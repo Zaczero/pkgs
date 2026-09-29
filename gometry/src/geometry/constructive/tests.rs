@@ -147,6 +147,45 @@ fn walk_keeps_small_turns_styled_and_sends_near_reversals_to_excursions() {
     assert!(matches!(folded.joins[0], WalkJoin::Excursion));
 }
 
+#[test]
+fn stroke_walk_styles_exact_reversals_and_emits_an_exact_semicircle_midpoint() {
+    let points = [
+        Point::new_raw_xy(0.0, 0.0),
+        Point::new_raw_xy(2.0, 0.0),
+        Point::new_raw_xy(1.0, 0.0),
+    ];
+    let round = WalkPlan::new_stroke(&points, false, 1.0, WalkJoinRule::Arc)
+        .unwrap()
+        .unwrap();
+    assert!(matches!(round.joins[0], WalkJoin::ReversalArc { .. }));
+
+    let mut budget = ExpansionBudget::new("test", "reversal arc");
+    let columns = materialize_walk(
+        &round,
+        std::f64::consts::PI / 16.0,
+        false,
+        &mut budget,
+        true,
+    )
+    .unwrap()
+    .unwrap();
+    let (xs, ys, _) = columns.into_columns();
+    assert!(
+        xs.iter()
+            .zip(&ys)
+            .any(|(&x, &y)| x.to_bits() == 3.0_f64.to_bits() && y.to_bits() == 0.0_f64.to_bits())
+    );
+
+    let bevel = WalkPlan::new_stroke(&points, false, 1.0, WalkJoinRule::Bevel)
+        .unwrap()
+        .unwrap();
+    assert!(matches!(bevel.joins[0], WalkJoin::Straight));
+    let miter = WalkPlan::new_stroke(&points, false, 1.0, WalkJoinRule::Miter { limit: 5.0 })
+        .unwrap()
+        .unwrap();
+    assert!(matches!(miter.joins[0], WalkJoin::Straight));
+}
+
 fn assert_plan_count_matches_materialization(
     points: &[Point],
     cyclic: bool,

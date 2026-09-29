@@ -17,6 +17,10 @@ pub(crate) enum WalkJoin {
     /// Outside turn, round rule: inscribed arc from the incoming normal's
     /// angle, sweeping counter-clockwise.
     Arc { from_angle: f64, sweep: f64 },
+    /// Exact 180-degree line reversal under the round rule. The midpoint is
+    /// emitted from the incoming normal directly so it coincides exactly with
+    /// a perpendicular stroke that meets the reversal tip.
+    ReversalArc { normal: (f64, f64) },
     /// Outside turn, miter rule within the limit: the offset carrier
     /// lines' crossing. Pure extension — never consumes an edge, so no
     /// clip parameters.
@@ -96,6 +100,12 @@ pub(crate) fn reflex_cross(
     debug_assert!(t_in.is_start() || t_in.is_end() || (0.0..=1.0).contains(&t_in.fraction()));
     debug_assert!(t_out.is_start() || t_out.is_end() || (0.0..=1.0).contains(&t_out.fraction()));
     Ok(Some((point, t_in, t_out)))
+}
+
+/// For three collinear points, whether `b` lies outside the closed segment
+/// between its neighbors.
+pub(crate) fn middle_outside_segment_bounds(a: Point, b: Point, c: Point) -> bool {
+    b.x < a.x.min(c.x) || b.x > a.x.max(c.x) || b.y < a.y.min(c.y) || b.y > a.y.max(c.y)
 }
 
 /// The outside miter join at `vertex`: the crossing of the two offset
@@ -319,15 +329,36 @@ impl<'a> WalkPlan<'a> {
     /// offset cannot be represented. A numerically ambiguous near-fold is
     /// emitted as an excursion inside this walk rather than switching to a
     /// different geometry engine.
-    #[expect(
-        clippy::indexing_slicing,
-        reason = "count >= 2 and edge/join bounds keep wrapped point and normal indices in range"
-    )]
     pub(crate) fn new(
         points: &'a [Point],
         cyclic: bool,
         distance: f64,
         rule: WalkJoinRule,
+    ) -> crate::error::Result<Option<Self>> {
+        Self::plan(points, cyclic, distance, rule, false)
+    }
+
+    /// Plan a buffer walk, where exact 180-degree reversals use the requested
+    /// join style just like other interior vertices.
+    pub(crate) fn new_stroke(
+        points: &'a [Point],
+        cyclic: bool,
+        distance: f64,
+        rule: WalkJoinRule,
+    ) -> crate::error::Result<Option<Self>> {
+        Self::plan(points, cyclic, distance, rule, true)
+    }
+
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "count >= 2 and edge/join bounds keep wrapped point and normal indices in range"
+    )]
+    fn plan(
+        points: &'a [Point],
+        cyclic: bool,
+        distance: f64,
+        rule: WalkJoinRule,
+        style_reversals: bool,
     ) -> crate::error::Result<Option<Self>> {
         let count = points.len();
         if count < 2 {
@@ -385,6 +416,16 @@ impl<'a> WalkPlan<'a> {
                 )? {
                     Some((point, t_in, t_out)) => WalkJoin::Cross { point, t_in, t_out },
                     None => WalkJoin::Excursion,
+                },
+                Orientation::Collinear
+                    if style_reversals && middle_outside_segment_bounds(v, w, u) =>
+                {
+                    match rule {
+                        WalkJoinRule::Arc => WalkJoin::ReversalArc {
+                            normal: normals[join],
+                        },
+                        WalkJoinRule::Bevel | WalkJoinRule::Miter { .. } => WalkJoin::Straight,
+                    }
                 },
                 Orientation::Collinear => WalkJoin::Straight,
             };
@@ -449,6 +490,7 @@ impl<'a> WalkPlan<'a> {
                 {
                     WalkJoin::Cross { t_out, .. } => Some(t_out),
                     WalkJoin::Arc { .. }
+                    | WalkJoin::ReversalArc { .. }
                     | WalkJoin::Miter { .. }
                     | WalkJoin::MiterCut { .. }
                     | WalkJoin::Excursion
@@ -463,6 +505,7 @@ impl<'a> WalkPlan<'a> {
                 {
                     WalkJoin::Cross { t_in, .. } => Some(t_in),
                     WalkJoin::Arc { .. }
+                    | WalkJoin::ReversalArc { .. }
                     | WalkJoin::Miter { .. }
                     | WalkJoin::MiterCut { .. }
                     | WalkJoin::Excursion
@@ -554,6 +597,20 @@ impl<'a> WalkPlan<'a> {
                         sink,
                     )?;
                 },
+                Some(WalkJoin::ReversalArc {
+                    normal: (normal_x, normal_y),
+                }) => {
+                    sink.push(w.x + self.distance * nx, w.y + self.distance * ny, source)?;
+                    emit_reversal_arc(
+                        w,
+                        *normal_x,
+                        *normal_y,
+                        self.distance,
+                        step_angle,
+                        source,
+                        sink,
+                    )?;
+                },
                 Some(WalkJoin::Excursion) => {
                     sink.push(w.x + self.distance * nx, w.y + self.distance * ny, source)?;
                     sink.push(w.x, w.y, source)?;
@@ -565,6 +622,47 @@ impl<'a> WalkPlan<'a> {
         }
         Ok(())
     }
+}
+
+fn emit_reversal_arc<S: WalkSink>(
+    center: Point,
+    nx: f64,
+    ny: f64,
+    distance: f64,
+    step_angle: f64,
+    source: u32,
+    sink: &mut S,
+) -> crate::error::Result<()> {
+    let half_steps = (std::f64::consts::FRAC_PI_2 / step_angle).ceil() as usize;
+    let step = std::f64::consts::FRAC_PI_2 / half_steps as f64;
+    let (sin_step, cos_step) = step.sin_cos();
+    let (mut cos_theta, mut sin_theta) = (nx, ny);
+    for index in 1..=half_steps {
+        (cos_theta, sin_theta) = (
+            cos_theta * cos_step - sin_theta * sin_step,
+            sin_theta * cos_step + cos_theta * sin_step,
+        );
+        if index == half_steps {
+            (cos_theta, sin_theta) = (-ny, nx);
+        }
+        sink.push(
+            center.x + distance * cos_theta,
+            center.y + distance * sin_theta,
+            source,
+        )?;
+    }
+    for _ in 1..half_steps {
+        (cos_theta, sin_theta) = (
+            cos_theta * cos_step - sin_theta * sin_step,
+            sin_theta * cos_step + cos_theta * sin_step,
+        );
+        sink.push(
+            center.x + distance * cos_theta,
+            center.y + distance * sin_theta,
+            source,
+        )?;
+    }
+    Ok(())
 }
 
 /// Emit one cap at `tip` continuing from offset normal `(nx, ny)` (the

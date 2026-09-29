@@ -2152,10 +2152,12 @@ class Geometry:
             meters on a geographic CRS, native units on a projected one, coordinate
             units otherwise.
         cap_style : {'round', 'flat', 'square'}, default 'round'
-            End-cap shape for open ends.
+            End-cap shape at the original first and last vertices of open lines. Closed lines have no end caps.
+            Point inputs always buffer to round discs, and MultiPoint buffers are
+            unions of round discs; `cap_style` does not affect either.
 
         join_style : {'round', 'miter', 'bevel'}, default 'round'
-            Corner join shape.
+            Interior corner style, including 180-degree reversals.
 
         quadrant_segments : int, default 8
             Segments used to approximate a quarter circle.
@@ -7906,10 +7908,12 @@ class GeometryArray(Sequence[_GeometryT_co]):
             units otherwise — a scalar applies to every geometry, or pass one value
             per geometry.
         cap_style : {'round', 'flat', 'square'}, default 'round'
-            End-cap shape for open ends.
+            End-cap shape at the original first and last vertices of open lines. Closed lines have no end caps.
+            Point inputs always buffer to round discs, and MultiPoint buffers are
+            unions of round discs; `cap_style` does not affect either.
 
         join_style : {'round', 'miter', 'bevel'}, default 'round'
-            Corner join shape.
+            Interior corner style, including 180-degree reversals.
 
         quadrant_segments : int, default 8
             Segments used to approximate a quarter circle.

@@ -8,7 +8,8 @@ use ahash::HashSetExt as _;
 
 use crate::geometry::constructive::{
     Result, WalkColumns, WalkCount, WalkJoin, WalkJoinRule, WalkPlan, WalkSink, close_xy_loop,
-    emit_cap, extend_cleaned, materialize_walk, raw_offset_loop, strict_cycle, winding_region,
+    emit_cap, extend_cleaned, materialize_walk, middle_outside_segment_bounds, raw_offset_loop,
+    strict_cycle, winding_region,
 };
 use crate::geometry::overlay::ExactSourceInventory;
 use crate::geometry::{
@@ -384,13 +385,11 @@ fn collection_polygon_operands(parts: &[Shape]) -> Vec<&Polygon> {
     polygons
 }
 
-/// Stroke buffer of lineal input through the winding engine: every chain
-/// emits ONE closed loop — the right side walked forward, an end cap, the
-/// left side walked backward, a start cap — and overlapping strokes
-/// (self-intersections, sharp folds, multi-part overlaps) resolve in the
-/// `winding >= 1` selection. Caps follow the style: round (a pi arc),
-/// flat (the direct chord), square (extended by the distance); outside
-/// joins follow `rule`; zero-length chains are disks (GEOS semantics).
+/// Stroke lineal input through the winding engine. The requested cap applies
+/// at each open source-chain endpoint; interior turns, including reversals,
+/// follow `rule`. Overlapping strokes (self-intersections, sharp folds,
+/// multi-part overlaps) resolve in the `winding >= 1` selection; zero-length
+/// chains are disks (GEOS semantics).
 /// `None` means that no usable constructive loop remained; non-finite
 /// derived coordinates are returned as typed errors.
 pub(in crate::geometry) fn winding_stroke_budgeted(
@@ -647,9 +646,8 @@ pub(crate) fn erosion_loops(
     Ok(Some(()))
 }
 
-/// Append one chain's stroke loop. Chains that dedup to a single point
-/// are zero-length: their stroke is the full disk (GEOS semantics);
-/// empty chains contribute nothing.
+/// Append the stroke loop for one chain; a chain that dedups to one point is
+/// a full disk, and an empty chain contributes nothing.
 /// `true` (clean) when the emitted loop used only outside joins — the
 /// precondition for the direct-stroke fast path even being plausible.
 pub(crate) fn stroke_loops(
@@ -681,11 +679,9 @@ pub(crate) fn stroke_loops(
             Ok(Some(true))
         },
         chain => {
-            // A collinear polyline (including one that folds back, like a
-            // closed degenerate ring `A..A`) covers exactly the interval
-            // between its extreme vertices, so its buffer is the stadium of
-            // that extent segment — not the thin self-retracing region a raw
-            // stroke of the folded path would select.
+            // A monotone collinear chain can collapse to its extent segment:
+            // its original endpoints are the extrema and it has no interior
+            // reversal join to preserve.
             let extent;
             let chain: &[Point] = if chain.len() >= 3
                 && let Some(segment) = collinear_extent(chain)
@@ -812,7 +808,7 @@ pub(crate) fn point_buffer(
 }
 
 /// Collect expansion loops across a collection's parts, recursively.
-pub(crate) fn collection_loops(
+fn collection_loops(
     loops: &mut Vec<LoopColumns>,
     parts: &[Shape],
     distance: f64,
@@ -898,18 +894,22 @@ pub(crate) fn collection_loops(
     Ok(Some(()))
 }
 
-/// The extent segment `[lo, hi]` of a collinear chain (≥ 3 distinct-adjacent
-/// vertices all on one line), or `None` when the chain bends. A connected
-/// collinear polyline — even one that doubles back or closes on itself —
-/// covers exactly the interval between its projection extremes, so stroking
-/// that segment yields the correct stadium where stroking the folded path
-/// would not (see the caller in [`stroke_loops`]).
+/// The extent segment `[lo, hi]` of a monotone collinear chain with at least
+/// three distinct-adjacent vertices, or `None` when the chain bends or reverses.
+/// Only monotone chains can collapse to the extent without changing which
+/// source vertices own endpoint caps and interior joins.
 pub(crate) fn collinear_extent(chain: &[Point]) -> Option<[Point; 2]> {
     let (&anchor, tail) = chain.split_first()?;
     let direction = *tail.iter().find(|point| !same_point(**point, anchor))?;
     if chain
         .iter()
         .any(|&point| orientation(anchor, direction, point) != Orientation::Collinear)
+    {
+        return None;
+    }
+    if chain
+        .array_windows::<3>()
+        .any(|[a, b, c]| middle_outside_segment_bounds(*a, *b, *c))
     {
         return None;
     }
@@ -941,7 +941,7 @@ pub(crate) fn raw_closed_stroke_loops(
     budget: &mut ExpansionBudget,
 ) -> Result<Option<(LoopColumns, LoopColumns, bool)>> {
     let step_angle = std::f64::consts::FRAC_PI_2 / f64::from(quadrant_segments.get());
-    let Some(right_plan) = WalkPlan::new(chain, true, distance, rule)? else {
+    let Some(right_plan) = WalkPlan::new_stroke(chain, true, distance, rule)? else {
         return Ok(None);
     };
     let mut backward = Vec::with_capacity(chain.len());
@@ -950,7 +950,7 @@ pub(crate) fn raw_closed_stroke_loops(
         .expect("a closed walk plan has a source start vertex");
     backward.push(first);
     backward.extend(chain.iter().skip(1).rev().copied());
-    let Some(left_plan) = WalkPlan::new(&backward, true, distance, rule)? else {
+    let Some(left_plan) = WalkPlan::new_stroke(&backward, true, distance, rule)? else {
         return Ok(None);
     };
     let Some(right_columns) = materialize_walk(&right_plan, step_angle, false, budget, true)?
@@ -984,7 +984,7 @@ pub(crate) fn raw_stroke_loop(
 ) -> Result<Option<(LoopColumns, bool)>> {
     let quadrant_segments = quadrant_segments.get();
     let step_angle = std::f64::consts::FRAC_PI_2 / f64::from(quadrant_segments);
-    let Some(right_plan) = WalkPlan::new(chain, false, distance, rule)? else {
+    let Some(right_plan) = WalkPlan::new_stroke(chain, false, distance, rule)? else {
         return Ok(None);
     };
     let start = *chain
@@ -1004,7 +1004,7 @@ pub(crate) fn raw_stroke_loop(
     let mut backward = crate::scratch_pool::ScratchPool::checkout(&BACKWARD);
     backward.reserve(chain.len());
     backward.extend(chain.iter().rev().copied());
-    let Some(left_plan) = WalkPlan::new(backward.as_slice(), false, distance, rule)? else {
+    let Some(left_plan) = WalkPlan::new_stroke(backward.as_slice(), false, distance, rule)? else {
         return Ok(None);
     };
     let (enx, eny) = right_plan.last_normal();

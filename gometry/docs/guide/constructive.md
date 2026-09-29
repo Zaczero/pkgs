@@ -58,13 +58,18 @@ current defaults and accepted values. The options control:
 | Parameter | Effect |
 |-----------|---------|
 | `quadrant_segments` | segments per quarter-circle; higher = rounder, more vertices |
-| `cap_style` | end-cap of open lines: `'round'`, `'flat'`, `'square'` |
-| `join_style` | corner style: `'round'`, `'miter'`, `'bevel'` |
+| `cap_style` | end-cap at the original first and last vertices of open lines: `'round'`, `'flat'`, `'square'` |
+| `join_style` | interior corner style, including 180° reversals: `'round'`, `'miter'`, `'bevel'` |
 | `miter_limit` | with `join_style='miter'`, clip spikes when the miter would exceed `limit × distance` |
 | `side` | stroke side for linework: `'both'`, `'left'`, or `'right'` |
 
-A round cap adds a half-disc at each line end; a flat cap stops dead at the
-endpoint.
+Point inputs always buffer to round discs, and MultiPoint buffers are unions
+of round discs; `cap_style` does not affect either.
+
+Only an open line's original first and last vertices receive end caps. An
+interior reversal is a join, so `join_style` controls its shape regardless of
+`cap_style`; closed lines have no end caps. A round cap adds a half-disc at
+each open-line endpoint, while a flat cap stops at the endpoint.
 
 ```python exec="on" source="block" result="text"
 import gometry as gm

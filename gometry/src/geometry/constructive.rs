@@ -31,7 +31,7 @@ pub(crate) use snap::{
 };
 pub(crate) use walk::{
     WalkColumns, WalkCount, WalkJoin, WalkJoinRule, WalkPlan, WalkSink, close_xy_loop, emit_cap,
-    extend_cleaned, materialize_walk,
+    extend_cleaned, materialize_walk, middle_outside_segment_bounds,
 };
 pub(in crate::geometry) use walk::{assemble_region_polygons, winding_region};
 #[cfg(test)]

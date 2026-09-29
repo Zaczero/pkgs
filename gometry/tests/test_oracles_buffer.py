@@ -260,3 +260,258 @@ def test_round_buffer_boundary_vertices_follow_the_source_locus(
         reference.area,
         rel=BUFFER_AREA_RELATIVE_TOLERANCE,
     )
+
+
+@pytest.mark.parametrize(
+    ('name', 'wkt'),
+    [
+        pytest.param(
+            'open-collinear-reversal',
+            'LINESTRING (0 0, 2 0, 1 0)',
+            id='open-collinear-reversal',
+        ),
+        pytest.param(
+            'open-retrace',
+            'LINESTRING (0 0, 0 1, 0 0, 1 0)',
+            id='open-retrace',
+        ),
+        pytest.param(
+            'z-retrace',
+            'LINESTRING (0 0, 0 1, 1 1, 0 1, 1 0)',
+            id='z-retrace',
+        ),
+        pytest.param(
+            'two-open-reversals',
+            'LINESTRING (0 0, 0 1, 0 0, 1 0, 1 -1, 1 0, 2 0)',
+            id='two-open-reversals',
+        ),
+        pytest.param(
+            'closed-retrace',
+            'LINESTRING (0 0, 0 1, 0 0, 1 0, 1 1, 0 0)',
+            id='closed-retrace',
+        ),
+        pytest.param(
+            'multiline-retrace',
+            'MULTILINESTRING ((0 0, 0 1, 0 0, 1 0), (2 0, 3 0))',
+            id='multiline-retrace',
+        ),
+        pytest.param(
+            'connected-reversal',
+            'MULTILINESTRING ((0 0, 2 0, 1 0), (2 0, 2 1))',
+            id='connected-reversal',
+        ),
+    ],
+)
+@pytest.mark.parametrize('cap_style', ['round', 'flat', 'square'])
+@pytest.mark.parametrize('join_style', ['round', 'bevel', 'miter'])
+def test_retraced_buffers_match_geos_for_each_cap_and_join_style(
+    name: str,
+    wkt: str,
+    cap_style: CapStyle,
+    join_style: JoinStyle,
+) -> None:
+    distance = 0.25
+    quadrant_segments = 8
+    actual = shapely.from_wkt(
+        gm.from_wkt(wkt)
+        .buffer(
+            distance,
+            cap_style=cap_style,
+            join_style=join_style,
+            quadrant_segments=quadrant_segments,
+        )
+        .to_wkt()
+    )
+    geos_join_style = 'mitre' if join_style == 'miter' else join_style
+    expected = shapely.buffer(
+        shapely.from_wkt(wkt),
+        distance,
+        quad_segs=quadrant_segments,
+        cap_style=cap_style,
+        join_style=geos_join_style,
+    )
+
+    assert shapely.is_valid(actual), name
+    assert actual.area == pytest.approx(expected.area, rel=1e-7, abs=1e-9), name
+    assert shapely.symmetric_difference(actual, expected).area <= 1e-8, name
+
+
+@pytest.mark.parametrize('cap_style', ['round', 'flat', 'square'])
+@pytest.mark.parametrize('join_style', ['round', 'bevel', 'miter'])
+def test_collection_retrace_matches_componentwise_geos(
+    cap_style: CapStyle,
+    join_style: JoinStyle,
+) -> None:
+    distance = 0.25
+    quadrant_segments = 8
+    line_wkt = 'LINESTRING (0 0, 0 1, 0 0, 1 0)'
+    point_wkt = 'POINT (3 3)'
+    collection = gm.from_wkt(
+        f'GEOMETRYCOLLECTION ({line_wkt}, {point_wkt})'
+    )
+    actual = shapely.from_wkt(
+        collection.buffer(
+            distance,
+            cap_style=cap_style,
+            join_style=join_style,
+            quadrant_segments=quadrant_segments,
+        ).to_wkt()
+    )
+
+    geos_join_style = 'mitre' if join_style == 'miter' else join_style
+    line_buffer = shapely.buffer(
+        shapely.from_wkt(line_wkt),
+        distance,
+        quad_segs=quadrant_segments,
+        cap_style=cap_style,
+        join_style=geos_join_style,
+    )
+    # cap_style describes line ends in Gometry; point members remain round.
+    point_buffer = shapely.buffer(
+        shapely.from_wkt(point_wkt),
+        distance,
+        quad_segs=quadrant_segments,
+        cap_style='round',
+    )
+    expected = shapely.union_all([line_buffer, point_buffer])
+
+    assert shapely.is_valid(actual)
+    assert actual.area == pytest.approx(expected.area, rel=1e-7, abs=1e-9)
+    assert shapely.symmetric_difference(actual, expected).area <= 1e-8
+
+
+@pytest.mark.parametrize('cap_style', ['round', 'flat', 'square'])
+@pytest.mark.parametrize('join_style', ['round', 'bevel', 'miter'])
+def test_closed_collinear_retrace_uses_joins_without_end_caps(
+    cap_style: CapStyle,
+    join_style: JoinStyle,
+) -> None:
+    distance = 0.25
+    quadrant_segments = 8
+    closed = gm.from_wkt('LINESTRING (0 0, 0 1, 0 0)')
+    actual = shapely.from_wkt(
+        closed.buffer(
+            distance,
+            cap_style=cap_style,
+            join_style=join_style,
+            quadrant_segments=quadrant_segments,
+        ).to_wkt()
+    )
+
+    # GEOS treats this repeated closure as a cap; the line-end contract makes
+    # its two 180-degree joins the only style-bearing points instead.
+    join_cap = 'round' if join_style == 'round' else 'flat'
+    expected = shapely.buffer(
+        shapely.from_wkt('LINESTRING (0 0, 0 1)'),
+        distance,
+        quad_segs=quadrant_segments,
+        cap_style=join_cap,
+        join_style='round',
+    )
+
+    assert actual.area == pytest.approx(expected.area, rel=1e-7, abs=1e-9)
+    assert shapely.symmetric_difference(actual, expected).area <= 1e-8
+
+
+@pytest.mark.parametrize(
+    'wkt',
+    [
+        pytest.param('POINT (5 5)', id='point'),
+        pytest.param('MULTIPOINT ((0 0), (5 0), (2.5 4))', id='multipoint'),
+    ],
+)
+@pytest.mark.parametrize('cap_style', ['round', 'flat', 'square'])
+def test_point_buffers_ignore_cap_style(wkt: str, cap_style: CapStyle) -> None:
+    distance = 0.25
+    quadrant_segments = 8
+    actual = shapely.from_wkt(
+        gm.from_wkt(wkt)
+        .buffer(
+            distance,
+            cap_style=cap_style,
+            quadrant_segments=quadrant_segments,
+        )
+        .to_wkt()
+    )
+    expected = shapely.buffer(
+        shapely.from_wkt(wkt),
+        distance,
+        quad_segs=quadrant_segments,
+        cap_style='round',
+    )
+
+    assert actual.area == pytest.approx(expected.area, rel=1e-7, abs=1e-9)
+    assert shapely.symmetric_difference(actual, expected).area <= 1e-8
+
+
+@pytest.mark.parametrize('miter_limit', [1.0, 5.0, 10.0])
+def test_reversal_miter_clips_to_the_offset_chord(
+    miter_limit: float,
+) -> None:
+    wkt = 'LINESTRING (0 0, 2 0, 1 0)'
+    distance = 0.25
+    quadrant_segments = 8
+    actual = shapely.from_wkt(
+        gm.from_wkt(wkt)
+        .buffer(
+            distance,
+            cap_style='flat',
+            join_style='miter',
+            miter_limit=miter_limit,
+            quadrant_segments=quadrant_segments,
+        )
+        .to_wkt()
+    )
+    expected = shapely.buffer(
+        shapely.from_wkt(wkt),
+        distance,
+        quad_segs=quadrant_segments,
+        cap_style='flat',
+        join_style='mitre',
+        mitre_limit=miter_limit,
+    )
+
+    assert actual.area == pytest.approx(expected.area, rel=1e-7, abs=1e-9)
+    assert shapely.symmetric_difference(actual, expected).area <= 1e-8
+
+
+@pytest.mark.parametrize('cap_style', ['round', 'flat', 'square'])
+@pytest.mark.parametrize(
+    ('join_style', 'expected'),
+    [
+        pytest.param('round', True, id='round-join'),
+        pytest.param('bevel', False, id='bevel-join'),
+        pytest.param('miter', False, id='miter-join'),
+    ],
+)
+def test_interior_reversal_witness_follows_join_style(
+    cap_style: CapStyle,
+    join_style: JoinStyle,
+    expected: bool,
+) -> None:
+    line = gm.from_wkt('LINESTRING (0 0, 0 1, 0 0, 1 0)')
+    result = line.buffer(
+        0.25,
+        cap_style=cap_style,
+        join_style=join_style,
+        quadrant_segments=8,
+    )
+
+    assert gm.covers(result, gm.Point(0, 1.125)) is expected
+
+
+def test_round_join_at_open_reversal_lies_on_the_distance_locus() -> None:
+    wkt = 'LINESTRING (0 0, 0 1, 0 0, 1 0)'
+    source = shapely.from_wkt(wkt)
+    result = gm.from_wkt(wkt).buffer(0.25, quadrant_segments=8)
+    boundary = shapely.from_wkt(result.to_wkt())
+    vertices = _exterior_vertices(result)
+
+    errors = [
+        abs(source.distance(shapely.Point(x, y)) - 0.25) for x, y in vertices
+    ]
+    assert errors
+    assert max(errors) <= BUFFER_LOCUS_TOLERANCE
+    reversal_tip = shapely.Point(0, 1.25)
+    assert source.distance(reversal_tip) == pytest.approx(0.25)
+    assert boundary.boundary.distance(reversal_tip) <= BUFFER_LOCUS_TOLERANCE
