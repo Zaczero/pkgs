@@ -2165,10 +2165,25 @@ pub(crate) fn lerp_point(start: Point, end: Point, fraction: f64) -> Point {
 
 /// Affine interpolation `start*(1 - fraction) + end*fraction`, valid for any
 /// `fraction` (callers such as `line_intersection` extrapolate past `[0, 1]`).
-/// The convex form keeps the result bounded by `max(|start|, |end|)` for
-/// `fraction` in `[0, 1]`, avoiding the `end - start` overflow class, and is
-/// exact at the endpoints (`fraction` 0 → `start`, 1 → `end`).
+/// Return exact endpoint and constant-ordinate identities before evaluating the
+/// convex form, whose separate products can underflow an equal subnormal value.
+/// Otherwise the convex form keeps the result bounded by
+/// `max(|start|, |end|)` for `fraction` in `[0, 1]`, avoiding the
+/// `end - start` overflow class.
+#[expect(
+    clippy::float_cmp,
+    reason = "zero and one are exact affine parameter identities; equal finite ordinates are preserved"
+)]
 pub(crate) fn interpolate_f64(start: f64, end: f64, fraction: f64) -> f64 {
+    if fraction == 0.0 {
+        return start;
+    }
+    if fraction == 1.0 {
+        return end;
+    }
+    if fraction.is_finite() && start.is_finite() && start == end {
+        return start;
+    }
     let value = start * (1.0 - fraction) + end * fraction;
     if value.is_finite() || !start.is_finite() || !end.is_finite() {
         return value;

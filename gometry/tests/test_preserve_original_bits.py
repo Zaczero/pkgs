@@ -70,6 +70,25 @@ def test_point_navigation_and_lrs_boundaries_preserve_endpoint_bits() -> None:
     assert _coords_xy_bits(substring) == _coords_xy_bits(line)
 
 
+def test_line_interpolation_preserves_equal_subnormal_ordinates() -> None:
+    vertical = gm.from_wkt('LINESTRING (5e-324 -1, 5e-324 2)')
+    vertical_midpoint = vertical.line_interpolate(0.5, normalized=True)
+    assert _bits(vertical_midpoint.x) == _bits(5e-324)
+    assert _bits(vertical_midpoint.y) == _bits(0.5)
+
+    horizontal = gm.from_wkt('LINESTRING (0 5e-324, 2 5e-324)')
+    horizontal_midpoint = horizontal.line_interpolate(0.5, normalized=True)
+    assert _bits(horizontal_midpoint.x) == _bits(1.0)
+    assert _bits(horizontal_midpoint.y) == _bits(5e-324)
+
+
+def test_line_interpolation_preserves_equal_ordinary_ordinates() -> None:
+    line = gm.LineString([(0.0, 0.1), (1.0, 0.1)])
+    point = line.line_interpolate(0.2, normalized=True)
+
+    assert _bits(point.y) == _bits(0.1)
+
+
 def test_zero_distance_destination_and_identity_bounds_use_frame_canonicalization() -> (
     None
 ):
