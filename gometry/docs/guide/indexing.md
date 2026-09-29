@@ -28,7 +28,9 @@ mutations rather than replaying the original source rows.
     answer. Retain the source geometry and use an exact predicate to refine those
     candidates into exact matches.
     [`idx.query(q, predicate=...)`][gometry.SpatialIndex.query] performs that
-    exact predicate refinement and returns only true matches.
+    exact predicate refinement and returns only true matches. Both methods
+    return source-row handles in ascending order; removing rows does not
+    renumber the remaining handles.
 
 ## Candidates vs query
 
@@ -57,7 +59,8 @@ print("exact intersects:", hits.tolist())
 
 `candidates` returns positional indices into the input array whose envelopes overlap
 the query envelope. `query` takes that same candidate set and applies the exact
-predicate, so it is always a subset. In this example, geometry **1** is a false
+predicate, so it is always a subset. Both return handles in ascending source-row
+order. In this example, geometry **1** is a false
 positive because its diagonal triangle's bounding box overlaps the query while the
 shape does not.
 
@@ -93,6 +96,8 @@ print(figure(
 
 `candidates` supplies rows for caller-owned refinement or a coarse spatial key.
 `query` performs the exact predicate refinement.
+A positive-infinite candidate expansion admits every live non-empty indexed row
+for a query with bounds.
 
 ### Periodic geographic bounds
 

@@ -27,12 +27,12 @@ use crate::py::errors::{GeometryError, parameter_error};
 use crate::py::numpy::{float64_array, int64_array, usize_array};
 use crate::py::vectors::Groups;
 use crate::{
-    Crs, DistanceUnit, Frame, GeometryArrayStorage, HeapSize, IndexEnvelope, NonNegative,
-    PointRows, Predicate, PyGeometry, PyGeometryArray, ShapeRow, bounds_envelope, crs, crs_label,
-    epoch_label, exact_geometry, exact_geometry_array, geometry_items,
+    Crs, DistanceUnit, DwithinDistance, Frame, GeometryArrayStorage, HeapSize, IndexEnvelope,
+    NonNegative, PointRows, Predicate, PyGeometry, PyGeometryArray, ShapeRow, bounds_envelope, crs,
+    crs_label, epoch_label, exact_geometry, exact_geometry_array, geometry_items,
     global_geographic_candidate_envelope, index_envelopes, pair_distance_geodesic,
     pair_distance_planar, pair_dwithin_geodesic, pair_dwithin_planar, point_from_bounds,
-    resolve_metric, topology_pair_after_gates, topology_scalar_pair, validate_distance_arg,
+    resolve_metric, topology_pair_after_gates, topology_scalar_pair, validate_dwithin_distance_arg,
     validate_nearest_k,
 };
 
@@ -129,7 +129,7 @@ impl IndexPredicate {
 pub(crate) fn query_distance(
     predicate: Option<IndexPredicate>,
     distance: Option<&Bound<'_, PyAny>>,
-) -> PyResult<Option<NonNegative>> {
+) -> PyResult<Option<DwithinDistance>> {
     let Some(distance) = distance else {
         if predicate.is_some_and(IndexPredicate::requires_distance) {
             return Err(GeometryError::new_err(
@@ -145,7 +145,7 @@ pub(crate) fn query_distance(
             predicate.token(),
         )));
     }
-    Ok(Some(validate_distance_arg(distance)?))
+    Ok(Some(validate_dwithin_distance_arg(distance)?))
 }
 
 /// Query domain needed only when an unframed empty index has no stored frame
@@ -228,7 +228,7 @@ pub(crate) enum PreparedIndexQuery {
     /// Candidate-only query with a resolved metric distance expansion.
     CandidatesDwithin {
         query_domain: QueryDomain,
-        distance: NonNegative,
+        distance: DwithinDistance,
         metric: crs::MetricModel,
     },
     /// Exact topology refinement needs no metric state.
@@ -239,7 +239,7 @@ pub(crate) enum PreparedIndexQuery {
     /// Exact distance refinement always carries every metric prerequisite.
     Dwithin {
         query_domain: QueryDomain,
-        distance: NonNegative,
+        distance: DwithinDistance,
         metric: crs::MetricModel,
         resolved: crs::ResolvedMetric,
     },
@@ -262,7 +262,7 @@ impl PreparedIndexQuery {
         &self,
     ) -> (
         Option<IndexPredicate>,
-        Option<NonNegative>,
+        Option<DwithinDistance>,
         Option<&crs::MetricModel>,
     ) {
         match self {
@@ -291,7 +291,7 @@ impl PreparedIndexQuery {
     pub(crate) fn for_index(
         index: &PySpatialIndex,
         predicate: Option<IndexPredicate>,
-        distance: Option<NonNegative>,
+        distance: Option<DwithinDistance>,
         unit: Option<DistanceUnit>,
     ) -> PyResult<Self> {
         Self::for_frame(
@@ -308,7 +308,7 @@ impl PreparedIndexQuery {
         index: &PySpatialIndex,
         geometry: &PyGeometry,
         predicate: Option<IndexPredicate>,
-        distance: Option<NonNegative>,
+        distance: Option<DwithinDistance>,
         unit: Option<DistanceUnit>,
     ) -> PyResult<Self> {
         Self::for_frame(
@@ -325,7 +325,7 @@ impl PreparedIndexQuery {
         index: &PySpatialIndex,
         array: &PyGeometryArray,
         predicate: Option<IndexPredicate>,
-        distance: Option<NonNegative>,
+        distance: Option<DwithinDistance>,
         unit: Option<DistanceUnit>,
     ) -> PyResult<Self> {
         Self::for_frame(
@@ -343,7 +343,7 @@ impl PreparedIndexQuery {
         query_frame: Option<&Frame>,
         metric_crs: Option<&str>,
         predicate: Option<IndexPredicate>,
-        distance: Option<NonNegative>,
+        distance: Option<DwithinDistance>,
         unit: Option<DistanceUnit>,
     ) -> PyResult<Self> {
         let crs = query_frame.and_then(Frame::crs_ref);

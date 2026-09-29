@@ -1710,7 +1710,7 @@ class Geometry:
         Parameters
         ----------
         tolerance : float, optional
-            Precision of the search, interpreted for the CRS (see ``unit``).
+            Positive finite search precision, interpreted for the CRS (see ``unit``).
             Omitted selects a scale-aware tolerance from the geometry's extent.
         unit : {'planar', 'meters'}, default None
             Omitted follows the CRS: geodesic meters on a geographic CRS, native units on a projected one, coordinate units without a CRS. ``planar``
@@ -1726,6 +1726,8 @@ class Geometry:
 
         Raises
         ------
+        GeometryError
+            If an explicit ``tolerance`` is not positive and finite.
         InvalidGeometryError
             If the pole of inaccessibility cannot be computed.
 
@@ -1863,12 +1865,13 @@ class Geometry:
             ``delaunay`` triangulates input vertices, and ``constrained`` preserves
             polygon boundaries.
         min_angle : float, optional
-            Minimum triangle angle in degrees; valid only with
-            ``method='constrained'``.
+            Minimum triangle angle in degrees; positive finite values up to 30 are
+            valid with ``method='constrained'``.
 
         max_area : float, optional
-            Maximum triangle area in square coordinate units; valid only with
-            ``method='constrained'``. Setting either option enables refinement;
+            Maximum triangle area in square coordinate units; positive finite values
+            are valid with ``method='constrained'``. Setting either option enables
+            refinement;
             without either option, duplicate XY sites use their first source
             occurrence and triangle corners preserve the selected source ordinates.
             Refinement inserts Steiner vertices and therefore returns uniform XY.
@@ -1881,7 +1884,8 @@ class Geometry:
         Raises
         ------
         GeometryError
-            If method-specific options are used with the wrong algorithm.
+            If a quality constraint is invalid or method-specific options are used
+            with the wrong algorithm.
         InvalidGeometryError
             If the triangulation cannot be constructed.
 
@@ -2151,7 +2155,7 @@ class Geometry:
         distance : float
             Buffer radius; negative shrinks areal geometries. CRS-aware: geodesic
             meters on a geographic CRS, native units on a projected one, coordinate
-            units otherwise.
+            units otherwise. Must be finite.
         cap_style : {'round', 'flat', 'square'}, default 'round'
             End-cap shape at the original first and last vertices of open lines. Closed lines have no end caps.
             Point inputs always buffer to round discs, and MultiPoint buffers are
@@ -2855,10 +2859,12 @@ class Geometry:
         concavity : float, default 2.0
             Sets the peel distance guard: a candidate triangle's opposite vertex must
             lie within ``edge_length / concavity`` of its boundary edge. ``0`` disables
-            this guard. Higher values typically keep more area, but the greedy peel
-            does not guarantee area monotonicity as ``concavity`` increases.
+            this guard. Must be finite and non-negative. Higher values typically keep
+            more area, but the greedy peel does not guarantee area monotonicity as
+            ``concavity`` increases.
         length_threshold : float, default 0.0
-            Boundary edges at or below this length are kept. For fixed input and
+            Boundary edges at or below this length are kept; must be finite and
+            non-negative. For fixed input and
             ``concavity``, a larger threshold always gives a hull that contains the
             smaller-threshold hull, so area never decreases. Interpreted for the CRS
             (see ``unit``). On a geographic CRS the threshold is evaluated in a local
@@ -2879,7 +2885,7 @@ class Geometry:
         Raises
         ------
         GeometryError
-            If parameters are non-finite or selected hull vertices have different
+            If parameters are non-finite or negative, or selected hull vertices have different
             coordinate axis layouts.
 
         See Also
@@ -3102,7 +3108,7 @@ class Geometry:
         Parameters
         ----------
         tolerance : float, default 0.0
-            Tolerance in coordinate units (non-negative).
+            Tolerance in coordinate units (finite and non-negative).
         clip : {'padded', 'envelope'} or Polygon, default 'padded'
             How to bound the unbounded outer cells: a padded box, the input
             envelope, or a `Polygon` to clip the diagram to.
@@ -3183,7 +3189,8 @@ class Geometry:
             Offset; sign selects the side. CRS-aware: geodesic meters on a geographic
             CRS, native units on a projected one, coordinate units otherwise. The result is the RAW parallel
             curve: where the input folds back within ``distance`` the curve can
-            self-intersect; ``buffer(side=...)`` gives the trimmed area instead.
+            self-intersect; ``buffer(side=...)`` gives the trimmed area instead. Must
+            be finite.
         join_style : {'round', 'miter', 'bevel'}, default 'round'
             Corner treatment at outside turns: ``'round'`` inscribes fillet arcs,
             ``'miter'`` extends the carriers to their crossing (clipped at
@@ -3834,7 +3841,7 @@ class Geometry:
         Parameters
         ----------
         tolerance : float, default 0.0
-            Tolerance in coordinate units (non-negative).
+            Tolerance in coordinate units (finite and non-negative).
 
 
         Returns
@@ -3904,7 +3911,7 @@ class Geometry:
         Parameters
         ----------
         tolerance : float, default 0.0
-            Tolerance in coordinate units (non-negative).
+            Tolerance in coordinate units (finite and non-negative).
         clip : {'padded', 'envelope'} or Polygon, default 'padded'
             How to bound the unbounded outer cells: a padded box, the input
             envelope, or a `Polygon` to clip the diagram to.
@@ -4096,7 +4103,8 @@ class Point(Geometry):
         bearing : float or sequence of float
             Initial azimuth in degrees clockwise from north.
         distance : float or sequence of float
-            Distance to travel in CRS-natural units, unless `unit` is set.
+            Finite, non-negative distance to travel in CRS-natural units, unless
+            `unit` is set.
         path : {'geodesic', 'rhumb'}, default 'geodesic'
             Route model. Rhumb paths require a geographic CRS and use meters.
         unit : {'planar', 'meters'}, optional
@@ -5801,7 +5809,8 @@ class GeometryArray(Sequence[_GeometryT_co]):
         bearing : float or sequence of float
             Initial azimuth in degrees clockwise from north.
         distance : float or sequence of float
-            Distance to travel in CRS-natural units, unless `unit` is set.
+            Finite, non-negative distance to travel in CRS-natural units, unless
+            `unit` is set.
         path : {'geodesic', 'rhumb'}, default 'geodesic'
             Route model. Rhumb paths require a geographic CRS and use meters.
         unit : {'planar', 'meters'}, optional
@@ -7287,9 +7296,9 @@ class GeometryArray(Sequence[_GeometryT_co]):
         Parameters
         ----------
         tolerance : float or sequence of float, optional
-            Precision of the search, interpreted for the CRS (see ``unit``) — a
-            scalar applies to every geometry, or pass one value per geometry. Omitted
-            selects a scale-aware tolerance independently for each geometry.
+            Positive finite search precision, interpreted for the CRS (see ``unit``) —
+            a scalar applies to every geometry, or pass one value per geometry.
+            Omitted selects a scale-aware tolerance independently for each geometry.
         unit : {'planar', 'meters'}, default None
             Omitted follows the CRS: geodesic meters on a geographic CRS, native units on a projected one, coordinate units without a CRS. ``planar``
             forces raw coordinate units (native angular units as Cartesian coordinates on a geographic CRS
@@ -7304,6 +7313,8 @@ class GeometryArray(Sequence[_GeometryT_co]):
 
         Raises
         ------
+        GeometryError
+            If an explicit ``tolerance`` is not positive and finite.
         InvalidGeometryError
             If the pole of inaccessibility cannot be computed.
 
@@ -7481,12 +7492,13 @@ class GeometryArray(Sequence[_GeometryT_co]):
         method : {'earcut', 'delaunay', 'constrained'}
             Required triangulation algorithm.
         min_angle : float or sequence of float, optional
-            Minimum triangle angle in degrees; valid only with
-            ``method='constrained'``.
+            Minimum triangle angle in degrees; each value must be positive, finite,
+            and at most 30. Valid only with ``method='constrained'``.
 
         max_area : float or sequence of float, optional
-            Maximum triangle area in square coordinate units; valid only with
-            ``method='constrained'``. Setting either option enables refinement;
+            Maximum triangle area in square coordinate units; each value must be
+            positive and finite. Valid only with ``method='constrained'``. Setting
+            either option enables refinement;
             inserted Steiner vertices return uniform XY. Scalar and array rows use
             the same first-occurrence source-site and ordinate policy.
 
@@ -7498,7 +7510,8 @@ class GeometryArray(Sequence[_GeometryT_co]):
         Raises
         ------
         GeometryError
-            If method-specific options are used with the wrong algorithm.
+            If a quality constraint is invalid or method-specific options are used
+            with the wrong algorithm.
 
         Examples
         --------
@@ -7911,7 +7924,7 @@ class GeometryArray(Sequence[_GeometryT_co]):
             Buffer radius; negative shrinks areal geometries. CRS-aware: geodesic
             meters on a geographic CRS, native units on a projected one, coordinate
             units otherwise — a scalar applies to every geometry, or pass one value
-            per geometry.
+            per geometry. Every distance must be finite.
         cap_style : {'round', 'flat', 'square'}, default 'round'
             End-cap shape at the original first and last vertices of open lines. Closed lines have no end caps.
             Point inputs always buffer to round discs, and MultiPoint buffers are
@@ -8730,9 +8743,11 @@ class GeometryArray(Sequence[_GeometryT_co]):
             lie within ``edge_length / concavity`` of its boundary edge. ``0`` disables
             this guard. Higher values typically keep more area, but the greedy peel
             does not guarantee area monotonicity as ``concavity`` increases — a scalar
-            applies to every geometry, or pass one value per geometry.
+            applies to every geometry, or pass one value per geometry. Each value must
+            be finite and non-negative.
         length_threshold : float or sequence of float, default 0.0
-            Boundary edges at or below this length are kept. For fixed input and
+            Boundary edges at or below this length are kept; each value must be finite
+            and non-negative. For fixed input and
             ``concavity``, a larger threshold always gives a hull that contains the
             smaller-threshold hull, so area never decreases. Interpreted for the CRS
             (see ``unit``). On a geographic CRS the threshold is evaluated in a local
@@ -8754,7 +8769,7 @@ class GeometryArray(Sequence[_GeometryT_co]):
         Raises
         ------
         GeometryError
-            If parameters are non-finite or selected hull vertices have different
+            If parameters are non-finite or negative, or selected hull vertices have different
             coordinate axis layouts.
 
         See Also
@@ -8984,7 +8999,7 @@ class GeometryArray(Sequence[_GeometryT_co]):
         Parameters
         ----------
         tolerance : float, default 0.0
-            Tolerance in coordinate units (non-negative).
+            Tolerance in coordinate units (finite and non-negative).
         clip : {'padded', 'envelope'} or Polygon, default 'padded'
             How to bound the unbounded outer cells: a padded box, the input
             envelope, or a `Polygon` to clip the diagram to.
@@ -9201,7 +9216,7 @@ class GeometryArray(Sequence[_GeometryT_co]):
             geometry, or pass one value per geometry. The result is the RAW
             parallel curve: where the input folds back within ``distance`` the
             curve can self-intersect; ``buffer(side=...)`` gives the trimmed area
-            instead.
+            instead. Every distance must be finite.
         join_style : {'round', 'miter', 'bevel'}, default 'round'
             Corner treatment at outside turns: ``'round'`` inscribes fillet arcs,
             ``'miter'`` extends the carriers to their crossing (clipped at
@@ -10060,7 +10075,7 @@ class GeometryArray(Sequence[_GeometryT_co]):
         Parameters
         ----------
         tolerance : float or sequence of float, default 0.0
-            Tolerance in coordinate units (non-negative) — a scalar applies to
+            Tolerance in coordinate units (finite and non-negative) — a scalar applies to
             every geometry, or pass one value per geometry.
 
 
@@ -10131,7 +10146,7 @@ class GeometryArray(Sequence[_GeometryT_co]):
         Parameters
         ----------
         tolerance : float, default 0.0
-            Tolerance in coordinate units (non-negative).
+            Tolerance in coordinate units (finite and non-negative).
         clip : {'padded', 'envelope'} or Polygon, default 'padded'
             How to bound the unbounded outer cells: a padded box, the input
             envelope, or a `Polygon` to clip the diagram to.
@@ -10591,8 +10606,9 @@ class SpatialIndex(Mapping[int, Geometry]):
             ``distance``).
         distance : float, optional
             ``'dwithin'`` distance threshold, in ``unit``. A positive infinite
-            threshold is accepted; missing or empty query rows produce empty
-            result groups rather than being dropped.
+            threshold is accepted; other values must be finite and
+            non-negative. Missing or empty query rows produce empty result
+            groups rather than being dropped.
         unit : {'planar', 'meters'}, default None
             Omitted follows the CRS: geodesic meters on a geographic CRS, native
             units on a projected one, coordinate units without a CRS.
@@ -10605,7 +10621,8 @@ class SpatialIndex(Mapping[int, Geometry]):
         int64 numpy.ndarray or Groups
             Matching index handles (row ids). A scalar query returns a read-only
             ``int64`` ndarray of handles; an array query returns ``Groups`` of
-            handles, one group per query row.
+            handles, one group per query row. Each result is in ascending
+            source-row order.
 
         Raises
         ------
@@ -10656,8 +10673,8 @@ class SpatialIndex(Mapping[int, Geometry]):
             Spatial predicate each returned pair must satisfy.
         distance : float, optional
             Required when ``predicate='dwithin'``: the maximum separation in
-            CRS-natural units. Positive infinity is accepted; missing query
-            rows produce no pairs.
+            CRS-natural units. Finite non-negative values and positive infinity
+            are accepted; missing query rows produce no pairs.
         unit : {'planar', 'meters'}, default None
             Omitted follows the CRS: geodesic meters on a geographic CRS, native
             units on a projected one, coordinate units without a CRS.
@@ -10713,7 +10730,8 @@ class SpatialIndex(Mapping[int, Geometry]):
             ``join(...)`` for directed relations.
         distance : float, optional
             ``'dwithin'`` distance threshold, in ``unit``. Positive infinity is
-            accepted; empty geometries never produce a pair.
+            accepted; other values must be finite and non-negative. Empty
+            geometries never produce a pair.
         unit : {'planar', 'meters'}, default None
             Omitted follows the CRS: geodesic meters on a geographic CRS, native
             units on a projected one, coordinate units without a CRS.
@@ -10778,7 +10796,9 @@ class SpatialIndex(Mapping[int, Geometry]):
         geom : Geometry or GeometryArray
             The query geometry, or one query per array element.
         distance : float, optional
-            Expand the query envelope by this much, in ``unit``.
+            Expand the query envelope by this much, in ``unit``. Finite
+            non-negative expansions and positive infinity are accepted;
+            infinity admits every live non-empty row for a query with bounds.
         unit : {'planar', 'meters'}, default None
             Omitted follows the CRS: geodesic meters on a geographic CRS, native
             units on a projected one, coordinate units without a CRS.
@@ -10789,6 +10809,7 @@ class SpatialIndex(Mapping[int, Geometry]):
         Returns
         -------
         int64 numpy.ndarray or Groups
+            Source-row handles in ascending order.
 
         Raises
         ------
@@ -10879,7 +10900,8 @@ class SpatialIndex(Mapping[int, Geometry]):
         k : int, default 1
             How many nearest neighbors to return.
         max_distance : float, optional
-            Ignore matches farther than this, in ``unit``.
+            Ignore matches farther than this, in ``unit``. Must be finite and
+            non-negative.
         return_distance : bool, default False
             Return distances alongside handles — ``(indices, distances)`` for
             a scalar query, ``(matches, distances)`` for an array query.
@@ -15260,7 +15282,8 @@ def snap(
     reference : Geometry or GeometryArray
         Target geometry to snap onto.
     tolerance : float or sequence of float
-        Maximum snap distance in coordinate units.
+        Maximum snap distance in coordinate units. Values must be finite and
+        non-negative.
 
     Returns
     -------
@@ -15502,7 +15525,8 @@ def point_between(
     left, right : Point or GeometryArray
         Endpoints; must share a CRS.
     distance : float or sequence of float
-        Distance(s) from ``left`` (or ``[0, 1]`` fractions if ``normalized``).
+        Finite distance(s) from ``left`` (or fractions if ``normalized``).
+        Values outside the segment clamp to its endpoints.
     normalized : bool, default False
         Treat ``distance`` as a fraction of the total distance.
     path : {'geodesic', 'rhumb'}, default 'geodesic'
@@ -15526,7 +15550,7 @@ def point_between(
     CRSMismatchError
         If the operands' CRS or coordinate-epoch metadata differ.
     GeometryError
-        If ``distance`` is not finite.
+        If ``distance`` is non-finite.
 
     Examples
     --------
@@ -17366,7 +17390,8 @@ def nearest(
     k : int, default 1
         Number of nearest neighbors to return per query.
     max_distance : float, optional
-        Ignore candidates farther than this from the query.
+        Ignore candidates farther than this from the query. Must be finite and
+        non-negative.
     return_distance : bool, default False
         If ``True``, return distances alongside handles — ``(indices,
         distances)`` for a scalar query, ``(matches, distances)`` for an
@@ -17434,8 +17459,9 @@ def join(
     distance : float, optional
         Required when ``predicate='dwithin'``: the maximum separation, in
         CRS-natural units — geodesic meters on a geographic CRS, native
-        units on a projected CRS, coordinate units when CRS-free. Positive
-        infinity is accepted; missing or empty rows produce no pairs.
+        units on a projected CRS, coordinate units when CRS-free. Finite
+        non-negative values and positive infinity are accepted; missing or
+        empty rows produce no pairs.
     unit : {'planar', 'meters'}, default None
         Omitted follows the CRS: geodesic meters on a geographic CRS, native
         units on a projected one, coordinate units without a CRS.
@@ -17982,7 +18008,8 @@ def coverage_is_valid(
         One coverage row or multiple rows (`Polygon` or `MultiPolygon` each).
 
     gap_width : float, default 0.0
-        Gap width in coordinate units; 0 disables gap detection.
+        Finite non-negative gap width in coordinate units; 0 disables gap
+        detection.
 
     Returns
     -------
@@ -18046,7 +18073,8 @@ def coverage_invalid_edges(
         One coverage row or multiple rows (`Polygon` or `MultiPolygon` each).
 
     gap_width : float, default 0.0
-        Gap width in coordinate units; 0 disables gap detection.
+        Finite non-negative gap width in coordinate units; 0 disables gap
+        detection.
 
     Returns
     -------
@@ -18316,11 +18344,11 @@ def coverage_clean(
     values : Geometry, GeometryArray, or iterable of Geometry
         One coverage row or multiple rows (`Polygon` or `MultiPolygon` each).
     grid_size : float, default 0.0
-        Vertex snapping grid in coordinate units; ``0`` preserves input
-        coordinates and disables snapping.
+        Finite non-negative vertex snapping grid in coordinate units; ``0``
+        preserves input coordinates and disables snapping.
 
     gap_width : float, default 0.0
-        Merge enclosed gaps narrower than this coordinate-space width (0 keeps
+        Finite non-negative coordinate-space width of gaps to merge (0 keeps
         gaps).
     overlap_rule : str, default 'longest_border'
         Which row keeps a region covered more than once:

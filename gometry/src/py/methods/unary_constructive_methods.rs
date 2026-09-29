@@ -123,10 +123,12 @@ Parameters
 concavity : float, default 2.0
     Sets the peel distance guard: a candidate triangle's opposite vertex must
     lie within ``edge_length / concavity`` of its boundary edge. ``0`` disables
-    this guard. Higher values typically keep more area, but the greedy peel
-    does not guarantee area monotonicity as ``concavity`` increases.
+    this guard. Must be finite and non-negative. Higher values typically keep
+    more area, but the greedy peel does not guarantee area monotonicity as
+    ``concavity`` increases.
 length_threshold : float, default 0.0
-    Boundary edges at or below this length are kept. For fixed input and
+    Boundary edges at or below this length are kept; must be finite and
+    non-negative. For fixed input and
     ``concavity``, a larger threshold always gives a hull that contains the
     smaller-threshold hull, so area never decreases. Interpreted for the CRS
     (see ``unit``). On a geographic CRS the threshold is evaluated in a local
@@ -146,9 +148,11 @@ concavity : float or sequence of float, default 2.0
     lie within ``edge_length / concavity`` of its boundary edge. ``0`` disables
     this guard. Higher values typically keep more area, but the greedy peel
     does not guarantee area monotonicity as ``concavity`` increases — a scalar
-    applies to every geometry, or pass one value per geometry.
+    applies to every geometry, or pass one value per geometry. Each value must
+    be finite and non-negative.
 length_threshold : float or sequence of float, default 0.0
-    Boundary edges at or below this length are kept. For fixed input and
+    Boundary edges at or below this length are kept; each value must be finite
+    and non-negative. For fixed input and
     ``concavity``, a larger threshold always gives a hull that contains the
     smaller-threshold hull, so area never decreases. Interpreted for the CRS
     (see ``unit``). On a geographic CRS the threshold is evaluated in a local
@@ -172,7 +176,7 @@ GeometryArray
 Raises
 ------
 GeometryError
-    If parameters are non-finite or selected hull vertices have different
+    If parameters are non-finite or negative, or selected hull vertices have different
     coordinate axis layouts.
 
 See Also
@@ -794,7 +798,7 @@ Parameters
 ----------";
     scalar: (r"
 tolerance : float, optional
-    Precision of the search, interpreted for the CRS (see ``unit``).
+    Positive finite search precision, interpreted for the CRS (see ``unit``).
     Omitted selects a scale-aware tolerance from the geometry's extent.
 ", r"
 
@@ -806,9 +810,9 @@ Point
 ");
     array: (r"
 tolerance : float or sequence of float, optional
-    Precision of the search, interpreted for the CRS (see ``unit``) — a
-    scalar applies to every geometry, or pass one value per geometry. Omitted
-    selects a scale-aware tolerance independently for each geometry.
+    Positive finite search precision, interpreted for the CRS (see ``unit``) —
+    a scalar applies to every geometry, or pass one value per geometry.
+    Omitted selects a scale-aware tolerance independently for each geometry.
 ", r"
 
 Returns
@@ -825,6 +829,8 @@ GeometryArray[Point]
     tail: r"
 Raises
 ------
+GeometryError
+    If an explicit ``tolerance`` is not positive and finite.
 InvalidGeometryError
     If the pole of inaccessibility cannot be computed.
 
@@ -1039,7 +1045,7 @@ space and does NOT auto-split antimeridian-crossing geographic input; call
 Parameters
 ----------
 tolerance : float, default 0.0
-    Tolerance in coordinate units (non-negative).
+    Tolerance in coordinate units (finite and non-negative).
 clip : {'padded', 'envelope'} or Polygon, default 'padded'
     How to bound the unbounded outer cells: a padded box, the input
     envelope, or a `Polygon` to clip the diagram to.
@@ -1087,7 +1093,7 @@ the envelope of a horizontal or vertical row, bound no cells.
 Parameters
 ----------
 tolerance : float, default 0.0
-    Tolerance in coordinate units (non-negative).
+    Tolerance in coordinate units (finite and non-negative).
 clip : {'padded', 'envelope'} or Polygon, default 'padded'
     How to bound the unbounded outer cells: a padded box, the input
     envelope, or a `Polygon` to clip the diagram to.
@@ -1134,12 +1140,13 @@ method : {'earcut', 'delaunay', 'constrained'}
     ``delaunay`` triangulates input vertices, and ``constrained`` preserves
     polygon boundaries.
 min_angle : float, optional
-    Minimum triangle angle in degrees; valid only with
-    ``method='constrained'``.
+    Minimum triangle angle in degrees; positive finite values up to 30 are
+    valid with ``method='constrained'``.
 
 max_area : float, optional
-    Maximum triangle area in square coordinate units; valid only with
-    ``method='constrained'``. Setting either option enables refinement;
+    Maximum triangle area in square coordinate units; positive finite values
+    are valid with ``method='constrained'``. Setting either option enables
+    refinement;
     without either option, duplicate XY sites use their first source
     occurrence and triangle corners preserve the selected source ordinates.
     Refinement inserts Steiner vertices and therefore returns uniform XY.
@@ -1152,7 +1159,8 @@ GeometryArray[Polygon]
 Raises
 ------
 GeometryError
-    If method-specific options are used with the wrong algorithm.
+    If a quality constraint is invalid or method-specific options are used
+    with the wrong algorithm.
 InvalidGeometryError
     If the triangulation cannot be constructed.
 
@@ -1172,12 +1180,13 @@ Parameters
 method : {'earcut', 'delaunay', 'constrained'}
     Required triangulation algorithm.
 min_angle : float or sequence of float, optional
-    Minimum triangle angle in degrees; valid only with
-    ``method='constrained'``.
+    Minimum triangle angle in degrees; each value must be positive, finite,
+    and at most 30. Valid only with ``method='constrained'``.
 
 max_area : float or sequence of float, optional
-    Maximum triangle area in square coordinate units; valid only with
-    ``method='constrained'``. Setting either option enables refinement;
+    Maximum triangle area in square coordinate units; each value must be
+    positive and finite. Valid only with ``method='constrained'``. Setting
+    either option enables refinement;
     inserted Steiner vertices return uniform XY. Scalar and array rows use
     the same first-occurrence source-site and ordinate policy.
 
@@ -1189,7 +1198,8 @@ Groups of GeometryArray[Polygon]
 Raises
 ------
 GeometryError
-    If method-specific options are used with the wrong algorithm.
+    If a quality constraint is invalid or method-specific options are used
+    with the wrong algorithm.
 
 Examples
 --------

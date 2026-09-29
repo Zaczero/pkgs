@@ -162,10 +162,9 @@ use py::support::{
     parse_spatial_index_handle, parse_wkt_output_dimension, point_from_bounds, py_polygonize_full,
     py_text_borrow, py_to_json_value, require_geojson_crs, resolve_line_metric,
     validate_buffer_miter_limit, validate_buffer_quadrant_segments, validate_densify_fraction,
-    validate_distance, validate_distance_arg, validate_dwithin_distance,
-    validate_dwithin_distance_arg, validate_equals_exact_tolerance, validate_max_segment_length,
-    validate_nearest_k, validate_smooth_iterations, voronoi_edges_flatten, voronoi_flatten,
-    wrapped_box,
+    validate_distance, validate_dwithin_distance, validate_dwithin_distance_arg,
+    validate_equals_exact_tolerance, validate_max_segment_length, validate_nearest_k,
+    validate_smooth_iterations, voronoi_edges_flatten, voronoi_flatten, wrapped_box,
 };
 use pyo3::buffer::PyBuffer;
 use pyo3::exceptions::{PyTypeError, PyValueError};

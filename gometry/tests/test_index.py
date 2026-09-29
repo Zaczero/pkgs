@@ -3,6 +3,7 @@ geodesic), mutability, and prepared geometry.
 """
 
 import copy
+import math
 from typing import Any, cast
 
 import gometry as gm
@@ -546,6 +547,113 @@ def test_spatial_index_refines_dwithin_queries() -> None:
         lonlat_index.query(
             lonlat_query, predicate='dwithin', distance=1.0, unit=cast('Any', 'km')
         )
+
+
+@pytest.mark.parametrize(
+    ('crs', 'unit', 'row_xs', 'row_ys', 'query_xs', 'query_ys'),
+    [
+        pytest.param(
+            None,
+            'planar',
+            [3.0, -1e8],
+            [4.0, 1e8],
+            [0.0, 20.0],
+            [0.0, 30.0],
+            id='planar',
+        ),
+        pytest.param(
+            4326,
+            'meters',
+            [3.0, -170.0],
+            [4.0, 70.0],
+            [0.0, 20.0],
+            [0.0, -30.0],
+            id='geographic',
+        ),
+    ],
+)
+def test_index_dwithin_positive_infinity_matches_all_non_empty_rows(
+    crs, unit, row_xs, row_ys, query_xs, query_ys
+) -> None:
+    rows = gm.points(row_xs, row_ys, crs=crs)
+    index = gm.SpatialIndex(rows)
+    query = gm.Point(0.0, 0.0, crs=crs)
+    expected = [0, 1]
+
+    assert gm.dwithin(query, rows[0], math.inf, unit=unit)
+    assert (
+        ids(index.query(query, predicate='dwithin', distance=math.inf, unit=unit))
+        == expected
+    )
+    assert ids(index.candidates(query, distance=math.inf, unit=unit)) == expected
+
+    queries = gm.GeometryArray(
+        [
+            gm.Point(query_xs[0], query_ys[0], crs=crs),
+            gm.Point(query_xs[1], query_ys[1], crs=crs),
+            gm.Point(crs=crs),
+            None,
+        ],
+        crs=crs,
+    )
+    expected_groups = [expected, expected, [], []]
+    assert (
+        match_rows(
+            index.query(queries, predicate='dwithin', distance=math.inf, unit=unit)
+        )
+        == expected_groups
+    )
+    assert match_rows(index.candidates(queries, distance=math.inf, unit=unit)) == [
+        expected,
+        expected,
+        [],
+        [],
+    ]
+
+    left, right = index.self_join(predicate='dwithin', distance=math.inf, unit=unit)
+    assert (left.tolist(), right.tolist()) == ([0], [1])
+    left, right = gm.join(
+        [query], rows, predicate='dwithin', distance=math.inf, unit=unit
+    )
+    assert (left.tolist(), right.tolist()) == ([0, 0], expected)
+
+
+@pytest.mark.parametrize(
+    'distance',
+    [
+        pytest.param(-1.0, id='negative'),
+        pytest.param(-math.inf, id='negative-infinity'),
+        pytest.param(math.nan, id='nan'),
+    ],
+)
+def test_index_dwithin_rejects_negative_and_nan_distances(distance) -> None:
+    index = gm.SpatialIndex([gm.Point(3.0, 4.0)])
+    scalar_query = gm.Point(0.0, 0.0)
+    array_query = gm.GeometryArray([scalar_query])
+
+    for query in (scalar_query, array_query):
+        with pytest.raises(gm.GeometryError, match='non-negative finite number'):
+            index.query(query, predicate='dwithin', distance=distance)
+
+
+def test_index_candidates_and_query_return_handles_in_ascending_source_order() -> None:
+    count = 64
+    rows = gm.points(list(reversed(range(count))), [0.0] * count)
+    index = gm.SpatialIndex(rows)
+    assert index.remove(17)
+    window = gm.box(-1.0, -1.0, float(count), 1.0)
+    expected = [handle for handle in range(count) if handle != 17]
+
+    assert ids(index.candidates(window)) == expected
+    assert ids(index.query(window, predicate='intersects')) == expected
+    assert match_rows(index.candidates(gm.GeometryArray([window, window]))) == [
+        expected,
+        expected,
+    ]
+    assert match_rows(index.query(gm.GeometryArray([window, window]))) == [
+        expected,
+        expected,
+    ]
 
 
 def test_join_returns_exact_refined_index_pairs() -> None:

@@ -528,7 +528,8 @@ pub(crate) fn symmetric_difference_all(
 ///     One coverage row or multiple rows (`Polygon` or `MultiPolygon` each).
 ///
 /// gap_width : float, default 0.0
-///     Gap width in coordinate units; 0 disables gap detection.
+///     Finite non-negative gap width in coordinate units; 0 disables gap
+///     detection.
 ///
 /// Returns
 /// -------
@@ -586,7 +587,8 @@ pub(crate) fn coverage_is_valid(
 ///     One coverage row or multiple rows (`Polygon` or `MultiPolygon` each).
 ///
 /// gap_width : float, default 0.0
-///     Gap width in coordinate units; 0 disables gap detection.
+///     Finite non-negative gap width in coordinate units; 0 disables gap
+///     detection.
 ///
 /// Returns
 /// -------
@@ -721,11 +723,11 @@ pub(crate) fn coverage_simplify(
 /// values : Geometry, GeometryArray, or iterable of Geometry
 ///     One coverage row or multiple rows (`Polygon` or `MultiPolygon` each).
 /// grid_size : float, default 0.0
-///     Vertex snapping grid in coordinate units; ``0`` preserves input
-///     coordinates and disables snapping.
+///     Finite non-negative vertex snapping grid in coordinate units; ``0``
+///     preserves input coordinates and disables snapping.
 ///
 /// gap_width : float, default 0.0
-///     Merge enclosed gaps narrower than this coordinate-space width (0 keeps
+///     Finite non-negative coordinate-space width of gaps to merge (0 keeps
 ///     gaps).
 /// overlap_rule : str, default 'longest_border'
 ///     Which row keeps a region covered more than once:

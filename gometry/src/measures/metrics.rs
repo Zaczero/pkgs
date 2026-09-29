@@ -248,7 +248,8 @@ pub(crate) fn length_natural_array(
 /// reference : Geometry or GeometryArray
 ///     Target geometry to snap onto.
 /// tolerance : float or sequence of float
-///     Maximum snap distance in coordinate units.
+///     Maximum snap distance in coordinate units. Values must be finite and
+///     non-negative.
 ///
 /// Returns
 /// -------

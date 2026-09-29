@@ -5,14 +5,14 @@ use crate::geometry::{PreparedPlan, TopologyDomain};
 use crate::predicates::engine::{GateOperand, PredicateSpec, PreparedTopologyPair, row_kind_empty};
 use crate::py::errors::{crs_mismatch_error, epoch_mismatch_error};
 use crate::py::index::{
-    AABB, Arc, BinaryHeap, Bounds, CapBound, Crs, DistanceUnit, Frame, GeodesicCapsCache,
-    GeodesicPruner, GeodesicRowCaps, IndexEntry, IndexEnvelope, IndexPredicate, IndexRowOperation,
-    NearestCandidate, NonNegative, Point, PointRows, Predicate, PreparedIndexQuery, PyGeometry,
-    PyGeometryArray, PyResult, PySpatialIndex, QueryDomain, RowMatches, Shape, ShapeData, ShapeRow,
-    bounds_envelope, crs, crs_label, csr_rows, epoch_label, global_geographic_candidate_envelope,
-    index_envelopes, pair_distance_geodesic, pair_dwithin_geodesic, pair_dwithin_planar,
-    point_from_bounds, retain_row, sort_unique_row_ids, topology_pair_after_gates,
-    topology_scalar_pair,
+    AABB, Arc, BinaryHeap, Bounds, CapBound, Crs, DistanceUnit, DwithinDistance, Frame,
+    GeodesicCapsCache, GeodesicPruner, GeodesicRowCaps, IndexEntry, IndexEnvelope, IndexPredicate,
+    IndexRowOperation, NearestCandidate, NonNegative, Point, PointRows, Predicate,
+    PreparedIndexQuery, PyGeometry, PyGeometryArray, PyResult, PySpatialIndex, QueryDomain,
+    RowMatches, Shape, ShapeData, ShapeRow, bounds_envelope, crs, crs_label, csr_rows, epoch_label,
+    global_geographic_candidate_envelope, index_envelopes, pair_distance_geodesic,
+    pair_dwithin_geodesic, pair_dwithin_planar, point_from_bounds, retain_row, sort_unique_row_ids,
+    topology_pair_after_gates, topology_scalar_pair,
 };
 
 fn geographic_keep(
@@ -93,11 +93,15 @@ impl PySpatialIndex {
         sort_unique_row_ids(out, start, self.rows.len());
     }
 
+    fn append_live_handles(&self, out: &mut Vec<usize>) {
+        out.extend(self.live_entries().map(|entry| entry.idx));
+    }
+
     /// Visit each live row's matching higher handles for a symmetric predicate.
     pub(crate) fn for_each_symmetric_matches(
         &self,
         predicate: IndexPredicate,
-        distance: Option<NonNegative>,
+        distance: Option<DwithinDistance>,
         unit: Option<DistanceUnit>,
         mut found: impl FnMut(usize, &[usize]),
     ) -> PyResult<()> {
@@ -112,7 +116,7 @@ impl PySpatialIndex {
         } else {
             None
         };
-        let radius = distance.map_or(0.0, NonNegative::get);
+        let radius = distance.map_or(0.0, DwithinDistance::get);
         let live = self.live_handles_sorted();
         let mut candidates = Vec::new();
         let mut products = self.rows.operation();
@@ -526,7 +530,7 @@ impl PySpatialIndex {
         pruner_point: Option<Point>,
         query_cap: Option<(Point, f64)>,
         predicate: Option<IndexPredicate>,
-        distance: Option<NonNegative>,
+        distance: Option<DwithinDistance>,
         distance_model: Option<&crs::MetricModel>,
         out: &mut Vec<usize>,
     ) -> PyResult<()> {
@@ -551,7 +555,7 @@ impl PySpatialIndex {
         pruner_point: Option<Point>,
         query_cap: Option<(Point, f64)>,
         _predicate: Option<IndexPredicate>,
-        distance: Option<NonNegative>,
+        distance: Option<DwithinDistance>,
         distance_model: Option<&crs::MetricModel>,
         out: &mut Vec<usize>,
     ) -> PyResult<()> {
@@ -573,13 +577,17 @@ impl PySpatialIndex {
         query_bounds: Option<Bounds>,
         pruner_point: Option<Point>,
         query_cap: Option<(Point, f64)>,
-        distance: Option<NonNegative>,
+        distance: Option<DwithinDistance>,
         distance_model: Option<&crs::MetricModel>,
         out: &mut Vec<usize>,
     ) -> PyResult<()> {
         let Some(query_bounds) = query_bounds else {
             return Ok(());
         };
+        if distance.is_some_and(|distance| distance.get() == f64::INFINITY) {
+            self.append_live_handles(out);
+            return Ok(());
+        }
         let coordinate_distance = distance.and_then(|distance| {
             distance_model
                 .as_ref()
@@ -650,7 +658,7 @@ impl PySpatialIndex {
     pub(crate) fn candidate_ids_sorted(
         &self,
         geometry: &PyGeometry,
-        distance: Option<NonNegative>,
+        distance: Option<DwithinDistance>,
         unit: Option<DistanceUnit>,
     ) -> PyResult<Vec<usize>> {
         let plan = PreparedIndexQuery::for_geometry(self, geometry, None, distance, unit)?;
@@ -1080,7 +1088,7 @@ impl PySpatialIndex {
         &self,
         geometry: &PyGeometry,
         predicate: IndexPredicate,
-        distance: Option<NonNegative>,
+        distance: Option<DwithinDistance>,
         unit: Option<DistanceUnit>,
     ) -> PyResult<Vec<usize>> {
         let plan =
@@ -1217,7 +1225,7 @@ impl PySpatialIndex {
         points: &PointRows<'_>,
         missing: Option<&ValidityMask>,
         predicate: Option<IndexPredicate>,
-        distance: Option<NonNegative>,
+        distance: Option<DwithinDistance>,
         unit: Option<DistanceUnit>,
     ) -> PyResult<RowMatches> {
         let plan = PreparedIndexQuery::for_array(self, array, predicate, distance, unit)?;
@@ -1328,11 +1336,15 @@ impl PySpatialIndex {
             let row_start = builder.len();
             match (coordinate_distance, distance) {
                 (Some(radius), _) => {
-                    self.collect_within_distance_2(
-                        [point.x, point.y],
-                        radius * radius,
-                        builder.values_mut(),
-                    );
+                    if radius == f64::INFINITY {
+                        self.append_live_handles(builder.values_mut());
+                    } else {
+                        self.collect_within_distance_2(
+                            [point.x, point.y],
+                            radius * radius,
+                            builder.values_mut(),
+                        );
+                    }
                 },
                 (None, Some(distance)) => {
                     let distance = distance.get();
@@ -1350,9 +1362,7 @@ impl PySpatialIndex {
                             }
                         },
                         None => {
-                            for entry in self.live_entries() {
-                                builder.values_mut().push(entry.idx);
-                            }
+                            self.append_live_handles(builder.values_mut());
                         },
                     }
                 },
@@ -1425,7 +1435,7 @@ impl PySpatialIndex {
         &self,
         points: &PointRows<'_>,
         missing: Option<&ValidityMask>,
-        distance: NonNegative,
+        distance: DwithinDistance,
         model: &crs::MetricModel,
         query_domain: QueryDomain,
         mut refine: impl FnMut(
@@ -1460,7 +1470,9 @@ impl PySpatialIndex {
             )?;
             let query = PreparedPlan::new(ShapeData::new(Shape::Point(point)));
             let row_start = builder.len();
-            if let Some(radius) = coordinate_distance {
+            if distance.get() == f64::INFINITY {
+                self.append_live_handles(builder.values_mut());
+            } else if let Some(radius) = coordinate_distance {
                 self.collect_within_distance_2(
                     [point.x, point.y],
                     radius * radius,
@@ -1474,14 +1486,10 @@ impl PySpatialIndex {
                         self.collect_intersecting(window, builder.values_mut());
                     }
                 } else {
-                    for entry in self.live_entries() {
-                        builder.values_mut().push(entry.idx);
-                    }
+                    self.append_live_handles(builder.values_mut());
                 }
             } else {
-                for entry in self.live_entries() {
-                    builder.values_mut().push(entry.idx);
-                }
+                self.append_live_handles(builder.values_mut());
             }
             self.finish_candidates(builder.values_mut(), row_start);
             refine(row, &query, builder.values_mut(), row_start, &mut products)?;
@@ -1553,7 +1561,7 @@ mod tests {
             &index,
             &array,
             Some(IndexPredicate::Dwithin),
-            Some(NonNegative::try_new("distance", 0.0).unwrap()),
+            Some(DwithinDistance::try_new("distance", 0.0).unwrap()),
             None,
         )
         .unwrap();

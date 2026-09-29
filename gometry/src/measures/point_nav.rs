@@ -2717,7 +2717,8 @@ pub(crate) fn reject_rhumb_unit(unit: Option<DistanceUnit>, operation: MetricOp)
 ///     Initial azimuth(s) in degrees clockwise from north.
 /// distance : float or sequence of float
 ///     Distance(s) to travel (geodesic meters on a geographic CRS, native
-///     units on a projected one, coordinate units otherwise).
+///     units on a projected one, coordinate units otherwise). Must be finite
+///     and non-negative.
 /// path : {'geodesic', 'rhumb'}, default 'geodesic'
 ///     Route model. Rhumb paths require a geographic CRS and use meters.
 /// unit : {'planar', 'meters'}, default None
@@ -2735,7 +2736,8 @@ pub(crate) fn reject_rhumb_unit(unit: Option<DistanceUnit>, operation: MetricOp)
 /// Raises
 /// ------
 /// GeometryError
-///     If ``bearing`` or ``distance`` is invalid.
+///     If ``bearing`` is non-finite or ``distance`` is not finite and
+///     non-negative.
 /// GeometryTypeError
 ///     If ``point`` is not a `Point`.
 /// CRSError
@@ -2772,7 +2774,8 @@ pub(crate) fn destination(
 /// left, right : Point or GeometryArray
 ///     Endpoints; must share a CRS.
 /// distance : float or sequence of float
-///     Distance(s) from ``left`` (or ``[0, 1]`` fractions if ``normalized``).
+///     Finite distance(s) from ``left`` (or fractions if ``normalized``).
+///     Values outside the segment clamp to its endpoints.
 /// normalized : bool, default False
 ///     Treat ``distance`` as a fraction of the total distance.
 /// path : {'geodesic', 'rhumb'}, default 'geodesic'
@@ -2796,7 +2799,7 @@ pub(crate) fn destination(
 /// CRSMismatchError
 ///     If the operands' CRS or coordinate-epoch metadata differ.
 /// GeometryError
-///     If ``distance`` is not finite.
+///     If ``distance`` is non-finite.
 ///
 /// Examples
 /// --------

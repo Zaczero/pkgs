@@ -11,8 +11,7 @@ use crate::io::WktDimension;
 use crate::py::errors::integer_parameter_error;
 use crate::py::support::{
     Bound, DwithinDistance, GeometryError, GeometryErrorKind, NonNegative, Positive, PyAny,
-    PyAnyMethods as _, PyErr, PyResult, Python, finite_f64_required, non_negative_int,
-    py_i64_bounded, py_i64_required,
+    PyAnyMethods as _, PyErr, PyResult, Python, non_negative_int, py_i64_bounded, py_i64_required,
 };
 
 pub(crate) fn parse_precision(value: &Bound<'_, PyAny>) -> PyResult<i32> {
@@ -198,10 +197,6 @@ pub(crate) fn parse_curve_bounds(
     Ok(Some(crate::geometry::Bounds::new_raw(
         *minx, *miny, *maxx, *maxy,
     )))
-}
-
-pub(crate) fn validate_distance_arg(value: &Bound<'_, PyAny>) -> PyResult<NonNegative> {
-    validate_distance(finite_f64_required("distance", value)?)
 }
 
 pub(crate) fn validate_dwithin_distance_arg(value: &Bound<'_, PyAny>) -> PyResult<DwithinDistance> {

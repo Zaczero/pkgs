@@ -21,7 +21,7 @@ Parameters
 distance : float
     Buffer radius; negative shrinks areal geometries. CRS-aware: geodesic
     meters on a geographic CRS, native units on a projected one, coordinate
-    units otherwise.
+    units otherwise. Must be finite.
 ", r"
 
 Returns
@@ -35,7 +35,7 @@ distance : float or sequence of float
     Buffer radius; negative shrinks areal geometries. CRS-aware: geodesic
     meters on a geographic CRS, native units on a projected one, coordinate
     units otherwise — a scalar applies to every geometry, or pass one value
-    per geometry.
+    per geometry. Every distance must be finite.
 ", r"
 
 Returns
@@ -111,7 +111,8 @@ distance : float
     Offset; sign selects the side. CRS-aware: geodesic meters on a geographic
     CRS, native units on a projected one, coordinate units otherwise. The result is the RAW parallel
     curve: where the input folds back within ``distance`` the curve can
-    self-intersect; ``buffer(side=...)`` gives the trimmed area instead.
+    self-intersect; ``buffer(side=...)`` gives the trimmed area instead. Must
+    be finite.
 ", r"
 
 Returns
@@ -127,7 +128,7 @@ distance : float or sequence of float
     geometry, or pass one value per geometry. The result is the RAW
     parallel curve: where the input folds back within ``distance`` the
     curve can self-intersect; ``buffer(side=...)`` gives the trimmed area
-    instead.
+    instead. Every distance must be finite.
 ", r"
 
 Returns
@@ -365,7 +366,7 @@ Parameters
 ----------";
     scalar: (r"
 tolerance : float, default 0.0
-    Tolerance in coordinate units (non-negative).
+    Tolerance in coordinate units (finite and non-negative).
 ", r"
 
 Returns
@@ -376,7 +377,7 @@ Geometry
 ");
     array: (r"
 tolerance : float or sequence of float, default 0.0
-    Tolerance in coordinate units (non-negative) — a scalar applies to
+    Tolerance in coordinate units (finite and non-negative) — a scalar applies to
     every geometry, or pass one value per geometry.
 ", r"
 

@@ -350,8 +350,9 @@ impl PySpatialIndex {
     ///     ``distance``).
     /// distance : float, optional
     ///     ``'dwithin'`` distance threshold, in ``unit``. A positive infinite
-    ///     threshold is accepted; missing or empty query rows produce empty
-    ///     result groups rather than being dropped.
+    ///     threshold is accepted; other values must be finite and
+    ///     non-negative. Missing or empty query rows produce empty result
+    ///     groups rather than being dropped.
     /// unit : {'planar', 'meters'}, default None
     ///     Omitted follows the CRS: geodesic meters on a geographic CRS, native
     ///     units on a projected one, coordinate units without a CRS.
@@ -364,7 +365,8 @@ impl PySpatialIndex {
     /// int64 numpy.ndarray or Groups
     ///     Matching index handles (row ids). A scalar query returns a read-only
     ///     ``int64`` ndarray of handles; an array query returns ``Groups`` of
-    ///     handles, one group per query row.
+    ///     handles, one group per query row. Each result is in ascending
+    ///     source-row order.
     ///
     /// Raises
     /// ------
@@ -520,8 +522,8 @@ impl PySpatialIndex {
     ///     Spatial predicate each returned pair must satisfy.
     /// distance : float, optional
     ///     Required when ``predicate='dwithin'``: the maximum separation in
-    ///     CRS-natural units. Positive infinity is accepted; missing query
-    ///     rows produce no pairs.
+    ///     CRS-natural units. Finite non-negative values and positive infinity
+    ///     are accepted; missing query rows produce no pairs.
     /// unit : {'planar', 'meters'}, default None
     ///     Omitted follows the CRS: geodesic meters on a geographic CRS, native
     ///     units on a projected one, coordinate units without a CRS.
@@ -574,7 +576,8 @@ impl PySpatialIndex {
     ///     ``join(...)`` for directed relations.
     /// distance : float, optional
     ///     ``'dwithin'`` distance threshold, in ``unit``. Positive infinity is
-    ///     accepted; empty geometries never produce a pair.
+    ///     accepted; other values must be finite and non-negative. Empty
+    ///     geometries never produce a pair.
     /// unit : {'planar', 'meters'}, default None
     ///     Omitted follows the CRS: geodesic meters on a geographic CRS, native
     ///     units on a projected one, coordinate units without a CRS.
@@ -639,7 +642,9 @@ impl PySpatialIndex {
     /// geom : Geometry or GeometryArray
     ///     The query geometry, or one query per array element.
     /// distance : float, optional
-    ///     Expand the query envelope by this much, in ``unit``.
+    ///     Expand the query envelope by this much, in ``unit``. Finite
+    ///     non-negative expansions and positive infinity are accepted;
+    ///     infinity admits every live non-empty row for a query with bounds.
     /// unit : {'planar', 'meters'}, default None
     ///     Omitted follows the CRS: geodesic meters on a geographic CRS, native
     ///     units on a projected one, coordinate units without a CRS.
@@ -650,6 +655,7 @@ impl PySpatialIndex {
     /// Returns
     /// -------
     /// int64 numpy.ndarray or Groups
+    ///     Source-row handles in ascending order.
     ///
     /// Raises
     /// ------
@@ -778,7 +784,8 @@ impl PySpatialIndex {
     /// k : int, default 1
     ///     How many nearest neighbors to return.
     /// max_distance : float, optional
-    ///     Ignore matches farther than this, in ``unit``.
+    ///     Ignore matches farther than this, in ``unit``. Must be finite and
+    ///     non-negative.
     /// return_distance : bool, default False
     ///     Return distances alongside handles — ``(indices, distances)`` for
     ///     a scalar query, ``(matches, distances)`` for an array query.

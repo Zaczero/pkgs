@@ -458,7 +458,8 @@ impl PyGeometryArray {
     /// bearing : float or sequence of float
     ///     Initial azimuth in degrees clockwise from north.
     /// distance : float or sequence of float
-    ///     Distance to travel in CRS-natural units, unless `unit` is set.
+    ///     Finite, non-negative distance to travel in CRS-natural units, unless
+    ///     `unit` is set.
     /// path : {'geodesic', 'rhumb'}, default 'geodesic'
     ///     Route model. Rhumb paths require a geographic CRS and use meters.
     /// unit : {'planar', 'meters'}, optional

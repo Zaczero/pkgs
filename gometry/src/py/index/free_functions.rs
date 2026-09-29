@@ -1,7 +1,7 @@
 use pyo3::IntoPyObjectExt as _;
 
 use crate::py::index::{
-    Bound, DistanceUnit, IndexPredicate, NonNegative, PreparedIndexQuery, Py, PyAny, PyResult,
+    Bound, DistanceUnit, DwithinDistance, IndexPredicate, PreparedIndexQuery, Py, PyAny, PyResult,
     PySpatialIndex, Python, build_spatial_index, exact_geometry_array, geometry_items, pyfunction,
     query_distance,
 };
@@ -22,7 +22,8 @@ use crate::py::numpy::int64_array;
 /// k : int, default 1
 ///     Number of nearest neighbors to return per query.
 /// max_distance : float, optional
-///     Ignore candidates farther than this from the query.
+///     Ignore candidates farther than this from the query. Must be finite and
+///     non-negative.
 /// return_distance : bool, default False
 ///     If ``True``, return distances alongside handles — ``(indices,
 ///     distances)`` for a scalar query, ``(matches, distances)`` for an
@@ -93,8 +94,9 @@ pub(crate) fn nearest(
 /// distance : float, optional
 ///     Required when ``predicate='dwithin'``: the maximum separation, in
 ///     CRS-natural units — geodesic meters on a geographic CRS, native
-///     units on a projected CRS, coordinate units when CRS-free. Positive
-///     infinity is accepted; missing or empty rows produce no pairs.
+///     units on a projected CRS, coordinate units when CRS-free. Finite
+///     non-negative values and positive infinity are accepted; missing or
+///     empty rows produce no pairs.
 /// unit : {'planar', 'meters'}, default None
 ///     Omitted follows the CRS: geodesic meters on a geographic CRS, native
 ///     units on a projected one, coordinate units without a CRS.
@@ -149,7 +151,7 @@ pub(crate) fn join_indexed(
     queries: &Bound<'_, PyAny>,
     index: &PySpatialIndex,
     predicate_op: IndexPredicate,
-    distance: Option<NonNegative>,
+    distance: Option<DwithinDistance>,
     unit: Option<DistanceUnit>,
 ) -> PyResult<Py<PyAny>> {
     let (left, right) = join_pair_columns(py, queries, index, predicate_op, distance, unit)?;
@@ -168,7 +170,7 @@ pub(crate) fn join_pair_columns(
     left: &Bound<'_, PyAny>,
     index: &PySpatialIndex,
     predicate: IndexPredicate,
-    distance: Option<NonNegative>,
+    distance: Option<DwithinDistance>,
     unit: Option<DistanceUnit>,
 ) -> PyResult<(Vec<i64>, Vec<i64>)> {
     // Matching is the native work `SpatialIndex.query` already detaches; only
@@ -197,7 +199,7 @@ fn join_array_pairs(
     array: &crate::PyGeometryArray,
     index: &PySpatialIndex,
     predicate: IndexPredicate,
-    distance: Option<NonNegative>,
+    distance: Option<DwithinDistance>,
     unit: Option<DistanceUnit>,
 ) -> PyResult<(Vec<i64>, Vec<i64>)> {
     if !array.is_compact_nullable()
@@ -301,7 +303,7 @@ fn join_item_pairs(
     left_items: &[crate::PyGeometry],
     index: &PySpatialIndex,
     predicate: IndexPredicate,
-    distance: Option<NonNegative>,
+    distance: Option<DwithinDistance>,
     unit: Option<DistanceUnit>,
 ) -> PyResult<(Vec<i64>, Vec<i64>)> {
     let mut left_ids = Vec::new();
