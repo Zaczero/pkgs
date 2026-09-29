@@ -245,6 +245,28 @@ def test_tile_boundary_owner_is_shared_by_scalar_and_array_construction() -> Non
     ]
 
 
+def test_world_tile_polygon_uses_geographic_rectangle_for_scalar_and_array() -> None:
+    world = gm.Tile(x=0, y=0, zoom=0)
+    expected = (-180.0, -85.0511287798066, 180.0, 85.0511287798066)
+    polygon = world.polygon
+    assert polygon.bounds == expected
+    assert polygon.to_wkt() == gm.box(*expected, crs=4326).to_wkt()
+    assert gm.contains(polygon, gm.Point(0.0, 0.0, crs=4326))
+
+    polygons = gm.CellArray([world], type=gm.Tile).polygon
+    np.testing.assert_array_equal(polygons.bounds, [expected])
+    assert polygons.total_bounds == expected
+    assert gm.contains(polygons[0], gm.Point(0.0, 0.0, crs=4326))
+
+    ordinary = gm.Tile(x=1, y=1, zoom=1).polygon
+    minx, miny, maxx, maxy = ordinary.bounds
+    four_corner_polygon = gm.Polygon(
+        [(minx, miny), (maxx, miny), (maxx, maxy), (minx, maxy), (minx, miny)],
+        crs=4326,
+    )
+    assert ordinary.to_wkt() == four_corner_polygon.to_wkt()
+
+
 @pytest.mark.parametrize('zoom', [0, 4, 29])
 def test_tile_outer_latitude_edges_keep_admission_contract(zoom: int) -> None:
     cells = 1 << zoom

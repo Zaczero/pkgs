@@ -293,6 +293,46 @@ def test_packed_bounds_match_scalar_antimeridian_crossing() -> None:
     assert mixed.total_bounds == (150.0, 40.0, -170.0, 50.0)
 
 
+def test_seam_only_bounds_use_the_canonical_seam() -> None:
+    polygon = gm.Polygon(
+        [(-180, -30), (180, -30), (180, 30), (-180, 30), (-180, -30)],
+        crs='OGC:CRS84',
+    )
+    expected = (-180.0, -30.0, -180.0, 30.0)
+    assert polygon.bounds == expected
+    array = gm.GeometryArray([polygon])
+    np.testing.assert_array_equal(array.bounds, [expected])
+    assert array.total_bounds == expected
+
+    # A same-spelling seam line bypasses crossing reduction and keeps its raw
+    # longitude; opposite seam aliases reduce to the frame's canonical spelling.
+    assert gm.LineString([(180, 0), (180, 10)], crs=4326).bounds == (
+        180.0,
+        0.0,
+        180.0,
+        10.0,
+    )
+    assert gm.LineString([(-180, 0), (180, 10)], crs=4326).bounds == (
+        -180.0,
+        0.0,
+        -180.0,
+        10.0,
+    )
+    assert gm.LineString([(180, 0), (-170, 10)], crs=4326).bounds == (
+        -180.0,
+        0.0,
+        -170.0,
+        10.0,
+    )
+
+    crossing = gm.from_wkt(
+        'POLYGON((170 40,-170 40,-170 50,170 50,170 40))',
+        crs=4326,
+    )
+    assert crossing.bounds == (170.0, 40.0, -170.0, 50.0)
+    assert _pole_ring().bounds == (-180.0, 80.0, 180.0, 90.0)
+
+
 def test_crosses_antimeridian_matches_split_frame() -> None:
     for crs in (None, 4269, 4326):
         line = gm.LineString([(170, -10), (-170, 10)], crs=crs)

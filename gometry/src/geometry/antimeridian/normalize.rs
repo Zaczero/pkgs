@@ -474,10 +474,19 @@ pub(crate) fn geographic_crossing_bounds_for_shapes_in_frame(
         encloses_south |= shape_encloses_pole_in_frame(shape, frame, false);
         has_polar_ring |= shape_has_polar_ring_in_frame(shape, frame);
     }
+    debug_assert!(
+        (summary.eastern_min.is_some() || summary.western_max.is_some()) == summary.miny.is_some()
+            && summary.miny.is_some() == summary.maxy.is_some(),
+        "each summarized coordinate contributes longitude and both latitude extrema"
+    );
+    let seam = axis
+        .canonicalize(axis.half_period())
+        .expect("a longitude axis half-period is its finite seam")
+        .get();
     let (mut minx, mut miny, mut maxx, mut maxy) = (
-        summary.eastern_min?,
+        summary.eastern_min.unwrap_or(seam),
         summary.miny?,
-        summary.western_max?,
+        summary.western_max.unwrap_or(seam),
         summary.maxy?,
     );
     // A pole-enclosing ring covers the whole polar cap, so its envelope reaches
