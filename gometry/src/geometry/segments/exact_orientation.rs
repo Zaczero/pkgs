@@ -175,6 +175,25 @@ mod tests {
     }
 
     #[test]
+    fn direction_sign_does_not_round_a_tiny_nonzero_cross_to_zero() {
+        let tiny = f64::from_bits(1);
+        let scale = 2.0_f64.powi(-20);
+        let a = XY::new(0.0, 0.0);
+        let b = XY::new(scale, scale);
+        let c = XY::new(0.0, 0.0);
+        let d = XY::new(tiny, 2.0 * tiny);
+        let rounded_cross = (b.x - a.x) * (d.y - c.y) - (b.y - a.y) * (d.x - c.x);
+        let exact_cross = dyadic_cross_sign(
+            &[dyadic_difference(b.x, a.x), dyadic_difference(b.y, a.y)],
+            &[dyadic_difference(d.x, c.x), dyadic_difference(d.y, c.y)],
+        );
+
+        assert_eq!(rounded_cross, 0.0);
+        assert_eq!(exact_cross, ExactSign::Positive);
+        assert_eq!(stored_cross_sign(a, b, c, d), ExactSign::Positive);
+    }
+
+    #[test]
     fn mixed_scale_diagonal_reaches_exact_fallback() {
         let mu = f64::from_bits(1);
         let length = 2.0_f64.powi(-20);

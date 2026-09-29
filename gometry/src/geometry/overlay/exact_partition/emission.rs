@@ -14,8 +14,7 @@ use super::{
 };
 use crate::geometry::arrangement::{IndexedTopology, compare_departures};
 use crate::geometry::exact_arith::ExactSign;
-use crate::geometry::segments::{point_on_segment, stored_orientation_sign};
-use crate::geometry::tessellation::exact::ExactDyadic;
+use crate::geometry::segments::{point_on_segment, stored_cross_sign, stored_orientation_sign};
 use crate::geometry::{
     CoordSeq, GeometryErrorKind, Point, Polygon, Result, Ring, Segment, XY, same_point,
 };
@@ -1013,31 +1012,22 @@ impl GlobalFaces {
                 face_quotient[self.walk_faces[topology.face_of[dart as usize] as usize] as usize]
             })
         };
-        let can_join = |left: u32, right: u32| -> Result<bool> {
+        let can_join = |left: u32, right: u32| -> bool {
             let node = topology.owners[right as usize] as usize;
             if protected[node] || sides(left) != sides(right) {
-                return Ok(false);
+                return false;
             }
             let row =
                 topology.starts[node] as usize..topology.starts[node.wrapping_add(1)] as usize;
             if row.filter(|&slot| retained[edges[slot] as usize]).count() != 2 {
-                return Ok(false);
+                return false;
             }
             let source = |slot: u32| {
                 partition.unique[partition.spans[edges[slot as usize] as usize].unique as usize]
             };
             let a = source(left);
             let b = source(right);
-            let difference =
-                |end, start| ExactDyadic::from_f64(end).try_subtract(ExactDyadic::from_f64(start));
-            let ax = difference(a.end.x, a.start.x)?;
-            let ay = difference(a.end.y, a.start.y)?;
-            let bx = difference(b.end.x, b.start.x)?;
-            let by = difference(b.end.y, b.start.y)?;
-            Ok(ax
-                .try_product(&by)?
-                .try_subtract(ay.try_product(&bx)?)?
-                .is_zero())
+            stored_cross_sign(a.start, a.end, b.start, b.end) == ExactSign::Zero
         };
         let mut span_slots = vec![0; partition.spans.len()];
         for (slot, &span) in edges.iter().enumerate() {
@@ -1069,7 +1059,7 @@ impl GlobalFaces {
                 } else {
                     index.wrapping_sub(1)
                 };
-                if !can_join(walk[prior], walk[index])? {
+                if !can_join(walk[prior], walk[index]) {
                     walk.rotate_left(index);
                     break;
                 }
@@ -1077,7 +1067,7 @@ impl GlobalFaces {
             let mut chords = Vec::with_capacity(walk.len());
             for (index, &slot) in walk.iter().enumerate() {
                 let chord = make_chord(slot)?;
-                if index > 0 && can_join(walk[index.wrapping_sub(1)], slot)? {
+                if index > 0 && can_join(walk[index.wrapping_sub(1)], slot) {
                     let previous: &mut PlannedChord = chords
                         .last_mut()
                         .expect("a joined chord has a preceding planned chord");
@@ -1099,7 +1089,7 @@ impl GlobalFaces {
             let node = topology.targets[slot as usize] as usize;
             let twin = topology.twins[slot as usize];
             for next in topology.starts[node]..topology.starts[node.wrapping_add(1)] {
-                if next != twin && remaining[edges[next as usize] as usize] && can_join(slot, next)?
+                if next != twin && remaining[edges[next as usize] as usize] && can_join(slot, next)
                 {
                     return Ok(Some(next));
                 }
