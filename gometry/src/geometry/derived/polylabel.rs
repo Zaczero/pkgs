@@ -856,12 +856,12 @@ pub(crate) fn polylabel_point(shape: &Shape, tolerance: Option<f64>) -> Result<P
     // representative point is the answer. Build the original-frame field only
     // on this rare branch.
     let Some(frame) = normalized_polylabel_frame(shape, bounds)? else {
-        return Ok(representative_point(shape, bounds));
+        return representative_point(shape, bounds);
     };
     // Without an interior no cell ever beats the boundary, and refinement
     // would run to `tolerance` along the whole outline.
     if !has_interior(shape) {
-        return Ok(representative_point(shape, bounds));
+        return representative_point(shape, bounds);
     }
     let normalized_bounds = frame
         .shape
@@ -869,7 +869,7 @@ pub(crate) fn polylabel_point(shape: &Shape, tolerance: Option<f64>) -> Result<P
         .expect("non-empty normalized polygon retains bounds");
     let mut field = PolylabelField::new(&frame.shape, frame.max_inradius, Some(frame.frame))?;
     if field.is_empty() {
-        return Ok(representative_point(shape, bounds));
+        return representative_point(shape, bounds);
     }
 
     // Tolerance remains in public Euclidean coordinates.  The framed field
@@ -878,7 +878,7 @@ pub(crate) fn polylabel_point(shape: &Shape, tolerance: Option<f64>) -> Result<P
     let tolerance = tolerance.unwrap_or(frame.default_tolerance);
 
     let mut best = field.cell(
-        representative_point(&frame.shape, normalized_bounds),
+        representative_point(&frame.shape, normalized_bounds)?,
         0.0,
         None,
     )?;
@@ -1428,14 +1428,14 @@ fn has_interior(shape: &Shape) -> bool {
     }
 }
 
-pub(crate) fn representative_point(shape: &Shape, bounds: Bounds) -> Point {
+pub(crate) fn representative_point(shape: &Shape, bounds: Bounds) -> Result<Point> {
     let bounds_center = || {
         Point::new_raw_xy(
             bounds.minx() + (bounds.maxx() - bounds.minx()) / 2.0,
             bounds.miny() + (bounds.maxy() - bounds.miny()) / 2.0,
         )
     };
-    match shape.point_on_surface() {
+    Ok(match shape.point_on_surface()? {
         Shape::Point(point) => point,
         Shape::MultiPoint(_)
         | Shape::LineString(_)
@@ -1444,7 +1444,7 @@ pub(crate) fn representative_point(shape: &Shape, bounds: Bounds) -> Point {
         | Shape::MultiPolygon(_)
         | Shape::GeometryCollection(_)
         | Shape::Empty(..) => bounds_center(),
-    }
+    })
 }
 
 /// The indexed boundary a polylabel search probes once per cell. The facet

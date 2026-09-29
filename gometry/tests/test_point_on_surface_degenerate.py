@@ -50,6 +50,35 @@ def test_point_on_surface_satisfies_covers_invariant(case: SurfaceCase) -> None:
     _assert_covers_invariant(case.geom, point)
 
 
+@pytest.mark.parametrize(
+    'wkt',
+    [
+        'LINESTRING (0 0, 1 2, 4 3)',
+        'LINESTRING (10000000000000000 1, 10000000000000002 2)',
+        'LINESTRING (5e-324 -1, 5e-324 2)',
+        'MULTILINESTRING ((0 0, 1 2, 4 3), (5 0, 5 3))',
+        (
+            'GEOMETRYCOLLECTION ('
+            'LINESTRING (0 0, 1 2, 4 3), '
+            'LINESTRING (5 0, 5 3))'
+        ),
+    ],
+    ids=[
+        'rounded_line_midpoint',
+        'off_line_single_segment_midpoint',
+        'subnormal_ordinate',
+        'multiline',
+        'collection',
+    ],
+)
+def test_line_point_on_surface_is_exactly_on_linework(wkt: str) -> None:
+    linework = gm.from_wkt(wkt)
+    point = linework.point_on_surface()
+
+    assert gm.covers(linework, point)
+    assert gm.distance(linework, point, unit='planar') == 0.0
+
+
 def test_holed_point_on_surface_is_inside_shell_outside_holes() -> None:
     donut = _holed_donut()
     point = (donut).point_on_surface()

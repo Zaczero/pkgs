@@ -277,7 +277,9 @@ fn h3_tile_polygon_seeds_center(
             }
         }
     }
-    if let Shape::Point(inside) = part_source.point_on_surface()
+    if let Shape::Point(inside) = part_source
+        .point_on_surface()
+        .map_err(H3TileError::Preparation)?
         && let Ok(latlng) = h3_latlng(inside)
     {
         let seed = latlng.to_cell(resolution);

@@ -1,7 +1,8 @@
+use super::centroid::{centroid_line_columns, lineal_centroid};
+use crate::error::Result;
 use crate::geometry::{
     Bounds, CoordSeq, LineSeq, Point, Polygon, REDUCE_LANES, ReduceSimd, Ring, Shape, column_mean2,
-    held_axis_interpolate, interpolate_segment_point, line_length, line_length_columns,
-    point_distance, simd_argmin_f64,
+    held_axis_interpolate, line_length_columns, point_on_segment, same_point, simd_argmin_f64,
 };
 
 /// Collect horizontal-bisector chord crossings for one ring's coordinate
@@ -41,6 +42,16 @@ fn point_from_chord_crossings(crossings: &mut [f64], mid: f64) -> Option<Point> 
             (left_end - left_start).total_cmp(&(right_end - right_start))
         })?;
     Some(Point::new_raw_xy(f64::midpoint(left, right), mid))
+}
+
+/// Binary64 squared distance used only to rank on-geometry representative candidates.
+#[expect(
+    clippy::arithmetic_side_effects,
+    reason = "squared XY distance orders representative candidates without a per-candidate square root"
+)]
+fn squared_xy_distance(point: Point, center: Point) -> f64 {
+    let (dx, dy) = (point.x - center.x, point.y - center.y);
+    dx * dx + dy * dy
 }
 
 /// Column kernel for polygonal `point_on_surface`: widest even-odd chord on the
@@ -145,56 +156,107 @@ pub(crate) fn polygonal_surface_point<'a>(
     point_from_chord_crossings(&mut crossings, mid)
 }
 
-/// Column kernel for lineal `point_on_surface`: arc-length midpoint of one
-/// admitted equal-length XY coordinate run (at least two vertices).
+/// Lineal representative from one coordinate run, preferring the interior
+/// vertex nearest its centroid. A two-coordinate line uses its rounded midpoint
+/// only when exact predicates prove that point lies strictly inside the segment.
 pub(crate) fn point_on_surface_line_columns(xs: &[f64], ys: &[f64]) -> Option<Point> {
     if xs.len() < 2 {
         return None;
     }
-    let total = line_length_columns(xs, ys);
-    if total == 0.0 {
-        // Every vertex coincides: the first one is on the line.
-        return Some(Point::new_raw_xy(*xs.first()?, *ys.first()?));
-    }
-    let target = total / 2.0;
-    let mut walked = 0.0;
-    // These parallel columns are slices of an admitted XY sequence.
-    for ((x0, x1), (y0, y1)) in xs
-        .iter()
-        .zip(xs.iter().skip(1))
-        .zip(ys.iter().zip(ys.iter().skip(1)))
-    {
-        let (start, end) = (Point::new_raw_xy(*x0, *y0), Point::new_raw_xy(*x1, *y1));
-        let length = point_distance(start, end);
-        if walked + length >= target {
-            let fraction = if length == 0.0 {
-                0.0
-            } else {
-                (target - walked) / length
-            };
-            let point = interpolate_segment_point(start, end, fraction);
-            return Some(Point::new_raw_xy(point.x, point.y));
-        }
-        walked += length;
-    }
-    // Float accumulation can land a hair short of `target`: take the last vertex.
-    Some(Point::new_raw_xy(*xs.last()?, *ys.last()?))
+    let centroid = (xs.len() > 3)
+        .then(|| centroid_line_columns(xs, ys))
+        .flatten();
+    point_on_surface_line_columns_at(xs, ys, centroid)
 }
 
-/// A representative point ON the linework: the arc-length midpoint of the
-/// LONGEST line piece. It always lies on the geometry (so `covered_by` holds —
-/// the only contract `point_on_surface` owes), needs no geo-rs conversion, and
-/// is a synthesized XY point like the polygonal kernel (Z/M is the ordinate
-/// policy's call at the boundary, not carried here).
+#[expect(
+    clippy::arithmetic_side_effects,
+    reason = "representative vertices are ranked by their binary64 squared centroid distance"
+)]
+fn point_on_surface_line_columns_at(
+    xs: &[f64],
+    ys: &[f64],
+    centroid: Option<(f64, f64)>,
+) -> Option<Point> {
+    if xs.len() < 2 {
+        return None;
+    }
+
+    if xs.len() > 2 {
+        let mut interior = xs
+            .iter()
+            .zip(ys)
+            .enumerate()
+            .skip(1)
+            .take(xs.len().saturating_sub(2));
+        let (_, (&first_x, &first_y)) = interior.next()?;
+        let first = Point::new_raw_xy(first_x, first_y);
+        let Some((center_x, center_y)) = centroid else {
+            return Some(first);
+        };
+        let center = Point::new_raw_xy(center_x, center_y);
+        let mut best_distance = squared_xy_distance(first, center);
+        let mut best = first;
+        for (_, (&x, &y)) in interior {
+            let point = Point::new_raw_xy(x, y);
+            let distance = squared_xy_distance(point, center);
+            if distance < best_distance {
+                best = point;
+                best_distance = distance;
+            }
+        }
+        return Some(best);
+    }
+
+    let start = Point::new_raw_xy(*xs.first()?, *ys.first()?);
+    let end = Point::new_raw_xy(*xs.last()?, *ys.last()?);
+    let midpoint = Point::new_raw_xy(f64::midpoint(start.x, end.x), f64::midpoint(start.y, end.y));
+    if !same_point(midpoint, start)
+        && !same_point(midpoint, end)
+        && point_on_segment(midpoint, start, end)
+    {
+        return Some(midpoint);
+    }
+
+    let center = centroid
+        .map(|(x, y)| Point::new_raw_xy(x, y))
+        .unwrap_or(midpoint);
+    let start_distance = squared_xy_distance(start, center);
+    let end_distance = squared_xy_distance(end, center);
+    Some(if end_distance < start_distance {
+        end
+    } else {
+        start
+    })
+}
+
+/// A representative point ON the linework: the candidate nearest the lineal
+/// centroid, using stored interior vertices and certified single-segment
+/// midpoints. No rounded interpolation is allowed to leave the source line.
+#[expect(
+    clippy::arithmetic_side_effects,
+    reason = "representative line candidates are ranked by squared XY distance"
+)]
 pub(crate) fn lineal_surface_point<'a>(
     lines: impl IntoIterator<Item = &'a CoordSeq>,
+    centroid: Option<(f64, f64)>,
 ) -> Option<Point> {
-    lines
-        .into_iter()
-        .filter(|line| line.xs().len() >= 2)
-        .map(|line| (line_length(line), line))
-        .max_by(|(left, _), (right, _)| left.total_cmp(right))
-        .and_then(|(_, line)| point_on_surface_line_columns(line.xs(), line.ys()))
+    let mut best = None;
+    let centroid_point = centroid.map(|(x, y)| Point::new_raw_xy(x, y));
+    for line in lines {
+        let Some(candidate) = point_on_surface_line_columns_at(line.xs(), line.ys(), centroid)
+        else {
+            continue;
+        };
+        let Some(center) = centroid_point else {
+            return Some(candidate);
+        };
+        let distance = squared_xy_distance(candidate, center);
+        if best.is_none_or(|(best_distance, _)| distance < best_distance) {
+            best = Some((distance, candidate));
+        }
+    }
+    best.map(|(_, point)| point)
 }
 
 /// The multipoint vertex nearest its centroid — a representative that is always
@@ -213,10 +275,9 @@ pub(crate) fn multipoint_surface_point(xs: &[f64], ys: &[f64]) -> Option<Point> 
         return None;
     }
     let (centroid_x, centroid_y) = column_mean2(xs, ys)?;
-    let score = |index: usize| {
-        let (dx, dy) = (xs[index] - centroid_x, ys[index] - centroid_y);
-        dx * dx + dy * dy
-    };
+    let centroid = Point::new_raw_xy(centroid_x, centroid_y);
+    let score =
+        |index: usize| squared_xy_distance(Point::new_raw_xy(xs[index], ys[index]), centroid);
     let nearest = simd_argmin_f64(count, score, |start| {
         let chunk = start / REDUCE_LANES;
         let (x_chunks, _) = xs.as_chunks::<REDUCE_LANES>();
@@ -267,37 +328,46 @@ fn gather_surface_components<'a>(
 /// through to its boundary linework, then to its vertices. Reused for bare
 /// degenerate polygons too (via `from_ref`), which the scanline kernel leaves
 /// to this boundary path.
-pub(crate) fn collection_surface_point(parts: &[Shape]) -> Option<Point> {
+pub(crate) fn collection_surface_point(shape: &Shape) -> Result<Option<Point>> {
     let mut polygons: Vec<&Polygon> = Vec::new();
     let mut lines: Vec<&CoordSeq> = Vec::new();
     let mut points: Vec<Point> = Vec::new();
-    gather_surface_components(parts, &mut polygons, &mut lines, &mut points);
+    gather_surface_components(
+        std::slice::from_ref(shape),
+        &mut polygons,
+        &mut lines,
+        &mut points,
+    );
     if !polygons.is_empty() {
         if let Some(point) = polygonal_surface_point(polygons.iter().copied()) {
-            return Some(point);
+            return Ok(Some(point));
         }
         // Degenerate areal: its boundary rings carry the representative point.
         if let Some(point) = lineal_surface_point(
             polygons
                 .iter()
                 .flat_map(|polygon| polygon.rings().map(Ring::coords)),
+            lineal_centroid(shape)?,
         ) {
-            return Some(point);
+            return Ok(Some(point));
         }
     }
+    if let [line] = lines.as_slice() {
+        return Ok(point_on_surface_line_columns(line.xs(), line.ys()));
+    }
     if !lines.is_empty()
-        && let Some(point) = lineal_surface_point(lines.iter().copied())
+        && let Some(point) = lineal_surface_point(lines.iter().copied(), lineal_centroid(shape)?)
     {
-        return Some(point);
+        return Ok(Some(point));
     }
     if points.is_empty() {
-        return None;
+        return Ok(None);
     }
     let mut xs = Vec::with_capacity(points.len());
     let mut ys = Vec::with_capacity(points.len());
     xs.extend(points.iter().map(|point| point.x));
     ys.extend(points.iter().map(|point| point.y));
-    multipoint_surface_point(&xs, &ys)
+    Ok(multipoint_surface_point(&xs, &ys))
 }
 
 #[cfg(test)]
@@ -334,7 +404,7 @@ mod tests {
     }
 
     fn surface_xy(shape: &Shape) -> (f64, f64) {
-        match shape.point_on_surface() {
+        match shape.point_on_surface().expect("test surface point") {
             Shape::Point(point) => (point.x, point.y),
             other @ (Shape::MultiPoint(_)
             | Shape::LineString(_)
@@ -354,7 +424,7 @@ mod tests {
             Shape::typed_empty(GeometryKind::GeometryCollection, CoordinateAxes::XY),
         ] {
             let result = crate::test_support::assert_no_allocations(|| empty.point_on_surface());
-            assert_eq!(result, Shape::empty_point());
+            assert_eq!(result.expect("empty surface point"), Shape::empty_point());
         }
     }
 
@@ -397,9 +467,24 @@ mod tests {
     }
 
     #[test]
-    fn degenerate_collinear_polygon_falls_back_to_boundary_midpoint() {
+    fn degenerate_collinear_polygon_returns_a_boundary_point() {
         let collapsed = polygon(&[(0.0, 0.0), (1.0, 0.0), (3.0, 0.0), (0.0, 0.0)], &[]);
-        assert_eq!(surface_xy(&collapsed), (3.0, 0.0));
+        let point = match collapsed
+            .point_on_surface()
+            .expect("collapsed surface point")
+        {
+            Shape::Point(point) => point,
+            other => panic!("expected a point, got {other:?}"),
+        };
+        assert!(
+            [
+                (xy(0.0, 0.0), xy(1.0, 0.0)),
+                (xy(1.0, 0.0), xy(3.0, 0.0)),
+                (xy(3.0, 0.0), xy(0.0, 0.0)),
+            ]
+            .into_iter()
+            .any(|(start, end)| point_on_segment(point, start, end))
+        );
     }
 
     #[test]

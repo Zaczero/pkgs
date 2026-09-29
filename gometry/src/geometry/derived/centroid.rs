@@ -798,7 +798,7 @@ fn finish_lineal_centroid_rescued(
 
 /// Column kernel for lineal centroid (dimension-1 pass) over one coordinate
 /// run.
-fn centroid_line_columns(xs: &[f64], ys: &[f64]) -> Option<(f64, f64)> {
+pub(super) fn centroid_line_columns(xs: &[f64], ys: &[f64]) -> Option<(f64, f64)> {
     let mut total_length = 0.0_f64;
     let mut line_sum = (0.0_f64, 0.0_f64);
     accumulate_lineal_centroid(xs, ys, &mut total_length, &mut line_sum);

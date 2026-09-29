@@ -5,9 +5,10 @@ use crate::geometry::derived::{
     areal_centroid, build_inscribed_circle, canonicalize_concave_hull_points, centroid_is_empty,
     collection_surface_point, emit_minimum_bounding_circle, emit_zero_radius_point,
     lineal_centroid, lineal_surface_point, minimum_area_rectangle, monotone_chain_hull,
-    multipoint_surface_point, native_concave_hull, point_centroid, polygonal_surface_point,
-    polylabel_center_radius, polylabel_point, scale_aware_default_tolerance, shape_from_open_hull,
-    shape_from_selected_hull, smallest_enclosing_circle,
+    multipoint_surface_point, native_concave_hull, point_centroid, point_on_surface_line_columns,
+    polygonal_surface_point, polylabel_center_radius, polylabel_point,
+    scale_aware_default_tolerance, shape_from_open_hull, shape_from_selected_hull,
+    smallest_enclosing_circle,
 };
 use crate::geometry::{
     DirectedOptimizationResult, GeometryErrorKind, LineSeq, Point, Polygon, Ring, Shape,
@@ -80,10 +81,11 @@ impl Shape {
 
     /// A representative point guaranteed to lie *on* the geometry — for a
     /// polygon an interior point, not a boundary vertex. Empty geometries
-    /// yield an empty geometry.
-    pub fn point_on_surface(&self) -> Self {
+    /// yield an empty geometry. Lineal candidates are ranked by the lineal
+    /// centroid, whose exact replay can fail on resources.
+    pub fn point_on_surface(&self) -> Result<Self> {
         if self.is_empty() {
-            return Self::empty_point();
+            return Ok(Self::empty_point());
         }
         // Polygonal input takes the own scanline kernel: one half-open chord
         // scan at the bbox bisector is enough to find a representative without
@@ -99,29 +101,33 @@ impl Shape {
             | Self::Empty(..) => None,
         };
         if let Some(point) = polygonal {
-            return Self::Point(point);
+            return Ok(Self::Point(point));
         }
         // Lineal and puntal representatives are own columnar kernels too — a
-        // line's arc-length midpoint and a multipoint's nearest-centroid vertex
-        // both lie ON the geometry (the only contract). Collections and
-        // degenerate polygons take the dimensional cascade below.
+        // line uses an on-line candidate nearest its centroid, and a multipoint
+        // uses its nearest-centroid vertex. Collections and degenerate polygons
+        // take the dimensional cascade below.
         let native = match self {
             Self::Point(point) => Some(Point::new_raw_xy(point.x, point.y)),
             Self::MultiPoint(points) => multipoint_surface_point(points.xs(), points.ys()),
-            Self::LineString(line) => lineal_surface_point(std::iter::once(line.as_coords())),
-            Self::MultiLineString(lines) => {
-                lineal_surface_point(lines.iter().map(LineSeq::as_coords))
+            Self::LineString(line) => point_on_surface_line_columns(line.xs(), line.ys()),
+            Self::MultiLineString(lines) => match lines.as_slice() {
+                [line] => point_on_surface_line_columns(line.xs(), line.ys()),
+                _ => lineal_surface_point(
+                    lines.iter().map(LineSeq::as_coords),
+                    lineal_centroid(self)?,
+                ),
             },
             // Mixed/nested collections and degenerate polygons (whose interior
             // the scanline could not find) fall to the same dimensional
             // cascade: highest dimension first, areal degeneracy down to its
             // boundary linework and vertices.
             Self::Polygon(_) | Self::MultiPolygon(_) | Self::GeometryCollection(_) => {
-                collection_surface_point(std::slice::from_ref(self))
+                collection_surface_point(self)?
             },
             Self::Empty(..) => None,
         };
-        native.map_or_else(Self::empty_point, Self::Point)
+        Ok(native.map_or_else(Self::empty_point, Self::Point))
     }
 
     pub fn envelope(&self) -> Result<Self> {
