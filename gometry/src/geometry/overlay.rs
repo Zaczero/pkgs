@@ -153,13 +153,8 @@ pub(crate) use clip::{
 pub(crate) use exact_partition::cartesian_support_nonempty;
 pub(in crate::geometry) use exact_partition::{
     ExactChainView, ExactLineEmission, ExactMetricSpan, ExactMetricSupport, ExactPartition,
-    ExactSourceInventory, NodeId, certify_emitted_incidence,
+    ExactSourceInventory, NodeId, RayAxis, RayPoints, certify_emitted_incidence, shoot_left,
 };
-#[expect(
-    unused_imports,
-    reason = "the ray facade is shared by Cartesian and source-backed Voronoi sweeps"
-)]
-pub(in crate::geometry) use exact_partition::{RayAxis, RayPoints, shoot_left};
 pub(crate) use exact_partition::{
     exact_intersects_bounds, occupied_cartesian_area, occupied_cartesian_support,
 };

@@ -621,6 +621,61 @@ struct ValidatedExactCycles {
     contacts: Vec<ExactCycleContact>,
 }
 
+#[derive(Clone, Copy)]
+pub(super) enum OwnerShellPosition {
+    Outside,
+    BoundaryOnly,
+    Inside,
+}
+
+#[derive(Clone, Copy)]
+pub(super) struct OwnerCycleContainment {
+    pub(super) shell_position: OwnerShellPosition,
+    pub(super) nested_descendant: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum OwnerCycleFailure {
+    OutsideShell,
+    BoundaryOnly,
+    NestedHole,
+}
+
+pub(super) fn first_owner_cycle_failure(
+    facts: &[OwnerCycleContainment],
+    shell: usize,
+) -> Option<(usize, OwnerCycleFailure)> {
+    for (ring, fact) in facts.iter().enumerate() {
+        if ring == shell {
+            continue;
+        }
+        match fact.shell_position {
+            OwnerShellPosition::Outside => {
+                return Some((ring, OwnerCycleFailure::OutsideShell));
+            },
+            OwnerShellPosition::BoundaryOnly => {
+                return Some((ring, OwnerCycleFailure::BoundaryOnly));
+            },
+            OwnerShellPosition::Inside => {},
+        }
+        if fact.nested_descendant {
+            return Some((ring, OwnerCycleFailure::NestedHole));
+        }
+    }
+    None
+}
+
+pub(super) fn validate_owner_cycle_facts(
+    facts: &[OwnerCycleContainment],
+    expected_cycles: usize,
+    shell: usize,
+) -> Result<()> {
+    if facts.len() != expected_cycles || first_owner_cycle_failure(facts, shell).is_some() {
+        return Err(exact_cycle_error());
+    }
+    Ok(())
+}
+
 type OpenClipRing = (Vec<exact::ExactPoint>, Vec<XY>, Vec<Option<usize>>);
 
 fn voronoi_error(message: impl Into<String>) -> crate::error::Error {
@@ -654,10 +709,8 @@ fn embedding_failure() -> crate::error::Error {
     voronoi_error("exact Voronoi subdivision has no topology-preserving binary64 embedding")
 }
 
-/// The box of the points' nearest binary64 roundings. Rounding is monotone,
-/// so exact boxes that meet have rounded boxes that meet, and an exact point in
-/// an exact box rounds into its rounded box. A point without a finite rounding
-/// has no box, and a missing box meets every box.
+#[cfg(test)]
+/// Reconstructs rounded source boxes for the exhaustive contact-work oracle.
 fn rounded_box<'a>(
     points: impl IntoIterator<Item = &'a exact::ExactPoint>,
 ) -> Result<Option<Bounds>> {
@@ -1083,10 +1136,12 @@ fn for_each_assembled_pair(
     })
 }
 
+/// The nesting step runs only after noded contact and touch validation succeeds.
 fn validate_assembled_exact_cycles(
     subdivision: &ExactSubdivision,
     cycles: &[NodedExactCycle<'_>],
     shell: usize,
+    validate_nesting: impl FnOnce() -> Result<()>,
 ) -> Result<()> {
     let mut points = Vec::with_capacity(cycles.len());
     points.extend(cycles.iter().map(|cycle| cycle.points));
@@ -1095,7 +1150,7 @@ fn validate_assembled_exact_cycles(
     let index = NodedSegmentIndex::new(cycles)?;
     for_each_assembled_pair(&points, &index, |_, _| Ok(()))?;
     validate_assembled_touch_fans(subdivision, cycles.len(), &index)?;
-    validate_exact_cycle_nesting(&points, shell)
+    validate_nesting()
 }
 
 #[cfg(test)]
@@ -1179,18 +1234,16 @@ fn validate_exact_cycle_rounding(cycles: &[&[exact::ExactPoint]]) -> Result<()> 
     Ok(())
 }
 
-#[expect(
-    clippy::indexing_slicing,
-    reason = "the cycle count and shell ordinal are admitted before exact contact validation"
-)]
+#[cfg(test)]
 fn validate_exact_cycle_nesting(cycles: &[&[exact::ExactPoint]], shell: usize) -> Result<()> {
-    for hole in 0..cycles.len() {
+    let shell_cycle = cycles.get(shell).copied().ok_or_else(exact_cycle_error)?;
+    for (hole, hole_cycle) in cycles.iter().enumerate() {
         if hole == shell {
             continue;
         }
         let mut saw_inside = false;
-        for point in cycles[hole] {
-            match exact::point_in_cycle(cycles[shell], point)? {
+        for point in *hole_cycle {
+            match exact::point_in_cycle(shell_cycle, point)? {
                 exact::PointInCycle::Outside => return Err(exact_cycle_error()),
                 exact::PointInCycle::Inside => saw_inside = true,
                 exact::PointInCycle::Boundary => {},
@@ -1199,12 +1252,12 @@ fn validate_exact_cycle_nesting(cycles: &[&[exact::ExactPoint]], shell: usize) -
         if !saw_inside {
             return Err(exact_cycle_error());
         }
-        for other in 0..cycles.len() {
+        for (other, other_cycle) in cycles.iter().enumerate() {
             if other == shell || other == hole {
                 continue;
             }
-            for point in cycles[other] {
-                if exact::point_in_cycle(cycles[hole], point)? == exact::PointInCycle::Inside {
+            for point in *other_cycle {
+                if exact::point_in_cycle(hole_cycle, point)? == exact::PointInCycle::Inside {
                     return Err(exact_cycle_error());
                 }
             }

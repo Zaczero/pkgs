@@ -74,6 +74,7 @@ fn direct_dual_subnormal_admission_matches_legacy_builder() {
 }
 
 use super::*;
+use crate::geometry::overlay::{RayAxis, RayPoints};
 use crate::geometry::segment_index::checked_index_count;
 
 #[test]
@@ -136,6 +137,95 @@ fn cycle(points: &[(f64, f64)]) -> Vec<exact::ExactPoint> {
 
 fn cycle_xy(points: &[(f64, f64)]) -> Vec<XY> {
     points.iter().map(|&(x, y)| XY::new(x, y)).collect()
+}
+
+#[expect(
+    clippy::arithmetic_side_effects,
+    reason = "ExactSimpleRing carries the repeated closing vertex admitted by simple_ring"
+)]
+fn exact_ring_points(
+    subdivision: &ExactSubdivision,
+    ring: &assembly::ExactSimpleRing,
+) -> Vec<exact::ExactPoint> {
+    ring.vertices[..ring.vertices.len() - 1]
+        .iter()
+        .map(|&vertex| subdivision.vertex(vertex).point.clone())
+        .collect()
+}
+
+type RingCoordinateKey = Vec<(u64, u64)>;
+type PolygonRingKey = (RingCoordinateKey, Vec<RingCoordinateKey>);
+
+fn exact_ring_coordinate_key(
+    subdivision: &ExactSubdivision,
+    ring: &assembly::ExactSimpleRing,
+) -> RingCoordinateKey {
+    let (_, open_vertices) = ring
+        .vertices
+        .split_last()
+        .expect("simple exact rings are closed");
+    let mut coordinates: Vec<_> = open_vertices
+        .iter()
+        .map(|&vertex| {
+            let point = subdivision
+                .vertex(vertex)
+                .point
+                .round_nearest_even()
+                .unwrap();
+            (point.x.to_bits(), point.y.to_bits())
+        })
+        .collect();
+    coordinates.sort_unstable();
+    coordinates
+}
+
+fn assert_owner_parts_match_exact_point_oracle(
+    subdivision: &ExactSubdivision,
+    parts: &[ExactCellPart],
+) {
+    for part in parts {
+        let shell = exact_ring_points(subdivision, &part.shell);
+        let holes: Vec<_> = part
+            .holes
+            .iter()
+            .map(|hole| exact_ring_points(subdivision, hole))
+            .collect();
+        assert_holes_inside_exact_shell(&shell, &holes);
+        let mut remaining = holes.as_slice();
+        while let Some((left, later)) = remaining.split_first() {
+            for right in later {
+                assert!(
+                    right.iter().all(|point| {
+                        exact::point_in_cycle(left, point).unwrap() != exact::PointInCycle::Inside
+                    }),
+                    "one emitted hole is nested inside another"
+                );
+                assert!(
+                    left.iter().all(|point| {
+                        exact::point_in_cycle(right, point).unwrap() != exact::PointInCycle::Inside
+                    }),
+                    "one emitted hole is nested inside another"
+                );
+            }
+            remaining = later;
+        }
+    }
+}
+
+fn assert_holes_inside_exact_shell(shell: &[exact::ExactPoint], holes: &[Vec<exact::ExactPoint>]) {
+    for hole in holes {
+        let mut saw_inside = false;
+        for point in hole {
+            match exact::point_in_cycle(shell, point).unwrap() {
+                exact::PointInCycle::Outside => {
+                    panic!("owner-local shell does not contain its emitted hole")
+                },
+                exact::PointInCycle::Boundary => {},
+                exact::PointInCycle::Inside => saw_inside = true,
+            }
+        }
+        assert!(saw_inside, "a boundary-only ring is not a hole");
+    }
 }
 
 fn rounded_clip_segment_certificate(
@@ -522,7 +612,10 @@ fn assembled_and_generic_validators_preserve_a_one_ulp_boundary_gap() {
         .collect();
     let point_cycles: Vec<_> = cycles.iter().map(Vec::as_slice).collect();
 
-    validate_assembled_exact_cycles(&subdivision, &noded_cycles, 0).unwrap();
+    validate_assembled_exact_cycles(&subdivision, &noded_cycles, 0, || {
+        validate_exact_cycle_nesting(&point_cycles, 0)
+    })
+    .unwrap();
     let generic = validate_exact_cycles(&point_cycles, 0).unwrap();
     assert!(generic.contacts.is_empty());
 
@@ -569,6 +662,95 @@ fn arbitrary_exact_cycle_oracle_keeps_crossing_t_and_overlap_rejections() {
 
     let adjacent_overlap = make(&[(0.0, 0.0), (4.0, 0.0), (2.0, 0.0), (2.0, 2.0), (0.0, 2.0)]);
     assert!(!validates(&[adjacent_overlap]));
+}
+
+#[test]
+fn owner_ray_sort_uses_exact_order_when_a_finite_hint_is_unavailable() {
+    let zero = exact::ExactPoint::from_xy(XY::new(0.0, 0.0));
+    let shallow = exact::ExactPoint::from_xy(XY::new(1.0, f64::from_bits(1)));
+    let one = exact::ExactPoint::from_xy(XY::new(0.0, 1.0));
+    let one_next = exact::ExactPoint::from_xy(XY::new(1.0, 1.0));
+    let high = exact::line_intersection(
+        &exact::ExactLine::through_points(&zero, &shallow).unwrap(),
+        &exact::ExactLine::through_points(&one, &one_next).unwrap(),
+    )
+    .unwrap();
+    assert!(
+        high.finite_rounding().unwrap().is_none(),
+        "the exact intersection lies above the finite binary64 range"
+    );
+
+    let exact_vertices = [
+        ExactVertex {
+            point: high,
+            fixed_xy: None,
+        },
+        ExactVertex {
+            point: exact::ExactPoint::from_xy(XY::new(2.0, 0.0)),
+            fixed_xy: None,
+        },
+        ExactVertex {
+            point: exact::ExactPoint::from_xy(XY::new(-2.0, 0.0)),
+            fixed_xy: None,
+        },
+    ];
+    let global_vertices = [VertexId(0), VertexId(1), VertexId(2)];
+    let points = assembly::OwnerRayPoints::new(&exact_vertices, &global_vertices);
+    assert_eq!(
+        RayPoints::rounded(&points, 0),
+        RayPoints::rounded(&points, 1),
+        "one unavailable hint makes the whole sort key constant"
+    );
+
+    let mut order = [0_u32, 1, 2];
+    RayPoints::sort_by_axis(
+        &points,
+        &mut order,
+        RayAxis::X,
+        |vertex| vertex,
+        |_, _| Ok(()),
+    )
+    .unwrap();
+    assert_eq!(order, [2, 1, 0]);
+}
+
+#[test]
+fn owner_ray_sort_breaks_nearest_even_hint_ties_with_exact_coordinates() {
+    let lower = exact::ExactPoint::from_xy(XY::new(1.0, 0.0));
+    let upper = exact::ExactPoint::from_xy(XY::new(1.0_f64.next_up(), 0.0));
+    let midpoint = lower.midpoint(&upper).unwrap();
+    assert_ne!(lower.compare_x(&midpoint).unwrap(), Ordering::Equal);
+    assert_eq!(
+        lower.round_nearest_even().unwrap(),
+        midpoint.round_nearest_even().unwrap()
+    );
+
+    let vertices = [
+        ExactVertex {
+            point: midpoint,
+            fixed_xy: None,
+        },
+        ExactVertex {
+            point: upper,
+            fixed_xy: None,
+        },
+        ExactVertex {
+            point: lower,
+            fixed_xy: None,
+        },
+    ];
+    let ids = [VertexId(0), VertexId(1), VertexId(2)];
+    let points = assembly::OwnerRayPoints::new(&vertices, &ids);
+    let mut order = [0_u32, 1, 2];
+    RayPoints::sort_by_axis(
+        &points,
+        &mut order,
+        RayAxis::X,
+        |vertex| vertex,
+        |_, _| Ok(()),
+    )
+    .unwrap();
+    assert_eq!(order, [2, 0, 1]);
 }
 
 #[test]
@@ -712,7 +894,10 @@ fn assembled_touch_fans_match_generic_exact_contacts_in_source_order() {
         .map(|(points, ring)| NodedExactCycle { points, ring })
         .collect();
     let point_cycles: Vec<_> = cycles.iter().map(Vec::as_slice).collect();
-    validate_assembled_exact_cycles(&subdivision, &noded_cycles, 0).unwrap();
+    validate_assembled_exact_cycles(&subdivision, &noded_cycles, 0, || {
+        validate_exact_cycle_nesting(&point_cycles, 0)
+    })
+    .unwrap();
     let expected = validate_exact_cycles(&point_cycles, 0).unwrap().contacts;
     let index = NodedSegmentIndex::new(&noded_cycles).unwrap();
     let mut actual = Vec::new();
@@ -750,7 +935,9 @@ fn actual_voronoi_ring_contacts_match_the_exhaustive_oracle() {
 
     for part in &parts {
         with_part_cycles(&subdivision, part, |point_cycles, noded_cycles| {
-            validate_assembled_exact_cycles(&subdivision, noded_cycles, 0)?;
+            validate_assembled_exact_cycles(&subdivision, noded_cycles, 0, || {
+                validate_exact_cycle_nesting(point_cycles, 0)
+            })?;
             let expected = validate_exact_cycles(point_cycles, 0)?.contacts;
             let index = NodedSegmentIndex::new(noded_cycles)?;
             let mut actual = Vec::new();
@@ -930,6 +1117,141 @@ fn exact_touch_graph_covers_all_five_outcomes_and_reversed_discovery() {
         assert_eq!(restored, expected);
         assert_eq!(reversed, restored);
     }
+}
+
+#[test]
+fn assembled_contact_validation_precedes_owner_local_containment() {
+    let shell = cycle(&[
+        (0.0, 0.0),
+        (8.0, 0.0),
+        (8.0, 8.0),
+        (0.0, 8.0),
+        (0.0, 6.0),
+        (0.0, 2.0),
+    ]);
+    let twice_touching_hole = cycle(&[(0.0, 2.0), (2.0, 4.0), (0.0, 6.0)]);
+    let invalid_cycles = [shell.clone(), twice_touching_hole];
+    let (invalid_subdivision, invalid_rings) = noded_fixture(&invalid_cycles).unwrap();
+    let invalid_noded: Vec<_> = invalid_cycles
+        .iter()
+        .zip(&invalid_rings)
+        .map(|(points, ring)| NodedExactCycle { points, ring })
+        .collect();
+    let invalid_touch_facts = [
+        OwnerCycleContainment {
+            shell_position: OwnerShellPosition::Inside,
+            nested_descendant: false,
+        },
+        OwnerCycleContainment {
+            shell_position: OwnerShellPosition::Inside,
+            nested_descendant: false,
+        },
+    ];
+    let invalid_nesting_called = std::cell::Cell::new(false);
+    let Err(invalid_facts) =
+        validate_assembled_exact_cycles(&invalid_subdivision, &invalid_noded, 0, || {
+            invalid_nesting_called.set(true);
+            validate_owner_cycle_facts(&invalid_touch_facts, invalid_noded.len(), 0)
+        })
+    else {
+        panic!("the exact touch graph admitted two shell contacts")
+    };
+    assert!(
+        !invalid_nesting_called.get(),
+        "Task164 contact validation must finish before owner-local containment runs"
+    );
+    assert!(
+        invalid_facts
+            .to_string()
+            .contains("exact Voronoi cycle set is not a valid polygon boundary"),
+        "the exact touch graph must reject before owner-local containment facts: {invalid_facts}"
+    );
+
+    let contained_hole = cycle(&[(2.0, 2.0), (6.0, 2.0), (6.0, 6.0), (2.0, 6.0)]);
+    let valid_cycles = [shell, contained_hole];
+    let (valid_subdivision, valid_rings) = noded_fixture(&valid_cycles).unwrap();
+    let valid_noded: Vec<_> = valid_cycles
+        .iter()
+        .zip(&valid_rings)
+        .map(|(points, ring)| NodedExactCycle { points, ring })
+        .collect();
+    let valid_facts = [
+        OwnerCycleContainment {
+            shell_position: OwnerShellPosition::Inside,
+            nested_descendant: false,
+        },
+        OwnerCycleContainment {
+            shell_position: OwnerShellPosition::Inside,
+            nested_descendant: false,
+        },
+    ];
+    let valid_nesting_called = std::cell::Cell::new(false);
+    validate_assembled_exact_cycles(&valid_subdivision, &valid_noded, 0, || {
+        valid_nesting_called.set(true);
+        validate_owner_cycle_facts(&valid_facts, valid_noded.len(), 0)
+    })
+    .unwrap();
+    assert!(valid_nesting_called.get());
+}
+
+#[test]
+fn owner_local_containment_checks_shell_before_source_ordered_nesting() {
+    let shell_first = [
+        OwnerCycleContainment {
+            shell_position: OwnerShellPosition::Inside,
+            nested_descendant: false,
+        },
+        OwnerCycleContainment {
+            shell_position: OwnerShellPosition::Outside,
+            nested_descendant: true,
+        },
+        OwnerCycleContainment {
+            shell_position: OwnerShellPosition::Inside,
+            nested_descendant: true,
+        },
+    ];
+    assert_eq!(
+        first_owner_cycle_failure(&shell_first, 0),
+        Some((1, OwnerCycleFailure::OutsideShell))
+    );
+
+    let source_order = [
+        OwnerCycleContainment {
+            shell_position: OwnerShellPosition::Inside,
+            nested_descendant: false,
+        },
+        OwnerCycleContainment {
+            shell_position: OwnerShellPosition::Inside,
+            nested_descendant: false,
+        },
+        OwnerCycleContainment {
+            shell_position: OwnerShellPosition::Inside,
+            nested_descendant: true,
+        },
+        OwnerCycleContainment {
+            shell_position: OwnerShellPosition::Outside,
+            nested_descendant: false,
+        },
+    ];
+    assert_eq!(
+        first_owner_cycle_failure(&source_order, 0),
+        Some((2, OwnerCycleFailure::NestedHole))
+    );
+
+    let boundary_only = [
+        OwnerCycleContainment {
+            shell_position: OwnerShellPosition::Inside,
+            nested_descendant: false,
+        },
+        OwnerCycleContainment {
+            shell_position: OwnerShellPosition::BoundaryOnly,
+            nested_descendant: false,
+        },
+    ];
+    assert_eq!(
+        first_owner_cycle_failure(&boundary_only, 0),
+        Some((1, OwnerCycleFailure::BoundaryOnly))
+    );
 }
 
 #[test]
@@ -2158,6 +2480,228 @@ fn site_shape(points: &[(f64, f64)]) -> Shape {
     )
 }
 
+fn task163_tangent_clip(hole_count: usize) -> Polygon {
+    let holes = (0..hole_count)
+        .map(|index| {
+            let ordinal =
+                f64::from(u32::try_from(index).expect("the fixture has fewer than u32 holes"));
+            let x = 1.0 + ordinal * 1.4;
+            closed_ring(&[(x, 10.0), (x + 0.25, 9.5), (x - 0.25, 9.5)])
+        })
+        .collect();
+    Polygon::new(rectangle(0.0, 0.0, 2000.0, 10.0), holes)
+}
+
+#[expect(
+    clippy::arithmetic_side_effects,
+    reason = "Ring constructors admit an explicit repeated closing coordinate"
+)]
+fn ring_coordinate_key(ring: &Ring) -> RingCoordinateKey {
+    let mut coordinates: Vec<_> = ring
+        .iter()
+        .take(ring.len() - 1)
+        .map(|point| (point.x.to_bits(), point.y.to_bits()))
+        .collect();
+    coordinates.sort_unstable();
+    coordinates
+}
+
+fn polygon_ring_keys(polygon: &Polygon) -> PolygonRingKey {
+    let shell = ring_coordinate_key(&polygon.shell);
+    let mut holes: Vec<_> = polygon.holes.iter().map(ring_coordinate_key).collect();
+    holes.sort_unstable();
+    (shell, holes)
+}
+
+#[test]
+fn owner_local_hosting_keeps_all_1334_noncollinear_interior_holes() {
+    let sites = sites_xy(&[(1000.0, 5.0), (1000.0, 1_000_000.0), (1_000_000.0, 5.0)]);
+    let holes = (0_u32..1_334)
+        .map(|index| {
+            let x = 1.0 + f64::from(index) * 1.4;
+            closed_ring(&[(x, 5.0), (x + 0.25, 4.5), (x - 0.25, 4.5)])
+        })
+        .collect();
+    let clip = Polygon::new(rectangle(0.0, 0.0, 2000.0, 10.0), holes);
+    let subdivision = grafted_clip_subdivision(&sites, &clip);
+    assembly::reset_owner_local_work();
+    let parts = assemble_cells(&subdivision).unwrap();
+    let work = assembly::owner_local_work();
+
+    assert_eq!(parts.len(), 1);
+    assert_eq!(parts[0].holes.len(), 1_334);
+    assert_eq!(work.owner_ring_edges, 4_006);
+    assert_eq!(work.owner_vertices, 4_006);
+    assert_eq!(work.host_queries, 1_335);
+    assert_eq!(work.ray_hits, 1_334);
+    assert_eq!(work.ring_side_checks, 1_335);
+    assert_eq!(work.global_edge_slot_visits, subdivision.edge_of_slot.len());
+    let shell_points = exact_ring_points(&subdivision, &parts[0].shell);
+    let hole_points: Vec<_> = parts[0]
+        .holes
+        .iter()
+        .map(|hole| exact_ring_points(&subdivision, hole))
+        .collect();
+    assert_holes_inside_exact_shell(&shell_points, &hole_points);
+    let mut emitted_rings = Vec::with_capacity(1 + parts[0].holes.len());
+    emitted_rings.push(exact_ring_coordinate_key(&subdivision, &parts[0].shell));
+    emitted_rings.extend(
+        parts[0]
+            .holes
+            .iter()
+            .map(|hole| exact_ring_coordinate_key(&subdivision, hole)),
+    );
+    emitted_rings.sort_unstable();
+    let mut source_rings = Vec::with_capacity(1 + clip.holes.len());
+    source_rings.push(ring_coordinate_key(&clip.shell));
+    source_rings.extend(clip.holes.iter().map(ring_coordinate_key));
+    source_rings.sort_unstable();
+    assert_eq!(
+        emitted_rings, source_rings,
+        "owner-local assembly preserves every exact clip ring coordinate set"
+    );
+}
+
+#[test]
+fn public_noncollinear_one_owner_keeps_1334_interior_holes_and_clip_support() {
+    let source = site_shape(&[(1000.0, 5.0), (1000.0, 1_000_000.0), (1_000_000.0, 5.0)]);
+    let holes = (0_u32..1_334)
+        .map(|index| {
+            let x = 1.0 + f64::from(index) * 1.4;
+            closed_ring(&[(x, 5.0), (x + 0.25, 4.5), (x - 0.25, 4.5)])
+        })
+        .collect();
+    let clip = Polygon::new(rectangle(0.0, 0.0, 2000.0, 10.0), holes);
+    let mut budget = ExpansionBudget::new("test", "noncollinear one-owner 1334 holes");
+    assembly::reset_owner_local_work();
+    let cells = source
+        .voronoi_polygons_budgeted(0.0, VoronoiBoundary::Polygon(&clip), &mut budget)
+        .unwrap();
+    let work = assembly::owner_local_work();
+
+    assert_eq!(cells.len(), 1);
+    let Shape::Polygon(cell) = &cells[0] else {
+        panic!("Voronoi polygon output contains only polygons");
+    };
+    assert_eq!(cell.holes.len(), 1_334);
+    assert_eq!(
+        polygon_ring_keys(cell),
+        polygon_ring_keys(&clip),
+        "the sole owner public output preserves the clip's shell and every hole coordinate"
+    );
+    assert_eq!(work.owner_ring_edges, 4_006);
+    assert_eq!(work.host_queries, 1_335);
+    assert_eq!(work.ray_hits, 1_334);
+    assert_eq!(work.ring_side_checks, 1_335);
+}
+
+#[test]
+fn task163_noncollinear_public_path_retains_667_tangent_outputs() {
+    let source = site_shape(&[(500.0, 5.0), (1500.0, 5.0), (1000.0, 7.0)]);
+    let clip = task163_tangent_clip(667);
+    let mut budget = ExpansionBudget::new("test", "Task 163 667 tangent holes");
+    assembly::reset_owner_local_work();
+    let cells = source
+        .voronoi_polygons_budgeted(0.0, VoronoiBoundary::Polygon(&clip), &mut budget)
+        .unwrap();
+    let work = assembly::owner_local_work();
+    let mut hole_count = 0;
+    for cell in &cells {
+        let Shape::Polygon(polygon) = cell else {
+            panic!("Voronoi polygon output contains only polygons");
+        };
+        hole_count += polygon.holes.len();
+    }
+
+    eprintln!(
+        "Task163 667 output: polygons={}, holes={hole_count}, budget={}, \
+         ring_edges={}, global_slot_visits={}, owner_vertices={}, face_walks={}, \
+         components={}, queries={}, hits={}, side_checks={}",
+        cells.len(),
+        budget.used(),
+        work.owner_ring_edges,
+        work.global_edge_slot_visits,
+        work.owner_vertices,
+        work.face_walks,
+        work.components,
+        work.host_queries,
+        work.ray_hits,
+        work.ring_side_checks,
+    );
+    assert_eq!(cells.len(), 4);
+    assert_eq!(hole_count, 666);
+    assert_eq!(work.owner_ring_edges, 2_680);
+    assert_eq!(work.global_edge_slot_visits, 5_364);
+    assert_eq!(work.owner_vertices, 2_013);
+    assert_eq!(work.face_walks, 671);
+    assert_eq!(work.components, 2);
+    assert_eq!(work.host_queries, 2);
+    assert_eq!(work.ray_hits, 0);
+    assert_eq!(work.ring_side_checks, 669);
+}
+
+#[test]
+fn task163_noncollinear_1334_public_output_preserves_owner_parts_and_rings() {
+    let sites = sites_xy(&[(500.0, 5.0), (1500.0, 5.0), (1000.0, 7.0)]);
+    let clip = task163_tangent_clip(1_334);
+    let subdivision = grafted_clip_subdivision(&sites, &clip);
+    let parts = assemble_cells(&subdivision).unwrap();
+    let mut owner_parts_holes = std::collections::BTreeMap::<u32, (usize, usize)>::new();
+    for part in &parts {
+        let counts = owner_parts_holes.entry(part.owner.0).or_default();
+        counts.0 += 1;
+        counts.1 += part.holes.len();
+    }
+    assert_eq!(
+        owner_parts_holes,
+        std::collections::BTreeMap::from([(0, (1, 535)), (1, (1, 441)), (2, (3, 356)),])
+    );
+
+    let mut expected_parts: Vec<_> = parts
+        .iter()
+        .map(|part| {
+            let mut holes: Vec<_> = part
+                .holes
+                .iter()
+                .map(|ring| exact_ring_coordinate_key(&subdivision, ring))
+                .collect();
+            holes.sort_unstable();
+            (exact_ring_coordinate_key(&subdivision, &part.shell), holes)
+        })
+        .collect();
+    expected_parts.sort_unstable();
+
+    let mut budget = ExpansionBudget::new("test", "Task 163 1334 tangent holes");
+    assembly::reset_owner_local_work();
+    let cells = site_shape(&[(500.0, 5.0), (1500.0, 5.0), (1000.0, 7.0)])
+        .voronoi_polygons_budgeted(0.0, VoronoiBoundary::Polygon(&clip), &mut budget)
+        .unwrap();
+    let work = assembly::owner_local_work();
+    let mut output_parts = Vec::with_capacity(cells.len());
+    let mut output_holes = 0;
+    for cell in &cells {
+        let Shape::Polygon(polygon) = cell else {
+            panic!("Voronoi polygon output contains only polygons");
+        };
+        output_holes += polygon.holes.len();
+        let (shell, holes) = polygon_ring_keys(polygon);
+        output_parts.push((shell, holes));
+    }
+    output_parts.sort_unstable();
+
+    assert_eq!(cells.len(), 5);
+    assert_eq!(output_holes, 1_332);
+    assert_eq!(budget.used(), 1_358);
+    assert_eq!(output_parts, expected_parts);
+    assert_eq!(work.owner_ring_edges, 5_356);
+    assert_eq!(work.owner_vertices, 4_022);
+    assert_eq!(work.face_walks, 1_340);
+    assert_eq!(work.components, 3);
+    assert_eq!(work.host_queries, 3);
+    assert_eq!(work.ray_hits, 0);
+    assert_eq!(work.ring_side_checks, 1_337);
+}
+
 #[test]
 fn diamond_clip_in_square_aabb_covers_clip_with_no_separator_through_contacts() {
     let diamond = Polygon::new(
@@ -2361,6 +2905,209 @@ fn isolated_component_exterior_inherits_the_containing_face() {
     assert!(inherited[0].owner.is_some());
     let parts = assemble_cells(&subdivision).unwrap();
     assert_eq!(parts.iter().map(|part| part.holes.len()).sum::<usize>(), 1);
+}
+
+#[test]
+fn owner_local_faces_match_exact_membership_on_touching_producer_rings() {
+    let sites = sites_xy(&[(-10.0, -10.0), (10.0, -10.0), (0.0, 10.0)]);
+    let fixtures = [
+        (
+            "one-hole-multi-owner",
+            Polygon::new(rectangle(-20.0, -20.0, 20.0, 20.0), vec![rectangle(
+                -1.0, -1.0, 1.0, 1.0,
+            )]),
+            3,
+            4,
+        ),
+        (
+            "shell-tangent",
+            Polygon::new(rectangle(0.0, 0.0, 8.0, 8.0), vec![closed_ring(&[
+                (0.0, 4.0),
+                (2.0, 5.0),
+                (2.0, 3.0),
+            ])]),
+            2,
+            3,
+        ),
+        (
+            "two-holes-touch",
+            Polygon::new(rectangle(0.0, 0.0, 10.0, 10.0), vec![
+                rectangle(2.0, 2.0, 4.0, 4.0),
+                rectangle(4.0, 4.0, 6.0, 6.0),
+            ]),
+            2,
+            4,
+        ),
+    ];
+
+    for (name, clip, expected_parts, expected_rings) in fixtures {
+        let subdivision = grafted_clip_subdivision(&sites, &clip);
+        assembly::reset_owner_local_work();
+        let parts = assemble_cells(&subdivision).unwrap_or_else(|error| {
+            panic!("{name}: owner-local assembly rejected producer output: {error}")
+        });
+        let work = assembly::owner_local_work();
+
+        assert_eq!(parts.len(), expected_parts, "{name}");
+        assert_eq!(
+            parts.iter().map(|part| 1 + part.holes.len()).sum::<usize>(),
+            expected_rings,
+            "{name}"
+        );
+        assert_owner_parts_match_exact_point_oracle(&subdivision, &parts);
+        assert_eq!(
+            work.global_edge_slot_visits,
+            subdivision.edge_of_slot.len(),
+            "{name}: build one global slot inverse, independent of owner count"
+        );
+        assert!(
+            work.owner_ring_edges <= subdivision.edge_of_slot.len(),
+            "{name}"
+        );
+        assert!(work.host_queries <= work.components, "{name}");
+        assert!(
+            work.face_walks <= work.owner_ring_edges + work.components,
+            "{name}"
+        );
+        assert!(work.ring_side_checks > 0, "{name}");
+
+        if name == "one-hole-multi-owner" {
+            let slots_by_edge = assembly::inverse_edge_slots(&subdivision);
+            let owner_zero = parts
+                .iter()
+                .find(|part| part.owner == SiteId(0))
+                .expect("minimal source fixture has owner zero");
+            let owner_only = assembly::OwnerLocalFaces::build(
+                &subdivision,
+                &[&owner_zero.shell],
+                &slots_by_edge,
+            )
+            .unwrap();
+            assert!(
+                owner_only
+                    .ring_side_faces(&subdivision, &slots_by_edge, &owner_zero.shell)
+                    .is_ok(),
+                "filtering foreign darts must leave a constant shell side"
+            );
+
+            let all_owner_rings: Vec<_> = parts
+                .iter()
+                .flat_map(|part| std::iter::once(&part.shell).chain(part.holes.iter()))
+                .collect();
+            let foreign_boundary_mutant =
+                assembly::OwnerLocalFaces::build(&subdivision, &all_owner_rings, &slots_by_edge)
+                    .unwrap();
+            let mutant_error = foreign_boundary_mutant
+                .ring_side_faces(&subdivision, &slots_by_edge, &owner_zero.shell)
+                .expect_err("foreign owner ring edges must not be retained as barriers");
+            assert!(
+                mutant_error
+                    .to_string()
+                    .contains("nonconstant left or right face"),
+                "foreign-boundary mutant failed unexpectedly: {mutant_error}"
+            );
+        }
+    }
+}
+
+#[test]
+fn reversed_owner_local_host_face_is_rejected_by_exact_shell_membership() {
+    let sites = sites_xy(&[(-10.0, -10.0), (10.0, -10.0), (0.0, 10.0)]);
+    let clip = Polygon::new(rectangle(-20.0, -20.0, 20.0, 20.0), vec![rectangle(
+        -1.0, -1.0, 1.0, 1.0,
+    )]);
+    let subdivision = grafted_clip_subdivision(&sites, &clip);
+    let parts = assemble_cells(&subdivision).unwrap();
+    assert_eq!(parts.len(), 3);
+    assert_owner_parts_match_exact_point_oracle(&subdivision, &parts);
+
+    let part = parts
+        .iter()
+        .find(|part| !part.holes.is_empty())
+        .expect("the producer fixture has one hole-bearing owner part");
+    let owner_rings: Vec<_> = std::iter::once(&part.shell)
+        .chain(part.holes.iter())
+        .collect();
+    let cycle_rings: Vec<_> = (0..owner_rings.len()).collect();
+    let slots_by_edge = assembly::inverse_edge_slots(&subdivision);
+    let reversed = assembly::OwnerLocalFaces::reversed_host_cycle_facts(
+        &subdivision,
+        &owner_rings,
+        &slots_by_edge,
+        &cycle_rings,
+        &part.shell,
+        &part.holes,
+    );
+    let rejected = match reversed {
+        Err(error) => {
+            assert!(
+                error.to_string().contains("owner-local"),
+                "reversed host face failed for an unrelated reason: {error}"
+            );
+            true
+        },
+        Ok(facts) => validate_owner_cycle_facts(&facts, owner_rings.len(), 0).is_err(),
+    };
+    assert!(
+        rejected,
+        "choosing the west face of a leftward-ray hit must not satisfy the exact shell oracle"
+    );
+}
+
+#[test]
+fn owner_local_work_scales_with_selected_ring_edges_and_keeps_no_hole_fast_path() {
+    let sites = sites_xy(&[(1000.0, 5.0), (1000.0, 1_000_000.0), (1_000_000.0, 5.0)]);
+    for hole_count in [128_usize, 256, 512] {
+        let holes = (0..hole_count)
+            .map(|index| {
+                let ordinal =
+                    f64::from(u32::try_from(index).expect("the fixture has fewer than u32 holes"));
+                let x = 1.0 + ordinal * 1.4;
+                closed_ring(&[(x, 5.0), (x + 0.25, 4.5), (x - 0.25, 4.5)])
+            })
+            .collect();
+        let clip = Polygon::new(rectangle(0.0, 0.0, 2000.0, 10.0), holes);
+        let subdivision = grafted_clip_subdivision(&sites, &clip);
+        assembly::reset_owner_local_work();
+        let (parts, allocations) =
+            crate::test_support::allocation_count(|| assemble_cells(&subdivision).unwrap());
+        let work = assembly::owner_local_work();
+        eprintln!(
+            "owner-local scaling holes={hole_count} allocations={allocations} \
+             ring_edges={} global_slot_visits={} vertices={} faces={} components={} \
+             queries={} hits={} axis_comparisons={} orientations={}",
+            work.owner_ring_edges,
+            work.global_edge_slot_visits,
+            work.owner_vertices,
+            work.face_walks,
+            work.components,
+            work.host_queries,
+            work.ray_hits,
+            work.ray_axis_comparisons,
+            work.ray_orientations,
+        );
+
+        assert_eq!(parts.len(), 1);
+        assert_eq!(parts[0].holes.len(), hole_count);
+        assert_eq!(work.owner_ring_edges, 4 + 3 * hole_count);
+        assert_eq!(work.owner_vertices, work.owner_ring_edges);
+        assert_eq!(work.host_queries, hole_count + 1);
+        assert_eq!(work.ray_hits, hole_count);
+        assert_eq!(work.ring_side_checks, hole_count + 1);
+        assert_eq!(work.global_edge_slot_visits, subdivision.edge_of_slot.len());
+        assert!(work.global_edge_slot_visits <= work.owner_ring_edges * 2);
+        assert!(work.face_walks <= work.owner_ring_edges + work.components);
+        assert!(work.ray_axis_comparisons < work.owner_ring_edges * 256);
+        assert!(work.ray_orientations < work.owner_ring_edges * 256);
+    }
+
+    let clip = Polygon::new(rectangle(0.0, 0.0, 2000.0, 10.0), Vec::new());
+    let subdivision = grafted_clip_subdivision(&sites, &clip);
+    assembly::reset_owner_local_work();
+    let parts = assemble_cells(&subdivision).unwrap();
+    let work = assembly::owner_local_work();
+    assert_eq!(parts.len(), 1);
+    assert_eq!(work, assembly::OwnerLocalWork::default());
 }
 
 #[test]
