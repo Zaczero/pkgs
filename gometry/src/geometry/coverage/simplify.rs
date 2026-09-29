@@ -1,4 +1,5 @@
 use std::collections::BinaryHeap;
+use std::num::NonZeroUsize;
 
 use crate::error::Result;
 use crate::geometry::coverage::{AABB, HashMap, Reverse, valid_coverage_rows};
@@ -40,7 +41,9 @@ fn exact_chain(
     let mut chain_source_segments = Vec::new();
     for (source, segment) in source_segments.iter().enumerate() {
         if same_point(segment.start, segment.end)
-            || !source_spans[source]
+            || !source_spans
+                .get(source)
+                .expect("source span rows match the source segment inventory")
                 .iter()
                 .any(|&(span, _)| view.spans.contains(&span))
             || chain_source_segments.iter().any(|prior| {
@@ -170,8 +173,12 @@ pub(in crate::geometry) fn simplify_chain_guarded_with_segments(
     let mut generation = vec![0_usize; count];
     let mut removed = vec![false; count];
     let mut heap = BinaryHeap::with_capacity(count);
-    for index in 1..count - 1 {
-        if let Some(importance) = candidate(xy(index - 1), xy(index), xy(index + 1))? {
+    for index in 1..count.wrapping_sub(1) {
+        if let Some(importance) = candidate(
+            xy(index.wrapping_sub(1)),
+            xy(index),
+            xy(index.wrapping_add(1)),
+        )? {
             heap.push(Reverse((total_order_key(importance), index, 0)));
         }
     }
@@ -180,30 +187,61 @@ pub(in crate::geometry) fn simplify_chain_guarded_with_segments(
         let Some(Reverse((_, index, stamp))) = heap.pop() else {
             break;
         };
-        if removed[index] || generation[index] != stamp {
+        if *removed
+            .get(index)
+            .expect("heap vertex index is within the chain")
+            || *generation
+                .get(index)
+                .expect("heap generation index is within the chain")
+                != stamp
+        {
             continue;
         }
-        let (before, after) = (prev[index], next[index]);
+        let (before, after) = (
+            *prev
+                .get(index)
+                .expect("heap vertex index is within the chain"),
+            *next
+                .get(index)
+                .expect("heap vertex index is within the chain"),
+        );
         if !guard.removal_is_safe(xy(before), xy(index), xy(after), chain_segments) {
             continue;
         }
-        removed[index] = true;
-        live -= 1;
-        next[before] = after;
-        prev[after] = before;
+        *removed
+            .get_mut(index)
+            .expect("heap vertex index is within the chain") = true;
+        live = live.wrapping_sub(1);
+        *next
+            .get_mut(before)
+            .expect("previous vertex index is within the chain") = after;
+        *prev
+            .get_mut(after)
+            .expect("next vertex index is within the chain") = before;
         for neighbor in [before, after] {
-            if neighbor == 0 || neighbor == count - 1 {
+            if neighbor == 0 || neighbor == count.wrapping_sub(1) {
                 continue;
             }
             // A vertex is refreshed at most once per removal, fewer than count times.
-            generation[neighbor] = generation[neighbor].wrapping_add(1);
-            if let Some(importance) =
-                candidate(xy(prev[neighbor]), xy(neighbor), xy(next[neighbor]))?
-            {
+            let stamp = generation
+                .get_mut(neighbor)
+                .expect("neighbor vertex index is within the chain");
+            *stamp = stamp.wrapping_add(1);
+            if let Some(importance) = candidate(
+                xy(*prev
+                    .get(neighbor)
+                    .expect("neighbor index is within the chain")),
+                xy(neighbor),
+                xy(*next
+                    .get(neighbor)
+                    .expect("neighbor index is within the chain")),
+            )? {
                 heap.push(Reverse((
                     total_order_key(importance),
                     neighbor,
-                    generation[neighbor],
+                    *generation
+                        .get(neighbor)
+                        .expect("neighbor generation index is within the chain"),
                 )));
             }
         }
@@ -212,7 +250,9 @@ pub(in crate::geometry) fn simplify_chain_guarded_with_segments(
     let mut cursor = 0;
     while cursor < count {
         kept.push(cursor);
-        cursor = next[cursor];
+        cursor = *next
+            .get(cursor)
+            .expect("simplification link index is within the chain");
     }
     Ok(kept)
 }
@@ -386,6 +426,14 @@ struct SourceAtom {
     reversed: bool,
 }
 
+#[expect(
+    clippy::arithmetic_side_effects,
+    reason = "NonZeroUsize proves the cyclic remainder divisor cannot be zero"
+)]
+const fn cyclic_index(index: usize, count: NonZeroUsize) -> usize {
+    index.wrapping_rem(count.get())
+}
+
 fn source_ordinals_for_ring(
     ring: &CoordSeq,
     source_segments: &[Segment],
@@ -394,7 +442,9 @@ fn source_ordinals_for_ring(
     let mut ordinals = Vec::with_capacity(ring.len().saturating_sub(1));
     for segment in line_segments(ring).filter(|segment| !same_point(segment.start, segment.end)) {
         let ordinal = (*cursor..source_segments.len()).find(|&index| {
-            let source = source_segments[index];
+            let source = *source_segments
+                .get(index)
+                .expect("source ordinal search stays within the inventory");
             same_point(source.start, segment.start) && same_point(source.end, segment.end)
         });
         let Some(ordinal) = ordinal else {
@@ -403,7 +453,7 @@ fn source_ordinals_for_ring(
             )
             .into());
         };
-        *cursor = ordinal + 1;
+        *cursor = ordinal.wrapping_add(1);
         ordinals.push(ordinal as u32);
     }
     Ok(ordinals)
@@ -413,7 +463,10 @@ fn source_run_nodes(partition: &ExactPartition<'_>, run: &[SourceAtom]) -> Resul
     let Some(&first) = run.first() else {
         return Ok(Vec::new());
     };
-    let first_span = partition.spans[first.span as usize];
+    let first_span = *partition
+        .spans
+        .get(first.span as usize)
+        .expect("coverage source span is within the exact partition");
     let first_node = if first.reversed {
         first_span.end
     } else {
@@ -423,7 +476,10 @@ fn source_run_nodes(partition: &ExactPartition<'_>, run: &[SourceAtom]) -> Resul
     nodes.push(first_node);
     let mut current = first_node;
     for &atom in run {
-        let span = partition.spans[atom.span as usize];
+        let span = *partition
+            .spans
+            .get(atom.span as usize)
+            .expect("coverage source span is within the exact partition");
         let (start, end) = if atom.reversed {
             (span.end, span.start)
         } else {
@@ -447,28 +503,50 @@ fn chain_run_indices(
     run_nodes: &[NodeId],
 ) -> Option<Vec<usize>> {
     let count = chain.spans.len();
+    let count_nonzero = NonZeroUsize::new(count)?;
     if run.is_empty() || run.len() > count {
         return None;
     }
     let cyclic = chain.nodes.first() == chain.nodes.last();
     let matches = |start: usize, forward: bool| {
-        for index in 0..run.len() {
+        for (index, atom) in run.iter().enumerate() {
             let (span_index, node_index) = if cyclic {
                 if forward {
-                    ((start + index) % count, (start + index) % count)
+                    let index = cyclic_index(start.wrapping_add(index), count_nonzero);
+                    (index, index)
                 } else {
                     (
-                        (start + count - 1 - index) % count,
-                        (start + count - index) % count,
+                        cyclic_index(
+                            start
+                                .wrapping_add(count)
+                                .wrapping_sub(1)
+                                .wrapping_sub(index),
+                            count_nonzero,
+                        ),
+                        cyclic_index(start.wrapping_add(count).wrapping_sub(index), count_nonzero),
                     )
                 }
             } else if forward {
-                (start + index, start + index)
+                let index = start.wrapping_add(index);
+                (index, index)
             } else {
-                (start - 1 - index, start - index)
+                (
+                    start.wrapping_sub(1).wrapping_sub(index),
+                    start.wrapping_sub(index),
+                )
             };
-            if chain.spans[span_index] != run[index].span
-                || chain.nodes[node_index] != run_nodes[index]
+            if *chain
+                .spans
+                .get(span_index)
+                .expect("matched span index is within the exact chain")
+                != atom.span
+                || *chain
+                    .nodes
+                    .get(node_index)
+                    .expect("matched node index is within the exact chain")
+                    != *run_nodes
+                        .get(index)
+                        .expect("source run has one node for every span")
             {
                 return None;
             }
@@ -477,14 +555,14 @@ fn chain_run_indices(
         for index in 0..=run.len() {
             let node_index = if cyclic {
                 if forward {
-                    (start + index) % count
+                    cyclic_index(start.wrapping_add(index), count_nonzero)
                 } else {
-                    (start + count - index) % count
+                    cyclic_index(start.wrapping_add(count).wrapping_sub(index), count_nonzero)
                 }
             } else if forward {
-                start + index
+                start.wrapping_add(index)
             } else {
-                start - index
+                start.wrapping_sub(index)
             };
             indices.push(node_index);
         }
@@ -501,7 +579,7 @@ fn chain_run_indices(
             }
         }
     } else {
-        for start in 0..count.saturating_sub(run.len() - 1) {
+        for start in 0..count.wrapping_sub(run.len().wrapping_sub(1)) {
             if let Some(indices) = matches(start, true) {
                 return Some(indices);
             }
@@ -527,8 +605,13 @@ fn replacement_for_chain_run(
     })?;
     let mut replacement = Vec::with_capacity(indices.len());
     for (position, &index) in indices.iter().enumerate() {
-        if position == indices.len() - 1 || simplified.kept.contains(&index) {
-            replacement.push(chain.points[index]);
+        if position == indices.len().wrapping_sub(1) || simplified.kept.contains(&index) {
+            replacement.push(
+                *chain
+                    .points
+                    .get(index)
+                    .expect("simplified chain index is within its point sequence"),
+            );
         }
     }
     Ok(replacement)
@@ -594,10 +677,19 @@ pub(crate) fn coverage_simplify<S: std::borrow::Borrow<Shape>>(
                 });
             }
             let cyclic = chain.points.len() > 1
-                && same_point(chain.points[0], *chain.points.last().expect("non-empty"));
+                && chain
+                    .points
+                    .first()
+                    .zip(chain.points.last())
+                    .is_some_and(|(&first, &last)| same_point(first, last));
             let kept = simplify_chain_kept(
                 chain.points.len(),
-                |index| chain.points[index],
+                |index| {
+                    *chain
+                        .points
+                        .get(index)
+                        .expect("simplification index is within its chain")
+                },
                 cyclic,
                 tolerance,
                 method,
@@ -647,7 +739,10 @@ fn rebuild_row(
         }
         // Match collect_polygon_segments: elide stutter vertices so chain
         // lookups never probe zero-length edges absent from the exact partition.
-        let mut open: Vec<Point> = original[..original.len() - 1].to_vec();
+        let (_, open_ring) = original
+            .split_last()
+            .expect("ring with at least four coordinates is non-empty");
+        let mut open = open_ring.to_vec();
         dedup_consecutive_points(&mut open);
         if open.len() < 3 {
             return Ok(original);
@@ -680,30 +775,65 @@ fn rebuild_row(
                     .map(|&(span, reversed)| SourceAtom { span, reversed }),
             );
         }
-        let chain_at = |index: usize| chain_of_span[atoms[index].span as usize] as usize;
+        let chain_at = |index: usize| {
+            let atom = atoms
+                .get(index)
+                .expect("cyclic coverage atom index is within the ring");
+            *chain_of_span
+                .get(atom.span as usize)
+                .expect("coverage span has an assigned chain") as usize
+        };
         let count = atoms.len();
-        let start = (0..count)
-            .find(|&index| chain_at((index + count - 1) % count) != chain_at(index))
-            .unwrap_or(0);
         let mut out: Vec<Point> = Vec::with_capacity(count.wrapping_add(1));
+        let Some(atom_count) = NonZeroUsize::new(count) else {
+            return Ok(out);
+        };
+        let start = (0..count)
+            .find(|&index| {
+                chain_at(cyclic_index(
+                    index.wrapping_add(count).wrapping_sub(1),
+                    atom_count,
+                )) != chain_at(index)
+            })
+            .unwrap_or(0);
         let mut consumed = 0;
         while consumed < count {
-            let here = (start + consumed) % count;
+            let here = cyclic_index(start.wrapping_add(consumed), atom_count);
             let id = chain_at(here);
             let mut len = 1;
-            while len < count && chain_at((start + consumed + len) % count) == id {
-                len += 1;
+            while len < count
+                && chain_at(cyclic_index(
+                    start.wrapping_add(consumed).wrapping_add(len),
+                    atom_count,
+                )) == id
+            {
+                len = len.wrapping_add(1);
             }
             let mut run = Vec::with_capacity(len);
             for offset in 0..len {
-                run.push(atoms[(start + consumed + offset) % count]);
+                run.push(
+                    *atoms
+                        .get(cyclic_index(
+                            start.wrapping_add(consumed).wrapping_add(offset),
+                            atom_count,
+                        ))
+                        .expect("coverage atom index is within the ring"),
+                );
             }
-            let replacement =
-                replacement_for_chain_run(partition, &chains[id], &simplified[id], &run)?;
+            let replacement = replacement_for_chain_run(
+                partition,
+                chains
+                    .get(id)
+                    .expect("coverage span chain is in the chain table"),
+                simplified
+                    .get(id)
+                    .expect("coverage span chain has a simplification result"),
+                &run,
+            )?;
             for &point in replacement.iter().take(replacement.len().saturating_sub(1)) {
                 out.push(source_point(point));
             }
-            consumed += len;
+            consumed = consumed.wrapping_add(len);
         }
         if let Some(&first) = out.first() {
             out.push(first);
@@ -719,7 +849,12 @@ fn rebuild_row(
                 .map(|polygon| rebuild_polygon(polygon, &mut rebuild_ring))
                 .collect::<Result<Vec<_>>>()?,
         )),
-        other => Ok(other.clone()),
+        Shape::Empty(..)
+        | Shape::Point(_)
+        | Shape::MultiPoint(_)
+        | Shape::LineString(_)
+        | Shape::MultiLineString(_)
+        | Shape::GeometryCollection(_) => Ok(shape.clone()),
     }
 }
 

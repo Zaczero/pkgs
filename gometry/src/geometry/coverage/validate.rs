@@ -38,7 +38,19 @@ pub(crate) fn coverage_rows<S: std::borrow::Borrow<Shape>>(
                 }
             },
             Shape::Empty(GeometryKind::Polygon | GeometryKind::MultiPolygon, _) => {},
-            _ => return Err(GeometryErrorKind::CoveragePolygonalRequired.into()),
+            Shape::Point(_)
+            | Shape::MultiPoint(_)
+            | Shape::LineString(_)
+            | Shape::MultiLineString(_)
+            | Shape::GeometryCollection(_)
+            | Shape::Empty(
+                GeometryKind::Point
+                | GeometryKind::MultiPoint
+                | GeometryKind::LineString
+                | GeometryKind::MultiLineString
+                | GeometryKind::GeometryCollection,
+                _,
+            ) => return Err(GeometryErrorKind::CoveragePolygonalRequired.into()),
         }
         prepared.push(CoverageRow {
             shape,
@@ -106,7 +118,10 @@ pub(crate) fn coverage_invalid_segments<S: std::borrow::Borrow<Shape>>(
     let rows = coverage_rows(rows, gap_width)?;
     let mut invalid = vec![Vec::new(); rows.len()];
     visit_invalid_segments(&rows, gap_width, |index, segment| {
-        invalid[index].push(segment);
+        invalid
+            .get_mut(index)
+            .expect("coverage row index is emitted from its row slice")
+            .push(segment);
         true
     })?;
     Ok(invalid)
@@ -121,7 +136,16 @@ pub(crate) fn visit_invalid_segments(
     report_invalid: impl FnMut(usize, Segment) -> bool,
 ) -> Result<bool> {
     let occurrences = edge_row_occurrences(rows)?;
-    coverage_invalid_with_count(rows, |key| occurrences[&key], gap_width, report_invalid)
+    coverage_invalid_with_count(
+        rows,
+        |key| {
+            *occurrences
+                .get(&key)
+                .expect("every row segment was counted before validation")
+        },
+        gap_width,
+        report_invalid,
+    )
 }
 
 /// Core validator given a count lookup: matched interface when count==2.
@@ -179,7 +203,9 @@ fn coverage_invalid_with_count(
     for group in duplicate_bounds.into_values() {
         let mut by_edges = try_hash_map_with_capacity(group.len())?;
         for index in group {
-            let mut edges: Vec<_> = rows[index]
+            let mut edges: Vec<_> = rows
+                .get(index)
+                .expect("duplicate-bounds row index is within the coverage")
                 .segments
                 .iter()
                 .copied()
@@ -191,15 +217,22 @@ fn coverage_invalid_with_count(
                     entry.insert(index);
                 },
                 std::collections::hash_map::Entry::Occupied(entry) => {
-                    coincident[*entry.get()] = true;
-                    coincident[index] = true;
+                    *coincident
+                        .get_mut(*entry.get())
+                        .expect("duplicate edge row index is within the coverage") = true;
+                    *coincident
+                        .get_mut(index)
+                        .expect("duplicate-bounds row index is within the coverage") = true;
                 },
             }
         }
     }
     let mut any_invalid = false;
     for (index, row) in rows.iter().enumerate() {
-        if coincident[index] {
+        if *coincident
+            .get(index)
+            .expect("coverage row index is within the coincident flags")
+        {
             for &segment in &row.segments {
                 any_invalid = true;
                 if !report_invalid(index, segment) {
@@ -270,7 +303,17 @@ pub(crate) fn valid_coverage_rows<'a, S: std::borrow::Borrow<Shape>>(
                 .or_insert((segment, 1));
         }
     }
-    if coverage_invalid_with_count(&prepared, |key| incidences[&key].1, 0.0, |_, _| false)? {
+    if coverage_invalid_with_count(
+        &prepared,
+        |key| {
+            incidences
+                .get(&key)
+                .expect("every prepared segment has a retained incidence")
+                .1
+        },
+        0.0,
+        |_, _| false,
+    )? {
         return Err(GeometryErrorKind::InvalidCoverage { operation }.into());
     }
     Ok(ValidCoverage {

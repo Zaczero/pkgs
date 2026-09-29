@@ -77,7 +77,12 @@ impl OrdinateSource {
                         add_vertex(&mut result.vertices, point);
                     }
                 },
-                _ => {},
+                Shape::Empty(..)
+                | Shape::LineString(_)
+                | Shape::MultiLineString(_)
+                | Shape::Polygon(_)
+                | Shape::MultiPolygon(_)
+                | Shape::GeometryCollection(_) => {},
             }
             if !(shape.has_z() || shape.has_m()) {
                 continue;
@@ -374,7 +379,12 @@ fn carry_or_degrade(
                 |geometry| carry_or_degrade(geometry, source, declared_axes, operation, strict),
             )?))
         },
-        _ => {
+        Shape::Point(_)
+        | Shape::MultiPoint(_)
+        | Shape::LineString(_)
+        | Shape::MultiLineString(_)
+        | Shape::Polygon(_)
+        | Shape::MultiPolygon(_) => {
             let axes = output_axes(output, source, declared_axes)?;
             if strict && axes != declared_axes && !output.is_empty() {
                 return Err(GeometryErrorKind::ordinate_dropped(operation));

@@ -116,7 +116,7 @@ impl CoordinateAxes {
     const M: u8 = 2;
 
     pub(crate) const fn new(z: HasZ, m: HasM) -> Self {
-        let bits = (z.0 as u8 * Self::Z) | (m.0 as u8 * Self::M);
+        let bits = (if z.0 { Self::Z } else { 0 }) | (if m.0 { Self::M } else { 0 });
         debug_assert!(Self::from_bits(bits).is_some());
         Self(bits)
     }
@@ -143,12 +143,25 @@ impl CoordinateAxes {
 
     /// Number of ordinates per coordinate (2 for XY … 4 for XYZM).
     pub const fn dimension(self) -> usize {
-        2 + self.has_z() as usize + self.has_m() as usize
+        match (self.has_z(), self.has_m()) {
+            (false, false) => 2,
+            (true, false) | (false, true) => 3,
+            (true, true) => 4,
+        }
     }
 
     /// Raw byte width for `count` coordinates stored as `f64` ordinate columns.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the byte width cannot be represented by `usize`.
     pub const fn byte_width(self, count: usize) -> usize {
-        count * std::mem::size_of::<f64>() * self.dimension()
+        let bytes_per_coordinate = std::mem::size_of::<f64>()
+            .checked_mul(self.dimension())
+            .expect("coordinate byte width exceeds usize");
+        count
+            .checked_mul(bytes_per_coordinate)
+            .expect("coordinate byte width exceeds usize")
     }
 
     /// Canonical tag: `"XY"`, `"XYZ"`, `"XYM"`, or `"XYZM"`.
@@ -388,3 +401,14 @@ pub(crate) struct GeodesicSegment {
 }
 
 crate::heapless!(Point, Bounds, XY, Segment, GeodesicSegment);
+
+#[cfg(test)]
+mod tests {
+    use super::CoordinateAxes;
+
+    #[test]
+    #[should_panic(expected = "coordinate byte width exceeds usize")]
+    fn byte_width_rejects_unrepresentable_sizes() {
+        CoordinateAxes::XYZM.byte_width(usize::MAX);
+    }
+}

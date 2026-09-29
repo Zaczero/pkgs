@@ -90,7 +90,7 @@ impl CurveFrame {
     }
 
     fn cell(&self, x: f64, y: f64) -> (u32, u32) {
-        let max = ((1_u64 << self.level.get()) - 1) as f64;
+        let max = (1_u64 << self.level.get()).wrapping_sub(1) as f64;
         let cell = |value: f64, low: f64, high: f64| -> u32 {
             // Halved terms keep every difference finite even when the raw
             // span (high - low) would overflow at 1e308-scale frames.

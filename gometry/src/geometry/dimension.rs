@@ -38,12 +38,16 @@ pub(crate) fn ring_is_collinear(coords: &crate::geometry::CoordSeq) -> bool {
         return true;
     };
     // The first vertex distinct from the origin fixes the candidate line.
-    let Some(base) = (0..xs.len()).find(|&i| xs[i] != ax || ys[i] != ay) else {
+    let Some((bx, by)) = xs
+        .iter()
+        .copied()
+        .zip(ys.iter().copied())
+        .find(|&(x, y)| x != ax || y != ay)
+    else {
         return true;
     };
-    let (bx, by) = (xs[base], ys[base]);
-    (0..xs.len()).all(|i| {
-        crate::geometry::orientation_xy(ax, ay, bx, by, xs[i], ys[i])
+    xs.iter().copied().zip(ys.iter().copied()).all(|(x, y)| {
+        crate::geometry::orientation_xy(ax, ay, bx, by, x, y)
             == crate::geometry::Orientation::Collinear
     })
 }

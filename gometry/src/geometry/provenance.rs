@@ -33,10 +33,17 @@ pub(crate) fn emit_from_original(
     let mut output = Vec::with_capacity(plan.len());
     for vertex in plan {
         let point = match vertex {
-            VertexProvenance::Input(index) => original[*index],
-            VertexProvenance::OnSegment { i, j, projection } => {
-                projection.interpolate_point(original[*i], original[*j])?
-            },
+            VertexProvenance::Input(index) => *original
+                .get(*index)
+                .expect("input provenance index is within the source geometry"),
+            VertexProvenance::OnSegment { i, j, projection } => projection.interpolate_point(
+                *original
+                    .get(*i)
+                    .expect("segment provenance start is within the source geometry"),
+                *original
+                    .get(*j)
+                    .expect("segment provenance end is within the source geometry"),
+            )?,
         };
         output.push(point);
     }

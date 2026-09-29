@@ -71,6 +71,13 @@ pub(crate) struct FacetBvh {
     codes: Box<[u32]>,
 }
 
+fn facet_for_leaf(linework: &PreparedLinework, index: usize) -> Facet {
+    *linework
+        .facets
+        .get(index)
+        .expect("BVH leaf facet index is within its prepared linework")
+}
+
 impl FacetBvh {
     /// Build over `linework`'s facets; `None` when it has none — or so many
     /// that a NODE index (`2F − 1` of them) could reach [`BvhCode::LEAF_BIT`] and a
@@ -87,7 +94,7 @@ impl FacetBvh {
             .map(|&facet| linework.facet_aabb(facet))
             .collect();
         let mut ids: Vec<u32> = (0..facet_count).collect();
-        let node_count = 2 * facet_count as usize - 1;
+        let node_count = (facet_count as usize).wrapping_mul(2).wrapping_sub(1);
         let mut tree = Self {
             aabbs: vec![[0.0; 4]; node_count].into_boxed_slice(),
             codes: vec![0; node_count].into_boxed_slice(),
@@ -100,6 +107,14 @@ impl FacetBvh {
 
     /// Longest-axis median split of `ids` (facet indices into `facet_aabbs`)
     /// into the node slot `node`, allocating child pairs from `next`.
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "Facet ids are below facet_aabbs.len(); recursive node ids are builder-produced and below the allocated 2F-1 aabbs/codes lengths"
+    )]
+    #[expect(
+        clippy::arithmetic_side_effects,
+        reason = "facet_count <= LEAF_BIT/2 keeps 2F-1 in usize; next advances only across sibling pairs within the allocated node_count"
+    )]
     fn fill_node(
         &mut self,
         node: usize,
@@ -137,6 +152,23 @@ impl FacetBvh {
         self.fill_node(first_child + 1, next, facet_aabbs, upper);
     }
 
+    fn node_aabb(&self, index: u32) -> [f64; 4] {
+        *self
+            .aabbs
+            .get(index as usize)
+            .expect("BVH traversal node index is within the built tree")
+    }
+
+    fn decode_node(&self, index: u32) -> BvhNode {
+        BvhCode::new(
+            *self
+                .codes
+                .get(index as usize)
+                .expect("BVH traversal node index is within the built tree"),
+        )
+        .decode()
+    }
+
     /// Minimum squared (or `hypot`) distance from a probe vertex set to the
     /// linework — one branch-and-bound descent per probe over a single
     /// shared traversal stack, carrying `best` across the whole sweep so
@@ -162,6 +194,10 @@ impl FacetBvh {
     /// [`min_points_distance`](Self::min_points_distance) and the packed
     /// point-array lanes (which need per-row results, not one fold). Returns
     /// `best` folded with this probe's minimum.
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "Stack ids start at root 0 and follow builder-encoded children below aabbs/codes.len(); leaf ids are below linework.facets.len()"
+    )]
     fn min_point_distance_with_stack_by(
         &self,
         linework: &PreparedLinework,
@@ -260,6 +296,14 @@ impl FacetBvh {
     /// — the per-row engine behind
     /// [`any_points_within`](Self::any_points_within) and the packed
     /// point-array lanes.
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "Stack ids start at root 0 and follow builder-encoded children below self.aabbs/codes.len(); leaf ids are below linework.facets.len()"
+    )]
+    #[expect(
+        clippy::arithmetic_side_effects,
+        reason = "A decoded internal node owns an allocated adjacent child pair, so first_child + 1 is below self.aabbs.len()"
+    )]
     pub(crate) fn point_within_with_stack(
         &self,
         linework: &PreparedLinework,
@@ -336,6 +380,14 @@ impl FacetBvh {
 
     /// [`for_each_overlapping_segment_pair`] with a caller-owned stack so an
     /// outer probe loop can allocate once and `clear` per call.
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "Root/child ids are below each tree's aabbs/codes.len(); leaf facet ids are below each linework.facets.len()"
+    )]
+    #[expect(
+        clippy::arithmetic_side_effects,
+        reason = "Internal nodes encode allocated sibling pairs, so first_child + 1 stays below the corresponding aabbs.len()"
+    )]
     pub(crate) fn for_each_overlapping_segment_pair_with_stack<B>(
         &self,
         linework: &PreparedLinework,
@@ -423,13 +475,13 @@ impl FacetBvh {
         stack.clear();
         stack.push(0);
         while let Some(index) = stack.pop() {
-            let aabb = self.aabbs[index as usize];
+            let aabb = self.node_aabb(index);
             if point.x < aabb[0] || point.x > aabb[2] || point.y < aabb[1] || point.y > aabb[3] {
                 continue;
             }
-            match BvhCode::new(self.codes[index as usize]).decode() {
+            match self.decode_node(index) {
                 BvhNode::Leaf(facet_index) => {
-                    let facet = linework.facets[facet_index];
+                    let facet = facet_for_leaf(linework, facet_index);
                     for i in 0..facet.segment_count as usize {
                         let segment = linework.segment(facet, i);
                         if point_on_segment(point, segment.start, segment.end) {
@@ -440,7 +492,7 @@ impl FacetBvh {
                 BvhNode::Internal(first_child) => {
                     let first_child = first_child as u32;
                     stack.push(first_child);
-                    stack.push(first_child + 1);
+                    stack.push(first_child.wrapping_add(1));
                 },
             }
         }
@@ -473,12 +525,12 @@ impl FacetBvh {
         stack.clear();
         stack.push(0);
         while let Some(index) = stack.pop() {
-            if !aabbs_overlap(self.aabbs[index as usize], probe_aabb) {
+            if !aabbs_overlap(self.node_aabb(index), probe_aabb) {
                 continue;
             }
-            match BvhCode::new(self.codes[index as usize]).decode() {
+            match self.decode_node(index) {
                 BvhNode::Leaf(facet_index) => {
-                    let facet = linework.facets[facet_index];
+                    let facet = facet_for_leaf(linework, facet_index);
                     for i in 0..facet.segment_count as usize {
                         if let ControlFlow::Break(value) = visit(linework.segment(facet, i)) {
                             return Some(value);
@@ -488,7 +540,7 @@ impl FacetBvh {
                 BvhNode::Internal(first_child) => {
                     let first_child = first_child as u32;
                     stack.push(first_child);
-                    stack.push(first_child + 1);
+                    stack.push(first_child.wrapping_add(1));
                 },
             }
         }
@@ -533,12 +585,12 @@ impl FacetBvh {
                 let limit = best
                     .as_ref()
                     .map_or(f64::INFINITY, |b| b.distance_key.upper_bound());
-                if bound(self.aabbs[index as usize]) > limit {
+                if bound(self.node_aabb(index)) > limit {
                     continue;
                 }
-                match BvhCode::new(self.codes[index as usize]).decode() {
+                match self.decode_node(index) {
                     BvhNode::Leaf(facet_index) => {
-                        let facet = linework.facets[facet_index];
+                        let facet = facet_for_leaf(linework, facet_index);
                         if linework.facet_point_distance_squared(facet, probe.x, probe.y)? <= limit
                         {
                             refine_facet_nearest(linework, facet, probe, &mut best)?;
@@ -553,6 +605,14 @@ impl FacetBvh {
         Ok(best)
     }
 
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "first_child is builder-produced and first_child + 1 is below self.aabbs.len()"
+    )]
+    #[expect(
+        clippy::arithmetic_side_effects,
+        reason = "first_child names an allocated sibling pair, so right = left + 1 and stack child + 1 stay below self.aabbs.len()"
+    )]
     fn push_nearer_last(
         &self,
         stack: &mut Vec<u32>,

@@ -16,6 +16,14 @@ type FacetSimd = Simd<f64, FACET_SEGMENTS>;
 /// no mask. Subnormal-length segments divide by the floor instead of their
 /// true square — their endpoints are ~1e-154 apart, far below measurement
 /// resolution either way.
+#[expect(
+    clippy::indexing_slicing,
+    reason = "PreparedLinework calls this for full facets and supplies nine in-bounds vertices in both XY columns"
+)]
+#[expect(
+    clippy::arithmetic_side_effects,
+    reason = "Squared-space-safe callers use IEEE f64 SIMD measurement arithmetic; the divisor floor preserves degenerate and subnormal behavior"
+)]
 pub(crate) fn simd_point_facet_distance_squared(xs: &[f64], ys: &[f64], px: f64, py: f64) -> f64 {
     let x0 = FacetSimd::from_slice(&xs[..FACET_SEGMENTS]);
     let y0 = FacetSimd::from_slice(&ys[..FACET_SEGMENTS]);

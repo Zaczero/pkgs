@@ -114,7 +114,7 @@ impl CsrOffsetBuilder {
         };
         for &raw_end in ends {
             let end = raw_end as usize;
-            let relative = end - window.source_start;
+            let relative = end.wrapping_sub(window.source_start);
             let rebased = output_base
                 .checked_add(relative)
                 .ok_or(GeometryErrorKind::OffsetCapacityExceeded)?;

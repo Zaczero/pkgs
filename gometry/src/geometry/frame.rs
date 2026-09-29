@@ -15,7 +15,9 @@ pub(crate) fn axis_pow2_scale(max_abs: f64) -> f64 {
     if max_abs <= 0.0 || !max_abs.is_finite() {
         return 1.0;
     }
-    let scale_exp = (-floor_binary_exponent(max_abs)).clamp(-1022, 1023);
+    let scale_exp = floor_binary_exponent(max_abs)
+        .wrapping_neg()
+        .clamp(-1022, 1023);
     exact_power_of_two(i16::try_from(scale_exp).expect("axis scale exponent fits i16"))
 }
 
@@ -39,7 +41,7 @@ pub(crate) fn scale_by_power_of_two(mut value: f64, mut exponent: i32) -> f64 {
         let step = exponent.clamp(-1022, 1023);
         let factor = exact_power_of_two(i16::try_from(step).expect("scale step fits i16"));
         value *= factor;
-        exponent -= step;
+        exponent = exponent.wrapping_sub(step);
     }
     value
 }
@@ -54,7 +56,9 @@ pub(crate) fn power_of_two_exponent(scale: f64) -> i32 {
 pub(crate) fn unscale_area(value: f64, scale_x: f64, scale_y: f64) -> f64 {
     scale_by_power_of_two(
         value,
-        -power_of_two_exponent(scale_x) - power_of_two_exponent(scale_y),
+        power_of_two_exponent(scale_x)
+            .wrapping_neg()
+            .wrapping_sub(power_of_two_exponent(scale_y)),
     )
 }
 

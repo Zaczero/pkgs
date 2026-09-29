@@ -147,7 +147,7 @@ impl<T: Clone> Iterator for SharedSliceIter<T> {
 
     fn next(&mut self) -> Option<Self::Item> {
         let value = self.owner.as_slice().get(self.index)?.clone();
-        self.index += 1;
+        self.index = self.index.wrapping_add(1);
         Some(value)
     }
 

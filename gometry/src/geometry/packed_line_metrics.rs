@@ -36,14 +36,16 @@ impl PackedLineColumnView<'_> {
     }
 
     pub(crate) fn row_xy(&self, logical: usize) -> (&[f64], &[f64]) {
-        // Window endpoints from CSR; slice once so the coordinate reborrows
-        // share one bounds-check pair (elision of the dual xs/ys path).
+        // CoordSeq admission keeps X/Y aligned; both columns use the same CSR window.
         let std::ops::Range { start, end } = self.row_map.csr_window(self.offsets, logical);
         let xs = self.coords.xs();
         let ys = self.coords.ys();
-        // Length-exact y reborrow after x window sets the live width.
-        let xs = &xs[start..end];
-        let ys = &ys[start..start + xs.len()];
+        let xs = xs
+            .get(start..end)
+            .expect("packed line row window is bounded by its coordinate columns");
+        let ys = ys
+            .get(start..end)
+            .expect("packed line row window is bounded by its coordinate columns");
         (xs, ys)
     }
 }
