@@ -195,6 +195,87 @@ def test_centroid_and_point_on_surface_array_match_scalar_antimeridian() -> None
     assert gm.equals(arr.point_on_surface()[0], scalar_surface)
 
 
+def test_split_seam_connected_polygon_centroid_matches_unsplit_scalar_and_array() -> None:
+    raw = gm.Polygon(
+        [(170, -10), (-170, -10), (-170, 10), (170, 10), (170, -10)],
+        crs=4326,
+    )
+    split = raw.split_antimeridian()
+    wrapped = gm.box(170, -10, -170, 10, crs=4326, wrap='split')
+    expected = raw.centroid()
+    assert (expected.x, expected.y) == (-180.0, 0.0)
+
+    for geometry in (split, wrapped):
+        assert gm.equals(raw, geometry)
+        centroid = geometry.centroid()
+        assert (centroid.x, centroid.y) == (expected.x, expected.y)
+        assert gm.contains(geometry, centroid)
+        assert gm.contains(geometry, geometry.point_on_surface())
+
+    rows = gm.GeometryArray([split, wrapped])
+    centroids = rows.centroid()
+    surfaces = rows.point_on_surface()
+    for index, geometry in enumerate((split, wrapped)):
+        centroid = centroids[index]
+        assert (centroid.x, centroid.y) == (expected.x, expected.y)
+        assert gm.contains(geometry, centroid)
+        assert gm.contains(geometry, surfaces[index])
+
+
+def test_asymmetric_split_polygon_centroid_matches_unsplit() -> None:
+    raw = gm.Polygon(
+        [(175, -10), (-165, -10), (-165, 10), (175, 10), (175, -10)],
+        crs=4326,
+    )
+    split = raw.split_antimeridian()
+    expected = raw.centroid()
+    assert (expected.x, expected.y) == (-175.0, 0.0)
+
+    centroid = split.centroid()
+    assert (centroid.x, centroid.y) == (expected.x, expected.y)
+    assert gm.contains(split, centroid)
+
+
+def test_split_line_centroid_matches_unsplit_scalar_and_array() -> None:
+    raw = gm.LineString([(170, -10), (-170, 10)], crs=4326)
+    split = raw.split_antimeridian()
+    expected = raw.centroid()
+    assert (expected.x, expected.y) == (-180.0, 0.0)
+
+    centroid = split.centroid()
+    assert (centroid.x, centroid.y) == (expected.x, expected.y)
+    assert gm.covers(split, centroid)
+
+    array_centroid = gm.GeometryArray([split]).centroid()[0]
+    assert (array_centroid.x, array_centroid.y) == (expected.x, expected.y)
+    assert gm.covers(split, array_centroid)
+
+
+def test_disconnected_parts_at_opposite_seam_spellings_keep_planar_centroid() -> None:
+    east = gm.box(170, -10, 180, -5, crs=4326)
+    west = gm.box(-180, 5, -170, 10, crs=4326)
+    geometry = gm.MultiPolygon([east, west], crs=4326)
+
+    # The seam-contact latitude intervals do not overlap, so these unrelated
+    # components do not form the paired halves emitted by split_antimeridian.
+    centroid = geometry.centroid()
+    assert (centroid.x, centroid.y) == (0.0, 0.0)
+
+
+def test_single_side_seam_touch_and_ordinary_centroids_are_unchanged() -> None:
+    one_side = gm.Polygon(
+        [(170, -10), (180, -10), (180, 10), (170, 10), (170, -10)],
+        crs=4326,
+    )
+    split = one_side.split_antimeridian()
+    assert split.to_wkb() == one_side.to_wkb()
+    assert split.centroid().to_wkb() == one_side.centroid().to_wkb()
+    assert (split.centroid().x, split.centroid().y) == (175.0, 0.0)
+
+    ordinary = gm.box(1, 2, 3, 4, crs=4326)
+    assert (ordinary.centroid().x, ordinary.centroid().y) == (2.0, 3.0)
+
+
 def test_centroid_uses_native_frame_period_for_grad_seam_scalar_and_array() -> None:
     factor = cast('float', gm.CRS(4807).axes[0]['unit_conversion_factor'])
     scale = math.degrees(factor)

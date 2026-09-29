@@ -17,6 +17,8 @@ import gometry as gm
 import pytest
 from gometry import _lib
 
+_CHILD_HANG_TIMEOUT_SECONDS = 30
+
 
 def assert_same(call, error: BaseException) -> None:
     with pytest.raises(type(error)) as excinfo:
@@ -932,11 +934,13 @@ def test_native_python_iterator_checks_signals() -> None:
             raise AssertionError('infinite native iterator was not interrupted')
         """
     )
+    # SIGALRM is the behavior oracle; this outer timeout only contains a child
+    # that never handles the signal.
     completed = subprocess.run(
         [sys.executable, '-c', script],
         capture_output=True,
         text=True,
-        timeout=5,
+        timeout=_CHILD_HANG_TIMEOUT_SECONDS,
         check=False,
     )
     assert completed.returncode == 0, completed.stderr

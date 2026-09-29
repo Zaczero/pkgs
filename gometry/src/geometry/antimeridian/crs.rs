@@ -5,7 +5,7 @@ use crate::boundary::metadata::Frame;
 use crate::crs::CrsError;
 use crate::geographic::{GeographicFrame, SeamIdentity};
 use crate::geometry::{
-    Coordinates, REDUCE_LANES, ReduceSimd, Shape, ShapeData, TopologyDomain, simd_mask_any,
+    Coordinates, Point, REDUCE_LANES, ReduceSimd, Shape, ShapeData, TopologyDomain, simd_mask_any,
 };
 
 /// Resolve the complete topology domain from CRS metadata. WGS84 uses the
@@ -60,6 +60,44 @@ pub(crate) fn crosses_antimeridian_in_frame(shape: &Shape, frame: GeographicFram
     }
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SeamSide {
+    East,
+    West,
+}
+
+#[derive(Clone, Copy)]
+struct SeamSegment {
+    start_side: Option<SeamSide>,
+    end_side: Option<SeamSide>,
+    crosses: bool,
+}
+
+fn inspect_seam_segment(
+    start: Point,
+    end: Point,
+    axis: crate::geographic::PeriodicAxis,
+    half: f64,
+) -> Option<SeamSegment> {
+    let raw_delta = (end.x - start.x).abs();
+    let (start_longitude, end_longitude) = (
+        axis.canonicalize(start.x).ok()?,
+        axis.canonicalize(end.x).ok()?,
+    );
+    let start_side = seam_side(start, start_longitude, axis);
+    let end_side = seam_side(end, end_longitude, axis);
+    let crosses = if start_side.is_some() || end_side.is_some() {
+        raw_delta > half && raw_delta < axis.period().next_up()
+    } else {
+        (end_longitude.get() - start_longitude.get()).abs() > half
+    };
+    Some(SeamSegment {
+        start_side,
+        end_side,
+        crosses,
+    })
+}
+
 /// Whether a stored chain leaves the planar chart of `frame`: an edge takes
 /// the long way between canonical longitudes, or runs more than a half turn
 /// to or from the seam.
@@ -82,15 +120,156 @@ pub(crate) fn chain_crosses_antimeridian<C: Coordinates + ?Sized>(
         return steps_exceed(xs, half);
     }
     chain.segment_pairs().any(|[start, end]| {
-        let raw_delta = (end.x - start.x).abs();
-        let (Ok(start), Ok(end)) = (axis.canonicalize(start.x), axis.canonicalize(end.x)) else {
-            return false;
-        };
-        if start.identity(axis) == SeamIdentity::Seam || end.identity(axis) == SeamIdentity::Seam {
-            return raw_delta > half && raw_delta < axis.period().next_up();
-        }
-        (end.get() - start.get()).abs() > half
+        inspect_seam_segment(start, end, axis, half).is_some_and(|segment| segment.crosses)
     })
+}
+
+#[derive(Default)]
+struct SeamContacts {
+    east: Vec<(f64, f64)>,
+    west: Vec<(f64, f64)>,
+}
+
+impl SeamContacts {
+    fn observe_segment(
+        &mut self,
+        start: Point,
+        start_side: Option<SeamSide>,
+        end: Point,
+        end_side: Option<SeamSide>,
+    ) {
+        match (start_side, end_side) {
+            (Some(start_side), Some(end_side)) if start_side == end_side => {
+                self.push(start_side, start.y.min(end.y), start.y.max(end.y));
+            },
+            (Some(start_side), Some(end_side)) => {
+                self.push(start_side, start.y, start.y);
+                self.push(end_side, end.y, end.y);
+            },
+            (Some(side), None) => self.push(side, start.y, start.y),
+            (None, Some(side)) => self.push(side, end.y, end.y),
+            (None, None) => {},
+        }
+    }
+
+    fn push(&mut self, side: SeamSide, start: f64, end: f64) {
+        match side {
+            SeamSide::East => self.east.push((start, end)),
+            SeamSide::West => self.west.push((start, end)),
+        }
+    }
+
+    #[expect(
+        clippy::arithmetic_side_effects,
+        reason = "advance a cursor only after its corresponding interval was present"
+    )]
+    fn connects_across_seam(mut self) -> bool {
+        if self.east.is_empty() || self.west.is_empty() {
+            return false;
+        }
+        self.east
+            .sort_unstable_by(|left, right| left.0.total_cmp(&right.0));
+        self.west
+            .sort_unstable_by(|left, right| left.0.total_cmp(&right.0));
+
+        let (mut east, mut west) = (0, 0);
+        while let (Some(&(east_start, east_end)), Some(&(west_start, west_end))) =
+            (self.east.get(east), self.west.get(west))
+        {
+            if east_start <= west_end && west_start <= east_end {
+                return true;
+            }
+            if east_end < west_end {
+                east += 1;
+            } else {
+                west += 1;
+            }
+        }
+        false
+    }
+}
+
+/// A single-pass seam scan for multipart derived-point routing. It preserves
+/// the SIMD crossing check for chains whose coordinates stay off the seam,
+/// and records seam contacts only for chains that contain one.
+pub(crate) struct GeographicDerivedPointScan {
+    frame: GeographicFrame,
+    contacts: SeamContacts,
+}
+
+impl GeographicDerivedPointScan {
+    pub(crate) fn new(frame: GeographicFrame) -> Self {
+        Self {
+            frame,
+            contacts: SeamContacts::default(),
+        }
+    }
+
+    /// Returns early when a chain itself crosses the seam; otherwise retains
+    /// its seam-side contact intervals for comparison with other chains.
+    pub(crate) fn scan_chain<C: Coordinates + ?Sized>(&mut self, chain: &C) -> bool {
+        let frame = self.frame;
+        chain_crosses_with_seam_visit(chain, frame, |start, start_side, end, end_side| {
+            self.contacts
+                .observe_segment(start, start_side, end, end_side);
+        })
+    }
+
+    pub(crate) fn connects_across_seam(self) -> bool {
+        self.contacts.connects_across_seam()
+    }
+}
+
+fn seam_side(
+    point: Point,
+    longitude: crate::geographic::CanonicalLongitude,
+    axis: crate::geographic::PeriodicAxis,
+) -> Option<SeamSide> {
+    (longitude.identity(axis) == SeamIdentity::Seam).then_some(if point.x > 0.0 {
+        SeamSide::East
+    } else {
+        SeamSide::West
+    })
+}
+
+fn chain_crosses_with_seam_visit<C, F>(
+    chain: &C,
+    frame: GeographicFrame,
+    mut visit_seam_segment: F,
+) -> bool
+where
+    C: Coordinates + ?Sized,
+    F: FnMut(Point, Option<SeamSide>, Point, Option<SeamSide>),
+{
+    let axis = frame.longitude();
+    let half = axis.half_period();
+    if let Some((xs, _)) = chain.xy_columns()
+        && xs.iter().all(|x| x.abs() < half)
+    {
+        // Canonical longitudes off the seam: only a long step crosses.
+        return steps_exceed(xs, half);
+    }
+    let mut has_segment = false;
+    for [start, end] in chain.segment_pairs() {
+        has_segment = true;
+        let Some(segment) = inspect_seam_segment(start, end, axis, half) else {
+            continue;
+        };
+        if segment.crosses {
+            return true;
+        }
+        visit_seam_segment(start, segment.start_side, end, segment.end_side);
+    }
+    if !has_segment && chain.coord_count() == 1 {
+        let point = chain.nth_coord(0);
+        if let Ok(longitude) = axis.canonicalize(point.x) {
+            let side = seam_side(point, longitude, axis);
+            if side.is_some() {
+                visit_seam_segment(point, side, point, side);
+            }
+        }
+    }
+    false
 }
 
 /// Whether any consecutive pair of `xs` differs by more than `limit`.

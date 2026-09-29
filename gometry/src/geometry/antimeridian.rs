@@ -22,8 +22,8 @@ mod normalize;
 mod polygon;
 
 pub(crate) use crs::{
-    antimeridian_frame, chain_crosses_antimeridian, crosses_antimeridian_in_frame,
-    geographic_crossing, topology_domain,
+    GeographicDerivedPointScan, antimeridian_frame, chain_crosses_antimeridian,
+    crosses_antimeridian_in_frame, geographic_crossing, topology_domain,
 };
 use linestring::{SeamRing, collect_points, ring_follows_seam, split_ring_at_seam};
 pub(crate) use linestring::{crossing_latitude_in_frame, segment_coords};

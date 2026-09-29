@@ -7,9 +7,10 @@ use std::collections::HashMap;
 use crate::error::Result;
 use crate::geographic::GeographicFrame;
 use crate::geometry::{
-    Bounds, CoordSeq, Coordinates as _, GeometryErrorKind, Point, Polygon, PreparedPlan,
-    RepairMethod, Segment, Shape, ShapeOwnerKey, TopologyDomain, ValidationIssue, VisibleXYKey,
-    shape_encloses_pole_in_frame, shape_has_polar_ring_in_frame, shared_segment_part,
+    Bounds, CoordSeq, Coordinates as _, GeographicDerivedPointScan, GeometryErrorKind, Point,
+    Polygon, PreparedPlan, RepairMethod, Segment, Shape, ShapeOwnerKey, TopologyDomain,
+    ValidationIssue, VisibleXYKey, shape_encloses_pole_in_frame, shape_has_polar_ring_in_frame,
+    shared_segment_part,
 };
 
 fn try_topology_split(shape: &Shape, domain: TopologyDomain) -> Result<Shape> {
@@ -386,7 +387,8 @@ fn rewrap_point(point: Point, frame: GeographicFrame) -> Result<Point> {
 }
 
 /// Derived representative point (centroid / `point_on_surface`) on a crossing
-/// geographic geometry. Two strategies, because unwrap-rewrap cannot serve both:
+/// or seam-connected geographic geometry. Two strategies, because
+/// unwrap-rewrap cannot serve both:
 ///
 /// * `interior` callers (`point_on_surface`, which must return a point strictly
 ///   inside) AND any pole-enclosing geometry route through the seam+pole SPLIT —
@@ -405,7 +407,7 @@ pub(crate) enum DerivedPointStrategy {
     Interior,
 }
 
-pub(crate) fn derived_point_unwrapped(
+fn derived_point_unwrapped(
     shape: &Shape,
     frame: GeographicFrame,
     strategy: DerivedPointStrategy,
@@ -426,6 +428,33 @@ pub(crate) fn derived_point_unwrapped(
     }
 }
 
+fn derived_point_needs_unwrap(shape: &Shape, frame: GeographicFrame) -> bool {
+    // Split seam-side pieces are multipart; preserve the crossing-only route
+    // for simple shapes and compare seam contacts across multipart chains.
+    if let Shape::Point(_) | Shape::MultiPoint(_) | Shape::Empty(..) = shape {
+        return false;
+    }
+    if let Shape::LineString(chain) = shape {
+        return crate::geometry::chain_crosses_antimeridian(chain, frame);
+    }
+    if let Shape::Polygon(_) = shape {
+        return crate::geometry::crosses_antimeridian_in_frame(shape, frame);
+    }
+
+    let mut scan = GeographicDerivedPointScan::new(frame);
+    let crosses = matches!(
+        shape.for_each_first_xy_segment_chain(|chain| {
+            if scan.scan_chain(chain) {
+                std::ops::ControlFlow::Break(())
+            } else {
+                std::ops::ControlFlow::Continue(())
+            }
+        }),
+        std::ops::ControlFlow::Break(())
+    );
+    crosses || scan.connects_across_seam()
+}
+
 /// Shared scalar/array gate for derived geographic points.
 pub(crate) fn unary_antimeridian_derived(
     shape: &Shape,
@@ -434,9 +463,7 @@ pub(crate) fn unary_antimeridian_derived(
     kernel: impl FnOnce(&Shape) -> Result<Shape>,
 ) -> Result<Shape> {
     match domain {
-        TopologyDomain::Geographic(frame)
-            if crate::geometry::crosses_antimeridian_in_frame(shape, frame) =>
-        {
+        TopologyDomain::Geographic(frame) if derived_point_needs_unwrap(shape, frame) => {
             derived_point_unwrapped(shape, frame, strategy, kernel)
         },
         TopologyDomain::Cartesian | TopologyDomain::Geographic(_) => kernel(shape),

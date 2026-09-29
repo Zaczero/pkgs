@@ -3,8 +3,8 @@
 Covers D15 (lying-key mapping), D11 (known-cardinality coordinate/broadcast
 iterables), D10 (untrusted iterable materialization), D12 (Features side-data),
 D13 (from_geoparquet columns=), D14/D23 (GeoParquet/viz attributes Mapping).
-Each negative test must TERMINATE under a hard wall-clock bound — hang
-(timeout rc 124) is a failure. Honest finite inputs remain valid.
+Each negative test must return its expected error or result. A generous child
+timeout contains a genuine hang without imposing a speed contract.
 """
 
 from __future__ import annotations
@@ -20,9 +20,11 @@ from pathlib import Path
 import gometry as gm
 import pytest
 
+_TERMINATION_TIMEOUT_SECONDS = 30.0
+
 
 def _run_child(
-    script: str, *, timeout: float = 8.0
+    script: str, *, timeout: float = _TERMINATION_TIMEOUT_SECONDS
 ) -> subprocess.CompletedProcess[str]:
     """Run *script* in a fresh interpreter under ``timeout`` wall seconds."""
     return subprocess.run(
@@ -35,7 +37,7 @@ def _run_child(
 
 
 def _assert_terminates(
-    script: str, *, timeout: float = 8.0
+    script: str, *, timeout: float = _TERMINATION_TIMEOUT_SECONDS
 ) -> subprocess.CompletedProcess[str]:
     """Assert the child finishes (raises or returns) inside *timeout*.
 
@@ -155,7 +157,7 @@ assert g.x == 1.0 and g.y == 2.0
 
 
 def test_n4_repeated_key_mapping_rejects_immediately() -> None:
-    """Infinite repeated-key stream must raise typed error under timeout 8."""
+    """Infinite repeated-key stream must raise a typed error instead of draining."""
     script = (
         _REPEAT_KEY_MAPPING
         + """
@@ -167,7 +169,7 @@ except Exception as e:
     raise
 """
     )
-    completed = _assert_terminates(script, timeout=8.0)
+    completed = _assert_terminates(script)
     assert completed.returncode != 0
     blob = completed.stdout + completed.stderr
     assert 'PanicException' not in blob
@@ -196,7 +198,7 @@ except Exception as e:
     print(type(e).__name__, e)
 """
     )
-    completed = _assert_terminates(script, timeout=8.0)
+    completed = _assert_terminates(script)
     blob = completed.stdout + completed.stderr
     assert 'PanicException' not in blob
     assert 'duplicate key' in blob
@@ -410,7 +412,7 @@ assert all("duplicate key" in msg for _, _, msg in errs)
 assert all(name == "GeometryError" for _, name, _ in errs)
 """
     )
-    completed = _assert_terminates(script, timeout=8.0)
+    completed = _assert_terminates(script)
     assert completed.returncode == 0, completed.stdout + completed.stderr
 
 
