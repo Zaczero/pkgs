@@ -1267,3 +1267,21 @@ def test_coordinates_equality_ignores_csr_absolute_offsets():
     ])
     assert list(left_polys[1:].coords) != list(other_polys[1:].coords)
     assert left_polys[1:].coords != other_polys[1:].coords
+
+
+def test_coordinates_random_access_and_lazy_iter() -> None:
+    """Random access crosses line boundaries and each iterator starts anew."""
+    coords = gm.line_strings([
+        [(13.0, 17.0), (19.0, 23.0)],
+        [(29.0, 31.0), (37.0, 41.0)],
+        [(43.0, 47.0), (53.0, 59.0)],
+    ]).coords
+
+    assert len(coords) == 6
+    assert coords[0] == (13.0, 17.0)
+    assert coords[3] == (37.0, 41.0)
+    assert coords[-1] == (53.0, 59.0)
+    iterator = iter(coords)
+    assert next(iterator) == (13.0, 17.0)
+    assert next(iterator) == (19.0, 23.0)
+    assert next(iter(coords)) == (13.0, 17.0)

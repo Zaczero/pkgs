@@ -461,3 +461,28 @@ def test_extension_setitem_iterable_values() -> None:
 
     with pytest.raises(ValueError, match='cannot set'):
         data[[0, 1]] = [gm.Point(0, 0, crs=4326)]
+
+
+def test_pandas_setitem_identity() -> None:
+    """Fancy-index assignment scatters into the column; CRS preserved.
+
+    Selection-size scaling lives in ``benches/cases/case_pandas_setitem_scale.py``.
+    """
+    pytest.importorskip('pandas')
+    import numpy as np
+    from gometry._pandas import GeometryExtensionArray
+
+    arr = gm.points([0.0, 1.0, 2.0, 3.0], [0.0, 1.0, 2.0, 3.0])
+    ext = GeometryExtensionArray(arr)
+
+    pt = gm.Point(9.0, 9.0)
+    ext[2] = pt
+    assert ext[2] == pt
+    assert ext._geoms.crs == arr.crs
+
+    positions = np.array([0, 1, 3], dtype=np.intp)
+    values = [gm.Point(10.0, 10.0), gm.Point(11.0, 11.0), gm.Point(12.0, 12.0)]
+    ext[positions] = values
+    for position, expected in zip(positions, values, strict=True):
+        assert ext[int(position)] == expected
+    assert ext._geoms.crs == arr.crs

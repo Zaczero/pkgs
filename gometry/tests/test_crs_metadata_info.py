@@ -1176,3 +1176,38 @@ def test_crs_info_has_deprecated_not_is_deprecated() -> None:
     assert info['deprecated'] is False
     assert 'is_deprecated' not in info
     assert gm.CRS(4326).is_deprecated is False
+
+
+def test_held_crs_info_is_receiver_local() -> None:
+    """Equivalent CRS receivers expose independent, refreshable info values.
+
+    Generation invalidation after ``crs_clear_cache`` / ``crs_configure`` is
+    also exercised in ``tests/test_crs_metadata_info.py``.
+    """
+    gm.crs_clear_cache()
+    first = gm.CRS(4326)
+    second = gm.CRS(4326)
+    first_info = first.info
+    expected = second.info
+    assert first_info == expected
+    assert first_info['name'] == 'WGS 84'
+
+    first_info['name'] = 'POISON'
+    assert first.info == expected
+    assert second.info == expected
+
+    gm.crs_clear_cache()
+    assert first.info == expected
+    assert second.info == expected
+
+
+def test_crs_authorities_cached_and_isolated() -> None:
+    gm.crs_clear_cache()
+    cold = gm.crs_authorities()
+    warm = gm.crs_authorities()
+    assert warm == cold
+    assert 'EPSG' in warm
+    warm[0] = 'POISON'
+    assert gm.crs_authorities() == cold
+    gm.crs_clear_cache()
+    assert gm.crs_authorities() == cold

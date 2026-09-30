@@ -7,6 +7,7 @@ import sys
 import textwrap
 from importlib import metadata
 
+import gometry as gm
 import pytest
 from packaging.requirements import Requirement
 from packaging.utils import canonicalize_name
@@ -252,3 +253,52 @@ def test_optional_exports_are_discoverable_without_dependency_import() -> None:
         } & set(sys.modules)
         """
     )
+
+
+def test_import_loads_numpy_keeps_optional_adapters_import_cheap() -> None:
+    """Fresh process: public adapters are visible without optional imports."""
+    code = """
+import sys
+import gometry as gm
+assert "numpy" in sys.modules
+assert not hasattr(gm, "TYPE_CHECKING")
+assert gm.Cell is __import__("gometry._types", fromlist=["Cell"]).Cell
+from gometry._lib import H3Cell
+# Protocol structural check still works after identity re-export.
+_ = H3Cell
+names = {
+    "explore",
+    "from_geopandas",
+    "from_geoparquet",
+    "from_pandas",
+    "from_polars",
+}
+assert names <= set(dir(gm))
+assert names <= set(gm.__all__)
+for name in ("pandas", "polars", "geopandas", "lonboard", "pyarrow", "arro3"):
+    assert name not in sys.modules, name
+# NumPy surfaces work immediately (core dependency already loaded).
+xs = gm.Point(1.0, 2.0).coords.x
+assert list(xs) == [1.0]
+print("ok")
+"""
+    result = subprocess.run(
+        [sys.executable, '-c', code],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert result.stdout.strip() == 'ok'
+
+
+def test_optional_exports_are_eager_facade_bindings() -> None:
+    names = (
+        'explore',
+        'from_geopandas',
+        'from_geoparquet',
+        'from_pandas',
+        'from_polars',
+    )
+    assert set(names) <= set(dir(gm))
+    assert set(names) <= set(gm.__all__)
+    assert set(names) <= vars(gm).keys()
