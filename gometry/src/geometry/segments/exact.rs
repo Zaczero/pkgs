@@ -5,7 +5,7 @@
 use crate::error::Result;
 use crate::geometry::Ordering;
 use crate::geometry::exact_arith::bounded::{Bounded, inside_window};
-use crate::geometry::exact_arith::{dd_add, dd_mul, two_product_exact, two_sum};
+use crate::geometry::exact_arith::{binary_zero, dd_add, dd_mul, two_product_exact, two_sum};
 use crate::geometry::segments::{
     Orientation, Segment, XY, interpolate_f64, interpolate_segment_point,
 };
@@ -324,10 +324,6 @@ pub(in crate::geometry) fn dd_strict_cmp(left: DdInterval, right: DdInterval) ->
     let lo = signed_sum_order(difference.head, difference.tail.lo);
     let hi = signed_sum_order(difference.head, difference.tail.hi);
     (lo == hi && lo != Ordering::Equal).then_some(lo)
-}
-
-const fn binary_zero(value: f64) -> bool {
-    value.to_bits().trailing_zeros() >= 63
 }
 
 const fn interval_is_exact_zero(value: Interval) -> bool {

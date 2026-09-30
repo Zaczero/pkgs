@@ -9,6 +9,8 @@
 //! needs at large magnitudes. [`two_product_exact`] declines a product whose
 //! residual might not be representable; [`two_product`] serves filtered
 //! predicates, whose error bound covers a rounded subnormal residual.
+//! [`two_product_dekker`] is the FMA-free product transform for hot kernels
+//! compiled to baselines where scalar `mul_add` is not a hardware instruction.
 
 pub(crate) mod bounded;
 pub(crate) mod product_sum;
@@ -51,6 +53,77 @@ pub(crate) fn two_product(lhs: f64, rhs: f64) -> (f64, f64) {
         return (head, 0.0);
     }
     (head, lhs.mul_add(rhs, -head))
+}
+
+const DEKKER_SPLITTER: f64 = 134_217_729.0;
+const DEKKER_PRODUCT_EXPONENT_MIN: i32 = -850;
+const DEKKER_PRODUCT_EXPONENT_MAX: i32 = 850;
+const DEKKER_SPLIT_EXPONENT_MAX: i32 = 995;
+
+/// Whether the binary64 encoding is either sign of zero.
+pub(crate) const fn binary_zero(value: f64) -> bool {
+    value.to_bits().trailing_zeros() >= 63
+}
+
+/// Whether an intermediate is finite and normal, or exactly zero.
+pub(crate) fn normal_or_zero(value: f64) -> bool {
+    binary_zero(value) || value.is_normal()
+}
+
+/// One rounded sum that declines overflow and subnormal results.
+pub(crate) fn checked_normal_sum(lhs: f64, rhs: f64) -> Option<f64> {
+    let sum = lhs + rhs;
+    normal_or_zero(sum).then_some(sum)
+}
+
+fn dekker_product(lhs: f64, rhs: f64) -> Option<f64> {
+    if binary_zero(lhs) || binary_zero(rhs) {
+        let product = lhs * rhs;
+        return product.is_finite().then_some(product);
+    }
+    let product = lhs * rhs;
+    product.is_normal().then_some(product)
+}
+
+fn dekker_split(value: f64) -> Option<(f64, f64)> {
+    if floor_binary_exponent(value.abs()) > DEKKER_SPLIT_EXPONENT_MAX {
+        return None;
+    }
+    let product = dekker_product(DEKKER_SPLITTER, value)?;
+    let large = checked_normal_sum(product, -value)?;
+    let high = checked_normal_sum(product, -large)?;
+    let low = checked_normal_sum(value, -high)?;
+    Some((high, low))
+}
+
+/// FMA-free error-free product using Dekker splitting. The standard residual
+/// subtraction order recovers the exact low part; the exponent window keeps
+/// every product and intermediate in the normal range where that identity
+/// holds. Inputs outside that window or a failed split are declined.
+pub(crate) fn two_product_dekker(lhs: f64, rhs: f64) -> Option<(f64, f64)> {
+    if !lhs.is_finite() || !rhs.is_finite() {
+        return None;
+    }
+    if binary_zero(lhs) || binary_zero(rhs) {
+        return Some((lhs * rhs, 0.0));
+    }
+    let exponent_sum =
+        floor_binary_exponent(lhs.abs()).checked_add(floor_binary_exponent(rhs.abs()))?;
+    if !(DEKKER_PRODUCT_EXPONENT_MIN..=DEKKER_PRODUCT_EXPONENT_MAX).contains(&exponent_sum) {
+        return None;
+    }
+    let (lhs_high, lhs_low) = dekker_split(lhs)?;
+    let (rhs_high, rhs_low) = dekker_split(rhs)?;
+    let product = dekker_product(lhs, rhs)?;
+    let high_high = dekker_product(lhs_high, rhs_high)?;
+    let low_high = dekker_product(lhs_low, rhs_high)?;
+    let high_low = dekker_product(lhs_high, rhs_low)?;
+    let low_low = dekker_product(lhs_low, rhs_low)?;
+    let error_1 = checked_normal_sum(product, -high_high)?;
+    let error_2 = checked_normal_sum(error_1, -low_high)?;
+    let error_3 = checked_normal_sum(error_2, -high_low)?;
+    let error = checked_normal_sum(low_low, -error_3)?;
+    Some((product, error))
 }
 
 pub(crate) fn dd_mul(lhs: (f64, f64), rhs: (f64, f64)) -> (f64, f64) {

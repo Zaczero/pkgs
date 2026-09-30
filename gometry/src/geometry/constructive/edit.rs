@@ -11,6 +11,9 @@ use crate::geometry::constructive::{
     segmentize_points_budgeted, snap_column_simd, split,
 };
 use crate::geometry::exact_arith::product_sum::ExactSum;
+use crate::geometry::exact_arith::{
+    binary_zero, checked_normal_sum, normal_or_zero, two_product_dekker, two_sum,
+};
 use crate::geometry::overlay::{OverlayOp, overlay_all_geographic_from, overlay_view_error};
 use crate::geometry::{
     Bounds, CoordSeq, CoordinateAxes, ExpansionBudget, GeometryErrorKind, GeometryKind, HasM, HasZ,
@@ -21,6 +24,93 @@ use crate::geometry::{
     line_parts_to_shape, same_topological_coordinate, set_point_ordinate, simd_xy_map_f64,
     simd_xy_map_one_f64,
 };
+
+/// Insert one exact product into a double-double expansion, retaining every
+/// limb except the two whose magnitudes are accumulated in `error`.
+macro_rules! add_affine_product {
+    ($high:ident, $low:ident, $error:ident, $lhs:expr, $rhs:expr) => {{
+        let (product, product_error) = two_product_dekker($lhs, $rhs)?;
+        let (sum, sum_error) = checked_two_sum($high, product)?;
+        let (low_sum, low_error) = checked_two_sum($low, product_error)?;
+        let (merged_error, discarded_high) = checked_two_sum(sum_error, low_sum)?;
+        let (next_high, next_residual) = checked_two_sum(sum, merged_error)?;
+        let (next_low, discarded_low) = checked_two_sum(next_residual, low_error)?;
+        $error = upper_sum($error, discarded_high.abs())?;
+        $error = upper_sum($error, discarded_low.abs())?;
+        $high = next_high;
+        $low = next_low;
+    }};
+}
+
+#[derive(Clone, Copy)]
+struct AffineExpansion {
+    high: f64,
+    low: f64,
+    error: f64,
+}
+
+#[derive(Clone, Copy)]
+struct AffineOriginRow {
+    coefficient_x: f64,
+    coefficient_y: f64,
+    output_origin: f64,
+    origin_x: f64,
+    origin_y: f64,
+    bias: Option<AffineExpansion>,
+}
+
+impl AffineOriginRow {
+    fn new(
+        coefficient_x: f64,
+        coefficient_y: f64,
+        output_origin: f64,
+        origin_x: f64,
+        origin_y: f64,
+    ) -> Self {
+        Self {
+            coefficient_x,
+            coefficient_y,
+            output_origin,
+            origin_x,
+            origin_y,
+            bias: affine_origin_bias(
+                coefficient_x,
+                coefficient_y,
+                output_origin,
+                origin_x,
+                origin_y,
+            ),
+        }
+    }
+
+    fn fast_map_finite(&self, value_x: f64, value_y: f64) -> Option<f64> {
+        let AffineExpansion {
+            mut high,
+            mut low,
+            mut error,
+        } = self.bias?;
+        add_affine_product!(high, low, error, self.coefficient_x, value_x);
+        add_affine_product!(high, low, error, self.coefficient_y, value_y);
+        round_certified_double_double(high, low, error)
+    }
+
+    fn map_finite(&self, value_x: f64, value_y: f64) -> Result<f64> {
+        if let Some(value) = self.fast_map_finite(value_x, value_y) {
+            return Ok(value);
+        }
+        let mut sum = ExactSum::zero();
+        sum.add_product(self.coefficient_x, value_x);
+        sum.add_product(self.coefficient_y, value_y);
+        sum.add_product(self.output_origin, 1.0);
+        sum.subtract_product(self.coefficient_x, self.origin_x);
+        sum.subtract_product(self.coefficient_y, self.origin_y);
+        let value = sum.round_to_binary64();
+        value
+            .is_finite()
+            .then_some(value)
+            .ok_or_else(|| GeometryErrorKind::NonFiniteCoordinate.into())
+    }
+}
 
 #[expect(
     clippy::arithmetic_side_effects,
@@ -67,33 +157,45 @@ impl AffineLinear {
             return Err(GeometryErrorKind::NonFiniteCoordinate.into());
         }
         Ok(OriginAffine {
-            linear: self,
-            origin,
+            preserved: self.preserved,
+            rows: [
+                (!self.preserved[0]).then(|| {
+                    AffineOriginRow::new(
+                        self.matrix[0],
+                        self.matrix[1],
+                        origin.0,
+                        origin.0,
+                        origin.1,
+                    )
+                }),
+                (!self.preserved[1]).then(|| {
+                    AffineOriginRow::new(
+                        self.matrix[2],
+                        self.matrix[3],
+                        origin.1,
+                        origin.0,
+                        origin.1,
+                    )
+                }),
+            ],
         })
     }
 }
 
 #[derive(Clone, Copy)]
 pub(crate) struct OriginAffine {
-    linear: AffineLinear,
-    origin: (f64, f64),
+    preserved: [bool; 2],
+    rows: [Option<AffineOriginRow>; 2],
 }
 
 impl OriginAffine {
-    pub(crate) fn map_xy(self, x: f64, y: f64) -> Result<(f64, f64)> {
-        let [m00, m01, m10, m11] = self.linear.matrix;
-        let [preserve_x, preserve_y] = self.linear.preserved;
-        let (origin_x, origin_y) = self.origin;
-        let mapped_x = if preserve_x {
-            x
-        } else {
-            affine_about_origin_ordinate(m00, m01, origin_x, origin_x, origin_y, x, y)?
-        };
-        let mapped_y = if preserve_y {
-            y
-        } else {
-            affine_about_origin_ordinate(m10, m11, origin_y, origin_x, origin_y, x, y)?
-        };
+    pub(crate) fn map_xy(&self, x: f64, y: f64) -> Result<(f64, f64)> {
+        let [x_row, y_row] = &self.rows;
+        if (x_row.is_some() || y_row.is_some()) && (!x.is_finite() || !y.is_finite()) {
+            return Err(GeometryErrorKind::NonFiniteCoordinate.into());
+        }
+        let mapped_x = x_row.as_ref().map_or(Ok(x), |row| row.map_finite(x, y))?;
+        let mapped_y = y_row.as_ref().map_or(Ok(y), |row| row.map_finite(x, y))?;
         Ok((mapped_x, mapped_y))
     }
 }
@@ -253,13 +355,13 @@ impl CoordSeq {
     }
 
     /// Exact origin-relative affine transform of the XY columns. Identity
-    /// rows carry their source column unchanged; every other row is rounded
-    /// from its exact five-product expression in [`ExactSum`].
+    /// rows carry their source column unchanged; other rows use a certified
+    /// expansion and fall back to [`ExactSum`] when rounding is uncertain.
     pub(crate) fn try_affine_about_origin(&self, transform: OriginAffine) -> Result<Self> {
-        if transform.linear.is_identity() {
+        if transform.preserved == [true, true] {
             return Ok(self.clone());
         }
-        let [x_identity, y_identity] = transform.linear.preserved;
+        let [x_identity, y_identity] = transform.preserved;
         let n = self.len();
         let (xs, ys) = (self.xs(), self.ys());
         let mut out_x = (!x_identity).then(|| Vec::with_capacity(n));
@@ -554,6 +656,7 @@ pub(crate) fn affine_y_row_identity(d: f64, e: f64, yoff: f64) -> bool {
 /// Round one non-identity origin-relative affine row from the exact stored
 /// binary64 expression. Identity rows are handled by callers so signed zero
 /// and unchanged coordinates remain bit-identical.
+#[cfg(test)]
 pub(crate) fn affine_about_origin_ordinate(
     coefficient_x: f64,
     coefficient_y: f64,
@@ -573,17 +676,182 @@ pub(crate) fn affine_about_origin_ordinate(
     {
         return Err(GeometryErrorKind::NonFiniteCoordinate.into());
     }
-    let mut sum = ExactSum::zero();
-    sum.add_product(coefficient_x, value_x);
-    sum.add_product(coefficient_y, value_y);
-    sum.add_product(output_origin, 1.0);
-    sum.subtract_product(coefficient_x, origin_x);
-    sum.subtract_product(coefficient_y, origin_y);
-    let value = sum.round_to_binary64();
-    value
-        .is_finite()
-        .then_some(value)
-        .ok_or_else(|| GeometryErrorKind::NonFiniteCoordinate.into())
+    AffineOriginRow::new(
+        coefficient_x,
+        coefficient_y,
+        output_origin,
+        origin_x,
+        origin_y,
+    )
+    .map_finite(value_x, value_y)
+}
+
+/// Prepare the three invariant terms once per affine row. The accumulated
+/// error bounds the exact bias outside the retained double-double.
+fn affine_origin_bias(
+    coefficient_x: f64,
+    coefficient_y: f64,
+    output_origin: f64,
+    origin_x: f64,
+    origin_y: f64,
+) -> Option<AffineExpansion> {
+    let (mut high, mut low, mut error) = (0.0, 0.0, 0.0);
+    add_affine_product!(high, low, error, output_origin, 1.0);
+    add_affine_product!(high, low, error, -coefficient_x, origin_x);
+    add_affine_product!(high, low, error, -coefficient_y, origin_y);
+    Some(AffineExpansion { high, low, error })
+}
+
+/// Correctly rounded fast path for the exact five-product origin-relative row.
+/// Its invariant bias is prepared once; each coordinate adds only the two
+/// variable products. Upward-rounded magnitudes bound all omitted limbs.
+#[cfg(test)]
+pub(super) fn fast_affine_about_origin_ordinate(
+    coefficient_x: f64,
+    coefficient_y: f64,
+    output_origin: f64,
+    origin_x: f64,
+    origin_y: f64,
+    value_x: f64,
+    value_y: f64,
+) -> Option<f64> {
+    [
+        coefficient_x,
+        coefficient_y,
+        output_origin,
+        origin_x,
+        origin_y,
+        value_x,
+        value_y,
+    ]
+    .into_iter()
+    .all(f64::is_finite)
+    .then(|| {
+        AffineOriginRow::new(
+            coefficient_x,
+            coefficient_y,
+            output_origin,
+            origin_x,
+            origin_y,
+        )
+        .fast_map_finite(value_x, value_y)
+    })
+    .flatten()
+}
+
+fn checked_two_sum(lhs: f64, rhs: f64) -> Option<(f64, f64)> {
+    if !normal_or_zero(lhs) || !normal_or_zero(rhs) {
+        return None;
+    }
+    let (sum, error) = two_sum(lhs, rhs);
+    (normal_or_zero(sum) && normal_or_zero(error)).then_some((sum, error))
+}
+
+/// Add nonnegative error magnitudes with an outward-rounded upper bound.
+fn upper_sum(lhs: f64, rhs: f64) -> Option<f64> {
+    if !normal_or_zero(lhs) || !normal_or_zero(rhs) {
+        return None;
+    }
+    let sum = checked_normal_sum(lhs, rhs)?;
+    if binary_zero(sum) {
+        return Some(0.0);
+    }
+    let upper = sum.next_up();
+    upper.is_normal().then_some(upper)
+}
+
+fn lower_sum(lhs: f64, rhs: f64) -> Option<f64> {
+    let sum = checked_normal_sum(lhs, rhs)?;
+    lower_bound(sum)
+}
+
+fn lower_difference(lhs: f64, rhs: f64) -> Option<f64> {
+    let difference = checked_normal_sum(lhs, -rhs)?;
+    if difference < 0.0 {
+        None
+    } else {
+        lower_bound(difference)
+    }
+}
+
+fn lower_bound(value: f64) -> Option<f64> {
+    if binary_zero(value) {
+        return Some(0.0);
+    }
+    if !value.is_normal() {
+        return None;
+    }
+    let lower = value.next_down();
+    normal_or_zero(lower).then_some(lower)
+}
+
+/// Accept only when `candidate + tail ± error` stays strictly inside its
+/// asymmetric binary64 rounding cell. Exact ties and uncertain cells fall back.
+fn round_certified_double_double(high: f64, low: f64, error: f64) -> Option<f64> {
+    let (candidate, tail) = checked_two_sum(high, low)?;
+    if !candidate.is_normal() || !normal_or_zero(tail) {
+        return None;
+    }
+    let previous = candidate.next_down();
+    let next = candidate.next_up();
+    if !previous.is_normal() || !next.is_normal() {
+        return None;
+    }
+    let lower_gap = checked_normal_sum(candidate, -previous)?;
+    let upper_gap = checked_normal_sum(next, -candidate)?;
+    let lower_half_gap = lower_gap * 0.5;
+    let upper_half_gap = upper_gap * 0.5;
+    if !lower_half_gap.is_normal() || !upper_half_gap.is_normal() {
+        return None;
+    }
+    let tail_magnitude = tail.abs();
+    let (lower_margin, upper_margin) = if tail < 0.0 {
+        (
+            lower_difference(lower_half_gap, tail_magnitude)?,
+            lower_sum(upper_half_gap, tail_magnitude)?,
+        )
+    } else {
+        (
+            lower_sum(lower_half_gap, tail_magnitude)?,
+            lower_difference(upper_half_gap, tail_magnitude)?,
+        )
+    };
+    (error < lower_margin && error < upper_margin).then_some(candidate)
+}
+
+#[cfg(test)]
+mod affine_rounding_tests {
+    use super::{AffineExpansion, AffineOriginRow};
+    use crate::geometry::exact_arith::product_sum::ExactSum;
+
+    #[test]
+    fn residual_bound_rejects_an_expansion_whose_exact_value_crosses_halfway() {
+        // The retained sum is 2^-106 below halfway; the residual moves it
+        // 2^-106 above halfway and therefore changes the rounded result.
+        let low = 2.0_f64.powi(-53) - 2.0_f64.powi(-106);
+        let residual = 2.0_f64.powi(-105);
+        let row = AffineOriginRow {
+            coefficient_x: 0.0,
+            coefficient_y: 0.0,
+            output_origin: 0.0,
+            origin_x: 0.0,
+            origin_y: 0.0,
+            bias: Some(AffineExpansion {
+                high: 1.0,
+                low,
+                error: residual,
+            }),
+        };
+        let mut exact = ExactSum::zero();
+        exact.add_product(1.0, 1.0);
+        exact.add_product(low, 1.0);
+        exact.add_product(residual, 1.0);
+        assert_eq!(
+            exact.round_to_binary64().to_bits(),
+            1.0_f64.next_up().to_bits()
+        );
+        assert_eq!(row.fast_map_finite(0.0, 0.0), None);
+    }
 }
 
 /// Affine map with power-of-two pre-scale of the input coordinates so
