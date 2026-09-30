@@ -1073,3 +1073,197 @@ def test_coordinate_exports_follow_carried_ordinates() -> None:
     assert np.asarray(flat.coords).shape == (2, 2)
     assert set(flat.coords.to_dict()) == {'x', 'y'}
     assert gm.get_coordinates(flat).shape == (2, 2)
+
+
+def _line_array(n: int, *, distinct: bool = False) -> gm.GeometryArray:
+    """Packed lines — the storage shape whose flat index is CSR (log rows).
+
+    When ``distinct`` is True each row has a unique offset so window/gather
+    slices are value-unequal when their row sets differ.
+    """
+    if distinct:
+        return gm.GeometryArray([
+            gm.LineString([(float(i + r), float((i + r) % 5)) for i in range(16)])
+            for r in range(n)
+        ])
+    line = gm.LineString([(float(i), float(i % 5)) for i in range(16)])
+    return gm.GeometryArray([line] * n)
+
+
+def test_coordinates_index_stops_at_first_hit_on_gathered_lines():
+    """Gathered packed lines: first-hit index must not re-walk the tail."""
+    # Distinct per-row geometry so a gather drops coordinates that only
+    # lived on the excluded rows.
+    arr = gm.GeometryArray([
+        gm.LineString([(float(i), 0.0), (float(i), 1.0)]) for i in range(500)
+    ])
+    gathered = arr[::2].coords  # even rows only
+    assert gathered.index((0.0, 0.0)) == 0
+    assert gathered.index((2.0, 0.0)) == 2  # second even row, first vertex
+    with pytest.raises(ValueError, match='not in Coordinates'):
+        gathered.index((1.0, 0.0))  # odd row dropped by gather
+    # Large gather: first hit is still position 0.
+    big = gm.GeometryArray([
+        gm.LineString([(float(i), 0.0), (float(i), 1.0)]) for i in range(4000)
+    ])[::2].coords
+    assert big.index(big[0]) == 0
+
+
+def test_coordinates_equality_and_count_across_storage_shapes():
+    """Equal-value equality / count across identity/window/gather/mixed/masked.
+
+    Pins the bulk path, not a packed-points-only shortcut: windowed and
+    gathered line coords, mixed multiparts, and missing masks must agree.
+    """
+    lines = _line_array(200, distinct=True)
+    window = lines[10:50].coords
+    assert window == lines[10:50].coords
+    assert window != lines[11:51].coords  # first-mismatch (distinct rows)
+
+    gather = lines[::2].coords
+    assert gather == lines[::2].coords
+    assert len(gather) == 100 * 16
+    assert gather.count(gather[0]) >= 1
+
+    # Mixed multiparts
+    mixed = gm.GeometryArray([
+        gm.Point(float(i), 0.0)
+        if i % 2 == 0
+        else gm.LineString([(0.0, 0.0), (1.0, 1.0)])
+        for i in range(40)
+    ])
+    assert mixed.coords == mixed.coords
+    assert mixed.coords != lines[:20].coords
+
+    # Masked: missing rows contribute no coordinates
+    masked = gm.GeometryArray([
+        None if i % 3 == 0 else gm.Point(float(i), 1.0) for i in range(30)
+    ])
+    dense = gm.GeometryArray([gm.Point(float(i), 1.0) for i in range(30) if i % 3 != 0])
+    assert list(masked.coords) == list(dense.coords)
+    assert masked.coords == dense.coords
+
+    # Z/M equality (finite ordinates — constructors reject non-finite)
+    zm = gm.LineString([(0.0, 0.0), (1.0, 1.0)], z=[1.5, 2.0], m=[3.0, 4.0])
+    zm2 = gm.LineString([(0.0, 0.0), (1.0, 1.0)], z=[1.5, 2.0], m=[3.0, 4.0])
+    assert zm.coords == zm2.coords
+    assert (
+        zm.coords
+        != gm.LineString([(0.0, 0.0), (1.0, 1.0)], z=[1.5, 9.0], m=[3.0, 4.0]).coords
+    )
+
+    # Reversed / slice stay consistent with the flattened order
+    rev = list(reversed(list(window)))
+    assert list(window)[::-1] == rev
+    assert window[:5] == list(window)[:5]
+    assert list(window)[:16] == list(lines[10:11].coords)
+
+
+def test_coordinates_equality_cross_row_map_storage():
+    """Value-equal Coordinates must compare equal across row-map shapes.
+
+    A bulk path that answers False solely because RowSelection maps differ
+    (identity vs full window, window/gather vs rebuilt identity) is wrong:
+    flattened list equality is the oracle.
+    """
+    lines = _line_array(80, distinct=True)
+    # Identity vs full-span slice (often Window {0, n} rather than Identity).
+    assert list(lines.coords) == list(lines[:].coords)
+    assert lines.coords == lines[:].coords
+
+    window = lines[10:40].coords
+    rebuilt_window = gm.GeometryArray(list(lines[10:40])).coords
+    assert list(window) == list(rebuilt_window)
+    assert window == rebuilt_window
+
+    gather = lines[::2].coords
+    rebuilt_gather = gm.GeometryArray(list(lines[::2])).coords
+    assert list(gather) == list(rebuilt_gather)
+    assert gather == rebuilt_gather
+
+    # Packed points: same cross-map contract.
+    pts = gm.GeometryArray([gm.Point(float(i), float(i % 3)) for i in range(60)])
+    assert list(pts.coords) == list(pts[:].coords)
+    assert pts.coords == pts[:].coords
+    g_pts = pts[::2].coords
+    rebuilt_pts = gm.GeometryArray(list(pts[::2])).coords
+    assert list(g_pts) == list(rebuilt_pts)
+    assert g_pts == rebuilt_pts
+
+    # Polygons: window vs rebuild.
+    polys = gm.GeometryArray([
+        gm.box(float(i), 0.0, float(i) + 1.0, 1.0) for i in range(40)
+    ])
+    pw = polys[5:25].coords
+    pr = gm.GeometryArray(list(polys[5:25])).coords
+    assert list(pw) == list(pr)
+    assert pw == pr
+
+    # Unequal content still False across maps (distinct rows required).
+    assert lines[10:40].coords != lines[11:41].coords
+    assert lines[::2].coords != lines[1::2].coords
+
+
+def test_coordinates_equality_ignores_csr_absolute_offsets():
+    """Flattened equality must not require matching CSR absolute offsets.
+
+    Different row partitions (or different window prefixes) can share the same
+    visible vertex stream. A bulk path that compares absolute offset tables
+    returns a false negative against ``list(coords)`` as the oracle.
+    """
+    # Identity: one 4-vertex line vs two 2-vertex lines — same verts in order.
+    one = gm.GeometryArray([
+        gm.LineString([(0.0, 0.0), (1.0, 1.0), (2.0, 2.0), (3.0, 3.0)])
+    ])
+    two = gm.GeometryArray([
+        gm.LineString([(0.0, 0.0), (1.0, 1.0)]),
+        gm.LineString([(2.0, 2.0), (3.0, 3.0)]),
+    ])
+    assert list(one.coords) == list(two.coords)
+    assert one.coords == two.coords
+
+    # Windows with different prefix lengths → different absolute CSR bases.
+    left = gm.GeometryArray([
+        gm.LineString([(9.0, 9.0), (9.0, 8.0)]),  # 2-vert prefix
+        gm.LineString([(1.0, 0.0), (2.0, 0.0), (3.0, 0.0)]),
+        gm.LineString([(4.0, 0.0), (5.0, 0.0)]),
+    ])
+    right = gm.GeometryArray([
+        gm.LineString([(8.0, 8.0), (8.0, 7.0), (8.0, 6.0)]),  # 3-vert prefix
+        gm.LineString([(1.0, 0.0), (2.0, 0.0), (3.0, 0.0)]),
+        gm.LineString([(4.0, 0.0), (5.0, 0.0)]),
+    ])
+    lw, rw = left[1:].coords, right[1:].coords
+    assert list(lw) == list(rw)
+    assert lw == rw
+
+    # Distinct trailing content still compares unequal.
+    other = gm.GeometryArray([
+        gm.LineString([(8.0, 8.0), (8.0, 7.0), (8.0, 6.0)]),
+        gm.LineString([(1.0, 0.0), (2.0, 0.0), (9.0, 9.0)]),  # last vertex differs
+        gm.LineString([(4.0, 0.0), (5.0, 0.0)]),
+    ])
+    assert list(left[1:].coords) != list(other[1:].coords)
+    assert left[1:].coords != other[1:].coords
+
+    # Polygons: unequal prefix vertex counts, same visible window.
+    left_polys = gm.GeometryArray([
+        gm.Polygon([(9.0, 9.0), (9.0, 8.0), (8.0, 9.0), (9.0, 9.0)]),
+        gm.box(1.0, 0.0, 3.0, 2.0),
+        gm.box(4.0, 0.0, 5.0, 1.0),
+    ])
+    right_polys = gm.GeometryArray([
+        gm.box(8.0, 8.0, 11.0, 11.0),
+        gm.box(1.0, 0.0, 3.0, 2.0),
+        gm.box(4.0, 0.0, 5.0, 1.0),
+    ])
+    lp, rp = left_polys[1:].coords, right_polys[1:].coords
+    assert list(lp) == list(rp)
+    assert lp == rp
+    other_polys = gm.GeometryArray([
+        gm.box(8.0, 8.0, 11.0, 11.0),
+        gm.box(1.0, 0.0, 3.0, 2.0),
+        gm.box(4.0, 0.0, 9.0, 1.0),
+    ])
+    assert list(left_polys[1:].coords) != list(other_polys[1:].coords)
+    assert left_polys[1:].coords != other_polys[1:].coords

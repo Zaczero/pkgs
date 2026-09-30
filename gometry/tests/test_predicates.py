@@ -1327,3 +1327,21 @@ def test_point_in_polygon_is_exact_at_extreme_finite_coordinates():
             # contains_xy rides the same kernel.
             assert not gm.contains_xy(triangle, 0.0, 0.5)
             assert gm.contains_xy(triangle, 5e307 * s, 0.0)
+
+
+def test_is_simple_dense_and_nullable_agree():
+    simple = gm.LineString([(0.0, 0.0), (1.0, 1.0), (2.0, 0.0)])
+    complex_ = gm.LineString([(0.0, 0.0), (1.0, 0.0), (0.5, 0.0), (1.5, 0.0)])
+    dense = gm.GeometryArray([simple, complex_] * 50)
+    d = dense.is_simple
+    assert bool(d[0]) is True
+    assert bool(d[1]) is False
+    # Nullable: missing rows → False sentinel; present rows match dense pattern
+    mixed = [None if i % 3 == 0 else ([simple, complex_][i % 2]) for i in range(100)]
+    nullable = gm.GeometryArray(mixed)
+    n = nullable.is_simple
+    for i, row in enumerate(mixed):
+        if row is None:
+            assert bool(n[i]) is False
+        else:
+            assert bool(n[i]) is bool(d[i % 2])

@@ -6,6 +6,7 @@ import math
 import sys
 
 import gometry as gm
+import pytest
 
 
 def test_self_intersections_crossing_line_point_coords() -> None:
@@ -48,3 +49,11 @@ def test_self_intersections_round_a_crossing_to_nearest_even() -> None:
     assert [(point.x, point.y) for point in points] == [
         (x, 1.5 + 2.0 * sys.float_info.epsilon)
     ]
+
+
+def test_unique_linework_node_preserves_length():
+    line = gm.LineString([(float(i), float(i % 3)) for i in range(32)])
+    noded = line.node()
+    # Unique input: noding must not invent/drop measure; length is preserved.
+    assert noded.length == pytest.approx(line.length)
+    assert not noded.is_empty

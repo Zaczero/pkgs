@@ -463,3 +463,11 @@ def test_wkb_homogeneous_outer_member_axes_must_agree(wkb: bytes) -> None:
     """Outer/member axes equality for MultiPoint — no silent promote/demote."""
     with pytest.raises(gm.ParseError, match=r'axes|member'):
         gm.from_wkb(wkb)
+
+
+def test_small_gc_and_large_line_to_wkb_roundtrip():
+    tiny = gm.GeometryCollection([gm.Point(1.0, 2.0), gm.Point(3.0, 4.0)])
+    back = gm.from_wkb(tiny.to_wkb())
+    assert gm.equals(back, tiny)
+    large = gm.LineString([(float(i), float(i % 7)) for i in range(2000)])
+    assert gm.equals(gm.from_wkb(large.to_wkb()), large)

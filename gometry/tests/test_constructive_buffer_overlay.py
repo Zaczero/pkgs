@@ -1085,3 +1085,13 @@ def test_shared_paths_jointly_nodes_partial_overlaps_into_maximal_runs() -> None
     same, opposite = gm.shared_paths(left, gm.LineString([(3, 0), (1, 0)])).parts
     assert same.is_empty
     assert opposite.to_wkt() == 'MULTILINESTRING ((1 0, 2 0, 3 0))'
+
+
+def test_overlay_operators_provenance_shared_edge():
+    left = gm.box(0, 0, 2, 2)
+    right = gm.box(2, 0, 4, 2)
+    assert gm.equals(left | right, gm.box(0, 0, 4, 2))
+    assert (left & right).area == 0.0
+    a = gm.box(0, 0, 2, 2)
+    b = gm.box(1, 1, 3, 3)
+    assert gm.equals(a & b, gm.box(1, 1, 2, 2))

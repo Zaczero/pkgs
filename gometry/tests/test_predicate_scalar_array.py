@@ -188,3 +188,53 @@ def test_every_predicate_spelling_agrees_across_dispatch_strategies() -> None:
             reversed_expected = [free(item, scalar) for item in batch]
             assert bools(free(values, scalar)) == reversed_expected, name
             assert bools(free(values, scalar)) == reversed_expected, name
+
+
+def test_fully_missing_pairwise_skips_materialization():
+    """All-missing partner must leave the receiver's retained size unchanged.
+
+    The observable consequence of skipping missing-row materialization and
+    cache warming: ``__sizeof__`` of a mixed receiver is bit-stable across an
+    all-missing pairwise predicate. Boolean all-False alone would stay green
+    under a path that still warms every left-hand ShapeData cache — a present
+    partner on the same left grows retained size substantially, so the flat
+    all-missing result is the property under test.
+    """
+    # Mixed storage (heterogeneous kinds) so a present partner materializes
+    # per-row ShapeData handles; packed homogeneous columns would not.
+    rows = []
+    for i in range(200):
+        if i % 2 == 0:
+            rows.append(gm.box(float(i), 0.0, float(i) + 1.0, 1.0))
+        else:
+            rows.append(
+                gm.LineString([(float(i), 0.0), (float(i), 1.0), (float(i) + 1.0, 1.0)])
+            )
+    left = gm.GeometryArray(rows)
+    miss = gm.GeometryArray([None] * 200)
+    before = left.__sizeof__()
+    out = gm.intersects(left, miss)
+    after = left.__sizeof__()
+    assert len(out) == 200
+    assert not out.any()
+    assert after == before, (
+        f'all-missing partner grew receiver retained size {before} -> {after} '
+        '(missing rows must not materialize / warm caches)'
+    )
+    # Control: a present partner on the same left MUST grow retained size
+    # (otherwise the flat all-missing result is vacuous).
+    present = gm.GeometryArray(rows)
+    _ = gm.intersects(left, present)
+    assert left.__sizeof__() > before, 'present partner should materialize caches'
+    # Fresh left: second all-missing call still stable.
+    left2 = gm.GeometryArray(rows)
+    b2 = left2.__sizeof__()
+    _ = gm.intersects(left2, miss)
+    assert left2.__sizeof__() == b2
+
+
+def test_partial_missing_pairwise_elementwise():
+    left = gm.GeometryArray([gm.Point(0, 0), None, gm.Point(1, 1), gm.Point(2, 2)])
+    right = gm.GeometryArray([gm.Point(0, 0), gm.Point(9, 9), None, gm.Point(2, 2)])
+    out = list(gm.intersects(left, right))
+    assert out == [True, False, False, True]
