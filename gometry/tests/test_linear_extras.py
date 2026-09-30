@@ -100,9 +100,7 @@ def test_interpolate_m_runs_continuously_across_parts() -> None:
 
 
 def test_distance_linear_referencing_keeps_zero_length_endpoint_vertices() -> None:
-    line = gm.from_wkt(
-        'LINESTRING ZM (0 0 0 0, 0 0 10 1, 1 0 20 2, 1 0 30 3)'
-    )
+    line = gm.from_wkt('LINESTRING ZM (0 0 0 0, 0 0 10 1, 1 0 20 2, 1 0 30 3)')
     expected = 'LINESTRING ZM (0 0 0 0, 0 0 10 1, 1 0 20 2, 1 0 30 3)'
 
     assert line.line_interpolate(0.0).to_wkt() == 'POINT ZM (0 0 0 0)'
@@ -116,13 +114,10 @@ def test_distance_linear_referencing_keeps_zero_length_endpoint_vertices() -> No
 
 
 def test_distance_substring_keeps_an_interior_zero_length_vertex_run() -> None:
-    line = gm.from_wkt(
-        'LINESTRING ZM (0 0 0 0, 0.5 0 5 1, 0.5 0 10 2, 1 0 15 3)'
-    )
+    line = gm.from_wkt('LINESTRING ZM (0 0 0 0, 0.5 0 5 1, 0.5 0 10 2, 1 0 15 3)')
 
     assert line.line_substring(0.25, 0.75, normalized=True).to_wkt() == (
-        'LINESTRING ZM (0.25 0 2.5 0.5, 0.5 0 5 1, '
-        '0.5 0 10 2, 0.75 0 12.5 2.5)'
+        'LINESTRING ZM (0.25 0 2.5 0.5, 0.5 0 5 1, 0.5 0 10 2, 0.75 0 12.5 2.5)'
     )
     assert line.line_interpolate(0.5, normalized=True).to_wkt() == (
         'POINT ZM (0.5 0 5 1)'
@@ -157,9 +152,7 @@ def test_m_substring_keeps_zero_xy_vertices_in_scalar_and_array_routes() -> None
 
     assert line.line_substring(0.25, 1.5, basis='m').to_wkt() == expected
     assert (
-        gm.GeometryArray([line])
-        .line_substring(0.25, 1.5, basis='m')[0]
-        .to_wkt()
+        gm.GeometryArray([line]).line_substring(0.25, 1.5, basis='m')[0].to_wkt()
         == expected
     )
 
@@ -184,15 +177,11 @@ def test_split_keeps_zero_xy_vertices_with_distinct_active_ordinates() -> None:
 
 def test_shapely_linear_interpolation_agrees_on_zero_length_z_endpoints() -> None:
     shapely = pytest.importorskip('shapely')
-    reference = shapely.from_wkt(
-        'LINESTRING Z (0 0 0, 0 0 10, 1 0 20, 1 0 30)'
-    )
+    reference = shapely.from_wkt('LINESTRING Z (0 0 0, 0 0 10, 1 0 20, 1 0 30)')
     line = gm.from_wkt('LINESTRING Z (0 0 0, 0 0 10, 1 0 20, 1 0 30)')
 
     for distance in (0.0, 1.0):
-        expected = shapely.line_interpolate_point(
-            reference, distance, normalized=True
-        )
+        expected = shapely.line_interpolate_point(reference, distance, normalized=True)
         actual = line.line_interpolate(distance, normalized=True)
         assert actual.z == expected.z
 
