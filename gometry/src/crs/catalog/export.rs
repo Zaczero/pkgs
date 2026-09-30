@@ -262,20 +262,17 @@ pub(crate) fn same_with_state(
     };
     let hit = CRS_COMPARISON_CACHE.with(|items| {
         let mut cache = items.borrow_mut();
-        if lru_promote(&mut cache, |item| {
+        lru_promote(&mut cache, |item| {
             item.key.left.as_str() == left.as_ref()
                 && item.key.right.as_str() == right.as_ref()
                 && item.key.mode == comparison
-        }) {
-            Some(
-                cache
-                    .last()
-                    .expect("a promoted CRS comparison is the MRU tail")
-                    .value,
-            )
-        } else {
-            None
-        }
+        })
+        .then(|| {
+            cache
+                .last()
+                .expect("a promoted CRS comparison is the MRU tail")
+                .value
+        })
     });
     if let Some(value) = hit {
         return Ok(value);

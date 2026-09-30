@@ -33,7 +33,13 @@ impl PyPoint {
                 PointAxis::Z => Err(PyAttributeError::new_err("empty point has no z coordinate")),
                 PointAxis::M => Err(PyAttributeError::new_err("empty point has no m coordinate")),
             },
-            _ => unreachable!("Point wraps a Point shape"),
+            Shape::MultiPoint(_)
+            | Shape::LineString(_)
+            | Shape::MultiLineString(_)
+            | Shape::Polygon(_)
+            | Shape::MultiPolygon(_)
+            | Shape::GeometryCollection(_)
+            | Shape::Empty(..) => unreachable!("Point wraps a Point shape"),
         }
     }
 }

@@ -218,7 +218,7 @@ impl Frame {
     pub(crate) const fn epoch(&self) -> Option<f64> {
         match self {
             Self::CrsEpoch(_, epoch) => Some(*epoch),
-            _ => None,
+            Self::None | Self::Crs(_) => None,
         }
     }
 
@@ -364,11 +364,11 @@ impl Frame {
         explicit: FrameAdoption,
         context: &str,
     ) -> Result<Self> {
-        if items.is_empty() {
+        let Some(first_item) = items.first() else {
             return Self::new(explicit.crs, explicit.epoch);
-        }
-        let first_crs = items[0].crs_ref().cloned();
-        let first_epoch = items[0].epoch();
+        };
+        let first_crs = first_item.crs_ref().cloned();
+        let first_epoch = first_item.epoch();
         let crs = if let Some(crs) = explicit.crs {
             // An explicit `crs=` is the requested output label, so items only
             // have to *agree* with it (see `common`); every item is then

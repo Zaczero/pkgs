@@ -48,7 +48,12 @@ impl CoordinateReplacement {
                         "coordinates must preserve each coordinate sequence axes",
                     ));
                 }
-                Ok(Some(SharedSlice::from_vec(values[range].to_vec())))
+                Ok(Some(SharedSlice::from_vec(
+                    values
+                        .get(range)
+                        .expect("replacement range is bounded by its admitted coordinate count")
+                        .to_vec(),
+                )))
             },
             ReplacementAxis::Carry => Ok(carried()),
         }
@@ -95,7 +100,9 @@ impl CoordinateReplacement {
                         "coordinates must preserve each coordinate sequence axes",
                     ));
                 }
-                Ok(Some(values[index]))
+                Ok(Some(*values.get(index).expect(
+                    "replacement index is bounded by its admitted coordinate count",
+                )))
             },
             ReplacementAxis::Carry => Ok(carried),
         }

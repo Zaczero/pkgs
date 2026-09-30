@@ -123,7 +123,13 @@ impl From<ErrorKind> for Error {
             ErrorKind::Crs(CrsError::GeodesicExponentOverflow) => {
                 ErrorStorage::Static(&GEODESIC_EXPONENT_OVERFLOW_ERROR)
             },
-            kind => ErrorStorage::Owned(Box::new(kind)),
+            kind @ (ErrorKind::Geometry(_)
+            | ErrorKind::Crs(_)
+            | ErrorKind::Io(_)
+            | ErrorKind::Frame(_)
+            | ErrorKind::Resource(ResourceError::SizeOverflowContext(_))) => {
+                ErrorStorage::Owned(Box::new(kind))
+            },
         })
     }
 }

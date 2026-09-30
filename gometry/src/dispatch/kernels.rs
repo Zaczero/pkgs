@@ -88,7 +88,7 @@ pub(crate) fn unary_buffer(
                 quadrant_segments,
                 miter_limit,
             ),
-            side => data.shape().buffer_sided(distance, side),
+            BufferSide::Left | BufferSide::Right => data.shape().buffer_sided(distance, side),
         };
     }
     let model = ctx.metric.require_model(MetricOp::Buffer)?;
@@ -101,7 +101,7 @@ pub(crate) fn unary_buffer(
             BufferSide::Both => {
                 shape.buffer_with_style(d, cap_style, join_style, quadrant_segments, miter_limit)
             },
-            side => shape.buffer_sided(d, side),
+            BufferSide::Left | BufferSide::Right => shape.buffer_sided(d, side),
         },
     )
 }
@@ -128,7 +128,7 @@ pub(crate) fn unary_buffer_budgeted(
                 miter_limit,
                 budget,
             ),
-            side => data.shape().buffer_sided(distance, side),
+            BufferSide::Left | BufferSide::Right => data.shape().buffer_sided(distance, side),
         };
     }
     let model = ctx.metric.require_model(MetricOp::Buffer)?;
@@ -147,7 +147,7 @@ pub(crate) fn unary_buffer_budgeted(
                 miter_limit,
                 budget,
             ),
-            side => shape.buffer_sided(d, side),
+            BufferSide::Left | BufferSide::Right => shape.buffer_sided(d, side),
         },
     )
 }
@@ -366,7 +366,13 @@ pub(crate) fn unary_is_valid(data: &PreparedPlan, ctx: &CachelessRowContext<'_>)
 pub(crate) fn unary_is_convex(data: &PreparedPlan, _ctx: &CachelessRowContext<'_>) -> Result<bool> {
     Ok(match data.shape() {
         Shape::Polygon(_) | Shape::Empty(GeometryKind::Polygon, _) => data.shape().is_convex()?,
-        _ => false,
+        Shape::Point(_)
+        | Shape::MultiPoint(_)
+        | Shape::LineString(_)
+        | Shape::MultiLineString(_)
+        | Shape::MultiPolygon(_)
+        | Shape::GeometryCollection(_)
+        | Shape::Empty(..) => false,
     })
 }
 
@@ -512,10 +518,11 @@ pub(crate) fn unary_area(data: &PreparedPlan, ctx: &CachelessRowContext<'_>) -> 
                 crate::geometry::TopologyDomain::Cartesian if collection => {
                     crate::geometry::occupied_cartesian_area(shape)?
                 },
-                domain if collection => {
+                domain @ crate::geometry::TopologyDomain::Geographic(_) if collection => {
                     crate::geometry::occupied_support_shape(shape, domain)?.area()
                 },
-                _ => shape.area(),
+                crate::geometry::TopologyDomain::Cartesian
+                | crate::geometry::TopologyDomain::Geographic(_) => shape.area(),
             };
             Ok(scale_area(area, to_metre.get()))
         },

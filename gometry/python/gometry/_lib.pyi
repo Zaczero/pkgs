@@ -21082,8 +21082,8 @@ def pluscode_shorten(
 ) -> list[str]:
     """Shorten a full plus code relative to a nearby reference point.
 
-    Removes leading digits that the reference location implies (at least
-    four when close enough); `pluscode_recover` restores them.
+    Removes two to six leading digits that the reference location implies;
+    `pluscode_recover` restores them.
 
     Parameters
     ----------

@@ -387,12 +387,12 @@ pub(crate) fn lru_insert<E>(cache: &mut Vec<E>, capacity: usize, entry: E) -> &E
 /// The match closure borrows the key, so the hit path clones no key. CRS caches
 /// whose miss construction consults another cache can use `lru_promote` and
 /// `lru_insert` around that work without holding this cache's borrow.
-pub(crate) fn lru_resolve<'a, E>(
-    cache: &'a mut Vec<E>,
+pub(crate) fn lru_resolve<E>(
+    cache: &mut Vec<E>,
     capacity: usize,
     matches: impl Fn(&E) -> bool,
     make: impl FnOnce() -> Result<E>,
-) -> Result<&'a E> {
+) -> Result<&E> {
     if lru_promote(cache, matches) {
         return Ok(cache.last().expect("a promoted LRU entry is the MRU tail"));
     }

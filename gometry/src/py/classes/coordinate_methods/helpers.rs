@@ -28,22 +28,44 @@ pub(crate) fn parse_coordinate_axes(value: &str, concept: &str) -> PyResult<Coor
 
 /// The ordered axes of a layout: ``X``, ``Y``, then ``Z``/``M`` when present.
 pub(crate) const fn coordinate_axis_order(axes: CoordinateAxes) -> ([CoordinateAxis; 4], usize) {
-    let mut order = [
-        CoordinateAxis::X,
-        CoordinateAxis::Y,
-        CoordinateAxis::X,
-        CoordinateAxis::X,
-    ];
-    let mut n = 2;
-    if axes.has_z() {
-        order[n] = CoordinateAxis::Z;
-        n += 1;
+    match (axes.has_z(), axes.has_m()) {
+        (false, false) => (
+            [
+                CoordinateAxis::X,
+                CoordinateAxis::Y,
+                CoordinateAxis::X,
+                CoordinateAxis::X,
+            ],
+            2,
+        ),
+        (true, false) => (
+            [
+                CoordinateAxis::X,
+                CoordinateAxis::Y,
+                CoordinateAxis::Z,
+                CoordinateAxis::X,
+            ],
+            3,
+        ),
+        (false, true) => (
+            [
+                CoordinateAxis::X,
+                CoordinateAxis::Y,
+                CoordinateAxis::M,
+                CoordinateAxis::X,
+            ],
+            3,
+        ),
+        (true, true) => (
+            [
+                CoordinateAxis::X,
+                CoordinateAxis::Y,
+                CoordinateAxis::Z,
+                CoordinateAxis::M,
+            ],
+            4,
+        ),
     }
-    if axes.has_m() {
-        order[n] = CoordinateAxis::M;
-        n += 1;
-    }
-    (order, n)
 }
 
 pub(crate) fn coordinate_ordinate(point: Point, axis: CoordinateAxis) -> Option<f64> {
@@ -63,7 +85,9 @@ pub(crate) fn coordinate_matrix_data(
     missing: f64,
 ) -> PyResult<(usize, Vec<f64>)> {
     let (order, dims) = coordinate_axis_order(axes);
-    let order = &order[..dims];
+    let order = order
+        .get(..dims)
+        .expect("axis count fits its fixed order array");
     let rows = view.len_for_python(py)?;
     let count = rows.checked_mul(dims).ok_or_else(|| {
         pyo3::exceptions::PyOverflowError::new_err("coordinate matrix is too large")
@@ -100,8 +124,16 @@ pub(crate) fn coordinate_matrix_data(
                 *value = match axis {
                     CoordinateAxis::X => x,
                     CoordinateAxis::Y => y,
-                    CoordinateAxis::Z => zs.map_or(missing, |column| column[i]),
-                    CoordinateAxis::M => ms.map_or(missing, |column| column[i]),
+                    CoordinateAxis::Z => zs.map_or(missing, |column| {
+                        *column
+                            .get(i)
+                            .expect("Z coordinates match the admitted row count")
+                    }),
+                    CoordinateAxis::M => ms.map_or(missing, |column| {
+                        *column
+                            .get(i)
+                            .expect("M coordinates match the admitted row count")
+                    }),
                 };
             }
         }
@@ -121,7 +153,10 @@ pub(crate) fn coordinate_tuple(
         return point_tuple(py, point);
     };
     let (order, n) = coordinate_axis_order(axes);
-    let values = order[..n]
+    let order = order
+        .get(..n)
+        .expect("axis count fits its fixed order array");
+    let values = order
         .iter()
         .map(|&axis| Ok(coordinate_ordinate(point, axis).into_pyobject(py)?.unbind()))
         .collect::<PyResult<Vec<_>>>()?;
@@ -151,7 +186,9 @@ pub(crate) fn column_axis_to_py(
             let capacity = coordinates::checked_vector_len::<f64>(count, "coordinate column")?;
             float64_array(py, vec![f64::NAN; capacity])
         },
-        column => column_ref_to_py(py, owner, column),
+        column @ (coordinates::CoordinateColumnRef::Borrowed(_)
+        | coordinates::CoordinateColumnRef::Dense(_)
+        | coordinates::CoordinateColumnRef::Nullable(_)) => column_ref_to_py(py, owner, column),
     }
 }
 

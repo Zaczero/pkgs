@@ -1,7 +1,3 @@
-#![expect(
-    clippy::similar_names,
-    reason = "axis and formula symbols name paired quantities here (minx/miny, xs/ys, lat_rad/lam_rad, step/stop), which this lint reads as typos"
-)]
 //! Shared row-container iteration and indexing helpers.
 
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -40,7 +36,7 @@ impl RowIterState {
             return None;
         }
         Some(if self.reverse {
-            len - 1 - position
+            len.wrapping_sub(1).wrapping_sub(position)
         } else {
             position
         })
@@ -83,8 +79,12 @@ pub(crate) enum RowIndexOrSlice {
 }
 
 pub(crate) fn normalize_row(index: isize, len: usize, label: &str) -> PyResult<usize> {
-    let len = len as isize;
-    let normalized = if index < 0 { len + index } else { index };
+    let len = isize::try_from(len).expect("Python row count fits in Py_ssize_t");
+    let normalized = if index < 0 {
+        len.wrapping_add(index)
+    } else {
+        index
+    };
     usize::try_from(normalized)
         .ok()
         .filter(|&row| row < len as usize)

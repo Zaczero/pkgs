@@ -41,19 +41,33 @@ impl RingCoordinateColumns for CoordSeq {
     }
 
     fn x(&self, index: usize) -> f64 {
-        self.xs()[index]
+        *self
+            .xs()
+            .get(index)
+            .expect("ring coordinate index is bounded by its admitted window")
     }
 
     fn y(&self, index: usize) -> f64 {
-        self.ys()[index]
+        *self
+            .ys()
+            .get(index)
+            .expect("ring coordinate index is bounded by its admitted window")
     }
 
     fn z(&self, index: usize) -> Option<f64> {
-        self.zs().map(|values| values[index])
+        self.zs().map(|values| {
+            *values
+                .get(index)
+                .expect("ring coordinate index is bounded by its admitted window")
+        })
     }
 
     fn m(&self, index: usize) -> Option<f64> {
-        self.ms().map(|values| values[index])
+        self.ms().map(|values| {
+            *values
+                .get(index)
+                .expect("ring coordinate index is bounded by its admitted window")
+        })
     }
 }
 
@@ -115,7 +129,7 @@ impl CheckedRingWindow {
             return Err(RingWindowError::TooShort(len));
         }
         let first = window.start;
-        let last = window.end - 1;
+        let last = window.end.wrapping_sub(1);
         #[expect(
             clippy::float_cmp,
             reason = "ring closure requires exact ordinate identity"
@@ -137,7 +151,6 @@ impl CheckedRingWindow {
 
 pub(crate) fn polygon_pack_axes(polygon: &Polygon) -> Option<CoordinateAxes> {
     let mut axes: Option<CoordinateAxes> = None;
-    let mut n_rings = 0_usize;
     for seq in polygon.rings() {
         CheckedRingWindow::checked(seq, 0..seq.len()).ok()?;
         let row_axes = seq.axes();
@@ -146,10 +159,6 @@ pub(crate) fn polygon_pack_axes(polygon: &Polygon) -> Option<CoordinateAxes> {
             Some(existing) if existing != row_axes => return None,
             Some(_) => {},
         }
-        n_rings += 1;
-    }
-    if n_rings == 0 {
-        return None;
     }
     axes
 }

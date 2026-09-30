@@ -111,6 +111,10 @@ pub(crate) fn unary_array<R: BulkElement>(
     R::bulk_into_py_masked(values, py, &output_frame, array.missing())
 }
 
+#[expect(
+    clippy::wildcard_enum_match_arm,
+    reason = "prepared state is reserved for the operations listed here; all others use the transient shape-only lane"
+)]
 const fn unary_row_mode(op: Operation) -> UnaryRowMode {
     match op {
         Operation::IsValid

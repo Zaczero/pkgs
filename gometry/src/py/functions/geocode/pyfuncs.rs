@@ -6,7 +6,9 @@ use crate::py::errors;
 use crate::py::functions::geocode::pluscode::{
     olc_decode, olc_encode, olc_recover, olc_require_full, olc_shorten, validate_pluscode_length,
 };
-use crate::py::functions::geocode::shortlink::{shortlink_decode, shortlink_encode};
+use crate::py::functions::geocode::shortlink::{
+    SHORTLINK_MAX_ZOOM, shortlink_decode, shortlink_encode,
+};
 use crate::py::functions::geocode::{
     Bound, CodeInput, IntoPyObject as _, Py, PyAny, PyErr, PyResult, Python, pyfunction,
 };
@@ -17,9 +19,24 @@ use crate::{
     lonlat_points,
 };
 
+#[derive(Clone, Copy)]
+enum GeocodeEncoder {
+    PlusCode { length: usize },
+    OsmShortlink { zoom: u8 },
+}
+
+impl GeocodeEncoder {
+    fn encode(self, lon: f64, lat: f64) -> String {
+        match self {
+            Self::PlusCode { length } => olc_encode(lat, lon, length),
+            Self::OsmShortlink { zoom } => shortlink_encode(lon, lat, zoom),
+        }
+    }
+}
+
 fn geocode_array_codes(
     array: &PyGeometryArray,
-    operation: impl Fn(f64, f64) -> PyResult<String> + Send,
+    encoder: GeocodeEncoder,
 ) -> PyResult<Vec<Option<String>>> {
     let points = match lonlat_points(array) {
         Ok(points) => points,
@@ -38,8 +55,7 @@ fn geocode_array_codes(
             continue;
         }
         let point = points.get(row);
-        let code = operation(point.x, point.y).map_err(|err| crate::note_array_row(err, row))?;
-        output.push(Some(code));
+        output.push(Some(encoder.encode(point.x, point.y)));
     }
     Ok(output)
 }
@@ -48,7 +64,7 @@ fn geocode_encode_broadcast(
     py: Python<'_>,
     value: &Bound<'_, PyAny>,
     lat: Option<&Bound<'_, PyAny>>,
-    operation: impl Fn(f64, f64) -> PyResult<String> + Copy + Send,
+    encoder: GeocodeEncoder,
 ) -> PyResult<Py<PyAny>> {
     use pyo3::IntoPyObjectExt as _;
 
@@ -60,7 +76,7 @@ fn geocode_encode_broadcast(
         }
         let shape = crate::lonlat_shape(geometry)?;
         let (lon, lat) = crate::point_xy(&shape)?;
-        return operation(lon, lat)?.into_py_any(py);
+        return encoder.encode(lon, lat).into_py_any(py);
     }
     if let Some(array) = exact_geometry_array(value) {
         if lat.is_some() {
@@ -69,7 +85,7 @@ fn geocode_encode_broadcast(
             ));
         }
         return py
-            .detach(move || geocode_array_codes(array, operation))?
+            .detach(move || geocode_array_codes(array, encoder))?
             .into_py_any(py);
     }
 
@@ -94,23 +110,19 @@ fn geocode_encode_broadcast(
         [(&mut lon, "longitude"), (&mut lat, "latitude")],
         "lon and lat",
     )?;
-    let encoded = lon
-        .values
-        .iter()
-        .zip(&lat.values)
-        .map(|(&lon, &lat)| {
-            geographic::validate_lonlat_xy(lon, lat)?;
-            operation(lon, lat)
-        })
-        .collect::<pyo3::PyResult<Vec<_>>>()?;
+    let mut codes = Vec::with_capacity(lon.values.len());
+    for (&lon, &lat) in lon.values.iter().zip(&lat.values) {
+        geographic::validate_lonlat_xy(lon, lat)?;
+        codes.push(encoder.encode(lon, lat));
+    }
     if scalar {
-        encoded
+        codes
             .into_iter()
             .next()
             .expect("scalar coordinate inputs produce one code")
             .into_py_any(py)
     } else {
-        encoded.into_py_any(py)
+        codes.into_py_any(py)
     }
 }
 
@@ -196,7 +208,7 @@ pub(crate) fn pluscode_encode(
     #[pyo3(from_py_with = crate::strict_i64)] length: i64,
 ) -> PyResult<Py<PyAny>> {
     let length = validate_pluscode_length(length)?;
-    geocode_encode_broadcast(py, value, lat, |lon, lat| Ok(olc_encode(lat, lon, length)))
+    geocode_encode_broadcast(py, value, lat, GeocodeEncoder::PlusCode { length })
 }
 
 /// Return the rectangular cell a plus code covers, as a WGS84 ``Polygon``.
@@ -255,8 +267,8 @@ pub(crate) fn pluscode_polygon(py: Python<'_>, code: &Bound<'_, PyAny>) -> PyRes
 
 /// Shorten a full plus code relative to a nearby reference point.
 ///
-/// Removes leading digits that the reference location implies (at least
-/// four when close enough); `pluscode_recover` restores them.
+/// Removes two to six leading digits that the reference location implies;
+/// `pluscode_recover` restores them.
 ///
 /// Parameters
 /// ----------
@@ -377,15 +389,13 @@ pub(crate) fn osm_shortlink_encode(
     lat: Option<&Bound<'_, PyAny>>,
     #[pyo3(from_py_with = crate::strict_i64)] zoom: i64,
 ) -> PyResult<Py<PyAny>> {
-    if !(0..=22).contains(&zoom) {
+    if !(0..=i64::from(SHORTLINK_MAX_ZOOM)).contains(&zoom) {
         return Err(GeometryError::new_err(format!(
-            "osm_shortlink zoom must be between 0 and 22, got {zoom}"
+            "osm_shortlink zoom must be between 0 and {SHORTLINK_MAX_ZOOM}, got {zoom}"
         )));
     }
     let zoom = zoom as u8;
-    geocode_encode_broadcast(py, value, lat, |lon, lat| {
-        Ok(shortlink_encode(lon, lat, zoom))
-    })
+    geocode_encode_broadcast(py, value, lat, GeocodeEncoder::OsmShortlink { zoom })
 }
 
 /// Parse an OSM shortlink code back into its location and zoom.

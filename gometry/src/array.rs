@@ -130,8 +130,8 @@ impl<'a> Iterator for LogicalRows<'a> {
             return None;
         }
         let logical = self.logical;
-        self.logical += 1;
-        self.remaining -= 1;
+        self.logical = self.logical.wrapping_add(1);
+        self.remaining = self.remaining.wrapping_sub(1);
         Some(match &mut self.state {
             LogicalRowsState::Dense(rows) => LogicalRow::Present {
                 logical,

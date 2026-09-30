@@ -79,6 +79,7 @@ def test_pluscode_encodes_canonical_vectors() -> None:
     ]
     for lat, lon, length, expected in vectors:
         assert gm.pluscode_encode(lon, lat, length=length) == expected, expected
+    assert gm.pluscode_encode(180.0, 0.0) == gm.pluscode_encode(-180.0, 0.0)
     # Point / array inputs are CRS-aware; bare pairs are lon, lat.
     assert gm.pluscode_encode(gm.Point(8.628, 47.366, crs=4326)) == '8FVC9J8H+C6'
     assert gm.pluscode_encode(
@@ -90,6 +91,20 @@ def test_pluscode_encodes_canonical_vectors() -> None:
         gm.pluscode_encode(0, 0, length=5)
     with pytest.raises(gm.GeometryError, match='between 2 and 15'):
         gm.pluscode_encode(0, 0, length=16)
+
+
+def test_pluscode_validates_the_specified_full_code_length() -> None:
+    """Open Location Code allows at most 15 digits: https://github.com/google/open-location-code/blob/main/Documentation/Specification/specification.md."""
+    assert gm.pluscode_polygon('849VGJQF+VX7QR3J').geometry_type == 'Polygon'
+    with pytest.raises(gm.ParseError, match='full plus code'):
+        gm.pluscode_polygon('849VGJQF+VX7QR3J2')
+    # Padding fills the prefix through the separator but does not count as code digits.
+    assert gm.pluscode_polygon('6GCR0000+').geometry_type == 'Polygon'
+
+
+def test_pluscode_padding_must_end_at_the_separator() -> None:
+    with pytest.raises(gm.ParseError, match='full plus code'):
+        gm.pluscode_polygon('6GCR00XQ+')
 
 
 def test_pluscode_rejects_out_of_range_bare_coordinates() -> None:
@@ -133,9 +148,10 @@ def test_pluscode_polygon_short_codes_and_validity() -> None:
         8.0000859375,
         47.000065,
     )
-    # shortCodeTests.csv vectors (lon, lat references).
-    assert gm.pluscode_shorten('9C3W9QCJ+2VX', -1.217765625, 51.3701125) == '+2VX'
+    # Locality-sensitive shortening retains two to six leading digits.
+    assert gm.pluscode_shorten('9C3W9QCJ+2VX', -1.217765625, 51.3701125) == 'CJ+2VX'
     assert gm.pluscode_shorten('9C3W9QCJ+2VX', -1.232865625, 51.3701125) == '9QCJ+2VX'
+    assert gm.pluscode_recover('CJ+2VX', -1.217765625, 51.3701125) == '9C3W9QCJ+2VX'
     assert gm.pluscode_recover('9QCJ+2VX', -1.217765625, 51.3852125) == '9C3W9QCJ+2VX'
     # Recovery wraps cell edges (R-row); a full code passes through
     # normalized.
@@ -143,7 +159,7 @@ def test_pluscode_polygon_short_codes_and_validity() -> None:
     assert gm.pluscode_recover('8fvc2222+22', 0, 0) == '8FVC2222+22'
     assert (
         gm.pluscode_shorten('9C3W9QCJ+2VX', reference=-1.217765625, lat=51.3701125)
-        == '+2VX'
+        == 'CJ+2VX'
     )
     assert (
         gm.pluscode_recover('9QCJ+2VX', reference=-1.217765625, lat=51.3852125)
@@ -160,7 +176,7 @@ def test_pluscode_polygon_short_codes_and_validity() -> None:
         ['9C3W9QCJ+2VX', '9C3W9QCJ+2VX'],
         [-1.217765625, -1.232865625],
         51.3701125,
-    ) == ['+2VX', '9QCJ+2VX']
+    ) == ['CJ+2VX', '9QCJ+2VX']
     assert gm.pluscode_recover(
         ['9QCJ+2VX', '8fvc2222+22'],
         [-1.217765625, 0.0],
@@ -174,10 +190,19 @@ def test_pluscode_polygon_short_codes_and_validity() -> None:
         gm.pluscode_shorten('7FG49Q00+', 2.775, 20.375)
     with pytest.raises(gm.ParseError, match='short plus code'):
         gm.pluscode_recover('not-a-code', 0, 0)
+    with pytest.raises(gm.ParseError, match='short plus code'):
+        gm.pluscode_recover('+2VX', -1.217765625, 51.3701125)
     with pytest.raises(gm.InvalidGeometryError):
         gm.pluscode_shorten('9C3W9QCJ+2VX', -181.0, 51.37)
     with pytest.raises(gm.InvalidGeometryError):
         gm.pluscode_recover('9QCJ+2VX', -1.2, 91.0)
+
+
+def test_pluscode_shortening_obeys_the_six_digit_limit() -> None:
+    """Open Location Code short codes remove two to six digits: https://github.com/google/open-location-code/blob/main/Documentation/Specification/specification.md."""
+    code = '9C3W9QCJ+2VX'
+    assert gm.pluscode_shorten(code, -1.217765625, 51.3701125) == 'CJ+2VX'
+    assert gm.pluscode_shorten(code, -1.217765625, 52.3701125) == '3W9QCJ+2VX'
 
 
 def test_osm_shortlink_round_trips() -> None:
@@ -203,6 +228,10 @@ def test_osm_shortlink_round_trips() -> None:
         cell = 360.0 / 2 ** (zoom + 8)
         assert trip_lon == pytest.approx(-73.99, abs=cell)
         assert trip_lat == pytest.approx(40.73, abs=cell)
+    assert gm.osm_shortlink_encode(180.0, 0.0, zoom=17) == (
+        gm.osm_shortlink_encode(-180.0, 0.0, zoom=17)
+    )
+    assert len(gm.osm_shortlink_encode(0.0, 0.0, zoom=22)) == 10
     # Point inputs and gates.
     assert gm.osm_shortlink_encode(gm.Point(13.365, 52.5077, crs=4326)) == (
         gm.osm_shortlink_encode(13.365, 52.5077)
@@ -231,6 +260,10 @@ def test_osm_shortlink_round_trips() -> None:
     # as an invalid negative zoom.
     with pytest.raises(gm.ParseError, match='too short'):
         gm.osm_shortlink_location('A')
+    with pytest.raises(gm.ParseError, match='too long'):
+        gm.osm_shortlink_location('A' * 11)
+    with pytest.raises(gm.ParseError, match='invalid OSM shortlink character'):
+        gm.osm_shortlink_location('A' * 11 + '!')
     assert isinstance(zoom, int)
 
 

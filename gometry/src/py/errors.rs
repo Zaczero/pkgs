@@ -345,7 +345,7 @@ fn native_resource(error: &Error) -> Option<NativeResource> {
             ResourceError::SizeOverflow => NativeResource::Overflow,
             ResourceError::SizeOverflowContext(message) => NativeResource::OverflowContext(message),
         }),
-        _ => None,
+        ErrorKind::Geometry(_) | ErrorKind::Crs(_) | ErrorKind::Io(_) | ErrorKind::Frame(_) => None,
     }
 }
 
@@ -367,7 +367,10 @@ impl From<Error> for PyErr {
         }
         let message = match error.kind() {
             ErrorKind::Io(error) => error.display_message(),
-            _ => error.to_string(),
+            ErrorKind::Geometry(_)
+            | ErrorKind::Crs(_)
+            | ErrorKind::Frame(_)
+            | ErrorKind::Resource(_) => error.to_string(),
         };
         match error.kind() {
             ErrorKind::Geometry(kind) => match kind {

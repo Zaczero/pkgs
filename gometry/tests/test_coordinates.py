@@ -728,6 +728,21 @@ def test_set_coordinates_validation_errors() -> None:
         poly.set_coordinates(opened)
 
 
+def test_points_reject_mismatched_z_and_m_column_lengths() -> None:
+    with pytest.raises(gm.InvalidGeometryError, match='same length'):
+        gm.points([0.0, 1.0], [0.0, 1.0], z=[2.0])
+    with pytest.raises(gm.InvalidGeometryError, match='same length'):
+        gm.points([0.0, 1.0], [0.0, 1.0], m=[3.0])
+
+
+def test_set_coordinates_rejects_mismatched_z_and_m_column_lengths() -> None:
+    line = gm.LineString([(0.0, 0.0, 1.0, 10.0), (1.0, 1.0, 2.0, 20.0)])
+    with pytest.raises(gm.InvalidGeometryError, match='z must have length 2'):
+        line.set_coordinates(x=[3.0, 4.0], y=[5.0, 6.0], z=[7.0], m=[30.0, 40.0])
+    with pytest.raises(gm.InvalidGeometryError, match='m must have length 2'):
+        line.set_coordinates(x=[3.0, 4.0], y=[5.0, 6.0], z=[7.0, 8.0], m=[30.0])
+
+
 def test_set_coordinates_accepts_positive_negative_and_zero_strides() -> None:
     line = gm.LineString([(0.0, 0.0), (1.0, 1.0), (2.0, 2.0)])
     storage = np.array([[10.0, 20.0], [11.0, 21.0], [12.0, 22.0]])

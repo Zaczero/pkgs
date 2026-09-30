@@ -50,7 +50,7 @@ pub(crate) fn closest_token<'a>(value: &str, tokens: &[&'a str]) -> Option<&'a s
     // nonsense ('xx', 'zzz') stays silent while real typos still suggest.
     let threshold = (value.len() / 3).clamp(1, 2);
     let max_token_len = tokens.iter().map(|token| token.len()).max()?;
-    let mut row = vec![0; max_token_len + 1];
+    let mut row = vec![0; max_token_len.wrapping_add(1)];
     let mut best: Option<(usize, &str)> = None;
     for &token in tokens {
         let distance = edit_distance_ascii_casefold(value.as_bytes(), token.as_bytes(), &mut row);
@@ -64,20 +64,32 @@ pub(crate) fn closest_token<'a>(value: &str, tokens: &[&'a str]) -> Option<&'a s
 /// Case-insensitive Levenshtein distance over bytes (tokens are ASCII), using
 /// one reusable row and a saved diagonal cell.
 fn edit_distance_ascii_casefold(left: &[u8], right: &[u8], row: &mut [usize]) -> usize {
-    for (column, value) in row.iter_mut().enumerate().take(right.len() + 1) {
+    let width = right.len().wrapping_add(1);
+    let row = row
+        .get_mut(..width)
+        .expect("edit-distance row is sized for the longer token");
+    for (column, value) in row.iter_mut().enumerate() {
         *value = column;
     }
     for (row_index, &l) in left.iter().enumerate() {
-        let mut diagonal = row[0];
-        row[0] = row_index + 1;
-        for (column, &r) in right.iter().enumerate() {
-            let old_above = row[column + 1];
-            let substitution = diagonal + usize::from(!l.eq_ignore_ascii_case(&r));
-            row[column + 1] = substitution.min(old_above + 1).min(row[column] + 1);
+        let Some((first, rest)) = row.split_first_mut() else {
+            unreachable!("an edit-distance row always has its zero column");
+        };
+        let mut diagonal = *first;
+        *first = row_index.wrapping_add(1);
+        let mut left_value = *first;
+        for (&r, cell) in right.iter().zip(rest) {
+            let old_above = *cell;
+            let substitution = diagonal.wrapping_add(usize::from(!l.eq_ignore_ascii_case(&r)));
+            *cell = substitution
+                .min(old_above.wrapping_add(1))
+                .min(left_value.wrapping_add(1));
             diagonal = old_above;
+            left_value = *cell;
         }
     }
-    row[right.len()]
+    *row.last()
+        .expect("an edit-distance row always has its zero column")
 }
 
 /// Token normalizer for PROJ export options: trimmed ASCII uppercase with

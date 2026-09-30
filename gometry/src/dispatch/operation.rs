@@ -38,6 +38,14 @@ macro_rules! define_operation {
                     Self::Predicate(_) => MetricResolver::None,
                 }
             }
+
+            pub(crate) const fn metric_op(self) -> Option<MetricOp> {
+                match self {
+                    $(Self::$unit => None,)*
+                    Self::Metric(op) => Some(op),
+                    Self::Predicate(_) => None,
+                }
+            }
         }
     };
 }
@@ -125,6 +133,10 @@ impl MetricOp {
         }
     }
 
+    #[expect(
+        clippy::wildcard_enum_match_arm,
+        reason = "ordinary metric operations share this hot resolver; only 3D and linear-reference metrics are specialized above"
+    )]
     pub(crate) const fn resolver(self) -> MetricResolver {
         match self {
             Self::Distance3d | Self::Length3d => MetricResolver::Metric3d {
@@ -197,13 +209,6 @@ impl Operation {
     /// Call-site ``unit=`` for CRS-aware ops (merged into [`MetricResolver`]).
     pub(crate) const fn resolver_with_unit(self, unit: Option<DistanceUnit>) -> MetricResolver {
         self.resolver().with_unit(unit)
-    }
-
-    pub(crate) const fn metric_op(self) -> Option<MetricOp> {
-        match self {
-            Self::Metric(op) => Some(op),
-            _ => None,
-        }
     }
 
     pub(crate) const fn resolver_with_line_unit(

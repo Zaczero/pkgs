@@ -86,7 +86,7 @@ pub(crate) fn line_locate_input(
         (GeometryInput::One(line), GeometryInput::One(point)) => {
             let query = locate_query(point.shape.shape())?;
             let plan = line.prepared_plan();
-            let located = locate.at(&plan, &*line.frame_cache(), query, Lane::Scalar)?;
+            let located = locate.at(&plan, &line.frame_cache(), query, Lane::Scalar)?;
             Ok(located.into_pyobject(py)?.unbind().into())
         },
         (GeometryInput::One(line), GeometryInput::Many(points)) => {
@@ -118,7 +118,7 @@ pub(crate) fn line_locate_input(
                         ArrayRow::Present(line) => {
                             let row = line.logical();
                             let line = rows.prepared(line)?;
-                            locate.at(&line, &*rows.frame_cache(row), query, Lane::Array(row))
+                            locate.at(&line, &rows.frame_cache(row), query, Lane::Array(row))
                         },
                     })
                     .collect_rows()
@@ -161,7 +161,7 @@ pub(crate) fn line_locate_input(
                         let query = point.row().with_shape(locate_query)??;
                         let row = line.logical();
                         let line = rows.prepared(line)?;
-                        locate.at(&line, &*rows.frame_cache(row), query, Lane::Array(row))
+                        locate.at(&line, &rows.frame_cache(row), query, Lane::Array(row))
                     })
                     .collect_rows()
             })
@@ -184,7 +184,7 @@ pub(crate) fn line_interpolate_points_scalar(
         .clone();
     let line = geometry.prepared_plan();
     let shapes =
-        line_interpolate_points_shape(&model, &line, &*geometry.frame_cache(), plan, Lane::Scalar)?;
+        line_interpolate_points_shape(&model, &line, &geometry.frame_cache(), plan, Lane::Scalar)?;
     Ok(PyGeometryArray::from_shapes(
         shapes,
         geometry.frame.clone(),

@@ -70,8 +70,9 @@ impl IndirectFloat64Buffer {
                     )));
                 }
                 let values: Box<[f64]> = values.into_boxed_slice();
-                let pointers: Box<[usize]> = (0..n)
-                    .map(|i| std::ptr::from_ref(&values[i]).expose_provenance())
+                let pointers: Box<[usize]> = values
+                    .iter()
+                    .map(|value| std::ptr::from_ref(value).expose_provenance())
                     .collect::<Vec<_>>()
                     .into_boxed_slice();
                 Ok(Self {
@@ -101,8 +102,14 @@ impl IndirectFloat64Buffer {
                 let pointers: Box<[usize]> = if n == 0 || d == 0 {
                     Box::from([])
                 } else {
-                    (0..n)
-                        .map(|row| std::ptr::from_ref(&values[row * d]).expose_provenance())
+                    values
+                        .chunks_exact(d)
+                        .map(|row| {
+                            std::ptr::from_ref(
+                                row.first().expect("nonempty rows have a first value"),
+                            )
+                            .expose_provenance()
+                        })
                         .collect::<Vec<_>>()
                         .into_boxed_slice()
                 };

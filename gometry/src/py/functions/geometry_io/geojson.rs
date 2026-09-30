@@ -1376,7 +1376,7 @@ impl RawJsonToPy<'_, '_> {
         self.text.as_bytes().get(self.position).copied()
     }
 
-    fn advance(&mut self) {
+    const fn advance(&mut self) {
         self.position = self.position.wrapping_add(1);
     }
 

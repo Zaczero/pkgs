@@ -23,10 +23,10 @@ impl PyCoordinates {
         use std::ops::ControlFlow;
         let py = other.py();
         let mut items = other.try_iter()?;
-        let mut position = 0;
+        let mut position = 0_usize;
         let walk = self.view.try_for_each_point(&mut |coord| {
             let current = position;
-            position += 1;
+            position = position.wrapping_add(1);
             if let Err(error) = crate::check_python_signals(py, current) {
                 return ControlFlow::Break(Err(error));
             }

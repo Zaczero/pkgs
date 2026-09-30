@@ -123,6 +123,10 @@ fn packed_f64_lane(
 }
 
 /// Packed-column fast paths for unary measure ops returning ``float64`` ndarrays.
+#[expect(
+    clippy::wildcard_enum_match_arm,
+    reason = "the packed f64 fast path handles only three measures; other operations continue to later dispatch"
+)]
 pub(crate) fn try_unary_packed_f64(
     py: Python<'_>,
     array: &PyGeometryArray,
@@ -184,6 +188,10 @@ pub(crate) fn try_unary_packed_bool(
 }
 
 /// The packed boolean kernels, with the missing-row sentinel applied.
+#[expect(
+    clippy::wildcard_enum_match_arm,
+    reason = "only packed boolean predicates are handled here; other operations continue to later dispatch"
+)]
 fn packed_bool_values(array: &PyGeometryArray, op: Operation) -> Option<PyResult<Vec<bool>>> {
     // Packed bool kernels run over physical rows (including NaN placeholders
     // on missing slots). [`packed_bool_lane`] then writes the missing-row
@@ -252,6 +260,10 @@ pub(crate) fn try_unary_packed_bounds(
 ///
 /// Param-less fast paths key on ``op``; parameterized ones key on the
 /// [`PackedUnary`] variant (whose construction is compile-checked).
+#[expect(
+    clippy::wildcard_enum_match_arm,
+    reason = "unmatched operations and parameter pairs decline the packed lane and continue to row dispatch"
+)]
 pub(crate) fn try_unary_packed_array(
     py: Python<'_>,
     array: &PyGeometryArray,

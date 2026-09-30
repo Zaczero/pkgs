@@ -93,9 +93,9 @@ pub(crate) fn canonical_lonlat(lon: f64, lat: f64) -> (f64, f64) {
 /// Shared by both [`geohash`] and [`tile`] so the wrap is defined once.
 pub(crate) const fn wrap_axis(value: i64, cells: i64) -> i64 {
     if value < 0 {
-        value + cells
+        value.wrapping_add(cells)
     } else if value >= cells {
-        value - cells
+        value.wrapping_sub(cells)
     } else {
         value
     }

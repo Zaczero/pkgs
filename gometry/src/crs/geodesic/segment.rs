@@ -834,10 +834,10 @@ fn cached_geodesic_line_with_caps(
             return *line;
         }
         count_line_cache_miss!();
-        if cache.len() == GEODESIC_LINE_CACHE_CAPACITY {
-            if let Some(evict) = cache.keys().next().copied() {
-                cache.remove(&evict);
-            }
+        if cache.len() == GEODESIC_LINE_CACHE_CAPACITY
+            && let Some(evict) = cache.keys().next().copied()
+        {
+            cache.remove(&evict);
         }
         let line = GeodesicLine::new(
             geodesic,

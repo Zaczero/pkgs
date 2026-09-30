@@ -387,7 +387,12 @@ impl StreamingShapes {
             Shape::Polygon(polygon) if super::polygon_pack_axes(polygon).is_some() => {
                 self.try_push_polygon_native(polygon)
             },
-            _ => Ok(false),
+            Shape::MultiPoint(_)
+            | Shape::MultiLineString(_)
+            | Shape::MultiPolygon(_)
+            | Shape::GeometryCollection(_)
+            | Shape::Empty(..)
+            | Shape::Polygon(_) => Ok(false),
         }
     }
 
@@ -477,7 +482,7 @@ impl StreamingShapes {
             let polygon_capacity = ShapeCountQuery::default()
                 .polygon_coordinates(polygon)
                 .ok()
-                .filter(|&capacity| capacity <= i32::MAX as usize);
+                .filter(|&capacity| i32::try_from(capacity).is_ok());
             let mut builder = StreamingPolygons::try_new(
                 axes,
                 self.coordinate_capacity,
@@ -501,8 +506,12 @@ impl StreamingShapes {
         rings: std::ops::Range<usize>,
     ) -> crate::error::Result<bool> {
         if rings.clone().any(|ring| {
-            let start = ring_offsets[ring] as usize;
-            let end = ring_offsets[ring + 1] as usize;
+            let &[start, end] = ring_offsets
+                .get(ring..)
+                .and_then(|offsets| offsets.first_chunk::<2>())
+                .expect("polygon ring range is bounded by its admitted offsets");
+            let start = start as usize;
+            let end = end as usize;
             super::CheckedRingWindow::checked(coords, start..end).is_err()
         }) {
             return Ok(false);

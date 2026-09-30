@@ -13,14 +13,10 @@ pub(crate) fn row_bounds(xs: &[f64], ys: &[f64]) -> Option<Bounds> {
     })
 }
 
-/// Borrow a CSR column window without `Range::clone()` — `std::ops::Range` is
-/// not `Copy` on our toolchain, but indexing via `start`/`end` is zero-cost.
-#[expect(
-    clippy::indexing_slicing,
-    reason = "callers pass coordinate windows admitted by PackedRow or validated CSR offsets"
-)]
+/// Borrow a CSR column window admitted by the source offsets.
 pub(crate) fn column_window<'a, T>(data: &'a [T], range: &std::ops::Range<usize>) -> &'a [T] {
-    &data[range.start..range.end]
+    data.get(range.start..range.end)
+        .expect("column window is bounded by its admitted offsets")
 }
 
 /// Map a packed centroid column result to a validated point (`POINT EMPTY` on

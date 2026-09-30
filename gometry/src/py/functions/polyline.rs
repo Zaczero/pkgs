@@ -45,15 +45,16 @@ fn push_encoded_char(out: &mut String, value: char) {
 
 /// Append one signed value as zig-zag 5-bit chunks offset by 63.
 fn encode_value(value: i64, out: &mut String) {
-    let mut bits = value << 1;
+    let mut bits = value.wrapping_shl(1);
     if value < 0 {
         bits = !bits;
     }
     while bits >= 0x20 {
-        push_encoded_char(out, char::from((0x20 | (bits & 0x1F)) as u8 + 63));
+        let digit = (0x20 | (bits & 0x1F)) as u8;
+        push_encoded_char(out, char::from(digit.wrapping_add(63)));
         bits >>= 5;
     }
-    push_encoded_char(out, char::from(bits as u8 + 63));
+    push_encoded_char(out, char::from((bits as u8).wrapping_add(63)));
 }
 
 fn encode_xy(
@@ -74,8 +75,8 @@ fn encode_xy(
     }
     let lat = scale(y, factor);
     let lon = scale(x, factor);
-    encode_value(lat - previous.0, out);
-    encode_value(lon - previous.1, out);
+    encode_value(lat.wrapping_sub(previous.0), out);
+    encode_value(lon.wrapping_sub(previous.1), out);
     *previous = (lat, lon);
     Ok(())
 }
@@ -106,7 +107,12 @@ fn encode_shape(shape: &Shape, factor: f64) -> PyResult<String> {
         {
             Ok(String::new())
         },
-        _ => Err(geometry_type_err(
+        Shape::MultiPoint(_)
+        | Shape::MultiLineString(_)
+        | Shape::Polygon(_)
+        | Shape::MultiPolygon(_)
+        | Shape::GeometryCollection(_)
+        | Shape::Empty(..) => Err(geometry_type_err(
             "to_polyline requires a LineString or Point",
         )),
     }
@@ -223,7 +229,7 @@ fn decode_value(bytes: &mut std::str::Bytes<'_>, source: &str) -> PyResult<Optio
             )));
         };
         bits |= i64::from(chunk & 0x1F) << shift;
-        shift += 5;
+        shift = shift.wrapping_add(5);
         if chunk < 0x20 {
             let value = if bits & 1 != 0 {
                 !(bits >> 1)

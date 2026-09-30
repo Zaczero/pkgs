@@ -132,24 +132,41 @@ pub(crate) fn note_array_row(err: PyErr, row: usize) -> PyErr {
         };
         let exception = err.value(py);
         let mut bytes = [0_u8; CAPACITY];
-        bytes[..PREFIX.len()].copy_from_slice(PREFIX);
+        bytes
+            .get_mut(..PREFIX.len())
+            .expect("prefix fits the note buffer")
+            .copy_from_slice(PREFIX);
         let mut digits = [0_u8; MAX_DIGITS];
         let mut end = digits.len();
         if row == 0 {
-            end -= 1;
-            digits[end] = b'0';
+            end = end.wrapping_sub(1);
+            *digits.get_mut(end).expect("zero fits the digit buffer") = b'0';
         } else {
             let mut value = row;
             while value != 0 {
-                end -= 1;
-                digits[end] = b'0' + (value % 10) as u8;
+                end = end.wrapping_sub(1);
+                *digits
+                    .get_mut(end)
+                    .expect("usize decimal digits fit the digit buffer") =
+                    b'0'.wrapping_add((value % 10) as u8);
                 value /= 10;
             }
         }
-        let digits = &digits[end..];
+        let digits = digits
+            .get(end..)
+            .expect("decimal digits start within the digit buffer");
         let start = PREFIX.len();
-        bytes[start..start + digits.len()].copy_from_slice(digits);
-        let note = match PyString::from_bytes(py, &bytes[..start + digits.len()]) {
+        let note_end = start.wrapping_add(digits.len());
+        bytes
+            .get_mut(start..note_end)
+            .expect("formatted note fits the note buffer")
+            .copy_from_slice(digits);
+        let note = match PyString::from_bytes(
+            py,
+            bytes
+                .get(..note_end)
+                .expect("formatted note fits the note buffer"),
+        ) {
             Ok(note) => note,
             Err(secondary) => {
                 drop(secondary);

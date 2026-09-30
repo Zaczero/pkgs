@@ -37,7 +37,9 @@ fn explicit_none_error(name: &str) -> PyErr {
 }
 
 fn axis_count(axes: CoordinateAxes) -> usize {
-    2 + usize::from(axes.has_z()) + usize::from(axes.has_m())
+    2_usize
+        .wrapping_add(usize::from(axes.has_z()))
+        .wrapping_add(usize::from(axes.has_m()))
 }
 
 fn reject_axis_fabrication(axes: CoordinateAxes, kwargs: &Bound<'_, PyDict>) -> PyResult<()> {
@@ -162,10 +164,9 @@ fn replacement_from_coordinates_view(
             zs: seq
                 .carried_zs()
                 .map_or(ReplacementAxis::Carry, ReplacementAxis::Replace),
-            ms: seq
-                .ms()
-                .map(|values| ReplacementAxis::Replace(SharedSlice::from_vec(values.to_vec())))
-                .unwrap_or(ReplacementAxis::Carry),
+            ms: seq.ms().map_or(ReplacementAxis::Carry, |values| {
+                ReplacementAxis::Replace(SharedSlice::from_vec(values.to_vec()))
+            }),
             len: expected_len,
             axes,
             positional: true,
@@ -215,13 +216,12 @@ fn replacement_from_matrix(
     kwargs.set_item("dtype", numpy.getattr("float64")?)?;
     let array = numpy.getattr("asarray")?.call((value,), Some(&kwargs))?;
     let shape = array.getattr("shape")?.extract::<Vec<usize>>()?;
-    if shape.len() != 2 {
+    let [rows, width] = shape.as_slice() else {
         return Err(InvalidGeometryError::new_err(
             "coordinates must be a two-dimensional matrix",
         ));
-    }
-    let rows = shape[0];
-    let width = shape[1];
+    };
+    let (rows, width) = (*rows, *width);
     let expected_width = axis_count(axes);
     if rows != expected_len {
         return Err(replacement_len_error(expected_len, rows));
@@ -241,8 +241,11 @@ fn replacement_from_matrix(
     let mut zs = axes.has_z().then(|| Vec::with_capacity(rows));
     let mut ms = axes.has_m().then(|| Vec::with_capacity(rows));
     let (order, n) = coordinate_axis_order(axes);
+    let order = order
+        .get(..n)
+        .expect("axis count fits its fixed order array");
     for row in flat.chunks_exact(width) {
-        for (&value, axis) in row.iter().zip(&order[..n]) {
+        for (&value, &axis) in row.iter().zip(order) {
             match axis {
                 CoordinateAxis::X => xs.push(value),
                 CoordinateAxis::Y => ys.push(value),
@@ -322,11 +325,19 @@ fn replacement_seq(
         ));
     }
     let start = cursor.get();
-    let end = start + old.len();
+    let end = start.wrapping_add(old.len());
     cursor.set(end);
     CoordSeq::try_from_vecs(
-        replacement.xs[start..end].to_vec(),
-        replacement.ys[start..end].to_vec(),
+        replacement
+            .xs
+            .get(start..end)
+            .expect("replacement range is bounded by admitted coordinates")
+            .to_vec(),
+        replacement
+            .ys
+            .get(start..end)
+            .expect("replacement range is bounded by admitted coordinates")
+            .to_vec(),
         replacement
             .z_column_for_seq(old, start..end)?
             .map(|values| values.as_slice().to_vec()),
@@ -351,10 +362,16 @@ fn replacement_point(
         ));
     }
     let index = cursor.get();
-    cursor.set(index + 1);
+    cursor.set(index.wrapping_add(1));
     Point::new_axes(
-        replacement.xs[index],
-        replacement.ys[index],
+        *replacement
+            .xs
+            .get(index)
+            .expect("replacement index is bounded by admitted coordinates"),
+        *replacement
+            .ys
+            .get(index)
+            .expect("replacement index is bounded by admitted coordinates"),
         ZOrdinate(replacement.z_at(*old, index)?),
         MOrdinate(replacement.m_at(*old, index)?),
     )
@@ -399,7 +416,11 @@ pub(crate) fn validate_shape_rings(shape: &Shape) -> PyResult<()> {
                 validate_shape_rings(item)?;
             }
         },
-        _ => {},
+        Shape::Point(_)
+        | Shape::MultiPoint(_)
+        | Shape::LineString(_)
+        | Shape::MultiLineString(_)
+        | Shape::Empty(..) => {},
     }
     Ok(())
 }
@@ -425,20 +446,38 @@ pub(crate) fn slice_replacement_for_shape(
     start: usize,
     len: usize,
 ) -> CoordinateReplacement {
-    let end = start + len;
+    let end = start.wrapping_add(len);
     CoordinateReplacement {
-        xs: SharedSlice::from_vec(replacement.xs[start..end].to_vec()),
-        ys: SharedSlice::from_vec(replacement.ys[start..end].to_vec()),
+        xs: SharedSlice::from_vec(
+            replacement
+                .xs
+                .get(start..end)
+                .expect("replacement range is bounded by admitted coordinates")
+                .to_vec(),
+        ),
+        ys: SharedSlice::from_vec(
+            replacement
+                .ys
+                .get(start..end)
+                .expect("replacement range is bounded by admitted coordinates")
+                .to_vec(),
+        ),
         zs: match &replacement.zs {
-            ReplacementAxis::Replace(values) => {
-                ReplacementAxis::Replace(SharedSlice::from_vec(values[start..end].to_vec()))
-            },
+            ReplacementAxis::Replace(values) => ReplacementAxis::Replace(SharedSlice::from_vec(
+                values
+                    .get(start..end)
+                    .expect("Z replacement range is bounded by admitted coordinates")
+                    .to_vec(),
+            )),
             ReplacementAxis::Carry => ReplacementAxis::Carry,
         },
         ms: match &replacement.ms {
-            ReplacementAxis::Replace(values) => {
-                ReplacementAxis::Replace(SharedSlice::from_vec(values[start..end].to_vec()))
-            },
+            ReplacementAxis::Replace(values) => ReplacementAxis::Replace(SharedSlice::from_vec(
+                values
+                    .get(start..end)
+                    .expect("M replacement range is bounded by admitted coordinates")
+                    .to_vec(),
+            )),
             ReplacementAxis::Carry => ReplacementAxis::Carry,
         },
         len,

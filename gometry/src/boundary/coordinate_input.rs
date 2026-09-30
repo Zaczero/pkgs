@@ -299,13 +299,13 @@ impl F64Param {
         Ok(())
     }
 
-    /// The value for row `row`. Trusts `row < len` (the caller iterates the
-    /// array it was parsed against), so `PerElement` indexes
-    /// unchecked-in-spirit via the validated slice.
+    /// Value for a row from the receiver whose exact length admitted this lane.
     pub(crate) fn get(&self, row: usize) -> f64 {
         match self {
             Self::Scalar(value) => *value,
-            Self::PerElement(values) => values[row],
+            Self::PerElement(values) => *values
+                .get(row)
+                .expect("per-element parameters match the admitted receiver length"),
         }
     }
 
@@ -382,7 +382,9 @@ impl I64Param {
     pub(crate) fn get(&self, row: usize) -> i64 {
         match self {
             Self::Scalar(value) => *value,
-            Self::PerElement(values) => values[row],
+            Self::PerElement(values) => *values
+                .get(row)
+                .expect("per-element parameters match the admitted receiver length"),
         }
     }
 
@@ -484,17 +486,22 @@ fn strided_buffer_to_column_f64(
     // General strides and byte order use PyO3's contiguous copy. A simple
     // native-endian column can fill its destination directly.
     if buffer.dimensions() == 1 && buffer_endian::buffer_format_is_native_endian(buffer.format()) {
-        let stride = buffer.strides()[0];
-        let item = std::mem::size_of::<f64>() as isize;
-        if stride % item == 0 {
+        let stride = *buffer
+            .strides()
+            .first()
+            .expect("one-dimensional buffers have one stride");
+        let item = isize::try_from(std::mem::size_of::<f64>()).expect("f64 item size fits isize");
+        if stride.checked_rem(item) == Some(0) {
             check_1d_byte_stride_span(len, stride)?;
-            let step = stride / item;
+            let step = stride.checked_div(item).expect("f64 item size is nonzero");
             let mut values = vec![0.0; len];
             // ReadOnlyCell is transparent over T; treating each strided slot as
             // a cell matches PyBuffer::as_slice for the contiguous case.
             let base = buffer.buf_ptr().cast::<ReadOnlyCell<f64>>();
             for (i, value) in values.iter_mut().enumerate() {
-                let offset = (i as isize).checked_mul(step).ok_or_else(|| {
+                // The admission above proved every index fits the signed offset domain.
+                let index = i as isize;
+                let offset = index.checked_mul(step).ok_or_else(|| {
                     pyo3::exceptions::PyOverflowError::new_err("buffer stride index overflows")
                 })?;
                 // SAFETY: PyBuffer is held; length and stride were validated;
@@ -536,15 +543,17 @@ fn coordseq_from_indirect_nd_buffer(
     let mut ys = Vec::with_capacity(n);
     let mut zs_col = (d >= 3).then(|| Vec::with_capacity(n));
     let mut ms_col = (d >= 4).then(|| Vec::with_capacity(n));
-    for row in 0..n {
-        let base = row * d;
-        xs.push(flat[base]);
-        ys.push(flat[base + 1]);
+    // buffer_item_count admitted the shape product, and this copy preserves
+    // its exact item count, so chunks_exact covers every row without a tail.
+    for row in flat.chunks_exact(d) {
+        let mut ordinates = row.iter().copied();
+        xs.push(ordinates.next().expect("N×D rows have at least two axes"));
+        ys.push(ordinates.next().expect("N×D rows have at least two axes"));
         if let Some(zs) = zs_col.as_mut() {
-            zs.push(flat[base + 2]);
+            zs.push(ordinates.next().expect("three-axis rows carry Z"));
         }
         if let Some(ms) = ms_col.as_mut() {
-            ms.push(flat[base + 3]);
+            ms.push(ordinates.next().expect("four-axis rows carry M"));
         }
     }
     let mut zs = zs_col;
@@ -621,12 +630,16 @@ pub(crate) fn try_coordseq_from_nd_buffer(
     let Some(&[row_stride, col_stride]) = buffer.strides().first_chunk::<2>() else {
         return Ok(None);
     };
-    let item = std::mem::size_of::<f64>() as isize;
-    if row_stride % item != 0 || col_stride % item != 0 {
+    let item = isize::try_from(std::mem::size_of::<f64>()).expect("f64 item size fits isize");
+    if row_stride.checked_rem(item) != Some(0) || col_stride.checked_rem(item) != Some(0) {
         return Ok(None);
     }
-    let row_step = row_stride / item;
-    let col_step = col_stride / item;
+    let row_step = row_stride
+        .checked_div(item)
+        .expect("f64 item size is nonzero");
+    let col_step = col_stride
+        .checked_div(item)
+        .expect("f64 item size is nonzero");
     // The direct stride walk and the ordinary copy both require a quiescent
     // producer; the copy path is not a native-writer synchronization protocol.
     if !buffer_endian::exporter_supports_direct_capture(value.py(), &buffer) {
@@ -645,10 +658,13 @@ pub(crate) fn try_coordseq_from_nd_buffer(
         // over foreign storage. The loads are non-atomic; the producer must
         // stay quiescent for this finite capture.
         let base = buffer.buf_ptr().cast::<ReadOnlyCell<f64>>();
+        let column = col as isize;
         for (i, value) in values.iter_mut().enumerate() {
-            let offset = (i as isize)
+            // The preceding corner admission proves the enumerated offsets fit.
+            let row = i as isize;
+            let offset = row
                 .checked_mul(row_step)
-                .and_then(|row| row.checked_add((col as isize).checked_mul(col_step)?))
+                .and_then(|row| row.checked_add(column.checked_mul(col_step)?))
                 .ok_or(crate::error::ResourceError::SizeOverflow)?;
             // SAFETY: buffer is held; shape/strides and `col < d` were
             // validated; no suboffsets are present, so this is in the declared
@@ -1283,7 +1299,11 @@ pub(crate) fn broadcast_coordinate_input(
         return Ok(());
     }
     if input.scalar {
-        input.values.resize(len, input.values[0]);
+        let value = *input
+            .values
+            .first()
+            .expect("scalar coordinate input has one admitted value");
+        input.values.resize(len, value);
         return Ok(());
     }
     Err(InvalidGeometryError::new_err(format!(

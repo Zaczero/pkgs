@@ -427,8 +427,7 @@ pub(crate) fn angle_radians(name: &str, value: &Bound<'_, PyAny>, radians: bool)
 /// Parse a 6-element `(a, b, d, e, xoff, yoff)` affine matrix of finite floats.
 pub(crate) fn parse_affine_matrix(matrix: &Bound<'_, PyAny>) -> PyResult<[f64; 6]> {
     reject_masked_array(matrix)?;
-    let names = ["a", "b", "d", "e", "xoff", "yoff"];
-    let mut position = 0;
+    let mut names = ["a", "b", "d", "e", "xoff", "yoff"].into_iter();
     let iter = crate::py_iter_or_error(matrix, || {
         GeometryError::new_err("affine matrix must be a sequence of 6 finite numbers")
     })?;
@@ -437,8 +436,7 @@ pub(crate) fn parse_affine_matrix(matrix: &Bound<'_, PyAny>) -> PyResult<[f64; 6
         iter,
         6,
         |item| {
-            let name = names[position];
-            position += 1;
+            let name = names.next().expect("the affine matrix has six values");
             match finite_f64_required(name, &item) {
                 Ok(value) => Ok(value),
                 Err(error)

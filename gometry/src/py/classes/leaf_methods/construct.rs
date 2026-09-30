@@ -197,7 +197,13 @@ impl PyPoint {
                 };
                 Shape::Point(Point::new_axes(x, y, ZOrdinate(z), MOrdinate(m))?)
             },
-            _ => unreachable!("Point wraps a Point shape"),
+            Shape::MultiPoint(_)
+            | Shape::LineString(_)
+            | Shape::MultiLineString(_)
+            | Shape::Polygon(_)
+            | Shape::MultiPolygon(_)
+            | Shape::GeometryCollection(_)
+            | Shape::Empty(..) => unreachable!("Point wraps a Point shape"),
         };
 
         let mut frame = base.frame.clone();
