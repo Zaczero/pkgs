@@ -5,7 +5,7 @@
 use std::ops::ControlFlow;
 
 use crate::error::{ResourceError, Result};
-use crate::geometry::{Bounds, PointKey, Segment, XY};
+use crate::geometry::{Bounds, PointKey, Segment, XY, segment_envelopes_disjoint};
 
 fn u32_ordinal(value: usize) -> Result<u32> {
     u32::try_from(value).map_err(|_| ResourceError::SizeOverflow.into())
@@ -27,6 +27,10 @@ const SWEEP_MIN_ITEMS: usize = 6;
 /// band count derives from (`count / grain`, capped at 64 bands).
 const SWEEP_BAND_MIN: usize = 4096;
 const SWEEP_BAND_GRAIN: usize = 2048;
+// A projection is a geometry-wide discriminator only for a prevalent run
+// direction, not for one incidental diagonal.
+const OBLIQUE_PROJECTION_MIN_RUNS: usize = 64;
+const OBLIQUE_PROJECTION_MIN_COHERENCE: f64 = 0.9;
 
 /// [`for_each_overlapping_bounds_pair`] over rows that may lack bounds: a row
 /// without bounds meets nothing, and the visitor receives row ordinals.
@@ -52,8 +56,8 @@ pub(in crate::geometry) fn for_each_indexed_overlapping_bounds_pair<B>(
 }
 
 /// One envelope in [`for_each_candidate_pair`]'s sweep order: extents along
-/// the sweep axis (sorted on `sweep_min`) and the cross axis (overlap
-/// filter), plus the input ordinal the visitor receives.
+/// the primary sweep axis (sorted on `sweep_min`) and the secondary interval
+/// (the XY cross axis or an oblique projection), plus the input ordinal.
 struct SweepEntry {
     sweep_min: f64,
     sweep_max: f64,
@@ -66,6 +70,12 @@ struct SweepEntry {
     side: u8,
 }
 
+#[derive(Clone, Copy)]
+struct ObliqueProjection {
+    x: f64,
+    y: f64,
+}
+
 thread_local! {
     static SWEEP_ENTRY_SCRATCH: crate::scratch_pool::ScratchPool<Vec<SweepEntry>> = const {
         crate::scratch_pool::ScratchPool::new(Vec::new())
@@ -74,6 +84,82 @@ thread_local! {
 
 fn wider_axis_swapped(min_x: f64, max_x: f64, min_y: f64, max_y: f64) -> bool {
     max_y - min_y > max_x - min_x
+}
+
+fn projected_point_interval(point: XY, projection: ObliqueProjection) -> Option<(f64, f64)> {
+    if !point.x.is_finite() || !point.y.is_finite() {
+        return None;
+    }
+    let (x, y) = (projection.x * point.x, projection.y * point.y);
+    if !x.is_finite() || !y.is_finite() {
+        return None;
+    }
+    let lower = x.next_down() + y.next_down();
+    let upper = x.next_up() + y.next_up();
+    if lower.is_nan() || upper.is_nan() {
+        return None;
+    }
+    let (lower, upper) = (lower.next_down(), upper.next_up());
+    (lower <= upper).then_some((lower, upper))
+}
+
+fn run_oblique_bounds(
+    pool: &[Segment],
+    run: &MonotoneRun,
+    projection: ObliqueProjection,
+) -> (f64, f64) {
+    let full = (f64::NEG_INFINITY, f64::INFINITY);
+    let Some(segments) = pool.get(run.start as usize..run.end as usize) else {
+        return full;
+    };
+    let (mut min, mut max) = (f64::INFINITY, f64::NEG_INFINITY);
+    for segment in segments {
+        let Some((lo, hi)) = projected_point_interval(segment.start, projection) else {
+            return full;
+        };
+        min = min.min(lo);
+        max = max.max(hi);
+    }
+    let Some(last) = segments.last() else {
+        return full;
+    };
+    let Some((lo, hi)) = projected_point_interval(last.end, projection) else {
+        return full;
+    };
+    (min.min(lo), max.max(hi))
+}
+
+fn monotone_runs_oblique_projection(
+    runs: &[MonotoneRun],
+    double_angle_sum: (f64, f64),
+    oblique_count: usize,
+) -> Option<ObliqueProjection> {
+    if runs.len() < OBLIQUE_PROJECTION_MIN_RUNS
+        || oblique_count < OBLIQUE_PROJECTION_MIN_RUNS
+        || (double_angle_sum.0 == 0.0 && double_angle_sum.1 == 0.0)
+    {
+        return None;
+    }
+    let strength =
+        (double_angle_sum.0 * double_angle_sum.0 + double_angle_sum.1 * double_angle_sum.1).sqrt();
+    let coherence = strength / oblique_count as f64;
+    if coherence < OBLIQUE_PROJECTION_MIN_COHERENCE {
+        return None;
+    }
+    let cos_double = (double_angle_sum.0 / strength).clamp(-1.0, 1.0);
+    let direction_x = f64::midpoint(1.0, cos_double).sqrt();
+    let direction_y = f64::midpoint(1.0, -cos_double)
+        .sqrt()
+        .copysign(double_angle_sum.1);
+    let projection = ObliqueProjection {
+        x: direction_y,
+        y: -direction_x,
+    };
+    // An axis-aligned normal adds no information beyond the XY envelope.
+    if projection.x == 0.0 || projection.y == 0.0 {
+        return None;
+    }
+    Some(projection)
 }
 
 /// Reorient entries to sweep the wider axis, then sort on `sweep_min`.
@@ -245,22 +331,14 @@ pub(in crate::geometry) fn for_each_candidate_pair<B>(
     }
     let mut runs = crate::scratch_pool::ScratchPool::checkout(&RUNS);
     monotone_runs(pool, &chain_of, &mut runs)?;
-    candidate_pairs_over_staged_runs(
-        pool,
-        &runs,
-        || Bounds::from_xy_iter(pool.iter().flat_map(|segment| [segment.start, segment.end])),
-        &mut visit,
-    )
+    candidate_pairs_over_staged_runs::<false, _>(pool, &runs, &mut visit)
 }
 
 /// The shared entry point behind [`for_each_candidate_pair`] and the
-/// prepared-linework sweep, over runs that are already decomposed. `bounds` is
-/// consulted only on the sweep path, so a caller that has to compute them can
-/// defer the pass.
-pub(in crate::geometry) fn candidate_pairs_over_staged_runs<B>(
+/// prepared-linework sweep, over runs that are already decomposed.
+pub(in crate::geometry) fn candidate_pairs_over_staged_runs<const OBLIQUE: bool, B>(
     pool: &[Segment],
     runs: &[MonotoneRun],
-    bounds: impl FnOnce() -> Bounds,
     visit: &mut impl FnMut(usize, usize) -> ControlFlow<B>,
 ) -> Result<ControlFlow<B>> {
     let count = pool.len();
@@ -280,7 +358,7 @@ pub(in crate::geometry) fn candidate_pairs_over_staged_runs<B>(
         }
         return Ok(ControlFlow::Continue(()));
     }
-    try_candidate_pairs_over_runs(pool, runs, bounds(), visit)
+    try_candidate_pairs_over_runs::<OBLIQUE, _>(pool, runs, visit)
 }
 
 /// The default `chain_of` for [`for_each_candidate_pair`]: one geometric chain,
@@ -293,16 +371,17 @@ pub(in crate::geometry) const fn single_chain(_: usize) -> u32 {
     clippy::indexing_slicing,
     reason = "run windows and entry ordinals are generated from these exact u32-admitted slices"
 )]
-fn try_candidate_pairs_over_runs<B>(
+fn try_candidate_pairs_over_runs<const OBLIQUE: bool, B>(
     pool: &[Segment],
     runs: &[MonotoneRun],
-    bounds: Bounds,
     visit: &mut impl FnMut(usize, usize) -> ControlFlow<B>,
 ) -> Result<ControlFlow<B>> {
-    let (min_x, min_y, max_x, max_y) = (bounds.minx(), bounds.miny(), bounds.maxx(), bounds.maxy());
-    let swapped = wider_axis_swapped(min_x, max_x, min_y, max_y);
     let mut entries = crate::scratch_pool::ScratchPool::checkout(&SWEEP_ENTRY_SCRATCH);
     entries.reserve(runs.len());
+    let (mut min_x, mut min_y) = (f64::INFINITY, f64::INFINITY);
+    let (mut max_x, mut max_y) = (f64::NEG_INFINITY, f64::NEG_INFINITY);
+    let (mut double_angle_x, mut double_angle_y) = (0.0_f64, 0.0_f64);
+    let mut oblique_count = 0_usize;
     for (ordinal, run) in runs.iter().enumerate() {
         // Length-exact run window: first/last via slice pattern (elision).
         let segs = &pool[run.start as usize..run.end as usize];
@@ -313,6 +392,25 @@ fn try_candidate_pairs_over_runs<B>(
         };
         let (x_lo, x_hi) = (first.x.min(last.x), first.x.max(last.x));
         let (y_lo, y_hi) = (first.y.min(last.y), first.y.max(last.y));
+        min_x = min_x.min(x_lo);
+        min_y = min_y.min(y_lo);
+        max_x = max_x.max(x_hi);
+        max_y = max_y.max(y_hi);
+        let (dx, dy) = (last.x - first.x, last.y - first.y);
+        if OBLIQUE
+            && run.sign_x != 0
+            && run.sign_y != 0
+            && dx.is_finite()
+            && dy.is_finite()
+            && let scale = dx.abs().max(dy.abs())
+            && scale > 0.0
+        {
+            let (dx, dy) = (dx / scale, dy / scale);
+            let norm_squared = dx * dx + dy * dy;
+            double_angle_x += (dx * dx - dy * dy) / norm_squared;
+            double_angle_y += (2.0 * dx * dy) / norm_squared;
+            oblique_count = oblique_count.wrapping_add(1);
+        }
         entries.push(SweepEntry {
             sweep_min: x_lo,
             sweep_max: x_hi,
@@ -322,7 +420,26 @@ fn try_candidate_pairs_over_runs<B>(
             side: 0,
         });
     }
+    let projection = if OBLIQUE && runs.len() < SWEEP_BAND_MIN {
+        monotone_runs_oblique_projection(runs, (double_angle_x, double_angle_y), oblique_count)
+    } else {
+        None
+    };
+    // Keep the XY primary axis and reuse the plain sweep's cross interval for
+    // the oblique coordinate. Run refinement still checks both XY envelopes.
+    let swapped = wider_axis_swapped(min_x, max_x, min_y, max_y);
     finish_sweep_entries(&mut entries, swapped);
+    if let Some(projection) = projection {
+        // An uncertain projection becomes an unbounded interval, so only a
+        // certified gap between run envelopes can prune the XY sweep.
+        for entry in entries.iter_mut() {
+            let run = &runs[entry.ordinal as usize];
+            (entry.cross_min, entry.cross_max) = run_oblique_bounds(pool, run, projection);
+        }
+    }
+    // Each run is monotone on both axes, so its endpoint envelope contains
+    // every staged vertex. Fold those same envelopes for the global sweep
+    // extents instead of rescanning all source coordinates.
     // Large sets band the CROSS axis: a pure 1-D sweep's forward window
     // grows linearly with density, while B bands cut it by B. An envelope
     // joins every band its cross extent overlaps, and a pair is visited
@@ -338,10 +455,20 @@ fn try_candidate_pairs_over_runs<B>(
         1
     };
     let band_height = (cross_hi - cross_lo) / bands as f64;
+    let projection_active = projection.is_some();
     let mut run_visit = |left: usize, right: usize| -> ControlFlow<B> {
-        run_pair_join(pool, &runs[left], &runs[right], swapped, visit)
+        run_pair_join::<OBLIQUE, _>(
+            pool,
+            &runs[left],
+            &runs[right],
+            swapped,
+            projection_active,
+            visit,
+        )
     };
-    if bands > 1 && band_height > 0.0 {
+    if projection.is_some() {
+        Ok(plain_windows(&entries, &mut run_visit))
+    } else if bands > 1 && band_height > 0.0 {
         Ok(banded_windows(
             &entries,
             bands,
@@ -437,18 +564,29 @@ pub(in crate::geometry) fn sign_of(value: f64) -> i8 {
 /// 1,200-vertex rings is found after a handful of halvings — where a linear
 /// interval merge walked every segment in the sweep overlap. Same candidate
 /// set: every pair whose envelopes overlap on both axes, each once.
-fn run_pair_join<B>(
+fn run_pair_join<const OBLIQUE: bool, B>(
     pool: &[Segment],
     a: &MonotoneRun,
     b: &MonotoneRun,
     swapped: bool,
+    projection_active: bool,
     visit: &mut impl FnMut(usize, usize) -> ControlFlow<B>,
 ) -> ControlFlow<B> {
     // Single-segment runs are the noding pools' common case (split
     // pieces interleave their sources, so chains rarely form there) —
-    // and for them the entry sweep has ALREADY proven exact envelope
-    // overlap on both axes, so the pair goes straight to the visitor.
+    // For an axis-aligned sweep the entry window already proves envelope
+    // overlap on both axes. With a projected secondary interval, only the
+    // primary axis was checked, so verify the XY envelopes below.
     if a.len() == 1 && b.len() == 1 {
+        if OBLIQUE
+            && projection_active
+            && pool
+                .get(a.start as usize)
+                .zip(pool.get(b.start as usize))
+                .is_some_and(|(left, right)| segment_envelopes_disjoint(*left, *right))
+        {
+            return ControlFlow::Continue(());
+        }
         let (low, high) = if a.start < b.start {
             (a.start, b.start)
         } else {
@@ -668,4 +806,59 @@ fn visit_ordered<B>(
         (right.ordinal, left.ordinal)
     };
     visit(low as usize, high as usize)
+}
+
+#[cfg(test)]
+mod oblique_projection_tests {
+    use std::cmp::Ordering;
+
+    use super::*;
+    use crate::geometry::tessellation::exact::ExactDyadic;
+
+    #[test]
+    fn oblique_projection_intervals_contain_exact_stored_values() {
+        let tiny = f64::from_bits(1);
+        let axes = [
+            ObliqueProjection { x: 0.125, y: -1.0 },
+            ObliqueProjection { x: 1.0, y: -1.0 },
+            ObliqueProjection {
+                x: tiny,
+                y: -3.0 * tiny,
+            },
+        ];
+        let points = [
+            XY::new(0.0, -0.0),
+            XY::new(tiny, -tiny),
+            XY::new(1.0e200, 1.0e200),
+            XY::new(1.0e200, 1.0e200_f64.next_up()),
+            XY::new(f64::MAX, -f64::MAX),
+        ];
+        for projection in axes {
+            for point in points {
+                let Some((lower, upper)) = projected_point_interval(point, projection) else {
+                    continue;
+                };
+                let x = ExactDyadic::from_f64(projection.x)
+                    .try_product(&ExactDyadic::from_f64(point.x))
+                    .unwrap();
+                let y = ExactDyadic::from_f64(projection.y)
+                    .try_product(&ExactDyadic::from_f64(point.y))
+                    .unwrap();
+                let exact = x.try_add(y).unwrap();
+                if !(lower.is_infinite() && lower.is_sign_negative()) {
+                    assert_ne!(ExactDyadic::from_f64(lower).cmp(&exact), Ordering::Greater);
+                }
+                if !(upper.is_infinite() && upper.is_sign_positive()) {
+                    assert_ne!(ExactDyadic::from_f64(upper).cmp(&exact), Ordering::Less);
+                }
+            }
+        }
+        assert!(
+            projected_point_interval(XY::new(f64::NAN, 0.0), ObliqueProjection {
+                x: 0.125,
+                y: -1.0
+            },)
+            .is_none()
+        );
+    }
 }

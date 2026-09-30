@@ -162,6 +162,52 @@ mod sweep_characterization {
     }
 
     #[test]
+    fn oblique_projection_keeps_contacts_between_parallel_runs() {
+        let _budget = crate::scratch_pool::RetainBudgetGuard::new();
+        let mut pool = (0..64)
+            .map(|index| {
+                let y = f64::from(index) * 2.0;
+                Segment {
+                    start: XY::new(0.0, y),
+                    end: XY::new(64.0, y + 8.0),
+                }
+            })
+            .collect::<Vec<_>>();
+        pool.push(Segment {
+            start: XY::new(32.0, -1.0),
+            end: XY::new(32.0, 130.0),
+        });
+
+        let mut runs = Vec::new();
+        super::super::sweep::monotone_runs(&pool, &single_chain, &mut runs)
+            .expect("the test runs fit their structural width");
+        let mut candidates = Vec::new();
+        let ControlFlow::Continue(()): ControlFlow<std::convert::Infallible> =
+            super::super::sweep::candidate_pairs_over_staged_runs::<true, _>(
+                &pool,
+                &runs,
+                &mut |left, right| {
+                    candidates.push(pair_key(left, right));
+                    ControlFlow::Continue(())
+                },
+            )
+            .expect("the projection sweep fits its structural widths");
+        let visited = sorted_unique(candidates);
+        for left in 0..pool.len() {
+            for right in (left + 1)..pool.len() {
+                if segments_intersect(pool[left], pool[right]) {
+                    let pair = pair_key(left, right);
+                    assert!(
+                        visited.binary_search(&pair).is_ok(),
+                        "crossing pair {:?} dropped by the oblique envelope filter",
+                        (left, right),
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
     fn for_each_candidate_pair_stops_on_break() {
         let _budget = crate::scratch_pool::RetainBudgetGuard::new();
         for count in [4, 20, 4096] {

@@ -2570,12 +2570,26 @@ pub(super) enum Contact {
     },
 }
 
-pub(super) fn segment_contact_with_orientations(
-    left: Segment,
-    right: Segment,
-) -> (Contact, PairOrientations) {
-    let orientations = PairOrientations::new(left, right);
-    let contact = if orientations.all_collinear() {
+pub(super) fn segment_contact_exact(left: Segment, right: Segment) -> Contact {
+    let right_start = orientation(left.start, left.end, right.start);
+    let right_end = orientation(left.start, left.end, right.end);
+    // Strictly same-side endpoints prove separation; defer the other carrier's
+    // two filtered orientations unless the first carrier allows contact.
+    if strictly_same_side(right_start, right_end) {
+        return Contact::Disjoint;
+    }
+    let left_start = orientation(right.start, right.end, left.start);
+    let left_end = orientation(right.start, right.end, left.end);
+    if strictly_same_side(left_start, left_end) {
+        return Contact::Disjoint;
+    }
+    let orientations = PairOrientations {
+        right_start,
+        right_end,
+        left_start,
+        left_end,
+    };
+    if orientations.all_collinear() {
         collinear_shared_span_exact(left, right)
             .map_or(Contact::Disjoint, |span| Contact::Collinear { span })
     } else if orientations.straddles_or_touches() {
@@ -2587,12 +2601,11 @@ pub(super) fn segment_contact_with_orientations(
         }
     } else {
         Contact::Disjoint
-    };
-    (contact, orientations)
+    }
 }
 
-pub(super) fn segment_contact_exact(left: Segment, right: Segment) -> Contact {
-    segment_contact_with_orientations(left, right).0
+fn strictly_same_side(left: Orientation, right: Orientation) -> bool {
+    left == right && left != Orientation::Collinear
 }
 
 pub(super) fn segment_contact(left: Segment, right: Segment) -> SegmentContact {

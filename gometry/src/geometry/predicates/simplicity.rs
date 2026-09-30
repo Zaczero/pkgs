@@ -4,7 +4,7 @@ use ahash::HashSetExt as _;
 
 use crate::geometry::{
     Contact, CoordSeq, Coordinates as _, HashSet, IndexedSegment, LineworkChains, Orientation,
-    Point, PointKey, Polygon, Ring, Segment, SegmentIndex, Shape, ValidationIssue, XY, orientation,
+    Point, PointKey, Polygon, Ring, SegmentIndex, Shape, ValidationIssue, XY, orientation,
     point_on_segment, ring_winding, same_point, segment_contact_exact, segment_cross_point,
     segments_intersect,
 };
@@ -132,18 +132,27 @@ pub(crate) fn segment_intersection_is_simple(left: IndexedSegment, right: Indexe
         return false;
     }
 
-    let shared = [
+    let (shared, left_other, right_other) = match [
         same_point(left.segment.start, right.segment.start),
         same_point(left.segment.start, right.segment.end),
         same_point(left.segment.end, right.segment.start),
         same_point(left.segment.end, right.segment.end),
-    ]
-    .into_iter()
-    .filter(|value| *value)
-    .count();
-    shared == 1
-        && !non_shared_endpoint_lies_on_segment(left.segment, right.segment)
-        && !non_shared_endpoint_lies_on_segment(right.segment, left.segment)
+    ] {
+        [true, false, false, false] => (left.segment.start, left.segment.end, right.segment.end),
+        [false, true, false, false] => (left.segment.start, left.segment.end, right.segment.start),
+        [false, false, true, false] => (left.segment.end, left.segment.start, right.segment.end),
+        [false, false, false, true] => (left.segment.end, left.segment.start, right.segment.start),
+        _ => return false,
+    };
+    // Noncollinear adjacent rays meet only at the shared vertex. If collinear,
+    // simplicity requires that vertex to lie between the two outer endpoints.
+    if orientation(left_other, shared, right_other) != Orientation::Collinear {
+        return true;
+    }
+    shared.x >= left_other.x.min(right_other.x)
+        && shared.x <= left_other.x.max(right_other.x)
+        && shared.y >= left_other.y.min(right_other.y)
+        && shared.y <= left_other.y.max(right_other.y)
 }
 
 pub(crate) fn segments_are_adjacent(left: IndexedSegment, right: IndexedSegment) -> bool {
@@ -247,15 +256,6 @@ pub(crate) fn collect_offending_pair(
         visit(point.point());
     }
     Ok(())
-}
-
-pub(crate) fn non_shared_endpoint_lies_on_segment(left: Segment, right: Segment) -> bool {
-    (!same_point(left.start, right.start)
-        && !same_point(left.start, right.end)
-        && point_on_segment(left.start, right.start, right.end))
-        || (!same_point(left.end, right.start)
-            && !same_point(left.end, right.end)
-            && point_on_segment(left.end, right.start, right.end))
 }
 
 impl ValidationIssue {

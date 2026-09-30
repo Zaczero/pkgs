@@ -2,8 +2,8 @@ use std::ops::ControlFlow;
 
 use crate::HeapSize;
 use crate::geometry::{
-    Bounds, Component, CoordSeq, Coordinates as _, IndexedSegment, MonotoneRun, Point, Segment,
-    Shape, XY, candidate_pairs_over_staged_runs, same_point, sign_of,
+    Component, CoordSeq, Coordinates as _, IndexedSegment, MonotoneRun, Point, Segment, Shape,
+    candidate_pairs_over_staged_runs, same_point, sign_of,
 };
 /// Flat XY linework staged for the candidate kernel: one segment column,
 /// a parallel chain-id column (the kernel's run-break identities), and
@@ -11,33 +11,21 @@ use crate::geometry::{
 /// reconstructed in O(1) for the RARE candidate pairs instead of being
 /// stored for every segment, and staging is one pass over the raw
 /// ordinate columns — no `Point` gathers, no per-segment metadata.
+#[derive(Default)]
 pub(in crate::geometry) struct LineworkChains {
     pub(crate) segments: Vec<Segment>,
     line_of: Vec<u32>,
     spans: Vec<LineSpan>,
-    /// Monotone runs and global bounds, built DURING staging (runs break
-    /// at line boundaries inherently — each line stages separately), so
-    /// the candidate kernel skips its per-call decomposition passes.
+    /// Monotone runs, built DURING staging (runs break at line boundaries
+    /// inherently — each line stages separately), so the candidate kernel skips
+    /// its per-call decomposition pass.
     runs: Vec<MonotoneRun>,
-    bounds: Bounds,
 }
 
 pub(crate) struct LineSpan {
     first: u32,
     count: u32,
     closed: bool,
-}
-
-impl Default for LineworkChains {
-    fn default() -> Self {
-        Self {
-            segments: Vec::new(),
-            line_of: Vec::new(),
-            spans: Vec::new(),
-            runs: Vec::new(),
-            bounds: Bounds::from_xy_iter(std::iter::empty()),
-        }
-    }
 }
 
 impl LineworkChains {
@@ -72,9 +60,6 @@ impl LineworkChains {
                 Point::new_raw_xy(xs[0], ys[0]),
                 Point::new_raw_xy(xs[count], ys[count]),
             );
-        if self.segments.is_empty() {
-            self.bounds = Bounds::from_xy_iter(std::iter::empty());
-        }
         let line = u32::try_from(self.spans.len())
             .map_err(|_| crate::error::ResourceError::SizeOverflow)?;
         let first = u32::try_from(self.segments.len())
@@ -91,11 +76,8 @@ impl LineworkChains {
         if let Some(source_edges) = &mut source_edges {
             source_edges.reserve(count);
         }
-        let [min_x, min_y, max_x, max_y] = crate::geometry::xy_bounds_columns(xs, ys);
-        self.bounds.include_xy(XY::new(min_x, min_y));
-        self.bounds.include_xy(XY::new(max_x, max_y));
-        // One pass stages segments, bounds, AND the monotone runs (a run
-        // extends while the quadrant signs hold; zero-length segments
+        // One pass stages segments and monotone runs (a run extends while the
+        // quadrant signs hold; zero-length segments
         // isolate; lines never chain into each other — see the kernel's
         // chain-identity contract).
         let mut run_start = first;
@@ -165,13 +147,19 @@ impl LineworkChains {
         }
     }
 
-    /// Run the candidate sweep over the staged linework, reusing the runs and
-    /// bounds built during staging so no per-call decomposition pass is needed.
+    /// Run the candidate sweep over the staged linework, reusing the runs
+    /// built during staging so no per-call decomposition pass is needed.
     pub(crate) fn for_each_candidate_pair(
         &self,
         mut visit: impl FnMut(usize, usize) -> ControlFlow<()>,
     ) -> crate::error::Result<ControlFlow<()>> {
-        candidate_pairs_over_staged_runs(&self.segments, &self.runs, || self.bounds, &mut visit)
+        // The oblique dimension targets repeated directions across source
+        // chains; a single chain retains the axis-aligned candidate index.
+        if self.spans.len() > 1 {
+            candidate_pairs_over_staged_runs::<true, _>(&self.segments, &self.runs, &mut visit)
+        } else {
+            candidate_pairs_over_staged_runs::<false, _>(&self.segments, &self.runs, &mut visit)
+        }
     }
 
     /// Stage every linework chain of `shape` (lines, ring linework of
