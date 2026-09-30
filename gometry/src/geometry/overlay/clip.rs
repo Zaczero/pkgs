@@ -5,7 +5,7 @@
 use std::simd::cmp::SimdPartialOrd as _;
 
 use crate::error::Result;
-use crate::geometry::overlay::{OverlayOp, binary_areal_overlay, rect_polygon};
+use crate::geometry::overlay::clip_polygonal_rectangle;
 use crate::geometry::{
     Bounds, CoordSeq, CoordinateAxes, Coordinates, GeometryKind, LineSeq, Point, Polygon,
     REDUCE_LANES, REDUCE_SIMD_MIN, ReduceSimd, Shape, clip_segment, line_segments, same_point,
@@ -24,11 +24,7 @@ pub(in crate::geometry) fn clip_polygonal_parts<P: AsRef<Polygon>>(
     polygons: &[P],
     rect: Bounds,
 ) -> Result<Vec<Polygon>> {
-    binary_areal_overlay(
-        polygons,
-        std::slice::from_ref(&rect_polygon(rect)?),
-        OverlayOp::Intersection,
-    )
+    clip_polygonal_rectangle(polygons, rect)
 }
 
 pub(crate) fn clipped_linestring<C: Coordinates + ?Sized>(

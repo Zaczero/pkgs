@@ -19,12 +19,12 @@ use crate::error::ResourceError;
 use crate::geometry::exact_arith::ExactSign;
 use crate::geometry::overlay::noding::{SegmentProvenance, SegmentSource};
 use crate::geometry::segments::{
-    crossing_homogeneous, crossing_point, point_in_segment_envelope, segment_envelopes_disjoint,
-    stored_orientation_sign,
+    SegmentClipInterval, crossing_homogeneous, crossing_point, point_in_segment_envelope,
+    segment_envelopes_disjoint, stored_orientation_sign,
 };
 use crate::geometry::tessellation::exact::{ExactDyadic, compare_ratios, round_ratio};
 use crate::geometry::{
-    ExpansionBudget, GeometryErrorKind, HashMap, PointKey, Result, Segment, XY,
+    Bounds, ExpansionBudget, GeometryErrorKind, HashMap, PointKey, Result, Segment, XY,
     for_each_candidate_pair, same_point, same_topological_coordinate, single_chain,
 };
 
@@ -87,6 +87,30 @@ impl<'a> PointArena<'a> {
         self.push(NodeRecipe::Crossing { segments, exact }, crossing.point)
     }
 
+    pub(super) fn push_crossing_with_exact(
+        &mut self,
+        segments: [u32; 2],
+        rounded: XY,
+        exact: [ExactDyadic; 3],
+    ) -> Result<u32> {
+        self.push(
+            NodeRecipe::Crossing {
+                segments,
+                exact: std::cell::OnceCell::from(Box::new(exact)),
+            },
+            rounded,
+        )
+    }
+
+    pub(super) fn push_constructed(&mut self, rounded: XY, exact: [ExactDyadic; 3]) -> Result<u32> {
+        self.push(
+            NodeRecipe::Constructed {
+                exact: std::cell::OnceCell::from(Box::new(exact)),
+            },
+            rounded,
+        )
+    }
+
     /// Move an entry out, leaving a stored placeholder behind.
     #[expect(
         clippy::indexing_slicing,
@@ -105,6 +129,17 @@ impl<'a> PointArena<'a> {
     )]
     pub(super) fn is_stored(&self, index: u32) -> bool {
         matches!(self.recipes[index as usize], NodeRecipe::Stored)
+    }
+
+    pub(super) fn same_exact_point(&self, left: u32, right: u32) -> Result<bool> {
+        let left = self.exact(left)?;
+        let right = self.exact(right)?;
+        let [left_x, left_y, left_w] = &*left;
+        let [right_x, right_y, right_w] = &*right;
+        Ok(
+            compare_ratios(left_x, left_w, right_x, right_w)? == Ordering::Equal
+                && compare_ratios(left_y, left_w, right_y, right_w)? == Ordering::Equal,
+        )
     }
 
     #[expect(
@@ -130,6 +165,9 @@ impl<'a> PointArena<'a> {
                     ExactDyadic::from_f64(1.0),
                 ]))
             },
+            NodeRecipe::Constructed { exact } => Ok(Cow::Borrowed(
+                &**exact.get().expect("constructed nodes carry exact points"),
+            )),
             NodeRecipe::Crossing { segments, exact } => {
                 let point = exact.get_or_try_init(|| -> Result<_> {
                     #[cfg(test)]
@@ -344,6 +382,23 @@ impl<'a> Forest<'a> {
         Ok(self.adopt(handle))
     }
 
+    pub(super) fn push_crossing_with_exact(
+        &mut self,
+        segments: [u32; 2],
+        rounded: XY,
+        exact: [ExactDyadic; 3],
+    ) -> Result<u32> {
+        let handle = self
+            .points
+            .push_crossing_with_exact(segments, rounded, exact)?;
+        Ok(self.adopt(handle))
+    }
+
+    pub(super) fn push_constructed(&mut self, rounded: XY, exact: [ExactDyadic; 3]) -> Result<u32> {
+        let handle = self.points.push_constructed(rounded, exact)?;
+        Ok(self.adopt(handle))
+    }
+
     /// Join two handles denoting one point. A stored root wins, and between
     /// crossings the lower segment pair, so a node's recipe is deterministic.
     #[expect(
@@ -356,28 +411,39 @@ impl<'a> Forest<'a> {
         if a == b {
             return Ok(());
         }
-        let (keep, merge) = match (
-            &self.points.recipes[a as usize],
-            &self.points.recipes[b as usize],
-        ) {
-            (NodeRecipe::Stored, NodeRecipe::Stored) => {
+        let left_recipe = &self.points.recipes[a as usize];
+        let right_recipe = &self.points.recipes[b as usize];
+        let priority = |recipe: &NodeRecipe| match recipe {
+            NodeRecipe::Stored => 0,
+            NodeRecipe::Constructed { .. } => 1,
+            NodeRecipe::Crossing { .. } => 2,
+        };
+        let (keep, merge) = match (priority(left_recipe), priority(right_recipe)) {
+            (0, 0) => {
                 return Err(GeometryErrorKind::Invalid(
                     "exact partition unioned distinct stored points".into(),
                 )
                 .into());
             },
-            (NodeRecipe::Stored, NodeRecipe::Crossing { .. }) => (a, b),
-            (NodeRecipe::Crossing { .. }, NodeRecipe::Stored) => (b, a),
-            (
-                NodeRecipe::Crossing { segments: left, .. },
-                NodeRecipe::Crossing {
-                    segments: right, ..
-                },
-            ) => {
-                if right < left {
-                    (b, a)
-                } else {
+            (left, right) if left < right => (a, b),
+            (left, right) if right < left => (b, a),
+            (2, 2) => {
+                let (
+                    NodeRecipe::Crossing { segments: left, .. },
+                    NodeRecipe::Crossing {
+                        segments: right, ..
+                    },
+                ) = (left_recipe, right_recipe)
+                else {
+                    unreachable!("equal crossing priorities have crossing recipes")
+                };
+                if right < left { (b, a) } else { (a, b) }
+            },
+            _ => {
+                if a < b {
                     (a, b)
+                } else {
+                    (b, a)
                 }
             },
         };
@@ -414,7 +480,23 @@ pub(in crate::geometry) fn partition_unique_segments<'a>(
     isolated: &[XY],
     budget: &mut ExpansionBudget,
 ) -> Result<ExactPartition<'a>> {
-    partition_unique_segments_with_budget(unique, provenance, isolated, Some(budget))
+    partition_unique_segments_with_budget(unique, provenance, isolated, None, Some(budget))
+}
+
+pub(in crate::geometry) fn partition_unique_segments_in_window<'a>(
+    unique: &'a [Segment],
+    provenance: &SegmentProvenance,
+    intervals: &[SegmentClipInterval],
+    window: Bounds,
+    budget: &mut ExpansionBudget,
+) -> Result<ExactPartition<'a>> {
+    partition_unique_segments_with_budget(
+        unique,
+        provenance,
+        &[],
+        Some((intervals, window)),
+        Some(budget),
+    )
 }
 
 pub(in crate::geometry) fn partition_unique_segments_unbudgeted<'a>(
@@ -422,16 +504,34 @@ pub(in crate::geometry) fn partition_unique_segments_unbudgeted<'a>(
     provenance: &SegmentProvenance,
     isolated: &[XY],
 ) -> Result<ExactPartition<'a>> {
-    partition_unique_segments_with_budget(unique, provenance, isolated, None)
+    partition_unique_segments_with_budget(unique, provenance, isolated, None, None)
 }
 
 fn partition_unique_segments_with_budget<'a>(
     unique: &'a [Segment],
     provenance: &SegmentProvenance,
     isolated: &[XY],
+    windowed: Option<(&[SegmentClipInterval], Bounds)>,
     mut budget: Option<&mut ExpansionBudget>,
 ) -> Result<ExactPartition<'a>> {
     debug_assert_eq!(provenance.len(), unique.len());
+    if let Some((intervals, _)) = windowed {
+        debug_assert_eq!(intervals.len(), unique.len());
+        let (zero, one) = (ExactDyadic::zero(), ExactDyadic::one());
+        for interval in intervals {
+            if interval
+                .start
+                .parameter
+                .cmp(&interval.end.parameter, &zero, &one)?
+                .is_gt()
+            {
+                return Err(GeometryErrorKind::Invalid(
+                    "rectangle clip interval is reversed on its source carrier".into(),
+                )
+                .into());
+            }
+        }
+    }
     let endpoint_capacity = unique
         .len()
         .checked_mul(2)
@@ -457,9 +557,52 @@ fn partition_unique_segments_with_budget<'a>(
     let mut end_handle = Vec::new();
     start_handle.reserve(unique.len());
     end_handle.reserve(unique.len());
-    for &segment in unique {
-        start_handle.push(intern_stored(segment.start, &mut endpoint_of, &mut forest)?);
-        end_handle.push(intern_stored(segment.end, &mut endpoint_of, &mut forest)?);
+    let mut clip_endpoint_keys = Vec::new();
+    if let Some((intervals, _)) = windowed {
+        clip_endpoint_keys.reserve(endpoint_capacity);
+        for interval in intervals {
+            let mut push_endpoint = |endpoint: &crate::geometry::segments::SegmentClipPoint| {
+                let handle = if let Some(exact) = &endpoint.exact {
+                    forest.push_constructed(endpoint.point, exact.clone())
+                } else {
+                    intern_stored(endpoint.point, &mut endpoint_of, &mut forest)
+                }?;
+                clip_endpoint_keys.push((PointKey::new(endpoint.point), handle));
+                Ok::<_, crate::error::Error>(handle)
+            };
+            start_handle.push(push_endpoint(&interval.start)?);
+            end_handle.push(push_endpoint(&interval.end)?);
+        }
+    } else {
+        for &segment in unique {
+            start_handle.push(intern_stored(segment.start, &mut endpoint_of, &mut forest)?);
+            end_handle.push(intern_stored(segment.end, &mut endpoint_of, &mut forest)?);
+        }
+    }
+    if !clip_endpoint_keys.is_empty() {
+        clip_endpoint_keys.sort_unstable_by_key(|(key, _)| *key);
+        let mut start = 0;
+        while start < clip_endpoint_keys.len() {
+            let key = clip_endpoint_keys[start].0;
+            let mut end = start.wrapping_add(1);
+            while clip_endpoint_keys
+                .get(end)
+                .is_some_and(|(next, _)| *next == key)
+            {
+                end = end.wrapping_add(1);
+            }
+            for right in start.wrapping_add(1)..end {
+                let right_handle = clip_endpoint_keys[right].1;
+                for left in start..right {
+                    let left_handle = clip_endpoint_keys[left].1;
+                    if forest.points.same_exact_point(left_handle, right_handle)? {
+                        forest.union(left_handle, right_handle)?;
+                        break;
+                    }
+                }
+            }
+            start = end;
+        }
     }
 
     let mut extra_handles = Vec::with_capacity(isolated.len());
@@ -475,7 +618,29 @@ fn partition_unique_segments_with_budget<'a>(
         extra_handles.push(handle);
     }
     drop(endpoint_of);
-    let pool = if extra_handles.is_empty() {
+    let pool = if let Some((intervals, _)) = windowed {
+        let capacity = unique
+            .len()
+            .checked_add(extra_handles.len())
+            .ok_or(ResourceError::SizeOverflow)?;
+        let mut pool = Vec::with_capacity(capacity);
+        pool.extend(intervals.iter().map(|interval| Segment {
+            start: interval.start.point,
+            end: interval.end.point,
+        }));
+        #[expect(
+            clippy::indexing_slicing,
+            reason = "extra handles were admitted by PointArena and address its aligned rounded-point column"
+        )]
+        pool.extend(extra_handles.iter().map(|&handle| {
+            let point = forest.points.rounded[handle as usize];
+            Segment {
+                start: point,
+                end: point,
+            }
+        }));
+        Cow::Owned(pool)
+    } else if extra_handles.is_empty() {
         Cow::Borrowed(unique)
     } else {
         let capacity = unique
@@ -525,6 +690,7 @@ fn partition_unique_segments_with_budget<'a>(
             &handles,
             &mut contacts,
             &mut forest,
+            windowed.map(|(_, bounds)| bounds),
         ) {
             Ok(()) => ControlFlow::Continue(()),
             Err(error) => {
@@ -537,6 +703,12 @@ fn partition_unique_segments_with_budget<'a>(
         && let Some(error) = pair_error
     {
         return Err(error);
+    }
+    if windowed.is_some() {
+        for (segment, (&start, &end)) in start_handle.iter().zip(&end_handle).enumerate() {
+            push_contact(&mut contacts, segment, start)?;
+            push_contact(&mut contacts, segment, end)?;
+        }
     }
     #[cfg(test)]
     drop(candidate_phase);
@@ -614,7 +786,7 @@ fn partition_unique_segments_with_budget<'a>(
             continue;
         }
         let (recipe, rounded) = forest.points.take(root);
-        if matches!(recipe, NodeRecipe::Crossing { .. })
+        if !matches!(recipe, NodeRecipe::Stored)
             && let Some(budget) = budget.as_deref_mut()
         {
             budget.add(1)?;
@@ -766,6 +938,7 @@ fn partition_unique_segments_with_budget<'a>(
         isolated: isolated_nodes,
         point_nodes,
         point_sources,
+        winding_seed: None,
         binding_starts,
         bindings,
         kept_nodes: KeptNodes::Selected,
@@ -792,16 +965,18 @@ pub(super) fn visit_pool_pair(
     handles: &EndpointHandles<'_>,
     contacts: &mut Vec<(u32, u32)>,
     forest: &mut Forest<'_>,
+    window: Option<Bounds>,
 ) -> Result<()> {
     let count = unique.len();
     match (left < count, right < count) {
-        (true, true) => classify_pair_into(unique, left, right, handles, contacts, forest),
+        (true, true) => classify_pair_into(unique, left, right, handles, contacts, forest, window),
         (true, false) => push_point_on_source(
             unique[left],
             left,
             pool[right].start,
             handles.extra[right.wrapping_sub(count)],
             contacts,
+            window,
         ),
         (false, true) => push_point_on_source(
             unique[right],
@@ -809,6 +984,7 @@ pub(super) fn visit_pool_pair(
             pool[left].start,
             handles.extra[left.wrapping_sub(count)],
             contacts,
+            window,
         ),
         (false, false) => Ok(()),
     }
@@ -832,8 +1008,12 @@ pub(super) fn push_point_on_source(
     point: XY,
     handle: u32,
     contacts: &mut Vec<(u32, u32)>,
+    window: Option<Bounds>,
 ) -> Result<()> {
-    if same_point(segment.start, segment.end) || !point_in_segment_envelope(point, segment) {
+    if same_point(segment.start, segment.end)
+        || !point_in_segment_envelope(point, segment)
+        || window.is_some_and(|bounds| !bounds.contains_xy(point))
+    {
         return Ok(());
     }
     let side = stored_orientation_sign(
@@ -861,6 +1041,7 @@ pub(super) fn push_overlap(
     [left, right]: [usize; 2],
     handles: &EndpointHandles<'_>,
     contacts: &mut Vec<(u32, u32)>,
+    window: Option<Bounds>,
 ) -> Result<()> {
     #[cfg(test)]
     let before = contacts.len();
@@ -869,7 +1050,8 @@ pub(super) fn push_overlap(
             (guest.start, handles.start[guest_index]),
             (guest.end, handles.end[guest_index]),
         ] {
-            if strictly_inside(host, point) {
+            if strictly_inside(host, point) && window.is_none_or(|bounds| bounds.contains_xy(point))
+            {
                 push_contact(contacts, host_index, handle)?;
             }
         }
@@ -892,14 +1074,15 @@ pub(super) fn classify_pair_into(
     handles: &EndpointHandles<'_>,
     contacts: &mut Vec<(u32, u32)>,
     forest: &mut Forest<'_>,
+    window: Option<Bounds>,
 ) -> Result<()> {
     let a = unique[left];
     let b = unique[right];
     if same_point(a.start, a.end) {
-        return push_point_on_source(b, right, a.start, handles.start[left], contacts);
+        return push_point_on_source(b, right, a.start, handles.start[left], contacts, window);
     }
     if same_point(b.start, b.end) {
-        return push_point_on_source(a, left, b.start, handles.start[right], contacts);
+        return push_point_on_source(a, left, b.start, handles.start[right], contacts, window);
     }
     if segment_envelopes_disjoint(a, b) {
         return Ok(());
@@ -931,13 +1114,13 @@ pub(super) fn classify_pair_into(
     };
     if let Some(other) = unshared {
         if orient(a, other) == ExactSign::Zero {
-            return push_overlap([a, b], [left, right], handles, contacts);
+            return push_overlap([a, b], [left, right], handles, contacts, window);
         }
         return Ok(());
     }
     let (o_b0, o_b1) = (orient(a, b.start), orient(a, b.end));
     if o_b0 == ExactSign::Zero && o_b1 == ExactSign::Zero {
-        return push_overlap([a, b], [left, right], handles, contacts);
+        return push_overlap([a, b], [left, right], handles, contacts, window);
     }
     // One endpoint on the other carrier: a touch when it lies strictly
     // inside, otherwise the segments do not meet.
@@ -952,7 +1135,8 @@ pub(super) fn classify_pair_into(
         (o_b1 == ExactSign::Zero, a, left, b.end, handles.end[right]),
     ] {
         if zero {
-            if strictly_inside(host, point) {
+            if strictly_inside(host, point) && window.is_none_or(|bounds| bounds.contains_xy(point))
+            {
                 push_contact(contacts, index, handle)?;
             }
             return Ok(());
@@ -970,7 +1154,8 @@ pub(super) fn classify_pair_into(
         (o_a1 == ExactSign::Zero, b, right, a.end, handles.end[left]),
     ] {
         if zero {
-            if strictly_inside(host, point) {
+            if strictly_inside(host, point) && window.is_none_or(|bounds| bounds.contains_xy(point))
+            {
                 push_contact(contacts, index, handle)?;
             }
             return Ok(());
@@ -979,13 +1164,60 @@ pub(super) fn classify_pair_into(
     // Strictly opposite sides on both carriers: a proper crossing, interior
     // to both segments.
     if o_b0 != o_b1 && o_a0 != o_a1 {
-        let segment = |index: usize| u32::try_from(index).map_err(|_| ResourceError::SizeOverflow);
-        let handle =
-            forest.push_crossing([segment(left.min(right))?, segment(left.max(right))?])?;
+        let segments = [
+            u32::try_from(left.min(right)).map_err(|_| ResourceError::SizeOverflow)?,
+            u32::try_from(left.max(right)).map_err(|_| ResourceError::SizeOverflow)?,
+        ];
+        let handle = if let Some(bounds) = window {
+            let crossing = crossing_point(a, b)?;
+            let rounded = crossing.point;
+            if rounded.x < bounds.minx()
+                || rounded.x > bounds.maxx()
+                || rounded.y < bounds.miny()
+                || rounded.y > bounds.maxy()
+            {
+                return Ok(());
+            }
+            let exact = if rounded.x == bounds.minx()
+                || rounded.x == bounds.maxx()
+                || rounded.y == bounds.miny()
+                || rounded.y == bounds.maxy()
+            {
+                Some(
+                    crossing
+                        .exact
+                        .map_or_else(|| crossing_homogeneous(a, b), Ok)?,
+                )
+            } else {
+                crossing.exact
+            };
+            if let Some(exact_point) = &exact {
+                if !homogeneous_point_in_bounds(exact_point, bounds)? {
+                    return Ok(());
+                }
+            }
+            match exact {
+                Some(exact) => forest.push_crossing_with_exact(segments, rounded, exact)?,
+                None => forest.push_crossing(segments)?,
+            }
+        } else {
+            forest.push_crossing(segments)?
+        };
         push_contact(contacts, left, handle)?;
         push_contact(contacts, right, handle)?;
     }
     Ok(())
+}
+
+fn homogeneous_point_in_bounds(point: &[ExactDyadic; 3], bounds: Bounds) -> Result<bool> {
+    let [x, y, w] = point;
+    let one = ExactDyadic::one();
+    Ok(
+        compare_ratios(x, w, &ExactDyadic::from_f64(bounds.minx()), &one)?.is_ge()
+            && compare_ratios(x, w, &ExactDyadic::from_f64(bounds.maxx()), &one)?.is_le()
+            && compare_ratios(y, w, &ExactDyadic::from_f64(bounds.miny()), &one)?.is_ge()
+            && compare_ratios(y, w, &ExactDyadic::from_f64(bounds.maxy()), &one)?.is_le(),
+    )
 }
 
 #[expect(

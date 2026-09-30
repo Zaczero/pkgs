@@ -707,10 +707,69 @@ fn clip_segment_axis_aligned(start: XY, end: XY, rect: Bounds) -> ClipVerdict {
 }
 
 fn clip_segment_exact(start: XY, end: XY, rect: Bounds) -> Result<Option<(XY, XY)>> {
-    // Exact orientations decide which closed rectangle edges meet the stored
-    // segment. Strict crossings use the axis-specific rational placement below;
-    // the generic DD crossing witness is a rounded approximation, not an
-    // authority for clipping.
+    let Some(interval) = clip_segment_rect_interval(Segment { start, end }, rect)? else {
+        return Ok(None);
+    };
+    if same_point(interval.start.point, interval.end.point) {
+        return Ok(None);
+    }
+    Ok(Some((interval.start.point, interval.end.point)))
+}
+
+/// Exact endpoints of a segment's closed intersection with a rectangle.
+///
+/// `exact` is absent only for an original stored endpoint. Constructed
+/// crossings retain both their exact homogeneous coordinate and source
+/// parameter; consumers can node the local span without treating its rounded
+/// endpoints as new source geometry.
+#[derive(Clone, Debug)]
+pub(crate) struct SegmentClipPoint {
+    pub(crate) parameter: SegmentParameter,
+    pub(crate) point: XY,
+    pub(crate) exact: Option<[ExactDyadic; 3]>,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct SegmentClipInterval {
+    pub(crate) start: SegmentClipPoint,
+    pub(crate) end: SegmentClipPoint,
+}
+
+/// Clip a stored source carrier to a closed rectangle without replacing that
+/// carrier by its rounded endpoint chord.
+pub(in crate::geometry) fn clip_segment_rect_interval(
+    segment: Segment,
+    rect: Bounds,
+) -> Result<Option<SegmentClipInterval>> {
+    let (start, end) = (segment.start, segment.end);
+    if same_point(start, end) {
+        return Ok(rect.contains_xy(start).then(|| SegmentClipInterval {
+            start: SegmentClipPoint {
+                parameter: SegmentParameter::Start,
+                point: start,
+                exact: None,
+            },
+            end: SegmentClipPoint {
+                parameter: SegmentParameter::Start,
+                point: start,
+                exact: None,
+            },
+        }));
+    }
+    if rect.contains_xy(start) && rect.contains_xy(end) {
+        return Ok(Some(SegmentClipInterval {
+            start: SegmentClipPoint {
+                parameter: SegmentParameter::Start,
+                point: start,
+                exact: None,
+            },
+            end: SegmentClipPoint {
+                parameter: SegmentParameter::End,
+                point: end,
+                exact: None,
+            },
+        }));
+    }
     let corners = [
         XY::new(rect.minx(), rect.miny()),
         XY::new(rect.maxx(), rect.miny()),
@@ -736,20 +795,22 @@ fn clip_segment_exact(start: XY, end: XY, rect: Bounds) -> Result<Option<(XY, XY
             ClipHit {
                 parameter: SegmentParameter::Start,
                 point: start,
+                exact: None,
             },
             &mut hits,
             &mut n_hits,
-        );
+        )?;
     }
     if point_in(end) {
         push_clip_hit(
             ClipHit {
                 parameter: SegmentParameter::End,
                 point: end,
+                exact: None,
             },
             &mut hits,
             &mut n_hits,
-        );
+        )?;
     }
     for (edge_start, edge_end) in edges {
         let edge = Segment {
@@ -763,18 +824,20 @@ fn clip_segment_exact(start: XY, end: XY, rect: Bounds) -> Result<Option<(XY, XY
                     ClipHit {
                         parameter: clip_segment_parameter(segment, span.start)?,
                         point: span.start,
+                        exact: None,
                     },
                     &mut hits,
                     &mut n_hits,
-                );
+                )?;
                 push_clip_hit(
                     ClipHit {
                         parameter: clip_segment_parameter(segment, span.end)?,
                         point: span.end,
+                        exact: None,
                     },
                     &mut hits,
                     &mut n_hits,
-                );
+                )?;
             }
         } else if orientations.straddles_or_touches() {
             if orientations.has_collinear() {
@@ -783,21 +846,22 @@ fn clip_segment_exact(start: XY, end: XY, rect: Bounds) -> Result<Option<(XY, XY
                         ClipHit {
                             parameter: clip_segment_parameter(segment, point)?,
                             point,
+                            exact: None,
                         },
                         &mut hits,
                         &mut n_hits,
-                    );
+                    )?;
                 }
             } else {
                 push_clip_hit(
                     clip_segment_edge_cross_exact(segment, edge_start, edge_end)?,
                     &mut hits,
                     &mut n_hits,
-                );
+                )?;
             }
         }
     }
-    if n_hits < 2 {
+    if n_hits == 0 {
         return Ok(None);
     }
     let mut i_min = 0_usize;
@@ -813,17 +877,31 @@ fn clip_segment_exact(start: XY, end: XY, rect: Bounds) -> Result<Option<(XY, XY
             i_max = i;
         }
     }
-    let p_min = hits[i_min].as_ref().expect("stored clip hit").point;
-    let p_max = hits[i_max].as_ref().expect("stored clip hit").point;
-    if same_point(p_min, p_max) {
-        return Ok(None);
-    }
-    Ok(Some((p_min, p_max)))
+    let first = hits[i_min].take().expect("stored clip hit");
+    let last = if i_min == i_max {
+        first.clone()
+    } else {
+        hits[i_max].take().expect("stored clip hit")
+    };
+    Ok(Some(SegmentClipInterval {
+        start: SegmentClipPoint {
+            parameter: first.parameter,
+            point: first.point,
+            exact: first.exact,
+        },
+        end: SegmentClipPoint {
+            parameter: last.parameter,
+            point: last.point,
+            exact: last.exact,
+        },
+    }))
 }
 
+#[derive(Clone)]
 struct ClipHit {
     parameter: SegmentParameter,
     point: XY,
+    exact: Option<[ExactDyadic; 3]>,
 }
 
 /// A position on a segment in exact arithmetic: an endpoint, or the interior
@@ -864,17 +942,32 @@ impl SegmentParameter {
     }
 }
 
-fn push_clip_hit(hits: ClipHit, output: &mut [Option<ClipHit>; 6], count: &mut usize) {
-    if *count >= output.len()
-        || output[..*count]
-            .iter()
-            .flatten()
-            .any(|existing| same_point(existing.point, hits.point))
-    {
-        return;
+fn push_clip_hit(hit: ClipHit, output: &mut [Option<ClipHit>; 6], count: &mut usize) -> Result<()> {
+    let (zero, one) = (ExactDyadic::zero(), ExactDyadic::one());
+    let mut duplicate = None;
+    for (index, existing) in output[..*count].iter().enumerate() {
+        if let Some(existing) = existing
+            && existing.parameter.cmp(&hit.parameter, &zero, &one)? == Ordering::Equal
+        {
+            duplicate = Some(index);
+            break;
+        }
     }
-    output[*count] = Some(hits);
+    if let Some(index) = duplicate {
+        // An original endpoint owns its spelling (including signed zero) when
+        // a rectangle corner produces the same exact parameter.
+        if matches!(
+            &hit.parameter,
+            SegmentParameter::Start | SegmentParameter::End
+        ) && let Some(slot) = output.get_mut(index)
+        {
+            *slot = Some(hit);
+        }
+        return Ok(());
+    }
+    output[*count] = Some(hit);
     *count += 1;
+    Ok(())
 }
 
 pub(in crate::geometry) fn clip_segment_parameter(
@@ -919,31 +1012,45 @@ fn clip_segment_edge_cross_exact(
     let delta_y = end_y.try_subtract(start_y.clone())?;
     if same_topological_coordinate(edge_start.x, edge_end.x) {
         let edge_x = ExactDyadic::from_f64(edge_start.x);
-        let offset = edge_x.try_subtract(start_x)?;
-        let numerator = start_y
+        let offset = edge_x.clone().try_subtract(start_x)?;
+        let mut denominator = delta_x.clone();
+        let mut numerator = start_y
             .try_product(&delta_x)?
             .try_add(delta_y.try_product(&offset)?)?;
-        let free = round_ratio(&numerator, &delta_x)?;
+        if denominator.sign() == ExactSign::Negative {
+            denominator = denominator.neg();
+            numerator = numerator.neg();
+        }
+        let x = edge_x.try_product(&denominator)?;
+        let free = round_ratio(&numerator, &denominator)?;
         Ok(ClipHit {
             parameter: SegmentParameter::Ratio {
                 num: offset,
                 den: delta_x,
             },
             point: XY::new(edge_start.x, free),
+            exact: Some([x, numerator, denominator]),
         })
     } else {
         let edge_y = ExactDyadic::from_f64(edge_start.y);
-        let offset = edge_y.try_subtract(start_y)?;
-        let numerator = start_x
+        let offset = edge_y.clone().try_subtract(start_y)?;
+        let mut denominator = delta_y.clone();
+        let mut numerator = start_x
             .try_product(&delta_y)?
             .try_add(delta_x.try_product(&offset)?)?;
-        let free = round_ratio(&numerator, &delta_y)?;
+        if denominator.sign() == ExactSign::Negative {
+            denominator = denominator.neg();
+            numerator = numerator.neg();
+        }
+        let y = edge_y.try_product(&denominator)?;
+        let free = round_ratio(&numerator, &denominator)?;
         Ok(ClipHit {
             parameter: SegmentParameter::Ratio {
                 num: offset,
                 den: delta_y,
             },
             point: XY::new(free, edge_start.y),
+            exact: Some([numerator, y, denominator]),
         })
     }
 }

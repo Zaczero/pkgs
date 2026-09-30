@@ -157,6 +157,9 @@ impl ExactSourceInventory {
         point_shell_faces.sort_unstable_by_key(|(face, _)| *face);
         let mut point_shell_cursor = 0;
         let mut occupancy = PolygonOccupancy::new(&self.polygon_rings, self.ring_count, odd)?;
+        if let Some((_, seed)) = &partition.winding_seed {
+            occupancy.seed(seed)?;
+        }
         partition.visit_face_windings_with_hook(
             topology,
             edges,

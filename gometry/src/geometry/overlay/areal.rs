@@ -1,11 +1,14 @@
 use crate::error::{ResourceError, Result};
-use crate::geometry::overlay::{ExactSourceInventory, OverlayOp, self_node_segments_sourced};
+use crate::geometry::overlay::self_node_segments_sourced;
+#[cfg(test)]
+use crate::geometry::overlay::{ExactSourceInventory, OverlayOp};
 use crate::geometry::{
     Arrangement, Bounds, Polygon, Ring, RingWinding, Segment, SegmentIndex, XY,
     ray_crossing_is_right, ring_winding, same_point,
 };
 use crate::scratch_pool::{RetainScratch, ScratchPool, flat_vec_retained_bytes};
 
+#[cfg(test)]
 pub(in crate::geometry) fn binary_areal_overlay<P: AsRef<Polygon>, Q: AsRef<Polygon>>(
     left: &[P],
     right: &[Q],

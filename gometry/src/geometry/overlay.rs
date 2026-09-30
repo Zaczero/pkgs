@@ -140,7 +140,9 @@ mod noding;
 mod rect;
 mod shape;
 
-pub(in crate::geometry) use areal::{binary_areal_overlay, build_areal_arrangement};
+#[cfg(test)]
+pub(in crate::geometry) use areal::binary_areal_overlay;
+pub(in crate::geometry) use areal::{build_areal_arrangement, ray_crossing};
 pub(crate) use assembly::{
     build_certified_overlay_shape, build_overlay_shape, dedup_points, merge_chains,
 };
@@ -153,7 +155,8 @@ pub(crate) use clip::{
 pub(crate) use exact_partition::cartesian_support_nonempty;
 pub(in crate::geometry) use exact_partition::{
     ExactChainView, ExactLineEmission, ExactMetricSpan, ExactMetricSupport, ExactPartition,
-    ExactSourceInventory, NodeId, RayAxis, RayPoints, certify_emitted_incidence, shoot_left,
+    ExactSourceInventory, NodeId, RayAxis, RayPoints, certify_emitted_incidence,
+    clip_polygonal_rectangle, shoot_left,
 };
 pub(crate) use exact_partition::{
     exact_intersects_bounds, occupied_cartesian_area, occupied_cartesian_support,

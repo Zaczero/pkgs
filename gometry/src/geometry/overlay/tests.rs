@@ -2309,3 +2309,441 @@ fn overlay_output_rings_carry_no_collinear_nodes() {
         "POLYGON ((0 0, 4 0, 4 4, 3 4, 3 1, 1 1, 1 4, 0 4, 0 0))"
     );
 }
+
+mod rectangle_clip_tests {
+    use super::*;
+    use crate::geometry::segments::clip_segment_rect_interval;
+    use crate::geometry::tessellation::exact::compare_ratios;
+
+    fn bounds(minx: f64, miny: f64, maxx: f64, maxy: f64) -> Bounds {
+        Bounds::new(minx, miny, maxx, maxy).expect("finite ordered rectangle")
+    }
+
+    fn ring(points: &[(f64, f64)]) -> Ring {
+        Ring::from_closed(
+            CoordSeq::try_from_points(
+                &points
+                    .iter()
+                    .map(|&(x, y)| Point::new_raw_xy(x, y))
+                    .collect::<Vec<_>>(),
+            )
+            .expect("test coordinates form a sequence"),
+        )
+        .expect("test coordinates form a closed ring")
+    }
+
+    fn polygon(points: &[(f64, f64)]) -> Polygon {
+        Polygon::new(ring(points), Vec::new())
+    }
+
+    fn rectangle(minx: f64, miny: f64, maxx: f64, maxy: f64) -> Polygon {
+        polygon(&[
+            (minx, miny),
+            (maxx, miny),
+            (maxx, maxy),
+            (minx, maxy),
+            (minx, miny),
+        ])
+    }
+
+    fn compare_clip_results(
+        name: &str,
+        actual: Result<Vec<Polygon>>,
+        expected: Result<Vec<Polygon>>,
+        matching_errors_are_expected: bool,
+    ) {
+        match (actual, expected) {
+            (Ok(actual), Ok(expected)) => {
+                let actual = clip::polygon_parts_to_shape(actual);
+                let expected = clip::polygon_parts_to_shape(expected);
+                assert!(
+                    actual.equals(&expected).unwrap(),
+                    "{name}: {actual:?} differs topologically from {expected:?}"
+                );
+                assert!(
+                    actual.validate().unwrap().is_none(),
+                    "{name}: invalid rectangle clip output {actual:?}"
+                );
+            },
+            (Err(actual), Err(expected)) if matching_errors_are_expected => {
+                assert_eq!(
+                    actual.to_string(),
+                    expected.to_string(),
+                    "{name}: local partition and exact overlay disagree on failure"
+                );
+            },
+            (actual, expected) => panic!(
+                "{name}: local partition returned {actual:?}, exact overlay returned {expected:?}"
+            ),
+        }
+    }
+
+    fn assert_clip_matches_oracle(name: &str, subjects: &[Polygon], bounds: Bounds) {
+        let rectangle = rect_polygon(bounds).expect("clip rectangle polygon");
+        let expected = binary_areal_overlay(
+            subjects,
+            std::slice::from_ref(&rectangle),
+            OverlayOp::Intersection,
+        );
+        let actual = clip_polygonal_rectangle(subjects, bounds);
+        compare_clip_results(name, actual, expected, false);
+    }
+
+    fn assert_clip_oracle_failure_or_equal(name: &str, subjects: &[Polygon], bounds: Bounds) {
+        let rectangle = rect_polygon(bounds).expect("clip rectangle polygon");
+        compare_clip_results(
+            name,
+            clip_polygonal_rectangle(subjects, bounds),
+            binary_areal_overlay(
+                subjects,
+                std::slice::from_ref(&rectangle),
+                OverlayOp::Intersection,
+            ),
+            true,
+        );
+    }
+
+    fn next_random(state: &mut u64) -> u64 {
+        let mut value = *state;
+        value ^= value.wrapping_shl(13);
+        value ^= value.wrapping_shr(7);
+        value ^= value.wrapping_shl(17);
+        *state = value;
+        value
+    }
+
+    fn random_unit(state: &mut u64) -> f64 {
+        (next_random(state) >> 11) as f64 / (1_u64 << 53) as f64
+    }
+
+    fn regular_ellipse(cx: f64, cy: f64, rx: f64, ry: f64, count: usize, phase: f64) -> Polygon {
+        let mut points = Vec::with_capacity(count.wrapping_add(1));
+        for index in 0..count {
+            let angle = phase + std::f64::consts::TAU * index as f64 / count as f64;
+            points.push(Point::new_raw_xy(
+                cx + rx * angle.cos(),
+                cy + ry * angle.sin(),
+            ));
+        }
+        points.push(points[0]);
+        Polygon::new(
+            Ring::from_closed(CoordSeq::try_from_points(&points).unwrap()).unwrap(),
+            Vec::new(),
+        )
+    }
+
+    #[test]
+    fn rectangle_local_partition_matches_the_oracle_on_the_full_areal_matrix() {
+        let square = rectangle(0.0, 0.0, 4.0, 4.0);
+        let shell = ring(&[
+            (0.0, 0.0),
+            (10.0, 0.0),
+            (10.0, 10.0),
+            (0.0, 10.0),
+            (0.0, 0.0),
+        ]);
+        let hole = ring(&[(4.0, 4.0), (6.0, 4.0), (6.0, 6.0), (4.0, 6.0), (4.0, 4.0)]);
+        let holed = Polygon::new(shell, vec![hole]);
+        let touching = [rectangle(0.0, 0.0, 2.0, 2.0), rectangle(2.0, 2.0, 4.0, 4.0)];
+        let concave = polygon(&[
+            (0.0, 0.0),
+            (6.0, 0.0),
+            (6.0, 6.0),
+            (4.0, 6.0),
+            (4.0, 2.0),
+            (2.0, 2.0),
+            (2.0, 6.0),
+            (0.0, 6.0),
+            (0.0, 0.0),
+        ]);
+        let spike = polygon(&[
+            (0.0, 0.0),
+            (4.0, 0.0),
+            (4.0, 4.0),
+            (2.0, 4.0),
+            (2.0, 2.0),
+            (3.0, 2.0),
+            (2.0, 2.0),
+            (2.0, 4.0),
+            (0.0, 4.0),
+            (0.0, 0.0),
+        ]);
+
+        let cases = [
+            (
+                "contained-window",
+                vec![rectangle(-4.0, -3.0, 4.0, 3.0)],
+                bounds(-1.0, -1.5, 1.25, 1.5),
+            ),
+            (
+                "source-disjoint-from-window",
+                vec![rectangle(0.0, 0.0, 1.0, 1.0)],
+                bounds(5.0, 5.0, 6.0, 6.0),
+            ),
+            (
+                "source-vertices-on-side-and-corner",
+                vec![square.clone()],
+                bounds(0.0, 1.0, 2.0, 4.0),
+            ),
+            (
+                "coincident-shell-and-window",
+                vec![square.clone()],
+                bounds(0.0, 0.0, 4.0, 4.0),
+            ),
+            (
+                "left-side-overlap",
+                vec![square.clone()],
+                bounds(0.0, 1.0, 2.0, 3.0),
+            ),
+            (
+                "right-side-overlap",
+                vec![square.clone()],
+                bounds(2.0, 1.0, 4.0, 3.0),
+            ),
+            (
+                "bottom-side-overlap",
+                vec![square.clone()],
+                bounds(1.0, 0.0, 3.0, 2.0),
+            ),
+            (
+                "top-side-overlap",
+                vec![square.clone()],
+                bounds(1.0, 2.0, 3.0, 4.0),
+            ),
+            (
+                "corner-only-contact",
+                vec![square.clone()],
+                bounds(4.0, 4.0, 5.0, 5.0),
+            ),
+            (
+                "zero-width-window",
+                vec![square.clone()],
+                bounds(2.0, 0.0, 2.0, 4.0),
+            ),
+            (
+                "zero-height-window",
+                vec![square.clone()],
+                bounds(0.0, 2.0, 4.0, 2.0),
+            ),
+            (
+                "hole-crossed-by-window",
+                vec![holed.clone()],
+                bounds(3.0, 3.0, 7.0, 7.0),
+            ),
+            (
+                "hole-contained-by-window",
+                vec![holed],
+                bounds(2.0, 2.0, 8.0, 8.0),
+            ),
+            (
+                "multiple-shells",
+                vec![square, rectangle(5.0, 1.0, 9.0, 5.0)],
+                bounds(1.0, 1.0, 7.0, 3.0),
+            ),
+            (
+                "point-touching-parts",
+                touching.to_vec(),
+                bounds(1.0, 1.0, 3.0, 3.0),
+            ),
+            (
+                "disconnected-concave-result",
+                vec![concave],
+                bounds(0.5, 3.0, 5.5, 5.0),
+            ),
+            ("retraced-spike", vec![spike], bounds(0.5, 0.5, 3.5, 3.5)),
+        ];
+        for (name, polygons, rect) in cases {
+            assert_clip_matches_oracle(name, &polygons, rect);
+        }
+    }
+
+    #[test]
+    fn contained_and_crossing_seeded_convex_rings_match_the_oracle() {
+        let mut state = 0xD1B5_4A32_D192_ED03;
+        for case in 0..24 {
+            let count = 5 + (next_random(&mut state) % 25) as usize;
+            let (cx, cy) = (
+                200.0 * random_unit(&mut state) - 100.0,
+                200.0 * random_unit(&mut state) - 100.0,
+            );
+            let (rx, ry) = (
+                2.0 + 8.0 * random_unit(&mut state),
+                2.0 + 8.0 * random_unit(&mut state),
+            );
+            let phase = std::f64::consts::TAU * random_unit(&mut state);
+            let polygon = regular_ellipse(cx, cy, rx, ry, count, phase);
+            assert_clip_matches_oracle(
+                &format!("seeded-contained-{case}"),
+                std::slice::from_ref(&polygon),
+                bounds(
+                    cx - 0.03 * rx,
+                    cy - 0.03 * ry,
+                    cx + 0.03 * rx,
+                    cy + 0.03 * ry,
+                ),
+            );
+            assert_clip_matches_oracle(
+                &format!("seeded-crossing-{case}"),
+                &[polygon],
+                bounds(cx + 0.7 * rx, cy - 0.1 * ry, cx + 1.1 * rx, cy + 0.1 * ry),
+            );
+        }
+    }
+
+    #[test]
+    fn ellipse_and_close_rounded_crossings_match_the_oracle() {
+        let ellipse = regular_ellipse(0.0, 0.0, 4.0, 3.0, 4096, 0.0);
+        assert_clip_matches_oracle(
+            "ellipse-4096-contained",
+            &[ellipse],
+            bounds(-1.0, -1.5, 1.25, 1.5),
+        );
+
+        let ulp = f64::from_bits(1.0_f64.to_bits().wrapping_add(1)) - 1.0;
+        let quarter = polygon(&[(-1.0, 1.0), (7.0, 1.0 + ulp), (7.0, 0.0), (-1.0, 1.0)]);
+        let half = polygon(&[(-1.0, 1.0), (3.0, 1.0 + ulp), (3.0, 0.0), (-1.0, 1.0)]);
+        let quarter_interval = clip_segment_rect_interval(
+            Segment {
+                start: XY::new(-1.0, 1.0),
+                end: XY::new(7.0, 1.0 + ulp),
+            },
+            bounds(1.0, 0.0, 2.0, 2.0),
+        )
+        .unwrap()
+        .unwrap();
+        let half_interval = clip_segment_rect_interval(
+            Segment {
+                start: XY::new(-1.0, 1.0),
+                end: XY::new(3.0, 1.0 + ulp),
+            },
+            bounds(1.0, 0.0, 2.0, 2.0),
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(quarter_interval.start.point.y.to_bits(), 1.0_f64.to_bits());
+        assert_eq!(half_interval.start.point.y.to_bits(), 1.0_f64.to_bits());
+        let [quarter_x, quarter_y, quarter_w] = quarter_interval.start.exact.unwrap();
+        let [half_x, half_y, half_w] = half_interval.start.exact.unwrap();
+        assert_eq!(
+            compare_ratios(&quarter_x, &quarter_w, &half_x, &half_w).unwrap(),
+            std::cmp::Ordering::Equal
+        );
+        assert!(
+            compare_ratios(&quarter_y, &quarter_w, &half_y, &half_w)
+                .unwrap()
+                .is_lt(),
+            "the exact boundary crossings differ despite sharing one rounded coordinate"
+        );
+        assert_clip_oracle_failure_or_equal(
+            "distinct-exact-crossings-one-rounded-coordinate",
+            &[quarter, half],
+            bounds(1.0, 0.0, 2.0, 2.0),
+        );
+    }
+
+    #[test]
+    fn rectangle_local_contact_guard_rejects_disjoint_source_edges() {
+        let subject = rectangle(0.0, 0.0, 1.0, 1.0);
+        assert_clip_matches_oracle(
+            "disjoint-source-window",
+            &[subject],
+            bounds(5.0, 5.0, 6.0, 6.0),
+        );
+    }
+
+    #[test]
+    fn rectangle_clip_line_contacts_and_zm_carry_keep_the_existing_contract() {
+        assert_eq!(
+            clip_segment(
+                XY::new(-2.0, 0.0),
+                XY::new(2.0, 0.0),
+                bounds(0.0, 0.0, 1.0, 1.0),
+            )
+            .unwrap(),
+            Some((XY::new(0.0, 0.0), XY::new(1.0, 0.0)))
+        );
+        assert_eq!(
+            clip_segment(
+                XY::new(-1.0, 1.0),
+                XY::new(0.0, 0.0),
+                bounds(0.0, 0.0, 1.0, 1.0),
+            )
+            .unwrap(),
+            None
+        );
+        assert_eq!(
+            clip_segment(
+                XY::new(0.0, -1.0),
+                XY::new(0.0, 2.0),
+                bounds(0.0, 0.0, 0.0, 1.0),
+            )
+            .unwrap(),
+            Some((XY::new(0.0, 0.0), XY::new(0.0, 1.0)))
+        );
+
+        let line_point =
+            |x, z, m| Point::new_axes(x, 0.0, ZOrdinate(Some(z)), MOrdinate(Some(m))).unwrap();
+        let source_line = Shape::LineString(
+            LineSeq::try_new(
+                CoordSeq::try_from_points(&[
+                    line_point(-1.0, 10.0, 100.0),
+                    line_point(2.0, 40.0, 400.0),
+                ])
+                .unwrap(),
+            )
+            .unwrap(),
+        );
+        let expected_line = Shape::LineString(
+            LineSeq::try_new(
+                CoordSeq::try_from_points(&[
+                    line_point(0.0, 20.0, 200.0),
+                    line_point(1.0, 30.0, 300.0),
+                ])
+                .unwrap(),
+            )
+            .unwrap(),
+        );
+        assert!(
+            source_line
+                .clip_by_rect(bounds(0.0, -1.0, 1.0, 1.0), true)
+                .unwrap()
+                .equals_exact(&expected_line, 0.0, true, true)
+        );
+
+        let polygon = Polygon::new(
+            Ring::from_closed(
+                CoordSeq::try_from_points(
+                    &[(0.0, 0.0), (4.0, 0.0), (4.0, 4.0), (0.0, 4.0), (0.0, 0.0)]
+                        .into_iter()
+                        .map(|(x, y)| {
+                            Point::new_axes(
+                                x,
+                                y,
+                                ZOrdinate(Some(x + y + 7.0)),
+                                MOrdinate(Some(x - y + 13.0)),
+                            )
+                            .unwrap()
+                        })
+                        .collect::<Vec<_>>(),
+                )
+                .unwrap(),
+            )
+            .unwrap(),
+            Vec::new(),
+        );
+        let rect = bounds(1.0, 0.5, 3.0, 3.5);
+        let expected_xy = clip::polygon_parts_to_shape(
+            binary_areal_overlay(
+                std::slice::from_ref(&polygon),
+                &[rect_polygon(rect).unwrap()],
+                OverlayOp::Intersection,
+            )
+            .unwrap(),
+        );
+        let source = Shape::Polygon(polygon);
+        let expected = carry_ordinates(expected_xy, &[&source], "clip_by_rect", false).unwrap();
+        let actual = source.clip_by_rect(rect, false).unwrap();
+        assert!(actual.equals_exact(&expected, 0.0, true, true));
+        let _error = source.clip_by_rect(rect, true).unwrap_err();
+    }
+}

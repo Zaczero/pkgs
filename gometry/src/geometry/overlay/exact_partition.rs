@@ -22,11 +22,14 @@ use std::ops::{ControlFlow, Range};
 use crate::error::ResourceError;
 use crate::geometry::arrangement::{IndexedTopology, IndexedTopologyScratch, compare_departures};
 use crate::geometry::exact_arith::ExactSign;
-use crate::geometry::overlay::build_certified_overlay_shape;
 use crate::geometry::overlay::noding::{
     SegmentProvenance, SegmentSource, dedup_undirected_segments_sourced, placement_offsets,
 };
-use crate::geometry::segments::stored_cross_sign;
+use crate::geometry::overlay::{build_certified_overlay_shape, ray_crossing, rect_polygon};
+use crate::geometry::segments::{
+    RectContact, SegmentClipInterval, clip_segment_rect_interval, segment_vs_rect,
+    stored_cross_sign, stored_orientation_sign,
+};
 use crate::geometry::tessellation::exact::ExactDyadic;
 use crate::geometry::{
     Bounds, Contact, CoordSeq, Coordinates as _, ExpansionBudget, GeometryErrorKind, GeometryKind,
@@ -45,7 +48,7 @@ mod relate;
 
 use construction::{
     AxisValue, PointArena, interpolate_ordinate, parameter_along, partition_unique_segments,
-    partition_unique_segments_unbudgeted,
+    partition_unique_segments_in_window, partition_unique_segments_unbudgeted,
 };
 #[cfg(test)]
 use emission::PlannedChord;
@@ -64,6 +67,31 @@ use metrics::{record_partition_call, update as update_partition_metrics};
 pub(in crate::geometry) use rays::{RayPoints, shoot_left};
 
 pub(in crate::geometry) use self::Axis as RayAxis;
+
+pub(in crate::geometry) fn clip_polygonal_rectangle<P: AsRef<Polygon>>(
+    polygons: &[P],
+    bounds: Bounds,
+) -> Result<Vec<Polygon>> {
+    let (inventory, intervals) = ExactSourceInventory::from_polygon_rect_clip(polygons, bounds)?;
+    let mut budget = ExpansionBudget::new("clip_by_rect", "rectangle-local exact partition");
+    let mut partition = inventory.partition_in_window(&intervals, bounds, &mut budget)?;
+    let (topology, edges) = partition.local_topology()?;
+    let global = partition.global_faces(&topology, &edges)?;
+    partition.winding_seed =
+        inventory.rectangle_winding_seed(&partition, &topology, &edges, &global, bounds)?;
+    let cells = inventory.select_cells(
+        &partition,
+        &topology,
+        &edges,
+        &global,
+        crate::geometry::OverlayOp::Intersection,
+        false,
+    )?;
+    let plan = cells.emission_plan(&partition, &topology, &edges, &global)?;
+    let (_, _, polygons) = plan.emit_xy_parts(&partition, &topology)?;
+    Ok(polygons)
+}
+
 #[cfg(test)]
 use crate::geometry::segments::crossing_homogeneous;
 #[cfg(test)]
@@ -362,6 +390,9 @@ impl ArealSources {
 #[derive(Debug)]
 pub(in crate::geometry) enum NodeRecipe {
     Stored,
+    Constructed {
+        exact: std::cell::OnceCell<Box<[ExactDyadic; 3]>>,
+    },
     Crossing {
         segments: [u32; 2],
         exact: std::cell::OnceCell<Box<[ExactDyadic; 3]>>,
@@ -484,6 +515,10 @@ pub(in crate::geometry) struct ExactPartition<'a> {
     /// Node ownership in explicit input-point occurrence order, including duplicates.
     pub point_nodes: Vec<NodeId>,
     pub point_sources: Vec<(NodeId, u32)>,
+    /// Source-ring winding at an interior face adjacent to the rectangle
+    /// boundary. Clipped partitions omit outside arcs, so face zero need not
+    /// have one source-ring winding; full-ring partitions leave this absent.
+    winding_seed: Option<(u32, Vec<i64>)>,
     binding_starts: Vec<u32>,
     /// The unique segments through each node, by `binding_starts`.
     bindings: Vec<u32>,
@@ -656,6 +691,91 @@ impl ExactSourceInventory {
         Self::from_staged(staged)
     }
 
+    fn from_polygon_rect_clip<P: AsRef<Polygon>>(
+        polygons: &[P],
+        bounds: Bounds,
+    ) -> Result<(Self, Vec<SegmentClipInterval>)> {
+        let rectangle = rect_polygon(bounds)?;
+        let mut staged = StagedExactSources::new(2);
+        for polygon in polygons {
+            staged.append_polygon(polygon.as_ref(), 0)?;
+        }
+        staged.append_polygon(&rectangle, 1)?;
+
+        let mut active_segments = Vec::new();
+        let mut active_sources = Vec::new();
+        for (source, &segment) in staged.segments.iter().enumerate() {
+            if !bounds.contains_xy(segment.start)
+                && !bounds.contains_xy(segment.end)
+                && segment_vs_rect(segment, bounds) == RectContact::None
+            {
+                continue;
+            }
+            let source = u32::try_from(source).map_err(|_| ResourceError::SizeOverflow)?;
+            active_segments.push(segment);
+            active_sources.push(source);
+        }
+        let (unique, local_provenance) =
+            dedup_undirected_segments_sourced(active_segments.iter().copied())?;
+        let mut offsets = Vec::with_capacity(
+            unique
+                .len()
+                .checked_add(1)
+                .ok_or(ResourceError::SizeOverflow)?,
+        );
+        let mut entries = Vec::with_capacity(active_sources.len());
+        offsets.push(0);
+        for owners in local_provenance.iter() {
+            for &(active, reversed) in owners {
+                let source = active_sources
+                    .get(active as usize)
+                    .copied()
+                    .ok_or_else(|| {
+                        GeometryErrorKind::Invalid(
+                            "rectangle-local provenance lost its full source ordinal".into(),
+                        )
+                    })?;
+                entries.push((source, reversed));
+            }
+            offsets.push(u32::try_from(entries.len()).map_err(|_| ResourceError::SizeOverflow)?);
+        }
+        let provenance = SegmentProvenance::from_csr(offsets, entries);
+
+        let mut intervals = Vec::with_capacity(unique.len());
+        for &segment in &unique {
+            intervals.push(clip_segment_rect_interval(segment, bounds)?.ok_or_else(|| {
+                GeometryErrorKind::Invalid(
+                    "a rectangle-contact segment has no closed clip interval".into(),
+                )
+            })?);
+        }
+
+        Ok((
+            Self {
+                source_segments: staged.segments,
+                unique,
+                provenance,
+                source_operands: staged.source_operands,
+                source_rings: staged.source_rings,
+                source_ring_kinds: staged.source_ring_kinds,
+                ring_kinds: staged.ring_kinds,
+                ring_polygons: staged.ring_polygons,
+                ring_holes: staged.ring_holes,
+                polygon_count: staged.polygon_count,
+                polygon_operands: staged.polygon_operands,
+                polygon_ring_ranges: staged.polygon_ring_ranges,
+                source_points: staged.source_points,
+                polygon_rings: staged.polygon_rings,
+                ring_count: staged.ring_count,
+                isolated: staged.isolated,
+                isolated_points: staged.isolated_points,
+                isolated_operands: staged.isolated_operands,
+                line_boundaries: staged.line_boundaries,
+            },
+            intervals,
+        ))
+    }
+
     pub(in crate::geometry) fn from_segments(segments: &[Segment]) -> Result<Self> {
         let mut staged = StagedExactSources::new(1);
         staged.reserve_segments(segments.len());
@@ -721,10 +841,6 @@ impl ExactSourceInventory {
         Self::from_staged(staged)
     }
 
-    #[expect(
-        clippy::indexing_slicing,
-        reason = "source IDs and node IDs in the partition are admitted by source staging and PointArena"
-    )]
     pub(in crate::geometry) fn partition(
         &self,
         budget: &mut ExpansionBudget,
@@ -740,15 +856,8 @@ impl ExactSourceInventory {
         &self,
         budget: Option<&mut ExpansionBudget>,
     ) -> Result<ExactPartition<'_>> {
-        #[cfg(test)]
-        record_partition_call();
-        #[cfg(test)]
-        update_partition_metrics(|metrics| {
-            metrics.partition_builds = metrics.partition_builds.wrapping_add(1);
-            metrics.source_segments = self.source_segments.len();
-            metrics.unique_source_segments = self.unique.len();
-        });
-        let mut partition = match budget {
+        self.record_partition_inventory();
+        let partition = match budget {
             Some(budget) => {
                 partition_unique_segments(&self.unique, &self.provenance, &self.isolated, budget)?
             },
@@ -758,6 +867,185 @@ impl ExactSourceInventory {
                 &self.isolated,
             )?,
         };
+        self.finish_partition(partition)
+    }
+
+    fn partition_in_window(
+        &self,
+        intervals: &[SegmentClipInterval],
+        bounds: Bounds,
+        budget: &mut ExpansionBudget,
+    ) -> Result<ExactPartition<'_>> {
+        self.record_partition_inventory();
+        let partition = partition_unique_segments_in_window(
+            &self.unique,
+            &self.provenance,
+            intervals,
+            bounds,
+            budget,
+        )?;
+        self.finish_partition(partition)
+    }
+
+    #[expect(
+        clippy::float_cmp,
+        reason = "a degenerate rectangle is defined by exact equality of its admitted bounds"
+    )]
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "slot, walk, span, source, and ring IDs are admitted by the checked local topology and staged inventory"
+    )]
+    fn rectangle_winding_seed(
+        &self,
+        partition: &ExactPartition<'_>,
+        topology: &IndexedTopology,
+        edges: &[u32],
+        global: &GlobalFaces,
+        bounds: Bounds,
+    ) -> Result<Option<(u32, Vec<i64>)>> {
+        if bounds.minx() == bounds.maxx() || bounds.miny() == bounds.maxy() {
+            return Ok(None);
+        }
+
+        let clip_ring = self
+            .ring_count
+            .checked_sub(1)
+            .ok_or(ResourceError::SizeOverflow)?;
+        for (slot, &span_id) in edges.iter().enumerate() {
+            if global.walk_faces[topology.face_of[slot] as usize] != 0 {
+                continue;
+            }
+            let span_index = span_id as usize;
+            if !partition
+                .owners(span_index)
+                .iter()
+                .any(|&(source, _)| self.source_operands[source as usize] == 1)
+            {
+                continue;
+            }
+            let span = partition.spans[span_index];
+            let Some(outward) = rectangle_side_outward(partition, span.start, span.end, bounds)?
+            else {
+                continue;
+            };
+            let twin = topology.twins[slot] as usize;
+            let face = global.walk_faces[topology.face_of[twin] as usize];
+            if face == 0 {
+                return Err(GeometryErrorKind::Invalid(
+                    "rectangle boundary does not separate an interior face".into(),
+                )
+                .into());
+            }
+
+            for node in [span.start, span.end] {
+                if !partition.is_stored(node) {
+                    continue;
+                }
+                let point = partition.node_xy(node);
+                let is_corner = [
+                    XY::new(bounds.minx(), bounds.miny()),
+                    XY::new(bounds.maxx(), bounds.miny()),
+                    XY::new(bounds.maxx(), bounds.maxy()),
+                    XY::new(bounds.minx(), bounds.maxy()),
+                ]
+                .into_iter()
+                .any(|corner| same_point(point, corner));
+                if !is_corner {
+                    continue;
+                }
+                let (mut winding, boundary) = self.source_winding_at_stored(point)?;
+                if !boundary {
+                    let clip = winding
+                        .get_mut(clip_ring)
+                        .ok_or(ResourceError::SizeOverflow)?;
+                    *clip = 1;
+                    return Ok(Some((face, winding)));
+                }
+            }
+
+            let start = partition.exact(span.start)?;
+            let end = partition.exact(span.end)?;
+            let probe = homogeneous_midpoint(&start, &end)?;
+            let direction = outward.map(i8::wrapping_neg);
+            let mut winding = self.source_winding_at_symbolic(&probe, direction)?;
+            let clip = winding
+                .get_mut(clip_ring)
+                .ok_or(ResourceError::SizeOverflow)?;
+            *clip = 1;
+            return Ok(Some((face, winding)));
+        }
+        Err(GeometryErrorKind::Invalid(
+            "rectangle-local partition has no exterior side interval for a winding seed".into(),
+        )
+        .into())
+    }
+
+    fn source_winding_at_stored(&self, point: XY) -> Result<(Vec<i64>, bool)> {
+        let mut winding = Vec::with_capacity(self.ring_count);
+        winding.resize(self.ring_count, 0_i64);
+        let mut boundary = false;
+        for (source, &segment) in self.source_segments.iter().enumerate() {
+            if self.source_operands[source] != 0
+                || self.source_ring_kinds[source] != Some(RingKind::Winding)
+            {
+                continue;
+            }
+            boundary |= point.x >= segment.start.x.min(segment.end.x)
+                && point.x <= segment.start.x.max(segment.end.x)
+                && point.y >= segment.start.y.min(segment.end.y)
+                && point.y <= segment.start.y.max(segment.end.y)
+                && stored_orientation_sign(
+                    segment.start.x,
+                    segment.start.y,
+                    segment.end.x,
+                    segment.end.y,
+                    point.x,
+                    point.y,
+                ) == ExactSign::Zero;
+            if let Some(ring) = self.source_rings[source] {
+                winding[ring as usize] =
+                    winding[ring as usize].wrapping_add(i64::from(ray_crossing(segment, point)));
+            }
+        }
+        Ok((winding, boundary))
+    }
+
+    fn source_winding_at_symbolic(
+        &self,
+        point: &[ExactDyadic; 3],
+        direction: [i8; 2],
+    ) -> Result<Vec<i64>> {
+        let mut winding = Vec::with_capacity(self.ring_count);
+        winding.resize(self.ring_count, 0_i64);
+        for (source, &segment) in self.source_segments.iter().enumerate() {
+            if self.source_operands[source] != 0
+                || self.source_ring_kinds[source] != Some(RingKind::Winding)
+            {
+                continue;
+            }
+            if let Some(ring) = self.source_rings[source] {
+                winding[ring as usize] = winding[ring as usize]
+                    .wrapping_add(i64::from(symbolic_ray_crossing(segment, point, direction)?));
+            }
+        }
+        Ok(winding)
+    }
+
+    fn record_partition_inventory(&self) {
+        #[cfg(test)]
+        record_partition_call();
+        #[cfg(test)]
+        update_partition_metrics(|metrics| {
+            metrics.partition_builds = metrics.partition_builds.wrapping_add(1);
+            metrics.source_segments = self.source_segments.len();
+            metrics.unique_source_segments = self.unique.len();
+        });
+    }
+
+    fn finish_partition<'a>(
+        &self,
+        mut partition: ExactPartition<'a>,
+    ) -> Result<ExactPartition<'a>> {
         #[cfg(test)]
         update_partition_metrics(|metrics| {
             metrics.canonical_spans = partition.spans.len();
@@ -1242,6 +1530,9 @@ impl ExactSourceInventory {
         let mut selected = Vec::with_capacity(global.count as usize);
         selected.resize(global.count as usize, false);
         let mut occupancy = PolygonOccupancy::new(&self.polygon_rings, self.ring_count, false)?;
+        if let Some((_, seed)) = &partition.winding_seed {
+            occupancy.seed(seed)?;
+        }
         partition.visit_face_windings_with_hook(
             &topology,
             &edges,
@@ -1300,6 +1591,7 @@ impl ExactSourceInventory {
     /// Select and serialize all relatively open cells for one Cartesian
     /// operation. The exact partition is the only incidence owner; this
     /// method never reconstructs a graph from rounded coordinates.
+    #[cfg(test)]
     pub(in crate::geometry) fn overlay_parts(
         &self,
         partition: &ExactPartition<'_>,
@@ -2510,6 +2802,106 @@ const fn ring_occupied(winding: i64, odd: bool) -> bool {
     if odd { winding % 2 != 0 } else { winding != 0 }
 }
 
+fn rectangle_side_outward(
+    partition: &ExactPartition<'_>,
+    start: NodeId,
+    end: NodeId,
+    bounds: Bounds,
+) -> Result<Option<[i8; 2]>> {
+    for (axis, value, direction) in [
+        (Axis::X, bounds.minx(), [-1, 0]),
+        (Axis::X, bounds.maxx(), [1, 0]),
+        (Axis::Y, bounds.miny(), [0, -1]),
+        (Axis::Y, bounds.maxy(), [0, 1]),
+    ] {
+        if partition.compare_axis_to(start, axis, value)? == Ordering::Equal
+            && partition.compare_axis_to(end, axis, value)? == Ordering::Equal
+        {
+            return Ok(Some(direction));
+        }
+    }
+    Ok(None)
+}
+
+fn homogeneous_midpoint(
+    left: &[ExactDyadic; 3],
+    right: &[ExactDyadic; 3],
+) -> Result<[ExactDyadic; 3]> {
+    let denominator = left[2]
+        .try_product(&right[2])?
+        .try_product(&ExactDyadic::from_f64(2.0))?;
+    let mut x = left[0]
+        .try_product(&right[2])?
+        .try_add(right[0].try_product(&left[2])?)?;
+    let mut y = left[1]
+        .try_product(&right[2])?
+        .try_add(right[1].try_product(&left[2])?)?;
+    let mut denominator = denominator;
+    if denominator.sign() == ExactSign::Negative {
+        x = x.neg();
+        y = y.neg();
+        denominator = denominator.neg();
+    }
+    Ok([x, y, denominator])
+}
+
+fn symbolic_ray_crossing(
+    segment: Segment,
+    point: &[ExactDyadic; 3],
+    direction: [i8; 2],
+) -> Result<i32> {
+    let (start, end) = (segment.start, segment.end);
+    let above = |ordinate: f64| -> Result<bool> {
+        let relative = ExactDyadic::from_f64(ordinate)
+            .try_product(&point[2])?
+            .try_subtract(point[1].clone())?;
+        Ok(match relative.sign() {
+            ExactSign::Positive => true,
+            ExactSign::Negative => false,
+            ExactSign::Zero => direction[1] < 0,
+        })
+    };
+    let (start_above, end_above) = (above(start.y)?, above(end.y)?);
+    if start_above == end_above {
+        return Ok(0);
+    }
+
+    let dx = ExactDyadic::from_f64(end.x).try_subtract(ExactDyadic::from_f64(start.x))?;
+    let dy = ExactDyadic::from_f64(end.y).try_subtract(ExactDyadic::from_f64(start.y))?;
+    let px = point[0]
+        .clone()
+        .try_subtract(ExactDyadic::from_f64(start.x).try_product(&point[2])?)?;
+    let py = point[1]
+        .clone()
+        .try_subtract(ExactDyadic::from_f64(start.y).try_product(&point[2])?)?;
+    let orientation = dx.try_product(&py)?.try_subtract(dy.try_product(&px)?)?;
+    let orientation = if orientation.sign() == ExactSign::Zero {
+        let dx_sign = exact_sign_i8(dx.sign());
+        let dy_sign = exact_sign_i8(dy.sign());
+        (dx_sign * direction[1] - dy_sign * direction[0]).signum()
+    } else {
+        exact_sign_i8(orientation.sign())
+    };
+    let right = if end.y > start.y {
+        orientation > 0
+    } else {
+        orientation < 0
+    };
+    if right {
+        Ok(if end.y > start.y { 1 } else { -1 })
+    } else {
+        Ok(0)
+    }
+}
+
+const fn exact_sign_i8(sign: ExactSign) -> i8 {
+    match sign {
+        ExactSign::Negative => -1,
+        ExactSign::Zero => 0,
+        ExactSign::Positive => 1,
+    }
+}
+
 /// Which polygons the face walk currently stands in, kept up to date as it
 /// crosses one ring edge at a time: a polygon is occupied when its shell ring
 /// is filled and none of its holes is, and every operand counts its occupied
@@ -2557,6 +2949,38 @@ impl PolygonOccupancy {
             filled_holes,
             occupied,
         })
+    }
+
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "the seed has the same ring count used to construct ring_polygon and each owner was admitted with its polygon range"
+    )]
+    fn seed(&mut self, winding: &[i64]) -> Result<()> {
+        if winding.len() != self.ring_polygon.len() {
+            return Err(GeometryErrorKind::Invalid(
+                "polygon occupancy seed has the wrong ring count".into(),
+            )
+            .into());
+        }
+        for (ring, owner) in self.ring_polygon.iter().enumerate() {
+            let Some((polygon, shell)) = owner else {
+                continue;
+            };
+            let filled = ring_occupied(winding[ring], self.odd);
+            let polygon = *polygon as usize;
+            if *shell {
+                self.shell_filled[polygon] = filled;
+            } else if filled {
+                self.filled_holes[polygon] = self.filled_holes[polygon].wrapping_add(1);
+            }
+        }
+        for (polygon, &filled_shell) in self.shell_filled.iter().enumerate() {
+            if filled_shell && self.filled_holes[polygon] == 0 {
+                let operand = self.polygon_operand[polygon] as usize;
+                self.occupied[operand] = self.occupied[operand].wrapping_add(1);
+            }
+        }
+        Ok(())
     }
 
     #[expect(
@@ -3742,12 +4166,38 @@ impl ExactPartition<'_> {
             cursor[face] = cursor[face].wrapping_add(1);
         }
         let mut winding = vec![0_i64; ring_count];
+        let seed_face = if let Some((face, seed)) = &self.winding_seed {
+            if seed.len() != ring_count {
+                return Err(GeometryErrorKind::Invalid(
+                    "exact partition winding seed has the wrong ring count".into(),
+                )
+                .into());
+            }
+            if *face == 0 || *face as usize >= count {
+                return Err(GeometryErrorKind::Invalid(
+                    "exact partition winding seed is not an interior face".into(),
+                )
+                .into());
+            }
+            winding.copy_from_slice(seed);
+            *face
+        } else {
+            0
+        };
         let mut visited = Vec::with_capacity(count);
         visited.resize(count, false);
         let mut stack = Vec::with_capacity(count);
         visited[0] = true;
-        visit(0, &winding, state)?;
-        stack.push((0_u32, starts[0], None));
+        if seed_face == 0 {
+            visit(0, &winding, state)?;
+        } else {
+            // The omitted source arcs can change winding across the unbounded
+            // local face. Seed inside the clip instead and keep that face out
+            // of the propagation path.
+            visited[seed_face as usize] = true;
+            visit(seed_face, &winding, state)?;
+        }
+        stack.push((seed_face, starts[seed_face as usize], None));
         while let Some((face, next, incoming)) = stack.last_mut() {
             if *next == starts[(*face as usize).wrapping_add(1)] {
                 if let Some(slot) = *incoming {
@@ -3787,7 +4237,11 @@ impl ExactPartition<'_> {
             stack.push((neighbor, starts[neighbor as usize], Some(slot)));
         }
         debug_assert!(visited.iter().all(|&seen| seen));
-        debug_assert!(winding.iter().all(|&value| value == 0));
+        if let Some((_, seed)) = &self.winding_seed {
+            debug_assert_eq!(&winding, seed);
+        } else {
+            debug_assert!(winding.iter().all(|&value| value == 0));
+        }
         Ok(())
     }
 
