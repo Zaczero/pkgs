@@ -1,6 +1,13 @@
 """Public geographic quotient topology regression paths."""
 
+import csv
+import hashlib
+import json
 import math
+from fractions import Fraction
+from itertools import pairwise
+from pathlib import Path
+from typing import Any
 
 import gometry as gm
 
@@ -11,6 +18,114 @@ def seam_box() -> gm.Polygon:
     return gm.Polygon(
         [(170, -10), (-170, -10), (-170, 10), (170, 10), (170, -10)], crs=4326
     )
+
+
+def _country_source_edges(
+    geojson: dict[str, Any],
+) -> list[tuple[tuple[float, float], tuple[float, float]]]:
+    edges = []
+    for feature in geojson['features']:
+        geometry = feature['geometry']
+        if geometry['type'] == 'Polygon':
+            polygons = [geometry['coordinates']]
+        elif geometry['type'] == 'MultiPolygon':
+            polygons = geometry['coordinates']
+        else:
+            raise AssertionError(f'unexpected country geometry: {geometry["type"]}')
+        for polygon in polygons:
+            for ring in polygon:
+                for start, end in pairwise(ring):
+                    edges.append((
+                        (float(start[0]), float(start[1])),
+                        (float(end[0]), float(end[1])),
+                    ))
+    return edges
+
+
+def _is_nearest_even_source_crossing(
+    edges: list[tuple[tuple[float, float], tuple[float, float]]],
+    longitude: float,
+    latitude: float,
+) -> bool:
+    period = Fraction(360)
+    x_low = Fraction(math.nextafter(longitude, -math.inf))
+    x_high = Fraction(math.nextafter(longitude, math.inf))
+    y_low = Fraction(math.nextafter(latitude, -math.inf))
+    y_high = Fraction(math.nextafter(latitude, math.inf))
+    nearby = []
+    for edge_index, (start, end) in enumerate(edges):
+        start_x = Fraction(start[0])
+        end_x = Fraction(end[0])
+        start_y = Fraction(start[1])
+        end_y = Fraction(end[1])
+        for turns in (-1, 0, 1):
+            shift = turns * period
+            first = (start_x + shift, start_y)
+            second = (end_x + shift, end_y)
+            if (
+                max(first[0], second[0]) >= x_low
+                and min(first[0], second[0]) <= x_high
+                and max(first[1], second[1]) >= y_low
+                and min(first[1], second[1]) <= y_high
+            ):
+                nearby.append((edge_index, first, second))
+
+    def cross(
+        first: tuple[Fraction, Fraction], second: tuple[Fraction, Fraction]
+    ) -> Fraction:
+        return first[0] * second[1] - first[1] * second[0]
+
+    for index, (left_edge, start, end) in enumerate(nearby):
+        direction = (end[0] - start[0], end[1] - start[1])
+        for right_edge, other_start, other_end in nearby[index + 1 :]:
+            if left_edge == right_edge:
+                continue
+            other_direction = (
+                other_end[0] - other_start[0],
+                other_end[1] - other_start[1],
+            )
+            denominator = cross(direction, other_direction)
+            if denominator == 0:
+                continue
+            offset = (other_start[0] - start[0], other_start[1] - start[1])
+            left_parameter = cross(offset, other_direction) / denominator
+            right_parameter = cross(offset, direction) / denominator
+            if not (0 < left_parameter < 1 and 0 < right_parameter < 1):
+                continue
+            exact_x = start[0] + left_parameter * direction[0]
+            exact_y = start[1] + left_parameter * direction[1]
+            exact_x -= period * ((exact_x + 180) // period)
+            if float(exact_x) == longitude and float(exact_y) == latitude:
+                return True
+    return False
+
+
+def _indexed_exact_covers(
+    index: gm.SpatialIndex,
+    geometries: list[gm.Geometry],
+    points: list[gm.Geometry],
+) -> list[bool]:
+    candidates = index.candidates(gm.GeometryArray(points))
+    pair_geometries = []
+    pair_points = []
+    for point, rows in zip(points, candidates, strict=True):
+        for row in rows:
+            pair_geometries.append(geometries[int(row)])
+            pair_points.append(point)
+    pair_results = (
+        gm.covers(
+            gm.GeometryArray(pair_geometries), gm.GeometryArray(pair_points)
+        ).tolist()
+        if pair_geometries
+        else []
+    )
+    memberships = []
+    offset = 0
+    for rows in candidates:
+        end = offset + len(rows)
+        memberships.append(any(pair_results[offset:end]))
+        offset = end
+    return memberships
 
 
 def test_quotient_seam_membership_reaches_every_topology_consumer() -> None:
@@ -124,6 +239,124 @@ def test_ordinary_geographic_polygons_relate_like_their_planar_twins() -> None:
     assert pair_rows(
         gm.join(gm.GeometryArray([partial, apart]), [hexagon], predicate='intersects')
     ) == [(0, 0)]
+
+
+def test_country_union_rounding_residuals_are_nearest_even_crossings() -> None:
+    fixture = Path(__file__).parents[1] / 'fixtures/osm_countries_0_1.geojson'
+    fixture_bytes = fixture.read_bytes()
+    assert hashlib.sha256(fixture_bytes).hexdigest() == (
+        'ca8c0a9019e2ab11c880ce85ecf7dd73d9b2a4b15e3265d41daf1af2bbfcfe66'
+    )
+    source_data = json.loads(fixture_bytes)
+    countries = list(gm.from_geojson(fixture_bytes.decode('utf-8'), crs=4326))
+    assert len(countries) == 217
+    source_index = gm.SpatialIndex(countries)
+    union = gm.union_all(countries)
+    union_parts = [union] if union.geometry_type == 'Polygon' else list(union.parts)
+    assert union.geometry_type in ('Polygon', 'MultiPolygon')
+    with (
+        Path(__file__).with_name('fixtures') / 'country_union_membership_candidates.csv'
+    ).open(newline='') as source:
+        candidates = [
+            (
+                int(row['component']),
+                float(row['longitude']),
+                float(row['latitude']),
+            )
+            for row in csv.DictReader(source)
+        ]
+    assert len(candidates) == 193
+
+    # Candidate 240 is the expected construction-rounding residual. The
+    # First-release contract ("Rounded Noding / First-release contract") keeps
+    # checked nearest-f64 emission: exact membership belongs to Q, not to the
+    # rounded reconstruction of its source geometries.
+    candidate_240 = (240, 35.021769720844745, 32.14166086431683)
+    assert candidate_240 in candidates
+
+    candidate_points = [
+        gm.Point(longitude, latitude, crs=4326) for _, longitude, latitude in candidates
+    ]
+    # The index supplies only a bounding-box prefilter; exact public `covers`
+    # decides source membership for every candidate row.
+    source_membership = _indexed_exact_covers(source_index, countries, candidate_points)
+    # Intersecting one MultiPoint checks all candidates against the dissolved
+    # output in one exact Q build instead of rebuilding Q once per point.
+    union_intersection = gm.intersection(
+        union,
+        gm.MultiPoint(
+            [(longitude, latitude) for _, longitude, latitude in candidates],
+            crs=4326,
+        ),
+    )
+    if union_intersection.is_empty:
+        union_covered_points = set()
+    elif union_intersection.geometry_type == 'Point':
+        union_covered_points = {(union_intersection.x, union_intersection.y)}
+    elif union_intersection.geometry_type == 'MultiPoint':
+        union_covered_points = {
+            (point.x, point.y) for point in union_intersection.parts
+        }
+    else:
+        raise AssertionError(
+            f'unexpected point intersection: {union_intersection.geometry_type}'
+        )
+    residuals = []
+    for (component, longitude, latitude), source_covered in zip(
+        candidates, source_membership, strict=True
+    ):
+        union_covers = (longitude, latitude) in union_covered_points
+        if source_covered:
+            assert union_covers, (
+                component,
+                longitude,
+                latitude,
+                'union false negative',
+            )
+        elif union_covers:
+            residuals.append((component, longitude, latitude))
+
+    assert candidate_240 in residuals
+    residual_coordinates = {
+        (longitude, latitude) for _, longitude, latitude in residuals
+    }
+    emitted_vertices = set()
+    for polygon in union_parts:
+        for ring in (polygon.exterior, *polygon.interiors):
+            for coordinate in ring.coords:
+                vertex = (float(coordinate[0]), float(coordinate[1]))
+                if vertex in residual_coordinates:
+                    emitted_vertices.add(vertex)
+
+    source_edges = _country_source_edges(source_data)
+    for component, longitude, latitude in residuals:
+        point = (longitude, latitude)
+        assert point in emitted_vertices, (component, point, 'not an emitted vertex')
+        assert _is_nearest_even_source_crossing(source_edges, longitude, latitude), (
+            component,
+            point,
+            'not a nearest-even constructed crossing',
+        )
+        neighbor_longitudes = (
+            math.nextafter(longitude, -math.inf),
+            longitude,
+            math.nextafter(longitude, math.inf),
+        )
+        latitudes = (
+            math.nextafter(latitude, -math.inf),
+            latitude,
+            math.nextafter(latitude, math.inf),
+        )
+        neighbors = [
+            gm.Point(neighbor_x, neighbor_y, crs=4326)
+            for neighbor_x in neighbor_longitudes
+            for neighbor_y in latitudes
+        ]
+        assert any(_indexed_exact_covers(source_index, countries, neighbors)), (
+            component,
+            point,
+            'no source-covered point within one ULP per ordinate',
+        )
 
 
 def test_geographic_overlay_uses_pole_equivalence_for_binary_and_aggregates() -> None:

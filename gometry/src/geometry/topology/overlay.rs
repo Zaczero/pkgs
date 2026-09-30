@@ -1062,7 +1062,7 @@ fn emitted_point(
         &owner.source_range,
     )?;
     let exact = exact_source_piece_point(piece, parameter)?;
-    let longitude = exact.x.round()?;
+    let longitude = round_canonical_longitude(topology.sources.frame, &exact.x)?;
     let latitude = Latitude::try_new(topology.sources.frame, exact.y.round()?)
         .map_err(|error| GeometryErrorKind::Invalid(error.to_string().into()))?
         .get();
@@ -1079,6 +1079,28 @@ fn emitted_point(
         port,
         point: Point::new_raw_xy(longitude, latitude),
     })
+}
+
+fn round_canonical_longitude(
+    frame: crate::geographic::GeographicFrame,
+    longitude: &ExactRational,
+) -> Result<f64> {
+    let axis = frame.longitude();
+    let half = ExactRational::from_f64(axis.half_period());
+    let period = ExactRational::from_f64(axis.period());
+    let negative_half = ExactRational::zero().try_subtract(&half)?;
+    let canonical = if longitude.try_cmp(&half)?.is_ge() {
+        longitude.try_subtract(&period)?
+    } else if longitude.try_cmp(&negative_half)?.is_lt() {
+        longitude.try_add(&period)?
+    } else {
+        longitude.clone()
+    };
+    // A rounded chart alias such as `122.427194 + 360` loses source low bits
+    // before floating remainder can canonicalize it.
+    axis.canonicalize(canonical.round()?)
+        .map(|longitude| longitude.get())
+        .map_err(|error| GeometryErrorKind::Invalid(error.to_string().into()).into())
 }
 
 fn push_line_part(output: &mut Vec<CoordSeq>, points: &mut Vec<Point>) -> Result<()> {
@@ -1546,11 +1568,11 @@ fn emit_ring(
         let first = *vertices.first().expect("the boundary has vertices");
         vertices.push(first);
     }
-    canonicalize_ring_vertices(topology.sources.frame, &mut vertices)?;
     let mut points = vertices
         .iter()
         .map(|vertex| vertex.point)
         .collect::<Vec<_>>();
+    canonicalize_ring_vertices(topology.sources.frame, &vertices, &mut points)?;
     let is_hole = {
         match open_point_cycle_winding(&points) {
             RingWinding::CounterClockwise => false,
@@ -1561,15 +1583,15 @@ fn emit_ring(
             },
         }
     };
-    for point in &mut points {
-        point.x = topology
-            .sources
-            .frame
-            .longitude()
-            .canonicalize(point.x)
-            .map_err(|error| GeometryErrorKind::Invalid(error.to_string().into()))?
-            .get();
+    for (vertex, point) in vertices.iter().zip(&mut points) {
+        *point = vertex.point;
     }
+    let first = *points
+        .first()
+        .expect("selected Q area boundary has at least three vertices");
+    *points
+        .last_mut()
+        .expect("selected Q area boundary has at least three vertices") = first;
     for (vertex, &point) in vertices.iter().zip(&points) {
         record_emitted_node(topology.sources.frame, vertex.node, point, live_node_keys)?;
     }
@@ -1967,42 +1989,49 @@ fn carry_ring_axes(
 
 fn canonicalize_ring_vertices(
     frame: crate::geographic::GeographicFrame,
-    vertices: &mut [EmittedVertex],
+    vertices: &[EmittedVertex],
+    chart_points: &mut [Point],
 ) -> Result<()> {
-    let axis = frame.longitude();
-    let first = vertices
+    if vertices.len() != chart_points.len() {
+        return Err(GeometryErrorKind::Invalid(
+            "Q chart ring vertices do not match their emitted nodes".into(),
+        )
+        .into());
+    }
+    let first_vertex = vertices
+        .first()
+        .ok_or_else(|| GeometryErrorKind::Invalid("Q emitted an empty polygon ring".into()))?;
+    let first_point = chart_points
         .first_mut()
         .ok_or_else(|| GeometryErrorKind::Invalid("Q emitted an empty polygon ring".into()))?;
-    let longitude = axis
-        .canonicalize(first.point.x)
+    let latitude = Latitude::try_new(frame, first_vertex.point.y)
         .map_err(|error| GeometryErrorKind::Invalid(error.to_string().into()))?;
-    let latitude = Latitude::try_new(frame, first.point.y)
-        .map_err(|error| GeometryErrorKind::Invalid(error.to_string().into()))?;
-    first.point.x = longitude.get();
-    first.point.y = latitude.get();
-    let mut reference = first.point.x;
-    for vertex in vertices.iter_mut().skip(1) {
-        let raw_longitude = vertex.point.x;
+    first_point.x = first_vertex.point.x;
+    first_point.y = latitude.get();
+    let mut reference = first_vertex.point.x;
+    for (vertex, point) in vertices.iter().zip(chart_points.iter_mut()).skip(1) {
         let latitude = Latitude::try_new(frame, vertex.point.y)
             .map_err(|error| GeometryErrorKind::Invalid(error.to_string().into()))?;
-        vertex.point.x = nearest_longitude_alias(frame, raw_longitude, reference)?;
-        vertex.point.y = latitude.get();
-        reference = vertex.point.x;
+        point.x = nearest_longitude_alias(frame, vertex.point.x, reference)?;
+        point.y = latitude.get();
+        reference = point.x;
     }
-    let Some(first) = vertices.first().copied() else {
-        return Err(GeometryErrorKind::Invalid("Q emitted an empty polygon ring".into()).into());
-    };
-    let Some(last) = vertices.last_mut() else {
-        unreachable!("a nonempty ring has a last vertex");
-    };
-    if first.node != last.node {
+    let first_vertex = vertices
+        .first()
+        .expect("an admitted ring has a first vertex");
+    let last_vertex = vertices.last().expect("an admitted ring has a last vertex");
+    if first_vertex.node != last_vertex.node {
         return Err(GeometryErrorKind::Invalid(
             "Q emitted a polygon ring with distinct endpoint nodes".into(),
         )
         .into());
     }
-    last.point.x = first.point.x;
-    last.point.y = first.point.y;
+    let first_point = *chart_points
+        .first()
+        .expect("an admitted ring has a first chart point");
+    *chart_points
+        .last_mut()
+        .expect("an admitted ring has a last chart point") = first_point;
     Ok(())
 }
 
@@ -2035,4 +2064,35 @@ fn nearest_longitude_alias(
         .ok_or_else(|| {
             GeometryErrorKind::Invalid("Q output longitude has no finite chart alias".into()).into()
         })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::geographic::GeographicFrame;
+
+    #[test]
+    fn emitted_longitude_reduces_chart_period_before_rounding() {
+        let frame = GeographicFrame::crs84();
+        let source = 122.427194_f64;
+        let period = ExactRational::from_f64(frame.longitude().period());
+        let shifted = ExactRational::from_f64(source).try_add(&period).unwrap();
+        let rounded_chart_alias = source + frame.longitude().period();
+
+        assert_eq!(
+            frame
+                .longitude()
+                .canonicalize(rounded_chart_alias)
+                .unwrap()
+                .get()
+                .to_bits(),
+            source.next_down().to_bits()
+        );
+        assert_eq!(
+            round_canonical_longitude(frame, &shifted)
+                .unwrap()
+                .to_bits(),
+            source.to_bits()
+        );
+    }
 }
