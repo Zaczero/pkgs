@@ -489,6 +489,100 @@ def test_snap_dedups_only_identical_projected_positions() -> None:
     assert coords[2][0] == 0.5000000000005
 
 
+def test_snap_dense_targets_snap_each_source_vertex_then_deduplicate() -> None:
+    source = [(0.1 * index, 0.0) for index in range(64)]
+    targets = [(source[index][0] + 0.1, 0.1) for index in range(0, 64, 16)]
+    reference = gm.MultiPoint(targets)
+    groups = (
+        ((0, 1, 2, 3), 0),
+        ((15, 16, 17, 18, 19), 1),
+        ((31, 32, 33, 34, 35), 2),
+        ((47, 48, 49, 50, 51), 3),
+    )
+    for indices, target_index in groups:
+        for index in indices:
+            point = gm.snap(gm.Point(*source[index]), reference, 0.25)
+            assert tuple(point.coords[0]) == targets[target_index], index
+
+    line = gm.LineString(source)
+    snapped = cast('gm.Geometry', gm.snap(line, reference, 0.25))
+    expected = (
+        targets[0],
+        *source[4:15],
+        targets[1],
+        *source[20:31],
+        targets[2],
+        *source[36:47],
+        targets[3],
+        *source[52:64],
+    )
+    assert snapped.num_coordinates == 49
+    assert tuple(map(tuple, snapped.coords)) == expected
+
+    rows = gm.snap(gm.GeometryArray([line]), reference, 0.25)
+    assert rows[0].num_coordinates == 49
+    assert tuple(map(tuple, rows[0].coords)) == expected
+
+
+def test_snap_keeps_two_endpoints_when_line_vertices_collapse_to_one_xy() -> None:
+    line = gm.LineString(
+        [(0.0, 0.0), (0.1, 0.0), (0.2, 0.0)],
+        z=[10.0, 11.0, 12.0],
+        m=[100.0, 101.0, 102.0],
+    )
+    snapped = gm.snap(line, gm.Point(0.1, 0.1), 0.25)
+    assert snapped.num_coordinates == 2
+    assert tuple(map(tuple, snapped.coords)) == (
+        (0.1, 0.1, 10.0, 100.0),
+        (0.1, 0.1, 12.0, 102.0),
+    )
+
+
+def test_snap_includes_a_vertex_at_exactly_the_tolerance() -> None:
+    point = gm.Point(0.0, 0.0)
+    reference = gm.Point(3.0, 4.0)
+    assert tuple(gm.snap(point, reference, 5.0).coords[0]) == (3.0, 4.0)
+    assert tuple(gm.snap(point, reference, math.nextafter(5.0, 0.0)).coords[0]) == (
+        0.0,
+        0.0,
+    )
+
+
+def test_snap_moved_vertices_keep_their_source_zm() -> None:
+    source = gm.from_wkt('LINESTRING ZM (0 0 11 101, 10 0 22 202)')
+    reference = gm.from_wkt('POINT ZM (0.5 0 900 9000)')
+    snapped = gm.snap(source, reference, 0.6)
+    assert snapped.has_z and snapped.has_m
+    assert tuple(map(tuple, snapped.coords)) == (
+        (0.5, 0.0, 11.0, 101.0),
+        (10.0, 0.0, 22.0, 202.0),
+    )
+
+
+def test_snap_inserts_segment_vertices_in_order_with_interpolated_zm() -> None:
+    source = gm.from_wkt('LINESTRING ZM (0 0 10 100, 10 0 20 200)')
+    reference = gm.from_wkt(
+        'MULTIPOINT ZM ((7 0.1 700 7000), (5 0.1 500 5000), '
+        '(5 -0.1 501 5001), (3 0.1 300 3000))'
+    )
+    snapped = gm.snap(source, reference, 0.2)
+    assert tuple(map(tuple, snapped.coords)) == (
+        (0.0, 0.0, 10.0, 100.0),
+        (3.0, 0.1, 13.0, 130.0),
+        (5.0, -0.1, 15.0, 150.0),
+        (5.0, 0.1, 15.0, 150.0),
+        (7.0, 0.1, 17.0, 170.0),
+        (10.0, 0.0, 20.0, 200.0),
+    )
+
+
+def test_snap_does_not_insert_targets_within_tolerance_of_segment_endpoints() -> None:
+    line = gm.LineString([(0.0, 0.0), (10.0, 0.0)])
+    reference = gm.MultiPoint([(0.1, 0.1), (0.0, 0.01)])
+    snapped = gm.snap(line, reference, 0.2)
+    assert tuple(map(tuple, snapped.coords)) == ((0.0, 0.01), (10.0, 0.0))
+
+
 def test_binary_array_dispatch_preserves_operand_order_and_missing_masks() -> None:
     scalar = gm.box(1, 1, 4, 4)
     values = gm.GeometryArray([gm.box(0, 0, 2, 2), None, gm.box(3, 3, 5, 5)])

@@ -239,6 +239,27 @@ pub(crate) fn length_natural_array(
 
 /// Snap vertices of ``geom`` onto ``reference`` within ``tolerance``.
 ///
+/// Each source vertex snaps independently to its nearest reference vertex at
+/// or below ``tolerance``; if none is in range, it stays unchanged. An exact
+/// computed-distance tie goes to the reference vertex with the smaller X,
+/// then Y, using IEEE total order. Multiple source vertices may snap to the
+/// same reference vertex.
+///
+/// On each line segment, every reference vertex whose projection lies in the
+/// open segment, whose segment distance is at or below ``tolerance``, and
+/// whose distance from both endpoints is greater than ``tolerance`` is
+/// inserted at its reference X/Y. Insertions follow segment order; equal
+/// projections are ordered by reference X/Y. Snapped source vertices retain
+/// their own Z/M, while inserted vertices interpolate Z/M from the source
+/// segment. Consecutive line coordinates with identical X/Y are emitted once,
+/// keeping the first. If that leaves only one coordinate, the snapped start
+/// and end are retained as two endpoints, which may share X/Y. Closed rings
+/// are reclosed.
+///
+/// Snapping may collapse polygon rings: collapsed holes are dropped and a
+/// collapsed shell produces an empty polygon. Snapping does not validate or
+/// repair topology, so a snapped polygon may be invalid.
+///
 /// Parameters
 /// ----------
 /// geom : Geometry or GeometryArray

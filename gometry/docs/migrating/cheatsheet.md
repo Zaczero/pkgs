@@ -107,7 +107,7 @@ Conventions: `import gometry as gm`; `geom` is a gometry geometry; and
 | `node(...)` (GEOS 3.7+) | `(...).node()` | Noded linework as `MultiLineString`. |
 | `line_merge(...)` | `(...).line_merge()` | |
 | `shared_paths(...)` | [`gm.shared_paths(...)`][gometry.shared_paths] | |
-| `snap(g, ref, tol)` | [`gm.snap(g, ref, tol)`][gometry.snap] | |
+| `snap(g, ref, tol)` | [`gm.snap(g, ref, tol)`][gometry.snap] | GEOS's vertex pass moves at most one source vertex per reference vertex and requires distance `< tol`; gometry independently snaps every source vertex at distance `<= tol` to its nearest reference (ties by smallest X, then Y) and collapses consecutive equal-X/Y line coordinates. |
 | `segmentize(g, max_len)` | `g.segmentize(max_len)` | |
 | `remove_repeated_points(...)` | `(...).remove_repeated_points()` | |
 | `minimum_rotated_rectangle(g)` | `g.minimum_rotated_rectangle()` | |

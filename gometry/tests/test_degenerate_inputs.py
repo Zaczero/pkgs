@@ -62,11 +62,22 @@ def test_repeated_point_removal_drops_collapsed_holes_and_keeps_rings_closed() -
 def test_snapping_collapses_rings_instead_of_failing() -> None:
     reference = W('POINT (4 4)')
     holed = W('POLYGON ((0 0, 10 0, 10 10, 0 10, 0 0), (4 4, 4.1 4, 4.1 4.1, 4 4))')
-    assert gm.snap(holed, reference, 0.5).to_wkt() == (
-        'POLYGON ((0 0, 10 0, 10 10, 0 10, 0 0))'
-    )
+    snapped_holed = gm.snap(holed, reference, 0.5)
+    assert snapped_holed.to_wkt() == ('POLYGON ((0 0, 10 0, 10 10, 0 10, 0 0))')
+    assert snapped_holed.is_valid
     collapsed = W('POLYGON ((0 0, 0 0, 0 0, 0 0))')
-    assert gm.snap(collapsed, W('POINT (0 0)'), 0.5).to_wkt() == 'POLYGON EMPTY'
+    snapped_collapsed = gm.snap(collapsed, W('POINT (0 0)'), 0.5)
+    assert snapped_collapsed.to_wkt() == 'POLYGON EMPTY'
+    assert snapped_collapsed.is_valid
+
+
+def test_snap_does_not_repair_an_invalid_polygon_result() -> None:
+    polygon = W('POLYGON ((0 0, 4 0, 4 4, 2 1, 0 4, 0 0))')
+    assert polygon.is_valid
+
+    snapped = gm.snap(polygon, W('POINT (2 -0.1)'), 1.2)
+    assert snapped.to_wkt() == ('POLYGON ((0 0, 2 -0.1, 4 0, 4 4, 2 -0.1, 0 4, 0 0))')
+    assert not snapped.is_valid
 
 
 def test_affine_transforms_keep_mixed_axes_rows() -> None:
