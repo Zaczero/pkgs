@@ -83,9 +83,7 @@ def test_convex_quad_clip_keeps_every_cell_valid_at_site_count(
     site_count: int,
 ) -> None:
     rng = random.Random(7)
-    sites = [
-        (rng.uniform(0, 1_000), rng.uniform(0, 1_000)) for _ in range(site_count)
-    ]
+    sites = [(rng.uniform(0, 1_000), rng.uniform(0, 1_000)) for _ in range(site_count)]
     clip = gm.Polygon([(50, 50), (950, 120), (900, 900), (120, 850), (50, 50)])
     cells = gm.MultiPoint(sites).voronoi_polygons(clip=clip)
     assert cells
