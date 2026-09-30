@@ -77,15 +77,15 @@ pub(in crate::geometry) fn partition_metrics() -> PartitionMetrics {
 
 pub(super) fn record_candidate_pair() {
     update(|metrics| {
-        metrics.candidate_pairs_attempted += 1;
-        metrics.candidate_pairs_distinct += 1;
+        metrics.candidate_pairs_attempted = metrics.candidate_pairs_attempted.wrapping_add(1);
+        metrics.candidate_pairs_distinct = metrics.candidate_pairs_distinct.wrapping_add(1);
     });
 }
 
 pub(super) fn record_overlap(cuts: usize) {
     update(|metrics| {
-        metrics.overlap_contacts += 1;
-        metrics.overlap_cuts += cuts;
+        metrics.overlap_contacts = metrics.overlap_contacts.wrapping_add(1);
+        metrics.overlap_cuts = metrics.overlap_cuts.wrapping_add(cuts);
     });
 }
 
