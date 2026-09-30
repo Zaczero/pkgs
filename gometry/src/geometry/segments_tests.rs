@@ -125,7 +125,7 @@ fn assert_liang_authority_agrees(name: &str, start: XY, end: XY, rect: Bounds) {
         ClipVerdict::Declined => {
             assert_eq!(clip_segment(start, end, rect).unwrap(), authority, "{name}");
         },
-        decided => {
+        decided @ (ClipVerdict::Disjoint | ClipVerdict::Clipped(..)) => {
             let fast = decided.into_clip();
             assert_eq!(fast.is_some(), authority.is_some(), "{name}");
             assert_eq!(clip_segment(start, end, rect).unwrap(), fast, "{name}");
@@ -892,7 +892,11 @@ fn assert_projection_ratio(
                 std::cmp::Ordering::Equal,
             );
         },
-        other => panic!("expected a source-bound interior, got {other:?}"),
+        other @ (super::SegmentProjection::Start
+        | super::SegmentProjection::Interior(_)
+        | super::SegmentProjection::End) => {
+            panic!("expected a source-bound interior, got {other:?}")
+        },
     }
 }
 

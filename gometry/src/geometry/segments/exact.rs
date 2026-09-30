@@ -582,7 +582,9 @@ pub(in crate::geometry) fn ray_crossing_is_right(
     }
     match orientation_xy(ax, ay, bx, by, px, py) {
         Orientation::Collinear => false,
-        orientation => (orientation == Orientation::CounterClockwise) == (by > ay),
+        orientation @ (Orientation::Clockwise | Orientation::CounterClockwise) => {
+            (orientation == Orientation::CounterClockwise) == (by > ay)
+        },
     }
 }
 
