@@ -7553,9 +7553,7 @@ class GeometryArray(Sequence[_GeometryT_co]):
         'LINESTRING (0 0, 0 2)'
         """
 
-    def to_geojson(
-        self, *, drop_epoch: bool = False
-    ) -> list[str | None]:
+    def to_geojson(self, *, drop_epoch: bool = False) -> list[str | None]:
         """Serialize to `GeoJSON` text. `GeoJSON` is WGS84 by specification (RFC 7946):
         CRS-tagged input must be ``EPSG:4326`` (or ``OGC:CRS84``) — reproject with
         ``to_crs(4326)`` first. CRS-free input is explicitly assumed to already be
@@ -16695,7 +16693,9 @@ def relate(
     right: Geometry | GeometryArray[Geometry | None],
 ) -> list[str | None]: ...
 @overload
-def relate(left: Geometry, right: GeometryArray[Geometry | None]) -> list[str | None]: ...
+def relate(
+    left: Geometry, right: GeometryArray[Geometry | None]
+) -> list[str | None]: ...
 @overload
 def relate(
     left: Geometry | GeometryArray[Geometry | None],

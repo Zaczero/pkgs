@@ -162,7 +162,9 @@ def test_maximum_inscribed_circle_centroid_and_radius_recover_the_disk() -> None
     radius = source.maximum_inscribed_radius(tolerance=tolerance)
 
     assert gm.covers(source, center)
-    assert gm.distance(center, source.boundary()) == pytest.approx(radius, abs=tolerance)
+    assert gm.distance(center, source.boundary()) == pytest.approx(
+        radius, abs=tolerance
+    )
 
 
 def test_maximum_inscribed_circle_omitted_and_explicit_tolerances_are_certified() -> (

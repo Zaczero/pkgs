@@ -77,8 +77,7 @@ def test_geometry_collection_with_empty_member_predicates_and_metrics() -> None:
             id='distinct-overlapping-collection-owners',
         ),
         pytest.param(
-            'GEOMETRYCOLLECTION ('
-            'POLYGON ((0 0, 2 2, 0 2, 2 0, 0 0)))',
+            'GEOMETRYCOLLECTION (POLYGON ((0 0, 2 2, 0 2, 2 0, 0 0)))',
             2.0,
             id='invalid-bow-tie-polygon',
         ),
@@ -93,7 +92,9 @@ def test_geometry_collection_area_uses_occupied_polygon_faces(
     np.testing.assert_array_equal(gm.GeometryArray([collection]).area, [expected])
 
 
-def test_geometry_collection_area_counts_overlaps_once_and_length_sums_members() -> None:
+def test_geometry_collection_area_counts_overlaps_once_and_length_sums_members() -> (
+    None
+):
     overlapping = gm.GeometryCollection([
         gm.box(0, 0, 2, 2),
         gm.box(1, 1, 3, 3),

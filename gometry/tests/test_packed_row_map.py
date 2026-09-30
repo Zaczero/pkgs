@@ -486,9 +486,10 @@ def test_nullable_spatial_keys_ignore_hidden_payload(
 ) -> None:
     masked = gm.GeometryArray(rows)._with_missing([False, True, False])
     for selected in (masked, masked[::-1], masked[[2, 1, 0]]):
-        assert selected.spatial_key().tolist() == selected.spatial_key(
-            bounds=bounds
-        ).tolist()
+        assert (
+            selected.spatial_key().tolist()
+            == selected.spatial_key(bounds=bounds).tolist()
+        )
 
 
 def _point_gather_array() -> tuple[gm.GeometryArray, gm.GeometryArray]:

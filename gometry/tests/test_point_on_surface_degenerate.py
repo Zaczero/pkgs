@@ -57,11 +57,7 @@ def test_point_on_surface_satisfies_covers_invariant(case: SurfaceCase) -> None:
         'LINESTRING (10000000000000000 1, 10000000000000002 2)',
         'LINESTRING (5e-324 -1, 5e-324 2)',
         'MULTILINESTRING ((0 0, 1 2, 4 3), (5 0, 5 3))',
-        (
-            'GEOMETRYCOLLECTION ('
-            'LINESTRING (0 0, 1 2, 4 3), '
-            'LINESTRING (5 0, 5 3))'
-        ),
+        ('GEOMETRYCOLLECTION (LINESTRING (0 0, 1 2, 4 3), LINESTRING (5 0, 5 3))'),
     ],
     ids=[
         'rounded_line_midpoint',

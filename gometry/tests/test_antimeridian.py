@@ -199,7 +199,9 @@ def test_centroid_and_point_on_surface_array_match_scalar_antimeridian() -> None
     assert (array_surface.crs, array_surface.epoch) == (poly.crs, poly.epoch)
 
 
-def test_split_seam_connected_polygon_centroid_matches_unsplit_scalar_and_array() -> None:
+def test_split_seam_connected_polygon_centroid_matches_unsplit_scalar_and_array() -> (
+    None
+):
     raw = gm.Polygon(
         [(170, -10), (-170, -10), (-170, 10), (170, 10), (170, -10)],
         crs=4326,

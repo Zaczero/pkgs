@@ -249,7 +249,10 @@ def test_zero_length_collection_line_does_not_move_positive_length_frame() -> No
     positive_line = gm.LineString([(maximum, -maximum), (maximum, maximum)])
     assert math.isinf(float(positive_line.length))
     expected = (float(Fraction(maximum)), 0.0)
-    assert (float(positive_line.centroid().x), float(positive_line.centroid().y)) == expected
+    assert (
+        float(positive_line.centroid().x),
+        float(positive_line.centroid().y),
+    ) == expected
 
     geometries = [
         gm.GeometryCollection([zero_line, positive_line]),
@@ -260,13 +263,15 @@ def test_zero_length_collection_line_does_not_move_positive_length_frame() -> No
         assert (float(centroid.x), float(centroid.y)) == expected
 
     dense = gm.GeometryArray(geometries)
-    assert [
-        (float(point.x), float(point.y)) for point in dense.centroid()
-    ] == [expected, expected]
+    assert [(float(point.x), float(point.y)) for point in dense.centroid()] == [
+        expected,
+        expected,
+    ]
     gathered = dense[np.array([1, 0], dtype=np.intp)]
-    assert [
-        (float(point.x), float(point.y)) for point in gathered.centroid()
-    ] == [expected, expected]
+    assert [(float(point.x), float(point.y)) for point in gathered.centroid()] == [
+        expected,
+        expected,
+    ]
 
 
 def test_repeated_shared_collection_centroid_preserves_occurrence_weights() -> None:

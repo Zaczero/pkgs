@@ -283,9 +283,7 @@ def test_concave_hull_larger_length_threshold_contains_previous_hull() -> None:
                 f'{name}: area decreased from threshold {lower_threshold} '
                 f'to {upper_threshold}'
             )
-        found_distinct_hulls |= any(
-            not gm.equals(hulls[0], hull) for hull in hulls[1:]
-        )
+        found_distinct_hulls |= any(not gm.equals(hulls[0], hull) for hull in hulls[1:])
 
     assert found_distinct_hulls, 'threshold ladder never changed a hull'
 
@@ -424,7 +422,9 @@ def test_polygonize_full_diagnostics_keep_source_rows_after_missing_input() -> N
     dangle = gm.LineString([(-1, 5), (0, 5)])
     invalid = gm.MultiLineString([[(10, 0), (11, 0)], [(10, 0), (11, 0)]])
 
-    result = gm.polygonize_full(gm.GeometryArray([None, joined_cycles, dangle, invalid]))
+    result = gm.polygonize_full(
+        gm.GeometryArray([None, joined_cycles, dangle, invalid])
+    )
 
     assert len(result.polygons) == 2
     assert [len(row) for row in result.cut_edges] == [0, 1, 0, 0]

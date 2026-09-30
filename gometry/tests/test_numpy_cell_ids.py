@@ -6,7 +6,6 @@ import gometry as gm
 import numpy as np
 import pytest
 
-
 ID_LAYOUTS = (
     pytest.param('contiguous', id='c-contiguous'),
     pytest.param('strided', id='strided'),

@@ -46,9 +46,7 @@ def test_collection_area_counts_overlapping_members_once() -> None:
     first = gm.box(0, 0, 2, 2, crs=4326)
     second = gm.box(1, 0, 3, 2, crs=4326)
 
-    collection_area = gm.GeometryCollection(
-        [first, second], crs=4326
-    ).area
+    collection_area = gm.GeometryCollection([first, second], crs=4326).area
     dissolved = gm.union_all([first, second])
 
     assert collection_area == pytest.approx(dissolved.area, rel=1e-12)

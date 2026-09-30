@@ -1054,12 +1054,8 @@ def test_mixed_geometry_array_nbytes_counts_multipart_members_and_holes() -> Non
     shell = [(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)]
     hole = [(2.0, 2.0), (4.0, 2.0), (4.0, 4.0), (2.0, 4.0)]
     polygon_with_hole = gm.Polygon(shell, holes=[hole])
-    multipolygon = gm.MultiPolygon(
-        [gm.box(20.0, 20.0, 21.0, 21.0), polygon_with_hole]
-    )
-    line_zm = gm.LineString(
-        [(30.0, 0.0), (31.0, 0.0)], z=[1.0, 2.0], m=[3.0, 4.0]
-    )
+    multipolygon = gm.MultiPolygon([gm.box(20.0, 20.0, 21.0, 21.0), polygon_with_hole])
+    line_zm = gm.LineString([(30.0, 0.0), (31.0, 0.0)], z=[1.0, 2.0], m=[3.0, 4.0])
     values = gm.GeometryArray([
         multipoint,
         multiline,

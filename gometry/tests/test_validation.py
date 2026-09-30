@@ -116,15 +116,11 @@ def test_collapsed_multiline_members_repair_to_geos_geometry_types(
 
 
 def test_geometry_collection_repair_keeps_its_outer_type() -> None:
-    geometry = gm.from_wkt(
-        'GEOMETRYCOLLECTION (LINESTRING (0 0, 0 0), POINT (4 5))'
-    )
+    geometry = gm.from_wkt('GEOMETRYCOLLECTION (LINESTRING (0 0, 0 0), POINT (4 5))')
 
     repaired = geometry.repair()
 
-    assert repaired.to_wkt() == (
-        'GEOMETRYCOLLECTION (POINT (0 0), POINT (4 5))'
-    )
+    assert repaired.to_wkt() == ('GEOMETRYCOLLECTION (POINT (0 0), POINT (4 5))')
     assert repaired.is_valid
 
 

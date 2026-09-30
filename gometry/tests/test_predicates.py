@@ -635,9 +635,7 @@ def test_128_ray_multipolygon_fan_needs_every_sector_to_contain_its_center() -> 
     ]
     center = (0.0, 0.0)
     wedges = [
-        gm.Polygon(
-            [center, vertices[index], vertices[(index + 1) % ray_count], center]
-        )
+        gm.Polygon([center, vertices[index], vertices[(index + 1) % ray_count], center])
         for index in range(ray_count)
     ]
     fan = gm.MultiPolygon(wedges)
@@ -651,9 +649,7 @@ def test_128_ray_multipolygon_fan_needs_every_sector_to_contain_its_center() -> 
 
 
 def test_long_noncontact_line_does_not_contain_or_intersect_its_nearby_point() -> None:
-    line = gm.LineString(
-        [(float(index), float(index % 2)) for index in range(4097)]
-    )
+    line = gm.LineString([(float(index), float(index % 2)) for index in range(4097)])
     query = gm.Point(2048.25, 0.4)
 
     assert not gm.contains(line, query)

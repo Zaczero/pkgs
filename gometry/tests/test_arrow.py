@@ -1982,9 +1982,7 @@ def test_geoarrow_outer_empty_polygon_is_polygon_empty() -> None:
 
 def test_geoarrow_zero_ring_polygon_preserves_xyzm_axes() -> None:
     source = gm.GeometryArray([
-        gm.from_wkt(
-            'POLYGON ZM ((0 0 1 10, 1 0 2 20, 1 1 3 30, 0 1 4 40, 0 0 1 10))'
-        )
+        gm.from_wkt('POLYGON ZM ((0 0 1 10, 1 0 2 20, 1 1 3 30, 0 1 4 40, 0 0 1 10))')
     ])
     polygon_type = source.to_arrow().type
     empty = pa.ExtensionArray.from_storage(

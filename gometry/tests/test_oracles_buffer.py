@@ -323,7 +323,8 @@ def test_retraced_buffers_match_geos_for_each_cap_and_join_style(
     distance = 0.25
     quadrant_segments = 8
     actual = shapely.from_wkt(
-        gm.from_wkt(wkt)
+        gm
+        .from_wkt(wkt)
         .buffer(
             distance,
             cap_style=cap_style,
@@ -356,9 +357,7 @@ def test_collection_retrace_matches_componentwise_geos(
     quadrant_segments = 8
     line_wkt = 'LINESTRING (0 0, 0 1, 0 0, 1 0)'
     point_wkt = 'POINT (3 3)'
-    collection = gm.from_wkt(
-        f'GEOMETRYCOLLECTION ({line_wkt}, {point_wkt})'
-    )
+    collection = gm.from_wkt(f'GEOMETRYCOLLECTION ({line_wkt}, {point_wkt})')
     actual = shapely.from_wkt(
         collection.buffer(
             distance,
@@ -435,7 +434,8 @@ def test_point_buffers_ignore_cap_style(wkt: str, cap_style: CapStyle) -> None:
     distance = 0.25
     quadrant_segments = 8
     actual = shapely.from_wkt(
-        gm.from_wkt(wkt)
+        gm
+        .from_wkt(wkt)
         .buffer(
             distance,
             cap_style=cap_style,
@@ -462,7 +462,8 @@ def test_reversal_miter_clips_to_the_offset_chord(
     distance = 0.25
     quadrant_segments = 8
     actual = shapely.from_wkt(
-        gm.from_wkt(wkt)
+        gm
+        .from_wkt(wkt)
         .buffer(
             distance,
             cap_style='flat',
@@ -517,9 +518,7 @@ def test_round_join_at_open_reversal_lies_on_the_distance_locus() -> None:
     boundary = shapely.from_wkt(result.to_wkt())
     vertices = _exterior_vertices(result)
 
-    errors = [
-        abs(source.distance(shapely.Point(x, y)) - 0.25) for x, y in vertices
-    ]
+    errors = [abs(source.distance(shapely.Point(x, y)) - 0.25) for x, y in vertices]
     assert errors
     assert max(errors) <= BUFFER_LOCUS_TOLERANCE
     reversal_tip = shapely.Point(0, 1.25)

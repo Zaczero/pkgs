@@ -36,9 +36,9 @@ def _xy(point: gm.Geometry) -> tuple[float, float]:
 
 
 def _alternating_line(vertex_count: int) -> gm.Geometry:
-    return gm.LineString(
-        [(float(index), float(index % 2)) for index in range(vertex_count)]
-    )
+    return gm.LineString([
+        (float(index), float(index % 2)) for index in range(vertex_count)
+    ])
 
 
 _ANTIMERIDIAN_LONGITUDES = frozenset({180.0, -180.0})
@@ -169,7 +169,7 @@ def test_long_noncontact_line_nearest_points_use_exact_edge_projection() -> None
     line = _alternating_line(4097)
     query = gm.Point(2048.25, 0.4)
     left, right = gm.nearest_points(line, query, unit='planar')
-    # On edge (2048, 0)–(2049, 1), the exact parameter is 13/40.
+    # On edge (2048, 0)-(2049, 1), the exact parameter is 13/40.
     assert left.x == pytest.approx(2048.0 + 13.0 / 40.0, abs=1e-12)
     assert left.y == pytest.approx(13.0 / 40.0, abs=1e-12)
     assert _xy(right) == (2048.25, 0.4)
@@ -211,7 +211,9 @@ class TestDegenerate:
         poly = gm.from_wkt('POLYGON ((0 0, 4 0, 4 4, 0 4, 0 0))')
         self._assert_zero_contact(poly, poly)
 
-    def test_128_ray_multipolygon_fan_nearest_witness_is_the_shared_center(self) -> None:
+    def test_128_ray_multipolygon_fan_nearest_witness_is_the_shared_center(
+        self,
+    ) -> None:
         ray_count = 128
         vertices = [
             (
@@ -222,9 +224,12 @@ class TestDegenerate:
         ]
         center = (0.0, 0.0)
         wedges = [
-            gm.Polygon(
-                [center, vertices[index], vertices[(index + 1) % ray_count], center]
-            )
+            gm.Polygon([
+                center,
+                vertices[index],
+                vertices[(index + 1) % ray_count],
+                center,
+            ])
             for index in range(ray_count)
         ]
         fan = gm.MultiPolygon(wedges)

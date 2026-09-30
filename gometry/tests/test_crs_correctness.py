@@ -82,11 +82,11 @@ def _geod_signed_area(points: list[list[float]] | list[tuple[float, float]]) -> 
 def _wgs84_surface_area() -> float:
     eccentricity_squared = GEOD.es
     eccentricity = math.sqrt(eccentricity_squared)
-    return 2.0 * math.pi * GEOD.a**2 * (
-        1.0
-        + (1.0 - eccentricity_squared)
-        * math.atanh(eccentricity)
-        / eccentricity
+    return (
+        2.0
+        * math.pi
+        * GEOD.a**2
+        * (1.0 + (1.0 - eccentricity_squared) * math.atanh(eccentricity) / eccentricity)
     )
 
 
@@ -498,7 +498,9 @@ def test_geodesic_point_to_segment_array_matches_scalar_across_cache_clear() -> 
     gm.crs_clear_cache()
     cold = gm.distance(queries, segment)
     assert cold == pytest.approx(expected)
-    assert cold == pytest.approx([gm.distance(point, segment) for point in query_points])
+    assert cold == pytest.approx([
+        gm.distance(point, segment) for point in query_points
+    ])
 
     warm = gm.distance(queries, segment)
     assert warm == pytest.approx(expected)

@@ -144,7 +144,9 @@ def test_crs_free_geojson_uses_wgs84_antimeridian_rules() -> None:
     )
 
 
-def test_geojson_width_summary_counts_coordinates_after_antimeridian_normalization() -> None:
+def test_geojson_width_summary_counts_coordinates_after_antimeridian_normalization() -> (
+    None
+):
     source = [(-170.0, 10.0)] * 50 + [(170.0, 10.0)]
     geometry = gm.LineString(source)
 

@@ -462,7 +462,9 @@ def test_require_feature_projection_rejects_non_json_property_values() -> None:
         'properties': {'opaque': Opaque()},
         'geometry': {'type': 'Point', 'coordinates': [1, 2]},
     }
-    with pytest.raises(gm.ParseError, match='unsupported JSON value type Opaque') as exc_info:
+    with pytest.raises(
+        gm.ParseError, match='unsupported JSON value type Opaque'
+    ) as exc_info:
         gm.require(feature)
     assert exc_info.value.format == 'geojson'
 

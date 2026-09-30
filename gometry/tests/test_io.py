@@ -478,7 +478,7 @@ def test_wkt_wkb_and_geojson_roundtrip() -> None:
     with pytest.raises(gm.InvalidGeometryError, match='GeoJSON cannot represent M'):
         gm.GeometryArray([gm.Point(1, 2, m=3)]).to_geojson()
     with pytest.raises(TypeError, match='GeoJSON cannot represent M'):
-        gm.Point(1, 2, m=3).__geo_interface__
+        _ = gm.Point(1, 2, m=3).__geo_interface__
 
 
 def test_force_2d_prepares_geometry_for_each_coordinate_writer() -> None:
@@ -1490,9 +1490,7 @@ def test_wkb_parser_is_strict_and_accepts_big_endian_input() -> None:
         gm.from_wkb(struct.pack('<BI', 1, 2147483665))
     with pytest.raises(ValueError) as unknown_type:
         gm.from_wkb(struct.pack('<BI', 1, 99))
-    assert str(unknown_type.value) == (
-        'invalid WKB: unsupported WKB geometry type 99'
-    )
+    assert str(unknown_type.value) == ('invalid WKB: unsupported WKB geometry type 99')
 
 
 def test_wkt_float_parse_bit_identical_to_std() -> None:

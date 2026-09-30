@@ -664,9 +664,7 @@ def test_publication_ignores_packages_no_block_loaded(
 ) -> None:
     result = _result(publication_baseline)
     result['doctor']['metadata']['packages']['unused'] = package_identity('unused')  # type: ignore[index]
-    _publish(
-        _run_manifest(tmp_path, publication_baseline, result), tmp_path
-    )
+    _publish(_run_manifest(tmp_path, publication_baseline, result), tmp_path)
 
 
 def test_publication_writes_only_the_deterministic_summary(
