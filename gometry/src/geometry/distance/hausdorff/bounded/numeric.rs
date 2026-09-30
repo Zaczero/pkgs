@@ -363,23 +363,27 @@ impl SquaredBounds {
         }
     }
 
-    /// Bounds on the smaller of two squared distances.
-    pub(super) fn min(self, other: Self) -> Result<Self> {
+    /// Bounds on the smaller distance, and whether `other` supplies its upper bound.
+    pub(super) fn min_with_upper_source(self, other: Self) -> Result<(Self, bool)> {
         let lower = if other.lower.try_cmp(&self.lower)? == Ordering::Less {
             other.lower
         } else {
             self.lower
         };
-        let (upper, upper_f64) = if other.upper.try_cmp(&self.upper)? == Ordering::Less {
+        let other_is_upper_minimum = other.upper.try_cmp(&self.upper)? == Ordering::Less;
+        let (upper, upper_f64) = if other_is_upper_minimum {
             (other.upper, other.upper_f64)
         } else {
             (self.upper, self.upper_f64)
         };
-        Ok(Self {
-            lower,
-            upper,
-            upper_f64,
-        })
+        Ok((
+            Self {
+                lower,
+                upper,
+                upper_f64,
+            },
+            other_is_upper_minimum,
+        ))
     }
 }
 

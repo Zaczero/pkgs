@@ -37,6 +37,12 @@ pub(super) struct IndexItem {
     pub(super) bounds: FloatBox,
 }
 
+pub(super) struct NearestSupport {
+    /// The smallest-upper-bound primitive; exact nearest when bounds are exact.
+    pub(super) primitive: PrimitiveId,
+    pub(super) bounds: SquaredBounds,
+}
+
 #[derive(Clone, Copy, Debug)]
 pub(super) struct IndexNode {
     pub(super) bounds: FloatBox,
@@ -161,18 +167,20 @@ impl SupportIndex {
         support: &PreparedSupport,
         point: &ExactPoint,
         tightness: Option<Tightness>,
-    ) -> Result<SquaredBounds> {
+    ) -> Result<NearestSupport> {
         let Some(root) = self.root else {
             return Err(crate::geometry::GeometryErrorKind::message(
                 "hausdorff_distance requires non-empty support",
             ));
         };
         let point_bounds = FloatBox::from_point(point)?;
-        let mut best: Option<SquaredBounds> = None;
+        let mut best: Option<NearestSupport> = None;
         let mut stack = ScratchPool::checkout(&NEAREST_STACK);
         stack.push(root);
         while let Some(node_index) = stack.pop() {
-            let best_upper = best.as_ref().map_or(f64::INFINITY, |best| best.upper_f64);
+            let best_upper = best
+                .as_ref()
+                .map_or(f64::INFINITY, |best| best.bounds.upper_f64);
             let node = self.nodes[node_index];
             if box_distance_lower(point_bounds, node.bounds) > best_upper {
                 continue;
@@ -195,7 +203,9 @@ impl SupportIndex {
             };
             for order_index in &self.order[start..end] {
                 let item = self.items[*order_index];
-                let best_upper = best.as_ref().map_or(f64::INFINITY, |best| best.upper_f64);
+                let best_upper = best
+                    .as_ref()
+                    .map_or(f64::INFINITY, |best| best.bounds.upper_f64);
                 if box_distance_lower(point_bounds, item.bounds) > best_upper {
                     continue;
                 }
@@ -212,10 +222,20 @@ impl SupportIndex {
                     point_bounds,
                     tightness,
                 )?;
-                best = Some(match best {
-                    None => bounds,
-                    Some(current) => current.min(bounds)?,
-                });
+                let (bounds, primitive) = match best {
+                    None => (bounds, item.primitive),
+                    Some(current) => {
+                        let (bounds, other_is_upper_minimum) =
+                            current.bounds.min_with_upper_source(bounds)?;
+                        let primitive = if other_is_upper_minimum {
+                            item.primitive
+                        } else {
+                            current.primitive
+                        };
+                        (bounds, primitive)
+                    },
+                };
+                best = Some(NearestSupport { primitive, bounds });
             }
         }
         best.ok_or_else(|| {

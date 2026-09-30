@@ -103,6 +103,38 @@ fn test_span(source: Segment) -> SupportSpan {
     }
 }
 
+#[test]
+fn extreme_exponent_spread_hausdorff_uses_bounded_refinement_work() {
+    let length = 2.0_f64.powi(996);
+    let height = 2.0_f64.powi(396);
+    let offset = 2.0_f64.powi(344);
+    let baseline = line(&[(0.0, 0.0), (length, height)]);
+    let graph = line(&[(0.0, 0.0), (height, 0.0), (length, height + offset)]);
+    let errors = [
+        (
+            "one ULP",
+            Some(f64::from_bits(offset.to_bits() + 1) - offset),
+        ),
+        ("1e-12", Some(1e-12 * offset)),
+        ("1e-6", Some(1e-6 * offset)),
+        ("default", None),
+    ];
+
+    for (name, max_error) in errors {
+        let (actual, work) = {
+            let _guard = limit_refinement_work(10_000);
+            let actual = distance(&baseline, &graph, max_error, 1.0).unwrap();
+            (actual, refinement_work())
+        };
+
+        assert_eq!(actual, offset, "{name} max_error");
+        assert!(
+            work <= 8,
+            "{name} max_error required {work} refinement steps"
+        );
+    }
+}
+
 fn reduced_point_span_distance_squared(point: &ExactPoint, span: &SupportSpan) -> Result<Rational> {
     let carrier = &span.carrier;
     let px = point.x.try_subtract(&carrier.ax)?;

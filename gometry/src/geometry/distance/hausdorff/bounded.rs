@@ -314,7 +314,12 @@ impl PreparedSupport {
         if self.index.root.is_none() {
             return Ok(false);
         }
-        Ok(self.index.nearest(self, point, None)?.lower.is_zero())
+        Ok(self
+            .index
+            .nearest(self, point, None)?
+            .bounds
+            .lower
+            .is_zero())
     }
 
     pub(in crate::geometry) fn candidate_is_contained(
@@ -444,7 +449,7 @@ impl PreparedSupport {
         if self.contains_area(point)? {
             return Ok(Rational::zero());
         }
-        Ok(self.index.nearest(self, point, None)?.lower)
+        Ok(self.index.nearest(self, point, None)?.bounds.lower)
     }
 
     #[expect(
@@ -2147,7 +2152,7 @@ fn patch_upper(
         radius_interval
             .upper_rational()
             .map_or(Ok(None), |radius| {
-                let depth = sqrt_upper(&context.scaled_squared(&boundary.lower)?, context)?;
+                let depth = sqrt_upper(&context.scaled_squared(&boundary.bounds.lower)?, context)?;
                 let depth = Rational::from_dyadic(depth.lower);
                 if radius.try_cmp(&depth)? == Ordering::Greater {
                     radius.try_subtract(&depth).map(Some)
@@ -2156,7 +2161,7 @@ fn patch_upper(
                 }
             })?
     } else {
-        let boundary = sqrt_upper(&context.scaled_squared(&boundary.upper)?, context)?;
+        let boundary = sqrt_upper(&context.scaled_squared(&boundary.bounds.upper)?, context)?;
         sum_upper(&boundary, &radius_interval)?
     };
 
@@ -2208,11 +2213,11 @@ fn raising_clearance(
     }
     if let Some(lower) = &context.lower_squared {
         let hint = target.index.nearest(target, point, Some(Tightness::ANY))?;
-        if context.scaled_squared(&hint.upper)?.try_cmp(lower)? == Ordering::Less {
+        if context.scaled_squared(&hint.bounds.upper)?.try_cmp(lower)? == Ordering::Less {
             return Ok(None);
         }
     }
-    let exact = target.index.nearest(target, point, None)?.lower;
+    let exact = target.index.nearest(target, point, None)?.bounds.lower;
     context.scaled_squared(&exact).map(Some)
 }
 
@@ -2310,6 +2315,98 @@ fn queue_upper(queue: &PatchQueue, context: &SearchContext<'_>) -> Result<Option
     Ok(Some(upper))
 }
 
+#[expect(
+    clippy::indexing_slicing,
+    reason = "nearest primitive IDs are created from this immutable target support"
+)]
+fn primitive_endpoints(
+    support: &PreparedSupport,
+    primitive: PrimitiveId,
+) -> Result<[ExactPoint; 2]> {
+    match primitive {
+        PrimitiveId::Span(index) => {
+            let span = &support.spans[index];
+            Ok([span_point(span, &span.t_lo)?, span_point(span, &span.t_hi)?])
+        },
+        PrimitiveId::Point(index) => {
+            let point = support.points[index].clone();
+            Ok([point.clone(), point])
+        },
+    }
+}
+
+fn shared_primitive_vertex(
+    support: &PreparedSupport,
+    first: PrimitiveId,
+    second: PrimitiveId,
+) -> Result<Option<ExactPoint>> {
+    let first_endpoints = primitive_endpoints(support, first)?;
+    let second_endpoints = primitive_endpoints(support, second)?;
+    for left in &first_endpoints {
+        for right in &second_endpoints {
+            if left.same_position(right)? {
+                return Ok(Some(left.clone()));
+            }
+        }
+    }
+    Ok(None)
+}
+
+/// Use a shared target vertex to seed a span split when its endpoint sites differ.
+/// The nearest-site query supplies only a partition hint; bounds still certify pruning.
+fn endpoint_site_split_parameter(
+    patch: &SourcePatch,
+    source: &PreparedSupport,
+    target: &PreparedSupport,
+) -> Result<Option<Rational>> {
+    let SourcePatch::Span { span, lo, hi } = patch else {
+        return Ok(None);
+    };
+    let source_span = &source.spans[*span];
+    let start = span_point(source_span, lo)?;
+    let end = span_point(source_span, hi)?;
+    let start_site = target.index.nearest(target, &start, None)?.primitive;
+    let end_site = target.index.nearest(target, &end, None)?.primitive;
+    if start_site == end_site {
+        return Ok(None);
+    }
+    let Some(vertex) = shared_primitive_vertex(target, start_site, end_site)? else {
+        return Ok(None);
+    };
+    let parameter = span_projection_parameter(&vertex, source_span)?;
+    if parameter.try_cmp(lo)? == Ordering::Greater && parameter.try_cmp(hi)? == Ordering::Less {
+        Ok(Some(parameter))
+    } else {
+        Ok(None)
+    }
+}
+
+fn split_hausdorff_patch(
+    patch: SourcePatch,
+    source: &PreparedSupport,
+    target: &PreparedSupport,
+    budget: &mut ExpansionBudget,
+) -> Result<Option<Vec<SourcePatch>>> {
+    if let Some(parameter) = endpoint_site_split_parameter(&patch, source, target)?
+        && let SourcePatch::Span { span, lo, hi } = &patch
+    {
+        budget.add(2)?;
+        return Ok(Some(vec![
+            SourcePatch::Span {
+                span: *span,
+                lo: lo.clone(),
+                hi: parameter.clone(),
+            },
+            SourcePatch::Span {
+                span: *span,
+                lo: parameter,
+                hi: hi.clone(),
+            },
+        ]));
+    }
+    patch.split(budget)
+}
+
 fn run_direction(
     source: &PreparedSupport,
     target: &PreparedSupport,
@@ -2343,7 +2440,9 @@ fn run_direction(
         }
         #[cfg(test)]
         count_refinement_work()?;
-        let Some(children) = record.patch.split(&mut context.budget)? else {
+        let Some(children) =
+            split_hausdorff_patch(record.patch, source, target, &mut context.budget)?
+        else {
             return Err(crate::geometry::GeometryErrorKind::message(
                 "hausdorff_distance patch reached a nonrepresentable subdivision",
             ));

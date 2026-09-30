@@ -85,8 +85,7 @@ def test_noncollinear_subnormal_triangle_has_polygonal_hulls() -> None:
     assert points.minimum_rotated_rectangle().geometry_type == 'Polygon'
 
 
-# Each call refines through some 650 exact levels of thousand-bit ratios,
-# so the two argument orders run as separate cases.
+# The wide exponent gap must not force refinement one parameter bit at a time.
 @pytest.mark.parametrize('reverse', [False, True], ids=['forward', 'reverse'])
 def test_hausdorff_preserves_underflowed_local_determinant(reverse: bool) -> None:
     length = 2.0**996
@@ -96,10 +95,7 @@ def test_hausdorff_preserves_underflowed_local_determinant(reverse: bool) -> Non
     graph = gm.LineString([(0.0, 0.0), (height, 0.0), (length, height + offset)])
     left, right = (graph, baseline) if reverse else (baseline, graph)
     max_error = math.ulp(offset)
-    assert (
-        abs(gm.hausdorff_distance(left, right, max_error=max_error) - offset)
-        <= max_error
-    )
+    assert gm.hausdorff_distance(left, right, max_error=max_error) == offset
 
 
 def test_concave_hull_near_collinear_ulp_sites_keeps_the_exact_cycle() -> None:
