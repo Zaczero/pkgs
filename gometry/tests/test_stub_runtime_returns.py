@@ -94,3 +94,11 @@ def test_static_narrowing_matches_runtime() -> None:
     assert np.asarray(point.coords, dtype=np.float32).dtype == np.float32
     assert np.asarray(h3_cells, dtype=object).dtype == object
     assert gm.CRS(4326).kind == 'geographic_2d'
+
+
+def test_stub_snap_to_grid_origin_is_numeric_pair_only() -> None:
+    """Runtime GridOrigin rejects affine tokens; stub must match."""
+    pt = gm.Point(1.2, 3.4)
+    assert isinstance(pt.snap_to_grid(1.0, origin=(0.0, 0.0)), gm.Point)
+    with pytest.raises((TypeError, gm.GeometryError, ValueError)):
+        pt.snap_to_grid(1.0, origin='centroid')  # type: ignore[arg-type]

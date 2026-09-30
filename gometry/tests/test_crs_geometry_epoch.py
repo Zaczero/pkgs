@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import pickle
 from typing import Any, cast
 
 import gometry as gm
@@ -286,3 +287,36 @@ def test_bound_grs80_towgs84_rejects_epoch() -> None:
 
 def test_etrs89_ensemble_rejects_epoch() -> None:
     _reject_epoch(4258)
+
+
+def test_r16_from_wkb_epoch_after_ewkb_crs() -> None:
+    """R16: ``from_wkb`` discovers the EWKB CRS before validating epoch."""
+    w = gm.Point(1, 2, crs=4326).to_wkb(include_srid=True)
+
+    from_wkb = gm.from_wkb([w], epoch=2020.0)
+    assert from_wkb.crs is not None
+    assert from_wkb.crs.to_authority() == ('EPSG', '4326')
+    assert from_wkb.epoch == 2020.0
+    assert [str(value) for value in from_wkb] == ['POINT (1 2)']
+
+    static = gm.Point(1, 2, crs=2180).to_wkb(include_srid=True)
+    with pytest.raises(
+        ValueError,
+        match=r'^a coordinate epoch requires a dynamic CRS; EPSG:2180 is static\. Remove epoch= or transform to a dynamic CRS first$',
+    ):
+        gm.from_wkb([static], epoch=2020.0)
+
+    # Pickle round-trip still works with CRS+epoch on the array frame.
+    framed = gm.GeometryArray([gm.Point(1, 2, crs=4326)], epoch=2020.0)
+    restored = pickle.loads(pickle.dumps(framed))
+    assert restored.crs == framed.crs
+    assert restored.epoch == 2020.0
+    assert [str(value) for value in restored] == ['POINT (1 2)']
+
+    # Epoch without any CRS still errors.
+    plain = gm.Point(1, 2).to_wkb()  # no SRID
+    with pytest.raises(
+        gm.CRSError,
+        match=r'^a coordinate epoch requires a CRS; attach one with crs= \(or set_crs\(\.\.\.\)\) before tagging an epoch$',
+    ):
+        gm.from_wkb([plain], epoch=2020.0)

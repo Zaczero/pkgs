@@ -68,3 +68,19 @@ def test_union_with_a_member_touching_the_seam_stays_valid() -> None:
     assert union.is_valid
     assert gm.contains(union, gm.Point(179.0, 20.5, crs=4326))
     assert not gm.contains(union, gm.Point(-179.0, 20.5, crs=4326))
+
+
+def test_r02_dissolve_stops_after_expected_plus_one() -> None:
+    """R02: dissolve keys stop after expected+1 (unbounded iterators bound)."""
+    import itertools
+
+    arr = gm.GeometryArray([gm.Point(0, 0), gm.Point(1, 1)])
+    geoms, keys = arr.dissolve(by=[0, 0])
+    assert keys == [0]
+    assert len(geoms) == 1
+
+    with pytest.raises(gm.GeometryError, match='one key per geometry'):
+        arr.dissolve(by=itertools.repeat(0))
+
+    with pytest.raises(gm.GeometryError, match='one key per geometry'):
+        arr.dissolve(by=['a'])

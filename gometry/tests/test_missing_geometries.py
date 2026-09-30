@@ -8,6 +8,7 @@ dense representation is byte-identical to pre-missing arrays (zero overhead).
 
 from __future__ import annotations
 
+import json
 import math
 import pickle
 
@@ -15,7 +16,11 @@ import gometry as gm
 import numpy as np
 import pytest
 
-from tests._support import with_validity
+from tests._support import (
+    _nullable_packed_linestring_arrow,
+    _nullable_packed_polygon_arrow,
+    with_validity,
+)
 
 
 @pytest.fixture
@@ -1293,3 +1298,98 @@ def test_repeated_ops_on_a_fancy_selection_stay_consistent() -> None:
     shifted = sel.translate(10.0, 0.0)
     np.testing.assert_array_equal(shifted.area, first_area)
     assert shifted.bounds[0][0] == sel.bounds[0][0] + 10.0
+
+
+def test_nullable_packed_unary_lanes_skip_placeholders_and_scatter() -> None:
+    """A true GeoArrow mask must keep packed unary work off NaN placeholders."""
+    lines = _nullable_packed_linestring_arrow()
+    dense_lines = lines.drop_missing()
+    np.testing.assert_equal(
+        lines.length,
+        np.array([dense_lines.length[0], np.nan, dense_lines.length[1]]),
+    )
+    np.testing.assert_equal(
+        lines.bounds,
+        np.vstack((dense_lines.bounds[0], [np.nan] * 4, dense_lines.bounds[1])),
+    )
+
+    polygons = _nullable_packed_polygon_arrow()
+    dense_polygons = polygons.drop_missing()
+    boundary = polygons.boundary()
+    assert boundary.is_missing.tolist() == [False, True, False]
+    assert boundary.to_wkb() == [
+        dense_polygons.boundary().to_wkb()[0],
+        None,
+        dense_polygons.boundary().to_wkb()[1],
+    ]
+
+
+@pytest.mark.parametrize('loader', [gm.from_wkb, gm.from_wkt])
+def test_bulk_missing_rows_do_not_panic_streaming_line_or_polygon(loader) -> None:
+    """Missing rows survive a mixed streaming lane during homogeneous demotion."""
+    line = gm.LineString([(0, 0), (1, 1)])
+    point = gm.Point(2, 2)
+    polygon = gm.Polygon([(0, 0), (1, 0), (0, 1), (0, 0)])
+    values = [line, None, point]
+    polygon_values = [polygon, None, point]
+    if loader is gm.from_wkb:
+        values = [line.to_wkb(), None, point.to_wkb()]
+        polygon_values = [polygon.to_wkb(), None, point.to_wkb()]
+    else:
+        values = [line.to_wkt(), None, point.to_wkt()]
+        polygon_values = [polygon.to_wkt(), None, point.to_wkt()]
+
+    line_array = loader(values)
+    assert line_array.is_missing.tolist() == [False, True, False]
+    assert line_array[0].geometry_type == 'LineString'
+    assert line_array[1] is None
+    assert line_array[2].geometry_type == 'Point'
+
+    polygon_array = loader(polygon_values)
+    assert polygon_array.is_missing.tolist() == [False, True, False]
+    assert polygon_array[0].geometry_type == 'Polygon'
+    assert polygon_array[1] is None
+    assert polygon_array[2].geometry_type == 'Point'
+
+    def geojson(geometry):
+        return json.loads(geometry.to_geojson())
+
+    geojson_line_array = gm.from_geojson(
+        [geojson(line), None, geojson(point)],
+    )
+    assert geojson_line_array.is_missing.tolist() == [False, True, False]
+    assert [
+        None if row is None else row.geometry_type for row in geojson_line_array
+    ] == ['LineString', None, 'Point']
+
+
+def test_with_missing_cannot_clear_mask_on_nullable_packed_arrow() -> None:
+    """_with_missing must OR with the existing mask — never expose NaN placeholders.
+
+    Nullable packed Arrow import puts NaN placeholder vertices under the mask;
+    clearing those bits would yield trusted ``LINESTRING (NaN NaN, …)``.
+    """
+    arr = _nullable_packed_linestring_arrow()
+    assert arr.is_missing.tolist() == [False, True, False]
+    # Attempt to clear every bit (the defect: replace-mask with all-False).
+    cleared = arr._with_missing([False] * len(arr))
+    assert cleared.is_missing.tolist() == [False, True, False]
+    assert cleared[1] is None
+    # Present rows still usable; no NaN geometry trusted.
+    assert 'NaN' not in cleared[0].to_wkt()
+    assert np.isfinite(cleared[0].length)
+    # fill_missing remains the valid unmask path.
+    filled = arr.fill_missing(gm.LineString([(9, 9), (10, 10)]))
+    assert filled.is_missing.tolist() == [False, False, False]
+    assert filled.to_wkt() == [
+        'LINESTRING (0 0, 1 1)',
+        'LINESTRING (9 9, 10 10)',
+        'LINESTRING (2 2, 3 3)',
+    ]
+    # Same on nullable packed polygons.
+    polys = _nullable_packed_polygon_arrow()
+    still_masked = polys._with_missing([False] * len(polys))
+    assert still_masked.is_missing.tolist() == [False, True, False]
+    assert still_masked[1] is None
+    assert 'NaN' not in still_masked[0].to_wkt()
+    assert np.isfinite(still_masked[0].area)

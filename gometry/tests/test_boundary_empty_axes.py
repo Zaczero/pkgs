@@ -164,3 +164,28 @@ def test_geographic_boundary_preserves_crs_and_declared_axes(
     assert result.crs == array.crs
     assert result.coordinate_axes == [axes, None]
     assert result.is_missing.tolist() == [False, True]
+
+
+def test_point_replace_preserves_typed_empty_axes() -> None:
+    empty_z = gm.from_wkt('POINT Z EMPTY')
+    assert empty_z.to_wkt() == 'POINT Z EMPTY'
+    assert empty_z.__replace__().to_wkt() == 'POINT Z EMPTY'
+    assert empty_z.__replace__(crs=4326).to_wkt() == 'POINT Z EMPTY'
+    assert empty_z.__replace__(crs=4326).crs == 'EPSG:4326'
+
+    empty_m = gm.from_wkt('POINT M EMPTY')
+    assert empty_m.__replace__().to_wkt() == 'POINT M EMPTY'
+    empty_zm = gm.from_wkt('POINT ZM EMPTY')
+    assert empty_zm.__replace__().to_wkt() == 'POINT ZM EMPTY'
+
+    # Axis-aware Z/M edits on empties.
+    cleared = empty_z.__replace__(z=None)
+    assert cleared.to_wkt() == 'POINT EMPTY'
+    promoted = gm.from_wkt('POINT EMPTY').__replace__(z=1.0)
+    assert promoted.to_wkt() == 'POINT Z EMPTY'
+
+    # Materialization that lacks required ordinates raises rather than flattens.
+    with pytest.raises(gm.InvalidGeometryError, match='requires z'):
+        empty_z.__replace__(x=1.0, y=2.0)
+    material = empty_z.__replace__(x=1.0, y=2.0, z=3.0)
+    assert material.to_wkt() == 'POINT Z (1 2 3)'

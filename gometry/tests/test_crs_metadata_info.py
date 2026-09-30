@@ -1169,3 +1169,10 @@ def test_crs_receiver_info_invalidates_on_reconfigure() -> None:
             gm.crs_reset()
             gm.crs_clear_cache()
     assert gm.CRS(4326).info['name'] == 'WGS 84'
+
+
+def test_crs_info_has_deprecated_not_is_deprecated() -> None:
+    info = gm.CRS(4326).info
+    assert info['deprecated'] is False
+    assert 'is_deprecated' not in info
+    assert gm.CRS(4326).is_deprecated is False

@@ -719,3 +719,10 @@ def test_d13_from_geoparquet_honest_columns_selection() -> None:
         # One-shot generator still works.
         _geoms, attrs2 = gm.from_geoparquet(path, columns=(c for c in ['id', 'label']))
         assert attrs2.column_names == ['id', 'label']
+
+
+def test_geometry_array_and_from_wkt_accept_iterators() -> None:
+    arr = gm.GeometryArray(iter([gm.Point(0, 0), gm.Point(1, 1)]))
+    assert len(arr) == 2
+    wkt_arr = gm.from_wkt(iter(['POINT (0 0)', 'POINT (1 1)']))
+    assert len(wkt_arr) == 2

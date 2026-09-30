@@ -2,10 +2,13 @@
 EWKB SRID inheritance, and EWKT prefix tolerance.
 """
 
+import pickle
 import struct
 
 import gometry as gm
+import pyarrow as pa
 import pytest
+from gometry import _lib
 
 
 def _iso_dim(type_code: int) -> int:
@@ -323,3 +326,140 @@ def test_wkb_rejects_oversized_coordinate_count_before_allocation() -> None:
     for payload in (linestring, multipoint, multipolygon, collection):
         with pytest.raises(gm.ParseError, match=r'exceeds remaining input|too large'):
             gm.from_wkb(payload)
+
+
+def test_public_constructor_malformed_wkb_polygon_never_panics() -> None:
+    """Empty/too-short WKB rings reject; XY-open ≥3 corners silent-close (A1).
+
+    Empty and < MIN_VERTICES_OPEN rings are structurally illegal —
+    ``from_wkb`` raises a typed ParseError, never PanicException. Open rings
+    with ≥3 corners silent-close under the shared untrusted ring admission
+    (same policy as WKT and pickle).
+    """
+    reject_cases = {
+        'zero_ring_coords': (
+            # Release-blocking repro: hex 01030000000100000000000000
+            bytes.fromhex('01030000000100000000000000')
+        ),
+        'two_vertex_ring': (
+            # 2 vertices — below MIN_VERTICES_OPEN
+            b'\x01\x03\x00\x00\x00\x01\x00\x00\x00\x02\x00\x00\x00'
+            + struct.pack('<4d', 0.0, 0.0, 1.0, 0.0)
+        ),
+        'closed_3_vertex_ring': (
+            # 3 coordinates, closed (first==last) — only 2 corners
+            b'\x01\x03\x00\x00\x00\x01\x00\x00\x00\x03\x00\x00\x00'
+            + struct.pack('<6d', 0.0, 0.0, 1.0, 0.0, 0.0, 0.0)
+        ),
+    }
+    for name, wkb in reject_cases.items():
+        with pytest.raises(gm.ParseError, match=r'ring|coordinates|vertices') as raised:
+            gm.from_wkb(wkb)
+        assert type(raised.value).__name__ != 'PanicException', name
+        with pytest.raises(gm.ParseError):
+            gm.from_wkb([wkb])
+
+    # 3 open corners — silent-close (was WKB-only reject before A1 uniformity).
+    open3 = b'\x01\x03\x00\x00\x00\x01\x00\x00\x00\x03\x00\x00\x00' + struct.pack(
+        '<6d', 0.0, 0.0, 1.0, 0.0, 0.0, 1.0
+    )
+    assert gm.from_wkb(open3).to_wkt() == 'POLYGON ((0 0, 1 0, 0 1, 0 0))'
+    assert gm.from_wkb(open3).is_valid
+
+    # 4 vertices, first != last — silent-close to a valid ring (A1).
+    unclosed = b'\x01\x03\x00\x00\x00\x01\x00\x00\x00\x04\x00\x00\x00' + struct.pack(
+        '<8d', 0.0, 0.0, 1.0, 0.0, 1.0, 1.0, 0.5, 1.0
+    )
+    arr = gm.from_wkb([unclosed])
+    assert len(arr) == 1
+    assert arr.to_wkt() == [
+        'POLYGON ((0 0, 1 0, 1 1, 0.5 1, 0 0))',
+    ]
+    assert bool(arr.is_valid[0])
+    geom = gm.from_wkb(unclosed)
+    assert geom.is_valid
+    assert geom.area > 0.0
+
+
+def test_wkb_structure_budget_rejects_empty_ring_amplification() -> None:
+    """200k empty rings fail structurally (min ring vertices / encoding bound).
+
+    No magic input-relative structure ratio — empty rings are illegal because a
+    closed ring needs ≥4 coordinates. Rejection must not allocate the rings.
+    """
+    n = 200_000
+    wkb = b'\x01\x03\x00\x00\x00' + struct.pack('<I', n) + b'\x00\x00\x00\x00' * n
+    assert len(wkb) == 9 + 4 * n
+    with pytest.raises(
+        (gm.ParseError, gm.InvalidGeometryError),
+        match=r'ring|vertices|too short|count|coordinates',
+    ):
+        gm.from_wkb(wkb)
+    # Same structural rejection on the mixed unpickler path.
+    with pytest.raises(
+        (gm.ParseError, gm.InvalidGeometryError),
+        match=r'ring|vertices|too short|count|coordinates',
+    ):
+        _lib._unpickle_geometry_array_v1([wkb], None, None, None)
+    # Legitimate multi-ring polygon still parses.
+    ok = gm.Polygon(
+        [(0, 0), (10, 0), (10, 10), (0, 10), (0, 0)],
+        [[(2, 2), (3, 2), (3, 3), (2, 2)]],
+    )
+    assert gm.from_wkb(ok.to_wkb()).area > 0
+
+
+def test_wkb_empty_multipoint_member_matches_wkt() -> None:
+    """Matching typed empty MultiPoint members normalize like WKT.
+
+    Exact LE payload: MULTIPOINT with NaN empty Point then POINT (1 2).
+    """
+    nan = float('nan')
+    wkb = (
+        struct.pack('<BII', 1, 4, 2)
+        + struct.pack('<BI2d', 1, 1, nan, nan)
+        + struct.pack('<BI2d', 1, 1, 1.0, 2.0)
+    )
+    wkb_geom = gm.from_wkb(wkb)
+    wkt_geom = gm.from_wkt('MULTIPOINT (EMPTY, (1 2))')
+    assert wkb_geom.to_wkt() == wkt_geom.to_wkt() == 'MULTIPOINT (EMPTY, (1 2))'
+    assert len(wkb_geom.coords) == 1
+    # bulk / Arrow-WKB / pickle
+    bulk = gm.from_wkb([wkb])
+    assert bulk[0].to_wkt() == 'MULTIPOINT (EMPTY, (1 2))'
+    arrow = gm.from_arrow(pa.array([wkb], type=pa.binary()))
+    assert arrow[0].to_wkt() == 'MULTIPOINT (EMPTY, (1 2))'
+    assert pickle.loads(pickle.dumps(wkb_geom)).to_wkt() == 'MULTIPOINT (EMPTY, (1 2))'
+
+
+def test_wkb_empty_multipolygon_member_matches_wkt() -> None:
+    """Matching typed empty MultiPolygon members normalize like WKT."""
+    empty_poly = struct.pack('<BI', 1, 3) + struct.pack('<I', 0)
+    shell = (
+        struct.pack('<BI', 1, 3)
+        + struct.pack('<I', 1)
+        + struct.pack('<I', 5)
+        + struct.pack('<10d', 0.0, 0.0, 1.0, 0.0, 1.0, 1.0, 0.0, 1.0, 0.0, 0.0)
+    )
+    wkb = struct.pack('<BII', 1, 6, 2) + empty_poly + shell
+    wkb_geom = gm.from_wkb(wkb)
+    wkt_geom = gm.from_wkt('MULTIPOLYGON (EMPTY, ((0 0, 1 0, 1 1, 0 1, 0 0)))')
+    assert wkb_geom.to_wkt() == wkt_geom.to_wkt()
+    assert len(wkb_geom.parts) == 2
+    assert pickle.loads(pickle.dumps(wkb_geom)).to_wkt() == wkb_geom.to_wkt()
+
+
+@pytest.mark.parametrize(
+    'wkb',
+    [
+        # MULTIPOINT Z containing XY Point
+        struct.pack('<BII', 1, 1004, 1) + struct.pack('<BI2d', 1, 1, 1.0, 2.0),
+        # MULTIPOINT (XY) containing Point Z
+        struct.pack('<BII', 1, 4, 1) + struct.pack('<BI3d', 1, 1001, 1.0, 2.0, 3.0),
+    ],
+    ids=['outer_z_member_xy', 'outer_xy_member_z'],
+)
+def test_wkb_homogeneous_outer_member_axes_must_agree(wkb: bytes) -> None:
+    """Outer/member axes equality for MultiPoint — no silent promote/demote."""
+    with pytest.raises(gm.ParseError, match=r'axes|member'):
+        gm.from_wkb(wkb)

@@ -388,3 +388,40 @@ def test_boundary_valid_values_still_work() -> None:
     # ndarray path for a representative vector param
     out = lines.offset_curve(np.array([1.0, 2.0, 3.0]))
     assert len(out) == 3
+
+
+def test_defaulted_params_reject_explicit_none_and_honor_omission() -> None:
+    poly = gm.Polygon([(0, 0), (3, 0), (3, 3), (0, 3), (0, 0)])
+    # Omission uses documented defaults.
+    assert isinstance(poly.concave_hull(), gm.Polygon)
+    assert gm.equals(poly.remove_repeated_points(), poly)
+    assert gm.equals_exact(gm.Point(1, 1), gm.Point(1, 1))
+    assert poly.smooth() is not None
+    snapped = poly.snap_to_grid(1.0)
+    assert isinstance(snapped, (gm.Polygon, gm.MultiPolygon))
+    rotated = poly.rotate(0.0)
+    assert isinstance(rotated, (gm.Polygon, gm.MultiPolygon))
+    voronoi = gm.MultiPoint([(0, 0), (1, 0), (0, 1)]).voronoi_polygons()
+    assert len(voronoi) >= 1
+
+    # Explicit None raises (TypeError-ish).
+    with pytest.raises(TypeError):
+        poly.concave_hull(concavity=None)
+    with pytest.raises(TypeError):
+        poly.concave_hull(length_threshold=None)
+    with pytest.raises(TypeError):
+        poly.remove_repeated_points(tolerance=None)
+    with pytest.raises(TypeError):
+        gm.equals_exact(gm.Point(0, 0), gm.Point(0, 0), None)
+    with pytest.raises(TypeError):
+        poly.smooth(iterations=None)
+    with pytest.raises(TypeError):
+        poly.snap_to_grid(1.0, origin=None)
+    with pytest.raises(TypeError):
+        poly.rotate(10.0, origin=None)
+    with pytest.raises(TypeError):
+        poly.scale(2.0, origin=None)
+    with pytest.raises(TypeError):
+        poly.skew(origin=None)
+    with pytest.raises(TypeError):
+        gm.MultiPoint([(0, 0), (1, 0), (0, 1)]).voronoi_polygons(clip=None)

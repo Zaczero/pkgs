@@ -470,3 +470,22 @@ def test_bbox_rule_covers_the_envelope_windows_on_every_grid(
     bbox = set(cover(source, 'bbox').to_numpy().tolist())
     assert bbox == set(cover(windows, 'overlap').to_numpy().tolist())
     assert set(cover(source, 'overlap').to_numpy().tolist()) <= bbox
+
+
+@pytest.mark.parametrize(
+    'factory',
+    [
+        gm.h3_bounding_cell,
+        gm.s2_bounding_cell,
+        gm.geohash_bounding_cell,
+        gm.tile_bounding_cell,
+    ],
+    ids=['h3', 's2', 'geohash', 'tile'],
+)
+def test_bounding_cell_skips_missing_rows(factory) -> None:
+    arr = gm.GeometryArray([gm.Point(13.4, 52.5, crs=4326), None])
+    cell = factory(arr)
+    assert cell is not None
+    # Present nonempty row folds; all-missing still errors.
+    with pytest.raises(gm.InvalidGeometryError, match='non-empty'):
+        factory(gm.GeometryArray([None, None], crs=4326))

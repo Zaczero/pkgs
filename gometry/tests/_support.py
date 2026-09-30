@@ -226,3 +226,108 @@ def with_validity(array: Any, validity: bytes) -> Any:
             storage.type, len(storage), [bitmap, buffers[1], buffers[2]]
         )
     return pa.ExtensionArray.from_storage(array.type, rebuilt)
+
+
+class _CapsuleOnly:
+    """Arrow C provider without a ``.type`` attribute."""
+
+    __slots__ = ('_capsules',)
+
+    def __init__(self, schema_capsule: object, array_capsule: object) -> None:
+        self._capsules = (schema_capsule, array_capsule)
+
+    def __arrow_c_array__(self, requested_schema=None):
+        return self._capsules
+
+
+def _capsule_only_from_pyarrow(arrow: Any) -> _CapsuleOnly:
+    schema, array = arrow.__arrow_c_array__()
+    return _CapsuleOnly(schema, array)
+
+
+def _capsule_only_from_gometry(arr: gm.GeometryArray) -> _CapsuleOnly:
+    schema, array = arr.__arrow_c_array__()
+    return _CapsuleOnly(schema, array)
+
+
+class _StreamOnly:
+    """Force the Arrow C stream path without PyArrow dispatch."""
+
+    __slots__ = ('_obj',)
+
+    def __init__(self, obj: object) -> None:
+        self._obj = obj
+
+    def __arrow_c_stream__(self, requested_schema=None):
+        return self._obj.__arrow_c_stream__(requested_schema)
+
+
+def _nullable_packed_linestring_arrow() -> gm.GeometryArray:
+    """Build nullable packed lines through the public GeoArrow import path."""
+    import pyarrow as pa
+
+    xy = pa.struct([('x', pa.float64()), ('y', pa.float64())])
+    points = pa.array([(0.0, 0.0), (1.0, 1.0), (2.0, 2.0), (3.0, 3.0)], type=xy)
+    offsets = pa.array([0, 2, 2, 4], type=pa.int32())
+    storage = pa.ListArray.from_arrays(
+        offsets, points, mask=pa.array([False, True, False])
+    )
+    field = pa.field(
+        'geometry',
+        storage.type,
+        metadata={
+            b'ARROW:extension:name': b'geoarrow.linestring',
+            b'ARROW:extension:metadata': b'{}',
+        },
+    )
+    batch = pa.RecordBatch.from_arrays([storage], schema=pa.schema([field]))
+    arr = gm.from_arrow(batch)
+    callable_, args = arr.drop_missing().__reduce_ex__(5)
+    assert callable_.__name__ == '_unpickle_packed_array_v1'
+    assert len(args[4]) == 1
+    return arr
+
+
+def _nullable_packed_polygon_arrow() -> gm.GeometryArray:
+    """Build nullable packed polygons through the public GeoArrow import path."""
+    import pyarrow as pa
+
+    xy = pa.struct([('x', pa.float64()), ('y', pa.float64())])
+    nan = float('nan')
+    points = pa.array(
+        [
+            (0.0, 0.0),
+            (1.0, 0.0),
+            (1.0, 1.0),
+            (0.0, 0.0),
+            (nan, nan),
+            (nan, nan),
+            (nan, nan),
+            (nan, nan),
+            (2.0, 2.0),
+            (3.0, 2.0),
+            (3.0, 3.0),
+            (2.0, 2.0),
+        ],
+        type=xy,
+    )
+    ring_offsets = pa.array([0, 4, 8, 12], type=pa.int32())
+    rings = pa.ListArray.from_arrays(ring_offsets, points)
+    poly_offsets = pa.array([0, 1, 2, 3], type=pa.int32())
+    storage = pa.ListArray.from_arrays(
+        poly_offsets, rings, mask=pa.array([False, True, False])
+    )
+    field = pa.field(
+        'geometry',
+        storage.type,
+        metadata={
+            b'ARROW:extension:name': b'geoarrow.polygon',
+            b'ARROW:extension:metadata': b'{}',
+        },
+    )
+    batch = pa.RecordBatch.from_arrays([storage], schema=pa.schema([field]))
+    arr = gm.from_arrow(batch)
+    callable_, args = arr.drop_missing().__reduce_ex__(5)
+    assert callable_.__name__ == '_unpickle_packed_array_v1'
+    assert len(args[4]) == 2
+    return arr

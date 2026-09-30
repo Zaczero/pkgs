@@ -1049,3 +1049,27 @@ def test_array_accepts_shapely_via_geo_interface() -> None:
     assert len(arr) == 2
     assert gm.equals_exact(arr[0], gm.Point(0, 0))
     assert gm.equals_exact(arr[1], gm.Point(1, 1))
+
+
+def test_coords_z_m_always_readonly_float64_nan_when_absent() -> None:
+    coords = gm.Point(1, 2, crs=4326).coords
+    for col in (coords.z, coords.m):
+        assert isinstance(col, np.ndarray)
+        assert col.dtype == np.float64
+        assert col.flags.writeable is False
+        assert col.shape == (1,)
+        assert np.isnan(col).all()
+
+
+def test_coordinate_exports_follow_carried_ordinates() -> None:
+    line = gm.LineString([(0, 0), (1, 1)], z=[5, 6])
+    assert list(line.coords) == [(0.0, 0.0, 5.0), (1.0, 1.0, 6.0)]
+    assert np.asarray(line.coords).shape == (2, 3)
+    assert set(line.coords.to_dict()) == {'x', 'y', 'z'}
+    assert gm.get_coordinates(line).shape == (2, 3)
+
+    flat = line.force_2d()
+    assert list(flat.coords) == [(0.0, 0.0), (1.0, 1.0)]
+    assert np.asarray(flat.coords).shape == (2, 2)
+    assert set(flat.coords.to_dict()) == {'x', 'y'}
+    assert gm.get_coordinates(flat).shape == (2, 2)

@@ -2,6 +2,8 @@
 extension metadata, IPC roundtrips, and decode strictness.
 """
 
+from __future__ import annotations
+
 import ctypes
 import io
 import json as _json
@@ -17,7 +19,14 @@ import pyarrow as pa
 import pytest
 from gometry._lib import CRS as _CRS
 
-from tests._support import canon, polygon_storage_twins, with_validity
+from tests._support import (
+    _capsule_only_from_gometry,
+    _capsule_only_from_pyarrow,
+    _StreamOnly,
+    canon,
+    polygon_storage_twins,
+    with_validity,
+)
 
 _WGS84_PROJJSON_METADATA = _json.dumps(
     {'crs': _CRS(4326).to_projjson_dict(), 'crs_type': 'projjson'},
@@ -2784,3 +2793,806 @@ def test_geometry_collections_export_via_wkb_lane_and_chunked_import() -> None:
     ])
     restored = cast('gm.GeometryArray', gm.from_arrow(chunks))
     assert [(g).to_wkt() for g in restored] == (values).to_wkt()
+
+
+def test_arrow_c_multirow_binary_and_large_binary_round_trip() -> None:
+    wkbs = [gm.Point(i, i).to_wkb() for i in range(5)]
+    for arrow_type in (pa.binary(), pa.large_binary()):
+        arrow = pa.array(wkbs, type=arrow_type)
+        restored = gm.from_arrow(arrow)
+        assert restored.to_wkt() == [f'POINT ({i} {i})' for i in range(5)]
+
+
+def test_arrow_c_nonzero_offset_and_sliced_geoarrow_struct() -> None:
+    values = gm.points([0, 1, 2, 3], [0, 1, 2, 3], crs=4326)
+    arrow = values.to_arrow()
+    sliced = arrow.slice(1, 2)
+    restored = gm.from_arrow(sliced)
+    assert restored.to_wkt() == ['POINT (1 1)', 'POINT (2 2)']
+    # Coordinate child fields of a sliced GeoArrow struct inherit parent offset
+    # so the visible span matches the slice, not the full parent allocation.
+    assert len(gm.from_arrow(sliced)) == 2
+    assert restored.crs is not None
+    assert values.crs is not None
+    assert restored.crs.same_as(values.crs, mode='exact')
+
+
+def test_true_nonzero_offset_c_array_capsule_binary() -> None:
+    """True nonzero-offset C array capsule (PyArrow slice retains offset;
+    gometry re-export always writes offset=0 so must not be the only test).
+    """
+    wkbs = [gm.Point(i, i).to_wkb() for i in range(5)]
+    full = pa.array(wkbs, type=pa.binary())
+    sliced = full.slice(1, 3)  # offset=1, length=3 in the C ABI
+    # Capsule-only forces owned native Arrow admission with a real offset.
+    restored = gm.from_arrow(_capsule_only_from_pyarrow(sliced))
+    assert restored.to_wkt() == ['POINT (1 1)', 'POINT (2 2)', 'POINT (3 3)']
+    # LargeBinary sibling.
+    sliced_l = pa.array(wkbs, type=pa.large_binary()).slice(2, 2)
+    restored_l = gm.from_arrow(_capsule_only_from_pyarrow(sliced_l))
+    assert restored_l.to_wkt() == ['POINT (2 2)', 'POINT (3 3)']
+
+
+def test_arrow_c_null_count_unknown_and_excessive() -> None:
+    # Known nulls still import as missing rows through pyarrow.
+    # Layout edge cases (null_count=-1 / <-1 / known>length, overflow, struct
+    # child bounds, Binary vs LargeBinary widths) are exercised by the pure
+    # Rust battery `layout_validation_tests` in src/py/arrow_c/native.rs —
+    # pyarrow normalizes those C-ABI fields before they reach from_arrow.
+    binary = pa.array(
+        [gm.Point(0, 0).to_wkb(), None, gm.Point(1, 1).to_wkb()],
+        type=pa.binary(),
+    )
+    restored = gm.from_arrow(binary)
+    assert restored.is_missing.tolist() == [False, True, False]
+
+
+def test_arrow_c_empty_array_with_unknown_null_count_imports() -> None:
+    """Empty arrays with null_count=-1 must not require a validity bitmap."""
+    empty = pa.array([], type=pa.binary())
+    restored = gm.from_arrow(empty)
+    assert len(restored) == 0
+
+
+def test_arrow_c_binary_view_wkb_round_trip() -> None:
+    """BinaryView storage (geoarrow.wkb / pa.binary_view) through the real
+    import path: schema tree + buffer iteration + final copy.
+    """
+    if not hasattr(pa, 'binary_view'):
+        pytest.skip('pyarrow binary_view unavailable')
+    wkbs = [gm.Point(i, i).to_wkb() for i in range(3)]
+    arrow = pa.array(wkbs, type=pa.binary_view())
+    restored = gm.from_arrow(arrow)
+    assert restored.to_wkt() == [f'POINT ({i} {i})' for i in range(3)]
+
+
+def test_zero_chunk_binary_view_accepted() -> None:
+    """B: zero-chunk BinaryView must share non-empty acceptance (empty GeometryArray)."""
+    if not hasattr(pa, 'binary_view'):
+        pytest.skip('pyarrow binary_view unavailable')
+    empty = gm.from_arrow(pa.chunked_array([], type=pa.binary_view()))
+    assert len(empty) == 0
+    # Capsule-only zero-chunk is not a ChunkedArray; empty BinaryView array
+    # still exercises the same type frame acceptance.
+    empty2 = gm.from_arrow(pa.array([], type=pa.binary_view()))
+    assert len(empty2) == 0
+
+
+def test_zero_chunk_large_list_geoarrow_extension_admits_empty() -> None:
+    """LargeList-backed GeoArrow accepts zero chunks as an empty column."""
+    if not hasattr(pa, 'large_list'):
+        pytest.skip('pyarrow large_list unavailable')
+
+    xy = pa.struct([('x', pa.float64()), ('y', pa.float64())])
+    storage_type = pa.large_list(xy)
+
+    class _GeoarrowLinestring(pa.ExtensionType):
+        def __arrow_ext_serialize__(self) -> bytes:
+            return b'{}'
+
+        @classmethod
+        def __arrow_ext_deserialize__(cls, storage_type, serialized):
+            return cls(storage_type)
+
+    ext = _GeoarrowLinestring(storage_type, 'geoarrow.linestring')
+    # Zero-chunk extension type (the C zero-chunk frame path).
+    zero = pa.chunked_array([], type=ext)
+    empty = gm.from_arrow(zero)
+    assert len(empty) == 0
+
+    # Field-metadata LargeList + zero batches (Table) also admits empty.
+    field = pa.field(
+        'geometry',
+        storage_type,
+        metadata={
+            b'ARROW:extension:name': b'geoarrow.linestring',
+            b'ARROW:extension:metadata': b'{}',
+        },
+    )
+    table = pa.Table.from_batches([], schema=pa.schema([field]))
+    empty_t = gm.from_arrow(table)
+    assert len(empty_t) == 0
+
+
+def test_geoarrow_closed_3_coord_ring_rejects_like_wkt_wkb() -> None:
+    """G1/F2: closed 3-coordinate GeoArrow ring is rejected at admission.
+
+    Shared ``admit_closed_ring`` policy: XY-closed rings need ≥4 vertices
+    (MIN_VERTICES_CLOSED). GeoArrow must not admit a short ring WKT/WKB refuse.
+    A legal 4-vertex ring still imports and pickles cleanly.
+    """
+    xy = pa.struct([('x', pa.float64()), ('y', pa.float64())])
+    # Degenerate closed 3-vertex ring: (0,0), (1,0), (0,0).
+    points3 = pa.array([(0.0, 0.0), (1.0, 0.0), (0.0, 0.0)], type=xy)
+    rings3 = pa.ListArray.from_arrays(pa.array([0, 3], type=pa.int32()), points3)
+    polygons3 = pa.ListArray.from_arrays(pa.array([0, 1], type=pa.int32()), rings3)
+    field = pa.field(
+        'geometry',
+        polygons3.type,
+        metadata={
+            b'ARROW:extension:name': b'geoarrow.polygon',
+            b'ARROW:extension:metadata': b'{}',
+        },
+    )
+    batch3 = pa.RecordBatch.from_arrays([polygons3], schema=pa.schema([field]))
+    with pytest.raises(
+        (gm.ParseError, gm.InvalidGeometryError, TypeError, ValueError),
+        match=r'three coordinates|RingTooShort|require at least',
+    ):
+        gm.from_arrow(batch3)
+
+    # Legal triangle (4 verts closed) still round-trips through pickle.
+    points4 = pa.array([(0.0, 0.0), (1.0, 0.0), (0.0, 1.0), (0.0, 0.0)], type=xy)
+    rings4 = pa.ListArray.from_arrays(pa.array([0, 4], type=pa.int32()), points4)
+    polygons4 = pa.ListArray.from_arrays(pa.array([0, 1], type=pa.int32()), rings4)
+    field4 = pa.field(
+        'geometry',
+        polygons4.type,
+        metadata={
+            b'ARROW:extension:name': b'geoarrow.polygon',
+            b'ARROW:extension:metadata': b'{}',
+        },
+    )
+    arr4 = gm.from_arrow(
+        pa.RecordBatch.from_arrays([polygons4], schema=pa.schema([field4]))
+    )
+    restored = pickle.loads(pickle.dumps(arr4))
+    assert len(restored) == 1
+    _ = restored.is_valid
+    _ = restored.area
+
+
+def test_capsule_only_binary_large_binary_binary_view_and_empty() -> None:
+    """Capsule-only imports for z / Z / vz / empty — must hit native.rs."""
+    wkbs = [gm.Point(i, i).to_wkb() for i in range(3)]
+    for arrow_type in (pa.binary(), pa.large_binary()):
+        restored = gm.from_arrow(
+            _capsule_only_from_pyarrow(pa.array(wkbs, type=arrow_type))
+        )
+        assert restored.to_wkt() == [f'POINT ({i} {i})' for i in range(3)]
+
+    if hasattr(pa, 'binary_view'):
+        restored = gm.from_arrow(
+            _capsule_only_from_pyarrow(pa.array(wkbs, type=pa.binary_view()))
+        )
+        assert restored.to_wkt() == [f'POINT ({i} {i})' for i in range(3)]
+
+    # Empty Binary / LargeBinary / BinaryView — zero-sized buffers may be null.
+    for arrow_type in (pa.binary(), pa.large_binary()):
+        empty = gm.from_arrow(_capsule_only_from_pyarrow(pa.array([], type=arrow_type)))
+        assert len(empty) == 0
+    if hasattr(pa, 'binary_view'):
+        empty_v = gm.from_arrow(
+            _capsule_only_from_pyarrow(pa.array([], type=pa.binary_view()))
+        )
+        assert len(empty_v) == 0
+
+
+def test_capsule_only_geoarrow_struct_slice_nested_list() -> None:
+    """Capsule-only +s (struct point) and nested +l (linestring) + slices."""
+    points = gm.points([0, 1, 2, 3], [0, 1, 2, 3], crs=4326)
+    restored = gm.from_arrow(_capsule_only_from_gometry(points))
+    assert restored.to_wkt() == points.to_wkt()
+    assert restored.crs is not None
+    assert points.crs is not None
+    assert restored.crs.same_as(points.crs, mode='exact')
+
+    # Empty WKB capsule path (zero-sized buffers may be null).
+    empty_wkb = gm.from_arrow(
+        _capsule_only_from_pyarrow(pa.array([], type=pa.binary()))
+    )
+    assert len(empty_wkb) == 0
+
+    sliced = points[1:3]
+    restored_s = gm.from_arrow(_capsule_only_from_gometry(sliced))
+    assert restored_s.to_wkt() == ['POINT (1 1)', 'POINT (2 2)']
+
+    lines = gm.GeometryArray(
+        [
+            gm.LineString([(0, 0), (1, 1)]),
+            gm.LineString([(2, 2), (3, 3), (4, 4)]),
+        ],
+        crs=4326,
+    )
+    restored_l = gm.from_arrow(_capsule_only_from_gometry(lines))
+    assert restored_l.to_wkt() == lines.to_wkt()
+
+
+def test_capsule_only_large_list_geometry_extension_admits() -> None:
+    """Native capsule and PyArrow lanes agree on checked-i64 LargeList input.
+
+    Bare LargeList without a geometry extension remains non-geometry storage.
+    """
+    if not hasattr(pa, 'large_list'):
+        pytest.skip('pyarrow large_list unavailable')
+    coords = pa.array([0.0, 0.0, 1.0, 1.0], type=pa.float64())
+    large = pa.LargeListArray.from_arrays(pa.array([0, 2], type=pa.int64()), coords)
+    # Bare LargeList (no geometry encoding) is not a geometry storage type.
+    with pytest.raises((TypeError, gm.ParseError, ValueError)):
+        gm.from_arrow(large)
+
+    # Both GeoArrow paths read checked i64 offsets; they must not reinterpret
+    # [0, 2] as i32 cells and produce EMPTY/a short line.
+    xy = pa.struct([('x', pa.float64()), ('y', pa.float64())])
+    points = pa.array([(0.0, 0.0), (1.0, 1.0)], type=xy)
+    storage = pa.LargeListArray.from_arrays(pa.array([0, 2], type=pa.int64()), points)
+    field = pa.field(
+        'geometry',
+        storage.type,
+        metadata={
+            b'ARROW:extension:name': b'geoarrow.linestring',
+            b'ARROW:extension:metadata': b'{}',
+        },
+    )
+    batch = pa.RecordBatch.from_arrays([storage], schema=pa.schema([field]))
+    admitted = gm.from_arrow(batch)
+    assert admitted.to_wkt() == ['LINESTRING (0 0, 1 1)']
+
+    class _GeoArrowLinestringType(pa.ExtensionType):
+        def __init__(self) -> None:
+            super().__init__(storage.type, 'geoarrow.linestring')
+
+        def __arrow_ext_serialize__(self) -> bytes:
+            return b'{}'
+
+        @classmethod
+        def __arrow_ext_deserialize__(
+            cls, storage_type: pa.DataType, serialized: bytes
+        ) -> _GeoArrowLinestringType:
+            del storage_type, serialized
+            return cls()
+
+    extension = _GeoArrowLinestringType()
+    native = gm.from_arrow(
+        _capsule_only_from_pyarrow(pa.ExtensionArray.from_storage(extension, storage))
+    )
+    assert native.to_wkt() == admitted.to_wkt()
+
+
+def test_pyarrow_large_list_geometry_extension_admits() -> None:
+    """Geoarrow linestring stored as LargeList decodes with checked i64 offsets.
+
+    Offsets [0, 2] as i64 must NOT be misread as i32 cells (which would yield
+    EMPTY or a short line). Admission is the GeoArrow SHOULD for LargeList.
+    """
+    if not hasattr(pa, 'large_list'):
+        pytest.skip('pyarrow large_list unavailable')
+    xy = pa.struct([('x', pa.float64()), ('y', pa.float64())])
+    points = pa.array([(0.0, 0.0), (1.0, 1.0)], type=xy)
+    offsets = pa.array([0, 2], type=pa.int64())
+    storage = pa.LargeListArray.from_arrays(offsets, points)
+    field = pa.field(
+        'geometry',
+        storage.type,
+        metadata={
+            b'ARROW:extension:name': b'geoarrow.linestring',
+            b'ARROW:extension:metadata': b'{}',
+        },
+    )
+    batch = pa.RecordBatch.from_arrays([storage], schema=pa.schema([field]))
+    arr = gm.from_arrow(batch)
+    assert arr.to_wkt() == ['LINESTRING (0 0, 1 1)']
+
+
+def test_empty_arrow_c_stream_large_list_geoarrow_admits() -> None:
+    """Zero-batch native streams accept GeoArrow LargeList like the direct lane."""
+    if not hasattr(pa, 'large_list'):
+        pytest.skip('pyarrow large_list unavailable')
+    xy = pa.struct([('x', pa.float64()), ('y', pa.float64())])
+    storage_type = pa.large_list(xy)
+    field = pa.field(
+        'geometry',
+        storage_type,
+        metadata={
+            b'ARROW:extension:name': b'geoarrow.linestring',
+            b'ARROW:extension:metadata': b'{}',
+        },
+    )
+    table = pa.Table.from_batches([], schema=pa.schema([field]))
+
+    class _StreamOnly:
+        """Force the native empty-stream path (no .type / pyarrow dispatch)."""
+
+        __slots__ = ('_obj',)
+
+        def __init__(self, obj: object) -> None:
+            self._obj = obj
+
+        def __arrow_c_stream__(self, requested_schema=None):
+            return self._obj.__arrow_c_stream__(requested_schema)
+
+    assert len(gm.from_arrow(_StreamOnly(table))) == 0
+    # i32 List remains equivalent.
+    ok_field = pa.field(
+        'geometry',
+        pa.list_(xy),
+        metadata={
+            b'ARROW:extension:name': b'geoarrow.linestring',
+            b'ARROW:extension:metadata': b'{}',
+        },
+    )
+    ok_table = pa.Table.from_batches([], schema=pa.schema([ok_field]))
+    empty = gm.from_arrow(_StreamOnly(ok_table))
+    assert len(empty) == 0
+    empty_wkb = gm.from_arrow(
+        _StreamOnly(
+            pa.Table.from_batches(
+                [],
+                schema=pa.schema([
+                    pa.field(
+                        'geometry',
+                        pa.binary(),
+                        metadata={
+                            b'ARROW:extension:name': b'geoarrow.wkb',
+                            b'ARROW:extension:metadata': b'{}',
+                        },
+                    )
+                ]),
+            )
+        )
+    )
+    assert len(empty_wkb) == 0
+
+
+def test_multichunk_point_import_matches_single_chunk() -> None:
+    """Multi-chunk packed import must equal single-chunk (no chunking-dependent cap)."""
+    n = 2_500
+    xs = list(range(n))
+    ys = [0.0] * n
+    single = gm.points(xs, ys).to_arrow()
+    mid = n // 2
+    multi = pa.chunked_array([single.slice(0, mid), single.slice(mid, n - mid)])
+    a = gm.from_arrow(single)
+    b = gm.from_arrow(multi)
+    assert a.to_wkt() == b.to_wkt()
+    assert len(a) == n
+
+
+def test_malformed_geoarrow_polygon_offsets_raise_not_panic() -> None:
+    """Nested ring offsets that escape the loaded span must raise cleanly.
+
+    polygon offsets [0,2], ring offsets [0,100,4] against 100 coords previously
+    panicked in ArrowOrdinateValues::value (index out of bounds).
+    """
+    from gometry._arrow import GEOARROW_POLYGON, _extension_type_from_storage
+
+    # 100 XY coordinate structs; visible polygon claims 2 rings with a runaway
+    # first ring window [0, 100] then [100, 4] (non-monotonic / out of span).
+    coords = pa.StructArray.from_arrays(
+        [pa.array([float(i) for i in range(100)]), pa.array([0.0] * 100)],
+        names=['x', 'y'],
+    )
+    # Ring offsets: [0, 100, 4] — first ring claims 100 vertices, second is inverted.
+    ring_offsets = pa.array([0, 100, 4], type=pa.int32())
+    rings = pa.ListArray.from_arrays(ring_offsets, coords)
+    poly_offsets = pa.array([0, 2], type=pa.int32())
+    polys = pa.ListArray.from_arrays(poly_offsets, rings)
+    ext = _extension_type_from_storage(pa, GEOARROW_POLYGON, polys.type, None, None)
+    arrow = pa.ExtensionArray.from_storage(ext, polys)
+    with pytest.raises(
+        (gm.ParseError, TypeError, ValueError, gm.GeometryError),
+        match=r'offset|span|range|ordered|vertex|coordinate|buffer',
+    ) as exc_info:
+        gm.from_arrow(arrow)
+    # Must not be a PanicException / index out of bounds.
+    assert 'PanicException' not in type(exc_info.value).__name__
+    assert 'index out of bounds' not in str(exc_info.value).lower()
+
+
+def test_empty_stream_rejects_bare_non_geometry_types() -> None:
+    """Zero-chunk stream must reject the same bare types non-empty rejects."""
+    for typ in [
+        pa.int64(),
+        pa.float64(),
+        pa.string(),
+        pa.list_(pa.float64()),
+        pa.struct([('x', pa.float64()), ('y', pa.float64())]),
+    ]:
+        table = pa.Table.from_batches([], schema=pa.schema([pa.field('col', typ)]))
+        with pytest.raises((TypeError, gm.ParseError, ValueError)):
+            gm.from_arrow(_StreamOnly(table))
+
+
+def test_empty_stream_preserves_geometry_field_crs_epoch() -> None:
+    """Empty stream CRS/epoch come from the geometry field, not the struct root."""
+    meta = (
+        gm
+        .GeometryArray([gm.Point(0, 0, crs=4326)], epoch=2020.0)
+        .to_arrow()
+        .type.__arrow_ext_serialize__()
+    )
+    field = pa.field(
+        'geometry',
+        pa.binary(),
+        metadata={
+            b'ARROW:extension:name': b'geoarrow.wkb',
+            b'ARROW:extension:metadata': meta,
+        },
+    )
+    table = pa.Table.from_batches([], schema=pa.schema([field]))
+    empty = gm.from_arrow(_StreamOnly(table))
+    assert len(empty) == 0
+    assert empty.crs is not None
+    assert empty.crs.to_authority() == ('EPSG', '4326')
+    assert empty.epoch == 2020.0
+
+
+def test_stream_table_with_large_list_sibling_imports() -> None:
+    """Unrelated large_list sibling must not block geometry column import."""
+    if not hasattr(pa, 'large_list'):
+        pytest.skip('pyarrow large_list unavailable')
+    pts = [gm.Point(0, 0).to_wkb(), gm.Point(1, 1).to_wkb()]
+    table = pa.table({
+        'geometry': pa.array(pts, type=pa.binary()),
+        'extra': pa.array([[1], [2]], type=pa.large_list(pa.int32())),
+    })
+    direct = gm.from_arrow(table)
+    stream = gm.from_arrow(_StreamOnly(table))
+    assert direct.to_wkt() == stream.to_wkt() == ['POINT (0 0)', 'POINT (1 1)']
+
+
+def test_stream_wrapper_nonempty_wkb_table_imports() -> None:
+    """Valid non-empty one-column WKB table must import through stream-only wrapper."""
+    pts = [gm.Point(i, i).to_wkb() for i in range(3)]
+    table = pa.table({'geometry': pa.array(pts, type=pa.binary())})
+    assert gm.from_arrow(table).to_wkt() == gm.from_arrow(_StreamOnly(table)).to_wkt()
+
+
+def test_zero_chunk_tagged_int64_geoarrow_rejected() -> None:
+    """geoarrow.linestring with int64 storage must reject empty and non-empty."""
+
+    class _Ext(pa.ExtensionType):
+        def __arrow_ext_serialize__(self) -> bytes:
+            return b'{}'
+
+        @classmethod
+        def __arrow_ext_deserialize__(cls, storage_type, serialized):
+            return cls(storage_type)
+
+    ext = _Ext(pa.int64(), 'geoarrow.linestring')
+    with pytest.raises((TypeError, gm.ParseError, ValueError, AttributeError)):
+        gm.from_arrow(pa.chunked_array([], type=ext))
+    with pytest.raises((TypeError, gm.ParseError, ValueError, AttributeError)):
+        gm.from_arrow(pa.array([1, 2, 3], type=ext))
+
+
+class _ArrayOnly:
+    """Force the Arrow-C array capsule path (no .type / pyarrow dispatch)."""
+
+    __slots__ = ('_obj',)
+
+    def __init__(self, obj: object) -> None:
+        self._obj = obj
+
+    def __arrow_c_array__(self, requested_schema=None):
+        return self._obj.__arrow_c_array__(requested_schema)
+
+
+def _geoarrow_point_field_array(struct_array: pa.StructArray) -> pa.Table:
+    field = pa.field(
+        'geometry',
+        struct_array.type,
+        metadata={b'ARROW:extension:name': b'geoarrow.point'},
+    )
+    return pa.Table.from_arrays([struct_array], schema=pa.schema([field]))
+
+
+def _geoarrow_point_extension(struct_array: pa.StructArray) -> pa.ExtensionArray:
+    from gometry._arrow import GEOARROW_POINT, _extension_type_from_storage
+
+    ext = _extension_type_from_storage(
+        pa, GEOARROW_POINT, struct_array.type, None, None
+    )
+    return pa.ExtensionArray.from_storage(ext, struct_array)
+
+
+@pytest.mark.parametrize('frontend', ['direct', 'stream', 'array_capsule'])
+@pytest.mark.parametrize('empty', [False, True])
+@pytest.mark.parametrize('via', ['extension', 'field_metadata'])
+def test_geoarrow_int64_point_storage_rejected_every_frontend(
+    frontend: str, empty: bool, via: str
+) -> None:
+    """int64 geoarrow.point must never reinterpret bytes as f64.
+
+    Exact kill: struct<x:int64,y:int64> row (1,2) must REJECT — not import as
+    ~(5e-324, 1e-323).
+    """
+    if empty:
+        typ = pa.struct([('x', pa.int64()), ('y', pa.int64())])
+        storage = pa.array([], type=typ)
+    else:
+        storage = pa.StructArray.from_arrays(
+            [pa.array([1], type=pa.int64()), pa.array([2], type=pa.int64())],
+            names=['x', 'y'],
+        )
+    if via == 'extension':
+        try:
+            arrow = _geoarrow_point_extension(storage)
+        except Exception:
+            # ExtensionType construction may reject non-float storage types.
+            return
+        table = pa.table({'geometry': arrow})
+    else:
+        table = _geoarrow_point_field_array(storage)
+
+    if frontend == 'direct':
+        target: object = table if via == 'field_metadata' else table.column(0)
+    elif frontend == 'stream':
+        target = _StreamOnly(table)
+    else:
+        # Direct capsule on the extension/column array when available.
+        col = table.column(0)
+        if hasattr(col, 'combine_chunks'):
+            col = col.combine_chunks()
+        if not hasattr(col, '__arrow_c_array__'):
+            pytest.skip('no __arrow_c_array__ on column')
+        target = _ArrayOnly(col)
+
+    with pytest.raises((TypeError, gm.ParseError, ValueError, AttributeError)):
+        gm.from_arrow(target)
+
+
+@pytest.mark.parametrize('frontend', ['direct', 'stream', 'array_capsule'])
+@pytest.mark.parametrize('empty', [False, True])
+def test_geoarrow_duplicate_x_point_storage_rejected_every_frontend(
+    frontend: str, empty: bool
+) -> None:
+    """Duplicate ``x`` field must reject — never silently drop the second x.
+
+    Exact kill: struct<x:f64,x:f64,y:f64> row (1,999,2) must not become POINT (1 2).
+    """
+    if empty:
+        typ = pa.struct([('x', pa.float64()), ('x', pa.float64()), ('y', pa.float64())])
+        storage = pa.array([], type=typ)
+    else:
+        storage = pa.StructArray.from_arrays(
+            [pa.array([1.0]), pa.array([999.0]), pa.array([2.0])],
+            names=['x', 'x', 'y'],
+        )
+    # Field-metadata path (ExtensionType may collapse duplicate names).
+    table = _geoarrow_point_field_array(storage)
+
+    if frontend == 'direct':
+        target: object = table
+    elif frontend == 'stream':
+        target = _StreamOnly(table)
+    else:
+        col = table.column(0)
+        if hasattr(col, 'combine_chunks'):
+            col = col.combine_chunks()
+        if not hasattr(col, '__arrow_c_array__'):
+            pytest.skip('no __arrow_c_array__ on column')
+        target = _ArrayOnly(col)
+
+    with pytest.raises((
+        TypeError,
+        gm.ParseError,
+        ValueError,
+        KeyError,
+        AttributeError,
+    )):
+        gm.from_arrow(target)
+
+
+@pytest.mark.parametrize('frontend', ['direct', 'stream'])
+@pytest.mark.parametrize('empty', [False, True])
+def test_unrecognized_extension_name_errors_every_frontend(
+    frontend: str, empty: bool
+) -> None:
+    """If an extension NAME is present it must classify or ERROR — never fall through."""
+    field = pa.field(
+        'geometry',
+        pa.binary(),
+        metadata={b'ARROW:extension:name': b'not.geometry'},
+    )
+    if empty:
+        table = pa.Table.from_batches([], schema=pa.schema([field]))
+    else:
+        wkb = gm.Point(1, 2).to_wkb()
+        table = pa.Table.from_arrays(
+            [pa.array([wkb], type=pa.binary())], schema=pa.schema([field])
+        )
+    target: object = table if frontend == 'direct' else _StreamOnly(table)
+    with pytest.raises(
+        (TypeError, gm.ParseError, ValueError), match=r'geoarrow|extension'
+    ):
+        gm.from_arrow(target)
+
+
+@pytest.mark.parametrize('frontend', ['direct', 'stream'])
+@pytest.mark.parametrize('empty', [False, True])
+def test_junk_extension_metadata_without_name_imports_as_bare_wkb(
+    frontend: str, empty: bool
+) -> None:
+    """Bare binary WKB with junk ext-metadata but no name imports everywhere."""
+    field = pa.field(
+        'geometry',
+        pa.binary(),
+        metadata={b'ARROW:extension:metadata': b'not-json'},
+    )
+    if empty:
+        table = pa.Table.from_batches([], schema=pa.schema([field]))
+        target: object = table if frontend == 'direct' else _StreamOnly(table)
+        out = gm.from_arrow(target)
+        assert len(out) == 0
+        return
+    wkb = gm.Point(1, 2).to_wkb()
+    table = pa.Table.from_arrays(
+        [pa.array([wkb], type=pa.binary())], schema=pa.schema([field])
+    )
+    target = table if frontend == 'direct' else _StreamOnly(table)
+    assert gm.from_arrow(target).to_wkt() == ['POINT (1 2)']
+
+
+def test_geoarrow_nested_polygon_int64_coords_rejected() -> None:
+    """Nested polygon geoarrow with int64 ordinate leaves must reject."""
+    from gometry._arrow import GEOARROW_POLYGON, _extension_type_from_storage
+
+    coords = pa.StructArray.from_arrays(
+        [
+            pa.array([0, 1, 1, 0, 0], type=pa.int64()),
+            pa.array([0, 0, 1, 1, 0], type=pa.int64()),
+        ],
+        names=['x', 'y'],
+    )
+    ring_offsets = pa.array([0, 5], type=pa.int32())
+    rings = pa.ListArray.from_arrays(ring_offsets, coords)
+    poly_offsets = pa.array([0, 1], type=pa.int32())
+    polys = pa.ListArray.from_arrays(poly_offsets, rings)
+    try:
+        ext = _extension_type_from_storage(pa, GEOARROW_POLYGON, polys.type, None, None)
+        arrow = pa.ExtensionArray.from_storage(ext, polys)
+    except Exception:
+        # Construction rejected — also a pass for this invariant.
+        return
+    with pytest.raises((TypeError, gm.ParseError, ValueError, AttributeError)):
+        gm.from_arrow(arrow)
+    with pytest.raises((TypeError, gm.ParseError, ValueError, AttributeError)):
+        gm.from_arrow(_StreamOnly(pa.table({'geometry': arrow})))
+
+
+def _geoarrow_polygon_array(
+    points: list[tuple[float, ...]],
+    *,
+    axes: str = 'xyz',
+) -> pa.Array:
+    """Build a single-row geoarrow.polygon ListArray over a coordinate struct."""
+    if axes == 'xyz':
+        coord_type = pa.struct([
+            ('x', pa.float64()),
+            ('y', pa.float64()),
+            ('z', pa.float64()),
+        ])
+    elif axes == 'xym':
+        coord_type = pa.struct([
+            ('x', pa.float64()),
+            ('y', pa.float64()),
+            ('m', pa.float64()),
+        ])
+    elif axes == 'xyzm':
+        coord_type = pa.struct([
+            ('x', pa.float64()),
+            ('y', pa.float64()),
+            ('z', pa.float64()),
+            ('m', pa.float64()),
+        ])
+    else:
+        coord_type = pa.struct([('x', pa.float64()), ('y', pa.float64())])
+    pts = pa.array(points, type=coord_type)
+    rings = pa.ListArray.from_arrays(pa.array([0, len(points)], type=pa.int32()), pts)
+    polys = pa.ListArray.from_arrays(pa.array([0, 1], type=pa.int32()), rings)
+    field = pa.field(
+        'geometry',
+        polys.type,
+        metadata={
+            b'ARROW:extension:name': b'geoarrow.polygon',
+            b'ARROW:extension:metadata': b'{}',
+        },
+    )
+    return pa.RecordBatch.from_arrays([polys], schema=pa.schema([field]))
+
+
+@pytest.mark.parametrize(
+    ('points', 'axes'),
+    [
+        # Z-unclosed: XY closes (1 vs 9 on Z).
+        (
+            [(0.0, 0.0, 1.0), (1.0, 0.0, 2.0), (0.0, 1.0, 3.0), (0.0, 0.0, 9.0)],
+            'xyz',
+        ),
+        # M-unclosed.
+        (
+            [(0.0, 0.0, 1.0), (1.0, 0.0, 2.0), (0.0, 1.0, 3.0), (0.0, 0.0, 9.0)],
+            'xym',
+        ),
+        # ZM-unclosed on Z.
+        (
+            [
+                (0.0, 0.0, 1.0, 4.0),
+                (1.0, 0.0, 2.0, 4.0),
+                (0.0, 1.0, 3.0, 4.0),
+                (0.0, 0.0, 9.0, 4.0),
+            ],
+            'xyzm',
+        ),
+        # ZM-unclosed on M.
+        (
+            [
+                (0.0, 0.0, 1.0, 4.0),
+                (1.0, 0.0, 2.0, 4.0),
+                (0.0, 1.0, 3.0, 4.0),
+                (0.0, 0.0, 1.0, 9.0),
+            ],
+            'xyzm',
+        ),
+    ],
+)
+def test_f4_geoarrow_polygon_rejects_active_ordinate_unclosed_rings(
+    points: list[tuple[float, ...]],
+    axes: str,
+) -> None:
+    """F4: Z/M/ZM-open GeoArrow rings must reject at import (D05 sister).
+
+    Packed import used to check XY-only closure, admitting trusted state that
+    pickle later rejected via same_active_position.
+    """
+    batch = _geoarrow_polygon_array(points, axes=axes)
+    with pytest.raises(gm.ParseError, match=r'closed|active ordinate|ring'):
+        gm.from_arrow(batch)
+    # Capsule frontend (native Arrow-C path).
+    storage = batch.column(0)
+    field = batch.schema.field(0)
+    # Re-wrap as ExtensionArray-like via RecordBatch so metadata sticks;
+    # capsule-only uses the same field metadata through table export.
+    table = pa.Table.from_batches([batch])
+    with pytest.raises(gm.ParseError, match=r'closed|active ordinate|ring'):
+        gm.from_arrow(_StreamOnly(table))
+    del storage, field
+
+
+def test_f4_geoarrow_closed_3d_polygon_imports_and_pickles() -> None:
+    """Genuinely closed 3D GeoArrow polygon still imports and pickle-round-trips."""
+    closed = [
+        (0.0, 0.0, 1.0),
+        (1.0, 0.0, 2.0),
+        (0.0, 1.0, 3.0),
+        (0.0, 0.0, 1.0),
+    ]
+    arr = gm.from_arrow(_geoarrow_polygon_array(closed, axes='xyz'))
+    assert arr.to_wkt() == ['POLYGON Z ((0 0 1, 1 0 2, 0 1 3, 0 0 1))']
+    restored = pickle.loads(pickle.dumps(arr))
+    assert restored.to_wkt() == arr.to_wkt()
+    assert list(restored[0].exterior.coords.z) == [1.0, 2.0, 3.0, 1.0]
+
+
+def test_f4_geoarrow_xy_closed_2d_polygon_unaffected() -> None:
+    """XY 2D closed rings still import on the packed path."""
+    closed_2d = [
+        (0.0, 0.0),
+        (1.0, 0.0),
+        (0.0, 1.0),
+        (0.0, 0.0),
+    ]
+    arr = gm.from_arrow(_geoarrow_polygon_array(closed_2d, axes='xy'))
+    assert arr.to_wkt() == ['POLYGON ((0 0, 1 0, 0 1, 0 0))']
+    assert pickle.loads(pickle.dumps(arr)).to_wkt() == arr.to_wkt()
