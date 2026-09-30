@@ -923,13 +923,12 @@ def test_in_core_pairs_do_not_warm_proj_pipeline() -> None:
     assert bucket_entries('proj_pipeline') == 0
 
 
-@pytest.mark.exhaustive
 @pytest.mark.parametrize('chunk', range(8), ids=lambda value: f'chunk-{value}')
 def test_observer_admitted_pairs_match_pyproj(chunk: int) -> None:
     """Every in-core-admitted EPSG geo↔projected pair must match pyproj.
 
-    Opt-in (full EPSG catalog scan): ``pytest -m exhaustive``. The sparse admitted-pair
-    matrix elsewhere in this file keeps deterministic CRS parity in the default lane.
+    The sparse admitted-pair matrix elsewhere in this file covers the curated
+    common cases; these deterministic shards cover the full discovered catalog.
     """
     all_pairs = _enumerate_epsg_geo_projected_pairs()
     # Keep each catalog sweep below the ordinary 60-second node timeout. The

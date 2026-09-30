@@ -7,9 +7,8 @@ required_plugins = [
 ]
 filterwarnings = [
   "error",
-  # pyproj oracle tests may lack an optional datum grid and then select the
-  # next-best transformation. This is an environment capability, not a warning
-  # from gometry.
+  # Projection-oracle tests may lack an optional datum grid and then select the
+  # next-best transformation; this warning reflects that environment capability.
   "ignore:Best transformation is not available:UserWarning",
 ]
 # Diagnostic, not a budget: pytest arms this with exit=False, so it dumps every
@@ -18,9 +17,6 @@ filterwarnings = [
 # case --timeout cannot reach, a native call that never returns to the
 # interpreter and so never lets the timeout thread run.
 faulthandler_timeout = "90"
-markers = [
-  "exhaustive: catalog-wide / combinatorial sweeps; opt in explicitly",
-]
 addopts = [
   "-n", "auto",
   # Large native suites saturate memory and make individual workers miss their
@@ -34,5 +30,4 @@ addopts = [
   "--durations=25",
   "--durations-min=0.25",
   "-ra",
-  "-m", "not exhaustive",
 ]

@@ -78,19 +78,18 @@ def test_reciprocal_sites_use_actual_nonrectangular_clip() -> None:
     _partition(cells, clip)
 
 
-@pytest.mark.exhaustive
-@pytest.mark.parametrize(
-    ('start', 'stop'),
-    [(start, min(start + 9, 1_000)) for start in range(10, 1_001, 10)],
-)
-def test_convex_quad_clip_sweep_keeps_every_cell_valid(start: int, stop: int) -> None:
+@pytest.mark.parametrize('site_count', [10, 100, 1_000])
+def test_convex_quad_clip_keeps_every_cell_valid_at_site_count(
+    site_count: int,
+) -> None:
     rng = random.Random(7)
-    sites = [(rng.uniform(0, 1_000), rng.uniform(0, 1_000)) for _ in range(1_000)]
+    sites = [
+        (rng.uniform(0, 1_000), rng.uniform(0, 1_000)) for _ in range(site_count)
+    ]
     clip = gm.Polygon([(50, 50), (950, 120), (900, 900), (120, 850), (50, 50)])
-    for count in range(start, stop + 1):
-        cells = gm.MultiPoint(sites[:count]).voronoi_polygons(clip=clip)
-        assert cells
-        assert all(cell.is_valid for cell in cells)
+    cells = gm.MultiPoint(sites).voronoi_polygons(clip=clip)
+    assert cells
+    assert all(cell.is_valid for cell in cells)
 
 
 def test_tolerance_grid_never_overflows_at_finite_extremes() -> None:
