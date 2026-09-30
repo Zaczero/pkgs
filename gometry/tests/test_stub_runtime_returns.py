@@ -71,3 +71,26 @@ def test_nearest_points_returns_point_pair() -> None:
     a, b = gm.nearest_points(_POINT, _POLY)
     assert isinstance(a, gm.Point)
     assert isinstance(b, gm.Point)
+
+
+def test_static_narrowing_matches_runtime() -> None:
+    point = gm.Point(1, 1)
+    line = gm.LineString([(0, 0), (1, 1), (2, 0)])
+    poly = gm.box(0, 0, 2, 2)
+    points = gm.GeometryArray([point, gm.Point(2, 2)])
+    index = gm.SpatialIndex(points)
+    h3_cells = gm.h3_cells([1.0, 2.0], [2.0, 3.0], resolution=9)
+
+    assert type(point.buffer(1.0)) is gm.Polygon
+    assert type(line.boundary()) is gm.MultiPoint
+    assert type(gm.H3Cell(point, resolution=9)) is gm.H3Cell
+    assert type(points[0]) is gm.Point
+    np.testing.assert_array_equal(index.query(point), np.array([0], dtype=np.int64))
+    assert gm.contains(poly, point) is True
+    assert isinstance(gm.area(poly, unit='planar'), float)
+    assert isinstance(gm.from_wkb(point.to_wkb()), gm.Geometry)
+    coordinates = point.coords.to_dict(index=True)
+    assert isinstance(coordinates['index'][0], np.integer)
+    assert np.asarray(point.coords, dtype=np.float32).dtype == np.float32
+    assert np.asarray(h3_cells, dtype=object).dtype == object
+    assert gm.CRS(4326).kind == 'geographic_2d'

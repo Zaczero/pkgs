@@ -1068,19 +1068,3 @@ if TYPE_CHECKING:
     _geohash_cell_ok: gm.Cell = gm.GeohashCell(POINT, precision=7)
     _tile_cell_ok: gm.Cell = gm.Tile(POINT, zoom=10)
     assert_type(_h3_cell_ok.children_count(), int)
-
-
-def test_static_narrowing_matches_runtime() -> None:
-    assert type(POINT.buffer(1.0)) is gm.Polygon
-    assert type(LINE.boundary()) is gm.MultiPoint
-    assert type(gm.H3Cell(POINT, resolution=9)) is gm.H3Cell
-    assert type(POINTS[0]) is gm.Point
-    np.testing.assert_array_equal(INDEX.query(POINT), np.array([0], dtype=np.int64))
-    assert gm.contains(POLY, POINT) is True
-    assert isinstance(gm.area(POLY, unit='planar'), float)
-    assert isinstance(gm.from_wkb(POINT.to_wkb()), gm.Geometry)
-    d = POINT.coords.to_dict(index=True)
-    assert isinstance(d['index'][0], np.integer)
-    assert np.asarray(POINT.coords, dtype=np.float32).dtype == np.float32
-    assert np.asarray(h3_cells, dtype=object).dtype == object
-    assert gm.CRS(4326).kind == 'geographic_2d'

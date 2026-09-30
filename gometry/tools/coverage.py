@@ -82,7 +82,6 @@ def main() -> int:
             '-m',
             'pytest',
             'tests',
-            '--ignore=tests/typing',
             '--cov=gometry',
             '--cov-report=term-missing',
             *(['--cov-report=html:coverage-python'] if html else []),
