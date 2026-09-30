@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-_BENCHES = Path(__file__).resolve().parents[1] / 'benches'
+_BENCHES = Path(__file__).resolve().parents[2] / 'benches'
 _SUPPORT = _BENCHES / 'support'
 _PYTHON = _BENCHES / 'python'
 for _path in (_SUPPORT, _PYTHON):

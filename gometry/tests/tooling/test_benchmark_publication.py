@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-_ROOT = Path(__file__).resolve().parents[1]
+_ROOT = Path(__file__).resolve().parents[2]
 _BENCHES = _ROOT / 'benches'
 for _path in (_BENCHES / 'support', _BENCHES / 'drivers'):
     if str(_path) not in sys.path:
@@ -21,7 +21,7 @@ import bench as bench_driver  # noqa: E402
 from _bench_registry import ALL_PUBLIC_OPERATIONS, scaling_record  # noqa: E402
 from benchmark_observation import make_observation  # noqa: E402
 
-from tests._bench_support import (  # noqa: E402
+from tests.tooling._bench_support import (  # noqa: E402
     HASH,
     file_identity,
     package_identity,

@@ -8,7 +8,7 @@ import json
 import sys
 from pathlib import Path
 
-_BENCHES = Path(__file__).resolve().parents[1] / 'benches'
+_BENCHES = Path(__file__).resolve().parents[2] / 'benches'
 _DRIVERS = _BENCHES / 'drivers'
 if str(_DRIVERS) not in sys.path:
     sys.path.insert(0, str(_DRIVERS))

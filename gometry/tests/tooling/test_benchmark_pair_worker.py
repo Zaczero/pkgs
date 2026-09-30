@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-GOMETRY_ROOT = Path(__file__).resolve().parents[1]
+GOMETRY_ROOT = Path(__file__).resolve().parents[2]
 _SUPPORT = GOMETRY_ROOT / 'benches' / 'support'
 _PYTHON = GOMETRY_ROOT / 'benches' / 'python'
 for path in (_SUPPORT, _PYTHON):

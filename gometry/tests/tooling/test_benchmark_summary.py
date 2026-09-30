@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-_BENCHES = Path(__file__).resolve().parents[1] / 'benches'
+_BENCHES = Path(__file__).resolve().parents[2] / 'benches'
 for _path in (_BENCHES / 'support',):
     if str(_path) not in sys.path:
         sys.path.insert(0, str(_path))
@@ -18,7 +18,7 @@ for _path in (_BENCHES / 'support',):
 import benchmark_observation as bo  # noqa: E402
 import summarize_bench as sb  # noqa: E402
 
-from tests._bench_support import producer  # noqa: E402
+from tests.tooling._bench_support import producer  # noqa: E402
 
 
 def _load(paths: list[Path]) -> dict[str, sb.BenchStats]:

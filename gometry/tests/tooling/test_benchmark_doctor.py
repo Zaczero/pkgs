@@ -14,7 +14,7 @@ import pytest
 
 from tests._support import GOMETRY_ROOT, load_tool
 
-_DRIVERS = Path(__file__).resolve().parents[1] / 'benches' / 'drivers'
+_DRIVERS = Path(__file__).resolve().parents[2] / 'benches' / 'drivers'
 if str(_DRIVERS) not in sys.path:
     sys.path.insert(0, str(_DRIVERS))
 

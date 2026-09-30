@@ -13,7 +13,7 @@ from typing import Any
 
 import pytest
 
-GOMETRY_ROOT = Path(__file__).resolve().parents[1]
+GOMETRY_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(GOMETRY_ROOT / 'benches' / 'support'))
 from benchmark_observation import make_observation, validate_observation  # noqa: E402
 

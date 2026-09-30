@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-_ROOT = Path(__file__).resolve().parents[1]
+_ROOT = Path(__file__).resolve().parents[2]
 _CASES = sorted((_ROOT / 'benches' / 'cases').glob('case_*.py'))
 
 
