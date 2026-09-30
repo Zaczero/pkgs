@@ -54,6 +54,10 @@ pub const fn round(x: f64) -> f64 {
 }
 
 #[inline]
+#[expect(
+    clippy::suboptimal_flops,
+    reason = "fused rounding would make exact H3 decisions depend on host FMA support"
+)]
 pub const fn mul_add(a: f64, b: f64, c: f64) -> f64 {
     // Gometry targets the fixed x86-64-v2 baseline. Scalar `f64::mul_add`
     // otherwise dispatches through compiler-builtins to FMA/FMA4 at runtime,
