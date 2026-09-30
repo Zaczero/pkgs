@@ -2705,7 +2705,8 @@ pub(crate) fn reject_rhumb_unit(unit: Option<DistanceUnit>, operation: MetricOp)
 /// Return the point reached from ``point`` along ``bearing`` for ``distance``.
 ///
 /// CRS-aware like every metric: geodesic on a geographic CRS, a planar offset
-/// in native units on a projected CRS, and coordinate units when CRS-free.
+/// in native linear units on a projected CRS, and raw coordinate units when
+/// CRS-free.
 /// ``path='rhumb'`` instead follows a constant compass course in meters on a
 /// geographic CRS. An empty point stays ``POINT EMPTY``.
 ///
@@ -2717,16 +2718,13 @@ pub(crate) fn reject_rhumb_unit(unit: Option<DistanceUnit>, operation: MetricOp)
 ///     Initial azimuth(s) in degrees clockwise from north.
 /// distance : float or sequence of float
 ///     Distance(s) to travel (geodesic meters on a geographic CRS, native
-///     units on a projected one, coordinate units otherwise). Must be finite
+///     linear units on a projected CRS, raw coordinate units when CRS-free).
+///     Must be finite
 ///     and non-negative.
 /// path : {'geodesic', 'rhumb'}, default 'geodesic'
 ///     Route model. Rhumb paths require a geographic CRS and use meters.
-/// unit : {'planar', 'meters'}, default None
-///     Omitted follows the CRS: geodesic meters on a geographic CRS, native
-///     units on a projected one, coordinate units without a CRS.
-///     ``'planar'`` forces raw coordinate units (native angular units as Cartesian
-///     geographic CRS — only for deliberate coordinate-space math);
-///     ``'meters'`` forces the CRS metric and raises without a CRS.
+#[doc = unit_parameter_doc!()]
+///     ``path='rhumb'`` uses meters and does not accept a unit override.
 ///
 /// Returns
 /// -------
@@ -2765,7 +2763,7 @@ pub(crate) fn destination(
 /// Return a point interpolated from ``left`` towards ``right``.
 ///
 /// CRS-aware like every metric: geodesic on a geographic CRS, planar on a
-/// projected CRS, and coordinate units when CRS-free. ``path='rhumb'`` follows
+/// projected CRS, and raw coordinate units when CRS-free. ``path='rhumb'`` follows
 /// the constant-bearing track on a geographic CRS. Z/M interpolate. An empty
 /// endpoint yields ``POINT EMPTY``.
 ///
@@ -2780,12 +2778,8 @@ pub(crate) fn destination(
 ///     Treat ``distance`` as a fraction of the total distance.
 /// path : {'geodesic', 'rhumb'}, default 'geodesic'
 ///     Route model. Rhumb paths require a geographic CRS and use meters.
-/// unit : {'planar', 'meters'}, default None
-///     Omitted follows the CRS: geodesic meters on a geographic CRS, native
-///     units on a projected one, coordinate units without a CRS.
-///     ``'planar'`` forces raw coordinate units (native angular units as Cartesian
-///     geographic CRS — only for deliberate coordinate-space math);
-///     ``'meters'`` forces the CRS metric and raises without a CRS.
+#[doc = unit_parameter_doc!()]
+///     ``path='rhumb'`` uses meters and does not accept a unit override.
 ///
 /// Returns
 /// -------

@@ -465,11 +465,11 @@ Origin: TypeAlias = Literal['centroid', 'center'] | Iterable[float]
 GridOrigin: TypeAlias = Iterable[float]
 #: Antimeridian handling for ``box``: ``'split'`` emits a multipart geometry.
 BoxWrap: TypeAlias = Literal['split']
-#: Distance/area unit for a CRS-aware metric's ``unit`` keyword. Omitted
-#: follows the CRS: geodesic meters on a geographic CRS, the CRS's native
-#: units on a projected one, coordinate units without a CRS. ``'planar'``
-#: forces raw coordinate units; ``'meters'`` forces the CRS metric and
-#: raises without a CRS.
+#: Distance/area unit for a CRS-aware metric's ``unit`` keyword. ``None``
+#: follows the CRS: geodesic meters for geographic data, native linear units
+#: for projected data, and raw coordinate units when CRS-free. ``'planar'``
+#: uses Cartesian coordinate space (native angular units for geographic data);
+#: ``'meters'`` uses the CRS metric and requires a CRS.
 DistanceUnit: TypeAlias = Literal['planar', 'meters']
 #: Equality strictness for ``CRS`` comparisons.
 CrsComparison: TypeAlias = Literal['ignore_axis_order', 'exact']

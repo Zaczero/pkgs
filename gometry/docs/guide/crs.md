@@ -9,7 +9,7 @@ A coordinate reference system (CRS) is the contract that says what your numbers
 [WGS 84](https://epsg.org/crs_4326/WGS-84.html) ellipsoid" or "21 meters east of
 some local origin." The CRS is also gometry's metric selector: geographic CRSs
 use geodesic metres and square metres, projected CRSs use native linear units
-and their squared area units, and CRS-free geometries use coordinate units.
+and their squared area units, and CRS-free geometries use raw coordinate units.
 Geographic coordinates themselves remain in the CRS-native angular units, which
 may be degrees, radians, grads, or another admitted angular unit.
 
@@ -66,9 +66,11 @@ distance is metres, but the produced outline is a local-projection approximation
   ([`buffer`][gometry.Geometry.buffer], [`centroid`][gometry.Geometry.centroid], [`simplify`][gometry.Geometry.simplify], overlays, …) carries the CRS *and* epoch of
   its inputs, so metadata never silently drops out of a pipeline.
 - **`unit=None` means the CRS-natural unit**, everywhere a `unit=` parameter
-  exists: ellipsoidal meters on a geographic CRS, native units on a projected
-  CRS, raw coordinate units when CRS-free. Asking a CRS-free geometry for
-  `unit='meters'` raises — there is no frame to give meters meaning.
+  exists: geographic measurements use geodesic meters, projected measurements
+  use native linear units, and CRS-free measurements use raw coordinate units
+  (area results square the corresponding unit). `unit='planar'` uses Cartesian
+  coordinate space, with geographic coordinates in their native angular units.
+  `unit='meters'` uses the CRS-aware metric and requires a CRS.
 - **`to_crs` transforms X/Y; Z and M follow the [ordinate rules](#z-and-m-under-transformation)** — Z is
   carried unchanged through horizontal projections and transformed when the
   pipeline consumes it; M is always carried unchanged. Serialization
@@ -330,7 +332,7 @@ Hausdorff's planar path is a certified computation rather than an unchecked
 floating-point approximation. By default its relative error is at most
 `1e-9`. Pass a positive, finite scalar `max_error` to replace that default
 with an absolute bound in the final result units. A projected result uses
-native units by default or metres with `unit='meters'`, so an absolute bound
+native linear units by default or metres with `unit='meters'`, so an absolute bound
 follows the same choice. The numerical geodesic path has no per-call
 certificate; supplying `max_error` to it raises instead of implying one.
 Neither error contract blurs set equality:
@@ -679,7 +681,7 @@ and an `XY` point) the witnesses drop to the ordinates both carry.
     existing segments, so every original survives untouched. Its `max_length` is
     a real-world distance measured like
     [`length`][gometry.length] — meters along the ellipsoid on a geographic CRS,
-    native units on a projected one, coordinate units when CRS-free — with the
+    native linear units on a projected one, raw coordinate units when CRS-free — with the
     same `unit='planar'` / `unit='meters'` escapes as every other metric.
 
     ```python exec="on" source="block" result="text"

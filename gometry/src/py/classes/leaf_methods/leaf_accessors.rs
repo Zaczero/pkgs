@@ -58,8 +58,8 @@ impl PyPoint {
     ///     `unit` is set.
     /// path : {'geodesic', 'rhumb'}, default 'geodesic'
     ///     Route model. Rhumb paths require a geographic CRS and use meters.
-    /// unit : {'planar', 'meters'}, optional
-    ///     Force coordinate units or CRS metric units.
+    #[doc = unit_parameter_doc!()]
+    ///     ``path='rhumb'`` uses meters and does not accept a unit override.
     ///
     /// Returns
     /// -------

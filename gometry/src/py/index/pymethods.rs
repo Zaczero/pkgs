@@ -346,19 +346,15 @@ impl PySpatialIndex {
     /// geom : Geometry or GeometryArray
     ///     The query geometry, or one query per array element.
     /// predicate : str, default 'intersects'
-    ///     Spatial relation each match must satisfy (``'dwithin'`` requires
-    ///     ``distance``).
+    ///     Spatial relation each match must satisfy, evaluated as
+    ///     ``predicate(query_geometry, indexed_geometry)`` (``'dwithin'``
+    ///     requires ``distance``).
     /// distance : float, optional
     ///     ``'dwithin'`` distance threshold, in ``unit``. A positive infinite
     ///     threshold is accepted; other values must be finite and
     ///     non-negative. Missing or empty query rows produce empty result
     ///     groups rather than being dropped.
-    /// unit : {'planar', 'meters'}, default None
-    ///     Omitted follows the CRS: geodesic meters on a geographic CRS, native
-    ///     units on a projected one, coordinate units without a CRS.
-    ///     ``'planar'`` forces raw coordinate units (native angular units as Cartesian
-    ///     geographic CRS — only for deliberate coordinate-space math);
-    ///     ``'meters'`` forces the CRS metric and raises without a CRS.
+    #[doc = unit_parameter_doc!()]
     ///
     /// Returns
     /// -------
@@ -524,11 +520,7 @@ impl PySpatialIndex {
     ///     Required when ``predicate='dwithin'``: the maximum separation in
     ///     CRS-natural units. Finite non-negative values and positive infinity
     ///     are accepted; missing query rows produce no pairs.
-    /// unit : {'planar', 'meters'}, default None
-    ///     Omitted follows the CRS: geodesic meters on a geographic CRS, native
-    ///     units on a projected one, coordinate units without a CRS.
-    ///     ``'planar'`` forces raw coordinate units; ``'meters'`` forces the
-    ///     CRS metric and raises without a CRS.
+    #[doc = unit_parameter_doc!()]
     ///
     /// Returns
     /// -------
@@ -578,12 +570,7 @@ impl PySpatialIndex {
     ///     ``'dwithin'`` distance threshold, in ``unit``. Positive infinity is
     ///     accepted; other values must be finite and non-negative. Empty
     ///     geometries never produce a pair.
-    /// unit : {'planar', 'meters'}, default None
-    ///     Omitted follows the CRS: geodesic meters on a geographic CRS, native
-    ///     units on a projected one, coordinate units without a CRS.
-    ///     ``'planar'`` forces raw coordinate units (native angular units as Cartesian
-    ///     geographic CRS — only for deliberate coordinate-space math);
-    ///     ``'meters'`` forces the CRS metric and raises without a CRS.
+    #[doc = unit_parameter_doc!()]
     ///
     /// Returns
     /// -------
@@ -632,7 +619,8 @@ impl PySpatialIndex {
     }
 
     /// Bounding-box candidate matches for a query geometry or array (not
-    /// exact).
+    /// exact). If you refine these candidates with a directional predicate,
+    /// evaluate it as ``predicate(query_geometry, indexed_geometry)``.
     ///
     /// A single geometry returns an `int64` ndarray; a `GeometryArray`
     /// returns `Groups` — one candidate row per row.
@@ -645,12 +633,7 @@ impl PySpatialIndex {
     ///     Expand the query envelope by this much, in ``unit``. Finite
     ///     non-negative expansions and positive infinity are accepted;
     ///     infinity admits every live non-empty row for a query with bounds.
-    /// unit : {'planar', 'meters'}, default None
-    ///     Omitted follows the CRS: geodesic meters on a geographic CRS, native
-    ///     units on a projected one, coordinate units without a CRS.
-    ///     ``'planar'`` forces raw coordinate units (native angular units as Cartesian
-    ///     geographic CRS — only for deliberate coordinate-space math);
-    ///     ``'meters'`` forces the CRS metric and raises without a CRS.
+    #[doc = unit_parameter_doc!()]
     ///
     /// Returns
     /// -------
@@ -782,19 +765,14 @@ impl PySpatialIndex {
     /// geom : Geometry or GeometryArray
     ///     The query geometry, or one query per array element.
     /// k : int, default 1
-    ///     How many nearest neighbors to return.
+    ///     How many nearest neighbors to return; ``0`` returns no neighbors.
     /// max_distance : float, optional
     ///     Ignore matches farther than this, in ``unit``. Must be finite and
     ///     non-negative.
     /// return_distance : bool, default False
     ///     Return distances alongside handles — ``(indices, distances)`` for
     ///     a scalar query, ``(matches, distances)`` for an array query.
-    /// unit : {'planar', 'meters'}, default None
-    ///     Omitted follows the CRS: geodesic meters on a geographic CRS, native
-    ///     units on a projected one, coordinate units without a CRS.
-    ///     ``'planar'`` forces raw coordinate units (native angular units as Cartesian
-    ///     geographic CRS — only for deliberate coordinate-space math);
-    ///     ``'meters'`` forces the CRS metric and raises without a CRS.
+    #[doc = unit_parameter_doc!()]
     /// exclusive : bool, default False
     ///     Skip an indexed geometry equal to the query (self-matches in
     ///     joins over the indexed set itself).

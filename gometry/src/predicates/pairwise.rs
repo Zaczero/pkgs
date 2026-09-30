@@ -28,12 +28,7 @@ use crate::{
 /// left, right : Geometry or GeometryArray
 ///     Scalar and ``GeometryArray`` broadcast pairwise; must share CRS and
 ///     coordinate epoch.
-/// unit : {'planar', 'meters'}, default None
-///     Omitted follows the CRS: geodesic meters on a geographic CRS, native
-///     units on a projected one, coordinate units without a CRS.
-///     ``'planar'`` forces raw coordinate units (native angular units as Cartesian
-///     geographic CRS — only for deliberate coordinate-space math);
-///     ``'meters'`` forces the CRS metric and raises without a CRS.
+#[doc = unit_parameter_doc!()]
 ///
 /// Returns
 /// -------
@@ -136,7 +131,7 @@ pub(crate) fn shortest_line(
 /// Compute the minimum distance between ``left`` and ``right``.
 ///
 /// CRS-aware: geodesic meters on a geographic CRS, native linear units on a
-/// projected CRS, coordinate units when CRS-free. Geographic distance supports
+/// projected CRS, raw coordinate units when CRS-free. Geographic distance supports
 /// point and linework operands only; filled polygon interiors require
 /// ``unit='planar'`` or a projected CRS.
 ///
@@ -145,12 +140,7 @@ pub(crate) fn shortest_line(
 /// left, right : Geometry or GeometryArray
 ///     Scalar and ``GeometryArray`` broadcast pairwise; must share CRS and
 ///     coordinate epoch.
-/// unit : {'planar', 'meters'}, default None
-///     Omitted follows the CRS: geodesic meters on a geographic CRS, native
-///     units on a projected one, coordinate units without a CRS.
-///     ``'planar'`` forces raw coordinate units (native angular units as Cartesian
-///     geographic CRS — only for deliberate coordinate-space math);
-///     ``'meters'`` forces the CRS metric and raises without a CRS.
+#[doc = unit_parameter_doc!()]
 ///
 /// Returns
 /// -------
@@ -203,7 +193,7 @@ pub(crate) fn distance(
 /// and have no 3D form; the 3D extent is ``bounds`` with ``min_z``/``max_z``.
 ///
 /// A projected CRS gives native linear units and a CRS-free geometry gives
-/// coordinate units — the same defaults as the 2D ``distance``. A geographic
+/// raw coordinate units — the same defaults as the 2D ``distance``. A geographic
 /// CRS raises under every ``unit``: a Euclidean norm cannot combine degrees
 /// with meter heights. Every vertex on both operands must carry a Z ordinate.
 ///
@@ -212,10 +202,7 @@ pub(crate) fn distance(
 /// left, right : Geometry or GeometryArray
 ///     Scalar and ``GeometryArray`` broadcast pairwise; must share CRS and
 ///     coordinate epoch.
-/// unit : {'planar', 'meters'} or None, default None
-///     ``None`` follows the CRS, exactly like ``distance``. ``'planar'``
-///     forces raw coordinate units; ``'meters'`` forces SI meters and raises
-///     without a CRS.
+#[doc = unit_parameter_doc!()]
 ///
 /// Returns
 /// -------
@@ -258,7 +245,7 @@ pub(crate) fn distance_3d(
 /// and ``right``.
 ///
 /// CRS-aware: geodesic meters on a geographic CRS, native linear units on a
-/// projected CRS, coordinate units when CRS-free. Geographic Hausdorff
+/// projected CRS, raw coordinate units when CRS-free. Geographic Hausdorff
 /// distance supports point and linework operands only; filled polygon
 /// interiors require ``unit='planar'`` or a projected CRS. Planar results use
 /// a certified relative bound by default or a caller-supplied absolute bound.
@@ -273,12 +260,7 @@ pub(crate) fn distance_3d(
 ///     Planar results default to a certified relative error of at most
 ///     ``1e-9``. Omit it for the numerical geodesic Hausdorff path; geodesic
 ///     results do not provide this certification contract.
-/// unit : {'planar', 'meters'}, default None
-///     Omitted follows the CRS: geodesic meters on a geographic CRS, native
-///     units on a projected one, coordinate units without a CRS.
-///     ``'planar'`` forces raw coordinate units (native angular units as Cartesian
-///     geographic CRS — only for deliberate coordinate-space math);
-///     ``'meters'`` forces the CRS metric and raises without a CRS.
+#[doc = unit_parameter_doc!()]
 ///
 /// Returns
 /// -------
@@ -332,7 +314,7 @@ pub(crate) fn hausdorff_distance(
 /// Discrete Fréchet distance between two linestrings.
 ///
 /// Measured for the CRS like ``distance``: geodesic meters on a geographic
-/// CRS, native units on a projected one, coordinate units when CRS-free.
+/// CRS, native linear units on a projected CRS, raw coordinate units when CRS-free.
 ///
 /// Parameters
 /// ----------
@@ -343,12 +325,7 @@ pub(crate) fn hausdorff_distance(
 ///     fraction of its length (in ``(0, 1]``) before measuring,
 ///     tightening the discrete vertex metric toward the continuous
 ///     one. Omitted measures vertices only.
-/// unit : {'planar', 'meters'}, default None
-///     Omitted follows the CRS: geodesic meters on a geographic CRS, native
-///     units on a projected one, coordinate units without a CRS.
-///     ``'planar'`` forces raw coordinate units (native angular units as Cartesian
-///     geographic CRS — only for deliberate coordinate-space math);
-///     ``'meters'`` forces the CRS metric and raises without a CRS.
+#[doc = unit_parameter_doc!()]
 ///
 /// Returns
 /// -------
@@ -410,12 +387,7 @@ pub(crate) fn frechet_distance(
 /// left, right : Geometry or GeometryArray
 ///     Scalar and ``GeometryArray`` broadcast pairwise; must share CRS and
 ///     coordinate epoch. Unpack order is point on ``left``, then on ``right``.
-/// unit : {'planar', 'meters'}, default None
-///     Omitted follows the CRS: geodesic meters on a geographic CRS, native
-///     units on a projected one, coordinate units without a CRS.
-///     ``'planar'`` forces raw coordinate units (native angular units as Cartesian
-///     geographic CRS — only for deliberate coordinate-space math);
-///     ``'meters'`` forces the CRS metric and raises without a CRS.
+#[doc = unit_parameter_doc!()]
 ///
 /// Returns
 /// -------
@@ -567,15 +539,11 @@ pub(crate) fn nearest_points(
 ///     coordinate epoch.
 /// distance : float or sequence of float
 ///     CRS-aware distance threshold: geodesic meters on a geographic CRS,
-///     native units on a projected one, coordinate units otherwise. A scalar
+///     native linear units on a projected CRS, raw coordinate units when
+///     CRS-free. A scalar
 ///     applies to every pair; with an array operand, an iterable supplies one
 ///     threshold per result row. Positive infinity is accepted.
-/// unit : {'planar', 'meters'}, default None
-///     Omitted follows the CRS: geodesic meters on a geographic CRS, native
-///     units on a projected one, coordinate units without a CRS.
-///     ``'planar'`` forces raw coordinate units (native angular units as Cartesian
-///     geographic CRS — only for deliberate coordinate-space math);
-///     ``'meters'`` forces the CRS metric and raises without a CRS.
+#[doc = unit_parameter_doc!()]
 ///
 /// Returns
 /// -------

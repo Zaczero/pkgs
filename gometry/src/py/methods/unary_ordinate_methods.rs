@@ -62,7 +62,12 @@ GeometryArray
     One 3D geometry per row (kinds preserved).
 
 ";
-    tail: r"See Also
+    tail: r"Raises
+------
+InvalidGeometryError
+    If ``z`` is not finite.
+
+See Also
 --------
 force_2d : Drop Z and M to plain XY.
 set_z : Set the Z ordinate at every vertex (overwriting existing Z).
@@ -102,7 +107,12 @@ GeometryArray
     One result per row (kinds preserved).
 
 ";
-    tail: r"See Also
+    tail: r"Raises
+------
+InvalidGeometryError
+    If ``z`` is not finite.
+
+See Also
 --------
 set_m : Set or clear the M ordinate.
 force_3d : Fill only the vertices that lack Z.
@@ -141,7 +151,12 @@ GeometryArray
     One result per row (kinds preserved).
 
 ";
-    tail: r"See Also
+    tail: r"Raises
+------
+InvalidGeometryError
+    If ``m`` is not finite.
+
+See Also
 --------
 set_z : Set or clear the Z ordinate.
 interpolate_m : Assign M by interpolating along the linework.

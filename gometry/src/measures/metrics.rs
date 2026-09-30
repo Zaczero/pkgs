@@ -20,10 +20,7 @@ pub(crate) fn bounds_array(py: Python<'_>, values: &PyGeometryArray) -> PyResult
 /// ----------
 /// geom : Geometry, GeometryArray, or iterable of geometry-like values
 ///     Input geometry, array, or iterable materialized as an array.
-/// unit : {'planar', 'meters'} or None, default None
-///     ``None`` follows the geometry's CRS, exactly like ``geom.area``.
-///     ``'planar'`` forces raw coordinate units; ``'meters'`` forces the CRS
-///     metric and raises without a CRS.
+#[doc = unit_parameter_doc!()]
 ///
 /// Returns
 /// -------
@@ -120,10 +117,7 @@ fn measure_natural_or_override(
 /// ----------
 /// geom : Geometry, GeometryArray, or iterable of geometry-like values
 ///     Input geometry, array, or iterable materialized as an array.
-/// unit : {'planar', 'meters'} or None, default None
-///     ``None`` follows the geometry's CRS, exactly like ``geom.length``.
-///     ``'planar'`` forces raw coordinate units; ``'meters'`` forces the CRS
-///     metric and raises without a CRS.
+#[doc = unit_parameter_doc!()]
 ///
 /// Returns
 /// -------
@@ -169,10 +163,8 @@ pub(crate) fn length(
 /// ----------
 /// geom : Geometry, GeometryArray, or iterable of geometry-like values
 ///     Input geometry, array, or iterable materialized as an array.
-/// unit : {'planar', 'meters'} or None, default None
-///     ``None`` follows the geometry's CRS, exactly like ``geom.length_3d``.
-///     ``'planar'`` forces raw coordinate units; ``'meters'`` forces the CRS
-///     metric and raises without a CRS.
+#[doc = unit_parameter_doc!()]
+///     Geographic CRSs are not supported by 3D Euclidean metrics.
 ///
 /// Returns
 /// -------
@@ -248,8 +240,9 @@ pub(crate) fn length_natural_array(
 /// reference : Geometry or GeometryArray
 ///     Target geometry to snap onto.
 /// tolerance : float or sequence of float
-///     Maximum snap distance in coordinate units. Values must be finite and
-///     non-negative.
+///     Maximum finite non-negative snap distance in coordinate space:
+///     geographic CRSs use native angular units, projected CRSs use native
+///     linear units, and CRS-free geometries use raw coordinate units.
 ///
 /// Returns
 /// -------

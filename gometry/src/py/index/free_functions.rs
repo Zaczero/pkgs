@@ -20,7 +20,8 @@ use crate::py::numpy::int64_array;
 /// geom : Geometry or GeometryArray
 ///     Query geometry (or array of queries).
 /// k : int, default 1
-///     Number of nearest neighbors to return per query.
+///     Number of nearest neighbors to return per query; ``0`` returns no
+///     neighbors.
 /// max_distance : float, optional
 ///     Ignore candidates farther than this from the query. Must be finite and
 ///     non-negative.
@@ -28,12 +29,7 @@ use crate::py::numpy::int64_array;
 ///     If ``True``, return distances alongside handles — ``(indices,
 ///     distances)`` for a scalar query, ``(matches, distances)`` for an
 ///     array query.
-/// unit : {'planar', 'meters'}, default None
-///     Omitted follows the CRS: geodesic meters on a geographic CRS, native
-///     units on a projected one, coordinate units without a CRS.
-///     ``'planar'`` forces raw coordinate units (native angular units as Cartesian
-///     geographic CRS — only for deliberate coordinate-space math);
-///     ``'meters'`` forces the CRS metric and raises without a CRS.
+#[doc = unit_parameter_doc!()]
 /// exclusive : bool, default False
 ///     If ``True``, skip candidates structurally equal to the query geometry
 ///     (same exact coordinates) — "the nearest *other* feature".
@@ -49,6 +45,15 @@ use crate::py::numpy::int64_array;
 ///     ``return_distance=True``, plain tuple field order is ``(indices,
 ///     distances)`` for a scalar query or ``(matches, distances)`` for an
 ///     array query (distances parallel to ``matches.values``).
+///
+/// Raises
+/// ------
+/// GeometryError
+///     If ``k`` is negative, ``max_distance`` is negative or non-finite, or
+///     ``unit='meters'`` is requested for a CRS-free geometry.
+/// CRSMismatchError
+///     If query and indexed geometries have different CRS or coordinate-epoch
+///     metadata.
 ///
 /// Examples
 /// --------
@@ -94,15 +99,10 @@ pub(crate) fn nearest(
 /// distance : float, optional
 ///     Required when ``predicate='dwithin'``: the maximum separation, in
 ///     CRS-natural units — geodesic meters on a geographic CRS, native
-///     units on a projected CRS, coordinate units when CRS-free. Finite
+///     linear units on a projected CRS, raw coordinate units when CRS-free. Finite
 ///     non-negative values and positive infinity are accepted; missing or
 ///     empty rows produce no pairs.
-/// unit : {'planar', 'meters'}, default None
-///     Omitted follows the CRS: geodesic meters on a geographic CRS, native
-///     units on a projected one, coordinate units without a CRS.
-///     ``'planar'`` forces raw coordinate units (native angular units as Cartesian
-///     geographic CRS — only for deliberate coordinate-space math);
-///     ``'meters'`` forces the CRS metric and raises without a CRS.
+#[doc = unit_parameter_doc!()]
 ///
 /// Returns
 /// -------

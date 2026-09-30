@@ -35,7 +35,7 @@ str
 Returns
 -------
 list of str
-    One WKT string per row.
+    One WKT string per row; missing rows yield ``None``.
 
 ";
     tail: r"
@@ -91,7 +91,7 @@ bytes
 Returns
 -------
 list of bytes
-    One WKB payload per row.
+    One WKB payload per row; missing rows yield ``None``.
 
 ";
     tail: r"Notes
@@ -150,7 +150,7 @@ str
 Returns
 -------
 list of str
-    One `GeoJSON` geometry string per row.
+    One `GeoJSON` geometry string per row; missing rows yield ``None``.
 
 ";
     tail: r#"Raises

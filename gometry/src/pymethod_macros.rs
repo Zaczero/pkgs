@@ -1,3 +1,17 @@
+macro_rules! unit_parameter_doc {
+    () => {
+        r"unit : {'planar', 'meters'}, default None
+    ``None`` (the default) follows the CRS: geographic measurements use
+    geodesic meters, projected measurements use native linear units, and
+    CRS-free measurements use raw coordinate units (area results square the
+    corresponding unit). ``'planar'`` uses Cartesian coordinate space, with
+    geographic coordinates in their native angular units. ``'meters'`` uses
+    the CRS-aware metric and requires a CRS.
+
+"
+    };
+}
+
 macro_rules! frozen_pymethods {
     (impl $py_type:ty { $($body:tt)* }) => {
         #[pyo3::pymethods]

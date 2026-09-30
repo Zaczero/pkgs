@@ -51,7 +51,9 @@ pub(crate) fn shared_paths(
 ///     Point or multipoint cutter.
 /// tolerance : float, keyword-only, optional
 ///     Coordinate-space distance within which a splitter point counts as
-///     on the line and near-equal cut offsets collapse. The default ``0.0``
+///     on the line and near-equal cut offsets collapse: native angular units
+///     on geographic CRSs, native linear units on projected CRSs, and raw
+///     coordinate units when CRS-free. The default ``0.0``
 ///     is exact topological membership (a point splits only when it lies
 ///     exactly on the linework) with identity deduplication.
 ///
@@ -62,7 +64,7 @@ pub(crate) fn shared_paths(
 ///
 /// Raises
 /// ------
-/// InvalidGeometryError
+/// GeometryError
 ///     If ``tolerance`` is negative or non-finite.
 /// CRSMismatchError
 ///     If operands' CRS or coordinate-epoch metadata differ.

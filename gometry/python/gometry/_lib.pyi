@@ -1610,7 +1610,8 @@ class Geometry:
             If the geometry carries Z/M, or a coordinate is outside the
             longitude/latitude domain. Flatten explicitly with ``force_2d()``.
         GeometryError
-            If ``precision`` is out of range.
+            If ``precision`` is out of range, or the geometry carries a
+            coordinate epoch and ``drop_epoch`` is false.
 
         See Also
         --------
@@ -1713,10 +1714,14 @@ class Geometry:
             Positive finite search precision, interpreted for the CRS (see ``unit``).
             Omitted selects a scale-aware tolerance from the geometry's extent.
         unit : {'planar', 'meters'}, default None
-            Omitted follows the CRS: geodesic meters on a geographic CRS, native units on a projected one, coordinate units without a CRS. ``planar``
-            forces raw coordinate units (native angular units as Cartesian coordinates on a geographic CRS
-            — only for deliberate coordinate-space math); ``meters`` forces the
-            CRS metric and raises without a CRS.
+            ``None`` (the default) follows the CRS: geographic measurements use
+            geodesic meters, projected measurements use native linear units, and
+            CRS-free measurements use raw coordinate units (area results square the
+            corresponding unit). ``'planar'`` uses Cartesian coordinate space, with
+            geographic coordinates in their native angular units. ``'meters'`` uses
+            the CRS-aware metric and requires a CRS.
+
+
 
         Returns
         -------
@@ -1750,10 +1755,14 @@ class Geometry:
         Parameters
         ----------
         unit : {'planar', 'meters'}, default None
-            Omitted follows the CRS: geodesic meters on a geographic CRS, native units on a projected one, coordinate units without a CRS. ``planar``
-            forces raw coordinate units (native angular units as Cartesian coordinates on a geographic CRS
-            — only for deliberate coordinate-space math); ``meters`` forces the
-            CRS metric and raises without a CRS.
+            ``None`` (the default) follows the CRS: geographic measurements use
+            geodesic meters, projected measurements use native linear units, and
+            CRS-free measurements use raw coordinate units (area results square the
+            corresponding unit). ``'planar'`` uses Cartesian coordinate space, with
+            geographic coordinates in their native angular units. ``'meters'`` uses
+            the CRS-aware metric and requires a CRS.
+
+
 
         Returns
         -------
@@ -1868,8 +1877,10 @@ class Geometry:
             valid with ``method='constrained'``.
 
         max_area : float, optional
-            Maximum triangle area in square coordinate units; positive finite values
-            are valid with ``method='constrained'``. Setting either option enables
+            Positive finite maximum triangle area in coordinate space. Geographic
+            CRSs use squared native angular units, projected CRSs use squared native
+            linear units, and CRS-free inputs use squared raw coordinate units. Valid
+            with ``method='constrained'``. Setting either option enables
             refinement;
             without either option, duplicate XY sites use their first source
             occurrence and triangle corners preserve the selected source ordinates.
@@ -2532,10 +2543,14 @@ class Geometry:
         Parameters
         ----------
         unit : {'planar', 'meters'}, default None
-            Omitted follows the CRS: geodesic meters on a geographic CRS, native units on a projected one, coordinate units without a CRS. ``planar``
-            forces raw coordinate units (native angular units as Cartesian coordinates on a geographic CRS
-            — only for deliberate coordinate-space math); ``meters`` forces the
-            CRS metric and raises without a CRS.
+            ``None`` (the default) follows the CRS: geographic measurements use
+            geodesic meters, projected measurements use native linear units, and
+            CRS-free measurements use raw coordinate units (area results square the
+            corresponding unit). ``'planar'`` uses Cartesian coordinate space, with
+            geographic coordinates in their native angular units. ``'meters'`` uses
+            the CRS-aware metric and requires a CRS.
+
+
 
         Returns
         -------
@@ -2678,12 +2693,15 @@ class Geometry:
         tolerance: _FloatScalarInput | None = None,
         unit: DistanceUnit | None = None,
     ) -> Point | Polygon:
-        """Largest circle inscribed in a polygonal geometry, as a contained filled disk.
+        """Largest circle inscribed in a polygonal geometry. Unlike Shapely's
+        same-named operation, which returns a two-point ``LineString`` from center to
+        boundary, gometry returns a contained filled polygonal approximation (or a
+        ``Point`` for a degenerate radius). The returned polygon's centroid gives the
+        circle center; ``maximum_inscribed_radius`` gives its numerical radius.
         Planar/projected input uses one deterministic representable center and
         certifies the global inradius against the requested absolute tolerance.
         Geographic input retains the documented local-projection approximation.
-        Mirrors minimum_bounding_circle; the radius alone is
-        maximum_inscribed_radius.
+        Mirrors minimum_bounding_circle.
 
         Parameters
         ----------
@@ -2691,9 +2709,14 @@ class Geometry:
             Positive absolute bound on the planar global-inradius gap. Omitted
             selects the existing scale-aware tolerance from the geometry's extent.
         unit : {'planar', 'meters'}, default None
-            Omitted follows the CRS: geodesic meters on a geographic CRS, native
-            units on a projected one, coordinate units without a CRS. ``planar`` forces
-            raw coordinate units; ``meters`` forces the CRS metric and raises without a CRS.
+            ``None`` (the default) follows the CRS: geographic measurements use
+            geodesic meters, projected measurements use native linear units, and
+            CRS-free measurements use raw coordinate units (area results square the
+            corresponding unit). ``'planar'`` uses Cartesian coordinate space, with
+            geographic coordinates in their native angular units. ``'meters'`` uses
+            the CRS-aware metric and requires a CRS.
+
+
 
         Returns
         -------
@@ -2744,15 +2767,28 @@ class Geometry:
             Positive absolute bound on the planar global-inradius gap. Omitted
             selects the existing scale-aware tolerance from the geometry's extent.
         unit : {'planar', 'meters'}, default None
-            Omitted follows the CRS: geodesic meters on a geographic CRS, native
-            units on a projected one, coordinate units without a CRS. ``planar`` forces
-            raw coordinate units; ``meters`` forces the CRS metric and raises without a CRS.
+            ``None`` (the default) follows the CRS: geographic measurements use
+            geodesic meters, projected measurements use native linear units, and
+            CRS-free measurements use raw coordinate units (area results square the
+            corresponding unit). ``'planar'`` uses Cartesian coordinate space, with
+            geographic coordinates in their native angular units. ``'meters'`` uses
+            the CRS-aware metric and requires a CRS.
+
+
 
         Returns
         -------
         float
             The inscribed radius in the requested/CRS metric units (see ``unit``); ``NaN`` for empty input.
 
+
+        Raises
+        ------
+        GeometryError
+            If ``tolerance`` is not positive and finite, or ``unit='meters'`` is
+            requested for a CRS-free geometry.
+        CRSError
+            If the CRS lacks linear axis units for a metric result.
 
         See Also
         --------
@@ -2776,15 +2812,20 @@ class Geometry:
         circumscribed 64-gon. Every edge encloses the disk and every vertex lies outside
         it. A single distinct vertex returns itself; empty input returns
         ``POLYGON EMPTY``. CRS-aware via local projection (approximate) on a
-        geographic CRS; projected CRS distances default to the CRS's native unit
+        geographic CRS; projected CRS distances default to the CRS's native linear units
         and scale through the CRS linear unit only with ``unit='meters'``.
 
         Parameters
         ----------
         unit : {'planar', 'meters'}, default None
-            Omitted follows the CRS: geodesic meters on a geographic CRS, native
-            units on a projected one, coordinate units without a CRS. ``planar`` forces
-            raw coordinate units; ``meters`` forces the CRS metric and raises without a CRS.
+            ``None`` (the default) follows the CRS: geographic measurements use
+            geodesic meters, projected measurements use native linear units, and
+            CRS-free measurements use raw coordinate units (area results square the
+            corresponding unit). ``'planar'`` uses Cartesian coordinate space, with
+            geographic coordinates in their native angular units. ``'meters'`` uses
+            the CRS-aware metric and requires a CRS.
+
+
 
         Returns
         -------
@@ -2822,9 +2863,14 @@ class Geometry:
         Parameters
         ----------
         unit : {'planar', 'meters'}, default None
-            Omitted follows the CRS: geodesic meters on a geographic CRS, native
-            units on a projected one, coordinate units without a CRS. ``planar`` forces
-            raw coordinate units; ``meters`` forces the CRS metric and raises without a CRS.
+            ``None`` (the default) follows the CRS: geographic measurements use
+            geodesic meters, projected measurements use native linear units, and
+            CRS-free measurements use raw coordinate units (area results square the
+            corresponding unit). ``'planar'`` uses Cartesian coordinate space, with
+            geographic coordinates in their native angular units. ``'meters'`` uses
+            the CRS-aware metric and requires a CRS.
+
+
 
         Returns
         -------
@@ -2870,10 +2916,14 @@ class Geometry:
             projection, while the output vertices are emitted from the original input
             coordinates.
         unit : {'planar', 'meters'}, default None
-            Omitted follows the CRS: geodesic meters on a geographic CRS, native units on a projected one, coordinate units without a CRS. ``planar``
-            forces raw coordinate units (native angular units as Cartesian coordinates on a geographic CRS
-            — only for deliberate coordinate-space math); ``meters`` forces the
-            CRS metric and raises without a CRS.
+            ``None`` (the default) follows the CRS: geographic measurements use
+            geodesic meters, projected measurements use native linear units, and
+            CRS-free measurements use raw coordinate units (area results square the
+            corresponding unit). ``'planar'`` uses Cartesian coordinate space, with
+            geographic coordinates in their native angular units. ``'meters'`` uses
+            the CRS-aware metric and requires a CRS.
+
+
 
         Returns
         -------
@@ -3107,7 +3157,9 @@ class Geometry:
         Parameters
         ----------
         tolerance : float, default 0.0
-            Tolerance in coordinate units (finite and non-negative).
+            Finite non-negative coordinate-space tolerance: native angular units for
+            geographic CRSs, native linear units for projected CRSs, and raw coordinate
+            units when CRS-free.
         clip : {'padded', 'envelope'} or Polygon, default 'padded'
             How to bound the unbounded outer cells: a padded box, the input
             envelope, or a `Polygon` to clip the diagram to.
@@ -3439,6 +3491,11 @@ class Geometry:
         Geometry
             The geometry with the new Z ordinate applied (same kind as the input).
 
+        Raises
+        ------
+        InvalidGeometryError
+            If ``z`` is not finite.
+
         See Also
         --------
         set_m : Set or clear the M ordinate.
@@ -3467,6 +3524,11 @@ class Geometry:
         Geometry
             The geometry with a Z ordinate on every vertex (same kind as the
             input).
+
+        Raises
+        ------
+        InvalidGeometryError
+            If ``z`` is not finite.
 
         See Also
         --------
@@ -3713,6 +3775,11 @@ class Geometry:
         Geometry
             The geometry with the new M ordinate applied (same kind as the input).
 
+        Raises
+        ------
+        InvalidGeometryError
+            If ``m`` is not finite.
+
         See Also
         --------
         set_z : Set or clear the Z ordinate.
@@ -3907,7 +3974,9 @@ class Geometry:
         Parameters
         ----------
         tolerance : float, default 0.0
-            Tolerance in coordinate units (finite and non-negative).
+            Finite non-negative coordinate-space tolerance: native angular units for
+            geographic CRSs, native linear units for projected CRSs, and raw coordinate
+            units when CRS-free.
         clip : {'padded', 'envelope'} or Polygon, default 'padded'
             How to bound the unbounded outer cells: a padded box, the input
             envelope, or a `Polygon` to clip the diagram to.
@@ -4103,8 +4172,16 @@ class Point(Geometry):
             `unit` is set.
         path : {'geodesic', 'rhumb'}, default 'geodesic'
             Route model. Rhumb paths require a geographic CRS and use meters.
-        unit : {'planar', 'meters'}, optional
-            Force coordinate units or CRS metric units.
+        unit : {'planar', 'meters'}, default None
+            ``None`` (the default) follows the CRS: geographic measurements use
+            geodesic meters, projected measurements use native linear units, and
+            CRS-free measurements use raw coordinate units (area results square the
+            corresponding unit). ``'planar'`` uses Cartesian coordinate space, with
+            geographic coordinates in their native angular units. ``'meters'`` uses
+            the CRS-aware metric and requires a CRS.
+
+
+            ``path='rhumb'`` uses meters and does not accept a unit override.
 
         Returns
         -------
@@ -6688,6 +6765,14 @@ class GeometryArray(Sequence[_GeometryT_co]):
         object
             A Polars Series containing WKB or EWKB values.
 
+        Raises
+        ------
+        GeometryError
+            If coordinate epoch metadata or a CRS that cannot be embedded as an
+            EWKB SRID would be lost without ``drop_epoch`` or ``drop_crs``.
+        ModuleNotFoundError
+            If Polars is not installed.
+
         Examples
         --------
         >>> import gometry as gm
@@ -6707,6 +6792,13 @@ class GeometryArray(Sequence[_GeometryT_co]):
         -------
         object
             A GeoPandas GeoSeries carrying this array's CRS.
+
+        Raises
+        ------
+        GeometryError
+            If the array carries a coordinate epoch and ``drop_epoch`` is false.
+        ModuleNotFoundError
+            If GeoPandas is not installed.
 
         Examples
         --------
@@ -6786,7 +6878,8 @@ class GeometryArray(Sequence[_GeometryT_co]):
             If a row carries Z/M, or a coordinate is outside the
             longitude/latitude domain. Flatten explicitly with ``force_2d()``.
         GeometryError
-            If ``precision`` is out of range.
+            If ``precision`` is out of range, or the array carries a coordinate
+            epoch and ``drop_epoch`` is false.
 
         See Also
         --------
@@ -7297,10 +7390,14 @@ class GeometryArray(Sequence[_GeometryT_co]):
             a scalar applies to every geometry, or pass one value per geometry.
             Omitted selects a scale-aware tolerance independently for each geometry.
         unit : {'planar', 'meters'}, default None
-            Omitted follows the CRS: geodesic meters on a geographic CRS, native units on a projected one, coordinate units without a CRS. ``planar``
-            forces raw coordinate units (native angular units as Cartesian coordinates on a geographic CRS
-            — only for deliberate coordinate-space math); ``meters`` forces the
-            CRS metric and raises without a CRS.
+            ``None`` (the default) follows the CRS: geographic measurements use
+            geodesic meters, projected measurements use native linear units, and
+            CRS-free measurements use raw coordinate units (area results square the
+            corresponding unit). ``'planar'`` uses Cartesian coordinate space, with
+            geographic coordinates in their native angular units. ``'meters'`` uses
+            the CRS-aware metric and requires a CRS.
+
+
 
         Returns
         -------
@@ -7341,10 +7438,14 @@ class GeometryArray(Sequence[_GeometryT_co]):
         Parameters
         ----------
         unit : {'planar', 'meters'}, default None
-            Omitted follows the CRS: geodesic meters on a geographic CRS, native units on a projected one, coordinate units without a CRS. ``planar``
-            forces raw coordinate units (native angular units as Cartesian coordinates on a geographic CRS
-            — only for deliberate coordinate-space math); ``meters`` forces the
-            CRS metric and raises without a CRS.
+            ``None`` (the default) follows the CRS: geographic measurements use
+            geodesic meters, projected measurements use native linear units, and
+            CRS-free measurements use raw coordinate units (area results square the
+            corresponding unit). ``'planar'`` uses Cartesian coordinate space, with
+            geographic coordinates in their native angular units. ``'meters'`` uses
+            the CRS-aware metric and requires a CRS.
+
+
 
         Returns
         -------
@@ -7385,7 +7486,7 @@ class GeometryArray(Sequence[_GeometryT_co]):
         Returns
         -------
         list of str
-            One `GeoJSON` geometry string per row.
+            One `GeoJSON` geometry string per row; missing rows yield ``None``.
 
         Raises
         ------
@@ -7492,8 +7593,10 @@ class GeometryArray(Sequence[_GeometryT_co]):
             and at most 30. Valid only with ``method='constrained'``.
 
         max_area : float or sequence of float, optional
-            Maximum triangle area in square coordinate units; each value must be
-            positive and finite. Valid only with ``method='constrained'``. Setting
+            Maximum triangle area in coordinate space; each value must be positive
+            and finite. Geographic CRSs use squared native angular units, projected
+            CRSs use squared native linear units, and CRS-free inputs use squared raw
+            coordinate units. Valid only with ``method='constrained'``. Setting
             either option enables refinement;
             inserted Steiner vertices return uniform XY. Scalar and array rows use
             the same first-occurrence source-site and ordinate policy.
@@ -8375,10 +8478,14 @@ class GeometryArray(Sequence[_GeometryT_co]):
         Parameters
         ----------
         unit : {'planar', 'meters'}, default None
-            Omitted follows the CRS: geodesic meters on a geographic CRS, native units on a projected one, coordinate units without a CRS. ``planar``
-            forces raw coordinate units (native angular units as Cartesian coordinates on a geographic CRS
-            — only for deliberate coordinate-space math); ``meters`` forces the
-            CRS metric and raises without a CRS.
+            ``None`` (the default) follows the CRS: geographic measurements use
+            geodesic meters, projected measurements use native linear units, and
+            CRS-free measurements use raw coordinate units (area results square the
+            corresponding unit). ``'planar'`` uses Cartesian coordinate space, with
+            geographic coordinates in their native angular units. ``'meters'`` uses
+            the CRS-aware metric and requires a CRS.
+
+
 
         Returns
         -------
@@ -8541,12 +8648,15 @@ class GeometryArray(Sequence[_GeometryT_co]):
         tolerance: FloatInput | None = None,
         unit: DistanceUnit | None = None,
     ) -> GeometryArray[Point | Polygon | None]:
-        """Largest circle inscribed in a polygonal geometry, as a contained filled disk.
+        """Largest circle inscribed in a polygonal geometry. Unlike Shapely's
+        same-named operation, which returns a two-point ``LineString`` from center to
+        boundary, gometry returns a contained filled polygonal approximation (or a
+        ``Point`` for a degenerate radius). The returned polygon's centroid gives the
+        circle center; ``maximum_inscribed_radius`` gives its numerical radius.
         Planar/projected input uses one deterministic representable center and
         certifies the global inradius against the requested absolute tolerance.
         Geographic input retains the documented local-projection approximation.
-        Mirrors minimum_bounding_circle; the radius alone is
-        maximum_inscribed_radius.
+        Mirrors minimum_bounding_circle.
 
         Parameters
         ----------
@@ -8555,9 +8665,14 @@ class GeometryArray(Sequence[_GeometryT_co]):
             applies to every geometry, or pass one value per geometry. Omitted
             selects a scale-aware tolerance independently for each geometry.
         unit : {'planar', 'meters'}, default None
-            Omitted follows the CRS: geodesic meters on a geographic CRS, native
-            units on a projected one, coordinate units without a CRS. ``planar`` forces
-            raw coordinate units; ``meters`` forces the CRS metric and raises without a CRS.
+            ``None`` (the default) follows the CRS: geographic measurements use
+            geodesic meters, projected measurements use native linear units, and
+            CRS-free measurements use raw coordinate units (area results square the
+            corresponding unit). ``'planar'`` uses Cartesian coordinate space, with
+            geographic coordinates in their native angular units. ``'meters'`` uses
+            the CRS-aware metric and requires a CRS.
+
+
 
         Returns
         -------
@@ -8605,15 +8720,28 @@ class GeometryArray(Sequence[_GeometryT_co]):
             applies to every geometry, or pass one value per geometry. Omitted
             selects a scale-aware tolerance independently for each geometry.
         unit : {'planar', 'meters'}, default None
-            Omitted follows the CRS: geodesic meters on a geographic CRS, native
-            units on a projected one, coordinate units without a CRS. ``planar`` forces
-            raw coordinate units; ``meters`` forces the CRS metric and raises without a CRS.
+            ``None`` (the default) follows the CRS: geographic measurements use
+            geodesic meters, projected measurements use native linear units, and
+            CRS-free measurements use raw coordinate units (area results square the
+            corresponding unit). ``'planar'`` uses Cartesian coordinate space, with
+            geographic coordinates in their native angular units. ``'meters'`` uses
+            the CRS-aware metric and requires a CRS.
+
+
 
         Returns
         -------
         numpy.ndarray of float
             The inscribed radius per row; ``NaN`` where empty.
 
+
+        Raises
+        ------
+        GeometryError
+            If ``tolerance`` is not positive and finite, or ``unit='meters'`` is
+            requested for a CRS-free geometry.
+        CRSError
+            If the CRS lacks linear axis units for a metric result.
 
         See Also
         --------
@@ -8644,15 +8772,20 @@ class GeometryArray(Sequence[_GeometryT_co]):
         circumscribed 64-gon. Every edge encloses the disk and every vertex lies outside
         it. A single distinct vertex returns itself; empty input returns
         ``POLYGON EMPTY``. CRS-aware via local projection (approximate) on a
-        geographic CRS; projected CRS distances default to the CRS's native unit
+        geographic CRS; projected CRS distances default to the CRS's native linear units
         and scale through the CRS linear unit only with ``unit='meters'``.
 
         Parameters
         ----------
         unit : {'planar', 'meters'}, default None
-            Omitted follows the CRS: geodesic meters on a geographic CRS, native
-            units on a projected one, coordinate units without a CRS. ``planar`` forces
-            raw coordinate units; ``meters`` forces the CRS metric and raises without a CRS.
+            ``None`` (the default) follows the CRS: geographic measurements use
+            geodesic meters, projected measurements use native linear units, and
+            CRS-free measurements use raw coordinate units (area results square the
+            corresponding unit). ``'planar'`` uses Cartesian coordinate space, with
+            geographic coordinates in their native angular units. ``'meters'`` uses
+            the CRS-aware metric and requires a CRS.
+
+
 
         Returns
         -------
@@ -8692,9 +8825,14 @@ class GeometryArray(Sequence[_GeometryT_co]):
         Parameters
         ----------
         unit : {'planar', 'meters'}, default None
-            Omitted follows the CRS: geodesic meters on a geographic CRS, native
-            units on a projected one, coordinate units without a CRS. ``planar`` forces
-            raw coordinate units; ``meters`` forces the CRS metric and raises without a CRS.
+            ``None`` (the default) follows the CRS: geographic measurements use
+            geodesic meters, projected measurements use native linear units, and
+            CRS-free measurements use raw coordinate units (area results square the
+            corresponding unit). ``'planar'`` uses Cartesian coordinate space, with
+            geographic coordinates in their native angular units. ``'meters'`` uses
+            the CRS-aware metric and requires a CRS.
+
+
 
         Returns
         -------
@@ -8751,10 +8889,14 @@ class GeometryArray(Sequence[_GeometryT_co]):
             coordinates — a scalar applies to every geometry, or pass one value per
             geometry.
         unit : {'planar', 'meters'}, default None
-            Omitted follows the CRS: geodesic meters on a geographic CRS, native units on a projected one, coordinate units without a CRS. ``planar``
-            forces raw coordinate units (native angular units as Cartesian coordinates on a geographic CRS
-            — only for deliberate coordinate-space math); ``meters`` forces the
-            CRS metric and raises without a CRS.
+            ``None`` (the default) follows the CRS: geographic measurements use
+            geodesic meters, projected measurements use native linear units, and
+            CRS-free measurements use raw coordinate units (area results square the
+            corresponding unit). ``'planar'`` uses Cartesian coordinate space, with
+            geographic coordinates in their native angular units. ``'meters'`` uses
+            the CRS-aware metric and requires a CRS.
+
+
 
         Returns
         -------
@@ -8995,7 +9137,9 @@ class GeometryArray(Sequence[_GeometryT_co]):
         Parameters
         ----------
         tolerance : float, default 0.0
-            Tolerance in coordinate units (finite and non-negative).
+            Finite non-negative coordinate-space tolerance: native angular units for
+            geographic CRSs, native linear units for projected CRSs, and raw coordinate
+            units when CRS-free.
         clip : {'padded', 'envelope'} or Polygon, default 'padded'
             How to bound the unbounded outer cells: a padded box, the input
             envelope, or a `Polygon` to clip the diagram to.
@@ -9521,6 +9665,11 @@ class GeometryArray(Sequence[_GeometryT_co]):
         GeometryArray
             One result per row (kinds preserved).
 
+        Raises
+        ------
+        InvalidGeometryError
+            If ``z`` is not finite.
+
         See Also
         --------
         set_m : Set or clear the M ordinate.
@@ -9548,6 +9697,11 @@ class GeometryArray(Sequence[_GeometryT_co]):
         -------
         GeometryArray
             One 3D geometry per row (kinds preserved).
+
+        Raises
+        ------
+        InvalidGeometryError
+            If ``z`` is not finite.
 
         See Also
         --------
@@ -9944,6 +10098,11 @@ class GeometryArray(Sequence[_GeometryT_co]):
         GeometryArray
             One result per row (kinds preserved).
 
+        Raises
+        ------
+        InvalidGeometryError
+            If ``m`` is not finite.
+
         See Also
         --------
         set_z : Set or clear the Z ordinate.
@@ -9984,7 +10143,7 @@ class GeometryArray(Sequence[_GeometryT_co]):
         Returns
         -------
         list of str
-            One WKT string per row.
+            One WKT string per row; missing rows yield ``None``.
 
 
         Raises
@@ -10035,7 +10194,7 @@ class GeometryArray(Sequence[_GeometryT_co]):
         Returns
         -------
         list of bytes
-            One WKB payload per row.
+            One WKB payload per row; missing rows yield ``None``.
 
         Notes
         -----
@@ -10139,7 +10298,9 @@ class GeometryArray(Sequence[_GeometryT_co]):
         Parameters
         ----------
         tolerance : float, default 0.0
-            Tolerance in coordinate units (finite and non-negative).
+            Finite non-negative coordinate-space tolerance: native angular units for
+            geographic CRSs, native linear units for projected CRSs, and raw coordinate
+            units when CRS-free.
         clip : {'padded', 'envelope'} or Polygon, default 'padded'
             How to bound the unbounded outer cells: a padded box, the input
             envelope, or a `Polygon` to clip the diagram to.
@@ -10595,19 +10756,23 @@ class SpatialIndex(Mapping[int, Geometry]):
         geom : Geometry or GeometryArray
             The query geometry, or one query per array element.
         predicate : str, default 'intersects'
-            Spatial relation each match must satisfy (``'dwithin'`` requires
-            ``distance``).
+            Spatial relation each match must satisfy, evaluated as
+            ``predicate(query_geometry, indexed_geometry)`` (``'dwithin'``
+            requires ``distance``).
         distance : float, optional
             ``'dwithin'`` distance threshold, in ``unit``. A positive infinite
             threshold is accepted; other values must be finite and
             non-negative. Missing or empty query rows produce empty result
             groups rather than being dropped.
         unit : {'planar', 'meters'}, default None
-            Omitted follows the CRS: geodesic meters on a geographic CRS, native
-            units on a projected one, coordinate units without a CRS.
-            ``'planar'`` forces raw coordinate units (native angular units as Cartesian
-            geographic CRS — only for deliberate coordinate-space math);
-            ``'meters'`` forces the CRS metric and raises without a CRS.
+            ``None`` (the default) follows the CRS: geographic measurements use
+            geodesic meters, projected measurements use native linear units, and
+            CRS-free measurements use raw coordinate units (area results square the
+            corresponding unit). ``'planar'`` uses Cartesian coordinate space, with
+            geographic coordinates in their native angular units. ``'meters'`` uses
+            the CRS-aware metric and requires a CRS.
+
+
 
         Returns
         -------
@@ -10669,10 +10834,14 @@ class SpatialIndex(Mapping[int, Geometry]):
             CRS-natural units. Finite non-negative values and positive infinity
             are accepted; missing query rows produce no pairs.
         unit : {'planar', 'meters'}, default None
-            Omitted follows the CRS: geodesic meters on a geographic CRS, native
-            units on a projected one, coordinate units without a CRS.
-            ``'planar'`` forces raw coordinate units; ``'meters'`` forces the
-            CRS metric and raises without a CRS.
+            ``None`` (the default) follows the CRS: geographic measurements use
+            geodesic meters, projected measurements use native linear units, and
+            CRS-free measurements use raw coordinate units (area results square the
+            corresponding unit). ``'planar'`` uses Cartesian coordinate space, with
+            geographic coordinates in their native angular units. ``'meters'`` uses
+            the CRS-aware metric and requires a CRS.
+
+
 
         Returns
         -------
@@ -10726,11 +10895,14 @@ class SpatialIndex(Mapping[int, Geometry]):
             accepted; other values must be finite and non-negative. Empty
             geometries never produce a pair.
         unit : {'planar', 'meters'}, default None
-            Omitted follows the CRS: geodesic meters on a geographic CRS, native
-            units on a projected one, coordinate units without a CRS.
-            ``'planar'`` forces raw coordinate units (native angular units as Cartesian
-            geographic CRS — only for deliberate coordinate-space math);
-            ``'meters'`` forces the CRS metric and raises without a CRS.
+            ``None`` (the default) follows the CRS: geographic measurements use
+            geodesic meters, projected measurements use native linear units, and
+            CRS-free measurements use raw coordinate units (area results square the
+            corresponding unit). ``'planar'`` uses Cartesian coordinate space, with
+            geographic coordinates in their native angular units. ``'meters'`` uses
+            the CRS-aware metric and requires a CRS.
+
+
 
         Returns
         -------
@@ -10779,7 +10951,8 @@ class SpatialIndex(Mapping[int, Geometry]):
         unit: DistanceUnit | None = None,
     ) -> npt.NDArray[np.int64] | Groups[npt.NDArray[np.int64]]:
         """Bounding-box candidate matches for a query geometry or array (not
-        exact).
+        exact). If you refine these candidates with a directional predicate,
+        evaluate it as ``predicate(query_geometry, indexed_geometry)``.
 
         A single geometry returns an `int64` ndarray; a `GeometryArray`
         returns `Groups` — one candidate row per row.
@@ -10793,11 +10966,14 @@ class SpatialIndex(Mapping[int, Geometry]):
             non-negative expansions and positive infinity are accepted;
             infinity admits every live non-empty row for a query with bounds.
         unit : {'planar', 'meters'}, default None
-            Omitted follows the CRS: geodesic meters on a geographic CRS, native
-            units on a projected one, coordinate units without a CRS.
-            ``'planar'`` forces raw coordinate units (native angular units as Cartesian
-            geographic CRS — only for deliberate coordinate-space math);
-            ``'meters'`` forces the CRS metric and raises without a CRS.
+            ``None`` (the default) follows the CRS: geographic measurements use
+            geodesic meters, projected measurements use native linear units, and
+            CRS-free measurements use raw coordinate units (area results square the
+            corresponding unit). ``'planar'`` uses Cartesian coordinate space, with
+            geographic coordinates in their native angular units. ``'meters'`` uses
+            the CRS-aware metric and requires a CRS.
+
+
 
         Returns
         -------
@@ -10891,7 +11067,7 @@ class SpatialIndex(Mapping[int, Geometry]):
         geom : Geometry or GeometryArray
             The query geometry, or one query per array element.
         k : int, default 1
-            How many nearest neighbors to return.
+            How many nearest neighbors to return; ``0`` returns no neighbors.
         max_distance : float, optional
             Ignore matches farther than this, in ``unit``. Must be finite and
             non-negative.
@@ -10899,11 +11075,14 @@ class SpatialIndex(Mapping[int, Geometry]):
             Return distances alongside handles — ``(indices, distances)`` for
             a scalar query, ``(matches, distances)`` for an array query.
         unit : {'planar', 'meters'}, default None
-            Omitted follows the CRS: geodesic meters on a geographic CRS, native
-            units on a projected one, coordinate units without a CRS.
-            ``'planar'`` forces raw coordinate units (native angular units as Cartesian
-            geographic CRS — only for deliberate coordinate-space math);
-            ``'meters'`` forces the CRS metric and raises without a CRS.
+            ``None`` (the default) follows the CRS: geographic measurements use
+            geodesic meters, projected measurements use native linear units, and
+            CRS-free measurements use raw coordinate units (area results square the
+            corresponding unit). ``'planar'`` uses Cartesian coordinate space, with
+            geographic coordinates in their native angular units. ``'meters'`` uses
+            the CRS-aware metric and requires a CRS.
+
+
         exclusive : bool, default False
             Skip an indexed geometry equal to the query (self-matches in
             joins over the indexed set itself).
@@ -15100,10 +15279,15 @@ def area(
     ----------
     geom : Geometry, GeometryArray, or iterable of geometry-like values
         Input geometry, array, or iterable materialized as an array.
-    unit : {'planar', 'meters'} or None, default None
-        ``None`` follows the geometry's CRS, exactly like ``geom.area``.
-        ``'planar'`` forces raw coordinate units; ``'meters'`` forces the CRS
-        metric and raises without a CRS.
+    unit : {'planar', 'meters'}, default None
+        ``None`` (the default) follows the CRS: geographic measurements use
+        geodesic meters, projected measurements use native linear units, and
+        CRS-free measurements use raw coordinate units (area results square the
+        corresponding unit). ``'planar'`` uses Cartesian coordinate space, with
+        geographic coordinates in their native angular units. ``'meters'`` uses
+        the CRS-aware metric and requires a CRS.
+
+
 
     Returns
     -------
@@ -15151,10 +15335,15 @@ def length(
     ----------
     geom : Geometry, GeometryArray, or iterable of geometry-like values
         Input geometry, array, or iterable materialized as an array.
-    unit : {'planar', 'meters'} or None, default None
-        ``None`` follows the geometry's CRS, exactly like ``geom.length``.
-        ``'planar'`` forces raw coordinate units; ``'meters'`` forces the CRS
-        metric and raises without a CRS.
+    unit : {'planar', 'meters'}, default None
+        ``None`` (the default) follows the CRS: geographic measurements use
+        geodesic meters, projected measurements use native linear units, and
+        CRS-free measurements use raw coordinate units (area results square the
+        corresponding unit). ``'planar'`` uses Cartesian coordinate space, with
+        geographic coordinates in their native angular units. ``'meters'`` uses
+        the CRS-aware metric and requires a CRS.
+
+
 
     Returns
     -------
@@ -15202,10 +15391,16 @@ def length_3d(
     ----------
     geom : Geometry, GeometryArray, or iterable of geometry-like values
         Input geometry, array, or iterable materialized as an array.
-    unit : {'planar', 'meters'} or None, default None
-        ``None`` follows the geometry's CRS, exactly like ``geom.length_3d``.
-        ``'planar'`` forces raw coordinate units; ``'meters'`` forces the CRS
-        metric and raises without a CRS.
+    unit : {'planar', 'meters'}, default None
+        ``None`` (the default) follows the CRS: geographic measurements use
+        geodesic meters, projected measurements use native linear units, and
+        CRS-free measurements use raw coordinate units (area results square the
+        corresponding unit). ``'planar'`` uses Cartesian coordinate space, with
+        geographic coordinates in their native angular units. ``'meters'`` uses
+        the CRS-aware metric and requires a CRS.
+
+
+        Geographic CRSs are not supported by 3D Euclidean metrics.
 
     Returns
     -------
@@ -15275,8 +15470,9 @@ def snap(
     reference : Geometry or GeometryArray
         Target geometry to snap onto.
     tolerance : float or sequence of float
-        Maximum snap distance in coordinate units. Values must be finite and
-        non-negative.
+        Maximum finite non-negative snap distance in coordinate space:
+        geographic CRSs use native angular units, projected CRSs use native
+        linear units, and CRS-free geometries use raw coordinate units.
 
     Returns
     -------
@@ -15509,7 +15705,7 @@ def point_between(
     """Return a point interpolated from ``left`` towards ``right``.
 
     CRS-aware like every metric: geodesic on a geographic CRS, planar on a
-    projected CRS, and coordinate units when CRS-free. ``path='rhumb'`` follows
+    projected CRS, and raw coordinate units when CRS-free. ``path='rhumb'`` follows
     the constant-bearing track on a geographic CRS. Z/M interpolate. An empty
     endpoint yields ``POINT EMPTY``.
 
@@ -15525,11 +15721,15 @@ def point_between(
     path : {'geodesic', 'rhumb'}, default 'geodesic'
         Route model. Rhumb paths require a geographic CRS and use meters.
     unit : {'planar', 'meters'}, default None
-        Omitted follows the CRS: geodesic meters on a geographic CRS, native
-        units on a projected one, coordinate units without a CRS.
-        ``'planar'`` forces raw coordinate units (native angular units as Cartesian
-        geographic CRS — only for deliberate coordinate-space math);
-        ``'meters'`` forces the CRS metric and raises without a CRS.
+        ``None`` (the default) follows the CRS: geographic measurements use
+        geodesic meters, projected measurements use native linear units, and
+        CRS-free measurements use raw coordinate units (area results square the
+        corresponding unit). ``'planar'`` uses Cartesian coordinate space, with
+        geographic coordinates in their native angular units. ``'meters'`` uses
+        the CRS-aware metric and requires a CRS.
+
+
+        ``path='rhumb'`` uses meters and does not accept a unit override.
 
     Returns
     -------
@@ -16342,14 +16542,14 @@ def relate(left: Geometry, right: Geometry) -> str: ...
 def relate(
     left: GeometryArray[Geometry | None],
     right: Geometry | GeometryArray[Geometry | None],
-) -> list[str]: ...
+) -> list[str | None]: ...
 @overload
-def relate(left: Geometry, right: GeometryArray[Geometry | None]) -> list[str]: ...
+def relate(left: Geometry, right: GeometryArray[Geometry | None]) -> list[str | None]: ...
 @overload
 def relate(
     left: Geometry | GeometryArray[Geometry | None],
     right: Geometry | GeometryArray[Geometry | None],
-) -> str | list[str]:
+) -> str | list[str | None]:
     """Compute the DE-9IM intersection matrix string for ``left`` and
     ``right``.
 
@@ -16364,8 +16564,9 @@ def relate(
 
     Returns
     -------
-    str or list of str
-        The nine-character DE-9IM pattern; one per input pair.
+    str or list of str or None
+        The nine-character DE-9IM pattern; one per input pair. A missing input
+        row yields ``None`` in its result slot.
 
     Raises
     ------
@@ -16624,7 +16825,7 @@ def distance(
     """Compute the minimum distance between ``left`` and ``right``.
 
     CRS-aware: geodesic meters on a geographic CRS, native linear units on a
-    projected CRS, coordinate units when CRS-free. Geographic distance supports
+    projected CRS, raw coordinate units when CRS-free. Geographic distance supports
     point and linework operands only; filled polygon interiors require
     ``unit='planar'`` or a projected CRS.
 
@@ -16634,11 +16835,14 @@ def distance(
         Scalar and ``GeometryArray`` broadcast pairwise; must share CRS and
         coordinate epoch.
     unit : {'planar', 'meters'}, default None
-        Omitted follows the CRS: geodesic meters on a geographic CRS, native
-        units on a projected one, coordinate units without a CRS.
-        ``'planar'`` forces raw coordinate units (native angular units as Cartesian
-        geographic CRS — only for deliberate coordinate-space math);
-        ``'meters'`` forces the CRS metric and raises without a CRS.
+        ``None`` (the default) follows the CRS: geographic measurements use
+        geodesic meters, projected measurements use native linear units, and
+        CRS-free measurements use raw coordinate units (area results square the
+        corresponding unit). ``'planar'`` uses Cartesian coordinate space, with
+        geographic coordinates in their native angular units. ``'meters'`` uses
+        the CRS-aware metric and requires a CRS.
+
+
 
     Returns
     -------
@@ -16707,7 +16911,7 @@ def distance_3d(
     and have no 3D form; the 3D extent is ``bounds`` with ``min_z``/``max_z``.
 
     A projected CRS gives native linear units and a CRS-free geometry gives
-    coordinate units — the same defaults as the 2D ``distance``. A geographic
+    raw coordinate units — the same defaults as the 2D ``distance``. A geographic
     CRS raises under every ``unit``: a Euclidean norm cannot combine degrees
     with meter heights. Every vertex on both operands must carry a Z ordinate.
 
@@ -16716,10 +16920,15 @@ def distance_3d(
     left, right : Geometry or GeometryArray
         Scalar and ``GeometryArray`` broadcast pairwise; must share CRS and
         coordinate epoch.
-    unit : {'planar', 'meters'} or None, default None
-        ``None`` follows the CRS, exactly like ``distance``. ``'planar'``
-        forces raw coordinate units; ``'meters'`` forces SI meters and raises
-        without a CRS.
+    unit : {'planar', 'meters'}, default None
+        ``None`` (the default) follows the CRS: geographic measurements use
+        geodesic meters, projected measurements use native linear units, and
+        CRS-free measurements use raw coordinate units (area results square the
+        corresponding unit). ``'planar'`` uses Cartesian coordinate space, with
+        geographic coordinates in their native angular units. ``'meters'`` uses
+        the CRS-aware metric and requires a CRS.
+
+
 
     Returns
     -------
@@ -16785,7 +16994,7 @@ def hausdorff_distance(
     and ``right``.
 
     CRS-aware: geodesic meters on a geographic CRS, native linear units on a
-    projected CRS, coordinate units when CRS-free. Geographic Hausdorff
+    projected CRS, raw coordinate units when CRS-free. Geographic Hausdorff
     distance supports point and linework operands only; filled polygon
     interiors require ``unit='planar'`` or a projected CRS. Planar results use
     a certified relative bound by default or a caller-supplied absolute bound.
@@ -16801,11 +17010,14 @@ def hausdorff_distance(
         ``1e-9``. Omit it for the numerical geodesic Hausdorff path; geodesic
         results do not provide this certification contract.
     unit : {'planar', 'meters'}, default None
-        Omitted follows the CRS: geodesic meters on a geographic CRS, native
-        units on a projected one, coordinate units without a CRS.
-        ``'planar'`` forces raw coordinate units (native angular units as Cartesian
-        geographic CRS — only for deliberate coordinate-space math);
-        ``'meters'`` forces the CRS metric and raises without a CRS.
+        ``None`` (the default) follows the CRS: geographic measurements use
+        geodesic meters, projected measurements use native linear units, and
+        CRS-free measurements use raw coordinate units (area results square the
+        corresponding unit). ``'planar'`` uses Cartesian coordinate space, with
+        geographic coordinates in their native angular units. ``'meters'`` uses
+        the CRS-aware metric and requires a CRS.
+
+
 
     Returns
     -------
@@ -16881,7 +17093,7 @@ def frechet_distance(
     """Discrete Fréchet distance between two linestrings.
 
     Measured for the CRS like ``distance``: geodesic meters on a geographic
-    CRS, native units on a projected one, coordinate units when CRS-free.
+    CRS, native linear units on a projected CRS, raw coordinate units when CRS-free.
 
     Parameters
     ----------
@@ -16893,11 +17105,14 @@ def frechet_distance(
         tightening the discrete vertex metric toward the continuous
         one. Omitted measures vertices only.
     unit : {'planar', 'meters'}, default None
-        Omitted follows the CRS: geodesic meters on a geographic CRS, native
-        units on a projected one, coordinate units without a CRS.
-        ``'planar'`` forces raw coordinate units (native angular units as Cartesian
-        geographic CRS — only for deliberate coordinate-space math);
-        ``'meters'`` forces the CRS metric and raises without a CRS.
+        ``None`` (the default) follows the CRS: geographic measurements use
+        geodesic meters, projected measurements use native linear units, and
+        CRS-free measurements use raw coordinate units (area results square the
+        corresponding unit). ``'planar'`` uses Cartesian coordinate space, with
+        geographic coordinates in their native angular units. ``'meters'`` uses
+        the CRS-aware metric and requires a CRS.
+
+
 
     Returns
     -------
@@ -17006,11 +17221,14 @@ def nearest_points(
         Scalar and ``GeometryArray`` broadcast pairwise; must share CRS and
         coordinate epoch. Unpack order is point on ``left``, then on ``right``.
     unit : {'planar', 'meters'}, default None
-        Omitted follows the CRS: geodesic meters on a geographic CRS, native
-        units on a projected one, coordinate units without a CRS.
-        ``'planar'`` forces raw coordinate units (native angular units as Cartesian
-        geographic CRS — only for deliberate coordinate-space math);
-        ``'meters'`` forces the CRS metric and raises without a CRS.
+        ``None`` (the default) follows the CRS: geographic measurements use
+        geodesic meters, projected measurements use native linear units, and
+        CRS-free measurements use raw coordinate units (area results square the
+        corresponding unit). ``'planar'`` uses Cartesian coordinate space, with
+        geographic coordinates in their native angular units. ``'meters'`` uses
+        the CRS-aware metric and requires a CRS.
+
+
 
     Returns
     -------
@@ -17115,11 +17333,14 @@ def shortest_line(
         Scalar and ``GeometryArray`` broadcast pairwise; must share CRS and
         coordinate epoch.
     unit : {'planar', 'meters'}, default None
-        Omitted follows the CRS: geodesic meters on a geographic CRS, native
-        units on a projected one, coordinate units without a CRS.
-        ``'planar'`` forces raw coordinate units (native angular units as Cartesian
-        geographic CRS — only for deliberate coordinate-space math);
-        ``'meters'`` forces the CRS metric and raises without a CRS.
+        ``None`` (the default) follows the CRS: geographic measurements use
+        geodesic meters, projected measurements use native linear units, and
+        CRS-free measurements use raw coordinate units (area results square the
+        corresponding unit). ``'planar'`` uses Cartesian coordinate space, with
+        geographic coordinates in their native angular units. ``'meters'`` uses
+        the CRS-aware metric and requires a CRS.
+
+
 
     Returns
     -------
@@ -17192,7 +17413,9 @@ def split(
         Point or multipoint cutter.
     tolerance : float, keyword-only, optional
         Coordinate-space distance within which a splitter point counts as
-        on the line and near-equal cut offsets collapse. The default ``0.0``
+        on the line and near-equal cut offsets collapse: native angular units
+        on geographic CRSs, native linear units on projected CRSs, and raw
+        coordinate units when CRS-free. The default ``0.0``
         is exact topological membership (a point splits only when it lies
         exactly on the linework) with identity deduplication.
 
@@ -17203,7 +17426,7 @@ def split(
 
     Raises
     ------
-    InvalidGeometryError
+    GeometryError
         If ``tolerance`` is negative or non-finite.
     CRSMismatchError
         If operands' CRS or coordinate-epoch metadata differ.
@@ -17261,15 +17484,19 @@ def dwithin(
         coordinate epoch.
     distance : float or sequence of float
         CRS-aware distance threshold: geodesic meters on a geographic CRS,
-        native units on a projected one, coordinate units otherwise. A scalar
+        native linear units on a projected CRS, raw coordinate units when
+        CRS-free. A scalar
         applies to every pair; with an array operand, an iterable supplies one
         threshold per result row. Positive infinity is accepted.
     unit : {'planar', 'meters'}, default None
-        Omitted follows the CRS: geodesic meters on a geographic CRS, native
-        units on a projected one, coordinate units without a CRS.
-        ``'planar'`` forces raw coordinate units (native angular units as Cartesian
-        geographic CRS — only for deliberate coordinate-space math);
-        ``'meters'`` forces the CRS metric and raises without a CRS.
+        ``None`` (the default) follows the CRS: geographic measurements use
+        geodesic meters, projected measurements use native linear units, and
+        CRS-free measurements use raw coordinate units (area results square the
+        corresponding unit). ``'planar'`` uses Cartesian coordinate space, with
+        geographic coordinates in their native angular units. ``'meters'`` uses
+        the CRS-aware metric and requires a CRS.
+
+
 
     Returns
     -------
@@ -17381,7 +17608,8 @@ def nearest(
     geom : Geometry or GeometryArray
         Query geometry (or array of queries).
     k : int, default 1
-        Number of nearest neighbors to return per query.
+        Number of nearest neighbors to return per query; ``0`` returns no
+        neighbors.
     max_distance : float, optional
         Ignore candidates farther than this from the query. Must be finite and
         non-negative.
@@ -17390,11 +17618,14 @@ def nearest(
         distances)`` for a scalar query, ``(matches, distances)`` for an
         array query.
     unit : {'planar', 'meters'}, default None
-        Omitted follows the CRS: geodesic meters on a geographic CRS, native
-        units on a projected one, coordinate units without a CRS.
-        ``'planar'`` forces raw coordinate units (native angular units as Cartesian
-        geographic CRS — only for deliberate coordinate-space math);
-        ``'meters'`` forces the CRS metric and raises without a CRS.
+        ``None`` (the default) follows the CRS: geographic measurements use
+        geodesic meters, projected measurements use native linear units, and
+        CRS-free measurements use raw coordinate units (area results square the
+        corresponding unit). ``'planar'`` uses Cartesian coordinate space, with
+        geographic coordinates in their native angular units. ``'meters'`` uses
+        the CRS-aware metric and requires a CRS.
+
+
     exclusive : bool, default False
         If ``True``, skip candidates structurally equal to the query geometry
         (same exact coordinates) — "the nearest *other* feature".
@@ -17410,6 +17641,15 @@ def nearest(
         ``return_distance=True``, plain tuple field order is ``(indices,
         distances)`` for a scalar query or ``(matches, distances)`` for an
         array query (distances parallel to ``matches.values``).
+
+    Raises
+    ------
+    GeometryError
+        If ``k`` is negative, ``max_distance`` is negative or non-finite, or
+        ``unit='meters'`` is requested for a CRS-free geometry.
+    CRSMismatchError
+        If query and indexed geometries have different CRS or coordinate-epoch
+        metadata.
 
     Examples
     --------
@@ -17452,15 +17692,18 @@ def join(
     distance : float, optional
         Required when ``predicate='dwithin'``: the maximum separation, in
         CRS-natural units — geodesic meters on a geographic CRS, native
-        units on a projected CRS, coordinate units when CRS-free. Finite
+        linear units on a projected CRS, raw coordinate units when CRS-free. Finite
         non-negative values and positive infinity are accepted; missing or
         empty rows produce no pairs.
     unit : {'planar', 'meters'}, default None
-        Omitted follows the CRS: geodesic meters on a geographic CRS, native
-        units on a projected one, coordinate units without a CRS.
-        ``'planar'`` forces raw coordinate units (native angular units as Cartesian
-        geographic CRS — only for deliberate coordinate-space math);
-        ``'meters'`` forces the CRS metric and raises without a CRS.
+        ``None`` (the default) follows the CRS: geographic measurements use
+        geodesic meters, projected measurements use native linear units, and
+        CRS-free measurements use raw coordinate units (area results square the
+        corresponding unit). ``'planar'`` uses Cartesian coordinate space, with
+        geographic coordinates in their native angular units. ``'meters'`` uses
+        the CRS-aware metric and requires a CRS.
+
+
 
     Returns
     -------

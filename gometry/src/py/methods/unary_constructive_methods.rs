@@ -167,11 +167,7 @@ GeometryArray
     One concave hull per row; degenerate inputs reduce dimension.
 
 ");
-    post: r"unit : {'planar', 'meters'}, default None
-    Omitted follows the CRS: geodesic meters on a geographic CRS, native units on a projected one, coordinate units without a CRS. ``planar``
-    forces raw coordinate units (native angular units as Cartesian coordinates on a geographic CRS
-    — only for deliberate coordinate-space math); ``meters`` forces the
-    CRS metric and raises without a CRS.";
+    post: unit_parameter_doc!();
     tail: r"
 Raises
 ------
@@ -338,12 +334,15 @@ Examples
 
 method_doc! {
     doc_maximum_inscribed_circle;
-    pre: r"Largest circle inscribed in a polygonal geometry, as a contained filled disk.
+    pre: r"Largest circle inscribed in a polygonal geometry. Unlike Shapely's
+same-named operation, which returns a two-point ``LineString`` from center to
+boundary, gometry returns a contained filled polygonal approximation (or a
+``Point`` for a degenerate radius). The returned polygon's centroid gives the
+circle center; ``maximum_inscribed_radius`` gives its numerical radius.
 Planar/projected input uses one deterministic representable center and
 certifies the global inradius against the requested absolute tolerance.
 Geographic input retains the documented local-projection approximation.
-Mirrors minimum_bounding_circle; the radius alone is
-maximum_inscribed_radius.
+Mirrors minimum_bounding_circle.
 
 Parameters
 ----------";
@@ -375,10 +374,7 @@ GeometryArray
     when degenerate) per row.
 
 ");
-    post: r"unit : {'planar', 'meters'}, default None
-    Omitted follows the CRS: geodesic meters on a geographic CRS, native
-    units on a projected one, coordinate units without a CRS. ``planar`` forces
-    raw coordinate units; ``meters`` forces the CRS metric and raises without a CRS.";
+    post: unit_parameter_doc!();
     tail: r"See Also
 --------
 polylabel : Approximate pole-of-inaccessibility label point.
@@ -439,11 +435,16 @@ numpy.ndarray of float
     The inscribed radius per row; ``NaN`` where empty.
 
 ");
-    post: r"unit : {'planar', 'meters'}, default None
-    Omitted follows the CRS: geodesic meters on a geographic CRS, native
-    units on a projected one, coordinate units without a CRS. ``planar`` forces
-    raw coordinate units; ``meters`` forces the CRS metric and raises without a CRS.";
+    post: unit_parameter_doc!();
     tail: r"
+Raises
+------
+GeometryError
+    If ``tolerance`` is not positive and finite, or ``unit='meters'`` is
+    requested for a CRS-free geometry.
+CRSError
+    If the CRS lacks linear axis units for a metric result.
+
 See Also
 --------
 maximum_inscribed_circle : The contained polygonal approximation.
@@ -457,21 +458,18 @@ Examples
 
 method_doc! {
     doc_minimum_bounding_circle;
-    body: r"Smallest circle enclosing the geometry, as a polygon. The standard shape:
+    body: concat!(r"Smallest circle enclosing the geometry, as a polygon. The standard shape:
 for planar/projected input, ``minimum_bounding_radius`` is the correctly rounded
 mathematical minimum radius and this method realizes that disk as a certified
 circumscribed 64-gon. Every edge encloses the disk and every vertex lies outside
 it. A single distinct vertex returns itself; empty input returns
 ``POLYGON EMPTY``. CRS-aware via local projection (approximate) on a
-geographic CRS; projected CRS distances default to the CRS's native unit
+geographic CRS; projected CRS distances default to the CRS's native linear units
 and scale through the CRS linear unit only with ``unit='meters'``.
 
 Parameters
 ----------
-unit : {'planar', 'meters'}, default None
-    Omitted follows the CRS: geodesic meters on a geographic CRS, native
-    units on a projected one, coordinate units without a CRS. ``planar`` forces
-    raw coordinate units; ``meters`` forces the CRS metric and raises without a CRS.";
+", unit_parameter_doc!());
     scalar: r"
 
 Returns
@@ -508,7 +506,7 @@ Examples
 
 method_doc! {
     doc_minimum_bounding_radius;
-    body: r"Radius of the smallest circle enclosing the geometry. For planar/projected
+    body: concat!(r"Radius of the smallest circle enclosing the geometry. For planar/projected
 input it is rounded from the exact source minimum; this is the numeric twin of
 minimum_bounding_circle, and both use the same exact support kernel. Empty
 input yields ``NaN``; a single distinct vertex yields ``0``. Geographic point
@@ -520,10 +518,7 @@ binary64 rounding.
 
 Parameters
 ----------
-unit : {'planar', 'meters'}, default None
-    Omitted follows the CRS: geodesic meters on a geographic CRS, native
-    units on a projected one, coordinate units without a CRS. ``planar`` forces
-    raw coordinate units; ``meters`` forces the CRS metric and raises without a CRS.";
+", unit_parameter_doc!());
     scalar: r"
 
 Returns
@@ -549,7 +544,7 @@ numpy.ndarray
 
 method_doc! {
     doc_minimum_clearance;
-    body: r"Smallest distance by which a vertex could move to invalidate the geometry.
+    body: concat!(r"Smallest distance by which a vertex could move to invalidate the geometry.
 On a geographic CRS, the witness is selected in the geometry's best local
 projection and then measured geodesically in source coordinates; this is a
 local-projection approximation, not an exact ellipsoidal clearance search.
@@ -557,11 +552,7 @@ Projected CRS and CRS-free geometries measure in the active planar units.
 
 Parameters
 ----------
-unit : {'planar', 'meters'}, default None
-    Omitted follows the CRS: geodesic meters on a geographic CRS, native units on a projected one, coordinate units without a CRS. ``planar``
-    forces raw coordinate units (native angular units as Cartesian coordinates on a geographic CRS
-    — only for deliberate coordinate-space math); ``meters`` forces the
-    CRS metric and raises without a CRS.";
+", unit_parameter_doc!());
     scalar: r"
 
 Returns
@@ -587,7 +578,7 @@ numpy.ndarray
 
 method_doc! {
     doc_minimum_clearance_line;
-    body: r"Two-point line realizing `minimum_clearance`. The metric matches
+    body: concat!(r"Two-point line realizing `minimum_clearance`. The metric matches
 minimum_clearance: on a geographic CRS, the witness is selected in the
 geometry's best local projection and returned in source coordinates, so it is a
 local-projection approximation rather than an exact ellipsoidal clearance
@@ -597,11 +588,7 @@ vertices).
 
 Parameters
 ----------
-unit : {'planar', 'meters'}, default None
-    Omitted follows the CRS: geodesic meters on a geographic CRS, native units on a projected one, coordinate units without a CRS. ``planar``
-    forces raw coordinate units (native angular units as Cartesian coordinates on a geographic CRS
-    — only for deliberate coordinate-space math); ``meters`` forces the
-    CRS metric and raises without a CRS.";
+", unit_parameter_doc!());
     scalar: r"
 
 Returns
@@ -821,11 +808,7 @@ GeometryArray[Point]
     One point per row.
 
 ");
-    post: r"unit : {'planar', 'meters'}, default None
-    Omitted follows the CRS: geodesic meters on a geographic CRS, native units on a projected one, coordinate units without a CRS. ``planar``
-    forces raw coordinate units (native angular units as Cartesian coordinates on a geographic CRS
-    — only for deliberate coordinate-space math); ``meters`` forces the
-    CRS metric and raises without a CRS.";
+    post: unit_parameter_doc!();
     tail: r"
 Raises
 ------
@@ -1045,7 +1028,9 @@ space and does NOT auto-split antimeridian-crossing geographic input; call
 Parameters
 ----------
 tolerance : float, default 0.0
-    Tolerance in coordinate units (finite and non-negative).
+    Finite non-negative coordinate-space tolerance: native angular units for
+    geographic CRSs, native linear units for projected CRSs, and raw coordinate
+    units when CRS-free.
 clip : {'padded', 'envelope'} or Polygon, default 'padded'
     How to bound the unbounded outer cells: a padded box, the input
     envelope, or a `Polygon` to clip the diagram to.
@@ -1093,7 +1078,9 @@ the envelope of a horizontal or vertical row, bound no cells.
 Parameters
 ----------
 tolerance : float, default 0.0
-    Tolerance in coordinate units (finite and non-negative).
+    Finite non-negative coordinate-space tolerance: native angular units for
+    geographic CRSs, native linear units for projected CRSs, and raw coordinate
+    units when CRS-free.
 clip : {'padded', 'envelope'} or Polygon, default 'padded'
     How to bound the unbounded outer cells: a padded box, the input
     envelope, or a `Polygon` to clip the diagram to.
@@ -1144,8 +1131,10 @@ min_angle : float, optional
     valid with ``method='constrained'``.
 
 max_area : float, optional
-    Maximum triangle area in square coordinate units; positive finite values
-    are valid with ``method='constrained'``. Setting either option enables
+    Positive finite maximum triangle area in coordinate space. Geographic
+    CRSs use squared native angular units, projected CRSs use squared native
+    linear units, and CRS-free inputs use squared raw coordinate units. Valid
+    with ``method='constrained'``. Setting either option enables
     refinement;
     without either option, duplicate XY sites use their first source
     occurrence and triangle corners preserve the selected source ordinates.
@@ -1184,8 +1173,10 @@ min_angle : float or sequence of float, optional
     and at most 30. Valid only with ``method='constrained'``.
 
 max_area : float or sequence of float, optional
-    Maximum triangle area in square coordinate units; each value must be
-    positive and finite. Valid only with ``method='constrained'``. Setting
+    Maximum triangle area in coordinate space; each value must be positive
+    and finite. Geographic CRSs use squared native angular units, projected
+    CRSs use squared native linear units, and CRS-free inputs use squared raw
+    coordinate units. Valid only with ``method='constrained'``. Setting
     either option enables refinement;
     inserted Steiner vertices return uniform XY. Scalar and array rows use
     the same first-occurrence source-site and ordinate policy.

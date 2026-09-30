@@ -67,6 +67,14 @@ impl PyGeometryArray {
     /// object
     ///     A Polars Series containing WKB or EWKB values.
     ///
+    /// Raises
+    /// ------
+    /// GeometryError
+    ///     If coordinate epoch metadata or a CRS that cannot be embedded as an
+    ///     EWKB SRID would be lost without ``drop_epoch`` or ``drop_crs``.
+    /// ModuleNotFoundError
+    ///     If Polars is not installed.
+    ///
     /// Examples
     /// --------
     /// >>> import gometry as gm
@@ -103,6 +111,13 @@ impl PyGeometryArray {
     /// -------
     /// object
     ///     A GeoPandas GeoSeries carrying this array's CRS.
+    ///
+    /// Raises
+    /// ------
+    /// GeometryError
+    ///     If the array carries a coordinate epoch and ``drop_epoch`` is false.
+    /// ModuleNotFoundError
+    ///     If GeoPandas is not installed.
     ///
     /// Examples
     /// --------

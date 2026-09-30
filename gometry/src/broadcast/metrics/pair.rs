@@ -132,7 +132,7 @@ pub(crate) fn geodesic_point_columns_dwithin_shape_values(
 /// * `unit='meters'` → the CRS metric, or a hard error on a CRS-free geometry
 ///   (no meter scale exists — telling the caller, not silently degrading),
 /// * `unit=None` (default) → the CRS-natural model (geodesic meters /
-///   projected native units / CRS-free coordinate units).
+///   projected native linear units / CRS-free raw coordinate units).
 ///
 /// This is the single seam every metric op shares (the spatial index included),
 /// so `unit` semantics cannot drift between operations.
@@ -148,7 +148,7 @@ pub(crate) fn resolve_metric(
         Some(DistanceUnit::Planar) => Ok(crs::MetricModel::COORDINATE),
         Some(DistanceUnit::Meters) if crs.is_none() => Err(GeometryError::new_err(format!(
             "{operation} unit='meters' requires a CRS; CRS-free geometries have no meter scale — \
-             use unit='planar' for coordinate units, or set a CRS"
+             use unit='planar' for raw coordinate units, or set a CRS"
         ))),
         Some(DistanceUnit::Meters) => Ok(crs::metric_model_meters(crs.expect("checked above"))?),
         None => Ok(crs::metric_model(crs)?),
@@ -157,9 +157,10 @@ pub(crate) fn resolve_metric(
 
 /// [`resolve_metric`]'s 3D sibling, for `distance_3d`/`length_3d`.
 ///
-/// The unit policy is identical: omitted reports the CRS's own linear unit,
-/// `unit='meters'` scales by the axis factor, `unit='planar'` is raw coordinate
-/// units. The one divergence is what a geographic CRS means. 2D measures it
+/// The unit policy is identical: omitted reports native linear units for a
+/// projected CRS and raw coordinate units without a CRS; `unit='meters'`
+/// scales by the axis factor, and `unit='planar'` uses coordinate units. The
+/// one divergence is what a geographic CRS means. 2D measures it
 /// geodesically; 3D cannot, because a Euclidean norm over degrees and metre
 /// heights is not dimensionally meaningful — so `ensure_3d_metric` rejects an
 /// angular horizontal under *every* unit, including `unit='planar'`. (2D
@@ -180,7 +181,7 @@ pub(crate) fn resolve_metric_3d(
         None | Some(DistanceUnit::Planar) => Ok(crs::MetricModel::COORDINATE),
         Some(DistanceUnit::Meters) if crs.is_none() => Err(GeometryError::new_err(format!(
             "{operation} unit='meters' requires a CRS; CRS-free geometries have no meter scale — \
-             use unit='planar' for coordinate units, or set a CRS"
+             use unit='planar' for raw coordinate units, or set a CRS"
         ))),
         Some(DistanceUnit::Meters) => Ok(crs::MetricModel::Planar { to_metre }),
     }
@@ -371,9 +372,9 @@ pub(crate) fn lonlat_points(
     Ok(LonLatPointRows::Columns { xs, ys })
 }
 
-/// CRS-aware minimum distance: planar coordinate units for a projected/CRS-free
-/// geometry, geodesic meters on the CRS ellipsoid (between the closest pair of
-/// points) for a geographic one.
+/// CRS-aware minimum distance: native linear units for projected geometry,
+/// raw coordinate units for CRS-free geometry, and geodesic meters on the CRS
+/// ellipsoid (between the closest pair of points) for geographic geometry.
 ///
 /// Geodesic antimeridian prelude: the seam-split forms of a pair when a geodesic
 /// metric meets a crossing geographic operand, else `None` (use the originals).
@@ -603,9 +604,10 @@ pub(crate) fn same_storage_similarity_metric_zeros(storage: &GeometryArrayStorag
     values
 }
 
-/// CRS-aware continuous Hausdorff distance: planar coordinate/native units under
-/// `unit='planar'`/a planar frame, explicit SI meters under `unit='meters'`,
-/// or true geodesic meters on a geographic CRS.
+/// CRS-aware continuous Hausdorff distance: native linear units on projected
+/// frames, raw coordinate units for CRS-free frames, coordinate-space units
+/// under `unit='planar'`, explicit SI meters under `unit='meters'`, or true
+/// geodesic meters on a geographic CRS.
 pub(crate) fn metric_hausdorff(
     model: &crs::MetricModel,
     a: &Shape,

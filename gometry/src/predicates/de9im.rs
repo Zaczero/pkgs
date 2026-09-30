@@ -19,8 +19,9 @@ use crate::{
 ///
 /// Returns
 /// -------
-/// str or list of str
-///     The nine-character DE-9IM pattern; one per input pair.
+/// str or list of str or None
+///     The nine-character DE-9IM pattern; one per input pair. A missing input
+///     row yields ``None`` in its result slot.
 ///
 /// Raises
 /// ------

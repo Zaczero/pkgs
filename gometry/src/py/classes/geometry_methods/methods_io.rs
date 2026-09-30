@@ -38,7 +38,8 @@ impl PyGeometry {
     ///     If the geometry carries Z/M, or a coordinate is outside the
     ///     longitude/latitude domain. Flatten explicitly with ``force_2d()``.
     /// GeometryError
-    ///     If ``precision`` is out of range.
+    ///     If ``precision`` is out of range, or the geometry carries a
+    ///     coordinate epoch and ``drop_epoch`` is false.
     ///
     /// See Also
     /// --------

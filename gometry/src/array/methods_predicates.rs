@@ -164,7 +164,8 @@ impl PyGeometryArray {
     ///     If a row carries Z/M, or a coordinate is outside the
     ///     longitude/latitude domain. Flatten explicitly with ``force_2d()``.
     /// GeometryError
-    ///     If ``precision`` is out of range.
+    ///     If ``precision`` is out of range, or the array carries a coordinate
+    ///     epoch and ``drop_epoch`` is false.
     ///
     /// See Also
     /// --------
