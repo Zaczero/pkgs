@@ -182,8 +182,8 @@ use geodesic_bvh::{
     geodesic_witness_is_better, witness_refine_limit,
 };
 pub(crate) use line_index::{LineIndex, LineIndexSlot, PlanarMetric, SegmentMetric};
+use linear::normalize_line_distance;
 pub(crate) use linear::{MeasureRange, MeasuredLineIndex, MeasuredLineIndexSlot};
-use linear::{normalize_line_distance, push_distinct_point};
 pub(crate) use ordinates::carry_overlay_ordinates;
 use ordinates::{carry_each, carry_ordinates};
 #[cfg(test)]
@@ -217,8 +217,8 @@ pub(in crate::geometry) use segments::{
 pub(crate) use util::{
     bounds_to_shape, columns_within, dedup_consecutive_points, dedup_consecutive_xy,
     empty_geometry, geographic_bounds_to_shape, point_equals_exact, points_equal_exact,
-    same_active_position, same_point, same_topological_coordinate, topology_coordinate_bits_simd,
-    unique_xy_points, wrap_index,
+    push_distinct_active_position, push_distinct_xy_position, same_active_position, same_point,
+    same_topological_coordinate, topology_coordinate_bits_simd, unique_xy_points, wrap_index,
 };
 
 /// Which optional ordinate an edit replaces or clears.

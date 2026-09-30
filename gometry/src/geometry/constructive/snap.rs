@@ -10,8 +10,9 @@ use crate::geometry::{
     Polygon, RepairMethod, Ring, RunIdentity, Segment, SegmentProjection, Shape, TopologyDomain,
     XY, axis_pow2_scale, bounds_distance_squared, dedup_consecutive_points,
     interpolate_subdivision_ordinate, line_segments, point_distance,
-    point_segment_distance_and_projection, points_dwithin, repair_shape_in_frame, same_point,
-    same_topological_coordinate, scaled_residual, validate_shape_in_frame,
+    point_segment_distance_and_projection, points_dwithin, push_distinct_xy_position,
+    repair_shape_in_frame, same_point, same_topological_coordinate, scaled_residual,
+    validate_shape_in_frame,
 };
 
 const SNAP_INDEX_MIN_POINTS: usize = 32;
@@ -263,13 +264,13 @@ pub(crate) fn snap_line_to_reference<C: Coordinates + ?Sized>(
     }
 
     let mut result = Vec::with_capacity(points.coord_count());
-    push_distinct_point(&mut result, reference.snap_point(points.nth_coord(0)));
+    push_distinct_xy_position(&mut result, reference.snap_point(points.nth_coord(0)));
 
     for [start, end] in points.segment_pairs() {
         for point in reference.insertions(start, end)? {
-            push_distinct_point(&mut result, point);
+            push_distinct_xy_position(&mut result, point);
         }
-        push_distinct_point(&mut result, reference.snap_point(end));
+        push_distinct_xy_position(&mut result, reference.snap_point(end));
     }
     if result.len() == 1 {
         result.clear();
@@ -279,12 +280,6 @@ pub(crate) fn snap_line_to_reference<C: Coordinates + ?Sized>(
         ]);
     }
     Ok(result)
-}
-
-fn push_distinct_point(points: &mut Vec<Point>, point: Point) {
-    if points.last().is_none_or(|last| !same_point(*last, point)) {
-        points.push(point);
-    }
 }
 
 pub(crate) fn snap_ring_to_reference<C: Coordinates + ?Sized>(

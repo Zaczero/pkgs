@@ -462,6 +462,13 @@ Linear referencing uses the geometry's CRS metric by default. Values are absolut
 distances unless `normalized=True`, when `0.0` and `1.0` mean the start and end.
 Pass `basis='m'` when the line's M ordinate is the route measure instead.
 
+Zero-length X/Y segments consume no distance, but their stored vertices remain
+on the route. Interpolation at an interior prefix shared by a zero-length run
+selects its first stored vertex; normalized `0.0` and `1.0` select the first
+and last stored vertices, including when the whole route has zero length.
+`line_substring` includes active-distinct stored vertices in its inclusive
+range, even when consecutive vertices share X/Y and differ only in Z/M.
+
 | Task | Distance basis (default) | M basis |
 | --- | --- | --- |
 | point at a location | [`line_interpolate(at)`][gometry.Geometry.line_interpolate] | `line_interpolate(at, basis='m')` |
@@ -524,13 +531,17 @@ derivable and drop only the axis that cannot be sourced:
 
 - Operations whose output vertices are **copied from input vertices** preserve Z/M:
   [`simplify`][gometry.Geometry.simplify], [`convex_hull`][gometry.Geometry.convex_hull], [`concave_hull`][gometry.Geometry.concave_hull], and
-  the triangulations keep every surviving vertex's ordinates. The geometric XY
-  hull is independent of input point order (±0.0 compares as the same ordinate).
+  [`reverse`][gometry.Geometry.reverse] and the triangulations keep every
+  surviving vertex's ordinates. The geometric XY hull is independent of input
+  point order (±0.0 compares as the same ordinate).
   When several input vertices share an XY position, hulls copy the first vertex
   in storage order, including its Z/M and signed-zero spelling.
 - Operations whose new vertices are **resolvable against the input** — overlay,
-  [`clip_by_rect`][gometry.Geometry.clip_by_rect], linear referencing — interpolate Z/M along source segments. If
-  an axis has a genuinely unsourceable output vertex (such as a clip-rectangle
+  [`clip_by_rect`][gometry.Geometry.clip_by_rect], [`split`][gometry.split], and
+  linear referencing — interpolate Z/M along source segments. They retain
+  active-distinct source vertices even when consecutive X/Y positions match;
+  distance-based linear referencing gives zero-length X/Y segments no length.
+  If an axis has a genuinely unsourceable output vertex (such as a clip-rectangle
   corner entering the output), or conflicting source values, that axis is
   dropped while the other axis may remain.
 - Empty overlay results retain the axes declared by the operation: `difference`

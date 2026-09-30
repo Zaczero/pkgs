@@ -23,6 +23,12 @@ method_doc! {
     pre: r"Interpolate point locations along linework. Empty linework yields
 ``POINT EMPTY`` at every location.
 
+Distance-basis routes retain vertices at zero-length X/Y segments. At an
+interior prefix shared by such a run, an exact boundary selects its first
+stored vertex; normalized ``0`` and ``1`` select the first and last stored
+vertices. M-basis interpolation follows the stored monotonic measure and keeps
+vertices whose active Z/M ordinates differ even when X/Y is equal.
+
 Parameters
 ----------
 at : float or sequence of float, optional
@@ -100,6 +106,11 @@ method_doc! {
     body: concat!(r"Return the portion of linework from ``start`` through ``end``. Empty
 linework yields ``LINESTRING EMPTY``.
 
+Both bounds are inclusive. Stored vertices at zero-length X/Y segments consume
+no distance but remain in the result when their active ordinates differ,
+including consecutive vertices with identical X/Y. This applies to distance
+and M basis.
+
 Parameters
 ----------
 start, end : float or sequence of float
@@ -165,7 +176,9 @@ from ``start_m`` at the start to ``end_m`` at the end, continuously across
 multipart linework (the PostGIS ``ST_AddMeasure`` shape). The stationing
 follows the CRS like length — geodesic on a geographic CRS, planar
 otherwise (coordinates are never moved). Z is preserved; existing M requires
-``overwrite=True``. Empty linework returns the same empty with an M axis.
+``overwrite=True``. Every stored vertex is retained; a zero-length X/Y segment
+has equal M values at both ends. Empty linework returns the same empty with an
+M axis.
 
 Parameters
 ----------";
@@ -224,6 +237,11 @@ method_doc! {
     doc_line_locate;
     body: concat!(r"Locate the position on linework nearest ``geom``. Empty linework, or
 an empty query point, locates to ``nan``.
+
+Projection is in X/Y. Zero-length X/Y segments add no distance-basis projection,
+and equal-distance projections keep the first route position. With
+``basis='m'``, the returned M is likewise taken from the first nearest
+projection.
 
 Parameters
 ----------

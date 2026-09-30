@@ -5,10 +5,11 @@
 //! geodesic engines share one lifecycle — for the geodesic metric the build
 //! pays the per-segment Karney inverse exactly once per (shape, CRS).
 //!
-//! Semantics are identical to the previous per-call walks: zero-length
-//! segments are skipped, an exact prefix boundary resolves to the segment it
-//! ends (`target <= length` in the old loop), distances normalize through
-//! [`normalize_line_distance`], and locate keeps first-wins tie ordering.
+//! Zero-length segments stay in the route sequence at their unchanged prefix
+//! and contribute their stored vertices to interpolation and substrings.
+//! Locate skips them, matching the former projection walk; exact prefix
+//! boundaries resolve to the first vertex at that prefix, except the end,
+//! which resolves to the last stored vertex.
 
 use crate::HeapSize;
 use crate::error::Result;
@@ -17,8 +18,14 @@ use crate::geometry::{
     GeodesicSegmentScratch, GeodesicWitnessNeed, GeometryErrorKind, LineSeq, MeasureRange,
     Ordering, Point, Segment, Shape, ShapeCountQuery, interpolate_f64, lerp_point,
     linework_first_point, normalize_line_distance, point_distance,
-    point_segment_distance_and_projection,
+    point_segment_distance_and_projection, push_distinct_active_position, same_point,
 };
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+pub(crate) enum LocateStrategy {
+    Planar,
+    Ordered,
+}
 
 /// Per-segment measurement for the linear-referencing engine.
 pub(crate) trait SegmentMetric {
@@ -31,12 +38,8 @@ pub(crate) trait SegmentMetric {
     }
     /// The point at `fraction` (`[0, 1]`) along the segment.
     fn interpolate(&self, start: Point, end: Point, fraction: f64) -> Point;
-    /// Whether locate sweeps should refine segments in cheap-lower-bound
-    /// order with early termination (worth it only when refinement is
-    /// expensive because it evaluates the certified geodesic segment kernel;
-    /// planar projection is cheaper
-    /// than the ordering would be).
-    const ORDERED_LOCATE: bool = false;
+    /// Candidate ordering and projection kernel selected by this metric.
+    const LOCATE_STRATEGY: LocateStrategy;
     /// Whether `locate_with_measure` needs the segment length argument.
     /// Planar M interpolation keeps the certified projection ratio and does
     /// not use the length; geodesic refinement needs its along-track scale.
@@ -92,10 +95,22 @@ pub(crate) trait SegmentMetric {
     }
 }
 
+macro_rules! locate_planar_segment {
+    ($probe:expr, $start:expr, $end:expr, $length:expr) => {{
+        let (distance, projection) =
+            point_segment_distance_and_projection(($probe).xy(), Segment {
+                start: ($start).into(),
+                end: ($end).into(),
+            })?;
+        Ok::<Option<(f64, f64)>, crate::error::Error>(Some((distance, projection.scale($length)?)))
+    }};
+}
+
 /// Planar (coordinate-unit) metric.
 pub(crate) struct PlanarMetric;
 
 impl SegmentMetric for PlanarMetric {
+    const LOCATE_STRATEGY: LocateStrategy = LocateStrategy::Planar;
     const LOCATE_WITH_MEASURE_NEEDS_LENGTH: bool = false;
 
     fn length(&self, start: Point, end: Point) -> f64 {
@@ -118,11 +133,7 @@ impl SegmentMetric for PlanarMetric {
         _best: f64,
         _scratch: &mut GeodesicSegmentScratch,
     ) -> Result<Option<(f64, f64)>> {
-        let (distance, projection) = point_segment_distance_and_projection(probe.xy(), Segment {
-            start: start.into(),
-            end: end.into(),
-        })?;
-        Ok(Some((distance, projection.scale(length)?)))
+        locate_planar_segment!(probe, start, end, length)
     }
 
     fn locate_with_measure(
@@ -149,7 +160,7 @@ impl SegmentMetric for PlanarMetric {
 
 /// Any [`GeodesicMetric`] is a [`SegmentMetric`] (lengths in meters).
 impl<M: GeodesicMetric> SegmentMetric for M {
-    const ORDERED_LOCATE: bool = true;
+    const LOCATE_STRATEGY: LocateStrategy = LocateStrategy::Ordered;
 
     fn admitted_length(&self, start: Point, end: Point) -> Result<f64> {
         Ok(self.make_segment(start, end)?.length)
@@ -242,8 +253,8 @@ impl LineIndexSlot {
 }
 
 /// The prefix-length index over one shape's linework, in one metric.
-/// One linear-referencing segment with FULL ordinate carry — the planar
-/// [`Segment`] is XY-only by design, and LRS interpolates Z/M.
+/// Each stored segment has FULL ordinate carry — the planar [`Segment`] is
+/// XY-only by design, and LRS interpolates Z/M.
 #[derive(Clone, Copy)]
 struct OrdinateSegment {
     start: Point,
@@ -252,8 +263,121 @@ struct OrdinateSegment {
 
 crate::heapless!(OrdinateSegment);
 
+macro_rules! locate_point_body {
+    (
+        $this:expr,
+        $probe:expr,
+        $normalized:expr,
+        $metric:expr,
+        $metric_type:ty,
+        $index:ident,
+        $segment:ident,
+        $offset:ident,
+        $length:ident,
+        $skip_zero_segments:block
+    ) => {{
+        let mut best_distance = f64::INFINITY;
+        let mut best_offset = 0.0;
+        let mut segment_scratch = GeodesicSegmentScratch::default();
+        if <$metric_type as SegmentMetric>::LOCATE_STRATEGY == LocateStrategy::Ordered {
+            #[derive(Clone, Copy)]
+            struct BoundEntry {
+                bound: f64,
+                index: usize,
+            }
+            impl PartialEq for BoundEntry {
+                fn eq(&self, other: &Self) -> bool {
+                    self.bound.to_bits() == other.bound.to_bits() && self.index == other.index
+                }
+            }
+            impl Eq for BoundEntry {}
+            impl PartialOrd for BoundEntry {
+                fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+                    Some(self.cmp(other))
+                }
+            }
+            impl Ord for BoundEntry {
+                fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+                    other
+                        .bound
+                        .total_cmp(&self.bound)
+                        .then_with(|| other.index.cmp(&self.index))
+                }
+            }
+            let mut entries = Vec::with_capacity(($this).segments.len());
+            for ($index, ($segment, &$offset)) in
+                std::iter::zip(&($this).segments, &($this).prefix).enumerate()
+            {
+                let $length = ($this).prefix[$index + 1] - $offset;
+                $skip_zero_segments;
+                let bound =
+                    ($metric).locate_bound($probe, $segment.start, $segment.end, $length)?;
+                entries.push(BoundEntry {
+                    bound,
+                    index: $index,
+                });
+            }
+            let mut order = std::collections::BinaryHeap::from(entries);
+            let mut best_index = usize::MAX;
+            while let Some(BoundEntry { bound, index }) = order.pop() {
+                if bound > best_distance {
+                    break;
+                }
+                #[expect(clippy::float_cmp, reason = "exact tie against the refined best")]
+                let skippable_tie = bound == best_distance && index > best_index;
+                if skippable_tie {
+                    continue;
+                }
+                let segment = ($this).segments[index];
+                let offset = ($this).prefix[index];
+                let length = ($this).prefix[index.wrapping_add(1)] - offset;
+                let Some((distance, along)) = ($metric).locate(
+                    $probe,
+                    segment.start,
+                    segment.end,
+                    length,
+                    best_distance,
+                    &mut segment_scratch,
+                )?
+                else {
+                    continue;
+                };
+                #[expect(clippy::float_cmp, reason = "tie-break preserves first-wins order")]
+                let tie = distance == best_distance && index < best_index;
+                if distance < best_distance || tie {
+                    best_distance = distance;
+                    best_offset = offset + along;
+                    best_index = index;
+                }
+            }
+        } else {
+            for ($index, ($segment, &$offset)) in
+                std::iter::zip(&($this).segments, &($this).prefix).enumerate()
+            {
+                let $length = ($this).prefix[$index + 1] - $offset;
+                $skip_zero_segments;
+                let Some((distance, along)) =
+                    locate_planar_segment!($probe, $segment.start, $segment.end, $length)?
+                else {
+                    continue;
+                };
+                if distance < best_distance {
+                    best_distance = distance;
+                    best_offset = $offset + along;
+                }
+            }
+        }
+        if $normalized {
+            Ok(best_offset / ($this).total)
+        } else {
+            Ok(best_offset)
+        }
+    }};
+}
+
 pub(crate) struct LineIndex {
-    /// Non-zero-length segments, in linework order.
+    /// All stored segments, in linework order. Zero-length segments share a
+    /// prefix with the surrounding route vertices.
     segments: Box<[OrdinateSegment]>,
     /// `prefix[i]` = cumulative length before segment `i`; the last entry is
     /// the cached total length. Lengths are cached here — locate's
@@ -264,9 +388,14 @@ pub(crate) struct LineIndex {
     total: f64,
     first: Point,
     last: Point,
+    has_zero_segments: bool,
 }
 
 impl LineIndex {
+    pub(crate) const fn has_zero_length_segments(&self) -> bool {
+        self.has_zero_segments
+    }
+
     fn storage(upper: Option<usize>) -> (Vec<OrdinateSegment>, Vec<f64>) {
         let mut segments = Vec::new();
         let mut prefix = Vec::new();
@@ -280,9 +409,8 @@ impl LineIndex {
     }
 
     /// Build over `shape`'s linework. `LineStringRequired` for non-lineal
-    /// shapes, `EmptyLinework` when there is no first vertex (the zero-total
-    /// degeneracies — all-zero-length linework — build fine and resolve to
-    /// `first`, matching the walks).
+    /// shapes and `EmptyLinework` when there is no first vertex. Zero-total
+    /// linework retains both endpoint identities.
     pub(crate) fn build(shape: &Shape, metric: &impl SegmentMetric) -> Result<Self> {
         let lines = shape.linework()?;
         let first = linework_first_point(&lines).ok_or(GeometryErrorKind::EmptyLinework)?;
@@ -291,6 +419,7 @@ impl LineIndex {
         prefix.push(0.0);
         let mut total = 0.0;
         let mut last = first;
+        let mut has_zero_segments = false;
         for line in &lines {
             for [start, end] in line.segment_pairs() {
                 last = end;
@@ -303,6 +432,9 @@ impl LineIndex {
                     ));
                 }
                 if length == 0.0 {
+                    has_zero_segments = true;
+                    segments.push(OrdinateSegment { start, end });
+                    prefix.push(total);
                     continue;
                 }
                 // Plain sum: blanket Kahan on LRS prefixes is nonfree (+4–33%
@@ -333,6 +465,7 @@ impl LineIndex {
             total,
             first,
             last,
+            has_zero_segments,
         })
     }
 
@@ -346,6 +479,7 @@ impl LineIndex {
         prefix.push(0.0);
         let mut total = 0.0;
         let mut last = first;
+        let mut has_zero_segments = false;
         for [start, end] in coords.segment_pairs() {
             last = end;
             let length = metric.admitted_length(start, end)?;
@@ -355,6 +489,9 @@ impl LineIndex {
                 ));
             }
             if length == 0.0 {
+                has_zero_segments = true;
+                segments.push(OrdinateSegment { start, end });
+                prefix.push(total);
                 continue;
             }
             total += length;
@@ -375,6 +512,7 @@ impl LineIndex {
             total,
             first,
             last,
+            has_zero_segments,
         })
     }
 
@@ -408,7 +546,16 @@ impl LineIndex {
         let Some((index, local)) = self.segment_at(target) else {
             return self.last;
         };
+        #[expect(
+            clippy::indexing_slicing,
+            reason = "segment_at returns an index in the segment slice"
+        )]
         let segment = self.segments[index];
+        #[expect(
+            clippy::arithmetic_side_effects,
+            clippy::indexing_slicing,
+            reason = "segment_at returns an index with a following prefix entry"
+        )]
         let length = self.prefix[index + 1] - self.prefix[index];
         if local == 0.0 {
             return segment.start;
@@ -418,6 +565,64 @@ impl LineIndex {
             return segment.end;
         }
         metric.interpolate(segment.start, segment.end, local / length)
+    }
+
+    pub(crate) fn interpolate_route_position(
+        &self,
+        distance: f64,
+        normalized: bool,
+        metric: &impl SegmentMetric,
+    ) -> Point {
+        if self.has_zero_segments {
+            self.interpolate_with_zero_length_segments(distance, normalized, metric)
+        } else {
+            self.interpolate(distance, normalized, metric)
+        }
+    }
+
+    pub(crate) fn interpolate_with_zero_length_segments(
+        &self,
+        distance: f64,
+        normalized: bool,
+        metric: &impl SegmentMetric,
+    ) -> Point {
+        if self.total == 0.0 {
+            return self.interpolate_zero_total(distance, normalized);
+        }
+        let target = normalize_line_distance(distance, self.total, normalized);
+        if target.total_cmp(&self.total) == Ordering::Equal {
+            return self.last;
+        }
+        let Some((index, local)) = self.segment_at(target) else {
+            return self.last;
+        };
+        #[expect(
+            clippy::indexing_slicing,
+            reason = "segment_at returns an index in the segment slice"
+        )]
+        let segment = self.segments[index];
+        #[expect(
+            clippy::arithmetic_side_effects,
+            clippy::indexing_slicing,
+            reason = "segment_at returns an index with a following prefix entry"
+        )]
+        let length = self.prefix[index + 1] - self.prefix[index];
+        if local == 0.0 {
+            return segment.start;
+        }
+        #[expect(clippy::float_cmp, reason = "exact prefix boundary identity")]
+        if local == length {
+            return segment.end;
+        }
+        metric.interpolate(segment.start, segment.end, local / length)
+    }
+
+    fn interpolate_zero_total(&self, distance: f64, normalized: bool) -> Point {
+        if normalized && distance >= 1.0 {
+            self.last
+        } else {
+            self.first
+        }
     }
 
     /// The sub-line between two distances (the engine behind
@@ -431,8 +636,19 @@ impl LineIndex {
         normalized: bool,
         metric: &impl SegmentMetric,
     ) -> Result<Shape> {
-        if self.total == 0.0 {
-            return Ok(Shape::Point(self.first));
+        if self.total == 0.0 && normalized && range.start() > range.end() {
+            return Err(GeometryErrorKind::SubstringOrder(range.start(), range.end()).into());
+        }
+        let zero_length_normalized_span = self.total == 0.0
+            && normalized
+            && range.start().clamp(0.0, 1.0) < range.end().clamp(0.0, 1.0);
+        if self.total == 0.0 && !zero_length_normalized_span {
+            let endpoint = if normalized && range.start().clamp(0.0, 1.0) >= 1.0 {
+                self.last
+            } else {
+                self.first
+            };
+            return Ok(Shape::Point(endpoint));
         }
         let (start_distance, end_distance) = (range.start(), range.end());
         let start = normalize_line_distance(start_distance, self.total, normalized);
@@ -440,8 +656,10 @@ impl LineIndex {
         if start > end {
             return Err(GeometryErrorKind::SubstringOrder(start_distance, end_distance).into());
         }
-        if start.total_cmp(&end) == Ordering::Equal {
-            return Ok(Shape::Point(self.interpolate(start, false, metric)));
+        if start.total_cmp(&end) == Ordering::Equal && !zero_length_normalized_span {
+            return Ok(Shape::Point(
+                self.interpolate_route_position(start, false, metric),
+            ));
         }
 
         let mut result = Vec::new();
@@ -464,6 +682,13 @@ impl LineIndex {
             }
             let segment = self.segments[index];
             let length = segment_end - segment_start;
+            if length == 0.0 {
+                if start <= segment_start && segment_start <= end {
+                    push_distinct_active_position(&mut result, segment.start);
+                    push_distinct_active_position(&mut result, segment.end);
+                }
+                continue;
+            }
             // Boundary fractions resolve to the exact stored endpoints — no
             // metric call (the interior windows of a substring walk are all
             // full segments, so this skips ~all the geodesic directs). The
@@ -483,12 +708,12 @@ impl LineIndex {
                     )
                 }
             };
-            push_distinct_point(&mut result, at(from));
-            push_distinct_point(&mut result, at(to));
+            push_distinct_active_position(&mut result, at(from));
+            push_distinct_active_position(&mut result, at(to));
         }
 
         Ok(match result.len() {
-            0 => Shape::Point(self.interpolate(start, false, metric)),
+            0 => Shape::Point(self.interpolate_route_position(start, false, metric)),
             1 => Shape::Point(result[0]),
             _ => Shape::LineString(LineSeq::from_proven(CoordSeq::try_from_points(&result)?)),
         })
@@ -496,6 +721,10 @@ impl LineIndex {
 
     /// The along-line offset of `probe`'s nearest projection (the engine
     /// behind `line_locate_point`). First-wins tie ordering, like the scan.
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "locate indices stay paired with their segment and trailing prefix entry"
+    )]
     pub(crate) fn locate_point<M: SegmentMetric>(
         &self,
         probe: Point,
@@ -509,113 +738,53 @@ impl LineIndex {
         if self.total == 0.0 {
             return Ok(0.0);
         }
-        let mut best_distance = f64::INFINITY;
-        let mut best_offset = 0.0;
-        let mut segment_scratch = GeodesicSegmentScratch::default();
-        if M::ORDERED_LOCATE {
-            // Refine in cheap-bound order with early termination: once the
-            // (ascending) bound cannot beat the best, neither can anything
-            // after it — the expensive refinement runs on a handful of
-            // segments instead of the whole linework. Ties keep the lowest
-            // segment index, exactly like the linear scan's first-wins.
-            // Heapify + pop instead of a full sort: pruning usually stops
-            // after a few lowest-bound candidates.
-            #[derive(Clone, Copy)]
-            struct BoundEntry {
-                bound: f64,
-                index: usize,
-            }
-            impl PartialEq for BoundEntry {
-                fn eq(&self, other: &Self) -> bool {
-                    self.bound.to_bits() == other.bound.to_bits() && self.index == other.index
-                }
-            }
-            impl Eq for BoundEntry {}
-            impl PartialOrd for BoundEntry {
-                fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-                    Some(self.cmp(other))
-                }
-            }
-            // Max-heap inverted: smaller bound (then smaller index) pops first.
-            impl Ord for BoundEntry {
-                fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-                    other
-                        .bound
-                        .total_cmp(&self.bound)
-                        .then_with(|| other.index.cmp(&self.index))
-                }
-            }
-            let mut entries = Vec::with_capacity(self.segments.len());
-            for (index, (segment, &offset)) in
-                std::iter::zip(&self.segments, &self.prefix).enumerate()
-            {
-                let length = self.prefix[index + 1] - offset;
-                let bound = metric.locate_bound(probe, segment.start, segment.end, length)?;
-                entries.push(BoundEntry { bound, index });
-            }
-            // O(n) heapify; pop ascending-bound until the ceiling is met.
-            let mut order = std::collections::BinaryHeap::from(entries);
-            let mut best_index = usize::MAX;
-            while let Some(BoundEntry { bound, index }) = order.pop() {
-                if bound > best_distance {
-                    break;
-                }
-                // An equal-bound segment can still TIE exactly; first-wins
-                // ordering only needs it refined when its index could win.
-                #[expect(clippy::float_cmp, reason = "exact tie against the refined best")]
-                let skippable_tie = bound == best_distance && index > best_index;
-                if skippable_tie {
-                    continue;
-                }
-                let segment = self.segments[index];
-                let offset = self.prefix[index];
-                let length = self.prefix[index.wrapping_add(1)] - offset;
-                let Some((distance, along)) = metric.locate(
-                    probe,
-                    segment.start,
-                    segment.end,
-                    length,
-                    best_distance,
-                    &mut segment_scratch,
-                )?
-                else {
-                    continue;
-                };
-                #[expect(clippy::float_cmp, reason = "tie-break preserves first-wins order")]
-                let tie = distance == best_distance && index < best_index;
-                if distance < best_distance || tie {
-                    best_distance = distance;
-                    best_offset = offset + along;
-                    best_index = index;
-                }
-            }
+        if self.has_zero_segments {
+            self.locate_point_with_zero_segments(probe, normalized, metric)
         } else {
-            for (index, (segment, &offset)) in
-                std::iter::zip(&self.segments, &self.prefix).enumerate()
+            locate_point_body!(
+                self,
+                probe,
+                normalized,
+                metric,
+                M,
+                index,
+                segment,
+                offset,
+                length,
+                {}
+            )
+        }
+    }
+
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "locate indices stay paired with their segment and trailing prefix entry"
+    )]
+    fn locate_point_with_zero_segments<M: SegmentMetric>(
+        &self,
+        probe: Point,
+        normalized: bool,
+        metric: &M,
+    ) -> Result<f64> {
+        locate_point_body!(
+            self,
+            probe,
+            normalized,
+            metric,
+            M,
+            index,
+            segment,
+            offset,
+            length,
             {
-                let length = self.prefix[index + 1] - offset;
-                let Some((distance, along)) = metric.locate(
-                    probe,
-                    segment.start,
-                    segment.end,
-                    length,
-                    best_distance,
-                    &mut segment_scratch,
-                )?
-                else {
+                if length == 0.0
+                    && (same_point(segment.start, segment.end)
+                        || metric.length(segment.start, segment.end) == 0.0)
+                {
                     continue;
-                };
-                if distance < best_distance {
-                    best_distance = distance;
-                    best_offset = offset + along;
                 }
             }
-        }
-        if normalized {
-            Ok(best_offset / self.total)
-        } else {
-            Ok(best_offset)
-        }
+        )
     }
 }
 
@@ -634,15 +803,6 @@ impl HeapSize for LineIndex {
         self.segments
             .heap_bytes()
             .saturating_add(self.prefix.heap_bytes())
-    }
-}
-
-fn push_distinct_point(points: &mut Vec<Point>, point: Point) {
-    if points
-        .last()
-        .is_none_or(|last| !crate::geometry::same_point(*last, point))
-    {
-        points.push(point);
     }
 }
 

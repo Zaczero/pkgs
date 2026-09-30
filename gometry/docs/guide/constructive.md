@@ -307,6 +307,10 @@ and cannot be combined with `unit=`. A request that would generate more than
 produced count, limit, and controlling parameter. The limit bounds what a
 parameter makes of each geometry; an array's length is not charged against it:
 
+Both modes retain original Z/M-bearing vertices in their stored order. A
+zero-length X/Y segment is not subdivided, so consecutive same-X/Y vertices
+with different active ordinates remain present.
+
 ```python exec="on" html="true"
 from _figures import panels, with_vertices
 import gometry as gm

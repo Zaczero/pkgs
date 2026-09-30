@@ -180,7 +180,7 @@ pub(crate) fn line_interpolate_points_coordseq(
     match plan {
         InterpolatePlan::Count(count) => {
             for sample in 0..*count {
-                points.push(Shape::Point(index.interpolate(
+                points.push(Shape::Point(index.interpolate_route_position(
                     InterpolatePlan::count_fraction(sample, *count),
                     true,
                     &PlanarMetric,
@@ -189,7 +189,7 @@ pub(crate) fn line_interpolate_points_coordseq(
         },
         InterpolatePlan::Distances(distances, mode) => {
             for &distance in distances {
-                points.push(Shape::Point(index.interpolate(
+                points.push(Shape::Point(index.interpolate_route_position(
                     mode.planar_along(distance, to_metre.get()),
                     mode.is_normalized(),
                     &PlanarMetric,
@@ -319,7 +319,7 @@ pub(crate) fn line_interpolate_coordseq(
     match model {
         crate::crs::MetricModel::Planar { to_metre } => {
             let index = LineIndex::build_coordseq(line, &PlanarMetric)?;
-            Ok(index.interpolate(
+            Ok(index.interpolate_route_position(
                 distance_mode.planar_along(distance, to_metre.get()),
                 distance_mode.is_normalized(),
                 &PlanarMetric,

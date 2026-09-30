@@ -99,6 +99,104 @@ def test_interpolate_m_runs_continuously_across_parts() -> None:
     assert gm.equals(line.interpolate_m(0, 100), measured)
 
 
+def test_distance_linear_referencing_keeps_zero_length_endpoint_vertices() -> None:
+    line = gm.from_wkt(
+        'LINESTRING ZM (0 0 0 0, 0 0 10 1, 1 0 20 2, 1 0 30 3)'
+    )
+    expected = 'LINESTRING ZM (0 0 0 0, 0 0 10 1, 1 0 20 2, 1 0 30 3)'
+
+    assert line.line_interpolate(0.0).to_wkt() == 'POINT ZM (0 0 0 0)'
+    assert line.line_interpolate(1.0).to_wkt() == 'POINT ZM (1 0 30 3)'
+    assert line.line_substring(0.0, 1.0, normalized=True).to_wkt() == expected
+
+    lines = gm.GeometryArray([line])
+    assert lines.line_interpolate(0.0)[0].to_wkt() == 'POINT ZM (0 0 0 0)'
+    assert lines.line_interpolate(1.0)[0].to_wkt() == 'POINT ZM (1 0 30 3)'
+    assert lines.line_substring(0.0, 1.0, normalized=True)[0].to_wkt() == expected
+
+
+def test_distance_substring_keeps_an_interior_zero_length_vertex_run() -> None:
+    line = gm.from_wkt(
+        'LINESTRING ZM (0 0 0 0, 0.5 0 5 1, 0.5 0 10 2, 1 0 15 3)'
+    )
+
+    assert line.line_substring(0.25, 0.75, normalized=True).to_wkt() == (
+        'LINESTRING ZM (0.25 0 2.5 0.5, 0.5 0 5 1, '
+        '0.5 0 10 2, 0.75 0 12.5 2.5)'
+    )
+    assert line.line_interpolate(0.5, normalized=True).to_wkt() == (
+        'POINT ZM (0.5 0 5 1)'
+    )
+
+
+def test_zero_total_normalized_linear_referencing_uses_stored_endpoints() -> None:
+    line = gm.from_wkt('LINESTRING ZM (0 0 0 0, 0 0 5 1, 0 0 10 2)')
+
+    assert line.line_interpolate(0.0, normalized=True).to_wkt() == (
+        'POINT ZM (0 0 0 0)'
+    )
+    assert line.line_interpolate(1.0, normalized=True).to_wkt() == (
+        'POINT ZM (0 0 10 2)'
+    )
+    assert line.line_substring(0.0, 1.0, normalized=True).to_wkt() == (
+        'LINESTRING ZM (0 0 0 0, 0 0 5 1, 0 0 10 2)'
+    )
+    assert line.line_substring(1.0, 2.0, normalized=True).to_wkt() == (
+        'POINT ZM (0 0 10 2)'
+    )
+    assert line.line_substring(-2.0, -1.0, normalized=True).to_wkt() == (
+        'POINT ZM (0 0 0 0)'
+    )
+    with pytest.raises(gm.GeometryError, match='start <= end'):
+        line.line_substring(1.0, 0.0, normalized=True)
+
+
+def test_m_substring_keeps_zero_xy_vertices_in_scalar_and_array_routes() -> None:
+    line = gm.from_wkt('LINESTRING ZM (0 0 0 0, 0 0 0 1, 1 0 1 2)')
+    expected = 'LINESTRING ZM (0 0 0 0.25, 0 0 0 1, 0.5 0 0.5 1.5)'
+
+    assert line.line_substring(0.25, 1.5, basis='m').to_wkt() == expected
+    assert (
+        gm.GeometryArray([line])
+        .line_substring(0.25, 1.5, basis='m')[0]
+        .to_wkt()
+        == expected
+    )
+
+
+def test_m_locate_keeps_first_wins_for_zero_xy_projection_ties() -> None:
+    line = gm.from_wkt('LINESTRING ZM (0 0 0 0, 0 0 0 1, 1 0 1 2)')
+
+    assert line.line_locate(gm.Point(0, 0), basis='m') == 0.0
+    assert gm.GeometryArray([line]).line_locate(gm.Point(0, 0), basis='m')[0] == 0.0
+
+
+def test_split_keeps_zero_xy_vertices_with_distinct_active_ordinates() -> None:
+    line = gm.from_wkt('LINESTRING ZM (0 0 0 0, 0 0 0 1, 1 0 1 2)')
+    expected = [
+        'LINESTRING ZM (0 0 0 0, 0 0 0 1, 0.5 0 0.5 1.5)',
+        'LINESTRING ZM (0.5 0 0.5 1.5, 1 0 1 2)',
+    ]
+
+    assert gm.split(line, gm.Point(0.5, 0)).to_wkt() == expected
+    assert gm.split(gm.GeometryArray([line]), gm.Point(0.5, 0)).to_wkt() == expected
+
+
+def test_shapely_linear_interpolation_agrees_on_zero_length_z_endpoints() -> None:
+    shapely = pytest.importorskip('shapely')
+    reference = shapely.from_wkt(
+        'LINESTRING Z (0 0 0, 0 0 10, 1 0 20, 1 0 30)'
+    )
+    line = gm.from_wkt('LINESTRING Z (0 0 0, 0 0 10, 1 0 20, 1 0 30)')
+
+    for distance in (0.0, 1.0):
+        expected = shapely.line_interpolate_point(
+            reference, distance, normalized=True
+        )
+        actual = line.line_interpolate(distance, normalized=True)
+        assert actual.z == expected.z
+
+
 def test_is_convex_polygon_matrix() -> None:
     assert gm.box(0, 0, 1, 1).is_convex
     assert gm.Polygon([(0, 0), (0, 1), (1, 1), (1, 0), (0, 0)]).is_convex

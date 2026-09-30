@@ -36,7 +36,7 @@ pub(crate) fn geodesic_line_interpolate(
             state.generation,
             &metric,
         )?;
-        Ok(Shape::Point(index.interpolate(
+        Ok(Shape::Point(index.interpolate_route_position(
             distance,
             distance_mode.is_normalized(),
             &metric,
@@ -151,7 +151,7 @@ pub(crate) fn geodesic_line_interpolate_coordseq(
     ensure_geographic_coordseq_in_frame(metric.frame(), line)?;
     let distance = Finite::try_new("distance", distance)?.get();
     let index = LineIndex::build_coordseq(line, metric)?;
-    Ok(index.interpolate(distance, distance_mode.is_normalized(), metric))
+    Ok(index.interpolate_route_position(distance, distance_mode.is_normalized(), metric))
 }
 
 /// Packed-line column kernel for geodesic `line_substring`.

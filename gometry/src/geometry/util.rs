@@ -187,6 +187,21 @@ pub(crate) fn same_active_position(left: Point, right: Point) -> bool {
     true
 }
 
+pub(crate) fn push_distinct_active_position(points: &mut Vec<Point>, point: Point) {
+    if points
+        .last()
+        .is_none_or(|last| !same_active_position(*last, point))
+    {
+        points.push(point);
+    }
+}
+
+pub(crate) fn push_distinct_xy_position(points: &mut Vec<Point>, point: Point) {
+    if points.last().is_none_or(|last| !same_point(*last, point)) {
+        points.push(point);
+    }
+}
+
 /// Collapse consecutive duplicate vertices (order-preserving, first kept).
 pub(crate) fn dedup_consecutive_points(v: &mut Vec<Point>) {
     v.dedup_by(|right, left| same_point(*left, *right));

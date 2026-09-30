@@ -31,6 +31,21 @@ def test_packed_line_substring_exports_geoarrow_linestring() -> None:
     assert (out[1]).to_wkt() == 'LINESTRING (0 2, 0 6)'
 
 
+def test_packed_lrs_preserves_zero_length_endpoint_vertices() -> None:
+    line = gm.from_wkt(
+        'LINESTRING ZM (0 0 0 0, 0 0 10 1, 1 0 20 2, 1 0 30 3)'
+    )
+    lines = gm.GeometryArray([line])
+    expected = 'LINESTRING ZM (0 0 0 0, 0 0 10 1, 1 0 20 2, 1 0 30 3)'
+
+    assert lines.to_arrow().type.extension_name == 'geoarrow.linestring'
+    assert lines.line_interpolate(0.0)[0].to_wkt() == 'POINT ZM (0 0 0 0)'
+    assert lines.line_interpolate(1.0, normalized=True)[0].to_wkt() == (
+        'POINT ZM (1 0 30 3)'
+    )
+    assert lines.line_substring(0.0, 1.0, normalized=True)[0].to_wkt() == expected
+
+
 def test_packed_interpolate_matches_mixed_storage() -> None:
     packed, mixed = line_storage_twins()
     distances = [0.5, 1.0]

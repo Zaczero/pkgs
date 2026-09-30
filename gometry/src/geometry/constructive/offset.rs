@@ -11,8 +11,8 @@ use crate::geometry::{
     BufferJoinStyle, CoordSeq, Coordinates, ExpansionBudget, GeometryErrorKind, GeometryKind,
     LineSeq, MOrdinate, MultiLineString, Point, Polygon, RepairMethod, Ring, Segment, Shape,
     Strictness, XY, ZOrdinate, axis_pow2_scale, column_all_finite, dedup_consecutive_points,
-    interpolate_f64, push_distinct_point, same_point, same_topological_coordinate, scaled_residual,
-    wrap_index,
+    interpolate_f64, push_distinct_xy_position, same_point, same_topological_coordinate,
+    scaled_residual, wrap_index,
 };
 use crate::{Finite, Positive};
 
@@ -365,10 +365,10 @@ fn offset_line_source(source: &OffsetSource, distance: f64) -> RawOffset {
 
     let mut result = Vec::with_capacity(vertices.len().wrapping_add(usize::from(source.closed)));
     let push_join = |result: &mut Vec<Point>, join: OffsetJoin| match join {
-        OffsetJoin::Miter(point) => push_distinct_point(result, point),
+        OffsetJoin::Miter(point) => push_distinct_xy_position(result, point),
         OffsetJoin::Bevel { incoming, outgoing } => {
-            push_distinct_point(result, incoming);
-            push_distinct_point(result, outgoing);
+            push_distinct_xy_position(result, incoming);
+            push_distinct_xy_position(result, outgoing);
         },
     };
     if source.closed {
@@ -388,7 +388,7 @@ fn offset_line_source(source: &OffsetSource, distance: f64) -> RawOffset {
         let first_segment = segments
             .first()
             .expect("an open offset source has at least one segment");
-        push_distinct_point(&mut result, first_segment.start);
+        push_distinct_xy_position(&mut result, first_segment.start);
         for (vertex, pair) in vertices.iter().skip(1).zip(segments.windows(2)) {
             let previous = pair.first().expect("two-segment join has a predecessor");
             let current = pair.get(1).expect("two-segment join has a successor");
@@ -398,7 +398,7 @@ fn offset_line_source(source: &OffsetSource, distance: f64) -> RawOffset {
         let last_segment = segments
             .last()
             .expect("an open offset source has at least one segment");
-        push_distinct_point(&mut result, last_segment.end);
+        push_distinct_xy_position(&mut result, last_segment.end);
     }
 
     if result.len() >= 2 {

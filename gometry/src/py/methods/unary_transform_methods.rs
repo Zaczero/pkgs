@@ -417,7 +417,9 @@ method_doc! {
 ``length``: a geographic CRS subdivides along the ellipsoid in meters, a
 projected CRS uses its native linear units, and a CRS-free geometry uses
 raw coordinate units. Every original vertex survives unchanged — this operation
-only inserts.
+only inserts. Consecutive equal-X/Y vertices with distinct active Z/M
+ordinates remain in their stored order; their zero-length segments are not
+subdivided.
 
 Parameters
 ----------";
@@ -571,7 +573,9 @@ GeometryArray
 
 method_doc! {
     doc_reverse;
-    body: r"Reverse the vertex order of a geometry.";
+    body: r"Reverse the vertex order of a geometry. Linework retains every stored
+vertex and its active Z/M ordinates, including equal-X/Y vertices, in reverse
+order.";
     scalar: r"
 
 Returns

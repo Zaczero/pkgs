@@ -14,8 +14,8 @@ use crate::geometry::{
     CoordSeq, CoordinateAxes, Coordinates, Distance3dParts, GeometryErrorKind, GeometryKind, HasM,
     HasZ, LineSeq, Lineal, MColumn, MultiLineString, Ordering, PlanarMetric, Point, PreparedPlan,
     Segment, SegmentMetric, SegmentProjection, Shape, SharedSlice, distance_3d_with_parts,
-    interpolate_fraction, point_distance, point_segment_selection, same_point, shape_axes_all_z,
-    squared_norm_is_trustworthy,
+    interpolate_fraction, point_distance, point_segment_selection, push_distinct_active_position,
+    shape_axes_all_z, squared_norm_is_trustworthy,
 };
 use crate::{Finite, HeapSize};
 /// Validated `(start, end)` pair for linear-referencing measure/distance bounds.
@@ -112,16 +112,14 @@ impl Shape {
 }
 
 impl PreparedPlan {
-    /// Cached-engine siblings of the `Shape` linear-referencing methods —
-    /// the prefix index builds once per handle and serves every later call
-    /// (shadowing the `Shape` versions via `Deref`, like distance/dwithin).
+    /// Cached-engine sibling of the `Shape` linear-referencing method.
     pub(crate) fn line_interpolate_point(&self, distance: f64, normalized: bool) -> Result<Shape> {
-        let distance = Finite::try_new("distance", distance)?.get();
-        Ok(Shape::Point(self.line_index()?.interpolate(
-            distance,
-            normalized,
-            &PlanarMetric,
-        )))
+        let index = self.line_index()?;
+        Ok(Shape::Point(if index.has_zero_length_segments() {
+            index.interpolate_with_zero_length_segments(distance, normalized, &PlanarMetric)
+        } else {
+            index.interpolate(distance, normalized, &PlanarMetric)
+        }))
     }
 
     pub(crate) fn line_substring(&self, range: MeasureRange, normalized: bool) -> Result<Shape> {
@@ -575,8 +573,8 @@ impl MeasuredLineIndex {
                     Ok(metric.interpolate(segment_start, segment_end, fraction(measure)?))
                 }
             };
-            push_distinct_point(&mut result, at(start.max(start_m))?);
-            push_distinct_point(&mut result, at(end.min(end_m))?);
+            push_distinct_active_position(&mut result, at(start.max(start_m))?);
+            push_distinct_active_position(&mut result, at(end.min(end_m))?);
             Ok(true)
         })?;
         Ok(match result.len() {
@@ -725,12 +723,12 @@ pub(super) fn split_line_by_points<C: Coordinates + ?Sized>(
         {
             let (_, projection) = cuts.next().expect("peeked cut exists");
             let point = projection.interpolate_point(pair[0], pair[1])?;
-            push_distinct_point(&mut piece, point);
+            push_distinct_active_position(&mut piece, point);
             if piece.len() >= 2 {
                 pieces.push(std::mem::replace(&mut piece, vec![point]));
             }
         }
-        push_distinct_point(&mut piece, pair[1]);
+        push_distinct_active_position(&mut piece, pair[1]);
     }
     if piece.len() >= 2 {
         pieces.push(piece);
@@ -775,13 +773,6 @@ pub(super) fn line_point_offset<C: Coordinates + ?Sized>(
         }
     }
     Ok(best)
-}
-
-/// Append `point` unless it duplicates the current last vertex.
-pub(super) fn push_distinct_point(points: &mut Vec<Point>, point: Point) {
-    if points.last().is_none_or(|last| !same_point(*last, point)) {
-        points.push(point);
-    }
 }
 
 #[cfg(test)]

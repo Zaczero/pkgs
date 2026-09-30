@@ -1654,7 +1654,9 @@ class Geometry:
         multipart linework (the PostGIS ``ST_AddMeasure`` shape). The stationing
         follows the CRS like length — geodesic on a geographic CRS, planar
         otherwise (coordinates are never moved). Z is preserved; existing M requires
-        ``overwrite=True``. Empty linework returns the same empty with an M axis.
+        ``overwrite=True``. Every stored vertex is retained; a zero-length X/Y segment
+        has equal M values at both ends. Empty linework returns the same empty with an
+        M axis.
 
         Parameters
         ----------
@@ -2106,6 +2108,11 @@ class Geometry:
         """Return the portion of linework from ``start`` through ``end``. Empty
         linework yields ``LINESTRING EMPTY``.
 
+        Both bounds are inclusive. Stored vertices at zero-length X/Y segments consume
+        no distance but remain in the result when their active ordinates differ,
+        including consecutive vertices with identical X/Y. This applies to distance
+        and M basis.
+
         Parameters
         ----------
         start, end : float or sequence of float
@@ -2437,6 +2444,11 @@ class Geometry:
         """Locate the position on linework nearest ``geom``. Empty linework, or
         an empty query point, locates to ``nan``.
 
+        Projection is in X/Y. Zero-length X/Y segments add no distance-basis projection,
+        and equal-distance projections keep the first route position. With
+        ``basis='m'``, the returned M is likewise taken from the first nearest
+        projection.
+
         Parameters
         ----------
         geom : Geometry or GeometryArray
@@ -2635,6 +2647,12 @@ class Geometry:
     ) -> Point:
         """Interpolate point locations along linework. Empty linework yields
         ``POINT EMPTY`` at every location.
+
+        Distance-basis routes retain vertices at zero-length X/Y segments. At an
+        interior prefix shared by such a run, an exact boundary selects its first
+        stored vertex; normalized ``0`` and ``1`` select the first and last stored
+        vertices. M-basis interpolation follows the stored monotonic measure and keeps
+        vertices whose active Z/M ordinates differ even when X/Y is equal.
 
         Parameters
         ----------
@@ -3126,7 +3144,9 @@ class Geometry:
         ``length``: a geographic CRS subdivides along the ellipsoid in meters, a
         projected CRS uses its native linear units, and a CRS-free geometry uses
         raw coordinate units. Every original vertex survives unchanged — this operation
-        only inserts.
+        only inserts. Consecutive equal-X/Y vertices with distinct active Z/M
+        ordinates remain in their stored order; their zero-length segments are not
+        subdivided.
 
         Parameters
         ----------
@@ -3325,7 +3345,9 @@ class Geometry:
         """
 
     def reverse(self) -> Self:
-        """Reverse the vertex order of a geometry.
+        """Reverse the vertex order of a geometry. Linework retains every stored
+        vertex and its active Z/M ordinates, including equal-X/Y vertices, in reverse
+        order.
 
         Returns
         -------
@@ -7376,7 +7398,9 @@ class GeometryArray(Sequence[_GeometryT_co]):
         multipart linework (the PostGIS ``ST_AddMeasure`` shape). The stationing
         follows the CRS like length — geodesic on a geographic CRS, planar
         otherwise (coordinates are never moved). Z is preserved; existing M requires
-        ``overwrite=True``. Empty linework returns the same empty with an M axis.
+        ``overwrite=True``. Every stored vertex is retained; a zero-length X/Y segment
+        has equal M values at both ends. Empty linework returns the same empty with an
+        M axis.
 
         Parameters
         ----------
@@ -7958,6 +7982,11 @@ class GeometryArray(Sequence[_GeometryT_co]):
         """Return the portion of linework from ``start`` through ``end``. Empty
         linework yields ``LINESTRING EMPTY``.
 
+        Both bounds are inclusive. Stored vertices at zero-length X/Y segments consume
+        no distance but remain in the result when their active ordinates differ,
+        including consecutive vertices with identical X/Y. This applies to distance
+        and M basis.
+
         Parameters
         ----------
         start, end : float or sequence of float
@@ -8427,6 +8456,11 @@ class GeometryArray(Sequence[_GeometryT_co]):
         """Locate the position on linework nearest ``geom``. Empty linework, or
         an empty query point, locates to ``nan``.
 
+        Projection is in X/Y. Zero-length X/Y segments add no distance-basis projection,
+        and equal-distance projections keep the first route position. With
+        ``basis='m'``, the returned M is likewise taken from the first nearest
+        projection.
+
         Parameters
         ----------
         geom : Geometry or GeometryArray
@@ -8636,6 +8670,12 @@ class GeometryArray(Sequence[_GeometryT_co]):
     ) -> GeometryArray[Point | None]:
         """Interpolate point locations along linework. Empty linework yields
         ``POINT EMPTY`` at every location.
+
+        Distance-basis routes retain vertices at zero-length X/Y segments. At an
+        interior prefix shared by such a run, an exact boundary selects its first
+        stored vertex; normalized ``0`` and ``1`` select the first and last stored
+        vertices. M-basis interpolation follows the stored monotonic measure and keeps
+        vertices whose active Z/M ordinates differ even when X/Y is equal.
 
         Parameters
         ----------
@@ -9160,7 +9200,9 @@ class GeometryArray(Sequence[_GeometryT_co]):
         ``length``: a geographic CRS subdivides along the ellipsoid in meters, a
         projected CRS uses its native linear units, and a CRS-free geometry uses
         raw coordinate units. Every original vertex survives unchanged — this operation
-        only inserts.
+        only inserts. Consecutive equal-X/Y vertices with distinct active Z/M
+        ordinates remain in their stored order; their zero-length segments are not
+        subdivided.
 
         Parameters
         ----------
@@ -9494,7 +9536,9 @@ class GeometryArray(Sequence[_GeometryT_co]):
         """
 
     def reverse(self) -> Self:
-        """Reverse the vertex order of a geometry.
+        """Reverse the vertex order of a geometry. Linework retains every stored
+        vertex and its active Z/M ordinates, including equal-X/Y vertices, in reverse
+        order.
 
         Returns
         -------
@@ -17525,6 +17569,9 @@ def split(
         coordinate units when CRS-free. The default ``0.0``
         is exact topological membership (a point splits only when it lies
         exactly on the linework) with identity deduplication.
+
+    Each piece retains source vertices, including consecutive equal-X/Y
+    vertices whose active Z/M ordinates differ.
 
     Returns
     -------

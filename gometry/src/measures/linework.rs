@@ -57,6 +57,9 @@ pub(crate) fn shared_paths(
 ///     is exact topological membership (a point splits only when it lies
 ///     exactly on the linework) with identity deduplication.
 ///
+/// Each piece retains source vertices, including consecutive equal-X/Y
+/// vertices whose active Z/M ordinates differ.
+///
 /// Returns
 /// -------
 /// GeometryArray
