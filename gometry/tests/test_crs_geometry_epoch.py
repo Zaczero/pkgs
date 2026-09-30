@@ -289,7 +289,7 @@ def test_etrs89_ensemble_rejects_epoch() -> None:
     _reject_epoch(4258)
 
 
-def test_r16_from_wkb_epoch_after_ewkb_crs() -> None:
+def test_from_wkb_epoch_after_ewkb_crs() -> None:
     """R16: ``from_wkb`` discovers the EWKB CRS before validating epoch."""
     w = gm.Point(1, 2, crs=4326).to_wkb(include_srid=True)
 

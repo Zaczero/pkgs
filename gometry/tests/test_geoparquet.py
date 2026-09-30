@@ -850,7 +850,7 @@ def test_geoparquet_native_layout_errors_are_normalized(parquet_path: str) -> No
 # --- D11: declared WKB must match physical binary / geoarrow.wkb storage ---
 
 
-def test_d11_wkb_metadata_rejects_native_geoarrow_storage() -> None:
+def test_wkb_metadata_rejects_native_geoarrow_storage() -> None:
     """Exact audit repro: WKB encoding over native point storage must not decode."""
     import pyarrow as pa
     from gometry._geoparquet import _decode_geometry_column
@@ -871,7 +871,7 @@ def test_d11_wkb_metadata_rejects_native_geoarrow_storage() -> None:
         )
 
 
-def test_d11_wkb_physical_binary_still_decodes() -> None:
+def test_wkb_physical_binary_still_decodes() -> None:
     """Positive: real Binary WKB and geoarrow.wkb still decode under WKB metadata."""
     import pyarrow as pa
     from gometry._geoparquet import _decode_geometry_column
@@ -890,7 +890,7 @@ def test_d11_wkb_physical_binary_still_decodes() -> None:
     assert out_plain.to_wkt() == ['POINT (1 2)']
 
 
-def test_d11_wkb_public_roundtrip_still_works(parquet_path: str) -> None:
+def test_wkb_public_roundtrip_still_works(parquet_path: str) -> None:
     """Positive: public WKB GeoParquet write+read still works."""
     values = gm.points([1.0, 3.0], [2.0, 4.0], crs=4326)
     values.to_geoparquet(parquet_path, encoding='wkb')
@@ -898,7 +898,7 @@ def test_d11_wkb_public_roundtrip_still_works(parquet_path: str) -> None:
     _assert_roundtrip(values, restored)
 
 
-def test_r15_dictionary_encoded_wkb_geoparquet_accepted(parquet_path: str) -> None:
+def test_dictionary_encoded_wkb_geoparquet_accepted(parquet_path: str) -> None:
     """R15: dictionary<binary> WKB must decode (read_dictionary / dict writers).
 
     Exact public repro: valid WKB GeoParquet re-encoded as dictionary binary,
@@ -1263,7 +1263,7 @@ def test_native_geoarrow_extension_without_frame_opinion_accepts_declared() -> N
 # --- D10: never silently relabel geometry kind via metadata ---
 
 
-def test_d10_multipoint_cannot_be_relabeled_as_linestring() -> None:
+def test_multipoint_cannot_be_relabeled_as_linestring() -> None:
     """Exact audit repro: MultiPoint storage + linestring encoding must error."""
     import pyarrow as pa
     from gometry._geoparquet import _native_geoarrow_column
@@ -1277,7 +1277,7 @@ def test_d10_multipoint_cannot_be_relabeled_as_linestring() -> None:
         _native_geoarrow_column(pa, pa.chunked_array([mp]), 'linestring', None, None)
 
 
-def test_d10_polygon_multilinestring_relabel_rejected() -> None:
+def test_polygon_multilinestring_relabel_rejected() -> None:
     """Same-depth kinds cannot be silently swapped via declared encoding."""
     import pyarrow as pa
     from gometry._geoparquet import _native_geoarrow_column
@@ -1301,7 +1301,7 @@ def test_d10_polygon_multilinestring_relabel_rejected() -> None:
         _native_geoarrow_column(pa, pa.chunked_array([mls]), 'polygon', None, None)
 
 
-def test_d10_matching_native_extension_still_decodes() -> None:
+def test_matching_native_extension_still_decodes() -> None:
     """Positive: matching embedded extension + declared encoding keeps kind."""
     import pyarrow as pa
     from gometry._geoparquet import _native_geoarrow_column
@@ -1313,7 +1313,7 @@ def test_d10_matching_native_extension_still_decodes() -> None:
     assert gm.from_arrow(labeled).to_wkt() == ['MULTIPOINT ((0 0), (1 1))']
 
 
-def test_d10_native_public_roundtrip_preserves_kinds(parquet_path: str) -> None:
+def test_native_public_roundtrip_preserves_kinds(parquet_path: str) -> None:
     """Positive: public native GeoParquet preserves MultiPoint / LineString kinds."""
     values = gm.GeometryArray([
         gm.MultiPoint([(0, 0), (1, 1)], crs=4326),
@@ -1368,7 +1368,7 @@ def _forge_geo_column_metadata(
     pq.write_table(table, parquet_path)
 
 
-def test_d10_public_path_rejects_multipoint_relabeled_as_linestring(
+def test_public_path_rejects_multipoint_relabeled_as_linestring(
     parquet_path: str,
 ) -> None:
     """Public native write+forge: MultiPoint must not become LineString."""
@@ -1383,7 +1383,7 @@ def test_d10_public_path_rejects_multipoint_relabeled_as_linestring(
         gm.from_geoparquet(parquet_path)
 
 
-def test_d10_public_path_rejects_polygon_relabeled_as_multilinestring(
+def test_public_path_rejects_polygon_relabeled_as_multilinestring(
     parquet_path: str,
 ) -> None:
     """Public native write+forge: Polygon must not become MultiLineString."""
@@ -1400,7 +1400,7 @@ def test_d10_public_path_rejects_polygon_relabeled_as_multilinestring(
         gm.from_geoparquet(parquet_path)
 
 
-def test_d10_plain_storage_rejects_encoding_geometry_types_mismatch(
+def test_plain_storage_rejects_encoding_geometry_types_mismatch(
     parquet_path: str,
 ) -> None:
     """Plain parquet storage (no extension): encoding must agree with geometry_types."""
@@ -1419,7 +1419,7 @@ def test_d10_plain_storage_rejects_encoding_geometry_types_mismatch(
         gm.from_geoparquet(parquet_path)
 
 
-def test_d10_plain_storage_rejects_wrong_depth_encoding(
+def test_plain_storage_rejects_wrong_depth_encoding(
     parquet_path: str,
 ) -> None:
     """Plain storage without extension: depth-incompatible encoding is rejected."""
@@ -1435,7 +1435,7 @@ def test_d10_plain_storage_rejects_wrong_depth_encoding(
         gm.from_geoparquet(parquet_path)
 
 
-def test_d10_plain_storage_declared_encoding_resolves_depth(
+def test_plain_storage_declared_encoding_resolves_depth(
     parquet_path: str,
 ) -> None:
     """R09: declared encoding + list depth resolve kind without ExtensionType.
@@ -1456,7 +1456,7 @@ def test_d10_plain_storage_declared_encoding_resolves_depth(
     assert list(restored.geometry_type) == ['LineString']
 
 
-def test_d10_plain_storage_polygon_as_multilinestring_via_encoding(
+def test_plain_storage_polygon_as_multilinestring_via_encoding(
     parquet_path: str,
 ) -> None:
     """Same-depth polygon storage + multilinestring encoding follows the declaration."""
@@ -1472,7 +1472,7 @@ def test_d10_plain_storage_polygon_as_multilinestring_via_encoding(
     assert list(restored.geometry_type) == ['MultiLineString']
 
 
-def test_d10_depth_ambiguous_plain_storage_with_matching_encoding(
+def test_depth_ambiguous_plain_storage_with_matching_encoding(
     parquet_path: str,
 ) -> None:
     """Bare multipoint storage + matching multipoint encoding is legal (R09)."""
@@ -1492,7 +1492,7 @@ def test_d10_depth_ambiguous_plain_storage_with_matching_encoding(
 # --- D13: every geo.columns entry must exist and match physical encoding ---
 
 
-def test_d13_declared_columns_must_exist_and_match_encoding() -> None:
+def test_declared_columns_must_exist_and_match_encoding() -> None:
     """Exact audit repro: ghost names and non-geometry 'id' as WKB must error."""
     import pyarrow as pa
     from gometry._geoparquet import _validate_attribute_columns
@@ -1518,7 +1518,7 @@ def test_d13_declared_columns_must_exist_and_match_encoding() -> None:
     )
 
 
-def test_d13_ghost_column_raises() -> None:
+def test_ghost_column_raises() -> None:
     import pyarrow as pa
     from gometry._geoparquet import _validate_attribute_columns
 
@@ -1539,7 +1539,7 @@ def test_d13_ghost_column_raises() -> None:
         _validate_attribute_columns(schema, metadata, None)
 
 
-def test_d13_int64_declared_wkb_raises_and_does_not_drop_attribute() -> None:
+def test_int64_declared_wkb_raises_and_does_not_drop_attribute() -> None:
     import pyarrow as pa
     from gometry._geoparquet import _validate_attribute_columns
 
@@ -1569,7 +1569,7 @@ def test_d13_int64_declared_wkb_raises_and_does_not_drop_attribute() -> None:
     assert attrs == ['id']
 
 
-def test_d13_public_roundtrip_preserves_attributes(parquet_path: str) -> None:
+def test_public_roundtrip_preserves_attributes(parquet_path: str) -> None:
     """Positive: attributes survive public write+read for WKB and native."""
     import pyarrow as pa
 
@@ -1650,7 +1650,7 @@ def test_geoparquet_unsized_attribute_generator_length_mismatch_rejects(
 # --- D12: filtered subset of declared geometry_types must decode ---
 
 
-def test_d12_filtered_subset_of_declared_types_decodes() -> None:
+def test_filtered_subset_of_declared_types_decodes() -> None:
     """Exact audit repro: actual Point under declared [Point, LineString] is valid."""
     import pyarrow as pa
     from gometry._geoparquet import _decode_geometry_column
@@ -1668,7 +1668,7 @@ def test_d12_filtered_subset_of_declared_types_decodes() -> None:
     assert out.to_wkt() == ['POINT (1 2)']
 
 
-def test_d12_actual_type_outside_declared_set_errors() -> None:
+def test_actual_type_outside_declared_set_errors() -> None:
     """Actual type not in a nonempty declared inventory still raises."""
     import pyarrow as pa
     from gometry._geoparquet import _decode_geometry_column
@@ -1689,7 +1689,7 @@ def test_d12_actual_type_outside_declared_set_errors() -> None:
         )
 
 
-def test_d12_exact_match_and_empty_declaration_still_work() -> None:
+def test_exact_match_and_empty_declaration_still_work() -> None:
     """Positive: exact inventory match and empty (unknown) declaration still decode."""
     import pyarrow as pa
     from gometry._geoparquet import _decode_geometry_column
@@ -1708,7 +1708,7 @@ def test_d12_exact_match_and_empty_declaration_still_work() -> None:
 # --- D14.1: M ordinates rejected independent of geometry_types ---
 
 
-def test_d14_1_m_rejected_with_empty_geometry_types() -> None:
+def test_geoparquet_m_ordinate_rejected_with_empty_geometry_types() -> None:
     """Exact audit repro: POINT M must not slip through geometry_types: []."""
     import pyarrow as pa
     from gometry._geoparquet import _decode_geometry_column
@@ -1724,7 +1724,7 @@ def test_d14_1_m_rejected_with_empty_geometry_types() -> None:
         )
 
 
-def test_d14_1_m_rejected_with_nonempty_geometry_types() -> None:
+def test_geoparquet_m_ordinate_rejected_with_nonempty_geometry_types() -> None:
     """M is rejected even when a type declaration is present."""
     import pyarrow as pa
     from gometry._geoparquet import _decode_geometry_column
@@ -1746,7 +1746,7 @@ def test_d14_1_m_rejected_with_nonempty_geometry_types() -> None:
         )
 
 
-def test_d14_1_z_geometries_still_decode_and_roundtrip(parquet_path: str) -> None:
+def test_geoparquet_z_geometries_decode_and_roundtrip(parquet_path: str) -> None:
     """Positive: Z (supported by GeoParquet) still decodes and round-trips."""
     import pyarrow as pa
     from gometry._geoparquet import _decode_geometry_column
@@ -1769,7 +1769,7 @@ def test_d14_1_z_geometries_still_decode_and_roundtrip(parquet_path: str) -> Non
 # --- D19 / N6: empty/all-null declared-vs-storage axes reconciliation ---
 
 
-def test_n6_empty_all_null_wkb_declared_z_imports() -> None:
+def test_empty_all_null_wkb_declared_z_imports() -> None:
     """N6: empty/all-null WKB trusts declared Point Z (binary storage is not XY).
 
     WKB encodes 3D inside the blob; inventing an XY inventory from binary
@@ -1802,7 +1802,7 @@ def test_n6_empty_all_null_wkb_declared_z_imports() -> None:
         )
 
 
-def test_n6_filtered_all_null_wkb_row_group_declared_point_z(parquet_path: str) -> None:
+def test_filtered_all_null_wkb_row_group_declared_point_z(parquet_path: str) -> None:
     """Public path: row_groups=[0] all-null WKB declared Point Z imports 2 nulls."""
     import json
 
@@ -1841,7 +1841,7 @@ def test_n6_filtered_all_null_wkb_row_group_declared_point_z(parquet_path: str) 
     assert all(filtered.is_missing)
 
 
-def test_d19_empty_consistent_xy_imports() -> None:
+def test_empty_consistent_xy_imports() -> None:
     """Consistent empty declaration (Point on XY WKB) still imports empty."""
     import pyarrow as pa
     from gometry._geoparquet import _decode_geometry_column
@@ -1861,7 +1861,7 @@ def test_d19_empty_consistent_xy_imports() -> None:
     assert null_out.is_missing[0]
 
 
-def test_d19_empty_native_xy_declared_z_still_rejects() -> None:
+def test_empty_native_xy_declared_z_still_rejects() -> None:
     """D19 intact: empty native XY storage + declared Point Z rejects.
 
     F6 rejects at the structural-axes check (declared axes exceed storage);
@@ -1890,7 +1890,7 @@ def test_d19_empty_native_xy_declared_z_still_rejects() -> None:
         )
 
 
-def test_d19_empty_native_xyz_declared_z_imports() -> None:
+def test_empty_native_xyz_declared_z_imports() -> None:
     """Native XYZ storage + declared Point Z is consistent and imports empty."""
     import pyarrow as pa
     from gometry._geoparquet import _decode_geometry_column
@@ -1916,7 +1916,7 @@ def test_d19_empty_native_xyz_declared_z_imports() -> None:
         )
 
 
-def test_d19_empty_native_xym_storage_rejects_m() -> None:
+def test_empty_native_xym_storage_rejects_m() -> None:
     """Empty native storage with an M field rejects GeoParquet 1.x M schema-wide."""
     import pyarrow as pa
     from gometry._geoparquet import _decode_geometry_column
@@ -1939,7 +1939,7 @@ def test_d19_empty_native_xym_storage_rejects_m() -> None:
 # --- D14.2: bbox ordering + orientation assertion ---
 
 
-def test_d14_2_bbox_ymin_gt_ymax_rejected() -> None:
+def test_bbox_ymin_gt_ymax_rejected() -> None:
     """Exact audit repro: bbox [0,5,10,4] (ymin > ymax) is malformed."""
     from gometry._geoparquet import _validate_column_metadata
 
@@ -1961,7 +1961,7 @@ def test_d14_2_bbox_ymin_gt_ymax_rejected() -> None:
         )
 
 
-def test_d14_2_valid_bbox_4_and_6_accepted() -> None:
+def test_valid_bbox_4_and_6_accepted() -> None:
     """Positive: ordered 4- and 6-element finite bboxes pass metadata validation."""
     from gometry._geoparquet import _validate_column_metadata
 
@@ -1996,7 +1996,7 @@ def test_d14_2_valid_bbox_4_and_6_accepted() -> None:
     assert meta6['bbox'] == [0, 1, 2, 10, 4, 5]
 
 
-def test_d14_2_bbox_z_and_x_ordering_rejected() -> None:
+def test_bbox_z_and_x_ordering_rejected() -> None:
     """Z inversion always rejected; X inversion only for non-geographic CRS.
 
     Under default CRS84 / geographic CRS, west > east is the legal
@@ -2050,7 +2050,7 @@ def test_d14_2_bbox_z_and_x_ordering_rejected() -> None:
         )
 
 
-def test_d14_2_orientation_assertion_rejects_clockwise_rings() -> None:
+def test_orientation_assertion_rejects_clockwise_rings() -> None:
     """When orientation is counterclockwise, CW polygonal rings must error."""
     import pyarrow as pa
     from gometry._geoparquet import _decode_geometry_column
@@ -2075,7 +2075,7 @@ def test_d14_2_orientation_assertion_rejects_clockwise_rings() -> None:
         )
 
 
-def test_d14_2_orientation_assertion_accepts_ccw_rings() -> None:
+def test_orientation_assertion_accepts_ccw_rings() -> None:
     """Positive: CCW exteriors under orientation assertion still decode."""
     import pyarrow as pa
     from gometry._geoparquet import _decode_geometry_column
@@ -2101,7 +2101,7 @@ def test_d14_2_orientation_assertion_accepts_ccw_rings() -> None:
 # --- P19: declared-column validation must be O(schema + metadata) ---
 
 
-def test_p19_declared_geometry_validation_is_subquadratic() -> None:
+def test_declared_geometry_validation_is_subquadratic() -> None:
     """P19: no per-declared-column ``count``/``index`` over schema.names.
 
     A schema with N columns that are ALL declared as WKB geometries must
@@ -2190,7 +2190,7 @@ def test_p19_declared_geometry_validation_is_subquadratic() -> None:
     assert attr_names.linear_scans == 0
 
 
-def test_p19_ghost_and_duplicate_still_rejected() -> None:
+def test_ghost_and_duplicate_still_rejected() -> None:
     """P19 behavior parity: ghost names and duplicate schema columns still error."""
     import pyarrow as pa
     from gometry._geoparquet import _validate_declared_geometry_columns
@@ -2233,7 +2233,7 @@ def test_p19_ghost_and_duplicate_still_rejected() -> None:
 # --- D14.3: one-shot columns / row_groups materialization ---
 
 
-def test_d14_3_generator_columns_honored_by_validator() -> None:
+def test_generator_columns_honored_by_validator() -> None:
     """Exact audit repro: generator columns must not be consumed to empty."""
     import pyarrow as pa
     from gometry._geoparquet import _validate_attribute_columns
@@ -2252,7 +2252,7 @@ def test_d14_3_generator_columns_honored_by_validator() -> None:
     assert selected == ['id']
 
 
-def test_d14_3_generator_columns_and_row_groups_public_path(
+def test_generator_columns_and_row_groups_public_path(
     parquet_path: str,
 ) -> None:
     """Public from_geoparquet honors generator columns and row_groups."""
@@ -2283,7 +2283,9 @@ def test_d14_3_generator_columns_and_row_groups_public_path(
 # --- Cross-defect positives: WKB + native public round-trips stay green ---
 
 
-def test_d12_d14_public_roundtrips_wkb_and_native(parquet_path: str) -> None:
+def test_geoparquet_wkb_and_native_roundtrips_preserve_metadata(
+    parquet_path: str,
+) -> None:
     """No over-rejection: WKB and homogeneous native keep attrs + CRS/epoch/kinds."""
     import pyarrow as pa
 
@@ -2347,7 +2349,7 @@ def test_from_geoparquet_iterable_columns_and_row_groups(parquet_path: str) -> N
 # ---------------------------------------------------------------------------
 
 
-def test_f6_native_point_z_over_xy_storage_rejected(parquet_path: str) -> None:
+def test_native_point_z_over_xy_storage_rejected(parquet_path: str) -> None:
     """F6: declared Point Z over fixed XY native struct storage must reject.
 
     Base-kind stripping + actual ⊆ declared let a matching 'Point' entry mask
@@ -2382,7 +2384,7 @@ def test_f6_native_point_z_over_xy_storage_rejected(parquet_path: str) -> None:
         gm.from_geoparquet(parquet_path)
 
 
-def test_f6_native_matching_axes_still_imports(parquet_path: str) -> None:
+def test_native_matching_axes_still_imports(parquet_path: str) -> None:
     """Native column whose declared types match structural axes still imports."""
     import json
 
@@ -2411,7 +2413,7 @@ def test_f6_native_matching_axes_still_imports(parquet_path: str) -> None:
     assert restored.to_wkt() == ['POINT (1 2)']
 
 
-def test_f6_wkb_point_z_declaration_still_trusted(parquet_path: str) -> None:
+def test_wkb_point_z_declaration_still_trusted(parquet_path: str) -> None:
     """N6: WKB columns keep declared geometry_types trust (axes live in blob)."""
     import json
 

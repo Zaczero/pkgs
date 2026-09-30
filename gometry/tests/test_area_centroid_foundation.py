@@ -58,7 +58,7 @@ def _densify_extreme_rect(n_per_edge: int) -> gm.Polygon:
     return gm.Polygon(pts)
 
 
-def test_c2_extreme_rectangle_area_centroid_contains_overlays() -> None:
+def test_extreme_rectangle_area_centroid_contains_overlays() -> None:
     """C2: +/-1e308 x +/-2 rect has +inf area, centroid (0,0), contains, nonempty overlays."""
     rect = _extreme_rect()
     interior = _interior_box()
@@ -80,7 +80,7 @@ def test_c2_extreme_rectangle_area_centroid_contains_overlays() -> None:
 
 
 @pytest.mark.parametrize('n_per_edge', [0, 30, 31, 32, 33])
-def test_c2_extreme_rect_invariant_across_vertex_crossover(n_per_edge: int) -> None:
+def test_extreme_rect_invariant_across_vertex_crossover(n_per_edge: int) -> None:
     """Geometry meaning must not depend on redundant vertex count (≥128 path)."""
     poly = _densify_extreme_rect(n_per_edge)
     nverts = len(list(poly.exterior.coords))
@@ -106,7 +106,7 @@ def test_c2_extreme_rect_invariant_across_vertex_crossover(n_per_edge: int) -> N
 
 
 @pytest.mark.parametrize('offset', [1e9, 1e12, 1e15])
-def test_n6_equal_boxes_centroid_order_invariant(offset: float) -> None:
+def test_equal_boxes_centroid_order_invariant(offset: float) -> None:
     """N6: three equal unit boxes -> exact centroid x=0.5 under every order."""
     boxes = [
         gm.box(offset, 0.0, offset + 1.0, 1.0),
@@ -125,7 +125,7 @@ def test_n6_equal_boxes_centroid_order_invariant(offset: float) -> None:
         assert c.y == 0.5
 
 
-def test_n6_equal_points_centroid_order_invariant() -> None:
+def test_equal_points_centroid_order_invariant() -> None:
     """N6: MultiPoint at [1e16, 1, -1e16] -> x=1/3 under every permutation."""
     coords = [1e16, 1.0, -1e16]
     for perm in permutations(range(3)):
@@ -136,7 +136,7 @@ def test_n6_equal_points_centroid_order_invariant() -> None:
         assert abs(c.x - 1.0 / 3.0) < 1e-15
 
 
-def test_n6_equal_length_lines_centroid_order_invariant() -> None:
+def test_equal_length_lines_centroid_order_invariant() -> None:
     """N6: equal-length vertical lines at [1e16, 1, -1e16] -> x=1/3 every order."""
     coords = [1e16, 1.0, -1e16]
     for perm in permutations(range(3)):

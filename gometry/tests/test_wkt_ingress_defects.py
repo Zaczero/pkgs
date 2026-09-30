@@ -48,7 +48,7 @@ def test_wkt_rejects_nonfinite_coordinates_at_one_admission_boundary(wkt: str) -
 # ---------------------------------------------------------------------------
 
 
-def test_r17_empty_parenthesis_multipart_rejected() -> None:
+def test_empty_parenthesis_multipart_rejected() -> None:
     """R17: empty parenthesized multiparts/collections are invalid WKT.
 
     Exact audit repros: ``MULTILINESTRING ()``, ``MULTIPOLYGON ()``,
@@ -129,7 +129,7 @@ def test_r17_empty_parenthesis_multipart_rejected() -> None:
         ('MULTIPOLYGON ZM (EMPTY)', 'MultiPolygon', 'XYZM', 'MULTIPOLYGON ZM (EMPTY)'),
     ],
 )
-def test_d16_all_empty_multipart_axes_matrix(
+def test_all_empty_multipart_axes_matrix(
     wkt: str, gtype: str, axes: str, expected: str
 ) -> None:
     """Positive matrix: top-level EMPTY and all-EMPTY members keep axes tags."""
@@ -140,7 +140,7 @@ def test_d16_all_empty_multipart_axes_matrix(
     assert g.to_wkt() == expected
 
 
-def test_d16_multipoint_empty_member_mixed_is_preserved() -> None:
+def test_multipoint_empty_member_mixed_is_preserved() -> None:
     """EMPTY MultiPoint members retain their position and declared axes."""
     g = gm.from_wkt('MULTIPOINT Z ((1 2 3), EMPTY)')
     assert g.to_wkt() == 'MULTIPOINT Z ((1 2 3), EMPTY)'
@@ -148,7 +148,7 @@ def test_d16_multipoint_empty_member_mixed_is_preserved() -> None:
     assert g.coordinate_axes == 'XYZ'
 
 
-def test_d16_multipolygon_empty_member_mixed_is_preserved() -> None:
+def test_multipolygon_empty_member_mixed_is_preserved() -> None:
     """EMPTY MultiPolygon members retain their position and count."""
     g = gm.from_wkt('MULTIPOLYGON (((0 0, 1 0, 1 1, 0 0)), EMPTY)')
     assert g.to_wkt() == 'MULTIPOLYGON (((0 0, 1 0, 1 1, 0 0)), EMPTY)'
@@ -161,7 +161,7 @@ def test_d16_multipolygon_empty_member_mixed_is_preserved() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_d17_geometrycollection_z_inherits_into_untagged_point() -> None:
+def test_geometrycollection_z_inherits_into_untagged_point() -> None:
     """EXACT repro: GEOMETRYCOLLECTION Z (POINT (1 2 3)) inherits Z."""
     g = gm.from_wkt('GEOMETRYCOLLECTION Z (POINT (1 2 3))')
     assert g.geometry_type == 'GeometryCollection'
@@ -173,19 +173,19 @@ def test_d17_geometrycollection_z_inherits_into_untagged_point() -> None:
     assert g.to_wkt() == 'GEOMETRYCOLLECTION (POINT Z (1 2 3))'
 
 
-def test_d17_geometrycollection_z_rejects_short_xy_child() -> None:
+def test_geometrycollection_z_rejects_short_xy_child() -> None:
     """EXACT repro: GEOMETRYCOLLECTION Z (POINT (1 2)) is under-specified."""
     with pytest.raises(gm.ParseError):
         gm.from_wkt('GEOMETRYCOLLECTION Z (POINT (1 2))')
 
 
-def test_d17_geometrycollection_z_rejects_mixed_short_after_explicit() -> None:
+def test_geometrycollection_z_rejects_mixed_short_after_explicit() -> None:
     """EXACT repro: second untagged child under Z outer must carry Z ordinates."""
     with pytest.raises(gm.ParseError):
         gm.from_wkt('GEOMETRYCOLLECTION Z (POINT Z (1 2 3), POINT (4 5))')
 
 
-def test_d17_geometrycollection_z_rejects_conflicting_child_tag() -> None:
+def test_geometrycollection_z_rejects_conflicting_child_tag() -> None:
     """Explicit child tag that conflicts with the outer collection is rejected."""
     with pytest.raises(gm.ParseError, match='dimensional tag conflicts'):
         gm.from_wkt('GEOMETRYCOLLECTION Z (POINT M (1 2 3))')
@@ -193,7 +193,7 @@ def test_d17_geometrycollection_z_rejects_conflicting_child_tag() -> None:
         gm.from_wkt('GEOMETRYCOLLECTION Z (POINT Z (1 2 3), POINT M (4 5 6))')
 
 
-def test_d17_untagged_geometrycollection_stays_heterogeneous() -> None:
+def test_untagged_geometrycollection_stays_heterogeneous() -> None:
     """EXACT positive: untagged outer collection accepts mixed child axes."""
     g = gm.from_wkt('GEOMETRYCOLLECTION (POINT Z (1 2 3), POINT (4 5))')
     members = list(g)
@@ -215,7 +215,7 @@ def test_d17_untagged_geometrycollection_stays_heterogeneous() -> None:
         'geometrycollection z (point (1 2 3))',
     ],
 )
-def test_d17_tagged_collection_positive_matrix(wkt: str) -> None:
+def test_tagged_geometrycollection_axes_matrix(wkt: str) -> None:
     """Positive: inherited / matching tags parse for several kinds and nestings."""
     g = gm.from_wkt(wkt)
     assert g.geometry_type == 'GeometryCollection'
@@ -226,7 +226,7 @@ def test_d17_tagged_collection_positive_matrix(wkt: str) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_d18_multilinestring_empty_member_emits_empty_not_parens() -> None:
+def test_multilinestring_empty_member_emits_empty_not_parens() -> None:
     """EXACT repro: zero-length MultiLineString member must not emit () ."""
     g = gm.from_geojson({
         'type': 'MultiLineString',
@@ -238,7 +238,7 @@ def test_d18_multilinestring_empty_member_emits_empty_not_parens() -> None:
     assert text == 'MULTILINESTRING (EMPTY, (0 0, 1 1))'
 
 
-def test_d18_multilinestring_empty_member_round_trips() -> None:
+def test_multilinestring_empty_member_round_trips() -> None:
     """EXACT repro: from_wkt(to_wkt(...)) must succeed for empty members."""
     g = gm.from_geojson({
         'type': 'MultiLineString',
@@ -254,7 +254,7 @@ def test_d18_multilinestring_empty_member_round_trips() -> None:
     assert members[1].to_wkt() == 'LINESTRING (0 0, 1 1)'
 
 
-def test_d18_multilinestring_empty_member_z_round_trip() -> None:
+def test_multilinestring_empty_member_z_round_trip() -> None:
     """Positive: Z MultiLineString with an empty member keeps axes and round-trips."""
     g = gm.from_wkt('MULTILINESTRING Z (EMPTY, (0 0 1, 1 1 2))')
     text = g.to_wkt()
@@ -267,19 +267,19 @@ def test_d18_multilinestring_empty_member_z_round_trip() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_d15_polygon_garbage_token_rejected() -> None:
+def test_polygon_garbage_token_rejected() -> None:
     """EXACT repro: garbage before a ring must not be discarded."""
     with pytest.raises(gm.ParseError):
         gm.from_wkt('POLYGON (garbage, (0 0,1 0,1 1,0 0))')
 
 
-def test_d15_multilinestring_missing_comma_rejected() -> None:
+def test_multilinestring_missing_comma_rejected() -> None:
     """EXACT repro: missing comma between members is a ParseError."""
     with pytest.raises(gm.ParseError):
         gm.from_wkt('MULTILINESTRING ((0 0,1 1) (2 2,3 3))')
 
 
-def test_d15_geometrycollection_trailing_comma_rejected() -> None:
+def test_geometrycollection_trailing_comma_rejected() -> None:
     """EXACT repro: trailing comma in a GeometryCollection is a ParseError."""
     with pytest.raises(gm.ParseError):
         gm.from_wkt('GEOMETRYCOLLECTION (POINT (1 2),)')
@@ -323,7 +323,7 @@ def test_d15_geometrycollection_trailing_comma_rejected() -> None:
         'MULTILINESTRING((0 0,1 1),(2 2,3 3))',
     ],
 )
-def test_d15_valid_wkt_corpus_still_parses(wkt: str) -> None:
+def test_valid_wkt_corpus_still_parses(wkt: str) -> None:
     """Positive no-over-rejection matrix: full valid WKT/EWKT surface still works."""
     g = gm.from_wkt(wkt)
     # Round-trip preserves structure for non-EWKT (SRID is not re-emitted by default).

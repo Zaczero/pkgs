@@ -237,7 +237,7 @@ def test_packed_pickle_rejects_payloads_that_would_panic() -> None:
     assert len(empty) == 0
 
 
-def test_d05_polygon_pickle_rejects_active_ordinate_unclosed_rings() -> None:
+def test_polygon_pickle_rejects_active_ordinate_unclosed_rings() -> None:
     """D05: pack-admission ring closure must cover every active ordinate.
 
     XY-closed rings whose Z and/or M first!=last previously entered trusted

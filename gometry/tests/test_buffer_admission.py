@@ -120,7 +120,7 @@ def _geoarrow_point_batch(fsl: pa.Array) -> pa.RecordBatch:
     return pa.RecordBatch.from_arrays([fsl], schema=pa.schema([field]))
 
 
-def test_c10_interleaved_child_null_under_outer_valid_rejects() -> None:
+def test_interleaved_child_null_under_outer_valid_rejects() -> None:
     """Referenced FixedSizeList child nulls must reject (not become zero)."""
     flat = pa.array([1.0, None, 3.0, 4.0], type=pa.float64())
     fsl = pa.FixedSizeListArray.from_arrays(flat, 2)
@@ -129,7 +129,7 @@ def test_c10_interleaved_child_null_under_outer_valid_rejects() -> None:
         gm.from_arrow(_geoarrow_point_batch(fsl))
 
 
-def test_c10_interleaved_child_null_hidden_by_outer_null_ok() -> None:
+def test_interleaved_child_null_hidden_by_outer_null_ok() -> None:
     """Child nulls wholly hidden by an outer null may be ignored."""
     flat = pa.array([1.0, 2.0, 99.0, None], type=pa.float64())
     fsl = pa.FixedSizeListArray.from_arrays(flat, 2, mask=pa.array([False, True]))
@@ -185,7 +185,7 @@ def _capsule_provider(schema_c, array_c):
     return Provider()
 
 
-def test_c11_parent_forged_n_buffers_rejects_capsule() -> None:
+def test_parent_forged_n_buffers_rejects_capsule() -> None:
     """Struct parent n_buffers must be 1; forging to 2 must reject (not accept)."""
     table = _wkb_table()
     # RecordBatch has __arrow_c_array__
@@ -202,7 +202,7 @@ def test_c11_parent_forged_n_buffers_rejects_capsule() -> None:
         gm.from_arrow(_capsule_provider(schema_c, array_c))
 
 
-def test_c11_parent_null_count_validity_mismatch_rejects_capsule() -> None:
+def test_parent_null_count_validity_mismatch_rejects_capsule() -> None:
     """Parent null_count that disagrees with validity must reject."""
     table = _wkb_table()
     batch = table.to_batches()[0]
@@ -219,7 +219,7 @@ def test_c11_parent_null_count_validity_mismatch_rejects_capsule() -> None:
         gm.from_arrow(_capsule_provider(schema_c, array_c))
 
 
-def test_c11_parent_forged_n_buffers_rejects_stream() -> None:
+def test_parent_forged_n_buffers_rejects_stream() -> None:
     """Stream path must also reject a forged parent n_buffers (not accept)."""
     table = _wkb_table()
     batch = table.to_batches()[0]
@@ -361,7 +361,7 @@ def test_c11_parent_forged_n_buffers_rejects_stream() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_c12_deep_unused_struct_sibling_imports_in_subprocess() -> None:
+def test_deep_unused_struct_sibling_imports_in_subprocess() -> None:
     """Valid geometry beside a ~50k-level unused Struct must import (exit 0)."""
     script = textwrap.dedent(
         r"""
@@ -562,7 +562,7 @@ def test_c12_deep_unused_struct_sibling_imports_in_subprocess() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_c13_deep_selected_schema_rejects_in_subprocess() -> None:
+def test_deep_selected_schema_rejects_in_subprocess() -> None:
     """A selected 20k-deep schema must raise cleanly, never crash the process.
 
     Mutation: remove the selected-capture depth guard in ``admitted.rs``. This
@@ -978,7 +978,7 @@ def test_from_arrow_negative_length_remains_type_error() -> None:
     assert counts == {'schema': 1, 'array': 1}
 
 
-def test_r14_zero_batch_binary_with_illegal_child_rejected() -> None:
+def test_zero_batch_binary_with_illegal_child_rejected() -> None:
     """R14: schema-only/zero-batch must reject Binary/`z` with n_children=1.
 
     Nonempty arrays already reject impossible child cardinality via layout
@@ -1373,7 +1373,7 @@ def test_arrow_c_stream_callback_errno_maps_to_python_error(
         assert error.value.errno == status
 
 
-def test_f5_arrow_c_child_index_out_of_range_rejects() -> None:
+def test_arrow_c_child_index_out_of_range_rejects() -> None:
     """F5: schema geometry child index >= array.n_children must ParseError.
 
     Stream zero-row path: schema has geometry at index 1, batch declares
@@ -1495,7 +1495,7 @@ def test_f5_arrow_c_child_index_out_of_range_rejects() -> None:
     assert restored_s.to_wkt() == ['POINT (1 2)']
 
 
-def test_f5_arrow_c_null_child_pointer_rejects() -> None:
+def test_arrow_c_null_child_pointer_rejects() -> None:
     """F5: null child pointer at a valid index must ParseError on stream path."""
     ctypes, ArrowSchema, ArrowArray, ArrowArrayStream = _f5_arrow_c_structs()
 

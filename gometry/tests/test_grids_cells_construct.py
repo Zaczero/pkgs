@@ -1128,7 +1128,7 @@ def _roundtrip_exact(cov):
         ),
     ],
 )
-def test_p23_transform_pickle_roundtrips(label, build):
+def test_cell_grid_transforms_pickle_roundtrip(label, build):
     base = build()
     uncompact_depth = {
         'h3': 5,
@@ -1144,7 +1144,7 @@ def test_p23_transform_pickle_roundtrips(label, build):
         _roundtrip_exact(cov)
 
 
-def test_p23_empty_center_uncompact_pickle():
+def test_empty_h3_and_geohash_center_uncompact_pickle():
     """Empty center cover uncompacted to a finer depth round-trips (the P23 repro)."""
     source = gm.box(-0.1, -0.1, 0.1, 0.1, crs=4326)
     # H3: center@4 is empty; uncompact(5) stays empty; must not recompute as center@5.
@@ -1157,7 +1157,7 @@ def test_p23_empty_center_uncompact_pickle():
     _ = _roundtrip_exact(gh)
 
 
-def test_p23_uncompact_past_million_pickle_roundtrips():
+def test_uncompact_past_million_pickle_roundtrips():
     """Uncompact past one million cells must still pickle-round-trip.
 
     Explicit expansion is not capped; pickle reconstruction must use the same
@@ -1183,7 +1183,7 @@ def test_cell_set_difference_past_million_cells_is_not_capped():
     assert result[-1] == left[-1]
 
 
-def test_p23_projected_source_roundtrips():
+def test_projected_source_roundtrips():
     """Projected sources (D26a false positive) still round-trip."""
     proj = gm.box(0, 0, 1000, 1000, crs=3857)
     for cov in (
@@ -1195,7 +1195,7 @@ def test_p23_projected_source_roundtrips():
         _roundtrip_exact(cov)
 
 
-def test_p23_empty_nonempty_parity():
+def test_h3_center_cover_pickle_roundtrips_empty_and_nonempty():
     """Empty/nonempty parity: empty factory stays empty; nonempty stays nonempty."""
     src = gm.box(-0.1, -0.1, 0.1, 0.1, crs=4326)
     empty = gm.h3_cover(src, 4, cell_rule='center')

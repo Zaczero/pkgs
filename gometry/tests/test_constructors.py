@@ -405,7 +405,7 @@ def test_lonlat_range_validation_on_grid_paths() -> None:
     )
 
 
-def test_d21_polygon_mixed_shell_hole_axes_rejected_at_construction() -> None:
+def test_polygon_mixed_shell_hole_axes_rejected_at_construction() -> None:
     """D21/G2: Polygon(xy_shell, xyz_hole) rejects at construction (writer parity).
 
     Writers refuse mixed ring axes rather than invent Z/M; construction matches.

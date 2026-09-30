@@ -786,7 +786,7 @@ def test_numpy_scalar_coordinates_and_float32_matrix_are_admitted() -> None:
         'POLYGON ZM ((0 0 1 2, 1 0 1 2, 0 1 1 2, 0 0 1 2))',
     ],
 )
-def test_n5_set_coordinates_rejects_active_ordinate_open_ring(wkt: str) -> None:
+def test_set_coordinates_rejects_active_ordinate_open_ring(wkt: str) -> None:
     """N5: Z/M-only open rings must fail set_coordinates (pack/pickle parity).
 
     XY-only closure used to admit these into trusted storage; the unpickler
@@ -840,7 +840,7 @@ def test_n5_set_coordinates_rejects_active_ordinate_open_ring(wkt: str) -> None:
     assert pickle.loads(pickle.dumps(moved)) == moved
 
 
-def test_n5_set_coordinates_xy_ring_unchanged() -> None:
+def test_set_coordinates_xy_ring_unchanged() -> None:
     """2D rings still reject XY-open and accept closed replacements."""
     import pickle
 
@@ -868,7 +868,7 @@ def test_n5_set_coordinates_xy_ring_unchanged() -> None:
     ],
     ids=['slice_tail', 'slice_head', 'gather_one', 'gather_two'],
 )
-def test_n5_set_coordinates_selection_rejects_z_open_ring(select) -> None:
+def test_set_coordinates_selection_rejects_z_open_ring(select) -> None:
     """N5: sliced/gathered packed arrays use the detached replacement path.
 
     That path had a parallel XY-only ring check (packed_columns) that still
@@ -976,7 +976,7 @@ def test_set_coordinates_matches_shapely_set_coordinates() -> None:
     assert out.to_wkt() == shapely.to_wkt(oracle, trim=True)
 
 
-def test_d22_heterogeneous_gc_coordinate_identity_is_noop() -> None:
+def test_heterogeneous_gc_coordinate_identity_is_noop() -> None:
     """D22: mixed-axes GeometryCollection set/map identity is an exact no-op.
 
     EXACT repro: ``GeometryCollection([Point Z, Point XY]).set_coordinates(g.coords)``

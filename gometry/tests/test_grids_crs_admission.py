@@ -377,7 +377,7 @@ def test_x1_singleton_multipolygon_shell_line_matches_polygon():
 # ---------------------------------------------------------------------------
 
 
-def test_c1_compound_to_cf_rejects():
+def test_compound_crs_to_cf_rejects():
     with pytest.raises(gm.CRSError, match='compound'):
         gm.CRS(9707).to_cf()
 
@@ -387,7 +387,7 @@ def test_c1_compound_to_cf_rejects():
 # ---------------------------------------------------------------------------
 
 
-def test_c4_identity_transform_rejects_out_of_domain_latitude():
+def test_identity_transform_rejects_out_of_domain_latitude():
     with pytest.raises((gm.CRSError, gm.InvalidGeometryError, gm.GeometryError)):
         gm.crs_transform('EPSG:4326', 'EPSG:4326', [10.0], [100.0])
     # Valid identity still works.
@@ -401,14 +401,14 @@ def test_c4_identity_transform_rejects_out_of_domain_latitude():
 # ---------------------------------------------------------------------------
 
 
-def test_d4_pluscode_rejects_out_of_domain():
+def test_pluscode_rejects_out_of_domain():
     with pytest.raises(gm.InvalidGeometryError):
         gm.pluscode_encode(1e20, 1e20)
     with pytest.raises(gm.InvalidGeometryError):
         gm.pluscode_encode(200.0, 0.0)
 
 
-def test_d5_shortlink_north_pole_distinct_from_south():
+def test_shortlink_north_pole_distinct_from_south():
     north = gm.osm_shortlink_encode(0.0, 90.0, zoom=10)
     south = gm.osm_shortlink_encode(0.0, -90.0, zoom=10)
     assert north != south
@@ -419,7 +419,7 @@ def test_d5_shortlink_north_pole_distinct_from_south():
 # ---------------------------------------------------------------------------
 
 
-def test_c2_polar_stereo_variant_a_uses_scale_factor():
+def test_polar_stereo_variant_a_uses_scale_factor():
     """Variant A CF must honor scale_factor_at_projection_origin (+k_0)."""
     cf = {
         'grid_mapping_name': 'polar_stereographic',
@@ -438,7 +438,7 @@ def test_c2_polar_stereo_variant_a_uses_scale_factor():
     assert 'lat_ts=90' not in text
 
 
-def test_c2_polar_stereo_variant_b_uses_standard_parallel():
+def test_polar_stereo_variant_b_uses_standard_parallel():
     cf = {
         'grid_mapping_name': 'polar_stereographic',
         'latitude_of_projection_origin': -90.0,
@@ -455,7 +455,7 @@ def test_c2_polar_stereo_variant_b_uses_standard_parallel():
     assert 'k_0=' not in text and '+k=' not in text
 
 
-def test_c8_mercator_rejects_conflicting_defining_parameters():
+def test_mercator_rejects_conflicting_defining_parameters():
     with pytest.raises(gm.CRSError):
         gm.CRS({
             'grid_mapping_name': 'mercator',
@@ -469,7 +469,7 @@ def test_c8_mercator_rejects_conflicting_defining_parameters():
         })
 
 
-def test_c8_mercator_single_key_controls_match_independent_proj_definitions():
+def test_mercator_single_key_controls_match_independent_proj_definitions():
     common = {
         'grid_mapping_name': 'mercator',
         'longitude_of_projection_origin': 0.0,
@@ -499,7 +499,7 @@ def test_c8_mercator_single_key_controls_match_independent_proj_definitions():
     )
 
 
-def test_c8_mercator_wkt_precedence_survives_parameter_conflict():
+def test_mercator_wkt_precedence_survives_parameter_conflict():
     cf = {
         'grid_mapping_name': 'mercator',
         'longitude_of_projection_origin': 0.0,
@@ -558,7 +558,7 @@ def _cf_projection_keys(crs: object) -> dict[str, object]:
     return cf
 
 
-def test_c2_polar_a_custom_degree_and_grad_export_same_cf_degrees():
+def test_polar_a_custom_degree_and_grad_export_same_cf_degrees():
     """100 gon / 50 gon must export as 90° / 45°, not as stored grads."""
     degree = _polar_a_wkt(
         lat=90.0,
@@ -620,7 +620,7 @@ def test_c2_polar_a_custom_degree_and_grad_export_same_cf_degrees():
         )
 
 
-def test_c2_polar_a_metre_offsets_on_foot_axes_use_axis_units():
+def test_polar_a_metre_offsets_on_foot_axes_use_axis_units():
     """False easting/northing follow the projected axis, not metres.
 
     Parameter offsets are 1000 m and 2500 m; axes are the international foot
@@ -651,7 +651,7 @@ def test_c2_polar_a_metre_offsets_on_foot_axes_use_axis_units():
     )
 
 
-def test_c2_paris_prime_meridian_exports_degrees():
+def test_paris_prime_meridian_exports_degrees():
     """EPSG:4807 stores 2.5969213 gon; CF longitude_of_prime_meridian is degrees."""
     cf = gm.CRS(4807).to_cf()
     assert cf['longitude_of_prime_meridian'] == pytest.approx(2.33722917)
@@ -662,7 +662,7 @@ def test_c2_paris_prime_meridian_exports_degrees():
 # ---------------------------------------------------------------------------
 
 
-def test_c7_standard_parallel_empty_raises():
+def test_standard_parallel_empty_raises():
     with pytest.raises(gm.CRSError, match='standard_parallel'):
         gm.CRS({
             'grid_mapping_name': 'lambert_conformal_conic',
@@ -673,7 +673,7 @@ def test_c7_standard_parallel_empty_raises():
         })
 
 
-def test_c7_standard_parallel_extra_raises():
+def test_standard_parallel_extra_raises():
     with pytest.raises(gm.CRSError, match='1 or 2'):
         gm.CRS({
             'grid_mapping_name': 'lambert_conformal_conic',
@@ -684,7 +684,7 @@ def test_c7_standard_parallel_extra_raises():
         })
 
 
-def test_c7_polar_empty_standard_parallel_raises():
+def test_polar_empty_standard_parallel_raises():
     with pytest.raises(gm.CRSError, match='standard_parallel'):
         gm.CRS({
             'grid_mapping_name': 'polar_stereographic',
@@ -700,7 +700,7 @@ def test_c7_polar_empty_standard_parallel_raises():
 # ---------------------------------------------------------------------------
 
 
-def test_c9_cf_projected_units_from_metadata():
+def test_cf_projected_units_from_metadata():
     """US-survey-foot CRS must reparse pure CF (no WKT) with us-ft units.
 
     CF false_easting is in native feet; PROJ +x_0 must be metres with
@@ -738,7 +738,7 @@ def test_c9_cf_projected_units_from_metadata():
 # ---------------------------------------------------------------------------
 
 
-def test_c6_crscfinfo_covers_runtime_keys():
+def test_crs_cf_info_covers_runtime_keys():
     from gometry._types import CrsCfInfo
 
     keys = set(CrsCfInfo.__annotations__)
@@ -759,7 +759,7 @@ def test_c6_crscfinfo_covers_runtime_keys():
 # ---------------------------------------------------------------------------
 
 
-def test_d2_h3_cells_geometry_array_missing_rows():
+def test_h3_cells_geometry_array_missing_rows():
     arr = gm.GeometryArray([
         gm.Point(0.0, 0.0, crs=4326),
         None,
@@ -835,7 +835,7 @@ def test_grid_cover_array_empty_and_missing_rows_are_empty_groups(name, kwargs):
 # ---------------------------------------------------------------------------
 
 
-def test_d3_cellarray_equality_uses_visible_values():
+def test_cell_array_equality_uses_visible_values():
     box = gm.box(0.0, 0.0, 1.0, 1.0, crs=4326)
     a = gm.h3_cover(box, resolution=3, cell_rule='overlap', max_cells=100)
     b = gm.h3_cover(box, resolution=3, cell_rule='overlap', max_cells=50)
@@ -869,7 +869,7 @@ def test_b4_spatial_index_geodesic_caps_survive_crs_clear_cache():
 # ---------------------------------------------------------------------------
 
 
-def test_c5_crs_codes_accepts_typed_database_kinds():
+def test_crs_codes_accepts_typed_database_kinds():
     """Every CrsDatabaseKind token is admitted; unknown tokens are rejected."""
     # Representative tokens from the typed inventory (not PROJ empty kinds).
     for kind in (
@@ -891,7 +891,7 @@ def test_c5_crs_codes_accepts_typed_database_kinds():
 # ---------------------------------------------------------------------------
 
 
-def test_d1_h3_max_cells_charges_realized_cells_not_raw_candidates():
+def test_h3_max_cells_charges_realized_cells_not_raw_candidates():
     """A tight max_cells that fits the realized cover must succeed.
 
     Pre-fix, charging repeated edge candidates rejected legitimate covers
@@ -913,7 +913,7 @@ def test_d1_h3_max_cells_charges_realized_cells_not_raw_candidates():
 # ---------------------------------------------------------------------------
 
 
-def test_d6_h3_cell_polygon_doc_mentions_chord_proxy():
+def test_h3_cell_polygon_doc_mentions_chord_proxy():
     """Public cell.polygon prose must disclose planar-chord proxy semantics."""
     cell = gm.H3Cell(0x85283473FFFFFFF)
     text = (type(cell).polygon.__doc__ or '').lower()

@@ -83,7 +83,7 @@ class M(collections.abc.Mapping):
         'gm.require(M())',
     ],
 )
-def test_d15_lying_mapping_terminates(call: str) -> None:
+def test_lying_mapping_terminates(call: str) -> None:
     script = (
         _LYING_MAPPING
         + f'\ntry:\n    {call}\nexcept Exception as e:\n    print(type(e).__name__, e)\n'
@@ -97,12 +97,12 @@ def test_d15_lying_mapping_terminates(call: str) -> None:
     assert 'mapping reports length' in blob or 'Error' in blob
 
 
-def test_d15_honest_mapping_from_geojson() -> None:
+def test_geojson_accepts_mapping_input() -> None:
     g = gm.from_geojson({'type': 'Point', 'coordinates': [1.0, 2.0]})
     assert g.x == 1.0 and g.y == 2.0
 
 
-def test_d15_honest_userdict_properties() -> None:
+def test_userdict_properties_are_preserved() -> None:
     props = collections.UserDict({'name': 'a'})
     feat = {
         'type': 'Feature',
@@ -140,7 +140,7 @@ class M(collections.abc.Mapping):
 """
 
 
-def test_n4_keys_only_mapping_from_geojson() -> None:
+def test_keys_only_mapping_from_geojson() -> None:
     """keys()-only duck that dict() accepts must parse as POINT (1 2)."""
     script = (
         _KEYS_ONLY_POINT
@@ -156,7 +156,7 @@ assert g.x == 1.0 and g.y == 2.0
     assert 'POINT (1 2)' in completed.stdout
 
 
-def test_n4_repeated_key_mapping_rejects_immediately() -> None:
+def test_repeated_key_mapping_rejects_immediately() -> None:
     """Infinite repeated-key stream must raise a typed error instead of draining."""
     script = (
         _REPEAT_KEY_MAPPING
@@ -187,7 +187,7 @@ except Exception as e:
         'gm.Features(gm.GeometryArray([gm.Point(0, 0)]), properties=M())',
     ],
 )
-def test_n4_repeated_key_rejects_across_sites(call: str) -> None:
+def test_repeated_key_rejects_across_sites(call: str) -> None:
     script = (
         _REPEAT_KEY_MAPPING
         + f"""
@@ -205,7 +205,7 @@ except Exception as e:
     assert 'GeometryError' in blob
 
 
-def test_n4_keys_only_properties_to_feature_and_features() -> None:
+def test_keys_only_properties_to_feature_and_features() -> None:
     """keys()-only properties mapping accepted by to_feature / Features."""
 
     class Props:
@@ -237,7 +237,7 @@ def test_n4_keys_only_properties_to_feature_and_features() -> None:
     assert parsed.properties[0]['k'] == 1
 
 
-def test_n4_honest_dict_and_userdict_unchanged() -> None:
+def test_mapping_inputs_accept_dict_userdict_and_proxy() -> None:
     g = gm.from_geojson({'type': 'Point', 'coordinates': [1.0, 2.0]})
     assert g.to_wkt() == 'POINT (1 2)'
     props = collections.UserDict({'name': 'a'})
@@ -254,7 +254,7 @@ def test_n4_honest_dict_and_userdict_unchanged() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_f3_nested_userdict_geometry_from_geojson() -> None:
+def test_nested_userdict_geometry_from_geojson() -> None:
     """Nested UserDict geometry in a Feature converts (top-level already did)."""
     g = gm.from_geojson({
         'type': 'Feature',
@@ -264,7 +264,7 @@ def test_f3_nested_userdict_geometry_from_geojson() -> None:
     assert g.x == 1.0 and g.y == 2.0
 
 
-def test_f3_nested_mapping_proxy_and_keys_duck() -> None:
+def test_nested_mapping_proxy_and_keys_duck() -> None:
     from types import MappingProxyType
 
     class Geom:
@@ -334,7 +334,7 @@ class _OnceMap:
         return self.data[k]
 
 
-def test_f1_to_feature_collection_preserves_once_map_properties() -> None:
+def test_to_feature_collection_preserves_once_map_properties() -> None:
     fc = gm.to_feature_collection(
         [gm.Point(0, 0), gm.Point(1, 1)],
         properties=_OnceMap({'name': 'ok'}),
@@ -343,7 +343,7 @@ def test_f1_to_feature_collection_preserves_once_map_properties() -> None:
     assert props == [{'name': 'ok'}, {'name': 'ok'}]
 
 
-def test_f1_from_features_accepts_keys_only_mapping() -> None:
+def test_from_features_accepts_keys_only_mapping() -> None:
     """Top-level keys()-only Feature (not only abc.Mapping) is accepted."""
 
     class Feat:
@@ -367,7 +367,7 @@ def test_f1_from_features_accepts_keys_only_mapping() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_f2_mapping_duck_legacy_getitem_keys_features() -> None:
+def test_mapping_duck_legacy_getitem_keys_features() -> None:
     class Keys:
         def __getitem__(self, i):
             if i == 0:
@@ -387,7 +387,7 @@ def test_f2_mapping_duck_legacy_getitem_keys_features() -> None:
     assert features.properties[0]['name'] == 'ok'
 
 
-def test_n4_geoparquet_and_viz_repeated_key_attributes() -> None:
+def test_geoparquet_and_viz_repeated_key_attributes() -> None:
     script = (
         _REPEAT_KEY_MAPPING
         + """
@@ -443,7 +443,7 @@ assert all(name == "GeometryError" for _, name, _ in errs)
         'gm.GeometryArray([gm.Point(0, 0)]).buffer(itertools.repeat(1.0))',
     ],
 )
-def test_d11_known_cardinality_repeat_terminates(call: str) -> None:
+def test_known_length_iterables_terminate(call: str) -> None:
     script = f"""\
 import itertools
 import gometry as gm
@@ -459,12 +459,12 @@ except Exception as e:
     assert 'length' in blob or 'Error' in blob
 
 
-def test_d11_finite_mismatch_message_stable() -> None:
+def test_finite_mismatch_reports_stable_error() -> None:
     with pytest.raises(gm.InvalidGeometryError, match='same length'):
         gm.points([1, 2], [1, 2, 3])
 
 
-def test_d11_honest_points_and_buffer() -> None:
+def test_points_and_buffer_accept_finite_inputs() -> None:
     assert gm.points([1.0, 2.0], [3.0, 4.0]).to_wkt() == [
         'POINT (1 3)',
         'POINT (2 4)',
@@ -479,7 +479,7 @@ def test_d11_honest_points_and_buffer() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_d10_honest_collection_and_features() -> None:
+def test_collection_and_features_accept_finite_inputs() -> None:
     assert gm.GeometryCollection([gm.Point(0, 0)]).to_wkt() == (
         'GEOMETRYCOLLECTION (POINT (0 0))'
     )
@@ -498,7 +498,7 @@ def test_d10_honest_collection_and_features() -> None:
     assert len(arr) == n
 
 
-def test_n3_crs_configure_generator_2_20_matches_list() -> None:
+def test_crs_configure_million_path_generator_matches_list() -> None:
     """N3: bare generator of 2^20 paths succeeds like the same-size list.
 
     Former MAX_BARE_COLLECT rejected generators at 1 Mi while lists of the
@@ -578,7 +578,7 @@ def test_crs_configure_rejects_unrepresentable_exact_paths_before_next() -> None
         'gm.Features(rows, properties=itertools.repeat(None))',
     ],
 )
-def test_d12_features_infinite_side_data_terminates(call: str) -> None:
+def test_features_infinite_side_data_terminates(call: str) -> None:
     script = f"""\
 import itertools
 import gometry as gm
@@ -595,7 +595,7 @@ except Exception as e:
     assert 'length' in blob
 
 
-def test_d12_features_honest_aligned_side_data() -> None:
+def test_features_honest_aligned_side_data() -> None:
     rows = gm.GeometryArray([gm.Point(0, 0)])
     features = gm.Features(rows, properties=[{'a': 1}], ids=[7])
     assert features.properties == ({'a': 1},)
@@ -615,7 +615,7 @@ def test_d12_features_honest_aligned_side_data() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_d23_to_geoparquet_userdict_attributes_succeeds() -> None:
+def test_to_geoparquet_userdict_attributes_succeeds() -> None:
     attrs = collections.UserDict({'v': [1]})
     with tempfile.TemporaryDirectory() as tmp:
         path = str(Path(tmp) / 'userdict.parquet')
@@ -628,7 +628,7 @@ def test_d23_to_geoparquet_userdict_attributes_succeeds() -> None:
         assert table.to_pydict() == {'v': [1]}
 
 
-def test_d14_to_geoparquet_infinite_attribute_column_terminates() -> None:
+def test_to_geoparquet_infinite_attribute_column_terminates() -> None:
     script = """\
 import itertools, tempfile
 from pathlib import Path
@@ -647,7 +647,7 @@ except Exception as e:
     assert 'does not match geometry length' in blob
 
 
-def test_d14_viz_attribute_table_infinite_column_terminates() -> None:
+def test_viz_attribute_table_infinite_column_terminates() -> None:
     script = """\
 import itertools
 from gometry._viz import _attribute_table
@@ -663,7 +663,7 @@ except Exception as e:
     assert 'does not match geometry length' in blob
 
 
-def test_d14_honest_finite_attributes() -> None:
+def test_geoparquet_and_viz_accept_finite_attributes() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         path = str(Path(tmp) / 'honest.parquet')
         arr = gm.GeometryArray([
@@ -686,7 +686,7 @@ def test_d14_honest_finite_attributes() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_d13_from_geoparquet_infinite_columns_terminates() -> None:
+def test_from_geoparquet_infinite_columns_terminates() -> None:
     script = """\
 import itertools, tempfile
 from pathlib import Path
@@ -707,7 +707,7 @@ except Exception as e:
     assert 'duplicate' in blob
 
 
-def test_d13_from_geoparquet_honest_columns_selection() -> None:
+def test_from_geoparquet_honest_columns_selection() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         path = str(Path(tmp) / 'cols.parquet')
         gm.GeometryArray([gm.Point(0, 0, crs=4326)]).to_geoparquet(

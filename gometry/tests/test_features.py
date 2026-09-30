@@ -628,7 +628,7 @@ def test_from_features_noncontiguous_utf8_memoryview() -> None:
     assert result.ids == (9,)
 
 
-def test_d16_from_features_accepts_signed_one_byte_buffers() -> None:
+def test_from_features_accepts_signed_one_byte_buffers() -> None:
     """D16: signed itemsize-1 buffers parse like from_geojson (not BufferError)."""
     import array
 

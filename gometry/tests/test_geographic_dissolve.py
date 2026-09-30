@@ -70,7 +70,7 @@ def test_union_with_a_member_touching_the_seam_stays_valid() -> None:
     assert not gm.contains(union, gm.Point(-179.0, 20.5, crs=4326))
 
 
-def test_r02_dissolve_stops_after_expected_plus_one() -> None:
+def test_dissolve_stops_after_expected_plus_one() -> None:
     """R02: dissolve keys stop after expected+1 (unbounded iterators bound)."""
     import itertools
 

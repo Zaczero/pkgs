@@ -237,7 +237,7 @@ def test_geometry_item_consumers_handle_missing_rows_by_contract() -> None:
     assert gm.equals_exact(gm.union_all([geom, None]), gm.union_all([geom]))
 
 
-def test_p18_geometry_collection_rejects_none_member_fail_fast() -> None:
+def test_geometry_collection_rejects_none_member_fail_fast() -> None:
     """P18: None is not a GeometryCollection member; fail on first None.
 
     EXACT repro: ``itertools.repeat(None)`` must raise immediately (the old

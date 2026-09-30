@@ -571,7 +571,7 @@ def test_voronoi_edges_clip_no_degenerate_rows() -> None:
     assert all(e.length > 0.0 for e in ordinary)
 
 
-def test_c2_extreme_area_centroid_and_ordinary_bit_identity() -> None:
+def test_extreme_area_centroid_and_ordinary_bit_identity() -> None:
     """C2: 1e154 box has finite area/centroid; ordinary box area bit-stable."""
     side = 1e154
     poly = gm.Polygon([(0.0, 0.0), (side, 0.0), (side, side), (0.0, side)])
@@ -583,7 +583,7 @@ def test_c2_extreme_area_centroid_and_ordinary_bit_identity() -> None:
     assert gm.box(0, 0, 2, 3).area == 6.0
 
 
-def test_c4_line_index_rejects_nonfinite_total_length() -> None:
+def test_line_index_rejects_nonfinite_total_length() -> None:
     """C4: LRS on linework whose total length overflows must not poison quietly."""
     # Two huge segments: each length is finite (~1e308) but the sum is +inf.
     ls = gm.LineString([(0.0, 0.0), (1e308, 0.0), (0.0, 1e308)])
@@ -592,7 +592,7 @@ def test_c4_line_index_rejects_nonfinite_total_length() -> None:
         ls.line_interpolate(0.5)
 
 
-def test_c8_subnormal_features_survive_zero_tolerance() -> None:
+def test_subnormal_features_survive_zero_tolerance() -> None:
     """C8: distinct subnormals must not collapse under zero-tolerance snap/rrp."""
     a = 1e-320
     b = 2e-320

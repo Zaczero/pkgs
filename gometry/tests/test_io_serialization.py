@@ -271,7 +271,7 @@ def test_b2_geojson_and_geoparquet_absent_crs_agree(tmp_path) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_c1_geoarrow_rejects_explicit_crs_null() -> None:
+def test_geoarrow_rejects_explicit_crs_null() -> None:
     pytest.importorskip('pyarrow')
     import pyarrow as pa
 
@@ -292,7 +292,7 @@ def test_c1_geoarrow_rejects_explicit_crs_null() -> None:
         gm.from_arrow(batch)
 
 
-def test_c2_spherical_edges_accepted_on_point() -> None:
+def test_spherical_edges_accepted_on_point() -> None:
     """Edge semantics are vacuous on points — spherical is accepted."""
     pytest.importorskip('pyarrow')
     import pyarrow as pa
@@ -318,7 +318,7 @@ def test_c2_spherical_edges_accepted_on_point() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_c3_geoparquet_3d_bbox_is_six_numbers(tmp_path) -> None:
+def test_geoparquet_3d_bbox_is_six_numbers(tmp_path) -> None:
     pytest.importorskip('pyarrow')
     import pyarrow.parquet as pq
     from gometry import _geoparquet as gp
@@ -337,7 +337,7 @@ def test_c3_geoparquet_3d_bbox_is_six_numbers(tmp_path) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_c4_dishonest_geometry_types_superset_rejected(tmp_path) -> None:
+def test_dishonest_geometry_types_superset_rejected(tmp_path) -> None:
     pytest.importorskip('pyarrow')
     import pyarrow as pa
     import pyarrow.parquet as pq
@@ -373,14 +373,14 @@ def test_c4_dishonest_geometry_types_superset_rejected(tmp_path) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_d1_include_srid_crs_free_raises() -> None:
+def test_include_srid_crs_free_raises() -> None:
     with pytest.raises(gm.CRSError, match=r'include_srid=True|CRS-free'):
         gm.Point(1, 2).to_wkb(include_srid=True)
     with pytest.raises(gm.CRSError, match=r'include_srid=True|CRS-free'):
         gm.Point(1, 2).to_wkt(include_srid=True)
 
 
-def test_d1_include_srid_epsg_still_embeds() -> None:
+def test_include_srid_epsg_still_embeds() -> None:
     wkb = gm.Point(1, 2, crs=4326).to_wkb(include_srid=True)
     assert wkb[:4].hex() == '01010000' or True  # EWKB flag present
     assert gm.from_wkb(wkb).crs == 'EPSG:4326'
@@ -391,7 +391,7 @@ def test_d1_include_srid_epsg_still_embeds() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_d2_hole_polygons_with_missing_stay_packed() -> None:
+def test_hole_polygons_with_missing_stay_packed() -> None:
     shell = [(0, 0), (4, 0), (4, 4), (0, 4), (0, 0)]
     hole = [(1, 1), (2, 1), (2, 2), (1, 2), (1, 1)]
     poly = gm.Polygon(shell, [hole])
@@ -418,7 +418,7 @@ def test_d2_hole_polygons_with_missing_stay_packed() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_d4_from_polyline_accepts_crs84() -> None:
+def test_from_polyline_accepts_crs84() -> None:
     encoded = gm.LineString([(1, 2), (3, 4)], crs=4326).to_polyline()
     decoded = gm.from_polyline(encoded, crs='OGC:CRS84')
     assert decoded.crs == 'OGC:CRS84'

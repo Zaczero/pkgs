@@ -25,7 +25,7 @@ def _call_no_panic(call):
         return None, exc
 
 
-def test_d01_positive_cell_array_roundtrip():
+def test_cell_array_pickle_roundtrip():
     cells = gm.h3_cover(gm.box(0, 0, 1, 1, crs=4326), resolution=2)
     arr = gm.CellArray(list(cells))
     out = pickle.loads(pickle.dumps(arr))
@@ -136,7 +136,7 @@ def test_cell_array_pickle_invalid_huge_mask_rejected_without_panic():
 # ---------------------------------------------------------------------------
 
 
-def test_d02_arrow_multilinestring_empty_parts_budget(pyarrow_or_skip):
+def test_arrow_multilinestring_empty_parts_budget(pyarrow_or_skip):
     """Empty line members are legal; decode is fallible-reserve only (no panic).
 
     Empty multiparts are linear in the declared offset length, not an
@@ -163,7 +163,7 @@ def test_d02_arrow_multilinestring_empty_parts_budget(pyarrow_or_skip):
     assert arr[0].geometry_type == 'MultiLineString'
 
 
-def test_d02_positive_dense_multilinestring_imports(pyarrow_or_skip):
+def test_dense_multilinestring_imports(pyarrow_or_skip):
     _ = pyarrow_or_skip
     # Small legitimate multi-line must still import.
     g = gm.MultiLineString([
@@ -181,14 +181,14 @@ def test_d02_positive_dense_multilinestring_imports(pyarrow_or_skip):
 # ---------------------------------------------------------------------------
 
 
-def test_d25_pickle_wkb_errors_stay_parse_errors():
+def test_pickle_wkb_errors_stay_parse_errors():
     with pytest.raises(gm.ParseError) as wkb_exc:
         _lib._unpickle_geometry_v1(b'\x01', None, None)
     assert type(wkb_exc.value) is gm.ParseError
     assert wkb_exc.value.format == 'wkb'
 
 
-def test_d25_positive_geometry_pickle_roundtrip():
+def test_geometry_pickle_roundtrip():
     g = gm.Point(1, 2, crs=4326)
     out = pickle.loads(pickle.dumps(g))
     assert out == g
@@ -212,7 +212,7 @@ def test_d25_positive_geometry_pickle_roundtrip():
 # ---------------------------------------------------------------------------
 
 
-def test_d29_forged_has_metadata_false_still_enforces_crs():
+def test_forged_has_metadata_false_still_enforces_crs():
     # Exact audit repro: forged has_metadata=False must not disable the CRS gate.
     # Reconstructors re-derive metadata from row storage before consulting the
     # private empty-index frame bit.
@@ -224,7 +224,7 @@ def test_d29_forged_has_metadata_false_still_enforces_crs():
         idx.query(gm.Point(0, 0, crs=3857))
 
 
-def test_d29_positive_spatial_index_roundtrip():
+def test_spatial_index_pickle_roundtrip():
     arr = gm.GeometryArray([gm.Point(0, 0, crs=4326), gm.Point(1, 1, crs=4326)])
     idx = gm.SpatialIndex(arr)
     out = pickle.loads(pickle.dumps(idx))
@@ -239,7 +239,7 @@ def test_d29_positive_spatial_index_roundtrip():
 # ---------------------------------------------------------------------------
 
 
-def test_d30_forged_valid_recomputed_false():
+def test_forged_valid_recomputed_false():
     # Exact audit repro: forged valid=True via unpickle payload is impossible;
     # unpickle takes geometry only and re-runs validate().
     bad = gm.from_wkt('POLYGON ((0 0,1 1,1 0,0 1,0 0))')
@@ -251,7 +251,7 @@ def test_d30_forged_valid_recomputed_false():
     assert report.valid == bad.is_valid
 
 
-def test_d30_forged_nonfinite_diagnostic_not_accepted():
+def test_forged_nonfinite_diagnostic_not_accepted():
     # Exact audit repro: forged issue tuple with nonfinite location is rejected
     # at the signature — payload never carries diagnostics.
     with pytest.raises(TypeError):
@@ -264,7 +264,7 @@ def test_d30_forged_nonfinite_diagnostic_not_accepted():
     assert report.location is None
 
 
-def test_d30_positive_validation_report_roundtrip():
+def test_validation_report_pickle_roundtrip():
     good = gm.Point(0, 0)
     bad = gm.from_wkt('POLYGON ((0 0,1 1,1 0,0 1,0 0))')
     for geom in (good, bad):
@@ -278,7 +278,7 @@ def test_d30_positive_validation_report_roundtrip():
 # ---------------------------------------------------------------------------
 
 
-def test_d32_empty_geometry_groups_unpickle():
+def test_empty_geometry_groups_unpickle():
     # Empty offsets is invalid CSR (must start with 0). Pre-fix release raised
     # BufferError / debug panic on len()-1; require a clean GeometryError.
     with pytest.raises(gm.GeometryError, match='invalid CSR offsets') as excinfo:
@@ -291,7 +291,7 @@ def test_d32_empty_geometry_groups_unpickle():
     assert len(g) == 0
 
 
-def test_d32_empty_cell_groups_unpickle():
+def test_empty_cell_groups_unpickle():
     with pytest.raises(gm.GeometryError, match='invalid CSR offsets') as excinfo:
         _lib._unpickle_cell_groups_v1(gm.CellArray([], type=gm.H3Cell), [])
     assert type(excinfo.value).__name__ != 'BufferError'
@@ -301,7 +301,7 @@ def test_d32_empty_cell_groups_unpickle():
     assert len(g) == 0
 
 
-def test_d32_positive_groups_roundtrip():
+def test_groups_pickle_roundtrip():
     arr = gm.GeometryArray([gm.Point(0, 0), gm.Point(1, 1)])
     # Build groups via a real op when available; else unpickle a valid CSR.
     groups = _lib._unpickle_geometry_groups_v1(arr, [0, 1, 2])

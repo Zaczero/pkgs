@@ -3547,7 +3547,7 @@ def _geoarrow_polygon_array(
         ),
     ],
 )
-def test_f4_geoarrow_polygon_rejects_active_ordinate_unclosed_rings(
+def test_geoarrow_polygon_rejects_active_ordinate_unclosed_rings(
     points: list[tuple[float, ...]],
     axes: str,
 ) -> None:
@@ -3570,7 +3570,7 @@ def test_f4_geoarrow_polygon_rejects_active_ordinate_unclosed_rings(
     del storage, field
 
 
-def test_f4_geoarrow_closed_3d_polygon_imports_and_pickles() -> None:
+def test_geoarrow_closed_3d_polygon_imports_and_pickles() -> None:
     """Genuinely closed 3D GeoArrow polygon still imports and pickle-round-trips."""
     closed = [
         (0.0, 0.0, 1.0),
@@ -3585,7 +3585,7 @@ def test_f4_geoarrow_closed_3d_polygon_imports_and_pickles() -> None:
     assert list(restored[0].exterior.coords.z) == [1.0, 2.0, 3.0, 1.0]
 
 
-def test_f4_geoarrow_xy_closed_2d_polygon_unaffected() -> None:
+def test_geoarrow_xy_closed_2d_polygon_unaffected() -> None:
     """XY 2D closed rings still import on the packed path."""
     closed_2d = [
         (0.0, 0.0),

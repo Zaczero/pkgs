@@ -21,7 +21,7 @@ if TYPE_CHECKING:
     from pathlib import Path
 
 
-def test_d03_big_endian_f64_points_match_native() -> None:
+def test_big_endian_float64_points_match_native() -> None:
     """Exact repro: BE f64 columns into points must equal LE values bit-exactly."""
     x_be = np.array([1.0], dtype='>f8')
     y_be = np.array([2.0], dtype='>f8')
@@ -35,7 +35,7 @@ def test_d03_big_endian_f64_points_match_native() -> None:
     assert be.x == le.x and be.y == le.y
 
 
-def test_d03_big_endian_f64_set_coordinates_and_crs_transform() -> None:
+def test_big_endian_float64_set_coordinates_and_crs_transform() -> None:
     x_be = np.array([1.0], dtype='>f8')
     y_be = np.array([2.0], dtype='>f8')
     x_le = np.array([1.0], dtype='<f8')
@@ -51,7 +51,7 @@ def test_d03_big_endian_f64_set_coordinates_and_crs_transform() -> None:
     assert float(out_be[0, 1]) == 2.0
 
 
-def test_d03_native_endian_f64_unchanged() -> None:
+def test_native_endian_float64_unchanged() -> None:
     native = '>' if sys.byteorder == 'big' else '<'
     x = np.array([3.5, -7.25], dtype=f'{native}f8')
     y = np.array([9.0, 0.125], dtype=f'{native}f8')
@@ -60,7 +60,7 @@ def test_d03_native_endian_f64_unchanged() -> None:
     assert arr[1].x == -7.25 and arr[1].y == 0.125
 
 
-def test_zero_dimensional_f64_buffers_remain_single_coordinate_columns() -> None:
+def test_zero_dimensional_float64_buffers_remain_single_coordinate_columns() -> None:
     points = gm.points(np.array(1.25), [2.5, 3.5])
     assert points.to_wkt() == ['POINT (1.25 2.5)', 'POINT (1.25 3.5)']
 
@@ -116,7 +116,7 @@ def test_zero_dimensional_ndarray_subclass_buffer_exception_keeps_identity() -> 
     assert excinfo.value is error
 
 
-def test_d03_big_endian_misread_would_be_wrong_without_swap() -> None:
+def test_big_endian_misread_would_be_wrong_without_swap() -> None:
     """Sanity: raw BE→host reinterpret of 1.0 is not 1.0; our path must still yield 1.0."""
     import struct
 
@@ -131,7 +131,7 @@ def test_d03_big_endian_misread_would_be_wrong_without_swap() -> None:
     assert p.x == 1.0 and p.y == 2.0
 
 
-def test_d04_big_endian_u64_cell_array_matches_native() -> None:
+def test_big_endian_u64_cell_array_matches_native() -> None:
     """Exact repro: CellArray from `>u8` ids must equal native-endian ids."""
     cell = gm.S2Cell(0, 0, level=1)
     be = gm.CellArray(np.array([cell.id], dtype='>u8'), type=gm.S2Cell)
@@ -141,7 +141,7 @@ def test_d04_big_endian_u64_cell_array_matches_native() -> None:
     assert be[0].id == le[0].id
 
 
-def test_d04_big_endian_h3_vertex_and_edge_arrays_accepted() -> None:
+def test_big_endian_h3_vertex_and_edge_arrays_accepted() -> None:
     """BE u64 vertex/edge id arrays must decode, not over-reject as invalid ids."""
     cell = gm.H3Cell(0x8928308280FFFFF)
     vertex = next(iter(cell.vertices))
@@ -158,7 +158,7 @@ def test_d04_big_endian_h3_vertex_and_edge_arrays_accepted() -> None:
         assert be[0].id == le[0].id, entity
 
 
-def test_d04_native_endian_u64_unchanged() -> None:
+def test_native_endian_u64_unchanged() -> None:
     native = '>' if sys.byteorder == 'big' else '<'
     cell = gm.S2Cell(0, 0, level=2)
     arr = gm.CellArray(np.array([cell.id], dtype=f'{native}u8'), type=gm.S2Cell)
@@ -392,7 +392,7 @@ def test_byte_buffer_provider_error_is_not_misclassified_as_an_iterable() -> Non
     assert excinfo.value is error
 
 
-def test_d01_erroring_arrow_stream_propagates() -> None:
+def test_erroring_arrow_stream_propagates() -> None:
     """Exact repro: read_all() failure must raise, not return an empty array."""
     pa = pytest.importorskip('pyarrow')
 
@@ -408,7 +408,7 @@ def test_d01_erroring_arrow_stream_propagates() -> None:
         gm.from_arrow(reader)
 
 
-def test_d01_happy_arrow_stream_returns_all_rows() -> None:
+def test_arrow_stream_returns_all_rows() -> None:
     pa = pytest.importorskip('pyarrow')
 
     arr = gm.points([1.0, 3.0], [2.0, 4.0], crs=4326).to_arrow()

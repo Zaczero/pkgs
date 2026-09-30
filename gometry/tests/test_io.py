@@ -644,7 +644,7 @@ def test_geometry_array_stops_lazy_coercion_at_first_malformed_row() -> None:
     assert not consumed_after_failure
 
 
-def test_r18_geojson_duplicate_key_last_wins_all_frontends() -> None:
+def test_geojson_duplicate_key_last_wins_all_frontends() -> None:
     """R18: recognized-member last-value-wins is identical on dict/str/bytes.
 
     Exact audit repro: shadowed non-string ``type`` then string ``type`` must
@@ -739,7 +739,7 @@ def test_m03_from_features_rejects_dual_defining_members() -> None:
         assert feats.properties == ({'k': 1},)
 
 
-def test_r19_rfc7946_cross_type_defining_members_rejected() -> None:
+def test_rfc7946_cross_type_defining_members_rejected() -> None:
     """R19: RFC 7946 §7.1 cross-type defining-member exclusions on all frontends."""
     import json
 
@@ -1571,7 +1571,7 @@ def test_serializer_methods_agree_across_scalar_and_array() -> None:
     assert array.to_geojson() == [geom.to_geojson()]
 
 
-def test_geojson_rejects_integer_coordinates_beyond_f64_exact_range() -> None:
+def test_geojson_rejects_integer_coordinates_beyond_float64_exact_range() -> None:
     # 2^53+1 is not exactly representable as binary64 — reject, never round.
     # (Exact integers beyond 2^53, e.g. 2^53+2, are admitted; see
     # test_geojson_numeric_fidelity.py.)
