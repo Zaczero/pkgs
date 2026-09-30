@@ -528,8 +528,9 @@ pub(crate) fn symmetric_difference_all(
 ///     One coverage row or multiple rows (`Polygon` or `MultiPolygon` each).
 ///
 /// gap_width : float, default 0.0
-///     Finite non-negative gap width in coordinate units; 0 disables gap
-///     detection.
+///     Finite non-negative coordinate-space gap width; 0 disables gap
+///     detection. Geographic CRSs use native angular units, projected CRSs
+///     use native linear units, and CRS-free inputs use raw coordinate units.
 ///
 /// Returns
 /// -------
@@ -587,8 +588,9 @@ pub(crate) fn coverage_is_valid(
 ///     One coverage row or multiple rows (`Polygon` or `MultiPolygon` each).
 ///
 /// gap_width : float, default 0.0
-///     Finite non-negative gap width in coordinate units; 0 disables gap
-///     detection.
+///     Finite non-negative coordinate-space gap width; 0 disables gap
+///     detection. Geographic CRSs use native angular units, projected CRSs
+///     use native linear units, and CRS-free inputs use raw coordinate units.
 ///
 /// Returns
 /// -------
@@ -644,8 +646,10 @@ pub(crate) fn coverage_invalid_edges(
 /// values : Geometry, GeometryArray, or iterable of Geometry
 ///     One coverage row or multiple rows (`Polygon` or `MultiPolygon` each).
 /// tolerance : float
-///     Distance-scale simplification tolerance, in coordinate units;
-///     non-negative finite. Read on the same scale by both methods (the
+///     Finite non-negative coordinate-space distance-scale tolerance:
+///     geographic CRSs use native angular units, projected CRSs use native
+///     linear units, and CRS-free inputs use raw coordinate units. Read on the
+///     same scale by both methods (the
 ///     Visvalingam-Whyatt effective area is ``tolerance**2 / 2``).
 /// method : {'vw', 'dp'}, default 'vw'
 ///     Importance criterion: ``'vw'`` is area-based (Visvalingam-Whyatt),
@@ -723,8 +727,11 @@ pub(crate) fn coverage_simplify(
 /// values : Geometry, GeometryArray, or iterable of Geometry
 ///     One coverage row or multiple rows (`Polygon` or `MultiPolygon` each).
 /// grid_size : float, default 0.0
-///     Finite non-negative vertex snapping grid in coordinate units; ``0``
-///     preserves input coordinates and disables snapping.
+///     Finite non-negative vertex snapping grid in coordinate space:
+///     geographic CRSs use native angular units, projected CRSs use native
+///     linear units, and CRS-free inputs use raw coordinate units. ``0``
+///     preserves input coordinates and disables snapping. Unlike
+///     ``snap_to_grid(grid_size=...)``, this operation accepts zero.
 ///
 /// gap_width : float, default 0.0
 ///     Finite non-negative coordinate-space width of gaps to merge (0 keeps

@@ -2174,8 +2174,8 @@ class Geometry:
         ----------
         distance : float
             Buffer radius; negative shrinks areal geometries. CRS-aware: geodesic
-            meters on a geographic CRS, native units on a projected one, coordinate
-            units otherwise. Must be finite.
+            meters on a geographic CRS, native linear units on a projected CRS, raw
+            coordinate units when CRS-free. Must be finite.
         cap_style : {'round', 'flat', 'square'}, default 'round'
             End-cap shape at the original first and last vertices of open lines. Closed lines have no end caps.
             Point inputs always buffer to round discs, and MultiPoint buffers are
@@ -2203,10 +2203,14 @@ class Geometry:
             not fabricated.
 
         unit : {'planar', 'meters'}, default None
-            Omitted follows the CRS: geodesic meters on a geographic CRS, native units on a projected one, coordinate units without a CRS. ``planar``
-            forces raw coordinate units (native angular units as Cartesian coordinates on a geographic CRS
-            — only for deliberate coordinate-space math); ``meters`` forces the
-            CRS metric and raises without a CRS.
+            ``None`` (the default) follows the CRS: geographic measurements use
+            geodesic meters, projected measurements use native linear units, and
+            CRS-free measurements use raw coordinate units (area results square the
+            corresponding unit). ``'planar'`` uses Cartesian coordinate space, with
+            geographic coordinates in their native angular units. ``'meters'`` uses
+            the CRS-aware metric and requires a CRS.
+
+
 
         Returns
         -------
@@ -2291,7 +2295,9 @@ class Geometry:
         Parameters
         ----------
         tolerance : float
-            Distance scale of removable detail, in coordinate units.
+            Distance scale of removable detail in coordinate space: native angular
+            units for geographic CRSs, native linear units for projected CRSs, and
+            raw coordinate units when CRS-free.
         method : {'vw', 'dp'}, default 'vw'
             ``'vw'`` is area-based (Visvalingam-Whyatt); ``'dp'`` is distance-
             based (Douglas-Peucker).
@@ -3113,25 +3119,29 @@ class Geometry:
         ``max_length`` is a real-world distance measured for the CRS, exactly like
         ``length``: a geographic CRS subdivides along the ellipsoid in meters, a
         projected CRS uses its native linear units, and a CRS-free geometry uses
-        coordinate units. Every original vertex survives unchanged — this operation
+        raw coordinate units. Every original vertex survives unchanged — this operation
         only inserts.
 
         Parameters
         ----------
         max_length : float, optional
-            Maximum segment length in coordinate units (positive). Pass this
+            Positive maximum segment length, interpreted for the CRS (see ``unit``).
+            Pass this
             positional argument or use ``fraction``, but not both.
 
         fraction : float, optional
             Fraction in ``(0, 1]`` of each source segment. Keyword-only; use when
             the subdivision is naturally relative rather than expressed in units.
+        unit : {'planar', 'meters'}, default None
+            ``None`` (the default) follows the CRS: geographic measurements use
+            geodesic meters, projected measurements use native linear units, and
+            CRS-free measurements use raw coordinate units (area results square the
+            corresponding unit). ``'planar'`` uses Cartesian coordinate space, with
+            geographic coordinates in their native angular units. ``'meters'`` uses
+            the CRS-aware metric and requires a CRS.
 
-        unit : {'planar', 'meters'} or None, default None
-            ``None`` follows the CRS. ``'planar'`` forces raw coordinate units
-            (native angular units as Cartesian coordinates on a geographic CRS — only for deliberate
-            coordinate-space math); ``'meters'`` forces the CRS metric and raises
-            without a CRS. Cannot be combined with ``fraction``, which is already
-            relative to each segment.
+            The override applies only to ``max_length``; ``fraction`` has no unit
+            and cannot be combined with ``unit``.
 
         Returns
         -------
@@ -3258,7 +3268,8 @@ class Geometry:
         ----------
         distance : float
             Offset; sign selects the side. CRS-aware: geodesic meters on a geographic
-            CRS, native units on a projected one, coordinate units otherwise. The result is the RAW parallel
+            CRS, native linear units on a projected CRS, raw coordinate units when
+            CRS-free. The result is the RAW parallel
             curve: where the input folds back within ``distance`` the curve can
             self-intersect; ``buffer(side=...)`` gives the trimmed area instead. Must
             be finite.
@@ -3275,10 +3286,14 @@ class Geometry:
             multiples of ``distance``, before it is clipped flat.
 
         unit : {'planar', 'meters'}, default None
-            Omitted follows the CRS: geodesic meters on a geographic CRS, native units on a projected one, coordinate units without a CRS. ``planar``
-            forces raw coordinate units (native angular units as Cartesian coordinates on a geographic CRS
-            — only for deliberate coordinate-space math); ``meters`` forces the
-            CRS metric and raises without a CRS.
+            ``None`` (the default) follows the CRS: geographic measurements use
+            geodesic meters, projected measurements use native linear units, and
+            CRS-free measurements use raw coordinate units (area results square the
+            corresponding unit). ``'planar'`` uses Cartesian coordinate space, with
+            geographic coordinates in their native angular units. ``'meters'`` uses
+            the CRS-aware metric and requires a CRS.
+
+
 
         Returns
         -------
@@ -3566,7 +3581,7 @@ class Geometry:
     @overload
     def snap_to_grid(
         self,
-        size: _FloatScalarInput | tuple[float, float] | Iterable[float],
+        grid_size: _FloatScalarInput | tuple[float, float] | Iterable[float],
         *,
         origin: GridOrigin = (0.0, 0.0),
         repair: Literal[False] = False,
@@ -3574,13 +3589,13 @@ class Geometry:
     @overload
     def snap_to_grid(
         self,
-        size: _FloatScalarInput | tuple[float, float] | Iterable[float],
+        grid_size: _FloatScalarInput | tuple[float, float] | Iterable[float],
         *,
         origin: GridOrigin = (0.0, 0.0),
         repair: bool = False,
     ) -> Geometry:
         """Snap every coordinate onto a regular grid and clean the result. X/Y move to
-        the nearest ``origin + k * size`` grid node; consecutive duplicate vertices
+        the nearest ``origin + k * grid_size`` grid node; consecutive duplicate vertices
         collapse, and parts that degenerate below their minimum become empty (the
         PostGIS ``ST_SnapToGrid`` shape — output may be non-simple). Z/M ride on
         surviving vertices. quantize is the decimal-rounding, vertex-preserving
@@ -3588,9 +3603,13 @@ class Geometry:
 
         Parameters
         ----------
-        size : float or tuple of float
-            Grid spacing — one value for a square grid or ``(sx, sy)`` (positive
-            finite).
+        grid_size : float or tuple of float
+            Positive finite coordinate-space grid spacing — native angular units for
+            geographic CRSs, native linear units for projected CRSs, and raw
+            coordinate units when CRS-free. Pass one value for a square grid or
+            ``(sx, sy)``.
+            Zero is invalid here; ``coverage_clean(grid_size=0)`` instead disables
+            snapping.
 
         origin : tuple of float, default (0.0, 0.0)
             A grid node anchoring the lattice.
@@ -3611,7 +3630,7 @@ class Geometry:
         Raises
         ------
         GeometryError
-            If ``size`` or ``origin`` is invalid, or the grid is too fine for the
+            If ``grid_size`` or ``origin`` is invalid, or the grid is too fine for the
             coordinate magnitude.
         InvalidGeometryError
             If ``repair=True`` and repair would have to invent Z/M ordinates, or
@@ -3621,7 +3640,7 @@ class Geometry:
         --------
         >>> import gometry as gm
         >>> jittery = gm.LineString([(0.12, 0.88), (2.49, 1.51)])
-        >>> (jittery.snap_to_grid(0.5)).to_wkt()
+        >>> jittery.snap_to_grid(grid_size=0.5).to_wkt()
         'LINESTRING (0 1, 2.5 1.5)'
         """
 
@@ -3924,7 +3943,9 @@ class Geometry:
         Parameters
         ----------
         tolerance : float, default 0.0
-            Tolerance in coordinate units (finite and non-negative).
+            Finite non-negative coordinate-space tolerance: native angular units for
+            geographic CRSs, native linear units for projected CRSs, and raw coordinate
+            units when CRS-free.
 
 
         Returns
@@ -4413,7 +4434,7 @@ class Point(Geometry):
     ) -> Point | Polygon: ...
     def snap_to_grid(
         self,
-        size: _FloatScalarInput | tuple[float, float] | Iterable[float],
+        grid_size: _FloatScalarInput | tuple[float, float] | Iterable[float],
         *,
         origin: GridOrigin = (0.0, 0.0),
         repair: bool = False,
@@ -4730,7 +4751,7 @@ class MultiPoint(Geometry):
     ) -> Polygon | MultiPolygon: ...
     def snap_to_grid(
         self,
-        size: _FloatScalarInput | tuple[float, float] | Iterable[float],
+        grid_size: _FloatScalarInput | tuple[float, float] | Iterable[float],
         *,
         origin: GridOrigin = (0.0, 0.0),
         repair: bool = False,
@@ -4974,7 +4995,7 @@ class LineString(Geometry):
     @overload
     def snap_to_grid(
         self,
-        size: _FloatScalarInput | tuple[float, float] | Iterable[float],
+        grid_size: _FloatScalarInput | tuple[float, float] | Iterable[float],
         *,
         origin: GridOrigin = (0.0, 0.0),
         repair: Literal[False] = False,
@@ -4982,7 +5003,7 @@ class LineString(Geometry):
     @overload
     def snap_to_grid(
         self,
-        size: _FloatScalarInput | tuple[float, float] | Iterable[float],
+        grid_size: _FloatScalarInput | tuple[float, float] | Iterable[float],
         *,
         origin: GridOrigin = (0.0, 0.0),
         repair: bool = False,
@@ -5165,7 +5186,7 @@ class MultiLineString(Geometry):
     ) -> Polygon | MultiPolygon: ...
     def snap_to_grid(
         self,
-        size: _FloatScalarInput | tuple[float, float] | Iterable[float],
+        grid_size: _FloatScalarInput | tuple[float, float] | Iterable[float],
         *,
         origin: GridOrigin = (0.0, 0.0),
         repair: bool = False,
@@ -5311,7 +5332,7 @@ class Polygon(Geometry):
     @overload
     def snap_to_grid(
         self,
-        size: _FloatScalarInput | tuple[float, float] | Iterable[float],
+        grid_size: _FloatScalarInput | tuple[float, float] | Iterable[float],
         *,
         origin: GridOrigin = (0.0, 0.0),
         repair: Literal[False] = False,
@@ -5319,7 +5340,7 @@ class Polygon(Geometry):
     @overload
     def snap_to_grid(
         self,
-        size: _FloatScalarInput | tuple[float, float] | Iterable[float],
+        grid_size: _FloatScalarInput | tuple[float, float] | Iterable[float],
         *,
         origin: GridOrigin = (0.0, 0.0),
         repair: bool = False,
@@ -5494,7 +5515,7 @@ class MultiPolygon(Geometry):
     @overload
     def snap_to_grid(
         self,
-        size: _FloatScalarInput | tuple[float, float] | Iterable[float],
+        grid_size: _FloatScalarInput | tuple[float, float] | Iterable[float],
         *,
         origin: GridOrigin = (0.0, 0.0),
         repair: Literal[False] = False,
@@ -5502,7 +5523,7 @@ class MultiPolygon(Geometry):
     @overload
     def snap_to_grid(
         self,
-        size: _FloatScalarInput | tuple[float, float] | Iterable[float],
+        grid_size: _FloatScalarInput | tuple[float, float] | Iterable[float],
         *,
         origin: GridOrigin = (0.0, 0.0),
         repair: bool = False,
@@ -5679,7 +5700,7 @@ class GeometryCollection(Geometry):
     ) -> GeometryCollection: ...
     def snap_to_grid(
         self,
-        size: _FloatScalarInput | tuple[float, float] | Iterable[float],
+        grid_size: _FloatScalarInput | tuple[float, float] | Iterable[float],
         *,
         origin: GridOrigin = (0.0, 0.0),
         repair: bool = False,
@@ -8059,8 +8080,8 @@ class GeometryArray(Sequence[_GeometryT_co]):
         ----------
         distance : float or sequence of float
             Buffer radius; negative shrinks areal geometries. CRS-aware: geodesic
-            meters on a geographic CRS, native units on a projected one, coordinate
-            units otherwise — a scalar applies to every geometry, or pass one value
+            meters on a geographic CRS, native linear units on a projected CRS, raw
+            coordinate units when CRS-free — a scalar applies to every geometry, or pass one value
             per geometry. Every distance must be finite.
         cap_style : {'round', 'flat', 'square'}, default 'round'
             End-cap shape at the original first and last vertices of open lines. Closed lines have no end caps.
@@ -8089,10 +8110,14 @@ class GeometryArray(Sequence[_GeometryT_co]):
             not fabricated.
 
         unit : {'planar', 'meters'}, default None
-            Omitted follows the CRS: geodesic meters on a geographic CRS, native units on a projected one, coordinate units without a CRS. ``planar``
-            forces raw coordinate units (native angular units as Cartesian coordinates on a geographic CRS
-            — only for deliberate coordinate-space math); ``meters`` forces the
-            CRS metric and raises without a CRS.
+            ``None`` (the default) follows the CRS: geographic measurements use
+            geodesic meters, projected measurements use native linear units, and
+            CRS-free measurements use raw coordinate units (area results square the
+            corresponding unit). ``'planar'`` uses Cartesian coordinate space, with
+            geographic coordinates in their native angular units. ``'meters'`` uses
+            the CRS-aware metric and requires a CRS.
+
+
 
         Returns
         -------
@@ -8200,8 +8225,10 @@ class GeometryArray(Sequence[_GeometryT_co]):
         Parameters
         ----------
         tolerance : float or sequence of float
-            Distance scale of removable detail, in coordinate units — a scalar
-            applies to every geometry, or pass one value per geometry.
+            Distance scale of removable detail in coordinate space — native angular
+            units for geographic CRSs, native linear units for projected CRSs, and raw
+            coordinate units when CRS-free. A scalar applies to every geometry, or
+            pass one value per geometry.
         method : {'vw', 'dp'}, default 'vw'
             ``'vw'`` is area-based (Visvalingam-Whyatt); ``'dp'`` is distance-
             based (Douglas-Peucker).
@@ -9119,26 +9146,29 @@ class GeometryArray(Sequence[_GeometryT_co]):
         ``max_length`` is a real-world distance measured for the CRS, exactly like
         ``length``: a geographic CRS subdivides along the ellipsoid in meters, a
         projected CRS uses its native linear units, and a CRS-free geometry uses
-        coordinate units. Every original vertex survives unchanged — this operation
+        raw coordinate units. Every original vertex survives unchanged — this operation
         only inserts.
 
         Parameters
         ----------
         max_length : float or sequence of float, optional
-            Maximum segment length in coordinate units (positive) — a scalar
-            applies to every geometry, or pass one value per geometry. Pass this
+            Positive maximum segment length, interpreted for the CRS (see ``unit``) —
+            a scalar applies to every geometry, or pass one value per geometry. Pass this
             positional argument or use ``fraction``, but not both.
 
         fraction : float or sequence of float, optional
             Fraction in ``(0, 1]`` of each source segment. Keyword-only; a scalar
             applies to every geometry, or pass one value per geometry.
+        unit : {'planar', 'meters'}, default None
+            ``None`` (the default) follows the CRS: geographic measurements use
+            geodesic meters, projected measurements use native linear units, and
+            CRS-free measurements use raw coordinate units (area results square the
+            corresponding unit). ``'planar'`` uses Cartesian coordinate space, with
+            geographic coordinates in their native angular units. ``'meters'`` uses
+            the CRS-aware metric and requires a CRS.
 
-        unit : {'planar', 'meters'} or None, default None
-            ``None`` follows the CRS. ``'planar'`` forces raw coordinate units
-            (native angular units as Cartesian coordinates on a geographic CRS — only for deliberate
-            coordinate-space math); ``'meters'`` forces the CRS metric and raises
-            without a CRS. Cannot be combined with ``fraction``, which is already
-            relative to each segment.
+            The override applies only to ``max_length``; ``fraction`` has no unit
+            and cannot be combined with ``unit``.
 
         Returns
         -------
@@ -9399,7 +9429,8 @@ class GeometryArray(Sequence[_GeometryT_co]):
         ----------
         distance : float or sequence of float
             Offset; sign selects the side. CRS-aware: geodesic meters on a geographic
-            CRS, native units on a projected one, coordinate units otherwise — a scalar applies to every
+            CRS, native linear units on a projected CRS, raw coordinate units when
+            CRS-free — a scalar applies to every
             geometry, or pass one value per geometry. The result is the RAW
             parallel curve: where the input folds back within ``distance`` the
             curve can self-intersect; ``buffer(side=...)`` gives the trimmed area
@@ -9417,10 +9448,14 @@ class GeometryArray(Sequence[_GeometryT_co]):
             multiples of ``distance``, before it is clipped flat.
 
         unit : {'planar', 'meters'}, default None
-            Omitted follows the CRS: geodesic meters on a geographic CRS, native units on a projected one, coordinate units without a CRS. ``planar``
-            forces raw coordinate units (native angular units as Cartesian coordinates on a geographic CRS
-            — only for deliberate coordinate-space math); ``meters`` forces the
-            CRS metric and raises without a CRS.
+            ``None`` (the default) follows the CRS: geographic measurements use
+            geodesic meters, projected measurements use native linear units, and
+            CRS-free measurements use raw coordinate units (area results square the
+            corresponding unit). ``'planar'`` uses Cartesian coordinate space, with
+            geographic coordinates in their native angular units. ``'meters'`` uses
+            the CRS-aware metric and requires a CRS.
+
+
 
         Returns
         -------
@@ -9766,7 +9801,7 @@ class GeometryArray(Sequence[_GeometryT_co]):
     @overload
     def snap_to_grid(
         self: GeometryArray[_GeometryT],
-        size: float | tuple[float, float] | Iterable[float],
+        grid_size: float | tuple[float, float] | Iterable[float],
         *,
         origin: GridOrigin = (0.0, 0.0),
         repair: Literal[False] = False,
@@ -9774,7 +9809,7 @@ class GeometryArray(Sequence[_GeometryT_co]):
     @overload
     def snap_to_grid(
         self: GeometryArray[Point],
-        size: float | tuple[float, float] | Iterable[float],
+        grid_size: float | tuple[float, float] | Iterable[float],
         *,
         origin: GridOrigin = (0.0, 0.0),
         repair: bool,
@@ -9782,7 +9817,7 @@ class GeometryArray(Sequence[_GeometryT_co]):
     @overload
     def snap_to_grid(
         self: GeometryArray[MultiPoint],
-        size: float | tuple[float, float] | Iterable[float],
+        grid_size: float | tuple[float, float] | Iterable[float],
         *,
         origin: GridOrigin = (0.0, 0.0),
         repair: bool,
@@ -9790,7 +9825,7 @@ class GeometryArray(Sequence[_GeometryT_co]):
     @overload
     def snap_to_grid(
         self: GeometryArray[MultiLineString],
-        size: float | tuple[float, float] | Iterable[float],
+        grid_size: float | tuple[float, float] | Iterable[float],
         *,
         origin: GridOrigin = (0.0, 0.0),
         repair: bool,
@@ -9798,7 +9833,7 @@ class GeometryArray(Sequence[_GeometryT_co]):
     @overload
     def snap_to_grid(
         self: GeometryArray[GeometryCollection],
-        size: float | tuple[float, float] | Iterable[float],
+        grid_size: float | tuple[float, float] | Iterable[float],
         *,
         origin: GridOrigin = (0.0, 0.0),
         repair: bool,
@@ -9806,7 +9841,7 @@ class GeometryArray(Sequence[_GeometryT_co]):
     @overload
     def snap_to_grid(
         self: GeometryArray[LineString],
-        size: float | tuple[float, float] | Iterable[float],
+        grid_size: float | tuple[float, float] | Iterable[float],
         *,
         origin: GridOrigin = (0.0, 0.0),
         repair: bool,
@@ -9814,7 +9849,7 @@ class GeometryArray(Sequence[_GeometryT_co]):
     @overload
     def snap_to_grid(
         self: GeometryArray[Polygon | MultiPolygon],
-        size: float | tuple[float, float] | Iterable[float],
+        grid_size: float | tuple[float, float] | Iterable[float],
         *,
         origin: GridOrigin = (0.0, 0.0),
         repair: bool,
@@ -9822,7 +9857,7 @@ class GeometryArray(Sequence[_GeometryT_co]):
     @overload
     def snap_to_grid(
         self: GeometryArray[_GeometryT | None],
-        size: float | tuple[float, float] | Iterable[float],
+        grid_size: float | tuple[float, float] | Iterable[float],
         *,
         origin: GridOrigin = (0.0, 0.0),
         repair: Literal[False] = False,
@@ -9830,7 +9865,7 @@ class GeometryArray(Sequence[_GeometryT_co]):
     @overload
     def snap_to_grid(
         self: GeometryArray[Point | None],
-        size: float | tuple[float, float] | Iterable[float],
+        grid_size: float | tuple[float, float] | Iterable[float],
         *,
         origin: GridOrigin = (0.0, 0.0),
         repair: bool,
@@ -9838,7 +9873,7 @@ class GeometryArray(Sequence[_GeometryT_co]):
     @overload
     def snap_to_grid(
         self: GeometryArray[MultiPoint | None],
-        size: float | tuple[float, float] | Iterable[float],
+        grid_size: float | tuple[float, float] | Iterable[float],
         *,
         origin: GridOrigin = (0.0, 0.0),
         repair: bool,
@@ -9846,7 +9881,7 @@ class GeometryArray(Sequence[_GeometryT_co]):
     @overload
     def snap_to_grid(
         self: GeometryArray[MultiLineString | None],
-        size: float | tuple[float, float] | Iterable[float],
+        grid_size: float | tuple[float, float] | Iterable[float],
         *,
         origin: GridOrigin = (0.0, 0.0),
         repair: bool,
@@ -9854,7 +9889,7 @@ class GeometryArray(Sequence[_GeometryT_co]):
     @overload
     def snap_to_grid(
         self: GeometryArray[GeometryCollection | None],
-        size: float | tuple[float, float] | Iterable[float],
+        grid_size: float | tuple[float, float] | Iterable[float],
         *,
         origin: GridOrigin = (0.0, 0.0),
         repair: bool,
@@ -9862,7 +9897,7 @@ class GeometryArray(Sequence[_GeometryT_co]):
     @overload
     def snap_to_grid(
         self: GeometryArray[LineString | None],
-        size: float | tuple[float, float] | Iterable[float],
+        grid_size: float | tuple[float, float] | Iterable[float],
         *,
         origin: GridOrigin = (0.0, 0.0),
         repair: bool,
@@ -9870,7 +9905,7 @@ class GeometryArray(Sequence[_GeometryT_co]):
     @overload
     def snap_to_grid(
         self: GeometryArray[Polygon | MultiPolygon | None],
-        size: float | tuple[float, float] | Iterable[float],
+        grid_size: float | tuple[float, float] | Iterable[float],
         *,
         origin: GridOrigin = (0.0, 0.0),
         repair: bool,
@@ -9878,7 +9913,7 @@ class GeometryArray(Sequence[_GeometryT_co]):
     @overload
     def snap_to_grid(
         self: GeometryArray[Geometry],
-        size: float | tuple[float, float] | Iterable[float],
+        grid_size: float | tuple[float, float] | Iterable[float],
         *,
         origin: GridOrigin = (0.0, 0.0),
         repair: bool = False,
@@ -9886,13 +9921,13 @@ class GeometryArray(Sequence[_GeometryT_co]):
     @overload
     def snap_to_grid(
         self: GeometryArray[Geometry | None],
-        size: float | tuple[float, float] | Iterable[float],
+        grid_size: float | tuple[float, float] | Iterable[float],
         *,
         origin: GridOrigin = (0.0, 0.0),
         repair: bool = False,
     ) -> GeometryArray[Geometry | None]:
         """Snap every coordinate onto a regular grid and clean the result. X/Y move to
-        the nearest ``origin + k * size`` grid node; consecutive duplicate vertices
+        the nearest ``origin + k * grid_size`` grid node; consecutive duplicate vertices
         collapse, and parts that degenerate below their minimum become empty (the
         PostGIS ``ST_SnapToGrid`` shape — output may be non-simple). Z/M ride on
         surviving vertices. quantize is the decimal-rounding, vertex-preserving
@@ -9900,9 +9935,13 @@ class GeometryArray(Sequence[_GeometryT_co]):
 
         Parameters
         ----------
-        size : float or tuple of float
-            Grid spacing — one value for a square grid or ``(sx, sy)`` (positive
-            finite).
+        grid_size : float or tuple of float
+            Positive finite coordinate-space grid spacing — native angular units for
+            geographic CRSs, native linear units for projected CRSs, and raw
+            coordinate units when CRS-free. Pass one value for a square grid or
+            ``(sx, sy)``.
+            Zero is invalid here; ``coverage_clean(grid_size=0)`` instead disables
+            snapping.
 
         origin : tuple of float, default (0.0, 0.0)
             A grid node anchoring the lattice.
@@ -9923,7 +9962,7 @@ class GeometryArray(Sequence[_GeometryT_co]):
         Raises
         ------
         GeometryError
-            If ``size`` or ``origin`` is invalid, or the grid is too fine for the
+            If ``grid_size`` or ``origin`` is invalid, or the grid is too fine for the
             coordinate magnitude.
         InvalidGeometryError
             If ``repair=True`` and repair would have to invent Z/M ordinates, or
@@ -9933,7 +9972,7 @@ class GeometryArray(Sequence[_GeometryT_co]):
         --------
         >>> import gometry as gm
         >>> jittery = gm.LineString([(0.12, 0.88), (2.49, 1.51)])
-        >>> (jittery.snap_to_grid(0.5)).to_wkt()
+        >>> jittery.snap_to_grid(grid_size=0.5).to_wkt()
         'LINESTRING (0 1, 2.5 1.5)'
         """
 
@@ -10274,8 +10313,10 @@ class GeometryArray(Sequence[_GeometryT_co]):
         Parameters
         ----------
         tolerance : float or sequence of float, default 0.0
-            Tolerance in coordinate units (finite and non-negative) — a scalar applies to
-            every geometry, or pass one value per geometry.
+            Finite non-negative coordinate-space tolerance — native angular units for
+            geographic CRSs, native linear units for projected CRSs, and raw coordinate
+            units when CRS-free. A scalar applies to every geometry, or pass one value
+            per geometry.
 
 
         Returns
@@ -18291,8 +18332,9 @@ def coverage_is_valid(
         One coverage row or multiple rows (`Polygon` or `MultiPolygon` each).
 
     gap_width : float, default 0.0
-        Finite non-negative gap width in coordinate units; 0 disables gap
-        detection.
+        Finite non-negative coordinate-space gap width; 0 disables gap
+        detection. Geographic CRSs use native angular units, projected CRSs
+        use native linear units, and CRS-free inputs use raw coordinate units.
 
     Returns
     -------
@@ -18356,8 +18398,9 @@ def coverage_invalid_edges(
         One coverage row or multiple rows (`Polygon` or `MultiPolygon` each).
 
     gap_width : float, default 0.0
-        Finite non-negative gap width in coordinate units; 0 disables gap
-        detection.
+        Finite non-negative coordinate-space gap width; 0 disables gap
+        detection. Geographic CRSs use native angular units, projected CRSs
+        use native linear units, and CRS-free inputs use raw coordinate units.
 
     Returns
     -------
@@ -18418,8 +18461,10 @@ def coverage_simplify(
     values : Geometry, GeometryArray, or iterable of Geometry
         One coverage row or multiple rows (`Polygon` or `MultiPolygon` each).
     tolerance : float
-        Distance-scale simplification tolerance, in coordinate units;
-        non-negative finite. Read on the same scale by both methods (the
+        Finite non-negative coordinate-space distance-scale tolerance:
+        geographic CRSs use native angular units, projected CRSs use native
+        linear units, and CRS-free inputs use raw coordinate units. Read on the
+        same scale by both methods (the
         Visvalingam-Whyatt effective area is ``tolerance**2 / 2``).
     method : {'vw', 'dp'}, default 'vw'
         Importance criterion: ``'vw'`` is area-based (Visvalingam-Whyatt),
@@ -18627,8 +18672,11 @@ def coverage_clean(
     values : Geometry, GeometryArray, or iterable of Geometry
         One coverage row or multiple rows (`Polygon` or `MultiPolygon` each).
     grid_size : float, default 0.0
-        Finite non-negative vertex snapping grid in coordinate units; ``0``
-        preserves input coordinates and disables snapping.
+        Finite non-negative vertex snapping grid in coordinate space:
+        geographic CRSs use native angular units, projected CRSs use native
+        linear units, and CRS-free inputs use raw coordinate units. ``0``
+        preserves input coordinates and disables snapping. Unlike
+        ``snap_to_grid(grid_size=...)``, this operation accepts zero.
 
     gap_width : float, default 0.0
         Finite non-negative coordinate-space width of gaps to merge (0 keeps

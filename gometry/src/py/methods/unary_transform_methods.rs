@@ -20,8 +20,8 @@ Parameters
     scalar: (r"
 distance : float
     Buffer radius; negative shrinks areal geometries. CRS-aware: geodesic
-    meters on a geographic CRS, native units on a projected one, coordinate
-    units otherwise. Must be finite.
+    meters on a geographic CRS, native linear units on a projected CRS, raw
+    coordinate units when CRS-free. Must be finite.
 ", r"
 
 Returns
@@ -33,8 +33,8 @@ Polygon or MultiPolygon
     array: (r"
 distance : float or sequence of float
     Buffer radius; negative shrinks areal geometries. CRS-aware: geodesic
-    meters on a geographic CRS, native units on a projected one, coordinate
-    units otherwise — a scalar applies to every geometry, or pass one value
+    meters on a geographic CRS, native linear units on a projected CRS, raw
+    coordinate units when CRS-free — a scalar applies to every geometry, or pass one value
     per geometry. Every distance must be finite.
 ", r"
 
@@ -44,7 +44,7 @@ GeometryArray
     One offset region per row.
 
 ");
-    post: r"cap_style : {'round', 'flat', 'square'}, default 'round'
+    post: concat!(r"cap_style : {'round', 'flat', 'square'}, default 'round'
     End-cap shape at the original first and last vertices of open lines. Closed lines have no end caps.
     Point inputs always buffer to round discs, and MultiPoint buffers are
     unions of round discs; `cap_style` does not affect either.
@@ -70,11 +70,7 @@ side : {'both', 'left', 'right'}, default 'both'
     Buffer boundaries are synthesized and therefore returned in XY; Z/M are
     not fabricated.
 
-unit : {'planar', 'meters'}, default None
-    Omitted follows the CRS: geodesic meters on a geographic CRS, native units on a projected one, coordinate units without a CRS. ``planar``
-    forces raw coordinate units (native angular units as Cartesian coordinates on a geographic CRS
-    — only for deliberate coordinate-space math); ``meters`` forces the
-    CRS metric and raises without a CRS.";
+", unit_parameter_doc!());
     tail: r"
 Raises
 ------
@@ -109,7 +105,8 @@ Parameters
     scalar: (r"
 distance : float
     Offset; sign selects the side. CRS-aware: geodesic meters on a geographic
-    CRS, native units on a projected one, coordinate units otherwise. The result is the RAW parallel
+    CRS, native linear units on a projected CRS, raw coordinate units when
+    CRS-free. The result is the RAW parallel
     curve: where the input folds back within ``distance`` the curve can
     self-intersect; ``buffer(side=...)`` gives the trimmed area instead. Must
     be finite.
@@ -124,7 +121,8 @@ LineString, MultiLineString, or GeometryCollection
     array: (r"
 distance : float or sequence of float
     Offset; sign selects the side. CRS-aware: geodesic meters on a geographic
-    CRS, native units on a projected one, coordinate units otherwise — a scalar applies to every
+    CRS, native linear units on a projected CRS, raw coordinate units when
+    CRS-free — a scalar applies to every
     geometry, or pass one value per geometry. The result is the RAW
     parallel curve: where the input folds back within ``distance`` the
     curve can self-intersect; ``buffer(side=...)`` gives the trimmed area
@@ -137,7 +135,7 @@ GeometryArray
     One offset curve per row.
 
 ");
-    post: r"join_style : {'round', 'miter', 'bevel'}, default 'round'
+    post: concat!(r"join_style : {'round', 'miter', 'bevel'}, default 'round'
     Corner treatment at outside turns: ``'round'`` inscribes fillet arcs,
     ``'miter'`` extends the carriers to their crossing (clipped at
     ``miter_limit``), ``'bevel'`` connects the offsets directly.
@@ -149,11 +147,7 @@ miter_limit : float, default 5.0
     With ``join_style='miter'``: how far a mitered corner may reach, in
     multiples of ``distance``, before it is clipped flat.
 
-unit : {'planar', 'meters'}, default None
-    Omitted follows the CRS: geodesic meters on a geographic CRS, native units on a projected one, coordinate units without a CRS. ``planar``
-    forces raw coordinate units (native angular units as Cartesian coordinates on a geographic CRS
-    — only for deliberate coordinate-space math); ``meters`` forces the
-    CRS metric and raises without a CRS.";
+", unit_parameter_doc!());
     tail: r"
 Raises
 ------
@@ -189,7 +183,9 @@ Parameters
 ----------";
     scalar: (r"
 tolerance : float
-    Distance scale of removable detail, in coordinate units.
+    Distance scale of removable detail in coordinate space: native angular
+    units for geographic CRSs, native linear units for projected CRSs, and
+    raw coordinate units when CRS-free.
 ", r"
 
 Returns
@@ -200,8 +196,10 @@ Geometry
 ");
     array: (r"
 tolerance : float or sequence of float
-    Distance scale of removable detail, in coordinate units — a scalar
-    applies to every geometry, or pass one value per geometry.
+    Distance scale of removable detail in coordinate space — native angular
+    units for geographic CRSs, native linear units for projected CRSs, and raw
+    coordinate units when CRS-free. A scalar applies to every geometry, or
+    pass one value per geometry.
 ", r"
 
 Returns
@@ -303,7 +301,7 @@ True";
 method_doc! {
     doc_snap_to_grid;
     body: r"Snap every coordinate onto a regular grid and clean the result. X/Y move to
-the nearest ``origin + k * size`` grid node; consecutive duplicate vertices
+the nearest ``origin + k * grid_size`` grid node; consecutive duplicate vertices
 collapse, and parts that degenerate below their minimum become empty (the
 PostGIS ``ST_SnapToGrid`` shape — output may be non-simple). Z/M ride on
 surviving vertices. quantize is the decimal-rounding, vertex-preserving
@@ -311,9 +309,13 @@ sibling.
 
 Parameters
 ----------
-size : float or tuple of float
-    Grid spacing — one value for a square grid or ``(sx, sy)`` (positive
-    finite).
+grid_size : float or tuple of float
+    Positive finite coordinate-space grid spacing — native angular units for
+    geographic CRSs, native linear units for projected CRSs, and raw
+    coordinate units when CRS-free. Pass one value for a square grid or
+    ``(sx, sy)``.
+    Zero is invalid here; ``coverage_clean(grid_size=0)`` instead disables
+    snapping.
 
 origin : tuple of float, default (0.0, 0.0)
     A grid node anchoring the lattice.
@@ -344,7 +346,7 @@ GeometryArray
 Raises
 ------
 GeometryError
-    If ``size`` or ``origin`` is invalid, or the grid is too fine for the
+    If ``grid_size`` or ``origin`` is invalid, or the grid is too fine for the
     coordinate magnitude.
 InvalidGeometryError
     If ``repair=True`` and repair would have to invent Z/M ordinates, or
@@ -354,7 +356,7 @@ Examples
 --------
 >>> import gometry as gm
 >>> jittery = gm.LineString([(0.12, 0.88), (2.49, 1.51)])
->>> (jittery.snap_to_grid(0.5)).to_wkt()
+>>> jittery.snap_to_grid(grid_size=0.5).to_wkt()
 'LINESTRING (0 1, 2.5 1.5)'";
 }
 
@@ -366,7 +368,9 @@ Parameters
 ----------";
     scalar: (r"
 tolerance : float, default 0.0
-    Tolerance in coordinate units (finite and non-negative).
+    Finite non-negative coordinate-space tolerance: native angular units for
+    geographic CRSs, native linear units for projected CRSs, and raw coordinate
+    units when CRS-free.
 ", r"
 
 Returns
@@ -377,8 +381,10 @@ Geometry
 ");
     array: (r"
 tolerance : float or sequence of float, default 0.0
-    Tolerance in coordinate units (finite and non-negative) — a scalar applies to
-    every geometry, or pass one value per geometry.
+    Finite non-negative coordinate-space tolerance — native angular units for
+    geographic CRSs, native linear units for projected CRSs, and raw coordinate
+    units when CRS-free. A scalar applies to every geometry, or pass one value
+    per geometry.
 ", r"
 
 Returns
@@ -410,14 +416,15 @@ method_doc! {
 ``max_length`` is a real-world distance measured for the CRS, exactly like
 ``length``: a geographic CRS subdivides along the ellipsoid in meters, a
 projected CRS uses its native linear units, and a CRS-free geometry uses
-coordinate units. Every original vertex survives unchanged — this operation
+raw coordinate units. Every original vertex survives unchanged — this operation
 only inserts.
 
 Parameters
 ----------";
     scalar: (r"
 max_length : float, optional
-    Maximum segment length in coordinate units (positive). Pass this
+    Positive maximum segment length, interpreted for the CRS (see ``unit``).
+    Pass this
     positional argument or use ``fraction``, but not both.
 
 fraction : float, optional
@@ -433,8 +440,8 @@ Geometry
 ");
     array: (r"
 max_length : float or sequence of float, optional
-    Maximum segment length in coordinate units (positive) — a scalar
-    applies to every geometry, or pass one value per geometry. Pass this
+    Positive maximum segment length, interpreted for the CRS (see ``unit``) —
+    a scalar applies to every geometry, or pass one value per geometry. Pass this
     positional argument or use ``fraction``, but not both.
 
 fraction : float or sequence of float, optional
@@ -448,13 +455,11 @@ GeometryArray
     One segmentized geometry per row (kinds preserved).
 
 ");
-    post: r"
-unit : {'planar', 'meters'} or None, default None
-    ``None`` follows the CRS. ``'planar'`` forces raw coordinate units
-    (native angular units as Cartesian coordinates on a geographic CRS — only for deliberate
-    coordinate-space math); ``'meters'`` forces the CRS metric and raises
-    without a CRS. Cannot be combined with ``fraction``, which is already
-    relative to each segment.";
+    post: concat!(
+        unit_parameter_doc!(),
+        r"    The override applies only to ``max_length``; ``fraction`` has no unit
+    and cannot be combined with ``unit``."
+    );
     tail: r"
 Raises
 ------

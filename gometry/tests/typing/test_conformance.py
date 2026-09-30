@@ -370,6 +370,7 @@ assert_type(POLY.exterior, gm.LineString)
 # return-parity): kind-changing array methods return the scalar leaf union,
 # kind-preserving ones return Self.
 assert_type(POINTS.buffer(1.0), gm.GeometryArray[gm.Polygon])
+assert_type(POINTS.snap_to_grid(grid_size=1.0), gm.GeometryArray[gm.Point])
 assert_type(POINTS.centroid(), gm.GeometryArray[gm.Point])
 assert_type(
     POINTS.convex_hull(),
@@ -406,6 +407,7 @@ assert_type(
 )
 assert_type(POLY.minimum_clearance_line(), gm.LineString)
 assert_type(POLY.snap_to_grid(0.5), gm.Polygon)
+assert_type(POLY.snap_to_grid(grid_size=0.5), gm.Polygon)
 assert_type(POLY.snap_to_grid(0.5, repair=True), gm.Polygon | gm.MultiPolygon)
 assert_type(
     gm.nearest_points(POINTS, LINE),

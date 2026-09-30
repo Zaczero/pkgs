@@ -92,7 +92,7 @@ pub enum GeometryErrorKind {
     #[error("a Polygon or MultiPolygon is required")]
     PolygonRequired,
     #[error(
-        "snap_to_grid size is too fine for the coordinate magnitude (the snapped coordinate \
+        "snap_to_grid grid_size is too fine for the coordinate magnitude (the snapped coordinate \
          overflowed)"
     )]
     SnapGridTooFine,

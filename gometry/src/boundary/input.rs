@@ -278,16 +278,16 @@ fn grid_pair(value: &Bound<'_, PyAny>, name: &str, expected: &str) -> PyResult<(
     Ok((*x, *y))
 }
 
-/// Boundary parser for `snap_to_grid` size: one positive finite float for
+/// Boundary parser for `snap_to_grid` grid_size: one positive finite float for
 /// a square grid, or an `(sx, sy)` pair.
 pub(crate) fn parse_grid_size(value: &Bound<'_, PyAny>) -> PyResult<(f64, f64)> {
     let pair = if let Some(size) = f64_scalar(value)? {
         (size, size)
     } else {
-        grid_pair(value, "size", "a positive number or an (sx, sy) pair")?
+        grid_pair(value, "grid_size", "a positive number or an (sx, sy) pair")?
     };
-    let sx = Positive::try_new("size", pair.0)?;
-    let sy = Positive::try_new("size", pair.1)?;
+    let sx = Positive::try_new("grid_size", pair.0)?;
+    let sy = Positive::try_new("grid_size", pair.1)?;
     Ok((sx.get(), sy.get()))
 }
 

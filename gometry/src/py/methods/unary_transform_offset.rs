@@ -158,17 +158,17 @@ impl PyGeometry {
 
     #[doc = doc_snap_to_grid!(scalar)]
     #[pyo3(
-        signature = (size, *, origin = GridOrigin::DEFAULT, repair = false),
-        text_signature = "($self, size, *, origin=(0.0, 0.0), repair=False)"
+        signature = (grid_size, *, origin = GridOrigin::DEFAULT, repair = false),
+        text_signature = "($self, grid_size, *, origin=(0.0, 0.0), repair=False)"
     )]
     pub fn snap_to_grid(
         &self,
         py: Python<'_>,
-        size: &Bound<'_, PyAny>,
+        grid_size: &Bound<'_, PyAny>,
         origin: GridOrigin,
         repair: bool,
     ) -> PyResult<crate::Typed> {
-        let size = parse_grid_size(size)?;
+        let grid_size = parse_grid_size(grid_size)?;
         let origin = origin.as_pair();
         let op = if repair {
             crate::dispatch::Operation::Repair
@@ -176,7 +176,7 @@ impl PyGeometry {
             crate::dispatch::Operation::SnapToGrid
         };
         unary_spine_shapes!(scalar, py, self, op, None, default, move |data, ctx| {
-            kernels::unary_snap_to_grid(data, ctx, size, origin, repair)
+            kernels::unary_snap_to_grid(data, ctx, grid_size, origin, repair)
         })
     }
 
@@ -453,17 +453,17 @@ impl PyGeometryArray {
 
     #[doc = doc_snap_to_grid!(array)]
     #[pyo3(
-        signature = (size, *, origin = GridOrigin::DEFAULT, repair = false),
-        text_signature = "($self, size, *, origin=(0.0, 0.0), repair=False)"
+        signature = (grid_size, *, origin = GridOrigin::DEFAULT, repair = false),
+        text_signature = "($self, grid_size, *, origin=(0.0, 0.0), repair=False)"
     )]
     pub fn snap_to_grid(
         &self,
         py: Python<'_>,
-        size: &Bound<'_, PyAny>,
+        grid_size: &Bound<'_, PyAny>,
         origin: GridOrigin,
         repair: bool,
     ) -> PyResult<Self> {
-        let size = parse_grid_size(size)?;
+        let grid_size = parse_grid_size(grid_size)?;
         let origin = origin.as_pair();
         let op = if repair {
             crate::dispatch::Operation::Repair
@@ -477,11 +477,11 @@ impl PyGeometryArray {
             op,
             None,
             crate::dispatch::PackedUnary::SnapToGrid {
-                size,
+                size: grid_size,
                 origin,
                 repair,
             },
-            move |data, ctx| { kernels::unary_snap_to_grid(data, ctx, size, origin, repair) }
+            move |data, ctx| { kernels::unary_snap_to_grid(data, ctx, grid_size, origin, repair) }
         )
     }
 

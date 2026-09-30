@@ -747,6 +747,22 @@ def test_snap_to_grid_snaps_dedups_and_collapses() -> None:
         gm.Point(1e308, 0).snap_to_grid(1, origin=(-1e308, 0))
 
 
+def test_snap_to_grid_grid_size_keyword_is_shared_by_scalar_and_array() -> None:
+    point = gm.Point(0.6, 0.4)
+    assert point.snap_to_grid(grid_size=1).to_wkt() == 'POINT (1 0)'
+
+    points = gm.GeometryArray([point, gm.Point(1.4, 1.6)])
+    assert points.snap_to_grid(grid_size=1).to_wkt() == [
+        'POINT (1 0)',
+        'POINT (1 2)',
+    ]
+
+    with pytest.raises(TypeError):
+        point.snap_to_grid(size=1)
+    with pytest.raises(TypeError):
+        points.snap_to_grid(size=1)
+
+
 def test_sample_points_is_deterministic_and_area_weighted() -> None:
     box = gm.box(0, 0, 1, 1, crs=3857)
     first = box.sample_points(100, seed=7)
