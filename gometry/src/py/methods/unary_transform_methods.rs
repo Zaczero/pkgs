@@ -47,25 +47,27 @@ GeometryArray
     post: concat!(r"cap_style : {'round', 'flat', 'square'}, default 'round'
     End-cap shape at the original first and last vertices of open lines. Closed lines have no end caps.
     Point inputs always buffer to round discs, and MultiPoint buffers are
-    unions of round discs; `cap_style` does not affect either.
+    unions of round discs; `cap_style` does not affect either. Sided buffers
+    always use flat ends, so this parameter applies to ``side='both'`` only.
 
 join_style : {'round', 'miter', 'bevel'}, default 'round'
-    Interior corner style, including 180-degree reversals.
+    Interior corner style for both two-sided and sided line buffers, including
+    180-degree reversals.
 
 quadrant_segments : int, default 8
-    Segments used to approximate a quarter circle.
+    Segments used to approximate a quarter-circle join in either buffer mode.
 
 miter_limit : float, default 5.0
     With ``join_style='miter'``: how far a mitered corner may reach, in
-    multiples of ``distance``; sharper corners are clipped flat at that
-    reach. Must be positive and finite.
+    multiples of ``distance``; sharper corners are clipped flat at that reach.
+    Applies to both two-sided and sided buffers; must be positive and finite.
 
 side : {'both', 'left', 'right'}, default 'both'
     Which side(s) of lineal input to buffer. ``'left'``/``'right'`` build
-    the one-sided strip between the line and its offset curve (flat ends,
-    miter joins — ``offset_curve(join_style='miter')`` closed into a
-    polygon); the style parameters apply to ``'both'`` only, and sided
-    buffers take a non-negative distance.
+    the one-sided strip between the line and its offset curve, with flat ends.
+    These sides honor the join parameters: ``join_style``,
+    ``quadrant_segments``, and ``miter_limit``. The distance must be
+    non-negative.
 
     Buffer boundaries are synthesized and therefore returned in XY; Z/M are
     not fabricated.

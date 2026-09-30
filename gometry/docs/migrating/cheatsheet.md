@@ -89,6 +89,7 @@ Conventions: `import gometry as gm`; `geom` is a gometry geometry; and
 | `intersection_all(geoms)` | [`gm.intersection_all(geoms)`][gometry.intersection_all] | Common region of all inputs. |
 | `symmetric_difference_all(geoms)` | [`gm.symmetric_difference_all(geoms)`][gometry.symmetric_difference_all] | Region in an odd number of inputs. |
 | `geom.buffer(d)` / `shapely.buffer(geom, d)` | [`geom.buffer(d)`][gometry.Geometry.buffer] | `quadrant_segments` corresponds to Shapely's `quad_segs` and GeoPandas' `resolution`; `miter_limit` corresponds to Shapely's `mitre_limit`. gometry defaults to 8 segments per quadrant; GeoPandas defaults to 16, so use `quadrant_segments=16` to retain that approximation. |
+| `geom.buffer(d, single_sided=True)` | `geom.buffer(abs(d), side='left')` for positive `d`; `geom.buffer(abs(d), side='right')` for negative `d` | Sided buffers use flat ends and honor `join_style`, `quadrant_segments`, and `miter_limit`; gometry expresses the side explicitly and requires a non-negative distance. |
 | `geom.simplify(t)` / `shapely.simplify(geom, t)` | [`geom.simplify(t)`][gometry.Geometry.simplify] | |
 | `geom.offset_curve(d)` | [`geom.offset_curve(d)`][gometry.Geometry.offset_curve] | |
 | `clip_by_rect(g, ...)` | `g.clip_by_rect(...)` | |

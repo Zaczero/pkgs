@@ -43,8 +43,8 @@ crate::tokens::token_enum! {
 crate::tokens::token_enum! {
     /// Which side(s) of a lineal geometry a buffer grows: symmetric
     /// (``'both'``) or one-sided strips (``'left'``/``'right'`` of the line
-    /// direction). Sided buffers use flat ends and miter joins along the
-    /// offset edge, like ``offset_curve``.
+    /// direction). One-sided buffers have flat ends and use the requested
+    /// ``join_style``, ``quadrant_segments``, and ``miter_limit``.
     pub enum BufferSide("buffer side", param = "side") {
         Both = "both",
         Left = "left",
