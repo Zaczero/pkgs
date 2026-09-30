@@ -65,3 +65,6 @@ name = "h3"
 
 # Upstream's standalone release profile is omitted; Cargo uses the consuming
 # workspace's profiles for this path package.
+
+# Vendored upstream code keeps its own lint policy rather than the workspace's.
+[lints]
