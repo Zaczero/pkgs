@@ -8,6 +8,7 @@ assertions stay in the H3/S2/geohash/tile oracle modules.
 
 from __future__ import annotations
 
+import pickle
 import re
 import sys
 from dataclasses import dataclass
@@ -1086,3 +1087,120 @@ def test_plural_builders_point_a_single_point_to_the_cell_class(
         gm.GeometryError, match=rf'use {cls}\(point, {keyword}=\.\.\.\)'
     ):
         builder(gm.Point(10, 50, crs=4326), **{keyword: 3})  # type: ignore[operator]
+
+
+def _roundtrip_exact(cov):
+    out = pickle.loads(pickle.dumps(cov))
+    assert len(out) == len(cov)
+    np.testing.assert_array_equal(out.to_numpy(), cov.to_numpy())
+    if len(cov) > 0:
+        assert out.to_polygon().bounds == cov.to_polygon().bounds
+    return out
+
+
+@pytest.mark.parametrize(
+    'label,build',
+    [
+        (
+            'h3',
+            lambda: gm.h3_cover(gm.box(-1, -1, 1, 1, crs=4326), 4, cell_rule='center'),
+        ),
+        (
+            's2',
+            lambda: gm.s2_cover(
+                gm.box(-1, -1, 1, 1, crs=4326),
+                level=6,
+                max_cells=128,
+                cell_rule='center',
+            ),
+        ),
+        (
+            'geohash',
+            lambda: gm.geohash_cover(
+                gm.box(-1, -1, 1, 1, crs=4326), 4, cell_rule='center'
+            ),
+        ),
+        (
+            'tile',
+            lambda: gm.tile_cover(
+                gm.box(-1, -1, 1, 1, crs=4326), 6, cell_rule='center'
+            ),
+        ),
+    ],
+)
+def test_p23_transform_pickle_roundtrips(label, build):
+    base = build()
+    uncompact_depth = {
+        'h3': 5,
+        's2': 8,
+        'geohash': 5,
+        'tile': 7,
+    }[label]
+    for _form, cov in (
+        ('base', base),
+        ('compact', base.compact()),
+        ('uncompact', base.uncompact(uncompact_depth)),
+    ):
+        _roundtrip_exact(cov)
+
+
+def test_p23_empty_center_uncompact_pickle():
+    """Empty center cover uncompacted to a finer depth round-trips (the P23 repro)."""
+    source = gm.box(-0.1, -0.1, 0.1, 0.1, crs=4326)
+    # H3: center@4 is empty; uncompact(5) stays empty; must not recompute as center@5.
+    cov = gm.h3_cover(source, 4, cell_rule='center').uncompact(5)
+    assert len(cov) == 0
+    _ = _roundtrip_exact(cov)
+
+    gh = gm.geohash_cover(source, 2, cell_rule='center').uncompact(5)
+    assert len(gh) == 0
+    _ = _roundtrip_exact(gh)
+
+
+def test_p23_uncompact_past_million_pickle_roundtrips():
+    """Uncompact past one million cells must still pickle-round-trip.
+
+    Explicit expansion is not capped; pickle reconstruction must use the same
+    path without introducing a second limit.
+    """
+    # One world tile at z0 → 4^10 = 1_048_576 cells at z10 (>1M).
+    cov = gm.tile_cover(gm.Point(10, 10, crs=4326), zoom=0).uncompact(10)
+    assert len(cov) > 1_000_000
+    # Must not raise "exceed the uncompact budget" during reconstruction.
+    out = pickle.loads(pickle.dumps(cov))
+    assert len(out) == len(cov)
+    np.testing.assert_array_equal(out.to_numpy(), cov.to_numpy())
+
+
+def test_cell_set_difference_past_million_cells_is_not_capped():
+    """Set algebra accepts a canonical, non-mergeable result over one million."""
+    leaves = gm.CellArray([gm.Tile('')], type=gm.Tile).uncompact(11)
+    left = leaves[::2]
+    result = gm.tile_difference(left, [])
+
+    assert len(result) == len(left) > 1_000_000
+    assert result[0] == left[0]
+    assert result[-1] == left[-1]
+
+
+def test_p23_projected_source_roundtrips():
+    """Projected sources (D26a false positive) still round-trip."""
+    proj = gm.box(0, 0, 1000, 1000, crs=3857)
+    for cov in (
+        gm.h3_cover(proj, 3).uncompact(4),
+        gm.tile_cover(proj, 4),
+        gm.s2_cover(proj, level=5, max_cells=64).compact(),
+        gm.geohash_cover(proj, 3).compact(),
+    ):
+        _roundtrip_exact(cov)
+
+
+def test_p23_empty_nonempty_parity():
+    """Empty/nonempty parity: empty factory stays empty; nonempty stays nonempty."""
+    src = gm.box(-0.1, -0.1, 0.1, 0.1, crs=4326)
+    empty = gm.h3_cover(src, 4, cell_rule='center')
+    assert len(empty) == 0
+    _roundtrip_exact(empty)
+    nonempty = gm.h3_cover(src, 5, cell_rule='center')
+    assert len(nonempty) > 0
+    _roundtrip_exact(nonempty)
