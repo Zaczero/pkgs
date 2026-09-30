@@ -1,4 +1,4 @@
-# Vendored from Zaczero/h3o revision 2b5bde491449c776cb9c1ae305a5f826f6d8e968.
+# Vendored from Zaczero/h3o revision 005af2eb8499f039dce7a61456f2198c297c2c22.
 # See GOMETRY_DIVERGENCE.md for local changes; LICENSE retains BSD-3-Clause terms.
 [package]
 name = "h3o"

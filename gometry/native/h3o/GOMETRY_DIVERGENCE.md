@@ -1,7 +1,7 @@
 # Gometry divergence
 
 This in-tree `h3o` 0.10.0 source is vendored from `Zaczero/h3o` revision
-`2b5bde491449c776cb9c1ae305a5f826f6d8e968`. Its BSD-3-Clause license is
+`005af2eb8499f039dce7a61456f2198c297c2c22`. Its BSD-3-Clause license is
 retained in `LICENSE`.
 
 This checkout carries the exact H3 projection carriers needed by gometry's
