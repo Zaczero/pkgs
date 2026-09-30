@@ -158,15 +158,19 @@ impl ConstrainedMeshPlan {
         }
         for (id, source) in self.source_constraints.iter().enumerate() {
             if source.id != id
-                || source.start_site >= self.vertices.len()
-                || source.end_site >= self.vertices.len()
                 || source.start_site == source.end_site
                 || !source.start.xy().x.is_finite()
                 || !source.start.xy().y.is_finite()
                 || !source.end.xy().x.is_finite()
                 || !source.end.xy().y.is_finite()
-                || self.vertices[source.start_site].xy() != source.start.xy()
-                || self.vertices[source.end_site].xy() != source.end.xy()
+                || self
+                    .vertices
+                    .get(source.start_site)
+                    .is_none_or(|point| point.xy() != source.start.xy())
+                || self
+                    .vertices
+                    .get(source.end_site)
+                    .is_none_or(|point| point.xy() != source.end.xy())
             {
                 return Err(GeometryErrorKind::triangulation(
                     "constrained mesh certificate has an invalid source site",
@@ -187,7 +191,7 @@ impl ConstrainedMeshPlan {
                 ));
             }
             if piece.source != source_id {
-                if piece.source != source_id + 1
+                if source_id.checked_add(1) != Some(piece.source)
                     || cursor.try_cmp(&one)? != std::cmp::Ordering::Equal
                 {
                     return Err(GeometryErrorKind::triangulation(
@@ -204,8 +208,12 @@ impl ConstrainedMeshPlan {
             }
             cursor = piece.hi.clone();
         }
-        if source_id + usize::from(!self.constraint_pieces.is_empty())
-            != self.source_constraints.len()
+        let source_count_matches = if self.constraint_pieces.is_empty() {
+            self.source_constraints.is_empty()
+        } else {
+            source_id.checked_add(1) == Some(self.source_constraints.len())
+        };
+        if !source_count_matches
             || (!self.constraint_pieces.is_empty()
                 && cursor.try_cmp(&one)? != std::cmp::Ordering::Equal)
         {
@@ -705,7 +713,7 @@ impl ConstrainedMesh {
                         hi: piece.hi,
                     });
             }
-            inserted += 1;
+            inserted = inserted.wrapping_add(1);
         }
     }
 

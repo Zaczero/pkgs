@@ -200,6 +200,10 @@ impl CertifiedDelaunay {
         &self.topology.halfedges
     }
 
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "the slot comes from this certified mesh's aligned halfedge column"
+    )]
     pub(super) fn edge_is_cocircular(&self, slot: usize) -> bool {
         self.cocircular_halfedges[slot]
     }
@@ -209,6 +213,10 @@ impl CertifiedDelaunay {
         &self.topology.hull
     }
 
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "each slot and reverse slot comes from the same completed flat mesh columns; direct halfedge-slot access preserves the certified topology layout"
+    )]
     pub(super) fn primal_edges(&self) -> Vec<CertifiedPrimalEdge> {
         let mut edges = Vec::with_capacity(self.topology.halfedges.len());
         for (slot, &reverse) in self.topology.halfedges.iter().enumerate() {
@@ -306,6 +314,14 @@ pub(crate) fn delaunay_triangulation(points: &[Point]) -> Result<Triangulation> 
 /// site index. With `corners` only strict corners survive, which is the seed
 /// the engine fans from; without it collinear boundary sites stay on the
 /// cycle, and a wholly collinear input yields its collinear order instead.
+#[expect(
+    clippy::indexing_slicing,
+    reason = "site IDs in order come from points, and the lower and upper last-two reads follow their length checks"
+)]
+#[expect(
+    clippy::arithmetic_side_effects,
+    reason = "the lower and upper last-two reads follow len >= 2, so subtracting one or two cannot underflow"
+)]
 fn hull_cycle(points: &[Point], corners: bool) -> Vec<usize> {
     let xy = |site: usize| points[site].xy();
     let orient = |a: usize, b: usize, c: usize| exact::orient2d(xy(a), xy(b), xy(c));
@@ -373,6 +389,10 @@ pub(super) fn exact_hull_cycle(points: &[Point]) -> Vec<usize> {
 }
 
 /// Collinear sites in order along their longer extent.
+#[expect(
+    clippy::indexing_slicing,
+    reason = "order contains only site IDs produced from 0..points.len()"
+)]
 fn collinear_order(points: &[Point]) -> Vec<usize> {
     let mut order = Vec::with_capacity(points.len());
     order.extend(0..points.len());
@@ -422,6 +442,10 @@ fn geometric_cmp(left: f64, right: f64) -> Ordering {
 }
 
 /// Twin slots for a flat triangle list by directed-edge lookup.
+#[expect(
+    clippy::indexing_slicing,
+    reason = "triangle and halfedge columns have one entry per stable flat slot, and reverse slots are values inserted from this same range"
+)]
 fn delaunay_halfedges(triangles: &[usize]) -> Result<Vec<usize>> {
     let mut halfedges = vec![EMPTY; triangles.len()];
     let mut directed = crate::collections::try_hash_map_with_capacity(triangles.len())?;
@@ -522,6 +546,10 @@ pub(crate) fn constrained_triangle_vertices<'a>(
     publish_constrained_plan(&plan, budget)
 }
 
+#[expect(
+    clippy::indexing_slicing,
+    reason = "the private plan's face site IDs are produced by its completed constrained mesh"
+)]
 fn publish_constrained_plan(
     plan: &cdt::ConstrainedMeshPlan,
     budget: &mut ExpansionBudget,
@@ -557,6 +585,10 @@ fn publish_constrained_plan(
     Ok(output)
 }
 
+#[expect(
+    clippy::indexing_slicing,
+    reason = "the selected face contains only site IDs produced by the mesh over this point column"
+)]
 pub(super) fn selected_triangle_points(
     points: &[Point],
     [a, b, c]: [usize; 3],
@@ -620,6 +652,10 @@ pub(super) fn selected_source_sites(points: Vec<Point>) -> Result<(Vec<Point>, V
     Ok((sites, occurrences))
 }
 
+#[expect(
+    clippy::indexing_slicing,
+    reason = "source endpoint keys come from the ring points collected above, and their site IDs index the selected vertex column used to build the map"
+)]
 fn constrained_source_plan(
     rings: &[&CoordSeq],
 ) -> Result<(Vec<Point>, Vec<usize>, Vec<cdt::SourceConstraint>)> {
@@ -644,7 +680,7 @@ fn constrained_source_plan(
     for ring in rings {
         for index in 0..ring.coord_count().saturating_sub(1) {
             let start = ring.nth_coord(index);
-            let end = ring.nth_coord(index + 1);
+            let end = ring.nth_coord(index.wrapping_add(1));
             if same_point(start.xy(), end.xy()) {
                 continue;
             }

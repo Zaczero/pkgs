@@ -156,12 +156,8 @@ impl FaceLabels {
         }
     }
 
-    #[expect(
-        clippy::indexing_slicing,
-        reason = "BoundaryFaceId is minted from the completed face CSR and this column has exactly one label slot per face"
-    )]
-    fn slot(&self, face: BoundaryFaceId) -> &Option<RegionLabel> {
-        &self.values[face.0 as usize]
+    fn slot(&self, face: BoundaryFaceId) -> Option<&RegionLabel> {
+        self.values.get(face.0 as usize).and_then(Option::as_ref)
     }
 
     #[expect(
@@ -174,6 +170,7 @@ impl FaceLabels {
 
     fn required(&self, face: BoundaryFaceId) -> RegionLabel {
         self.slot(face)
+            .copied()
             .expect("a queued boundary face has an assigned label")
     }
 
@@ -394,7 +391,7 @@ fn assign_walk_label(
     face: BoundaryFaceId,
     label: RegionLabel,
 ) -> Result<()> {
-    match *labels.slot(face) {
+    match labels.slot(face).copied() {
         None => {
             *labels.slot_mut(face) = Some(label);
             queue.push_back(face);

@@ -2403,7 +2403,7 @@ fn embed(
             }
             Ok(())
         };
-        marked_index.for_each_containing(Some(point), |separator| visit(separator))?;
+        marked_index.for_each_containing(Some(point), visit)?;
     }
     let mut emitted_incidence = Vec::new();
     for &edge_id in &live_edges {
@@ -3132,13 +3132,13 @@ pub(super) fn build_collinear_polygons(
     let order = mesh
         .collinear_order()
         .ok_or_else(|| voronoi_error("non-collinear sites entered the collinear Voronoi lane"))?;
-    if matches!(boundary, VoronoiBoundary::Envelope) {
-        if sites.first().is_some_and(|first| {
+    if matches!(boundary, VoronoiBoundary::Envelope)
+        && sites.first().is_some_and(|first| {
             sites.iter().all(|site| site.point.x == first.point.x)
                 || sites.iter().all(|site| site.point.y == first.point.y)
-        }) {
-            return Ok(Vec::new());
-        }
+        })
+    {
+        return Ok(Vec::new());
     }
     let clip = normalize_clip(sites, boundary, true)?;
     let frame = match clip.source {
@@ -3851,9 +3851,7 @@ fn reverse_tagged(ring: &mut [Tagged]) {
     if let Some(first) = ring.first().map(|tagged| tagged.leaving) {
         let mut next = first;
         for tagged in ring.iter_mut().rev() {
-            let previous = tagged.leaving;
-            tagged.leaving = next;
-            next = previous;
+            std::mem::swap(&mut tagged.leaving, &mut next);
         }
     }
 }
@@ -4628,6 +4626,10 @@ fn dual_embed(
     let mut interned = try_hash_map_with_capacity(rings.centers.len())?;
     let mut vertex_xy: Vec<XY> = Vec::with_capacity(rings.centers.len());
     vertex_xy.resize(rings.centers.len(), XY::new(0.0, 0.0));
+    #[expect(
+        clippy::collapsible_if,
+        reason = "keep the center-only memo lookup on its measured base instruction path"
+    )]
     #[expect(
         clippy::indexing_slicing,
         reason = "center components index the admitted center map; dense IDs occupy its prefix or are assigned immediately before their coordinate is published, and the intern table only returns those IDs"
