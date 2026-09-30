@@ -1658,10 +1658,14 @@ class Geometry:
             Replace existing M ordinates instead of raising.
 
         unit : {'planar', 'meters'}, default None
-            Omitted follows the CRS: geodesic meters on a geographic CRS, native units on a projected one, coordinate units without a CRS. ``planar``
-            forces raw coordinate units (native angular units as Cartesian coordinates on a geographic CRS
-            — only for deliberate coordinate-space math); ``meters`` forces the
-            CRS metric and raises without a CRS.
+            ``None`` (the default) follows the CRS: geographic measurements use
+            geodesic meters, projected measurements use native linear units, and
+            CRS-free measurements use raw coordinate units (area results square the
+            corresponding unit). ``'planar'`` uses Cartesian coordinate space, with
+            geographic coordinates in their native angular units. ``'meters'`` uses
+            the CRS-aware metric and requires a CRS.
+
+
 
         Returns
         -------
@@ -2110,9 +2114,15 @@ class Geometry:
         normalized : bool, default False
             Interpret distance-basis positions as fractions in [0, 1]. Invalid with
             ``basis='m'``.
-
         unit : {'planar', 'meters'}, default None
-            Distance-basis unit override. Omitted follows the CRS; invalid with
+            ``None`` (the default) follows the CRS: geographic measurements use
+            geodesic meters, projected measurements use native linear units, and
+            CRS-free measurements use raw coordinate units (area results square the
+            corresponding unit). ``'planar'`` uses Cartesian coordinate space, with
+            geographic coordinates in their native angular units. ``'meters'`` uses
+            the CRS-aware metric and requires a CRS.
+
+            Available only with ``basis='distance'``; invalid with
             ``basis='m'``.
 
         Returns
@@ -2429,7 +2439,14 @@ class Geometry:
             Return a distance-basis fraction in [0, 1]. Invalid with ``basis='m'``.
 
         unit : {'planar', 'meters'}, default None
-            Distance-basis unit override. Omitted follows the CRS; invalid with
+            ``None`` (the default) follows the CRS: geographic measurements use
+            geodesic meters, projected measurements use native linear units, and
+            CRS-free measurements use raw coordinate units (area results square the
+            corresponding unit). ``'planar'`` uses Cartesian coordinate space, with
+            geographic coordinates in their native angular units. ``'meters'`` uses
+            the CRS-aware metric and requires a CRS.
+
+            Available only with ``basis='distance'``; invalid with
             ``basis='m'``.
 
         Returns
@@ -2568,7 +2585,6 @@ class Geometry:
     def line_interpolate(
         self,
         at: _FloatScalarInput,
-        /,
         *,
         basis: Literal['distance'] = 'distance',
         count: None = None,
@@ -2579,7 +2595,6 @@ class Geometry:
     def line_interpolate(
         self,
         at: _FloatColumn1D,
-        /,
         *,
         basis: Literal['distance'] = 'distance',
         count: None = None,
@@ -2590,7 +2605,6 @@ class Geometry:
     def line_interpolate(
         self,
         at: None = None,
-        /,
         *,
         count: _IntScalar,
         basis: Literal['distance'] = 'distance',
@@ -2601,7 +2615,6 @@ class Geometry:
     def line_interpolate(
         self,
         at: _FloatScalarInput,
-        /,
         *,
         count: None = None,
         basis: Literal['m'],
@@ -2632,7 +2645,14 @@ class Geometry:
             with ``basis='m'``.
 
         unit : {'planar', 'meters'}, default None
-            Distance-basis unit override. Omitted follows the CRS; invalid with
+            ``None`` (the default) follows the CRS: geographic measurements use
+            geodesic meters, projected measurements use native linear units, and
+            CRS-free measurements use raw coordinate units (area results square the
+            corresponding unit). ``'planar'`` uses Cartesian coordinate space, with
+            geographic coordinates in their native angular units. ``'meters'`` uses
+            the CRS-aware metric and requires a CRS.
+
+            Available only with ``basis='distance'``; invalid with
             ``basis='m'``.
 
         Returns
@@ -5886,8 +5906,16 @@ class GeometryArray(Sequence[_GeometryT_co]):
             `unit` is set.
         path : {'geodesic', 'rhumb'}, default 'geodesic'
             Route model. Rhumb paths require a geographic CRS and use meters.
-        unit : {'planar', 'meters'}, optional
-            Force coordinate units or CRS metric units.
+        unit : {'planar', 'meters'}, default None
+            ``None`` (the default) follows the CRS: geographic measurements use
+            geodesic meters, projected measurements use native linear units, and
+            CRS-free measurements use raw coordinate units (area results square the
+            corresponding unit). ``'planar'`` uses Cartesian coordinate space, with
+            geographic coordinates in their native angular units. ``'meters'`` uses
+            the CRS-aware metric and requires a CRS.
+
+
+            ``path='rhumb'`` uses meters and does not accept a unit override.
 
         Returns
         -------
@@ -7325,10 +7353,14 @@ class GeometryArray(Sequence[_GeometryT_co]):
             Replace existing M ordinates instead of raising.
 
         unit : {'planar', 'meters'}, default None
-            Omitted follows the CRS: geodesic meters on a geographic CRS, native units on a projected one, coordinate units without a CRS. ``planar``
-            forces raw coordinate units (native angular units as Cartesian coordinates on a geographic CRS
-            — only for deliberate coordinate-space math); ``meters`` forces the
-            CRS metric and raises without a CRS.
+            ``None`` (the default) follows the CRS: geographic measurements use
+            geodesic meters, projected measurements use native linear units, and
+            CRS-free measurements use raw coordinate units (area results square the
+            corresponding unit). ``'planar'`` uses Cartesian coordinate space, with
+            geographic coordinates in their native angular units. ``'meters'`` uses
+            the CRS-aware metric and requires a CRS.
+
+
 
         Returns
         -------
@@ -7906,9 +7938,15 @@ class GeometryArray(Sequence[_GeometryT_co]):
         normalized : bool, default False
             Interpret distance-basis positions as fractions in [0, 1]. Invalid with
             ``basis='m'``.
-
         unit : {'planar', 'meters'}, default None
-            Distance-basis unit override. Omitted follows the CRS; invalid with
+            ``None`` (the default) follows the CRS: geographic measurements use
+            geodesic meters, projected measurements use native linear units, and
+            CRS-free measurements use raw coordinate units (area results square the
+            corresponding unit). ``'planar'`` uses Cartesian coordinate space, with
+            geographic coordinates in their native angular units. ``'meters'`` uses
+            the CRS-aware metric and requires a CRS.
+
+            Available only with ``basis='distance'``; invalid with
             ``basis='m'``.
 
         Returns
@@ -8363,7 +8401,14 @@ class GeometryArray(Sequence[_GeometryT_co]):
             Return a distance-basis fraction in [0, 1]. Invalid with ``basis='m'``.
 
         unit : {'planar', 'meters'}, default None
-            Distance-basis unit override. Omitted follows the CRS; invalid with
+            ``None`` (the default) follows the CRS: geographic measurements use
+            geodesic meters, projected measurements use native linear units, and
+            CRS-free measurements use raw coordinate units (area results square the
+            corresponding unit). ``'planar'`` uses Cartesian coordinate space, with
+            geographic coordinates in their native angular units. ``'meters'`` uses
+            the CRS-aware metric and requires a CRS.
+
+            Available only with ``basis='distance'``; invalid with
             ``basis='m'``.
 
         Returns
@@ -8503,7 +8548,6 @@ class GeometryArray(Sequence[_GeometryT_co]):
     def line_interpolate(
         self: GeometryArray[Geometry],
         at: FloatInput,
-        /,
         *,
         basis: Literal['distance'] = 'distance',
         count: None = None,
@@ -8514,7 +8558,6 @@ class GeometryArray(Sequence[_GeometryT_co]):
     def line_interpolate(
         self: GeometryArray[Geometry | None],
         at: FloatInput,
-        /,
         *,
         basis: Literal['distance'] = 'distance',
         count: None = None,
@@ -8525,7 +8568,6 @@ class GeometryArray(Sequence[_GeometryT_co]):
     def line_interpolate(
         self,
         at: None = None,
-        /,
         *,
         count: _IntInput,
         basis: Literal['distance'] = 'distance',
@@ -8536,7 +8578,6 @@ class GeometryArray(Sequence[_GeometryT_co]):
     def line_interpolate(
         self: GeometryArray[Geometry],
         at: FloatInput,
-        /,
         *,
         count: None = None,
         basis: Literal['m'],
@@ -8547,7 +8588,6 @@ class GeometryArray(Sequence[_GeometryT_co]):
     def line_interpolate(
         self: GeometryArray[Geometry | None],
         at: FloatInput,
-        /,
         *,
         count: None = None,
         basis: Literal['m'],
@@ -8579,7 +8619,14 @@ class GeometryArray(Sequence[_GeometryT_co]):
             with ``basis='m'``.
 
         unit : {'planar', 'meters'}, default None
-            Distance-basis unit override. Omitted follows the CRS; invalid with
+            ``None`` (the default) follows the CRS: geographic measurements use
+            geodesic meters, projected measurements use native linear units, and
+            CRS-free measurements use raw coordinate units (area results square the
+            corresponding unit). ``'planar'`` uses Cartesian coordinate space, with
+            geographic coordinates in their native angular units. ``'meters'`` uses
+            the CRS-aware metric and requires a CRS.
+
+            Available only with ``basis='distance'``; invalid with
             ``basis='m'``.
 
         Returns

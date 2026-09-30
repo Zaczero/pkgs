@@ -21,11 +21,13 @@ def test_line_interpolate_counts_distances_and_index_reuse() -> None:
     assert [p.x for p in line.line_interpolate([2.5, 99.0])] == [2.5, 10.0]
     points = line.line_interpolate([0.25, 0.75], normalized=True)
     assert [p.x for p in points] == [2.5, 7.5]
+    assert line.line_interpolate(at=2.5).x == 2.5
     geodesic = gm.LineString([(0, 0), (1, 0)], crs=4326)
     metre_points = geodesic.line_interpolate([55000.0])
     assert metre_points.crs == 'EPSG:4326'
     assert metre_points[0].x == pytest.approx(0.494, abs=0.01)
     rows = gm.GeometryArray([line, gm.LineString([(0, 0), (4, 0)])])
+    assert [point.x for point in rows.line_interpolate(at=[2.5, 1.0])] == [2.5, 1.0]
     per_row = rows.line_interpolate(count=2)
     assert isinstance(per_row, gm.Groups)
     assert [[p.x for p in part] for part in per_row] == [[0.0, 10.0], [0.0, 4.0]]

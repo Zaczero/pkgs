@@ -57,7 +57,7 @@ GeometryArray[Point] or Groups[GeometryArray[Point]]
     row for ``count`` samples.
 
 ");
-    post: r"
+    post: concat!(r"
 basis : {'distance', 'm'}, default 'distance'
     Use CRS-aware distance, or the line's monotonic M ordinate. For ``basis='m'``,
     synthesized coordinates follow the CRS metric: geodesic on a geographic CRS,
@@ -67,9 +67,8 @@ normalized : bool, default False
     Interpret distance-basis ``at`` values as fractions in [0, 1]. Invalid
     with ``basis='m'``.
 
-unit : {'planar', 'meters'}, default None
-    Distance-basis unit override. Omitted follows the CRS; invalid with
-    ``basis='m'``.";
+", unit_parameter_doc!(), r"    Available only with ``basis='distance'``; invalid with
+    ``basis='m'``.");
     tail: r"
 Raises
 ------
@@ -98,7 +97,7 @@ Examples
 
 method_doc! {
     doc_line_substring;
-    body: r"Return the portion of linework from ``start`` through ``end``. Empty
+    body: concat!(r"Return the portion of linework from ``start`` through ``end``. Empty
 linework yields ``LINESTRING EMPTY``.
 
 Parameters
@@ -115,10 +114,8 @@ basis : {'distance', 'm'}, default 'distance'
 normalized : bool, default False
     Interpret distance-basis positions as fractions in [0, 1]. Invalid with
     ``basis='m'``.
-
-unit : {'planar', 'meters'}, default None
-    Distance-basis unit override. Omitted follows the CRS; invalid with
-    ``basis='m'``.";
+", unit_parameter_doc!(), r"    Available only with ``basis='distance'``; invalid with
+    ``basis='m'``.");
     scalar: r"
 
 Returns
@@ -195,14 +192,10 @@ GeometryArray
     One result per row (kinds preserved).
 
 ");
-    post: r"overwrite : bool, default False
+    post: concat!(r"overwrite : bool, default False
     Replace existing M ordinates instead of raising.
 
-unit : {'planar', 'meters'}, default None
-    Omitted follows the CRS: geodesic meters on a geographic CRS, native units on a projected one, coordinate units without a CRS. ``planar``
-    forces raw coordinate units (native angular units as Cartesian coordinates on a geographic CRS
-    — only for deliberate coordinate-space math); ``meters`` forces the
-    CRS metric and raises without a CRS.";
+", unit_parameter_doc!());
     tail: r"
 Raises
 ------
@@ -229,7 +222,7 @@ Examples
 
 method_doc! {
     doc_line_locate;
-    body: r"Locate the position on linework nearest ``geom``. Empty linework, or
+    body: concat!(r"Locate the position on linework nearest ``geom``. Empty linework, or
 an empty query point, locates to ``nan``.
 
 Parameters
@@ -245,9 +238,8 @@ basis : {'distance', 'm'}, default 'distance'
 normalized : bool, default False
     Return a distance-basis fraction in [0, 1]. Invalid with ``basis='m'``.
 
-unit : {'planar', 'meters'}, default None
-    Distance-basis unit override. Omitted follows the CRS; invalid with
-    ``basis='m'``.";
+", unit_parameter_doc!(), r"    Available only with ``basis='distance'``; invalid with
+    ``basis='m'``.");
     scalar: r"
 
 Returns
@@ -297,8 +289,8 @@ Examples
 impl PyGeometry {
     #[doc = doc_line_interpolate!(scalar)]
     #[pyo3(
-        signature = (at = None, /, *, count = None, basis = LineReferenceBasis::Distance, normalized = false, unit = None),
-        text_signature = "($self, at=None, /, *, count=None, basis='distance', normalized=False, unit=None)"
+        signature = (at = None, *, count = None, basis = LineReferenceBasis::Distance, normalized = false, unit = None),
+        text_signature = "($self, at=None, *, count=None, basis='distance', normalized=False, unit=None)"
     )]
     pub fn line_interpolate(
         &self,
@@ -462,8 +454,8 @@ impl PyGeometryArray {
     ///     `unit` is set.
     /// path : {'geodesic', 'rhumb'}, default 'geodesic'
     ///     Route model. Rhumb paths require a geographic CRS and use meters.
-    /// unit : {'planar', 'meters'}, optional
-    ///     Force coordinate units or CRS metric units.
+    #[doc = unit_parameter_doc!()]
+    ///     ``path='rhumb'`` uses meters and does not accept a unit override.
     ///
     /// Returns
     /// -------
@@ -507,8 +499,8 @@ impl PyGeometryArray {
 
     #[doc = doc_line_interpolate!(array)]
     #[pyo3(
-        signature = (at = None, /, *, count = None, basis = LineReferenceBasis::Distance, normalized = false, unit = None),
-        text_signature = "($self, at=None, /, *, count=None, basis='distance', normalized=False, unit=None)"
+        signature = (at = None, *, count = None, basis = LineReferenceBasis::Distance, normalized = false, unit = None),
+        text_signature = "($self, at=None, *, count=None, basis='distance', normalized=False, unit=None)"
     )]
     pub fn line_interpolate(
         &self,
