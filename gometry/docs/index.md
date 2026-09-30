@@ -86,7 +86,7 @@ The usual stack makes you remember whether a metric means degrees or meters. gom
 [`geom.area`][gometry.Geometry.area], one [`geom.length`][gometry.Geometry.length], one [`gm.distance(a, b)`][gometry.distance] — the geometry's CRS decides how
 they are computed and the result is **native** for that CRS: a geographic CRS measures
 geodesically in meters, a projected CRS uses its native linear units (feet stay feet;
-meters stay meters), and a CRS-free geometry stays in coordinate units. Geographic
+meters stay meters), and a CRS-free geometry stays in raw coordinate units. Geographic
 longitude and latitude values remain in the CRS's native angular units; the periodic
 seam, pole, and prime meridian come from that same frame. Pass
 `unit='meters'` for forced SI, or reproject with [`geom.to_crs(...)`][gometry.Geometry.to_crs] to change the frame.

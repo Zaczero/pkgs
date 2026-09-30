@@ -434,7 +434,8 @@ They report the CRS's own linear unit, exactly like their 2D siblings: a US-surv
 CRS gives feet from `length_3d`, as it does from `length`. The free functions
 [`gm.length_3d`][gometry.length_3d] and [`gm.distance_3d`][gometry.distance_3d] take the
 same `unit=` override as [`gm.length`][gometry.length] and
-[`gm.distance`][gometry.distance] when you want SI metres or raw coordinate units.
+[`gm.distance`][gometry.distance] when you want SI metres, projected native linear
+units, or CRS-free raw coordinate units.
 
 On a geometry without Z, accessors and metrics have different results. The
 **accessors** (`min_z` / `max_z`) describe what is

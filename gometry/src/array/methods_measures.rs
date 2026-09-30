@@ -148,9 +148,9 @@ impl PyGeometryArray {
     }
     /// Per-row area, measured for the array's CRS.
     ///
-    /// A geographic CRS gives ellipsoidal square meters (geodesic, on the CRS's
-    /// own ellipsoid); a projected CRS gives squared native coordinate units;
-    /// a CRS-free array gives squared coordinate units. Use ``to_crs`` to
+    /// A geographic CRS gives geodesic square meters on the CRS's own ellipsoid;
+    /// a projected CRS gives squared native linear units; a CRS-free array
+    /// gives squared raw coordinate units. Use ``to_crs`` to
     /// change frame.
     ///
     /// Returns
@@ -174,9 +174,9 @@ impl PyGeometryArray {
     /// Per-row length (curves) or perimeter (areal), measured for the array's
     /// CRS.
     ///
-    /// A geographic CRS gives ellipsoidal meters (geodesic, on the CRS's own
-    /// ellipsoid); a projected CRS gives native linear units; a CRS-free array
-    /// gives coordinate units. Use ``to_crs`` to change frame.
+    /// A geographic CRS gives geodesic meters on the CRS's own ellipsoid; a
+    /// projected CRS gives native linear units; a CRS-free array gives raw
+    /// coordinate units. Use ``to_crs`` to change frame.
     ///
     /// Returns
     /// -------

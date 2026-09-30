@@ -218,8 +218,9 @@ pub(crate) fn py_polygonize_full(
 
 /// CRS-aware constructive kernel: one owner for the planar-vs-geographic
 /// split shared by `buffer` and `offset_curve` (scalar and array lanes).
-/// Planar frames scale the meter `distance` into coordinate units; geographic
-/// frames run the kernel at meter scale inside the shape's best local
+/// Projected frames scale the meter `distance` into native linear units, and
+/// CRS-free frames use raw coordinate units; geographic frames run the kernel
+/// at meter scale inside the shape's best local
 /// projection.
 ///
 /// **Geographic approximation.** On a geographic CRS, the checked local-
@@ -440,7 +441,7 @@ pub(crate) fn metric_minimum_bounding_circle(
 }
 
 /// CRS-aware minimum enclosing radius. Planar/projected results follow the
-/// metric model (native coordinate units by default; SI meters under
+/// metric model (native linear units by default; SI meters under
 /// ``unit='meters'``); geographic two-point inputs use the exact ellipsoidal
 /// midpoint radius; larger geographic point sets use the planar enclosing-
 /// circle center and measure support distances on the ellipsoid, so they are

@@ -88,7 +88,7 @@ Conventions: `import gometry as gm`; `geom` is a gometry geometry; and
 | `unary_union(geoms)` | [`gm.union_all(geoms)`][gometry.union_all] | Rejects conflicting CRS. |
 | `intersection_all(geoms)` | [`gm.intersection_all(geoms)`][gometry.intersection_all] | Common region of all inputs. |
 | `symmetric_difference_all(geoms)` | [`gm.symmetric_difference_all(geoms)`][gometry.symmetric_difference_all] | Region in an odd number of inputs. |
-| `geom.buffer(d)` / `shapely.buffer(geom, d)` | [`geom.buffer(d)`][gometry.Geometry.buffer] | |
+| `geom.buffer(d)` / `shapely.buffer(geom, d)` | [`geom.buffer(d)`][gometry.Geometry.buffer] | `quadrant_segments` corresponds to Shapely's `quad_segs` and GeoPandas' `resolution`; `miter_limit` corresponds to Shapely's `mitre_limit`. gometry defaults to 8 segments per quadrant; GeoPandas defaults to 16, so use `quadrant_segments=16` to retain that approximation. |
 | `geom.simplify(t)` / `shapely.simplify(geom, t)` | [`geom.simplify(t)`][gometry.Geometry.simplify] | |
 | `geom.offset_curve(d)` | [`geom.offset_curve(d)`][gometry.Geometry.offset_curve] | |
 | `clip_by_rect(g, ...)` | `g.clip_by_rect(...)` | |
@@ -97,7 +97,7 @@ Conventions: `import gometry as gm`; `geom` is a gometry geometry; and
 | `geom.centroid` / `geom.envelope` | `g.centroid()` / `g.envelope()` | |
 | `geom.point_on_surface()` | `g.point_on_surface()` | |
 | `polylabel(g)` | `g.polylabel()` | [Pole of inaccessibility](https://en.wikipedia.org/wiki/Pole_of_inaccessibility). |
-| `maximum_inscribed_circle(g)` | `g.maximum_inscribed_circle()` | Filled inscribed disk (`Polygon`); `g.maximum_inscribed_radius()` is the radius. |
+| `maximum_inscribed_circle(g)` | `g.maximum_inscribed_circle()` | Shapely returns a two-point `LineString` from center to boundary; gometry returns a filled polygonal approximation (or a `Point` for a degenerate radius). Use `disk.centroid()` for the returned disk's center and `g.maximum_inscribed_radius()` for its numerical radius; pass the same `tolerance` and `unit` to both. |
 | `shortest_line(a, b)` | [`gm.shortest_line(a, b)`][gometry.shortest_line] | |
 | `ops.nearest_points(a, b)` | [`gm.nearest_points(a, b)`][gometry.nearest_points] | The `(pa, pb)` pair behind `shortest_line`. |
 | `delaunay_triangles(g)` | `g.triangulate(method='delaunay')` | Use `method='constrained'` for constrained edges or `method='earcut'` for polygon interiors. |

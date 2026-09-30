@@ -154,6 +154,17 @@ def test_maximum_inscribed_circle_radius_matches_the_emitted_polygon() -> None:
     assert inferred == pytest.approx(radius, abs=1e-12)
 
 
+def test_maximum_inscribed_circle_centroid_and_radius_recover_the_disk() -> None:
+    source = gm.Polygon([(0, 0), (5, 0), (5, 2), (2, 2), (2, 5), (0, 5)])
+    tolerance = 1e-12
+    disk = source.maximum_inscribed_circle(tolerance=tolerance)
+    center = disk.centroid()
+    radius = source.maximum_inscribed_radius(tolerance=tolerance)
+
+    assert gm.covers(source, center)
+    assert gm.distance(center, source.boundary()) == pytest.approx(radius, abs=tolerance)
+
+
 def test_maximum_inscribed_circle_omitted_and_explicit_tolerances_are_certified() -> (
     None
 ):

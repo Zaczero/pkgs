@@ -39,13 +39,13 @@ fn ensure_positive_finite_linear_unit(
 
 /// The single source of truth for CRS-aware metrics
 /// (`area`/`length`/`distance`/ `buffer`/…): geographic CRS measure
-/// geodesically on their own ellipsoid in meters; everything else (projected,
-/// engineering, CRS-free) is planar in the unit scale selected by the caller
-/// (`1.0` for native/coordinate units, CRS linear factor for explicit meters).
+/// geodesically on their own ellipsoid in meters; projected geometry uses
+/// native linear units, CRS-free geometry uses raw coordinate units, and
+/// explicit meters use the CRS linear factor.
 #[derive(Debug, Clone)]
 pub(crate) enum MetricModel {
     /// Planar/Cartesian. `to_metre` is the active metric scale: `1.0` when the
-    /// public unit is native coordinate units, or the projected CRS's linear
+    /// public unit is native linear units, or the projected CRS's linear
     /// axis factor for explicit `unit='meters'` (e.g. `0.3048…` for a
     /// US-survey-foot CRS). Scale outputs by `to_metre` (`to_metre²` for area)
     /// and divide inputs in the active metric unit by `to_metre`.
@@ -63,12 +63,12 @@ pub(crate) enum MetricModel {
 }
 
 impl MetricModel {
-    /// Planar coordinate units (CRS-free): a meter is one coordinate unit.
+    /// Raw coordinate units (CRS-free): a meter is one coordinate unit.
     pub(crate) const COORDINATE: Self = Self::Planar {
         to_metre: PositiveFiniteScale::ONE,
     };
 
-    /// A meter-denominated `distance` expressed in coordinate units, for the
+    /// A meter-denominated `distance` expressed in active coordinate units, for the
     /// envelope/R-tree prefilters that walk coordinate space directly. `None`
     /// for a geodesic model, where a meter radius has no fixed coordinate-space
     /// size and the caller must fall back to a per-pair geodesic test.
@@ -147,7 +147,7 @@ impl ResolvedMetric {
 }
 
 /// Resolve the default/native [`MetricModel`] for a CRS (a compound CRS
-/// delegates to its horizontal component; `None` is planar coordinate units).
+/// delegates to its horizontal component; `None` uses raw coordinate units).
 ///
 /// Defaults are CRS-natural: geographic CRS use geodesic meters, projected CRS
 /// validate their horizontal axes and then report/accept their native linear
@@ -258,7 +258,7 @@ pub(crate) fn metric_model_for_at(
             state: Arc::new(state.clone()),
         },
         // Validate the axes, then discard the scale: the CRS-natural default
-        // reports native coordinate units, not metres.
+        // reports native linear units, not metres.
         HorizontalComponent::Planar { info } => {
             planar_to_metre(&info.definition, &info, state)?;
             MetricModel::COORDINATE
@@ -361,7 +361,7 @@ pub(crate) fn geographic_metric_frame_at(
 /// heights — as is any meter-vs-foot axis-unit mix in a 3D/compound CRS. A
 /// projected 2D CRS is accepted: its Z ordinate inherits the horizontal linear
 /// unit. A CRS-free geometry (`crs` is `None`) is accepted, with ordinates in
-/// bare coordinate units (caveat emptor).
+/// raw coordinate units (caveat emptor).
 pub(crate) fn ensure_3d_metric(crs: Option<&str>) -> Result<PositiveFiniteScale> {
     let Some(crs) = crs else {
         return Ok(PositiveFiniteScale::ONE);

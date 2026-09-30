@@ -59,7 +59,7 @@ On degree-valued lon/lat data Shapely's bare
 by 100 *degrees*. gometry has one [`geom.area`][gometry.Geometry.area] (and one [`gm.distance`][gometry.distance] /
 [`Geometry.buffer`][gometry.Geometry.buffer]) whose answer is decided by the geometry's CRS and is native by
 default — a geographic CRS measures geodesically (meters), a projected CRS in its
-**native linear units**, CRS-free geometry in bare coordinate units.
+**native linear units**, CRS-free geometry in raw coordinate units.
 
 === "Shapely (silently wrong on lon/lat)"
 

@@ -354,9 +354,9 @@ impl PyGeometry {
     }
     /// Area in CRS-natural units for the geometry's CRS.
     ///
-    /// A geographic CRS gives ellipsoidal square meters (geodesic, on the CRS's
-    /// own ellipsoid); a projected CRS gives squared native coordinate units;
-    /// a CRS-free geometry gives squared coordinate units. Use ``to_crs`` to
+    /// A geographic CRS gives geodesic square meters on the CRS's own ellipsoid;
+    /// a projected CRS gives squared native linear units; a CRS-free geometry
+    /// gives squared raw coordinate units. Use ``to_crs`` to
     /// change frame. Geographic polygons measure their lon/lat chart interior,
     /// including regions larger than half the ellipsoid.
     ///
@@ -379,9 +379,9 @@ impl PyGeometry {
     }
     /// Length (curves) or perimeter (areal), measured for the geometry's CRS.
     ///
-    /// A geographic CRS gives ellipsoidal meters (geodesic, on the CRS's own
-    /// ellipsoid); a projected CRS gives native linear units; a CRS-free
-    /// geometry gives coordinate units. Use ``to_crs`` to change frame.
+    /// A geographic CRS gives geodesic meters on the CRS's own ellipsoid; a
+    /// projected CRS gives native linear units; a CRS-free geometry gives raw
+    /// coordinate units. Use ``to_crs`` to change frame.
     ///
     /// Returns
     /// -------

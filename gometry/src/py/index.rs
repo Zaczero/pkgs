@@ -479,7 +479,7 @@ pub(crate) struct GeodesicCapsCache {
 /// candidates (``idx.candidates(geom)``), proximity (``idx.nearest(geom)``),
 /// self-joins (``idx.self_join()``) — and mutate it incrementally with
 /// ``insert``/``remove``. Distances follow the indexed CRS: meters on a
-/// geographic frame, native linear units on a projected frame, coordinate
+/// geographic frame, native linear units on a projected frame, raw coordinate
 /// units when CRS-free.
 #[pyclass(
     name = "SpatialIndex",

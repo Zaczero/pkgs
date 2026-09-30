@@ -47,8 +47,8 @@ print(station)
 
 A buffer models straight-line proximity, not travel time or route distance. On a
 [geographic CRS](../guide/crs.md), [`buffer(500)`][gometry.Geometry.buffer] uses a local-projection radial
-distance of 500 meters rather than 500 degrees; `unit='planar'` selects raw
-coordinate units:
+distance of 500 meters rather than 500 degrees; `unit='planar'` instead uses
+native angular units as Cartesian coordinates:
 
 ```python exec="on" source="block" result="text" session="catchment"
 service_area = station.buffer(500)
