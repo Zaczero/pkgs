@@ -55,7 +55,6 @@ pub(super) struct NodeParts {
     pub(super) points: Vec<NodeId>,
     pub(super) lines: Vec<Vec<NodeId>>,
     pub(super) polygons: Vec<Vec<Vec<NodeId>>>,
-    pub(super) rounded: Vec<(NodeId, XY)>,
 }
 
 pub(super) struct CoverageFaceState {
@@ -291,8 +290,8 @@ impl BoundaryPlan {
         partition: &ExactPartition<'_>,
         topology: &IndexedTopology,
     ) -> Result<NodeParts> {
-        let (items, rounded_segments) = self.round_items(partition, topology)?;
-        self.emit_node_parts_from_segments(partition, topology, &items, &rounded_segments, true)
+        drop(self.round_items(partition, topology)?);
+        self.build_node_parts(partition, topology)
     }
 
     pub(super) fn emit_node_parts_with_coordinates(
@@ -326,7 +325,7 @@ impl BoundaryPlan {
         }
         self.check_emitted_fans(topology, &rounded_segments)?;
         self.check_global_faces(partition, &items, &rounded_segments)?;
-        self.emit_node_parts_from_segments(partition, topology, &items, &rounded_segments, true)
+        self.build_node_parts(partition, topology)
     }
 
     /// A row's parts from nodes rounded once for every row, whose
@@ -346,30 +345,18 @@ impl BoundaryPlan {
             self.check_emitted_fans(topology, &rounded_segments)?;
             self.check_global_faces(partition, &items, &rounded_segments)?;
         }
-        self.emit_node_parts_from_segments(partition, topology, &items, &rounded_segments, false)
+        self.build_node_parts(partition, topology)
     }
 
     #[expect(
         clippy::indexing_slicing,
         reason = "planned source ranges, walk owners, and node chords are IDs from this boundary plan and topology"
     )]
-    pub(super) fn emit_node_parts_from_segments(
+    fn build_node_parts(
         &self,
         partition: &ExactPartition<'_>,
         topology: &IndexedTopology,
-        items: &[[NodeId; 2]],
-        rounded_segments: &[Segment],
-        retain_rounded: bool,
     ) -> Result<NodeParts> {
-        let mut rounded = Vec::new();
-        if retain_rounded {
-            let rounded_capacity = items.len().wrapping_mul(2);
-            rounded.reserve(rounded_capacity);
-            for (&[start, end], segment) in items.iter().zip(rounded_segments) {
-                rounded.push((start, segment.start));
-                rounded.push((end, segment.end));
-            }
-        }
         let node_chord = |chord: &PlannedChord| {
             let first = self.source_darts[chord.sources.start] as usize;
             let last = self.source_darts[chord.sources.end.wrapping_sub(1)] as usize;
@@ -453,7 +440,6 @@ impl BoundaryPlan {
             points,
             lines,
             polygons,
-            rounded,
         })
     }
 

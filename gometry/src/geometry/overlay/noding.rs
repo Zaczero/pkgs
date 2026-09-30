@@ -1,3 +1,5 @@
+use std::collections::hash_map::Entry;
+
 use crate::error::{ResourceError, Result};
 use crate::geometry::segments::{
     PairOrientations, point_in_segment_envelope, segment_cross_point_with_orientations,
@@ -88,21 +90,26 @@ pub(crate) fn dedup_undirected_segments_sourced(
     let mut assignment: Vec<(u32, bool)> = Vec::with_capacity(capacity);
     for segment in segments {
         let key = undirected_segment_edge_key(segment);
-        if let Some(&unique_index) = index_of.get(&key) {
-            let rep = unique[unique_index as usize];
-            // Same undirected endpoints ⇒ same direction or exact reverse.
-            let reversed = !same_point(rep.start, segment.start);
-            debug_assert!(
-                (same_point(rep.start, segment.start) && same_point(rep.end, segment.end))
-                    || (same_point(rep.start, segment.end) && same_point(rep.end, segment.start))
-            );
-            assignment.push((unique_index, reversed));
-        } else {
-            let unique_index =
-                u32::try_from(unique.len()).map_err(|_| ResourceError::SizeOverflow)?;
-            index_of.insert(key, unique_index);
-            unique.push(segment);
-            assignment.push((unique_index, false));
+        match index_of.entry(key) {
+            Entry::Occupied(entry) => {
+                let unique_index = *entry.get();
+                let rep = unique[unique_index as usize];
+                // Same undirected endpoints ⇒ same direction or exact reverse.
+                let reversed = !same_point(rep.start, segment.start);
+                debug_assert!(
+                    (same_point(rep.start, segment.start) && same_point(rep.end, segment.end))
+                        || (same_point(rep.start, segment.end)
+                            && same_point(rep.end, segment.start))
+                );
+                assignment.push((unique_index, reversed));
+            },
+            Entry::Vacant(entry) => {
+                let unique_index =
+                    u32::try_from(unique.len()).map_err(|_| ResourceError::SizeOverflow)?;
+                entry.insert(unique_index);
+                unique.push(segment);
+                assignment.push((unique_index, false));
+            },
         }
     }
     drop(index_of);

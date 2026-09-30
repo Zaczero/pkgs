@@ -74,6 +74,28 @@ use crate::geometry::tessellation::exact::{compare_ratios, round_ratio};
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
 pub(in crate::geometry) struct NodeId(pub u32);
 
+enum ResolvedNodePoints {
+    XY,
+    Ordinates(Vec<Option<Point>>),
+}
+
+impl ResolvedNodePoints {
+    fn get(&self, partition: &ExactPartition<'_>, node: NodeId) -> Option<Point> {
+        match self {
+            Self::XY => {
+                let xy = partition.node_xy(node);
+                Some(Point::new_raw_xy(xy.x, xy.y))
+            },
+            Self::Ordinates(points) => points.get(node.0 as usize).copied().flatten(),
+        }
+    }
+
+    fn point(&self, partition: &ExactPartition<'_>, node: NodeId) -> Point {
+        self.get(partition, node)
+            .expect("emitted node has a resolved point")
+    }
+}
+
 #[cfg(test)]
 struct ArealSources {
     segments: Vec<Segment>,
@@ -1000,20 +1022,26 @@ impl ExactSourceInventory {
         &self,
         partition: &ExactPartition<'_>,
         nodes: &[NodeId],
-        rounded: impl Fn(NodeId) -> Result<XY>,
         declared_axes: crate::geometry::CoordinateAxes,
-    ) -> Result<HashMap<NodeId, Point>> {
-        let mut by_node =
-            HashMap::with_hasher(crate::collections::collection_hash_state()?.clone());
-        by_node.reserve(nodes.len());
-        for &node in nodes {
-            if by_node.contains_key(&node) {
-                continue;
-            }
-            let point = self.resolve_node_point(partition, node, rounded(node)?, declared_axes)?;
-            by_node.insert(node, point);
+    ) -> Result<ResolvedNodePoints> {
+        if nodes.is_empty() || (!declared_axes.has_z() && !declared_axes.has_m()) {
+            return Ok(ResolvedNodePoints::XY);
         }
-        Ok(by_node)
+        let mut by_node = vec![None; partition.node_count()];
+        for &node in nodes {
+            let point = by_node.get_mut(node.0 as usize).ok_or_else(|| {
+                GeometryErrorKind::Invalid("exact overlay output references an unknown node".into())
+            })?;
+            if point.is_none() {
+                *point = Some(self.resolve_node_point(
+                    partition,
+                    node,
+                    partition.node_xy(node),
+                    declared_axes,
+                )?);
+            }
+        }
+        Ok(ResolvedNodePoints::Ordinates(by_node))
     }
 
     fn winding_source_rings(&self) -> Vec<Option<u32>> {
@@ -1058,18 +1086,13 @@ impl ExactSourceInventory {
             .ok_or(ResourceError::SizeOverflow)?;
         nodes.reserve(node_capacity);
         nodes.extend(items.iter().flatten().copied());
-        let by_node = self.resolve_node_points(
-            partition,
-            &nodes,
-            |node| Ok(partition.node_xy(node)),
-            declared_axes,
-        )?;
-        let axes = bucket_axes(&nodes, &by_node, declared_axes, strict, "node")?;
+        let by_node = self.resolve_node_points(partition, &nodes, declared_axes)?;
+        let axes = bucket_axes(&nodes, partition, &by_node, declared_axes, strict, "node")?;
         let mut lines = Vec::with_capacity(items.len());
         for item in items {
             let points = vec![
-                with_axes(by_node[&item[0]], axes),
-                with_axes(by_node[&item[1]], axes),
+                with_axes(by_node.point(partition, item[0]), axes),
+                with_axes(by_node.point(partition, item[1]), axes),
             ];
             lines.push(LineSeq::from_proven(CoordSeq::try_from_points(&points)?));
         }
@@ -1287,51 +1310,48 @@ impl ExactSourceInventory {
             ordinate_protected.as_deref(),
         )?;
         let parts = plan.emit_node_parts(partition, &topology)?;
-        let line_node_count = parts.lines.iter().try_fold(0_usize, |count, line| {
-            count
-                .checked_add(line.len())
-                .ok_or(ResourceError::SizeOverflow)
-        })?;
-        let polygon_node_count = parts.polygons.iter().try_fold(0_usize, |count, polygon| {
-            polygon.iter().try_fold(count, |count, ring| {
+        let by_node = if declared_axes.has_z() || declared_axes.has_m() {
+            let line_node_count = parts.lines.iter().try_fold(0_usize, |count, line| {
                 count
-                    .checked_add(ring.len())
+                    .checked_add(line.len())
                     .ok_or(ResourceError::SizeOverflow)
-            })
-        })?;
-        let node_capacity = parts
-            .points
-            .len()
-            .checked_add(line_node_count)
-            .and_then(|count| count.checked_add(polygon_node_count))
-            .ok_or(ResourceError::SizeOverflow)?;
-        let mut nodes = Vec::with_capacity(node_capacity);
-        nodes.extend(parts.points.iter().copied());
-        for line in &parts.lines {
-            nodes.extend(line.iter().copied());
-        }
-        for polygon in &parts.polygons {
-            for ring in polygon {
-                nodes.extend(ring.iter().copied());
+            })?;
+            let polygon_node_count =
+                parts.polygons.iter().try_fold(0_usize, |count, polygon| {
+                    polygon.iter().try_fold(count, |count, ring| {
+                        count
+                            .checked_add(ring.len())
+                            .ok_or(ResourceError::SizeOverflow)
+                    })
+                })?;
+            let node_capacity = parts
+                .points
+                .len()
+                .checked_add(line_node_count)
+                .and_then(|count| count.checked_add(polygon_node_count))
+                .ok_or(ResourceError::SizeOverflow)?;
+            let mut nodes = Vec::with_capacity(node_capacity);
+            nodes.extend(parts.points.iter().copied());
+            for line in &parts.lines {
+                nodes.extend(line.iter().copied());
             }
-        }
-        let mut rounded =
-            HashMap::with_hasher(crate::collections::collection_hash_state()?.clone());
-        rounded.reserve(parts.rounded.len());
-        for &(node, point) in &parts.rounded {
-            rounded.entry(node).or_insert(point);
-        }
-        let by_node = self.resolve_node_points(
+            for polygon in &parts.polygons {
+                for ring in polygon {
+                    nodes.extend(ring.iter().copied());
+                }
+            }
+            self.resolve_node_points(partition, &nodes, declared_axes)?
+        } else {
+            ResolvedNodePoints::XY
+        };
+        self.node_parts_to_shape_resolved(
             partition,
-            &nodes,
-            |node| {
-                rounded.get(&node).copied().ok_or_else(|| {
-                    GeometryErrorKind::Invalid("exact overlay output lost rounded XY".into()).into()
-                })
-            },
+            parts,
+            &by_node,
             declared_axes,
-        )?;
-        self.node_parts_to_shape_resolved(parts, &by_node, declared_axes, strict, operation.name())
+            strict,
+            operation.name(),
+        )
     }
 
     /// Select both closed children of one subdivision cut from one exact
@@ -1430,33 +1450,10 @@ impl ExactSourceInventory {
             )?);
         }
 
-        let mut rounded =
-            HashMap::with_hasher(crate::collections::collection_hash_state()?.clone());
-        rounded.reserve(nodes.len());
-        let mut output_nodes = Vec::with_capacity(nodes.len());
-        let mut output_seen = Vec::with_capacity(partition.node_count());
-        output_seen.resize(partition.node_count(), false);
-        for parts in &node_parts {
-            for &(node, point) in &parts.rounded {
-                rounded.entry(node).or_insert(point);
-                if !output_seen[node.0 as usize] {
-                    output_seen[node.0 as usize] = true;
-                    output_nodes.push(node);
-                }
-            }
-        }
-        let by_node = self.resolve_node_points(
-            partition,
-            &output_nodes,
-            |node| {
-                rounded.get(&node).copied().ok_or_else(|| {
-                    GeometryErrorKind::Invalid("exact overlay output lost rounded XY".into()).into()
-                })
-            },
-            declared_axes,
-        )?;
+        let by_node = self.resolve_node_points(partition, &nodes, declared_axes)?;
         let mut parts = node_parts.into_iter();
         let first = self.node_parts_to_shape_resolved(
+            partition,
             parts
                 .next()
                 .expect("two subdivision plans produce two outputs"),
@@ -1466,6 +1463,7 @@ impl ExactSourceInventory {
             "subdivide",
         )?;
         let second = self.node_parts_to_shape_resolved(
+            partition,
             parts
                 .next()
                 .expect("two subdivision plans produce two outputs"),
@@ -1517,12 +1515,7 @@ impl ExactSourceInventory {
             }
         }
         ExactPartition::check_node_injectivity(&nodes, &partition.round_nodes(&nodes))?;
-        let by_node = self.resolve_node_points(
-            partition,
-            &nodes,
-            |node| Ok(partition.node_xy(node)),
-            declared_axes,
-        )?;
+        let by_node = self.resolve_node_points(partition, &nodes, declared_axes)?;
         let views = partition.source_span_views(&self.source_segments)?;
         let ranges = source_line_ranges(source)?;
         let mut outputs = Vec::with_capacity(selected.len());
@@ -1556,7 +1549,7 @@ impl ExactSourceInventory {
         ranges: &[Range<usize>],
         views: &[Vec<(u32, bool)>],
         selected: &[bool],
-        by_node: &HashMap<NodeId, Point>,
+        by_node: &ResolvedNodePoints,
         declared_axes: crate::geometry::CoordinateAxes,
         strict: bool,
     ) -> Result<Shape> {
@@ -1608,12 +1601,19 @@ impl ExactSourceInventory {
             line_nodes.reserve(run.len());
             line_nodes.extend(run.iter().copied());
         }
-        let line_axes = bucket_axes(&line_nodes, by_node, declared_axes, strict, "subdivide")?;
+        let line_axes = bucket_axes(
+            &line_nodes,
+            partition,
+            by_node,
+            declared_axes,
+            strict,
+            "subdivide",
+        )?;
         let mut lines = Vec::with_capacity(node_runs.len());
         for run in node_runs {
             let mut points = Vec::with_capacity(run.len());
             for node in run {
-                points.push(with_axes(by_node[&node], line_axes));
+                points.push(with_axes(by_node.point(partition, node), line_axes));
             }
             lines.push(LineSeq::from_proven(CoordSeq::try_from_points(&points)?));
         }
@@ -1625,8 +1625,9 @@ impl ExactSourceInventory {
 
     fn node_parts_to_shape_resolved(
         &self,
+        partition: &ExactPartition<'_>,
         parts: NodeParts,
-        by_node: &HashMap<NodeId, Point>,
+        by_node: &ResolvedNodePoints,
         declared_axes: crate::geometry::CoordinateAxes,
         strict: bool,
         operation: &str,
@@ -1643,29 +1644,50 @@ impl ExactSourceInventory {
                     .ok_or(ResourceError::SizeOverflow)
             })
         })?;
-        let point_axes = bucket_axes(&parts.points, by_node, declared_axes, strict, operation)?;
+        let point_axes = bucket_axes(
+            &parts.points,
+            partition,
+            by_node,
+            declared_axes,
+            strict,
+            operation,
+        )?;
         let mut line_nodes = Vec::with_capacity(line_node_count);
         for line in &parts.lines {
             line_nodes.extend(line.iter().copied());
         }
-        let line_axes = bucket_axes(&line_nodes, by_node, declared_axes, strict, operation)?;
+        let line_axes = bucket_axes(
+            &line_nodes,
+            partition,
+            by_node,
+            declared_axes,
+            strict,
+            operation,
+        )?;
         let mut polygon_nodes = Vec::with_capacity(polygon_node_count);
         for polygon in &parts.polygons {
             for ring in polygon {
                 polygon_nodes.extend(ring.iter().copied());
             }
         }
-        let polygon_axes = bucket_axes(&polygon_nodes, by_node, declared_axes, strict, operation)?;
+        let polygon_axes = bucket_axes(
+            &polygon_nodes,
+            partition,
+            by_node,
+            declared_axes,
+            strict,
+            operation,
+        )?;
 
         let mut points = Vec::with_capacity(parts.points.len());
         for node in parts.points {
-            points.push(with_axes(by_node[&node], point_axes));
+            points.push(with_axes(by_node.point(partition, node), point_axes));
         }
         let mut lines = Vec::with_capacity(parts.lines.len());
         for line in parts.lines {
             let mut coordinates = Vec::with_capacity(line.len());
             for node in line {
-                coordinates.push(with_axes(by_node[&node], line_axes));
+                coordinates.push(with_axes(by_node.point(partition, node), line_axes));
             }
             lines.push(CoordSeq::try_from_points(&coordinates)?);
         }
@@ -1675,7 +1697,7 @@ impl ExactSourceInventory {
             for ring in polygon {
                 let mut coordinates = Vec::with_capacity(ring.len());
                 for node in ring {
-                    coordinates.push(with_axes(by_node[&node], polygon_axes));
+                    coordinates.push(with_axes(by_node.point(partition, node), polygon_axes));
                 }
                 rings.push(Ring::try_from_closed(CoordSeq::try_from_points(
                     &coordinates,
@@ -2554,18 +2576,19 @@ fn rings_occupied(winding: &[i64], mut rings: Range<usize>, odd: bool) -> bool {
 
 fn bucket_axes(
     nodes: &[NodeId],
-    points: &HashMap<NodeId, Point>,
+    partition: &ExactPartition<'_>,
+    points: &ResolvedNodePoints,
     declared: crate::geometry::CoordinateAxes,
     strict: bool,
     operation: &str,
 ) -> Result<crate::geometry::CoordinateAxes> {
-    if nodes.is_empty() {
+    if nodes.is_empty() || (!declared.has_z() && !declared.has_m()) {
         return Ok(crate::geometry::CoordinateAxes::XY);
     }
     let mut has_z = declared.has_z();
     let mut has_m = declared.has_m();
     for node in nodes {
-        let point = points.get(node).ok_or_else(|| {
+        let point = points.get(partition, *node).ok_or_else(|| {
             GeometryErrorKind::Invalid("exact overlay output lost a live node".into())
         })?;
         has_z &= point.z().is_some();

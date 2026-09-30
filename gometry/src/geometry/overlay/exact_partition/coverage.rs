@@ -10,15 +10,15 @@ use std::cmp::Ordering;
 use super::metrics::update as update_partition_metrics;
 use super::{
     ArealCells, CoverageFaceState, ExactPartition, ExactSourceInventory, GlobalFaces, KeptNodes,
-    NodeId, NodeParts, bucket_axes, with_axes,
+    NodeId, NodeParts, ResolvedNodePoints, bucket_axes, with_axes,
 };
 use crate::error::ResourceError;
 use crate::geometry::arrangement::IndexedTopology;
 use crate::geometry::exact_arith::{dd_add, floor_binary_exponent, two_sum};
 use crate::geometry::{
-    CoordSeq, CoordinateAxes, CoverageOverlapRule, ExactRationalArea, GeometryErrorKind, HashMap,
-    Point, Polygon, Result, Ring, Shape, XY, axis_pow2_scale, point_distance,
-    power_of_two_exponent, scale_by_power_of_two, scaled_residual,
+    CoordSeq, CoordinateAxes, CoverageOverlapRule, ExactRationalArea, GeometryErrorKind, Polygon,
+    Result, Ring, Shape, XY, axis_pow2_scale, point_distance, power_of_two_exponent,
+    scale_by_power_of_two, scaled_residual,
 };
 
 /// A nonnegative binary64 significand times an extended binary exponent.
@@ -578,12 +578,7 @@ impl ExactSourceInventory {
             &output_nodes,
             &partition.round_nodes(&output_nodes),
         )?;
-        let by_node = self.resolve_node_points(
-            partition,
-            &output_nodes,
-            |node| Ok(partition.node_xy(node)),
-            declared_axes,
-        )?;
+        let by_node = self.resolve_node_points(partition, &output_nodes, declared_axes)?;
 
         let mut outputs = Vec::with_capacity(row_count);
         for row in 0..row_count_u32 {
@@ -602,7 +597,12 @@ impl ExactSourceInventory {
             cells.nodes.resize(partition.node_count(), false);
             let plan = cells.emission_plan(partition, &topology, &edges, &global)?;
             let parts = plan.emit_node_parts_with_shared_rounding(partition, &topology)?;
-            outputs.push(self.coverage_shape_from_node_parts(parts, &by_node, declared_axes)?);
+            outputs.push(self.coverage_shape_from_node_parts(
+                partition,
+                parts,
+                &by_node,
+                declared_axes,
+            )?);
         }
         #[cfg(test)]
         update_partition_metrics(|metrics| {
@@ -763,8 +763,9 @@ impl ExactSourceInventory {
 
     pub(super) fn coverage_shape_from_node_parts(
         &self,
+        partition: &ExactPartition<'_>,
         parts: NodeParts,
-        by_node: &HashMap<NodeId, Point>,
+        by_node: &ResolvedNodePoints,
         declared_axes: CoordinateAxes,
     ) -> Result<Shape> {
         debug_assert!(parts.points.is_empty());
@@ -783,19 +784,26 @@ impl ExactSourceInventory {
                 nodes.extend_from_slice(ring);
             }
         }
-        let axes = bucket_axes(&nodes, by_node, declared_axes, false, "coverage_clean")?;
+        let axes = bucket_axes(
+            &nodes,
+            partition,
+            by_node,
+            declared_axes,
+            false,
+            "coverage_clean",
+        )?;
         let mut polygons = Vec::with_capacity(parts.polygons.len());
         for polygon in parts.polygons {
             let mut rings = Vec::with_capacity(polygon.len());
             for ring in polygon {
                 let mut points = Vec::with_capacity(ring.len());
                 for node in ring {
-                    let point = by_node.get(&node).ok_or_else(|| {
+                    let point = by_node.get(partition, node).ok_or_else(|| {
                         GeometryErrorKind::Invalid(
                             "exact coverage output lost a rounded node".into(),
                         )
                     })?;
-                    points.push(with_axes(*point, axes));
+                    points.push(with_axes(point, axes));
                 }
                 rings.push(Ring::try_from_closed(CoordSeq::try_from_points(&points)?)?);
             }
