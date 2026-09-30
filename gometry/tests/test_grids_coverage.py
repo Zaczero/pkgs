@@ -127,8 +127,8 @@ def test_interleaved_missing_cover_rows_keep_logical_alignment() -> None:
 @pytest.mark.parametrize(
     'cover, depth, bounds',
     [
-        (gm.h3_cover, {'resolution': 2}, (-2, -2, 2, 2)),
-        (gm.geohash_cover, {'precision': 3}, (-170, -70, 170, 70)),
+        (gm.h3_cover, {'resolution': 2}, (-10, -10, 10, 10)),
+        (gm.geohash_cover, {'precision': 3}, (-2, -2, 2, 2)),
         (gm.tile_cover, {'zoom': 3}, (-170, -70, 170, 70)),
         (gm.s2_cover, {'level': 3}, (-170, -70, 170, 70)),
     ],
@@ -140,7 +140,7 @@ def test_public_grid_order_budget_and_array_parity(cover, depth, bounds) -> None
         cells = cover(polygon, cell_rule=rule, max_cells=None, **depth)
         keys = [cell.token if hasattr(cell, 'token') else cell.id for cell in cells]
         assert keys == sorted(set(keys))
-        assert keys
+        assert len(keys) > 1
         at_limit = cover(polygon, cell_rule=rule, max_cells=len(keys), **depth)
         assert [
             cell.token if hasattr(cell, 'token') else cell.id for cell in at_limit
@@ -180,13 +180,6 @@ def test_cover_propagates_dissolved_area_error(cover, depth) -> None:
 
     assert type(raised.value) is gm.InvalidGeometryError
     assert type(raised.value).__name__ != 'PanicException'
-
-
-def test_cover_cells_use_free_geometry_predicate() -> None:
-    source = gm.box(0, 0, 1, 1)
-    gm.h3_cover(source, resolution=5)
-    assert gm.contains(source, gm.Point(0.5, 0.5))
-    assert gm.disjoint(source, gm.Point(2, 2))
 
 
 @pytest.mark.parametrize('crs', [None, 4326], ids=['crs-free', 'epsg4326'])

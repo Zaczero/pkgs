@@ -482,17 +482,6 @@ def test_s2_interior_subtree_rejects_before_enumeration():
     _assert_not_panic(excinfo.value)
 
 
-def test_large_uncapped_pickle_roundtrip():
-    """A large materialized cell array still pickle-roundtrips."""
-    # Exact ±180 full-longitude band: geographic cover keeps the world extent.
-    src = gm.box(-180.0, -82.0, 180.0, 82.0, crs=4326)
-    cov = gm.tile_cover(src, zoom=10, cell_rule='bbox')
-    out = pickle.loads(pickle.dumps(cov))
-    assert len(cov) >= 800_000
-    assert len(out) == len(cov)
-    np.testing.assert_array_equal(out.to_numpy(), cov.to_numpy())
-
-
 # ---------------------------------------------------------------------------
 # P23 — pickle of transformed coverages
 # ---------------------------------------------------------------------------

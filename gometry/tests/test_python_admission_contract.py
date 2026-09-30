@@ -925,7 +925,7 @@ def test_native_python_iterator_checks_signals() -> None:
             raise KeyboardInterrupt
 
         signal.signal(signal.SIGALRM, interrupt)
-        signal.alarm(1)
+        signal.setitimer(signal.ITIMER_REAL, 0.1)
         try:
             gm.GeometryArray(itertools.repeat(gm.Point(0, 0)))
         except KeyboardInterrupt:

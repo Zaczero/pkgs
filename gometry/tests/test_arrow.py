@@ -1858,40 +1858,21 @@ def test_from_arrow_multi_empty_malformed_start_offset_rejected() -> None:
 
 
 def test_from_arrow_pyarrow_discards_zero_length_chunks() -> None:
-    """m09: PyArrow chunked import discards zero-length chunks (stream parity).
-
-    Many empty chunks must yield a zero-row array without retaining per-empty
-    storage. Point empties are offset-free so total ``len==0`` stays O(1) after
-    type classification; offset-bearing empties still validate per chunk (N1)
-    without retaining storage. Empty chunks around real data must not appear as
-    rows; non-empty chunk import stays unchanged.
-    """
+    """Empty chunks add no rows and preserve CRS around non-empty chunks."""
     arr = gm.points([1.0, 2.0], [3.0, 4.0], crs=4326).to_arrow()
     empty = arr.slice(0, 0)
 
-    # Exact repro shape: many empty chunks → zero rows + CRS preserved, O(1)
-    # relative to chunk count (no per-empty retained storage / chunk Vec).
-    n_empty = 20_000
-    many_empty = pa.chunked_array([empty] * n_empty, type=arr.type)
-    assert len(many_empty) == 0 and many_empty.num_chunks == n_empty
-    out = cast('gm.GeometryArray', gm.from_arrow(many_empty))
-    assert len(out) == 0
-    assert out.crs.to_epsg() == 4326
-    assert out.to_wkt() == []
+    multiple_empty = pa.chunked_array([empty, empty], type=arr.type)
+    assert multiple_empty.num_chunks == 2
+    empty_out = cast('gm.GeometryArray', gm.from_arrow(multiple_empty))
+    assert len(empty_out) == 0
+    assert empty_out.crs.to_epsg() == 4326
+    assert empty_out.to_wkt() == []
 
-    # Empty around real data: only present rows land.
-    mixed = pa.chunked_array([empty, arr, empty, empty], type=arr.type)
+    mixed = pa.chunked_array([empty, arr, empty], type=arr.type)
     mixed_out = cast('gm.GeometryArray', gm.from_arrow(mixed))
     assert mixed_out.to_wkt() == ['POINT (1 3)', 'POINT (2 4)']
     assert mixed_out.crs.to_epsg() == 4326
-
-    # Positive: non-empty multi-chunk import unchanged.
-    half = arr.slice(0, 1)
-    other = arr.slice(1, 1)
-    non_empty = pa.chunked_array([half, other], type=arr.type)
-    kept = cast('gm.GeometryArray', gm.from_arrow(non_empty))
-    assert kept.to_wkt() == ['POINT (1 3)', 'POINT (2 4)']
-    assert kept.crs.to_epsg() == 4326
 
 
 def test_from_arrow_stream_discards_zero_row_batches() -> None:

@@ -16,11 +16,18 @@ _COUNTRIES = (
 @pytest.fixture(scope='module')
 def countries() -> dict[str, gm.Geometry]:
     text = _COUNTRIES.read_text(encoding='utf-8')
-    codes = [
-        feature['properties']['tags'].get('ISO3166-1:alpha2')
-        for feature in json.loads(text)['features']
-    ]
-    return dict(zip(codes, gm.from_geojson(text, crs=4326), strict=True))
+    codes = ('RU', 'CN')
+    wanted = set(codes)
+    features = {}
+    for feature in json.loads(text)['features']:
+        code = feature['properties']['tags'].get('ISO3166-1:alpha2')
+        if code in wanted:
+            features[code] = feature
+    selected = json.dumps({
+        'type': 'FeatureCollection',
+        'features': [features[code] for code in codes],
+    })
+    return dict(zip(codes, gm.from_geojson(selected, crs=4326), strict=True))
 
 
 def test_union_keeps_holes_of_a_member_bordering_an_antimeridian_member(
@@ -35,18 +42,17 @@ def test_union_keeps_holes_of_a_member_bordering_an_antimeridian_member(
     assert union.area == pytest.approx(russia.area + china.area, rel=1e-12)
 
 
-def test_collection_area_counts_overlapping_members_once(
-    countries: dict[str, gm.Geometry],
-) -> None:
-    members = list(countries.values())
+def test_collection_area_counts_overlapping_members_once() -> None:
+    first = gm.box(0, 0, 2, 2, crs=4326)
+    second = gm.box(1, 0, 3, 2, crs=4326)
 
-    collection = gm.GeometryCollection(members, crs=4326).area
+    collection_area = gm.GeometryCollection(
+        [first, second], crs=4326
+    ).area
+    dissolved = gm.union_all([first, second])
 
-    dissolved = gm.union_all(members)
-    assert collection == pytest.approx(
-        sum(part.area for part in dissolved.parts), rel=1e-12
-    )
-    assert collection < sum(member.area for member in members)
+    assert collection_area == pytest.approx(dissolved.area, rel=1e-12)
+    assert collection_area < first.area + second.area
 
 
 def test_union_with_a_member_touching_the_seam_stays_valid() -> None:

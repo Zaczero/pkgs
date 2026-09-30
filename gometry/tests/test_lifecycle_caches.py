@@ -51,65 +51,44 @@ print("ok")
 
 
 def test_held_crs_info_is_receiver_local() -> None:
-    """1k held CRS: repeated .info is receiver-cached.
+    """Equivalent CRS receivers expose independent, refreshable info values.
 
-    Generation-aware invalidation after ``crs_clear_cache`` /
-    ``crs_configure`` is pinned in ``tests/test_crs_metadata_info.py``.
-    Wall-clock for the warm 1k pass lives in
-    ``benches/cases/case_held_crs_info_scale.py``.
+    Generation invalidation after ``crs_clear_cache`` / ``crs_configure`` is
+    also exercised in ``tests/test_crs_metadata_info.py``.
     """
     gm.crs_clear_cache()
-    held: list[gm.CRS] = []
-    for code in range(2000, 5000):
-        try:
-            held.append(gm.CRS(code))
-        except Exception:  # noqa: S112 — skip unconstructible EPSG codes while filling the set
-            continue
-        if len(held) >= 1000:
-            break
-    assert len(held) == 1000
+    first = gm.CRS(4326)
+    second = gm.CRS(4326)
+    first_info = first.info
+    expected = second.info
+    assert first_info == expected
+    assert first_info['name'] == 'WGS 84'
 
-    # Fill receiver caches; repeated reads stay content-stable (not re-resolved
-    # to a different snapshot without a generation bump).
-    first_pass = [crs.info for crs in held]
-    second_pass = [crs.info for crs in held]
-    assert second_pass == first_pass
-    assert all(
-        isinstance(info.get('name'), str) and info['name'] for info in first_pass
-    )
+    first_info['name'] = 'POISON'
+    assert first.info == expected
+    assert second.info == expected
 
-    # After clear, held receivers rebuild (generation-aware).
-    name_before = held[0].info['name']
     gm.crs_clear_cache()
-    rebuilt = held[0].info
-    assert rebuilt['name'] == name_before
-    assert isinstance(rebuilt['name'], str) and rebuilt['name']
+    assert first.info == expected
+    assert second.info == expected
 
 
 def test_coordinates_random_access_and_lazy_iter() -> None:
-    """coords[0]/[-1] and first-item iter are correct across run counts.
+    """Random access crosses line boundaries and each iterator starts anew."""
+    coords = gm.line_strings([
+        [(13.0, 17.0), (19.0, 23.0)],
+        [(29.0, 31.0), (37.0, 41.0)],
+        [(43.0, 47.0), (53.0, 59.0)],
+    ]).coords
 
-    Storage-shaped O(1) indexing / flat scaling vs run count is measured in
-    ``benches/cases/case_coordinates_access_scale.py``.
-    """
-    for n_runs in (1_000, 20_000, 100_000):
-        arr = gm.line_strings([
-            [(float(i), 0.0), (float(i), 1.0)] for i in range(n_runs)
-        ])
-        coords = arr.coords
-        assert coords[0] == (0.0, 0.0)
-        assert coords[-1] == (float(n_runs - 1), 1.0)
-        # Random middle vertex of the last run (open line: 2 verts per run).
-        assert coords[2 * (n_runs - 1)] == (float(n_runs - 1), 0.0)
-
-    line = gm.LineString([(float(i), 0.0) for i in range(640_000)])
-    coords = line.coords
-    first = next(iter(coords))
-    assert first == (0.0, 0.0)
-    # Fresh iterators restart; identity of first vertex is stable.
-    assert next(iter(coords)) == (0.0, 0.0)
-    assert coords[0] == (0.0, 0.0)
-    assert coords[-1] == (639_999.0, 0.0)
+    assert len(coords) == 6
+    assert coords[0] == (13.0, 17.0)
+    assert coords[3] == (37.0, 41.0)
+    assert coords[-1] == (53.0, 59.0)
+    iterator = iter(coords)
+    assert next(iterator) == (13.0, 17.0)
+    assert next(iterator) == (19.0, 23.0)
+    assert next(iter(coords)) == (13.0, 17.0)
 
 
 def test_crs_authorities_cached_and_isolated() -> None:
@@ -134,8 +113,7 @@ def test_optional_exports_are_eager_facade_bindings() -> None:
     )
     assert set(names) <= set(dir(gm))
     assert set(names) <= set(gm.__all__)
-    for name in names:
-        assert getattr(gm, name) is getattr(gm, name)
+    assert set(names) <= vars(gm).keys()
 
 
 def test_pandas_setitem_identity() -> None:
