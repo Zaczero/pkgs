@@ -719,14 +719,12 @@ fn clip_segment_exact(start: XY, end: XY, rect: Bounds) -> Result<Option<(XY, XY
 /// Exact endpoints of a segment's closed intersection with a rectangle.
 ///
 /// `exact` is absent only for an original stored endpoint. Constructed
-/// crossings retain both their exact homogeneous coordinate and source
-/// parameter; consumers can node the local span without treating its rounded
-/// endpoints as new source geometry.
+/// crossings retain their exact homogeneous coordinate; consumers can node the
+/// local span without treating its rounded endpoints as new source geometry.
 #[derive(Clone, Debug)]
 pub(crate) struct SegmentClipPoint {
-    pub(crate) parameter: SegmentParameter,
     pub(crate) point: XY,
-    pub(crate) exact: Option<[ExactDyadic; 3]>,
+    pub(crate) exact: Option<Box<[ExactDyadic; 3]>>,
 }
 
 #[derive(Clone, Debug)]
@@ -737,20 +735,22 @@ pub(crate) struct SegmentClipInterval {
 
 /// Clip a stored source carrier to a closed rectangle without replacing that
 /// carrier by its rounded endpoint chord.
+#[expect(
+    clippy::indexing_slicing,
+    reason = "hit indices are bounded by the fixed six-slot buffer populated from the segment and four rectangle sides"
+)]
 pub(in crate::geometry) fn clip_segment_rect_interval(
     segment: Segment,
     rect: Bounds,
 ) -> Result<Option<SegmentClipInterval>> {
     let (start, end) = (segment.start, segment.end);
     if same_point(start, end) {
-        return Ok(rect.contains_xy(start).then(|| SegmentClipInterval {
+        return Ok(rect.contains_xy(start).then_some(SegmentClipInterval {
             start: SegmentClipPoint {
-                parameter: SegmentParameter::Start,
                 point: start,
                 exact: None,
             },
             end: SegmentClipPoint {
-                parameter: SegmentParameter::Start,
                 point: start,
                 exact: None,
             },
@@ -759,12 +759,10 @@ pub(in crate::geometry) fn clip_segment_rect_interval(
     if rect.contains_xy(start) && rect.contains_xy(end) {
         return Ok(Some(SegmentClipInterval {
             start: SegmentClipPoint {
-                parameter: SegmentParameter::Start,
                 point: start,
                 exact: None,
             },
             end: SegmentClipPoint {
-                parameter: SegmentParameter::End,
                 point: end,
                 exact: None,
             },
@@ -885,14 +883,12 @@ pub(in crate::geometry) fn clip_segment_rect_interval(
     };
     Ok(Some(SegmentClipInterval {
         start: SegmentClipPoint {
-            parameter: first.parameter,
             point: first.point,
-            exact: first.exact,
+            exact: first.exact.map(Box::new),
         },
         end: SegmentClipPoint {
-            parameter: last.parameter,
             point: last.point,
-            exact: last.exact,
+            exact: last.exact.map(Box::new),
         },
     }))
 }
@@ -942,6 +938,10 @@ impl SegmentParameter {
     }
 }
 
+#[expect(
+    clippy::indexing_slicing,
+    reason = "hit count is bounded by distinct endpoints of one segment's convex rectangle intersection"
+)]
 fn push_clip_hit(hit: ClipHit, output: &mut [Option<ClipHit>; 6], count: &mut usize) -> Result<()> {
     let (zero, one) = (ExactDyadic::zero(), ExactDyadic::one());
     let mut duplicate = None;

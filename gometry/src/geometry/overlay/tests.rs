@@ -2622,8 +2622,8 @@ mod rectangle_clip_tests {
         .unwrap();
         assert_eq!(quarter_interval.start.point.y.to_bits(), 1.0_f64.to_bits());
         assert_eq!(half_interval.start.point.y.to_bits(), 1.0_f64.to_bits());
-        let [quarter_x, quarter_y, quarter_w] = quarter_interval.start.exact.unwrap();
-        let [half_x, half_y, half_w] = half_interval.start.exact.unwrap();
+        let [quarter_x, quarter_y, quarter_w] = *quarter_interval.start.exact.unwrap();
+        let [half_x, half_y, half_w] = *half_interval.start.exact.unwrap();
         assert_eq!(
             compare_ratios(&quarter_x, &quarter_w, &half_x, &half_w).unwrap(),
             std::cmp::Ordering::Equal

@@ -867,7 +867,7 @@ impl ExactSourceInventory {
                 &self.isolated,
             )?,
         };
-        self.finish_partition(partition)
+        Ok(self.finish_partition(partition))
     }
 
     fn partition_in_window(
@@ -884,7 +884,7 @@ impl ExactSourceInventory {
             bounds,
             budget,
         )?;
-        self.finish_partition(partition)
+        Ok(self.finish_partition(partition))
     }
 
     #[expect(
@@ -953,7 +953,7 @@ impl ExactSourceInventory {
                 if !is_corner {
                     continue;
                 }
-                let (mut winding, boundary) = self.source_winding_at_stored(point)?;
+                let (mut winding, boundary) = self.source_winding_at_stored(point);
                 if !boundary {
                     let clip = winding
                         .get_mut(clip_ring)
@@ -980,9 +980,12 @@ impl ExactSourceInventory {
         .into())
     }
 
-    fn source_winding_at_stored(&self, point: XY) -> Result<(Vec<i64>, bool)> {
-        let mut winding = Vec::with_capacity(self.ring_count);
-        winding.resize(self.ring_count, 0_i64);
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "source and ring IDs are admitted by source staging, and winding is sized to ring_count"
+    )]
+    fn source_winding_at_stored(&self, point: XY) -> (Vec<i64>, bool) {
+        let mut winding = vec![0_i64; self.ring_count];
         let mut boundary = false;
         for (source, &segment) in self.source_segments.iter().enumerate() {
             if self.source_operands[source] != 0
@@ -1007,16 +1010,19 @@ impl ExactSourceInventory {
                     winding[ring as usize].wrapping_add(i64::from(ray_crossing(segment, point)));
             }
         }
-        Ok((winding, boundary))
+        (winding, boundary)
     }
 
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "source and ring IDs are admitted by source staging, and winding is sized to ring_count"
+    )]
     fn source_winding_at_symbolic(
         &self,
         point: &[ExactDyadic; 3],
         direction: [i8; 2],
     ) -> Result<Vec<i64>> {
-        let mut winding = Vec::with_capacity(self.ring_count);
-        winding.resize(self.ring_count, 0_i64);
+        let mut winding = vec![0_i64; self.ring_count];
         for (source, &segment) in self.source_segments.iter().enumerate() {
             if self.source_operands[source] != 0
                 || self.source_ring_kinds[source] != Some(RingKind::Winding)
@@ -1031,6 +1037,13 @@ impl ExactSourceInventory {
         Ok(winding)
     }
 
+    #[cfg_attr(
+        not(test),
+        expect(
+            clippy::missing_const_for_fn,
+            reason = "test-only partition metrics update thread-local counters"
+        )
+    )]
     fn record_partition_inventory(&self) {
         #[cfg(test)]
         record_partition_call();
@@ -1042,10 +1055,11 @@ impl ExactSourceInventory {
         });
     }
 
-    fn finish_partition<'a>(
-        &self,
-        mut partition: ExactPartition<'a>,
-    ) -> Result<ExactPartition<'a>> {
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "span owners and node IDs are admitted by the same exact partition"
+    )]
+    fn finish_partition<'a>(&self, mut partition: ExactPartition<'a>) -> ExactPartition<'a> {
         #[cfg(test)]
         update_partition_metrics(|metrics| {
             metrics.canonical_spans = partition.spans.len();
@@ -1064,7 +1078,7 @@ impl ExactSourceInventory {
             }
         }
         partition.kept_nodes = KeptNodes::OffRings(on_ring);
-        Ok(partition)
+        partition
     }
 
     pub(in crate::geometry) fn source_segments(&self) -> &[Segment] {
@@ -2878,7 +2892,10 @@ fn symbolic_ray_crossing(
     let orientation = if orientation.sign() == ExactSign::Zero {
         let dx_sign = exact_sign_i8(dx.sign());
         let dy_sign = exact_sign_i8(dy.sign());
-        (dx_sign * direction[1] - dy_sign * direction[0]).signum()
+        (dx_sign
+            .wrapping_mul(direction[1])
+            .wrapping_sub(dy_sign.wrapping_mul(direction[0])))
+        .signum()
     } else {
         exact_sign_i8(orientation.sign())
     };

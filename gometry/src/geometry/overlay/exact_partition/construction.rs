@@ -15,12 +15,12 @@ use std::ops::ControlFlow;
 use super::metrics::{record_candidate_pair, record_overlap, update as update_partition_metrics};
 use super::rays::RayPoints;
 use super::{Axis, ExactPartition, ExactSpan, KeptNodes, NodeId, NodeRecipe};
-use crate::error::ResourceError;
+use crate::error::{Error, ResourceError};
 use crate::geometry::exact_arith::ExactSign;
 use crate::geometry::overlay::noding::{SegmentProvenance, SegmentSource};
 use crate::geometry::segments::{
-    SegmentClipInterval, crossing_homogeneous, crossing_point, point_in_segment_envelope,
-    segment_envelopes_disjoint, stored_orientation_sign,
+    SegmentClipInterval, SegmentClipPoint, crossing_homogeneous, crossing_point,
+    point_in_segment_envelope, segment_envelopes_disjoint, stored_orientation_sign,
 };
 use crate::geometry::tessellation::exact::{ExactDyadic, compare_ratios, round_ratio};
 use crate::geometry::{
@@ -132,6 +132,9 @@ impl<'a> PointArena<'a> {
     }
 
     pub(super) fn same_exact_point(&self, left: u32, right: u32) -> Result<bool> {
+        if left == right {
+            return Ok(true);
+        }
         let left = self.exact(left)?;
         let right = self.exact(right)?;
         let [left_x, left_y, left_w] = &*left;
@@ -517,20 +520,6 @@ fn partition_unique_segments_with_budget<'a>(
     debug_assert_eq!(provenance.len(), unique.len());
     if let Some((intervals, _)) = windowed {
         debug_assert_eq!(intervals.len(), unique.len());
-        let (zero, one) = (ExactDyadic::zero(), ExactDyadic::one());
-        for interval in intervals {
-            if interval
-                .start
-                .parameter
-                .cmp(&interval.end.parameter, &zero, &one)?
-                .is_gt()
-            {
-                return Err(GeometryErrorKind::Invalid(
-                    "rectangle clip interval is reversed on its source carrier".into(),
-                )
-                .into());
-            }
-        }
     }
     let endpoint_capacity = unique
         .len()
@@ -559,16 +548,16 @@ fn partition_unique_segments_with_budget<'a>(
     end_handle.reserve(unique.len());
     let mut clip_endpoint_keys = Vec::new();
     if let Some((intervals, _)) = windowed {
-        clip_endpoint_keys.reserve(endpoint_capacity);
         for interval in intervals {
-            let mut push_endpoint = |endpoint: &crate::geometry::segments::SegmentClipPoint| {
+            let mut push_endpoint = |endpoint: &SegmentClipPoint| {
                 let handle = if let Some(exact) = &endpoint.exact {
-                    forest.push_constructed(endpoint.point, exact.clone())
+                    let handle = forest.push_constructed(endpoint.point, (**exact).clone())?;
+                    clip_endpoint_keys.push((PointKey::new(endpoint.point), handle));
+                    Ok(handle)
                 } else {
                     intern_stored(endpoint.point, &mut endpoint_of, &mut forest)
                 }?;
-                clip_endpoint_keys.push((PointKey::new(endpoint.point), handle));
-                Ok::<_, crate::error::Error>(handle)
+                Ok::<_, Error>(handle)
             };
             start_handle.push(push_endpoint(&interval.start)?);
             end_handle.push(push_endpoint(&interval.end)?);
@@ -580,28 +569,23 @@ fn partition_unique_segments_with_budget<'a>(
         }
     }
     if !clip_endpoint_keys.is_empty() {
-        clip_endpoint_keys.sort_unstable_by_key(|(key, _)| *key);
-        let mut start = 0;
-        while start < clip_endpoint_keys.len() {
-            let key = clip_endpoint_keys[start].0;
-            let mut end = start.wrapping_add(1);
-            while clip_endpoint_keys
-                .get(end)
-                .is_some_and(|(next, _)| *next == key)
+        for &(key, handle) in &clip_endpoint_keys {
+            if let Some(&stored) = endpoint_of.get(&key)
+                && forest.points.same_exact_point(stored, handle)?
             {
-                end = end.wrapping_add(1);
+                forest.union(stored, handle)?;
             }
-            for right in start.wrapping_add(1)..end {
-                let right_handle = clip_endpoint_keys[right].1;
-                for left in start..right {
-                    let left_handle = clip_endpoint_keys[left].1;
+        }
+        clip_endpoint_keys.sort_unstable_by_key(|(key, _)| *key);
+        for group in clip_endpoint_keys.chunk_by(|left, right| left.0 == right.0) {
+            for (right, &(_, right_handle)) in group.iter().enumerate().skip(1) {
+                for &(_, left_handle) in group.iter().take(right) {
                     if forest.points.same_exact_point(left_handle, right_handle)? {
                         forest.union(left_handle, right_handle)?;
                         break;
                     }
                 }
             }
-            start = end;
         }
     }
 
@@ -703,12 +687,6 @@ fn partition_unique_segments_with_budget<'a>(
         && let Some(error) = pair_error
     {
         return Err(error);
-    }
-    if windowed.is_some() {
-        for (segment, (&start, &end)) in start_handle.iter().zip(&end_handle).enumerate() {
-            push_contact(&mut contacts, segment, start)?;
-            push_contact(&mut contacts, segment, end)?;
-        }
     }
     #[cfg(test)]
     drop(candidate_phase);
@@ -1067,6 +1045,10 @@ pub(super) fn push_overlap(
     clippy::indexing_slicing,
     reason = "candidate pair IDs index the unique segment and endpoint-handle columns"
 )]
+#[expect(
+    clippy::float_cmp,
+    reason = "exact represented-coordinate equality identifies a rounded crossing on a window side"
+)]
 pub(super) fn classify_pair_into(
     unique: &[Segment],
     left: usize,
@@ -1191,10 +1173,10 @@ pub(super) fn classify_pair_into(
             } else {
                 crossing.exact
             };
-            if let Some(exact_point) = &exact {
-                if !homogeneous_point_in_bounds(exact_point, bounds)? {
-                    return Ok(());
-                }
+            if let Some(exact_point) = &exact
+                && !homogeneous_point_in_bounds(exact_point, bounds)?
+            {
+                return Ok(());
             }
             match exact {
                 Some(exact) => forest.push_crossing_with_exact(segments, rounded, exact)?,
