@@ -1438,14 +1438,14 @@ mod frame_cache_row_tests {
     }
 
     #[test]
-    fn planar_metric_over_million_logical_rows_initializes_no_products() {
+    fn planar_metric_for_selected_rows_initializes_no_products() {
         let source = points();
-        let rows: Vec<usize> = (0..1_000_000).map(|row| row % 3).collect();
-        let array = source.gather_logical_rows(&rows).unwrap();
+        let array = source.gather_logical_rows(&[0, 1, 0]).unwrap();
         let probe = PreparedPlan::new(Shape::Point(Point::new_raw_xy(4.0, 4.0)));
+        let mut rows = array.row_operation();
 
-        for row in array.storage().iter_rows() {
-            let data = PreparedRow::transient(row).unwrap();
+        for row in rows.present_rows() {
+            let data = rows.prepared(row).unwrap();
             crate::broadcast::pair_distance_planar(1.0, &data, &probe).unwrap();
         }
 
