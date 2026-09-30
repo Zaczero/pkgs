@@ -16,8 +16,6 @@
 
 use std::borrow::{Borrow, Cow};
 use std::cmp::Ordering;
-use std::collections::HashSet;
-use std::hash::BuildHasherDefault;
 use std::mem;
 use std::ops::{ControlFlow, Range};
 
@@ -33,8 +31,8 @@ use crate::geometry::tessellation::exact::ExactDyadic;
 use crate::geometry::{
     Bounds, Contact, CoordSeq, Coordinates as _, ExpansionBudget, GeometryErrorKind, GeometryKind,
     HashMap, LineSeq, Loc, MultiLineString, Point, PointKey, Polygon, PolygonizeFull, Result, Ring,
-    RingKind, Segment, Shape, XY, for_each_candidate_pair, same_point, segment_contact_exact,
-    single_chain,
+    RingKind, Segment, Shape, SharedShapeOwners, XY, for_each_candidate_pair, same_point,
+    segment_contact_exact, single_chain,
 };
 
 mod construction;
@@ -508,10 +506,10 @@ pub(in crate::geometry) enum KeptNodes {
 /// Fallible Cartesian source inventory shared by overlay, relation, clipping,
 /// repair, and raw linework consumers.
 ///
-/// The inventory is deliberately source-oriented: duplicate/reversed segment
-/// occurrences remain in `source_*` until the exact partition has attributed
-/// them to one unique edge. Ring identity and operand identity therefore stay
-/// available for winding and set-operation selection after noding.
+/// The inventory is deliberately source-oriented: independently stored
+/// duplicate/reversed segment occurrences remain in `source_*` until the exact
+/// partition has attributed them to one unique edge. Ring identity and operand
+/// identity therefore stay available for winding and set-operation selection.
 pub(in crate::geometry) struct ExactSourceInventory {
     source_segments: Vec<Segment>,
     unique: Vec<Segment>,
@@ -535,11 +533,32 @@ pub(in crate::geometry) struct ExactSourceInventory {
 }
 
 impl ExactSourceInventory {
+    /// Stage each operand as a set, visiting repeated shared collection owners once.
     pub(in crate::geometry) fn from_shapes<S: Borrow<Shape>>(shapes: &[S]) -> Result<Self> {
+        Self::stage_shapes(shapes, |staged, shape, operand| {
+            let mut owners = SharedShapeOwners::for_collections();
+            staged.append_shape(shape, operand, &mut owners)
+        })
+    }
+
+    /// Preserve every source occurrence for consumers whose result observes
+    /// multiplicity, such as DE-9IM line-boundary facts and polygonize diagnostics.
+    pub(in crate::geometry) fn from_shapes_with_occurrences<S: Borrow<Shape>>(
+        shapes: &[S],
+    ) -> Result<Self> {
+        Self::stage_shapes(shapes, |staged, shape, operand| {
+            staged.append_shape_with_occurrences(shape, operand)
+        })
+    }
+
+    fn stage_shapes<S: Borrow<Shape>>(
+        shapes: &[S],
+        mut append: impl FnMut(&mut StagedExactSources, &Shape, u32) -> Result<()>,
+    ) -> Result<Self> {
         let mut staged = StagedExactSources::new(shapes.len());
         for (operand, shape) in shapes.iter().enumerate() {
             let operand = u32::try_from(operand).map_err(|_| ResourceError::SizeOverflow)?;
-            staged.append_shape(Borrow::<Shape>::borrow(shape), operand)?;
+            append(&mut staged, Borrow::<Shape>::borrow(shape), operand)?;
         }
         Self::from_staged(staged)
     }
@@ -552,11 +571,8 @@ impl ExactSourceInventory {
     /// area-only partition.
     fn from_occupied_area_shape(shape: &Shape) -> Result<Option<Self>> {
         let mut staged = StagedExactSources::new(1);
-        {
-            let mut collection_owners =
-                HashSet::<usize, BuildHasherDefault<crate::collections::IndexHasher>>::default();
-            staged.append_occupied_area_shape(shape, 0, &mut collection_owners)?;
-        }
+        let mut collection_owners = SharedShapeOwners::for_collections();
+        staged.append_occupied_area_shape(shape, 0, &mut collection_owners)?;
         if staged.polygon_count == 0 {
             return Ok(None);
         }
@@ -577,8 +593,9 @@ impl ExactSourceInventory {
             return Ok(None);
         }
         let mut staged = StagedExactSources::new(1);
+        let mut owners = SharedShapeOwners::for_collections();
         for shape in shapes {
-            staged.append_shape(shape, 0)?;
+            staged.append_shape(shape, 0, &mut owners)?;
         }
         Self::from_staged(staged).map(Some)
     }
@@ -2138,9 +2155,7 @@ pub(crate) fn exact_intersects_bounds(shape: &Shape, bounds: Bounds) -> Result<b
     let mut budget = ExpansionBudget::new("intersects", "exact partition");
     let partition = inventory.partition(&mut budget)?;
     for [x, y] in bounds.corners() {
-        if crate::geometry::cartesian_point_location(shape, Point::new_raw_xy(x, y))
-            != Loc::Exterior
-        {
+        if crate::geometry::cartesian_point_covers(shape, Point::new_raw_xy(x, y)) {
             return Ok(true);
         }
     }
@@ -2270,8 +2285,33 @@ impl StagedExactSources {
         }
     }
 
-    fn append_shape(&mut self, shape: &Shape, operand: u32) -> Result<()> {
-        shape.try_for_each_component(&mut |component| match component {
+    fn append_shape(
+        &mut self,
+        shape: &Shape,
+        operand: u32,
+        owners: &mut SharedShapeOwners,
+    ) -> Result<()> {
+        if let Shape::GeometryCollection(collection) = shape {
+            if owners.first_collection(collection.as_slice(), collection.members_are_shared()) {
+                for member in collection {
+                    self.append_shape(member, operand, owners)?;
+                }
+            }
+            return Ok(());
+        }
+        self.append_shape_with_occurrences(shape, operand)
+    }
+
+    fn append_shape_with_occurrences(&mut self, shape: &Shape, operand: u32) -> Result<()> {
+        shape.try_for_each_component(&mut |component| self.append_component(component, operand))
+    }
+
+    fn append_component(
+        &mut self,
+        component: crate::geometry::Component<'_>,
+        operand: u32,
+    ) -> Result<()> {
+        match component {
             crate::geometry::Component::Point(point) => {
                 self.append_isolated_point(point, operand);
                 Ok(())
@@ -2281,14 +2321,14 @@ impl StagedExactSources {
                 Ok(())
             },
             crate::geometry::Component::Polygon(polygon) => self.append_polygon(polygon, operand),
-        })
+        }
     }
 
     fn append_occupied_area_shape(
         &mut self,
         shape: &Shape,
         operand: u32,
-        collection_owners: &mut HashSet<usize, BuildHasherDefault<crate::collections::IndexHasher>>,
+        collection_owners: &mut SharedShapeOwners,
     ) -> Result<()> {
         match shape {
             Shape::Point(..)
@@ -2304,6 +2344,9 @@ impl StagedExactSources {
             },
             Shape::GeometryCollection(collection) => {
                 let members = collection.as_slice();
+                if !collection_owners.first_collection(members, collection.members_are_shared()) {
+                    return Ok(());
+                }
                 if !members.iter().any(|member| {
                     matches!(
                         member,
@@ -2313,12 +2356,6 @@ impl StagedExactSources {
                     )
                 }) {
                     return Ok(());
-                }
-                if collection.members_are_shared() {
-                    let address = members.as_ptr().addr();
-                    if !collection_owners.insert(address) {
-                        return Ok(());
-                    }
                 }
                 for member in members {
                     self.append_occupied_area_shape(member, operand, collection_owners)?;

@@ -265,8 +265,7 @@ impl ExactPointTester {
     }
 
     fn covers_point(&self, point: Point) -> bool {
-        crate::geometry::cartesian_point_location(&self.shape, point)
-            != crate::geometry::Loc::Exterior
+        crate::geometry::cartesian_point_covers(&self.shape, point)
     }
 }
 

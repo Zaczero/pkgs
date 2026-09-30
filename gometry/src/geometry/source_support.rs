@@ -16,7 +16,9 @@ use std::ops::Range;
 
 use crate::geometry::exact_arith::ExactSign;
 use crate::geometry::segments::stored_orientation_sign;
-use crate::geometry::{Loc, Point, Polygon, Ring, Shape, XY, point_on_segment, same_point};
+use crate::geometry::{
+    Loc, Point, Polygon, Ring, Shape, SharedShapeOwners, XY, point_on_segment, same_point,
+};
 
 /// Whether a stored ring supplies areal winding or collapsed line support.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -83,11 +85,20 @@ impl<'a> SourceSupport<'a> {
 
     fn from_shape(shape: &'a Shape) -> Self {
         let mut source = Self::new();
-        source.append_shape(shape);
+        let mut owners = None;
+        source.append_shape(shape, &mut owners);
         source
     }
 
-    fn append_shape(&mut self, shape: &'a Shape) {
+    fn from_shape_with_shared_owners(shape: &'a Shape) -> Self {
+        let mut source = Self::new();
+        let mut shared_owners = SharedShapeOwners::for_collections();
+        let mut owners = Some(&mut shared_owners);
+        source.append_shape(shape, &mut owners);
+        source
+    }
+
+    fn append_shape(&mut self, shape: &'a Shape, owners: &mut Option<&mut SharedShapeOwners>) {
         match shape {
             Shape::Point(point) => {
                 self.points.push(point.xy());
@@ -109,8 +120,12 @@ impl<'a> SourceSupport<'a> {
                 }
             },
             Shape::GeometryCollection(geometries) => {
-                for geometry in geometries {
-                    self.append_shape(geometry);
+                if owners.as_mut().is_none_or(|owners| {
+                    owners.first_collection(geometries.as_slice(), geometries.members_are_shared())
+                }) {
+                    for geometry in geometries {
+                        self.append_shape(geometry, owners);
+                    }
                 }
             },
             Shape::Empty(..) => {},
@@ -813,8 +828,14 @@ pub(crate) fn cartesian_point_location(shape: &Shape, point: Point) -> Loc {
     SourceSupport::from_shape(shape).location(point)
 }
 
+/// Boolean point coverage is a set-membership query: duplicate components can
+/// change a line point's boundary/interior label, but not whether it is present.
+pub(crate) fn cartesian_point_covers(shape: &Shape, point: Point) -> bool {
+    SourceSupport::from_shape_with_shared_owners(shape).location(point) != Loc::Exterior
+}
+
 pub(crate) fn cartesian_area_covers_point(shape: &Shape, point: Point) -> bool {
-    SourceSupport::from_shape(shape).area_covers(point)
+    SourceSupport::from_shape_with_shared_owners(shape).area_covers(point)
 }
 
 /// Cartesian location over polygons given as ring views, shell first — the
@@ -921,6 +942,35 @@ mod tests {
         let odd = "MULTILINESTRING ((0 0,2 0),(1 0,1 1))";
         assert_eq!(location(shared, 1.0, 0.0), Loc::Interior);
         assert_eq!(location(odd, 1.0, 0.0), Loc::Boundary);
+    }
+
+    #[test]
+    fn set_membership_skips_shared_owners_but_location_keeps_endpoint_parity() {
+        let line = shape("LINESTRING (0 0,1 0)");
+        let owner = Shape::geometry_collection(vec![line]).unwrap();
+        let shared =
+            Shape::geometry_collection(vec![owner.clone(), owner]).expect("shared owner admitted");
+        let bytes = crate::io::to_wkb(&shared, None, false).expect("shared input serializes");
+        let expanded = crate::io::parse_wkb(&bytes)
+            .expect("unshared expansion parses")
+            .shape;
+        let endpoint = Point::new_raw_xy(0.0, 0.0);
+
+        assert_eq!(
+            cartesian_point_location(&shared, endpoint),
+            cartesian_point_location(&expanded, endpoint)
+        );
+        assert_eq!(cartesian_point_location(&shared, endpoint), Loc::Interior);
+        assert!(shared.contains_point(endpoint));
+        assert!(cartesian_point_covers(&shared, endpoint));
+        assert_eq!(
+            cartesian_point_covers(&shared, endpoint),
+            cartesian_point_covers(&expanded, endpoint)
+        );
+        assert!(!cartesian_point_covers(
+            &shared,
+            Point::new_raw_xy(2.0, 0.0)
+        ));
     }
 
     #[test]

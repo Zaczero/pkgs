@@ -2,8 +2,8 @@ use crate::error::Result;
 #[cfg(test)]
 use crate::geometry::{CompiledPattern, GeometryErrorKind, PreparedPlan};
 use crate::geometry::{
-    Loc, Point, RunIdentity, Shape, SharedShapeOwners, SupportRunKind, cartesian_point_location,
-    graph_relate_shapes, point_equals_exact, points_equal_exact,
+    Loc, Point, RunIdentity, Shape, SharedShapeOwners, SupportRunKind, cartesian_point_covers,
+    cartesian_point_location, graph_relate_shapes, point_equals_exact, points_equal_exact,
 };
 #[cfg(test)]
 use crate::predicates::engine::{PreparedTopologyPair, topology_scalar_pattern};
@@ -25,12 +25,11 @@ impl Shape {
     /// keeps a single exhaustive match, so a new `Shape` variant cannot
     /// update one predicate and silently miss its twin.
     fn point_membership<const BOUNDARY: bool>(&self, point: Point) -> bool {
-        let location = cartesian_point_location(self, point);
         if BOUNDARY {
-            location != Loc::Exterior
-        } else {
-            location == Loc::Interior
+            return cartesian_point_covers(self, point);
         }
+        let location = cartesian_point_location(self, point);
+        location == Loc::Interior
     }
 
     pub fn contains(&self, other: &Self) -> Result<bool> {

@@ -624,7 +624,7 @@ impl Shape {
         shapes: &[S],
         strict: bool,
     ) -> Result<PolygonizeFull> {
-        let inventory = ExactSourceInventory::from_shapes(shapes)?;
+        let inventory = ExactSourceInventory::from_shapes_with_occurrences(shapes)?;
         let mut budget = ExpansionBudget::new("polygonize_full", "exact partition");
         let mut partition = inventory.partition(&mut budget)?;
         let exact_polygons = inventory.linework_polygons(&mut partition, false)?;

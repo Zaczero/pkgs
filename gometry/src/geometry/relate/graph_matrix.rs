@@ -119,7 +119,7 @@ pub(crate) fn graph_relate_data(left: &PreparedPlan, right: &PreparedPlan) -> Re
 
 fn exact_cartesian_relate(left: &Shape, right: &Shape) -> Result<De9im> {
     let inputs = [left, right];
-    let inventory = ExactSourceInventory::from_shapes(&inputs)?;
+    let inventory = ExactSourceInventory::from_shapes_with_occurrences(&inputs)?;
     let mut budget = crate::geometry::ExpansionBudget::new("relate", "exact partition");
     let partition = inventory.partition(&mut budget)?;
     inventory.relate(&partition)

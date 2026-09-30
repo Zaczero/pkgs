@@ -48,6 +48,39 @@ fn continuous_hausdorff_keeps_tiny_parallel_separation() {
 }
 
 #[test]
+fn filled_hausdorff_support_matches_shared_wkb_expansion() {
+    let square = polygon(vec![
+        p(0.0, 0.0),
+        p(1.0, 0.0),
+        p(1.0, 1.0),
+        p(0.0, 1.0),
+        p(0.0, 0.0),
+    ]);
+    let target = Shape::Point(p(3.0, 3.0));
+    for depth in [6, 10] {
+        let mut shared = square.clone();
+        for _ in 0..depth {
+            shared = Shape::geometry_collection(vec![shared.clone(), shared]).unwrap();
+        }
+        let expanded = crate::io::parse_wkb(
+            &crate::io::to_wkb(&shared, None, false).expect("shared source writes"),
+        )
+        .expect("unshared source expansion parses")
+        .shape;
+
+        assert_eq!(
+            hausdorff_distance(&shared, &target, Some(1e-9), 1.0)
+                .unwrap()
+                .to_bits(),
+            hausdorff_distance(&expanded, &target, Some(1e-9), 1.0)
+                .unwrap()
+                .to_bits(),
+            "depth {depth}"
+        );
+    }
+}
+
+#[test]
 fn point_segment_distance_divides_before_unscaling_tiny_area() {
     let end = 1e-200_f64;
     let midpoint = end / 2.0;

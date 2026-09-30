@@ -1,6 +1,170 @@
 use crate::geometry::overlay::*;
 use crate::geometry::*;
 
+fn shared_set_case(name: &str) -> Shape {
+    match name {
+        "polygon" => crate::io::parse_wkt("POLYGON ((0 0,2 0,2 2,0 2,0 0))").unwrap(),
+        "line" => crate::io::parse_wkt("LINESTRING (0 0,2 0,2 1)").unwrap(),
+        "point" => crate::io::parse_wkt("POINT (1 1)").unwrap(),
+        "polygon with hole" => {
+            crate::io::parse_wkt("POLYGON ((0 0,4 0,4 4,0 4,0 0),(1 1,3 1,3 3,1 3,1 1))").unwrap()
+        },
+        "Z/M points sharing XY" => crate::io::parse_wkt(
+            "GEOMETRYCOLLECTION (POINT ZM (0 0 1 10), POINT ZM (0 0 2 20), POINT ZM (1 1 3 30))",
+        )
+        .unwrap(),
+        "mixed collection" => Shape::geometry_collection(vec![
+            crate::io::parse_wkt("POLYGON ((0 0,2 0,2 2,0 2,0 0))").unwrap(),
+            crate::io::parse_wkt("LINESTRING (-1 1,3 1)").unwrap(),
+            crate::io::parse_wkt("POINT (1 1)").unwrap(),
+        ])
+        .unwrap(),
+        _ => unreachable!("known shared-set fixture"),
+    }
+}
+
+fn nested_shared_set(shape: Shape, depth: usize) -> Shape {
+    let mut shared = shape;
+    for _ in 0..depth {
+        shared = Shape::geometry_collection(vec![shared.clone(), shared])
+            .expect("shared collection depth is admitted");
+    }
+    shared
+}
+
+fn shape_wkb(shape: &Shape) -> Vec<u8> {
+    crate::io::to_wkb(shape, None, false).expect("shared-set result writes WKB")
+}
+
+fn subdivision_wkb(shape: &Shape) -> Vec<Vec<u8>> {
+    shape
+        .subdivide(8, false)
+        .expect("shared-set subdivision succeeds")
+        .iter()
+        .map(shape_wkb)
+        .collect()
+}
+
+fn shapes_wkb(shapes: &[Shape]) -> Vec<Vec<u8>> {
+    shapes.iter().map(shape_wkb).collect()
+}
+
+fn assert_shared_set_overlay_identity(name: &str, depth: usize) {
+    let shared = nested_shared_set(shared_set_case(name), depth);
+    let expanded = crate::io::parse_wkb(&shape_wkb(&shared))
+        .expect("WKB round-trip expands shared members")
+        .shape;
+
+    let shared_parts = subdivision_wkb(&shared);
+    assert_eq!(
+        shared_parts,
+        subdivision_wkb(&expanded),
+        "{name}, depth {depth}"
+    );
+
+    let shared_union =
+        Shape::union_all_topo(&[&shared], TopologyDomain::Cartesian, Strictness::Lenient)
+            .expect("shared set union succeeds");
+    let expanded_union =
+        Shape::union_all_topo(&[&expanded], TopologyDomain::Cartesian, Strictness::Lenient)
+            .expect("expanded set union succeeds");
+    assert_eq!(
+        shape_wkb(&shared_union),
+        shape_wkb(&expanded_union),
+        "{name}, depth {depth}"
+    );
+
+    assert_eq!(
+        shape_wkb(&shared.node(Strictness::Lenient).unwrap()),
+        shape_wkb(&expanded.node(Strictness::Lenient).unwrap()),
+        "node: {name}, depth {depth}"
+    );
+    assert_eq!(
+        shapes_wkb(&Shape::polygonize_all(&[&shared], false).unwrap()),
+        shapes_wkb(&Shape::polygonize_all(&[&expanded], false).unwrap()),
+        "polygonize_all: {name}, depth {depth}"
+    );
+    assert_eq!(
+        shapes_wkb(&Shape::build_area_all(&[&shared], false).unwrap()),
+        shapes_wkb(&Shape::build_area_all(&[&expanded], false).unwrap()),
+        "build_area_all: {name}, depth {depth}"
+    );
+
+    let clip =
+        crate::io::parse_wkt("POLYGON ((-0.5 -0.5,0.5 -0.5,0.5 0.5,-0.5 0.5,-0.5 -0.5))").unwrap();
+    for operation in [
+        OverlayOp::Union,
+        OverlayOp::Intersection,
+        OverlayOp::Difference,
+        OverlayOp::SymmetricDifference,
+    ] {
+        assert_eq!(
+            shape_wkb(
+                &shared
+                    .overlay(&clip, operation, Strictness::Lenient)
+                    .unwrap()
+            ),
+            shape_wkb(
+                &expanded
+                    .overlay(&clip, operation, Strictness::Lenient)
+                    .unwrap()
+            ),
+            "{operation:?}: {name}, depth {depth}"
+        );
+    }
+}
+
+macro_rules! shared_set_overlay_identity_tests {
+    ($($test:ident => ($name:literal, $depth:literal)),+ $(,)?) => {
+        $(
+            #[test]
+            fn $test() {
+                assert_shared_set_overlay_identity($name, $depth);
+            }
+        )+
+    };
+}
+
+shared_set_overlay_identity_tests! {
+    shared_polygon_set_ops_match_expansion_at_depth_6 => ("polygon", 6),
+    shared_line_set_ops_match_expansion_at_depth_6 => ("line", 6),
+    shared_point_set_ops_match_expansion_at_depth_6 => ("point", 6),
+    shared_holed_polygon_set_ops_match_expansion_at_depth_6 => ("polygon with hole", 6),
+    shared_zm_set_ops_match_expansion_at_depth_6 => ("Z/M points sharing XY", 6),
+    shared_mixed_set_ops_match_expansion_at_depth_6 => ("mixed collection", 6),
+    shared_polygon_set_ops_match_expansion_at_depth_10 => ("polygon", 10),
+    shared_line_set_ops_match_expansion_at_depth_10 => ("line", 10),
+    shared_point_set_ops_match_expansion_at_depth_10 => ("point", 10),
+    shared_holed_polygon_set_ops_match_expansion_at_depth_10 => ("polygon with hole", 10),
+    shared_zm_set_ops_match_expansion_at_depth_10 => ("Z/M points sharing XY", 10),
+    shared_mixed_set_ops_match_expansion_at_depth_10 => ("mixed collection", 10),
+}
+
+#[test]
+fn depth_128_shared_set_overlay_finishes_with_correct_support() {
+    let base = crate::io::parse_wkt("POLYGON ((0 0,1 0,1 1,0 1,0 0))").unwrap();
+    for depth in [40, 128] {
+        let mut shared = base.clone();
+        for _ in 0..depth {
+            shared = Shape::geometry_collection(vec![shared.clone(), shared])
+                .expect("shared collection depth is admitted");
+        }
+
+        let parts = shared
+            .subdivide(8, false)
+            .expect("deep subdivision succeeds");
+        assert!(!parts.is_empty(), "depth {depth}");
+        let area = Shape::union_all_topo(&parts, TopologyDomain::Cartesian, Strictness::Lenient)
+            .expect("deep subdivision parts union");
+        assert_eq!(area.area(), 1.0, "depth {depth}");
+
+        let union =
+            Shape::union_all_topo(&[&shared], TopologyDomain::Cartesian, Strictness::Lenient)
+                .expect("deep union succeeds");
+        assert_eq!(union.area(), 1.0, "depth {depth}");
+    }
+}
+
 #[test]
 fn sourced_noder_orders_extreme_horizontal_cuts_and_keeps_owner() {
     for scale in [2.0_f64.powi(-600), 2.0_f64.powi(600)] {

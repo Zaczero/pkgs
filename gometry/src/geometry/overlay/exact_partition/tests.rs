@@ -709,6 +709,60 @@ fn occupied_area_inventory_folds_repeated_shared_collection_owners() {
 }
 
 #[test]
+fn set_inventory_deduplicates_shared_owners_and_occurrence_inventory_does_not() {
+    let line = crate::io::parse_wkt("LINESTRING (0 0,1 0)").unwrap();
+    let polygon = crate::io::parse_wkt("POLYGON ((0 0,1 0,1 1,0 1,0 0))").unwrap();
+    let point = crate::io::parse_wkt("POINT (0 0)").unwrap();
+
+    for (shape, segments, isolated) in [(line, 1, 0), (polygon, 4, 0), (point, 0, 1)] {
+        let owner = Shape::geometry_collection(vec![shape]).unwrap();
+        let shared = Shape::geometry_collection(vec![owner.clone(), owner]).unwrap();
+
+        let set = ExactSourceInventory::from_shapes(&[&shared]).unwrap();
+        assert_eq!(set.source_segments.len(), segments);
+        assert_eq!(set.isolated.len(), isolated);
+
+        let occurrences = ExactSourceInventory::from_shapes_with_occurrences(&[&shared]).unwrap();
+        assert_eq!(occurrences.source_segments.len(), segments * 2);
+        assert_eq!(occurrences.isolated.len(), isolated * 2);
+    }
+}
+
+#[test]
+fn cartesian_set_support_consumers_match_unshared_expansion() {
+    let base = crate::io::parse_wkt("POLYGON ((0 0,1 0,1 1,0 1,0 0))").unwrap();
+    let mut shared = base;
+    for _ in 0..10 {
+        shared = Shape::geometry_collection(vec![shared.clone(), shared]).unwrap();
+    }
+    let expanded = crate::io::parse_wkb(
+        &crate::io::to_wkb(&shared, None, false).expect("shared support serializes"),
+    )
+    .expect("unshared support expansion parses")
+    .shape;
+
+    let shared_support = occupied_cartesian_support(&shared).unwrap();
+    let expanded_support = occupied_cartesian_support(&expanded).unwrap();
+    assert_eq!(
+        crate::io::to_wkb(&shared_support, None, false).unwrap(),
+        crate::io::to_wkb(&expanded_support, None, false).unwrap()
+    );
+    assert_eq!(
+        occupied_cartesian_area(&shared).unwrap().to_bits(),
+        occupied_cartesian_area(&expanded).unwrap().to_bits()
+    );
+    assert_eq!(
+        cartesian_support_nonempty(&shared).unwrap(),
+        cartesian_support_nonempty(&expanded).unwrap()
+    );
+    let bounds = Bounds::new_raw(0.25, 0.25, 0.75, 0.75);
+    assert_eq!(
+        exact_intersects_bounds(&shared, bounds).unwrap(),
+        exact_intersects_bounds(&expanded, bounds).unwrap()
+    );
+}
+
+#[test]
 fn occupied_area_ingress_declines_collection_without_areal_members() {
     let shape = crate::io::parse_wkt("GEOMETRYCOLLECTION (POINT (1 2), LINESTRING (0 0, 3 4))")
         .expect("valid nonareal collection");

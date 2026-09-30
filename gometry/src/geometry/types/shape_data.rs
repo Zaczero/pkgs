@@ -480,6 +480,16 @@ impl PreparedPlan {
         ))
     }
 
+    /// Boolean set membership does not observe a line point's boundary versus
+    /// interior label, so shared collection owners can be visited once.
+    pub(crate) fn cartesian_point_covers(&self, point: Point) -> Result<bool> {
+        if matches!(self.shape(), Shape::GeometryCollection(_)) {
+            return Ok(crate::geometry::cartesian_point_covers(self.shape(), point));
+        }
+        self.cartesian_point_location(point)
+            .map(|location| location != crate::geometry::Loc::Exterior)
+    }
+
     /// The indexed point tester of a polygonal shape, built on first use.
     pub(crate) fn point_tester(&self) -> Result<Option<&PointBatchTester>> {
         Ok(self

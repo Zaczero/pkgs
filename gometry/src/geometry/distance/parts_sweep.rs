@@ -1,11 +1,11 @@
 use crate::geometry::{
-    DistanceParts, Loc, MultiPoint, Point, Segment, Shape, ShapeCountQuery, point_distance,
-    point_distance_squared, point_segment_distance, point_segment_distance_squared, points_dwithin,
-    same_point, segment_envelopes_disjoint, segments_intersect,
+    DistanceParts, MultiPoint, Point, Segment, Shape, ShapeCountQuery, cartesian_point_covers,
+    point_distance, point_distance_squared, point_segment_distance, point_segment_distance_squared,
+    points_dwithin, same_point, segment_envelopes_disjoint, segments_intersect,
 };
 pub(crate) fn parts_covers_point(shape: &Shape, parts: &DistanceParts, point: Point) -> bool {
     if shape.has_area_parts() {
-        return crate::geometry::cartesian_point_location(shape, point) != Loc::Exterior;
+        return cartesian_point_covers(shape, point);
     }
     parts
         .point_only

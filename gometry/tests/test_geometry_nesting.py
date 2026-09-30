@@ -249,7 +249,9 @@ assert set(vertices[:-1]) == {
     assert result.returncode == 0, result.stderr
 
 
-def test_shared_depth_128_geojson_preflight_and_tile_admission_keep_first_error() -> None:
+def test_shared_depth_128_geojson_preflight_and_tile_admission_keep_first_error() -> (
+    None
+):
     script = r"""
 import gometry as gm
 
@@ -345,6 +347,81 @@ def test_shared_depth_8_geojson_output_matches_expanded_occurrences() -> None:
     assert shared.to_geojson() == expanded(8).to_geojson()
 
 
+@pytest.mark.parametrize(
+    ('name', 'wkt', 'x', 'y'),
+    [
+        ('polygon', 'POLYGON ((0 0,2 0,2 2,0 2,0 0))', 1.0, 1.0),
+        ('line', 'LINESTRING (0 0,2 0,2 1)', 0.0, 0.0),
+        ('point', 'POINT (1 1)', 1.0, 1.0),
+        (
+            'polygon with hole',
+            'POLYGON ((0 0,4 0,4 4,0 4,0 0),(1 1,3 1,3 3,1 3,1 1))',
+            0.5,
+            0.5,
+        ),
+        (
+            'Z/M points sharing XY',
+            'GEOMETRYCOLLECTION (POINT ZM (0 0 1 10), POINT ZM (0 0 2 20), POINT ZM (1 1 3 30))',
+            0.0,
+            0.0,
+        ),
+        (
+            'mixed collection',
+            'GEOMETRYCOLLECTION (POLYGON ((0 0,2 0,2 2,0 2,0 0)), LINESTRING (-1 1,3 1), POINT (1 1))',
+            1.0,
+            1.0,
+        ),
+    ],
+    ids=[
+        'polygon',
+        'line',
+        'point',
+        'polygon-with-hole',
+        'zm-points-sharing-xy',
+        'mixed-collection',
+    ],
+)
+@pytest.mark.parametrize('depth', [6, 10], ids=['depth-6', 'depth-10'])
+def test_shared_set_operations_match_unshared_wkb_expansion(
+    name: str,
+    wkt: str,
+    x: float,
+    y: float,
+    depth: int,
+) -> None:
+    shared = gm.from_wkt(wkt)
+    for _ in range(depth):
+        shared = gm.GeometryCollection([shared, shared])
+    expanded = gm.from_wkb(shared.to_wkb())
+    probe = gm.Point(x, y)
+
+    shared_parts = [part.to_wkb() for part in shared.subdivide(max_vertices=8)]
+    expanded_parts = [part.to_wkb() for part in expanded.subdivide(max_vertices=8)]
+    assert shared_parts == expanded_parts, f'{name}, depth {depth}'
+    assert gm.union_all([shared]).to_wkb() == gm.union_all([expanded]).to_wkb(), (
+        name,
+        depth,
+    )
+    for predicate in (gm.intersects, gm.disjoint, gm.covers):
+        assert predicate(shared, probe) == predicate(expanded, probe), (name, depth)
+    assert gm.covered_by(probe, shared) == gm.covered_by(probe, expanded), (name, depth)
+    assert gm.intersects_xy(shared, x, y) == gm.intersects_xy(expanded, x, y), (
+        name,
+        depth,
+    )
+
+
+def test_depth_128_shared_subdivide_union_and_intersects() -> None:
+    shared = gm.box(0.0, 0.0, 1.0, 1.0)
+    for _ in range(128):
+        shared = gm.GeometryCollection([shared, shared])
+
+    parts = shared.subdivide(max_vertices=8)
+    assert len(parts) > 0
+    assert gm.union_all([shared]).area == 1.0
+    assert gm.intersects(shared, gm.Point(0.5, 0.5))
+
+
 def test_nonadjacent_shared_bounds_and_extrema_keep_signed_zero_bits() -> None:
     positive = gm.GeometryCollection([
         gm.Point(0.0, 0.0, z=0.0, m=0.0),
@@ -396,7 +473,9 @@ def test_shared_packed_array_windows_remain_distinct_in_point_sets() -> None:
     assert shape.max_m == 202
 
 
-def test_geodesic_concave_hull_keeps_first_projected_source_witness_in_depth_128() -> None:
+def test_geodesic_concave_hull_keeps_first_projected_source_witness_in_depth_128() -> (
+    None
+):
     script = r"""
 import math
 import gometry as gm

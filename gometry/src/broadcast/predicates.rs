@@ -511,10 +511,7 @@ fn xy_predicate_array_values(
                         let point = Point::new_raw_xy(x, y);
                         let row = rows.prepared_at(logical, row)?;
                         if domain == TopologyDomain::Cartesian {
-                            return Ok(xy_location_matches(
-                                row.cartesian_point_location(point)?,
-                                inclusive,
-                            ));
+                            return cartesian_xy_matches(&row, point, inclusive);
                         }
                         let row_cache = rows.frame_cache(logical);
                         let point = PreparedPlan::new(ShapeData::from(Shape::Point(point)));
@@ -551,12 +548,7 @@ fn xy_array_values(
         return x
             .into_iter()
             .zip(y)
-            .map(|(x, y)| {
-                Ok(xy_location_matches(
-                    original.cartesian_point_location(Point::new_raw_xy(x, y))?,
-                    inclusive,
-                ))
-            })
+            .map(|(x, y)| cartesian_xy_matches(original, Point::new_raw_xy(x, y), inclusive))
             .collect_rows();
     }
     x.into_iter()
@@ -587,6 +579,16 @@ fn xy_location_matches(location: crate::geometry::Loc, inclusive: bool) -> bool 
     }
 }
 
+fn cartesian_xy_matches(prepared: &PreparedPlan, point: Point, inclusive: bool) -> Result<bool> {
+    if inclusive {
+        prepared.cartesian_point_covers(point)
+    } else {
+        prepared
+            .cartesian_point_location(point)
+            .map(|location| xy_location_matches(location, false))
+    }
+}
+
 pub(crate) fn xy_predicate_values(
     py: Python<'_>,
     geometry: &PyGeometry,
@@ -606,8 +608,8 @@ pub(crate) fn xy_predicate_values(
     if scalar {
         let point = Point::new(x[0], y[0])?;
         if domain == TopologyDomain::Cartesian {
-            let location = py.detach(move || original.cartesian_point_location(point))?;
-            return Ok(py_bool(py, xy_location_matches(location, inclusive)));
+            let matches = py.detach(move || cartesian_xy_matches(&original, point, inclusive))?;
+            return Ok(py_bool(py, matches));
         }
         let point = PreparedPlan::new(ShapeData::from(Shape::Point(point)));
         let point_cache = crate::geometry::FrameDependentCaches::default();

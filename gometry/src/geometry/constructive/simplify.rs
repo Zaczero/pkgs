@@ -15,10 +15,11 @@ use crate::geometry::overlay::{ExactSourceInventory, rect_polygon};
 use crate::geometry::{
     Bounds, CoordSeq, Coordinates as _, ExpansionBudget, GeometryKind, LineSeq, MultiLineString,
     MultiMember, MultiPolygon, Orientation, Point, PointKey, Polygon, REDUCE_LANES, ReduceSimd,
-    Ring, Segment, Shape, ShapeCountQuery, TopologyGuard, XY, admit_shape_vector_capacity,
-    dedup_consecutive_points, line_segments, open_point_cycle_winding, orientation,
-    point_on_segment, point_segment_distance, point_segment_distance_squared, same_point,
-    simplified_polygon_delta_is_simple, simplify_chain_guarded, triangle_area, vw_area_tolerance,
+    Ring, Segment, Shape, ShapeCountQuery, SharedShapeOwners, TopologyGuard, XY,
+    admit_shape_vector_capacity, dedup_consecutive_points, line_segments, open_point_cycle_winding,
+    orientation, point_on_segment, point_segment_distance, point_segment_distance_squared,
+    same_point, simplified_polygon_delta_is_simple, simplify_chain_guarded, triangle_area,
+    vw_area_tolerance,
 };
 
 #[cfg(test)]
@@ -667,22 +668,23 @@ pub(crate) const fn axis_halves(bounds: Bounds, split_x: bool, cut: f64) -> [Bou
     }
 }
 
-/// Choose a representable cut between source-coordinate ordinates around the
-/// median. The source values, rather than a rounded child, own this decision:
+/// Choose the representable cut nearest the median of distinct source-coordinate
+/// ordinates. The source values, rather than a rounded child, own this decision:
 /// a dense cluster beside a remote vertex therefore gets a finite complexity
 /// split without a second median retry.
 fn source_median_cut(
     shape: &Shape,
     split_x: bool,
     bounds: Bounds,
-    coordinate_count: usize,
+    owner_coordinate_count: usize,
 ) -> Result<Option<f64>> {
-    let capacity = admit_shape_vector_capacity::<f64>(coordinate_count)?;
+    let capacity = admit_shape_vector_capacity::<f64>(owner_coordinate_count)?;
     let mut ordinates = Vec::with_capacity(capacity);
-    shape.for_each_point(|point| {
+    shape.for_each_first_point_run(|point| {
         ordinates.push(if split_x { point.x } else { point.y });
     });
     ordinates.sort_unstable_by(f64::total_cmp);
+    ordinates.dedup_by(|left, right| *left == *right);
     let middle = ordinates.len() / 2;
     let (low, high) = if split_x {
         (bounds.minx(), bounds.maxx())
@@ -706,6 +708,19 @@ fn source_median_cut(
         .map(|(_, _, cut)| cut))
 }
 
+fn owner_coordinate_count(shape: &Shape, logical_count: Option<usize>) -> usize {
+    if let Some(count) = logical_count
+        && SharedShapeOwners::for_shape(shape).is_none()
+    {
+        return count;
+    }
+    let mut count = 0_usize;
+    shape.for_each_first_point_run(|_| {
+        count = count.saturating_add(1);
+    });
+    count
+}
+
 pub(crate) fn split(
     shape: Shape,
     max_vertices: usize,
@@ -723,10 +738,11 @@ pub(crate) fn split(
     let mut work = Vec::with_capacity(1);
     let mut staged = Vec::new();
     let shape_bounds = shape.bounds();
+    let coordinate_count = ShapeCountQuery::default().coordinate_count(&shape);
     work.push(WorkItem {
         shape,
         bounds: shape_bounds,
-        coordinate_count: None,
+        coordinate_count,
         terminal: false,
     });
     while let Some(item) = work.pop() {
@@ -742,9 +758,7 @@ pub(crate) fn split(
             staged.push(item.shape);
             continue;
         }
-        let item_coordinate_count = item
-            .coordinate_count
-            .or_else(|| ShapeCountQuery::default().coordinate_count(&item.shape));
+        let item_coordinate_count = item.coordinate_count;
         if item_coordinate_count.is_some_and(|count| count <= max_vertices) {
             staged.push(item.shape);
             continue;
@@ -753,11 +767,9 @@ pub(crate) fn split(
             staged.push(item.shape);
             continue;
         };
-        let item_coordinate_count =
-            item_coordinate_count.ok_or(crate::error::ResourceError::SizeOverflow)?;
-
-        let x_cut = source_median_cut(&item.shape, true, bounds, item_coordinate_count)?;
-        let y_cut = source_median_cut(&item.shape, false, bounds, item_coordinate_count)?;
+        let owner_coordinate_count = owner_coordinate_count(&item.shape, item_coordinate_count);
+        let x_cut = source_median_cut(&item.shape, true, bounds, owner_coordinate_count)?;
+        let y_cut = source_median_cut(&item.shape, false, bounds, owner_coordinate_count)?;
         let x_longer = (bounds.maxx() - bounds.minx()) >= (bounds.maxy() - bounds.miny());
         let candidate = if x_longer {
             x_cut
@@ -791,12 +803,8 @@ pub(crate) fn split(
             let mut counts = ShapeCountQuery::default();
             let [left, right] = &children;
             [
-                (!left.is_empty())
-                    .then(|| counts.coordinates(left))
-                    .transpose()?,
-                (!right.is_empty())
-                    .then(|| counts.coordinates(right))
-                    .transpose()?,
+                (!left.is_empty()).then(|| counts.coordinate_count(left)),
+                (!right.is_empty()).then(|| counts.coordinate_count(right)),
             ]
         };
         #[cfg(test)]
@@ -820,7 +828,12 @@ pub(crate) fn split(
                 } else {
                     child_bounds.miny() > bounds.miny()
                 };
-                let source_complexity_progress = child_coordinate_count < item_coordinate_count;
+                let source_complexity_progress =
+                    match (item_coordinate_count, child_coordinate_count) {
+                        (None, Some(_)) => true,
+                        (Some(parent), Some(child)) => child < parent,
+                        (None, None) | (Some(_), None) => false,
+                    };
                 matches!(
                     &item.shape,
                     Shape::LineString(_) | Shape::MultiLineString(_)
@@ -831,11 +844,12 @@ pub(crate) fn split(
             {
                 progressed |= progress;
             }
-            let terminal = child_coordinate_count <= max_vertices || !progress;
+            let terminal =
+                child_coordinate_count.is_some_and(|count| count <= max_vertices) || !progress;
             work.push(WorkItem {
                 shape: child,
                 bounds: child_bounds,
-                coordinate_count: Some(child_coordinate_count),
+                coordinate_count: child_coordinate_count,
                 terminal,
             });
         }
@@ -2334,5 +2348,62 @@ mod subdivision_tests {
             assert!(!parts.is_empty(), "{wkt}");
             assert!(parts.iter().all(|part| !part.is_empty()), "{wkt}");
         }
+    }
+
+    #[test]
+    fn subdivision_uses_distinct_ordinates_for_mixed_shared_multiplicity() {
+        let rectangle = |min_x, max_x| {
+            ring_shape(&[
+                Point::new_raw_xy(min_x, 0.0),
+                Point::new_raw_xy(max_x, 0.0),
+                Point::new_raw_xy(max_x, 1.0),
+                Point::new_raw_xy(min_x, 1.0),
+                Point::new_raw_xy(min_x, 0.0),
+            ])
+        };
+        let first = Shape::geometry_collection(vec![rectangle(0.0, 2.0)]).unwrap();
+        let nested =
+            Shape::geometry_collection(vec![first.clone(), rectangle(10.0, 12.0)]).unwrap();
+        let shared = Shape::geometry_collection(vec![first, nested]).unwrap();
+        let expanded = crate::io::parse_wkb(
+            &crate::io::to_wkb(&shared, None, false).expect("shared input serializes"),
+        )
+        .expect("unshared expansion parses")
+        .shape;
+
+        let shared_parts = shared.subdivide(8, false).unwrap();
+        let expanded_parts = expanded.subdivide(8, false).unwrap();
+        let wkb = |parts: &[Shape]| {
+            parts
+                .iter()
+                .map(|part| crate::io::to_wkb(part, None, false).unwrap())
+                .collect::<Vec<_>>()
+        };
+        let shared_parts_wkb = wkb(&shared_parts);
+        assert_eq!(shared_parts_wkb, wkb(&expanded_parts));
+        assert_eq!(shared_parts_wkb, wkb(&shared.subdivide(8, false).unwrap()));
+
+        let mut counts = ShapeCountQuery::default();
+        assert!(shared_parts.iter().all(|part| {
+            counts
+                .coordinate_count(part)
+                .is_some_and(|count| count <= 8)
+        }));
+        let source_union = Shape::union_all_topo(
+            &[&shared],
+            crate::geometry::TopologyDomain::Cartesian,
+            crate::geometry::Strictness::Lenient,
+        )
+        .unwrap();
+        let parts_union = Shape::union_all_topo(
+            &shared_parts,
+            crate::geometry::TopologyDomain::Cartesian,
+            crate::geometry::Strictness::Lenient,
+        )
+        .unwrap();
+        assert_eq!(
+            crate::io::to_wkb(&source_union, None, false).unwrap(),
+            crate::io::to_wkb(&parts_union, None, false).unwrap()
+        );
     }
 }

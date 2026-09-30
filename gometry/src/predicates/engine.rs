@@ -736,13 +736,28 @@ fn local_point_predicate(
         if matches!(left.shape(), Shape::Point(_)) {
             return Ok(None);
         }
+        let set_membership = matches!(
+            spec.predicate,
+            Predicate::Intersects | Predicate::Disjoint | Predicate::Covers
+        );
+        if set_membership {
+            let covered = left.cartesian_point_covers(*right_point)?;
+            return Ok(Some(if spec.predicate == Predicate::Disjoint {
+                !covered
+            } else {
+                covered
+            }));
+        }
         let location = || left.cartesian_point_location(*right_point);
         return Ok(Some(match spec.predicate {
-            Predicate::Intersects | Predicate::Covers => location()? != Loc::Exterior,
-            Predicate::Disjoint => location()? == Loc::Exterior,
             Predicate::Contains | Predicate::ContainsProperly => location()? == Loc::Interior,
             Predicate::Touches => location()? == Loc::Boundary,
-            Predicate::Within | Predicate::CoveredBy | Predicate::Equals => return Ok(None),
+            Predicate::Intersects
+            | Predicate::Disjoint
+            | Predicate::Covers
+            | Predicate::Within
+            | Predicate::CoveredBy
+            | Predicate::Equals => return Ok(None),
             Predicate::Crosses | Predicate::Overlaps => false,
         }));
     }
@@ -750,16 +765,27 @@ fn local_point_predicate(
         if matches!(right.shape(), Shape::Point(_)) {
             return Ok(None);
         }
+        let set_membership = matches!(
+            spec.predicate,
+            Predicate::Intersects | Predicate::Disjoint | Predicate::CoveredBy
+        );
+        if set_membership {
+            let covered = right.cartesian_point_covers(*left_point)?;
+            return Ok(Some(if spec.predicate == Predicate::Disjoint {
+                !covered
+            } else {
+                covered
+            }));
+        }
         let location = right.cartesian_point_location(*left_point)?;
         return Ok(Some(match spec.predicate {
-            Predicate::Intersects | Predicate::CoveredBy => location != Loc::Exterior,
-            Predicate::Disjoint => location == Loc::Exterior,
             Predicate::Within => location == Loc::Interior,
             Predicate::Touches => location == Loc::Boundary,
             Predicate::Contains
             | Predicate::ContainsProperly
             | Predicate::Covers
             | Predicate::Equals => return Ok(None),
+            Predicate::Intersects | Predicate::Disjoint | Predicate::CoveredBy => return Ok(None),
             Predicate::Crosses | Predicate::Overlaps => false,
         }));
     }
@@ -1453,6 +1479,122 @@ mod tests {
             message.contains("invalid longitude/latitude (0.5, 91)"),
             "{message}"
         );
+    }
+
+    fn cartesian_predicate(predicate: Predicate, left: &Shape, right: &Shape) -> bool {
+        let left = PreparedPlan::transient(left);
+        let right = PreparedPlan::transient(right);
+        let pair = PreparedTopologyPair::cartesian(&left, &right);
+        topology_scalar_pair(&predicate.spec(), &pair).expect("Cartesian predicate succeeds")
+    }
+
+    fn shared_collection(shape: Shape, depth: usize) -> Shape {
+        let mut shared = shape;
+        for _ in 0..depth {
+            shared = Shape::geometry_collection(vec![shared.clone(), shared])
+                .expect("shared collection depth is admitted");
+        }
+        shared
+    }
+
+    fn wkb(shape: &Shape) -> Vec<u8> {
+        crate::io::to_wkb(shape, None, false).expect("predicate fixture serializes")
+    }
+
+    #[test]
+    fn shared_boolean_point_predicates_match_unshared_wkb_expansion() {
+        let cases = [
+            (
+                crate::io::parse_wkt("POLYGON ((0 0,2 0,2 2,0 2,0 0))").unwrap(),
+                Point::new_raw_xy(1.0, 1.0),
+            ),
+            (
+                crate::io::parse_wkt("LINESTRING (0 0,2 0)").unwrap(),
+                Point::new_raw_xy(0.0, 0.0),
+            ),
+            (
+                crate::io::parse_wkt("POINT (1 1)").unwrap(),
+                Point::new_raw_xy(1.0, 1.0),
+            ),
+            (
+                crate::io::parse_wkt(
+                    "POLYGON ((0 0,4 0,4 4,0 4,0 0),(1 1,3 1,3 3,1 3,1 1))",
+                )
+                .unwrap(),
+                Point::new_raw_xy(0.5, 0.5),
+            ),
+            (
+                crate::io::parse_wkt(
+                    "GEOMETRYCOLLECTION (POINT ZM (0 0 1 10), POINT ZM (0 0 2 20), POINT ZM (1 1 3 30))",
+                )
+                .unwrap(),
+                Point::new_raw_xy(0.0, 0.0),
+            ),
+            (
+                Shape::geometry_collection(vec![
+                    crate::io::parse_wkt("POLYGON ((0 0,2 0,2 2,0 2,0 0))").unwrap(),
+                    crate::io::parse_wkt("LINESTRING (-1 1,3 1)").unwrap(),
+                    crate::io::parse_wkt("POINT (1 1)").unwrap(),
+                ])
+                .unwrap(),
+                Point::new_raw_xy(1.0, 1.0),
+            ),
+        ];
+
+        for (base, query) in cases {
+            let point = Shape::Point(query);
+            for depth in [6, 10] {
+                let shared = shared_collection(base.clone(), depth);
+                let expanded = crate::io::parse_wkb(&wkb(&shared))
+                    .expect("expanded WKB parses")
+                    .shape;
+
+                for predicate in [
+                    Predicate::Intersects,
+                    Predicate::Disjoint,
+                    Predicate::Covers,
+                ] {
+                    assert_eq!(
+                        cartesian_predicate(predicate, &shared, &point),
+                        cartesian_predicate(predicate, &expanded, &point),
+                        "{predicate:?}, depth {depth}"
+                    );
+                }
+                assert_eq!(
+                    cartesian_predicate(Predicate::CoveredBy, &point, &shared),
+                    cartesian_predicate(Predicate::CoveredBy, &point, &expanded),
+                    "CoveredBy, depth {depth}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn exact_location_predicates_keep_occurrence_boundary_parity() {
+        let line = crate::io::parse_wkt("LINESTRING (0 0,1 0)").unwrap();
+        let point = Shape::Point(Point::new_raw_xy(0.0, 0.0));
+        let shared = shared_collection(line, 6);
+        let expanded = crate::io::parse_wkb(&wkb(&shared))
+            .expect("expanded WKB parses")
+            .shape;
+
+        for predicate in [Predicate::Contains, Predicate::Touches] {
+            assert_eq!(
+                cartesian_predicate(predicate, &shared, &point),
+                cartesian_predicate(predicate, &expanded, &point),
+                "{predicate:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn depth_40_and_128_shared_point_intersects_complete() {
+        let square = rectangle(0.0, 0.0, 1.0, 1.0);
+        let point = Shape::Point(Point::new_raw_xy(0.5, 0.5));
+        for depth in [40, 128] {
+            let shared = shared_collection(square.clone(), depth);
+            assert!(cartesian_predicate(Predicate::Intersects, &shared, &point));
+        }
     }
 
     #[test]
