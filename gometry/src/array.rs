@@ -37,10 +37,10 @@ use crate::{
     line_interpolate_points_shape, line_locate_coordseq, map_coordinates_callback,
     non_negative_int, note_array_row, overlay_operator, owned_voronoi_boundary,
     parse_coordinate_replacement, parse_crs, parse_curve_bounds, parse_interpolate_plan,
-    parse_precision, parse_wkt_output_dimension, positive_int, pyclass, replace_shape_coordinates,
-    require_geojson_crs, resolve_line_metric, resolve_metric, row_sample_seed,
-    slice_replacement_for_shape, validate_densify_fraction, validate_equals_exact_tolerance,
-    validate_max_segment_length, validate_subdivide_max_vertices,
+    parse_precision, positive_int, pyclass, replace_shape_coordinates, require_geojson_crs,
+    resolve_line_metric, resolve_metric, row_sample_seed, slice_replacement_for_shape,
+    validate_densify_fraction, validate_equals_exact_tolerance, validate_max_segment_length,
+    validate_subdivide_max_vertices,
 };
 
 /// An immutable array of geometries sharing one CRS/epoch frame.

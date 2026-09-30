@@ -15,16 +15,14 @@ use crate::io::{
     Shape, crs, geojson_text_summary, parse_content,
 };
 
-#[cfg(test)]
-pub(crate) fn to_geojson_string_with_z(shape: &Shape, include_z: bool) -> String {
-    // Writer-parity fixtures select the low-level Cartesian domain explicitly;
-    // public CRS-free inputs use `geojson_domain` and therefore select WGS84.
-    if include_z {
-        to_geojson_string::<true>(shape, TopologyDomain::Cartesian)
-    } else {
-        to_geojson_string::<false>(shape, TopologyDomain::Cartesian)
-    }
-    .expect("test geometry serializes to GeoJSON")
+pub(crate) const GEOJSON_M_ERROR: &str =
+    "GeoJSON cannot represent M; drop it with set_m(None) (or force_2d()).";
+
+pub(crate) fn geojson_interface_error() -> String {
+    format!(
+        "__geo_interface__ cannot represent M or coordinate epoch; {GEOJSON_M_ERROR} \
+         Clear the coordinate epoch with set_epoch(None)."
+    )
 }
 
 /// Serialize a geometry to an RFC 7946 GeoJSON string.
@@ -38,20 +36,17 @@ pub(crate) fn to_geojson_string_with_z(shape: &Shape, include_z: bool) -> String
 /// (§3.1.6). Public CRS-free geometries explicitly assume WGS84 coordinates
 /// and select this geographic domain; callers with projected or other planar
 /// semantics must transform or choose another format.
-pub(crate) fn to_geojson_string<const INCLUDE_Z: bool>(
-    shape: &Shape,
-    domain: TopologyDomain,
-) -> Result<String> {
-    to_geojson_string_with_limit::<INCLUDE_Z>(shape, domain, isize::MAX.unsigned_abs())
+pub(crate) fn to_geojson_string(shape: &Shape, domain: TopologyDomain) -> Result<String> {
+    to_geojson_string_with_limit(shape, domain, isize::MAX.unsigned_abs())
 }
 
-fn to_geojson_string_with_limit<const INCLUDE_Z: bool>(
+fn to_geojson_string_with_limit(
     shape: &Shape,
     domain: TopologyDomain,
     limit: usize,
 ) -> Result<String> {
     let limit = limit.min(isize::MAX.unsigned_abs());
-    validate_geojson_value::<INCLUDE_Z>(shape)?;
+    validate_geojson_value(shape)?;
     crate::io::require_serializable_axes(shape)?;
     let prepared = geojson_output_shape(shape, domain)?;
     let summary = geojson_text_summary(&prepared);
@@ -76,12 +71,12 @@ fn to_geojson_string_with_limit<const INCLUDE_Z: bool>(
     {
         let mut out = String::new();
         let _reservation = out.try_reserve(capacity);
-        write_geojson_to_impl::<INCLUDE_Z>(&mut out, &prepared);
+        write_geojson_to_impl(&mut out, &prepared);
         Ok(out)
     } else {
         let mut out = CheckedText::with_capacity_hint(capacity.min(limit), limit);
         let mut position_scratch = String::with_capacity(GEOJSON_POSITION_UPPER_BYTES);
-        write_geojson_to_checked_impl::<INCLUDE_Z>(&mut out, &prepared, &mut position_scratch)?;
+        write_geojson_to_checked_impl(&mut out, &prepared, &mut position_scratch)?;
         Ok(out.into_string())
     }
 }
@@ -105,21 +100,20 @@ pub(crate) fn geojson_domain(crs: Option<&str>) -> Result<TopologyDomain> {
     })
 }
 
-pub(crate) fn validate_geojson_value<const INCLUDE_Z: bool>(shape: &Shape) -> Result<()> {
+pub(crate) fn validate_geojson_value(shape: &Shape) -> Result<()> {
+    if shape.has_m() {
+        return Err(GeometryErrorKind::Invalid(GEOJSON_M_ERROR.into()).into());
+    }
     if let Shape::Empty(_, axes) = shape {
         return validate_geojson_empty_axes(*axes);
-    }
-    if shape.has_m() {
-        return Err(GeometryErrorKind::OrdinateDropped("GeoJSON M ordinate".into()).into());
-    }
-    if !INCLUDE_Z && shape.has_z() {
-        return Err(GeometryErrorKind::OrdinateDropped("GeoJSON Z ordinate".into()).into());
     }
     validate_geojson_structure(shape, &mut SharedShapeOwners::for_collections())
 }
 
 fn validate_geojson_empty_axes(axes: CoordinateAxes) -> Result<()> {
-    if axes == CoordinateAxes::XY {
+    if axes.has_m() {
+        Err(GeometryErrorKind::Invalid(GEOJSON_M_ERROR.into()).into())
+    } else if axes == CoordinateAxes::XY {
         Ok(())
     } else {
         Err(GeometryErrorKind::OrdinateDropped("GeoJSON empty geometry".into()).into())
@@ -233,7 +227,7 @@ fn validate_geojson_domain(shape: &Shape) -> Result<()> {
     Ok(())
 }
 
-fn write_geojson_to_checked_impl<const INCLUDE_Z: bool>(
+fn write_geojson_to_checked_impl(
     out: &mut CheckedText,
     shape: &Shape,
     position_scratch: &mut String,
@@ -244,25 +238,25 @@ fn write_geojson_to_checked_impl<const INCLUDE_Z: bool>(
     match shape {
         Shape::Point(point) => {
             out.push_str(r#"{"type":"Point","coordinates":"#)?;
-            write_geojson_position_checked::<INCLUDE_Z>(out, *point, false, position_scratch)?;
+            write_geojson_position_checked(out, *point, false, position_scratch)?;
             out.push('}')?;
             Ok(())
         },
         Shape::MultiPoint(points) => {
             out.push_str(r#"{"type":"MultiPoint","coordinates":"#)?;
-            write_geojson_positions_checked::<INCLUDE_Z, _>(out, points, position_scratch)?;
+            write_geojson_positions_checked(out, points, position_scratch)?;
             out.push('}')?;
             Ok(())
         },
         Shape::LineString(points) => {
             out.push_str(r#"{"type":"LineString","coordinates":"#)?;
-            write_geojson_positions_checked::<INCLUDE_Z, _>(out, points, position_scratch)?;
+            write_geojson_positions_checked(out, points, position_scratch)?;
             out.push('}')?;
             Ok(())
         },
         Shape::MultiLineString(lines) => {
             out.push_str(r#"{"type":"MultiLineString","coordinates":"#)?;
-            write_geojson_lines_checked::<INCLUDE_Z, _>(
+            write_geojson_lines_checked(
                 out,
                 lines.iter().map(LineSeq::as_coords),
                 position_scratch,
@@ -272,13 +266,13 @@ fn write_geojson_to_checked_impl<const INCLUDE_Z: bool>(
         },
         Shape::Polygon(polygon) => {
             out.push_str(r#"{"type":"Polygon","coordinates":"#)?;
-            write_geojson_polygon_checked::<INCLUDE_Z>(out, polygon, position_scratch)?;
+            write_geojson_polygon_checked(out, polygon, position_scratch)?;
             out.push('}')?;
             Ok(())
         },
         Shape::MultiPolygon(polygons) => {
             out.push_str(r#"{"type":"MultiPolygon","coordinates":"#)?;
-            write_geojson_polygons_checked::<INCLUDE_Z>(out, polygons, position_scratch)?;
+            write_geojson_polygons_checked(out, polygons, position_scratch)?;
             out.push('}')?;
             Ok(())
         },
@@ -288,7 +282,7 @@ fn write_geojson_to_checked_impl<const INCLUDE_Z: bool>(
                 if idx > 0 {
                     out.push(',')?;
                 }
-                write_geojson_to_checked_impl::<INCLUDE_Z>(out, geometry, position_scratch)?;
+                write_geojson_to_checked_impl(out, geometry, position_scratch)?;
             }
             out.push_str("]}")?;
             Ok(())
@@ -306,13 +300,13 @@ fn write_geojson_to_checked_impl<const INCLUDE_Z: bool>(
     }
 }
 
-fn write_geojson_position_checked<const INCLUDE_Z: bool>(
+fn write_geojson_position_checked(
     out: &mut CheckedText,
     point: Point,
     comma_before: bool,
     position_scratch: &mut String,
 ) -> Result<()> {
-    write_geojson_position_values_checked::<INCLUDE_Z>(
+    write_geojson_position_values_checked(
         out,
         point.x,
         point.y,
@@ -322,7 +316,7 @@ fn write_geojson_position_checked<const INCLUDE_Z: bool>(
     )
 }
 
-fn write_geojson_position_values_checked<const INCLUDE_Z: bool>(
+fn write_geojson_position_values_checked(
     out: &mut CheckedText,
     x: f64,
     y: f64,
@@ -338,7 +332,7 @@ fn write_geojson_position_values_checked<const INCLUDE_Z: bool>(
     write_geojson_number(position_scratch, x);
     position_scratch.push(',');
     write_geojson_number(position_scratch, y);
-    if INCLUDE_Z && let Some(z) = z {
+    if let Some(z) = z {
         position_scratch.push(',');
         write_geojson_number(position_scratch, z);
     }
@@ -346,16 +340,16 @@ fn write_geojson_position_values_checked<const INCLUDE_Z: bool>(
     out.push_str(position_scratch)
 }
 
-fn write_geojson_positions_checked<const INCLUDE_Z: bool, C: Coordinates + ?Sized>(
+fn write_geojson_positions_checked<C: Coordinates + ?Sized>(
     out: &mut CheckedText,
     points: &C,
     position_scratch: &mut String,
 ) -> Result<()> {
     out.push('[')?;
     if let Some((xs, ys)) = points.xy_columns() {
-        if INCLUDE_Z && let Some(zs) = points.z_column() {
+        if let Some(zs) = points.z_column() {
             for (idx, ((&x, &y), &z)) in xs.iter().zip(ys).zip(zs).enumerate() {
-                write_geojson_position_values_checked::<true>(
+                write_geojson_position_values_checked(
                     out,
                     x,
                     y,
@@ -366,25 +360,18 @@ fn write_geojson_positions_checked<const INCLUDE_Z: bool, C: Coordinates + ?Size
             }
         } else {
             for (idx, (&x, &y)) in xs.iter().zip(ys).enumerate() {
-                write_geojson_position_values_checked::<INCLUDE_Z>(
-                    out,
-                    x,
-                    y,
-                    None,
-                    idx > 0,
-                    position_scratch,
-                )?;
+                write_geojson_position_values_checked(out, x, y, None, idx > 0, position_scratch)?;
             }
         }
     } else {
         for (idx, point) in points.iter_coords().enumerate() {
-            write_geojson_position_checked::<INCLUDE_Z>(out, point, idx > 0, position_scratch)?;
+            write_geojson_position_checked(out, point, idx > 0, position_scratch)?;
         }
     }
     out.push(']')
 }
 
-fn write_geojson_lines_checked<'a, const INCLUDE_Z: bool, I>(
+fn write_geojson_lines_checked<'a, I>(
     out: &mut CheckedText,
     lines: I,
     position_scratch: &mut String,
@@ -397,26 +384,26 @@ where
         if idx > 0 {
             out.push(',')?;
         }
-        write_geojson_positions_checked::<INCLUDE_Z, _>(out, line, position_scratch)?;
+        write_geojson_positions_checked(out, line, position_scratch)?;
     }
     out.push(']')
 }
 
-fn write_geojson_polygon_checked<const INCLUDE_Z: bool>(
+fn write_geojson_polygon_checked(
     out: &mut CheckedText,
     polygon: &Polygon,
     position_scratch: &mut String,
 ) -> Result<()> {
     out.push('[')?;
-    write_geojson_positions_checked::<INCLUDE_Z, _>(out, &polygon.shell, position_scratch)?;
+    write_geojson_positions_checked(out, &polygon.shell, position_scratch)?;
     for hole in polygon.holes.iter() {
         out.push(',')?;
-        write_geojson_positions_checked::<INCLUDE_Z, _>(out, hole, position_scratch)?;
+        write_geojson_positions_checked(out, hole, position_scratch)?;
     }
     out.push(']')
 }
 
-fn write_geojson_polygons_checked<const INCLUDE_Z: bool>(
+fn write_geojson_polygons_checked(
     out: &mut CheckedText,
     polygons: &[Polygon],
     position_scratch: &mut String,
@@ -426,7 +413,7 @@ fn write_geojson_polygons_checked<const INCLUDE_Z: bool>(
         if idx > 0 {
             out.push(',')?;
         }
-        write_geojson_polygon_checked::<INCLUDE_Z>(out, polygon, position_scratch)?;
+        write_geojson_polygon_checked(out, polygon, position_scratch)?;
     }
     out.push(']')
 }
@@ -443,39 +430,39 @@ fn write_geojson_number(out: &mut String, value: f64) {
     out.push_str(buffer.format_finite(value));
 }
 
-fn write_geojson_to_impl<const INCLUDE_Z: bool>(out: &mut String, shape: &Shape) {
+fn write_geojson_to_impl(out: &mut String, shape: &Shape) {
     // `type` is emitted FIRST, matching RFC 7946's examples and every mainstream
     // producer (shapely, GDAL); key order is cosmetic to a parser but conventional
     // for humans and lenient consumers.
     match shape {
         Shape::Point(point) => {
             out.push_str(r#"{"type":"Point","coordinates":"#);
-            write_geojson_position::<INCLUDE_Z>(out, *point);
+            write_geojson_position(out, *point);
             out.push('}');
         },
         Shape::MultiPoint(points) => {
             out.push_str(r#"{"type":"MultiPoint","coordinates":"#);
-            write_geojson_positions::<INCLUDE_Z, _>(out, points);
+            write_geojson_positions(out, points);
             out.push('}');
         },
         Shape::LineString(points) => {
             out.push_str(r#"{"type":"LineString","coordinates":"#);
-            write_geojson_positions::<INCLUDE_Z, _>(out, points);
+            write_geojson_positions(out, points);
             out.push('}');
         },
         Shape::MultiLineString(lines) => {
             out.push_str(r#"{"type":"MultiLineString","coordinates":"#);
-            write_geojson_lines::<INCLUDE_Z, _>(out, lines.iter().map(LineSeq::as_coords));
+            write_geojson_lines(out, lines.iter().map(LineSeq::as_coords));
             out.push('}');
         },
         Shape::Polygon(polygon) => {
             out.push_str(r#"{"type":"Polygon","coordinates":"#);
-            write_geojson_polygon::<INCLUDE_Z>(out, polygon);
+            write_geojson_polygon(out, polygon);
             out.push('}');
         },
         Shape::MultiPolygon(polygons) => {
             out.push_str(r#"{"type":"MultiPolygon","coordinates":"#);
-            write_geojson_polygons::<INCLUDE_Z>(out, polygons);
+            write_geojson_polygons(out, polygons);
             out.push('}');
         },
         Shape::GeometryCollection(geometries) => {
@@ -484,7 +471,7 @@ fn write_geojson_to_impl<const INCLUDE_Z: bool>(out: &mut String, shape: &Shape)
                 if idx > 0 {
                     out.push(',');
                 }
-                write_geojson_to_impl::<INCLUDE_Z>(out, geometry);
+                write_geojson_to_impl(out, geometry);
             }
             out.push_str("]}");
         },
@@ -501,46 +488,38 @@ fn write_geojson_to_impl<const INCLUDE_Z: bool>(out: &mut String, shape: &Shape)
     }
 }
 
-fn write_geojson_position<const INCLUDE_Z: bool>(out: &mut String, point: Point) {
-    write_geojson_position_values::<INCLUDE_Z>(out, point.x, point.y, point.z());
+fn write_geojson_position(out: &mut String, point: Point) {
+    write_geojson_position_values(out, point.x, point.y, point.z());
 }
 
-fn write_geojson_position_values<const INCLUDE_Z: bool>(
-    out: &mut String,
-    x: f64,
-    y: f64,
-    z: Option<f64>,
-) {
+fn write_geojson_position_values(out: &mut String, x: f64, y: f64, z: Option<f64>) {
     out.push('[');
     write_geojson_number(out, x);
     out.push(',');
     write_geojson_number(out, y);
-    if INCLUDE_Z && let Some(z) = z {
+    if let Some(z) = z {
         out.push(',');
         write_geojson_number(out, z);
     }
     out.push(']');
 }
 
-fn write_geojson_positions<const INCLUDE_Z: bool, C: Coordinates + ?Sized>(
-    out: &mut String,
-    points: &C,
-) {
+fn write_geojson_positions<C: Coordinates + ?Sized>(out: &mut String, points: &C) {
     out.push('[');
     if let Some((xs, ys)) = points.xy_columns() {
-        if INCLUDE_Z && let Some(zs) = points.z_column() {
+        if let Some(zs) = points.z_column() {
             for (idx, ((&x, &y), &z)) in xs.iter().zip(ys).zip(zs).enumerate() {
                 if idx > 0 {
                     out.push(',');
                 }
-                write_geojson_position_values::<true>(out, x, y, Some(z));
+                write_geojson_position_values(out, x, y, Some(z));
             }
         } else {
             for (idx, (&x, &y)) in xs.iter().zip(ys).enumerate() {
                 if idx > 0 {
                     out.push(',');
                 }
-                write_geojson_position_values::<INCLUDE_Z>(out, x, y, None);
+                write_geojson_position_values(out, x, y, None);
             }
         }
     } else {
@@ -548,13 +527,13 @@ fn write_geojson_positions<const INCLUDE_Z: bool, C: Coordinates + ?Sized>(
             if idx > 0 {
                 out.push(',');
             }
-            write_geojson_position::<INCLUDE_Z>(out, point);
+            write_geojson_position(out, point);
         }
     }
     out.push(']');
 }
 
-fn write_geojson_lines<'a, const INCLUDE_Z: bool, I>(out: &mut String, lines: I)
+fn write_geojson_lines<'a, I>(out: &mut String, lines: I)
 where
     I: IntoIterator<Item = &'a CoordSeq>,
 {
@@ -563,28 +542,28 @@ where
         if idx > 0 {
             out.push(',');
         }
-        write_geojson_positions::<INCLUDE_Z, _>(out, line);
+        write_geojson_positions(out, line);
     }
     out.push(']');
 }
 
-fn write_geojson_polygon<const INCLUDE_Z: bool>(out: &mut String, polygon: &Polygon) {
+fn write_geojson_polygon(out: &mut String, polygon: &Polygon) {
     out.push('[');
-    write_geojson_positions::<INCLUDE_Z, _>(out, &polygon.shell);
+    write_geojson_positions(out, &polygon.shell);
     for hole in polygon.holes.iter() {
         out.push(',');
-        write_geojson_positions::<INCLUDE_Z, _>(out, hole);
+        write_geojson_positions(out, hole);
     }
     out.push(']');
 }
 
-fn write_geojson_polygons<const INCLUDE_Z: bool>(out: &mut String, polygons: &[Polygon]) {
+fn write_geojson_polygons(out: &mut String, polygons: &[Polygon]) {
     out.push('[');
     for (idx, polygon) in polygons.iter().enumerate() {
         if idx > 0 {
             out.push(',');
         }
-        write_geojson_polygon::<INCLUDE_Z>(out, polygon);
+        write_geojson_polygon(out, polygon);
     }
     out.push(']');
 }

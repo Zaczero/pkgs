@@ -34,8 +34,8 @@ use crate::{
 )]
 pub struct PyCoordinates {
     pub(crate) view: coordinates::CoordinateView,
-    /// `None` renders each coordinate in its own axes (native); `Some` forces a
-    /// fixed rectangular layout, padding absent Z/M with `None` (via `select`).
+    /// `None` renders each coordinate in its native axes; `Some` forces a
+    /// rectangular coordinate-view layout.
     pub(crate) layout: Option<CoordinateAxes>,
 }
 

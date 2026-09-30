@@ -1,7 +1,7 @@
 use crate::geometry::GeometryErrorKind;
 use crate::io::wkt::{
-    CoordinateAxes, Coordinates, GeometryKind, IoError, Point, Polygon, Result, Shape,
-    extended_srid_code, require_serializable_axes,
+    CoordinateAxes, Coordinates, GeometryKind, Point, Polygon, Result, Shape, extended_srid_code,
+    require_serializable_axes,
 };
 use crate::io::{CheckedText, wkt_text_summary};
 
@@ -12,7 +12,7 @@ struct WktScratch {
 
 pub(crate) fn to_wkt(shape: &Shape) -> Result<String> {
     require_serializable_axes(shape)?;
-    format_wkt(shape, None, WktNumberFormat::Shortest)
+    format_wkt(shape, WktNumberFormat::Shortest)
 }
 
 fn wkt_srid_prefix(crs: Option<&str>, include_srid: bool) -> Result<Option<String>> {
@@ -20,9 +20,8 @@ fn wkt_srid_prefix(crs: Option<&str>, include_srid: bool) -> Result<Option<Strin
         .map(|code| code.map(|code| format!("SRID={code};")))
 }
 
-pub(crate) fn to_wkt_with_dimension(
+pub(crate) fn to_wkt_with_srid(
     shape: &Shape,
-    output_dimension: Option<WktDimension>,
     crs: Option<&str>,
     include_srid: bool,
 ) -> Result<String> {
@@ -34,12 +33,7 @@ pub(crate) fn to_wkt_with_dimension(
         Ok(Some(prefix)) => isize::MAX.unsigned_abs().saturating_sub(prefix.len()),
         Ok(None) | Err(_) => isize::MAX.unsigned_abs(),
     };
-    let body = format_wkt_with_limit(
-        shape,
-        output_dimension,
-        WktNumberFormat::Shortest,
-        body_limit,
-    )?;
+    let body = format_wkt_with_limit(shape, WktNumberFormat::Shortest, body_limit)?;
     match prefix? {
         Some(prefix) => {
             let length = prefix
@@ -53,28 +47,6 @@ pub(crate) fn to_wkt_with_dimension(
             Ok(output)
         },
         None => Ok(body),
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum WktDimension {
-    Two,
-    Three,
-    Four,
-}
-
-impl TryFrom<u8> for WktDimension {
-    type Error = crate::error::Error;
-
-    fn try_from(value: u8) -> Result<Self> {
-        match value {
-            2 => Ok(Self::Two),
-            3 => Ok(Self::Three),
-            4 => Ok(Self::Four),
-            _ => Err(IoError::wkt(format!(
-                "WKT output_dimension must be 2, 3, or 4, got {value}"
-            ))),
-        }
     }
 }
 
@@ -181,23 +153,14 @@ impl WktNumberFormat {
 /// `Geometry.__format__`.
 pub(crate) fn to_wkt_display(shape: &Shape, format: WktNumberFormat) -> Result<String> {
     require_serializable_axes(shape)?;
-    format_wkt(shape, None, format)
+    format_wkt(shape, format)
 }
 
-fn format_wkt(
-    shape: &Shape,
-    output_dimension: Option<WktDimension>,
-    format: WktNumberFormat,
-) -> Result<String> {
-    format_wkt_with_limit(shape, output_dimension, format, isize::MAX.unsigned_abs())
+fn format_wkt(shape: &Shape, format: WktNumberFormat) -> Result<String> {
+    format_wkt_with_limit(shape, format, isize::MAX.unsigned_abs())
 }
 
-fn format_wkt_with_limit(
-    shape: &Shape,
-    output_dimension: Option<WktDimension>,
-    format: WktNumberFormat,
-    limit: usize,
-) -> Result<String> {
+fn format_wkt_with_limit(shape: &Shape, format: WktNumberFormat, limit: usize) -> Result<String> {
     let limit = limit.min(isize::MAX.unsigned_abs());
     let summary = wkt_text_summary(shape);
     summary.wkt_lower_bound(limit).require_within()?;
@@ -211,9 +174,7 @@ fn format_wkt_with_limit(
             usize::from(precision).checked_add(24).unwrap_or_default()
         },
     };
-    let coordinate_bytes_per_coord = wkt_output_axes(shape.axes(), output_dimension)
-        .dimension()
-        .checked_mul(bytes_per_ordinate);
+    let coordinate_bytes_per_coord = shape.axes().dimension().checked_mul(bytes_per_ordinate);
     let capacity = summary
         .coordinate_count()
         .zip(coordinate_bytes_per_coord)
@@ -228,7 +189,7 @@ fn format_wkt_with_limit(
         })
         .filter(|capacity| isize::try_from(*capacity).is_ok())
         .unwrap_or_default();
-    let dimensions = wkt_output_axes(shape.axes(), output_dimension).dimension();
+    let dimensions = shape.axes().dimension();
     let maximum_ordinate_bytes = format.maximum_ordinate_bytes();
     let base_writer_fits = summary
         .wkt_upper_bound(dimensions, maximum_ordinate_bytes)
@@ -236,20 +197,13 @@ fn format_wkt_with_limit(
     if base_writer_fits {
         let mut out = String::new();
         let _reservation = out.try_reserve(capacity);
-        write_wkt(&mut out, shape, output_dimension, format, usize::MAX)?;
+        write_wkt(&mut out, shape, format, usize::MAX)?;
         return Ok(out);
     }
 
     let mut out = CheckedText::with_capacity_hint(capacity.min(limit), limit);
     let mut scratch = WktScratch::default();
-    write_wkt_checked(
-        &mut out,
-        shape,
-        output_dimension,
-        format,
-        usize::MAX,
-        &mut scratch,
-    )?;
+    write_wkt_checked(&mut out, shape, format, usize::MAX, &mut scratch)?;
     Ok(out.into_string())
 }
 
@@ -265,7 +219,7 @@ pub(crate) fn to_wkt_preview(shape: &Shape, limit: usize) -> Result<String> {
         .unwrap_or_default();
     let mut out = String::new();
     let _reservation = out.try_reserve(capacity);
-    write_wkt(&mut out, shape, None, WktNumberFormat::Shortest, limit)?;
+    write_wkt(&mut out, shape, WktNumberFormat::Shortest, limit)?;
     Ok(out)
 }
 
@@ -278,24 +232,20 @@ pub(crate) fn to_wkt_preview(shape: &Shape, limit: usize) -> Result<String> {
 fn write_wkt_checked(
     out: &mut CheckedText,
     shape: &Shape,
-    output_dimension: Option<WktDimension>,
     format: WktNumberFormat,
     limit: usize,
     scratch: &mut WktScratch,
 ) -> Result<()> {
     match shape {
         Shape::Point(point) => {
-            let axes = wkt_output_axes(CoordinateAxes::from_point(*point), output_dimension);
+            let axes = CoordinateAxes::from_point(*point);
             out.write_formatted(format_args!("POINT{} (", axes.wkt_tag()))?;
             write_wkt_point_checked(out, *point, axes, format, scratch)?;
             out.push(')')?;
             Ok(())
         },
         Shape::MultiPoint(points) => {
-            out.write_formatted(format_args!(
-                "MULTIPOINT{} (",
-                wkt_output_axes(shape.axes(), output_dimension).wkt_tag()
-            ))?;
+            out.write_formatted(format_args!("MULTIPOINT{} (", shape.axes().wkt_tag()))?;
             for (index, member) in points.members().enumerate() {
                 if out.len() >= limit {
                     break;
@@ -311,7 +261,7 @@ fn write_wkt_checked(
                         write_wkt_point_checked(
                             out,
                             point,
-                            wkt_output_axes(CoordinateAxes::from_point(point), output_dimension),
+                            CoordinateAxes::from_point(point),
                             format,
                             scratch,
                         )?;
@@ -323,14 +273,14 @@ fn write_wkt_checked(
             Ok(())
         },
         Shape::LineString(points) => {
-            let axes = wkt_output_axes(shape.axes(), output_dimension);
+            let axes = shape.axes();
             out.write_formatted(format_args!("LINESTRING{} (", axes.wkt_tag()))?;
             write_wkt_ring_checked(out, points, axes, format, limit, scratch)?;
             out.push(')')?;
             Ok(())
         },
         Shape::MultiLineString(lines) => {
-            let axes = wkt_output_axes(shape.axes(), output_dimension);
+            let axes = shape.axes();
             out.write_formatted(format_args!("MULTILINESTRING{} (", axes.wkt_tag()))?;
             for (index, member) in lines.members_with_values().enumerate() {
                 if out.len() >= limit {
@@ -353,14 +303,14 @@ fn write_wkt_checked(
             Ok(())
         },
         Shape::Polygon(polygon) => {
-            let axes = wkt_output_axes(shape.axes(), output_dimension);
+            let axes = shape.axes();
             out.write_formatted(format_args!("POLYGON{} (", axes.wkt_tag()))?;
             write_wkt_polygon_checked(out, polygon, axes, format, limit, scratch)?;
             out.push(')')?;
             Ok(())
         },
         Shape::MultiPolygon(polygons) => {
-            let axes = wkt_output_axes(shape.axes(), output_dimension);
+            let axes = shape.axes();
             out.write_formatted(format_args!("MULTIPOLYGON{} (", axes.wkt_tag()))?;
             for (index, member) in polygons.members_with_values().enumerate() {
                 if out.len() >= limit {
@@ -390,7 +340,7 @@ fn write_wkt_checked(
                 if index > 0 {
                     out.push_str(", ")?;
                 }
-                write_wkt_checked(out, geometry, output_dimension, format, limit, scratch)?;
+                write_wkt_checked(out, geometry, format, limit, scratch)?;
             }
             out.push(')')?;
             Ok(())
@@ -405,7 +355,7 @@ fn write_wkt_checked(
                 GeometryKind::MultiPolygon => "MULTIPOLYGON",
                 GeometryKind::GeometryCollection => "GEOMETRYCOLLECTION",
             };
-            write_wkt_empty_checked(out, keyword, *axes, output_dimension)?;
+            write_wkt_empty_checked(out, keyword, *axes)?;
             Ok(())
         },
     }
@@ -422,16 +372,14 @@ fn require_wkt_axes(actual: CoordinateAxes, required: CoordinateAxes) -> Result<
     Ok(())
 }
 
-/// `{KEYWORD}{ Z| M| ZM} EMPTY` — the dimensional tag survives emptiness,
-/// filtered through the same `output_dimension` policy as coordinates.
+/// `{KEYWORD}{ Z| M| ZM} EMPTY` — the dimensional tag survives emptiness.
 fn write_wkt_empty_checked(
     out: &mut CheckedText,
     keyword: &str,
     axes: CoordinateAxes,
-    output_dimension: Option<WktDimension>,
 ) -> Result<()> {
     out.push_str(keyword)?;
-    out.push_str(wkt_output_axes(axes, output_dimension).wkt_tag())?;
+    out.push_str(axes.wkt_tag())?;
     out.push_str(" EMPTY")
 }
 
@@ -639,29 +587,18 @@ fn write_wkt_coordinate_impl_checked<const Z: bool, const M: bool>(
 
 /// Fast WKT writer used only when the owner-aware upper bound proves that all
 /// bytes fit in the destination `String`.
-fn write_wkt(
-    out: &mut String,
-    shape: &Shape,
-    output_dimension: Option<WktDimension>,
-    format: WktNumberFormat,
-    limit: usize,
-) -> Result<()> {
+fn write_wkt(out: &mut String, shape: &Shape, format: WktNumberFormat, limit: usize) -> Result<()> {
     use std::fmt::Write as _;
     match shape {
         Shape::Point(point) => {
-            let axes = wkt_output_axes(CoordinateAxes::from_point(*point), output_dimension);
+            let axes = CoordinateAxes::from_point(*point);
             write!(out, "POINT{} (", axes.wkt_tag()).expect("writing WKT to String");
             write_wkt_point(out, *point, axes, format);
             out.push(')');
             Ok(())
         },
         Shape::MultiPoint(points) => {
-            write!(
-                out,
-                "MULTIPOINT{} (",
-                wkt_output_axes(shape.axes(), output_dimension).wkt_tag()
-            )
-            .expect("writing WKT to String");
+            write!(out, "MULTIPOINT{} (", shape.axes().wkt_tag()).expect("writing WKT to String");
             for (index, member) in points.members().enumerate() {
                 if out.len() >= limit {
                     break;
@@ -674,12 +611,7 @@ fn write_wkt(
                     crate::geometry::MultiMember::Value(point_index) => {
                         let point = points.point_at(point_index);
                         out.push('(');
-                        write_wkt_point(
-                            out,
-                            point,
-                            wkt_output_axes(CoordinateAxes::from_point(point), output_dimension),
-                            format,
-                        );
+                        write_wkt_point(out, point, CoordinateAxes::from_point(point), format);
                         out.push(')');
                     },
                 }
@@ -688,14 +620,14 @@ fn write_wkt(
             Ok(())
         },
         Shape::LineString(points) => {
-            let axes = wkt_output_axes(shape.axes(), output_dimension);
+            let axes = shape.axes();
             write!(out, "LINESTRING{} (", axes.wkt_tag()).expect("writing WKT to String");
             write_wkt_ring(out, points, axes, format, limit);
             out.push(')');
             Ok(())
         },
         Shape::MultiLineString(lines) => {
-            let axes = wkt_output_axes(shape.axes(), output_dimension);
+            let axes = shape.axes();
             write!(out, "MULTILINESTRING{} (", axes.wkt_tag()).expect("writing WKT to String");
             for (index, member) in lines.members_with_values().enumerate() {
                 if out.len() >= limit {
@@ -718,14 +650,14 @@ fn write_wkt(
             Ok(())
         },
         Shape::Polygon(polygon) => {
-            let axes = wkt_output_axes(shape.axes(), output_dimension);
+            let axes = shape.axes();
             write!(out, "POLYGON{} (", axes.wkt_tag()).expect("writing WKT to String");
             write_wkt_polygon(out, polygon, axes, format, limit)?;
             out.push(')');
             Ok(())
         },
         Shape::MultiPolygon(polygons) => {
-            let axes = wkt_output_axes(shape.axes(), output_dimension);
+            let axes = shape.axes();
             write!(out, "MULTIPOLYGON{} (", axes.wkt_tag()).expect("writing WKT to String");
             for (index, member) in polygons.members_with_values().enumerate() {
                 if out.len() >= limit {
@@ -755,7 +687,7 @@ fn write_wkt(
                 if index > 0 {
                     out.push_str(", ");
                 }
-                write_wkt(out, geometry, output_dimension, format, limit)?;
+                write_wkt(out, geometry, format, limit)?;
             }
             out.push(')');
             Ok(())
@@ -770,20 +702,15 @@ fn write_wkt(
                 GeometryKind::MultiPolygon => "MULTIPOLYGON",
                 GeometryKind::GeometryCollection => "GEOMETRYCOLLECTION",
             };
-            write_wkt_empty(out, keyword, *axes, output_dimension);
+            write_wkt_empty(out, keyword, *axes);
             Ok(())
         },
     }
 }
 
-fn write_wkt_empty(
-    out: &mut String,
-    keyword: &str,
-    axes: CoordinateAxes,
-    output_dimension: Option<WktDimension>,
-) {
+fn write_wkt_empty(out: &mut String, keyword: &str, axes: CoordinateAxes) {
     out.push_str(keyword);
-    out.push_str(wkt_output_axes(axes, output_dimension).wkt_tag());
+    out.push_str(axes.wkt_tag());
     out.push_str(" EMPTY");
 }
 
@@ -969,18 +896,6 @@ fn write_wkt_coordinate_impl<const Z: bool, const M: bool>(
     }
 }
 
-const fn wkt_output_axes(
-    axes: CoordinateAxes,
-    output_dimension: Option<WktDimension>,
-) -> CoordinateAxes {
-    match output_dimension {
-        Some(WktDimension::Two) => CoordinateAxes::XY,
-        // 3D output keeps Z when present (dropping M), else passes XYM/XY through.
-        Some(WktDimension::Three) if axes.has_z() => CoordinateAxes::XYZ,
-        None | Some(WktDimension::Three | WktDimension::Four) => axes,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1004,7 +919,7 @@ mod tests {
             let summary = wkt_text_summary(&shape);
             let upper_bound = summary
                 .wkt_upper_bound(
-                    wkt_output_axes(shape.axes(), None).dimension(),
+                    shape.axes().dimension(),
                     WktNumberFormat::Shortest.maximum_ordinate_bytes(),
                 )
                 .expect("fixture upper bound is representable");
@@ -1028,13 +943,13 @@ mod tests {
         assert!(
             small_summary
                 .wkt_upper_bound(
-                    wkt_output_axes(small_shape.axes(), None).dimension(),
+                    small_shape.axes().dimension(),
                     WktNumberFormat::Shortest.maximum_ordinate_bytes(),
                 )
                 .is_some_and(|upper_bound| upper_bound > small_limit)
         );
         assert_eq!(
-            format_wkt_with_limit(&small_shape, None, WktNumberFormat::Shortest, small_limit,)
+            format_wkt_with_limit(&small_shape, WktNumberFormat::Shortest, small_limit,)
                 .expect("checked fallback can emit bytes below the limit"),
             "POINT (0 0)"
         );
@@ -1049,13 +964,13 @@ mod tests {
         assert!(
             summary
                 .wkt_upper_bound(
-                    wkt_output_axes(shape.axes(), None).dimension(),
+                    shape.axes().dimension(),
                     WktNumberFormat::Fixed(255).maximum_ordinate_bytes(),
                 )
                 .is_some_and(|upper_bound| upper_bound > limit)
         );
 
-        let error = format_wkt_with_limit(&shape, None, WktNumberFormat::Fixed(255), limit)
+        let error = format_wkt_with_limit(&shape, WktNumberFormat::Fixed(255), limit)
             .expect_err("fixed-width WKT exceeds the output limit");
         assert!(matches!(
             error.kind(),

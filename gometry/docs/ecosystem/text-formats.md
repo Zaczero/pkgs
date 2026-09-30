@@ -106,7 +106,7 @@ wkb_arrow = geoms.to_arrow(encoding="wkb")
 ## WKT and EWKT
 
 WKT is the human-readable format. gometry reads and writes the `Z`, `M`, and
-`ZM` dimensional tags, with an explicit output dimension. Pass
+`ZM` dimensional tags, preserving the ordinates the geometry carries. Pass
 `include_srid=True` to emit **EWKT** with an `SRID=` prefix so the CRS survives
 the text round-trip.
 
@@ -115,7 +115,7 @@ import gometry as gm
 
 pz = gm.Point(21.0, 52.0, z=100.0, crs=4979)
 print("default:", pz.to_wkt())
-print("force 2D:", pz.to_wkt(output_dimension=2))
+print("force 2D:", pz.force_2d().to_wkt())
 print("EWKT:", pz.to_wkt(include_srid=True))
 
 print("parse:", gm.from_wkt("POINT ZM (1 2 3 4)").coordinate_axes)
@@ -148,7 +148,7 @@ p = gm.Point(21.0, 52.0, crs=4326)
 print("2D:", p.to_geojson())
 
 pz = gm.Point(21.0, 52.0, z=100.0, crs=4979)
-print("with Z:", pz.to_geojson(include_z=True))
+print("with Z:", pz.to_geojson())
 ```
 
 Construction accepts M; the restriction applies at **serialization** time:
@@ -165,7 +165,8 @@ except gm.InvalidGeometryError as e:
 
 !!! warning "GeoJSON cannot carry M or epoch"
     `to_geojson` and `__geo_interface__` raise on M; epoch metadata must be
-    explicitly dropped with `drop_epoch=True`. Clear M with [`set_m(None)`][gometry.Geometry.set_m] and
+    explicitly dropped with `drop_epoch=True`. Clear M with [`set_m(None)`][gometry.Geometry.set_m] or
+    [`force_2d()`][gometry.Geometry.force_2d], and
     epoch with [`set_epoch(None)`][gometry.Geometry.set_epoch] only when that loss is intended. WKB/EWKB
     preserves M but not epoch. For lossless M/epoch interchange, use gometry's
     GeoArrow extension metadata with gometry or an extension-aware consumer;
@@ -315,9 +316,9 @@ print(restored == point, restored.crs, restored.epoch)
 | --- | --- | --- | --- | --- | --- | --- |
 | ISO WKB | [`to_wkb()` / `to_wkb(drop_epoch=True)`][gometry.Geometry.to_wkb] | [`from_wkb`][gometry.from_wkb] | no | no (requires `drop_epoch=True` when present) | yes (ISO type codes) | yes (ISO type codes) |
 | EWKB | `to_wkb(include_srid=True, drop_epoch=True)` | [`from_wkb`][gometry.from_wkb] | yes (SRID) | no (requires `drop_epoch=True` when present) | yes | yes |
-| WKT | [`to_wkt(output_dimension=, drop_epoch=True)`][gometry.Geometry.to_wkt] | [`from_wkt`][gometry.from_wkt] | no | no (requires `drop_epoch=True` when present) | yes (default; `output_dimension=2` drops) | yes (`M`/`ZM` tags) |
-| EWKT | `to_wkt(include_srid=True, output_dimension=, drop_epoch=True)` | [`from_wkt`][gometry.from_wkt] | yes (`SRID=` prefix) | no (requires `drop_epoch=True` when present) | yes (default) | yes |
-| GeoJSON | [`to_geojson(include_z=, drop_epoch=True)`][gometry.Geometry.to_geojson] | [`from_geojson`][gometry.from_geojson] | assumes WGS84 lon/lat on write and declares it on read (default attaches `OGC:CRS84`; pass `crs=4326`/`crs=None`/`crs=4979` to control); reproject before `to_geojson` | no (requires `drop_epoch=True` when present) | yes (when `include_z=True`) | no — always raises on M; clear it explicitly first |
+| WKT | [`to_wkt(drop_epoch=True)`][gometry.Geometry.to_wkt] | [`from_wkt`][gometry.from_wkt] | no | no (requires `drop_epoch=True` when present) | yes, when carried | yes (`M`/`ZM` tags) |
+| EWKT | `to_wkt(include_srid=True, drop_epoch=True)` | [`from_wkt`][gometry.from_wkt] | yes (`SRID=` prefix) | no (requires `drop_epoch=True` when present) | yes, when carried | yes |
+| GeoJSON | [`to_geojson(drop_epoch=True)`][gometry.Geometry.to_geojson] | [`from_geojson`][gometry.from_geojson] | assumes WGS84 lon/lat on write and declares it on read (default attaches `OGC:CRS84`; pass `crs=4326`/`crs=None`/`crs=4979` to control); reproject before `to_geojson` | no (requires `drop_epoch=True` when present) | yes, when carried | no — raises on M; use `set_m(None)` or `force_2d()` first |
 | `__geo_interface__` | `geom.__geo_interface__` | [`from_geojson`][gometry.from_geojson] | no | no — raises when present | yes (when present) | no — raises when present |
 | GeoArrow | [`to_arrow`][gometry.Geometry.to_arrow] | [`gm.from_arrow`][gometry.from_arrow] | yes (PROJJSON) | yes, in gometry's extension metadata (gometry or extension-aware consumers; not standard GeoArrow metadata) | yes | yes (packed Z/M children for homogeneous axes without explicit empty members; WKB fallback for mixed axes or explicit empty members) |
 | pandas | [`to_pandas`][gometry.GeometryArray.to_pandas] | adapter Series of [`Geometry`][gometry.Geometry] | yes (on each geometry) | yes (on each geometry object) | yes | yes |

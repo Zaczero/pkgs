@@ -145,13 +145,18 @@ Conventions: `import gometry as gm`; `geom` is a gometry geometry; and
 |---|---|
 | [WKB](https://www.ogc.org/standard/sfa/) `from_wkb(b)` / `to_wkb(g)` | [`gm.from_wkb(b)`][gometry.from_wkb] / `g.to_wkb(include_srid=...)` |
 | EWKB | `gm.from_wkb(b)` / `g.to_wkb(include_srid=True)` |
-| [WKT](https://www.ogc.org/standard/sfa/) `from_wkt(s)` / `to_wkt(g)` | [`gm.from_wkt(s)`][gometry.from_wkt] / `g.to_wkt(output_dimension=...)` |
-| [GeoJSON](https://datatracker.ietf.org/doc/html/rfc7946) | `gm.from_geojson(obj)` / `g.to_geojson(include_z=...)` |
+| [WKT](https://www.ogc.org/standard/sfa/) `from_wkt(s)` / `to_wkt(g)` | [`gm.from_wkt(s)`][gometry.from_wkt] / `g.to_wkt()` |
+| [GeoJSON](https://datatracker.ietf.org/doc/html/rfc7946) | `gm.from_geojson(obj)` / `g.to_geojson()` |
 | GeoJSON features w/ attributes | [`gm.from_features(fc)`][gometry.from_features] → validated [`Features`][gometry.Features] record; inverse [`gm.to_feature_collection(geoms, properties=..., ids=...)`][gometry.to_feature_collection] |
 | `geom.__geo_interface__` | [`geom.__geo_interface__`](../ecosystem/text-formats.md#__geo_interface__) |
 | [GeoArrow](https://geoarrow.org/) | [`gm.from_arrow(obj)`][gometry.from_arrow] / [`geom.to_arrow()`][gometry.Geometry.to_arrow] |
 | `shapely.to_wkb(Point(...))` / `shapely.to_wkb(box(...))` | [`gm.Point(x, y).to_wkb(precision=...)`][gometry.Geometry.to_wkb] / `gm.box(...).to_wkb(include_srid=..., precision=...)` |
 | `shapely.to_wkt(Point(...))` / `shapely.to_wkt(box(...))` | [`gm.Point(x, y).to_wkt(precision=...)`][gometry.Geometry.to_wkt] / `gm.box(...).to_wkt(precision=...)` |
+
+Shapely's `to_wkt(output_dimension=2)` becomes `geom.force_2d().to_wkt()` in
+gometry. Remove geometry axes before writing with `force_2d()`, `set_z(None)`,
+or `set_m(None)`; use `coords.select(...)` to choose a coordinate-view layout
+for coordinate exports without changing the geometry.
 
 ### Indexing & prepared
 

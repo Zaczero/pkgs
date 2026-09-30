@@ -445,7 +445,7 @@ impl PyGeometryArray {
         require_geojson_crs(self.crs_str())?;
         if self.has_m() || self.epoch().is_some() {
             return Err(crate::PyTypeError::new_err(
-                "__geo_interface__ cannot represent M or coordinate epoch; use an explicit serializer or clear the dimension",
+                crate::io::geojson_interface_error(),
             ));
         }
         let array = self.clone();
@@ -454,12 +454,13 @@ impl PyGeometryArray {
             .detach(move || {
                 let mut texts = Vec::with_capacity(array.len());
                 for row in array.row_operation().rows_with_missing(|| ()) {
-                    let text = match row {
-                        ArrayRow::Missing { .. } => None,
-                        ArrayRow::Present(row) => Some(row.row().try_with_shape(|shape| {
-                            crate::io::to_geojson_string::<true>(shape, domain)
-                        })?),
-                    };
+                    let text =
+                        match row {
+                            ArrayRow::Missing { .. } => None,
+                            ArrayRow::Present(row) => Some(row.row().try_with_shape(|shape| {
+                                crate::io::to_geojson_string(shape, domain)
+                            })?),
+                        };
                     texts.push(text);
                 }
                 Ok::<_, crate::error::Error>(texts)

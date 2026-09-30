@@ -195,7 +195,6 @@ def test_public_integer_boundaries_raise_value_error_not_overflow() -> None:
         (lambda: s2_cell.parent(-1), 'S2 level'),
         (lambda: gm.CellArray([-1], type=gm.S2Cell).polygon, 'S2Cell id'),
         (lambda: gm.CellArray([huge], type=gm.S2Cell).polygon, 'S2Cell id'),
-        (lambda: point.to_wkt(output_dimension=-1), 'WKT output_dimension'),
         (lambda: point.quantize(huge), 'precision'),
         (lambda: gm.Point(0, 0).to_wkb(precision=16), 'precision'),
         (lambda: gm.Point(0, 0).buffer(1, quadrant_segments=-1), 'quadrant_segments'),

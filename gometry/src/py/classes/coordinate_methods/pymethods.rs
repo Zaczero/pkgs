@@ -192,11 +192,10 @@ impl PyCoordinates {
 
     /// Return a view of the same coordinates in a fixed ``coordinate_axes`` layout
     /// (``'XY'``/``'XYZ'``/``'XYM'``/``'XYZM'``): every tuple/column has that
-    /// shape. Nested/tuple output (``to_nested`` / ``select`` iteration) uses
-    /// ``None`` where a coordinate lacks the requested Z/M; ndarray columns
-    /// (``.x``/``.y``/``.z``/``.m``) and ``numpy.asarray`` use NaN for absent
-    /// axes. Makes a mixed-dimension array rectangular for iteration and
-    /// ``numpy.asarray``.
+    /// shape. Nested/tuple output uses ``None`` where a coordinate lacks the
+    /// requested Z/M; ndarray columns and ``numpy.asarray`` use ``NaN`` there.
+    /// `select` changes which ordinates nested output, iteration, ndarray/dict
+    /// exports, and coordinate equality see; it does not change the geometry.
     ///
     /// Parameters
     /// ----------
@@ -206,14 +205,14 @@ impl PyCoordinates {
     /// Returns
     /// -------
     /// Coordinates
-    ///     The same coordinates with the forced layout.
+    ///     The same coordinates with the selected view layout.
     ///
     /// Examples
     /// --------
     /// >>> import gometry as gm
     /// >>> coords = gm.LineString([(0, 0), (1, 1)]).coords
-    /// >>> coords.select('XY').to_nested()
-    /// [(0.0, 0.0), (1.0, 1.0)]
+    /// >>> coords.select('XYZ').to_nested()
+    /// [(0.0, 0.0, None), (1.0, 1.0, None)]
     pub fn select(&self, axes: CoordinateAxes) -> Self {
         Self {
             view: self.view.clone(),
@@ -256,9 +255,9 @@ impl PyCoordinates {
 
     /// Return a dependency-free column dict — ``{'x': ndarray, 'y': ndarray, …}`` — ready
     /// for ``pandas``/``polars`` (``pd.DataFrame(coords.to_dict())``).
-    /// ``z``/``m`` columns appear when present or `select`-forced (``NaN`` for
-    /// rows that lack them); ``index=True`` adds the source-geometry row
-    /// column.
+    /// ``z``/``m`` columns appear when carried by the view or selected layout,
+    /// with ``NaN`` for rows that lack an ordinate; ``index=True`` adds the
+    /// source-geometry row column.
     ///
     /// Parameters
     /// ----------
@@ -364,8 +363,9 @@ impl PyCoordinates {
     /// Return the coordinates as a nested structure mirroring the geometry's topology
     /// (point → ``[x, y]``, line → list of tuples, polygon → list of rings;
     /// arrays → one entry per present geometry) — the ``__geo_interface__``-style
-    /// nesting, as Python lists. Missing array rows are skipped. The flat
-    /// columns do not preserve this shape.
+    /// nesting, as Python lists. A selected view layout determines each
+    /// coordinate's ordinates; absent selected Z/M values are ``None``. Missing
+    /// array rows are skipped. The flat columns do not preserve this shape.
     ///
     /// Returns
     /// -------
@@ -379,14 +379,16 @@ impl PyCoordinates {
     /// [(0.0, 0.0), (1.0, 1.0)]
     pub fn to_nested(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         match self.view.source() {
-            coordinates::CoordinateSource::Shape(shape) => coordinates_object(py, shape),
+            coordinates::CoordinateSource::Shape(shape) => {
+                coordinates_object(py, shape, self.layout)
+            },
             coordinates::CoordinateSource::Array(storage, missing) => {
                 let nested = match storage {
                     GeometryArrayStorage::Mixed(shapes) => shapes
                         .iter()
                         .enumerate()
                         .filter(|(row, _)| !missing.is_some_and(|mask| mask.is_missing(*row)))
-                        .map(|(_, shape)| coordinates_object(py, shape))
+                        .map(|(_, shape)| coordinates_object(py, shape, self.layout))
                         .collect::<PyResult<Vec<_>>>()?,
                     GeometryArrayStorage::Packed(PackedStorage::Points { coords, row_map }) => {
                         let map = row_map.as_deref();
@@ -402,6 +404,7 @@ impl PyCoordinates {
                                             &Shape::Point(coords.point_at(
                                                 crate::array::physical_row(map, present),
                                             )),
+                                            self.layout,
                                         )
                                     })
                                     .collect::<PyResult<Vec<_>>>()?;
@@ -415,6 +418,7 @@ impl PyCoordinates {
                                     &Shape::Point(
                                         coords.point_at(crate::array::physical_row(map, index)),
                                     ),
+                                    self.layout,
                                 )
                             })
                             .collect::<PyResult<Vec<_>>>()?
@@ -428,7 +432,7 @@ impl PyCoordinates {
                         .map(|(_, shape)| {
                             shape
                                 .map_err(PyErr::from)
-                                .and_then(|shape| coordinates_object(py, &shape))
+                                .and_then(|shape| coordinates_object(py, &shape, self.layout))
                         })
                         .collect::<PyResult<Vec<_>>>()?,
                 };

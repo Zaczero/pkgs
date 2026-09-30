@@ -6,36 +6,46 @@
 //! super::*`.
 
 use pyo3::prelude::*;
-use pyo3::types::PyDict;
+use pyo3::types::{PyDict, PyTuple};
 use serde_json::Value;
 
 use crate::py::errors::{GeometryError, parse_error};
-use crate::{Coordinates, Point, Polygon, PyList, Shape, geometry, py_bool};
+use crate::{CoordinateAxes, Coordinates, Point, Polygon, PyList, Shape, geometry, py_bool};
 
-pub(crate) fn coordinates_object(py: Python<'_>, shape: &Shape) -> PyResult<Py<PyAny>> {
+pub(crate) fn coordinates_object(
+    py: Python<'_>,
+    shape: &Shape,
+    layout: Option<CoordinateAxes>,
+) -> PyResult<Py<PyAny>> {
     let value = match shape {
-        Shape::Point(point) => point_coordinates_object(py, *point)?,
-        Shape::MultiPoint(points) => points_to_py(py, points)?.unbind().into(),
-        Shape::LineString(points) => points_to_py(py, points)?.unbind().into(),
+        Shape::Point(point) => point_coordinates_object(py, *point, layout)?,
+        Shape::MultiPoint(points) => points_to_py(py, points, layout)?.unbind().into(),
+        Shape::LineString(points) => points_to_py(py, points, layout)?.unbind().into(),
         Shape::MultiLineString(lines) => {
             let values: Vec<Py<PyAny>> = lines
                 .iter()
-                .map(|line| Ok(points_to_py(py, line)?.unbind().into()))
+                .map(|line| Ok(points_to_py(py, line, layout)?.unbind().into()))
                 .collect::<pyo3::PyResult<Vec<_>>>()?;
             PyList::new(py, values)?.unbind().into()
         },
-        Shape::Polygon(polygon) => polygon_coordinates_object(py, polygon)?.unbind().into(),
+        Shape::Polygon(polygon) => polygon_coordinates_object(py, polygon, layout)?
+            .unbind()
+            .into(),
         Shape::MultiPolygon(polygons) => {
             let values: Vec<Py<PyAny>> = polygons
                 .iter()
-                .map(|polygon| Ok(polygon_coordinates_object(py, polygon)?.unbind().into()))
+                .map(|polygon| {
+                    Ok(polygon_coordinates_object(py, polygon, layout)?
+                        .unbind()
+                        .into())
+                })
                 .collect::<pyo3::PyResult<Vec<_>>>()?;
             PyList::new(py, values)?.unbind().into()
         },
         Shape::GeometryCollection(geometries) => {
             let values = geometries
                 .iter()
-                .map(|geometry| coordinates_object(py, geometry))
+                .map(|geometry| coordinates_object(py, geometry, layout))
                 .collect::<pyo3::PyResult<Vec<_>>>()?;
             PyList::new(py, values)?.unbind().into()
         },
@@ -47,10 +57,11 @@ pub(crate) fn coordinates_object(py: Python<'_>, shape: &Shape) -> PyResult<Py<P
 pub(crate) fn polygon_coordinates_object<'py>(
     py: Python<'py>,
     polygon: &Polygon,
+    layout: Option<CoordinateAxes>,
 ) -> PyResult<Bound<'py, PyList>> {
     let values: Vec<Py<PyAny>> = std::iter::once(&polygon.shell)
         .chain(polygon.holes.iter())
-        .map(|ring| Ok(points_to_py(py, ring)?.unbind().into()))
+        .map(|ring| Ok(points_to_py(py, ring, layout)?.unbind().into()))
         .collect::<pyo3::PyResult<Vec<_>>>()?;
     PyList::new(py, values)
 }
@@ -58,15 +69,23 @@ pub(crate) fn polygon_coordinates_object<'py>(
 pub(crate) fn points_to_py<'py, C: Coordinates + ?Sized>(
     py: Python<'py>,
     points: &C,
+    layout: Option<CoordinateAxes>,
 ) -> PyResult<Bound<'py, PyList>> {
     let values = points
         .iter_coords()
-        .map(|point| point_tuple(py, point))
+        .map(|point| point_tuple_with_layout(py, point, layout))
         .collect::<pyo3::PyResult<Vec<_>>>()?;
     PyList::new(py, values)
 }
 
-pub(crate) fn point_coordinates_object(py: Python<'_>, point: Point) -> PyResult<Py<PyAny>> {
+pub(crate) fn point_coordinates_object(
+    py: Python<'_>,
+    point: Point,
+    layout: Option<CoordinateAxes>,
+) -> PyResult<Py<PyAny>> {
+    if let Some(axes) = layout {
+        return Ok(PyList::new(py, point_values(point, axes))?.unbind().into());
+    }
     Ok(match (point.z(), point.m()) {
         (None, None) => vec![point.x, point.y].into_pyobject(py)?.unbind(),
         (Some(z), None) => vec![point.x, point.y, z].into_pyobject(py)?.unbind(),
@@ -82,6 +101,31 @@ pub(crate) fn point_tuple(py: Python<'_>, point: Point) -> PyResult<Py<PyAny>> {
         (None, Some(m)) => (point.x, point.y, m).into_pyobject(py)?.unbind().into(),
         (Some(z), Some(m)) => (point.x, point.y, z, m).into_pyobject(py)?.unbind().into(),
     })
+}
+
+fn point_tuple_with_layout(
+    py: Python<'_>,
+    point: Point,
+    layout: Option<CoordinateAxes>,
+) -> PyResult<Py<PyAny>> {
+    let Some(axes) = layout else {
+        return point_tuple(py, point);
+    };
+    Ok(PyTuple::new(py, point_values(point, axes))?
+        .unbind()
+        .into_any())
+}
+
+fn point_values(point: Point, axes: CoordinateAxes) -> Vec<Option<f64>> {
+    let mut values = Vec::with_capacity(axes.dimension());
+    values.extend([Some(point.x), Some(point.y)]);
+    if axes.has_z() {
+        values.push(point.z());
+    }
+    if axes.has_m() {
+        values.push(point.m());
+    }
+    values
 }
 
 pub(crate) fn json_to_py(py: Python<'_>, value: &Value) -> PyResult<Py<PyAny>> {

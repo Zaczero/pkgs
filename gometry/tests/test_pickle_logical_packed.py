@@ -51,9 +51,7 @@ def test_packed_pickles_preserve_selected_row_order_and_axes(
 
     for selected in selections:
         restored = pickle.loads(pickle.dumps(selected, protocol=5))
-        assert restored.to_wkt(output_dimension=4) == selected.to_wkt(
-            output_dimension=4
-        )
+        assert restored.to_wkt() == selected.to_wkt()
         assert restored.coordinate_axes == selected.coordinate_axes
 
 

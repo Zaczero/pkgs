@@ -60,9 +60,7 @@ fn set_feature_id(feature: &Bound<'_, PyDict>, value: Option<&Bound<'_, PyAny>>)
 fn require_geojson_shape(shape: &Shape, crs: Option<&str>) -> PyResult<()> {
     require_geojson_crs(crs)?;
     if shape.has_m() {
-        return Err(InvalidGeometryError::new_err(
-            "GeoJSON has no M ordinate; use WKT/GeoArrow to preserve M",
-        ));
+        return Err(InvalidGeometryError::new_err(crate::io::GEOJSON_M_ERROR));
     }
     Ok(())
 }
@@ -103,7 +101,7 @@ fn serialize_feature_shapes(
                     shape
                         .map(|(shape, crs)| {
                             let domain = crate::io::geojson_domain(crs.as_deref())?;
-                            crate::io::to_geojson_string::<true>(&shape, domain)
+                            crate::io::to_geojson_string(&shape, domain)
                         })
                         .transpose()
                         .map_err(|error| (logical, error))?,
@@ -130,9 +128,7 @@ fn serialize_array_feature_shapes(
                     let logical = row.logical();
                     Some(
                         row.row()
-                            .try_with_shape(|shape| {
-                                crate::io::to_geojson_string::<true>(shape, domain)
-                            })
+                            .try_with_shape(|shape| crate::io::to_geojson_string(shape, domain))
                             .map_err(|error| (logical, error))?,
                     )
                 },
@@ -206,6 +202,7 @@ enum FeatureGeometryRows {
 }
 
 /// Build a GeoJSON Feature mapping from a geometry and side data.
+#[doc = crate::writer_ordinate_policy!()]
 ///
 /// Parameters
 /// ----------
@@ -237,7 +234,7 @@ enum FeatureGeometryRows {
 /// InvalidGeometryError
 ///     If the geometry has an M ordinate or coordinates outside the WGS84
 ///     longitude/latitude domain. GeoJSON Feature mappings have no
-///     representation for M; use WKT/GeoArrow to preserve it.
+///     representation for M; drop it with ``set_m(None)`` (or ``force_2d()``).
 /// CRSError
 ///     If a CRS-tagged geometry is not in the WGS84 lon/lat family.
 ///
@@ -279,7 +276,7 @@ pub(crate) fn to_feature(
         Some(
             py.detach(move || {
                 let domain = crate::io::geojson_domain(crs.as_deref())?;
-                crate::io::to_geojson_string::<true>(&shape, domain)
+                crate::io::to_geojson_string(&shape, domain)
             })
             .map_err(PyErr::from)?,
         )
@@ -295,6 +292,7 @@ pub(crate) fn to_feature(
 }
 
 /// Build a GeoJSON FeatureCollection from geometries and aligned side data.
+#[doc = crate::writer_ordinate_policy!()]
 ///
 /// Parameters
 /// ----------
@@ -330,8 +328,8 @@ pub(crate) fn to_feature(
 ///     coordinate epoch metadata is present without ``drop_epoch=True``.
 /// InvalidGeometryError
 ///     If a geometry has an M ordinate or coordinates outside the WGS84
-///     longitude/latitude domain. GeoJSON Feature mappings have no
-///     representation for M; use WKT/GeoArrow to preserve it.
+///     longitude/latitude domain. GeoJSON Feature mappings cannot represent M;
+///     drop it with ``set_m(None)`` (or ``force_2d()``).
 /// CRSError
 ///     If a CRS-tagged geometry is not EPSG:4326 longitude/latitude.
 ///
@@ -390,9 +388,7 @@ fn to_feature_collection_impl(
         errors::require_epoch_drop(array.epoch(), drop_epoch, "to_feature_collection")?;
         require_geojson_crs(array.crs_str())?;
         if array.has_m() {
-            return Err(InvalidGeometryError::new_err(
-                "GeoJSON has no M ordinate; use WKT/GeoArrow to preserve M",
-            ));
+            return Err(InvalidGeometryError::new_err(crate::io::GEOJSON_M_ERROR));
         }
         (FeatureGeometryRows::Array(array.clone()), array.len())
     } else {

@@ -52,7 +52,7 @@ fn mixed_ring_axes_polygon() -> Polygon {
 }
 
 fn assert_mixed_ring_axes_error(shape: &Shape) {
-    let error = to_geojson_string::<true>(shape, crate::geometry::TopologyDomain::Cartesian)
+    let error = to_geojson_string(shape, crate::geometry::TopologyDomain::Cartesian)
         .expect_err("mixed polygon ring axes must be rejected by the writer");
     assert!(matches!(
         error.kind(),
@@ -75,12 +75,9 @@ fn checked_writer_runs_when_geojson_upper_bound_exceeds_fitting_lower_bound() {
             .is_some_and(|upper_bound| upper_bound > limit)
     );
 
-    let error = to_geojson_string_with_limit::<false>(
-        &shape,
-        crate::geometry::TopologyDomain::Cartesian,
-        limit,
-    )
-    .expect_err("GeoJSON position exceeds the output limit");
+    let error =
+        to_geojson_string_with_limit(&shape, crate::geometry::TopologyDomain::Cartesian, limit)
+            .expect_err("GeoJSON position exceeds the output limit");
     assert!(matches!(
         error.kind(),
         ErrorKind::Resource(ResourceError::SizeOverflow)
@@ -102,7 +99,7 @@ fn geojson_upper_bound_covers_each_geometry_kind() {
         "GEOMETRYCOLLECTION EMPTY",
     ] {
         let shape = parse_wkt(source).expect("fixture WKT parses");
-        let output = to_geojson_string::<false>(&shape, crate::geometry::TopologyDomain::Cartesian)
+        let output = to_geojson_string(&shape, crate::geometry::TopologyDomain::Cartesian)
             .expect("fixture GeoJSON serializes");
         let upper_bound = geojson_text_summary(&shape)
             .geojson_upper_bound()
@@ -130,13 +127,13 @@ fn checked_geojson_writer_runs_when_upper_bound_exceeds_fitting_lower_bound() {
             .is_some_and(|upper_bound| upper_bound > small_limit)
     );
     assert_eq!(
-        to_geojson_string_with_limit::<false>(
+        to_geojson_string_with_limit(
             &small_shape,
             crate::geometry::TopologyDomain::Cartesian,
             small_limit,
         )
         .expect("checked fallback emits a Point below the limit"),
-        to_geojson_string::<false>(&small_shape, crate::geometry::TopologyDomain::Cartesian)
+        to_geojson_string(&small_shape, crate::geometry::TopologyDomain::Cartesian)
             .expect("base writer emits a Point")
     );
 
@@ -153,12 +150,9 @@ fn checked_geojson_writer_runs_when_upper_bound_exceeds_fitting_lower_bound() {
             .is_some_and(|upper_bound| upper_bound > limit)
     );
 
-    let error = to_geojson_string_with_limit::<false>(
-        &shape,
-        crate::geometry::TopologyDomain::Cartesian,
-        limit,
-    )
-    .expect_err("GeoJSON position exceeds the output limit");
+    let error =
+        to_geojson_string_with_limit(&shape, crate::geometry::TopologyDomain::Cartesian, limit)
+            .expect_err("GeoJSON position exceeds the output limit");
     assert!(matches!(
         error.kind(),
         ErrorKind::Resource(ResourceError::SizeOverflow)
@@ -187,7 +181,7 @@ fn geographic_domain() -> crate::geometry::TopologyDomain {
 }
 
 fn written(shape: &Shape, domain: crate::geometry::TopologyDomain) -> Value {
-    let text = to_geojson_string::<false>(shape, domain).expect("serializes");
+    let text = to_geojson_string(shape, domain).expect("serializes");
     serde_json::from_str(&text).expect("emitted GeoJSON parses")
 }
 
@@ -300,7 +294,7 @@ fn writer_preserves_uniform_xyz_and_mixed_collection_axes() {
         )],
     ));
     let polygon_value: Value = serde_json::from_str(
-        &to_geojson_string::<true>(&polygon, crate::geometry::TopologyDomain::Cartesian)
+        &to_geojson_string(&polygon, crate::geometry::TopologyDomain::Cartesian)
             .expect("uniform XYZ polygon serializes"),
     )
     .expect("uniform XYZ output is JSON");
@@ -322,7 +316,7 @@ fn writer_preserves_uniform_xyz_and_mixed_collection_axes() {
         Shape::geometry_collection(vec![Shape::Point(point(1.0, 2.0)), Shape::Point(xyz_point)])
             .expect("mixed-axis collection is valid");
     let collection_value: Value = serde_json::from_str(
-        &to_geojson_string::<true>(&collection, crate::geometry::TopologyDomain::Cartesian)
+        &to_geojson_string(&collection, crate::geometry::TopologyDomain::Cartesian)
             .expect("mixed-axis collection serializes"),
     )
     .expect("mixed-axis collection output is JSON");
@@ -346,9 +340,9 @@ fn write_rejects_out_of_domain_geographic_positions() {
     // domain. The low-level serializer still accepts an explicitly selected
     // Cartesian domain for internal parity fixtures; public CRS-free writers
     // select the geographic domain instead.
-    to_geojson_string::<false>(&Shape::Point(point(0.0, 91.0)), geographic_domain()).unwrap_err();
-    to_geojson_string::<false>(&Shape::Point(point(181.0, 0.0)), geographic_domain()).unwrap_err();
-    to_geojson_string::<false>(
+    to_geojson_string(&Shape::Point(point(0.0, 91.0)), geographic_domain()).unwrap_err();
+    to_geojson_string(&Shape::Point(point(181.0, 0.0)), geographic_domain()).unwrap_err();
+    to_geojson_string(
         &Shape::Point(point(0.0, 91.0)),
         crate::geometry::TopologyDomain::Cartesian,
     )
@@ -361,7 +355,7 @@ fn write_rejects_geojson_unrepresentable_axes_and_members() {
         crate::geometry::GeometryKind::Point,
         crate::geometry::CoordinateAxes::XYZ,
     );
-    to_geojson_string::<true>(&xyz_empty, crate::geometry::TopologyDomain::Cartesian).unwrap_err();
+    to_geojson_string(&xyz_empty, crate::geometry::TopologyDomain::Cartesian).unwrap_err();
 
     let measured = Shape::Point(
         Point::new_axes(
@@ -372,11 +366,10 @@ fn write_rejects_geojson_unrepresentable_axes_and_members() {
         )
         .unwrap(),
     );
-    to_geojson_string::<true>(&measured, crate::geometry::TopologyDomain::Cartesian).unwrap_err();
+    to_geojson_string(&measured, crate::geometry::TopologyDomain::Cartesian).unwrap_err();
 
     let explicit_empty = parse_wkt("MULTIPOINT (EMPTY, (1 2))").unwrap();
-    to_geojson_string::<true>(&explicit_empty, crate::geometry::TopologyDomain::Cartesian)
-        .unwrap_err();
+    to_geojson_string(&explicit_empty, crate::geometry::TopologyDomain::Cartesian).unwrap_err();
 }
 
 #[test]
@@ -457,7 +450,7 @@ fn xyz_geojson_extreme_values_parse_and_round_trip() {
         )
         .unwrap(),
     );
-    let text = to_geojson_string::<true>(&shape, crate::geometry::TopologyDomain::Cartesian)
+    let text = to_geojson_string(&shape, crate::geometry::TopologyDomain::Cartesian)
         .expect("extreme XYZ GeoJSON writes");
     let value: Value = serde_json::from_str(&text).expect("extreme GeoJSON parses as JSON");
     assert_eq!(parse_geojson(&value).unwrap(), shape);

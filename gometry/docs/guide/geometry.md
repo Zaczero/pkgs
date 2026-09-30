@@ -374,6 +374,10 @@ for x, y, z, m in coords:
 
 ```
 
+[`coords.select(...)`][gometry.Coordinates.select] chooses a fixed coordinate-view
+layout for nested output, iteration, ndarray/dict exports, and equality without
+changing the geometry.
+
 ### Explicit constructors identify ambiguous tuples
 
 A bare 3-tuple `(x, y, v)` is ambiguous — it could be XYZ or XYM. Use the

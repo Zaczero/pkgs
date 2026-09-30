@@ -500,7 +500,7 @@ def test_z_m_preserved_scalar_geometry(
 def test_z_m_preserved_geometry_array() -> None:
     arr = gm.points([0.0, 10.0], [0.0, 10.0], z=[1.0, 2.0], m=[3.0, 4.0], crs=WGS84)
     out = arr.to_crs(WEB_MERCATOR)
-    coords = gm.get_coordinates(out, axes='XYZM')
+    coords = gm.get_coordinates(out)
     assert len(coords) == 2
     assert coords[0, 2:] == pytest.approx([1.0, 3.0])
     assert coords[1, 2:] == pytest.approx([2.0, 4.0])

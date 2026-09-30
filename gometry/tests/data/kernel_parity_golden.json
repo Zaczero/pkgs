@@ -13216,7 +13216,7 @@
     "to_geojson:zm_polygon": {
       "class": "InvalidGeometryError",
       "kind": "error",
-      "message_key": "geojson_has_no_m_ordinate"
+      "message_key": "geojson_cannot_represent_m"
     },
     "to_wkb:antimeridian_line": {
       "hex": "010200000002000000000000000040654000000000000024c000000000004065c00000000000002440",

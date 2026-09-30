@@ -360,7 +360,6 @@ _AffineMatrix: TypeAlias = (
 )
 _Bounds2D: TypeAlias = tuple[float, float, float, float]
 _Bounds3D: TypeAlias = tuple[float, float, float, float, float, float]
-_WktOutputDimension: TypeAlias = Literal[2, 3, 4]
 
 #: A scalar GeoJSON input: JSON text, any mapping, or a
 #: ``__geo_interface__``-bearing object.
@@ -679,11 +678,10 @@ class Coordinates(Sequence[tuple[float | None, ...]]):
     def select(self, axes: CoordinateAxes) -> Coordinates:
         """Return a view of the same coordinates in a fixed ``coordinate_axes`` layout
         (``'XY'``/``'XYZ'``/``'XYM'``/``'XYZM'``): every tuple/column has that
-        shape. Nested/tuple output (``to_nested`` / ``select`` iteration) uses
-        ``None`` where a coordinate lacks the requested Z/M; ndarray columns
-        (``.x``/``.y``/``.z``/``.m``) and ``numpy.asarray`` use NaN for absent
-        axes. Makes a mixed-dimension array rectangular for iteration and
-        ``numpy.asarray``.
+        shape. Nested/tuple output uses ``None`` where a coordinate lacks the
+        requested Z/M; ndarray columns and ``numpy.asarray`` use ``NaN`` there.
+        `select` changes which ordinates nested output, iteration, ndarray/dict
+        exports, and coordinate equality see; it does not change the geometry.
 
         Parameters
         ----------
@@ -693,14 +691,14 @@ class Coordinates(Sequence[tuple[float | None, ...]]):
         Returns
         -------
         Coordinates
-            The same coordinates with the forced layout.
+            The same coordinates with the selected view layout.
 
         Examples
         --------
         >>> import gometry as gm
         >>> coords = gm.LineString([(0, 0), (1, 1)]).coords
-        >>> coords.select('XY').to_nested()
-        [(0.0, 0.0), (1.0, 1.0)]
+        >>> coords.select('XYZ').to_nested()
+        [(0.0, 0.0, None), (1.0, 1.0, None)]
         """
     @property
     def row_index(self) -> npt.NDArray[np.int64]:
@@ -727,8 +725,9 @@ class Coordinates(Sequence[tuple[float | None, ...]]):
         """Return the coordinates as a nested structure mirroring the geometry's topology
         (point → ``[x, y]``, line → list of tuples, polygon → list of rings;
         arrays → one entry per present geometry) — the ``__geo_interface__``-style
-        nesting, as Python lists. Missing array rows are skipped. The flat
-        columns do not preserve this shape.
+        nesting, as Python lists. A selected view layout determines each
+        coordinate's ordinates; absent selected Z/M values are ``None``. Missing
+        array rows are skipped. The flat columns do not preserve this shape.
 
         Returns
         -------
@@ -751,9 +750,9 @@ class Coordinates(Sequence[tuple[float | None, ...]]):
     ) -> dict[str, npt.NDArray[np.float64] | npt.NDArray[np.int64]]:
         """Return a dependency-free column dict — ``{'x': ndarray, 'y': ndarray, …}`` — ready
         for ``pandas``/``polars`` (``pd.DataFrame(coords.to_dict())``).
-        ``z``/``m`` columns appear when present or `select`-forced (``NaN`` for
-        rows that lack them); ``index=True`` adds the source-geometry row
-        column.
+        ``z``/``m`` columns appear when carried by the view or selected layout,
+        with ``NaN`` for rows that lack an ordinate; ``index=True`` adds the
+        source-geometry row column.
 
         Parameters
         ----------
@@ -1586,6 +1585,7 @@ class Geometry:
     def to_polyline(self, *, precision: int = 5, drop_epoch: bool = False) -> str:
         """Encode the ``LineString`` or ``Point`` as Google polyline text (see
         `from_polyline`).
+        Each writer preserves all ordinates the format supports and rejects unsupported axes; remove geometry axes with `force_2d()`, `set_z(None)`, or `set_m(None)` before writing, or use `coords.select(...)` to choose a coordinate-view export layout.
 
         Parameters
         ----------
@@ -1771,7 +1771,7 @@ class Geometry:
         'LINESTRING (0 0, 0 2)'
         """
 
-    def to_geojson(self, *, include_z: bool = True, drop_epoch: bool = False) -> str:
+    def to_geojson(self, *, drop_epoch: bool = False) -> str:
         """Serialize to `GeoJSON` text. `GeoJSON` is WGS84 by specification (RFC 7946):
         CRS-tagged input must be ``EPSG:4326`` (or ``OGC:CRS84``) — reproject with
         ``to_crs(4326)`` first. CRS-free input is explicitly assumed to already be
@@ -1780,13 +1780,12 @@ class Geometry:
         split according to RFC 7946. If CRS-free coordinates have projected or other
         planar semantics, transform them or choose another format.
 
+        Each writer preserves all ordinates the format supports and rejects unsupported axes; remove geometry axes with `force_2d()`, `set_z(None)`, or `set_m(None)` before writing, or use `coords.select(...)` to choose a coordinate-view export layout.
+
+        GeoJSON cannot represent M; drop it with ``set_m(None)`` (or ``force_2d()``).
+
         Parameters
         ----------
-        include_z : bool, default True
-            Write Z ordinates when present.
-
-            `GeoJSON` cannot represent M; remove it explicitly with ``set_m(None)``.
-
         drop_epoch : bool, default False
             Permit losing coordinate-epoch metadata, which GeoJSON cannot encode.
 
@@ -1800,7 +1799,7 @@ class Geometry:
         CRSError
             If the input carries a CRS other than WGS84.
         InvalidGeometryError
-            If input carries M ordinates.
+            If input carries M ordinates; drop them with ``set_m(None)`` (or ``force_2d()``).
         GeometryError
             If input carries a coordinate epoch and ``drop_epoch`` is false.
 
@@ -3730,20 +3729,16 @@ class Geometry:
     def to_wkt(
         self,
         *,
-        output_dimension: _WktOutputDimension | None = None,
         include_srid: bool = False,
         precision: _IntScalar | None = None,
         drop_epoch: bool = False,
     ) -> str:
         """Serialize to Well-Known Text.
 
+        Each writer preserves all ordinates the format supports and rejects unsupported axes; remove geometry axes with `force_2d()`, `set_z(None)`, or `set_m(None)` before writing, or use `coords.select(...)` to choose a coordinate-view export layout.
+
         Parameters
         ----------
-        output_dimension : int, optional
-            Cap the written ordinate count (2, 3, or 4) to at most the
-            geometry's own dimensionality; defaults to writing all present
-            ordinates. Cannot invent Z/M that the geometry does not carry.
-
         include_srid : bool, default False
             Embed the EPSG code as an EWKT ``SRID=<code>;`` prefix. The PostGIS wire
             aliases ``OGC:CRS84`` to SRID 4326 and ``OGC:CRS84h`` to SRID 4979;
@@ -3764,8 +3759,7 @@ class Geometry:
         Raises
         ------
         GeometryError
-            If ``output_dimension`` is not 2, 3, or 4, or ``precision`` is not
-            between 0 and 15, or the geometry carries a coordinate epoch and
+            If ``precision`` is not between 0 and 15, or the geometry carries a coordinate epoch and
             ``drop_epoch`` is false.
         CRSError
             If ``include_srid`` is set and the CRS has no EPSG code.
@@ -3791,6 +3785,8 @@ class Geometry:
         drop_epoch: bool = False,
     ) -> bytes:
         """Serialize to Well-Known Binary.
+
+        Each writer preserves all ordinates the format supports and rejects unsupported axes; remove geometry axes with `force_2d()`, `set_z(None)`, or `set_m(None)` before writing, or use `coords.select(...)` to choose a coordinate-view export layout.
 
         Parameters
         ----------
@@ -6765,6 +6761,7 @@ class GeometryArray(Sequence[_GeometryT_co]):
     ) -> list[str | None]:
         """Encode every ``LineString`` or ``Point`` row as Google polyline text (see
         `Geometry.to_polyline`).
+        Each writer preserves all ordinates the format supports and rejects unsupported axes; remove geometry axes with `force_2d()`, `set_z(None)`, or `set_m(None)` before writing, or use `coords.select(...)` to choose a coordinate-view export layout.
 
         Parameters
         ----------
@@ -7366,7 +7363,7 @@ class GeometryArray(Sequence[_GeometryT_co]):
         """
 
     def to_geojson(
-        self, *, include_z: bool = True, drop_epoch: bool = False
+        self, *, drop_epoch: bool = False
     ) -> list[str | None]:
         """Serialize to `GeoJSON` text. `GeoJSON` is WGS84 by specification (RFC 7946):
         CRS-tagged input must be ``EPSG:4326`` (or ``OGC:CRS84``) — reproject with
@@ -7376,13 +7373,12 @@ class GeometryArray(Sequence[_GeometryT_co]):
         split according to RFC 7946. If CRS-free coordinates have projected or other
         planar semantics, transform them or choose another format.
 
+        Each writer preserves all ordinates the format supports and rejects unsupported axes; remove geometry axes with `force_2d()`, `set_z(None)`, or `set_m(None)` before writing, or use `coords.select(...)` to choose a coordinate-view export layout.
+
+        GeoJSON cannot represent M; drop it with ``set_m(None)`` (or ``force_2d()``).
+
         Parameters
         ----------
-        include_z : bool, default True
-            Write Z ordinates when present.
-
-            `GeoJSON` cannot represent M; remove it explicitly with ``set_m(None)``.
-
         drop_epoch : bool, default False
             Permit losing coordinate-epoch metadata, which GeoJSON cannot encode.
 
@@ -7396,7 +7392,7 @@ class GeometryArray(Sequence[_GeometryT_co]):
         CRSError
             If the input carries a CRS other than WGS84.
         InvalidGeometryError
-            If input carries M ordinates.
+            If input carries M ordinates; drop them with ``set_m(None)`` (or ``force_2d()``).
         GeometryError
             If input carries a coordinate epoch and ``drop_epoch`` is false.
 
@@ -9964,20 +9960,16 @@ class GeometryArray(Sequence[_GeometryT_co]):
     def to_wkt(
         self,
         *,
-        output_dimension: _WktOutputDimension | None = None,
         include_srid: bool = False,
         precision: int | None = None,
         drop_epoch: bool = False,
     ) -> list[str | None]:
         """Serialize to Well-Known Text.
 
+        Each writer preserves all ordinates the format supports and rejects unsupported axes; remove geometry axes with `force_2d()`, `set_z(None)`, or `set_m(None)` before writing, or use `coords.select(...)` to choose a coordinate-view export layout.
+
         Parameters
         ----------
-        output_dimension : int, optional
-            Cap the written ordinate count (2, 3, or 4) to at most the
-            geometry's own dimensionality; defaults to writing all present
-            ordinates. Cannot invent Z/M that the geometry does not carry.
-
         include_srid : bool, default False
             Embed the EPSG code as an EWKT ``SRID=<code>;`` prefix. The PostGIS wire
             aliases ``OGC:CRS84`` to SRID 4326 and ``OGC:CRS84h`` to SRID 4979;
@@ -9998,8 +9990,7 @@ class GeometryArray(Sequence[_GeometryT_co]):
         Raises
         ------
         GeometryError
-            If ``output_dimension`` is not 2, 3, or 4, or ``precision`` is not
-            between 0 and 15, or the geometry carries a coordinate epoch and
+            If ``precision`` is not between 0 and 15, or the geometry carries a coordinate epoch and
             ``drop_epoch`` is false.
         CRSError
             If ``include_srid`` is set and the CRS has no EPSG code.
@@ -10025,6 +10016,8 @@ class GeometryArray(Sequence[_GeometryT_co]):
         drop_epoch: bool = False,
     ) -> list[bytes | None]:
         """Serialize to Well-Known Binary.
+
+        Each writer preserves all ordinates the format supports and rejects unsupported axes; remove geometry axes with `force_2d()`, `set_z(None)`, or `set_m(None)` before writing, or use `coords.select(...)` to choose a coordinate-view export layout.
 
         Parameters
         ----------
@@ -18505,21 +18498,18 @@ def symmetric_difference_all(
 def get_coordinates(
     values: Geometry | GeometryArray[Geometry | None] | Iterable[_GeometryLike | None],
     *,
-    axes: CoordinateAxes | None = None,
     return_index: Literal[False] = False,
 ) -> npt.NDArray[np.float64]: ...
 @overload
 def get_coordinates(
     values: Geometry | GeometryArray[Geometry | None] | Iterable[_GeometryLike | None],
     *,
-    axes: CoordinateAxes | None = None,
     return_index: Literal[True],
 ) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.int64]]: ...
 @overload
 def get_coordinates(
     values: Geometry | GeometryArray[Geometry | None] | Iterable[_GeometryLike | None],
     *,
-    axes: CoordinateAxes | None = None,
     return_index: bool = False,
 ) -> npt.NDArray[np.float64] | tuple[npt.NDArray[np.float64], npt.NDArray[np.int64]]:
     """Extract coordinates as one flat dense matrix.
@@ -18530,8 +18520,8 @@ def get_coordinates(
         Values are flattened depth-first in source-row order. Missing and empty
         geometries contribute no rows, but array and iterable source indexes
         remain available through `return_index=True`.
-    axes : {'XY', 'XYZ', 'XYM', 'XYZM'}, optional
-        Output coordinate columns. ``None`` means ``'XY'``.
+        The matrix includes every axis carried by the coordinates; heterogeneous
+        rows use ``NaN`` where a coordinate lacks an axis.
     return_index : bool, default False
         Return a source-row index alongside the matrix. Scalar geometries use
         index zero for every coordinate.
@@ -19059,6 +19049,7 @@ def to_feature(
     drop_epoch: bool = False,
 ) -> GeoJsonFeature:
     """Build a GeoJSON Feature mapping from a geometry and side data.
+    Each writer preserves all ordinates the format supports and rejects unsupported axes; remove geometry axes with `force_2d()`, `set_z(None)`, or `set_m(None)` before writing, or use `coords.select(...)` to choose a coordinate-view export layout.
 
     Parameters
     ----------
@@ -19090,7 +19081,7 @@ def to_feature(
     InvalidGeometryError
         If the geometry has an M ordinate or coordinates outside the WGS84
         longitude/latitude domain. GeoJSON Feature mappings have no
-        representation for M; use WKT/GeoArrow to preserve it.
+        representation for M; drop it with ``set_m(None)`` (or ``force_2d()``).
     CRSError
         If a CRS-tagged geometry is not in the WGS84 lon/lat family.
 
@@ -19128,6 +19119,7 @@ def to_feature_collection(
     drop_epoch: bool = False,
 ) -> GeoJsonFeatureCollection:
     """Build a GeoJSON FeatureCollection from geometries and aligned side data.
+    Each writer preserves all ordinates the format supports and rejects unsupported axes; remove geometry axes with `force_2d()`, `set_z(None)`, or `set_m(None)` before writing, or use `coords.select(...)` to choose a coordinate-view export layout.
 
     Parameters
     ----------
@@ -19163,8 +19155,8 @@ def to_feature_collection(
         coordinate epoch metadata is present without ``drop_epoch=True``.
     InvalidGeometryError
         If a geometry has an M ordinate or coordinates outside the WGS84
-        longitude/latitude domain. GeoJSON Feature mappings have no
-        representation for M; use WKT/GeoArrow to preserve it.
+        longitude/latitude domain. GeoJSON Feature mappings cannot represent M;
+        drop it with ``set_m(None)`` (or ``force_2d()``).
     CRSError
         If a CRS-tagged geometry is not EPSG:4326 longitude/latitude.
 

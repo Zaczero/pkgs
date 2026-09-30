@@ -683,7 +683,7 @@ def test_coverage_clean_publishes_shared_bits_and_source_ordinates() -> None:
     expected_bits = {tuple(row) for row in expected.view(np.uint64)}
     shared_bits = []
     for geometry in out:
-        coordinates = gm.get_coordinates(geometry, axes='XY')
+        coordinates = gm.get_coordinates(geometry.force_2d())
         selected = coordinates[
             (coordinates[:, 0] == 1.2)
             & ((coordinates[:, 1] == 0.0) | (coordinates[:, 1] == 1.0))

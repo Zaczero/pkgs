@@ -10,9 +10,7 @@ mod read;
 mod write;
 
 pub(crate) use read::{classify_wkt_type_token, parse_wkt};
-pub(crate) use write::{
-    WktDimension, WktNumberFormat, to_wkt, to_wkt_display, to_wkt_preview, to_wkt_with_dimension,
-};
+pub(crate) use write::{WktNumberFormat, to_wkt, to_wkt_display, to_wkt_preview, to_wkt_with_srid};
 
 #[cfg(test)]
 mod tests {
@@ -20,7 +18,7 @@ mod tests {
 
     use super::*;
     use crate::geometry::{MOrdinate, ZOrdinate};
-    use crate::io::{parse_geojson, to_geojson_string_with_z};
+    use crate::io::parse_geojson;
 
     fn wkt_number(value: f64) -> String {
         let mut out = String::new();
@@ -323,39 +321,28 @@ mod tests {
         ];
 
         for shape in cases {
-            for include_z in [false, true] {
-                if shape.has_m()
-                    || (!include_z && shape.has_z())
-                    || matches!(shape, Shape::Empty(_, axes) if axes != CoordinateAxes::XY)
-                {
-                    let result = if include_z {
-                        geojson::to_geojson_string::<true>(
-                            &shape,
-                            crate::geometry::TopologyDomain::Cartesian,
-                        )
-                    } else {
-                        geojson::to_geojson_string::<false>(
-                            &shape,
-                            crate::geometry::TopologyDomain::Cartesian,
-                        )
-                    };
-                    assert!(result.is_err(), "unrepresentable GeoJSON axes must reject");
-                    continue;
-                }
-                let direct = to_geojson_string_with_z(&shape, include_z);
-                // Compare CONTENT, not byte order: the direct writer emits `type`
-                // first (the convention) while the serde value-tree reference sorts
-                // keys, so assert the parsed values are equal. The writer
-                // normalizes polygon winding to the RFC 7946 right-hand rule
-                // (shells CCW, holes CW), so the reference walks the same
-                // oriented view.
-                let oriented = shape.clone().orient_polygons(false).unwrap();
-                assert_eq!(
-                    serde_json::from_str::<serde_json::Value>(&direct).unwrap(),
-                    reference_geojson_value(&oriented, include_z),
+            if shape.has_m() || matches!(shape, Shape::Empty(_, axes) if axes != CoordinateAxes::XY)
+            {
+                assert!(
+                    geojson::to_geojson_string(&shape, crate::geometry::TopologyDomain::Cartesian,)
+                        .is_err(),
+                    "unrepresentable GeoJSON axes must reject"
                 );
-                parse_geojson(&serde_json::from_str(&direct).unwrap()).unwrap();
+                continue;
             }
+            let direct =
+                geojson::to_geojson_string(&shape, crate::geometry::TopologyDomain::Cartesian)
+                    .expect("carried GeoJSON ordinates serialize");
+            // Compare CONTENT, not byte order: the direct writer emits `type`
+            // first (the convention) while the serde value-tree reference sorts
+            // keys, so assert the parsed values are equal. The writer
+            // normalizes polygon winding to the RFC 7946 right-hand rule
+            // (shells CCW, holes CW), so the reference walks the same
+            // oriented view.
+            let oriented = shape.clone().orient_polygons(false).unwrap();
+            let value = serde_json::from_str::<serde_json::Value>(&direct).unwrap();
+            assert_eq!(value, reference_geojson_value(&oriented));
+            parse_geojson(&value).unwrap();
         }
     }
 
@@ -387,35 +374,35 @@ mod tests {
         parse_geojson(&value).unwrap_err();
     }
 
-    fn reference_geojson_value(shape: &Shape, include_z: bool) -> Value {
+    fn reference_geojson_value(shape: &Shape) -> Value {
         match shape {
             Shape::Point(point) => json!({
                 "type": "Point",
-                "coordinates": reference_point(*point, include_z),
+                "coordinates": reference_point(*point),
             }),
             Shape::MultiPoint(points) => json!({
                 "type": "MultiPoint",
-                "coordinates": reference_points(points, include_z),
+                "coordinates": reference_points(points),
             }),
             Shape::LineString(points) => json!({
                 "type": "LineString",
-                "coordinates": reference_points(points, include_z),
+                "coordinates": reference_points(points),
             }),
             Shape::MultiLineString(lines) => json!({
                 "type": "MultiLineString",
-                "coordinates": lines.iter().map(|line| reference_points(line, include_z)).collect::<Vec<_>>(),
+                "coordinates": lines.iter().map(reference_points).collect::<Vec<_>>(),
             }),
             Shape::Polygon(polygon) => json!({
                 "type": "Polygon",
-                "coordinates": reference_polygon(polygon, include_z),
+                "coordinates": reference_polygon(polygon),
             }),
             Shape::MultiPolygon(polygons) => json!({
                 "type": "MultiPolygon",
-                "coordinates": polygons.iter().map(|polygon| reference_polygon(polygon, include_z)).collect::<Vec<_>>(),
+                "coordinates": polygons.iter().map(reference_polygon).collect::<Vec<_>>(),
             }),
             Shape::GeometryCollection(geometries) => json!({
                 "type": "GeometryCollection",
-                "geometries": geometries.iter().map(|geometry| reference_geojson_value(geometry, include_z)).collect::<Vec<_>>(),
+                "geometries": geometries.iter().map(reference_geojson_value).collect::<Vec<_>>(),
             }),
             Shape::Empty(GeometryKind::GeometryCollection, _) => {
                 json!({"type": "GeometryCollection", "geometries": []})
@@ -424,32 +411,20 @@ mod tests {
         }
     }
 
-    fn reference_point(point: Point, include_z: bool) -> Vec<f64> {
-        if include_z {
-            point
-                .z()
-                .map_or_else(|| vec![point.x, point.y], |z| vec![point.x, point.y, z])
-        } else {
-            vec![point.x, point.y]
-        }
+    fn reference_point(point: Point) -> Vec<f64> {
+        point
+            .z()
+            .map_or_else(|| vec![point.x, point.y], |z| vec![point.x, point.y, z])
     }
 
-    fn reference_points<C: Coordinates + ?Sized>(points: &C, include_z: bool) -> Vec<Vec<f64>> {
-        points
-            .iter_coords()
-            .map(|point| reference_point(point, include_z))
-            .collect()
+    fn reference_points<C: Coordinates + ?Sized>(points: &C) -> Vec<Vec<f64>> {
+        points.iter_coords().map(reference_point).collect()
     }
 
-    fn reference_polygon(polygon: &Polygon, include_z: bool) -> Vec<Vec<Vec<f64>>> {
+    fn reference_polygon(polygon: &Polygon) -> Vec<Vec<Vec<f64>>> {
         let mut rings = Vec::with_capacity(polygon.holes.len().wrapping_add(1));
-        rings.push(reference_points(&polygon.shell, include_z));
-        rings.extend(
-            polygon
-                .holes
-                .iter()
-                .map(|hole| reference_points(hole, include_z)),
-        );
+        rings.push(reference_points(&polygon.shell));
+        rings.extend(polygon.holes.iter().map(reference_points));
         rings
     }
 }

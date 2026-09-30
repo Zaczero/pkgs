@@ -7,11 +7,10 @@ use std::num::NonZeroU32;
 use pyo3::types::PyString;
 
 use crate::boundary::FloatInput;
-use crate::io::WktDimension;
 use crate::py::errors::integer_parameter_error;
 use crate::py::support::{
     Bound, DwithinDistance, GeometryError, GeometryErrorKind, NonNegative, Positive, PyAny,
-    PyAnyMethods as _, PyErr, PyResult, Python, non_negative_int, py_i64_bounded, py_i64_required,
+    PyAnyMethods as _, PyErr, PyResult, Python, non_negative_int, py_i64_bounded,
 };
 
 pub(crate) fn parse_precision(value: &Bound<'_, PyAny>) -> PyResult<i32> {
@@ -19,27 +18,6 @@ pub(crate) fn parse_precision(value: &Bound<'_, PyAny>) -> PyResult<i32> {
         GeometryError::new_err(format!("precision must be between 0 and 15, got {v}"))
     })
     .map(|precision| precision as i32)
-}
-
-pub(crate) fn parse_wkt_output_dimension(
-    value: Option<&Bound<'_, PyAny>>,
-) -> PyResult<Option<WktDimension>> {
-    let Some(value) = value else {
-        return Ok(None);
-    };
-    if value.is_none() {
-        return Ok(None);
-    }
-    let dimension = py_i64_required("WKT output_dimension", value)?;
-    u8::try_from(dimension)
-        .ok()
-        .and_then(|dimension| WktDimension::try_from(dimension).ok())
-        .map(Some)
-        .ok_or_else(|| {
-            GeometryError::new_err(format!(
-                "WKT output_dimension must be 2, 3, or 4, got {dimension}"
-            ))
-        })
 }
 
 pub(crate) fn validate_buffer_quadrant_segments(quadrant_segments: i64) -> PyResult<NonZeroU32> {

@@ -12,8 +12,8 @@ use crate::array::{
     Result, Shape, VoronoiClipInput, bool_array, cdt_refinement_values, exact_geometry,
     exact_geometry_array, expected_geometry_or_array, geometry, io, non_negative_int,
     note_array_row, owned_voronoi_boundary, pair_packed_equals_exact, parse_precision,
-    parse_wkt_output_dimension, require_geojson_crs, row_sample_seed, rows_err,
-    validate_equals_exact_tolerance, validate_subdivide_max_vertices,
+    require_geojson_crs, row_sample_seed, rows_err, validate_equals_exact_tolerance,
+    validate_subdivide_max_vertices,
 };
 use crate::py::support;
 use crate::py::vectors::Groups;
@@ -22,11 +22,9 @@ impl PyGeometryArray {
     pub(crate) fn to_wkt_impl(
         &self,
         py: Python<'_>,
-        output_dimension: Option<&Bound<'_, PyAny>>,
         include_srid: bool,
         precision: Option<&Bound<'_, PyAny>>,
     ) -> PyResult<Vec<String>> {
-        let output_dimension = parse_wkt_output_dimension(output_dimension)?;
         let precision = precision.map(parse_precision).transpose()?;
         let array = self.clone();
         let crs = self.crs_ref().cloned();
@@ -41,12 +39,7 @@ impl PyGeometryArray {
                             Some(precision) => std::borrow::Cow::Owned(shape.quantize(precision)?),
                             None => std::borrow::Cow::Borrowed(shape),
                         };
-                        io::to_wkt_with_dimension(
-                            &shape,
-                            output_dimension,
-                            crs.as_deref(),
-                            include_srid,
-                        )
+                        io::to_wkt_with_srid(&shape, crs.as_deref(), include_srid)
                     }),
                 })
                 .collect_rows()
@@ -134,31 +127,23 @@ impl PyGeometryArray {
         Ok(output)
     }
 
-    pub(crate) fn to_geojson_impl(&self, py: Python<'_>, include_z: bool) -> PyResult<Vec<String>> {
+    pub(crate) fn to_geojson_impl(&self, py: Python<'_>) -> PyResult<Vec<String>> {
         require_geojson_crs(self.crs_str())?;
         // O(1) axis probe off the packed columns instead of materializing every
         // row's `Shape`. M is unrepresentable in GeoJSON: refuse it by default
         // (no silent loss).
         if self.has_m() {
-            return Err(InvalidGeometryError::new_err(
-                "GeoJSON has no M ordinate; remove M with set_m(None), or use WKT/GeoArrow",
-            ));
+            return Err(InvalidGeometryError::new_err(crate::io::GEOJSON_M_ERROR));
         }
         let crs = self.crs_ref().cloned();
         let domain = py.detach(move || io::geojson_domain(crs.as_deref()))?;
         // GeoJSON treats CRS-free coordinates as WGS84 lon/lat too. A
         // domain-invalid row is a spec violation, not a degradable data
         // condition, so it fails the batch (like the M-ordinate refusal above).
-        if include_z {
-            py.detach(|| self.geojson_rows::<true>(domain))
-                .map_err(rows_err)
-        } else {
-            py.detach(|| self.geojson_rows::<false>(domain))
-                .map_err(rows_err)
-        }
+        py.detach(|| self.geojson_rows(domain)).map_err(rows_err)
     }
 
-    fn geojson_rows<const INCLUDE_Z: bool>(
+    fn geojson_rows(
         &self,
         domain: geometry::TopologyDomain,
     ) -> std::result::Result<Vec<String>, (usize, crate::error::Error)> {
@@ -169,7 +154,7 @@ impl PyGeometryArray {
                 ArrayRow::Present(row) => {
                     let logical = row.logical();
                     row.row()
-                        .try_with_shape(|shape| io::to_geojson_string::<INCLUDE_Z>(shape, domain))
+                        .try_with_shape(|shape| io::to_geojson_string(shape, domain))
                         .map_err(|error| (logical, error))?
                 },
             };

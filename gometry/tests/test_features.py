@@ -100,7 +100,7 @@ def test_feature_helpers_preserve_properties_round_trip() -> None:
         lambda: gm.to_feature_collection(gm.GeometryArray([measured])),
     )
     for encode in encoders:
-        with pytest.raises(gm.InvalidGeometryError, match='GeoJSON has no M'):
+        with pytest.raises(gm.InvalidGeometryError, match='GeoJSON cannot represent M'):
             encode()
     features = gm.from_features(json.dumps(fc))
     assert isinstance(features, gm.Features)

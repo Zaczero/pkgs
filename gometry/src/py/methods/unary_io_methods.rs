@@ -6,15 +6,12 @@ use crate::{PyGeometry, PyGeometryArray, PyValidationReport, RepairMethod};
 
 method_doc! {
     doc_to_wkt;
-    body: r"Serialize to Well-Known Text.
+    body: concat!(r"Serialize to Well-Known Text.
+
+", crate::writer_ordinate_policy!(), r"
 
 Parameters
 ----------
-output_dimension : int, optional
-    Cap the written ordinate count (2, 3, or 4) to at most the
-    geometry's own dimensionality; defaults to writing all present
-    ordinates. Cannot invent Z/M that the geometry does not carry.
-
 include_srid : bool, default False
     Embed the EPSG code as an EWKT ``SRID=<code>;`` prefix. The PostGIS wire
     aliases ``OGC:CRS84`` to SRID 4326 and ``OGC:CRS84h`` to SRID 4979;
@@ -24,7 +21,7 @@ precision : int, optional
     Decimal places to round coordinates to (omit for full precision).
 
 drop_epoch : bool, default False
-    Permit losing coordinate-epoch metadata, which WKT cannot encode.";
+    Permit losing coordinate-epoch metadata, which WKT cannot encode.");
     scalar: r"
 
 Returns
@@ -45,8 +42,7 @@ list of str
 Raises
 ------
 GeometryError
-    If ``output_dimension`` is not 2, 3, or 4, or ``precision`` is not
-    between 0 and 15, or the geometry carries a coordinate epoch and
+    If ``precision`` is not between 0 and 15, or the geometry carries a coordinate epoch and
     ``drop_epoch`` is false.
 CRSError
     If ``include_srid`` is set and the CRS has no EPSG code.
@@ -66,7 +62,9 @@ Examples
 
 method_doc! {
     doc_to_wkb;
-    body: r"Serialize to Well-Known Binary.
+    body: concat!(r"Serialize to Well-Known Binary.
+
+", crate::writer_ordinate_policy!(), r"
 
 Parameters
 ----------
@@ -79,7 +77,7 @@ precision : int, optional
     Decimal places to round coordinates to (omit for full precision).
 
 drop_epoch : bool, default False
-    Permit losing coordinate-epoch metadata, which (E)WKB cannot encode.";
+    Permit losing coordinate-epoch metadata, which (E)WKB cannot encode.");
     scalar: r"
 
 Returns
@@ -123,7 +121,7 @@ True";
 
 method_doc! {
     doc_to_geojson;
-    body: r"Serialize to `GeoJSON` text. `GeoJSON` is WGS84 by specification (RFC 7946):
+    body: concat!(r"Serialize to `GeoJSON` text. `GeoJSON` is WGS84 by specification (RFC 7946):
 CRS-tagged input must be ``EPSG:4326`` (or ``OGC:CRS84``) — reproject with
 ``to_crs(4326)`` first. CRS-free input is explicitly assumed to already be
 WGS84 longitude/latitude: coordinates outside longitude ``[-180, 180]`` or
@@ -131,15 +129,14 @@ latitude ``[-90, 90]`` are rejected, and antimeridian-crossing geometry is
 split according to RFC 7946. If CRS-free coordinates have projected or other
 planar semantics, transform them or choose another format.
 
+", crate::writer_ordinate_policy!(), r"
+
+GeoJSON cannot represent M; drop it with ``set_m(None)`` (or ``force_2d()``).
+
 Parameters
 ----------
-include_z : bool, default True
-    Write Z ordinates when present.
-
-    `GeoJSON` cannot represent M; remove it explicitly with ``set_m(None)``.
-
 drop_epoch : bool, default False
-    Permit losing coordinate-epoch metadata, which GeoJSON cannot encode.";
+    Permit losing coordinate-epoch metadata, which GeoJSON cannot encode.");
     scalar: r"
 
 Returns
@@ -161,7 +158,7 @@ list of str
 CRSError
     If the input carries a CRS other than WGS84.
 InvalidGeometryError
-    If input carries M ordinates.
+    If input carries M ordinates; drop them with ``set_m(None)`` (or ``force_2d()``).
 GeometryError
     If input carries a coordinate epoch and ``drop_epoch`` is false.
 
@@ -275,17 +272,16 @@ Examples
 #[pymethods]
 impl PyGeometry {
     #[doc = doc_to_wkt!(scalar)]
-    #[pyo3(signature = (*, output_dimension = None, include_srid = false, precision = None, drop_epoch = false))]
+    #[pyo3(signature = (*, include_srid = false, precision = None, drop_epoch = false))]
     pub fn to_wkt(
         &self,
         py: Python<'_>,
-        output_dimension: Option<&Bound<'_, PyAny>>,
         include_srid: bool,
         precision: Option<&Bound<'_, PyAny>>,
         drop_epoch: bool,
     ) -> PyResult<String> {
         require_epoch_drop(self.epoch(), drop_epoch, "to_wkt")?;
-        self.to_wkt_impl(py, output_dimension, include_srid, precision)
+        self.to_wkt_impl(py, include_srid, precision)
     }
 
     #[doc = doc_to_wkb!(scalar)]
@@ -302,15 +298,10 @@ impl PyGeometry {
     }
 
     #[doc = doc_to_geojson!(scalar)]
-    #[pyo3(signature = (*, include_z = true, drop_epoch = false))]
-    pub fn to_geojson(
-        &self,
-        py: Python<'_>,
-        include_z: bool,
-        drop_epoch: bool,
-    ) -> PyResult<String> {
+    #[pyo3(signature = (*, drop_epoch = false))]
+    pub fn to_geojson(&self, py: Python<'_>, drop_epoch: bool) -> PyResult<String> {
         require_epoch_drop(self.epoch(), drop_epoch, "to_geojson")?;
-        self.to_geojson_impl(py, include_z)
+        self.to_geojson_impl(py)
     }
 
     #[doc = doc_validate!(scalar)]
@@ -331,17 +322,16 @@ impl PyGeometry {
 #[pymethods]
 impl PyGeometryArray {
     #[doc = doc_to_wkt!(array)]
-    #[pyo3(signature = (*, output_dimension = None, include_srid = false, precision = None, drop_epoch = false))]
+    #[pyo3(signature = (*, include_srid = false, precision = None, drop_epoch = false))]
     pub fn to_wkt(
         &self,
         py: Python<'_>,
-        output_dimension: Option<&Bound<'_, PyAny>>,
         include_srid: bool,
         precision: Option<&Bound<'_, PyAny>>,
         drop_epoch: bool,
     ) -> PyResult<Py<PyAny>> {
         require_epoch_drop(self.epoch(), drop_epoch, "to_wkt")?;
-        let rows = self.to_wkt_impl(py, output_dimension, include_srid, precision)?;
+        let rows = self.to_wkt_impl(py, include_srid, precision)?;
         self.masked_row_list(py, rows)
     }
 
@@ -360,15 +350,10 @@ impl PyGeometryArray {
     }
 
     #[doc = doc_to_geojson!(array)]
-    #[pyo3(signature = (*, include_z = true, drop_epoch = false))]
-    pub fn to_geojson(
-        &self,
-        py: Python<'_>,
-        include_z: bool,
-        drop_epoch: bool,
-    ) -> PyResult<Py<PyAny>> {
+    #[pyo3(signature = (*, drop_epoch = false))]
+    pub fn to_geojson(&self, py: Python<'_>, drop_epoch: bool) -> PyResult<Py<PyAny>> {
         require_epoch_drop(self.epoch(), drop_epoch, "to_geojson")?;
-        let rows = self.to_geojson_impl(py, include_z)?;
+        let rows = self.to_geojson_impl(py)?;
         self.masked_row_list(py, rows)
     }
 

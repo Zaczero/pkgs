@@ -122,9 +122,9 @@ def test_geodesic_array_area_length_match_scalar(metric):
 
 def test_to_geojson_always_rejects_m():
     xym = gm.from_wkt('POINT M (1 2 3)', crs=4326)
-    with pytest.raises(gm.InvalidGeometryError, match='GeoJSON has no M ordinate'):
+    with pytest.raises(gm.InvalidGeometryError, match='GeoJSON cannot represent M'):
         (xym).to_geojson()
-    with pytest.raises(gm.InvalidGeometryError, match='GeoJSON has no M ordinate'):
+    with pytest.raises(gm.InvalidGeometryError, match='GeoJSON cannot represent M'):
         (gm.from_wkt(['POINT M (1 2 3)'], crs=4326)).to_geojson()
     assert xym.set_m(None).to_geojson() == '{"type":"Point","coordinates":[1.0,2.0]}'
     assert '9' in (gm.from_wkt('POINT Z (1 2 9)', crs=4326)).to_geojson()

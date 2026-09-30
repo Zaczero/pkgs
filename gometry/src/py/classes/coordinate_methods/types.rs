@@ -53,21 +53,19 @@ impl PyCoordinates {
         }
     }
 
-    /// Format one coordinate as a Python tuple, honoring a fixed `select`
-    /// layout (absent Z/M become `None`) or the coordinate's native axes.
+    /// Format one coordinate as a Python tuple using the selected layout when set.
     pub(crate) fn tuple(&self, py: Python<'_>, point: Point) -> PyResult<Py<PyAny>> {
         coordinate_tuple(py, point, self.layout)
     }
 
     /// Visible-layout equality used by membership / count / index — the same
-    /// representation iteration yields. A `select('XY')` view matches on XY
-    /// only; a forced XYZ layout matches `(x, y, None)` when Z is absent.
+    /// representation iteration yields.
     pub(crate) fn visible_equals(
         &self,
         py: Python<'_>,
         point: Point,
         item: &Bound<'_, PyAny>,
     ) -> PyResult<bool> {
-        self.tuple(py, point)?.bind(py).eq(item)
+        coordinate_tuple(py, point, self.layout)?.bind(py).eq(item)
     }
 }

@@ -75,14 +75,20 @@ print("source-row index:", row_index.tolist())
 `(N, dims)` matrix (a copy, since storage is column-major) with `NaN`
 for absent Z/M; [`coords.to_dict()`][gometry.Coordinates.to_dict] returns
 read-only ndarray columns such as `{'x': ndarray, 'y': ndarray}` for direct
-pandas/Polars construction. It omits Z/M when the view does not carry those
-axes; call `coords.select('XYZ')` or `coords.select('XYZM')` to force those
-columns, which use `NaN` where absent. For a flattened `GeometryArray.coords`
-view, use [`.row_index`][gometry.Coordinates.row_index] to map each coordinate
-back to its source geometry row. [`get_coordinates`][gometry.get_coordinates]
-takes `axes=` and always returns one flat matrix; with `return_index=True` it
-also returns a parallel `int64` source-row index, including for empty and
-missing rows. Raw iterables use the same dense bulk extraction path.
+Pandas/Polars construction. It omits Z/M when the view does not carry those
+axes; mixed views include their union and use `NaN` where a row lacks an axis.
+Use `coords.select('XY')`, `coords.select('XYZ')`, `coords.select('XYM')`, or
+`coords.select('XYZM')` to choose a fixed coordinate-view layout. The selected
+layout changes nested output, iteration, ndarray/dict exports, and equality
+without changing the geometry. For a flattened `GeometryArray.coords` view, use
+[`.row_index`][gometry.Coordinates.row_index] to map each coordinate back to
+its source geometry row. [`get_coordinates`][gometry.get_coordinates] derives
+its columns from the carried axes and always returns one flat matrix; call
+`force_2d()`, `set_z(None)`, or `set_m(None)` on geometries before calling it
+when an ordinate should be removed. With
+`return_index=True` it also returns a parallel `int64` source-row index,
+including for empty and missing rows. Raw iterables use the same dense bulk
+extraction path.
 
 ## Coordinate matrices
 

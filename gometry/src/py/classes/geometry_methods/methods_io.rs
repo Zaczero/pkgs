@@ -13,6 +13,7 @@ frozen_pymethods! {
 impl PyGeometry {
     /// Encode the ``LineString`` or ``Point`` as Google polyline text (see
     /// `from_polyline`).
+    #[doc = crate::writer_ordinate_policy!()]
     ///
     /// Parameters
     /// ----------

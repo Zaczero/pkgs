@@ -139,6 +139,7 @@ impl PyGeometryArray {
 
     /// Encode every ``LineString`` or ``Point`` row as Google polyline text (see
     /// `Geometry.to_polyline`).
+    #[doc = crate::writer_ordinate_policy!()]
     ///
     /// Parameters
     /// ----------

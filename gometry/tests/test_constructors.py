@@ -217,13 +217,10 @@ def test_explicit_z_m_point_constructors_preserve_axes_without_affecting_xy_topo
     assert xyzm.set_z(None).set_m(None).coordinate_axes == 'XY'
     assert xyzm.set_z(None).set_m(None).coords.to_nested() == [1.0, 2.0]
     assert xyz.to_wkt() == 'POINT Z (1 2 3)'
-    assert xyz.to_wkt(output_dimension=2) == 'POINT (1 2)'
-    assert xym.to_wkt(output_dimension=3) == 'POINT M (1 2 4)'
-    assert xyzm.to_wkt(output_dimension=3) == 'POINT Z (1 2 3)'
-    assert xyzm.to_wkt(output_dimension=4) == 'POINT ZM (1 2 3 4)'
-    assert line.to_wkt(output_dimension=2) == 'LINESTRING (0 0, 1 1)'
-    with pytest.raises(ValueError, match='output_dimension'):
-        xyz.to_wkt(output_dimension=5)
+    assert xyz.force_2d().to_wkt() == 'POINT (1 2)'
+    assert xym.to_wkt() == 'POINT M (1 2 4)'
+    assert xyzm.to_wkt() == 'POINT ZM (1 2 3 4)'
+    assert line.force_2d().to_wkt() == 'LINESTRING (0 0, 1 1)'
     assert gm.from_wkt('POINT M (1 2 4)').coords.to_nested() == [1.0, 2.0, 4.0]
     assert gm.from_wkt('POINT ZM (1 2 3 4)').coords.to_nested() == [1.0, 2.0, 3.0, 4.0]
     assert gm.from_geojson(xyz.to_geojson(), crs=4979).coords.to_nested() == [
@@ -231,8 +228,6 @@ def test_explicit_z_m_point_constructors_preserve_axes_without_affecting_xy_topo
         2.0,
         3.0,
     ]
-    with pytest.raises(gm.InvalidGeometryError, match='cannot represent'):
-        xyz.to_geojson(include_z=False)
     with pytest.raises(ValueError, match='XY or XYZ only'):
         gm.from_geojson({'type': 'Point', 'coordinates': [1, 2, 3, 4]})
     with pytest.raises(ValueError, match='expected axes'):
@@ -244,7 +239,7 @@ def test_explicit_z_m_point_constructors_preserve_axes_without_affecting_xy_topo
     assert int.from_bytes(ewkb[1:5], 'little') == 3758096385
     assert gm.from_wkb(ewkb).crs == 'EPSG:4326'
     assert gm.from_wkb(ewkb).coords.to_nested() == [1.0, 2.0, 3.0, 4.0]
-    with pytest.raises(gm.InvalidGeometryError, match='GeoJSON has no M'):
+    with pytest.raises(gm.InvalidGeometryError, match='GeoJSON cannot represent M'):
         xym.to_geojson()
 
 
@@ -310,7 +305,7 @@ def test_points_numpy_columns_copy_values_and_preserve_zm_axes() -> None:
 
     assert points[0].coordinate_axes == 'XYZM'
     assert points[0].crs == 'EPSG:4326'
-    coordinates = gm.get_coordinates(points, axes='XYZM')
+    coordinates = gm.get_coordinates(points)
     assert coordinates.shape == (2, 4)
     np.testing.assert_array_equal(coordinates, np.column_stack((x, y, z, m)))
     # The packed constructor owns its columns; later producer mutation cannot

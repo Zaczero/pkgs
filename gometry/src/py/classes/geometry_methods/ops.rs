@@ -14,8 +14,7 @@ use crate::py::support;
 use crate::{
     Frame, PyGeometryArray, PyValidationReport, RepairMethod, Shape, VoronoiClipInput, geometry,
     io, parse_cdt_refinement, parse_precision, parse_sample_count, parse_sample_seed,
-    parse_wkt_output_dimension, require_geojson_crs, validate_subdivide_max_vertices,
-    voronoi_edges_flatten, voronoi_flatten,
+    require_geojson_crs, validate_subdivide_max_vertices, voronoi_edges_flatten, voronoi_flatten,
 };
 
 impl PyGeometry {
@@ -33,11 +32,9 @@ impl PyGeometry {
     pub(crate) fn to_wkt_impl(
         &self,
         py: Python<'_>,
-        output_dimension: Option<&Bound<'_, PyAny>>,
         include_srid: bool,
         precision: Option<&Bound<'_, PyAny>>,
     ) -> PyResult<String> {
-        let output_dimension = parse_wkt_output_dimension(output_dimension)?;
         let precision = precision.map(parse_precision).transpose()?;
         let shape = Arc::clone(&self.shape);
         let crs = self.crs_ref().cloned();
@@ -45,9 +42,8 @@ impl PyGeometry {
             let quantized = precision
                 .map(|precision| shape.quantize(precision))
                 .transpose()?;
-            Ok(io::to_wkt_with_dimension(
+            Ok(io::to_wkt_with_srid(
                 quantized.as_ref().unwrap_or(&shape),
-                output_dimension,
                 crs.as_deref(),
                 include_srid,
             )?)
@@ -73,12 +69,10 @@ impl PyGeometry {
         Ok(PyBytes::new(py, &bytes))
     }
 
-    pub(crate) fn to_geojson_impl(&self, py: Python<'_>, include_z: bool) -> PyResult<String> {
+    pub(crate) fn to_geojson_impl(&self, py: Python<'_>) -> PyResult<String> {
         require_geojson_crs(self.crs_str())?;
         if self.shape.has_m() {
-            return Err(InvalidGeometryError::new_err(
-                "GeoJSON has no M ordinate; remove M with set_m(None), or use WKT/GeoArrow",
-            ));
+            return Err(InvalidGeometryError::new_err(crate::io::GEOJSON_M_ERROR));
         }
         // GeoJSON treats CRS-free coordinates as WGS84 lon/lat too, so the
         // public writer always selects the RFC 7946 geographic rules.
@@ -86,11 +80,7 @@ impl PyGeometry {
         let frame = self.frame.clone();
         py.detach(move || {
             let domain = io::geojson_domain(frame.crs_str())?;
-            Ok(if include_z {
-                io::to_geojson_string::<true>(&shape, domain)?
-            } else {
-                io::to_geojson_string::<false>(&shape, domain)?
-            })
+            Ok(io::to_geojson_string(&shape, domain)?)
         })
     }
 

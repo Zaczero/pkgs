@@ -441,9 +441,13 @@ def test_wkt_wkb_and_geojson_roundtrip() -> None:
     parsed = gm.from_wkt(['POINT Z (1 2 3)', 'LINESTRING Z (0 0 1, 1 1 2)'], crs=4979)
     assert isinstance(parsed, gm.GeometryArray)
     assert parsed.crs == 'EPSG:4979'
-    assert parsed.to_wkt(output_dimension=2) == ['POINT (1 2)', 'LINESTRING (0 0, 1 1)']
-    with pytest.raises(gm.InvalidGeometryError, match='cannot represent Z/M'):
-        parsed.to_geojson(include_z=False)
+    assert parsed.to_wkt() == [
+        'POINT Z (1 2 3)',
+        'LINESTRING Z (0 0 1, 1 1 2)',
+    ]
+    geojson = [json.loads(text) for text in parsed.to_geojson()]
+    assert geojson[0]['coordinates'] == [1.0, 2.0, 3.0]
+    assert geojson[1]['coordinates'] == [[0.0, 0.0, 1.0], [1.0, 1.0, 2.0]]
     geojson_texts = parsed.force_2d().to_geojson()
     geojson_recovered = gm.from_geojson(geojson_texts, crs=4326)
     assert isinstance(geojson_recovered, gm.GeometryArray)
@@ -471,8 +475,57 @@ def test_wkt_wkb_and_geojson_roundtrip() -> None:
         'LINESTRING (0 0, 1 1)',
     ]
     assert mixed_geojson_recovered.to_wkt() == ['POINT (1 2)', 'LINESTRING (0 0, 1 1)']
-    with pytest.raises(gm.InvalidGeometryError, match='GeoJSON has no M'):
+    with pytest.raises(gm.InvalidGeometryError, match='GeoJSON cannot represent M'):
         gm.GeometryArray([gm.Point(1, 2, m=3)]).to_geojson()
+    with pytest.raises(TypeError, match='GeoJSON cannot represent M'):
+        gm.Point(1, 2, m=3).__geo_interface__
+
+
+def test_force_2d_prepares_geometry_for_each_coordinate_writer() -> None:
+    line = gm.LineString(
+        [(0, 0), (1, 1)],
+        z=[5, 6],
+        m=[7, 8],
+        crs=4326,
+    )
+    flat = line.force_2d()
+    assert flat.to_wkt() == 'LINESTRING (0 0, 1 1)'
+    assert gm.from_wkb(flat.to_wkb()).coordinate_axes == 'XY'
+    assert json.loads(flat.to_geojson())['coordinates'] == [
+        [0.0, 0.0],
+        [1.0, 1.0],
+    ]
+    assert gm.from_polyline(flat.to_polyline()).coordinate_axes == 'XY'
+    assert gm.to_feature(flat)['geometry']['coordinates'] == [
+        [0.0, 0.0],
+        [1.0, 1.0],
+    ]
+    assert gm.to_feature_collection([flat])['features'][0]['geometry'][
+        'coordinates'
+    ] == [[0.0, 0.0], [1.0, 1.0]]
+
+    rows = gm.GeometryArray([line]).force_2d()
+    assert rows.to_wkt() == ['LINESTRING (0 0, 1 1)']
+    assert gm.from_wkb(rows.to_wkb()[0]).coordinate_axes == 'XY'
+    assert json.loads(rows.to_geojson()[0])['coordinates'] == [
+        [0.0, 0.0],
+        [1.0, 1.0],
+    ]
+    assert rows.to_polyline() == [flat.to_polyline()]
+    assert gm.from_arrow(rows.to_arrow())[0].coordinate_axes == 'XY'
+    assert rows.to_numpy()[0].coordinate_axes == 'XY'
+
+
+def test_removed_ordinate_selection_keywords_are_rejected() -> None:
+    line = gm.LineString([(0, 0), (1, 1)], crs=4326)
+    rows = gm.GeometryArray([line])
+    for geometry in (line, rows):
+        with pytest.raises(TypeError):
+            geometry.to_wkt(output_dimension=2)
+        with pytest.raises(TypeError):
+            geometry.to_geojson(include_z=False)
+    with pytest.raises(TypeError):
+        gm.get_coordinates(line, axes='XY')
 
 
 @pytest.mark.parametrize(

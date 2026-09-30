@@ -68,7 +68,17 @@ def test_coords_sequence_is_flat_and_columnar() -> None:
     assert forced.shape == (3, 3) and np.isnan(forced[:, 2]).all()
     ragged = gm.GeometryArray([gm.Point(0, 0), gm.Point(1, 2, z=9)])
     assert list(ragged.coords) == [(0.0, 0.0), (1.0, 2.0, 9.0)]
-    assert list(ragged.coords.select('XYZ')) == [(0.0, 0.0, None), (1.0, 2.0, 9.0)]
+    ragged_matrix = np.asarray(ragged.coords)
+    assert ragged_matrix.shape == (2, 3)
+    np.testing.assert_allclose(ragged_matrix[:, 2], [np.nan, 9.0], equal_nan=True)
+    assert list(ragged.coords.select('XYZ')) == [
+        (0.0, 0.0, None),
+        (1.0, 2.0, 9.0),
+    ]
+    assert ragged.coords.select('XYZ').to_nested() == [
+        [0.0, 0.0, None],
+        [1.0, 2.0, 9.0],
+    ]
     selected = ragged.coords.select('XYZ').to_dict()
     np.testing.assert_array_equal(selected['x'], [0.0, 1.0])
     np.testing.assert_array_equal(selected['y'], [0.0, 2.0])
@@ -168,17 +178,21 @@ def test_coordinates_numpy_protocol_honors_direct_opposite_endian_dtype() -> Non
         np.asarray(coords, dtype=requested, copy=False)
 
 
-def test_coordinates_equality_compares_visible_values() -> None:
+def test_coordinates_equality_tracks_selected_layouts() -> None:
     xy = gm.LineString([(0, 0), (1, 1)]).coords
     assert xy == gm.LineString([(0, 0), (1, 1)]).coords
     assert xy == [(0, 0), (1, 1)]
-    assert xy == xy.select('XY')
     assert xy != [(0, 0)]
     assert xy != [(0, 0), (1, 1), (2, 2)]
     assert xy != [(0, 0), (1, 2)]
+    assert xy == xy.select('XY')
 
-    left = gm.LineString([(0, 0), (1, 1)], z=[5, 6]).coords.select('XY')
-    right = gm.LineString([(0, 0), (1, 1)], z=[8, 9]).coords.select('XY')
+    left_native = gm.LineString([(0, 0), (1, 1)], z=[5, 6]).coords
+    right_native = gm.LineString([(0, 0), (1, 1)], z=[8, 9]).coords
+    assert left_native != right_native
+
+    left = left_native.select('XY')
+    right = right_native.select('XY')
     assert left == right
     assert left == list(left)
     assert list(left) == left
@@ -235,6 +249,8 @@ def test_coordinate_extraction_parts_and_rings_helpers() -> None:
         (0.0, 0.0),
         (1.0, 1.0),
     ]
+    assert gm.Point(1, 2, z=3).coords.select('XY').to_nested() == [1.0, 2.0]
+    assert gm.Point(1, 2).coords.select('XYZ').to_nested() == [1.0, 2.0, None]
     assert coordinates[:3] == [(9.0, 9.0), (0.0, 0.0), (4.0, 0.0)]
     np.testing.assert_array_equal(indexes, [0] + [1] * 10)
     parts = values.parts
@@ -305,10 +321,9 @@ def test_array_ragged_helpers_retain_empty_missing_rows_and_views() -> None:
     assert isinstance(rings, gm.Groups)
     assert rings.offsets.tolist() == [0, 1, 1, 1, 3]
 
-    coords, indexes = gm.get_coordinates(polygons, axes='XYZ', return_index=True)
-    assert coords.shape == (12, 3)
+    coords, indexes = gm.get_coordinates(polygons, return_index=True)
+    assert coords.shape == (12, 2)
     np.testing.assert_array_equal(indexes, [0] * 4 + [3] * 8)
-    assert np.isnan(coords[:, 2]).all()
 
     selected = polygons[[3, 1, 2]]
     selected_rings = selected.boundary().parts
@@ -353,26 +368,19 @@ def test_coordinate_columns_are_readonly_ndarrays() -> None:
 @pytest.mark.parametrize(
     'middle', [None, gm.from_wkt('POINT EMPTY')], ids=['missing', 'empty']
 )
-@pytest.mark.parametrize(
-    'axes, expected',
-    [
-        ('XY', [[1, 2], [5, 6]]),
-        ('XYZ', [[1, 2, 3], [5, 6, np.nan]]),
-        ('XYM', [[1, 2, np.nan], [5, 6, 7]]),
-        ('XYZM', [[1, 2, 3, np.nan], [5, 6, np.nan, 7]]),
-    ],
-)
-def test_get_coordinates_preserves_empty_rows_and_absent_ordinates(
-    middle, axes, expected
-):
+def test_get_coordinates_preserves_empty_rows_and_all_carried_axes(middle):
     array = gm.GeometryArray([
         gm.from_wkt('POINT Z (1 2 3)'),
         middle,
         gm.from_wkt('POINT M (5 6 7)'),
     ])
-    matrix, indexes = gm.get_coordinates(array, axes=axes, return_index=True)
-    assert matrix.shape == (2, len(expected[0]))
-    np.testing.assert_array_equal(matrix, expected)
+    matrix, indexes = gm.get_coordinates(array, return_index=True)
+    assert matrix.shape == (2, 4)
+    np.testing.assert_allclose(
+        matrix,
+        [[1, 2, 3, np.nan], [5, 6, np.nan, 7]],
+        equal_nan=True,
+    )
     np.testing.assert_array_equal(indexes, [0, 2])
 
 
@@ -386,10 +394,11 @@ def test_get_coordinates() -> None:
     np.testing.assert_array_equal(scalar_coords, coords)
     np.testing.assert_array_equal(scalar_indexes, [0, 0, 0])
     arr = gm.GeometryArray([gm.Point(0, 0), gm.LineString([(1, 1), (2, 2)])])
-    with_z = gm.get_coordinates(arr, axes='XYZ')
-    assert with_z.shape == (3, 3)
-    assert np.isnan(with_z[:, 2]).all()
-    np.testing.assert_array_equal(with_z[:, :2], [[0, 0], [1, 1], [2, 2]])
+    with_z_arr = gm.GeometryArray([gm.Point(0, 0), gm.Point(1, 1, z=9)])
+    with_z = gm.get_coordinates(with_z_arr)
+    assert with_z.shape == (2, 3)
+    np.testing.assert_allclose(with_z[:, 2], [np.nan, 9], equal_nan=True)
+    np.testing.assert_array_equal(with_z[:, :2], [[0, 0], [1, 1]])
     grouped, indexes = gm.get_coordinates(arr, return_index=True)
     np.testing.assert_array_equal(grouped, [[0, 0], [1, 1], [2, 2]])
     assert indexes.dtype == np.int64
@@ -422,18 +431,7 @@ def test_get_coordinates_collections_are_flat_and_one_shot() -> None:
         np.testing.assert_array_equal(indexes, [0, 3])
 
 
-@pytest.mark.parametrize(
-    ('axes', 'expected'),
-    [
-        ('XY', [[1, 2], [5, 6]]),
-        ('XYZ', [[1, 2, 3], [5, 6, np.nan]]),
-        ('XYM', [[1, 2, np.nan], [5, 6, 7]]),
-        ('XYZM', [[1, 2, 3, np.nan], [5, 6, np.nan, 7]]),
-    ],
-)
-def test_get_coordinates_collection_axes_match_across_input_representations(
-    axes: str, expected: list[list[float]]
-) -> None:
+def test_get_coordinates_collection_axes_match_across_input_representations() -> None:
     rows = [
         gm.from_wkt('POINT Z (1 2 3)'),
         gm.from_wkt('POINT EMPTY'),
@@ -445,13 +443,19 @@ def test_get_coordinates_collection_axes_match_across_input_representations(
         lambda: iter(rows),
         lambda: gm.GeometryArray(rows),
     ):
-        matrix = gm.get_coordinates(source_factory(), axes=axes)
-        assert matrix.shape == (2, len(expected[0]))
-        np.testing.assert_array_equal(matrix, expected)
-        matrix, indexes = gm.get_coordinates(
-            source_factory(), axes=axes, return_index=True
+        matrix = gm.get_coordinates(source_factory())
+        assert matrix.shape == (2, 4)
+        np.testing.assert_allclose(
+            matrix,
+            [[1, 2, 3, np.nan], [5, 6, np.nan, 7]],
+            equal_nan=True,
         )
-        np.testing.assert_array_equal(matrix, expected)
+        matrix, indexes = gm.get_coordinates(source_factory(), return_index=True)
+        np.testing.assert_allclose(
+            matrix,
+            [[1, 2, 3, np.nan], [5, 6, np.nan, 7]],
+            equal_nan=True,
+        )
         np.testing.assert_array_equal(indexes, [0, 3])
 
 
@@ -571,7 +575,7 @@ def test_compact_nullable_point_coordinate_indices(
     np.testing.assert_array_equal(columns['x'], [point.x for point in expected_points])
     np.testing.assert_array_equal(columns['z'], [point.z for point in expected_points])
 
-    matrix, indexes = gm.get_coordinates(values, axes='XYZM', return_index=True)
+    matrix, indexes = gm.get_coordinates(values, return_index=True)
     np.testing.assert_array_equal(indexes, expected_rows)
     np.testing.assert_array_equal(
         matrix,
@@ -606,7 +610,7 @@ def test_compact_nullable_point_coordinate_indices_preserve_slices_and_edges() -
     assert empty.coords.coordinate_axes == 'XYZM'
     np.testing.assert_array_equal(empty.coords.row_index, [])
     np.testing.assert_array_equal(empty.coords.to_dict(index=True)['index'], [])
-    matrix, indexes = gm.get_coordinates(empty, axes='XYZM', return_index=True)
+    matrix, indexes = gm.get_coordinates(empty, return_index=True)
     assert matrix.shape == (0, 4)
     np.testing.assert_array_equal(indexes, [])
 

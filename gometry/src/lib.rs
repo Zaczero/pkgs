@@ -21,6 +21,15 @@
     try_trait_v2
 )]
 
+macro_rules! writer_ordinate_policy {
+    () => {
+        "Each writer preserves all ordinates the format supports and rejects unsupported axes; \
+         remove geometry axes with `force_2d()`, `set_z(None)`, or `set_m(None)` before writing, \
+         or use `coords.select(...)` to choose a coordinate-view export layout."
+    };
+}
+pub(crate) use writer_ordinate_policy;
+
 mod boundary;
 use boundary::{
     CoordinateInput, CrsCoordinateArgs, CsrBuilder, DefaultedF64Input, DefaultedI64Input, F64Param,
@@ -159,12 +168,12 @@ use py::support::{
     missing_geometry_items_error, nearest_point_columns_masked, note_array_row,
     optional_coordinates, owned_voronoi_boundary, parse_crs, parse_crs_epoch, parse_curve_bounds,
     parse_geojson_geometry_value, parse_geojson_slice, parse_interpolate_plan, parse_precision,
-    parse_spatial_index_handle, parse_wkt_output_dimension, point_from_bounds, py_polygonize_full,
-    py_text_borrow, py_to_json_value, require_geojson_crs, resolve_line_metric,
-    validate_buffer_miter_limit, validate_buffer_quadrant_segments, validate_densify_fraction,
-    validate_distance, validate_dwithin_distance, validate_dwithin_distance_arg,
-    validate_equals_exact_tolerance, validate_max_segment_length, validate_nearest_k,
-    validate_smooth_iterations, voronoi_edges_flatten, voronoi_flatten, wrapped_box,
+    parse_spatial_index_handle, point_from_bounds, py_polygonize_full, py_text_borrow,
+    py_to_json_value, require_geojson_crs, resolve_line_metric, validate_buffer_miter_limit,
+    validate_buffer_quadrant_segments, validate_densify_fraction, validate_distance,
+    validate_dwithin_distance, validate_dwithin_distance_arg, validate_equals_exact_tolerance,
+    validate_max_segment_length, validate_nearest_k, validate_smooth_iterations,
+    voronoi_edges_flatten, voronoi_flatten, wrapped_box,
 };
 use pyo3::buffer::PyBuffer;
 use pyo3::exceptions::{PyTypeError, PyValueError};

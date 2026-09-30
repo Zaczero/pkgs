@@ -142,8 +142,7 @@ pub(crate) fn coordinate_matrix_data(
 }
 
 /// Format one coordinate as a Python tuple, honoring a fixed `select` layout
-/// (absent Z/M become `None`) or the coordinate's native axes. Shared by
-/// `Coordinates` indexing/iteration, membership, and the lazy iterator.
+/// (absent Z/M become `None`) or the coordinate's native axes.
 pub(crate) fn coordinate_tuple(
     py: Python<'_>,
     point: Point,
@@ -227,8 +226,8 @@ pub(crate) fn coordinate_view_for_input(input: GeometryInput<'_>) -> coordinates
 ///     Values are flattened depth-first in source-row order. Missing and empty
 ///     geometries contribute no rows, but array and iterable source indexes
 ///     remain available through `return_index=True`.
-/// axes : {'XY', 'XYZ', 'XYM', 'XYZM'}, optional
-///     Output coordinate columns. ``None`` means ``'XY'``.
+///     The matrix includes every axis carried by the coordinates; heterogeneous
+///     rows use ``NaN`` where a coordinate lacks an axis.
 /// return_index : bool, default False
 ///     Return a source-row index alongside the matrix. Scalar geometries use
 ///     index zero for every coordinate.
@@ -254,11 +253,10 @@ pub(crate) fn coordinate_view_for_input(input: GeometryInput<'_>) -> coordinates
 /// >>> matrix.tolist(), indexes.tolist()
 /// ([[1.0, 2.0]], [0])
 #[pyfunction]
-#[pyo3(signature = (values, *, axes = None, return_index = false))]
+#[pyo3(signature = (values, *, return_index = false))]
 pub(crate) fn get_coordinates(
     py: Python<'_>,
     values: &Bound<'_, PyAny>,
-    axes: Option<CoordinateAxes>,
     return_index: bool,
 ) -> PyResult<Py<PyAny>> {
     let array;
@@ -268,9 +266,9 @@ pub(crate) fn get_coordinates(
         array = PyGeometryArray::new(values, None, None)?;
         GeometryInput::Many(&array)
     };
-    let axes = axes.unwrap_or(CoordinateAxes::XY);
-    let (_, dims) = coordinate_axis_order(axes);
     let view = coordinate_view_for_input(input);
+    let axes = view.axes_for_python(py)?;
+    let (_, dims) = coordinate_axis_order(axes);
     let (rows, data) = coordinate_matrix_data(py, &view, axes, f64::NAN)?;
     let matrix = float64_matrix(py, data, rows, dims)?;
     if return_index {

@@ -1010,15 +1010,18 @@ def test_stub_snap_to_grid_origin_is_numeric_pair_only() -> None:
         pt.snap_to_grid(1.0, origin='centroid')  # type: ignore[arg-type]
 
 
-def test_coords_select_nan_vs_none_doctrine() -> None:
-    """Ndarray columns use NaN for absent axes; nested/tuple iteration uses None."""
-    coords = gm.Point(1, 2).coords.select('XYZ')
-    assert np.isnan(coords.z).all()
-    # Iteration / tuple rows (not the flat Point to_nested list) carry None.
-    assert list(coords) == [(1.0, 2.0, None)]
-    line = gm.LineString([(0, 0), (1, 1)]).coords.select('XYZ')
-    assert np.isnan(line.z).all()
-    assert list(line) == [(0.0, 0.0, None), (1.0, 1.0, None)]
+def test_coordinate_exports_follow_carried_ordinates() -> None:
+    line = gm.LineString([(0, 0), (1, 1)], z=[5, 6])
+    assert list(line.coords) == [(0.0, 0.0, 5.0), (1.0, 1.0, 6.0)]
+    assert np.asarray(line.coords).shape == (2, 3)
+    assert set(line.coords.to_dict()) == {'x', 'y', 'z'}
+    assert gm.get_coordinates(line).shape == (2, 3)
+
+    flat = line.force_2d()
+    assert list(flat.coords) == [(0.0, 0.0), (1.0, 1.0)]
+    assert np.asarray(flat.coords).shape == (2, 2)
+    assert set(flat.coords.to_dict()) == {'x', 'y'}
+    assert gm.get_coordinates(flat).shape == (2, 2)
 
 
 # ---------------------------------------------------------------------------

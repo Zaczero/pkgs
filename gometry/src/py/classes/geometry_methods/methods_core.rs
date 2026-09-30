@@ -344,14 +344,11 @@ impl PyGeometry {
     pub fn geo_interface<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
         require_geojson_crs(self.crs_str())?;
         if self.has_m() || self.epoch().is_some() {
-            return Err(PyTypeError::new_err(
-                "__geo_interface__ cannot represent M or coordinate epoch; use an explicit serializer or clear the dimension",
-            ));
+            return Err(PyTypeError::new_err(crate::io::geojson_interface_error()));
         }
         let shape = std::sync::Arc::clone(&self.shape);
         let domain = crate::io::geojson_domain(self.crs_str())?;
-        let text =
-            py.detach(move || crate::io::to_geojson_string::<true>(shape.shape(), domain))?;
+        let text = py.detach(move || crate::io::to_geojson_string(shape.shape(), domain))?;
         let geometry = crate::boundary::json_text_to_py(py, &text)?;
         Ok(geometry.bind(py).clone().cast_into()?)
     }
