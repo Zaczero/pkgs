@@ -657,7 +657,7 @@ impl Interval {
 fn leading_window(value: &ExactDyadic) -> Option<(u64, i64)> {
     let (&high, rest) = value.limbs.split_last()?;
     let next = rest.last().copied().unwrap_or(0);
-    let high_bits = 64 - high.leading_zeros();
+    let high_bits = 64_u32.wrapping_sub(high.leading_zeros());
     let window = (u128::from(high) << 64) | u128::from(next);
     let mantissa = (window >> high_bits) as u64;
     let bits = i64::try_from(rest.len())
@@ -677,7 +677,7 @@ fn scale_pow2(mut value: f64, mut shift: i64, upward: bool) -> f64 {
     while shift != 0 {
         let step = shift.clamp(-512, 512);
         value *= 2.0_f64.powi(step as i32);
-        shift -= step;
+        shift = shift.wrapping_sub(step);
         if value.is_infinite() {
             return if upward { f64::INFINITY } else { f64::MAX };
         }
@@ -1019,7 +1019,7 @@ impl ExactPoint {
     pub(super) fn compare_lex(&self, other: &Self) -> Result<Ordering> {
         Ok(match self.compare_x(other)? {
             Ordering::Equal => self.compare_y(other)?,
-            order => order,
+            order @ (Ordering::Less | Ordering::Greater) => order,
         })
     }
 
@@ -1160,7 +1160,7 @@ pub(super) fn compare_along(
 ) -> Result<Ordering> {
     let (axis_order, direction) = match start.compare_x(end)? {
         Ordering::Equal => (left.compare_y(right)?, start.compare_y(end)?),
-        direction => (left.compare_x(right)?, direction),
+        direction @ (Ordering::Less | Ordering::Greater) => (left.compare_x(right)?, direction),
     };
     Ok(if direction.is_gt() {
         axis_order.reverse()
@@ -1222,7 +1222,7 @@ pub(super) fn segment_intersection(
             return Ok(SegmentIntersection::Point(point.clone()));
         }
     }
-    if o0.as_i8() * o1.as_i8() < 0 && o2.as_i8() * o3.as_i8() < 0 {
+    if o0.as_i8().wrapping_mul(o1.as_i8()) < 0 && o2.as_i8().wrapping_mul(o3.as_i8()) < 0 {
         return Ok(SegmentIntersection::Point(line_intersection(
             &ExactLine::through_points(a0, a1)?,
             &ExactLine::through_points(b0, b1)?,
@@ -1348,18 +1348,22 @@ fn cycle_orientation_exact<'a>(
         ExactSign::Zero => {
             Err(GeometryErrorKind::voronoi("exact cycle has zero orientation").into())
         },
-        sign => Ok(sign.weighted_by(denominator.sign())),
+        sign @ (ExactSign::Negative | ExactSign::Positive) => {
+            Ok(sign.weighted_by(denominator.sign()))
+        },
     }
 }
 
+#[expect(
+    clippy::arithmetic_side_effects,
+    reason = "a slice of nonzero-sized ExactPoints has at most isize::MAX elements, so the winding count cannot overflow i64 on 64-bit targets"
+)]
 pub(super) fn point_in_cycle(
     open_cycle: &[ExactPoint],
     point: &ExactPoint,
 ) -> Result<PointInCycle> {
-    let mut winding = 0_i32;
-    for index in 0..open_cycle.len() {
-        let start = &open_cycle[index];
-        let end = &open_cycle[(index + 1) % open_cycle.len()];
+    let mut winding = 0_i64;
+    for (start, end) in open_cycle.iter().zip(open_cycle.iter().cycle().skip(1)) {
         if on_segment(start, end, point)? {
             return Ok(PointInCycle::Boundary);
         }
@@ -1449,6 +1453,10 @@ fn squared_distance_cmp_point_exact(origin: &ExactPoint, left: XY, right: XY) ->
 #[expect(
     clippy::needless_pass_by_value,
     reason = "the iterator is re-walked once per widening round"
+)]
+#[expect(
+    clippy::indexing_slicing,
+    reason = "each axis loop ranges over 0..2, matching the lengths of the coordinate and bound arrays"
 )]
 pub(super) fn enclosing_frame_binary64<'a>(
     points: impl Iterator<Item = &'a ExactPoint> + Clone,
@@ -1644,7 +1652,7 @@ pub(super) fn rectangular_boundary(points: &[Point], padded: bool) -> Result<[Ex
         .first()
         .ok_or_else(|| GeometryErrorKind::voronoi("empty Voronoi site set"))?;
     let (mut min_x, mut max_x, mut min_y, mut max_y) = (first.x, first.x, first.y, first.y);
-    for point in &points[1..] {
+    for point in points.iter().skip(1) {
         min_x = min_x.min(point.x);
         max_x = max_x.max(point.x);
         min_y = min_y.min(point.y);
@@ -1767,15 +1775,12 @@ fn orient_points_exact(a: &ExactPoint, b: &ExactPoint, c: &ExactPoint) -> Result
 /// is not normalized: signed products and ratio comparison operate directly on
 /// it.
 fn intersection_homogeneous(a: &ExactLine, b: &ExactLine) -> Result<Homogeneous> {
-    let cross = |i: usize, j: usize| {
-        a.0[i]
-            .try_product(&b.0[j])?
-            .try_subtract(a.0[j].try_product(&b.0[i])?)
-    };
+    let [a0, a1, a2] = &a.0;
+    let [b0, b1, b2] = &b.0;
     Ok(Homogeneous {
-        x: cross(1, 2)?,
-        y: cross(2, 0)?,
-        w: cross(0, 1)?,
+        x: a1.try_product(b2)?.try_subtract(a2.try_product(b1)?)?,
+        y: a2.try_product(b0)?.try_subtract(a0.try_product(b2)?)?,
+        w: a0.try_product(b1)?.try_subtract(a1.try_product(b0)?)?,
     })
 }
 
@@ -1817,7 +1822,7 @@ fn exact_ratio_order(
     let left = an.try_product(bd)?;
     let right = bn.try_product(ad)?;
     let mut order = left.cmp(&right);
-    if ad.sign().as_i8() * bd.sign().as_i8() < 0 {
+    if ad.sign().as_i8().wrapping_mul(bd.sign().as_i8()) < 0 {
         order = order.reverse();
     }
     Ok(order)
@@ -1951,7 +1956,7 @@ fn approximate_ratio_components(
     let leading = |value: &ExactDyadic| -> Option<(u64, i64)> {
         let (&high, rest) = value.limbs.split_last()?;
         let next = rest.last().copied().unwrap_or(0);
-        let high_bits = 64 - high.leading_zeros();
+        let high_bits = 64_u32.wrapping_sub(high.leading_zeros());
         let window = (u128::from(high) << 64) | u128::from(next);
         let significand = (window >> high_bits) as u64;
         let bit_length = i64::try_from(rest.len())
@@ -1983,7 +1988,11 @@ fn scale_approximation(significand: f64, exponent: i64) -> Option<f64> {
     } else if exponent < -1075 {
         Some(0.0)
     } else {
-        Some(significand * f64::MIN_POSITIVE * 2.0_f64.powi(i32::try_from(exponent + 1022).ok()?))
+        Some(
+            significand
+                * f64::MIN_POSITIVE
+                * 2.0_f64.powi(i32::try_from(exponent.wrapping_add(1022)).ok()?),
+        )
     }
 }
 
@@ -2042,7 +2051,7 @@ fn exact_ratio_bracket(
                     return Ok(None);
                 }
                 let lower = bits;
-                bits += 1;
+                bits = bits.wrapping_add(1);
                 let (order, product) = compare(bits)?;
                 match order {
                     Ordering::Less => lower_product = product,
@@ -2057,7 +2066,7 @@ fn exact_ratio_bracket(
                     return Ok(None);
                 }
                 let upper = bits;
-                bits -= 1;
+                bits = bits.wrapping_sub(1);
                 let (order, product) = compare(bits)?;
                 match order {
                     Ordering::Greater => {},
@@ -2094,10 +2103,10 @@ fn round_ratio_binary(numerator: &ExactDyadic, denominator: &ExactDyadic) -> Res
     let mut low = 0_u64;
     let mut high = f64::MAX.to_bits();
     while low < high {
-        let mid = low + (high - low).div_ceil(2);
+        let mid = low.wrapping_add(high.wrapping_sub(low).div_ceil(2));
         let product = ExactDyadic::from_f64(f64::from_bits(mid)).try_product(&denominator)?;
         if product.cmp(&numerator) == Ordering::Greater {
-            high = mid - 1;
+            high = mid.wrapping_sub(1);
         } else {
             low = mid;
         }
@@ -2106,7 +2115,7 @@ fn round_ratio_binary(numerator: &ExactDyadic, denominator: &ExactDyadic) -> Res
     let rounded = if low == f64::MAX.to_bits() {
         lower
     } else {
-        let upper = f64::from_bits(low + 1);
+        let upper = f64::from_bits(low.wrapping_add(1));
         // Compare 2*n/d with lower+upper. Equality is the rounding tie.
         let twice_numerator = numerator.try_product(&ExactDyadic::from_f64(2.0))?;
         let midpoint_scaled = ExactDyadic::from_f64(lower)
@@ -2171,10 +2180,11 @@ pub(in crate::geometry) fn round_ratio(
             if encoded_exponent == 0 {
                 -1074
             } else {
-                encoded_exponent as i64 - 1075
+                (encoded_exponent as i64).wrapping_sub(1075)
             }
         };
-        let midpoint_order = residual.cmp_magnitude_scaled(denominator, spacing_exponent - 1);
+        let midpoint_order =
+            residual.cmp_magnitude_scaled(denominator, spacing_exponent.wrapping_sub(1));
         let rounded = match midpoint_order {
             Ordering::Less => lower,
             Ordering::Equal if low & 1 == 0 => lower,
@@ -2286,11 +2296,11 @@ fn exact_sqrt_ratio_bracket(
             let mut lower = bits;
             let mut step = 1_u64;
             loop {
-                let distance = max_bits - lower;
+                let distance = max_bits.wrapping_sub(lower);
                 if distance == 0 {
                     return Ok(None);
                 }
-                let candidate = lower + step.min(distance);
+                let candidate = lower.wrapping_add(step.min(distance));
                 match compare(candidate)? {
                     Ordering::Less => {
                         lower = candidate;
@@ -2308,7 +2318,7 @@ fn exact_sqrt_ratio_bracket(
                 if upper == 0 {
                     return Ok(None);
                 }
-                let candidate = upper - step.min(upper);
+                let candidate = upper.wrapping_sub(step.min(upper));
                 match compare(candidate)? {
                     Ordering::Greater => {
                         upper = candidate;
@@ -2326,8 +2336,8 @@ fn exact_sqrt_ratio_bracket(
     // the returned endpoints are adjacent in binary64's nonnegative bit
     // ordering; unlike a fixed ULP walk, this also covers both subnormal and
     // binade boundaries without an arbitrary retry limit.
-    while upper - lower > 1 {
-        let middle = lower + (upper - lower) / 2;
+    while upper.wrapping_sub(lower) > 1 {
+        let middle = lower.wrapping_add(upper.wrapping_sub(lower) / 2);
         match compare(middle)? {
             Ordering::Less => lower = middle,
             Ordering::Equal => return Ok(Some((middle, middle))),
@@ -2341,13 +2351,13 @@ fn round_sqrt_ratio_binary(numerator: &ExactDyadic, denominator: &ExactDyadic) -
     let mut low = 0_u64;
     let mut high = f64::MAX.to_bits();
     while low < high {
-        let mid = low + (high - low).div_ceil(2);
+        let mid = low.wrapping_add(high.wrapping_sub(low).div_ceil(2));
         let candidate = ExactDyadic::from_f64(f64::from_bits(mid));
         let square = candidate
             .try_product(&candidate)?
             .try_product(denominator)?;
         if square.cmp(numerator) == Ordering::Greater {
-            high = mid - 1;
+            high = mid.wrapping_sub(1);
         } else {
             low = mid;
         }
@@ -2356,7 +2366,7 @@ fn round_sqrt_ratio_binary(numerator: &ExactDyadic, denominator: &ExactDyadic) -
         return Ok(f64::MAX);
     }
     let lower = f64::from_bits(low);
-    let upper = f64::from_bits(low + 1);
+    let upper = f64::from_bits(low.wrapping_add(1));
     let midpoint_sum = ExactDyadic::from_f64(lower).try_add(ExactDyadic::from_f64(upper))?;
     let midpoint_squared = midpoint_sum
         .try_product(&midpoint_sum)?

@@ -16,6 +16,14 @@ pub(crate) use crate::geometry::exact_arith::{
 /// `output` cannot hold `left.len() + right.len()`, or if `require_finite` is
 /// set and a two-sum head is non-finite. Callers that admit infinities pass
 /// `require_finite = false`.
+#[expect(
+    clippy::indexing_slicing,
+    reason = "the initial reads follow nonempty checks, merge indices stay below their source lengths, and the checked input-size sum admits every output slot"
+)]
+#[expect(
+    clippy::arithmetic_side_effects,
+    reason = "each merge cursor and output length advances only within its checked source-length or output-capacity bound"
+)]
 pub(crate) fn expansion_sum_zeroelim<const NEGATE_RIGHT: bool>(
     left: &[f64],
     right: &[f64],

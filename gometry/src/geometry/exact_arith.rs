@@ -66,7 +66,7 @@ pub(crate) const fn binary_zero(value: f64) -> bool {
 }
 
 /// Whether an intermediate is finite and normal, or exactly zero.
-pub(crate) fn normal_or_zero(value: f64) -> bool {
+pub(crate) const fn normal_or_zero(value: f64) -> bool {
     binary_zero(value) || value.is_normal()
 }
 
@@ -136,6 +136,10 @@ pub(crate) fn dd_add(lhs: (f64, f64), rhs: (f64, f64)) -> (f64, f64) {
     two_sum(head, head_err + (lhs.1 + rhs.1))
 }
 
+#[expect(
+    clippy::arithmetic_side_effects,
+    reason = "stored exponents are 1..=2046 and a nonzero subnormal significand's leading-bit index is 0..=51"
+)]
 pub(crate) fn floor_binary_exponent(value: f64) -> i32 {
     debug_assert!(value.is_finite() && value > 0.0);
     let bits = value.to_bits();
@@ -151,7 +155,7 @@ pub(crate) fn floor_binary_exponent(value: f64) -> i32 {
 }
 
 pub(crate) fn exact_power_of_two(shift: i16) -> f64 {
-    let stored = i32::from(shift) + 1023;
+    let stored = i32::from(shift).wrapping_add(1023);
     debug_assert!((1..=2046).contains(&stored));
     f64::from_bits((stored as u64) << 52)
 }

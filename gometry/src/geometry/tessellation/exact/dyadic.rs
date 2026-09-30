@@ -920,13 +920,12 @@ impl ExactDyadic {
             // A u64-sized estimate times one limb fits u128; one limb and its
             // borrow fit i128 exactly.
             let mut borrow = 0_i128;
-            for i in 0..n {
-                let offset = i.wrapping_add(j);
-                let product = estimate.wrapping_mul(u128::from(v[i]));
-                let difference = i128::from(u[offset])
+            for (limb, &divisor) in u.iter_mut().skip(j).take(n).zip(&v) {
+                let product = estimate.wrapping_mul(u128::from(divisor));
+                let difference = i128::from(*limb)
                     .wrapping_sub(borrow)
                     .wrapping_sub(i128::from(product as u64));
-                u[offset] = difference as u64;
+                *limb = difference as u64;
                 borrow = ((product >> 64) as i128).wrapping_sub(difference >> 64);
             }
             let high = j.wrapping_add(n);
@@ -936,12 +935,11 @@ impl ExactDyadic {
             if difference < 0 {
                 quotient[j] = quotient[j].wrapping_sub(1);
                 let mut carry = 0_u128;
-                for i in 0..n {
-                    let offset = i.wrapping_add(j);
-                    let sum = u128::from(u[offset])
-                        .wrapping_add(u128::from(v[i]))
+                for (limb, &divisor) in u.iter_mut().skip(j).take(n).zip(&v) {
+                    let sum = u128::from(*limb)
+                        .wrapping_add(u128::from(divisor))
                         .wrapping_add(carry);
-                    u[offset] = sum as u64;
+                    *limb = sum as u64;
                     carry = sum >> 64;
                 }
                 u[high] = u[high].wrapping_add(carry as u64);
