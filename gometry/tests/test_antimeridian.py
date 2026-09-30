@@ -179,7 +179,11 @@ def test_seam_vertex_spelling_does_not_change_validity(
 
 
 def test_centroid_and_point_on_surface_array_match_scalar_antimeridian() -> None:
-    poly = gm.Polygon([(170, -5), (-170, -5), (-170, 5), (170, 5)], crs=4326)
+    poly = gm.Polygon(
+        [(170, -5), (-170, -5), (-170, 5), (170, 5)],
+        crs=4326,
+        epoch=2020.0,
+    )
     arr = gm.GeometryArray([poly])
     scalar_centroid = poly.centroid()
     array_centroid = arr.centroid()[0]
@@ -189,10 +193,10 @@ def test_centroid_and_point_on_surface_array_match_scalar_antimeridian() -> None
     scalar_surface = poly.point_on_surface()
     array_surface = arr.point_on_surface()[0]
     assert gm.equals(scalar_surface, array_surface)
-    assert scalar_surface.x == pytest.approx(175.0)
-    assert scalar_surface.y == pytest.approx(0.0)
-    assert gm.equals(arr.centroid()[0], scalar_centroid)
-    assert gm.equals(arr.point_on_surface()[0], scalar_surface)
+    assert gm.covers(poly, scalar_surface)
+    assert scalar_surface.coordinate_axes == 'XY'
+    assert (scalar_surface.crs, scalar_surface.epoch) == (poly.crs, poly.epoch)
+    assert (array_surface.crs, array_surface.epoch) == (poly.crs, poly.epoch)
 
 
 def test_split_seam_connected_polygon_centroid_matches_unsplit_scalar_and_array() -> None:

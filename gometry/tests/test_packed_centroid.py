@@ -51,14 +51,27 @@ def test_packed_polygons_centroid_matches_mixed_storage() -> None:
     assert canon((packed).centroid()) == canon((mixed).centroid())
 
 
-def test_packed_lines_point_on_surface_matches_mixed_storage() -> None:
-    packed, mixed = line_storage_twins()
-    assert canon((packed).point_on_surface()) == canon((mixed).point_on_surface())
+def test_packed_lines_point_on_surface_stays_on_linework() -> None:
+    for values in line_storage_twins():
+        result = values.point_on_surface()
+        assert result.crs == values.crs
+        assert result.epoch == values.epoch
+        for source, point in zip(values, result, strict=True):
+            assert gm.equals(source.point_on_surface(), point)
+            assert point.coordinate_axes == source.coordinate_axes
+            assert gm.covers(source, point)
+            assert gm.distance(source, point, unit='planar') == 0.0
 
 
-def test_packed_polygons_point_on_surface_matches_mixed_storage() -> None:
-    packed, mixed = polygon_storage_twins()
-    assert canon((packed).point_on_surface()) == canon((mixed).point_on_surface())
+def test_packed_polygons_point_on_surface_stays_inside() -> None:
+    for values in polygon_storage_twins():
+        result = values.point_on_surface()
+        assert result.crs == values.crs
+        assert result.epoch == values.epoch
+        for source, point in zip(values, result, strict=True):
+            assert gm.equals(source.point_on_surface(), point)
+            assert point.coordinate_axes == source.coordinate_axes
+            assert gm.within(point, source)
 
 
 def test_packed_point_on_surface_stays_inside_shell_and_outside_hole() -> None:

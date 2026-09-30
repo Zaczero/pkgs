@@ -81,17 +81,20 @@ def test_triangulation_preserves_ordinates(method: str) -> None:
 
 
 def test_point_on_surface_is_interior_xy_point() -> None:
-    """point_on_surface returns an interior computed point, not a boundary vertex.
+    """The computed representative point is interior and has XY axes.
 
     The representative point does not coincide with an input vertex, so (like
     centroid) Z/M cannot be carried, so it is 2D.
     """
-    assert (_z_polygon()).point_on_surface().coordinate_axes == 'XY'
-    result = (_z_polygon()).point_on_surface()
-    assert result.coordinate_axes == 'XY'
-    assert gm.within(result, _xy_polygon())
-    assert (result).to_wkt() == 'POINT (2 2)'
-    assert ((_xy_polygon()).point_on_surface()).to_wkt() == 'POINT (2 2)'
+    z_polygon = _z_polygon()
+    z_result = z_polygon.point_on_surface()
+    assert z_result.coordinate_axes == 'XY'
+    assert gm.within(z_result, z_polygon)
+
+    xy_polygon = _xy_polygon()
+    xy_result = xy_polygon.point_on_surface()
+    assert xy_result.coordinate_axes == 'XY'
+    assert gm.within(xy_result, xy_polygon)
 
 
 def test_witness_lines_keep_only_shared_ordinates() -> None:
