@@ -31,7 +31,6 @@ let
     curl
     gnugrep
     h2spec
-    hatch
     jq
     k6
     lychee
