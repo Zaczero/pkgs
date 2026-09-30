@@ -682,18 +682,43 @@ def test_snap_reference_storage_threshold_preserves_linear_output() -> None:
     assert tuple(map(tuple, indexed.coords)) == expected
 
 
-def test_snap_index_keeps_latest_reference_on_an_exact_distance_tie() -> None:
-    references = [(-1.0, 0.0), (1.0, 0.0)] + [
-        (10.0 + index, 10.0) for index in range(30)
-    ]
-    snapped = gm.snap(gm.Point(0.0, 0.0), gm.MultiPoint(references), 1.0)
-    assert tuple(snapped.coords[0]) == (1.0, 0.0)
+def test_snap_breaks_exact_distance_ties_by_smallest_xy() -> None:
+    for references, expected in (
+        ([(-1.0, 0.0), (1.0, 0.0)], (-1.0, 0.0)),
+        ([(0.0, -1.0), (0.0, 1.0)], (0.0, -1.0)),
+    ):
+        for ordered_references in (references, list(reversed(references))):
+            linear = gm.snap(
+                gm.Point(0.0, 0.0),
+                gm.MultiPoint(ordered_references),
+                1.0,
+            )
+            assert tuple(linear.coords[0]) == expected, ordered_references
 
-    reversed_references = [references[1], references[0], *references[2:]]
-    reversed_snapped = gm.snap(
-        gm.Point(0.0, 0.0), gm.MultiPoint(reversed_references), 1.0
+            indexed_references = [
+                *ordered_references,
+                *((10.0 + index, 10.0) for index in range(30)),
+            ]
+            indexed = gm.snap(
+                gm.Point(0.0, 0.0),
+                gm.MultiPoint(indexed_references),
+                1.0,
+            )
+            assert tuple(indexed.coords[0]) == expected, indexed_references
+
+
+def test_snap_orders_equal_projection_insertions_by_smallest_xy() -> None:
+    line = gm.LineString([(0.0, 0.0), (10.0, 0.0)])
+    references = [(5.0, 0.1), (5.0, -0.1)]
+    expected = (
+        (0.0, 0.0),
+        (5.0, -0.1),
+        (5.0, 0.1),
+        (10.0, 0.0),
     )
-    assert tuple(reversed_snapped.coords[0]) == (-1.0, 0.0)
+    for ordered_references in (references, list(reversed(references))):
+        snapped = gm.snap(line, gm.MultiPoint(ordered_references), 0.2)
+        assert tuple(map(tuple, snapped.coords)) == expected
 
 
 def test_snap_index_full_scans_a_min_subnormal_tolerance() -> None:

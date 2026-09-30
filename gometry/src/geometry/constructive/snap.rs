@@ -17,7 +17,7 @@ use crate::geometry::{
 
 const SNAP_INDEX_MIN_POINTS: usize = 32;
 
-type SnapTree = BulkRTree<rstar::primitives::GeomWithData<[f64; 2], usize>>;
+type SnapTree = BulkRTree<[f64; 2]>;
 
 enum SnapReferenceStorage {
     Linear(Vec<XY>),
@@ -25,8 +25,8 @@ enum SnapReferenceStorage {
 }
 
 pub(crate) struct SnapReference {
-    /// One reference representation: either build-ordered XY values or the
-    /// same values in the spatial index, whose data is the source ordinal.
+    /// Reference XY values stay in build order when linear and become point
+    /// primitives in the spatial index for larger sets.
     storage: SnapReferenceStorage,
     tolerance: f64,
     /// `tolerance²`; only a normal value enables the spatial candidate filter.
@@ -39,11 +39,8 @@ impl SnapReference {
         let limit = tolerance * tolerance;
         let storage = if reference_points.len() >= SNAP_INDEX_MIN_POINTS {
             let mut entries = Vec::with_capacity(reference_points.len());
-            for (ordinal, point) in reference_points.iter().enumerate() {
-                entries.push(rstar::primitives::GeomWithData::new(
-                    [point.x, point.y],
-                    ordinal,
-                ));
+            for point in reference_points {
+                entries.push([point.x, point.y]);
             }
             SnapReferenceStorage::Indexed(BulkRTree::bulk_load_with_params(entries))
         } else {
@@ -68,25 +65,26 @@ impl SnapReference {
     }
 
     /// The reference vertex `point` snaps onto: smallest distance within
-    /// tolerance wins, and the LATEST reference (build order) wins exact
-    /// ties — the linear scan's `<=` update rule, preserved exactly.
+    /// tolerance wins, then lexicographically smallest X/Y breaks exact ties.
     fn nearest(&self, point: Point) -> Option<XY> {
-        let mut best: Option<(f64, usize, XY)> = None;
-        let mut consider = |distance: f64, ordinal: usize, position: XY| {
-            if best.is_none_or(|(leader, at, _)| {
-                distance < leader || (distance.to_bits() == leader.to_bits() && ordinal > at)
+        let mut best: Option<(f64, XY)> = None;
+        let mut consider = |distance: f64, position: XY| {
+            if best.is_none_or(|(leader, leader_position)| {
+                distance < leader
+                    || (distance.to_bits() == leader.to_bits()
+                        && compare_xy(position, leader_position).is_lt())
             }) {
-                best = Some((distance, ordinal, position));
+                best = Some((distance, position));
             }
         };
         // The metric (squared when the limit is representable, else distance)
         // is uniform across candidates, so `best` is a valid argmin either way.
-        let mut test = |reference: XY, ordinal: usize| {
+        let mut test = |reference: XY| {
             // Honest dwithin — squared false-zero must not treat distinct
             // subnormals as within a zero (or tiny) tolerance.
             if points_dwithin(point, reference, self.tolerance) {
                 let distance = point_distance(point, reference);
-                consider(distance, ordinal, reference);
+                consider(distance, reference);
             }
         };
         match (&self.storage, self.limit) {
@@ -97,17 +95,11 @@ impl SnapReference {
                     outward_padded_bounds(point.x, point.x, point.y, point.y, self.tolerance)
                 {
                     for candidate in tree.locate_in_envelope_intersecting(window) {
-                        test(
-                            XY::new(candidate.geom()[0], candidate.geom()[1]),
-                            candidate.data,
-                        );
+                        test(XY::new(candidate[0], candidate[1]));
                     }
                 } else {
                     for candidate in tree {
-                        test(
-                            XY::new(candidate.geom()[0], candidate.geom()[1]),
-                            candidate.data,
-                        );
+                        test(XY::new(candidate[0], candidate[1]));
                     }
                 }
             },
@@ -115,20 +107,17 @@ impl SnapReference {
             // honest points_dwithin (cannot trust squared-space radius).
             (SnapReferenceStorage::Indexed(tree), _) => {
                 for candidate in tree {
-                    test(
-                        XY::new(candidate.geom()[0], candidate.geom()[1]),
-                        candidate.data,
-                    );
+                    test(XY::new(candidate[0], candidate[1]));
                 }
             },
             // Brute: scan every reference vertex (small reference).
             (SnapReferenceStorage::Linear(points), _) => {
-                for (ordinal, &reference) in points.iter().enumerate() {
-                    test(reference, ordinal);
+                for &reference in points {
+                    test(reference);
                 }
             },
         }
-        best.map(|(_, _, position)| position)
+        best.map(|(_, position)| position)
     }
 
     /// Reference vertices to drop into the open segment `start -> end`, in
@@ -149,8 +138,8 @@ impl SnapReference {
         // Grow to the surviving candidates rather than the reference count:
         // this runs once per source segment, and a tolerance window admits a
         // handful of references out of the whole set.
-        let mut candidates: Vec<(SegmentProjection, usize, Point)> = Vec::new();
-        let mut consider = |reference: XY, ordinal: usize| -> crate::error::Result<()> {
+        let mut candidates: Vec<(SegmentProjection, Point)> = Vec::new();
+        let mut consider = |reference: XY| -> crate::error::Result<()> {
             // Skip if within tolerance of either endpoint, or farther than
             // tolerance from the open segment (honest distance, not squared).
             if points_dwithin(reference, start, tolerance)
@@ -166,7 +155,7 @@ impl SnapReference {
                 let mut point = projection.interpolate_point(start, end)?;
                 point.x = reference.x;
                 point.y = reference.y;
-                candidates.push((projection, ordinal, point));
+                candidates.push((projection, point));
             }
             Ok(())
         };
@@ -179,52 +168,50 @@ impl SnapReference {
                 let (lo_y, hi_y) = (start.y.min(end.y), start.y.max(end.y));
                 if let Some(window) = outward_padded_bounds(lo_x, hi_x, lo_y, hi_y, tolerance) {
                     for candidate in tree.locate_in_envelope_intersecting(window) {
-                        consider(
-                            XY::new(candidate.geom()[0], candidate.geom()[1]),
-                            candidate.data,
-                        )?;
+                        consider(XY::new(candidate[0], candidate[1]))?;
                     }
                 } else {
                     for candidate in tree {
-                        consider(
-                            XY::new(candidate.geom()[0], candidate.geom()[1]),
-                            candidate.data,
-                        )?;
+                        consider(XY::new(candidate[0], candidate[1]))?;
                     }
                 }
             },
             (SnapReferenceStorage::Indexed(tree), _) => {
                 for candidate in tree {
-                    consider(
-                        XY::new(candidate.geom()[0], candidate.geom()[1]),
-                        candidate.data,
-                    )?;
+                    consider(XY::new(candidate[0], candidate[1]))?;
                 }
             },
             // Brute: scan every reference vertex (small reference); `consider`
             // applies the exact tolerance/projection filter.
             (SnapReferenceStorage::Linear(points), _) => {
-                for (ordinal, &reference) in points.iter().enumerate() {
-                    consider(reference, ordinal)?;
+                for &reference in points {
+                    consider(reference)?;
                 }
             },
         }
-        // Fraction order with build-order ties: identical to the linear
-        // scan's input-order stable sort.
+        // Equal projections use the reference XY set rather than its input order.
         crate::geometry::try_sort_by(&mut candidates, |a, b| {
-            Ok(a.0.cmp_along(&b.0)?.then(a.1.cmp(&b.1)))
+            Ok(a.0
+                .cmp_along(&b.0)?
+                .then_with(|| compare_xy(XY::new(a.1.x, a.1.y), XY::new(b.1.x, b.1.y))))
         })?;
         // Collapse only genuine duplicates — references at an identical
         // projected position. A fixed parametric epsilon would merge distinct
         // reference points (e.g. 0.5 and 0.5000000000005) even at tolerance 0.
         #[expect(clippy::float_cmp, reason = "exact projected-position identity")]
-        candidates.dedup_by(|right, left| right.2.x == left.2.x && right.2.y == left.2.y);
+        candidates.dedup_by(|right, left| right.1.x == left.1.x && right.1.y == left.1.y);
         let mut output = Vec::with_capacity(candidates.len());
-        for (_, _, point) in candidates {
+        for (_, point) in candidates {
             output.push(point);
         }
         Ok(output)
     }
+}
+
+fn compare_xy(left: XY, right: XY) -> std::cmp::Ordering {
+    left.x
+        .total_cmp(&right.x)
+        .then_with(|| left.y.total_cmp(&right.y))
 }
 
 fn outward_padded_bounds(
@@ -1540,19 +1527,23 @@ mod snap_reference_tests {
     }
 
     #[test]
-    fn indexed_nearest_keeps_the_latest_source_ordinal_on_a_distance_tie() {
+    fn indexed_nearest_breaks_a_distance_tie_by_smallest_xy() {
         let mut points = vec![XY::new(-1.0, 0.0), XY::new(1.0, 0.0)];
         points.extend(
             (0..(SNAP_INDEX_MIN_POINTS - points.len()))
                 .map(|index| XY::new(10.0 + index as f64, 10.0)),
         );
-        let reference = SnapReference::build(&points, 1.0);
+        let mut reversed = points.clone();
+        reversed.swap(0, 1);
         let source = Point::new_raw_axes(0.0, 0.0, ZOrdinate(Some(7.0)), MOrdinate(Some(11.0)));
-        let snapped = reference.snap_point(source);
-        assert_eq!(snapped.x.to_bits(), 1.0_f64.to_bits());
-        assert_eq!(snapped.y.to_bits(), 0.0_f64.to_bits());
-        assert_eq!(snapped.z().unwrap().to_bits(), 7.0_f64.to_bits());
-        assert_eq!(snapped.m().unwrap().to_bits(), 11.0_f64.to_bits());
+        for points in [points, reversed] {
+            let reference = SnapReference::build(&points, 1.0);
+            let snapped = reference.snap_point(source);
+            assert_eq!(snapped.x.to_bits(), (-1.0_f64).to_bits());
+            assert_eq!(snapped.y.to_bits(), 0.0_f64.to_bits());
+            assert_eq!(snapped.z().unwrap().to_bits(), 7.0_f64.to_bits());
+            assert_eq!(snapped.m().unwrap().to_bits(), 11.0_f64.to_bits());
+        }
     }
 
     #[test]
