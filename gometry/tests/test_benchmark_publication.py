@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import shutil
 import sys
 from pathlib import Path
@@ -105,7 +106,7 @@ def _block_payload(operation, index: int, lock_path: str = 'lock') -> dict[str, 
     }
 
 
-def _result(tmp_path: Path) -> dict[str, object]:
+def _build_result(tmp_path: Path) -> dict[str, object]:
     lock = tmp_path / 'lock'
     lock.write_bytes(b'x')
     artifacts: list[str] = []
@@ -249,15 +250,29 @@ def _result(tmp_path: Path) -> dict[str, object]:
     }
 
 
-def _run_manifest(tmp_path: Path, result: dict[str, object] | None = None) -> Path:
-    result = _result(tmp_path) if result is None else result
+@pytest.fixture(scope='module')
+def publication_baseline(tmp_path_factory: pytest.TempPathFactory) -> str:
+    root = tmp_path_factory.mktemp('publication-baseline')
+    return json.dumps(_build_result(root))
+
+
+def _result(publication_baseline: str) -> dict[str, object]:
+    return json.loads(publication_baseline)
+
+
+def _run_manifest(
+    tmp_path: Path,
+    publication_baseline: str,
+    result: dict[str, object] | None = None,
+) -> Path:
+    result = _result(publication_baseline) if result is None else result
     run_directory = tmp_path / 'run'
     raw_directory = run_directory / 'raw'
     raw_directory.mkdir(parents=True)
     artifacts = []
     for source in result.pop('source_artifacts'):
         artifact = raw_directory / Path(str(source)).name
-        shutil.copy2(source, artifact)
+        os.link(source, artifact)
         artifacts.append(f'raw/{artifact.name}')
     result.update({
         'manifest_type': bench_driver._RUN_MANIFEST_TYPE,
@@ -271,11 +286,17 @@ def _run_manifest(tmp_path: Path, result: dict[str, object] | None = None) -> Pa
     return manifest
 
 
+def _replace_artifact(path: Path, content: str) -> None:
+    temporary = path.with_name(f'.{path.name}.tmp')
+    temporary.write_text(content, encoding='utf-8')
+    temporary.replace(path)
+
+
 def _mutate_first_block(run_manifest: Path, mutate) -> None:
     for raw in sorted(run_manifest.parent.joinpath('raw').glob('block-*.json')):
         payload = json.loads(raw.read_text(encoding='utf-8'))
         mutate(payload)
-        raw.write_text(json.dumps(payload), encoding='utf-8')
+        _replace_artifact(raw, json.dumps(payload))
         return
     raise AssertionError('fixture has no paired block artifact')
 
@@ -389,11 +410,11 @@ def test_release_measurement_cannot_publish_or_mutate_current(
 
 
 def test_publication_rejects_filtered_run_without_touching_current(
-    tmp_path: Path,
+    tmp_path: Path, publication_baseline: str
 ) -> None:
-    result = _result(tmp_path)
+    result = _result(publication_baseline)
     result['filter'] = 'gometry.points/10k_numpy_xy'
-    run_manifest = _run_manifest(tmp_path, result)
+    run_manifest = _run_manifest(tmp_path, publication_baseline, result)
     current = tmp_path / 'current'
     current.mkdir()
     sentinel = current / 'sentinel'
@@ -412,27 +433,34 @@ def test_publication_rejects_filtered_run_without_touching_current(
     ],
 )
 def test_non_release_and_incomplete_runs_are_unpublishable(
-    tmp_path: Path, changes: dict[str, object], message: str
+    tmp_path: Path,
+    publication_baseline: str,
+    changes: dict[str, object],
+    message: str,
 ) -> None:
-    result = _result(tmp_path)
+    result = _result(publication_baseline)
     result.update(changes)
     result['publishable'] = False
-    run_manifest = _run_manifest(tmp_path, result)
+    run_manifest = _run_manifest(tmp_path, publication_baseline, result)
     with pytest.raises(SystemExit, match=message):
         _publish(run_manifest, tmp_path)
 
 
-def test_publication_rejects_missing_artifact_and_metadata(tmp_path: Path) -> None:
-    result = _result(tmp_path)
-    run_manifest = _run_manifest(tmp_path, result)
+def test_publication_rejects_missing_artifact_and_metadata(
+    tmp_path: Path, publication_baseline: str
+) -> None:
+    result = _result(publication_baseline)
+    run_manifest = _run_manifest(tmp_path, publication_baseline, result)
     next(run_manifest.parent.joinpath('raw').glob('block-*.json')).unlink()
     with pytest.raises(SystemExit, match='references a missing artifact'):
         _publish(run_manifest, tmp_path)
     incomplete_root = tmp_path / 'incomplete'
     incomplete_root.mkdir()
-    incomplete = _result(incomplete_root)
+    incomplete = _result(publication_baseline)
     del incomplete['doctor']['metadata']['uv_lock']  # type: ignore[index]
-    incomplete_manifest = _run_manifest(incomplete_root, incomplete)
+    incomplete_manifest = _run_manifest(
+        incomplete_root, publication_baseline, incomplete
+    )
     with pytest.raises(SystemExit, match='missing benchmark identity metadata'):
         _publish(incomplete_manifest, tmp_path)
 
@@ -460,16 +488,18 @@ def test_publication_rejects_missing_artifact_and_metadata(tmp_path: Path) -> No
     ids=('operation', 'block', 'lead'),
 )
 def test_publication_rejects_exact_matrix_mutations(
-    tmp_path: Path, mutation, message: str
+    tmp_path: Path, publication_baseline: str, mutation, message: str
 ) -> None:
-    run_manifest = _run_manifest(tmp_path)
+    run_manifest = _run_manifest(tmp_path, publication_baseline)
     _mutate_first_block(run_manifest, mutation)
     with pytest.raises(SystemExit, match=message):
         _publish(run_manifest, tmp_path)
 
 
-def test_publication_rejects_comparator_module_mutation(tmp_path: Path) -> None:
-    run_manifest = _run_manifest(tmp_path)
+def test_publication_rejects_comparator_module_mutation(
+    tmp_path: Path, publication_baseline: str
+) -> None:
+    run_manifest = _run_manifest(tmp_path, publication_baseline)
 
     def mutate(payload: dict[str, object]) -> None:
         identity = payload['arms']['B']['provenance_before']
@@ -482,8 +512,10 @@ def test_publication_rejects_comparator_module_mutation(tmp_path: Path) -> None:
         _publish(run_manifest, tmp_path)
 
 
-def test_publication_rejects_native_library_mutation(tmp_path: Path) -> None:
-    run_manifest = _run_manifest(tmp_path)
+def test_publication_rejects_native_library_mutation(
+    tmp_path: Path, publication_baseline: str
+) -> None:
+    run_manifest = _run_manifest(tmp_path, publication_baseline)
 
     def mutate(payload: dict[str, object]) -> None:
         identity = payload['arms']['A']['provenance_before']
@@ -496,8 +528,10 @@ def test_publication_rejects_native_library_mutation(tmp_path: Path) -> None:
         _publish(run_manifest, tmp_path)
 
 
-def test_publication_rejects_comparator_native_library_mutation(tmp_path: Path) -> None:
-    run_manifest = _run_manifest(tmp_path)
+def test_publication_rejects_comparator_native_library_mutation(
+    tmp_path: Path, publication_baseline: str
+) -> None:
+    run_manifest = _run_manifest(tmp_path, publication_baseline)
 
     def mutate(payload: dict[str, object]) -> None:
         identity = payload['arms']['B']['provenance_before']
@@ -516,8 +550,10 @@ def test_publication_rejects_comparator_native_library_mutation(tmp_path: Path) 
         _publish(run_manifest, tmp_path)
 
 
-def test_publication_rejects_dependency_lock_mutation(tmp_path: Path) -> None:
-    run_manifest = _run_manifest(tmp_path)
+def test_publication_rejects_dependency_lock_mutation(
+    tmp_path: Path, publication_baseline: str
+) -> None:
+    run_manifest = _run_manifest(tmp_path, publication_baseline)
 
     def mutate(payload: dict[str, object]) -> None:
         for side in ('A', 'B'):
@@ -540,9 +576,12 @@ def test_publication_rejects_dependency_lock_mutation(tmp_path: Path) -> None:
     ],
 )
 def test_publication_rejects_geos_attribution_mutations(
-    tmp_path: Path, mutation: str, message: str
+    tmp_path: Path,
+    publication_baseline: str,
+    mutation: str,
+    message: str,
 ) -> None:
-    run_manifest = _run_manifest(tmp_path)
+    run_manifest = _run_manifest(tmp_path, publication_baseline)
 
     def mutate(payload: dict[str, object]) -> None:
         identity = payload['arms']['B']['provenance_before']
@@ -563,8 +602,10 @@ def test_publication_rejects_geos_attribution_mutations(
         _publish(run_manifest, tmp_path)
 
 
-def test_publication_rejects_effective_build_fact_mutation(tmp_path: Path) -> None:
-    run_manifest = _run_manifest(tmp_path)
+def test_publication_rejects_effective_build_fact_mutation(
+    tmp_path: Path, publication_baseline: str
+) -> None:
+    run_manifest = _run_manifest(tmp_path, publication_baseline)
 
     def mutate(payload: dict[str, object]) -> None:
         for side in ('A', 'B'):
@@ -578,8 +619,10 @@ def test_publication_rejects_effective_build_fact_mutation(tmp_path: Path) -> No
         _publish(run_manifest, tmp_path)
 
 
-def test_publication_rejects_extra_paired_artifact(tmp_path: Path) -> None:
-    run_manifest = _run_manifest(tmp_path)
+def test_publication_rejects_extra_paired_artifact(
+    tmp_path: Path, publication_baseline: str
+) -> None:
+    run_manifest = _run_manifest(tmp_path, publication_baseline)
     result = json.loads(run_manifest.read_text(encoding='utf-8'))
     source = next(run_manifest.parent.joinpath('raw').glob('block-*.json'))
     extra = run_manifest.parent / 'raw' / 'extra-paired.json'
@@ -591,37 +634,45 @@ def test_publication_rejects_extra_paired_artifact(tmp_path: Path) -> None:
 
 
 def test_publication_rejects_mismatched_external_oracle_artifact(
-    tmp_path: Path,
+    tmp_path: Path, publication_baseline: str
 ) -> None:
-    run_manifest = _run_manifest(tmp_path)
+    run_manifest = _run_manifest(tmp_path, publication_baseline)
     oracle = run_manifest.parent / 'raw' / 'oracle.json'
     payload = json.loads(oracle.read_text(encoding='utf-8'))
     payload['verified'] -= 1
-    oracle.write_text(json.dumps(payload), encoding='utf-8')
+    _replace_artifact(oracle, json.dumps(payload))
     with pytest.raises(SystemExit, match='oracle artifact is incomplete'):
         _publish(run_manifest, tmp_path)
 
 
-def test_publication_rejects_absent_or_untracked_lock_identity(tmp_path: Path) -> None:
-    result = _result(tmp_path)
+def test_publication_rejects_absent_or_untracked_lock_identity(
+    tmp_path: Path, publication_baseline: str
+) -> None:
+    result = _result(publication_baseline)
     result['doctor']['metadata']['uv_lock'] = {  # type: ignore[index]
         'path': None,
         'sha256': None,
         'size_bytes': None,
     }
-    run_manifest = _run_manifest(tmp_path, result)
+    run_manifest = _run_manifest(tmp_path, publication_baseline, result)
     with pytest.raises(SystemExit, match='requires a lock file identity'):
         _publish(run_manifest, tmp_path)
 
 
-def test_publication_ignores_packages_no_block_loaded(tmp_path: Path) -> None:
-    result = _result(tmp_path)
+def test_publication_ignores_packages_no_block_loaded(
+    tmp_path: Path, publication_baseline: str
+) -> None:
+    result = _result(publication_baseline)
     result['doctor']['metadata']['packages']['unused'] = package_identity('unused')  # type: ignore[index]
-    _publish(_run_manifest(tmp_path, result), tmp_path)
+    _publish(
+        _run_manifest(tmp_path, publication_baseline, result), tmp_path
+    )
 
 
-def test_publication_writes_only_the_deterministic_summary(tmp_path: Path) -> None:
-    run_manifest = _run_manifest(tmp_path)
+def test_publication_writes_only_the_deterministic_summary(
+    tmp_path: Path, publication_baseline: str
+) -> None:
+    run_manifest = _run_manifest(tmp_path, publication_baseline)
     current = tmp_path / 'current'
     current.mkdir()
     (current / 'summary.md').write_text('previous table', encoding='utf-8')
@@ -643,9 +694,11 @@ def test_publication_writes_only_the_deterministic_summary(tmp_path: Path) -> No
 
 
 def test_cli_publishes_one_run_manifest(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
+    publication_baseline: str,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    run_manifest = _run_manifest(tmp_path)
+    run_manifest = _run_manifest(tmp_path, publication_baseline)
     current = tmp_path / 'current'
     monkeypatch.setattr(
         sys,
