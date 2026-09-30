@@ -211,6 +211,11 @@ impl PyGeometryArray {
                 row_map,
             }) = self.storage()
         {
+            let longitude_axis = match crate::geometry::topology_domain(&self.frame) {
+                Ok(crate::geometry::TopologyDomain::Geographic(frame)) => Some(frame.longitude()),
+                Ok(crate::geometry::TopologyDomain::Cartesian) => None,
+                Err(error) => return Some(Err(error.into())),
+            };
             // Propagate real PyResult errors from the packed kernels — never
             // `.ok()` them into a silent fallthrough that hides the failure.
             if row_map.reorders() {
@@ -226,21 +231,23 @@ impl PyGeometryArray {
                     coords, offsets, ..
                 }) = materialized.storage()
                 {
-                    return Some(match method {
-                        SimplifyMethod::Vw => {
-                            materialized.simplify_vw_packed_lines(coords, offsets, tolerance)
-                        },
-                        SimplifyMethod::Dp => {
-                            materialized.simplify_dp_packed_lines(coords, offsets, tolerance)
-                        },
-                    });
+                    return Some(materialized.simplify_packed_lines_with_method(
+                        coords,
+                        offsets,
+                        tolerance,
+                        method,
+                        longitude_axis,
+                    ));
                 }
                 return None;
             }
-            return Some(match method {
-                SimplifyMethod::Vw => self.simplify_vw_packed_lines(coords, offsets, tolerance),
-                SimplifyMethod::Dp => self.simplify_dp_packed_lines(coords, offsets, tolerance),
-            });
+            return Some(self.simplify_packed_lines_with_method(
+                coords,
+                offsets,
+                tolerance,
+                method,
+                longitude_axis,
+            ));
         }
         None
     }

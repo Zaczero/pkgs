@@ -66,6 +66,28 @@ impl PeriodicAxis {
         self.half_period
     }
 
+    /// Whether a newly-created coordinate edge would be read across the
+    /// periodic seam. A full-turn edge retains its existing interpretation.
+    pub(crate) fn edge_exceeds_half_period(self, from: f64, to: f64) -> bool {
+        // Canonical interior longitudes need only one subtraction; aliases
+        // use the same seam spelling rule as geographic topology.
+        if from.abs() < self.half_period && to.abs() < self.half_period {
+            return (to - from).abs() > self.half_period;
+        }
+        let raw_delta = (to - from).abs();
+        if self.full_turn_delta(from, to).is_some() {
+            return false;
+        }
+        let (Ok(from), Ok(to)) = (self.canonicalize(from), self.canonicalize(to)) else {
+            return false;
+        };
+        if from.identity(self) == SeamIdentity::Seam || to.identity(self) == SeamIdentity::Seam {
+            raw_delta > self.half_period && raw_delta < self.period.next_up()
+        } else {
+            (to.get() - from.get()).abs() > self.half_period
+        }
+    }
+
     pub(crate) fn full_turn_delta(self, from: f64, to: f64) -> Option<f64> {
         let delta = to - from;
         if !delta.is_finite() {

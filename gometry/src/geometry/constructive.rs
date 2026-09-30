@@ -18,9 +18,12 @@ pub(crate) use offset::{DEFAULT_MITER_LIMIT, reversed_points, sided_strip_parts}
 pub(in crate::geometry) use ring::{canonical_ring_seq, oriented_ring};
 pub(crate) use ring::{
     decimal_scale, normalized_line, orient_ring, quantize_column_simd, quantize_to_scale,
-    snap_column_simd, stable_snap_ordinate, vw_keep,
+    snap_column_simd, stable_snap_ordinate, vw_keep, vw_keep_geographic,
 };
-pub(crate) use simplify::{raw_offset_loop, rdp_keep, split, strict_cycle, validate_buffer_style};
+pub(crate) use simplify::{
+    GeographicRdpGuard, PlanarRdpGuard, RdpEdgeSpanGuard, raw_offset_loop,
+    rdp_keep_with_edge_guard, split, strict_cycle, validate_buffer_style,
+};
 #[cfg(test)]
 pub(crate) use snap::densify_points_budgeted;
 pub(crate) use snap::{

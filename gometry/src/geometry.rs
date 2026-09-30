@@ -152,9 +152,10 @@ use access::{
 pub(crate) use arrangement::Arrangement;
 pub(crate) use bvh_code::{BvhCode, BvhNode};
 pub(crate) use constructive::{
-    AffineLinear, DEFAULT_MITER_LIMIT, OriginAffine, SegmentPlacement,
-    densify_points_budgeted_with_placement, rdp_keep, segmentize_points_budgeted, stable_affine_xy,
-    stable_snap_ordinate, verify_planar_segmentize_output, verify_planar_segmentize_shape, vw_keep,
+    AffineLinear, DEFAULT_MITER_LIMIT, GeographicRdpGuard, OriginAffine, PlanarRdpGuard,
+    RdpEdgeSpanGuard, SegmentPlacement, densify_points_budgeted_with_placement,
+    rdp_keep_with_edge_guard, segmentize_points_budgeted, stable_affine_xy, stable_snap_ordinate,
+    verify_planar_segmentize_output, verify_planar_segmentize_shape, vw_keep, vw_keep_geographic,
 };
 use constructive::{
     SnapReference, assemble_region_polygons, decimal_scale, orient_ring, quantize_to_scale,

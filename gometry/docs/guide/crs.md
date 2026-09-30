@@ -810,7 +810,11 @@ The **stay-planar**
 constructive ops ([`convex_hull`][gometry.Geometry.convex_hull], [`concave_hull`][gometry.Geometry.concave_hull], [`buffer`][gometry.Geometry.buffer], [`offset_curve`][gometry.Geometry.offset_curve],
 [`simplify`][gometry.Geometry.simplify], Voronoi, Delaunay) do **not** auto-split; call
 [`split_antimeridian`][gometry.Geometry.split_antimeridian] first on crossing
-input. A crossing geometry's [`bounds`][gometry.Geometry.bounds] reports
+input. Geographic simplification also rejects a vertex removal that creates
+an edge geographic topology would read across the seam. The check uses the
+CRS-native longitude half-period and preserves the stored crossing input; it
+does not normalize or split it. A crossing geometry's
+[`bounds`][gometry.Geometry.bounds] reports
 `west > east` (minx > maxx) — the established geographic convention.
 
 For WGS 84 boxes that wrap longitude 180/−180, use `wrap="split"` so the visible

@@ -7,6 +7,7 @@ use crate::array::{
     note_array_row, parse_curve_bounds, physical_row, rows_err,
 };
 use crate::boundary::input;
+use crate::geographic::PeriodicAxis;
 use crate::geometry::types::ShapeHeapMemo;
 use crate::py::vectors::Groups;
 
@@ -150,18 +151,89 @@ impl PyGeometryArray {
         .map_err(crate::PyErr::from)
     }
 
+    pub(crate) fn simplify_vw_packed_lines_geographic(
+        &self,
+        coords: &CoordSeq,
+        offsets: &CsrOffsetColumn,
+        tolerance: f64,
+        axis: PeriodicAxis,
+    ) -> PyResult<Self> {
+        self.simplify_packed_lines_mask(coords, offsets, |xs, ys, keep| {
+            Ok(crate::geometry::vw_keep_geographic(
+                xs, ys, tolerance, axis, keep,
+            ))
+        })
+        .map_err(crate::PyErr::from)
+    }
+
     pub(crate) fn simplify_dp_packed_lines(
         &self,
         coords: &CoordSeq,
         offsets: &CsrOffsetColumn,
         tolerance: f64,
     ) -> PyResult<Self> {
+        self.simplify_dp_packed_lines_with_guard::<crate::geometry::PlanarRdpGuard>(
+            coords,
+            offsets,
+            tolerance,
+            crate::geometry::PlanarRdpGuard,
+        )
+    }
+
+    pub(crate) fn simplify_dp_packed_lines_geographic(
+        &self,
+        coords: &CoordSeq,
+        offsets: &CsrOffsetColumn,
+        tolerance: f64,
+        axis: PeriodicAxis,
+    ) -> PyResult<Self> {
+        self.simplify_dp_packed_lines_with_guard(
+            coords,
+            offsets,
+            tolerance,
+            crate::geometry::GeographicRdpGuard(&axis),
+        )
+    }
+
+    pub(crate) fn simplify_packed_lines_with_method(
+        &self,
+        coords: &CoordSeq,
+        offsets: &CsrOffsetColumn,
+        tolerance: f64,
+        method: crate::geometry::SimplifyMethod,
+        longitude_axis: Option<PeriodicAxis>,
+    ) -> PyResult<Self> {
+        match (method, longitude_axis) {
+            (crate::geometry::SimplifyMethod::Vw, Some(axis)) => {
+                self.simplify_vw_packed_lines_geographic(coords, offsets, tolerance, axis)
+            },
+            (crate::geometry::SimplifyMethod::Vw, None) => {
+                self.simplify_vw_packed_lines(coords, offsets, tolerance)
+            },
+            (crate::geometry::SimplifyMethod::Dp, Some(axis)) => {
+                self.simplify_dp_packed_lines_geographic(coords, offsets, tolerance, axis)
+            },
+            (crate::geometry::SimplifyMethod::Dp, None) => {
+                self.simplify_dp_packed_lines(coords, offsets, tolerance)
+            },
+        }
+    }
+
+    fn simplify_dp_packed_lines_with_guard<G: crate::geometry::RdpEdgeSpanGuard>(
+        &self,
+        coords: &CoordSeq,
+        offsets: &CsrOffsetColumn,
+        tolerance: f64,
+        edge_guard: G,
+    ) -> PyResult<Self> {
         // One batch-local DP work stack reused across rows (clear+push, no
         // per-row allocation). Free-threading: not a receiver cache / lock.
         let result = {
             let mut stack: Vec<(usize, usize)> = Vec::new();
             self.simplify_packed_lines_mask(coords, offsets, |xs, ys, keep| {
-                crate::geometry::rdp_keep(xs, ys, tolerance, keep, &mut stack)
+                crate::geometry::rdp_keep_with_edge_guard(
+                    xs, ys, tolerance, edge_guard, keep, &mut stack,
+                )
             })
         };
         result.map_err(crate::PyErr::from)

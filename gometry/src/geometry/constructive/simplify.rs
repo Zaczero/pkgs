@@ -9,6 +9,7 @@ use std::simd::cmp::SimdPartialOrd as _;
 
 use crate::NonNegative;
 use crate::error::Result;
+use crate::geographic::PeriodicAxis;
 use crate::geometry::constructive::{WalkJoinRule, WalkPlan, materialize_walk, vw_keep};
 use crate::geometry::overlay::{ExactSourceInventory, rect_polygon};
 use crate::geometry::{
@@ -35,15 +36,262 @@ fn subdivision_work() -> (usize, usize) {
     SUBDIVISION_WORK.with(Cell::get)
 }
 
+// Expand the split scan into each const-specialized keep loop so the planar
+// and geographic paths share one algorithm without a runtime mode branch.
+macro_rules! rdp_split_inline {
+    ($xs:expr, $ys:expr, $start:expr, $end:expr, $tolerance:expr, $tolerance_squared:expr) => {{
+        (|xs: &[f64],
+          ys: &[f64],
+          start: usize,
+          end: usize,
+          tolerance: f64,
+          tolerance_squared: f64|
+         -> Result<Option<usize>> {
+            let (ax, ay) = (
+                *xs.get(start)
+                    .expect("Douglas-Peucker start belongs to its source range"),
+                *ys.get(start)
+                    .expect("Douglas-Peucker start belongs to its source range"),
+            );
+            let (bx, by) = (
+                *xs.get(end)
+                    .expect("Douglas-Peucker end belongs to its source range"),
+                *ys.get(end)
+                    .expect("Douglas-Peucker end belongs to its source range"),
+            );
+            let (dx, dy) = (bx - ax, by - ay);
+            let chord_squared = dx * dx + dy * dy;
+            let threshold = tolerance_squared * chord_squared;
+            let mut best = 0.0_f64;
+            let mut farthest = start;
+            let interior_start = start.wrapping_add(1);
+            let interior_xs = xs
+                .get(interior_start..end)
+                .expect("Douglas-Peucker interior belongs to its source range");
+            let interior_ys = ys
+                .get(interior_start..end)
+                .expect("Douglas-Peucker interior belongs to its source range");
+            let exact_scan = |best: &mut f64, farthest: &mut usize| -> Result<()> {
+                let chord = Segment {
+                    start: XY::new(ax, ay),
+                    end: XY::new(bx, by),
+                };
+                *best = f64::NEG_INFINITY;
+                for (offset, (&x, &y)) in interior_xs.iter().zip(interior_ys).enumerate() {
+                    let index = interior_start.wrapping_add(offset);
+                    let deviation = point_segment_distance_squared(XY::new(x, y), chord)?;
+                    if deviation > *best {
+                        *best = deviation;
+                        *farthest = index;
+                    }
+                }
+                Ok(())
+            };
+            // When tolerance² underflows/overflows or the chord collapses, recover
+            // with unsquared distances against the raw (positive) tolerance. Once
+            // only tolerance² survives the public API, recovery is impossible — so
+            // callers pass both.
+            if !threshold.is_finite()
+                || threshold == 0.0
+                || !threshold.is_normal()
+                || chord_squared <= 0.0
+                || !tolerance_squared.is_normal()
+            {
+                // Prefer the raw finite distance tolerance (survives when tol² is
+                // +inf). Fall back to sqrt of a finite square; +inf/NaN/negative
+                // raw means "no finite threshold" → never split (endpoints only).
+                let tol = if tolerance > 0.0 && tolerance.is_finite() {
+                    tolerance
+                } else if tolerance_squared.is_normal() {
+                    tolerance_squared.sqrt()
+                } else if tolerance_squared > 0.0 && tolerance_squared.is_finite() {
+                    tolerance_squared.sqrt().max(f64::MIN_POSITIVE)
+                } else if tolerance == 0.0 {
+                    let chord = Segment {
+                        start: XY::new(ax, ay),
+                        end: XY::new(bx, by),
+                    };
+                    let mut split = None;
+                    let mut best_d = f64::NAN;
+                    for (offset, (&x, &y)) in interior_xs.iter().zip(interior_ys).enumerate() {
+                        let index = interior_start.wrapping_add(offset);
+                        let point = XY::new(x, y);
+                        if point_on_segment(point, chord.start, chord.end) {
+                            continue;
+                        }
+                        let d = point_segment_distance(point, chord)?;
+                        if split.is_none() || d > best_d {
+                            split = Some(index);
+                            best_d = d;
+                        }
+                    }
+                    return Ok(split);
+                } else {
+                    return Ok(None);
+                };
+                let chord = Segment {
+                    start: XY::new(ax, ay),
+                    end: XY::new(bx, by),
+                };
+                let mut best_d = f64::NEG_INFINITY;
+                for (offset, (&x, &y)) in interior_xs.iter().zip(interior_ys).enumerate() {
+                    let index = interior_start.wrapping_add(offset);
+                    let d = point_segment_distance(XY::new(x, y), chord)?;
+                    if d > best_d {
+                        best_d = d;
+                        farthest = index;
+                    }
+                }
+                return Ok((best_d > tol).then_some(farthest));
+            }
+            let mut index = interior_start;
+            if end.wrapping_sub(index) >= REDUCE_LANES {
+                let lane_offsets =
+                    std::simd::Simd::<u64, REDUCE_LANES>::from_array(std::array::from_fn(|lane| {
+                        lane as u64
+                    }));
+                let (ax_s, ay_s) = (ReduceSimd::splat(ax), ReduceSimd::splat(ay));
+                let (bx_s, by_s) = (ReduceSimd::splat(bx), ReduceSimd::splat(by));
+                let (dx_s, dy_s) = (ReduceSimd::splat(dx), ReduceSimd::splat(dy));
+                let chord_s = ReduceSimd::splat(chord_squared);
+                let mut best_scores = ReduceSimd::splat(0.0);
+                let mut best_lanes = std::simd::Simd::<u64, REDUCE_LANES>::splat(0);
+                #[expect(
+                    clippy::arithmetic_side_effects,
+                    reason = "SIMD cursor lanes are bounded source ordinals"
+                )]
+                let mut cursor =
+                    std::simd::Simd::<u64, REDUCE_LANES>::splat(index as u64) + lane_offsets;
+                while index.wrapping_add(REDUCE_LANES) <= end {
+                    let lane_end = index.wrapping_add(REDUCE_LANES);
+                    let x = ReduceSimd::from_slice(
+                        xs.get(index..lane_end)
+                            .expect("Douglas-Peucker SIMD window belongs to its source range"),
+                    );
+                    let y = ReduceSimd::from_slice(
+                        ys.get(index..lane_end)
+                            .expect("Douglas-Peucker SIMD window belongs to its source range"),
+                    );
+                    #[expect(
+                        clippy::arithmetic_side_effects,
+                        reason = "SIMD lanes preserve the binary64 point-to-segment score"
+                    )]
+                    let score = {
+                        let (qx, qy) = (x - ax_s, y - ay_s);
+                        let along = qx * dx_s + qy * dy_s;
+                        let cross = qx * dy_s - qy * dx_s;
+                        let (rx, ry) = (x - bx_s, y - by_s);
+                        along.simd_le(ReduceSimd::splat(0.0)).select(
+                            (qx * qx + qy * qy) * chord_s,
+                            along
+                                .simd_ge(chord_s)
+                                .select((rx * rx + ry * ry) * chord_s, cross * cross),
+                        )
+                    };
+                    let improved = score.simd_gt(best_scores);
+                    best_scores = improved.select(score, best_scores);
+                    best_lanes = improved.cast::<i64>().select(cursor, best_lanes);
+                    #[expect(
+                        clippy::arithmetic_side_effects,
+                        reason = "SIMD cursor lanes are bounded source ordinals"
+                    )]
+                    {
+                        cursor += std::simd::Simd::splat(REDUCE_LANES as u64);
+                    }
+                    index = index.wrapping_add(REDUCE_LANES);
+                }
+                for (&score, &source_index) in
+                    best_scores.as_array().iter().zip(best_lanes.as_array())
+                {
+                    if score > best {
+                        best = score;
+                        farthest = source_index as usize;
+                    }
+                }
+            }
+            let scalar_xs = xs
+                .get(index..end)
+                .expect("Douglas-Peucker scalar suffix belongs to its source range");
+            let scalar_ys = ys
+                .get(index..end)
+                .expect("Douglas-Peucker scalar suffix belongs to its source range");
+            for (offset, (&x, &y)) in scalar_xs.iter().zip(scalar_ys).enumerate() {
+                let scalar_index = index.wrapping_add(offset);
+                let (qx, qy) = (x - ax, y - ay);
+                let along = qx * dx + qy * dy;
+                let score = if along <= 0.0 {
+                    (qx * qx + qy * qy) * chord_squared
+                } else if along >= chord_squared {
+                    let (rx, ry) = (x - bx, y - by);
+                    (rx * rx + ry * ry) * chord_squared
+                } else {
+                    let cross = qx * dy - qy * dx;
+                    cross * cross
+                };
+                if score > best {
+                    best = score;
+                    farthest = scalar_index;
+                }
+            }
+            if !best.is_finite() {
+                exact_scan(&mut best, &mut farthest)?;
+                return Ok((best > tolerance_squared).then_some(farthest));
+            }
+            Ok((best > threshold).then_some(farthest))
+        })($xs, $ys, $start, $end, $tolerance, $tolerance_squared)
+    }};
+}
+
+pub(crate) trait RdpEdgeSpanGuard: Copy {
+    const GEOGRAPHIC: bool;
+
+    fn edge_exceeds_half_period(&self, from: f64, to: f64) -> bool;
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct PlanarRdpGuard;
+
+impl RdpEdgeSpanGuard for PlanarRdpGuard {
+    const GEOGRAPHIC: bool = false;
+
+    fn edge_exceeds_half_period(&self, _from: f64, _to: f64) -> bool {
+        false
+    }
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct GeographicRdpGuard<'a>(pub(crate) &'a PeriodicAxis);
+
+impl RdpEdgeSpanGuard for GeographicRdpGuard<'_> {
+    const GEOGRAPHIC: bool = true;
+
+    fn edge_exceeds_half_period(&self, from: f64, to: f64) -> bool {
+        self.0.edge_exceeds_half_period(from, to)
+    }
+}
+
 /// The Douglas-Peucker keep mask over raw columns: `keep` and `stack` are
 /// cleared and refilled (reusable across packed-array rows); `Ok(Some(kept_count))`
 /// unless the chain is too short to simplify. The packed-array lane appends
 /// kept vertices straight into new CSR columns from this mask. `stack` must
 /// stay batch-local — never a receiver cache or lock (free-threading).
-pub(crate) fn rdp_keep(
+#[cfg(test)]
+fn rdp_keep(
     xs: &[f64],
     ys: &[f64],
     tolerance: f64,
+    keep: &mut Vec<bool>,
+    stack: &mut Vec<(usize, usize)>,
+) -> Result<Option<usize>> {
+    rdp_keep_with_edge_guard(xs, ys, tolerance, PlanarRdpGuard, keep, stack)
+}
+
+/// Monomorphized DP keep mask with a planar or geographic edge-span policy.
+pub(crate) fn rdp_keep_with_edge_guard<G: RdpEdgeSpanGuard>(
+    xs: &[f64],
+    ys: &[f64],
+    tolerance: f64,
+    edge_guard: G,
     keep: &mut Vec<bool>,
     stack: &mut Vec<(usize, usize)>,
 ) -> Result<Option<usize>> {
@@ -68,7 +316,18 @@ pub(crate) fn rdp_keep(
         if end.wrapping_sub(start) < 2 {
             continue;
         }
-        if let Some(farthest) = rdp_split(xs, ys, start, end, tolerance, tolerance_squared)? {
+        let split = if G::GEOGRAPHIC
+            && edge_guard.edge_exceeds_half_period(
+                *xs.get(start)
+                    .expect("Douglas-Peucker start belongs to its source range"),
+                *xs.get(end)
+                    .expect("Douglas-Peucker end belongs to its source range"),
+            ) {
+            Some(start.wrapping_add(end.wrapping_sub(start) / 2))
+        } else {
+            rdp_split_inline!(xs, ys, start, end, tolerance, tolerance_squared)?
+        };
+        if let Some(farthest) = split {
             *keep
                 .get_mut(farthest)
                 .expect("Douglas-Peucker split belongs to its source range") = true;
@@ -89,7 +348,8 @@ pub(crate) fn rdp_keep(
 /// `tolerance` is the raw distance-scale threshold (must stay available when
 /// `tolerance_squared` overflows to +inf — recovery from tol² alone is
 /// impossible).
-pub(crate) fn rdp_split(
+#[cfg(test)]
+fn rdp_split_reference(
     xs: &[f64],
     ys: &[f64],
     start: usize,
@@ -285,6 +545,34 @@ pub(crate) fn rdp_split(
         return Ok((best > tolerance_squared).then_some(farthest));
     }
     Ok((best > threshold).then_some(farthest))
+}
+
+#[cfg(test)]
+#[test]
+fn inline_rdp_split_matches_reference_on_scalar_simd_and_overflow_paths() {
+    fn assert_split(
+        xs: &[f64],
+        ys: &[f64],
+        start: usize,
+        end: usize,
+        tolerance: f64,
+        expected: Option<usize>,
+    ) {
+        let tolerance_squared = tolerance * tolerance;
+        let inlined = rdp_split_inline!(xs, ys, start, end, tolerance, tolerance_squared).unwrap();
+        let reference =
+            rdp_split_reference(xs, ys, start, end, tolerance, tolerance_squared).unwrap();
+        assert_eq!(inlined, expected);
+        assert_eq!(reference, expected);
+    }
+
+    assert_split(&[0.0, 1.0, 2.0], &[0.0, 1.0, 0.0], 0, 2, 0.0, Some(1));
+
+    let xs: [f64; 16] = std::array::from_fn(|index| index as f64);
+    let ys: [f64; 16] = std::array::from_fn(|index| if index == 7 { 10.0 } else { 0.0 });
+    assert_split(&xs, &ys, 0, 15, 0.1, Some(7));
+
+    assert_split(&[-1e308, 0.0, 1e308], &[0.0, 1e307, 0.0], 0, 2, 1e308, None);
 }
 
 /// Clean strictly-turning vertex cycle of a ring: closing duplicate,
@@ -829,7 +1117,29 @@ impl Shape {
     /// call would pay the slow guarded walk — and it runs on the REDUCED
     /// output through the indexed validity kernel, so it is cheap.
     pub fn simplify_dp(&self, tolerance: f64, preserve_topology: bool) -> Result<Self> {
-        match self.simplify_raw_dp(tolerance)? {
+        self.simplify_dp_with_edge_guard::<false>(
+            tolerance,
+            preserve_topology,
+            crate::geographic::GeographicFrame::crs84().longitude(),
+        )
+    }
+
+    pub(crate) fn simplify_dp_geographic(
+        &self,
+        tolerance: f64,
+        preserve_topology: bool,
+        axis: PeriodicAxis,
+    ) -> Result<Self> {
+        self.simplify_dp_with_edge_guard::<true>(tolerance, preserve_topology, axis)
+    }
+
+    fn simplify_dp_with_edge_guard<const CHECK_EDGE_SPAN: bool>(
+        &self,
+        tolerance: f64,
+        preserve_topology: bool,
+        axis: PeriodicAxis,
+    ) -> Result<Self> {
+        match self.simplify_raw_dp_with_edge_guard::<CHECK_EDGE_SPAN>(tolerance, axis)? {
             RawSimplify::Unchanged => {
                 if preserve_topology {
                     Ok(self.clone())
@@ -850,7 +1160,7 @@ impl Shape {
                 if self.simplify_kept_topology(&raw)? {
                     Ok(raw)
                 } else {
-                    self.simplify_guarded(tolerance)
+                    self.simplify_guarded::<CHECK_EDGE_SPAN>(tolerance, axis)
                 }
             },
         }
@@ -943,8 +1253,12 @@ impl Shape {
     /// Guarded greedy simplification: per chain (line or ring), repeatedly
     /// remove the vertex with the smallest chord deviation `<= tolerance`
     /// whose removal the topology guard accepts.
-    fn simplify_guarded(&self, tolerance: f64) -> Result<Self> {
-        self.simplify_guarded_with(|prev, vertex, next| {
+    fn simplify_guarded<const CHECK_EDGE_SPAN: bool>(
+        &self,
+        tolerance: f64,
+        axis: PeriodicAxis,
+    ) -> Result<Self> {
+        self.simplify_guarded_with::<CHECK_EDGE_SPAN>(axis, |prev, vertex, next| {
             let deviation = point_segment_distance(vertex, Segment {
                 start: prev,
                 end: next,
@@ -957,8 +1271,9 @@ impl Shape {
     /// importance criterion (chord deviation for Douglas-Peucker, triangle
     /// area for Visvalingam-Whyatt): the least important removable vertex
     /// the topology guard accepts drops first.
-    fn simplify_guarded_with(
+    fn simplify_guarded_with<const CHECK_EDGE_SPAN: bool>(
         &self,
+        axis: PeriodicAxis,
         candidate: impl Fn(XY, XY, XY) -> Result<Option<f64>>,
     ) -> Result<Self> {
         let mut counts = ShapeCountQuery::default();
@@ -981,6 +1296,13 @@ impl Shape {
             Ok::<_, std::convert::Infallible>(())
         });
         let guard = TopologyGuard::new(&segments, vertex_cloud);
+        let guarded_candidate = |prev: XY, vertex: XY, next: XY| {
+            if CHECK_EDGE_SPAN && axis.edge_exceeds_half_period(prev.x, next.x) {
+                Ok(None)
+            } else {
+                candidate(prev, vertex, next)
+            }
+        };
         self.map_chains(&|points: &CoordSeq| {
             let xs = points.xs();
             let ys = points.ys();
@@ -1004,7 +1326,7 @@ impl Shape {
                     )
                 },
                 closed,
-                &candidate,
+                &guarded_candidate,
                 &guard,
             )?;
             if kept.len() == count {
@@ -1028,7 +1350,29 @@ impl Shape {
     /// same value is directly comparable between `simplify`, `simplify_vw`,
     /// and `coverage_simplify`.
     pub fn simplify_vw(&self, tolerance: f64, preserve_topology: bool) -> Result<Self> {
-        match self.simplify_raw_vw(tolerance)? {
+        self.simplify_vw_with_edge_guard::<false>(
+            tolerance,
+            preserve_topology,
+            crate::geographic::GeographicFrame::crs84().longitude(),
+        )
+    }
+
+    pub(crate) fn simplify_vw_geographic(
+        &self,
+        tolerance: f64,
+        preserve_topology: bool,
+        axis: PeriodicAxis,
+    ) -> Result<Self> {
+        self.simplify_vw_with_edge_guard::<true>(tolerance, preserve_topology, axis)
+    }
+
+    fn simplify_vw_with_edge_guard<const CHECK_EDGE_SPAN: bool>(
+        &self,
+        tolerance: f64,
+        preserve_topology: bool,
+        axis: PeriodicAxis,
+    ) -> Result<Self> {
+        match self.simplify_raw_vw_with_edge_guard::<CHECK_EDGE_SPAN>(tolerance, axis)? {
             RawSimplify::Unchanged => {
                 if preserve_topology {
                     Ok(self.clone())
@@ -1044,7 +1388,7 @@ impl Shape {
                     Ok(raw)
                 } else {
                     let area_tolerance = vw_area_tolerance(tolerance);
-                    self.simplify_guarded_with(|prev, vertex, next| {
+                    self.simplify_guarded_with::<CHECK_EDGE_SPAN>(axis, |prev, vertex, next| {
                         let area = triangle_area(prev, vertex, next);
                         Ok((area < area_tolerance).then_some(area))
                     })
@@ -1058,19 +1402,65 @@ impl Shape {
         Ok(self.simplify_raw_vw(tolerance)?.into_shape(self))
     }
 
+    #[cfg(test)]
     fn simplify_raw_dp(&self, tolerance: f64) -> Result<RawSimplify> {
+        self.simplify_raw_dp_with_edge_guard::<false>(
+            tolerance,
+            crate::geographic::GeographicFrame::crs84().longitude(),
+        )
+    }
+
+    fn simplify_raw_dp_with_edge_guard<const CHECK_EDGE_SPAN: bool>(
+        &self,
+        tolerance: f64,
+        axis: PeriodicAxis,
+    ) -> Result<RawSimplify> {
         let tolerance = NonNegative::try_new("tolerance", tolerance)?.get();
         let mut scratch = KeepScratch::default();
         self.simplify_raw(&mut scratch, &mut |xs, ys, scratch| {
-            rdp_keep(xs, ys, tolerance, &mut scratch.keep, &mut scratch.stack)
+            if CHECK_EDGE_SPAN {
+                rdp_keep_with_edge_guard(
+                    xs,
+                    ys,
+                    tolerance,
+                    GeographicRdpGuard(&axis),
+                    &mut scratch.keep,
+                    &mut scratch.stack,
+                )
+            } else {
+                rdp_keep_with_edge_guard(
+                    xs,
+                    ys,
+                    tolerance,
+                    PlanarRdpGuard,
+                    &mut scratch.keep,
+                    &mut scratch.stack,
+                )
+            }
         })
     }
 
+    #[cfg(test)]
     fn simplify_raw_vw(&self, tolerance: f64) -> Result<RawSimplify> {
+        self.simplify_raw_vw_with_edge_guard::<false>(
+            tolerance,
+            crate::geographic::GeographicFrame::crs84().longitude(),
+        )
+    }
+
+    fn simplify_raw_vw_with_edge_guard<const CHECK_EDGE_SPAN: bool>(
+        &self,
+        tolerance: f64,
+        axis: PeriodicAxis,
+    ) -> Result<RawSimplify> {
         let tolerance = NonNegative::try_new("tolerance", tolerance)?.get();
         let mut scratch = KeepScratch::default();
         self.simplify_raw(&mut scratch, &mut |xs, ys, scratch| {
-            Ok(vw_keep(xs, ys, tolerance, &mut scratch.keep))
+            Ok(if CHECK_EDGE_SPAN {
+                crate::geometry::vw_keep_geographic(xs, ys, tolerance, axis, &mut scratch.keep)
+            } else {
+                vw_keep(xs, ys, tolerance, &mut scratch.keep)
+            })
         })
     }
 

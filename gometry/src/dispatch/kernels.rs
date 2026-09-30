@@ -61,9 +61,19 @@ pub(crate) fn unary_simplify(
     preserve_topology: bool,
 ) -> Result<Shape> {
     let tolerance = tolerance.get(ctx.lane.row());
-    match method {
-        SimplifyMethod::Vw => data.shape().simplify_vw(tolerance, preserve_topology),
-        SimplifyMethod::Dp => data.shape().simplify_dp(tolerance, preserve_topology),
+    match (ctx.domain, method) {
+        (crate::geometry::TopologyDomain::Geographic(frame), SimplifyMethod::Vw) => data
+            .shape()
+            .simplify_vw_geographic(tolerance, preserve_topology, frame.longitude()),
+        (crate::geometry::TopologyDomain::Geographic(frame), SimplifyMethod::Dp) => data
+            .shape()
+            .simplify_dp_geographic(tolerance, preserve_topology, frame.longitude()),
+        (crate::geometry::TopologyDomain::Cartesian, SimplifyMethod::Vw) => {
+            data.shape().simplify_vw(tolerance, preserve_topology)
+        },
+        (crate::geometry::TopologyDomain::Cartesian, SimplifyMethod::Dp) => {
+            data.shape().simplify_dp(tolerance, preserve_topology)
+        },
     }
 }
 

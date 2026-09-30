@@ -139,6 +139,114 @@ def test_simplify_vw_area_criterion_and_topology_preservation() -> None:
         line.simplify(-1.0, method='vw')
 
 
+@pytest.mark.parametrize(
+    ('method', 'preserve_topology'),
+    list(itertools.product(('dp', 'vw'), (False, True))),
+    ids=('dp-raw', 'dp-topology', 'vw-raw', 'vw-topology'),
+)
+def test_geographic_simplify_keeps_new_edges_on_the_input_side_of_the_seam(
+    method: str,
+    preserve_topology: bool,
+) -> None:
+    wide = gm.box(-170, -60, 170, 60, crs=4326)
+    simplified = wide.simplify(
+        1.0,
+        method=method,
+        preserve_topology=preserve_topology,
+    )
+    assert gm.contains(simplified, gm.Point(0, 0, crs=4326))
+    assert not gm.contains(simplified, gm.Point(179, 0, crs=4326))
+    assert simplified.bounds == (-170.0, -60.0, 170.0, 60.0)
+    assert gm.GeometryArray([wide]).simplify(
+        1.0,
+        method=method,
+        preserve_topology=preserve_topology,
+    )[0].to_wkb() == simplified.to_wkb()
+
+    line = gm.LineString([(longitude, 10) for longitude in range(-170, 171, 10)], crs=4326)
+    simplified_line = line.simplify(
+        1000.0,
+        method=method,
+        preserve_topology=preserve_topology,
+    )
+    coordinates = list(simplified_line.coords)
+    assert len(coordinates) >= 3
+    assert all(
+        abs(right[0] - left[0]) <= 180.0
+        for left, right in itertools.pairwise(coordinates)
+    )
+    assert gm.GeometryArray([line]).simplify(
+        1000.0,
+        method=method,
+        preserve_topology=preserve_topology,
+    )[0].to_wkb() == simplified_line.to_wkb()
+
+    grad_source = gm.LineString(
+        [(longitude, 0) for longitude in range(-190, 191, 10)],
+        crs=4807,
+    )
+    grad_line = grad_source.simplify(
+        1000.0,
+        method=method,
+        preserve_topology=preserve_topology,
+    )
+    assert all(
+        abs(right[0] - left[0]) <= 200.0
+        for left, right in itertools.pairwise(grad_line.coords)
+    )
+    assert gm.GeometryArray([grad_source]).simplify(
+        1000.0,
+        method=method,
+        preserve_topology=preserve_topology,
+    )[0].to_wkb() == grad_line.to_wkb()
+
+    aliased_line = gm.LineString([(500, 0), (575, 0), (650, 0)], crs=4326)
+    aliased_simplified = aliased_line.simplify(
+        1000.0,
+        method=method,
+        preserve_topology=preserve_topology,
+    )
+    assert list(aliased_simplified.coords) == list(aliased_line.coords)
+    assert gm.GeometryArray([aliased_line]).simplify(
+        1000.0,
+        method=method,
+        preserve_topology=preserve_topology,
+    )[0].to_wkb() == aliased_simplified.to_wkb()
+
+    world_band_source = gm.box(-180, -85, 180, 85, crs=4326)
+    world_band = world_band_source.simplify(
+        1.0,
+        method=method,
+        preserve_topology=preserve_topology,
+    )
+    assert gm.contains(world_band, gm.Point(0, 0, crs=4326))
+    assert gm.contains(world_band, gm.Point(179, 0, crs=4326))
+    assert not gm.contains(world_band, gm.Point(0, 86, crs=4326))
+    assert gm.GeometryArray([world_band_source]).simplify(
+        1.0,
+        method=method,
+        preserve_topology=preserve_topology,
+    )[0].to_wkb() == world_band.to_wkb()
+
+    for crs in (None, 3857):
+        cartesian = gm.LineString(
+            [(0, 0), (1, 0.1), (2, 0), (3, 0.1), (4, 0)],
+            crs=crs,
+        )
+        expected = gm.LineString([(0, 0), (4, 0)], crs=crs)
+        simplified = cartesian.simplify(
+            1.0,
+            method=method,
+            preserve_topology=preserve_topology,
+        )
+        assert simplified.to_wkb() == expected.to_wkb()
+        assert gm.GeometryArray([cartesian]).simplify(
+            1.0,
+            method=method,
+            preserve_topology=preserve_topology,
+        )[0].to_wkb() == expected.to_wkb()
+
+
 def test_simplify_vw_packed_lines_matches_per_row() -> None:
     """Packed Lines take the columnar VW lane when topology is off."""
     lines = gm.GeometryArray(
