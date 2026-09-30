@@ -71,6 +71,17 @@ def test_extension_assignment_views_and_copies(points: gm.GeometryArray) -> None
     assert copied.geometry_array.to_wkt() == points.to_wkt()
 
 
+def test_extension_array_view_rejects_dtype_argument(
+    points: gm.GeometryArray,
+) -> None:
+    array = GeometryExtensionArray(points)
+
+    with pytest.raises(NotImplementedError) as error:
+        array.view(dtype=object)
+
+    assert str(error.value) == 'GeometryExtensionArray.view supports only dtype=None'
+
+
 def test_extension_array_pickle_preserves_view_state_aliasing(
     points: gm.GeometryArray,
 ) -> None:
