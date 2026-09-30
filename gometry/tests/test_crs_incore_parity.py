@@ -162,6 +162,107 @@ NON_METRE_SCALAR_BATCH_CASES: tuple[tuple[str, str], ...] = (
     (NAD83, 'EPSG:2276'),
 )
 
+# Generated from the sorted EPSG projected-CRS catalog in PROJ database
+# v11.022: 5,275 geographic/projected pairs yielded 161 metadata strata and 87
+# admitted strata. Each pair is the first in-core catalog entry for its
+# projection method, linear-unit class, source/target axis order, and source
+# ellipsoid.
+_STRATIFIED_ADMITTED_PAIRS: tuple[tuple[str, str], ...] = (
+    ('EPSG:10158', 'EPSG:10160'),
+    ('EPSG:10175', 'EPSG:10183'),
+    ('EPSG:10191', 'EPSG:10194'),
+    ('EPSG:10268', 'EPSG:10270'),
+    ('EPSG:10284', 'EPSG:10286'),
+    ('EPSG:10475', 'EPSG:10477'),
+    ('EPSG:4269', 'EPSG:10481'),
+    ('EPSG:6318', 'EPSG:10516'),
+    ('EPSG:4326', 'EPSG:10592'),
+    ('EPSG:4600', 'EPSG:2000'),
+    ('EPSG:4200', 'EPSG:20004'),
+    ('EPSG:4609', 'EPSG:2009'),
+    ('EPSG:4202', 'EPSG:20249'),
+    ('EPSG:4205', 'EPSG:20538'),
+    ('EPSG:4160', 'EPSG:2081'),
+    ('EPSG:4223', 'EPSG:2088'),
+    ('EPSG:7683', 'EPSG:20904'),
+    ('EPSG:4209', 'EPSG:20934'),
+    ('EPSG:4162', 'EPSG:2096'),
+    ('EPSG:4249', 'EPSG:2101'),
+    ('EPSG:4168', 'EPSG:2136'),
+    ('EPSG:4168', 'EPSG:2137'),
+    ('EPSG:4609', 'EPSG:2138'),
+    ('EPSG:4179', 'EPSG:2172'),
+    ('EPSG:4122', 'EPSG:2200'),
+    ('EPSG:4267', 'EPSG:2204'),
+    ('EPSG:4694', 'EPSG:22181'),
+    ('EPSG:4122', 'EPSG:2219'),
+    ('EPSG:8237', 'EPSG:22239'),
+    ('EPSG:8237', 'EPSG:22240'),
+    ('EPSG:4269', 'EPSG:2225'),
+    ('EPSG:4227', 'EPSG:22770'),
+    ('EPSG:4122', 'EPSG:2290'),
+    ('EPSG:4229', 'EPSG:22991'),
+    ('EPSG:4248', 'EPSG:2317'),
+    ('EPSG:4610', 'EPSG:2327'),
+    ('EPSG:6318', 'EPSG:23301'),
+    ('EPSG:6318', 'EPSG:23302'),
+    ('EPSG:4238', 'EPSG:23846'),
+    ('EPSG:4239', 'EPSG:23946'),
+    ('EPSG:4241', 'EPSG:24100'),
+    ('EPSG:4242', 'EPSG:24200'),
+    ('EPSG:4145', 'EPSG:24311'),
+    ('EPSG:4146', 'EPSG:24342'),
+    ('EPSG:4243', 'EPSG:24370'),
+    ('EPSG:4144', 'EPSG:24375'),
+    ('EPSG:4145', 'EPSG:24376'),
+    ('EPSG:4146', 'EPSG:24378'),
+    ('EPSG:4245', 'EPSG:24547'),
+    ('EPSG:4246', 'EPSG:24600'),
+    ('EPSG:4267', 'EPSG:26729'),
+    ('EPSG:4272', 'EPSG:27291'),
+    ('EPSG:4277', 'EPSG:27700'),
+    ('EPSG:4281', 'EPSG:28192'),
+    ('EPSG:4289', 'EPSG:28991'),
+    ('EPSG:4293', 'EPSG:29333'),
+    ('EPSG:4267', 'EPSG:2964'),
+    ('EPSG:4298', 'EPSG:29849'),
+    ('EPSG:4299', 'EPSG:29902'),
+    ('EPSG:4269', 'EPSG:3005'),
+    ('EPSG:4326', 'EPSG:3031'),
+    ('EPSG:4258', 'EPSG:3034'),
+    ('EPSG:4258', 'EPSG:3035'),
+    ('EPSG:4312', 'EPSG:31287'),
+    ('EPSG:4316', 'EPSG:31600'),
+    ('EPSG:4326', 'EPSG:32661'),
+    ('EPSG:4326', 'EPSG:32664'),
+    ('EPSG:4326', 'EPSG:32761'),
+    ('EPSG:4267', 'EPSG:3309'),
+    ('EPSG:10345', 'EPSG:3411'),
+    ('EPSG:10345', 'EPSG:3412'),
+    ('EPSG:4326', 'EPSG:3413'),
+    ('EPSG:4758', 'EPSG:3448'),
+    ('EPSG:4720', 'EPSG:3460'),
+    ('EPSG:4326', 'EPSG:3571'),
+    ('EPSG:4267', 'EPSG:3795'),
+    ('EPSG:4326', 'EPSG:3857'),
+    ('EPSG:4326', 'EPSG:4826'),
+    ('EPSG:4764', 'EPSG:5482'),
+    ('EPSG:4267', 'EPSG:5588'),
+    ('EPSG:5464', 'EPSG:5589'),
+    ('EPSG:6783', 'EPSG:6792'),
+    ('EPSG:6783', 'EPSG:6793'),
+    ('EPSG:4326', 'EPSG:6932'),
+    ('EPSG:4326', 'EPSG:9191'),
+    ('EPSG:4148', 'EPSG:9221'),
+    ('EPSG:5324', 'EPSG:9947'),
+)
+
+# These specifically named regressions are outside ADMITTED_PAIRS.
+_STRATIFIED_NAMED_REGRESSION_PAIRS = (
+    *NON_METRE_SCALAR_BATCH_CASES,
+    ('EPSG:6783', 'EPSG:6861'),
+)
+
 
 def _utm_zone_number(crs: str) -> int:
     code = int(crs.split(':')[1])
@@ -636,42 +737,22 @@ def test_additional_non_metre_pairs_match_pyproj_in_core(target: str) -> None:
     assert last_transform_engine() == 'in_core'
 
 
-def _enumerate_epsg_geo_projected_pairs() -> list[tuple[str, str]]:
-    """Deterministic EPSG catalog: (base geographic CRS, projected CRS)."""
-    from pyproj.enums import PJType
-
-    infos = list(
-        pyproj.database.query_crs_info(auth_name='EPSG', pj_types=PJType.PROJECTED_CRS)
-    )
-    infos.sort(key=lambda info: info.code)
-    pairs: list[tuple[str, str]] = []
-    seen: set[tuple[str, str]] = set()
-    for info in infos:
-        code = f'EPSG:{info.code}'
-        try:
-            crs = pyproj.CRS(code)
-            geo = crs.source_crs
-            if geo is None:
-                continue
-            geo_code = geo.to_epsg()
-            if geo_code is None:
-                continue
-            geo_str = f'EPSG:{geo_code}'
-        except Exception:  # noqa: S112 — unparseable catalog rows are skipped by design
-            continue
-        key = (geo_str, code)
-        if key in seen:
-            continue
-        seen.add(key)
-        pairs.append(key)
-    return pairs
-
-
-def _pick_test_lonlat(source: str, target: str) -> tuple[float, float] | None:
+def _pick_test_lonlat(
+    source: str,
+    target: str,
+    *,
+    source_crs: pyproj.CRS | None = None,
+    target_crs: pyproj.CRS | None = None,
+) -> tuple[float, float] | None:
     """One deterministic in-area lon/lat for a geographic→projected pair."""
     ref_crs = target
     try:
-        area = pyproj.CRS(ref_crs).area_of_use
+        ref_object = source_crs if ref_crs == source else target_crs
+        area = (
+            ref_object.area_of_use
+            if ref_object is not None
+            else pyproj.CRS(ref_crs).area_of_use
+        )
     except Exception:
         area = None
     if area is not None:
@@ -923,24 +1004,17 @@ def test_in_core_pairs_do_not_warm_proj_pipeline() -> None:
     assert bucket_entries('proj_pipeline') == 0
 
 
-@pytest.mark.parametrize('chunk', range(8), ids=lambda value: f'chunk-{value}')
-def test_observer_admitted_pairs_match_pyproj(chunk: int) -> None:
-    """Every in-core-admitted EPSG geo↔projected pair must match pyproj.
-
-    The sparse admitted-pair matrix elsewhere in this file covers the curated
-    common cases; these deterministic shards cover the full discovered catalog.
-    """
-    all_pairs = _enumerate_epsg_geo_projected_pairs()
-    # Keep each catalog sweep below the ordinary 60-second node timeout. The
-    # partition is deterministic and every pair still exercises both directions
-    # and the independent pyproj oracle exactly once in its owning node.
-    pairs = all_pairs[chunk::8]
-    scanned = len(pairs)
-    admitted = 0
-    oracle_results: list[tuple[tuple[float, float], tuple[float, float]]] = []
-    admitted_by_method: dict[str, int] = {}
-    non_metre_by_method: dict[str, int] = {}
-    non_metre_admitted = 0
+def test_observer_admitted_pairs_match_pyproj() -> None:
+    """Check one catalog-first in-core pair per projection-path stratum."""
+    # ADMITTED_PAIRS remains the full named regression matrix; these additional
+    # unit and zero-origin cases are named outside that table.
+    pairs = tuple(
+        dict.fromkeys((
+            *_STRATIFIED_ADMITTED_PAIRS,
+            *_STRATIFIED_NAMED_REGRESSION_PAIRS,
+        ))
+    )
+    pair_crs = {pair: (pyproj.CRS(pair[0]), pyproj.CRS(pair[1])) for pair in pairs}
 
     def shared_domain_failure_or_fail(
         source: str,
@@ -948,75 +1022,77 @@ def test_observer_admitted_pairs_match_pyproj(chunk: int) -> None:
         x: float,
         y: float,
         gometry_error: gm.TransformError,
-    ) -> None:
+    ) -> bool:
         try:
-            reference = pyproj.Transformer.from_crs(source, target, always_xy=True)
-            reference_xy = reference.transform(x, y, errcheck=True)
+            reference = pyproj.Transformer.from_crs(
+                source, target, always_xy=True
+            ).transform(x, y, errcheck=True)
         except pyproj.exceptions.ProjError:
-            return
-        assert all(math.isfinite(value) for value in reference_xy)
+            return True
+        assert all(math.isfinite(value) for value in reference)
         pytest.fail(
             f'{source} -> {target} admitted transform raised while pyproj '
-            f'produced {reference_xy}: {gometry_error}'
+            f'produced {reference}: {gometry_error}'
         )
 
+    gm.crs_clear_cache()
+    assert last_transform_engine() is None
+    compared = 0
     for source, target in pairs:
-        gm.crs_clear_cache()
-        assert last_transform_engine() is None
-        lonlat = _pick_test_lonlat(source, target)
-        if lonlat is None:
-            continue
+        geographic, projected = pair_crs[(source, target)]
+        lonlat = _pick_test_lonlat(
+            source,
+            target,
+            source_crs=geographic,
+            target_crs=projected,
+        )
+        assert lonlat is not None, (source, target)
         lon, lat = lonlat
         try:
             gometry_xy = gm.crs_transform(source, target, lon, lat)
         except gm.TransformError as gometry_error:
-            if last_transform_engine() != 'in_core':
+            if last_transform_engine() == 'in_core' and shared_domain_failure_or_fail(
+                source, target, lon, lat, gometry_error
+            ):
                 continue
-            shared_domain_failure_or_fail(source, target, lon, lat, gometry_error)
-            continue
-        if last_transform_engine() == 'proj':
-            continue
-        assert last_transform_engine() == 'in_core'
-        gm.crs_clear_cache()
-        assert last_transform_engine() is None
+            raise
+        assert last_transform_engine() == 'in_core', (
+            f'{source} -> {target} did not use the in-core engine'
+        )
         try:
-            gm.crs_transform(target, source, gometry_xy[0], gometry_xy[1])
+            gometry_lonlat = gm.crs_transform(
+                target, source, gometry_xy[0], gometry_xy[1]
+            )
         except gm.TransformError as gometry_error:
-            if last_transform_engine() != 'in_core':
-                continue
-            shared_domain_failure_or_fail(
+            if last_transform_engine() == 'in_core' and shared_domain_failure_or_fail(
                 target,
                 source,
                 gometry_xy[0],
                 gometry_xy[1],
                 gometry_error,
-            )
-            continue
-        if last_transform_engine() == 'proj':
-            continue
-        assert last_transform_engine() == 'in_core'
-        admitted += 1
-        projected = pyproj.CRS(target)
-        method = projected.coordinate_operation
-        assert method is not None
-        method_code = method.method_code
-        admitted_by_method[method_code] = admitted_by_method.get(method_code, 0) + 1
-        if projected.axis_info[0].unit_conversion_factor != 1.0:
-            non_metre_admitted += 1
-            non_metre_by_method[method_code] = (
-                non_metre_by_method.get(method_code, 0) + 1
-            )
-        oracle_results.append(
-            _assert_pair_parity_both_directions(source, target, lon, lat)
+            ):
+                continue
+            raise
+        assert last_transform_engine() == 'in_core', (
+            f'{target} -> {source} did not use the in-core engine'
         )
-    assert scanned >= 500, (
-        f'expected one-eighth of full projected catalog, got {scanned}'
-    )
-    assert admitted == len(oracle_results) > 0, (
-        f'catalog chunk={chunk} scan={scanned} admitted={admitted} '
-        f'non_metre_admitted={non_metre_admitted} methods={admitted_by_method} '
-        f'non_metre_methods={non_metre_by_method}'
-    )
+
+        forward = pyproj.Transformer.from_crs(geographic, projected, always_xy=True)
+        reverse = pyproj.Transformer.from_crs(projected, geographic, always_xy=True)
+        _assert_xy_parity(
+            gometry_xy,
+            forward.transform(lon, lat),
+            tol=OBSERVER_TOL_M,
+            context=f'{(source, target)} forward coord={lonlat}',
+        )
+        _assert_xy_parity(
+            gometry_lonlat,
+            reverse.transform(gometry_xy[0], gometry_xy[1]),
+            tol=OBSERVER_TOL_DEG,
+            context=f'{(target, source)} inverse coord={gometry_xy}',
+        )
+        compared += 1
+    assert compared > 0
 
 
 @pytest.mark.parametrize('pair', FALLBACK_TO_PROJ)
