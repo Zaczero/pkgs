@@ -98,7 +98,13 @@ pub(crate) fn unary_buffer(
                 quadrant_segments,
                 miter_limit,
             ),
-            BufferSide::Left | BufferSide::Right => data.shape().buffer_sided(distance, side),
+            BufferSide::Left | BufferSide::Right => data.shape().buffer_sided(
+                distance,
+                side,
+                join_style,
+                quadrant_segments,
+                miter_limit,
+            ),
         };
     }
     let model = ctx.metric.require_model(MetricOp::Buffer)?;
@@ -111,7 +117,9 @@ pub(crate) fn unary_buffer(
             BufferSide::Both => {
                 shape.buffer_with_style(d, cap_style, join_style, quadrant_segments, miter_limit)
             },
-            BufferSide::Left | BufferSide::Right => shape.buffer_sided(d, side),
+            BufferSide::Left | BufferSide::Right => {
+                shape.buffer_sided(d, side, join_style, quadrant_segments, miter_limit)
+            },
         },
     )
 }
@@ -138,7 +146,14 @@ pub(crate) fn unary_buffer_budgeted(
                 miter_limit,
                 budget,
             ),
-            BufferSide::Left | BufferSide::Right => data.shape().buffer_sided(distance, side),
+            BufferSide::Left | BufferSide::Right => data.shape().buffer_sided_budgeted(
+                distance,
+                side,
+                join_style,
+                quadrant_segments,
+                miter_limit,
+                budget,
+            ),
         };
     }
     let model = ctx.metric.require_model(MetricOp::Buffer)?;
@@ -157,7 +172,14 @@ pub(crate) fn unary_buffer_budgeted(
                 miter_limit,
                 budget,
             ),
-            BufferSide::Left | BufferSide::Right => shape.buffer_sided(d, side),
+            BufferSide::Left | BufferSide::Right => shape.buffer_sided_budgeted(
+                d,
+                side,
+                join_style,
+                quadrant_segments,
+                miter_limit,
+                budget,
+            ),
         },
     )
 }

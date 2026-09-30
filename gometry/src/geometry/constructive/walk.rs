@@ -1,7 +1,7 @@
 use rstar::AABB;
 use rstar::primitives::{GeomWithData, Rectangle};
 
-use crate::geometry::constructive::offset::{MiterConstruction, MiterFinish, miter_join};
+use crate::geometry::constructive::offset::{MiterConstruction, miter_join};
 use crate::geometry::constructive::{Result, emit_arc, unit_right_normal};
 use crate::geometry::overlay::ExactSourceInventory;
 use crate::geometry::{
@@ -120,17 +120,10 @@ pub(crate) fn convex_miter(
     distance: f64,
     limit: f64,
 ) -> WalkJoin {
-    match miter_join(
-        incoming,
-        outgoing,
-        vertex,
-        distance,
-        limit,
-        MiterFinish::Clip,
-    ) {
+    match miter_join(incoming, outgoing, vertex, distance, limit) {
         MiterConstruction::WithinLimit(point) => WalkJoin::Miter { point },
         MiterConstruction::Clipped { entry, exit } => WalkJoin::MiterCut { entry, exit },
-        MiterConstruction::OverLimit | MiterConstruction::Unusable => WalkJoin::Straight,
+        MiterConstruction::Unusable => WalkJoin::Straight,
     }
 }
 

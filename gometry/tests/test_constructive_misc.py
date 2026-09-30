@@ -369,7 +369,11 @@ def test_buffer_side_builds_one_sided_strips() -> None:
     assert 0.566 < swept.area <= zigzag.length * 0.2
     square = gm.LineString([(0, 0), (1, 0), (1, 1), (0, 1), (0, 0)])
     assert abs(square.buffer(0.2, side='left').area - 0.64) < 1e-06
-    assert abs(square.buffer(0.2, side='right').area - 0.96) < 1e-06
+    round_corner = 8 * 0.2**2 * math.sin(math.pi / 16.0) / 2
+    assert square.buffer(0.2, side='right').area == pytest.approx(
+        0.8 + 3 * round_corner
+    )
+    assert abs(square.buffer(0.2, side='right', join_style='miter').area - 0.92) < 1e-12
     spike = gm.LineString([(0, 0), (2, 0), (0.001, 1e-06), (2, 2e-06)])
     for side in ('left', 'right'):
         strip2 = spike.buffer(0.2, side=side)

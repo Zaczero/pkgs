@@ -4,14 +4,13 @@ use std::num::NonZeroU32;
 use crate::geometry::DEFAULT_MITER_LIMIT;
 use crate::geometry::constructive::{
     Result, WalkJoinRule, convex_buffer_budgeted, degenerate_polygonal_as_linework,
-    multipoint_loops, point_buffer, sided_strip_parts, validate_buffer_style,
-    winding_buffer_budgeted, winding_collection_budgeted, winding_erosion_budgeted, winding_region,
-    winding_stroke_budgeted,
+    multipoint_loops, point_buffer, validate_buffer_style, winding_buffer_budgeted,
+    winding_collection_budgeted, winding_erosion_budgeted, winding_region,
+    winding_sided_stroke_budgeted, winding_stroke_budgeted,
 };
 use crate::geometry::{
-    Bounds, BufferCapStyle, BufferJoinStyle, BufferSide, CoordSeq, ExpansionBudget,
-    GeometryErrorKind, LineSeq, RepairMethod, Shape, for_each_overlapping_bounds_pair,
-    polygon_parts_to_shape, same_topological_coordinate,
+    BufferCapStyle, BufferJoinStyle, BufferSide, CoordSeq, ExpansionBudget, GeometryErrorKind,
+    LineSeq, Shape, polygon_parts_to_shape, same_topological_coordinate,
 };
 use crate::{Finite, Positive};
 
@@ -216,12 +215,37 @@ impl Shape {
         }
     }
 
-    /// One-sided buffer of lineal geometry: the strip between each line and
-    /// its offset curve at `distance` on `side` (left/right of the line
-    /// direction), with flat ends and miter joins — the `offset_curve`
-    /// construction closed into a polygon. Symmetric (`side='both'`) buffers
-    /// take the regular [`Self::buffer_with_style`] path at the caller.
-    pub fn buffer_sided(&self, distance: f64, side: BufferSide) -> Result<Self> {
+    /// One-sided buffer of lineal geometry, with flat ends and styled joins.
+    /// Symmetric (`side='both'`) buffers take the regular
+    /// [`Self::buffer_with_style`] path at the caller.
+    pub(crate) fn buffer_sided(
+        &self,
+        distance: f64,
+        side: BufferSide,
+        join_style: BufferJoinStyle,
+        quadrant_segments: NonZeroU32,
+        miter_limit: Positive,
+    ) -> Result<Self> {
+        let mut budget = ExpansionBudget::new("buffer", "quadrant_segments");
+        self.buffer_sided_budgeted(
+            distance,
+            side,
+            join_style,
+            quadrant_segments,
+            miter_limit,
+            &mut budget,
+        )
+    }
+
+    pub(crate) fn buffer_sided_budgeted(
+        &self,
+        distance: f64,
+        side: BufferSide,
+        join_style: BufferJoinStyle,
+        quadrant_segments: NonZeroU32,
+        miter_limit: Positive,
+        budget: &mut ExpansionBudget,
+    ) -> Result<Self> {
         debug_assert!(
             side != BufferSide::Both,
             "callers route 'both' to buffer_with_style"
@@ -230,91 +254,32 @@ impl Shape {
         if distance < 0.0 {
             return Err(GeometryErrorKind::NegativeSidedBufferDistance.into());
         }
-        if self.is_empty() {
+        validate_buffer_style(quadrant_segments, miter_limit);
+        let rule = WalkJoinRule::new(join_style, miter_limit.get());
+        let mut chains = Vec::new();
+        let mut stack = vec![self];
+        while let Some(geometry) = stack.pop() {
+            match geometry {
+                Self::LineString(line) => chains.push(line.as_coords()),
+                Self::MultiLineString(lines) => {
+                    chains.extend(lines.iter().map(LineSeq::as_coords));
+                },
+                Self::GeometryCollection(parts) => stack.extend(parts.iter().rev()),
+                Self::Empty(..) => {},
+                Self::Point(_) | Self::MultiPoint(_) | Self::Polygon(_) | Self::MultiPolygon(_) => {
+                    return Err(GeometryErrorKind::SidedBufferRequiresLineal.into());
+                },
+            }
+        }
+        if chains.is_empty() || same_topological_coordinate(distance, 0.0) {
             return Ok(Self::empty_polygon());
         }
-        // Positive offsets fall on the left of the line direction (the
-        // `offset_curve` convention); the right side mirrors the sign.
         let signed = match side {
             BufferSide::Left => distance,
             BufferSide::Right | BufferSide::Both => -distance,
         };
-        let strips = match self {
-            Self::LineString(points) => sided_strip_parts(points, signed)?,
-            Self::MultiLineString(lines) => {
-                let mut parts = Vec::new();
-                for line in lines {
-                    parts.extend(sided_strip_parts(line, signed)?);
-                }
-                parts
-            },
-            Self::GeometryCollection(geometries) => {
-                let parts = geometries
-                    .iter()
-                    .map(|geometry| geometry.buffer_sided(distance, side))
-                    .collect::<Result<Vec<_>>>()?;
-                let mut polygons = Vec::new();
-                for part in parts {
-                    match part {
-                        Self::Polygon(polygon) => polygons.push(polygon),
-                        Self::MultiPolygon(more) => polygons.extend(more),
-                        Self::Point(_)
-                        | Self::MultiPoint(_)
-                        | Self::LineString(_)
-                        | Self::MultiLineString(_)
-                        | Self::GeometryCollection(_)
-                        | Self::Empty(..) => {},
-                    }
-                }
-                polygons
-            },
-            Self::Point(_)
-            | Self::MultiPoint(_)
-            | Self::Polygon(_)
-            | Self::MultiPolygon(_)
-            | Self::Empty(..) => {
-                return Err(GeometryErrorKind::SidedBufferRequiresLineal.into());
-            },
-        };
-        if strips.is_empty() || distance == 0.0 {
-            return Ok(Self::empty_polygon());
-        }
-        // Per-line strips are individually valid; multi-part inputs can still
-        // overlap each other, where the structure repair unions the parts
-        // into a valid polygonal result (the same validity contract as
-        // `buffer`). Buffer output is always X/Y-only — like the geo-backed
-        // symmetric buffer, and matching what the repair lanes produce — so
-        // the surfaces' synthesizing-op contract (`'auto'` yields 2D) holds on
-        // every path.
-        let shape =
-            Self::narrow_polygons(crate::geometry::CoordinateAxes::XY, strips).force_2d()?;
-        if strips_are_pairwise_strictly_disjoint(&shape)? || shape.validate()?.is_none() {
-            Ok(shape)
-        } else {
-            shape.repair(RepairMethod::Structure, false)
-        }
+        winding_sided_stroke_budgeted(&chains, signed, rule, quadrant_segments, budget)
     }
-}
-
-/// Individually valid strips with pairwise non-intersecting closed envelopes
-/// cannot overlap or touch, which is exactly the remaining MultiPolygon
-/// validity condition. The envelope sweep avoids a quadratic proof for large
-/// multi-line inputs.
-fn strips_are_pairwise_strictly_disjoint(shape: &Shape) -> crate::error::Result<bool> {
-    let Shape::MultiPolygon(strips) = shape else {
-        return Ok(true);
-    };
-    let mut bounds = Vec::with_capacity(strips.len());
-    for strip in strips.iter() {
-        let Some(bounds_for_strip) = Bounds::from_coords(strip.shell.coords()) else {
-            return Ok(false);
-        };
-        bounds.push(bounds_for_strip);
-    }
-    Ok(
-        for_each_overlapping_bounds_pair(&bounds, |_, _| std::ops::ControlFlow::Break(()))?
-            .is_continue(),
-    )
 }
 
 /// The only non-empty non-collection member of `parts`, if there is exactly

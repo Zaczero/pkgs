@@ -9,7 +9,7 @@ use ahash::HashSetExt as _;
 use crate::geometry::constructive::{
     Result, WalkColumns, WalkCount, WalkJoin, WalkJoinRule, WalkPlan, WalkSink, close_xy_loop,
     emit_cap, extend_cleaned, materialize_walk, middle_outside_segment_bounds, raw_offset_loop,
-    strict_cycle, winding_region,
+    sided_buffer_loop, strict_cycle, winding_region,
 };
 use crate::geometry::overlay::ExactSourceInventory;
 use crate::geometry::{
@@ -430,7 +430,7 @@ pub(in crate::geometry) fn winding_stroke_budgeted(
     // and take the winding engine unchanged.
     if clean
         && let [(xs, ys)] = loops.as_slice()
-        && let Some(polygon) = simple_stroke_polygon(xs, ys, budget)?
+        && let Some(polygon) = simple_positive_loop_polygon(xs, ys, budget)?
     {
         return Ok(Some(Shape::Polygon(polygon)));
     }
@@ -441,10 +441,10 @@ pub(in crate::geometry) fn winding_stroke_budgeted(
     Ok(Some(polygon_parts_to_shape(parts)))
 }
 
-/// One stroke loop as a directly valid polygon: close the columns into a
-/// ring and accept only a simple, positive-area result (the complete gate
-/// for the single-loop fast path; anything else falls back to winding).
-fn simple_stroke_polygon(
+/// One positive-winding loop as a directly valid polygon: close the columns
+/// into a ring and accept only a simple result; all other cases use the same
+/// exact winding selection as overlapping loops.
+fn simple_positive_loop_polygon(
     xs: &[f64],
     ys: &[f64],
     budget: &mut ExpansionBudget,
@@ -471,6 +471,36 @@ fn simple_stroke_polygon(
     } else {
         Ok(None)
     }
+}
+
+/// One-sided strips share the winding stroke's positive-face selection. Each
+/// source contributes one source/offset ring; a simple sole ring needs no
+/// arrangement, while overlapping or self-crossing rings are selected together.
+pub(in crate::geometry) fn winding_sided_stroke_budgeted(
+    chains: &[&CoordSeq],
+    distance: f64,
+    rule: WalkJoinRule,
+    quadrant_segments: std::num::NonZeroU32,
+    budget: &mut ExpansionBudget,
+) -> Result<Shape> {
+    let mut loops = Vec::with_capacity(chains.len());
+    for chain in chains {
+        if let Some(loop_columns) =
+            sided_buffer_loop(chain, distance, rule, quadrant_segments, budget)?
+        {
+            loops.push(loop_columns);
+        }
+    }
+    if loops.is_empty() {
+        return Ok(Shape::empty_polygon());
+    }
+    if let [(xs, ys)] = loops.as_slice()
+        && let Some(polygon) = simple_positive_loop_polygon(xs, ys, budget)?
+    {
+        return Ok(Shape::Polygon(polygon));
+    }
+    let parts = winding_region(&loops, |winding| winding >= 1)?;
+    Ok(polygon_parts_to_shape(parts))
 }
 
 /// Buffer of a whole `GeometryCollection` in ONE winding pass: every part

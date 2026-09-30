@@ -1,9 +1,7 @@
 use std::num::NonZeroU32;
 
 use crate::Positive;
-use crate::geometry::constructive::offset::{
-    OffsetEdge, OffsetJoin, line_intersection, offset_curve_points, offset_join, offset_line,
-};
+use crate::geometry::constructive::offset::{line_intersection, offset_curve_points};
 use crate::geometry::constructive::walk::{
     WalkCount, WalkJoin, WalkPlan, close_xy_loop, convex_miter, materialize_walk, reflex_cross,
 };
@@ -85,40 +83,6 @@ fn miter_limit_keeps_the_equality_tie_at_extreme_scales() {
         assert!(matches!(join(scale, 2.9), WalkJoin::MiterCut { .. }));
         assert!(matches!(join(scale, 3.0), WalkJoin::Miter { .. }));
     }
-}
-
-#[test]
-fn raw_over_limit_join_bevels_while_styled_miter_cuts() {
-    let point = |x: f64, y: f64| Point::new_raw_xy(x, y);
-    let previous = OffsetEdge {
-        start: point(-1.0, 0.0),
-        end: point(6.0, 0.0),
-    };
-    let current = OffsetEdge {
-        start: point(5.0, -1.0),
-        end: point(7.0, 1.0),
-    };
-    let vertex = point(0.0, 0.0);
-    assert!(matches!(
-        offset_join(&previous, &current, vertex, 1.0),
-        OffsetJoin::Bevel { .. }
-    ));
-    assert!(matches!(
-        convex_miter(
-            Segment {
-                start: previous.start.xy(),
-                end: previous.end.xy(),
-            },
-            Segment {
-                start: current.start.xy(),
-                end: current.end.xy(),
-            },
-            vertex,
-            1.0,
-            5.0,
-        ),
-        WalkJoin::MiterCut { .. }
-    ));
 }
 
 #[test]
@@ -404,13 +368,24 @@ fn buffer_keeps_a_vertex_below_the_removed_input_simplification_tolerance() {
 }
 
 #[test]
-fn raw_offset_unavailability_stays_empty_while_budget_errors_propagate() {
+fn offset_curve_unavailability_stays_empty_while_budget_errors_propagate() {
     let overflow = CoordSeq::try_from_points(&[
         Point::new_raw_xy(1.5e308, 0.0),
         Point::new_raw_xy(1.5e308, 1.0),
     ])
     .unwrap();
-    assert!(offset_line(&overflow, -1.5e308).is_none());
+    let mut overflow_budget = ExpansionBudget::new("offset_curve", "quadrant_segments");
+    assert!(
+        offset_curve_points(
+            &overflow,
+            -1.5e308,
+            WalkJoinRule::Arc,
+            NonZeroU32::new(8).unwrap(),
+            &mut overflow_budget,
+        )
+        .unwrap()
+        .is_none()
+    );
 
     let line =
         CoordSeq::try_from_points(&[Point::new_raw_xy(0.0, 0.0), Point::new_raw_xy(1.0, 0.0)])
@@ -1767,7 +1742,18 @@ mod consecutive_dedup_tests {
         ])
         .unwrap();
         assert!(offset_source(&line).is_some());
-        assert!(offset_line(&line, 1.0).is_some());
+        let mut budget = ExpansionBudget::new("offset_curve", "quadrant_segments");
+        assert!(
+            offset_curve_points(
+                &line,
+                1.0,
+                WalkJoinRule::Arc,
+                NonZeroU32::new(8).unwrap(),
+                &mut budget,
+            )
+            .unwrap()
+            .is_some()
+        );
         let collapsed = CoordSeq::try_from_points(&[point(0.0, 0.0), point(0.0, 0.0)]).unwrap();
         assert!(offset_source(&collapsed).is_none());
     }

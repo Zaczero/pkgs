@@ -14,7 +14,7 @@ mod walk;
 mod winding;
 
 pub(crate) use edit::{AffineLinear, OriginAffine, stable_affine_xy};
-pub(crate) use offset::{DEFAULT_MITER_LIMIT, reversed_points, sided_strip_parts};
+pub(crate) use offset::{DEFAULT_MITER_LIMIT, reversed_points, sided_buffer_loop};
 pub(in crate::geometry) use ring::{canonical_ring_seq, oriented_ring};
 pub(crate) use ring::{
     decimal_scale, normalized_line, orient_ring, quantize_column_simd, quantize_to_scale,
@@ -47,7 +47,7 @@ pub(crate) use winding::{
 };
 pub(in crate::geometry) use winding::{
     winding_buffer_budgeted, winding_collection_budgeted, winding_erosion_budgeted,
-    winding_stroke_budgeted,
+    winding_sided_stroke_budgeted, winding_stroke_budgeted,
 };
 #[cfg(test)]
 mod tests;

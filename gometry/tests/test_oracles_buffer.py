@@ -159,6 +159,321 @@ def test_buffer_matches_geos_oracle(
         )
 
 
+def _sided_sine_line(length: int) -> list[tuple[float, float]]:
+    return [
+        (
+            400 * i / 4095 - 200,
+            14 * math.sin(i * 0.031) + 2 * math.cos(i * 0.107),
+        )
+        for i in range(length)
+    ]
+
+
+def _sided_buffer_fixtures():
+    road = [
+        (i * 0.1, 0.35 * math.sin(i * 0.004) + 0.08 * math.cos(i * 0.013))
+        for i in range(4096)
+    ]
+    return [
+        pytest.param(
+            'low-curvature-road-4096',
+            gm.LineString(road).to_wkt(),
+            id='low-curvature-road-4096',
+        ),
+        pytest.param(
+            'sine-prefix-153',
+            gm.LineString(_sided_sine_line(153)).to_wkt(),
+            id='sine-prefix-153',
+        ),
+        pytest.param(
+            'sine-prefix-240',
+            gm.LineString(_sided_sine_line(240)).to_wkt(),
+            id='sine-prefix-240',
+        ),
+        pytest.param(
+            'sine-prefix-256',
+            gm.LineString(_sided_sine_line(256)).to_wkt(),
+            id='sine-prefix-256',
+        ),
+        pytest.param(
+            'zigzag',
+            gm.LineString([(0, 0), (2, 2), (4, 0), (6, 2), (8, 0)]).to_wkt(),
+            id='zigzag',
+        ),
+        pytest.param(
+            'closed-ring',
+            gm.LineString([(0, 0), (4, 0), (4, 4), (0, 4), (0, 0)]).to_wkt(),
+            id='closed-ring',
+        ),
+        pytest.param(
+            'self-crossing',
+            gm.LineString([(0, 0), (4, 4), (0, 4), (4, 0), (5, 1)]).to_wkt(),
+            id='self-crossing',
+        ),
+        pytest.param(
+            'overlapping-multiline',
+            gm.MultiLineString([[(0, 0), (4, 0)], [(2, 0.5), (6, 0.5)]]).to_wkt(),
+            id='overlapping-multiline',
+        ),
+        pytest.param(
+            'overlapping-collection',
+            gm.GeometryCollection([
+                gm.LineString([(0, 0), (4, 0)]),
+                gm.MultiLineString([[(2, 0.5), (6, 0.5)]]),
+            ]).to_wkt(),
+            id='overlapping-collection',
+        ),
+    ]
+
+
+# GEOS 3.13.1 simplifies shallow offset concavities and polygonizes the
+# single-sided result; compare these full-vertex cases with the unsimplified
+# one-sided ring as well as recording their GEOS deltas.
+_GEOS_SIDED_BUFFER_EXCEPTIONS = {
+    'sine-prefix-153': 'GEOS simplifies shallow concave offset bends at distance/100',
+    'sine-prefix-240': 'GEOS simplifies shallow concave offset bends at distance/100',
+    'sine-prefix-256': 'GEOS simplifies shallow concave offset bends at distance/100',
+    'sine-4096': 'GEOS simplifies shallow concave offset bends at distance/100',
+    'self-crossing': 'GEOS offset simplification and polygonizer cleanup select different faces',
+}
+
+
+def _exact_sided_ring_reference(
+    line,
+    side: str,
+    join_style: str,
+):
+    """Independent structure repair of the full-vertex source/offset ring."""
+    source = list(line.coords)
+    signed_distance = 2.0 if side == 'left' else -2.0
+    offset = line.offset_curve(
+        signed_distance,
+        join_style=join_style,
+        quadrant_segments=8,
+        miter_limit=5.0,
+    )
+    assert offset.geometry_type == 'LineString'
+    offset_coordinates = list(offset.coords)
+    ring = (
+        list(reversed(offset_coordinates)) + source
+        if side == 'left'
+        else offset_coordinates + list(reversed(source))
+    )
+    ring.append(ring[0])
+    return shapely.make_valid(
+        shapely.Polygon(ring),
+        method='structure',
+        keep_collapsed=False,
+    )
+
+
+@pytest.mark.parametrize(
+    ('side', 'join_style'),
+    [
+        pytest.param(side, join_style, id=f'{side}-{join_style}')
+        for side in ('left', 'right')
+        for join_style in ('round', 'miter', 'bevel')
+    ],
+)
+@pytest.mark.parametrize(('name', 'wkt'), _sided_buffer_fixtures())
+def test_sided_buffer_matches_shapely(
+    name: str,
+    wkt: str,
+    side: str,
+    join_style: str,
+) -> None:
+    gometry_input = gm.from_wkt(wkt)
+    shapely_input = shapely.from_wkt(wkt)
+
+    gometry_result = gometry_input.buffer(
+        2.0,
+        side=side,
+        join_style=join_style,
+        quadrant_segments=8,
+        miter_limit=5.0,
+    )
+    geos_join_style = 'mitre' if join_style == 'miter' else join_style
+    geos_distance = 2.0 if side == 'left' else -2.0
+    geos_result = shapely.buffer(
+        shapely_input,
+        geos_distance,
+        single_sided=True,
+        cap_style='flat',
+        join_style=geos_join_style,
+        mitre_limit=5.0,
+        quad_segs=8,
+    )
+    gometry_geos = shapely.from_wkt(gometry_result.to_wkt())
+    relative_area = abs(gometry_result.area - geos_result.area) / geos_result.area
+    hausdorff = shapely.hausdorff_distance(
+        gometry_geos,
+        geos_result,
+        densify=0.25,
+    )
+    assert gometry_result.is_valid and shapely.is_valid(gometry_geos)
+    if relative_area <= 2e-4 and hausdorff <= 0.03:
+        return
+    reason = _GEOS_SIDED_BUFFER_EXCEPTIONS.get(name)
+    assert reason is not None, (
+        f'{name}/{side}/{join_style}: relative area={relative_area}, Hausdorff={hausdorff}'
+    )
+    exact_reference = _exact_sided_ring_reference(gometry_input, side, join_style)
+    exact_relative_area = (
+        abs(gometry_result.area - exact_reference.area) / exact_reference.area
+    )
+    exact_hausdorff = shapely.hausdorff_distance(
+        gometry_geos,
+        exact_reference,
+        densify=0.25,
+    )
+    assert exact_relative_area <= 1e-12 and exact_hausdorff <= 1e-12, (
+        f'{name}/{side}/{join_style}: {reason}; full-vertex exact-ring '
+        f'comparison rel_area={exact_relative_area}, Hausdorff={exact_hausdorff}'
+    )
+
+
+@pytest.mark.parametrize(
+    ('side', 'round_coords', 'miter_coords'),
+    [
+        pytest.param(
+            'left',
+            [(0, 0), (2, 0), (2, -2)],
+            [(0, 0), (2, 0), (3, -0.1)],
+            id='left-outer-turn',
+        ),
+        pytest.param(
+            'right',
+            [(0, 0), (2, 0), (2, 2)],
+            [(0, 0), (2, 0), (3, 0.1)],
+            id='right-outer-turn',
+        ),
+    ],
+)
+def test_sided_buffer_honors_round_resolution_and_miter_limit(
+    side: str,
+    round_coords: list[tuple[float, float]],
+    miter_coords: list[tuple[float, float]],
+) -> None:
+    from shapely.geometry import LineString
+
+    round_line = gm.LineString(round_coords)
+    round_reference = LineString(round_coords)
+    signed_distance = 2.0 if side == 'left' else -2.0
+    round_results = []
+    for quadrant_segments in (1, 8):
+        result = round_line.buffer(
+            2.0,
+            side=side,
+            join_style='round',
+            quadrant_segments=quadrant_segments,
+        )
+        geos = shapely.buffer(
+            round_reference,
+            signed_distance,
+            single_sided=True,
+            cap_style='flat',
+            join_style='round',
+            quad_segs=quadrant_segments,
+        )
+        output = shapely.from_wkt(result.to_wkt())
+        assert abs(result.area - geos.area) / geos.area <= 2e-4
+        assert shapely.hausdorff_distance(output, geos, densify=0.25) <= 0.03
+        round_results.append(output)
+    assert round_results[0].symmetric_difference(round_results[1]).area > 1e-4
+
+    miter_line = gm.LineString(miter_coords)
+    miter_reference = LineString(miter_coords)
+    miter_results = []
+    for miter_limit in (1.0, 5.0):
+        result = miter_line.buffer(
+            2.0,
+            side=side,
+            join_style='miter',
+            miter_limit=miter_limit,
+        )
+        geos = shapely.buffer(
+            miter_reference,
+            signed_distance,
+            single_sided=True,
+            cap_style='flat',
+            join_style='mitre',
+            mitre_limit=miter_limit,
+        )
+        output = shapely.from_wkt(result.to_wkt())
+        assert abs(result.area - geos.area) / geos.area <= 2e-4
+        assert shapely.hausdorff_distance(output, geos, densify=0.25) <= 0.03
+        miter_results.append(output)
+    assert miter_results[0].symmetric_difference(miter_results[1]).area > 1e-4
+
+    default_caps = round_line.buffer(2.0, side=side, join_style='round')
+    for cap_style in ('round', 'flat', 'square'):
+        assert gm.equals(
+            round_line.buffer(2.0, side=side, cap_style=cap_style, join_style='round'),
+            default_caps,
+        )
+
+
+@pytest.mark.parametrize(
+    ('side', 'join_style'),
+    [
+        pytest.param(side, join_style, id=f'{side}-{join_style}')
+        for side in ('left', 'right')
+        for join_style in ('round', 'miter', 'bevel')
+    ],
+)
+def test_sided_buffer_array_matches_scalar(side: str, join_style: str) -> None:
+    lines = [
+        gm.LineString([(0, 0), (2, 0), (3, -0.1)]),
+        gm.LineString([(0, 0), (4, 4), (0, 4), (4, 0), (5, 1)]),
+    ]
+    result = gm.GeometryArray(lines).buffer(
+        2.0,
+        side=side,
+        join_style=join_style,
+        quadrant_segments=4,
+        miter_limit=5.0,
+    )
+    for index, line in enumerate(lines):
+        expected = line.buffer(
+            2.0,
+            side=side,
+            join_style=join_style,
+            quadrant_segments=4,
+            miter_limit=5.0,
+        )
+        assert gm.equals(result[index], expected)
+
+
+@pytest.mark.parametrize('side', ['left', 'right'])
+def test_sided_buffer_4096_vertex_sine_reproducer(side: str) -> None:
+    line = gm.LineString(_sided_sine_line(4096))
+    result = line.buffer(2.0, side=side)
+    assert result.is_valid
+    assert result.geometry_type in ('Polygon', 'MultiPolygon')
+    source = shapely.from_wkt(line.to_wkt())
+    geos_distance = 2.0 if side == 'left' else -2.0
+    geos = shapely.buffer(
+        source,
+        geos_distance,
+        single_sided=True,
+        cap_style='flat',
+        join_style='round',
+        quad_segs=8,
+    )
+    output = shapely.from_wkt(result.to_wkt())
+    relative_area = abs(result.area - geos.area) / geos.area
+    hausdorff = shapely.hausdorff_distance(output, geos, densify=0.25)
+    exact_reference = _exact_sided_ring_reference(line, side, 'round')
+    exact_relative_area = abs(result.area - exact_reference.area) / exact_reference.area
+    exact_hausdorff = shapely.hausdorff_distance(output, exact_reference, densify=0.25)
+    assert shapely.is_valid(output)
+    assert exact_relative_area <= 1e-12 and exact_hausdorff <= 1e-12, (
+        f'{_GEOS_SIDED_BUFFER_EXCEPTIONS["sine-4096"]}; '
+        f'GEOS rel_area={relative_area}, Hausdorff={hausdorff}; '
+        f'full-ring rel_area={exact_relative_area}, Hausdorff={exact_hausdorff}'
+    )
+
+
 def test_buffer_high_resolution_no_panic_on_extreme_coordinates() -> None:
     """The FFI no-panic invariant for the buffer engine under huge finite
     coordinates and high resolution — overflow/degenerate paths must fall

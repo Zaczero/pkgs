@@ -5,218 +5,23 @@
 use std::num::NonZeroU32;
 
 use crate::geometry::constructive::{
-    Result, WalkJoinRule, WalkPlan, materialize_walk, source_vector, unit_right_normal,
+    Result, WalkColumns, WalkJoinRule, WalkPlan, materialize_walk, source_vector,
 };
 use crate::geometry::{
     BufferJoinStyle, CoordSeq, Coordinates, ExpansionBudget, GeometryErrorKind, GeometryKind,
-    LineSeq, MOrdinate, MultiLineString, Point, Polygon, RepairMethod, Ring, Segment, Shape,
-    Strictness, XY, ZOrdinate, axis_pow2_scale, column_all_finite, dedup_consecutive_points,
-    interpolate_f64, push_distinct_xy_position, same_point, same_topological_coordinate,
-    scaled_residual, wrap_index,
+    LineSeq, MOrdinate, MultiLineString, Point, Segment, Shape, XY, ZOrdinate, axis_pow2_scale,
+    dedup_consecutive_points, interpolate_f64, same_point, same_topological_coordinate,
+    scaled_residual,
 };
 use crate::{Finite, Positive};
 
-/// Construct one-sided strips directly when the whole strip is already valid
-/// (the overwhelmingly common case), otherwise use the union of its
-/// per-segment quads — the swept region itself, which stays correct when the
-/// path self-crosses and a whole-ring repair would not (even-odd ring repair
-/// cancels faces covered by two sweep arms).
-pub(crate) fn sided_strip_parts<C: Coordinates + ?Sized>(
-    points: &C,
-    signed: f64,
-) -> Result<Vec<Polygon>> {
-    let Some(source) = offset_source(points) else {
-        return Ok(Vec::new());
-    };
-    let Some(strip) = sided_strip_source(&source, signed)? else {
-        return Ok(Vec::new());
-    };
-    if strip.validate("polygon", "$")?.is_none() {
-        return Ok(vec![strip]);
-    }
-    let quads = sided_strip_quads(points, signed)?;
-    Ok(match Shape::union_all(&quads, Strictness::Lenient)? {
-        Shape::Polygon(polygon) => vec![polygon],
-        Shape::MultiPolygon(polygons) => polygons.iter().cloned().collect(),
-        Shape::Point(_)
-        | Shape::MultiPoint(_)
-        | Shape::LineString(_)
-        | Shape::MultiLineString(_)
-        | Shape::GeometryCollection(_)
-        | Shape::Empty(..) => Vec::new(),
-    })
-}
-
-/// The strip's per-segment quads — the same miter-joined offset geometry as
-/// the direct strip, one quad per deduplicated input segment, X/Y only (the
-/// repair lane never carries Z/M, matching the whole-ring repair it
-/// replaces). A locally inverted miter can self-cross an individual quad;
-/// those are rebuilt before the union, which requires valid parts.
-pub(crate) fn sided_strip_quads<C: Coordinates + ?Sized>(
-    points: &C,
-    signed: f64,
-) -> Result<Vec<Shape>> {
-    let Some(source) = offset_source(points) else {
-        return Ok(Vec::new());
-    };
-    let vertices = &source.vertices;
-    let segments = offset_segments(&source, signed);
-    let count = source.segment_count();
-    if segments.len() != count {
-        // Deduplicated vertices offset 1:1; a dropped segment means a
-        // non-finite offset (coordinates at the f64 edge), not an empty
-        // geometric strip.
-        return Err(GeometryErrorKind::message(
-            "buffer calculation produced non-finite coordinates",
-        ));
-    }
-    let closed = source.closed;
-    // One join per joined vertex (every vertex when closed, the interior
-    // ones when open), computed once and shared by the two adjacent quads.
-    let joins: Vec<OffsetJoin> = if closed {
-        (0..count)
-            .map(|index| {
-                let previous_index = if index == 0 {
-                    count.wrapping_sub(1)
-                } else {
-                    index.wrapping_sub(1)
-                };
-                let previous = *segments
-                    .get(previous_index)
-                    .expect("closed offset predecessor belongs to its segment cycle");
-                let current = segments
-                    .get(index)
-                    .expect("closed offset segment belongs to its source cycle");
-                let vertex = *vertices
-                    .get(index)
-                    .expect("closed offset vertex belongs to its source cycle");
-                offset_join(&previous, current, vertex, signed)
-            })
-            .collect()
-    } else {
-        (1..count)
-            .map(|index| {
-                offset_join(
-                    segments
-                        .get(index.wrapping_sub(1))
-                        .expect("open offset predecessor belongs to its source run"),
-                    segments
-                        .get(index)
-                        .expect("open offset segment belongs to its source run"),
-                    *vertices
-                        .get(index)
-                        .expect("open offset vertex belongs to its source run"),
-                    signed,
-                )
-            })
-            .collect()
-    };
-    let offset_start = |index: usize| {
-        if closed {
-            joins
-                .get(index)
-                .expect("closed offset join belongs to its source cycle")
-                .outgoing()
-        } else if index == 0 {
-            segments
-                .first()
-                .expect("an admitted open offset has a first segment")
-                .start
-        } else {
-            joins
-                .get(index.wrapping_sub(1))
-                .expect("open offset join belongs to its source run")
-                .outgoing()
-        }
-    };
-    let offset_end = |index: usize| {
-        if closed {
-            joins
-                .get(wrap_index(index.wrapping_add(1), count))
-                .expect("closed offset successor join belongs to its cycle")
-                .incoming()
-        } else if index.wrapping_add(1) == count {
-            segments
-                .last()
-                .expect("an admitted open offset has a last segment")
-                .end
-        } else {
-            joins
-                .get(index)
-                .expect("open offset join belongs to its source run")
-                .incoming()
-        }
-    };
-    let normalized = |quad: Shape| {
-        if quad.validate()?.is_none() {
-            Ok(quad)
-        } else {
-            quad.repair(RepairMethod::Structure, false)
-        }
-    };
-    let mut parts = Vec::with_capacity(count.wrapping_add(joins.len()));
-    for index in 0..count {
-        let start = *vertices
-            .get(index)
-            .expect("offset segment starts at an admitted source vertex");
-        let end = *vertices
-            .get(wrap_index(index.wrapping_add(1), vertices.len()))
-            .expect("offset segment ends at an admitted source vertex");
-        parts.push(normalized(Shape::Polygon(Polygon::new(
-            xy_ring([start, end, offset_end(index), offset_start(index), start])?,
-            Vec::new(),
-        )))?);
-    }
-    // A bevel join leaves a wedge between the two raw offset endpoints that
-    // no per-segment quad covers; fill it so the union is the full sweep.
-    for (join_index, join) in joins.iter().enumerate() {
-        let OffsetJoin::Bevel { incoming, outgoing } = join else {
-            continue;
-        };
-        if same_point(*incoming, *outgoing) {
-            continue;
-        }
-        let vertex_index = if closed {
-            join_index
-        } else {
-            join_index.wrapping_add(1)
-        };
-        let vertex = *vertices
-            .get(vertex_index)
-            .expect("offset bevel join belongs to a source vertex");
-        parts.push(normalized(Shape::Polygon(Polygon::new(
-            xy_ring([vertex, *incoming, *outgoing, vertex])?,
-            Vec::new(),
-        )))?);
-    }
-    Ok(parts)
-}
-
-/// A small X/Y ring assembled straight into ordinate columns — no
-/// intermediate `Vec<Point>` per part.
-pub(crate) fn xy_ring<const N: usize>(points: [Point; N]) -> Result<Ring> {
-    Ring::try_from_closed(CoordSeq::try_from_vecs(
-        points.iter().map(|point| point.x).collect(),
-        points.iter().map(|point| point.y).collect(),
-        None,
-        None,
-    )?)
-}
-
 /// The finite source vertex run, with only exact zero-length edges removed,
 /// plus its closure flag. This is structural edge admission, not a
-/// tolerance-based simplification: raw offsets and sided strips use the same
-/// source order so their edge and join indexes cannot drift apart.
+/// tolerance-based simplification; offset curves and sided-buffer walks share
+/// the same source order.
 pub(crate) struct OffsetSource {
     vertices: Vec<Point>,
     closed: bool,
-}
-
-impl OffsetSource {
-    /// One offset segment per polyline segment (cyclic when closed).
-    fn segment_count(&self) -> usize {
-        self.vertices.len().wrapping_sub(usize::from(!self.closed))
-    }
 }
 
 pub(crate) fn offset_source<C: Coordinates + ?Sized>(points: &C) -> Option<OffsetSource> {
@@ -241,25 +46,71 @@ pub(crate) fn offset_source<C: Coordinates + ?Sized>(points: &C) -> Option<Offse
     Some(OffsetSource { vertices, closed })
 }
 
-/// The closed strip polygon between a line and its offset at `signed`
-/// distance: forward along the line, back along the offset (flat ends).
-fn sided_strip_source(source: &OffsetSource, signed: f64) -> Result<Option<Polygon>> {
-    let offset = match offset_line_source(source, signed) {
-        RawOffset::Value(offset) => offset,
-        RawOffset::Empty => return Ok(None),
-        RawOffset::Unrepresentable => {
-            return Err(GeometryErrorKind::message(
-                "buffer calculation produced non-finite coordinates",
-            ));
-        },
-    };
-    let mut shell = source.vertices.clone();
-    shell.extend(offset.into_iter().rev());
-    if let Some(first) = shell.first().copied() {
-        shell.push(first);
+fn offset_walk_columns(
+    mut walk: Vec<Point>,
+    closed: bool,
+    distance: f64,
+    rule: WalkJoinRule,
+    quadrant_segments: NonZeroU32,
+    budget: &mut ExpansionBudget,
+    track_sources: bool,
+    reject_nonfinite: bool,
+) -> Result<Option<(Vec<Point>, WalkColumns, bool)>> {
+    let left = distance > 0.0;
+    if left {
+        walk.reverse();
     }
-    Ok(Ring::from_closed(CoordSeq::try_from_points(&shell)?)
-        .map(|shell| Polygon::new(shell, Vec::new())))
+    let step_angle = std::f64::consts::FRAC_PI_2 / f64::from(quadrant_segments.get());
+    let Some(plan) = WalkPlan::new(&walk, closed, distance.abs(), rule)? else {
+        return Ok(None);
+    };
+    let Some(columns) =
+        materialize_walk(&plan, step_angle, track_sources, budget, reject_nonfinite)?
+    else {
+        return Ok(None);
+    };
+    Ok(Some((walk, columns, left)))
+}
+
+/// One positively wound strip loop: the offset side followed by the source
+/// in the opposite direction. Closed inputs retain their repeated endpoint,
+/// so both ends meet there with flat caps instead of forming an annular seam.
+pub(crate) fn sided_buffer_loop<C: Coordinates + ?Sized>(
+    points: &C,
+    distance: f64,
+    rule: WalkJoinRule,
+    quadrant_segments: NonZeroU32,
+    budget: &mut ExpansionBudget,
+) -> Result<Option<(Vec<f64>, Vec<f64>)>> {
+    let Some(mut source) = offset_source(points) else {
+        return Ok(None);
+    };
+    if source.closed
+        && let Some(&first) = source.vertices.first()
+    {
+        source.vertices.push(first);
+    }
+    let source_count = source.vertices.len();
+    let Some((walk, columns, _left)) = offset_walk_columns(
+        source.vertices,
+        false,
+        distance,
+        rule,
+        quadrant_segments,
+        budget,
+        false,
+        true,
+    )?
+    else {
+        return Ok(None);
+    };
+    let (mut xs, mut ys, _) = columns.into_columns();
+    budget.add(source_count)?;
+    xs.reserve(source_count);
+    ys.reserve(source_count);
+    xs.extend(walk.iter().rev().map(|point| point.x));
+    ys.extend(walk.iter().rev().map(|point| point.y));
+    Ok(Some((xs, ys)))
 }
 
 /// The planned offset curve with the buffer's join vocabulary: round
@@ -267,9 +118,8 @@ fn sided_strip_source(source: &OffsetSource, signed: f64) -> Result<Option<Polyg
 /// `distance` offsets LEFT of the line direction, negative RIGHT, and the
 /// output keeps the input direction either way (the left side is the
 /// right-offset of the REVERSED walk, un-reversed after emission). Closed
-/// inputs offset cyclically and close the output. `None` means that the raw
-/// offset cannot be represented (or the source has no segment); it is not a
-/// request to switch to the legacy raw-miter emitter.
+/// inputs offset cyclically and close the output. `None` means that the
+/// unrepresentable offset has no line result or the source has no segment.
 pub(crate) fn offset_curve_points<C: Coordinates + ?Sized>(
     points: &C,
     distance: f64,
@@ -281,30 +131,22 @@ pub(crate) fn offset_curve_points<C: Coordinates + ?Sized>(
     let Some(source) = offset_source(points) else {
         return Ok(None);
     };
-    let step_angle = std::f64::consts::FRAC_PI_2 / f64::from(quadrant_segments.get());
-    let left = distance > 0.0;
-    let mut walk = source.vertices;
-    if left {
-        walk.reverse();
-    }
-    // A failed normal is an unrepresentable raw offset, not permission to
-    // change the requested style to the legacy emitter.
-    let Some(plan) = WalkPlan::new(&walk, source.closed, distance.abs(), rule)? else {
-        return Ok(None);
-    };
-    // `reject_nonfinite = false` is the raw-offset overflow contract: the
-    // materializer reports unrepresentable derived coordinates as `None`.
-    let Some(columns) = materialize_walk(&plan, step_angle, true, budget, false)? else {
+    let closed = source.closed;
+    let Some((walk, columns, left)) = offset_walk_columns(
+        source.vertices,
+        closed,
+        distance,
+        rule,
+        quadrant_segments,
+        budget,
+        true,
+        false,
+    )?
+    else {
         return Ok(None);
     };
     let (xs, ys, sources) = columns.into_columns();
     let sources = sources.expect("tracked walk columns retain a source per emitted vertex");
-    // Coordinates at the f64 edge overflow the offset arithmetic — no
-    // offset curve (the alternate emitter's guard agrees, so the surface
-    // yields the documented empty line).
-    if !column_all_finite(&xs) || !column_all_finite(&ys) {
-        return Ok(None);
-    }
     // Each output vertex inherits the ordinates of the source vertex it
     // derives from (arc and join points belong to their corner) — the same
     // per-vertex Z/M carry the miter emitter always had.
@@ -316,9 +158,7 @@ pub(crate) fn offset_curve_points<C: Coordinates + ?Sized>(
             Point::new_raw_axes(x, y, ZOrdinate(origin.z()), MOrdinate(origin.m()))
         })
         .collect();
-    if source.closed
-        && let Some(&first) = result.first()
-    {
+    if closed && let Some(&first) = result.first() {
         // `WalkPlan` is open for the offset/winding shared representation;
         // this public closed curve owns one more coordinate and admits it
         // before appending, rather than reviving the old input-size estimate.
@@ -333,205 +173,15 @@ pub(crate) fn offset_curve_points<C: Coordinates + ?Sized>(
     Ok((result.len() >= 2).then_some(result))
 }
 
-#[cfg(test)]
-pub(crate) fn offset_line<C: Coordinates + ?Sized>(
-    points: &C,
-    distance: f64,
-) -> Option<Vec<Point>> {
-    let source = offset_source(points)?;
-    match offset_line_source(&source, distance) {
-        RawOffset::Value(offset) => Some(offset),
-        RawOffset::Empty | RawOffset::Unrepresentable => None,
-    }
-}
-
-enum RawOffset {
-    /// The occupied source has no representable line result.
-    Empty,
-    /// A finite source edge or its translated offset exceeded binary64.
-    Unrepresentable,
-    /// A source-ordered offset line.
-    Value(Vec<Point>),
-}
-
-fn offset_line_source(source: &OffsetSource, distance: f64) -> RawOffset {
-    let vertices = &source.vertices;
-    let segments = offset_segments(source, distance);
-    if segments.len() != source.segment_count() {
-        // Deduplicated vertices offset 1:1; a dropped segment means a
-        // non-finite offset (coordinates at the f64 edge) — no offset line.
-        return RawOffset::Unrepresentable;
-    }
-
-    let mut result = Vec::with_capacity(vertices.len().wrapping_add(usize::from(source.closed)));
-    let push_join = |result: &mut Vec<Point>, join: OffsetJoin| match join {
-        OffsetJoin::Miter(point) => push_distinct_xy_position(result, point),
-        OffsetJoin::Bevel { incoming, outgoing } => {
-            push_distinct_xy_position(result, incoming);
-            push_distinct_xy_position(result, outgoing);
-        },
-    };
-    if source.closed {
-        let mut previous = segments
-            .last()
-            .copied()
-            .expect("a closed offset source has at least two vertices");
-        for (vertex, current) in vertices.iter().zip(&segments) {
-            let join = offset_join(&previous, current, *vertex, distance);
-            push_join(&mut result, join);
-            previous = *current;
-        }
-        if let Some(first) = result.first().copied() {
-            result.push(first);
-        }
-    } else {
-        let first_segment = segments
-            .first()
-            .expect("an open offset source has at least one segment");
-        push_distinct_xy_position(&mut result, first_segment.start);
-        for (vertex, pair) in vertices.iter().skip(1).zip(segments.windows(2)) {
-            let previous = pair.first().expect("two-segment join has a predecessor");
-            let current = pair.get(1).expect("two-segment join has a successor");
-            let join = offset_join(previous, current, *vertex, distance);
-            push_join(&mut result, join);
-        }
-        let last_segment = segments
-            .last()
-            .expect("an open offset source has at least one segment");
-        push_distinct_xy_position(&mut result, last_segment.end);
-    }
-
-    if result.len() >= 2 {
-        RawOffset::Value(result)
-    } else {
-        RawOffset::Empty
-    }
-}
-
-fn offset_segments(source: &OffsetSource, distance: f64) -> Vec<OffsetEdge> {
-    let points = source.vertices.as_slice();
-    let limit = source.segment_count();
-    points
-        .iter()
-        .copied()
-        .zip(points.iter().copied().cycle().skip(1))
-        .take(limit)
-        .filter_map(|(start, end)| offset_segment(start, end, distance))
-        .collect()
-}
-
-/// One offset edge with FULL ordinate carry — the offset lane keeps
-/// Z/M through translation, and the joins re-attach the vertex's
-/// ordinates (the planar [`Segment`] is XY-only by design).
-#[derive(Clone, Copy)]
-pub(crate) struct OffsetEdge {
-    pub start: Point,
-    pub end: Point,
-}
-
-pub(crate) fn offset_segment(start: Point, end: Point, distance: f64) -> Option<OffsetEdge> {
-    // Use the walk's one normal kernel for raw and styled constructions. The
-    // raw lane negates the right normal to offset to the left.
-    let (nx, ny) = unit_right_normal(start, end)?;
-    let offset_x = -nx * distance;
-    let offset_y = -ny * distance;
-    // Offsetting coordinates near f64::MAX by a same-sign distance can overflow;
-    // drop such a segment rather than panicking on the finite-coordinate assert.
-    Some(OffsetEdge {
-        start: start.translate_xy(offset_x, offset_y).ok()?,
-        end: end.translate_xy(offset_x, offset_y).ok()?,
-    })
-}
-
 /// The default miter limit, in offset widths from the vertex.
 ///
 /// A near-reversal turn otherwise sends the miter intersection toward
-/// infinity. Raw offsets bevel an over-limit join; styled miter walks clip
-/// it flat at the declared reach.
+/// infinity; styled miter walks clip it flat at the declared reach.
 pub(crate) const DEFAULT_MITER_LIMIT: f64 = 5.0;
-
-/// One join between consecutive offset segments: the miter intersection
-/// when it stays within [`DEFAULT_MITER_LIMIT`] offset widths of the vertex,
-/// otherwise the bevel — the two raw offset endpoints joined by a straight
-/// edge. Collapsing to a midpoint would pull the strip inside the offset
-/// distance.
-pub(crate) enum OffsetJoin {
-    Miter(Point),
-    Bevel { incoming: Point, outgoing: Point },
-}
-
-impl OffsetJoin {
-    /// The join point ending the incoming segment's offset edge.
-    const fn incoming(&self) -> Point {
-        match self {
-            Self::Miter(point)
-            | Self::Bevel {
-                incoming: point, ..
-            } => *point,
-        }
-    }
-
-    /// The join point starting the outgoing segment's offset edge.
-    const fn outgoing(&self) -> Point {
-        match self {
-            Self::Miter(point)
-            | Self::Bevel {
-                outgoing: point, ..
-            } => *point,
-        }
-    }
-}
-
-pub(crate) fn offset_join(
-    previous: &OffsetEdge,
-    current: &OffsetEdge,
-    vertex: Point,
-    distance: f64,
-) -> OffsetJoin {
-    let carry = |point: XY| {
-        vertex
-            .with_xy(point.x, point.y)
-            .expect("join point preserves finite vertex ordinates")
-    };
-    match miter_join(
-        Segment {
-            start: previous.start.xy(),
-            end: previous.end.xy(),
-        },
-        Segment {
-            start: current.start.xy(),
-            end: current.end.xy(),
-        },
-        vertex,
-        distance,
-        DEFAULT_MITER_LIMIT,
-        MiterFinish::Bevel,
-    ) {
-        MiterConstruction::WithinLimit(point) => OffsetJoin::Miter(carry(point)),
-        // Near-parallel carriers and over-limit raw joins both retain the
-        // legacy raw-offset bevel. Styled miter joins use MiterFinish::Clip
-        // below and therefore do not silently share this outcome.
-        MiterConstruction::OverLimit
-        | MiterConstruction::Unusable
-        | MiterConstruction::Clipped { .. } => OffsetJoin::Bevel {
-            incoming: carry(previous.end.xy()),
-            outgoing: carry(current.start.xy()),
-        },
-    }
-}
-
-/// The explicit local finish for an over-limit miter. Raw offsets use a bevel
-/// to retain their established shape; styled miter walks use a clipped miter.
-#[derive(Clone, Copy)]
-pub(crate) enum MiterFinish {
-    Bevel,
-    Clip,
-}
 
 /// Shared miter geometry before the caller applies its local join vocabulary.
 pub(crate) enum MiterConstruction {
     WithinLimit(XY),
-    OverLimit,
     Clipped { entry: XY, exit: XY },
     Unusable,
 }
@@ -542,16 +192,12 @@ pub(crate) fn miter_join(
     vertex: Point,
     distance: f64,
     limit: f64,
-    finish: MiterFinish,
 ) -> MiterConstruction {
     let Some(point) = line_intersection(incoming, outgoing) else {
         return MiterConstruction::Unusable;
     };
     if miter_within_limit(point, vertex, distance, limit) {
         return MiterConstruction::WithinLimit(point);
-    }
-    if matches!(finish, MiterFinish::Bevel) {
-        return MiterConstruction::OverLimit;
     }
     let Some((entry, exit)) = clipped_miter(incoming, outgoing, vertex, point, distance, limit)
     else {
