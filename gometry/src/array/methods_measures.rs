@@ -153,6 +153,10 @@ impl PyGeometryArray {
     /// gives squared raw coordinate units. Use ``to_crs`` to
     /// change frame.
     ///
+    /// Each ``GeometryCollection`` row counts overlapping members once, as
+    /// the area of their union. Parts of a valid ``MultiPolygon`` cannot
+    /// overlap.
+    ///
     /// Returns
     /// -------
     /// numpy.ndarray
@@ -177,6 +181,9 @@ impl PyGeometryArray {
     /// A geographic CRS gives geodesic meters on the CRS's own ellipsoid; a
     /// projected CRS gives native linear units; a CRS-free array gives raw
     /// coordinate units. Use ``to_crs`` to change frame.
+    ///
+    /// Each ``GeometryCollection`` row sums every member's length or
+    /// perimeter, including overlapping members.
     ///
     /// Returns
     /// -------

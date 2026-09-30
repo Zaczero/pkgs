@@ -16,6 +16,9 @@ pub(crate) fn bounds_array(py: Python<'_>, values: &PyGeometryArray) -> PyResult
 
 /// Compute area in CRS-natural units or with a ``unit`` override.
 ///
+/// For a ``GeometryCollection``, overlapping members count once, as the area
+/// of their union. Parts of a valid ``MultiPolygon`` cannot overlap.
+///
 /// Parameters
 /// ----------
 /// geom : Geometry, GeometryArray, or iterable of geometry-like values
@@ -112,6 +115,9 @@ fn measure_natural_or_override(
 }
 
 /// Compute length in CRS-natural units or with a ``unit`` override.
+///
+/// For a ``GeometryCollection``, length sums every member's length or
+/// perimeter, including overlapping members.
 ///
 /// Parameters
 /// ----------

@@ -93,6 +93,30 @@ def test_geometry_collection_area_uses_occupied_polygon_faces(
     np.testing.assert_array_equal(gm.GeometryArray([collection]).area, [expected])
 
 
+def test_geometry_collection_area_counts_overlaps_once_and_length_sums_members() -> None:
+    overlapping = gm.GeometryCollection([
+        gm.box(0, 0, 2, 2),
+        gm.box(1, 1, 3, 3),
+    ])
+    identical = gm.GeometryCollection([
+        gm.box(0, 0, 2, 2),
+        gm.box(0, 0, 2, 2),
+    ])
+
+    assert overlapping.area == 7.0
+    assert overlapping.length == 16.0
+    assert identical.area == 4.0
+    assert identical.length == 16.0
+    assert gm.area(overlapping) == 7.0
+    assert gm.length(overlapping) == 16.0
+
+    array = gm.GeometryArray([overlapping, identical])
+    np.testing.assert_array_equal(array.area, [7.0, 4.0])
+    np.testing.assert_array_equal(array.length, [16.0, 16.0])
+    np.testing.assert_array_equal(gm.area(array), [7.0, 4.0])
+    np.testing.assert_array_equal(gm.length(array), [16.0, 16.0])
+
+
 def test_geometry_collection_area_without_areal_members_is_zero() -> None:
     collection = gm.GeometryCollection([
         gm.Point(8, 1),

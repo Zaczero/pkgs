@@ -70,8 +70,8 @@ Conventions: `import gometry as gm`; `geom` is a gometry geometry; and
 
 | Shapely | gometry | Notes |
 |---|---|---|
-| `geom.area` | [`geom.area`][gometry.Geometry.area] / [`geoms.area`][gometry.GeometryArray.area] |
-| `geom.length` | [`geom.length`][gometry.Geometry.length] / [`geoms.length`][gometry.GeometryArray.length] |
+| `geom.area` | [`geom.area`][gometry.Geometry.area] / [`geoms.area`][gometry.GeometryArray.area] | A `GeometryCollection` counts overlapping members once (the area of their union); Shapely sums member areas. |
+| `geom.length` | [`geom.length`][gometry.Geometry.length] / [`geoms.length`][gometry.GeometryArray.length] | For a `GeometryCollection`, sums every member's length or perimeter, including overlaps; Shapely agrees. |
 | `a.distance(b)` / `shapely.distance(a, b)` | [`gm.distance(a, b)`][gometry.distance] |
 | change the metric frame / units | [`geom.to_crs(target)`][gometry.Geometry.to_crs] / [`gm.area(geom, unit=…)`][gometry.area] |
 | `minimum_clearance(g)` | [`g.minimum_clearance()`][gometry.Geometry.minimum_clearance] |

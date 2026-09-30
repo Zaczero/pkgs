@@ -360,6 +360,9 @@ impl PyGeometry {
     /// change frame. Geographic polygons measure their lon/lat chart interior,
     /// including regions larger than half the ellipsoid.
     ///
+    /// A ``GeometryCollection`` counts overlapping members once, as the area
+    /// of their union. Parts of a valid ``MultiPolygon`` cannot overlap.
+    ///
     /// Returns
     /// -------
     /// float
@@ -382,6 +385,9 @@ impl PyGeometry {
     /// A geographic CRS gives geodesic meters on the CRS's own ellipsoid; a
     /// projected CRS gives native linear units; a CRS-free geometry gives raw
     /// coordinate units. Use ``to_crs`` to change frame.
+    ///
+    /// A ``GeometryCollection`` sums every member's length or perimeter,
+    /// including overlapping members.
     ///
     /// Returns
     /// -------

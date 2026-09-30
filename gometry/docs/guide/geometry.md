@@ -186,9 +186,11 @@ print(gc.to_wkt())
 
 ```
 
-!!! note "Mixed-dimension collections sum area and length"
-    [`.area`][gometry.Geometry.area] and [`.length`][gometry.Geometry.length] on a `GeometryCollection` **sum** each part's
-    contribution (points and lines add zero area; polygon rings add their area).
+!!! note "Collection area counts overlaps once; length sums members"
+    [`.area`][gometry.Geometry.area] measures the union of a collection's
+    areal support, so overlapping members count once. [`.length`][gometry.Geometry.length]
+    sums every member's length or perimeter, including overlapping members.
+    Points and lines contribute zero area.
     Prefer homogeneous multi-types when you want a single-kind column; reserve
     collections for genuinely heterogeneous
     results (e.g. an overlay that returns both lines and points, or the
