@@ -18,7 +18,7 @@ use crate::{
     coerce_geojson_geometry_value_at, coordinate_epoch_option, copy_one_byte_buffer,
     exact_backed_bytes, exact_geometry, exact_geometry_array, guard_epoch_frame, io,
     is_concrete_batch, is_py_bytes_or_bytearray, mapping_as_dict, parse_geojson_geometry_value,
-    py_bool, py_to_json_value, require_geojson_crs,
+    py_bool, require_geojson_crs,
 };
 
 enum DecodedGeoJson {
@@ -182,11 +182,11 @@ fn parse_geojson_concrete_row(
 /// ParseError
 ///     If the `geojson` is malformed or an unsupported type, a coordinate
 ///     sequence mixes axes (XY with XYZ), a coordinate integer is not exactly
-///     representable as binary64, or a legacy ``crs`` member is unsupported or
-///     conflicts with ``crs`` (``format`` is ``"geojson"``).
-/// InvalidGeometryError
-///     If a position is outside the WGS84 lon/lat domain or a ring fails
-///     structural ring admission.
+///     representable as binary64, a ``bbox``, Feature ``properties`` or ``id``
+///     is malformed, a Python mapping contains non-JSON data, or a legacy
+///     ``crs`` member is unsupported or conflicts with ``crs``, a position
+///     is outside the WGS84 domain, or a ring fails structural admission
+///     (``format`` is ``"geojson"``).
 /// CRSError
 ///     If ``crs`` is not a recognized CRS or is outside the WGS84 family, or
 ///     ``epoch`` is set with ``crs=None``.
@@ -357,10 +357,9 @@ pub(crate) fn from_geojson(
 /// ParseError
 ///     If the input is not a Feature/FeatureCollection/iterable, a feature is
 ///     malformed, a geometry cannot be parsed, or a legacy ``crs`` member is
-///     unsupported or conflicts with ``crs`` (``format`` is ``"GeoJSON"``).
-/// InvalidGeometryError
-///     If a position is outside the WGS84 lon/lat domain or a ring fails
-///     structural ring admission.
+///     unsupported or conflicts with ``crs``, a position is outside the WGS84
+///     domain, or a ring fails structural admission
+///     (``format`` is ``"geojson"``).
 /// CRSError
 ///     If ``crs`` is not recognized or is outside the WGS84 family, or
 ///     ``epoch`` is set with ``crs=None``.
@@ -371,9 +370,9 @@ pub(crate) fn from_geojson(
 /// -----
 /// Text input is decoded in Rust. Coordinate numbers follow the same admission
 /// as ``from_geojson``: correctly-rounded binary64 floats, and integers only
-/// when exactly representable as ``float`` (non-exact integers raise). Object
-/// keys in text input are returned sorted; mapping input keeps key order and
-/// opaque property values.
+/// when exactly representable as ``float`` (non-exact integers raise). Feature
+/// properties and IDs must contain JSON-compatible values; Python mapping
+/// inputs retain property key order and exact integer values.
 ///
 /// See Also
 /// --------
@@ -522,24 +521,29 @@ fn decode_features_text(
 }
 
 fn validate_text_side_data(row: &FeatureRow) -> crate::error::Result<()> {
-    if let FeatureSideData::Json(Some(value)) = &row.properties {
-        let text = value.get().trim();
-        if text != "null" && !text.starts_with('{') {
-            return Err(io::IoError::geojson(
-                "feature properties must be a mapping or None",
-            ));
-        }
+    if let FeatureSideData::Json(value) = &row.properties {
+        let kind = match value.as_deref().map(|value| value.get().trim()) {
+            None => io::GeoJsonMemberKind::Missing,
+            Some("null") => io::GeoJsonMemberKind::Null,
+            Some(value) if value.starts_with('{') => io::GeoJsonMemberKind::Object,
+            Some(_) => io::GeoJsonMemberKind::Other,
+        };
+        io::validate_geojson_feature_properties(kind)?;
     }
-    if let FeatureSideData::Json(Some(value)) = &row.id {
-        let text = value.get().trim();
-        if text != "null" {
-            let value: Value = support::deserialize_json(text.as_bytes())?;
-            if !value.is_string() && !value.is_number() {
-                return Err(io::IoError::geojson(
-                    "feature id must be a string or finite number",
-                ));
-            }
-        }
+    if let FeatureSideData::Json(value) = &row.id {
+        let kind = match value.as_deref().map(|value| value.get().trim()) {
+            None => io::GeoJsonMemberKind::Missing,
+            Some("null") => io::GeoJsonMemberKind::Null,
+            Some(value) => {
+                let value: Value = support::deserialize_json(value.as_bytes())?;
+                match value {
+                    Value::String(_) => io::GeoJsonMemberKind::String,
+                    Value::Number(_) => io::GeoJsonMemberKind::Number,
+                    _ => io::GeoJsonMemberKind::Other,
+                }
+            },
+        };
+        io::validate_geojson_feature_id(kind)?;
     }
     Ok(())
 }
@@ -649,6 +653,7 @@ fn feature_row_from_meta(
         properties,
         id,
         legacy_crs,
+        bbox,
     } = feature
     else {
         return Err(io::IoError::geojson("each feature must be a mapping"));
@@ -658,6 +663,7 @@ fn feature_row_from_meta(
             "each feature must have type \"Feature\"",
         ));
     }
+    validate_feature_bbox_raw(bbox.as_deref())?;
     let geometry = match geometry {
         FeatureGeometryValue::Missing => {
             return Err(io::IoError::geojson("each feature must have a geometry"));
@@ -685,8 +691,10 @@ fn build_python_features(
     // Keystone first (not abc.Mapping): keys()-only ducks that dict() accepts
     // must enter the Feature/FeatureCollection branch without an ABC gate.
     if let Some(data) = mapping_as_dict(data)? {
+        validate_python_geojson_mapping_keys(&data)?;
         match python_mapping_kind(&data)? {
             Some(PythonFeatureKind::Collection) => {
+                validate_python_geojson_extensions(&data, &["type", "features", "crs", "bbox"])?;
                 // RFC 7946 §7.1: FeatureCollection must not carry Geometry/Feature
                 // defining members (parity with from_geojson / JSON frontends).
                 let mut members = io::DefiningMembers::default();
@@ -703,11 +711,14 @@ fn build_python_features(
                     members.set(io::DefiningMembers::PROPERTIES);
                 }
                 io::reject_rfc7946_cross_type_members("FeatureCollection", members)?;
+                if let Some(bbox) = data.get_item(pyo3::intern!(py, "bbox"))? {
+                    validate_python_geojson_bbox(&bbox)?;
+                }
                 let features = data
                     .get_item(pyo3::intern!(py, "features"))?
                     .ok_or_else(|| feature_parse_error("feature collection requires features"))?;
                 if let Some(legacy) = data.get_item(pyo3::intern!(py, "crs"))? {
-                    let legacy = py_to_json_value(&legacy)?;
+                    let legacy = support::py_to_geojson_json_value(&legacy)?;
                     py.detach(|| {
                         io::GeoJsonCrs::new(io::LegacyGeoJsonCrsPolicy::Fixed(crs.as_deref()))
                             .reconcile_declaration(&legacy)
@@ -778,6 +789,33 @@ enum PythonFeatureKind {
     Collection,
 }
 
+fn validate_python_geojson_mapping_keys(mapping: &Bound<'_, PyDict>) -> PyResult<()> {
+    for key in mapping.keys().iter() {
+        if key.cast::<PyString>().is_err() {
+            return Err(io::IoError::geojson("JSON object keys must be strings").into());
+        }
+    }
+    Ok(())
+}
+
+fn validate_python_geojson_extensions(mapping: &Bound<'_, PyDict>, known: &[&str]) -> PyResult<()> {
+    for (key, value) in mapping.iter() {
+        let key = key
+            .cast::<PyString>()
+            .map_err(|_| PyErr::from(io::IoError::geojson("JSON object keys must be strings")))?;
+        if !known.contains(&key.to_cow()?.as_ref()) {
+            support::validate_geojson_json_value(&value, support::MAX_JSON_NESTING)?;
+        }
+    }
+    Ok(())
+}
+
+fn validate_python_geojson_bbox(value: &Bound<'_, PyAny>) -> PyResult<()> {
+    let bbox = support::py_to_geojson_data_value(value)?;
+    io::validate_geojson_bbox(&bbox)?;
+    Ok(())
+}
+
 fn python_mapping_kind(mapping: &Bound<'_, PyDict>) -> PyResult<Option<PythonFeatureKind>> {
     let Some(value) = mapping.get_item(pyo3::intern!(mapping.py(), "type"))? else {
         return Ok(None);
@@ -800,6 +838,15 @@ fn python_feature_row(
     // keys()+seen copier (N4): accept keys()-only ducks, not only abc.Mapping.
     let feature = mapping_as_dict(feature)?
         .ok_or_else(|| feature_parse_error("each feature must be a mapping"))?;
+    validate_python_geojson_mapping_keys(&feature)?;
+    validate_python_geojson_extensions(&feature, &[
+        "type",
+        "geometry",
+        "properties",
+        "id",
+        "crs",
+        "bbox",
+    ])?;
     if !matches!(
         python_mapping_kind(&feature)?,
         Some(PythonFeatureKind::Feature)
@@ -820,6 +867,9 @@ fn python_feature_row(
         members.set(io::DefiningMembers::FEATURES);
     }
     io::reject_rfc7946_cross_type_members("Feature", members)?;
+    if let Some(bbox) = feature.get_item(pyo3::intern!(py, "bbox"))? {
+        validate_python_geojson_bbox(&bbox)?;
+    }
     let geometry = feature
         .get_item(pyo3::intern!(py, "geometry"))?
         .ok_or_else(|| feature_parse_error("each feature must have a geometry"))?;
@@ -828,7 +878,7 @@ fn python_feature_row(
     let id = python_feature_id(py, feature.get_item(pyo3::intern!(py, "id"))?)?;
     let legacy_crs = feature
         .get_item(pyo3::intern!(py, "crs"))?
-        .map(|legacy| py_to_json_value(&legacy))
+        .map(|legacy| support::py_to_geojson_json_value(&legacy))
         .transpose()?;
     let geometry = if geometry.is_none() {
         FeatureGeometryInput::Null
@@ -849,25 +899,24 @@ fn python_feature_properties(
     value: Option<Bound<'_, PyAny>>,
 ) -> PyResult<Py<PyAny>> {
     let Some(value) = value else {
+        io::validate_geojson_feature_properties(io::GeoJsonMemberKind::Missing)?;
         return Ok(PyDict::new(py).unbind().into());
     };
     if value.is_none() {
+        io::validate_geojson_feature_properties(io::GeoJsonMemberKind::Null)?;
         return Ok(py.None());
     }
     // Shared keys()+seen copier (N4): accepts keys()-only ducks and rejects
     // repeated-key streams immediately — never dict.update object-iteration.
     let Some(output) = mapping_as_dict(&value)? else {
-        return Err(feature_parse_error(
-            "feature properties must be a mapping or None",
-        ));
+        return Err(
+            io::validate_geojson_feature_properties(io::GeoJsonMemberKind::Other)
+                .expect_err("non-mapping Feature properties are rejected")
+                .into(),
+        );
     };
-    for key in output.keys().iter() {
-        if !key.is_instance_of::<PyString>() {
-            return Err(feature_parse_error(
-                "feature properties keys must be strings",
-            ));
-        }
-    }
+    io::validate_geojson_feature_properties(io::GeoJsonMemberKind::Object)?;
+    support::validate_geojson_feature_side_data(&value)?;
     Ok(output.unbind().into())
 }
 
@@ -875,17 +924,22 @@ fn python_feature_id(py: Python<'_>, value: Option<Bound<'_, PyAny>>) -> PyResul
     let Some(value) = value.filter(|value| !value.is_none()) else {
         return Ok(py.None());
     };
-    let valid = !value.is_instance_of::<PyBool>()
-        && (value.is_instance_of::<PyString>()
-            || value.is_instance_of::<PyInt>()
-            || value
-                .cast::<PyFloat>()
-                .is_ok_and(|number| number.value().is_finite()));
-    if !valid {
-        return Err(feature_parse_error(
-            "feature id must be a string or finite number",
-        ));
-    }
+    let kind = if value.is_instance_of::<PyBool>() {
+        io::GeoJsonMemberKind::Other
+    } else if value.is_instance_of::<PyString>() {
+        io::GeoJsonMemberKind::String
+    } else if value.is_instance_of::<PyInt>() {
+        io::GeoJsonMemberKind::Number
+    } else if let Ok(number) = value.cast::<PyFloat>() {
+        if number.value().is_finite() {
+            io::GeoJsonMemberKind::Number
+        } else {
+            io::GeoJsonMemberKind::NonFinite
+        }
+    } else {
+        io::GeoJsonMemberKind::Other
+    };
+    io::validate_geojson_feature_id(kind)?;
     Ok(value.unbind())
 }
 
@@ -955,29 +1009,45 @@ struct FeatureTopMeta {
     properties: Option<Box<RawValue>>,
     id: Option<Box<RawValue>>,
     legacy_crs: Option<Value>,
+    bbox: Option<Box<RawValue>>,
+}
+
+fn validate_feature_bbox_raw(value: Option<&RawValue>) -> crate::error::Result<()> {
+    let Some(value) = value else {
+        return Ok(());
+    };
+    let bbox: Value = support::deserialize_json(value.get().as_bytes())?;
+    io::validate_geojson_bbox(&bbox)
 }
 
 impl FeatureTopMeta {
     fn into_rows(self) -> crate::error::Result<(Vec<FeatureRowMeta>, Option<Value>, bool)> {
         match self.kind.as_deref() {
-            Some("FeatureCollection") => match self.features {
-                Some(FeatureRowsMeta::Rows(rows)) => Ok((rows, self.legacy_crs, true)),
-                Some(FeatureRowsMeta::NotIterable) => Err(io::IoError::geojson(
-                    "feature collection features must be iterable",
-                )),
-                None => Err(io::IoError::geojson("feature collection requires features")),
+            Some("FeatureCollection") => {
+                validate_feature_bbox_raw(self.bbox.as_deref())?;
+                match self.features {
+                    Some(FeatureRowsMeta::Rows(rows)) => Ok((rows, self.legacy_crs, true)),
+                    Some(FeatureRowsMeta::NotIterable) => Err(io::IoError::geojson(
+                        "feature collection features must be iterable",
+                    )),
+                    None => Err(io::IoError::geojson("feature collection requires features")),
+                }
             },
-            Some("Feature") => Ok((
-                vec![FeatureRowMeta::Mapping {
-                    kind: self.kind,
-                    geometry: self.geometry,
-                    properties: self.properties,
-                    id: self.id,
-                    legacy_crs: self.legacy_crs,
-                }],
-                None,
-                false,
-            )),
+            Some("Feature") => {
+                validate_feature_bbox_raw(self.bbox.as_deref())?;
+                Ok((
+                    vec![FeatureRowMeta::Mapping {
+                        kind: self.kind,
+                        geometry: self.geometry,
+                        properties: self.properties,
+                        id: self.id,
+                        legacy_crs: self.legacy_crs,
+                        bbox: None,
+                    }],
+                    None,
+                    false,
+                ))
+            },
             _ => Err(io::IoError::geojson(
                 "expected a Feature, FeatureCollection, or iterable of Feature mappings",
             )),
@@ -1013,6 +1083,7 @@ impl<'de> Visitor<'de> for FeatureTopMetaVisitor {
         let mut properties = None;
         let mut id = None;
         let mut legacy_crs = None;
+        let mut bbox = None;
         let mut has_coordinates = false;
         let mut has_geometries = false;
         let mut has_geometry = false;
@@ -1037,6 +1108,7 @@ impl<'de> Visitor<'de> for FeatureTopMetaVisitor {
                 },
                 "id" => id = Some(map.next_value()?),
                 "crs" => legacy_crs = Some(map.next_value()?),
+                "bbox" => bbox = Some(map.next_value()?),
                 "coordinates" => {
                     has_coordinates = true;
                     let _ = map.next_value::<IgnoredAny>()?;
@@ -1085,6 +1157,7 @@ impl<'de> Visitor<'de> for FeatureTopMetaVisitor {
             properties,
             id,
             legacy_crs,
+            bbox,
         })
     }
 }
@@ -1176,6 +1249,7 @@ enum FeatureRowMeta {
         properties: Option<Box<RawValue>>,
         id: Option<Box<RawValue>>,
         legacy_crs: Option<Value>,
+        bbox: Option<Box<RawValue>>,
     },
     NotMapping,
 }
@@ -1207,6 +1281,7 @@ impl<'de> Visitor<'de> for FeatureRowMetaVisitor {
         let mut properties = None;
         let mut id = None;
         let mut legacy_crs = None;
+        let mut bbox = None;
         let mut has_coordinates = false;
         let mut has_geometries = false;
         let mut has_features = false;
@@ -1219,6 +1294,7 @@ impl<'de> Visitor<'de> for FeatureRowMetaVisitor {
                 "properties" => properties = Some(map.next_value()?),
                 "id" => id = Some(map.next_value()?),
                 "crs" => legacy_crs = Some(map.next_value()?),
+                "bbox" => bbox = Some(map.next_value()?),
                 "coordinates" => {
                     has_coordinates = true;
                     let _ = map.next_value::<IgnoredAny>()?;
@@ -1257,6 +1333,7 @@ impl<'de> Visitor<'de> for FeatureRowMetaVisitor {
             properties,
             id,
             legacy_crs,
+            bbox,
         })
     }
 
@@ -1568,7 +1645,7 @@ impl RawJsonToPy<'_, '_> {
 }
 
 fn feature_parse_error(message: &'static str) -> PyErr {
-    errors::parse_error(message, crate::error::ParseFormat::GeoJson)
+    PyErr::from(io::IoError::geojson(message))
 }
 
 /// The features of a `GeoJSON` ``FeatureCollection``, or `None` for any other
@@ -1582,6 +1659,7 @@ fn geojson_feature_collection(value: &Value) -> crate::error::Result<Option<&Vec
     }
     // RFC 7946 §7.1: FeatureCollection must not carry Geometry/Feature members.
     io::reject_rfc7946_value_object(object).map_err(|error| error.with_parse_path("$"))?;
+    io::validate_geojson_bbox_member(object)?;
     object
         .get("features")
         .and_then(Value::as_array)
@@ -1611,6 +1689,7 @@ fn geojson_feature_collection_member(
         );
     }
     io::reject_rfc7946_value_object(object).map_err(|error| error.with_parse_path(path))?;
+    io::validate_geojson_feature_members(object)?;
     let geometry = object.get("geometry").ok_or_else(|| {
         io::IoError::geojson("GeoJSON Feature requires geometry").with_parse_path(path)
     })?;

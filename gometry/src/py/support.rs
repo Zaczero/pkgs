@@ -84,11 +84,13 @@ pub(crate) use frame_args::{
     py_text_borrow,
 };
 pub(crate) use geojson::{
-    GeoJsonDecodeContext, JsonValueError, ScalarOrIterator, classify_scalar_or_iterator,
-    coerce_geojson_geometry_value, coerce_geojson_geometry_value_at, deserialize_json,
-    is_concrete_batch, is_mapping_like, is_py_bytes_or_bytearray, is_wgs84_family_crs,
-    is_wkt_string, mapping_as_dict, parse_geojson_geometry_value, parse_geojson_slice,
-    parse_geojson_text, py_to_json_value, py_to_json_value_classified, require_geojson_crs,
+    GeoJsonDecodeContext, JsonValueError, MAX_JSON_NESTING, ScalarOrIterator,
+    classify_scalar_or_iterator, coerce_geojson_geometry_value, coerce_geojson_geometry_value_at,
+    deserialize_json, is_concrete_batch, is_mapping_like, is_py_bytes_or_bytearray,
+    is_wgs84_family_crs, is_wkt_string, mapping_as_dict, parse_geojson_geometry_value,
+    parse_geojson_slice, parse_geojson_text, py_to_geojson_data_value, py_to_geojson_json_value,
+    py_to_json_value, py_to_json_value_classified, require_geojson_crs,
+    validate_geojson_feature_side_data, validate_geojson_json_value,
 };
 pub(crate) use io_encoders::{box_polygon, wrapped_box};
 pub(crate) use linref::{

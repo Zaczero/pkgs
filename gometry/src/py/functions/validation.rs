@@ -56,7 +56,7 @@ use crate::{
 ///     If ``crs`` is not a recognized CRS.
 /// ParseError
 ///     If foreign GeoJSON is malformed, or its legacy ``crs`` member is
-///     unsupported or conflicts with ``crs`` (``format`` is ``"GeoJSON"``).
+///     unsupported or conflicts with ``crs`` (``format`` is ``"geojson"``).
 /// CRSMismatchError
 ///     If an already-decoded / native / non-GeoJSON geometry's CRS conflicts
 ///     with ``crs``. EWKT/EWKB embedded SRID conflicts use this error too.

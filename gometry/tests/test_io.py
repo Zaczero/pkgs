@@ -777,7 +777,7 @@ def test_geojson_text_rows_use_direct_coordinate_decoder() -> None:
     assert parsed.is_missing.tolist() == [False, False, False, True]
 
 
-def test_from_geojson_dict_feature_collection_skips_properties() -> None:
+def test_from_geojson_rejects_non_json_feature_properties() -> None:
 
     class NotJson:
         pass
@@ -798,10 +798,12 @@ def test_from_geojson_dict_feature_collection_skips_properties() -> None:
             },
         ],
     }
-    assert gm.from_geojson(feature).to_wkt() == 'POINT (1 2)'
-    parsed = gm.from_geojson(collection)
-    assert isinstance(parsed, gm.GeometryArray)
-    assert parsed.to_wkt() == ['POINT (1 2)', 'LINESTRING (0 0, 1 1)']
+    for value in (feature, collection):
+        with pytest.raises(
+            gm.ParseError, match='unsupported JSON value type NotJson'
+        ) as exc_info:
+            gm.from_geojson(value)
+        assert exc_info.value.format == 'geojson'
 
 
 def test_mixed_geometry_and_bytes_batch_coerces_per_item() -> None:

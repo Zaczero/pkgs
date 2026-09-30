@@ -873,6 +873,23 @@ pub(crate) fn py_parse_geoparquet_column_frame(
             JsonValueError::NonFinite => GeoParquetAdmissionError::Metadata(format!(
                 "invalid GeoParquet column '{column_name}': epoch must be finite"
             )),
+            JsonValueError::NonStringKey => GeoParquetAdmissionError::from(PyTypeError::new_err(
+                "JSON object keys must be strings",
+            )),
+            JsonValueError::NestingLimit(max_depth) => {
+                GeoParquetAdmissionError::from(PyErr::from(crate::io::IoError::geojson(format!(
+                    "GeoJSON JSON nesting exceeds the structural limit of {max_depth}"
+                ))))
+            },
+            JsonValueError::FeatureDataNestingLimit => {
+                GeoParquetAdmissionError::from(PyErr::from(crate::io::IoError::geojson(format!(
+                    "GeoJSON Feature side data exceeds nesting depth {}",
+                    crate::geometry::MAX_NESTING
+                ))))
+            },
+            JsonValueError::UnsupportedType(name) => GeoParquetAdmissionError::from(
+                GeometryError::new_err(format!("unsupported JSON value type {name}")),
+            ),
             JsonValueError::Python(error) => GeoParquetAdmissionError::from(error),
         }
         .into_py_err()

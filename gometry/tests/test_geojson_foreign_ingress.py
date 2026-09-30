@@ -411,12 +411,13 @@ def test_geojson_nested_sequence_conversion_stops_at_first_unsupported_child(
     ))
 
     with pytest.raises(
-        gm.GeometryError, match='unsupported JSON value type FirstUnsupported'
-    ):
+        gm.ParseError, match='unsupported JSON value type FirstUnsupported'
+    ) as exc_info:
         gm.from_geojson(
             {'type': 'LineString', 'coordinates': coordinates},
             crs=None,
         )
+    assert exc_info.value.format == 'geojson'
 
 
 @pytest.mark.parametrize(
@@ -452,7 +453,7 @@ def test_geojson_multipolygon_invalid_ordinate_reports_nested_path() -> None:
     assert exc_info.value.path == '$.coordinates[0][0][1][1]'
 
 
-def test_require_feature_projection_ignores_opaque_properties() -> None:
+def test_require_feature_projection_rejects_non_json_property_values() -> None:
     class Opaque:
         pass
 
@@ -461,7 +462,9 @@ def test_require_feature_projection_ignores_opaque_properties() -> None:
         'properties': {'opaque': Opaque()},
         'geometry': {'type': 'Point', 'coordinates': [1, 2]},
     }
-    assert gm.require(feature).to_wkt() == 'POINT (1 2)'
+    with pytest.raises(gm.ParseError, match='unsupported JSON value type Opaque') as exc_info:
+        gm.require(feature)
+    assert exc_info.value.format == 'geojson'
 
 
 def test_wkt_looking_text_keeps_wkt_format_after_auto_selection() -> None:

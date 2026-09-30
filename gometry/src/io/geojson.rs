@@ -610,7 +610,9 @@ pub(crate) fn parse_geojson_at(value: &Value, path: &str) -> Result<Shape> {
 mod geojson_object;
 // Crate-visible for from_features defining-member flags + shared §7.1 check.
 pub(crate) use geojson_object::{
-    DefiningMembers, json_number_to_f64, reject_rfc7946_cross_type_members,
+    DefiningMembers, GeoJsonMemberKind, json_number_to_f64, reject_rfc7946_cross_type_members,
+    validate_geojson_bbox, validate_geojson_bbox_member, validate_geojson_feature_id,
+    validate_geojson_feature_members, validate_geojson_feature_properties,
 };
 
 fn json_number(value: &Value, message: &'static str) -> Result<f64> {
@@ -1066,6 +1068,7 @@ fn parse_geojson_inner_impl(value: &Value, path: &JsonPath<'_>, depth: usize) ->
         .ok_or_else(|| IoError::geojson("GeoJSON geometry must be an object"))?;
     // §7.1 before kind dispatch so Point+properties / GC+coordinates reject.
     reject_rfc7946_value_object(object)?;
+    validate_geojson_bbox_member(object)?;
     let geometry_type = object
         .get("type")
         .and_then(Value::as_str)

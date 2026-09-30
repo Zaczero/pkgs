@@ -19017,10 +19017,9 @@ def from_features(
     ParseError
         If the input is not a Feature/FeatureCollection/iterable, a feature is
         malformed, a geometry cannot be parsed, or a legacy ``crs`` member is
-        unsupported or conflicts with ``crs`` (``format`` is ``"GeoJSON"``).
-    InvalidGeometryError
-        If a position is outside the WGS84 lon/lat domain or a ring fails
-        structural ring admission.
+        unsupported or conflicts with ``crs``, a position is outside the WGS84
+        domain, or a ring fails structural admission
+        (``format`` is ``"geojson"``).
     CRSError
         If ``crs`` is not recognized or is outside the WGS84 family, or
         ``epoch`` is set with ``crs=None``.
@@ -19031,9 +19030,9 @@ def from_features(
     -----
     Text input is decoded in Rust. Coordinate numbers follow the same admission
     as ``from_geojson``: correctly-rounded binary64 floats, and integers only
-    when exactly representable as ``float`` (non-exact integers raise). Object
-    keys in text input are returned sorted; mapping input keeps key order and
-    opaque property values.
+    when exactly representable as ``float`` (non-exact integers raise). Feature
+    properties and IDs must contain JSON-compatible values; Python mapping
+    inputs retain property key order and exact integer values.
 
     See Also
     --------
@@ -19255,11 +19254,11 @@ def from_geojson(
     ParseError
         If the `geojson` is malformed or an unsupported type, a coordinate
         sequence mixes axes (XY with XYZ), a coordinate integer is not exactly
-        representable as binary64, or a legacy ``crs`` member is unsupported or
-        conflicts with ``crs`` (``format`` is ``"geojson"``).
-    InvalidGeometryError
-        If a position is outside the WGS84 lon/lat domain or a ring fails
-        structural ring admission.
+        representable as binary64, a ``bbox``, Feature ``properties`` or ``id``
+        is malformed, a Python mapping contains non-JSON data, or a legacy
+        ``crs`` member is unsupported or conflicts with ``crs``, a position
+        is outside the WGS84 domain, or a ring fails structural admission
+        (``format`` is ``"geojson"``).
     CRSError
         If ``crs`` is not a recognized CRS or is outside the WGS84 family, or
         ``epoch`` is set with ``crs=None``.
@@ -19363,7 +19362,7 @@ def require(
         If ``crs`` is not a recognized CRS.
     ParseError
         If foreign GeoJSON is malformed, or its legacy ``crs`` member is
-        unsupported or conflicts with ``crs`` (``format`` is ``"GeoJSON"``).
+        unsupported or conflicts with ``crs`` (``format`` is ``"geojson"``).
     CRSMismatchError
         If an already-decoded / native / non-GeoJSON geometry's CRS conflicts
         with ``crs``. EWKT/EWKB embedded SRID conflicts use this error too.

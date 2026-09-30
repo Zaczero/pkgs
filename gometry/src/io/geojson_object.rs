@@ -1,5 +1,7 @@
 //! Shared GeoJSON object rules and numeric conversion helpers.
 
+use serde_json::Value;
+
 use crate::io::{IoError, Result};
 
 /// Presence of RFC 7946 defining members used for §7.1 cross-type checks.
@@ -68,6 +70,95 @@ pub(crate) fn reject_rfc7946_cross_type_members(
         )));
     }
     Ok(())
+}
+
+pub(crate) fn validate_geojson_bbox(value: &Value) -> Result<()> {
+    let Some(bounds) = value.as_array() else {
+        return Err(IoError::geojson(
+            "GeoJSON bbox must contain 4 or 6 finite numbers",
+        ));
+    };
+    if !matches!(bounds.len(), 4 | 6) {
+        return Err(IoError::geojson(
+            "GeoJSON bbox must contain 4 or 6 finite numbers",
+        ));
+    }
+    for bound in bounds {
+        let Value::Number(number) = bound else {
+            return Err(IoError::geojson(
+                "GeoJSON bbox must contain 4 or 6 finite numbers",
+            ));
+        };
+        json_number_to_f64(number)
+            .map_err(|_| IoError::geojson("GeoJSON bbox must contain 4 or 6 finite numbers"))?;
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_geojson_bbox_member(object: &serde_json::Map<String, Value>) -> Result<()> {
+    if let Some(bbox) = object.get("bbox") {
+        validate_geojson_bbox(bbox)?;
+    }
+    Ok(())
+}
+
+#[derive(Clone, Copy)]
+pub(crate) enum GeoJsonMemberKind {
+    Missing,
+    Null,
+    Object,
+    String,
+    Number,
+    NonFinite,
+    Other,
+}
+
+pub(crate) fn validate_geojson_feature_properties(kind: GeoJsonMemberKind) -> Result<()> {
+    if matches!(
+        kind,
+        GeoJsonMemberKind::Missing | GeoJsonMemberKind::Null | GeoJsonMemberKind::Object
+    ) {
+        Ok(())
+    } else {
+        Err(IoError::geojson(
+            "feature properties must be a mapping or None",
+        ))
+    }
+}
+
+pub(crate) fn validate_geojson_feature_id(kind: GeoJsonMemberKind) -> Result<()> {
+    match kind {
+        GeoJsonMemberKind::Missing
+        | GeoJsonMemberKind::Null
+        | GeoJsonMemberKind::String
+        | GeoJsonMemberKind::Number => Ok(()),
+        GeoJsonMemberKind::NonFinite => Err(IoError::geojson("JSON number must be finite")),
+        GeoJsonMemberKind::Object | GeoJsonMemberKind::Other => Err(IoError::geojson(
+            "feature id must be a string or finite number",
+        )),
+    }
+}
+
+pub(crate) fn validate_geojson_feature_members(
+    object: &serde_json::Map<String, Value>,
+) -> Result<()> {
+    let properties = match object.get("properties") {
+        None => GeoJsonMemberKind::Missing,
+        Some(Value::Null) => GeoJsonMemberKind::Null,
+        Some(Value::Object(_)) => GeoJsonMemberKind::Object,
+        Some(_) => GeoJsonMemberKind::Other,
+    };
+    validate_geojson_feature_properties(properties)?;
+
+    let id = match object.get("id") {
+        None => GeoJsonMemberKind::Missing,
+        Some(Value::Null) => GeoJsonMemberKind::Null,
+        Some(Value::String(_)) => GeoJsonMemberKind::String,
+        Some(Value::Number(_)) => GeoJsonMemberKind::Number,
+        Some(_) => GeoJsonMemberKind::Other,
+    };
+    validate_geojson_feature_id(id)?;
+    validate_geojson_bbox_member(object)
 }
 
 /// Admit a signed integer coordinate only when it is exactly representable as

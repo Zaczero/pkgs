@@ -195,11 +195,9 @@ def test_feature_null_geometry_mapping_matches_text_missing_rows() -> None:
 
 def test_from_features_native_object_lane_preserves_python_fidelity() -> None:
     assert gm.from_features.__module__ == 'gometry._lib'
-    marker = object()
     huge = 1 << 100
     identifier = _FeatureId(17)
     properties = types.MappingProxyType({
-        'marker': marker,
         'huge': huge,
         'tail': 'keeps insertion order',
     })
@@ -221,10 +219,22 @@ def test_from_features_native_object_lane_preserves_python_fidelity() -> None:
     assert isinstance(result, gm.Features)
     assert result.geometries.epoch == 2020.5
     assert [str(value) for value in result.geometries] == ['POINT (1 2)']
-    assert list(result.properties[0]) == ['marker', 'huge', 'tail']
-    assert result.properties[0]['marker'] is marker
+    assert list(result.properties[0]) == ['huge', 'tail']
     assert result.properties[0]['huge'] == huge
     assert result.ids[0] is identifier
+
+
+def test_from_features_rejects_non_json_python_property_values() -> None:
+    with pytest.raises(
+        gm.ParseError,
+        match='unsupported JSON value type object',
+    ) as exc_info:
+        gm.from_features({
+            'type': 'Feature',
+            'geometry': {'type': 'Point', 'coordinates': [1, 2]},
+            'properties': {'marker': object()},
+        })
+    assert exc_info.value.format == 'geojson'
 
 
 def test_from_features_mapping_side_data_is_snapshotted() -> None:
