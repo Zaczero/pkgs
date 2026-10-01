@@ -125,6 +125,24 @@ pub enum GeometryErrorKind {
     ExactCyclicOrder { node: u32 },
     #[error("exact geometry embedding failed: global face changed at node {node}")]
     ExactGlobalFace { node: u32 },
+    #[error(
+        "{operation} cannot be represented in binary64: no assignment of adjacent floating-point \
+         coordinates to the {constructed} constructed vertices in conflict preserves the exact \
+         incidence, cyclic order and faces"
+    )]
+    ExactEmbeddingUnrepresentable {
+        operation: &'static str,
+        constructed: usize,
+    },
+    #[error(
+        "{operation} could not certify a binary64 embedding within its search budget \
+         ({evaluations} predicate evaluations over {constructed} constructed vertices)"
+    )]
+    ExactEmbeddingSearchLimit {
+        operation: &'static str,
+        constructed: usize,
+        evaluations: u64,
+    },
     #[error("Frechet distance requires a LineString or single-line MultiLineString")]
     FrechetLineStringRequired,
     #[error("{0} cannot represent Z/M; remove the unsupported ordinates explicitly first")]

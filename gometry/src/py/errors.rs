@@ -417,7 +417,9 @@ impl From<Error> for PyErr {
                 | G::ExactCyclicOrder { .. }
                 | G::ExactGlobalFace { .. }
                 | G::PicklePayload(_) => GeometryError::new_err(message),
-                G::UnrepresentableOutput { operation } => with_attrs(
+                G::UnrepresentableOutput { operation }
+                | G::ExactEmbeddingUnrepresentable { operation, .. }
+                | G::ExactEmbeddingSearchLimit { operation, .. } => with_attrs(
                     GeometryError::new_err(message),
                     &[("operation", Attr::Str(operation))],
                 ),
@@ -613,8 +615,9 @@ mod tests {
     use pyo3::exceptions::PyOverflowError;
     use pyo3::prelude::*;
 
-    use super::native_overflow_error;
+    use super::{GeometryError, native_overflow_error};
     use crate::error::{Error, ResourceError};
+    use crate::geometry::GeometryErrorKind;
 
     #[test]
     fn contextual_overflow_keeps_its_message() {
@@ -661,6 +664,54 @@ mod tests {
                 "row count overflow"
             );
             drop(error);
+        });
+    }
+
+    #[test]
+    fn embedding_errors_are_geometry_errors_with_operation() {
+        Python::initialize();
+        Python::attach(|py| {
+            let cases = [
+                (
+                    GeometryErrorKind::ExactEmbeddingUnrepresentable {
+                        operation: "intersection",
+                        constructed: 3,
+                    },
+                    "intersection",
+                    "intersection cannot be represented in binary64: no assignment of adjacent floating-point coordinates to the 3 constructed vertices in conflict preserves the exact incidence, cyclic order and faces",
+                ),
+                (
+                    GeometryErrorKind::ExactEmbeddingSearchLimit {
+                        operation: "subdivide",
+                        constructed: 5,
+                        evaluations: 123,
+                    },
+                    "subdivide",
+                    "subdivide could not certify a binary64 embedding within its search budget (123 predicate evaluations over 5 constructed vertices)",
+                ),
+            ];
+            for (kind, operation, message) in cases {
+                let error: PyErr = Error::from(kind).into();
+                assert!(error.is_instance_of::<GeometryError>(py));
+                assert_eq!(
+                    error
+                        .value(py)
+                        .str()
+                        .expect("error string")
+                        .to_str()
+                        .expect("error message"),
+                    message
+                );
+                assert_eq!(
+                    error
+                        .value(py)
+                        .getattr("operation")
+                        .expect("operation attribute")
+                        .extract::<String>()
+                        .expect("operation name"),
+                    operation
+                );
+            }
         });
     }
 }
