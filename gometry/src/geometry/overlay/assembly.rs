@@ -1,6 +1,6 @@
 use crate::geometry::{
-    CoordSeq, CoordSeqBuilder, CoordinateAxes, Coordinates as _, HashMap,
-    LineSeq, Point, PointKey, Polygon, Shape,
+    CoordSeq, CoordSeqBuilder, CoordinateAxes, Coordinates as _, HashMap, LineSeq, Point, PointKey,
+    Polygon, Shape,
 };
 
 fn extend_chain(edge: &CoordSeq, from: PointKey, skip: usize, out: &mut CoordSeqBuilder) {
