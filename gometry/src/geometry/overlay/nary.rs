@@ -14,7 +14,7 @@ use crate::geometry::topology::overlay::exact_geographic_overlay;
 use crate::geometry::{
     Bounds, Contact, CoordSeq, CoordinateAxes, Coordinates as _, Dimension,
     GeographicTopologyRoute, GeometryErrorKind, GeometryKind, HashSet, Loc, Point, PointKey,
-    Segment, SegmentParameter, Shape, SharedShapeOwners, TopologyDomain, XY,
+    PreparedPlan, Segment, SegmentParameter, Shape, SharedShapeOwners, TopologyDomain, XY,
     carry_overlay_ordinates, cartesian_point_location, clip_segment_parameter,
     exact_crossing_parameter, for_each_candidate_pair, point_on_segment, segment_contact_exact,
     undirected_segment_edge_key, unique_xy_points,
@@ -485,34 +485,15 @@ fn puntal_points(shape: &Shape) -> Option<Vec<Point>> {
     collect(shape, &mut points, &mut owners).then_some(points)
 }
 
-const fn line_segment_midpoint(segment: Segment) -> XY {
-    XY::new(
+fn line_segment_midpoint(segment: Segment) -> Option<XY> {
+    let midpoint = XY::new(
         f64::midpoint(segment.start.x, segment.end.x),
         f64::midpoint(segment.start.y, segment.end.y),
-    )
-}
-
-#[derive(Clone, Copy)]
-enum PolygonSide {
-    Interior,
-    Exterior,
-}
-
-impl PolygonSide {
-    const fn from_location(location: Loc) -> Option<Self> {
-        match location {
-            Loc::Interior => Some(Self::Interior),
-            Loc::Exterior => Some(Self::Exterior),
-            Loc::Boundary => None,
-        }
-    }
-
-    const fn location(self) -> Loc {
-        match self {
-            Self::Interior => Loc::Interior,
-            Self::Exterior => Loc::Exterior,
-        }
-    }
+    );
+    (!crate::geometry::same_point(midpoint, segment.start)
+        && !crate::geometry::same_point(midpoint, segment.end)
+        && point_on_segment(midpoint.point(), segment.start, segment.end))
+    .then_some(midpoint)
 }
 
 /// Lineal results can be clipped by exact pair-sweep contacts and indexed point
@@ -584,7 +565,6 @@ fn exact_cartesian_line_polygon_overlay(
     };
     let LineContactEvents {
         mut cut_events,
-        mut overlap_events,
         deduplicate_line_edges,
         atomicize_line_edges,
     } = line_polygon_contact_events(
@@ -594,27 +574,23 @@ fn exact_cartesian_line_polygon_overlay(
         strictly_monotone,
     )?;
     cut_events.sort_unstable_by_key(|event| event.source_segment);
-    overlap_events.sort_unstable_by_key(|span| span.source_segment);
-
     let polygon_bounds = polygon_shape.bounds();
+    let polygon_plan = PreparedPlan::transient(polygon_shape);
     let intersection = operation == OverlayOp::Intersection;
 
     let mut lines = Vec::new();
+    let mut polygon_contact_points =
+        HashSet::with_hasher(crate::collections::collection_hash_state()?.clone());
     let mut boundary_contacts =
         HashSet::with_hasher(crate::collections::collection_hash_state()?.clone());
     let parameter_zero = ExactDyadic::from_f64(0.0);
     let parameter_one = ExactDyadic::from_f64(1.0);
     let mut cuts = Vec::new();
     let mut unique_cuts = Vec::new();
-    let mut overlaps = Vec::new();
     let mut cut_events = cut_events.into_iter().peekable();
-    let mut overlap_cursor = 0_usize;
     let mut source_segment_index = 0_usize;
     for source_line in &line_sequences {
         let mut current = Vec::new();
-        // Polygon membership is constant across adjacent source pieces until
-        // the sweep finds a polygon-boundary contact.
-        let mut current_side = None;
         for [start, end] in source_line.segment_pairs() {
             let segment = Segment {
                 start: start.xy(),
@@ -623,7 +599,7 @@ fn exact_cartesian_line_polygon_overlay(
             let index = source_segment_index;
             source_segment_index = source_segment_index.wrapping_add(1);
             if crate::geometry::same_point(segment.start, segment.end) {
-                discard_line_events(index, &mut cut_events, &overlap_events, &mut overlap_cursor);
+                discard_line_events(index, &mut cut_events);
                 continue;
             }
             let segment_bounds = Bounds::new_raw(
@@ -639,8 +615,7 @@ fn exact_cartesian_line_polygon_overlay(
                 .is_some_and(|event| event.source_segment == index);
             if outside_polygon_bounds && intersection {
                 finish_line_piece(&mut current, &mut lines)?;
-                discard_line_events(index, &mut cut_events, &overlap_events, &mut overlap_cursor);
-                current_side = Some(PolygonSide::Exterior);
+                discard_line_events(index, &mut cut_events);
                 continue;
             }
             if outside_polygon_bounds && !has_events {
@@ -651,27 +626,17 @@ fn exact_cartesian_line_polygon_overlay(
                     segment.end,
                     atomicize_line_edges,
                 )?;
-                current_side = Some(PolygonSide::Exterior);
                 continue;
             }
             if !outside_polygon_bounds && !has_events {
-                let side = if let Some(side) = current_side {
-                    side
-                } else {
-                    let location = cartesian_point_location(
-                        polygon_shape,
-                        line_segment_midpoint(segment).point(),
-                    );
-                    let Some(side) = PolygonSide::from_location(location) else {
-                        return Ok(None);
-                    };
-                    side
+                let Some(midpoint) = line_segment_midpoint(segment) else {
+                    return Ok(None);
                 };
-                current_side = Some(side);
+                let location = polygon_plan.cartesian_point_location(midpoint.point())?;
                 let keep = if intersection {
-                    matches!(side, PolygonSide::Interior)
+                    location != Loc::Exterior
                 } else {
-                    matches!(side, PolygonSide::Exterior)
+                    location == Loc::Exterior
                 };
                 if keep {
                     emit_line_piece(
@@ -690,19 +655,18 @@ fn exact_cartesian_line_polygon_overlay(
                 index,
                 segment,
                 &mut cut_events,
-                &overlap_events,
-                &mut overlap_cursor,
                 &mut cuts,
                 &mut unique_cuts,
-                &mut overlaps,
                 &parameter_zero,
                 &parameter_one,
             )?;
-            boundary_contacts.extend(
-                cuts.iter()
-                    .filter(|cut| cut.on_boundary)
-                    .map(|cut| PointKey::new(cut.point.point())),
-            );
+            for cut in cuts.iter().filter(|cut| cut.on_polygon_segment) {
+                let point = cut.point.point();
+                polygon_contact_points.insert(PointKey::new(point));
+                if polygon_plan.cartesian_point_location(point)? == Loc::Boundary {
+                    boundary_contacts.insert(PointKey::new(point));
+                }
+            }
             if outside_polygon_bounds {
                 for [start, end] in cuts.array_windows::<2>() {
                     if crate::geometry::same_point(start.point, end.point) {
@@ -716,49 +680,19 @@ fn exact_cartesian_line_polygon_overlay(
                         atomicize_line_edges,
                     )?;
                 }
-                current_side = Some(PolygonSide::Exterior);
                 continue;
             }
             for [start, end] in cuts.array_windows::<2>() {
                 if crate::geometry::same_point(start.point, end.point) {
                     return Ok(None);
                 }
-                let on_boundary = line_interval_is_boundary(
-                    start,
-                    end,
-                    &overlaps,
-                    &parameter_zero,
-                    &parameter_one,
-                )?;
-                let side = if on_boundary {
-                    None
-                } else if start.on_boundary || end.on_boundary {
-                    let midpoint = line_segment_midpoint(Segment {
-                        start: start.point,
-                        end: end.point,
-                    });
-                    PolygonSide::from_location(cartesian_point_location(
-                        polygon_shape,
-                        midpoint.point(),
-                    ))
-                } else {
-                    current_side.or_else(|| {
-                        let midpoint = line_segment_midpoint(Segment {
-                            start: start.point,
-                            end: end.point,
-                        });
-                        PolygonSide::from_location(cartesian_point_location(
-                            polygon_shape,
-                            midpoint.point(),
-                        ))
-                    })
+                let Some(midpoint) = line_segment_midpoint(Segment {
+                    start: start.point,
+                    end: end.point,
+                }) else {
+                    return Ok(None);
                 };
-                let location = match (on_boundary, side) {
-                    (true, _) => Loc::Boundary,
-                    (false, Some(side)) => side.location(),
-                    (false, None) => return Ok(None),
-                };
-                current_side = side;
+                let location = polygon_plan.cartesian_point_location(midpoint.point())?;
                 let keep = if intersection {
                     location != Loc::Exterior
                 } else {
@@ -803,7 +737,7 @@ fn exact_cartesian_line_polygon_overlay(
     }
     let mut lines = merge_chains(&lines)?;
     for line in &mut lines {
-        *line = dissolve_boundary_line_vertices(line, &boundary_contacts)?;
+        *line = dissolve_boundary_line_vertices(line, &polygon_contact_points)?;
     }
     let shape = build_certified_overlay_shape(Vec::new(), lines, Vec::new())?;
     let shape = carry_overlay_ordinates(shape, inputs, operation, strictness.is_strict())?;
@@ -945,7 +879,7 @@ fn polygon_boundaries(shape: &Shape, first_chain: u32) -> Result<Option<PolygonB
 struct LineCut {
     parameter: SegmentParameter,
     point: XY,
-    on_boundary: bool,
+    on_polygon_segment: bool,
 }
 
 struct LineCutEvent {
@@ -953,20 +887,8 @@ struct LineCutEvent {
     cut: LineCut,
 }
 
-#[derive(Clone)]
-struct LineBoundarySpan {
-    start: SegmentParameter,
-    end: SegmentParameter,
-}
-
-struct LineOverlapEvent {
-    source_segment: usize,
-    span: LineBoundarySpan,
-}
-
 struct LineContactEvents {
     cut_events: Vec<LineCutEvent>,
-    overlap_events: Vec<LineOverlapEvent>,
     deduplicate_line_edges: bool,
     atomicize_line_edges: bool,
 }
@@ -978,7 +900,6 @@ fn line_polygon_contact_events(
     line_is_monotone: bool,
 ) -> Result<LineContactEvents> {
     let mut cut_events = Vec::new();
-    let mut overlap_events = Vec::new();
     let mut deduplicate_line_edges = false;
     let candidate_flow: ControlFlow<crate::error::Error> = for_each_candidate_pair(
         candidates,
@@ -1035,7 +956,6 @@ fn line_polygon_contact_events(
                         boundary,
                         contact,
                         &mut cut_events,
-                        &mut overlap_events,
                     ) {
                         Ok(()) => ControlFlow::Continue(()),
                         Err(error) => ControlFlow::Break(error),
@@ -1049,7 +969,6 @@ fn line_polygon_contact_events(
     }
     Ok(LineContactEvents {
         cut_events,
-        overlap_events,
         deduplicate_line_edges,
         atomicize_line_edges: !line_is_monotone,
     })
@@ -1061,7 +980,6 @@ fn push_line_polygon_contact(
     boundary: Segment,
     contact: Contact,
     cuts: &mut Vec<LineCutEvent>,
-    overlaps: &mut Vec<LineOverlapEvent>,
 ) -> Result<()> {
     match contact {
         Contact::Disjoint => {},
@@ -1085,16 +1003,20 @@ fn push_line_polygon_contact(
             );
         },
         Contact::Collinear { span } => {
-            let start = clip_segment_parameter(line, span.start)?;
-            let end = clip_segment_parameter(line, span.end)?;
-            push_line_cut(cuts, source_segment, start.clone(), span.start, true);
-            push_line_cut(cuts, source_segment, end.clone(), span.end, true);
-            if !crate::geometry::same_point(span.start, span.end) {
-                overlaps.push(LineOverlapEvent {
-                    source_segment,
-                    span: LineBoundarySpan { start, end },
-                });
-            }
+            push_line_cut(
+                cuts,
+                source_segment,
+                clip_segment_parameter(line, span.start)?,
+                span.start,
+                true,
+            );
+            push_line_cut(
+                cuts,
+                source_segment,
+                clip_segment_parameter(line, span.end)?,
+                span.end,
+                true,
+            );
         },
     }
     Ok(())
@@ -1182,14 +1104,14 @@ fn push_line_cut(
     source_segment: usize,
     parameter: SegmentParameter,
     point: XY,
-    on_boundary: bool,
+    on_polygon_segment: bool,
 ) {
     events.push(LineCutEvent {
         source_segment,
         cut: LineCut {
             parameter,
             point,
-            on_boundary,
+            on_polygon_segment,
         },
     });
 }
@@ -1197,8 +1119,6 @@ fn push_line_cut(
 fn discard_line_events(
     source_segment: usize,
     cuts: &mut std::iter::Peekable<std::vec::IntoIter<LineCutEvent>>,
-    overlaps: &[LineOverlapEvent],
-    overlap_cursor: &mut usize,
 ) {
     while cuts
         .peek()
@@ -1206,39 +1126,29 @@ fn discard_line_events(
     {
         cuts.next();
     }
-    while overlaps
-        .get(*overlap_cursor)
-        .is_some_and(|span| span.source_segment == source_segment)
-    {
-        *overlap_cursor = overlap_cursor.wrapping_add(1);
-    }
 }
 
 fn gather_line_cuts(
     source_segment: usize,
     segment: Segment,
     cut_events: &mut std::iter::Peekable<std::vec::IntoIter<LineCutEvent>>,
-    overlap_events: &[LineOverlapEvent],
-    overlap_cursor: &mut usize,
     cuts: &mut Vec<LineCut>,
     unique_cuts: &mut Vec<LineCut>,
-    overlaps: &mut Vec<LineBoundarySpan>,
     zero: &ExactDyadic,
     one: &ExactDyadic,
 ) -> Result<()> {
     cuts.clear();
     unique_cuts.clear();
-    overlaps.clear();
     cuts.extend([
         LineCut {
             parameter: SegmentParameter::Start,
             point: segment.start,
-            on_boundary: false,
+            on_polygon_segment: false,
         },
         LineCut {
             parameter: SegmentParameter::End,
             point: segment.end,
-            on_boundary: false,
+            on_polygon_segment: false,
         },
     ]);
     while cut_events
@@ -1246,22 +1156,6 @@ fn gather_line_cuts(
         .is_some_and(|event| event.source_segment == source_segment)
     {
         cuts.push(cut_events.next().expect("peeked line cut event exists").cut);
-    }
-    let overlap_start = *overlap_cursor;
-    while overlap_events
-        .get(*overlap_cursor)
-        .is_some_and(|span| span.source_segment == source_segment)
-    {
-        *overlap_cursor = overlap_cursor.wrapping_add(1);
-    }
-    let overlap_end = *overlap_cursor;
-    for span in overlap_events
-        .get(overlap_start..overlap_end)
-        .ok_or_else(|| {
-            GeometryErrorKind::Invalid("line overlay overlap range escaped its event array".into())
-        })?
-    {
-        overlaps.push(span.span.clone());
     }
     sort_line_cuts(cuts, unique_cuts, zero, one)
 }
@@ -1279,8 +1173,8 @@ fn sort_line_cuts(
         }
         match left.parameter.cmp(&right.parameter, zero, one) {
             Ok(std::cmp::Ordering::Equal) => left
-                .on_boundary
-                .cmp(&right.on_boundary)
+                .on_polygon_segment
+                .cmp(&right.on_polygon_segment)
                 .then_with(|| left.point.x.total_cmp(&right.point.x))
                 .then_with(|| left.point.y.total_cmp(&right.point.y)),
             Ok(ordering) => ordering,
@@ -1299,7 +1193,7 @@ fn sort_line_cuts(
         if let Some(previous) = unique.last_mut()
             && previous.parameter.cmp(&cut.parameter, zero, one)?.is_eq()
         {
-            previous.on_boundary |= cut.on_boundary;
+            previous.on_polygon_segment |= cut.on_polygon_segment;
         } else {
             unique.push(cut);
         }
@@ -1307,29 +1201,6 @@ fn sort_line_cuts(
     std::mem::swap(cuts, unique);
     unique.clear();
     Ok(())
-}
-
-fn line_interval_is_boundary(
-    start: &LineCut,
-    end: &LineCut,
-    overlaps: &[LineBoundarySpan],
-    zero: &ExactDyadic,
-    one: &ExactDyadic,
-) -> Result<bool> {
-    for overlap in overlaps {
-        let orientation = overlap.start.cmp(&overlap.end, zero, one)?;
-        let (overlap_start, overlap_end) = if orientation.is_le() {
-            (&overlap.start, &overlap.end)
-        } else {
-            (&overlap.end, &overlap.start)
-        };
-        if start.parameter.cmp(overlap_start, zero, one)?.is_ge()
-            && end.parameter.cmp(overlap_end, zero, one)?.is_le()
-        {
-            return Ok(true);
-        }
-    }
-    Ok(false)
 }
 
 fn append_line_piece(
@@ -1403,8 +1274,8 @@ fn unique_line_edges(lines: &[CoordSeq]) -> Result<Vec<CoordSeq>> {
     Ok(edges)
 }
 
-/// The exact emitter dissolves a collinear line node when a polygon ring also
-/// passes through it; off-ring line vertices remain protected.
+/// Contact-generated line nodes are dissolved when they are collinear; source
+/// vertices away from polygon contacts retain their stored presentation.
 fn dissolve_boundary_line_vertices(
     line: &CoordSeq,
     boundary_points: &HashSet<PointKey>,

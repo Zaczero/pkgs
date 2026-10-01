@@ -147,6 +147,84 @@ fn assert_overlay_matches_full_partition(
     }
 }
 
+fn assert_point_lane_matches_full_partition(
+    name: &str,
+    left: &Shape,
+    right: &Shape,
+    operation: OverlayOp,
+    strictness: Strictness,
+) {
+    let actual = overlay_all(
+        &[left, right],
+        TopologyDomain::Cartesian,
+        operation,
+        strictness,
+    );
+    let expected =
+        super::nary::full_partition_cartesian_overlay(&[left, right], operation, strictness);
+    let (actual, expected) = match (actual, expected) {
+        (Ok(actual), Ok(expected)) => (actual, expected),
+        (Err(actual), Err(expected)) => {
+            assert_eq!(actual.to_string(), expected.to_string(), "{name}");
+            return;
+        },
+        (actual, expected) => {
+            panic!("{name}: actual={actual:?}, full partition={expected:?}");
+        },
+    };
+
+    if operation == OverlayOp::Intersection
+        || operation == OverlayOp::Difference && is_puntal_test_shape(left)
+    {
+        assert_eq!(
+            shape_wkb(&actual),
+            shape_wkb(&expected),
+            "{name}: point-set output differs from full partition"
+        );
+        return;
+    }
+
+    assert!(
+        actual.equals(&expected).unwrap(),
+        "{name}: point-set result {actual:?} != {expected:?}"
+    );
+
+    let retained = match operation {
+        OverlayOp::Difference if is_higher_dimensional_test_shape(left) => Some(left),
+        OverlayOp::Union | OverlayOp::SymmetricDifference => {
+            if is_higher_dimensional_test_shape(left) {
+                Some(left)
+            } else if is_higher_dimensional_test_shape(right) {
+                Some(right)
+            } else {
+                None
+            }
+        },
+        OverlayOp::Intersection | OverlayOp::Difference => None,
+    };
+    if let Some(retained) = retained.filter(|shape| !shape.is_empty()) {
+        assert!(
+            contains_verbatim_test_member(&actual, retained),
+            "{name}: retained higher-dimensional operand was not passed through verbatim: {actual:?}"
+        );
+    }
+}
+
+fn is_puntal_test_shape(shape: &Shape) -> bool {
+    shape.topological_dimension() == Dimension::Point
+}
+
+fn is_higher_dimensional_test_shape(shape: &Shape) -> bool {
+    shape.topological_dimension() > Dimension::Point
+}
+
+fn contains_verbatim_test_member(shape: &Shape, retained: &Shape) -> bool {
+    if shape_wkb(shape) == shape_wkb(retained) {
+        return true;
+    }
+    matches!(shape, Shape::GeometryCollection(parts) if parts.iter().any(|part| contains_verbatim_test_member(part, retained)))
+}
+
 fn subdivision_wkb(shape: &Shape) -> Vec<Vec<u8>> {
     shape
         .subdivide(8, false)
@@ -613,6 +691,119 @@ fn line_polygon_overlays_match_full_partition_wkb() {
             OverlayOp::Difference,
             strictness,
         );
+    }
+}
+
+#[test]
+fn degenerate_polygon_line_and_point_overlays_match_full_partition_wkb() {
+    let polygons = [
+        ("spike", "POLYGON((0 0,4 0,4 4,2 4,2 7,2 4,0 4,0 0))"),
+        ("collapsed", "POLYGON((0 0,2 2,4 4,0 0))"),
+        (
+            "shell equals hole",
+            "POLYGON((0 0,4 0,4 4,0 4,0 0),(0 0,4 0,4 4,0 4,0 0))",
+        ),
+        ("bow-tie", "POLYGON((0 0,4 4,4 0,0 4,0 0))"),
+        (
+            "twice-wound square",
+            "POLYGON((0 0,4 0,4 4,0 4,0 0,4 0,4 4,0 4,0 0))",
+        ),
+        (
+            "hole touching shell",
+            "POLYGON((0 0,6 0,6 6,0 6,0 0),(0 0,3 2,3 4,0 0))",
+        ),
+        (
+            "external hole",
+            "POLYGON((0 0,4 0,4 4,0 4,0 0),(10 10,11 10,11 11,10 10))",
+        ),
+        ("empty", "POLYGON EMPTY"),
+        (
+            "multipolygon with collapsed member",
+            "MULTIPOLYGON(((0 0,2 2,4 4,0 0)),((5 5,7 5,7 7,5 7,5 5)))",
+        ),
+    ];
+    let lines = [
+        ("through", "LINESTRING(-1 2,5 2)"),
+        ("along diagonal", "LINESTRING(-1 -1,5 5)"),
+        ("along cancelled spur", "LINESTRING(2 3,2 8)"),
+        ("along shell edge", "LINESTRING(-1 0,5 0)"),
+    ];
+    let points = [
+        ("on cancelled spur", "POINT(2 5)"),
+        ("on diagonal", "POINT(2 2)"),
+        ("on touching endpoint", "POINT(0 0)"),
+        ("in shell", "POINT(1 1)"),
+        ("outside", "POINT(9 9)"),
+        (
+            "multipoint across support classes",
+            "MULTIPOINT((2 5),(2 2),(9 9))",
+        ),
+    ];
+
+    for (polygon_name, polygon_wkt) in polygons {
+        let polygon = crate::io::parse_wkt(polygon_wkt)
+            .unwrap_or_else(|error| panic!("{polygon_name}: {error}"));
+        for (line_name, line_wkt) in lines {
+            let line = crate::io::parse_wkt(line_wkt)
+                .unwrap_or_else(|error| panic!("{line_name}: {error}"));
+            let name = format!("{polygon_name}, line {line_name}");
+            for (left, right) in [(&line, &polygon), (&polygon, &line)] {
+                assert_overlay_matches_full_partition(
+                    &name,
+                    left,
+                    right,
+                    OverlayOp::Intersection,
+                    Strictness::Lenient,
+                );
+            }
+            assert_overlay_matches_full_partition(
+                &name,
+                &line,
+                &polygon,
+                OverlayOp::Difference,
+                Strictness::Lenient,
+            );
+        }
+
+        for (point_name, point_wkt) in points {
+            let point = crate::io::parse_wkt(point_wkt)
+                .unwrap_or_else(|error| panic!("{point_name}: {error}"));
+            let name = format!("{polygon_name}, point {point_name}");
+            for (left, right) in [(&point, &polygon), (&polygon, &point)] {
+                assert_point_lane_matches_full_partition(
+                    &name,
+                    left,
+                    right,
+                    OverlayOp::Intersection,
+                    Strictness::Lenient,
+                );
+            }
+            assert_point_lane_matches_full_partition(
+                &name,
+                &point,
+                &polygon,
+                OverlayOp::Difference,
+                Strictness::Lenient,
+            );
+            for operation in [OverlayOp::Union, OverlayOp::SymmetricDifference] {
+                for (left, right) in [(&point, &polygon), (&polygon, &point)] {
+                    assert_point_lane_matches_full_partition(
+                        &name,
+                        left,
+                        right,
+                        operation,
+                        Strictness::Lenient,
+                    );
+                }
+            }
+            assert_point_lane_matches_full_partition(
+                &name,
+                &polygon,
+                &point,
+                OverlayOp::Difference,
+                Strictness::Lenient,
+            );
+        }
     }
 }
 
