@@ -107,21 +107,27 @@ pub(crate) fn clip_multipoint_columns(
     let (minx, miny, maxx, maxy) = (rect.minx(), rect.miny(), rect.maxx(), rect.maxy());
     let (x_chunks, _) = xs.as_chunks::<REDUCE_LANES>();
     let (y_chunks, _) = ys.as_chunks::<REDUCE_LANES>();
-    let kept = simd_select_indices(
-        len,
-        |index| {
-            let (x, y) = (xs[index], ys[index]);
-            x >= minx && x <= maxx && y >= miny && y <= maxy
-        },
-        |start| {
-            let chunk = start / REDUCE_LANES;
-            let x_chunk = ReduceSimd::from_array(x_chunks[chunk]);
-            let y_chunk = ReduceSimd::from_array(y_chunks[chunk]);
-            x_chunk.simd_ge(ReduceSimd::splat(minx))
-                & x_chunk.simd_le(ReduceSimd::splat(maxx))
-                & y_chunk.simd_ge(ReduceSimd::splat(miny))
-                & y_chunk.simd_le(ReduceSimd::splat(maxy))
-        },
-    );
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "simd_select_indices calls the scalar predicate only with indices below len"
+    )]
+    let scalar = |index| {
+        let (x, y) = (xs[index], ys[index]);
+        x >= minx && x <= maxx && y >= miny && y <= maxy
+    };
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "simd_select_indices calls the vector predicate only at complete lane-chunk starts"
+    )]
+    let vector = |start| {
+        let chunk = start / REDUCE_LANES;
+        let x_chunk = ReduceSimd::from_array(x_chunks[chunk]);
+        let y_chunk = ReduceSimd::from_array(y_chunks[chunk]);
+        x_chunk.simd_ge(ReduceSimd::splat(minx))
+            & x_chunk.simd_le(ReduceSimd::splat(maxx))
+            & y_chunk.simd_ge(ReduceSimd::splat(miny))
+            & y_chunk.simd_le(ReduceSimd::splat(maxy))
+    };
+    let kept = simd_select_indices(len, scalar, vector);
     points.select(kept.into_iter())
 }

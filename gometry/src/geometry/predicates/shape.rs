@@ -153,7 +153,11 @@ impl Shape {
                         .iter()
                         .any(|geometry| geometry.has_area_parts_with_owners(owners))
             },
-            _ => false,
+            Self::Point(_)
+            | Self::MultiPoint(_)
+            | Self::LineString(_)
+            | Self::MultiLineString(_)
+            | Self::Empty(..) => false,
         }
     }
 
@@ -226,6 +230,10 @@ impl Shape {
         })
     }
 
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "MultiMember::Value indices are validated by their owning multipart geometry; preserve O(1) member access"
+    )]
     pub(crate) fn equals_exact_impl<const Z: bool, const M: bool>(
         &self,
         other: &Self,

@@ -197,7 +197,12 @@ impl Shape {
             let kind = match self {
                 Self::MultiLineString(_) => GeometryKind::MultiLineString,
                 Self::Empty(kind, _) => *kind,
-                _ => GeometryKind::LineString,
+                Self::Point(_) => GeometryKind::Point,
+                Self::MultiPoint(_) => GeometryKind::MultiPoint,
+                Self::LineString(_) => GeometryKind::LineString,
+                Self::Polygon(_) => GeometryKind::Polygon,
+                Self::MultiPolygon(_) => GeometryKind::MultiPolygon,
+                Self::GeometryCollection(_) => GeometryKind::GeometryCollection,
             };
             return Ok(Self::Empty(kind, self.axes().union(CoordinateAxes::XYM)));
         }
@@ -225,6 +230,11 @@ impl Shape {
         let mut traveled = 0.0;
         let mut measured = Vec::with_capacity(parts.len());
         let mut seg_cursor = 0_usize;
+        #[expect(
+            clippy::indexing_slicing,
+            clippy::arithmetic_side_effects,
+            reason = "part ends and segment lengths are emitted alongside each part, so the part and segment cursors stay within synchronized columns"
+        )]
         for (part_index, part) in parts.iter().enumerate() {
             let part_end = part_seg_ends[part_index];
             let mut measures = Vec::with_capacity(part.len());
@@ -287,7 +297,12 @@ impl Shape {
                 }
                 Self::MultiLineString(MultiLineString::try_new(output_axes, members)?)
             },
-            _ => unreachable!("linework returns only line strings"),
+            Self::Point(_)
+            | Self::MultiPoint(_)
+            | Self::Polygon(_)
+            | Self::MultiPolygon(_)
+            | Self::GeometryCollection(_)
+            | Self::Empty(..) => unreachable!("linework returns only line strings"),
         })
     }
 
@@ -414,7 +429,12 @@ impl MeasuredLineIndex {
             Shape::Empty(GeometryKind::LineString | GeometryKind::MultiLineString, _) => {
                 return Err(MeasuredLineAdmission::Empty.into());
             },
-            _ => return Err(MeasuredLineAdmission::NotLineal.into()),
+            Shape::Point(_)
+            | Shape::MultiPoint(_)
+            | Shape::Polygon(_)
+            | Shape::MultiPolygon(_)
+            | Shape::GeometryCollection(_)
+            | Shape::Empty(..) => return Err(MeasuredLineAdmission::NotLineal.into()),
         };
         let mut owned = Vec::with_capacity(parts.len());
         owned.extend(parts.iter().map(|line| line.as_coords().clone()));
@@ -577,9 +597,9 @@ impl MeasuredLineIndex {
             push_distinct_active_position(&mut result, at(end.min(end_m))?);
             Ok(true)
         })?;
-        Ok(match result.len() {
-            0 => Shape::Point(self.interpolate_finite(start, metric)?),
-            1 => Shape::Point(result[0]),
+        Ok(match result.as_slice() {
+            [] => Shape::Point(self.interpolate_finite(start, metric)?),
+            [point] => Shape::Point(*point),
             _ => Shape::LineString(LineSeq::from_proven(CoordSeq::try_from_points(&result)?)),
         })
     }
@@ -610,7 +630,11 @@ impl MeasuredLineIndexSlot {
                 ErrorKind::Geometry(GeometryErrorKind::NonMonotonicMeasure) => {
                     Ok(Self::Rejected(MeasuredLineAdmission::NonMonotonic))
                 },
-                _ => Err(error),
+                ErrorKind::Geometry(_)
+                | ErrorKind::Crs(_)
+                | ErrorKind::Io(_)
+                | ErrorKind::Frame(_)
+                | ErrorKind::Resource(_) => Err(error),
             },
         }
     }
@@ -660,9 +684,9 @@ pub(super) fn split_line_by_points<C: Coordinates + ?Sized>(
     tolerance: f64,
 ) -> crate::error::Result<Vec<Vec<Point>>> {
     let coords: Vec<Point> = line.iter_coords().collect();
-    if coords.len() < 2 {
+    let [first, .., _] = coords.as_slice() else {
         return Ok(vec![coords]);
-    }
+    };
     let Some(first_live) = coords
         .array_windows::<2>()
         .position(|pair| point_distance(pair[0], pair[1]) > 0.0)
@@ -694,8 +718,11 @@ pub(super) fn split_line_by_points<C: Coordinates + ?Sized>(
                 continue;
             }
             if tolerance != 0.0 {
-                let start = coords[cut.0];
-                let end = coords[cut.0 + 1];
+                #[expect(
+                    clippy::indexing_slicing,
+                    reason = "line_point_offset returns the ordinal of an existing coordinate pair"
+                )]
+                let (start, end) = (coords[cut.0], coords[cut.0.wrapping_add(1)]);
                 if point_distance(
                     previous.1.interpolate_point(start, end)?,
                     cut.1.interpolate_point(start, end)?,
@@ -713,8 +740,8 @@ pub(super) fn split_line_by_points<C: Coordinates + ?Sized>(
         return Ok(vec![coords]);
     }
 
-    let mut pieces = Vec::with_capacity(cuts.len() + 1);
-    let mut piece = vec![coords[0]];
+    let mut pieces = Vec::with_capacity(cuts.len().wrapping_add(1));
+    let mut piece = vec![*first];
     let mut cuts = cuts.into_iter().peekable();
     for (segment_index, pair) in coords.array_windows::<2>().enumerate() {
         while cuts

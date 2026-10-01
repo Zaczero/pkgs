@@ -285,7 +285,12 @@ impl Shape {
                 }
                 axes
             },
-            _ => None,
+            Self::Point(_)
+            | Self::MultiPoint(_)
+            | Self::LineString(_)
+            | Self::MultiLineString(_)
+            | Self::GeometryCollection(_)
+            | Self::Empty(..) => None,
         }
     }
 
@@ -591,9 +596,11 @@ impl Shape {
     pub fn build_area(&self, strict: bool) -> Result<Self> {
         let polygons: Vec<Polygon> = Self::build_area_all(&[self], strict)?
             .into_iter()
-            .map(|shape| match shape {
-                Self::Polygon(polygon) => polygon,
-                _ => unreachable!("build_area_all yields only polygons"),
+            .map(|shape| {
+                let Self::Polygon(polygon) = shape else {
+                    unreachable!("build_area_all yields only polygons")
+                };
+                polygon
             })
             .collect();
         match polygons.len() {
@@ -602,6 +609,10 @@ impl Shape {
                 polygons.into_iter().next().expect("one polygon"),
             )),
             _ => {
+                #[expect(
+                    clippy::indexing_slicing,
+                    reason = "this arm handles at least two polygons"
+                )]
                 let axes = polygons[0].axes();
                 if polygons.iter().all(|polygon| polygon.axes() == axes) {
                     let members = polygons
@@ -631,10 +642,11 @@ impl Shape {
         let mut full = inventory.polygonize_diagnostics(&partition)?;
         full.polygons = exact_polygons.into_iter().map(Shape::Polygon).collect();
         let carry_diagnostic_rows = |rows: Vec<Vec<Self>>| {
+            debug_assert_eq!(rows.len(), shapes.len());
             rows.into_iter()
-                .enumerate()
-                .map(|(row, outputs)| {
-                    let source = <S as Borrow<Self>>::borrow(&shapes[row]);
+                .zip(shapes)
+                .map(|(outputs, shape)| {
+                    let source = <S as Borrow<Self>>::borrow(shape);
                     carry_each(outputs, &[source], "polygonize_full", strict)
                 })
                 .collect::<Result<Vec<_>>>()

@@ -56,10 +56,10 @@ impl LineworkChains {
         };
         let (xs, ys) = (points.xs(), points.ys());
         let closed = count >= 1
-            && same_point(
-                Point::new_raw_xy(xs[0], ys[0]),
-                Point::new_raw_xy(xs[count], ys[count]),
-            );
+            && points
+                .first()
+                .zip(points.last())
+                .is_some_and(|(first, last)| same_point(first, last));
         let line = u32::try_from(self.spans.len())
             .map_err(|_| crate::error::ResourceError::SizeOverflow)?;
         let first = u32::try_from(self.segments.len())
@@ -92,8 +92,9 @@ impl LineworkChains {
         // the closed-ring wrap read the STAGED ordinal/count below, so the real
         // segments flanking a duplicate become correctly adjacent.
         let mut staged = 0_u32;
-        for (source_edge, index) in (0..count_u32).zip(0..count) {
-            let (x0, y0, x1, y1) = (xs[index], ys[index], xs[index + 1], ys[index + 1]);
+        for (source_edge, (&[x0, x1], &[y0, y1])) in
+            (0..count_u32).zip(xs.array_windows::<2>().zip(ys.array_windows::<2>()))
+        {
             let (sx, sy) = (sign_of(x1 - x0), sign_of(y1 - y0));
             if sx == 0 && sy == 0 {
                 continue; // zero-length: removable stutter, never staged
@@ -184,13 +185,17 @@ impl LineworkChains {
     }
 
     /// The semantic per-segment view, composed on demand.
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "candidate ordinals address the aligned staged columns and need O(1) semantic reconstruction"
+    )]
     pub(crate) fn at(&self, ordinal: usize) -> IndexedSegment {
         let line = self.line_of[ordinal] as usize;
         let span = &self.spans[line];
         IndexedSegment {
             segment: self.segments[ordinal],
             line,
-            index: ordinal - span.first as usize,
+            index: ordinal.wrapping_sub(span.first as usize),
             count: span.count as usize,
             closed: span.closed,
         }

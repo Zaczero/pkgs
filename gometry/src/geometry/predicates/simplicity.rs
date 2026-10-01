@@ -68,24 +68,23 @@ pub(in crate::geometry) fn simplified_polygon_delta_is_simple(
         // that skips original vertices is a NEW chord.
         let (bx, by) = (before.xs(), before.ys());
         let (ax, ay) = (after.xs(), after.ys());
-        let mut source = 0_usize;
-        for edge in 0..after.coord_count() - 1 {
-            let (tx, ty) = (ax[edge + 1], ay[edge + 1]);
-            let mut steps = 0_usize;
+        let mut source = bx.iter().copied().zip(by.iter().copied());
+        let _ = source.next();
+        for (edge, (tx, ty)) in ax.iter().skip(1).zip(ay.iter().skip(1)).enumerate() {
+            let mut skipped = false;
             loop {
-                source += 1;
-                steps += 1;
-                if source >= bx.len() {
+                let Some((x, y)) = source.next() else {
                     return Ok(false); // not a subset — re-check everything
-                }
+                };
                 // Bit equality is the intent: output vertices ARE input
                 // vertices (the keep-mask contract).
-                if bx[source].to_bits() == tx.to_bits() && by[source].to_bits() == ty.to_bits() {
+                if x.to_bits() == tx.to_bits() && y.to_bits() == ty.to_bits() {
                     break;
                 }
+                skipped = true;
             }
-            if steps > 1 {
-                chords.push(ordinal_base + edge);
+            if skipped {
+                chords.push(ordinal_base.wrapping_add(edge));
             }
         }
     }
@@ -161,7 +160,7 @@ pub(crate) fn segments_are_adjacent(left: IndexedSegment, right: IndexedSegment)
             || (left.closed
                 && left.count > 1
                 && left.index.min(right.index) == 0
-                && left.index.max(right.index) == left.count - 1))
+                && left.index.max(right.index) == left.count.wrapping_sub(1)))
 }
 
 /// OGC simplicity for intersecting segments of DIFFERENT lines: the
@@ -187,7 +186,8 @@ pub(crate) fn cross_line_touch_is_simple(left: IndexedSegment, right: IndexedSeg
 pub(crate) fn is_line_boundary(segment: IndexedSegment, point: XY) -> bool {
     !segment.closed
         && ((segment.index == 0 && same_point(point, segment.segment.start))
-            || (segment.index == segment.count - 1 && same_point(point, segment.segment.end)))
+            || (segment.index == segment.count.wrapping_sub(1)
+                && same_point(point, segment.segment.end)))
 }
 
 /// Duplicate point-atom coordinates (the `is_simple` rule for points):
@@ -214,7 +214,11 @@ pub(crate) fn collect_duplicate_points(shape: &Shape, visit: &mut impl FnMut(Poi
                     walk(geometry, seen, visit);
                 }
             },
-            _ => {},
+            Shape::LineString(_)
+            | Shape::MultiLineString(_)
+            | Shape::Polygon(_)
+            | Shape::MultiPolygon(_)
+            | Shape::Empty(..) => {},
         }
     }
     // A lone point cannot coincide with itself; collections and multipoints

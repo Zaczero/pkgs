@@ -4,6 +4,7 @@ use std::ops::ControlFlow;
 use crate::NonNegative;
 use crate::geographic::GeographicFrame;
 use crate::geometry::constructive::Result;
+use crate::geometry::types::ensure_coordseq_vertex_capacity;
 use crate::geometry::{
     Bounds, BulkRTree, CoordSeq, Coordinates, ExpansionBudget, GENERATED_ITEM_LIMIT,
     GeometryErrorKind, GeometryKind, LineSeq, MultiLineString, MultiMember, MultiPolygon, Point,
@@ -782,6 +783,10 @@ struct SubdivisionCount {
 }
 
 impl SubdivisionCount {
+    #[expect(
+        clippy::missing_const_for_fn,
+        reason = "generated output is runtime subdivision accounting with no compile-time caller"
+    )]
     fn generated(&self, input_len: usize) -> usize {
         self.emitted.wrapping_sub(input_len)
     }
@@ -830,7 +835,7 @@ struct SubdivisionColumns<'a> {
 
 impl<'a> SubdivisionColumns<'a> {
     fn new(points: &'a CoordSeq, emission: SubdivisionEmission<'a>, total: usize) -> Result<Self> {
-        crate::geometry::types::ensure_coordseq_vertex_capacity(total)?;
+        ensure_coordseq_vertex_capacity(total)?;
         let z_column = points.zs();
         let m_column = points.ms();
         Ok(Self {

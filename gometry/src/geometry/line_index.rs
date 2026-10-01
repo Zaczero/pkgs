@@ -237,7 +237,10 @@ impl LineIndexSlot {
                 ErrorKind::Geometry(GeometryErrorKind::EmptyLinework) => Ok(Self::Empty),
                 ErrorKind::Geometry(GeometryErrorKind::LineStringRequired) => Ok(Self::NotLineal),
                 ErrorKind::Resource(_) => Err(error),
-                _ => Ok(Self::Invalid(error.to_string())),
+                ErrorKind::Geometry(_)
+                | ErrorKind::Crs(_)
+                | ErrorKind::Io(_)
+                | ErrorKind::Frame(_) => Ok(Self::Invalid(error.to_string())),
             },
         }
     }
@@ -527,7 +530,11 @@ impl LineIndex {
             .prefix
             .partition_point(|&boundary| boundary < target)
             .saturating_sub(1)
-            .min(self.segments.len() - 1);
+            .min(self.segments.len().wrapping_sub(1));
+        #[expect(
+            clippy::indexing_slicing,
+            reason = "the nonempty segment slice and one-entry-longer prefix are built together"
+        )]
         Some((index, target - self.prefix[index]))
     }
 
@@ -552,11 +559,10 @@ impl LineIndex {
         )]
         let segment = self.segments[index];
         #[expect(
-            clippy::arithmetic_side_effects,
             clippy::indexing_slicing,
             reason = "segment_at returns an index with a following prefix entry"
         )]
-        let length = self.prefix[index + 1] - self.prefix[index];
+        let length = self.prefix[index.wrapping_add(1)] - self.prefix[index];
         if local == 0.0 {
             return segment.start;
         }
@@ -602,11 +608,10 @@ impl LineIndex {
         )]
         let segment = self.segments[index];
         #[expect(
-            clippy::arithmetic_side_effects,
             clippy::indexing_slicing,
             reason = "segment_at returns an index with a following prefix entry"
         )]
-        let length = self.prefix[index + 1] - self.prefix[index];
+        let length = self.prefix[index.wrapping_add(1)] - self.prefix[index];
         if local == 0.0 {
             return segment.start;
         }
@@ -666,9 +671,13 @@ impl LineIndex {
         // Only the overlapping prefix window is walked; semantics (distinct
         // consecutive points, segment-end offsets) match the full scan.
         let from_index = self.prefix.partition_point(|&boundary| boundary < start);
-        for index in from_index.saturating_sub(1)..self.segments.len() {
-            let segment_start = self.prefix[index];
-            let segment_end = self.prefix[index + 1];
+        for (segment, prefix_pair) in self
+            .segments
+            .iter()
+            .zip(self.prefix.array_windows::<2>())
+            .skip(from_index.saturating_sub(1))
+        {
+            let [segment_start, segment_end] = *prefix_pair;
             if segment_end < start {
                 continue;
             }
@@ -680,7 +689,6 @@ impl LineIndex {
             if from > to {
                 continue;
             }
-            let segment = self.segments[index];
             let length = segment_end - segment_start;
             if length == 0.0 {
                 if start <= segment_start && segment_start <= end {
@@ -712,9 +720,9 @@ impl LineIndex {
             push_distinct_active_position(&mut result, at(to));
         }
 
-        Ok(match result.len() {
-            0 => Shape::Point(self.interpolate_route_position(start, false, metric)),
-            1 => Shape::Point(result[0]),
+        Ok(match result.as_slice() {
+            [] => Shape::Point(self.interpolate_route_position(start, false, metric)),
+            [point] => Shape::Point(*point),
             _ => Shape::LineString(LineSeq::from_proven(CoordSeq::try_from_points(&result)?)),
         })
     }
