@@ -200,6 +200,10 @@ impl PolygonPointIndex {
         self.location(Point::new_raw_xy(x, y)) == RingClass::Interior
     }
 
+    pub(crate) fn covers_point(&self, point: Point) -> bool {
+        self.covers_xy(point.x, point.y)
+    }
+
     fn covers_xy(&self, x: f64, y: f64) -> bool {
         if !self.in_bounds_xy(x, y) {
             return false;

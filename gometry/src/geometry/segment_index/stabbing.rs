@@ -126,7 +126,10 @@ impl<T> YStabbingIndex<T> {
     /// Visit every item whose Y-interval contains `y` (closed).
     ///
     /// Stops early when `visit` returns [`ControlFlow::Break`].
-    #[cfg(test)]
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "band ranges and item/tree IDs are emitted by this admitted Y plan"
+    )]
     pub(crate) fn for_each_at_y<B>(
         &self,
         y: f64,

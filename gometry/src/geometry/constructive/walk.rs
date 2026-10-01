@@ -13,6 +13,10 @@ pub(crate) enum WalkJoin {
     /// Outside turn, round rule: inscribed arc from the incoming normal's
     /// angle, sweeping counter-clockwise.
     Arc { from_angle: f64, sweep: f64 },
+    /// Exact 180-degree line reversal under the round rule. The midpoint is
+    /// emitted from the incoming normal directly so it coincides exactly with
+    /// a perpendicular stroke that meets the reversal tip.
+    ReversalArc { normal: (f64, f64) },
     /// Outside turn, miter rule within the limit: the offset carrier
     /// lines' crossing. Pure extension — never consumes an edge, so no
     /// clip parameters.
@@ -92,6 +96,12 @@ pub(crate) fn reflex_cross(
     debug_assert!(t_in.is_start() || t_in.is_end() || (0.0..=1.0).contains(&t_in.fraction()));
     debug_assert!(t_out.is_start() || t_out.is_end() || (0.0..=1.0).contains(&t_out.fraction()));
     Ok(Some((point, t_in, t_out)))
+}
+
+/// For three collinear points, whether `b` lies outside the closed segment
+/// between its neighbors.
+pub(crate) fn middle_outside_segment_bounds(a: Point, b: Point, c: Point) -> bool {
+    b.x < a.x.min(c.x) || b.x > a.x.max(c.x) || b.y < a.y.min(c.y) || b.y > a.y.max(c.y)
 }
 
 /// The outside miter join at `vertex`: the crossing of the two offset
@@ -212,7 +222,7 @@ pub(crate) struct WalkCount<'a> {
     len: usize,
     previous: Option<(u64, u64)>,
     all_finite: bool,
-    budget: Option<&'a ExpansionBudget>,
+    budget: &'a ExpansionBudget,
 }
 
 impl WalkCount<'_> {
@@ -231,7 +241,7 @@ impl<'a> WalkCount<'a> {
             len: 0,
             previous: None,
             all_finite: true,
-            budget: Some(budget),
+            budget,
         }
     }
 }
@@ -243,10 +253,8 @@ impl WalkSink for WalkCount<'_> {
             return Ok(());
         }
         self.previous = Some(point);
-        let next = self.len.saturating_add(1);
-        if let Some(budget) = self.budget {
-            budget.check_additional(next)?;
-        }
+        let next = self.len.wrapping_add(1);
+        self.budget.check_additional(next)?;
         self.len = next;
         self.all_finite &= x.is_finite() && y.is_finite();
         Ok(())
@@ -316,12 +324,42 @@ impl<'a> WalkPlan<'a> {
         distance: f64,
         rule: WalkJoinRule,
     ) -> crate::error::Result<Option<Self>> {
+        Self::plan(points, cyclic, distance, rule, false)
+    }
+
+    /// Plan a buffer walk, where exact 180-degree reversals use the requested
+    /// join style just like other interior vertices.
+    pub(crate) fn new_stroke(
+        points: &'a [Point],
+        cyclic: bool,
+        distance: f64,
+        rule: WalkJoinRule,
+    ) -> crate::error::Result<Option<Self>> {
+        Self::plan(points, cyclic, distance, rule, true)
+    }
+
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "count >= 2 and edge/join bounds keep wrapped point and normal indices in range"
+    )]
+    fn plan(
+        points: &'a [Point],
+        cyclic: bool,
+        distance: f64,
+        rule: WalkJoinRule,
+        style_reversals: bool,
+    ) -> crate::error::Result<Option<Self>> {
         let count = points.len();
-        let edges = if cyclic { count } else { count - 1 };
+        if count < 2 {
+            return Ok(None);
+        }
+        let edges = if cyclic { count } else { count.wrapping_sub(1) };
         let mut normals = Vec::with_capacity(edges);
         for edge in 0..edges {
-            let Some(normal) = unit_right_normal(points[edge], points[wrap_index(edge + 1, count)])
-            else {
+            let Some(normal) = unit_right_normal(
+                points[edge],
+                points[wrap_index(edge.wrapping_add(1), count)],
+            ) else {
                 return Ok(None);
             };
             normals.push(normal);
@@ -330,17 +368,17 @@ impl<'a> WalkPlan<'a> {
             start: Point::new_raw_xy(from.x + distance * nx, from.y + distance * ny).into(),
             end: Point::new_raw_xy(to.x + distance * nx, to.y + distance * ny).into(),
         };
-        let join_count = if cyclic { edges } else { edges - 1 };
+        let join_count = if cyclic { edges } else { edges.wrapping_sub(1) };
         let mut joins = Vec::with_capacity(join_count);
         for join in 0..join_count {
             let v = points[join];
-            let w = points[wrap_index(join + 1, count)];
-            let u = points[wrap_index(join + 2, count)];
+            let w = points[wrap_index(join.wrapping_add(1), count)];
+            let u = points[wrap_index(join.wrapping_add(2), count)];
             let planned = match orientation(v, w, u) {
                 Orientation::CounterClockwise => match rule {
                     WalkJoinRule::Arc => {
                         let (nx, ny) = normals[join];
-                        let (mx, my) = normals[wrap_index(join + 1, edges)];
+                        let (mx, my) = normals[wrap_index(join.wrapping_add(1), edges)];
                         let from_angle = ny.atan2(nx);
                         let mut sweep = my.atan2(mx) - from_angle;
                         if sweep < 0.0 {
@@ -355,7 +393,7 @@ impl<'a> WalkPlan<'a> {
                     WalkJoinRule::Bevel => WalkJoin::Straight,
                     WalkJoinRule::Miter { limit } => convex_miter(
                         offset_edge(v, w, normals[join]),
-                        offset_edge(w, u, normals[wrap_index(join + 1, edges)]),
+                        offset_edge(w, u, normals[wrap_index(join.wrapping_add(1), edges)]),
                         w,
                         distance,
                         limit,
@@ -363,10 +401,20 @@ impl<'a> WalkPlan<'a> {
                 },
                 Orientation::Clockwise => match reflex_cross(
                     offset_edge(v, w, normals[join]),
-                    offset_edge(w, u, normals[wrap_index(join + 1, edges)]),
+                    offset_edge(w, u, normals[wrap_index(join.wrapping_add(1), edges)]),
                 )? {
                     Some((point, t_in, t_out)) => WalkJoin::Cross { point, t_in, t_out },
                     None => WalkJoin::Excursion,
+                },
+                Orientation::Collinear
+                    if style_reversals && middle_outside_segment_bounds(v, w, u) =>
+                {
+                    match rule {
+                        WalkJoinRule::Arc => WalkJoin::ReversalArc {
+                            normal: normals[join],
+                        },
+                        WalkJoinRule::Bevel | WalkJoinRule::Miter { .. } => WalkJoin::Straight,
+                    }
                 },
                 Orientation::Collinear => WalkJoin::Straight,
             };
@@ -381,7 +429,7 @@ impl<'a> WalkPlan<'a> {
         };
         plan.validate()?;
         #[cfg(test)]
-        WALK_PLAN_CONSTRUCTIONS.with(|count| count.set(count.get() + 1));
+        WALK_PLAN_CONSTRUCTIONS.with(|count| count.set(count.get().wrapping_add(1)));
         Ok(Some(plan))
     }
 
@@ -418,18 +466,40 @@ impl<'a> WalkPlan<'a> {
         let edges = self.normals.len();
         for edge in 0..edges {
             let entry_join = if edge == 0 {
-                self.cyclic.then(|| joins - 1)
+                self.cyclic.then(|| joins.wrapping_sub(1))
             } else {
-                Some(edge - 1)
+                Some(edge.wrapping_sub(1))
             };
             let exit_join = (edge < joins).then_some(edge);
-            let entry = entry_join.and_then(|join| match &self.joins[join] {
-                WalkJoin::Cross { t_out, .. } => Some(t_out),
-                _ => None,
+            let entry = entry_join.and_then(|join| {
+                match self
+                    .joins
+                    .get(join)
+                    .expect("walk entry join belongs to the validated plan")
+                {
+                    WalkJoin::Cross { t_out, .. } => Some(t_out),
+                    WalkJoin::Arc { .. }
+                    | WalkJoin::ReversalArc { .. }
+                    | WalkJoin::Miter { .. }
+                    | WalkJoin::MiterCut { .. }
+                    | WalkJoin::Excursion
+                    | WalkJoin::Straight => None,
+                }
             });
-            let exit = exit_join.and_then(|join| match &self.joins[join] {
-                WalkJoin::Cross { t_in, .. } => Some(t_in),
-                _ => None,
+            let exit = exit_join.and_then(|join| {
+                match self
+                    .joins
+                    .get(join)
+                    .expect("walk exit join belongs to the validated plan")
+                {
+                    WalkJoin::Cross { t_in, .. } => Some(t_in),
+                    WalkJoin::Arc { .. }
+                    | WalkJoin::ReversalArc { .. }
+                    | WalkJoin::Miter { .. }
+                    | WalkJoin::MiterCut { .. }
+                    | WalkJoin::Excursion
+                    | WalkJoin::Straight => None,
+                }
             });
             let backwards = match (entry, exit) {
                 (Some(entry), Some(exit)) => entry.cmp_along(exit)? != Ordering::Less,
@@ -439,8 +509,17 @@ impl<'a> WalkPlan<'a> {
             };
             if backwards {
                 for join in [entry_join, exit_join].into_iter().flatten() {
-                    if matches!(self.joins[join], WalkJoin::Cross { .. }) {
-                        self.joins[join] = WalkJoin::Excursion;
+                    if matches!(
+                        self.joins
+                            .get(join)
+                            .expect("walk endpoint join belongs to the validated plan"),
+                        WalkJoin::Cross { .. }
+                    ) {
+                        *self
+                            .joins
+                            .get_mut(join)
+                            .expect("walk endpoint join belongs to the validated plan") =
+                            WalkJoin::Excursion;
                     }
                 }
             }
@@ -461,20 +540,32 @@ impl<'a> WalkPlan<'a> {
         let count = self.points.len();
         for (edge, &(nx, ny)) in self.normals.iter().enumerate() {
             let previous = if edge == 0 {
-                self.cyclic.then(|| self.joins.len() - 1)
+                self.cyclic.then(|| self.joins.len().wrapping_sub(1))
             } else {
-                Some(edge - 1)
+                Some(edge.wrapping_sub(1))
             };
-            if !previous.is_some_and(|join| self.joins[join].replaces_endpoints()) {
-                let v = self.points[edge];
+            if !previous.is_some_and(|join| {
+                self.joins
+                    .get(join)
+                    .expect("walk predecessor join belongs to the plan")
+                    .replaces_endpoints()
+            }) {
+                let v = *self
+                    .points
+                    .get(edge)
+                    .expect("walk edge belongs to the source vertices");
                 sink.push(
                     v.x + self.distance * nx,
                     v.y + self.distance * ny,
                     edge as u32,
                 )?;
             }
-            let source = wrap_index(edge + 1, count) as u32;
-            let w = self.points[source as usize];
+            let source_index = wrap_index(edge.wrapping_add(1), count);
+            let source = source_index as u32;
+            let w = *self
+                .points
+                .get(source_index)
+                .expect("walk destination belongs to the source vertices");
             match self.joins.get(edge) {
                 Some(WalkJoin::Cross { point, .. } | WalkJoin::Miter { point }) => {
                     sink.push(point.x, point.y, source)?;
@@ -495,6 +586,20 @@ impl<'a> WalkPlan<'a> {
                         sink,
                     )?;
                 },
+                Some(WalkJoin::ReversalArc {
+                    normal: (normal_x, normal_y),
+                }) => {
+                    sink.push(w.x + self.distance * nx, w.y + self.distance * ny, source)?;
+                    emit_reversal_arc(
+                        w,
+                        *normal_x,
+                        *normal_y,
+                        self.distance,
+                        step_angle,
+                        source,
+                        sink,
+                    )?;
+                },
                 Some(WalkJoin::Excursion) => {
                     sink.push(w.x + self.distance * nx, w.y + self.distance * ny, source)?;
                     sink.push(w.x, w.y, source)?;
@@ -506,6 +611,47 @@ impl<'a> WalkPlan<'a> {
         }
         Ok(())
     }
+}
+
+fn emit_reversal_arc<S: WalkSink>(
+    center: Point,
+    nx: f64,
+    ny: f64,
+    distance: f64,
+    step_angle: f64,
+    source: u32,
+    sink: &mut S,
+) -> crate::error::Result<()> {
+    let half_steps = (std::f64::consts::FRAC_PI_2 / step_angle).ceil() as usize;
+    let step = std::f64::consts::FRAC_PI_2 / half_steps as f64;
+    let (sin_step, cos_step) = step.sin_cos();
+    let (mut cos_theta, mut sin_theta) = (nx, ny);
+    for index in 1..=half_steps {
+        (cos_theta, sin_theta) = (
+            cos_theta * cos_step - sin_theta * sin_step,
+            sin_theta * cos_step + cos_theta * sin_step,
+        );
+        if index == half_steps {
+            (cos_theta, sin_theta) = (-ny, nx);
+        }
+        sink.push(
+            center.x + distance * cos_theta,
+            center.y + distance * sin_theta,
+            source,
+        )?;
+    }
+    for _ in 1..half_steps {
+        (cos_theta, sin_theta) = (
+            cos_theta * cos_step - sin_theta * sin_step,
+            sin_theta * cos_step + cos_theta * sin_step,
+        );
+        sink.push(
+            center.x + distance * cos_theta,
+            center.y + distance * sin_theta,
+            source,
+        )?;
+    }
+    Ok(())
 }
 
 /// Emit one cap at `tip` continuing from offset normal `(nx, ny)` (the
