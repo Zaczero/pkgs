@@ -519,10 +519,15 @@ pub(in crate::geometry) struct ExactPartition<'a> {
     /// boundary. Clipped partitions omit outside arcs, so face zero need not
     /// have one source-ring winding; full-ring partitions leave this absent.
     winding_seed: Option<(u32, Vec<i64>)>,
-    binding_starts: Vec<u32>,
-    /// The unique segments through each node, by `binding_starts`.
-    bindings: Vec<u32>,
+    ordinate_bindings: Option<OrdinateBindings>,
     kept_nodes: KeptNodes,
+}
+
+/// Source carriers through each node, retained only for Z/M interpolation.
+#[derive(Debug)]
+struct OrdinateBindings {
+    starts: Vec<u32>,
+    unique: Vec<u32>,
 }
 
 /// Which nodes emission keeps as vertices, beyond those selection requires.
@@ -558,7 +563,7 @@ pub(in crate::geometry) struct ExactSourceInventory {
     polygon_count: usize,
     polygon_operands: Vec<u32>,
     polygon_ring_ranges: Vec<Range<usize>>,
-    source_points: Vec<[Point; 2]>,
+    source_points: Option<Vec<[Point; 2]>>,
     polygon_rings: Vec<Vec<Range<usize>>>,
     ring_count: usize,
     isolated: Vec<XY>,
@@ -856,12 +861,41 @@ impl ExactSourceInventory {
         &self,
         budget: Option<&mut ExpansionBudget>,
     ) -> Result<ExactPartition<'_>> {
+        if self.has_source_ordinates() {
+            self.partition_with_ordinates::<true>(budget)
+        } else {
+            self.partition_with_ordinates::<false>(budget)
+        }
+    }
+
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "active provenance source ordinals address the staged source-point column"
+    )]
+    fn has_source_ordinates(&self) -> bool {
+        let Some(points) = &self.source_points else {
+            return false;
+        };
+        self.provenance.iter().flatten().any(|&(source, _)| {
+            points[source as usize]
+                .iter()
+                .any(|point| point.z().is_some() || point.m().is_some())
+        })
+    }
+
+    fn partition_with_ordinates<const ORDINATES: bool>(
+        &self,
+        budget: Option<&mut ExpansionBudget>,
+    ) -> Result<ExactPartition<'_>> {
         self.record_partition_inventory();
         let partition = match budget {
-            Some(budget) => {
-                partition_unique_segments(&self.unique, &self.provenance, &self.isolated, budget)?
-            },
-            None => partition_unique_segments_unbudgeted(
+            Some(budget) => partition_unique_segments::<ORDINATES>(
+                &self.unique,
+                &self.provenance,
+                &self.isolated,
+                budget,
+            )?,
+            None => partition_unique_segments_unbudgeted::<ORDINATES>(
                 &self.unique,
                 &self.provenance,
                 &self.isolated,
@@ -877,13 +911,23 @@ impl ExactSourceInventory {
         budget: &mut ExpansionBudget,
     ) -> Result<ExactPartition<'_>> {
         self.record_partition_inventory();
-        let partition = partition_unique_segments_in_window(
-            &self.unique,
-            &self.provenance,
-            intervals,
-            bounds,
-            budget,
-        )?;
+        let partition = if self.has_source_ordinates() {
+            partition_unique_segments_in_window::<true>(
+                &self.unique,
+                &self.provenance,
+                intervals,
+                bounds,
+                budget,
+            )?
+        } else {
+            partition_unique_segments_in_window::<false>(
+                &self.unique,
+                &self.provenance,
+                intervals,
+                bounds,
+                budget,
+            )?
+        };
         Ok(self.finish_partition(partition))
     }
 
@@ -1216,10 +1260,27 @@ impl ExactSourceInventory {
         reason = "node_bindings is a CSR row lookup for a NodeId admitted by the same ExactPartition"
     )]
     fn node_bindings<'a>(&self, node: NodeId, partition: &'a ExactPartition<'_>) -> &'a [u32] {
+        let Some(bindings) = &partition.ordinate_bindings else {
+            return &[];
+        };
         let index = node.0 as usize;
-        let start = partition.binding_starts[index] as usize;
-        let end = partition.binding_starts[index + 1] as usize;
-        &partition.bindings[start..end]
+        let start = bindings.starts[index] as usize;
+        let end = bindings.starts[index + 1] as usize;
+        &bindings.unique[start..end]
+    }
+
+    fn source_ordinate_points(&self, source: u32) -> Result<Option<&[Point; 2]>> {
+        self.source_points
+            .as_ref()
+            .map(|points| {
+                points.get(source as usize).ok_or_else(|| {
+                    GeometryErrorKind::Invalid(
+                        "exact partition ordinate binding references an unknown source".into(),
+                    )
+                    .into()
+                })
+            })
+            .transpose()
     }
 
     #[expect(
@@ -1247,11 +1308,9 @@ impl ExactSourceInventory {
                 let [num, den] = parameter_along(partition.unique[unique as usize], &point)?;
                 let from_end = den.clone().try_subtract(num.clone())?;
                 for &(source, reversed) in self.provenance.owners(unique as usize) {
-                    let points = self.source_points.get(source as usize).ok_or_else(|| {
-                        GeometryErrorKind::Invalid(
-                            "exact partition ordinate binding references an unknown source".into(),
-                        )
-                    })?;
+                    let Some(points) = self.source_ordinate_points(source)? else {
+                        continue;
+                    };
                     let along = if reversed { &from_end } else { &num };
                     let [start, end] = *points;
                     if axes.has_z() {
@@ -1267,12 +1326,9 @@ impl ExactSourceInventory {
             if bound != node {
                 continue;
             }
-            let source = source as usize;
-            let points = self.source_points.get(source).ok_or_else(|| {
-                GeometryErrorKind::Invalid(
-                    "exact partition point binding references an unknown source".into(),
-                )
-            })?;
+            let Some(points) = self.source_ordinate_points(source)? else {
+                continue;
+            };
             for point in points {
                 if axes.has_z() {
                     z.observe(point.z());
@@ -1313,17 +1369,18 @@ impl ExactSourceInventory {
         if !axes.has_z() && !axes.has_m() {
             return Ok(None);
         }
+        let Some(bindings) = &partition.ordinate_bindings else {
+            return Ok(None);
+        };
         let mut protected = Vec::with_capacity(partition.node_count());
         protected.resize(partition.node_count(), false);
-        for (node, &[start, end]) in partition.binding_starts.array_windows::<2>().enumerate() {
-            for &unique in &partition.bindings[start as usize..end as usize] {
+        for (node, &[start, end]) in bindings.starts.array_windows::<2>().enumerate() {
+            for &unique in &bindings.unique[start as usize..end as usize] {
                 let mut source_has_ordinate = false;
                 for &(source, _) in self.provenance.owners(unique as usize) {
-                    let points = self.source_points.get(source as usize).ok_or_else(|| {
-                        GeometryErrorKind::Invalid(
-                            "exact partition ordinate binding references an unknown source".into(),
-                        )
-                    })?;
+                    let Some(points) = self.source_ordinate_points(source)? else {
+                        continue;
+                    };
                     source_has_ordinate |= (axes.has_z()
                         && (points[0].z().is_some() || points[1].z().is_some()))
                         || (axes.has_m() && (points[0].m().is_some() || points[1].m().is_some()));
@@ -2548,7 +2605,7 @@ fn compare_diagnostic_lines(left: &Shape, right: &Shape) -> Ordering {
 
 struct StagedExactSources {
     segments: Vec<Segment>,
-    source_points: Vec<[Point; 2]>,
+    source_points: Option<Vec<[Point; 2]>>,
     source_operands: Vec<u32>,
     source_rings: Vec<Option<u32>>,
     source_ring_kinds: Vec<Option<RingKind>>,
@@ -2572,7 +2629,7 @@ impl StagedExactSources {
         polygon_rings.resize_with(operand_count, Vec::new);
         Self {
             segments: Vec::new(),
-            source_points: Vec::new(),
+            source_points: None,
             source_operands: Vec::new(),
             source_rings: Vec::new(),
             source_ring_kinds: Vec::new(),
@@ -2680,6 +2737,7 @@ impl StagedExactSources {
     }
 
     fn append_line_coords(&mut self, line: &CoordSeq, operand: u32) {
+        self.retain_source_ordinates(line.axes());
         self.reserve_segments(line.coord_count().saturating_sub(1));
         let mut first = None;
         let mut last = None;
@@ -2749,8 +2807,9 @@ impl StagedExactSources {
             self.ring_holes.push(ring_index > 0);
             self.ring_kinds.push(kind);
             let count = ring.len().saturating_sub(1);
+            self.retain_source_ordinates(ring.coords().axes());
             self.reserve_segments(count);
-            let mut pairs = ring.segment_pairs().peekable();
+            let mut pairs = ring.segment_pairs();
             let [first, first_end] = pairs.next().expect("a Ring has at least four coordinates");
             let mut pairs = std::iter::once([first, first_end]).chain(pairs).peekable();
             while let Some([start, mut end]) = pairs.next() {
@@ -2776,10 +2835,26 @@ impl StagedExactSources {
 
     fn reserve_segments(&mut self, count: usize) {
         self.segments.reserve(count);
-        self.source_points.reserve(count);
+        if let Some(points) = &mut self.source_points {
+            points.reserve(count);
+        }
         self.source_operands.reserve(count);
         self.source_rings.reserve(count);
         self.source_ring_kinds.reserve(count);
+    }
+
+    fn retain_source_ordinates(&mut self, axes: crate::geometry::CoordinateAxes) {
+        if self.source_points.is_none() && axes != crate::geometry::CoordinateAxes::XY {
+            // Earlier XY sources have no ordinates, so their stored carriers
+            // recover the prefix when a later source first supplies Z/M.
+            let mut points = Vec::with_capacity(self.segments.capacity());
+            points.extend(
+                self.segments
+                    .iter()
+                    .map(|segment| [segment.start.point(), segment.end.point()]),
+            );
+            self.source_points = Some(points);
+        }
     }
 
     fn push_segment(
@@ -2790,8 +2865,10 @@ impl StagedExactSources {
         ring: Option<u32>,
         ring_kind: Option<RingKind>,
     ) {
+        if let Some(points) = &mut self.source_points {
+            points.push(*source_points);
+        }
         self.segments.push(segment);
-        self.source_points.push(*source_points);
         self.source_operands.push(operand);
         self.source_rings.push(ring);
         self.source_ring_kinds.push(ring_kind);

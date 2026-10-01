@@ -1,6 +1,37 @@
 use super::*;
 
 #[test]
+fn mixed_source_order_keeps_absent_and_interpolated_ordinates_distinct() {
+    let xy = crate::io::parse_wkt("LINESTRING (0 0,4 0)").unwrap();
+    let zm = crate::io::parse_wkt("LINESTRING ZM (2 -1 10 100,2 1 30 300)").unwrap();
+    for shapes in [[&xy, &zm], [&zm, &xy]] {
+        let inventory = ExactSourceInventory::from_shapes(&shapes).unwrap();
+        let mut budget = ExpansionBudget::new("node", "source ordinates");
+        let partition = inventory.partition(&mut budget).unwrap();
+        let crossing = *partition.crossings().first().unwrap();
+        let point = inventory
+            .resolve_node_point(
+                &partition,
+                crossing,
+                partition.node_xy(crossing),
+                crate::geometry::CoordinateAxes::XYZM,
+            )
+            .unwrap();
+        assert_eq!((point.z(), point.m()), (Some(20.0), Some(200.0)));
+        let endpoint = partition.stored_node(XY::new(0.0, 0.0)).unwrap();
+        let point = inventory
+            .resolve_node_point(
+                &partition,
+                endpoint,
+                partition.node_xy(endpoint),
+                crate::geometry::CoordinateAxes::XYZM,
+            )
+            .unwrap();
+        assert_eq!((point.z(), point.m()), (None, None));
+    }
+}
+
+#[test]
 fn csr_prefix_offsets_use_the_native_index_domain_past_u32_max() {
     let u32_max = usize::try_from(u32::MAX).expect("u32 count fits this supported target");
     let mut over_u32 = [0, u32_max, 1];
@@ -490,7 +521,8 @@ fn areal_cells_exclude_cancelled_spurs_and_keep_collapsed_points() {
     let (unique, provenance) =
         dedup_undirected_segments_sourced(sources.segments.iter().copied()).unwrap();
     let mut budget = ExpansionBudget::new("exact_partition", "items");
-    let partition = partition_unique_segments(&unique, &provenance, &[], &mut budget).unwrap();
+    let partition =
+        partition_unique_segments::<true>(&unique, &provenance, &[], &mut budget).unwrap();
     let (topology, edges) = partition.local_topology().unwrap();
     let faces = partition.global_faces(&topology, &edges).unwrap();
     let cells = sources
@@ -553,7 +585,8 @@ fn zero_length_sources_keep_owners_at_incident_and_isolated_nodes() {
     ])
     .unwrap();
     let mut budget = ExpansionBudget::new("exact_partition", "items");
-    let partition = partition_unique_segments(&unique, &provenance, &[], &mut budget).unwrap();
+    let partition =
+        partition_unique_segments::<true>(&unique, &provenance, &[], &mut budget).unwrap();
     let incident = partition.stored_node(XY::new(1.0, 0.0)).unwrap();
     let isolated = partition.stored_node(XY::new(3.0, 2.0)).unwrap();
     assert_eq!(partition.point_sources, [
@@ -853,8 +886,13 @@ impl Case {
 
     fn partition(&self) -> ExactPartition<'_> {
         let mut budget = ExpansionBudget::new("exact_partition", "items");
-        partition_unique_segments(&self.unique, &self.provenance, &self.isolated, &mut budget)
-            .unwrap()
+        partition_unique_segments::<true>(
+            &self.unique,
+            &self.provenance,
+            &self.isolated,
+            &mut budget,
+        )
+        .unwrap()
     }
 }
 
@@ -1387,15 +1425,19 @@ fn generated_budget_charges_only_net_canonical_growth() {
         let case = run(&segments);
         let mut budget = ExpansionBudget::new("exact_partition", "items");
         budget.add(GENERATED_ITEM_LIMIT - growth).unwrap();
-        let partition =
-            partition_unique_segments(&case.unique, &case.provenance, &case.isolated, &mut budget)
-                .unwrap();
+        let partition = partition_unique_segments::<true>(
+            &case.unique,
+            &case.provenance,
+            &case.isolated,
+            &mut budget,
+        )
+        .unwrap();
         assert_eq!(budget.used(), GENERATED_ITEM_LIMIT);
         assert!(partition.node_count() > 0);
         if growth > 0 {
             let mut short = ExpansionBudget::new("exact_partition", "items");
             short.add(GENERATED_ITEM_LIMIT - growth + 1).unwrap();
-            let Err(error) = partition_unique_segments(
+            let Err(error) = partition_unique_segments::<true>(
                 &case.unique,
                 &case.provenance,
                 &case.isolated,
@@ -1493,7 +1535,8 @@ fn component_count(partition: &ExactPartition) -> usize {
 fn public_entry_matches_inner_on_empty() {
     let mut budget = ExpansionBudget::new("exact_partition", "items");
     let (unique, provenance) = dedup_undirected_segments_sourced(Vec::<Segment>::new()).unwrap();
-    let partition = partition_unique_segments(&unique, &provenance, &[], &mut budget).unwrap();
+    let partition =
+        partition_unique_segments::<true>(&unique, &provenance, &[], &mut budget).unwrap();
     assert_eq!(partition.node_count(), 0);
 }
 
@@ -2872,7 +2915,8 @@ fn degenerate_unique_without_isolated_slice_does_not_vanish() {
         dedup_undirected_segments_sourced(vec![seg(0.0, 0.0, 2.0, 0.0), seg(1.0, 1.0, 1.0, 1.0)])
             .unwrap();
     let mut budget = ExpansionBudget::new("exact_partition", "items");
-    let partition = partition_unique_segments(&unique, &provenance, &[], &mut budget).unwrap();
+    let partition =
+        partition_unique_segments::<true>(&unique, &provenance, &[], &mut budget).unwrap();
     assert!(partition.stored_node(XY::new(1.0, 1.0)).is_some());
     assert_eq!(partition.isolated.len(), 1);
 }
@@ -2915,7 +2959,8 @@ fn isolated_on_line_cuts_the_edge() {
     let (unique, provenance) =
         dedup_undirected_segments_sourced(vec![seg(0.0, 0.0, 2.0, 0.0)]).unwrap();
     let partition =
-        partition_unique_segments(&unique, &provenance, &[XY::new(1.0, 0.0)], &mut budget).unwrap();
+        partition_unique_segments::<true>(&unique, &provenance, &[XY::new(1.0, 0.0)], &mut budget)
+            .unwrap();
     assert_eq!(partition.node_count(), 3);
     assert_eq!(partition.spans.len(), 2);
     assert!(partition.isolated.is_empty());
@@ -2935,7 +2980,8 @@ fn isolated_at_crossing_is_stored_not_constructed() {
         dedup_undirected_segments_sourced(vec![seg(0.0, 0.0, 2.0, 2.0), seg(0.0, 2.0, 2.0, 0.0)])
             .unwrap();
     let partition =
-        partition_unique_segments(&unique, &provenance, &[XY::new(1.0, 1.0)], &mut budget).unwrap();
+        partition_unique_segments::<true>(&unique, &provenance, &[XY::new(1.0, 1.0)], &mut budget)
+            .unwrap();
     assert_eq!(partition.node_count(), 5);
     assert_eq!(partition.spans.len(), 4);
     assert_eq!(constructed_count(&partition), 0);

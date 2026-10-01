@@ -14,7 +14,7 @@ use std::ops::ControlFlow;
 #[cfg(test)]
 use super::metrics::{record_candidate_pair, record_overlap, update as update_partition_metrics};
 use super::rays::RayPoints;
-use super::{Axis, ExactPartition, ExactSpan, KeptNodes, NodeId, NodeRecipe};
+use super::{Axis, ExactPartition, ExactSpan, KeptNodes, NodeId, NodeRecipe, OrdinateBindings};
 use crate::error::{Error, ResourceError};
 use crate::geometry::exact_arith::ExactSign;
 use crate::geometry::overlay::noding::{SegmentProvenance, SegmentSource};
@@ -477,23 +477,29 @@ pub(super) fn strictly_inside(segment: Segment, point: XY) -> bool {
     start.min(end) < value && value < start.max(end)
 }
 
-pub(in crate::geometry) fn partition_unique_segments<'a>(
+pub(in crate::geometry) fn partition_unique_segments<'a, const ORDINATES: bool>(
     unique: &'a [Segment],
     provenance: &SegmentProvenance,
     isolated: &[XY],
     budget: &mut ExpansionBudget,
 ) -> Result<ExactPartition<'a>> {
-    partition_unique_segments_with_budget(unique, provenance, isolated, None, Some(budget))
+    partition_unique_segments_with_budget::<ORDINATES>(
+        unique,
+        provenance,
+        isolated,
+        None,
+        Some(budget),
+    )
 }
 
-pub(in crate::geometry) fn partition_unique_segments_in_window<'a>(
+pub(in crate::geometry) fn partition_unique_segments_in_window<'a, const ORDINATES: bool>(
     unique: &'a [Segment],
     provenance: &SegmentProvenance,
     intervals: &[SegmentClipInterval],
     window: Bounds,
     budget: &mut ExpansionBudget,
 ) -> Result<ExactPartition<'a>> {
-    partition_unique_segments_with_budget(
+    partition_unique_segments_with_budget::<ORDINATES>(
         unique,
         provenance,
         &[],
@@ -502,15 +508,15 @@ pub(in crate::geometry) fn partition_unique_segments_in_window<'a>(
     )
 }
 
-pub(in crate::geometry) fn partition_unique_segments_unbudgeted<'a>(
+pub(in crate::geometry) fn partition_unique_segments_unbudgeted<'a, const ORDINATES: bool>(
     unique: &'a [Segment],
     provenance: &SegmentProvenance,
     isolated: &[XY],
 ) -> Result<ExactPartition<'a>> {
-    partition_unique_segments_with_budget(unique, provenance, isolated, None, None)
+    partition_unique_segments_with_budget::<ORDINATES>(unique, provenance, isolated, None, None)
 }
 
-fn partition_unique_segments_with_budget<'a>(
+fn partition_unique_segments_with_budget<'a, const ORDINATES: bool>(
     unique: &'a [Segment],
     provenance: &SegmentProvenance,
     isolated: &[XY],
@@ -799,10 +805,17 @@ fn partition_unique_segments_with_budget<'a>(
     // bound to it once. Segments are visited in ascending order, so a
     // counting placement keeps each node's bindings in that order.
     let node_count = points.len();
-    let mut last_unique = Vec::with_capacity(node_count);
-    last_unique.resize(node_count, u32::MAX);
+    let mut last_unique = if ORDINATES {
+        vec![u32::MAX; node_count]
+    } else {
+        Vec::new()
+    };
     let mut binding_nodes: Vec<(u32, u32)> = Vec::new();
-    let mut binding_starts = vec![0_u32; node_count.wrapping_add(1)];
+    let mut binding_starts = if ORDINATES {
+        vec![0_u32; node_count.wrapping_add(1)]
+    } else {
+        Vec::new()
+    };
     let mut intervals: Vec<(u32, u32, u32)> = Vec::new();
     for (index, (((segment, &start_handle), &end_handle), &[start_contact, end_contact])) in unique
         .iter()
@@ -831,7 +844,7 @@ fn partition_unique_segments_with_budget<'a>(
         )]
         for handle in walk {
             let node = node_of(handle)?;
-            if last_unique[node as usize] != source {
+            if ORDINATES && last_unique[node as usize] != source {
                 last_unique[node as usize] = source;
                 let next = node.wrapping_add(1) as usize;
                 binding_starts[next] = binding_starts[next].wrapping_add(1);
@@ -849,15 +862,15 @@ fn partition_unique_segments_with_budget<'a>(
     drop(along);
     drop(contact_starts);
     drop(last_unique);
-    let mut total = 0_u32;
-    for offset in binding_starts.iter_mut().skip(1) {
-        total = total
-            .checked_add(*offset)
-            .ok_or(ResourceError::SizeOverflow)?;
-        *offset = total;
-    }
-    let mut bindings = vec![0_u32; binding_nodes.len()];
-    {
+    let ordinate_bindings = if ORDINATES {
+        let mut total = 0_u32;
+        for offset in binding_starts.iter_mut().skip(1) {
+            total = total
+                .checked_add(*offset)
+                .ok_or(ResourceError::SizeOverflow)?;
+            *offset = total;
+        }
+        let mut bindings = vec![0_u32; binding_nodes.len()];
         let mut cursor = Vec::with_capacity(node_count);
         cursor.extend(binding_starts.iter().take(node_count).copied());
         #[expect(
@@ -868,7 +881,13 @@ fn partition_unique_segments_with_budget<'a>(
             bindings[cursor[node as usize] as usize] = source;
             cursor[node as usize] = cursor[node as usize].wrapping_add(1);
         }
-    }
+        Some(OrdinateBindings {
+            starts: binding_starts,
+            unique: bindings,
+        })
+    } else {
+        None
+    };
     drop(binding_nodes);
 
     // The budget counts operation-wide net growth: overlap coalescing can
@@ -922,8 +941,7 @@ fn partition_unique_segments_with_budget<'a>(
         point_nodes,
         point_sources,
         winding_seed: None,
-        binding_starts,
-        bindings,
+        ordinate_bindings,
         kept_nodes: KeptNodes::Selected,
     })
 }
