@@ -450,6 +450,12 @@ def test_crosses_antimeridian_agrees_across_crs_and_array_lanes(
 def test_split_antimeridian_gates() -> None:
     with pytest.raises(gm.CRSError, match='requires a geographic CRS'):
         gm.LineString([(170, 0), (-170, 0)], crs=3857).split_antimeridian()
+    measured_pole = gm.from_wkt(
+        'POLYGON ZM ((-45 40 1 2, 45 40 1 2, 135 40 1 2, -135 40 1 2, -45 40 1 2))',
+        crs=3857,
+    )
+    with pytest.raises(gm.CRSError, match='requires a geographic CRS'):
+        measured_pole.split_antimeridian()
     periodic = gm.LineString([(190, 0), (200, 0)]).split_antimeridian()
     assert periodic.to_wkt() == 'LINESTRING (-170 0, -160 0)'
     zm_ring = gm.from_wkt(
@@ -1400,6 +1406,99 @@ def test_polar_annulus_split_membership_bounds_and_index() -> None:
     assert list(index.query(gm.Point(180, 89, crs=4326), predicate='intersects')) == [0]
     assert list(index.query(gm.Point(180, 75, crs=4326), predicate='intersects')) == [1]
     assert list(index.query(gm.Point(0, 75, crs=4326), predicate='intersects')) == [1]
+
+
+@pytest.mark.parametrize(
+    (
+        'shell_latitude',
+        'hole_latitude',
+        'inside_latitude',
+        'hole_probe',
+        'outside_latitude',
+    ),
+    [
+        (70.0, 80.0, 75.0, 85.0, 65.0),
+        (60.0, 75.0, 67.5, 80.0, 50.0),
+    ],
+    ids=['70-80', '60-75'],
+)
+@pytest.mark.parametrize('south', [False, True], ids=['north', 'south'])
+def test_polar_annulus_split_preserves_geodesic_area_and_membership(
+    shell_latitude: float,
+    hole_latitude: float,
+    inside_latitude: float,
+    hole_probe: float,
+    outside_latitude: float,
+    *,
+    south: bool,
+) -> None:
+    direction = -1.0 if south else 1.0
+    annulus = gm.Polygon(
+        _latitude_ring(direction * shell_latitude),
+        holes=[_latitude_ring(direction * hole_latitude)],
+        crs=4326,
+    )
+    split = annulus.split_antimeridian()
+
+    assert annulus.is_valid
+    assert split.is_valid
+    assert split.area == pytest.approx(annulus.area, rel=1e-15)
+    for longitude in (0.0, 180.0, -180.0):
+        for latitude, expected in (
+            (direction * inside_latitude, True),
+            (direction * hole_probe, False),
+            (direction * outside_latitude, False),
+        ):
+            point = gm.Point(longitude, latitude, crs=4326)
+            assert gm.contains(annulus, point) is expected
+            assert gm.contains(split, point) is expected
+            assert gm.contains_xy(annulus, longitude, latitude) is expected
+            assert gm.contains_xy(split, longitude, latitude) is expected
+
+
+def test_split_seam_donut_preserves_area_and_membership() -> None:
+    # Existing seam vertices avoid affine cuts, whose geodesic area is not
+    # promised to match the unsplit chart geometry.
+    shell = [(160, -20), (180, -20), (-160, -20), (-160, 20), (180, 20), (160, 20)]
+    hole = [(170, -5), (180, -5), (-170, -5), (-170, 5), (180, 5), (170, 5)]
+    donut = gm.Polygon(shell, holes=[hole], crs=4326)
+    split = donut.split_antimeridian()
+
+    assert donut.is_valid
+    assert split.is_valid
+    assert split.area == pytest.approx(donut.area, rel=1e-15)
+    for longitude, latitude, expected in (
+        (180.0, 0.0, False),
+        (-180.0, 0.0, False),
+        (165.0, 0.0, True),
+        (-165.0, 0.0, True),
+        (180.0, 10.0, True),
+        (-180.0, 10.0, True),
+        (155.0, 0.0, False),
+        (-155.0, 0.0, False),
+    ):
+        point = gm.Point(longitude, latitude, crs=4326)
+        assert gm.contains(donut, point) is expected
+        assert gm.contains(split, point) is expected
+        assert gm.contains_xy(donut, longitude, latitude) is expected
+        assert gm.contains_xy(split, longitude, latitude) is expected
+
+
+def test_split_polar_annulus_carries_resolvable_zm() -> None:
+    longitudes = (0, 60, 120, 180, -120, -60)
+    shell = [(longitude, 70, 5, 50) for longitude in longitudes]
+    hole = [(longitude, 80, 5, 50) for longitude in longitudes]
+    annulus = gm.Polygon(shell, holes=[hole], crs=4326)
+    split = annulus.split_antimeridian()
+    coordinates = gm.get_coordinates(split)
+
+    assert annulus.is_valid
+    assert split.is_valid
+    assert split.coordinate_axes == 'XYZM'
+    assert split.area == annulus.area
+    np.testing.assert_array_equal(
+        coordinates[:, 2:], np.tile([5.0, 50.0], (len(coordinates), 1))
+    )
 
 
 def test_geographic_validation_and_repair_use_normalized_topology() -> None:
