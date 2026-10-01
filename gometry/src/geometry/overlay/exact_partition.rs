@@ -16,13 +16,12 @@
 
 use std::borrow::{Borrow, Cow};
 use std::cmp::Ordering;
-use std::mem;
 use std::ops::{ControlFlow, Range};
 
 use crate::error::ResourceError;
 #[cfg(test)]
 use crate::geometry::Coordinates as _;
-use crate::geometry::arrangement::{IndexedTopology, IndexedTopologyScratch, compare_departures};
+use crate::geometry::arrangement::{IndexedTopology, IndexedTopologyScratch};
 use crate::geometry::exact_arith::ExactSign;
 use crate::geometry::overlay::noding::{
     SegmentProvenance, SegmentSource, dedup_undirected_segments_sourced, placement_offsets,
@@ -42,6 +41,7 @@ use crate::geometry::{
 
 mod construction;
 mod coverage;
+mod embedding;
 mod emission;
 #[cfg(test)]
 mod metrics;
@@ -1518,7 +1518,7 @@ impl ExactSourceInventory {
             return Ok(Shape::multi_line_string(declared_axes, Vec::new()));
         }
         // Certifies the rounded chords; the points below read the same rounding.
-        partition.round_incident_items(&items)?;
+        let (items, _) = partition.round_incident_items(items)?;
         let mut nodes = Vec::new();
         let node_capacity = items
             .len()
@@ -3877,21 +3877,7 @@ impl ExactPartition<'_> {
     }
 
     fn check_node_injectivity(nodes: &[NodeId], coordinates: &[XY]) -> Result<()> {
-        debug_assert_eq!(nodes.len(), coordinates.len());
-        let mut owners = HashMap::with_hasher(crate::collections::collection_hash_state()?.clone());
-        owners.reserve(nodes.len());
-        for (&node, &coordinate) in nodes.iter().zip(coordinates) {
-            if let Some(first) = owners.insert(PointKey::new(coordinate), node)
-                && first != node
-            {
-                return Err(GeometryErrorKind::ExactNodeCollision {
-                    first: first.0,
-                    second: node.0,
-                }
-                .into());
-            }
-        }
-        Ok(())
+        embedding::check_node_injectivity(nodes, coordinates)
     }
 
     /// Whether rounding moves any of `items`: only crossings round, so
@@ -3908,48 +3894,17 @@ impl ExactPartition<'_> {
         moved
     }
 
-    #[expect(
-        clippy::indexing_slicing,
-        reason = "each item endpoint is a NodeId admitted by this partition and seen is sized from its PointArena"
-    )]
-    fn round_incident_items(&self, items: &[[NodeId; 2]]) -> Result<Vec<Segment>> {
-        let mut segments = Vec::with_capacity(items.len());
-        segments.extend(items.iter().map(|&[start, end]| Segment {
-            start: self.node_xy(start),
-            end: self.node_xy(end),
-        }));
-        if !self.rounding_moves(items) {
-            return Ok(segments);
-        }
-        let mut seen = Vec::with_capacity(self.node_count());
-        seen.resize(self.node_count(), false);
-        let mut nodes = Vec::new();
-        for &node in items.iter().flatten() {
-            if !mem::replace(&mut seen[node.0 as usize], true) {
-                nodes.push(node);
-            }
-        }
-        Self::check_node_injectivity(&nodes, &self.round_nodes(&nodes))?;
-        // A repeated node represents a live isolated point, not a new cut.
-        if let ControlFlow::Break((first, second)) =
-            for_each_candidate_pair(&segments, single_chain, |left, right| {
-                let endpoints = |index: usize| {
-                    let segment = segments[index];
-                    [
-                        (items[index][0], segment.start),
-                        (items[index][1], segment.end),
-                    ]
-                };
-                if emitted_pair_preserves_incidence(endpoints(left), endpoints(right)) {
-                    ControlFlow::Continue(())
-                } else {
-                    ControlFlow::Break((left, right))
-                }
-            })?
-        {
-            return Err(GeometryErrorKind::ExactUnexpectedContact { first, second }.into());
-        }
-        Ok(segments)
+    fn round_incident_items(
+        &self,
+        items: Vec<[NodeId; 2]>,
+    ) -> Result<(Vec<[NodeId; 2]>, Vec<Segment>)> {
+        let emission = embedding::Emission::incident_items(items);
+        let emissions = [&emission];
+        let (_, mut segments) = embedding::embed(self, None, &emissions)?;
+        let segments = segments
+            .pop()
+            .expect("one incident emission produces one segment list");
+        Ok((emission.items, segments))
     }
 
     #[expect(
@@ -3961,7 +3916,7 @@ impl ExactPartition<'_> {
         items.extend(self.spans.iter().map(|span| [span.start, span.end]));
 
         let (topology, edge_of_slot) = self.local_topology()?;
-        let segments = self.round_incident_items(&items)?;
+        let (items, segments) = self.round_incident_items(items)?;
 
         let mut departures = Vec::with_capacity(self.spans.len());
         departures.resize(self.spans.len(), [u32::MAX; 2]);
@@ -4008,68 +3963,12 @@ impl ExactPartition<'_> {
         })
     }
 
-    #[expect(
-        clippy::indexing_slicing,
-        reason = "dart IDs and fan ranges are produced by local_topology and the emitted-dart vector is sized from those slots"
-    )]
     fn check_emitted_fans(
         topology: &IndexedTopology,
         darts: &[[u32; 2]],
         segments: &[Segment],
     ) -> Result<()> {
-        debug_assert_eq!(darts.len(), segments.len());
-        // Emitted departures by topology slot.
-        let mut departures: Vec<Option<(XY, XY)>> = Vec::with_capacity(topology.targets.len());
-        departures.resize(topology.targets.len(), None);
-        for (&[start, end], segment) in darts.iter().zip(segments) {
-            debug_assert!(
-                departures[start as usize].is_none() && departures[end as usize].is_none()
-            );
-            departures[start as usize] = Some((segment.start, segment.end));
-            departures[end as usize] = Some((segment.end, segment.start));
-        }
-        for (node, &[start, end]) in topology.starts.array_windows::<2>().enumerate() {
-            let mut first = None;
-            let mut previous = None;
-            let mut descents = 0_usize;
-            let mut count = 0_usize;
-            for (target, departure) in
-                (start..end).zip(&mut departures[start as usize..end as usize])
-            {
-                let Some((origin, point)) = departure.take() else {
-                    continue;
-                };
-                let current = (target, point);
-                first.get_or_insert((origin, current));
-                if let Some((last_target, last_point)) = previous {
-                    descents = descents.wrapping_add(usize::from(
-                        compare_departures(origin, last_point, last_target, point, target)
-                            == Ordering::Greater,
-                    ));
-                }
-                previous = Some(current);
-                count = count.wrapping_add(1);
-            }
-            if count > 2 {
-                let (origin, (first_target, first_point)) =
-                    first.expect("a node with multiple emitted darts has a first dart");
-                let (last_target, last_point) =
-                    previous.expect("a node with multiple emitted darts has a last dart");
-                descents = descents.wrapping_add(usize::from(
-                    compare_departures(origin, last_point, last_target, first_point, first_target)
-                        == Ordering::Greater,
-                ));
-                // A cyclically sorted sequence crosses the positive-x cut once.
-                if descents != 1 {
-                    return Err(GeometryErrorKind::ExactCyclicOrder { node: node as u32 }.into());
-                }
-            }
-        }
-        debug_assert!(
-            departures.iter().all(Option::is_none),
-            "emitted chords must retain exact dart identities"
-        );
-        Ok(())
+        embedding::check_emitted_fans(topology, darts, segments)
     }
 
     pub(in crate::geometry) fn compare_nodes(

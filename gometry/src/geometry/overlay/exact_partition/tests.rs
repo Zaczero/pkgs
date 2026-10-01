@@ -237,9 +237,10 @@ fn rounded_chord_can_hit_an_isolated_node_without_node_collision() {
     let nodes = [start, crossing, isolated];
     let coordinates = partition.round_nodes(&nodes);
     ExactPartition::check_node_injectivity(&nodes, &coordinates).unwrap();
-    let emitted = partition
-        .round_incident_items(&[[start, crossing]])
+    let (emitted_items, emitted) = partition
+        .round_incident_items(vec![[start, crossing]])
         .unwrap();
+    assert_eq!(emitted_items.len(), 1);
     assert_eq!(emitted.len(), 1);
     let (topology, edges) = partition.local_topology().unwrap();
     let faces = partition.global_faces(&topology, &edges).unwrap();

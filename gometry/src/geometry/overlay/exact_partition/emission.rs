@@ -3,16 +3,17 @@
 //! Once the partition knows its global faces, emission is a separate job:
 //! pick the cells a stored-ring winding selects, plan the chords that bound
 //! them, and round each face to a ring. The checks that rounding preserved
-//! incidence, cyclic order and face identity live with the plan they verify.
+//! incidence, cyclic order and face identity are centralized in the sibling
+//! `embedding` module.
 
 use std::cmp::Ordering;
 use std::ops::Range;
 
-use super::rays::{EmittedPoints, shoot_left};
+use super::embedding::{self, Embedding, Emission};
 use super::{
     ArealCells, Axis, ExactPartition, ExactSourceInventory, KeptNodes, NodeId, rings_occupied,
 };
-use crate::geometry::arrangement::{IndexedTopology, compare_departures};
+use crate::geometry::arrangement::IndexedTopology;
 use crate::geometry::exact_arith::ExactSign;
 use crate::geometry::segments::{point_on_segment, stored_cross_sign, stored_orientation_sign};
 use crate::geometry::{
@@ -129,6 +130,49 @@ impl CoverageFaceState {
 }
 
 impl BoundaryPlan {
+    pub(super) fn emission(&self, topology: &IndexedTopology) -> Emission {
+        let items = self.incident_items(topology);
+        let chords = self
+            .walks
+            .iter()
+            .map(Vec::len)
+            .chain(std::iter::once(self.lines.len()))
+            .fold(0, usize::wrapping_add);
+        Emission {
+            items,
+            chords,
+            darts: self.emitted_darts(topology),
+            faces: Some(self.face_labels()),
+        }
+    }
+
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "planned source ranges and their dart twins come from this boundary plan and checked topology"
+    )]
+    fn emitted_darts(&self, topology: &IndexedTopology) -> Vec<[u32; 2]> {
+        let mut darts = Vec::new();
+        for chord in self.walks.iter().flatten().chain(&self.lines) {
+            let first = self.source_darts[chord.sources.start];
+            let last = self.source_darts[chord.sources.end.wrapping_sub(1)];
+            darts.push([first, topology.twins[last as usize]]);
+        }
+        darts
+    }
+
+    fn face_labels(&self) -> Vec<[u32; 2]> {
+        let mut faces = Vec::new();
+        faces.extend(
+            self.walks
+                .iter()
+                .flatten()
+                .chain(&self.lines)
+                .map(|chord| chord.sides),
+        );
+        faces.extend(self.points.iter().map(|&(_, host)| [host, host]));
+        faces
+    }
+
     #[expect(
         clippy::indexing_slicing,
         reason = "chord endpoints and incidence nodes come from this boundary plan and its checked CSR topology"
@@ -493,14 +537,9 @@ impl BoundaryPlan {
         topology: &IndexedTopology,
         segments: &[Segment],
     ) -> Result<()> {
-        let mut darts = Vec::new();
-        for chord in self.walks.iter().flatten().chain(&self.lines) {
-            let first = self.source_darts[chord.sources.start];
-            let last = self.source_darts[chord.sources.end.wrapping_sub(1)];
-            darts.push([first, topology.twins[last as usize]]);
-        }
+        let darts = self.emitted_darts(topology);
         debug_assert_eq!(segments.len(), darts.len().wrapping_add(self.points.len()));
-        ExactPartition::check_emitted_fans(topology, &darts, &segments[..darts.len()])
+        embedding::check_emitted_fans(topology, &darts, &segments[..darts.len()])
     }
 
     pub(super) fn round_items(
@@ -508,24 +547,18 @@ impl BoundaryPlan {
         partition: &ExactPartition<'_>,
         topology: &IndexedTopology,
     ) -> Result<(Vec<[NodeId; 2]>, Vec<Segment>)> {
-        let items = self.incident_items(topology);
-        let segments = partition.round_incident_items(&items)?;
-        if partition.rounding_moves(&items) {
-            self.check_emitted_fans(topology, &segments)?;
-            self.check_global_faces(partition, &items, &segments)?;
-        }
-        Ok((items, segments))
+        let emission = self.emission(topology);
+        let emissions = [&emission];
+        let (_, mut segments) = embedding::embed(partition, Some(topology), &emissions)?;
+        let segments = segments
+            .pop()
+            .expect("one plan emission produces one segment list");
+        Ok((emission.items, segments))
     }
 
-    // Incidence and cyclic order fix each connected embedding up to its exterior.
-    // Fixing that face and the hosts of disconnected components fixes the global faces.
     #[expect(
         clippy::indexing_slicing,
-        reason = "emitted NodeIds index the partition; incident offsets and item ordinals are native usize indices built from those items"
-    )]
-    #[expect(
-        clippy::float_cmp,
-        reason = "exact rounded coordinates are ordered by their stored binary64 values to keep emitted topology deterministic"
+        reason = "emitted NodeIds index the partition whose nearest coordinates are copied and patched from these emitted segments"
     )]
     pub(super) fn check_global_faces(
         &self,
@@ -533,148 +566,13 @@ impl BoundaryPlan {
         items: &[[NodeId; 2]],
         segments: &[Segment],
     ) -> Result<()> {
-        let mut sides = Vec::with_capacity(items.len());
-        for chord in self.walks.iter().flatten().chain(&self.lines) {
-            sides.push(chord.sides);
-        }
-        for &(_, host) in &self.points {
-            sides.push([host, host]);
-        }
-        debug_assert_eq!(sides.len(), items.len());
-        debug_assert_eq!(segments.len(), items.len());
-        let node_count = partition.node_count();
-        // Every node at its emitted coordinate, as stored doubles.
-        let mut coordinates = Vec::with_capacity(node_count);
-        coordinates.extend((0..node_count as u32).map(|node| partition.node_xy(NodeId(node))));
-        let incidence_rows = node_count.wrapping_add(1);
-        let mut incident_starts = vec![0_usize; incidence_rows];
-        let mut parents = Vec::with_capacity(node_count);
-        parents.extend(0..node_count as u32);
+        let mut coordinates = Embedding::nearest(partition).coordinates().to_vec();
         for (&[start, end], segment) in items.iter().zip(segments) {
             coordinates[start.0 as usize] = segment.start;
             coordinates[end.0 as usize] = segment.end;
-            let start_node = start.0 as usize;
-            let start_offset = start_node.wrapping_add(1);
-            incident_starts[start_offset] = incident_starts[start_offset].wrapping_add(1);
-            if end != start {
-                let end_node = end.0 as usize;
-                let end_offset = end_node.wrapping_add(1);
-                incident_starts[end_offset] = incident_starts[end_offset].wrapping_add(1);
-            }
-            let mut left = start.0;
-            let mut right = end.0;
-            while parents[left as usize] != left {
-                parents[left as usize] = parents[parents[left as usize] as usize];
-                left = parents[left as usize];
-            }
-            while parents[right as usize] != right {
-                parents[right as usize] = parents[parents[right as usize] as usize];
-                right = parents[right as usize];
-            }
-            parents[left.max(right) as usize] = left.min(right);
         }
-        super::construction::prefix_contact_offsets(&mut incident_starts);
-        let incident_count = incident_starts[node_count];
-        let mut incident = vec![0_usize; incident_count];
-        {
-            let mut cursor = Vec::with_capacity(node_count);
-            cursor.extend(incident_starts.iter().take(node_count).copied());
-            for (index, &[start, end]) in items.iter().enumerate() {
-                for node in [start, end]
-                    .into_iter()
-                    .take(if end == start { 1 } else { 2 })
-                {
-                    let node = node.0 as usize;
-                    let position = cursor[node];
-                    incident[position] = index;
-                    cursor[node] = position.wrapping_add(1);
-                }
-            }
-        }
-        // Each component's root is its lexicographically least emitted node.
-        let mut roots: Vec<Option<(usize, XY)>> = Vec::with_capacity(node_count);
-        roots.resize(node_count, None);
-        for node in 0..node_count {
-            if incident_starts[node] == incident_starts[node.wrapping_add(1)] {
-                continue;
-            }
-            let mut root = node as u32;
-            while parents[root as usize] != root {
-                root = parents[root as usize];
-            }
-            let point = coordinates[node];
-            let entry = &mut roots[root as usize];
-            if entry.is_none_or(|(_, prior): (usize, XY)| {
-                point.x < prior.x || (point.x == prior.x && point.y < prior.y)
-            }) {
-                *entry = Some((node, point));
-            }
-        }
-        // The face each component's own plan puts around it: its root's
-        // exterior wedge, or the host of an isolated point.
-        drop(parents);
-        let mut queries = Vec::new();
-        let mut exteriors = Vec::new();
-        for &(node, point) in roots.iter().flatten() {
-            let mut exterior = None;
-            let mut chosen = None;
-            let mut has_upper = false;
-            let range = incident_starts[node]..incident_starts[node.wrapping_add(1)];
-            for &index in &incident[range] {
-                let [start, end] = items[index];
-                let (target, target_point, face) = if start.0 as usize == node {
-                    (end.0, segments[index].end, sides[index][0])
-                } else {
-                    (start.0, segments[index].start, sides[index][1])
-                };
-                if target as usize == node {
-                    exterior = Some(face);
-                    continue;
-                }
-                let upper = target_point.y >= point.y;
-                if chosen.is_none()
-                    || (upper && !has_upper)
-                    || (upper == has_upper && {
-                        let (prior_target, prior_point) = chosen
-                            .expect("a selected departure exists before comparing the next one");
-                        compare_departures(point, prior_point, prior_target, target_point, target)
-                            == Ordering::Less
-                    })
-                {
-                    chosen = Some((target, target_point));
-                    exterior = Some(face);
-                    has_upper = upper;
-                }
-            }
-            queries.push(node as u32);
-            exteriors.push(exterior.expect("a component root has an incident emitted edge"));
-        }
-        drop(roots);
-        drop(incident);
-        drop(incident_starts);
-        // The emitted embedding keeps the exact incidence and fans, so the
-        // face just east of the first chord a leftward ray from a root meets
-        // is the face holding that component.
-        let hits = shoot_left(
-            &EmittedPoints(&coordinates),
-            items.len(),
-            |index| [items[index][0].0, items[index][1].0],
-            &queries,
-        )?;
-        for ((&node, &exterior), hit) in queries.iter().zip(&exteriors).zip(hits) {
-            let host = hit.map_or(0, |chord| {
-                let segment = segments[chord];
-                if segment.start.y < segment.end.y {
-                    sides[chord][1]
-                } else {
-                    sides[chord][0]
-                }
-            });
-            if host != exterior {
-                return Err(GeometryErrorKind::ExactGlobalFace { node }.into());
-            }
-        }
-        Ok(())
+        let embedding = Embedding::from_owned(coordinates);
+        embedding::check_global_faces(partition, &embedding, items, &self.face_labels(), segments)
     }
 
     #[expect(
