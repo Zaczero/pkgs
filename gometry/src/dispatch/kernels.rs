@@ -41,7 +41,10 @@ pub(crate) fn unary_centroid(data: &PreparedPlan, ctx: &CachelessRowContext<'_>)
 
 /// Envelope kernel shared by the spine-routed free function.
 pub(crate) fn unary_envelope(data: &PreparedPlan, _ctx: &CachelessRowContext<'_>) -> Result<Shape> {
-    data.shape().envelope()
+    data.bounds().map_or_else(
+        || Ok(Shape::empty_polygon()),
+        crate::geometry::bounds_to_shape,
+    )
 }
 
 /// Convex-hull kernel shared by the spine-routed free function.
