@@ -1468,10 +1468,6 @@ impl ExactSourceInventory {
         partition.emit_lines(&self.source_operands)
     }
 
-    #[expect(
-        clippy::indexing_slicing,
-        reason = "node pairs and resolved point entries are emitted from the same ExactPartition"
-    )]
     pub(in crate::geometry) fn node_shape(
         &self,
         partition: &ExactPartition<'_>,
@@ -3392,7 +3388,7 @@ enum LineSource<'a> {
 }
 
 impl<'a> LineSource<'a> {
-    fn from_shape(shape: &'a Shape) -> Option<Self> {
+    const fn from_shape(shape: &'a Shape) -> Option<Self> {
         match shape {
             Shape::LineString(line) => Some(Self::LineString(line)),
             Shape::MultiLineString(lines) => Some(Self::MultiLineString(lines)),

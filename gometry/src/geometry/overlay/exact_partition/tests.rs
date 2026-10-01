@@ -79,7 +79,8 @@ fn line_source_ranges_reserve_only_stored_multiline_values() {
     let shape = Shape::MultiLineString(lines);
     let source = LineSource::from_shape(&shape).expect("multiline source");
     let ranges = source_line_ranges(source).unwrap();
-    assert_eq!(ranges, [0..1]);
+    assert_eq!(ranges.len(), 1);
+    assert_eq!(ranges[0], 0..1);
     assert!(ranges.capacity() < member_count);
 }
 
@@ -394,9 +395,11 @@ fn collapsed_ring_sources_retain_support_without_winding_labels() {
         "POLYGON ((0 0,4 0,2 0,0 0),(1 1,3 1,3 3,1 3,1 1))",
         "POLYGON ((8 0,12 0,12 4,8 4,8 0),(9 2,11 2,10 2,9 2))",
     ]
-    .map(|wkt| match crate::io::parse_wkt(wkt).unwrap() {
-        crate::geometry::Shape::Polygon(polygon) => polygon,
-        _ => unreachable!(),
+    .map(|wkt| {
+        let Shape::Polygon(polygon) = crate::io::parse_wkt(wkt).unwrap() else {
+            unreachable!()
+        };
+        polygon
     });
     let sources = super::ArealSources::new(&polygons).unwrap();
     assert_eq!(sources.collapsed_rings, [(0, 0..3), (3, 11..14)]);
@@ -513,9 +516,11 @@ fn areal_cells_exclude_cancelled_spurs_and_keep_collapsed_points() {
         "POLYGON ((0 0,4 0,4 4,0 4,0 0,-2 0,0 0))",
         "POLYGON ((6 6,6 6,6 6,6 6))",
     ]
-    .map(|wkt| match crate::io::parse_wkt(wkt).unwrap() {
-        crate::geometry::Shape::Polygon(polygon) => polygon,
-        _ => unreachable!(),
+    .map(|wkt| {
+        let Shape::Polygon(polygon) = crate::io::parse_wkt(wkt).unwrap() else {
+            unreachable!()
+        };
+        polygon
     });
     let sources = ArealSources::new(&polygons).unwrap();
     let (unique, provenance) =
@@ -601,9 +606,11 @@ fn zero_length_sources_keep_owners_at_incident_and_isolated_nodes() {
 
 #[test]
 fn stored_ring_sources_keep_direction_and_shell_hole_composition() {
-    let polygon = |wkt| match crate::io::parse_wkt(wkt).unwrap() {
-        crate::geometry::Shape::Polygon(polygon) => polygon,
-        _ => unreachable!(),
+    let polygon = |wkt| {
+        let Shape::Polygon(polygon) = crate::io::parse_wkt(wkt).unwrap() else {
+            unreachable!()
+        };
+        polygon
     };
     let polygons = [
         polygon("POLYGON ((0 0,0 4,4 4,4 0,0 0),(1 1,1 3,3 3,3 1,1 1))"),
