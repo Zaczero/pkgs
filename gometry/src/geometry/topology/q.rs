@@ -441,6 +441,9 @@ struct HostRoot {
     point: ExactChartPoint,
 }
 
+/// Cut-root face and host queries sample the same southern side of the event.
+const ROOT_CUT_FACE_SIDE: i8 = -1;
+
 #[derive(Clone, Copy, Debug)]
 enum SweepEventKind {
     End(usize),
@@ -1812,9 +1815,11 @@ fn build_global_face_topology(
         let root = if let Some(port) = topology.cut_index.root_ports[component] {
             let port_data = &topology.ports[port.0 as usize];
             let face = if port_data.cut {
-                topology
-                    .cut_index
-                    .local_face_at(component_id, &port_data.point.y, -1)?
+                topology.cut_index.local_face_at(
+                    component_id,
+                    &port_data.point.y,
+                    ROOT_CUT_FACE_SIDE,
+                )?
             } else {
                 face_in_direction(
                     topology.face_chart(),
@@ -1911,10 +1916,12 @@ fn build_global_face_topology(
                 },
             });
         } else {
-            let host =
-                topology
-                    .cut_index
-                    .host_face_on_cut(root.component, reference, &root.point.y, 1)?;
+            let host = topology.cut_index.host_face_on_cut(
+                root.component,
+                reference,
+                &root.point.y,
+                ROOT_CUT_FACE_SIDE,
+            )?;
             if topology.local_faces[host.0 as usize].component == root.component {
                 return Err(GeometryErrorKind::Invalid(
                     "a pole-only Q component selected itself as its host".into(),
@@ -6930,6 +6937,44 @@ mod tests {
                 .geometry,
             Loc::Interior
         );
+    }
+
+    #[test]
+    fn polar_hole_intersection_with_its_pole_cap_is_empty() {
+        let polar_hole = Shape::Polygon(Polygon::new(
+            ring(&[
+                (0.0, 70.0),
+                (60.0, 70.0),
+                (120.0, 70.0),
+                (180.0, 70.0),
+                (-120.0, 70.0),
+                (-60.0, 70.0),
+                (0.0, 70.0),
+            ]),
+            vec![ring(&[
+                (0.0, 80.0),
+                (60.0, 80.0),
+                (120.0, 80.0),
+                (180.0, 80.0),
+                (-120.0, 80.0),
+                (-60.0, 80.0),
+                (0.0, 80.0),
+            ])],
+        ));
+        let pole_cap = Shape::Polygon(Polygon::new(
+            ring(&[(120.0, 90.0), (110.0, 85.0), (130.0, 85.0), (120.0, 90.0)]),
+            Vec::new(),
+        ));
+
+        let intersection = crate::geometry::overlay_all(
+            &[&polar_hole, &pole_cap],
+            crate::geometry::TopologyDomain::Geographic(GeographicFrame::crs84()),
+            crate::geometry::OverlayOp::Intersection,
+            crate::geometry::Strictness::Strict,
+        )
+        .unwrap();
+
+        assert!(intersection.is_empty(), "{intersection:?}");
     }
 
     #[test]
