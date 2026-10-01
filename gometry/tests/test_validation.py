@@ -193,6 +193,27 @@ def test_validation_reports_wkb_boundary_ring_location_and_path() -> None:
     assert report.reason is not None
 
 
+def test_multipolygon_validation_preserves_collapsed_shell_context_at_member_three() -> (
+    None
+):
+    shell = [(0, 0), (1, 0), (1, 1), (0, 1), (0, 0)]
+    collapsed = [(0, 0), (1, 1), (1, 1), (0, 0)]
+    geometry = gm.MultiPolygon([
+        gm.Polygon(shell),
+        gm.Polygon(shell),
+        gm.Polygon(shell),
+        gm.Polygon(collapsed),
+    ])
+
+    report = geometry.validate()
+
+    assert (report.code, report.detail, report.path) == (
+        'ring_collapsed',
+        'multi polygon member shell collapses to fewer than three distinct vertices',
+        '$[3].shell',
+    )
+
+
 def test_validation_reports_and_repairs_self_intersecting_polygons() -> None:
     planar_bowtie = gm.Polygon([(0, 0), (2, 2), (0, 2), (2, 0), (0, 0)])
     report = planar_bowtie.validate()

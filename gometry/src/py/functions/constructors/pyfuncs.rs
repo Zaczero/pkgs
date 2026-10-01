@@ -431,7 +431,13 @@ pub(super) fn line_strings(
     crs: Option<&Bound<'_, PyAny>>,
     epoch: Option<&Bound<'_, PyAny>>,
 ) -> PyResult<PyGeometryArray> {
-    build_geometry_array(values, crs, epoch, line_string_from_data_item)
+    build_geometry_array(
+        values,
+        crs,
+        epoch,
+        crate::CoordSeqStructure::Sequence,
+        line_string_from_data_item,
+    )
 }
 
 /// Create a ``GeometryArray`` of polygons from per-polygon ring inputs.
@@ -476,7 +482,13 @@ pub(super) fn polygons(
     crs: Option<&Bound<'_, PyAny>>,
     epoch: Option<&Bound<'_, PyAny>>,
 ) -> PyResult<PyGeometryArray> {
-    build_geometry_array(values, crs, epoch, polygon_from_data_item)
+    build_geometry_array(
+        values,
+        crs,
+        epoch,
+        crate::CoordSeqStructure::Polygon,
+        polygon_from_data_item,
+    )
 }
 
 /// Create a ``GeometryArray`` of multipoints from per-multipoint inputs.
@@ -520,7 +532,13 @@ pub(super) fn multi_points(
     crs: Option<&Bound<'_, PyAny>>,
     epoch: Option<&Bound<'_, PyAny>>,
 ) -> PyResult<PyGeometryArray> {
-    build_geometry_array(values, crs, epoch, multi_point_from_data_item)
+    build_geometry_array(
+        values,
+        crs,
+        epoch,
+        crate::CoordSeqStructure::Sequence,
+        multi_point_from_data_item,
+    )
 }
 
 /// Create a ``GeometryArray`` of multilinestrings from per-multiline inputs.
@@ -564,7 +582,13 @@ pub(super) fn multi_line_strings(
     crs: Option<&Bound<'_, PyAny>>,
     epoch: Option<&Bound<'_, PyAny>>,
 ) -> PyResult<PyGeometryArray> {
-    build_geometry_array(values, crs, epoch, multi_line_string_from_data_item)
+    build_geometry_array(
+        values,
+        crs,
+        epoch,
+        crate::CoordSeqStructure::MultiLineString,
+        multi_line_string_from_data_item,
+    )
 }
 
 /// Create a ``GeometryArray`` of multipolygons from per-multipolygon inputs.
@@ -608,5 +632,11 @@ pub(super) fn multi_polygons(
     crs: Option<&Bound<'_, PyAny>>,
     epoch: Option<&Bound<'_, PyAny>>,
 ) -> PyResult<PyGeometryArray> {
-    build_geometry_array(values, crs, epoch, multi_polygon_from_data_item)
+    build_geometry_array(
+        values,
+        crs,
+        epoch,
+        crate::CoordSeqStructure::MultiPolygon,
+        multi_polygon_from_data_item,
+    )
 }

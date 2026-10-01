@@ -14,7 +14,7 @@ use crate::boundary::buffer_endian;
 use crate::boundary::buffer_endian::{
     buffer_item_count, buffer_to_column_f64, buffer_to_vec_f64, try_typed_buffer,
 };
-use crate::geometry::column_all_finite;
+use crate::geometry::{CoordWindow, column_all_finite};
 use crate::py::errors;
 use crate::py::errors::{GeometryError, InvalidGeometryError};
 use crate::py::numpy::reject_masked_array;
@@ -27,6 +27,107 @@ use crate::{
 pub(crate) struct CoordinateInput {
     pub values: Vec<f64>,
     pub scalar: bool,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) enum CoordSeqShape {
+    Empty,
+    One([usize; 1]),
+    Two([usize; 2]),
+    Three([usize; 3]),
+    Four([usize; 4]),
+}
+
+impl CoordSeqShape {
+    const fn from_slice(dimensions: &[usize]) -> Option<Self> {
+        match dimensions {
+            [] => Some(Self::Empty),
+            [first] => Some(Self::One([*first])),
+            [first, second] => Some(Self::Two([*first, *second])),
+            [first, second, third] => Some(Self::Three([*first, *second, *third])),
+            [first, second, third, fourth] => Some(Self::Four([*first, *second, *third, *fourth])),
+            _ => None,
+        }
+    }
+
+    pub(crate) const fn as_slice(&self) -> &[usize] {
+        match self {
+            Self::Empty => &[],
+            Self::One(dimensions) => dimensions.as_slice(),
+            Self::Two(dimensions) => dimensions.as_slice(),
+            Self::Three(dimensions) => dimensions.as_slice(),
+            Self::Four(dimensions) => dimensions.as_slice(),
+        }
+    }
+}
+
+pub(crate) struct CoordSeqBuffer {
+    pub coordinates: CoordSeq,
+    pub shape: CoordSeqShape,
+}
+
+impl CoordSeqBuffer {
+    pub(crate) fn row(&self, index: usize) -> crate::error::Result<Self> {
+        let shape = self.shape.as_slice();
+        let Some((&rows, row_shape)) = shape.split_first() else {
+            return Err(crate::error::ResourceError::SizeOverflow.into());
+        };
+        if index >= rows {
+            return Err(crate::error::ResourceError::SizeOverflow.into());
+        }
+        let row_coordinates = row_shape
+            .iter()
+            .try_fold(1_usize, |total, &length| total.checked_mul(length));
+        let Some(row_coordinates) = row_coordinates else {
+            return Err(crate::error::ResourceError::SizeOverflow.into());
+        };
+        let start = index
+            .checked_mul(row_coordinates)
+            .ok_or(crate::error::ResourceError::SizeOverflow)?;
+        let end = start
+            .checked_add(row_coordinates)
+            .ok_or(crate::error::ResourceError::SizeOverflow)?;
+        let window = CoordWindow::checked(start..end, self.coordinates.len())?;
+        let Some(shape) = CoordSeqShape::from_slice(row_shape) else {
+            return Err(crate::error::ResourceError::SizeOverflow.into());
+        };
+        Ok(Self {
+            coordinates: self.coordinates.view(window),
+            shape,
+        })
+    }
+}
+
+#[derive(Clone, Copy)]
+pub(crate) enum CoordSeqStructure {
+    Sequence,
+    Polygon,
+    MultiLineString,
+    MultiPolygon,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) enum CoordSeqBufferMode {
+    Geometry(CoordSeqStructure),
+    GeometryArray(CoordSeqStructure),
+}
+
+impl CoordSeqBufferMode {
+    const fn accepts_rank(self, rank: usize) -> bool {
+        let (structure, geometry_rank) = match self {
+            Self::Geometry(structure) => (structure, Some(rank)),
+            Self::GeometryArray(structure) => (structure, rank.checked_sub(1)),
+        };
+        let Some(geometry_rank) = geometry_rank else {
+            return false;
+        };
+        match structure {
+            CoordSeqStructure::Sequence => geometry_rank == 2,
+            CoordSeqStructure::Polygon => geometry_rank == 2 || geometry_rank == 3,
+            CoordSeqStructure::MultiLineString => geometry_rank == 3,
+            CoordSeqStructure::MultiPolygon => geometry_rank == 4,
+        }
+    }
 }
 
 /// How a float input is admitted: coordinates are finite values from a
@@ -527,27 +628,31 @@ fn check_1d_byte_stride_span(len: usize, stride: isize) -> PyResult<()> {
     Ok(())
 }
 
-/// Build a [`CoordSeq`] from an indirect (suboffset) N×D `f64` buffer via
-/// PyO3's safe contiguous copy, then de-interleave into SoA columns.
-fn coordseq_from_indirect_nd_buffer(
+/// Copy a `f64` buffer through PyO3's layout-aware path, then de-interleave it.
+fn coordseq_from_copied_nd_buffer(
     py: Python<'_>,
     buffer: &PyBuffer<f64>,
     item_count: usize,
-    n: usize,
+    point_count: usize,
     d: usize,
+    shape: CoordSeqShape,
     z: Option<&Bound<'_, PyAny>>,
     m: Option<&Bound<'_, PyAny>>,
-) -> PyResult<CoordSeq> {
+) -> PyResult<CoordSeqBuffer> {
     let flat = buffer_to_vec_f64(py, buffer, item_count)?;
-    let mut xs = Vec::with_capacity(n);
-    let mut ys = Vec::with_capacity(n);
-    let mut zs_col = (d >= 3).then(|| Vec::with_capacity(n));
-    let mut ms_col = (d >= 4).then(|| Vec::with_capacity(n));
-    // buffer_item_count admitted the shape product, and this copy preserves
-    // its exact item count, so chunks_exact covers every row without a tail.
+    let mut xs = Vec::with_capacity(point_count);
+    let mut ys = Vec::with_capacity(point_count);
+    let mut zs_col = (d >= 3).then(|| Vec::with_capacity(point_count));
+    let mut ms_col = (d >= 4).then(|| Vec::with_capacity(point_count));
+    // `buffer_item_count` admitted the shape product, and this copy preserves
+    // its exact item count, so `chunks_exact` covers every coordinate.
     for row in flat.chunks_exact(d) {
         let mut ordinates = row.iter().copied();
-        xs.push(ordinates.next().expect("N×D rows have at least two axes"));
+        xs.push(
+            ordinates
+                .next()
+                .expect("coordinate rows have at least two axes"),
+        );
         ys.push(ordinates.next().expect("N×D rows have at least two axes"));
         if let Some(zs) = zs_col.as_mut() {
             zs.push(ordinates.next().expect("three-axis rows carry Z"));
@@ -564,7 +669,7 @@ fn coordseq_from_indirect_nd_buffer(
             z_col,
             "z",
             FloatInput::Coordinate,
-            n,
+            point_count,
             |got| {
                 InvalidGeometryError::new_err(format!(
                     "z must have the same length as x/y coordinates (got length {got})"
@@ -578,7 +683,7 @@ fn coordseq_from_indirect_nd_buffer(
             m_col,
             "m",
             FloatInput::Coordinate,
-            n,
+            point_count,
             |got| {
                 InvalidGeometryError::new_err(format!(
                     "m must have the same length as x/y coordinates (got length {got})"
@@ -586,13 +691,14 @@ fn coordseq_from_indirect_nd_buffer(
             },
         )?);
     }
-    Ok(CoordSeq::try_from_vecs(xs, ys, zs, ms)?)
+    Ok(CoordSeqBuffer {
+        coordinates: CoordSeq::try_from_vecs(xs, ys, zs, ms)?,
+        shape,
+    })
 }
 
-/// Try to build a final SoA [`CoordSeq`] from a contiguous (or regularly
-/// strided) N×D numeric buffer directly into owned columns.
-/// Returns `Ok(None)` when the value is not an N×D
-/// float buffer (caller falls back to the general extractor).
+/// Capture a typed coordinate buffer into SoA columns, retaining the regular
+/// dimensions above its final ordinate axis for Rust-side row slicing.
 ///
 /// `z`/`m` optional columns override inline ordinates and cannot combine with
 /// D>2 buffers (same rule as [`crate::py::support::extract::extract_points`]).
@@ -600,33 +706,114 @@ pub(crate) fn try_coordseq_from_nd_buffer(
     value: &Bound<'_, PyAny>,
     z: Option<&Bound<'_, PyAny>>,
     m: Option<&Bound<'_, PyAny>>,
-) -> PyResult<Option<CoordSeq>> {
+    mode: CoordSeqBufferMode,
+) -> PyResult<Option<CoordSeqBuffer>> {
     reject_masked_array(value)?;
+    if matches!(mode, CoordSeqBufferMode::GeometryArray(_))
+        && value.cast_exact::<PyUntypedArray>().is_err()
+    {
+        return Ok(None);
+    }
     let Some(buffer) = try_typed_buffer::<f64>(value)? else {
         return Ok(None);
     };
     let item_count = buffer_item_count(&buffer)?;
-    if buffer.dimensions() != 2 {
+    let dimensions = buffer.dimensions();
+    if !mode.accepts_rank(dimensions) {
         return Ok(None);
     }
-    let Some(&[n, d]) = buffer.shape().first_chunk::<2>() else {
+    let Some((&ordinate_count, leading_shape)) = buffer.shape().split_last() else {
         return Ok(None);
     };
-    if !(2..=4).contains(&d) {
+    if !(2..=4).contains(&ordinate_count) {
         return Ok(None);
     }
-    if d > 2 && (z.is_some() || m.is_some()) {
+    let Some(shape) = CoordSeqShape::from_slice(leading_shape) else {
+        return Ok(None);
+    };
+    let point_count = leading_shape
+        .iter()
+        .try_fold(1_usize, |total, &length| total.checked_mul(length))
+        .ok_or(crate::error::ResourceError::SizeOverflow)
+        .map_err(crate::error::Error::from)?;
+    if dimensions > 2 && (z.is_some() || m.is_some()) {
+        return Ok(None);
+    }
+    if ordinate_count > 2 && (z.is_some() || m.is_some()) {
         return Err(InvalidGeometryError::new_err(
             "inline Z/M coordinates cannot be combined with z/m arrays",
         ));
     }
-    // Indirect (PIL-style) N×D buffers need pointer indirection via suboffsets;
-    // the flat row/col stride arithmetic would read the pointer table as
-    // coordinates. Snapshot through PyO3's safe contiguous copy.
+    // Indirect (PIL-style) buffers need pointer indirection via suboffsets.
+    // Snapshot through PyO3's safe contiguous copy rather than reading their
+    // pointer tables as coordinates.
     if buffer.suboffsets().is_some() {
-        return coordseq_from_indirect_nd_buffer(value.py(), &buffer, item_count, n, d, z, m)
-            .map(Some);
+        return coordseq_from_copied_nd_buffer(
+            value.py(),
+            &buffer,
+            item_count,
+            point_count,
+            ordinate_count,
+            shape,
+            z,
+            m,
+        )
+        .map(Some);
     }
+    if dimensions > 2 {
+        let mut xs = Vec::with_capacity(point_count);
+        let mut ys = Vec::with_capacity(point_count);
+        let mut zs = (ordinate_count >= 3).then(|| Vec::with_capacity(point_count));
+        let mut ms = (ordinate_count >= 4).then(|| Vec::with_capacity(point_count));
+        if point_count > 0
+            && buffer_endian::exporter_supports_direct_capture(value.py(), &buffer)
+            && let Some(cells) = buffer.as_slice(value.py())
+        {
+            let swap = !buffer_endian::buffer_format_is_native_endian(buffer.format());
+            for coordinate in cells.chunks_exact(ordinate_count) {
+                let mut ordinates = [0.0; 4];
+                for (slot, cell) in ordinates.iter_mut().zip(coordinate) {
+                    let mut ordinate = cell.get();
+                    if swap {
+                        ordinate = buffer_endian::swap_f64_endian(ordinate);
+                    }
+                    *slot = ordinate;
+                }
+                let [
+                    first_ordinate,
+                    second_ordinate,
+                    third_ordinate,
+                    fourth_ordinate,
+                ] = ordinates;
+                xs.push(first_ordinate);
+                ys.push(second_ordinate);
+                if let Some(zs) = &mut zs {
+                    zs.push(third_ordinate);
+                }
+                if let Some(ms) = &mut ms {
+                    ms.push(fourth_ordinate);
+                }
+            }
+        } else if point_count > 0 {
+            return coordseq_from_copied_nd_buffer(
+                value.py(),
+                &buffer,
+                item_count,
+                point_count,
+                ordinate_count,
+                shape,
+                None,
+                None,
+            )
+            .map(Some);
+        }
+        return Ok(Some(CoordSeqBuffer {
+            coordinates: CoordSeq::try_from_vecs(xs, ys, zs, ms)?,
+            shape,
+        }));
+    }
+
+    let n = point_count;
     let Some(&[row_stride, col_stride]) = buffer.strides().first_chunk::<2>() else {
         return Ok(None);
     };
@@ -643,13 +830,20 @@ pub(crate) fn try_coordseq_from_nd_buffer(
     // The direct stride walk and the ordinary copy both require a quiescent
     // producer; the copy path is not a native-writer synchronization protocol.
     if !buffer_endian::exporter_supports_direct_capture(value.py(), &buffer) {
-        return coordseq_from_indirect_nd_buffer(value.py(), &buffer, item_count, n, d, z, m)
-            .map(Some);
+        return coordseq_from_copied_nd_buffer(
+            value.py(),
+            &buffer,
+            item_count,
+            point_count,
+            ordinate_count,
+            shape,
+            z,
+            m,
+        )
+        .map(Some);
     }
-    check_2d_byte_stride_corners(n, d, row_stride, col_stride)?;
-    let native = buffer_endian::buffer_format_is_native_endian(buffer.format());
-    let swap = !native;
-
+    check_2d_byte_stride_corners(n, ordinate_count, row_stride, col_stride)?;
+    let swap = !buffer_endian::buffer_format_is_native_endian(buffer.format());
     let fill_column = |col: usize| -> crate::error::Result<Vec<f64>> {
         use pyo3::buffer::ReadOnlyCell;
 
@@ -666,7 +860,7 @@ pub(crate) fn try_coordseq_from_nd_buffer(
                 .checked_mul(row_step)
                 .and_then(|row| row.checked_add(column.checked_mul(col_step)?))
                 .ok_or(crate::error::ResourceError::SizeOverflow)?;
-            // SAFETY: buffer is held; shape/strides and `col < d` were
+            // SAFETY: buffer is held; shape/strides and `col < ordinate_count` were
             // validated; no suboffsets are present, so this is in the declared
             // range. The provider must remain quiescent during capture.
             let mut ordinate = unsafe { (*base.offset(offset)).get() };
@@ -686,43 +880,52 @@ pub(crate) fn try_coordseq_from_nd_buffer(
             return Err(pyo3::PyErr::from(error));
         },
     };
-    let mut zs = match (d >= 3).then(|| fill_column(2)).transpose() {
+    let mut zs = match (ordinate_count >= 3).then(|| fill_column(2)).transpose() {
         Ok(values) => values,
         Err(error) => {
             drop((xs, ys));
             return Err(pyo3::PyErr::from(error));
         },
     };
-    let mut ms = match (d >= 4).then(|| fill_column(3)).transpose() {
+    let mut ms = match (ordinate_count >= 4).then(|| fill_column(3)).transpose() {
         Ok(values) => values,
         Err(error) => {
             drop((xs, ys, zs));
             return Err(pyo3::PyErr::from(error));
         },
     };
-
-    // Optional parallel z/m columns (only valid when D == 2).
     if let Some(z_col) = z {
-        let values =
-            float_values_exact(z_col.py(), z_col, "z", FloatInput::Coordinate, n, |got| {
+        zs = Some(float_values_exact(
+            z_col.py(),
+            z_col,
+            "z",
+            FloatInput::Coordinate,
+            point_count,
+            |got| {
                 InvalidGeometryError::new_err(format!(
                     "z must have the same length as x/y coordinates (got length {got})"
                 ))
-            })?;
-        zs = Some(values);
+            },
+        )?);
     }
     if let Some(m_col) = m {
-        let values =
-            float_values_exact(m_col.py(), m_col, "m", FloatInput::Coordinate, n, |got| {
+        ms = Some(float_values_exact(
+            m_col.py(),
+            m_col,
+            "m",
+            FloatInput::Coordinate,
+            point_count,
+            |got| {
                 InvalidGeometryError::new_err(format!(
                     "m must have the same length as x/y coordinates (got length {got})"
                 ))
-            })?;
-        ms = Some(values);
+            },
+        )?);
     }
-
-    // Finite check + axes from column presence.
-    Ok(Some(CoordSeq::try_from_vecs(xs, ys, zs, ms)?))
+    Ok(Some(CoordSeqBuffer {
+        coordinates: CoordSeq::try_from_vecs(xs, ys, zs, ms)?,
+        shape,
+    }))
 }
 
 fn check_2d_byte_stride_corners(

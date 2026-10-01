@@ -10,12 +10,13 @@ pub(crate) mod reserve;
 pub(crate) use buffer_endian::{buffer_copy_to_slice_u64, buffer_to_vec_u64};
 pub(crate) use convert::{coordinates_object, json_text_to_py, json_to_py, point_tuple};
 pub(crate) use coordinate_input::{
-    CoordinateInput, CrsCoordinateArgs, DefaultedF64Input, DefaultedI64Input, F64Param, FloatInput,
-    I64Param, Zt, ZtLaneRefs, ZtLanes, ZtValues, broadcast_coordinate_group,
-    broadcast_coordinate_input, broadcast_crs_coordinate_inputs, coordinate_column_values,
-    coordinate_column_values_exact, coordinate_column_values_from_buffer,
-    coordinate_input_with_expected, coordinate_inputs_are_scalar, coordinate_sequence_len_hint,
-    float_values, float_values_at_most, float_values_exact, optional_coordinate_column_values,
+    CoordSeqBuffer, CoordSeqBufferMode, CoordSeqStructure, CoordinateInput, CrsCoordinateArgs,
+    DefaultedF64Input, DefaultedI64Input, F64Param, FloatInput, I64Param, Zt, ZtLaneRefs, ZtLanes,
+    ZtValues, broadcast_coordinate_group, broadcast_coordinate_input,
+    broadcast_crs_coordinate_inputs, coordinate_column_values, coordinate_column_values_exact,
+    coordinate_column_values_from_buffer, coordinate_input_with_expected,
+    coordinate_inputs_are_scalar, coordinate_sequence_len_hint, float_values, float_values_at_most,
+    float_values_exact, optional_coordinate_column_values,
     optional_coordinate_column_values_from_buffer, optional_coordinate_input_with_expected,
     parameter_input_with_expected, reject_multidimensional_coordinate_array,
     try_coordseq_from_nd_buffer,

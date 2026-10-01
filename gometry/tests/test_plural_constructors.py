@@ -4,6 +4,7 @@ import inspect
 from collections.abc import Iterable
 
 import gometry as gm
+import numpy as np
 import pytest
 
 
@@ -159,6 +160,71 @@ def test_polygons_one_shot_iterator_keeps_shell_and_hole() -> None:
     assert bare.area == 100.0
 
 
+@pytest.mark.parametrize(
+    ('ring', 'message'),
+    [
+        pytest.param(
+            np.array([(0, 0), (1, 0)], dtype=np.float64),
+            'polygon rings require at least three coordinates, got 2',
+            id='too-short-at-row-three',
+        ),
+        pytest.param(
+            np.array(
+                [(0, 0, 1), (1, 0, 2), (1, 1, 3), (0, 0, 4)],
+                dtype=np.float64,
+            ),
+            'polygon ring must be closed on all active ordinates',
+            id='active-axis-open-at-row-three',
+        ),
+        pytest.param(
+            np.array([(float('nan'), 0), (1, 0), (1, 1), (0, 0)], dtype=np.float64),
+            'x must be finite',
+            id='nonfinite-x-at-row-three',
+        ),
+        pytest.param(
+            np.array([(0, float('nan')), (1, 0), (1, 1), (0, 0)], dtype=np.float64),
+            'coordinate must be finite',
+            id='nonfinite-y-at-row-three',
+        ),
+    ],
+)
+def test_polygons_preserve_numpy_ring_errors_at_row_three(
+    ring: np.ndarray,
+    message: str,
+) -> None:
+    shell = np.array(
+        [(0, 0), (1, 0), (1, 1), (0, 1), (0, 0)],
+        dtype=np.float64,
+    )
+    rows = np.empty(4, dtype=object)
+    rows[0] = shell
+    rows[1] = shell
+    rows[2] = shell
+    rows[3] = ring
+
+    with pytest.raises(gm.InvalidGeometryError) as error:
+        gm.polygons(rows)
+
+    assert str(error.value) == message
+
+
+def test_regular_numpy_polygon_array_preserves_active_axis_ring_error_order() -> None:
+    closed_shell = np.array(
+        [(0, 0, 1), (1, 0, 2), (1, 1, 3), (0, 0, 1)],
+        dtype=np.float64,
+    )
+    open_on_z = np.array(
+        [(0, 0, 1), (1, 0, 2), (1, 1, 3), (0, 0, 4)],
+        dtype=np.float64,
+    )
+    shells = np.stack([closed_shell, closed_shell, closed_shell, open_on_z])
+
+    with pytest.raises(gm.InvalidGeometryError) as error:
+        gm.polygons(shells)
+
+    assert str(error.value) == 'polygon ring must be closed on all active ordinates'
+
+
 def test_multipolygon_one_shot_iterator_keeps_shell_and_hole() -> None:
     """P21: MultiPolygon raw members share polygon_from_coordinates_item."""
     shell = [(0, 0), (10, 0), (10, 10), (0, 10), (0, 0)]
@@ -184,6 +250,167 @@ def test_multi_line_strings_round_trip() -> None:
     assert len(multilines) == 2
     assert gm.equals(multilines[0], gm.MultiLineString(data[0], crs=4326))
     assert gm.equals(multilines[1], gm.MultiLineString(data[1], crs=4326))
+
+
+def test_nested_numpy_arrays_keep_multiline_and_multipolygon_rows() -> None:
+    lines = np.array(
+        [
+            [[(0, 0), (1, 1)], [(2, 0), (3, 1)]],
+            [[(4, 0), (5, 1)], [(6, 0), (7, 1)]],
+        ],
+        dtype=np.float64,
+    )
+    multilines = gm.multi_line_strings(lines)
+    assert gm.equals(
+        multilines[0],
+        gm.MultiLineString([[(0, 0), (1, 1)], [(2, 0), (3, 1)]]),
+    )
+    assert gm.equals(
+        multilines[1],
+        gm.MultiLineString([[(4, 0), (5, 1)], [(6, 0), (7, 1)]]),
+    )
+
+    rings = np.array(
+        [
+            [
+                [[(0, 0), (1, 0), (1, 1), (0, 1), (0, 0)]],
+                [[(2, 0), (3, 0), (3, 1), (2, 1), (2, 0)]],
+            ],
+            [
+                [[(4, 0), (5, 0), (5, 1), (4, 1), (4, 0)]],
+                [[(6, 0), (7, 0), (7, 1), (6, 1), (6, 0)]],
+            ],
+        ],
+        dtype=np.float64,
+    )
+    multipolygons = gm.multi_polygons(rings)
+    for row, left in enumerate((0, 4)):
+        expected = gm.MultiPolygon([
+            [[(left, 0), (left + 1, 0), (left + 1, 1), (left, 1), (left, 0)]],
+            [
+                [
+                    (left + 2, 0),
+                    (left + 3, 0),
+                    (left + 3, 1),
+                    (left + 2, 1),
+                    (left + 2, 0),
+                ]
+            ],
+        ])
+        assert gm.equals(multipolygons[row], expected)
+
+
+def test_regular_numpy_geometry_array_shapes_keep_constructor_nesting() -> None:
+    lines = np.array(
+        [
+            [(0, 0), (1, 1)],
+            [(2, 0), (3, 1)],
+        ],
+        dtype=np.float64,
+    )
+    line_strings = gm.line_strings(lines)
+    assert line_strings[0].length == pytest.approx(2**0.5)
+    assert line_strings[1].length == pytest.approx(2**0.5)
+
+    shells = np.array(
+        [
+            [(0, 0), (2, 0), (2, 2), (0, 2)],
+            [(4, 0), (7, 0), (7, 3), (4, 3)],
+        ],
+        dtype=np.float64,
+    )
+    polygons = gm.polygons(shells)
+    assert [polygon.area for polygon in polygons] == [4.0, 9.0]
+
+    rings = np.array(
+        [
+            [
+                [(0, 0), (10, 0), (10, 10), (0, 10)],
+                [(2, 2), (6, 2), (6, 6), (2, 6)],
+            ],
+            [
+                [(20, 0), (28, 0), (28, 8), (20, 8)],
+                [(22, 2), (25, 2), (25, 5), (22, 5)],
+            ],
+        ],
+        dtype=np.float64,
+    )
+    polygons_with_holes = gm.polygons(rings)
+    assert [polygon.area for polygon in polygons_with_holes] == [84.0, 55.0]
+
+    points = np.array(
+        [
+            [(0, 0), (1, 1)],
+            [(2, 2), (3, 3)],
+        ],
+        dtype=np.float64,
+    )
+    multi_points = gm.multi_points(points)
+    assert gm.equals(multi_points[0], gm.MultiPoint([(0, 0), (1, 1)]))
+    assert gm.equals(multi_points[1], gm.MultiPoint([(2, 2), (3, 3)]))
+
+
+def test_regular_numpy_coordinate_capture_preserves_endian_and_strides() -> None:
+    coordinates = np.array(
+        [
+            [(0, 0), (1, 1), (2, 0)],
+            [(3, 0), (4, 1), (5, 0)],
+        ],
+        dtype=np.float64,
+    )
+    layouts = (
+        coordinates[:, ::-1, :],
+        coordinates[:, :, ::-1],
+        coordinates.astype('>f8'),
+        np.asfortranarray(coordinates),
+    )
+
+    for layout in layouts:
+        actual = gm.line_strings(layout)
+        expected = [gm.LineString(row.tolist()) for row in layout]
+        assert all(
+            gm.equals(left, right) for left, right in zip(actual, expected, strict=True)
+        )
+
+
+def test_object_outer_arrays_capture_numeric_multiline_and_multipolygon_rows() -> None:
+    line_rows = np.empty(2, dtype=object)
+    line_rows[0] = np.array(
+        [[[(0, 0), (1, 1)], [(2, 0), (3, 1)]]],
+        dtype=np.float64,
+    )[0]
+    line_rows[1] = np.array(
+        [[[(4, 0), (5, 1)], [(6, 0), (7, 1)]]],
+        dtype=np.float64,
+    )[0]
+    multilines = gm.multi_line_strings(line_rows)
+    assert gm.equals(
+        multilines[0],
+        gm.MultiLineString([[(0, 0), (1, 1)], [(2, 0), (3, 1)]]),
+    )
+    assert gm.equals(
+        multilines[1],
+        gm.MultiLineString([[(4, 0), (5, 1)], [(6, 0), (7, 1)]]),
+    )
+
+    polygon_rows = np.empty(2, dtype=object)
+    polygon_rows[0] = np.array(
+        [[[[(0, 0), (1, 0), (1, 1), (0, 1), (0, 0)]]]],
+        dtype=np.float64,
+    )[0]
+    polygon_rows[1] = np.array(
+        [[[[(2, 0), (3, 0), (3, 1), (2, 1), (2, 0)]]]],
+        dtype=np.float64,
+    )[0]
+    multipolygons = gm.multi_polygons(polygon_rows)
+    assert gm.equals(
+        multipolygons[0],
+        gm.MultiPolygon([[[(0, 0), (1, 0), (1, 1), (0, 1), (0, 0)]]]),
+    )
+    assert gm.equals(
+        multipolygons[1],
+        gm.MultiPolygon([[[(2, 0), (3, 0), (3, 1), (2, 1), (2, 0)]]]),
+    )
 
 
 def test_multi_polygons_round_trip() -> None:
