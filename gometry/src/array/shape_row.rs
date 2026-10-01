@@ -292,6 +292,19 @@ impl<'a> ShapeRow<'a> {
         }
     }
 
+    pub(crate) fn segment_count_lower_bound(self) -> usize {
+        match self {
+            Self::Packed(row @ PackedRow::Lines { .. }) => row.coord_count().saturating_sub(1),
+            Self::Packed(row @ PackedRow::Polygons { .. }) => row
+                .coord_count()
+                .saturating_sub(row.polygon_rings().expect("polygon row has rings").len()),
+            Self::Handle(_)
+            | Self::Shape(_)
+            | Self::Point(_)
+            | Self::Packed(PackedRow::Points { .. }) => 0,
+        }
+    }
+
     pub(crate) fn try_for_each_segment(
         self,
         mut visit: impl FnMut(crate::geometry::Segment) -> Result<()>,

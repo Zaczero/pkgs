@@ -781,7 +781,7 @@ pub(crate) fn row_point_predicate<'a>(
     right: ShapeRow<'a>,
 ) -> crate::error::Result<Option<bool>> {
     let target = if right.point().is_some() { left } else { right };
-    if crate::array::packed_row_persistent(target) {
+    if crate::array::packed_row_persistent!(target) {
         return Ok(None);
     }
     point_predicate(
@@ -805,7 +805,7 @@ fn fixed_row_point_predicate(
     fixed_left: bool,
 ) -> crate::error::Result<Option<bool>> {
     let fixed_point = ShapeRow::Shape(fixed.shape()).point();
-    if fixed_point.is_some() && crate::array::packed_row_persistent(row) {
+    if fixed_point.is_some() && crate::array::packed_row_persistent!(row) {
         return Ok(None);
     }
     let (left, right) = if fixed_left {

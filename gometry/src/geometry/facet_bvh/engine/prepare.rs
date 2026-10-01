@@ -82,7 +82,7 @@ fn push_chain_facets(
 // Stamp the shared fold at each probe so full-facet rounding stays identical
 // without an out-of-line call per facet.
 macro_rules! facet_point_distance_columns {
-    ($squared:expr, $simd:expr, $xs:expr, $ys:expr, $point:expr, $best:expr $(,)?) => {{
+    ($squared:expr, $simd:expr, $count:expr, $xs:expr, $ys:expr, $point:expr, $best:expr $(,)?) => {{
         use $crate::error::Result;
         use $crate::geometry::facet_bvh::{
             FACET_SEGMENTS, aabb_distance_squared, point_aabb, segment_aabb,
@@ -91,14 +91,17 @@ macro_rules! facet_point_distance_columns {
         use $crate::geometry::{
             Segment, XY, point_segment_distance, point_segment_distance_squared,
         };
-        let (xs, ys, point) = ($xs, $ys, $point);
+        let count = $count;
+        let point = $point;
         'minimum: {
-            if $squared && $simd && xs.len() == FACET_SEGMENTS + 1 {
+            if $squared && $simd && count == FACET_SEGMENTS {
+                let (xs, ys) = ($xs, $ys);
                 let squared = simd_point_facet_distance_squared(xs, ys, point.x, point.y);
                 if squared.is_finite() {
                     break 'minimum Result::<f64>::Ok(squared);
                 }
             }
+            let (xs, ys) = ($xs, $ys);
             let mut best = $best;
             for ([ax, bx], [ay, by]) in xs.array_windows::<2>().zip(ys.array_windows::<2>()) {
                 let segment = Segment {
@@ -457,6 +460,7 @@ impl PreparedLinework {
         facet_point_distance_columns!(
             true,
             true,
+            count,
             xs.get(first..=first.saturating_add(count))
                 .expect("prepared facet x window"),
             ys.get(first..=first.saturating_add(count))
@@ -479,6 +483,7 @@ impl PreparedLinework {
         facet_point_distance_columns!(
             false,
             false,
+            count,
             chain
                 .xs()
                 .get(first..=first.saturating_add(count))

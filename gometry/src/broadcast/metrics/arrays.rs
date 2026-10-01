@@ -263,7 +263,13 @@ where
                     });
                 };
                 let index = left_row.logical();
-                let (left, right) = if let Some(kernel) = row_kernel.as_mut() {
+                let (left, right) = if let Some(kernel) = row_kernel.as_mut()
+                    && left_row
+                        .row()
+                        .segment_count_lower_bound()
+                        .saturating_add(right_row.row().segment_count_lower_bound())
+                        <= crate::geometry::RowMetricPair::MAX_SEGMENTS
+                {
                     let a = left_row.row();
                     let b = right_row.row();
                     let a_bounds = left_bounds

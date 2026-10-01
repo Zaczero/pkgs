@@ -9,7 +9,7 @@ use crate::geometry::{
     same_point, segment_envelopes_disjoint, segments_intersect,
 };
 
-const DIRECT_PAIR_MAX_SEGMENTS: usize = 64;
+const DIRECT_PAIR_MAX_SEGMENTS: usize = RowMetricPair::MAX_SEGMENTS;
 
 #[derive(Default)]
 struct Boundary<'a> {
@@ -114,13 +114,14 @@ impl<'a> Boundary<'a> {
                     let window = packed
                         .polygon_ring_window(ring)
                         .expect("admitted polygon ring");
+                    // Packed ring admission already owns XY closure.
                     self.chain(
                         coords
                             .xs()
                             .get(window.clone())
                             .expect("admitted ring x window"),
                         coords.ys().get(window).expect("admitted ring y window"),
-                        true,
+                        false,
                     );
                 }
             },
@@ -149,7 +150,7 @@ impl<'a> Boundary<'a> {
             },
             ShapeRow::Point(_) | ShapeRow::Packed(PackedRow::Points { .. }) => unreachable!(),
         }
-        self.segment_count() <= DIRECT_PAIR_MAX_SEGMENTS
+        true
     }
 
     fn sweep<const SQUARED: bool, const SIMD: bool>(
@@ -183,6 +184,7 @@ impl<'a> Boundary<'a> {
                         best = best.min(facet_point_distance_columns!(
                             SQUARED,
                             SIMD,
+                            end.wrapping_sub(first),
                             chain.xs.get(first..=end).expect("admitted facet x window"),
                             chain.ys.get(first..=end).expect("admitted facet y window"),
                             point,
@@ -211,6 +213,8 @@ pub(crate) struct RowMetricPair<'a> {
 }
 
 impl<'a> RowMetricPair<'a> {
+    pub(crate) const MAX_SEGMENTS: usize = 64;
+
     pub(crate) fn new() -> Self {
         Self {
             left: Boundary::default(),

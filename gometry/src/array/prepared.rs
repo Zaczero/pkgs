@@ -329,12 +329,10 @@ impl<'a> ArrayRowOperation<'a> {
         &mut self,
         row: PresentRow<'a>,
     ) -> crate::error::Result<PreparedRow<'a>> {
-        self.array.prepared_row_with(
-            &mut self.products,
-            row.logical,
-            row.row,
-            self.array.row_bounds_seed(row.logical),
-        )
+        self.array
+            .prepared_row_with(&mut self.products, row.logical, row.row, || {
+                self.array.row_bounds_seed(row.logical)
+            })
     }
 
     pub(crate) fn prepared_at(
@@ -342,12 +340,10 @@ impl<'a> ArrayRowOperation<'a> {
         logical: usize,
         row: ShapeRow<'a>,
     ) -> crate::error::Result<PreparedRow<'a>> {
-        self.array.prepared_row_with(
-            &mut self.products,
-            logical,
-            row,
-            self.array.row_bounds_seed(logical),
-        )
+        self.array
+            .prepared_row_with(&mut self.products, logical, row, || {
+                self.array.row_bounds_seed(logical)
+            })
     }
 
     pub(crate) fn prepared_at_with_bounds(
@@ -357,7 +353,9 @@ impl<'a> ArrayRowOperation<'a> {
         bounds: Option<Bounds>,
     ) -> crate::error::Result<PreparedRow<'a>> {
         self.array
-            .prepared_row_with(&mut self.products, logical, row, BoundsSeed::Value(bounds))
+            .prepared_row_with(&mut self.products, logical, row, || {
+                BoundsSeed::Value(bounds)
+            })
     }
 
     pub(crate) fn warm_prepared_at(
@@ -379,7 +377,7 @@ impl<'a> ArrayRowOperation<'a> {
     }
 
     pub(crate) fn quick_bounds_at(&mut self, logical: usize, row: ShapeRow<'a>) -> Option<Bounds> {
-        if packed_row_persistent(row)
+        if packed_row_persistent!(row)
             && let Some((chunk, offset)) = self.products.existing_cell(logical)
             && let Some(plan) = chunk.cell(offset).prepared.get()
         {
@@ -695,30 +693,34 @@ fn selection_touches_chunk(
     }
 }
 
-pub(crate) fn packed_row_persistent(row: ShapeRow<'_>) -> bool {
-    use crate::geometry::uses_linear_plan_for_len;
-    match row {
-        ShapeRow::Packed(row @ crate::array::PackedRow::Lines { .. }) => row
-            .vertex_window()
-            .is_some_and(|window| !uses_linear_plan_for_len(window.len().saturating_sub(1))),
-        ShapeRow::Packed(row @ crate::array::PackedRow::Polygons { .. }) => {
-            let rings = row
-                .polygon_rings()
-                .expect("packed polygon rows carry a ring range");
-            let rings_non_linear = rings.clone().any(|ring| {
-                let open = row
-                    .polygon_ring_window(ring)
-                    .expect("ring lies in its packed polygon row")
-                    .len()
-                    .saturating_sub(1);
-                !uses_linear_plan_for_len(open)
-            });
-            rings_non_linear || !uses_linear_plan_for_len(rings.len().saturating_sub(1))
-        },
-        ShapeRow::Shape(_) => true,
-        ShapeRow::Handle(_) | ShapeRow::Point(_) | ShapeRow::Packed(_) => false,
-    }
+macro_rules! packed_row_persistent {
+    ($row:expr) => {{
+        use $crate::array::ShapeRow;
+        use $crate::geometry::uses_linear_plan_for_len;
+        match $row {
+            ShapeRow::Packed(row @ crate::array::PackedRow::Lines { .. }) => row
+                .vertex_window()
+                .is_some_and(|window| !uses_linear_plan_for_len(window.len().saturating_sub(1))),
+            ShapeRow::Packed(row @ crate::array::PackedRow::Polygons { .. }) => {
+                let rings = row
+                    .polygon_rings()
+                    .expect("packed polygon rows carry a ring range");
+                let rings_non_linear = rings.clone().any(|ring| {
+                    let open = row
+                        .polygon_ring_window(ring)
+                        .expect("ring lies in its packed polygon row")
+                        .len()
+                        .saturating_sub(1);
+                    !uses_linear_plan_for_len(open)
+                });
+                rings_non_linear || !uses_linear_plan_for_len(rings.len().saturating_sub(1))
+            },
+            ShapeRow::Shape(_) => true,
+            ShapeRow::Handle(_) | ShapeRow::Point(_) | ShapeRow::Packed(_) => false,
+        }
+    }};
 }
+pub(crate) use packed_row_persistent;
 
 impl PyGeometryArray {
     pub(crate) fn row_operation(&self) -> ArrayRowOperation<'_> {
@@ -745,7 +747,7 @@ impl PyGeometryArray {
         row: ShapeRow<'a>,
     ) -> crate::error::Result<PreparedRow<'a>> {
         let mut products = self.row_products.operation();
-        self.prepared_row_with(&mut products, index, row, self.row_bounds_seed(index))
+        self.prepared_row_with(&mut products, index, row, || self.row_bounds_seed(index))
     }
 
     pub(crate) fn prepared_row_with<'a>(
@@ -753,7 +755,7 @@ impl PyGeometryArray {
         products: &mut RowProductsHandle,
         index: usize,
         row: ShapeRow<'a>,
-        bounds: BoundsSeed,
+        bounds: impl FnOnce() -> BoundsSeed,
     ) -> crate::error::Result<PreparedRow<'a>> {
         match row {
             ShapeRow::Handle(handle) => Ok(PreparedRow::Shared(handle)),
@@ -765,7 +767,7 @@ impl PyGeometryArray {
                 let (chunk, offset) = products.cell(index);
                 let handle = chunk.cell(offset).prepared.get_or_init(|| {
                     let data = PreparedPlan::new(ShapeData::new(shape.clone()));
-                    if let BoundsSeed::Value(bounds) = bounds {
+                    if let BoundsSeed::Value(bounds) = bounds() {
                         Arc::new(data.with_seeded_bounds(bounds))
                     } else {
                         Arc::new(data)
@@ -773,13 +775,13 @@ impl PyGeometryArray {
                 });
                 Ok(PreparedRow::Owned(Arc::clone(handle)))
             },
-            packed @ ShapeRow::Packed(_) if packed_row_persistent(packed) => {
+            packed @ ShapeRow::Packed(_) if packed_row_persistent!(packed) => {
                 let (chunk, offset) = products.cell(index);
                 if let Some(plan) = chunk.cell(offset).prepared.get() {
                     return Ok(PreparedRow::Owned(Arc::clone(plan)));
                 }
                 // Seeded only for the row being built: a warm row returns above.
-                let transient = PreparedRow::transient_with_seed(packed, bounds)?;
+                let transient = PreparedRow::transient_with_seed(packed, bounds())?;
                 let handle = chunk.cell(offset).prepared.get_or_init(|| match transient {
                     PreparedRow::Transient(data) => Arc::new(data),
                     PreparedRow::Shared(data) => Arc::clone(data),
@@ -787,9 +789,9 @@ impl PyGeometryArray {
                 });
                 Ok(PreparedRow::Owned(Arc::clone(handle)))
             },
-            packed @ ShapeRow::Packed(_) => PreparedRow::transient_with_seed(packed, bounds),
+            packed @ ShapeRow::Packed(_) => PreparedRow::transient_with_seed(packed, bounds()),
             ShapeRow::Point(point) => {
-                PreparedRow::transient_with_seed(ShapeRow::Point(point), bounds)
+                PreparedRow::transient_with_seed(ShapeRow::Point(point), bounds())
             },
         }
     }
