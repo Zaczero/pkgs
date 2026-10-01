@@ -71,6 +71,7 @@ def test_pole_boundary_predicates_match_scalar_and_cell_polygon_batches() -> Non
             crs=4326,
         )
         expected = {
+            'contains': False,
             'intersects': True,
             'covers': True,
             'touches': True,

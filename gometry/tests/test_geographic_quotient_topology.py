@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 import gometry as gm
+import pytest
 
 from tests._support import ids, pair_rows
 
@@ -17,6 +18,13 @@ from tests._support import ids, pair_rows
 def seam_box() -> gm.Polygon:
     return gm.Polygon(
         [(170, -10), (-170, -10), (-170, 10), (170, 10), (170, -10)], crs=4326
+    )
+
+
+def _north_polar_cap() -> gm.Polygon:
+    return gm.Polygon(
+        [(-180, 80), (-90, 80), (0, 80), (90, 80), (180, 80), (-180, 80)],
+        crs=4326,
     )
 
 
@@ -405,11 +413,13 @@ def test_geographic_overlay_keeps_seam_and_polar_area_membership() -> None:
     polar_triangle = gm.Polygon([(120, 90), (110, 85), (130, 85), (120, 90)], crs=4326)
     full_band = gm.box(-180, -10, 180, 10, crs=4326)
     band_window = gm.box(20, -5, 40, 5, crs=4326)
+    full_band_index = gm.SpatialIndex([full_band])
 
     for longitude in (-180, 180):
         seam_point = gm.Point(longitude, 0, crs=4326)
         assert gm.covers(full_band, seam_point)
         assert gm.intersects(full_band, seam_point)
+        assert ids(full_band_index.query(seam_point, predicate='intersects')) == [0]
 
     seam_intersection = gm.intersection_all([seam_left, seam_right])
     assert gm.covers(seam_intersection, gm.Point(180, 15, crs=4326))
@@ -511,16 +521,33 @@ def test_epsg_4807_pole_index_candidate_reaches_exact_refinement() -> None:
 
 
 def test_full_turn_self_relation_keeps_the_closed_area_boundary() -> None:
-    polygon = gm.Polygon(
-        [(-180, 80), (-90, 80), (0, 80), (90, 80), (180, 80), (-180, 80)],
-        crs=4326,
-    )
+    polygon = _north_polar_cap()
 
     assert gm.equals(polygon, polygon)
     assert gm.relate(polygon, polygon) == '2FFF1FFF2'
     result = gm.intersection(polygon, polygon)
     assert result.geometry_type == 'Polygon'
     assert gm.equals(result, polygon)
+    assert result.area > 0.0
+    assert result.area == polygon.area
+
+
+@pytest.mark.parametrize(
+    'representation',
+    ['split', 'geojson'],
+    ids=['antimeridian-split', 'geojson-round-trip'],
+)
+def test_full_turn_polar_cap_contains_pole_after_representation(
+    representation: str,
+) -> None:
+    cap = _north_polar_cap()
+    geometry = (
+        cap.split_antimeridian()
+        if representation == 'split'
+        else gm.from_geojson(cap.to_geojson())
+    )
+
+    assert gm.contains(geometry, gm.Point(0, 90, crs=geometry.crs))
 
 
 def test_seam_only_ring_has_line_support_not_global_area() -> None:
