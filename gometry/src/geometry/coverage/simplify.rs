@@ -30,7 +30,7 @@ struct SimplifiedChain {
 fn exact_chain(
     partition: &ExactPartition<'_>,
     view: ExactChainView,
-    source_spans: &[Vec<(u32, bool)>],
+    source_ordinals: &[usize],
     source_segments: &[Segment],
 ) -> Chain {
     let points = view
@@ -39,13 +39,11 @@ fn exact_chain(
         .map(|&node| partition.node_xy(node))
         .collect();
     let mut chain_source_segments = Vec::new();
-    for (source, segment) in source_segments.iter().enumerate() {
+    for &source in source_ordinals {
+        let segment = source_segments
+            .get(source)
+            .expect("chain source ordinal comes from the source segment inventory");
         if same_point(segment.start, segment.end)
-            || !source_spans
-                .get(source)
-                .expect("source span rows match the source segment inventory")
-                .iter()
-                .any(|&(span, _)| view.spans.contains(&span))
             || chain_source_segments.iter().any(|prior| {
                 undirected_segment_edge_key(*prior) == undirected_segment_edge_key(*segment)
             })
@@ -647,12 +645,27 @@ pub(crate) fn coverage_simplify<S: std::borrow::Borrow<Shape>>(
     let partition = inventory.partition(&mut budget)?;
     let views = partition.coverage_chain_views(inventory.source_operands())?;
     let source_spans = partition.source_span_views(inventory.source_segments())?;
+    let mut chain_sources = vec![Vec::new(); views.chains.len()];
+    for (source, spans) in source_spans.iter().enumerate() {
+        for &(span, _) in spans {
+            let chain = *views
+                .chain_of_span
+                .get(span as usize)
+                .expect("source span belongs to the coverage chain inventory");
+            let sources = chain_sources
+                .get_mut(chain as usize)
+                .expect("coverage span has a chain owner");
+            if sources.last() != Some(&source) {
+                sources.push(source);
+            }
+        }
+    }
     let mut chains = Vec::with_capacity(views.chains.len());
-    for view in views.chains {
+    for (view, sources) in views.chains.into_iter().zip(&chain_sources) {
         chains.push(exact_chain(
             &partition,
             view,
-            &source_spans,
+            sources,
             inventory.source_segments(),
         ));
     }
