@@ -8,7 +8,7 @@
 
 use std::cell::OnceCell;
 
-use crate::geometry::source_support::RowPointQuery;
+use crate::geometry::source_support::cartesian_row_point_location;
 use crate::geometry::{
     Bounds, CompiledPattern, GeographicPrepared, GeographicTopologyRoute, Loc, PreparedPlan, Shape,
     TopologyDomain, graph_relate_data, line_scalar_prefers_direct_polygon_relate,
@@ -543,7 +543,6 @@ pub(crate) fn scalar_vs_shapes<'a>(
             // Point rows probe the scalar once each: index it for a batch.
             let element_count = elements.len();
             let mut point_tester_ready = element_count < 2;
-            let mut point_query = crate::geometry::source_support::RowPointQuery::new();
             let mut results = Vec::with_capacity(element_count);
             for (index, row) in elements {
                 let mut evaluate = || -> crate::error::Result<bool> {
@@ -558,13 +557,9 @@ pub(crate) fn scalar_vs_shapes<'a>(
                         scalar.point_tester()?;
                         point_tester_ready = true;
                     }
-                    if let Some(verdict) = fixed_row_point_predicate(
-                        spec,
-                        scalar,
-                        row,
-                        scalar_is_left,
-                        &mut point_query,
-                    )? {
+                    if let Some(verdict) =
+                        fixed_row_point_predicate(spec, scalar, row, scalar_is_left)?
+                    {
                         return Ok(verdict);
                     }
                     let element = row_operation.as_mut().map_or_else(
@@ -784,7 +779,6 @@ pub(crate) fn row_point_predicate<'a>(
     spec: &PredicateSpec,
     left: ShapeRow<'a>,
     right: ShapeRow<'a>,
-    query: &mut RowPointQuery<'a>,
 ) -> crate::error::Result<Option<bool>> {
     let target = if right.point().is_some() { left } else { right };
     if crate::array::packed_row_persistent(target) {
@@ -795,17 +789,20 @@ pub(crate) fn row_point_predicate<'a>(
         left.point(),
         right.point(),
         |left_side, point, coverage| {
-            Ok(query.location(if left_side { left } else { right }, point, coverage))
+            Ok(cartesian_row_point_location(
+                if left_side { left } else { right },
+                point,
+                coverage,
+            ))
         },
     )
 }
 
-fn fixed_row_point_predicate<'a>(
+fn fixed_row_point_predicate(
     spec: &PredicateSpec,
     fixed: &PreparedPlan,
-    row: ShapeRow<'a>,
+    row: ShapeRow<'_>,
     fixed_left: bool,
-    query: &mut RowPointQuery<'a>,
 ) -> crate::error::Result<Option<bool>> {
     let fixed_point = ShapeRow::Shape(fixed.shape()).point();
     if fixed_point.is_some() && crate::array::packed_row_persistent(row) {
@@ -830,7 +827,7 @@ fn fixed_row_point_predicate<'a>(
                 fixed.cartesian_point_location(point)
             }
         } else {
-            Ok(query.location(row, point, coverage))
+            Ok(cartesian_row_point_location(row, point, coverage))
         }
     })
 }

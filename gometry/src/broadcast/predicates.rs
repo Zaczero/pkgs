@@ -134,7 +134,6 @@ pub(crate) fn predicate_pairwise_arrays(
             }
             match domain {
                 TopologyDomain::Cartesian => {
-                    let mut query = crate::geometry::source_support::RowPointQuery::new();
                     pairs!(index, left, right, {
                         let left_gate = GateOperand::cartesian(
                             left,
@@ -151,9 +150,7 @@ pub(crate) fn predicate_pairwise_arrays(
                         if let Some(verdict) = spec.pre_topology(&left_gate, &right_gate)? {
                             return Ok(verdict);
                         }
-                        if let Some(verdict) =
-                            engine::row_point_predicate(&spec, left, right, &mut query)?
-                        {
+                        if let Some(verdict) = engine::row_point_predicate(&spec, left, right)? {
                             return Ok(verdict);
                         }
                         let left =

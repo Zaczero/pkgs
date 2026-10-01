@@ -2818,7 +2818,7 @@ impl StagedExactSources {
         line: &(impl crate::geometry::Coordinates + ?Sized),
         operand: u32,
     ) {
-        self.retain_source_ordinates(line.axes());
+        self.retain_source_ordinates(line);
         self.reserve_segments(line.coord_count().saturating_sub(1));
         let mut first = None;
         let mut last = None;
@@ -2896,7 +2896,7 @@ impl StagedExactSources {
             self.ring_holes.push(ring_index > 0);
             self.ring_kinds.push(kind);
             let count = ring.coord_count().saturating_sub(1);
-            self.retain_source_ordinates(ring.coords().axes());
+            self.retain_source_ordinates(&ring);
             self.reserve_segments(count);
             let mut pairs = ring.segment_pairs();
             let [first, first_end] = pairs.next().expect("a Ring has at least four coordinates");
@@ -2932,8 +2932,13 @@ impl StagedExactSources {
         self.source_ring_kinds.reserve(count);
     }
 
-    fn retain_source_ordinates(&mut self, axes: crate::geometry::CoordinateAxes) {
-        if self.source_points.is_none() && axes != crate::geometry::CoordinateAxes::XY {
+    fn retain_source_ordinates(
+        &mut self,
+        coordinates: &(impl crate::geometry::Coordinates + ?Sized),
+    ) {
+        if self.source_points.is_none()
+            && (coordinates.z_column().is_some() || coordinates.m_column().is_some())
+        {
             // Earlier XY sources have no ordinates, so their stored carriers
             // recover the prefix when a later source first supplies Z/M.
             let mut points = Vec::with_capacity(self.segments.capacity());

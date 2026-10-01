@@ -2,7 +2,7 @@ use crate::array::{PackedRow, ShapeRow};
 use crate::error::Result;
 use crate::geometry::distance::{bounds_distance_squared, bounds_squared_safe};
 use crate::geometry::facet_bvh::{FACET_SEGMENTS, facet_point_distance_columns};
-use crate::geometry::source_support::RowPointQuery;
+use crate::geometry::source_support::cartesian_row_area_covers_point;
 use crate::geometry::{
     Bounds, GeometryKind, Point, Segment, Shape, XY, finish_planar_squared_min, point_distance,
     point_distance_squared, point_segment_distance, point_segment_distance_squared, points_dwithin,
@@ -208,7 +208,6 @@ impl<'a> Boundary<'a> {
 pub(crate) struct RowMetricPair<'a> {
     left: Boundary<'a>,
     right: Boundary<'a>,
-    query: RowPointQuery<'a>,
 }
 
 impl<'a> RowMetricPair<'a> {
@@ -216,7 +215,6 @@ impl<'a> RowMetricPair<'a> {
         Self {
             left: Boundary::default(),
             right: Boundary::default(),
-            query: RowPointQuery::new(),
         }
     }
 
@@ -231,7 +229,7 @@ impl<'a> RowMetricPair<'a> {
     }
 
     fn contacts(
-        &mut self,
+        &self,
         left: ShapeRow<'a>,
         right: ShapeRow<'a>,
         bounds: Option<&(Bounds, Bounds)>,
@@ -248,13 +246,13 @@ impl<'a> RowMetricPair<'a> {
         }
         if right.kind() == GeometryKind::Polygon
             && let Some(point) = self.left.points().next()
-            && self.query.area_covers(right, point)
+            && cartesian_row_area_covers_point(right, point)
         {
             return true;
         }
         if left.kind() == GeometryKind::Polygon
             && let Some(point) = self.right.points().next()
-            && self.query.area_covers(left, point)
+            && cartesian_row_area_covers_point(left, point)
         {
             return true;
         }
