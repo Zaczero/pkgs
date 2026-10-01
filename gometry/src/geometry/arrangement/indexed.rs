@@ -144,8 +144,17 @@ impl IndexedTopology {
 
         scratch.successor.clear();
         scratch.successor.resize(slots, u32::MAX);
-        for (slot, successor) in scratch.successor.iter_mut().enumerate() {
-            *successor = self.successor_slot(slot as u32);
+        #[expect(
+            clippy::indexing_slicing,
+            reason = "CSR row slots and their reciprocal twins were admitted from the same slot domain"
+        )]
+        for &[start, end] in self.starts.array_windows::<2>() {
+            let row = start as usize..end as usize;
+            let mut previous = end.wrapping_sub(1);
+            for slot in row {
+                scratch.successor[self.twins[slot] as usize] = previous;
+                previous = slot as u32;
+            }
         }
         self.face_of.clear();
         self.face_of.resize(slots, u32::MAX);

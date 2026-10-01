@@ -3206,6 +3206,14 @@ impl PolygonOccupancy {
     fn operand_occupied(&self, operand: usize) -> bool {
         self.occupied[operand] != 0
     }
+
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "polygon IDs are admitted by the source inventory used to construct occupancy"
+    )]
+    fn polygon_holes_occupied(&self, polygon: usize) -> bool {
+        self.filled_holes[polygon] != 0
+    }
 }
 
 #[expect(

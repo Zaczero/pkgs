@@ -243,13 +243,7 @@ impl ExactSourceInventory {
                     for &polygon in &touched_polygons {
                         let polygon = polygon as usize;
                         if shell_support[polygon] && !hole_support[polygon] {
-                            hole_support[polygon] = self.polygon_ring_ranges[polygon]
-                                .clone()
-                                .skip(1)
-                                .any(|hole| {
-                                    self.ring_kinds[hole] == RingKind::Winding
-                                        && ring_occupied(winding[hole], odd)
-                                });
+                            hole_support[polygon] = occupancy.polygon_holes_occupied(polygon);
                         }
                         if shell_support[polygon] && !hole_support[polygon] {
                             let operand = self.polygon_operands[polygon] as usize;
@@ -325,9 +319,12 @@ impl ExactSourceInventory {
     ) -> (Vec<u32>, Vec<u32>) {
         let count = global.count as usize;
         let mut counts = vec![0_u32; count];
-        for &walk in &topology.face_of {
-            let face = global.walk_faces[walk as usize] as usize;
-            counts[face] = counts[face].wrapping_add(1);
+        for (&face, &[start, end]) in global
+            .walk_faces
+            .iter()
+            .zip(topology.face_starts.array_windows::<2>())
+        {
+            counts[face as usize] = counts[face as usize].wrapping_add(end.wrapping_sub(start));
         }
         let mut starts = Vec::with_capacity(count.wrapping_add(1));
         let mut total = 0_u32;
@@ -340,11 +337,17 @@ impl ExactSourceInventory {
         starts.push(total);
         let mut cursor = counts;
         let mut slots = vec![0; topology.face_of.len()];
-        for (slot, &walk) in topology.face_of.iter().enumerate() {
-            let face = global.walk_faces[walk as usize] as usize;
+        for (&face, &[start, end]) in global
+            .walk_faces
+            .iter()
+            .zip(topology.face_starts.array_windows::<2>())
+        {
+            let face = face as usize;
             let index = cursor[face] as usize;
-            slots[index] = slot as u32;
-            cursor[face] = cursor[face].wrapping_add(1);
+            let count = end.wrapping_sub(start);
+            slots[index..index.wrapping_add(count as usize)]
+                .copy_from_slice(&topology.face_slots[start as usize..end as usize]);
+            cursor[face] = cursor[face].wrapping_add(count);
         }
         (starts, slots)
     }

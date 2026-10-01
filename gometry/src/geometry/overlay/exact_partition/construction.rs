@@ -8,6 +8,7 @@
 
 use std::borrow::Cow;
 use std::cmp::Ordering;
+use std::collections::hash_map::Entry;
 use std::mem;
 use std::ops::ControlFlow;
 
@@ -540,12 +541,14 @@ fn partition_unique_segments_with_budget<'a, const ORDINATES: bool>(
     let intern_stored =
         |point: XY, endpoint_of: &mut HashMap<PointKey, u32>, forest: &mut Forest| -> Result<u32> {
             let key = PointKey::new(point);
-            if let Some(&id) = endpoint_of.get(&key) {
-                return Ok(id);
+            match endpoint_of.entry(key) {
+                Entry::Occupied(entry) => Ok(*entry.get()),
+                Entry::Vacant(entry) => {
+                    let id = forest.push_stored(point)?;
+                    entry.insert(id);
+                    Ok(id)
+                },
             }
-            let id = forest.push_stored(point)?;
-            endpoint_of.insert(key, id);
-            Ok(id)
         };
 
     let mut start_handle = Vec::new();
@@ -760,10 +763,11 @@ fn partition_unique_segments_with_budget<'a, const ORDINATES: bool>(
         forest.union(left, right)?;
     }
 
-    // Compact roots into nodes, moving each root's point out of the forest.
+    // A compacted node never follows the visited handle, so every overwritten
+    // recipe is either a nonroot or a root that has already been moved.
     let mut compact_of: Vec<Option<u32>> = Vec::with_capacity(forest.parent.len());
     compact_of.resize(forest.parent.len(), None);
-    let mut points = PointArena::with_capacity(unique, 0);
+    let mut compact_count = 0_usize;
     #[expect(
         clippy::indexing_slicing,
         reason = "forest roots are valid handles; compact_of is sized one-for-one with the forest and PointArena"
@@ -779,7 +783,10 @@ fn partition_unique_segments_with_budget<'a, const ORDINATES: bool>(
         {
             budget.add(1)?;
         }
-        compact_of[root as usize] = Some(points.push(recipe, rounded)?);
+        compact_of[root as usize] = Some(compact_count as u32);
+        forest.points.recipes[compact_count] = recipe;
+        forest.points.rounded[compact_count] = rounded;
+        compact_count = compact_count.wrapping_add(1);
     }
     #[expect(
         clippy::indexing_slicing,
@@ -789,7 +796,10 @@ fn partition_unique_segments_with_budget<'a, const ORDINATES: bool>(
         let root = forest.find(handle as u32);
         compact_of[handle] = compact_of[root as usize];
     }
-    drop(forest);
+    let Forest { mut points, parent } = forest;
+    drop(parent);
+    points.recipes.truncate(compact_count);
+    points.rounded.truncate(compact_count);
     let node_of = |handle: u32| -> Result<u32> {
         compact_of
             .get(handle as usize)
@@ -816,7 +826,8 @@ fn partition_unique_segments_with_budget<'a, const ORDINATES: bool>(
     } else {
         Vec::new()
     };
-    let mut intervals: Vec<(u32, u32, u32)> = Vec::new();
+    let mut intervals: Vec<(u32, u32, u32)> =
+        Vec::with_capacity(unique.len().saturating_add(along.len()));
     for (index, (((segment, &start_handle), &end_handle), &[start_contact, end_contact])) in unique
         .iter()
         .zip(&start_handle)
@@ -1250,8 +1261,12 @@ pub(super) fn aggregate_atoms(
     } else {
         None
     };
-    let mut spans: Vec<ExactSpan> = Vec::new();
-    let mut contributors: Vec<(u32, u32, bool)> = Vec::with_capacity(intervals.len());
+    let mut spans: Vec<ExactSpan> = Vec::with_capacity(intervals.len());
+    let mut contributors: Vec<(u32, u32, bool)> = if has_overlaps {
+        Vec::with_capacity(intervals.len())
+    } else {
+        Vec::new()
+    };
     for (unique, start, end) in intervals {
         let lo = start.min(end);
         let hi = start.max(end);
@@ -1274,11 +1289,31 @@ pub(super) fn aggregate_atoms(
         if let Some(map) = &mut atom_of {
             map.insert((lo, hi), atom);
         }
-        contributors.push((atom, unique, false));
+        if has_overlaps {
+            contributors.push((atom, unique, false));
+        }
     }
     drop(atom_of);
 
     let atom_count = spans.len();
+    if !has_overlaps {
+        let mut offsets = Vec::with_capacity(atom_count.wrapping_add(1));
+        let mut total = 0_u32;
+        offsets.push(total);
+        for span in &spans {
+            let count = u32::try_from(source_provenance.owners(span.unique as usize).len())
+                .map_err(|_| ResourceError::SizeOverflow)?;
+            total = total
+                .checked_add(count)
+                .ok_or(ResourceError::SizeOverflow)?;
+            offsets.push(total);
+        }
+        let mut entries = Vec::with_capacity(total as usize);
+        for span in &spans {
+            entries.extend_from_slice(source_provenance.owners(span.unique as usize));
+        }
+        return Ok((spans, SegmentProvenance::from_csr(offsets, entries)));
+    }
     let mut counts = vec![0_u32; atom_count];
     for &(atom, unique, _) in &contributors {
         let count = u32::try_from(source_provenance.owners(unique as usize).len())

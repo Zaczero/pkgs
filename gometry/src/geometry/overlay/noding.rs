@@ -69,9 +69,9 @@ impl std::ops::Index<usize> for SegmentProvenance {
 /// representative. Binary overlay winding needs the FULL provenance set — a
 /// shared edge keeps both operands' tags after expansion.
 ///
-/// Two-pass CSR build: assign unique indices, count multiplicity, place
-/// `(ordinal, reversed)` into a single flat `entries` vector. Unique input
-/// pays HashMap inserts + two flat vecs — never N tiny heap `Vec`s.
+/// Unique input publishes identity provenance directly. The first repeated edge
+/// stages assignments for the unique prefix, then counting placement groups
+/// `(ordinal, reversed)` owners into one flat `entries` vector.
 pub(crate) fn dedup_undirected_segments_sourced(
     segments: impl IntoIterator<Item = Segment>,
 ) -> Result<(Vec<Segment>, SegmentProvenance)> {
@@ -82,11 +82,15 @@ pub(crate) fn dedup_undirected_segments_sourced(
     index_of.reserve(capacity);
     let mut unique: Vec<Segment> = Vec::with_capacity(capacity);
     // Per original ordinal: (unique_index, reversed).
-    let mut assignment: Vec<(u32, bool)> = Vec::with_capacity(capacity);
+    let mut assignment: Vec<(u32, bool)> = Vec::new();
     for segment in segments {
         let key = undirected_segment_edge_key(segment);
         match index_of.entry(key) {
             Entry::Occupied(entry) => {
+                if assignment.is_empty() {
+                    assignment.reserve(capacity);
+                    assignment.extend((0..unique.len() as u32).map(|index| (index, false)));
+                }
                 let unique_index = *entry.get();
                 let rep = unique[unique_index as usize];
                 // Same undirected endpoints ⇒ same direction or exact reverse.
@@ -103,12 +107,21 @@ pub(crate) fn dedup_undirected_segments_sourced(
                     u32::try_from(unique.len()).map_err(|_| ResourceError::SizeOverflow)?;
                 entry.insert(unique_index);
                 unique.push(segment);
-                assignment.push((unique_index, false));
+                if !assignment.is_empty() {
+                    assignment.push((unique_index, false));
+                }
             },
         }
     }
     drop(index_of);
     let unique_count = unique.len();
+    if assignment.is_empty() {
+        let count = u32::try_from(unique_count).map_err(|_| ResourceError::SizeOverflow)?;
+        return Ok((unique, SegmentProvenance {
+            offsets: (0..=count).collect(),
+            entries: (0..count).map(|ordinal| (ordinal, false)).collect(),
+        }));
+    }
     let mut counts = vec![0_u32; unique_count];
     for &(unique_index, _) in &assignment {
         counts[unique_index as usize] = counts[unique_index as usize]
