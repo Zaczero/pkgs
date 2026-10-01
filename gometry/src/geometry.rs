@@ -219,9 +219,11 @@ pub(crate) use predicates::{
 pub(in crate::geometry) use segments::{
     DdInterval, SegmentParameter, clip_segment_parameter, dd_strict_cmp,
 };
+#[cfg(test)]
+pub(crate) use util::dedup_consecutive_xy;
 pub(crate) use util::{
-    bounds_to_shape, columns_within, dedup_consecutive_points, dedup_consecutive_xy,
-    empty_geometry, geographic_bounds_to_shape, point_equals_exact, points_equal_exact,
+    bounds_to_shape, columns_within, dedup_consecutive_points, empty_geometry,
+    geographic_bounds_to_shape, point_equals_exact, points_equal_exact,
     push_distinct_active_position, push_distinct_xy_position, same_active_position, same_point,
     same_topological_coordinate, topology_coordinate_bits_simd, unique_xy_points, wrap_index,
 };

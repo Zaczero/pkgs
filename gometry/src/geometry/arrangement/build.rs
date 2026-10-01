@@ -1,155 +1,14 @@
 use super::walk::arrangement_faces;
 use crate::error::{ResourceError, Result};
 use crate::geometry::arrangement::{
-    Arrangement, ArrangementSpares, IndexedTopology, TypedSpares, WindingWeight,
-    arrangement_spares, build_csr, dedup_vertices_and_edges, order_single_loop_rows,
-    positional_loop_cuts, positional_loop_pieces, region_spares, sort_rows_counterclockwise,
-    split_ring_at_pinches, typed_spares,
+    Arrangement, ArrangementSpares, TypedSpares, WindingWeight, arrangement_spares, build_csr,
+    dedup_vertices_and_edges, order_single_loop_rows, positional_loop_cuts, positional_loop_pieces,
+    sort_rows_counterclockwise, typed_spares,
 };
-use crate::geometry::{HashMap, PointKey, Segment, XY, arrangement, wrap_index};
-
-impl Arrangement<i32> {
-    /// Build from noded directed segments with unit weights. Coincident
-    /// segments (either direction) collapse into one undirected half-edge
-    /// pair carrying the net directed multiplicity. Face rings are NOT
-    /// collected — region consumers walk boundaries through
-    /// [`Arrangement::region_rings`]; use [`Arrangement::new_with_rings`]
-    /// to materialize every face's ring.
-    #[cfg(test)]
-    pub(crate) fn new(segments: &[Segment]) -> Result<Self> {
-        Self::weighted(segments.iter().copied(), |_| 1)
-    }
-
-    /// [`Arrangement::new`] with every [`Face::ring`] materialized — for
-    /// consumers that read the faces themselves (coverage cleaning) rather
-    /// than a winding-selected region boundary.
-    pub(crate) fn new_with_rings(segments: impl ExactSizeIterator<Item = Segment>) -> Result<Self> {
-        Self::build::<true>(segments, |_| 1)
-    }
-
-    /// Specialized constructor for ONE closed loop's raw (un-noded)
-    /// segments — the stroke/offset buffer's dominant caseload. Produces
-    /// bit-identical topology columns to `self_node_segments` +
-    /// [`Arrangement::new`] (hence bit-identical faces and rings, since the
-    /// walks downstream are shared) while skipping the atomic segment soup,
-    /// the vertex hash dedup, and the global edge sort: on a single chained
-    /// loop, vertex identity is POSITIONAL, and every noding cut is a
-    /// transversal crossing visited exactly twice — dense ids and CSR rows
-    /// fall out of the ordinal walk.
-    ///
-    /// Returns `None` (the caller falls back to the general path) on any
-    /// input outside that shape: collinear overlaps, key-coincident
-    /// vertices (T-junctions, repeated loop vertices), concurrent or
-    /// ulp-twin crossings, duplicate edges, or a chain that is not bitwise
-    /// closed.
-    ///
-    /// The vertex-key map is left EMPTY — `component_of_point` must not be
-    /// called on a fast-path arrangement (single-loop consumers seed their
-    /// one component with `[0]`, never by probe).
-    #[cfg(test)]
-    pub(crate) fn from_single_loop(segments: &[Segment]) -> crate::error::Result<Option<Self>> {
-        let n = segments.len();
-        let Some((cuts, group_count)) = single_loop_cuts(segments)? else {
-            return Ok(None);
-        };
-        let mut spares = arrangement_spares();
-        let mut typed = typed_spares::<i32>();
-        let ids = spares.take_ids()?;
-        let vertex_count = n
-            .checked_add(group_count as usize)
-            .ok_or(ResourceError::SizeOverflow)?;
-        let edge_count = n
-            .checked_add(cuts.len())
-            .ok_or(ResourceError::SizeOverflow)?;
-        let half_edge_count = IndexedTopology::admit_counts(vertex_count, edge_count)?;
-        let mut points = std::mem::take(&mut spares.points);
-        points.clear();
-        points.reserve(vertex_count);
-        let (is_cut, pieces) = single_loop_pieces(segments, &cuts, group_count, &mut points);
-        debug_assert_eq!(points.len(), vertex_count);
-        // Degrees are structural — chain vertices 2, crossings 4 — so the
-        // CSR shape needs no edge sort.
-        let mut starts = std::mem::take(&mut spares.topology.starts);
-        starts.clear();
-        starts.reserve(
-            vertex_count
-                .checked_add(1)
-                .ok_or(ResourceError::SizeOverflow)?,
-        );
-        starts.push(0);
-        let mut total = 0_u32;
-        for &cut in &is_cut {
-            total += if cut { 4 } else { 2 };
-            starts.push(total);
-        }
-        debug_assert_eq!(total as usize, half_edge_count);
-        debug_assert_eq!(half_edge_count, 2 * pieces.len());
-        let mut targets = std::mem::take(&mut spares.topology.targets);
-        targets.clear();
-        targets.resize(half_edge_count, 0);
-        let mut edge_of_slot = std::mem::take(&mut spares.edge_of_slot);
-        edge_of_slot.clear();
-        edge_of_slot.resize(half_edge_count, 0);
-        let mut multiplicities = std::mem::take(&mut typed.multiplicities);
-        multiplicities.clear();
-        multiplicities.resize(half_edge_count, 0);
-        let mut filled = std::mem::take(&mut spares.filled);
-        filled.clear();
-        filled.resize(vertex_count, 0);
-        for (edge, &(from, to)) in pieces.iter().enumerate() {
-            let slot = (starts[from as usize] + filled[from as usize]) as usize;
-            filled[from as usize] += 1;
-            targets[slot] = to;
-            multiplicities[slot] = 1;
-            edge_of_slot[slot] = edge as u32;
-            let twin = (starts[to as usize] + filled[to as usize]) as usize;
-            filled[to as usize] += 1;
-            targets[twin] = from;
-            multiplicities[twin] = -1;
-            edge_of_slot[twin] = edge as u32;
-        }
-        if !order_single_loop_rows(
-            &points,
-            &starts,
-            &mut targets,
-            &mut multiplicities,
-            &mut edge_of_slot,
-        ) {
-            // Restock the pools (contents are stale by definition) and let
-            // the general path own the case.
-            spares.points = points;
-            spares.topology.starts = starts;
-            spares.topology.targets = targets;
-            spares.edge_of_slot = edge_of_slot;
-            spares.ids = Some(ids);
-            spares.filled = filled;
-            typed.multiplicities = multiplicities;
-            return Ok(None);
-        }
-        spares.points = points;
-        spares.topology.starts = starts;
-        spares.topology.targets = targets;
-        spares.edge_of_slot = edge_of_slot;
-        spares.filled = filled;
-        typed.multiplicities = multiplicities;
-        Ok(Some(Self::finish_topology::<false>(ids, spares, typed)?))
-    }
-}
-
-#[cfg(test)]
-use crate::geometry::arrangement::{single_loop_cuts, single_loop_pieces};
+use crate::geometry::{HashMap, PointKey, Segment, XY, arrangement};
 
 impl<W: WindingWeight> Arrangement<W> {
-    /// Positional MULTI-LOOP constructor — [`Arrangement::from_single_loop`]'s
-    /// identity extended to K clean closed loops (binary-overlay rings,
-    /// dissolve leaves): per-loop positional vertices, crossing groups
-    /// shared globally (a cross-loop crossing groups exactly like a
-    /// self-crossing — same key, two distinct global ordinals), per-loop
-    /// winding weights, and the same bails — the global duplicate-key
-    /// check covers cross-loop vertex coincidence and T-junctions.
-    /// Populates `ids` (consumers probe components) and runs the
-    /// DISCONNECTED topology pass. `None` hands the case to the general
-    /// build, the exact oracle.
+    /// Build the test oracle from positional chart rings with per-ring weights.
     pub(crate) fn from_loops(
         segments: &[Segment],
         loop_ranges: &[(u32, u32)],
@@ -165,10 +24,7 @@ impl<W: WindingWeight> Arrangement<W> {
         let vertex_count = n
             .checked_add(group_count as usize)
             .ok_or(ResourceError::SizeOverflow)?;
-        let edge_count = n
-            .checked_add(cuts.len())
-            .ok_or(ResourceError::SizeOverflow)?;
-        let half_edge_count = IndexedTopology::admit_counts(vertex_count, edge_count)?;
+        u32::try_from(vertex_count).map_err(|_| ResourceError::SizeOverflow)?;
         let mut points = std::mem::take(&mut spares.points);
         points.clear();
         points.reserve(vertex_count);
@@ -190,8 +46,14 @@ impl<W: WindingWeight> Arrangement<W> {
                 .ok_or(ResourceError::SizeOverflow)?;
             starts.push(total);
         }
-        debug_assert_eq!(total as usize, half_edge_count);
-        debug_assert_eq!(half_edge_count, 2 * pieces.len());
+        let half_edge_count = total as usize;
+        debug_assert_eq!(
+            half_edge_count,
+            pieces
+                .len()
+                .checked_mul(2)
+                .expect("piece count fits the checked half-edge total"),
+        );
         let mut targets = std::mem::take(&mut spares.topology.targets);
         targets.clear();
         targets.reserve(half_edge_count);
@@ -210,13 +72,15 @@ impl<W: WindingWeight> Arrangement<W> {
         filled.resize(vertex_count, 0);
         for (edge, &(from, to, loop_index)) in pieces.iter().enumerate() {
             let weight = weight_of_loop(loop_index as usize);
-            let slot = (starts[from as usize] + filled[from as usize]) as usize;
-            filled[from as usize] += 1;
+            let from_index = from as usize;
+            let slot = starts[from_index].wrapping_add(filled[from_index]) as usize;
+            filled[from_index] = filled[from_index].wrapping_add(1);
             targets[slot] = to;
             multiplicities[slot] = weight;
             edge_of_slot[slot] = edge as u32;
-            let twin = (starts[to as usize] + filled[to as usize]) as usize;
-            filled[to as usize] += 1;
+            let to_index = to as usize;
+            let twin = starts[to_index].wrapping_add(filled[to_index]) as usize;
+            filled[to_index] = filled[to_index].wrapping_add(1);
             targets[twin] = from;
             multiplicities[twin] = weight.neg();
             edge_of_slot[twin] = edge as u32;
@@ -250,21 +114,19 @@ impl<W: WindingWeight> Arrangement<W> {
         spares.topology.targets = targets;
         spares.edge_of_slot = edge_of_slot;
         typed.multiplicities = multiplicities;
-        Ok(Some(Self::finish_topology::<false>(ids, spares, typed)?))
+        Ok(Some(Self::finish_topology(ids, spares, typed)?))
     }
 
     /// Build from noded directed segments, `weight_of(index)` giving each
-    /// source segment's winding weight (a binary overlay tags operands
-    /// with per-operand units). Face rings are not collected (see
-    /// [`Arrangement::new`]).
+    /// source segment's winding weight.
     pub(crate) fn weighted(
         segments: impl ExactSizeIterator<Item = Segment>,
         weight_of: impl Fn(usize) -> W,
     ) -> Result<Self> {
-        Self::build::<false>(segments, weight_of)
+        Self::build(segments, weight_of)
     }
 
-    pub(crate) fn build<const RINGS: bool>(
+    pub(crate) fn build(
         segments: impl ExactSizeIterator<Item = Segment>,
         weight_of: impl Fn(usize) -> W,
     ) -> Result<Self> {
@@ -299,13 +161,13 @@ impl<W: WindingWeight> Arrangement<W> {
         spares.topology.targets = targets;
         spares.edge_of_slot = edge_of_slot;
         typed.multiplicities = multiplicities;
-        Self::finish_topology::<RINGS>(ids, spares, typed)
+        Self::finish_topology(ids, spares, typed)
     }
 
     /// Post-CSR assembly shared by every constructor: connected components,
     /// the global face walk, and the face CSR. The topology columns are
     /// already final — everything here is derived.
-    pub(crate) fn finish_topology<const RINGS: bool>(
+    pub(crate) fn finish_topology(
         ids: HashMap<PointKey, u32>,
         mut core: crate::scratch_pool::ScratchLease<arrangement::ArrangementSpares>,
         typed: crate::scratch_pool::ScratchLease<TypedSpares<W>>,
@@ -334,7 +196,7 @@ impl<W: WindingWeight> Arrangement<W> {
         };
         core.edge_of_slot.clear();
         core.ids = Some(ids);
-        let faces = arrangement_faces::<RINGS>(&core.points, &core.topology);
+        let faces = arrangement_faces(&core.points, &core.topology);
         Ok(Self {
             core,
             typed,
@@ -450,128 +312,7 @@ impl<W: WindingWeight> Arrangement<W> {
         self.component_of[vertex as usize]
     }
 
-    /// Boundary rings of the region whose faces pass `keep`, walked
-    /// directly on the half-edges: every boundary half-edge (kept face on
-    /// the LEFT, twin's face not) lies on exactly one ring; the successor
-    /// at each head vertex is the first boundary half-edge clockwise of
-    /// the arrival reversal (the fan swept between them is the arrival's
-    /// own kept region). A walk through a PINCH vertex — the region
-    /// touching itself at a point — can revisit it (two corner-touching
-    /// lobes, or a hole touching its shell: no single local successor
-    /// rule resolves both), so every emitted walk is split at repeated
-    /// vertices into SIMPLE rings, whose shoelace sign then classifies
-    /// shell versus hole. Shells come out counter-clockwise, holes clockwise —
-    /// rings are closed (first point repeated).
-    pub(crate) fn region_rings(&self, windings: &[W], keep: impl Fn(W) -> bool) -> Vec<Vec<XY>> {
-        // A half-edge is on the kept region's boundary iff its left face is
-        // kept and its twin's (right) face is not.
-        let is_boundary = |slot| {
-            let twin = self.twin_slot(slot);
-            keep(windings[self.face_of[slot] as usize])
-                && !keep(windings[self.face_of[twin] as usize])
-        };
-        let half_edge_count = self.targets.len();
-        let mut spares = region_spares();
-        let mut used = std::mem::take(&mut spares.used);
-        used.clear();
-        used.reserve(half_edge_count);
-        used.resize(half_edge_count, false);
-        let mut rings = Vec::new();
-        // Pinch-splitter scratch, reused across rings AND across calls:
-        // vertices carry DENSE ids, so a generation-stamped position table
-        // replaces the old per-vertex coordinate hashing entirely.
-        let mut position_of = std::mem::take(&mut spares.position_of);
-        position_of.clear();
-        position_of.reserve(self.points.len());
-        position_of.resize(self.points.len(), (0, 0));
-        let mut generation = 0_u32;
-        let mut ring = std::mem::take(&mut spares.ring);
-        let mut ring_ids = std::mem::take(&mut spares.ring_ids);
-        let mut path = std::mem::take(&mut spares.path);
-        let mut path_ids = std::mem::take(&mut spares.path_ids);
-        for seed in 0..half_edge_count {
-            if used[seed] || !is_boundary(seed) {
-                continue;
-            }
-            ring.clear();
-            ring_ids.clear();
-            let tail = self.owners[seed];
-            ring.push(self.points[tail as usize]);
-            ring_ids.push(tail);
-            let mut slot = seed;
-            loop {
-                used[slot] = true;
-                let head = self.targets[slot];
-                ring.push(self.points[head as usize]);
-                ring_ids.push(head);
-                let row =
-                    self.starts[head as usize] as usize..self.starts[head as usize + 1] as usize;
-                let row_len = row.end - row.start;
-                let reverse = self.twin_slot(slot);
-                let mut position = reverse - row.start;
-                let next = loop {
-                    position = wrap_index(position + row_len - 1, row_len);
-                    let candidate = row.start + position;
-                    if is_boundary(candidate) {
-                        break candidate;
-                    }
-                    debug_assert_ne!(
-                        candidate, reverse,
-                        "boundary walk must progress past the reversal"
-                    );
-                };
-                slot = next;
-                if slot == seed {
-                    break;
-                }
-            }
-            generation += 1;
-            split_ring_at_pinches(
-                &ring,
-                &ring_ids,
-                &mut rings,
-                &mut position_of,
-                generation,
-                &mut path,
-                &mut path_ids,
-            );
-        }
-        spares.used = used;
-        spares.position_of = position_of;
-        spares.ring = ring;
-        spares.ring_ids = ring_ids;
-        spares.path = path;
-        spares.path_ids = path_ids;
-        rings
-    }
-
     pub(crate) fn twin_slot(&self, slot: usize) -> usize {
         self.twins[slot] as usize
-    }
-
-    #[cfg(test)]
-    pub(crate) fn vertex_count(&self) -> usize {
-        self.points.len()
-    }
-
-    /// Visit every undirected edge piece once (its lower-id half-edge):
-    /// the directed multiplicity, both endpoint vertex ids, and the faces
-    /// on its two sides — the native relate's boundary-row currency.
-    pub(crate) fn for_each_edge_piece(&self, mut visit: impl FnMut(W, u32, u32, u32, u32)) {
-        for slot in 0..self.targets.len() {
-            let from = self.owners[slot];
-            let to = self.targets[slot];
-            if from >= to {
-                continue;
-            }
-            let twin = self.twin_slot(slot);
-            visit(
-                self.typed.multiplicities[slot],
-                from,
-                to,
-                self.face_of[slot],
-                self.face_of[twin],
-            );
-        }
     }
 }

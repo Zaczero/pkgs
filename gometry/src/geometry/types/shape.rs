@@ -319,24 +319,6 @@ impl<'source> ShapeCountQuery<'source> {
         total.ok_or_else(|| crate::error::ResourceError::SizeOverflow.into())
     }
 
-    pub(crate) fn coordinates_for_polygons(
-        &mut self,
-        polygons: &'source [Polygon],
-    ) -> crate::error::Result<usize> {
-        let mut total = Some(0_usize);
-        for polygon in polygons {
-            let Some(polygon_coordinates) = self.polygon_summary(polygon).coordinates else {
-                total = None;
-                break;
-            };
-            total = total.and_then(|left| left.checked_add(polygon_coordinates));
-            if total.is_none() {
-                break;
-            }
-        }
-        total.ok_or_else(|| crate::error::ResourceError::SizeOverflow.into())
-    }
-
     pub(crate) fn polygon_coordinates(
         &mut self,
         polygon: &'source Polygon,

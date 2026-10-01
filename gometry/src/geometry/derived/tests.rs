@@ -18,9 +18,7 @@ fn minimum_area_rectangle_area(hull: &[Point]) -> f64 {
     let ring = super::minimum_area_rectangle(hull).expect("finite rectangle");
     let mut points = ring.iter_coords();
     points.next_back().expect("closed rectangle");
-    crate::geometry::open_point_cycle_decision(&points.collect::<Vec<_>>())
-        .magnitude()
-        .get()
+    crate::geometry::open_point_cycle_magnitude(&points.collect::<Vec<_>>()).get()
 }
 
 #[test]
