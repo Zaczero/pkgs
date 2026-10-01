@@ -69,8 +69,8 @@ pub(crate) fn is_simple_array(
     is_simple_array_row_fallback(py, values)
 }
 
-/// Dense + nullable packed is_simple only. Geographic antimeridian crossings
-/// fall through so the frame-aware per-row lane owns them.
+/// Dense + nullable packed is_simple only. Geographic seam crossings and
+/// candidate seam contacts fall through to the frame-aware per-row lane.
 fn try_is_simple_packed(
     py: Python<'_>,
     array: &crate::PyGeometryArray,
@@ -81,14 +81,14 @@ fn try_is_simple_packed(
     };
     if let crate::geometry::TopologyDomain::Geographic(frame) = domain {
         for row in array.row_operation().present_rows() {
-            let crossing = match row
+            let seam_facts = match row
                 .row()
-                .with_shape(|shape| crate::geometry::crosses_antimeridian_in_frame(shape, frame))
+                .with_shape(|shape| crate::geometry::geographic_seam_facts_in_frame(shape, frame))
             {
-                Ok(crossing) => crossing,
+                Ok(seam_facts) => seam_facts,
                 Err(error) => return Some(Err(error.into())),
             };
-            if crossing {
+            if seam_facts.crosses || seam_facts.possible_contact {
                 return None;
             }
         }

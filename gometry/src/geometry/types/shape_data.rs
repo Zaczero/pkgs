@@ -9,9 +9,9 @@ use crate::error::Result;
 use crate::geometry::topology::ExactGeographicTopology;
 use crate::geometry::types::{Bounds, GeodesicSegment, Point, Segment, Shape, XY};
 use crate::geometry::{
-    DistanceParts, GeodesicParts, GeodesicPartsKey, GeodesicSweepCaps, GeographicTopologyRoute,
-    LineIndex, LineIndexSlot, MeasuredLineIndex, MeasuredLineIndexSlot, PlanarMetric,
-    PointBatchTester, SegmentMetric,
+    DistanceParts, GeodesicParts, GeodesicPartsKey, GeodesicSweepCaps, GeographicSeamFacts,
+    GeographicTopologyRoute, LineIndex, LineIndexSlot, MeasuredLineIndex, MeasuredLineIndexSlot,
+    PlanarMetric, PointBatchTester, SegmentMetric,
 };
 
 /// Sidecar for products derived from immutable coordinates. Geodesic products
@@ -245,7 +245,7 @@ pub struct ShapeData {
 struct TopologyPlan {
     validity: OnceLock<Option<Box<ValidationIssue>>>,
     simplicity: OnceLock<bool>,
-    antimeridian_crossing: OnceLock<bool>,
+    geographic_seam_facts: OnceLock<GeographicSeamFacts>,
     point_tester: OnceLock<Option<Box<PointBatchTester>>>,
     point_scans: std::sync::atomic::AtomicU32,
 }
@@ -350,11 +350,13 @@ impl PreparedPlan {
             .get_or_try_init(|| self.shape().is_simple())?)
     }
 
-    pub(crate) fn crosses_antimeridian(&self) -> bool {
-        *self
-            .topology()
-            .antimeridian_crossing
-            .get_or_init(|| self.shape().crosses_antimeridian())
+    pub(crate) fn geographic_seam_facts(&self) -> GeographicSeamFacts {
+        *self.topology().geographic_seam_facts.get_or_init(|| {
+            crate::geometry::geographic_seam_facts_in_frame(
+                self.shape(),
+                crate::geographic::GeographicFrame::crs84(),
+            )
+        })
     }
 
     pub(crate) fn distance_parts(&self) -> Result<&DistanceParts> {

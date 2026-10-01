@@ -110,6 +110,80 @@ pub(crate) fn crosses_antimeridian_in_frame(shape: &Shape, frame: GeographicFram
     }
 }
 
+/// Seam facts used by frame-aware validity. Latitude-range overlap is only a
+/// broad-phase candidate; exact Q owns the contact verdict.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) struct GeographicSeamFacts {
+    pub(crate) crosses: bool,
+    pub(crate) possible_contact: bool,
+}
+
+pub(crate) fn geographic_seam_facts_in_frame(
+    shape: &Shape,
+    frame: GeographicFrame,
+) -> GeographicSeamFacts {
+    let axis = frame.longitude();
+    let half = axis.half_period();
+    let mut intervals = Vec::new();
+    let mut crosses = false;
+    match shape.for_each_first_xy_segment_chain(|chain| {
+        if let Some((xs, ys)) = chain.xy_columns()
+            && xs.iter().all(|x| x.abs() < half)
+        {
+            let chain_crosses = steps_exceed(xs, half);
+            crosses |= chain_crosses;
+            if !chain_crosses {
+                return std::ops::ControlFlow::Continue(());
+            }
+            for (x_pair, y_pair) in xs.windows(2).zip(ys.windows(2)) {
+                let ([x0, x1], [y0, y1]) = (x_pair, y_pair) else {
+                    unreachable!("windows(2) contains exactly two ordinates");
+                };
+                let (x0, x1, y0, y1) = (*x0, *x1, *y0, *y1);
+                if (x1 - x0).abs() > half {
+                    intervals.push((y0.min(y1), y0.max(y1)));
+                }
+            }
+            return std::ops::ControlFlow::Continue(());
+        }
+        for [start, end] in chain.segment_pairs() {
+            let Some(seam) = inspect_seam_segment(start, end, axis, half) else {
+                continue;
+            };
+            crosses |= seam.crosses;
+            if seam.crosses || seam.start_side.is_some() || seam.end_side.is_some() {
+                intervals.push((start.y.min(end.y), start.y.max(end.y)));
+            }
+        }
+        std::ops::ControlFlow::Continue(())
+    }) {
+        std::ops::ControlFlow::Continue(()) => (),
+        std::ops::ControlFlow::Break(()) => {
+            unreachable!("the seam-fact visitor never stops before all chains")
+        },
+    }
+    intervals.sort_unstable_by(|left, right| left.0.total_cmp(&right.0));
+    let Some((_, mut highest_end)) = intervals.first().copied() else {
+        return GeographicSeamFacts {
+            crosses,
+            possible_contact: false,
+        };
+    };
+    for &(low, high) in intervals.iter().skip(1) {
+        if low <= highest_end {
+            return GeographicSeamFacts {
+                crosses,
+                possible_contact: true,
+            };
+        }
+        highest_end = highest_end.max(high);
+    }
+    GeographicSeamFacts {
+        crosses,
+        possible_contact: false,
+    }
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum SeamSide {
     East,
@@ -342,6 +416,15 @@ fn steps_exceed(xs: &[f64], limit: f64) -> bool {
     )
 }
 
+/// Whether a planar topology op must split-normalize ``shape`` at ±180 before
+/// evaluating. Cartesian domains skip the coordinate scan entirely.
+pub(crate) fn geographic_crossing(domain: TopologyDomain, shape: &ShapeData) -> bool {
+    match domain {
+        TopologyDomain::Cartesian => false,
+        TopologyDomain::Geographic(frame) => crosses_antimeridian_in_frame(shape.shape(), frame),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -415,7 +498,7 @@ mod tests {
             &pole_vertex,
             &pole_enclosing_ring,
         ] {
-            assert_eq!(route(shape), GeographicTopologyRoute::Quotient, "{shape:?}",);
+            assert_eq!(route(shape), GeographicTopologyRoute::Quotient, "{shape:?}");
         }
 
         let ordinary = polygon(&[
@@ -433,14 +516,5 @@ mod tests {
             geographic_topology_route([ordinary_view, seam_view]),
             GeographicTopologyRoute::Quotient
         );
-    }
-}
-
-/// Whether a planar topology op must split-normalize ``shape`` at ±180 before
-/// evaluating. Cartesian domains skip the coordinate scan entirely.
-pub(crate) fn geographic_crossing(domain: TopologyDomain, shape: &ShapeData) -> bool {
-    match domain {
-        TopologyDomain::Cartesian => false,
-        TopologyDomain::Geographic(frame) => crosses_antimeridian_in_frame(shape.shape(), frame),
     }
 }

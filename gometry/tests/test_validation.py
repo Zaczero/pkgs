@@ -335,6 +335,197 @@ def test_is_valid_is_uniform_across_scalar_and_array() -> None:
     assert repaired.is_valid and repaired.crs == 'EPSG:4326'
 
 
+@pytest.mark.parametrize('crs', [4326, 'OGC:CRS84'], ids=['epsg4326', 'crs84'])
+def test_geographic_seam_bowtie_is_invalid_with_exact_q_witness(crs: int | str) -> None:
+    points = [(170, -10), (-170, 10), (170, 10), (-170, -10), (170, -10)]
+    bowtie = gm.Polygon(points, crs=crs)
+
+    report = bowtie.validate()
+
+    assert not bowtie.is_valid
+    assert not bowtie.is_simple
+    assert (report.code, report.reason) == (
+        'self_intersection',
+        'exterior ring has a self-intersection',
+    )
+    assert report.location is not None
+    assert abs(report.location[0]) == 180.0
+    assert report.location[1] == 0.0
+
+    planar_unwrap = gm.Polygon([
+        (170, -10),
+        (190, 10),
+        (170, 10),
+        (190, -10),
+        (170, -10),
+    ])
+    planar_report = planar_unwrap.validate()
+    assert not planar_unwrap.is_valid and not planar_unwrap.is_simple
+    assert (planar_report.code, planar_report.location) == (
+        report.code,
+        report.location,
+    )
+
+    rows = gm.GeometryArray(
+        [
+            bowtie,
+            gm.Polygon([(170, -10), (-170, -10), (-170, 10), (170, 10), (170, -10)]),
+        ],
+        crs=crs,
+    )
+    np.testing.assert_array_equal(rows.is_valid, [False, True])
+    np.testing.assert_array_equal(rows.is_simple, [False, True])
+    reports = rows.validate()
+    assert reports[0] is not None and reports[0].location == report.location
+
+
+@pytest.mark.parametrize('crs', [4326, 'OGC:CRS84'], ids=['epsg4326', 'crs84'])
+def test_geographic_seam_hole_touches_keep_planar_ogc_validity(crs: int | str) -> None:
+    shell = [(170, -10), (-170, -10), (-170, 10), (170, 10), (170, -10)]
+    point_touch = [(180, -10), (175, -5), (180, 0), (-175, -5), (180, -10)]
+    shared_segment = [(178, -10), (-178, -10), (-179, -5), (179, -5), (178, -10)]
+    point_touch_polygon = gm.Polygon(shell, [point_touch], crs=crs)
+    shared_segment_polygon = gm.Polygon(shell, [shared_segment], crs=crs)
+
+    assert point_touch_polygon.is_valid and point_touch_polygon.is_simple
+    assert point_touch_polygon.validate().valid
+    assert not shared_segment_polygon.is_valid
+    assert not shared_segment_polygon.is_simple
+    report = shared_segment_polygon.validate()
+    assert report.code == 'shared_linework'
+    assert report.location == (178.0, -10.0)
+
+    planar_point_touch = gm.Polygon(
+        [(170, -10), (190, -10), (190, 10), (170, 10), (170, -10)],
+        [[(180, -10), (175, -5), (180, 0), (185, -5), (180, -10)]],
+    )
+    planar_shared_segment = gm.Polygon(
+        [(170, -10), (190, -10), (190, 10), (170, 10), (170, -10)],
+        [[(178, -10), (182, -10), (181, -5), (179, -5), (178, -10)]],
+    )
+    assert planar_point_touch.is_valid == point_touch_polygon.is_valid
+    assert planar_shared_segment.is_valid == shared_segment_polygon.is_valid
+
+    rows = gm.GeometryArray([point_touch_polygon, shared_segment_polygon], crs=crs)
+    np.testing.assert_array_equal(rows.is_valid, [True, False])
+    np.testing.assert_array_equal(rows.is_simple, [True, False])
+    assert [item.valid for item in rows.validate()] == [True, False]
+
+
+def test_geographic_ring_self_touch_and_line_crossing_are_not_simple_at_seam() -> None:
+    ring_touch = gm.Polygon(
+        [
+            (170, -10),
+            (-180, 0),
+            (170, 10),
+            (-170, 10),
+            (180, 0),
+            (-170, -10),
+            (170, -10),
+        ],
+        crs=4326,
+    )
+    crossing = gm.LineString(
+        [(170, -10), (-170, 10), (170, 10), (-170, -10)],
+        crs=4326,
+    )
+    seam_crossing = gm.LineString([(170, 0), (-170, 1)], crs=4326)
+
+    report = ring_touch.validate()
+    assert not ring_touch.is_valid and not ring_touch.is_simple
+    assert report.code == 'self_intersection'
+    assert not crossing.is_simple
+    assert seam_crossing.is_simple
+    assert [(point.x, point.y) for point in crossing.self_intersections()] == [
+        (180.0, 0.0)
+    ]
+
+    rows = gm.GeometryArray([crossing, seam_crossing], crs=4326)
+    np.testing.assert_array_equal(rows.is_simple, [False, True])
+
+
+def test_valid_geographic_seam_crossing_polygon_still_splits() -> None:
+    box = gm.Polygon(
+        [(170, -10), (-170, -10), (-170, 10), (170, 10), (170, -10)],
+        crs=4326,
+    )
+
+    assert box.is_valid and box.is_simple
+    split = box.split_antimeridian()
+    assert split.is_valid
+    assert split.to_wkt() == (
+        'MULTIPOLYGON (((-180 -10, -170 -10, -170 10, -180 10, -180 -10)), '
+        '((180 10, 170 10, 170 -10, 180 -10, 180 10)))'
+    )
+
+
+def test_caller_multipolygon_matching_split_output_is_valid() -> None:
+    geometry = gm.from_wkt(
+        'MULTIPOLYGON (((-180 -10, -170 -10, -170 10, -180 10, -180 -10)), '
+        '((180 10, 170 10, 170 -10, 180 -10, 180 10)))',
+        crs=4326,
+    )
+
+    assert geometry.is_valid and geometry.is_simple
+
+
+def test_multipolygon_interiors_overlapping_across_seam_are_invalid() -> None:
+    geometry = gm.from_wkt(
+        'MULTIPOLYGON ('
+        '((170 -10, -170 -10, -170 10, 170 10, 170 -10)), '
+        '((175 -5, -175 -5, -175 5, 175 5, 175 -5)))',
+        crs=4326,
+    )
+
+    assert not geometry.is_valid and not geometry.is_simple
+
+
+def test_multipolygon_edges_crossing_at_the_seam_are_invalid() -> None:
+    geometry = gm.from_wkt(
+        'MULTIPOLYGON ('
+        '((179 -1, -179 1, 179 3, 179 -1)), '
+        '((179 1, -179 -1, -179 4, 179 1)))',
+        crs=4326,
+    )
+
+    assert not geometry.is_valid and not geometry.is_simple
+
+
+def test_multipolygon_members_touching_at_one_seam_point_are_valid() -> None:
+    geometry = gm.from_wkt(
+        'MULTIPOLYGON ('
+        '((170 -10, 180 -10, 180 0, 170 0, 170 -10)), '
+        '((-180 0, -170 0, -170 10, -180 10, -180 0)))',
+        crs=4326,
+    )
+
+    assert geometry.is_valid and geometry.is_simple
+
+
+def test_multipolygon_members_sharing_a_seam_edge_from_the_same_side_are_invalid() -> (
+    None
+):
+    geometry = gm.from_wkt(
+        'MULTIPOLYGON ('
+        '((-180 -10, -170 -10, -170 10, -180 10, -180 -10)), '
+        '((180 0, -170 0, -170 15, 180 15, 180 0)))',
+        crs=4326,
+    )
+
+    assert not geometry.is_valid and not geometry.is_simple
+
+
+def test_partial_opposite_side_seam_edge_overlap_is_a_cut() -> None:
+    geometry = gm.from_wkt(
+        'MULTIPOLYGON ('
+        '((-180 -10, -170 -10, -170 10, -180 10, -180 -10)), '
+        '((180 0, 170 0, 170 15, 180 15, 180 0)))',
+        crs=4326,
+    )
+
+    assert geometry.is_valid and geometry.is_simple
+
+
 def test_one_ulp_distinct_touching_holes_are_valid_in_every_row_order() -> None:
     below_one = math.nextafter(1.0, 0.0)
     shell = [(-20, -20), (20, -20), (20, 20), (-20, 20), (-20, -20)]

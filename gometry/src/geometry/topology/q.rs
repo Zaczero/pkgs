@@ -16,6 +16,7 @@ use crate::geometry::source_support::RingKind;
 use crate::geometry::tessellation::exact::ExactRational;
 use crate::geometry::{
     Bounds, De9im, Dimension, GeometryErrorKind, Loc, Point, RingWinding, Segment, SegmentIndex,
+    canonical_f64_bits,
 };
 use crate::heap_size::HeapSize;
 
@@ -94,6 +95,113 @@ pub(super) struct ChartSpan {
     pub ports: [QPortId; 2],
     pub nodes: [QNodeId; 2],
     pub owners: Box<[QSpanOwner]>,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct SeamCutEdgePair {
+    edges: (u32, u32),
+    polygons: (u32, u32),
+    low_y: f64,
+    high_y: f64,
+    low_adjacent_edges: (Option<u32>, Option<u32>),
+    high_adjacent_edges: (Option<u32>, Option<u32>),
+}
+
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+struct SeamTouchFilter {
+    edge: u32,
+    other_polygon: u32,
+    latitude_bits: u64,
+    adjacent_edge: u32,
+    ignore_above: bool,
+    ignore_below: bool,
+}
+
+#[derive(Clone, Debug, Default)]
+pub(crate) struct SeamCutEdgePairs {
+    seam_x: f64,
+    pairs: Box<[SeamCutEdgePair]>,
+    touch_filters: Box<[SeamTouchFilter]>,
+}
+
+impl SeamCutEdgePairs {
+    fn get(&self, left: u32, right: u32) -> Option<&SeamCutEdgePair> {
+        let key = if left < right {
+            (left, right)
+        } else {
+            (right, left)
+        };
+        self.pairs
+            .binary_search_by_key(&key, |seam_cut| seam_cut.edges)
+            .ok()
+            .and_then(|index| self.pairs.get(index))
+    }
+
+    pub(crate) fn contains(&self, left: u32, right: u32) -> bool {
+        self.get(left, right).is_some()
+    }
+
+    /// Omit only rays inside a certified cut span. A source edge extending
+    /// beyond a partial overlap keeps the ray on its non-cut side.
+    pub(crate) fn touch_directions(
+        &self,
+        edge: u32,
+        other_edge: u32,
+        other_polygon: u32,
+        point: crate::geometry::XY,
+        segment: Segment,
+    ) -> [bool; 2] {
+        if canonical_f64_bits(point.x) != canonical_f64_bits(self.seam_x) {
+            return [true, true];
+        }
+        let key = (edge, other_polygon, canonical_f64_bits(point.y), other_edge);
+        let start = self
+            .touch_filters
+            .partition_point(|filter| filter.key() < key);
+        let Some(filters) = self.touch_filters.get(start..) else {
+            return [true, true];
+        };
+        let mut include = [true, true];
+        for filter in filters.iter().take_while(|filter| filter.key() == key) {
+            let into_cut = |endpoint: crate::geometry::XY| {
+                (endpoint.y > point.y && filter.ignore_above)
+                    || (endpoint.y < point.y && filter.ignore_below)
+            };
+            include[0] &= !into_cut(segment.start);
+            include[1] &= !into_cut(segment.end);
+        }
+        include
+    }
+}
+
+impl SeamTouchFilter {
+    const fn key(self) -> (u32, u32, u64, u32) {
+        (
+            self.edge,
+            self.other_polygon,
+            self.latitude_bits,
+            self.adjacent_edge,
+        )
+    }
+}
+
+#[derive(Clone, Copy)]
+struct SeamBoundaryOwner {
+    edge: SourceEdgeId,
+    polygon: SourcePolygonId,
+    ring: SourceRingId,
+    hole: bool,
+    east_spelling: bool,
+}
+
+#[derive(Clone, Copy)]
+struct SeamOwnerSide {
+    nodes: [QNodeId; 2],
+    edge: SourceEdgeId,
+    polygon: SourcePolygonId,
+    east_spelling: bool,
+    left_interior: bool,
+    right_interior: bool,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -3049,6 +3157,7 @@ pub(super) struct ExactGeographicQ {
     pub source_point_faces: Box<[Option<GlobalFaceId>]>,
     pub global_face_count: usize,
     pub face_rows: GlobalFaceRowOccupancy,
+    seam_cut_edge_pairs: Option<SeamCutEdgePairs>,
     span_line_rows: GlobalSpanRowSupport,
     span_collapsed_rows: GlobalSpanRowSupport,
     node_point_rows: GlobalNodeRowSupport,
@@ -3069,6 +3178,7 @@ impl ExactGeographicQ {
         frame: GeographicFrame,
         sources: &ExactGeographicChartInventory,
         chart: &NodedExactChart,
+        capture_seam_cut_edge_pairs: bool,
     ) -> Result<Self> {
         if sources.frame != frame {
             return Err(GeometryErrorKind::Invalid(
@@ -3080,8 +3190,14 @@ impl ExactGeographicQ {
         let cut_chart = make_cut_chart(frame, sources, chart, &cut)?;
         let topology = QuotientFaces::build(frame, cut_chart)?;
         let global = build_global_face_topology(frame, sources, &topology)?;
-        let (face_rows, span_collapsed_rows, node_point_rows) =
-            GlobalFaceRowOccupancy::build(global.count, sources, &topology, &global)?;
+        let (face_rows, span_collapsed_rows, node_point_rows, seam_cut_edge_pairs) =
+            GlobalFaceRowOccupancy::build(
+                global.count,
+                sources,
+                &topology,
+                &global,
+                capture_seam_cut_edge_pairs,
+            )?;
         let span_line_rows = build_span_line_rows(sources, &topology.spans)?;
         let node_line_boundary_rows = build_node_line_boundary_rows(sources, &topology)?;
         let spatial_index = QSpatialIndex::build(
@@ -3116,6 +3232,7 @@ impl ExactGeographicQ {
             source_point_faces: global.source_point_faces.into_boxed_slice(),
             global_face_count: global.count,
             face_rows,
+            seam_cut_edge_pairs,
             span_line_rows,
             span_collapsed_rows,
             node_point_rows,
@@ -3583,6 +3700,10 @@ impl HeapSize for ExactGeographicQ {
             + self.source_node_faces.len() * std::mem::size_of::<Option<GlobalFaceId>>()
             + self.source_point_faces.len() * std::mem::size_of::<Option<GlobalFaceId>>()
             + self.face_rows.heap_bytes()
+            + self.seam_cut_edge_pairs.as_ref().map_or(0, |pairs| {
+                pairs.pairs.len() * std::mem::size_of::<SeamCutEdgePair>()
+                    + pairs.touch_filters.len() * std::mem::size_of::<SeamTouchFilter>()
+            })
             + self.span_line_rows.heap_bytes()
             + self.span_collapsed_rows.heap_bytes()
             + self.node_point_rows.heap_bytes()
@@ -3630,12 +3751,31 @@ impl ExactGeographicTopology {
         frame: GeographicFrame,
         views: impl ExactSizeIterator<Item = crate::geographic::ScalarGeographicView<'a>>,
     ) -> Result<Self> {
+        Self::build_from_views(frame, views, false)
+    }
+
+    pub(crate) fn from_views_with_seam_cut_edge_pairs<'a>(
+        frame: GeographicFrame,
+        views: impl ExactSizeIterator<Item = crate::geographic::ScalarGeographicView<'a>>,
+    ) -> Result<Self> {
+        Self::build_from_views(frame, views, true)
+    }
+
+    fn build_from_views<'a>(
+        frame: GeographicFrame,
+        views: impl ExactSizeIterator<Item = crate::geographic::ScalarGeographicView<'a>>,
+        capture_seam_cut_edge_pairs: bool,
+    ) -> Result<Self> {
         let sources = ExactGeographicChartInventory::collect_views(frame, views)?;
         let mut budget =
             crate::geometry::ExpansionBudget::new("geographic topology", "exact chart noding");
         let chart = sources.node(&mut budget)?;
-        let q = ExactGeographicQ::build(frame, &sources, &chart)?;
+        let q = ExactGeographicQ::build(frame, &sources, &chart, capture_seam_cut_edge_pairs)?;
         Ok(Self { sources, chart, q })
+    }
+
+    pub(crate) const fn seam_cut_edge_pairs(&self) -> Option<&SeamCutEdgePairs> {
+        self.q.seam_cut_edge_pairs.as_ref()
     }
 
     pub(crate) fn relate_pair(&self) -> Result<De9im> {
@@ -3672,6 +3812,135 @@ impl ExactGeographicTopology {
             .into());
         }
         self.q.classify_rectangle(self, bounds, SourceRowId(0))
+    }
+
+    /// Whether distinct source boundary edges meet at the seam after Q
+    /// identifies its chart copies. One edge can own spans on both ports, so
+    /// the contact test uses source-edge identity; callers then use Q's face
+    /// occupancy to distinguish chart cuts from ordinary boundary contacts.
+    pub(crate) fn has_source_contact_at_seam(&self) -> Result<bool> {
+        if self.sources.row_count != 1 {
+            return Err(GeometryErrorKind::Invalid(
+                "seam validity contacts require one source row".into(),
+            )
+            .into());
+        }
+
+        let seam_nodes = self
+            .q
+            .nodes
+            .iter()
+            .map(|node| {
+                let QNodeKey::Source(source_node) = &node.key else {
+                    return false;
+                };
+                self.chart
+                    .nodes
+                    .get(source_node.0 as usize)
+                    .is_some_and(|node| matches!(&node.key, ExactQuotientKey::Seam(_)))
+            })
+            .collect::<Vec<_>>();
+        let mut line_edges = Vec::new();
+        let mut ring_edges = Vec::new();
+        for span in &self.q.spans {
+            for node in span.nodes {
+                let index = node.0 as usize;
+                if !seam_nodes.get(index).copied().ok_or_else(|| {
+                    GeometryErrorKind::Invalid(
+                        "exact Q seam contact references an unknown node".into(),
+                    )
+                })? {
+                    continue;
+                }
+                for owner in &span.owners {
+                    let edge = self
+                        .sources
+                        .edges
+                        .get(owner.source_edge.0 as usize)
+                        .ok_or_else(|| {
+                            GeometryErrorKind::Invalid(
+                                "exact Q seam contact references an unknown source edge".into(),
+                            )
+                        })?;
+                    match edge.kind {
+                        SourceEdgeKind::Line => line_edges.push((node, owner.source_edge)),
+                        SourceEdgeKind::Ring { polygon, ring, .. } => {
+                            ring_edges.push((node, polygon, ring, owner.source_edge));
+                        },
+                    }
+                }
+            }
+        }
+        line_edges.sort_unstable();
+        line_edges.dedup();
+        for pair in line_edges.windows(2) {
+            let [left, right] = pair else {
+                unreachable!("windows(2) contains two source contacts");
+            };
+            if left.0 == right.0 && left.1 != right.1 {
+                return Ok(true);
+            }
+        }
+
+        ring_edges.sort_unstable();
+        ring_edges.dedup();
+        let mut start = 0;
+        while start < ring_edges.len() {
+            let Some((node, ..)) = ring_edges.get(start).copied() else {
+                return Err(GeometryErrorKind::Invalid(
+                    "exact Q seam contact group starts outside its source list".into(),
+                )
+                .into());
+            };
+            let mut end = start.checked_add(1).ok_or(ResourceError::SizeOverflow)?;
+            while end < ring_edges.len() && ring_edges.get(end).is_some_and(|c| c.0 == node) {
+                end = end.checked_add(1).ok_or(ResourceError::SizeOverflow)?;
+            }
+            let Some(group) = ring_edges.get(start..end) else {
+                return Err(GeometryErrorKind::Invalid(
+                    "exact Q seam contact group has an invalid range".into(),
+                )
+                .into());
+            };
+            let Some((_, polygon, ring, _)) = group.first().copied() else {
+                return Err(GeometryErrorKind::Invalid(
+                    "exact Q seam contact group is empty".into(),
+                )
+                .into());
+            };
+            if group
+                .iter()
+                .any(|contact| contact.1 != polygon || contact.2 != ring)
+            {
+                return Ok(true);
+            }
+            if group.len() == 1 {
+                start = end;
+                continue;
+            }
+            if group.len() > 2 {
+                return Ok(true);
+            }
+            let [left_contact, right_contact] = group else {
+                return Ok(true);
+            };
+            let source_ring = self.sources.rings.get(ring.0 as usize).ok_or_else(|| {
+                GeometryErrorKind::Invalid(
+                    "exact Q seam contact references an unknown source ring".into(),
+                )
+            })?;
+            let last_edge = source_ring.source_edges.end.saturating_sub(1);
+            let left = left_contact.3.0 as usize;
+            let right = right_contact.3.0 as usize;
+            let adjacent = left.abs_diff(right) == 1
+                || (left == source_ring.source_edges.start && right == last_edge)
+                || (right == source_ring.source_edges.start && left == last_edge);
+            if !adjacent {
+                return Ok(true);
+            }
+            start = end;
+        }
+        Ok(false)
     }
 }
 
@@ -4790,6 +5059,54 @@ pub(super) struct GlobalFaceRowOccupancy {
     intervals: Box<[[usize; 2]]>,
 }
 
+fn seam_boundary_owner(
+    sources: &ExactGeographicChartInventory,
+    frame: GeographicFrame,
+    owner: &QSpanOwner,
+) -> Result<Option<SeamBoundaryOwner>> {
+    if owner.ring_transition.is_none() {
+        return Ok(None);
+    }
+    let edge = sources
+        .edges
+        .get(owner.source_edge.0 as usize)
+        .ok_or_else(|| {
+            GeometryErrorKind::Invalid("Q seam span has an unknown source edge".into())
+        })?;
+    let SourceEdgeKind::Ring {
+        polygon,
+        ring,
+        hole,
+        ..
+    } = edge.kind
+    else {
+        return Ok(None);
+    };
+    let [start, end] = edge.source;
+    if start.x.to_bits() != end.x.to_bits() || start.y.to_bits() == end.y.to_bits() {
+        return Ok(None);
+    }
+    let axis = frame.longitude();
+    let start_longitude = axis
+        .canonicalize(start.x)
+        .map_err(|error| GeometryErrorKind::Invalid(error.to_string().into()))?;
+    let end_longitude = axis
+        .canonicalize(end.x)
+        .map_err(|error| GeometryErrorKind::Invalid(error.to_string().into()))?;
+    if start_longitude.identity(axis) != crate::geographic::SeamIdentity::Seam
+        || end_longitude.identity(axis) != crate::geographic::SeamIdentity::Seam
+    {
+        return Ok(None);
+    }
+    Ok(Some(SeamBoundaryOwner {
+        edge: owner.source_edge,
+        polygon,
+        ring,
+        hole,
+        east_spelling: start.x.is_sign_positive(),
+    }))
+}
+
 impl GlobalFaceRowOccupancy {
     #[expect(
         clippy::indexing_slicing,
@@ -4801,7 +5118,13 @@ impl GlobalFaceRowOccupancy {
         sources: &ExactGeographicChartInventory,
         topology: &QuotientFaces,
         global: &GlobalFaceTopology,
-    ) -> Result<(Self, GlobalSpanRowSupport, GlobalNodeRowSupport)> {
+        capture_seam_cut_edge_pairs: bool,
+    ) -> Result<(
+        Self,
+        GlobalSpanRowSupport,
+        GlobalNodeRowSupport,
+        Option<SeamCutEdgePairs>,
+    )> {
         let offset_count = face_count
             .checked_add(1)
             .ok_or(ResourceError::SizeOverflow)?;
@@ -4850,6 +5173,7 @@ impl GlobalFaceRowOccupancy {
                 },
                 GlobalSpanRowSupport::build(topology.spans.len(), &mut span_collapsed_memberships)?,
                 GlobalNodeRowSupport::build(topology.nodes.len(), &mut node_point_memberships)?,
+                capture_seam_cut_edge_pairs.then(SeamCutEdgePairs::default),
             ));
         };
         if global.seed_winding.len() != sources.rings.len() {
@@ -4994,6 +5318,7 @@ impl GlobalFaceRowOccupancy {
         let mut face_counts = vec![0; face_count];
         let mut span_collapsed_pending = vec![true; topology.spans.len()];
         let mut span_collapsed_memberships = Vec::<(usize, SourceRowId)>::new();
+        let mut seam_owner_sides = Vec::new();
         let mut shell_candidates = Vec::new();
         let mut hole_candidates = Vec::new();
         let mut collapsed_shells = Vec::new();
@@ -5035,6 +5360,21 @@ impl GlobalFaceRowOccupancy {
                     GeometryErrorKind::Invalid("Q dual arc has no collapsed-shell state".into())
                 })?;
                 if *pending {
+                    let seam_owners = if capture_seam_cut_edge_pairs {
+                        span.owners
+                            .iter()
+                            .map(|owner| seam_boundary_owner(sources, sources.frame, owner))
+                            .collect::<Result<Vec<_>>>()?
+                            .into_iter()
+                            .flatten()
+                            .collect::<Vec<_>>()
+                    } else {
+                        Vec::new()
+                    };
+                    let seam_before = seam_owners
+                        .iter()
+                        .map(|&owner| state.seam_owner_interior(owner))
+                        .collect::<Result<Vec<_>>>()?;
                     collect_collapsed_shell_candidates(
                         span,
                         sources,
@@ -5044,6 +5384,27 @@ impl GlobalFaceRowOccupancy {
                         &mut collapsed_shells,
                     )?;
                     state.apply(&span.owners, multiplier, sources)?;
+                    for (&owner, &before) in seam_owners.iter().zip(&seam_before) {
+                        let after = state.seam_owner_interior(owner)?;
+                        let (left_interior, right_interior) = if arc.forward {
+                            (before, after)
+                        } else {
+                            (after, before)
+                        };
+                        let [first, second] = span.nodes;
+                        seam_owner_sides.push(SeamOwnerSide {
+                            nodes: if first <= second {
+                                [first, second]
+                            } else {
+                                [second, first]
+                            },
+                            edge: owner.edge,
+                            polygon: owner.polygon,
+                            east_spelling: owner.east_spelling,
+                            left_interior,
+                            right_interior,
+                        });
+                    }
                     for candidate in &collapsed_shells {
                         let holes_after = state
                             .polygon_holes
@@ -5160,6 +5521,15 @@ impl GlobalFaceRowOccupancy {
             GlobalSpanRowSupport::build(topology.spans.len(), &mut span_collapsed_memberships)?;
         let node_point_rows =
             GlobalNodeRowSupport::build(topology.nodes.len(), &mut node_point_memberships)?;
+        let seam_cut_edge_pairs = if capture_seam_cut_edge_pairs {
+            Some(classify_seam_cut_edge_pairs(
+                seam_owner_sides,
+                sources,
+                sources.frame,
+            )?)
+        } else {
+            None
+        };
         Ok((
             Self {
                 face_order: face_order.into_boxed_slice(),
@@ -5169,6 +5539,7 @@ impl GlobalFaceRowOccupancy {
             },
             span_collapsed_rows,
             node_point_rows,
+            seam_cut_edge_pairs,
         ))
     }
 
@@ -5213,6 +5584,249 @@ impl GlobalFaceRowOccupancy {
             .filter(|&row| self.contains(face, row))
             .collect()
     }
+}
+
+fn classify_seam_cut_edge_pairs(
+    mut sides: Vec<SeamOwnerSide>,
+    sources: &ExactGeographicChartInventory,
+    frame: GeographicFrame,
+) -> Result<SeamCutEdgePairs> {
+    sides.sort_unstable_by_key(|side| {
+        (
+            side.nodes,
+            side.edge,
+            side.polygon,
+            side.east_spelling,
+            side.left_interior,
+            side.right_interior,
+        )
+    });
+    sides.dedup_by_key(|side| {
+        (
+            side.nodes,
+            side.edge,
+            side.polygon,
+            side.east_spelling,
+            side.left_interior,
+            side.right_interior,
+        )
+    });
+
+    let mut pair_spans = Vec::new();
+    let mut start = 0;
+    while start < sides.len() {
+        let Some(first) = sides.get(start) else {
+            break;
+        };
+        let nodes = first.nodes;
+        let mut end = start.checked_add(1).ok_or(ResourceError::SizeOverflow)?;
+        while sides.get(end).is_some_and(|side| side.nodes == nodes) {
+            end = end.checked_add(1).ok_or(ResourceError::SizeOverflow)?;
+        }
+        let Some(group) = sides.get(start..end) else {
+            break;
+        };
+        for (index, left) in group.iter().enumerate() {
+            for right in group.iter().skip(index).skip(1) {
+                if left.edge == right.edge || left.east_spelling == right.east_spelling {
+                    continue;
+                }
+                let left_has_interior = left.left_interior != left.right_interior;
+                let right_has_interior = right.left_interior != right.right_interior;
+                let opposite_interiors = left_has_interior
+                    && right_has_interior
+                    && left.left_interior != right.left_interior;
+                let (edges, polygons) = if left.edge < right.edge {
+                    (
+                        (left.edge.0, right.edge.0),
+                        (left.polygon.0, right.polygon.0),
+                    )
+                } else {
+                    (
+                        (right.edge.0, left.edge.0),
+                        (right.polygon.0, left.polygon.0),
+                    )
+                };
+                pair_spans.push((edges, polygons, opposite_interiors));
+            }
+        }
+        start = end;
+    }
+    pair_spans.sort_unstable_by_key(|&(edges, ..)| edges);
+
+    let mut edge_pairs = Vec::new();
+    let mut cursor = 0;
+    while cursor < pair_spans.len() {
+        let Some(&((left, right), polygons, _)) = pair_spans.get(cursor) else {
+            break;
+        };
+        let mut end = cursor.checked_add(1).ok_or(ResourceError::SizeOverflow)?;
+        let mut every_overlap_span_is_a_cut =
+            pair_spans.get(cursor).is_some_and(|&(_, _, cut)| cut);
+        while let Some(&(next_edges, _, cut)) = pair_spans.get(end) {
+            if next_edges != (left, right) {
+                break;
+            }
+            every_overlap_span_is_a_cut &= cut;
+            end = end.checked_add(1).ok_or(ResourceError::SizeOverflow)?;
+        }
+        if every_overlap_span_is_a_cut {
+            let left_index = usize::try_from(left).map_err(|_| ResourceError::SizeOverflow)?;
+            let right_index = usize::try_from(right).map_err(|_| ResourceError::SizeOverflow)?;
+            let left_edge = sources.edges.get(left_index).ok_or_else(|| {
+                GeometryErrorKind::Invalid("a seam cut owner has an unknown source edge".into())
+            })?;
+            let right_edge = sources.edges.get(right_index).ok_or_else(|| {
+                GeometryErrorKind::Invalid("a seam cut owner has an unknown source edge".into())
+            })?;
+            let [left_start, left_end] = left_edge.source;
+            let [right_start, right_end] = right_edge.source;
+            let low_y = left_start
+                .y
+                .min(left_end.y)
+                .max(right_start.y.min(right_end.y));
+            let high_y = left_start
+                .y
+                .max(left_end.y)
+                .min(right_start.y.max(right_end.y));
+            if low_y < high_y {
+                let left_ring = match left_edge.kind {
+                    SourceEdgeKind::Ring { ring, .. } => ring,
+                    SourceEdgeKind::Line => {
+                        return Err(GeometryErrorKind::Invalid(
+                            "a seam cut owner is not a ring".into(),
+                        )
+                        .into());
+                    },
+                };
+                let right_ring = match right_edge.kind {
+                    SourceEdgeKind::Ring { ring, .. } => ring,
+                    SourceEdgeKind::Line => {
+                        return Err(GeometryErrorKind::Invalid(
+                            "a seam cut owner is not a ring".into(),
+                        )
+                        .into());
+                    },
+                };
+                edge_pairs.push(SeamCutEdgePair {
+                    edges: (left, right),
+                    polygons,
+                    low_y,
+                    high_y,
+                    low_adjacent_edges: (
+                        seam_edge_adjacent_at_y(sources, left, low_y, left_ring),
+                        seam_edge_adjacent_at_y(sources, right, low_y, right_ring),
+                    ),
+                    high_adjacent_edges: (
+                        seam_edge_adjacent_at_y(sources, left, high_y, left_ring),
+                        seam_edge_adjacent_at_y(sources, right, high_y, right_ring),
+                    ),
+                });
+            }
+        }
+        cursor = end;
+    }
+    let mut touch_filters = Vec::with_capacity(edge_pairs.len().saturating_mul(4));
+    for pair in &edge_pairs {
+        for (edge, polygon, adjacent, cut_y, ignore_above, ignore_below) in [
+            (
+                pair.edges.0,
+                pair.polygons.1,
+                pair.low_adjacent_edges.1,
+                pair.low_y,
+                true,
+                false,
+            ),
+            (
+                pair.edges.0,
+                pair.polygons.1,
+                pair.high_adjacent_edges.1,
+                pair.high_y,
+                false,
+                true,
+            ),
+            (
+                pair.edges.1,
+                pair.polygons.0,
+                pair.low_adjacent_edges.0,
+                pair.low_y,
+                true,
+                false,
+            ),
+            (
+                pair.edges.1,
+                pair.polygons.0,
+                pair.high_adjacent_edges.0,
+                pair.high_y,
+                false,
+                true,
+            ),
+        ] {
+            if let Some(adjacent_edge) = adjacent {
+                touch_filters.push(SeamTouchFilter {
+                    edge,
+                    other_polygon: polygon,
+                    latitude_bits: canonical_f64_bits(cut_y),
+                    adjacent_edge,
+                    ignore_above,
+                    ignore_below,
+                });
+            }
+        }
+    }
+    touch_filters.sort_unstable();
+    touch_filters.dedup();
+    Ok(SeamCutEdgePairs {
+        seam_x: frame.longitude().half_period(),
+        pairs: edge_pairs.into_boxed_slice(),
+        touch_filters: touch_filters.into_boxed_slice(),
+    })
+}
+
+fn seam_edge_adjacent_at_y(
+    sources: &ExactGeographicChartInventory,
+    edge: u32,
+    y: f64,
+    ring: SourceRingId,
+) -> Option<u32> {
+    // LineworkChains removes zero-length stutters, so seek the nearest staged
+    // neighbor rather than assuming the adjacent source-edge ordinal survives.
+    let edge_index = usize::try_from(edge).ok()?;
+    let source_edge = sources.edges.get(edge_index)?;
+    let [start, end] = source_edge.source;
+    let at_start = canonical_f64_bits(start.y) == canonical_f64_bits(y);
+    let at_end = canonical_f64_bits(end.y) == canonical_f64_bits(y);
+    let previous = if at_start {
+        true
+    } else if at_end {
+        false
+    } else {
+        return None;
+    };
+    let source_ring = sources.rings.get(ring.0 as usize)?;
+    let range = &source_ring.source_edges;
+    let mut candidate = edge_index;
+    for _ in 0..range.len() {
+        candidate = if previous {
+            if candidate == range.start {
+                range.end.checked_sub(1)?
+            } else {
+                candidate.checked_sub(1)?
+            }
+        } else if candidate.checked_add(1)? == range.end {
+            range.start
+        } else {
+            candidate.checked_add(1)?
+        };
+        let candidate_edge = sources.edges.get(candidate)?;
+        let [candidate_start, candidate_end] = candidate_edge.source;
+        if canonical_f64_bits(candidate_start.x) != canonical_f64_bits(candidate_end.x)
+            || canonical_f64_bits(candidate_start.y) != canonical_f64_bits(candidate_end.y)
+        {
+            return Some(candidate_edge.id.0);
+        }
+    }
+    None
 }
 
 #[derive(Clone, Copy)]
@@ -5313,6 +5927,29 @@ impl FaceOccupancyState {
         for_each_span_ring_transition(owners, &mut |transition| {
             self.apply_transition(transition, multiplier, sources)
         })
+    }
+
+    fn seam_owner_interior(&self, owner: SeamBoundaryOwner) -> Result<bool> {
+        let ring_inside = self
+            .winding
+            .get(owner.ring.0 as usize)
+            .map(|&winding| winding != 0)
+            .ok_or_else(|| GeometryErrorKind::Invalid("Q seam owner has an unknown ring".into()))?;
+        let polygon = owner.polygon.0 as usize;
+        let (Some(&shells), Some(&holes)) = (
+            self.polygon_shells.get(polygon),
+            self.polygon_holes.get(polygon),
+        ) else {
+            return Err(
+                GeometryErrorKind::Invalid("Q seam owner has an unknown polygon".into()).into(),
+            );
+        };
+        let polygon_inside = shells != 0 && holes == 0;
+        Ok((if owner.hole {
+            !ring_inside
+        } else {
+            ring_inside
+        }) && polygon_inside)
     }
 
     #[expect(
@@ -6083,7 +6720,10 @@ fn make_cut_chart(
 mod tests {
     use super::*;
     use crate::geographic::AngularFactor;
-    use crate::geometry::{CoordSeq, ExpansionBudget, LineSeq, Polygon, Ring, Shape};
+    use crate::geometry::{
+        CoordSeq, CoordinateAxes, ExpansionBudget, LineSeq, MultiMember, MultiPolygon, Polygon,
+        Ring, Shape,
+    };
 
     fn degrees() -> GeographicFrame {
         let unit = AngularFactor::try_new("test degrees", std::f64::consts::PI / 180.0).unwrap();
@@ -6103,6 +6743,17 @@ mod tests {
         .unwrap()
     }
 
+    fn line(points: &[(f64, f64)]) -> Shape {
+        let coordinates = CoordSeq::try_from_points(
+            &points
+                .iter()
+                .map(|&(x, y)| crate::geometry::Point::new_raw_xy(x, y))
+                .collect::<Vec<_>>(),
+        )
+        .unwrap();
+        Shape::LineString(LineSeq::try_new(coordinates).unwrap())
+    }
+
     fn q_graph_for_shapes(shapes: &[Shape]) -> (ExactGeographicChartInventory, ExactGeographicQ) {
         let frame = degrees();
         let inputs =
@@ -6110,7 +6761,7 @@ mod tests {
         let sources = ExactGeographicChartInventory::collect(&inputs).unwrap();
         let mut budget = ExpansionBudget::new("test", "exact chart");
         let chart = sources.node(&mut budget).unwrap();
-        let q = ExactGeographicQ::build(frame, &sources, &chart).unwrap();
+        let q = ExactGeographicQ::build(frame, &sources, &chart, false).unwrap();
         (sources, q)
     }
 
@@ -6123,6 +6774,187 @@ mod tests {
         let view =
             crate::geographic::ScalarGeographicView::try_new(frame, shape).expect("fixture admits");
         ExactGeographicTopology::from_views(frame, std::iter::once(view)).unwrap()
+    }
+
+    fn exact_topology_with_seam_cuts(shape: &Shape) -> ExactGeographicTopology {
+        let frame = degrees();
+        let view =
+            crate::geographic::ScalarGeographicView::try_new(frame, shape).expect("fixture admits");
+        ExactGeographicTopology::from_views_with_seam_cut_edge_pairs(frame, std::iter::once(view))
+            .unwrap()
+    }
+
+    fn multipolygon(polygons: Vec<Polygon>) -> Shape {
+        Shape::MultiPolygon(
+            MultiPolygon::try_new(
+                CoordinateAxes::XY,
+                polygons.into_iter().map(MultiMember::Value).collect(),
+            )
+            .unwrap(),
+        )
+    }
+
+    fn seam_copy_edges(topology: &ExactGeographicTopology) -> Vec<(u32, bool)> {
+        topology
+            .sources
+            .edges
+            .iter()
+            .filter_map(|edge| {
+                let SourceEdgeKind::Ring { .. } = edge.kind else {
+                    return None;
+                };
+                let [start, end] = edge.source;
+                (start.x.to_bits() == end.x.to_bits()
+                    && start.y.to_bits() != end.y.to_bits()
+                    && start.x.abs().to_bits() == 180.0_f64.to_bits())
+                .then_some((edge.id.0, start.x.is_sign_positive()))
+            })
+            .collect()
+    }
+
+    #[test]
+    fn exact_q_reports_source_contacts_at_the_seam() {
+        let crossing = Shape::Polygon(Polygon::new(
+            ring(&[
+                (170.0, -10.0),
+                (-170.0, 10.0),
+                (170.0, 10.0),
+                (-170.0, -10.0),
+                (170.0, -10.0),
+            ]),
+            Vec::new(),
+        ));
+        assert!(
+            exact_topology(&crossing)
+                .has_source_contact_at_seam()
+                .unwrap()
+        );
+
+        let ordinary_crossing = Shape::Polygon(Polygon::new(
+            ring(&[
+                (170.0, -10.0),
+                (-170.0, -10.0),
+                (-170.0, 10.0),
+                (170.0, 10.0),
+                (170.0, -10.0),
+            ]),
+            Vec::new(),
+        ));
+        assert!(
+            !exact_topology(&ordinary_crossing)
+                .has_source_contact_at_seam()
+                .unwrap()
+        );
+
+        let simple_line = line(&[(170.0, 0.0), (-170.0, 0.0)]);
+        assert!(
+            !exact_topology(&simple_line)
+                .has_source_contact_at_seam()
+                .unwrap()
+        );
+
+        let crossing_line = line(&[
+            (170.0, -10.0),
+            (-170.0, 10.0),
+            (170.0, 10.0),
+            (-170.0, -10.0),
+        ]);
+        assert!(
+            exact_topology(&crossing_line)
+                .has_source_contact_at_seam()
+                .unwrap()
+        );
+    }
+
+    #[test]
+    fn exact_q_classifies_only_opposite_side_seam_overlap_as_a_cut() {
+        let split_members = multipolygon(vec![
+            Polygon::new(
+                ring(&[
+                    (-180.0, -10.0),
+                    (-170.0, -10.0),
+                    (-170.0, 10.0),
+                    (-180.0, 10.0),
+                    (-180.0, -10.0),
+                ]),
+                Vec::new(),
+            ),
+            Polygon::new(
+                ring(&[
+                    (180.0, 10.0),
+                    (170.0, 10.0),
+                    (170.0, -10.0),
+                    (180.0, -10.0),
+                    (180.0, 10.0),
+                ]),
+                Vec::new(),
+            ),
+        ]);
+        let topology = exact_topology_with_seam_cuts(&split_members);
+        let cut_pairs = topology.seam_cut_edge_pairs().unwrap();
+        let copies = seam_copy_edges(&topology);
+        let west = copies.iter().find(|(_, east)| !east).unwrap().0;
+        let east = copies.iter().find(|(_, east)| *east).unwrap().0;
+        assert!(cut_pairs.contains(west, east));
+        assert!(topology.has_source_contact_at_seam().unwrap());
+
+        let partial_overlap = multipolygon(vec![
+            Polygon::new(
+                ring(&[
+                    (-180.0, -10.0),
+                    (-170.0, -10.0),
+                    (-170.0, 10.0),
+                    (-180.0, 10.0),
+                    (-180.0, -10.0),
+                ]),
+                Vec::new(),
+            ),
+            Polygon::new(
+                ring(&[
+                    (180.0, 0.0),
+                    (170.0, 0.0),
+                    (170.0, 15.0),
+                    (180.0, 15.0),
+                    (180.0, 0.0),
+                ]),
+                Vec::new(),
+            ),
+        ]);
+        let topology = exact_topology_with_seam_cuts(&partial_overlap);
+        let cut_pairs = topology.seam_cut_edge_pairs().unwrap();
+        let copies = seam_copy_edges(&topology);
+        let west = copies.iter().find(|(_, east)| !east).unwrap().0;
+        let east = copies.iter().find(|(_, east)| *east).unwrap().0;
+        assert!(cut_pairs.contains(west, east));
+
+        let same_side = multipolygon(vec![
+            Polygon::new(
+                ring(&[
+                    (-180.0, -10.0),
+                    (-170.0, -10.0),
+                    (-170.0, 10.0),
+                    (-180.0, 10.0),
+                    (-180.0, -10.0),
+                ]),
+                Vec::new(),
+            ),
+            Polygon::new(
+                ring(&[
+                    (180.0, 0.0),
+                    (-170.0, 0.0),
+                    (-170.0, 15.0),
+                    (180.0, 15.0),
+                    (180.0, 0.0),
+                ]),
+                Vec::new(),
+            ),
+        ]);
+        let topology = exact_topology_with_seam_cuts(&same_side);
+        let cut_pairs = topology.seam_cut_edge_pairs().unwrap();
+        let copies = seam_copy_edges(&topology);
+        let west = copies.iter().find(|(_, east)| !east).unwrap().0;
+        let east = copies.iter().find(|(_, east)| *east).unwrap().0;
+        assert!(!cut_pairs.contains(west, east));
     }
 
     fn nested_box_shapes(count: usize) -> Vec<Shape> {

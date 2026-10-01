@@ -89,13 +89,14 @@ pub(crate) use types::{
 };
 mod antimeridian;
 pub(crate) use antimeridian::{
-    DerivedPointStrategy, GeographicDerivedPointScan, GeographicTopologyRoute, antimeridian_frame,
-    chain_crosses_antimeridian, classify_geographic_chart, crosses_antimeridian_in_frame,
-    geographic_crossing, geographic_crossing_bounds,
+    DerivedPointStrategy, GeographicDerivedPointScan, GeographicSeamFacts, GeographicTopologyRoute,
+    antimeridian_frame, chain_crosses_antimeridian, classify_geographic_chart,
+    crosses_antimeridian_in_frame, geographic_crossing, geographic_crossing_bounds,
     geographic_crossing_bounds_for_shapes_in_frame, geographic_crossing_bounds_in_frame,
-    geographic_topology_route, is_ring_data_in_frame, is_simple_data_in_frame,
-    repair_data_in_frame, repair_shape_in_frame, self_intersections_in_frame, topology_domain,
-    unary_antimeridian_derived, validate_data_in_frame, validate_shape_in_frame,
+    geographic_seam_facts_in_frame, geographic_topology_route, is_ring_data_in_frame,
+    is_simple_data_in_frame, repair_data_in_frame, repair_shape_in_frame,
+    self_intersections_in_frame, topology_domain, unary_antimeridian_derived,
+    validate_data_in_frame, validate_shape_in_frame,
 };
 mod arrangement;
 mod bvh_code;
@@ -147,7 +148,7 @@ mod topology;
 #[cfg(test)]
 pub(crate) use topology::TopologyGraph;
 pub(crate) use topology::{
-    ExactGeographicRectangleLocation, ExactGeographicTopology, TopologyDomain,
+    ExactGeographicRectangleLocation, ExactGeographicTopology, SeamCutEdgePairs, TopologyDomain,
 };
 mod util;
 use std::borrow::Borrow;
@@ -650,7 +651,7 @@ impl Polygon {
         name: &str,
         path: &str,
     ) -> crate::error::Result<Option<ValidationIssue>> {
-        self.validate_inner(name, path, None)
+        self.validate_inner(name, path, None, None)
     }
 
     pub(in crate::geometry) fn validate_with_contacts(
@@ -659,7 +660,23 @@ impl Polygon {
         path: &str,
         contacts: &mut Vec<PolygonContact>,
     ) -> crate::error::Result<Option<ValidationIssue>> {
-        self.validate_inner(name, path, Some(contacts))
+        self.validate_inner(name, path, Some(contacts), None)
+    }
+
+    pub(crate) fn validate_with_seam_cut_edge_pairs(
+        &self,
+        name: &str,
+        path: &str,
+        source_edge_base: u32,
+        source_polygon_id: u32,
+        seam_cut_edge_pairs: &SeamCutEdgePairs,
+    ) -> crate::error::Result<Option<ValidationIssue>> {
+        self.validate_inner(
+            name,
+            path,
+            None,
+            Some((seam_cut_edge_pairs, source_edge_base, source_polygon_id)),
+        )
     }
 
     fn validate_inner(
@@ -667,6 +684,7 @@ impl Polygon {
         name: &str,
         path: &str,
         contacts: Option<&mut Vec<PolygonContact>>,
+        seam_cut_edge_pairs: Option<(&SeamCutEdgePairs, u32, u32)>,
     ) -> crate::error::Result<Option<ValidationIssue>> {
         if let Some(issue) = validate_ring(self.shell.coords(), || {
             (format!("{name} shell"), format!("{path}.shell"))
@@ -680,7 +698,7 @@ impl Polygon {
                 return Ok(Some(issue));
             }
         }
-        polygon_rings_issue_with_contacts(self, path, contacts)
+        polygon_rings_issue_with_contacts(self, path, contacts, seam_cut_edge_pairs)
     }
 
     fn contains_point(&self, point: Point) -> bool {

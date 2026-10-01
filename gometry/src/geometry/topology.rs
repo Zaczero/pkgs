@@ -33,7 +33,7 @@ mod staging;
 pub(crate) use graph::TopologyGraph;
 #[cfg(test)]
 pub(super) use graph::{AreaSupport, TopologyEdge, TopologyKey, TopologyLocation, TopologyNodeId};
-pub(crate) use q::{ExactGeographicRectangleLocation, ExactGeographicTopology};
+pub(crate) use q::{ExactGeographicRectangleLocation, ExactGeographicTopology, SeamCutEdgePairs};
 
 /// SIMD ray-crossing decision for one chunk of ring edges, or `None` when any
 /// straddling lane's crossing sign cannot be trusted in plain `f64` (the

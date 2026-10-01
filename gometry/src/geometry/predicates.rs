@@ -14,7 +14,8 @@ mod validate;
 mod validity_helpers;
 
 pub(in crate::geometry) use membership::{
-    PolygonContact, multi_polygon_members_issue, polygon_rings_issue_with_contacts,
+    PolygonContact, is_seam_cut_pair, multi_polygon_members_issue,
+    multi_polygon_members_issue_with_seam_cuts, polygon_rings_issue_with_contacts,
 };
 pub(crate) use membership::{
     RingClass, TouchDirections, ring_classify_point, ring_contains_interior, ring_label,

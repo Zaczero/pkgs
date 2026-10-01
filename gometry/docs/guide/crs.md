@@ -808,6 +808,9 @@ the seam and still interpret each stored edge from its endpoints on the CRS
 ellipsoid, so inserting chart vertices does not promise geodesic area or length
 conservation. Geodesic area measures the polygon's lon/lat chart interior,
 including regions larger than half the ellipsoid, independent of ring order.
+At the seam, only a collinear shared span with polygon interiors on opposite
+sides is a chart cut; that span does not count for validity or simplicity, while
+same-side overlaps remain invalid.
 The **stay-planar**
 constructive ops ([`convex_hull`][gometry.Geometry.convex_hull], [`concave_hull`][gometry.Geometry.concave_hull], [`buffer`][gometry.Geometry.buffer], [`offset_curve`][gometry.Geometry.offset_curve],
 [`simplify`][gometry.Geometry.simplify], Voronoi, Delaunay) do **not** auto-split; call

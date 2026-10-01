@@ -1,9 +1,10 @@
 use crate::geometry::{
-    Bounds, Coordinates, HashMap, HashMapExt as _, IndexedSegment, LineworkChains, Orientation,
-    Point, PointKey, Polygon, Ring, SegmentParameter, ValidationIssue, XY, classify_ring_pair,
-    classify_ring_pair_with_contacts, clip_segment_parameter, face_interior_point,
-    for_each_overlapping_bounds_pair, orient_ring, orientation_xy, ray_crossing_is_right,
-    ring_probe_point, settle_touches, topology, visit_interacting_pairs,
+    Bounds, Contact, Coordinates, HashMap, HashMapExt as _, IndexedSegment, LineworkChains,
+    Orientation, Point, PointKey, Polygon, Ring, SeamCutEdgePairs, SegmentParameter,
+    ValidationIssue, XY, classify_ring_pair, classify_ring_pair_with_contacts,
+    clip_segment_parameter, face_interior_point, for_each_overlapping_bounds_pair, orient_ring,
+    orientation_xy, ray_crossing_is_right, ring_probe_point, same_point, segment_contact_exact,
+    settle_touches, topology, visit_interacting_pairs,
 };
 /// Where a probe point sits relative to one ring.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -176,6 +177,43 @@ fn source_edge_ordinal(
         .expect("staged segment has a source-edge ordinal") as usize
 }
 
+fn source_edge_id(
+    source_edges: &[u32],
+    source_offsets: &[usize],
+    source_ring_bases: &[u32],
+    segment: &IndexedSegment,
+) -> crate::error::Result<u32> {
+    let base = *source_ring_bases.get(segment.line).ok_or_else(|| {
+        crate::geometry::GeometryErrorKind::Invalid(
+            "seam-cut filter has no source-ring base".into(),
+        )
+    })?;
+    base.checked_add(
+        u32::try_from(source_edge_ordinal(source_edges, source_offsets, segment))
+            .map_err(|_| crate::error::ResourceError::SizeOverflow)?,
+    )
+    .ok_or_else(|| crate::error::ResourceError::SizeOverflow.into())
+}
+
+pub(in crate::geometry) fn is_seam_cut_pair(
+    left: &IndexedSegment,
+    right: &IndexedSegment,
+    source_edges: &[u32],
+    source_offsets: &[usize],
+    source_ring_bases: &[u32],
+    seam_cut_edge_pairs: &SeamCutEdgePairs,
+) -> crate::error::Result<bool> {
+    let left_edge = source_edge_id(source_edges, source_offsets, source_ring_bases, left)?;
+    let right_edge = source_edge_id(source_edges, source_offsets, source_ring_bases, right)?;
+    if !seam_cut_edge_pairs.contains(left_edge, right_edge) {
+        return Ok(false);
+    }
+    Ok(matches!(
+        segment_contact_exact(left.segment, right.segment),
+        Contact::Collinear { span } if !same_point(span.start, span.end)
+    ))
+}
+
 pub(crate) fn ring_label(ring: usize) -> String {
     if ring == 0 {
         "exterior ring".into()
@@ -194,15 +232,28 @@ pub(in crate::geometry) fn polygon_rings_issue_with_contacts(
     polygon: &Polygon,
     path: &str,
     mut contacts: Option<&mut Vec<PolygonContact>>,
+    seam_cut_edge_pairs: Option<(&SeamCutEdgePairs, u32, u32)>,
 ) -> crate::error::Result<Option<ValidationIssue>> {
     // A Vec's admitted length is below usize::MAX, so adding the shell remains exact.
     let ring_count = polygon.holes.len().wrapping_add(1);
     let mut chains = LineworkChains::default();
     let mut source_edges = Vec::new();
     let mut source_offsets = Vec::new();
+    let mut source_ring_bases = Vec::new();
+    let mut next_source_edge = seam_cut_edge_pairs.map(|(_, base, _)| base);
     for ring in std::iter::once(&polygon.shell).chain(polygon.holes.iter()) {
-        if contacts.is_some() {
+        if contacts.is_some() || seam_cut_edge_pairs.is_some() {
             source_offsets.push(source_edges.len());
+            if let Some(next) = next_source_edge {
+                source_ring_bases.push(next);
+                next_source_edge = Some(
+                    next.checked_add(
+                        u32::try_from(ring.coord_count().saturating_sub(1))
+                            .map_err(|_| crate::error::ResourceError::SizeOverflow)?,
+                    )
+                    .ok_or(crate::error::ResourceError::SizeOverflow)?,
+                );
+            }
             if chains
                 .push_line_with_source_edges(ring.coords(), &mut source_edges)?
                 .is_none()
@@ -220,6 +271,18 @@ pub(in crate::geometry) fn polygon_rings_issue_with_contacts(
                                    right: &IndexedSegment,
                                    point: XY|
          -> crate::error::Result<()> {
+            if let Some((seam_cut_edge_pairs, ..)) = seam_cut_edge_pairs
+                && is_seam_cut_pair(
+                    left,
+                    right,
+                    &source_edges,
+                    &source_offsets,
+                    &source_ring_bases,
+                    seam_cut_edge_pairs,
+                )?
+            {
+                return Ok(());
+            }
             if let Some(contacts) = contacts.as_deref_mut() {
                 let left_edge = source_edge_ordinal(&source_edges, &source_offsets, left);
                 let right_edge = source_edge_ordinal(&source_edges, &source_offsets, right);
@@ -245,10 +308,37 @@ pub(in crate::geometry) fn polygon_rings_issue_with_contacts(
             }
             Ok(())
         };
+        let mut include_touch_directions =
+            |left: &IndexedSegment, right: &IndexedSegment, point: XY| {
+                let Some((seam_cut_edge_pairs, _, source_polygon)) = seam_cut_edge_pairs else {
+                    return Ok(([true, true], [true, true]));
+                };
+                let left_edge =
+                    source_edge_id(&source_edges, &source_offsets, &source_ring_bases, left)?;
+                let right_edge =
+                    source_edge_id(&source_edges, &source_offsets, &source_ring_bases, right)?;
+                Ok((
+                    seam_cut_edge_pairs.touch_directions(
+                        left_edge,
+                        right_edge,
+                        source_polygon,
+                        point,
+                        left.segment,
+                    ),
+                    seam_cut_edge_pairs.touch_directions(
+                        right_edge,
+                        left_edge,
+                        source_polygon,
+                        point,
+                        right.segment,
+                    ),
+                ))
+            };
         classify_ring_pair_with_contacts(
             left,
             right,
             &mut touches,
+            &mut include_touch_directions,
             &mut collect_contact,
             &|a, b| {
                 format!(
@@ -353,12 +443,21 @@ pub(in crate::geometry) fn polygon_rings_issue_with_contacts(
     Ok(nest_issue)
 }
 
-/// Member-pair validity of a multipolygon (each member already valid on
-/// its own): members may touch at finitely many points but never share
-/// linework, cross — including through a shared vertex — or stack.
+/// Member-pair validity of a multipolygon (each member already valid on its
+/// own): members may touch at finitely many points but never share linework,
+/// cross — including through a shared vertex — or stack. The geographic
+/// validator exempts only Q-certified opposite-side seam spans.
 pub(in crate::geometry) fn multi_polygon_members_issue(
     polygons: &[Polygon],
     path: &str,
+) -> crate::error::Result<Option<ValidationIssue>> {
+    multi_polygon_members_issue_with_seam_cuts(polygons, path, None)
+}
+
+pub(in crate::geometry) fn multi_polygon_members_issue_with_seam_cuts(
+    polygons: &[Polygon],
+    path: &str,
+    seam_cut_edge_pairs: Option<(&SeamCutEdgePairs, u32, u32)>,
 ) -> crate::error::Result<Option<ValidationIssue>> {
     let overlap =
         |a: usize, b: usize| format!("polygons at indices {} and {} overlap", a.min(b), b.max(a));
@@ -373,11 +472,31 @@ pub(in crate::geometry) fn multi_polygon_members_issue(
             .ok_or(crate::error::ResourceError::SizeOverflow)
     })?;
     let mut member_of = Vec::with_capacity(ring_count);
+    let mut source_edges = Vec::new();
+    let mut source_offsets = Vec::new();
+    let mut source_ring_bases = Vec::new();
+    let mut next_source_edge = seam_cut_edge_pairs.map(|(_, base, _)| base);
     for (member, polygon) in polygons.iter().enumerate() {
         for ring in
             std::iter::once(polygon.shell.coords()).chain(polygon.holes.iter().map(Ring::coords))
         {
-            if chains.push_line(ring)?.is_none() {
+            let staged = if next_source_edge.is_some() {
+                source_offsets.push(source_edges.len());
+                if let Some(next) = next_source_edge {
+                    source_ring_bases.push(next);
+                    next_source_edge = Some(
+                        next.checked_add(
+                            u32::try_from(ring.coord_count().saturating_sub(1))
+                                .map_err(|_| crate::error::ResourceError::SizeOverflow)?,
+                        )
+                        .ok_or(crate::error::ResourceError::SizeOverflow)?,
+                    );
+                }
+                chains.push_line_with_source_edges(ring, &mut source_edges)?
+            } else {
+                chains.push_line(ring)?
+            };
+            if staged.is_none() {
                 return Ok(None);
             }
             member_of.push(member);
@@ -392,11 +511,91 @@ pub(in crate::geometry) fn multi_polygon_members_issue(
     };
     let mut touches: TouchDirections = HashMap::new();
     if let Some(issue) = visit_interacting_pairs(&chains, |left, right| {
-        let (left, right) = (as_member(left), as_member(right));
-        if left.line == right.line {
+        if let Some((seam_cut_edge_pairs, ..)) = seam_cut_edge_pairs
+            && is_seam_cut_pair(
+                left,
+                right,
+                &source_edges,
+                &source_offsets,
+                &source_ring_bases,
+                seam_cut_edge_pairs,
+            )?
+        {
+            return Ok(None);
+        }
+        let source_left = left;
+        let source_right = right;
+        let (left_member, right_member) = (as_member(left), as_member(right));
+        if left_member.line == right_member.line {
             return Ok(None); // same member: already validated by itself
         }
-        classify_ring_pair(&left, &right, &mut touches, &overlap)
+        if let Some((seam_cut_edge_pairs, _, source_polygon_base)) = seam_cut_edge_pairs {
+            let left_member_index = member_of.get(source_left.line).copied().ok_or_else(|| {
+                crate::geometry::GeometryErrorKind::Invalid(
+                    "seam-cut filter has no left MultiPolygon member".into(),
+                )
+            })?;
+            let right_member_index =
+                member_of.get(source_right.line).copied().ok_or_else(|| {
+                    crate::geometry::GeometryErrorKind::Invalid(
+                        "seam-cut filter has no right MultiPolygon member".into(),
+                    )
+                })?;
+            let left_polygon = source_polygon_base
+                .checked_add(
+                    u32::try_from(left_member_index)
+                        .map_err(|_| crate::error::ResourceError::SizeOverflow)?,
+                )
+                .ok_or(crate::error::ResourceError::SizeOverflow)?;
+            let right_polygon = source_polygon_base
+                .checked_add(
+                    u32::try_from(right_member_index)
+                        .map_err(|_| crate::error::ResourceError::SizeOverflow)?,
+                )
+                .ok_or(crate::error::ResourceError::SizeOverflow)?;
+            let mut include_touch_directions =
+                |_: &IndexedSegment, _: &IndexedSegment, point: XY| {
+                    let left_edge = source_edge_id(
+                        &source_edges,
+                        &source_offsets,
+                        &source_ring_bases,
+                        source_left,
+                    )?;
+                    let right_edge = source_edge_id(
+                        &source_edges,
+                        &source_offsets,
+                        &source_ring_bases,
+                        source_right,
+                    )?;
+                    Ok((
+                        seam_cut_edge_pairs.touch_directions(
+                            left_edge,
+                            right_edge,
+                            right_polygon,
+                            point,
+                            source_left.segment,
+                        ),
+                        seam_cut_edge_pairs.touch_directions(
+                            right_edge,
+                            left_edge,
+                            left_polygon,
+                            point,
+                            source_right.segment,
+                        ),
+                    ))
+                };
+            let mut no_contact = |_: &IndexedSegment, _: &IndexedSegment, _: XY| Ok(());
+            classify_ring_pair_with_contacts(
+                &left_member,
+                &right_member,
+                &mut touches,
+                &mut include_touch_directions,
+                &mut no_contact,
+                &overlap,
+            )
+        } else {
+            classify_ring_pair(&left_member, &right_member, &mut touches, &overlap)
+        }
     })? {
         return Ok(Some(issue.with_path_prefix(path)));
     }

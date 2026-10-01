@@ -69,13 +69,25 @@ pub(crate) fn classify_ring_pair(
     touches: &mut TouchDirections,
     describe: &impl Fn(usize, usize) -> String,
 ) -> crate::error::Result<Option<ValidationIssue>> {
-    classify_ring_pair_with_contacts(left, right, touches, &mut |_, _, _| Ok(()), describe)
+    classify_ring_pair_with_contacts(
+        left,
+        right,
+        touches,
+        &mut |_, _, _| Ok(([true, true], [true, true])),
+        &mut |_, _, _| Ok(()),
+        describe,
+    )
 }
 
 pub(in crate::geometry) fn classify_ring_pair_with_contacts(
     left: &IndexedSegment,
     right: &IndexedSegment,
     touches: &mut TouchDirections,
+    include_touch_directions: &mut impl FnMut(
+        &IndexedSegment,
+        &IndexedSegment,
+        XY,
+    ) -> crate::error::Result<([bool; 2], [bool; 2])>,
     on_touch: &mut impl FnMut(&IndexedSegment, &IndexedSegment, XY) -> crate::error::Result<()>,
     describe: &impl Fn(usize, usize) -> String,
 ) -> crate::error::Result<Option<ValidationIssue>> {
@@ -100,7 +112,15 @@ pub(in crate::geometry) fn classify_ring_pair_with_contacts(
             "$",
         ))),
         Contact::Touch { point } => {
-            record_touch(touches, left, right, point.point());
+            let (include_left, include_right) = include_touch_directions(left, right, point)?;
+            record_touch_filtered(
+                touches,
+                left,
+                right,
+                point.point(),
+                include_left,
+                include_right,
+            );
             on_touch(left, right, point)?;
             Ok(None)
         },
@@ -133,16 +153,26 @@ pub(crate) fn pair_contact_point(
 }
 
 /// Record the local directions both segments contribute at touch `point`.
-pub(crate) fn record_touch(
+pub(crate) fn record_touch_filtered(
     touches: &mut TouchDirections,
     left: &IndexedSegment,
     right: &IndexedSegment,
     point: Point,
+    include_left: [bool; 2],
+    include_right: [bool; 2],
 ) {
+    if !include_left.contains(&true) && !include_right.contains(&true) {
+        return;
+    }
     let (first, second) = if left.line <= right.line {
         (left, right)
     } else {
         (right, left)
+    };
+    let (include_first, include_second) = if left.line <= right.line {
+        (include_left, include_right)
+    } else {
+        (include_right, include_left)
     };
     let entry = touches
         .entry((first.line, second.line))
@@ -150,13 +180,24 @@ pub(crate) fn record_touch(
         .entry(PointKey::new(point))
         .or_default();
     let [first_directions, second_directions] = entry;
-    push_touch_directions(first_directions, first.segment, point.xy());
-    push_touch_directions(second_directions, second.segment, point.xy());
+    push_touch_directions(first_directions, first.segment, point.xy(), include_first);
+    push_touch_directions(
+        second_directions,
+        second.segment,
+        point.xy(),
+        include_second,
+    );
 }
 
-pub(crate) fn push_touch_directions(directions: &mut Vec<XY>, segment: Segment, point: XY) {
-    for endpoint in [segment.start, segment.end] {
-        if !same_point(endpoint, point)
+pub(crate) fn push_touch_directions(
+    directions: &mut Vec<XY>,
+    segment: Segment,
+    point: XY,
+    include: [bool; 2],
+) {
+    for (endpoint, include) in [segment.start, segment.end].into_iter().zip(include) {
+        if include
+            && !same_point(endpoint, point)
             && !directions.iter().any(|known| same_point(*known, endpoint))
         {
             directions.push(endpoint);

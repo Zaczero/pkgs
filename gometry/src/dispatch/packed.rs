@@ -212,11 +212,12 @@ fn packed_bool_values(array: &PyGeometryArray, op: Operation) -> Option<PyResult
                 Ok(shape) => shape,
                 Err(error) => return Some(Err(error.into())),
             };
-            if crate::geometry::crosses_antimeridian_in_frame(&shape, frame) {
+            let seam_facts = crate::geometry::geographic_seam_facts_in_frame(&shape, frame);
+            if seam_facts.crosses || seam_facts.possible_contact {
                 // Packed validity/simplicity kernels intentionally know nothing
-                // about frames. A crossing geographic column takes the shared
-                // per-row lane; ordinary geographic columns keep the packed
-                // fast path.
+                // about frames. Seam crossings and possible seam contacts take
+                // the shared per-row lane; ordinary geographic columns keep the
+                // packed fast path.
                 return None;
             }
         }
