@@ -1,6 +1,6 @@
 use crate::geometry::{
-    CoordSeq, CoordinateAxes, Coordinates as _, GeometryKind, HashMap, HashSet, LineSeq, Point,
-    PointKey, Polygon, Ring, Shape, point_on_segment,
+    CoordSeq, CoordSeqBuilder, CoordinateAxes, Coordinates as _, GeometryKind, HashMap, HashSet,
+    LineSeq, Point, PointKey, Polygon, Ring, Shape, point_on_segment,
 };
 
 /// Order-preserving topological dedup of overlay output points.
@@ -70,12 +70,13 @@ pub(crate) fn drop_collinear_vertices(mut vertices: Vec<Point>) -> Vec<Point> {
     kept
 }
 
-fn extend_chain(edge: &CoordSeq, from: PointKey, skip: usize, out: &mut Vec<Point>) {
-    out.reserve(edge.coord_count().saturating_sub(skip));
+fn extend_chain(edge: &CoordSeq, from: PointKey, skip: usize, out: &mut CoordSeqBuilder) {
     if PointKey::new(edge.first().expect("edge has >= 2 vertices")) == from {
-        out.extend(edge.iter().skip(skip));
+        out.extend_window(edge, skip..edge.len());
     } else {
-        out.extend(edge.iter().rev().skip(skip));
+        for point in edge.iter().rev().skip(skip) {
+            out.push(point);
+        }
     }
 }
 
@@ -105,9 +106,13 @@ pub(crate) fn merge_chains<E: AsRef<CoordSeq>>(edges: &[E]) -> crate::error::Res
     if live.len() <= 1 {
         let mut result = Vec::with_capacity(live.len());
         for index in live {
-            let mut coords = Vec::new();
-            extend_chain(edges[index].as_ref(), ends[0][0], 0, &mut coords);
-            result.push(CoordSeq::try_from_points(&coords)?);
+            let edge = edges
+                .get(index)
+                .expect("live edge ordinal comes from the input edges")
+                .as_ref();
+            let mut coords = CoordSeqBuilder::with_capacity(edge.axes(), edge.len());
+            extend_chain(edge, ends[0][0], 0, &mut coords);
+            result.push(coords.finish()?);
         }
         return Ok(result);
     }
@@ -170,7 +175,15 @@ pub(crate) fn merge_chains<E: AsRef<CoordSeq>>(edges: &[E]) -> crate::error::Res
     let mut chains: Vec<CoordSeq> = Vec::with_capacity(ends.len());
     let walk =
         |seed: usize, start_slot: usize, used: &mut [bool]| -> crate::error::Result<CoordSeq> {
-            let mut coords: Vec<Point> = Vec::new();
+            let first = edges
+                .get(
+                    *live
+                        .get(seed)
+                        .expect("chain seed belongs to the live edges"),
+                )
+                .expect("live edge ordinal comes from the input edges")
+                .as_ref();
+            let mut coords = CoordSeqBuilder::with_capacity(first.axes(), first.len());
             let mut edge = seed;
             let mut from = node_ends[seed][start_slot];
             loop {
@@ -180,7 +193,7 @@ pub(crate) fn merge_chains<E: AsRef<CoordSeq>>(edges: &[E]) -> crate::error::Res
                 extend_chain(
                     edges[live[edge]].as_ref(),
                     from_key,
-                    usize::from(!coords.is_empty()),
+                    usize::from(coords.len() != 0),
                     &mut coords,
                 );
                 let far = if a == from { b } else { a };
@@ -199,7 +212,7 @@ pub(crate) fn merge_chains<E: AsRef<CoordSeq>>(edges: &[E]) -> crate::error::Res
                     None => break,
                 }
             }
-            CoordSeq::try_from_points(&coords)
+            coords.finish()
         };
     // Open chains first: every edge with a barrier end (degree != 2) starts
     // a chain that runs until the next barrier; edges interior to such a
