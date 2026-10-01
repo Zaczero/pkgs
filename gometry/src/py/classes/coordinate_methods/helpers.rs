@@ -93,18 +93,37 @@ pub(crate) fn coordinate_matrix_data(
         pyo3::exceptions::PyOverflowError::new_err("coordinate matrix is too large")
     })?;
     let capacity = coordinates::checked_vector_len::<f64>(count, "coordinate matrix")?;
-    let Some(seq) = view.single_seq().filter(|seq| seq.len() == rows) else {
-        let mut data = Vec::with_capacity(capacity);
-        view.for_each_point(|coord| {
-            data.extend(
-                order
-                    .iter()
-                    .map(|&axis| coordinate_ordinate(coord, axis).unwrap_or(missing)),
-            );
-        });
-        return Ok((rows, data));
-    };
     let mut data = vec![0.0; capacity];
+    let mut output = data.as_mut_slice();
+    view.for_each(&mut |_, run| {
+        let count = match run {
+            crate::geometry::CoordRun::Seq(seq) => seq.len(),
+            crate::geometry::CoordRun::Point(_) => 1,
+        }
+        .wrapping_mul(dims);
+        let (current, remaining) = std::mem::take(&mut output).split_at_mut(count);
+        output = remaining;
+        match run {
+            crate::geometry::CoordRun::Seq(seq) => {
+                interleave_coordinate_columns(seq, axes, order, missing, current);
+            },
+            crate::geometry::CoordRun::Point(point) => {
+                for (value, &axis) in current.iter_mut().zip(order) {
+                    *value = coordinate_ordinate(point, axis).unwrap_or(missing);
+                }
+            },
+        }
+    });
+    Ok((rows, data))
+}
+
+fn interleave_coordinate_columns(
+    seq: &crate::geometry::CoordSeq,
+    axes: CoordinateAxes,
+    order: &[CoordinateAxis],
+    missing: f64,
+    data: &mut [f64],
+) {
     let xs = seq.xs();
     let ys = seq.ys();
     let zs = seq.zs();
@@ -119,7 +138,12 @@ pub(crate) fn coordinate_matrix_data(
             *output = [x, y];
         }
     } else {
-        for (i, ((output, &x), &y)) in data.chunks_exact_mut(dims).zip(xs).zip(ys).enumerate() {
+        for (i, ((output, &x), &y)) in data
+            .chunks_exact_mut(order.len())
+            .zip(xs)
+            .zip(ys)
+            .enumerate()
+        {
             for (value, &axis) in output.iter_mut().zip(order) {
                 *value = match axis {
                     CoordinateAxis::X => x,
@@ -138,7 +162,6 @@ pub(crate) fn coordinate_matrix_data(
             }
         }
     }
-    Ok((rows, data))
 }
 
 /// Format one coordinate as a Python tuple, honoring a fixed `select` layout

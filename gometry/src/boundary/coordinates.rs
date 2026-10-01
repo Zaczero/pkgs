@@ -1305,7 +1305,7 @@ impl CoordinateView {
     /// Drive `visit` over every run / scalar point of the owner, dispatching
     /// scalar shapes vs array rows. The traversal primitive behind every
     /// method. Prefer [`try_for_each`] when the visitor may stop early.
-    fn for_each<F>(&self, visit: &mut F)
+    pub(crate) fn for_each<F>(&self, visit: &mut F)
     where
         F: for<'x> FnMut(Option<usize>, CoordRun<'x>),
     {
