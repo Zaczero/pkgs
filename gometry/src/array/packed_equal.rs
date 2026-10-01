@@ -157,6 +157,10 @@ fn packed_polygons_equal_exact_columns_impl<const Z: bool, const M: bool>(
 }
 
 /// `equals_exact` over two resolved packed point column sets.
+#[expect(
+    clippy::indexing_slicing,
+    reason = "PointColumns cursors yield admitted physical rows; retain direct scalar coordinate-lane reads"
+)]
 fn packed_points_equal_exact_columns_impl<const Z: bool, const M: bool>(
     left: &PointColumns<'_>,
     right: &PointColumns<'_>,
@@ -207,6 +211,10 @@ fn packed_points_equal_exact_columns_impl<const Z: bool, const M: bool>(
     out
 }
 
+#[expect(
+    clippy::arithmetic_side_effects,
+    reason = "SIMD tolerance comparison intentionally uses IEEE subtraction, including overflow to infinities and NaN"
+)]
 fn packed_points_equal_contiguous<const Z: bool, const M: bool>(
     left: &PointColumns<'_>,
     right: &PointColumns<'_>,

@@ -10,6 +10,11 @@ impl PyGeometryArray {
         self.gather_logical_rows_iter(rows.iter().copied())
     }
 
+    #[expect(
+        clippy::indexing_slicing,
+        clippy::arithmetic_side_effects,
+        reason = "an exact-size row iterator keeps each enumerated output within the pre-sized validity bitmap"
+    )]
     pub(crate) fn gather_logical_rows_iter(
         &self,
         rows: impl ExactSizeIterator<Item = usize> + Clone,
@@ -101,6 +106,10 @@ impl PyGeometryArray {
         )
     }
 
+    #[expect(
+        clippy::arithmetic_side_effects,
+        reason = "admitted packed line and polygon offset columns always contain their initial sentinel"
+    )]
     pub(crate) fn selected_storage(
         &self,
         rows: impl Iterator<Item = usize> + Clone,
@@ -141,9 +150,15 @@ impl PyGeometryArray {
                     rows,
                 ),
             }),
-            GeometryArrayStorage::Mixed(shapes) => {
-                GeometryArrayStorage::Mixed(rows.map(|row| shapes[row].clone()).collect())
-            },
+            GeometryArrayStorage::Mixed(shapes) => GeometryArrayStorage::Mixed(
+                rows.map(|row| {
+                    shapes
+                        .get(row)
+                        .expect("selected mixed row is within the backing array")
+                        .clone()
+                })
+                .collect(),
+            ),
         }
     }
 

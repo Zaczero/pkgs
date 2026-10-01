@@ -632,6 +632,10 @@ fn parse_wkt_points(value: &str, axes: CoordinateAxes) -> Result<CoordSeq> {
     })
 }
 
+#[expect(
+    clippy::naive_bytecount,
+    reason = "this is an advisory reservation hint; bytecount is not a direct package dependency"
+)]
 fn parse_wkt_points_impl<const Z: bool, const M: bool>(value: &str) -> Result<CoordSeq> {
     let bytes = value.as_bytes();
     let capacity = bytes
@@ -815,14 +819,26 @@ impl<'a> WktByteCursor<'a> {
         self.position == self.bytes.len()
     }
 
+    #[expect(
+        clippy::missing_const_for_fn,
+        reason = "keep the WKT parser cursor's runtime call shape unchanged"
+    )]
     fn advance(&mut self) {
         self.position = self.position.wrapping_add(1);
     }
 
+    #[expect(
+        clippy::missing_const_for_fn,
+        reason = "keep the WKT parser cursor's runtime call shape unchanged"
+    )]
     fn advance_by(&mut self, count: usize) {
         self.position = self.position.wrapping_add(count);
     }
 
+    #[expect(
+        clippy::missing_const_for_fn,
+        reason = "keep the WKT parser cursor's runtime call shape unchanged"
+    )]
     fn seek_after(&mut self, position: usize) {
         self.position = position.wrapping_add(1);
     }

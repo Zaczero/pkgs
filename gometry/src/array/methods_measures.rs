@@ -293,6 +293,10 @@ impl PyGeometryArray {
     /// >>> geoms.to_wkt()
     /// ['POLYGON ((0 0, 2 0, 2 1, 0 1, 0 0))']
     #[pyo3(signature = (by))]
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "group indices are created with each group and published only after both parallel vectors are extended"
+    )]
     pub fn dissolve(&self, py: Python<'_>, by: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
         // Fixed-count alignment via keystone: fallible exact reserve + stop after
         // expected+1 so unbounded `itertools.repeat` cannot grow forever.

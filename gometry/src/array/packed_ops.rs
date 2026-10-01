@@ -319,6 +319,10 @@ impl PyGeometryArray {
 
     /// The array reordered by ascending `keys` (stable, so equal keys keep
     /// row order).
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "the key vector has one entry per row and sort keys are generated from its own index range"
+    )]
     pub(crate) fn taken_by_keys(&self, keys: &[u64]) -> crate::error::Result<Self> {
         let mut order: Vec<_> = (0..keys.len()).collect();
         order.sort_unstable_by_key(|&row| (self.is_row_missing(row), keys[row], row));

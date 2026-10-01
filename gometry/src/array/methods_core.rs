@@ -1139,7 +1139,9 @@ impl PyGeometryArray {
                             crate::array::ShapeRow::Point(point) => {
                                 point.x.is_finite() && point.y.is_finite()
                             },
-                            _ => false,
+                            crate::array::ShapeRow::Handle(_)
+                            | crate::array::ShapeRow::Shape(_)
+                            | crate::array::ShapeRow::Packed(_) => false,
                         },
                     };
                     values.push(value);
@@ -1187,7 +1189,13 @@ impl PyGeometryArray {
                             Shape::Polygon(_) | Shape::Empty(GeometryKind::Polygon, _) => {
                                 shape.is_convex().unwrap_or(false)
                             },
-                            _ => false,
+                            Shape::Point(_)
+                            | Shape::MultiPoint(_)
+                            | Shape::LineString(_)
+                            | Shape::MultiLineString(_)
+                            | Shape::MultiPolygon(_)
+                            | Shape::GeometryCollection(_)
+                            | Shape::Empty(..) => false,
                         }
                     };
                     output.push(value);

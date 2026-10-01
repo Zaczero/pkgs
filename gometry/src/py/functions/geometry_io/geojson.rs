@@ -539,7 +539,9 @@ fn validate_text_side_data(row: &FeatureRow) -> crate::error::Result<()> {
                 match value {
                     Value::String(_) => io::GeoJsonMemberKind::String,
                     Value::Number(_) => io::GeoJsonMemberKind::Number,
-                    _ => io::GeoJsonMemberKind::Other,
+                    Value::Null | Value::Bool(_) | Value::Array(_) | Value::Object(_) => {
+                        io::GeoJsonMemberKind::Other
+                    },
                 }
             },
         };

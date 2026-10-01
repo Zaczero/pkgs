@@ -440,7 +440,7 @@ impl PyCellArray {
 
     /// Unique ids + dense codes (factorize pass).
     fn factorize_entries(&self) -> std::result::Result<(Vec<u64>, Vec<i64>), FactorizationError> {
-        if let RowSelectionRef::Identity = self.selection_ref() {
+        if matches!(self.selection_ref(), RowSelectionRef::Identity) {
             return self.factorize_identity_entries();
         }
         let mut slot_of: HashMap<u64, usize> = HashMap::with_capacity(self.len());
@@ -723,6 +723,10 @@ impl PyCellArray {
     /// -------
     /// int
     #[getter]
+    #[expect(
+        clippy::arithmetic_side_effects,
+        reason = "the u64 id column length is bounded by Vec layout, so its logical byte length fits usize"
+    )]
     fn nbytes(&self) -> usize {
         self.len() * size_of::<u64>()
     }

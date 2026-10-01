@@ -439,7 +439,9 @@ impl PyGeometryArray {
                     ),
                 )?)
             },
-            _ => self.map_shapes(|shape| Ok(shape.reverse()?)),
+            GeometryArrayStorage::Mixed(_) | GeometryArrayStorage::Packed(_) => {
+                self.map_shapes(|shape| Ok(shape.reverse()?))
+            },
         }
     }
 
@@ -600,7 +602,7 @@ impl PyGeometryArray {
                 self.try_map_packed_columns_detached(py, self.frame.clone(), move |columns| {
                     match columns {
                         PackedColumns::Lines(lines) => clip_lines_packed_xy(&lines, rect, domain),
-                        _ => Ok(None),
+                        PackedColumns::Points(_) | PackedColumns::Polygons(_) => Ok(None),
                     }
                 })?;
             if let Some(result) = clipped {

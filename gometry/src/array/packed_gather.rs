@@ -88,7 +88,7 @@ fn materialize_gather(storage: &PackedStorage) -> PackedColumnResult<Option<Pack
                 coords: Arc::new(gather_point_columns(coords, map).map_err(batch_err)?),
                 row_map: RowSelection::Identity,
             }),
-            _ => None,
+            RowSelectionRef::Identity | RowSelectionRef::Window { .. } => None,
         },
         PackedStorage::Lines {
             coords,
@@ -105,7 +105,7 @@ fn materialize_gather(storage: &PackedStorage) -> PackedColumnResult<Option<Pack
                     row_map: RowSelection::Identity,
                 })
             },
-            _ => None,
+            RowSelectionRef::Identity | RowSelectionRef::Window { .. } => None,
         },
         PackedStorage::Polygons {
             coords,
@@ -128,7 +128,7 @@ fn materialize_gather(storage: &PackedStorage) -> PackedColumnResult<Option<Pack
                     row_map: RowSelection::Identity,
                 })
             },
-            _ => None,
+            RowSelectionRef::Identity | RowSelectionRef::Window { .. } => None,
         },
     })
 }

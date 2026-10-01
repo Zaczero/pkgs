@@ -513,7 +513,7 @@ impl PyGeometryArray {
         let len = self.len();
         let clamp = |bound: i64| -> usize {
             let resolved = if bound < 0 {
-                bound + i64::try_from(len).unwrap_or(i64::MAX)
+                bound.saturating_add(i64::try_from(len).unwrap_or(i64::MAX))
             } else {
                 bound
             };
@@ -533,12 +533,12 @@ impl PyGeometryArray {
             return Err(PyValueError::new_err("value is not in array"));
         };
         if self.frame_matches(geometry) && start < stop {
-            for (position, row) in self
+            for (row, position) in self
                 .row_operation()
                 .rows_with_missing(|| ())
                 .take(stop)
                 .skip(start)
-                .enumerate()
+                .zip(start..stop)
             {
                 let equal = match row {
                     ArrayRow::Present(row) => row
@@ -547,7 +547,7 @@ impl PyGeometryArray {
                     ArrayRow::Missing { .. } => false,
                 };
                 if equal {
-                    return Ok(start + position);
+                    return Ok(position);
                 }
             }
         }
@@ -565,6 +565,10 @@ impl PyGeometryArray {
     /// -------
     /// int
     ///     How many elements equal ``value``.
+    #[expect(
+        clippy::arithmetic_side_effects,
+        reason = "the match count cannot exceed the admitted array row count"
+    )]
     pub fn count(&self, value: &Bound<'_, PyAny>) -> PyResult<usize> {
         if value.is_none() {
             return Ok(self
@@ -808,6 +812,10 @@ impl PyGeometryArray {
     /// -------
     /// GeometryArray
     #[pyo3(name = "_replace_at")]
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "positions are bounds-checked before they index the row map, and selected replacements come from that map"
+    )]
     pub fn replace_at(
         &self,
         positions: &Bound<'_, PyAny>,

@@ -75,6 +75,10 @@ impl Ring {
     /// Check the shared parsed-ring closure policy without allocating a new
     /// coordinate owner. `true` means the first vertex must be appended;
     /// `false` means the supplied sequence is already a valid closed ring.
+    #[expect(
+        clippy::arithmetic_side_effects,
+        reason = "the minimum vertex count is checked before subtracting one for the final coordinate index"
+    )]
     pub(crate) fn closure_requires_append(coords: &CoordSeq) -> Result<bool> {
         if coords.len() < Self::MIN_VERTICES_OPEN {
             return Err(GeometryErrorKind::RingTooShort(coords.len()).into());
@@ -244,6 +248,10 @@ impl Coordinates for [XY] {
         self.len()
     }
 
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "this trait method deliberately preserves slice-style indexed access and out-of-range panic behavior"
+    )]
     fn nth_coord(&self, index: usize) -> Point {
         self[index].point()
     }
@@ -254,6 +262,10 @@ impl Coordinates for Vec<XY> {
         self.len()
     }
 
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "this trait method deliberately preserves slice-style indexed access and out-of-range panic behavior"
+    )]
     fn nth_coord(&self, index: usize) -> Point {
         self[index].point()
     }
@@ -316,6 +328,10 @@ impl Coordinates for [Point] {
         <[Point]>::len(self)
     }
 
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "this trait method deliberately preserves slice-style indexed access and out-of-range panic behavior"
+    )]
     fn nth_coord(&self, index: usize) -> Point {
         self[index]
     }
@@ -326,6 +342,10 @@ impl Coordinates for Vec<Point> {
         self.len()
     }
 
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "this trait method deliberately preserves slice-style indexed access and out-of-range panic behavior"
+    )]
     fn nth_coord(&self, index: usize) -> Point {
         self[index]
     }

@@ -2,6 +2,7 @@ use pyo3::PyErr;
 use pyo3::exceptions::{PyOverflowError, PyTypeError};
 use pyo3::types::{PyDict, PyFloat, PyList, PyString};
 
+use crate::py::errors::parse_error;
 use crate::py::support::{
     Bound, CRSError, Frame, GeometryError, Py, PyAny, PyAnyMethods as _, PyBool,
     PyBoolMethods as _, PyDictMethods as _, PyFloatMethods as _, PyInt, PyListMethods as _,
@@ -166,7 +167,7 @@ impl JsonValueError {
             Self::NestingLimit(max_depth) => PyErr::from(crate::io::IoError::geojson(format!(
                 "GeoJSON JSON nesting exceeds the structural limit of {max_depth}"
             ))),
-            Self::FeatureDataNestingLimit => crate::py::errors::parse_error(
+            Self::FeatureDataNestingLimit => parse_error(
                 format!(
                     "GeoJSON Feature side data exceeds nesting depth {}",
                     crate::geometry::MAX_NESTING
@@ -190,7 +191,7 @@ impl JsonValueError {
                 "GeoJSON JSON nesting exceeds the structural limit of {max_depth}"
             ))
             .into(),
-            Self::FeatureDataNestingLimit => crate::py::errors::parse_error(
+            Self::FeatureDataNestingLimit => parse_error(
                 format!(
                     "GeoJSON Feature side data exceeds nesting depth {}",
                     crate::geometry::MAX_NESTING
@@ -552,6 +553,10 @@ pub(crate) fn py_to_json_value_classified(
 // Keep a finite lexical envelope before disabling that parser guard.
 pub(crate) const MAX_JSON_NESTING: usize = crate::geometry::MAX_NESTING * 2 + 16;
 
+#[expect(
+    clippy::indexing_slicing,
+    reason = "the JSON scanner calls this predicate only for an in-range byte offset"
+)]
 fn is_non_finite_json_number(bytes: &[u8], index: usize) -> bool {
     let at_value_boundary = index == 0
         || bytes

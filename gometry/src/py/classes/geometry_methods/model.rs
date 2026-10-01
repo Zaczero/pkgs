@@ -323,7 +323,7 @@ fn geometry_parts_index(
     let len = geometry.shape.part_count();
     let clamp = |bound: i64| -> usize {
         let resolved = if bound < 0 {
-            bound + i64::try_from(len).unwrap_or(i64::MAX)
+            bound.saturating_add(i64::try_from(len).unwrap_or(i64::MAX))
         } else {
             bound
         };

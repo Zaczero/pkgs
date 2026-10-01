@@ -1317,6 +1317,11 @@ impl CoordinateView {
     }
 
     /// Breakable traversal: `ControlFlow::Break` stops at the current run.
+    #[expect(
+        clippy::indexing_slicing,
+        clippy::arithmetic_side_effects,
+        reason = "admitted polygon CSR rows bound both ring endpoints; retain direct hot-path column reads"
+    )]
     fn try_for_each<B, F>(&self, visit: &mut F) -> ControlFlow<B>
     where
         F: for<'x> FnMut(Option<usize>, CoordRun<'x>) -> ControlFlow<B>,
@@ -1511,7 +1516,12 @@ impl CoordinateView {
             CoordinateOwner::Shape(shape) => match shape.shape() {
                 Shape::MultiPoint(seq) => Some(seq),
                 Shape::LineString(seq) => Some(seq.as_coords()),
-                _ => None,
+                Shape::Point(_)
+                | Shape::MultiLineString(_)
+                | Shape::Polygon(_)
+                | Shape::MultiPolygon(_)
+                | Shape::GeometryCollection(_)
+                | Shape::Empty(..) => None,
             },
             // A packed point array's coordinates are exactly its shared column,
             // so `.x`/`.y` can borrow it directly (zero-copy on the Rust side).
@@ -1635,6 +1645,10 @@ impl CoordinateView {
         clippy::impl_trait_in_params,
         reason = "visitor type is intentionally opaque at this one-pass traversal boundary"
     )]
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "CoordSeq admits equal-length ordinate columns and this loop is bounded by their shared length"
+    )]
     pub fn try_for_each_point<B>(
         &self,
         visit: &mut impl FnMut(Point) -> ControlFlow<B>,
@@ -1707,6 +1721,10 @@ impl CoordinateView {
     /// Shared run-wise row-index emitter. Identity packed storage fills from
     /// CSR offsets (or the point column length); every other owner walks
     /// coordinate runs once and fills each run's span with its logical row id.
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "identity row indexes and CSR endpoints are admitted against the exact output capacity"
+    )]
     fn row_index_cast<T: Copy>(&self, capacity: usize, cast: impl Fn(usize) -> T) -> Vec<T> {
         let zero = cast(0);
 
@@ -1754,7 +1772,7 @@ impl CoordinateView {
                     }
                     return indexes;
                 },
-                _ => {},
+                GeometryArrayStorage::Mixed(_) | GeometryArrayStorage::Packed(_) => {},
             }
         }
 
@@ -1786,6 +1804,10 @@ impl CoordinateView {
     /// Packed identity columns and single-sequence shapes resolve in O(1) (or
     /// O(log runs) via CSR binary search). General owners walk runs with early
     /// break so `coords[0]` never scans past the first hit.
+    #[expect(
+        clippy::arithmetic_side_effects,
+        reason = "each remaining-index decrement is guarded by a comparison proving the minuend is large enough"
+    )]
     pub fn point_at(&self, index: usize) -> Option<Point> {
         if let Some(point) = self.point_at_fast(index) {
             return Some(point);
@@ -1825,7 +1847,14 @@ impl CoordinateView {
                 Shape::Point(point) if index == 0 => Some(*point),
                 Shape::LineString(seq) if index < seq.len() => Some(seq.point_at(index)),
                 Shape::MultiPoint(seq) if index < seq.len() => Some(seq.point_at(index)),
-                _ => None,
+                Shape::Point(_)
+                | Shape::MultiPoint(_)
+                | Shape::LineString(_)
+                | Shape::MultiLineString(_)
+                | Shape::Polygon(_)
+                | Shape::MultiPolygon(_)
+                | Shape::GeometryCollection(_)
+                | Shape::Empty(..) => None,
             },
             CoordinateOwner::Array {
                 storage,
@@ -2004,6 +2033,10 @@ fn coordseq_columns_bit_eq(left: &CoordSeq, right: &CoordSeq) -> bool {
         }
 }
 
+#[expect(
+    clippy::indexing_slicing,
+    reason = "the packed span is checked against the shared CoordSeq column length before it is borrowed"
+)]
 fn borrowed_axis(
     coords: &CoordSeq,
     span: std::ops::Range<usize>,
@@ -2021,6 +2054,10 @@ fn borrowed_axis(
     }
 }
 
+#[expect(
+    clippy::indexing_slicing,
+    reason = "the checked end bounds both endpoints of this admitted CSR row window"
+)]
 fn line_window_coord_span(
     offsets: &[i32],
     coords_len: usize,
@@ -2036,6 +2073,10 @@ fn line_window_coord_span(
     (end <= coords_len && start <= end).then_some(start..end)
 }
 
+#[expect(
+    clippy::indexing_slicing,
+    reason = "the checked polygon and ring endpoints bound the admitted nested CSR window"
+)]
 fn polygon_window_coord_span(
     ring_offsets: &[i32],
     polygon_offsets: &[i32],
@@ -2218,6 +2259,10 @@ fn packed_columnar_equal(
     }
 }
 
+#[expect(
+    clippy::arithmetic_side_effects,
+    reason = "admitted row windows make start plus length representable before constructing their coordinate spans"
+)]
 fn packed_points_columnar_eq(
     ca: &CoordSeq,
     ma: &crate::array::RowSelection,
@@ -2307,6 +2352,11 @@ fn packed_polygons_columnar_eq(
 }
 
 /// Visible ordinate fingerprint used by layout-aware equality (NaN-stable).
+#[expect(
+    clippy::indexing_slicing,
+    clippy::arithmetic_side_effects,
+    reason = "the closed XY/Z/M layout has at most four slots, and n advances only for present axes"
+)]
 fn visible_coordinate_bits(
     point: Point,
     layout: Option<CoordinateAxes>,
@@ -2379,6 +2429,11 @@ impl CoordinateView {
 /// O(1) flat-index lookup into packed line CSR under identity or a contiguous
 /// row window, whose coordinates are one contiguous span. Gather falls
 /// through (non-contiguous coord spans).
+#[expect(
+    clippy::indexing_slicing,
+    clippy::arithmetic_side_effects,
+    reason = "identity and window rows are admitted by their CSR column; the flat index is checked against its resolved span"
+)]
 fn packed_line_point_at(
     coords: &CoordSeq,
     offsets: &[i32],
@@ -2400,6 +2455,11 @@ fn packed_line_point_at(
 
 /// O(1) flat-index lookup into packed polygon CSR under identity or a
 /// contiguous row window, whose coordinates are one contiguous span.
+#[expect(
+    clippy::indexing_slicing,
+    clippy::arithmetic_side_effects,
+    reason = "identity and window rows are admitted by nested CSR columns; the flat index is checked against its resolved span"
+)]
 fn packed_polygon_point_at(
     coords: &CoordSeq,
     rings: &[i32],

@@ -17,7 +17,15 @@ fn point_from_unary_shape(shape: Shape) -> Point {
     match shape {
         Shape::Point(point) => point,
         Shape::Empty(GeometryKind::Point, _) => Point::new_raw_xy(f64::NAN, f64::NAN),
-        _ => unreachable!("centroid/point_on_surface yield Point or POINT EMPTY"),
+        Shape::MultiPoint(_)
+        | Shape::LineString(_)
+        | Shape::MultiLineString(_)
+        | Shape::Polygon(_)
+        | Shape::MultiPolygon(_)
+        | Shape::GeometryCollection(_)
+        | Shape::Empty(..) => {
+            unreachable!("centroid/point_on_surface yield Point or POINT EMPTY")
+        },
     }
 }
 

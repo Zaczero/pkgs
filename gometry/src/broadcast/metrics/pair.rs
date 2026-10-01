@@ -554,6 +554,10 @@ pub(crate) fn pair_dwithin_geodesic(
 
 /// Element-wise zero metric for array-vs-self when both operands share one
 /// `Arc<GeometryArrayStorage>`.
+#[expect(
+    clippy::indexing_slicing,
+    reason = "selected polygon ring ranges are admitted by the corresponding nested CSR offset columns"
+)]
 pub(crate) fn same_storage_similarity_metric_zeros(storage: &GeometryArrayStorage) -> Vec<f64> {
     let mut values = Vec::with_capacity(storage.len());
     match storage {

@@ -675,10 +675,6 @@ impl PointRows<'_> {
         self.len() == 0
     }
 
-    #[expect(
-        clippy::indexing_slicing,
-        reason = "mixed point indices are admitted by the exact-size PointRows cursor; retain O(1) access"
-    )]
     pub(crate) fn get(&self, index: usize) -> Point {
         match &self.0 {
             PointRowSource::Packed { coords, row_map } => {
@@ -1025,10 +1021,6 @@ impl LineRows<'_> {
         )
     }
 
-    #[expect(
-        clippy::indexing_slicing,
-        reason = "mixed line indices are admitted by the exact-size LineRows operation; retain O(1) access"
-    )]
     pub(crate) fn row_xy(&self, index: usize) -> (&[f64], &[f64]) {
         match &self.0 {
             LineRowSource::Packed {
@@ -1155,10 +1147,6 @@ impl<'a> PhysicalRowsIter<'a> {
 impl<'a> Iterator for PhysicalRowsIter<'a> {
     type Item = PhysicalRow<'a>;
 
-    #[expect(
-        clippy::indexing_slicing,
-        reason = "the mixed-row cursor returns before indexing once its admitted slice length is reached"
-    )]
     fn next(&mut self) -> Option<Self::Item> {
         match self {
             Self::Mixed { items, index } => {
