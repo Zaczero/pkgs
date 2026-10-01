@@ -12,7 +12,8 @@ use crate::geometry::constructive::{
 };
 use crate::geometry::exact_arith::product_sum::ExactSum;
 use crate::geometry::exact_arith::{
-    binary_zero, checked_normal_sum, normal_or_zero, two_product_dekker, two_sum,
+    DekkerParts, binary_zero, checked_normal_sum, floor_binary_exponent, normal_or_zero,
+    two_product_dekker_admitted, two_product_dekker_checked_parts, two_sum,
 };
 use crate::geometry::overlay::{OverlayOp, overlay_all_geographic_from, overlay_view_error};
 use crate::geometry::{
@@ -25,20 +26,41 @@ use crate::geometry::{
     simd_xy_map_one_f64,
 };
 
-/// Insert one exact product into a double-double expansion, retaining every
-/// limb except the two whose magnitudes are accumulated in `error`.
-macro_rules! add_affine_product {
-    ($high:ident, $low:ident, $error:ident, $lhs:expr, $rhs:expr) => {{
-        let (product, product_error) = two_product_dekker($lhs, $rhs)?;
-        let (sum, sum_error) = checked_two_sum($high, product)?;
-        let (low_sum, low_error) = checked_two_sum($low, product_error)?;
+/// Expand the fixed residual merge at its call site; omitted low limbs accrue
+/// in `error`, and checked forms use `?` when an intermediate is unsafe.
+macro_rules! add_affine_expansion_product {
+    ($high:ident, $low:ident, $error:ident, $product:ident, $product_error:ident) => {{
+        let (sum, sum_error) = checked_two_sum($high, $product)?;
+        let (low_sum, low_error) = checked_two_sum($low, $product_error)?;
         let (merged_error, discarded_high) = checked_two_sum(sum_error, low_sum)?;
         let (next_high, next_residual) = checked_two_sum(sum, merged_error)?;
-        let (next_low, discarded_low) = checked_two_sum(next_residual, low_error)?;
         $error = upper_sum($error, discarded_high.abs())?;
-        $error = upper_sum($error, discarded_low.abs())?;
+        $error = upper_sum($error, low_error.abs())?;
         $high = next_high;
-        $low = next_low;
+        $low = next_residual;
+    }};
+}
+
+/// Use a prepared matrix split and checked pivot split during transform setup.
+macro_rules! add_affine_product_parts {
+    ($high:ident, $low:ident, $error:ident, $lhs:expr, $rhs:expr) => {{
+        let (product, product_error) = two_product_dekker_checked_parts($lhs, $rhs)?;
+        add_affine_expansion_product!($high, $low, $error, product, product_error);
+    }};
+}
+
+/// Inline the admitted product and residual merge into the coordinate loop.
+macro_rules! add_affine_product_admitted {
+    ($high:ident, $low:ident, $error:ident, $lhs:expr, $rhs:expr) => {{
+        let (product, product_error) = two_product_dekker_admitted($lhs, $rhs);
+        let (sum, sum_error) = two_sum($high, product);
+        let (low_sum, low_error) = two_sum($low, product_error);
+        let (merged_error, discarded_high) = two_sum(sum_error, low_sum);
+        let (next_high, next_residual) = two_sum(sum, merged_error);
+        $error = upper_sum_admitted($error, discarded_high.abs());
+        $error = upper_sum_admitted($error, low_error.abs());
+        $high = next_high;
+        $low = next_residual;
     }};
 }
 
@@ -50,9 +72,85 @@ struct AffineExpansion {
 }
 
 #[derive(Clone, Copy)]
+struct ExponentExtent {
+    min: Option<i32>,
+    max: Option<i32>,
+}
+
+impl ExponentExtent {
+    fn split_safe(self) -> bool {
+        self.min.is_none_or(|exponent| exponent >= -970)
+            && self.max.is_none_or(|exponent| exponent <= 995)
+    }
+}
+
+#[derive(Clone, Copy)]
+struct MagnitudeExtent {
+    min_bits: u64,
+    max_bits: u64,
+}
+
+impl MagnitudeExtent {
+    const EMPTY: Self = Self {
+        min_bits: 0x7FF0_0000_0000_0000,
+        max_bits: 0,
+    };
+
+    fn include(&mut self, value: f64) -> bool {
+        let magnitude_bits = value.to_bits() & 0x7FFF_FFFF_FFFF_FFFF;
+        if magnitude_bits >= 0x7FF0_0000_0000_0000 {
+            return false;
+        }
+        if magnitude_bits != 0 {
+            self.min_bits = self.min_bits.min(magnitude_bits);
+            self.max_bits = self.max_bits.max(magnitude_bits);
+        }
+        true
+    }
+
+    fn exponents(self) -> ExponentExtent {
+        if self.min_bits == 0x7FF0_0000_0000_0000 {
+            return ExponentExtent {
+                min: None,
+                max: None,
+            };
+        }
+        ExponentExtent {
+            min: Some(floor_binary_exponent(f64::from_bits(self.min_bits))),
+            max: Some(floor_binary_exponent(f64::from_bits(self.max_bits))),
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+struct AffineRowExtents {
+    x: ExponentExtent,
+    y: ExponentExtent,
+}
+
+impl AffineRowExtents {
+    fn from_columns(xs: &[f64], ys: &[f64]) -> Option<Self> {
+        debug_assert_eq!(xs.len(), ys.len());
+        let mut x = MagnitudeExtent::EMPTY;
+        let mut y = MagnitudeExtent::EMPTY;
+        for (&x_value, &y_value) in xs.iter().zip(ys) {
+            if !x.include(x_value) || !y.include(y_value) {
+                return None;
+            }
+        }
+        Some(Self {
+            x: x.exponents(),
+            y: y.exponents(),
+        })
+    }
+}
+
+#[derive(Clone, Copy)]
 struct AffineOriginRow {
     coefficient_x: f64,
     coefficient_y: f64,
+    coefficient_x_parts: Option<DekkerParts>,
+    coefficient_y_parts: Option<DekkerParts>,
     output_origin: f64,
     origin_x: f64,
     origin_y: f64,
@@ -66,19 +164,26 @@ impl AffineOriginRow {
         output_origin: f64,
         origin_x: f64,
         origin_y: f64,
+        coefficient_x_parts: Option<DekkerParts>,
+        coefficient_y_parts: Option<DekkerParts>,
+        origin_x_parts: Option<DekkerParts>,
+        origin_y_parts: Option<DekkerParts>,
+        output_origin_parts: Option<DekkerParts>,
     ) -> Self {
         Self {
             coefficient_x,
             coefficient_y,
+            coefficient_x_parts,
+            coefficient_y_parts,
             output_origin,
             origin_x,
             origin_y,
             bias: affine_origin_bias(
-                coefficient_x,
-                coefficient_y,
-                output_origin,
-                origin_x,
-                origin_y,
+                output_origin_parts,
+                coefficient_x_parts,
+                coefficient_y_parts,
+                origin_x_parts,
+                origin_y_parts,
             ),
         }
     }
@@ -89,27 +194,234 @@ impl AffineOriginRow {
             mut low,
             mut error,
         } = self.bias?;
-        add_affine_product!(high, low, error, self.coefficient_x, value_x);
-        add_affine_product!(high, low, error, self.coefficient_y, value_y);
-        round_certified_double_double(high, low, error)
+        let value_x_parts = DekkerParts::checked(value_x)?;
+        let value_y_parts = DekkerParts::checked(value_y)?;
+        add_affine_product_parts!(high, low, error, self.coefficient_x_parts?, value_x_parts);
+        add_affine_product_parts!(high, low, error, self.coefficient_y_parts?, value_y_parts);
+        let (candidate, certified) = round_certified_double_double::<false>(high, low, error);
+        certified.then_some(candidate)
     }
 
     fn map_finite(&self, value_x: f64, value_y: f64) -> Result<f64> {
         if let Some(value) = self.fast_map_finite(value_x, value_y) {
             return Ok(value);
         }
-        let mut sum = ExactSum::zero();
-        sum.add_product(self.coefficient_x, value_x);
-        sum.add_product(self.coefficient_y, value_y);
-        sum.add_product(self.output_origin, 1.0);
-        sum.subtract_product(self.coefficient_x, self.origin_x);
-        sum.subtract_product(self.coefficient_y, self.origin_y);
-        let value = sum.round_to_binary64();
-        value
-            .is_finite()
-            .then_some(value)
-            .ok_or_else(|| GeometryErrorKind::NonFiniteCoordinate.into())
+        self.exact_map_finite(value_x, value_y)
     }
+
+    fn exact_map_finite(&self, value_x: f64, value_y: f64) -> Result<f64> {
+        exact_affine_origin_ordinate(
+            self.coefficient_x,
+            self.coefficient_y,
+            self.output_origin,
+            self.origin_x,
+            self.origin_y,
+            value_x,
+            value_y,
+        )
+    }
+
+    fn admitted(
+        &self,
+        x_extent: ExponentExtent,
+        y_extent: ExponentExtent,
+    ) -> Option<AdmittedAffineOriginRow> {
+        let coefficient_x_parts = self.coefficient_x_parts?;
+        let coefficient_y_parts = self.coefficient_y_parts?;
+        let bias = self.bias?;
+        if !x_extent.split_safe() || !y_extent.split_safe() {
+            return None;
+        }
+        if !affine_product_exponents_admitted(coefficient_x_parts, x_extent)
+            || !affine_product_exponents_admitted(coefficient_y_parts, y_extent)
+        {
+            return None;
+        }
+        if !affine_expansion_admitted(bias) {
+            return None;
+        }
+        let x_is_zero = coefficient_x_parts.is_zero();
+        let y_is_zero = coefficient_y_parts.is_zero();
+        let bias_is_zero =
+            binary_zero(bias.high) && binary_zero(bias.low) && binary_zero(bias.error);
+        let mode = match (bias_is_zero, x_is_zero, y_is_zero) {
+            (true, false, true) => AdmittedAffineMode::ProductX(coefficient_x_parts),
+            (true, true, false) => AdmittedAffineMode::ProductY(coefficient_y_parts),
+            (true, false, false) => {
+                AdmittedAffineMode::Dot(coefficient_x_parts, coefficient_y_parts)
+            },
+            (true, true, true) => AdmittedAffineMode::Zero,
+            (false, true, true) => AdmittedAffineMode::BiasOnly(bias),
+            (false, false, true) => AdmittedAffineMode::BiasedProductX(coefficient_x_parts, bias),
+            (false, true, false) => AdmittedAffineMode::BiasedProductY(coefficient_y_parts, bias),
+            (false, false, false) => {
+                AdmittedAffineMode::General(coefficient_x_parts, coefficient_y_parts, bias)
+            },
+        };
+        Some(AdmittedAffineOriginRow { mode })
+    }
+}
+
+#[derive(Clone, Copy)]
+enum AdmittedAffineMode {
+    Zero,
+    ProductX(DekkerParts),
+    ProductY(DekkerParts),
+    BiasOnly(AffineExpansion),
+    BiasedProductX(DekkerParts, AffineExpansion),
+    BiasedProductY(DekkerParts, AffineExpansion),
+    Dot(DekkerParts, DekkerParts),
+    General(DekkerParts, DekkerParts, AffineExpansion),
+}
+
+#[derive(Clone, Copy)]
+struct AdmittedAffineOriginRow {
+    mode: AdmittedAffineMode,
+}
+
+impl AdmittedAffineOriginRow {
+    const fn requires_coordinate_split(&self) -> bool {
+        matches!(
+            &self.mode,
+            AdmittedAffineMode::BiasedProductX(..)
+                | AdmittedAffineMode::BiasedProductY(..)
+                | AdmittedAffineMode::Dot(..)
+                | AdmittedAffineMode::General(..)
+        )
+    }
+
+    fn map(
+        self,
+        value_x: f64,
+        value_y: f64,
+        parts_x: DekkerParts,
+        parts_y: DekkerParts,
+    ) -> (f64, bool) {
+        match self.mode {
+            AdmittedAffineMode::Zero => (0.0, true),
+            AdmittedAffineMode::ProductX(coefficient) => {
+                (single_product(coefficient.value(), value_x), true)
+            },
+            AdmittedAffineMode::ProductY(coefficient) => {
+                (single_product(coefficient.value(), value_y), true)
+            },
+            AdmittedAffineMode::BiasOnly(bias) => {
+                round_certified_double_double::<true>(bias.high, bias.low, bias.error)
+            },
+            AdmittedAffineMode::BiasedProductX(coefficient, bias) => {
+                map_biased_product(bias, coefficient, parts_x)
+            },
+            AdmittedAffineMode::BiasedProductY(coefficient, bias) => {
+                map_biased_product(bias, coefficient, parts_y)
+            },
+            AdmittedAffineMode::Dot(coefficient_x, coefficient_y) => {
+                map_exact_dot(coefficient_x, coefficient_y, parts_x, parts_y)
+            },
+            AdmittedAffineMode::General(coefficient_x, coefficient_y, bias) => {
+                map_general_affine_row(bias, coefficient_x, coefficient_y, parts_x, parts_y)
+            },
+        }
+    }
+}
+
+/// A sole exact product rounds correctly with one binary64 multiply. ExactSum
+/// canonicalizes a mathematically zero row to +0, unlike signed-zero multiply.
+fn single_product(coefficient: f64, value: f64) -> f64 {
+    let product = coefficient * value;
+    if binary_zero(value) { 0.0 } else { product }
+}
+
+fn map_biased_product(
+    bias: AffineExpansion,
+    coefficient: DekkerParts,
+    value: DekkerParts,
+) -> (f64, bool) {
+    let AffineExpansion {
+        mut high,
+        mut low,
+        mut error,
+    } = bias;
+    add_affine_product_admitted!(high, low, error, coefficient, value);
+    round_certified_double_double::<true>(high, low, error)
+}
+
+/// Compact two exact products; the residuals discarded from the low-limb
+/// merge are added to the outward error bound.
+fn map_exact_dot(
+    coefficient_x: DekkerParts,
+    coefficient_y: DekkerParts,
+    value_x: DekkerParts,
+    value_y: DekkerParts,
+) -> (f64, bool) {
+    let (product_x, error_x) = two_product_dekker_admitted(coefficient_x, value_x);
+    let (product_y, error_y) = two_product_dekker_admitted(coefficient_y, value_y);
+    let (head, head_error) = two_sum(product_x, product_y);
+    let (product_tail, discarded_products) = two_sum(error_x, error_y);
+    let (merged_tail, discarded_merge) = two_sum(head_error, product_tail);
+    let (high, low) = two_sum(head, merged_tail);
+    let error = upper_sum_admitted(0.0, discarded_products.abs());
+    let error = upper_sum_admitted(error, discarded_merge.abs());
+    round_certified_double_double::<true>(high, low, error)
+}
+
+fn map_general_affine_row(
+    bias: AffineExpansion,
+    coefficient_x: DekkerParts,
+    coefficient_y: DekkerParts,
+    value_x: DekkerParts,
+    value_y: DekkerParts,
+) -> (f64, bool) {
+    let AffineExpansion {
+        mut high,
+        mut low,
+        mut error,
+    } = bias;
+    add_affine_product_admitted!(high, low, error, coefficient_x, value_x);
+    add_affine_product_admitted!(high, low, error, coefficient_y, value_y);
+    round_certified_double_double::<true>(high, low, error)
+}
+
+const MIN_ADMITTED_PRODUCT_EXPONENT: i32 = -970;
+const MAX_ADMITTED_PRODUCT_EXPONENT: i32 = 850;
+const MAX_ADMITTED_ACCUMULATOR_EXPONENT: i32 = 860;
+// A nonidentity affine output is finite or the operation errors. This NaN
+// payload is therefore an in-buffer fixup tag, avoiding per-row scratch.
+const AFFINE_FIXUP_MARKER: f64 = f64::from_bits(0x7FF8_0000_0000_0001);
+
+// A binary64 with floor exponent e is a multiple of 2^(e-52). Dekker's split
+// keeps both parts on that lattice, so every partial product in a two-product
+// transform is a multiple of 2^(e_lhs+e_rhs-104). Requiring a product exponent
+// sum of at least -970 keeps that lattice on or above 2^-1074, the minimum
+// subnormal quantum; at -971 a half-subnormal residual can round away (the
+// boundary witness below). Coordinate exponents [-970, 995] also keep the
+// splitter product finite and every nonzero split limb normal. At the upper
+// product sum of 850, each product stays below 2^852; the admitted bias limbs
+// stay below 2^861, so their fixed-size accumulation remains far from overflow.
+fn affine_product_exponents_admitted(coefficient: DekkerParts, coordinate: ExponentExtent) -> bool {
+    if coefficient.is_zero() {
+        return true;
+    }
+    let (Some(min_coordinate), Some(max_coordinate)) = (coordinate.min, coordinate.max) else {
+        return true;
+    };
+    let Some(min_product_exponent) = coefficient.exponent().checked_add(min_coordinate) else {
+        return false;
+    };
+    let Some(max_product_exponent) = coefficient.exponent().checked_add(max_coordinate) else {
+        return false;
+    };
+    (MIN_ADMITTED_PRODUCT_EXPONENT..=MAX_ADMITTED_PRODUCT_EXPONENT).contains(&min_product_exponent)
+        && max_product_exponent <= MAX_ADMITTED_PRODUCT_EXPONENT
+}
+
+fn affine_expansion_admitted(expansion: AffineExpansion) -> bool {
+    [expansion.high, expansion.low, expansion.error]
+        .into_iter()
+        .all(|value| {
+            normal_or_zero(value)
+                && (binary_zero(value)
+                    || floor_binary_exponent(value.abs()) <= MAX_ADMITTED_ACCUMULATOR_EXPONENT)
+        })
 }
 
 #[expect(
@@ -126,9 +438,9 @@ fn affine_ordinate_simd(
     first * x + second * y + offset
 }
 
-#[derive(Clone, Copy)]
 pub(crate) struct AffineLinear {
     matrix: [f64; 4],
+    coefficient_parts: [Option<DekkerParts>; 4],
     preserved: [bool; 2],
 }
 
@@ -140,6 +452,7 @@ impl AffineLinear {
         let [m00, m01, m10, m11] = matrix;
         Ok(Self {
             matrix,
+            coefficient_parts: matrix.map(DekkerParts::checked),
             preserved: [
                 same_topological_coordinate(m00, 1.0) && same_topological_coordinate(m01, 0.0),
                 same_topological_coordinate(m10, 0.0) && same_topological_coordinate(m11, 1.0),
@@ -147,15 +460,17 @@ impl AffineLinear {
         })
     }
 
-    pub(crate) const fn is_identity(self) -> bool {
+    pub(crate) const fn is_identity(&self) -> bool {
         let [preserve_x, preserve_y] = self.preserved;
         preserve_x && preserve_y
     }
 
-    pub(crate) fn at(self, origin: (f64, f64)) -> Result<OriginAffine> {
+    pub(crate) fn at(&self, origin: (f64, f64)) -> Result<OriginAffine> {
         if !origin.0.is_finite() || !origin.1.is_finite() {
             return Err(GeometryErrorKind::NonFiniteCoordinate.into());
         }
+        let origin_x_parts = DekkerParts::checked(origin.0);
+        let origin_y_parts = DekkerParts::checked(origin.1);
         Ok(OriginAffine {
             preserved: self.preserved,
             rows: [
@@ -166,6 +481,11 @@ impl AffineLinear {
                         origin.0,
                         origin.0,
                         origin.1,
+                        self.coefficient_parts[0],
+                        self.coefficient_parts[1],
+                        origin_x_parts,
+                        origin_y_parts,
+                        origin_x_parts,
                     )
                 }),
                 (!self.preserved[1]).then(|| {
@@ -175,6 +495,11 @@ impl AffineLinear {
                         origin.1,
                         origin.0,
                         origin.1,
+                        self.coefficient_parts[2],
+                        self.coefficient_parts[3],
+                        origin_x_parts,
+                        origin_y_parts,
+                        origin_y_parts,
                     )
                 }),
             ],
@@ -182,7 +507,6 @@ impl AffineLinear {
     }
 }
 
-#[derive(Clone, Copy)]
 pub(crate) struct OriginAffine {
     preserved: [bool; 2],
     rows: [Option<AffineOriginRow>; 2],
@@ -198,6 +522,244 @@ impl OriginAffine {
         let mapped_y = y_row.as_ref().map_or(Ok(y), |row| row.map_finite(x, y))?;
         Ok((mapped_x, mapped_y))
     }
+
+    pub(crate) fn map_xy_columns(
+        &self,
+        xs: &[f64],
+        ys: &[f64],
+        out_x: Option<&mut [f64]>,
+        out_y: Option<&mut [f64]>,
+    ) -> Result<()> {
+        debug_assert_eq!(xs.len(), ys.len());
+        let out_x_len = out_x.as_ref().map(|column| column.len());
+        let out_y_len = out_y.as_ref().map(|column| column.len());
+        debug_assert!(out_x_len.is_none_or(|length| length == xs.len()));
+        debug_assert!(out_y_len.is_none_or(|length| length == ys.len()));
+        let Some(extents) = AffineRowExtents::from_columns(xs, ys) else {
+            return self.map_xy_columns_checked(xs, ys, out_x, out_y);
+        };
+        let [x_row, y_row] = &self.rows;
+        let admitted_x = x_row
+            .as_ref()
+            .and_then(|row| row.admitted(extents.x, extents.y));
+        let admitted_y = y_row
+            .as_ref()
+            .and_then(|row| row.admitted(extents.x, extents.y));
+        if (x_row.is_some() && admitted_x.is_none()) || (y_row.is_some() && admitted_y.is_none()) {
+            return self.map_xy_columns_checked(xs, ys, out_x, out_y);
+        }
+        self.map_xy_columns_admitted(
+            xs,
+            ys,
+            out_x,
+            out_y,
+            admitted_x.as_ref(),
+            admitted_y.as_ref(),
+        )
+    }
+
+    fn map_xy_columns_checked(
+        &self,
+        xs: &[f64],
+        ys: &[f64],
+        out_x: Option<&mut [f64]>,
+        out_y: Option<&mut [f64]>,
+    ) -> Result<()> {
+        let [x_row, y_row] = &self.rows;
+        match (x_row, y_row, out_x, out_y) {
+            (Some(_), Some(_), Some(out_x), Some(out_y)) => {
+                for (((&x, &y), out_x), out_y) in xs
+                    .iter()
+                    .zip(ys)
+                    .zip(out_x.iter_mut())
+                    .zip(out_y.iter_mut())
+                {
+                    (*out_x, *out_y) = self.map_xy(x, y)?;
+                }
+            },
+            (Some(_), None, Some(out_x), out_y) => {
+                for ((&x, &y), out_x) in xs.iter().zip(ys).zip(out_x.iter_mut()) {
+                    *out_x = self.map_xy(x, y)?.0;
+                }
+                if let Some(out_y) = out_y {
+                    out_y.copy_from_slice(ys);
+                }
+            },
+            (None, Some(_), out_x, Some(out_y)) => {
+                for ((&x, &y), out_y) in xs.iter().zip(ys).zip(out_y.iter_mut()) {
+                    *out_y = self.map_xy(x, y)?.1;
+                }
+                if let Some(out_x) = out_x {
+                    out_x.copy_from_slice(xs);
+                }
+            },
+            (None, None, out_x, out_y) => {
+                if let Some(out_x) = out_x {
+                    out_x.copy_from_slice(xs);
+                }
+                if let Some(out_y) = out_y {
+                    out_y.copy_from_slice(ys);
+                }
+            },
+            _ => unreachable!("nonidentity affine axes have output columns"),
+        }
+        Ok(())
+    }
+
+    fn map_xy_columns_admitted(
+        &self,
+        xs: &[f64],
+        ys: &[f64],
+        out_x: Option<&mut [f64]>,
+        out_y: Option<&mut [f64]>,
+        admitted_x: Option<&AdmittedAffineOriginRow>,
+        admitted_y: Option<&AdmittedAffineOriginRow>,
+    ) -> Result<()> {
+        let [x_row, y_row] = &self.rows;
+        match (x_row, y_row, admitted_x, admitted_y, out_x, out_y) {
+            (Some(x_row), Some(y_row), Some(x_fast), Some(y_fast), Some(out_x), Some(out_y)) => {
+                map_admitted_xy_columns(xs, ys, out_x, out_y, x_row, y_row, x_fast, y_fast)
+            },
+            (Some(x_row), None, Some(x_fast), None, Some(out_x), out_y) => {
+                map_admitted_one_column(xs, ys, out_x, x_row, x_fast)?;
+                if let Some(out_y) = out_y {
+                    out_y.copy_from_slice(ys);
+                }
+                Ok(())
+            },
+            (None, Some(y_row), None, Some(y_fast), out_x, Some(out_y)) => {
+                map_admitted_one_column(xs, ys, out_y, y_row, y_fast)?;
+                if let Some(out_x) = out_x {
+                    out_x.copy_from_slice(xs);
+                }
+                Ok(())
+            },
+            (None, None, None, None, out_x, out_y) => {
+                if let Some(out_x) = out_x {
+                    out_x.copy_from_slice(xs);
+                }
+                if let Some(out_y) = out_y {
+                    out_y.copy_from_slice(ys);
+                }
+                Ok(())
+            },
+            _ => unreachable!("row admission and output axes share one affine transform"),
+        }
+    }
+}
+
+fn upper_sum_admitted(lhs: f64, rhs: f64) -> f64 {
+    let sum = lhs + rhs;
+    if binary_zero(sum) { 0.0 } else { sum.next_up() }
+}
+
+fn map_admitted_xy_columns(
+    xs: &[f64],
+    ys: &[f64],
+    out_x: &mut [f64],
+    out_y: &mut [f64],
+    x_row: &AffineOriginRow,
+    y_row: &AffineOriginRow,
+    x_fast: &AdmittedAffineOriginRow,
+    y_fast: &AdmittedAffineOriginRow,
+) -> Result<()> {
+    if x_fast.requires_coordinate_split() || y_fast.requires_coordinate_split() {
+        map_admitted_xy_columns_kernel::<true>(xs, ys, out_x, out_y, x_row, y_row, x_fast, y_fast)
+    } else {
+        map_admitted_xy_columns_kernel::<false>(xs, ys, out_x, out_y, x_row, y_row, x_fast, y_fast)
+    }
+}
+
+fn map_admitted_xy_columns_kernel<const SPLIT_COORDINATES: bool>(
+    xs: &[f64],
+    ys: &[f64],
+    out_x: &mut [f64],
+    out_y: &mut [f64],
+    x_row: &AffineOriginRow,
+    y_row: &AffineOriginRow,
+    x_fast: &AdmittedAffineOriginRow,
+    y_fast: &AdmittedAffineOriginRow,
+) -> Result<()> {
+    for (((&x, &y), output_x), output_y) in xs
+        .iter()
+        .zip(ys)
+        .zip(out_x.iter_mut())
+        .zip(out_y.iter_mut())
+    {
+        let (x_parts, y_parts) = if SPLIT_COORDINATES {
+            (DekkerParts::admitted(x), DekkerParts::admitted(y))
+        } else {
+            (DekkerParts::zero(), DekkerParts::zero())
+        };
+        let (mapped_x, certified_x) = x_fast.map(x, y, x_parts, y_parts);
+        let (mapped_y, certified_y) = y_fast.map(x, y, x_parts, y_parts);
+        *output_x = if certified_x {
+            mapped_x
+        } else {
+            AFFINE_FIXUP_MARKER
+        };
+        *output_y = if certified_y {
+            mapped_y
+        } else {
+            AFFINE_FIXUP_MARKER
+        };
+    }
+    for (((&x, &y), output_x), output_y) in xs
+        .iter()
+        .zip(ys)
+        .zip(out_x.iter_mut())
+        .zip(out_y.iter_mut())
+    {
+        if output_x.to_bits() == AFFINE_FIXUP_MARKER.to_bits() {
+            *output_x = x_row.exact_map_finite(x, y)?;
+        }
+        if output_y.to_bits() == AFFINE_FIXUP_MARKER.to_bits() {
+            *output_y = y_row.exact_map_finite(x, y)?;
+        }
+    }
+    Ok(())
+}
+
+fn map_admitted_one_column(
+    xs: &[f64],
+    ys: &[f64],
+    output: &mut [f64],
+    exact_row: &AffineOriginRow,
+    fast_row: &AdmittedAffineOriginRow,
+) -> Result<()> {
+    if fast_row.requires_coordinate_split() {
+        map_admitted_one_column_kernel::<true>(xs, ys, output, exact_row, fast_row)
+    } else {
+        map_admitted_one_column_kernel::<false>(xs, ys, output, exact_row, fast_row)
+    }
+}
+
+fn map_admitted_one_column_kernel<const SPLIT_COORDINATES: bool>(
+    xs: &[f64],
+    ys: &[f64],
+    output: &mut [f64],
+    exact_row: &AffineOriginRow,
+    fast_row: &AdmittedAffineOriginRow,
+) -> Result<()> {
+    for ((&x, &y), output) in xs.iter().zip(ys).zip(output.iter_mut()) {
+        let (x_parts, y_parts) = if SPLIT_COORDINATES {
+            (DekkerParts::admitted(x), DekkerParts::admitted(y))
+        } else {
+            (DekkerParts::zero(), DekkerParts::zero())
+        };
+        let (mapped, certified) = fast_row.map(x, y, x_parts, y_parts);
+        *output = if certified {
+            mapped
+        } else {
+            AFFINE_FIXUP_MARKER
+        };
+    }
+    for ((&x, &y), output) in xs.iter().zip(ys).zip(output.iter_mut()) {
+        if output.to_bits() == AFFINE_FIXUP_MARKER.to_bits() {
+            *output = exact_row.exact_map_finite(x, y)?;
+        }
+    }
+    Ok(())
 }
 
 impl CoordSeq {
@@ -357,24 +919,16 @@ impl CoordSeq {
     /// Exact origin-relative affine transform of the XY columns. Identity
     /// rows carry their source column unchanged; other rows use a certified
     /// expansion and fall back to [`ExactSum`] when rounding is uncertain.
-    pub(crate) fn try_affine_about_origin(&self, transform: OriginAffine) -> Result<Self> {
+    pub(crate) fn try_affine_about_origin(&self, transform: &OriginAffine) -> Result<Self> {
         if transform.preserved == [true, true] {
             return Ok(self.clone());
         }
         let [x_identity, y_identity] = transform.preserved;
         let n = self.len();
         let (xs, ys) = (self.xs(), self.ys());
-        let mut out_x = (!x_identity).then(|| Vec::with_capacity(n));
-        let mut out_y = (!y_identity).then(|| Vec::with_capacity(n));
-        for (&x, &y) in xs.iter().zip(ys) {
-            let (x, y) = transform.map_xy(x, y)?;
-            if let Some(out_x) = out_x.as_mut() {
-                out_x.push(x);
-            }
-            if let Some(out_y) = out_y.as_mut() {
-                out_y.push(y);
-            }
-        }
+        let mut out_x = (!x_identity).then(|| vec![0.0; n]);
+        let mut out_y = (!y_identity).then(|| vec![0.0; n]);
+        transform.map_xy_columns(xs, ys, out_x.as_deref_mut(), out_y.as_deref_mut())?;
         Self::from_shared_columns(
             out_x.map_or_else(|| self.carried_xs(), crate::geometry::SharedSlice::from_vec),
             out_y.map_or_else(|| self.carried_ys(), crate::geometry::SharedSlice::from_vec),
@@ -637,6 +1191,28 @@ impl Shape {
     }
 }
 
+fn exact_affine_origin_ordinate(
+    coefficient_x: f64,
+    coefficient_y: f64,
+    output_origin: f64,
+    origin_x: f64,
+    origin_y: f64,
+    value_x: f64,
+    value_y: f64,
+) -> Result<f64> {
+    let mut sum = ExactSum::zero();
+    sum.add_product(coefficient_x, value_x);
+    sum.add_product(coefficient_y, value_y);
+    sum.add_product(output_origin, 1.0);
+    sum.subtract_product(coefficient_x, origin_x);
+    sum.subtract_product(coefficient_y, origin_y);
+    let value = sum.round_to_binary64();
+    value
+        .is_finite()
+        .then_some(value)
+        .ok_or_else(|| GeometryErrorKind::NonFiniteCoordinate.into())
+}
+
 #[expect(
     clippy::float_cmp,
     reason = "affine identity rows are exact coefficients"
@@ -682,6 +1258,11 @@ pub(crate) fn affine_about_origin_ordinate(
         output_origin,
         origin_x,
         origin_y,
+        DekkerParts::checked(coefficient_x),
+        DekkerParts::checked(coefficient_y),
+        DekkerParts::checked(origin_x),
+        DekkerParts::checked(origin_y),
+        DekkerParts::checked(output_origin),
     )
     .map_finite(value_x, value_y)
 }
@@ -689,16 +1270,29 @@ pub(crate) fn affine_about_origin_ordinate(
 /// Prepare the three invariant terms once per affine row. The accumulated
 /// error bounds the exact bias outside the retained double-double.
 fn affine_origin_bias(
-    coefficient_x: f64,
-    coefficient_y: f64,
-    output_origin: f64,
-    origin_x: f64,
-    origin_y: f64,
+    output_origin_parts: Option<DekkerParts>,
+    coefficient_x_parts: Option<DekkerParts>,
+    coefficient_y_parts: Option<DekkerParts>,
+    origin_x_parts: Option<DekkerParts>,
+    origin_y_parts: Option<DekkerParts>,
 ) -> Option<AffineExpansion> {
     let (mut high, mut low, mut error) = (0.0, 0.0, 0.0);
-    add_affine_product!(high, low, error, output_origin, 1.0);
-    add_affine_product!(high, low, error, -coefficient_x, origin_x);
-    add_affine_product!(high, low, error, -coefficient_y, origin_y);
+    let one = DekkerParts::checked(1.0)?;
+    add_affine_product_parts!(high, low, error, output_origin_parts?, one);
+    add_affine_product_parts!(
+        high,
+        low,
+        error,
+        coefficient_x_parts?.negated(),
+        origin_x_parts?
+    );
+    add_affine_product_parts!(
+        high,
+        low,
+        error,
+        coefficient_y_parts?.negated(),
+        origin_y_parts?
+    );
     Some(AffineExpansion { high, low, error })
 }
 
@@ -733,6 +1327,11 @@ pub(super) fn fast_affine_about_origin_ordinate(
             output_origin,
             origin_x,
             origin_y,
+            DekkerParts::checked(coefficient_x),
+            DekkerParts::checked(coefficient_y),
+            DekkerParts::checked(origin_x),
+            DekkerParts::checked(origin_y),
+            DekkerParts::checked(output_origin),
         )
         .fast_map_finite(value_x, value_y)
     })
@@ -760,68 +1359,133 @@ fn upper_sum(lhs: f64, rhs: f64) -> Option<f64> {
     upper.is_normal().then_some(upper)
 }
 
-fn lower_sum(lhs: f64, rhs: f64) -> Option<f64> {
-    let sum = checked_normal_sum(lhs, rhs)?;
-    lower_bound(sum)
-}
-
-fn lower_difference(lhs: f64, rhs: f64) -> Option<f64> {
-    let difference = checked_normal_sum(lhs, -rhs)?;
-    if difference < 0.0 {
-        None
+const fn next_down_finite(value: f64) -> f64 {
+    const SIGN: u64 = 1 << 63;
+    let bits = value.to_bits();
+    let magnitude = bits & !SIGN;
+    if magnitude == 0 {
+        f64::from_bits(SIGN | 1)
+    } else if bits & SIGN == 0 {
+        f64::from_bits(bits.wrapping_sub(1))
     } else {
-        lower_bound(difference)
+        f64::from_bits(bits.wrapping_add(1))
     }
 }
 
-fn lower_bound(value: f64) -> Option<f64> {
-    if binary_zero(value) {
-        return Some(0.0);
+const fn adjacent_finite_values(value: f64) -> (f64, f64) {
+    const SIGN: u64 = 1 << 63;
+    let bits = value.to_bits();
+    let magnitude = bits & !SIGN;
+    if magnitude == 0 {
+        (f64::from_bits(SIGN | 1), f64::from_bits(1))
+    } else if bits & SIGN == 0 {
+        (
+            f64::from_bits(bits.wrapping_sub(1)),
+            f64::from_bits(bits.wrapping_add(1)),
+        )
+    } else {
+        (
+            f64::from_bits(bits.wrapping_add(1)),
+            f64::from_bits(bits.wrapping_sub(1)),
+        )
     }
-    if !value.is_normal() {
-        return None;
+}
+
+fn lower_bound_certified<const ADMITTED: bool>(value: f64) -> (f64, bool) {
+    if ADMITTED {
+        (next_down_finite(value), true)
+    } else if binary_zero(value) {
+        (0.0, true)
+    } else {
+        let lower = value.next_down();
+        (lower, value.is_normal() && normal_or_zero(lower))
     }
-    let lower = value.next_down();
-    normal_or_zero(lower).then_some(lower)
+}
+
+fn lower_sum_certified<const ADMITTED: bool>(lhs: f64, rhs: f64) -> (f64, bool) {
+    let sum = lhs + rhs;
+    let (lower, bound_is_valid) = lower_bound_certified::<ADMITTED>(sum);
+    let valid = if ADMITTED {
+        true
+    } else {
+        normal_or_zero(sum) && bound_is_valid
+    };
+    (lower, valid)
+}
+
+fn lower_difference_certified<const ADMITTED: bool>(lhs: f64, rhs: f64) -> (f64, bool) {
+    let difference = lhs - rhs;
+    let (lower, bound_is_valid) = lower_bound_certified::<ADMITTED>(difference);
+    let valid = if ADMITTED {
+        true
+    } else {
+        normal_or_zero(difference) && difference >= 0.0 && bound_is_valid
+    };
+    (lower, valid)
 }
 
 /// Accept only when `candidate + tail ± error` stays strictly inside its
-/// asymmetric binary64 rounding cell. Exact ties and uncertain cells fall back.
-fn round_certified_double_double(high: f64, low: f64, error: f64) -> Option<f64> {
-    let (candidate, tail) = checked_two_sum(high, low)?;
-    if !candidate.is_normal() || !normal_or_zero(tail) {
-        return None;
-    }
-    let previous = candidate.next_down();
-    let next = candidate.next_up();
-    if !previous.is_normal() || !next.is_normal() {
-        return None;
-    }
-    let lower_gap = checked_normal_sum(candidate, -previous)?;
-    let upper_gap = checked_normal_sum(next, -candidate)?;
+/// asymmetric binary64 rounding cell. `ADMITTED` removes range checks already
+/// proved by the row bounds; both lanes use the same strict cell inequalities.
+fn round_certified_double_double<const ADMITTED: bool>(
+    high: f64,
+    low: f64,
+    error: f64,
+) -> (f64, bool) {
+    let (candidate, tail) = two_sum(high, low);
+    let (previous, next) = if ADMITTED {
+        adjacent_finite_values(candidate)
+    } else {
+        (candidate.next_down(), candidate.next_up())
+    };
+    let lower_gap = candidate - previous;
+    let upper_gap = next - candidate;
     let lower_half_gap = lower_gap * 0.5;
     let upper_half_gap = upper_gap * 0.5;
-    if !lower_half_gap.is_normal() || !upper_half_gap.is_normal() {
-        return None;
-    }
     let tail_magnitude = tail.abs();
-    let (lower_margin, upper_margin) = if tail < 0.0 {
-        (
-            lower_difference(lower_half_gap, tail_magnitude)?,
-            lower_sum(upper_half_gap, tail_magnitude)?,
-        )
+    let (lower_margin, lower_is_valid, upper_margin, upper_is_valid) = if tail < 0.0 {
+        let (lower, lower_valid) =
+            lower_difference_certified::<ADMITTED>(lower_half_gap, tail_magnitude);
+        let (upper, upper_valid) = lower_sum_certified::<ADMITTED>(upper_half_gap, tail_magnitude);
+        (lower, lower_valid, upper, upper_valid)
     } else {
-        (
-            lower_sum(lower_half_gap, tail_magnitude)?,
-            lower_difference(upper_half_gap, tail_magnitude)?,
-        )
+        let (lower, lower_valid) = lower_sum_certified::<ADMITTED>(lower_half_gap, tail_magnitude);
+        let (upper, upper_valid) =
+            lower_difference_certified::<ADMITTED>(upper_half_gap, tail_magnitude);
+        (lower, lower_valid, upper, upper_valid)
     };
-    (error < lower_margin && error < upper_margin).then_some(candidate)
+    let range_is_valid = if ADMITTED {
+        true
+    } else {
+        normal_or_zero(high)
+            && normal_or_zero(low)
+            && normal_or_zero(tail)
+            && previous.is_normal()
+            && next.is_normal()
+            && normal_or_zero(lower_gap)
+            && normal_or_zero(upper_gap)
+            && lower_half_gap.is_normal()
+            && upper_half_gap.is_normal()
+            && lower_is_valid
+            && upper_is_valid
+            && error >= 0.0
+            && error.is_finite()
+    };
+    let certified =
+        candidate.is_normal() && range_is_valid && error < lower_margin && error < upper_margin;
+    (candidate, certified)
 }
 
 #[cfg(test)]
+#[expect(
+    clippy::items_after_test_module,
+    reason = "keep affine rounding witnesses beside their private certificate helpers"
+)]
 mod affine_rounding_tests {
-    use super::{AffineExpansion, AffineOriginRow};
+    use super::{
+        AdmittedAffineMode, AdmittedAffineOriginRow, AffineExpansion, AffineLinear,
+        AffineOriginRow, AffineRowExtents, DekkerParts, exact_affine_origin_ordinate,
+    };
     use crate::geometry::exact_arith::product_sum::ExactSum;
 
     #[test]
@@ -833,6 +1497,8 @@ mod affine_rounding_tests {
         let row = AffineOriginRow {
             coefficient_x: 0.0,
             coefficient_y: 0.0,
+            coefficient_x_parts: DekkerParts::checked(0.0),
+            coefficient_y_parts: DekkerParts::checked(0.0),
             output_origin: 0.0,
             origin_x: 0.0,
             origin_y: 0.0,
@@ -851,6 +1517,205 @@ mod affine_rounding_tests {
             1.0_f64.next_up().to_bits()
         );
         assert_eq!(row.fast_map_finite(0.0, 0.0), None);
+    }
+
+    #[test]
+    fn row_admission_rejects_a_product_with_a_half_subnormal_tail() {
+        let one_plus_ulp = 1.0 + 2.0_f64.powi(-52);
+        let coefficient_x = one_plus_ulp * 2.0_f64.powi(-400);
+        let value_x = one_plus_ulp * 2.0_f64.powi(-571);
+        let coefficient_y = -0.5;
+        let value_y = 2.0_f64.powi(-970) + 2.0_f64.powi(-1021);
+        let origin_y = 2.0_f64.powi(-52);
+        let row = AffineOriginRow::new(
+            coefficient_x,
+            coefficient_y,
+            1.0,
+            0.0,
+            origin_y,
+            DekkerParts::checked(coefficient_x),
+            DekkerParts::checked(coefficient_y),
+            DekkerParts::checked(0.0),
+            DekkerParts::checked(origin_y),
+            DekkerParts::checked(1.0),
+        );
+        let extents = AffineRowExtents::from_columns(&[value_x], &[value_y])
+            .expect("the witness coordinates are finite");
+        let expected = exact_affine_origin_ordinate(
+            coefficient_x,
+            coefficient_y,
+            1.0,
+            0.0,
+            origin_y,
+            value_x,
+            value_y,
+        )
+        .unwrap();
+        let (unchecked_candidate, unchecked_certified) = AdmittedAffineOriginRow {
+            mode: AdmittedAffineMode::General(
+                row.coefficient_x_parts.unwrap(),
+                row.coefficient_y_parts.unwrap(),
+                row.bias.unwrap(),
+            ),
+        }
+        .map(
+            value_x,
+            value_y,
+            DekkerParts::admitted(value_x),
+            DekkerParts::admitted(value_y),
+        );
+
+        assert_eq!(expected.to_bits(), 1.0_f64.next_up().to_bits());
+        assert_eq!(unchecked_candidate.to_bits(), 1.0_f64.to_bits());
+        assert!(!unchecked_certified);
+        assert_ne!(unchecked_candidate.to_bits(), expected.to_bits());
+        assert!(
+            row.admitted(extents.x, extents.y).is_none(),
+            "admission would allow unchecked result {:#018x}, but ExactSum gives {:#018x}",
+            unchecked_candidate.to_bits(),
+            expected.to_bits(),
+        );
+    }
+
+    #[test]
+    fn admitted_coordinate_loop_matches_exact_rows_and_fixes_uncertain_vertices() {
+        let xs = [
+            2.0_f64.powi(-100),
+            1.0,
+            2.0_f64.powi(100),
+            -(2.0_f64.powi(100)),
+        ];
+        let ys = [
+            -(2.0_f64.powi(-80)),
+            0.25,
+            -(2.0_f64.powi(100)),
+            2.0_f64.powi(99),
+        ];
+        let transform = AffineLinear::new([1.25, -0.75, 0.5, 2.0])
+            .unwrap()
+            .at((0.0, 0.0))
+            .unwrap();
+        let [Some(x_row), Some(y_row)] = &transform.rows else {
+            panic!("both affine rows are nonidentity")
+        };
+        let extents = AffineRowExtents::from_columns(&xs, &ys).unwrap();
+        assert!(x_row.admitted(extents.x, extents.y).is_some());
+        assert!(y_row.admitted(extents.x, extents.y).is_some());
+
+        let mut actual_x = vec![0.0; xs.len()];
+        let mut actual_y = vec![0.0; ys.len()];
+        transform
+            .map_xy_columns(&xs, &ys, Some(&mut actual_x), Some(&mut actual_y))
+            .unwrap();
+        for (((&x, &y), &mapped_x), &mapped_y) in xs.iter().zip(&ys).zip(&actual_x).zip(&actual_y) {
+            assert_eq!(
+                mapped_x.to_bits(),
+                exact_affine_origin_ordinate(1.25, -0.75, 0.0, 0.0, 0.0, x, y)
+                    .unwrap()
+                    .to_bits()
+            );
+            assert_eq!(
+                mapped_y.to_bits(),
+                exact_affine_origin_ordinate(0.5, 2.0, 0.0, 0.0, 0.0, x, y)
+                    .unwrap()
+                    .to_bits()
+            );
+        }
+
+        let upper = 1.0_f64.next_up();
+        let midpoint = AffineLinear::new([0.5, 0.0, 0.0, 1.0])
+            .unwrap()
+            .at((upper, 0.0))
+            .unwrap();
+        let [Some(x_row), None] = &midpoint.rows else {
+            panic!("the X affine row is nonidentity and Y is preserved")
+        };
+        let (xs, ys) = ([1.0], [0.0]);
+        let extents = AffineRowExtents::from_columns(&xs, &ys).unwrap();
+        assert!(x_row.admitted(extents.x, extents.y).is_some());
+        let mut actual_x = [0.0];
+        midpoint
+            .map_xy_columns(&xs, &ys, Some(&mut actual_x), None)
+            .unwrap();
+        let mapped_x = actual_x
+            .first()
+            .copied()
+            .expect("the midpoint row has one coordinate");
+        assert_eq!(
+            mapped_x.to_bits(),
+            exact_affine_origin_ordinate(0.5, 0.0, upper, upper, 0.0, 1.0, 0.0)
+                .unwrap()
+                .to_bits()
+        );
+        assert_eq!(mapped_x.to_bits(), 1.0_f64.to_bits());
+    }
+
+    #[test]
+    fn origin_zero_single_product_rows_match_exact_product_rounding() {
+        let xs = [-0.0, 2.0_f64.powi(-500), 1.0, -(2.0_f64.powi(100))];
+        let ys = [0.0, -(2.0_f64.powi(-200)), -3.0, 2.0_f64.powi(100)];
+        let transform = AffineLinear::new([1.25, 0.0, 0.0, 0.75])
+            .unwrap()
+            .at((0.0, 0.0))
+            .unwrap();
+        let [Some(x_row), Some(y_row)] = &transform.rows else {
+            panic!("both nonidentity scale rows are present")
+        };
+        let extents = AffineRowExtents::from_columns(&xs, &ys).unwrap();
+        assert!(x_row.admitted(extents.x, extents.y).is_some());
+        assert!(y_row.admitted(extents.x, extents.y).is_some());
+
+        let mut actual_x = vec![0.0; xs.len()];
+        let mut actual_y = vec![0.0; ys.len()];
+        transform
+            .map_xy_columns(&xs, &ys, Some(&mut actual_x), Some(&mut actual_y))
+            .unwrap();
+        for (((&x, &y), &mapped_x), &mapped_y) in xs.iter().zip(&ys).zip(&actual_x).zip(&actual_y) {
+            assert_eq!(
+                mapped_x.to_bits(),
+                exact_affine_origin_ordinate(1.25, 0.0, 0.0, 0.0, 0.0, x, y)
+                    .unwrap()
+                    .to_bits()
+            );
+            assert_eq!(
+                mapped_y.to_bits(),
+                exact_affine_origin_ordinate(0.0, 0.75, 0.0, 0.0, 0.0, x, y)
+                    .unwrap()
+                    .to_bits()
+            );
+        }
+        assert_eq!(
+            actual_x
+                .first()
+                .copied()
+                .expect("the row has coordinates")
+                .to_bits(),
+            0.0_f64.to_bits()
+        );
+    }
+
+    #[test]
+    fn coordinate_row_with_subnormal_values_uses_the_checked_path() {
+        let minimum_subnormal = f64::from_bits(1);
+        let transform = AffineLinear::new([2.0, 0.0, 0.0, 1.0])
+            .unwrap()
+            .at((0.0, 0.0))
+            .unwrap();
+        let xs = [minimum_subnormal, -minimum_subnormal];
+        let ys = [0.0, 0.0];
+        let [Some(x_row), None] = &transform.rows else {
+            panic!("only the X scale row is nonidentity")
+        };
+        let extents = AffineRowExtents::from_columns(&xs, &ys).unwrap();
+        assert!(x_row.admitted(extents.x, extents.y).is_none());
+        let mut actual_x = [0.0; 2];
+        transform
+            .map_xy_columns(&xs, &ys, Some(&mut actual_x), None)
+            .unwrap();
+        assert_eq!(actual_x.map(f64::to_bits), [
+            f64::from_bits(2).to_bits(),
+            f64::from_bits((1 << 63) | 2).to_bits()
+        ]);
     }
 }
 
@@ -1065,7 +1930,7 @@ impl Shape {
         }
         let transform = linear.at(origin)?;
         self.try_map_coordseqs(
-            |seq| seq.try_affine_about_origin(transform),
+            |seq| seq.try_affine_about_origin(&transform),
             |point| {
                 let (x, y) = transform.map_xy(point.x, point.y)?;
                 Point::new_axes(x, y, ZOrdinate(point.z()), MOrdinate(point.m()))

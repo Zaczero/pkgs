@@ -166,7 +166,7 @@ impl PackedColumnBuilder {
         &mut self,
         coords: &CoordSeq,
         window: Range<usize>,
-        transform: crate::geometry::OriginAffine,
+        transform: &crate::geometry::OriginAffine,
     ) -> CrateResult<()> {
         debug_assert!(has_spare_capacity(&self.xs, window.len()));
         debug_assert!(has_spare_capacity(&self.ys, window.len()));
@@ -181,20 +181,25 @@ impl PackedColumnBuilder {
                 .is_none_or(|column| has_spare_capacity(column, window.len()))
         );
         let previous_len = self.xs.len();
-        for (&x, &y) in column_window(coords.xs(), &window)
-            .iter()
-            .zip(column_window(coords.ys(), &window))
-        {
-            let (x, y) = match transform.map_xy(x, y) {
-                Ok(point) => point,
-                Err(error) => {
-                    self.xs.truncate(previous_len);
-                    self.ys.truncate(previous_len);
-                    return Err(error);
-                },
-            };
-            self.xs.push(x);
-            self.ys.push(y);
+        self.xs.extend(std::iter::repeat_n(0.0, window.len()));
+        self.ys.extend(std::iter::repeat_n(0.0, window.len()));
+        let output_x = self
+            .xs
+            .get_mut(previous_len..)
+            .expect("appended affine X window exists");
+        let output_y = self
+            .ys
+            .get_mut(previous_len..)
+            .expect("appended affine Y window exists");
+        if let Err(error) = transform.map_xy_columns(
+            column_window(coords.xs(), &window),
+            column_window(coords.ys(), &window),
+            Some(output_x),
+            Some(output_y),
+        ) {
+            self.xs.truncate(previous_len);
+            self.ys.truncate(previous_len);
+            return Err(error);
         }
         if let (Some(output), Some(source)) = (self.zs.as_mut(), coords.zs()) {
             output.extend_from_slice(column_window(source, &window));
@@ -337,7 +342,7 @@ mod tests {
             .unwrap();
         assert!(
             builder
-                .push_affine_about_origin_admitted(&coords, 1..3, transform)
+                .push_affine_about_origin_admitted(&coords, 1..3, &transform)
                 .is_err()
         );
         let (output, offsets) = builder.finish(2).unwrap();

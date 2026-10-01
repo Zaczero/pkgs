@@ -1167,7 +1167,7 @@ pub(crate) fn subdivide_polygon_columns(
 pub(crate) fn packed_per_row_self_origin_affine_columns(
     columns: PackedColumns<'_>,
     spec: OriginSpec,
-    linear: crate::geometry::AffineLinear,
+    linear: &crate::geometry::AffineLinear,
 ) -> PackedColumnResult<PackedColumnOutput> {
     match columns {
         PackedColumns::Points(point_columns) => match spec {
@@ -1256,7 +1256,7 @@ pub(crate) fn packed_per_row_self_origin_affine_columns(
                     .map_err(|error| row_err(row, error))?;
                 let transform = linear.at(pivot).map_err(|error| row_err(row, error))?;
                 builder
-                    .push_affine_about_origin_admitted(coords, window, transform)
+                    .push_affine_about_origin_admitted(coords, window, &transform)
                     .map_err(|error| row_err(row, error))?;
             }
             let cap = builder.vertex_len();
@@ -1292,7 +1292,7 @@ pub(crate) fn packed_per_row_self_origin_affine_columns(
                         .polygon_ring_window(ring)
                         .expect("ring lies in its admitted polygon row");
                     builder
-                        .push_affine_about_origin_admitted(coords, window, transform)
+                        .push_affine_about_origin_admitted(coords, window, &transform)
                         .map_err(|error| row_err(row, error))?;
                 }
                 output_rings = output_rings.wrapping_add(row_rings.len());

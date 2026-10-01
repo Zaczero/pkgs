@@ -2097,6 +2097,7 @@ mod tests {
         let prefix = source.view(CoordWindow::from_range(0..3, source.len()));
         let source_offsets = CsrOffsetColumn::try_new(vec![0, 3, 6], source.len()).unwrap();
         let prefix_offsets = CsrOffsetColumn::try_new(vec![0, 3], prefix.len()).unwrap();
+        let linear = crate::geometry::AffineLinear::new([2.0, 0.0, 0.0, 2.0]).unwrap();
         let footprints = [
             LineColumns::from_parts(&source, &source_offsets, RowSelectionRef::Window {
                 start: 0,
@@ -2109,7 +2110,7 @@ mod tests {
                 packed_column_kernels::packed_per_row_self_origin_affine_columns(
                     PackedColumns::Lines(columns),
                     crate::array::OriginSpec::Center,
-                    crate::geometry::AffineLinear::new([2.0, 0.0, 0.0, 2.0]).unwrap(),
+                    &linear,
                 )
             else {
                 panic!("line affine must produce line columns");
@@ -2128,11 +2129,12 @@ mod tests {
             let storage = gathered_lines(rows);
             let columns = resolve_packed_columns(&storage, None, PointRowLayout::Dense)
                 .expect("packed columns");
+            let linear = crate::geometry::AffineLinear::new([2.0, 0.0, 0.0, 2.0]).unwrap();
             let (output, allocations) = allocation_count(|| {
                 packed_column_kernels::packed_per_row_self_origin_affine_columns(
                     columns,
                     crate::array::OriginSpec::Center,
-                    crate::geometry::AffineLinear::new([2.0, 0.0, 0.0, 2.0]).unwrap(),
+                    &linear,
                 )
             });
             let Ok(PackedColumnOutput::Lines { coords, offsets }) = output else {

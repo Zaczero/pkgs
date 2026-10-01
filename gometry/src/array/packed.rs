@@ -1068,7 +1068,7 @@ impl PyGeometryArray {
             return Ok(Some(identity));
         }
         self.map_packed_columns_detached(py, self.frame.clone(), move |columns| {
-            packed_per_row_self_origin_affine_columns(columns, spec, linear)
+            packed_per_row_self_origin_affine_columns(columns, spec, &linear)
         })
     }
 

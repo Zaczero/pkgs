@@ -9,7 +9,7 @@
 //! needs at large magnitudes. [`two_product_exact`] declines a product whose
 //! residual might not be representable; [`two_product`] serves filtered
 //! predicates, whose error bound covers a rounded subnormal residual.
-//! [`two_product_dekker`] is the FMA-free product transform for hot kernels
+//! [`DekkerParts`] stores one checked coefficient split for hot kernels
 //! compiled to baselines where scalar `mul_add` is not a hardware instruction.
 
 pub(crate) mod bounded;
@@ -60,6 +60,89 @@ const DEKKER_PRODUCT_EXPONENT_MIN: i32 = -850;
 const DEKKER_PRODUCT_EXPONENT_MAX: i32 = 850;
 const DEKKER_SPLIT_EXPONENT_MAX: i32 = 995;
 
+#[derive(Clone, Copy)]
+pub(crate) struct DekkerParts {
+    value: f64,
+    high: f64,
+    low: f64,
+    exponent: i32,
+}
+
+impl DekkerParts {
+    pub(crate) const fn zero() -> Self {
+        Self {
+            value: 0.0,
+            high: 0.0,
+            low: 0.0,
+            exponent: 0,
+        }
+    }
+
+    pub(crate) fn checked(value: f64) -> Option<Self> {
+        if !value.is_finite() {
+            return None;
+        }
+        if binary_zero(value) {
+            return Some(Self {
+                value,
+                high: value,
+                low: 0.0,
+                exponent: 0,
+            });
+        }
+        let (high, low) = dekker_split(value)?;
+        Some(Self {
+            value,
+            high,
+            low,
+            exponent: floor_binary_exponent(value.abs()),
+        })
+    }
+
+    /// Split a finite input whose exponent was admitted with its entire row.
+    pub(crate) fn admitted(value: f64) -> Self {
+        if binary_zero(value) {
+            return Self {
+                value,
+                high: value,
+                low: 0.0,
+                exponent: 0,
+            };
+        }
+        let product = DEKKER_SPLITTER * value;
+        let large = product - value;
+        let high = product - large;
+        let low = value - high;
+        Self {
+            value,
+            high,
+            low,
+            exponent: 0,
+        }
+    }
+
+    pub(crate) const fn exponent(self) -> i32 {
+        self.exponent
+    }
+
+    pub(crate) const fn value(self) -> f64 {
+        self.value
+    }
+
+    pub(crate) const fn is_zero(self) -> bool {
+        binary_zero(self.value)
+    }
+
+    pub(crate) fn negated(self) -> Self {
+        Self {
+            value: -self.value,
+            high: -self.high,
+            low: -self.low,
+            exponent: self.exponent,
+        }
+    }
+}
+
 /// Whether the binary64 encoding is either sign of zero.
 pub(crate) const fn binary_zero(value: f64) -> bool {
     value.to_bits().trailing_zeros() >= 63
@@ -96,34 +179,52 @@ fn dekker_split(value: f64) -> Option<(f64, f64)> {
     Some((high, low))
 }
 
-/// FMA-free error-free product using Dekker splitting. The standard residual
-/// subtraction order recovers the exact low part; the exponent window keeps
-/// every product and intermediate in the normal range where that identity
-/// holds. Inputs outside that window or a failed split are declined.
-pub(crate) fn two_product_dekker(lhs: f64, rhs: f64) -> Option<(f64, f64)> {
-    if !lhs.is_finite() || !rhs.is_finite() {
-        return None;
+/// Checked FMA-free product transform for already split inputs. It declines
+/// products whose residual arithmetic leaves its normal exponent range.
+pub(crate) fn two_product_dekker_checked_parts(
+    lhs: DekkerParts,
+    rhs: DekkerParts,
+) -> Option<(f64, f64)> {
+    if lhs.is_zero() || rhs.is_zero() {
+        return Some((lhs.value * rhs.value, 0.0));
     }
-    if binary_zero(lhs) || binary_zero(rhs) {
-        return Some((lhs * rhs, 0.0));
-    }
-    let exponent_sum =
-        floor_binary_exponent(lhs.abs()).checked_add(floor_binary_exponent(rhs.abs()))?;
+    let exponent_sum = lhs.exponent.checked_add(rhs.exponent)?;
     if !(DEKKER_PRODUCT_EXPONENT_MIN..=DEKKER_PRODUCT_EXPONENT_MAX).contains(&exponent_sum) {
         return None;
     }
-    let (lhs_high, lhs_low) = dekker_split(lhs)?;
-    let (rhs_high, rhs_low) = dekker_split(rhs)?;
-    let product = dekker_product(lhs, rhs)?;
-    let high_high = dekker_product(lhs_high, rhs_high)?;
-    let low_high = dekker_product(lhs_low, rhs_high)?;
-    let high_low = dekker_product(lhs_high, rhs_low)?;
-    let low_low = dekker_product(lhs_low, rhs_low)?;
+    let product = dekker_product(lhs.value, rhs.value)?;
+    let high_high = dekker_product(lhs.high, rhs.high)?;
+    let low_high = dekker_product(lhs.low, rhs.high)?;
+    let high_low = dekker_product(lhs.high, rhs.low)?;
+    let low_low = dekker_product(lhs.low, rhs.low)?;
     let error_1 = checked_normal_sum(product, -high_high)?;
     let error_2 = checked_normal_sum(error_1, -low_high)?;
     let error_3 = checked_normal_sum(error_2, -high_low)?;
     let error = checked_normal_sum(low_low, -error_3)?;
     Some((product, error))
+}
+
+/// Error-free product for row-admitted split operands.
+///
+/// The row admission bounds each input exponent and their sum. Every nonzero
+/// split limb is therefore an integer multiple of its input's `2^(e-52)` grid,
+/// and each partial product lies on the grid `2^(e_lhs+e_rhs-104)`. Admission
+/// requires that grid to be at least the subnormal quantum, so none of these
+/// rounded operations can discard a nonzero residual.
+pub(crate) fn two_product_dekker_admitted(lhs: DekkerParts, rhs: DekkerParts) -> (f64, f64) {
+    if lhs.is_zero() || rhs.is_zero() {
+        return (lhs.value * rhs.value, 0.0);
+    }
+    let product = lhs.value * rhs.value;
+    let high_high = lhs.high * rhs.high;
+    let low_high = lhs.low * rhs.high;
+    let high_low = lhs.high * rhs.low;
+    let low_low = lhs.low * rhs.low;
+    let error_1 = product - high_high;
+    let error_2 = error_1 - low_high;
+    let error_3 = error_2 - high_low;
+    let error = low_low - error_3;
+    (product, error)
 }
 
 pub(crate) fn dd_mul(lhs: (f64, f64), rhs: (f64, f64)) -> (f64, f64) {
@@ -154,6 +255,10 @@ pub(crate) fn floor_binary_exponent(value: f64) -> i32 {
     }
 }
 
+#[expect(
+    clippy::arithmetic_side_effects,
+    reason = "the i16 shift keeps the i32 adjustment in range and the debug check bounds the encoded exponent"
+)]
 pub(crate) fn exact_power_of_two(shift: i16) -> f64 {
     let stored = i32::from(shift).wrapping_add(1023);
     debug_assert!((1..=2046).contains(&stored));
