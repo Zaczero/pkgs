@@ -171,13 +171,28 @@ const EPSILON: f64 = f64::EPSILON;
 ///
 /// Staging, validity, canonicalization and areal topology share this
 /// original-coordinate predicate, independently of rounded area measurement.
+#[expect(
+    clippy::indexing_slicing,
+    reason = "pairs counts adjacent entries in equal closed-ring columns, including the terminal vertex"
+)]
 pub(crate) fn exact_ring_area_sign_columns(xs: &[f64], ys: &[f64], pairs: usize) -> AreaSign {
-    cycle_sign(pairs, |index| {
-        (
-            XY::new(xs[index], ys[index]),
-            XY::new(xs[index + 1], ys[index + 1]),
-        )
-    })
+    if pairs == 0 {
+        return AreaSign::Zero;
+    }
+    if let Some(sign) = rounded_translated_cycle_sign_columns(xs, ys, pairs) {
+        return sign;
+    }
+
+    let mut sum = ExactSum::zero();
+    for ((&x0, &x1), (&y0, &y1)) in xs[..pairs]
+        .iter()
+        .zip(&xs[1..=pairs])
+        .zip(ys[..pairs].iter().zip(&ys[1..=pairs]))
+    {
+        sum.add_product(x0, y1);
+        sum.subtract_product(x1, y0);
+    }
+    area_sign_from_ordering(sum.ordering())
 }
 
 fn cycle_sign(edge_count: usize, mut edge_at: impl FnMut(usize) -> (XY, XY)) -> AreaSign {
@@ -187,24 +202,165 @@ fn cycle_sign(edge_count: usize, mut edge_at: impl FnMut(usize) -> (XY, XY)) -> 
     if let Some(sign) = rounded_translated_cycle_sign(edge_count, &mut edge_at) {
         return sign;
     }
+    exact_cycle_sign(edge_count, &mut edge_at)
+}
 
+fn exact_cycle_sign(edge_count: usize, mut edge_at: impl FnMut(usize) -> (XY, XY)) -> AreaSign {
     let mut sum = ExactSum::zero();
     for index in 0..edge_count {
         let (a, b) = edge_at(index);
         sum.add_product(a.x, b.y);
         sum.subtract_product(b.x, a.y);
     }
-    match sum.ordering() {
+    area_sign_from_ordering(sum.ordering())
+}
+
+const fn area_sign_from_ordering(ordering: std::cmp::Ordering) -> AreaSign {
+    match ordering {
         std::cmp::Ordering::Less => AreaSign::Negative,
         std::cmp::Ordering::Equal => AreaSign::Zero,
         std::cmp::Ordering::Greater => AreaSign::Positive,
     }
 }
 
-/// One rounded-residual filter over a contiguous closed cycle. For finite
-/// `r = fl(d)`, `(u*|r| + min_subnormal/2)/(1-u) <= EPSILON*|r| +
-/// min_subnormal` bounds translation error against the original shoelace sum.
+/// Running filter over a cycle whose vertices are exposed by an edge reader.
 fn rounded_translated_cycle_sign(
+    edge_count: usize,
+    mut edge_at: impl FnMut(usize) -> (XY, XY),
+) -> Option<AreaSign> {
+    if edge_count > 1 << 26 {
+        return None;
+    }
+    let (origin, _) = edge_at(0);
+    let mut filter = CycleSignFilter::new(origin, edge_count)?;
+    for index in 0..edge_count {
+        let (_, destination) = edge_at(index);
+        filter.push(destination);
+    }
+    filter.finish()
+}
+
+/// Column-specialized filter: the contiguous slices make each vertex pair
+/// bounds-free in the loop, and the running product magnitude removes the
+/// NaN-aware maxima from the prior per-edge error estimate.
+#[expect(
+    clippy::indexing_slicing,
+    reason = "edge_count pairs each vertex with its following stored column entry"
+)]
+fn rounded_translated_cycle_sign_columns(
+    xs: &[f64],
+    ys: &[f64],
+    edge_count: usize,
+) -> Option<AreaSign> {
+    if edge_count > 1 << 26 {
+        return None;
+    }
+    let (&origin_x, &origin_y) = xs.first().zip(ys.first())?;
+    let origin = XY::new(origin_x, origin_y);
+    let mut filter = CycleSignFilter::new(origin, edge_count)?;
+    for (&x, &y) in xs[1..=edge_count].iter().zip(&ys[1..=edge_count]) {
+        filter.push(XY::new(x, y));
+    }
+    filter.finish()
+}
+
+struct CycleSignFilter {
+    origin: XY,
+    previous: XY,
+    edge_count: usize,
+    sum: f64,
+    product_magnitude: f64,
+}
+
+impl CycleSignFilter {
+    fn new(origin: XY, edge_count: usize) -> Option<Self> {
+        (origin.x.is_finite() && origin.y.is_finite()).then_some(Self {
+            origin,
+            previous: XY::new(0.0, 0.0),
+            edge_count,
+            sum: 0.0,
+            product_magnitude: 0.0,
+        })
+    }
+
+    fn push(&mut self, destination: XY) {
+        let next = XY::new(destination.x - self.origin.x, destination.y - self.origin.y);
+        let left = self.previous.x * next.y;
+        let right = next.x * self.previous.y;
+        let difference = left - right;
+        let sum = self.sum + difference;
+        let product_magnitude = left.abs() + right.abs();
+        let product_magnitude = self.product_magnitude + product_magnitude;
+
+        self.previous = next;
+        self.sum = sum;
+        self.product_magnitude = product_magnitude;
+    }
+
+    fn finish(self) -> Option<AreaSign> {
+        if !(self.sum.is_finite() && self.product_magnitude.is_finite()) {
+            return None;
+        }
+        // A finite binary64 subtraction is exact when its result is subnormal
+        // (Sterbenz or the shared subnormal grid); normal residuals have the
+        // usual relative bound. For n <= 2^26, the relative term covers
+        // translated residuals, rounded products and differences, the
+        // sequential sum, and rounding of the positive magnitude fold. The
+        // absolute term covers underflow in products and accumulations.
+        let count = self.edge_count as f64;
+        let relative = (32.0 * count * EPSILON) * self.product_magnitude;
+        let underflow = (8.0 * f64::MIN_POSITIVE * count) * count;
+        let bound = (relative + underflow).next_up();
+        if !bound.is_finite() {
+            return None;
+        }
+        if self.sum > bound {
+            Some(AreaSign::Positive)
+        } else if self.sum < -bound {
+            Some(AreaSign::Negative)
+        } else {
+            None
+        }
+    }
+}
+
+#[cfg(test)]
+#[expect(
+    clippy::arithmetic_side_effects,
+    reason = "This test oracle preserves adjacent closed-ring indexing for the original-coordinate exact fallback"
+)]
+fn reference_exact_ring_area_sign_columns(xs: &[f64], ys: &[f64], pairs: usize) -> AreaSign {
+    reference_cycle_sign(pairs, |index| {
+        (
+            XY::new(xs[index], ys[index]),
+            XY::new(xs[index + 1], ys[index + 1]),
+        )
+    })
+}
+
+#[cfg(test)]
+fn reference_cycle_sign(edge_count: usize, mut edge_at: impl FnMut(usize) -> (XY, XY)) -> AreaSign {
+    if edge_count == 0 {
+        return AreaSign::Zero;
+    }
+    if let Some(sign) = reference_rounded_translated_cycle_sign(edge_count, &mut edge_at) {
+        return sign;
+    }
+    let mut sum = ExactSum::zero();
+    for index in 0..edge_count {
+        let (a, b) = edge_at(index);
+        sum.add_product(a.x, b.y);
+        sum.subtract_product(b.x, a.y);
+    }
+    area_sign_from_ordering(sum.ordering())
+}
+
+#[cfg(test)]
+#[expect(
+    clippy::arithmetic_side_effects,
+    reason = "The test oracle reproduces the former translated shoelace filter evaluation"
+)]
+fn reference_rounded_translated_cycle_sign(
     edge_count: usize,
     mut edge_at: impl FnMut(usize) -> (XY, XY),
 ) -> Option<AreaSign> {
@@ -236,13 +392,9 @@ fn rounded_translated_cycle_sign(
         sum += difference;
         previous = next;
     }
-
-    // A nonfinite residual contaminates a strict product and difference, then
-    // persists through the sequential sum; reject before max-derived bounds.
     if !sum.is_finite() {
         return None;
     }
-
     let error_x = rounded_residual_error_bound(maximum_x_residual);
     let error_y = rounded_residual_error_bound(maximum_y_residual);
     let translation_term = outward_add(
@@ -254,8 +406,6 @@ fn rounded_translated_cycle_sign(
     );
     let translation_error = outward_mul(2.0 * edge_count as f64, translation_term);
     let edge_count_squared = (edge_count as f64) * (edge_count as f64);
-    // Products, subtraction, and n-1 sequential additions contribute at most
-    // 16u*n^2*m + 8*MIN_POSITIVE*n^2 for n <= 2^26.
     let arithmetic_error = outward_add(
         outward_mul(8.0 * f64::EPSILON * edge_count_squared, maximum_product),
         outward_mul(8.0 * f64::MIN_POSITIVE, edge_count_squared),
@@ -273,6 +423,7 @@ fn rounded_translated_cycle_sign(
     }
 }
 
+#[cfg(test)]
 /// A conservative absolute error bound for a finite rounded subtraction.
 fn rounded_residual_error_bound(maximum_residual: f64) -> f64 {
     outward_add(
@@ -281,10 +432,12 @@ fn rounded_residual_error_bound(maximum_residual: f64) -> f64 {
     )
 }
 
+#[cfg(test)]
 fn outward_mul(left: f64, right: f64) -> f64 {
     (left * right).next_up()
 }
 
+#[cfg(test)]
 fn outward_add(left: f64, right: f64) -> f64 {
     (left + right).next_up()
 }
@@ -319,9 +472,12 @@ fn exact_open_point_sign(points: &[Point]) -> AreaSign {
 /// in [`crossover`].
 const SHOELACE_SIMD_MIN: usize = crossover::OFFSET_PAIR_MEASURE;
 
-/// Origin-shifted, optionally per-axis-scaled shoelace half-sum / 2.
-/// Unit scales keep the ordinary path bit-identical. Non-unit scales form
-/// `x*sx - origin_x*sx` and `y*sy - origin_y*sy`.
+/// Scalar shoelace half-sum for the short-ring path. Unit scales retain the
+/// existing operation order; non-unit scales form `x*s - origin*s`.
+#[expect(
+    clippy::indexing_slicing,
+    reason = "pairs counts adjacent entries in equal closed-ring columns, including the terminal vertex"
+)]
 fn shoelace_shifted(
     xs: &[f64],
     ys: &[f64],
@@ -332,35 +488,54 @@ fn shoelace_shifted(
     sy: f64,
 ) -> f64 {
     let identity = sx.to_bits() == 1.0_f64.to_bits() && sy.to_bits() == 1.0_f64.to_bits();
-    // Small rings (the overwhelmingly common case — most polygons have well
-    // under ~64 vertices): a tight reassociation-friendly scalar fold over two
-    // offset slices. LLVM auto-vectorizes it at the natural width and elides
-    // bounds checks (the offset slices are length-`pairs`). The forced 512-bit
-    // path below pays per-ring tail padding + a horizontal `reduce_sum`, which
-    // only amortizes on long rings — many tiny per-ring reductions are NOT
-    // stream-shaped (see the 512-bit-for-streams-only float policy).
+    xs[..pairs]
+        .iter()
+        .zip(&xs[1..=pairs])
+        .zip(ys[..pairs].iter().zip(&ys[1..=pairs]))
+        .fold(0.0_f64, |area, ((&x0, &x1), (&y0, &y1))| {
+            let (sx0, sy0) = if identity {
+                (x0 - ox, y0 - oy)
+            } else {
+                (scaled_residual(x0, ox, sx), scaled_residual(y0, oy, sy))
+            };
+            let (sx1, sy1) = if identity {
+                (x1 - ox, y1 - oy)
+            } else {
+                (scaled_residual(x1, ox, sx), scaled_residual(y1, oy, sy))
+            };
+            area.algebraic_add(sx0.algebraic_mul(sy1).algebraic_sub(sx1.algebraic_mul(sy0)))
+        })
+        / 2.0
+}
+
+/// Shifted shoelace measure and its absolute error bound. Long rings compute
+/// both in one traversal, reusing the SIMD residuals for the bound without
+/// changing the cross-sum reduction.
+#[expect(
+    clippy::indexing_slicing,
+    reason = "pairs and SIMD reduction ranges are bounded by the admitted closed-ring columns"
+)]
+#[expect(
+    clippy::arithmetic_side_effects,
+    reason = "The binary64 cross fold and product scale form the certified measure and roundoff bound"
+)]
+fn shoelace_shifted_with_roundoff(
+    xs: &[f64],
+    ys: &[f64],
+    pairs: usize,
+    ox: f64,
+    oy: f64,
+    sx: f64,
+    sy: f64,
+) -> (f64, f64) {
     if pairs < SHOELACE_SIMD_MIN {
-        let cross = xs[..pairs]
-            .iter()
-            .zip(&xs[1..=pairs])
-            .zip(ys[..pairs].iter().zip(&ys[1..=pairs]))
-            .fold(0.0_f64, |area, ((&x0, &x1), (&y0, &y1))| {
-                // Ordinary path: plain origin shift (bit-identical). Scaled
-                // rescue: `x*s - origin*s`, never `(x-origin)*s`.
-                let (sx0, sy0) = if identity {
-                    (x0 - ox, y0 - oy)
-                } else {
-                    (scaled_residual(x0, ox, sx), scaled_residual(y0, oy, sy))
-                };
-                let (sx1, sy1) = if identity {
-                    (x1 - ox, y1 - oy)
-                } else {
-                    (scaled_residual(x1, ox, sx), scaled_residual(y1, oy, sy))
-                };
-                area.algebraic_add(sx0.algebraic_mul(sy1).algebraic_sub(sx1.algebraic_mul(sy0)))
-            });
-        return cross / 2.0;
+        return (
+            shoelace_shifted(xs, ys, pairs, ox, oy, sx, sy),
+            shoelace_shifted_roundoff(xs, ys, pairs, ox, oy, sx, sy),
+        );
     }
+
+    let identity = sx.to_bits() == 1.0_f64.to_bits() && sy.to_bits() == 1.0_f64.to_bits();
     let (x0, _) = xs[..pairs].as_chunks::<REDUCE_LANES>();
     let (x1, _) = xs[1..=pairs].as_chunks::<REDUCE_LANES>();
     let (y0, _) = ys[..pairs].as_chunks::<REDUCE_LANES>();
@@ -379,31 +554,62 @@ fn shoelace_shifted(
     let residual_y = |v: ReduceSimd, o: ReduceSimd| {
         if identity { v - o } else { v * sy_v - o * sy_v }
     };
-    let simd_fold = |mut acc: ReduceSimd, start: usize| {
+    let simd_fold = |mut acc: ReduceSimd, mut product_scale: f64, start: usize| {
         let chunk = start / REDUCE_LANES;
-        let (x0, x1) = (
+        let (rx0, rx1) = (
             residual_x(ReduceSimd::from_array(x0[chunk]), ovx),
             residual_x(ReduceSimd::from_array(x1[chunk]), ovx),
         );
-        let (y0, y1) = (
+        let (ry0, ry1) = (
             residual_y(ReduceSimd::from_array(y0[chunk]), ovy),
             residual_y(ReduceSimd::from_array(y1[chunk]), ovy),
         );
-        acc += x0 * y1 - x1 * y0;
-        acc
+        acc += rx0 * ry1 - rx1 * ry0;
+        for (((x0, x1), y0), y1) in rx0
+            .to_array()
+            .into_iter()
+            .zip(rx1.to_array())
+            .zip(ry0.to_array())
+            .zip(ry1.to_array())
+        {
+            product_scale += x0.abs() * y1.abs() + x1.abs() * y0.abs();
+        }
+        (acc, product_scale)
     };
     let lanes = x0.len() * REDUCE_LANES;
     simd_reduce_f64(
         pairs,
         ReduceSimd::splat(0.0),
-        (),
-        |acc, (), start| (simd_fold(acc, start), ()),
-        |(), range| {
+        0.0_f64,
+        simd_fold,
+        |mut product_scale, range| {
             if range.start != 0 {
                 debug_assert_eq!(range.start, lanes);
             }
+            let start = range.start;
+            let end = range.end;
+            let x_start = &xs[range.clone()];
+            let y_start = &ys[range];
+            for ((&x0, &x1), (&y0, &y1)) in x_start
+                .iter()
+                .zip(xs[start + 1..=end].iter())
+                .zip(y_start.iter().zip(ys[start + 1..=end].iter()))
+            {
+                let (x0, y0) = if identity {
+                    (x0 - ox, y0 - oy)
+                } else {
+                    (scaled_residual(x0, ox, sx), scaled_residual(y0, oy, sy))
+                };
+                let (x1, y1) = if identity {
+                    (x1 - ox, y1 - oy)
+                } else {
+                    (scaled_residual(x1, ox, sx), scaled_residual(y1, oy, sy))
+                };
+                product_scale += x0.abs() * y1.abs() + x1.abs() * y0.abs();
+            }
+            product_scale
         },
-        |mut acc, ()| {
+        |mut acc, product_scale| {
             if lanes < pairs {
                 let (tx0, tx1) = (
                     residual_x(ReduceSimd::load_or_default(&xs[lanes..pairs]), ovx),
@@ -415,16 +621,18 @@ fn shoelace_shifted(
                 );
                 acc += tx0 * ty1 - tx1 * ty0;
             }
-            acc.reduce_sum() / 2.0
+            let area = acc.reduce_sum() / 2.0;
+            let operations = pairs.saturating_mul(4).saturating_add(1) as f64;
+            (area, product_scale * EPSILON * operations)
         },
     )
 }
 
-/// Absolute roundoff bound of [`shoelace_shifted`] for one ring. The decisive
-/// scale is the sum of the two products *before* each subtraction: a finite
-/// nonzero cross term can already have lost its answer to product
-/// cancellation, so bounding only the resulting value misses the `2^-27`
-/// rotated triangle.
+/// Absolute roundoff bound for the scalar shoelace fold on one ring. The
+/// decisive scale is the sum of the two products *before* each subtraction: a
+/// finite nonzero cross term can already have lost its answer to product
+/// cancellation, so bounding only the result misses the `2^-27` rotated
+/// triangle.
 fn shoelace_shifted_roundoff(
     xs: &[f64],
     ys: &[f64],
@@ -456,6 +664,142 @@ fn shoelace_shifted_roundoff(
     // Each edge has two rounded products, one rounded subtraction, and one
     // contribution to the fold.  This conservative IEEE-754 roundoff bound
     // is a property of the performed arithmetic, not a geometry-size knob.
+    let operations = pairs.saturating_mul(4).saturating_add(1) as f64;
+    product_scale * EPSILON * operations
+}
+
+#[cfg(test)]
+mod reference {
+    use std::simd::num::SimdFloat as _;
+
+    use super::{REDUCE_LANES, ReduceSimd, SHOELACE_SIMD_MIN, scaled_residual, simd_reduce_f64};
+
+    #[expect(
+        clippy::arithmetic_side_effects,
+        reason = "This test-only SIMD oracle preserves the former binary64 shoelace reduction order"
+    )]
+    pub(super) fn shoelace_shifted(
+        xs: &[f64],
+        ys: &[f64],
+        pairs: usize,
+        ox: f64,
+        oy: f64,
+        sx: f64,
+        sy: f64,
+    ) -> f64 {
+        let identity = sx.to_bits() == 1.0_f64.to_bits() && sy.to_bits() == 1.0_f64.to_bits();
+        if pairs < SHOELACE_SIMD_MIN {
+            let cross = xs[..pairs]
+                .iter()
+                .zip(&xs[1..=pairs])
+                .zip(ys[..pairs].iter().zip(&ys[1..=pairs]))
+                .fold(0.0_f64, |area, ((&x0, &x1), (&y0, &y1))| {
+                    let (sx0, sy0) = if identity {
+                        (x0 - ox, y0 - oy)
+                    } else {
+                        (scaled_residual(x0, ox, sx), scaled_residual(y0, oy, sy))
+                    };
+                    let (sx1, sy1) = if identity {
+                        (x1 - ox, y1 - oy)
+                    } else {
+                        (scaled_residual(x1, ox, sx), scaled_residual(y1, oy, sy))
+                    };
+                    area.algebraic_add(sx0.algebraic_mul(sy1).algebraic_sub(sx1.algebraic_mul(sy0)))
+                });
+            return cross / 2.0;
+        }
+        let (x0, _) = xs[..pairs].as_chunks::<REDUCE_LANES>();
+        let (x1, _) = xs[1..=pairs].as_chunks::<REDUCE_LANES>();
+        let (y0, _) = ys[..pairs].as_chunks::<REDUCE_LANES>();
+        let (y1, _) = ys[1..=pairs].as_chunks::<REDUCE_LANES>();
+        let (ovx, ovy) = (ReduceSimd::splat(ox), ReduceSimd::splat(oy));
+        let sx_v = ReduceSimd::splat(sx);
+        let sy_v = ReduceSimd::splat(sy);
+        let residual_x = |values: ReduceSimd, origin: ReduceSimd| {
+            if identity {
+                values - origin
+            } else {
+                values * sx_v - origin * sx_v
+            }
+        };
+        let residual_y = |values: ReduceSimd, origin: ReduceSimd| {
+            if identity {
+                values - origin
+            } else {
+                values * sy_v - origin * sy_v
+            }
+        };
+        let simd_fold = |mut acc: ReduceSimd, start: usize| {
+            let chunk = start / REDUCE_LANES;
+            let (x0, x1) = (
+                residual_x(ReduceSimd::from_array(x0[chunk]), ovx),
+                residual_x(ReduceSimd::from_array(x1[chunk]), ovx),
+            );
+            let (y0, y1) = (
+                residual_y(ReduceSimd::from_array(y0[chunk]), ovy),
+                residual_y(ReduceSimd::from_array(y1[chunk]), ovy),
+            );
+            acc += x0 * y1 - x1 * y0;
+            acc
+        };
+        let lanes = x0.len() * REDUCE_LANES;
+        simd_reduce_f64(
+            pairs,
+            ReduceSimd::splat(0.0),
+            (),
+            |acc, (), start| (simd_fold(acc, start), ()),
+            |(), range| {
+                if range.start != 0 {
+                    debug_assert_eq!(range.start, lanes);
+                }
+            },
+            |mut acc, ()| {
+                if lanes < pairs {
+                    let (tx0, tx1) = (
+                        residual_x(ReduceSimd::load_or_default(&xs[lanes..pairs]), ovx),
+                        residual_x(ReduceSimd::load_or_default(&xs[lanes + 1..=pairs]), ovx),
+                    );
+                    let (ty0, ty1) = (
+                        residual_y(ReduceSimd::load_or_default(&ys[lanes..pairs]), ovy),
+                        residual_y(ReduceSimd::load_or_default(&ys[lanes + 1..=pairs]), ovy),
+                    );
+                    acc += tx0 * ty1 - tx1 * ty0;
+                }
+                acc.reduce_sum() / 2.0
+            },
+        )
+    }
+}
+
+#[cfg(test)]
+fn reference_shoelace_shifted_roundoff(
+    xs: &[f64],
+    ys: &[f64],
+    pairs: usize,
+    ox: f64,
+    oy: f64,
+    sx: f64,
+    sy: f64,
+) -> f64 {
+    let identity = sx.to_bits() == 1.0_f64.to_bits() && sy.to_bits() == 1.0_f64.to_bits();
+    let mut product_scale = 0.0_f64;
+    for ((&x0, &x1), (&y0, &y1)) in xs[..pairs]
+        .iter()
+        .zip(&xs[1..=pairs])
+        .zip(ys[..pairs].iter().zip(&ys[1..=pairs]))
+    {
+        let (x0, y0) = if identity {
+            (x0 - ox, y0 - oy)
+        } else {
+            (scaled_residual(x0, ox, sx), scaled_residual(y0, oy, sy))
+        };
+        let (x1, y1) = if identity {
+            (x1 - ox, y1 - oy)
+        } else {
+            (scaled_residual(x1, ox, sx), scaled_residual(y1, oy, sy))
+        };
+        product_scale += x0.abs() * y1.abs() + x1.abs() * y0.abs();
+    }
     let operations = pairs.saturating_mul(4).saturating_add(1) as f64;
     product_scale * EPSILON * operations
 }
@@ -537,10 +881,12 @@ pub(crate) fn polygon_area_measure_with(
         if pairs == 0 {
             return;
         }
-        let ring = shoelace_shifted(xs, ys, pairs, ox, oy, sx, sy).abs();
+        let (signed_ring, ring_error) =
+            shoelace_shifted_with_roundoff(xs, ys, pairs, ox, oy, sx, sy);
+        let ring = signed_ring.abs();
         rings += 1;
         magnitude += ring;
-        error += shoelace_shifted_roundoff(xs, ys, pairs, ox, oy, sx, sy);
+        error += ring_error;
         if hole {
             area -= ring;
         } else {
@@ -588,6 +934,61 @@ fn exact_polygon_area_measure_with(visit: impl Fn(&mut dyn FnMut(&[f64], &[f64],
         }
     });
     total.round_to_area()
+}
+
+#[cfg(test)]
+#[expect(
+    clippy::arithmetic_side_effects,
+    reason = "The test oracle preserves the original binary64 area/error accumulation order"
+)]
+fn reference_polygon_area_measure_with(
+    visit: impl Fn(&mut dyn FnMut(&[f64], &[f64], bool)),
+) -> f64 {
+    let mut min_x = f64::INFINITY;
+    let mut max_x = f64::NEG_INFINITY;
+    let mut min_y = f64::INFINITY;
+    let mut max_y = f64::NEG_INFINITY;
+    let mut any = false;
+    visit(&mut |xs, ys, _hole| {
+        for (&x, &y) in xs.iter().zip(ys.iter()) {
+            any = true;
+            min_x = min_x.min(x);
+            max_x = max_x.max(x);
+            min_y = min_y.min(y);
+            max_y = max_y.max(y);
+        }
+    });
+    if !(any && min_x.is_finite() && min_y.is_finite()) {
+        return f64::NAN;
+    }
+    let ox = f64::midpoint(min_x, max_x);
+    let oy = f64::midpoint(min_y, max_y);
+    let sx = axis_pow2_scale(max_x.abs().max(min_x.abs()).max(ox.abs()));
+    let sy = axis_pow2_scale(max_y.abs().max(min_y.abs()).max(oy.abs()));
+    let mut area = 0.0_f64;
+    let mut magnitude = 0.0_f64;
+    let mut error = 0.0_f64;
+    let mut rings = 0_usize;
+    visit(&mut |xs, ys, hole| {
+        let pairs = xs.len().saturating_sub(1);
+        if pairs == 0 {
+            return;
+        }
+        let ring = reference::shoelace_shifted(xs, ys, pairs, ox, oy, sx, sy).abs();
+        rings += 1;
+        magnitude += ring;
+        error += reference_shoelace_shifted_roundoff(xs, ys, pairs, ox, oy, sx, sy);
+        if hole {
+            area -= ring;
+        } else {
+            area += ring;
+        }
+    });
+    error += magnitude * EPSILON * rings.saturating_add(1) as f64;
+    if !(area.is_finite() && error.is_finite() && area.abs() > error) {
+        return exact_polygon_area_measure_with(visit);
+    }
+    unscale_area(area, sx, sy)
 }
 
 /// Packed polygon area with a fused ordinary path.
@@ -757,6 +1158,206 @@ mod tests {
                 area + ((x0 - ox) * (y1 - oy) - (x1 - ox) * (y0 - oy))
             })
             / 2.0
+    }
+
+    fn assert_ring_sign_matches_reference(xs: &[f64], ys: &[f64]) {
+        let pairs = xs.len().saturating_sub(1);
+        assert_eq!(
+            exact_ring_area_sign_columns(xs, ys, pairs),
+            reference_exact_ring_area_sign_columns(xs, ys, pairs),
+            "ring columns differ: {xs:?} {ys:?}"
+        );
+    }
+
+    fn assert_area_bits_match_reference(rings: &[(&[f64], &[f64], bool)]) {
+        let actual = polygon_area_measure_with(|visit| {
+            for &(xs, ys, hole) in rings {
+                visit(xs, ys, hole);
+            }
+        });
+        let expected = reference_polygon_area_measure_with(|visit| {
+            for &(xs, ys, hole) in rings {
+                visit(xs, ys, hole);
+            }
+        });
+        assert_eq!(
+            actual.to_bits(),
+            expected.to_bits(),
+            "{actual:e} != {expected:e}"
+        );
+    }
+
+    #[test]
+    fn certified_ring_sign_matches_reference_on_slivers_and_generated_cycles() {
+        let tiny = f64::from_bits(1);
+        let sliver = 2.0_f64.powi(-54);
+        let translated = 2.0_f64.powi(-54);
+        for (xs, ys) in [
+            (
+                vec![
+                    -1.446_158_859_221_779_4e-110,
+                    -2.594_428_477_756_554e-110,
+                    -2.307_361_073_122_860_3e-110,
+                    -1.446_158_859_221_779_4e-110,
+                ],
+                vec![
+                    2.371_948_131_117_221_8e-110,
+                    -1.487_324_694_703_768_7e-110,
+                    -5.225_064_882_485_208e-111,
+                    2.371_948_131_117_221_8e-110,
+                ],
+            ),
+            (vec![0.0, 1.0, 1.0 - 2.0_f64.powi(-27), 0.0], vec![
+                0.0,
+                1.0 + 2.0_f64.powi(-27),
+                1.0,
+                0.0,
+            ]),
+            (vec![1.0, 0.0, sliver, 1.0], vec![0.0, 1.0, 1.0, 0.0]),
+            (vec![1.0e7, 1.0e7 + 1.0, 1.0e7 + 1.0, 1.0e7, 1.0e7], vec![
+                1.0e7,
+                1.0e7,
+                1.0e7 + translated,
+                1.0e7 + translated,
+                1.0e7,
+            ]),
+            (vec![0.0, tiny, 0.0, 0.0], vec![0.0, 0.0, tiny, 0.0]),
+            (vec![f64::MAX, -f64::MAX, 0.0, f64::MAX], vec![
+                1.0, 1.0, 0.0, 1.0,
+            ]),
+        ] {
+            assert_ring_sign_matches_reference(&xs, &ys);
+        }
+
+        let mut seed = 0x67E1_8A29_0D43_B5CF_u64;
+        let mut next_coordinate = || {
+            seed = seed
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            f64::from(u32::try_from(seed >> 32).expect("upper word fits u32") % 31) - 15.0
+        };
+        for ring_index in 0..32 {
+            let mut xs = Vec::with_capacity(25);
+            let mut ys = Vec::with_capacity(25);
+            for vertex in 0..24 {
+                let x = next_coordinate();
+                let y = if ring_index % 4 == 0 {
+                    f64::from(u32::try_from(vertex).expect("24 vertices fit u32")) - 12.0
+                } else {
+                    next_coordinate()
+                };
+                xs.push(x);
+                ys.push(y);
+            }
+            if ring_index % 3 == 0 {
+                let duplicate_x = *xs.get(4).expect("24 generated vertices");
+                let duplicate_y = *ys.get(4).expect("24 generated vertices");
+                *xs.get_mut(5).expect("24 generated vertices") = duplicate_x;
+                *ys.get_mut(5).expect("24 generated vertices") = duplicate_y;
+                let collinear_y = *ys.get(12).expect("24 generated vertices");
+                *ys.get_mut(13).expect("24 generated vertices") = collinear_y;
+            }
+            let first_x = *xs.first().expect("24 generated vertices");
+            let first_y = *ys.first().expect("24 generated vertices");
+            xs.push(first_x);
+            ys.push(first_y);
+            assert_ring_sign_matches_reference(&xs, &ys);
+        }
+    }
+
+    #[test]
+    fn fused_long_area_keeps_reference_bits_for_random_and_degenerate_rings() {
+        let radial = |count: usize, radius: f64, phase: f64| {
+            let mut xs = Vec::with_capacity(count + 1);
+            let mut ys = Vec::with_capacity(count + 1);
+            let count_f64 = f64::from(u32::try_from(count).expect("ring size fits u32"));
+            for index in 0..count {
+                let index_f64 = f64::from(u32::try_from(index).expect("index fits u32"));
+                let angle = phase + 2.0 * std::f64::consts::PI * index_f64 / count_f64;
+                let radius = radius
+                    * (1.0 + 0.07 * (5.0 * angle + 0.2).sin() + 0.025 * (13.0 * angle).cos());
+                xs.push(radius * angle.cos());
+                ys.push(radius * angle.sin());
+            }
+            xs.push(*xs.first().expect("radial ring has vertices"));
+            ys.push(*ys.first().expect("radial ring has vertices"));
+            (xs, ys)
+        };
+        let (shell_xs, shell_ys) = radial(4096, 100.0, 0.0);
+        let (hole_xs, hole_ys) = radial(257, 15.0, 0.17);
+        assert_area_bits_match_reference(&[
+            (&shell_xs, &shell_ys, false),
+            (&hole_xs, &hole_ys, true),
+        ]);
+
+        let mut seed = 0x1B74_6C2D_950F_A813_u64;
+        let mut coordinate = || {
+            seed = seed
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            f64::from(u32::try_from(seed >> 32).expect("upper word fits u32") % 257) - 128.0
+        };
+        for ring_index in 0..16 {
+            let mut xs = Vec::with_capacity(65);
+            let mut ys = Vec::with_capacity(65);
+            for vertex in 0..64 {
+                xs.push(500_000.0 + coordinate());
+                ys.push(if ring_index % 3 == 0 {
+                    5_200_000.0 + f64::from(u32::try_from(vertex).expect("64 vertices fit u32"))
+                } else {
+                    5_200_000.0 + coordinate()
+                });
+            }
+            if ring_index % 4 == 0 {
+                let duplicate_x = *xs.get(7).expect("64 generated vertices");
+                let duplicate_y = *ys.get(7).expect("64 generated vertices");
+                *xs.get_mut(8).expect("64 generated vertices") = duplicate_x;
+                *ys.get_mut(8).expect("64 generated vertices") = duplicate_y;
+            }
+            xs.push(*xs.first().expect("64 generated vertices"));
+            ys.push(*ys.first().expect("64 generated vertices"));
+            assert_area_bits_match_reference(&[(&xs, &ys, false)]);
+        }
+
+        let sliver_xs = [
+            19.343_75,
+            -30.765_625,
+            -18.265_625,
+            0.140_625,
+            -3.109_375,
+            30.359_375,
+            19.343_75,
+        ];
+        let sliver_ys = [
+            59.031_25,
+            -91.296_875,
+            -53.796_875,
+            1.421_875_000_000_000_4,
+            -8.328_125,
+            92.078_125,
+            59.031_25,
+        ];
+        assert_area_bits_match_reference(&[(&sliver_xs, &sliver_ys, false)]);
+
+        let (lo, hi) = (2.0_f64.powi(-60), 1.0 - 2.0_f64.powi(-53));
+        let shell_xs = [0.0, 1.0, 1.0, 0.5, 0.0, 0.0];
+        let shell_ys = [0.0, 0.0, 1.0, 1.0 + 2.0_f64.powi(-52), 1.0, 0.0];
+        let hole_xs = [0.0, 0.0, 1.0, 1.0, 0.0];
+        let hole_ys = [0.0, 1.0, 1.0, 0.0, 0.0];
+        let thin_hole_xs = [lo, lo, hi, hi, lo];
+        let thin_hole_ys = [lo, hi, hi, lo, lo];
+        assert_area_bits_match_reference(&[
+            (&shell_xs, &shell_ys, false),
+            (&hole_xs, &hole_ys, true),
+        ]);
+        assert_area_bits_match_reference(&[
+            (
+                &[0.0, 1.0, 1.0, 0.0, 0.0],
+                &[0.0, 0.0, 1.0, 1.0, 0.0],
+                false,
+            ),
+            (&thin_hole_xs, &thin_hole_ys, true),
+        ]);
     }
 
     #[test]
