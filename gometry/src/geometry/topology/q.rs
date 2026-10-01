@@ -3709,15 +3709,14 @@ fn pair_row_slot(row: SourceRowId) -> Result<usize> {
 }
 
 fn pair_face_membership(q: &ExactGeographicQ, face: GlobalFaceId) -> [bool; 2] {
-    let rows = q.face_rows.rows_for(face);
     [
-        rows.binary_search(&SourceRowId(0)).is_ok(),
-        rows.binary_search(&SourceRowId(1)).is_ok(),
+        q.face_rows.contains(face, SourceRowId(0)),
+        q.face_rows.contains(face, SourceRowId(1)),
     ]
 }
 
 fn q_face_has_row(q: &ExactGeographicQ, face: GlobalFaceId, row: SourceRowId) -> bool {
-    q.face_rows.rows_for(face).binary_search(&row).is_ok()
+    q.face_rows.contains(face, row)
 }
 
 const fn area_location(any: bool, all: bool) -> Loc {
@@ -4781,9 +4780,14 @@ const fn signs_are_opposite(left: ExactSign, right: ExactSign) -> bool {
 }
 
 #[derive(Debug)]
+/// A row occupies half-open intervals in the dual walk's face preorder.
+/// Crossing and rollback record only changed rows, so nesting does not copy
+/// enclosing memberships into every descendant face.
 pub(super) struct GlobalFaceRowOccupancy {
-    pub offsets: Box<[usize]>,
-    pub rows: Box<[SourceRowId]>,
+    face_order: Box<[usize]>,
+    face_counts: Box<[usize]>,
+    row_offsets: Box<[usize]>,
+    intervals: Box<[[usize; 2]]>,
 }
 
 impl GlobalFaceRowOccupancy {
@@ -4839,8 +4843,10 @@ impl GlobalFaceRowOccupancy {
             );
             return Ok((
                 Self {
-                    offsets: vec![0; offset_count].into_boxed_slice(),
-                    rows: Box::new([]),
+                    face_order: vec![0; face_count].into_boxed_slice(),
+                    face_counts: vec![0; face_count].into_boxed_slice(),
+                    row_offsets: vec![0; sources.row_count + 1].into_boxed_slice(),
+                    intervals: Box::new([]),
                 },
                 GlobalSpanRowSupport::build(topology.spans.len(), &mut span_collapsed_memberships)?,
                 GlobalNodeRowSupport::build(topology.nodes.len(), &mut node_point_memberships)?,
@@ -4943,7 +4949,6 @@ impl GlobalFaceRowOccupancy {
             )
             .into());
         }
-        arcs.sort_unstable_by_key(|arc| (arc.from.0, arc.to.0, arc.span, arc.forward));
         let mut degrees = vec![0_usize; face_count];
         for arc in &arcs {
             let degree = degrees.get_mut(arc.from.0 as usize).ok_or_else(|| {
@@ -4968,6 +4973,14 @@ impl GlobalFaceRowOccupancy {
             )
             .into());
         }
+        let mut positions = offsets[..face_count].to_vec();
+        let mut ordered_arcs = arcs.clone();
+        for arc in arcs {
+            let position = &mut positions[arc.from.0 as usize];
+            ordered_arcs[*position] = arc;
+            *position += 1;
+        }
+        let arcs = ordered_arcs;
 
         let mut state = FaceOccupancyState::new(sources, &global.seed_winding)?;
         trim_collapsed_points_on_face(
@@ -4977,14 +4990,15 @@ impl GlobalFaceRowOccupancy {
             &state,
         )?;
         let mut seen = vec![false; face_count];
-        let mut memberships = Vec::<(GlobalFaceId, SourceRowId)>::new();
+        let mut face_order = vec![0; face_count];
+        let mut face_counts = vec![0; face_count];
         let mut span_collapsed_pending = vec![true; topology.spans.len()];
         let mut span_collapsed_memberships = Vec::<(usize, SourceRowId)>::new();
         let mut shell_candidates = Vec::new();
         let mut hole_candidates = Vec::new();
         let mut collapsed_shells = Vec::new();
         seen[seed_index] = true;
-        state.append_face(seed_face, &mut memberships);
+        state.append_face(seed_face, &mut face_order, &mut face_counts);
         let seed_start = offsets[seed_index];
         let seed_end = offsets[seed_index + 1];
         let mut stack = vec![FaceWalkFrame {
@@ -5058,7 +5072,7 @@ impl GlobalFaceRowOccupancy {
                 *seen.get_mut(target).ok_or_else(|| {
                     GeometryErrorKind::Invalid("Q dual target has no visited state".into())
                 })? = true;
-                state.append_face(arc.to, &mut memberships);
+                state.append_face(arc.to, &mut face_order, &mut face_counts);
                 trim_collapsed_points_on_face(
                     arc.to,
                     &collapsed_point_faces,
@@ -5099,48 +5113,59 @@ impl GlobalFaceRowOccupancy {
                 .map(|candidate| (candidate.node.0 as usize, candidate.row)),
         );
 
-        memberships.sort_unstable_by_key(|(face, row)| (face.0, row.0));
-        for pair in memberships.windows(2) {
-            let [left, right] = pair else {
-                unreachable!("windows(2) yields adjacent face-row memberships");
-            };
-            if left == right {
-                return Err(GeometryErrorKind::Invalid(
-                    "a global Q face contains one operand row more than once".into(),
-                )
-                .into());
+        for (row, &start) in state.interval_starts.iter().enumerate() {
+            if let Some(start) = start
+                && start < state.cursor
+            {
+                state.intervals.push((
+                    SourceRowId(u32::try_from(row).map_err(|_| ResourceError::SizeOverflow)?),
+                    [start, state.cursor],
+                ));
             }
         }
-        let mut csr_offsets = vec![0_usize; offset_count];
-        for (face, _) in &memberships {
-            let slot = csr_offsets.get_mut(face.0 as usize + 1).ok_or_else(|| {
-                GeometryErrorKind::Invalid("Q membership has an unknown face".into())
-            })?;
-            *slot = slot.checked_add(1).ok_or(ResourceError::SizeOverflow)?;
+        let mut row_offsets = vec![0_usize; sources.row_count + 1];
+        for &(row, _) in &state.intervals {
+            row_offsets[row.0 as usize + 1] += 1;
         }
-        for index in 1..offset_count {
-            let previous = *csr_offsets.get(index - 1).ok_or_else(|| {
-                GeometryErrorKind::Invalid("Q membership CSR lost its previous offset".into())
-            })?;
-            let current = csr_offsets.get_mut(index).ok_or_else(|| {
-                GeometryErrorKind::Invalid("Q membership CSR lost its next offset".into())
-            })?;
-            *current = current
-                .checked_add(previous)
-                .ok_or(ResourceError::SizeOverflow)?;
+        for index in 1..row_offsets.len() {
+            row_offsets[index] += row_offsets[index - 1];
         }
-        let rows = memberships
-            .into_iter()
-            .map(|(_, row)| row)
-            .collect::<Vec<_>>();
+        let mut positions = row_offsets[..sources.row_count].to_vec();
+        let mut intervals = vec![[0; 2]; state.intervals.len()];
+        for (row, interval) in state.intervals {
+            let position = &mut positions[row.0 as usize];
+            intervals[*position] = interval;
+            *position += 1;
+        }
+        let mut write = 0;
+        // Non-tree crossings can close and reopen a row without visiting a face.
+        for row in 0..sources.row_count {
+            let start = row_offsets[row];
+            let end = row_offsets[row + 1];
+            row_offsets[row] = write;
+            let row_start = write;
+            for read in start..end {
+                let interval = intervals[read];
+                if write > row_start && intervals[write - 1][1] == interval[0] {
+                    intervals[write - 1][1] = interval[1];
+                } else {
+                    intervals[write] = interval;
+                    write += 1;
+                }
+            }
+        }
+        row_offsets[sources.row_count] = write;
+        intervals.truncate(write);
         let span_collapsed_rows =
             GlobalSpanRowSupport::build(topology.spans.len(), &mut span_collapsed_memberships)?;
         let node_point_rows =
             GlobalNodeRowSupport::build(topology.nodes.len(), &mut node_point_memberships)?;
         Ok((
             Self {
-                offsets: csr_offsets.into_boxed_slice(),
-                rows: rows.into_boxed_slice(),
+                face_order: face_order.into_boxed_slice(),
+                face_counts: face_counts.into_boxed_slice(),
+                row_offsets: row_offsets.into_boxed_slice(),
+                intervals: intervals.into_boxed_slice(),
             },
             span_collapsed_rows,
             node_point_rows,
@@ -5149,10 +5174,44 @@ impl GlobalFaceRowOccupancy {
 
     #[expect(
         clippy::indexing_slicing,
-        reason = "GlobalFaceIds are checked against this CSR table's face count before publication"
+        clippy::arithmetic_side_effects,
+        reason = "face and source row IDs belong to the admitted topology; interval offsets cover every row"
     )]
-    pub(super) fn rows_for(&self, face: GlobalFaceId) -> &[SourceRowId] {
-        &self.rows[self.offsets[face.0 as usize]..self.offsets[face.0 as usize + 1]]
+    pub(super) fn contains(&self, face: GlobalFaceId, row: SourceRowId) -> bool {
+        let face = face.0 as usize;
+        let row = row.0 as usize;
+        if row + 1 >= self.row_offsets.len() {
+            return false;
+        }
+        let count = self.face_counts[face];
+        if count == 0 {
+            return false;
+        }
+        if count + 1 == self.row_offsets.len() {
+            return true;
+        }
+        let order = self.face_order[face];
+        let intervals = &self.intervals[self.row_offsets[row]..self.row_offsets[row + 1]];
+        let end = intervals.partition_point(|interval| interval[0] <= order);
+        end != 0 && order < intervals[end - 1][1]
+    }
+
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "global face IDs belong to the admitted topology"
+    )]
+    pub(super) fn count(&self, face: GlobalFaceId) -> usize {
+        self.face_counts[face.0 as usize]
+    }
+
+    #[cfg(test)]
+    fn rows_for(&self, face: GlobalFaceId) -> Vec<SourceRowId> {
+        self.row_offsets
+            .windows(2)
+            .enumerate()
+            .map(|(row, _)| SourceRowId(u32::try_from(row).unwrap()))
+            .filter(|&row| self.contains(face, row))
+            .collect()
     }
 }
 
@@ -5177,8 +5236,10 @@ struct FaceOccupancyState {
     polygon_holes: Vec<usize>,
     polygon_occupied: Vec<bool>,
     row_polygon_counts: Vec<usize>,
-    active_rows: Vec<SourceRowId>,
-    active_row_positions: Vec<Option<usize>>,
+    active_count: usize,
+    interval_starts: Vec<Option<usize>>,
+    intervals: Vec<(SourceRowId, [usize; 2])>,
+    cursor: usize,
 }
 
 impl FaceOccupancyState {
@@ -5226,16 +5287,14 @@ impl FaceOccupancyState {
                 *count = count.checked_add(1).ok_or(ResourceError::SizeOverflow)?;
             }
         }
-        let mut active_rows = Vec::new();
-        let mut active_row_positions = vec![None; sources.row_count];
-        for (row, &count) in row_polygon_counts.iter().enumerate() {
-            if count != 0 {
-                let row_id =
-                    SourceRowId(u32::try_from(row).map_err(|_| ResourceError::SizeOverflow)?);
-                active_row_positions[row] = Some(active_rows.len());
-                active_rows.push(row_id);
-            }
-        }
+        let interval_starts = row_polygon_counts
+            .iter()
+            .map(|&count| (count != 0).then_some(0))
+            .collect::<Vec<_>>();
+        let active_count = interval_starts
+            .iter()
+            .filter(|start| start.is_some())
+            .count();
         Ok(Self {
             winding: winding.to_vec(),
             ring_inside,
@@ -5243,8 +5302,10 @@ impl FaceOccupancyState {
             polygon_holes,
             polygon_occupied,
             row_polygon_counts,
-            active_rows,
-            active_row_positions,
+            active_count,
+            interval_starts,
+            intervals: Vec::new(),
+            cursor: 0,
         })
     }
 
@@ -5344,50 +5405,62 @@ impl FaceOccupancyState {
         Ok(())
     }
 
+    #[expect(
+        clippy::arithmetic_side_effects,
+        reason = "active row count is bounded by the admitted row inventory"
+    )]
     fn activate_row(&mut self, row: SourceRowId) -> Result<()> {
-        let position = self
-            .active_row_positions
+        let start = self
+            .interval_starts
             .get_mut(row.0 as usize)
             .ok_or_else(|| GeometryErrorKind::Invalid("Q active row is unknown".into()))?;
-        if position.is_none() {
-            *position = Some(self.active_rows.len());
-            self.active_rows.push(row);
+        if start.is_none() {
+            *start = Some(self.cursor);
+            self.active_count += 1;
         }
         Ok(())
     }
 
+    #[expect(
+        clippy::arithmetic_side_effects,
+        reason = "taking an active interval removes exactly one counted row"
+    )]
     fn deactivate_row(&mut self, row: SourceRowId) -> Result<()> {
-        let position = self
-            .active_row_positions
+        let start = self
+            .interval_starts
             .get_mut(row.0 as usize)
             .ok_or_else(|| GeometryErrorKind::Invalid("Q inactive row is unknown".into()))?;
-        let index = position.take().ok_or_else(|| {
+        let start = start.take().ok_or_else(|| {
             GeometryErrorKind::Invalid("Q row occupancy disappeared before its last polygon".into())
         })?;
-        self.active_rows.swap_remove(index);
-        if let Some(&moved) = self.active_rows.get(index) {
-            let moved_position = self
-                .active_row_positions
-                .get_mut(moved.0 as usize)
-                .ok_or_else(|| GeometryErrorKind::Invalid("Q moved row is unknown".into()))?;
-            *moved_position = Some(index);
+        if start < self.cursor {
+            self.intervals.push((row, [start, self.cursor]));
         }
+        self.active_count -= 1;
         Ok(())
     }
 
-    fn append_face(&self, face: GlobalFaceId, output: &mut Vec<(GlobalFaceId, SourceRowId)>) {
-        output.extend(self.active_rows.iter().map(|&row| (face, row)));
+    #[expect(
+        clippy::indexing_slicing,
+        clippy::arithmetic_side_effects,
+        reason = "each admitted global face is visited once"
+    )]
+    const fn append_face(&mut self, face: GlobalFaceId, order: &mut [usize], counts: &mut [usize]) {
+        order[face.0 as usize] = self.cursor;
+        counts[face.0 as usize] = self.active_count;
+        self.cursor += 1;
     }
 }
 
 impl HeapSize for GlobalFaceRowOccupancy {
     #[expect(
         clippy::arithmetic_side_effects,
-        reason = "HeapSize sums the already-published row CSR buffers as an estimate"
+        reason = "HeapSize sums the already-published face order and row interval buffers as an estimate"
     )]
     fn heap_bytes(&self) -> usize {
-        self.offsets.len() * std::mem::size_of::<usize>()
-            + self.rows.len() * std::mem::size_of::<SourceRowId>()
+        (self.face_order.len() + self.face_counts.len() + self.row_offsets.len())
+            * std::mem::size_of::<usize>()
+            + self.intervals.len() * std::mem::size_of::<[usize; 2]>()
     }
 }
 
@@ -7219,8 +7292,8 @@ mod tests {
         .unwrap();
         let (_, q) = q_graph(&collection);
         assert_eq!(q.global_face_count, 1);
-        assert_eq!(q.face_rows.offsets.as_ref(), &[0, 0]);
-        assert!(q.face_rows.rows.is_empty());
+        assert_eq!(q.face_rows.count(GlobalFaceId(0)), 0);
+        assert!(q.face_rows.intervals.is_empty());
         assert_eq!(q.source_point_faces.as_ref(), &[Some(GlobalFaceId(0))]);
     }
 
@@ -7327,7 +7400,20 @@ mod tests {
         assert_eq!(small.global_face_count, 65);
         assert_eq!(large.global_face_count, 257);
         assert_eq!(large.spans.len(), 1_024);
-        assert_eq!(large.face_rows.rows.len(), 32_896);
+        assert_eq!(small.face_rows.intervals.len(), 64);
+        assert_eq!(large.face_rows.intervals.len(), 256);
+        for face in 0..large.global_face_count {
+            let face = GlobalFaceId(u32::try_from(face).unwrap());
+            let depth = large.face_rows.count(face);
+            for row in 0..256 {
+                assert_eq!(
+                    large
+                        .face_rows
+                        .contains(face, SourceRowId(u32::try_from(row).unwrap())),
+                    row < depth,
+                );
+            }
+        }
         assert!(large.host_status_max_height <= 22);
         assert!(large.host_status_comparisons < 256 * 1_024);
         assert!(large.host_status_comparisons < small.host_status_comparisons * 6);

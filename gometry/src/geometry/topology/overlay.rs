@@ -79,9 +79,9 @@ pub(in crate::geometry) fn exact_geographic_overlay(
     let faces = select_faces(q, row_count, operation)?;
     let whole_sphere = !faces.is_empty() && faces.iter().all(|&selected| selected);
     let mut face_regions = face_regions(q, &faces)?;
-    let line_spans = select_line_spans(q, &faces, row_count, operation)?;
+    let line_spans = select_line_spans(topology, &faces, row_count, operation)?;
     let cycles = selected_area_boundaries(q, &faces, &mut face_regions)?;
-    let point_nodes = select_points(q, &faces, &line_spans, row_count, operation)?;
+    let point_nodes = select_points(topology, &faces, &line_spans, row_count, operation)?;
     let piece_ranges = source_piece_ranges(topology)?;
     let ordinates = node_ordinates(topology)?;
 
@@ -150,12 +150,84 @@ pub(in crate::geometry) fn exact_geographic_overlay(
     build_certified_overlay_shape_with_axes(points, lines, polygons, axes)
 }
 
-fn selects_rows(rows: &[SourceRowId], row_count: usize, operation: OverlayOp) -> bool {
+const fn selects_support(
+    count: usize,
+    first: bool,
+    row_count: usize,
+    operation: OverlayOp,
+) -> bool {
     match operation {
-        OverlayOp::Union => !rows.is_empty(),
-        OverlayOp::Intersection => rows.len() == row_count,
-        OverlayOp::Difference => rows.first().is_some_and(|row| row.0 == 0) && rows.len() == 1,
-        OverlayOp::SymmetricDifference => !rows.len().is_multiple_of(2),
+        OverlayOp::Union => count != 0,
+        OverlayOp::Intersection => count == row_count,
+        OverlayOp::Difference => first && count == 1,
+        OverlayOp::SymmetricDifference => !count.is_multiple_of(2),
+    }
+}
+
+/// Incident faces can differ only on rows owning an incident source edge.
+/// Count their union from one face and those rows, without expanding ancestors.
+#[derive(Default)]
+struct AreaSupport {
+    faces: Vec<GlobalFaceId>,
+    rows: Vec<SourceRowId>,
+}
+
+impl AreaSupport {
+    fn clear(&mut self) {
+        self.faces.clear();
+        self.rows.clear();
+    }
+
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "span indices come from this topology's span table or admitted darts"
+    )]
+    fn append_span(&mut self, topology: &ExactGeographicTopology, span: usize) -> Result<()> {
+        for owner in &topology.q.spans[span].owners {
+            let edge = topology
+                .sources
+                .edges
+                .get(owner.source_edge.0 as usize)
+                .ok_or_else(|| {
+                    GeometryErrorKind::Invalid("Q support references an unknown source edge".into())
+                })?;
+            self.rows.push(edge.row);
+        }
+        Ok(())
+    }
+
+    fn contains(&self, q: &super::q::ExactGeographicQ, row: SourceRowId) -> bool {
+        self.faces
+            .iter()
+            .any(|&face| q.face_rows.contains(face, row))
+    }
+
+    #[expect(
+        clippy::arithmetic_side_effects,
+        reason = "the union counts distinct admitted source rows"
+    )]
+    fn count(&mut self, q: &super::q::ExactGeographicQ) -> usize {
+        let Some(&first) = self.faces.first() else {
+            return 0;
+        };
+        self.rows.sort_unstable();
+        self.rows.dedup();
+        q.face_rows.count(first)
+            + self
+                .rows
+                .iter()
+                .filter(|&&row| !q.face_rows.contains(first, row) && self.contains(q, row))
+                .count()
+    }
+
+    #[expect(
+        clippy::arithmetic_side_effects,
+        reason = "sorted unique support rows add only rows absent from the area union"
+    )]
+    fn with_rows(&mut self, q: &super::q::ExactGeographicQ, rows: &[SourceRowId]) -> (usize, bool) {
+        let count = self.count(q) + rows.iter().filter(|&&row| !self.contains(q, row)).count();
+        let first = rows.binary_search(&SourceRowId(0)).is_ok() || self.contains(q, SourceRowId(0));
+        (count, first)
     }
 }
 
@@ -175,8 +247,9 @@ fn select_faces(
     let mut selected = Vec::with_capacity(q.global_face_count);
     for face in 0..q.global_face_count {
         let face = GlobalFaceId(u32::try_from(face).map_err(|_| ResourceError::SizeOverflow)?);
-        selected.push(selects_rows(
-            q.face_rows.rows_for(face),
+        selected.push(selects_support(
+            q.face_rows.count(face),
+            q.face_rows.contains(face, SourceRowId(0)),
             row_count,
             operation,
         ));
@@ -262,72 +335,66 @@ fn face_regions(q: &super::q::ExactGeographicQ, selected: &[bool]) -> Result<Fac
     Ok(regions)
 }
 
+#[expect(
+    clippy::indexing_slicing,
+    reason = "global face indices and the selected-face table belong to the same admitted Q"
+)]
 fn select_line_spans(
-    q: &super::q::ExactGeographicQ,
+    topology: &ExactGeographicTopology,
     selected_faces: &[bool],
     row_count: usize,
     operation: OverlayOp,
 ) -> Result<Vec<bool>> {
+    let q = &topology.q;
     let mut selected = Vec::with_capacity(q.spans.len());
-    let (mut area_rows, mut curve_rows, mut support_rows) = (Vec::new(), Vec::new(), Vec::new());
+    let mut area = AreaSupport::default();
+    let mut curve_rows = Vec::new();
     for (span_index, faces) in q.span_global_faces.iter().enumerate() {
         if q.span_is_collapsed_pole(span_index)? {
             selected.push(false);
             continue;
         }
-        area_rows.clear();
+        area.clear();
         if let Some([left, right]) = faces {
-            append_unique_rows(
-                &mut area_rows,
-                q.face_rows.rows_for(*left),
-                q.face_rows.rows_for(*right),
-            );
+            if selected_faces[left.0 as usize] || selected_faces[right.0 as usize] {
+                selected.push(false);
+                continue;
+            }
+            area.faces.extend([*left, *right]);
+            area.append_span(topology, span_index)?;
         }
         append_unique_rows(
             &mut curve_rows,
             q.line_rows_for_span(span_index)?,
             q.collapsed_rows_for_span(span_index)?,
         );
-        append_unique_rows(&mut support_rows, &area_rows, &curve_rows);
-        let area_absorbs = if let Some([left, right]) = faces {
-            let left_selected = selected_faces
-                .get(left.0 as usize)
-                .copied()
-                .ok_or_else(|| {
-                    GeometryErrorKind::Invalid("Q span has an unknown left face".into())
-                })?;
-            let right_selected =
-                selected_faces
-                    .get(right.0 as usize)
-                    .copied()
-                    .ok_or_else(|| {
-                        GeometryErrorKind::Invalid("Q span has an unknown right face".into())
-                    })?;
-            left_selected || right_selected
-        } else {
-            false
-        };
         let curve_selected = match operation {
             OverlayOp::Union => !curve_rows.is_empty(),
-            OverlayOp::Intersection => support_rows.len() == row_count,
+            OverlayOp::Intersection => area.with_rows(q, &curve_rows).0 == row_count,
             OverlayOp::Difference => {
                 curve_rows.binary_search(&SourceRowId(0)).is_ok()
-                    && support_rows.iter().all(|row| row.0 == 0)
+                    && area.with_rows(q, &curve_rows).0 == 1
             },
             OverlayOp::SymmetricDifference => !curve_rows.len().is_multiple_of(2),
         };
-        selected.push(curve_selected && !area_absorbs);
+        selected.push(curve_selected);
     }
     Ok(selected)
 }
 
+#[expect(
+    clippy::indexing_slicing,
+    clippy::arithmetic_side_effects,
+    reason = "node, dart, local and global face indices and fan offsets are admitted by this Q"
+)]
 fn select_points(
-    q: &super::q::ExactGeographicQ,
+    topology: &ExactGeographicTopology,
     selected_faces: &[bool],
     selected_spans: &[bool],
     row_count: usize,
     operation: OverlayOp,
 ) -> Result<Vec<QNodeId>> {
+    let q = &topology.q;
     let mut line_nodes = vec![false; q.nodes.len()];
     for (span, &selected) in q.spans.iter().zip(selected_spans) {
         if selected {
@@ -340,84 +407,42 @@ fn select_points(
     }
 
     let mut output = Vec::new();
-    let (mut area_rows, mut curve_rows) = (Vec::new(), Vec::new());
+    let mut area = AreaSupport::default();
     let mut support_rows = Vec::new();
     for (node_index, node) in q.nodes.iter().enumerate() {
-        area_rows.clear();
-        curve_rows.clear();
-        let fan_start = *q
-            .outgoing_offsets
-            .get(node_index)
-            .ok_or_else(|| GeometryErrorKind::Invalid("Q node has no fan start".into()))?;
-        let fan_end = *q
-            .outgoing_offsets
-            .get(node_index.saturating_add(1))
-            .ok_or_else(|| GeometryErrorKind::Invalid("Q node has no fan end".into()))?;
-        let area_absorbs = if fan_start == fan_end {
-            let face = q
-                .source_node_faces
-                .get(node_index)
-                .copied()
-                .flatten()
-                .ok_or_else(|| {
-                    GeometryErrorKind::Invalid("an isolated Q node has no host face".into())
-                })?;
-            area_rows.extend_from_slice(q.face_rows.rows_for(face));
-            selected_faces
-                .get(face.0 as usize)
-                .copied()
-                .ok_or_else(|| {
-                    GeometryErrorKind::Invalid("isolated Q node has an unknown host face".into())
-                })?
-        } else {
-            let fan = q.outgoing.get(fan_start..fan_end).ok_or_else(|| {
-                GeometryErrorKind::Invalid("Q node has an invalid outgoing fan".into())
-            })?;
-            let mut selected = false;
-            for &dart in fan {
-                let span_index = q
-                    .darts
-                    .get(dart.0 as usize)
-                    .ok_or_else(|| GeometryErrorKind::Invalid("Q node fan dart is unknown".into()))?
-                    .span
-                    .0 as usize;
-                curve_rows.extend_from_slice(q.line_rows_for_span(span_index)?);
-                curve_rows.extend_from_slice(q.collapsed_rows_for_span(span_index)?);
-                let local = *q.dart_faces.get(dart.0 as usize).ok_or_else(|| {
-                    GeometryErrorKind::Invalid("Q node fan has no local face".into())
-                })?;
-                let face = *q
-                    .global_face_of_local
-                    .get(local.0 as usize)
-                    .ok_or_else(|| {
-                        GeometryErrorKind::Invalid("Q local face has no global face".into())
-                    })?;
-                area_rows.extend_from_slice(q.face_rows.rows_for(face));
-                selected |= selected_faces
-                    .get(face.0 as usize)
-                    .copied()
-                    .ok_or_else(|| {
-                        GeometryErrorKind::Invalid("Q fan references an unknown global face".into())
-                    })?;
-            }
-            selected
-        };
-        area_rows.sort_unstable();
-        area_rows.dedup();
-        curve_rows.sort_unstable();
-        curve_rows.dedup();
-        let point_rows = q.point_rows_for_node(node_index)?;
+        if line_nodes[node_index] {
+            continue;
+        }
+        area.clear();
         support_rows.clear();
-        support_rows.extend_from_slice(&area_rows);
-        support_rows.extend_from_slice(&curve_rows);
-        support_rows.extend_from_slice(point_rows);
+        let fan = &q.outgoing[q.outgoing_offsets[node_index]..q.outgoing_offsets[node_index + 1]];
+        if fan.is_empty() {
+            let face = q.source_node_faces[node_index].ok_or_else(|| {
+                GeometryErrorKind::Invalid("an isolated Q node has no host face".into())
+            })?;
+            area.faces.push(face);
+        } else {
+            for &dart in fan {
+                let span_index = q.darts[dart.0 as usize].span.0 as usize;
+                support_rows.extend_from_slice(q.line_rows_for_span(span_index)?);
+                support_rows.extend_from_slice(q.collapsed_rows_for_span(span_index)?);
+                let local = q.dart_faces[dart.0 as usize];
+                area.faces.push(q.global_face_of_local[local.0 as usize]);
+                area.append_span(topology, span_index)?;
+            }
+        }
+        if area
+            .faces
+            .iter()
+            .any(|face| selected_faces[face.0 as usize])
+        {
+            continue;
+        }
+        support_rows.extend_from_slice(q.point_rows_for_node(node_index)?);
         support_rows.sort_unstable();
         support_rows.dedup();
-        let line_absorbs = line_nodes
-            .get(node_index)
-            .copied()
-            .ok_or_else(|| GeometryErrorKind::Invalid("Q node has no line-support state".into()))?;
-        if selects_rows(&support_rows, row_count, operation) && !area_absorbs && !line_absorbs {
+        let (count, first) = area.with_rows(q, &support_rows);
+        if selects_support(count, first, row_count, operation) {
             output.push(node.id);
         }
     }
