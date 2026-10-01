@@ -595,6 +595,27 @@ struct GlobalFaceTopology {
     host_status_max_height: usize,
 }
 
+pub(super) struct GlobalFaceStructure {
+    pub(super) local_to_global: Vec<GlobalFaceId>,
+    pub(super) span_global_faces: Vec<Option<[GlobalFaceId; 2]>>,
+    pub(super) component_hosts: Vec<Option<GlobalFaceId>>,
+    pub(super) cut_interval_faces: Vec<GlobalFaceId>,
+    pub(super) source_node_faces: Vec<Option<GlobalFaceId>>,
+    pub(super) count: usize,
+    seed: Option<SeedFaceGerm>,
+    seed_ray_spans: Vec<SeedRaySpan>,
+    #[cfg(test)]
+    host_status_comparisons: usize,
+    #[cfg(test)]
+    host_status_max_height: usize,
+}
+
+#[derive(Clone, Copy)]
+struct SeedRaySpan {
+    span: usize,
+    multiplier: i64,
+}
+
 #[derive(Debug)]
 pub(super) struct QCutIndex {
     events: Box<[QCutEvent]>,
@@ -1903,11 +1924,10 @@ fn apply_span_ring_transitions(
     clippy::arithmetic_side_effects,
     reason = "component, port, face, and status IDs index the dense Q columns that construct them"
 )]
-fn build_global_face_topology(
+pub(super) fn global_face_structure(
     frame: GeographicFrame,
-    sources: &ExactGeographicChartInventory,
     topology: &QuotientFaces,
-) -> Result<GlobalFaceTopology> {
+) -> Result<GlobalFaceStructure> {
     let component_count = topology.cut_index.component_runs.len();
     let mut edge_component = vec![false; component_count];
     for face in &topology.local_faces {
@@ -1984,16 +2004,15 @@ fn build_global_face_topology(
     }
     let Some(reference) = reference else {
         let span_global_faces = vec![None; topology.spans.len()];
-        return Ok(GlobalFaceTopology {
+        return Ok(GlobalFaceStructure {
             local_to_global: Vec::new(),
             span_global_faces,
             component_hosts: vec![None; component_count],
             cut_interval_faces: vec![GlobalFaceId(0); topology.cut_index.intervals.len()],
             source_node_faces: vec![Some(GlobalFaceId(0)); topology.nodes.len()],
-            source_point_faces: vec![Some(GlobalFaceId(0)); sources.points.len()],
-            seed_face: None,
-            seed_winding: Vec::new(),
             count: 1,
+            seed: None,
+            seed_ray_spans: Vec::new(),
             #[cfg(test)]
             host_status_comparisons: 0,
             #[cfg(test)]
@@ -2005,7 +2024,7 @@ fn build_global_face_topology(
     let mut queries = Vec::new();
     let mut isolated_node_host_by_node = vec![None; topology.nodes.len()];
     let seed = select_seed_face_germ(topology)?;
-    let mut seed_ray_winding = vec![0_i64; sources.rings.len()];
+    let mut seed_ray_spans = Vec::new();
     for (component, root) in roots.iter().enumerate() {
         let Some(root) = root else {
             continue;
@@ -2298,24 +2317,13 @@ fn build_global_face_topology(
                         .into());
                     }
                     let multiplier = if vertical_order.is_lt() { -1 } else { 1 };
-                    apply_span_ring_transitions(&mut seed_ray_winding, &span.owners, multiplier)?;
+                    seed_ray_spans.push(SeedRaySpan {
+                        span: *span_id,
+                        multiplier,
+                    });
                 }
                 Ok(())
             })?;
-        }
-    }
-
-    let mut seed_winding = north_pole_ring_windings(sources);
-    if let Some(seed) = &seed {
-        for event in topology.cut_index.events.iter().rev() {
-            if event.y.try_cmp(&seed.germ.point.y)?.is_gt() {
-                apply_cut_event_winding(topology, event.node, &mut seed_winding)?;
-            }
-        }
-        for (value, delta) in seed_winding.iter_mut().zip(seed_ray_winding) {
-            *value = value
-                .checked_add(delta)
-                .ok_or(ResourceError::SizeOverflow)?;
         }
     }
 
@@ -2381,15 +2389,6 @@ fn build_global_face_topology(
         local_to_global.push(global);
     }
     let count = global_face_count;
-    let seed_face = seed.as_ref().map_or_else(
-        || {
-            seed_winding
-                .iter()
-                .any(|&winding| winding != 0)
-                .then_some(GlobalFaceId(0))
-        },
-        |seed| Some(local_to_global[seed.local_face.0 as usize]),
-    );
     let span_global_faces = topology
         .span_local_faces
         .iter()
@@ -2437,6 +2436,81 @@ fn build_global_face_topology(
         };
         source_node_faces.push(Some(local));
     }
+    validate_global_euler(topology, edge_component_count, count)?;
+    Ok(GlobalFaceStructure {
+        local_to_global,
+        span_global_faces,
+        component_hosts,
+        cut_interval_faces,
+        source_node_faces,
+        count: count.max(1),
+        seed,
+        seed_ray_spans,
+        #[cfg(test)]
+        host_status_comparisons,
+        #[cfg(test)]
+        host_status_max_height,
+    })
+}
+
+#[expect(
+    clippy::indexing_slicing,
+    clippy::arithmetic_side_effects,
+    reason = "Q IDs and ring transitions index the dense topology and source inventory built together"
+)]
+fn build_global_face_topology(
+    frame: GeographicFrame,
+    sources: &ExactGeographicChartInventory,
+    topology: &QuotientFaces,
+) -> Result<GlobalFaceTopology> {
+    let structure = global_face_structure(frame, topology)?;
+    if structure.local_to_global.is_empty() {
+        return Ok(GlobalFaceTopology {
+            local_to_global: structure.local_to_global,
+            span_global_faces: structure.span_global_faces,
+            component_hosts: structure.component_hosts,
+            cut_interval_faces: structure.cut_interval_faces,
+            source_node_faces: structure.source_node_faces,
+            source_point_faces: vec![Some(GlobalFaceId(0)); sources.points.len()],
+            seed_face: None,
+            seed_winding: Vec::new(),
+            count: structure.count,
+            #[cfg(test)]
+            host_status_comparisons: structure.host_status_comparisons,
+            #[cfg(test)]
+            host_status_max_height: structure.host_status_max_height,
+        });
+    }
+
+    let mut seed_winding = north_pole_ring_windings(sources);
+    if let Some(seed) = &structure.seed {
+        for event in topology.cut_index.events.iter().rev() {
+            if event.y.try_cmp(&seed.germ.point.y)?.is_gt() {
+                apply_cut_event_winding(topology, event.node, &mut seed_winding)?;
+            }
+        }
+        let mut seed_ray_winding = vec![0_i64; sources.rings.len()];
+        for crossing in &structure.seed_ray_spans {
+            let span = topology.spans.get(crossing.span).ok_or_else(|| {
+                GeometryErrorKind::Invalid("Q seed sweep has an unknown span".into())
+            })?;
+            apply_span_ring_transitions(&mut seed_ray_winding, &span.owners, crossing.multiplier)?;
+        }
+        for (value, delta) in seed_winding.iter_mut().zip(seed_ray_winding) {
+            *value = value
+                .checked_add(delta)
+                .ok_or(ResourceError::SizeOverflow)?;
+        }
+    }
+    let seed_face = structure.seed.as_ref().map_or_else(
+        || {
+            seed_winding
+                .iter()
+                .any(|&winding| winding != 0)
+                .then_some(GlobalFaceId(0))
+        },
+        |seed| Some(structure.local_to_global[seed.local_face.0 as usize]),
+    );
     if topology.source_point_ports.len() != sources.points.len() {
         return Err(GeometryErrorKind::Invalid(
             "Q source-point ports do not match the source inventory".into(),
@@ -2457,7 +2531,8 @@ fn build_global_face_topology(
             continue;
         }
         source_point_faces.push(Some(
-            *source_node_faces
+            *structure
+                .source_node_faces
                 .get(node_index)
                 .ok_or_else(|| {
                     GeometryErrorKind::Invalid("Q source point has no node host entry".into())
@@ -2468,21 +2543,20 @@ fn build_global_face_topology(
                 })?,
         ));
     }
-    validate_global_euler(topology, edge_component_count, count)?;
     Ok(GlobalFaceTopology {
-        local_to_global,
-        span_global_faces,
-        component_hosts,
-        cut_interval_faces,
-        source_node_faces,
+        local_to_global: structure.local_to_global,
+        span_global_faces: structure.span_global_faces,
+        component_hosts: structure.component_hosts,
+        cut_interval_faces: structure.cut_interval_faces,
+        source_node_faces: structure.source_node_faces,
         source_point_faces,
         seed_face,
         seed_winding,
-        count: count.max(1),
+        count: structure.count,
         #[cfg(test)]
-        host_status_comparisons,
+        host_status_comparisons: structure.host_status_comparisons,
         #[cfg(test)]
-        host_status_max_height,
+        host_status_max_height: structure.host_status_max_height,
     })
 }
 
@@ -2515,7 +2589,7 @@ fn validate_global_euler(
     }
     Ok(())
 }
-struct QuotientFaces {
+pub(super) struct QuotientFaces {
     cut: ExactRational,
     cut_east: ExactRational,
     ports: Vec<QPort>,
