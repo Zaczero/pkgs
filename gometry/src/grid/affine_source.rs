@@ -308,6 +308,9 @@ struct LiftStep {
 /// Determine an exact continuous-lift update.  The floating estimate only
 /// proposes a nearby integer; every eventual branch is confirmed through the
 /// expansion sign, including the written +/-180 and +/-360 directions.
+///
+/// The grid cap lift retains written full-turn edges, including seam aliases;
+/// exact topology uses the quotient edge rule instead.
 fn lifted_step(start: f64, end: f64) -> ExactResult<LiftStep> {
     let end_expansion = ExactExpansion::from_f64(end)?;
     let start_expansion = ExactExpansion::from_f64(start)?;

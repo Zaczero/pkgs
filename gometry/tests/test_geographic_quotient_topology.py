@@ -231,6 +231,14 @@ def test_ordinary_geographic_polygons_relate_like_their_planar_twins() -> None:
     assert gm.relate(hexagon, hexagon) == '2FFF1FFF2'
     boundary_vertex = gm.Point(math.cos(math.pi / 3), math.sin(math.pi / 3), crs=4326)
     assert gm.relate(hexagon, boundary_vertex) == 'FF20F1FF2'
+    assert gm.intersects(hexagon, gm.GeometryArray([whole, apart])).tolist() == [
+        True,
+        False,
+    ]
+    assert gm.intersects(gm.GeometryArray([whole, apart]), hexagon).tolist() == [
+        True,
+        False,
+    ]
 
     index = gm.SpatialIndex([hexagon])
     assert ids(index.query(partial, predicate='intersects')) == [0]
@@ -395,10 +403,13 @@ def test_geographic_overlay_keeps_seam_and_polar_area_membership() -> None:
         crs=4326,
     )
     polar_triangle = gm.Polygon([(120, 90), (110, 85), (130, 85), (120, 90)], crs=4326)
-    full_band = gm.Polygon(
-        [(-180, -10), (180, -10), (180, 10), (-180, 10), (-180, -10)], crs=4326
-    )
+    full_band = gm.box(-180, -10, 180, 10, crs=4326)
     band_window = gm.box(20, -5, 40, 5, crs=4326)
+
+    for longitude in (-180, 180):
+        seam_point = gm.Point(longitude, 0, crs=4326)
+        assert gm.covers(full_band, seam_point)
+        assert gm.intersects(full_band, seam_point)
 
     seam_intersection = gm.intersection_all([seam_left, seam_right])
     assert gm.covers(seam_intersection, gm.Point(180, 15, crs=4326))
@@ -408,9 +419,7 @@ def test_geographic_overlay_keeps_seam_and_polar_area_membership() -> None:
 
 
 def test_south_full_turn_ring_emits_its_polar_shell() -> None:
-    cap = gm.Polygon(
-        [(0, -80), (90, -80), (180, -80), (-90, -80), (0, -80)], crs=4326
-    )
+    cap = gm.Polygon([(0, -80), (90, -80), (180, -80), (-90, -80), (0, -80)], crs=4326)
 
     result = gm.union_all([cap])
 
@@ -421,9 +430,7 @@ def test_south_full_turn_ring_emits_its_polar_shell() -> None:
 
 
 def test_intersection_emits_a_new_shell_at_the_north_pole() -> None:
-    cap = gm.Polygon(
-        [(0, 80), (90, 80), (180, 80), (-90, 80), (0, 80)], crs=4326
-    )
+    cap = gm.Polygon([(0, 80), (90, 80), (180, 80), (-90, 80), (0, 80)], crs=4326)
     wedge = gm.Polygon([(120, 90), (110, 75), (130, 75), (120, 90)], crs=4326)
 
     result = gm.intersection(cap, wedge)
@@ -456,9 +463,7 @@ def test_difference_emits_a_new_shell_across_the_seam() -> None:
 
 
 def test_union_merges_seam_adjacent_source_rings_into_one_shell() -> None:
-    east = gm.Polygon(
-        [(170, 0), (180, 0), (180, 10), (170, 10), (170, 0)], crs=4326
-    )
+    east = gm.Polygon([(170, 0), (180, 0), (180, 10), (170, 10), (170, 0)], crs=4326)
     west = gm.Polygon(
         [(-180, 0), (-170, 0), (-170, 10), (-180, 10), (-180, 0)], crs=4326
     )
@@ -503,3 +508,35 @@ def test_epsg_4807_pole_index_candidate_reaches_exact_refinement() -> None:
     index = gm.SpatialIndex([north])
     assert ids(index.candidates(alternate_spelling)) == [0]
     assert ids(index.query(alternate_spelling, predicate='intersects')) == [0]
+
+
+def test_full_turn_self_relation_keeps_the_closed_area_boundary() -> None:
+    polygon = gm.Polygon(
+        [(-180, 80), (-90, 80), (0, 80), (90, 80), (180, 80), (-180, 80)],
+        crs=4326,
+    )
+
+    assert gm.equals(polygon, polygon)
+    assert gm.relate(polygon, polygon) == '2FFF1FFF2'
+    result = gm.intersection(polygon, polygon)
+    assert result.geometry_type == 'Polygon'
+    assert gm.equals(result, polygon)
+
+
+def test_seam_only_ring_has_line_support_not_global_area() -> None:
+    polygon = gm.Polygon(
+        [(-180, -85), (180, -85), (180, 85), (-180, 85), (-180, -85)],
+        crs=4326,
+    )
+    seam_line = gm.LineString([(-180, -85), (-180, 85)], crs=4326)
+    center = gm.Point(0, 0, crs=4326)
+    near_seam = gm.Point(179, 0, crs=4326)
+
+    assert polygon.area == 0.0
+    assert not gm.contains(polygon, center)
+    assert not gm.contains(polygon, near_seam)
+    assert not gm.covers(polygon, center)
+    assert not gm.covers(polygon, near_seam)
+    assert gm.covers(polygon, seam_line)
+    assert gm.intersects(polygon, seam_line)
+    assert gm.covers(polygon, gm.Point(180, 0, crs=4326))

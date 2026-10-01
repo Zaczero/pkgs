@@ -1526,10 +1526,28 @@ mod periodic_tests {
             assert_eq!(south_cap[0].upper(), [half, -pole / 2.0]);
 
             let band = polygon(
-                &[-half, half, half, -half, -half],
+                &[
+                    -half,
+                    -half / 2.0,
+                    0.0,
+                    half / 2.0,
+                    half,
+                    half,
+                    half / 2.0,
+                    0.0,
+                    -half / 2.0,
+                    -half,
+                    -half,
+                ],
                 &[
                     -pole / 2.0,
                     -pole / 2.0,
+                    -pole / 2.0,
+                    -pole / 2.0,
+                    -pole / 2.0,
+                    pole / 2.0,
+                    pole / 2.0,
+                    pole / 2.0,
                     pole / 2.0,
                     pole / 2.0,
                     -pole / 2.0,

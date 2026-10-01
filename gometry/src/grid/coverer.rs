@@ -18,7 +18,8 @@ use rstar::AABB;
 
 use crate::geometry::{
     Bounds, CoordSeq, ExactGeographicTopology, Loc, Point, PointBatchTester, Polygon, PreparedPlan,
-    RectContact, Segment, Shape, Strictness, XY, bounds_to_shape, line_segments, segment_vs_rect,
+    RectContact, Segment, Shape, Strictness, XY, geographic_bounds_to_shape, line_segments,
+    segment_vs_rect,
 };
 use crate::grid::affine_source::{
     GeographicCoverageSource, PackedBvh, PackedBvhEntry, RectClass as AffineRectClass,
@@ -212,8 +213,8 @@ impl<'a> GeographicCandidateClassifier<'a> {
         self.classify_candidate(&candidate)
     }
 
-    /// Refine a provisional rectangle against the source-owned exact Q. A
-    /// pre-certified interior remains on the fast path; other candidates reuse
+    /// Refine a provisional rectangle against exact source topology. A
+    /// pre-certified interior remains on the fast path; quotient cases reuse
     /// the frame-cached source topology.
     fn refine_candidate(
         &self,
@@ -232,17 +233,17 @@ impl<'a> GeographicCandidateClassifier<'a> {
                     RectClass::Outside
                 },
                 None => {
-                    let candidate = bounds_to_shape(bounds)?;
+                    let candidate = geographic_bounds_to_shape(bounds, self.prepared.frame())?;
                     let candidate_plan = PreparedPlan::transient(&candidate);
                     let candidate_cache = crate::geometry::FrameDependentCaches::default();
-                    let operands = PreparedTopologyPair::Geographic {
-                        left: self.prepared,
-                        right: crate::geometry::GeographicPrepared::try_new(
+                    let operands = PreparedTopologyPair::from_geographic(
+                        self.prepared,
+                        crate::geometry::GeographicPrepared::try_new(
                             &candidate_plan,
                             &candidate_cache,
                             self.prepared.frame(),
                         )?,
-                    };
+                    );
                     if topology_scalar_pair(&Predicate::Covers.spec(), &operands)? {
                         RectClass::Interior
                     } else if topology_scalar_pair(&Predicate::Intersects.spec(), &operands)? {
@@ -966,6 +967,47 @@ mod tests {
         );
         assert_eq!(cache.geographic_exact_topology_accesses(), 1);
         assert_eq!(cache.geographic_exact_topology_builds(), 1);
+    }
+
+    #[test]
+    fn point_on_tile_root_reaches_the_overlap_leaf() {
+        let source = Shape::Point(Point::new_raw_xy(1.0, 1.0));
+        let plan = PreparedPlan::new(source.clone());
+        let cache = crate::geometry::FrameDependentCaches::default();
+        let frame = crate::geographic::GeographicFrame::crs84();
+        let root = crate::grid::tile::root();
+        let classifier = GeographicCandidateClassifier::new(&source, &source, &plan, &cache, frame)
+            .expect("fixture admits");
+        let bounds = root.bounds();
+        let candidate = classifier.admit_bounds(bounds);
+
+        assert_eq!(
+            classifier
+                .classify_candidate(&candidate)
+                .expect("candidate admits"),
+            RectClass::Boundary
+        );
+        assert_eq!(
+            classifier
+                .refine_candidate(&candidate)
+                .expect("candidate refines"),
+            RectClass::Boundary
+        );
+        assert_eq!(
+            cover(
+                &source,
+                &source,
+                &plan,
+                &cache,
+                frame,
+                RectCoverRule::Overlap,
+                vec![root],
+                0,
+                None,
+            )
+            .expect("root cover"),
+            [root]
+        );
     }
 
     #[test]
