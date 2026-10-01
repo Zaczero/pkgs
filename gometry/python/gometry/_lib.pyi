@@ -3035,11 +3035,13 @@ class Geometry:
         """
 
     def subdivide(self, *, max_vertices: _IntScalar = 256) -> GeometryArray[Geometry]:
-        """Split geometry into parts of bounded complexity. Recursively halves each
-        geometry's bounds across the longer axis and clips until every part has at
-        most ``max_vertices`` coordinates (the PostGIS ``ST_Subdivide`` shape).
-        Parts cover the input exactly. Source ordinates are carried where meaningful;
-        synthesized clip vertices use the operation's natural XY result.
+        """Split geometry into parts of bounded complexity. Recursively clips
+        across the longer axis until every part has at most ``max_vertices``
+        coordinates (the PostGIS ``ST_Subdivide`` shape). Linework with no
+        representable rectangular cut is divided between source vertices. Parts cover
+        the input up to binary64 rounding at constructed cut vertices. Source
+        ordinates are carried where meaningful; synthesized clip vertices use the
+        operation's natural XY result.
 
         Parameters
         ----------
@@ -3056,6 +3058,7 @@ class Geometry:
         ------
         GeometryError
             If ``max_vertices`` is below ``8``.
+            If exact partitioning cannot produce parts within the requested bound.
 
         Examples
         --------
@@ -9090,11 +9093,13 @@ class GeometryArray(Sequence[_GeometryT_co]):
         """
 
     def subdivide(self, *, max_vertices: int = 256) -> Groups[GeometryArray[Geometry]]:
-        """Split geometry into parts of bounded complexity. Recursively halves each
-        geometry's bounds across the longer axis and clips until every part has at
-        most ``max_vertices`` coordinates (the PostGIS ``ST_Subdivide`` shape).
-        Parts cover the input exactly. Source ordinates are carried where meaningful;
-        synthesized clip vertices use the operation's natural XY result.
+        """Split geometry into parts of bounded complexity. Recursively clips
+        across the longer axis until every part has at most ``max_vertices``
+        coordinates (the PostGIS ``ST_Subdivide`` shape). Linework with no
+        representable rectangular cut is divided between source vertices. Parts cover
+        the input up to binary64 rounding at constructed cut vertices. Source
+        ordinates are carried where meaningful; synthesized clip vertices use the
+        operation's natural XY result.
 
         Parameters
         ----------
@@ -9112,6 +9117,7 @@ class GeometryArray(Sequence[_GeometryT_co]):
         ------
         GeometryError
             If ``max_vertices`` is below ``8``.
+            If exact partitioning cannot produce parts within the requested bound.
 
         Examples
         --------

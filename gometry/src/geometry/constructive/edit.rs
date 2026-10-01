@@ -2016,10 +2016,12 @@ impl Shape {
     /// Split the geometry into parts of at most `max_vertices` coordinates
     /// by selecting representable source-coordinate cuts across the longer
     /// axis and emitting both closed children from one exact partition (the
-    /// `PostGIS` ``ST_Subdivide`` shape). Parts cover the input exactly;
-    /// simple inputs return as a single part. The only over-budget emissions
-    /// are spatially unsplittable: float-degenerate coordinate clusters and
-    /// parts whose exact cut cannot reduce their coordinate complexity.
+    /// `PostGIS` ``ST_Subdivide`` shape). Parts cover the input up to
+    /// binary64 rounding at constructed cut vertices; simple inputs return as
+    /// a single part. Linework with no representable rectangular cut is
+    /// divided between source vertices. If exact partitioning cannot produce
+    /// bounded parts, subdivision returns an unrepresentable-output error
+    /// instead of emitting an oversized part.
     pub fn subdivide(&self, max_vertices: usize, drop: bool) -> Result<Vec<Self>> {
         let mut parts = Vec::new();
         let mut budget = ExpansionBudget::new("subdivide", "max_vertices");

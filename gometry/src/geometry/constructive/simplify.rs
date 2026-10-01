@@ -13,13 +13,13 @@ use crate::geographic::PeriodicAxis;
 use crate::geometry::constructive::{WalkJoinRule, WalkPlan, materialize_walk, vw_keep};
 use crate::geometry::overlay::{ExactSourceInventory, rect_polygon};
 use crate::geometry::{
-    Bounds, CoordSeq, Coordinates as _, ExpansionBudget, GeometryKind, LineSeq, MultiLineString,
-    MultiMember, MultiPolygon, Orientation, Point, PointKey, Polygon, REDUCE_LANES, ReduceSimd,
-    Ring, Segment, Shape, ShapeCountQuery, SharedShapeOwners, TopologyGuard, XY,
-    admit_shape_vector_capacity, dedup_consecutive_points, line_segments, open_point_cycle_winding,
-    orientation, point_on_segment, point_segment_distance, point_segment_distance_squared,
-    same_point, simplified_polygon_delta_is_simple, simplify_chain_guarded, triangle_area,
-    vw_area_tolerance,
+    Bounds, CoordSeq, CoordWindow, Coordinates as _, ExpansionBudget, GeometryErrorKind,
+    GeometryKind, LineSeq, MultiLineString, MultiMember, MultiPolygon, Orientation, Point,
+    PointKey, Polygon, REDUCE_LANES, ReduceSimd, Ring, Segment, Shape, ShapeCountQuery,
+    SharedShapeOwners, TopologyGuard, XY, admit_shape_vector_capacity, dedup_consecutive_points,
+    line_segments, open_point_cycle_winding, orientation, point_on_segment, point_segment_distance,
+    point_segment_distance_squared, same_point, simplified_polygon_delta_is_simple,
+    simplify_chain_guarded, triangle_area, vw_area_tolerance,
 };
 
 #[cfg(test)]
@@ -678,13 +678,7 @@ fn source_median_cut(
     bounds: Bounds,
     owner_coordinate_count: usize,
 ) -> Result<Option<f64>> {
-    let capacity = admit_shape_vector_capacity::<f64>(owner_coordinate_count)?;
-    let mut ordinates = Vec::with_capacity(capacity);
-    shape.for_each_first_point_run(|point| {
-        ordinates.push(if split_x { point.x } else { point.y });
-    });
-    ordinates.sort_unstable_by(f64::total_cmp);
-    ordinates.dedup_by(|left, right| *left == *right);
+    let ordinates = source_ordinates(shape, split_x, owner_coordinate_count)?;
     let middle = ordinates.len() / 2;
     let (low, high) = if split_x {
         (bounds.minx(), bounds.maxx())
@@ -708,6 +702,108 @@ fn source_median_cut(
         .map(|(_, _, cut)| cut))
 }
 
+fn source_vertex_cut(
+    shape: &Shape,
+    split_x: bool,
+    bounds: Bounds,
+    owner_coordinate_count: usize,
+) -> Result<Option<f64>> {
+    let ordinates = source_ordinates(shape, split_x, owner_coordinate_count)?;
+    let middle = ordinates.len() / 2;
+    let (low, high) = if split_x {
+        (bounds.minx(), bounds.maxx())
+    } else {
+        (bounds.miny(), bounds.maxy())
+    };
+    Ok(ordinates
+        .iter()
+        .enumerate()
+        .filter_map(|(index, &ordinate)| {
+            (low < ordinate && ordinate < high).then_some((index.abs_diff(middle), index, ordinate))
+        })
+        .min_by_key(|&(distance, index, _)| (distance, index))
+        .map(|(_, _, cut)| cut))
+}
+
+fn bounds_midpoint_cut(bounds: Bounds, split_x: bool) -> Option<f64> {
+    let (low, high) = if split_x {
+        (bounds.minx(), bounds.maxx())
+    } else {
+        (bounds.miny(), bounds.maxy())
+    };
+    let cut = f64::midpoint(low, high);
+    (low < cut && cut < high).then_some(cut)
+}
+
+fn source_ordinates(
+    shape: &Shape,
+    split_x: bool,
+    owner_coordinate_count: usize,
+) -> Result<Vec<f64>> {
+    let capacity = admit_shape_vector_capacity::<f64>(owner_coordinate_count)?;
+    let mut ordinates = Vec::with_capacity(capacity);
+    shape.for_each_first_point_run(|point| {
+        ordinates.push(if split_x { point.x } else { point.y });
+    });
+    ordinates.sort_unstable_by(f64::total_cmp);
+    ordinates.dedup_by(|left, right| *left == *right);
+    Ok(ordinates)
+}
+
+fn push_subdivision_members(
+    shape: &Shape,
+    max_vertices: usize,
+    work: &mut Vec<SubdivisionWorkItem>,
+) -> bool {
+    if !matches!(
+        shape,
+        Shape::MultiPoint(_)
+            | Shape::MultiLineString(_)
+            | Shape::MultiPolygon(_)
+            | Shape::GeometryCollection(_)
+    ) {
+        return false;
+    }
+    if matches!(shape, Shape::MultiPolygon(_))
+        && shape.parts().any(|member| {
+            !ShapeCountQuery::default()
+                .coordinate_count(&member)
+                .is_some_and(|count| count <= max_vertices)
+        })
+    {
+        return false;
+    }
+    let mut members = shape.parts().rev();
+    let Some(first) = members.next() else {
+        return false;
+    };
+    work.push(SubdivisionWorkItem::new(first, false));
+    for member in &mut members {
+        work.push(SubdivisionWorkItem::new(member, false));
+    }
+    true
+}
+
+fn stage_line_vertices(shape: &Shape, max_vertices: usize, staged: &mut Vec<Shape>) -> bool {
+    let Shape::LineString(line) = shape else {
+        return false;
+    };
+    if line.len() <= max_vertices || max_vertices < 2 {
+        return false;
+    }
+    let mut start = 0;
+    while start < line.len().saturating_sub(1) {
+        let end = start.saturating_add(max_vertices).min(line.len());
+        let window = CoordWindow::from_range(start..end, line.len());
+        staged.push(Shape::LineString(LineSeq::row_view(
+            line.as_coords(),
+            window,
+        )));
+        start = end.saturating_sub(1);
+    }
+    true
+}
+
 fn owner_coordinate_count(shape: &Shape, logical_count: Option<usize>) -> usize {
     if let Some(count) = logical_count
         && SharedShapeOwners::for_shape(shape).is_none()
@@ -721,6 +817,26 @@ fn owner_coordinate_count(shape: &Shape, logical_count: Option<usize>) -> usize 
     count
 }
 
+struct SubdivisionWorkItem {
+    shape: Shape,
+    bounds: Option<Bounds>,
+    coordinate_count: Option<usize>,
+    vertex_cut: bool,
+}
+
+impl SubdivisionWorkItem {
+    fn new(shape: Shape, vertex_cut: bool) -> Self {
+        let bounds = shape.bounds();
+        let coordinate_count = ShapeCountQuery::default().coordinate_count(&shape);
+        Self {
+            shape,
+            bounds,
+            coordinate_count,
+            vertex_cut,
+        }
+    }
+}
+
 pub(crate) fn split(
     shape: Shape,
     max_vertices: usize,
@@ -728,23 +844,9 @@ pub(crate) fn split(
     out: &mut Vec<Shape>,
     budget: &mut ExpansionBudget,
 ) -> Result<()> {
-    struct WorkItem {
-        shape: Shape,
-        bounds: Option<Bounds>,
-        coordinate_count: Option<usize>,
-        terminal: bool,
-    }
-
     let mut work = Vec::with_capacity(1);
     let mut staged = Vec::new();
-    let shape_bounds = shape.bounds();
-    let coordinate_count = ShapeCountQuery::default().coordinate_count(&shape);
-    work.push(WorkItem {
-        shape,
-        bounds: shape_bounds,
-        coordinate_count,
-        terminal: false,
-    });
+    work.push(SubdivisionWorkItem::new(shape, false));
     while let Some(item) = work.pop() {
         #[cfg(test)]
         SUBDIVISION_WORK.with(|work| {
@@ -754,22 +856,41 @@ pub(crate) fn split(
         if item.shape.is_empty() {
             continue;
         }
-        if item.terminal {
-            staged.push(item.shape);
-            continue;
-        }
         let item_coordinate_count = item.coordinate_count;
         if item_coordinate_count.is_some_and(|count| count <= max_vertices) {
             staged.push(item.shape);
             continue;
         }
-        let Some(bounds) = item.bounds else {
-            staged.push(item.shape);
+        if matches!(&item.shape, Shape::MultiPolygon(_))
+            && push_subdivision_members(&item.shape, max_vertices, &mut work)
+        {
             continue;
+        }
+        let Some(bounds) = item.bounds else {
+            if push_subdivision_members(&item.shape, max_vertices, &mut work) {
+                continue;
+            }
+            if stage_line_vertices(&item.shape, max_vertices, &mut staged) {
+                continue;
+            }
+            return Err(GeometryErrorKind::unrepresentable_output("subdivide"));
         };
         let owner_coordinate_count = owner_coordinate_count(&item.shape, item_coordinate_count);
-        let x_cut = source_median_cut(&item.shape, true, bounds, owner_coordinate_count)?;
-        let y_cut = source_median_cut(&item.shape, false, bounds, owner_coordinate_count)?;
+        let source_cut = |split_x| {
+            if item.vertex_cut {
+                if let Some(cut) = bounds_midpoint_cut(bounds, split_x) {
+                    return Ok(Some(cut));
+                }
+                match source_vertex_cut(&item.shape, split_x, bounds, owner_coordinate_count)? {
+                    Some(cut) => Ok(Some(cut)),
+                    None => source_median_cut(&item.shape, split_x, bounds, owner_coordinate_count),
+                }
+            } else {
+                source_median_cut(&item.shape, split_x, bounds, owner_coordinate_count)
+            }
+        };
+        let x_cut = source_cut(true)?;
+        let y_cut = source_cut(false)?;
         let x_longer = (bounds.maxx() - bounds.minx()) >= (bounds.maxy() - bounds.miny());
         let candidate = if x_longer {
             x_cut
@@ -781,8 +902,20 @@ pub(crate) fn split(
                 .or_else(|| x_cut.map(|cut| (true, cut)))
         };
         let Some((split_x, cut)) = candidate else {
-            staged.push(item.shape);
-            continue;
+            if !item.vertex_cut {
+                work.push(SubdivisionWorkItem {
+                    vertex_cut: true,
+                    ..item
+                });
+                continue;
+            }
+            if push_subdivision_members(&item.shape, max_vertices, &mut work) {
+                continue;
+            }
+            if stage_line_vertices(&item.shape, max_vertices, &mut staged) {
+                continue;
+            }
+            return Err(GeometryErrorKind::unrepresentable_output("subdivide"));
         };
         let halves = axis_halves(bounds, split_x, cut);
         let left_rect = Shape::Polygon(rect_polygon(halves[0])?);
@@ -795,9 +928,21 @@ pub(crate) fn split(
                 .subdivision_parts(&partition, &item.shape, item.shape.axes(), drop, [1, 2])?;
         if children.iter().all(Shape::is_empty) {
             // A cut that cannot be represented by the exact arrangement must
-            // not silently lose the source support.
-            staged.push(item.shape);
-            continue;
+            // not silently lose the source support or violate the size bound.
+            if !item.vertex_cut {
+                work.push(SubdivisionWorkItem {
+                    vertex_cut: true,
+                    ..item
+                });
+                continue;
+            }
+            if stage_line_vertices(&item.shape, max_vertices, &mut staged) {
+                continue;
+            }
+            if push_subdivision_members(&item.shape, max_vertices, &mut work) {
+                continue;
+            }
+            return Err(GeometryErrorKind::unrepresentable_output("subdivide"));
         }
         let child_coordinate_counts = {
             let mut counts = ShapeCountQuery::default();
@@ -844,13 +989,11 @@ pub(crate) fn split(
             {
                 progressed |= progress;
             }
-            let terminal =
-                child_coordinate_count.is_some_and(|count| count <= max_vertices) || !progress;
-            work.push(WorkItem {
+            work.push(SubdivisionWorkItem {
                 shape: child,
                 bounds: child_bounds,
                 coordinate_count: child_coordinate_count,
-                terminal,
+                vertex_cut: !progress,
             });
         }
         #[cfg(test)]
@@ -2321,7 +2464,7 @@ mod subdivision_tests {
     }
 
     #[test]
-    fn adjacent_sub_ulp_cluster_is_documented_unsplittable() {
+    fn adjacent_sub_ulp_line_uses_coordinate_sequence_cuts() {
         let adjacent = f64::from_bits(1.0_f64.to_bits() + 1);
         let points = (0..9)
             .map(|index| Point::new_raw_xy(if index % 2 == 0 { 1.0 } else { adjacent }, 0.0))
@@ -2329,12 +2472,39 @@ mod subdivision_tests {
         let shape = line_shape(&points);
         reset_partition_calls();
         let parts = shape.subdivide(8, false).unwrap();
-        assert_eq!(parts.len(), 1);
+        assert_eq!(parts.len(), 2);
         let mut counts = ShapeCountQuery::default();
-        assert_eq!(
-            counts.coordinates(&parts[0]).unwrap(),
-            counts.coordinates(&shape).unwrap()
-        );
+        assert!(parts.iter().all(|part| {
+            counts
+                .coordinate_count(part)
+                .is_some_and(|count| count <= 8)
+        }));
+        assert_eq!(partition_calls(), 0);
+    }
+
+    #[test]
+    fn over_budget_clipped_multipart_children_are_revisited_by_member() {
+        let shape =
+            crate::io::parse_wkt("POLYGON((0 0,20 0,20 20,0 20,0 0),(0 0,5 2,2 5,0 0))").unwrap();
+        let parts = shape.subdivide(8, false).unwrap();
+        let mut counts = ShapeCountQuery::default();
+        assert!(parts.iter().all(|part| {
+            counts
+                .coordinate_count(part)
+                .is_some_and(|count| count <= 8)
+        }));
+    }
+
+    #[test]
+    fn over_budget_multipolygon_is_separated_before_spatial_partitioning() {
+        let shape = crate::io::parse_wkt(
+            "MULTIPOLYGON(((0 0,10 0,10 10,0 10,0 0)),((10 10,20 10,20 20,10 20,10 10)))",
+        )
+        .unwrap();
+        reset_partition_calls();
+        let parts = shape.subdivide(8, false).unwrap();
+        assert_eq!(parts.len(), 2);
+        assert!(parts.iter().all(|part| matches!(part, Shape::Polygon(_))));
         assert_eq!(partition_calls(), 0);
     }
 
