@@ -5231,10 +5231,8 @@ struct FaceWalkFrame {
 
 struct FaceOccupancyState {
     winding: Vec<i64>,
-    ring_inside: Vec<bool>,
     polygon_shells: Vec<usize>,
     polygon_holes: Vec<usize>,
-    polygon_occupied: Vec<bool>,
     row_polygon_counts: Vec<usize>,
     active_count: usize,
     interval_starts: Vec<Option<usize>>,
@@ -5254,11 +5252,10 @@ impl FaceOccupancyState {
             )
             .into());
         }
-        let ring_inside = winding.iter().map(|&value| value != 0).collect::<Vec<_>>();
         let mut polygon_shells = vec![0_usize; sources.polygons.len()];
         let mut polygon_holes = vec![0_usize; sources.polygons.len()];
-        for (index, ring) in sources.rings.iter().enumerate() {
-            if !ring_inside[index] {
+        for (ring, &ring_winding) in sources.rings.iter().zip(winding) {
+            if ring_winding == 0 {
                 continue;
             }
             let polygon = if ring.hole {
@@ -5271,14 +5268,14 @@ impl FaceOccupancyState {
             })?;
             *polygon = polygon.checked_add(1).ok_or(ResourceError::SizeOverflow)?;
         }
-        let polygon_occupied = polygon_shells
-            .iter()
-            .zip(&polygon_holes)
-            .map(|(&shells, &holes)| shells != 0 && holes == 0)
-            .collect::<Vec<_>>();
         let mut row_polygon_counts = vec![0_usize; sources.row_count];
-        for (index, polygon) in sources.polygons.iter().enumerate() {
-            if polygon_occupied[index] {
+        for ((polygon, &shells), &holes) in sources
+            .polygons
+            .iter()
+            .zip(&polygon_shells)
+            .zip(&polygon_holes)
+        {
+            if shells != 0 && holes == 0 {
                 let count = row_polygon_counts
                     .get_mut(polygon.row.0 as usize)
                     .ok_or_else(|| {
@@ -5297,10 +5294,8 @@ impl FaceOccupancyState {
             .count();
         Ok(Self {
             winding: winding.to_vec(),
-            ring_inside,
             polygon_shells,
             polygon_holes,
-            polygon_occupied,
             row_polygon_counts,
             active_count,
             interval_starts,
@@ -5348,15 +5343,19 @@ impl FaceOccupancyState {
         if was_inside == is_inside {
             return Ok(());
         }
-        let ring_inside = self
-            .ring_inside
-            .get_mut(index)
-            .ok_or_else(|| GeometryErrorKind::Invalid("Q transition has no ring state".into()))?;
-        *ring_inside = is_inside;
         let ring = sources.rings.get(index).ok_or_else(|| {
             GeometryErrorKind::Invalid("Q transition has an unknown source ring".into())
         })?;
         let polygon_index = ring.polygon.0 as usize;
+        let (Some(&shells), Some(&holes)) = (
+            self.polygon_shells.get(polygon_index),
+            self.polygon_holes.get(polygon_index),
+        ) else {
+            return Err(
+                GeometryErrorKind::Invalid("Q transition has an unknown polygon".into()).into(),
+            );
+        };
+        let before_polygon = shells != 0 && holes == 0;
         let count = if ring.hole {
             self.polygon_holes.get_mut(polygon_index)
         } else {
@@ -5372,11 +5371,9 @@ impl FaceOccupancyState {
         };
         let after_polygon =
             self.polygon_shells[polygon_index] != 0 && self.polygon_holes[polygon_index] == 0;
-        let before_polygon = self.polygon_occupied[polygon_index];
         if before_polygon == after_polygon {
             return Ok(());
         }
-        self.polygon_occupied[polygon_index] = after_polygon;
         let row = sources
             .polygons
             .get(polygon_index)
