@@ -26,6 +26,11 @@ struct LineStep {
     owner: usize,
 }
 
+#[derive(Clone, Copy)]
+struct SelectedLineSpan {
+    owner: usize,
+}
+
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 enum SpanEndpoint {
     Start,
@@ -344,20 +349,20 @@ fn select_line_spans(
     selected_faces: &[bool],
     row_count: usize,
     operation: OverlayOp,
-) -> Result<Vec<bool>> {
+) -> Result<Vec<Option<SelectedLineSpan>>> {
     let q = &topology.q;
     let mut selected = Vec::with_capacity(q.spans.len());
     let mut area = AreaSupport::default();
     let mut curve_rows = Vec::new();
     for (span_index, faces) in q.span_global_faces.iter().enumerate() {
         if q.span_is_collapsed_pole(span_index)? {
-            selected.push(false);
+            selected.push(None);
             continue;
         }
         area.clear();
         if let Some([left, right]) = faces {
             if selected_faces[left.0 as usize] || selected_faces[right.0 as usize] {
-                selected.push(false);
+                selected.push(None);
                 continue;
             }
             area.faces.extend([*left, *right]);
@@ -377,7 +382,13 @@ fn select_line_spans(
             },
             OverlayOp::SymmetricDifference => !curve_rows.len().is_multiple_of(2),
         };
-        selected.push(curve_selected);
+        selected.push(if curve_selected {
+            Some(SelectedLineSpan {
+                owner: line_owner_index(topology, span_index)?,
+            })
+        } else {
+            None
+        });
     }
     Ok(selected)
 }
@@ -390,14 +401,14 @@ fn select_line_spans(
 fn select_points(
     topology: &ExactGeographicTopology,
     selected_faces: &[bool],
-    selected_spans: &[bool],
+    selected_spans: &[Option<SelectedLineSpan>],
     row_count: usize,
     operation: OverlayOp,
 ) -> Result<Vec<QNodeId>> {
     let q = &topology.q;
     let mut line_nodes = vec![false; q.nodes.len()];
     for (span, &selected) in q.spans.iter().zip(selected_spans) {
-        if selected {
+        if selected.is_some() {
             for node in span.nodes {
                 *line_nodes.get_mut(node.0 as usize).ok_or_else(|| {
                     GeometryErrorKind::Invalid("Q span references an unknown node".into())
@@ -732,6 +743,7 @@ fn line_owner_index(topology: &ExactGeographicTopology, span_index: usize) -> Re
         .ok_or_else(|| GeometryErrorKind::Invalid("Q line span is unknown".into()))?;
     let line_rows = q.line_rows_for_span(span_index)?;
     let collapsed_rows = q.collapsed_rows_for_span(span_index)?;
+    let mut ring_owner = None;
     for (owner_index, owner) in span.owners.iter().enumerate() {
         let edge = source_edge_at(topology, owner.source_edge)?;
         let supported = match edge.kind {
@@ -741,11 +753,17 @@ fn line_owner_index(topology: &ExactGeographicTopology, span_index: usize) -> Re
                 kind: crate::geometry::RingKind::Collapsed,
                 ..
             } => collapsed_rows.binary_search(&edge.row).is_ok(),
-            SourceEdgeKind::Ring { .. } => false,
+            SourceEdgeKind::Ring { .. } => {
+                ring_owner.get_or_insert(owner_index);
+                false
+            },
         };
         if supported {
             return Ok(owner_index);
         }
+    }
+    if let Some(owner) = ring_owner {
+        return Ok(owner);
     }
     Err(
         GeometryErrorKind::Invalid("selected Q curve span has no source interval owner".into())
@@ -770,19 +788,22 @@ fn area_owner_index(topology: &ExactGeographicTopology, span_index: usize) -> Re
     Err(GeometryErrorKind::Invalid("selected Q area boundary has no ring owner".into()).into())
 }
 
-fn line_steps(topology: &ExactGeographicTopology, selected: &[bool]) -> Result<Vec<Vec<LineStep>>> {
+fn line_steps(
+    topology: &ExactGeographicTopology,
+    selected: &[Option<SelectedLineSpan>],
+) -> Result<Vec<Vec<LineStep>>> {
     let q = &topology.q;
     let node_count = q.nodes.len();
     let mut degree = vec![0_usize; node_count];
     let mut incidences = Vec::new();
-    let edge_count = selected.iter().filter(|&&keep| keep).count();
+    let edge_count = selected.iter().flatten().count();
     incidences.reserve(
         edge_count
             .checked_mul(2)
             .ok_or(ResourceError::SizeOverflow)?,
     );
-    for (span_index, (span, &keep)) in q.spans.iter().zip(selected).enumerate() {
-        if !keep {
+    for (span_index, (span, selection)) in q.spans.iter().zip(selected).enumerate() {
+        if selection.is_none() {
             continue;
         }
         let [start_node, end_node] = span.nodes;
@@ -838,15 +859,16 @@ fn line_steps(topology: &ExactGeographicTopology, selected: &[bool]) -> Result<V
             GeometryErrorKind::Invalid("Q line node has an invalid incidence range".into())
         })?;
         for &(_, span, endpoint) in incident {
-            let keep = selected.get(span).copied().ok_or_else(|| {
+            let selection = selected.get(span).copied().ok_or_else(|| {
                 GeometryErrorKind::Invalid("Q line incidence references an unknown span".into())
             })?;
             let already_visited = visited.get(span).copied().ok_or_else(|| {
                 GeometryErrorKind::Invalid("Q line incidence has no visited state".into())
             })?;
-            if keep && !already_visited {
+            if selection.is_some() && !already_visited {
                 paths.push(walk_line_steps(
                     topology,
+                    selected,
                     &degree,
                     &offsets,
                     &incidences,
@@ -857,14 +879,15 @@ fn line_steps(topology: &ExactGeographicTopology, selected: &[bool]) -> Result<V
             }
         }
     }
-    for (span, &keep) in selected.iter().enumerate() {
+    for (span, selection) in selected.iter().enumerate() {
         let already_visited = visited
             .get(span)
             .copied()
             .ok_or_else(|| GeometryErrorKind::Invalid("Q line span has no visited state".into()))?;
-        if keep && !already_visited {
+        if selection.is_some() && !already_visited {
             paths.push(walk_line_steps(
                 topology,
+                selected,
                 &degree,
                 &offsets,
                 &incidences,
@@ -879,6 +902,7 @@ fn line_steps(topology: &ExactGeographicTopology, selected: &[bool]) -> Result<V
 
 fn walk_line_steps(
     topology: &ExactGeographicTopology,
+    selected: &[Option<SelectedLineSpan>],
     degree: &[usize],
     offsets: &[usize],
     incidences: &[(usize, usize, SpanEndpoint)],
@@ -903,10 +927,20 @@ fn walk_line_steps(
             .into());
         }
         *already_visited = true;
+        let owner = selected
+            .get(span_index)
+            .copied()
+            .flatten()
+            .map(|selection| selection.owner)
+            .ok_or_else(|| {
+                GeometryErrorKind::Invalid(
+                    "selected Q curve span has no source interval owner".into(),
+                )
+            })?;
         steps.push(LineStep {
             span: span_index,
             from_endpoint,
-            owner: line_owner_index(topology, span_index)?,
+            owner,
         });
         let span = q
             .spans
@@ -1670,7 +1704,7 @@ fn emit_lines(
     topology: &ExactGeographicTopology,
     piece_ranges: &[Range<usize>],
     ordinates: &[NodeOrdinates],
-    selected: &[bool],
+    selected: &[Option<SelectedLineSpan>],
     live_node_keys: &mut Vec<(EmittedNodeKey, QNodeId)>,
 ) -> Result<Vec<CoordSeq>> {
     let q = &topology.q;

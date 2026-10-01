@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
 import gometry as gm
 import pytest
 
@@ -119,3 +122,97 @@ def test_dissolve_keeps_sliver_faces_without_representable_interior() -> None:
         gm.union_all([argentina, uruguay]).area + gm.union_all([seam]).area,
         rel=1e-12,
     )
+
+
+def _assert_geographic_overlay_area_identity(
+    left: gm.Geometry, right: gm.Geometry
+) -> gm.Geometry:
+    intersection = gm.intersection(left, right)
+    union = gm.union(left, right)
+    symmetric_difference = gm.symmetric_difference(left, right)
+
+    assert intersection.is_valid
+    assert union.is_valid
+    assert symmetric_difference.is_valid
+    assert intersection.length > 0.0
+    # Areas are geodesic square metres; allow 1e-12 relative and 1e-3 absolute
+    # floating-point roundoff in the overlay identity.
+    assert intersection.area + symmetric_difference.area == pytest.approx(
+        union.area, rel=1e-12, abs=1e-3
+    )
+    return intersection
+
+
+def test_minimized_country_shared_border_intersection_keeps_its_source_interval() -> (
+    None
+):
+    russia = gm.Polygon(
+        [
+            (-179.5551997, 70.0996777),
+            (179.8176414, 69.7948444),
+            (-179.8683419985996, 69.94636166206753),
+            (-179.5551997, 70.0996777),
+        ],
+        crs=4326,
+    )
+    norway = gm.Polygon(
+        [
+            (179.8176414, 69.7948444),
+            (-179.5551997, 70.0996777),
+            (-179.86921630140046, 69.94816043793249),
+            (179.8176414, 69.7948444),
+        ],
+        crs=4326,
+    )
+
+    intersection = _assert_geographic_overlay_area_identity(russia, norway)
+
+    assert intersection.area == pytest.approx(0.0, abs=1e-3)
+    assert gm.covers(intersection, gm.Point(179.8176414, 69.7948444, crs=4326))
+
+
+def test_synthetic_seam_shared_edge_intersection_is_valid() -> None:
+    left = gm.Polygon(
+        [(179.0, 0.0), (-179.0, 0.0), (-179.8, -1.0), (179.0, 0.0)],
+        crs=4326,
+    )
+    right = gm.Polygon(
+        [(-179.0, 0.0), (179.0, 0.0), (179.8, 1.0), (-179.0, 0.0)],
+        crs=4326,
+    )
+
+    intersection = _assert_geographic_overlay_area_identity(left, right)
+
+    assert intersection.area == pytest.approx(0.0, abs=1e-3)
+    assert gm.covers(intersection, gm.Point(179.0, 0.0, crs=4326))
+
+
+def test_russia_norway_intersection_emits_the_shared_country_border() -> None:
+    fixture = Path(__file__).resolve().parents[1] / 'fixtures/osm_countries_0_1.geojson'
+    source = json.loads(fixture.read_text(encoding='utf-8'))
+    wanted = {'RU', 'NO'}
+    features = {
+        feature['properties']['tags'].get('ISO3166-1:alpha2'): feature
+        for feature in source['features']
+        if feature['properties']['tags'].get('ISO3166-1:alpha2') in wanted
+    }
+    countries = dict(
+        zip(
+            ('RU', 'NO'),
+            gm.from_geojson(
+                json.dumps({
+                    'type': 'FeatureCollection',
+                    'features': [features['RU'], features['NO']],
+                }),
+                crs=4326,
+            ),
+            strict=True,
+        )
+    )
+
+    intersection = _assert_geographic_overlay_area_identity(
+        countries['RU'], countries['NO']
+    )
+
+    assert intersection.area == pytest.approx(0.0, abs=1e-3)
+    assert gm.covers(intersection, gm.Point(31.4448003, 70.0996777, crs=4326))
