@@ -1,10 +1,8 @@
 //! Exact n-ary geographic set selection and output emission over global Q.
 
-use std::ops::Range;
-
 use super::exact::{
-    ExactChartPiece, ExactSourceEdge, ExactSourceRange, ExactSourceRing, SourceEdgeId,
-    SourceEdgeKind, SourceRingId, SourceRowId, exact_source_piece_point,
+    ExactSourceEdge, ExactSourceRange, ExactSourceRing, SourceEdgeId, SourceEdgeKind, SourceRingId,
+    SourceRowId,
 };
 use super::q::{ExactGeographicTopology, GlobalFaceId, QDartId, QNodeId, QPortId};
 use crate::error::{ResourceError, Result};
@@ -51,6 +49,40 @@ struct BoundaryCycle {
     region: usize,
 }
 
+struct QOverlayPlan {
+    whole_sphere: bool,
+    polygons: PolygonPlan,
+    cycles: Vec<BoundaryCycle>,
+    line_paths: Vec<Vec<LineStep>>,
+    point_nodes: Vec<QNodeId>,
+}
+
+enum PolygonPlan {
+    WholeSphere(Vec<usize>),
+    Regions {
+        rings: Vec<PlannedAreaRing>,
+        region_count: usize,
+    },
+}
+
+#[derive(Clone, Copy)]
+enum PlannedAreaRing {
+    Source {
+        ring: usize,
+        region: usize,
+        reverse: bool,
+    },
+    Cycle {
+        cycle: usize,
+        region: usize,
+    },
+}
+
+struct QCoordinates {
+    node: Vec<XY>,
+    pole_port_longitude: Vec<Option<f64>>,
+}
+
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 enum EmittedNodeKey {
     Coordinate(u64, u64),
@@ -79,36 +111,15 @@ pub(in crate::geometry) fn exact_geographic_overlay(
     declared_axes: CoordinateAxes,
     strict: bool,
 ) -> Result<Shape> {
-    let q = &topology.q;
-    let row_count = topology.sources.row_count;
-    let faces = select_faces(q, row_count, operation)?;
-    let whole_sphere = !faces.is_empty() && faces.iter().all(|&selected| selected);
-    let mut face_regions = face_regions(q, &faces)?;
-    let line_spans = select_line_spans(topology, &faces, row_count, operation)?;
-    let cycles = selected_area_boundaries(q, &faces, &mut face_regions)?;
-    let point_nodes = select_points(topology, &faces, &line_spans, row_count, operation)?;
-    let piece_ranges = source_piece_ranges(topology)?;
+    let plan = QOverlayPlan::build(topology, operation)?;
+    let coordinates = QCoordinates::build(topology)?;
+    let source_points = source_point_coordinates(topology)?;
     let ordinates = node_ordinates(topology)?;
-
-    let mut live_node_keys = Vec::new();
-    let mut polygons = emit_polygons(
-        topology,
-        &piece_ranges,
-        &ordinates,
-        &faces,
-        operation,
-        &cycles,
-        &mut live_node_keys,
-    )?;
-    let lines = emit_lines(
-        topology,
-        &piece_ranges,
-        &ordinates,
-        &line_spans,
-        &mut live_node_keys,
-    )?;
-    let points = emit_points(topology, &point_nodes, &mut live_node_keys)?;
+    let mut live_node_keys = plan.live_node_keys(topology, &coordinates, &source_points)?;
     certify_node_injectivity(&mut live_node_keys)?;
+    let mut polygons = emit_polygons(topology, &plan, &ordinates, &coordinates)?;
+    let lines = emit_lines(topology, &plan.line_paths, &ordinates, &coordinates)?;
+    let points = emit_points(topology, &plan.point_nodes, &source_points, &coordinates)?;
 
     if points.is_empty() && lines.is_empty() && polygons.is_empty() {
         return build_certified_overlay_shape_with_axes(points, lines, polygons, declared_axes);
@@ -138,7 +149,7 @@ pub(in crate::geometry) fn exact_geographic_overlay(
         &mut lines,
         &mut polygons,
     )?;
-    if whole_sphere {
+    if plan.whole_sphere {
         return match polygons.len() {
             0 => Err(GeometryErrorKind::Invalid(
                 "Q selected the whole sphere without source area polygons".into(),
@@ -153,6 +164,330 @@ pub(in crate::geometry) fn exact_geographic_overlay(
         };
     }
     build_certified_overlay_shape_with_axes(points, lines, polygons, axes)
+}
+
+impl QOverlayPlan {
+    fn build(topology: &ExactGeographicTopology, operation: OverlayOp) -> Result<Self> {
+        let q = &topology.q;
+        let row_count = topology.sources.row_count;
+        let faces = select_faces(q, row_count, operation)?;
+        let whole_sphere = !faces.is_empty() && faces.iter().all(|&selected| selected);
+        let mut face_regions = face_regions(q, &faces)?;
+        let line_spans = select_line_spans(topology, &faces, row_count, operation)?;
+        let cycles = selected_area_boundaries(q, &faces, &mut face_regions)?;
+        let point_nodes = select_points(topology, &faces, &line_spans, row_count, operation)?;
+        let line_paths = line_steps(topology, &line_spans)?;
+        let polygons = PolygonPlan::build(topology, whole_sphere, operation, &cycles)?;
+        Ok(Self {
+            whole_sphere,
+            polygons,
+            cycles,
+            line_paths,
+            point_nodes,
+        })
+    }
+
+    fn live_node_keys(
+        &self,
+        topology: &ExactGeographicTopology,
+        coordinates: &QCoordinates,
+        source_points: &[Option<Point>],
+    ) -> Result<Vec<(EmittedNodeKey, QNodeId)>> {
+        let mut live = Vec::new();
+        match &self.polygons {
+            PolygonPlan::WholeSphere(source_polygons) => {
+                for &polygon_index in source_polygons {
+                    let polygon =
+                        topology
+                            .sources
+                            .polygons
+                            .get(polygon_index)
+                            .ok_or_else(|| {
+                                GeometryErrorKind::Invalid(
+                                    "Q whole-sphere polygon plan references an unknown polygon"
+                                        .into(),
+                                )
+                            })?;
+                    for ring_index in polygon.rings.clone() {
+                        let ring = topology.sources.rings.get(ring_index).ok_or_else(|| {
+                            GeometryErrorKind::Invalid(
+                                "Q whole-sphere polygon plan references an unknown ring".into(),
+                            )
+                        })?;
+                        append_source_ring_nodes(topology, ring, &mut live)?;
+                    }
+                }
+            },
+            PolygonPlan::Regions { rings, .. } => {
+                for ring in rings {
+                    match *ring {
+                        PlannedAreaRing::Source { ring, .. } => {
+                            let source_ring =
+                                topology.sources.rings.get(ring).ok_or_else(|| {
+                                    GeometryErrorKind::Invalid(
+                                        "Q area plan references an unknown source ring".into(),
+                                    )
+                                })?;
+                            append_source_ring_nodes(topology, source_ring, &mut live)?;
+                        },
+                        PlannedAreaRing::Cycle { cycle, .. } => {
+                            let cycle = self.cycles.get(cycle).ok_or_else(|| {
+                                GeometryErrorKind::Invalid(
+                                    "Q area plan references an unknown cycle".into(),
+                                )
+                            })?;
+                            for &dart_id in &cycle.darts {
+                                let dart =
+                                    topology.q.darts.get(dart_id.0 as usize).ok_or_else(|| {
+                                        GeometryErrorKind::Invalid(
+                                            "Q area plan references an unknown dart".into(),
+                                        )
+                                    })?;
+                                for port_id in [dart.from_port, dart.to_port] {
+                                    let port =
+                                        topology.q.ports.get(port_id.0 as usize).ok_or_else(
+                                            || {
+                                                GeometryErrorKind::Invalid(
+                                                    "Q area plan references an unknown port".into(),
+                                                )
+                                            },
+                                        )?;
+                                    if !port.cut {
+                                        record_emitted_node(
+                                            topology.sources.frame,
+                                            port.node,
+                                            coordinates.point(topology, port_id)?,
+                                            &mut live,
+                                        )?;
+                                    }
+                                }
+                            }
+                        },
+                    }
+                }
+            },
+        }
+        for path in &self.line_paths {
+            for step in path {
+                let span = topology.q.spans.get(step.span).ok_or_else(|| {
+                    GeometryErrorKind::Invalid("Q line plan references an unknown span".into())
+                })?;
+                for port_id in span.ports {
+                    let port = topology.q.ports.get(port_id.0 as usize).ok_or_else(|| {
+                        GeometryErrorKind::Invalid("Q line plan references an unknown port".into())
+                    })?;
+                    if !port.cut {
+                        record_emitted_node(
+                            topology.sources.frame,
+                            port.node,
+                            coordinates.point(topology, port_id)?,
+                            &mut live,
+                        )?;
+                    }
+                }
+            }
+        }
+        for &node in &self.point_nodes {
+            let point = if let Some(source) = source_points.get(node.0 as usize).copied().flatten()
+            {
+                source
+            } else {
+                let node_data = topology.q.nodes.get(node.0 as usize).ok_or_else(|| {
+                    GeometryErrorKind::Invalid("Q point plan references an unknown node".into())
+                })?;
+                let port_id = *topology
+                    .q
+                    .node_ports
+                    .get(node_data.ports.start)
+                    .ok_or_else(|| {
+                        GeometryErrorKind::Invalid("Q point node has no first port".into())
+                    })?;
+                coordinates.point(topology, port_id)?
+            };
+            record_emitted_node(topology.sources.frame, node, point, &mut live)?;
+        }
+        Ok(live)
+    }
+}
+
+impl PolygonPlan {
+    fn build(
+        topology: &ExactGeographicTopology,
+        whole_sphere: bool,
+        operation: OverlayOp,
+        cycles: &[BoundaryCycle],
+    ) -> Result<Self> {
+        if whole_sphere {
+            let mut source_polygons = Vec::new();
+            for (index, source_polygon) in topology.sources.polygons.iter().enumerate() {
+                if !source_polygon_contributes_to_whole_sphere(source_polygon, operation) {
+                    continue;
+                }
+                let has_areal_shell = source_polygon
+                    .rings
+                    .clone()
+                    .filter_map(|ring| topology.sources.rings.get(ring))
+                    .any(|ring| !ring.hole && ring.has_areal_winding());
+                if has_areal_shell {
+                    source_polygons.push(index);
+                }
+            }
+            return Ok(Self::WholeSphere(source_polygons));
+        }
+
+        let mut rings = Vec::new();
+        let mut emitted_cycles = vec![false; cycles.len()];
+        for (ring_index, source_ring) in topology.sources.rings.iter().enumerate() {
+            if !source_ring.summary.exact_axis_band {
+                continue;
+            }
+            let mut source_cycles = Vec::new();
+            for (cycle_index, cycle) in cycles.iter().enumerate() {
+                if cycle_belongs_to_source_ring(topology, cycle, source_ring.id)? {
+                    source_cycles.push(cycle_index);
+                }
+            }
+            if source_cycles.len() != 2 {
+                continue;
+            }
+            let Some(&first_cycle) = source_cycles.first() else {
+                continue;
+            };
+            let region = cycles
+                .get(first_cycle)
+                .ok_or_else(|| GeometryErrorKind::Invalid("Q axis-band cycle is unknown".into()))?
+                .region;
+            let mut cycles_are_consistent = true;
+            for &cycle_index in &source_cycles {
+                let cycle = cycles.get(cycle_index).ok_or_else(|| {
+                    GeometryErrorKind::Invalid("Q axis-band cycle is unknown".into())
+                })?;
+                let emitted = emitted_cycles.get(cycle_index).copied().ok_or_else(|| {
+                    GeometryErrorKind::Invalid("Q axis-band cycle has no emission state".into())
+                })?;
+                if cycle.region != region || emitted {
+                    cycles_are_consistent = false;
+                    break;
+                }
+            }
+            if !cycles_are_consistent
+                || !source_axis_band_cycles_cover_boundary(
+                    topology,
+                    source_ring,
+                    cycles,
+                    &source_cycles,
+                )?
+            {
+                continue;
+            }
+            let Some(follows_source) = source_axis_band_cycles_follow_source(
+                topology,
+                source_ring,
+                cycles,
+                &source_cycles,
+            )?
+            else {
+                continue;
+            };
+            rings.push(PlannedAreaRing::Source {
+                ring: ring_index,
+                region,
+                reverse: !follows_source,
+            });
+            for cycle_index in source_cycles {
+                *emitted_cycles.get_mut(cycle_index).ok_or_else(|| {
+                    GeometryErrorKind::Invalid("Q axis-band cycle has no emission state".into())
+                })? = true;
+            }
+        }
+        for (cycle_index, (cycle, &emitted)) in cycles.iter().zip(&emitted_cycles).enumerate() {
+            if !emitted {
+                rings.push(PlannedAreaRing::Cycle {
+                    cycle: cycle_index,
+                    region: cycle.region,
+                });
+            }
+        }
+        Ok(Self::Regions {
+            rings,
+            region_count: topology.q.global_face_count,
+        })
+    }
+}
+
+impl QCoordinates {
+    fn build(topology: &ExactGeographicTopology) -> Result<Self> {
+        let frame = topology.sources.frame;
+        let q = &topology.q;
+        let mut node = Vec::with_capacity(q.nodes.len());
+        let mut pole_port_longitude = vec![None; q.ports.len()];
+        for (node_index, q_node) in q.nodes.iter().enumerate() {
+            if q_node.id.0 as usize != node_index {
+                return Err(GeometryErrorKind::Invalid(
+                    "Q node coordinates are not indexed by QNodeId".into(),
+                )
+                .into());
+            }
+            let first_port_id = *q.node_ports.get(q_node.ports.start).ok_or_else(|| {
+                GeometryErrorKind::Invalid("Q node has no first port for coordinates".into())
+            })?;
+            let first_port = q
+                .ports
+                .get(first_port_id.0 as usize)
+                .ok_or_else(|| GeometryErrorKind::Invalid("Q node port is unknown".into()))?;
+            let xy = XY::new(
+                round_canonical_longitude(frame, &first_port.point.x)?,
+                Latitude::try_new(frame, first_port.point.y.round()?)
+                    .map_err(|error| GeometryErrorKind::Invalid(error.to_string().into()))?
+                    .get(),
+            );
+            let is_pole = matches!(
+                emitted_node_key(frame, xy)?,
+                EmittedNodeKey::NorthPole | EmittedNodeKey::SouthPole
+            );
+            node.push(xy);
+            if is_pole {
+                for &port_id in q.node_ports.get(q_node.ports.clone()).ok_or_else(|| {
+                    GeometryErrorKind::Invalid("Q node ports are incomplete".into())
+                })? {
+                    let port = q.ports.get(port_id.0 as usize).ok_or_else(|| {
+                        GeometryErrorKind::Invalid("Q pole port is unknown".into())
+                    })?;
+                    *pole_port_longitude
+                        .get_mut(port_id.0 as usize)
+                        .ok_or_else(|| {
+                            GeometryErrorKind::Invalid("Q pole port coordinate is unknown".into())
+                        })? = Some(round_canonical_longitude(frame, &port.point.x)?);
+                }
+            }
+        }
+        Ok(Self {
+            node,
+            pole_port_longitude,
+        })
+    }
+
+    fn point(&self, topology: &ExactGeographicTopology, port_id: QPortId) -> Result<Point> {
+        let port = topology
+            .q
+            .ports
+            .get(port_id.0 as usize)
+            .ok_or_else(|| GeometryErrorKind::Invalid("Q emitted port is unknown".into()))?;
+        let xy = self
+            .node
+            .get(port.node.0 as usize)
+            .copied()
+            .ok_or_else(|| {
+                GeometryErrorKind::Invalid("Q emitted node has no coordinates".into())
+            })?;
+        let longitude = self
+            .pole_port_longitude
+            .get(port_id.0 as usize)
+            .copied()
+            .flatten()
+            .unwrap_or(xy.x);
+        Ok(Point::new_raw_xy(longitude, xy.y))
+    }
 }
 
 const fn selects_support(
@@ -652,76 +987,6 @@ fn next_boundary_dart(
     Err(GeometryErrorKind::Invalid("a selected Q boundary dart has no successor".into()).into())
 }
 
-fn source_piece_ranges(topology: &ExactGeographicTopology) -> Result<Vec<Range<usize>>> {
-    let mut ranges = vec![0..0; topology.sources.edges.len()];
-    for (piece_index, piece) in topology.sources.pieces.iter().enumerate() {
-        let range = ranges
-            .get_mut(piece.source_edge.0 as usize)
-            .ok_or_else(|| {
-                GeometryErrorKind::Invalid("Q chart piece has an unknown source edge".into())
-            })?;
-        if range.start == range.end {
-            *range = piece_index..piece_index.saturating_add(1);
-        } else if range.end == piece_index {
-            range.end = piece_index.saturating_add(1);
-        } else {
-            return Err(GeometryErrorKind::Invalid(
-                "Q source chart pieces are not grouped by source edge".into(),
-            )
-            .into());
-        }
-    }
-    Ok(ranges)
-}
-
-fn source_piece_for_owner<'a>(
-    topology: &'a ExactGeographicTopology,
-    piece_ranges: &[Range<usize>],
-    source_edge: SourceEdgeId,
-    source_range: &ExactSourceRange,
-) -> Result<&'a ExactChartPiece> {
-    let range = piece_ranges
-        .get(source_edge.0 as usize)
-        .ok_or_else(|| GeometryErrorKind::Invalid("Q owner has an unknown source edge".into()))?;
-    for piece_index in range.clone() {
-        let piece =
-            topology.sources.pieces.get(piece_index).ok_or_else(|| {
-                GeometryErrorKind::Invalid("Q source chart piece is unknown".into())
-            })?;
-        if piece
-            .source_range
-            .start
-            .try_cmp(&source_range.start)?
-            .is_le()
-            && piece.source_range.end.try_cmp(&source_range.end)?.is_ge()
-        {
-            return Ok(piece);
-        }
-    }
-    Err(
-        GeometryErrorKind::Invalid("Q span owner crosses an original source-chart split".into())
-            .into(),
-    )
-}
-
-fn source_parameter_at_port<'a>(
-    span: &super::q::ChartSpan,
-    owner: &'a super::q::QSpanOwner,
-    port: QPortId,
-) -> Result<&'a ExactRational> {
-    let endpoint = span
-        .ports
-        .iter()
-        .position(|&candidate| candidate == port)
-        .ok_or_else(|| GeometryErrorKind::Invalid("Q port is not on its owned span".into()))?;
-    let at_source_start = (endpoint == 0) != owner.reversed;
-    Ok(if at_source_start {
-        &owner.source_range.start
-    } else {
-        &owner.source_range.end
-    })
-}
-
 fn source_edge_at(
     topology: &ExactGeographicTopology,
     source_edge: SourceEdgeId,
@@ -1098,7 +1363,7 @@ fn node_ordinates(topology: &ExactGeographicTopology) -> Result<Vec<NodeOrdinate
 
 fn emitted_point(
     topology: &ExactGeographicTopology,
-    piece_ranges: &[Range<usize>],
+    coordinates: &QCoordinates,
     ordinates: &[NodeOrdinates],
     span_index: usize,
     owner_index: usize,
@@ -1109,22 +1374,12 @@ fn emitted_point(
         .spans
         .get(span_index)
         .ok_or_else(|| GeometryErrorKind::Invalid("Q emitted span is unknown".into()))?;
-    let owner = span
-        .owners
+    span.owners
         .get(owner_index)
         .ok_or_else(|| GeometryErrorKind::Invalid("Q emitted owner is unknown".into()))?;
-    let parameter = source_parameter_at_port(span, owner, port)?;
-    let piece = source_piece_for_owner(
-        topology,
-        piece_ranges,
-        owner.source_edge,
-        &owner.source_range,
-    )?;
-    let exact = exact_source_piece_point(piece, parameter)?;
-    let longitude = round_canonical_longitude(topology.sources.frame, &exact.x)?;
-    let latitude = Latitude::try_new(topology.sources.frame, exact.y.round()?)
-        .map_err(|error| GeometryErrorKind::Invalid(error.to_string().into()))?
-        .get();
+    if !span.ports.contains(&port) {
+        return Err(GeometryErrorKind::Invalid("Q port is not on its emitted span".into()).into());
+    }
     let node = q
         .ports
         .get(port.0 as usize)
@@ -1136,7 +1391,7 @@ fn emitted_point(
     Ok(EmittedVertex {
         node,
         port,
-        point: Point::new_raw_xy(longitude, latitude),
+        point: coordinates.point(topology, port)?,
     })
 }
 
@@ -1172,153 +1427,111 @@ fn push_line_part(output: &mut Vec<CoordSeq>, points: &mut Vec<Point>) -> Result
 
 fn emit_polygons(
     topology: &ExactGeographicTopology,
-    piece_ranges: &[Range<usize>],
+    plan: &QOverlayPlan,
     ordinates: &[NodeOrdinates],
-    selected_faces: &[bool],
-    operation: OverlayOp,
-    cycles: &[BoundaryCycle],
-    live_node_keys: &mut Vec<(EmittedNodeKey, QNodeId)>,
+    coordinates: &QCoordinates,
 ) -> Result<Vec<Polygon>> {
-    let q = &topology.q;
-    let face_count = q.global_face_count;
-    if !selected_faces.is_empty() && selected_faces.iter().all(|&selected| selected) {
-        // A whole-sphere selection has no exterior boundary to trace. Its
-        // closed source polygon union is the representable output boundary.
-        let mut output = Vec::new();
-        for source_polygon in &topology.sources.polygons {
-            if !source_polygon_contributes_to_whole_sphere(source_polygon, operation) {
-                continue;
+    match &plan.polygons {
+        PolygonPlan::WholeSphere(source_polygons) => {
+            // A whole-sphere selection has no exterior boundary to trace. Its
+            // closed source polygon union is the representable output boundary.
+            let mut output = Vec::with_capacity(source_polygons.len());
+            for &polygon_index in source_polygons {
+                let source_polygon =
+                    topology
+                        .sources
+                        .polygons
+                        .get(polygon_index)
+                        .ok_or_else(|| {
+                            GeometryErrorKind::Invalid(
+                                "Q whole-sphere plan references an unknown polygon".into(),
+                            )
+                        })?;
+                output.push(emit_source_polygon(topology, source_polygon)?);
             }
-            let has_areal_shell = source_polygon
-                .rings
-                .clone()
-                .filter_map(|ring| topology.sources.rings.get(ring))
-                .any(|ring| !ring.hole && ring.has_areal_winding());
-            if has_areal_shell {
-                output.push(emit_source_polygon(
-                    topology,
-                    source_polygon,
-                    live_node_keys,
-                )?);
-            }
-        }
-        if output.is_empty() {
-            return Err(GeometryErrorKind::Invalid(
-                "Q selected the whole sphere without source area polygons".into(),
-            )
-            .into());
-        }
-        return Ok(output);
-    }
-
-    let mut shells = Vec::with_capacity(face_count);
-    let mut holes = Vec::with_capacity(face_count);
-    shells.resize_with(face_count, Vec::<Ring>::new);
-    holes.resize_with(face_count, Vec::<Ring>::new);
-
-    let mut emitted_cycles = vec![false; cycles.len()];
-    for source_ring in &topology.sources.rings {
-        if !source_ring.summary.exact_axis_band {
-            continue;
-        }
-        let mut source_cycles = Vec::new();
-        for (cycle_index, cycle) in cycles.iter().enumerate() {
-            if cycle_belongs_to_source_ring(topology, cycle, source_ring.id)? {
-                source_cycles.push(cycle_index);
-            }
-        }
-        if source_cycles.len() != 2 {
-            continue;
-        }
-        let Some(&first_cycle) = source_cycles.first() else {
-            continue;
-        };
-        let region = cycles
-            .get(first_cycle)
-            .ok_or_else(|| GeometryErrorKind::Invalid("Q axis-band cycle is unknown".into()))?
-            .region;
-        let mut cycles_are_consistent = true;
-        for &cycle_index in &source_cycles {
-            let cycle = cycles
-                .get(cycle_index)
-                .ok_or_else(|| GeometryErrorKind::Invalid("Q axis-band cycle is unknown".into()))?;
-            let emitted = emitted_cycles.get(cycle_index).copied().ok_or_else(|| {
-                GeometryErrorKind::Invalid("Q axis-band cycle has no emission state".into())
-            })?;
-            if cycle.region != region || emitted {
-                cycles_are_consistent = false;
-                break;
-            }
-        }
-        if !cycles_are_consistent
-            || !source_axis_band_cycles_cover_boundary(
-                topology,
-                source_ring,
-                cycles,
-                &source_cycles,
-            )?
-        {
-            continue;
-        }
-        let Some(follows_source) =
-            source_axis_band_cycles_follow_source(topology, source_ring, cycles, &source_cycles)?
-        else {
-            continue;
-        };
-        let mut ring = emit_source_ring(topology, source_ring, live_node_keys)?;
-        if !follows_source {
-            ring = ring.reversed()?;
-        }
-        let is_hole = chart_ring_is_hole(topology.sources.frame, &ring)?;
-        let destination = if is_hole {
-            holes.get_mut(region)
-        } else {
-            shells.get_mut(region)
-        }
-        .ok_or_else(|| GeometryErrorKind::Invalid("Q axis-band region is unknown".into()))?;
-        destination.push(ring);
-        for cycle in source_cycles {
-            *emitted_cycles.get_mut(cycle).ok_or_else(|| {
-                GeometryErrorKind::Invalid("Q axis-band cycle has no emission state".into())
-            })? = true;
-        }
-    }
-
-    for (cycle, &emitted) in cycles.iter().zip(&emitted_cycles) {
-        if emitted {
-            continue;
-        }
-        let (ring, is_hole) = emit_ring(topology, piece_ranges, ordinates, cycle, live_node_keys)?;
-        let destination = if is_hole {
-            holes.get_mut(cycle.region)
-        } else {
-            shells.get_mut(cycle.region)
-        }
-        .ok_or_else(|| GeometryErrorKind::Invalid("Q boundary region is unknown".into()))?;
-        destination.push(ring);
-    }
-
-    let mut output = Vec::new();
-    for (region, (mut region_shells, region_holes)) in shells.into_iter().zip(holes).enumerate() {
-        if region_shells.is_empty() && region_holes.is_empty() {
-            continue;
-        }
-        if region_shells.len() != 1 {
-            return Err(GeometryErrorKind::Invalid(
-                format!(
-                    "selected Q region {region} has {} shells",
-                    region_shells.len(),
+            if output.is_empty() {
+                return Err(GeometryErrorKind::Invalid(
+                    "Q selected the whole sphere without source area polygons".into(),
                 )
-                .into(),
-            )
-            .into());
-        }
-        let shell = region_shells
-            .pop()
-            .expect("the selected region has one shell");
-        output.push(Polygon::new(shell, region_holes));
+                .into());
+            }
+            Ok(output)
+        },
+        PolygonPlan::Regions {
+            rings,
+            region_count,
+        } => {
+            let mut shells = Vec::with_capacity(*region_count);
+            let mut holes = Vec::with_capacity(*region_count);
+            shells.resize_with(*region_count, Vec::<Ring>::new);
+            holes.resize_with(*region_count, Vec::<Ring>::new);
+            for planned in rings {
+                let (region, ring, is_hole) = match *planned {
+                    PlannedAreaRing::Source {
+                        ring: source_ring_index,
+                        region,
+                        reverse,
+                    } => {
+                        let source_ring = topology
+                            .sources
+                            .rings
+                            .get(source_ring_index)
+                            .ok_or_else(|| {
+                                GeometryErrorKind::Invalid(
+                                    "Q area plan references an unknown source ring".into(),
+                                )
+                            })?;
+                        let mut ring = emit_source_ring(topology, source_ring)?;
+                        if reverse {
+                            ring = ring.reversed()?;
+                        }
+                        let is_hole = chart_ring_is_hole(topology.sources.frame, &ring)?;
+                        (region, ring, is_hole)
+                    },
+                    PlannedAreaRing::Cycle { cycle, region } => {
+                        let cycle = plan.cycles.get(cycle).ok_or_else(|| {
+                            GeometryErrorKind::Invalid(
+                                "Q area plan references an unknown cycle".into(),
+                            )
+                        })?;
+                        let (ring, is_hole) = emit_ring(topology, coordinates, ordinates, cycle)?;
+                        (region, ring, is_hole)
+                    },
+                };
+                let destination = if is_hole {
+                    holes.get_mut(region)
+                } else {
+                    shells.get_mut(region)
+                }
+                .ok_or_else(|| GeometryErrorKind::Invalid("Q boundary region is unknown".into()))?;
+                destination.push(ring);
+            }
+
+            let mut output = Vec::new();
+            for (region, (mut region_shells, region_holes)) in
+                shells.into_iter().zip(holes).enumerate()
+            {
+                if region_shells.is_empty() && region_holes.is_empty() {
+                    continue;
+                }
+                if region_shells.len() != 1 {
+                    return Err(GeometryErrorKind::Invalid(
+                        format!(
+                            "selected Q region {region} has {} shells",
+                            region_shells.len(),
+                        )
+                        .into(),
+                    )
+                    .into());
+                }
+                let shell = region_shells
+                    .pop()
+                    .expect("the selected region has one shell");
+                output.push(Polygon::new(shell, region_holes));
+            }
+            Ok(output)
+        },
     }
-    Ok(output)
 }
 
 const fn source_polygon_contributes_to_whole_sphere(
@@ -1509,25 +1722,13 @@ fn source_ranges_cover_unit_interval(ranges: &mut [ExactSourceRange]) -> Result<
 fn emit_source_ring(
     topology: &ExactGeographicTopology,
     source_ring: &super::exact::ExactSourceRing,
-    live_node_keys: &mut Vec<(EmittedNodeKey, QNodeId)>,
 ) -> Result<Ring> {
-    let q = &topology.q;
     let mut points = Vec::with_capacity(source_ring.source_edges.len().saturating_add(1));
     for edge_index in source_ring.source_edges.clone() {
         let edge =
             topology.sources.edges.get(edge_index).ok_or_else(|| {
                 GeometryErrorKind::Invalid("Q source ring edge is unknown".into())
             })?;
-        let ports = q
-            .source_edge_ports
-            .get(edge.id.0 as usize)
-            .ok_or_else(|| GeometryErrorKind::Invalid("Q source ring ports are unknown".into()))?;
-        for (endpoint, &port_id) in edge.source.iter().zip(ports) {
-            let port = q.ports.get(port_id.0 as usize).ok_or_else(|| {
-                GeometryErrorKind::Invalid("Q source ring port is unknown".into())
-            })?;
-            record_emitted_node(topology.sources.frame, port.node, *endpoint, live_node_keys)?;
-        }
         points.push(edge.source[0].with_xy_raw(
             edge.source[0].x,
             Latitude::from_admitted(topology.sources.frame, edge.source[0].y).get(),
@@ -1546,10 +1747,42 @@ fn emit_source_ring(
     Ring::try_from_closed(CoordSeq::try_from_points(&points)?)
 }
 
+fn append_source_ring_nodes(
+    topology: &ExactGeographicTopology,
+    source_ring: &ExactSourceRing,
+    live: &mut Vec<(EmittedNodeKey, QNodeId)>,
+) -> Result<()> {
+    for edge_index in source_ring.source_edges.clone() {
+        let edge =
+            topology.sources.edges.get(edge_index).ok_or_else(|| {
+                GeometryErrorKind::Invalid("Q source ring edge is unknown".into())
+            })?;
+        let ports = topology
+            .q
+            .source_edge_ports
+            .get(edge.id.0 as usize)
+            .ok_or_else(|| GeometryErrorKind::Invalid("Q source ring ports are unknown".into()))?;
+        for (endpoint, &port_id) in edge.source.iter().zip(ports) {
+            let port = topology.q.ports.get(port_id.0 as usize).ok_or_else(|| {
+                GeometryErrorKind::Invalid("Q source ring port is unknown".into())
+            })?;
+            record_emitted_node(
+                topology.sources.frame,
+                port.node,
+                endpoint.with_xy_raw(
+                    endpoint.x,
+                    Latitude::from_admitted(topology.sources.frame, endpoint.y).get(),
+                ),
+                live,
+            )?;
+        }
+    }
+    Ok(())
+}
+
 fn emit_source_polygon(
     topology: &ExactGeographicTopology,
     source_polygon: &super::exact::ExactSourcePolygon,
-    live_node_keys: &mut Vec<(EmittedNodeKey, QNodeId)>,
 ) -> Result<Polygon> {
     let mut shell = None;
     let mut holes = Vec::new();
@@ -1558,7 +1791,7 @@ fn emit_source_polygon(
             topology.sources.rings.get(ring_index).ok_or_else(|| {
                 GeometryErrorKind::Invalid("Q source polygon ring is unknown".into())
             })?;
-        let ring = emit_source_ring(topology, source_ring, live_node_keys)?;
+        let ring = emit_source_ring(topology, source_ring)?;
         if source_ring.hole {
             holes.push(ring);
         } else if shell.replace(ring).is_some() {
@@ -1576,10 +1809,9 @@ fn emit_source_polygon(
 
 fn emit_ring(
     topology: &ExactGeographicTopology,
-    piece_ranges: &[Range<usize>],
+    coordinates: &QCoordinates,
     ordinates: &[NodeOrdinates],
     cycle: &BoundaryCycle,
-    live_node_keys: &mut Vec<(EmittedNodeKey, QNodeId)>,
 ) -> Result<(Ring, bool)> {
     let q = &topology.q;
     let mut pivot = 0;
@@ -1608,7 +1840,7 @@ fn emit_ring(
         for port in [dart.from_port, dart.to_port] {
             let emitted = emitted_point(
                 topology,
-                piece_ranges,
+                coordinates,
                 ordinates,
                 dart.span.0 as usize,
                 owner_index,
@@ -1666,9 +1898,6 @@ fn emit_ring(
     *points
         .last_mut()
         .expect("selected Q area boundary has at least three vertices") = first;
-    for (vertex, &point) in vertices.iter().zip(&points) {
-        record_emitted_node(topology.sources.frame, vertex.node, point, live_node_keys)?;
-    }
     Ok((
         Ring::try_from_closed(CoordSeq::try_from_points(&points)?)?,
         is_hole,
@@ -1702,14 +1931,13 @@ fn chart_ring_is_hole(frame: crate::geographic::GeographicFrame, ring: &Ring) ->
 
 fn emit_lines(
     topology: &ExactGeographicTopology,
-    piece_ranges: &[Range<usize>],
+    paths: &[Vec<LineStep>],
     ordinates: &[NodeOrdinates],
-    selected: &[Option<SelectedLineSpan>],
-    live_node_keys: &mut Vec<(EmittedNodeKey, QNodeId)>,
+    coordinates: &QCoordinates,
 ) -> Result<Vec<CoordSeq>> {
     let q = &topology.q;
     let mut output = Vec::new();
-    for mut path in line_steps(topology, selected)? {
+    for path in paths {
         let mut start = None;
         for (index, step) in path.iter().enumerate() {
             let span = q
@@ -1729,12 +1957,11 @@ fn emit_lines(
                 break;
             }
         }
-        if let Some(start) = start {
-            path.rotate_left(start);
-        }
+        let start = start.unwrap_or(0);
+        let (before_start, from_start) = path.split_at(start);
         let mut points = Vec::new();
         let mut previous: Option<EmittedVertex> = None;
-        for step in path {
+        for step in from_start.iter().chain(before_start) {
             let span = q
                 .spans
                 .get(step.span)
@@ -1746,7 +1973,7 @@ fn emit_lines(
             };
             let from = emitted_point(
                 topology,
-                piece_ranges,
+                coordinates,
                 ordinates,
                 step.span,
                 step.owner,
@@ -1754,7 +1981,7 @@ fn emit_lines(
             )?;
             let to = emitted_point(
                 topology,
-                piece_ranges,
+                coordinates,
                 ordinates,
                 step.span,
                 step.owner,
@@ -1820,16 +2047,9 @@ fn emit_lines(
                 if points.last().is_none_or(|last| *last != from.point) {
                     points.push(from.point);
                 }
-                record_emitted_node(
-                    topology.sources.frame,
-                    from.node,
-                    from.point,
-                    live_node_keys,
-                )?;
             }
             if !to_cut {
                 points.push(to.point);
-                record_emitted_node(topology.sources.frame, to.node, to.point, live_node_keys)?;
             }
             previous = Some(to);
         }
@@ -1841,28 +2061,14 @@ fn emit_lines(
 fn emit_points(
     topology: &ExactGeographicTopology,
     nodes: &[QNodeId],
-    live_node_keys: &mut Vec<(EmittedNodeKey, QNodeId)>,
+    source_points: &[Option<Point>],
+    coordinates: &QCoordinates,
 ) -> Result<Vec<Point>> {
     let q = &topology.q;
-    let mut source_points = vec![None; q.nodes.len()];
-    for (source, &port) in topology.sources.points.iter().zip(&q.source_point_ports) {
-        let node = q
-            .ports
-            .get(port.0 as usize)
-            .ok_or_else(|| GeometryErrorKind::Invalid("Q source point port is unknown".into()))?
-            .node;
-        source_points
-            .get_mut(node.0 as usize)
-            .ok_or_else(|| GeometryErrorKind::Invalid("Q source point has an unknown node".into()))?
-            .get_or_insert(source.point);
-    }
     let mut output = Vec::with_capacity(nodes.len());
     for &node in nodes {
         let point = if let Some(source) = source_points.get(node.0 as usize).copied().flatten() {
-            Point::new_raw_xy(
-                source.x,
-                Latitude::from_admitted(topology.sources.frame, source.y).get(),
-            )
+            source
         } else {
             let node_data = q
                 .nodes
@@ -1871,26 +2077,38 @@ fn emit_points(
             let port_id = *q.node_ports.get(node_data.ports.start).ok_or_else(|| {
                 GeometryErrorKind::Invalid("Q point node has no first port".into())
             })?;
-            let port = q
-                .ports
-                .get(port_id.0 as usize)
-                .ok_or_else(|| GeometryErrorKind::Invalid("Q point node has no port".into()))?;
-            let longitude = topology
-                .sources
-                .frame
-                .longitude()
-                .canonicalize(port.point.x.round()?)
-                .map_err(|error| GeometryErrorKind::Invalid(error.to_string().into()))?
-                .get();
-            let latitude = Latitude::try_new(topology.sources.frame, port.point.y.round()?)
-                .map_err(|error| GeometryErrorKind::Invalid(error.to_string().into()))?
-                .get();
-            Point::new_raw_xy(longitude, latitude)
+            coordinates.point(topology, port_id)?
         };
-        record_emitted_node(topology.sources.frame, node, point, live_node_keys)?;
         output.push(point);
     }
     Ok(output)
+}
+
+fn source_point_coordinates(topology: &ExactGeographicTopology) -> Result<Vec<Option<Point>>> {
+    let mut source_points = vec![None; topology.q.nodes.len()];
+    for (source, &port) in topology
+        .sources
+        .points
+        .iter()
+        .zip(topology.q.source_point_ports.iter())
+    {
+        let node = topology
+            .q
+            .ports
+            .get(port.0 as usize)
+            .ok_or_else(|| GeometryErrorKind::Invalid("Q source point port is unknown".into()))?
+            .node;
+        source_points
+            .get_mut(node.0 as usize)
+            .ok_or_else(|| GeometryErrorKind::Invalid("Q source point node is unknown".into()))?
+            .get_or_insert_with(|| {
+                Point::new_raw_xy(
+                    source.point.x,
+                    Latitude::from_admitted(topology.sources.frame, source.point.y).get(),
+                )
+            });
+    }
+    Ok(source_points)
 }
 
 fn record_emitted_node(

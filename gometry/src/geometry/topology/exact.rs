@@ -128,32 +128,6 @@ impl ExactChartPoint {
     }
 }
 
-pub(super) fn exact_source_piece_point(
-    piece: &ExactChartPiece,
-    parameter: &ExactRational,
-) -> Result<ExactChartPoint> {
-    let width = piece
-        .source_range
-        .end
-        .try_subtract(&piece.source_range.start)?;
-    if width.is_zero() {
-        return Err(GeometryErrorKind::Invalid(
-            "an exact chart piece has an empty source interval".into(),
-        )
-        .into());
-    }
-    let local = parameter
-        .try_subtract(&piece.source_range.start)?
-        .try_quotient(&width)?;
-    let interpolate = |start: &ExactRational, end: &ExactRational| -> Result<ExactRational> {
-        start.try_add(&end.try_subtract(start)?.try_product(&local)?)
-    };
-    Ok(ExactChartPoint::from_rationals(
-        interpolate(&piece.start.x, &piece.end.x)?,
-        interpolate(&piece.start.y, &piece.end.y)?,
-    ))
-}
-
 impl ExactChartPiece {
     fn outward_proxy(&self) -> Result<Option<Segment>> {
         let [start_min_x, start_min_y, start_max_x, start_max_y] = self.start.outward_bounds()?;
