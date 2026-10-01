@@ -7,13 +7,14 @@
 use super::{
     BinaryHeap, ExactPoint, ExactSign, FloatBox, HULL_SEPARATION_LIMIT, NEAREST_CANDIDATE_LIMIT,
     NOMINATED_SITE_COUNT, PreparedSupport, Rational, Result, SquaredBounds, SupportSpan, Tightness,
-    XY, box_distance_lower, exact, line_filter_enabled, nonnegative_upper_bound,
-    point_segment_squared_f64, span_point, supporting_line_lower_squared,
+    XY, box_distance_lower, exact, line_filter_enabled, nonnegative_bounds,
+    nonnegative_upper_bound, point_segment_squared_f64, span_point, supporting_line_lower_squared,
 };
 use crate::scratch_pool::ScratchPool;
 
 thread_local! {
     static NEAREST_STACK: ScratchPool<Vec<usize>> = const { ScratchPool::new(Vec::new()) };
+    static NEAREST_FRONTIER: ScratchPool<Vec<(usize, f64)>> = const { ScratchPool::new(Vec::new()) };
 }
 
 #[derive(Debug)]
@@ -37,10 +38,38 @@ pub(super) struct IndexItem {
     pub(super) bounds: FloatBox,
 }
 
-pub(super) struct NearestSupport {
+pub(super) struct NearestSupport<B = SquaredBounds> {
     /// The smallest-upper-bound primitive; exact nearest when bounds are exact.
     pub(super) primitive: PrimitiveId,
-    pub(super) bounds: SquaredBounds,
+    pub(super) bounds: B,
+}
+
+trait NearestBounds: Sized {
+    const FILTER_LINES: bool;
+    fn upper(&self) -> f64;
+    fn merge_nearest(self, other: Self) -> Result<(Self, bool)>;
+}
+
+impl NearestBounds for SquaredBounds {
+    const FILTER_LINES: bool = true;
+    fn upper(&self) -> f64 {
+        self.upper_f64
+    }
+
+    fn merge_nearest(self, other: Self) -> Result<(Self, bool)> {
+        self.min_with_upper_source(other)
+    }
+}
+
+impl NearestBounds for (f64, f64) {
+    const FILTER_LINES: bool = false;
+    fn upper(&self) -> f64 {
+        self.1
+    }
+
+    fn merge_nearest(self, other: Self) -> Result<(Self, bool)> {
+        Ok(((self.0.min(other.0), self.1.min(other.1)), other.1 < self.1))
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -79,6 +108,23 @@ impl SupportIndex {
                 bounds: FloatBox::from_point(point)?,
             });
         }
+        Ok(Self::from_items(items))
+    }
+
+    pub(super) fn from_boundary_edges(edges: &[BoundaryEdge]) -> Self {
+        Self::from_items(
+            edges
+                .iter()
+                .enumerate()
+                .map(|(index, edge)| IndexItem {
+                    primitive: PrimitiveId::Span(index),
+                    bounds: edge.bounds,
+                })
+                .collect(),
+        )
+    }
+
+    fn from_items(items: Vec<IndexItem>) -> Self {
         let mut order = Vec::with_capacity(items.len());
         order.extend(0..items.len());
         // Splitting a range of at least five leaves at least two items per
@@ -94,7 +140,53 @@ impl SupportIndex {
             index.root = Some(index.build_range(0, index.order.len()));
         }
 
-        Ok(index)
+        index
+    }
+
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "edge ordinals and node ranges belong to this immutable boundary-edge index"
+    )]
+    pub(super) fn contains_area(&self, edges: &[BoundaryEdge], point: &ExactPoint) -> Result<bool> {
+        let Some(root) = self.root else {
+            return Ok(false);
+        };
+        let bounds = FloatBox::from_point(point)?;
+        let meets_ray = |edge: FloatBox| {
+            edge.min_y <= bounds.max_y && edge.max_y >= bounds.min_y && edge.max_x >= bounds.min_x
+        };
+        let mut inside = false;
+        let mut stack = ScratchPool::checkout(&NEAREST_STACK);
+        stack.push(root);
+        while let Some(node_index) = stack.pop() {
+            let node = self.nodes[node_index];
+            if !meets_ray(node.bounds) {
+                continue;
+            }
+            let (start, end) = match node.children {
+                IndexChildren::Branch { left, right } => {
+                    stack.push(right);
+                    stack.push(left);
+                    continue;
+                },
+                IndexChildren::Leaf { start, end } => (start, end),
+            };
+            for &ordinal in &self.order[start..end] {
+                let item = self.items[ordinal];
+                if !meets_ray(item.bounds) {
+                    continue;
+                }
+                let PrimitiveId::Span(edge) = item.primitive else {
+                    unreachable!("boundary-edge indices contain only edge ordinals");
+                };
+                match super::edge_location(point, &edges[edge])? {
+                    super::CycleLocation::Boundary => return Ok(true),
+                    super::CycleLocation::Crosses => inside = !inside,
+                    super::CycleLocation::Clear => {},
+                }
+            }
+        }
+        Ok(inside)
     }
 
     #[expect(
@@ -114,7 +206,8 @@ impl SupportIndex {
         }
 
         let split_x = (bounds.max_x - bounds.min_x) >= (bounds.max_y - bounds.min_y);
-        self.order[start..end].sort_unstable_by(|left, right| {
+        let middle = start.wrapping_add(end.wrapping_sub(start) / 2);
+        self.order[start..end].select_nth_unstable_by(middle.wrapping_sub(start), |left, right| {
             let left_bounds = self.items[*left].bounds;
             let right_bounds = self.items[*right].bounds;
             let left_key = if split_x {
@@ -129,7 +222,6 @@ impl SupportIndex {
             };
             left_key.total_cmp(&right_key).then_with(|| left.cmp(right))
         });
-        let middle = start.wrapping_add(end.wrapping_sub(start) / 2);
         let left = self.build_range(start, middle);
         let right = self.build_range(middle, end);
         let index = self.nodes.len();
@@ -158,31 +250,65 @@ impl SupportIndex {
     /// With `tightness`, primitives may be bounded in double-double
     /// intervals; without it every evaluation is exact and both bounds equal
     /// the exact distance.
-    #[expect(
-        clippy::indexing_slicing,
-        reason = "root, branch, leaf, and primitive IDs come from this immutable SupportIndex and its PreparedSupport"
-    )]
     pub(super) fn nearest(
         &self,
         support: &PreparedSupport,
         point: &ExactPoint,
         tightness: Option<Tightness>,
     ) -> Result<NearestSupport> {
+        let point_bounds = FloatBox::from_point(point)?;
+        if let Some(tightness) = tightness {
+            let nearest = self.nearest_with(support, point_bounds, |primitive| {
+                if let Some(bounds) =
+                    support.primitive_interval_bounds(primitive, point_bounds, tightness)
+                {
+                    return Ok(bounds);
+                }
+                let exact = support
+                    .primitive_distance_squared(primitive, point)?
+                    .to_rational()?;
+                nonnegative_bounds(&exact)
+            })?;
+            let (lower, upper) = nearest.bounds;
+            if lower.is_finite() && upper.is_finite() && tightness.admits(lower, upper) {
+                return Ok(NearestSupport {
+                    primitive: nearest.primitive,
+                    bounds: SquaredBounds::enclosing(lower.max(0.0), upper),
+                });
+            }
+        }
+        self.nearest_with(support, point_bounds, |primitive| {
+            support.primitive_squared_bounds(primitive, point, point_bounds, None)
+        })
+    }
+
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "root, branch, leaf, and primitive IDs come from this immutable SupportIndex and its PreparedSupport"
+    )]
+    fn nearest_with<B: NearestBounds>(
+        &self,
+        support: &PreparedSupport,
+        point_bounds: FloatBox,
+        mut evaluate: impl FnMut(PrimitiveId) -> Result<B>,
+    ) -> Result<NearestSupport<B>> {
         let Some(root) = self.root else {
             return Err(crate::geometry::GeometryErrorKind::message(
                 "hausdorff_distance requires non-empty support",
             ));
         };
-        let point_bounds = FloatBox::from_point(point)?;
-        let mut best: Option<NearestSupport> = None;
-        let mut stack = ScratchPool::checkout(&NEAREST_STACK);
-        stack.push(root);
-        while let Some(node_index) = stack.pop() {
+        let mut best: Option<NearestSupport<B>> = None;
+        let mut stack = ScratchPool::checkout(&NEAREST_FRONTIER);
+        stack.push((
+            root,
+            box_distance_lower(point_bounds, self.nodes[root].bounds),
+        ));
+        while let Some((node_index, node_lower)) = stack.pop() {
             let best_upper = best
                 .as_ref()
-                .map_or(f64::INFINITY, |best| best.bounds.upper_f64);
+                .map_or(f64::INFINITY, |best| best.bounds.upper());
             let node = self.nodes[node_index];
-            if box_distance_lower(point_bounds, node.bounds) > best_upper {
+            if node_lower > best_upper {
                 continue;
             }
             let (start, end) = match node.children {
@@ -191,9 +317,9 @@ impl SupportIndex {
                     let left_lower = box_distance_lower(point_bounds, self.nodes[left].bounds);
                     let right_lower = box_distance_lower(point_bounds, self.nodes[right].bounds);
                     let (first, second) = if left_lower <= right_lower {
-                        (left, right)
+                        ((left, left_lower), (right, right_lower))
                     } else {
-                        (right, left)
+                        ((right, right_lower), (left, left_lower))
                     };
                     stack.push(second);
                     stack.push(first);
@@ -205,28 +331,24 @@ impl SupportIndex {
                 let item = self.items[*order_index];
                 let best_upper = best
                     .as_ref()
-                    .map_or(f64::INFINITY, |best| best.bounds.upper_f64);
+                    .map_or(f64::INFINITY, |best| best.bounds.upper());
                 if box_distance_lower(point_bounds, item.bounds) > best_upper {
                     continue;
                 }
-                if line_filter_enabled()
+                if B::FILTER_LINES
+                    && line_filter_enabled()
                     && let PrimitiveId::Span(index) = item.primitive
                     && supporting_line_lower_squared(point_bounds, &support.spans[index])
                         > best_upper
                 {
                     continue;
                 }
-                let bounds = support.primitive_squared_bounds(
-                    item.primitive,
-                    point,
-                    point_bounds,
-                    tightness,
-                )?;
+                let bounds = evaluate(item.primitive)?;
                 let (bounds, primitive) = match best {
                     None => (bounds, item.primitive),
                     Some(current) => {
                         let (bounds, other_is_upper_minimum) =
-                            current.bounds.min_with_upper_source(bounds)?;
+                            current.bounds.merge_nearest(bounds)?;
                         let primitive = if other_is_upper_minimum {
                             item.primitive
                         } else {
@@ -263,7 +385,7 @@ impl SupportIndex {
         let Some(root) = self.root else {
             return Ok(Vec::new());
         };
-        let (x, y) = (point.x.round()?, point.y.round()?);
+        let XY { x, y } = point.rounded_xy()?;
         let query = FloatBox {
             min_x: x,
             max_x: x,
@@ -419,7 +541,7 @@ pub(super) fn forms_monotone_chain(
         };
         let span = &support.spans[index];
         spans.push(span);
-        ends.push([span_point(span, &span.t_lo)?, span_point(span, &span.t_hi)?]);
+        ends.push([span_point(span, span.lo())?, span_point(span, span.hi())?]);
     }
     // `links[i][end]` is the span sharing endpoint `end` (0 at `t_lo`) of span
     // `i`; an endpoint shared three ways is a branch, not a chain.
@@ -468,8 +590,8 @@ pub(super) fn forms_monotone_chain(
     for &(first, first_reversed) in &walk {
         let mut leads = true;
         for &(second, second_reversed) in &walk {
-            let left = &spans[first].carrier;
-            let right = &spans[second].carrier;
+            let left = spans[first].carrier()?;
+            let right = spans[second].carrier()?;
             let flip = first_reversed != second_reversed;
             let cross = oriented_sign(
                 left.dx

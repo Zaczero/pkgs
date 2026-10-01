@@ -543,20 +543,9 @@ fn inscribed_circle_retries_after_a_rounded_radius_overrun() {
 
 #[test]
 fn certified_inscribed_circle_reuses_the_directed_support_at_emission() {
-    let source = Shape::Polygon(Polygon::new(
-        Ring::from_closed(
-            crate::geometry::CoordSeq::try_from_points(&[
-                Point::new_raw_xy(0.0, 0.0),
-                Point::new_raw_xy(4.0, 0.0),
-                Point::new_raw_xy(4.0, 4.0),
-                Point::new_raw_xy(0.0, 4.0),
-                Point::new_raw_xy(0.0, 0.0),
-            ])
-            .unwrap(),
-        )
-        .unwrap(),
-        Vec::new(),
-    ));
+    let source =
+        crate::io::parse_wkt("MULTIPOLYGON (((0 0,2 0,2 4,0 4,0 0)),((2 0,4 0,4 4,2 4,2 0)))")
+            .unwrap();
     overlay::reset_partition_calls();
     source.maximum_inscribed_circle(Some(1e-9)).unwrap();
     assert_eq!(overlay::partition_calls(), 1);

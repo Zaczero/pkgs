@@ -2,6 +2,7 @@
 
 use std::cmp::Ordering;
 use std::collections::BinaryHeap;
+use std::sync::Arc;
 
 use crate::error::Result;
 use crate::geometry::exact_arith::ExactSign;
@@ -10,7 +11,7 @@ use crate::geometry::tessellation::exact;
 use crate::geometry::tessellation::exact::{ExactDyadic, ExactRational as Rational};
 use crate::geometry::{
     CoordSeq, Coordinates as _, DdInterval, ExpansionBudget, LineSeq, PackedLineColumnView, Point,
-    RunIdentity, Segment, Shape, XY,
+    Polygonal, RunIdentity, Segment, Shape, XY,
 };
 
 mod index;
@@ -25,8 +26,8 @@ use instrumentation::{
     limit_refinement_work, refinement_work, reset_exact_span_evaluations, set_line_filter_enabled,
 };
 use numeric::{
-    Accuracy, ErrorBound, ExactCarrier, FloatBox, SquaredBounds, SupportSpan, Tightness,
-    UnreducedRatio,
+    Accuracy, DistanceInterval, ErrorBound, ExactCarrier, FloatBox, SelectedSpan, SquaredBounds,
+    SupportSpan, Tightness, UnreducedRatio,
 };
 
 const NOMINATED_SITE_COUNT: usize = 4;
@@ -35,14 +36,16 @@ const HULL_SEPARATION_LIMIT: usize = 8;
 
 #[derive(Debug)]
 pub(crate) struct PreparedSupport {
-    spans: Vec<SupportSpan>,
-    points: Vec<ExactPoint>,
+    spans: Arc<[SupportSpan]>,
+    points: Arc<[ExactPoint]>,
     faces: Vec<Vec<Vec<ExactPoint>>>,
     boundary_spans: Option<Vec<bool>>,
     boundary_points: Option<Vec<bool>>,
     boundary_edges: Vec<BoundaryEdge>,
     area_bounds: Option<FloatBox>,
-    index: SupportIndex,
+    index: Arc<SupportIndex>,
+    area_index: Arc<SupportIndex>,
+    parallel_carriers: bool,
 }
 
 impl PreparedSupport {
@@ -66,7 +69,7 @@ impl PreparedSupport {
                         },
                         &mut spans,
                         &mut points,
-                    )?;
+                    );
                 }
                 Ok::<(), crate::error::Error>(())
             })?;
@@ -88,10 +91,61 @@ impl PreparedSupport {
         if !shape.has_area_parts() {
             return Self::from_shape(shape, budget);
         }
+        // Valid polygon rings already are their filled support boundary.
+        // Invalid/overlapping inputs still need the union partition to select
+        // that boundary before distance and containment queries can use it.
+        if let Some(polygonal) = shape.polygonal()
+            && shape.validate()?.is_none()
+        {
+            return Self::from_valid_polygonal(&polygonal);
+        }
         let inventory = ExactSourceInventory::from_shapes(&[shape])?;
         let partition = inventory.partition(budget)?;
         let support = inventory.metric_support_with_boundary(&partition)?;
         Self::from_metric_support(support)
+    }
+
+    fn from_valid_polygonal(shape: &Polygonal<'_>) -> Result<Self> {
+        let mut spans = Vec::new();
+        let mut points = Vec::new();
+        let mut faces = Vec::new();
+        let mut add_polygon = |polygon: &crate::geometry::Polygon| {
+            if polygon.shell.coords().is_empty() {
+                return;
+            }
+            let mut cycles = Vec::new();
+            for ring in std::iter::once(&polygon.shell).chain(polygon.holes.iter()) {
+                let cycle: Vec<_> = ring
+                    .coords()
+                    .iter_coords()
+                    .map(|point| ExactPoint::from_xy(point.xy()))
+                    .collect();
+                if cycle.len() >= 3 {
+                    cycles.push(cycle);
+                }
+                for [start, end] in ring.coords().segment_pairs() {
+                    push_raw_segment(
+                        Segment {
+                            start: start.xy(),
+                            end: end.xy(),
+                        },
+                        &mut spans,
+                        &mut points,
+                    );
+                }
+            }
+            faces.push(cycles);
+        };
+        match shape {
+            Polygonal::Polygon(polygon) => add_polygon(polygon),
+            Polygonal::MultiPolygon(polygons) => {
+                for polygon in polygons.iter() {
+                    add_polygon(polygon);
+                }
+            },
+            Polygonal::Empty => {},
+        }
+        Self::from_parts(spans, points, faces)
     }
 
     fn from_line_columns(xs: &[f64], ys: &[f64]) -> Result<Self> {
@@ -104,7 +158,7 @@ impl PreparedSupport {
             let mut start = first;
             for (x, y) in coordinates {
                 let end = XY::new(x, y);
-                push_raw_segment(Segment { start, end }, &mut spans, &mut points)?;
+                push_raw_segment(Segment { start, end }, &mut spans, &mut points);
                 start = end;
             }
             if xs.len() == 1 {
@@ -170,7 +224,7 @@ impl PreparedSupport {
         let mut boundary_edges = Vec::new();
         for face in &faces {
             for cycle in face {
-                if cycle.len() < 2 {
+                if cycle.len() < 3 {
                     continue;
                 }
                 for (start, end) in cycle
@@ -178,6 +232,13 @@ impl PreparedSupport {
                     .zip(cycle.iter().cycle().skip(1))
                     .take(cycle.len())
                 {
+                    if start
+                        .stored_xy()
+                        .zip(end.stored_xy())
+                        .is_some_and(|(start, end)| start == end)
+                    {
+                        continue;
+                    }
                     boundary_edges.push(BoundaryEdge {
                         start: start.clone(),
                         end: end.clone(),
@@ -198,16 +259,31 @@ impl PreparedSupport {
             ));
         }
 
-        let index = SupportIndex::build(&spans, &points)?;
+        let parallel_carriers = may_have_parallel_carriers(&spans);
+        let index = Arc::new(SupportIndex::build(&spans, &points)?);
+        let same_edges = points.is_empty()
+            && spans.len() == boundary_edges.len()
+            && spans.iter().zip(&boundary_edges).all(|(span, edge)| {
+                span.range.is_none()
+                    && edge.start.stored_xy() == Some(span.source.start)
+                    && edge.end.stored_xy() == Some(span.source.end)
+            });
+        let area_index = if same_edges {
+            Arc::clone(&index)
+        } else {
+            Arc::new(SupportIndex::from_boundary_edges(&boundary_edges))
+        };
         Ok(Self {
-            spans,
-            points,
+            spans: spans.into(),
+            points: points.into(),
             faces,
             boundary_spans: None,
             boundary_points: None,
             boundary_edges,
             area_bounds,
             index,
+            area_index,
+            parallel_carriers,
         })
     }
 
@@ -217,6 +293,23 @@ impl PreparedSupport {
     /// support hidden by a positive-area face.
     pub(in crate::geometry) fn boundary_clone(&self) -> Result<Self> {
         let span_flags = self.boundary_spans.as_deref();
+        let point_flags = self.boundary_points.as_deref();
+        if span_flags.is_none_or(|flags| flags.iter().all(|&selected| selected))
+            && point_flags.is_none_or(|flags| flags.iter().all(|&selected| selected))
+        {
+            return Ok(Self {
+                spans: Arc::clone(&self.spans),
+                points: Arc::clone(&self.points),
+                faces: Vec::new(),
+                boundary_spans: None,
+                boundary_points: None,
+                boundary_edges: Vec::new(),
+                area_bounds: None,
+                index: Arc::clone(&self.index),
+                area_index: Arc::default(),
+                parallel_carriers: self.parallel_carriers,
+            });
+        }
         let mut spans = Vec::with_capacity(span_flags.map_or(self.spans.len(), |flags| {
             flags.iter().filter(|&&selected| selected).count()
         }));
@@ -231,7 +324,6 @@ impl PreparedSupport {
             None => spans.extend(self.spans.iter().cloned()),
         }
 
-        let point_flags = self.boundary_points.as_deref();
         let mut points = Vec::with_capacity(point_flags.map_or(self.points.len(), |flags| {
             flags.iter().filter(|&&selected| selected).count()
         }));
@@ -257,8 +349,8 @@ impl PreparedSupport {
         for (index, span) in self.spans.iter().enumerate() {
             patches.push(SourcePatch::Span {
                 span: index,
-                lo: span.t_lo.clone(),
-                hi: span.t_hi.clone(),
+                lo: span.lo().clone(),
+                hi: span.hi().clone(),
             });
         }
         if let Some(bounds) = self.area_bounds
@@ -270,10 +362,21 @@ impl PreparedSupport {
     }
 
     fn inradius_initial_patches(&self) -> Result<Vec<SourcePatch>> {
-        if self.has_positive_area()? {
-            return Ok(self
-                .area_bounds
-                .map_or_else(Vec::new, |bounds| vec![SourcePatch::Box(bounds)]));
+        if self.has_positive_area() {
+            let mut patches = Vec::with_capacity(self.faces.len());
+            for face in &self.faces {
+                let mut bounds = None;
+                for point in face.iter().filter(|cycle| cycle.len() >= 3).flatten() {
+                    let point_bounds = FloatBox::from_point(point)?;
+                    bounds = Some(bounds.map_or(point_bounds, |bounds: FloatBox| {
+                        bounds.include(point_bounds)
+                    }));
+                }
+                if let Some(bounds) = bounds {
+                    patches.push(SourcePatch::Box(bounds));
+                }
+            }
+            return Ok(patches);
         }
 
         let mut patches = self.initial_patches();
@@ -285,26 +388,9 @@ impl PreparedSupport {
     }
 
     fn contains_area(&self, point: &ExactPoint) -> Result<bool> {
-        let point_bounds = FloatBox::from_point(point)?;
-        // `boundary_edges` lists each cycle of at least two points in order.
-        let mut edges = self.boundary_edges.as_slice();
-        for face in &self.faces {
-            let mut inside = false;
-            for cycle in face {
-                let count = if cycle.len() < 2 { 0 } else { cycle.len() };
-                let (cycle_edges, rest) = edges.split_at(count);
-                edges = rest;
-                match cycle_location(point, point_bounds, cycle, cycle_edges)? {
-                    CycleLocation::Boundary => return Ok(true),
-                    CycleLocation::Crosses => inside = !inside,
-                    CycleLocation::Clear => {},
-                }
-            }
-            if inside {
-                return Ok(true);
-            }
-        }
-        Ok(false)
+        // Partition faces have disjoint interiors. Shared internal edges
+        // cross a ray twice, so parity over all cycles is their filled union.
+        self.area_index.contains_area(&self.boundary_edges, point)
     }
 
     fn covers_support(&self, point: &ExactPoint) -> Result<bool> {
@@ -333,18 +419,55 @@ impl PreparedSupport {
         if !self.contains_area(&center)? {
             return Ok(false);
         }
+        // A convex polygon whose vertices lie in the center's clearance disk
+        // cannot cross the source boundary, including an enclosed hole.
+        let clearance_squared = boundary.distance_squared(&center)?;
+        let mut inside_disk = true;
+        let mut radius_squared = Rational::zero();
         for &point in candidate {
             let point = ExactPoint::from_xy(point.xy());
-            if !self.covers_support(&point)? {
-                return Ok(false);
+            let squared = exact_point_distance_squared(&center, &point)?;
+            if squared.try_cmp(&radius_squared)? == Ordering::Greater {
+                radius_squared = squared.clone();
+            }
+            if squared.try_cmp(&clearance_squared)? == Ordering::Greater {
+                inside_disk = false;
+                if !self.covers_support(&point)? {
+                    return Ok(false);
+                }
             }
         }
+        if inside_disk {
+            return Ok(true);
+        }
+        let radius_squared = nonnegative_upper_bound(&radius_squared)?;
+        let center_bounds = FloatBox::from_point(&center)?;
+        let center_xy = center.rounded_xy()?;
         // The selected boundary spans include retained hole cycles. Testing
         // the whole segment, rather than only its endpoints, rejects both an
         // inward chord crossing and a hole wholly enclosed by the candidate.
-        for span in &boundary.spans {
-            let start = span_point(span, &span.t_lo)?;
-            let end = span_point(span, &span.t_hi)?;
+        for span in boundary.spans.iter() {
+            if box_distance_lower(center_bounds, span.bounds) > radius_squared {
+                continue;
+            }
+            let side = crate::geometry::orientation(span.source.start, span.source.end, center_xy);
+            if side != crate::geometry::Orientation::Collinear
+                && candidate.iter().all(|point| {
+                    let vertex_side = crate::geometry::orientation(
+                        span.source.start,
+                        span.source.end,
+                        point.xy(),
+                    );
+                    vertex_side == side || vertex_side == crate::geometry::Orientation::Collinear
+                })
+            {
+                // The selected span lies on its original exact carrier.
+                // A polygon in one closed carrier half-plane has no interior
+                // on that line, including when it touches a candidate vertex.
+                continue;
+            }
+            let start = span_point(span, span.lo())?;
+            let end = span_point(span, span.hi())?;
             if exact_segment_enters_candidate(&start, &end, candidate, counter_clockwise)? {
                 return Ok(false);
             }
@@ -352,35 +475,15 @@ impl PreparedSupport {
         Ok(true)
     }
 
-    fn has_positive_area(&self) -> Result<bool> {
-        for face in &self.faces {
-            for cycle in face {
-                if cycle.len() < 3 {
-                    continue;
-                }
-                let mut area = Rational::zero();
-                for (left, right) in cycle
-                    .iter()
-                    .zip(cycle.iter().cycle().skip(1))
-                    .take(cycle.len())
-                {
-                    let cross = left
-                        .x
-                        .try_product(&right.y)?
-                        .try_subtract(&left.y.try_product(&right.x)?)?;
-                    area = area.try_add(&cross)?;
-                }
-                if !area.is_zero() {
-                    return Ok(true);
-                }
-            }
-        }
-        Ok(false)
+    const fn has_positive_area(&self) -> bool {
+        // Faces come from either valid polygon rings or selected non-exterior
+        // partition faces; collapsed support lives only in spans and points.
+        !self.faces.is_empty()
     }
 
     fn first_boundary_point(&self) -> Option<ExactPoint> {
         if let Some(span) = self.spans.first() {
-            return Some(span.start.clone());
+            return Some(span.start_point());
         }
         if let Some(point) = self.points.first() {
             return Some(point.clone());
@@ -398,10 +501,7 @@ impl PreparedSupport {
             let max_x = Rational::from_f64(bounds.max_x);
             let min_y = Rational::from_f64(bounds.min_y);
             let max_y = Rational::from_f64(bounds.max_y);
-            let center = ExactPoint {
-                x: min_x.try_midpoint(&max_x)?,
-                y: min_y.try_midpoint(&max_y)?,
-            };
+            let center = ExactPoint::new(min_x.try_midpoint(&max_x)?, min_y.try_midpoint(&max_y)?);
             if self.contains_area(&center)? {
                 return Ok(Some(center));
             }
@@ -438,8 +538,8 @@ impl PreparedSupport {
                 point_span_distance_squared(point, &self.spans[index])
             },
             PrimitiveId::Point(index) => {
-                let dx = UnreducedRatio::try_difference(&point.x, &self.points[index].x)?;
-                let dy = UnreducedRatio::try_difference(&point.y, &self.points[index].y)?;
+                let dx = UnreducedRatio::try_difference(point.x(), self.points[index].x())?;
+                let dy = UnreducedRatio::try_difference(point.y(), self.points[index].y())?;
                 dx.try_square()?.try_add(&dy.try_square()?)
             },
         }
@@ -452,10 +552,6 @@ impl PreparedSupport {
         Ok(self.index.nearest(self, point, None)?.bounds.lower)
     }
 
-    #[expect(
-        clippy::indexing_slicing,
-        reason = "PrimitiveId carries a stable span/point ordinal from this immutable PreparedSupport"
-    )]
     fn primitive_squared_bounds(
         &self,
         primitive: PrimitiveId,
@@ -463,10 +559,9 @@ impl PreparedSupport {
         point_bounds: FloatBox,
         tightness: Option<Tightness>,
     ) -> Result<SquaredBounds> {
-        if let (Some(tightness), PrimitiveId::Span(index)) = (tightness, primitive)
+        if let Some(tightness) = tightness
             && let Some((lower, upper)) =
-                point_span_squared_bounds(point_bounds, &self.spans[index])
-            && tightness.admits(lower, upper)
+                self.primitive_interval_bounds(primitive, point_bounds, tightness)
         {
             return Ok(SquaredBounds::enclosing(lower, upper));
         }
@@ -475,34 +570,149 @@ impl PreparedSupport {
                 .to_rational()?,
         )
     }
+
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "PrimitiveId carries a stable span ordinal from this immutable PreparedSupport"
+    )]
+    fn primitive_interval_bounds(
+        &self,
+        primitive: PrimitiveId,
+        point_bounds: FloatBox,
+        tightness: Tightness,
+    ) -> Option<(f64, f64)> {
+        let PrimitiveId::Span(index) = primitive else {
+            return None;
+        };
+        point_span_binary64_bounds(point_bounds, &self.spans[index])
+            .filter(|&(lower, upper)| tightness.admits(lower, upper))
+            .or_else(|| {
+                point_span_squared_bounds_with::<exact::Interval>(point_bounds, &self.spans[index])
+                    .filter(|&(lower, upper)| tightness.admits(lower, upper))
+            })
+            .or_else(|| {
+                point_span_squared_bounds(point_bounds, &self.spans[index])
+                    .filter(|&(lower, upper)| tightness.admits(lower, upper))
+            })
+    }
 }
 
-fn push_raw_segment(
-    source: Segment,
-    spans: &mut Vec<SupportSpan>,
-    points: &mut Vec<ExactPoint>,
-) -> Result<()> {
+/// Disjoint slope enclosures prove that no two exact carriers are parallel.
+/// An unresolved slope or overlapping pair keeps the exact strip certificate
+/// available; this filter only removes a nomination query that cannot help.
+fn may_have_parallel_carriers(spans: &[SupportSpan]) -> bool {
+    let mut slopes = Vec::with_capacity(spans.len());
+    let mut vertical = false;
+    for span in spans {
+        let (a, b) = (span.source.start, span.source.end);
+        if a.x <= b.x && b.x <= a.x {
+            if vertical {
+                return true;
+            }
+            vertical = true;
+            continue;
+        }
+        let dx = exact::Interval::exact(b.x).sub(exact::Interval::exact(a.x));
+        let dy = exact::Interval::exact(b.y).sub(exact::Interval::exact(a.y));
+        if !dx.is_finite() || !dy.is_finite() || (dx.lo <= 0.0 && dx.hi >= 0.0) {
+            return true;
+        }
+        let quotients = [dy.lo / dx.lo, dy.lo / dx.hi, dy.hi / dx.lo, dy.hi / dx.hi];
+        if quotients.iter().any(|value| !value.is_finite()) {
+            return true;
+        }
+        let low = quotients
+            .into_iter()
+            .fold(f64::INFINITY, f64::min)
+            .next_down();
+        let high = quotients
+            .into_iter()
+            .fold(f64::NEG_INFINITY, f64::max)
+            .next_up();
+        slopes.push((low, high));
+    }
+    slopes.sort_unstable_by(|left, right| left.0.total_cmp(&right.0));
+    slopes
+        .array_windows::<2>()
+        .any(|[left, right]| right.0 <= left.1)
+}
+
+/// A full segment and a singleton query admit an absolute distance-error
+/// filter. Normal squared norms exclude square-root underflow; the 128-unit-
+/// roundoff allowance covers subtraction, projection/clamping, cross product,
+/// square root, and division, including an uncertain end-normal decision.
+fn point_span_binary64_bounds(point: FloatBox, span: &SupportSpan) -> Option<(f64, f64)> {
+    if span.range.is_some() {
+        return None;
+    }
+    if !(point.min_x.to_bits() == point.max_x.to_bits()
+        && point.min_y.to_bits() == point.max_y.to_bits())
+    {
+        return None;
+    }
+    let (a, b) = (span.source.start, span.source.end);
+    let (vx, vy) = (b.x - a.x, b.y - a.y);
+    let (px, py) = (point.min_x - a.x, point.min_y - a.y);
+    let (qx, qy) = (point.min_x - b.x, point.min_y - b.y);
+    let norm = vx * vx + vy * vy;
+    let dot = px * vx + py * vy;
+    if !(norm.is_normal() && norm > 0.0 && dot.is_finite()) {
+        return None;
+    }
+    let endpoint = |x: f64, y: f64| {
+        let squared = x * x + y * y;
+        squared.is_normal().then(|| squared.sqrt())
+    };
+    let distance = if dot <= 0.0 {
+        endpoint(px, py)?
+    } else if dot >= norm {
+        endpoint(qx, qy)?
+    } else {
+        (px * vy - py * vx).abs() / norm.sqrt()
+    };
+    let magnitude = vx
+        .abs()
+        .max(vy.abs())
+        .max(px.abs())
+        .max(py.abs())
+        .max(qx.abs())
+        .max(qy.abs());
+    let error = (64.0 * f64::EPSILON * magnitude).next_up();
+    let lower = (distance - error).next_down().max(0.0);
+    let upper = (distance + error).next_up();
+    let lower = (lower * lower).next_down().max(0.0);
+    let upper = (upper * upper).next_up();
+    (distance.is_finite() && lower.is_finite() && upper.is_finite()).then_some((lower, upper))
+}
+
+fn push_raw_segment(source: Segment, spans: &mut Vec<SupportSpan>, points: &mut Vec<ExactPoint>) {
     if source.start == source.end {
         points.push(ExactPoint::from_xy(source.start));
-        return Ok(());
+        return;
     }
-    spans.push(SupportSpan {
+    spans.push(raw_support_span(source));
+}
+
+const fn raw_support_span(source: Segment) -> SupportSpan {
+    SupportSpan {
         source,
-        carrier: ExactCarrier::from_segment(source)?,
-        t_lo: Rational::zero(),
-        t_hi: Rational::one(),
-        start: ExactPoint::from_xy(source.start),
+        carrier: std::sync::OnceLock::new(),
+        range: None,
         bounds: FloatBox {
             min_x: source.start.x.min(source.end.x),
             max_x: source.start.x.max(source.end.x),
             min_y: source.start.y.min(source.end.y),
             max_y: source.start.y.max(source.end.y),
         },
-    });
-    Ok(())
+    }
 }
 
 fn support_span(span: ExactMetricSpan) -> Result<SupportSpan> {
+    if span.start_parameter[0].is_zero()
+        && span.end_parameter[0].cmp(&span.end_parameter[1]) == Ordering::Equal
+    {
+        return Ok(raw_support_span(span.source));
+    }
     let start = ExactPoint::from_homogeneous(span.start.homogeneous)?;
     let end = ExactPoint::from_homogeneous(span.end.homogeneous)?;
     let mut t_lo = Rational::new(
@@ -516,10 +726,11 @@ fn support_span(span: ExactMetricSpan) -> Result<SupportSpan> {
     let bounds = FloatBox::from_point(&start)?.include(FloatBox::from_point(&end)?);
     Ok(SupportSpan {
         source: span.source,
-        carrier: ExactCarrier::from_segment(span.source)?,
-        t_lo,
-        t_hi,
-        start,
+        carrier: std::sync::OnceLock::new(),
+        range: Some(Box::new(SelectedSpan {
+            parameters: [t_lo, t_hi],
+            start,
+        })),
         bounds,
     })
 }
@@ -542,16 +753,16 @@ impl ExactCarrier {
 }
 
 fn span_point(span: &SupportSpan, parameter: &Rational) -> Result<ExactPoint> {
-    let carrier = &span.carrier;
+    let carrier = span.carrier()?;
     let x = carrier.ax.try_add(&carrier.dx.try_product(parameter)?)?;
     let y = carrier.ay.try_add(&carrier.dy.try_product(parameter)?)?;
-    Ok(ExactPoint { x, y })
+    Ok(ExactPoint::new(x, y))
 }
 
 fn span_projection_parameter(point: &ExactPoint, span: &SupportSpan) -> Result<Rational> {
-    let carrier = &span.carrier;
-    let px = point.x.try_subtract(&carrier.ax)?;
-    let py = point.y.try_subtract(&carrier.ay)?;
+    let carrier = span.carrier()?;
+    let px = point.x().try_subtract(&carrier.ax)?;
+    let py = point.y().try_subtract(&carrier.ay)?;
     let numerator = px
         .try_product(&carrier.dx)?
         .try_add(&py.try_product(&carrier.dy)?)?;
@@ -577,25 +788,25 @@ fn span_coordinate_difference(
 }
 
 fn point_span_distance_squared(point: &ExactPoint, span: &SupportSpan) -> Result<UnreducedRatio> {
-    let carrier = &span.carrier;
-    let px = UnreducedRatio::try_difference(&point.x, &carrier.ax)?;
-    let py = UnreducedRatio::try_difference(&point.y, &carrier.ay)?;
+    let carrier = span.carrier()?;
+    let px = UnreducedRatio::try_difference(point.x(), &carrier.ax)?;
+    let py = UnreducedRatio::try_difference(point.y(), &carrier.ay)?;
     let dx = UnreducedRatio::from_rational(&carrier.dx)?;
     let dy = UnreducedRatio::from_rational(&carrier.dy)?;
     let norm_squared = UnreducedRatio::from_rational(&carrier.norm_squared)?;
     let dot = px.try_product(&dx)?.try_add(&py.try_product(&dy)?)?;
-    let low = UnreducedRatio::from_rational(&span.t_lo)?.try_product(&norm_squared)?;
-    let high = UnreducedRatio::from_rational(&span.t_hi)?.try_product(&norm_squared)?;
+    let low = UnreducedRatio::from_rational(span.lo())?.try_product(&norm_squared)?;
+    let high = UnreducedRatio::from_rational(span.hi())?.try_product(&norm_squared)?;
     let parameter = if carrier.norm_squared.is_zero() || dot.try_cmp(&low)? == Ordering::Less {
-        &span.t_lo
+        span.lo()
     } else if dot.try_cmp(&high)? == Ordering::Greater {
-        &span.t_hi
+        span.hi()
     } else {
         let cross = px.try_product(&dy)?.try_subtract(&py.try_product(&dx)?)?;
         return cross.try_square()?.try_quotient(&norm_squared);
     };
-    let dx = span_coordinate_difference(&point.x, &carrier.ax, &carrier.dx, parameter)?;
-    let dy = span_coordinate_difference(&point.y, &carrier.ay, &carrier.dy, parameter)?;
+    let dx = span_coordinate_difference(point.x(), &carrier.ax, &carrier.dx, parameter)?;
+    let dy = span_coordinate_difference(point.y(), &carrier.ay, &carrier.dy, parameter)?;
     dx.try_square()?.try_add(&dy.try_square()?)
 }
 
@@ -605,25 +816,41 @@ fn point_span_distance_squared(point: &ExactPoint, span: &SupportSpan) -> Result
 /// box corners bound them; a box straddling the segment's end normals, a
 /// partial span, or a non-finite stage declines to the exact evaluation.
 fn point_span_squared_bounds(point_bounds: FloatBox, span: &SupportSpan) -> Option<(f64, f64)> {
-    if !(span.t_lo.is_zero() && span.t_hi.is_one()) {
+    point_span_squared_bounds_with::<DdInterval>(point_bounds, span)
+}
+
+fn point_span_squared_bounds_with<I: DistanceInterval>(
+    point_bounds: FloatBox,
+    span: &SupportSpan,
+) -> Option<(f64, f64)> {
+    if span.range.is_some() {
         return None;
     }
     let (start, end) = (span.source.start, span.source.end);
-    let dx = DdInterval::difference(end.x, start.x)?;
-    let dy = DdInterval::difference(end.y, start.y)?;
-    let (norm_lower, norm_upper) = dx.square()?.add(dy.square()?)?.outward_bounds();
+    let dx = I::delta(end.x, start.x)?;
+    let dy = I::delta(end.y, start.y)?;
+    let (norm_lower, norm_upper) = dx
+        .square_bounds()?
+        .add_bounds(dy.square_bounds()?)?
+        .enclosure();
     if !(norm_lower > 0.0 && norm_upper.is_finite()) {
         return None;
     }
     let (mut dot_lower, mut dot_upper) = (f64::INFINITY, f64::NEG_INFINITY);
     let (mut cross_lower, mut cross_upper) = (f64::INFINITY, f64::NEG_INFINITY);
-    for (x, y) in point_bounds.corners() {
-        let px = DdInterval::difference(x, start.x)?;
-        let py = DdInterval::difference(y, start.y)?;
-        let (low, high) = dx.mul(px)?.add(dy.mul(py)?)?.outward_bounds();
+    for (x, y) in point_bounds.distinct_corners() {
+        let px = I::delta(x, start.x)?;
+        let py = I::delta(y, start.y)?;
+        let (low, high) = dx
+            .mul_bounds(px)?
+            .add_bounds(dy.mul_bounds(py)?)?
+            .enclosure();
         dot_lower = dot_lower.min(low);
         dot_upper = dot_upper.max(high);
-        let (low, high) = dx.mul(py)?.sub(dy.mul(px)?)?.outward_bounds();
+        let (low, high) = dx
+            .mul_bounds(py)?
+            .sub_bounds(dy.mul_bounds(px)?)?
+            .enclosure();
         cross_lower = cross_lower.min(low);
         cross_upper = cross_upper.max(high);
     }
@@ -632,10 +859,15 @@ fn point_span_squared_bounds(point_bounds: FloatBox, span: &SupportSpan) -> Opti
     }
     let endpoint = |target: XY| -> Option<(f64, f64)> {
         let mut upper: f64 = 0.0;
-        for (x, y) in point_bounds.corners() {
-            let px = DdInterval::difference(x, target.x)?;
-            let py = DdInterval::difference(y, target.y)?;
-            upper = upper.max(px.square()?.add(py.square()?)?.outward_bounds().1);
+        for (x, y) in point_bounds.distinct_corners() {
+            let px = I::delta(x, target.x)?;
+            let py = I::delta(y, target.y)?;
+            upper = upper.max(
+                px.square_bounds()?
+                    .add_bounds(py.square_bounds()?)?
+                    .enclosure()
+                    .1,
+            );
         }
         let target = FloatBox {
             min_x: target.x,
@@ -678,32 +910,39 @@ fn point_span_squared_bounds(point_bounds: FloatBox, span: &SupportSpan) -> Opti
 /// unsupported, nonfinite, underflowed, or sign-uncertain stage declines.
 /// Restricting the carrier to the stored span can only increase the distance.
 fn supporting_line_lower_squared(point_bounds: FloatBox, span: &SupportSpan) -> f64 {
-    let Some(dx) = DdInterval::difference(span.source.end.x, span.source.start.x) else {
+    supporting_line_lower_squared_with::<exact::Interval>(point_bounds, span)
+}
+
+fn supporting_line_lower_squared_with<I: DistanceInterval>(
+    point_bounds: FloatBox,
+    span: &SupportSpan,
+) -> f64 {
+    let Some(dx) = I::delta(span.source.end.x, span.source.start.x) else {
         return 0.0;
     };
-    let Some(dy) = DdInterval::difference(span.source.end.y, span.source.start.y) else {
+    let Some(dy) = I::delta(span.source.end.y, span.source.start.y) else {
         return 0.0;
     };
 
     let mut cross_lower = f64::INFINITY;
     let mut cross_upper = f64::NEG_INFINITY;
-    for (x, y) in point_bounds.corners() {
-        let Some(px) = DdInterval::difference(x, span.source.start.x) else {
+    for (x, y) in point_bounds.distinct_corners() {
+        let Some(px) = I::delta(x, span.source.start.x) else {
             return 0.0;
         };
-        let Some(py) = DdInterval::difference(y, span.source.start.y) else {
+        let Some(py) = I::delta(y, span.source.start.y) else {
             return 0.0;
         };
-        let Some(left) = dx.mul(py) else {
+        let Some(left) = dx.mul_bounds(py) else {
             return 0.0;
         };
-        let Some(right) = dy.mul(px) else {
+        let Some(right) = dy.mul_bounds(px) else {
             return 0.0;
         };
-        let Some(cross) = left.sub(right) else {
+        let Some(cross) = left.sub_bounds(right) else {
             return 0.0;
         };
-        let (lower, upper) = cross.outward_bounds();
+        let (lower, upper) = cross.enclosure();
         if !(lower.is_finite() && upper.is_finite() && lower <= upper) {
             return 0.0;
         }
@@ -722,10 +961,13 @@ fn supporting_line_lower_squared(point_bounds: FloatBox, span: &SupportSpan) -> 
         return 0.0;
     }
 
-    let Some(norm) = dx.square().and_then(|x| dy.square().and_then(|y| x.add(y))) else {
+    let Some(norm) = dx
+        .square_bounds()
+        .and_then(|x| dy.square_bounds().and_then(|y| x.add_bounds(y)))
+    else {
         return 0.0;
     };
-    let (norm_lower, norm_upper) = norm.outward_bounds();
+    let (norm_lower, norm_upper) = norm.enclosure();
     if !norm_lower.is_finite() || norm_lower > norm_upper || !norm_upper.is_normal() {
         return 0.0;
     }
@@ -749,10 +991,14 @@ fn supporting_line_lower_squared(point_bounds: FloatBox, span: &SupportSpan) -> 
 }
 
 fn nonnegative_upper_bound(value: &Rational) -> Result<f64> {
+    Ok(nonnegative_bounds(value)?.1)
+}
+
+fn nonnegative_bounds(value: &Rational) -> Result<(f64, f64)> {
     if value.try_cmp(&Rational::from_f64(f64::MAX))? == Ordering::Greater {
-        Ok(f64::INFINITY)
+        Ok((f64::MAX, f64::INFINITY))
     } else {
-        Ok(value.outward_bounds()?.1)
+        value.outward_bounds()
     }
 }
 
@@ -851,14 +1097,17 @@ fn box_distance_lower(left: FloatBox, right: FloatBox) -> f64 {
         right.min_y - left.max_y,
         left.min_y - right.max_y,
     ];
-    if gaps.iter().any(|value| value.is_nan()) {
-        return 0.0;
+    let dx = gaps[0].max(gaps[1]).max(0.0);
+    let dy = gaps[2].max(gaps[3]).max(0.0);
+    let squared = dx * dx + dy * dy;
+    // Subtraction, squaring, summation, and the final multiply use fewer than
+    // eight unit roundoffs. A 32-roundoff bias also covers subnormal products
+    // when the sum is normal; below that range zero is the safe lower bound.
+    if squared >= f64::MIN_POSITIVE && gaps.iter().all(|value| !value.is_nan()) {
+        squared.min(f64::MAX) * (1.0 - 16.0 * f64::EPSILON)
+    } else {
+        0.0
     }
-    let dx = gaps[0].max(gaps[1]).next_down().max(0.0);
-    let dy = gaps[2].max(gaps[3]).next_down().max(0.0);
-    let x_squared = (dx * dx).next_down().max(0.0);
-    let y_squared = (dy * dy).next_down().max(0.0);
-    (x_squared + y_squared).next_down().max(0.0)
 }
 
 enum CycleLocation {
@@ -868,79 +1117,91 @@ enum CycleLocation {
     Clear,
 }
 
-/// Locate a point against one cycle in a single pass. The exact cross product
-/// runs only for edges that straddle the rightward ray or whose extent holds
-/// the point; any other edge can neither contain the point nor cross the ray.
-/// `edges[i]` joins `cycle[i]` to its successor, and an edge whose outward
-/// bounds lie wholly above or below the point's needs no exact comparison.
-fn cycle_location(
-    point: &ExactPoint,
-    point_bounds: FloatBox,
-    cycle: &[ExactPoint],
-    edges: &[BoundaryEdge],
-) -> Result<CycleLocation> {
-    if cycle.len() < 3 {
+/// Classify one ray contact without rounding constructed boundary vertices.
+fn edge_location(point: &ExactPoint, edge: &BoundaryEdge) -> Result<CycleLocation> {
+    if let (Some(point), Some(left), Some(right)) = (
+        point.stored_xy(),
+        edge.start.stored_xy(),
+        edge.end.stored_xy(),
+    ) {
+        return ray_edge_location(point, left, right);
+    }
+    let (left, right) = (&edge.start, &edge.end);
+    ray_edge_location(point, left, right)
+}
+
+trait RayPoint: Copy {
+    fn compare_y(self, other: Self) -> Result<Ordering>;
+    fn between_x(self, left: Self, right: Self) -> Result<bool>;
+    fn orientation(self, left: Self, right: Self) -> Result<ExactSign>;
+}
+
+impl RayPoint for XY {
+    fn compare_y(self, other: Self) -> Result<Ordering> {
+        Ok(self
+            .y
+            .partial_cmp(&other.y)
+            .expect("prepared coordinates are finite"))
+    }
+
+    fn between_x(self, left: Self, right: Self) -> Result<bool> {
+        Ok((left.x <= self.x && self.x <= right.x) || (right.x <= self.x && self.x <= left.x))
+    }
+
+    fn orientation(self, left: Self, right: Self) -> Result<ExactSign> {
+        Ok(match crate::geometry::orientation(left, right, self) {
+            crate::geometry::Orientation::Collinear => ExactSign::Zero,
+            crate::geometry::Orientation::Clockwise => ExactSign::Negative,
+            crate::geometry::Orientation::CounterClockwise => ExactSign::Positive,
+        })
+    }
+}
+
+impl RayPoint for &ExactPoint {
+    fn compare_y(self, other: Self) -> Result<Ordering> {
+        self.y().try_cmp(other.y())
+    }
+
+    fn between_x(self, left: Self, right: Self) -> Result<bool> {
+        between(self.x(), left.x(), right.x())
+    }
+
+    fn orientation(self, left: Self, right: Self) -> Result<ExactSign> {
+        let dx = right.x().try_subtract(left.x())?;
+        let dy = right.y().try_subtract(left.y())?;
+        let px = self.x().try_subtract(left.x())?;
+        let py = self.y().try_subtract(left.y())?;
+        Ok(dx
+            .try_product(&py)?
+            .try_subtract(&dy.try_product(&px)?)?
+            .sign())
+    }
+}
+
+fn ray_edge_location<P: RayPoint>(point: P, left: P, right: P) -> Result<CycleLocation> {
+    let left_order = left.compare_y(point)?;
+    let right_order = right.compare_y(point)?;
+    let straddles = (left_order == Ordering::Greater) != (right_order == Ordering::Greater);
+    let spans_y = left_order != right_order || left_order == Ordering::Equal;
+    let holds_point = spans_y && point.between_x(left, right)?;
+    if !straddles && !holds_point {
         return Ok(CycleLocation::Clear);
     }
-    // Off the cycle's bounds the point is neither on it nor enclosed by it.
-    let bounds = edges
-        .iter()
-        .map(|edge| edge.bounds)
-        .reduce(FloatBox::include)
-        .expect("a cycle of three points has edges");
-    if !bounds.meets(point_bounds) {
-        return Ok(CycleLocation::Clear);
+    let cross = point.orientation(left, right)?;
+    if holds_point && cross == ExactSign::Zero {
+        return Ok(CycleLocation::Boundary);
     }
-    let mut crossings = false;
-    debug_assert_eq!(cycle.len(), edges.len());
-    let previous_count = cycle.len().wrapping_sub(1);
-    let last = cycle
-        .last()
-        .expect("a cycle of three points has a last point");
-    let mut left_order = last.y.try_cmp(&point.y)?;
-    let lefts = std::iter::once(last).chain(cycle.iter().take(previous_count));
-    let edge_first = edges
-        .iter()
-        .next_back()
-        .expect("cycle edges align with cycle points");
-    let edges = std::iter::once(edge_first).chain(edges.iter().take(previous_count));
-    for ((left, right), edge) in lefts.zip(cycle.iter()).zip(edges) {
-        let edge = edge.bounds;
-        let right_order = if edge.min_y > point_bounds.max_y {
-            Ordering::Greater
-        } else if edge.max_y < point_bounds.min_y {
-            Ordering::Less
-        } else {
-            right.y.try_cmp(&point.y)?
-        };
-        let straddles = (left_order == Ordering::Greater) != (right_order == Ordering::Greater);
-        let spans_y = left_order != right_order || left_order == Ordering::Equal;
-        left_order = right_order;
-        let holds_point = spans_y && between(&point.x, &left.x, &right.x)?;
-        if !straddles && !holds_point {
-            continue;
-        }
-        let dx = right.x.try_subtract(&left.x)?;
-        let dy = right.y.try_subtract(&left.y)?;
-        let px = point.x.try_subtract(&left.x)?;
-        let py = point.y.try_subtract(&left.y)?;
-        let cross = dx.try_product(&py)?.try_subtract(&dy.try_product(&px)?)?;
-        if holds_point && cross.is_zero() {
-            return Ok(CycleLocation::Boundary);
-        }
-        let rising = right_order == Ordering::Greater;
+    let rising = right_order == Ordering::Greater;
+    Ok(
         if straddles
-            && ((rising && cross.sign() == ExactSign::Positive)
-                || (!rising && cross.sign() == ExactSign::Negative))
+            && ((rising && cross == ExactSign::Positive)
+                || (!rising && cross == ExactSign::Negative))
         {
-            crossings = !crossings;
-        }
-    }
-    Ok(if crossings {
-        CycleLocation::Crosses
-    } else {
-        CycleLocation::Clear
-    })
+            CycleLocation::Crosses
+        } else {
+            CycleLocation::Clear
+        },
+    )
 }
 
 fn between(value: &Rational, left: &Rational, right: &Rational) -> Result<bool> {
@@ -958,24 +1219,24 @@ fn segment_box_intersection(edge: &BoundaryEdge, bounds: FloatBox) -> Result<Opt
     if point_in_box(&edge.end, bounds)? {
         return Ok(Some(edge.end.clone()));
     }
-    let dx = edge.end.x.try_subtract(&edge.start.x)?;
-    let dy = edge.end.y.try_subtract(&edge.start.y)?;
+    let dx = edge.end.x().try_subtract(edge.start.x())?;
+    let dy = edge.end.y().try_subtract(edge.start.y())?;
     for x in [bounds.min_x, bounds.max_x] {
         if dx.is_zero() {
             continue;
         }
         let x = Rational::from_f64(x);
-        let parameter = x.try_subtract(&edge.start.x)?.try_quotient(&dx)?;
+        let parameter = x.try_subtract(edge.start.x())?.try_quotient(&dx)?;
         if parameter.try_cmp(&Rational::zero())? == Ordering::Less
             || parameter.try_cmp(&Rational::one())? == Ordering::Greater
         {
             continue;
         }
-        let y = edge.start.y.try_add(&dy.try_product(&parameter)?)?;
+        let y = edge.start.y().try_add(&dy.try_product(&parameter)?)?;
         if y.try_cmp(&Rational::from_f64(bounds.min_y))? != Ordering::Less
             && y.try_cmp(&Rational::from_f64(bounds.max_y))? != Ordering::Greater
         {
-            return Ok(Some(ExactPoint { x, y }));
+            return Ok(Some(ExactPoint::new(x, y)));
         }
     }
     for y in [bounds.min_y, bounds.max_y] {
@@ -983,17 +1244,17 @@ fn segment_box_intersection(edge: &BoundaryEdge, bounds: FloatBox) -> Result<Opt
             continue;
         }
         let y = Rational::from_f64(y);
-        let parameter = y.try_subtract(&edge.start.y)?.try_quotient(&dy)?;
+        let parameter = y.try_subtract(edge.start.y())?.try_quotient(&dy)?;
         if parameter.try_cmp(&Rational::zero())? == Ordering::Less
             || parameter.try_cmp(&Rational::one())? == Ordering::Greater
         {
             continue;
         }
-        let x = edge.start.x.try_add(&dx.try_product(&parameter)?)?;
+        let x = edge.start.x().try_add(&dx.try_product(&parameter)?)?;
         if x.try_cmp(&Rational::from_f64(bounds.min_x))? != Ordering::Less
             && x.try_cmp(&Rational::from_f64(bounds.max_x))? != Ordering::Greater
         {
-            return Ok(Some(ExactPoint { x, y }));
+            return Ok(Some(ExactPoint::new(x, y)));
         }
     }
     Ok(None)
@@ -1004,10 +1265,10 @@ fn point_in_box(point: &ExactPoint, bounds: FloatBox) -> Result<bool> {
     let max_x = Rational::from_f64(bounds.max_x);
     let min_y = Rational::from_f64(bounds.min_y);
     let max_y = Rational::from_f64(bounds.max_y);
-    Ok(point.x.try_cmp(&min_x)? != Ordering::Less
-        && point.x.try_cmp(&max_x)? != Ordering::Greater
-        && point.y.try_cmp(&min_y)? != Ordering::Less
-        && point.y.try_cmp(&max_y)? != Ordering::Greater)
+    Ok(point.x().try_cmp(&min_x)? != Ordering::Less
+        && point.x().try_cmp(&max_x)? != Ordering::Greater
+        && point.y().try_cmp(&min_y)? != Ordering::Less
+        && point.y().try_cmp(&max_y)? != Ordering::Greater)
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1088,8 +1349,8 @@ fn exact_segment_enters_candidate(
     let mut upper = one;
     let mut lower_closed = true;
     let mut upper_closed = true;
-    let source_x = end.x.try_subtract(&start.x)?;
-    let source_y = end.y.try_subtract(&start.y)?;
+    let source_x = end.x().try_subtract(start.x())?;
+    let source_y = end.y().try_subtract(start.y())?;
 
     for (&left, &right) in candidate
         .iter()
@@ -1098,8 +1359,8 @@ fn exact_segment_enters_candidate(
     {
         let edge_x = Rational::from_f64(right.x).try_subtract(&Rational::from_f64(left.x))?;
         let edge_y = Rational::from_f64(right.y).try_subtract(&Rational::from_f64(left.y))?;
-        let start_x = start.x.try_subtract(&Rational::from_f64(left.x))?;
-        let start_y = start.y.try_subtract(&Rational::from_f64(left.y))?;
+        let start_x = start.x().try_subtract(&Rational::from_f64(left.x))?;
+        let start_y = start.y().try_subtract(&Rational::from_f64(left.y))?;
         let mut c0 = edge_x
             .try_product(&start_y)?
             .try_subtract(&edge_y.try_product(&start_x)?)?;
@@ -1197,10 +1458,8 @@ impl SourcePatch {
                 let max_x = Rational::from_f64(bounds.max_x);
                 let min_y = Rational::from_f64(bounds.min_y);
                 let max_y = Rational::from_f64(bounds.max_y);
-                let center = ExactPoint {
-                    x: min_x.try_midpoint(&max_x)?,
-                    y: min_y.try_midpoint(&max_y)?,
-                };
+                let center =
+                    ExactPoint::new(min_x.try_midpoint(&max_x)?, min_y.try_midpoint(&max_y)?);
                 let half_x = max_x
                     .try_subtract(&min_x)?
                     .try_quotient(&Rational::from_f64(2.0))?;
@@ -1388,7 +1647,9 @@ impl SourcePatch {
 fn span_radius_squared(span: &SupportSpan, lo: &Rational, hi: &Rational) -> Result<Rational> {
     let delta = hi.try_subtract(lo)?;
     let half = delta.try_quotient(&Rational::from_f64(2.0))?;
-    span.carrier.norm_squared.try_product(&half.try_square()?)
+    span.carrier()?
+        .norm_squared
+        .try_product(&half.try_square()?)
 }
 
 #[derive(Debug)]
@@ -1866,7 +2127,7 @@ impl<'a> SearchContext<'a> {
             self.lower_squared = Some(squared);
             self.lower_witness = Some(witness);
         }
-        // Equal exact clearances intentionally retain the first witness
+        // Equal certified clearances intentionally retain the first witness
         // visited. Patch queue insertion order is monotonic and tie-stable.
         Ok(())
     }
@@ -1964,9 +2225,9 @@ fn fixed_site_squared(
 }
 
 fn carrier_line_value(span: &SupportSpan, point: &ExactPoint) -> Result<Rational> {
-    let carrier = &span.carrier;
-    let px = point.x.try_subtract(&carrier.ax)?;
-    let py = point.y.try_subtract(&carrier.ay)?;
+    let carrier = span.carrier()?;
+    let px = point.x().try_subtract(&carrier.ax)?;
+    let py = point.y().try_subtract(&carrier.ay)?;
     carrier
         .dx
         .try_product(&py)?
@@ -1974,18 +2235,34 @@ fn carrier_line_value(span: &SupportSpan, point: &ExactPoint) -> Result<Rational
 }
 
 fn exact_parallel(left: &SupportSpan, right: &SupportSpan) -> Result<bool> {
+    let difference = |end, start| exact::Interval::exact(end).sub(exact::Interval::exact(start));
+    let lx = difference(left.source.end.x, left.source.start.x);
+    let ly = difference(left.source.end.y, left.source.start.y);
+    let rx = difference(right.source.end.x, right.source.start.x);
+    let ry = difference(right.source.end.y, right.source.start.y);
+    if [lx, ly, rx, ry].into_iter().all(exact::Interval::is_finite) {
+        let first = lx.mul(ry);
+        let second = ly.mul(rx);
+        if first.is_finite() && second.is_finite() {
+            let cross = first.sub(second);
+            if cross.is_finite() && cross.sign().is_some() {
+                return Ok(false);
+            }
+        }
+    }
+    let left = left.carrier()?;
+    let right = right.carrier()?;
     Ok(left
-        .carrier
         .dx
-        .try_product(&right.carrier.dy)?
-        .try_subtract(&left.carrier.dy.try_product(&right.carrier.dx)?)?
+        .try_product(&right.dy)?
+        .try_subtract(&left.dy.try_product(&right.dx)?)?
         .is_zero())
 }
 
 fn projection_is_in_span(point: &ExactPoint, span: &SupportSpan) -> Result<bool> {
     let parameter = span_projection_parameter(point, span)?;
-    Ok(parameter.try_cmp(&span.t_lo)? != Ordering::Less
-        && parameter.try_cmp(&span.t_hi)? != Ordering::Greater)
+    Ok(parameter.try_cmp(span.lo())? != Ordering::Less
+        && parameter.try_cmp(span.hi())? != Ordering::Greater)
 }
 
 fn signs_between_parallel_lines(first: &[Rational], second: &[Rational]) -> bool {
@@ -2034,6 +2311,9 @@ fn parallel_strip_upper(
     nominated: &[PrimitiveId],
     context: &SearchContext<'_>,
 ) -> Result<Option<Rational>> {
+    if !target.parallel_carriers {
+        return Ok(None);
+    }
     let mut span_indices = Vec::with_capacity(nominated.len());
     for &primitive in nominated {
         if let PrimitiveId::Span(index) = primitive {
@@ -2044,8 +2324,11 @@ fn parallel_strip_upper(
         return Ok(None);
     }
     let corners = patch.corners(source)?;
-    let area_probe =
-        context.exact_upper && matches!(patch, SourcePatch::Box(_)) && !source.faces.is_empty();
+    let area_probe = context.exact_upper
+        && matches!(patch, SourcePatch::Box(bounds) if source.area_bounds.is_some_and(|area| {
+            bounds.min_x <= area.min_x && bounds.max_x >= area.max_x
+                && bounds.min_y <= area.min_y && bounds.max_y >= area.max_y
+        }));
     let probe_count = if area_probe {
         source
             .faces
@@ -2069,7 +2352,7 @@ fn parallel_strip_upper(
             if !exact_parallel(left, right)? {
                 continue;
             }
-            let separation = carrier_line_value(left, &right.start)?;
+            let separation = carrier_line_value(left, &right.start_point())?;
             left_values.clear();
             right_values.clear();
             let mut valid = true;
@@ -2119,7 +2402,7 @@ fn parallel_strip_upper(
             }
             let separation_squared = separation
                 .try_square()?
-                .try_quotient(&left.carrier.norm_squared)?;
+                .try_quotient(&left.carrier()?.norm_squared)?;
             let half = separation_squared.try_quotient(&Rational::from_f64(4.0))?;
             let squared = context.scaled_squared(&half)?;
             let Some(upper) = sqrt_upper(&squared, context)?.upper_rational() else {
@@ -2227,6 +2510,16 @@ fn build_patch(
     target: &PreparedSupport,
     context: &mut SearchContext<'_>,
 ) -> Result<Option<PatchRecord>> {
+    if context.exact_upper
+        && context.lower_squared.is_some()
+        && let SourcePatch::Box(bounds) = patch
+    {
+        match directed_box_record(bounds, source, target, context)? {
+            DirectedBoxBound::ExactNeeded => {},
+            DirectedBoxBound::Pruned => return Ok(None),
+            DirectedBoxBound::Enclosed(record) => return Ok(Some(record)),
+        }
+    }
     let Some(witness) = patch.witness(source, context.exact_upper)? else {
         return Ok(None);
     };
@@ -2261,6 +2554,92 @@ fn build_patch(
         return Ok(None);
     }
     Ok(Some(PatchRecord { patch, upper }))
+}
+
+#[expect(
+    clippy::large_enum_variant,
+    reason = "the enclosed cell is the hot result; boxing it allocates for every queued box"
+)]
+enum DirectedBoxBound {
+    ExactNeeded,
+    Pruned,
+    Enclosed(PatchRecord),
+}
+
+/// Signed boundary distance is one-Lipschitz. Its certified value at a
+/// representable center plus the farthest box-corner distance encloses every
+/// interior clearance; parallel-site bounds close flat maxima without
+/// refining the length of a plateau down to the tolerance.
+fn directed_box_record(
+    bounds: FloatBox,
+    source: &PreparedSupport,
+    target: &PreparedSupport,
+    context: &mut SearchContext<'_>,
+) -> Result<DirectedBoxBound> {
+    let x = f64::midpoint(bounds.min_x, bounds.max_x);
+    let y = f64::midpoint(bounds.min_y, bounds.max_y);
+    let dx = (x - bounds.min_x)
+        .abs()
+        .max((bounds.max_x - x).abs())
+        .next_up();
+    let dy = (y - bounds.min_y)
+        .abs()
+        .max((bounds.max_y - y).abs())
+        .next_up();
+    let radius_squared = ((dx * dx).next_up() + (dy * dy).next_up()).next_up();
+    let radius = radius_squared.sqrt().next_up();
+    let tightness = context.tightness();
+    if !radius_squared.is_normal()
+        || !radius.is_finite()
+        || 64.0 * f64::EPSILON * radius > tightness.absolute
+    {
+        return Ok(DirectedBoxBound::ExactNeeded);
+    }
+    let center = ExactPoint::from_xy(XY::new(x, y));
+    let nearest = target.index.nearest(target, &center, Some(tightness))?;
+    let distance_upper = nearest.bounds.upper_f64.sqrt().next_up();
+    let distance_lower = nonnegative_bounds(&nearest.bounds.lower)?
+        .0
+        .max(0.0)
+        .sqrt()
+        .next_down()
+        .max(0.0);
+    if (distance_upper - distance_lower).next_up() > tightness.absolute {
+        return Ok(DirectedBoxBound::ExactNeeded);
+    }
+    let inside = source.contains_area(&center)?;
+    let distance = if inside {
+        distance_upper
+    } else {
+        -distance_lower
+    };
+    let upper = (distance + radius).next_up().max(0.0);
+    if !upper.is_finite() {
+        return Ok(DirectedBoxBound::ExactNeeded);
+    }
+    if inside && !nearest.bounds.lower.is_zero() {
+        // A certified lower distance is enough to nominate a witness. The
+        // rounded-center certificate recomputes its exact clearance at emission.
+        let clearance = context.scaled_squared(&nearest.bounds.lower)?;
+        context.update_lower_with_witness(clearance, &center)?;
+    }
+    let mut upper = Rational::from_f64(upper);
+    let patch = SourcePatch::Box(bounds);
+    if target.parallel_carriers {
+        let nominated = target.index.nominate(target, &center)?;
+        if let Some(strip) = parallel_strip_upper(&patch, source, target, &nominated, context)?
+            && strip.try_cmp(&upper)? == Ordering::Less
+        {
+            upper = strip;
+        }
+    }
+    if upper_is_below_lower(&upper, context)? {
+        return Ok(DirectedBoxBound::Pruned);
+    }
+    Ok(DirectedBoxBound::Enclosed(PatchRecord {
+        patch,
+        upper: Some(upper),
+    }))
 }
 
 fn lower_candidate(context: &SearchContext<'_>) -> Result<Option<f64>> {
@@ -2326,7 +2705,7 @@ fn primitive_endpoints(
     match primitive {
         PrimitiveId::Span(index) => {
             let span = &support.spans[index];
-            Ok([span_point(span, &span.t_lo)?, span_point(span, &span.t_hi)?])
+            Ok([span_point(span, span.lo())?, span_point(span, span.hi())?])
         },
         PrimitiveId::Point(index) => {
             let point = support.points[index].clone();
@@ -2354,6 +2733,10 @@ fn shared_primitive_vertex(
 
 /// Use a shared target vertex to seed a span split when its endpoint sites differ.
 /// The nearest-site query supplies only a partition hint; bounds still certify pruning.
+#[expect(
+    clippy::indexing_slicing,
+    reason = "source span ordinals come from this immutable support's source patches"
+)]
 fn endpoint_site_split_parameter(
     patch: &SourcePatch,
     source: &PreparedSupport,
@@ -2538,8 +2921,8 @@ fn movement_lower_squared(
 }
 
 fn exact_point_distance_squared(left: &ExactPoint, right: &ExactPoint) -> Result<Rational> {
-    let dx = left.x.try_subtract(&right.x)?;
-    let dy = left.y.try_subtract(&right.y)?;
+    let dx = left.x().try_subtract(right.x())?;
+    let dy = left.y().try_subtract(right.y())?;
     dx.try_square()?.try_add(&dy.try_square()?)
 }
 
@@ -2555,18 +2938,25 @@ fn directed_candidate(
     ) else {
         return Ok(None);
     };
+    let witness_interval = SqrtInterval::from_squared_with_error(witness_squared, None)?;
+    if let Some(witness_upper) = witness_interval.upper_rational() {
+        let gap = upper
+            .try_subtract(&witness_upper)?
+            .try_product(&context.output_scale)?;
+        if gap.try_cmp(&context.output_tolerance)? == Ordering::Greater {
+            return Ok(None);
+        }
+    }
 
     let center_exact = if witness_squared.is_zero() {
         source
             .first_boundary_point()
             .unwrap_or_else(|| witness.clone())
     } else {
-        ExactPoint {
-            x: Rational::from_f64(witness.x.round()?),
-            y: Rational::from_f64(witness.y.round()?),
-        }
+        ExactPoint::from_xy(witness.rounded_xy()?)
     };
-    let center = Point::new_raw_xy(center_exact.x.round()?, center_exact.y.round()?);
+    let xy = center_exact.rounded_xy()?;
+    let center = Point::new_raw_xy(xy.x, xy.y);
     if !center.x.is_finite() || !center.y.is_finite() {
         return Ok(None);
     }
@@ -2627,7 +3017,7 @@ fn run_directed(
     target: &PreparedSupport,
     context: &mut SearchContext<'_>,
 ) -> Result<DirectedCandidate> {
-    context.require_positive_witness = source.has_positive_area()?;
+    context.require_positive_witness = source.has_positive_area();
     let mut queue = PatchQueue::new(context.exact_upper);
     for patch in source.inradius_initial_patches()? {
         if let Some(record) = build_patch(patch, source, target, context)? {
@@ -2655,9 +3045,6 @@ fn run_directed(
         }
         #[cfg(test)]
         count_refinement_work()?;
-        // Four-way box splitting exhausted a budget of 64 refinements per box
-        // on 16 adjacent unit boxes; halving the longest axis stays within it
-        // (`directed_adjacent_box_refinement_work_scales_with_boundary_spans`).
         let Some(children) = record
             .patch
             .split_with_strategy(&mut context.budget, BoxSplitStrategy::LongestAxis)?
@@ -2756,15 +3143,15 @@ fn symmetric_distance(
     mut covered: impl FnMut(bool) -> Result<bool>,
 ) -> Result<f64> {
     for (source, target) in [(source, target), (target, source)] {
-        for span in &source.spans {
-            for parameter in [&span.t_lo, &span.t_hi] {
+        for span in source.spans.iter() {
+            for parameter in [span.lo(), span.hi()] {
                 let point = span_point(span, parameter)?;
                 if let Some(squared) = raising_clearance(target, &point, context)? {
                     context.update_lower(squared)?;
                 }
             }
         }
-        for point in &source.points {
+        for point in source.points.iter() {
             if let Some(squared) = raising_clearance(target, point, context)? {
                 context.update_lower(squared)?;
             }
@@ -2882,29 +3269,69 @@ pub(crate) fn line_columns_batch(
 }
 
 #[derive(Clone, Debug)]
-pub(in crate::geometry) struct ExactPoint {
-    x: Rational,
-    y: Rational,
+pub(in crate::geometry) enum ExactPoint {
+    Stored {
+        xy: XY,
+        exact: std::sync::OnceLock<Box<[Rational; 2]>>,
+    },
+    Constructed(Box<[Rational; 2]>),
 }
 
 impl ExactPoint {
-    fn from_xy(point: XY) -> Self {
-        Self {
-            x: Rational::from_f64(point.x),
-            y: Rational::from_f64(point.y),
+    const fn from_xy(point: XY) -> Self {
+        Self::Stored {
+            xy: point,
+            exact: std::sync::OnceLock::new(),
         }
+    }
+
+    fn new(x: Rational, y: Rational) -> Self {
+        Self::Constructed(Box::new([x, y]))
+    }
+
+    const fn stored_xy(&self) -> Option<XY> {
+        match self {
+            Self::Stored { xy, .. } => Some(*xy),
+            Self::Constructed(_) => None,
+        }
+    }
+
+    fn rounded_xy(&self) -> Result<XY> {
+        if let Some(xy) = self.stored_xy() {
+            return Ok(xy);
+        }
+        Ok(XY::new(self.x().round()?, self.y().round()?))
+    }
+
+    fn components(&self) -> &[Rational; 2] {
+        match self {
+            Self::Stored { xy, exact } => {
+                exact.get_or_init(|| Box::new([Rational::from_f64(xy.x), Rational::from_f64(xy.y)]))
+            },
+            Self::Constructed(exact) => exact,
+        }
+    }
+
+    fn x(&self) -> &Rational {
+        let [x, _] = self.components();
+        x
+    }
+
+    fn y(&self) -> &Rational {
+        let [_, y] = self.components();
+        y
     }
 
     fn from_homogeneous(value: [ExactDyadic; 3]) -> crate::error::Result<Self> {
         let [x, y, w] = value;
-        Ok(Self {
-            x: Rational::new(x, w.clone())?,
-            y: Rational::new(y, w)?,
-        })
+        Ok(Self::new(
+            Rational::new(x, w.clone())?,
+            Rational::new(y, w)?,
+        ))
     }
 
     fn same_position(&self, other: &Self) -> crate::error::Result<bool> {
-        Ok(self.x.try_cmp(&other.x)?.is_eq() && self.y.try_cmp(&other.y)?.is_eq())
+        Ok(self.x().try_cmp(other.x())?.is_eq() && self.y().try_cmp(other.y())?.is_eq())
     }
 }
 

@@ -227,6 +227,9 @@ impl ExactRational {
     }
 
     pub(in crate::geometry) fn try_quotient(&self, other: &Self) -> Result<Self> {
+        if other.is_one() {
+            return Ok(self.clone());
+        }
         Self::new(
             self.numerator.try_product(&other.denominator)?,
             self.denominator.try_product(&other.numerator)?,
@@ -235,6 +238,13 @@ impl ExactRational {
 
     pub(in crate::geometry) fn try_midpoint(&self, other: &Self) -> Result<Self> {
         let numerator = self.try_add(other)?;
+        if numerator.denominator.is_one() {
+            return Ok(Self::from_dyadic(
+                numerator
+                    .numerator
+                    .try_product(&ExactDyadic::from_f64(0.5))?,
+            ));
+        }
         Self::new(
             numerator.numerator.clone(),
             numerator
@@ -244,6 +254,9 @@ impl ExactRational {
     }
 
     pub(in crate::geometry) fn try_cmp(&self, other: &Self) -> Result<Ordering> {
+        if self.denominator.is_one() && other.denominator.is_one() {
+            return Ok(self.numerator.cmp(&other.numerator));
+        }
         Ok(self
             .numerator
             .try_product(&other.denominator)?

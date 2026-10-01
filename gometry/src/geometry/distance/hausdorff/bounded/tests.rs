@@ -95,10 +95,8 @@ fn test_span(source: Segment) -> SupportSpan {
         .include(FloatBox::from_point(&end).unwrap());
     SupportSpan {
         source,
-        carrier: ExactCarrier::from_segment(source).unwrap(),
-        t_lo: Rational::zero(),
-        t_hi: Rational::one(),
-        start,
+        carrier: std::sync::OnceLock::new(),
+        range: None,
         bounds,
     }
 }
@@ -136,18 +134,18 @@ fn extreme_exponent_spread_hausdorff_uses_bounded_refinement_work() {
 }
 
 fn reduced_point_span_distance_squared(point: &ExactPoint, span: &SupportSpan) -> Result<Rational> {
-    let carrier = &span.carrier;
-    let px = point.x.try_subtract(&carrier.ax)?;
-    let py = point.y.try_subtract(&carrier.ay)?;
+    let carrier = span.carrier().unwrap();
+    let px = point.x().try_subtract(&carrier.ax)?;
+    let py = point.y().try_subtract(&carrier.ay)?;
     let dot = px
         .try_product(&carrier.dx)?
         .try_add(&py.try_product(&carrier.dy)?)?;
-    let low = span.t_lo.try_product(&carrier.norm_squared)?;
-    let high = span.t_hi.try_product(&carrier.norm_squared)?;
+    let low = span.lo().try_product(&carrier.norm_squared)?;
+    let high = span.hi().try_product(&carrier.norm_squared)?;
     let parameter = if carrier.norm_squared.is_zero() || dot.try_cmp(&low)? == Ordering::Less {
-        &span.t_lo
+        span.lo()
     } else if dot.try_cmp(&high)? == Ordering::Greater {
-        &span.t_hi
+        span.hi()
     } else {
         let cross = px
             .try_product(&carrier.dy)?
@@ -155,8 +153,8 @@ fn reduced_point_span_distance_squared(point: &ExactPoint, span: &SupportSpan) -
         return cross.try_square()?.try_quotient(&carrier.norm_squared);
     };
     let projected = span_point(span, parameter)?;
-    let dx = point.x.try_subtract(&projected.x)?;
-    let dy = point.y.try_subtract(&projected.y)?;
+    let dx = point.x().try_subtract(projected.x())?;
+    let dy = point.y().try_subtract(projected.y())?;
     dx.try_square()?.try_add(&dy.try_square()?)
 }
 
@@ -631,8 +629,8 @@ fn box_radius_covers_unrepresentable_midpoint_corners() {
     });
     let (center, radius) = patch.center_and_radius_squared(&source).unwrap();
     for corner in patch.corners(&source).unwrap() {
-        let dx = corner.x.try_subtract(&center.x).unwrap();
-        let dy = corner.y.try_subtract(&center.y).unwrap();
+        let dx = corner.x().try_subtract(center.x()).unwrap();
+        let dy = corner.y().try_subtract(center.y()).unwrap();
         let squared = dx
             .try_square()
             .unwrap()
@@ -650,17 +648,17 @@ fn aabb_lower_squared(point: &ExactPoint, bounds: FloatBox) -> Result<Rational> 
     let min_y = Rational::from_f64(bounds.min_y);
     let max_y = Rational::from_f64(bounds.max_y);
     let zero = Rational::zero();
-    let dx = if point.x.try_cmp(&min_x)? == Ordering::Less {
-        min_x.try_subtract(&point.x)?
-    } else if point.x.try_cmp(&max_x)? == Ordering::Greater {
-        point.x.try_subtract(&max_x)?
+    let dx = if point.x().try_cmp(&min_x)? == Ordering::Less {
+        min_x.try_subtract(point.x())?
+    } else if point.x().try_cmp(&max_x)? == Ordering::Greater {
+        point.x().try_subtract(&max_x)?
     } else {
         zero.clone()
     };
-    let dy = if point.y.try_cmp(&min_y)? == Ordering::Less {
-        min_y.try_subtract(&point.y)?
-    } else if point.y.try_cmp(&max_y)? == Ordering::Greater {
-        point.y.try_subtract(&max_y)?
+    let dy = if point.y().try_cmp(&min_y)? == Ordering::Less {
+        min_y.try_subtract(point.y())?
+    } else if point.y().try_cmp(&max_y)? == Ordering::Greater {
+        point.y().try_subtract(&max_y)?
     } else {
         zero
     };
@@ -687,6 +685,53 @@ fn floating_box_pruning_stays_below_exact_distance() {
         assert_ne!(
             Rational::from_f64(lower).try_cmp(&exact).unwrap(),
             Ordering::Greater,
+        );
+    }
+}
+
+#[test]
+fn disjoint_carrier_slopes_skip_only_impossible_parallel_strips() {
+    let distinct = PreparedSupport::from_line_columns(&[0.0, 1.0, 2.0], &[0.0, 0.0, 1.0]).unwrap();
+    assert!(!distinct.parallel_carriers);
+    let horizontal =
+        PreparedSupport::from_line_columns(&[0.0, 1.0, 2.0], &[0.0, 0.0, 0.0]).unwrap();
+    assert!(horizontal.parallel_carriers);
+    let vertical = PreparedSupport::from_line_columns(&[0.0, 0.0, 0.0], &[0.0, 1.0, 2.0]).unwrap();
+    assert!(vertical.parallel_carriers);
+}
+
+#[test]
+fn original_polygon_edges_share_distance_and_membership_indices() {
+    let shape = polygon(&[(0.0, 0.0), (4.0, 0.0), (4.0, 4.0), (0.0, 4.0), (0.0, 0.0)]);
+    let mut budget = ExpansionBudget::new("maximum_inscribed_circle", "tolerance");
+    let support = PreparedSupport::from_shape_with_boundary(&shape, &mut budget).unwrap();
+    assert!(Arc::ptr_eq(&support.index, &support.area_index));
+}
+
+#[test]
+fn floating_box_pruning_covers_normal_sums_of_subnormal_products_and_overflow() {
+    for (target, probe) in [
+        (XY::new(0.0, 0.0), XY::new(1.2, 1.2)),
+        (XY::new(0.0, 0.0), XY::new(1.1e-154, 1.1e-154)),
+        (XY::new(0.0, 0.0), XY::new(1e-160, 1e-160)),
+        (XY::new(0.0, 0.0), XY::new(1e200, 0.0)),
+        (XY::new(-f64::MAX, 0.0), XY::new(f64::MAX, 0.0)),
+    ] {
+        let bounds = FloatBox {
+            min_x: target.x,
+            max_x: target.x,
+            min_y: target.y,
+            max_y: target.y,
+        };
+        let point = ExactPoint::from_xy(probe);
+        let lower = box_distance_lower(FloatBox::from_point(&point).unwrap(), bounds);
+        let exact = aabb_lower_squared(&point, bounds).unwrap();
+        assert!(lower.is_finite());
+        assert!(lower >= 0.0);
+        assert_ne!(
+            Rational::from_f64(lower).try_cmp(&exact).unwrap(),
+            Ordering::Greater,
+            "target={target:?}, probe={probe:?}"
         );
     }
 }
@@ -1075,8 +1120,8 @@ fn unreduced_distances_match_reduced_point_and_span_references() {
         let actual = point_support
             .primitive_distance_squared(PrimitiveId::Point(0), &point)
             .unwrap();
-        let dx = point.x.try_subtract(&point_support.points[0].x).unwrap();
-        let dy = point.y.try_subtract(&point_support.points[0].y).unwrap();
+        let dx = point.x().try_subtract(point_support.points[0].x()).unwrap();
+        let dy = point.y().try_subtract(point_support.points[0].y()).unwrap();
         let expected = dx
             .try_square()
             .unwrap()
@@ -1109,10 +1154,13 @@ fn unreduced_distances_match_reduced_point_and_span_references() {
     }
 
     let mut subspan = PreparedSupport::from_line_columns(&[0.0, 6.0], &[0.0, 0.0]).unwrap();
-    subspan.spans[0].t_lo =
-        Rational::new(ExactDyadic::from_f64(1.0), ExactDyadic::from_f64(3.0)).unwrap();
-    subspan.spans[0].t_hi =
-        Rational::new(ExactDyadic::from_f64(2.0), ExactDyadic::from_f64(3.0)).unwrap();
+    Arc::make_mut(&mut subspan.spans)[0].range = Some(Box::new(SelectedSpan {
+        parameters: [
+            Rational::new(ExactDyadic::from_f64(1.0), ExactDyadic::from_f64(3.0)).unwrap(),
+            Rational::new(ExactDyadic::from_f64(2.0), ExactDyadic::from_f64(3.0)).unwrap(),
+        ],
+        start: ExactPoint::from_xy(XY::new(2.0, 0.0)),
+    }));
     let point = ExactPoint::from_xy(XY::new(0.0, 0.0));
     let actual = point_span_distance_squared(&point, &subspan.spans[0]).unwrap();
     let expected = reduced_point_span_distance_squared(&point, &subspan.spans[0]).unwrap();
@@ -1129,8 +1177,10 @@ fn selected_span_clamps_oblique_projection() {
         (0.25, 0.75, 0.0, 0.0, 1.5625),
         (0.25, 0.75, 3.0, 4.0, 1.5625),
     ] {
-        support.spans[0].t_lo = Rational::from_f64(lo);
-        support.spans[0].t_hi = Rational::from_f64(hi);
+        Arc::make_mut(&mut support.spans)[0].range = Some(Box::new(SelectedSpan {
+            parameters: [Rational::from_f64(lo), Rational::from_f64(hi)],
+            start: ExactPoint::from_xy(XY::new(3.0 * lo, 4.0 * lo)),
+        }));
         let value =
             point_span_distance_squared(&ExactPoint::from_xy(XY::new(x, y)), &support.spans[0])
                 .unwrap();
@@ -1138,6 +1188,78 @@ fn selected_span_clamps_oblique_projection() {
             value
                 .try_cmp_rational(&Rational::from_f64(expected))
                 .unwrap(),
+            Ordering::Equal
+        );
+    }
+}
+
+#[test]
+fn binary64_span_filter_encloses_interior_and_endpoint_clearances() {
+    for (xs, ys, probe) in [
+        ([0.0, 3.0], [0.0, 4.0], (1.0, 3.0)),
+        ([0.0, 3.0], [0.0, 4.0], (-3.0, -4.0)),
+        ([0.0, 3.0], [0.0, 4.0], (6.0, 8.0)),
+        ([3.0, 0.0], [4.0, 0.0], (1.0, 3.0)),
+        ([0.0, 1.0], [0.0, 0.0], (0.5, 1.0 + f64::EPSILON)),
+        (
+            [0.0, 1.0],
+            [0.0, 0.0],
+            (-1.0 - f64::EPSILON, 1.0 + f64::EPSILON),
+        ),
+        ([0.0, 1e-100], [0.0, 0.0], (5e-101, 1e-100)),
+    ] {
+        let support = PreparedSupport::from_line_columns(&xs, &ys).unwrap();
+        let point = ExactPoint::from_xy(XY::new(probe.0, probe.1));
+        let bounds = FloatBox::from_point(&point).unwrap();
+        let interval = point_span_squared_bounds_with::<exact::Interval>(bounds, &support.spans[0])
+            .expect("the binary64 filter decides these finite separated regimes");
+        let filtered = point_span_binary64_bounds(bounds, &support.spans[0])
+            .expect("the distance-error filter decides these finite separated regimes");
+        let exact = support
+            .primitive_distance_squared(PrimitiveId::Span(0), &point)
+            .unwrap()
+            .to_rational()
+            .unwrap();
+        for (lower, upper) in [interval, filtered] {
+            assert_ne!(
+                Rational::from_f64(lower).try_cmp(&exact).unwrap(),
+                Ordering::Greater
+            );
+            assert_ne!(
+                Rational::from_f64(upper).try_cmp(&exact).unwrap(),
+                Ordering::Less
+            );
+        }
+    }
+}
+
+#[test]
+fn nearest_distance_refines_overflowing_squared_distance_terms() {
+    for (end_x, probe_x, clearance) in [(1e100, 5e99, 1e100), (1e200, 5e199, 1e200)] {
+        let support = PreparedSupport::from_line_columns(&[0.0, end_x], &[0.0, 0.0]).unwrap();
+        let point = ExactPoint::from_xy(XY::new(probe_x, clearance));
+        let bounds = FloatBox::from_point(&point).unwrap();
+        assert!(
+            point_span_squared_bounds_with::<exact::Interval>(bounds, &support.spans[0]).is_none()
+        );
+        let nearest = support
+            .index
+            .nearest(
+                &support,
+                &point,
+                Some(Tightness {
+                    relative: 0.0,
+                    absolute: 0.0,
+                }),
+            )
+            .unwrap();
+        let expected = Rational::from_f64(clearance).try_square().unwrap();
+        assert_eq!(
+            nearest.bounds.lower.try_cmp(&expected).unwrap(),
+            Ordering::Equal
+        );
+        assert_eq!(
+            nearest.bounds.upper.try_cmp(&expected).unwrap(),
             Ordering::Equal
         );
     }
@@ -1209,8 +1331,8 @@ fn directed_inradius_retains_the_rounded_center_and_global_enclosure() {
     );
     assert_eq!(
         (
-            result.proof.witness.x.round().unwrap(),
-            result.proof.witness.y.round().unwrap()
+            result.proof.witness.x().round().unwrap(),
+            result.proof.witness.y().round().unwrap()
         ),
         (2.0, 2.0)
     );
@@ -1227,12 +1349,12 @@ fn directed_inradius_uses_a_stable_center_on_a_parallel_plateau() {
     );
     assert_eq!(
         (
-            first.proof.witness.x.round().unwrap(),
-            first.proof.witness.y.round().unwrap()
+            first.proof.witness.x().round().unwrap(),
+            first.proof.witness.y().round().unwrap()
         ),
         (
-            second.proof.witness.x.round().unwrap(),
-            second.proof.witness.y.round().unwrap()
+            second.proof.witness.x().round().unwrap(),
+            second.proof.witness.y().round().unwrap()
         )
     );
     assert_eq!(first.center.x, 4.0);
@@ -1278,8 +1400,8 @@ fn directed_inradius_accounts_for_rounding_an_exact_witness_center() {
     let result = directed_candidate_for(&shape, 1.0, 1.0);
     let rounded = ExactPoint::from_xy(result.center.xy());
     assert!(
-        result.proof.witness.x.try_cmp(&rounded.x).unwrap() != Ordering::Equal
-            || result.proof.witness.y.try_cmp(&rounded.y).unwrap() != Ordering::Equal
+        result.proof.witness.x().try_cmp(rounded.x()).unwrap() != Ordering::Equal
+            || result.proof.witness.y().try_cmp(rounded.y()).unwrap() != Ordering::Equal
     );
     assert_eq!(
         result

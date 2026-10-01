@@ -129,6 +129,25 @@ def test_maximum_inscribed_circle_handles_reciprocal_coordinate_scales() -> None
     assert gm.covers(source, source.maximum_inscribed_circle(tolerance=tolerance))
 
 
+def test_maximum_inscribed_radius_refines_a_tiny_reflex_corner() -> None:
+    scale = 1e-300
+    source = gm.Polygon([
+        (0, 0),
+        (5 * scale, 0),
+        (5 * scale, 2 * scale),
+        (2 * scale, 2 * scale),
+        (2 * scale, 5 * scale),
+        (0, 5 * scale),
+    ])
+    tolerance = 1e-303
+    radius = Fraction(source.maximum_inscribed_radius(tolerance=tolerance)) / Fraction(
+        scale
+    )
+    error = Fraction(tolerance) / Fraction(scale)
+    assert (4 - radius) ** 2 >= 8
+    assert (4 - radius - error) ** 2 <= 8
+
+
 def test_maximum_inscribed_circle_reports_unrepresentable_tight_translated_accuracy() -> (
     None
 ):

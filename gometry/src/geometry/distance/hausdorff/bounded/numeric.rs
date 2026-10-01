@@ -9,6 +9,84 @@ use std::cmp::Ordering;
 use super::{
     ExactDyadic, ExactPoint, ExactSign, Rational, Result, Segment, nonnegative_upper_bound,
 };
+use crate::geometry::DdInterval;
+use crate::geometry::tessellation::exact::Interval;
+
+pub(super) trait DistanceInterval: Copy {
+    fn delta(left: f64, right: f64) -> Option<Self>;
+    fn add_bounds(self, other: Self) -> Option<Self>;
+    fn sub_bounds(self, other: Self) -> Option<Self>;
+    fn mul_bounds(self, other: Self) -> Option<Self>;
+    fn square_bounds(self) -> Option<Self>;
+    fn enclosure(self) -> (f64, f64);
+}
+
+impl DistanceInterval for Interval {
+    fn delta(left: f64, right: f64) -> Option<Self> {
+        let value = Self::exact(left).sub(Self::exact(right));
+        value.is_finite().then_some(value)
+    }
+
+    fn add_bounds(self, other: Self) -> Option<Self> {
+        let value = self.add(other);
+        value.is_finite().then_some(value)
+    }
+
+    fn sub_bounds(self, other: Self) -> Option<Self> {
+        let value = self.sub(other);
+        value.is_finite().then_some(value)
+    }
+
+    fn mul_bounds(self, other: Self) -> Option<Self> {
+        let value = self.mul(other);
+        value.is_finite().then_some(value)
+    }
+
+    fn square_bounds(self) -> Option<Self> {
+        let (lo, hi) = if self.lo >= 0.0 {
+            (self.lo, self.hi)
+        } else if self.hi <= 0.0 {
+            (-self.hi, -self.lo)
+        } else {
+            (0.0, (-self.lo).max(self.hi))
+        };
+        let value = Self {
+            lo: (lo * lo).next_down().max(0.0),
+            hi: (hi * hi).next_up(),
+        };
+        value.is_finite().then_some(value)
+    }
+
+    fn enclosure(self) -> (f64, f64) {
+        (self.lo, self.hi)
+    }
+}
+
+impl DistanceInterval for DdInterval {
+    fn delta(left: f64, right: f64) -> Option<Self> {
+        Self::difference(left, right)
+    }
+
+    fn add_bounds(self, other: Self) -> Option<Self> {
+        self.add(other)
+    }
+
+    fn sub_bounds(self, other: Self) -> Option<Self> {
+        self.sub(other)
+    }
+
+    fn mul_bounds(self, other: Self) -> Option<Self> {
+        self.mul(other)
+    }
+
+    fn square_bounds(self) -> Option<Self> {
+        self.square()
+    }
+
+    fn enclosure(self) -> (f64, f64) {
+        self.outward_bounds()
+    }
+}
 
 pub(super) struct Accuracy {
     pub(super) error: ErrorBound,
@@ -86,8 +164,11 @@ pub(super) struct FloatBox {
 
 impl FloatBox {
     pub(super) fn from_point(point: &ExactPoint) -> Result<Self> {
-        let (min_x, max_x) = point.x.outward_bounds()?;
-        let (min_y, max_y) = point.y.outward_bounds()?;
+        let ((min_x, max_x), (min_y, max_y)) = if let Some(point) = point.stored_xy() {
+            ((point.x, point.x), (point.y, point.y))
+        } else {
+            (point.x().outward_bounds()?, point.y().outward_bounds()?)
+        };
         if !(min_x.is_finite() && max_x.is_finite() && min_y.is_finite() && max_y.is_finite()) {
             return Err(crate::geometry::GeometryErrorKind::message(
                 "selected support has no finite conservative index enclosure",
@@ -125,16 +206,67 @@ impl FloatBox {
             (self.max_x, self.max_y),
         ]
     }
+
+    #[expect(
+        clippy::arithmetic_side_effects,
+        clippy::float_cmp,
+        reason = "endpoint identity selects one or two coordinates per axis, whose count cannot overflow"
+    )]
+    pub(super) fn distinct_corners(self) -> impl Iterator<Item = (f64, f64)> {
+        let nx = usize::from(self.min_x != self.max_x) + 1;
+        let ny = usize::from(self.min_y != self.max_y) + 1;
+        (0..nx).flat_map(move |x| {
+            let x = if x == 0 { self.min_x } else { self.max_x };
+            (0..ny).map(move |y| (x, if y == 0 { self.min_y } else { self.max_y }))
+        })
+    }
 }
 
 #[derive(Clone, Debug)]
 pub(super) struct SupportSpan {
     pub(super) source: Segment,
-    pub(super) carrier: ExactCarrier,
-    pub(super) t_lo: Rational,
-    pub(super) t_hi: Rational,
-    pub(super) start: ExactPoint,
+    pub(super) carrier: std::sync::OnceLock<Box<ExactCarrier>>,
+    pub(super) range: Option<Box<SelectedSpan>>,
     pub(super) bounds: FloatBox,
+}
+
+#[derive(Clone, Debug)]
+pub(super) struct SelectedSpan {
+    pub(super) parameters: [Rational; 2],
+    pub(super) start: ExactPoint,
+}
+
+impl SupportSpan {
+    pub(super) fn start_point(&self) -> ExactPoint {
+        self.range.as_ref().map_or_else(
+            || ExactPoint::from_xy(self.source.start),
+            |selected| selected.start.clone(),
+        )
+    }
+
+    pub(super) fn lo(&self) -> &Rational {
+        let [lo, _] = self.parameters();
+        lo
+    }
+
+    pub(super) fn hi(&self) -> &Rational {
+        let [_, hi] = self.parameters();
+        hi
+    }
+
+    fn parameters(&self) -> &[Rational; 2] {
+        static FULL: std::sync::LazyLock<[Rational; 2]> =
+            std::sync::LazyLock::new(|| [Rational::zero(), Rational::one()]);
+        self.range
+            .as_deref()
+            .map_or_else(|| &*FULL, |selected| &selected.parameters)
+    }
+
+    pub(super) fn carrier(&self) -> Result<&ExactCarrier> {
+        self.carrier
+            .get_or_try_init(|| ExactCarrier::from_segment(self.source).map(Box::new))
+            .map(Box::as_ref)
+    }
 }
 
 #[derive(Clone, Debug)]
