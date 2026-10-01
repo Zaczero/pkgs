@@ -776,7 +776,9 @@ impl Candidate {
         }
 
         let supports = self.supports;
-        let [preferred_a, preferred_b, preferred_c, preferred_d] = self.correct_corners(hull);
+        let [preferred_a, preferred_b, preferred_c, preferred_d] = self
+            .correct_corners(hull)
+            .ok_or_else(minimum_rectangle_not_representable)?;
         let [corner_a, corner_b, corner_c, corner_d] = [
             emit_corner(
                 self.basis,
@@ -880,15 +882,15 @@ impl Candidate {
         clippy::indexing_slicing,
         reason = "candidate support ordinals are generated from this same convex hull"
     )]
-    fn correct_corners(self, hull: &[Point]) -> [PreferredCorner; 4] {
+    fn correct_corners(self, hull: &[Point]) -> Option<[PreferredCorner; 4]> {
         let supports = self.supports;
         let origin = hull[supports.along_min];
-        [
-            self.unframe_corner(origin, hull[supports.along_min], hull[supports.outward_min]),
-            self.unframe_corner(origin, hull[supports.along_max], hull[supports.outward_min]),
-            self.unframe_corner(origin, hull[supports.along_max], hull[supports.outward_max]),
-            self.unframe_corner(origin, hull[supports.along_min], hull[supports.outward_max]),
-        ]
+        Some([
+            self.unframe_corner(origin, hull[supports.along_min], hull[supports.outward_min])?,
+            self.unframe_corner(origin, hull[supports.along_max], hull[supports.outward_min])?,
+            self.unframe_corner(origin, hull[supports.along_max], hull[supports.outward_max])?,
+            self.unframe_corner(origin, hull[supports.along_min], hull[supports.outward_max])?,
+        ])
     }
 
     /// Intersect selected support lines in an anisotropically scaled frame.
@@ -901,7 +903,7 @@ impl Candidate {
         origin: Point,
         along_support: Point,
         outward_support: Point,
-    ) -> PreferredCorner {
+    ) -> Option<PreferredCorner> {
         let max_x = origin
             .x
             .abs()
@@ -914,6 +916,9 @@ impl Candidate {
             .max(outward_support.y.abs());
         let sx = axis_pow2_scale(max_x);
         let sy = axis_pow2_scale(max_y);
+        if !sx.is_finite() || sx <= 0.0 || !sy.is_finite() || sy <= 0.0 {
+            return None;
+        }
         let equal_scales = sx.to_bits() == sy.to_bits();
         let (origin_x, origin_y, along_x, along_y, outward_x, outward_y) = if sx.to_bits()
             == 1.0_f64.to_bits()
@@ -951,10 +956,33 @@ impl Candidate {
                 (self.basis.outward.0 / sx, self.basis.outward.1 / sy),
             )
         };
+        if ![
+            origin_x, origin_y, along_x, along_y, outward_x, outward_y, along.0, along.1,
+            outward.0, outward.1,
+        ]
+        .into_iter()
+        .all(|value| value.is_finite())
+        {
+            return None;
+        }
         let along_residual = along.0 * (along_x - origin_x) + along.1 * (along_y - origin_y);
         let outward_residual =
             outward.0 * (outward_x - origin_x) + outward.1 * (outward_y - origin_y);
         let determinant = along.0 * outward.1 - along.1 * outward.0;
+        if !along_residual.is_finite()
+            || !outward_residual.is_finite()
+            || !determinant.is_finite()
+            || determinant <= 0.0
+        {
+            return None;
+        }
+        let denominator = [determinant * sx, determinant * sy];
+        if !denominator
+            .into_iter()
+            .all(|value| value.is_finite() && value > 0.0)
+        {
+            return None;
+        }
         let x_value = (origin_x * determinant + along_residual * outward.1
             - along.1 * outward_residual)
             / determinant
@@ -971,18 +999,12 @@ impl Candidate {
         y_numerator.add_product(origin_y, determinant);
         y_numerator.add_product(along.0, outward_residual);
         y_numerator.subtract_product(along_residual, outward.0);
-        let denominator = [determinant * sx, determinant * sy];
-        debug_assert!(
-            denominator
-                .into_iter()
-                .all(|value| value.is_finite() && value > 0.0)
-        );
-        PreferredCorner {
+        Some(PreferredCorner {
             point: Point::new_raw_xy(x_value, y_value),
             numerator: [x_numerator, y_numerator],
             denominator,
             anisotropic_frame: !equal_scales,
-        }
+        })
     }
 }
 
@@ -1105,6 +1127,12 @@ fn support_margin(halfplane: SupportHalfplane, candidate: Point) -> ExactSum {
     exact_dot_delta(halfplane.gradient, halfplane.support, candidate)
 }
 
+fn minimum_rectangle_not_representable() -> crate::error::Error {
+    GeometryErrorKind::message(
+        "minimum_rotated_rectangle result is not representable with finite coordinates",
+    )
+}
+
 /// Emit a finite point in the outward intersection of two support halfplanes.
 /// The preferred inverse is accepted only after its two exact residuals prove
 /// it lies in the wedge.  The repair shifts one coordinate in a shared outward
@@ -1161,11 +1189,8 @@ fn emit_corner(
             return Ok(candidate);
         }
     }
-    finite_support_wedge_point(first, second, preferred).ok_or_else(|| {
-        GeometryErrorKind::message(
-            "minimum_rotated_rectangle result is not representable with finite coordinates",
-        )
-    })
+    finite_support_wedge_point(first, second, preferred)
+        .ok_or_else(minimum_rectangle_not_representable)
 }
 
 fn axis_corner(first: SupportHalfplane, second: SupportHalfplane) -> Option<Point> {
