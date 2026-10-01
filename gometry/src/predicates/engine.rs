@@ -9,9 +9,11 @@
 use std::cell::OnceCell;
 
 use crate::geometry::source_support::cartesian_row_point_location;
+use crate::geometry::storage::PackedRow;
 use crate::geometry::{
     Bounds, CompiledPattern, GeographicPrepared, GeographicTopologyRoute, Loc, PreparedPlan, Shape,
-    TopologyDomain, graph_relate_data, line_scalar_prefers_direct_polygon_relate,
+    SharedShapeOwners, TopologyDomain, graph_relate_data,
+    line_scalar_prefers_direct_polygon_relate, ring_winding,
 };
 
 #[derive(Clone, Copy)]
@@ -305,25 +307,36 @@ impl Predicate {
 }
 
 impl PredicateSpec {
-    /// A definite answer from operand bounds alone, before any exact topology.
+    /// A definite answer from pre-topology facts, before the pair is related.
     ///
-    /// Disjoint bounds settle only `disjoint` and `intersects`. Every other
-    /// predicate reaches the exact support owner because raw coordinate
-    /// envelopes may include canceled or hole-erased source geometry.
-    pub(crate) fn bounds_gate(&self, left: Bounds, right: Bounds) -> Option<bool> {
-        if !left.intersects(right) {
+    /// Disjoint boxes refute every predicate whose matrix requires an
+    /// intersection. Equality also refutes when both operands have a
+    /// certificate of non-empty support; raw bounds alone cannot distinguish
+    /// two empty supports, which are equal.
+    pub(crate) fn bounds_gate(
+        &self,
+        left: &GateOperand<'_>,
+        right: &GateOperand<'_>,
+    ) -> Option<bool> {
+        let (left_bounds, right_bounds) = (left.bounds?, right.bounds?);
+        if !left_bounds.intersects(right_bounds) {
             return match self.predicate {
                 Predicate::Disjoint => Some(true),
-                Predicate::Intersects => Some(false),
-                Predicate::Contains
+                Predicate::Intersects
+                | Predicate::Contains
                 | Predicate::ContainsProperly
                 | Predicate::Within
                 | Predicate::Covers
                 | Predicate::CoveredBy
                 | Predicate::Touches
                 | Predicate::Crosses
-                | Predicate::Overlaps
-                | Predicate::Equals => None,
+                | Predicate::Overlaps => Some(false),
+                Predicate::Equals
+                    if left.has_known_nonempty_support() && right.has_known_nonempty_support() =>
+                {
+                    Some(false)
+                },
+                Predicate::Equals => None,
             };
         }
         None
@@ -332,9 +345,9 @@ impl PredicateSpec {
     /// Every answer available before either operand is prepared.
     ///
     /// Ordered by what each stage has to touch: declared kinds refute without
-    /// reading a coordinate, bounds refute without topology, and two
-    /// rectangles that meet settle `intersects` outright. `None` hands the
-    /// pair to the exact kernel.
+    /// reading coordinates, disjoint bounds refute shared-support predicates,
+    /// and two rectangles that meet settle `intersects` outright. `None` hands
+    /// the pair to the exact kernel.
     pub(crate) fn pre_topology(
         &self,
         left: &GateOperand<'_>,
@@ -346,12 +359,12 @@ impl PredicateSpec {
         if !left.bounds_sound || !right.bounds_sound {
             return Ok(None);
         }
+        if let Some(verdict) = self.bounds_gate(left, right) {
+            return Ok(Some(verdict));
+        }
         let (Some(left_bounds), Some(right_bounds)) = (left.bounds, right.bounds) else {
             return Ok(None);
         };
-        if let Some(verdict) = self.bounds_gate(left_bounds, right_bounds) {
-            return Ok(Some(verdict));
-        }
         self.rectangles_meet(left, left_bounds, right, right_bounds)
     }
 
@@ -468,11 +481,59 @@ impl<'a> GateOperand<'a> {
             .try_with_shape(|shape| Ok(crate::geometry::is_axis_aligned_rectangle(shape, bounds)))
     }
 
+    /// Positive-only proof for the empty-support equality case. A hole-free
+    /// ring with nonzero exact area owns a filled face; all other areal
+    /// support remains unknown rather than guessed from declared kind.
+    fn has_known_nonempty_support(&self) -> bool {
+        match self.row {
+            ShapeRow::Handle(plan) => shape_has_known_nonempty_support(
+                plan.shape(),
+                &mut SharedShapeOwners::for_collections(),
+            ),
+            ShapeRow::Shape(shape) => {
+                shape_has_known_nonempty_support(shape, &mut SharedShapeOwners::for_collections())
+            },
+            ShapeRow::Point(_) => true,
+            ShapeRow::Packed(row @ PackedRow::Polygons { .. }) => {
+                let Some(mut rings) = ShapeRow::Packed(row).polygon_rings() else {
+                    return false;
+                };
+                let Some(shell) = rings.next() else {
+                    return false;
+                };
+                rings.next().is_none() && !ring_winding(&shell).is_degenerate()
+            },
+            ShapeRow::Packed(row) => !row.is_empty(),
+        }
+    }
+
     /// Whether this operand's coordinate box means what it says, so a caller
     /// may compare it as a plain rectangle. False across the seam, at a pole,
     /// and at a longitude the frame would move.
     pub(crate) const fn bounds_are_sound(&self) -> bool {
         self.bounds_sound
+    }
+}
+
+fn shape_has_known_nonempty_support(shape: &Shape, owners: &mut SharedShapeOwners) -> bool {
+    match shape {
+        Shape::Point(_) => true,
+        Shape::MultiPoint(points) => !points.is_empty(),
+        Shape::LineString(line) => !line.is_empty(),
+        Shape::MultiLineString(lines) => lines.iter().any(|line| !line.is_empty()),
+        Shape::Polygon(polygon) => {
+            polygon.holes.is_empty() && !ring_winding(&polygon.shell).is_degenerate()
+        },
+        Shape::MultiPolygon(polygons) => polygons.iter().any(|polygon| {
+            polygon.holes.is_empty() && !ring_winding(&polygon.shell).is_degenerate()
+        }),
+        Shape::GeometryCollection(parts) => {
+            owners.first_collection(parts.as_slice(), parts.members_are_shared())
+                && parts
+                    .iter()
+                    .any(|part| shape_has_known_nonempty_support(part, owners))
+        },
+        Shape::Empty(..) => false,
     }
 }
 
@@ -1161,6 +1222,129 @@ mod tests {
         )
     }
 
+    #[derive(Clone, Copy)]
+    struct FarApartSupportCase {
+        name: &'static str,
+        left: &'static str,
+        right: &'static str,
+        both_supports_certified_nonempty: bool,
+        matrix: Option<&'static str>,
+    }
+
+    const REMOTE_RECTANGLE: &str = "POLYGON ((1000 1000,1004 1000,1004 1004,1000 1004,1000 1000))";
+
+    const FAR_APART_SUPPORT_CASES: [FarApartSupportCase; 14] = [
+        FarApartSupportCase {
+            name: "spike",
+            left: "POLYGON ((0 0,4 0,4 4,2 4,2 6,2 4,0 4,0 0))",
+            right: REMOTE_RECTANGLE,
+            both_supports_certified_nonempty: true,
+            matrix: None,
+        },
+        FarApartSupportCase {
+            name: "collapsed polygon",
+            left: "POLYGON ((0 0,2 2,4 4,0 0))",
+            right: REMOTE_RECTANGLE,
+            both_supports_certified_nonempty: false,
+            matrix: None,
+        },
+        FarApartSupportCase {
+            name: "shell equals hole",
+            left: "POLYGON ((0 0,4 0,4 4,0 4,0 0),(0 0,4 0,4 4,0 4,0 0))",
+            right: REMOTE_RECTANGLE,
+            both_supports_certified_nonempty: false,
+            matrix: None,
+        },
+        FarApartSupportCase {
+            name: "zero-net bow-tie",
+            left: "POLYGON ((0 0,4 4,0 4,4 0,0 0))",
+            right: REMOTE_RECTANGLE,
+            both_supports_certified_nonempty: false,
+            matrix: None,
+        },
+        FarApartSupportCase {
+            name: "twice-wound shell",
+            left: "POLYGON ((0 0,4 0,4 4,0 4,0 0,4 0,4 4,0 4,0 0))",
+            right: REMOTE_RECTANGLE,
+            both_supports_certified_nonempty: true,
+            matrix: None,
+        },
+        FarApartSupportCase {
+            name: "external hole",
+            left: "POLYGON ((0 0,4 0,4 4,0 4,0 0),(8 8,9 8,9 9,8 9,8 8))",
+            right: REMOTE_RECTANGLE,
+            both_supports_certified_nonempty: false,
+            matrix: None,
+        },
+        FarApartSupportCase {
+            name: "empty polygon",
+            left: "POLYGON EMPTY",
+            right: REMOTE_RECTANGLE,
+            both_supports_certified_nonempty: false,
+            matrix: None,
+        },
+        FarApartSupportCase {
+            name: "collapsed-only multipolygon",
+            left: "MULTIPOLYGON (((0 0,2 2,4 4,0 0)))",
+            right: REMOTE_RECTANGLE,
+            both_supports_certified_nonempty: false,
+            matrix: None,
+        },
+        FarApartSupportCase {
+            name: "multipolygon with collapsed member",
+            left: "MULTIPOLYGON (((0 0,2 2,4 4,0 0)),((6 6,9 6,9 9,6 9,6 6)))",
+            right: REMOTE_RECTANGLE,
+            both_supports_certified_nonempty: true,
+            matrix: None,
+        },
+        FarApartSupportCase {
+            name: "collection with collapsed polygon member",
+            left: "GEOMETRYCOLLECTION (POLYGON ((0 0,2 2,4 4,0 0)),LINESTRING (6 6,7 6))",
+            right: REMOTE_RECTANGLE,
+            both_supports_certified_nonempty: true,
+            matrix: None,
+        },
+        FarApartSupportCase {
+            name: "two empty supports with raw bounds",
+            left: "POLYGON ((0 0,4 0,4 4,0 4,0 0),(0 0,4 0,4 4,0 4,0 0))",
+            right: "POLYGON ((1000 1000,1004 1000,1004 1004,1000 1004,1000 1000),(1000 1000,1004 1000,1004 1004,1000 1004,1000 1000))",
+            both_supports_certified_nonempty: false,
+            matrix: Some("FFFFFFFF2"),
+        },
+        FarApartSupportCase {
+            name: "two typed empty polygons",
+            left: "POLYGON EMPTY",
+            right: "POLYGON EMPTY",
+            both_supports_certified_nonempty: false,
+            matrix: Some("FFFFFFFF2"),
+        },
+        FarApartSupportCase {
+            name: "disjoint points",
+            left: "POINT (0 0)",
+            right: "POINT (1000 1000)",
+            both_supports_certified_nonempty: true,
+            matrix: None,
+        },
+        FarApartSupportCase {
+            name: "disjoint lines",
+            left: "LINESTRING (0 0,4 4)",
+            right: "LINESTRING (1000 1000,1004 1004)",
+            both_supports_certified_nonempty: true,
+            matrix: None,
+        },
+    ];
+
+    fn parse_wkt_shape(wkt: &str) -> Shape {
+        crate::io::parse_wkt(wkt).expect("bounds-gate fixture WKT parses")
+    }
+
+    fn prepared_pair(left: &Shape, right: &Shape) -> (PreparedPlan, PreparedPlan) {
+        (
+            PreparedPlan::new(left.clone()),
+            PreparedPlan::new(right.clone()),
+        )
+    }
+
     #[test]
     fn scalar_rows_relate_from_fixed_graphs_in_both_cartesian_orders() {
         let scalar = PreparedPlan::new(rectangle(0.0, 0.0, 2.0, 2.0));
@@ -1444,6 +1628,127 @@ mod tests {
     }
 
     #[test]
+    fn disjoint_support_refutations_match_partition_matrices() {
+        for case in FAR_APART_SUPPORT_CASES {
+            let left = parse_wkt_shape(case.left);
+            let right = parse_wkt_shape(case.right);
+            let (left_plan, right_plan) = prepared_pair(&left, &right);
+            let pair = PreparedTopologyPair::cartesian(&left_plan, &right_plan);
+            let matrix = pair.relate().expect("fixture relation succeeds");
+            if let Some(expected) = case.matrix {
+                assert_eq!(matrix.text(), expected, "{} matrix", case.name);
+            }
+
+            for predicate in Predicate::ALL {
+                let spec = predicate.spec();
+                let without_pre_topology_gate = topology_pair_after_gates(&spec, &pair)
+                    .expect("ungated Cartesian predicate succeeds");
+                let with_pre_topology_gate =
+                    topology_scalar_pair(&spec, &pair).expect("Cartesian predicate succeeds");
+                assert_eq!(
+                    with_pre_topology_gate, without_pre_topology_gate,
+                    "{}: pre-topology gate changed {predicate:?}",
+                    case.name,
+                );
+                assert_eq!(
+                    with_pre_topology_gate,
+                    predicate_matrix_value(&spec, matrix),
+                    "{}: {predicate:?} disagrees with the exact matrix",
+                    case.name,
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn disjoint_bounds_refute_intersections_and_only_certified_equality() {
+        let intersections = [
+            Predicate::Intersects,
+            Predicate::Contains,
+            Predicate::ContainsProperly,
+            Predicate::Within,
+            Predicate::Covers,
+            Predicate::CoveredBy,
+            Predicate::Touches,
+            Predicate::Crosses,
+            Predicate::Overlaps,
+        ];
+        for case in FAR_APART_SUPPORT_CASES {
+            let left = parse_wkt_shape(case.left);
+            let right = parse_wkt_shape(case.right);
+            let (left_plan, right_plan) = prepared_pair(&left, &right);
+            let pair = PreparedTopologyPair::cartesian(&left_plan, &right_plan);
+            let (left_gate, right_gate) = pair.gate_operands();
+            let Some((left_bounds, right_bounds)) = left_gate.bounds().zip(right_gate.bounds())
+            else {
+                for predicate in Predicate::ALL {
+                    assert_eq!(
+                        predicate.spec().bounds_gate(&left_gate, &right_gate),
+                        None,
+                        "{} has no two bounds",
+                        case.name,
+                    );
+                }
+                continue;
+            };
+            assert!(
+                !left_bounds.intersects(right_bounds),
+                "{} fixture bounds must be disjoint",
+                case.name
+            );
+            for predicate in intersections {
+                assert_eq!(
+                    predicate.spec().bounds_gate(&left_gate, &right_gate),
+                    Some(false),
+                    "{}: {predicate:?} requires shared support",
+                    case.name,
+                );
+            }
+            assert_eq!(
+                Predicate::Disjoint
+                    .spec()
+                    .bounds_gate(&left_gate, &right_gate),
+                Some(true),
+                "{}",
+                case.name,
+            );
+            assert_eq!(
+                Predicate::Equals
+                    .spec()
+                    .bounds_gate(&left_gate, &right_gate),
+                case.both_supports_certified_nonempty.then_some(false),
+                "{}",
+                case.name,
+            );
+        }
+    }
+
+    #[test]
+    fn disjoint_contains_gate_skips_partition_allocations() {
+        let (left, right) = prepared_pair(
+            &rectangle(0.0, 0.0, 10.0, 10.0),
+            &rectangle(100.0, 100.0, 110.0, 110.0),
+        );
+        assert!(left.bounds().is_some());
+        assert!(right.bounds().is_some());
+        let pair = PreparedTopologyPair::cartesian(&left, &right);
+        let spec = Predicate::Contains.spec();
+        let (matrix, partition_allocations) =
+            crate::test_support::allocation_count(|| pair.relate().expect("matrix succeeds"));
+        assert!(
+            partition_allocations > 0,
+            "exact partition is the counter control"
+        );
+        assert!(!predicate_matrix_value(&spec, matrix));
+
+        let (answer, gate_allocations) = crate::test_support::allocation_count(|| {
+            topology_scalar_pair(&spec, &pair).expect("Cartesian predicate succeeds")
+        });
+        assert!(!answer);
+        assert_eq!(gate_allocations, 0, "disjoint bounds stop before partition");
+    }
+
+    #[test]
     fn geographic_crossing_rows_fail_open_the_bounds_gate() {
         let query = PreparedPlan::new(rectangle(172.0, 42.0, 178.0, 48.0));
         let crossing = rectangle(170.0, 40.0, -170.0, 50.0);
@@ -1459,6 +1764,18 @@ mod tests {
         )
         .expect("fixture admits");
         assert_eq!(actual, [true]);
+
+        let crossing_contains_query = scalar_vs_shapes(
+            &Predicate::Contains.spec(),
+            &query,
+            [(0, Some(ShapeRow::Shape(&crossing)))].into_iter(),
+            false,
+            None,
+            TopologyDomain::Geographic(degrees()),
+            &cache,
+        )
+        .expect("fixture admits");
+        assert_eq!(crossing_contains_query, [true]);
     }
 
     #[test]
