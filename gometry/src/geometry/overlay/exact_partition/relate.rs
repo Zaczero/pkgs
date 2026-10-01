@@ -291,6 +291,12 @@ impl ExactSourceInventory {
         {
             let [left, right] = *faces;
             let (left, right) = (left as usize, right as usize);
+            for &(source, _) in partition.owners(span) {
+                let source = source as usize;
+                if self.source_rings[source].is_none() {
+                    curve_row[self.source_operands[source] as usize] = true;
+                }
+            }
             for (operand, ((curve, support), raw)) in curve_row
                 .iter_mut()
                 .zip(support_row)
@@ -298,7 +304,6 @@ impl ExactSourceInventory {
                 .enumerate()
             {
                 let [left_raw, right_raw] = *raw;
-                *curve = self.explicit_curve_support(partition, span, operand);
                 *support = *curve
                     || left_raw
                     || right_raw
@@ -366,22 +371,6 @@ impl ExactSourceInventory {
             }
         }
         faces
-    }
-
-    #[expect(
-        clippy::indexing_slicing,
-        reason = "span owner source IDs and their operand/ring columns come from the same inventory"
-    )]
-    pub(super) fn explicit_curve_support(
-        &self,
-        partition: &ExactPartition<'_>,
-        span: usize,
-        operand: usize,
-    ) -> bool {
-        partition.owners(span).iter().any(|&(source, _)| {
-            let source = source as usize;
-            self.source_operands[source] as usize == operand && self.source_rings[source].is_none()
-        })
     }
 
     #[expect(
@@ -644,22 +633,13 @@ impl ExactSourceInventory {
                     facts.face_membership[host * operands + operand];
             }
         }
-        for (node, (cell_node, membership)) in cells
+        // Span support already includes both incident faces and has been
+        // propagated to both endpoints. Only isolated nodes need their host face.
+        for (cell_node, membership) in cells
             .nodes
             .iter_mut()
-            .zip(node_membership.chunks_exact_mut(operands))
-            .enumerate()
+            .zip(node_membership.chunks_exact(operands))
         {
-            let range = topology.starts[node] as usize..topology.starts[node + 1] as usize;
-            if !range.is_empty() {
-                for (operand, present) in membership.iter_mut().enumerate() {
-                    let any = range.clone().any(|slot| {
-                        let face = global.walk_faces[topology.face_of[slot] as usize] as usize;
-                        facts.face_membership[face * operands + operand]
-                    });
-                    *present |= any;
-                }
-            }
             *cell_node |= select_operation(operation, membership);
         }
         Ok(cells)
