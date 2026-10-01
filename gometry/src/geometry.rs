@@ -111,6 +111,8 @@ pub(crate) use derived::{
     smallest_enclosing_circle,
 };
 mod distance;
+pub(crate) use distance::{RowMetricPair, discrete_frechet_distance_with_scratch};
+pub(crate) use types::coordinate_columns_eq;
 mod facet_bvh;
 mod generated_budget;
 mod geodesic_bvh;
@@ -134,7 +136,7 @@ mod segment_index;
 pub(in crate::geometry) use segment_index::OrderTree;
 pub(crate) use segment_index::{EdgeId, EdgeYIndex, uses_linear_plan_for_len};
 mod segments;
-mod source_support;
+pub(crate) mod source_support;
 pub(in crate::geometry) use source_support::compare_rays;
 pub(crate) use source_support::{
     RingKind, RingView, cartesian_area_covers_point, cartesian_point_covers,

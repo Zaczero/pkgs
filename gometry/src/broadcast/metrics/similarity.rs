@@ -108,16 +108,62 @@ impl SimilarityOp {
         row: usize,
         scratch: &mut FrechetDpScratch,
     ) -> crate::error::Result<f64> {
-        match self {
-            Self::Hausdorff { max_error } => metric_hausdorff(model, left, right, *max_error),
-            Self::Frechet { densify } => metrics::metric_frechet_densified_with_scratch(
-                model,
-                left,
-                right,
-                densify.at(row),
-                scratch,
-            ),
+        self.eval_rows_at(model, left.into(), right.into(), row, scratch)
+    }
+
+    pub(crate) fn eval_rows_at(
+        &self,
+        model: &crs::MetricModel,
+        left: crate::array::ShapeRow<'_>,
+        right: crate::array::ShapeRow<'_>,
+        row: usize,
+        scratch: &mut FrechetDpScratch,
+    ) -> crate::error::Result<f64> {
+        if let crs::MetricModel::Planar { to_metre } = model {
+            match self {
+                Self::Hausdorff { max_error } => {
+                    if left.is_empty() || right.is_empty() {
+                        return Ok(f64::INFINITY);
+                    }
+                    return crate::geometry::hausdorff_distance(
+                        left,
+                        right,
+                        *max_error,
+                        to_metre.get(),
+                    );
+                },
+                Self::Frechet { densify } if densify.at(row).is_none() => {
+                    let mut counts = crate::geometry::ShapeCountQuery::default();
+                    crate::geometry::ExpansionBudget::pairwise(
+                        "frechet_distance",
+                        "densify",
+                        left.coordinates(&mut counts)?,
+                        right.coordinates(&mut counts)?,
+                    )?;
+                    if left.is_empty() || right.is_empty() {
+                        return Ok(f64::INFINITY);
+                    }
+                    if let (Some(left), Some(right)) = (left.line_coords(), right.line_coords()) {
+                        return Ok(crate::geometry::discrete_frechet_distance_with_scratch(
+                            &left, &right, scratch,
+                        ) * to_metre.get());
+                    }
+                },
+                Self::Frechet { .. } => {},
+            }
         }
+        left.try_with_shape(|left| {
+            right.try_with_shape(|right| match self {
+                Self::Hausdorff { max_error } => metric_hausdorff(model, left, right, *max_error),
+                Self::Frechet { densify } => metrics::metric_frechet_densified_with_scratch(
+                    model,
+                    left,
+                    right,
+                    densify.at(row),
+                    scratch,
+                ),
+            })
+        })
     }
 
     pub(crate) fn eval_scalar(
@@ -296,15 +342,13 @@ pub(crate) fn array_crs_frechet_metric_per_densify(
                             ArrayRow::Missing { value, .. } => Ok(value),
                             ArrayRow::Present(left) => {
                                 let logical = left.logical();
-                                left.row().try_with_shape(|left| {
-                                    operation.eval_shapes_at(
-                                        &model,
-                                        left,
-                                        right.shape(),
-                                        logical,
-                                        &mut scratch,
-                                    )
-                                })
+                                operation.eval_rows_at(
+                                    &model,
+                                    left.row(),
+                                    right.shape().into(),
+                                    logical,
+                                    &mut scratch,
+                                )
                             },
                         })
                         .collect_rows()
@@ -326,17 +370,13 @@ pub(crate) fn array_crs_frechet_metric_per_densify(
                         .map(|(left, right)| match (left, right) {
                             (ArrayRow::Present(left), ArrayRow::Present(right)) => {
                                 let logical = left.logical();
-                                left.row().try_with_shape(|left| {
-                                    right.row().try_with_shape(|right| {
-                                        operation.eval_shapes_at(
-                                            &model,
-                                            left,
-                                            right,
-                                            logical,
-                                            &mut scratch,
-                                        )
-                                    })
-                                })
+                                operation.eval_rows_at(
+                                    &model,
+                                    left.row(),
+                                    right.row(),
+                                    logical,
+                                    &mut scratch,
+                                )
                             },
                             _ => Ok(f64::NAN),
                         })

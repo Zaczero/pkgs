@@ -32,8 +32,8 @@ impl From<Dimension> for usize {
     clippy::float_cmp,
     reason = "the first vertex distinct from the origin is found by identity, not proximity; a tolerance would pick a near-duplicate as the line's second point"
 )]
-pub(crate) fn ring_is_collinear(coords: &crate::geometry::CoordSeq) -> bool {
-    let (xs, ys) = (coords.xs(), coords.ys());
+pub(crate) fn ring_is_collinear(coords: &(impl crate::geometry::Coordinates + ?Sized)) -> bool {
+    let (xs, ys) = coords.xy_columns().expect("rings carry coordinate columns");
     let Some((&ax, &ay)) = xs.first().zip(ys.first()) else {
         return true;
     };

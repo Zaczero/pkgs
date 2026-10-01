@@ -79,6 +79,103 @@ struct RayGroup {
     end: usize,
 }
 
+#[derive(Default)]
+struct LocationScratch {
+    windings: Vec<i64>,
+    rays: Vec<Ray>,
+    groups: Vec<RayGroup>,
+    collapsed_points: Vec<usize>,
+}
+
+pub(crate) struct RowPointQuery<'a> {
+    source: SourceSupport<'a>,
+    scratch: LocationScratch,
+}
+
+impl<'a> RowPointQuery<'a> {
+    pub(crate) const fn new() -> Self {
+        Self {
+            source: SourceSupport::new(),
+            scratch: LocationScratch {
+                windings: Vec::new(),
+                rays: Vec::new(),
+                groups: Vec::new(),
+                collapsed_points: Vec::new(),
+            },
+        }
+    }
+
+    pub(crate) fn location(
+        &mut self,
+        row: crate::array::ShapeRow<'a>,
+        point: Point,
+        coverage: bool,
+    ) -> Loc {
+        self.set_row(row, coverage);
+        self.source.location_with_scratch(point, &mut self.scratch)
+    }
+
+    pub(crate) fn area_covers(&mut self, row: crate::array::ShapeRow<'a>, point: Point) -> bool {
+        self.set_row(row, true);
+        self.source
+            .area_covers_with_scratch(point, &mut self.scratch)
+    }
+
+    fn set_row(&mut self, row: crate::array::ShapeRow<'a>, coverage: bool) {
+        use crate::array::{PackedRow, ShapeRow};
+        let source = &mut self.source;
+        source.rings.clear();
+        source.polygons.clear();
+        source.curves.clear();
+        source.points.clear();
+        let mut shared = SharedShapeOwners::for_collections();
+        let mut owners = coverage.then_some(&mut shared);
+        match row {
+            ShapeRow::Handle(plan) => source.append_shape(plan.shape(), &mut owners),
+            ShapeRow::Shape(shape) => source.append_shape(shape, &mut owners),
+            ShapeRow::Point(point) => source.points.push(point.xy()),
+            ShapeRow::Packed(PackedRow::Points {
+                coords, physical, ..
+            }) => {
+                source.points.push(coords.point_at(physical).xy());
+            },
+            ShapeRow::Packed(packed @ PackedRow::Lines { coords, .. }) => {
+                let window = packed.vertex_window().expect("line row carries its window");
+                source.append_curve_columns(
+                    coords
+                        .xs()
+                        .get(window.clone())
+                        .expect("admitted line x window"),
+                    coords.ys().get(window).expect("admitted line y window"),
+                );
+            },
+            ShapeRow::Packed(packed @ PackedRow::Polygons { coords, .. }) => {
+                let rings = packed
+                    .polygon_rings()
+                    .expect("polygon row carries its rings");
+                for ring in rings {
+                    let window = packed
+                        .polygon_ring_window(ring)
+                        .expect("admitted ring window");
+                    let xs = coords
+                        .xs()
+                        .get(window.clone())
+                        .expect("admitted ring x window");
+                    let ys = coords.ys().get(window).expect("admitted ring y window");
+                    source.rings.push(RingView {
+                        xs,
+                        ys,
+                        kind: ring_kind_columns(xs, ys),
+                    });
+                }
+                if !source.rings.is_empty() {
+                    source.polygons.push(0..source.rings.len());
+                }
+            },
+        }
+    }
+}
+
 #[cfg(test)]
 impl<'a> ReferenceSourceSupport<'a> {
     const fn new() -> Self {
@@ -140,21 +237,27 @@ impl<'a> ReferenceSourceSupport<'a> {
     }
 
     fn append_curve(&mut self, curve: &'a crate::geometry::CoordSeq) {
-        self.curves.push(CurveView {
-            xs: curve.xs(),
-            ys: curve.ys(),
-        });
-        if !has_nonzero_segment(curve.xs(), curve.ys()) {
-            self.points.reserve(curve.len());
-            for (&x, &y) in curve.xs().iter().zip(curve.ys()) {
+        self.append_curve_columns(curve.xs(), curve.ys());
+    }
+
+    fn append_curve_columns(&mut self, xs: &'a [f64], ys: &'a [f64]) {
+        self.curves.push(CurveView { xs, ys });
+        if !has_nonzero_segment(xs, ys) {
+            self.points.reserve(xs.len());
+            for (&x, &y) in xs.iter().zip(ys) {
                 self.points.push(XY::new(x, y));
             }
         }
     }
 
     fn location(&self, point: Point) -> Loc {
+        self.location_with_scratch(point, &mut LocationScratch::default())
+    }
+
+    fn location_with_scratch(&self, point: Point, scratch: &mut LocationScratch) -> Loc {
         let query = point.xy();
-        let mut windings = Vec::with_capacity(self.rings.len());
+        let windings = &mut scratch.windings;
+        windings.clear();
         let mut incident = false;
         for ring in &self.rings {
             let probe = ring_probe_columns(ring.xs, ring.ys, query);
@@ -170,8 +273,10 @@ impl<'a> ReferenceSourceSupport<'a> {
             .points
             .iter()
             .any(|&candidate| same_point(candidate, query));
-        let mut collapsed_points = Vec::new();
-        let mut rays = Vec::new();
+        let collapsed_points = &mut scratch.collapsed_points;
+        collapsed_points.clear();
+        let rays = &mut scratch.rays;
+        rays.clear();
         for (ring_id, ring) in self.rings.iter().enumerate() {
             for_each_ring_segment(ring.xs, ring.ys, |start, end| {
                 if same_point(start, end) {
@@ -238,23 +343,33 @@ impl<'a> ReferenceSourceSupport<'a> {
         }
 
         if !incident {
-            return self.location_without_contact(&windings, query, explicit_point);
+            return self.location_without_contact(windings, query, explicit_point);
         }
 
         rays.sort_unstable_by(|left, right| compare_rays(query, left.end, right.end));
-        let groups = ray_groups(query, &rays);
+        let mut groups = std::mem::take(&mut scratch.groups);
+        ray_groups_into(query, rays, &mut groups);
         let endpoint_parity = self.curve_endpoint_parity(query);
         let mut state = LocalStar {
             source: self,
             query,
-            windings,
-            rays,
+            windings: std::mem::take(windings),
+            rays: std::mem::take(rays),
             groups,
             endpoint_parity,
             explicit_point,
-            collapsed_points,
+            collapsed_points: std::mem::take(collapsed_points),
         };
-        state.location()
+        let location = state.location();
+        scratch.windings = state.windings;
+        scratch.rays = state.rays;
+        scratch.groups = state.groups;
+        scratch.collapsed_points = state.collapsed_points;
+        location
+    }
+
+    fn area_covers(&self, point: Point) -> bool {
+        self.area_covers_with_scratch(point, &mut LocationScratch::default())
     }
 
     fn location_without_contact(&self, windings: &[i64], query: XY, explicit_point: bool) -> Loc {
@@ -1200,8 +1315,8 @@ fn symbolic_orientation_from_sign(start: XY, end: XY, direct: ExactSign) -> Exac
     clippy::indexing_slicing,
     reason = "start and end advance only within the sorted ray slice being grouped"
 )]
-fn ray_groups(query: XY, rays: &[Ray]) -> Vec<RayGroup> {
-    let mut groups = Vec::new();
+fn ray_groups_into(query: XY, rays: &[Ray], groups: &mut Vec<RayGroup>) {
+    groups.clear();
     let mut start = 0_usize;
     while start < rays.len() {
         let mut end = start.wrapping_add(1);
@@ -1213,7 +1328,6 @@ fn ray_groups(query: XY, rays: &[Ray]) -> Vec<RayGroup> {
         groups.push(RayGroup { start, end });
         start = end;
     }
-    groups
 }
 
 pub(in crate::geometry) fn compare_rays(query: XY, left: XY, right: XY) -> Ordering {

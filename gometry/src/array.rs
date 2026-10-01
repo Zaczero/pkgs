@@ -362,7 +362,9 @@ pub(crate) use linref_kernels::{line_interpolate_points_rows, line_locate_point_
 mod iter;
 pub(crate) use iter::PyGeometryArrayIter;
 mod prepared;
-pub(crate) use prepared::{ArrayRow, ArrayRowOperation, BoundsSeed, PreparedRow, RowProducts};
+pub(crate) use prepared::{
+    ArrayRow, ArrayRowOperation, BoundsSeed, PreparedRow, RowProducts, packed_row_persistent,
+};
 mod storage_helpers;
 mod storage_types;
 pub(crate) use packed_column_builder::{
@@ -398,7 +400,7 @@ mod uniform_columns;
 pub(crate) use pack_admission::{CheckedRingWindow, RingWindowError, polygon_pack_axes};
 pub(crate) use packed::ComputedCaches;
 pub(crate) use streaming::StreamingShapes;
-mod shape_row;
+pub(crate) mod shape_row;
 mod storage_impl;
 pub(crate) use packed_equal::pair_packed_equals_exact;
 mod tests;

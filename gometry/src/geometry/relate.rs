@@ -14,6 +14,7 @@
 
 mod de9im;
 mod graph_matrix;
+pub(in crate::geometry) use graph_matrix::exact_cartesian_relate;
 mod interval;
 mod operands;
 

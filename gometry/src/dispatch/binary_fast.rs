@@ -220,10 +220,10 @@ fn dispatch_metric_binary<R>(
     + Copy
     + Send
     + Sync,
-    array_lane: impl Fn(
+    array_lane: impl for<'a> Fn(
         Python<'_>,
-        &crate::PyGeometryArray,
-        GeometryInput<'_>,
+        &'a crate::PyGeometryArray,
+        GeometryInput<'a>,
         &Frame,
         MetricOp,
         Option<DistanceUnit>,
@@ -261,10 +261,10 @@ fn dispatch_metric_binary_admitted<R>(
     + Copy
     + Send
     + Sync,
-    array_lane: impl Fn(
+    array_lane: impl for<'a> Fn(
         Python<'_>,
-        &crate::PyGeometryArray,
-        GeometryInput<'_>,
+        &'a crate::PyGeometryArray,
+        GeometryInput<'a>,
         &Frame,
         MetricOp,
         Option<DistanceUnit>,
@@ -276,7 +276,7 @@ where
     let operation = Operation::Metric(op);
     let has_missing = matches!(&admission.left, GeometryInput::Many(array) if array.has_missing())
         || matches!(&admission.right, GeometryInput::Many(array) if array.has_missing());
-    if has_missing
+    if (has_missing && matches!(admission.domain, TopologyDomain::Geographic(_)))
         || matches!(
             (&admission.left, &admission.right),
             (GeometryInput::One(_), GeometryInput::One(_))

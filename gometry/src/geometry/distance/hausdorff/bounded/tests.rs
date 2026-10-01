@@ -557,7 +557,7 @@ fn fast_and_complete_sqrt_paths_have_identical_bounded_results() {
         .iter()
         .map(|(left, right, error, scale)| {
             let _path = force_exact_sqrt_path(false);
-            distance(left, right, Some(*error), *scale).expect("fast bounded result")
+            distance(*left, *right, Some(*error), *scale).expect("fast bounded result")
         })
         .collect();
     let fast_stats = sqrt_stats();
@@ -569,7 +569,7 @@ fn fast_and_complete_sqrt_paths_have_identical_bounded_results() {
         .iter()
         .map(|(left, right, error, scale)| {
             let _path = force_exact_sqrt_path(true);
-            distance(left, right, Some(*error), *scale).expect("complete bounded result")
+            distance(*left, *right, Some(*error), *scale).expect("complete bounded result")
         })
         .collect();
     let complete_stats = sqrt_stats();

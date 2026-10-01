@@ -18,7 +18,7 @@ mod shared_slice;
 
 pub(crate) use coordseq::{
     CoordIter, CoordSeq, CoordSeqBuilder, CoordWindow, MColumn, VisiblePointRunKey, VisibleXYKey,
-    coerce_to_common_axes,
+    coerce_to_common_axes, coordinate_columns_eq,
 };
 pub(crate) use csr::{
     CsrOffsetBuilder, CsrOffsetColumn, GeometryKind, PolygonLevel, RingLevel, checked_csr_window,

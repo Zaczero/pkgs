@@ -18,7 +18,7 @@ use crate::error::Result;
 use crate::geometry::{PointSet, PreparedPlan, TopologyDomain};
 use crate::predicates::engine;
 use crate::predicates::engine::{
-    GateOperand, Predicate, PreparedTopologyPair, row_kind_empty, topology_scalar_pair,
+    GateOperand, Predicate, PreparedTopologyPair, topology_scalar_pair,
 };
 use crate::py::errors::{GeometryError, InvalidGeometryError};
 use crate::py::numpy::bool_array;
@@ -47,6 +47,17 @@ pub(crate) fn predicate_scalar_vs_array(
     domain: TopologyDomain,
 ) -> PyResult<Py<PyAny>> {
     let spec = *spec;
+    if let Some(kind) = array.storage().uniform_kind() {
+        let scalar_kind = crate::geometry::GeometryKind::of(scalar.shape.shape());
+        let (left, right) = if scalar_is_left {
+            (scalar_kind, kind)
+        } else {
+            (kind, scalar_kind)
+        };
+        if let Some(verdict) = spec.predicate.kind_gate(left, right) {
+            return bool_array_mask_missing(py, vec![verdict; array.len()], array.missing());
+        }
+    }
     let missing = array.missing().cloned();
     let plan = scalar.prepared_plan();
     let scalar_cache = scalar.frame_cache();
@@ -86,6 +97,14 @@ pub(crate) fn predicate_pairwise_arrays(
     missing: Option<&ValidityMask>,
 ) -> PyResult<Py<PyAny>> {
     let spec = *spec;
+    if let Some((left_kind, right_kind)) = left
+        .storage()
+        .uniform_kind()
+        .zip(right.storage().uniform_kind())
+        && let Some(verdict) = spec.predicate.kind_gate(left_kind, right_kind)
+    {
+        return bool_array_mask_missing(py, vec![verdict; left.len()], missing);
+    }
     let left_bounds = left.existing_element_bounds();
     let right_bounds = right.existing_element_bounds();
     let left_array = left.clone();
@@ -95,76 +114,83 @@ pub(crate) fn predicate_pairwise_arrays(
         py.detach(move || {
             let mut left_rows = left_array.row_operation();
             let mut right_rows = right_array.row_operation();
-            left_rows
-                .rows_with_missing(|| ())
-                .zip(right_rows.rows_with_missing(|| ()))
-                .map(|(left, right)| {
-                    // A missing row is a placeholder, not an empty geometry.
-                    // It never reaches an exact kernel, and the mask replaces
-                    // this value on the way out.
-                    let (ArrayRow::Present(left), ArrayRow::Present(right)) = (left, right) else {
-                        return Ok(false);
-                    };
-                    let index = left.logical();
-                    let left = left.row();
-                    let right = right.row();
-                    match domain {
-                        TopologyDomain::Cartesian => {
-                            if let Some(verdict) = spec.pre_topology(
-                                &GateOperand::cartesian(
-                                    left,
-                                    left_bounds
-                                        .as_ref()
-                                        .and_then(|bounds| bounds.get(index).copied().flatten()),
-                                ),
-                                &GateOperand::cartesian(
-                                    right,
-                                    right_bounds
-                                        .as_ref()
-                                        .and_then(|bounds| bounds.get(index).copied().flatten()),
-                                ),
-                            )? {
-                                return Ok(verdict);
-                            }
-                            let left = left_rows.prepared_at(index, left)?;
-                            let right = right_rows.prepared_at(index, right)?;
-                            let left_cache = left_rows.frame_cache(index);
-                            let right_cache = right_rows.frame_cache(index);
-                            Ok(topology_scalar_pair(
-                                &spec,
-                                &PreparedTopologyPair::try_for_domain(
-                                    &left,
-                                    &left_cache,
-                                    &right,
-                                    &right_cache,
-                                    domain,
-                                )?,
-                            )?)
-                        },
-                        TopologyDomain::Geographic(_) => {
-                            let (left_kind, _) = row_kind_empty(left);
-                            let (right_kind, _) = row_kind_empty(right);
-                            if let Some(verdict) = spec.predicate.kind_gate(left_kind, right_kind) {
-                                return Ok(verdict);
-                            }
-                            let left = left_rows.prepared_at(index, left)?;
-                            let right = right_rows.prepared_at(index, right)?;
-                            let left_cache = left_rows.frame_cache(index);
-                            let right_cache = right_rows.frame_cache(index);
-                            Ok(topology_scalar_pair(
-                                &spec,
-                                &PreparedTopologyPair::try_for_domain(
-                                    &left,
-                                    &left_cache,
-                                    &right,
-                                    &right_cache,
-                                    domain,
-                                )?,
-                            )?)
-                        },
-                    }
-                })
-                .collect_rows()
+            macro_rules! pairs {
+                ($index:ident, $left:ident, $right:ident, $evaluate:block) => {
+                    left_rows
+                        .rows_with_missing(|| ())
+                        .zip(right_rows.rows_with_missing(|| ()))
+                        .map(|(left, right)| {
+                            let (ArrayRow::Present(left), ArrayRow::Present(right)) = (left, right)
+                            else {
+                                return Ok(false);
+                            };
+                            let $index = left.logical();
+                            let $left = left.row();
+                            let $right = right.row();
+                            $evaluate
+                        })
+                        .collect_rows()
+                };
+            }
+            match domain {
+                TopologyDomain::Cartesian => {
+                    let mut query = crate::geometry::source_support::RowPointQuery::new();
+                    pairs!(index, left, right, {
+                        let left_gate = GateOperand::cartesian(
+                            left,
+                            left_bounds
+                                .as_ref()
+                                .and_then(|bounds| bounds.get(index).copied().flatten()),
+                        );
+                        let right_gate = GateOperand::cartesian(
+                            right,
+                            right_bounds
+                                .as_ref()
+                                .and_then(|bounds| bounds.get(index).copied().flatten()),
+                        );
+                        if let Some(verdict) = spec.pre_topology(&left_gate, &right_gate)? {
+                            return Ok(verdict);
+                        }
+                        if let Some(verdict) =
+                            engine::row_point_predicate(&spec, left, right, &mut query)?
+                        {
+                            return Ok(verdict);
+                        }
+                        let left =
+                            left_rows.prepared_at_with_bounds(index, left, left_gate.bounds())?;
+                        let right = right_rows.prepared_at_with_bounds(
+                            index,
+                            right,
+                            right_gate.bounds(),
+                        )?;
+                        engine::topology_pair_after_gates(
+                            &spec,
+                            &PreparedTopologyPair::cartesian(&left, &right),
+                        )
+                    })
+                },
+                TopologyDomain::Geographic(frame) => {
+                    pairs!(index, left, right, {
+                        if let Some(verdict) = spec.predicate.kind_gate(left.kind(), right.kind()) {
+                            return Ok(verdict);
+                        }
+                        let left = left_rows.prepared_at(index, left)?;
+                        let right = right_rows.prepared_at(index, right)?;
+                        let left_cache = left_rows.frame_cache(index);
+                        let right_cache = right_rows.frame_cache(index);
+                        topology_scalar_pair(
+                            &spec,
+                            &PreparedTopologyPair::try_geographic(
+                                &left,
+                                &left_cache,
+                                &right,
+                                &right_cache,
+                                frame,
+                            )?,
+                        )
+                    })
+                },
+            }
         })
         .map_err(super::rows_err)?,
         missing,

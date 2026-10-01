@@ -4,4 +4,4 @@ mod bvh;
 mod prepare;
 
 pub(crate) use bvh::{FacetBvh, NearestCandidate};
-pub(crate) use prepare::{Facet, PreparedLinework};
+pub(crate) use prepare::{Facet, PreparedLinework, facet_point_distance_columns};

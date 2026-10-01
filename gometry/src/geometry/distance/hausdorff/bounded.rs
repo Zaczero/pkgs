@@ -7,11 +7,12 @@ use std::sync::Arc;
 use crate::error::Result;
 use crate::geometry::exact_arith::ExactSign;
 use crate::geometry::overlay::{ExactMetricSpan, ExactMetricSupport, ExactSourceInventory};
+use crate::geometry::relate::exact_cartesian_relate;
 use crate::geometry::tessellation::exact;
 use crate::geometry::tessellation::exact::{ExactDyadic, ExactRational as Rational};
 use crate::geometry::{
     CoordSeq, Coordinates as _, DdInterval, ExpansionBudget, LineSeq, PackedLineColumnView, Point,
-    Polygonal, RunIdentity, Segment, Shape, XY,
+    Polygonal, Segment, Shape, XY,
 };
 
 mod index;
@@ -49,36 +50,28 @@ pub(crate) struct PreparedSupport {
 }
 
 impl PreparedSupport {
-    pub(in crate::geometry) fn from_shape(
-        shape: &Shape,
+    pub(in crate::geometry) fn from_shape<'a>(
+        shape: impl Into<crate::array::ShapeRow<'a>>,
         budget: &mut ExpansionBudget,
     ) -> Result<Self> {
+        let shape = shape.into();
         if !shape.has_area_parts() {
-            let capacity = shape.segment_count_capacity_hint(RunIdentity::XY);
+            let capacity = shape.segment_count_capacity_hint();
             let mut spans = Vec::new();
             if let Some(capacity) = capacity {
                 let _reservation = spans.try_reserve(capacity);
             }
             let mut points = Vec::new();
-            shape.try_for_each_first_segment_chain(RunIdentity::XY, |chain| {
-                for [start, end] in chain.segment_pairs() {
-                    push_raw_segment(
-                        Segment {
-                            start: start.xy(),
-                            end: end.xy(),
-                        },
-                        &mut spans,
-                        &mut points,
-                    );
-                }
-                Ok::<(), crate::error::Error>(())
+            shape.try_for_each_segment(|segment| {
+                push_raw_segment(segment, &mut spans, &mut points);
+                Ok(())
             })?;
-            shape.for_each_first_point_only(RunIdentity::XY, |point| {
+            shape.for_each_point_only(|point| {
                 points.push(ExactPoint::from_xy(point.xy()));
             });
             return Self::from_parts(spans, points, Vec::new());
         }
-        let inventory = ExactSourceInventory::from_shapes(&[shape])?;
+        let inventory = ExactSourceInventory::from_rows([shape].into_iter())?;
         let partition = inventory.partition(budget)?;
         let support = inventory.metric_support(&partition)?;
         Self::from_metric_support(support)
@@ -3099,15 +3092,17 @@ pub(crate) fn directed_inradius_scaled(
     })
 }
 
-pub(crate) fn distance(
-    left: &Shape,
-    right: &Shape,
+pub(crate) fn distance<'a>(
+    left: impl Into<crate::array::ShapeRow<'a>>,
+    right: impl Into<crate::array::ShapeRow<'a>>,
     max_error: Option<f64>,
     scale: f64,
 ) -> Result<f64> {
+    let left = left.into();
+    let right = right.into();
     let accuracy = Accuracy::new(max_error, scale)?;
     let mut context = SearchContext::new(&accuracy);
-    let identical = left == right;
+    let identical = left.same_stored_geometry(right);
     if identical && !left.has_area_parts() {
         return Ok(0.0);
     }
@@ -3120,12 +3115,12 @@ pub(crate) fn distance(
         &source,
         &target,
         &mut context,
-        || left.equals(right),
+        || exact_cartesian_relate(left, right).map(|matrix| matrix.is_equal_topo()),
         |forward| {
             if forward {
-                right.covers(left)
+                exact_cartesian_relate(right, left).map(|matrix| matrix.is_covers())
             } else {
-                left.covers(right)
+                exact_cartesian_relate(left, right).map(|matrix| matrix.is_covers())
             }
         },
     )

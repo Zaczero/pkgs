@@ -3,11 +3,10 @@ use crate::error::{ResourceError, Result};
 use crate::geometry::facet_bvh::engine::bvh::refine_facet_nearest;
 use crate::geometry::facet_bvh::{
     FACET_SEGMENTS, NearestCandidate, aabb_distance, aabb_distance_squared, point_aabb,
-    simd_point_facet_distance_squared,
 };
 use crate::geometry::{
     Bounds, CoordSeq, Point, RunIdentity, Segment, Shape, XY, point_on_segment,
-    point_segment_distance, point_segment_distance_squared, segments_intersect, xy_bounds_columns,
+    point_segment_distance_squared, segments_intersect, xy_bounds_columns,
 };
 
 /// One run of up to [`FACET_SEGMENTS`] consecutive segments inside a single
@@ -79,6 +78,51 @@ fn push_chain_facets(
     }
     Ok(segments)
 }
+
+// Stamp the shared fold at each probe so full-facet rounding stays identical
+// without an out-of-line call per facet.
+macro_rules! facet_point_distance_columns {
+    ($squared:expr, $simd:expr, $xs:expr, $ys:expr, $point:expr, $best:expr $(,)?) => {{
+        use $crate::error::Result;
+        use $crate::geometry::facet_bvh::{
+            FACET_SEGMENTS, aabb_distance_squared, point_aabb, segment_aabb,
+            simd_point_facet_distance_squared,
+        };
+        use $crate::geometry::{
+            Segment, XY, point_segment_distance, point_segment_distance_squared,
+        };
+        let (xs, ys, point) = ($xs, $ys, $point);
+        'minimum: {
+            if $squared && $simd && xs.len() == FACET_SEGMENTS + 1 {
+                let squared = simd_point_facet_distance_squared(xs, ys, point.x, point.y);
+                if squared.is_finite() {
+                    break 'minimum Result::<f64>::Ok(squared);
+                }
+            }
+            let mut best = $best;
+            for ([ax, bx], [ay, by]) in xs.array_windows::<2>().zip(ys.array_windows::<2>()) {
+                let segment = Segment {
+                    start: XY::new(*ax, *ay),
+                    end: XY::new(*bx, *by),
+                };
+                // Equal bounds retain the projection's rounded distance tie.
+                if $squared
+                    && aabb_distance_squared(point_aabb(point.x, point.y), segment_aabb(segment))
+                        > best
+                {
+                    continue;
+                }
+                best = best.min(if $squared {
+                    point_segment_distance_squared(point, segment)?
+                } else {
+                    point_segment_distance(point, segment)?
+                });
+            }
+            Result::<f64>::Ok(best)
+        }
+    }};
+}
+pub(crate) use facet_point_distance_columns;
 
 impl PreparedLinework {
     #[expect(
@@ -410,26 +454,16 @@ impl PreparedLinework {
         let count = facet.segment_count as usize;
         let xs = chain.xs();
         let ys = chain.ys();
-        if count == FACET_SEGMENTS {
-            let simd = simd_point_facet_distance_squared(
-                &xs[first..=first + FACET_SEGMENTS],
-                &ys[first..=first + FACET_SEGMENTS],
-                px,
-                py,
-            );
-            if simd.is_finite() {
-                return Ok(simd);
-            }
-        }
-        let point = Point::new_raw_xy(px, py);
-        let mut best = f64::INFINITY;
-        for index in 0..count {
-            best = best.min(point_segment_distance_squared(
-                point,
-                self.segment(facet, index),
-            )?);
-        }
-        Ok(best)
+        facet_point_distance_columns!(
+            true,
+            true,
+            xs.get(first..=first.saturating_add(count))
+                .expect("prepared facet x window"),
+            ys.get(first..=first.saturating_add(count))
+                .expect("prepared facet y window"),
+            Point::new_raw_xy(px, py),
+            f64::INFINITY,
+        )
     }
 
     /// Scalar `hypot`-space fold for one facet — the overflow-safe sibling of
@@ -439,11 +473,23 @@ impl PreparedLinework {
         facet: Facet,
         point: Point,
     ) -> crate::error::Result<f64> {
-        let mut best = f64::INFINITY;
-        for index in 0..facet.segment_count as usize {
-            best = best.min(point_segment_distance(point, self.segment(facet, index))?);
-        }
-        Ok(best)
+        let (chain, facet) = self.facet_chain(facet);
+        let first = facet.first_vertex as usize;
+        let count = facet.segment_count as usize;
+        facet_point_distance_columns!(
+            false,
+            false,
+            chain
+                .xs()
+                .get(first..=first.saturating_add(count))
+                .expect("prepared facet x window"),
+            chain
+                .ys()
+                .get(first..=first.saturating_add(count))
+                .expect("prepared facet y window"),
+            point,
+            f64::INFINITY,
+        )
     }
 
     /// The AABB of one facet's vertex run, as `[minx, miny, maxx, maxy]`.

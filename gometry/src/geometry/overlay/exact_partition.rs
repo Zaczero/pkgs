@@ -20,6 +20,8 @@ use std::mem;
 use std::ops::{ControlFlow, Range};
 
 use crate::error::ResourceError;
+#[cfg(test)]
+use crate::geometry::Coordinates as _;
 use crate::geometry::arrangement::{IndexedTopology, IndexedTopologyScratch, compare_departures};
 use crate::geometry::exact_arith::ExactSign;
 use crate::geometry::overlay::noding::{
@@ -32,9 +34,9 @@ use crate::geometry::segments::{
 };
 use crate::geometry::tessellation::exact::ExactDyadic;
 use crate::geometry::{
-    Bounds, Contact, CoordSeq, Coordinates as _, ExpansionBudget, GeometryErrorKind, GeometryKind,
-    HashMap, LineSeq, Loc, MultiLineString, Point, PointKey, Polygon, PolygonizeFull, Result, Ring,
-    RingKind, Segment, Shape, SharedShapeOwners, XY, for_each_candidate_pair, same_point,
+    Bounds, Contact, CoordSeq, ExpansionBudget, GeometryErrorKind, GeometryKind, HashMap, LineSeq,
+    Loc, MultiLineString, Point, PointKey, Polygon, PolygonizeFull, Result, Ring, RingKind,
+    Segment, Shape, SharedShapeOwners, XY, for_each_candidate_pair, same_point,
     segment_contact_exact, single_chain,
 };
 
@@ -575,9 +577,19 @@ pub(in crate::geometry) struct ExactSourceInventory {
 impl ExactSourceInventory {
     /// Stage each operand as a set, visiting repeated shared collection owners once.
     pub(in crate::geometry) fn from_shapes<S: Borrow<Shape>>(shapes: &[S]) -> Result<Self> {
-        Self::stage_shapes(shapes, |staged, shape, operand| {
+        Self::from_rows(
+            shapes
+                .iter()
+                .map(|shape| crate::array::ShapeRow::Shape(shape.borrow())),
+        )
+    }
+
+    pub(in crate::geometry) fn from_rows<'a>(
+        rows: impl ExactSizeIterator<Item = crate::array::ShapeRow<'a>>,
+    ) -> Result<Self> {
+        Self::stage_rows(rows, |staged, row, operand| {
             let mut owners = SharedShapeOwners::for_collections();
-            staged.append_shape(shape, operand, &mut owners)
+            staged.append_row(row, operand, &mut owners)
         })
     }
 
@@ -586,19 +598,37 @@ impl ExactSourceInventory {
     pub(in crate::geometry) fn from_shapes_with_occurrences<S: Borrow<Shape>>(
         shapes: &[S],
     ) -> Result<Self> {
-        Self::stage_shapes(shapes, |staged, shape, operand| {
-            staged.append_shape_with_occurrences(shape, operand)
+        Self::from_rows_with_occurrences(
+            shapes
+                .iter()
+                .map(|shape| crate::array::ShapeRow::Shape(shape.borrow())),
+        )
+    }
+
+    pub(in crate::geometry) fn from_rows_with_occurrences<'a>(
+        rows: impl ExactSizeIterator<Item = crate::array::ShapeRow<'a>>,
+    ) -> Result<Self> {
+        Self::stage_rows(rows, |staged, row, operand| match row {
+            crate::array::ShapeRow::Shape(shape) => {
+                staged.append_shape_with_occurrences(shape, operand)
+            },
+            crate::array::ShapeRow::Handle(plan) => {
+                staged.append_shape_with_occurrences(plan.shape(), operand)
+            },
+            row @ (crate::array::ShapeRow::Point(_) | crate::array::ShapeRow::Packed(_)) => {
+                staged.append_row(row, operand, &mut SharedShapeOwners::for_collections())
+            },
         })
     }
 
-    fn stage_shapes<S: Borrow<Shape>>(
-        shapes: &[S],
-        mut append: impl FnMut(&mut StagedExactSources, &Shape, u32) -> Result<()>,
+    fn stage_rows<'a>(
+        rows: impl ExactSizeIterator<Item = crate::array::ShapeRow<'a>>,
+        mut append: impl FnMut(&mut StagedExactSources, crate::array::ShapeRow<'a>, u32) -> Result<()>,
     ) -> Result<Self> {
-        let mut staged = StagedExactSources::new(shapes.len());
-        for (operand, shape) in shapes.iter().enumerate() {
+        let mut staged = StagedExactSources::new(rows.len());
+        for (operand, row) in rows.enumerate() {
             let operand = u32::try_from(operand).map_err(|_| ResourceError::SizeOverflow)?;
-            append(&mut staged, Borrow::<Shape>::borrow(shape), operand)?;
+            append(&mut staged, row, operand)?;
         }
         Self::from_staged(staged)
     }
@@ -2648,6 +2678,53 @@ impl StagedExactSources {
         }
     }
 
+    fn append_row(
+        &mut self,
+        row: crate::array::ShapeRow<'_>,
+        operand: u32,
+        owners: &mut SharedShapeOwners,
+    ) -> Result<()> {
+        use crate::array::{PackedRow, ShapeRow};
+        match row {
+            ShapeRow::Handle(plan) => self.append_shape(plan.shape(), operand, owners),
+            ShapeRow::Shape(shape) => self.append_shape(shape, operand, owners),
+            ShapeRow::Point(point) => {
+                self.append_isolated_point(point, operand);
+                Ok(())
+            },
+            ShapeRow::Packed(PackedRow::Points {
+                coords, physical, ..
+            }) => {
+                self.append_isolated_point(coords.point_at(physical), operand);
+                Ok(())
+            },
+            ShapeRow::Packed(row @ PackedRow::Lines { coords, .. }) => {
+                let coords = crate::array::shape_row::CoordRow::new(
+                    coords,
+                    row.vertex_window().expect("line row has a vertex window"),
+                );
+                self.append_line_coords(&coords, operand);
+                Ok(())
+            },
+            ShapeRow::Packed(row @ PackedRow::Polygons { coords, .. }) => {
+                let rings = row.polygon_rings().expect("polygon row has a ring window");
+                if rings.is_empty() {
+                    return Ok(());
+                }
+                self.append_polygon_rings(
+                    rings.map(|ring| {
+                        crate::array::shape_row::CoordRow::new(
+                            coords,
+                            row.polygon_ring_window(ring)
+                                .expect("admitted polygon ring"),
+                        )
+                    }),
+                    operand,
+                )
+            },
+        }
+    }
+
     fn append_shape(
         &mut self,
         shape: &Shape,
@@ -2736,7 +2813,11 @@ impl StagedExactSources {
         self.isolated_operands.push(operand);
     }
 
-    fn append_line_coords(&mut self, line: &CoordSeq, operand: u32) {
+    fn append_line_coords(
+        &mut self,
+        line: &(impl crate::geometry::Coordinates + ?Sized),
+        operand: u32,
+    ) {
         self.retain_source_ordinates(line.axes());
         self.reserve_segments(line.coord_count().saturating_sub(1));
         let mut first = None;
@@ -2778,11 +2859,19 @@ impl StagedExactSources {
         }
     }
 
+    fn append_polygon(&mut self, polygon: &Polygon, operand: u32) -> Result<()> {
+        self.append_polygon_rings(polygon.rings(), operand)
+    }
+
     #[expect(
         clippy::indexing_slicing,
         reason = "operand IDs are admitted by the source inventory's operand count"
     )]
-    fn append_polygon(&mut self, polygon: &Polygon, operand: u32) -> Result<()> {
+    fn append_polygon_rings<C: crate::geometry::Coordinates>(
+        &mut self,
+        rings: impl IntoIterator<Item = C>,
+        operand: u32,
+    ) -> Result<()> {
         let first_ring = self.ring_count;
         let polygon_id =
             u32::try_from(self.polygon_count).map_err(|_| ResourceError::SizeOverflow)?;
@@ -2791,14 +2880,14 @@ impl StagedExactSources {
             .checked_add(1)
             .ok_or(ResourceError::SizeOverflow)?;
         self.polygon_operands.push(operand);
-        for (ring_index, ring) in polygon.rings().enumerate() {
+        for (ring_index, ring) in rings.into_iter().enumerate() {
             let ring_id =
                 u32::try_from(self.ring_count).map_err(|_| ResourceError::SizeOverflow)?;
             self.ring_count = self
                 .ring_count
                 .checked_add(1)
                 .ok_or(ResourceError::SizeOverflow)?;
-            let kind = if crate::geometry::ring_is_collinear(ring.coords()) {
+            let kind = if crate::geometry::ring_is_collinear(&ring) {
                 RingKind::Collapsed
             } else {
                 RingKind::Winding
@@ -2806,7 +2895,7 @@ impl StagedExactSources {
             self.ring_polygons.push(polygon_id);
             self.ring_holes.push(ring_index > 0);
             self.ring_kinds.push(kind);
-            let count = ring.len().saturating_sub(1);
+            let count = ring.coord_count().saturating_sub(1);
             self.retain_source_ordinates(ring.coords().axes());
             self.reserve_segments(count);
             let mut pairs = ring.segment_pairs();

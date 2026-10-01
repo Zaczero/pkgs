@@ -4,7 +4,7 @@
 )]
 use crate::geometry::packed_line_metrics::PackedLineColumnView;
 use crate::geometry::{
-    CoordSeq, Point, axis_extent, axis_pow2_scale, packed_line_metrics, point_distance,
+    Point, axis_extent, axis_pow2_scale, packed_line_metrics, point_distance,
     same_topological_coordinate,
 };
 pub(crate) fn frechet_distance_line_columns(
@@ -79,14 +79,16 @@ pub(crate) fn frechet_distance_line_columns_batch(
 }
 
 pub(crate) fn discrete_frechet_distance_with_scratch(
-    left: &CoordSeq,
-    right: &CoordSeq,
+    left: &(impl crate::geometry::Coordinates + ?Sized),
+    right: &(impl crate::geometry::Coordinates + ?Sized),
     scratch: &mut FrechetDpScratch,
 ) -> f64 {
-    if left.len() <= right.len() {
-        frechet_dp_columns_with_dp_scratch(left.xs(), left.ys(), right.xs(), right.ys(), scratch)
+    let (left_xs, left_ys) = left.xy_columns().expect("Fréchet operands carry columns");
+    let (right_xs, right_ys) = right.xy_columns().expect("Fréchet operands carry columns");
+    if left_xs.len() <= right_xs.len() {
+        frechet_dp_columns_with_dp_scratch(left_xs, left_ys, right_xs, right_ys, scratch)
     } else {
-        frechet_dp_columns_with_dp_scratch(right.xs(), right.ys(), left.xs(), left.ys(), scratch)
+        frechet_dp_columns_with_dp_scratch(right_xs, right_ys, left_xs, left_ys, scratch)
     }
 }
 

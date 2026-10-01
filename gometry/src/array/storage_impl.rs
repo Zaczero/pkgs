@@ -12,6 +12,20 @@ use crate::geometry::GeometryKind;
 use crate::geometry::types::ShapeHeapMemo;
 
 impl GeometryArrayStorage {
+    pub(crate) const fn uniform_kind(&self) -> Option<crate::geometry::GeometryKind> {
+        match self {
+            Self::Packed(PackedStorage::Points { .. }) => {
+                Some(crate::geometry::GeometryKind::Point)
+            },
+            Self::Packed(PackedStorage::Lines { .. }) => {
+                Some(crate::geometry::GeometryKind::LineString)
+            },
+            Self::Packed(PackedStorage::Polygons { .. }) => {
+                Some(crate::geometry::GeometryKind::Polygon)
+            },
+            Self::Mixed(_) => None,
+        }
+    }
     /// The one coordinate layout carried by homogeneous packed storage.
     /// Selections only remap rows and missing slots use placeholders with the
     /// same columns, so this is O(1) for points, lines, and polygons.

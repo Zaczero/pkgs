@@ -13,6 +13,8 @@ mod intersects;
 mod misc;
 mod nearest;
 mod parts_sweep;
+mod row_pair;
+pub(crate) use row_pair::RowMetricPair;
 mod shape_data_distance;
 mod shape_data_nearest;
 mod shape_impl;

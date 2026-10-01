@@ -21,8 +21,7 @@ use crate::broadcast::metrics::{
 use crate::dispatch::MetricOp;
 use crate::geometry::packed_line_metrics::scale_metric_values;
 use crate::geometry::{
-    PreparedPlan, ReduceSimd, bounds_distance_squared, pair_map4_guarded_f64, pair_select_mask,
-    points_dwithin,
+    PreparedPlan, ReduceSimd, pair_map4_guarded_f64, pair_select_mask, points_dwithin,
 };
 
 fn float64_array_mask_missing(
@@ -60,15 +59,13 @@ pub(crate) fn array_crs_metric_float(
                             ArrayRow::Missing { value, .. } => Ok(value),
                             ArrayRow::Present(row) => {
                                 let logical = row.logical();
-                                row.row().try_with_shape(|left| {
-                                    operation.eval_shapes_at(
-                                        &model,
-                                        left,
-                                        right.shape(),
-                                        logical,
-                                        &mut scratch,
-                                    )
-                                })
+                                operation.eval_rows_at(
+                                    &model,
+                                    row.row(),
+                                    right.shape().into(),
+                                    logical,
+                                    &mut scratch,
+                                )
                             },
                         })
                         .collect_rows()
@@ -153,17 +150,13 @@ pub(crate) fn array_crs_metric_float(
                         .map(|(left, right)| match (left, right) {
                             (ArrayRow::Present(left), ArrayRow::Present(right)) => {
                                 let logical = left.logical();
-                                left.row().try_with_shape(|left| {
-                                    right.row().try_with_shape(|right| {
-                                        operation.eval_shapes_at(
-                                            &model,
-                                            left,
-                                            right,
-                                            logical,
-                                            &mut scratch,
-                                        )
-                                    })
-                                })
+                                operation.eval_rows_at(
+                                    &model,
+                                    left.row(),
+                                    right.row(),
+                                    logical,
+                                    &mut scratch,
+                                )
                             },
                             _ => Ok(f64::NAN),
                         })
@@ -179,13 +172,13 @@ pub(crate) fn array_crs_metric_float(
 /// `distance` and `dwithin`: packed points stream shared columns through
 /// `packed_points` with the GIL released (one kernel call per pair, no `Shape`
 /// wrapping); general rows run `pair` over prepared plans.
-fn array_pair_metric<T, P, C, B, F>(
+fn array_pair_metric<'a, T, P, C, F, Q>(
     py: Python<'_>,
-    array: &PyGeometryArray,
-    right: &PyGeometryArray,
+    array: &'a PyGeometryArray,
+    right: &'a PyGeometryArray,
     packed_points: Option<P>,
     packed_columns: Option<C>,
-    bounds_refute: Option<B>,
+    mut row_kernel: Option<Q>,
     missing_value: T,
     pair: F,
 ) -> PyResult<Vec<T>>
@@ -193,7 +186,14 @@ where
     T: Copy + Send + 'static,
     P: Fn(Point, Point) -> crate::error::Result<T> + Send,
     C: Fn(&[f64], &[f64], &[f64], &[f64]) -> crate::error::Result<Vec<T>> + Send,
-    B: Fn(Bounds, Bounds) -> Option<T> + Send + Sync,
+    Q: FnMut(
+            &mut crate::geometry::RowMetricPair<'a>,
+            crate::array::ShapeRow<'a>,
+            crate::array::ShapeRow<'a>,
+            Option<Bounds>,
+            Option<Bounds>,
+        ) -> crate::error::Result<Option<T>>
+        + Send,
     F: Fn(
             usize,
             &PreparedPlan,
@@ -242,61 +242,15 @@ where
         }
         unreachable!("all-point pair metrics provide a direct point kernel")
     }
-    // Row pairs ride prepared handles; dwithin can settle far-apart boxes
-    // before materializing both operands' prepared plans + distance parts.
-    if let Some(refute) = bounds_refute
-        && let (Some(left_bounds), Some(right_bounds)) = (
-            array.existing_element_bounds(),
-            right.existing_element_bounds(),
-        )
-    {
-        let left_array = array.clone();
-        let right_array = right.clone();
-        return py
-            .detach(move || {
-                let mut left_rows = left_array.row_operation();
-                let mut right_rows = right_array.row_operation();
-                left_rows
-                    .rows_with_missing(|| missing_value)
-                    .zip(right_rows.rows_with_missing(|| missing_value))
-                    .map(|(left, right)| {
-                        let (ArrayRow::Present(left_row), ArrayRow::Present(right_row)) =
-                            (left, right)
-                        else {
-                            return Ok(match left {
-                                ArrayRow::Missing { value, .. } => value,
-                                ArrayRow::Present(_) => match right {
-                                    ArrayRow::Missing { value, .. } => value,
-                                    ArrayRow::Present(_) => unreachable!(),
-                                },
-                            });
-                        };
-                        let index = left_row.logical();
-                        let left_row = left_row.row();
-                        let right_row = right_row.row();
-                        if let (Some(lb), Some(rb)) = (
-                            left_bounds.get(index).copied().flatten(),
-                            right_bounds.get(index).copied().flatten(),
-                        ) && let Some(verdict) = refute(lb, rb)
-                        {
-                            return Ok(verdict);
-                        }
-                        let left = left_rows.prepared_at(index, left_row)?;
-                        let right = right_rows.prepared_at(index, right_row)?;
-                        pair(index, &left, &right, &mut left_rows, &mut right_rows)
-                    })
-                    .collect_rows()
-            })
-            .map_err(rows_err);
-    }
-    let left_array = array.clone();
-    let right_array = right.clone();
+    let left_bounds = array.existing_element_bounds();
+    let right_bounds = right.existing_element_bounds();
     py.detach(move || {
-        let mut left_rows = left_array.row_operation();
-        let mut right_rows = right_array.row_operation();
+        let mut left_rows = array.row_operation();
+        let mut right_rows = right.row_operation();
+        let mut scratch = crate::geometry::RowMetricPair::new();
         left_rows
-            .rows_with_missing(|| missing_value)
-            .zip(right_rows.rows_with_missing(|| missing_value))
+            .rows_with_missing(move || missing_value)
+            .zip(right_rows.rows_with_missing(move || missing_value))
             .map(|(left, right)| {
                 let (ArrayRow::Present(left_row), ArrayRow::Present(right_row)) = (left, right)
                 else {
@@ -309,8 +263,30 @@ where
                     });
                 };
                 let index = left_row.logical();
-                let left = left_rows.prepared(left_row)?;
-                let right = right_rows.prepared(right_row)?;
+                let (left, right) = if let Some(kernel) = row_kernel.as_mut() {
+                    let a = left_row.row();
+                    let b = right_row.row();
+                    let a_bounds = left_bounds
+                        .as_ref()
+                        .and_then(|bounds| bounds.get(index).copied().flatten())
+                        .or_else(|| left_rows.quick_bounds_at(index, a));
+                    let b_bounds = right_bounds
+                        .as_ref()
+                        .and_then(|bounds| bounds.get(index).copied().flatten())
+                        .or_else(|| right_rows.quick_bounds_at(index, b));
+                    if let Some(value) = kernel(&mut scratch, a, b, a_bounds, b_bounds)? {
+                        return Ok(value);
+                    }
+                    (
+                        left_rows.prepared_at_with_bounds(index, a, a_bounds)?,
+                        right_rows.prepared_at_with_bounds(index, b, b_bounds)?,
+                    )
+                } else {
+                    (
+                        left_rows.prepared(left_row)?,
+                        right_rows.prepared(right_row)?,
+                    )
+                };
                 pair(index, &left, &right, &mut left_rows, &mut right_rows)
             })
             .collect_rows()
@@ -319,10 +295,10 @@ where
 }
 
 /// Per-element CRS-aware distances from `array` to `other` (scalar or array).
-pub(crate) fn array_crs_distances(
+pub(crate) fn array_crs_distances<'a>(
     py: Python<'_>,
-    array: &PyGeometryArray,
-    other: GeometryInput<'_>,
+    array: &'a PyGeometryArray,
+    other: GeometryInput<'a>,
     _frame: &Frame,
     operation: MetricOp,
     unit: Option<DistanceUnit>,
@@ -381,6 +357,10 @@ pub(crate) fn array_crs_distances(
                     py,
                     py.detach(move || {
                         let mut rows = array.row_operation();
+                        let mut scratch = crate::geometry::RowMetricPair::new();
+                        let fixed = crate::array::ShapeRow::Shape(right_shape.shape());
+                        let fixed_bounds = right_shape.bounds();
+                        let element_bounds = array.existing_element_bounds();
                         rows.rows_with_missing(|| f64::NAN)
                             .map(|logical_row| {
                                 let ArrayRow::Present(row) = logical_row else {
@@ -389,7 +369,18 @@ pub(crate) fn array_crs_distances(
                                     }
                                     unreachable!();
                                 };
-                                let left = rows.prepared(row)?;
+                                let logical = row.logical();
+                                let shape = row.row();
+                                let bounds = element_bounds
+                                    .as_ref()
+                                    .and_then(|bounds| bounds.get(logical).copied().flatten())
+                                    .or_else(|| rows.quick_bounds_at(logical, shape));
+                                if let Some(value) =
+                                    scratch.distance(shape, fixed, bounds, fixed_bounds)?
+                                {
+                                    return Ok(value * to_metre.get());
+                                }
+                                let left = rows.prepared_at_with_bounds(logical, shape, bounds)?;
                                 Ok(left.distance(&right_shape)? * to_metre.get())
                             })
                             .collect_rows()
@@ -554,7 +545,17 @@ pub(crate) fn array_crs_distances(
                             right,
                             packed_planar,
                             packed_columns,
-                            None::<fn(Bounds, Bounds) -> Option<f64>>,
+                            Some(
+                                |scratch: &mut crate::geometry::RowMetricPair<'a>,
+                                 left,
+                                 right,
+                                 left_bounds,
+                                 right_bounds| {
+                                    scratch
+                                        .distance(left, right, left_bounds, right_bounds)
+                                        .map(|value| value.map(|value| value * to_metre.get()))
+                                },
+                            ),
                             f64::NAN,
                             |_row, left, right_data, _left_products, _right_products| {
                                 pair_distance_planar(to_metre.get(), left, right_data)
@@ -594,7 +595,16 @@ pub(crate) fn array_crs_distances(
                             right,
                             packed_planar,
                             packed_columns,
-                            None::<fn(Bounds, Bounds) -> Option<f64>>,
+                            None::<
+                                fn(
+                                    &mut crate::geometry::RowMetricPair<'a>,
+                                    crate::array::ShapeRow<'a>,
+                                    crate::array::ShapeRow<'a>,
+                                    Option<Bounds>,
+                                    Option<Bounds>,
+                                )
+                                    -> crate::error::Result<Option<f64>>,
+                            >,
                             f64::NAN,
                             |row, left, right_data, left_products, right_products| {
                                 pair_distance_geodesic(
@@ -620,10 +630,10 @@ pub(crate) fn array_crs_distances(
 /// (bounds-prune + intersects fast-path) rather than computing every exact
 /// distance; geodesic rows use their threshold owner and retain its early
 /// exclusion/hit behavior.
-pub(crate) fn array_crs_dwithin(
+pub(crate) fn array_crs_dwithin<'a>(
     py: Python<'_>,
-    array: &PyGeometryArray,
-    other: GeometryInput<'_>,
+    array: &'a PyGeometryArray,
+    other: GeometryInput<'a>,
     _frame: &Frame,
     distance: f64,
     operation: MetricOp,
@@ -699,14 +709,6 @@ pub(crate) fn array_crs_dwithin(
                             }
                             Ok(out)
                         });
-                    // Planar box-separation refuter: boxes farther apart (squared)
-                    // than the planar limit can never be within it.
-                    let bounds_refute =
-                        limit_sq
-                            .is_finite()
-                            .then_some(move |left: Bounds, right: Bounds| {
-                                (bounds_distance_squared(left, right) > limit_sq).then_some(false)
-                            });
                     bool_array(
                         py,
                         array_pair_metric(
@@ -715,7 +717,15 @@ pub(crate) fn array_crs_dwithin(
                             right,
                             packed_planar,
                             packed_columns,
-                            bounds_refute,
+                            Some(
+                                |scratch: &mut crate::geometry::RowMetricPair<'a>,
+                                 left,
+                                 right,
+                                 left_bounds,
+                                 right_bounds| {
+                                    scratch.dwithin(left, right, left_bounds, right_bounds, limit)
+                                },
+                            ),
                             false,
                             |_row, left, right_data, _left_products, _right_products| {
                                 pair_dwithin_planar(to_metre.get(), left, right_data, distance)
@@ -757,7 +767,16 @@ pub(crate) fn array_crs_dwithin(
                             right,
                             packed_planar,
                             packed_columns,
-                            None::<fn(Bounds, Bounds) -> Option<bool>>,
+                            None::<
+                                fn(
+                                    &mut crate::geometry::RowMetricPair<'a>,
+                                    crate::array::ShapeRow<'a>,
+                                    crate::array::ShapeRow<'a>,
+                                    Option<Bounds>,
+                                    Option<Bounds>,
+                                )
+                                    -> crate::error::Result<Option<bool>>,
+                            >,
                             false,
                             |row, left, right_data, left_products, right_products| {
                                 pair_dwithin_geodesic(
@@ -775,19 +794,6 @@ pub(crate) fn array_crs_dwithin(
             }
         },
     }
-}
-
-/// Boxes farther apart than the threshold can never be within it.
-///
-/// The constant-threshold lane installs this same refutation as a closure over
-/// one precomputed square. Here the threshold varies per row, so the square is
-/// formed per row as well.
-fn dwithin_box_refutes(left: Option<Bounds>, right: Option<Bounds>, limit: f64) -> bool {
-    let (Some(left), Some(right)) = (left, right) else {
-        return false;
-    };
-    let limit_sq = limit * limit;
-    limit_sq.is_finite() && bounds_distance_squared(left, right) > limit_sq
 }
 
 /// Admit every present row in a geographic array before a dwithin result
@@ -849,7 +855,6 @@ fn array_crs_dwithin_per_element_values(
             let model = resolve_metric(array.crs_str(), unit, operation)?;
             let resolved = crs::ResolvedMetric::from_model(&model)?;
             let right_plan = right.prepared_plan();
-            let right_cache = right.frame_cache();
             if let crs::ResolvedMetric::Geodesic(metric) = &resolved {
                 ensure_geodesic_array_rows(array, metric.frame)?;
                 ensure_geodesic_shape(metric.frame, right_plan.shape())?;
@@ -859,6 +864,8 @@ fn array_crs_dwithin_per_element_values(
                     let right_bounds = right_plan.bounds();
                     let left_bounds = array.existing_element_bounds();
                     let mut rows = array.row_operation();
+                    let mut scratch = crate::geometry::RowMetricPair::new();
+                    let fixed = crate::array::ShapeRow::Shape(right_plan.shape());
                     try_collect_dwithin_rows(
                         array.len(),
                         rows.rows_with_missing(|| false).map(|left| {
@@ -867,17 +874,20 @@ fn array_crs_dwithin_per_element_values(
                             };
                             let row = left.logical();
                             let left = left.row();
-                            if dwithin_box_refutes(
-                                left_bounds
-                                    .as_ref()
-                                    .and_then(|bounds| bounds.get(row).copied().flatten())
-                                    .or_else(|| left.quick_bounds()),
+                            let bounds = left_bounds
+                                .as_ref()
+                                .and_then(|bounds| bounds.get(row).copied().flatten())
+                                .or_else(|| rows.quick_bounds_at(row, left));
+                            if let Some(value) = scratch.dwithin(
+                                left,
+                                fixed,
+                                bounds,
                                 right_bounds,
                                 distance.get(row) / to_metre.get(),
-                            ) {
-                                return Ok(false);
+                            )? {
+                                return Ok(value);
                             }
-                            let left = rows.prepared_at(row, left)?;
+                            let left = rows.prepared_at_with_bounds(row, left, bounds)?;
                             pair_dwithin_planar(
                                 to_metre.get(),
                                 &left,
@@ -889,6 +899,7 @@ fn array_crs_dwithin_per_element_values(
                     .map_err(rows_err)?
                 },
                 crs::ResolvedMetric::Geodesic(metric) => {
+                    let right_cache = right.frame_cache();
                     let mut rows = array.row_operation();
                     try_collect_dwithin_rows(
                         array.len(),
@@ -923,6 +934,7 @@ fn array_crs_dwithin_per_element_values(
                     let right_bounds = right.existing_element_bounds();
                     let mut left_rows = array.row_operation();
                     let mut right_rows = right.row_operation();
+                    let mut scratch = crate::geometry::RowMetricPair::new();
                     try_collect_dwithin_rows(
                         array.len(),
                         left_rows
@@ -937,21 +949,27 @@ fn array_crs_dwithin_per_element_values(
                                 let row = left.logical();
                                 let left = left.row();
                                 let right_row = right_row.row();
-                                if dwithin_box_refutes(
-                                    left_bounds
-                                        .as_ref()
-                                        .and_then(|bounds| bounds.get(row).copied().flatten())
-                                        .or_else(|| left.quick_bounds()),
-                                    right_bounds
-                                        .as_ref()
-                                        .and_then(|bounds| bounds.get(row).copied().flatten())
-                                        .or_else(|| right_row.quick_bounds()),
+                                let a_bounds = left_bounds
+                                    .as_ref()
+                                    .and_then(|bounds| bounds.get(row).copied().flatten())
+                                    .or_else(|| left_rows.quick_bounds_at(row, left));
+                                let b_bounds = right_bounds
+                                    .as_ref()
+                                    .and_then(|bounds| bounds.get(row).copied().flatten())
+                                    .or_else(|| right_rows.quick_bounds_at(row, right_row));
+                                if let Some(value) = scratch.dwithin(
+                                    left,
+                                    right_row,
+                                    a_bounds,
+                                    b_bounds,
                                     distance.get(row) / to_metre.get(),
-                                ) {
-                                    return Ok(false);
+                                )? {
+                                    return Ok(value);
                                 }
-                                let left = left_rows.prepared_at(row, left)?;
-                                let right_data = right_rows.prepared_at(row, right_row)?;
+                                let left =
+                                    left_rows.prepared_at_with_bounds(row, left, a_bounds)?;
+                                let right_data =
+                                    right_rows.prepared_at_with_bounds(row, right_row, b_bounds)?;
                                 pair_dwithin_planar(
                                     to_metre.get(),
                                     &left,
@@ -1023,7 +1041,6 @@ pub(crate) fn array_crs_dwithin_scalar(
         let resolved = crs::ResolvedMetric::from_model(&model)?;
         let array_owned = array.clone();
         let other_shape = other.prepared_plan();
-        let other_cache = other.frame_cache();
         if let crs::ResolvedMetric::Geodesic(metric) = &resolved {
             ensure_geodesic_array_rows(array, metric.frame)?;
             ensure_geodesic_shape(metric.frame, other_shape.shape())?;
@@ -1031,19 +1048,36 @@ pub(crate) fn array_crs_dwithin_scalar(
         let rows = match &resolved {
             crs::ResolvedMetric::Planar { to_metre } => {
                 let mut rows = array_owned.row_operation();
+                let mut scratch = crate::geometry::RowMetricPair::new();
+                let fixed = crate::array::ShapeRow::Shape(other_shape.shape());
+                let fixed_bounds = other_shape.bounds();
+                let element_bounds = array.existing_element_bounds();
+                let limit = distance / to_metre.get();
                 try_collect_dwithin_rows(
                     array.len(),
                     rows.rows_with_missing(|| false).map(|row| {
                         let ArrayRow::Present(row) = row else {
                             return Ok(false);
                         };
-                        let left = rows.prepared(row)?;
+                        let logical = row.logical();
+                        let shape = row.row();
+                        let bounds = element_bounds
+                            .as_ref()
+                            .and_then(|bounds| bounds.get(logical).copied().flatten())
+                            .or_else(|| rows.quick_bounds_at(logical, shape));
+                        if let Some(value) =
+                            scratch.dwithin(shape, fixed, bounds, fixed_bounds, limit)?
+                        {
+                            return Ok(value);
+                        }
+                        let left = rows.prepared_at_with_bounds(logical, shape, bounds)?;
                         pair_dwithin_planar(to_metre.get(), &left, &other_shape, distance)
                     }),
                 )
                 .map_err(rows_err)?
             },
             crs::ResolvedMetric::Geodesic(metric) => {
+                let other_cache = other.frame_cache();
                 let mut rows = array_owned.row_operation();
                 try_collect_dwithin_rows(
                     array.len(),
@@ -1103,16 +1137,14 @@ pub(crate) fn array_crs_dwithin_scalar(
             let row_count = array.len();
             let limit = distance / to_metre.get();
             let other_shape = other.prepared_plan();
-            // Box-separation reject against the FIXED operand's box, from the
-            // array's batch per-element boxes: an element whose box sits farther
-            // (squared) than the limit is settled false before materialization.
-            let sq_limit = (limit * limit).is_finite().then_some(limit * limit);
             let other_bounds = other_shape.bounds();
             let element_bounds = array.existing_element_bounds();
             bool_array_mask_missing(
                 py,
                 py.detach(move || {
                     let mut rows = array.row_operation();
+                    let mut scratch = crate::geometry::RowMetricPair::new();
+                    let fixed = crate::array::ShapeRow::Shape(other_shape.shape());
                     try_collect_dwithin_rows(
                         row_count,
                         rows.rows_with_missing(|| false).map(|row| {
@@ -1121,14 +1153,16 @@ pub(crate) fn array_crs_dwithin_scalar(
                             };
                             let index = row.logical();
                             let row = row.row();
-                            if let (Some(sq_limit), Some(other_bounds), Some(element_bounds)) =
-                                (sq_limit, other_bounds, element_bounds.as_ref())
-                                && let Some(element) = element_bounds.get(index).copied().flatten()
-                                && bounds_distance_squared(element, other_bounds) > sq_limit
+                            let bounds = element_bounds
+                                .as_ref()
+                                .and_then(|bounds| bounds.get(index).copied().flatten())
+                                .or_else(|| rows.quick_bounds_at(index, row));
+                            if let Some(value) =
+                                scratch.dwithin(row, fixed, bounds, other_bounds, limit)?
                             {
-                                return Ok(false);
+                                return Ok(value);
                             }
-                            let left = rows.prepared_at(index, row)?;
+                            let left = rows.prepared_at_with_bounds(index, row, bounds)?;
                             left.dwithin(&other_shape, limit)
                         }),
                     )

@@ -1313,20 +1313,31 @@ impl PartialEq for CoordSeq {
     fn eq(&self, other: &Self) -> bool {
         // WINDOWED comparison: a view equals any sequence with the same
         // coordinates, independent of the backing buffer it shares.
-        self.axes() == other.axes()
-            && columns_bits_eq(self.xs(), other.xs())
-            && columns_bits_eq(self.ys(), other.ys())
-            && match (self.zs(), other.zs()) {
-                (Some(a), Some(b)) => columns_bits_eq(a, b),
-                (None, None) => true,
-                _ => false,
-            }
-            && match (self.ms(), other.ms()) {
-                (Some(a), Some(b)) => columns_bits_eq(a, b),
-                (None, None) => true,
-                _ => false,
-            }
+        self.axes() == other.axes() && coordinate_columns_eq(self, other)
     }
+}
+
+pub(crate) fn coordinate_columns_eq(
+    left: &(impl crate::geometry::Coordinates + ?Sized),
+    right: &(impl crate::geometry::Coordinates + ?Sized),
+) -> bool {
+    let (Some((left_x, left_y)), Some((right_x, right_y))) =
+        (left.xy_columns(), right.xy_columns())
+    else {
+        return false;
+    };
+    columns_bits_eq(left_x, right_x)
+        && columns_bits_eq(left_y, right_y)
+        && match (left.z_column(), right.z_column()) {
+            (Some(a), Some(b)) => columns_bits_eq(a, b),
+            (None, None) => true,
+            _ => false,
+        }
+        && match (left.m_column(), right.m_column()) {
+            (Some(a), Some(b)) => columns_bits_eq(a, b),
+            (None, None) => true,
+            _ => false,
+        }
 }
 
 impl Eq for CoordSeq {}
