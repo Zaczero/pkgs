@@ -85,14 +85,15 @@ pub(crate) use types::{
     Ring, RingLevel, Segment, SegmentContact, SegmentPairWitness, Shape, ShapeCountQuery,
     ShapeData, ShapeOwnerKey, SharedSlice, SimplifyMethod, SmoothMethod, ValidationIssue,
     VisiblePointRunKey, VisibleXYKey, VoronoiBoundary, XY, ZOrdinate, canonical_f64_bits,
-    coerce_to_common_axes, ordered_edge, segment_midpoint,
+    coerce_to_common_axes,
 };
 mod antimeridian;
 pub(crate) use antimeridian::{
-    DerivedPointStrategy, GeographicDerivedPointScan, antimeridian_frame,
-    chain_crosses_antimeridian, crosses_antimeridian_in_frame, geographic_crossing,
-    geographic_crossing_bounds, geographic_crossing_bounds_for_shapes_in_frame,
-    geographic_crossing_bounds_in_frame, is_ring_data_in_frame, is_simple_data_in_frame,
+    DerivedPointStrategy, GeographicDerivedPointScan, GeographicTopologyRoute, antimeridian_frame,
+    chain_crosses_antimeridian, classify_geographic_chart, crosses_antimeridian_in_frame,
+    geographic_crossing, geographic_crossing_bounds,
+    geographic_crossing_bounds_for_shapes_in_frame, geographic_crossing_bounds_in_frame,
+    geographic_topology_route, is_ring_data_in_frame, is_simple_data_in_frame,
     repair_data_in_frame, repair_shape_in_frame, self_intersections_in_frame, topology_domain,
     unary_antimeridian_derived, validate_data_in_frame, validate_shape_in_frame,
 };

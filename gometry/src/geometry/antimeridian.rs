@@ -22,8 +22,9 @@ mod normalize;
 mod polygon;
 
 pub(crate) use crs::{
-    GeographicDerivedPointScan, antimeridian_frame, chain_crosses_antimeridian,
-    crosses_antimeridian_in_frame, geographic_crossing, topology_domain,
+    GeographicDerivedPointScan, GeographicTopologyRoute, antimeridian_frame,
+    chain_crosses_antimeridian, classify_geographic_chart, crosses_antimeridian_in_frame,
+    geographic_crossing, geographic_topology_route, topology_domain,
 };
 #[cfg(test)]
 pub(crate) use linestring::crossing_latitude_in_frame;

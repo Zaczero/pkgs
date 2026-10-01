@@ -953,7 +953,7 @@ fn rectangle_cover_certificate_fails_open_at_geographic_singularities() {
 }
 
 #[test]
-fn geographic_pair_q_matches_reference_on_ordinary_areal_pairs() {
+fn ordinary_geographic_relation_matches_q_and_the_graph_reference() {
     let frame = crate::crs::info("EPSG:4326")
         .unwrap()
         .geographic_frame()
@@ -1008,24 +1008,87 @@ fn geographic_pair_q_matches_reference_on_ordinary_areal_pairs() {
         let right_plan = PreparedPlan::transient(&right);
         let left_cache = crate::geometry::FrameDependentCaches::default();
         let right_cache = crate::geometry::FrameDependentCaches::default();
+        let left_prepared =
+            GeographicPrepared::try_new(&left_plan, &left_cache, frame).expect("fixture admits");
+        let right_prepared =
+            GeographicPrepared::try_new(&right_plan, &right_cache, frame).expect("fixture admits");
         assert_eq!(
-            graph_relate_data_geographic(
-                GeographicPrepared::try_new(&left_plan, &left_cache, frame)
-                    .expect("fixture admits"),
-                GeographicPrepared::try_new(&right_plan, &right_cache, frame)
-                    .expect("fixture admits"),
-            )
-            .unwrap()
-            .0,
-            expected.0,
-            "{name}: prepared dispatch"
+            left_prepared.chart_route(),
+            GeographicTopologyRoute::ExactPartition,
+            "{name}: left chart route"
         );
+        assert_eq!(
+            right_prepared.chart_route(),
+            GeographicTopologyRoute::ExactPartition,
+            "{name}: right chart route"
+        );
+        let q = graph_relate_data_geographic_q(left_prepared, right_prepared).unwrap();
+        let routed = graph_relate_data_geographic(left_prepared, right_prepared).unwrap();
+        assert_eq!(routed.0, q.0, "{name}: ExactPartition route versus Q");
+        assert_eq!(routed.0, expected.0, "{name}: graph reference");
         assert_eq!(
             graph_relate_shapes_geographic(&left, &right).0,
             expected.0,
             "{name}: shape dispatch"
         );
     }
+}
+
+#[test]
+fn ordinary_country_charts_match_q_relation() {
+    const COUNTRIES: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/fixtures/osm_countries_0_1.geojson"
+    ));
+
+    let frame = crate::crs::info("EPSG:4326")
+        .unwrap()
+        .geographic_frame()
+        .unwrap();
+    let countries: serde_json::Value = serde_json::from_str(COUNTRIES).unwrap();
+    let features = countries["features"].as_array().unwrap();
+    let mut compared = 0;
+
+    for feature in features {
+        let country = feature["properties"]["tags"]["ISO3166-1:alpha2"]
+            .as_str()
+            .unwrap();
+        let shape = crate::io::parse_geojson(&feature["geometry"]).unwrap();
+        let plan = PreparedPlan::transient(&shape);
+        let cache = crate::geometry::FrameDependentCaches::default();
+        let prepared =
+            GeographicPrepared::try_new(&plan, &cache, frame).expect("country fixture admits");
+        if prepared.chart_route() == GeographicTopologyRoute::Quotient {
+            continue;
+        }
+
+        let mut probe = None;
+        prepared.view().for_each_coordinate(|coordinate| {
+            if probe.is_none() {
+                let point = coordinate.native();
+                probe = Some(Shape::Point(Point::new_raw_xy(point.x, point.y)));
+            }
+        });
+        let probe = probe.unwrap_or_else(|| panic!("{country}: ordinary country has no vertex"));
+        let probe_plan = PreparedPlan::transient(&probe);
+        let probe_cache = crate::geometry::FrameDependentCaches::default();
+        let prepared_probe = GeographicPrepared::try_new(&probe_plan, &probe_cache, frame).unwrap();
+        assert_eq!(
+            prepared_probe.chart_route(),
+            GeographicTopologyRoute::ExactPartition,
+            "{country}: source vertex chart route"
+        );
+
+        let q = graph_relate_data_geographic_q(prepared, prepared_probe).unwrap();
+        let routed = graph_relate_data_geographic(prepared, prepared_probe).unwrap();
+        assert_eq!(routed, q, "{country}: ExactPartition route versus Q");
+        compared += 1;
+    }
+
+    assert!(
+        compared > 0,
+        "country fixture has no ordinary-chart geometries"
+    );
 }
 
 #[test]
@@ -1054,15 +1117,24 @@ fn geographic_pair_q_matches_reference_at_quotient_aliases() {
         let right_plan = PreparedPlan::transient(&ordinary);
         let left_cache = crate::geometry::FrameDependentCaches::default();
         let right_cache = crate::geometry::FrameDependentCaches::default();
+        let left_prepared =
+            GeographicPrepared::try_new(&left_plan, &left_cache, frame).expect("fixture admits");
+        let right_prepared =
+            GeographicPrepared::try_new(&right_plan, &right_cache, frame).expect("fixture admits");
         assert_eq!(
-            graph_relate_data_geographic(
-                GeographicPrepared::try_new(&left_plan, &left_cache, frame)
-                    .expect("fixture admits"),
-                GeographicPrepared::try_new(&right_plan, &right_cache, frame)
-                    .expect("fixture admits"),
-            )
-            .unwrap()
-            .0,
+            left_prepared.chart_route(),
+            GeographicTopologyRoute::Quotient,
+            "{name}: quotient route",
+        );
+        assert_eq!(
+            right_prepared.chart_route(),
+            GeographicTopologyRoute::ExactPartition,
+            "{name}: ordinary route",
+        );
+        assert_eq!(
+            graph_relate_data_geographic(left_prepared, right_prepared,)
+                .unwrap()
+                .0,
             expected.0,
             "{name}: fallback"
         );

@@ -9,8 +9,9 @@ use crate::error::Result;
 use crate::geometry::topology::ExactGeographicTopology;
 use crate::geometry::types::{Bounds, GeodesicSegment, Point, Segment, Shape, XY};
 use crate::geometry::{
-    DistanceParts, GeodesicParts, GeodesicPartsKey, GeodesicSweepCaps, LineIndex, LineIndexSlot,
-    MeasuredLineIndex, MeasuredLineIndexSlot, PlanarMetric, PointBatchTester, SegmentMetric,
+    DistanceParts, GeodesicParts, GeodesicPartsKey, GeodesicSweepCaps, GeographicTopologyRoute,
+    LineIndex, LineIndexSlot, MeasuredLineIndex, MeasuredLineIndexSlot, PlanarMetric,
+    PointBatchTester, SegmentMetric,
 };
 
 /// Sidecar for products derived from immutable coordinates. Geodesic products
@@ -20,9 +21,14 @@ use crate::geometry::{
 pub(crate) struct FrameDependentCaches {
     entry: Mutex<Option<(GeodesicPartsKey, FrameDependentEntry)>>,
     geographic_exact_topology: Mutex<GeographicExactTopologySlot>,
-    /// The frame the stored coordinates were admitted in, with whether their
-    /// raw box then stands in for the shape.
-    admission: Mutex<Option<(crate::geographic::GeographicFrame, bool)>>,
+    /// Admission facts for one geographic frame.
+    admission: Mutex<
+        Option<(
+            crate::geographic::GeographicFrame,
+            bool,
+            GeographicTopologyRoute,
+        )>,
+    >,
     #[cfg(test)]
     geographic_exact_topology_accesses: AtomicUsize,
     #[cfg(test)]
@@ -94,26 +100,28 @@ struct FrameDependentEntry {
 impl FrameDependentCaches {
     /// Whether the raw box is sound in `frame`, once the coordinates have
     /// been admitted there; `None` before that admission.
-    pub(crate) fn admitted_bounds_sound(
+    pub(crate) fn geographic_admission(
         &self,
         frame: crate::geographic::GeographicFrame,
-    ) -> Option<bool> {
+    ) -> Option<(bool, GeographicTopologyRoute)> {
         self.admission
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .filter(|&(admitted, _)| admitted == frame)
-            .map(|(_, bounds_sound)| bounds_sound)
+            .filter(|&(admitted, ..)| admitted == frame)
+            .map(|(_, bounds_sound, route)| (bounds_sound, route))
     }
 
     pub(crate) fn record_admission(
         &self,
         frame: crate::geographic::GeographicFrame,
         bounds_sound: bool,
+        route: GeographicTopologyRoute,
     ) {
         *self
             .admission
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some((frame, bounds_sound));
+            .unwrap_or_else(std::sync::PoisonError::into_inner) =
+            Some((frame, bounds_sound, route));
     }
 
     pub(crate) fn geographic_exact_topology(

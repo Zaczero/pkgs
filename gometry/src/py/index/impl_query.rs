@@ -28,10 +28,7 @@ fn geographic_keep(
     }
     Ok(topology_pair_after_gates(
         spec,
-        &PreparedTopologyPair::Geographic {
-            left: *query,
-            right: *candidate,
-        },
+        &PreparedTopologyPair::from_geographic(*query, *candidate),
     )?)
 }
 

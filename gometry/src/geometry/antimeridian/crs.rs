@@ -3,10 +3,60 @@ use std::simd::num::SimdFloat as _;
 
 use crate::boundary::metadata::Frame;
 use crate::crs::CrsError;
-use crate::geographic::{GeographicFrame, SeamIdentity};
+use crate::geographic::{GeographicFrame, ScalarGeographicView, SeamIdentity};
 use crate::geometry::{
-    Coordinates, Point, REDUCE_LANES, ReduceSimd, Shape, ShapeData, TopologyDomain, simd_mask_any,
+    Coordinates, Point, REDUCE_LANES, ReduceSimd, Shape, ShapeData, TopologyDomain,
+    canonical_f64_bits, shape_has_polar_ring_in_frame, simd_mask_any,
 };
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum GeographicTopologyRoute {
+    ExactPartition,
+    Quotient,
+}
+
+impl GeographicTopologyRoute {
+    pub(crate) const fn combine(self, other: Self) -> Self {
+        match (self, other) {
+            (Self::ExactPartition, Self::ExactPartition) => Self::ExactPartition,
+            _ => Self::Quotient,
+        }
+    }
+}
+
+/// Classify an admitted geographic view for exact planar topology.
+///
+/// ExactPartition can use stored longitude/latitude coordinates only when
+/// they name one open chart: canonical ordinary vertices, no seam-crossing
+/// edges, and no full-longitude ring. Seam and pole topology remains Q-owned.
+pub(crate) fn classify_geographic_chart(view: ScalarGeographicView<'_>) -> GeographicTopologyRoute {
+    let frame = view.frame();
+    let mut canonical_ordinary_coordinates = true;
+    view.for_each_coordinate(|coordinate| {
+        canonical_ordinary_coordinates &= coordinate.identity(frame) == SeamIdentity::Ordinary
+            && canonical_f64_bits(coordinate.native().x)
+                == canonical_f64_bits(coordinate.longitude().get());
+    });
+    if canonical_ordinary_coordinates
+        && !crosses_antimeridian_in_frame(view.shape(), frame)
+        && !shape_has_polar_ring_in_frame(view.shape(), frame)
+    {
+        GeographicTopologyRoute::ExactPartition
+    } else {
+        GeographicTopologyRoute::Quotient
+    }
+}
+
+pub(crate) fn geographic_topology_route<'a>(
+    views: impl IntoIterator<Item = ScalarGeographicView<'a>>,
+) -> GeographicTopologyRoute {
+    for view in views {
+        if classify_geographic_chart(view) == GeographicTopologyRoute::Quotient {
+            return GeographicTopologyRoute::Quotient;
+        }
+    }
+    GeographicTopologyRoute::ExactPartition
+}
 
 /// Resolve the complete topology domain from CRS metadata. WGS84 uses the
 /// constant native frame; other geographic CRSs use their cached native frame.
@@ -290,6 +340,100 @@ fn steps_exceed(xs: &[f64], limit: f64) -> bool {
                 .simd_gt(ReduceSimd::splat(limit))
         },
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::geometry::{CoordSeq, LineSeq, Polygon, Ring};
+
+    fn polygon(points: &[(f64, f64)]) -> Shape {
+        let points = points
+            .iter()
+            .map(|&(x, y)| Point::new_raw_xy(x, y))
+            .collect::<Vec<_>>();
+        Shape::Polygon(Polygon::new(
+            Ring::try_from_closed(CoordSeq::try_from_points(&points).unwrap()).unwrap(),
+            Vec::new(),
+        ))
+    }
+
+    fn line(points: &[(f64, f64)]) -> Shape {
+        let points = points
+            .iter()
+            .map(|&(x, y)| Point::new_raw_xy(x, y))
+            .collect::<Vec<_>>();
+        Shape::LineString(LineSeq::try_new(CoordSeq::try_from_points(&points).unwrap()).unwrap())
+    }
+
+    fn route(shape: &Shape) -> GeographicTopologyRoute {
+        let view = ScalarGeographicView::try_new(GeographicFrame::crs84(), shape)
+            .expect("fixture coordinates are admitted");
+        classify_geographic_chart(view)
+    }
+
+    #[test]
+    fn exact_partition_chart_admits_an_ordinary_closed_chart() {
+        let ordinary = polygon(&[
+            (-10.0, -10.0),
+            (10.0, -10.0),
+            (10.0, 10.0),
+            (-10.0, 10.0),
+            (-10.0, -10.0),
+        ]);
+        let frame = GeographicFrame::crs84();
+        let view = ScalarGeographicView::try_new(frame, &ordinary).unwrap();
+
+        assert_eq!(
+            classify_geographic_chart(view),
+            GeographicTopologyRoute::ExactPartition
+        );
+        assert_eq!(
+            geographic_topology_route([view, view]),
+            GeographicTopologyRoute::ExactPartition
+        );
+    }
+
+    #[test]
+    fn exact_partition_chart_rejects_each_quotient_boundary() {
+        let seam_crossing = line(&[(170.0, 0.0), (-170.0, 0.0)]);
+        let seam_touching = line(&[(180.0, 0.0), (179.0, 0.0)]);
+        let seam_alias = Shape::Point(Point::new_raw_xy(360.0, 0.0));
+        let pole_vertex = Shape::Point(Point::new_raw_xy(0.0, 90.0));
+        let pole_enclosing_ring = polygon(&[
+            (-135.0, 80.0),
+            (-45.0, 80.0),
+            (45.0, 80.0),
+            (135.0, 80.0),
+            (-135.0, 80.0),
+        ]);
+
+        for shape in [
+            &seam_crossing,
+            &seam_touching,
+            &seam_alias,
+            &pole_vertex,
+            &pole_enclosing_ring,
+        ] {
+            assert_eq!(route(shape), GeographicTopologyRoute::Quotient, "{shape:?}",);
+        }
+
+        let ordinary = polygon(&[
+            (-10.0, -10.0),
+            (10.0, -10.0),
+            (10.0, 10.0),
+            (-10.0, 10.0),
+            (-10.0, -10.0),
+        ]);
+        let ordinary_view =
+            ScalarGeographicView::try_new(GeographicFrame::crs84(), &ordinary).unwrap();
+        let seam_view =
+            ScalarGeographicView::try_new(GeographicFrame::crs84(), &seam_touching).unwrap();
+        assert_eq!(
+            geographic_topology_route([ordinary_view, seam_view]),
+            GeographicTopologyRoute::Quotient
+        );
+    }
 }
 
 /// Whether a planar topology op must split-normalize ``shape`` at ±180 before

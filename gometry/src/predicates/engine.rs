@@ -9,8 +9,8 @@
 use std::cell::OnceCell;
 
 use crate::geometry::{
-    Bounds, CompiledPattern, GeographicPrepared, Loc, PreparedPlan, Shape, TopologyDomain,
-    graph_relate_data, line_scalar_prefers_direct_polygon_relate,
+    Bounds, CompiledPattern, GeographicPrepared, GeographicTopologyRoute, Loc, PreparedPlan, Shape,
+    TopologyDomain, graph_relate_data, line_scalar_prefers_direct_polygon_relate,
 };
 
 #[derive(Clone, Copy)]
@@ -55,10 +55,26 @@ impl<'a> PreparedTopologyPair<'a> {
         right_cache: &'a crate::geometry::FrameDependentCaches,
         frame: crate::geographic::GeographicFrame,
     ) -> crate::error::Result<Self> {
-        Ok(Self::Geographic {
-            left: GeographicPrepared::try_new(left, left_cache, frame)?,
-            right: GeographicPrepared::try_new(right, right_cache, frame)?,
-        })
+        Ok(Self::from_geographic(
+            GeographicPrepared::try_new(left, left_cache, frame)?,
+            GeographicPrepared::try_new(right, right_cache, frame)?,
+        ))
+    }
+
+    pub(crate) fn from_geographic(
+        left: GeographicPrepared<'a>,
+        right: GeographicPrepared<'a>,
+    ) -> Self {
+        if left.chart_route().combine(right.chart_route())
+            == GeographicTopologyRoute::ExactPartition
+        {
+            Self::Cartesian {
+                left: left.plan(),
+                right: right.plan(),
+            }
+        } else {
+            Self::Geographic { left, right }
+        }
     }
 
     /// The two operands as the pre-topology gates read them.
@@ -641,30 +657,40 @@ pub(crate) fn scalar_vs_shapes<'a>(
                     let rectangle = element_prepared.plan().shape();
                     if let Some(bounds) = rectangle.bounds()
                         && crate::geometry::is_axis_aligned_rectangle(rectangle, bounds)
-                        && let Some(location) = scalar_exact_topology
+                    {
+                        if prepared
+                            .chart_route()
+                            .combine(element_prepared.chart_route())
+                            == GeographicTopologyRoute::ExactPartition
+                        {
+                            results.push(
+                                crate::geometry::exact_intersects_bounds(
+                                    prepared.plan().shape(),
+                                    bounds,
+                                )
+                                .map_err(|error| (index, error))?,
+                            );
+                            continue;
+                        }
+                        if let Some(location) = scalar_exact_topology
                             .get_or_try_init(|| prepared.exact_topology())
                             .map_err(|error| (index, error))?
                             .classify_rectangle(bounds)
                             .map_err(|error| (index, error))?
-                    {
-                        results.push(matches!(
-                            location,
-                            crate::geometry::ExactGeographicRectangleLocation::Interior
-                                | crate::geometry::ExactGeographicRectangleLocation::Boundary
-                        ));
-                        continue;
+                        {
+                            results.push(matches!(
+                                location,
+                                crate::geometry::ExactGeographicRectangleLocation::Interior
+                                    | crate::geometry::ExactGeographicRectangleLocation::Boundary
+                            ));
+                            continue;
+                        }
                     }
                 }
                 let operands = if scalar_is_left {
-                    PreparedTopologyPair::Geographic {
-                        left: prepared,
-                        right: element_prepared,
-                    }
+                    PreparedTopologyPair::from_geographic(prepared, element_prepared)
                 } else {
-                    PreparedTopologyPair::Geographic {
-                        left: element_prepared,
-                        right: prepared,
-                    }
+                    PreparedTopologyPair::from_geographic(element_prepared, prepared)
                 };
                 let verdict =
                     topology_scalar_pair(spec, &operands).map_err(|error| (index, error))?;
@@ -1335,7 +1361,7 @@ mod tests {
     }
 
     #[test]
-    fn prepared_intersects_rectangle_queries_reuse_exact_q_and_respect_holes() {
+    fn prepared_intersects_rectangle_queries_use_exact_partition_and_respect_holes() {
         let outer = rectangle(0.0, 0.0, 10.0, 10.0);
         let Shape::Polygon(outer) = outer else {
             unreachable!("rectangle helper returns a polygon");
@@ -1370,8 +1396,8 @@ mod tests {
         )
         .expect("rectangle queries admit");
         assert_eq!(actual, [false, true]);
-        assert_eq!(cache.geographic_exact_topology_builds(), 1);
-        assert_eq!(cache.geographic_exact_topology_accesses(), 1);
+        assert_eq!(cache.geographic_exact_topology_builds(), 0);
+        assert_eq!(cache.geographic_exact_topology_accesses(), 0);
     }
 
     #[test]

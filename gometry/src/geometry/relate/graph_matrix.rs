@@ -15,7 +15,8 @@ use crate::geometry::topology::{
     AreaSupport, TopologyGraph, TopologyKey, TopologyLocation, TopologyNodeId,
 };
 use crate::geometry::{
-    Bounds, Coordinates as _, ExactGeographicTopology, PreparedPlan, Ring, Shape,
+    Bounds, Coordinates as _, ExactGeographicTopology, GeographicTopologyRoute, PreparedPlan, Ring,
+    Shape,
 };
 #[cfg(test)]
 use crate::geometry::{CoordSeq, HashMap, PointKey, Polygon, overlay, same_point, topology};
@@ -30,6 +31,7 @@ pub(crate) struct GeographicPrepared<'a> {
     frame_cache: &'a crate::geometry::FrameDependentCaches,
     view: ScalarGeographicView<'a>,
     bounds_sound: bool,
+    chart_route: GeographicTopologyRoute,
 }
 
 impl<'a> GeographicPrepared<'a> {
@@ -52,6 +54,10 @@ impl<'a> GeographicPrepared<'a> {
         self.bounds_sound
     }
 
+    pub(crate) const fn chart_route(&self) -> GeographicTopologyRoute {
+        self.chart_route
+    }
+
     /// Admit `plan.shape()` once per frame; later pairs reuse the admission
     /// and its box fact from the plan's frame cache.
     pub(crate) fn try_new(
@@ -59,16 +65,18 @@ impl<'a> GeographicPrepared<'a> {
         frame_cache: &'a crate::geometry::FrameDependentCaches,
         frame: GeographicFrame,
     ) -> crate::error::Result<Self> {
-        if let Some(bounds_sound) = frame_cache.admitted_bounds_sound(frame) {
+        if let Some((bounds_sound, chart_route)) = frame_cache.geographic_admission(frame) {
             return Ok(Self {
                 plan,
                 frame_cache,
                 view: ScalarGeographicView::previously_admitted(frame, plan.shape()),
                 bounds_sound,
+                chart_route,
             });
         }
         let view = ScalarGeographicView::try_new(frame, plan.shape())
             .map_err(|diagnostic| invalid_lonlat_error(diagnostic.native.x, diagnostic.native.y))?;
+        let chart_route = crate::geometry::classify_geographic_chart(view);
         let bounds_sound = plan.bounds().is_some_and(|bounds| {
             crate::geometry::raw_coordinate_bounds_are_sound_in_frame(
                 Some(plan.shape()),
@@ -76,12 +84,13 @@ impl<'a> GeographicPrepared<'a> {
                 frame,
             )
         });
-        frame_cache.record_admission(frame, bounds_sound);
+        frame_cache.record_admission(frame, bounds_sound, chart_route);
         Ok(Self {
             plan,
             frame_cache,
             view,
             bounds_sound,
+            chart_route,
         })
     }
 }
@@ -118,7 +127,7 @@ fn graph_relate_shapes_geographic(left: &Shape, right: &Shape) -> De9im {
     let right = PreparedPlan::transient(right);
     let left_cache = crate::geometry::FrameDependentCaches::default();
     let right_cache = crate::geometry::FrameDependentCaches::default();
-    graph_relate_data_geographic(
+    graph_relate_data_geographic_q(
         GeographicPrepared::try_new(&left, &left_cache, frame).expect("fixture admits"),
         GeographicPrepared::try_new(&right, &right_cache, frame).expect("fixture admits"),
     )
@@ -142,6 +151,17 @@ fn exact_cartesian_relate(left: &Shape, right: &Shape) -> Result<De9im> {
     reason = "GeographicPrepared is a Copy view of three borrows; the relate functions take the completed prepare step by value"
 )]
 pub(crate) fn graph_relate_data_geographic(
+    left: GeographicPrepared<'_>,
+    right: GeographicPrepared<'_>,
+) -> Result<De9im> {
+    debug_assert_eq!(left.frame(), right.frame());
+    if left.chart_route().combine(right.chart_route()) == GeographicTopologyRoute::ExactPartition {
+        return exact_cartesian_relate(left.plan().shape(), right.plan().shape());
+    }
+    graph_relate_data_geographic_q(left, right)
+}
+
+fn graph_relate_data_geographic_q(
     left: GeographicPrepared<'_>,
     right: GeographicPrepared<'_>,
 ) -> Result<De9im> {
