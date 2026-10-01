@@ -498,7 +498,9 @@ def test_split_antimeridian_ordinate_policy(
 def test_split_antimeridian_exact_world_band_and_xy_pole() -> None:
     band = gm.Polygon([(0, -30), (360, -30), (360, 30), (0, 30)], crs=4326)
     split = band.split_antimeridian()
-    assert split.to_wkt() == 'POLYGON ((-180 -30, 180 -30, 180 30, -180 30, -180 -30))'
+    assert split.to_wkt() == (
+        'POLYGON ((-180 -30, 0 -30, 180 -30, 180 30, 0 30, -180 30, -180 -30))'
+    )
     for longitude in (-179, 0, 179):
         point = gm.Point(longitude, 0, crs=4326)
         assert gm.contains(band, point)
@@ -718,8 +720,22 @@ def test_split_antimeridian_crs84_canonical_identity_and_full_turn_rewrite() -> 
     assert half_period.split_antimeridian().to_wkt() == half_period.to_wkt()
     full_period = gm.LineString([(-180, 0), (180, 0)], crs=4326)
     assert full_period.split_antimeridian().to_wkt() == full_period.to_wkt()
+    # A pole-to-pole world ring needs ordinary longitude witnesses; seam
+    # aliases alone have no full-turn edge.
     world = gm.Polygon(
-        [(-180, -90), (180, -90), (180, 90), (-180, 90), (-180, -90)],
+        [
+            (-180, -90),
+            (-90, -90),
+            (0, -90),
+            (90, -90),
+            (180, -90),
+            (180, 90),
+            (90, 90),
+            (0, 90),
+            (-90, 90),
+            (-180, 90),
+            (-180, -90),
+        ],
         crs=4326,
     )
     split_world = world.split_antimeridian()
@@ -750,7 +766,7 @@ def test_split_antimeridian_crs84_canonical_identity_and_full_turn_rewrite() -> 
     band = gm.Polygon([(0, -30), (360, -30), (360, 30), (0, 30)], crs=4326)
     assert (
         band.split_antimeridian().to_wkt()
-        == 'POLYGON ((-180 -30, 180 -30, 180 30, -180 30, -180 -30))'
+        == 'POLYGON ((-180 -30, 0 -30, 180 -30, 180 30, 0 30, -180 30, -180 -30))'
     )
 
 

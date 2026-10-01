@@ -535,7 +535,7 @@ struct OrdinateBindings {
 pub(in crate::geometry) enum KeptNodes {
     /// Only the nodes selection requires.
     Selected,
-    /// Every node: coverage and polygonization publish each source vertex.
+    /// Every node: coverage, polygonization, and geographic charts preserve source vertices.
     All,
     /// Every node no polygon ring passes through, indexed by node: linework
     /// keeps its vertices whatever else shares the arrangement, while ring
@@ -3415,6 +3415,10 @@ fn walk_exact_chain(
 impl ExactPartition<'_> {
     pub(in crate::geometry) const fn node_count(&self) -> usize {
         self.points.len()
+    }
+
+    pub(in crate::geometry) fn keep_all_nodes(&mut self) {
+        self.kept_nodes = KeptNodes::All;
     }
 
     /// A node's nearest-even binary64 point.

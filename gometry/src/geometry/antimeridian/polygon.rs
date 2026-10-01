@@ -11,8 +11,8 @@ use crate::geometry::antimeridian::{
 use crate::geometry::{
     CoordSeq, CoordinateAxes, Coordinates as _, GeometryErrorKind, LineSeq, MOrdinate,
     MultiLineString, MultiMember, MultiPolygon, Point, Polygon, Ring, Shape, ShapeOwnerKey,
-    Strictness, ZOrdinate, open_point_cycle_winding, polygon_is_valid, ring_encloses_pole,
-    ring_winding, same_point,
+    Strictness, TopologyDomain, ZOrdinate, interpolate_optional_ordinate, open_point_cycle_winding,
+    polygon_is_valid, ring_encloses_pole, ring_winding, same_point,
 };
 
 #[derive(Default)]
@@ -286,25 +286,60 @@ fn chart_ring(
     let summary =
         RingSummary::try_new(frame, &geographic).map_err(|error| split_view_error(&error))?;
     let mut points = Vec::new();
-    points.reserve_exact(geographic.len());
     if matches!(summary.domain, RingDomain::FullLongitude(_))
         && matches!(summary.turn, RingTurn::None)
     {
+        let axis = frame.longitude();
         let xs = geographic.native_xs();
         let west = xs.iter().copied().fold(f64::INFINITY, f64::min);
         let east = xs.iter().copied().fold(f64::NEG_INFINITY, f64::max);
-        for index in 0..geographic.len() {
-            let point = geographic.native_point(index);
+        let midpoint_count = ring
+            .segment_pairs()
+            .filter_map(|[start, end]| {
+                (start.y.to_bits() == end.y.to_bits()
+                    && axis.full_turn_delta(start.x, end.x).is_some())
+                .then_some(())
+            })
+            .count();
+        #[expect(
+            clippy::arithmetic_side_effects,
+            reason = "the stored f64 coordinate columns bound a ring below half usize::MAX"
+        )]
+        let output_count = geographic.len() + midpoint_count;
+        points.reserve_exact(output_count);
+        let band_point = |point: Point| -> Result<Point> {
             let x = if point.x.to_bits() == west.to_bits() {
                 -180.0
             } else if point.x.to_bits() == east.to_bits() {
                 180.0
             } else {
-                chart_longitude(point.x, frame, longitude_scale)?
+                (point.x - west - axis.half_period()) * longitude_scale
             };
-            points.push(point.with_xy(x, chart_latitude(point.y, frame, latitude_scale)?)?);
+            point.with_xy(x, chart_latitude(point.y, frame, latitude_scale)?)
+        };
+        for [start, end] in ring.segment_pairs() {
+            if points.is_empty() {
+                points.push(band_point(start)?);
+            }
+            if start.y.to_bits() == end.y.to_bits()
+                && axis.full_turn_delta(start.x, end.x).is_some()
+            {
+                // A raw full-turn edge needs an ordinary chart witness; its
+                // two seam spellings alone would collapse to a line.
+                let midpoint = f64::midpoint(start.x, end.x);
+                let x = (midpoint - west - axis.half_period()) * longitude_scale;
+                let y = chart_latitude(start.y, frame, latitude_scale)?;
+                points.push(Point::new_axes(
+                    x,
+                    y,
+                    ZOrdinate(interpolate_optional_ordinate(start.z(), end.z(), 0.5)),
+                    MOrdinate(interpolate_optional_ordinate(start.m(), end.m(), 0.5)),
+                )?);
+            }
+            points.push(band_point(end)?);
         }
     } else {
+        points.reserve_exact(geographic.len());
         for index in 0..geographic.len() {
             points.push(chart_point(
                 geographic.native_point(index),
@@ -483,14 +518,24 @@ fn split_polygon(
 }
 
 fn split_polygon_inner(polygon: &Polygon, preferred: PoleClosure) -> Result<Vec<Polygon>> {
+    split_polygon_inner_in_mode(polygon, preferred, HoleOverlayMode::Select)
+}
+
+fn split_polygon_inner_in_mode(
+    polygon: &Polygon,
+    preferred: PoleClosure,
+    mut overlay_mode: HoleOverlayMode,
+) -> Result<Vec<Polygon>> {
     // Split crossing holes as independent areal operands, then subtract them
     // from the split shell.  Treating shell and hole seam fragments as one
     // undifferentiated stitching pool works for ordinary crossings, but it
     // cannot represent nested polar caps: both rings independently require a
     // pole closure, and the pooled closest-start walk joins them into invalid
-    // self-intersecting rings.  Set difference is the structural operation the
-    // source polygon already expresses, and the native overlay kernel gives us
-    // the correct seam-connected annulus without a second stitching model.
+    // self-intersecting rings. Set difference is the structural operation the
+    // source polygon already expresses. Already-cut chart parts use Cartesian
+    // coordinates, including zero-turn world bands with their interior
+    // longitude witnesses. A nonzero longitude turn remains quotient support
+    // and needs Q; its result is cut back into chart pieces before publication.
     // A hole tracing the seam is split with the crossing holes: the polygon's
     // interior lies across the seam from it.
     let mut crossing_holes = Vec::new();
@@ -507,16 +552,58 @@ fn split_polygon_inner(polygon: &Polygon, preferred: PoleClosure) -> Result<Vec<
     if !crossing_holes.is_empty() {
         let axes = polygon.shell.coords().axes();
         let shell_only = Polygon::new(polygon.shell.clone(), stationary_holes);
-        let shell_parts = split_polygon_inner(&shell_only, preferred)?;
+        let shell_parts = split_polygon_inner_in_mode(&shell_only, preferred, overlay_mode)?;
         let mut result = Shape::narrow_polygons(axes, shell_parts);
         for hole in crossing_holes {
             let hole_axes = hole.coords().axes();
             let hole_closure = pole_closure_for_ring(&hole);
-            let hole_parts = split_polygon_inner(&Polygon::new(hole, Vec::new()), hole_closure)?;
+            let hole_parts = split_polygon_inner_in_mode(
+                &Polygon::new(hole, Vec::new()),
+                hole_closure,
+                overlay_mode,
+            )?;
             let hole_shape = Shape::narrow_polygons(hole_axes, hole_parts);
-            result = result.difference(&hole_shape, Strictness::Strict)?;
+            let frame = GeographicFrame::crs84();
+            let operands = [&result, &hole_shape];
+            let use_quotient = match overlay_mode {
+                HoleOverlayMode::Select => {
+                    shape_has_longitude_turn_in_frame(&result, frame)?
+                        || shape_has_longitude_turn_in_frame(&hole_shape, frame)?
+                },
+                HoleOverlayMode::Quotient => true,
+                HoleOverlayMode::Chart => false,
+            };
+            result = if use_quotient {
+                overlay_mode = HoleOverlayMode::Quotient;
+                crate::geometry::overlay_all(
+                    &operands,
+                    TopologyDomain::Geographic(frame),
+                    crate::geometry::OverlayOp::Difference,
+                    Strictness::Strict,
+                )?
+            } else {
+                crate::geometry::overlay_all_geographic_chart(
+                    &operands,
+                    crate::geometry::OverlayOp::Difference,
+                    Strictness::Strict,
+                )?
+            };
         }
-        return polygons_from_shape(result);
+        let polygons = polygons_from_shape(result)?;
+        if overlay_mode != HoleOverlayMode::Quotient {
+            return Ok(polygons);
+        }
+        // Q selects the correct quotient set, but this API publishes cut-chart geometry.
+        let mut charted = Vec::new();
+        for polygon in polygons {
+            let closure = pole_closure_for_ring(&polygon.shell);
+            charted.extend(split_polygon_inner_in_mode(
+                &polygon,
+                closure,
+                HoleOverlayMode::Chart,
+            )?);
+        }
+        return Ok(charted);
     }
 
     let segments = match split_ring_at_seam(&collect_points(polygon.shell.coords())) {
@@ -566,6 +653,51 @@ fn split_polygon_inner(polygon: &Polygon, preferred: PoleClosure) -> Result<Vec<
         Err(_) => Err(GeometryErrorKind::antimeridian_split_failed(
             "pole closure is ambiguous: both directions produce valid rings",
         )),
+    }
+}
+
+fn shape_has_longitude_turn_in_frame(shape: &Shape, frame: GeographicFrame) -> Result<bool> {
+    fn ring_has_longitude_turn(ring: &Ring, frame: GeographicFrame) -> Result<bool> {
+        let summary = RingSummary::try_new(frame, &GeographicRing::from_ring(ring))
+            .map_err(|error| split_view_error(&error))?;
+        Ok(summary.turn != RingTurn::None)
+    }
+
+    fn polygon_has_longitude_turn(polygon: &Polygon, frame: GeographicFrame) -> Result<bool> {
+        if ring_has_longitude_turn(&polygon.shell, frame)? {
+            return Ok(true);
+        }
+        for hole in polygon.holes.iter() {
+            if ring_has_longitude_turn(hole, frame)? {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
+    match shape {
+        Shape::Polygon(polygon) => polygon_has_longitude_turn(polygon, frame),
+        Shape::MultiPolygon(polygons) => {
+            for polygon in polygons.iter() {
+                if polygon_has_longitude_turn(polygon, frame)? {
+                    return Ok(true);
+                }
+            }
+            Ok(false)
+        },
+        Shape::GeometryCollection(geometries) => {
+            for geometry in geometries.iter() {
+                if shape_has_longitude_turn_in_frame(geometry, frame)? {
+                    return Ok(true);
+                }
+            }
+            Ok(false)
+        },
+        Shape::Point(_)
+        | Shape::MultiPoint(_)
+        | Shape::LineString(_)
+        | Shape::MultiLineString(_)
+        | Shape::Empty(..) => Ok(false),
     }
 }
 
@@ -689,6 +821,13 @@ enum PoleClosure {
     Auto,
     North,
     South,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum HoleOverlayMode {
+    Select,
+    Quotient,
+    Chart,
 }
 
 /// A seam end with no seam start between it and the pole closes over that pole.
@@ -1072,11 +1211,111 @@ mod tests {
         let split = split_crs84(&shape);
         assert_ne!(split, shape);
         let expected = Shape::Polygon(Polygon::new(
-            closed_ring(&[-180.0, 180.0, 180.0, -180.0, -180.0], &[
-                -30.0, -30.0, 30.0, 30.0, -30.0,
+            closed_ring(&[-180.0, 0.0, 180.0, 180.0, 0.0, -180.0, -180.0], &[
+                -30.0, -30.0, -30.0, 30.0, 30.0, 30.0, -30.0,
             ]),
             Vec::new(),
         ));
         assert_eq!(split, expected);
+    }
+
+    #[test]
+    fn splitting_a_polar_annulus_keeps_the_full_longitude_band() {
+        let latitude_ring = |latitude| {
+            [
+                (0.0, latitude),
+                (60.0, latitude),
+                (120.0, latitude),
+                (180.0, latitude),
+                (-120.0, latitude),
+                (-60.0, latitude),
+            ]
+        };
+        let shell = latitude_ring(70.0);
+        let hole = latitude_ring(80.0);
+        let source = polygon(&shell, &[&hole]);
+        let split = split_crs84(&source);
+        assert_eq!(split.validate().unwrap(), None, "{split:?}");
+        let point = Shape::Point(Point::new_raw_xy(0.0, 75.0));
+        let source_plan = crate::geometry::PreparedPlan::transient(&split);
+        let point_plan = crate::geometry::PreparedPlan::transient(&point);
+        let source_cache = crate::geometry::FrameDependentCaches::default();
+        let point_cache = crate::geometry::FrameDependentCaches::default();
+        let frame = GeographicFrame::crs84();
+        let source_prepared =
+            crate::geometry::GeographicPrepared::try_new(&source_plan, &source_cache, frame)
+                .unwrap();
+        let point_prepared =
+            crate::geometry::GeographicPrepared::try_new(&point_plan, &point_cache, frame).unwrap();
+        assert!(
+            crate::geometry::graph_relate_data_geographic(source_prepared, point_prepared)
+                .unwrap()
+                .is_contains(),
+            "{split:?}"
+        );
+
+        for longitude in [0.0, 180.0, -180.0] {
+            for (latitude, expected) in [(75.0, true), (89.0, false), (65.0, false)] {
+                let point = Shape::Point(Point::new_raw_xy(longitude, latitude));
+                let point_plan = crate::geometry::PreparedPlan::transient(&point);
+                let point_cache = crate::geometry::FrameDependentCaches::default();
+                let point_prepared =
+                    crate::geometry::GeographicPrepared::try_new(&point_plan, &point_cache, frame)
+                        .unwrap();
+                let relation =
+                    crate::geometry::graph_relate_data_geographic(source_prepared, point_prepared)
+                        .unwrap();
+                assert_eq!(
+                    relation.is_contains(),
+                    expected,
+                    "({longitude}, {latitude}) in {split:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn crossing_hole_subtraction_keeps_a_zero_turn_world_band_in_its_chart() {
+        let source = polygon(
+            &[(0.0, -30.0), (360.0, -30.0), (360.0, 30.0), (0.0, 30.0)],
+            &[&[(175.0, 0.0), (-175.0, 0.0), (-175.0, 5.0), (175.0, 5.0)]],
+        );
+        let split = split_crs84(&source);
+
+        assert_eq!(split.validate().unwrap(), None, "{split:?}");
+        assert_eq!(split.area(), 21_550.0, "{split:?}");
+        let mut witnesses = [false; 2];
+        split.for_each_point(|point| {
+            if point.x.to_bits() == 0.0_f64.to_bits() {
+                if point.y.to_bits() == (-30.0_f64).to_bits() {
+                    witnesses[0] = true;
+                }
+                if point.y.to_bits() == 30.0_f64.to_bits() {
+                    witnesses[1] = true;
+                }
+            }
+        });
+        assert_eq!(witnesses, [true, true], "{split:?}");
+    }
+
+    #[test]
+    fn chart_ring_interpolates_ordinates_at_full_turn_witnesses() {
+        let point =
+            |x, y, z, m| Point::new_axes(x, y, ZOrdinate(Some(z)), MOrdinate(Some(m))).unwrap();
+        let ring = Ring::closed_coordseq(
+            CoordSeq::try_from_points(&[
+                point(0.0, -30.0, 0.0, 10.0),
+                point(360.0, -30.0, 360.0, 370.0),
+                point(360.0, 30.0, 720.0, 730.0),
+                point(0.0, 30.0, 1080.0, 1090.0),
+                point(0.0, -30.0, 0.0, 10.0),
+            ])
+            .unwrap(),
+        )
+        .unwrap();
+        let chart = super::chart_ring(&ring, GeographicFrame::crs84(), 1.0, 1.0).unwrap();
+
+        assert_eq!(chart.coords().point_at(1), point(0.0, -30.0, 180.0, 190.0));
+        assert_eq!(chart.coords().point_at(4), point(0.0, 30.0, 900.0, 910.0));
     }
 }

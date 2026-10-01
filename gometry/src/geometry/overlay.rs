@@ -78,10 +78,9 @@ impl OverlayOp {
 
 /// Build one occupied-support shape for a metric or moment consumer.
 ///
-/// Cartesian inputs use the exact incidence partition directly. Geographic
-/// inputs retain the geographic graph's seam and pole quotient; this wrapper
-/// changes only the selected region, leaving the metric conversion to its
-/// owner.
+/// Ordinary geographic charts share the exact partition route with Cartesian
+/// overlays. Seam and pole inputs retain Q's quotient; this wrapper changes
+/// only selected support and leaves metric conversion to its owner.
 pub(crate) fn occupied_support_shape(
     shape: &Shape,
     domain: TopologyDomain,
@@ -98,21 +97,7 @@ pub(crate) fn occupied_support_shape(
                 // losing the quotient's implicit pole closure.
                 return Ok(shape.clone());
             }
-            if let Some(bounds) = shape.bounds()
-                && crate::geometry::raw_coordinate_bounds_are_sound_in_frame(
-                    Some(shape),
-                    bounds,
-                    frame,
-                )
-            {
-                // A canonical, non-seam, non-polar geographic shape has one
-                // chart with the same incidences as Cartesian longitude and
-                // latitude. The exact partition is therefore equivalent to
-                // the geographic quotient on this certified chart.
-                occupied_cartesian_support(shape)
-            } else {
-                nary::occupied_geographic_support(shape, frame)
-            }
+            nary::occupied_geographic_support(shape, frame)
         },
     }
 }
@@ -171,7 +156,9 @@ pub(in crate::geometry) use nary::{
     VoronoiIntermediateOverlay, binary_cartesian_overlay_without_partition_budget,
     overlay_all_geographic_from, overlay_view_error,
 };
-pub(crate) use nary::{empty_shape_for_dimension_with_axes, overlay_all};
+pub(crate) use nary::{
+    empty_shape_for_dimension_with_axes, overlay_all, overlay_all_geographic_chart,
+};
 #[cfg(test)]
 pub(crate) use noding::self_node_segments_sourced;
 #[cfg(test)]

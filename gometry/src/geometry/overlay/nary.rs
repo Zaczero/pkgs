@@ -10,8 +10,8 @@ use crate::geometry::overlay::{
 };
 use crate::geometry::topology::overlay::exact_geographic_overlay;
 use crate::geometry::{
-    Bounds, CoordSeq, CoordinateAxes, Dimension, GeometryErrorKind, GeometryKind, Shape,
-    TopologyDomain,
+    Bounds, CoordSeq, CoordinateAxes, Dimension, GeographicTopologyRoute, GeometryErrorKind,
+    GeometryKind, Shape, TopologyDomain,
 };
 
 /// Evaluate one or more operands in one canonical overlay arrangement.
@@ -26,6 +26,31 @@ pub(crate) fn overlay_all<S: Borrow<Shape>>(
     strictness: Strictness,
 ) -> Result<Shape> {
     overlay_all_with_bounds_certificates(geometries, domain, op, strictness, true)
+}
+
+/// Overlay already-charted geographic split parts with exact planar topology
+/// while retaining vertices that still define geographic metric edges.
+pub(crate) fn overlay_all_geographic_chart<S: Borrow<Shape>>(
+    geometries: &[S],
+    op: OverlayOp,
+    strictness: Strictness,
+) -> Result<Shape> {
+    if geometries.is_empty() {
+        return Err(GeometryErrorKind::EmptyGeometrySequence {
+            operation: op.name(),
+        }
+        .into());
+    }
+    let mut inputs = Vec::with_capacity(geometries.len());
+    inputs.extend(geometries.iter().map(std::borrow::Borrow::borrow));
+    exact_partition_overlay_with_bounds_certificates(
+        inputs,
+        op,
+        strictness,
+        true,
+        true,
+        ExactPartitionBudget::Charge,
+    )
 }
 
 #[cfg(test)]
@@ -100,7 +125,7 @@ impl VoronoiIntermediateOverlay {
 /// selection, dimensional absorption, and checked emission belong to
 /// `ExactPartition`; disjoint bounds only partition independent inputs.
 fn exact_cartesian_overlay(
-    mut inputs: Vec<&Shape>,
+    inputs: Vec<&Shape>,
     operation: OverlayOp,
     strictness: Strictness,
     bounds_certificates: bool,
@@ -109,6 +134,24 @@ fn exact_cartesian_overlay(
     if inputs.len() == 1 && operation == OverlayOp::Intersection {
         return Ok(inputs[0].clone());
     }
+    exact_partition_overlay_with_bounds_certificates(
+        inputs,
+        operation,
+        strictness,
+        bounds_certificates,
+        false,
+        partition_budget,
+    )
+}
+
+fn exact_partition_overlay_with_bounds_certificates(
+    mut inputs: Vec<&Shape>,
+    operation: OverlayOp,
+    strictness: Strictness,
+    bounds_certificates: bool,
+    preserve_geographic_vertices: bool,
+    partition_budget: ExactPartitionBudget,
+) -> Result<Shape> {
     if operation == OverlayOp::Difference {
         inputs[1..].sort_unstable_by(|left, right| crate::geometry::compare_shapes(left, right));
     } else {
@@ -130,9 +173,14 @@ fn exact_cartesian_overlay(
         None
     };
     let shape = match components {
-        None => {
-            exact_partition_overlay(inputs, operation, declared_axes, strict, partition_budget)?
-        },
+        None => exact_partition_overlay(
+            inputs,
+            operation,
+            declared_axes,
+            strict,
+            preserve_geographic_vertices,
+            partition_budget,
+        )?,
         Some(components) => {
             let mut shapes = Vec::with_capacity(components.len());
             let mut subset = Vec::new();
@@ -145,6 +193,7 @@ fn exact_cartesian_overlay(
                     operation,
                     declared_axes,
                     strict,
+                    preserve_geographic_vertices,
                     partition_budget,
                 )?);
             }
@@ -242,6 +291,7 @@ fn exact_partition_overlay(
     operation: OverlayOp,
     declared_axes: CoordinateAxes,
     strict: bool,
+    preserve_geographic_vertices: bool,
     partition_budget: ExactPartitionBudget,
 ) -> Result<Shape> {
     let union = if operation == OverlayOp::Union {
@@ -253,7 +303,7 @@ fn exact_partition_overlay(
         Some(inventory) => inventory,
         None => ExactSourceInventory::from_shapes(inputs)?,
     };
-    let partition = match partition_budget {
+    let mut partition = match partition_budget {
         ExactPartitionBudget::Charge => {
             let mut budget =
                 crate::geometry::ExpansionBudget::new(operation.name(), "exact partition");
@@ -261,6 +311,11 @@ fn exact_partition_overlay(
         },
         ExactPartitionBudget::Ignore => inventory.partition_without_budget()?,
     };
+    if preserve_geographic_vertices {
+        // Chart-collinear vertices still define separate geographic metric
+        // edges, so exact planar simplification must not merge them.
+        partition.keep_all_nodes();
+    }
     inventory.overlay_shape(&partition, operation, declared_axes, strict)
 }
 
@@ -280,25 +335,70 @@ pub(in crate::geometry) fn binary_cartesian_overlay_without_partition_budget(
     )
 }
 
-/// Geographic overlays use one global Q over the canonical-ordered original
-/// rows. The source inventory retains each edge's original interval through
-/// charting, cutting, and exact noding; output ordinates are restored from
-/// those intervals after exact cell selection.
+/// Geographic overlays share one chart classifier. Ordinary charts use the
+/// exact planar partition; seam and pole cases use one global Q over the
+/// original rows so source intervals still own checked Z/M emission.
 pub(in crate::geometry) fn overlay_all_geographic_from(
     originals: &GeographicInputs<'_>,
     op: OverlayOp,
     strictness: Strictness,
     bounds_certificates: bool,
 ) -> Result<Shape> {
-    let frame = originals.frame();
     let mut original_refs = Vec::with_capacity(originals.views().len());
     original_refs.extend(originals.views().iter().map(|view| view.shape()));
-    let declared_axes = overlay_declared_axes(&original_refs, op);
+    if crate::geometry::geographic_topology_route(originals.views().iter().copied())
+        == GeographicTopologyRoute::ExactPartition
+    {
+        return exact_partition_overlay_with_bounds_certificates(
+            original_refs,
+            op,
+            strictness,
+            bounds_certificates,
+            true,
+            ExactPartitionBudget::Charge,
+        );
+    }
+    exact_geographic_q_overlay(
+        originals,
+        &original_refs,
+        op,
+        strictness,
+        bounds_certificates,
+    )
+}
+
+#[cfg(test)]
+pub(crate) fn overlay_all_geographic_q_from(
+    originals: &GeographicInputs<'_>,
+    op: OverlayOp,
+    strictness: Strictness,
+    bounds_certificates: bool,
+) -> Result<Shape> {
+    let mut original_refs = Vec::with_capacity(originals.views().len());
+    original_refs.extend(originals.views().iter().map(|view| view.shape()));
+    exact_geographic_q_overlay(
+        originals,
+        &original_refs,
+        op,
+        strictness,
+        bounds_certificates,
+    )
+}
+
+fn exact_geographic_q_overlay(
+    originals: &GeographicInputs<'_>,
+    original_refs: &[&Shape],
+    op: OverlayOp,
+    strictness: Strictness,
+    bounds_certificates: bool,
+) -> Result<Shape> {
+    let frame = originals.frame();
+    let declared_axes = overlay_declared_axes(original_refs, op);
 
     if bounds_certificates && op == OverlayOp::Intersection && originals.views().len() > 1 {
         let facts = overlay_bounds_facts_geographic(originals);
         if facts.raw_coordinate_bounds_sound && intersection_bounds_empty(&facts.bounds) {
-            return Ok(empty_nary_overlay_shape(&original_refs, op));
+            return Ok(empty_nary_overlay_shape(original_refs, op));
         }
     }
 
@@ -320,7 +420,7 @@ pub(in crate::geometry) fn overlay_all_geographic_from(
     let topology = crate::geometry::ExactGeographicTopology::from_views(frame, views.into_iter())?;
     let output = exact_geographic_overlay(&topology, op, declared_axes, strictness.is_strict())?;
     Ok(if output.is_empty() {
-        empty_nary_overlay_shape(&original_refs, op)
+        empty_nary_overlay_shape(original_refs, op)
     } else {
         output
     })
@@ -471,5 +571,101 @@ pub(crate) const fn empty_shape_for_dimension_with_axes(
         Dimension::Point => Shape::typed_empty(GeometryKind::Point, axes),
         Dimension::Curve => Shape::typed_empty(GeometryKind::LineString, axes),
         Dimension::Surface => Shape::typed_empty(GeometryKind::Polygon, axes),
+    }
+}
+
+#[cfg(test)]
+mod geographic_chart_route_tests {
+    use super::*;
+    use crate::geographic::GeographicFrame;
+    use crate::geometry::{Point, Polygon, Ring, graph_relate_shapes};
+
+    fn rectangle(west: f64, south: f64, east: f64, north: f64) -> Shape {
+        let points = [
+            Point::new_raw_xy(west, south),
+            Point::new_raw_xy(east, south),
+            Point::new_raw_xy(east, north),
+            Point::new_raw_xy(west, north),
+            Point::new_raw_xy(west, south),
+        ];
+        Shape::Polygon(Polygon::new(
+            Ring::try_from_closed(CoordSeq::try_from_points(&points).unwrap()).unwrap(),
+            Vec::new(),
+        ))
+    }
+
+    #[test]
+    fn ordinary_geographic_overlays_match_the_q_reference() {
+        let shell = rectangle(-10.0, -10.0, 10.0, 10.0);
+        let overlap = rectangle(0.0, -5.0, 8.0, 5.0);
+        let inner = rectangle(-2.0, -2.0, 2.0, 2.0);
+        let disconnected = rectangle(20.0, 0.0, 24.0, 4.0);
+        let cases = [
+            (OverlayOp::Union, vec![&shell, &overlap, &disconnected]),
+            (OverlayOp::Intersection, vec![&shell, &overlap]),
+            (OverlayOp::Difference, vec![&shell, &inner]),
+            (OverlayOp::SymmetricDifference, vec![&shell, &overlap]),
+        ];
+
+        for (operation, inputs) in cases {
+            let originals =
+                GeographicInputs::try_from_shapes(GeographicFrame::crs84(), inputs.iter().copied())
+                    .unwrap();
+            assert_eq!(
+                crate::geometry::geographic_topology_route(originals.views().iter().copied()),
+                GeographicTopologyRoute::ExactPartition
+            );
+
+            let routed =
+                overlay_all_geographic_from(&originals, operation, Strictness::Lenient, true)
+                    .unwrap();
+            let q = overlay_all_geographic_q_from(&originals, operation, Strictness::Lenient, true)
+                .unwrap();
+            assert!(
+                graph_relate_shapes(&routed, &q).unwrap().is_equal_topo(),
+                "{operation:?}: ExactPartition and Q outputs differ"
+            );
+        }
+    }
+
+    #[test]
+    fn ordinary_near_ulp_country_overlay_matches_the_q_reference() {
+        let argentina = crate::io::parse_wkt(
+            "MULTIPOLYGON (((-58.10222180941994 -33.010937543229446, \
+             -58.084289 -33.0009615, -58.085477253434156 -32.99, \
+             -58.089648910878246 -32.99, -58.0878711 -32.9965279, \
+             -58.10222180941994 -33.010937543229446)), \
+             ((-58.11 -33.00166081596568, -58.10769305699579 -32.99, \
+             -58.11 -32.99, -58.11 -33.00166081596568)))",
+        )
+        .unwrap();
+        let uruguay = crate::io::parse_wkt(
+            "POLYGON ((-58.11 -33.02, -58.08 -33.02, -58.08 -32.99, \
+             -58.085477253434156 -32.99, -58.084289 -33.0009615, \
+             -58.10256757394891 -33.011129892448544, \
+             -58.0878711 -32.9965279, -58.089648910878246 -32.99, \
+             -58.10765630407339 -32.99, -58.11 -33.001904214459806, \
+             -58.11 -33.02))",
+        )
+        .unwrap();
+        let inputs = [&argentina, &uruguay];
+        let originals =
+            GeographicInputs::try_from_shapes(GeographicFrame::crs84(), inputs.into_iter())
+                .unwrap();
+        assert_eq!(
+            crate::geometry::geographic_topology_route(originals.views().iter().copied()),
+            GeographicTopologyRoute::ExactPartition
+        );
+
+        let routed =
+            overlay_all_geographic_from(&originals, OverlayOp::Union, Strictness::Lenient, true)
+                .unwrap();
+        let q =
+            overlay_all_geographic_q_from(&originals, OverlayOp::Union, Strictness::Lenient, true)
+                .unwrap();
+        assert!(
+            graph_relate_shapes(&routed, &q).unwrap().is_equal_topo(),
+            "ExactPartition and Q differ for the near-ULP border union"
+        );
     }
 }
