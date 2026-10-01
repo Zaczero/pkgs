@@ -1568,6 +1568,64 @@ fn set_inventory_deduplicates_shared_owners_and_occurrence_inventory_does_not() 
 }
 
 #[test]
+fn staged_source_occurrences_are_readable_and_can_omit_zm_carriers() {
+    let line = crate::io::parse_wkt("LINESTRING ZM (0 0 1 2,1 0 3 4)").unwrap();
+    let polygon =
+        crate::io::parse_wkt("POLYGON ZM ((0 0 1 2,2 0 1 2,2 2 1 2,0 2 1 2,0 0 1 2))").unwrap();
+    let point = crate::io::parse_wkt("POINT ZM (5 5 1 2)").unwrap();
+    let owner = Shape::geometry_collection(vec![line, polygon, point]).unwrap();
+    let shared = Shape::geometry_collection(vec![owner.clone(), owner]).unwrap();
+    let rows = || [storage::ShapeRow::Shape(&shared)].into_iter();
+
+    let staged =
+        crate::geometry::overlay::StagedExactSources::from_rows_with_occurrences(rows(), false)
+            .unwrap();
+    assert_eq!(staged.segments().len(), 10);
+    assert_eq!(staged.source_operands(), &[0; 10]);
+    assert_eq!(
+        staged
+            .source_rings()
+            .iter()
+            .filter(|ring| ring.is_none())
+            .count(),
+        2
+    );
+    assert_eq!(
+        staged
+            .source_ring_kinds()
+            .iter()
+            .filter(|kind| kind.is_some())
+            .count(),
+        8
+    );
+    assert_eq!(staged.ring_kinds(), &[RingKind::Winding, RingKind::Winding]);
+    assert_eq!(staged.ring_polygons(), &[0, 1]);
+    assert_eq!(staged.ring_holes(), &[false, false]);
+    assert_eq!(staged.polygon_operands(), &[0, 0]);
+    assert_eq!(staged.polygon_ring_ranges(), &[0..1, 1..2]);
+    assert_eq!(staged.polygon_rings()[0], [0..1, 1..2]);
+    assert_eq!(staged.isolated().len(), 2);
+    assert_eq!(staged.isolated_operands(), &[0, 0]);
+    assert_eq!(staged.line_boundaries().len(), 4);
+    assert_eq!(
+        staged
+            .source_points
+            .as_ref()
+            .expect("ZM carriers retained")
+            .len(),
+        10
+    );
+
+    let staged_xy =
+        crate::geometry::overlay::StagedExactSources::from_rows_with_occurrences(rows(), true)
+            .unwrap();
+    assert_eq!(staged_xy.segments().len(), staged.segments().len());
+    assert_eq!(staged_xy.source_operands(), staged.source_operands());
+    assert_eq!(staged_xy.source_rings(), staged.source_rings());
+    assert!(staged_xy.source_points.is_none());
+}
+
+#[test]
 fn cartesian_set_support_consumers_match_unshared_expansion() {
     let base = crate::io::parse_wkt("POLYGON ((0 0,1 0,1 1,0 1,0 0))").unwrap();
     let mut shared = base;

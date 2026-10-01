@@ -636,10 +636,7 @@ impl ExactSourceInventory {
     pub(in crate::geometry) fn from_rows<'a>(
         rows: impl ExactSizeIterator<Item = storage::ShapeRow<'a>>,
     ) -> Result<Self> {
-        Self::stage_rows(rows, |staged, row, operand| {
-            let mut owners = SharedShapeOwners::for_collections();
-            staged.append_row(row, operand, &mut owners)
-        })
+        Self::from_staged(StagedExactSources::from_rows(rows)?)
     }
 
     /// Preserve every source occurrence for consumers whose result observes
@@ -657,27 +654,13 @@ impl ExactSourceInventory {
     pub(in crate::geometry) fn from_rows_with_occurrences<'a>(
         rows: impl ExactSizeIterator<Item = storage::ShapeRow<'a>>,
     ) -> Result<Self> {
-        Self::stage_rows(rows, |staged, row, operand| match row {
-            storage::ShapeRow::Shape(shape) => staged.append_shape_with_occurrences(shape, operand),
-            storage::ShapeRow::Handle(plan) => {
-                staged.append_shape_with_occurrences(plan.shape(), operand)
-            },
-            row @ (storage::ShapeRow::Point(_) | storage::ShapeRow::Packed(_)) => {
-                staged.append_row(row, operand, &mut SharedShapeOwners::for_collections())
-            },
-        })
+        Self::stage_rows(rows)
     }
 
     fn stage_rows<'a>(
         rows: impl ExactSizeIterator<Item = storage::ShapeRow<'a>>,
-        mut append: impl FnMut(&mut StagedExactSources, storage::ShapeRow<'a>, u32) -> Result<()>,
     ) -> Result<Self> {
-        let mut staged = StagedExactSources::new(rows.len());
-        for (operand, row) in rows.enumerate() {
-            let operand = u32::try_from(operand).map_err(|_| ResourceError::SizeOverflow)?;
-            append(&mut staged, row, operand)?;
-        }
-        Self::from_staged(staged)
+        Self::from_staged(StagedExactSources::from_rows_with_occurrences(rows, false)?)
     }
 
     /// Build only the sources that can select occupied two-dimensional faces.
@@ -2943,9 +2926,16 @@ fn compare_diagnostic_lines(left: &Shape, right: &Shape) -> Ordering {
     key(left).cmp(&key(right))
 }
 
-struct StagedExactSources {
+/// Exact source components before partition deduplication.
+///
+/// Occurrence-preserving ingress keeps every component occurrence, including
+/// members reached through shared collection owners; set ingress can fold
+/// repeated shared owners before they enter this buffer.
+pub(in crate::geometry) struct StagedExactSources {
     segments: Vec<Segment>,
     source_points: Option<Vec<[Point; 2]>>,
+    /// Source endpoint Z/M values are unnecessary for XY-only consumers.
+    xy_only: bool,
     source_operands: Vec<u32>,
     source_rings: Vec<Option<u32>>,
     source_ring_kinds: Vec<Option<RingKind>>,
@@ -2963,13 +2953,25 @@ struct StagedExactSources {
     line_boundaries: Vec<(u32, PointKey)>,
 }
 
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "the relate evaluator consumes these staged-source accessors"
+    )
+)]
 impl StagedExactSources {
     fn new(operand_count: usize) -> Self {
+        Self::with_xy_only(operand_count, false)
+    }
+
+    fn with_xy_only(operand_count: usize, xy_only: bool) -> Self {
         let mut polygon_rings = Vec::with_capacity(operand_count);
         polygon_rings.resize_with(operand_count, Vec::new);
         Self {
             segments: Vec::new(),
             source_points: None,
+            xy_only,
             source_operands: Vec::new(),
             source_rings: Vec::new(),
             source_ring_kinds: Vec::new(),
@@ -2986,6 +2988,99 @@ impl StagedExactSources {
             isolated_operands: Vec::new(),
             line_boundaries: Vec::new(),
         }
+    }
+
+    fn from_rows<'a>(
+        rows: impl ExactSizeIterator<Item = storage::ShapeRow<'a>>,
+    ) -> Result<Self> {
+        Self::stage_rows(rows, false, |staged, row, operand| {
+            let mut owners = SharedShapeOwners::for_collections();
+            staged.append_row(row, operand, &mut owners)
+        })
+    }
+
+    /// Stage every source occurrence. XY-only consumers can skip retaining
+    /// Z/M endpoint columns while keeping the same source walk and XY data.
+    pub(in crate::geometry) fn from_rows_with_occurrences<'a>(
+        rows: impl ExactSizeIterator<Item = storage::ShapeRow<'a>>,
+        xy_only: bool,
+    ) -> Result<Self> {
+        Self::stage_rows(rows, xy_only, |staged, row, operand| match row {
+            storage::ShapeRow::Shape(shape) => {
+                staged.append_shape_with_occurrences(shape, operand)
+            },
+            storage::ShapeRow::Handle(plan) => {
+                staged.append_shape_with_occurrences(plan.shape(), operand)
+            },
+            row @ (storage::ShapeRow::Point(_) | storage::ShapeRow::Packed(_)) => {
+                staged.append_row(row, operand, &mut SharedShapeOwners::for_collections())
+            },
+        })
+    }
+
+    fn stage_rows<'a>(
+        rows: impl ExactSizeIterator<Item = storage::ShapeRow<'a>>,
+        xy_only: bool,
+        mut append: impl FnMut(&mut Self, storage::ShapeRow<'a>, u32) -> Result<()>,
+    ) -> Result<Self> {
+        let mut staged = Self::with_xy_only(rows.len(), xy_only);
+        for (operand, row) in rows.enumerate() {
+            let operand = u32::try_from(operand).map_err(|_| ResourceError::SizeOverflow)?;
+            append(&mut staged, row, operand)?;
+        }
+        Ok(staged)
+    }
+
+    pub(in crate::geometry) fn segments(&self) -> &[Segment] {
+        &self.segments
+    }
+
+    pub(in crate::geometry) fn source_operands(&self) -> &[u32] {
+        &self.source_operands
+    }
+
+    pub(in crate::geometry) fn source_rings(&self) -> &[Option<u32>] {
+        &self.source_rings
+    }
+
+    pub(in crate::geometry) fn source_ring_kinds(&self) -> &[Option<RingKind>] {
+        &self.source_ring_kinds
+    }
+
+    pub(in crate::geometry) fn ring_kinds(&self) -> &[RingKind] {
+        &self.ring_kinds
+    }
+
+    pub(in crate::geometry) fn ring_polygons(&self) -> &[u32] {
+        &self.ring_polygons
+    }
+
+    pub(in crate::geometry) fn ring_holes(&self) -> &[bool] {
+        &self.ring_holes
+    }
+
+    pub(in crate::geometry) fn polygon_operands(&self) -> &[u32] {
+        &self.polygon_operands
+    }
+
+    pub(in crate::geometry) fn polygon_ring_ranges(&self) -> &[Range<usize>] {
+        &self.polygon_ring_ranges
+    }
+
+    pub(in crate::geometry) fn polygon_rings(&self) -> &[Vec<Range<usize>>] {
+        &self.polygon_rings
+    }
+
+    pub(in crate::geometry) fn isolated(&self) -> &[XY] {
+        &self.isolated
+    }
+
+    pub(in crate::geometry) fn isolated_operands(&self) -> &[u32] {
+        &self.isolated_operands
+    }
+
+    pub(in crate::geometry) fn line_boundaries(&self) -> &[(u32, PointKey)] {
+        &self.line_boundaries
     }
 
     fn append_row(
@@ -3246,7 +3341,8 @@ impl StagedExactSources {
         &mut self,
         coordinates: &(impl crate::geometry::Coordinates + ?Sized),
     ) {
-        if self.source_points.is_none()
+        if !self.xy_only
+            && self.source_points.is_none()
             && (coordinates.z_column().is_some() || coordinates.m_column().is_some())
         {
             // Earlier XY sources have no ordinates, so their stored carriers
