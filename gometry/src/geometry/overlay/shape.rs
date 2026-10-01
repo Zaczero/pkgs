@@ -40,9 +40,11 @@ impl Shape {
         self.overlay_inner(other, op, strictness)
     }
 
-    /// Mixed-dimension set overlay over X/Y, restoring Z/M afterwards via the
-    /// provenance resolver (or dropping it when `strict`). Binary and n-ary
-    /// entry points use the same all-input arrangement and assembly.
+    /// Mixed-dimension set overlay over X/Y. Binary puntal operations,
+    /// line/polygon intersections, and line-minus-polygon differences use
+    /// dimension-specific lanes; other inputs use the exact partition. New
+    /// vertices restore Z/M from source provenance, or drop an unavailable axis
+    /// when `strict` is false.
     pub(crate) fn overlay_inner(
         &self,
         other: &Self,
@@ -54,9 +56,10 @@ impl Shape {
 
     /// Dissolve every geometry into one mixed-dimension union.
     ///
-    /// All inputs share one topology graph and arrangement; points and lines
-    /// survive only where the selected set operation does not absorb them.
-    /// Z/M is restored afterwards unless `strict`.
+    /// Cartesian inputs use the exact partition except for binary puntal unions,
+    /// which can be resolved directly. Points and lines survive only where the
+    /// selected operation does not absorb them. Z/M is restored afterwards
+    /// unless `strict`.
     ///
     /// Planar-only internal path (no frame). Prefer
     /// [`Self::union_all_topo`] when a geographic frame is known so
@@ -69,7 +72,9 @@ impl Shape {
         Self::union_all_topo(geometries, TopologyDomain::Cartesian, strictness)
     }
 
-    /// Frame-aware n-ary union. All operands are assembled in one arrangement.
+    /// Frame-aware union. Geographic inputs use their frame-aware overlay
+    /// route; Cartesian inputs use the exact partition except for binary
+    /// puntal unions, which can be resolved directly.
     pub(crate) fn union_all_topo<S: std::borrow::Borrow<Self>>(
         geometries: &[S],
         domain: TopologyDomain,
@@ -84,8 +89,10 @@ impl Shape {
         overlay_all(geometries, domain, OverlayOp::Union, strictness)
     }
 
-    /// Frame-aware n-ary intersection. All operands are assembled in one
-    /// arrangement.
+    /// Frame-aware n-ary intersection. Geographic inputs use their frame-aware
+    /// overlay route; Cartesian inputs use the exact partition except for
+    /// binary puntal and line/polygon combinations, which can be resolved
+    /// directly.
     pub(crate) fn intersection_all_topo<S: std::borrow::Borrow<Self>>(
         geometries: &[S],
         domain: TopologyDomain,
@@ -100,8 +107,9 @@ impl Shape {
         overlay_all(geometries, domain, OverlayOp::Intersection, strictness)
     }
 
-    /// Frame-aware n-ary symmetric difference. All operands are assembled in
-    /// one arrangement.
+    /// Frame-aware n-ary symmetric difference. Geographic inputs use their
+    /// frame-aware overlay route; binary Cartesian puntal combinations can be
+    /// resolved directly.
     pub(crate) fn symmetric_difference_all_topo<S: std::borrow::Borrow<Self>>(
         geometries: &[S],
         domain: TopologyDomain,

@@ -145,6 +145,17 @@ share a border intersect in that border (a [`LineString`][gometry.LineString]), 
 touch yields the corner [`Point`][gometry.Point] — so a non-empty [`intersects(a, b)`][gometry.intersects] always has
 a non-empty `intersection(a, b)`.
 
+When one operand is a point set (a `Point`, `MultiPoint`, or point-only
+collection) and the other has higher dimension, `intersection` returns the
+covered points and `difference(points, other)` returns the uncovered points.
+`union` and `symmetric_difference` add only uncovered points to the
+higher-dimensional geometry; `difference(geometry, points)` leaves a
+higher-dimensional geometry unchanged. The retained higher-dimensional part
+preserves its stored line and polygon coordinates, including ring start,
+orientation, collinear vertices, and Z/M values. Ordinates on absorbed points do
+not rewrite it. Call [`normalize()`][gometry.Geometry.normalize]
+explicitly when a canonical coordinate presentation is needed.
+
 ```python exec="on" html="true"
 from _figures import panels
 import gometry as gm

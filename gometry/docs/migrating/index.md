@@ -20,7 +20,12 @@ seven [Simple Features](https://www.ogc.org/standard/sfa/) families, the same
 predicates and constructive operations, the same WKB/WKT/GeoJSON interop and
 `__geo_interface__`. Scalar predicates become **free functions** ([`gm.contains(a, b)`][gometry.contains], vectorized over
 arrays), metrics read the CRS, and the kernels are GEOS-free. Behavior differences
-are validity, CRS-aware metrics, and index refinement.
+include validity, CRS-aware metrics, index refinement, and point-set overlay
+presentation: when `union`, `symmetric_difference`, or `difference` with a
+higher-dimensional geometry on the left retains that operand, its stored
+line/polygon coordinates and Z/M pass through. See [Overlay (set
+operations)](../guide/constructive.md#overlay-set-operations) for the exact
+cases and when to call `normalize()`.
 
 ### `make_valid` → `repair`
 

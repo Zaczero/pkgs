@@ -232,20 +232,22 @@ contract-checked, so the docs cannot drift from the raise sites.
 XY, XYZ, XYM, and XYZM are supported layouts. Z/M behavior by operation family
 and the explicit recovery methods are documented in [Geometry & dimensions](../guide/geometry.md).
 
-## Overlay returns dissolved maximal lines
+## Overlay linework and point-set presentation
 
-Overlays node their inputs into atomic per-vertex segments
-to compute the result; gometry then dissolves that linework back into the fewest
-maximal [`LineString`s][gometry.LineString], splitting only at genuine junctions (a node of degree
-`>= 3`) and never fusing two arms through one. So `difference`, `intersection`,
-[`symmetric_difference`][gometry.symmetric_difference], and `union` of lines — and the shared-boundary linework
-of polygon overlays — come back as whole lines: a line minus a disjoint line is
-returned intact, a line clipped to a covering polygon is one `LineString`, and a
+General overlays node their inputs into atomic segments to compute the result,
+then dissolve selected linework into maximal [`LineString`s][gometry.LineString],
+splitting only at genuine junctions (a node of degree `>= 3`) and never fusing
+two arms through one. A line clipped to a covering polygon is one line, and a
 line crossed by a *subtracted* line keeps flowing through the crossing vertex.
-The OGC point-set semantics constrain the geometry, not its partition into
-parts, so the public result does not expose the intermediate noding arrangement.
-[`line_merge`][gometry.Geometry.line_merge] is available when a caller starts with independent linework: it
-joins at degree-2 nodes and splits at genuine Y/T/X junctions.
+The public result follows the OGC point set, not the partition used to compute
+it. [`line_merge`][gometry.Geometry.line_merge] applies the same degree-two and
+junction rules when callers start with independent linework.
+
+When a binary point-set overlay retains a non-empty higher-dimensional
+operand—as `union`, `symmetric_difference`, or `difference` with that operand
+on the left does—its line and polygon coordinates pass through in their stored
+presentation. Ring start, orientation, and collinear vertices are not rewritten,
+and absorbed point ordinates do not change the retained operand's Z/M values.
 
 ## The Arrow / GeoArrow boundary
 
