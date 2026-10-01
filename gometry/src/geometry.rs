@@ -144,7 +144,7 @@ pub(crate) mod source_support;
 pub(in crate::geometry) use source_support::compare_rays;
 pub(crate) use source_support::{
     RingKind, RingView, cartesian_area_covers_point, cartesian_point_covers,
-    cartesian_point_location, cartesian_polygon_views_location, edge_winding, ring_kind_columns,
+    cartesian_point_location, edge_winding, ring_kind_columns,
 };
 mod tessellation;
 mod topology;

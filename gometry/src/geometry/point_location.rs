@@ -17,9 +17,20 @@ use std::sync::Arc;
 use crate::HeapSize;
 use crate::error::Result;
 use crate::geometry::segment_index::{EdgeId, EdgeYIndex, YStabbingIndex, checked_index_count};
+use crate::geometry::source_support::{
+    PointQuery, RingEdgeCandidates, SourcePointLocation, StreamingLocation,
+    cartesian_point_location_and_area,
+};
+#[cfg(test)]
+use crate::geometry::source_support::{
+    exact_edge_winding, exact_offset_edge_winding, exact_offset_point_in_bounds,
+    exact_point_in_bounds, exact_query_xy, exact_query_y,
+};
+#[cfg(test)]
+use crate::geometry::tessellation::exact::ExactDyadic;
 use crate::geometry::{
-    Bounds, CoordSeq, Loc, Point, Polygon, Ring, RingClass, RingView, Shape, SharedSlice, XY,
-    cartesian_polygon_views_location, edge_winding, ring_kind_columns, xy_bounds_columns,
+    Bounds, CoordSeq, Loc, Point, Polygon, RingClass, RingView, Shape, SharedSlice, XY,
+    edge_winding, ring_kind_columns, xy_bounds_columns,
 };
 
 /// One closed ring's Y-indexed edges for prepared point membership.
@@ -35,11 +46,22 @@ pub(crate) struct RingPointIndex {
 
 impl RingPointIndex {
     fn build(coords: &CoordSeq) -> Result<Self> {
+        Self::build_with_kind(coords, ring_kind_columns(coords.xs(), coords.ys()))
+    }
+
+    fn build_winding(coords: &CoordSeq) -> Result<Option<Self>> {
+        let kind = ring_kind_columns(coords.xs(), coords.ys());
+        if kind == crate::geometry::RingKind::Collapsed {
+            return Ok(None);
+        }
+        Self::build_with_kind(coords, kind).map(Some)
+    }
+
+    fn build_with_kind(coords: &CoordSeq, kind: crate::geometry::RingKind) -> Result<Self> {
         let xs = coords.xs();
         let ys = coords.ys();
         let n = xs.len();
         debug_assert_eq!(n, ys.len());
-        let kind = ring_kind_columns(xs, ys);
         let bounds = if n == 0 {
             Bounds::new_raw(
                 f64::INFINITY,
@@ -56,7 +78,7 @@ impl RingPointIndex {
             xs: coords.carried_xs(),
             ys: coords.carried_ys(),
             kind,
-            edges: EdgeYIndex::build(ys)?,
+            edges: EdgeYIndex::build_closed(ys)?,
         })
     }
 
@@ -70,13 +92,17 @@ impl RingPointIndex {
 
     fn edge_xy(&self, edge: EdgeId) -> (f64, f64, f64, f64) {
         let e = edge.as_usize();
-        let next = e.wrapping_add(1);
+        let next = if e.wrapping_add(1) < self.xs.len() {
+            e.wrapping_add(1)
+        } else {
+            0
+        };
         debug_assert_eq!(self.xs.len(), self.ys.len());
-        debug_assert!(next < self.xs.len());
-        // SAFETY: EdgeYIndex::build creates exactly one id per adjacent Y pair,
-        // and its dense/tree plans only emit those ids. The index is built from
-        // these same columns, whose equal lengths make every emitted id satisfy
-        // `next < self.xs.len()`.
+        debug_assert!(e < self.xs.len());
+        // SAFETY: EdgeYIndex::build_closed creates one id per adjacent Y pair
+        // plus the last-to-first pair, and its plans only emit those ids. The
+        // index is built from these same columns, whose equal lengths make both
+        // selected ordinals valid (including the closing edge's wrapped end).
         unsafe {
             (
                 *self.xs.get_unchecked(e),
@@ -116,6 +142,100 @@ impl RingPointIndex {
         };
         touched.is_none().then_some(winding)
     }
+
+    #[cfg(test)]
+    fn winding_off_boundary_exact(&self, point: &[ExactDyadic; 3]) -> Result<Option<i64>> {
+        self.winding_off_boundary_exact_query(point, None)
+    }
+
+    #[cfg(test)]
+    fn winding_off_boundary_exact_offset(
+        &self,
+        point: &[ExactDyadic; 3],
+        direction: &[ExactDyadic; 2],
+    ) -> Result<Option<i64>> {
+        self.winding_off_boundary_exact_query(point, Some(direction))
+    }
+
+    #[cfg(test)]
+    fn winding_off_boundary_exact_query(
+        &self,
+        point: &[ExactDyadic; 3],
+        direction: Option<&[ExactDyadic; 2]>,
+    ) -> Result<Option<i64>> {
+        let in_bounds = match direction {
+            Some(direction) => exact_offset_point_in_bounds(self.bounds, point, direction)?,
+            None => exact_point_in_bounds(self.bounds, point)?,
+        };
+        if !in_bounds {
+            return Ok(Some(0));
+        }
+        let direction_y = direction.map(|direction| {
+            let [_, y] = direction;
+            y
+        });
+        let y = exact_query_y(point, direction_y)?;
+        let mut winding = 0_i64;
+        let mut boundary = false;
+        let mut error = None;
+        let mut visit = |edge| {
+            let (ax, ay, bx, by) = self.edge_xy(edge);
+            let start = XY::new(ax, ay);
+            let end = XY::new(bx, by);
+            let contact = match direction {
+                Some(direction) => exact_offset_edge_winding(start, end, point, direction),
+                None => exact_edge_winding(start, end, point),
+            };
+            match contact {
+                Ok(Some(delta)) => {
+                    winding = winding.wrapping_add(delta);
+                    ControlFlow::Continue(())
+                },
+                Ok(None) => {
+                    boundary = true;
+                    ControlFlow::Break(())
+                },
+                Err(failure) => {
+                    error = Some(failure);
+                    ControlFlow::Break(())
+                },
+            }
+        };
+        if let Some(edges) = self.edges.dense_band_edges(y) {
+            for edge in edges {
+                if visit(edge).is_break() {
+                    break;
+                }
+            }
+        } else {
+            self.edges.for_each_edge(y, visit);
+        }
+        if let Some(error) = error {
+            return Err(error);
+        }
+        Ok((!boundary).then_some(winding))
+    }
+}
+
+impl RingEdgeCandidates for RingPointIndex {
+    fn ring_view(&self) -> RingView<'_> {
+        self.view()
+    }
+
+    fn visit_stabbed_edges(
+        &self,
+        y: f64,
+        visit: &mut dyn FnMut(XY, XY) -> Result<()>,
+    ) -> Result<()> {
+        let failure = self.edges.for_each_edge(y, |edge| {
+            let (ax, ay, bx, by) = self.edge_xy(edge);
+            match visit(XY::new(ax, ay), XY::new(bx, by)) {
+                Ok(()) => ControlFlow::Continue(()),
+                Err(error) => ControlFlow::Break(error),
+            }
+        });
+        failure.map_or(Ok(()), Err)
+    }
 }
 
 impl HeapSize for RingPointIndex {
@@ -139,14 +259,38 @@ pub(crate) struct PolygonPointIndex {
 impl PolygonPointIndex {
     pub(crate) fn build(polygon: &Polygon) -> Result<Self> {
         let hole_count = checked_index_count(polygon.holes.len())?;
-        let mut index = Self::build_shell(&polygon.shell)?;
+        let shell = RingPointIndex::build(polygon.shell.coords())?;
+        let mut winding_rings = shell.kind == crate::geometry::RingKind::Winding;
         let mut hole_rings = Vec::with_capacity(hole_count as usize);
         for hole in polygon.holes.iter() {
             let ring = RingPointIndex::build(hole.coords())?;
-            index.winding_rings &= ring.kind == crate::geometry::RingKind::Winding;
+            winding_rings &= ring.kind == crate::geometry::RingKind::Winding;
             hole_rings.push(ring);
         }
-        index.holes = YStabbingIndex::build(hole_rings, |ring| {
+        Self::from_rings(shell, hole_rings, winding_rings)
+    }
+
+    pub(crate) fn build_areal(polygon: &Polygon) -> Result<Option<Self>> {
+        let Some(shell) = RingPointIndex::build_winding(polygon.shell.coords())? else {
+            return Ok(None);
+        };
+        let hole_count = checked_index_count(polygon.holes.len())?;
+        let mut holes = Vec::with_capacity(hole_count as usize);
+        for hole in polygon.holes.iter() {
+            let Some(ring) = RingPointIndex::build_winding(hole.coords())? else {
+                return Ok(None);
+            };
+            holes.push(ring);
+        }
+        Self::from_rings(shell, holes, true).map(Some)
+    }
+
+    fn from_rings(
+        shell: RingPointIndex,
+        hole_rings: Vec<RingPointIndex>,
+        winding_rings: bool,
+    ) -> Result<Self> {
+        let holes = YStabbingIndex::build(hole_rings, |ring| {
             (
                 ring.bounds.minx(),
                 ring.bounds.maxx(),
@@ -154,23 +298,10 @@ impl PolygonPointIndex {
                 ring.bounds.maxy(),
             )
         })?;
-        Ok(index)
-    }
-
-    pub(in crate::geometry) fn build_shell(shell: &Ring) -> Result<Self> {
-        let shell_index = RingPointIndex::build(shell.coords())?;
-        let winding_rings = shell_index.kind == crate::geometry::RingKind::Winding;
         Ok(Self {
-            bounds: Some(shell_index.bounds),
-            shell: shell_index,
-            holes: YStabbingIndex::build(Vec::new(), |_| {
-                (
-                    f64::INFINITY,
-                    f64::NEG_INFINITY,
-                    f64::INFINITY,
-                    f64::NEG_INFINITY,
-                )
-            })?,
+            bounds: Some(shell.bounds),
+            shell,
+            holes,
             winding_rings,
         })
     }
@@ -195,6 +326,113 @@ impl PolygonPointIndex {
                 })
         });
         touched.is_none().then_some(shell != 0 && !hole_occupied)
+    }
+
+    #[cfg(test)]
+    fn occupied_off_boundary_exact(&self, point: &[ExactDyadic; 3]) -> Result<Option<bool>> {
+        if let Some(bounds) = self.bounds
+            && !exact_point_in_bounds(bounds, point)?
+        {
+            return Ok(Some(false));
+        }
+        if !self.winding_rings {
+            return Ok(None);
+        }
+        let Some(shell) = self.shell.winding_off_boundary_exact(point)? else {
+            return Ok(None);
+        };
+        if shell == 0 {
+            return Ok(Some(false));
+        }
+        let query = exact_query_xy(point, None)?;
+        let mut hole_occupied = false;
+        let mut error = None;
+        let touched = self.holes.for_each_at_point(query.x, query.y, |hole| {
+            match hole.winding_off_boundary_exact(point) {
+                Ok(Some(winding)) => {
+                    hole_occupied |= winding != 0;
+                    ControlFlow::Continue(())
+                },
+                Ok(None) => ControlFlow::Break(()),
+                Err(failure) => {
+                    error = Some(failure);
+                    ControlFlow::Break(())
+                },
+            }
+        });
+        if let Some(error) = error {
+            return Err(error);
+        }
+        Ok(touched.is_none().then_some(!hole_occupied))
+    }
+
+    #[cfg(test)]
+    fn occupied_off_boundary_exact_offset(
+        &self,
+        point: &[ExactDyadic; 3],
+        direction: &[ExactDyadic; 2],
+    ) -> Result<Option<bool>> {
+        if let Some(bounds) = self.bounds
+            && !exact_offset_point_in_bounds(bounds, point, direction)?
+        {
+            return Ok(Some(false));
+        }
+        if !self.winding_rings {
+            return Ok(None);
+        }
+        let Some(shell) = self
+            .shell
+            .winding_off_boundary_exact_offset(point, direction)?
+        else {
+            return Ok(None);
+        };
+        if shell == 0 {
+            return Ok(Some(false));
+        }
+        let query = exact_query_xy(point, Some(direction))?;
+        let mut hole_occupied = false;
+        let mut error = None;
+        let touched = self.holes.for_each_at_point(query.x, query.y, |hole| {
+            match hole.winding_off_boundary_exact_offset(point, direction) {
+                Ok(Some(winding)) => {
+                    hole_occupied |= winding != 0;
+                    ControlFlow::Continue(())
+                },
+                Ok(None) => ControlFlow::Break(()),
+                Err(failure) => {
+                    error = Some(failure);
+                    ControlFlow::Break(())
+                },
+            }
+        });
+        if let Some(error) = error {
+            return Err(error);
+        }
+        Ok(touched.is_none().then_some(!hole_occupied))
+    }
+
+    fn visit_indexed_into<Q: PointQuery>(&self, location: &mut StreamingLocation<Q>) -> Result<()> {
+        let rings = std::iter::once(&self.shell).chain(self.holes.items().iter());
+        location.visit_indexed_polygon_views(rings)
+    }
+
+    fn location_and_area(&self, point: Point) -> SourcePointLocation {
+        if let Some(occupied) = self.occupied_off_boundary(point.x, point.y) {
+            return SourcePointLocation {
+                location: if occupied {
+                    Loc::Interior
+                } else {
+                    Loc::Exterior
+                },
+                area: occupied,
+            };
+        }
+        let mut location = StreamingLocation::for_stored_point(point);
+        self.visit_indexed_into(&mut location)
+            .expect("stored point location does not construct exact values");
+        location
+            .finish()
+            .expect("stored point location does not construct exact values")
     }
 
     fn in_bounds_xy(&self, x: f64, y: f64) -> bool {
@@ -224,32 +462,10 @@ impl PolygonPointIndex {
     }
 
     fn location(&self, point: Point) -> RingClass {
-        if let Some(occupied) = self.occupied_off_boundary(point.x, point.y) {
-            return if occupied {
-                RingClass::Interior
-            } else {
-                RingClass::Exterior
-            };
-        }
-        let mut hole_indices = Vec::new();
-        let _: Option<()> = self
-            .holes
-            .for_each_at_point_index(point.x, point.y, |index| {
-                hole_indices.push(index);
-                ControlFlow::Continue(())
-            });
-        let rings =
-            std::iter::once(self.shell.view()).chain(hole_indices.into_iter().map(|index| {
-                self.holes
-                    .get(index)
-                    .expect("point index returned an invalid item index")
-                    .view()
-            }));
-        let location = cartesian_polygon_views_location([rings], point);
-        match location {
-            crate::geometry::Loc::Interior => RingClass::Interior,
-            crate::geometry::Loc::Boundary => RingClass::Boundary,
-            crate::geometry::Loc::Exterior => RingClass::Exterior,
+        match self.location_and_area(point).location {
+            Loc::Interior => RingClass::Interior,
+            Loc::Boundary => RingClass::Boundary,
+            Loc::Exterior => RingClass::Exterior,
         }
     }
 }
@@ -298,6 +514,62 @@ fn any_part_at(
         .is_some()
 }
 
+fn location_from_indexed_parts<Q: PointQuery>(
+    parts: &YStabbingIndex<PolygonPointIndex>,
+    x: f64,
+    y: f64,
+    mut location: StreamingLocation<Q>,
+) -> Result<SourcePointLocation> {
+    let mut error = None;
+    let _ = parts.for_each_at_point(x, y, |part| match part.visit_indexed_into(&mut location) {
+        Ok(()) => ControlFlow::Continue(()),
+        Err(failure) => {
+            error = Some(failure);
+            ControlFlow::Break(())
+        },
+    });
+    if let Some(error) = error {
+        return Err(error);
+    }
+    location.finish()
+}
+
+#[cfg(test)]
+fn indexed_parts_occupied_exact(
+    parts: &YStabbingIndex<PolygonPointIndex>,
+    point: &[ExactDyadic; 3],
+    direction: Option<&[ExactDyadic; 2]>,
+) -> Result<Option<bool>> {
+    let query = exact_query_xy(point, direction)?;
+    let mut occupied = false;
+    let mut unresolved = false;
+    let mut error = None;
+    let _ = parts.for_each_at_point(query.x, query.y, |part| {
+        let result = match direction {
+            Some(direction) => part.occupied_off_boundary_exact_offset(point, direction),
+            None => part.occupied_off_boundary_exact(point),
+        };
+        match result {
+            Ok(Some(inside)) => {
+                occupied |= inside;
+                ControlFlow::Continue(())
+            },
+            Ok(None) => {
+                unresolved = true;
+                ControlFlow::Break(())
+            },
+            Err(failure) => {
+                error = Some(failure);
+                ControlFlow::Break(())
+            },
+        }
+    });
+    if let Some(error) = error {
+        return Err(error);
+    }
+    Ok((!unresolved).then_some(occupied))
+}
+
 pub(crate) enum PointBatchTester {
     /// Single polygon — no multipolygon Y-index indirection.
     Polygon {
@@ -339,9 +611,12 @@ impl PointBatchTester {
     }
 
     pub(crate) fn from_polygon(polygon: &Polygon) -> Result<Self> {
-        Ok(Self::Polygon {
-            index: PolygonPointIndex::build(polygon)?,
-        })
+        if let Some(index) = PolygonPointIndex::build_areal(polygon)? {
+            return Ok(Self::Polygon { index });
+        }
+        Ok(Self::Generic(ExactPointTester {
+            shape: Shape::Polygon(polygon.clone()),
+        }))
     }
 
     pub(crate) fn from_multipolygon(polygons: &crate::geometry::MultiPolygon) -> Result<Self> {
@@ -351,7 +626,12 @@ impl PointBatchTester {
         let part_count = checked_index_count(polygons.len())?;
         let mut built = Vec::with_capacity(part_count as usize);
         for polygon in polygons.iter() {
-            built.push(PolygonPointIndex::build(polygon)?);
+            let Some(index) = PolygonPointIndex::build_areal(polygon)? else {
+                return Ok(Self::Generic(ExactPointTester {
+                    shape: Shape::MultiPolygon(polygons.clone()),
+                }));
+            };
+            built.push(index);
         }
         let parts = YStabbingIndex::build(built, |part| {
             part.bounds.map_or(
@@ -398,41 +678,106 @@ impl PointBatchTester {
         })
     }
 
-    /// Exact location of any probe. Off every edge the indexed windings
-    /// answer; on an edge the exact local star decides from the stored ring
-    /// views, so no ring is re-classified per probe. Only parts whose
-    /// envelope holds the probe contribute: every other part has zero winding
-    /// there and no incident edge.
     pub(crate) fn location(&self, point: Point) -> Loc {
-        if let Some(location) = self.location_off_boundary(point) {
-            return location;
-        }
+        self.location_and_area(point).location
+    }
+
+    fn location_and_area(&self, point: Point) -> SourcePointLocation {
         match self {
-            Self::Polygon { index } => match index.location(point) {
-                RingClass::Interior => Loc::Interior,
-                RingClass::Boundary => Loc::Boundary,
-                RingClass::Exterior => Loc::Exterior,
+            Self::Polygon { index } => index.location_and_area(point),
+            Self::MultiPolygon { parts } => {
+                if let Some(location) = self.location_off_boundary(point) {
+                    return SourcePointLocation {
+                        location,
+                        area: location == Loc::Interior,
+                    };
+                }
+                let location = StreamingLocation::for_stored_point(point);
+                location_from_indexed_parts(parts, point.x, point.y, location)
+                    .expect("stored point location does not construct exact values")
+            },
+            Self::Generic(tester) => cartesian_point_location_and_area(&tester.shape, point),
+        }
+    }
+
+    #[cfg(test)]
+    pub(in crate::geometry) fn location_and_area_exact(
+        &self,
+        point: &[ExactDyadic; 3],
+    ) -> Result<Option<SourcePointLocation>> {
+        let occupied = match self {
+            Self::Polygon { index } => index.occupied_off_boundary_exact(point)?,
+            Self::MultiPolygon { parts } => indexed_parts_occupied_exact(parts, point, None)?,
+            Self::Generic(_) => return Ok(None),
+        };
+        if let Some(occupied) = occupied {
+            return Ok(Some(SourcePointLocation {
+                location: if occupied {
+                    Loc::Interior
+                } else {
+                    Loc::Exterior
+                },
+                area: occupied,
+            }));
+        }
+
+        let location = StreamingLocation::for_exact_point(point)?;
+        match self {
+            Self::Polygon { index } => {
+                let mut location = location;
+                index.visit_indexed_into(&mut location)?;
+                Ok(Some(location.finish()?))
             },
             Self::MultiPolygon { parts } => {
-                let mut near = Vec::new();
-                let _: Option<()> = parts.for_each_at_point_index(point.x, point.y, |index| {
-                    near.push(index);
-                    ControlFlow::Continue(())
-                });
-                cartesian_polygon_views_location(
-                    near.into_iter().map(|index| {
-                        let part = parts
-                            .get(index)
-                            .expect("point index returned an invalid item");
-                        std::iter::once(part.shell.view())
-                            .chain(part.holes.items().iter().map(RingPointIndex::view))
-                    }),
-                    point,
-                )
+                let query = exact_query_xy(point, None)?;
+                Ok(Some(location_from_indexed_parts(
+                    parts, query.x, query.y, location,
+                )?))
             },
-            Self::Generic(tester) => {
-                crate::geometry::cartesian_point_location(&tester.shape, point)
+            Self::Generic(_) => Ok(None),
+        }
+    }
+
+    #[cfg(test)]
+    pub(in crate::geometry) fn location_and_area_exact_offset(
+        &self,
+        point: &[ExactDyadic; 3],
+        direction: &[ExactDyadic; 2],
+    ) -> Result<Option<SourcePointLocation>> {
+        let occupied = match self {
+            Self::Polygon { index } => {
+                index.occupied_off_boundary_exact_offset(point, direction)?
             },
+            Self::MultiPolygon { parts } => {
+                indexed_parts_occupied_exact(parts, point, Some(direction))?
+            },
+            Self::Generic(_) => return Ok(None),
+        };
+        if let Some(occupied) = occupied {
+            return Ok(Some(SourcePointLocation {
+                location: if occupied {
+                    Loc::Interior
+                } else {
+                    Loc::Exterior
+                },
+                area: occupied,
+            }));
+        }
+
+        let location = StreamingLocation::for_exact_offset(point, direction)?;
+        match self {
+            Self::Polygon { index } => {
+                let mut location = location;
+                index.visit_indexed_into(&mut location)?;
+                Ok(Some(location.finish()?))
+            },
+            Self::MultiPolygon { parts } => {
+                let query = exact_query_xy(point, Some(direction))?;
+                Ok(Some(location_from_indexed_parts(
+                    parts, query.x, query.y, location,
+                )?))
+            },
+            Self::Generic(_) => Ok(None),
         }
     }
 
@@ -473,7 +818,7 @@ impl HeapSize for PointBatchTester {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::geometry::{CoordWindow, LineSeq, MultiPolygon, ring_classify_point};
+    use crate::geometry::{CoordWindow, LineSeq, MultiPolygon, Ring, ring_classify_point};
 
     fn winding_class(ring: &RingPointIndex, x: f64, y: f64) -> RingClass {
         match ring.winding_off_boundary(x, y) {
@@ -493,6 +838,23 @@ mod tests {
             shell: closed_ring(&[(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0), (0.0, 0.0)]),
             holes: SharedSlice::empty(),
         }
+    }
+
+    fn dense_square_points() -> Vec<(f64, f64)> {
+        let mut points = Vec::with_capacity(37);
+        points.extend((0..=9).map(|x| (f64::from(x), 0.0)));
+        points.extend((1..=9).map(|y| (10.0, f64::from(y))));
+        points.extend((0..=8).rev().map(|x| (f64::from(x), 10.0)));
+        points.extend((1..=8).rev().map(|y| (0.0, f64::from(y))));
+        points.push((0.0, 0.0));
+        points
+    }
+
+    fn dense_square() -> Shape {
+        Shape::Polygon(Polygon {
+            shell: closed_ring(&dense_square_points()),
+            holes: SharedSlice::empty(),
+        })
     }
 
     #[test]
@@ -535,12 +897,10 @@ mod tests {
 
     #[test]
     fn dense_ring_classification_matches_shape_kernel() {
-        let mut points = Vec::with_capacity(37);
-        points.extend((0..=9).map(|x| XY::new(f64::from(x), 0.0)));
-        points.extend((1..=9).map(|y| XY::new(10.0, f64::from(y))));
-        points.extend((0..=8).rev().map(|x| XY::new(f64::from(x), 10.0)));
-        points.extend((1..=8).rev().map(|y| XY::new(0.0, f64::from(y))));
-        points.push(XY::new(0.0, 0.0));
+        let points: Vec<_> = dense_square_points()
+            .into_iter()
+            .map(|(x, y)| XY::new(x, y))
+            .collect();
         let coords = CoordSeq::try_from_xy(&points).unwrap();
         assert_eq!(coords.xs().len() - 1, 36);
         let ring = RingPointIndex::build(&coords).unwrap();
@@ -789,6 +1149,7 @@ mod tests {
             holes: SharedSlice::empty(),
         });
         let tester = PointBatchTester::new(&shape).unwrap();
+        assert!(!tester.uses_indexed_plan());
         for point in [
             Point::new_raw_xy(0.0, 0.0),
             Point::new_raw_xy(1.0, 1.0),
@@ -861,10 +1222,17 @@ mod tests {
             for step_x in -2..=18 {
                 for step_y in -2..=18 {
                     let point = Point::new_raw_xy(f64::from(step_x) / 4.0, f64::from(step_y) / 4.0);
-                    let exact = crate::geometry::cartesian_point_location(&shape, point);
-                    assert_eq!(tester.location(point), exact, "{wkt} at {point:?}");
+                    let exact = crate::geometry::source_support::cartesian_point_location_and_area(
+                        &shape, point,
+                    );
+                    assert_eq!(tester.location(point), exact.location, "{wkt} at {point:?}");
+                    assert_eq!(
+                        tester.location_and_area(point),
+                        exact,
+                        "area for {wkt} at {point:?}"
+                    );
                     if let Some(location) = tester.location_off_boundary(point) {
-                        assert_eq!(location, exact, "{wkt} at {point:?}");
+                        assert_eq!(location, exact.location, "{wkt} at {point:?}");
                     } else {
                         let mut on_edge = false;
                         shape.for_each_segment_chain(|chain| {
@@ -880,5 +1248,133 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn indexed_rational_locations_match_streaming_labels_and_area() {
+        let shape = dense_square();
+        let tester = PointBatchTester::new(&shape).unwrap();
+        assert!(tester.uses_indexed_plan());
+
+        for point in [
+            [
+                ExactDyadic::from_f64(1.0),
+                ExactDyadic::from_f64(1.0),
+                ExactDyadic::from_f64(3.0),
+            ],
+            [
+                ExactDyadic::from_f64(1.0),
+                ExactDyadic::from_f64(0.0),
+                ExactDyadic::from_f64(3.0),
+            ],
+            [
+                ExactDyadic::from_f64(20.0),
+                ExactDyadic::from_f64(10.0),
+                ExactDyadic::from_f64(2.0),
+            ],
+            [
+                ExactDyadic::from_f64(22.0),
+                ExactDyadic::from_f64(10.0),
+                ExactDyadic::from_f64(2.0),
+            ],
+        ] {
+            let expected =
+                crate::geometry::source_support::cartesian_exact_point_location_and_area(
+                    &shape, &point,
+                )
+                .unwrap();
+            assert_eq!(
+                tester.location_and_area_exact(&point).unwrap(),
+                Some(expected)
+            );
+            assert_eq!(
+                crate::geometry::source_support::cartesian_exact_point_location(&shape, &point)
+                    .unwrap(),
+                expected.location
+            );
+        }
+
+        let point = [
+            ExactDyadic::from_f64(1.0),
+            ExactDyadic::from_f64(1.0),
+            ExactDyadic::from_f64(3.0),
+        ];
+        let expected = crate::geometry::source_support::cartesian_exact_point_location_and_area(
+            &shape, &point,
+        )
+        .unwrap();
+        let plan = crate::geometry::PreparedPlan::transient(&shape);
+        for _ in 0..4 {
+            assert_eq!(plan.locate_exact(&point).unwrap(), expected);
+        }
+        assert!(
+            plan.point_tester()
+                .unwrap()
+                .expect("large prepared polygon gets a point tester")
+                .uses_indexed_plan()
+        );
+    }
+
+    #[test]
+    fn exact_offsets_use_indexed_edges_and_preserve_tangency() {
+        let shape = dense_square();
+        let point = [
+            ExactDyadic::from_f64(1.0),
+            ExactDyadic::from_f64(0.0),
+            ExactDyadic::from_f64(3.0),
+        ];
+        let plan = crate::geometry::PreparedPlan::transient(&shape);
+        for _ in 0..4 {
+            let _ = plan.locate_exact(&point).unwrap();
+        }
+
+        for (direction, expected_toward) in [
+            (
+                [ExactDyadic::from_f64(0.0), ExactDyadic::from_f64(1.0)],
+                crate::geometry::source_support::OccupiedToward::Yes,
+            ),
+            (
+                [ExactDyadic::from_f64(0.0), ExactDyadic::from_f64(-1.0)],
+                crate::geometry::source_support::OccupiedToward::No,
+            ),
+            (
+                [ExactDyadic::from_f64(1.0), ExactDyadic::from_f64(0.0)],
+                crate::geometry::source_support::OccupiedToward::Tangent,
+            ),
+        ] {
+            let indexed = plan.locate_exact_offset(&point, &direction).unwrap();
+            let streaming =
+                crate::geometry::source_support::cartesian_exact_offset_location_and_area(
+                    &shape, &point, &direction,
+                )
+                .unwrap();
+            assert_eq!(indexed, streaming);
+            assert_eq!(
+                crate::geometry::source_support::cartesian_exact_offset_location(
+                    &shape, &point, &direction
+                )
+                .unwrap(),
+                streaming.location
+            );
+            assert_eq!(
+                plan.occupied_toward_exact(&point, &direction).unwrap(),
+                expected_toward
+            );
+        }
+    }
+
+    #[test]
+    fn prepared_location_schedule_keeps_small_polygons_streaming() {
+        let shape = Shape::Polygon(unit_square());
+        let point = [
+            ExactDyadic::from_f64(0.5),
+            ExactDyadic::from_f64(0.5),
+            ExactDyadic::one(),
+        ];
+        let plan = crate::geometry::PreparedPlan::transient(&shape);
+        for _ in 0..4 {
+            assert_eq!(plan.locate_exact(&point).unwrap().location, Loc::Interior);
+        }
+        assert!(plan.point_tester().unwrap().is_none());
     }
 }

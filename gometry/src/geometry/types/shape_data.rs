@@ -9,13 +9,24 @@ use crate::crs::ChartEdge;
 use crate::error::Result;
 use crate::geographic::GeographicFrame;
 use crate::geometry::distance::ChartParts;
+#[cfg(test)]
+use crate::geometry::source_support::{
+    OccupiedToward, SourcePointLocation, cartesian_exact_offset_location_and_area,
+    cartesian_exact_point_location_and_area, occupied_toward,
+};
+#[cfg(test)]
+use crate::geometry::tessellation::exact::ExactDyadic;
 use crate::geometry::topology::ExactGeographicTopology;
 use crate::geometry::types::{Bounds, GeodesicSegment, Point, Segment, Shape, XY};
 use crate::geometry::{
     ChartLineIndex, DistanceParts, GeodesicParts, GeodesicPartsKey, GeographicPrepared,
     GeographicSeamFacts, GeographicTopologyRoute, LineIndex, LineIndexSlot, MeasuredLineIndex,
-    MeasuredLineIndexSlot, PlanarMetric, PointBatchTester,
+    MeasuredLineIndexSlot, PlanarMetric, PointBatchTester, SegmentMetric, ShapeCountQuery,
 };
+
+const POINT_SCANS_BEFORE_INDEXING: u32 = 3;
+// The index's fixed setup does not amortize for small source arrays.
+const SMALL_POINT_INDEX_OPERAND: usize = 16;
 
 /// Sidecar for products derived from immutable coordinates. Geodesic products
 /// are keyed by ellipsoid and PROJ runtime generation; exact geographic
@@ -537,25 +548,69 @@ impl PreparedPlan {
     /// Exact Cartesian location of `point`. Early probes scan the source;
     /// the indexed tester costs about three scans to build, so it is built
     /// once this plan has paid that much, and a repeated operand ends up
-    /// indexed at no more than twice the cost of knowing in advance.
+    /// indexed at no more than twice the cost of knowing in advance. Small
+    /// sources stay streamed because their index setup cannot pay back.
     pub(crate) fn cartesian_point_location(&self, point: Point) -> Result<crate::geometry::Loc> {
-        const SCANS_BEFORE_INDEXING: u32 = 3;
-        let topology = self.topology();
-        if let Some(Some(tester)) = topology.point_tester.get() {
-            return Ok(tester.location(point));
-        }
-        if topology
-            .point_scans
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-            >= SCANS_BEFORE_INDEXING
-            && let Some(tester) = self.point_tester()?
-        {
+        if let Some(tester) = self.point_tester_for_location()? {
             return Ok(tester.location(point));
         }
         Ok(crate::geometry::cartesian_point_location(
             self.shape(),
             point,
         ))
+    }
+
+    #[cfg(test)]
+    pub(in crate::geometry) fn locate_exact(
+        &self,
+        point: &[ExactDyadic; 3],
+    ) -> Result<SourcePointLocation> {
+        if let Some(tester) = self.point_tester_for_location()?
+            && let Some(location) = tester.location_and_area_exact(point)?
+        {
+            return Ok(location);
+        }
+        cartesian_exact_point_location_and_area(self.shape(), point)
+    }
+
+    #[cfg(test)]
+    pub(in crate::geometry) fn locate_exact_offset(
+        &self,
+        point: &[ExactDyadic; 3],
+        direction: &[ExactDyadic; 2],
+    ) -> Result<SourcePointLocation> {
+        if let Some(tester) = self.point_tester_for_location()?
+            && let Some(location) = tester.location_and_area_exact_offset(point, direction)?
+        {
+            return Ok(location);
+        }
+        cartesian_exact_offset_location_and_area(self.shape(), point, direction)
+    }
+
+    #[cfg(test)]
+    pub(in crate::geometry) fn occupied_toward_exact(
+        &self,
+        point: &[ExactDyadic; 3],
+        direction: &[ExactDyadic; 2],
+    ) -> Result<OccupiedToward> {
+        self.locate_exact_offset(point, direction)
+            .map(occupied_toward)
+    }
+
+    fn point_tester_for_location(&self) -> Result<Option<&PointBatchTester>> {
+        let topology = self.topology();
+        if let Some(tester) = topology.point_tester.get() {
+            return Ok(tester.as_deref());
+        }
+        if topology
+            .point_scans
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            >= POINT_SCANS_BEFORE_INDEXING
+        {
+            self.point_tester()
+        } else {
+            Ok(None)
+        }
     }
 
     /// Boolean set membership does not observe a line point's boundary versus
@@ -575,6 +630,10 @@ impl PreparedPlan {
             .point_tester
             .get_or_try_init(|| -> Result<_> {
                 if matches!(self.shape(), Shape::Polygon(_) | Shape::MultiPolygon(_)) {
+                    let mut counts = ShapeCountQuery::default();
+                    if counts.coordinates_at_most(self.shape(), SMALL_POINT_INDEX_OPERAND) {
+                        return Ok(None);
+                    }
                     let tester = PointBatchTester::new(self.shape())?;
                     Ok(Some(Box::new(tester)))
                 } else {

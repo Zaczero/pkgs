@@ -14,13 +14,294 @@
 use std::cmp::Ordering;
 use std::ops::Range;
 
+use crate::error::Result;
+#[cfg(test)]
+use crate::geometry::Bounds;
 #[cfg(test)]
 use crate::geometry::Ring;
 use crate::geometry::exact_arith::ExactSign;
-use crate::geometry::segments::stored_orientation_sign;
+use crate::geometry::segments::{stored_orientation_sign, try_sort_by};
+#[cfg(test)]
+use crate::geometry::tessellation::exact::{ExactDyadic, compare_ratios, outward_ratio_bounds};
 use crate::geometry::{
-    Loc, Point, Polygon, Shape, SharedShapeOwners, XY, point_on_segment, same_point, storage,
+    Loc, Point, Polygon, Shape, SharedShapeOwners, XY, point_on_segment, same_point,
+    same_topological_coordinate, storage,
 };
+
+#[derive(Clone, Copy)]
+pub(in crate::geometry) enum QueryAxis {
+    X,
+    Y,
+}
+
+#[derive(Clone, Copy)]
+pub(in crate::geometry) struct AxisRelation {
+    query_below: bool,
+    equal: bool,
+}
+
+pub(in crate::geometry) trait PointQuery: Copy {
+    fn compare_axis(self, axis: QueryAxis, value: f64) -> Result<Ordering>;
+    fn orientation(self, start: XY, end: XY) -> Result<ExactSign>;
+    fn index_y(self) -> Result<f64>;
+
+    fn axis_relation(self, axis: QueryAxis, value: f64) -> Result<AxisRelation> {
+        self.compare_axis(axis, value).map(|order| AxisRelation {
+            query_below: order == Ordering::Less,
+            equal: order == Ordering::Equal,
+        })
+    }
+
+    fn misses_height(self, _start: f64, _end: f64) -> bool {
+        false
+    }
+
+    fn same_point(self, point: XY) -> Result<bool> {
+        Ok(self.compare_axis(QueryAxis::X, point.x)? == Ordering::Equal
+            && self.compare_axis(QueryAxis::Y, point.y)? == Ordering::Equal)
+    }
+}
+
+#[derive(Clone, Copy)]
+pub(in crate::geometry) struct StoredQuery(XY);
+
+impl PointQuery for StoredQuery {
+    fn axis_relation(self, axis: QueryAxis, value: f64) -> Result<AxisRelation> {
+        let query = match axis {
+            QueryAxis::X => self.0.x,
+            QueryAxis::Y => self.0.y,
+        };
+        Ok(AxisRelation {
+            query_below: query < value,
+            equal: query == value,
+        })
+    }
+
+    fn compare_axis(self, axis: QueryAxis, value: f64) -> Result<Ordering> {
+        let query = match axis {
+            QueryAxis::X => self.0.x,
+            QueryAxis::Y => self.0.y,
+        };
+        Ok(if query < value {
+            Ordering::Less
+        } else if query > value {
+            Ordering::Greater
+        } else if same_topological_coordinate(query, value) {
+            Ordering::Equal
+        } else {
+            query.total_cmp(&value)
+        })
+    }
+
+    fn orientation(self, start: XY, end: XY) -> Result<ExactSign> {
+        Ok(stored_orientation_sign(
+            start.x, start.y, end.x, end.y, self.0.x, self.0.y,
+        ))
+    }
+
+    fn index_y(self) -> Result<f64> {
+        Ok(self.0.y)
+    }
+}
+
+#[cfg(test)]
+#[derive(Clone, Copy)]
+pub(in crate::geometry) struct ExactQuery<'a> {
+    point: &'a [ExactDyadic; 3],
+    x_bounds: (f64, f64),
+    y_bounds: (f64, f64),
+}
+
+#[cfg(test)]
+impl<'a> ExactQuery<'a> {
+    fn new(point: &'a [ExactDyadic; 3]) -> Result<Self> {
+        let [x, y, w] = point;
+        Ok(Self {
+            point,
+            x_bounds: outward_ratio_bounds(x, w)?,
+            y_bounds: outward_ratio_bounds(y, w)?,
+        })
+    }
+}
+
+#[cfg(test)]
+impl PointQuery for ExactQuery<'_> {
+    fn compare_axis(self, axis: QueryAxis, value: f64) -> Result<Ordering> {
+        let (lower, upper) = match axis {
+            QueryAxis::X => self.x_bounds,
+            QueryAxis::Y => self.y_bounds,
+        };
+        if upper < value {
+            return Ok(Ordering::Less);
+        }
+        if lower > value {
+            return Ok(Ordering::Greater);
+        }
+        if lower == upper {
+            return Ok(Ordering::Equal);
+        }
+        compare_exact_axis(self.point, axis, value)
+    }
+
+    fn orientation(self, start: XY, end: XY) -> Result<ExactSign> {
+        let [x, y, w] = self.point;
+        let dx = ExactDyadic::from_f64(end.x).try_subtract(ExactDyadic::from_f64(start.x))?;
+        let dy = ExactDyadic::from_f64(end.y).try_subtract(ExactDyadic::from_f64(start.y))?;
+        let from_x = x
+            .clone()
+            .try_subtract(ExactDyadic::from_f64(start.x).try_product(w)?)?;
+        let from_y = y
+            .clone()
+            .try_subtract(ExactDyadic::from_f64(start.y).try_product(w)?)?;
+        let determinant = dx
+            .try_product(&from_y)?
+            .try_subtract(dy.try_product(&from_x)?)?;
+        let sign = determinant.sign();
+        Ok(if w.sign() == ExactSign::Negative {
+            match sign {
+                ExactSign::Negative => ExactSign::Positive,
+                ExactSign::Positive => ExactSign::Negative,
+                ExactSign::Zero => ExactSign::Zero,
+            }
+        } else {
+            sign
+        })
+    }
+
+    fn index_y(self) -> Result<f64> {
+        exact_query_y(self.point, None)
+    }
+
+    fn misses_height(self, start: f64, end: f64) -> bool {
+        let (lower, upper) = self.y_bounds;
+        (start < lower && end < lower) || (start > upper && end > upper)
+    }
+}
+
+#[cfg(test)]
+fn compare_exact_axis(point: &[ExactDyadic; 3], axis: QueryAxis, value: f64) -> Result<Ordering> {
+    let [x, y, w] = point;
+    let numerator = match axis {
+        QueryAxis::X => x,
+        QueryAxis::Y => y,
+    };
+    compare_ratios(
+        numerator,
+        w,
+        &ExactDyadic::from_f64(value),
+        &ExactDyadic::one(),
+    )
+}
+
+#[cfg(test)]
+fn exact_query_coordinate(
+    numerator: &ExactDyadic,
+    denominator: &ExactDyadic,
+    direction: Option<&ExactDyadic>,
+) -> Result<f64> {
+    let rounded = crate::geometry::tessellation::exact::round_ratio(numerator, denominator)?;
+    let order = compare_ratios(
+        numerator,
+        denominator,
+        &ExactDyadic::from_f64(rounded),
+        &ExactDyadic::one(),
+    )?;
+    let below = order == Ordering::Less
+        || (order == Ordering::Equal
+            && direction.is_some_and(|direction| direction.sign() == ExactSign::Negative));
+    Ok(if below { rounded.next_down() } else { rounded })
+}
+
+#[cfg(test)]
+pub(in crate::geometry) fn exact_query_y(
+    point: &[ExactDyadic; 3],
+    direction_y: Option<&ExactDyadic>,
+) -> Result<f64> {
+    let [_, y, w] = point;
+    exact_query_coordinate(y, w, direction_y)
+}
+
+#[cfg(test)]
+pub(in crate::geometry) fn exact_query_xy(
+    point: &[ExactDyadic; 3],
+    direction: Option<&[ExactDyadic; 2]>,
+) -> Result<XY> {
+    let [x, y, w] = point;
+    let direction = direction.map(|direction| {
+        let [direction_x, direction_y] = direction;
+        (direction_x, direction_y)
+    });
+    Ok(XY::new(
+        exact_query_coordinate(x, w, direction.map(|(x, _)| x))?,
+        exact_query_coordinate(y, w, direction.map(|(_, y)| y))?,
+    ))
+}
+
+#[cfg(test)]
+#[derive(Clone, Copy)]
+pub(in crate::geometry) struct InfinitesimalQuery<'a> {
+    point: ExactQuery<'a>,
+    direction: &'a [ExactDyadic; 2],
+}
+
+#[cfg(test)]
+impl PointQuery for InfinitesimalQuery<'_> {
+    fn compare_axis(self, axis: QueryAxis, value: f64) -> Result<Ordering> {
+        let order = self.point.compare_axis(axis, value)?;
+        if order != Ordering::Equal {
+            return Ok(order);
+        }
+        let [direction_x, direction_y] = self.direction;
+        Ok(
+            match match axis {
+                QueryAxis::X => direction_x.sign(),
+                QueryAxis::Y => direction_y.sign(),
+            } {
+                ExactSign::Negative => Ordering::Less,
+                ExactSign::Zero => Ordering::Equal,
+                ExactSign::Positive => Ordering::Greater,
+            },
+        )
+    }
+
+    fn orientation(self, start: XY, end: XY) -> Result<ExactSign> {
+        let orientation = self.point.orientation(start, end)?;
+        if orientation != ExactSign::Zero {
+            return Ok(orientation);
+        }
+        let [direction_x, direction_y] = self.direction;
+        let dx = ExactDyadic::from_f64(end.x).try_subtract(ExactDyadic::from_f64(start.x))?;
+        let dy = ExactDyadic::from_f64(end.y).try_subtract(ExactDyadic::from_f64(start.y))?;
+        Ok(dx
+            .try_product(direction_y)?
+            .try_subtract(dy.try_product(direction_x)?)?
+            .sign())
+    }
+
+    fn index_y(self) -> Result<f64> {
+        let [_direction_x, direction_y] = self.direction;
+        exact_query_y(self.point.point, Some(direction_y))
+    }
+
+    fn misses_height(self, start: f64, end: f64) -> bool {
+        self.point.misses_height(start, end)
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(in crate::geometry) struct SourcePointLocation {
+    pub(in crate::geometry) location: Loc,
+    pub(in crate::geometry) area: bool,
+}
+
+pub(in crate::geometry) trait RingEdgeCandidates {
+    fn ring_view(&self) -> RingView<'_>;
+    fn visit_stabbed_edges(
+        &self,
+        y: f64,
+        visit: &mut dyn FnMut(XY, XY) -> Result<()>,
+    ) -> Result<()>;
+}
 
 /// Whether a stored ring supplies areal winding or collapsed line support.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -643,6 +924,16 @@ struct RingScan {
     collapsed_point: bool,
 }
 
+struct RingScanState {
+    first: Option<XY>,
+    distinct: Option<XY>,
+    non_collinear: bool,
+    winding: i64,
+    formal_winding: i64,
+    collapsed_point: bool,
+    ray_start: usize,
+}
+
 struct EdgeProbe {
     on_segment: bool,
     winding: i64,
@@ -656,25 +947,27 @@ macro_rules! edge_probe {
         let start = $start;
         let end = $end;
         let query = $query;
-        let at_start = query.y == start.y && same_point(query, start);
-        let at_end = query.y == end.y && same_point(query, end);
-        let start_above = start.y > query.y;
-        let end_above = end.y > query.y;
+        let query_y_start = query.axis_relation(QueryAxis::Y, start.y)?;
+        let query_y_end = query.axis_relation(QueryAxis::Y, end.y)?;
+        let at_start = query_y_start.equal && query.same_point(start)?;
+        let at_end = query_y_end.equal && query.same_point(end)?;
+        let start_above = query_y_start.query_below;
+        let end_above = query_y_end.query_below;
         // Opposite strict-above flags encode both half-open crossing directions.
         let crossing = start_above != end_above;
-        let horizontal = query.y == start.y && query.y == end.y;
+        let horizontal = query_y_start.equal && query_y_end.equal;
         let horizontal_on_segment = horizontal
             && if start.x <= end.x {
-                start.x <= query.x && query.x <= end.x
+                query.compare_axis(QueryAxis::X, start.x)? != Ordering::Less
+                    && query.compare_axis(QueryAxis::X, end.x)? != Ordering::Greater
             } else {
-                end.x <= query.x && query.x <= start.x
+                query.compare_axis(QueryAxis::X, end.x)? != Ordering::Less
+                    && query.compare_axis(QueryAxis::X, start.x)? != Ordering::Greater
             };
         let orientation = if at_start || at_end {
             Some(ExactSign::Zero)
         } else if crossing {
-            Some(stored_orientation_sign(
-                start.x, start.y, end.x, end.y, query.x, query.y,
-            ))
+            Some(query.orientation(start, end)?)
         } else {
             None
         };
@@ -704,19 +997,75 @@ macro_rules! edge_probe {
         } else {
             0
         };
-        EdgeProbe {
+        Ok::<_, crate::error::Error>(EdgeProbe {
             on_segment,
             winding,
             formal_winding,
+        })
+    }};
+}
+
+/// Keep per-edge state updates in the scan loop; a helper call costs once per
+/// source edge.
+macro_rules! scan_ring_edge {
+    ($location:expr, $state:expr, $infer_kind:expr, $start:expr, $end:expr) => {{
+        let location = &mut *$location;
+        let state = $state;
+        let infer_kind = $infer_kind;
+        let start = $start;
+        let end = $end;
+        if infer_kind
+            && !state.non_collinear
+            && let Some(first) = state.first
+            && (end.x != first.x || end.y != first.y)
+        {
+            if let Some(second) = state.distinct {
+                state.non_collinear =
+                    stored_orientation_sign(first.x, first.y, second.x, second.y, end.x, end.y)
+                        != ExactSign::Zero;
+            } else {
+                state.distinct = Some(end);
+            }
         }
+        if !location.query.misses_height(start.y, end.y) {
+            if same_point(start, end) {
+                state.collapsed_point |= location.query.same_point(start)?;
+            } else {
+                let edge = edge_probe!(start, end, location.query)?;
+                if edge.on_segment {
+                    if !location.query.same_point(end)? {
+                        location.rays.push(Ray {
+                            end,
+                            ring: None,
+                            curve: false,
+                            collapsed: false,
+                            reverse: false,
+                        });
+                    }
+                    if !location.query.same_point(start)? {
+                        location.rays.push(Ray {
+                            end: start,
+                            ring: None,
+                            curve: false,
+                            collapsed: false,
+                            reverse: true,
+                        });
+                    }
+                } else {
+                    state.winding = state.winding.wrapping_add(edge.winding);
+                }
+                state.formal_winding = state.formal_winding.wrapping_add(edge.formal_winding);
+            }
+        }
+        Ok::<(), crate::error::Error>(())
     }};
 }
 
 /// Query-local exact point location. Ordinary probes keep only scalar
 /// winding and occupancy state; rays and per-ring state are retained only
 /// when the query lies on source linework.
-struct StreamingLocation {
-    query: XY,
+pub(in crate::geometry) struct StreamingLocation<Q: PointQuery> {
+    query: Q,
     mode: LocationMode,
     boundary_rings: Vec<BoundaryRing>,
     boundary_polygons: Vec<BoundaryPolygon>,
@@ -726,8 +1075,37 @@ struct StreamingLocation {
     curve_endpoint_parity: bool,
 }
 
-impl StreamingLocation {
-    const fn new(query: XY, mode: LocationMode) -> Self {
+impl StreamingLocation<StoredQuery> {
+    pub(in crate::geometry) const fn for_stored_point(point: Point) -> Self {
+        Self::new(StoredQuery(point.xy()), LocationMode::Full)
+    }
+}
+
+#[cfg(test)]
+impl<'a> StreamingLocation<ExactQuery<'a>> {
+    pub(in crate::geometry) fn for_exact_point(point: &'a [ExactDyadic; 3]) -> Result<Self> {
+        Ok(Self::new(ExactQuery::new(point)?, LocationMode::Full))
+    }
+}
+
+#[cfg(test)]
+impl<'a> StreamingLocation<InfinitesimalQuery<'a>> {
+    pub(in crate::geometry) fn for_exact_offset(
+        point: &'a [ExactDyadic; 3],
+        direction: &'a [ExactDyadic; 2],
+    ) -> Result<Self> {
+        Ok(Self::new(
+            InfinitesimalQuery {
+                point: ExactQuery::new(point)?,
+                direction,
+            },
+            LocationMode::Full,
+        ))
+    }
+}
+
+impl<Q: PointQuery> StreamingLocation<Q> {
+    const fn new(query: Q, mode: LocationMode) -> Self {
         Self {
             query,
             mode,
@@ -740,24 +1118,71 @@ impl StreamingLocation {
         }
     }
 
+    pub(in crate::geometry) fn visit_indexed_polygon_views<'a, R: RingEdgeCandidates + 'a>(
+        &mut self,
+        rings: impl IntoIterator<Item = &'a R>,
+    ) -> Result<()> {
+        let y = self.query.index_y()?;
+        let mut summary = PolygonSummary::new(self.boundary_rings.len());
+        for (index, ring) in rings.into_iter().enumerate() {
+            let view = ring.ring_view();
+            let scan = self.scan_ring_with_edges(
+                view.xs,
+                view.ys,
+                Some(view.kind),
+                index == 0,
+                |visit| ring.visit_stabbed_edges(y, visit),
+            )?;
+            summary.add_ring(index == 0, scan);
+        }
+        self.finish_polygon(summary);
+        Ok(())
+    }
+
+    pub(in crate::geometry) fn finish(self) -> Result<SourcePointLocation> {
+        if self.rays.is_empty() {
+            let area = self.area_without_contact;
+            return Ok(SourcePointLocation {
+                location: self.location_without_contact(),
+                area,
+            });
+        }
+        self.boundary_location()
+    }
+
+    fn finish_location(self) -> Result<Loc> {
+        if self.rays.is_empty() {
+            return Ok(self.location_without_contact());
+        }
+        self.boundary_location().map(|location| location.location)
+    }
+
+    fn location_without_contact(&self) -> Loc {
+        if (self.mode == LocationMode::Full && self.point_support) || self.area_without_contact {
+            Loc::Interior
+        } else {
+            Loc::Exterior
+        }
+    }
+
     fn visit_row(
         &mut self,
         row: storage::ShapeRow<'_>,
         owners: &mut Option<&mut SharedShapeOwners>,
-    ) {
+    ) -> Result<()> {
         use crate::geometry::storage::{PackedRow, ShapeRow};
         match row {
-            ShapeRow::Handle(plan) => self.visit_shape(plan.shape(), owners),
-            ShapeRow::Shape(shape) => self.visit_shape(shape, owners),
+            ShapeRow::Handle(plan) => self.visit_shape(plan.shape(), owners)?,
+            ShapeRow::Shape(shape) => self.visit_shape(shape, owners)?,
             ShapeRow::Point(point) => {
-                if self.mode == LocationMode::Full && same_point(point.xy(), self.query) {
+                if self.mode == LocationMode::Full && self.query.same_point(point.xy())? {
                     self.point_support = true;
                 }
             },
             ShapeRow::Packed(PackedRow::Points {
                 coords, physical, ..
             }) => {
-                self.visit_row(ShapeRow::Point(coords.point_at(physical)), owners);
+                self.visit_row(ShapeRow::Point(coords.point_at(physical)), owners)?;
             },
             ShapeRow::Packed(row @ PackedRow::Lines { coords, .. }) => {
                 if self.mode == LocationMode::Full {
@@ -768,7 +1193,7 @@ impl StreamingLocation {
                             .get(window.clone())
                             .expect("admitted line x window"),
                         coords.ys().get(window).expect("admitted line y window"),
-                    );
+                    )?;
                 }
             },
             ShapeRow::Packed(row @ PackedRow::Polygons { coords, .. }) => {
@@ -789,42 +1214,46 @@ impl StreamingLocation {
                         coords.ys().get(window).expect("admitted ring y window"),
                         None,
                         index == 0,
-                    );
+                    )?;
                     summary.add_ring(index == 0, scan);
                 }
                 self.finish_polygon(summary);
             },
         }
+        Ok(())
     }
 
-    fn visit_shape(&mut self, shape: &Shape, owners: &mut Option<&mut SharedShapeOwners>) {
+    fn visit_shape(
+        &mut self,
+        shape: &Shape,
+        owners: &mut Option<&mut SharedShapeOwners>,
+    ) -> Result<()> {
         match shape {
             Shape::Point(point) => {
-                if self.mode == LocationMode::Full && same_point(point.xy(), self.query) {
+                if self.mode == LocationMode::Full && self.query.same_point(point.xy())? {
                     self.point_support = true;
                 }
             },
-            Shape::MultiPoint(points) => {
-                if self.mode == LocationMode::Full
-                    && points
-                        .points()
-                        .any(|point| same_point(point.xy(), self.query))
-                {
-                    self.point_support = true;
+            Shape::MultiPoint(points) if self.mode == LocationMode::Full => {
+                for point in points.points() {
+                    if self.query.same_point(point.xy())? {
+                        self.point_support = true;
+                        break;
+                    }
                 }
             },
             Shape::LineString(line) if self.mode == LocationMode::Full => {
-                self.visit_curve(line.as_coords());
+                self.visit_curve(line.as_coords())?;
             },
             Shape::MultiLineString(lines) if self.mode == LocationMode::Full => {
                 for line in lines {
-                    self.visit_curve(line.as_coords());
+                    self.visit_curve(line.as_coords())?;
                 }
             },
-            Shape::Polygon(polygon) => self.visit_polygon(polygon),
+            Shape::Polygon(polygon) => self.visit_polygon(polygon)?,
             Shape::MultiPolygon(polygons) => {
                 for polygon in polygons {
-                    self.visit_polygon(polygon);
+                    self.visit_polygon(polygon)?;
                 }
             },
             Shape::GeometryCollection(geometries) => {
@@ -832,35 +1261,26 @@ impl StreamingLocation {
                     owners.first_collection(geometries.as_slice(), geometries.members_are_shared())
                 }) {
                     for geometry in geometries {
-                        self.visit_shape(geometry, owners);
+                        self.visit_shape(geometry, owners)?;
                     }
                 }
             },
-            Shape::LineString(_) | Shape::MultiLineString(_) | Shape::Empty(..) => {},
+            Shape::MultiPoint(_)
+            | Shape::LineString(_)
+            | Shape::MultiLineString(_)
+            | Shape::Empty(..) => {},
         }
+        Ok(())
     }
 
-    fn visit_polygon(&mut self, polygon: &Polygon) {
+    fn visit_polygon(&mut self, polygon: &Polygon) -> Result<()> {
         let mut summary = PolygonSummary::new(self.boundary_rings.len());
         for (index, ring) in polygon.rings().enumerate() {
-            let scan = self.scan_ring(ring.xs(), ring.ys(), None, index == 0);
+            let scan = self.scan_ring(ring.xs(), ring.ys(), None, index == 0)?;
             summary.add_ring(index == 0, scan);
         }
         self.finish_polygon(summary);
-    }
-
-    fn visit_polygon_views<'a, P>(&mut self, polygons: impl IntoIterator<Item = P>)
-    where
-        P: IntoIterator<Item = RingView<'a>>,
-    {
-        for polygon in polygons {
-            let mut summary = PolygonSummary::new(self.boundary_rings.len());
-            for (index, ring) in polygon.into_iter().enumerate() {
-                let scan = self.scan_ring(ring.xs, ring.ys, Some(ring.kind), index == 0);
-                summary.add_ring(index == 0, scan);
-            }
-            self.finish_polygon(summary);
-        }
+        Ok(())
     }
 
     fn finish_polygon(&mut self, summary: PolygonSummary) {
@@ -884,109 +1304,100 @@ impl StreamingLocation {
         });
     }
 
-    #[expect(
-        clippy::indexing_slicing,
-        reason = "ray_start is the prior ray length and scanning only appends rays before rewriting that suffix"
-    )]
     fn scan_ring(
         &mut self,
         xs: &[f64],
         ys: &[f64],
         kind_hint: Option<RingKind>,
         shell: bool,
-    ) -> RingScan {
-        let first = xs.first().zip(ys.first()).map(|(&x, &y)| XY::new(x, y));
-        let mut distinct: Option<XY> = None;
-        let mut non_collinear = false;
-        let mut winding = 0_i64;
-        let mut formal_winding = 0_i64;
-        let mut collapsed_point = false;
-        let ray_start = self.rays.len();
-        let query = self.query;
-
-        macro_rules! scan_edge {
-            ($start:expr, $end:expr) => {{
-                let start = $start;
-                let end = $end;
-                if same_point(start, end) {
-                    collapsed_point |= same_point(start, query);
-                } else {
-                    let edge = edge_probe!(start, end, query);
-                    if edge.on_segment {
-                        if !same_point(query, end) {
-                            self.rays.push(Ray {
-                                end,
-                                ring: None,
-                                curve: false,
-                                collapsed: false,
-                                reverse: false,
-                            });
-                        }
-                        if !same_point(query, start) {
-                            self.rays.push(Ray {
-                                end: start,
-                                ring: None,
-                                curve: false,
-                                collapsed: false,
-                                reverse: true,
-                            });
-                        }
-                    } else {
-                        winding = winding.wrapping_add(edge.winding);
-                    }
-                    formal_winding = formal_winding.wrapping_add(edge.formal_winding);
-                }
-            }};
-        }
-
+    ) -> Result<RingScan> {
+        let infer_kind = kind_hint.is_none();
+        let mut state = RingScanState {
+            first: xs.first().zip(ys.first()).map(|(&x, &y)| XY::new(x, y)),
+            distinct: None,
+            non_collinear: false,
+            winding: 0,
+            formal_winding: 0,
+            collapsed_point: false,
+            ray_start: self.rays.len(),
+        };
         if xs.len() >= 2 && ys.len() >= 2 {
             for ([ax, bx], [ay, by]) in xs.array_windows::<2>().zip(ys.array_windows::<2>()) {
-                let start = XY::new(*ax, *ay);
-                let end = XY::new(*bx, *by);
-                if kind_hint.is_none()
-                    && !non_collinear
-                    && let Some(first) = first
-                    && (end.x != first.x || end.y != first.y)
-                {
-                    if let Some(second) = distinct {
-                        non_collinear = stored_orientation_sign(
-                            first.x, first.y, second.x, second.y, end.x, end.y,
-                        ) != ExactSign::Zero;
-                    } else {
-                        distinct = Some(end);
-                    }
-                }
-                scan_edge!(start, end);
+                scan_ring_edge!(
+                    self,
+                    &mut state,
+                    infer_kind,
+                    XY::new(*ax, *ay),
+                    XY::new(*bx, *by)
+                )?;
             }
             if let (Some(first), Some(last)) = (
                 xs.first().zip(ys.first()).map(|(&x, &y)| XY::new(x, y)),
                 xs.last().zip(ys.last()).map(|(&x, &y)| XY::new(x, y)),
             ) && !same_point(first, last)
             {
-                scan_edge!(last, first);
+                scan_ring_edge!(self, &mut state, infer_kind, last, first)?;
             }
         }
+        Ok(self.finish_ring(&state, kind_hint, shell))
+    }
 
-        let kind = kind_hint.unwrap_or(if non_collinear {
+    fn scan_ring_with_edges(
+        &mut self,
+        xs: &[f64],
+        ys: &[f64],
+        kind_hint: Option<RingKind>,
+        shell: bool,
+        visit_edges: impl FnOnce(&mut dyn FnMut(XY, XY) -> Result<()>) -> Result<()>,
+    ) -> Result<RingScan> {
+        let mut state = RingScanState {
+            first: xs.first().zip(ys.first()).map(|(&x, &y)| XY::new(x, y)),
+            distinct: None,
+            non_collinear: false,
+            winding: 0,
+            formal_winding: 0,
+            collapsed_point: false,
+            ray_start: self.rays.len(),
+        };
+        {
+            let infer_kind = kind_hint.is_none();
+            let mut visit_edge =
+                |start: XY, end: XY| scan_ring_edge!(self, &mut state, infer_kind, start, end);
+            visit_edges(&mut visit_edge)?;
+        }
+        Ok(self.finish_ring(&state, kind_hint, shell))
+    }
+
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "ray_start is the prior ray length and scanning only appends rays before rewriting that suffix"
+    )]
+    fn finish_ring(
+        &mut self,
+        state: &RingScanState,
+        kind_hint: Option<RingKind>,
+        shell: bool,
+    ) -> RingScan {
+        let kind = kind_hint.unwrap_or(if state.non_collinear {
             RingKind::Winding
         } else {
             RingKind::Collapsed
         });
-        let touched = self.rays.len() != ray_start;
+        let touched = self.rays.len() != state.ray_start;
         if self.mode == LocationMode::Area && kind == RingKind::Collapsed {
-            self.rays.truncate(ray_start);
+            self.rays.truncate(state.ray_start);
         }
         let boundary_ring =
             if touched && (self.mode == LocationMode::Full || kind == RingKind::Winding) {
                 let index = self.boundary_rings.len();
-                for ray in &mut self.rays[ray_start..] {
+                for ray in &mut self.rays[state.ray_start..] {
                     ray.ring = Some((index, ring_ray_delta(kind, ray.reverse)));
                     ray.collapsed = kind == RingKind::Collapsed;
                 }
                 self.boundary_rings.push(BoundaryRing {
                     kind,
                     winding: if kind == RingKind::Winding {
-                        formal_winding
+                        state.formal_winding
                     } else {
                         0
                     },
@@ -995,7 +1406,7 @@ impl StreamingLocation {
                 Some(index)
             } else {
                 if self.mode == LocationMode::Area {
-                    self.rays.truncate(ray_start);
+                    self.rays.truncate(state.ray_start);
                 }
                 None
             };
@@ -1004,28 +1415,28 @@ impl StreamingLocation {
             kind,
             winding: if kind == RingKind::Winding {
                 if boundary_ring.is_some() {
-                    formal_winding
+                    state.formal_winding
                 } else {
-                    winding
+                    state.winding
                 }
             } else {
                 0
             },
             boundary_ring,
-            collapsed_point,
+            collapsed_point: state.collapsed_point,
         }
     }
 
-    fn visit_curve(&mut self, curve: &crate::geometry::CoordSeq) {
-        self.visit_curve_columns(curve.xs(), curve.ys());
+    fn visit_curve(&mut self, curve: &crate::geometry::CoordSeq) -> Result<()> {
+        self.visit_curve_columns(curve.xs(), curve.ys())
     }
 
-    fn visit_curve_columns(&mut self, xs: &[f64], ys: &[f64]) {
+    fn visit_curve_columns(&mut self, xs: &[f64], ys: &[f64]) -> Result<()> {
         let Some((&first_x, &first_y)) = xs.first().zip(ys.first()) else {
-            return;
+            return Ok(());
         };
         let Some((&last_x, &last_y)) = xs.last().zip(ys.last()) else {
-            return;
+            return Ok(());
         };
         let mut nonzero = false;
         let query = self.query;
@@ -1036,8 +1447,8 @@ impl StreamingLocation {
             if !nonzero || same_point(start, end) {
                 continue;
             }
-            if edge_probe!(start, end, query).on_segment {
-                if !same_point(query, end) {
+            if edge_probe!(start, end, query)?.on_segment {
+                if !query.same_point(end)? {
                     self.rays.push(Ray {
                         end,
                         ring: None,
@@ -1046,7 +1457,7 @@ impl StreamingLocation {
                         reverse: false,
                     });
                 }
-                if !same_point(query, start) {
+                if !query.same_point(start)? {
                     self.rays.push(Ray {
                         end: start,
                         ring: None,
@@ -1058,16 +1469,17 @@ impl StreamingLocation {
             }
         }
         if nonzero {
-            self.curve_endpoint_parity ^= same_point(XY::new(first_x, first_y), query)
-                ^ same_point(XY::new(last_x, last_y), query);
-        } else if self.mode == LocationMode::Full
-            && xs
-                .iter()
-                .zip(ys)
-                .any(|(&x, &y)| same_point(XY::new(x, y), query))
-        {
-            self.point_support = true;
+            self.curve_endpoint_parity ^= query.same_point(XY::new(first_x, first_y))?
+                ^ query.same_point(XY::new(last_x, last_y))?;
+        } else if self.mode == LocationMode::Full {
+            for (&x, &y) in xs.iter().zip(ys) {
+                if query.same_point(XY::new(x, y))? {
+                    self.point_support = true;
+                    break;
+                }
+            }
         }
+        Ok(())
     }
 
     #[expect(
@@ -1149,27 +1561,39 @@ impl StreamingLocation {
         clippy::arithmetic_side_effects,
         reason = "Cyclic group indices and offsets are bounded by the addressable RayGroup vector"
     )]
-    fn boundary_location(mut self) -> Loc {
-        self.rays
-            .sort_unstable_by(|left, right| compare_rays(self.query, left.end, right.end));
-        let groups = ray_groups(self.query, &self.rays);
-        let seed_group = groups.iter().position(|group| {
+    fn boundary_location(mut self) -> Result<SourcePointLocation> {
+        let query = self.query;
+        try_sort_by(&mut self.rays, |left, right| {
+            compare_query_rays(query, left.end, right.end)
+        })?;
+        let groups = query_ray_groups(query, &self.rays)?;
+        let mut seed_group = None;
+        for (index, group) in groups.iter().enumerate() {
             let ray = &self.rays[group.start];
-            ray.end.y == self.query.y && ray.end.x > self.query.x
-        });
-        let first = seed_group.map_or_else(
-            || {
-                groups
-                    .iter()
-                    .position(|group| {
-                        let ray = &self.rays[group.start];
-                        ray.end.y > self.query.y
-                            || (ray.end.y == self.query.y && ray.end.x > self.query.x)
-                    })
-                    .unwrap_or(0)
-            },
-            |index| index.wrapping_add(1) % groups.len(),
-        );
+            if query.compare_axis(QueryAxis::Y, ray.end.y)? == Ordering::Equal
+                && query.compare_axis(QueryAxis::X, ray.end.x)? == Ordering::Less
+            {
+                seed_group = Some(index);
+                break;
+            }
+        }
+        let first = if let Some(index) = seed_group {
+            index.wrapping_add(1) % groups.len()
+        } else {
+            let mut first = 0;
+            for (index, group) in groups.iter().enumerate() {
+                let ray = &self.rays[group.start];
+                let y = query.compare_axis(QueryAxis::Y, ray.end.y)?;
+                if y == Ordering::Less
+                    || (y == Ordering::Equal
+                        && query.compare_axis(QueryAxis::X, ray.end.x)? == Ordering::Less)
+                {
+                    first = index;
+                    break;
+                }
+            }
+            first
+        };
 
         let mut any_area = false;
         let mut all_area = true;
@@ -1197,21 +1621,30 @@ impl StreamingLocation {
         }
 
         if self.mode == LocationMode::Area {
-            return if any_area {
-                Loc::Interior
-            } else {
-                Loc::Exterior
-            };
+            return Ok(SourcePointLocation {
+                location: if any_area {
+                    Loc::Interior
+                } else {
+                    Loc::Exterior
+                },
+                area: any_area,
+            });
         }
         if any_area {
-            return if all_area {
-                Loc::Interior
-            } else {
-                Loc::Boundary
-            };
+            return Ok(SourcePointLocation {
+                location: if all_area {
+                    Loc::Interior
+                } else {
+                    Loc::Boundary
+                },
+                area: true,
+            });
         }
         if line {
-            return line_location(self.curve_endpoint_parity, residual_collapsed_degree_odd);
+            return Ok(SourcePointLocation {
+                location: line_location(self.curve_endpoint_parity, residual_collapsed_degree_odd),
+                area: false,
+            });
         }
         let point_support = self.point_support
             || self.boundary_polygons.iter().any(|polygon| {
@@ -1219,24 +1652,16 @@ impl StreamingLocation {
                     && !polygon.holes.point_support
             });
         if point_support {
-            Loc::Interior
+            Ok(SourcePointLocation {
+                location: Loc::Interior,
+                area: false,
+            })
         } else {
-            Loc::Exterior
+            Ok(SourcePointLocation {
+                location: Loc::Exterior,
+                area: false,
+            })
         }
-    }
-
-    fn finish(self) -> Loc {
-        if self.rays.is_empty() {
-            if self.mode == LocationMode::Full && self.point_support {
-                return Loc::Interior;
-            }
-            return if self.area_without_contact {
-                Loc::Interior
-            } else {
-                Loc::Exterior
-            };
-        }
-        self.boundary_location()
     }
 }
 
@@ -1255,6 +1680,46 @@ fn symbolic_orientation_from_sign(start: XY, end: XY, direct: ExactSign) -> Exac
     }
 }
 
+#[expect(
+    clippy::indexing_slicing,
+    reason = "the exact ray events are finite and the following group bounds partition their sorted slice"
+)]
+fn query_ray_groups<Q: PointQuery>(query: Q, rays: &[Ray]) -> Result<Vec<RayGroup>> {
+    let mut groups = Vec::new();
+    let mut start = 0_usize;
+    while start < rays.len() {
+        let mut end = start.wrapping_add(1);
+        while end < rays.len()
+            && compare_query_rays(query, rays[start].end, rays[end].end)? == Ordering::Equal
+        {
+            end = end.wrapping_add(1);
+        }
+        groups.push(RayGroup { start, end });
+        start = end;
+    }
+    Ok(groups)
+}
+
+fn compare_query_rays<Q: PointQuery>(query: Q, left: XY, right: XY) -> Result<Ordering> {
+    let left_y = query.compare_axis(QueryAxis::Y, left.y)?;
+    let right_y = query.compare_axis(QueryAxis::Y, right.y)?;
+    let left_upper = left_y == Ordering::Less
+        || (left_y == Ordering::Equal
+            && query.compare_axis(QueryAxis::X, left.x)? == Ordering::Less);
+    let right_upper = right_y == Ordering::Less
+        || (right_y == Ordering::Equal
+            && query.compare_axis(QueryAxis::X, right.x)? == Ordering::Less);
+    if left_upper != right_upper {
+        return Ok(right_upper.cmp(&left_upper));
+    }
+    Ok(match query.orientation(left, right)? {
+        ExactSign::Positive => Ordering::Less,
+        ExactSign::Negative => Ordering::Greater,
+        ExactSign::Zero => Ordering::Equal,
+    })
+}
+
+#[cfg(test)]
 #[expect(
     clippy::indexing_slicing,
     reason = "start and end advance only within the sorted ray slice being grouped"
@@ -1319,6 +1784,109 @@ pub(crate) fn edge_winding(start: XY, end: XY, query: XY) -> Option<i64> {
     };
     let orientation = stored_orientation_sign(start.x, start.y, end.x, end.y, query.x, query.y);
     Some(if orientation == sign { direction } else { 0 })
+}
+
+#[cfg(test)]
+pub(in crate::geometry) fn exact_point_in_bounds(
+    bounds: Bounds,
+    point: &[ExactDyadic; 3],
+) -> Result<bool> {
+    point_in_bounds(ExactQuery::new(point)?, bounds)
+}
+
+#[cfg(test)]
+pub(in crate::geometry) fn exact_offset_point_in_bounds(
+    bounds: Bounds,
+    point: &[ExactDyadic; 3],
+    direction: &[ExactDyadic; 2],
+) -> Result<bool> {
+    point_in_bounds(
+        InfinitesimalQuery {
+            point: ExactQuery::new(point)?,
+            direction,
+        },
+        bounds,
+    )
+}
+
+#[cfg(test)]
+fn point_in_bounds(query: impl PointQuery, bounds: Bounds) -> Result<bool> {
+    Ok(
+        query.compare_axis(QueryAxis::X, bounds.minx())? != Ordering::Less
+            && query.compare_axis(QueryAxis::X, bounds.maxx())? != Ordering::Greater
+            && query.compare_axis(QueryAxis::Y, bounds.miny())? != Ordering::Less
+            && query.compare_axis(QueryAxis::Y, bounds.maxy())? != Ordering::Greater,
+    )
+}
+
+#[cfg(test)]
+pub(in crate::geometry) fn exact_edge_winding(
+    start: XY,
+    end: XY,
+    point: &[ExactDyadic; 3],
+) -> Result<Option<i64>> {
+    edge_winding_for_query(start, end, ExactQuery::new(point)?)
+}
+
+#[cfg(test)]
+pub(in crate::geometry) fn exact_offset_edge_winding(
+    start: XY,
+    end: XY,
+    point: &[ExactDyadic; 3],
+    direction: &[ExactDyadic; 2],
+) -> Result<Option<i64>> {
+    edge_winding_for_query(start, end, InfinitesimalQuery {
+        point: ExactQuery::new(point)?,
+        direction,
+    })
+}
+
+#[cfg(test)]
+fn edge_winding_for_query(start: XY, end: XY, query: impl PointQuery) -> Result<Option<i64>> {
+    if same_point(start, end) {
+        return Ok(Some(0));
+    }
+    let (x_start, x_end) = (
+        query.compare_axis(QueryAxis::X, start.x)?,
+        query.compare_axis(QueryAxis::X, end.x)?,
+    );
+    let (y_start, y_end) = (
+        query.compare_axis(QueryAxis::Y, start.y)?,
+        query.compare_axis(QueryAxis::Y, end.y)?,
+    );
+    let outside_x = (x_start == Ordering::Less && x_end == Ordering::Less)
+        || (x_start == Ordering::Greater && x_end == Ordering::Greater);
+    let outside_y = (y_start == Ordering::Less && y_end == Ordering::Less)
+        || (y_start == Ordering::Greater && y_end == Ordering::Greater);
+    let mut orientation = None;
+    if !outside_x && !outside_y {
+        let sign = query.orientation(start, end)?;
+        if sign == ExactSign::Zero {
+            return Ok(None);
+        }
+        orientation = Some(sign);
+    }
+    let direction = if y_start != Ordering::Less && y_end == Ordering::Less {
+        1
+    } else if y_end != Ordering::Less && y_start == Ordering::Less {
+        -1
+    } else {
+        return Ok(Some(0));
+    };
+    let orientation = match orientation {
+        Some(sign) => sign,
+        None => query.orientation(start, end)?,
+    };
+    let expected = if direction > 0 {
+        ExactSign::Positive
+    } else {
+        ExactSign::Negative
+    };
+    Ok(Some(if orientation == expected {
+        direction
+    } else {
+        0
+    }))
 }
 
 #[cfg(test)]
@@ -1434,7 +2002,28 @@ fn for_each_xy_segment(xs: &[f64], ys: &[f64], mut visit: impl FnMut(XY, XY)) {
 
 /// Cartesian location for any source shape.
 pub(crate) fn cartesian_point_location(shape: &Shape, point: Point) -> Loc {
-    cartesian_row_point_location(shape.into(), point, false)
+    let mut location = StreamingLocation::for_stored_point(point);
+    let mut owners = None;
+    location
+        .visit_shape(shape, &mut owners)
+        .expect("stored point location does not construct exact values");
+    location
+        .finish_location()
+        .expect("stored point location does not construct exact values")
+}
+
+pub(in crate::geometry) fn cartesian_point_location_and_area(
+    shape: &Shape,
+    point: Point,
+) -> SourcePointLocation {
+    let mut location = StreamingLocation::for_stored_point(point);
+    let mut owners = None;
+    location
+        .visit_shape(shape, &mut owners)
+        .expect("stored point location does not construct exact values");
+    location
+        .finish()
+        .expect("stored point location does not construct exact values")
 }
 
 pub(crate) fn cartesian_row_point_location(
@@ -1442,11 +2031,15 @@ pub(crate) fn cartesian_row_point_location(
     point: Point,
     coverage: bool,
 ) -> Loc {
-    let mut location = StreamingLocation::new(point.xy(), LocationMode::Full);
+    let mut location = StreamingLocation::for_stored_point(point);
     let mut shared = SharedShapeOwners::for_collections();
     let mut owners = coverage.then_some(&mut shared);
-    location.visit_row(row, &mut owners);
-    location.finish()
+    location
+        .visit_row(row, &mut owners)
+        .expect("stored point location does not construct exact values");
+    location
+        .finish_location()
+        .expect("stored point location does not construct exact values")
 }
 
 /// Boolean point coverage is a set-membership query: duplicate components can
@@ -1460,22 +2053,73 @@ pub(crate) fn cartesian_area_covers_point(shape: &Shape, point: Point) -> bool {
 }
 
 pub(crate) fn cartesian_row_area_covers_point(row: storage::ShapeRow<'_>, point: Point) -> bool {
-    let mut location = StreamingLocation::new(point.xy(), LocationMode::Area);
+    let mut location = StreamingLocation::new(StoredQuery(point.xy()), LocationMode::Area);
     let mut shared_owners = SharedShapeOwners::for_collections();
     let mut owners = Some(&mut shared_owners);
-    location.visit_row(row, &mut owners);
-    location.finish() != Loc::Exterior
+    location
+        .visit_row(row, &mut owners)
+        .expect("stored point location does not construct exact values");
+    location
+        .finish()
+        .expect("stored point location does not construct exact values")
+        .area
 }
 
-/// Cartesian location over polygons given as ring views, shell first — the
-/// path of prepared point testers, which already hold each ring's kind.
-pub(crate) fn cartesian_polygon_views_location<'a, P: IntoIterator<Item = RingView<'a>>>(
-    polygons: impl IntoIterator<Item = P>,
-    point: Point,
-) -> Loc {
-    let mut location = StreamingLocation::new(point.xy(), LocationMode::Full);
-    location.visit_polygon_views(polygons);
+#[cfg(test)]
+pub(in crate::geometry) fn cartesian_exact_point_location(
+    shape: &Shape,
+    point: &[ExactDyadic; 3],
+) -> Result<Loc> {
+    Ok(cartesian_exact_point_location_and_area(shape, point)?.location)
+}
+
+#[cfg(test)]
+pub(in crate::geometry) fn cartesian_exact_point_location_and_area(
+    shape: &Shape,
+    point: &[ExactDyadic; 3],
+) -> Result<SourcePointLocation> {
+    let mut location = StreamingLocation::for_exact_point(point)?;
+    let mut owners = None;
+    location.visit_shape(shape, &mut owners)?;
     location.finish()
+}
+
+#[cfg(test)]
+pub(in crate::geometry) fn cartesian_exact_offset_location(
+    shape: &Shape,
+    point: &[ExactDyadic; 3],
+    direction: &[ExactDyadic; 2],
+) -> Result<Loc> {
+    Ok(cartesian_exact_offset_location_and_area(shape, point, direction)?.location)
+}
+
+#[cfg(test)]
+pub(in crate::geometry) fn cartesian_exact_offset_location_and_area(
+    shape: &Shape,
+    point: &[ExactDyadic; 3],
+    direction: &[ExactDyadic; 2],
+) -> Result<SourcePointLocation> {
+    let mut location = StreamingLocation::for_exact_offset(point, direction)?;
+    let mut owners = None;
+    location.visit_shape(shape, &mut owners)?;
+    location.finish()
+}
+
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(in crate::geometry) enum OccupiedToward {
+    Yes,
+    No,
+    Tangent,
+}
+
+#[cfg(test)]
+pub(in crate::geometry) const fn occupied_toward(location: SourcePointLocation) -> OccupiedToward {
+    match (location.location, location.area) {
+        (Loc::Interior, true) => OccupiedToward::Yes,
+        (Loc::Exterior, _) => OccupiedToward::No,
+        _ => OccupiedToward::Tangent,
+    }
 }
 
 #[cfg(test)]
@@ -1986,5 +2630,52 @@ mod tests {
             )
             .unwrap()
         );
+    }
+
+    #[test]
+    fn line_interior_in_a_collection_does_not_claim_area() {
+        let source =
+            shape("GEOMETRYCOLLECTION (POLYGON ((0 0,4 0,4 4,0 4,0 0)),LINESTRING (10 0,14 4))");
+        let location = cartesian_point_location_and_area(&source, Point::new_raw_xy(12.0, 2.0));
+        assert_eq!(location.location, Loc::Interior);
+        assert!(!location.area);
+
+        let point = [
+            ExactDyadic::from_f64(12.0),
+            ExactDyadic::from_f64(2.0),
+            ExactDyadic::one(),
+        ];
+        let exact = cartesian_exact_point_location_and_area(&source, &point).unwrap();
+        assert_eq!(exact, location);
+        assert_eq!(
+            crate::geometry::PreparedPlan::transient(&source)
+                .locate_exact(&point)
+                .unwrap(),
+            exact
+        );
+    }
+
+    #[test]
+    fn stored_query_axis_order_preserves_topological_identity() {
+        let first_nan = f64::from_bits(0x7FF8_0000_0000_0001);
+        let second_nan = f64::from_bits(0x7FF8_0000_0000_0002);
+        let query = StoredQuery(XY::new(first_nan, 0.0));
+        assert_eq!(
+            query.compare_axis(QueryAxis::X, first_nan).unwrap(),
+            Ordering::Equal
+        );
+        assert_ne!(
+            query.compare_axis(QueryAxis::X, second_nan).unwrap(),
+            Ordering::Equal
+        );
+        assert_eq!(
+            query.compare_axis(QueryAxis::Y, -0.0).unwrap(),
+            Ordering::Equal
+        );
+
+        let finite = StoredQuery(XY::new(1.0, -0.0));
+        assert!(finite.axis_relation(QueryAxis::X, 2.0).unwrap().query_below);
+        assert!(!finite.axis_relation(QueryAxis::X, 0.0).unwrap().query_below);
+        assert!(finite.axis_relation(QueryAxis::Y, 0.0).unwrap().equal);
     }
 }
