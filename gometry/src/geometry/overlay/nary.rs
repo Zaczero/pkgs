@@ -2,29 +2,104 @@ use std::borrow::Borrow;
 use std::ops::ControlFlow;
 
 use crate::boundary::geographic::invalid_lonlat_error;
-use crate::error::Result;
+use crate::error::{ResourceError, Result};
 use crate::geographic::{GeographicInputs, GeographicViewError};
 use crate::geometry::overlay::{
-    ExactSourceInventory, OverlayOp, Strictness, build_certified_overlay_shape,
+    ExactSourceInventory, OverlayOp, Strictness, build_certified_overlay_shape, merge_chains,
     overlay_declared_axes,
 };
+use crate::geometry::segments::crossing_point;
+use crate::geometry::tessellation::exact::ExactDyadic;
 use crate::geometry::topology::overlay::exact_geographic_overlay;
 use crate::geometry::{
-    Bounds, CoordSeq, CoordinateAxes, Dimension, GeographicTopologyRoute, GeometryErrorKind,
-    GeometryKind, Shape, TopologyDomain,
+    Bounds, Contact, CoordSeq, CoordinateAxes, Coordinates as _, Dimension,
+    GeographicTopologyRoute, GeometryErrorKind, GeometryKind, HashSet, Loc, Point, PointKey,
+    Segment, SegmentParameter, Shape, SharedShapeOwners, TopologyDomain, XY,
+    carry_overlay_ordinates, cartesian_point_location, clip_segment_parameter,
+    exact_crossing_parameter, for_each_candidate_pair, point_on_segment, segment_contact_exact,
+    undirected_segment_edge_key, unique_xy_points,
 };
 
-/// Evaluate one or more operands in one canonical overlay arrangement.
+/// Canonical operand order for every overlay entry: difference keeps its left
+/// operand first and orders the subtrahends; other operations order all
+/// operands. A macro so the generic owner keeps its original single body on the
+/// ordinary path; a helper call there measured as overhead on every overlay.
+macro_rules! sort_overlay_inputs {
+    ($inputs:expr, $operation:expr) => {
+        if $operation == OverlayOp::Difference {
+            let (_, right) = ($inputs)
+                .split_first_mut()
+                .expect("difference input includes its left operand");
+            right.sort_unstable_by(|left, right| crate::geometry::compare_shapes(left, right));
+        } else {
+            ($inputs).sort_unstable_by(|left, right| crate::geometry::compare_shapes(left, right));
+        }
+    };
+}
+
+#[derive(Clone, Copy)]
+enum CartesianBinaryLane {
+    Puntal,
+    LinePolygon,
+}
+
+/// Admit a binary Cartesian pair to a dimension-specific lane from stored kinds
+/// alone, so ineligible pairs pay only this branch before the generic owner.
+/// Each lane re-checks its operands and falls back to the exact partition when
+/// it cannot answer exactly, so this is admission, not a semantic decision.
+macro_rules! cartesian_binary_lane {
+    ($left:expr, $right:expr, $operation:expr) => {{
+        let left = $left;
+        let right = $right;
+        let operation = $operation;
+        if left.topological_dimension() == Dimension::Point
+            || right.topological_dimension() == Dimension::Point
+        {
+            Some(CartesianBinaryLane::Puntal)
+        } else {
+            match operation {
+                OverlayOp::Intersection
+                    if (is_line_operand(left) && is_polygon_operand(right))
+                        || (is_line_operand(right) && is_polygon_operand(left)) =>
+                {
+                    Some(CartesianBinaryLane::LinePolygon)
+                },
+                OverlayOp::Difference if is_line_operand(left) && is_polygon_operand(right) => {
+                    Some(CartesianBinaryLane::LinePolygon)
+                },
+                _ => None,
+            }
+        }
+    }};
+}
+
+/// Evaluate one or more operands in the canonical overlay owner.
 ///
-/// The source order is normalized before noding. Unless disjoint bounds settle
-/// the operation, all operands participate in the same exact partition or
-/// geographic quotient, and every output bucket is assembled once.
+/// Binary Cartesian puntal and line/polygon pairs use dimension-specific lanes;
+/// all other inputs retain exact partition or geographic quotient semantics.
 pub(crate) fn overlay_all<S: Borrow<Shape>>(
     geometries: &[S],
     domain: TopologyDomain,
     op: OverlayOp,
     strictness: Strictness,
 ) -> Result<Shape> {
+    if matches!(&domain, TopologyDomain::Cartesian)
+        && let [left, right] = geometries
+    {
+        let left = <S as Borrow<Shape>>::borrow(left);
+        let right = <S as Borrow<Shape>>::borrow(right);
+        if let Some(lane) = cartesian_binary_lane!(left, right, op) {
+            let mut inputs = [left, right];
+            return exact_cartesian_binary_overlay(
+                &mut inputs,
+                lane,
+                op,
+                strictness,
+                true,
+                ExactPartitionBudget::Charge,
+            );
+        }
+    }
     overlay_all_with_bounds_certificates(geometries, domain, op, strictness, true)
 }
 
@@ -144,6 +219,40 @@ fn exact_cartesian_overlay(
     )
 }
 
+/// Try dimension-specific lanes only when stored shape metadata admits them.
+/// Every other binary input goes directly to the generic Cartesian owner.
+fn exact_cartesian_binary_overlay(
+    inputs: &mut [&Shape],
+    lane: CartesianBinaryLane,
+    operation: OverlayOp,
+    strictness: Strictness,
+    bounds_certificates: bool,
+    partition_budget: ExactPartitionBudget,
+) -> Result<Shape> {
+    sort_overlay_inputs!(inputs, operation);
+    let sorted_inputs: &[&Shape] = inputs;
+    let fast_result = match lane {
+        CartesianBinaryLane::Puntal => {
+            exact_cartesian_puntal_overlay(sorted_inputs, operation, strictness)?
+        },
+        CartesianBinaryLane::LinePolygon => {
+            exact_cartesian_line_polygon_overlay(sorted_inputs, operation, strictness)?
+        },
+    };
+    if let Some(shape) = fast_result {
+        return Ok(shape);
+    }
+
+    exact_partition_overlay_with_bounds_certificates(
+        sorted_inputs.to_vec(),
+        operation,
+        strictness,
+        bounds_certificates,
+        false,
+        partition_budget,
+    )
+}
+
 fn exact_partition_overlay_with_bounds_certificates(
     mut inputs: Vec<&Shape>,
     operation: OverlayOp,
@@ -152,12 +261,9 @@ fn exact_partition_overlay_with_bounds_certificates(
     preserve_geographic_vertices: bool,
     partition_budget: ExactPartitionBudget,
 ) -> Result<Shape> {
-    if operation == OverlayOp::Difference {
-        inputs[1..].sort_unstable_by(|left, right| crate::geometry::compare_shapes(left, right));
-    } else {
-        inputs.sort_unstable_by(|left, right| crate::geometry::compare_shapes(left, right));
-    }
+    sort_overlay_inputs!(inputs, operation);
     let inputs = inputs.as_slice();
+    // Declared axes are a fact about the whole input, not any one component.
     let declared_axes = overlay_declared_axes(inputs, operation);
     let strict = strictness.is_strict();
     let components = if bounds_certificates && inputs.len() > 1 {
@@ -205,6 +311,1164 @@ fn exact_partition_overlay_with_bounds_certificates(
     } else {
         shape.normalize()?
     })
+}
+
+/// Point-set operations do not need an arrangement. A higher-dimensional
+/// operand remains its original value when the point result is absorbed or
+/// added alongside it.
+fn exact_cartesian_puntal_overlay(
+    inputs: &[&Shape],
+    operation: OverlayOp,
+    strictness: Strictness,
+) -> Result<Option<Shape>> {
+    let [left, right] = inputs else {
+        return Ok(None);
+    };
+    let left_points = puntal_points(left);
+    let right_points = puntal_points(right);
+    match (left_points, right_points) {
+        (Some(left_points), Some(right_points)) => {
+            let left_points = unique_xy_points(left_points)?;
+            let right_points = unique_xy_points(right_points)?;
+            let points = match operation {
+                OverlayOp::Intersection | OverlayOp::Difference => {
+                    let right_keys = point_keys(&right_points)?;
+                    let intersection = operation == OverlayOp::Intersection;
+                    left_points
+                        .into_iter()
+                        .filter(|point| right_keys.contains(&PointKey::new(*point)) == intersection)
+                        .collect()
+                },
+                OverlayOp::Union => {
+                    let left_keys = point_keys(&left_points)?;
+                    let mut points = left_points;
+                    points.extend(
+                        right_points
+                            .into_iter()
+                            .filter(|point| !left_keys.contains(&PointKey::new(*point))),
+                    );
+                    points
+                },
+                OverlayOp::SymmetricDifference => {
+                    let left_keys = point_keys(&left_points)?;
+                    let right_keys = point_keys(&right_points)?;
+                    let mut points: Vec<_> = left_points
+                        .into_iter()
+                        .filter(|point| !right_keys.contains(&PointKey::new(*point)))
+                        .collect();
+                    points.extend(
+                        right_points
+                            .into_iter()
+                            .filter(|point| !left_keys.contains(&PointKey::new(*point))),
+                    );
+                    points
+                },
+            };
+            point_overlay_shape(points, inputs, operation, strictness).map(Some)
+        },
+        (Some(points), None) => {
+            one_puntal_overlay(points, right, true, inputs, operation, strictness)
+        },
+        (None, Some(points)) => {
+            one_puntal_overlay(points, left, false, inputs, operation, strictness)
+        },
+        (None, None) => Ok(None),
+    }
+}
+
+fn one_puntal_overlay(
+    points: Vec<Point>,
+    other: &Shape,
+    puntal_is_left: bool,
+    inputs: &[&Shape],
+    operation: OverlayOp,
+    strictness: Strictness,
+) -> Result<Option<Shape>> {
+    let mut points = unique_xy_points(points)?;
+    if operation == OverlayOp::Difference && !puntal_is_left {
+        return Ok((other.topological_dimension() > Dimension::Point).then(|| other.clone()));
+    }
+
+    points.retain(|&point| {
+        let covered = cartesian_point_location(other, point) != Loc::Exterior;
+        match operation {
+            OverlayOp::Intersection => covered,
+            OverlayOp::Difference | OverlayOp::Union | OverlayOp::SymmetricDifference => !covered,
+        }
+    });
+
+    if operation == OverlayOp::Intersection || operation == OverlayOp::Difference {
+        return point_overlay_shape(points, inputs, operation, strictness).map(Some);
+    }
+
+    if points.is_empty() {
+        return Ok(Some(if other.is_empty() {
+            empty_nary_overlay_shape(inputs, operation)
+        } else {
+            other.clone()
+        }));
+    }
+    let point_shape = point_overlay_shape(points, inputs, operation, strictness)?;
+    if other.is_empty() {
+        return Ok(Some(point_shape));
+    }
+
+    let mut parts = Vec::new();
+    parts.push(point_shape);
+    if let Shape::GeometryCollection(collection) = other
+        && other.nesting_depth() == crate::geometry::MAX_NESTING
+    {
+        // Preserve the collection as a member unless another layer would exceed
+        // the admitted depth; then move its existing members up intact.
+        parts.extend(collection.iter().cloned());
+    } else {
+        parts.push(other.clone());
+    }
+    Shape::geometry_collection(parts).map(Some)
+}
+
+fn point_overlay_shape(
+    points: Vec<Point>,
+    inputs: &[&Shape],
+    operation: OverlayOp,
+    strictness: Strictness,
+) -> Result<Shape> {
+    if points.is_empty() {
+        return Ok(empty_nary_overlay_shape(inputs, operation));
+    }
+    let shape = build_certified_overlay_shape(points, Vec::new(), Vec::new())?;
+    carry_overlay_ordinates(shape, inputs, operation, strictness.is_strict())
+}
+
+fn point_keys(points: &[Point]) -> Result<HashSet<PointKey>> {
+    let mut keys = HashSet::with_hasher(crate::collections::collection_hash_state()?.clone());
+    keys.reserve(points.len());
+    keys.extend(points.iter().copied().map(PointKey::new));
+    Ok(keys)
+}
+
+fn puntal_points(shape: &Shape) -> Option<Vec<Point>> {
+    fn collect(shape: &Shape, points: &mut Vec<Point>, owners: &mut SharedShapeOwners) -> bool {
+        match shape {
+            Shape::Point(point) => points.push(*point),
+            Shape::MultiPoint(multipoint) => points.extend(multipoint.points()),
+            Shape::Empty(
+                GeometryKind::Point | GeometryKind::MultiPoint | GeometryKind::GeometryCollection,
+                _,
+            ) => {},
+            Shape::GeometryCollection(collection) => {
+                if !owners.first_collection(collection.as_slice(), collection.members_are_shared())
+                {
+                    return true;
+                }
+                for part in collection {
+                    if !collect(part, points, owners) {
+                        return false;
+                    }
+                }
+            },
+            Shape::LineString(_)
+            | Shape::MultiLineString(_)
+            | Shape::Polygon(_)
+            | Shape::MultiPolygon(_)
+            | Shape::Empty(..) => return false,
+        }
+        true
+    }
+
+    if shape.topological_dimension() != Dimension::Point {
+        return None;
+    }
+
+    let mut points = Vec::new();
+    let mut owners = SharedShapeOwners::for_collections();
+    collect(shape, &mut points, &mut owners).then_some(points)
+}
+
+const fn line_segment_midpoint(segment: Segment) -> XY {
+    XY::new(
+        f64::midpoint(segment.start.x, segment.end.x),
+        f64::midpoint(segment.start.y, segment.end.y),
+    )
+}
+
+#[derive(Clone, Copy)]
+enum PolygonSide {
+    Interior,
+    Exterior,
+}
+
+impl PolygonSide {
+    const fn from_location(location: Loc) -> Option<Self> {
+        match location {
+            Loc::Interior => Some(Self::Interior),
+            Loc::Exterior => Some(Self::Exterior),
+            Loc::Boundary => None,
+        }
+    }
+
+    const fn location(self) -> Loc {
+        match self {
+            Self::Interior => Loc::Interior,
+            Self::Exterior => Loc::Exterior,
+        }
+    }
+}
+
+/// Lineal results can be clipped by exact pair-sweep contacts and indexed point
+/// location without constructing areal faces. Degenerate lines and isolated
+/// point intersections remain on the general partition path.
+fn exact_cartesian_line_polygon_overlay(
+    inputs: &[&Shape],
+    operation: OverlayOp,
+    strictness: Strictness,
+) -> Result<Option<Shape>> {
+    let [left, right] = inputs else {
+        return Ok(None);
+    };
+    let (line_shape, polygon_shape) = match operation {
+        OverlayOp::Intersection | OverlayOp::Difference
+            if is_line_operand(left) && is_polygon_operand(right) =>
+        {
+            (left, right)
+        },
+        OverlayOp::Intersection if is_line_operand(right) && is_polygon_operand(left) => {
+            (right, left)
+        },
+        OverlayOp::Union
+        | OverlayOp::Intersection
+        | OverlayOp::Difference
+        | OverlayOp::SymmetricDifference => return Ok(None),
+    };
+    let line_sequences = line_sequences(line_shape).expect("line operand was admitted");
+    if line_shape.is_empty() {
+        return Ok(Some(empty_nary_overlay_shape(inputs, operation)));
+    }
+    if line_sequences.iter().any(|line| {
+        !line
+            .segment_pairs()
+            .any(|[start, end]| !crate::geometry::same_point(start.xy(), end.xy()))
+    }) {
+        return Ok(None);
+    }
+
+    let first_polygon_chain =
+        u32::try_from(line_sequences.len()).map_err(|_| ResourceError::SizeOverflow)?;
+    let mut candidate_segments = Vec::new();
+    let mut candidate_chains = Vec::new();
+    for (chain, line) in line_sequences.iter().enumerate() {
+        let chain = u32::try_from(chain).map_err(|_| ResourceError::SizeOverflow)?;
+        for [start, end] in line.segment_pairs() {
+            candidate_segments.push(Segment {
+                start: start.xy(),
+                end: end.xy(),
+            });
+            candidate_chains.push(chain);
+        }
+    }
+    let line_segment_count = candidate_segments.len();
+    let Some(polygon_boundaries) = polygon_boundaries(polygon_shape, first_polygon_chain)? else {
+        return Ok(None);
+    };
+    let candidate_capacity = line_segment_count
+        .checked_add(polygon_boundaries.segments.len())
+        .ok_or(ResourceError::SizeOverflow)?;
+    candidate_segments.reserve(candidate_capacity.saturating_sub(candidate_segments.len()));
+    candidate_chains.reserve(candidate_capacity.saturating_sub(candidate_chains.len()));
+    candidate_segments.extend(polygon_boundaries.segments);
+    candidate_chains.extend(polygon_boundaries.chains);
+    let strictly_monotone = if let [line] = line_sequences.as_slice() {
+        strictly_monotone_column(line.xs()) || strictly_monotone_column(line.ys())
+    } else {
+        false
+    };
+    let LineContactEvents {
+        mut cut_events,
+        mut overlap_events,
+        deduplicate_line_edges,
+        atomicize_line_edges,
+    } = line_polygon_contact_events(
+        &candidate_segments,
+        &candidate_chains,
+        line_segment_count,
+        strictly_monotone,
+    )?;
+    cut_events.sort_unstable_by_key(|event| event.source_segment);
+    overlap_events.sort_unstable_by_key(|span| span.source_segment);
+
+    let polygon_bounds = polygon_shape.bounds();
+    let intersection = operation == OverlayOp::Intersection;
+
+    let mut lines = Vec::new();
+    let mut boundary_contacts =
+        HashSet::with_hasher(crate::collections::collection_hash_state()?.clone());
+    let parameter_zero = ExactDyadic::from_f64(0.0);
+    let parameter_one = ExactDyadic::from_f64(1.0);
+    let mut cuts = Vec::new();
+    let mut unique_cuts = Vec::new();
+    let mut overlaps = Vec::new();
+    let mut cut_events = cut_events.into_iter().peekable();
+    let mut overlap_cursor = 0_usize;
+    let mut source_segment_index = 0_usize;
+    for source_line in &line_sequences {
+        let mut current = Vec::new();
+        // Polygon membership is constant across adjacent source pieces until
+        // the sweep finds a polygon-boundary contact.
+        let mut current_side = None;
+        for [start, end] in source_line.segment_pairs() {
+            let segment = Segment {
+                start: start.xy(),
+                end: end.xy(),
+            };
+            let index = source_segment_index;
+            source_segment_index = source_segment_index.wrapping_add(1);
+            if crate::geometry::same_point(segment.start, segment.end) {
+                discard_line_events(index, &mut cut_events, &overlap_events, &mut overlap_cursor);
+                continue;
+            }
+            let segment_bounds = Bounds::new_raw(
+                segment.start.x.min(segment.end.x),
+                segment.start.y.min(segment.end.y),
+                segment.start.x.max(segment.end.x),
+                segment.start.y.max(segment.end.y),
+            );
+            let outside_polygon_bounds =
+                polygon_bounds.is_none_or(|bounds| !bounds.intersects(segment_bounds));
+            let has_events = cut_events
+                .peek()
+                .is_some_and(|event| event.source_segment == index);
+            if outside_polygon_bounds && intersection {
+                finish_line_piece(&mut current, &mut lines)?;
+                discard_line_events(index, &mut cut_events, &overlap_events, &mut overlap_cursor);
+                current_side = Some(PolygonSide::Exterior);
+                continue;
+            }
+            if outside_polygon_bounds && !has_events {
+                emit_line_piece(
+                    &mut current,
+                    &mut lines,
+                    segment.start,
+                    segment.end,
+                    atomicize_line_edges,
+                )?;
+                current_side = Some(PolygonSide::Exterior);
+                continue;
+            }
+            if !outside_polygon_bounds && !has_events {
+                let side = if let Some(side) = current_side {
+                    side
+                } else {
+                    let location = cartesian_point_location(
+                        polygon_shape,
+                        line_segment_midpoint(segment).point(),
+                    );
+                    let Some(side) = PolygonSide::from_location(location) else {
+                        return Ok(None);
+                    };
+                    side
+                };
+                current_side = Some(side);
+                let keep = if intersection {
+                    matches!(side, PolygonSide::Interior)
+                } else {
+                    matches!(side, PolygonSide::Exterior)
+                };
+                if keep {
+                    emit_line_piece(
+                        &mut current,
+                        &mut lines,
+                        segment.start,
+                        segment.end,
+                        atomicize_line_edges,
+                    )?;
+                } else {
+                    finish_line_piece(&mut current, &mut lines)?;
+                }
+                continue;
+            }
+            gather_line_cuts(
+                index,
+                segment,
+                &mut cut_events,
+                &overlap_events,
+                &mut overlap_cursor,
+                &mut cuts,
+                &mut unique_cuts,
+                &mut overlaps,
+                &parameter_zero,
+                &parameter_one,
+            )?;
+            boundary_contacts.extend(
+                cuts.iter()
+                    .filter(|cut| cut.on_boundary)
+                    .map(|cut| PointKey::new(cut.point.point())),
+            );
+            if outside_polygon_bounds {
+                for [start, end] in cuts.array_windows::<2>() {
+                    if crate::geometry::same_point(start.point, end.point) {
+                        return Ok(None);
+                    }
+                    emit_line_piece(
+                        &mut current,
+                        &mut lines,
+                        start.point,
+                        end.point,
+                        atomicize_line_edges,
+                    )?;
+                }
+                current_side = Some(PolygonSide::Exterior);
+                continue;
+            }
+            for [start, end] in cuts.array_windows::<2>() {
+                if crate::geometry::same_point(start.point, end.point) {
+                    return Ok(None);
+                }
+                let on_boundary = line_interval_is_boundary(
+                    start,
+                    end,
+                    &overlaps,
+                    &parameter_zero,
+                    &parameter_one,
+                )?;
+                let side = if on_boundary {
+                    None
+                } else if start.on_boundary || end.on_boundary {
+                    let midpoint = line_segment_midpoint(Segment {
+                        start: start.point,
+                        end: end.point,
+                    });
+                    PolygonSide::from_location(cartesian_point_location(
+                        polygon_shape,
+                        midpoint.point(),
+                    ))
+                } else {
+                    current_side.or_else(|| {
+                        let midpoint = line_segment_midpoint(Segment {
+                            start: start.point,
+                            end: end.point,
+                        });
+                        PolygonSide::from_location(cartesian_point_location(
+                            polygon_shape,
+                            midpoint.point(),
+                        ))
+                    })
+                };
+                let location = match (on_boundary, side) {
+                    (true, _) => Loc::Boundary,
+                    (false, Some(side)) => side.location(),
+                    (false, None) => return Ok(None),
+                };
+                current_side = side;
+                let keep = if intersection {
+                    location != Loc::Exterior
+                } else {
+                    location == Loc::Exterior
+                };
+                if keep {
+                    emit_line_piece(
+                        &mut current,
+                        &mut lines,
+                        start.point,
+                        end.point,
+                        atomicize_line_edges,
+                    )?;
+                } else {
+                    finish_line_piece(&mut current, &mut lines)?;
+                }
+            }
+        }
+        finish_line_piece(&mut current, &mut lines)?;
+    }
+
+    if operation == OverlayOp::Intersection && !boundary_contacts.is_empty() {
+        let mut retained_boundary_contacts =
+            HashSet::with_hasher(crate::collections::collection_hash_state()?.clone());
+        for line in &lines {
+            for point in line {
+                let key = PointKey::new(point);
+                if boundary_contacts.contains(&key) {
+                    retained_boundary_contacts.insert(key);
+                }
+            }
+        }
+        if retained_boundary_contacts.len() != boundary_contacts.len() {
+            return Ok(None);
+        }
+    }
+    if lines.is_empty() {
+        return Ok(Some(empty_nary_overlay_shape(inputs, operation)));
+    }
+    if deduplicate_line_edges {
+        lines = unique_line_edges(&lines)?;
+    }
+    let mut lines = merge_chains(&lines)?;
+    for line in &mut lines {
+        *line = dissolve_boundary_line_vertices(line, &boundary_contacts)?;
+    }
+    let shape = build_certified_overlay_shape(Vec::new(), lines, Vec::new())?;
+    let shape = carry_overlay_ordinates(shape, inputs, operation, strictness.is_strict())?;
+    shape.normalize().map(Some)
+}
+
+fn strictly_monotone_column(values: &[f64]) -> bool {
+    let Some([first, second]) = values.first_chunk::<2>() else {
+        return false;
+    };
+    let Some(first_ordering) = first.partial_cmp(second) else {
+        return false;
+    };
+    let increasing = first_ordering.is_lt();
+    if first_ordering.is_eq() {
+        return false;
+    }
+    values.array_windows::<2>().all(|[start, end]| {
+        let Some(ordering) = start.partial_cmp(end) else {
+            return false;
+        };
+        if ordering.is_eq() {
+            return false;
+        }
+        if increasing {
+            ordering.is_lt()
+        } else {
+            ordering.is_gt()
+        }
+    })
+}
+
+fn line_sequences(shape: &Shape) -> Option<Vec<&CoordSeq>> {
+    match shape {
+        Shape::LineString(line) => Some(vec![line.as_coords()]),
+        Shape::MultiLineString(lines) => Some(lines.iter().map(|line| line.as_coords()).collect()),
+        Shape::Empty(GeometryKind::LineString | GeometryKind::MultiLineString, _) => {
+            Some(Vec::new())
+        },
+        Shape::Point(_)
+        | Shape::MultiPoint(_)
+        | Shape::Polygon(_)
+        | Shape::MultiPolygon(_)
+        | Shape::GeometryCollection(_)
+        | Shape::Empty(
+            GeometryKind::Point
+            | GeometryKind::MultiPoint
+            | GeometryKind::Polygon
+            | GeometryKind::MultiPolygon
+            | GeometryKind::GeometryCollection,
+            _,
+        ) => None,
+    }
+}
+
+const fn is_line_operand(shape: &Shape) -> bool {
+    matches!(
+        shape,
+        Shape::LineString(_)
+            | Shape::MultiLineString(_)
+            | Shape::Empty(GeometryKind::LineString | GeometryKind::MultiLineString, _)
+    )
+}
+
+const fn is_polygon_operand(shape: &Shape) -> bool {
+    matches!(
+        shape,
+        Shape::Polygon(_)
+            | Shape::MultiPolygon(_)
+            | Shape::Empty(GeometryKind::Polygon | GeometryKind::MultiPolygon, _)
+    )
+}
+
+struct PolygonBoundarySegments {
+    segments: Vec<Segment>,
+    chains: Vec<u32>,
+}
+
+fn polygon_boundaries(shape: &Shape, first_chain: u32) -> Result<Option<PolygonBoundarySegments>> {
+    fn append_polygon(
+        polygon: &crate::geometry::Polygon,
+        segments: &mut Vec<Segment>,
+        chains: &mut Vec<u32>,
+        next_chain: &mut u32,
+    ) -> Result<bool> {
+        for ring in polygon.rings() {
+            if crate::geometry::ring_kind_columns(ring.xs(), ring.ys())
+                == crate::geometry::RingKind::Collapsed
+            {
+                return Ok(false);
+            }
+            let chain = *next_chain;
+            *next_chain = chain.checked_add(1).ok_or(ResourceError::SizeOverflow)?;
+            for [start, end] in ring.segment_pairs() {
+                segments.push(Segment {
+                    start: start.xy(),
+                    end: end.xy(),
+                });
+                chains.push(chain);
+            }
+        }
+        Ok(true)
+    }
+
+    let mut segments = Vec::new();
+    let mut chains = Vec::new();
+    let mut next_chain = first_chain;
+    match shape {
+        Shape::Polygon(polygon) => {
+            if !append_polygon(polygon, &mut segments, &mut chains, &mut next_chain)? {
+                return Ok(None);
+            }
+        },
+        Shape::MultiPolygon(polygons) => {
+            for polygon in polygons {
+                if !append_polygon(polygon, &mut segments, &mut chains, &mut next_chain)? {
+                    return Ok(None);
+                }
+            }
+        },
+        Shape::Empty(GeometryKind::Polygon | GeometryKind::MultiPolygon, _) => {},
+        Shape::Point(_)
+        | Shape::MultiPoint(_)
+        | Shape::LineString(_)
+        | Shape::MultiLineString(_)
+        | Shape::GeometryCollection(_)
+        | Shape::Empty(
+            GeometryKind::Point
+            | GeometryKind::MultiPoint
+            | GeometryKind::LineString
+            | GeometryKind::MultiLineString
+            | GeometryKind::GeometryCollection,
+            _,
+        ) => return Ok(None),
+    }
+    Ok(Some(PolygonBoundarySegments { segments, chains }))
+}
+
+struct LineCut {
+    parameter: SegmentParameter,
+    point: XY,
+    on_boundary: bool,
+}
+
+struct LineCutEvent {
+    source_segment: usize,
+    cut: LineCut,
+}
+
+#[derive(Clone)]
+struct LineBoundarySpan {
+    start: SegmentParameter,
+    end: SegmentParameter,
+}
+
+struct LineOverlapEvent {
+    source_segment: usize,
+    span: LineBoundarySpan,
+}
+
+struct LineContactEvents {
+    cut_events: Vec<LineCutEvent>,
+    overlap_events: Vec<LineOverlapEvent>,
+    deduplicate_line_edges: bool,
+    atomicize_line_edges: bool,
+}
+
+fn line_polygon_contact_events(
+    candidates: &[Segment],
+    chains: &[u32],
+    line_segment_count: usize,
+    line_is_monotone: bool,
+) -> Result<LineContactEvents> {
+    let mut cut_events = Vec::new();
+    let mut overlap_events = Vec::new();
+    let mut deduplicate_line_edges = false;
+    let candidate_flow: ControlFlow<crate::error::Error> = for_each_candidate_pair(
+        candidates,
+        |index| {
+            chains
+                .get(index)
+                .copied()
+                .expect("candidate index addresses the chain column")
+        },
+        |left, right| {
+            let (Some(&left_segment), Some(&right_segment)) =
+                (candidates.get(left), candidates.get(right))
+            else {
+                return ControlFlow::Break(
+                    GeometryErrorKind::Invalid(
+                        "segment candidate index escaped its source pool".into(),
+                    )
+                    .into(),
+                );
+            };
+            let left_is_line = left < line_segment_count;
+            let right_is_line = right < line_segment_count;
+            match (left_is_line, right_is_line) {
+                (false, false) => ControlFlow::Continue(()),
+                (true, true) if line_is_monotone => ControlFlow::Continue(()),
+                (true, true) => {
+                    let contact = segment_contact_exact(left_segment, right_segment);
+                    if let Contact::Collinear { span } = contact {
+                        deduplicate_line_edges |=
+                            !crate::geometry::same_point(span.start, span.end);
+                    }
+                    match push_line_self_contact(
+                        left,
+                        left_segment,
+                        right,
+                        right_segment,
+                        contact,
+                        &mut cut_events,
+                    ) {
+                        Ok(()) => ControlFlow::Continue(()),
+                        Err(error) => ControlFlow::Break(error),
+                    }
+                },
+                _ => {
+                    let (source_segment, line, boundary) = if left_is_line {
+                        (left, left_segment, right_segment)
+                    } else {
+                        (right, right_segment, left_segment)
+                    };
+                    let contact = segment_contact_exact(line, boundary);
+                    match push_line_polygon_contact(
+                        source_segment,
+                        line,
+                        boundary,
+                        contact,
+                        &mut cut_events,
+                        &mut overlap_events,
+                    ) {
+                        Ok(()) => ControlFlow::Continue(()),
+                        Err(error) => ControlFlow::Break(error),
+                    }
+                },
+            }
+        },
+    )?;
+    if let ControlFlow::Break(error) = candidate_flow {
+        return Err(error);
+    }
+    Ok(LineContactEvents {
+        cut_events,
+        overlap_events,
+        deduplicate_line_edges,
+        atomicize_line_edges: !line_is_monotone,
+    })
+}
+
+fn push_line_polygon_contact(
+    source_segment: usize,
+    line: Segment,
+    boundary: Segment,
+    contact: Contact,
+    cuts: &mut Vec<LineCutEvent>,
+    overlaps: &mut Vec<LineOverlapEvent>,
+) -> Result<()> {
+    match contact {
+        Contact::Disjoint => {},
+        Contact::Cross => {
+            let point = crossing_point(line, boundary)?.point;
+            push_line_cut(
+                cuts,
+                source_segment,
+                exact_crossing_parameter(line, boundary)?,
+                point,
+                true,
+            );
+        },
+        Contact::Touch { point } => {
+            push_line_cut(
+                cuts,
+                source_segment,
+                clip_segment_parameter(line, point)?,
+                point,
+                true,
+            );
+        },
+        Contact::Collinear { span } => {
+            let start = clip_segment_parameter(line, span.start)?;
+            let end = clip_segment_parameter(line, span.end)?;
+            push_line_cut(cuts, source_segment, start.clone(), span.start, true);
+            push_line_cut(cuts, source_segment, end.clone(), span.end, true);
+            if !crate::geometry::same_point(span.start, span.end) {
+                overlaps.push(LineOverlapEvent {
+                    source_segment,
+                    span: LineBoundarySpan { start, end },
+                });
+            }
+        },
+    }
+    Ok(())
+}
+
+fn push_line_self_contact(
+    left_source: usize,
+    left: Segment,
+    right_source: usize,
+    right: Segment,
+    contact: Contact,
+    cuts: &mut Vec<LineCutEvent>,
+) -> Result<()> {
+    match contact {
+        Contact::Disjoint => {},
+        Contact::Cross => {
+            let point = crossing_point(left, right)?.point;
+            push_line_cut(
+                cuts,
+                left_source,
+                exact_crossing_parameter(left, right)?,
+                point,
+                false,
+            );
+            push_line_cut(
+                cuts,
+                right_source,
+                exact_crossing_parameter(right, left)?,
+                point,
+                false,
+            );
+        },
+        Contact::Touch { point } => {
+            push_line_cut(
+                cuts,
+                left_source,
+                clip_segment_parameter(left, point)?,
+                point,
+                false,
+            );
+            push_line_cut(
+                cuts,
+                right_source,
+                clip_segment_parameter(right, point)?,
+                point,
+                false,
+            );
+        },
+        Contact::Collinear { span } => {
+            push_line_cut(
+                cuts,
+                left_source,
+                clip_segment_parameter(left, span.start)?,
+                span.start,
+                false,
+            );
+            push_line_cut(
+                cuts,
+                left_source,
+                clip_segment_parameter(left, span.end)?,
+                span.end,
+                false,
+            );
+            push_line_cut(
+                cuts,
+                right_source,
+                clip_segment_parameter(right, span.start)?,
+                span.start,
+                false,
+            );
+            push_line_cut(
+                cuts,
+                right_source,
+                clip_segment_parameter(right, span.end)?,
+                span.end,
+                false,
+            );
+        },
+    }
+    Ok(())
+}
+
+fn push_line_cut(
+    events: &mut Vec<LineCutEvent>,
+    source_segment: usize,
+    parameter: SegmentParameter,
+    point: XY,
+    on_boundary: bool,
+) {
+    events.push(LineCutEvent {
+        source_segment,
+        cut: LineCut {
+            parameter,
+            point,
+            on_boundary,
+        },
+    });
+}
+
+fn discard_line_events(
+    source_segment: usize,
+    cuts: &mut std::iter::Peekable<std::vec::IntoIter<LineCutEvent>>,
+    overlaps: &[LineOverlapEvent],
+    overlap_cursor: &mut usize,
+) {
+    while cuts
+        .peek()
+        .is_some_and(|event| event.source_segment == source_segment)
+    {
+        cuts.next();
+    }
+    while overlaps
+        .get(*overlap_cursor)
+        .is_some_and(|span| span.source_segment == source_segment)
+    {
+        *overlap_cursor = overlap_cursor.wrapping_add(1);
+    }
+}
+
+fn gather_line_cuts(
+    source_segment: usize,
+    segment: Segment,
+    cut_events: &mut std::iter::Peekable<std::vec::IntoIter<LineCutEvent>>,
+    overlap_events: &[LineOverlapEvent],
+    overlap_cursor: &mut usize,
+    cuts: &mut Vec<LineCut>,
+    unique_cuts: &mut Vec<LineCut>,
+    overlaps: &mut Vec<LineBoundarySpan>,
+    zero: &ExactDyadic,
+    one: &ExactDyadic,
+) -> Result<()> {
+    cuts.clear();
+    unique_cuts.clear();
+    overlaps.clear();
+    cuts.extend([
+        LineCut {
+            parameter: SegmentParameter::Start,
+            point: segment.start,
+            on_boundary: false,
+        },
+        LineCut {
+            parameter: SegmentParameter::End,
+            point: segment.end,
+            on_boundary: false,
+        },
+    ]);
+    while cut_events
+        .peek()
+        .is_some_and(|event| event.source_segment == source_segment)
+    {
+        cuts.push(cut_events.next().expect("peeked line cut event exists").cut);
+    }
+    let overlap_start = *overlap_cursor;
+    while overlap_events
+        .get(*overlap_cursor)
+        .is_some_and(|span| span.source_segment == source_segment)
+    {
+        *overlap_cursor = overlap_cursor.wrapping_add(1);
+    }
+    let overlap_end = *overlap_cursor;
+    for span in overlap_events
+        .get(overlap_start..overlap_end)
+        .ok_or_else(|| {
+            GeometryErrorKind::Invalid("line overlay overlap range escaped its event array".into())
+        })?
+    {
+        overlaps.push(span.span.clone());
+    }
+    sort_line_cuts(cuts, unique_cuts, zero, one)
+}
+
+fn sort_line_cuts(
+    cuts: &mut Vec<LineCut>,
+    unique: &mut Vec<LineCut>,
+    zero: &ExactDyadic,
+    one: &ExactDyadic,
+) -> Result<()> {
+    let mut comparison_error = None;
+    cuts.sort_unstable_by(|left, right| {
+        if comparison_error.is_some() {
+            return std::cmp::Ordering::Equal;
+        }
+        match left.parameter.cmp(&right.parameter, zero, one) {
+            Ok(std::cmp::Ordering::Equal) => left
+                .on_boundary
+                .cmp(&right.on_boundary)
+                .then_with(|| left.point.x.total_cmp(&right.point.x))
+                .then_with(|| left.point.y.total_cmp(&right.point.y)),
+            Ok(ordering) => ordering,
+            Err(error) => {
+                comparison_error = Some(error);
+                std::cmp::Ordering::Equal
+            },
+        }
+    });
+    if let Some(error) = comparison_error {
+        return Err(error);
+    }
+    unique.clear();
+    unique.reserve(cuts.len());
+    for cut in cuts.drain(..) {
+        if let Some(previous) = unique.last_mut()
+            && previous.parameter.cmp(&cut.parameter, zero, one)?.is_eq()
+        {
+            previous.on_boundary |= cut.on_boundary;
+        } else {
+            unique.push(cut);
+        }
+    }
+    std::mem::swap(cuts, unique);
+    unique.clear();
+    Ok(())
+}
+
+fn line_interval_is_boundary(
+    start: &LineCut,
+    end: &LineCut,
+    overlaps: &[LineBoundarySpan],
+    zero: &ExactDyadic,
+    one: &ExactDyadic,
+) -> Result<bool> {
+    for overlap in overlaps {
+        let orientation = overlap.start.cmp(&overlap.end, zero, one)?;
+        let (overlap_start, overlap_end) = if orientation.is_le() {
+            (&overlap.start, &overlap.end)
+        } else {
+            (&overlap.end, &overlap.start)
+        };
+        if start.parameter.cmp(overlap_start, zero, one)?.is_ge()
+            && end.parameter.cmp(overlap_end, zero, one)?.is_le()
+        {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+fn append_line_piece(
+    current: &mut Vec<Point>,
+    output: &mut Vec<CoordSeq>,
+    start: XY,
+    end: XY,
+) -> Result<()> {
+    if current
+        .last()
+        .is_some_and(|point| !crate::geometry::same_point(point.xy(), start))
+    {
+        finish_line_piece(current, output)?;
+    }
+    if current.is_empty() {
+        current.push(start.point());
+    }
+    if current
+        .last()
+        .is_none_or(|point| !crate::geometry::same_point(point.xy(), end))
+    {
+        current.push(end.point());
+    }
+    Ok(())
+}
+
+fn emit_line_piece(
+    current: &mut Vec<Point>,
+    output: &mut Vec<CoordSeq>,
+    start: XY,
+    end: XY,
+    atomic: bool,
+) -> Result<()> {
+    if atomic {
+        finish_line_piece(current, output)?;
+        output.push(CoordSeq::try_from_xy(&[start, end])?);
+        Ok(())
+    } else {
+        append_line_piece(current, output, start, end)
+    }
+}
+
+fn finish_line_piece(current: &mut Vec<Point>, output: &mut Vec<CoordSeq>) -> Result<()> {
+    if current.len() >= 2 {
+        output.push(CoordSeq::try_from_points(current)?);
+    }
+    current.clear();
+    Ok(())
+}
+
+fn unique_line_edges(lines: &[CoordSeq]) -> Result<Vec<CoordSeq>> {
+    let mut seen = HashSet::with_hasher(crate::collections::collection_hash_state()?.clone());
+    let mut unique = Vec::new();
+    for line in lines {
+        for [start, end] in line.segment_pairs() {
+            let segment = Segment {
+                start: start.xy(),
+                end: end.xy(),
+            };
+            if !seen.insert(undirected_segment_edge_key(segment)) {
+                continue;
+            }
+            u32::try_from(unique.len()).map_err(|_| ResourceError::SizeOverflow)?;
+            unique.push(segment);
+        }
+    }
+    let mut edges = Vec::with_capacity(unique.len());
+    for segment in unique {
+        edges.push(CoordSeq::try_from_xy(&[segment.start, segment.end])?);
+    }
+    Ok(edges)
+}
+
+/// The exact emitter dissolves a collinear line node when a polygon ring also
+/// passes through it; off-ring line vertices remain protected.
+fn dissolve_boundary_line_vertices(
+    line: &CoordSeq,
+    boundary_points: &HashSet<PointKey>,
+) -> Result<CoordSeq> {
+    let points: Vec<_> = line.iter().collect();
+    if let Some((&closing, open)) = points.split_last()
+        && open
+            .first()
+            .is_some_and(|&first| crate::geometry::same_point(first, closing))
+    {
+        let mut cycle = open.to_vec();
+        loop {
+            if cycle.len() <= 3 {
+                break;
+            }
+            let first = cycle
+                .first()
+                .copied()
+                .expect("cycle has at least four points");
+            let mut previous = cycle
+                .last()
+                .copied()
+                .expect("cycle has at least four points");
+            let next_points = cycle.iter().copied().skip(1).chain(std::iter::once(first));
+            let mut removable = None;
+            for (index, (point, next)) in cycle.iter().copied().zip(next_points).enumerate() {
+                if boundary_points.contains(&PointKey::new(point))
+                    && point_on_segment(point, previous, next)
+                {
+                    removable = Some(index);
+                    break;
+                }
+                previous = point;
+            }
+            match removable {
+                Some(index) => {
+                    cycle.remove(index);
+                },
+                None => break,
+            }
+        }
+        if let Some(&first) = cycle.first() {
+            cycle.push(first);
+        }
+        return CoordSeq::try_from_points(&cycle);
+    }
+
+    let Some((&first, remaining)) = points.split_first() else {
+        return Ok(line.clone());
+    };
+    let mut kept = Vec::with_capacity(points.len());
+    kept.push(first);
+    for next in remaining.iter().copied() {
+        while let [.., previous, point] = kept.as_slice() {
+            if !boundary_points.contains(&PointKey::new(*point))
+                || !point_on_segment(*point, *previous, next)
+            {
+                break;
+            }
+            kept.pop();
+        }
+        kept.push(next);
+    }
+    CoordSeq::try_from_points(&kept)
 }
 
 /// Independently partitioned results retain one common ordinate axis per
@@ -319,6 +1583,30 @@ fn exact_partition_overlay(
     inventory.overlay_shape(&partition, operation, declared_axes, strict)
 }
 
+#[cfg(test)]
+pub(super) fn full_partition_cartesian_overlay(
+    inputs: &[&Shape],
+    operation: OverlayOp,
+    strictness: Strictness,
+) -> Result<Shape> {
+    let mut inputs = inputs.to_vec();
+    sort_overlay_inputs!(inputs, operation);
+    let inputs = inputs.as_slice();
+    let shape = exact_partition_overlay(
+        inputs,
+        operation,
+        overlay_declared_axes(inputs, operation),
+        strictness.is_strict(),
+        false,
+        ExactPartitionBudget::Charge,
+    )?;
+    Ok(if shape.is_empty() {
+        empty_nary_overlay_shape(inputs, operation)
+    } else {
+        shape.normalize()?
+    })
+}
+
 /// Voronoi owns the published-output budget for these intermediate clips.
 pub(in crate::geometry) fn binary_cartesian_overlay_without_partition_budget(
     left: &Shape,
@@ -326,9 +1614,21 @@ pub(in crate::geometry) fn binary_cartesian_overlay_without_partition_budget(
     operation: VoronoiIntermediateOverlay,
     strictness: Strictness,
 ) -> Result<Shape> {
+    let operation = operation.operation();
+    let mut inputs = vec![left, right];
+    if let Some(lane) = cartesian_binary_lane!(left, right, operation) {
+        return exact_cartesian_binary_overlay(
+            inputs.as_mut_slice(),
+            lane,
+            operation,
+            strictness,
+            true,
+            ExactPartitionBudget::Ignore,
+        );
+    }
     exact_cartesian_overlay(
-        vec![left, right],
-        operation.operation(),
+        inputs,
+        operation,
         strictness,
         true,
         ExactPartitionBudget::Ignore,
@@ -578,7 +1878,7 @@ pub(crate) const fn empty_shape_for_dimension_with_axes(
 mod geographic_chart_route_tests {
     use super::*;
     use crate::geographic::GeographicFrame;
-    use crate::geometry::{Point, Polygon, Ring, graph_relate_shapes};
+    use crate::geometry::{Polygon, Ring, graph_relate_shapes};
 
     fn rectangle(west: f64, south: f64, east: f64, north: f64) -> Shape {
         let points = [

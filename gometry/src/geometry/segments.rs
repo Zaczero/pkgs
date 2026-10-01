@@ -994,6 +994,30 @@ pub(in crate::geometry) fn clip_segment_parameter(
     })
 }
 
+/// Exact source parameter of a proper crossing, without first rounding the
+/// crossing coordinates. Linework consumers that order constructed contacts
+/// must not derive that order from the emitted binary64 witness.
+pub(in crate::geometry) fn exact_crossing_parameter(
+    segment: Segment,
+    other: Segment,
+) -> Result<SegmentParameter> {
+    let [x, y, weight] = crossing_homogeneous(segment, other)?;
+    let use_x = !same_topological_coordinate(segment.start.x, segment.end.x);
+    let (coordinate, start, end) = if use_x {
+        (x, segment.start.x, segment.end.x)
+    } else {
+        (y, segment.start.y, segment.end.y)
+    };
+    let start = ExactDyadic::from_f64(start);
+    let denominator =
+        weight.try_product(&ExactDyadic::from_f64(end).try_subtract(start.clone())?)?;
+    let numerator = coordinate.try_subtract(weight.try_product(&start)?)?;
+    Ok(SegmentParameter::Ratio {
+        num: numerator,
+        den: denominator,
+    })
+}
+
 fn clip_segment_edge_cross_exact(
     segment: Segment,
     edge_start: XY,

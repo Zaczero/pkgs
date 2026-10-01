@@ -88,7 +88,11 @@ impl OrdinateSource {
                 continue;
             }
             shape.for_each_vertex_pair(|start, end| {
-                if !same_point(start, end) {
+                if same_point(start, end) {
+                    // A collapsed source edge still contributes both endpoint occurrences.
+                    add_vertex(&mut result.vertices, start);
+                    add_vertex(&mut result.vertices, end);
+                } else {
                     result.add_source_edge(start, end);
                 }
             });

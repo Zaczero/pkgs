@@ -223,7 +223,7 @@ pub(crate) use predicates::{
     shape_reaches_geographic_pole_in_frame,
 };
 pub(in crate::geometry) use segments::{
-    DdInterval, SegmentParameter, clip_segment_parameter, dd_strict_cmp,
+    DdInterval, SegmentParameter, clip_segment_parameter, dd_strict_cmp, exact_crossing_parameter,
 };
 #[cfg(test)]
 pub(crate) use util::dedup_consecutive_xy;

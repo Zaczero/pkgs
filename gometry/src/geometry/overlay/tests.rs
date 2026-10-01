@@ -36,6 +36,117 @@ fn shape_wkb(shape: &Shape) -> Vec<u8> {
     crate::io::to_wkb(shape, None, false).expect("shared-set result writes WKB")
 }
 
+fn test_line(points: &[(f64, f64)]) -> Shape {
+    let points: Vec<_> = points.iter().map(|&(x, y)| XY::new(x, y)).collect();
+    Shape::LineString(LineSeq::from_proven(
+        CoordSeq::try_from_xy(&points).expect("test line coordinates are admitted"),
+    ))
+}
+
+fn test_square(minx: f64, miny: f64, maxx: f64, maxy: f64) -> Shape {
+    let points = [
+        XY::new(minx, miny),
+        XY::new(maxx, miny),
+        XY::new(maxx, maxy),
+        XY::new(minx, maxy),
+        XY::new(minx, miny),
+    ];
+    Shape::Polygon(Polygon::new(
+        Ring::try_from_closed(
+            CoordSeq::try_from_xy(&points).expect("test square coordinates are admitted"),
+        )
+        .expect("test square ring is closed"),
+        Vec::new(),
+    ))
+}
+
+fn test_ring(points: &[(f64, f64)]) -> Ring {
+    let points: Vec<_> = points.iter().map(|&(x, y)| XY::new(x, y)).collect();
+    Ring::try_from_closed(
+        CoordSeq::try_from_xy(&points).expect("test ring coordinates are admitted"),
+    )
+    .expect("test ring is closed")
+}
+
+fn point_part(shape: &Shape) -> Option<&Shape> {
+    match shape {
+        Shape::Point(_)
+        | Shape::MultiPoint(_)
+        | Shape::Empty(GeometryKind::Point | GeometryKind::MultiPoint, _) => Some(shape),
+        Shape::GeometryCollection(collection) => collection.iter().find_map(point_part),
+        Shape::LineString(_)
+        | Shape::MultiLineString(_)
+        | Shape::Polygon(_)
+        | Shape::MultiPolygon(_)
+        | Shape::Empty(..) => None,
+    }
+}
+
+fn assert_puntal_points_match_partition(
+    name: &str,
+    left: &Shape,
+    right: &Shape,
+    operation: OverlayOp,
+    strictness: Strictness,
+) {
+    let actual = overlay_all(
+        &[left, right],
+        TopologyDomain::Cartesian,
+        operation,
+        strictness,
+    );
+    let expected =
+        super::nary::full_partition_cartesian_overlay(&[left, right], operation, strictness);
+    match (actual, expected) {
+        (Ok(actual), Ok(expected)) => {
+            let actual_points = point_part(&actual).map(shape_wkb);
+            let expected_points = point_part(&expected).map(shape_wkb);
+            assert_eq!(
+                actual_points, expected_points,
+                "{name}: {actual:?} != {expected:?}"
+            );
+        },
+        (Err(actual), Err(expected)) => {
+            assert_eq!(actual.to_string(), expected.to_string(), "{name}");
+        },
+        (actual, expected) => {
+            panic!("{name}: actual={actual:?}, full partition={expected:?}");
+        },
+    }
+}
+
+fn assert_overlay_matches_full_partition(
+    name: &str,
+    left: &Shape,
+    right: &Shape,
+    operation: OverlayOp,
+    strictness: Strictness,
+) {
+    let actual = overlay_all(
+        &[left, right],
+        TopologyDomain::Cartesian,
+        operation,
+        strictness,
+    );
+    let expected =
+        super::nary::full_partition_cartesian_overlay(&[left, right], operation, strictness);
+    match (actual, expected) {
+        (Ok(actual), Ok(expected)) => {
+            assert_eq!(
+                shape_wkb(&actual),
+                shape_wkb(&expected),
+                "{name}: {actual:?} != {expected:?}"
+            );
+        },
+        (Err(actual), Err(expected)) => {
+            assert_eq!(actual.to_string(), expected.to_string(), "{name}");
+        },
+        (actual, expected) => {
+            panic!("{name}: actual={actual:?}, full partition={expected:?}");
+        },
+    }
+}
+
 fn subdivision_wkb(shape: &Shape) -> Vec<Vec<u8>> {
     shape
         .subdivide(8, false)
@@ -47,6 +158,462 @@ fn subdivision_wkb(shape: &Shape) -> Vec<Vec<u8>> {
 
 fn shapes_wkb(shapes: &[Shape]) -> Vec<Vec<u8>> {
     shapes.iter().map(shape_wkb).collect()
+}
+
+#[test]
+fn point_overlays_match_full_partition_across_polygon_locations() {
+    let carrier =
+        crate::io::parse_wkt("POLYGON ((0 0,6 0,6 6,0 6,0 0),(2 2,4 2,4 4,2 4,2 2))").unwrap();
+    let cases = [
+        ("interior", Point::new_raw_xy(1.0, 1.0), true),
+        ("shell boundary", Point::new_raw_xy(0.0, 3.0), true),
+        ("shell vertex", Point::new_raw_xy(0.0, 0.0), true),
+        ("hole interior", Point::new_raw_xy(3.0, 3.0), false),
+        ("hole boundary", Point::new_raw_xy(2.0, 3.0), true),
+        ("exterior", Point::new_raw_xy(7.0, 3.0), false),
+    ];
+    for (name, point, covered) in cases {
+        let point_shape = Shape::Point(point);
+        assert_puntal_points_match_partition(
+            name,
+            &point_shape,
+            &carrier,
+            OverlayOp::Intersection,
+            Strictness::Lenient,
+        );
+        let intersection = overlay_all(
+            &[&point_shape, &carrier],
+            TopologyDomain::Cartesian,
+            OverlayOp::Intersection,
+            Strictness::Lenient,
+        )
+        .unwrap();
+        assert_eq!(
+            point_part(&intersection).is_some_and(|part| !part.is_empty()),
+            covered,
+            "{name}: {intersection:?}"
+        );
+        assert_puntal_points_match_partition(
+            name,
+            &point_shape,
+            &carrier,
+            OverlayOp::Difference,
+            Strictness::Lenient,
+        );
+    }
+}
+
+#[test]
+fn point_set_overlays_match_full_partition_for_duplicates_and_ordinates() {
+    let left = Shape::MultiPoint(
+        vec![
+            Point::new_axes(0.0, 0.0, ZOrdinate(Some(3.0)), MOrdinate(Some(30.0))).unwrap(),
+            Point::new_axes(0.0, 0.0, ZOrdinate(Some(3.0)), MOrdinate(Some(30.0))).unwrap(),
+            Point::new_axes(2.0, 2.0, ZOrdinate(Some(5.0)), MOrdinate(Some(50.0))).unwrap(),
+        ]
+        .into(),
+    );
+    let right = Shape::MultiPoint(
+        vec![
+            Point::new_axes(0.0, 0.0, ZOrdinate(Some(3.0)), MOrdinate(Some(30.0))).unwrap(),
+            Point::new_axes(4.0, 4.0, ZOrdinate(Some(7.0)), MOrdinate(Some(70.0))).unwrap(),
+        ]
+        .into(),
+    );
+    for operation in [
+        OverlayOp::Intersection,
+        OverlayOp::Union,
+        OverlayOp::Difference,
+        OverlayOp::SymmetricDifference,
+    ] {
+        assert_puntal_points_match_partition(
+            "XYZM point sets with duplicate coordinates",
+            &left,
+            &right,
+            operation,
+            Strictness::Lenient,
+        );
+    }
+
+    let conflicting = Shape::MultiPoint(
+        vec![
+            Point::new_axes(0.0, 0.0, ZOrdinate(Some(9.0)), MOrdinate(Some(30.0))).unwrap(),
+            Point::new_axes(2.0, 2.0, ZOrdinate(Some(5.0)), MOrdinate(Some(50.0))).unwrap(),
+        ]
+        .into(),
+    );
+    for strictness in [Strictness::Strict, Strictness::Lenient] {
+        assert_puntal_points_match_partition(
+            "conflicting duplicate Z",
+            &left,
+            &conflicting,
+            OverlayOp::Union,
+            strictness,
+        );
+    }
+}
+
+#[test]
+fn puntal_collections_and_empty_operands_match_full_partition_points() {
+    let inner = Shape::geometry_collection(vec![
+        Shape::MultiPoint(vec![Point::new_raw_xy(1.0, 1.0), Point::new_raw_xy(2.0, 3.0)].into()),
+        Shape::Point(Point::new_raw_xy(5.0, 5.0)),
+    ])
+    .unwrap();
+    let points = Shape::geometry_collection(vec![inner.clone(), inner]).unwrap();
+    let carrier = crate::io::parse_wkt(
+        "GEOMETRYCOLLECTION (POLYGON ((0 0,6 0,6 6,0 6,0 0),(2 2,4 2,4 4,2 4,2 2)), LINESTRING (0 3,6 3))",
+    )
+    .unwrap();
+    for operation in [
+        OverlayOp::Intersection,
+        OverlayOp::Union,
+        OverlayOp::Difference,
+        OverlayOp::SymmetricDifference,
+    ] {
+        assert_puntal_points_match_partition(
+            "shared point collection against mixed carrier",
+            &points,
+            &carrier,
+            operation,
+            Strictness::Lenient,
+        );
+    }
+    assert_puntal_points_match_partition(
+        "shared point collection difference order",
+        &carrier,
+        &points,
+        OverlayOp::Difference,
+        Strictness::Lenient,
+    );
+
+    let empty_points = Shape::typed_empty(GeometryKind::MultiPoint, CoordinateAxes::XYZM);
+    let empty_polygon = Shape::typed_empty(GeometryKind::Polygon, CoordinateAxes::XYZM);
+    for (left, right, operation) in [
+        (&empty_points, &carrier, OverlayOp::Intersection),
+        (&empty_points, &empty_polygon, OverlayOp::Intersection),
+        (&empty_points, &carrier, OverlayOp::Difference),
+        (&empty_points, &carrier, OverlayOp::Union),
+        (&empty_points, &carrier, OverlayOp::SymmetricDifference),
+    ] {
+        assert_puntal_points_match_partition(
+            "typed empty point operand",
+            left,
+            right,
+            operation,
+            Strictness::Lenient,
+        );
+    }
+    let result = overlay_all(
+        &[&empty_points, &empty_polygon],
+        TopologyDomain::Cartesian,
+        OverlayOp::Intersection,
+        Strictness::Lenient,
+    )
+    .unwrap();
+    assert_eq!(
+        result,
+        Shape::typed_empty(GeometryKind::Point, CoordinateAxes::XYZM)
+    );
+}
+
+#[test]
+fn point_overlays_preserve_the_nonpoint_operand_verbatim() {
+    let polygon = crate::io::parse_wkt("POLYGON ((4 0,2 0,0 0,0 4,4 4,4 0))").unwrap();
+    assert_ne!(
+        shape_wkb(&polygon),
+        shape_wkb(&polygon.normalize().unwrap())
+    );
+    let interior = Shape::Point(Point::new_raw_xy(1.0, 1.0));
+    for operation in [
+        OverlayOp::Union,
+        OverlayOp::SymmetricDifference,
+        OverlayOp::Difference,
+    ] {
+        let result = overlay_all(
+            &[&polygon, &interior],
+            TopologyDomain::Cartesian,
+            operation,
+            Strictness::Lenient,
+        )
+        .unwrap();
+        assert_eq!(shape_wkb(&result), shape_wkb(&polygon), "{operation:?}");
+    }
+
+    let exterior = Shape::Point(Point::new_raw_xy(8.0, 1.0));
+    for operation in [OverlayOp::Union, OverlayOp::SymmetricDifference] {
+        let result = overlay_all(
+            &[&polygon, &exterior],
+            TopologyDomain::Cartesian,
+            operation,
+            Strictness::Lenient,
+        )
+        .unwrap();
+        let Shape::GeometryCollection(parts) = result else {
+            panic!("outside point and polygon produce a mixed result: {result:?}");
+        };
+        let output_polygon = parts
+            .iter()
+            .find(|part| matches!(part, Shape::Polygon(_) | Shape::MultiPolygon(_)))
+            .expect("polygon result part");
+        assert_eq!(
+            shape_wkb(output_polygon),
+            shape_wkb(&polygon),
+            "{operation:?}"
+        );
+    }
+
+    // An absorbed point with conflicting Z does not re-resolve the stored
+    // higher-dimensional operand that passes through the operation.
+    let xyz_polygon = crate::io::parse_wkt(
+        "POLYGON ZM ((4 0 14 140, 2 0 12 120, 0 0 10 100, 0 4 20 200, 4 4 18 180, 4 0 14 140))",
+    )
+    .unwrap();
+    let conflicting_boundary = Shape::Point(
+        Point::new_axes(2.0, 0.0, ZOrdinate(Some(99.0)), MOrdinate(Some(120.0))).unwrap(),
+    );
+    for (left, right, operation) in [
+        (&xyz_polygon, &conflicting_boundary, OverlayOp::Union),
+        (
+            &xyz_polygon,
+            &conflicting_boundary,
+            OverlayOp::SymmetricDifference,
+        ),
+        (&xyz_polygon, &conflicting_boundary, OverlayOp::Difference),
+    ] {
+        let result = overlay_all(
+            &[left, right],
+            TopologyDomain::Cartesian,
+            operation,
+            Strictness::Strict,
+        )
+        .unwrap();
+        assert_eq!(shape_wkb(&result), shape_wkb(&xyz_polygon), "{operation:?}");
+    }
+
+    let collection = Shape::geometry_collection(vec![polygon]).unwrap();
+    for operation in [OverlayOp::Union, OverlayOp::SymmetricDifference] {
+        let result = overlay_all(
+            &[&collection, &exterior],
+            TopologyDomain::Cartesian,
+            operation,
+            Strictness::Lenient,
+        )
+        .unwrap();
+        let Shape::GeometryCollection(parts) = result else {
+            panic!("outside point and collection produce a mixed result: {result:?}");
+        };
+        assert!(
+            parts
+                .iter()
+                .any(|part| shape_wkb(part) == shape_wkb(&collection)),
+            "{operation:?}: the pass-through collection changed: {parts:?}"
+        );
+    }
+}
+
+#[test]
+fn union_all_preserves_a_box_when_an_interior_point_is_absorbed() {
+    let box_shape = crate::io::parse_wkt("POLYGON ((4 0,2 0,0 0,0 4,4 4,4 0))").unwrap();
+    assert_ne!(
+        shape_wkb(&box_shape),
+        shape_wkb(&box_shape.normalize().unwrap())
+    );
+    let point = Shape::Point(Point::new_raw_xy(1.0, 1.0));
+
+    let result = Shape::union_all(&[box_shape.clone(), point], Strictness::Lenient).unwrap();
+
+    assert_eq!(shape_wkb(&result), shape_wkb(&box_shape));
+}
+
+#[test]
+fn point_union_preserves_a_max_depth_collection_without_exceeding_the_limit() {
+    let polygon = crate::io::parse_wkt("POLYGON ((0 0,2 0,2 2,0 2,0 0))").unwrap();
+    let mut collection = polygon.clone();
+    for _ in 0..MAX_NESTING {
+        collection = Shape::geometry_collection(vec![collection]).unwrap();
+    }
+    assert_eq!(collection.nesting_depth(), MAX_NESTING);
+
+    let exterior = Shape::Point(Point::new_raw_xy(8.0, 1.0));
+    let result = overlay_all(
+        &[&collection, &exterior],
+        TopologyDomain::Cartesian,
+        OverlayOp::Union,
+        Strictness::Lenient,
+    )
+    .unwrap();
+    assert_eq!(result.nesting_depth(), MAX_NESTING);
+    let Shape::GeometryCollection(parts) = &result else {
+        panic!("outside point and maximum-depth collection produce a mixed result: {result:?}");
+    };
+    let mut parts = parts.iter();
+    assert!(matches!(parts.next(), Some(Shape::Point(_))));
+    let mut pass_through = parts.next().expect("collection pass-through member");
+    assert!(parts.next().is_none());
+    assert_eq!(pass_through.nesting_depth(), MAX_NESTING.saturating_sub(1));
+    while let Shape::GeometryCollection(children) = pass_through {
+        let mut members = children.iter();
+        pass_through = members.next().expect("single nested collection member");
+        assert!(members.next().is_none());
+    }
+    assert_eq!(shape_wkb(pass_through), shape_wkb(&polygon));
+}
+
+#[test]
+fn line_polygon_overlays_match_full_partition_wkb() {
+    let square = test_square(0.0, 0.0, 4.0, 4.0);
+    let holed = Shape::Polygon(Polygon::new(
+        test_ring(&[(0.0, 0.0), (8.0, 0.0), (8.0, 8.0), (0.0, 8.0), (0.0, 0.0)]),
+        vec![test_ring(&[
+            (3.0, 3.0),
+            (5.0, 3.0),
+            (5.0, 5.0),
+            (3.0, 5.0),
+            (3.0, 3.0),
+        ])],
+    ));
+    let cases = [
+        (
+            "crossing with source vertices",
+            square.clone(),
+            test_line(&[(-1.0, 2.0), (1.0, 2.0), (3.0, 2.0), (5.0, 2.0)]),
+        ),
+        (
+            "touch at polygon vertex",
+            square.clone(),
+            test_line(&[(-1.0, -1.0), (0.0, 0.0)]),
+        ),
+        (
+            "collinear polygon edge",
+            square.clone(),
+            test_line(&[(-1.0, 0.0), (2.0, 0.0), (5.0, 0.0)]),
+        ),
+        (
+            "line entirely inside",
+            square.clone(),
+            test_line(&[(1.0, 1.0), (2.0, 2.0), (3.0, 3.0)]),
+        ),
+        (
+            "line entirely outside",
+            square.clone(),
+            test_line(&[(-3.0, 5.0), (-2.0, 6.0)]),
+        ),
+        (
+            "line through a hole",
+            holed,
+            test_line(&[(-1.0, 4.0), (2.0, 4.0), (4.0, 4.0), (9.0, 4.0)]),
+        ),
+        (
+            "nearest-rounded rational crossing",
+            Shape::Polygon(Polygon::new(
+                test_ring(&[(0.0, 0.0), (5.0, 0.0), (0.0, 5.0), (0.0, 0.0)]),
+                Vec::new(),
+            )),
+            test_line(&[(-1.0, 1.0), (5.0, 4.0)]),
+        ),
+        (
+            "collinear sloped boundary",
+            Shape::Polygon(Polygon::new(
+                test_ring(&[(0.0, 0.0), (5.0, 5.0), (0.0, 5.0), (0.0, 0.0)]),
+                Vec::new(),
+            )),
+            test_line(&[(-1.0, -1.0), (2.5, 2.5), (6.0, 6.0)]),
+        ),
+        (
+            "collapsed shell trimmed by an areal hole",
+            Shape::Polygon(Polygon::new(
+                test_ring(&[(0.0, 0.0), (10.0, 0.0), (5.0, 0.0), (0.0, 0.0)]),
+                vec![test_ring(&[
+                    (2.0, -1.0),
+                    (8.0, -1.0),
+                    (8.0, 1.0),
+                    (2.0, 1.0),
+                    (2.0, -1.0),
+                ])],
+            )),
+            test_line(&[(4.0, 0.0), (6.0, 0.0)]),
+        ),
+        (
+            "self-crossing line",
+            square.clone(),
+            test_line(&[(-1.0, 1.0), (5.0, 5.0), (-1.0, 5.0), (5.0, 1.0)]),
+        ),
+        (
+            "reversed overlapping line segments",
+            square.clone(),
+            test_line(&[(-1.0, 2.0), (3.0, 2.0), (-1.0, 2.0), (5.0, 2.0)]),
+        ),
+        (
+            "zero-length line",
+            square.clone(),
+            test_line(&[(1.0, 1.0), (1.0, 1.0)]),
+        ),
+        (
+            "tangent vertex",
+            square,
+            test_line(&[(-1.0, 1.0), (1.0, -1.0)]),
+        ),
+    ];
+    for (name, polygon, line) in cases {
+        for (left, right) in [(&line, &polygon), (&polygon, &line)] {
+            assert_overlay_matches_full_partition(
+                name,
+                left,
+                right,
+                OverlayOp::Intersection,
+                Strictness::Lenient,
+            );
+        }
+        assert_overlay_matches_full_partition(
+            name,
+            &line,
+            &polygon,
+            OverlayOp::Difference,
+            Strictness::Lenient,
+        );
+    }
+
+    let xyzm_polygon = crate::io::parse_wkt(
+        "POLYGON ZM ((0 0 10 100, 4 0 10 100, 4 4 10 100, 0 4 10 100, 0 0 10 100))",
+    )
+    .unwrap();
+    let xyzm_line = crate::io::parse_wkt("LINESTRING ZM (-1 2 1 11, 5 2 5 15)").unwrap();
+    for strictness in [Strictness::Strict, Strictness::Lenient] {
+        assert_overlay_matches_full_partition(
+            "XYZM line crossing",
+            &xyzm_line,
+            &xyzm_polygon,
+            OverlayOp::Intersection,
+            strictness,
+        );
+        assert_overlay_matches_full_partition(
+            "XYZM line difference",
+            &xyzm_line,
+            &xyzm_polygon,
+            OverlayOp::Difference,
+            strictness,
+        );
+    }
+
+    let xyzm_overlapping_line =
+        crate::io::parse_wkt("LINESTRING ZM (-1 2 0 10, 3 2 4 20, -1 2 8 30, 5 2 12 40)").unwrap();
+    for strictness in [Strictness::Strict, Strictness::Lenient] {
+        assert_overlay_matches_full_partition(
+            "XYZM reversed and partial overlapping line intersection",
+            &xyzm_overlapping_line,
+            &xyzm_polygon,
+            OverlayOp::Intersection,
+            strictness,
+        );
+        assert_overlay_matches_full_partition(
+            "XYZM reversed and partial overlapping line difference",
+            &xyzm_overlapping_line,
+            &xyzm_polygon,
+            OverlayOp::Difference,
+            strictness,
+        );
+    }
 }
 
 fn assert_shared_set_overlay_identity(name: &str, depth: usize) {
