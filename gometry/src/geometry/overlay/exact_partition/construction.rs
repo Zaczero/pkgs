@@ -660,6 +660,7 @@ fn partition_unique_segments_with_budget<'a>(
         extra: &extra_handles,
     };
     let mut pair_error = None;
+    let mut has_overlaps = false;
     #[cfg(test)]
     let candidate_phase =
         crate::test_support::allocation_phase(crate::test_support::AllocationPhase::CandidatePairs);
@@ -676,7 +677,10 @@ fn partition_unique_segments_with_budget<'a>(
             &mut forest,
             windowed.map(|(_, bounds)| bounds),
         ) {
-            Ok(()) => ControlFlow::Continue(()),
+            Ok(overlap) => {
+                has_overlaps |= overlap;
+                ControlFlow::Continue(())
+            },
             Err(error) => {
                 pair_error = Some(error);
                 ControlFlow::Break(())
@@ -873,7 +877,8 @@ fn partition_unique_segments_with_budget<'a>(
         .iter()
         .filter(|segment| !same_point(segment.start, segment.end))
         .count();
-    let (spans, atom_provenance) = aggregate_atoms(intervals, provenance, baseline, budget)?;
+    let (spans, atom_provenance) =
+        aggregate_atoms(intervals, provenance, baseline, has_overlaps, budget)?;
 
     let mut degree = vec![0_u32; node_count];
     #[expect(
@@ -944,7 +949,7 @@ pub(super) fn visit_pool_pair(
     contacts: &mut Vec<(u32, u32)>,
     forest: &mut Forest<'_>,
     window: Option<Bounds>,
-) -> Result<()> {
+) -> Result<bool> {
     let count = unique.len();
     match (left < count, right < count) {
         (true, true) => classify_pair_into(unique, left, right, handles, contacts, forest, window),
@@ -955,7 +960,8 @@ pub(super) fn visit_pool_pair(
             handles.extra[right.wrapping_sub(count)],
             contacts,
             window,
-        ),
+        )
+        .map(|()| false),
         (false, true) => push_point_on_source(
             unique[right],
             right,
@@ -963,8 +969,9 @@ pub(super) fn visit_pool_pair(
             handles.extra[left.wrapping_sub(count)],
             contacts,
             window,
-        ),
-        (false, false) => Ok(()),
+        )
+        .map(|()| false),
+        (false, false) => Ok(false),
     }
 }
 
@@ -1057,17 +1064,19 @@ pub(super) fn classify_pair_into(
     contacts: &mut Vec<(u32, u32)>,
     forest: &mut Forest<'_>,
     window: Option<Bounds>,
-) -> Result<()> {
+) -> Result<bool> {
     let a = unique[left];
     let b = unique[right];
     if same_point(a.start, a.end) {
-        return push_point_on_source(b, right, a.start, handles.start[left], contacts, window);
+        return push_point_on_source(b, right, a.start, handles.start[left], contacts, window)
+            .map(|()| false);
     }
     if same_point(b.start, b.end) {
-        return push_point_on_source(a, left, b.start, handles.start[right], contacts, window);
+        return push_point_on_source(a, left, b.start, handles.start[right], contacts, window)
+            .map(|()| false);
     }
     if segment_envelopes_disjoint(a, b) {
-        return Ok(());
+        return Ok(false);
     }
     #[cfg(test)]
     let _contact_phase = crate::test_support::allocation_phase(
@@ -1089,20 +1098,20 @@ pub(super) fn classify_pair_into(
     let shared = |point: XY| same_point(point, a.start) || same_point(point, a.end);
     let unshared = match (shared(b.start), shared(b.end)) {
         // Unique segments never repeat, so this is `a` itself.
-        (true, true) => return Ok(()),
+        (true, true) => return Ok(false),
         (true, false) => Some(b.end),
         (false, true) => Some(b.start),
         (false, false) => None,
     };
     if let Some(other) = unshared {
         if orient(a, other) == ExactSign::Zero {
-            return push_overlap([a, b], [left, right], handles, contacts, window);
+            return push_overlap([a, b], [left, right], handles, contacts, window).map(|()| true);
         }
-        return Ok(());
+        return Ok(false);
     }
     let (o_b0, o_b1) = (orient(a, b.start), orient(a, b.end));
     if o_b0 == ExactSign::Zero && o_b1 == ExactSign::Zero {
-        return push_overlap([a, b], [left, right], handles, contacts, window);
+        return push_overlap([a, b], [left, right], handles, contacts, window).map(|()| true);
     }
     // One endpoint on the other carrier: a touch when it lies strictly
     // inside, otherwise the segments do not meet.
@@ -1121,7 +1130,7 @@ pub(super) fn classify_pair_into(
             {
                 push_contact(contacts, index, handle)?;
             }
-            return Ok(());
+            return Ok(false);
         }
     }
     let (o_a0, o_a1) = (orient(b, a.start), orient(b, a.end));
@@ -1140,7 +1149,7 @@ pub(super) fn classify_pair_into(
             {
                 push_contact(contacts, index, handle)?;
             }
-            return Ok(());
+            return Ok(false);
         }
     }
     // Strictly opposite sides on both carriers: a proper crossing, interior
@@ -1158,7 +1167,7 @@ pub(super) fn classify_pair_into(
                 || rounded.y < bounds.miny()
                 || rounded.y > bounds.maxy()
             {
-                return Ok(());
+                return Ok(false);
             }
             let exact = if rounded.x == bounds.minx()
                 || rounded.x == bounds.maxx()
@@ -1176,7 +1185,7 @@ pub(super) fn classify_pair_into(
             if let Some(exact_point) = &exact
                 && !homogeneous_point_in_bounds(exact_point, bounds)?
             {
-                return Ok(());
+                return Ok(false);
             }
             match exact {
                 Some(exact) => forest.push_crossing_with_exact(segments, rounded, exact)?,
@@ -1188,7 +1197,7 @@ pub(super) fn classify_pair_into(
         push_contact(contacts, left, handle)?;
         push_contact(contacts, right, handle)?;
     }
-    Ok(())
+    Ok(false)
 }
 
 fn homogeneous_point_in_bounds(point: &[ExactDyadic; 3], bounds: Bounds) -> Result<bool> {
@@ -1210,17 +1219,25 @@ pub(super) fn aggregate_atoms(
     intervals: Vec<(u32, u32, u32)>,
     source_provenance: &SegmentProvenance,
     baseline: usize,
+    has_overlaps: bool,
     mut budget: Option<&mut ExpansionBudget>,
 ) -> Result<(Vec<ExactSpan>, SegmentProvenance)> {
-    let mut atom_of: HashMap<(u32, u32), u32> =
-        HashMap::with_hasher(crate::collections::collection_hash_state()?.clone());
-    atom_of.reserve(intervals.len());
+    // Distinct carriers cannot share an atom. The contact sweep has already
+    // established whether any collinear pair can require atom reconciliation.
+    let mut atom_of = if has_overlaps {
+        let mut map: HashMap<(u32, u32), u32> =
+            HashMap::with_hasher(crate::collections::collection_hash_state()?.clone());
+        map.reserve(intervals.len());
+        Some(map)
+    } else {
+        None
+    };
     let mut spans: Vec<ExactSpan> = Vec::new();
     let mut contributors: Vec<(u32, u32, bool)> = Vec::with_capacity(intervals.len());
     for (unique, start, end) in intervals {
         let lo = start.min(end);
         let hi = start.max(end);
-        if let Some(&atom) = atom_of.get(&(lo, hi)) {
+        if let Some(&atom) = atom_of.as_ref().and_then(|map| map.get(&(lo, hi))) {
             let reversed = start != spans[atom as usize].start.0;
             contributors.push((atom, unique, reversed));
             continue;
@@ -1236,7 +1253,9 @@ pub(super) fn aggregate_atoms(
             end: NodeId(end),
             unique,
         });
-        atom_of.insert((lo, hi), atom);
+        if let Some(map) = &mut atom_of {
+            map.insert((lo, hi), atom);
+        }
         contributors.push((atom, unique, false));
     }
     drop(atom_of);
