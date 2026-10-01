@@ -14,10 +14,12 @@
 use std::cmp::Ordering;
 use std::ops::Range;
 
+#[cfg(test)]
+use crate::geometry::Ring;
 use crate::geometry::exact_arith::ExactSign;
 use crate::geometry::segments::stored_orientation_sign;
 use crate::geometry::{
-    Loc, Point, Polygon, Ring, Shape, SharedShapeOwners, XY, point_on_segment, same_point,
+    Loc, Point, Polygon, Shape, SharedShapeOwners, XY, point_on_segment, same_point,
 };
 
 /// Whether a stored ring supplies areal winding or collapsed line support.
@@ -43,17 +45,20 @@ pub(crate) struct RingView<'a> {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[cfg(test)]
 struct RingProbe {
     pub(crate) winding: i64,
     pub(crate) incident: bool,
 }
 
+#[cfg(test)]
 struct CurveView<'a> {
     xs: &'a [f64],
     ys: &'a [f64],
 }
 
-struct SourceSupport<'a> {
+#[cfg(test)]
+struct ReferenceSourceSupport<'a> {
     rings: Vec<RingView<'a>>,
     polygons: Vec<Range<usize>>,
     curves: Vec<CurveView<'a>>,
@@ -65,6 +70,7 @@ struct Ray {
     ring: Option<(usize, i64)>,
     curve: bool,
     collapsed: bool,
+    reverse: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -73,7 +79,8 @@ struct RayGroup {
     end: usize,
 }
 
-impl<'a> SourceSupport<'a> {
+#[cfg(test)]
+impl<'a> ReferenceSourceSupport<'a> {
     const fn new() -> Self {
         Self {
             rings: Vec::new(),
@@ -85,20 +92,11 @@ impl<'a> SourceSupport<'a> {
 
     fn from_shape(shape: &'a Shape) -> Self {
         let mut source = Self::new();
-        let mut owners = None;
-        source.append_shape(shape, &mut owners);
+        source.append_shape(shape);
         source
     }
 
-    fn from_shape_with_shared_owners(shape: &'a Shape) -> Self {
-        let mut source = Self::new();
-        let mut shared_owners = SharedShapeOwners::for_collections();
-        let mut owners = Some(&mut shared_owners);
-        source.append_shape(shape, &mut owners);
-        source
-    }
-
-    fn append_shape(&mut self, shape: &'a Shape, owners: &mut Option<&mut SharedShapeOwners>) {
+    fn append_shape(&mut self, shape: &'a Shape) {
         match shape {
             Shape::Point(point) => {
                 self.points.push(point.xy());
@@ -120,12 +118,8 @@ impl<'a> SourceSupport<'a> {
                 }
             },
             Shape::GeometryCollection(geometries) => {
-                if owners.as_mut().is_none_or(|owners| {
-                    owners.first_collection(geometries.as_slice(), geometries.members_are_shared())
-                }) {
-                    for geometry in geometries {
-                        self.append_shape(geometry, owners);
-                    }
+                for geometry in geometries {
+                    self.append_shape(geometry);
                 }
             },
             Shape::Empty(..) => {},
@@ -199,6 +193,7 @@ impl<'a> SourceSupport<'a> {
                         ring: Some((ring_id, ring_ray_delta(ring.kind, false))),
                         curve: false,
                         collapsed: ring.kind == RingKind::Collapsed,
+                        reverse: false,
                     });
                 }
                 if !same_point(query, start) {
@@ -207,6 +202,7 @@ impl<'a> SourceSupport<'a> {
                         ring: Some((ring_id, ring_ray_delta(ring.kind, true))),
                         curve: false,
                         collapsed: ring.kind == RingKind::Collapsed,
+                        reverse: true,
                     });
                 }
             });
@@ -226,6 +222,7 @@ impl<'a> SourceSupport<'a> {
                         ring: None,
                         curve: true,
                         collapsed: false,
+                        reverse: false,
                     });
                 }
                 if !same_point(query, start) {
@@ -234,6 +231,7 @@ impl<'a> SourceSupport<'a> {
                         ring: None,
                         curve: true,
                         collapsed: false,
+                        reverse: true,
                     });
                 }
             });
@@ -259,65 +257,6 @@ impl<'a> SourceSupport<'a> {
         state.location()
     }
 
-    fn area_covers(&self, point: Point) -> bool {
-        let query = point.xy();
-        let mut windings = Vec::with_capacity(self.rings.len());
-        let mut incident = false;
-        for ring in &self.rings {
-            let probe = ring_probe_columns(ring.xs, ring.ys, query);
-            incident |= probe.incident;
-            windings.push(if ring.kind == RingKind::Winding {
-                probe.winding
-            } else {
-                0
-            });
-        }
-        if !incident {
-            return self.area_occupied(&windings);
-        }
-
-        let mut rays = Vec::new();
-        for (ring_id, ring) in self.rings.iter().enumerate() {
-            for_each_ring_segment(ring.xs, ring.ys, |start, end| {
-                if same_point(start, end) || !point_on_segment(query.point(), start, end) {
-                    return;
-                }
-                if !same_point(query, end) {
-                    rays.push(Ray {
-                        end,
-                        ring: Some((ring_id, ring_ray_delta(ring.kind, false))),
-                        curve: false,
-                        collapsed: ring.kind == RingKind::Collapsed,
-                    });
-                }
-                if !same_point(query, start) {
-                    rays.push(Ray {
-                        end: start,
-                        ring: Some((ring_id, ring_ray_delta(ring.kind, true))),
-                        curve: false,
-                        collapsed: ring.kind == RingKind::Collapsed,
-                    });
-                }
-            });
-        }
-        if rays.is_empty() {
-            return false;
-        }
-        rays.sort_unstable_by(|left, right| compare_rays(query, left.end, right.end));
-        let groups = ray_groups(query, &rays);
-        let mut star = LocalStar {
-            source: self,
-            query,
-            windings,
-            rays,
-            groups,
-            endpoint_parity: false,
-            explicit_point: false,
-            collapsed_points: Vec::new(),
-        };
-        matches!(star.location(), Loc::Interior | Loc::Boundary)
-    }
-
     fn location_without_contact(&self, windings: &[i64], query: XY, explicit_point: bool) -> Loc {
         if self.area_occupied(windings) {
             return Loc::Interior;
@@ -337,10 +276,6 @@ impl<'a> SourceSupport<'a> {
         }
     }
 
-    #[expect(
-        clippy::indexing_slicing,
-        reason = "polygon ring ranges and the same-order winding slice are appended together; indexed shell/hole reads avoid rescanning rings"
-    )]
     fn area_occupied(&self, windings: &[i64]) -> bool {
         self.polygons.iter().any(|rings| {
             let mut rings = rings.clone();
@@ -349,10 +284,6 @@ impl<'a> SourceSupport<'a> {
         })
     }
 
-    #[expect(
-        clippy::indexing_slicing,
-        reason = "shell/hole IDs come from the polygon ranges and index the same source-ring and winding owners"
-    )]
     fn collapsed_polygon_support(&self, windings: &[i64], query: XY) -> bool {
         self.polygons.iter().any(|rings| {
             let mut rings = rings.clone();
@@ -392,8 +323,9 @@ impl<'a> SourceSupport<'a> {
     }
 }
 
+#[cfg(test)]
 struct LocalStar<'a, 'b> {
-    source: &'a SourceSupport<'b>,
+    source: &'a ReferenceSourceSupport<'b>,
     query: XY,
     windings: Vec<i64>,
     rays: Vec<Ray>,
@@ -403,11 +335,8 @@ struct LocalStar<'a, 'b> {
     collapsed_points: Vec<usize>,
 }
 
+#[cfg(test)]
 impl LocalStar<'_, '_> {
-    #[expect(
-        clippy::indexing_slicing,
-        reason = "ray groups are a checked partition of the sorted ray slice owned by this star"
-    )]
     #[expect(
         clippy::arithmetic_side_effects,
         reason = "nonempty groups and bounded cyclic offsets keep group ordinals representable"
@@ -514,10 +443,6 @@ impl LocalStar<'_, '_> {
         }
     }
 
-    #[expect(
-        clippy::indexing_slicing,
-        reason = "ray ring IDs address the same winding and source-ring vectors used to generate them"
-    )]
     fn cross_ring(
         windings: &mut [i64],
         rings: &[RingView<'_>],
@@ -532,10 +457,6 @@ impl LocalStar<'_, '_> {
         }
     }
 
-    #[expect(
-        clippy::indexing_slicing,
-        reason = "ray and collapsed-point ring IDs address the support vector sized from the same source rings"
-    )]
     const fn retain_ring_support(ring_support: &mut [bool], ring: usize, supported: bool) {
         ring_support[ring] |= supported;
     }
@@ -548,10 +469,6 @@ impl LocalStar<'_, '_> {
         }
     }
 
-    #[expect(
-        clippy::indexing_slicing,
-        reason = "shell and hole IDs are ranges into the support vector built for these source rings"
-    )]
     fn collapsed_point_support(&self, ring_support: &[bool]) -> bool {
         self.source.polygons.iter().any(|rings| {
             let mut rings = rings.clone();
@@ -562,10 +479,6 @@ impl LocalStar<'_, '_> {
         })
     }
 
-    #[expect(
-        clippy::indexing_slicing,
-        reason = "ring IDs carried by these rays address the aligned per-ring winding state"
-    )]
     fn group_ring_values(&self, group: &[Ray], values: &mut Vec<(usize, i64)>) {
         values.clear();
         for ray in group {
@@ -579,10 +492,6 @@ impl LocalStar<'_, '_> {
         }
     }
 
-    #[expect(
-        clippy::indexing_slicing,
-        reason = "the ring ID indexes the same winding vector used to build each ray"
-    )]
     fn ring_value(&self, ring: usize, group: &[Ray], before: &[(usize, i64)], after: bool) -> bool {
         let value = before
             .iter()
@@ -626,10 +535,6 @@ impl LocalStar<'_, '_> {
         })
     }
 
-    #[expect(
-        clippy::indexing_slicing,
-        reason = "the ring ID comes from this source's ray and indexes its owned ring views"
-    )]
     fn ring_sector_support(
         &self,
         ring: usize,
@@ -652,6 +557,642 @@ const fn line_location(endpoint_parity: bool, residual_collapsed_degree_odd: boo
         Loc::Boundary
     } else {
         Loc::Interior
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum LocationMode {
+    Full,
+    Area,
+}
+
+struct BoundaryRing {
+    kind: RingKind,
+    winding: i64,
+    shell: bool,
+}
+
+#[derive(Clone, Copy)]
+struct PolygonShell {
+    kind: RingKind,
+    winding: bool,
+    ring: Option<usize>,
+    collapsed_point: bool,
+}
+
+#[derive(Clone, Copy)]
+struct PolygonHoles {
+    winding: bool,
+    point_support: bool,
+}
+
+struct BoundaryPolygon {
+    rings: Range<usize>,
+    shell: Option<PolygonShell>,
+    holes: PolygonHoles,
+}
+
+#[derive(Clone, Copy)]
+struct PolygonSummary {
+    ring_start: usize,
+    shell: Option<PolygonShell>,
+    holes: PolygonHoles,
+}
+
+impl PolygonSummary {
+    const fn new(ring_start: usize) -> Self {
+        Self {
+            ring_start,
+            shell: None,
+            holes: PolygonHoles {
+                winding: false,
+                point_support: false,
+            },
+        }
+    }
+
+    fn add_ring(&mut self, shell: bool, scan: RingScan) {
+        if shell {
+            self.shell = Some(PolygonShell {
+                kind: scan.kind,
+                winding: scan.winding != 0,
+                ring: scan.boundary_ring,
+                collapsed_point: scan.kind == RingKind::Collapsed && scan.collapsed_point,
+            });
+            return;
+        }
+
+        if scan.kind == RingKind::Winding && scan.winding != 0 {
+            self.holes.point_support = true;
+            if scan.boundary_ring.is_none() {
+                self.holes.winding = true;
+            }
+        } else if scan.kind == RingKind::Collapsed
+            && (scan.boundary_ring.is_some() || scan.collapsed_point)
+        {
+            self.holes.point_support = true;
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+struct RingScan {
+    kind: RingKind,
+    winding: i64,
+    boundary_ring: Option<usize>,
+    collapsed_point: bool,
+}
+
+struct EdgeProbe {
+    on_segment: bool,
+    winding: i64,
+    formal_winding: i64,
+}
+
+/// Stamps the exact edge decision into each column loop so a boundary query
+/// does not cross a Rust call boundary for every source edge.
+macro_rules! edge_probe {
+    ($start:expr, $end:expr, $query:expr) => {{
+        let start = $start;
+        let end = $end;
+        let query = $query;
+        let at_start = query.y == start.y && same_point(query, start);
+        let at_end = query.y == end.y && same_point(query, end);
+        let start_above = start.y > query.y;
+        let end_above = end.y > query.y;
+        // Opposite strict-above flags encode both half-open crossing directions.
+        let crossing = start_above != end_above;
+        let horizontal = query.y == start.y && query.y == end.y;
+        let horizontal_on_segment = horizontal
+            && if start.x <= end.x {
+                start.x <= query.x && query.x <= end.x
+            } else {
+                end.x <= query.x && query.x <= start.x
+            };
+        let orientation = if at_start || at_end {
+            Some(ExactSign::Zero)
+        } else if crossing {
+            Some(stored_orientation_sign(
+                start.x, start.y, end.x, end.y, query.x, query.y,
+            ))
+        } else {
+            None
+        };
+        let on_segment = at_start
+            || at_end
+            || horizontal_on_segment
+            || (crossing && orientation == Some(ExactSign::Zero));
+        let upward = crossing && !start_above;
+        let downward = crossing && start_above;
+        let winding = if upward && orientation == Some(ExactSign::Positive) {
+            1
+        } else if downward && orientation == Some(ExactSign::Negative) {
+            -1
+        } else {
+            0
+        };
+        let formal_winding = if crossing {
+            let orientation = orientation.expect("a formal crossing has an orientation");
+            let orientation = symbolic_orientation_from_sign(start, end, orientation);
+            if !start_above && end_above && orientation == ExactSign::Positive {
+                1
+            } else if !end_above && start_above && orientation == ExactSign::Negative {
+                -1
+            } else {
+                0
+            }
+        } else {
+            0
+        };
+        EdgeProbe {
+            on_segment,
+            winding,
+            formal_winding,
+        }
+    }};
+}
+
+/// Query-local exact point location. Ordinary probes keep only scalar
+/// winding and occupancy state; rays and per-ring state are retained only
+/// when the query lies on source linework.
+struct StreamingLocation {
+    query: XY,
+    mode: LocationMode,
+    boundary_rings: Vec<BoundaryRing>,
+    boundary_polygons: Vec<BoundaryPolygon>,
+    rays: Vec<Ray>,
+    area_without_contact: bool,
+    point_support: bool,
+    curve_endpoint_parity: bool,
+}
+
+impl StreamingLocation {
+    const fn new(query: XY, mode: LocationMode) -> Self {
+        Self {
+            query,
+            mode,
+            boundary_rings: Vec::new(),
+            boundary_polygons: Vec::new(),
+            rays: Vec::new(),
+            area_without_contact: false,
+            point_support: false,
+            curve_endpoint_parity: false,
+        }
+    }
+
+    fn visit_shape(&mut self, shape: &Shape, owners: &mut Option<&mut SharedShapeOwners>) {
+        match shape {
+            Shape::Point(point) => {
+                if self.mode == LocationMode::Full && same_point(point.xy(), self.query) {
+                    self.point_support = true;
+                }
+            },
+            Shape::MultiPoint(points) => {
+                if self.mode == LocationMode::Full
+                    && points
+                        .points()
+                        .any(|point| same_point(point.xy(), self.query))
+                {
+                    self.point_support = true;
+                }
+            },
+            Shape::LineString(line) if self.mode == LocationMode::Full => {
+                self.visit_curve(line.as_coords());
+            },
+            Shape::MultiLineString(lines) if self.mode == LocationMode::Full => {
+                for line in lines {
+                    self.visit_curve(line.as_coords());
+                }
+            },
+            Shape::Polygon(polygon) => self.visit_polygon(polygon),
+            Shape::MultiPolygon(polygons) => {
+                for polygon in polygons {
+                    self.visit_polygon(polygon);
+                }
+            },
+            Shape::GeometryCollection(geometries) => {
+                if owners.as_mut().is_none_or(|owners| {
+                    owners.first_collection(geometries.as_slice(), geometries.members_are_shared())
+                }) {
+                    for geometry in geometries {
+                        self.visit_shape(geometry, owners);
+                    }
+                }
+            },
+            Shape::LineString(_) | Shape::MultiLineString(_) | Shape::Empty(..) => {},
+        }
+    }
+
+    fn visit_polygon(&mut self, polygon: &Polygon) {
+        let mut summary = PolygonSummary::new(self.boundary_rings.len());
+        for (index, ring) in polygon.rings().enumerate() {
+            let scan = self.scan_ring(ring.xs(), ring.ys(), None, index == 0);
+            summary.add_ring(index == 0, scan);
+        }
+        self.finish_polygon(summary);
+    }
+
+    fn visit_polygon_views<'a, P>(&mut self, polygons: impl IntoIterator<Item = P>)
+    where
+        P: IntoIterator<Item = RingView<'a>>,
+    {
+        for polygon in polygons {
+            let mut summary = PolygonSummary::new(self.boundary_rings.len());
+            for (index, ring) in polygon.into_iter().enumerate() {
+                let scan = self.scan_ring(ring.xs, ring.ys, Some(ring.kind), index == 0);
+                summary.add_ring(index == 0, scan);
+            }
+            self.finish_polygon(summary);
+        }
+    }
+
+    fn finish_polygon(&mut self, summary: PolygonSummary) {
+        if summary.ring_start == self.boundary_rings.len() {
+            self.area_without_contact |= summary
+                .shell
+                .is_some_and(|shell| shell.winding && !summary.holes.winding);
+            if self.mode == LocationMode::Full
+                && summary.shell.is_some_and(|shell| shell.collapsed_point)
+                && !summary.holes.point_support
+            {
+                self.point_support = true;
+            }
+            return;
+        }
+
+        self.boundary_polygons.push(BoundaryPolygon {
+            rings: summary.ring_start..self.boundary_rings.len(),
+            shell: summary.shell,
+            holes: summary.holes,
+        });
+    }
+
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "ray_start is the prior ray length and scanning only appends rays before rewriting that suffix"
+    )]
+    fn scan_ring(
+        &mut self,
+        xs: &[f64],
+        ys: &[f64],
+        kind_hint: Option<RingKind>,
+        shell: bool,
+    ) -> RingScan {
+        let first = xs.first().zip(ys.first()).map(|(&x, &y)| XY::new(x, y));
+        let mut distinct: Option<XY> = None;
+        let mut non_collinear = false;
+        let mut winding = 0_i64;
+        let mut formal_winding = 0_i64;
+        let mut collapsed_point = false;
+        let ray_start = self.rays.len();
+        let query = self.query;
+
+        macro_rules! scan_edge {
+            ($start:expr, $end:expr) => {{
+                let start = $start;
+                let end = $end;
+                if same_point(start, end) {
+                    collapsed_point |= same_point(start, query);
+                } else {
+                    let edge = edge_probe!(start, end, query);
+                    if edge.on_segment {
+                        if !same_point(query, end) {
+                            self.rays.push(Ray {
+                                end,
+                                ring: None,
+                                curve: false,
+                                collapsed: false,
+                                reverse: false,
+                            });
+                        }
+                        if !same_point(query, start) {
+                            self.rays.push(Ray {
+                                end: start,
+                                ring: None,
+                                curve: false,
+                                collapsed: false,
+                                reverse: true,
+                            });
+                        }
+                    } else {
+                        winding = winding.wrapping_add(edge.winding);
+                    }
+                    formal_winding = formal_winding.wrapping_add(edge.formal_winding);
+                }
+            }};
+        }
+
+        if xs.len() >= 2 && ys.len() >= 2 {
+            for ([ax, bx], [ay, by]) in xs.array_windows::<2>().zip(ys.array_windows::<2>()) {
+                let start = XY::new(*ax, *ay);
+                let end = XY::new(*bx, *by);
+                if kind_hint.is_none()
+                    && !non_collinear
+                    && let Some(first) = first
+                    && (end.x != first.x || end.y != first.y)
+                {
+                    if let Some(second) = distinct {
+                        non_collinear = stored_orientation_sign(
+                            first.x, first.y, second.x, second.y, end.x, end.y,
+                        ) != ExactSign::Zero;
+                    } else {
+                        distinct = Some(end);
+                    }
+                }
+                scan_edge!(start, end);
+            }
+            if let (Some(first), Some(last)) = (
+                xs.first().zip(ys.first()).map(|(&x, &y)| XY::new(x, y)),
+                xs.last().zip(ys.last()).map(|(&x, &y)| XY::new(x, y)),
+            ) && !same_point(first, last)
+            {
+                scan_edge!(last, first);
+            }
+        }
+
+        let kind = kind_hint.unwrap_or(if non_collinear {
+            RingKind::Winding
+        } else {
+            RingKind::Collapsed
+        });
+        let touched = self.rays.len() != ray_start;
+        if self.mode == LocationMode::Area && kind == RingKind::Collapsed {
+            self.rays.truncate(ray_start);
+        }
+        let boundary_ring =
+            if touched && (self.mode == LocationMode::Full || kind == RingKind::Winding) {
+                let index = self.boundary_rings.len();
+                for ray in &mut self.rays[ray_start..] {
+                    ray.ring = Some((index, ring_ray_delta(kind, ray.reverse)));
+                    ray.collapsed = kind == RingKind::Collapsed;
+                }
+                self.boundary_rings.push(BoundaryRing {
+                    kind,
+                    winding: if kind == RingKind::Winding {
+                        formal_winding
+                    } else {
+                        0
+                    },
+                    shell,
+                });
+                Some(index)
+            } else {
+                if self.mode == LocationMode::Area {
+                    self.rays.truncate(ray_start);
+                }
+                None
+            };
+
+        RingScan {
+            kind,
+            winding: if kind == RingKind::Winding {
+                if boundary_ring.is_some() {
+                    formal_winding
+                } else {
+                    winding
+                }
+            } else {
+                0
+            },
+            boundary_ring,
+            collapsed_point,
+        }
+    }
+
+    fn visit_curve(&mut self, curve: &crate::geometry::CoordSeq) {
+        let xs = curve.xs();
+        let ys = curve.ys();
+        let Some((&first_x, &first_y)) = xs.first().zip(ys.first()) else {
+            return;
+        };
+        let Some((&last_x, &last_y)) = xs.last().zip(ys.last()) else {
+            return;
+        };
+        let mut nonzero = false;
+        let query = self.query;
+        for ([ax, bx], [ay, by]) in xs.array_windows::<2>().zip(ys.array_windows::<2>()) {
+            let start = XY::new(*ax, *ay);
+            let end = XY::new(*bx, *by);
+            nonzero |= start.x != end.x || start.y != end.y;
+            if !nonzero || same_point(start, end) {
+                continue;
+            }
+            if edge_probe!(start, end, query).on_segment {
+                if !same_point(query, end) {
+                    self.rays.push(Ray {
+                        end,
+                        ring: None,
+                        curve: true,
+                        collapsed: false,
+                        reverse: false,
+                    });
+                }
+                if !same_point(query, start) {
+                    self.rays.push(Ray {
+                        end: start,
+                        ring: None,
+                        curve: true,
+                        collapsed: false,
+                        reverse: true,
+                    });
+                }
+            }
+        }
+        if nonzero {
+            self.curve_endpoint_parity ^= same_point(XY::new(first_x, first_y), query)
+                ^ same_point(XY::new(last_x, last_y), query);
+        } else if self.mode == LocationMode::Full
+            && xs
+                .iter()
+                .zip(ys)
+                .any(|(&x, &y)| same_point(XY::new(x, y), query))
+        {
+            self.point_support = true;
+        }
+    }
+
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "shell and boundary-ring IDs are created with the same boundary_rings vector they index"
+    )]
+    fn area_occupied(&self) -> bool {
+        self.area_without_contact
+            || self.boundary_polygons.iter().any(|polygon| {
+                let shell = polygon.shell.is_some_and(|shell| {
+                    shell
+                        .ring
+                        .map_or(shell.winding, |ring| self.boundary_rings[ring].winding != 0)
+                });
+                shell
+                    && !polygon.holes.winding
+                    && !polygon.rings.clone().any(|ring| {
+                        let state = &self.boundary_rings[ring];
+                        !state.shell && state.kind == RingKind::Winding && state.winding != 0
+                    })
+            })
+    }
+
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "ray ring IDs are assigned from boundary_rings before they are retained"
+    )]
+    fn ring_sector_support(&self, ring: usize, group: &[Ray], after: bool) -> bool {
+        let state = &self.boundary_rings[ring];
+        if state.kind == RingKind::Collapsed {
+            return group.iter().any(|ray| {
+                ray.collapsed && ray.ring.is_some_and(|(candidate, _)| candidate == ring)
+            });
+        }
+        let winding = state.winding.wrapping_add(if after {
+            group.iter().fold(0_i64, |delta, ray| {
+                delta.wrapping_add(
+                    ray.ring
+                        .filter(|&(candidate, _)| candidate == ring)
+                        .map_or(0, |(_, delta)| delta),
+                )
+            })
+        } else {
+            0
+        });
+        winding != 0
+    }
+
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "each polygon ring range and shell ID refer to the boundary-ring entries appended while scanning that polygon"
+    )]
+    fn polygon_ray_support(&self, group: &[Ray]) -> bool {
+        self.boundary_polygons.iter().any(|polygon| {
+            let shell = polygon.shell.is_some_and(|shell| {
+                shell
+                    .ring
+                    .map_or(shell.kind == RingKind::Winding && shell.winding, |ring| {
+                        self.ring_sector_support(ring, group, false)
+                            || self.ring_sector_support(ring, group, true)
+                    })
+            });
+            shell
+                && !polygon.holes.winding
+                && !polygon.rings.clone().any(|ring| {
+                    let state = &self.boundary_rings[ring];
+                    !state.shell
+                        && (self.ring_sector_support(ring, group, false)
+                            || self.ring_sector_support(ring, group, true))
+                })
+        })
+    }
+
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "ray groups partition the sorted ray vector and their ring IDs reference the same boundary-ring vector"
+    )]
+    #[expect(
+        clippy::arithmetic_side_effects,
+        reason = "Cyclic group indices and offsets are bounded by the addressable RayGroup vector"
+    )]
+    fn boundary_location(mut self) -> Loc {
+        self.rays
+            .sort_unstable_by(|left, right| compare_rays(self.query, left.end, right.end));
+        let groups = ray_groups(self.query, &self.rays);
+        let seed_group = groups.iter().position(|group| {
+            let ray = &self.rays[group.start];
+            ray.end.y == self.query.y && ray.end.x > self.query.x
+        });
+        let first = seed_group.map_or_else(
+            || {
+                groups
+                    .iter()
+                    .position(|group| {
+                        let ray = &self.rays[group.start];
+                        ray.end.y > self.query.y
+                            || (ray.end.y == self.query.y && ray.end.x > self.query.x)
+                    })
+                    .unwrap_or(0)
+            },
+            |index| index.wrapping_add(1) % groups.len(),
+        );
+
+        let mut any_area = false;
+        let mut all_area = true;
+        let mut line = false;
+        let mut residual_collapsed_degree_odd = false;
+        for offset in 0..groups.len() {
+            let group_index = first.wrapping_add(offset) % groups.len();
+            let group = groups[group_index];
+            let rays = &self.rays[group.start..group.end];
+            let before_area = self.area_occupied();
+            let group_curve = rays.iter().any(|ray| ray.curve);
+            let group_support = self.polygon_ray_support(rays);
+            line |= group_curve || group_support;
+            if group_support && !group_curve {
+                residual_collapsed_degree_odd = !residual_collapsed_degree_odd;
+            }
+            for ray in rays {
+                if let Some((ring, delta)) = ray.ring {
+                    self.boundary_rings[ring].winding =
+                        self.boundary_rings[ring].winding.wrapping_add(delta);
+                }
+            }
+            any_area |= before_area;
+            all_area &= before_area;
+        }
+
+        if self.mode == LocationMode::Area {
+            return if any_area {
+                Loc::Interior
+            } else {
+                Loc::Exterior
+            };
+        }
+        if any_area {
+            return if all_area {
+                Loc::Interior
+            } else {
+                Loc::Boundary
+            };
+        }
+        if line {
+            return line_location(self.curve_endpoint_parity, residual_collapsed_degree_odd);
+        }
+        let point_support = self.point_support
+            || self.boundary_polygons.iter().any(|polygon| {
+                polygon.shell.is_some_and(|shell| shell.collapsed_point)
+                    && !polygon.holes.point_support
+            });
+        if point_support {
+            Loc::Interior
+        } else {
+            Loc::Exterior
+        }
+    }
+
+    fn finish(self) -> Loc {
+        if self.rays.is_empty() {
+            if self.mode == LocationMode::Full && self.point_support {
+                return Loc::Interior;
+            }
+            return if self.area_without_contact {
+                Loc::Interior
+            } else {
+                Loc::Exterior
+            };
+        }
+        self.boundary_location()
+    }
+}
+
+fn symbolic_orientation_from_sign(start: XY, end: XY, direct: ExactSign) -> ExactSign {
+    if direct != ExactSign::Zero {
+        return direct;
+    }
+    match start.y.total_cmp(&end.y) {
+        Ordering::Less => ExactSign::Negative,
+        Ordering::Greater => ExactSign::Positive,
+        Ordering::Equal => match start.x.total_cmp(&end.x) {
+            Ordering::Less => ExactSign::Positive,
+            Ordering::Greater => ExactSign::Negative,
+            Ordering::Equal => ExactSign::Zero,
+        },
     }
 }
 
@@ -689,6 +1230,7 @@ pub(in crate::geometry) fn compare_rays(query: XY, left: XY, right: XY) -> Order
 }
 
 /// Directed winding and exact source incidence for one stored ring.
+#[cfg(test)]
 fn ring_probe_columns(xs: &[f64], ys: &[f64], point: XY) -> RingProbe {
     let mut winding = 0_i64;
     let mut incident = false;
@@ -720,6 +1262,7 @@ pub(crate) fn edge_winding(start: XY, end: XY, query: XY) -> Option<i64> {
     Some(if orientation == sign { direction } else { 0 })
 }
 
+#[cfg(test)]
 fn formal_ring_winding(xs: &[f64], ys: &[f64], point: XY) -> i64 {
     let mut winding = 0_i64;
     for_each_xy_segment(xs, ys, |start, end| {
@@ -741,6 +1284,7 @@ fn formal_ring_winding(xs: &[f64], ys: &[f64], point: XY) -> i64 {
     winding
 }
 
+#[cfg(test)]
 fn symbolic_orientation(start: XY, end: XY, point: XY) -> ExactSign {
     let direct = stored_orientation_sign(start.x, start.y, end.x, end.y, point.x, point.y);
     if direct != ExactSign::Zero {
@@ -757,6 +1301,7 @@ fn symbolic_orientation(start: XY, end: XY, point: XY) -> ExactSign {
     }
 }
 
+#[cfg(test)]
 fn ring_kind(ring: &Ring) -> RingKind {
     ring_kind_columns(ring.xs(), ring.ys())
 }
@@ -779,12 +1324,14 @@ pub(crate) fn ring_kind_columns(xs: &[f64], ys: &[f64]) -> RingKind {
     }
 }
 
+#[cfg(test)]
 fn has_nonzero_segment(xs: &[f64], ys: &[f64]) -> bool {
     xs.array_windows::<2>()
         .zip(ys.array_windows::<2>())
         .any(|([ax, bx], [ay, by])| *ax != *bx || *ay != *by)
 }
 
+#[cfg(test)]
 fn ring_has_point(xs: &[f64], ys: &[f64], point: XY) -> bool {
     let query = point.point();
     let mut hit = false;
@@ -794,10 +1341,12 @@ fn ring_has_point(xs: &[f64], ys: &[f64], point: XY) -> bool {
     hit
 }
 
+#[cfg(test)]
 fn curve_has_point(xs: &[f64], ys: &[f64], point: XY) -> bool {
     ring_has_point(xs, ys, point)
 }
 
+#[cfg(test)]
 fn for_each_ring_segment(xs: &[f64], ys: &[f64], mut visit: impl FnMut(XY, XY)) {
     if xs.len() < 2 || ys.len() < 2 {
         return;
@@ -817,6 +1366,7 @@ fn for_each_ring_segment(xs: &[f64], ys: &[f64], mut visit: impl FnMut(XY, XY)) 
     }
 }
 
+#[cfg(test)]
 fn for_each_xy_segment(xs: &[f64], ys: &[f64], mut visit: impl FnMut(XY, XY)) {
     for ([ax, bx], [ay, by]) in xs.array_windows::<2>().zip(ys.array_windows::<2>()) {
         visit(XY::new(*ax, *ay), XY::new(*bx, *by));
@@ -825,17 +1375,28 @@ fn for_each_xy_segment(xs: &[f64], ys: &[f64], mut visit: impl FnMut(XY, XY)) {
 
 /// Cartesian location for any source shape.
 pub(crate) fn cartesian_point_location(shape: &Shape, point: Point) -> Loc {
-    SourceSupport::from_shape(shape).location(point)
+    let mut location = StreamingLocation::new(point.xy(), LocationMode::Full);
+    let mut owners = None;
+    location.visit_shape(shape, &mut owners);
+    location.finish()
 }
 
 /// Boolean point coverage is a set-membership query: duplicate components can
 /// change a line point's boundary/interior label, but not whether it is present.
 pub(crate) fn cartesian_point_covers(shape: &Shape, point: Point) -> bool {
-    SourceSupport::from_shape_with_shared_owners(shape).location(point) != Loc::Exterior
+    let mut location = StreamingLocation::new(point.xy(), LocationMode::Full);
+    let mut shared_owners = SharedShapeOwners::for_collections();
+    let mut owners = Some(&mut shared_owners);
+    location.visit_shape(shape, &mut owners);
+    location.finish() != Loc::Exterior
 }
 
 pub(crate) fn cartesian_area_covers_point(shape: &Shape, point: Point) -> bool {
-    SourceSupport::from_shape_with_shared_owners(shape).area_covers(point)
+    let mut location = StreamingLocation::new(point.xy(), LocationMode::Area);
+    let mut shared_owners = SharedShapeOwners::for_collections();
+    let mut owners = Some(&mut shared_owners);
+    location.visit_shape(shape, &mut owners);
+    location.finish() != Loc::Exterior
 }
 
 /// Cartesian location over polygons given as ring views, shell first — the
@@ -844,15 +1405,9 @@ pub(crate) fn cartesian_polygon_views_location<'a, P: IntoIterator<Item = RingVi
     polygons: impl IntoIterator<Item = P>,
     point: Point,
 ) -> Loc {
-    let mut source = SourceSupport::new();
-    for rings in polygons {
-        let first = source.rings.len();
-        for ring in rings {
-            source.rings.push(ring);
-        }
-        source.polygons.push(first..source.rings.len());
-    }
-    source.location(point)
+    let mut location = StreamingLocation::new(point.xy(), LocationMode::Full);
+    location.visit_polygon_views(polygons);
+    location.finish()
 }
 
 #[cfg(test)]
@@ -867,6 +1422,148 @@ mod tests {
         cartesian_point_location(&shape(wkt), Point::new_raw_xy(x, y))
     }
 
+    fn assert_streaming_matches_reference(shape: &Shape, point: Point) {
+        let expected = ReferenceSourceSupport::from_shape(shape).location(point);
+        let actual = cartesian_point_location(shape, point);
+        assert_eq!(actual, expected, "{shape:?} at ({}, {})", point.x, point.y);
+        assert_eq!(
+            cartesian_point_covers(shape, point),
+            expected != Loc::Exterior,
+            "coverage for {shape:?} at ({}, {})",
+            point.x,
+            point.y
+        );
+    }
+
+    #[test]
+    fn streaming_location_matches_source_support_on_degenerate_and_random_inputs() {
+        let fixed = [
+            (
+                "POLYGON ((0 0,10 0,10 10,0 10,0 0),(2 2,2 8,8 8,8 2,2 2))",
+                vec![
+                    (0.0, 0.0),
+                    (5.0, 0.0),
+                    (10.0, 5.0),
+                    (1.0, 1.0),
+                    (2.0, 5.0),
+                    (5.0, 5.0),
+                    (11.0, 5.0),
+                ],
+            ),
+            (
+                "MULTIPOLYGON (((0 0,4 0,4 4,0 4,0 0)),((4 4,8 4,8 8,4 8,4 4)))",
+                vec![(0.0, 0.0), (2.0, 0.0), (4.0, 4.0), (6.0, 6.0), (9.0, 9.0)],
+            ),
+            ("POLYGON ((0 0,4 0,2 0,0 0))", vec![
+                (0.0, 0.0),
+                (1.0, 0.0),
+                (2.0, 0.0),
+                (4.0, 0.0),
+                (2.0, 1.0),
+            ]),
+            ("POLYGON ((1 1,1 1,1 1,1 1),(1 1,3 1,3 3,1 3,1 1))", vec![
+                (1.0, 1.0),
+                (2.0, 2.0),
+                (3.0, 1.0),
+                (4.0, 4.0),
+            ]),
+            (
+                "GEOMETRYCOLLECTION (POLYGON ((0 0,4 0,4 4,0 4,0 0)),LINESTRING (0 0,2 0),LINESTRING (2 0,4 0),POINT (7 7))",
+                vec![
+                    (0.0, 0.0),
+                    (1.0, 0.0),
+                    (2.0, 0.0),
+                    (4.0, 4.0),
+                    (7.0, 7.0),
+                    (8.0, 8.0),
+                ],
+            ),
+            ("POLYGON ((0 0,1 0,1 2e-300,0 2e-300,0 0))", vec![
+                (0.0, 0.0),
+                (0.5, 0.0),
+                (1.0, 1e-300),
+                (0.5, 1e-300),
+                (2.0, 1e-300),
+            ]),
+            ("POLYGON ((0 0,5e-324 0,5e-324 5e-324,0 5e-324,0 0))", vec![
+                (0.0, 0.0),
+                (5e-324, 0.0),
+                (5e-324, 5e-324),
+                (0.0, 5e-324),
+            ]),
+            (
+                "POLYGON ((1e300 1e300,1.0000000000000002e300 1e300,1.0000000000000002e300 1.0000000000000002e300,1e300 1.0000000000000002e300,1e300 1e300))",
+                vec![
+                    (1e300, 1e300),
+                    (1.000_000_000_000_000_2e300, 1e300),
+                    (1.000_000_000_000_000_2e300, 1.000_000_000_000_000_2e300),
+                    (1.000_000_000_000_000_2e300, 1.000_000_000_000_000_2e300),
+                ],
+            ),
+        ];
+
+        for (wkt, probes) in fixed {
+            let source = shape(wkt);
+            for (x, y) in probes {
+                assert_streaming_matches_reference(&source, Point::new_raw_xy(x, y));
+            }
+        }
+
+        let mut seed = 0x8F3D_9A71_2C56_B40D_u64;
+        let mut next_coordinate = || {
+            seed = seed
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            f64::from(u32::try_from(seed >> 32).expect("upper word fits u32") % 19) - 9.0
+        };
+        for ring_index in 0..12 {
+            let ring_y = f64::from(u32::try_from(ring_index).expect("12 rings fit u32")) - 6.0;
+            let mut vertices: Vec<(f64, f64)> = std::iter::repeat_with(|| {
+                let x = next_coordinate();
+                let y = if ring_index % 4 == 0 {
+                    ring_y
+                } else {
+                    next_coordinate()
+                };
+                (x, y)
+            })
+            .take(24)
+            .collect();
+            if ring_index % 3 == 0 {
+                let duplicate = *vertices.get(4).expect("24 generated vertices");
+                *vertices.get_mut(5).expect("24 generated vertices") = duplicate;
+                let ordinate = vertices.get(12).expect("24 generated vertices").1;
+                vertices.get_mut(13).expect("24 generated vertices").1 = ordinate;
+            }
+            let first = *vertices.first().expect("24 generated vertices");
+            vertices.push(first);
+            let coordinates = vertices
+                .iter()
+                .map(|(x, y)| format!("{x} {y}"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            let source = shape(&format!("POLYGON (({coordinates}))"));
+            for &(x, y) in &vertices {
+                assert_streaming_matches_reference(&source, Point::new_raw_xy(x, y));
+            }
+            for pair in vertices.windows(2) {
+                let [start, end] = pair else {
+                    unreachable!();
+                };
+                assert_streaming_matches_reference(
+                    &source,
+                    Point::new_raw_xy(f64::midpoint(start.0, end.0), f64::midpoint(start.1, end.1)),
+                );
+            }
+            for _ in 0..24 {
+                assert_streaming_matches_reference(
+                    &source,
+                    Point::new_raw_xy(next_coordinate(), next_coordinate()),
+                );
+            }
+        }
+    }
+
     #[test]
     fn nonincident_line_query_has_no_contact_scratch_allocation() {
         let shape = Shape::LineString(crate::geometry::LineSeq::from_proven(
@@ -878,11 +1575,21 @@ mod tests {
             )
             .unwrap(),
         ));
-        let source = SourceSupport::from_shape(&shape);
+        let source = ReferenceSourceSupport::from_shape(&shape);
         let (location, allocations) = crate::test_support::allocation_count(|| {
             source.location(Point::new_raw_xy(2048.25, 0.4))
         });
         assert_eq!(location, Loc::Exterior);
+        assert_eq!(allocations, 0);
+    }
+
+    #[test]
+    fn one_shot_polygon_location_has_no_source_or_contact_allocations() {
+        let source = shape("POLYGON ((0 0,10 0,10 10,0 10,0 0),(2 2,2 8,8 8,8 2,2 2))");
+        let (location, allocations) = crate::test_support::allocation_count(|| {
+            cartesian_point_location(&source, Point::new_raw_xy(1.0, 1.0))
+        });
+        assert_eq!(location, Loc::Interior);
         assert_eq!(allocations, 0);
     }
 

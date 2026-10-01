@@ -92,7 +92,7 @@ impl RingPointIndex {
     fn winding_off_boundary(&self, x: f64, y: f64) -> Option<i64> {
         let query = XY::new(x, y);
         let mut winding = 0_i64;
-        let touched = self.edges.for_each_edge(y, |edge| {
+        let mut visit = |edge| {
             let (ax, ay, bx, by) = self.edge_xy(edge);
             edge_winding(XY::new(ax, ay), XY::new(bx, by), query).map_or(
                 ControlFlow::Break(()),
@@ -101,7 +101,19 @@ impl RingPointIndex {
                     ControlFlow::Continue(())
                 },
             )
-        });
+        };
+        let touched = if let Some(edges) = self.edges.dense_band_edges(y) {
+            let mut touched = None;
+            for edge in edges {
+                if visit(edge).is_break() {
+                    touched = Some(());
+                    break;
+                }
+            }
+            touched
+        } else {
+            self.edges.for_each_edge(y, visit)
+        };
         touched.is_none().then_some(winding)
     }
 }
