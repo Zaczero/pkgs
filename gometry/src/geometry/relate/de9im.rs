@@ -1,4 +1,6 @@
+use crate::geometry::relate::matrix_predicates::{self, Decided, Tri};
 use crate::geometry::{CompiledPattern, Dimension};
+use crate::predicates::Predicate;
 
 /// (`II IB IE / BI BB BE / EI EB EE`, `A` rows × `B` columns).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -20,7 +22,7 @@ impl De9im {
 
     pub(crate) const fn set_at_least(&mut self, row: Loc, col: Loc, dim: Dimension) {
         let index = row as usize * 3 + col as usize;
-        let value = b'0' + dim.code();
+        let value = super::dimension_entry(dim);
         if self.0[index] == b'F' || self.0[index] < value {
             self.0[index] = value;
         }
@@ -31,22 +33,6 @@ impl De9im {
         self.0[row as usize * 3 + col as usize] = b'F';
     }
 
-    pub(crate) fn left_dimension(self) -> Option<Dimension> {
-        [self.0[0], self.0[1], self.0[2]]
-            .into_iter()
-            .filter(|&entry| entry != b'F')
-            .filter_map(dimension_from_de9im_entry)
-            .max()
-    }
-
-    pub(crate) fn right_dimension(self) -> Option<Dimension> {
-        [self.0[0], self.0[3], self.0[6]]
-            .into_iter()
-            .filter(|&entry| entry != b'F')
-            .filter_map(dimension_from_de9im_entry)
-            .max()
-    }
-
     pub(crate) fn text(self) -> String {
         String::from_utf8_lossy(&self.0).into_owned()
     }
@@ -54,59 +40,27 @@ impl De9im {
     /// OGC pattern match on an ingress-validated pattern: `T` = non-empty,
     /// `F` = empty, digits exact, `*` = anything.
     pub(crate) fn matches(self, pattern: CompiledPattern) -> bool {
-        let mut verdict = true;
-        for (&entry, expected) in self.0.iter().zip(pattern.cells()) {
-            verdict &= match expected {
-                b'T' => entry != b'F',
-                b'F' => entry == b'F',
-                b'0' | b'1' | b'2' => entry == expected,
-                b'*' => true,
-                _ => unreachable!("compiled DE-9IM pattern is validated"),
-            };
-        }
-        verdict
+        matrix_predicates::eval_pattern(pattern, &Decided(self)) == Tri::True
     }
 
-    pub(crate) const fn is_touches(self) -> bool {
-        // Contact without interior overlap: any boundary entry non-empty.
-        self.0[0] == b'F' && (self.0[1] != b'F' || self.0[3] != b'F' || self.0[4] != b'F')
+    pub(crate) fn is_touches(self) -> bool {
+        matrix_predicates::decided(Predicate::Touches, self)
     }
 
-    pub(crate) const fn is_intersects(self) -> bool {
-        self.0[0] != b'F' || self.0[1] != b'F' || self.0[3] != b'F' || self.0[4] != b'F'
+    pub(crate) fn is_intersects(self) -> bool {
+        matrix_predicates::decided(Predicate::Intersects, self)
     }
 
-    pub(crate) const fn is_disjoint(self) -> bool {
-        !self.is_intersects()
+    pub(crate) fn is_disjoint(self) -> bool {
+        matrix_predicates::decided(Predicate::Disjoint, self)
     }
 
     pub(crate) fn is_crosses_by_dimension(self) -> bool {
-        let Some(left) = self.left_dimension() else {
-            return false;
-        };
-        let Some(right) = self.right_dimension() else {
-            return false;
-        };
-        match left.cmp(&right) {
-            std::cmp::Ordering::Less => self.0[0] != b'F' && self.0[2] != b'F',
-            std::cmp::Ordering::Greater => self.0[0] != b'F' && self.0[6] != b'F',
-            std::cmp::Ordering::Equal => left == Dimension::Curve && self.0[0] == b'0',
-        }
+        matrix_predicates::decided(Predicate::Crosses, self)
     }
 
     pub(crate) fn is_overlaps_by_dimension(self) -> bool {
-        let (Some(left), Some(right)) = (self.left_dimension(), self.right_dimension()) else {
-            return false;
-        };
-        if left != right {
-            return false;
-        }
-        match left {
-            Dimension::Point | Dimension::Surface => {
-                self.0[0] != b'F' && self.0[2] != b'F' && self.0[6] != b'F'
-            },
-            Dimension::Curve => self.0[0] == b'1' && self.0[2] != b'F' && self.0[6] != b'F',
-        }
+        matrix_predicates::decided(Predicate::Overlaps, self)
     }
 
     /// Rows and columns swapped — `relate(B, A)` from `relate(A, B)`.
@@ -115,45 +69,19 @@ impl De9im {
         Self([m[0], m[3], m[6], m[1], m[4], m[7], m[2], m[5], m[8]])
     }
 
-    pub(crate) const fn is_contains(self) -> bool {
-        // `T*****FF*`.
-        self.0[0] != b'F' && self.0[6] == b'F' && self.0[7] == b'F'
+    pub(crate) fn is_contains(self) -> bool {
+        matrix_predicates::decided(Predicate::Contains, self)
     }
 
-    pub(crate) const fn is_covers(self) -> bool {
-        // `T*****FF* | *T****FF* | ***T**FF* | ****T*FF*`.
-        (self.0[0] != b'F' || self.0[1] != b'F' || self.0[3] != b'F' || self.0[4] != b'F')
-            && self.0[6] == b'F'
-            && self.0[7] == b'F'
+    pub(crate) fn is_covers(self) -> bool {
+        matrix_predicates::decided(Predicate::Covers, self)
     }
 
-    pub(crate) const fn is_contains_properly(self) -> bool {
-        // `T**FF*FF*`.
-        self.0[0] != b'F'
-            && self.0[3] == b'F'
-            && self.0[4] == b'F'
-            && self.0[6] == b'F'
-            && self.0[7] == b'F'
+    pub(crate) fn is_contains_properly(self) -> bool {
+        matrix_predicates::decided(Predicate::ContainsProperly, self)
     }
 
     pub(crate) fn is_equal_topo(self) -> bool {
-        if self == Self::empty_disjoint() {
-            return true;
-        }
-        // `T*F**FFF*`.
-        self.0[0] != b'F'
-            && self.0[2] == b'F'
-            && self.0[5] == b'F'
-            && self.0[6] == b'F'
-            && self.0[7] == b'F'
-    }
-}
-
-const fn dimension_from_de9im_entry(entry: u8) -> Option<Dimension> {
-    match entry {
-        b'0' => Some(Dimension::Point),
-        b'1' => Some(Dimension::Curve),
-        b'2' => Some(Dimension::Surface),
-        _ => None,
+        matrix_predicates::decided(Predicate::Equals, self)
     }
 }

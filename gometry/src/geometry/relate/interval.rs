@@ -16,9 +16,10 @@
 #[cfg(test)]
 use super::De9im;
 use super::de9im::Loc;
+use super::matrix_predicates::{
+    self, Cell as MatrixCell, Cells as MatrixCells, DimRange, Operand as MatrixOperand, Tri,
+};
 use crate::geometry::{CompiledPattern, Dimension};
-#[cfg(test)]
-use crate::predicates::engine::predicate_matrix_value;
 
 /// One cell's dimension, with `F` below every real dimension so intervals
 /// order naturally.
@@ -150,143 +151,78 @@ impl De9imInterval {
         self.is_decided().then(|| De9im(self.lo.map(Cell::ascii)))
     }
 
-    /// One pattern literal against one cell's bounds.
-    fn literal(lo: Cell, hi: Cell, literal: u8) -> Option<bool> {
-        match literal {
-            b'*' => Some(true),
-            b'T' => match (lo, hi) {
-                (Cell::Dim(_), _) => Some(true),
-                (Cell::Empty, Cell::Empty) => Some(false),
-                (Cell::Empty, Cell::Dim(_)) => None,
-            },
-            b'F' => match (lo, hi) {
-                (Cell::Empty, Cell::Empty) => Some(true),
-                (Cell::Dim(_), _) => Some(false),
-                (Cell::Empty, Cell::Dim(_)) => None,
-            },
-            b'0' | b'1' | b'2' => {
-                let wanted = Cell::Dim(match literal {
-                    b'0' => Dimension::Point,
-                    b'1' => Dimension::Curve,
-                    _ => Dimension::Surface,
-                });
-                if lo == wanted && hi == wanted {
-                    Some(true)
-                } else if lo > wanted || hi < wanted {
-                    Some(false)
-                } else {
-                    None
-                }
-            },
-            _ => unreachable!("patterns are validated at their ingress"),
-        }
-    }
-
     /// A whole nine-literal pattern (a conjunction), under three-valued
     /// logic: `Some(false)` as soon as any literal fails, `Some(true)` only
     /// when every literal holds, `None` while any literal is still open.
     pub(crate) fn pattern(&self, pattern: CompiledPattern) -> Option<bool> {
-        let mut open = false;
-        let literals = pattern.cells();
-        for ((&lo, &hi), &literal) in self.lo.iter().zip(&self.hi).zip(&literals) {
-            match Self::literal(lo, hi, literal) {
-                Some(false) => return Some(false),
-                Some(true) => {},
-                None => open = true,
-            }
-        }
-        (!open).then_some(true)
-    }
-
-    /// A disjunction of patterns.
-    #[cfg(test)]
-    pub(crate) fn any_pattern(&self, patterns: &[CompiledPattern]) -> Option<bool> {
-        let mut open = false;
-        for &pattern in patterns {
-            match self.pattern(pattern) {
-                Some(true) => return Some(true),
-                Some(false) => {},
-                None => open = true,
-            }
-        }
-        (!open).then_some(false)
+        matrix_predicates::eval_pattern(pattern, self).option()
     }
 }
 
-#[cfg(test)]
-const fn named_pattern(pattern: &str) -> CompiledPattern {
-    match CompiledPattern::new(pattern) {
-        Some(compiled) => compiled,
-        None => panic!("named DE-9IM pattern is valid"),
-    }
+#[expect(
+    clippy::indexing_slicing,
+    reason = "the closed MatrixCell enum maps only to indexes in the fixed nine-entry interval"
+)]
+const fn interval_matrix_cell(cells: &[Cell], cell: MatrixCell) -> Cell {
+    cells[cell.index()]
 }
 
-/// The named predicates as pattern sets over `(left, right)`, with the two
-/// dimension-dependent ones resolved from the operand dimensions the engine
-/// already knows. These are the OGC definitions `De9im`'s `is_*` methods
-/// implement on a decided matrix, spelled as patterns so the interval
-/// evaluator can decide them early.
-#[cfg(test)]
-pub(crate) fn predicate_verdict(
-    interval: &De9imInterval,
-    predicate: crate::predicates::Predicate,
-    left: Dimension,
-    right: Dimension,
-) -> Option<bool> {
-    use crate::predicates::Predicate;
-    const INTERSECTS: [CompiledPattern; 4] = [
-        named_pattern("T********"),
-        named_pattern("*T*******"),
-        named_pattern("***T*****"),
-        named_pattern("****T****"),
-    ];
-    const TOUCHES: [CompiledPattern; 3] = [
-        named_pattern("FT*******"),
-        named_pattern("F**T*****"),
-        named_pattern("F***T****"),
-    ];
-    const COVERS: [CompiledPattern; 4] = [
-        named_pattern("T*****FF*"),
-        named_pattern("*T****FF*"),
-        named_pattern("***T**FF*"),
-        named_pattern("****T*FF*"),
-    ];
-    const COVERED_BY: [CompiledPattern; 4] = [
-        named_pattern("T*F**F***"),
-        named_pattern("*TF**F***"),
-        named_pattern("**FT*F***"),
-        named_pattern("**F*TF***"),
-    ];
-    const CONTAINS: CompiledPattern = named_pattern("T*****FF*");
-    const WITHIN: CompiledPattern = named_pattern("T*F**F***");
-    const CONTAINS_PROPERLY: CompiledPattern = named_pattern("T**FF*FF*");
-    const EQUALS: CompiledPattern = named_pattern("T*F**FFF*");
-    const CROSSES_LESS: CompiledPattern = named_pattern("T*T******");
-    const CROSSES_GREATER: CompiledPattern = named_pattern("T*****T**");
-    const CROSSES_CURVE: CompiledPattern = named_pattern("0********");
-    const OVERLAPS_CURVE: CompiledPattern = named_pattern("1*T***T**");
-    const OVERLAPS: CompiledPattern = named_pattern("T*T***T**");
-    match predicate {
-        Predicate::Intersects => interval.any_pattern(&INTERSECTS),
-        Predicate::Disjoint => interval.any_pattern(&INTERSECTS).map(|hit| !hit),
-        Predicate::Contains => interval.pattern(CONTAINS),
-        Predicate::Within => interval.pattern(WITHIN),
-        Predicate::Covers => interval.any_pattern(&COVERS),
-        Predicate::CoveredBy => interval.any_pattern(&COVERED_BY),
-        Predicate::ContainsProperly => interval.pattern(CONTAINS_PROPERLY),
-        Predicate::Touches => interval.any_pattern(&TOUCHES),
-        Predicate::Equals => interval.pattern(EQUALS),
-        Predicate::Crosses => match left.cmp(&right) {
-            std::cmp::Ordering::Less => interval.pattern(CROSSES_LESS),
-            std::cmp::Ordering::Greater => interval.pattern(CROSSES_GREATER),
-            std::cmp::Ordering::Equal if left == Dimension::Curve => {
-                interval.pattern(CROSSES_CURVE)
-            },
-            std::cmp::Ordering::Equal => Some(false),
-        },
-        Predicate::Overlaps if left != right => Some(false),
-        Predicate::Overlaps if left == Dimension::Curve => interval.pattern(OVERLAPS_CURVE),
-        Predicate::Overlaps => interval.pattern(OVERLAPS),
+fn max_dimension(cells: [Cell; 3]) -> Option<Dimension> {
+    cells
+        .into_iter()
+        .filter_map(|cell| match cell {
+            Cell::Empty => None,
+            Cell::Dim(dimension) => Some(dimension),
+        })
+        .max()
+}
+
+impl MatrixCells for De9imInterval {
+    fn at_least(&self, cell: MatrixCell, dimension: Dimension) -> Tri {
+        let lower = interval_matrix_cell(&self.lo, cell);
+        let upper = interval_matrix_cell(&self.hi, cell);
+        let wanted = Cell::Dim(dimension);
+        if lower >= wanted {
+            Tri::True
+        } else if upper < wanted {
+            Tri::False
+        } else {
+            Tri::Unknown
+        }
+    }
+
+    fn is_empty(&self, cell: MatrixCell) -> Tri {
+        match (
+            interval_matrix_cell(&self.lo, cell),
+            interval_matrix_cell(&self.hi, cell),
+        ) {
+            (Cell::Dim(_), _) => Tri::False,
+            (Cell::Empty, Cell::Empty) => Tri::True,
+            (Cell::Empty, Cell::Dim(_)) => Tri::Unknown,
+        }
+    }
+
+    fn exactly(&self, cell: MatrixCell, dimension: Dimension) -> Tri {
+        let lower = interval_matrix_cell(&self.lo, cell);
+        let upper = interval_matrix_cell(&self.hi, cell);
+        let wanted = Cell::Dim(dimension);
+        if lower == wanted && upper == wanted {
+            Tri::True
+        } else if lower > wanted || upper < wanted {
+            Tri::False
+        } else {
+            Tri::Unknown
+        }
+    }
+
+    fn interior_dim(&self, operand: MatrixOperand) -> DimRange {
+        let cells = match operand {
+            MatrixOperand::Left => [MatrixCell::Ii, MatrixCell::Ib, MatrixCell::Ie],
+            MatrixOperand::Right => [MatrixCell::Ii, MatrixCell::Bi, MatrixCell::Ei],
+        };
+        let lower = max_dimension(cells.map(|cell| interval_matrix_cell(&self.lo, cell)));
+        let upper = max_dimension(cells.map(|cell| interval_matrix_cell(&self.hi, cell)));
+        DimRange::from_bounds(lower, upper)
     }
 }
 
@@ -312,31 +248,6 @@ mod tests {
         interior: Dimension::Surface,
         boundary: Some(Dimension::Curve),
     };
-
-    fn spec_of(predicate: Predicate) -> crate::predicates::PredicateSpec {
-        crate::predicates::PredicateSpec {
-            predicate,
-            token: "",
-            symmetric: false,
-            index_envelope: None,
-        }
-    }
-
-    fn every_predicate() -> [Predicate; 11] {
-        [
-            Predicate::Intersects,
-            Predicate::Disjoint,
-            Predicate::Contains,
-            Predicate::ContainsProperly,
-            Predicate::Within,
-            Predicate::Covers,
-            Predicate::CoveredBy,
-            Predicate::Touches,
-            Predicate::Crosses,
-            Predicate::Overlaps,
-            Predicate::Equals,
-        ]
-    }
 
     /// Settle every cell at its current lower bound.
     fn settle_all(interval: &mut De9imInterval) {
@@ -376,10 +287,9 @@ mod tests {
 
     #[test]
     fn a_decided_interval_agrees_with_the_matrix_methods_on_every_predicate() {
-        // Walk a grid of matrices through the interval by witnessing each cell
-        // at its target and settling everything, then compare the pattern
-        // evaluator against the decided-matrix implementation. Every named
-        // predicate, every operand-dimension pairing the patterns depend on.
+        // Walk matrices through the interval by witnessing each cell at its
+        // target and settling everything, then compare interval and decided
+        // projections for every matrix admitted by the operand caps.
         let dims = [Dimension::Point, Dimension::Curve, Dimension::Surface];
         let shapes = [POINT, LINE, RING, AREA];
         for &left in &shapes {
@@ -409,24 +319,10 @@ mod tests {
                     }
                     settle_all(&mut interval);
                     let matrix = interval.matrix().expect("settled");
-                    // A non-empty interior lands at its full dimension
-                    // somewhere: the interior row of A (and column of B) peaks
-                    // at that operand's dimension. Anything else describes an
-                    // operand the direct engine never admits — and is where the
-                    // matrix-derived dimension `is_crosses_by_dimension` reads
-                    // would diverge from the operand dimension the evaluator is
-                    // handed.
-                    let peak =
-                        |cells: [usize; 3]| cells.into_iter().map(|cell| interval.lo[cell]).max();
-                    let realizable = peak([0, 1, 2]) == Some(Cell::Dim(left.interior))
-                        && peak([0, 3, 6]) == Some(Cell::Dim(right.interior));
-                    for predicate in every_predicate() {
-                        if !realizable {
-                            break;
-                        }
+                    for predicate in Predicate::ALL {
                         assert_eq!(
-                            predicate_verdict(&interval, predicate, left.interior, right.interior),
-                            Some(predicate_matrix_value(&spec_of(predicate), matrix)),
+                            matrix_predicates::eval(predicate, &interval).option(),
+                            Some(matrix_predicates::decided(predicate, matrix)),
                             "{predicate:?} on {}",
                             matrix.text()
                         );
@@ -455,28 +351,27 @@ mod tests {
     #[test]
     fn intersects_decides_on_the_first_witness_and_disjoint_only_on_settlement() {
         let mut interval = De9imInterval::open(LINE, LINE);
-        let dims = (Dimension::Curve, Dimension::Curve);
         assert_eq!(
-            predicate_verdict(&interval, Predicate::Intersects, dims.0, dims.1),
+            matrix_predicates::eval(Predicate::Intersects, &interval).option(),
             None
         );
         assert_eq!(
-            predicate_verdict(&interval, Predicate::Disjoint, dims.0, dims.1),
+            matrix_predicates::eval(Predicate::Disjoint, &interval).option(),
             None
         );
         interval.witness(Loc::Interior, Loc::Interior, Dimension::Point);
         assert_eq!(
-            predicate_verdict(&interval, Predicate::Intersects, dims.0, dims.1),
+            matrix_predicates::eval(Predicate::Intersects, &interval).option(),
             Some(true)
         );
         assert_eq!(
-            predicate_verdict(&interval, Predicate::Disjoint, dims.0, dims.1),
+            matrix_predicates::eval(Predicate::Disjoint, &interval).option(),
             Some(false)
         );
         // Touches needs II empty, and II is now witnessed: decided false at
         // once, before anything else settles.
         assert_eq!(
-            predicate_verdict(&interval, Predicate::Touches, dims.0, dims.1),
+            matrix_predicates::eval(Predicate::Touches, &interval).option(),
             Some(false)
         );
 
@@ -487,14 +382,15 @@ mod tests {
             }
         }
         assert_eq!(
-            predicate_verdict(&interval, Predicate::Disjoint, dims.0, dims.1),
+            matrix_predicates::eval(Predicate::Disjoint, &interval).option(),
             Some(true)
         );
-        // The exterior cells are still open, and `equals` depends on them.
+        // The exterior cells are still open, so effective emptiness and the
+        // empty-equals-empty case are not decided yet.
         assert_eq!(
-            predicate_verdict(&interval, Predicate::Equals, dims.0, dims.1),
-            Some(false),
-            "II is settled empty, which alone refutes equality"
+            matrix_predicates::eval(Predicate::Equals, &interval).option(),
+            None,
+            "II alone does not settle whether both operands are empty"
         );
         assert!(!interval.is_decided());
     }
@@ -505,33 +401,20 @@ mod tests {
         interval.witness(Loc::Interior, Loc::Interior, Dimension::Point);
         // A point witnessed, but a collinear overlap could still lift II to 1.
         assert_eq!(
-            predicate_verdict(
-                &interval,
-                Predicate::Crosses,
-                Dimension::Curve,
-                Dimension::Curve
-            ),
+            matrix_predicates::eval(Predicate::Crosses, &interval).option(),
             None
         );
         interval.settle(Loc::Interior, Loc::Interior);
+        interval.witness(Loc::Interior, Loc::Exterior, Dimension::Curve);
+        interval.witness(Loc::Exterior, Loc::Interior, Dimension::Curve);
         assert_eq!(
-            predicate_verdict(
-                &interval,
-                Predicate::Crosses,
-                Dimension::Curve,
-                Dimension::Curve
-            ),
+            matrix_predicates::eval(Predicate::Crosses, &interval).option(),
             Some(true)
         );
         let mut overlap = De9imInterval::open(LINE, LINE);
         overlap.witness(Loc::Interior, Loc::Interior, Dimension::Curve);
         assert_eq!(
-            predicate_verdict(
-                &overlap,
-                Predicate::Crosses,
-                Dimension::Curve,
-                Dimension::Curve
-            ),
+            matrix_predicates::eval(Predicate::Crosses, &overlap).option(),
             Some(false),
             "II already exceeds the point dimension crosses demands"
         );

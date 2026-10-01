@@ -12,10 +12,13 @@
 //! interior/boundary/exterior intersections described in §6.1.14.2:
 //! <https://docs.ogc.org/is/06-103r4/06-103r4.pdf>.
 
+use crate::geometry::Dimension;
+
 mod de9im;
 mod graph_matrix;
 pub(in crate::geometry) use graph_matrix::exact_cartesian_relate;
 mod interval;
+mod matrix_predicates;
 mod operands;
 
 pub(crate) use de9im::{De9im, Loc};
@@ -28,3 +31,11 @@ pub(crate) use interval::{De9imInterval, OperandShape};
 #[cfg(test)]
 pub(crate) use operands::polygon_has_nondegenerate_area;
 pub(crate) use operands::{line_has_nonzero_segment, multiline_has_nonzero_segment};
+
+pub(crate) const fn dimension_entry(dimension: Dimension) -> u8 {
+    match dimension {
+        Dimension::Point => b'0',
+        Dimension::Curve => b'1',
+        Dimension::Surface => b'2',
+    }
+}
