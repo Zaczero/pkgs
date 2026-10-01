@@ -196,12 +196,18 @@ fn geographic_polar_ring_uses_the_pole_quotient_for_interior_support() {
 }
 
 #[test]
-fn geographic_full_longitude_band_survives_as_quotient_self_loops() {
+fn geographic_full_longitude_band_preserves_area_across_the_quotient_seam() {
     let shape = Shape::Polygon(polygon(
         &[
             (-180.0, -10.0),
+            (-90.0, -10.0),
+            (0.0, -10.0),
+            (90.0, -10.0),
             (180.0, -10.0),
             (180.0, 10.0),
+            (90.0, 10.0),
+            (0.0, 10.0),
+            (-90.0, 10.0),
             (-180.0, 10.0),
             (-180.0, -10.0),
         ],
@@ -217,14 +223,12 @@ fn geographic_full_longitude_band_survives_as_quotient_self_loops() {
         TopologyLocation::Interior
     );
     assert_eq!(
+        graph.locate_point(XY::new(180.0, 0.0)),
+        TopologyLocation::Interior
+    );
+    assert_eq!(
         graph.locate_point(XY::new(0.0, 10.0)),
         TopologyLocation::Boundary
-    );
-    assert!(
-        graph
-            .edges
-            .iter()
-            .any(|edge| { graph.equivalent(edge.segment.start, edge.segment.end) })
     );
 }
 

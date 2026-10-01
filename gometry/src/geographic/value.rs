@@ -98,7 +98,18 @@ impl PeriodicAxis {
             || self
                 .conventional_integer_period()
                 .is_some_and(|period| magnitude.to_bits() == period.to_bits());
-        is_full_turn.then_some(delta.signum() * self.period)
+        if !is_full_turn {
+            return None;
+        }
+        // The two chart spellings of the seam are one source position. A
+        // stored edge between them is not a full turn; a full-turn path must
+        // carry an ordinary longitude or intermediate source vertices.
+        let from = self.wrap_admitted(from);
+        let to = self.wrap_admitted(to);
+        if from.identity(self) == SeamIdentity::Seam && to.identity(self) == SeamIdentity::Seam {
+            return None;
+        }
+        Some(delta.signum() * self.period)
     }
 
     fn conventional_integer_period(self) -> Option<f64> {

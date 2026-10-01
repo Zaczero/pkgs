@@ -256,7 +256,6 @@ pub(crate) struct GeographicCoordinate {
 }
 
 impl GeographicCoordinate {
-    #[cfg(test)]
     pub(crate) const fn native(self) -> Point {
         self.native
     }
@@ -625,6 +624,7 @@ pub(crate) enum RingLatitudeSpan {
 pub(crate) enum RingDomain {
     Ordinary,
     FullLongitude(RingLatitudeSpan),
+    SeamOnly,
 }
 
 #[derive(Clone, Debug)]
@@ -668,8 +668,9 @@ pub(crate) struct RingSummary {
     /// Signed seam-transit total; `turn` is only its coarse semantic class.
     pub(crate) seam_transits: i64,
     pub(crate) domain: RingDomain,
-    /// True only for an explicit axis-aligned world-band ring. Winding rings
-    /// can share the same domain while retaining source-edge fill semantics.
+    /// True only when each axis-aligned parallel has an intermediate
+    /// longitude or an admitted full-turn edge. An edge between the two seam
+    /// spellings has zero width.
     pub(crate) exact_axis_band: bool,
     pub(crate) south: Latitude,
     pub(crate) north: Latitude,
@@ -682,6 +683,8 @@ impl RingSummary {
     ) -> Result<Self, GeographicViewError> {
         let axis = frame.longitude();
         let mut seam_transits = 0_i64;
+        let mut seam_only_vertices = true;
+        let mut has_seam_vertex = false;
         let fail = |index: usize, source: GeographicError| {
             GeographicDiagnostic::boxed(
                 GeographicLocation {
@@ -697,12 +700,22 @@ impl RingSummary {
         let mut west = ring.x(0);
         let mut east = west;
         for index in 0..ring.len() {
-            frame
+            let longitude = frame
                 .longitude()
                 .canonicalize(ring.x(index))
                 .map_err(|source| fail(index, source))?;
             let latitude =
                 Latitude::try_new(frame, ring.y(index)).map_err(|source| fail(index, source))?;
+            let identity = if latitude.identity(frame) == SeamIdentity::Pole {
+                SeamIdentity::Pole
+            } else {
+                longitude.identity(axis)
+            };
+            match identity {
+                SeamIdentity::Seam => has_seam_vertex = true,
+                SeamIdentity::Pole => {},
+                SeamIdentity::Ordinary => seam_only_vertices = false,
+            }
             if latitude.get() < south.get() {
                 south = latitude;
             }
@@ -728,6 +741,7 @@ impl RingSummary {
         };
         let exact_axis_band = is_exact_axis_band(frame, ring, west, east, south, north);
         let full_longitude = matches!(turn, RingTurn::Full(_)) || exact_axis_band;
+        let seam_only = seam_only_vertices && has_seam_vertex && !full_longitude;
         let domain = if full_longitude {
             #[expect(
                 clippy::float_cmp,
@@ -740,6 +754,8 @@ impl RingSummary {
                 RingLatitudeSpan::Ordinary
             };
             RingDomain::FullLongitude(span)
+        } else if seam_only {
+            RingDomain::SeamOnly
         } else {
             RingDomain::Ordinary
         };
@@ -768,13 +784,17 @@ fn is_exact_axis_band(
         return false;
     }
     let mut corners = 0_u8;
-    let axis_corners = (0..ring.len()).all(|index| {
+    let mut parallel_interiors = 0_u8;
+    let mut parallel_full_turns = 0_u8;
+    let axis_vertices = (0..ring.len()).all(|index| {
         let x = ring.x(index);
         let y = ring.y(index);
         let x_side = if x.to_bits() == west.to_bits() {
             0
         } else if x.to_bits() == east.to_bits() {
             1
+        } else if x > west && x < east {
+            2
         } else {
             return false;
         };
@@ -782,17 +802,42 @@ fn is_exact_axis_band(
             0
         } else if y.to_bits() == north.get().to_bits() {
             1
+        } else if y > south.get() && y < north.get() {
+            2
         } else {
             return false;
         };
-        corners |= 1 << (x_side * 2 + y_side);
+        match (x_side, y_side) {
+            (0, 0) => corners |= 1 << 0,
+            (1, 0) => corners |= 1 << 1,
+            (1, 1) => corners |= 1 << 2,
+            (0, 1) => corners |= 1 << 3,
+            (2, 0) => parallel_interiors |= 1,
+            (2, 1) => parallel_interiors |= 2,
+            (0 | 1, 2) => {},
+            _ => return false,
+        }
         true
     });
+    let axis = frame.longitude();
     let axis_edges = (0..ring.len() - 1).all(|index| {
-        ring.x(index).to_bits() == ring.x(index + 1).to_bits()
-            || ring.y(index).to_bits() == ring.y(index + 1).to_bits()
+        let start_x = ring.x(index);
+        let end_x = ring.x(index + 1);
+        let start_y = ring.y(index);
+        let end_y = ring.y(index + 1);
+        if start_y.to_bits() == end_y.to_bits() && axis.full_turn_delta(start_x, end_x).is_some() {
+            if start_y.to_bits() == south.get().to_bits() {
+                parallel_full_turns |= 1;
+            } else if start_y.to_bits() == north.get().to_bits() {
+                parallel_full_turns |= 2;
+            }
+        }
+        start_x.to_bits() == end_x.to_bits() || start_y.to_bits() == end_y.to_bits()
     });
-    axis_corners && axis_edges && corners == 0b1111
+    axis_vertices
+        && axis_edges
+        && corners == 0b1111
+        && (parallel_interiors | parallel_full_turns) == 0b11
 }
 
 fn exact_difference_equals(left: f64, right: f64, target: f64) -> bool {

@@ -1752,6 +1752,9 @@ fn north_pole_ring_windings(sources: &ExactGeographicChartInventory) -> Vec<i64>
         .rings
         .iter()
         .map(|ring| {
+            if matches!(ring.summary.domain, crate::geographic::RingDomain::SeamOnly) {
+                return 0;
+            }
             if ring.summary.exact_axis_band {
                 if ring.summary.north.get().to_bits() != sources.frame.pole().to_bits() {
                     return 0;
@@ -6425,8 +6428,14 @@ mod tests {
     fn exact_full_longitude_axis_band_occupies_only_its_source_band() {
         let shell = ring(&[
             (-180.0, -10.0),
+            (-90.0, -10.0),
+            (0.0, -10.0),
+            (90.0, -10.0),
             (180.0, -10.0),
             (180.0, 10.0),
+            (90.0, 10.0),
+            (0.0, 10.0),
+            (-90.0, 10.0),
             (-180.0, 10.0),
             (-180.0, -10.0),
         ]);
@@ -6442,12 +6451,48 @@ mod tests {
     }
 
     #[test]
+    fn seam_alias_rectangle_is_collapsed_line_support() {
+        let shape = Shape::Polygon(Polygon::new(
+            ring(&[
+                (-180.0, -85.0),
+                (180.0, -85.0),
+                (180.0, 85.0),
+                (-180.0, 85.0),
+                (-180.0, -85.0),
+            ]),
+            vec![],
+        ));
+        let topology = exact_topology(&shape);
+        assert_eq!(topology.sources.rings[0].kind, RingKind::Collapsed);
+        assert_eq!(
+            topology.sources.rings[0].summary.domain,
+            crate::geographic::RingDomain::SeamOnly
+        );
+        let central = topology
+            .locate_point(crate::geometry::Point::new_raw_xy(0.0, 0.0))
+            .unwrap();
+        assert_eq!(central.geometry, Loc::Exterior);
+        assert_eq!(central.area, Loc::Exterior);
+        let seam = topology
+            .locate_point(crate::geometry::Point::new_raw_xy(180.0, 0.0))
+            .unwrap();
+        assert_eq!(seam.geometry, Loc::Interior);
+        assert_eq!(seam.area, Loc::Exterior);
+    }
+
+    #[test]
     fn pole_to_pole_full_longitude_axis_band_occupies_the_sphere() {
         let world = Shape::Polygon(Polygon::new(
             ring(&[
                 (-180.0, -90.0),
+                (-90.0, -90.0),
+                (0.0, -90.0),
+                (90.0, -90.0),
                 (180.0, -90.0),
                 (180.0, 90.0),
+                (90.0, 90.0),
+                (0.0, 90.0),
+                (-90.0, 90.0),
                 (-180.0, 90.0),
                 (-180.0, -90.0),
             ]),

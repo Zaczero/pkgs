@@ -96,8 +96,8 @@ pub(crate) fn split_ring_at_seam(points: &[Point]) -> SeamRing {
     let coords = dedup_consecutive(points.to_vec());
     let cycle = &coords[..coords.len().saturating_sub(1)];
     let Some(start) = cycle.iter().position(|&point| !on_seam(point)) else {
-        // Only a full-longitude band lies wholly on the seam; its sides are
-        // its stored spellings.
+        // Preserve the source seam runs. A ring that spells both seam aliases
+        // without intermediate longitudes collapses to this support.
         let pieces = segment_coords(points);
         return if pieces.is_empty() {
             SeamRing::Whole(points.to_vec())

@@ -3022,8 +3022,14 @@ mod exact_geographic_nary_tests {
     fn nary_union_emits_a_full_longitude_axis_band_without_turn_fill() {
         let band = polygon(&[
             (-180.0, -10.0),
+            (-90.0, -10.0),
+            (0.0, -10.0),
+            (90.0, -10.0),
             (180.0, -10.0),
             (180.0, 10.0),
+            (90.0, 10.0),
+            (0.0, 10.0),
+            (-90.0, 10.0),
             (-180.0, 10.0),
             (-180.0, -10.0),
         ]);
@@ -3052,8 +3058,14 @@ mod exact_geographic_nary_tests {
     fn nary_union_emits_a_source_owned_whole_sphere() {
         let middle = polygon(&[
             (-180.0, -80.0),
+            (-90.0, -80.0),
+            (0.0, -80.0),
+            (90.0, -80.0),
             (180.0, -80.0),
             (180.0, 80.0),
+            (90.0, 80.0),
+            (0.0, 80.0),
+            (-90.0, 80.0),
             (-180.0, 80.0),
             (-180.0, -80.0),
         ]);

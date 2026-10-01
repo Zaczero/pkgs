@@ -1359,37 +1359,52 @@ fn source_axis_band_cycles_cover_boundary(
     all_cycles: &[BoundaryCycle],
     cycle_indices: &[usize],
 ) -> Result<bool> {
-    let mut horizontal_full_turn_edges = Vec::new();
+    let frame = topology.sources.frame;
+    let axis = frame.longitude();
+    let south = canonical_bits(source_ring.summary.south.get());
+    let north = canonical_bits(source_ring.summary.north.get());
+    let mut parallel_edges = Vec::new();
+    let mut parallel_mask = 0_u8;
     for edge_index in source_ring.source_edges.clone() {
         let edge =
             topology.sources.edges.get(edge_index).ok_or_else(|| {
                 GeometryErrorKind::Invalid("Q source ring edge is unknown".into())
             })?;
-        if canonical_bits(edge.source[0].y) == canonical_bits(edge.source[1].y)
-            && topology
-                .sources
-                .frame
-                .longitude()
-                .full_turn_delta(edge.source[0].x, edge.source[1].x)
-                .is_some()
-        {
-            horizontal_full_turn_edges.push((edge.id, canonical_bits(edge.source[0].y)));
+        let latitude = canonical_bits(edge.source[0].y);
+        if latitude != canonical_bits(edge.source[1].y) {
+            continue;
         }
+        let parallel = if latitude == south {
+            1
+        } else if latitude == north {
+            2
+        } else {
+            continue;
+        };
+        let full_turn = axis
+            .full_turn_delta(edge.source[0].x, edge.source[1].x)
+            .is_some();
+        if !full_turn {
+            let start = axis
+                .canonicalize(edge.source[0].x)
+                .expect("source longitude was admitted")
+                .get();
+            let end = axis
+                .canonicalize(edge.source[1].x)
+                .expect("source longitude was admitted")
+                .get();
+            if start.to_bits() == end.to_bits() {
+                continue;
+            }
+        }
+        parallel_mask |= parallel;
+        parallel_edges.push(edge.id);
     }
-    if horizontal_full_turn_edges.len() < 2 {
-        return Ok(false);
-    }
-    let Some(&(_, first_latitude)) = horizontal_full_turn_edges.first() else {
-        return Ok(false);
-    };
-    if !horizontal_full_turn_edges
-        .iter()
-        .any(|&(_, latitude)| first_latitude != latitude)
-    {
+    if parallel_mask != 0b11 {
         return Ok(false);
     }
 
-    for (edge_id, _) in horizontal_full_turn_edges {
+    for edge_id in parallel_edges {
         let mut ranges = Vec::new();
         for &cycle_index in cycle_indices {
             let cycle = all_cycles

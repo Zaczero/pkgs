@@ -134,8 +134,9 @@ fn ring_summary_preserves_exact_full_turn_direction_and_world_band() {
 }
 
 fn axis_box(frame: GeographicFrame, west: f64, east: f64, south: f64, north: f64) -> RingSummary {
-    let ring = ring(vec![west, east, east, west, west], vec![
-        south, south, north, north, south,
+    let middle = f64::midpoint(west, east);
+    let ring = ring(vec![west, middle, east, east, middle, west, west], vec![
+        south, south, south, north, north, north, south,
     ]);
     RingSummary::try_new(frame, &GeographicRing::from_ring(&ring)).unwrap()
 }
@@ -197,8 +198,20 @@ fn unwrapped_axis_boxes_are_exact_and_wide_diagonals_are_not_bands() {
         RingSummary::try_new(degrees(), &GeographicRing::from_ring(&diagonal))
             .unwrap()
             .domain,
-        RingDomain::Ordinary
+        RingDomain::SeamOnly
     );
+}
+
+#[test]
+fn seam_spelled_axis_ring_is_not_an_explicit_world_band() {
+    let seam_only = ring(vec![-180.0, 180.0, 180.0, -180.0, -180.0], vec![
+        -85.0, -85.0, 85.0, 85.0, -85.0,
+    ]);
+    let summary = RingSummary::try_new(degrees(), &GeographicRing::from_ring(&seam_only)).unwrap();
+
+    assert_eq!(summary.turn, RingTurn::None);
+    assert!(!summary.exact_axis_band);
+    assert_eq!(summary.domain, RingDomain::SeamOnly);
 }
 
 #[test]
@@ -754,6 +767,18 @@ fn seam_transits_preserve_direction_aliases_and_multiple_windings() {
     assert_eq!(axis.seam_transit(0.0, -180.0).unwrap(), 0);
     assert_eq!(axis.seam_transit(180.0, 0.0).unwrap(), -1);
     assert_eq!(axis.seam_transit(-180.0, 0.0).unwrap(), 0);
+    assert_eq!(axis.full_turn_delta(-180.0, 180.0), None);
+    assert_eq!(axis.full_turn_delta(180.0, -180.0), None);
+    assert_eq!(
+        axis.shortest_edge(-180.0, 180.0).unwrap(),
+        EdgeDirection::Minor(0.0)
+    );
+    assert_eq!(
+        axis.shortest_edge(180.0, -180.0).unwrap(),
+        EdgeDirection::Minor(0.0)
+    );
+    assert_eq!(axis.full_turn_delta(0.0, 360.0), Some(360.0));
+    assert_eq!(axis.full_turn_delta(360.0, 0.0), Some(-360.0));
     axis.seam_transit(f64::NAN, 0.0).unwrap_err();
     axis.seam_transit(0.0, f64::INFINITY).unwrap_err();
 

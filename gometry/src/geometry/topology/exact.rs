@@ -11,8 +11,8 @@ use crate::error::{ResourceError, Result};
 #[cfg(test)]
 use crate::geographic::GeographicInputs;
 use crate::geographic::{
-    EdgeDirection, GeographicFrame, Latitude, RingSummary, ScalarGeographicView, SeamIdentity,
-    TurnDirection,
+    EdgeDirection, GeographicFrame, Latitude, RingDomain, RingSummary, ScalarGeographicView,
+    SeamIdentity, TurnDirection,
 };
 use crate::geometry::exact_arith::ExactSign;
 use crate::geometry::segments::try_sort_by;
@@ -871,9 +871,10 @@ impl ExactSourceRing {
     /// Full-longitude traversals and explicit axis bands can enclose spherical
     /// area even when their longitude/latitude projection has zero shoelace.
     pub(super) const fn has_areal_winding(&self) -> bool {
-        matches!(self.kind, RingKind::Winding)
-            || self.summary.seam_transits != 0
-            || self.summary.exact_axis_band
+        !matches!(self.summary.domain, RingDomain::SeamOnly)
+            && (matches!(self.kind, RingKind::Winding)
+                || self.summary.seam_transits != 0
+                || self.summary.exact_axis_band)
     }
 }
 
@@ -1077,12 +1078,18 @@ impl ExactGeographicChartInventory {
             let ring_id = SourceRingId(
                 u32::try_from(self.rings.len()).map_err(|_| ResourceError::SizeOverflow)?,
             );
-            let kind = crate::geometry::ring_kind_columns(ring.coords().xs(), ring.coords().ys());
+            let stored_kind =
+                crate::geometry::ring_kind_columns(ring.coords().xs(), ring.coords().ys());
             let summary = RingSummary::try_new(
                 self.frame,
                 &crate::geographic::GeographicRing::from_ring(ring),
             )
             .expect("the source ring was admitted in this frame");
+            let kind = if summary.domain == RingDomain::SeamOnly {
+                RingKind::Collapsed
+            } else {
+                stored_kind
+            };
             let axis_band_winding = summary
                 .exact_axis_band
                 .then(|| crate::geometry::ring_winding(ring));
