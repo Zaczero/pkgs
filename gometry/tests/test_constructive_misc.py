@@ -139,6 +139,54 @@ def test_simplify_vw_area_criterion_and_topology_preservation() -> None:
         line.simplify(-1.0, method='vw')
 
 
+@pytest.mark.parametrize('method', ['vw', 'dp'])
+@pytest.mark.parametrize('tolerance', [0.01, 0.5, 1.5, 100.0])
+def test_topology_preserving_simplify_keeps_closed_simple_lines(
+    method: str,
+    tolerance: float,
+) -> None:
+    ring = gm.from_wkt('LINESTRING(0 0,5 0.2,10 0,5 -0.2,0 0)')
+    simplified = ring.simplify(tolerance, method=method)
+    coordinates = list(simplified.coords)
+
+    assert simplified.is_closed, (method, tolerance, coordinates)
+    assert simplified.is_simple, (method, tolerance, coordinates)
+    assert simplified.is_valid, (method, tolerance, coordinates)
+    assert len(coordinates) >= 4, (method, tolerance, coordinates)
+    assert len({coordinate[:2] for coordinate in coordinates[:-1]}) >= 3
+
+
+@pytest.mark.parametrize('method', ['vw', 'dp'])
+def test_topology_preserving_simplify_keeps_closed_lines_with_zm(method: str) -> None:
+    ring = gm.LineString(
+        [(0, 0), (5, 0.2), (10, 0), (5, -0.2), (0, 0)],
+        z=[1, 2, 3, 4, 1],
+        m=[10, 20, 30, 40, 10],
+    )
+    simplified = ring.simplify(100.0, method=method)
+    coordinates = list(simplified.coords)
+
+    assert simplified.coordinate_axes == 'XYZM'
+    assert simplified.is_closed
+    assert simplified.is_simple
+    assert len(coordinates) >= 4
+    assert len({coordinate[:2] for coordinate in coordinates[:-1]}) >= 3
+    assert coordinates[0] == coordinates[-1]
+    assert set(coordinates) <= set(ring.coords)
+
+
+@pytest.mark.parametrize('method', ['vw', 'dp'])
+def test_topology_preserving_simplify_does_not_collapse_retraced_line(
+    method: str,
+) -> None:
+    line = gm.from_wkt('LINESTRING(0 4,1 5,0 4)')
+    simplified = line.simplify(0.5, method=method)
+    coordinates = list(simplified.coords)
+
+    assert simplified.is_closed
+    assert len({coordinate[:2] for coordinate in coordinates}) == 2
+
+
 @pytest.mark.parametrize(
     ('method', 'preserve_topology'),
     list(itertools.product(('dp', 'vw'), (False, True))),
@@ -321,12 +369,15 @@ def _assert_aba_endpoints(geom: gm.Geometry) -> None:
     assert list(geom.coords.m) == [10.0, 90.0]
 
 
-def test_simplify_vw_keeps_repeated_xy_endpoint_ordinates() -> None:
-    """Interior VW drop of A-B-A must keep each endpoint's original Z/M slot."""
+def test_simplify_vw_keeps_repeated_xy_endpoint_ordinates_without_safe_collapse() -> (
+    None
+):
+    """Raw VW keeps endpoint ordinates; guarded VW must not collapse A-B-A."""
     line = _aba_zm_line()
     raw = line.simplify(1.0, method='vw', preserve_topology=False)
     _assert_aba_endpoints(raw)
-    _assert_aba_endpoints(line.simplify(1.0, method='vw'))
+    safe = line.simplify(1.0, method='vw')
+    assert list(safe.coords) == list(line.coords)
 
     packed = gm.GeometryArray([line, line])
     assert packed.to_arrow().type.extension_name == 'geoarrow.linestring'

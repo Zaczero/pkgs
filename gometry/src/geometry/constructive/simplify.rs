@@ -832,7 +832,7 @@ pub(crate) fn split(
                     match (item_coordinate_count, child_coordinate_count) {
                         (None, Some(_)) => true,
                         (Some(parent), Some(child)) => child < parent,
-                        (None, None) | (Some(_), None) => false,
+                        (None | Some(_), None) => false,
                     };
                 matches!(
                     &item.shape,
@@ -881,6 +881,47 @@ fn has_three_distinct_xy(coords: &CoordSeq) -> bool {
         }
     }
     false
+}
+
+fn has_two_distinct_xy(coords: &CoordSeq) -> bool {
+    let Some((&first_x, &first_y)) = coords.xs().first().zip(coords.ys().first()) else {
+        return false;
+    };
+    let first = PointKey::new(XY::new(first_x, first_y));
+    coords
+        .xs()
+        .iter()
+        .zip(coords.ys())
+        .skip(1)
+        .any(|(&x, &y)| PointKey::new(XY::new(x, y)) != first)
+}
+
+fn coords_are_closed(coords: &CoordSeq) -> bool {
+    coords
+        .xs()
+        .first()
+        .zip(coords.ys().first())
+        .zip(coords.xs().last().zip(coords.ys().last()))
+        .is_some_and(|((&first_x, &first_y), (&last_x, &last_y))| {
+            same_point(XY::new(first_x, first_y), XY::new(last_x, last_y))
+        })
+}
+
+fn line_kept_structure(original: &LineSeq, simplified: &LineSeq) -> bool {
+    let original = original.as_coords();
+    let simplified = simplified.as_coords();
+    if !has_two_distinct_xy(original) {
+        return true;
+    }
+    if !has_two_distinct_xy(simplified) {
+        return false;
+    }
+    if !coords_are_closed(original) {
+        return true;
+    }
+    coords_are_closed(simplified)
+        && (!has_three_distinct_xy(original)
+            || (simplified.len() >= 4 && has_three_distinct_xy(simplified)))
 }
 
 /// Operation-local keep-count identity. `Unchanged` means every chain kept
@@ -1233,9 +1274,10 @@ impl Shape {
         })
     }
 
-    /// Whether raw DP output preserved what `preserve_topology` promises:
-    /// polygonal output stays valid and non-collapsed; a simple lineal
-    /// input stays simple.
+    /// Whether raw output preserved what `preserve_topology` promises:
+    /// polygonal output stays valid and non-collapsed; simple lineal input
+    /// stays simple, and closed line strings retain a closed non-degenerate
+    /// form.
     fn simplify_kept_topology(&self, simplified: &Self) -> Result<bool> {
         match self {
             Self::Polygon(_) | Self::MultiPolygon(_) => {
@@ -1246,7 +1288,28 @@ impl Shape {
                 Ok(simplified_polygon_delta_is_simple(self, simplified)?
                     && (self.is_empty() || !simplified.is_empty()))
             },
-            Self::LineString(_) | Self::MultiLineString(_) => {
+            Self::LineString(original) => {
+                let Self::LineString(simplified_line) = simplified else {
+                    return Ok(false);
+                };
+                if !line_kept_structure(original, simplified_line) {
+                    return Ok(false);
+                }
+                Ok(!self.is_simple()? || simplified.is_simple()?)
+            },
+            Self::MultiLineString(original) => {
+                let Self::MultiLineString(simplified_lines) = simplified else {
+                    return Ok(false);
+                };
+                if original.len() != simplified_lines.len()
+                    || !original
+                        .as_slice()
+                        .iter()
+                        .zip(simplified_lines.as_slice())
+                        .all(|(original, simplified)| line_kept_structure(original, simplified))
+                {
+                    return Ok(false);
+                }
                 Ok(!self.is_simple()? || simplified.is_simple()?)
             },
             Self::GeometryCollection(geometries) => {
