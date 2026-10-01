@@ -332,7 +332,7 @@ struct ChartRing {
 }
 
 impl ChartRing {
-    fn new() -> Self {
+    const fn new() -> Self {
         Self {
             twice_area: 0.0,
             absolute_products: 0.0,
@@ -383,7 +383,7 @@ impl ChartRing {
         self.previous_lon = lon;
         self.previous_lat = lat;
         self.previous_unwrapped_lon = unwrapped_lon;
-        self.count += 1;
+        self.count = self.count.wrapping_add(1);
     }
 
     fn close(&mut self) {
@@ -412,7 +412,7 @@ impl ChartRing {
         let reverse = x1 * y0;
         self.twice_area += forward - reverse;
         self.absolute_products += forward.abs() + reverse.abs();
-        self.edge_count += 1;
+        self.edge_count = self.edge_count.wrapping_add(1);
         if let Some(exact_area) = &mut self.exact_area {
             exact_area.add_cross(x0, y0, x1, y1);
         }
@@ -462,7 +462,7 @@ fn chart_interior_area(
     }
     match orientation.expect("non-polar rings resolve chart orientation") {
         std::cmp::Ordering::Equal => 0.0,
-        orientation => {
+        orientation @ (std::cmp::Ordering::Less | std::cmp::Ordering::Greater) => {
             let oriented = if orientation == std::cmp::Ordering::Less {
                 -area
             } else {

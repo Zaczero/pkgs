@@ -13,17 +13,17 @@ fn staged_open_ring_vertex_count(coords: &CoordSeq) -> usize {
     let (xs, ys) = (coords.xs(), coords.ys());
     let mut first = None;
     let mut previous = None;
-    let mut count = 0;
+    let mut count = 0_usize;
     for (&x, &y) in std::iter::zip(xs, ys) {
         let point = XY::new(x, y);
         if previous != Some(point) {
             first.get_or_insert(point);
             previous = Some(point);
-            count += 1;
+            count = count.saturating_add(1);
         }
     }
     if count > 1 && first == previous {
-        count -= 1;
+        count = count.saturating_sub(1);
     }
     count
 }

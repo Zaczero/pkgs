@@ -81,6 +81,14 @@ pub(crate) fn collapsed_line_point<C: Coordinates + ?Sized>(points: &C) -> Optio
         .then_some(first)
 }
 
+#[expect(
+    clippy::indexing_slicing,
+    reason = "xy_columns returns equal-length slices for the admitted coordinate sequence, and ordinals are bounded by coord_count"
+)]
+#[expect(
+    clippy::arithmetic_side_effects,
+    reason = "ring and corner counts are bounded by the admitted coordinate slice length"
+)]
 pub(crate) fn validate_ring<C: Coordinates + ?Sized>(
     points: &C,
     // Labels are built ONLY on failure: eager `format!` at the call sites
@@ -233,7 +241,7 @@ fn shell_convexity<C: Coordinates + ?Sized>(shell: &C, strict: bool) -> bool {
     let len = shell.coord_count();
     let (distinct, first, last) = normalized_shell_extent(shell, len);
     let n = if distinct > 1 && first == last {
-        distinct - 1
+        distinct.saturating_sub(1)
     } else {
         distinct
     };
@@ -272,7 +280,7 @@ fn shell_convexity<C: Coordinates + ?Sized>(shell: &C, strict: bool) -> bool {
         }
         edge_start = edge_end;
         edge_end = Some(point);
-        emitted += 1;
+        emitted = emitted.saturating_add(1);
     }
     debug_assert_eq!(emitted, n);
     let first_point = first_point.expect("a normalized shell with three points has a first point");
@@ -290,7 +298,7 @@ fn normalized_shell_extent<C: Coordinates + ?Sized>(
     shell: &C,
     len: usize,
 ) -> (usize, Option<XY>, Option<XY>) {
-    let mut distinct = 0;
+    let mut distinct = 0_usize;
     let mut first = None;
     let mut last = None;
     let mut previous = None;
@@ -304,7 +312,7 @@ fn normalized_shell_extent<C: Coordinates + ?Sized>(
         }
         previous = Some(point);
         last = Some(point);
-        distinct += 1;
+        distinct = distinct.saturating_add(1);
     }
     (distinct, first, last)
 }
@@ -352,13 +360,21 @@ impl ConvexityState {
         } else if self.strict {
             return false;
         }
-        let component_sign = |value: f64| i32::from(value > 0.0) - i32::from(value < 0.0);
+        let component_sign = |value: f64| {
+            if value > 0.0 {
+                1
+            } else if value < 0.0 {
+                -1
+            } else {
+                0
+            }
+        };
         let sx = component_sign(b.x - a.x);
         if sx != 0 {
             if self.last_x == 0 {
                 self.first_x = sx;
             } else if sx != self.last_x {
-                self.x_flips += 1;
+                self.x_flips = self.x_flips.saturating_add(1);
             }
             self.last_x = sx;
         }
@@ -367,7 +383,7 @@ impl ConvexityState {
             if self.last_y == 0 {
                 self.first_y = sy;
             } else if sy != self.last_y {
-                self.y_flips += 1;
+                self.y_flips = self.y_flips.saturating_add(1);
             }
             self.last_y = sy;
         }
@@ -379,10 +395,10 @@ impl ConvexityState {
             return false;
         }
         if self.last_x != 0 && self.last_x != self.first_x {
-            self.x_flips += 1;
+            self.x_flips = self.x_flips.saturating_add(1);
         }
         if self.last_y != 0 && self.last_y != self.first_y {
-            self.y_flips += 1;
+            self.y_flips = self.y_flips.saturating_add(1);
         }
         self.x_flips == 2 && self.y_flips == 2
     }

@@ -8,6 +8,10 @@ pub(crate) struct CompiledPattern {
 }
 
 impl CompiledPattern {
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "the exact nine-byte length check admits every cell ordinal in the fixed pattern arrays"
+    )]
     pub(crate) const fn new(pattern: &str) -> Option<Self> {
         let bytes = pattern.as_bytes();
         if bytes.len() != 9 {
@@ -21,7 +25,7 @@ impl CompiledPattern {
                 return None;
             }
             cells[index] = byte;
-            index += 1;
+            index = index.wrapping_add(1);
         }
         Some(Self { cells })
     }

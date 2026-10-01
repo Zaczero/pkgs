@@ -559,7 +559,7 @@ enum AuxiliaryAxis {
 }
 
 impl AuxiliaryAxis {
-    fn coordinate(self, point: [f64; 3]) -> f64 {
+    const fn coordinate(self, point: [f64; 3]) -> f64 {
         match self {
             Self::X => point[0],
             Self::Y => point[1],
@@ -618,31 +618,35 @@ pub(super) struct WitnessOrder(u128);
 impl WitnessOrder {
     pub(super) const ZERO: Self = Self(0);
 
-    pub(super) fn from_rank(rank: u128) -> Self {
+    pub(super) const fn from_rank(rank: u128) -> Self {
         Self(rank)
     }
 
-    pub(super) fn ordinal(index: usize) -> Self {
+    pub(super) const fn ordinal(index: usize) -> Self {
         Self(index as u128)
     }
 
+    #[expect(
+        clippy::missing_const_for_fn,
+        reason = "making this shared width helper const would newly make the out-of-scope target_feature_width caller lint"
+    )]
     pub(super) fn feature_width(segments: usize, point_only: usize) -> u128 {
         (segments as u128).wrapping_add(point_only as u128)
     }
 
-    pub(super) fn row_major(base: Self, row: usize, width: u128, column: u128) -> Self {
+    pub(super) const fn row_major(base: Self, row: usize, width: u128, column: u128) -> Self {
         Self::after_rows(base, row, width).with_column(column)
     }
 
-    pub(super) fn after_rows(base: Self, rows: usize, width: u128) -> Self {
+    pub(super) const fn after_rows(base: Self, rows: usize, width: u128) -> Self {
         Self(base.0.wrapping_add((rows as u128).wrapping_mul(width)))
     }
 
-    pub(super) fn with_column(self, column: u128) -> Self {
+    pub(super) const fn with_column(self, column: u128) -> Self {
         Self(self.0.wrapping_add(column))
     }
 
-    pub(super) fn point_feature(segments: usize, point: usize) -> u128 {
+    pub(super) const fn point_feature(segments: usize, point: usize) -> u128 {
         (segments as u128).wrapping_add(point as u128)
     }
 }

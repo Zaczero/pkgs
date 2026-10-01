@@ -24,14 +24,25 @@ impl Shape {
         match self {
             Self::LineString(points) => line_is_closed(points),
             Self::MultiLineString(lines) => !lines.is_empty() && lines.iter().all(line_is_closed),
-            _ => false,
+            Self::Point(_)
+            | Self::MultiPoint(_)
+            | Self::Polygon(_)
+            | Self::MultiPolygon(_)
+            | Self::GeometryCollection(_)
+            | Self::Empty(..) => false,
         }
     }
 
     pub fn is_ring(&self) -> crate::error::Result<bool> {
         match self {
             Self::LineString(points) => Ok(line_is_closed(points) && line_is_simple(points)?),
-            _ => Ok(false),
+            Self::Point(_)
+            | Self::MultiPoint(_)
+            | Self::MultiLineString(_)
+            | Self::Polygon(_)
+            | Self::MultiPolygon(_)
+            | Self::GeometryCollection(_)
+            | Self::Empty(..) => Ok(false),
         }
     }
 
@@ -75,7 +86,7 @@ impl Shape {
         let mut chains = LineworkChains::default();
         chains.push_shape(self)?;
         let mut failure = Ok(());
-        let _ = chains.for_each_candidate_pair(|left, right| {
+        let _candidate_pairs = chains.for_each_candidate_pair(|left, right| {
             match collect_offending_pair(chains.at(left), chains.at(right), &mut visit) {
                 Ok(()) => ControlFlow::Continue(()),
                 Err(error) => {
@@ -213,7 +224,13 @@ impl Shape {
                 Ok(shell_is_convex(&polygon.shell))
             },
             Self::Empty(GeometryKind::Polygon, _) => Ok(true),
-            _ => Err(GeometryErrorKind::SinglePolygonRequired.into()),
+            Self::Point(_)
+            | Self::MultiPoint(_)
+            | Self::LineString(_)
+            | Self::MultiLineString(_)
+            | Self::MultiPolygon(_)
+            | Self::GeometryCollection(_)
+            | Self::Empty(..) => Err(GeometryErrorKind::SinglePolygonRequired.into()),
         }
     }
 
@@ -257,7 +274,13 @@ impl Shape {
     pub fn is_ccw(&self) -> bool {
         match self {
             Self::LineString(points) => line_is_ccw(points),
-            _ => false,
+            Self::Point(_)
+            | Self::MultiPoint(_)
+            | Self::MultiLineString(_)
+            | Self::Polygon(_)
+            | Self::MultiPolygon(_)
+            | Self::GeometryCollection(_)
+            | Self::Empty(..) => false,
         }
     }
 }

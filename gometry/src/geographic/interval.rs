@@ -110,14 +110,11 @@ where
     }
     let mut best_gap = 0.0;
     let mut best_start = 0.0;
-    for index in 0..merged.len() {
-        let end = merged[index][1];
-        let (gap, next) = if index + 1 == merged.len() {
-            ((axis.period() - end) + merged[0][0], merged[0][0])
-        } else {
-            let next = merged[index + 1][0];
-            (next - end, next)
-        };
+    let mut merged = merged.iter().copied();
+    let [first_start, mut previous_end] = merged
+        .next()
+        .expect("nonempty intervals produce a merged segment");
+    let mut consider_gap = |gap: f64, next: f64| {
         let candidate_start = from_zero_based(axis, next).get();
         if gap > best_gap
             || (gap.total_cmp(&best_gap) == Ordering::Equal && candidate_start < best_start)
@@ -125,7 +122,12 @@ where
             best_gap = gap;
             best_start = candidate_start;
         }
+    };
+    for [next, end] in merged {
+        consider_gap(next - previous_end, next);
+        previous_end = end;
     }
+    consider_gap((axis.period() - previous_end) + first_start, first_start);
     if best_gap == 0.0 {
         CircularInterval::Full
     } else {

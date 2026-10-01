@@ -180,7 +180,11 @@ pub(crate) fn ring_label(ring: usize) -> String {
     if ring == 0 {
         "exterior ring".into()
     } else {
-        format!("interior ring at index {}", ring - 1)
+        format!(
+            "interior ring at index {}",
+            ring.checked_sub(1)
+                .expect("interior ring ordinal follows the exterior ring")
+        )
     }
 }
 
@@ -191,7 +195,8 @@ pub(in crate::geometry) fn polygon_rings_issue_with_contacts(
     path: &str,
     mut contacts: Option<&mut Vec<PolygonContact>>,
 ) -> crate::error::Result<Option<ValidationIssue>> {
-    let ring_count = polygon.holes.len() + 1;
+    // A Vec's admitted length is below usize::MAX, so adding the shell remains exact.
+    let ring_count = polygon.holes.len().wrapping_add(1);
     let mut chains = LineworkChains::default();
     let mut source_edges = Vec::new();
     let mut source_offsets = Vec::new();
@@ -304,29 +309,41 @@ pub(in crate::geometry) fn polygon_rings_issue_with_contacts(
         probes.push(probe);
     }
     let mut nest_issue: Option<ValidationIssue> = None;
-    let _ = for_each_overlapping_bounds_pair(&hole_bounds, |index, other_index| {
-        let other = &polygon.holes[other_index];
-        if ring_classify_point(other.coords(), probes[index]) == RingClass::Interior {
+    let _hole_pairs = for_each_overlapping_bounds_pair(&hole_bounds, |index, other_index| {
+        let other = polygon
+            .holes
+            .get(other_index)
+            .expect("hole bounds retain their polygon ring ordinals");
+        let probe = *probes
+            .get(index)
+            .expect("hole probes retain their polygon ring ordinals");
+        let other_probe = *probes
+            .get(other_index)
+            .expect("hole probes retain their polygon ring ordinals");
+        if ring_classify_point(other.coords(), probe) == RingClass::Interior {
             let (a, b) = (index.min(other_index), index.max(other_index));
             nest_issue = Some(ValidationIssue::new(
                 "hole_overlap",
                 format!(
                     "interior ring at index {a} and interior ring at index {b} intersect on an area"
                 ),
-                Some(probes[index]),
+                Some(probe),
                 path,
             ));
             return std::ops::ControlFlow::Break(());
         }
-        let hole = &polygon.holes[index];
-        if ring_classify_point(hole.coords(), probes[other_index]) == RingClass::Interior {
+        let hole = polygon
+            .holes
+            .get(index)
+            .expect("hole bounds retain their polygon ring ordinals");
+        if ring_classify_point(hole.coords(), other_probe) == RingClass::Interior {
             let (a, b) = (index.min(other_index), index.max(other_index));
             nest_issue = Some(ValidationIssue::new(
                 "hole_overlap",
                 format!(
                     "interior ring at index {a} and interior ring at index {b} intersect on an area"
                 ),
-                Some(probes[other_index]),
+                Some(other_probe),
                 path,
             ));
             return std::ops::ControlFlow::Break(());
@@ -367,7 +384,9 @@ pub(in crate::geometry) fn multi_polygon_members_issue(
         }
     }
     let as_member = |seg: &IndexedSegment| IndexedSegment {
-        line: member_of[seg.line],
+        line: *member_of
+            .get(seg.line)
+            .expect("staged ring ordinals have matching member identities"),
         index: usize::MAX,
         ..*seg
     };
@@ -405,14 +424,18 @@ pub(in crate::geometry) fn multi_polygon_members_issue(
         member_bounds.push(bounds);
     }
     let mut nest_issue: Option<ValidationIssue> = None;
-    let _ = for_each_overlapping_bounds_pair(&member_bounds, |index, other_index| {
+    let _member_pairs = for_each_overlapping_bounds_pair(&member_bounds, |index, other_index| {
         // A shell vertex OFF the other member's whole boundary decides
         // the pair: no cross-member linework contact survived the pair
         // scan, so any non-touch vertex lies strictly inside or
         // outside — and touch points are finite, so the FIRST vertex
         // almost always answers.
-        let polygon = &polygons[index];
-        let other = &polygons[other_index];
+        let polygon = polygons
+            .get(index)
+            .expect("member bounds retain polygon ordinals");
+        let other = polygons
+            .get(other_index)
+            .expect("member bounds retain polygon ordinals");
         let probe = member_probe_point(polygon, other);
         if other.contains_point(probe) {
             nest_issue = Some(ValidationIssue::new(

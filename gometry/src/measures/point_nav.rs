@@ -1875,8 +1875,8 @@ impl PointBinaryRows {
 fn destination_many_array(
     py: Python<'_>,
     array: &PyGeometryArray,
-    bearing: CoordinateInput,
-    distance: CoordinateInput,
+    bearing: &CoordinateInput,
+    distance: &CoordinateInput,
     unit: Option<DistanceUnit>,
 ) -> PyResult<Py<PyAny>> {
     let len = array.len();
@@ -2013,7 +2013,7 @@ fn destination_point_array(
         Many(array) => {
             broadcast_destination_param(&mut bearing, len, "bearing")?;
             broadcast_destination_param(&mut distance, len, "distance")?;
-            destination_many_array(py, array, bearing, distance, unit)
+            destination_many_array(py, array, &bearing, &distance, unit)
         },
     }
 }

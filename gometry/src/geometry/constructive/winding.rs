@@ -72,7 +72,6 @@ pub(crate) fn degenerate_polygonal_as_linework(shape: &Shape) -> Result<Shape> {
             }
             Shape::multi_line_string(polygon.shell.coords().axes(), lines)
         },
-        Shape::Polygon(_) => shape.clone(),
         Shape::MultiPolygon(polygons) => {
             let mut members = Vec::with_capacity(polygons.member_count());
             for member in polygons.members_with_values() {
@@ -95,6 +94,7 @@ pub(crate) fn degenerate_polygonal_as_linework(shape: &Shape) -> Result<Shape> {
         | Shape::MultiPoint(_)
         | Shape::LineString(_)
         | Shape::MultiLineString(_)
+        | Shape::Polygon(_)
         | Shape::Empty(..) => shape.clone(),
     })
 }

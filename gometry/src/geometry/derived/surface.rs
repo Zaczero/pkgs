@@ -45,10 +45,6 @@ fn point_from_chord_crossings(crossings: &mut [f64], mid: f64) -> Option<Point> 
 }
 
 /// Binary64 squared distance used only to rank on-geometry representative candidates.
-#[expect(
-    clippy::arithmetic_side_effects,
-    reason = "squared XY distance orders representative candidates without a per-candidate square root"
-)]
 fn squared_xy_distance(point: Point, center: Point) -> f64 {
     let (dx, dy) = (point.x - center.x, point.y - center.y);
     dx * dx + dy * dy
@@ -169,10 +165,6 @@ pub(crate) fn point_on_surface_line_columns(xs: &[f64], ys: &[f64]) -> Option<Po
     point_on_surface_line_columns_at(xs, ys, centroid)
 }
 
-#[expect(
-    clippy::arithmetic_side_effects,
-    reason = "representative vertices are ranked by their binary64 squared centroid distance"
-)]
 fn point_on_surface_line_columns_at(
     xs: &[f64],
     ys: &[f64],
@@ -218,9 +210,7 @@ fn point_on_surface_line_columns_at(
         return Some(midpoint);
     }
 
-    let center = centroid
-        .map(|(x, y)| Point::new_raw_xy(x, y))
-        .unwrap_or(midpoint);
+    let center = centroid.map_or(midpoint, |(x, y)| Point::new_raw_xy(x, y));
     let start_distance = squared_xy_distance(start, center);
     let end_distance = squared_xy_distance(end, center);
     Some(if end_distance < start_distance {
@@ -233,10 +223,6 @@ fn point_on_surface_line_columns_at(
 /// A representative point ON the linework: the candidate nearest the lineal
 /// centroid, using stored interior vertices and certified single-segment
 /// midpoints. No rounded interpolation is allowed to leave the source line.
-#[expect(
-    clippy::arithmetic_side_effects,
-    reason = "representative line candidates are ranked by squared XY distance"
-)]
 pub(crate) fn lineal_surface_point<'a>(
     lines: impl IntoIterator<Item = &'a CoordSeq>,
     centroid: Option<(f64, f64)>,
@@ -474,7 +460,13 @@ mod tests {
             .expect("collapsed surface point")
         {
             Shape::Point(point) => point,
-            other => panic!("expected a point, got {other:?}"),
+            other @ (Shape::MultiPoint(_)
+            | Shape::LineString(_)
+            | Shape::MultiLineString(_)
+            | Shape::Polygon(_)
+            | Shape::MultiPolygon(_)
+            | Shape::GeometryCollection(_)
+            | Shape::Empty(..)) => panic!("expected a point, got {other:?}"),
         };
         assert!(
             [

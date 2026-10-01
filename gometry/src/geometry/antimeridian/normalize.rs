@@ -159,7 +159,13 @@ fn crossing_hole_relationship_issue(
             }
             for (other_index, other) in &normalized_holes {
                 let relation = other.relate(&hole)?;
-                if relation.as_bytes()[0] != b'F' {
+                if relation
+                    .as_bytes()
+                    .first()
+                    .copied()
+                    .expect("DE-9IM relations contain nine cells")
+                    != b'F'
+                {
                     return Ok(Some(ValidationIssue::new(
                         "hole_overlap",
                         format!(
@@ -200,7 +206,11 @@ fn crossing_hole_relationship_issue(
             }
             Ok(None)
         },
-        _ => Ok(None),
+        Shape::Point(_)
+        | Shape::MultiPoint(_)
+        | Shape::LineString(_)
+        | Shape::MultiLineString(_)
+        | Shape::Empty(..) => Ok(None),
     }
 }
 
@@ -424,7 +434,13 @@ fn derived_point_unwrapped(
     let unwrapped = unwrap_longitude(shape, frame)?;
     match kernel(&unwrapped)? {
         Shape::Point(point) => Ok(Shape::Point(rewrap_point(point, frame)?)),
-        other => Ok(other),
+        other @ (Shape::MultiPoint(_)
+        | Shape::LineString(_)
+        | Shape::MultiLineString(_)
+        | Shape::Polygon(_)
+        | Shape::MultiPolygon(_)
+        | Shape::GeometryCollection(_)
+        | Shape::Empty(..)) => Ok(other),
     }
 }
 

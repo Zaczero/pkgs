@@ -660,104 +660,6 @@ fn assert_affine_origin_row_matches_exact(row: [f64; 7], case: &str) -> bool {
 
 #[test]
 fn affine_origin_fast_filter_matches_exact_five_product_rows() {
-    let ulp_at_one = 1.0_f64.next_up().to_bits();
-    let term = 3.0 * 2.0_f64.powi(-109);
-    let above_tie_by_lost_residual = [
-        1.0,
-        2.0_f64.powi(-53),
-        -(2.0_f64.powi(-107) + 2.0_f64.powi(-117)),
-        -term,
-        -3.0 * 2.0_f64.powi(-56),
-        1.0,
-        1.0,
-    ];
-    assert_eq!(
-        exact_affine_origin_row(above_tie_by_lost_residual).to_bits(),
-        ulp_at_one,
-        "the exact pivot-relative expression lies just above the halfway value"
-    );
-    assert_affine_origin_row_matches_exact(above_tie_by_lost_residual, "near-tie pivot");
-
-    let ordinary = [2.0, -0.5, 7.0, 3.0, -5.0, 11.0, 13.0];
-    assert_eq!(
-        exact_affine_origin_row(ordinary).to_bits(),
-        14.0_f64.to_bits()
-    );
-    assert!(assert_affine_origin_row_matches_exact(
-        ordinary,
-        "two pivots"
-    ));
-
-    let catastrophic_cancellation = [
-        1.0 + 2.0_f64.powi(-52),
-        -1.0,
-        0.0,
-        0.0,
-        0.0,
-        2.0_f64.powi(500),
-        2.0_f64.powi(500),
-    ];
-    assert_eq!(
-        exact_affine_origin_row(catastrophic_cancellation).to_bits(),
-        2.0_f64.powi(448).to_bits()
-    );
-    assert_affine_origin_row_matches_exact(catastrophic_cancellation, "cancellation");
-
-    for (case, output_origin, expected) in [
-        ("exact tie", 0.0, 1.0),
-        (
-            "just above tie",
-            2.0_f64.powi(-106),
-            f64::from_bits(ulp_at_one),
-        ),
-        ("just below tie", -(2.0_f64.powi(-106)), 1.0),
-    ] {
-        let row = [1.0, 2.0_f64.powi(-53), output_origin, 0.0, 0.0, 1.0, 1.0];
-        assert_eq!(exact_affine_origin_row(row).to_bits(), expected.to_bits());
-        assert_affine_origin_row_matches_exact(row, case);
-    }
-
-    let minimum_subnormal = f64::from_bits(1);
-    let subnormal_row = [1.0, 0.0, 0.0, 0.0, 0.0, minimum_subnormal, 0.0];
-    assert_eq!(
-        exact_affine_origin_row(subnormal_row).to_bits(),
-        minimum_subnormal.to_bits()
-    );
-    assert_affine_origin_row_matches_exact(subnormal_row, "subnormal input and result");
-
-    let near_overflow = [
-        2.0_f64.powi(500),
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        2.0_f64.powi(500),
-        0.0,
-    ];
-    assert_eq!(
-        exact_affine_origin_row(near_overflow).to_bits(),
-        2.0_f64.powi(1000).to_bits()
-    );
-    assert_affine_origin_row_matches_exact(near_overflow, "near-overflow product");
-
-    let splitter_overflow = [
-        2.0_f64.powi(1000),
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        2.0_f64.powi(-900),
-        0.0,
-    ];
-    assert_eq!(
-        exact_affine_origin_row(splitter_overflow).to_bits(),
-        2.0_f64.powi(100).to_bits()
-    );
-    assert_affine_origin_row_matches_exact(
-        splitter_overflow,
-        "splitter overflow with a finite product",
-    );
-
     // Captured with seed 0x9e3779b97f4a7c15 at reciprocal exponent strata
     // spanning the normal range. Keep the operands as bits for exact replay.
     const RANDOM_ROWS: [[u64; 7]; 16] = [
@@ -906,6 +808,104 @@ fn affine_origin_fast_filter_matches_exact_five_product_rows() {
             0x001D_907D_1EE2_C436,
         ],
     ];
+    let ulp_at_one = 1.0_f64.next_up().to_bits();
+    let term = 3.0 * 2.0_f64.powi(-109);
+    let above_tie_by_lost_residual = [
+        1.0,
+        2.0_f64.powi(-53),
+        -(2.0_f64.powi(-107) + 2.0_f64.powi(-117)),
+        -term,
+        -3.0 * 2.0_f64.powi(-56),
+        1.0,
+        1.0,
+    ];
+    assert_eq!(
+        exact_affine_origin_row(above_tie_by_lost_residual).to_bits(),
+        ulp_at_one,
+        "the exact pivot-relative expression lies just above the halfway value"
+    );
+    assert_affine_origin_row_matches_exact(above_tie_by_lost_residual, "near-tie pivot");
+
+    let ordinary = [2.0, -0.5, 7.0, 3.0, -5.0, 11.0, 13.0];
+    assert_eq!(
+        exact_affine_origin_row(ordinary).to_bits(),
+        14.0_f64.to_bits()
+    );
+    assert!(assert_affine_origin_row_matches_exact(
+        ordinary,
+        "two pivots"
+    ));
+
+    let catastrophic_cancellation = [
+        1.0 + 2.0_f64.powi(-52),
+        -1.0,
+        0.0,
+        0.0,
+        0.0,
+        2.0_f64.powi(500),
+        2.0_f64.powi(500),
+    ];
+    assert_eq!(
+        exact_affine_origin_row(catastrophic_cancellation).to_bits(),
+        2.0_f64.powi(448).to_bits()
+    );
+    assert_affine_origin_row_matches_exact(catastrophic_cancellation, "cancellation");
+
+    for (case, output_origin, expected) in [
+        ("exact tie", 0.0, 1.0),
+        (
+            "just above tie",
+            2.0_f64.powi(-106),
+            f64::from_bits(ulp_at_one),
+        ),
+        ("just below tie", -(2.0_f64.powi(-106)), 1.0),
+    ] {
+        let row = [1.0, 2.0_f64.powi(-53), output_origin, 0.0, 0.0, 1.0, 1.0];
+        assert_eq!(exact_affine_origin_row(row).to_bits(), expected.to_bits());
+        assert_affine_origin_row_matches_exact(row, case);
+    }
+
+    let minimum_subnormal = f64::from_bits(1);
+    let subnormal_row = [1.0, 0.0, 0.0, 0.0, 0.0, minimum_subnormal, 0.0];
+    assert_eq!(
+        exact_affine_origin_row(subnormal_row).to_bits(),
+        minimum_subnormal.to_bits()
+    );
+    assert_affine_origin_row_matches_exact(subnormal_row, "subnormal input and result");
+
+    let near_overflow = [
+        2.0_f64.powi(500),
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        2.0_f64.powi(500),
+        0.0,
+    ];
+    assert_eq!(
+        exact_affine_origin_row(near_overflow).to_bits(),
+        2.0_f64.powi(1000).to_bits()
+    );
+    assert_affine_origin_row_matches_exact(near_overflow, "near-overflow product");
+
+    let splitter_overflow = [
+        2.0_f64.powi(1000),
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        2.0_f64.powi(-900),
+        0.0,
+    ];
+    assert_eq!(
+        exact_affine_origin_row(splitter_overflow).to_bits(),
+        2.0_f64.powi(100).to_bits()
+    );
+    assert_affine_origin_row_matches_exact(
+        splitter_overflow,
+        "splitter overflow with a finite product",
+    );
+
     let mut certified = 0_usize;
     for (index, bits) in RANDOM_ROWS.into_iter().enumerate() {
         let row = bits.map(f64::from_bits);

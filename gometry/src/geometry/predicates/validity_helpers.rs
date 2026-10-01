@@ -8,7 +8,6 @@ use crate::geometry::{
     admit_shape_vector_capacity, point_distance, point_distance_squared, point_in_ccw_triangle,
     point_segment_distance, ring_winding, same_point, segment_projection,
     squared_norm_is_trustworthy, try_point_distance_squared, try_point_segment_distance_squared,
-    wrap_index,
 };
 
 /// Iteratively remove segments with a degree-1 endpoint (dangles) from the
@@ -80,8 +79,14 @@ pub(crate) fn prune_dangles(segments: &mut Vec<Segment>) {
 /// centroid of its corner triangle; when other boundary vertices intrude into
 /// that triangle, the midpoint towards the intruder closest to the corner is
 /// interior instead (the classical interior-point construction).
+#[expect(
+    clippy::indexing_slicing,
+    reason = "the admitted face is a closed ring and the selected corner and cyclic neighbors come from its open slice"
+)]
 pub(in crate::geometry) fn face_interior_point(face: &[XY]) -> XY {
-    let open = &face[..face.len() - 1];
+    let (_, open) = face
+        .split_last()
+        .expect("closed face has a final coordinate");
     let corner = open
         .iter()
         .enumerate()
@@ -92,8 +97,18 @@ pub(in crate::geometry) fn face_interior_point(face: &[XY]) -> XY {
         })
         .map_or(0, |(index, _)| index);
     let vertex = open[corner];
-    let previous = open[wrap_index(corner + open.len() - 1, open.len())];
-    let next = open[wrap_index(corner + 1, open.len())];
+    let previous_index = if corner == 0 {
+        open.len().wrapping_sub(1)
+    } else {
+        corner.wrapping_sub(1)
+    };
+    let next_index = if corner.wrapping_add(1) == open.len() {
+        0
+    } else {
+        corner.wrapping_add(1)
+    };
+    let previous = open[previous_index];
+    let next = open[next_index];
 
     let intruder = open
         .iter()
@@ -154,7 +169,11 @@ pub(crate) fn minimum_clearance_witness(
         return Ok(None);
     }
     let segments = indexed_segments(shape)?;
-    let witness = if points.len() * points.len().max(segments.len()) >= SEGMENT_INDEX_MIN_PAIRS {
+    let witness = if points
+        .len()
+        .saturating_mul(points.len().max(segments.len()))
+        >= SEGMENT_INDEX_MIN_PAIRS
+    {
         minimum_clearance_witness_indexed(&points, &segments)?
     } else {
         minimum_clearance_witness_brute(&points, &segments)?
@@ -185,7 +204,10 @@ fn minimum_clearance_witness_indexed(
                 })?
         {
             clearance_squared = distance_squared;
-            let other_index = first_point_index_by_xy[&PointKey::new(other)];
+            let other_index = first_point_index_by_xy
+                .get(&PointKey::new(other))
+                .copied()
+                .expect("every indexed point was admitted to the coordinate map");
             witness = Some((
                 [
                     VertexProvenance::Input(point_index),
@@ -209,11 +231,19 @@ fn minimum_clearance_witness_indexed(
             })?
             && let Some(distance_squared) =
                 admit_clearance_squared(raw_sq, clearance_squared, || {
-                    point_segment_distance(*point, segments[seg_i].xy)
+                    point_segment_distance(
+                        *point,
+                        segments
+                            .get(seg_i)
+                            .expect("segment ordinals come from the indexed segment slice")
+                            .xy,
+                    )
                 })?
         {
             clearance_squared = distance_squared;
-            let segment = segments[seg_i];
+            let segment = *segments
+                .get(seg_i)
+                .expect("segment ordinals come from the indexed segment slice");
             witness = Some((
                 [
                     VertexProvenance::Input(point_index),
@@ -238,7 +268,10 @@ fn minimum_clearance_witness_brute(
     let mut witness = None;
     let mut clearance_squared = f64::INFINITY;
     for (left_index, left) in points.iter().enumerate() {
-        for (offset, right) in points[(left_index + 1)..].iter().enumerate() {
+        let later_points = points
+            .get(left_index.wrapping_add(1)..)
+            .expect("an enumerated point precedes the end of its source slice");
+        for (offset, right) in later_points.iter().enumerate() {
             if same_point(*left, *right) {
                 continue;
             }
@@ -257,7 +290,7 @@ fn minimum_clearance_witness_brute(
             witness = Some((
                 [
                     VertexProvenance::Input(left_index),
-                    VertexProvenance::Input(left_index + 1 + offset),
+                    VertexProvenance::Input(left_index.wrapping_add(1).wrapping_add(offset)),
                 ],
                 distance_squared,
             ));
@@ -353,6 +386,10 @@ fn first_point_index_by_xy(points: &[Point]) -> crate::error::Result<HashMap<Poi
 }
 
 fn indexed_segments(shape: &Shape) -> crate::error::Result<Vec<IndexedSegment>> {
+    #[expect(
+        clippy::arithmetic_side_effects,
+        reason = "segment and coordinate ordinals remain within the admitted source shape's usize-sized coordinate inventory"
+    )]
     fn line_segments_with_indices<C: Coordinates + ?Sized>(
         coords: &C,
         cursor: &mut usize,
@@ -377,11 +414,11 @@ fn indexed_segments(shape: &Shape) -> crate::error::Result<Vec<IndexedSegment>> 
     let segment_count = ShapeCountQuery::default().segments(shape)?;
     let capacity = admit_shape_vector_capacity::<IndexedSegment>(segment_count)?;
     let mut out = Vec::with_capacity(capacity);
-    let mut cursor = 0;
+    let mut cursor = 0_usize;
     shape.for_each_component(&mut |component| match component {
         // A puntal member owns one coordinate index and no segment.
         Component::Point(_) => {
-            cursor += 1;
+            cursor = cursor.wrapping_add(1);
         },
         Component::LineString(line) => line_segments_with_indices(line, &mut cursor, &mut out),
         Component::Polygon(polygon) => {
@@ -395,7 +432,7 @@ fn indexed_segments(shape: &Shape) -> crate::error::Result<Vec<IndexedSegment>> 
 
 pub(crate) fn line_is_closed<C: Coordinates + ?Sized>(points: &C) -> bool {
     let len = points.coord_count();
-    len >= 2 && same_point(points.nth_coord(0), points.nth_coord(len - 1))
+    len >= 2 && same_point(points.nth_coord(0), points.nth_coord(len.wrapping_sub(1)))
 }
 
 /// `LineString` CCW test (the `Shape::is_ccw` line arm): a closed ring

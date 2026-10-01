@@ -80,7 +80,23 @@ pub(crate) struct De9imInterval {
 }
 
 const fn index(row: Loc, col: Loc) -> usize {
-    row as usize * 3 + col as usize
+    (row as usize).wrapping_mul(3).wrapping_add(col as usize)
+}
+
+#[expect(
+    clippy::indexing_slicing,
+    reason = "the three Loc variants map only to cells in the fixed nine-entry DE-9IM array"
+)]
+const fn interval_cell(cells: &[Cell; 9], row: Loc, col: Loc) -> &Cell {
+    &cells[index(row, col)]
+}
+
+#[expect(
+    clippy::indexing_slicing,
+    reason = "the three Loc variants map only to cells in the fixed nine-entry DE-9IM array"
+)]
+const fn interval_cell_mut(cells: &mut [Cell; 9], row: Loc, col: Loc) -> &mut Cell {
+    &mut cells[index(row, col)]
 }
 
 const LOCS: [Loc; 3] = [Loc::Interior, Loc::Boundary, Loc::Exterior];
@@ -93,21 +109,23 @@ impl De9imInterval {
         let mut hi = [Cell::Empty; 9];
         for row in LOCS {
             for col in LOCS {
-                hi[index(row, col)] = Cell::max_of([left.part(row), right.part(col)]);
+                *interval_cell_mut(&mut hi, row, col) =
+                    Cell::max_of([left.part(row), right.part(col)]);
             }
         }
         let mut lo = [Cell::Empty; 9];
-        lo[index(Loc::Exterior, Loc::Exterior)] = Cell::Dim(Dimension::Surface);
+        *interval_cell_mut(&mut lo, Loc::Exterior, Loc::Exterior) = Cell::Dim(Dimension::Surface);
         Self { lo, hi }
     }
 
     /// Evidence that `row` of the left operand meets `col` of the right at
     /// least at `dim`.
     pub(crate) fn witness(&mut self, row: Loc, col: Loc, dim: Dimension) {
-        let cell = &mut self.lo[index(row, col)];
+        let maximum = interval_cell(&self.hi, row, col);
+        let cell = interval_cell_mut(&mut self.lo, row, col);
         let seen = Cell::Dim(dim);
         debug_assert!(
-            seen <= self.hi[index(row, col)],
+            seen <= *maximum,
             "witnessed a dimension the operands cannot share"
         );
         if *cell < seen {
@@ -117,7 +135,8 @@ impl De9imInterval {
 
     /// Proof that nothing left to do can raise `(row, col)` further.
     pub(crate) const fn settle(&mut self, row: Loc, col: Loc) {
-        self.hi[index(row, col)] = self.lo[index(row, col)];
+        let minimum = *interval_cell(&self.lo, row, col);
+        *interval_cell_mut(&mut self.hi, row, col) = minimum;
     }
 
     #[cfg(test)]
@@ -132,8 +151,7 @@ impl De9imInterval {
     }
 
     /// One pattern literal against one cell's bounds.
-    fn literal(&self, cell: usize, literal: u8) -> Option<bool> {
-        let (lo, hi) = (self.lo[cell], self.hi[cell]);
+    fn literal(lo: Cell, hi: Cell, literal: u8) -> Option<bool> {
         match literal {
             b'*' => Some(true),
             b'T' => match (lo, hi) {
@@ -169,8 +187,9 @@ impl De9imInterval {
     /// when every literal holds, `None` while any literal is still open.
     pub(crate) fn pattern(&self, pattern: CompiledPattern) -> Option<bool> {
         let mut open = false;
-        for (cell, &literal) in pattern.cells().iter().enumerate() {
-            match self.literal(cell, literal) {
+        let literals = pattern.cells();
+        for ((&lo, &hi), &literal) in self.lo.iter().zip(&self.hi).zip(&literals) {
+            match Self::literal(lo, hi, literal) {
                 Some(false) => return Some(false),
                 Some(true) => {},
                 None => open = true,

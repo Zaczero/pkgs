@@ -40,7 +40,7 @@ pub(crate) fn visit_interacting_pairs(
     ) -> crate::error::Result<Option<ValidationIssue>>,
 ) -> crate::error::Result<Option<ValidationIssue>> {
     let mut issue = Ok(None);
-    let _ = chains.for_each_candidate_pair(|left, right| {
+    let _candidate_pairs = chains.for_each_candidate_pair(|left, right| {
         let (left, right) = (&chains.at(left), &chains.at(right));
         // Chain-adjacent segments share an endpoint by construction, so they
         // always intersect; skip orientation tests for this valid-ring case.

@@ -153,7 +153,14 @@ fn coverage_union_inner<S: std::borrow::Borrow<Shape>>(coverage: &[S]) -> Result
             },
             // Empties contribute no regions; non-polygonal rows are rejected by
             // coverage_rows before we get here.
-            _ => {},
+            Shape::Empty(..) => {},
+            Shape::Point(_)
+            | Shape::MultiPoint(_)
+            | Shape::LineString(_)
+            | Shape::MultiLineString(_)
+            | Shape::GeometryCollection(_) => {
+                unreachable!("coverage rows admit only polygonal shapes")
+            },
         }
     }
     if !multi {
@@ -182,7 +189,13 @@ fn coverage_union_inner<S: std::borrow::Borrow<Shape>>(coverage: &[S]) -> Result
                     parts.extend(polygons.iter().cloned());
                 },
                 Shape::Empty(..) => {},
-                _ => unreachable!("coverage rows are polygonal"),
+                Shape::Point(_)
+                | Shape::MultiPoint(_)
+                | Shape::LineString(_)
+                | Shape::MultiLineString(_)
+                | Shape::GeometryCollection(_) => {
+                    unreachable!("coverage rows admit only polygonal shapes")
+                },
             }
         }
         // The direct path already proves these parts are the complete union.

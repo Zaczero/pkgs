@@ -4,7 +4,6 @@ use crate::geometry::overlay::ExactSourceInventory;
 use crate::geometry::{
     CoordSeq, Coordinates as _, GeometryErrorKind, LineSeq, MultiLineString, MultiMember,
     MultiPoint, Polygon, RepairMethod, Ring, Shape, XY, polygon_parts_to_shape, same_point,
-    wrap_index,
 };
 
 pub(crate) fn line_repair(line: &LineSeq) -> Result<Shape> {
@@ -27,7 +26,12 @@ pub(crate) fn multiline_repair(lines: &MultiLineString) -> Result<Shape> {
         match line_repair(line)? {
             Shape::Point(point) => points.push(point),
             Shape::LineString(line) => line_members.push(line),
-            _ => unreachable!("line repair only returns points or lines"),
+            Shape::MultiPoint(_)
+            | Shape::MultiLineString(_)
+            | Shape::Polygon(_)
+            | Shape::MultiPolygon(_)
+            | Shape::GeometryCollection(_)
+            | Shape::Empty(..) => unreachable!("line repair only returns points or lines"),
         }
     }
 
@@ -108,9 +112,29 @@ pub(crate) fn ring_without_antennas(ring: &Ring) -> Result<Option<Ring>> {
         let (_, ys) = ys.split_last().expect("ring has a closing coordinate");
         let len = xs.len();
         let clean = (0..len).all(|index| {
-            let prev = wrap_index(index + len - 1, len);
-            let next = wrap_index(index + 1, len);
-            !same_point(XY::new(xs[prev], ys[prev]), XY::new(xs[next], ys[next]))
+            let previous_index = if index == 0 {
+                len.wrapping_sub(1)
+            } else {
+                index.wrapping_sub(1)
+            };
+            let next_index = if index.wrapping_add(1) == len {
+                0
+            } else {
+                index.wrapping_add(1)
+            };
+            let previous = XY::new(
+                *xs.get(previous_index)
+                    .expect("ring columns share the admitted length"),
+                *ys.get(previous_index)
+                    .expect("ring columns share the admitted length"),
+            );
+            let next = XY::new(
+                *xs.get(next_index)
+                    .expect("ring columns share the admitted length"),
+                *ys.get(next_index)
+                    .expect("ring columns share the admitted length"),
+            );
+            !same_point(previous, next)
         });
         if clean {
             return Ok(Some(ring.clone()));
@@ -131,10 +155,24 @@ pub(crate) fn ring_without_antennas(ring: &Ring) -> Result<Option<Ring>> {
             if len < 3 {
                 return Ok(None);
             }
-            let prev = points[wrap_index(index + len - 1, len)];
-            let next = points[wrap_index(index + 1, len)];
+            let previous_index = if index == 0 {
+                len.wrapping_sub(1)
+            } else {
+                index.wrapping_sub(1)
+            };
+            let next_index = if index.wrapping_add(1) == len {
+                0
+            } else {
+                index.wrapping_add(1)
+            };
+            let prev = *points
+                .get(previous_index)
+                .expect("ring vertex ordinal is within the open ring");
+            let next = *points
+                .get(next_index)
+                .expect("ring vertex ordinal is within the open ring");
             if same_point(prev, next) {
-                let duplicate = wrap_index(index + 1, len);
+                let duplicate = next_index;
                 if duplicate > index {
                     points.remove(duplicate);
                     points.remove(index);
@@ -144,7 +182,7 @@ pub(crate) fn ring_without_antennas(ring: &Ring) -> Result<Option<Ring>> {
                 }
                 removed = true;
             } else {
-                index += 1;
+                index = index.wrapping_add(1);
             }
         }
         if !removed {

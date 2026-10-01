@@ -439,7 +439,7 @@ enum Axis3d {
 }
 
 impl Axis3d {
-    fn lower(self, aabb: Aabb3d) -> f64 {
+    const fn lower(self, aabb: Aabb3d) -> f64 {
         match self {
             Self::X => aabb[0],
             Self::Y => aabb[1],
