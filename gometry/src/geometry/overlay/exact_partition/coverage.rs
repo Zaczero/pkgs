@@ -334,9 +334,9 @@ impl ExactSourceInventory {
     ///
     /// Face membership and gap ownership are decided from stored-ring
     /// windings and exact span provenance.  Boundary plans are then built one
-    /// row at a time, but all of them consume the same rounded node map and
-    /// the same resolved ordinate map.  No emitted coordinate participates in
-    /// selection, and no row is sent through a second partition.
+    /// row at a time and certified together against the union of their
+    /// emitted chords. No emitted coordinate participates in selection, and
+    /// no row is sent through a second partition.
     pub(in crate::geometry) fn coverage_clean_rows(
         &self,
         partition: &mut ExactPartition<'_>,
@@ -574,13 +574,9 @@ impl ExactSourceInventory {
         update_partition_metrics(|metrics| {
             metrics.publication_nodes = output_nodes.len();
         });
-        ExactPartition::check_node_injectivity(
-            &output_nodes,
-            &partition.round_nodes(&output_nodes),
-        )?;
         let by_node = self.resolve_node_points(partition, &output_nodes, declared_axes)?;
 
-        let mut outputs = Vec::with_capacity(row_count);
+        let mut plans = Vec::with_capacity(row_count);
         for row in 0..row_count_u32 {
             let mut cells = ArealCells {
                 faces: Vec::new(),
@@ -595,8 +591,18 @@ impl ExactSourceInventory {
             cells.spans.resize(partition.spans.len(), false);
             cells.nodes.reserve(partition.node_count());
             cells.nodes.resize(partition.node_count(), false);
-            let plan = cells.emission_plan(partition, &topology, &edges, &global)?;
-            let parts = plan.emit_node_parts_with_shared_rounding(partition, &topology)?;
+            plans.push(cells.emission_plan(partition, &topology, &edges, &global)?);
+        }
+        let emissions: Vec<_> = plans
+            .iter()
+            .map(|plan| plan.emission(&topology, &edges))
+            .collect();
+        let emission_refs: Vec<_> = emissions.iter().collect();
+        let (_embedding, _) = partition.embed(&emission_refs, "coverage_clean")?;
+
+        let mut outputs = Vec::with_capacity(row_count);
+        for plan in plans {
+            let parts = plan.build_node_parts(partition, &topology)?;
             outputs.push(self.coverage_shape_from_node_parts(
                 partition,
                 parts,

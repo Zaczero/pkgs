@@ -558,7 +558,7 @@ impl Shape {
         let mut budget = ExpansionBudget::new("polygonize", "exact partition");
         let mut partition = inventory.partition(&mut budget)?;
         let polygons = inventory
-            .linework_polygons(&mut partition, false)?
+            .linework_polygons(&mut partition, false, "polygonize")?
             .into_iter()
             .map(Self::Polygon)
             .collect();
@@ -578,7 +578,7 @@ impl Shape {
         let mut budget = ExpansionBudget::new("build_area", "exact partition");
         let mut partition = inventory.partition(&mut budget)?;
         let polygons = inventory
-            .linework_polygons(&mut partition, true)?
+            .linework_polygons(&mut partition, true, "build_area")?
             .into_iter()
             .map(Self::Polygon)
             .collect();
@@ -636,9 +636,7 @@ impl Shape {
         let inventory = ExactSourceInventory::from_shapes_with_occurrences(shapes)?;
         let mut budget = ExpansionBudget::new("polygonize_full", "exact partition");
         let mut partition = inventory.partition(&mut budget)?;
-        let exact_polygons = inventory.linework_polygons(&mut partition, false)?;
-        let mut full = inventory.polygonize_diagnostics(&partition)?;
-        full.polygons = exact_polygons.into_iter().map(Shape::Polygon).collect();
+        let full = inventory.polygonize_full(&mut partition)?;
         let carry_diagnostic_rows = |rows: Vec<Vec<Self>>| {
             debug_assert_eq!(rows.len(), shapes.len());
             rows.into_iter()

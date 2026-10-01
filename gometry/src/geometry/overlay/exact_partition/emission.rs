@@ -9,16 +9,14 @@
 use std::cmp::Ordering;
 use std::ops::Range;
 
-use super::embedding::{self, Embedding, Emission};
+use super::embedding::{Embedding, Emission};
 use super::{
     ArealCells, Axis, ExactPartition, ExactSourceInventory, KeptNodes, NodeId, rings_occupied,
 };
 use crate::geometry::arrangement::IndexedTopology;
 use crate::geometry::exact_arith::ExactSign;
 use crate::geometry::segments::{point_on_segment, stored_cross_sign, stored_orientation_sign};
-use crate::geometry::{
-    CoordSeq, GeometryErrorKind, Point, Polygon, Result, Ring, Segment, XY, same_point,
-};
+use crate::geometry::{CoordSeq, GeometryErrorKind, Point, Polygon, Result, Ring, XY, same_point};
 
 pub(super) struct GlobalFaces {
     pub(super) walk_faces: Vec<u32>,
@@ -130,47 +128,78 @@ impl CoverageFaceState {
 }
 
 impl BoundaryPlan {
-    pub(super) fn emission(&self, topology: &IndexedTopology) -> Emission {
-        let items = self.incident_items(topology);
-        let chords = self
-            .walks
+    fn chord_count(&self) -> usize {
+        self.walks
             .iter()
             .map(Vec::len)
             .chain(std::iter::once(self.lines.len()))
-            .fold(0, usize::wrapping_add);
-        Emission {
-            items,
-            chords,
-            darts: self.emitted_darts(topology),
-            faces: Some(self.face_labels()),
-        }
+            .fold(0, usize::wrapping_add)
+    }
+
+    fn area_chord_count(&self) -> usize {
+        self.walks.iter().map(Vec::len).fold(0, usize::wrapping_add)
+    }
+
+    pub(super) fn polygonize_emission(
+        &self,
+        topology: &IndexedTopology,
+        edge_of_slot: &[u32],
+    ) -> Emission {
+        debug_assert!(self.walks.is_empty());
+        self.emission_with_areal_chords(topology, edge_of_slot, self.chord_count())
     }
 
     #[expect(
         clippy::indexing_slicing,
-        reason = "planned source ranges and their dart twins come from this boundary plan and checked topology"
+        reason = "source ranges and slot IDs belong to this plan and the topology built from the same partition"
     )]
-    fn emitted_darts(&self, topology: &IndexedTopology) -> Vec<[u32; 2]> {
-        let mut darts = Vec::new();
+    fn emission_with_areal_chords(
+        &self,
+        topology: &IndexedTopology,
+        edge_of_slot: &[u32],
+        areal_chords: usize,
+    ) -> Emission {
+        let chords = self.chord_count();
+        debug_assert!(areal_chords <= chords);
+        let mut items = Vec::with_capacity(chords);
+        let mut fan_spans = Vec::with_capacity(if areal_chords == 0 { 0 } else { chords });
+        let mut faces = (areal_chords > 0).then(|| Vec::with_capacity(chords));
         for chord in self.walks.iter().flatten().chain(&self.lines) {
-            let first = self.source_darts[chord.sources.start];
-            let last = self.source_darts[chord.sources.end.wrapping_sub(1)];
-            darts.push([first, topology.twins[last as usize]]);
+            let first = self.source_darts[chord.sources.start] as usize;
+            let last = self.source_darts[chord.sources.end.wrapping_sub(1)] as usize;
+            items.push([
+                NodeId(topology.owners[first]),
+                NodeId(topology.targets[last]),
+            ]);
+            if areal_chords > 0 {
+                fan_spans.push([edge_of_slot[first], edge_of_slot[last]]);
+            }
+            if let Some(faces) = &mut faces {
+                faces.push(chord.sides);
+            }
         }
-        darts
+        items.reserve(self.points.len());
+        if let Some(faces) = &mut faces {
+            faces.reserve(self.points.len());
+        }
+        for &(node, host) in &self.points {
+            items.push([node, node]);
+            if let Some(faces) = &mut faces {
+                faces.push([host, host]);
+            }
+        }
+        debug_assert_eq!(items.len(), chords.wrapping_add(self.points.len()));
+        Emission {
+            items,
+            chords,
+            areal_chords,
+            fan_spans,
+            faces,
+        }
     }
 
-    fn face_labels(&self) -> Vec<[u32; 2]> {
-        let mut faces = Vec::new();
-        faces.extend(
-            self.walks
-                .iter()
-                .flatten()
-                .chain(&self.lines)
-                .map(|chord| chord.sides),
-        );
-        faces.extend(self.points.iter().map(|&(_, host)| [host, host]));
-        faces
+    pub(super) fn emission(&self, topology: &IndexedTopology, edge_of_slot: &[u32]) -> Emission {
+        self.emission_with_areal_chords(topology, edge_of_slot, self.area_chord_count())
     }
 
     #[expect(
@@ -246,10 +275,17 @@ impl BoundaryPlan {
         &self,
         partition: &ExactPartition<'_>,
         topology: &IndexedTopology,
+        edge_of_slot: &[u32],
+        operation: &'static str,
     ) -> Result<(Vec<Point>, Vec<CoordSeq>, Vec<Polygon>)> {
         let groups = self.polygon_walks(partition, topology)?;
         let line_walks = self.line_walks(topology);
-        let (_, segments) = self.round_items(partition, topology)?;
+        let emission = self.emission(topology, edge_of_slot);
+        let emissions = [&emission];
+        let (_, mut segment_sets) = partition.embed(&emissions, operation)?;
+        let segments = segment_sets
+            .pop()
+            .expect("one plan emission produces one segment list");
         let mut remaining = segments.as_slice();
         let mut rings = Vec::with_capacity(self.walks.len());
         for walk in &self.walks {
@@ -329,74 +365,11 @@ impl BoundaryPlan {
         Ok((points, lines, polygons))
     }
 
-    pub(super) fn emit_node_parts(
-        &self,
-        partition: &ExactPartition<'_>,
-        topology: &IndexedTopology,
-    ) -> Result<NodeParts> {
-        drop(self.round_items(partition, topology)?);
-        self.build_node_parts(partition, topology)
-    }
-
-    pub(super) fn emit_node_parts_with_coordinates(
-        &self,
-        partition: &ExactPartition<'_>,
-        topology: &IndexedTopology,
-        coordinates: &[Option<XY>],
-    ) -> Result<NodeParts> {
-        let items = self.incident_items(topology);
-        let mut rounded_segments = Vec::with_capacity(items.len());
-        for &[start, end] in &items {
-            let start = coordinates
-                .get(start.0 as usize)
-                .and_then(Option::as_ref)
-                .copied()
-                .ok_or_else(|| {
-                    GeometryErrorKind::Invalid(
-                        "exact subdivision output lost a rounded start node".into(),
-                    )
-                })?;
-            let end = coordinates
-                .get(end.0 as usize)
-                .and_then(Option::as_ref)
-                .copied()
-                .ok_or_else(|| {
-                    GeometryErrorKind::Invalid(
-                        "exact subdivision output lost a rounded end node".into(),
-                    )
-                })?;
-            rounded_segments.push(Segment { start, end });
-        }
-        self.check_emitted_fans(topology, &rounded_segments)?;
-        self.check_global_faces(partition, &items, &rounded_segments)?;
-        self.build_node_parts(partition, topology)
-    }
-
-    /// A row's parts from nodes rounded once for every row, whose
-    /// injectivity the caller certified across the whole coverage.
-    pub(super) fn emit_node_parts_with_shared_rounding(
-        &self,
-        partition: &ExactPartition<'_>,
-        topology: &IndexedTopology,
-    ) -> Result<NodeParts> {
-        let items = self.incident_items(topology);
-        let mut rounded_segments = Vec::with_capacity(items.len());
-        rounded_segments.extend(items.iter().map(|&[start, end]| Segment {
-            start: partition.node_xy(start),
-            end: partition.node_xy(end),
-        }));
-        if partition.rounding_moves(&items) {
-            self.check_emitted_fans(topology, &rounded_segments)?;
-            self.check_global_faces(partition, &items, &rounded_segments)?;
-        }
-        self.build_node_parts(partition, topology)
-    }
-
     #[expect(
         clippy::indexing_slicing,
         reason = "planned source ranges, walk owners, and node chords are IDs from this boundary plan and topology"
     )]
-    fn build_node_parts(
+    pub(super) fn build_node_parts(
         &self,
         partition: &ExactPartition<'_>,
         topology: &IndexedTopology,
@@ -527,74 +500,6 @@ impl BoundaryPlan {
         }
         Ok(polygons)
     }
-
-    #[expect(
-        clippy::indexing_slicing,
-        reason = "source ranges and dart twins come from the same boundary plan and checked topology"
-    )]
-    pub(super) fn check_emitted_fans(
-        &self,
-        topology: &IndexedTopology,
-        segments: &[Segment],
-    ) -> Result<()> {
-        let darts = self.emitted_darts(topology);
-        debug_assert_eq!(segments.len(), darts.len().wrapping_add(self.points.len()));
-        embedding::check_emitted_fans(topology, &darts, &segments[..darts.len()])
-    }
-
-    pub(super) fn round_items(
-        &self,
-        partition: &ExactPartition<'_>,
-        topology: &IndexedTopology,
-    ) -> Result<(Vec<[NodeId; 2]>, Vec<Segment>)> {
-        let emission = self.emission(topology);
-        let emissions = [&emission];
-        let (_, mut segments) = embedding::embed(partition, Some(topology), &emissions)?;
-        let segments = segments
-            .pop()
-            .expect("one plan emission produces one segment list");
-        Ok((emission.items, segments))
-    }
-
-    #[expect(
-        clippy::indexing_slicing,
-        reason = "emitted NodeIds index the partition whose nearest coordinates are copied and patched from these emitted segments"
-    )]
-    pub(super) fn check_global_faces(
-        &self,
-        partition: &ExactPartition<'_>,
-        items: &[[NodeId; 2]],
-        segments: &[Segment],
-    ) -> Result<()> {
-        let mut coordinates = Embedding::nearest(partition).coordinates().to_vec();
-        for (&[start, end], segment) in items.iter().zip(segments) {
-            coordinates[start.0 as usize] = segment.start;
-            coordinates[end.0 as usize] = segment.end;
-        }
-        let embedding = Embedding::from_owned(coordinates);
-        embedding::check_global_faces(partition, &embedding, items, &self.face_labels(), segments)
-    }
-
-    #[expect(
-        clippy::indexing_slicing,
-        reason = "planned source ranges address darts in this plan and its paired topology"
-    )]
-    pub(super) fn incident_items(&self, topology: &IndexedTopology) -> Vec<[NodeId; 2]> {
-        let mut items = Vec::new();
-        for chord in self.walks.iter().flatten().chain(&self.lines) {
-            let first = self.source_darts[chord.sources.start] as usize;
-            let last = self.source_darts[chord.sources.end.wrapping_sub(1)] as usize;
-            items.push([
-                NodeId(topology.owners[first]),
-                NodeId(topology.targets[last]),
-            ]);
-        }
-        items.reserve(self.points.len());
-        for &(node, _) in &self.points {
-            items.push([node, node]);
-        }
-        items
-    }
 }
 
 /// Every bounded face of the arrangement as its own polygon, in face order.
@@ -603,30 +508,140 @@ impl BoundaryPlan {
 /// coordinates instead of re-rounding the edges it shares with neighbors.
 /// Dangling edges inside a face bound nothing and are neither certified nor
 /// emitted.
-#[expect(
-    clippy::indexing_slicing,
-    reason = "polygonization slot, span, walk, and face IDs come from the same checked topology and exact partition"
-)]
-pub(super) fn polygonize_faces(
+pub(super) fn polygonize_emission(
     partition: &ExactPartition<'_>,
     topology: &IndexedTopology,
     edges: &[u32],
     global: &GlobalFaces,
-) -> Result<Vec<Polygon>> {
-    let face_of = |slot: usize| global.walk_faces[topology.face_of[slot] as usize];
+) -> Result<Emission> {
+    let spans = polygonize_boundary_spans(partition, topology, edges, global);
+    polygonize_emission_with_spans(partition, topology, edges, global, spans)
+}
+
+#[expect(
+    clippy::indexing_slicing,
+    reason = "polygonization slot and face IDs belong to this checked topology and exact partition"
+)]
+fn polygonize_boundary_spans(
+    partition: &ExactPartition<'_>,
+    topology: &IndexedTopology,
+    edges: &[u32],
+    global: &GlobalFaces,
+) -> Vec<bool> {
     let flags = |len: usize| vec![false; len];
     let mut spans = flags(partition.spans.len());
     for (slot, &span) in edges.iter().enumerate() {
-        spans[span as usize] |= face_of(slot) != face_of(topology.twins[slot] as usize);
+        let face = global.walk_faces[topology.face_of[slot] as usize];
+        let other = global.walk_faces[topology.face_of[topology.twins[slot] as usize] as usize];
+        spans[span as usize] |= face != other;
     }
+    spans
+}
+
+fn polygonize_emission_with_spans(
+    partition: &ExactPartition<'_>,
+    topology: &IndexedTopology,
+    edges: &[u32],
+    global: &GlobalFaces,
+    spans: Vec<bool>,
+) -> Result<Emission> {
+    let flags = |len: usize| vec![false; len];
     let lines = ArealCells {
         faces: flags(global.count as usize),
         spans,
         nodes: flags(partition.node_count()),
     };
-    lines
-        .emission_plan(partition, topology, edges, global)?
-        .round_items(partition, topology)?;
+    let plan = lines.emission_plan(partition, topology, edges, global)?;
+    Ok(plan.polygonize_emission(topology, edges))
+}
+
+#[expect(
+    clippy::indexing_slicing,
+    reason = "diagnostic spans, side labels, and endpoint slots belong to this checked partition and topology"
+)]
+pub(super) fn polygonize_full_emission(
+    partition: &ExactPartition<'_>,
+    topology: &IndexedTopology,
+    edges: &[u32],
+    global: &GlobalFaces,
+    diagnostic_spans: &[bool],
+) -> Result<Emission> {
+    debug_assert_eq!(diagnostic_spans.len(), partition.spans.len());
+    let boundary_spans = polygonize_boundary_spans(partition, topology, edges, global);
+    let mut extra_spans = Vec::with_capacity(partition.spans.len());
+    extra_spans.extend(
+        diagnostic_spans
+            .iter()
+            .zip(&boundary_spans)
+            .map(|(&diagnostic, &boundary)| diagnostic && !boundary),
+    );
+    let mut emission =
+        polygonize_emission_with_spans(partition, topology, edges, global, boundary_spans)?;
+    let area_chords = emission.chords;
+    if let Some(faces) = &mut emission.faces {
+        let mut side_labels = vec![[0; 2]; partition.spans.len()];
+        for (slot, &span) in edges.iter().enumerate() {
+            let span = span as usize;
+            if topology.owners[slot] != partition.spans[span].start.0 {
+                continue;
+            }
+            let twin = topology.twins[slot] as usize;
+            side_labels[span] = [
+                global.walk_faces[topology.face_of[slot] as usize],
+                global.walk_faces[topology.face_of[twin] as usize],
+            ];
+        }
+        for (span, &diagnostic) in extra_spans.iter().enumerate() {
+            if !diagnostic {
+                continue;
+            }
+            let endpoints = partition.spans[span];
+            emission.items.push([endpoints.start, endpoints.end]);
+            emission.fan_spans.push([span as u32, span as u32]);
+            faces.push(side_labels[span]);
+            emission.chords = emission.chords.wrapping_add(1);
+        }
+    } else {
+        for (span, &diagnostic) in extra_spans.iter().enumerate() {
+            if !diagnostic {
+                continue;
+            }
+            let endpoints = partition.spans[span];
+            emission.items.push([endpoints.start, endpoints.end]);
+            emission.chords = emission.chords.wrapping_add(1);
+        }
+    }
+    debug_assert_eq!(emission.areal_chords, area_chords);
+    debug_assert_eq!(emission.items.len(), emission.chords);
+    if let Some(faces) = &emission.faces {
+        debug_assert_eq!(emission.fan_spans.len(), emission.chords);
+        debug_assert_eq!(faces.len(), emission.chords);
+    } else {
+        debug_assert_eq!(emission.areal_chords, 0);
+        debug_assert!(emission.fan_spans.is_empty());
+    }
+    Ok(emission)
+}
+
+pub(super) fn polygonize_faces(
+    partition: &ExactPartition<'_>,
+    topology: &IndexedTopology,
+    edges: &[u32],
+    global: &GlobalFaces,
+    operation: &'static str,
+) -> Result<Vec<Polygon>> {
+    let emission = polygonize_emission(partition, topology, edges, global)?;
+    let (embedding, _) = partition.embed(&[&emission], operation)?;
+    polygonize_faces_with_embedding(partition, topology, global, &embedding)
+}
+
+pub(super) fn polygonize_faces_with_embedding(
+    partition: &ExactPartition<'_>,
+    topology: &IndexedTopology,
+    global: &GlobalFaces,
+    embedding: &Embedding<'_>,
+) -> Result<Vec<Polygon>> {
+    let face_of = |slot: usize| global.walk_faces[topology.face_of[slot] as usize];
     let walks = global.boundary_walks(topology, |face, other| face != 0 && face != other);
     let mut shells = Vec::with_capacity(global.count as usize);
     shells.resize(global.count as usize, None);
@@ -636,7 +651,7 @@ pub(super) fn polygonize_faces(
         let face = face_of(walk[0] as usize) as usize;
         let ring = closed_ring(
             walk.iter()
-                .map(|&slot| partition.node_xy(NodeId(topology.owners[slot as usize]))),
+                .map(|&slot| embedding.xy(NodeId(topology.owners[slot as usize]))),
         )?;
         if walk_is_shell(
             partition,

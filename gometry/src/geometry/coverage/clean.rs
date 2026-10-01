@@ -251,7 +251,7 @@ fn dissolve_edge_incidences(
     let inventory = ExactSourceInventory::from_segments(&survivors)?;
     let mut budget = crate::geometry::ExpansionBudget::new("coverage_union", "exact partition");
     let mut partition = inventory.partition(&mut budget)?;
-    let parts = inventory.linework_polygons(&mut partition, true)?;
+    let parts = inventory.linework_polygons(&mut partition, true, "coverage_union")?;
     Ok(polygon_parts_to_shape(parts))
 }
 

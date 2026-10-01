@@ -52,11 +52,10 @@ use construction::{
     AxisValue, PointArena, interpolate_ordinate, parameter_along, partition_unique_segments,
     partition_unique_segments_in_window, partition_unique_segments_unbudgeted,
 };
-#[cfg(test)]
-use emission::PlannedChord;
 use emission::{
     BoundaryPlan, CellFacts, CoverageFaceState, GlobalFaces, NodeParts,
-    emitted_pair_preserves_incidence, polygonize_faces,
+    emitted_pair_preserves_incidence, polygonize_faces, polygonize_faces_with_embedding,
+    polygonize_full_emission,
 };
 #[cfg(test)]
 pub(in crate::geometry) use metrics::{
@@ -1502,8 +1501,9 @@ impl ExactSourceInventory {
     pub(in crate::geometry) fn line_emission(
         &self,
         partition: &ExactPartition<'_>,
+        operation: &'static str,
     ) -> Result<ExactLineEmission> {
-        partition.emit_lines(&self.source_operands)
+        partition.emit_lines(&self.source_operands, operation)
     }
 
     pub(in crate::geometry) fn node_shape(
@@ -1512,13 +1512,16 @@ impl ExactSourceInventory {
         declared_axes: crate::geometry::CoordinateAxes,
         strict: bool,
     ) -> Result<Shape> {
-        let mut items = Vec::with_capacity(partition.spans.len());
-        items.extend(partition.spans.iter().map(|span| [span.start, span.end]));
-        if items.is_empty() {
+        if partition.spans.is_empty() {
             return Ok(Shape::multi_line_string(declared_axes, Vec::new()));
         }
-        // Certifies the rounded chords; the points below read the same rounding.
-        let (items, _) = partition.round_incident_items(items)?;
+        let items = {
+            let spans = (0..partition.spans.len()).map(|span| span as u32);
+            let emission = partition.span_emission(spans);
+            let emissions = [&emission];
+            let (_embedding, _) = partition.embed(&emissions, "node")?;
+            emission.items
+        };
         let mut nodes = Vec::new();
         let node_capacity = items
             .len()
@@ -1543,11 +1546,11 @@ impl ExactSourceInventory {
         clippy::indexing_slicing,
         reason = "span, node, dart, face, and operand IDs come from the checked partition and its aligned diagnostic rows"
     )]
-    pub(in crate::geometry) fn polygonize_diagnostics(
+    pub(in crate::geometry) fn polygonize_full(
         &self,
-        partition: &ExactPartition<'_>,
+        partition: &mut ExactPartition<'_>,
     ) -> Result<PolygonizeFull> {
-        let emission = self.line_emission(partition)?;
+        partition.kept_nodes = KeptNodes::All;
         let (topology, edges) = partition.local_topology()?;
         let global = partition.global_faces(&topology, &edges)?;
         let mut same_face = vec![false; partition.spans.len()];
@@ -1608,37 +1611,55 @@ impl ExactSourceInventory {
             rows.reserve(self.polygon_rings.len());
             rows.resize_with(self.polygon_rings.len(), Vec::new);
         }
-
-        for (index, (_, &segment)) in partition.spans.iter().zip(&emission.segments).enumerate() {
-            let owners = emission.sources(index);
+        let mut diagnostic_spans = vec![false; partition.spans.len()];
+        for index in 0..partition.spans.len() {
+            let owners = partition.owners(index);
             let mut rows = Vec::with_capacity(owners.len());
-            for source in owners {
-                if !rows.contains(&source.operand) {
-                    rows.push(source.operand);
+            for &(source, _) in owners {
+                let row = self.source_operands[source as usize];
+                if !rows.contains(&row) {
+                    rows.push(row);
                 }
             }
             for row in rows {
                 let row = row as usize;
                 if owners.len() > 1 {
-                    invalid_rings[row].push(diagnostic_line(segment, true)?);
+                    invalid_rings[row].push((index, true));
                 } else if dangle_spans[index] {
-                    dangles[row].push(diagnostic_line(segment, false)?);
+                    dangles[row].push((index, false));
                 } else if same_face[index] {
-                    cuts[row].push(diagnostic_line(segment, false)?);
+                    cuts[row].push((index, false));
+                } else {
+                    continue;
                 }
-            }
-        }
-        for rows in [&mut cuts, &mut dangles, &mut invalid_rings] {
-            for row in rows {
-                row.sort_unstable_by(compare_diagnostic_lines);
+                diagnostic_spans[index] = true;
             }
         }
 
+        let emission =
+            polygonize_full_emission(partition, &topology, &edges, &global, &diagnostic_spans)?;
+        let (embedding, _) = partition.embed(&[&emission], "polygonize_full")?;
+        let polygons = polygonize_faces_with_embedding(partition, &topology, &global, &embedding)?;
+        let emit_rows = |rows: Vec<Vec<(usize, bool)>>| -> Result<Vec<Vec<Shape>>> {
+            rows.into_iter()
+                .map(|row| {
+                    let mut lines = row
+                        .into_iter()
+                        .map(|(span, closed)| {
+                            let span = partition.spans[span];
+                            diagnostic_line(embedding.segment([span.start, span.end]), closed)
+                        })
+                        .collect::<Result<Vec<_>>>()?;
+                    lines.sort_unstable_by(compare_diagnostic_lines);
+                    Ok(lines)
+                })
+                .collect()
+        };
         Ok(PolygonizeFull {
-            polygons: Vec::new(),
-            cuts,
-            dangles,
-            invalid_rings,
+            polygons: polygons.into_iter().map(Shape::Polygon).collect(),
+            cuts: emit_rows(cuts)?,
+            dangles: emit_rows(dangles)?,
+            invalid_rings: emit_rows(invalid_rings)?,
         })
     }
 
@@ -1715,7 +1736,7 @@ impl ExactSourceInventory {
         partition: &ExactPartition<'_>,
     ) -> Result<Shape> {
         let (points, lines, polygons) =
-            self.overlay_parts_with_fill(partition, crate::geometry::OverlayOp::Union)?;
+            self.overlay_parts_with_fill(partition, crate::geometry::OverlayOp::Union, "area")?;
         build_certified_overlay_shape(points, lines, polygons)
     }
 
@@ -1732,7 +1753,7 @@ impl ExactSourceInventory {
         partition: &ExactPartition<'_>,
         operation: crate::geometry::OverlayOp,
     ) -> Result<(Vec<Point>, Vec<CoordSeq>, Vec<Polygon>)> {
-        self.overlay_parts_with_fill(partition, operation)
+        self.overlay_parts_with_fill(partition, operation, operation.name())
     }
 
     pub(in crate::geometry) fn overlay_shape(
@@ -1775,10 +1796,13 @@ impl ExactSourceInventory {
             ordinate_protected.as_deref(),
         )?;
         if declared_axes == CoordinateAxes::XY && plan.points.is_empty() && plan.lines.is_empty() {
-            let (_, _, polygons) = plan.emit_xy_parts(partition, topology)?;
+            let (_, _, polygons) =
+                plan.emit_xy_parts(partition, topology, edges, operation.name())?;
             return Ok(Shape::narrow_polygons(CoordinateAxes::XY, polygons));
         }
-        let parts = plan.emit_node_parts(partition, topology)?;
+        let emission = plan.emission(&topology, &edges);
+        let (_embedding, _) = partition.embed(&[&emission], operation.name())?;
+        let parts = plan.build_node_parts(partition, topology)?;
         let by_node = if declared_axes.has_z() || declared_axes.has_m() {
             let line_node_count = parts.lines.iter().try_fold(0_usize, |count, line| {
                 count
@@ -1829,7 +1853,7 @@ impl ExactSourceInventory {
     /// topology, rounding pass, and ordinate resolution.
     #[expect(
         clippy::indexing_slicing,
-        reason = "plan node IDs are admitted by this partition and index its node-aligned seen/coordinate columns"
+        reason = "plan node IDs are admitted by this partition and index its node-aligned seen flags"
     )]
     pub(in crate::geometry) fn subdivision_parts(
         &self,
@@ -1889,11 +1913,16 @@ impl ExactSourceInventory {
             )?);
         }
 
+        let emissions: Vec<_> = plans
+            .iter()
+            .map(|plan| plan.emission(&topology, &edges))
+            .collect();
+        let emission_refs: Vec<_> = emissions.iter().collect();
         let mut seen = Vec::with_capacity(partition.node_count());
         seen.resize(partition.node_count(), false);
         let mut nodes = Vec::new();
-        for plan in &plans {
-            for [start, end] in plan.incident_items(&topology) {
+        for emission in &emissions {
+            for &[start, end] in &emission.items {
                 for node in [start, end] {
                     if !seen[node.0 as usize] {
                         seen[node.0 as usize] = true;
@@ -1902,21 +1931,11 @@ impl ExactSourceInventory {
                 }
             }
         }
-        let rounded_nodes = partition.round_nodes(&nodes);
-        ExactPartition::check_node_injectivity(&nodes, &rounded_nodes)?;
-        let mut coordinates = Vec::with_capacity(partition.node_count());
-        coordinates.resize(partition.node_count(), None);
-        for (&node, &coordinate) in nodes.iter().zip(&rounded_nodes) {
-            coordinates[node.0 as usize] = Some(coordinate);
-        }
+        let (_embedding, _) = partition.embed(&emission_refs, "subdivide")?;
 
         let mut node_parts = Vec::with_capacity(plans.len());
-        for plan in plans {
-            node_parts.push(plan.emit_node_parts_with_coordinates(
-                partition,
-                &topology,
-                &coordinates,
-            )?);
+        for plan in &plans {
+            node_parts.push(plan.build_node_parts(partition, &topology)?);
         }
 
         let by_node = self.resolve_node_points(partition, &nodes, declared_axes)?;
@@ -1966,16 +1985,24 @@ impl ExactSourceInventory {
             selected.push(cells.spans);
         }
 
+        let emissions: Vec<_> = selected
+            .iter()
+            .map(|spans| {
+                partition.span_emission(
+                    spans
+                        .iter()
+                        .enumerate()
+                        .filter_map(|(span, &selected)| selected.then_some(span as u32)),
+                )
+            })
+            .collect();
+        let emission_refs: Vec<_> = emissions.iter().collect();
         let mut seen = Vec::with_capacity(partition.node_count());
         seen.resize(partition.node_count(), false);
         let mut nodes = Vec::new();
-        for spans in &selected {
-            for (index, &is_selected) in spans.iter().enumerate() {
-                if !is_selected {
-                    continue;
-                }
-                let span = partition.spans[index];
-                for node in [span.start, span.end] {
+        for emission in &emissions {
+            for &[start, end] in &emission.items {
+                for node in [start, end] {
                     if !seen[node.0 as usize] {
                         seen[node.0 as usize] = true;
                         nodes.push(node);
@@ -1983,7 +2010,7 @@ impl ExactSourceInventory {
                 }
             }
         }
-        ExactPartition::check_node_injectivity(&nodes, &partition.round_nodes(&nodes))?;
+        let (_embedding, _) = partition.embed(&emission_refs, "subdivide")?;
         let by_node = self.resolve_node_points(partition, &nodes, declared_axes)?;
         let views = partition.source_span_views(&self.source_segments)?;
         let ranges = source_line_ranges(source)?;
@@ -2303,19 +2330,20 @@ impl ExactSourceInventory {
         &self,
         partition: &ExactPartition<'_>,
     ) -> Result<(Vec<Point>, Vec<CoordSeq>, Vec<Polygon>)> {
-        self.overlay_parts_with_fill(partition, crate::geometry::OverlayOp::Union)
+        self.overlay_parts_with_fill(partition, crate::geometry::OverlayOp::Union, "make_valid")
     }
 
     fn overlay_parts_with_fill(
         &self,
         partition: &ExactPartition<'_>,
         operation: crate::geometry::OverlayOp,
+        embedding_operation: &'static str,
     ) -> Result<(Vec<Point>, Vec<CoordSeq>, Vec<Polygon>)> {
         let (topology, edges) = partition.local_topology()?;
         let global = partition.global_faces(&topology, &edges)?;
         let cells = self.select_cells(partition, &topology, &edges, &global, operation, false)?;
         let plan = cells.emission_plan(partition, &topology, &edges, &global)?;
-        plan.emit_xy_parts(partition, &topology)
+        plan.emit_xy_parts(partition, &topology, &edges, embedding_operation)
     }
 
     pub(in crate::geometry) fn repair_parts(
@@ -2335,7 +2363,7 @@ impl ExactSourceInventory {
             &winding_rings,
         )?;
         let plan = cells.emission_plan(partition, &topology, &edges, &global)?;
-        plan.emit_xy_parts(partition, &topology)
+        plan.emit_xy_parts(partition, &topology, &edges, "make_valid")
     }
 
     #[expect(
@@ -2346,12 +2374,13 @@ impl ExactSourceInventory {
         &self,
         partition: &mut ExactPartition<'_>,
         build_area: bool,
+        operation: &'static str,
     ) -> Result<Vec<Polygon>> {
         partition.kept_nodes = KeptNodes::All;
         let (topology, edges) = partition.local_topology()?;
         let global = partition.global_faces(&topology, &edges)?;
         if !build_area {
-            return polygonize_faces(partition, &topology, &edges, &global);
+            return polygonize_faces(partition, &topology, &edges, &global, operation);
         }
         let mut cycles: Vec<Vec<Vec<NodeId>>> = Vec::with_capacity(global.count as usize);
         cycles.resize_with(global.count as usize, Vec::new);
@@ -2439,7 +2468,7 @@ impl ExactSourceInventory {
             },
         };
         let plan = cells.emission_plan(partition, &topology, &edges, &global)?;
-        let (_, _, polygons) = plan.emit_xy_parts(partition, &topology)?;
+        let (_, _, polygons) = plan.emit_xy_parts(partition, &topology, &edges, operation)?;
         Ok(polygons)
     }
 
@@ -2468,7 +2497,9 @@ impl ExactSourceInventory {
                 Ok(())
             },
         )?;
-        self.emit_selected_winding_polygons(partition, &topology, &edges, &global, selected)
+        self.emit_selected_winding_polygons(
+            partition, &topology, &edges, &global, selected, "buffer",
+        )
     }
 
     /// Select the union of independently wound polygon groups from one exact
@@ -2532,7 +2563,9 @@ impl ExactSourceInventory {
                 Ok(())
             },
         )?;
-        self.emit_selected_winding_polygons(partition, &topology, &edges, &global, selected)
+        self.emit_selected_winding_polygons(
+            partition, &topology, &edges, &global, selected, "buffer",
+        )
     }
 
     fn emit_selected_winding_polygons(
@@ -2542,6 +2575,7 @@ impl ExactSourceInventory {
         edges: &[u32],
         global: &GlobalFaces,
         selected: Vec<bool>,
+        operation: &'static str,
     ) -> Result<Vec<Polygon>> {
         let cells = ArealCells {
             faces: selected,
@@ -2557,7 +2591,7 @@ impl ExactSourceInventory {
             },
         };
         let plan = cells.emission_plan(partition, topology, edges, global)?;
-        let (_, _, polygons) = plan.emit_xy_parts(partition, topology)?;
+        let (_, _, polygons) = plan.emit_xy_parts(partition, topology, edges, operation)?;
         Ok(polygons)
     }
 }
@@ -3872,73 +3906,27 @@ impl ExactPartition<'_> {
         )
     }
 
+    #[cfg(test)]
     fn round_nodes(&self, nodes: &[NodeId]) -> Vec<XY> {
         nodes.iter().map(|&node| self.node_xy(node)).collect()
     }
 
-    fn check_node_injectivity(nodes: &[NodeId], coordinates: &[XY]) -> Result<()> {
-        embedding::check_node_injectivity(nodes, coordinates)
-    }
-
-    /// Whether rounding moves any of `items`: only crossings round, so
-    /// items between stored nodes keep the exact geometry whose injectivity,
-    /// incidence, fans and faces the partition already established.
-    fn rounding_moves(&self, items: &[[NodeId; 2]]) -> bool {
-        let moved = items.iter().flatten().any(|&node| !self.is_stored(node));
-        #[cfg(test)]
-        if !moved {
-            update_partition_metrics(|metrics| {
-                metrics.unmoved_emissions = metrics.unmoved_emissions.wrapping_add(1);
-            });
-        }
-        moved
-    }
-
-    fn round_incident_items(
-        &self,
-        items: Vec<[NodeId; 2]>,
-    ) -> Result<(Vec<[NodeId; 2]>, Vec<Segment>)> {
-        let emission = embedding::Emission::incident_items(items);
-        let emissions = [&emission];
-        let (_, mut segments) = embedding::embed(self, None, &emissions)?;
-        let segments = segments
-            .pop()
-            .expect("one incident emission produces one segment list");
-        Ok((emission.items, segments))
-    }
-
     #[expect(
         clippy::indexing_slicing,
-        reason = "darts and span IDs are generated by local_topology and source operands match admitted provenance rows"
+        reason = "span IDs and source operands match the admitted span and provenance rows"
     )]
-    fn emit_lines(&self, source_operands: &[u32]) -> Result<ExactLineEmission> {
-        let mut items = Vec::with_capacity(self.spans.len());
-        items.extend(self.spans.iter().map(|span| [span.start, span.end]));
-
-        let (topology, edge_of_slot) = self.local_topology()?;
-        let (items, segments) = self.round_incident_items(items)?;
-
-        let mut departures = Vec::with_capacity(self.spans.len());
-        departures.resize(self.spans.len(), [u32::MAX; 2]);
-        for (slot, &span) in edge_of_slot.iter().enumerate() {
-            let span_index = span as usize;
-            let span = self.spans[span_index];
-            let slot = slot as u32;
-            if topology.owners[slot as usize] == span.start.0 {
-                departures[span_index][0] = slot;
-            } else {
-                debug_assert_eq!(topology.owners[slot as usize], span.end.0);
-                departures[span_index][1] = slot;
-            }
-        }
-        let mut darts = Vec::with_capacity(departures.len());
-        for [start, end] in departures {
-            debug_assert!(start != u32::MAX && end != u32::MAX);
-            darts.push([start, end]);
-        }
-        if self.rounding_moves(&items) {
-            Self::check_emitted_fans(&topology, &darts, &segments)?;
-        }
+    fn emit_lines(
+        &self,
+        source_operands: &[u32],
+        operation: &'static str,
+    ) -> Result<ExactLineEmission> {
+        let spans = (0..self.spans.len()).map(|span| span as u32);
+        let emission = self.span_emission(spans);
+        let emissions = [&emission];
+        let (_, mut segment_sets) = self.embed(&emissions, operation)?;
+        let segments = segment_sets
+            .pop()
+            .expect("one line emission produces one segment list");
 
         let mut offsets = Vec::new();
         let offset_capacity = self
@@ -3961,14 +3949,6 @@ impl ExactPartition<'_> {
             owners,
             offsets,
         })
-    }
-
-    fn check_emitted_fans(
-        topology: &IndexedTopology,
-        darts: &[[u32; 2]],
-        segments: &[Segment],
-    ) -> Result<()> {
-        embedding::check_emitted_fans(topology, darts, segments)
     }
 
     pub(in crate::geometry) fn compare_nodes(

@@ -173,7 +173,7 @@ impl Shape {
         let inventory = ExactSourceInventory::from_shapes(&[self, other])?;
         let mut budget = crate::geometry::ExpansionBudget::new("shared_paths", "exact partition");
         let partition = inventory.partition(&mut budget)?;
-        let emission = inventory.line_emission(&partition)?;
+        let emission = inventory.line_emission(&partition, "shared_paths")?;
         let (same, opposite) = shared_paths_from_exact(&emission)?;
         let mut same_lines = Vec::with_capacity(same.len());
         for line in same {

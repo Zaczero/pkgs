@@ -4,6 +4,14 @@
 //! chord incidence, cyclic order, and optional global-face correspondence.
 //! Emissions carry the topology labels that those checks need; selection stays
 //! in the exact partition.
+//!
+//! Every emitted item, including an isolated point as `[n, n]`, is checked
+//! for identity and pairwise incidence. Pure linework has no areal faces and
+//! skips fan and global-face checks. A face-bearing emission checks fan order
+//! at each node incident to an areal chord, including every emitted chord at
+//! that node. Fans with at most two departures have a unique cyclic order and
+//! satisfy F vacuously. Global-face correspondence covers every component and
+//! isolated point in the emission.
 
 use std::borrow::Cow;
 use std::cmp::Ordering;
@@ -13,7 +21,7 @@ use std::ops::ControlFlow;
 use super::rays::{EmittedPoints, shoot_left};
 use super::{ExactPartition, NodeId};
 use crate::collections::try_hash_map_with_capacity;
-use crate::geometry::arrangement::{IndexedTopology, compare_departures};
+use crate::geometry::arrangement::compare_departures;
 use crate::geometry::overlay::exact_partition::emission::emitted_pair_preserves_incidence;
 use crate::geometry::{
     GeometryErrorKind, PointKey, Result, Segment, XY, for_each_candidate_pair, single_chain,
@@ -32,7 +40,8 @@ impl<'p> Embedding<'p> {
         }
     }
 
-    pub(super) fn from_owned(table: Vec<XY>) -> Self {
+    #[cfg(test)]
+    pub(super) const fn from_owned(table: Vec<XY>) -> Self {
         Self {
             table: Cow::Owned(table),
         }
@@ -58,32 +67,24 @@ impl<'p> Embedding<'p> {
     }
 }
 
-/// The chords, topology darts, and optional face labels one output publishes.
+/// One output's chords and points. Areal boundary chords form the initial
+/// `areal_chords` prefix; face-bearing emissions retain fan spans and host
+/// labels for every chord and point.
 pub(super) struct Emission {
     pub(super) items: Vec<[NodeId; 2]>,
     pub(super) chords: usize,
-    pub(super) darts: Vec<[u32; 2]>,
+    pub(super) areal_chords: usize,
+    pub(super) fan_spans: Vec<[u32; 2]>,
     pub(super) faces: Option<Vec<[u32; 2]>>,
-}
-
-impl Emission {
-    pub(super) fn incident_items(items: Vec<[NodeId; 2]>) -> Self {
-        let chords = items.len();
-        Self {
-            items,
-            chords,
-            darts: Vec::new(),
-            faces: None,
-        }
-    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum Witness {
     Collision(NodeId, NodeId),
     Contact {
-        emission: usize,
+        left_emission: usize,
         left: usize,
+        right_emission: usize,
         right: usize,
     },
     Fan(NodeId),
@@ -157,16 +158,13 @@ impl Injectivity {
     }
 }
 
-/// Certify one shared coordinate table against every emission. `topology` is
-/// absent only for the temporary incidence-only line path; emissions carrying
-/// darts always provide it.
+/// Certify one shared coordinate table against every emission.
 #[expect(
     clippy::indexing_slicing,
-    reason = "emission item, segment, dart, face, and node IDs are built from the same partition and aligned emission"
+    reason = "emission item, segment, span, face, and node IDs are built from the same partition and aligned emission"
 )]
 pub(super) fn certify<S: Sink>(
     partition: &ExactPartition<'_>,
-    topology: Option<&IndexedTopology>,
     embedding: &Embedding<'_>,
     emissions: &[&Emission],
     segments: &[&[Segment]],
@@ -223,49 +221,54 @@ pub(super) fn certify<S: Sink>(
             contact_segments.push(segments[emission_index][item_index]);
         }
     }
-    if let ControlFlow::Break(()) =
-        for_each_candidate_pair(&contact_segments, single_chain, |left, right| {
-            let (left_emission, left_item) = contact_items[left];
-            let (right_emission, right_item) = contact_items[right];
-            let left_nodes = emissions[left_emission].items[left_item];
-            let right_nodes = emissions[right_emission].items[right_item];
-            let left_segment = contact_segments[left];
-            let right_segment = contact_segments[right];
-            let endpoints = |[start, end]: [NodeId; 2], segment: Segment| {
-                [(start, segment.start), (end, segment.end)]
-            };
-            if emitted_pair_preserves_incidence(
-                endpoints(left_nodes, left_segment),
-                endpoints(right_nodes, right_segment),
-            ) {
-                ControlFlow::Continue(())
-            } else {
-                let flow = sink.report(Witness::Contact {
-                    emission: left_emission,
-                    left: left_item,
-                    right: right_item,
-                });
-                if flow.is_continue() {
-                    prior_witness = true;
-                }
-                flow
+    if for_each_candidate_pair(&contact_segments, single_chain, |left, right| {
+        let (left_emission, left_item) = contact_items[left];
+        let (right_emission, right_item) = contact_items[right];
+        let left_nodes = emissions[left_emission].items[left_item];
+        let right_nodes = emissions[right_emission].items[right_item];
+        let left_segment = contact_segments[left];
+        let right_segment = contact_segments[right];
+        let endpoints = |[start, end]: [NodeId; 2], segment: Segment| {
+            [(start, segment.start), (end, segment.end)]
+        };
+        if emitted_pair_preserves_incidence(
+            endpoints(left_nodes, left_segment),
+            endpoints(right_nodes, right_segment),
+        ) {
+            ControlFlow::Continue(())
+        } else {
+            let flow = sink.report(Witness::Contact {
+                left_emission,
+                left: left_item,
+                right_emission,
+                right: right_item,
+            });
+            if flow.is_continue() {
+                prior_witness = true;
             }
-        })?
+            flow
+        }
+    })?
+    .is_break()
     {
         return Ok(ControlFlow::Break(()));
     }
 
     for (emission_index, emission) in emissions.iter().enumerate() {
-        if emission.darts.is_empty() {
+        debug_assert_eq!(emission.faces.is_some(), emission.areal_chords > 0);
+        if emission.faces.is_none() {
             continue;
         }
-        let topology = topology.expect("emissions with darts require their indexed topology");
-        debug_assert_eq!(emission.chords, emission.darts.len());
+        debug_assert!(emission.areal_chords <= emission.chords);
+        debug_assert_eq!(emission.chords, emission.fan_spans.len());
         debug_assert!(emission.chords <= segments[emission_index].len());
         let flow = visit_fans(
-            topology,
-            &emission.darts,
+            partition,
+            embedding,
+            &emission.items[..emission.chords],
+            &emission.fan_spans,
             &segments[emission_index][..emission.chords],
+            emission.areal_chords,
             &mut prior_witness,
             sink,
         );
@@ -300,46 +303,75 @@ pub(super) fn certify<S: Sink>(
     Ok(ControlFlow::Continue(()))
 }
 
-/// Return the nearest table only after its applicable certificate passes.
-pub(super) fn embed<'p>(
-    partition: &'p ExactPartition<'_>,
-    topology: Option<&IndexedTopology>,
-    emissions: &[&Emission],
-) -> Result<(Embedding<'p>, Vec<Vec<Segment>>)> {
-    let embedding = Embedding::nearest(partition);
-    let segments: Vec<Vec<_>> = emissions
+pub(super) fn rounding_moves(partition: &ExactPartition<'_>, items: &[[NodeId; 2]]) -> bool {
+    let moved = items
         .iter()
-        .map(|emission| {
-            emission
-                .items
-                .iter()
-                .map(|&item| embedding.segment(item))
-                .collect()
-        })
-        .collect();
-    let segment_views: Vec<_> = segments.iter().map(Vec::as_slice).collect();
-    let mut needs_certificate = false;
-    for emission in emissions {
-        needs_certificate |= partition.rounding_moves(&emission.items);
+        .flatten()
+        .any(|&node| !partition.is_stored(node));
+    #[cfg(test)]
+    if !moved {
+        super::metrics::update(|metrics| {
+            metrics.unmoved_emissions = metrics.unmoved_emissions.wrapping_add(1);
+        });
     }
-    if needs_certificate {
-        let mut sink = FirstFailure::default();
-        if certify(
-            partition,
-            topology,
-            &embedding,
-            emissions,
-            &segment_views,
-            &mut sink,
-        )?
-        .is_break()
-        {
-            return Err(sink.into_error());
-        }
-    }
-    Ok((embedding, segments))
+    moved
 }
 
+impl ExactPartition<'_> {
+    /// Return one nearest-coordinate table only after every emission passes its
+    /// complete certificate.
+    pub(super) fn embed<'p>(
+        &'p self,
+        emissions: &[&Emission],
+        _operation: &'static str,
+    ) -> Result<(Embedding<'p>, Vec<Vec<Segment>>)> {
+        let embedding = Embedding::nearest(self);
+        let segments: Vec<Vec<_>> = emissions
+            .iter()
+            .map(|emission| {
+                emission
+                    .items
+                    .iter()
+                    .map(|&item| embedding.segment(item))
+                    .collect()
+            })
+            .collect();
+        let segment_views: Vec<_> = segments.iter().map(Vec::as_slice).collect();
+        let mut needs_certificate = false;
+        for emission in emissions {
+            needs_certificate |= rounding_moves(self, &emission.items);
+        }
+        if needs_certificate {
+            let mut sink = FirstFailure::default();
+            if certify(self, &embedding, emissions, &segment_views, &mut sink)?.is_break() {
+                return Err(sink.into_error());
+            }
+        }
+        Ok((embedding, segments))
+    }
+
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "each selected span ID comes from this ExactPartition's span domain"
+    )]
+    pub(super) fn span_emission(&self, spans: impl IntoIterator<Item = u32>) -> Emission {
+        let mut items = Vec::new();
+        for span_id in spans {
+            let span = self.spans[span_id as usize];
+            items.push([span.start, span.end]);
+        }
+        let chords = items.len();
+        Emission {
+            items,
+            chords,
+            areal_chords: 0,
+            fan_spans: Vec::new(),
+            faces: None,
+        }
+    }
+}
+
+#[cfg(test)]
 pub(super) fn check_node_injectivity(nodes: &[NodeId], coordinates: &[XY]) -> Result<()> {
     debug_assert_eq!(nodes.len(), coordinates.len());
     let mut injectivity = Injectivity::new(nodes.len())?;
@@ -351,91 +383,153 @@ pub(super) fn check_node_injectivity(nodes: &[NodeId], coordinates: &[XY]) -> Re
     Ok(())
 }
 
-#[expect(
-    clippy::indexing_slicing,
-    reason = "darts and segments are paired from the same boundary-plan emission and topology"
-)]
+#[cfg(test)]
 pub(super) fn check_emitted_fans(
-    topology: &IndexedTopology,
-    darts: &[[u32; 2]],
+    partition: &ExactPartition<'_>,
+    embedding: &Embedding<'_>,
+    items: &[[NodeId; 2]],
+    fan_spans: &[[u32; 2]],
     segments: &[Segment],
+    areal_chords: usize,
 ) -> Result<()> {
     let mut sink = FirstFailure::default();
     let mut had_witness = false;
-    if visit_fans(topology, darts, segments, &mut had_witness, &mut sink).is_break() {
+    if visit_fans(
+        partition,
+        embedding,
+        items,
+        fan_spans,
+        segments,
+        areal_chords,
+        &mut had_witness,
+        &mut sink,
+    )
+    .is_break()
+    {
         return Err(sink.into_error());
     }
     Ok(())
 }
 
-#[expect(
-    clippy::indexing_slicing,
-    reason = "dart IDs and fan ranges are produced by local_topology and the emitted-dart vector is sized from those slots"
-)]
-fn visit_fans<S: Sink>(
-    topology: &IndexedTopology,
-    darts: &[[u32; 2]],
-    segments: &[Segment],
-    had_witness: &mut bool,
-    sink: &mut S,
-) -> ControlFlow<()> {
-    debug_assert_eq!(darts.len(), segments.len());
-    let mut departures: Vec<Option<(XY, XY)>> = Vec::with_capacity(topology.targets.len());
-    departures.resize(topology.targets.len(), None);
-    for (&[start, end], segment) in darts.iter().zip(segments) {
-        debug_assert!(departures[start as usize].is_none() && departures[end as usize].is_none());
-        departures[start as usize] = Some((segment.start, segment.end));
-        departures[end as usize] = Some((segment.end, segment.start));
-    }
-    for (node, &[start, end]) in topology.starts.array_windows::<2>().enumerate() {
-        let mut first = None;
-        let mut previous = None;
-        let mut descents = 0_usize;
-        let mut count = 0_usize;
-        for (target, departure) in (start..end).zip(&mut departures[start as usize..end as usize]) {
-            let Some((origin, point)) = departure.take() else {
-                continue;
-            };
-            let current = (target, point);
-            first.get_or_insert((origin, current));
-            if let Some((last_target, last_point)) = previous {
-                descents = descents.wrapping_add(usize::from(
-                    compare_departures(origin, last_point, last_target, point, target)
-                        == Ordering::Greater,
-                ));
-            }
-            previous = Some(current);
-            count = count.wrapping_add(1);
-        }
-        if count > 2 {
-            let (origin, (first_target, first_point)) =
-                first.expect("a node with multiple emitted darts has a first dart");
-            let (last_target, last_point) =
-                previous.expect("a node with multiple emitted darts has a last dart");
-            descents = descents.wrapping_add(usize::from(
-                compare_departures(origin, last_point, last_target, first_point, first_target)
-                    == Ordering::Greater,
-            ));
-            if descents != 1 {
-                *had_witness = true;
-                let flow = sink.report(Witness::Fan(NodeId(node as u32)));
-                if flow.is_break() {
-                    return flow;
-                }
-            }
-        }
-    }
-    debug_assert!(
-        departures.iter().all(Option::is_none),
-        "emitted chords must retain exact dart identities"
-    );
-    ControlFlow::Continue(())
+#[derive(Clone, Copy, Default)]
+struct FanDeparture {
+    span: u32,
+    item: usize,
+    at_start: bool,
 }
 
 #[expect(
     clippy::indexing_slicing,
-    reason = "emitted NodeIds index the partition and face labels and item ordinals are built from the same emission"
+    reason = "emitted item, span and node IDs are admitted by the same exact partition"
 )]
+fn visit_fans<S: Sink>(
+    partition: &ExactPartition<'_>,
+    embedding: &Embedding<'_>,
+    items: &[[NodeId; 2]],
+    fan_spans: &[[u32; 2]],
+    segments: &[Segment],
+    areal_chords: usize,
+    had_witness: &mut bool,
+    sink: &mut S,
+) -> ControlFlow<()> {
+    debug_assert_eq!(items.len(), fan_spans.len());
+    debug_assert_eq!(items.len(), segments.len());
+    debug_assert!(areal_chords <= items.len());
+    let node_count = partition.node_count();
+    let mut areal_nodes = vec![false; node_count];
+    for &[start, end] in &items[..areal_chords] {
+        areal_nodes[start.0 as usize] = true;
+        areal_nodes[end.0 as usize] = true;
+    }
+    let mut starts = vec![0_usize; node_count.wrapping_add(1)];
+    for &[start, end] in items {
+        let start = start.0 as usize;
+        let end = end.0 as usize;
+        starts[start.wrapping_add(1)] = starts[start.wrapping_add(1)].wrapping_add(1);
+        starts[end.wrapping_add(1)] = starts[end.wrapping_add(1)].wrapping_add(1);
+    }
+    let mut total = 0_usize;
+    for offset in starts.iter_mut().skip(1) {
+        total = total.wrapping_add(*offset);
+        *offset = total;
+    }
+    let mut cursor = starts[..node_count].to_vec();
+    let mut departures = Vec::new();
+    departures.resize(total, FanDeparture::default());
+    for (item, &[start, end]) in items.iter().enumerate() {
+        let [start_span, end_span] = fan_spans[item];
+        let start_position = cursor[start.0 as usize];
+        departures[start_position] = FanDeparture {
+            span: start_span,
+            item,
+            at_start: true,
+        };
+        cursor[start.0 as usize] = start_position.wrapping_add(1);
+        let end_position = cursor[end.0 as usize];
+        departures[end_position] = FanDeparture {
+            span: end_span,
+            item,
+            at_start: false,
+        };
+        cursor[end.0 as usize] = end_position.wrapping_add(1);
+    }
+    for node in 0..node_count {
+        let range = starts[node]..starts[node.wrapping_add(1)];
+        if !areal_nodes[node] || range.len() <= 2 {
+            continue;
+        }
+        let origin = NodeId(node as u32);
+        let row = &mut departures[range];
+        row.sort_unstable_by(|left, right| {
+            partition.compare_departures(origin, left.span as usize, right.span as usize)
+        });
+        let endpoint = |departure: FanDeparture| {
+            let [start, end] = items[departure.item];
+            let segment = segments[departure.item];
+            if departure.at_start {
+                (end, segment.end)
+            } else {
+                (start, segment.start)
+            }
+        };
+        let origin_xy = embedding.xy(origin);
+        let mut first: Option<(NodeId, XY)> = None;
+        let mut previous: Option<(NodeId, XY)> = None;
+        let mut descents = 0_usize;
+        for &departure in row.iter() {
+            let (target, point) = endpoint(departure);
+            first.get_or_insert((target, point));
+            if let Some((last_target, last_point)) = previous {
+                descents = descents.wrapping_add(usize::from(
+                    compare_departures(origin_xy, last_point, last_target.0, point, target.0)
+                        == Ordering::Greater,
+                ));
+            }
+            previous = Some((target, point));
+        }
+        let (first_target, first_point) = first.expect("a fan row has a first departure");
+        let (last_target, last_point) = previous.expect("a fan row has a last departure");
+        descents = descents.wrapping_add(usize::from(
+            compare_departures(
+                origin_xy,
+                last_point,
+                last_target.0,
+                first_point,
+                first_target.0,
+            ) == Ordering::Greater,
+        ));
+        if descents != 1 {
+            *had_witness = true;
+            let flow = sink.report(Witness::Fan(origin));
+            if flow.is_break() {
+                return flow;
+            }
+        }
+    }
+    ControlFlow::Continue(())
+}
+
+#[cfg(test)]
 pub(super) fn check_global_faces(
     partition: &ExactPartition<'_>,
     embedding: &Embedding<'_>,
