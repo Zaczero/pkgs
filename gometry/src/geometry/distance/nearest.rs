@@ -46,24 +46,38 @@ pub(crate) fn nearest_probe_to_parts(
                 }
             }
         } else {
-            for probe_point in probe.probe_points() {
-                for &target_point in &target.point_only {
-                    let distance_squared = point_distance_squared(probe_point, target_point);
-                    let distance_key = point_pair_distance_key(probe_point.xy(), target_point.xy());
-                    let improves = match best.as_ref() {
-                        Some(candidate) => distance_key.cmp(&candidate.distance_key)?.is_lt(),
-                        None => true,
-                    };
-                    if improves {
-                        best = Some(NearestCandidate {
-                            probe: probe_point,
-                            target: target_point,
-                            distance_squared,
-                            distance_key,
-                        });
-                    }
+            let mut offset = 0_usize;
+            let mut failure = None;
+            probe.linework.for_each_chain_xy_columns(|xs, ys| {
+                if failure.is_none() {
+                    failure = nearest_point_pairs(
+                        xs.iter().copied().zip(ys.iter().copied()).enumerate(),
+                        |ordinal| probe.linework.vertex_at(offset.wrapping_add(ordinal)),
+                        &target.point_only,
+                        &mut best,
+                    )
+                    .err();
                 }
+                offset = offset.wrapping_add(xs.len());
+            });
+            if let Some(error) = failure {
+                return Err(error);
             }
+            nearest_point_pairs(
+                probe
+                    .point_only
+                    .iter()
+                    .map(|point| (point.x, point.y))
+                    .enumerate(),
+                |ordinal| {
+                    *probe
+                        .point_only
+                        .get(ordinal)
+                        .expect("point ordinal belongs to the isolated-point probe")
+                },
+                &target.point_only,
+                &mut best,
+            )?;
         }
     }
     let improved = match incoming.as_ref() {
@@ -87,6 +101,50 @@ pub(crate) fn nearest_probe_to_parts(
         },
         (_, incoming, _) => incoming,
     })
+}
+
+fn nearest_point_pairs(
+    probes: impl Iterator<Item = (usize, (f64, f64))>,
+    full_point: impl Fn(usize) -> Point,
+    targets: &[Point],
+    best: &mut Option<NearestCandidate>,
+) -> crate::error::Result<()> {
+    let mut limit = best
+        .as_ref()
+        .map_or(f64::INFINITY, point_pair_rejection_limit);
+    for (ordinal, (x, y)) in probes {
+        for &target in targets {
+            let dx = x - target.x;
+            let dy = y - target.y;
+            let squared = dx * dx + dy * dy;
+            if squared.is_normal() && squared > limit {
+                continue;
+            }
+            let probe = Point::new_raw_xy(x, y);
+            let distance_key = point_pair_distance_key(probe.xy(), target.xy());
+            if let Some(candidate) = best.as_ref()
+                && !distance_key.cmp(&candidate.distance_key)?.is_lt()
+            {
+                continue;
+            }
+            let candidate = NearestCandidate {
+                probe: full_point(ordinal),
+                target,
+                distance_squared: point_distance_squared(probe, target),
+                distance_key,
+            };
+            limit = point_pair_rejection_limit(&candidate);
+            *best = Some(candidate);
+        }
+    }
+    Ok(())
+}
+
+fn point_pair_rejection_limit(candidate: &NearestCandidate) -> f64 {
+    // The normal square-sum has gamma(4) relative error. Four epsilons
+    // exceed that bound plus this multiplication's rounding; uncertain and
+    // subnormal candidates still reach the exact distance-key comparison.
+    candidate.distance_key.upper_bound() * (1.0 + 4.0 * f64::EPSILON)
 }
 
 /// A [`NearestCandidate`] remembering which operand was the probe side.

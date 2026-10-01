@@ -1,7 +1,7 @@
 use crate::geometry::{
     DistanceParts, MultiPoint, Point, Segment, Shape, ShapeCountQuery, cartesian_point_covers,
-    point_distance, point_distance_squared, point_segment_distance, point_segment_distance_squared,
-    points_dwithin, same_point, segment_envelopes_disjoint, segments_intersect,
+    point_distance, point_segment_distance, point_segment_distance_squared, points_dwithin,
+    same_point, segment_envelopes_disjoint, segments_intersect,
 };
 pub(crate) fn parts_covers_point(shape: &Shape, parts: &DistanceParts, point: Point) -> bool {
     if shape.has_area_parts() {
@@ -70,18 +70,42 @@ pub(crate) fn min_parts_to_parts<const SQUARED: bool>(
         },
     };
     if !target.point_only.is_empty() {
-        for (x, y) in probe.probe_coords() {
-            for &other in &target.point_only {
-                let candidate = if SQUARED {
-                    point_distance_squared(Point::new_raw_xy(x, y), other)
-                } else {
-                    point_distance(Point::new_raw_xy(x, y), other)
-                };
-                best = best.min(candidate);
-            }
-        }
+        probe.linework.for_each_chain_xy_columns(|xs, ys| {
+            best = min_point_pairs::<SQUARED>(
+                xs.iter().copied().zip(ys.iter().copied()),
+                &target.point_only,
+                best,
+            );
+        });
+        best = min_point_pairs::<SQUARED>(
+            probe.point_only.iter().map(|point| (point.x, point.y)),
+            &target.point_only,
+            best,
+        );
     }
     Ok(best)
+}
+
+fn min_point_pairs<const SQUARED: bool>(
+    probes: impl Iterator<Item = (f64, f64)>,
+    targets: &[Point],
+    mut best: f64,
+) -> f64 {
+    for (x, y) in probes {
+        for other in targets {
+            let candidate = if SQUARED {
+                // Squared-space callers bound the coordinates against overflow
+                // and rescue a subnormal/false-zero minimum in distance space.
+                let dx = x - other.x;
+                let dy = y - other.y;
+                dx * dx + dy * dy
+            } else {
+                point_distance(Point::new_raw_xy(x, y), *other)
+            };
+            best = best.min(candidate);
+        }
+    }
+    best
 }
 
 /// Whether any vertex of `probe` sits within `distance` (inclusive) of
