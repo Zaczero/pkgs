@@ -73,8 +73,8 @@ pub(crate) use area::{
 pub(crate) use segments::{Orientation, held_axis_interpolate, orientation};
 pub(crate) mod types;
 pub(crate) use types::{
-    Bounds, BufferCapStyle, BufferJoinStyle, BufferSide, CoordSeq, CoordSeqBuilder, CoordWindow,
-    CoordinateAxes, Coordinates, CsrOffsetBuilder, CsrOffsetColumn, DistanceParts,
+    Bounds, BufferCapStyle, BufferJoinStyle, BufferSide, ChartMetric, CoordSeq, CoordSeqBuilder,
+    CoordWindow, CoordinateAxes, Coordinates, CsrOffsetBuilder, CsrOffsetColumn, DistanceParts,
     FrameDependentCaches, GeodesicInnerInterval, GeodesicMetric, GeodesicMinimum,
     GeodesicNumericalPolicy, GeodesicParts, GeodesicPreparedSegment, GeodesicSegment,
     GeodesicSegmentDerivative, GeodesicSegmentMinimum, GeodesicSegmentQuery,
@@ -217,8 +217,8 @@ use predicates::{
     simplified_polygon_delta_is_simple, validate_ring, visit_interacting_pairs,
 };
 pub(crate) use predicates::{
-    RingClass, line_is_ccw, line_is_closed, line_is_simple, line_is_valid, polygon_is_valid,
-    shape_encloses_pole_in_frame, shape_has_polar_ring_in_frame,
+    RingAreaPole, RingClass, line_is_ccw, line_is_closed, line_is_simple, line_is_valid,
+    polygon_is_valid, ring_area_pole, shape_encloses_pole_in_frame, shape_has_polar_ring_in_frame,
     shape_reaches_geographic_pole_in_frame,
 };
 pub(in crate::geometry) use segments::{

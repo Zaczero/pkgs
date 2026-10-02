@@ -1368,7 +1368,7 @@ def test_crs_roundtrip_tiny_and_huge_residuals() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Finding 19 — S2 leaf area + geodesic Kahan (smoke)
+# Finding 19 — S2 leaf area + chart-edge length compensation (smoke)
 # ---------------------------------------------------------------------------
 
 
@@ -1377,8 +1377,8 @@ def test_s2_leaf_area_positive_finite() -> None:
     assert cell.area > 0.0 and math.isfinite(cell.area)
 
 
-def test_geodesic_shape_length_compensated_multipart() -> None:
-    """Geodesic MultiLineString length (measure.rs compensated_sum) exceeds big-only."""
+def test_chart_shape_length_compensated_multipart() -> None:
+    """Chart-edge MultiLineString length exceeds the big-member length."""
     # Shape-length fold only — NOT LRS prefixes (N11 closed; no blanket Kahan there).
     big = gm.LineString([(-10.0, 0.0), (10.0, 0.0)], crs=4326)
     tiny_coords = [(0.0, i * 1e-9) for i in range(101)]

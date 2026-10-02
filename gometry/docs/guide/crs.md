@@ -66,9 +66,10 @@ distance is metres, but the produced outline is a local-projection approximation
   ([`buffer`][gometry.Geometry.buffer], [`centroid`][gometry.Geometry.centroid], [`simplify`][gometry.Geometry.simplify], overlays, …) carries the CRS *and* epoch of
   its inputs, so metadata never silently drops out of a pipeline.
 - **`unit=None` means the CRS-natural unit**, everywhere a `unit=` parameter
-  exists: geographic measurements use geodesic meters, projected measurements
-  use native linear units, and CRS-free measurements use raw coordinate units
-  (area results square the corresponding unit). `unit='planar'` uses Cartesian
+  exists: geographic shape area and length use ellipsoidal chart-edge measures,
+  geographic point distances use geodesics, projected measurements use native
+  linear units, and CRS-free measurements use raw coordinate units (area
+  results square the corresponding unit). `unit='planar'` uses Cartesian
   coordinate space, with geographic coordinates in their native angular units.
   `unit='meters'` uses the CRS-aware metric and requires a CRS.
 - **`to_crs` transforms X/Y; Z and M follow the [ordinate rules](#z-and-m-under-transformation)** — Z is
@@ -275,12 +276,14 @@ a [`GeometryArray`][gometry.GeometryArray]. The free functions
 paths** that take `unit=`; they are not a second vectorized API. Binary
 [`gm.distance`][gometry.distance] is free because it relates two operands.
 
-## Geographic CRS → geodesic, automatically
+## Geographic CRS → ellipsoidal measures, automatically
 
-Attach a geographic CRS and the *same* [`geom.area`][gometry.Geometry.area] / [`geom.length`][gometry.Geometry.length] / [`distance()`][gometry.distance]
-measure geodesically on that ellipsoid, regardless of whether its stored angular
-coordinates use degrees, radians, or grads
-([Karney's algorithm](https://geographiclib.sourceforge.io/)) and return meters.
+Attach a geographic CRS and shape [`area`][gometry.Geometry.area] and
+[`length`][gometry.Geometry.length] measure straight longitude/latitude edges
+on that CRS's ellipsoid. Pairwise [`distance()`][gometry.distance] follows the
+shortest ellipsoidal geodesic. These metrics respect whether angular
+coordinates use degrees, radians, or grads; geodesic calculations use
+[Karney's algorithm](https://geographiclib.sourceforge.io/).
 
 ```python exec="on" source="block" result="text"
 import gometry as gm
@@ -294,8 +297,8 @@ print(f"bearing: {gm.bearing(paris, london):.1f}°")
 
 ```
 
-`length` measures a path; `area` measures a polygon — both on the ellipsoid when
-the CRS is geographic:
+`length` measures the chart-edge path in metres; `area` measures the ellipsoidal
+area bounded by those edges in square metres:
 
 ```python exec="on" source="block" result="text"
 import gometry as gm
@@ -310,21 +313,22 @@ print(f"city area: {city.area/1e6:.0f} km²")
 
 ```
 
-For geographic line metrics and polygon perimeters, each stored edge is
-interpreted as the shortest ellipsoidal geodesic between its endpoints (the
-stored-edge model — not necessarily a constant-latitude parallel). WKT and GeoJSON store only
-vertices; they do not encode an edge model. When the source means a rhumb line
-or a path in a particular projected frame, **generate intermediate vertices with
-that intended algorithm** before construction — ordinary densify interpolates the
-stored edge model and does not synthesize a rhumb route. Split or otherwise
-disambiguate antipodal and antimeridian-sensitive paths.
+For geographic shape area and length, each stored edge is straight in the
+longitude/latitude chart. A constant-latitude edge therefore follows its
+parallel, rather than the shortest geodesic between its endpoints. WKT and
+GeoJSON store only vertices; they do not encode an edge model. When the source
+means a rhumb line or a path in a particular projected frame, **generate
+intermediate vertices with that intended algorithm** before construction —
+ordinary densify interpolates the stored chart edge and does not synthesize a
+rhumb route. Split or otherwise disambiguate half-period edges that have no
+unique chart direction.
 
 Geographic pairwise metrics — [`distance`][gometry.distance],
 [`dwithin`][gometry.dwithin], [`hausdorff_distance`][gometry.hausdorff_distance],
 [`nearest_points`][gometry.nearest_points], and
 [`shortest_line`][gometry.shortest_line] — support point and linework operands.
 Filled `Polygon` and `MultiPolygon` interiors are unsupported and raise
-`CRSError`. Use `polygon.boundary()` for its geodesic boundary linework,
+`CRSError`. Use `polygon.boundary()` for its boundary linework,
 `unit='planar'` for coordinate-space areal distance, or reproject to a suitable
 projected CRS.
 
@@ -351,9 +355,9 @@ converts the longitude span to radians and sets the interval count to
 `ceil(Δλ / 0.247)`, so each stored horizontal chord spans at most `0.247`
 radians (about `14.152°`). The `wrap='split'` path remains the separate
 EPSG:4326 seam-splitting constructor.
-`gm.length` sums the shortest ellipsoidal geodesic between adjacent vertices;
-it therefore measures this stored chordal boundary, not the mathematical
-constant-latitude parallels named by the box bounds.
+`gm.length` measures each stored straight longitude/latitude edge on the
+ellipsoid. Its equal-latitude sides therefore measure the mathematical
+constant-latitude parallels named by the box bounds, to rounding.
 
 The reference parallel length in the example below is
 `N(φ) cos(φ) Δλ`, where
@@ -371,7 +375,7 @@ crs = gm.CRS(4326)
 coordinates = gm.get_coordinates(box).tolist()
 north_latitude = max(point[1] for point in coordinates)
 north = [point for point in coordinates if point[1] == north_latitude]
-chord_length = gm.LineString(north, crs=crs).length
+stored_edge_length = gm.LineString(north, crs=crs).length
 ellipsoid = crs.ellipsoid
 a = ellipsoid["semi_major_metre"]
 flattening = 1.0 / ellipsoid["inverse_flattening"]
@@ -384,17 +388,18 @@ parallel_length = (
     * math.cos(latitude)
     * longitude_span
 )
-shortfall = parallel_length - chord_length
+length_difference = stored_edge_length - parallel_length
 print(f"northern-side chord intervals: {len(north) - 1}")
-print(f"northern-side chord length: {chord_length:,.3f} m")
+print(f"northern-side stored-edge length: {stored_edge_length:,.3f} m")
 print(f"WGS 84 parallel reference: {parallel_length:,.3f} m")
-print(f"shortfall: {shortfall:,.3f} m ({shortfall / parallel_length * 100.0:.6f}%)")
+print(f"difference: {length_difference:,.3f} m ({length_difference / parallel_length * 100.0:.6f}%)")
 
 ```
 
 This measured example is not a per-call error bound. If a closer approximation
 is required, provide more intermediate vertices when constructing the polygon;
-`gm.length` will still measure the resulting stored chords.
+`gm.length` measures the resulting stored straight longitude/latitude edges on
+the ellipsoid.
 
 ### Geographic geodesic numerical domain
 
@@ -591,7 +596,8 @@ the geodesic figure.
     Local area/length operations use a UTM zone or national grid covering the
     region. Web Mercator (`EPSG:3857`) is intended for tiles rather than area
     measurement. Global or trans-continental measurement can remain in a
-    geographic CRS, where `geom.area` / `geom.length` measure geodesically.
+    geographic CRS, where `geom.area` / `geom.length` measure ellipsoidal chart
+    edges.
 
 ## CRS-free measurement
 
@@ -615,7 +621,7 @@ geometry — comparable with a geodesic answer:
 import gometry as gm
 
 city = gm.box(2.3, 48.8, 2.4, 48.9, crs=4326)
-print("geodesic m²:", round(city.area))
+print("ellipsoidal m²:", round(city.area))
 print("planar deg²:", gm.area(city, unit='planar'))
 
 ```
@@ -802,12 +808,12 @@ spatial index, and validation/repair ([`is_valid`][gometry.Geometry.is_valid],
 [`snap_to_grid(..., repair=True)`][gometry.Geometry.snap_to_grid]) — **auto-split-normalize**
 seam-crossing input at their chokepoints. A seam split is coordinate-planar:
 it inserts affine crossing vertices into straight edges in the unwrapped
-longitude/latitude chart. Geodesic measures (`distance`,
-[`length`][gometry.length], [`area`][gometry.area], …) take the short way across
-the seam and still interpret each stored edge from its endpoints on the CRS
-ellipsoid, so inserting chart vertices does not promise geodesic area or length
-conservation. Geodesic area measures the polygon's lon/lat chart interior,
-including regions larger than half the ellipsoid, independent of ring order.
+longitude/latitude chart. Geographic shape measures
+([`length`][gometry.length] and [`area`][gometry.area]) integrate those chart
+edges, so splitting preserves ellipsoidal length and area to rounding. Pairwise
+[`distance`][gometry.distance] continues to use the shortest geodesic across the
+seam. Geographic area measures the polygon's lon/lat chart interior, including
+regions larger than half the ellipsoid, independent of ring order.
 At the seam, only a collinear shared span with polygon interiors on opposite
 sides is a chart cut; that span does not count for validity or simplicity, while
 same-side overlaps remain invalid.

@@ -36,10 +36,8 @@ pub(crate) use shape::{
     MultiMember, MultiPoint, MultiPolygon, RepairMethod, Shape, ShapeCountQuery, ShapeHeapMemo,
     ShapeOwnerKey, SimplifyMethod, SmoothMethod, VoronoiBoundary,
 };
-#[cfg(test)]
-pub(crate) use shape_data::ChartMetric;
 pub(crate) use shape_data::{
-    FrameDependentCaches, GeodesicInnerInterval, GeodesicMetric, GeodesicMinimum,
+    ChartMetric, FrameDependentCaches, GeodesicInnerInterval, GeodesicMetric, GeodesicMinimum,
     GeodesicNumericalPolicy, GeodesicPreparedSegment, GeodesicSegmentDerivative,
     GeodesicSegmentMinimum, GeodesicSegmentQuery, GeodesicSegmentQueryResult,
     GeodesicSegmentSample, GeodesicSegmentScratch, GeodesicWitnessNeed, IndexedSegment,

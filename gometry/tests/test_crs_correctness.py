@@ -1,9 +1,4 @@
-"""Regression tests pinning the CRS and metric correctness-completeness pass.
-
-Each test documents one fix we must never reintroduce. Geodesic measurements
-use ``pyproj.Geod`` as an independent check where a direct comparison is
-available.
-"""
+"""Regression tests for CRS-aware measurement and coordinate-frame behavior."""
 
 from __future__ import annotations
 
@@ -14,7 +9,14 @@ import gometry as gm
 import pytest
 from pyproj import Geod
 
-from tests._support import bools, floats, ids
+from tests._support import (
+    bools,
+    chart_parallel_length,
+    chart_rectangle_perimeter,
+    chart_zone_area,
+    floats,
+    ids,
+)
 
 FOOT_CRS = 2263
 FOOT_UNIT_M = 0.3048006096012192
@@ -70,13 +72,6 @@ def _physical_coordinates(box: gm.Geometry, crs: object) -> list[tuple[float, fl
         (float(x) * longitude_factor + prime_meridian, float(y) * latitude_factor)
         for x, y in gm.get_coordinates(box).tolist()
     ]
-
-
-def _geod_signed_area(points: list[list[float]] | list[tuple[float, float]]) -> float:
-    return GEOD.polygon_area_perimeter(
-        [point[0] for point in points],
-        [point[1] for point in points],
-    )[0]
 
 
 def _wgs84_surface_area() -> float:
@@ -288,7 +283,7 @@ def test_geographic_and_crs_free_unit_modes_are_unchanged() -> None:
         gm.length(raw_line, unit='meters')
 
 
-def test_geodesic_exterior_length_is_ellipsoidal_and_excludes_holes() -> None:
+def test_chart_exterior_length_is_ellipsoidal_and_excludes_holes() -> None:
     """An exterior line is not a polygon perimeter or a planar/spherical proxy."""
     exterior = [
         (0.0, 0.0),
@@ -306,12 +301,8 @@ def test_geodesic_exterior_length_is_ellipsoidal_and_excludes_holes() -> None:
     ]
     exterior_line = gm.MultiLineString([exterior], crs=4326)
     polygon = gm.Polygon(exterior, holes=[hole], crs=4326)
-    exterior_length = GEOD.line_length(
-        [point[0] for point in exterior], [point[1] for point in exterior]
-    )
-    hole_length = GEOD.line_length(
-        [point[0] for point in hole], [point[1] for point in hole]
-    )
+    exterior_length = chart_rectangle_perimeter(GEOD, 0.0, 1.0, 0.0, 1.0)
+    hole_length = chart_rectangle_perimeter(GEOD, 0.25, 0.75, 0.25, 0.75)
 
     assert exterior_line.length == pytest.approx(exterior_length, rel=1e-12)
     assert polygon.length == pytest.approx(exterior_length + hole_length, rel=1e-12)
@@ -319,11 +310,11 @@ def test_geodesic_exterior_length_is_ellipsoidal_and_excludes_holes() -> None:
     assert exterior_line.length != pytest.approx(4.0)
     z_line = gm.LineString([(0.0, 0.0, 10.0), (1.0, 0.0, 20.0)], crs=4326)
     assert z_line.length == pytest.approx(
-        GEOD.line_length([0.0, 1.0], [0.0, 0.0]), rel=1e-12
+        chart_parallel_length(0.0, 1.0, semi_major=GEOD.a, flattening=GEOD.f)
     )
 
 
-def test_geodesic_area_uses_the_chart_interior_for_large_regions() -> None:
+def test_chart_area_uses_the_chart_interior_for_large_regions() -> None:
     ellipsoid_area = _wgs84_surface_area()
     origin = gm.Point(0.0, 0.0, crs=4326)
     for bounds in (
@@ -331,15 +322,19 @@ def test_geodesic_area_uses_the_chart_interior_for_large_regions() -> None:
         (-180.0, -85.0, 180.0, 85.0),
     ):
         geometry = gm.box(*bounds, crs=4326)
+        west, south, east, north = bounds
+        expected = chart_zone_area(
+            west, east, south, north, semi_major=GEOD.a, flattening=GEOD.f
+        )
+        assert expected > ellipsoid_area / 2.0
         coordinates = gm.get_coordinates(geometry).tolist()
-        expected = ellipsoid_area - abs(_geod_signed_area(coordinates))
         for ring in (coordinates[:-1], list(reversed(coordinates[:-1]))):
             polygon = gm.Polygon(ring, crs=4326)
             assert gm.contains(polygon, origin)
             assert polygon.area == pytest.approx(expected, rel=2e-15)
 
 
-def test_geodesic_polar_cap_area_is_orientation_independent() -> None:
+def test_chart_polar_cap_area_is_orientation_independent() -> None:
     ring = [
         (0.0, 80.0),
         (60.0, 80.0),
@@ -349,14 +344,17 @@ def test_geodesic_polar_cap_area_is_orientation_independent() -> None:
         (-60.0, 80.0),
     ]
     north_pole = gm.Point(0.0, 90.0, crs=4326)
-    expected = abs(_geod_signed_area([*ring, ring[0]]))
+    expected = chart_zone_area(
+        -180.0, 180.0, 80.0, 90.0, semi_major=GEOD.a, flattening=GEOD.f
+    )
     for vertices in (ring, list(reversed(ring))):
         polygon = gm.Polygon(vertices, crs=4326)
         assert gm.contains(polygon, north_pole)
-        assert polygon.area == pytest.approx(expected, rel=1e-15)
+        # Both the closed-form oracle and edge series use binary64 near the pole.
+        assert polygon.area == pytest.approx(expected, rel=3e-15)
 
 
-def test_geodesic_area_subtracts_holes_from_a_large_chart_interior() -> None:
+def test_chart_area_subtracts_holes_from_a_large_chart_interior() -> None:
     shell = gm.box(-170.0, -60.0, 170.0, 60.0, crs=4326)
     shell_coordinates = gm.get_coordinates(shell).tolist()
     hole = [
@@ -368,11 +366,9 @@ def test_geodesic_area_subtracts_holes_from_a_large_chart_interior() -> None:
     ]
     polygon = gm.Polygon(shell_coordinates[:-1], holes=[hole], crs=4326)
     ellipsoid_area = _wgs84_surface_area()
-    expected = (
-        ellipsoid_area
-        - abs(_geod_signed_area(shell_coordinates))
-        - abs(_geod_signed_area(hole))
-    )
+    expected = chart_zone_area(
+        -170.0, 170.0, -60.0, 60.0, semi_major=GEOD.a, flattening=GEOD.f
+    ) - chart_zone_area(-10.0, 10.0, -10.0, 10.0, semi_major=GEOD.a, flattening=GEOD.f)
 
     assert expected > ellipsoid_area / 2.0
     assert gm.contains(polygon, gm.Point(100.0, 0.0, crs=4326))
@@ -380,7 +376,7 @@ def test_geodesic_area_subtracts_holes_from_a_large_chart_interior() -> None:
     assert polygon.area == pytest.approx(expected, rel=2e-15)
 
 
-def test_geodesic_area_array_matches_scalar_in_packed_and_mixed_storage() -> None:
+def test_chart_area_array_matches_scalar_in_packed_and_mixed_storage() -> None:
     wide = gm.box(-170.0, -60.0, 170.0, 60.0, crs=4326)
     coordinates = gm.get_coordinates(wide).tolist()
     reversed_wide = gm.Polygon(list(reversed(coordinates[:-1])), crs=4326)
@@ -400,16 +396,16 @@ def test_geodesic_area_array_matches_scalar_in_packed_and_mixed_storage() -> Non
     )
 
 
-def test_geodesic_area_keeps_the_existing_small_polygon_result() -> None:
+def test_chart_area_matches_the_authalic_zone_formula_for_a_small_polygon() -> None:
     polygon = gm.box(2.0, 48.0, 3.0, 49.0, crs=4326)
-    coordinates = gm.get_coordinates(polygon).tolist()
-    expected = abs(_geod_signed_area(coordinates))
+    expected = chart_zone_area(
+        2.0, 3.0, 48.0, 49.0, semi_major=GEOD.a, flattening=GEOD.f
+    )
 
-    assert polygon.area == 8217589924.770447
-    assert polygon.area == pytest.approx(expected, rel=1e-15)
+    assert polygon.area == pytest.approx(expected, rel=1e-14)
 
 
-def test_degenerate_geodesic_chart_rings_have_zero_area() -> None:
+def test_degenerate_chart_rings_have_zero_area() -> None:
     seam_aliases = gm.Polygon(
         [(180.0, -10.0), (-180.0, -10.0), (-180.0, 10.0), (180.0, 10.0)],
         crs=4326,
@@ -428,7 +424,7 @@ def test_degenerate_geodesic_chart_rings_have_zero_area() -> None:
     assert chart_collinear.area == 0.0
 
 
-def test_packed_geodesic_polygon_length_uses_selected_ring_windows() -> None:
+def test_packed_chart_polygon_length_uses_selected_ring_windows() -> None:
     shell = [
         (0.0, 0.0),
         (1.0, 0.0),
@@ -444,9 +440,9 @@ def test_packed_geodesic_polygon_length_uses_selected_ring_windows() -> None:
         (0.25, 0.25),
     ]
     polygon = gm.Polygon(shell, holes=[hole], crs=4326)
-    expected = GEOD.line_length(
-        [point[0] for point in shell], [point[1] for point in shell]
-    ) + GEOD.line_length([point[0] for point in hole], [point[1] for point in hole])
+    expected = chart_rectangle_perimeter(GEOD, 0.0, 1.0, 0.0, 1.0) + (
+        chart_rectangle_perimeter(GEOD, 0.25, 0.75, 0.25, 0.75)
+    )
     source = gm.GeometryArray(
         [polygon, gm.from_wkt('POLYGON EMPTY', crs=4326), None, polygon],
         crs=4326,

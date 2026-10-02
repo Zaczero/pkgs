@@ -174,11 +174,12 @@ method_doc! {
     pre: r"Interpolate an M ordinate along the line's arc length (CRS-aware). M runs
 from ``start_m`` at the start to ``end_m`` at the end, continuously across
 multipart linework (the PostGIS ``ST_AddMeasure`` shape). The stationing
-follows the CRS like length — geodesic on a geographic CRS, planar
-otherwise (coordinates are never moved). Z is preserved; existing M requires
-``overwrite=True``. Every stored vertex is retained; a zero-length X/Y segment
-has equal M values at both ends. Empty linework returns the same empty with an
-M axis.
+uses geodesic distance on geographic CRSs and planar distance otherwise;
+coordinates are never moved. Geographic 2D length and perimeter measure chart
+edges, so their values can differ from LRS stationing. Z is preserved; existing
+M requires ``overwrite=True``. Every stored vertex is retained; a zero-length
+X/Y segment has equal M values at both ends. Empty linework returns the same
+empty with an M axis.
 
 Parameters
 ----------";

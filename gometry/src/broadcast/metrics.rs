@@ -11,12 +11,13 @@ use crate::broadcast::{
 crate::tokens::token_enum! {
     /// Distance/area unit override for a CRS-aware metric operation's
     /// `unit` keyword. The keyword is `None` by default (the pythonic
-    /// "derive it" spelling): the CRS drives the metric — geodesic meters
-    /// on a geographic CRS, native linear units on a projected CRS, raw
-    /// coordinate units without a CRS. `'planar'` uses Cartesian coordinate
-    /// space (native angular units on a geographic CRS); `'meters'` always
-    /// measures the CRS metric and errors on a CRS-free geometry, which has
-    /// no meter scale. Parsed once at the
+    /// "derive it" spelling): the CRS drives the metric — ellipsoidal units
+    /// for geographic shape measures, native linear units on a projected CRS,
+    /// raw coordinate units without a CRS. Geographic shape area and length
+    /// follow straight longitude/latitude edges; point distances use geodesics.
+    /// `'planar'` uses Cartesian coordinate space (native angular units on a
+    /// geographic CRS); `'meters'` always measures the CRS metric and errors on
+    /// a CRS-free geometry, which has no meter scale. Parsed once at the
     /// `PyO3` boundary so the choice flows inward as a `Copy` enum.
     pub enum DistanceUnit("unit", param = "unit") {
         Planar = "planar",

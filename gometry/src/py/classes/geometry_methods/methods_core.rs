@@ -354,11 +354,12 @@ impl PyGeometry {
     }
     /// Area in CRS-natural units for the geometry's CRS.
     ///
-    /// A geographic CRS gives geodesic square meters on the CRS's own ellipsoid;
+    /// A geographic CRS gives ellipsoidal square meters for the region bounded
+    /// by edges straight in longitude/latitude;
     /// a projected CRS gives squared native linear units; a CRS-free geometry
     /// gives squared raw coordinate units. Use ``to_crs`` to
-    /// change frame. Geographic polygons measure their lon/lat chart interior,
-    /// including regions larger than half the ellipsoid.
+    /// change frame. Geographic polygons measure their longitude/latitude chart
+    /// interior, including regions larger than half the ellipsoid.
     ///
     /// A ``GeometryCollection`` counts overlapping members once, as the area
     /// of their union. Parts of a valid ``MultiPolygon`` cannot overlap.
@@ -382,9 +383,9 @@ impl PyGeometry {
     }
     /// Length (curves) or perimeter (areal), measured for the geometry's CRS.
     ///
-    /// A geographic CRS gives geodesic meters on the CRS's own ellipsoid; a
-    /// projected CRS gives native linear units; a CRS-free geometry gives raw
-    /// coordinate units. Use ``to_crs`` to change frame.
+    /// A geographic CRS gives ellipsoidal meters along edges straight in
+    /// longitude/latitude; a projected CRS gives native linear units; a CRS-free
+    /// geometry gives raw coordinate units. Use ``to_crs`` to change frame.
     ///
     /// A ``GeometryCollection`` sums every member's length or perimeter,
     /// including overlapping members.
@@ -407,6 +408,8 @@ impl PyGeometry {
         Python::attach(|py| crate::length_natural_scalar(py, self))
     }
     /// 3D length of curves with Z, measured for the geometry's CRS.
+    ///
+    /// Geographic CRSs do not support 3D Euclidean length.
     ///
     /// Returns
     /// -------

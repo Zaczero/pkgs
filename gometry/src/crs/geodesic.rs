@@ -1,8 +1,7 @@
-//! Ellipsoidal geodesic math (geographiclib): inverse/direct/interpolate,
-//! area/length, segment distance and intersection, the geodesic LRS,
-//! and the `MetricModel` that decides planar-vs-geodesic. The geodesic instance
-//! cache (`with_geodesic`) reaches its thread-local storage in the parent via
-//! `super`.
+//! Geographic metric math: GeographicLib point-to-point geodesics and the
+//! shared chart-edge area/length integrals, with the `MetricModel` that selects
+//! each CRS-aware operation. The geodesic instance cache (`with_geodesic`)
+//! reaches its thread-local storage in the parent via `super`.
 
 use geographiclib_rs::geodesic_capability as caps;
 pub(crate) use geographiclib_rs::{DirectGeodesic, InverseGeodesic};
@@ -163,7 +162,6 @@ pub(crate) struct GeodesicLineKey {
 
 mod bearing;
 mod cache;
-#[cfg(test)]
 mod chart_edge;
 mod distance;
 mod domain;
@@ -181,7 +179,8 @@ pub(crate) use bearing::{
     geodesic_cross_track_with_radius, geodesic_destination, geodesic_destination_crs_at,
     geodesic_for_crs_at, geodesic_point_between,
 };
-pub(crate) use cache::{with_geodesic_at, with_geodesic_cache_at};
+pub(crate) use cache::{with_geodesic_at, with_geodesic_cache_at, with_geodesic_chart_cache_at};
+pub(crate) use chart_edge::AuthalicSeries;
 pub(crate) use distance::{
     geodesic_frechet_at_with_scratch, geodesic_hausdorff_at, geodesic_point_distances,
     geodesic_point_pair_distance, geodesic_point_pair_distances, geodesic_point_pair_dwithin,
@@ -198,9 +197,9 @@ pub(crate) use ellipsoid_metric::{
 #[cfg(test)]
 pub(crate) use measure::with_ellipsoid_metric;
 pub(crate) use measure::{
-    DistanceMode, geodesic_interpolate_on_line, geodesic_length_at, geodesic_line_length_columns,
-    geodesic_line_solution, geodesic_ring_measure_columns, geodesic_shape_area,
-    geodesic_shape_length, with_ellipsoid_metric_at, with_resolved_ellipsoid_metric_at,
+    DistanceMode, chart_line_length_columns, chart_shape_area, chart_shape_length,
+    geodesic_interpolate_on_line, geodesic_line_solution, geodesic_witness_distance_at,
+    with_ellipsoid_metric_at, with_resolved_ellipsoid_metric_at,
 };
 pub(crate) use metric_model::{
     GeodesicMetric, MetricModel, ResolvedMetric, ensure_3d_metric, geographic_metric_frame_at,

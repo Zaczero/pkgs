@@ -1,4 +1,4 @@
-use geographiclib_rs::{Geodesic, PolygonArea, Winding, geodesic_capability as caps};
+use geographiclib_rs::Geodesic;
 
 use crate::crs::RuntimeState;
 use crate::crs::geodesic::{
@@ -6,12 +6,11 @@ use crate::crs::geodesic::{
     ensure_geographic_domain_in_frame, geographic_metric_frame_at, inverse_distance,
     inverse_distance_azimuths, normalize, with_geodesic_at, with_geodesic_erased_at,
 };
-use crate::crs::local::normalize_longitude;
 use crate::error::Result;
 use crate::geographic::GeographicFrame;
-use crate::geometry::exact_arith::product_sum::ExactSum;
 use crate::geometry::{
-    Coordinates, Point, Polygon, Shape, canonicalize_zero, same_topological_coordinate,
+    ChartMetric, Coordinates, Point, Polygon, Ring, RingAreaPole, Shape, canonicalize_zero,
+    ring_area_pole, same_topological_coordinate,
 };
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -87,205 +86,265 @@ pub(crate) fn with_resolved_ellipsoid_metric_at<T>(
     with_geodesic_erased_at(crs, shapes, state, |error| error, f)
 }
 
-pub(crate) fn geodesic_shape_area(
-    geodesic: &Geodesic,
+pub(crate) fn chart_shape_area(
+    metric: &impl ChartMetric,
     shape: &Shape,
     frame: GeographicFrame,
-) -> f64 {
-    canonicalize_zero(match shape {
-        Shape::Polygon(polygon) => geodesic_polygon_area(geodesic, polygon, frame),
+) -> Result<f64> {
+    let area = match shape {
+        Shape::Polygon(polygon) => chart_polygon_area(metric, polygon, frame)?,
         Shape::MultiPolygon(polygons) => compensated_sum(
             polygons
                 .iter()
-                .map(|polygon| geodesic_polygon_area(geodesic, polygon, frame)),
-        ),
+                .map(|polygon| chart_polygon_area(metric, polygon, frame)),
+        )?,
         Shape::GeometryCollection(geometries) => compensated_sum(
             geometries
                 .iter()
-                .map(|geometry| geodesic_shape_area(geodesic, geometry, frame)),
-        ),
+                .map(|geometry| chart_shape_area(metric, geometry, frame)),
+        )?,
         Shape::Point(_)
         | Shape::MultiPoint(_)
         | Shape::LineString(_)
         | Shape::MultiLineString(_)
         | Shape::Empty(..) => 0.0,
-    })
+    };
+    Ok(canonicalize_zero(area))
 }
 
-pub(crate) fn geodesic_shape_length(
-    geodesic: &Geodesic,
-    shape: &Shape,
+fn chart_polygon_area(
+    metric: &impl ChartMetric,
+    polygon: &Polygon,
     frame: GeographicFrame,
-) -> f64 {
-    canonicalize_zero(match shape {
+) -> Result<f64> {
+    let mut sum = 0.0;
+    let mut correction = 0.0;
+    add_compensated(
+        &mut sum,
+        &mut correction,
+        chart_ring_area(metric, &polygon.shell, frame)?,
+    );
+    for hole in polygon.holes.iter() {
+        add_compensated(
+            &mut sum,
+            &mut correction,
+            -chart_ring_area(metric, hole, frame)?,
+        );
+    }
+    Ok(sum)
+}
+
+fn chart_ring_area(metric: &impl ChartMetric, ring: &Ring, frame: GeographicFrame) -> Result<f64> {
+    let pole = ring_area_pole(ring, frame);
+    let (north, full_turn) = match pole {
+        RingAreaPole::None => (ring.nth_coord(0).y >= 0.0, false),
+        RingAreaPole::North => (true, true),
+        RingAreaPole::South => (false, true),
+        RingAreaPole::Straddling => {
+            // Q1 remains open; match split_antimeridian's current north closure.
+            (true, true)
+        },
+    };
+
+    let mut integral = 0.0;
+    let mut correction = 0.0;
+    for [start, end] in ring.segment_pairs() {
+        let edge = metric.chart_edge(start, end)?;
+        add_compensated(
+            &mut integral,
+            &mut correction,
+            metric.chart_area_edge_term(&edge, north),
+        );
+    }
+    let area = metric.chart_area_factor() * integral.abs();
+    let surface_area = metric.chart_surface_area();
+    let area = if full_turn && area > surface_area / 2.0 {
+        surface_area - area
+    } else {
+        area
+    };
+    Ok(area)
+}
+
+pub(crate) fn chart_shape_length(metric: &impl ChartMetric, shape: &Shape) -> Result<f64> {
+    let length = match shape {
         Shape::Point(_) | Shape::MultiPoint(_) | Shape::Empty(..) => 0.0,
-        Shape::LineString(points) => geodesic_line_length(geodesic, points, frame),
-        Shape::MultiLineString(lines) => compensated_sum(
-            lines
-                .iter()
-                .map(|line| geodesic_line_length(geodesic, line, frame)),
-        ),
-        Shape::Polygon(polygon) => geodesic_polygon_perimeter(geodesic, polygon, frame),
-        Shape::MultiPolygon(polygons) => compensated_sum(
-            polygons
-                .iter()
-                .map(|polygon| geodesic_polygon_perimeter(geodesic, polygon, frame)),
-        ),
+        Shape::LineString(points) => chart_line_length(metric, points)?,
+        Shape::MultiLineString(lines) => {
+            compensated_sum(lines.iter().map(|line| chart_line_length(metric, line)))?
+        },
+        Shape::Polygon(polygon) => chart_polygonal_perimeter(metric, std::iter::once(polygon))?,
+        Shape::MultiPolygon(polygons) => chart_polygonal_perimeter(metric, polygons.iter())?,
         Shape::GeometryCollection(geometries) => compensated_sum(
             geometries
                 .iter()
-                .map(|geometry| geodesic_shape_length(geodesic, geometry, frame)),
-        ),
-    })
-}
-
-pub(crate) fn geodesic_polygon_area(
-    geodesic: &Geodesic,
-    polygon: &Polygon,
-    frame: GeographicFrame,
-) -> f64 {
-    // Every ring area selects its interior in the unwrapped longitude/latitude
-    // chart, independent of vertex order. Holes subtract that same interior.
-    compensated_sum(
-        std::iter::once(geodesic_ring_area(geodesic, &polygon.shell, frame)).chain(
-            polygon
-                .holes
-                .iter()
-                .map(|hole| -geodesic_ring_area(geodesic, hole, frame)),
-        ),
-    )
-}
-
-pub(crate) fn geodesic_polygon_perimeter(
-    geodesic: &Geodesic,
-    polygon: &Polygon,
-    frame: GeographicFrame,
-) -> f64 {
-    compensated_sum(
-        std::iter::once(geodesic_ring_measure(geodesic, &polygon.shell, frame).0).chain(
-            polygon
-                .holes
-                .iter()
-                .map(|hole| geodesic_ring_measure(geodesic, hole, frame).0),
-        ),
-    )
-}
-
-pub(crate) fn geodesic_ring_measure<C: Coordinates + ?Sized>(
-    geodesic: &Geodesic,
-    ring: &C,
-    frame: GeographicFrame,
-) -> (f64, f64) {
-    let points = || {
-        ring.iter_coords().map(|point| {
-            let point = frame
-                .to_geodesic_point(point)
-                .expect("geographic metric received admitted coordinates");
-            (point.x, point.y)
-        })
+                .map(|geometry| chart_shape_length(metric, geometry)),
+        )?,
     };
-    geodesic_ring_measure_lonlat(geodesic, ring.coord_count(), points(), || {
-        exact_chart_orientation(points())
-    })
+    Ok(canonicalize_zero(length))
 }
 
-pub(crate) fn geodesic_ring_measure_columns(
-    geodesic: &Geodesic,
+fn chart_polygonal_perimeter<'a>(
+    metric: &impl ChartMetric,
+    polygons: impl IntoIterator<Item = &'a Polygon>,
+) -> Result<f64> {
+    let mut perimeter = 0.0;
+    let mut correction = 0.0;
+    let mut seam_edges = SeamEdges::default();
+    for polygon in polygons {
+        add_ring_perimeter(
+            metric,
+            &polygon.shell,
+            &mut perimeter,
+            &mut correction,
+            &mut seam_edges,
+        )?;
+        for hole in polygon.holes.iter() {
+            add_ring_perimeter(
+                metric,
+                hole,
+                &mut perimeter,
+                &mut correction,
+                &mut seam_edges,
+            )?;
+        }
+    }
+    seam_edges.cancel(metric, &mut perimeter, &mut correction)?;
+    Ok(perimeter)
+}
+
+fn add_ring_perimeter(
+    metric: &impl ChartMetric,
+    ring: &Ring,
+    perimeter: &mut f64,
+    correction: &mut f64,
+    seam_edges: &mut SeamEdges,
+) -> Result<()> {
+    for [start, end] in ring.segment_pairs() {
+        let edge = metric.chart_edge(start, end)?;
+        let length = metric.chart_edge_length(&edge)?;
+        add_compensated(perimeter, correction, length);
+        if let Some([latitude0, latitude1]) = metric.chart_edge_seam_span(&edge) {
+            let south = latitude0.min(latitude1);
+            let north = latitude0.max(latitude1);
+            if south < north {
+                seam_edges.add_span(south, north);
+            }
+        }
+    }
+    Ok(())
+}
+
+#[derive(Default)]
+struct SeamEdges {
+    starts: Vec<f64>,
+    ends: Vec<f64>,
+}
+
+impl SeamEdges {
+    fn add_span(&mut self, south: f64, north: f64) {
+        self.starts.push(canonicalize_zero(south));
+        self.ends.push(canonicalize_zero(north));
+    }
+
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "the occurrence count scales a binary64 perimeter total"
+    )]
+    fn cancel(
+        &mut self,
+        metric: &impl ChartMetric,
+        perimeter: &mut f64,
+        correction: &mut f64,
+    ) -> Result<()> {
+        self.starts.sort_unstable_by(f64::total_cmp);
+        self.ends.sort_unstable_by(f64::total_cmp);
+        let mut start_cursor = 0;
+        let mut end_cursor = 0;
+        let mut previous = None;
+        let mut active = 0usize;
+        while start_cursor < self.starts.len() || end_cursor < self.ends.len() {
+            let latitude = match (
+                self.starts.get(start_cursor).copied(),
+                self.ends.get(end_cursor).copied(),
+            ) {
+                (Some(start), Some(end)) => {
+                    if start.total_cmp(&end).is_gt() {
+                        end
+                    } else {
+                        start
+                    }
+                },
+                (Some(start), None) => start,
+                (None, Some(end)) => end,
+                (None, None) => unreachable!("a seam event remains"),
+            };
+
+            if let Some(south) = previous
+                && south < latitude
+                && active > 1
+            {
+                // Even seam coverage is internal on the longitude quotient.
+                let cancelled = active & !1;
+                let length = metric.chart_seam_span_length(south, latitude)?;
+                add_compensated(perimeter, correction, -(length * cancelled as f64));
+            }
+
+            let mut starts = 0usize;
+            while self
+                .starts
+                .get(start_cursor)
+                .is_some_and(|start| start.to_bits() == latitude.to_bits())
+            {
+                starts += 1;
+                start_cursor += 1;
+            }
+            let mut ends = 0usize;
+            while self
+                .ends
+                .get(end_cursor)
+                .is_some_and(|end| end.to_bits() == latitude.to_bits())
+            {
+                ends += 1;
+                end_cursor += 1;
+            }
+            active = active
+                .checked_sub(ends)
+                .and_then(|active| active.checked_add(starts))
+                .expect("periodic seam spans have balanced endpoints");
+            previous = Some(latitude);
+        }
+        debug_assert_eq!(active, 0);
+        Ok(())
+    }
+}
+
+fn chart_line_length<C: Coordinates + ?Sized>(
+    metric: &impl ChartMetric,
+    points: &C,
+) -> Result<f64> {
+    if let Some((xs, ys)) = points.xy_columns() {
+        return chart_line_length_columns(metric, xs, ys);
+    }
+    compensated_sum(points.segment_pairs().map(|[start, end]| {
+        let edge = metric.chart_edge(start, end)?;
+        metric.chart_edge_length(&edge)
+    }))
+}
+
+pub(crate) fn chart_line_length_columns(
+    metric: &impl ChartMetric,
     xs: &[f64],
     ys: &[f64],
-    frame: GeographicFrame,
-) -> (f64, f64) {
+) -> Result<f64> {
     debug_assert_eq!(xs.len(), ys.len());
-    let points = || {
-        std::iter::zip(xs, ys).map(|(&lon, &lat)| {
-            let point = frame
-                .to_geodesic_point(Point::new_raw_xy(lon, lat))
-                .expect("geographic metric received admitted coordinates");
-            (point.x, point.y)
-        })
-    };
-    geodesic_ring_measure_lonlat(geodesic, xs.len(), points(), || {
-        exact_chart_orientation(points())
-    })
-}
-
-/// Compute a ring's chart-interior geodesic area without its perimeter.
-///
-/// `PolygonArea::add_point` requests both distance and area from every inverse
-/// edge, but area measurement discards the distance. The public raw inverse
-/// API accepts the narrower `AREA` mask, so keep the same transit/reduction
-/// rules while avoiding the unused perimeter work and its accumulator.
-fn geodesic_ring_area<C: Coordinates + ?Sized>(
-    geodesic: &Geodesic,
-    ring: &C,
-    frame: GeographicFrame,
-) -> f64 {
-    if ring.coord_count() < 3 {
-        return 0.0;
-    }
-    let mut points = ring.iter_coords().map(|point| {
-        let point = frame
-            .to_geodesic_point(point)
-            .expect("geographic metric received admitted coordinates");
-        (point.x, point.y)
-    });
-    let Some((initial_lon, initial_lat)) = points.next() else {
-        return 0.0;
-    };
-    let mut chart = ChartRing::new();
-    chart.add_point(initial_lon, initial_lat);
-    let mut latest_lon = initial_lon;
-    let mut latest_lat = initial_lat;
-    let mut area = 0.0;
-    let mut correction = 0.0;
-
-    for (lon, lat) in points {
-        let s12 = geodesic
-            ._gen_inverse(latest_lat, latest_lon, lat, lon, caps::AREA)
-            .9;
-        add_compensated(&mut area, &mut correction, s12);
-        chart.add_point(lon, lat);
-        latest_lon = lon;
-        latest_lat = lat;
-    }
-
-    let s12 = geodesic
-        ._gen_inverse(latest_lat, latest_lon, initial_lat, initial_lon, caps::AREA)
-        .9;
-    add_compensated(&mut area, &mut correction, s12);
-    chart.close();
-
-    let geoid_area = geodesic.area();
-    area %= geoid_area;
-    if chart.crossings % 2 != 0 {
-        area += if area < 0.0 {
-            geoid_area / 2.0
-        } else {
-            -geoid_area / 2.0
-        };
-    }
-
-    // PolygonArea is constructed with CounterClockwise winding and computes a
-    // signed result in (-half-planet, half-planet].
-    area = -area;
-    if area > geoid_area / 2.0 {
-        area -= geoid_area;
-    } else if area <= -geoid_area / 2.0 {
-        area += geoid_area;
-    }
-    let orientation = if chart.crossings % 2 != 0 {
-        None
-    } else {
-        Some(chart.orientation().unwrap_or_else(|| {
-            exact_chart_orientation(ring.iter_coords().map(|point| {
-                let point = frame
-                    .to_geodesic_point(point)
-                    .expect("geographic metric received admitted coordinates");
-                (point.x, point.y)
-            }))
-        }))
-    };
-    chart_interior_area(area, &chart, orientation, geoid_area)
+    compensated_sum(xs.array_windows::<2>().zip(ys.array_windows::<2>()).map(
+        |([x0, x1], [y0, y1])| {
+            let edge =
+                metric.chart_edge(Point::new_raw_xy(*x0, *y0), Point::new_raw_xy(*x1, *y1))?;
+            metric.chart_edge_length(&edge)
+        },
+    ))
 }
 
 fn add_compensated(sum: &mut f64, correction: &mut f64, value: f64) {
@@ -295,285 +354,43 @@ fn add_compensated(sum: &mut f64, correction: &mut f64, value: f64) {
     *sum = next;
 }
 
-fn longitude_transit(lon1: f64, lon2: f64, difference: f64) -> i64 {
-    if difference > 0.0 && ((lon1 < 0.0 && lon2 >= 0.0) || (lon1 > 0.0 && lon2 == 0.0)) {
-        1
-    } else if difference < 0.0 && lon1 >= 0.0 && lon2 < 0.0 {
-        -1
-    } else {
-        0
-    }
-}
-
-fn longitude_step(lon1: f64, lon2: f64) -> (f64, f64) {
-    let difference = lon2 - lon1;
-    if difference > 180.0 {
-        (difference - 360.0, -360.0)
-    } else if difference <= -180.0 {
-        (difference + 360.0, 360.0)
-    } else {
-        (difference, 0.0)
-    }
-}
-
-struct ChartRing {
-    twice_area: f64,
-    absolute_products: f64,
-    edge_count: usize,
-    exact_area: Option<Box<ExactSum>>,
-    count: usize,
-    initial_lon: f64,
-    initial_lat: f64,
-    previous_lon: f64,
-    previous_lat: f64,
-    previous_unwrapped_lon: f64,
-    longitude_offset: f64,
-    crossings: i64,
-}
-
-impl ChartRing {
-    const fn new() -> Self {
-        Self {
-            twice_area: 0.0,
-            absolute_products: 0.0,
-            edge_count: 0,
-            exact_area: None,
-            count: 0,
-            initial_lon: 0.0,
-            initial_lat: 0.0,
-            previous_lon: 0.0,
-            previous_lat: 0.0,
-            previous_unwrapped_lon: 0.0,
-            longitude_offset: 0.0,
-            crossings: 0,
-        }
-    }
-
-    fn exact() -> Self {
-        Self {
-            exact_area: Some(Box::new(ExactSum::zero())),
-            ..Self::new()
-        }
-    }
-
-    fn add_point(&mut self, lon: f64, lat: f64) {
-        let lon = normalize_longitude(lon);
-        if self.count == 0 {
-            self.initial_lon = lon;
-            self.initial_lat = lat;
-            self.previous_lon = lon;
-            self.previous_lat = lat;
-            self.previous_unwrapped_lon = lon;
-            self.count = 1;
-            return;
-        }
-
-        let (difference, offset_delta) = longitude_step(self.previous_lon, lon);
-        self.longitude_offset += offset_delta;
-        let unwrapped_lon = lon + self.longitude_offset;
-        self.add_edge(
-            self.previous_unwrapped_lon,
-            self.previous_lat,
-            unwrapped_lon,
-            lat,
-        );
-        self.crossings =
-            self.crossings
-                .wrapping_add(longitude_transit(self.previous_lon, lon, difference));
-        self.previous_lon = lon;
-        self.previous_lat = lat;
-        self.previous_unwrapped_lon = unwrapped_lon;
-        self.count = self.count.wrapping_add(1);
-    }
-
-    fn close(&mut self) {
-        if self.count == 0 {
-            return;
-        }
-
-        let (difference, offset_delta) = longitude_step(self.previous_lon, self.initial_lon);
-        let longitude_offset = self.longitude_offset + offset_delta;
-        let unwrapped_lon = self.initial_lon + longitude_offset;
-        self.add_edge(
-            self.previous_unwrapped_lon,
-            self.previous_lat,
-            unwrapped_lon,
-            self.initial_lat,
-        );
-        self.crossings = self.crossings.wrapping_add(longitude_transit(
-            self.previous_lon,
-            self.initial_lon,
-            difference,
-        ));
-    }
-
-    fn add_edge(&mut self, x0: f64, y0: f64, x1: f64, y1: f64) {
-        let forward = x0 * y1;
-        let reverse = x1 * y0;
-        self.twice_area += forward - reverse;
-        self.absolute_products += forward.abs() + reverse.abs();
-        self.edge_count = self.edge_count.wrapping_add(1);
-        if let Some(exact_area) = &mut self.exact_area {
-            exact_area.add_cross(x0, y0, x1, y1);
-        }
-    }
-
-    fn orientation(&self) -> Option<std::cmp::Ordering> {
-        if let Some(exact_area) = &self.exact_area {
-            return Some(exact_area.ordering());
-        }
-
-        // Admit the rounded sign only outside a bound for product, sum, and
-        // subnormal rounding; callers replay uncertain rings with ExactSum.
-        let operations = 16.0 * self.edge_count as f64 + 8.0;
-        let error = operations * (self.absolute_products * f64::EPSILON + f64::from_bits(1));
-        if !self.twice_area.is_finite() || !error.is_finite() || self.twice_area.abs() <= error {
-            return None;
-        }
-        Some(if self.twice_area < 0.0 {
-            std::cmp::Ordering::Less
-        } else {
-            std::cmp::Ordering::Greater
-        })
-    }
-}
-
-fn exact_chart_orientation(points: impl IntoIterator<Item = (f64, f64)>) -> std::cmp::Ordering {
-    let mut chart = ChartRing::exact();
-    for (lon, lat) in points {
-        chart.add_point(lon, lat);
-    }
-    chart.close();
-    chart
-        .orientation()
-        .expect("an exact chart accumulator always determines orientation")
-}
-
-fn chart_interior_area(
-    area: f64,
-    chart: &ChartRing,
-    orientation: Option<std::cmp::Ordering>,
-    ellipsoid_area: f64,
-) -> f64 {
-    if chart.crossings % 2 != 0 {
-        // The transit correction already selected the pole-side cap; reverse
-        // traversal changes only its sign.
-        return area.abs();
-    }
-    match orientation.expect("non-polar rings resolve chart orientation") {
-        std::cmp::Ordering::Equal => 0.0,
-        orientation @ (std::cmp::Ordering::Less | std::cmp::Ordering::Greater) => {
-            let oriented = if orientation == std::cmp::Ordering::Less {
-                -area
-            } else {
-                area
-            };
-            let area = oriented % ellipsoid_area;
-            if area < 0.0 {
-                area + ellipsoid_area
-            } else {
-                area
-            }
-        },
-    }
-}
-
-fn geodesic_ring_measure_lonlat(
-    geodesic: &Geodesic,
-    coord_count: usize,
-    points: impl IntoIterator<Item = (f64, f64)>,
-    exact_orientation: impl FnOnce() -> std::cmp::Ordering,
-) -> (f64, f64) {
-    if coord_count < 3 {
-        return (0.0, 0.0);
-    }
-    let mut area = PolygonArea::new(geodesic, Winding::CounterClockwise);
-    let mut chart = ChartRing::new();
-    for (lon, lat) in points {
-        area.add_point(lat, lon);
-        chart.add_point(lon, lat);
-    }
-    chart.close();
-    let (perimeter, area, _) = area.compute(true);
-    let orientation = if chart.crossings % 2 != 0 {
-        None
-    } else {
-        Some(chart.orientation().unwrap_or_else(exact_orientation))
-    };
-    (
-        perimeter,
-        chart_interior_area(area, &chart, orientation, geodesic.area()),
-    )
-}
-
-pub(crate) fn geodesic_length_at(crs: &str, shape: &Shape, state: &RuntimeState) -> Result<f64> {
-    let frame = geographic_metric_frame_at(crs, state)?;
-    ensure_geographic_domain_in_frame(frame, shape)?;
-    let crs = normalize(crs)?;
-    with_geodesic_at(&crs, state, |geodesic| {
-        Ok(geodesic_shape_length(geodesic, shape, frame))
-    })
-}
-
-pub(crate) fn geodesic_line_length<C: Coordinates + ?Sized>(
-    geodesic: &Geodesic,
-    points: &C,
-    frame: GeographicFrame,
-) -> f64 {
-    if let Some((xs, ys)) = points.xy_columns() {
-        return geodesic_line_length_columns(geodesic, xs, ys, frame);
-    }
-    compensated_sum(points.segment_pairs().map(|[start, end]| {
-        let start = frame
-            .to_geodesic_point(start)
-            .expect("geographic metric received admitted coordinates");
-        let end = frame
-            .to_geodesic_point(end)
-            .expect("geographic metric received admitted coordinates");
-        geodesic_segment_length(geodesic, start.x, start.y, end.x, end.y)
-    }))
-}
-
-pub(crate) fn geodesic_line_length_columns(
-    geodesic: &Geodesic,
-    xs: &[f64],
-    ys: &[f64],
-    frame: GeographicFrame,
-) -> f64 {
-    debug_assert_eq!(xs.len(), ys.len());
-    compensated_sum(xs.array_windows::<2>().zip(ys.array_windows::<2>()).map(
-        |([x0, x1], [y0, y1])| {
-            let start = frame
-                .to_geodesic_point(Point::new_raw_xy(*x0, *y0))
-                .expect("geographic metric received admitted coordinates");
-            let end = frame
-                .to_geodesic_point(Point::new_raw_xy(*x1, *y1))
-                .expect("geographic metric received admitted coordinates");
-            geodesic_segment_length(geodesic, start.x, start.y, end.x, end.y)
-        },
-    ))
-}
-
-fn compensated_sum(values: impl IntoIterator<Item = f64>) -> f64 {
+fn compensated_sum(values: impl IntoIterator<Item = Result<f64>>) -> Result<f64> {
     let mut sum = 0.0;
     let mut correction = 0.0;
     for value in values {
-        let adjusted = value - correction;
-        let next = sum + adjusted;
-        correction = (next - sum) - adjusted;
-        sum = next;
+        add_compensated(&mut sum, &mut correction, value?);
     }
-    sum
+    Ok(sum)
 }
 
-fn geodesic_segment_length(
-    geodesic: &Geodesic,
-    start_lon: f64,
-    start_lat: f64,
-    end_lon: f64,
-    end_lat: f64,
-) -> f64 {
-    inverse_distance(geodesic, start_lon, start_lat, end_lon, end_lat)
+pub(crate) fn geodesic_witness_distance_at(
+    crs: &str,
+    shape: &Shape,
+    state: &RuntimeState,
+) -> Result<f64> {
+    let frame = geographic_metric_frame_at(crs, state)?;
+    ensure_geographic_domain_in_frame(frame, shape)?;
+    let Shape::LineString(line) = shape else {
+        unreachable!("minimum-clearance witness is a two-point line")
+    };
+    debug_assert_eq!(line.coord_count(), 2);
+    let start = frame
+        .to_geodesic_point(line.nth_coord(0))
+        .expect("geographic coordinates were admitted");
+    let end = frame
+        .to_geodesic_point(line.nth_coord(1))
+        .expect("geographic coordinates were admitted");
+    let crs = normalize(crs)?;
+    with_geodesic_at(&crs, state, |geodesic| {
+        let distance = inverse_distance(geodesic, start.x, start.y, end.x, end.y);
+        if distance.is_finite() {
+            Ok(distance)
+        } else {
+            Err(CrsError::invalid(
+                "geodesic witness distance is not representable in binary64 metres",
+            ))
+        }
+    })
 }
 
 pub(crate) fn geodesic_direct_on_ellipsoid(
@@ -628,4 +445,234 @@ pub(crate) fn geodesic_interpolate_on_line(
 ) -> Result<GeodesicDirectInfo> {
     let target = (fraction * total).clamp(0.0, total);
     geodesic_direct_on_ellipsoid(geodesic, longitude, latitude, forward_azimuth, target)
+}
+
+#[cfg(test)]
+mod chart_measure_tests {
+    use std::sync::Arc;
+
+    use geographiclib_rs::Geodesic;
+
+    use super::{chart_polygon_area, chart_polygonal_perimeter};
+    use crate::crs::geodesic::{AuthalicSeries, GeodesicMetric};
+    use crate::geographic::{AngularFactor, GeographicFrame};
+    use crate::geometry::types::ChartMetric;
+    use crate::geometry::{Point, Polygon, Ring, RingAreaPole, ring_area_pole};
+
+    fn metric_with_flattening_and_frame(flattening: f64, frame: GeographicFrame) -> GeodesicMetric {
+        let geodesic = Geodesic::new(6_378_137.0, flattening);
+        let authalic_series = AuthalicSeries::new(&geodesic);
+        GeodesicMetric {
+            crs: Arc::new("EPSG:4326".to_owned()),
+            geodesic: Box::new(geodesic),
+            authalic_series,
+            frame,
+            state: crate::crs::runtime_state_snapshot().unwrap(),
+        }
+    }
+
+    fn metric_with_flattening(flattening: f64) -> GeodesicMetric {
+        metric_with_flattening_and_frame(flattening, GeographicFrame::crs84())
+    }
+
+    fn metric() -> GeodesicMetric {
+        metric_with_flattening(1.0 / 298.257_223_563)
+    }
+
+    fn ring(points: &[(f64, f64)]) -> Ring {
+        Ring::closed(
+            points
+                .iter()
+                .map(|&(x, y)| Point::new_raw_xy(x, y))
+                .collect(),
+        )
+        .unwrap()
+    }
+
+    fn polygon(shell: &[(f64, f64)], holes: &[&[(f64, f64)]]) -> Polygon {
+        Polygon::new(ring(shell), holes.iter().map(|hole| ring(hole)).collect())
+    }
+
+    #[test]
+    fn chart_area_matches_high_precision_zone_and_triangle_literals() {
+        let metric = metric();
+        let frame = metric.frame;
+        let zone = polygon(
+            &[(-45.0, 70.0), (45.0, 70.0), (45.0, 80.0), (-45.0, 80.0)],
+            &[],
+        );
+        let zone_area = chart_polygon_area(&metric, &zone, frame).unwrap();
+        let zone_expected =
+            2_899_441_975_904.581_036_205_810_669_933_563_650_514_840_876_784_698_225;
+        assert!(
+            (zone_area - zone_expected).abs() <= 1.0e-14 * zone_expected,
+            "zone area={zone_area:.17}, expected={zone_expected:.17}"
+        );
+
+        let triangle = polygon(&[(0.0, 10.0), (30.0, 10.0), (15.0, 50.0)], &[]);
+        let triangle_area = chart_polygon_area(&metric, &triangle, frame).unwrap();
+        let triangle_expected =
+            6_706_052_330_164.589_974_816_023_206_088_526_299_535_059_741_903_974_644;
+        assert!(
+            (triangle_area - triangle_expected).abs() <= 1.0e-14 * triangle_expected,
+            "triangle area={triangle_area:.17}, expected={triangle_expected:.17}"
+        );
+    }
+
+    #[test]
+    fn chart_area_series_matches_spherical_oblate_and_prolate_literals() {
+        let frame = GeographicFrame::crs84();
+        let zone = polygon(
+            &[(-45.0, 70.0), (45.0, 70.0), (45.0, 80.0), (-45.0, 80.0)],
+            &[],
+        );
+        let cases = [
+            (
+                0.0,
+                2_882_901_463_210.015_326_402_293_007_066_545_690_845_072_588_580_157_504_759_345_263_7,
+            ),
+            (
+                0.02,
+                2_983_569_749_854.379_597_021_215_698_894_220_798_358_603_884_467_051_635_905_974_172_6,
+            ),
+            (
+                -0.01,
+                2_834_347_845_268.142_710_504_611_349_147_843_595_380_138_617_606_293_374_597_410_335_3,
+            ),
+        ];
+        for (flattening, expected) in cases {
+            let metric = metric_with_flattening(flattening);
+            let actual = chart_polygon_area(&metric, &zone, frame).unwrap();
+            assert!(
+                (actual - expected).abs() <= 1.0e-14 * expected,
+                "flattening={flattening}: actual={actual:.17}, expected={expected:.17}"
+            );
+        }
+    }
+
+    #[test]
+    fn chart_area_and_perimeter_are_invariant_between_degree_grad_and_radian_frames() {
+        let degree_polygon: [(f64, f64); 4] =
+            [(-45.0, 70.0), (45.0, 70.0), (45.0, 80.0), (-45.0, 80.0)];
+        let grad_factor = AngularFactor::try_new("grad", std::f64::consts::PI / 200.0).unwrap();
+        let grad_frame = GeographicFrame::try_new(grad_factor, grad_factor, 0.0).unwrap();
+        let radian_factor = AngularFactor::try_new("radian", 1.0).unwrap();
+        let radian_frame = GeographicFrame::try_new(radian_factor, radian_factor, 0.0).unwrap();
+        let grad_polygon = degree_polygon
+            .map(|(longitude, latitude)| (longitude * 10.0 / 9.0, latitude * 10.0 / 9.0));
+        let radian_polygon = degree_polygon
+            .map(|(longitude, latitude)| (longitude.to_radians(), latitude.to_radians()));
+
+        let degree_metric = metric_with_flattening(1.0 / 298.257_223_563);
+        let grad_metric = metric_with_flattening_and_frame(1.0 / 298.257_223_563, grad_frame);
+        let radian_metric = metric_with_flattening_and_frame(1.0 / 298.257_223_563, radian_frame);
+        let degree_shape = polygon(&degree_polygon, &[]);
+        let grad_shape = polygon(&grad_polygon, &[]);
+        let radian_shape = polygon(&radian_polygon, &[]);
+        let degree_area =
+            chart_polygon_area(&degree_metric, &degree_shape, GeographicFrame::crs84()).unwrap();
+        let grad_area = chart_polygon_area(&grad_metric, &grad_shape, grad_frame).unwrap();
+        let radian_area = chart_polygon_area(&radian_metric, &radian_shape, radian_frame).unwrap();
+        let degree_length =
+            chart_polygonal_perimeter(&degree_metric, std::iter::once(&degree_shape)).unwrap();
+        let grad_length =
+            chart_polygonal_perimeter(&grad_metric, std::iter::once(&grad_shape)).unwrap();
+        let radian_length =
+            chart_polygonal_perimeter(&radian_metric, std::iter::once(&radian_shape)).unwrap();
+
+        for actual in [grad_area, radian_area] {
+            assert!((actual - degree_area).abs() <= 1.0e-14 * degree_area);
+        }
+        for actual in [grad_length, radian_length] {
+            assert!((actual - degree_length).abs() <= 1.0e-14 * degree_length);
+        }
+    }
+
+    #[test]
+    fn chart_perimeter_cancels_partial_periodic_seam_overlaps() {
+        let metric = metric();
+        let west = polygon(
+            &[(170.0, -10.0), (180.0, -10.0), (180.0, 10.0), (170.0, 10.0)],
+            &[],
+        );
+        let east = polygon(
+            &[(-180.0, 0.0), (-170.0, 0.0), (-170.0, 20.0), (-180.0, 20.0)],
+            &[],
+        );
+        let west_perimeter = chart_polygonal_perimeter(&metric, std::iter::once(&west)).unwrap();
+        let east_perimeter = chart_polygonal_perimeter(&metric, std::iter::once(&east)).unwrap();
+        let combined = chart_polygonal_perimeter(&metric, [&west, &east]).unwrap();
+        let shared = metric.chart_seam_span_length(0.0, 10.0).unwrap();
+        let expected = west_perimeter + east_perimeter - 2.0 * shared;
+        assert!(
+            (combined - expected).abs() <= 1.0e-8,
+            "combined={combined:.17}, expected={expected:.17}"
+        );
+    }
+
+    #[test]
+    fn chart_area_subtracts_holes_against_high_precision_literals() {
+        let metric = metric();
+        let frame = metric.frame;
+        let donut = polygon(&[(0.0, 0.0), (4.0, 0.0), (4.0, 4.0), (0.0, 4.0)], &[&[
+            (1.0, 1.0),
+            (3.0, 1.0),
+            (3.0, 3.0),
+            (1.0, 3.0),
+        ]]);
+        let area = chart_polygon_area(&metric, &donut, frame).unwrap();
+        let expected =
+            147_584_819_008.449_501_378_451_988_766_978_276_231_871_241_968_190_528_449_191_370_78;
+        assert!(
+            (area - expected).abs() <= 1.0e-13 * expected,
+            "donut area={area:.17}, expected={expected:.17}"
+        );
+    }
+
+    #[test]
+    fn chart_area_uses_topology_poles_and_keeps_the_open_q1_closure() {
+        let metric = metric();
+        let frame = metric.frame;
+        let north_cap = polygon(
+            &[
+                (-180.0, 80.0),
+                (-90.0, 80.0),
+                (0.0, 80.0),
+                (90.0, 80.0),
+                (180.0, 80.0),
+            ],
+            &[],
+        );
+        assert_eq!(ring_area_pole(&north_cap.shell, frame), RingAreaPole::North);
+        let north_cap_area = chart_polygon_area(&metric, &north_cap, frame).unwrap();
+        let north_cap_expected =
+            3_908_572_761_836.572_209_792_944_327_893_186_980_909_264_547_994_116_673_544_607_356_9;
+        assert!(
+            (north_cap_area - north_cap_expected).abs() <= 1.0e-14 * north_cap_expected,
+            "north cap area={north_cap_area:.17}, expected={north_cap_expected:.17}"
+        );
+
+        // Q1 is open: straddling full-turn rings retain split_antimeridian's current north closure.
+        let straddling = polygon(
+            &[
+                (-180.0, 20.0),
+                (-90.0, -20.0),
+                (0.0, 20.0),
+                (90.0, -20.0),
+                (180.0, 20.0),
+            ],
+            &[],
+        );
+        assert_eq!(
+            ring_area_pole(&straddling.shell, frame),
+            RingAreaPole::Straddling
+        );
+        let straddling_area = chart_polygon_area(&metric, &straddling, frame).unwrap();
+        let north_hemisphere =
+            255_032_810_862_044.254_686_559_003_616_048_988_307_808_250_765_468_377_018_878_358_31;
+        assert!(
+            (straddling_area - north_hemisphere).abs() <= 1.0e-14 * north_hemisphere,
+            "Q1 north closure area={straddling_area:.17}, expected={north_hemisphere:.17}"
+        );
+    }
 }

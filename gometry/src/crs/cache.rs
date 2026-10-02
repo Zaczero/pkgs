@@ -128,6 +128,7 @@ pub(super) struct CachedProjectionFactorsObject {
 pub(super) struct CachedGeodesicObject {
     pub definition: String,
     pub object: Geodesic,
+    pub authalic_series: crate::crs::geodesic::AuthalicSeries,
 }
 
 pub(in crate::crs) struct CachedRhumbEllipsoid {

@@ -1,5 +1,5 @@
-"""CRS behavior — geodesic measurement, transforms, best-UTM selection,
-runtime config, cache info, and the PROJ authority metadata surface.
+"""CRS behavior — geodesic distances, chart-edge measures, transforms,
+best-UTM selection, runtime config, cache info, and PROJ authority metadata.
 """
 
 import json
@@ -8,6 +8,15 @@ from typing import cast
 
 import gometry as gm
 import pytest
+from pyproj import Geod
+
+from tests._support import (
+    chart_parallel_length,
+    chart_rectangle_perimeter,
+    chart_zone_area,
+)
+
+GEOD = Geod(ellps='WGS84')
 
 
 def _custom_geographic_crs(flattening: float) -> str:
@@ -26,7 +35,7 @@ def test_geodesic_series_domain_boundaries_reach_each_metric_path(
     geodesic = gm.CRS(crs)
     assert geodesic.ellipsoid is not None
     assert float(geodesic.ellipsoid['inverse_flattening']) == pytest.approx(
-        0.0 if flattening == 0.0 else 50.0
+        0.0 if flattening == 0.0 else 1.0 / flattening
     )
     start = gm.Point(0.0, 0.0, crs=crs)
     end = gm.Point(1.0, 0.0, crs=crs)
@@ -43,6 +52,23 @@ def test_geodesic_series_domain_boundaries_reach_each_metric_path(
     assert gm.intersects(line, crossing)
     assert gm.nearest_points(start, line)[0].to_wkt() == start.to_wkt()
     assert gm.hausdorff_distance(start, end) == pytest.approx(distance)
+    parallel = gm.LineString([(0.0, 60.0), (1.0, 60.0)], crs=crs)
+    assert parallel.length == pytest.approx(
+        chart_parallel_length(60.0, 1.0, semi_major=6_378_137.0, flattening=flattening),
+        rel=1e-15,
+    )
+    box = gm.box(0.0, 0.0, 1.0, 1.0, crs=crs)
+    assert box.area == pytest.approx(
+        chart_zone_area(
+            0.0,
+            1.0,
+            0.0,
+            1.0,
+            semi_major=6_378_137.0,
+            flattening=flattening,
+        ),
+        rel=1e-13,
+    )
 
 
 def test_geodesic_parallel_proximity_is_not_segment_contact() -> None:
@@ -188,7 +214,7 @@ def test_geodesic_series_domain_rejection_is_shared_across_entry_points(
     assert all(operation_message == message for _, operation_message in messages)
 
 
-def test_geodesic_distance_and_area_use_wgs84_ellipsoid() -> None:
+def test_geodesic_distance_and_chart_area_use_wgs84_ellipsoid() -> None:
     start = gm.Point(0, 0, crs=4326)
     end = gm.Point(1, 0, crs=4326)
     north = gm.Point(0, 1, crs=4326)
@@ -198,13 +224,31 @@ def test_geodesic_distance_and_area_use_wgs84_ellipsoid() -> None:
     collection = gm.GeometryCollection([square, meridian], crs=4326)
     assert gm.distance(start, end) == pytest.approx(111319.49079327357)
     assert gm.distance(start, north) == pytest.approx(110574.38855779878)
-    assert square.area == pytest.approx(12308778361.469452)
+    assert square.area == pytest.approx(
+        chart_zone_area(
+            0.0, 1.0, 0.0, 1.0, semi_major=6_378_137.0, flattening=1.0 / 298.257223563
+        ),
+        # The public closed-form helper and native series each round in binary64.
+        rel=3e-14,
+    )
     assert gm.Polygon(
         [(-179, -80), (179, -80), (179, 80), (-179, 80), (-179, -80)], crs=4326
-    ).area == pytest.approx(2790277931191.946)
+    ).area == pytest.approx(
+        chart_zone_area(
+            179.0,
+            181.0,
+            -80.0,
+            80.0,
+            semi_major=6_378_137.0,
+            flattening=1.0 / 298.257223563,
+        ),
+        rel=1e-14,
+    )
     assert meridian.length == pytest.approx(221149.45337213494)
     assert multilines.length == pytest.approx(221893.8793510729)
-    assert square.length == pytest.approx(443770.917248302)
+    assert square.length == pytest.approx(
+        chart_rectangle_perimeter(GEOD, 0.0, 1.0, 0.0, 1.0), rel=1e-14
+    )
     assert collection.length == pytest.approx(square.length + meridian.length, rel=0.01)
     assert gm.distance(gm.points([0, 0], [0, 1], crs=4326), end) == pytest.approx([
         111319.49079327357,
@@ -254,8 +298,10 @@ def test_geodesic_distance_and_area_use_wgs84_ellipsoid() -> None:
     )
     assert measured.z == pytest.approx(12.5)
     assert measured.m == pytest.approx(125.0)
-    assert gm.GeometryArray([square]).area == pytest.approx([12308778361.469452])
-    assert square.length == pytest.approx(443770.917248302)
+    assert gm.GeometryArray([square]).area == pytest.approx([square.area])
+    assert square.length == pytest.approx(
+        chart_rectangle_perimeter(GEOD, 0.0, 1.0, 0.0, 1.0), rel=1e-14
+    )
     projected_start = start.to_crs(32631)
     projected_end = end.to_crs(32631)
     assert gm.distance(

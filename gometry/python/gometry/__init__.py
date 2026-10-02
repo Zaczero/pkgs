@@ -2,9 +2,10 @@
 
 A vectorized geometry library backed by a Rust core. Geometries are immutable
 and CRS-aware, and operations broadcast element-wise over arrays without
-per-element Python overhead. The CRS decides the measure: geographic CRS use
-geodesic meters, projected CRS use native linear units by default, and
-``unit='meters'`` forces SI when you need it.
+per-element Python overhead. Geographic shape area and length follow straight
+longitude/latitude edges on the CRS ellipsoid; point-to-point distances use
+ellipsoidal geodesics. Projected measures use native linear units by default,
+and ``unit='meters'`` forces SI when you need it.
 
 The top-level namespace holds geometry classes (`Point`, `Polygon`, `box`,
 ...), binary predicates and overlays (`gm.intersects`, `gm.union`, ...),
@@ -25,7 +26,7 @@ Examples
 >>> stop = gm.Point(2.3479, 48.8589, crs=4326)
 >>> gm.intersects(gm.box(2.34, 48.85, 2.36, 48.87, crs=4326), stop)
 True
->>> round(stop.buffer(500).area)  # geodesic square meters
+>>> round(stop.buffer(500).area)  # ellipsoidal square meters
 780942
 """
 

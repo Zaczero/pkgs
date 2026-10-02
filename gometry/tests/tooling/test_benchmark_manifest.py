@@ -188,7 +188,7 @@ def test_revised_operations_and_labels() -> None:
     assert all(
         next(op for op in RELEASE_OPERATIONS if token in op.gometry).domain
         == 'CRS & geodesy'
-        for token in ('geodesic_area', 'geodesic_length')
+        for token in ('chart_edge_area', 'chart_edge_length')
     )
 
 

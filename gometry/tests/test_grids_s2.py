@@ -8,6 +8,15 @@ import operator
 import gometry as gm
 import numpy as np
 import pytest
+import shapely
+from pyproj import Geod
+
+from tests._support import GOMETRY_ROOT, load_tool
+
+_CHART_EDGE_REFERENCE = load_tool(
+    '_bench_chart_edge_reference',
+    GOMETRY_ROOT / 'benches/python/_bench_chart_edge_reference.py',
+)
 
 
 def _assert_seam_within_matches_linear_source(source: gm.Geometry) -> None:
@@ -1142,7 +1151,8 @@ def test_dissolve_is_order_independent_for_all_live_grid_dissolvers() -> None:
         assert gm.equals(rebuilt, canonical)
 
 
-def test_s2_to_polygon_pole_cap_conserves_area() -> None:
+def test_s2_to_polygon_pole_cap_matches_chart_edge_area_reference() -> None:
+    geod = Geod(ellps='WGS84')
     for box in (
         gm.box(-180, -90, 180, -85, crs=4326),
         gm.box(-180, 85, 180, 90, crs=4326),
@@ -1152,8 +1162,11 @@ def test_s2_to_polygon_pole_cap_conserves_area() -> None:
             coverage = gm.s2_cover(box, level=level)
             outline = coverage.to_polygon()
             assert outline.is_valid
-            cell_area = sum(cell.area for cell in coverage)
-            assert abs(outline.area - cell_area) / cell_area < 0.02
+            reference = _CHART_EDGE_REFERENCE.polygonal_chart_areas(
+                [shapely.from_wkb(outline.to_wkb())],
+                geod,
+            )[0]
+            assert outline.area == pytest.approx(reference, rel=2e-12, abs=1e-3)
 
 
 def test_rect_to_polygon_topology_dissolve_conserves_area() -> None:

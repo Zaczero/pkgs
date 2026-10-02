@@ -1418,12 +1418,16 @@ pub(crate) trait GeodesicMetric {
 ///
 /// The edge representation belongs to the metric provider; geometry code
 /// remains independent of the CRS and ellipsoid implementation.
-#[cfg(test)]
 pub(crate) trait ChartMetric {
     type Edge: Copy;
 
     fn chart_edge(&self, start: Point, end: Point) -> Result<Self::Edge>;
     fn chart_edge_length(&self, edge: &Self::Edge) -> Result<f64>;
+    fn chart_edge_seam_span(&self, edge: &Self::Edge) -> Option<[f64; 2]>;
+    fn chart_seam_span_length(&self, south: f64, north: f64) -> Result<f64>;
+    fn chart_area_edge_term(&self, edge: &Self::Edge, north: bool) -> f64;
+    fn chart_area_factor(&self) -> f64;
+    fn chart_surface_area(&self) -> f64;
 }
 
 #[derive(Clone, Copy, Debug)]

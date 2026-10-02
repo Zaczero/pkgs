@@ -3,7 +3,8 @@ use std::sync::Arc;
 use geographiclib_rs::Geodesic;
 
 use crate::crs::geodesic::{
-    CrsError, CrsInfo, Result, ensure_geodesic_lonlat_crs_at, with_geodesic_cache_at,
+    AuthalicSeries, CrsError, CrsInfo, Result, ensure_geodesic_lonlat_crs_at,
+    with_geodesic_chart_cache_at,
 };
 use crate::crs::info_with_state;
 use crate::geographic::GeographicFrame;
@@ -37,11 +38,11 @@ fn ensure_positive_finite_linear_unit(
     PositiveFiniteScale::try_new(unit, error)
 }
 
-/// The single source of truth for CRS-aware metrics
-/// (`area`/`length`/`distance`/ `buffer`/…): geographic CRS measure
-/// geodesically on their own ellipsoid in meters; projected geometry uses
-/// native linear units, CRS-free geometry uses raw coordinate units, and
-/// explicit meters use the CRS linear factor.
+/// The single source of truth for CRS-aware metric selection: geographic
+/// operations use their CRS ellipsoid, projected geometry uses native linear
+/// units, CRS-free geometry uses raw coordinate units, and explicit meters use
+/// the CRS linear factor. Shape measures and point-set distances retain their
+/// distinct chart-edge and geodesic models.
 #[derive(Debug, Clone)]
 pub(crate) enum MetricModel {
     /// Planar/Cartesian. `to_metre` is the active metric scale: `1.0` when the
@@ -90,11 +91,10 @@ impl MetricModel {
     }
 }
 
-/// Batch-resolved geodesic payload owned by [`ResolvedMetric`]. The geodesic
-/// ellipsoid object is resolved (CRS-kind check, thread-cache refresh,
-/// normalization, geodesic-cache lookup) once and carried by value, so a
-/// per-row/per-pair loop pays zero CRS-resolution cost. The owned [`Geodesic`]
-/// is a handful of `f64` ellipsoid constants, cheap to clone once per batch and
+/// Batch-resolved ellipsoid payload owned by [`ResolvedMetric`]. The geodesic
+/// and its cached authalic series are resolved (CRS-kind check, thread-cache
+/// refresh, normalization, geodesic-cache lookup) once and carried by value, so
+/// a per-row/per-pair loop pays zero CRS-resolution cost. The payload is
 /// trivially `Send`, sidestepping the thread-local cache borrow that a borrowed
 /// metric would hold across a GIL-released loop.
 #[derive(Clone)]
@@ -105,6 +105,7 @@ pub(crate) struct GeodesicMetric {
     )]
     pub(crate) crs: Arc<String>,
     pub(crate) geodesic: Box<Geodesic>,
+    pub(crate) authalic_series: AuthalicSeries,
     pub(crate) frame: GeographicFrame,
     pub(crate) state: Arc<crate::crs::RuntimeState>,
 }
@@ -115,10 +116,16 @@ impl GeodesicMetric {
             return Err(CrsError::invalid("expected a geodesic metric model"));
         };
         ensure_geodesic_lonlat_crs_at(crs, state)?;
-        let geodesic = with_geodesic_cache_at(crs, state, |error| error, |g| Ok(Box::new(*g)))?;
+        let (geodesic, authalic_series) = with_geodesic_chart_cache_at(
+            crs,
+            state,
+            |error| error,
+            |geodesic, series| Ok((Box::new(*geodesic), *series)),
+        )?;
         Ok(Self {
             crs: Arc::clone(crs),
             geodesic,
+            authalic_series,
             frame: *frame,
             state: Arc::clone(state),
         })
@@ -149,9 +156,10 @@ impl ResolvedMetric {
 /// Resolve the default/native [`MetricModel`] for a CRS (a compound CRS
 /// delegates to its horizontal component; `None` uses raw coordinate units).
 ///
-/// Defaults are CRS-natural: geographic CRS use geodesic meters, projected CRS
+/// Defaults are CRS-natural: geographic shape measures use the ellipsoid
+/// along straight chart edges and point distances use geodesics; projected CRS
 /// validate their horizontal axes and then report/accept their native linear
-/// coordinate units, and CRS-free geometries use raw coordinate units.
+/// coordinate units; CRS-free geometries use raw coordinate units.
 pub(crate) fn metric_model(crs: Option<&str>) -> Result<MetricModel> {
     let state = crate::crs::runtime_state_snapshot()?;
     metric_model_at(crs, &state)
@@ -174,7 +182,7 @@ pub(crate) fn metric_model_at(
 /// traversal cannot be applied to one and forgotten on the other — they were
 /// previously verbatim copies diverging in two lines.
 enum HorizontalComponent {
-    /// A geographic CRS: measured geodesically on its own ellipsoid.
+    /// A geographic CRS resolved against its own ellipsoid.
     Geodesic {
         #[expect(
             clippy::rc_buffer,

@@ -563,12 +563,12 @@ pub(crate) fn unary_area(data: &PreparedPlan, ctx: &CachelessRowContext<'_>) -> 
         },
         ResolvedMetric::Geodesic(metric) => {
             crate::crs::ensure_geographic_domain_in_frame(metric.frame, shape)?;
-            Ok(if collection {
+            if collection {
                 let support = crate::geometry::occupied_support_shape(shape, ctx.domain)?;
-                crate::crs::geodesic_shape_area(&metric.geodesic, &support, metric.frame)
+                crate::crs::chart_shape_area(metric, &support, metric.frame)
             } else {
-                crate::crs::geodesic_shape_area(&metric.geodesic, shape, metric.frame)
-            })
+                crate::crs::chart_shape_area(metric, shape, metric.frame)
+            }
         },
     }
 }
@@ -582,11 +582,7 @@ pub(crate) fn unary_length(data: &PreparedPlan, ctx: &CachelessRowContext<'_>) -
         },
         ResolvedMetric::Geodesic(metric) => {
             crate::crs::ensure_geographic_domain_in_frame(metric.frame, data.shape())?;
-            Ok(crate::crs::geodesic_shape_length(
-                &metric.geodesic,
-                data.shape(),
-                metric.frame,
-            ))
+            crate::crs::chart_shape_length(metric, data.shape())
         },
     }
 }

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib.util
 import itertools
+import math
 import sys
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -22,6 +23,78 @@ TOOL_IMPORT_DIRS = (
     TOOLS / 'stubs',
     TOOLS / 'docs',
 )
+
+
+def chart_zone_area(
+    west: float,
+    east: float,
+    south: float,
+    north: float,
+    *,
+    semi_major: float,
+    flattening: float,
+) -> float:
+    """Closed-form ellipsoidal area between chart parallels."""
+    eccentricity_squared = flattening * (2.0 - flattening)
+
+    def authalic_q(latitude: float) -> float:
+        sine = math.sin(math.radians(latitude))
+        if eccentricity_squared == 0.0:
+            return 2.0 * sine
+        if eccentricity_squared > 0.0:
+            eccentricity = math.sqrt(eccentricity_squared)
+            inverse = math.atanh(eccentricity * sine)
+        else:
+            eccentricity = math.sqrt(-eccentricity_squared)
+            inverse = math.atan(eccentricity * sine)
+        return (1.0 - eccentricity_squared) * (
+            sine / (1.0 - eccentricity_squared * sine * sine) + inverse / eccentricity
+        )
+
+    return (
+        semi_major**2
+        / 2.0
+        * math.radians(east - west)
+        * (authalic_q(north) - authalic_q(south))
+    )
+
+
+def chart_parallel_length(
+    latitude: float, longitude_delta: float, *, semi_major: float, flattening: float
+) -> float:
+    """Closed-form ellipsoidal length of one straight chart parallel."""
+    eccentricity_squared = flattening * (2.0 - flattening)
+    sine = math.sin(math.radians(latitude))
+    prime_vertical = semi_major / math.sqrt(1.0 - eccentricity_squared * sine * sine)
+    return (
+        prime_vertical
+        * math.cos(math.radians(latitude))
+        * math.radians(longitude_delta)
+    )
+
+
+def chart_rectangle_perimeter(
+    geodesic: Any,
+    west: float,
+    east: float,
+    south: float,
+    north: float,
+) -> float:
+    """Perimeter oracle for a ring of two parallels and two meridians."""
+    lower = chart_parallel_length(
+        south,
+        east - west,
+        semi_major=geodesic.a,
+        flattening=geodesic.f,
+    )
+    upper = chart_parallel_length(
+        north,
+        east - west,
+        semi_major=geodesic.a,
+        flattening=geodesic.f,
+    )
+    meridian = geodesic.inv(west, south, west, north)[2]
+    return lower + upper + 2.0 * meridian
 
 
 def _resolve_tool_path(name: str) -> Path:

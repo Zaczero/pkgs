@@ -8,6 +8,12 @@ import pytest
 import s2sphere
 import shapely
 
+from tests._support import (
+    chart_parallel_length,
+    chart_rectangle_perimeter,
+    chart_zone_area,
+)
+
 
 def test_overlay_restores_zm_and_force_2d_flattens() -> None:
     """Overlay restores resolvable Z/M across scalar, aggregate, and array
@@ -90,11 +96,18 @@ def test_geodesic_measurements_match_pyproj_oracle() -> None:
     midpoint = gm.point_between(point, other, distance / 2.0)
     assert midpoint.x == pytest.approx(midpoint_lon, rel=1e-09)
     assert midpoint.y == pytest.approx(midpoint_lat, rel=1e-09)
-    area, perimeter = geod.polygon_area_perimeter(
-        [21.0, 21.1, 21.1, 21.0, 21.0], [52.0, 52.0, 52.1, 52.1, 52.0]
+    expected_area = chart_zone_area(
+        21.0,
+        21.1,
+        52.0,
+        52.1,
+        semi_major=geod.a,
+        flattening=geod.f,
     )
-    assert square.area == pytest.approx(abs(area), rel=1e-09)
-    assert square.length == pytest.approx(perimeter, rel=1e-09)
+    expected_perimeter = chart_rectangle_perimeter(geod, 21.0, 21.1, 52.0, 52.1)
+    # This small box subtracts close authalic-q values in both binary64 paths.
+    assert square.area == pytest.approx(expected_area, rel=2e-13)
+    assert square.length == pytest.approx(expected_perimeter, rel=1e-13)
     assert point.buffer(100).area == pytest.approx(math.pi * 100 * 100, rel=0.01)
 
 
@@ -367,7 +380,7 @@ def test_geodesic_point_navigation_matches_pyproj_ellipsoid_oracle() -> None:
         ])
 
 
-def test_crs_geodesic_geometry_measurements_match_pyproj_ellipsoid_oracle() -> None:
+def test_crs_chart_geometry_measurements_match_ellipsoid_oracles() -> None:
     coordinates = [
         (-73.0, 41.0),
         (-72.0, 41.0),
@@ -386,16 +399,19 @@ def test_crs_geodesic_geometry_measurements_match_pyproj_ellipsoid_oracle() -> N
     geod = pyproj.Geod(
         a=ellipsoid['semi_major_metre'], rf=ellipsoid['inverse_flattening']
     )
-    outer_area, outer_perimeter = geod.polygon_area_perimeter(
-        [point[0] for point in coordinates], [point[1] for point in coordinates]
+    semi_major = float(ellipsoid['semi_major_metre'])
+    flattening = 1.0 / float(ellipsoid['inverse_flattening'])
+    expected_area = chart_zone_area(
+        -73.0, -72.0, 41.0, 42.0, semi_major=semi_major, flattening=flattening
+    ) - chart_zone_area(
+        -72.7, -72.3, 41.3, 41.7, semi_major=semi_major, flattening=flattening
     )
-    hole_area, hole_perimeter = geod.polygon_area_perimeter(
-        [point[0] for point in hole], [point[1] for point in hole]
-    )
-    expected_area = abs(outer_area) - abs(hole_area)
-    expected_perimeter = outer_perimeter + hole_perimeter
-    expected_length = geod.line_length(
-        [point[0] for point in coordinates[:3]], [point[1] for point in coordinates[:3]]
+    expected_perimeter = chart_rectangle_perimeter(
+        geod, -73.0, -72.0, 41.0, 42.0
+    ) + chart_rectangle_perimeter(geod, -72.7, -72.3, 41.3, 41.7)
+    expected_length = (
+        chart_parallel_length(41.0, 1.0, semi_major=semi_major, flattening=flattening)
+        + geod.inv(-72.0, 41.0, -72.0, 42.0)[2]
     )
     assert polygon.area == pytest.approx(abs(expected_area))
     with pytest.warns(gm.AccuracyWarning, match='ca_nrc_ntv2_0[.]tif'):

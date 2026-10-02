@@ -21,8 +21,8 @@ pub(crate) use membership::{
     RingClass, TouchDirections, ring_classify_point, ring_contains_interior, ring_label,
 };
 pub(crate) use pole::{
-    ring_encloses_pole, shape_encloses_pole_in_frame, shape_has_polar_ring_in_frame,
-    shape_reaches_geographic_pole_in_frame,
+    RingAreaPole, ring_area_pole, ring_encloses_pole, shape_encloses_pole_in_frame,
+    shape_has_polar_ring_in_frame, shape_reaches_geographic_pole_in_frame,
 };
 pub(in crate::geometry) use relate::LineworkChains;
 pub(crate) use repair::{line_repair, multiline_repair, polygonal_repair};

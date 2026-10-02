@@ -148,10 +148,10 @@ impl PyGeometryArray {
     }
     /// Per-row area, measured for the array's CRS.
     ///
-    /// A geographic CRS gives geodesic square meters on the CRS's own ellipsoid;
-    /// a projected CRS gives squared native linear units; a CRS-free array
-    /// gives squared raw coordinate units. Use ``to_crs`` to
-    /// change frame.
+    /// A geographic CRS gives ellipsoidal square meters for the region bounded
+    /// by edges straight in longitude/latitude; a projected CRS gives squared
+    /// native linear units; a CRS-free array gives squared raw coordinate units.
+    /// Use ``to_crs`` to change frame.
     ///
     /// Each ``GeometryCollection`` row counts overlapping members once, as
     /// the area of their union. Parts of a valid ``MultiPolygon`` cannot
@@ -178,9 +178,9 @@ impl PyGeometryArray {
     /// Per-row length (curves) or perimeter (areal), measured for the array's
     /// CRS.
     ///
-    /// A geographic CRS gives geodesic meters on the CRS's own ellipsoid; a
-    /// projected CRS gives native linear units; a CRS-free array gives raw
-    /// coordinate units. Use ``to_crs`` to change frame.
+    /// A geographic CRS gives ellipsoidal meters along edges straight in
+    /// longitude/latitude; a projected CRS gives native linear units; a CRS-free
+    /// array gives raw coordinate units. Use ``to_crs`` to change frame.
     ///
     /// Each ``GeometryCollection`` row sums every member's length or
     /// perimeter, including overlapping members.
@@ -204,6 +204,8 @@ impl PyGeometryArray {
         crate::length_natural_array(py, self)
     }
     /// Per-row 3D length of curves with Z, measured for the array's CRS.
+    ///
+    /// Geographic CRSs do not support 3D Euclidean length.
     ///
     /// Returns
     /// -------
@@ -490,31 +492,26 @@ impl PyGeometryArray {
                     Ok(values)
                 })
             },
-            model @ crs::MetricModel::Geodesic { frame, .. } => {
+            model @ crs::MetricModel::Geodesic { .. } => {
                 let crs::ResolvedMetric::Geodesic(metric) =
                     crs::ResolvedMetric::from_model(&model)?
                 else {
                     unreachable!("geodesic model resolves to a geodesic metric");
                 };
-                let geodesic = metric.geodesic;
+                let frame = metric.frame;
                 self.reduce_packed_columns_detached(py, move |columns| {
                     let values = match columns {
                         PackedColumns::Lines(line_columns) => {
                             geodesic_line_measure(&line_columns, frame, |xs, ys| {
-                                crate::crs::geodesic_line_length_columns(&geodesic, xs, ys, frame)
-                            })
-                            .map_err(PackedColumnError::Batch)?
+                                crate::crs::chart_line_length_columns(&metric, xs, ys)
+                            })?
                         },
                         PackedColumns::Polygons(polygon_columns) => {
                             let ring_measure =
                                 |xs: &[f64], ys: &[f64], _window: std::ops::Range<usize>| {
-                                    crate::crs::geodesic_ring_measure_columns(
-                                        &geodesic, xs, ys, frame,
-                                    )
-                                    .0
+                                    crate::crs::chart_line_length_columns(&metric, xs, ys)
                                 };
-                            geodesic_polygon_measure(&polygon_columns, frame, ring_measure)
-                                .map_err(PackedColumnError::Batch)?
+                            geodesic_polygon_measure(&polygon_columns, frame, ring_measure)?
                         },
                         PackedColumns::Points(_) => {
                             unreachable!("length packed lane requires line or polygon storage")

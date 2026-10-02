@@ -888,7 +888,7 @@ pub(crate) fn metric_minimum_clearance(
         |to_metre| Ok(shape.minimum_clearance()? * to_metre),
         |geodesic_crs, _, state| {
             let line = metric_minimum_clearance_line(model, crs, shape)?;
-            crs::geodesic_length_at(geodesic_crs, &line, state)
+            crs::geodesic_witness_distance_at(geodesic_crs, &line, state)
         },
     )
 }

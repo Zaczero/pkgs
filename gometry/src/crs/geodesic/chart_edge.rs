@@ -1,7 +1,12 @@
+//! Shared chart-edge geometry and numerical integrals for geographic measures.
+//!
+//! Longitude direction comes from `PeriodicAxis::shortest_edge`; latitude stays
+//! in native units until pole-referenced colatitude is formed.
+
 use geographiclib_rs::Geodesic;
 
 use crate::error::Result;
-use crate::geographic::{EdgeDirection, GeographicFrame, Latitude};
+use crate::geographic::{EdgeDirection, GeographicFrame, Latitude, SeamIdentity};
 use crate::geometry::types::ChartMetric;
 use crate::geometry::{GeometryErrorKind, Point};
 
@@ -48,12 +53,99 @@ const G7_WEIGHTS: [f64; 4] = [
 const MAX_GK15_EVALUATIONS: usize = 5_000;
 const RELATIVE_LENGTH_ERROR: f64 = 4.0 * f64::EPSILON;
 const ONE_DEGREE: f64 = std::f64::consts::PI / 180.0;
+const MAX_AUTHALIC_HARMONICS: usize = 9;
+const AUTHALIC_TAIL_RELATIVE: f64 = 1.0e-17;
+
+#[derive(Clone, Copy, Debug)]
+/// Truncated authalic-q sine series cached with its ellipsoid's geodesic.
+pub(crate) struct AuthalicSeries {
+    coefficients: [f64; MAX_AUTHALIC_HARMONICS],
+    harmonics: usize,
+    polar_q: f64,
+}
+
+impl AuthalicSeries {
+    #[expect(
+        clippy::arithmetic_side_effects,
+        reason = "the validated flattening domain bounds harmonics to nine and the largest binomial row to sixty-nine"
+    )]
+    pub(crate) fn new(geodesic: &Geodesic) -> Self {
+        let e2 = geodesic.f * (2.0 - geodesic.f);
+        let ratio = (e2 / 4.0).abs();
+        let mut harmonics: usize = 1;
+        while ratio.powi(harmonics as i32) >= AUTHALIC_TAIL_RELATIVE {
+            harmonics = harmonics.wrapping_add(1);
+        }
+
+        let mut coefficients = [0.0; MAX_AUTHALIC_HARMONICS];
+        for (k, coefficient) in coefficients.iter_mut().enumerate().take(harmonics) {
+            let mut sum = 0.0;
+            let mut scaled_power = (e2 / 4.0).powi(k as i32);
+            for j in k..3 * harmonics + 8 {
+                let ratio = (2 * j + 2) as f64 / (2 * j + 1) as f64;
+                sum += scaled_power * ratio * binomial(2 * j + 1, j - k);
+                scaled_power *= e2 / 4.0;
+            }
+            *coefficient = (1.0 - e2) * sum * if k % 2 == 0 { 1.0 } else { -1.0 };
+        }
+
+        let mut polar_q = 0.0;
+        let mut correction = 0.0;
+        for (k, &coefficient) in coefficients.iter().take(harmonics).enumerate() {
+            let value = if k % 2 == 0 {
+                coefficient
+            } else {
+                -coefficient
+            };
+            add_compensated(&mut polar_q, &mut correction, value);
+        }
+        Self {
+            coefficients,
+            harmonics,
+            polar_q,
+        }
+    }
+
+    pub(crate) fn area_factor(self, semi_major: f64) -> f64 {
+        semi_major * semi_major / 2.0
+    }
+
+    pub(crate) fn surface_area(self, semi_major: f64) -> f64 {
+        2.0 * std::f64::consts::PI * semi_major * semi_major * self.polar_q
+    }
+}
+
+fn binomial(n: usize, k: usize) -> f64 {
+    let k = k.min(n - k);
+    let mut coefficient = 1.0;
+    for index in 1..=k {
+        coefficient *= (n + 1 - index) as f64 / index as f64;
+    }
+    coefficient
+}
+
+fn add_compensated(sum: &mut f64, correction: &mut f64, value: f64) {
+    let adjusted = value - *correction;
+    let next = *sum + adjusted;
+    *correction = (next - *sum) - adjusted;
+    *sum = next;
+}
+
+fn one_minus_sinc_small(value: f64) -> f64 {
+    let squared = value * value;
+    squared / 6.0
+        * (1.0
+            - squared / 20.0
+                * (1.0
+                    - squared / 42.0
+                        * (1.0
+                            - squared / 72.0 * (1.0 - squared / 110.0 * (1.0 - squared / 156.0)))))
+}
 
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct ChartEdge {
-    start_longitude_degrees: f64,
-    start_latitude_degrees: f64,
-    end_latitude_degrees: f64,
+    meridian: Option<MeridianCoordinates>,
+    seam_meridian: bool,
     start_latitude: f64,
     end_latitude: f64,
     latitude_delta: f64,
@@ -62,10 +154,17 @@ pub(crate) struct ChartEdge {
     pole: f64,
 }
 
+#[derive(Clone, Copy, Debug)]
+struct MeridianCoordinates {
+    longitude: f64,
+    start_latitude: f64,
+    end_latitude: f64,
+}
+
 impl ChartEdge {
     pub(crate) fn new(start: Point, end: Point, frame: GeographicFrame) -> Result<Self> {
         let axis = frame.longitude();
-        let longitude_delta = match axis
+        let longitude_delta_native = match axis
             .shortest_edge(start.x, end.x)
             .expect("chart-edge coordinates were admitted before measurement")
         {
@@ -80,24 +179,39 @@ impl ChartEdge {
         };
         let start_latitude = Latitude::from_admitted(frame, start.y).get();
         let end_latitude = Latitude::from_admitted(frame, end.y).get();
-        let (start_longitude_degrees, start_latitude_degrees) = frame
-            .to_geodesic_xy(start.x, start_latitude)
-            .expect("chart-edge coordinates were admitted before measurement");
-        let (_, end_latitude_degrees) = frame
-            .to_geodesic_xy(end.x, end_latitude)
-            .expect("chart-edge coordinates were admitted before measurement");
+        let latitude_delta = end_latitude - start_latitude;
+        let seam_meridian = is_seam_longitude(axis, start.x) && is_seam_longitude(axis, end.x);
+        let meridian = if longitude_delta_native == 0.0 && latitude_delta != 0.0 {
+            let (longitude, start_latitude) = frame
+                .to_geodesic_xy(start.x, start_latitude)
+                .expect("chart-edge coordinates were admitted before measurement");
+            let (_, end_latitude) = frame
+                .to_geodesic_xy(end.x, end_latitude)
+                .expect("chart-edge coordinates were admitted before measurement");
+            Some(MeridianCoordinates {
+                longitude,
+                start_latitude,
+                end_latitude,
+            })
+        } else {
+            None
+        };
 
         Ok(Self {
-            start_longitude_degrees,
-            start_latitude_degrees,
-            end_latitude_degrees,
+            meridian,
+            seam_meridian,
             start_latitude,
             end_latitude,
-            latitude_delta: end_latitude - start_latitude,
-            longitude_delta: longitude_delta * axis.unit().radians_per_unit(),
+            latitude_delta,
+            longitude_delta: longitude_delta_native * axis.unit().radians_per_unit(),
             latitude_unit: frame.latitude_unit().radians_per_unit(),
             pole: frame.pole(),
         })
+    }
+
+    fn seam_span(self) -> Option<[f64; 2]> {
+        self.seam_meridian
+            .then_some([self.start_latitude, self.end_latitude])
     }
 
     pub(crate) fn length(self, geodesic: &Geodesic) -> Result<f64> {
@@ -111,13 +225,13 @@ impl ChartEdge {
             return self.finite_length(result);
         }
 
-        if self.longitude_delta == 0.0 {
+        if let Some(meridian) = self.meridian {
             return self.finite_length(super::inverse_distance(
                 geodesic,
-                self.start_longitude_degrees,
-                self.start_latitude_degrees,
-                self.start_longitude_degrees,
-                self.end_latitude_degrees,
+                meridian.longitude,
+                meridian.start_latitude,
+                meridian.longitude,
+                meridian.end_latitude,
             ));
         }
 
@@ -179,6 +293,61 @@ impl ChartEdge {
             });
         }
         self.finite_length(total)
+    }
+
+    /// Mean pole-referenced authalic integral multiplied by the chart longitude step.
+    pub(crate) fn authalic_area_term(self, series: &AuthalicSeries, north: bool) -> f64 {
+        let direction = if north { 1.0 } else { -1.0 };
+        let theta0 = (self.pole - direction * self.start_latitude) * self.latitude_unit;
+        let half_delta = -direction * self.latitude_delta * self.latitude_unit / 2.0;
+        let midpoint = theta0 + half_delta;
+        let (sin_mid, cos_mid) = (midpoint / 2.0).sin_cos();
+        let (sin_delta, cos_delta) = half_delta.sin_cos();
+        let sin_mid_step = 2.0 * sin_mid * cos_mid;
+        let cos_mid_step = cos_mid * cos_mid - sin_mid * sin_mid;
+        let sin_delta_step = 2.0 * sin_delta * cos_delta;
+        let cos_delta_step = cos_delta * cos_delta - sin_delta * sin_delta;
+        let mut sin_mid_harmonic = sin_mid;
+        let mut cos_mid_harmonic = cos_mid;
+        let mut sin_delta_harmonic = sin_delta;
+        let mut cos_delta_harmonic = cos_delta;
+        let mut mean = 0.0;
+        for (k, &coefficient) in series
+            .coefficients
+            .iter()
+            .take(series.harmonics)
+            .enumerate()
+        {
+            let y = (2 * k + 1) as f64 * half_delta;
+            let (sinc_y, one_minus_sinc_y) = if y.abs() < 0.5 {
+                let one_minus_sinc_y = one_minus_sinc_small(y);
+                (1.0 - one_minus_sinc_y, one_minus_sinc_y)
+            } else {
+                let sinc_y = sin_delta_harmonic / y;
+                (sinc_y, 1.0 - sinc_y)
+            };
+            let mean_deficit =
+                one_minus_sinc_y + sinc_y * 2.0 * sin_mid_harmonic * sin_mid_harmonic;
+            let signed_coefficient = if k % 2 == 0 {
+                coefficient
+            } else {
+                -coefficient
+            };
+            mean += signed_coefficient * mean_deficit;
+
+            let next_sin_mid = sin_mid_harmonic * cos_mid_step + cos_mid_harmonic * sin_mid_step;
+            let next_cos_mid = cos_mid_harmonic * cos_mid_step - sin_mid_harmonic * sin_mid_step;
+            sin_mid_harmonic = next_sin_mid;
+            cos_mid_harmonic = next_cos_mid;
+
+            let next_sin_delta =
+                sin_delta_harmonic * cos_delta_step + cos_delta_harmonic * sin_delta_step;
+            let next_cos_delta =
+                cos_delta_harmonic * cos_delta_step - sin_delta_harmonic * sin_delta_step;
+            sin_delta_harmonic = next_sin_delta;
+            cos_delta_harmonic = next_cos_delta;
+        }
+        self.longitude_delta * mean
     }
 
     fn finite_length(self, length: f64) -> Result<f64> {
@@ -264,6 +433,24 @@ impl ChartEdge {
     }
 }
 
+#[expect(
+    clippy::float_cmp,
+    reason = "only an exact seam spelling is the topology-owned seam identity"
+)]
+fn is_seam_longitude(axis: crate::geographic::PeriodicAxis, value: f64) -> bool {
+    let magnitude = value.abs();
+    if magnitude < axis.half_period() {
+        false
+    } else if magnitude == axis.half_period() {
+        true
+    } else {
+        axis.canonicalize(value)
+            .expect("chart-edge longitude was admitted")
+            .identity(axis)
+            == SeamIdentity::Seam
+    }
+}
+
 impl ChartMetric for super::GeodesicMetric {
     type Edge = ChartEdge;
 
@@ -273,6 +460,32 @@ impl ChartMetric for super::GeodesicMetric {
 
     fn chart_edge_length(&self, edge: &Self::Edge) -> Result<f64> {
         edge.length(&self.geodesic)
+    }
+
+    fn chart_area_edge_term(&self, edge: &Self::Edge, north: bool) -> f64 {
+        edge.authalic_area_term(&self.authalic_series, north)
+    }
+
+    fn chart_edge_seam_span(&self, edge: &Self::Edge) -> Option<[f64; 2]> {
+        edge.seam_span()
+    }
+
+    fn chart_seam_span_length(&self, south: f64, north: f64) -> Result<f64> {
+        let half_period = self.frame.longitude().half_period();
+        let edge = ChartEdge::new(
+            Point::new_raw_xy(half_period, south),
+            Point::new_raw_xy(-half_period, north),
+            self.frame,
+        )?;
+        edge.length(&self.geodesic)
+    }
+
+    fn chart_area_factor(&self) -> f64 {
+        self.authalic_series.area_factor(self.geodesic.a)
+    }
+
+    fn chart_surface_area(&self) -> f64 {
+        self.authalic_series.surface_area(self.geodesic.a)
     }
 }
 
@@ -291,7 +504,7 @@ mod tests {
     use geographiclib_rs::Geodesic;
 
     use super::super::GeodesicMetric;
-    use super::{ChartEdge, ONE_DEGREE};
+    use super::{AuthalicSeries, ChartEdge, ONE_DEGREE};
     use crate::geographic::{AngularFactor, EdgeDirection, GeographicFrame, PeriodicAxis};
     use crate::geometry::types::ChartMetric;
     use crate::geometry::{GeometryErrorKind, Point};
@@ -423,10 +636,30 @@ mod tests {
     }
 
     #[test]
+    fn chart_edge_reports_only_meridians_on_the_periodic_seam() {
+        let seam = ChartEdge::new(
+            Point::new_raw_xy(180.0, 70.0),
+            Point::new_raw_xy(-180.0, 80.0),
+            degrees(),
+        )
+        .unwrap();
+        assert_eq!(seam.seam_span(), Some([70.0, 80.0]));
+
+        let ordinary = ChartEdge::new(
+            Point::new_raw_xy(0.0, 70.0),
+            Point::new_raw_xy(0.0, 80.0),
+            degrees(),
+        )
+        .unwrap();
+        assert_eq!(ordinary.seam_span(), None);
+    }
+
+    #[test]
     fn chart_metric_trait_constructs_and_measures_a_chart_edge() {
         let metric = GeodesicMetric {
             crs: Arc::new("EPSG:4326".to_owned()),
             geodesic: Box::new(wgs84()),
+            authalic_series: AuthalicSeries::new(&wgs84()),
             frame: degrees(),
             state: crate::crs::runtime_state_snapshot().unwrap(),
         };

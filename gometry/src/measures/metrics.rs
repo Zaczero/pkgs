@@ -19,6 +19,9 @@ pub(crate) fn bounds_array(py: Python<'_>, values: &PyGeometryArray) -> PyResult
 /// For a ``GeometryCollection``, overlapping members count once, as the area
 /// of their union. Parts of a valid ``MultiPolygon`` cannot overlap.
 ///
+/// For geographic geometries, area is the ellipsoidal area of the region whose
+/// edges are straight in longitude/latitude.
+///
 /// Parameters
 /// ----------
 /// geom : Geometry, GeometryArray, or iterable of geometry-like values
@@ -118,6 +121,9 @@ fn measure_natural_or_override(
 ///
 /// For a ``GeometryCollection``, length sums every member's length or
 /// perimeter, including overlapping members.
+///
+/// For geographic geometries, length and perimeter are measured along edges
+/// straight in longitude/latitude on the CRS ellipsoid.
 ///
 /// Parameters
 /// ----------

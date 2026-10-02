@@ -76,9 +76,11 @@ fn cached_geodesic_object(crs: &str, state: &RuntimeState) -> Result<CachedGeode
         ellipsoid.semi_minor_metre,
         flattening,
     )?;
+    let object = Geodesic::new(ellipsoid.semi_major_metre, flattening);
     Ok(CachedGeodesicObject {
         definition: crs.to_owned(),
-        object: Geodesic::new(ellipsoid.semi_major_metre, flattening),
+        authalic_series: super::AuthalicSeries::new(&object),
+        object,
     })
 }
 
@@ -87,6 +89,26 @@ pub(crate) fn with_geodesic_cache_at<T, E>(
     state: &RuntimeState,
     map_err: impl Fn(crate::error::Error) -> E,
     f: impl FnOnce(&Geodesic) -> Result<T, E>,
+) -> Result<T, E> {
+    with_geodesic_object_cache_at(crs, state, map_err, |entry| f(&entry.object))
+}
+
+pub(crate) fn with_geodesic_chart_cache_at<T, E>(
+    crs: &str,
+    state: &RuntimeState,
+    map_err: impl Fn(crate::error::Error) -> E,
+    f: impl FnOnce(&Geodesic, &super::AuthalicSeries) -> Result<T, E>,
+) -> Result<T, E> {
+    with_geodesic_object_cache_at(crs, state, map_err, |entry| {
+        f(&entry.object, &entry.authalic_series)
+    })
+}
+
+fn with_geodesic_object_cache_at<T, E>(
+    crs: &str,
+    state: &RuntimeState,
+    map_err: impl Fn(crate::error::Error) -> E,
+    f: impl FnOnce(&CachedGeodesicObject) -> Result<T, E>,
 ) -> Result<T, E> {
     ensure_thread_caches_current(state);
     // Build a miss outside the cache borrow. `cached_geodesic_object` uses the
@@ -101,19 +123,18 @@ pub(crate) fn with_geodesic_cache_at<T, E>(
             let cache = cache.borrow();
             f(&cache
                 .last()
-                .expect("a promoted geodesic object is the MRU tail")
-                .object)
+                .expect("a promoted geodesic object is the MRU tail"))
         });
     }
 
     let entry = cached_geodesic_object(crs, state).map_err(&map_err)?;
     ensure_thread_caches_current(state);
-    // The miss path resolves only CRS info and constructs the geodesic object;
-    // it cannot re-enter this thread-local geodesic-object bucket.
+    // The miss path resolves cached CRS info and builds the ellipsoid's geodesic
+    // and authalic series; it cannot re-enter this cache bucket.
     CRS_GEODESIC_CACHE.with(|cache| {
         let mut cache = cache.borrow_mut();
         let entry = lru_insert(&mut cache, CRS_GEODESIC_CACHE_CAPACITY, entry);
-        f(&entry.object)
+        f(&entry)
     })
 }
 

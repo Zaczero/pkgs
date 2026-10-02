@@ -63,8 +63,10 @@ On degree-valued lon/lat data Shapely's bare
 `.area` returns degrees², `.distance` returns degrees, and `.buffer(100)` buffers
 by 100 *degrees*. gometry has one [`geom.area`][gometry.Geometry.area] (and one [`gm.distance`][gometry.distance] /
 [`Geometry.buffer`][gometry.Geometry.buffer]) whose answer is decided by the geometry's CRS and is native by
-default — a geographic CRS measures geodesically (meters), a projected CRS in its
-**native linear units**, CRS-free geometry in raw coordinate units.
+default — geographic shape area and length measure straight longitude/latitude
+edges on the ellipsoid, point distances follow ellipsoidal geodesics, a projected
+CRS uses its **native linear units**, and CRS-free geometry uses raw coordinate
+units.
 
 === "Shapely (silently wrong on lon/lat)"
 
@@ -82,7 +84,7 @@ default — a geographic CRS measures geodesically (meters), a projected CRS in 
     area = gm.box(20.0, 51.0, 22.0, 53.0, crs=4326)
     a = gm.Point(21.0, 52.0, crs=4326)
     b = gm.Point(22.0, 52.0, crs=4326)
-    print("geodesic area (m²):", round(area.area))
+    print("ellipsoidal area (m²):", round(area.area))
     print("geodesic distance (m):", round(gm.distance(a, b)))
     print("projected area (m²):", round(area.to_crs(area.estimate_local_crs()).area))
     ```
@@ -181,8 +183,9 @@ preserved unchanged — never invented, never silently dropped.
 
 pyproj's `Geod` (Karney/[GeographicLib](https://geographiclib.sourceforge.io/)
 WGS 84 ellipsoidal geodesy) maps onto [`gm.bearing`][gometry.bearing], `point.destination`,
-[`gm.point_between`][gometry.point_between], and the geometry metrics. On a **geographic** CRS these compute
-geodesically on the ellipsoid; there is no `Geod` object to construct. For a
+[`gm.point_between`][gometry.point_between], point-to-point distances, and LRS.
+Geographic shape area and length instead measure straight longitude/latitude
+edges on the CRS ellipsoid. There is no `Geod` object to construct. For a
 non-WGS 84 ellipsoid, give the points that geographic CRS (for example
 `gm.Point(lon, lat, crs=4230)`); every geodesic operation runs on the CRS's own
 ellipsoid.

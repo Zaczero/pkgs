@@ -828,7 +828,13 @@ def test_minimum_clearance_line_realizes_the_clearance() -> None:
     geo = gm.box(13.0, 52.0, 13.1, 52.2, crs=4326)
     geo_line = geo.minimum_clearance_line()
     assert geo_line.crs == 'EPSG:4326'
-    assert geo_line.length == pytest.approx(geo.minimum_clearance(), rel=0.001)
+    geo_coords = gm.get_coordinates(geo_line)
+    geo_witness_distance = gm.distance(
+        gm.Point(*geo_coords[0][:2], crs=4326),
+        gm.Point(*geo_coords[-1][:2], crs=4326),
+    )
+    assert geo_witness_distance == pytest.approx(geo.minimum_clearance(), rel=0.001)
+    assert geo_line.length >= geo_witness_distance - 1e-9
     assert gm.Point(1, 1).minimum_clearance_line().is_empty
     batch = gm.GeometryArray([gm.box(0, 0, 3, 2), gm.box(0, 0, 1, 5)])
     np.testing.assert_allclose(
@@ -847,7 +853,12 @@ def test_geographic_minimum_clearance_line_preserves_input_vertex_bits() -> None
     line = poly.minimum_clearance_line()
     endpoints = [(coord[0], coord[1]) for coord in line.coords]
     assert all(endpoint in vertices for endpoint in endpoints)
-    assert line.length == pytest.approx(poly.minimum_clearance(), rel=0.001)
+    witness_distance = gm.distance(
+        gm.Point(*endpoints[0], crs=4326),
+        gm.Point(*endpoints[-1], crs=4326),
+    )
+    assert witness_distance == pytest.approx(poly.minimum_clearance(), rel=0.001)
+    assert line.length >= witness_distance - 1e-9
 
 
 def test_geographic_minimum_clearance_line_vertex_segment_matches_scalar() -> None:
@@ -862,7 +873,12 @@ def test_geographic_minimum_clearance_line_vertex_segment_matches_scalar() -> No
     witness = linework.minimum_clearance_line()
     endpoints = [(coord[0], coord[1]) for coord in witness.coords]
     assert (13.2, 52.0009) in endpoints
-    assert witness.length == pytest.approx(linework.minimum_clearance())
+    witness_distance = gm.distance(
+        gm.Point(*endpoints[0], crs=4326),
+        gm.Point(*endpoints[-1], crs=4326),
+    )
+    assert witness_distance == pytest.approx(linework.minimum_clearance())
+    assert witness.length >= witness_distance - 1e-9
 
 
 def test_unique_points_dedups_in_first_occurrence_order() -> None:

@@ -100,7 +100,7 @@ def country_boundary_lines(
 def country_exteriors_multilinestring(
     parts: gm.GeometryArray | None = None,
 ) -> gm.MultiLineString:
-    """All exteriors as one MultiLineString (geodesic length metric)."""
+    """All exteriors as one MultiLineString for ellipsoidal chart-edge length."""
     lines = country_boundary_lines(parts)
     # Build MultiLineString from coordinate sequences
     chains = [list(zip(line.coords.x, line.coords.y, strict=True)) for line in lines]

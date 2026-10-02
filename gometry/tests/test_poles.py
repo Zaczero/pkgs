@@ -1,4 +1,4 @@
-"""Pole-encircling geographic polygons — membership and sensible geodesic area."""
+"""Pole-encircling geographic polygons — membership and chart-cap area."""
 
 import math
 

@@ -31,7 +31,7 @@ import gometry as gm
 # A one-degree tile over Paris. The CRS travels with the geometry.
 tile = gm.box(2.0, 48.0, 3.0, 49.0, crs=4326)
 
-print(f"geodesic area:  {tile.area / 1e6:>8,.0f} km²")
+print(f"ellipsoidal area: {tile.area / 1e6:>8,.0f} km²")
 print(f"planar area:    {gm.area(tile, unit='planar'):>8.4f} degree²")
 print(f"Web Mercator:   {tile.to_crs(3857).area / 1e6:>8,.0f} km²")
 
@@ -39,11 +39,12 @@ print(f"Web Mercator:   {tile.to_crs(3857).area / 1e6:>8,.0f} km²")
 
 One square degree is three different answers, and the CRS carried by the
 geometry decides which one you asked for. On a geographic CRS,
-[`area`][gometry.Geometry.area] is geodesic and returns m²; `unit="planar"`
-measures the raw coordinates as they stand; and reprojecting first returns that
-frame's own answer, which at this latitude Web Mercator inflates 2.3 times.
-[`length`][gometry.Geometry.length], [`distance`][gometry.distance], and
-[`buffer`][gometry.Geometry.buffer] follow the same rule.
+[`area`][gometry.Geometry.area] measures the ellipsoidal area bounded by
+straight longitude/latitude edges; `unit="planar"` measures the raw coordinates
+as they stand; and reprojecting first returns that frame's own answer, which at
+this latitude Web Mercator inflates 2.3 times. Geographic [`length`][gometry.Geometry.length]
+uses the same chart-edge model, while [`distance`][gometry.distance] follows an
+ellipsoidal geodesic.
 
 <div class="grid cards" markdown>
 
@@ -84,11 +85,13 @@ frame's own answer, which at this latitude Web Mercator inflates 2.3 times.
 
 The usual stack makes you remember whether a metric means degrees or meters. gometry has one
 [`geom.area`][gometry.Geometry.area], one [`geom.length`][gometry.Geometry.length], one [`gm.distance(a, b)`][gometry.distance] — the geometry's CRS decides how
-they are computed and the result is **native** for that CRS: a geographic CRS measures
-geodesically in meters, a projected CRS uses its native linear units (feet stay feet;
-meters stay meters), and a CRS-free geometry stays in raw coordinate units. Geographic
-longitude and latitude values remain in the CRS's native angular units; the periodic
-seam, pole, and prime meridian come from that same frame. Pass
+they are computed and the result is **native** for that CRS: geographic shape
+area and length measure straight longitude/latitude edges on the ellipsoid,
+point distances follow geodesics, a projected CRS uses its native linear units
+(feet stay feet; meters stay meters), and a CRS-free geometry stays in raw
+coordinate units. Geographic
+longitude and latitude values remain in the CRS's native angular units; the
+periodic seam, pole, and prime meridian come from that same frame. Pass
 `unit='meters'` for forced SI, or reproject with [`geom.to_crs(...)`][gometry.Geometry.to_crs] to change the frame.
 
 ### Batched without hidden loops

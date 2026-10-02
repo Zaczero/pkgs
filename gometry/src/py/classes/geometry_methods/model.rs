@@ -26,8 +26,9 @@ use crate::{Point, Shape};
 /// Construct with the leaf classes (``Point(...)``, ``LineString(...)``) or
 /// parsers (``from_wkt(...)``),
 /// inspect it (``geom.bounds``, ``geom.coords``), relate it
-/// (``contains(geom, other)``), measure it (``geom.area`` — geodesic meters on
-/// a geographic CRS), and derive from it (``geom.buffer(10.0)``); every
+/// (``contains(geom, other)``), measure it (``geom.area`` — ellipsoidal square
+/// meters of the longitude/latitude chart region on a geographic CRS), and
+/// derive from it (``geom.buffer(10.0)``); every
 /// operation returns a new geometry. Instances are one of the typed subclasses
 /// (``Point``, ``LineString``, ``Polygon``, ...), so ``isinstance`` narrows.
 #[pyclass(

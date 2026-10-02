@@ -213,15 +213,15 @@ axes.
 ```python exec="on" source="block" result="text"
 import gometry as gm
 
-def geodesic_area_km2(poly):
+def ellipsoidal_area_km2(poly):
     poly = gm.require(poly, crs=4326)
     return poly.area / 1e6
 
 ok = gm.box(2, 48, 3, 49, crs=4326)
-print(f"{geodesic_area_km2(ok):.1f} km²")
+print(f"{ellipsoidal_area_km2(ok):.1f} km²")
 
 try:
-    geodesic_area_km2(gm.box(2, 48, 3, 49))
+    ellipsoidal_area_km2(gm.box(2, 48, 3, 49))
 except gm.CRSMismatchError as e:
     print("rejected:", e)
 

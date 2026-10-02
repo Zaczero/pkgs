@@ -674,9 +674,9 @@ pub(crate) fn geodesic_line_measure<F>(
     columns: &LineColumns<'_>,
     frame: crate::geographic::GeographicFrame,
     mut measure: F,
-) -> Result<Vec<f64>>
+) -> PackedColumnResult<Vec<f64>>
 where
-    F: FnMut(&[f64], &[f64]) -> f64,
+    F: FnMut(&[f64], &[f64]) -> crate::error::Result<f64>,
 {
     let coords = columns.coords();
     let xs = coords.xs();
@@ -704,7 +704,7 @@ where
         let row_xs = column_window(xs, &window);
         let row_ys = column_window(ys, &window);
         validate_geographic_columns!(frame, longitude, row_xs, row_ys)?;
-        output.push(measure(row_xs, row_ys));
+        output.push(measure(row_xs, row_ys).map_err(|error| row_err(logical, error))?);
     }
     Ok(output)
 }
@@ -713,9 +713,9 @@ pub(crate) fn geodesic_polygon_measure<F>(
     columns: &PolygonColumns<'_>,
     frame: crate::geographic::GeographicFrame,
     ring_measure: F,
-) -> Result<Vec<f64>>
+) -> PackedColumnResult<Vec<f64>>
 where
-    F: Fn(&[f64], &[f64], std::ops::Range<usize>) -> f64,
+    F: Fn(&[f64], &[f64], std::ops::Range<usize>) -> crate::error::Result<f64>,
 {
     let coords = columns.coords();
     let xs = coords.xs();
@@ -753,13 +753,20 @@ where
             xs,
             ys,
             ring_measure,
-        );
-        let holes: f64 = (rings_start.wrapping_add(1)..rings_end)
-            .map(|ring| {
-                measure_admitted_polygon_ring!(ring_offsets.as_slice(), ring, xs, ys, ring_measure,)
-            })
-            .sum();
-        output.push(shell + holes);
+        )
+        .map_err(|error| row_err(logical, error))?;
+        let mut total = shell;
+        for ring in rings_start.wrapping_add(1)..rings_end {
+            total += measure_admitted_polygon_ring!(
+                ring_offsets.as_slice(),
+                ring,
+                xs,
+                ys,
+                ring_measure,
+            )
+            .map_err(|error| row_err(logical, error))?;
+        }
+        output.push(total);
     }
     Ok(output)
 }

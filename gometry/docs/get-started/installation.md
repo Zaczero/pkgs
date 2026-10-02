@@ -100,7 +100,7 @@ import gometry as gm
 print("gometry", md.version("gometry"))
 print("PROJ", gm.crs_engine()["version"])
 poly = gm.box(20.0, 51.0, 22.0, 53.0, crs=4326)
-print(f"geodesic area: {poly.area:,.0f} m²")
+print(f"ellipsoidal area: {poly.area:,.0f} m²")
 
 ```
 

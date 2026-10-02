@@ -9,6 +9,23 @@ fn ring_summary_in_frame(ring: &Ring, frame: GeographicFrame) -> Option<RingSumm
     RingSummary::try_new(frame, &GeographicRing::from_ring(ring)).ok()
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum RingAreaPole {
+    None,
+    North,
+    South,
+    Straddling,
+}
+
+fn summary_encloses_pole(summary: &RingSummary, north: bool) -> bool {
+    matches!(summary.turn, RingTurn::Full(_))
+        && if north {
+            summary.south.get() > 0.0
+        } else {
+            summary.north.get() < 0.0
+        }
+}
+
 #[derive(Default)]
 struct PoleMemo {
     rings: HashMap<VisibleXYKey, Option<RingSummary>>,
@@ -35,14 +52,7 @@ impl PoleMemo {
         let Some(summary) = self.ring_summary(ring, frame) else {
             return false;
         };
-        if !matches!(summary.turn, RingTurn::Full(_)) {
-            return false;
-        }
-        if north {
-            summary.south.get() > 0.0
-        } else {
-            summary.north.get() < 0.0
-        }
+        summary_encloses_pole(&summary, north)
     }
 
     fn polygon_encloses_pole(
@@ -151,6 +161,22 @@ impl PoleMemo {
 /// full-longitude winding at high latitude.
 pub(crate) fn ring_encloses_pole(ring: &Ring, north: bool) -> bool {
     ring_encloses_pole_in_frame(ring, GeographicFrame::crs84(), north)
+}
+
+pub(crate) fn ring_area_pole(ring: &Ring, frame: GeographicFrame) -> RingAreaPole {
+    let Some(summary) = ring_summary_in_frame(ring, frame) else {
+        return RingAreaPole::None;
+    };
+    if !matches!(summary.turn, RingTurn::Full(_)) {
+        return RingAreaPole::None;
+    }
+    if summary_encloses_pole(&summary, true) {
+        RingAreaPole::North
+    } else if summary_encloses_pole(&summary, false) {
+        RingAreaPole::South
+    } else {
+        RingAreaPole::Straddling
+    }
 }
 
 fn ring_encloses_pole_in_frame(ring: &Ring, frame: GeographicFrame, north: bool) -> bool {

@@ -151,6 +151,22 @@ def test_split_antimeridian_polygons_use_affine_chart_crossings() -> None:
     assert line.split_antimeridian().to_wkt() == split_rows[0].to_wkt()
 
 
+def test_multipolygon_perimeter_cancels_partial_periodic_seam_overlap() -> None:
+    geometry = gm.from_wkt(
+        'MULTIPOLYGON (((170 -10, 180 -10, 180 10, 170 10, 170 -10)),'
+        '((-180 0, -170 0, -170 20, -180 20, -180 0)))',
+        crs=4326,
+    )
+    assert geometry.is_valid
+    west, east = geometry.parts
+    shared = gm.distance(
+        gm.Point(180, 0, crs=4326),
+        gm.Point(-180, 10, crs=4326),
+    )
+    expected = west.length + east.length - 2.0 * shared
+    assert geometry.length == pytest.approx(expected, abs=1.0e-8)
+
+
 @pytest.mark.parametrize('seam', [180.0, -180.0])
 @pytest.mark.parametrize(
     'ring',
@@ -1423,7 +1439,7 @@ def test_polar_annulus_split_membership_bounds_and_index() -> None:
     ids=['70-80', '60-75'],
 )
 @pytest.mark.parametrize('south', [False, True], ids=['north', 'south'])
-def test_polar_annulus_split_preserves_geodesic_area_and_membership(
+def test_polar_annulus_split_preserves_chart_area_length_and_membership(
     shell_latitude: float,
     hole_latitude: float,
     inside_latitude: float,
@@ -1443,6 +1459,7 @@ def test_polar_annulus_split_preserves_geodesic_area_and_membership(
     assert annulus.is_valid
     assert split.is_valid
     assert split.area == pytest.approx(annulus.area, rel=1e-15)
+    assert split.length == pytest.approx(annulus.length, rel=1e-13)
     for longitude in (0.0, 180.0, -180.0):
         for latitude, expected in (
             (direction * inside_latitude, True),
@@ -1457,8 +1474,7 @@ def test_polar_annulus_split_preserves_geodesic_area_and_membership(
 
 
 def test_split_seam_donut_preserves_area_and_membership() -> None:
-    # Existing seam vertices avoid affine cuts, whose geodesic area is not
-    # promised to match the unsplit chart geometry.
+    # Existing seam vertices keep the split on the source chart edges.
     shell = [(160, -20), (180, -20), (-160, -20), (-160, 20), (180, 20), (160, 20)]
     hole = [(170, -5), (180, -5), (-170, -5), (-170, 5), (180, 5), (170, 5)]
     donut = gm.Polygon(shell, holes=[hole], crs=4326)
@@ -1467,6 +1483,7 @@ def test_split_seam_donut_preserves_area_and_membership() -> None:
     assert donut.is_valid
     assert split.is_valid
     assert split.area == pytest.approx(donut.area, rel=1e-15)
+    assert split.length == pytest.approx(donut.length, rel=1e-13)
     for longitude, latitude, expected in (
         (180.0, 0.0, False),
         (-180.0, 0.0, False),

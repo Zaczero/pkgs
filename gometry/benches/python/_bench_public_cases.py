@@ -12,6 +12,11 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
+from _bench_chart_edge_reference import (
+    country_exterior_chart_length,
+    polygonal_chart_areas,
+)
+
 if TYPE_CHECKING:
     from collections.abc import Callable
 
@@ -1803,7 +1808,7 @@ def build_from_geojson() -> PublicCase:
     )
 
 
-def build_geodesic_area() -> PublicCase:
+def build_chart_edge_area() -> PublicCase:
     parts_gm = load_country_parts()
     parts_sh = country_parts_shapely()
     from pyproj import Geod
@@ -1814,12 +1819,10 @@ def build_geodesic_area() -> PublicCase:
         return parts_gm.area
 
     def competitor_call():
-        return np.asarray([
-            abs(geod.geometry_area_perimeter(part)[0]) for part in parts_sh
-        ])
+        return polygonal_chart_areas(parts_sh, geod)
 
-    _reg('gometry.geodesic_area/217_countries', gometry_call)
-    _reg('pyproj.Geod.geometry_area_perimeter/217_countries', competitor_call)
+    _reg('gometry.chart_edge_area/217_countries', gometry_call)
+    _reg('pyproj.chart_edge_area_reference/217_countries', competitor_call)
     return _case(
         gometry_call,
         competitor_call,
@@ -1829,7 +1832,7 @@ def build_geodesic_area() -> PublicCase:
     )
 
 
-def build_geodesic_length() -> PublicCase:
+def build_chart_edge_length() -> PublicCase:
     ext_gm = country_exteriors_multilinestring()
     ext_sh = country_exteriors_shapely()
     from pyproj import Geod
@@ -1840,14 +1843,14 @@ def build_geodesic_length() -> PublicCase:
         return ext_gm.length
 
     def competitor_call():
-        return geod.geometry_length(ext_sh)
+        return country_exterior_chart_length(ext_sh.geoms, geod)
 
     _reg(
-        'gometry.geodesic_length/1034_exteriors_16135_vertices',
+        'gometry.chart_edge_length/1034_exteriors_16135_vertices',
         gometry_call,
     )
     _reg(
-        'pyproj.Geod.geometry_length/1034_exteriors_16135_vertices',
+        'pyproj.chart_edge_length_reference/1034_exteriors_16135_vertices',
         competitor_call,
     )
     return _case(
@@ -1900,8 +1903,8 @@ BUILDERS: dict[str, Callable[[], PublicCase]] = {
     'gometry.index.nearest/1k_queries_10k_polygons_k1': build_index_nearest,
     'gometry.index.build/10k_polygons': build_index_build,
     'gometry.from_geojson/217_countries_2_26mb': build_from_geojson,
-    'gometry.geodesic_area/217_countries': build_geodesic_area,
-    'gometry.geodesic_length/1034_exteriors_16135_vertices': build_geodesic_length,
+    'gometry.chart_edge_area/217_countries': build_chart_edge_area,
+    'gometry.chart_edge_length/1034_exteriors_16135_vertices': build_chart_edge_length,
 }
 
 

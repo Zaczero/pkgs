@@ -35,8 +35,8 @@ TOLERANCES: dict[str, tuple[float, float]] = {
     'deg': (1e-12, 1e-10),  # geographic transformed coordinates
     'm_geodesic': (1e-12, 1e-6),  # geodesic distances
     'deg_destination': (0.0, 1e-11),  # destination coords (lon wrapped)
-    'm2_ellipsoidal': (2e-12, 1e-3),  # 217-country area
-    'm_ellipsoidal': (2e-12, 1e-6),  # country boundary length
+    'm2_ellipsoidal': (2e-12, 1e-3),  # 217-country chart-edge area
+    'm_ellipsoidal': (2e-12, 1e-6),  # country chart-edge length
 }
 
 # ``clip_by_rect`` already admits this coordinate budget in its public

@@ -1,4 +1,4 @@
-"""CRS behavior — geodesic measurement, transforms, best-UTM selection,
+"""CRS behavior — geodesic distances, chart-edge measures, transforms, best-UTM selection,
 runtime config, cache info, and the PROJ authority metadata surface.
 """
 
@@ -10,6 +10,11 @@ from typing import Any, cast
 import gometry as gm
 import numpy as np
 import pytest
+from pyproj import Geod
+
+from tests._support import chart_rectangle_perimeter, chart_zone_area
+
+GEOD = Geod(ellps='WGS84')
 
 
 class _PyprojStyleArea:
@@ -279,12 +284,25 @@ def _assert_crs_namespace_operations_geodesic_and_transforms() -> None:
     )
     crs_geodesic_line = gm.LineString([(-73.0, 41.0), (-72.0, 42.0)], crs=4326)
     projected_geodesic_polygon = crs_geodesic_polygon.to_crs(3857)
-    assert crs_geodesic_polygon.area == pytest.approx(9273189574.569885)
+    expected_chart_area = chart_zone_area(
+        -73.0,
+        -72.0,
+        41.0,
+        42.0,
+        semi_major=GEOD.a,
+        flattening=GEOD.f,
+    )
+    assert crs_geodesic_polygon.area == pytest.approx(expected_chart_area, rel=1e-14)
     assert projected_geodesic_polygon.to_crs(4326).area == pytest.approx(
         crs_geodesic_polygon.area
     )
-    assert crs_geodesic_polygon.length == pytest.approx(389112.1929116194)
-    assert crs_geodesic_line.length == pytest.approx(138946.2474912301)
+    assert crs_geodesic_polygon.length == pytest.approx(
+        chart_rectangle_perimeter(GEOD, -73.0, -72.0, 41.0, 42.0), rel=1e-14
+    )
+    assert crs_geodesic_line.length == pytest.approx(
+        138_948.345_854_815_97,
+        rel=1e-14,
+    )
     assert gm.GeometryArray([crs_geodesic_polygon]).area == pytest.approx([
         crs_geodesic_polygon.area
     ])

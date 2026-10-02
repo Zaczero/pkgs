@@ -947,9 +947,8 @@ running off the seam closes over its pole automatically. Geometries that do
 not cross are returned unchanged. A split ``LineString`` becomes a
 ``MultiLineString`` and a split ``Polygon`` a ``MultiPolygon``, like repair.
 Seam vertices interpolate Z/M at the same chart fraction. On a geographic CRS,
-geodesic metrics still interpret each stored edge from its endpoints on the
-CRS ellipsoid, so this operation does not promise geodesic area or length
-conservation.";
+the split subdivides existing chart edges, so ellipsoidal area and perimeter
+are conserved to rounding.";
     scalar: r"
 
 Returns

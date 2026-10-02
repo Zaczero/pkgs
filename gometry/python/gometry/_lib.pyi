@@ -784,8 +784,9 @@ class Geometry:
     Construct with the leaf classes (``Point(...)``, ``LineString(...)``) or
     parsers (``from_wkt(...)``),
     inspect it (``geom.bounds``, ``geom.coords``), relate it
-    (``contains(geom, other)``), measure it (``geom.area`` — geodesic meters on
-    a geographic CRS), and derive from it (``geom.buffer(10.0)``); every
+    (``contains(geom, other)``), measure it (``geom.area`` — ellipsoidal square
+    meters of the longitude/latitude chart region on a geographic CRS), and
+    derive from it (``geom.buffer(10.0)``); every
     operation returns a new geometry. Instances are one of the typed subclasses
     (``Point``, ``LineString``, ``Polygon``, ...), so ``isinstance`` narrows.
     """
@@ -1195,11 +1196,12 @@ class Geometry:
     def area(self) -> float:
         """Area in CRS-natural units for the geometry's CRS.
 
-        A geographic CRS gives geodesic square meters on the CRS's own ellipsoid;
+        A geographic CRS gives ellipsoidal square meters for the region bounded
+        by edges straight in longitude/latitude;
         a projected CRS gives squared native linear units; a CRS-free geometry
         gives squared raw coordinate units. Use ``to_crs`` to
-        change frame. Geographic polygons measure their lon/lat chart interior,
-        including regions larger than half the ellipsoid.
+        change frame. Geographic polygons measure their longitude/latitude chart
+        interior, including regions larger than half the ellipsoid.
 
         A ``GeometryCollection`` counts overlapping members once, as the area
         of their union. Parts of a valid ``MultiPolygon`` cannot overlap.
@@ -1222,9 +1224,9 @@ class Geometry:
     def length(self) -> float:
         """Length (curves) or perimeter (areal), measured for the geometry's CRS.
 
-        A geographic CRS gives geodesic meters on the CRS's own ellipsoid; a
-        projected CRS gives native linear units; a CRS-free geometry gives raw
-        coordinate units. Use ``to_crs`` to change frame.
+        A geographic CRS gives ellipsoidal meters along edges straight in
+        longitude/latitude; a projected CRS gives native linear units; a CRS-free
+        geometry gives raw coordinate units. Use ``to_crs`` to change frame.
 
         A ``GeometryCollection`` sums every member's length or perimeter,
         including overlapping members.
@@ -1246,6 +1248,8 @@ class Geometry:
     @property
     def length_3d(self) -> float:
         """3D length of curves with Z, measured for the geometry's CRS.
+
+        Geographic CRSs do not support 3D Euclidean length.
 
         Returns
         -------
@@ -1652,11 +1656,12 @@ class Geometry:
         """Interpolate an M ordinate along the line's arc length (CRS-aware). M runs
         from ``start_m`` at the start to ``end_m`` at the end, continuously across
         multipart linework (the PostGIS ``ST_AddMeasure`` shape). The stationing
-        follows the CRS like length — geodesic on a geographic CRS, planar
-        otherwise (coordinates are never moved). Z is preserved; existing M requires
-        ``overwrite=True``. Every stored vertex is retained; a zero-length X/Y segment
-        has equal M values at both ends. Empty linework returns the same empty with an
-        M axis.
+        uses geodesic distance on geographic CRSs and planar distance otherwise;
+        coordinates are never moved. Geographic 2D length and perimeter measure chart
+        edges, so their values can differ from LRS stationing. Z is preserved; existing
+        M requires ``overwrite=True``. Every stored vertex is retained; a zero-length
+        X/Y segment has equal M values at both ends. Empty linework returns the same
+        empty with an M axis.
 
         Parameters
         ----------
@@ -1666,12 +1671,13 @@ class Geometry:
             Replace existing M ordinates instead of raising.
 
         unit : {'planar', 'meters'}, default None
-            ``None`` (the default) follows the CRS: geographic measurements use
-            geodesic meters, projected measurements use native linear units, and
-            CRS-free measurements use raw coordinate units (area results square the
-            corresponding unit). ``'planar'`` uses Cartesian coordinate space, with
-            geographic coordinates in their native angular units. ``'meters'`` uses
-            the CRS-aware metric and requires a CRS.
+            ``None`` (the default) follows the CRS: geographic shape area and length
+            use ellipsoidal chart-edge measures while point distances use geodesics;
+            projected measurements use native linear units, and CRS-free measurements
+            use raw coordinate units (area results square the corresponding unit).
+            ``'planar'`` uses Cartesian coordinate space, with geographic coordinates
+            in their native angular units. ``'meters'`` uses the CRS-aware metric and
+            requires a CRS.
 
 
 
@@ -1731,12 +1737,13 @@ class Geometry:
             for the CRS (see ``unit``).
             Omitted selects a scale-aware tolerance from the geometry's extent.
         unit : {'planar', 'meters'}, default None
-            ``None`` (the default) follows the CRS: geographic measurements use
-            geodesic meters, projected measurements use native linear units, and
-            CRS-free measurements use raw coordinate units (area results square the
-            corresponding unit). ``'planar'`` uses Cartesian coordinate space, with
-            geographic coordinates in their native angular units. ``'meters'`` uses
-            the CRS-aware metric and requires a CRS.
+            ``None`` (the default) follows the CRS: geographic shape area and length
+            use ellipsoidal chart-edge measures while point distances use geodesics;
+            projected measurements use native linear units, and CRS-free measurements
+            use raw coordinate units (area results square the corresponding unit).
+            ``'planar'`` uses Cartesian coordinate space, with geographic coordinates
+            in their native angular units. ``'meters'`` uses the CRS-aware metric and
+            requires a CRS.
 
 
 
@@ -1772,12 +1779,13 @@ class Geometry:
         Parameters
         ----------
         unit : {'planar', 'meters'}, default None
-            ``None`` (the default) follows the CRS: geographic measurements use
-            geodesic meters, projected measurements use native linear units, and
-            CRS-free measurements use raw coordinate units (area results square the
-            corresponding unit). ``'planar'`` uses Cartesian coordinate space, with
-            geographic coordinates in their native angular units. ``'meters'`` uses
-            the CRS-aware metric and requires a CRS.
+            ``None`` (the default) follows the CRS: geographic shape area and length
+            use ellipsoidal chart-edge measures while point distances use geodesics;
+            projected measurements use native linear units, and CRS-free measurements
+            use raw coordinate units (area results square the corresponding unit).
+            ``'planar'`` uses Cartesian coordinate space, with geographic coordinates
+            in their native angular units. ``'meters'`` uses the CRS-aware metric and
+            requires a CRS.
 
 
 
@@ -2138,12 +2146,13 @@ class Geometry:
             Interpret distance-basis positions as fractions in [0, 1]. Invalid with
             ``basis='m'``.
         unit : {'planar', 'meters'}, default None
-            ``None`` (the default) follows the CRS: geographic measurements use
-            geodesic meters, projected measurements use native linear units, and
-            CRS-free measurements use raw coordinate units (area results square the
-            corresponding unit). ``'planar'`` uses Cartesian coordinate space, with
-            geographic coordinates in their native angular units. ``'meters'`` uses
-            the CRS-aware metric and requires a CRS.
+            ``None`` (the default) follows the CRS: geographic shape area and length
+            use ellipsoidal chart-edge measures while point distances use geodesics;
+            projected measurements use native linear units, and CRS-free measurements
+            use raw coordinate units (area results square the corresponding unit).
+            ``'planar'`` uses Cartesian coordinate space, with geographic coordinates
+            in their native angular units. ``'meters'`` uses the CRS-aware metric and
+            requires a CRS.
 
             Available only with ``basis='distance'``; invalid with
             ``basis='m'``.
@@ -2228,12 +2237,13 @@ class Geometry:
             not fabricated.
 
         unit : {'planar', 'meters'}, default None
-            ``None`` (the default) follows the CRS: geographic measurements use
-            geodesic meters, projected measurements use native linear units, and
-            CRS-free measurements use raw coordinate units (area results square the
-            corresponding unit). ``'planar'`` uses Cartesian coordinate space, with
-            geographic coordinates in their native angular units. ``'meters'`` uses
-            the CRS-aware metric and requires a CRS.
+            ``None`` (the default) follows the CRS: geographic shape area and length
+            use ellipsoidal chart-edge measures while point distances use geodesics;
+            projected measurements use native linear units, and CRS-free measurements
+            use raw coordinate units (area results square the corresponding unit).
+            ``'planar'`` uses Cartesian coordinate space, with geographic coordinates
+            in their native angular units. ``'meters'`` uses the CRS-aware metric and
+            requires a CRS.
 
 
 
@@ -2475,12 +2485,13 @@ class Geometry:
             Return a distance-basis fraction in [0, 1]. Invalid with ``basis='m'``.
 
         unit : {'planar', 'meters'}, default None
-            ``None`` (the default) follows the CRS: geographic measurements use
-            geodesic meters, projected measurements use native linear units, and
-            CRS-free measurements use raw coordinate units (area results square the
-            corresponding unit). ``'planar'`` uses Cartesian coordinate space, with
-            geographic coordinates in their native angular units. ``'meters'`` uses
-            the CRS-aware metric and requires a CRS.
+            ``None`` (the default) follows the CRS: geographic shape area and length
+            use ellipsoidal chart-edge measures while point distances use geodesics;
+            projected measurements use native linear units, and CRS-free measurements
+            use raw coordinate units (area results square the corresponding unit).
+            ``'planar'`` uses Cartesian coordinate space, with geographic coordinates
+            in their native angular units. ``'meters'`` uses the CRS-aware metric and
+            requires a CRS.
 
             Available only with ``basis='distance'``; invalid with
             ``basis='m'``.
@@ -2596,12 +2607,13 @@ class Geometry:
         Parameters
         ----------
         unit : {'planar', 'meters'}, default None
-            ``None`` (the default) follows the CRS: geographic measurements use
-            geodesic meters, projected measurements use native linear units, and
-            CRS-free measurements use raw coordinate units (area results square the
-            corresponding unit). ``'planar'`` uses Cartesian coordinate space, with
-            geographic coordinates in their native angular units. ``'meters'`` uses
-            the CRS-aware metric and requires a CRS.
+            ``None`` (the default) follows the CRS: geographic shape area and length
+            use ellipsoidal chart-edge measures while point distances use geodesics;
+            projected measurements use native linear units, and CRS-free measurements
+            use raw coordinate units (area results square the corresponding unit).
+            ``'planar'`` uses Cartesian coordinate space, with geographic coordinates
+            in their native angular units. ``'meters'`` uses the CRS-aware metric and
+            requires a CRS.
 
 
 
@@ -2687,12 +2699,13 @@ class Geometry:
             with ``basis='m'``.
 
         unit : {'planar', 'meters'}, default None
-            ``None`` (the default) follows the CRS: geographic measurements use
-            geodesic meters, projected measurements use native linear units, and
-            CRS-free measurements use raw coordinate units (area results square the
-            corresponding unit). ``'planar'`` uses Cartesian coordinate space, with
-            geographic coordinates in their native angular units. ``'meters'`` uses
-            the CRS-aware metric and requires a CRS.
+            ``None`` (the default) follows the CRS: geographic shape area and length
+            use ellipsoidal chart-edge measures while point distances use geodesics;
+            projected measurements use native linear units, and CRS-free measurements
+            use raw coordinate units (area results square the corresponding unit).
+            ``'planar'`` uses Cartesian coordinate space, with geographic coordinates
+            in their native angular units. ``'meters'`` uses the CRS-aware metric and
+            requires a CRS.
 
             Available only with ``basis='distance'``; invalid with
             ``basis='m'``.
@@ -2774,12 +2787,13 @@ class Geometry:
             Positive absolute bound on the planar global-inradius gap. Omitted
             selects the existing scale-aware tolerance from the geometry's extent.
         unit : {'planar', 'meters'}, default None
-            ``None`` (the default) follows the CRS: geographic measurements use
-            geodesic meters, projected measurements use native linear units, and
-            CRS-free measurements use raw coordinate units (area results square the
-            corresponding unit). ``'planar'`` uses Cartesian coordinate space, with
-            geographic coordinates in their native angular units. ``'meters'`` uses
-            the CRS-aware metric and requires a CRS.
+            ``None`` (the default) follows the CRS: geographic shape area and length
+            use ellipsoidal chart-edge measures while point distances use geodesics;
+            projected measurements use native linear units, and CRS-free measurements
+            use raw coordinate units (area results square the corresponding unit).
+            ``'planar'`` uses Cartesian coordinate space, with geographic coordinates
+            in their native angular units. ``'meters'`` uses the CRS-aware metric and
+            requires a CRS.
 
 
 
@@ -2833,12 +2847,13 @@ class Geometry:
             Positive absolute bound on the planar global-inradius gap. Omitted
             selects the existing scale-aware tolerance from the geometry's extent.
         unit : {'planar', 'meters'}, default None
-            ``None`` (the default) follows the CRS: geographic measurements use
-            geodesic meters, projected measurements use native linear units, and
-            CRS-free measurements use raw coordinate units (area results square the
-            corresponding unit). ``'planar'`` uses Cartesian coordinate space, with
-            geographic coordinates in their native angular units. ``'meters'`` uses
-            the CRS-aware metric and requires a CRS.
+            ``None`` (the default) follows the CRS: geographic shape area and length
+            use ellipsoidal chart-edge measures while point distances use geodesics;
+            projected measurements use native linear units, and CRS-free measurements
+            use raw coordinate units (area results square the corresponding unit).
+            ``'planar'`` uses Cartesian coordinate space, with geographic coordinates
+            in their native angular units. ``'meters'`` uses the CRS-aware metric and
+            requires a CRS.
 
 
 
@@ -2885,12 +2900,13 @@ class Geometry:
         Parameters
         ----------
         unit : {'planar', 'meters'}, default None
-            ``None`` (the default) follows the CRS: geographic measurements use
-            geodesic meters, projected measurements use native linear units, and
-            CRS-free measurements use raw coordinate units (area results square the
-            corresponding unit). ``'planar'`` uses Cartesian coordinate space, with
-            geographic coordinates in their native angular units. ``'meters'`` uses
-            the CRS-aware metric and requires a CRS.
+            ``None`` (the default) follows the CRS: geographic shape area and length
+            use ellipsoidal chart-edge measures while point distances use geodesics;
+            projected measurements use native linear units, and CRS-free measurements
+            use raw coordinate units (area results square the corresponding unit).
+            ``'planar'`` uses Cartesian coordinate space, with geographic coordinates
+            in their native angular units. ``'meters'`` uses the CRS-aware metric and
+            requires a CRS.
 
 
 
@@ -2930,12 +2946,13 @@ class Geometry:
         Parameters
         ----------
         unit : {'planar', 'meters'}, default None
-            ``None`` (the default) follows the CRS: geographic measurements use
-            geodesic meters, projected measurements use native linear units, and
-            CRS-free measurements use raw coordinate units (area results square the
-            corresponding unit). ``'planar'`` uses Cartesian coordinate space, with
-            geographic coordinates in their native angular units. ``'meters'`` uses
-            the CRS-aware metric and requires a CRS.
+            ``None`` (the default) follows the CRS: geographic shape area and length
+            use ellipsoidal chart-edge measures while point distances use geodesics;
+            projected measurements use native linear units, and CRS-free measurements
+            use raw coordinate units (area results square the corresponding unit).
+            ``'planar'`` uses Cartesian coordinate space, with geographic coordinates
+            in their native angular units. ``'meters'`` uses the CRS-aware metric and
+            requires a CRS.
 
 
 
@@ -2983,12 +3000,13 @@ class Geometry:
             projection, while the output vertices are emitted from the original input
             coordinates.
         unit : {'planar', 'meters'}, default None
-            ``None`` (the default) follows the CRS: geographic measurements use
-            geodesic meters, projected measurements use native linear units, and
-            CRS-free measurements use raw coordinate units (area results square the
-            corresponding unit). ``'planar'`` uses Cartesian coordinate space, with
-            geographic coordinates in their native angular units. ``'meters'`` uses
-            the CRS-aware metric and requires a CRS.
+            ``None`` (the default) follows the CRS: geographic shape area and length
+            use ellipsoidal chart-edge measures while point distances use geodesics;
+            projected measurements use native linear units, and CRS-free measurements
+            use raw coordinate units (area results square the corresponding unit).
+            ``'planar'`` uses Cartesian coordinate space, with geographic coordinates
+            in their native angular units. ``'meters'`` uses the CRS-aware metric and
+            requires a CRS.
 
 
 
@@ -3179,12 +3197,13 @@ class Geometry:
             Fraction in ``(0, 1]`` of each source segment. Keyword-only; use when
             the subdivision is naturally relative rather than expressed in units.
         unit : {'planar', 'meters'}, default None
-            ``None`` (the default) follows the CRS: geographic measurements use
-            geodesic meters, projected measurements use native linear units, and
-            CRS-free measurements use raw coordinate units (area results square the
-            corresponding unit). ``'planar'`` uses Cartesian coordinate space, with
-            geographic coordinates in their native angular units. ``'meters'`` uses
-            the CRS-aware metric and requires a CRS.
+            ``None`` (the default) follows the CRS: geographic shape area and length
+            use ellipsoidal chart-edge measures while point distances use geodesics;
+            projected measurements use native linear units, and CRS-free measurements
+            use raw coordinate units (area results square the corresponding unit).
+            ``'planar'`` uses Cartesian coordinate space, with geographic coordinates
+            in their native angular units. ``'meters'`` uses the CRS-aware metric and
+            requires a CRS.
 
             The override applies only to ``max_length``; ``fraction`` has no unit
             and cannot be combined with ``unit``.
@@ -3270,9 +3289,8 @@ class Geometry:
         not cross are returned unchanged. A split ``LineString`` becomes a
         ``MultiLineString`` and a split ``Polygon`` a ``MultiPolygon``, like repair.
         Seam vertices interpolate Z/M at the same chart fraction. On a geographic CRS,
-        geodesic metrics still interpret each stored edge from its endpoints on the
-        CRS ellipsoid, so this operation does not promise geodesic area or length
-        conservation.
+        the split subdivides existing chart edges, so ellipsoidal area and perimeter
+        are conserved to rounding.
 
         Returns
         -------
@@ -3332,12 +3350,13 @@ class Geometry:
             multiples of ``distance``, before it is clipped flat.
 
         unit : {'planar', 'meters'}, default None
-            ``None`` (the default) follows the CRS: geographic measurements use
-            geodesic meters, projected measurements use native linear units, and
-            CRS-free measurements use raw coordinate units (area results square the
-            corresponding unit). ``'planar'`` uses Cartesian coordinate space, with
-            geographic coordinates in their native angular units. ``'meters'`` uses
-            the CRS-aware metric and requires a CRS.
+            ``None`` (the default) follows the CRS: geographic shape area and length
+            use ellipsoidal chart-edge measures while point distances use geodesics;
+            projected measurements use native linear units, and CRS-free measurements
+            use raw coordinate units (area results square the corresponding unit).
+            ``'planar'`` uses Cartesian coordinate space, with geographic coordinates
+            in their native angular units. ``'meters'`` uses the CRS-aware metric and
+            requires a CRS.
 
 
 
@@ -4262,12 +4281,13 @@ class Point(Geometry):
         path : {'geodesic', 'rhumb'}, default 'geodesic'
             Route model. Rhumb paths require a geographic CRS and use meters.
         unit : {'planar', 'meters'}, default None
-            ``None`` (the default) follows the CRS: geographic measurements use
-            geodesic meters, projected measurements use native linear units, and
-            CRS-free measurements use raw coordinate units (area results square the
-            corresponding unit). ``'planar'`` uses Cartesian coordinate space, with
-            geographic coordinates in their native angular units. ``'meters'`` uses
-            the CRS-aware metric and requires a CRS.
+            ``None`` (the default) follows the CRS: geographic shape area and length
+            use ellipsoidal chart-edge measures while point distances use geodesics;
+            projected measurements use native linear units, and CRS-free measurements
+            use raw coordinate units (area results square the corresponding unit).
+            ``'planar'`` uses Cartesian coordinate space, with geographic coordinates
+            in their native angular units. ``'meters'`` uses the CRS-aware metric and
+            requires a CRS.
 
 
             ``path='rhumb'`` uses meters and does not accept a unit override.
@@ -5976,12 +5996,13 @@ class GeometryArray(Sequence[_GeometryT_co]):
         path : {'geodesic', 'rhumb'}, default 'geodesic'
             Route model. Rhumb paths require a geographic CRS and use meters.
         unit : {'planar', 'meters'}, default None
-            ``None`` (the default) follows the CRS: geographic measurements use
-            geodesic meters, projected measurements use native linear units, and
-            CRS-free measurements use raw coordinate units (area results square the
-            corresponding unit). ``'planar'`` uses Cartesian coordinate space, with
-            geographic coordinates in their native angular units. ``'meters'`` uses
-            the CRS-aware metric and requires a CRS.
+            ``None`` (the default) follows the CRS: geographic shape area and length
+            use ellipsoidal chart-edge measures while point distances use geodesics;
+            projected measurements use native linear units, and CRS-free measurements
+            use raw coordinate units (area results square the corresponding unit).
+            ``'planar'`` uses Cartesian coordinate space, with geographic coordinates
+            in their native angular units. ``'meters'`` uses the CRS-aware metric and
+            requires a CRS.
 
 
             ``path='rhumb'`` uses meters and does not accept a unit override.
@@ -6657,10 +6678,10 @@ class GeometryArray(Sequence[_GeometryT_co]):
     def area(self) -> npt.NDArray[np.float64]:
         """Per-row area, measured for the array's CRS.
 
-        A geographic CRS gives geodesic square meters on the CRS's own ellipsoid;
-        a projected CRS gives squared native linear units; a CRS-free array
-        gives squared raw coordinate units. Use ``to_crs`` to
-        change frame.
+        A geographic CRS gives ellipsoidal square meters for the region bounded
+        by edges straight in longitude/latitude; a projected CRS gives squared
+        native linear units; a CRS-free array gives squared raw coordinate units.
+        Use ``to_crs`` to change frame.
 
         Each ``GeometryCollection`` row counts overlapping members once, as
         the area of their union. Parts of a valid ``MultiPolygon`` cannot
@@ -6686,9 +6707,9 @@ class GeometryArray(Sequence[_GeometryT_co]):
         """Per-row length (curves) or perimeter (areal), measured for the array's
         CRS.
 
-        A geographic CRS gives geodesic meters on the CRS's own ellipsoid; a
-        projected CRS gives native linear units; a CRS-free array gives raw
-        coordinate units. Use ``to_crs`` to change frame.
+        A geographic CRS gives ellipsoidal meters along edges straight in
+        longitude/latitude; a projected CRS gives native linear units; a CRS-free
+        array gives raw coordinate units. Use ``to_crs`` to change frame.
 
         Each ``GeometryCollection`` row sums every member's length or
         perimeter, including overlapping members.
@@ -6711,6 +6732,8 @@ class GeometryArray(Sequence[_GeometryT_co]):
     @property
     def length_3d(self) -> npt.NDArray[np.float64]:
         """Per-row 3D length of curves with Z, measured for the array's CRS.
+
+        Geographic CRSs do not support 3D Euclidean length.
 
         Returns
         -------
@@ -7416,11 +7439,12 @@ class GeometryArray(Sequence[_GeometryT_co]):
         """Interpolate an M ordinate along the line's arc length (CRS-aware). M runs
         from ``start_m`` at the start to ``end_m`` at the end, continuously across
         multipart linework (the PostGIS ``ST_AddMeasure`` shape). The stationing
-        follows the CRS like length — geodesic on a geographic CRS, planar
-        otherwise (coordinates are never moved). Z is preserved; existing M requires
-        ``overwrite=True``. Every stored vertex is retained; a zero-length X/Y segment
-        has equal M values at both ends. Empty linework returns the same empty with an
-        M axis.
+        uses geodesic distance on geographic CRSs and planar distance otherwise;
+        coordinates are never moved. Geographic 2D length and perimeter measure chart
+        edges, so their values can differ from LRS stationing. Z is preserved; existing
+        M requires ``overwrite=True``. Every stored vertex is retained; a zero-length
+        X/Y segment has equal M values at both ends. Empty linework returns the same
+        empty with an M axis.
 
         Parameters
         ----------
@@ -7431,12 +7455,13 @@ class GeometryArray(Sequence[_GeometryT_co]):
             Replace existing M ordinates instead of raising.
 
         unit : {'planar', 'meters'}, default None
-            ``None`` (the default) follows the CRS: geographic measurements use
-            geodesic meters, projected measurements use native linear units, and
-            CRS-free measurements use raw coordinate units (area results square the
-            corresponding unit). ``'planar'`` uses Cartesian coordinate space, with
-            geographic coordinates in their native angular units. ``'meters'`` uses
-            the CRS-aware metric and requires a CRS.
+            ``None`` (the default) follows the CRS: geographic shape area and length
+            use ellipsoidal chart-edge measures while point distances use geodesics;
+            projected measurements use native linear units, and CRS-free measurements
+            use raw coordinate units (area results square the corresponding unit).
+            ``'planar'`` uses Cartesian coordinate space, with geographic coordinates
+            in their native angular units. ``'meters'`` uses the CRS-aware metric and
+            requires a CRS.
 
 
 
@@ -7505,12 +7530,13 @@ class GeometryArray(Sequence[_GeometryT_co]):
             one value per geometry.
             Omitted selects a scale-aware tolerance independently for each geometry.
         unit : {'planar', 'meters'}, default None
-            ``None`` (the default) follows the CRS: geographic measurements use
-            geodesic meters, projected measurements use native linear units, and
-            CRS-free measurements use raw coordinate units (area results square the
-            corresponding unit). ``'planar'`` uses Cartesian coordinate space, with
-            geographic coordinates in their native angular units. ``'meters'`` uses
-            the CRS-aware metric and requires a CRS.
+            ``None`` (the default) follows the CRS: geographic shape area and length
+            use ellipsoidal chart-edge measures while point distances use geodesics;
+            projected measurements use native linear units, and CRS-free measurements
+            use raw coordinate units (area results square the corresponding unit).
+            ``'planar'`` uses Cartesian coordinate space, with geographic coordinates
+            in their native angular units. ``'meters'`` uses the CRS-aware metric and
+            requires a CRS.
 
 
 
@@ -7553,12 +7579,13 @@ class GeometryArray(Sequence[_GeometryT_co]):
         Parameters
         ----------
         unit : {'planar', 'meters'}, default None
-            ``None`` (the default) follows the CRS: geographic measurements use
-            geodesic meters, projected measurements use native linear units, and
-            CRS-free measurements use raw coordinate units (area results square the
-            corresponding unit). ``'planar'`` uses Cartesian coordinate space, with
-            geographic coordinates in their native angular units. ``'meters'`` uses
-            the CRS-aware metric and requires a CRS.
+            ``None`` (the default) follows the CRS: geographic shape area and length
+            use ellipsoidal chart-edge measures while point distances use geodesics;
+            projected measurements use native linear units, and CRS-free measurements
+            use raw coordinate units (area results square the corresponding unit).
+            ``'planar'`` uses Cartesian coordinate space, with geographic coordinates
+            in their native angular units. ``'meters'`` uses the CRS-aware metric and
+            requires a CRS.
 
 
 
@@ -8032,12 +8059,13 @@ class GeometryArray(Sequence[_GeometryT_co]):
             Interpret distance-basis positions as fractions in [0, 1]. Invalid with
             ``basis='m'``.
         unit : {'planar', 'meters'}, default None
-            ``None`` (the default) follows the CRS: geographic measurements use
-            geodesic meters, projected measurements use native linear units, and
-            CRS-free measurements use raw coordinate units (area results square the
-            corresponding unit). ``'planar'`` uses Cartesian coordinate space, with
-            geographic coordinates in their native angular units. ``'meters'`` uses
-            the CRS-aware metric and requires a CRS.
+            ``None`` (the default) follows the CRS: geographic shape area and length
+            use ellipsoidal chart-edge measures while point distances use geodesics;
+            projected measurements use native linear units, and CRS-free measurements
+            use raw coordinate units (area results square the corresponding unit).
+            ``'planar'`` uses Cartesian coordinate space, with geographic coordinates
+            in their native angular units. ``'meters'`` uses the CRS-aware metric and
+            requires a CRS.
 
             Available only with ``basis='distance'``; invalid with
             ``basis='m'``.
@@ -8184,12 +8212,13 @@ class GeometryArray(Sequence[_GeometryT_co]):
             not fabricated.
 
         unit : {'planar', 'meters'}, default None
-            ``None`` (the default) follows the CRS: geographic measurements use
-            geodesic meters, projected measurements use native linear units, and
-            CRS-free measurements use raw coordinate units (area results square the
-            corresponding unit). ``'planar'`` uses Cartesian coordinate space, with
-            geographic coordinates in their native angular units. ``'meters'`` uses
-            the CRS-aware metric and requires a CRS.
+            ``None`` (the default) follows the CRS: geographic shape area and length
+            use ellipsoidal chart-edge measures while point distances use geodesics;
+            projected measurements use native linear units, and CRS-free measurements
+            use raw coordinate units (area results square the corresponding unit).
+            ``'planar'`` uses Cartesian coordinate space, with geographic coordinates
+            in their native angular units. ``'meters'`` uses the CRS-aware metric and
+            requires a CRS.
 
 
 
@@ -8507,12 +8536,13 @@ class GeometryArray(Sequence[_GeometryT_co]):
             Return a distance-basis fraction in [0, 1]. Invalid with ``basis='m'``.
 
         unit : {'planar', 'meters'}, default None
-            ``None`` (the default) follows the CRS: geographic measurements use
-            geodesic meters, projected measurements use native linear units, and
-            CRS-free measurements use raw coordinate units (area results square the
-            corresponding unit). ``'planar'`` uses Cartesian coordinate space, with
-            geographic coordinates in their native angular units. ``'meters'`` uses
-            the CRS-aware metric and requires a CRS.
+            ``None`` (the default) follows the CRS: geographic shape area and length
+            use ellipsoidal chart-edge measures while point distances use geodesics;
+            projected measurements use native linear units, and CRS-free measurements
+            use raw coordinate units (area results square the corresponding unit).
+            ``'planar'`` uses Cartesian coordinate space, with geographic coordinates
+            in their native angular units. ``'meters'`` uses the CRS-aware metric and
+            requires a CRS.
 
             Available only with ``basis='distance'``; invalid with
             ``basis='m'``.
@@ -8629,12 +8659,13 @@ class GeometryArray(Sequence[_GeometryT_co]):
         Parameters
         ----------
         unit : {'planar', 'meters'}, default None
-            ``None`` (the default) follows the CRS: geographic measurements use
-            geodesic meters, projected measurements use native linear units, and
-            CRS-free measurements use raw coordinate units (area results square the
-            corresponding unit). ``'planar'`` uses Cartesian coordinate space, with
-            geographic coordinates in their native angular units. ``'meters'`` uses
-            the CRS-aware metric and requires a CRS.
+            ``None`` (the default) follows the CRS: geographic shape area and length
+            use ellipsoidal chart-edge measures while point distances use geodesics;
+            projected measurements use native linear units, and CRS-free measurements
+            use raw coordinate units (area results square the corresponding unit).
+            ``'planar'`` uses Cartesian coordinate space, with geographic coordinates
+            in their native angular units. ``'meters'`` uses the CRS-aware metric and
+            requires a CRS.
 
 
 
@@ -8731,12 +8762,13 @@ class GeometryArray(Sequence[_GeometryT_co]):
             with ``basis='m'``.
 
         unit : {'planar', 'meters'}, default None
-            ``None`` (the default) follows the CRS: geographic measurements use
-            geodesic meters, projected measurements use native linear units, and
-            CRS-free measurements use raw coordinate units (area results square the
-            corresponding unit). ``'planar'`` uses Cartesian coordinate space, with
-            geographic coordinates in their native angular units. ``'meters'`` uses
-            the CRS-aware metric and requires a CRS.
+            ``None`` (the default) follows the CRS: geographic shape area and length
+            use ellipsoidal chart-edge measures while point distances use geodesics;
+            projected measurements use native linear units, and CRS-free measurements
+            use raw coordinate units (area results square the corresponding unit).
+            ``'planar'`` uses Cartesian coordinate space, with geographic coordinates
+            in their native angular units. ``'meters'`` uses the CRS-aware metric and
+            requires a CRS.
 
             Available only with ``basis='distance'``; invalid with
             ``basis='m'``.
@@ -8827,12 +8859,13 @@ class GeometryArray(Sequence[_GeometryT_co]):
             applies to every geometry, or pass one value per geometry. Omitted
             selects a scale-aware tolerance independently for each geometry.
         unit : {'planar', 'meters'}, default None
-            ``None`` (the default) follows the CRS: geographic measurements use
-            geodesic meters, projected measurements use native linear units, and
-            CRS-free measurements use raw coordinate units (area results square the
-            corresponding unit). ``'planar'`` uses Cartesian coordinate space, with
-            geographic coordinates in their native angular units. ``'meters'`` uses
-            the CRS-aware metric and requires a CRS.
+            ``None`` (the default) follows the CRS: geographic shape area and length
+            use ellipsoidal chart-edge measures while point distances use geodesics;
+            projected measurements use native linear units, and CRS-free measurements
+            use raw coordinate units (area results square the corresponding unit).
+            ``'planar'`` uses Cartesian coordinate space, with geographic coordinates
+            in their native angular units. ``'meters'`` uses the CRS-aware metric and
+            requires a CRS.
 
 
 
@@ -8882,12 +8915,13 @@ class GeometryArray(Sequence[_GeometryT_co]):
             applies to every geometry, or pass one value per geometry. Omitted
             selects a scale-aware tolerance independently for each geometry.
         unit : {'planar', 'meters'}, default None
-            ``None`` (the default) follows the CRS: geographic measurements use
-            geodesic meters, projected measurements use native linear units, and
-            CRS-free measurements use raw coordinate units (area results square the
-            corresponding unit). ``'planar'`` uses Cartesian coordinate space, with
-            geographic coordinates in their native angular units. ``'meters'`` uses
-            the CRS-aware metric and requires a CRS.
+            ``None`` (the default) follows the CRS: geographic shape area and length
+            use ellipsoidal chart-edge measures while point distances use geodesics;
+            projected measurements use native linear units, and CRS-free measurements
+            use raw coordinate units (area results square the corresponding unit).
+            ``'planar'`` uses Cartesian coordinate space, with geographic coordinates
+            in their native angular units. ``'meters'`` uses the CRS-aware metric and
+            requires a CRS.
 
 
 
@@ -8940,12 +8974,13 @@ class GeometryArray(Sequence[_GeometryT_co]):
         Parameters
         ----------
         unit : {'planar', 'meters'}, default None
-            ``None`` (the default) follows the CRS: geographic measurements use
-            geodesic meters, projected measurements use native linear units, and
-            CRS-free measurements use raw coordinate units (area results square the
-            corresponding unit). ``'planar'`` uses Cartesian coordinate space, with
-            geographic coordinates in their native angular units. ``'meters'`` uses
-            the CRS-aware metric and requires a CRS.
+            ``None`` (the default) follows the CRS: geographic shape area and length
+            use ellipsoidal chart-edge measures while point distances use geodesics;
+            projected measurements use native linear units, and CRS-free measurements
+            use raw coordinate units (area results square the corresponding unit).
+            ``'planar'`` uses Cartesian coordinate space, with geographic coordinates
+            in their native angular units. ``'meters'`` uses the CRS-aware metric and
+            requires a CRS.
 
 
 
@@ -8987,12 +9022,13 @@ class GeometryArray(Sequence[_GeometryT_co]):
         Parameters
         ----------
         unit : {'planar', 'meters'}, default None
-            ``None`` (the default) follows the CRS: geographic measurements use
-            geodesic meters, projected measurements use native linear units, and
-            CRS-free measurements use raw coordinate units (area results square the
-            corresponding unit). ``'planar'`` uses Cartesian coordinate space, with
-            geographic coordinates in their native angular units. ``'meters'`` uses
-            the CRS-aware metric and requires a CRS.
+            ``None`` (the default) follows the CRS: geographic shape area and length
+            use ellipsoidal chart-edge measures while point distances use geodesics;
+            projected measurements use native linear units, and CRS-free measurements
+            use raw coordinate units (area results square the corresponding unit).
+            ``'planar'`` uses Cartesian coordinate space, with geographic coordinates
+            in their native angular units. ``'meters'`` uses the CRS-aware metric and
+            requires a CRS.
 
 
 
@@ -9051,12 +9087,13 @@ class GeometryArray(Sequence[_GeometryT_co]):
             coordinates — a scalar applies to every geometry, or pass one value per
             geometry.
         unit : {'planar', 'meters'}, default None
-            ``None`` (the default) follows the CRS: geographic measurements use
-            geodesic meters, projected measurements use native linear units, and
-            CRS-free measurements use raw coordinate units (area results square the
-            corresponding unit). ``'planar'`` uses Cartesian coordinate space, with
-            geographic coordinates in their native angular units. ``'meters'`` uses
-            the CRS-aware metric and requires a CRS.
+            ``None`` (the default) follows the CRS: geographic shape area and length
+            use ellipsoidal chart-edge measures while point distances use geodesics;
+            projected measurements use native linear units, and CRS-free measurements
+            use raw coordinate units (area results square the corresponding unit).
+            ``'planar'`` uses Cartesian coordinate space, with geographic coordinates
+            in their native angular units. ``'meters'`` uses the CRS-aware metric and
+            requires a CRS.
 
 
 
@@ -9253,12 +9290,13 @@ class GeometryArray(Sequence[_GeometryT_co]):
             Fraction in ``(0, 1]`` of each source segment. Keyword-only; a scalar
             applies to every geometry, or pass one value per geometry.
         unit : {'planar', 'meters'}, default None
-            ``None`` (the default) follows the CRS: geographic measurements use
-            geodesic meters, projected measurements use native linear units, and
-            CRS-free measurements use raw coordinate units (area results square the
-            corresponding unit). ``'planar'`` uses Cartesian coordinate space, with
-            geographic coordinates in their native angular units. ``'meters'`` uses
-            the CRS-aware metric and requires a CRS.
+            ``None`` (the default) follows the CRS: geographic shape area and length
+            use ellipsoidal chart-edge measures while point distances use geodesics;
+            projected measurements use native linear units, and CRS-free measurements
+            use raw coordinate units (area results square the corresponding unit).
+            ``'planar'`` uses Cartesian coordinate space, with geographic coordinates
+            in their native angular units. ``'meters'`` uses the CRS-aware metric and
+            requires a CRS.
 
             The override applies only to ``max_length``; ``fraction`` has no unit
             and cannot be combined with ``unit``.
@@ -9407,9 +9445,8 @@ class GeometryArray(Sequence[_GeometryT_co]):
         not cross are returned unchanged. A split ``LineString`` becomes a
         ``MultiLineString`` and a split ``Polygon`` a ``MultiPolygon``, like repair.
         Seam vertices interpolate Z/M at the same chart fraction. On a geographic CRS,
-        geodesic metrics still interpret each stored edge from its endpoints on the
-        CRS ellipsoid, so this operation does not promise geodesic area or length
-        conservation.
+        the split subdivides existing chart edges, so ellipsoidal area and perimeter
+        are conserved to rounding.
 
         Returns
         -------
@@ -9541,12 +9578,13 @@ class GeometryArray(Sequence[_GeometryT_co]):
             multiples of ``distance``, before it is clipped flat.
 
         unit : {'planar', 'meters'}, default None
-            ``None`` (the default) follows the CRS: geographic measurements use
-            geodesic meters, projected measurements use native linear units, and
-            CRS-free measurements use raw coordinate units (area results square the
-            corresponding unit). ``'planar'`` uses Cartesian coordinate space, with
-            geographic coordinates in their native angular units. ``'meters'`` uses
-            the CRS-aware metric and requires a CRS.
+            ``None`` (the default) follows the CRS: geographic shape area and length
+            use ellipsoidal chart-edge measures while point distances use geodesics;
+            projected measurements use native linear units, and CRS-free measurements
+            use raw coordinate units (area results square the corresponding unit).
+            ``'planar'`` uses Cartesian coordinate space, with geographic coordinates
+            in their native angular units. ``'meters'`` uses the CRS-aware metric and
+            requires a CRS.
 
 
 
@@ -10947,12 +10985,13 @@ class SpatialIndex(Mapping[int, Geometry]):
             non-negative. Missing or empty query rows produce empty result
             groups rather than being dropped.
         unit : {'planar', 'meters'}, default None
-            ``None`` (the default) follows the CRS: geographic measurements use
-            geodesic meters, projected measurements use native linear units, and
-            CRS-free measurements use raw coordinate units (area results square the
-            corresponding unit). ``'planar'`` uses Cartesian coordinate space, with
-            geographic coordinates in their native angular units. ``'meters'`` uses
-            the CRS-aware metric and requires a CRS.
+            ``None`` (the default) follows the CRS: geographic shape area and length
+            use ellipsoidal chart-edge measures while point distances use geodesics;
+            projected measurements use native linear units, and CRS-free measurements
+            use raw coordinate units (area results square the corresponding unit).
+            ``'planar'`` uses Cartesian coordinate space, with geographic coordinates
+            in their native angular units. ``'meters'`` uses the CRS-aware metric and
+            requires a CRS.
 
 
 
@@ -11016,12 +11055,13 @@ class SpatialIndex(Mapping[int, Geometry]):
             CRS-natural units. Finite non-negative values and positive infinity
             are accepted; missing query rows produce no pairs.
         unit : {'planar', 'meters'}, default None
-            ``None`` (the default) follows the CRS: geographic measurements use
-            geodesic meters, projected measurements use native linear units, and
-            CRS-free measurements use raw coordinate units (area results square the
-            corresponding unit). ``'planar'`` uses Cartesian coordinate space, with
-            geographic coordinates in their native angular units. ``'meters'`` uses
-            the CRS-aware metric and requires a CRS.
+            ``None`` (the default) follows the CRS: geographic shape area and length
+            use ellipsoidal chart-edge measures while point distances use geodesics;
+            projected measurements use native linear units, and CRS-free measurements
+            use raw coordinate units (area results square the corresponding unit).
+            ``'planar'`` uses Cartesian coordinate space, with geographic coordinates
+            in their native angular units. ``'meters'`` uses the CRS-aware metric and
+            requires a CRS.
 
 
 
@@ -11077,12 +11117,13 @@ class SpatialIndex(Mapping[int, Geometry]):
             accepted; other values must be finite and non-negative. Empty
             geometries never produce a pair.
         unit : {'planar', 'meters'}, default None
-            ``None`` (the default) follows the CRS: geographic measurements use
-            geodesic meters, projected measurements use native linear units, and
-            CRS-free measurements use raw coordinate units (area results square the
-            corresponding unit). ``'planar'`` uses Cartesian coordinate space, with
-            geographic coordinates in their native angular units. ``'meters'`` uses
-            the CRS-aware metric and requires a CRS.
+            ``None`` (the default) follows the CRS: geographic shape area and length
+            use ellipsoidal chart-edge measures while point distances use geodesics;
+            projected measurements use native linear units, and CRS-free measurements
+            use raw coordinate units (area results square the corresponding unit).
+            ``'planar'`` uses Cartesian coordinate space, with geographic coordinates
+            in their native angular units. ``'meters'`` uses the CRS-aware metric and
+            requires a CRS.
 
 
 
@@ -11148,12 +11189,13 @@ class SpatialIndex(Mapping[int, Geometry]):
             non-negative expansions and positive infinity are accepted;
             infinity admits every live non-empty row for a query with bounds.
         unit : {'planar', 'meters'}, default None
-            ``None`` (the default) follows the CRS: geographic measurements use
-            geodesic meters, projected measurements use native linear units, and
-            CRS-free measurements use raw coordinate units (area results square the
-            corresponding unit). ``'planar'`` uses Cartesian coordinate space, with
-            geographic coordinates in their native angular units. ``'meters'`` uses
-            the CRS-aware metric and requires a CRS.
+            ``None`` (the default) follows the CRS: geographic shape area and length
+            use ellipsoidal chart-edge measures while point distances use geodesics;
+            projected measurements use native linear units, and CRS-free measurements
+            use raw coordinate units (area results square the corresponding unit).
+            ``'planar'`` uses Cartesian coordinate space, with geographic coordinates
+            in their native angular units. ``'meters'`` uses the CRS-aware metric and
+            requires a CRS.
 
 
 
@@ -11257,12 +11299,13 @@ class SpatialIndex(Mapping[int, Geometry]):
             Return distances alongside handles — ``(indices, distances)`` for
             a scalar query, ``(matches, distances)`` for an array query.
         unit : {'planar', 'meters'}, default None
-            ``None`` (the default) follows the CRS: geographic measurements use
-            geodesic meters, projected measurements use native linear units, and
-            CRS-free measurements use raw coordinate units (area results square the
-            corresponding unit). ``'planar'`` uses Cartesian coordinate space, with
-            geographic coordinates in their native angular units. ``'meters'`` uses
-            the CRS-aware metric and requires a CRS.
+            ``None`` (the default) follows the CRS: geographic shape area and length
+            use ellipsoidal chart-edge measures while point distances use geodesics;
+            projected measurements use native linear units, and CRS-free measurements
+            use raw coordinate units (area results square the corresponding unit).
+            ``'planar'`` uses Cartesian coordinate space, with geographic coordinates
+            in their native angular units. ``'meters'`` uses the CRS-aware metric and
+            requires a CRS.
 
 
         exclusive : bool, default False
@@ -15460,17 +15503,21 @@ def area(
     For a ``GeometryCollection``, overlapping members count once, as the area
     of their union. Parts of a valid ``MultiPolygon`` cannot overlap.
 
+    For geographic geometries, area is the ellipsoidal area of the region whose
+    edges are straight in longitude/latitude.
+
     Parameters
     ----------
     geom : Geometry, GeometryArray, or iterable of geometry-like values
         Input geometry, array, or iterable materialized as an array.
     unit : {'planar', 'meters'}, default None
-        ``None`` (the default) follows the CRS: geographic measurements use
-        geodesic meters, projected measurements use native linear units, and
-        CRS-free measurements use raw coordinate units (area results square the
-        corresponding unit). ``'planar'`` uses Cartesian coordinate space, with
-        geographic coordinates in their native angular units. ``'meters'`` uses
-        the CRS-aware metric and requires a CRS.
+        ``None`` (the default) follows the CRS: geographic shape area and length
+        use ellipsoidal chart-edge measures while point distances use geodesics;
+        projected measurements use native linear units, and CRS-free measurements
+        use raw coordinate units (area results square the corresponding unit).
+        ``'planar'`` uses Cartesian coordinate space, with geographic coordinates
+        in their native angular units. ``'meters'`` uses the CRS-aware metric and
+        requires a CRS.
 
 
 
@@ -15519,17 +15566,21 @@ def length(
     For a ``GeometryCollection``, length sums every member's length or
     perimeter, including overlapping members.
 
+    For geographic geometries, length and perimeter are measured along edges
+    straight in longitude/latitude on the CRS ellipsoid.
+
     Parameters
     ----------
     geom : Geometry, GeometryArray, or iterable of geometry-like values
         Input geometry, array, or iterable materialized as an array.
     unit : {'planar', 'meters'}, default None
-        ``None`` (the default) follows the CRS: geographic measurements use
-        geodesic meters, projected measurements use native linear units, and
-        CRS-free measurements use raw coordinate units (area results square the
-        corresponding unit). ``'planar'`` uses Cartesian coordinate space, with
-        geographic coordinates in their native angular units. ``'meters'`` uses
-        the CRS-aware metric and requires a CRS.
+        ``None`` (the default) follows the CRS: geographic shape area and length
+        use ellipsoidal chart-edge measures while point distances use geodesics;
+        projected measurements use native linear units, and CRS-free measurements
+        use raw coordinate units (area results square the corresponding unit).
+        ``'planar'`` uses Cartesian coordinate space, with geographic coordinates
+        in their native angular units. ``'meters'`` uses the CRS-aware metric and
+        requires a CRS.
 
 
 
@@ -15580,12 +15631,13 @@ def length_3d(
     geom : Geometry, GeometryArray, or iterable of geometry-like values
         Input geometry, array, or iterable materialized as an array.
     unit : {'planar', 'meters'}, default None
-        ``None`` (the default) follows the CRS: geographic measurements use
-        geodesic meters, projected measurements use native linear units, and
-        CRS-free measurements use raw coordinate units (area results square the
-        corresponding unit). ``'planar'`` uses Cartesian coordinate space, with
-        geographic coordinates in their native angular units. ``'meters'`` uses
-        the CRS-aware metric and requires a CRS.
+        ``None`` (the default) follows the CRS: geographic shape area and length
+        use ellipsoidal chart-edge measures while point distances use geodesics;
+        projected measurements use native linear units, and CRS-free measurements
+        use raw coordinate units (area results square the corresponding unit).
+        ``'planar'`` uses Cartesian coordinate space, with geographic coordinates
+        in their native angular units. ``'meters'`` uses the CRS-aware metric and
+        requires a CRS.
 
 
         Geographic CRSs are not supported by 3D Euclidean metrics.
@@ -15930,12 +15982,13 @@ def point_between(
     path : {'geodesic', 'rhumb'}, default 'geodesic'
         Route model. Rhumb paths require a geographic CRS and use meters.
     unit : {'planar', 'meters'}, default None
-        ``None`` (the default) follows the CRS: geographic measurements use
-        geodesic meters, projected measurements use native linear units, and
-        CRS-free measurements use raw coordinate units (area results square the
-        corresponding unit). ``'planar'`` uses Cartesian coordinate space, with
-        geographic coordinates in their native angular units. ``'meters'`` uses
-        the CRS-aware metric and requires a CRS.
+        ``None`` (the default) follows the CRS: geographic shape area and length
+        use ellipsoidal chart-edge measures while point distances use geodesics;
+        projected measurements use native linear units, and CRS-free measurements
+        use raw coordinate units (area results square the corresponding unit).
+        ``'planar'`` uses Cartesian coordinate space, with geographic coordinates
+        in their native angular units. ``'meters'`` uses the CRS-aware metric and
+        requires a CRS.
 
 
         ``path='rhumb'`` uses meters and does not accept a unit override.
@@ -17046,12 +17099,13 @@ def distance(
         Scalar and ``GeometryArray`` broadcast pairwise; must share CRS and
         coordinate epoch.
     unit : {'planar', 'meters'}, default None
-        ``None`` (the default) follows the CRS: geographic measurements use
-        geodesic meters, projected measurements use native linear units, and
-        CRS-free measurements use raw coordinate units (area results square the
-        corresponding unit). ``'planar'`` uses Cartesian coordinate space, with
-        geographic coordinates in their native angular units. ``'meters'`` uses
-        the CRS-aware metric and requires a CRS.
+        ``None`` (the default) follows the CRS: geographic shape area and length
+        use ellipsoidal chart-edge measures while point distances use geodesics;
+        projected measurements use native linear units, and CRS-free measurements
+        use raw coordinate units (area results square the corresponding unit).
+        ``'planar'`` uses Cartesian coordinate space, with geographic coordinates
+        in their native angular units. ``'meters'`` uses the CRS-aware metric and
+        requires a CRS.
 
 
 
@@ -17132,12 +17186,13 @@ def distance_3d(
         Scalar and ``GeometryArray`` broadcast pairwise; must share CRS and
         coordinate epoch.
     unit : {'planar', 'meters'}, default None
-        ``None`` (the default) follows the CRS: geographic measurements use
-        geodesic meters, projected measurements use native linear units, and
-        CRS-free measurements use raw coordinate units (area results square the
-        corresponding unit). ``'planar'`` uses Cartesian coordinate space, with
-        geographic coordinates in their native angular units. ``'meters'`` uses
-        the CRS-aware metric and requires a CRS.
+        ``None`` (the default) follows the CRS: geographic shape area and length
+        use ellipsoidal chart-edge measures while point distances use geodesics;
+        projected measurements use native linear units, and CRS-free measurements
+        use raw coordinate units (area results square the corresponding unit).
+        ``'planar'`` uses Cartesian coordinate space, with geographic coordinates
+        in their native angular units. ``'meters'`` uses the CRS-aware metric and
+        requires a CRS.
 
 
 
@@ -17221,12 +17276,13 @@ def hausdorff_distance(
         ``1e-9``. Omit it for the numerical geodesic Hausdorff path; geodesic
         results do not provide this certification contract.
     unit : {'planar', 'meters'}, default None
-        ``None`` (the default) follows the CRS: geographic measurements use
-        geodesic meters, projected measurements use native linear units, and
-        CRS-free measurements use raw coordinate units (area results square the
-        corresponding unit). ``'planar'`` uses Cartesian coordinate space, with
-        geographic coordinates in their native angular units. ``'meters'`` uses
-        the CRS-aware metric and requires a CRS.
+        ``None`` (the default) follows the CRS: geographic shape area and length
+        use ellipsoidal chart-edge measures while point distances use geodesics;
+        projected measurements use native linear units, and CRS-free measurements
+        use raw coordinate units (area results square the corresponding unit).
+        ``'planar'`` uses Cartesian coordinate space, with geographic coordinates
+        in their native angular units. ``'meters'`` uses the CRS-aware metric and
+        requires a CRS.
 
 
 
@@ -17316,12 +17372,13 @@ def frechet_distance(
         tightening the discrete vertex metric toward the continuous
         one. Omitted measures vertices only.
     unit : {'planar', 'meters'}, default None
-        ``None`` (the default) follows the CRS: geographic measurements use
-        geodesic meters, projected measurements use native linear units, and
-        CRS-free measurements use raw coordinate units (area results square the
-        corresponding unit). ``'planar'`` uses Cartesian coordinate space, with
-        geographic coordinates in their native angular units. ``'meters'`` uses
-        the CRS-aware metric and requires a CRS.
+        ``None`` (the default) follows the CRS: geographic shape area and length
+        use ellipsoidal chart-edge measures while point distances use geodesics;
+        projected measurements use native linear units, and CRS-free measurements
+        use raw coordinate units (area results square the corresponding unit).
+        ``'planar'`` uses Cartesian coordinate space, with geographic coordinates
+        in their native angular units. ``'meters'`` uses the CRS-aware metric and
+        requires a CRS.
 
 
 
@@ -17432,12 +17489,13 @@ def nearest_points(
         Scalar and ``GeometryArray`` broadcast pairwise; must share CRS and
         coordinate epoch. Unpack order is point on ``left``, then on ``right``.
     unit : {'planar', 'meters'}, default None
-        ``None`` (the default) follows the CRS: geographic measurements use
-        geodesic meters, projected measurements use native linear units, and
-        CRS-free measurements use raw coordinate units (area results square the
-        corresponding unit). ``'planar'`` uses Cartesian coordinate space, with
-        geographic coordinates in their native angular units. ``'meters'`` uses
-        the CRS-aware metric and requires a CRS.
+        ``None`` (the default) follows the CRS: geographic shape area and length
+        use ellipsoidal chart-edge measures while point distances use geodesics;
+        projected measurements use native linear units, and CRS-free measurements
+        use raw coordinate units (area results square the corresponding unit).
+        ``'planar'`` uses Cartesian coordinate space, with geographic coordinates
+        in their native angular units. ``'meters'`` uses the CRS-aware metric and
+        requires a CRS.
 
 
 
@@ -17544,12 +17602,13 @@ def shortest_line(
         Scalar and ``GeometryArray`` broadcast pairwise; must share CRS and
         coordinate epoch.
     unit : {'planar', 'meters'}, default None
-        ``None`` (the default) follows the CRS: geographic measurements use
-        geodesic meters, projected measurements use native linear units, and
-        CRS-free measurements use raw coordinate units (area results square the
-        corresponding unit). ``'planar'`` uses Cartesian coordinate space, with
-        geographic coordinates in their native angular units. ``'meters'`` uses
-        the CRS-aware metric and requires a CRS.
+        ``None`` (the default) follows the CRS: geographic shape area and length
+        use ellipsoidal chart-edge measures while point distances use geodesics;
+        projected measurements use native linear units, and CRS-free measurements
+        use raw coordinate units (area results square the corresponding unit).
+        ``'planar'`` uses Cartesian coordinate space, with geographic coordinates
+        in their native angular units. ``'meters'`` uses the CRS-aware metric and
+        requires a CRS.
 
 
 
@@ -17616,6 +17675,9 @@ def split(
 ) -> GeometryArray[LineString | None]:
     """Split lineal geometry by point splitter(s).
 
+    Each piece retains source vertices, including consecutive equal-X/Y
+    vertices whose active Z/M ordinates differ.
+
     Parameters
     ----------
     geom : Geometry or GeometryArray
@@ -17629,9 +17691,6 @@ def split(
         coordinate units when CRS-free. The default ``0.0``
         is exact topological membership (a point splits only when it lies
         exactly on the linework) with identity deduplication.
-
-    Each piece retains source vertices, including consecutive equal-X/Y
-    vertices whose active Z/M ordinates differ.
 
     Returns
     -------
@@ -17703,12 +17762,13 @@ def dwithin(
         applies to every pair; with an array operand, an iterable supplies one
         threshold per result row. Positive infinity is accepted.
     unit : {'planar', 'meters'}, default None
-        ``None`` (the default) follows the CRS: geographic measurements use
-        geodesic meters, projected measurements use native linear units, and
-        CRS-free measurements use raw coordinate units (area results square the
-        corresponding unit). ``'planar'`` uses Cartesian coordinate space, with
-        geographic coordinates in their native angular units. ``'meters'`` uses
-        the CRS-aware metric and requires a CRS.
+        ``None`` (the default) follows the CRS: geographic shape area and length
+        use ellipsoidal chart-edge measures while point distances use geodesics;
+        projected measurements use native linear units, and CRS-free measurements
+        use raw coordinate units (area results square the corresponding unit).
+        ``'planar'`` uses Cartesian coordinate space, with geographic coordinates
+        in their native angular units. ``'meters'`` uses the CRS-aware metric and
+        requires a CRS.
 
 
 
@@ -17832,12 +17892,13 @@ def nearest(
         distances)`` for a scalar query, ``(matches, distances)`` for an
         array query.
     unit : {'planar', 'meters'}, default None
-        ``None`` (the default) follows the CRS: geographic measurements use
-        geodesic meters, projected measurements use native linear units, and
-        CRS-free measurements use raw coordinate units (area results square the
-        corresponding unit). ``'planar'`` uses Cartesian coordinate space, with
-        geographic coordinates in their native angular units. ``'meters'`` uses
-        the CRS-aware metric and requires a CRS.
+        ``None`` (the default) follows the CRS: geographic shape area and length
+        use ellipsoidal chart-edge measures while point distances use geodesics;
+        projected measurements use native linear units, and CRS-free measurements
+        use raw coordinate units (area results square the corresponding unit).
+        ``'planar'`` uses Cartesian coordinate space, with geographic coordinates
+        in their native angular units. ``'meters'`` uses the CRS-aware metric and
+        requires a CRS.
 
 
     exclusive : bool, default False
@@ -17910,12 +17971,13 @@ def join(
         non-negative values and positive infinity are accepted; missing or
         empty rows produce no pairs.
     unit : {'planar', 'meters'}, default None
-        ``None`` (the default) follows the CRS: geographic measurements use
-        geodesic meters, projected measurements use native linear units, and
-        CRS-free measurements use raw coordinate units (area results square the
-        corresponding unit). ``'planar'`` uses Cartesian coordinate space, with
-        geographic coordinates in their native angular units. ``'meters'`` uses
-        the CRS-aware metric and requires a CRS.
+        ``None`` (the default) follows the CRS: geographic shape area and length
+        use ellipsoidal chart-edge measures while point distances use geodesics;
+        projected measurements use native linear units, and CRS-free measurements
+        use raw coordinate units (area results square the corresponding unit).
+        ``'planar'`` uses Cartesian coordinate space, with geographic coordinates
+        in their native angular units. ``'meters'`` uses the CRS-aware metric and
+        requires a CRS.
 
 
 
