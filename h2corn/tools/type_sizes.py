@@ -38,23 +38,37 @@ class Layout:
 def capture(output: Path, target_directory: Path) -> None:
     """Build the crate in an isolated target directory and retain rustc output."""
     environment = os.environ.copy()
-    prior_flags = environment.get('RUSTFLAGS', '')
-    environment['RUSTFLAGS'] = f'{prior_flags} -Zprint-type-sizes'.strip()
+    environment.setdefault('PYO3_PYTHON', sys.executable)
     environment['CARGO_TARGET_DIR'] = str(target_directory)
-    # A dead local sccache daemon must not make the layout oracle unavailable.
-    environment.pop('RUSTC_WRAPPER', None)
-    result = subprocess.run(
-        ['cargo', 'build', '--release', '--lib'],
-        cwd=REPOSITORY,
-        env=environment,
-        text=True,
-        capture_output=True,
-        check=False,
-    )
     output.parent.mkdir(parents=True, exist_ok=True)
-    output.write_text(result.stdout + result.stderr)
-    if result.returncode:
-        raise RuntimeError(f'capture build failed; compiler output is in {output}')
+    captured: list[str] = []
+    # Cargo does not replay this rustc stdout on a fresh target.
+    for command in (
+        ['cargo', 'clean', '--release', '-p', 'h2corn'],
+        [
+            'cargo',
+            'rustc',
+            '--locked',
+            '--release',
+            '--lib',
+            '--',
+            '-Zprint-type-sizes',
+        ],
+    ):
+        result = subprocess.run(
+            command,
+            cwd=REPOSITORY,
+            env=environment,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        captured.append(result.stdout + result.stderr)
+        output.write_text(''.join(captured))
+        if result.returncode:
+            raise RuntimeError(
+                f'capture command failed; compiler output is in {output}'
+            )
     if not parse_capture(output):
         raise RuntimeError(
             f'capture contained no type sizes; compiler output is in {output}'
