@@ -18,7 +18,6 @@ use super::{
 /// decides almost every call; the interval filter and the dyadic path behind
 /// it take what it declines, including anything non-finite.
 pub(in crate::geometry) fn orient2d_float(a: XY, b: XY, c: XY) -> Option<ExactSign> {
-    const ERRBOUND: f64 = (3.0 + 16.0 * f64::EPSILON) * f64::EPSILON;
     // Components in [2^-450, 2^450] lie on the 2^-502 lattice.
     // Degree-two products and cancellations cannot underflow; the upper
     // bound also leaves room for the determinant sum and its error bound.
@@ -31,6 +30,18 @@ pub(in crate::geometry) fn orient2d_float(a: XY, b: XY, c: XY) -> Option<ExactSi
     {
         return None;
     }
+    orient2d_normal_components(acx, acy, bcx, bcy)
+}
+
+/// Stage-A determinant filter for rounded source-coordinate differences
+/// already admitted to the component domain of `orient2d_float`.
+pub(in crate::geometry) fn orient2d_normal_components(
+    acx: f64,
+    acy: f64,
+    bcx: f64,
+    bcy: f64,
+) -> Option<ExactSign> {
+    const ERRBOUND: f64 = (3.0 + 16.0 * f64::EPSILON) * f64::EPSILON;
     let (left, right) = (acx * bcy, acy * bcx);
     let det = left - right;
     let detsum = left.abs() + right.abs();

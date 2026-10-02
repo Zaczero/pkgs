@@ -9,7 +9,9 @@ use rstar::AABB;
 use rstar::primitives::{GeomWithData, Rectangle};
 
 use super::earcut_bridges::BridgeArena;
+use super::exact::orient2d_normal_components;
 use crate::error::Result;
+use crate::geometry::exact_arith::ExactSign;
 #[cfg(test)]
 use crate::geometry::orientation_xy;
 use crate::geometry::{
@@ -879,6 +881,7 @@ struct EarCandidateTree {
     reflex: Vec<bool>,
     // Removal preserves original ring ordinal order, including wraparound.
     convex: BTreeSet<NodeId>,
+    normal_arithmetic: bool,
 }
 
 #[expect(
@@ -932,6 +935,16 @@ impl EarCandidateTree {
         let mut aliases = Vec::with_capacity(points.len());
         let mut live = vec![0_usize; points.len()];
         let mut reflex = Vec::with_capacity(points.len());
+        const MIN_COORDINATE: f64 = f64::from_bits((1023 - 200) << 52);
+        const MAX_COORDINATE: f64 = f64::from_bits((1023 + 200) << 52);
+        // Such stored ordinates lie on the 2^-252 lattice, so any nonzero
+        // rounded difference is at least 2^-252 and at most 2^201. Box
+        // extrema select stored ordinates and inherit the same certificate.
+        let normal_arithmetic = points.iter().all(|point| {
+            [point.x, point.y].iter().all(|value| {
+                *value == 0.0 || (MIN_COORDINATE..=MAX_COORDINATE).contains(&value.abs())
+            })
+        });
         for (index, &point) in points.iter().enumerate() {
             let vertex = NodeId::from_index(index);
             let representative =
@@ -962,6 +975,7 @@ impl EarCandidateTree {
                 .filter_map(|(index, &reflex)| (!reflex).then_some(NodeId::from_index(index)))
                 .collect(),
             reflex,
+            normal_arithmetic,
         };
         build(&mut tree, points, &live, &mut order, None);
         tree.leaves = aliases
@@ -1026,11 +1040,17 @@ impl EarCandidateTree {
         }
     }
 
-    fn any_in(&self, bounds: Bounds, mut predicate: impl FnMut(NodeId) -> bool) -> bool {
+    fn any_in(
+        &self,
+        bounds: Bounds,
+        triangle: [XY; 3],
+        mut predicate: impl FnMut(NodeId) -> bool,
+    ) -> bool {
         fn visit(
             tree: &EarCandidateTree,
             index: usize,
             bounds: Bounds,
+            triangle: &[XY; 3],
             predicate: &mut impl FnMut(NodeId) -> bool,
         ) -> bool {
             #[cfg(test)]
@@ -1042,11 +1062,40 @@ impl EarCandidateTree {
             match node.branch {
                 EarCandidateBranch::Vertex(vertex) => predicate(vertex),
                 EarCandidateBranch::Children([left, right]) => {
-                    visit(tree, left, bounds, predicate) || visit(tree, right, bounds, predicate)
+                    if tree.normal_arithmetic {
+                        for (a, b) in triangle.iter().zip(triangle.iter().cycle().skip(1)) {
+                            // Maximize the edge determinant over this box.
+                            // A certified negative maximum excludes it; zero
+                            // and uncertain signs preserve boundary witnesses.
+                            let corner = XY::new(
+                                if b.y < a.y {
+                                    node.bounds.maxx()
+                                } else {
+                                    node.bounds.minx()
+                                },
+                                if b.x > a.x {
+                                    node.bounds.maxy()
+                                } else {
+                                    node.bounds.miny()
+                                },
+                            );
+                            if orient2d_normal_components(
+                                a.x - corner.x,
+                                a.y - corner.y,
+                                b.x - corner.x,
+                                b.y - corner.y,
+                            ) == Some(ExactSign::Negative)
+                            {
+                                return false;
+                            }
+                        }
+                    }
+                    visit(tree, left, bounds, triangle, predicate)
+                        || visit(tree, right, bounds, triangle, predicate)
                 },
             }
         }
-        visit(self, 0, bounds, &mut predicate)
+        visit(self, 0, bounds, &triangle, &mut predicate)
     }
 }
 
@@ -1156,7 +1205,7 @@ fn ear_contains_vertex(
     let maxy = a.y.max(b.y).max(c.y);
     if let Some(candidates) = &arena.candidates {
         let bounds = Bounds::new_raw(minx, miny, maxx, maxy);
-        return candidates.any_in(bounds, |candidate| {
+        return candidates.any_in(bounds, [a.xy(), b.xy(), c.xy()], |candidate| {
             candidate_inside_ear(
                 candidate,
                 prev,
