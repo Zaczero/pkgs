@@ -954,6 +954,7 @@ fn partition_unique_segments_with_budget<'a, const ORDINATES: bool>(
         winding_seed: None,
         ordinate_bindings,
         kept_nodes: KeptNodes::Selected,
+        embedding_domain: super::embedding::EmbeddingDomain::Plane,
     })
 }
 

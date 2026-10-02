@@ -3,7 +3,7 @@ use std::ops::ControlFlow;
 
 use crate::error::{ResourceError, Result};
 use crate::geographic::lonlat::invalid_lonlat_error;
-use crate::geographic::{GeographicInputs, GeographicViewError};
+use crate::geographic::{GeographicFrame, GeographicInputs, GeographicViewError};
 use crate::geometry::overlay::{
     ExactSourceInventory, OverlayOp, Strictness, build_certified_overlay_shape,
     intersect_rectangular_polygonal, merge_chains, overlay_declared_axes, rect_polygon,
@@ -327,6 +327,7 @@ fn bounds_disjoint(left: Bounds, right: Bounds) -> bool {
 /// while retaining vertices that still define geographic metric edges.
 pub(crate) fn overlay_all_geographic_chart<S: Borrow<Shape>>(
     geometries: &[S],
+    frame: GeographicFrame,
     op: OverlayOp,
     strictness: Strictness,
 ) -> Result<Shape> {
@@ -343,7 +344,7 @@ pub(crate) fn overlay_all_geographic_chart<S: Borrow<Shape>>(
         op,
         strictness,
         true,
-        true,
+        Some(frame),
         ExactPartitionBudget::Charge,
     )
 }
@@ -434,7 +435,7 @@ fn exact_cartesian_overlay(
         operation,
         strictness,
         bounds_certificates,
-        false,
+        None,
         partition_budget,
     )
 }
@@ -469,7 +470,7 @@ fn exact_cartesian_binary_overlay(
         operation,
         strictness,
         bounds_certificates,
-        false,
+        None,
         partition_budget,
     )
 }
@@ -644,7 +645,7 @@ fn exact_partition_overlay_with_bounds_certificates(
     operation: OverlayOp,
     strictness: Strictness,
     bounds_certificates: bool,
-    preserve_geographic_vertices: bool,
+    geographic: Option<GeographicFrame>,
     partition_budget: ExactPartitionBudget,
 ) -> Result<Shape> {
     puntal_nary_lane!(&inputs, operation, strictness, None);
@@ -671,7 +672,7 @@ fn exact_partition_overlay_with_bounds_certificates(
             operation,
             declared_axes,
             strict,
-            preserve_geographic_vertices,
+            geographic,
             partition_budget,
         )?,
         Some(components) => {
@@ -686,7 +687,7 @@ fn exact_partition_overlay_with_bounds_certificates(
                     operation,
                     declared_axes,
                     strict,
-                    preserve_geographic_vertices,
+                    geographic,
                     partition_budget,
                 )?);
             }
@@ -1792,7 +1793,7 @@ fn exact_partition_overlay(
     operation: OverlayOp,
     declared_axes: CoordinateAxes,
     strict: bool,
-    preserve_geographic_vertices: bool,
+    geographic: Option<GeographicFrame>,
     partition_budget: ExactPartitionBudget,
 ) -> Result<Shape> {
     let union = if operation == OverlayOp::Union {
@@ -1812,10 +1813,10 @@ fn exact_partition_overlay(
         },
         ExactPartitionBudget::Ignore => inventory.partition_without_budget()?,
     };
-    if preserve_geographic_vertices {
+    if let Some(frame) = geographic {
         // Chart-collinear vertices still define separate geographic metric
         // edges, so exact planar simplification must not merge them.
-        partition.keep_all_nodes();
+        partition.set_geographic_frame(frame);
     }
     inventory.overlay_shape(&partition, operation, declared_axes, strict)
 }
@@ -1834,7 +1835,7 @@ pub(super) fn full_partition_cartesian_overlay(
         operation,
         overlay_declared_axes(inputs, operation),
         strictness.is_strict(),
-        false,
+        None,
         ExactPartitionBudget::Charge,
     )?;
     Ok(if shape.is_empty() {
@@ -1894,7 +1895,7 @@ pub(in crate::geometry) fn overlay_all_geographic_from(
             op,
             strictness,
             bounds_certificates,
-            true,
+            Some(originals.frame()),
             ExactPartitionBudget::Charge,
         );
     }
@@ -2370,7 +2371,6 @@ pub(crate) const fn empty_shape_for_dimension_with_axes(
 #[cfg(test)]
 mod geographic_chart_route_tests {
     use super::*;
-    use crate::geographic::GeographicFrame;
     use crate::geometry::{Polygon, Ring, graph_relate_shapes};
 
     fn rectangle(west: f64, south: f64, east: f64, north: f64) -> Shape {

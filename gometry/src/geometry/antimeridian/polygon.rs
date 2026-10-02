@@ -584,6 +584,7 @@ fn split_polygon_inner_in_mode(
             } else {
                 crate::geometry::overlay_all_geographic_chart(
                     &operands,
+                    frame,
                     crate::geometry::OverlayOp::Difference,
                     Strictness::Strict,
                 )?

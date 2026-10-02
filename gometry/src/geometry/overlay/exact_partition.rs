@@ -564,6 +564,7 @@ pub(in crate::geometry) struct ExactPartition<'a> {
     winding_seed: Option<(u32, Vec<i64>)>,
     ordinate_bindings: Option<OrdinateBindings>,
     kept_nodes: KeptNodes,
+    embedding_domain: embedding::EmbeddingDomain,
 }
 
 /// Source carriers through each node, retained only for Z/M interpolation.
@@ -990,7 +991,7 @@ impl ExactSourceInventory {
                 &self.isolated,
             )?,
         };
-        Ok(self.finish_partition(partition))
+        Ok(self.finish_partition(partition, embedding::EmbeddingDomain::Plane))
     }
 
     fn partition_in_window(
@@ -1017,7 +1018,7 @@ impl ExactSourceInventory {
                 budget,
             )?
         };
-        Ok(self.finish_partition(partition))
+        Ok(self.finish_partition(partition, embedding::EmbeddingDomain::Rectangle(bounds)))
     }
 
     #[expect(
@@ -1198,7 +1199,11 @@ impl ExactSourceInventory {
         clippy::indexing_slicing,
         reason = "span owners and node IDs are admitted by the same exact partition"
     )]
-    fn finish_partition<'a>(&self, mut partition: ExactPartition<'a>) -> ExactPartition<'a> {
+    fn finish_partition<'a>(
+        &self,
+        mut partition: ExactPartition<'a>,
+        embedding_domain: embedding::EmbeddingDomain,
+    ) -> ExactPartition<'a> {
         #[cfg(test)]
         update_partition_metrics(|metrics| {
             metrics.canonical_spans = partition.spans.len();
@@ -1217,6 +1222,7 @@ impl ExactSourceInventory {
             }
         }
         partition.kept_nodes = KeptNodes::OffRings(on_ring);
+        partition.embedding_domain = embedding_domain;
         partition
     }
 
@@ -3715,8 +3721,12 @@ impl ExactPartition<'_> {
         self.points.len()
     }
 
-    pub(in crate::geometry) fn keep_all_nodes(&mut self) {
+    pub(in crate::geometry) fn set_geographic_frame(
+        &mut self,
+        frame: crate::geographic::GeographicFrame,
+    ) {
         self.kept_nodes = KeptNodes::All;
+        self.embedding_domain = embedding::EmbeddingDomain::Geographic(frame);
     }
 
     /// A node's nearest-even binary64 point.

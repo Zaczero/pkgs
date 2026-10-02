@@ -21,11 +21,76 @@ use std::ops::ControlFlow;
 use super::rays::{EmittedPoints, shoot_left};
 use super::{ExactPartition, NodeId};
 use crate::collections::try_hash_map_with_capacity;
+use crate::geographic::{GeographicFrame, Latitude, SeamIdentity};
 use crate::geometry::arrangement::compare_departures;
 use crate::geometry::overlay::exact_partition::emission::emitted_pair_preserves_incidence;
 use crate::geometry::{
-    GeometryErrorKind, PointKey, Result, Segment, XY, for_each_candidate_pair, single_chain,
+    Bounds, GeometryErrorKind, PointKey, Result, Segment, XY, for_each_candidate_pair, single_chain,
 };
+
+/// The coordinate domain of a partition's output embedding.
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "A7 consumes the stored domain during candidate admission"
+    )
+)]
+#[derive(Clone, Copy, Debug)]
+pub(super) enum EmbeddingDomain {
+    Plane,
+    Rectangle(Bounds),
+    Geographic(GeographicFrame),
+}
+
+impl EmbeddingDomain {
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "A7 wires candidate filtering to the partition's embedding domain"
+        )
+    )]
+    pub(super) fn admits(self, nearest: XY, candidate: XY) -> bool {
+        if !candidate.x.is_finite() || !candidate.y.is_finite() {
+            return false;
+        }
+        match self {
+            Self::Plane => true,
+            Self::Rectangle(bounds) => bounds.contains_xy(candidate),
+            Self::Geographic(frame) => {
+                let longitude_axis = frame.longitude();
+                let half_period = longitude_axis.half_period();
+                if candidate.x < -half_period || candidate.x > half_period {
+                    return false;
+                }
+                let Ok(latitude) = Latitude::try_new(frame, candidate.y) else {
+                    return false;
+                };
+                let Ok(longitude) = longitude_axis.canonicalize(candidate.x) else {
+                    return false;
+                };
+                if longitude.identity(longitude_axis) == SeamIdentity::Seam {
+                    let Ok(nearest_longitude) = longitude_axis.canonicalize(nearest.x) else {
+                        return false;
+                    };
+                    if nearest_longitude.identity(longitude_axis) != SeamIdentity::Seam {
+                        return false;
+                    }
+                }
+                if latitude.identity(frame) == SeamIdentity::Pole {
+                    let Ok(nearest_latitude) = Latitude::try_new(frame, nearest.y) else {
+                        return false;
+                    };
+                    if nearest_latitude.identity(frame) != SeamIdentity::Pole {
+                        return false;
+                    }
+                }
+                true
+            },
+        }
+    }
+}
 
 /// The coordinates used to check an emission. Nearest borrows the immutable
 /// arena table; an accepted search assignment owns a patched copy.

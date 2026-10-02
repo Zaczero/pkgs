@@ -1,5 +1,93 @@
 use super::*;
 
+#[test]
+fn planar_embedding_domain_admits_finite_coordinates_only() {
+    let domain = embedding::EmbeddingDomain::Plane;
+    let nearest = XY::new(0.0, 0.0);
+    assert!(domain.admits(nearest, nearest));
+    assert!(domain.admits(XY::new(0.0, 0.0), XY::new(f64::MAX, f64::MIN)));
+    assert!(!domain.admits(XY::new(0.0, 0.0), XY::new(f64::INFINITY, 0.0)));
+    assert!(!domain.admits(XY::new(0.0, 0.0), XY::new(0.0, f64::NAN)));
+}
+
+#[test]
+fn rectangle_embedding_domain_keeps_candidates_in_the_closed_window() {
+    let bounds = Bounds::new(-2.0, -3.0, 4.0, 5.0).unwrap();
+    let domain = embedding::EmbeddingDomain::Rectangle(bounds);
+    let nearest = XY::new(0.0, 0.0);
+    assert!(domain.admits(nearest, nearest));
+    assert!(domain.admits(nearest, XY::new(-2.0, 5.0)));
+    assert!(domain.admits(nearest, XY::new(4.0, -3.0)));
+    assert!(!domain.admits(nearest, XY::new((-2.0_f64).next_down(), 0.0)));
+    assert!(!domain.admits(nearest, XY::new(4.0_f64.next_up(), 0.0)));
+}
+
+#[test]
+fn geographic_embedding_domain_uses_frame_limits_and_existing_singular_lines() {
+    use crate::geographic::{AngularFactor, GeographicFrame};
+
+    let grad = AngularFactor::try_new("test angle", std::f64::consts::PI / 200.0).unwrap();
+    let frame = GeographicFrame::try_new(grad, grad, 0.0).unwrap();
+    let domain = embedding::EmbeddingDomain::Geographic(frame);
+    let half_period = frame.longitude().half_period();
+    let pole = frame.pole();
+    let ordinary = XY::new(0.0, 0.0);
+
+    assert!(domain.admits(ordinary, ordinary));
+    assert!(domain.admits(ordinary, XY::new(25.0, 40.0)));
+    assert!(!domain.admits(ordinary, XY::new(half_period, 0.0)));
+    assert!(!domain.admits(ordinary, XY::new(0.0, pole)));
+    assert!(!domain.admits(ordinary, XY::new(half_period.next_up(), 0.0)));
+    assert!(!domain.admits(ordinary, XY::new(0.0, pole.next_up().next_up())));
+
+    let seam = XY::new(-half_period, 0.0);
+    assert!(domain.admits(seam, XY::new(-half_period, 1.0)));
+    let pole_node = XY::new(0.0, pole);
+    assert!(domain.admits(pole_node, XY::new(1.0, pole)));
+    assert!(domain.admits(pole_node, XY::new(1.0, pole.next_up())));
+}
+
+#[test]
+fn rectangle_partition_uses_its_clip_window_as_embedding_domain() {
+    let Shape::Polygon(polygon) =
+        crate::io::parse_wkt("POLYGON ((-1 -1,1 -1,1 1,-1 1,-1 -1))").unwrap()
+    else {
+        panic!("expected polygon");
+    };
+    let bounds = Bounds::new(-0.5, -0.5, 0.5, 0.5).unwrap();
+    let rectangle = crate::geometry::overlay::rect::rect_polygon(bounds).unwrap();
+    let (inventory, intervals) =
+        ExactSourceInventory::from_polygon_rect_clip(&[&polygon], &rectangle, bounds, false)
+            .unwrap()
+            .expect("the rectangle clips the polygon");
+    let mut budget = ExpansionBudget::new("clip_by_rect", "embedding domain test");
+    let partition = inventory
+        .partition_in_window(&intervals, bounds, &mut budget)
+        .unwrap();
+
+    assert!(matches!(
+        partition.embedding_domain,
+        embedding::EmbeddingDomain::Rectangle(actual)
+            if actual.into_array() == bounds.into_array()
+    ));
+}
+
+#[test]
+fn geographic_frame_installs_domain_and_preserves_all_source_vertices() {
+    let source = crate::io::parse_wkt("LINESTRING (0 0,2 0)").unwrap();
+    let inventory = ExactSourceInventory::from_shapes(&[&source]).unwrap();
+    let mut budget = ExpansionBudget::new("overlay", "geographic embedding domain test");
+    let mut partition = inventory.partition(&mut budget).unwrap();
+    let frame = crate::geographic::GeographicFrame::crs84();
+    partition.set_geographic_frame(frame);
+
+    assert!(matches!(
+        partition.embedding_domain,
+        embedding::EmbeddingDomain::Geographic(actual) if actual == frame
+    ));
+    assert!(matches!(partition.kept_nodes, KeptNodes::All));
+}
+
 fn certify_plan(
     plan: &BoundaryPlan,
     partition: &ExactPartition<'_>,
