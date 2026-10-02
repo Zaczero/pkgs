@@ -7,10 +7,12 @@ fn certify_plan(
     edge_of_slot: &[u32],
 ) -> crate::error::Result<(Vec<[NodeId; 2]>, Vec<Segment>)> {
     let emission = plan.emission(topology, edge_of_slot);
-    let (_embedding, mut segment_sets) = partition.embed(&[&emission], "test")?;
-    let segments = segment_sets
-        .pop()
-        .expect("one emission produces one segment list");
+    let embedding = partition.embed(&[&emission], "test")?;
+    let segments = emission
+        .items
+        .iter()
+        .map(|&item| embedding::Embedding::segment_at(embedding.coordinates(), item))
+        .collect();
     Ok((emission.items, segments))
 }
 
@@ -84,25 +86,136 @@ fn mixed_source_order_keeps_absent_and_interpolated_ordinates_distinct() {
         let mut budget = ExpansionBudget::new("node", "source ordinates");
         let partition = inventory.partition(&mut budget).unwrap();
         let crossing = *partition.crossings().first().unwrap();
-        let point = inventory
-            .resolve_node_point(
-                &partition,
-                crossing,
-                partition.node_xy(crossing),
-                crate::geometry::CoordinateAxes::XYZM,
-            )
+        let (z, m) = inventory
+            .resolve_node_ordinates(&partition, crossing, crate::geometry::CoordinateAxes::XYZM)
             .unwrap();
-        assert_eq!((point.z(), point.m()), (Some(20.0), Some(200.0)));
+        assert_eq!((z.0, m.0), (Some(20.0), Some(200.0)));
         let endpoint = partition.stored_node(XY::new(0.0, 0.0)).unwrap();
-        let point = inventory
-            .resolve_node_point(
-                &partition,
-                endpoint,
-                partition.node_xy(endpoint),
-                crate::geometry::CoordinateAxes::XYZM,
-            )
+        let (z, m) = inventory
+            .resolve_node_ordinates(&partition, endpoint, crate::geometry::CoordinateAxes::XYZM)
             .unwrap();
-        assert_eq!((point.z(), point.m()), (None, None));
+        assert_eq!((z.0, m.0), (None, None));
+    }
+}
+
+#[test]
+fn resolved_node_points_use_embedding_xy_and_exact_ordinates() {
+    let xy = crate::io::parse_wkt("LINESTRING (0 0,4 0)").unwrap();
+    let zm = crate::io::parse_wkt("LINESTRING ZM (2 -1 10 100,2 1 30 300)").unwrap();
+    let inventory = ExactSourceInventory::from_shapes(&[&xy, &zm]).unwrap();
+    let mut budget = ExpansionBudget::new("node", "embedding ordinates");
+    let partition = inventory.partition(&mut budget).unwrap();
+    let crossing = *partition.crossings().first().unwrap();
+    let endpoint = partition.stored_node(XY::new(0.0, 0.0)).unwrap();
+    let mut coordinates = partition.points.rounded.clone();
+    *coordinates
+        .get_mut(crossing.0 as usize)
+        .expect("crossing belongs to the partition coordinate table") = XY::new(12.0, 13.0);
+    let embedding = embedding::Embedding::from_owned(coordinates);
+    let points = inventory
+        .resolve_node_points(
+            &partition,
+            &embedding,
+            &[crossing, endpoint],
+            crate::geometry::CoordinateAxes::XYZM,
+        )
+        .unwrap();
+
+    let crossing = points.point(crossing, embedding.xy(crossing));
+    assert_eq!(crossing.xy(), XY::new(12.0, 13.0));
+    assert_eq!((crossing.z(), crossing.m()), (Some(20.0), Some(200.0)));
+    let endpoint = points.point(endpoint, embedding.xy(endpoint));
+    assert_eq!(endpoint.xy(), XY::new(0.0, 0.0));
+    assert_eq!((endpoint.z(), endpoint.m()), (None, None));
+}
+
+#[test]
+fn xy_node_parts_serialize_the_certified_embedding() {
+    let horizontal = crate::io::parse_wkt("LINESTRING (0 0,4 0)").unwrap();
+    let vertical = crate::io::parse_wkt("LINESTRING (2 -1,2 1)").unwrap();
+    let inventory = ExactSourceInventory::from_shapes(&[&horizontal, &vertical]).unwrap();
+    let mut budget = ExpansionBudget::new("overlay", "certified XY serialization");
+    let partition = inventory.partition(&mut budget).unwrap();
+    let crossing = *partition.crossings().first().unwrap();
+    let endpoint = partition.stored_node(XY::new(0.0, 0.0)).unwrap();
+    let mut coordinates = partition.points.rounded.clone();
+    *coordinates
+        .get_mut(crossing.0 as usize)
+        .expect("crossing belongs to the partition coordinate table") = XY::new(12.0, 13.0);
+    let embedding = embedding::Embedding::from_owned(coordinates);
+    let points = ResolvedNodePoints::XY(&embedding);
+    let result = inventory
+        .node_parts_to_shape_resolved(
+            NodeParts {
+                points: Vec::new(),
+                lines: vec![vec![endpoint, crossing]],
+                polygons: Vec::new(),
+            },
+            &embedding,
+            &points,
+            crate::geometry::CoordinateAxes::XY,
+            false,
+            "test",
+        )
+        .unwrap();
+
+    match result {
+        Shape::LineString(line) => {
+            assert_eq!(line.xs(), [0.0, 12.0]);
+            assert_eq!(line.ys(), [0.0, 13.0]);
+        },
+        Shape::MultiLineString(lines) => {
+            assert_eq!(lines.len(), 1);
+            assert_eq!(lines[0].xs(), [0.0, 12.0]);
+            assert_eq!(lines[0].ys(), [0.0, 13.0]);
+        },
+        other => panic!("expected one line, got {other:?}"),
+    }
+}
+
+#[test]
+fn coverage_xy_parts_serialize_the_certified_embedding() {
+    let source = crate::io::parse_wkt("POLYGON ((0 0,4 0,4 4,0 4,0 0))").unwrap();
+    let inventory = ExactSourceInventory::from_shapes(&[&source]).unwrap();
+    let mut budget = ExpansionBudget::new("coverage_clean", "certified XY serialization");
+    let partition = inventory.partition(&mut budget).unwrap();
+    let node = |x, y| partition.stored_node(XY::new(x, y)).unwrap();
+    let ring = vec![
+        node(0.0, 0.0),
+        node(4.0, 0.0),
+        node(4.0, 4.0),
+        node(0.0, 4.0),
+        node(0.0, 0.0),
+    ];
+    let moved = node(4.0, 4.0);
+    let mut coordinates = partition.points.rounded.clone();
+    *coordinates
+        .get_mut(moved.0 as usize)
+        .expect("stored vertex belongs to the partition coordinate table") = XY::new(5.0, 5.0);
+    let embedding = embedding::Embedding::from_owned(coordinates);
+    let points = ResolvedNodePoints::XY(&embedding);
+    let result = ExactSourceInventory::coverage_shape_from_node_parts(
+        NodeParts {
+            points: Vec::new(),
+            lines: Vec::new(),
+            polygons: vec![vec![ring]],
+        },
+        &points,
+        crate::geometry::CoordinateAxes::XY,
+    )
+    .unwrap();
+
+    match result {
+        Shape::Polygon(polygon) => {
+            assert_eq!(polygon.shell.coords().xs(), [0.0, 4.0, 5.0, 0.0, 0.0]);
+            assert_eq!(polygon.shell.coords().ys(), [0.0, 0.0, 5.0, 4.0, 0.0]);
+        },
+        Shape::MultiPolygon(polygons) => {
+            assert_eq!(polygons.len(), 1);
+            assert_eq!(polygons[0].shell.coords().xs(), [0.0, 4.0, 5.0, 0.0, 0.0]);
+            assert_eq!(polygons[0].shell.coords().ys(), [0.0, 0.0, 5.0, 4.0, 0.0]);
+        },
+        other => panic!("expected one polygon, got {other:?}"),
     }
 }
 
@@ -535,7 +648,7 @@ fn collapsed_ring_sources_retain_support_without_winding_labels() {
             partition.is_stored(span.start),
             "stored-only fixture constructed a node"
         );
-        let start = partition.node_xy(span.start);
+        let start = partition.nearest_xy(span.start);
         let expected = start.x >= 8.0 || start.y == 0.0;
         assert_eq!(cells.spans[index], expected);
     }
@@ -544,7 +657,7 @@ fn collapsed_ring_sources_retain_support_without_winding_labels() {
             partition.is_stored(NodeId(index as u32)),
             "stored-only fixture constructed a node"
         );
-        let point = partition.node_xy(NodeId(index as u32));
+        let point = partition.nearest_xy(NodeId(index as u32));
         assert_eq!(filled, point.x >= 8.0 || point.y == 0.0);
     }
     let (lines, points) = cells.lower_dimensions(&partition, &topology, &edges, &faces);
@@ -557,12 +670,12 @@ fn collapsed_ring_sources_retain_support_without_winding_labels() {
                 partition.is_stored(span.start),
                 "stored-only fixture constructed a node"
             );
-            let start = partition.node_xy(span.start);
+            let start = partition.nearest_xy(span.start);
             assert!(
                 partition.is_stored(span.end),
                 "stored-only fixture constructed a node"
             );
-            let end = partition.node_xy(span.end);
+            let end = partition.nearest_xy(span.end);
             assert_eq!((start.y, end.y), (0.0, 0.0));
             (start.x.min(end.x), start.x.max(end.x))
         })
@@ -615,7 +728,7 @@ fn areal_cells_exclude_cancelled_spurs_and_keep_collapsed_points() {
                 partition.is_stored(NodeId(index as u32)),
                 "stored-only fixture constructed a node"
             );
-            let point = partition.node_xy(NodeId(index as u32));
+            let point = partition.nearest_xy(NodeId(index as u32));
             selected.push(point);
         }
     }
@@ -1511,7 +1624,7 @@ fn polygonize_emission_preserves_hosts_across_disconnected_cycles() {
     let nearest_segments: Vec<_> = emission
         .items
         .iter()
-        .map(|&item| nearest.segment(item))
+        .map(|&item| embedding::Embedding::segment_at(nearest.coordinates(), item))
         .collect();
     let nearest_segment_views = [nearest_segments.as_slice()];
     let mut nearest_witnesses = WitnessLog::default();
@@ -1542,7 +1655,7 @@ fn polygonize_emission_preserves_hosts_across_disconnected_cycles() {
     let moved_segments: Vec<_> = emission
         .items
         .iter()
-        .map(|&item| moved.segment(item))
+        .map(|&item| embedding::Embedding::segment_at(moved.coordinates(), item))
         .collect();
     let moved_segment_views = [moved_segments.as_slice()];
     let mut moved_witnesses = WitnessLog::default();
@@ -1614,7 +1727,7 @@ fn polygonize_full_certifies_diagnostic_lines_with_polygon_faces() {
     let segments: Vec<_> = emission
         .items
         .iter()
-        .map(|&item| nearest.segment(item))
+        .map(|&item| embedding::Embedding::segment_at(nearest.coordinates(), item))
         .collect();
     let emissions = [&emission];
     let segment_views = [segments.as_slice()];
@@ -2451,7 +2564,7 @@ fn selected_boundaries_keep_hole_direction_and_host_face() {
                 );
                 let node = NodeId(topology.owners[slot as usize]);
                 assert!(partition.is_stored(node), "square corners are stored");
-                let point = partition.node_xy(node);
+                let point = partition.nearest_xy(node);
                 (point.x, point.y)
             })
             .collect();
@@ -2751,7 +2864,7 @@ fn selected_polygon_walks_keep_an_island_inside_a_hole_separate() {
         let first = &plan.walks[polygon[0]][0];
         let node = NodeId(topology.owners[plan.source_darts[first.sources.start] as usize]);
         assert!(partition.is_stored(node), "stored square corner");
-        let x = partition.node_xy(node).x;
+        let x = partition.nearest_xy(node).x;
         if polygon.len() == 1 {
             assert!((4.0..=6.0).contains(&x));
         } else {
@@ -3311,7 +3424,7 @@ fn rounding_midpoint_crossing_declines_and_rounds_to_even() {
     let partition = case.partition();
     assert_eq!(partition_metrics().declined_crossings, 1);
     assert_eq!(
-        partition.node_xy(crossing_node(&partition)),
+        partition.nearest_xy(crossing_node(&partition)),
         XY::new(x, 1.5 + 2.0 * f64::EPSILON)
     );
 }
@@ -3335,7 +3448,8 @@ fn crossings_rounding_to_one_double_stay_distinct() {
     let mut shared_roundings = 0;
     for (index, &first) in crossings.iter().enumerate() {
         for &second in &crossings[index + 1..] {
-            shared_roundings += usize::from(partition.node_xy(first) == partition.node_xy(second));
+            shared_roundings +=
+                usize::from(partition.nearest_xy(first) == partition.nearest_xy(second));
             assert_ne!(
                 partition.compare_nodes(first, second).unwrap(),
                 Ordering::Equal
@@ -3364,7 +3478,7 @@ fn out_of_window_and_near_parallel_crossings_decline() {
         let [first_unique, second_unique] = partition.unique.first_chunk::<2>().unwrap();
         let [x, y, w] = crossing_homogeneous(*first_unique, *second_unique).unwrap();
         assert_eq!(
-            partition.node_xy(crossing),
+            partition.nearest_xy(crossing),
             XY::new(round_ratio(&x, &w).unwrap(), round_ratio(&y, &w).unwrap())
         );
     }
@@ -3386,7 +3500,7 @@ fn star_crossings_keep_one_recipe_per_constructed_node() {
         if partition.is_stored(node) {
             continue;
         }
-        let point = partition.node_xy(node);
+        let point = partition.nearest_xy(node);
         assert_eq!(point.y, 0.0);
         assert_exact_at(&partition, node, [&dyadic(point.x), &one], [&zero, &one]);
         found.push(point.x);

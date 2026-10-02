@@ -315,8 +315,8 @@ impl ExactSourceInventory {
                 .get(span)
                 .expect("global edge comes from the exact partition");
             let length = scaled_point_distance(
-                partition.node_xy(atomic.start),
-                partition.node_xy(atomic.end),
+                partition.nearest_xy(atomic.start),
+                partition.nearest_xy(atomic.end),
             );
             self.for_each_span_row(partition, span, seen_rows, |row| {
                 lengths
@@ -574,8 +574,6 @@ impl ExactSourceInventory {
         update_partition_metrics(|metrics| {
             metrics.publication_nodes = output_nodes.len();
         });
-        let by_node = self.resolve_node_points(partition, &output_nodes, declared_axes)?;
-
         let mut plans = Vec::with_capacity(row_count);
         for row in 0..row_count_u32 {
             let mut cells = ArealCells {
@@ -598,13 +596,14 @@ impl ExactSourceInventory {
             .map(|plan| plan.emission(&topology, &edges))
             .collect();
         let emission_refs: Vec<_> = emissions.iter().collect();
-        let (_embedding, _) = partition.embed(&emission_refs, "coverage_clean")?;
+        let embedding = partition.embed(&emission_refs, "coverage_clean")?;
+        let by_node =
+            self.resolve_node_points(partition, &embedding, &output_nodes, declared_axes)?;
 
         let mut outputs = Vec::with_capacity(row_count);
         for plan in plans {
             let parts = plan.build_node_parts(partition, &topology)?;
-            outputs.push(self.coverage_shape_from_node_parts(
-                partition,
+            outputs.push(Self::coverage_shape_from_node_parts(
                 parts,
                 &by_node,
                 declared_axes,
@@ -727,8 +726,8 @@ impl ExactSourceInventory {
                 .spans
                 .get(span_index)
                 .expect("global edge comes from the exact partition");
-            let start_xy = partition.node_xy(span.start);
-            let end_xy = partition.node_xy(span.end);
+            let start_xy = partition.nearest_xy(span.start);
+            let end_xy = partition.nearest_xy(span.end);
             let length = point_distance(start_xy, end_xy);
             perimeter += length;
             if let Some(area) = &mut area {
@@ -768,14 +767,19 @@ impl ExactSourceInventory {
     }
 
     pub(super) fn coverage_shape_from_node_parts(
-        &self,
-        partition: &ExactPartition<'_>,
         parts: NodeParts,
         by_node: &ResolvedNodePoints,
         declared_axes: CoordinateAxes,
     ) -> Result<Shape> {
         debug_assert!(parts.points.is_empty());
         debug_assert!(parts.lines.is_empty());
+        if !declared_axes.has_z() && !declared_axes.has_m() {
+            let xy = by_node.coordinates();
+            return Ok(Shape::narrow_polygons(
+                CoordinateAxes::XY,
+                super::polygons_from_xy_nodes(parts.polygons, xy)?,
+            ));
+        }
         let node_count = parts
             .polygons
             .iter()
@@ -790,25 +794,21 @@ impl ExactSourceInventory {
                 nodes.extend_from_slice(ring);
             }
         }
-        let axes = bucket_axes(
-            &nodes,
-            partition,
-            by_node,
-            declared_axes,
-            false,
-            "coverage_clean",
-        )?;
+        let axes = bucket_axes(&nodes, by_node, declared_axes, false, "coverage_clean")?;
+        let xy = by_node.coordinates();
         let mut polygons = Vec::with_capacity(parts.polygons.len());
         for polygon in parts.polygons {
             let mut rings = Vec::with_capacity(polygon.len());
             for ring in polygon {
                 let mut points = Vec::with_capacity(ring.len());
                 for node in ring {
-                    let point = by_node.get(partition, node).ok_or_else(|| {
-                        GeometryErrorKind::Invalid(
-                            "exact coverage output lost a rounded node".into(),
-                        )
-                    })?;
+                    let point = by_node
+                        .get(node, super::embedding::Embedding::xy_at(xy, node))
+                        .ok_or_else(|| {
+                            GeometryErrorKind::Invalid(
+                                "exact coverage output lost a rounded node".into(),
+                            )
+                        })?;
                     points.push(with_axes(point, axes));
                 }
                 rings.push(Ring::try_from_closed(CoordSeq::try_from_points(&points)?)?);

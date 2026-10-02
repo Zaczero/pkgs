@@ -282,16 +282,18 @@ impl BoundaryPlan {
         let line_walks = self.line_walks(topology);
         let emission = self.emission(topology, edge_of_slot);
         let emissions = [&emission];
-        let (_, mut segment_sets) = partition.embed(&emissions, operation)?;
-        let segments = segment_sets
-            .pop()
-            .expect("one plan emission produces one segment list");
-        let mut remaining = segments.as_slice();
+        let embedding = partition.embed(&emissions, operation)?;
+        let coordinates = embedding.coordinates();
+        let mut remaining = emission.items.as_slice();
         let mut rings = Vec::with_capacity(self.walks.len());
         for walk in &self.walks {
             let (chords, rest) = remaining.split_at(walk.len());
             remaining = rest;
-            rings.push(Some(closed_ring(chords.iter().map(|chord| chord.start))?));
+            rings.push(Some(closed_ring(
+                chords
+                    .iter()
+                    .map(|chord| Embedding::xy_at(coordinates, chord[0])),
+            )?));
         }
         let mut polygons = Vec::with_capacity(groups.len());
         for group in groups {
@@ -319,11 +321,17 @@ impl BoundaryPlan {
             xs.reserve(coordinate_count);
             ys.reserve(coordinate_count);
             for (index, reversed) in walk {
-                let chord = chords[index];
+                let [start_node, end_node] = chords[index];
                 let (start, end) = if reversed {
-                    (chord.end, chord.start)
+                    (
+                        Embedding::xy_at(coordinates, end_node),
+                        Embedding::xy_at(coordinates, start_node),
+                    )
                 } else {
-                    (chord.start, chord.end)
+                    (
+                        Embedding::xy_at(coordinates, start_node),
+                        Embedding::xy_at(coordinates, end_node),
+                    )
                 };
                 if xs.is_empty() {
                     xs.push(start.x);
@@ -357,10 +365,10 @@ impl BoundaryPlan {
             }
             lines.push(CoordSeq::try_from_vecs(xs, ys, None, None)?);
         }
-        lines.sort_unstable_by(crate::geometry::compare_point_slices);
         let mut points = Vec::with_capacity(isolated.len());
         for item in isolated {
-            points.push(Point::new_raw_xy(item.start.x, item.start.y));
+            let point = Embedding::xy_at(coordinates, item[0]);
+            points.push(Point::new_raw_xy(point.x, point.y));
         }
         Ok((points, lines, polygons))
     }
@@ -631,7 +639,7 @@ pub(super) fn polygonize_faces(
     operation: &'static str,
 ) -> Result<Vec<Polygon>> {
     let emission = polygonize_emission(partition, topology, edges, global)?;
-    let (embedding, _) = partition.embed(&[&emission], operation)?;
+    let embedding = partition.embed(&[&emission], operation)?;
     polygonize_faces_with_embedding(partition, topology, global, &embedding)
 }
 
@@ -642,6 +650,7 @@ pub(super) fn polygonize_faces_with_embedding(
     embedding: &Embedding<'_>,
 ) -> Result<Vec<Polygon>> {
     let face_of = |slot: usize| global.walk_faces[topology.face_of[slot] as usize];
+    let coordinates = embedding.coordinates();
     let walks = global.boundary_walks(topology, |face, other| face != 0 && face != other);
     let mut shells = Vec::with_capacity(global.count as usize);
     shells.resize(global.count as usize, None);
@@ -649,10 +658,10 @@ pub(super) fn polygonize_faces_with_embedding(
     let mut holes = Vec::new();
     for walk in &walks {
         let face = face_of(walk[0] as usize) as usize;
-        let ring = closed_ring(
-            walk.iter()
-                .map(|&slot| embedding.xy(NodeId(topology.owners[slot as usize]))),
-        )?;
+        let ring =
+            closed_ring(walk.iter().map(|&slot| {
+                Embedding::xy_at(coordinates, NodeId(topology.owners[slot as usize]))
+            }))?;
         if walk_is_shell(
             partition,
             topology,
@@ -755,17 +764,22 @@ pub(super) fn canonicalize_closed_nodes(
 }
 
 /// A closed ring through `vertices`, rotated to start at its least vertex.
-pub(super) fn closed_ring(vertices: impl ExactSizeIterator<Item = XY> + Clone) -> Result<Ring> {
+pub(super) fn closed_ring(vertices: impl ExactSizeIterator<Item = XY>) -> Result<Ring> {
     let count = vertices.len().wrapping_add(1);
     let mut xs = Vec::new();
     let mut ys = Vec::new();
     xs.reserve(count);
     ys.reserve(count);
-    let first = vertices.clone().next().expect("a ring has vertices");
-    for vertex in vertices.chain([first]) {
+    let mut vertices = vertices;
+    let first = vertices.next().expect("a ring has vertices");
+    xs.push(first.x);
+    ys.push(first.y);
+    for vertex in vertices {
         xs.push(vertex.x);
         ys.push(vertex.y);
     }
+    xs.push(first.x);
+    ys.push(first.y);
     canonicalize_closed_xy(&mut xs, &mut ys);
     Ring::try_from_closed(CoordSeq::try_from_vecs(xs, ys, None, None)?)
 }

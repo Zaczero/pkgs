@@ -192,7 +192,9 @@ impl Shape {
     }
 }
 
-fn shared_paths_from_exact(emission: &ExactLineEmission) -> Result<(Vec<CoordSeq>, Vec<CoordSeq>)> {
+fn shared_paths_from_exact(
+    emission: &ExactLineEmission<'_>,
+) -> Result<(Vec<CoordSeq>, Vec<CoordSeq>)> {
     let mut same = Vec::new();
     let mut opposite = Vec::new();
     let mut same_path_direction =
@@ -202,16 +204,16 @@ fn shared_paths_from_exact(emission: &ExactLineEmission) -> Result<(Vec<CoordSeq
     let mut same_keys = HashSet::with_hasher(crate::collections::collection_hash_state()?.clone());
     let mut opposite_keys =
         HashSet::with_hasher(crate::collections::collection_hash_state()?.clone());
-    same.reserve(emission.segments.len());
-    opposite.reserve(emission.segments.len());
+    same.reserve(emission.len());
+    opposite.reserve(emission.len());
     for map in [&mut same_path_direction, &mut opposite_path_direction] {
-        map.reserve(emission.segments.len());
+        map.reserve(emission.len());
     }
     for set in [&mut same_keys, &mut opposite_keys] {
-        set.reserve(emission.segments.len());
+        set.reserve(emission.len());
     }
 
-    for (index, &segment) in emission.segments.iter().enumerate() {
+    for (index, segment) in emission.segments().enumerate() {
         let mut left_direction = None;
         let mut left_mask = 0_u8;
         let mut right_mask = 0_u8;

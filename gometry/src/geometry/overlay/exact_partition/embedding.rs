@@ -29,6 +29,7 @@ use crate::geometry::{
 
 /// The coordinates used to check an emission. Nearest borrows the immutable
 /// arena table; an accepted search assignment owns a patched copy.
+#[derive(Debug)]
 pub(super) struct Embedding<'p> {
     table: Cow<'p, [XY]>,
 }
@@ -47,6 +48,8 @@ impl<'p> Embedding<'p> {
         }
     }
 
+    /// Borrow once at serialization boundaries instead of redispatching `Cow`
+    /// for each emitted node.
     pub(super) fn coordinates(&self) -> &[XY] {
         self.table.as_ref()
     }
@@ -56,13 +59,21 @@ impl<'p> Embedding<'p> {
         reason = "each NodeId is admitted by the same ExactPartition whose coordinate table this embedding owns"
     )]
     pub(super) fn xy(&self, node: NodeId) -> XY {
-        self.table[node.0 as usize]
+        Self::xy_at(self.coordinates(), node)
     }
 
-    pub(super) fn segment(&self, [start, end]: [NodeId; 2]) -> Segment {
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "the node ID and coordinate slice are paired from the same certified embedding"
+    )]
+    pub(super) fn xy_at(coordinates: &[XY], node: NodeId) -> XY {
+        coordinates[node.0 as usize]
+    }
+
+    pub(super) fn segment_at(coordinates: &[XY], [start, end]: [NodeId; 2]) -> Segment {
         Segment {
-            start: self.xy(start),
-            end: self.xy(end),
+            start: Self::xy_at(coordinates, start),
+            end: Self::xy_at(coordinates, end),
         }
     }
 }
@@ -324,30 +335,31 @@ impl ExactPartition<'_> {
         &'p self,
         emissions: &[&Emission],
         _operation: &'static str,
-    ) -> Result<(Embedding<'p>, Vec<Vec<Segment>>)> {
+    ) -> Result<Embedding<'p>> {
         let embedding = Embedding::nearest(self);
-        let segments: Vec<Vec<_>> = emissions
-            .iter()
-            .map(|emission| {
-                emission
-                    .items
-                    .iter()
-                    .map(|&item| embedding.segment(item))
-                    .collect()
-            })
-            .collect();
-        let segment_views: Vec<_> = segments.iter().map(Vec::as_slice).collect();
         let mut needs_certificate = false;
         for emission in emissions {
             needs_certificate |= rounding_moves(self, &emission.items);
         }
         if needs_certificate {
+            let coordinates = embedding.coordinates();
+            let segments: Vec<Vec<_>> = emissions
+                .iter()
+                .map(|emission| {
+                    emission
+                        .items
+                        .iter()
+                        .map(|&item| Embedding::segment_at(coordinates, item))
+                        .collect()
+                })
+                .collect();
+            let segment_views: Vec<_> = segments.iter().map(Vec::as_slice).collect();
             let mut sink = FirstFailure::default();
             if certify(self, &embedding, emissions, &segment_views, &mut sink)?.is_break() {
                 return Err(sink.into_error());
             }
         }
-        Ok((embedding, segments))
+        Ok(embedding)
     }
 
     #[expect(

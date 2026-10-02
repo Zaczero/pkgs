@@ -36,7 +36,7 @@ fn exact_chain(
     let points = view
         .nodes
         .iter()
-        .map(|&node| partition.node_xy(node))
+        .map(|&node| partition.nearest_xy(node))
         .collect();
     let mut chain_source_segments = Vec::new();
     for &source in source_ordinals {
