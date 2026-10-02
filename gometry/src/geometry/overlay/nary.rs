@@ -5,8 +5,9 @@ use crate::boundary::geographic::invalid_lonlat_error;
 use crate::error::{ResourceError, Result};
 use crate::geographic::{GeographicInputs, GeographicViewError};
 use crate::geometry::overlay::{
-    ExactSourceInventory, OverlayOp, Strictness, build_certified_overlay_shape, merge_chains,
-    overlay_declared_axes,
+    ExactSourceInventory, OverlayOp, Strictness, build_certified_overlay_shape,
+    intersect_rectangular_polygonal, merge_chains, overlay_declared_axes, rect_polygon,
+    rectangle_bounds,
 };
 use crate::geometry::segments::crossing_point;
 use crate::geometry::tessellation::exact::ExactDyadic;
@@ -106,11 +107,73 @@ pub(crate) fn overlay_all<S: Borrow<Shape>>(
     op: OverlayOp,
     strictness: Strictness,
 ) -> Result<Shape> {
+    overlay_all_inner(geometries, domain, op, strictness, None)
+}
+
+/// Overlay with bounds already owned by the caller's immutable geometry plan.
+fn overlay_all_with_bounds<S: Borrow<Shape>>(
+    geometries: &[S],
+    domain: TopologyDomain,
+    op: OverlayOp,
+    strictness: Strictness,
+    bounds: &[Option<Bounds>],
+) -> Result<Shape> {
+    overlay_all_inner(geometries, domain, op, strictness, Some(bounds))
+}
+
+fn overlay_all_inner<S: Borrow<Shape>>(
+    geometries: &[S],
+    domain: TopologyDomain,
+    op: OverlayOp,
+    strictness: Strictness,
+    known_bounds: Option<&[Option<Bounds>]>,
+) -> Result<Shape> {
     if matches!(&domain, TopologyDomain::Cartesian)
         && let [left, right] = geometries
     {
         let left = <S as Borrow<Shape>>::borrow(left);
         let right = <S as Borrow<Shape>>::borrow(right);
+        let left_rectangle = rectangle_bounds(left);
+        let right_rectangle = rectangle_bounds(right);
+        if (left_rectangle.is_some() || right_rectangle.is_some())
+            && let Some(shape) = rectangle_operation_result(
+                left,
+                right,
+                op,
+                overlay_operand_bounds(known_bounds, 0, left),
+                overlay_operand_bounds(known_bounds, 1, right),
+                left_rectangle,
+                right_rectangle,
+            )
+        {
+            return Ok(shape);
+        }
+        if op == OverlayOp::Intersection
+            && let Some(bounds) = right_rectangle
+            && let Shape::Polygon(rectangle) = right
+            && let Some(shape) = intersect_rectangular_polygonal(
+                left,
+                rectangle,
+                bounds,
+                crate::geometry::compare_shapes(right, left).is_lt(),
+                strictness,
+            )?
+        {
+            return Ok(shape);
+        }
+        if op == OverlayOp::Intersection
+            && let Some(bounds) = left_rectangle
+            && let Shape::Polygon(rectangle) = left
+            && let Some(shape) = intersect_rectangular_polygonal(
+                right,
+                rectangle,
+                bounds,
+                crate::geometry::compare_shapes(left, right).is_lt(),
+                strictness,
+            )?
+        {
+            return Ok(shape);
+        }
         if let Some(lane) = cartesian_binary_lane!(left, right, op) {
             let mut inputs = [left, right];
             return exact_cartesian_binary_overlay(
@@ -124,6 +187,140 @@ pub(crate) fn overlay_all<S: Borrow<Shape>>(
         }
     }
     overlay_all_with_bounds_certificates(geometries, domain, op, strictness, true)
+}
+
+pub(crate) fn overlay_intersection_with_rectangle(
+    subject: &Shape,
+    rectangle: Bounds,
+    subject_bounds: Option<Bounds>,
+    strictness: Strictness,
+) -> Result<Shape> {
+    let subject_bounds = subject_bounds.or_else(|| subject.bounds());
+    if let Some(shape) = rectangle_intersection_result(subject, subject_bounds, rectangle) {
+        return Ok(shape);
+    }
+    let rectangle_polygon = rect_polygon(rectangle)?;
+    let rectangle_first =
+        crate::geometry::compare_shapes(&Shape::Polygon(rectangle_polygon.clone()), subject)
+            .is_lt();
+    if let Some(shape) = intersect_rectangular_polygonal(
+        subject,
+        &rectangle_polygon,
+        rectangle,
+        rectangle_first,
+        strictness,
+    )? {
+        return Ok(shape);
+    }
+    let rectangle_shape = Shape::Polygon(rectangle_polygon);
+    let bounds = [subject_bounds, Some(rectangle)];
+    overlay_all_with_bounds(
+        &[subject, &rectangle_shape],
+        TopologyDomain::Cartesian,
+        OverlayOp::Intersection,
+        strictness,
+        &bounds,
+    )
+}
+
+fn overlay_operand_bounds(
+    known_bounds: Option<&[Option<Bounds>]>,
+    index: usize,
+    shape: &Shape,
+) -> Option<Bounds> {
+    match known_bounds {
+        Some(bounds) => bounds
+            .get(index)
+            .copied()
+            .flatten()
+            .or_else(|| shape.bounds()),
+        None => shape.bounds(),
+    }
+}
+
+fn rectangle_operation_result(
+    left: &Shape,
+    right: &Shape,
+    operation: OverlayOp,
+    left_bounds: Option<Bounds>,
+    right_bounds: Option<Bounds>,
+    left_rectangle: Option<Bounds>,
+    right_rectangle: Option<Bounds>,
+) -> Option<Shape> {
+    match operation {
+        OverlayOp::Intersection => {
+            if let Some(rectangle) = right_rectangle
+                && let Some(shape) = rectangle_intersection_result(left, left_bounds, rectangle)
+            {
+                return Some(shape);
+            }
+            if let Some(rectangle) = left_rectangle
+                && let Some(shape) = rectangle_intersection_result(right, right_bounds, rectangle)
+            {
+                return Some(shape);
+            }
+        },
+        OverlayOp::Difference => {
+            if right_rectangle.is_some_and(|rectangle| {
+                left_bounds.is_some_and(|bounds| bounds_contain(rectangle, bounds))
+            }) {
+                return Some(empty_rectangle_result(left));
+            }
+        },
+        OverlayOp::Union => {
+            if left.axes() == CoordinateAxes::XY
+                && right.axes() == CoordinateAxes::XY
+                && left_rectangle.is_some_and(|rectangle| {
+                    right_bounds.is_some_and(|bounds| bounds_contain(rectangle, bounds))
+                })
+            {
+                return Some(left.clone());
+            }
+            if left.axes() == CoordinateAxes::XY
+                && right.axes() == CoordinateAxes::XY
+                && right_rectangle.is_some_and(|rectangle| {
+                    left_bounds.is_some_and(|bounds| bounds_contain(rectangle, bounds))
+                })
+            {
+                return Some(right.clone());
+            }
+        },
+        OverlayOp::SymmetricDifference => {},
+    }
+    None
+}
+
+fn rectangle_intersection_result(
+    subject: &Shape,
+    subject_bounds: Option<Bounds>,
+    rectangle: Bounds,
+) -> Option<Shape> {
+    let bounds = subject_bounds?;
+    if bounds_contain(rectangle, bounds) {
+        Some(subject.clone())
+    } else if bounds_disjoint(bounds, rectangle) {
+        Some(empty_rectangle_result(subject))
+    } else {
+        None
+    }
+}
+
+fn empty_rectangle_result(subject: &Shape) -> Shape {
+    empty_shape_for_dimension_with_axes(subject.topological_dimension(), subject.axes())
+}
+
+fn bounds_contain(outer: Bounds, inner: Bounds) -> bool {
+    inner.minx() >= outer.minx()
+        && inner.maxx() <= outer.maxx()
+        && inner.miny() >= outer.miny()
+        && inner.maxy() <= outer.maxy()
+}
+
+fn bounds_disjoint(left: Bounds, right: Bounds) -> bool {
+    left.maxx() < right.minx()
+        || right.maxx() < left.minx()
+        || left.maxy() < right.miny()
+        || right.maxy() < left.miny()
 }
 
 /// Overlay already-charted geographic split parts with exact planar topology
@@ -1686,6 +1883,9 @@ pub(in crate::geometry) fn overlay_all_geographic_from(
 ) -> Result<Shape> {
     let mut original_refs = Vec::with_capacity(originals.views().len());
     original_refs.extend(originals.views().iter().map(|view| view.shape()));
+    if let Some(shape) = geographic_rectangle_operation_result(originals, &original_refs, op)? {
+        return Ok(shape);
+    }
     if crate::geometry::geographic_topology_route(originals.views().iter().copied())
         == GeographicTopologyRoute::ExactPartition
     {
@@ -1705,6 +1905,103 @@ pub(in crate::geometry) fn overlay_all_geographic_from(
         strictness,
         bounds_certificates,
     )
+}
+
+fn geographic_rectangle_operation_result(
+    originals: &GeographicInputs<'_>,
+    shapes: &[&Shape],
+    operation: OverlayOp,
+) -> Result<Option<Shape>> {
+    let [left, right] = shapes else {
+        return Ok(None);
+    };
+    let frame = originals.frame();
+    let left_rectangle = canonical_geographic_rectangle_bounds(left, frame)?;
+    let right_rectangle = canonical_geographic_rectangle_bounds(right, frame)?;
+    if left_rectangle.is_none() && right_rectangle.is_none() {
+        return Ok(None);
+    }
+    let left_bounds = left.bounds();
+    let right_bounds = right.bounds();
+    if !left_bounds.is_some_and(|bounds| {
+        crate::geometry::raw_coordinate_bounds_are_sound_in_frame(Some(left), bounds, frame)
+    }) || !right_bounds.is_some_and(|bounds| {
+        crate::geometry::raw_coordinate_bounds_are_sound_in_frame(Some(right), bounds, frame)
+    }) {
+        return Ok(None);
+    }
+    Ok(rectangle_operation_result(
+        left,
+        right,
+        operation,
+        left_bounds,
+        right_bounds,
+        left_rectangle,
+        right_rectangle,
+    ))
+}
+
+fn canonical_geographic_rectangle_bounds(
+    shape: &Shape,
+    frame: crate::geographic::GeographicFrame,
+) -> Result<Option<Bounds>> {
+    let Shape::Polygon(polygon) = shape else {
+        return Ok(None);
+    };
+    if !polygon.holes.is_empty() || polygon.axes() != CoordinateAxes::XY {
+        return Ok(None);
+    }
+    let ring = polygon.shell.coords();
+    let coordinate_count = ring.coord_count();
+    if coordinate_count < 5 || coordinate_count.wrapping_sub(3) % 2 != 0 {
+        return Ok(None);
+    }
+    let segments = coordinate_count.wrapping_sub(3) / 2;
+    let first = ring.point_at(0);
+    let east_south = ring.point_at(segments);
+    let east_north = ring.point_at(segments.wrapping_add(1));
+    let west = first.x;
+    let south = first.y;
+    let east = east_south.x;
+    let north = east_north.y;
+    if !(west < east && south < north && east_south.y == south && east_north.x == east) {
+        return Ok(None);
+    }
+
+    let mut previous_x = west;
+    for index in 1..=segments {
+        let point = ring.point_at(index);
+        if point.y != south || point.x <= previous_x {
+            return Ok(None);
+        }
+        previous_x = point.x;
+    }
+    if previous_x != east {
+        return Ok(None);
+    }
+
+    previous_x = east;
+    for index in segments.wrapping_add(2)..=segments.wrapping_mul(2).wrapping_add(1) {
+        let point = ring.point_at(index);
+        if point.y != north || point.x >= previous_x {
+            return Ok(None);
+        }
+        previous_x = point.x;
+    }
+    let closing = ring.point_at(coordinate_count.wrapping_sub(1));
+    if previous_x != west || !crate::geometry::same_point(first, closing) {
+        return Ok(None);
+    }
+    let Ok(bounds) = Bounds::new(west, south, east, north) else {
+        return Ok(None);
+    };
+    if crate::geometry::raw_coordinate_bounds_are_sound_in_frame(None, bounds, frame)
+        && crate::geometry::raw_coordinate_bounds_are_sound_in_frame(Some(shape), bounds, frame)
+    {
+        Ok(Some(bounds))
+    } else {
+        Ok(None)
+    }
 }
 
 #[cfg(test)]

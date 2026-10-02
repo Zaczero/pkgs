@@ -27,14 +27,17 @@ def _diagonal_ordinate(
 
 
 @pytest.mark.parametrize('reverse', [False, True])
-def test_extreme_clip_carries_zm_in_source_order(reverse: bool) -> None:
+def test_extreme_clip_carries_zm_from_source_segments(reverse: bool) -> None:
     """A no-vertex-in-window diagonal reaches ordinate segment interpolation."""
     forward = [(-1e308, -1e308, 100.0, 1000.0), (1e308, 1e308, 300.0, 3000.0)]
     source = list(reversed(forward)) if reverse else forward
     # The XY clip has no source vertex to reuse, so `carry_ordinates` misses
     # the vertex table and must enter `segment_ordinate_at` for both corners.
-    clipped = gm.LineString(source).clip_by_rect(0.0, 0.0, 1.0, 1.0)
-    expected_xy = [(1.0, 1.0), (0.0, 0.0)] if reverse else [(0.0, 0.0), (1.0, 1.0)]
+    line = gm.LineString(source)
+    rectangle = gm.box(0.0, 0.0, 1.0, 1.0)
+    clipped = line.clip_by_rect(0.0, 0.0, 1.0, 1.0)
+    assert clipped.to_wkb() == gm.intersection(line, rectangle).to_wkb()
+    expected_xy = [(0.0, 0.0), (1.0, 1.0)]
     got = list(clipped.coords)
     assert [(x, y) for x, y, _, _ in got] == expected_xy
     start, end = source
@@ -57,10 +60,11 @@ def test_exact_clip_rounds_thin_crossings(
 ) -> None:
     forward = [(-1.0e15, 0.0), (1.0e15, y_end)]
     source = list(reversed(forward)) if reverse else forward
-    clipped = gm.LineString(source).clip_by_rect(0.0, 0.0, 1.0, 1.0)
+    line = gm.LineString(source)
+    rectangle = gm.box(0.0, 0.0, 1.0, 1.0)
+    clipped = line.clip_by_rect(0.0, 0.0, 1.0, 1.0)
+    assert clipped.to_wkb() == gm.intersection(line, rectangle).to_wkb()
     expected = [(0.0, expected_y[0]), (1.0, expected_y[1])]
-    if reverse:
-        expected.reverse()
     assert list(clipped.coords) == expected
 
 
@@ -68,13 +72,20 @@ def test_exact_clip_rounds_mixed_exponent_crossings() -> None:
     tiny = 2.0**-601
     line = gm.LineString([(2.0**-600, -tiny), (-(2.0**500), 2.0**500)])
     clipped = line.clip_by_rect(0.0, 0.0, 1.0, 2.0**600)
-    assert list(clipped.coords) == [(tiny, 0.0), (0.0, tiny)]
+    assert (
+        clipped.to_wkb()
+        == gm.intersection(line, gm.box(0.0, 0.0, 1.0, 2.0**600)).to_wkb()
+    )
+    assert list(clipped.coords) == [(0.0, tiny), (tiny, 0.0)]
 
     line = gm.LineString([(2.0**-1074, 2.0**-500), (-(2.0**500), -(2.0**1023))])
     clipped = line.clip_by_rect(0.0, 0.0, 1.0, 1.0)
+    assert (
+        clipped.to_wkb() == gm.intersection(line, gm.box(0.0, 0.0, 1.0, 1.0)).to_wkb()
+    )
     assert list(clipped.coords) == [
-        (2.0**-1074, 2.0**-500),
         (0.0, float.fromhex('0x1.ffffffffffffcp-501')),
+        (2.0**-1074, 2.0**-500),
     ]
 
 
@@ -127,17 +138,25 @@ def test_packed_line_clip_matches_each_geometry_including_emptied_rows() -> None
 def test_exact_clip_preserves_closed_boundaries_signed_zero_and_degenerate_rectangles() -> (
     None
 ):
-    signed = gm.LineString([(-2.0, -0.0), (2.0, -0.0)]).clip_by_rect(0.0, 0.0, 1.0, 1.0)
-    assert [point[1].hex() for point in signed.coords] == ['-0x0.0p+0', '-0x0.0p+0']
+    signed_line = gm.LineString([(-2.0, -0.0), (2.0, -0.0)])
+    signed = signed_line.clip_by_rect(0.0, 0.0, 1.0, 1.0)
+    assert (
+        signed.to_wkb()
+        == gm.intersection(signed_line, gm.box(0.0, 0.0, 1.0, 1.0)).to_wkb()
+    )
+    assert [point[1].hex() for point in signed.coords] == ['0x0.0p+0', '0x0.0p+0']
 
     collinear = gm.LineString([(-2.0, 0.0), (2.0, 0.0)]).clip_by_rect(
         0.0, 0.0, 1.0, 1.0
     )
     assert list(collinear.coords) == [(0.0, 0.0), (1.0, 0.0)]
-    corner_touch = gm.LineString([(-1.0, 1.0), (0.0, 0.0)]).clip_by_rect(
-        0.0, 0.0, 1.0, 1.0
+    corner_line = gm.LineString([(-1.0, 1.0), (0.0, 0.0)])
+    corner_touch = corner_line.clip_by_rect(0.0, 0.0, 1.0, 1.0)
+    assert corner_touch.to_wkt() == 'POINT (0 0)'
+    assert (
+        corner_touch.to_wkb()
+        == gm.intersection(corner_line, gm.box(0.0, 0.0, 1.0, 1.0)).to_wkb()
     )
-    assert corner_touch.is_empty
 
     vertical = gm.LineString([(0.0, -1.0), (0.0, 2.0)]).clip_by_rect(0.0, 0.0, 0.0, 1.0)
     horizontal = gm.LineString([(-1.0, 0.0), (2.0, 0.0)]).clip_by_rect(

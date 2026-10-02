@@ -6,10 +6,9 @@ use crate::geometry::{
     Shape, same_point,
 };
 
-/// Narrow ring linework to its boundary shape, mirroring
-/// [`line_parts_to_shape`]: nothing → empty, one ring → `LineString`, more →
-/// `MultiLineString`. Takes owned `CoordSeq`s so polygon boundaries clone their
-/// coordinate columns once with no `Point` staging.
+/// Narrow ring linework to its boundary shape: nothing → empty, one ring →
+/// `LineString`, more → `MultiLineString`. Takes owned `CoordSeq`s so polygon
+/// boundaries clone their coordinate columns once with no `Point` staging.
 pub(crate) fn rings_to_boundary(mut rings: Vec<LineSeq>, empty_axes: CoordinateAxes) -> Shape {
     let axes = rings.first().map_or(empty_axes, |ring| ring.axes());
     match rings.len() {

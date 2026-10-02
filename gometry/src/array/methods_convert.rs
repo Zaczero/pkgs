@@ -2,8 +2,8 @@ use crate::array::packed_columns::{LineColumns, PolygonColumns};
 use crate::array::{
     Arc, Bounds, ComputedCaches, CoordSeq, F64Param, GeometryArrayStorage, OriginSpec,
     PackedColumnError, PackedColumns, PackedRow, PackedStorage, PyErr, PyGeometryArray, PyResult,
-    Python, Result, RowSelection, Shape, StorageLayout, clip_lines_packed_xy, geometry,
-    note_array_row, reverse_coord_windows, subdivide_line_columns, subdivide_polygon_columns,
+    Python, Result, RowSelection, Shape, StorageLayout, geometry, note_array_row,
+    reverse_coord_windows, subdivide_line_columns, subdivide_polygon_columns,
     validate_densify_fraction, validate_max_segment_length,
 };
 use crate::geographic::GeographicFrame;
@@ -594,26 +594,11 @@ impl PyGeometryArray {
         rect: Bounds,
         domain: TopologyDomain,
     ) -> PyResult<Self> {
-        if matches!(
-            self.storage(),
-            GeometryArrayStorage::Packed(PackedStorage::Lines { .. })
-        ) {
-            let clipped =
-                self.try_map_packed_columns_detached(py, self.frame.clone(), move |columns| {
-                    match columns {
-                        PackedColumns::Lines(lines) => clip_lines_packed_xy(&lines, rect, domain),
-                        PackedColumns::Points(_) | PackedColumns::Polygons(_) => Ok(None),
-                    }
-                })?;
-            if let Some(result) = clipped {
-                return Ok(result);
-            }
-        }
-        self.map_shapes(|shape| {
-            if let crate::geometry::TopologyDomain::Geographic(frame) = domain {
-                Ok(shape.clip_by_rect_in_geographic_frame(rect, false, shape.bounds(), frame)?)
+        self.map_shapes_detached(py, move |shape| {
+            if let TopologyDomain::Geographic(frame) = domain {
+                shape.clip_by_rect_in_geographic_frame(rect, false, frame)
             } else {
-                Ok(shape.clip_by_rect(rect, false)?)
+                shape.clip_by_rect(rect, false)
             }
         })
     }

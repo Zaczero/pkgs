@@ -243,7 +243,7 @@ pub struct ShapeData {
 /// inapplicable areal tester.
 #[derive(Default)]
 struct TopologyPlan {
-    validity: OnceLock<Option<Box<ValidationIssue>>>,
+    validity: OnceLock<Option<Box<crate::geometry::ValidationIssue>>>,
     simplicity: OnceLock<bool>,
     geographic_seam_facts: OnceLock<GeographicSeamFacts>,
     point_tester: OnceLock<Option<Box<PointBatchTester>>>,

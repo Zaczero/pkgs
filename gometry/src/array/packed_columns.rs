@@ -313,14 +313,6 @@ impl<'a> LineColumns<'a> {
         materialized_packed_lines_len(self.offsets(), self.row_map)
     }
 
-    pub(crate) fn selected_vertex_capacity_hint(&self) -> usize {
-        (0..self.rows()).fold(0_usize, |total, row| {
-            total
-                .saturating_add(self.row_window(row).len())
-                .min(self.coords.len())
-        })
-    }
-
     pub(crate) fn materialized_present_vertices(
         &self,
         minimum_row_len: usize,

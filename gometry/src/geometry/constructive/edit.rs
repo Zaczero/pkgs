@@ -15,15 +15,15 @@ use crate::geometry::exact_arith::{
     DekkerParts, binary_zero, checked_normal_sum, floor_binary_exponent, normal_or_zero,
     two_product_dekker_admitted, two_product_dekker_checked_parts, two_sum,
 };
-use crate::geometry::overlay::{OverlayOp, overlay_all_geographic_from, overlay_view_error};
+use crate::geometry::overlay::{
+    OverlayOp, overlay_all_geographic_from, overlay_intersection_with_rectangle, overlay_view_error,
+};
 use crate::geometry::{
     Bounds, CoordSeq, CoordinateAxes, ExpansionBudget, GeometryErrorKind, GeometryKind, HasM, HasZ,
     LineSeq, MOrdinate, MultiPoint, MultiPolygon, OrdinateAxis, Point, Polygon, ReduceSimd, Shape,
-    ShapeOwnerKey, Strictness, ZOrdinate, axis_pow2_scale, carry_ordinates,
-    clip_multipoint_columns, clip_polygonal, clipped_line_parts, clipped_linestring,
-    column_all_finite, compare_point_slices, compare_points, compare_polygons, compare_shapes,
-    line_parts_to_shape, same_topological_coordinate, set_point_ordinate, simd_xy_map_f64,
-    simd_xy_map_one_f64,
+    ShapeOwnerKey, Strictness, ZOrdinate, axis_pow2_scale, column_all_finite, compare_point_slices,
+    compare_points, compare_polygons, compare_shapes, same_topological_coordinate,
+    set_point_ordinate, simd_xy_map_f64, simd_xy_map_one_f64,
 };
 
 /// Expand the fixed residual merge at its call site; omitted low limbs accrue
@@ -2040,25 +2040,12 @@ impl Shape {
         &self,
         rect: Bounds,
         drop: bool,
-        bounds: Option<Bounds>,
         frame: crate::geographic::GeographicFrame,
     ) -> Result<Self> {
         let subject_plan = crate::geometry::PreparedPlan::transient(self);
         let subject_cache = crate::geometry::FrameDependentCaches::default();
         let subject =
             crate::geometry::GeographicPrepared::try_new(&subject_plan, &subject_cache, frame)?;
-        let subject_bounds_sound = bounds.is_none_or(|bounds| {
-            crate::geometry::raw_coordinate_bounds_are_sound_in_frame(
-                Some(subject.view().shape()),
-                bounds,
-                frame,
-            )
-        });
-        let rectangle_bounds_sound =
-            crate::geometry::raw_coordinate_bounds_are_sound_in_frame(None, rect, frame);
-        if subject_bounds_sound && rectangle_bounds_sound && !rect.crosses_antimeridian() {
-            return self.clip_by_rect_with_bounds(rect, drop, bounds);
-        }
 
         let rectangle = if rect.crosses_antimeridian() {
             let west = Bounds::new(
@@ -2091,11 +2078,7 @@ impl Shape {
             Strictness::from(drop),
             true,
         )?;
-        Ok(if clipped.is_empty() {
-            empty_clip_shape(self)
-        } else {
-            clipped
-        })
+        Ok(clipped)
     }
 
     /// [`Self::clip_by_rect`] with the operand's bounds supplied by the
@@ -2114,101 +2097,7 @@ impl Shape {
             let right = self.clip_by_rect_with_bounds(east, drop, bounds)?;
             return left.union(&right, Strictness::from(drop));
         }
-        // Bounds inside the rectangle clip to the geometry VERBATIM — the
-        // dominant tiling case, and it sidesteps the polygon clipper's
-        // grid snapping for untouched inputs. Disjoint bounds short to each
-        // family's empty below without touching the clip machinery.
-        if let Some(bounds) = bounds
-            && bounds.minx() >= rect.minx()
-            && bounds.maxx() <= rect.maxx()
-            && bounds.miny() >= rect.miny()
-            && bounds.maxy() <= rect.maxy()
-        {
-            return Ok(self.clone());
-        }
-        let disjoint = bounds.is_some_and(|bounds| !bounds.intersects(rect));
-        let clipped = match self {
-            Self::Point(point) if rect.contains_point(*point) => self.clone(),
-            Self::MultiPoint(points) => {
-                Self::multi_point(points.axes(), clip_multipoint_columns(points, rect)?)
-            },
-            Self::Point(_) => empty_clip_shape(self),
-            Self::LineString(_)
-            | Self::MultiLineString(_)
-            | Self::Polygon(_)
-            | Self::MultiPolygon(_)
-                if disjoint =>
-            {
-                empty_clip_shape(self)
-            },
-            // Line crossings lie on input segments, so Z/M always resolve by
-            // interpolation; polygon output can also include clip-rectangle
-            // corners, which derive from no input vertex — there the policy
-            // decides (restore-or-raise vs pure X/Y).
-            Self::LineString(points) => carry_ordinates(
-                clipped_linestring(points, rect)?,
-                &[self],
-                "clip_by_rect",
-                drop,
-            )?,
-            Self::MultiLineString(lines) => {
-                let mut clipped = Vec::new();
-                for line in lines {
-                    clipped.extend(clipped_line_parts(line, rect)?);
-                }
-                carry_ordinates(line_parts_to_shape(clipped)?, &[self], "clip_by_rect", drop)?
-            },
-            Self::Polygon(polygon) => carry_ordinates(
-                clip_polygonal(std::slice::from_ref(polygon), rect)?,
-                &[self],
-                "clip_by_rect",
-                drop,
-            )?,
-            Self::MultiPolygon(polygons) => carry_ordinates(
-                clip_polygonal(polygons, rect)?,
-                &[self],
-                "clip_by_rect",
-                drop,
-            )?,
-            Self::GeometryCollection(geometries) => Self::GeometryCollection(
-                geometries.try_map_members(|geometry| geometry.clip_by_rect(rect, drop))?,
-            ),
-            Self::Empty(..) => self.clone(),
-        };
-        // Normalize a vanished clip to the SUBJECT's typed empty (a clipped-away
-        // line is `LINESTRING EMPTY`, matching `intersection` with the clip box;
-        // an all-empty collection flattens to `GEOMETRYCOLLECTION EMPTY` rather
-        // than a nest of empties), so the op's output type stays stable.
-        Ok(if clipped.is_empty() {
-            empty_clip_shape(self)
-        } else {
-            clipped
-        })
-    }
-}
-
-/// Empty result of a rectangle clip, typed to the SUBJECT's family so the op's
-/// output type is stable: clipping a line away yields `LINESTRING EMPTY`, a
-/// polygon `POLYGON EMPTY` (matching `intersection` with the 2D clip box), and
-/// a collection a flat `GEOMETRYCOLLECTION EMPTY`.
-pub(crate) fn empty_clip_shape(subject: &Shape) -> Shape {
-    match subject {
-        // A collection clips to a flat empty collection, and an already-empty
-        // subject keeps its exact kind; every typed family routes through the
-        // ONE dim→empty source so the mapping has a single home.
-        Shape::GeometryCollection(_) => {
-            Shape::typed_empty(GeometryKind::GeometryCollection, subject.axes())
-        },
-        Shape::Empty(..) => subject.clone(),
-        Shape::Point(_)
-        | Shape::MultiPoint(_)
-        | Shape::LineString(_)
-        | Shape::MultiLineString(_)
-        | Shape::Polygon(_)
-        | Shape::MultiPolygon(_) => crate::geometry::empty_shape_for_dimension_with_axes(
-            subject.topological_dimension(),
-            subject.axes(),
-        ),
+        overlay_intersection_with_rectangle(self, rect, bounds, Strictness::from(drop))
     }
 }
 

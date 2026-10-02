@@ -2042,7 +2042,16 @@ class Geometry:
         maxx: _FloatScalarInput,
         maxy: _FloatScalarInput,
     ) -> Geometry:
-        """Clip a geometry to a closed rectangle ``(minx, miny, maxx, maxy)``.
+        """Return the intersection with the closed rectangle
+        ``(minx, miny, maxx, maxy)``. Its WKB is identical to
+        ``intersection(self, box(minx, miny, maxx, maxy))`` when the box carries the
+        same CRS and coordinate epoch. For a geographic interval crossing the
+        antimeridian, use ``wrap='split'`` with a matching CRS. Point-only and edge-only
+        contacts are retained; equal ``minx``/``maxx`` or ``miny``/``maxy`` select a
+        closed line or point.
+
+        When the closed rectangle contains the subject's raw bounds, the subject is
+        returned verbatim for Cartesian inputs and canonical seam-free geographic bounds.
 
         Source ordinates are carried where meaningful; synthesized clip vertices use
         the operation's natural XY result.
@@ -2054,11 +2063,10 @@ class Geometry:
         equal endpoints select a zero-width meridian. ``miny``/``maxy`` are the
         south/north latitudes and must be finite with ``south <= north``.
 
-        A subject that crosses the seam, reaches a pole, or has a non-canonical
-        longitude is clipped through frame-aware overlay. Canonical, seam-free,
-        pole-free inputs use direct rectangle clipping. Geographic rectangle
-        horizontal edges follow parallels and use the same construction as
-        :func:`box` for these canonical endpoints.
+        Geographic inputs use frame-aware overlay so longitude aliases, seam crossings,
+        and pole vertices follow the CRS topology. Geographic rectangle horizontal
+        edges follow parallels and use the same construction as :func:`box` when that
+        box uses the same CRS and coordinate epoch.
 
         Parameters
         ----------
@@ -7935,7 +7943,16 @@ class GeometryArray(Sequence[_GeometryT_co]):
         maxx: float,
         maxy: float,
     ) -> GeometryArray[Geometry | None]:
-        """Clip a geometry to a closed rectangle ``(minx, miny, maxx, maxy)``.
+        """Return the intersection with the closed rectangle
+        ``(minx, miny, maxx, maxy)``. Its WKB is identical to
+        ``intersection(self, box(minx, miny, maxx, maxy))`` when the box carries the
+        same CRS and coordinate epoch. For a geographic interval crossing the
+        antimeridian, use ``wrap='split'`` with a matching CRS. Point-only and edge-only
+        contacts are retained; equal ``minx``/``maxx`` or ``miny``/``maxy`` select a
+        closed line or point.
+
+        When the closed rectangle contains the subject's raw bounds, the subject is
+        returned verbatim for Cartesian inputs and canonical seam-free geographic bounds.
 
         Source ordinates are carried where meaningful; synthesized clip vertices use
         the operation's natural XY result.
@@ -7947,11 +7964,10 @@ class GeometryArray(Sequence[_GeometryT_co]):
         equal endpoints select a zero-width meridian. ``miny``/``maxy`` are the
         south/north latitudes and must be finite with ``south <= north``.
 
-        A subject that crosses the seam, reaches a pole, or has a non-canonical
-        longitude is clipped through frame-aware overlay. Canonical, seam-free,
-        pole-free inputs use direct rectangle clipping. Geographic rectangle
-        horizontal edges follow parallels and use the same construction as
-        :func:`box` for these canonical endpoints.
+        Geographic inputs use frame-aware overlay so longitude aliases, seam crossings,
+        and pole vertices follow the CRS topology. Geographic rectangle horizontal
+        edges follow parallels and use the same construction as :func:`box` when that
+        box uses the same CRS and coordinate epoch.
 
         Parameters
         ----------
@@ -18151,6 +18167,8 @@ def intersection(
     Evaluated in the coordinate plane. In a geographic CRS, topology resolves
     longitude aliases, seam spellings, and pole longitudes in the CRS-native
     frame; seam-crossing inputs are split into chart pieces before construction.
+    A closed axis-aligned rectangle containing the other operand's raw bounds
+    retains that operand verbatim when its bounds are sound in the operation's frame.
 
     Parameters
     ----------

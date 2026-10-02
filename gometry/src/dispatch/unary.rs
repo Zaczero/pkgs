@@ -121,10 +121,10 @@ const fn unary_row_mode(op: Operation) -> UnaryRowMode {
         | Operation::IsSimple
         | Operation::IsRing
         | Operation::Bounds
-        | Operation::ClipByRect
         | Operation::Metric(MetricOp::Area | MetricOp::LineInterpolate | MetricOp::LineSubstring) => {
             UnaryRowMode::Prepared
         },
+        Operation::ClipByRect => UnaryRowMode::ShapeOnly,
         _ => UnaryRowMode::ShapeOnly,
     }
 }

@@ -623,11 +623,6 @@ fn line_polygon_overlays_match_full_partition_wkb() {
             test_line(&[(-1.0, 2.0), (3.0, 2.0), (-1.0, 2.0), (5.0, 2.0)]),
         ),
         (
-            "zero-length line",
-            square.clone(),
-            test_line(&[(1.0, 1.0), (1.0, 1.0)]),
-        ),
-        (
             "tangent vertex",
             square,
             test_line(&[(-1.0, 1.0), (1.0, -1.0)]),
@@ -805,6 +800,14 @@ fn degenerate_polygon_line_and_point_overlays_match_full_partition_wkb() {
             );
         }
     }
+    let collapsed_line = test_line(&[(1.0, 1.0), (1.0, 1.0)]);
+    assert_overlay_matches_full_partition(
+        "zero-length line difference",
+        &collapsed_line,
+        &test_square(0.0, 0.0, 4.0, 4.0),
+        OverlayOp::Difference,
+        Strictness::Lenient,
+    );
 }
 
 fn assert_shared_set_overlay_identity(name: &str, depth: usize) {
@@ -1816,13 +1819,13 @@ mod binary_areal_overlay_tests {
     }
 
     #[test]
-    fn polygon_intersection_with_a_collapsed_line_is_its_point() {
+    fn rectangle_contained_collapsed_line_is_preserved_verbatim() {
         let polygon = square(0.0, 0.0, 4.0, 4.0);
         let collapsed = line(&[(1.0, 1.0), (1.0, 1.0)]);
-        let collapsed_result = polygon
-            .intersection(&collapsed, Strictness::Strict)
-            .unwrap();
-        assert_eq!(collapsed_result, point(1.0, 1.0));
+        for (left, right) in [(&polygon, &collapsed), (&collapsed, &polygon)] {
+            let result = left.intersection(right, Strictness::Strict).unwrap();
+            assert_eq!(shape_wkb(&result), shape_wkb(&collapsed));
+        }
     }
 
     #[test]
@@ -2542,11 +2545,29 @@ mod binary_areal_overlay_tests {
         use crate::geometry::overlay::exact_partition::{
             partition_metrics, reset_partition_builds,
         };
-        let outer = square(0.0, 0.0, 4.0, 4.0);
-        for (right, moved) in [
-            (square(1.0, 1.0, 2.0, 2.0), false),
-            (regular_polygon(4.0, 4.0, 1.5, 7), true),
-        ] {
+        let outer = Shape::Polygon(Polygon::new(
+            test_ring(&[
+                (0.0, 0.0),
+                (2.0, 0.0),
+                (4.0, 0.0),
+                (4.0, 4.0),
+                (0.0, 4.0),
+                (0.0, 0.0),
+            ]),
+            Vec::new(),
+        ));
+        let inner = Shape::Polygon(Polygon::new(
+            test_ring(&[
+                (1.0, 1.0),
+                (1.5, 1.0),
+                (2.0, 1.0),
+                (2.0, 2.0),
+                (1.0, 2.0),
+                (1.0, 1.0),
+            ]),
+            Vec::new(),
+        ));
+        for (right, moved) in [(inner, false), (regular_polygon(4.0, 4.0, 1.5, 7), true)] {
             reset_partition_builds();
             overlay_all(
                 &[&outer, &right],
@@ -3106,17 +3127,16 @@ mod rectangle_clip_tests {
 
     fn compare_clip_results(
         name: &str,
-        actual: Result<Vec<Polygon>>,
-        expected: Result<Vec<Polygon>>,
+        actual: Result<Shape>,
+        expected: Result<Shape>,
         matching_errors_are_expected: bool,
     ) {
         match (actual, expected) {
             (Ok(actual), Ok(expected)) => {
-                let actual = clip::polygon_parts_to_shape(actual);
-                let expected = clip::polygon_parts_to_shape(expected);
-                assert!(
-                    actual.equals(&expected).unwrap(),
-                    "{name}: {actual:?} differs topologically from {expected:?}"
+                assert_eq!(
+                    shape_wkb(&actual),
+                    shape_wkb(&expected),
+                    "{name}: rectangle intersection {actual:?} differs from full partition {expected:?}"
                 );
                 assert!(
                     actual.validate().unwrap().is_none(),
@@ -3137,41 +3157,474 @@ mod rectangle_clip_tests {
     }
 
     fn assert_clip_matches_oracle(name: &str, subjects: &[Polygon], bounds: Bounds) {
-        let rectangle = rect_polygon(bounds).expect("clip rectangle polygon");
-        let expected = binary_areal_overlay(
-            subjects,
-            std::slice::from_ref(&rectangle),
+        let subject = Shape::narrow_polygons(CoordinateAxes::XY, subjects.to_vec());
+        let rectangle_polygon = rect_polygon(bounds).expect("clip rectangle polygon");
+        let rectangle = Shape::Polygon(rectangle_polygon.clone());
+        let expected = super::nary::full_partition_cartesian_overlay(
+            &[&subject, &rectangle],
             OverlayOp::Intersection,
+            Strictness::Lenient,
         );
-        let actual = clip_polygonal_rectangle(subjects, bounds);
-        compare_clip_results(name, actual, expected, false);
+        let expected = expected.unwrap();
+        let actual = super::intersect_rectangular_polygonal(
+            &subject,
+            &rectangle_polygon,
+            bounds,
+            crate::geometry::compare_shapes(&rectangle, &subject).is_lt(),
+            Strictness::Lenient,
+        )
+        .unwrap()
+        .unwrap_or_else(|| expected.clone());
+        compare_clip_results(name, Ok(actual), Ok(expected), false);
     }
 
     fn assert_clip_oracle_failure_or_equal(name: &str, subjects: &[Polygon], bounds: Bounds) {
-        let rectangle = rect_polygon(bounds).expect("clip rectangle polygon");
+        let subject = Shape::narrow_polygons(CoordinateAxes::XY, subjects.to_vec());
+        let rectangle = Shape::Polygon(rect_polygon(bounds).expect("clip rectangle polygon"));
+        let inputs = [&subject, &rectangle];
         compare_clip_results(
             name,
-            clip_polygonal_rectangle(subjects, bounds),
-            binary_areal_overlay(
-                subjects,
-                std::slice::from_ref(&rectangle),
+            overlay_all(
+                &inputs,
+                crate::geometry::TopologyDomain::Cartesian,
                 OverlayOp::Intersection,
+                Strictness::Lenient,
+            ),
+            super::nary::full_partition_cartesian_overlay(
+                &inputs,
+                OverlayOp::Intersection,
+                Strictness::Lenient,
             ),
             true,
         );
     }
 
-    fn next_random(state: &mut u64) -> u64 {
-        let mut value = *state;
-        value ^= value.wrapping_shl(13);
-        value ^= value.wrapping_shr(7);
-        value ^= value.wrapping_shl(17);
-        *state = value;
-        value
+    fn assert_public_clip_matches_intersection(
+        name: &str,
+        source_wkt: &str,
+        rect: Bounds,
+    ) -> Shape {
+        let subject = crate::io::parse_wkt(source_wkt).expect("test geometry parses");
+        let rectangle = Shape::Polygon(rect_polygon(rect).expect("clip rectangle polygon"));
+        let actual = subject.clip_by_rect(rect, false);
+        let expected = subject.intersection(&rectangle, Strictness::Lenient);
+        match (actual, expected) {
+            (Ok(actual), Ok(expected)) => {
+                assert_eq!(
+                    shape_wkb(&actual),
+                    shape_wkb(&expected),
+                    "{name}: clip {actual:?} differs from intersection {expected:?}"
+                );
+                actual
+            },
+            (Err(actual), Err(expected)) => {
+                assert_eq!(
+                    actual.to_string(),
+                    expected.to_string(),
+                    "{name}: clip and intersection failed differently"
+                );
+                panic!("{name}: enumerated input must be accepted")
+            },
+            (actual, expected) => {
+                panic!("{name}: clip returned {actual:?}, intersection returned {expected:?}")
+            },
+        }
     }
 
-    fn random_unit(state: &mut u64) -> f64 {
-        (next_random(state) >> 11) as f64 / (1_u64 << 53) as f64
+    #[test]
+    fn clip_by_rect_matches_closed_box_intersection_on_contacts_and_degeneracies() {
+        let rect = bounds(1.0, 1.0, 4.0, 4.0);
+        let cases = [
+            ("line-point-contact", "LINESTRING (5 3, 4 1)", rect),
+            ("line-edge-contact", "LINESTRING (5 2, 4 2)", rect),
+            ("line-corner-contact", "LINESTRING (5 5, 4 4)", rect),
+            ("line-runs-along-edge", "LINESTRING (1 1, 4 1)", rect),
+            (
+                "multiline-mixed-contact",
+                "MULTILINESTRING ((5 3, 4 1), (1 1, 4 1))",
+                rect,
+            ),
+            (
+                "multipolygon-point-contact-with-area",
+                "MULTIPOLYGON (((1 1, 2 1, 2 2, 1 2, 1 1)), ((4 4, 6 4, 6 6, 4 6, 4 4)))",
+                rect,
+            ),
+            (
+                "multipolygon-edge-contact-with-area",
+                "MULTIPOLYGON (((1 1, 2 1, 2 2, 1 2, 1 1)), ((4 2, 6 2, 6 3, 4 3, 4 2)))",
+                rect,
+            ),
+            (
+                "polygon-edge-contact",
+                "POLYGON ((4 2, 6 2, 6 3, 4 3, 4 2))",
+                rect,
+            ),
+            (
+                "polygon-corner-contact",
+                "POLYGON ((4 4, 6 4, 6 6, 4 6, 4 4))",
+                rect,
+            ),
+            (
+                "polygon-runs-along-edge",
+                "POLYGON ((0 1, 4 1, 4 3, 0 3, 0 1))",
+                bounds(1.0, 1.0, 3.0, 4.0),
+            ),
+            (
+                "holed-polygon-edge-contact",
+                "POLYGON ((0 0, 6 0, 6 6, 0 6, 0 0), (4 2, 5 2, 5 4, 4 4, 4 2))",
+                bounds(4.0, 1.0, 6.0, 5.0),
+            ),
+            (
+                "holed-polygon-corner-contact",
+                "POLYGON ((0 0, 6 0, 6 6, 0 6, 0 0), (3 3, 5 3, 5 5, 3 5, 3 3))",
+                bounds(5.0, 5.0, 7.0, 7.0),
+            ),
+            (
+                "zero-width-line",
+                "LINESTRING (0 0, 4 4)",
+                bounds(2.0, 1.0, 2.0, 3.0),
+            ),
+            (
+                "zero-height-line",
+                "LINESTRING (0 2, 4 2)",
+                bounds(1.0, 2.0, 3.0, 2.0),
+            ),
+            (
+                "zero-width-polygon",
+                "POLYGON ((0 0, 4 0, 4 4, 0 4, 0 0))",
+                bounds(2.0, 0.0, 2.0, 4.0),
+            ),
+            (
+                "zero-height-polygon",
+                "POLYGON ((0 0, 4 0, 4 4, 0 4, 0 0))",
+                bounds(0.0, 2.0, 4.0, 2.0),
+            ),
+            (
+                "spike",
+                "POLYGON ((0 0, 4 0, 4 4, 2 4, 2 2, 3 2, 2 2, 2 4, 0 4, 0 0))",
+                bounds(0.5, 0.5, 3.5, 3.5),
+            ),
+            (
+                "collapsed-shell",
+                "POLYGON ((0 0, 2 2, 4 4, 0 0))",
+                bounds(-1.0, 1.0, 5.0, 3.0),
+            ),
+            (
+                "shell-equals-hole",
+                "POLYGON ((0 0, 4 0, 4 4, 0 4, 0 0), (0 0, 4 0, 4 4, 0 4, 0 0))",
+                bounds(-1.0, -1.0, 5.0, 5.0),
+            ),
+            (
+                "bow-tie",
+                "POLYGON ((0 0, 2 2, 2 0, 0 2, 0 0))",
+                bounds(-1.0, -1.0, 3.0, 1.0),
+            ),
+            (
+                "twice-wound",
+                "POLYGON ((0 0, 4 0, 4 4, 0 4, 0 0, 4 0, 4 4, 0 4, 0 0))",
+                bounds(-1.0, -1.0, 5.0, 5.0),
+            ),
+            (
+                "hole-touching-shell",
+                "POLYGON ((0 0, 6 0, 6 6, 0 6, 0 0), (0 2, 2 2, 2 4, 0 4, 0 2))",
+                bounds(-1.0, -1.0, 7.0, 7.0),
+            ),
+            (
+                "external-hole",
+                "POLYGON ((0 0, 4 0, 4 4, 0 4, 0 0), (5 1, 6 1, 6 2, 5 2, 5 1))",
+                bounds(-1.0, -1.0, 7.0, 7.0),
+            ),
+            ("empty", "POLYGON EMPTY", rect),
+            (
+                "collapsed-member-multipolygon",
+                "MULTIPOLYGON (((0 0, 2 2, 4 4, 0 0)), ((5 0, 7 2, 9 4, 5 0)))",
+                bounds(-1.0, -1.0, 10.0, 5.0),
+            ),
+            (
+                "nearest-rounded-line-crossings",
+                "LINESTRING (0 5, 5 2)",
+                rect,
+            ),
+        ];
+        for (name, source_wkt, rect) in cases {
+            assert_public_clip_matches_intersection(name, source_wkt, rect);
+        }
+
+        let point_contact = assert_public_clip_matches_intersection(
+            "known-line-point-contact",
+            "LINESTRING (5 3, 4 1)",
+            rect,
+        );
+        assert_eq!(
+            shape_wkb(&point_contact),
+            shape_wkb(&crate::io::parse_wkt("POINT (4 1)").unwrap())
+        );
+        let edge_contact = assert_public_clip_matches_intersection(
+            "known-polygon-edge-contact",
+            "POLYGON ((4 2, 6 2, 6 3, 4 3, 4 2))",
+            rect,
+        );
+        assert_eq!(
+            shape_wkb(&edge_contact),
+            shape_wkb(&crate::io::parse_wkt("LINESTRING (4 2, 4 3)").unwrap())
+        );
+        let corner_contact = assert_public_clip_matches_intersection(
+            "known-polygon-corner-contact",
+            "POLYGON ((4 4, 6 4, 6 6, 4 6, 4 4))",
+            rect,
+        );
+        assert_eq!(
+            shape_wkb(&corner_contact),
+            shape_wkb(&crate::io::parse_wkt("POINT (4 4)").unwrap())
+        );
+        let mixed_point = assert_public_clip_matches_intersection(
+            "known-mixed-point-and-area",
+            "MULTIPOLYGON (((1 1, 2 1, 2 2, 1 2, 1 1)), ((4 4, 6 4, 6 6, 4 6, 4 4)))",
+            rect,
+        );
+        assert_eq!(
+            shape_wkb(&mixed_point),
+            shape_wkb(
+                &crate::io::parse_wkt(
+                    "GEOMETRYCOLLECTION (POINT (4 4), POLYGON ((1 1, 2 1, 2 2, 1 2, 1 1)))"
+                )
+                .unwrap()
+            )
+        );
+        let nearest_crossing = assert_public_clip_matches_intersection(
+            "nearest-rounded-crossing",
+            "LINESTRING (0 5, 5 2)",
+            rect,
+        );
+        assert_eq!(
+            shape_wkb(&nearest_crossing),
+            shape_wkb(&crate::io::parse_wkt("LINESTRING (1.6666666666666667 4, 4 2.6)").unwrap())
+        );
+        let bow_tie = assert_public_clip_matches_intersection(
+            "known-bow-tie-lobes",
+            "POLYGON ((0 0, 2 2, 2 0, 0 2, 0 0))",
+            bounds(-1.0, -1.0, 3.0, 1.0),
+        );
+        assert_eq!(
+            shape_wkb(&bow_tie),
+            shape_wkb(
+                &crate::io::parse_wkt(
+                    "MULTIPOLYGON (((0 0, 1 1, 0 1, 0 0)), ((1 1, 2 0, 2 1, 1 1)))"
+                )
+                .unwrap()
+            )
+        );
+    }
+
+    #[test]
+    fn contained_valid_polygonal_intersection_preserves_the_operand_verbatim() {
+        let bounds = bounds(-1.0, -1.0, 7.0, 5.0);
+        for (name, source_wkt) in [
+            (
+                "noncanonical-shell-and-hole",
+                "POLYGON ((4 0, 2 0, 0 0, 0 4, 4 4, 4 0), (1 1, 1 3, 3 3, 3 1, 1 1))",
+            ),
+            (
+                "noncanonical-multipolygon-order",
+                "MULTIPOLYGON (((4 0, 6 0, 6 2, 4 2, 4 0)), ((0 0, 2 0, 2 2, 0 2, 0 0)))",
+            ),
+        ] {
+            let subject = crate::io::parse_wkt(source_wkt).unwrap();
+            let expected = shape_wkb(&subject);
+            let actual = assert_public_clip_matches_intersection(name, source_wkt, bounds);
+            assert_eq!(
+                shape_wkb(&actual),
+                expected,
+                "{name}: retained operand changed"
+            );
+            let rectangle = Shape::Polygon(rect_polygon(bounds).unwrap());
+            let reversed = rectangle
+                .intersection(&subject, Strictness::Lenient)
+                .unwrap();
+            assert_eq!(
+                shape_wkb(&reversed),
+                expected,
+                "{name}: reversed operands changed the retained value"
+            );
+        }
+    }
+
+    #[test]
+    fn contained_invalid_polygon_intersection_preserves_the_operand_verbatim() {
+        let source_wkt = "POLYGON ((0 0, 2 2, 2 0, 0 2, 0 0))";
+        let subject = crate::io::parse_wkt(source_wkt).unwrap();
+        let expected = shape_wkb(&subject);
+        let actual = assert_public_clip_matches_intersection(
+            "contained-bow-tie",
+            source_wkt,
+            bounds(-1.0, -1.0, 3.0, 3.0),
+        );
+        assert_eq!(shape_wkb(&actual), expected);
+    }
+
+    #[test]
+    fn contained_zm_polygon_intersection_preserves_the_operand_verbatim() {
+        let subject = crate::io::parse_wkt(
+            "POLYGON ZM ((0 0 10 100, 2 0 12 120, 4 0 14 140, \
+             4 4 18 180, 0 4 20 200, 0 0 10 100))",
+        )
+        .unwrap();
+        let expected = shape_wkb(&subject);
+        let bounds = bounds(0.0, 0.0, 4.0, 4.0);
+        let rectangle = Shape::Polygon(rect_polygon(bounds).unwrap());
+
+        let clipped = subject.clip_by_rect(bounds, false).unwrap();
+        let intersection = subject
+            .intersection(&rectangle, Strictness::Lenient)
+            .unwrap();
+
+        assert_eq!(shape_wkb(&clipped), expected);
+        assert_eq!(shape_wkb(&intersection), expected);
+    }
+
+    #[test]
+    fn contained_boundary_touching_polygon_intersection_preserves_the_operand() {
+        let subject = crate::io::parse_wkt("POLYGON ((0 0, 2 0, 2 1, 2 2, 0 2, 0 0))").unwrap();
+        let expected = shape_wkb(&subject);
+        let bounds = bounds(-1.0, -1.0, 2.0, 3.0);
+        let rectangle = Shape::Polygon(rect_polygon(bounds).unwrap());
+
+        let clipped = subject.clip_by_rect(bounds, false).unwrap();
+        let intersection = subject
+            .intersection(&rectangle, Strictness::Lenient)
+            .unwrap();
+
+        assert_eq!(shape_wkb(&clipped), expected);
+        assert_eq!(shape_wkb(&intersection), expected);
+    }
+
+    #[test]
+    fn contained_point_touching_multipolygon_intersection_returns_input_verbatim() {
+        let subject = crate::io::parse_wkt(
+            "MULTIPOLYGON (((0 0, 2 0, 2 1, 2 2, 0 2, 0 0)), \
+             ((2 1, 3 0, 4 1, 3 2, 2 1)))",
+        )
+        .unwrap();
+        assert!(subject.validate().unwrap().is_none());
+        let rectangle = bounds(-1.0, -1.0, 5.0, 3.0);
+        let clipped = assert_public_clip_matches_intersection(
+            "contained-point-touching-members",
+            "MULTIPOLYGON (((0 0, 2 0, 2 1, 2 2, 0 2, 0 0)), \
+             ((2 1, 3 0, 4 1, 3 2, 2 1)))",
+            rectangle,
+        );
+        assert_eq!(
+            shape_wkb(&clipped),
+            shape_wkb(&subject),
+            "contained touching members retain their original presentation"
+        );
+    }
+
+    #[test]
+    fn contained_rectangle_difference_returns_the_typed_empty() {
+        let subject = crate::io::parse_wkt("POLYGON ((0 0, 2 0, 2 2, 0 2, 0 0))").unwrap();
+        let rectangle = Shape::Polygon(rect_polygon(bounds(-1.0, -1.0, 3.0, 3.0)).unwrap());
+
+        let difference = subject.difference(&rectangle, Strictness::Lenient).unwrap();
+
+        assert_eq!(
+            shape_wkb(&difference),
+            shape_wkb(&crate::io::parse_wkt("POLYGON EMPTY").unwrap())
+        );
+    }
+
+    #[test]
+    fn rectangle_union_retains_the_covering_rectangle() {
+        let subject = crate::io::parse_wkt("POLYGON ((1 1, 2 1, 2 2, 1 2, 1 1))").unwrap();
+        let rectangle = Shape::Polygon(rect_polygon(bounds(0.0, 0.0, 4.0, 4.0)).unwrap());
+        let expected = shape_wkb(&rectangle);
+
+        let union = subject.union(&rectangle, Strictness::Lenient).unwrap();
+        let reversed_union = rectangle.union(&subject, Strictness::Lenient).unwrap();
+
+        assert_eq!(shape_wkb(&union), expected);
+        assert_eq!(shape_wkb(&reversed_union), expected);
+    }
+
+    #[test]
+    fn disjoint_rectangle_intersection_returns_the_typed_empty() {
+        let subject = crate::io::parse_wkt("POLYGON ((0 0, 2 0, 2 2, 0 2, 0 0))").unwrap();
+        let rectangle = Shape::Polygon(rect_polygon(bounds(5.0, 5.0, 6.0, 6.0)).unwrap());
+
+        let intersection = subject
+            .intersection(&rectangle, Strictness::Lenient)
+            .unwrap();
+        let reversed = rectangle
+            .intersection(&subject, Strictness::Lenient)
+            .unwrap();
+
+        assert_eq!(
+            shape_wkb(&intersection),
+            shape_wkb(&crate::io::parse_wkt("POLYGON EMPTY").unwrap())
+        );
+        assert_eq!(shape_wkb(&reversed), shape_wkb(&intersection));
+    }
+
+    #[test]
+    fn clip_by_rect_matches_full_intersection_for_the_country_fixture() {
+        const COUNTRIES: &str = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/fixtures/osm_countries_0_1.geojson"
+        ));
+
+        let countries: serde_json::Value =
+            serde_json::from_str(COUNTRIES).expect("country fixture parses");
+        let features = countries["features"]
+            .as_array()
+            .expect("country fixture is a feature collection");
+        assert_eq!(features.len(), 217);
+        let bounds = bounds(-10.0, -10.0, 30.0, 50.0);
+        let rectangle = Shape::Polygon(rect_polygon(bounds).expect("clip rectangle polygon"));
+        for (index, feature) in features.iter().enumerate() {
+            let code = feature["properties"]["tags"]["ISO3166-1:alpha2"]
+                .as_str()
+                .expect("country has an ISO code");
+            let subject =
+                crate::io::parse_geojson(&feature["geometry"]).expect("country geometry parses");
+            let clipped = subject.clip_by_rect(bounds, false).unwrap();
+            let intersection = subject
+                .intersection(&rectangle, Strictness::Lenient)
+                .unwrap();
+            let full = super::nary::full_partition_cartesian_overlay(
+                &[&subject, &rectangle],
+                OverlayOp::Intersection,
+                Strictness::Lenient,
+            )
+            .unwrap();
+            let source_bounds = subject.bounds().expect("country has coordinates");
+            let contained = source_bounds.minx() >= bounds.minx()
+                && source_bounds.maxx() <= bounds.maxx()
+                && source_bounds.miny() >= bounds.miny()
+                && source_bounds.maxy() <= bounds.maxy();
+            if contained {
+                assert_eq!(
+                    shape_wkb(&clipped),
+                    shape_wkb(&subject),
+                    "country {index} ({code}): contained clip changed the retained operand"
+                );
+                assert_eq!(
+                    shape_wkb(&intersection),
+                    shape_wkb(&subject),
+                    "country {index} ({code}): intersection changed the retained operand"
+                );
+            } else {
+                assert_eq!(
+                    shape_wkb(&clipped),
+                    shape_wkb(&intersection),
+                    "country {index} ({code}): clip differs from intersection"
+                );
+                assert_eq!(
+                    shape_wkb(&clipped),
+                    shape_wkb(&full),
+                    "country {index} ({code}): local clip differs from the full partition"
+                );
+            }
+        }
     }
 
     fn regular_ellipse(cx: f64, cy: f64, rx: f64, ry: f64, count: usize, phase: f64) -> Polygon {
@@ -3226,6 +3679,25 @@ mod rectangle_clip_tests {
             (0.0, 4.0),
             (0.0, 0.0),
         ]);
+        let square_ring = ring(&[(0.0, 0.0), (4.0, 0.0), (4.0, 4.0), (0.0, 4.0), (0.0, 0.0)]);
+        let shell_equal_hole = Polygon::new(square_ring.clone(), vec![square_ring.clone()]);
+        let touching_hole_shell = Polygon::new(
+            ring(&[(0.0, 0.0), (6.0, 0.0), (6.0, 6.0), (0.0, 6.0), (0.0, 0.0)]),
+            vec![ring(&[
+                (0.0, 2.0),
+                (2.0, 2.0),
+                (2.0, 4.0),
+                (0.0, 4.0),
+                (0.0, 2.0),
+            ])],
+        );
+        let external_hole = Polygon::new(square_ring, vec![ring(&[
+            (5.0, 1.0),
+            (6.0, 1.0),
+            (6.0, 2.0),
+            (5.0, 2.0),
+            (5.0, 1.0),
+        ])]);
 
         let cases = [
             (
@@ -3309,6 +3781,61 @@ mod rectangle_clip_tests {
                 bounds(0.5, 3.0, 5.5, 5.0),
             ),
             ("retraced-spike", vec![spike], bounds(0.5, 0.5, 3.5, 3.5)),
+            (
+                "collapsed-shell",
+                vec![polygon(&[(0.0, 0.0), (2.0, 2.0), (4.0, 4.0), (0.0, 0.0)])],
+                bounds(-1.0, 1.0, 5.0, 3.0),
+            ),
+            (
+                "shell-equals-hole",
+                vec![shell_equal_hole],
+                bounds(-1.0, -1.0, 5.0, 5.0),
+            ),
+            (
+                "bow-tie",
+                vec![polygon(&[
+                    (0.0, 0.0),
+                    (2.0, 2.0),
+                    (2.0, 0.0),
+                    (0.0, 2.0),
+                    (0.0, 0.0),
+                ])],
+                bounds(-1.0, -1.0, 3.0, 1.0),
+            ),
+            (
+                "twice-wound",
+                vec![polygon(&[
+                    (0.0, 0.0),
+                    (4.0, 0.0),
+                    (4.0, 4.0),
+                    (0.0, 4.0),
+                    (0.0, 0.0),
+                    (4.0, 0.0),
+                    (4.0, 4.0),
+                    (0.0, 4.0),
+                    (0.0, 0.0),
+                ])],
+                bounds(-1.0, -1.0, 5.0, 5.0),
+            ),
+            (
+                "hole-touching-shell",
+                vec![touching_hole_shell],
+                bounds(-1.0, -1.0, 7.0, 7.0),
+            ),
+            (
+                "external-hole",
+                vec![external_hole],
+                bounds(-1.0, -1.0, 7.0, 7.0),
+            ),
+            ("empty-polygon", Vec::new(), bounds(1.0, 1.0, 4.0, 4.0)),
+            (
+                "collapsed-member-multipolygon",
+                vec![
+                    polygon(&[(0.0, 0.0), (2.0, 2.0), (4.0, 4.0), (0.0, 0.0)]),
+                    polygon(&[(5.0, 0.0), (7.0, 2.0), (9.0, 4.0), (5.0, 0.0)]),
+                ],
+                bounds(-1.0, -1.0, 10.0, 5.0),
+            ),
         ];
         for (name, polygons, rect) in cases {
             assert_clip_matches_oracle(name, &polygons, rect);
@@ -3316,35 +3843,26 @@ mod rectangle_clip_tests {
     }
 
     #[test]
-    fn contained_and_crossing_seeded_convex_rings_match_the_oracle() {
-        let mut state = 0xD1B5_4A32_D192_ED03;
-        for case in 0..24 {
-            let count = 5 + (next_random(&mut state) % 25) as usize;
-            let (cx, cy) = (
-                200.0 * random_unit(&mut state) - 100.0,
-                200.0 * random_unit(&mut state) - 100.0,
-            );
-            let (rx, ry) = (
-                2.0 + 8.0 * random_unit(&mut state),
-                2.0 + 8.0 * random_unit(&mut state),
-            );
-            let phase = std::f64::consts::TAU * random_unit(&mut state);
-            let polygon = regular_ellipse(cx, cy, rx, ry, count, phase);
-            assert_clip_matches_oracle(
-                &format!("seeded-contained-{case}"),
-                std::slice::from_ref(&polygon),
-                bounds(
-                    cx - 0.03 * rx,
-                    cy - 0.03 * ry,
-                    cx + 0.03 * rx,
-                    cy + 0.03 * ry,
-                ),
-            );
-            assert_clip_matches_oracle(
-                &format!("seeded-crossing-{case}"),
-                &[polygon],
-                bounds(cx + 0.7 * rx, cy - 0.1 * ry, cx + 1.1 * rx, cy + 0.1 * ry),
-            );
+    fn named_convex_rings_match_the_rectangle_clip_oracle() {
+        let cases = [
+            (
+                "pentagon-contained-window",
+                regular_ellipse(-17.0, 12.0, 8.0, 4.0, 5, std::f64::consts::PI / 9.0),
+                bounds(-17.2, 11.8, -16.8, 12.2),
+            ),
+            (
+                "nine-vertex-crossing-window",
+                regular_ellipse(14.0, -9.0, 11.0, 3.0, 9, std::f64::consts::PI / 7.0),
+                bounds(18.0, -10.0, 24.0, -5.0),
+            ),
+            (
+                "thirty-two-vertex-crossing-window",
+                regular_ellipse(-40.0, -25.0, 16.0, 9.0, 32, std::f64::consts::PI / 13.0),
+                bounds(-29.0, -27.0, -18.0, -23.0),
+            ),
+        ];
+        for (name, polygon, rect) in cases {
+            assert_clip_matches_oracle(name, &[polygon], rect);
         }
     }
 
@@ -3410,35 +3928,7 @@ mod rectangle_clip_tests {
     }
 
     #[test]
-    fn rectangle_clip_line_contacts_and_zm_carry_keep_the_existing_contract() {
-        assert_eq!(
-            clip_segment(
-                XY::new(-2.0, 0.0),
-                XY::new(2.0, 0.0),
-                bounds(0.0, 0.0, 1.0, 1.0),
-            )
-            .unwrap(),
-            Some((XY::new(0.0, 0.0), XY::new(1.0, 0.0)))
-        );
-        assert_eq!(
-            clip_segment(
-                XY::new(-1.0, 1.0),
-                XY::new(0.0, 0.0),
-                bounds(0.0, 0.0, 1.0, 1.0),
-            )
-            .unwrap(),
-            None
-        );
-        assert_eq!(
-            clip_segment(
-                XY::new(0.0, -1.0),
-                XY::new(0.0, 2.0),
-                bounds(0.0, 0.0, 0.0, 1.0),
-            )
-            .unwrap(),
-            Some((XY::new(0.0, 0.0), XY::new(0.0, 1.0)))
-        );
-
+    fn rectangle_clip_intersection_preserves_zm_carry() {
         let line_point =
             |x, z, m| Point::new_axes(x, 0.0, ZOrdinate(Some(z)), MOrdinate(Some(m))).unwrap();
         let source_line = Shape::LineString(

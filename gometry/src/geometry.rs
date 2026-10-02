@@ -60,8 +60,7 @@ pub(crate) use access::{
     centroid_ring_sums, column_all_finite, column_mean2, column_minmax, line_length_3d_columns,
     line_length_columns, pair_map4_guarded_f64, pair_select_mask, shape_axes_all_z,
     simd_argmin_f64, simd_indexed_map_f64, simd_map_f64, simd_mask_all, simd_mask_any,
-    simd_select_indices, simd_xy_map_f64, squared_norm_untrusted_mask, try_simd_map_f64,
-    xy_bounds_columns,
+    simd_xy_map_f64, squared_norm_untrusted_mask, try_simd_map_f64, xy_bounds_columns,
 };
 #[cfg(test)]
 pub(crate) use area::{AreaSign, open_point_cycle_magnitude, open_xy_cycle_sign};
@@ -198,14 +197,8 @@ pub(crate) use ordinates::carry_overlay_ordinates;
 use ordinates::{carry_each, carry_ordinates};
 #[cfg(test)]
 pub(crate) use overlay::cartesian_support_nonempty;
-pub(crate) use overlay::{
-    OverlayOp, Strictness, empty_shape_for_dimension_with_axes, exact_intersects_bounds,
-    rect_polygon,
-};
-use overlay::{
-    clip_multipoint_columns, clip_polygonal, clipped_line_parts, clipped_linestring,
-    line_parts_to_shape, polygon_parts_to_shape,
-};
+use overlay::polygon_parts_to_shape;
+pub(crate) use overlay::{OverlayOp, Strictness, exact_intersects_bounds, rect_polygon};
 pub(crate) use packed_line_metrics::{PackedLineColumnView, scale_metric_values};
 pub(crate) use point_location::{PointBatchTester, PolygonPointIndex};
 pub(in crate::geometry) use predicates::PolygonContact;
@@ -316,13 +309,13 @@ pub(crate) use segments::{
     point_distance_squared, point_on_segment, points_dwithin, segment_vs_rect,
     squared_norm_is_trustworthy,
 };
-pub(crate) use segments::{clip_segment, point_segment_distance, point_segment_selection};
 /// Convex lerp shared with the broadcast fallback lanes (see
 /// `broadcast::metrics::points`), so packed and fallback agree at the extremes.
 pub(crate) use segments::{
     interpolate_f64, interpolate_fraction, interpolate_optional_ordinate,
     interpolate_subdivision_ordinate,
 };
+pub(crate) use segments::{point_segment_distance, point_segment_selection};
 pub(in crate::geometry) use segments::{try_dedup_by, try_sort_by};
 pub(crate) use tessellation::{CdtRefinement, row_sample_seed};
 use tessellation::{delaunay_triangulation, point_in_ccw_triangle};
@@ -961,13 +954,6 @@ impl Bounds {
             [self.maxx(), self.maxy()],
             [self.minx(), self.maxy()],
         ]
-    }
-
-    pub(crate) fn contains_point(self, point: Point) -> bool {
-        point.x >= self.minx()
-            && point.x <= self.maxx()
-            && point.y >= self.miny()
-            && point.y <= self.maxy()
     }
 
     pub(crate) fn contains_xy(self, point: XY) -> bool {

@@ -90,6 +90,8 @@ pub(crate) fn overlay_operator(
 /// Evaluated in the coordinate plane. In a geographic CRS, topology resolves
 /// longitude aliases, seam spellings, and pole longitudes in the CRS-native
 /// frame; seam-crossing inputs are split into chart pieces before construction.
+/// A closed axis-aligned rectangle containing the other operand's raw bounds
+/// retains that operand verbatim when its bounds are sound in the operation's frame.
 ///
 /// Parameters
 /// ----------

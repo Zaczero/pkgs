@@ -20,10 +20,7 @@ use crate::array::{
     column_window, crs, packed_line_row, packed_polygon_bounds, packed_polygon_vertex_window,
     row_bounds, row_bounds_values,
 };
-use crate::geometry::{
-    CoordSeqBuilder, CoordWindow, LineSeq, MOrdinate, Point, XY, ZOrdinate, clip_segment,
-    same_point,
-};
+use crate::geometry::{CoordSeqBuilder, CoordWindow, LineSeq, MOrdinate, Point, ZOrdinate};
 
 /// Expand coordinate validation into the packed row loop. Its `?` returns the
 /// first invalid coordinate through the detached batch operation.
@@ -169,106 +166,6 @@ const COLUMN_STREAM_MAX_SEGMENTS: usize = 24;
 /// Minimum contiguous short groups before ColumnStream is preferred over PerRun.
 /// Measured on the roads fixture (10k short lines); re-measure before changing.
 const COLUMN_STREAM_MIN_GROUPS: usize = 64;
-
-/// Clip packed XY line rows into packed output without materializing result shapes.
-///
-/// The result remains packed only while every row has at most one surviving
-/// line part. A row that re-enters the rectangle declines the lane so the
-/// caller can retain the general `MultiLineString` representation and its
-/// ordinate/error policy.
-pub(crate) fn clip_lines_packed_xy(
-    line_columns: &LineColumns<'_>,
-    rect: Bounds,
-    domain: crate::geometry::TopologyDomain,
-) -> PackedColumnResult<Option<PackedColumnOutput>> {
-    if let crate::geometry::TopologyDomain::Geographic(frame) = domain
-        && (rect.crosses_antimeridian()
-            || !crate::geometry::raw_coordinate_bounds_are_sound_in_frame(None, rect, frame))
-    {
-        return Ok(None);
-    }
-    let coords = line_columns.coords();
-    if coords.zs().is_some() || coords.ms().is_some() {
-        return Ok(None);
-    }
-    let (xs, ys) = (coords.xs(), coords.ys());
-    let selected_len = line_columns.selected_vertex_capacity_hint();
-    let mut builder = PackedColumnBuilder::like(coords, selected_len, line_columns.rows());
-
-    for row in 0..line_columns.rows() {
-        if line_columns.is_missing(row) {
-            builder.close_row().map_err(batch_err)?;
-            continue;
-        }
-        let window = line_columns.row_window(row);
-        let row_xs = column_window(xs, &window);
-        let row_ys = column_window(ys, &window);
-        let Some(bounds) = row_bounds(row_xs, row_ys) else {
-            return Ok(None);
-        };
-        if let crate::geometry::TopologyDomain::Geographic(frame) = domain {
-            let shape = Shape::LineString(LineSeq::row_view(
-                coords,
-                CoordWindow::from_range(window.clone(), coords.len()),
-            ));
-            if !crate::geometry::raw_coordinate_bounds_are_sound_in_frame(
-                Some(&shape),
-                bounds,
-                frame,
-            ) {
-                return Ok(None);
-            }
-        }
-        if !bounds.intersects(rect) {
-            return Ok(None);
-        }
-        if rect.contains(bounds) {
-            builder.push_window(coords, window).map_err(batch_err)?;
-            continue;
-        }
-
-        let mut part_count = 0_usize;
-        let mut last_end = None;
-        for (x_pair, y_pair) in row_xs.array_windows::<2>().zip(row_ys.array_windows::<2>()) {
-            let [x0, x1] = *x_pair;
-            let [y0, y1] = *y_pair;
-            let Some((clipped_start, clipped_end)) =
-                clip_segment(XY::new(x0, y0), XY::new(x1, y1), rect)
-                    .map_err(|error| row_err(row, error))?
-            else {
-                continue;
-            };
-            if same_point(clipped_start, clipped_end) {
-                continue;
-            }
-            if last_end.is_some_and(|last| same_point(last, clipped_start)) {
-                builder
-                    .push_xy(clipped_end.x, clipped_end.y)
-                    .map_err(batch_err)?;
-            } else {
-                part_count = part_count.wrapping_add(1);
-                if part_count > 1 {
-                    return Ok(None);
-                }
-                builder
-                    .push_xy(clipped_start.x, clipped_start.y)
-                    .map_err(batch_err)?;
-                builder
-                    .push_xy(clipped_end.x, clipped_end.y)
-                    .map_err(batch_err)?;
-            }
-            last_end = Some(clipped_end);
-        }
-        if part_count == 0 {
-            return Ok(None);
-        }
-        builder.close_row().map_err(batch_err)?;
-    }
-
-    let capacity = builder.vertex_len();
-    let (coords, offsets) = builder.finish(capacity).map_err(batch_err)?;
-    Ok(Some(PackedColumnOutput::Lines { coords, offsets }))
-}
 
 /// Dual-strategy planar line-length (or ring-perimeter leaf) reduction.
 ///

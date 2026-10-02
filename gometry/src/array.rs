@@ -382,8 +382,8 @@ mod packed_column_kernels;
 mod packed_columns;
 mod packed_gather;
 pub(crate) use packed_column_kernels::{
-    bounds_values_from_columns_masked, buffer_point_columns, clip_lines_packed_xy,
-    geodesic_line_measure, geodesic_polygon_measure, geographic_bounds_values_from_columns,
+    bounds_values_from_columns_masked, buffer_point_columns, geodesic_line_measure,
+    geodesic_polygon_measure, geographic_bounds_values_from_columns,
     map_masked_point_columns_to_crs, packed_per_row_self_origin_affine_columns,
     reduce_lines_or_polygons, segmented_planar_lengths, segmented_planar_lengths_3d,
     subdivide_line_columns, subdivide_polygon_columns, total_bounds_from_columns,

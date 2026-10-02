@@ -770,7 +770,7 @@ pub(crate) fn unary_clip_by_rect(
     if let crate::geometry::TopologyDomain::Geographic(frame) = ctx.domain {
         return data
             .shape()
-            .clip_by_rect_in_geographic_frame(rect, drop, data.bounds(), frame);
+            .clip_by_rect_in_geographic_frame(rect, drop, frame);
     }
     data.clip_by_rect_with_bounds(rect, drop, data.bounds())
 }

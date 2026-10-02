@@ -88,54 +88,6 @@ pub(crate) fn simd_mask_any(
     )
 }
 
-/// Collect indices where `scalar` / `vector` is true. Full `REDUCE_LANES`
-/// chunks run `vector` (chunk-start index); inputs below [`REDUCE_SIMD_MIN`]
-/// and the tail use `scalar` exclusively. A count pass sizes the reserve;
-/// chunk masks expand via `to_bitmask` — plain ops only (decision paths).
-pub(crate) fn simd_select_indices(
-    len: usize,
-    mut scalar: impl FnMut(usize) -> bool,
-    mut vector: impl FnMut(usize) -> std::simd::Mask<i64, REDUCE_LANES>,
-) -> Vec<usize> {
-    if len == 0 {
-        return Vec::new();
-    }
-    if len < REDUCE_SIMD_MIN {
-        return (0..len).filter(|&index| scalar(index)).collect();
-    }
-    let chunks = len / REDUCE_LANES;
-    let mut count = 0_usize;
-    for chunk in 0..chunks {
-        count = count.wrapping_add(
-            vector(chunk.wrapping_mul(REDUCE_LANES))
-                .to_bitmask()
-                .count_ones() as usize,
-        );
-    }
-    let lanes = chunks.wrapping_mul(REDUCE_LANES);
-    for index in lanes..len {
-        if scalar(index) {
-            count = count.wrapping_add(1);
-        }
-    }
-    let mut indices = Vec::with_capacity(count);
-    for chunk in 0..chunks {
-        let start = chunk.wrapping_mul(REDUCE_LANES);
-        let bitmask = vector(start).to_bitmask();
-        for lane in 0..REDUCE_LANES {
-            if bitmask & (1_u64 << lane) != 0 {
-                indices.push(start.wrapping_add(lane));
-            }
-        }
-    }
-    for index in lanes..len {
-        if scalar(index) {
-            indices.push(index);
-        }
-    }
-    indices
-}
-
 /// First-minimum index under `f64::total_cmp` (NaN ordering preserved).
 /// Full `REDUCE_LANES` chunks evaluate `vector_score` when every lane is
 /// finite; otherwise the chunk falls back to `scalar_score` lane-by-lane.

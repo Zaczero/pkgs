@@ -1080,6 +1080,84 @@ def test_clip_by_rect_clips_scalar_array_and_preserves_line_axes() -> None:
         polygon.clip_by_rect(2, 0, 1, 1)
 
 
+def test_clip_by_rect_wkb_matches_box_intersection_in_the_same_frame() -> None:
+    rect = (-10.0, -10.0, 30.0, 50.0)
+    subject = gm.box(-20, -15, 40, 55, crs=4326)
+    rectangle = gm.box(*rect, crs=4326)
+    clipped = subject.clip_by_rect(*rect)
+    expected = gm.intersection(subject, rectangle)
+    assert clipped.to_wkb() == expected.to_wkb()
+
+    array = gm.GeometryArray([subject, gm.box(-100, -80, -90, -70, crs=4326)])
+    clipped_array = array.clip_by_rect(*rect)
+    expected_array = gm.intersection(array, rectangle)
+    assert [item.to_wkb() for item in clipped_array] == [
+        item.to_wkb() for item in expected_array
+    ]
+
+    seam_subject = gm.Polygon(
+        [(170, -10), (-170, -10), (-170, 10), (170, 10), (170, -10)],
+        crs=4326,
+    )
+    seam_rect = (175.0, -5.0, -175.0, 5.0)
+    seam_box = gm.box(*seam_rect, crs=4326, wrap='split')
+    assert (
+        seam_subject.clip_by_rect(*seam_rect).to_wkb()
+        == gm.intersection(seam_subject, seam_box).to_wkb()
+    )
+
+    contained = gm.Polygon(
+        [(1, 1), (2, 1), (2, 2), (1, 2), (1, 1)],
+        crs=4326,
+    )
+    contained_bounds = (-10.0, -10.0, 10.0, 10.0)
+    geographic_box = gm.box(*contained_bounds, crs=4326)
+    assert contained.clip_by_rect(*contained_bounds).to_wkb() == contained.to_wkb()
+    assert gm.intersection(contained, geographic_box).to_wkb() == contained.to_wkb()
+
+
+def test_clip_by_rect_contained_polygonal_wkb_matches_intersection() -> None:
+    bounds = (-1.0, -1.0, 5.0, 5.0)
+    subjects = [
+        gm.from_wkt('POLYGON ((0 0, 2 0, 4 0, 4 4, 0 4, 0 0))'),
+        gm.from_wkt('POLYGON ((0 0, 4 0, 4 4, 0 4, 0 0), (1 1, 1 3, 3 3, 3 1, 1 1))'),
+        gm.from_wkt('POLYGON ((0 0, 2 2, 2 0, 0 2, 0 0))'),
+        gm.from_wkt(
+            'MULTIPOLYGON (((0 0, 2 0, 2 1, 2 2, 0 2, 0 0)), '
+            '((2 1, 3 0, 4 1, 3 2, 2 1)))'
+        ),
+    ]
+    rectangle = gm.box(*bounds)
+
+    for subject in subjects:
+        expected_wkb = subject.to_wkb()
+        assert subject.clip_by_rect(*bounds).to_wkb() == expected_wkb
+        assert gm.intersection(subject, rectangle).to_wkb() == expected_wkb
+
+    geometries = gm.GeometryArray(subjects)
+    clipped = geometries.clip_by_rect(*bounds)
+    expected = gm.intersection(geometries, rectangle)
+    source_wkb = [geometry.to_wkb() for geometry in geometries]
+    assert [geometry.to_wkb() for geometry in clipped] == source_wkb
+    assert [geometry.to_wkb() for geometry in expected] == source_wkb
+
+
+def test_clip_by_rect_array_wkb_matches_box_intersection_on_mixed_dimensions() -> None:
+    bounds = (1.0, 1.0, 4.0, 4.0)
+    geometries = gm.GeometryArray([
+        gm.from_wkt('LINESTRING (5 3, 4 1)'),
+        gm.from_wkt('MULTILINESTRING ((5 3, 4 1), (1 1, 4 1))'),
+        gm.from_wkt('POLYGON ((4 2, 6 2, 6 3, 4 3, 4 2))'),
+        gm.from_wkt(
+            'MULTIPOLYGON (((1 1, 2 1, 2 2, 1 2, 1 1)), ((4 4, 6 4, 6 6, 4 6, 4 4)))'
+        ),
+    ])
+    rectangle = gm.box(*bounds)
+    clipped = geometries.clip_by_rect(*bounds)
+    expected = gm.intersection(geometries, rectangle)
+    assert [item.to_wkb() for item in clipped] == [item.to_wkb() for item in expected]
+
+
 def test_clip_by_rect_line_array_keeps_categories_and_multipart_fallback() -> None:
     crossing = gm.LineString([(-1, 0.5), (0.5, 0.6), (2, 0.5)])
     inside = gm.LineString([(0.1, 0.5), (0.5, 0.6), (0.9, 0.5)])
@@ -1155,7 +1233,7 @@ def test_clip_by_rect_line_array_reentry_at_same_boundary_matches_scalar() -> No
         assert packed.to_wkt() == scalar.to_wkt()
 
 
-def test_clip_by_rect_empty_is_subject_typed() -> None:
+def test_clip_by_rect_empty_matches_intersection_type() -> None:
     rect = (0.0, 0.0, 2.0, 2.0)
     box = gm.box(*rect)
     expected = {
@@ -1163,13 +1241,15 @@ def test_clip_by_rect_empty_is_subject_typed() -> None:
         'LINESTRING(5 5,6 6)': 'LINESTRING EMPTY',
         'LINESTRING(-5 5,15 5)': 'LINESTRING EMPTY',
         'POLYGON((9 9,10 9,10 10,9 10,9 9))': 'POLYGON EMPTY',
-        'GEOMETRYCOLLECTION(POINT(9 9),LINESTRING(8 8,9 9))': 'GEOMETRYCOLLECTION EMPTY',
+        'GEOMETRYCOLLECTION(POINT(9 9),LINESTRING(8 8,9 9))': 'LINESTRING EMPTY',
     }
     for wkt, empty in expected.items():
         geom = gm.from_wkt(wkt)
-        assert geom.clip_by_rect(*rect).to_wkt() == empty
-        if not wkt.startswith('GEOMETRY'):
-            assert gm.intersection(geom, box).to_wkt() == empty
+        clipped = geom.clip_by_rect(*rect)
+        intersection = gm.intersection(geom, box)
+        assert clipped.to_wkt() == empty
+        assert intersection.to_wkt() == empty
+        assert clipped.to_wkb() == intersection.to_wkb()
 
 
 def test_shared_paths_tiny_collinear_segments_stay_same_direction() -> None:

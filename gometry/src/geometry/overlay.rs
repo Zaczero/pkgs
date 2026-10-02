@@ -131,11 +131,8 @@ pub(in crate::geometry) use areal::{binary_areal_overlay, build_areal_arrangemen
 pub(crate) use assembly::{
     build_certified_overlay_shape, build_certified_overlay_shape_with_axes, merge_chains,
 };
+pub(crate) use clip::intersect_rectangular_polygonal;
 pub(super) use clip::polygon_parts_to_shape;
-pub(crate) use clip::{
-    clip_multipoint_columns, clip_polygonal, clipped_line_parts, clipped_linestring,
-    line_parts_to_shape,
-};
 #[cfg(test)]
 pub(crate) use exact_partition::cartesian_support_nonempty;
 pub(in crate::geometry) use exact_partition::{
@@ -157,12 +154,12 @@ pub(in crate::geometry) use nary::{
     overlay_all_geographic_from, overlay_view_error,
 };
 pub(crate) use nary::{
-    empty_shape_for_dimension_with_axes, overlay_all, overlay_all_geographic_chart,
+    overlay_all, overlay_all_geographic_chart, overlay_intersection_with_rectangle,
 };
 #[cfg(test)]
 pub(crate) use noding::self_node_segments_sourced;
 #[cfg(test)]
 pub(in crate::geometry) use noding::{NodingScan, full_noding_events};
-pub(crate) use rect::rect_polygon;
+pub(crate) use rect::{rect_polygon, rectangle_bounds};
 #[cfg(test)]
 mod tests;

@@ -27,16 +27,16 @@ use crate::geometry::exact_arith::ExactSign;
 use crate::geometry::overlay::noding::{
     SegmentProvenance, SegmentSource, dedup_undirected_segments_sourced, placement_offsets,
 };
-use crate::geometry::overlay::{build_certified_overlay_shape, ray_crossing, rect_polygon};
+use crate::geometry::overlay::{build_certified_overlay_shape, ray_crossing};
 use crate::geometry::segments::{
     RectContact, SegmentClipInterval, clip_segment_rect_interval, segment_vs_rect,
     stored_cross_sign, stored_orientation_sign,
 };
 use crate::geometry::tessellation::exact::ExactDyadic;
 use crate::geometry::{
-    Bounds, Contact, CoordSeq, ExpansionBudget, GeometryErrorKind, GeometryKind, HashMap, LineSeq,
-    Loc, MultiLineString, Point, PointKey, Polygon, PolygonizeFull, Result, Ring, RingKind,
-    Segment, Shape, SharedShapeOwners, XY, for_each_candidate_pair, same_point,
+    Bounds, Contact, CoordSeq, CoordinateAxes, ExpansionBudget, GeometryErrorKind, GeometryKind,
+    HashMap, LineSeq, Loc, MultiLineString, Point, PointKey, Polygon, PolygonizeFull, Result, Ring,
+    RingKind, Segment, Shape, SharedShapeOwners, XY, for_each_candidate_pair, same_point,
     segment_contact_exact, single_chain,
 };
 
@@ -72,26 +72,40 @@ pub(in crate::geometry) use self::Axis as RayAxis;
 
 pub(in crate::geometry) fn clip_polygonal_rectangle<P: AsRef<Polygon>>(
     polygons: &[P],
+    rectangle: &Polygon,
     bounds: Bounds,
-) -> Result<Vec<Polygon>> {
-    let (inventory, intervals) = ExactSourceInventory::from_polygon_rect_clip(polygons, bounds)?;
+    axes: CoordinateAxes,
+    strict: bool,
+    rectangle_first: bool,
+) -> Result<Option<Shape>> {
+    if polygons.is_empty() {
+        return Ok(Some(Shape::typed_empty(GeometryKind::Polygon, axes)));
+    }
+    let Some((inventory, intervals)) =
+        ExactSourceInventory::from_polygon_rect_clip(polygons, rectangle, bounds, rectangle_first)?
+    else {
+        return Ok(None);
+    };
     let mut budget = ExpansionBudget::new("clip_by_rect", "rectangle-local exact partition");
     let mut partition = inventory.partition_in_window(&intervals, bounds, &mut budget)?;
     let (topology, edges) = partition.local_topology()?;
     let global = partition.global_faces(&topology, &edges)?;
     partition.winding_seed =
         inventory.rectangle_winding_seed(&partition, &topology, &edges, &global, bounds)?;
-    let cells = inventory.select_cells(
+    let result = inventory.overlay_shape_with_faces(
         &partition,
         &topology,
         &edges,
         &global,
         crate::geometry::OverlayOp::Intersection,
-        false,
+        axes,
+        strict,
     )?;
-    let plan = cells.emission_plan(&partition, &topology, &edges, &global)?;
-    let (_, _, polygons) = plan.emit_xy_parts(&partition, &topology)?;
-    Ok(polygons)
+    Ok(Some(if result.is_empty() {
+        Shape::typed_empty(GeometryKind::Polygon, axes)
+    } else {
+        result.normalize()?
+    }))
 }
 
 #[cfg(test)]
@@ -728,23 +742,43 @@ impl ExactSourceInventory {
 
     fn from_polygon_rect_clip<P: AsRef<Polygon>>(
         polygons: &[P],
+        rectangle: &Polygon,
         bounds: Bounds,
-    ) -> Result<(Self, Vec<SegmentClipInterval>)> {
-        let rectangle = rect_polygon(bounds)?;
+        rectangle_first: bool,
+    ) -> Result<Option<(Self, Vec<SegmentClipInterval>)>> {
         let mut staged = StagedExactSources::new(2);
+        if rectangle_first {
+            staged.append_polygon(rectangle, 1)?;
+        }
         for polygon in polygons {
             staged.append_polygon(polygon.as_ref(), 0)?;
         }
-        staged.append_polygon(&rectangle, 1)?;
+        if !rectangle_first {
+            staged.append_polygon(rectangle, 1)?;
+        }
 
         let mut active_segments = Vec::new();
         let mut active_sources = Vec::new();
         for (source, &segment) in staged.segments.iter().enumerate() {
-            if !bounds.contains_xy(segment.start)
-                && !bounds.contains_xy(segment.end)
-                && segment_vs_rect(segment, bounds) == RectContact::None
-            {
-                continue;
+            if staged.source_operands[source] == 0 {
+                let interior = |point: XY| {
+                    point.x > bounds.minx()
+                        && point.x < bounds.maxx()
+                        && point.y > bounds.miny()
+                        && point.y < bounds.maxy()
+                };
+                let contact = if interior(segment.start) || interior(segment.end) {
+                    RectContact::Open
+                } else {
+                    segment_vs_rect(segment, bounds)
+                };
+                if contact == RectContact::Closed {
+                    // Contact-only cells use the full partition's point/edge owner.
+                    return Ok(None);
+                }
+                if contact == RectContact::None {
+                    continue;
+                }
             }
             let source = u32::try_from(source).map_err(|_| ResourceError::SizeOverflow)?;
             active_segments.push(segment);
@@ -785,7 +819,7 @@ impl ExactSourceInventory {
             })?);
         }
 
-        Ok((
+        Ok(Some((
             Self {
                 source_segments: staged.segments,
                 unique,
@@ -808,7 +842,7 @@ impl ExactSourceInventory {
                 line_boundaries: staged.line_boundaries,
             },
             intervals,
-        ))
+        )))
     }
 
     pub(in crate::geometry) fn from_segments(segments: &[Segment]) -> Result<Self> {
@@ -981,9 +1015,15 @@ impl ExactSourceInventory {
             return Ok(None);
         }
 
+        let clip_polygon = self
+            .polygon_operands
+            .iter()
+            .position(|&operand| operand == 1)
+            .ok_or(ResourceError::SizeOverflow)?;
         let clip_ring = self
-            .ring_count
-            .checked_sub(1)
+            .polygon_ring_ranges
+            .get(clip_polygon)
+            .map(|range| range.start)
             .ok_or(ResourceError::SizeOverflow)?;
         for (slot, &span_id) in edges.iter().enumerate() {
             if global.walk_faces[topology.face_of[slot] as usize] != 0 {
@@ -1706,16 +1746,41 @@ impl ExactSourceInventory {
     ) -> Result<Shape> {
         let (topology, edges) = partition.local_topology()?;
         let global = partition.global_faces(&topology, &edges)?;
-        let cells = self.select_cells(partition, &topology, &edges, &global, operation, false)?;
-        let ordinate_protected = self.ordinate_protected_nodes(partition, declared_axes)?;
-        let plan = cells.emission_plan_with_protected(
+        self.overlay_shape_with_faces(
             partition,
             &topology,
             &edges,
             &global,
+            operation,
+            declared_axes,
+            strict,
+        )
+    }
+
+    fn overlay_shape_with_faces(
+        &self,
+        partition: &ExactPartition<'_>,
+        topology: &IndexedTopology,
+        edges: &[u32],
+        global: &GlobalFaces,
+        operation: crate::geometry::OverlayOp,
+        declared_axes: crate::geometry::CoordinateAxes,
+        strict: bool,
+    ) -> Result<Shape> {
+        let cells = self.select_cells(partition, topology, edges, global, operation, false)?;
+        let ordinate_protected = self.ordinate_protected_nodes(partition, declared_axes)?;
+        let plan = cells.emission_plan_with_protected(
+            partition,
+            topology,
+            edges,
+            global,
             ordinate_protected.as_deref(),
         )?;
-        let parts = plan.emit_node_parts(partition, &topology)?;
+        if declared_axes == CoordinateAxes::XY && plan.points.is_empty() && plan.lines.is_empty() {
+            let (_, _, polygons) = plan.emit_xy_parts(partition, topology)?;
+            return Ok(Shape::narrow_polygons(CoordinateAxes::XY, polygons));
+        }
+        let parts = plan.emit_node_parts(partition, topology)?;
         let by_node = if declared_axes.has_z() || declared_axes.has_m() {
             let line_node_count = parts.lines.iter().try_fold(0_usize, |count, line| {
                 count
@@ -4432,7 +4497,46 @@ impl ExactPartition<'_> {
             visit(neighbor, &winding, state)?;
             stack.push((neighbor, starts[neighbor as usize], Some(slot)));
         }
-        debug_assert!(visited.iter().all(|&seen| seen));
+        #[cfg(debug_assertions)]
+        {
+            // The window seed deliberately avoids face zero, whose winding is
+            // not constant after source arcs outside the rectangle are omitted.
+            // This can leave zero-area walks outside the seed's dual component;
+            // every open face must still have a path within the window.
+            let walk_has_area = |start: u32, end: u32| {
+                let mut points = (start as usize..end as usize)
+                    .map(|slot| self.node_xy(NodeId(topology.owners[slot])));
+                let Some(first) = points.next() else {
+                    return false;
+                };
+                let Some(second) = points.find(|&point| !same_point(point, first)) else {
+                    return false;
+                };
+                points.any(|point| {
+                    stored_orientation_sign(first.x, first.y, second.x, second.y, point.x, point.y)
+                        != ExactSign::Zero
+                })
+            };
+            let unvisited_open_faces = faces
+                .walk_faces
+                .iter()
+                .enumerate()
+                .filter_map(|(walk, &face)| (!visited[face as usize]).then_some((walk, face)))
+                .filter_map(|(walk, face)| {
+                    let (Some(&start), Some(&end)) = (
+                        topology.face_starts.get(walk),
+                        topology.face_starts.get(walk.wrapping_add(1)),
+                    ) else {
+                        unreachable!("global walk ordinal comes from this topology");
+                    };
+                    walk_has_area(start, end).then_some(face)
+                })
+                .collect::<Vec<_>>();
+            debug_assert!(
+                unvisited_open_faces.is_empty(),
+                "seeded face-winding left open faces {unvisited_open_faces:?} unvisited"
+            );
+        }
         if let Some((_, seed)) = &self.winding_seed {
             debug_assert_eq!(&winding, seed);
         } else {
