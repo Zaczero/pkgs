@@ -20,6 +20,11 @@ use crate::geometry::{
     undirected_segment_edge_key, unique_xy_points,
 };
 
+#[cfg(test)]
+thread_local! {
+    static NARY_CANDIDATE_WORK: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 /// Canonical operand order for every overlay entry: difference keeps its left
 /// operand first and orders the subtrahends; other operations order all
 /// operands. A macro so the generic owner keeps its original single body on the
@@ -274,7 +279,7 @@ fn exact_partition_overlay_with_bounds_certificates(
         if operation == OverlayOp::Intersection && intersection_bounds_empty(&bounds) {
             return Ok(empty_nary_overlay_shape(inputs, operation));
         }
-        interacting_components(&bounds, operation)?
+        interacting_components(&bounds, operation)
     } else {
         None
     };
@@ -1638,10 +1643,7 @@ fn overlay_bounds_facts_geographic(originals: &GeographicInputs<'_>) -> OverlayB
 
 /// Inputs whose certified bounds never meet cannot interact in the Cartesian
 /// lane. Geographic Q instead owns every admitted row in one global face table.
-fn interacting_components(
-    bounds: &[Option<Bounds>],
-    op: OverlayOp,
-) -> Result<Option<Vec<Vec<usize>>>> {
+fn interacting_components(bounds: &[Option<Bounds>], op: OverlayOp) -> Option<Vec<Vec<usize>>> {
     const fn root(parent: &mut [usize], mut node: usize) -> usize {
         while parent[node] != node {
             parent[node] = parent[parent[node]];
@@ -1650,17 +1652,87 @@ fn interacting_components(
         node
     }
     if op == OverlayOp::Intersection {
-        return Ok(None);
+        return None;
     }
     let count = bounds.len();
     let mut parent = Vec::with_capacity(count);
     parent.extend(0..count);
-    let ControlFlow::Continue(()): ControlFlow<std::convert::Infallible> =
-        crate::geometry::for_each_indexed_overlapping_bounds_pair(bounds, |left, right| {
-            let (a, b) = (root(&mut parent, left), root(&mut parent, right));
-            parent[a.max(b)] = a.min(b);
-            ControlFlow::Continue(())
-        })?;
+    let visit_limit = count.saturating_mul(8);
+    if count <= 256 {
+        // The existing compact sweep costs less on ordinary small overlays.
+        // Its pair budget still bounds coincident inputs before partitioning.
+        let mut visits = 0_usize;
+        let flow =
+            crate::geometry::for_each_indexed_overlapping_bounds_pair(bounds, |left, right| {
+                visits = visits.wrapping_add(1);
+                #[cfg(test)]
+                NARY_CANDIDATE_WORK.with(|work| work.set(work.get().saturating_add(1)));
+                if visits > visit_limit {
+                    return ControlFlow::Break(());
+                }
+                let (a, b) = (root(&mut parent, left), root(&mut parent, right));
+                parent[a.max(b)] = a.min(b);
+                ControlFlow::Continue(())
+            })
+            .expect("at most 256 bounds fit the sweep's u32 ordinal domain");
+        if flow.is_break() {
+            return None;
+        }
+    } else {
+        let mut entries: Vec<_> = bounds
+            .iter()
+            .enumerate()
+            .filter_map(|(ordinal, bounds)| bounds.map(|bounds| (ordinal, bounds)))
+            .collect();
+        entries.sort_unstable_by(|&(_, left), &(_, right)| {
+            left.minx()
+                .total_cmp(&right.minx())
+                .then_with(|| right.maxx().total_cmp(&left.maxx()))
+                .then_with(|| left.miny().total_cmp(&right.miny()))
+                .then_with(|| right.maxy().total_cmp(&left.maxy()))
+        });
+        // A contained box adds no future connection that its container cannot add.
+        // Remove it from the sweep's linked order after joining their components.
+        // Larger boxes precede their containers' children even at equal minx.
+        let mut next: Vec<_> = (1..=entries.len()).collect();
+        let mut left = 0;
+        let mut visits = 0_usize;
+        while let Some(&(left_ordinal, left_bounds)) = entries.get(left) {
+            let mut previous = left;
+            let mut right = next[left];
+            while let Some(&(right_ordinal, right_bounds)) = entries.get(right) {
+                if right_bounds.minx() > left_bounds.maxx() {
+                    break;
+                }
+                visits = visits.wrapping_add(1);
+                #[cfg(test)]
+                NARY_CANDIDATE_WORK.with(|work| work.set(work.get().saturating_add(1)));
+                if visits > visit_limit {
+                    // Decomposition is optional. Dense nonnested windows must not
+                    // spend quadratic work before the exact partition can start.
+                    return None;
+                }
+                if left_bounds.intersects(right_bounds) {
+                    let (a, b) = (
+                        root(&mut parent, left_ordinal),
+                        root(&mut parent, right_ordinal),
+                    );
+                    parent[a.max(b)] = a.min(b);
+                    if left_bounds.maxx() >= right_bounds.maxx()
+                        && left_bounds.miny() <= right_bounds.miny()
+                        && left_bounds.maxy() >= right_bounds.maxy()
+                    {
+                        next[previous] = next[right];
+                        right = next[right];
+                        continue;
+                    }
+                }
+                previous = right;
+                right = next[right];
+            }
+            left = next[left];
+        }
+    }
     for node in 0..count {
         parent[node] = root(&mut parent, node);
     }
@@ -1668,16 +1740,16 @@ fn interacting_components(
     if op == OverlayOp::Difference {
         let left = parent.iter().filter(|&&root| root == 0).count();
         if left == count {
-            return Ok(None);
+            return None;
         }
         let mut component = Vec::with_capacity(left);
         component.extend((0..count).filter(|&node| parent[node] == 0));
         components.push(component);
-        return Ok(Some(components));
+        return Some(components);
     }
     let roots = (0..count).filter(|&node| parent[node] == node).count();
     if roots == 1 {
-        return Ok(None);
+        return None;
     }
     let mut slot_of_root = Vec::with_capacity(count);
     slot_of_root.resize(count, usize::MAX);
@@ -1689,7 +1761,95 @@ fn interacting_components(
         }
         components[slot_of_root[root]].push(node);
     }
-    Ok(Some(components))
+    Some(components)
+}
+
+#[cfg(test)]
+mod nary_work_tests {
+    use pyo3::prelude::*;
+    use pyo3::types::{PyList, PyTuple};
+
+    use super::NARY_CANDIDATE_WORK;
+
+    #[test]
+    fn public_nary_overlays_bound_repeated_input_work() {
+        crate::test_support::initialize_python();
+        Python::attach(|py| {
+            let module = PyModule::new(py, "gometry._lib").unwrap();
+            crate::lib(&module).unwrap();
+            let point = module
+                .getattr("Point")
+                .unwrap()
+                .call1((0.25, 0.25))
+                .unwrap();
+            let polygon = module.getattr("box").unwrap().call1((0, 0, 1, 1)).unwrap();
+            for count in [128_usize, 512] {
+                let points = PyList::empty(py);
+                let polygons = PyList::empty(py);
+                for _ in 0..count {
+                    points.append(&point).unwrap();
+                    polygons.append(&polygon).unwrap();
+                }
+                points.append(py.None()).unwrap();
+                let array = module
+                    .getattr("GeometryArray")
+                    .unwrap()
+                    .call1((&points,))
+                    .unwrap();
+                for (rows, expected) in [
+                    (&array, "POINT (0.25 0.25)"),
+                    (polygons.as_any(), "POLYGON ((0 0, 1 0, 1 1, 0 1, 0 0))"),
+                ] {
+                    for operation in ["union_all", "symmetric_difference_all"] {
+                        NARY_CANDIDATE_WORK.with(|work| work.set(0));
+                        let output = module.getattr(operation).unwrap().call1((rows,)).unwrap();
+                        let expected = if operation == "symmetric_difference_all" {
+                            if rows.is(&array) {
+                                "POINT EMPTY"
+                            } else {
+                                "POLYGON EMPTY"
+                            }
+                        } else {
+                            expected
+                        };
+                        assert_eq!(
+                            output
+                                .call_method0("to_wkt")
+                                .unwrap()
+                                .extract::<String>()
+                                .unwrap(),
+                            expected,
+                        );
+                        let work = NARY_CANDIDATE_WORK.with(std::cell::Cell::get);
+                        assert!(work > 0, "{operation} did not reach n-ary candidate work");
+                        assert!(
+                            work < count.saturating_mul(16),
+                            "{operation} examined {work} candidates for {count} repeated rows"
+                        );
+                    }
+                }
+                let keys = PyList::new(py, std::iter::repeat_n(0, count.wrapping_add(1))).unwrap();
+                NARY_CANDIDATE_WORK.with(|work| work.set(0));
+                let dissolved = array.call_method1("dissolve", (&keys,)).unwrap();
+                let shapes = dissolved.cast::<PyTuple>().unwrap().get_item(0).unwrap();
+                let output = shapes.get_item(0).unwrap();
+                assert_eq!(
+                    output
+                        .call_method0("to_wkt")
+                        .unwrap()
+                        .extract::<String>()
+                        .unwrap(),
+                    "POINT (0.25 0.25)",
+                );
+                let work = NARY_CANDIDATE_WORK.with(std::cell::Cell::get);
+                assert!(work > 0, "dissolve did not reach n-ary candidate work");
+                assert!(
+                    work < count.saturating_mul(16),
+                    "dissolve examined {work} candidates for {count} repeated rows"
+                );
+            }
+        });
+    }
 }
 
 fn intersection_bounds_empty(bounds: &[Option<Bounds>]) -> bool {
