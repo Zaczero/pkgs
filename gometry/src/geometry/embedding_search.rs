@@ -1,11 +1,4 @@
 //! Deterministic search over finite embedding domains.
-#![cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "A7 connects this tested generic core to the production embedding path"
-    )
-)]
 
 use std::cmp::Ordering;
 use std::hash::Hash;
@@ -18,18 +11,14 @@ const BASE_EVALUATION_LIMIT: u64 = 1 << 16;
 const EVALUATIONS_PER_CONSTRUCTED_NODE: u64 = 1 << 12;
 
 /// A candidate assignment for one independent class of movable nodes.
-///
-/// `class` is the corresponding index in [`Problem::classes`].
 #[derive(Clone, Copy)]
 pub(in crate::geometry) struct ClassAssignment<'a, N, C> {
-    pub class: usize,
     pub variables: &'a [N],
     pub values: &'a [C],
 }
 
 #[derive(Debug)]
 pub(in crate::geometry) struct ClassSolution<N, C> {
-    pub class: usize,
     pub variables: Vec<N>,
     pub values: Vec<C>,
 }
@@ -153,6 +142,18 @@ impl EvaluationBudget {
         Ok(())
     }
 
+    /// Record work that the problem had to complete before search began.
+    pub(in crate::geometry) fn charge_completed(&mut self, units: u64) -> Result<()> {
+        self.evaluations = self
+            .evaluations
+            .checked_add(units)
+            .ok_or_else(|| self.limit_error())?;
+        if self.evaluations > self.limit {
+            return Err(self.limit_error());
+        }
+        Ok(())
+    }
+
     fn limit_error(&self) -> crate::error::Error {
         GeometryErrorKind::ExactEmbeddingSearchLimit {
             operation: self.operation,
@@ -181,6 +182,12 @@ struct PreparedClass<N, C, K, S> {
     variables: Vec<N>,
     options: Vec<Vec<(C, K)>>,
     local: S,
+}
+
+struct PreparedOptions<N, C, K> {
+    class: usize,
+    variables: Vec<N>,
+    options: Vec<Vec<(C, K)>>,
 }
 
 struct ClassSearchState<C, K> {
@@ -352,7 +359,8 @@ impl<P: Problem> Search<P> {
     }
 
     pub(in crate::geometry) fn run(mut self) -> Result<SearchAssignment<P::Node, P::Candidate>> {
-        self.budget.charge(self.problem.initial_evaluations())?;
+        self.budget
+            .charge_completed(self.problem.initial_evaluations())?;
         let (prepared, class_positions) = prepare_classes(&self.problem, &mut self.budget)?;
         let mut states = Vec::with_capacity(prepared.len());
         let mut current_solutions = Vec::with_capacity(prepared.len());
@@ -371,7 +379,6 @@ impl<P: Problem> Search<P> {
                 let mut assignments = Vec::with_capacity(prepared.len());
                 for (class, values) in prepared.iter().zip(&current_solutions) {
                     assignments.push(ClassAssignment {
-                        class: class.class,
                         variables: &class.variables,
                         values,
                     });
@@ -383,7 +390,6 @@ impl<P: Problem> Search<P> {
                     let mut classes = Vec::with_capacity(prepared.len());
                     for (class, values) in prepared.into_iter().zip(current_solutions) {
                         classes.push(ClassSolution {
-                            class: class.class,
                             variables: class.variables,
                             values,
                         });
@@ -495,16 +501,13 @@ fn prepare_classes<P: Problem>(
     let _candidate_hint = candidate_scratch.try_reserve(9);
     let mut seen_keys = Vec::new();
     let _key_hint = seen_keys.try_reserve(9);
-    let mut prepared = Vec::with_capacity(specs.len());
-    let mut class_positions = Vec::with_capacity(classes.len());
-    class_positions.resize(classes.len(), usize::MAX);
+    let mut admitted = Vec::with_capacity(specs.len());
     for spec in specs {
         let fixed_candidates = problem.fixed_keys(spec.class, &spec.variables)?;
         let mut fixed_keys = try_hash_set_with_capacity(fixed_candidates.len())?;
         for key in fixed_candidates {
             fixed_keys.insert(key);
         }
-        let local = problem.prepare_class(spec.class, &spec.variables, budget)?;
         let mut options = Vec::with_capacity(spec.variables.len());
         for &node in &spec.variables {
             candidate_scratch.clear();
@@ -527,15 +530,30 @@ fn prepare_classes<P: Problem>(
             options.push(node_options);
         }
 
-        let class = PreparedClass {
+        let class = PreparedOptions {
             class: spec.class,
             variables: spec.variables,
             options,
-            local,
         };
         if !has_perfect_matching(&class)? {
             return Err(budget.unrepresentable());
         }
+        admitted.push(class);
+    }
+
+    let mut prepared = Vec::with_capacity(admitted.len());
+    let mut class_positions = Vec::with_capacity(classes.len());
+    class_positions.resize(classes.len(), usize::MAX);
+    // Hall failures should reject the whole problem before domain-specific
+    // preparation materializes potentially dense proximity partners.
+    for class in admitted {
+        let local = problem.prepare_class(class.class, &class.variables, budget)?;
+        let class = PreparedClass {
+            class: class.class,
+            variables: class.variables,
+            options: class.options,
+            local,
+        };
         let position = prepared.len();
         *class_positions
             .get_mut(class.class)
@@ -592,7 +610,7 @@ fn sort_candidates<P: Problem>(
     Ok(())
 }
 
-fn has_perfect_matching<N, C, K, S>(class: &PreparedClass<N, C, K, S>) -> Result<bool>
+fn has_perfect_matching<N, C, K>(class: &PreparedOptions<N, C, K>) -> Result<bool>
 where
     K: Copy + Eq + Hash,
 {
@@ -717,6 +735,7 @@ mod tests {
         global_target: Option<Vec<(usize, u8)>>,
         blamed_classes: Vec<usize>,
         initial_evaluations: u64,
+        prepare_calls: Rc<Cell<usize>>,
         local_calls: Rc<Cell<usize>>,
         global_calls: Rc<Cell<usize>>,
     }
@@ -732,6 +751,7 @@ mod tests {
                 global_target: None,
                 blamed_classes: Vec::new(),
                 initial_evaluations: 0,
+                prepare_calls: Rc::new(Cell::new(0)),
                 local_calls: Rc::new(Cell::new(0)),
                 global_calls: Rc::new(Cell::new(0)),
             }
@@ -790,6 +810,8 @@ mod tests {
             _variables: &[Self::Node],
             _budget: &mut EvaluationBudget,
         ) -> Result<Self::ClassState> {
+            self.prepare_calls
+                .set(self.prepare_calls.get().wrapping_add(1));
             Ok(())
         }
 
@@ -819,7 +841,7 @@ mod tests {
             budget: &mut EvaluationBudget,
         ) -> Result<GlobalCheck> {
             debug_assert!(assignments.iter().all(|assignment| {
-                self.classes.get(assignment.class).is_some_and(|variables| {
+                self.classes.iter().any(|variables| {
                     variables.len() == assignment.variables.len()
                         && assignment
                             .variables
@@ -877,7 +899,6 @@ mod tests {
         ]);
         let assignment = search_fixture(problem, 2).unwrap();
         let class = assignment.classes.first().unwrap();
-        assert_eq!(class.class, 0);
         assert_eq!(class.variables, [1, 3]);
         assert_eq!(class.values, [2, 6]);
     }
@@ -943,6 +964,22 @@ mod tests {
     }
 
     #[test]
+    fn hall_failure_skips_class_preparation() {
+        let problem = FixtureProblem::new(vec![vec![0, 1]], vec![vec![7], vec![7]]);
+        let prepare_calls = problem.prepare_calls.clone();
+        let error = search_fixture(problem, 2).unwrap_err();
+
+        assert!(matches!(
+            error.kind(),
+            ErrorKind::Geometry(GeometryErrorKind::ExactEmbeddingUnrepresentable {
+                operation: "search_test",
+                constructed: 2
+            })
+        ));
+        assert_eq!(prepare_calls.get(), 0);
+    }
+
+    #[test]
     fn local_failure_backtracks_to_the_next_lexicographic_candidate() {
         let mut problem = FixtureProblem::new(vec![vec![1, 0]], vec![vec![1, 0], vec![1, 0]]);
         problem.rejected.push((0, 0, 0));
@@ -967,11 +1004,9 @@ mod tests {
 
         assert_eq!(global_calls.get(), 4);
         let first = assignment.classes.first().unwrap();
-        assert_eq!(first.class, 1);
         assert_eq!(first.variables, [0]);
         assert_eq!(first.values, [1]);
         let second = assignment.classes.get(1).unwrap();
-        assert_eq!(second.class, 0);
         assert_eq!(second.variables, [10]);
         assert_eq!(second.values, [3]);
     }
@@ -1020,6 +1055,22 @@ mod tests {
                 constructed: 1,
                 evaluations
             }) if *evaluations == BASE_EVALUATION_LIMIT
+        ));
+    }
+
+    #[test]
+    fn over_budget_closure_reports_its_completed_work() {
+        let mut problem = FixtureProblem::new(vec![vec![0]], vec![vec![7]]);
+        problem.initial_evaluations = BASE_EVALUATION_LIMIT + 7;
+        let error = search_fixture(problem, 1).unwrap_err();
+
+        assert!(matches!(
+            error.kind(),
+            ErrorKind::Geometry(GeometryErrorKind::ExactEmbeddingSearchLimit {
+                operation: "search_test",
+                constructed: 1,
+                evaluations
+            }) if *evaluations == BASE_EVALUATION_LIMIT + 7
         ));
     }
 

@@ -4418,7 +4418,7 @@ mod exact_geographic_nary_tests {
     }
 
     #[test]
-    fn nary_emission_rejects_distinct_exact_crossings_that_round_together() {
+    fn nary_emission_repairs_distinct_exact_crossings_that_round_together() {
         let sources = Shape::geometry_collection(vec![
             line(&[Point::new_raw_xy(0.0, 0.0), Point::new_raw_xy(3.0, 1.0)]),
             line(&[Point::new_raw_xy(1.0, -1.0), Point::new_raw_xy(1.0, 1.0)]),
@@ -4428,16 +4428,12 @@ mod exact_geographic_nary_tests {
             ]),
         ])
         .unwrap();
-        let error = super::super::nary::overlay_all(
+        super::super::nary::overlay_all(
             &[&sources],
             TopologyDomain::Geographic(frame()),
             OverlayOp::Intersection,
             Strictness::Lenient,
         )
-        .expect_err("the output cannot preserve both exact crossing nodes");
-        assert!(matches!(
-            error.kind(),
-            crate::error::ErrorKind::Geometry(GeometryErrorKind::ExactNodeCollision { .. })
-        ));
+        .expect("adjacent floating-point coordinates separate the exact crossings");
     }
 }

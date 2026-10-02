@@ -494,7 +494,7 @@ fn boundary_contraction_preserves_explicit_points_and_source_paths() {
 }
 
 #[test]
-fn rounded_chord_can_hit_an_isolated_node_without_node_collision() {
+fn rounded_chord_contact_with_an_isolated_node_is_repaired() {
     let point = XY::new(0.5, 1.0 / 6.0);
     let case = run(&[
         seg(0.0, 0.0, 3.0, 1.0),
@@ -528,15 +528,35 @@ fn rounded_chord_can_hit_an_isolated_node_without_node_collision() {
     let plan = cells
         .emission_plan(&partition, &topology, &edges, &faces)
         .unwrap();
-    let items = plan.emission(&topology, &edges).items;
-    assert_eq!(items.len(), 2);
-    let error = plan
+    let emission = plan.emission(&topology, &edges);
+    assert_eq!(emission.items.len(), 2);
+    let embedding = partition.embed(&[&emission], "test").unwrap();
+    assert_eq!(embedding.xy(start), partition.nearest_xy(start));
+    assert_eq!(embedding.xy(isolated), partition.nearest_xy(isolated));
+    assert_ne!(embedding.xy(crossing), partition.nearest_xy(crossing));
+    let segments: Vec<_> = emission
+        .items
+        .iter()
+        .map(|&item| embedding::Embedding::segment_at(embedding.coordinates(), item))
+        .collect();
+    let mut sink = embedding::FirstFailure::default();
+    assert!(
+        embedding::certify(
+            &partition,
+            &embedding,
+            &[&emission],
+            &[&segments],
+            &mut sink,
+        )
+        .unwrap()
+        .is_continue()
+    );
+    let (points, lines, polygons) = plan
         .emit_xy_parts(&partition, &topology, &edges, "test")
-        .unwrap_err();
-    assert!(matches!(
-        error.kind(),
-        crate::error::ErrorKind::Geometry(GeometryErrorKind::ExactUnexpectedContact { .. })
-    ));
+        .unwrap();
+    assert_eq!(points.len(), 1);
+    assert_eq!(lines.len(), 1);
+    assert!(polygons.is_empty());
     assert!(!emitted_pair_preserves_incidence(
         [(start, coordinates[0]), (crossing, coordinates[1])],
         [(isolated, coordinates[2]); 2],
