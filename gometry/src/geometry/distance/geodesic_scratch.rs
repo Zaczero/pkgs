@@ -1,6 +1,7 @@
 use std::collections::BinaryHeap;
 
 use super::geodesic_hausdorff_helpers::HausdorffInterval;
+use crate::crs::PointEdgeScratch;
 use crate::geometry::distance::RowProbe;
 use crate::geometry::{GeodesicSegmentScratch, Point, RunIdentity, Shape};
 #[derive(Default)]
@@ -9,6 +10,7 @@ pub(crate) struct GeodesicScratch {
     pub(crate) stack: Vec<u32>,
     pub(crate) outer: BinaryHeap<HausdorffInterval>,
     pub(crate) segment: GeodesicSegmentScratch,
+    pub(crate) point_edge: PointEdgeScratch,
 }
 
 impl GeodesicScratch {
@@ -18,6 +20,7 @@ impl GeodesicScratch {
             stack: Vec::new(),
             outer: BinaryHeap::new(),
             segment: GeodesicSegmentScratch::new(),
+            point_edge: PointEdgeScratch::new(),
         }
     }
 }
@@ -28,6 +31,7 @@ impl crate::scratch_pool::RetainScratch for GeodesicScratch {
         self.stack.clear();
         self.outer.clear();
         self.segment.clear();
+        self.point_edge.clear();
     }
 
     fn retained_bytes(&self) -> usize {
@@ -39,6 +43,7 @@ impl crate::scratch_pool::RetainScratch for GeodesicScratch {
                     .saturating_mul(std::mem::size_of::<HausdorffInterval>()),
             )
             .saturating_add(self.segment.retained_bytes())
+            .saturating_add(self.point_edge.retained_bytes())
     }
 }
 

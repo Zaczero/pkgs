@@ -165,7 +165,9 @@ mod cache;
 mod chart_edge;
 mod distance;
 mod domain;
+mod edge_distance;
 mod ellipsoid_metric;
+mod envelope;
 mod measure;
 mod metric_model;
 mod nearest_lrs;
@@ -191,9 +193,11 @@ pub(crate) use domain::{
     ensure_geographic_coordseq_in_frame, ensure_geographic_domain_in_frame,
     ensure_geographic_lonlat, ensure_geographic_lonlat_in_frame, geographic_lonlat_result,
 };
+pub(crate) use edge_distance::PointEdgeScratch;
 pub(crate) use ellipsoid_metric::{
     EllipsoidMetric, inverse_azimuths, inverse_distance, inverse_distance_azimuths,
 };
+pub(crate) use envelope::GeodesicEnvelopeBound;
 #[cfg(test)]
 pub(crate) use measure::with_ellipsoid_metric;
 pub(crate) use measure::{

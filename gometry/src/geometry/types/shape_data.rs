@@ -6,6 +6,8 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 use crate::HeapSize;
 use crate::error::Result;
+use crate::geographic::GeographicFrame;
+use crate::geometry::distance::ChartParts;
 use crate::geometry::topology::ExactGeographicTopology;
 use crate::geometry::types::{Bounds, GeodesicSegment, Point, Segment, Shape, XY};
 use crate::geometry::{
@@ -95,6 +97,7 @@ struct GeographicExactTopologySlot {
 struct FrameDependentEntry {
     line_index: Option<Arc<LineIndex>>,
     parts: Option<Arc<GeodesicParts>>,
+    chart_parts: Option<Arc<ChartParts>>,
 }
 
 impl FrameDependentCaches {
@@ -216,6 +219,24 @@ impl FrameDependentCaches {
         drop(slot);
         Some(value)
     }
+
+    pub(in crate::geometry) fn cached_chart_parts(
+        &self,
+        key: &GeodesicPartsKey,
+    ) -> Option<Arc<ChartParts>> {
+        self.get(key).and_then(|entry| entry.chart_parts)
+    }
+
+    pub(in crate::geometry) fn merge_chart_parts(
+        &self,
+        key: &GeodesicPartsKey,
+        parts: &Arc<ChartParts>,
+    ) -> Option<Arc<ChartParts>> {
+        self.merge(key.clone(), |entry| {
+            entry.chart_parts.get_or_insert_with(|| Arc::clone(parts));
+        })
+        .and_then(|entry| entry.chart_parts)
+    }
 }
 
 impl HeapSize for FrameDependentEntry {
@@ -223,6 +244,7 @@ impl HeapSize for FrameDependentEntry {
         self.line_index
             .heap_bytes()
             .saturating_add(self.parts.heap_bytes())
+            .saturating_add(self.chart_parts.heap_bytes())
     }
 }
 
@@ -1418,11 +1440,70 @@ pub(crate) trait GeodesicMetric {
 ///
 /// The edge representation belongs to the metric provider; geometry code
 /// remains independent of the CRS and ellipsoid implementation.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct ChartBox {
+    /// Canonical Greenwich degrees. `west > east` denotes a seam-crossing
+    /// interval; `[-180, 180]` denotes the full longitude range.
+    pub(crate) west: f64,
+    pub(crate) south: f64,
+    pub(crate) east: f64,
+    pub(crate) north: f64,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum PointEdgeQuery {
+    Minimum { cutoff: f64 },
+    Dwithin { limit: f64 },
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct PointEdgeMinimum {
+    pub(crate) distance: f64,
+    pub(crate) parameter: f64,
+    pub(crate) lower_bound: f64,
+    pub(crate) evaluations: usize,
+    pub(crate) budget_exhausted: bool,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum PointEdgeQueryResult {
+    Minimum(PointEdgeMinimum),
+    Excluded,
+    Within {
+        evaluations: usize,
+    },
+    Outside {
+        lower_bound: f64,
+        evaluations: usize,
+        budget_exhausted: bool,
+    },
+}
+
 pub(crate) trait ChartMetric {
     type Edge: Copy;
+    type PointEdgeScratch: Default;
 
+    fn chart_frame(&self) -> GeographicFrame;
     fn chart_edge(&self, start: Point, end: Point) -> Result<Self::Edge>;
     fn chart_edge_length(&self, edge: &Self::Edge) -> Result<f64>;
+    fn chart_edge_bounds(&self, edge: &Self::Edge) -> ChartBox;
+    fn chart_edge_parameter_for_point(&self, point: Point, edge: &Self::Edge) -> Option<f64>;
+    fn chart_edge_witness(
+        &self,
+        start: Point,
+        end: Point,
+        edge: &Self::Edge,
+        parameter: f64,
+    ) -> Result<Point>;
+    fn point_edge_query(
+        &self,
+        point: Point,
+        edge: &Self::Edge,
+        bounds: ChartBox,
+        query: PointEdgeQuery,
+        scratch: &mut Self::PointEdgeScratch,
+    ) -> Result<PointEdgeQueryResult>;
+    fn envelope_lower_bound(&self, point: Point, bounds: ChartBox) -> Result<f64>;
     fn chart_edge_seam_span(&self, edge: &Self::Edge) -> Option<[f64; 2]>;
     fn chart_seam_span_length(&self, south: f64, north: f64) -> Result<f64>;
     fn chart_area_edge_term(&self, edge: &Self::Edge, north: bool) -> f64;

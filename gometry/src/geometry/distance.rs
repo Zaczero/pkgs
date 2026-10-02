@@ -2,6 +2,7 @@
 //! Fréchet distance on `Shape`, plus the geodesic linear-referencing methods.
 
 use crate::error::Result;
+mod chart_parts;
 mod distance_3d;
 mod frechet;
 mod geodesic_hausdorff_helpers;
@@ -19,6 +20,10 @@ mod shape_data_distance;
 mod shape_data_nearest;
 mod shape_impl;
 
+pub(crate) use chart_parts::{
+    ChartParts, cached_point_chart_distance, cached_point_chart_dwithin,
+    cached_point_chart_minimum, uses_chart_edge_model,
+};
 #[cfg(test)]
 pub(crate) use distance_3d::distance_3d_brute_parts;
 pub(crate) use distance_3d::{Distance3dParts, distance_3d_with_parts};

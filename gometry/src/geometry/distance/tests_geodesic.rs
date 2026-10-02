@@ -111,6 +111,160 @@ fn live_geodesic_nearest_points(
     geodesic_nearest_points_with_parts(left, &left_parts, right, &right_parts, metric)
 }
 
+fn uses_chart_point_line_path(left: &Shape, right: &Shape) -> bool {
+    matches!(
+        (left, right),
+        (
+            Shape::Point(_),
+            Shape::LineString(_) | Shape::MultiLineString(_)
+        ) | (
+            Shape::LineString(_) | Shape::MultiLineString(_),
+            Shape::Point(_)
+        )
+    )
+}
+
+#[test]
+fn point_to_line_distance_and_nearest_witness_use_the_same_chart_edge() -> Result<()> {
+    let point_shape = Shape::Point(p(0.0, 82.9));
+    let line_shape = line(vec![p(-45.0, 80.0), p(45.0, 80.0)]);
+    let point = PreparedPlan::new(point_shape.clone());
+    let line_plan = PreparedPlan::new(line_shape.clone());
+    let point_cache = FrameDependentCaches::default();
+    let line_cache = FrameDependentCaches::default();
+    with_ellipsoid_metric("EPSG:4326", &[&point_shape, &line_shape], |metric| {
+        let (semi_major, flattening) = metric.ellipsoid_parameters();
+        let distance = point.geodesic_distance_cached(
+            &point_cache,
+            &line_plan,
+            &line_cache,
+            "EPSG:4326",
+            semi_major,
+            flattening,
+            metric,
+        )?;
+        assert!(
+            (distance - 323_839.5087).abs() < 1.0e-3,
+            "point-to-chart-edge distance was {distance}"
+        );
+
+        let nearest = point
+            .geodesic_nearest_points_cached(
+                &point_cache,
+                &line_plan,
+                &line_cache,
+                "EPSG:4326",
+                semi_major,
+                flattening,
+                metric,
+            )?
+            .expect("nonempty point and line have nearest witnesses");
+        let attained = metric.segment_length(nearest.0, nearest.1);
+        assert_eq!(distance, attained);
+        assert!((nearest.1.x - 0.0).abs() < 1.0e-12);
+        assert!((nearest.1.y - 80.0).abs() < 1.0e-12);
+
+        assert!(!point.geodesic_dwithin_cached(
+            &point_cache,
+            &line_plan,
+            &line_cache,
+            "EPSG:4326",
+            semi_major,
+            flattening,
+            metric,
+            distance - 1.0,
+        )?);
+        assert!(point.geodesic_dwithin_cached(
+            &point_cache,
+            &line_plan,
+            &line_cache,
+            "EPSG:4326",
+            semi_major,
+            flattening,
+            metric,
+            distance + 1.0,
+        )?);
+
+        let touching_shape = Shape::Point(p(0.0, 80.0));
+        let touching = PreparedPlan::new(touching_shape.clone());
+        let touching_cache = FrameDependentCaches::default();
+        assert_eq!(
+            touching.geodesic_distance_cached(
+                &touching_cache,
+                &line_plan,
+                &line_cache,
+                "EPSG:4326",
+                semi_major,
+                flattening,
+                metric,
+            )?,
+            0.0
+        );
+        assert!(touching.geodesic_dwithin_cached(
+            &touching_cache,
+            &line_plan,
+            &line_cache,
+            "EPSG:4326",
+            semi_major,
+            flattening,
+            metric,
+            0.0,
+        )?);
+        Ok(())
+    })?;
+    Ok(())
+}
+
+#[test]
+fn point_to_chart_edge_nearest_witness_interpolates_ordinates_by_arclength() -> Result<()> {
+    let point_shape = Shape::Point(p(0.0, 82.9));
+    let line_shape = line(vec![
+        Point::new_axes(-45.0, 80.0, ZOrdinate(Some(10.0)), MOrdinate(Some(100.0)))
+            .expect("finite start ordinates"),
+        Point::new_axes(45.0, 80.0, ZOrdinate(Some(30.0)), MOrdinate(Some(300.0)))
+            .expect("finite end ordinates"),
+    ]);
+    with_ellipsoid_metric("EPSG:4326", &[&point_shape, &line_shape], |metric| {
+        let point = PreparedPlan::new(point_shape.clone());
+        let line_plan = PreparedPlan::new(line_shape.clone());
+        let (semi_major, flattening) = metric.ellipsoid_parameters();
+        let nearest = point
+            .geodesic_nearest_points_cached(
+                &FrameDependentCaches::default(),
+                &line_plan,
+                &FrameDependentCaches::default(),
+                "EPSG:4326",
+                semi_major,
+                flattening,
+                metric,
+            )?
+            .expect("nonempty point and line have nearest witnesses");
+        assert!((nearest.1.x - 0.0).abs() < 1.0e-12);
+        assert!((nearest.1.y - 80.0).abs() < 1.0e-12);
+        assert!((nearest.1.z().expect("target carries Z") - 20.0).abs() <= 1.0e-12);
+        assert!((nearest.1.m().expect("target carries M") - 200.0).abs() <= 1.0e-10);
+
+        let touching = PreparedPlan::new(Shape::Point(p(0.0, 80.0)));
+        let touching_witness = touching
+            .geodesic_nearest_points_cached(
+                &FrameDependentCaches::default(),
+                &line_plan,
+                &FrameDependentCaches::default(),
+                "EPSG:4326",
+                semi_major,
+                flattening,
+                metric,
+            )?
+            .expect("the point lies on the chart edge");
+        assert_eq!((touching_witness.0.x, touching_witness.0.y), (0.0, 80.0));
+        assert_eq!((touching_witness.1.x, touching_witness.1.y), (0.0, 80.0));
+        assert!((touching_witness.1.z().expect("target carries Z") - 20.0).abs() <= 1.0e-12);
+        assert!((touching_witness.1.m().expect("target carries M") - 200.0).abs() <= 1.0e-10);
+        Ok(())
+    })?;
+    Ok(())
+}
+
 fn dense_directed_geodesic(
     source: &Shape,
     target: &Shape,
@@ -1072,7 +1226,7 @@ fn geodesic_distance_matches_brute_scalar_oracle() -> Result<()> {
     clippy::panic_in_result_fn,
     reason = "the test returns Result for fallible setup and uses normal assertion macros for its oracle"
 )]
-fn cached_geodesic_parts_match_shape_kernels() -> Result<()> {
+fn cached_legacy_geodesic_parts_match_shape_kernels() -> Result<()> {
     let mut cases = geodesic_distance_oracle_cases();
     cases.extend([
         (
@@ -1086,6 +1240,7 @@ fn cached_geodesic_parts_match_shape_kernels() -> Result<()> {
             Shape::Point(p(0.0, 0.0)),
         ),
     ]);
+    cases.retain(|(_, left, right)| !uses_chart_point_line_path(left, right));
     for (name, left, right) in cases {
         with_ellipsoid_metric("EPSG:4326", &[&left, &right], |metric| {
             let (semi_major, flattening) = metric.ellipsoid_parameters();

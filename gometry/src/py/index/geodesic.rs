@@ -26,7 +26,8 @@
 
 use rstar::AABB;
 
-use crate::geometry::Point;
+use crate::crs::GeodesicEnvelopeBound;
+use crate::geometry::{ChartBox, Point};
 use crate::{HeapSize, crs};
 
 #[derive(Clone, Copy, Debug)]
@@ -103,17 +104,7 @@ fn central_angle(beta1: Radians, beta2: Radians, delta_lon: Radians) -> Radians 
 /// Geodesic distance lower bounds from one fixed query point, on one CRS
 /// ellipsoid.
 pub(crate) struct GeodesicPruner {
-    /// Semi-minor axis (meters): the auxiliary-sphere radius of the bound.
-    minor_radius: f64,
-    /// The backend's distance accuracy (meters). The bound is tight on short
-    /// meridional arcs near the equator, where it can exceed the distance the
-    /// backend reports by rounding; every use keeps this much slack so a
-    /// threshold query never prunes a point it would accept.
-    backend_floor: f64,
-    one_minus_f: f64,
-    /// Query point on the auxiliary sphere (radians).
-    beta: Radians,
-    lon: Radians,
+    envelope: GeodesicEnvelopeBound,
 }
 
 impl GeodesicPruner {
@@ -136,51 +127,13 @@ impl GeodesicPruner {
         let shape = crs::ellipsoid_shape_at(crs, state).ok()?;
         let major = shape.semi_major.get();
         let flattening = shape.flattening;
-        let one_minus_f = 1.0 - flattening;
         Some(Self {
-            minor_radius: major * one_minus_f,
-            backend_floor: crate::geometry::GeodesicNumericalPolicy::new(major).backend_floor(),
-            one_minus_f,
-            beta: reduced_latitude(Degrees(point.y), one_minus_f),
-            lon: Radians(point.x.to_radians()),
+            envelope: GeodesicEnvelopeBound::new(
+                major,
+                flattening,
+                Point::new_raw_xy(point.x, point.y),
+            ),
         })
-    }
-
-    /// Shortest angular longitude gap to `lon_degrees`, wrap-aware.
-    fn lon_gap(&self, lon: Degrees) -> Radians {
-        // Both longitudes are validated lonlat, so the delta is within one
-        // period — the conditional subtract is EXACT (float `%` would be a
-        // soft `fmod` call on the x86-64-v2 baseline, per KNN node visit),
-        // keeping the pruning bound sound.
-        let delta = (lon.0.to_radians() - self.lon.0).abs();
-        let gap = if delta >= std::f64::consts::TAU {
-            delta - std::f64::consts::TAU
-        } else {
-            delta
-        };
-        Radians(gap.min(std::f64::consts::TAU - gap))
-    }
-
-    /// Central angle from the query to the meridian arc at `lon_degrees`
-    /// spanning reduced latitudes `[beta_lo, beta_hi]`.
-    fn to_meridian_arc(&self, lon: Degrees, beta_lo: Radians, beta_hi: Radians) -> Radians {
-        let theta = self.lon_gap(lon);
-        let mut best = central_angle(self.beta, beta_lo, theta)
-            .0
-            .min(central_angle(self.beta, beta_hi, theta).0);
-        // Cross-track candidate: the perpendicular foot on the meridian's
-        // great circle, valid when it lands inside the arc's latitude span.
-        if theta.0 < std::f64::consts::FRAC_PI_2 && self.beta.0.abs() < std::f64::consts::FRAC_PI_2
-        {
-            let foot = Radians(f64::atan2(self.beta.0.tan(), theta.0.cos()));
-            if (beta_lo.0..=beta_hi.0).contains(&foot.0) {
-                let cross_track = (theta.0.sin().abs() * self.beta.0.cos())
-                    .clamp(0.0, 1.0)
-                    .asin();
-                best = best.min(cross_track);
-            }
-        }
-        Radians(best)
     }
 
     /// Lower bound (meters) on the geodesic distance from the query point to
@@ -189,20 +142,12 @@ impl GeodesicPruner {
         let (lower, upper) = (env.lower(), env.upper());
         let (lon_lo, lat_lo) = lower.into();
         let (lon_hi, lat_hi) = upper.into();
-        let beta_lo = reduced_latitude(Degrees(lat_lo), self.one_minus_f);
-        let beta_hi = reduced_latitude(Degrees(lat_hi), self.one_minus_f);
-        // Degenerate/wide longitude spans collapse to the latitude gap.
-        let lon_degrees = Degrees(self.lon.0.to_degrees());
-        let sigma = if lon_hi - lon_lo >= 360.0 || (lon_lo..=lon_hi).contains(&lon_degrees.0) {
-            Radians((self.beta.0 - self.beta.0.clamp(beta_lo.0, beta_hi.0)).abs())
-        } else {
-            Radians(
-                self.to_meridian_arc(Degrees(lon_lo), beta_lo, beta_hi)
-                    .0
-                    .min(self.to_meridian_arc(Degrees(lon_hi), beta_lo, beta_hi).0),
-            )
-        };
-        (self.minor_radius * sigma.0 - self.backend_floor).max(0.0)
+        self.envelope.lower_bound(ChartBox {
+            west: lon_lo,
+            south: lat_lo,
+            east: lon_hi,
+            north: lat_hi,
+        })
     }
 
     /// The planar lon/lat window(s) guaranteed to contain every point within
@@ -211,36 +156,36 @@ impl GeodesicPruner {
     /// whole world (callers keep the global scan).
     pub(crate) fn dwithin_windows(&self, distance: f64) -> Option<DwithinWindows> {
         // s ≤ distance ⟹ σ ≤ distance / b (the bound, inverted).
-        let alpha = (distance + self.backend_floor) / self.minor_radius;
+        let alpha = (distance + self.envelope.backend_floor()) / self.envelope.minor_radius();
         if alpha >= std::f64::consts::PI {
             return None;
         }
-        let beta_lo = Radians(self.beta.0 - alpha);
-        let beta_hi = Radians(self.beta.0 + alpha);
+        let beta_lo = Radians(self.envelope.beta() - alpha);
+        let beta_hi = Radians(self.envelope.beta() + alpha);
         if beta_lo.0 <= -std::f64::consts::FRAC_PI_2 || beta_hi.0 >= std::f64::consts::FRAC_PI_2 {
             // The cap reaches a pole: every longitude qualifies.
             let lat_lo = geodetic_latitude(
                 Radians(beta_lo.0.max(-std::f64::consts::FRAC_PI_2)),
-                self.one_minus_f,
+                self.envelope.one_minus_f(),
             );
             let lat_hi = geodetic_latitude(
                 Radians(beta_hi.0.min(std::f64::consts::FRAC_PI_2)),
-                self.one_minus_f,
+                self.envelope.one_minus_f(),
             );
             return Some(DwithinWindows::one(AABB::from_corners(
                 [-180.0, lat_lo.0],
                 [180.0, lat_hi.0],
             )));
         }
-        let lat_lo = geodetic_latitude(beta_lo, self.one_minus_f);
-        let lat_hi = geodetic_latitude(beta_hi, self.one_minus_f);
+        let lat_lo = geodetic_latitude(beta_lo, self.envelope.one_minus_f());
+        let lat_hi = geodetic_latitude(beta_hi, self.envelope.one_minus_f());
         // Spherical-cap rect bound: max longitude deviation where the
         // meridian is tangent to the cap.
-        let half_width = (alpha.sin() / self.beta.0.cos())
+        let half_width = (alpha.sin() / self.envelope.beta().cos())
             .clamp(-1.0, 1.0)
             .asin()
             .to_degrees();
-        let lon = self.lon.0.to_degrees();
+        let lon = self.envelope.longitude().to_degrees();
         let (lon_lo, lon_hi) = (lon - half_width, lon + half_width);
         // Inclusive wrap checks: a window touching ±180 must also cover the
         // seam's other spelling (an entry at lon 180 matches a query at -180).

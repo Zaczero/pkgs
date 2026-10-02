@@ -1,14 +1,16 @@
+use crate::crs::PointEdgeScratch;
 use crate::geometry::distance::{
     Result, area_overlap_probe, bounds_distance_squared, bounds_squared_safe,
-    coordinate_squared_safe, ensure_geodesic_linework, geodesic_distance_with_parts,
-    geodesic_dwithin_with_parts, geodesic_point_distance_with_parts_and_scratch,
-    geodesic_point_dwithin_with_parts_and_scratch, parts_boundary_contact, parts_covers_point,
-    puntal_brute_distance, puntal_brute_distance_squared, quick_area_overlap, squared_space_safe,
+    cached_point_chart_distance, cached_point_chart_dwithin, coordinate_squared_safe,
+    ensure_geodesic_linework, geodesic_distance_with_parts, geodesic_dwithin_with_parts,
+    geodesic_point_distance_with_parts_and_scratch, geodesic_point_dwithin_with_parts_and_scratch,
+    parts_boundary_contact, parts_covers_point, puntal_brute_distance,
+    puntal_brute_distance_squared, quick_area_overlap, squared_space_safe, uses_chart_edge_model,
 };
 use crate::geometry::{
-    DistanceParts, FacetBvh, FrameDependentCaches, GeodesicMetric, GeodesicPartsKey, Point,
-    PointBatchTester, PreparedPlan, Shape, distance, finish_planar_squared_min, point_distance,
-    points_dwithin,
+    ChartMetric, DistanceParts, FacetBvh, FrameDependentCaches, GeodesicMetric, GeodesicPartsKey,
+    Point, PointBatchTester, PreparedPlan, Shape, distance, finish_planar_squared_min,
+    point_distance, points_dwithin,
 };
 impl PreparedPlan {
     /// Planar distance with both sides' prepared state cached on the handle —
@@ -114,7 +116,7 @@ impl PreparedPlan {
 
     /// Geodesic distance with both sides' geodesic working state cached on the
     /// handles for one normalized CRS and ellipsoid.
-    pub(crate) fn geodesic_distance_cached(
+    pub(crate) fn geodesic_distance_cached<M>(
         &self,
         self_cache: &FrameDependentCaches,
         other: &Self,
@@ -122,12 +124,45 @@ impl PreparedPlan {
         crs: &str,
         semi_major: f64,
         flattening: f64,
-        metric: &impl GeodesicMetric,
-    ) -> Result<f64> {
+        metric: &M,
+    ) -> Result<f64>
+    where
+        M: GeodesicMetric + ChartMetric<PointEdgeScratch = PointEdgeScratch>,
+    {
         if let (Shape::Point(a), Shape::Point(b)) = (self.shape(), other.shape()) {
             metric.ensure_shape(self.shape())?;
             metric.ensure_shape(other.shape())?;
             return Ok(metric.segment_length(*a, *b));
+        }
+        if let Shape::Point(point) = self.shape()
+            && uses_chart_edge_model(other.shape())
+        {
+            return cached_point_chart_distance(
+                *point,
+                self,
+                self_cache,
+                other,
+                other_cache,
+                crs,
+                semi_major,
+                flattening,
+                metric,
+            );
+        }
+        if let Shape::Point(point) = other.shape()
+            && uses_chart_edge_model(self.shape())
+        {
+            return cached_point_chart_distance(
+                *point,
+                other,
+                other_cache,
+                self,
+                self_cache,
+                crs,
+                semi_major,
+                flattening,
+                metric,
+            );
         }
         let self_key = GeodesicPartsKey::new_at_generation(
             crs,
@@ -154,7 +189,7 @@ impl PreparedPlan {
 
     /// Threshold-aware geodesic `dwithin` with cached per-shape geodesic
     /// working state. Exact hits at or below `distance` return immediately.
-    pub(crate) fn geodesic_dwithin_cached(
+    pub(crate) fn geodesic_dwithin_cached<M>(
         &self,
         self_cache: &FrameDependentCaches,
         other: &Self,
@@ -162,9 +197,12 @@ impl PreparedPlan {
         crs: &str,
         semi_major: f64,
         flattening: f64,
-        metric: &impl GeodesicMetric,
+        metric: &M,
         distance: f64,
-    ) -> Result<bool> {
+    ) -> Result<bool>
+    where
+        M: GeodesicMetric + ChartMetric<PointEdgeScratch = PointEdgeScratch>,
+    {
         if distance.is_infinite() && distance.is_sign_positive() {
             ensure_geodesic_linework(self.shape(), metric)?;
             ensure_geodesic_linework(other.shape(), metric)?;
@@ -174,6 +212,38 @@ impl PreparedPlan {
             metric.ensure_shape(self.shape())?;
             metric.ensure_shape(other.shape())?;
             return Ok(metric.segment_length(*a, *b) <= distance);
+        }
+        if let Shape::Point(point) = self.shape()
+            && uses_chart_edge_model(other.shape())
+        {
+            return cached_point_chart_dwithin(
+                *point,
+                self,
+                self_cache,
+                other,
+                other_cache,
+                crs,
+                semi_major,
+                flattening,
+                metric,
+                distance,
+            );
+        }
+        if let Shape::Point(point) = other.shape()
+            && uses_chart_edge_model(self.shape())
+        {
+            return cached_point_chart_dwithin(
+                *point,
+                other,
+                other_cache,
+                self,
+                self_cache,
+                crs,
+                semi_major,
+                flattening,
+                metric,
+                distance,
+            );
         }
         let self_key = GeodesicPartsKey::new_at_generation(
             crs,

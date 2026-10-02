@@ -1,10 +1,11 @@
+use crate::crs::PointEdgeScratch;
 use crate::geographic::GeographicFrame;
 use crate::geometry::distance::{
-    Result, geodesic_nearest_points_with_parts, nearest_probe_to_parts, parts_boundary_witness,
-    quick_area_overlap, squared_space_safe,
+    Result, cached_point_chart_minimum, geodesic_nearest_points_with_parts, nearest_probe_to_parts,
+    parts_boundary_witness, quick_area_overlap, squared_space_safe, uses_chart_edge_model,
 };
 use crate::geometry::{
-    FrameDependentCaches, GeodesicMetric, GeodesicPartsKey, Point, PreparedPlan,
+    ChartMetric, FrameDependentCaches, GeodesicMetric, GeodesicPartsKey, Point, PreparedPlan, Shape,
 };
 impl PreparedPlan {
     /// Nearest point pair on cached prepared state — argmin vertex sweeps
@@ -57,7 +58,7 @@ impl PreparedPlan {
 
     /// Geodesic nearest-point pair with cached geodesic working state. The
     /// witness tie order is identical to `Shape::geodesic_nearest_points`.
-    pub(crate) fn geodesic_nearest_points_cached(
+    pub(crate) fn geodesic_nearest_points_cached<M>(
         &self,
         self_cache: &FrameDependentCaches,
         other: &Self,
@@ -65,8 +66,46 @@ impl PreparedPlan {
         crs: &str,
         semi_major: f64,
         flattening: f64,
-        metric: &impl GeodesicMetric,
-    ) -> Result<Option<(Point, Point)>> {
+        metric: &M,
+    ) -> Result<Option<(Point, Point)>>
+    where
+        M: GeodesicMetric + ChartMetric<PointEdgeScratch = PointEdgeScratch>,
+    {
+        if let (Shape::Point(left), Shape::Point(right)) = (self.shape(), other.shape()) {
+            return Ok(Some((*left, *right)));
+        }
+        if let Shape::Point(point) = self.shape()
+            && uses_chart_edge_model(other.shape())
+        {
+            return Ok(cached_point_chart_minimum(
+                *point,
+                self,
+                self_cache,
+                other,
+                other_cache,
+                crs,
+                semi_major,
+                flattening,
+                metric,
+            )?
+            .map(|minimum| (minimum.first, minimum.second)));
+        }
+        if let Shape::Point(point) = other.shape()
+            && uses_chart_edge_model(self.shape())
+        {
+            return Ok(cached_point_chart_minimum(
+                *point,
+                other,
+                other_cache,
+                self,
+                self_cache,
+                crs,
+                semi_major,
+                flattening,
+                metric,
+            )?
+            .map(|minimum| (minimum.second, minimum.first)));
+        }
         let self_key = GeodesicPartsKey::new_at_generation(
             crs,
             semi_major,
@@ -97,7 +136,7 @@ impl PreparedPlan {
     /// wrong edge). The non-crossing operand is borrowed — the common all-rows-
     /// non-crossing case keeps the prepared cache and pays nothing; only a
     /// crossing row allocates a split form.
-    pub(crate) fn geodesic_nearest_points_cached_split(
+    pub(crate) fn geodesic_nearest_points_cached_split<M>(
         &self,
         self_cache: &FrameDependentCaches,
         other: &Self,
@@ -105,9 +144,12 @@ impl PreparedPlan {
         crs: &str,
         semi_major: f64,
         flattening: f64,
-        metric: &impl GeodesicMetric,
+        metric: &M,
         frame: GeographicFrame,
-    ) -> Result<Option<(Point, Point)>> {
+    ) -> Result<Option<(Point, Point)>>
+    where
+        M: GeodesicMetric + ChartMetric<PointEdgeScratch = PointEdgeScratch>,
+    {
         let self_crosses = crate::geometry::crosses_antimeridian_in_frame(self.shape(), frame);
         let other_crosses = crate::geometry::crosses_antimeridian_in_frame(other.shape(), frame);
         if !self_crosses && !other_crosses {

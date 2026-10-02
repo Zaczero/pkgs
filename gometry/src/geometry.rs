@@ -73,17 +73,18 @@ pub(crate) use segments::{Orientation, held_axis_interpolate, orientation};
 pub(crate) mod storage;
 pub(crate) mod types;
 pub(crate) use types::{
-    Bounds, BufferCapStyle, BufferJoinStyle, BufferSide, ChartMetric, CoordSeq, CoordSeqBuilder,
-    CoordWindow, CoordinateAxes, Coordinates, CsrOffsetBuilder, CsrOffsetColumn, DistanceParts,
-    FrameDependentCaches, GeodesicInnerInterval, GeodesicMetric, GeodesicMinimum,
+    Bounds, BufferCapStyle, BufferJoinStyle, BufferSide, ChartBox, ChartMetric, CoordSeq,
+    CoordSeqBuilder, CoordWindow, CoordinateAxes, Coordinates, CsrOffsetBuilder, CsrOffsetColumn,
+    DistanceParts, FrameDependentCaches, GeodesicInnerInterval, GeodesicMetric, GeodesicMinimum,
     GeodesicNumericalPolicy, GeodesicParts, GeodesicPreparedSegment, GeodesicSegment,
     GeodesicSegmentDerivative, GeodesicSegmentMinimum, GeodesicSegmentQuery,
     GeodesicSegmentQueryResult, GeodesicSegmentSample, GeodesicSegmentScratch, GeodesicWitnessNeed,
     GeometryErrorKind, GeometryKind, HasM, HasZ, IndexedSegment, IntoSharedShape, LineSeq,
     MAX_NESTING, MColumn, MOrdinate, MultiLineString, MultiMember, MultiPoint, MultiPolygon, Point,
-    PointKey, Polygon, PolygonLevel, PolygonizeFull, PreparedPlan, RepairMethod, Ring, RingLevel,
-    Segment, SegmentContact, SegmentPairWitness, Shape, ShapeCountQuery, ShapeData, ShapeOwnerKey,
-    SharedSlice, SimplifyMethod, SmoothMethod, ValidationIssue, VisiblePointRunKey, VisibleXYKey,
+    PointEdgeMinimum, PointEdgeQuery, PointEdgeQueryResult, PointKey, Polygon, PolygonLevel,
+    PolygonizeFull, PreparedPlan, RepairMethod, Ring, RingLevel, Segment, SegmentContact,
+    SegmentPairWitness, Shape, ShapeCountQuery, ShapeData, ShapeOwnerKey, SharedSlice,
+    SimplifyMethod, SmoothMethod, ValidationIssue, VisiblePointRunKey, VisibleXYKey,
     VoronoiBoundary, XY, ZOrdinate, canonical_f64_bits, coerce_to_common_axes,
 };
 mod antimeridian;

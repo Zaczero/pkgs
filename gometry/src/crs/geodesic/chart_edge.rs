@@ -6,9 +6,14 @@
 use geographiclib_rs::Geodesic;
 
 use crate::error::Result;
-use crate::geographic::{EdgeDirection, GeographicFrame, Latitude, SeamIdentity};
+use crate::geographic::{
+    CircularInterval, EdgeDirection, GeographicFrame, Latitude, LongitudeWindows, SeamIdentity,
+};
 use crate::geometry::types::ChartMetric;
-use crate::geometry::{GeometryErrorKind, Point};
+use crate::geometry::{
+    ChartBox, GeometryErrorKind, MOrdinate, Orientation, Point, PointEdgeQuery,
+    PointEdgeQueryResult, XY, ZOrdinate, interpolate_optional_ordinate, orientation,
+};
 
 const GL4_NODES: [f64; 4] = [
     0.069_431_844_202_973_71,
@@ -144,13 +149,15 @@ fn one_minus_sinc_small(value: f64) -> f64 {
 
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct ChartEdge {
+    frame: GeographicFrame,
     meridian: Option<MeridianCoordinates>,
     seam_meridian: bool,
-    start_x: f64,
-    longitude_delta_native: f64,
+    start_longitude: f64,
+    end_longitude: f64,
     start_latitude: f64,
     end_latitude: f64,
     latitude_delta: f64,
+    longitude_delta_native: f64,
     longitude_delta: f64,
     latitude_unit: f64,
     pole: f64,
@@ -200,20 +207,233 @@ impl ChartEdge {
         };
 
         Ok(Self {
+            frame,
             meridian,
             seam_meridian,
-            start_x: start.x,
-            longitude_delta_native,
+            start_longitude: start.x,
+            end_longitude: end.x,
             start_latitude,
             end_latitude,
             latitude_delta,
+            longitude_delta_native,
             longitude_delta: longitude_delta_native * axis.unit().radians_per_unit(),
             latitude_unit: frame.latitude_unit().radians_per_unit(),
             pole: frame.pole(),
         })
     }
 
-    fn seam_span(&self) -> Option<[f64; 2]> {
+    pub(super) fn geodetic_position(self, parameter: f64) -> Result<Point> {
+        let point = self.position(parameter);
+        let (longitude, latitude) = self
+            .frame
+            .to_geodesic_xy(point.x, point.y)
+            .expect("an admitted chart-edge position stays in its geographic frame");
+        Ok(Point::new_raw_xy(longitude, latitude))
+    }
+
+    pub(super) fn bounds(self) -> ChartBox {
+        let (start_longitude, start_latitude) = self
+            .frame
+            .to_geodesic_xy(self.start_longitude, self.start_latitude)
+            .expect("chart-edge endpoints were admitted");
+        let (end_longitude, end_latitude) = self
+            .frame
+            .to_geodesic_xy(self.end_longitude, self.end_latitude)
+            .expect("chart-edge endpoints were admitted");
+        let south = start_latitude.min(end_latitude).next_down().max(-90.0);
+        let north = start_latitude.max(end_latitude).next_up().min(90.0);
+        let axis = GeographicFrame::crs84().longitude();
+        let interval = if start_latitude.abs() == 90.0 || end_latitude.abs() == 90.0 {
+            CircularInterval::Full
+        } else {
+            match axis
+                .shortest_edge(start_longitude, end_longitude)
+                .expect("canonical chart-edge endpoints are admitted")
+            {
+                EdgeDirection::Minor(delta) => {
+                    let west = if delta < 0.0 {
+                        end_longitude
+                    } else {
+                        start_longitude
+                    };
+                    let sweep = delta.abs() + 64.0 * f64::EPSILON * 360.0;
+                    CircularInterval::try_arc(axis, west, sweep)
+                        .expect("a chart edge spans less than half a longitude period")
+                },
+                EdgeDirection::HalfTurn(_) => CircularInterval::Full,
+            }
+        };
+        let (west, east) = match interval.windows(axis) {
+            Some(LongitudeWindows::One([west, east])) => (west, east),
+            Some(LongitudeWindows::Two([west, _], [_, east])) => (west, east),
+            Some(LongitudeWindows::Full) | None => (-180.0, 180.0),
+        };
+        ChartBox {
+            west,
+            south,
+            east,
+            north,
+        }
+    }
+
+    #[expect(
+        clippy::float_cmp,
+        reason = "pole aliases and degenerate chart points use exact topological identity"
+    )]
+    pub(super) fn parameter_for_point(self, point: Point) -> Option<f64> {
+        let axis = self.frame.longitude();
+        let start_longitude = axis.canonicalize(self.start_longitude).ok()?.get();
+        let point_longitude = axis.canonicalize(point.x).ok()?.get();
+        let point_latitude = Latitude::try_new(self.frame, point.y).ok()?.get();
+        if point_latitude.abs() == self.pole {
+            if self.start_latitude.abs() == self.pole && self.start_latitude == point_latitude {
+                return Some(0.0);
+            }
+            if self.end_latitude.abs() == self.pole && self.end_latitude == point_latitude {
+                return Some(1.0);
+            }
+        }
+        let point_delta = match axis.shortest_edge(start_longitude, point_longitude).ok()? {
+            EdgeDirection::Minor(delta) => delta,
+            EdgeDirection::HalfTurn(_) => return None,
+        };
+        let start = XY::new(start_longitude, self.start_latitude);
+        let end = XY::new(
+            start_longitude + self.longitude_delta_native,
+            self.end_latitude,
+        );
+        let probe = XY::new(start_longitude + point_delta, point_latitude);
+        if orientation(start, probe, end) != Orientation::Collinear
+            || probe.x < start.x.min(end.x)
+            || probe.x > start.x.max(end.x)
+            || probe.y < start.y.min(end.y)
+            || probe.y > start.y.max(end.y)
+        {
+            return None;
+        }
+        if self.longitude_delta_native == 0.0 && self.latitude_delta == 0.0 {
+            return Some(0.0);
+        }
+        let parameter = if self.longitude_delta_native.abs() >= self.latitude_delta.abs() {
+            (probe.x - start.x) / (end.x - start.x)
+        } else {
+            (probe.y - start.y) / (end.y - start.y)
+        };
+        (0.0..=1.0).contains(&parameter).then_some(parameter)
+    }
+
+    pub(super) fn is_geodesically_degenerate(self, geodesic: &Geodesic) -> bool {
+        self.derivatives(0.5, geodesic).speed == 0.0
+    }
+
+    pub(super) fn derivatives(self, parameter: f64, geodesic: &Geodesic) -> ChartEdgeDerivatives {
+        let e2 = geodesic.f * (2.0 - geodesic.f);
+        let dphi = self.latitude_delta * self.latitude_unit;
+        let dlambda = self.longitude_delta;
+        let (sin_latitude, cos_latitude) = self.latitude_sincos(parameter);
+        let w2 = 1.0 - e2 * sin_latitude * sin_latitude;
+        let w = w2.sqrt();
+        let prime_vertical = geodesic.a / w;
+        let meridian = geodesic.a * (1.0 - e2) / (w2 * w);
+        let east = prime_vertical * cos_latitude * dlambda;
+        let north = meridian * dphi;
+        let speed = east.hypot(north);
+        if speed == 0.0 {
+            return ChartEdgeDerivatives {
+                speed,
+                acceleration: 0.0,
+                azimuth: 0.0,
+                geodesic_curvature: 0.0,
+            };
+        }
+        let east_derivative = -meridian * sin_latitude * dphi * dlambda;
+        let north_derivative = dphi * dphi * 3.0 * e2 * sin_latitude * cos_latitude * meridian / w2;
+        let azimuth = east.atan2(north);
+        let azimuth_derivative =
+            (east_derivative * north - east * north_derivative) / (speed * speed);
+        let geodesic_curvature = (azimuth_derivative - sin_latitude * dlambda) / speed;
+        ChartEdgeDerivatives {
+            speed,
+            acceleration: east_derivative.hypot(north_derivative),
+            azimuth,
+            geodesic_curvature,
+        }
+    }
+
+    pub(super) fn sampled_derivative_bounds(
+        self,
+        geodesic: &Geodesic,
+    ) -> ChartEdgeDerivativeBounds {
+        const SAMPLE_PARAMETERS: [f64; 9] = [0.0, 0.125, 0.25, 0.375, 0.5, 0.625, 0.75, 0.875, 1.0];
+        let mut speed = 0.0_f64;
+        let mut acceleration = 0.0_f64;
+        let mut curvature = 0.0_f64;
+        for parameter in SAMPLE_PARAMETERS {
+            let derivative = self.derivatives(parameter, geodesic);
+            speed = speed.max(derivative.speed);
+            acceleration = acceleration.max(derivative.acceleration);
+            curvature = curvature.max(derivative.geodesic_curvature.abs());
+        }
+        ChartEdgeDerivativeBounds {
+            speed: speed * 1.05,
+            acceleration: acceleration * 1.05,
+            curvature: curvature * 1.05,
+        }
+    }
+
+    #[expect(
+        clippy::float_cmp,
+        reason = "the exact endpoint parameters reuse the edge's already-computed length"
+    )]
+    pub(super) fn length_to(self, parameter: f64, geodesic: &Geodesic) -> Result<f64> {
+        if parameter == 0.0 {
+            return Ok(0.0);
+        }
+        if parameter == 1.0 {
+            return self.length(geodesic);
+        }
+        self.integrate(0.0, parameter, geodesic)
+    }
+
+    #[expect(
+        clippy::float_cmp,
+        reason = "exact minimizer endpoint parameters preserve input coordinates and ordinates"
+    )]
+    pub(super) fn witness(
+        self,
+        start: Point,
+        end: Point,
+        parameter: f64,
+        geodesic: &Geodesic,
+    ) -> Result<Point> {
+        if parameter == 0.0 {
+            return Ok(start);
+        }
+        if parameter == 1.0 {
+            return Ok(end);
+        }
+        let total = self.length(geodesic)?;
+        let fraction = if total == 0.0 {
+            0.0
+        } else {
+            (self.length_to(parameter, geodesic)? / total).clamp(0.0, 1.0)
+        };
+        let position = self.position(parameter);
+        let longitude = self
+            .frame
+            .longitude()
+            .canonicalize(position.x)
+            .expect("an admitted chart-edge witness has finite longitude");
+        Ok(Point::new_axes(
+            longitude.get(),
+            position.y,
+            ZOrdinate(interpolate_optional_ordinate(start.z(), end.z(), fraction)),
+            MOrdinate(interpolate_optional_ordinate(start.m(), end.m(), fraction)),
+        )
+        .expect("an admitted chart-edge witness is finite"))
+    }
+
+    pub(super) fn seam_span(&self) -> Option<[f64; 2]> {
         self.seam_meridian
             .then_some([self.start_latitude, self.end_latitude])
     }
@@ -339,7 +559,7 @@ impl ChartEdge {
 
     /// Position on the chart edge in its native angular frame.
     pub(crate) fn position(&self, t: f64) -> crate::geometry::Point {
-        let longitude = self.start_x + t * self.longitude_delta_native;
+        let longitude = self.start_longitude + t * self.longitude_delta_native;
         let latitude = crate::geometry::interpolate_subdivision_ordinate(
             self.start_latitude,
             self.end_latitude,
@@ -591,6 +811,11 @@ fn is_seam_longitude(axis: crate::geographic::PeriodicAxis, value: f64) -> bool 
 
 impl ChartMetric for super::GeodesicMetric {
     type Edge = ChartEdge;
+    type PointEdgeScratch = super::edge_distance::PointEdgeScratch;
+
+    fn chart_frame(&self) -> GeographicFrame {
+        self.frame
+    }
 
     fn chart_edge(&self, start: Point, end: Point) -> Result<Self::Edge> {
         ChartEdge::new(start, end, self.frame)
@@ -598,6 +823,56 @@ impl ChartMetric for super::GeodesicMetric {
 
     fn chart_edge_length(&self, edge: &Self::Edge) -> Result<f64> {
         edge.length(&self.geodesic)
+    }
+
+    fn chart_edge_bounds(&self, edge: &Self::Edge) -> ChartBox {
+        edge.bounds()
+    }
+
+    fn chart_edge_parameter_for_point(&self, point: Point, edge: &Self::Edge) -> Option<f64> {
+        edge.parameter_for_point(point)
+    }
+
+    fn chart_edge_witness(
+        &self,
+        start: Point,
+        end: Point,
+        edge: &Self::Edge,
+        parameter: f64,
+    ) -> Result<Point> {
+        edge.witness(start, end, parameter, &self.geodesic)
+    }
+
+    fn point_edge_query(
+        &self,
+        point: Point,
+        edge: &Self::Edge,
+        bounds: ChartBox,
+        query: PointEdgeQuery,
+        scratch: &mut Self::PointEdgeScratch,
+    ) -> Result<PointEdgeQueryResult> {
+        let envelope_lower = self.envelope_lower_bound(point, bounds)?;
+        super::edge_distance::point_edge_query(
+            &self.geodesic,
+            self.frame,
+            point,
+            edge,
+            envelope_lower,
+            query,
+            crate::geometry::GeodesicNumericalPolicy::new(self.geodesic.a),
+            scratch,
+        )
+    }
+
+    fn envelope_lower_bound(&self, point: Point, bounds: ChartBox) -> Result<f64> {
+        let point = self
+            .frame
+            .to_geodesic_point(point)
+            .expect("the query point was admitted before envelope pruning");
+        Ok(
+            super::envelope::GeodesicEnvelopeBound::new(self.geodesic.a, self.geodesic.f, point)
+                .lower_bound(bounds),
+        )
     }
 
     fn chart_area_edge_term(&self, edge: &Self::Edge, north: bool) -> f64 {
@@ -625,6 +900,21 @@ impl ChartMetric for super::GeodesicMetric {
     fn chart_surface_area(&self) -> f64 {
         self.authalic_series.surface_area(self.geodesic.a)
     }
+}
+
+#[derive(Clone, Copy)]
+pub(super) struct ChartEdgeDerivatives {
+    pub(super) speed: f64,
+    pub(super) acceleration: f64,
+    pub(super) azimuth: f64,
+    pub(super) geodesic_curvature: f64,
+}
+
+#[derive(Clone, Copy)]
+pub(super) struct ChartEdgeDerivativeBounds {
+    pub(super) speed: f64,
+    pub(super) acceleration: f64,
+    pub(super) curvature: f64,
 }
 
 #[derive(Clone, Copy)]

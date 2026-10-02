@@ -37,12 +37,13 @@ pub(crate) use shape::{
     ShapeOwnerKey, SimplifyMethod, SmoothMethod, VoronoiBoundary,
 };
 pub(crate) use shape_data::{
-    ChartMetric, FrameDependentCaches, GeodesicInnerInterval, GeodesicMetric, GeodesicMinimum,
-    GeodesicNumericalPolicy, GeodesicPreparedSegment, GeodesicSegmentDerivative,
+    ChartBox, ChartMetric, FrameDependentCaches, GeodesicInnerInterval, GeodesicMetric,
+    GeodesicMinimum, GeodesicNumericalPolicy, GeodesicPreparedSegment, GeodesicSegmentDerivative,
     GeodesicSegmentMinimum, GeodesicSegmentQuery, GeodesicSegmentQueryResult,
     GeodesicSegmentSample, GeodesicSegmentScratch, GeodesicWitnessNeed, IndexedSegment,
-    IntoSharedShape, PointKey, PolygonizeFull, PreparedPlan, SegmentContact, SegmentPairWitness,
-    ShapeData, ValidationIssue, canonical_f64_bits,
+    IntoSharedShape, PointEdgeMinimum, PointEdgeQuery, PointEdgeQueryResult, PointKey,
+    PolygonizeFull, PreparedPlan, SegmentContact, SegmentPairWitness, ShapeData, ValidationIssue,
+    canonical_f64_bits,
 };
 pub(crate) use shared_slice::{SharedSlice, SharedSliceIter};
 

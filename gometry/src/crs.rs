@@ -85,9 +85,10 @@ pub(crate) use geodesic::geodesic_counters;
 #[cfg(test)]
 pub(crate) use geodesic::with_ellipsoid_metric;
 pub(crate) use geodesic::{
-    ChartEdge, DistanceMode, EllipsoidMetric, EllipsoidShape, GeodesicCalculation, GeodesicLineKey,
-    GeodesicMetric, MetricModel, ResolvedMetric, chart_line_length_columns, chart_shape_area,
-    chart_shape_length, checked_geodesic_segment, ellipsoid_shape_at, ensure_3d_metric,
+    ChartEdge, DistanceMode, EllipsoidMetric, EllipsoidShape, GeodesicCalculation,
+    GeodesicEnvelopeBound, GeodesicLineKey, GeodesicMetric, MetricModel, PointEdgeScratch,
+    ResolvedMetric, chart_line_length_columns, chart_shape_area, chart_shape_length,
+    checked_geodesic_segment, ellipsoid_shape_at, ensure_3d_metric,
     ensure_geographic_columns_in_frame, ensure_geographic_domain_in_frame,
     ensure_geographic_lonlat, ensure_geographic_lonlat_in_frame, finite, geodesic_bearing,
     geodesic_cross_track_crs_at, geodesic_cross_track_radius_crs_at,

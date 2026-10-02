@@ -1,5 +1,6 @@
 use geographiclib_rs::Geodesic;
 
+use super::chart_edge::{AuthalicSeries, ChartEdge};
 use crate::crs::geodesic::segment::{
     PreparedSegment, geodesic_curvature_domain, geodesic_segment_contact, longitude_difference,
     spherical_meridional_branch_parameters,
@@ -10,10 +11,11 @@ use crate::crs::geodesic::{
 };
 use crate::geographic::GeographicFrame;
 use crate::geometry::{
-    GeodesicMetric, GeodesicNumericalPolicy, GeodesicPreparedSegment, GeodesicSegment,
-    GeodesicSegmentDerivative, GeodesicSegmentQuery, GeodesicSegmentQueryResult,
+    ChartBox, ChartMetric, GeodesicMetric, GeodesicNumericalPolicy, GeodesicPreparedSegment,
+    GeodesicSegment, GeodesicSegmentDerivative, GeodesicSegmentQuery, GeodesicSegmentQueryResult,
     GeodesicSegmentSample, GeodesicSegmentScratch, GeodesicWitnessNeed, MOrdinate, Point,
-    SegmentContact, SegmentPairWitness, XY, ZOrdinate, interpolate_optional_ordinate,
+    PointEdgeQuery, PointEdgeQueryResult, SegmentContact, SegmentPairWitness, XY, ZOrdinate,
+    interpolate_optional_ordinate,
 };
 
 pub(crate) fn inverse_distance(
@@ -72,6 +74,7 @@ pub(crate) struct EllipsoidMetric<'a> {
     frame: GeographicFrame,
     runtime_generation: u64,
     policy: GeodesicNumericalPolicy,
+    authalic: std::cell::OnceCell<AuthalicSeries>,
     normalized: std::cell::OnceCell<Geodesic>,
     intersection: std::cell::OnceCell<IntersectSolver>,
 }
@@ -141,6 +144,7 @@ impl<'a> EllipsoidMetric<'a> {
             frame,
             runtime_generation,
             policy: GeodesicNumericalPolicy::new(geodesic.a),
+            authalic: std::cell::OnceCell::new(),
             normalized: std::cell::OnceCell::new(),
             intersection: std::cell::OnceCell::new(),
         }
@@ -166,6 +170,12 @@ impl<'a> EllipsoidMetric<'a> {
 
     pub(crate) const fn frame(&self) -> GeographicFrame {
         self.frame
+    }
+
+    fn authalic_series(&self) -> AuthalicSeries {
+        *self
+            .authalic
+            .get_or_init(|| AuthalicSeries::new(self.geodesic))
     }
 
     fn to_geodesic_point(&self, point: Point) -> Point {
@@ -459,6 +469,99 @@ impl GeodesicMetric for EllipsoidMetric<'_> {
         let opposite_delta = longitude_difference(segment.start.x, target.x + 180.0);
         Some(self.scale_distance(segment.length * opposite_delta.abs() / delta.abs()))
             .filter(|along| along.is_finite())
+    }
+}
+
+impl ChartMetric for EllipsoidMetric<'_> {
+    type Edge = ChartEdge;
+    type PointEdgeScratch = super::edge_distance::PointEdgeScratch;
+
+    fn chart_frame(&self) -> GeographicFrame {
+        self.frame
+    }
+
+    fn chart_edge(&self, start: Point, end: Point) -> crate::error::Result<Self::Edge> {
+        ChartEdge::new(start, end, self.frame)
+    }
+
+    fn chart_edge_length(&self, edge: &Self::Edge) -> crate::error::Result<f64> {
+        edge.length(self.geodesic)
+    }
+
+    fn chart_edge_bounds(&self, edge: &Self::Edge) -> ChartBox {
+        edge.bounds()
+    }
+
+    fn chart_edge_parameter_for_point(&self, point: Point, edge: &Self::Edge) -> Option<f64> {
+        edge.parameter_for_point(point)
+    }
+
+    fn chart_edge_witness(
+        &self,
+        start: Point,
+        end: Point,
+        edge: &Self::Edge,
+        parameter: f64,
+    ) -> crate::error::Result<Point> {
+        edge.witness(start, end, parameter, self.geodesic)
+    }
+
+    fn point_edge_query(
+        &self,
+        point: Point,
+        edge: &Self::Edge,
+        bounds: ChartBox,
+        query: PointEdgeQuery,
+        scratch: &mut Self::PointEdgeScratch,
+    ) -> crate::error::Result<PointEdgeQueryResult> {
+        let envelope_lower = self.envelope_lower_bound(point, bounds)?;
+        super::edge_distance::point_edge_query(
+            self.geodesic,
+            self.frame,
+            point,
+            edge,
+            envelope_lower,
+            query,
+            self.policy,
+            scratch,
+        )
+    }
+
+    fn envelope_lower_bound(&self, point: Point, bounds: ChartBox) -> crate::error::Result<f64> {
+        let point = self
+            .frame
+            .to_geodesic_point(point)
+            .expect("the query point was admitted before envelope pruning");
+        Ok(
+            super::envelope::GeodesicEnvelopeBound::new(self.geodesic.a, self.geodesic.f, point)
+                .lower_bound(bounds),
+        )
+    }
+
+    fn chart_edge_seam_span(&self, edge: &Self::Edge) -> Option<[f64; 2]> {
+        edge.seam_span()
+    }
+
+    fn chart_seam_span_length(&self, south: f64, north: f64) -> crate::error::Result<f64> {
+        let half_period = self.frame.longitude().half_period();
+        ChartEdge::new(
+            Point::new_raw_xy(half_period, south),
+            Point::new_raw_xy(-half_period, north),
+            self.frame,
+        )?
+        .length(self.geodesic)
+    }
+
+    fn chart_area_edge_term(&self, edge: &Self::Edge, north: bool) -> f64 {
+        edge.authalic_area_term(&self.authalic_series(), north)
+    }
+
+    fn chart_area_factor(&self) -> f64 {
+        self.authalic_series().area_factor(self.geodesic.a)
+    }
+
+    fn chart_surface_area(&self) -> f64 {
+        self.authalic_series().surface_area(self.geodesic.a)
     }
 }
 
