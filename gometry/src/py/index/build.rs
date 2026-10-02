@@ -71,8 +71,10 @@ fn scan_spatial_index_rows<'a>(
             entries.push(IndexEntry { idx, envelope });
         }
         live.push(1);
-        non_prunable_live =
-            non_prunable_live.wrapping_add(usize::from(!geodesic_prunable_point(&item.shape)));
+        if matches!(domain, TopologyDomain::Geographic(_)) {
+            non_prunable_live =
+                non_prunable_live.wrapping_add(usize::from(!geodesic_prunable_point(&item.shape)));
+        }
     }
     Ok(IndexScan {
         entries,
@@ -91,6 +93,7 @@ fn finish_spatial_index(
     // boxed row positions the query results index into.
     let total_rows = rows.len();
     let live_count = scan.live.iter().filter(|&&live| live != 0).count();
+    let bulk_entry_counts = bulk_entry_counts(&scan.entries, live_count, total_rows);
     Ok(PySpatialIndex {
         rows: IndexRows {
             packed: None,
@@ -99,6 +102,8 @@ fn finish_spatial_index(
             live_count,
         },
         bulk: StaticStrTree::build(scan.entries, total_rows).map_err(pyo3::PyErr::from)?,
+        bulk_dead_entries: 0,
+        bulk_entry_counts,
         overflow: StaticStrForest::new(total_rows),
         geodesic_caps: std::sync::Mutex::default(),
         mutation_gen: 0,
@@ -155,11 +160,13 @@ fn packed_index_payload(
             })?,
         }
         live.push(1);
-        non_prunable_live = non_prunable_live.wrapping_add(usize::from(!matches!(
-            shape_row,
-            crate::array::ShapeRow::Point(point)
-                if (-180.0..=180.0).contains(&point.x) && (-90.0..=90.0).contains(&point.y)
-        )));
+        if matches!(domain, TopologyDomain::Geographic(_)) {
+            non_prunable_live = non_prunable_live.wrapping_add(usize::from(!matches!(
+                shape_row,
+                crate::array::ShapeRow::Point(point)
+                    if (-180.0..=180.0).contains(&point.x) && (-90.0..=90.0).contains(&point.y)
+            )));
+        }
     }
     Ok((entries, live, non_prunable_live))
 }
@@ -178,8 +185,12 @@ pub(crate) fn packed_spatial_index(array: &PyGeometryArray) -> PyResult<Option<P
         .transpose()?
         .unwrap_or(TopologyDomain::Cartesian);
     let (entries, live, non_prunable_live) = packed_index_payload(array, domain)?;
-    let live_count = live.iter().map(|&live| usize::from(live != 0)).sum();
+    let live_count = match domain {
+        TopologyDomain::Cartesian => entries.len(),
+        TopologyDomain::Geographic(_) => live.iter().map(|&live| usize::from(live != 0)).sum(),
+    };
     let total_rows = array.len();
+    let bulk_entry_counts = bulk_entry_counts(&entries, live_count, total_rows);
     Ok(Some(PySpatialIndex {
         rows: IndexRows {
             packed: Some(PackedStore {
@@ -190,6 +201,8 @@ pub(crate) fn packed_spatial_index(array: &PyGeometryArray) -> PyResult<Option<P
             live_count,
         },
         bulk: StaticStrTree::build(entries, total_rows).map_err(pyo3::PyErr::from)?,
+        bulk_dead_entries: 0,
+        bulk_entry_counts,
         overflow: StaticStrForest::new(total_rows),
         geodesic_caps: std::sync::Mutex::default(),
         mutation_gen: 0,
@@ -312,8 +325,10 @@ pub(crate) fn restore_spatial_index(
                     envelope,
                 });
             }
-            non_prunable_live = non_prunable_live
-                .wrapping_add(usize::from(!geodesic_prunable_point(&geometry.shape)));
+            if matches!(domain, TopologyDomain::Geographic(_)) {
+                non_prunable_live = non_prunable_live
+                    .wrapping_add(usize::from(!geodesic_prunable_point(&geometry.shape)));
+            }
             live.push(1);
             geometry
         } else {
@@ -324,6 +339,7 @@ pub(crate) fn restore_spatial_index(
     }
     let total_rows = rows.len();
     let live_count = live.iter().filter(|&&live| live != 0).count();
+    let bulk_entry_counts = bulk_entry_counts(&entries, live_count, total_rows);
     // Re-derive metadata from the row storage, while retaining an explicitly
     // framed index after its last live row is removed.
     let metadata = (has_metadata || present).then(|| values.frame.clone());
@@ -335,12 +351,32 @@ pub(crate) fn restore_spatial_index(
             live_count,
         },
         bulk: StaticStrTree::build(entries, total_rows).map_err(pyo3::PyErr::from)?,
+        bulk_dead_entries: 0,
+        bulk_entry_counts,
         overflow: StaticStrForest::new(total_rows),
         geodesic_caps: std::sync::Mutex::default(),
         mutation_gen: 0,
         metadata,
         non_prunable_live,
     })
+}
+
+fn bulk_entry_counts(
+    entries: &[IndexEntry],
+    live_count: usize,
+    total_rows: usize,
+) -> Option<std::sync::Arc<Vec<usize>>> {
+    if entries.len() == live_count {
+        return None;
+    }
+    let mut counts = vec![0_usize; total_rows];
+    for entry in entries {
+        let count = counts
+            .get_mut(entry.idx)
+            .expect("bulk entry belongs to the admitted row table");
+        *count = count.wrapping_add(1);
+    }
+    Some(std::sync::Arc::new(counts))
 }
 
 /// The CRS + coordinate epoch shared by every item, or `None` for an empty

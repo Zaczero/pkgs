@@ -163,6 +163,23 @@ impl StaticStrTree {
         &self.entries
     }
 
+    pub(super) fn prepare_compaction(
+        &self,
+        live: &[u8],
+        removed_handle: usize,
+        remaining: usize,
+    ) -> crate::error::Result<Arc<Self>> {
+        let mut entries = LiveEntriesExcept {
+            entries: self.live_entries(live),
+            removed_handle,
+            remaining,
+        };
+        let retained = entries.by_ref().collect();
+        #[cfg(debug_assertions)]
+        entries.debug_assert_exhausted();
+        Self::build(retained, self.initial_len)
+    }
+
     /// Every live entry, in STR storage order.
     pub(super) fn live_entries<'a>(
         &'a self,
@@ -385,7 +402,6 @@ impl StaticStrForest {
         self.total_entries
     }
 
-    #[cfg(test)]
     pub(super) const fn live_entry_count(&self) -> usize {
         self.live_entries
     }
@@ -620,7 +636,7 @@ impl StaticStrForest {
         let live_after = self.live_entries.wrapping_sub(removed_entries);
         let dead_after = self.dead_entries.wrapping_add(removed_entries);
         debug_assert!(self.total_entries == live_after.wrapping_add(dead_after));
-        dead_after > live_after
+        compaction_due(self.total_entries, dead_after)
     }
 
     pub(super) fn mark_removed(&mut self, removed_entries: usize) {
@@ -667,6 +683,13 @@ impl StaticStrForest {
             self.live_entries.wrapping_add(self.dead_entries)
         );
     }
+}
+
+/// Retaining at most one tombstone per live entry bounds every physical-entry
+/// traversal by twice its live size. Rebuilds occur only after enough removals
+/// to pay for a fresh STR sort.
+pub(super) const fn compaction_due(total_entries: usize, dead_after: usize) -> bool {
+    dead_after > total_entries / 2
 }
 
 struct LiveEntriesExcept<I> {

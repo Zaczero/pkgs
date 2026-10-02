@@ -11,10 +11,12 @@ use crate::py::index::{
 pub(crate) struct NearestVisited {
     values: Vec<usize>,
     touched: Vec<usize>,
+    sparse: crate::collections::IndexMap<usize, usize>,
+    unique: bool,
 }
 
 impl NearestVisited {
-    fn reset(&mut self, len: usize) {
+    fn reset(&mut self, len: usize, live_count: usize, entry_count: usize) {
         for idx in self.touched.drain(..) {
             *self
                 .values
@@ -22,14 +24,36 @@ impl NearestVisited {
                 .expect("touched bitmap word remains allocated until reset") = 0;
         }
         let words = len.div_ceil(usize::BITS as usize);
-        self.values.resize(words, 0);
+        self.sparse.clear();
+        self.unique = entry_count == live_count;
+        // Dense bitmap initialization must be bounded by the live problem,
+        // rather than the highest stable handle after a deletion history.
+        self.values.resize(
+            if !self.unique && words <= live_count {
+                words
+            } else {
+                0
+            },
+            0,
+        );
     }
 
     fn visit(&mut self, idx: usize) -> bool {
+        // Every live row owns at least one cover entry. Equal row and entry
+        // counts therefore prove that traversal cannot revisit a row alias.
+        if self.unique {
+            return true;
+        }
         let word = idx.div_euclid(usize::BITS as usize);
         let shift = u32::try_from(idx.rem_euclid(usize::BITS as usize))
             .expect("bitmap shift is less than usize::BITS");
         let bit = 1_usize.wrapping_shl(shift);
+        if self.values.is_empty() {
+            let value = self.sparse.entry(word).or_default();
+            let first = *value & bit == 0;
+            *value |= bit;
+            return first;
+        }
         let word_value = self
             .values
             .get_mut(word)
@@ -477,7 +501,7 @@ impl PySpatialIndex {
         resolved: &crs::GeodesicMetric,
         query: &PreparedPlan,
     ) -> PyResult<Vec<NearestCandidate>> {
-        visited.reset(self.rows.len());
+        self.reset_nearest_visited(visited);
         let query_cache_owner = query_cache();
         let mut rows = self.rows.operation();
         let mut exact = |idx| {
@@ -545,7 +569,7 @@ impl PySpatialIndex {
         visited: &mut NearestVisited,
     ) -> PyResult<Vec<NearestCandidate>> {
         let mut leaf_policy = HeapLeafPolicy { leaf_frontier };
-        visited.reset(self.rows.len());
+        self.reset_nearest_visited(visited);
         frontier.clear();
         let root_level = self.bulk.root_level();
         let root_count = self
@@ -648,6 +672,15 @@ impl PySpatialIndex {
         state.accept(NearestCandidate::new(distance, entry_idx));
         Ok(())
     }
+
+    fn reset_nearest_visited(&self, visited: &mut NearestVisited) {
+        let entries = self
+            .bulk
+            .entry_count()
+            .wrapping_sub(self.bulk_dead_entries)
+            .wrapping_add(self.overflow.live_entry_count());
+        visited.reset(self.rows.len(), self.rows.live_count(), entries);
+    }
 }
 
 #[cfg(test)]
@@ -665,15 +698,28 @@ mod tests {
     use crate::test_support::allocation_count;
 
     #[test]
+    fn sparse_nearest_visits_do_not_allocate_historical_bitmap_words() {
+        let mut visited = NearestVisited::default();
+        crate::test_support::assert_no_allocations(|| visited.reset(1 << 20, 16, 32));
+        for handle in [0, 63, 64, (1 << 20) - 1] {
+            assert!(visited.visit(handle));
+            assert!(!visited.visit(handle));
+        }
+        visited.reset(1 << 20, 16, 32);
+        assert!(visited.visit((1 << 20) - 1));
+        visited.reset(128, 128, 256);
+        assert!(visited.visit(64));
+    }
+    #[test]
     fn visited_reset_preserves_unique_visits_across_word_boundaries_and_sizes() {
         let mut visited = NearestVisited::default();
         for len in [129, 1, 0, 65, 257, 63] {
-            visited.reset(len);
+            visited.reset(len, len, len * 2);
             for row in (0..len).rev() {
                 assert!(visited.visit(row));
                 assert!(!visited.visit(row));
             }
-            visited.reset(len);
+            visited.reset(len, len, len * 2);
             for row in (0..len).step_by(7) {
                 assert!(visited.visit(row));
             }

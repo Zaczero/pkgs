@@ -493,8 +493,12 @@ pub(crate) struct PySpatialIndex {
     // `remove` tombstones handles; overflow entries stay in their immutable
     // runs until the dead-entry invariant triggers compaction.
     rows: IndexRows,
-    /// The immutable STR-packed bulk (build-time rows; tombstone removal).
+    /// Build-time rows, repacked once tombstones outnumber live cover entries.
     bulk: Arc<StaticStrTree>,
+    bulk_dead_entries: usize,
+    /// Periodic covers may contribute several entries for one handle.
+    /// Single-entry covers need no count column.
+    bulk_entry_counts: Option<Arc<Vec<usize>>>,
     /// Post-build inserts — immutable STR runs maintained by binary carries.
     overflow: StaticStrForest,
     /// Lazy per-row geodesic caps (anchor + proven aux reach), built on the
@@ -514,7 +518,7 @@ pub(crate) struct PySpatialIndex {
     // compares coordinates directly, so mixed frames would silently mis-match).
     // `None` until the first geometry is indexed.
     metadata: Option<Frame>,
-    // Count of live geometries that are not points inside the lon/lat domain.
+    // Count of live geographic geometries that are not points inside the lon/lat domain.
     // Geodesic lower-bound pruning is sound exactly when this is zero. Keeping
     // the count incrementally makes removal O(tree mutation), not O(live rows).
     non_prunable_live: usize,
@@ -525,6 +529,8 @@ impl Clone for PySpatialIndex {
         Self {
             rows: self.rows.clone(),
             bulk: Arc::clone(&self.bulk),
+            bulk_dead_entries: self.bulk_dead_entries,
+            bulk_entry_counts: self.bulk_entry_counts.clone(),
             overflow: self.overflow.clone(),
             // A copied index can diverge on its next mutation.
             geodesic_caps: std::sync::Mutex::default(),
@@ -674,14 +680,17 @@ impl IndexRows {
     }
     fn len(&self) -> usize {
         debug_assert_eq!(
-            self.packed_len().checked_add(self.boxed.len()),
+            self.packed
+                .as_ref()
+                .map_or(0, |packed| packed.source.len())
+                .checked_add(self.boxed.len()),
             Some(self.live.len())
         );
         self.live.len()
     }
 
     fn packed_len(&self) -> usize {
-        self.packed.as_ref().map_or(0, |packed| packed.source.len())
+        self.live.len().wrapping_sub(self.boxed.len())
     }
 
     fn push(&mut self, geometry: PyGeometry) -> usize {
@@ -768,6 +777,7 @@ impl PySpatialIndex {
         self.rows
             .heap_bytes()
             .saturating_add(self.bulk.heap_bytes())
+            .saturating_add(self.bulk_entry_counts.heap_bytes())
             .saturating_add(self.overflow.heap_bytes())
             .saturating_add(self.metadata_heap_bytes())
             .saturating_add(self.geodesic_caps_heap_bytes())

@@ -3,7 +3,7 @@
 
 use crate::py::index::{
     Frame, GeometryError, IndexEntry, PyGeometry, PyGeometryArray, PyResult, PySpatialIndex,
-    geodesic_prunable_point, index_envelopes, index_metadata,
+    TopologyDomain, geodesic_prunable_point, index_envelopes, index_metadata,
 };
 
 fn checked_total_rows(start: usize, count: usize) -> PyResult<usize> {
@@ -85,7 +85,10 @@ impl PySpatialIndex {
         let effective_frame = self.metadata.as_ref().unwrap_or(&geometry.frame);
         let domain = crate::geometry::topology_domain(effective_frame)?;
         let cover = index_envelopes(geometry.shape.shape(), bounds, domain)?;
-        let non_prunable_live = usize::from(!geodesic_prunable_point(&geometry.shape));
+        let non_prunable_live = usize::from(
+            matches!(domain, TopologyDomain::Geographic(_))
+                && !geodesic_prunable_point(&geometry.shape),
+        );
         let adopt_frame = self.metadata.is_none().then(|| geometry.frame.clone());
         let mut entry_counts = [0_usize; 1];
         let mut entries = Vec::with_capacity(cover.entries().len());
@@ -144,8 +147,10 @@ impl PySpatialIndex {
                 });
             }
             entry_counts.push(cover.entries().len());
-            non_prunable_live = non_prunable_live
-                .wrapping_add(usize::from(!geodesic_prunable_point(&geometry.shape)));
+            if matches!(domain, TopologyDomain::Geographic(_)) {
+                non_prunable_live = non_prunable_live
+                    .wrapping_add(usize::from(!geodesic_prunable_point(&geometry.shape)));
+            }
         }
         self.insert_prepared_batch(
             items,
@@ -192,8 +197,10 @@ impl PySpatialIndex {
             }
             entry_counts.push(cover.entries().len());
             let plan = array.prepared_row(offset, row)?.into_owned_plan();
-            non_prunable_live =
-                non_prunable_live.wrapping_add(usize::from(!geodesic_prunable_point(plan.shape())));
+            if matches!(domain, TopologyDomain::Geographic(_)) {
+                non_prunable_live = non_prunable_live
+                    .wrapping_add(usize::from(!geodesic_prunable_point(plan.shape())));
+            }
             items.push(PyGeometry::from_prepared_plan(plan, array.frame.clone()));
         }
         self.insert_prepared_batch(
@@ -280,13 +287,38 @@ impl PySpatialIndex {
         if !self.rows.is_live(handle) {
             return Ok(false);
         }
-        let non_prunable = {
+        let non_prunable = if self.non_prunable_live == 0 {
+            false
+        } else {
             let mut rows = self.rows.operation();
             rows.row(handle)?
                 .with_shape(|shape| !geodesic_prunable_point(shape))?
         };
         let removed = if handle < self.bulk.initial_len() {
-            self.rows.mark_removed(handle)
+            let removed_entries = self.bulk_entry_counts.as_ref().map_or(1, |counts| {
+                *counts
+                    .get(handle)
+                    .expect("bulk handle belongs to the original cover count column")
+            });
+            let dead_after = self.bulk_dead_entries.wrapping_add(removed_entries);
+            let prepared = if super::str_tree::compaction_due(self.bulk.entry_count(), dead_after) {
+                Some(self.bulk.prepare_compaction(
+                    &self.rows.live,
+                    handle,
+                    self.bulk.entry_count().wrapping_sub(dead_after),
+                )?)
+            } else {
+                None
+            };
+            let removed = self.rows.mark_removed(handle);
+            debug_assert!(removed);
+            if let Some(prepared) = prepared {
+                self.bulk = prepared;
+                self.bulk_dead_entries = 0;
+            } else {
+                self.bulk_dead_entries = dead_after;
+            }
+            removed
         } else {
             // The forest records the physical cover size when the row is
             // inserted, so removal only consults that count. It never
@@ -422,6 +454,39 @@ mod tests {
                 .caps
                 .is_none()
         );
+    }
+
+    #[test]
+    fn bulk_compaction_bounds_physical_entries_and_preserves_shared_copies() {
+        let mut index = spatial_index(
+            (0..256)
+                .map(|handle| point(f64::from(handle), 0.0))
+                .collect(),
+        )
+        .expect("bulk index");
+        let copy = index.clone();
+        for handle in 0..240 {
+            assert!(index.remove_handle(handle).expect("bulk remove"));
+        }
+        assert!(index.bulk.entry_count() <= 32);
+        assert_eq!(index.live_handles_sorted(), (240..256).collect::<Vec<_>>());
+        assert_eq!(copy.bulk.entry_count(), 256);
+        assert_eq!(copy.rows.live_count(), 256);
+        assert_eq!(index.bulk.initial_len(), 256);
+        assert_eq!(index.insert_one(&point(256.0, 0.0)).unwrap(), 256);
+    }
+
+    #[test]
+    fn bulk_compaction_accounts_for_periodic_cover_aliases() {
+        let mut index = spatial_index(vec![crossing_line(); 65]).expect("geographic index");
+        let copy = index.clone();
+        for handle in 0..61 {
+            assert!(index.remove_handle(handle).expect("remove periodic cover"));
+        }
+        assert_eq!(index.live_handles_sorted(), [61, 62, 63, 64]);
+        assert!(index.bulk.entry_count() <= 2 * index.live_entries().count());
+        assert_eq!(copy.rows.live_count(), 65);
+        assert_eq!(copy.bulk.entry_count(), copy.live_entries().count());
     }
 
     #[test]

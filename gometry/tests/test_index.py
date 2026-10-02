@@ -4,6 +4,7 @@ geodesic), mutability, and prepared geometry.
 
 import copy
 import math
+import sys
 from typing import Any, cast
 
 import gometry as gm
@@ -15,6 +16,21 @@ from tests._support import floats, ids, pair_rows
 
 def match_rows(matches: gm.Groups) -> list[list[int]]:
     return [row.tolist() for row in matches]
+
+
+def test_sparse_index_releases_historical_search_structure() -> None:
+    points = gm.points(np.arange(8192, dtype=float), 0)
+    index = gm.SpatialIndex(points)
+    before = sys.getsizeof(index)
+    for handle in range(8176):
+        index.remove(handle)
+    # The packed coordinates and stable-handle liveness remain retained. The
+    # search structure must release at least 24 bytes per historical row.
+    assert sys.getsizeof(index) < before - 8192 * 24
+    assert list(index) == list(range(8176, 8192))
+    assert ids(index.candidates(gm.box(-1, -1, 8193, 1))) == list(range(8176, 8192))
+    assert ids(index.nearest(gm.Point(4096, 0))) == [8176]
+    assert pair_rows(index.self_join()) == []
 
 
 @pytest.mark.parametrize('predicate', ['crosses', 'overlaps'])
