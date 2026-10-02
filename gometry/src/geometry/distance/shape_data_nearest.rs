@@ -4,16 +4,14 @@ use crate::geometry::distance::{
     quick_area_overlap, squared_space_safe,
 };
 use crate::geometry::{
-    FrameDependentCaches, GeodesicMetric, GeodesicPartsKey, Point, PreparedPlan, same_point,
-    squared_norm_is_trustworthy,
+    FrameDependentCaches, GeodesicMetric, GeodesicPartsKey, Point, PreparedPlan,
 };
 impl PreparedPlan {
     /// Nearest point pair on cached prepared state — argmin vertex sweeps
     /// (the disjoint-pair minimum is always a vertex projection; see
     /// [`Self::distance`]) with an exact intersection witness for touching/
-    /// crossing operands. Falls back to the brute shape path when a side
-    /// mixes Z/M presence across chains (the packed columns cannot
-    /// reconstruct faithful ordinates there). `None` only when an operand is
+    /// crossing operands. Full-ordinate chain views retain mixed Z/M
+    /// presence when reconstructing projected witnesses. `None` only when an operand is
     /// empty (the surfaces map it to the output-type EMPTY sentinel).
     pub(crate) fn nearest_points(&self, other: &Self) -> Result<Option<(Point, Point)>> {
         // Disjoint boxes cannot intersect: the witness scans only run when
@@ -28,46 +26,33 @@ impl PreparedPlan {
         }
         let self_parts = self.distance_parts()?;
         let other_parts = other.distance_parts()?;
-        // The argmin sweeps run in squared space (no hypot rescue), so
-        // extreme-coordinate operands take the brute path alongside
-        // mixed-ordinate linework. Tie identity (which of several equally
-        // near pairs is returned) is deliberately unspecified.
-        if !self_parts.linework.uniform_ordinates()
-            || !other_parts.linework.uniform_ordinates()
-            || !squared_space_safe(self_parts)
-            || !squared_space_safe(other_parts)
-        {
-            return self.shape().nearest_points(other.shape());
-        }
         if overlapping
             && let Some(witness) =
                 parts_boundary_witness(self.shape(), self_parts, other.shape(), other_parts)?
         {
             return Ok(Some((witness, witness)));
         }
-        let best = nearest_probe_to_parts(self_parts, other_parts, None, false)?;
-        let best = nearest_probe_to_parts(other_parts, self_parts, best, true)?;
-        // Squared-space ordering cannot distinguish a false-zero or quantized
-        // subnormal candidate from another tiny witness. Re-run the rare
-        // untrustworthy class through the shape-level hypot reduction, whose
-        // segment witness now comes from the certified projection owner.
-        if best.as_ref().is_some_and(|oriented| {
-            let candidate = &oriented.candidate;
-            !squared_norm_is_trustworthy(
-                candidate.distance_squared,
-                same_point(candidate.probe, candidate.target),
-            )
-        }) {
-            return self.shape().nearest_points(other.shape());
-        }
-        Ok(best.map(|oriented| {
+        let best = if squared_space_safe(self_parts) && squared_space_safe(other_parts) {
+            let best = nearest_probe_to_parts::<true>(self_parts, other_parts, None, false)?;
+            nearest_probe_to_parts::<true>(other_parts, self_parts, best, true)?
+        } else {
+            let best = nearest_probe_to_parts::<false>(self_parts, other_parts, None, false)?;
+            nearest_probe_to_parts::<false>(other_parts, self_parts, best, true)?
+        };
+        best.map(|oriented| {
             let candidate = oriented.candidate;
-            if oriented.swapped {
-                (candidate.target, candidate.probe)
+            let target = candidate.target_point(if oriented.swapped {
+                &self_parts.linework
             } else {
-                (candidate.probe, candidate.target)
-            }
-        }))
+                &other_parts.linework
+            })?;
+            Ok(if oriented.swapped {
+                (target, candidate.probe)
+            } else {
+                (candidate.probe, target)
+            })
+        })
+        .transpose()
     }
 
     /// Geodesic nearest-point pair with cached geodesic working state. The

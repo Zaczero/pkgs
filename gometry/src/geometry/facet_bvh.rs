@@ -27,7 +27,8 @@ pub(crate) use aabb::{
     segment_aabb, union_aabb,
 };
 pub(crate) use engine::{
-    Facet, FacetBvh, NearestCandidate, PreparedLinework, facet_point_distance_columns,
+    Facet, FacetBvh, NearestCandidate, NearestTarget, PreparedLinework,
+    facet_point_distance_columns,
 };
 pub(crate) use simd::simd_point_facet_distance_squared;
 

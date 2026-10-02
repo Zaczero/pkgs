@@ -1,12 +1,9 @@
-use rstar::{AABB, RTreeNode, RTreeObject};
+use rstar::{AABB, RTreeObject};
 
 use crate::HeapSize;
 #[cfg(test)]
 use crate::geometry::point_on_segment;
-use crate::geometry::{
-    BulkRTree, Ordering, Point, Segment, point_segment_distance_key,
-    point_segment_distance_squared, same_point,
-};
+use crate::geometry::{BulkRTree, Point, Segment, same_point};
 
 /// One segment as an R-tree leaf, carrying its position in the build slice
 /// (so pair-once sweeps can keep `ordinal > i` candidates).
@@ -75,55 +72,6 @@ impl SegmentIndex {
         Self {
             tree: BulkRTree::bulk_load_with_params(entries),
         }
-    }
-
-    pub(crate) fn nearest_segment_ordinal_if(
-        &self,
-        point: Point,
-        mut best: f64,
-        keep: impl Fn(&Segment, f64) -> bool,
-    ) -> crate::error::Result<Option<(usize, Segment, f64)>> {
-        let query = [point.x, point.y];
-        let mut witness = None;
-        let mut stack: Vec<&RTreeNode<SegmentEntry>> = self.tree.root().children().iter().collect();
-        while let Some(node) = stack.pop() {
-            match node {
-                RTreeNode::Parent(parent) => {
-                    let lower_bound = parent.envelope().distance_2(&query);
-                    if lower_bound < best || (witness.is_some() && lower_bound <= best) {
-                        stack.extend(parent.children());
-                    }
-                },
-                RTreeNode::Leaf(entry) => {
-                    let lower_bound = entry.envelope.distance_2(&query);
-                    if lower_bound < best || (witness.is_some() && lower_bound <= best) {
-                        let distance = point_segment_distance_squared(point, entry.segment)?;
-                        let replace = if distance < best {
-                            true
-                        } else if distance.total_cmp(&best).is_eq() {
-                            if let Some((ordinal, incumbent, _)) = witness.as_ref() {
-                                match point_segment_distance_key(point.xy(), entry.segment)?
-                                    .cmp(&point_segment_distance_key(point.xy(), *incumbent)?)?
-                                {
-                                    Ordering::Less => true,
-                                    Ordering::Equal => entry.ordinal < *ordinal,
-                                    Ordering::Greater => false,
-                                }
-                            } else {
-                                false
-                            }
-                        } else {
-                            false
-                        };
-                        if replace && keep(&entry.segment, distance) {
-                            best = distance;
-                            witness = Some((entry.ordinal, entry.segment, distance));
-                        }
-                    }
-                },
-            }
-        }
-        Ok(witness)
     }
 
     /// Indexed entries whose envelope intersects `query`'s — the noding /

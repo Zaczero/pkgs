@@ -1,10 +1,10 @@
 use crate::geometry::distance::parts_covers_point;
 use crate::geometry::{
-    BVH_MIN_INDEXED_SEGMENTS, DistanceParts, FacetBvh, NearestCandidate, Point, PointSetIndex,
-    Segment, Shape, point_distance_squared, point_pair_distance_key, same_point,
+    BVH_MIN_INDEXED_SEGMENTS, DistanceParts, FacetBvh, NearestCandidate, NearestTarget, Point,
+    PointSetIndex, Segment, Shape, point_distance_squared, point_pair_distance_key,
     segment_contact_point,
 };
-pub(crate) fn nearest_probe_to_parts(
+pub(crate) fn nearest_probe_to_parts<const SQUARED: bool>(
     probe: &DistanceParts,
     target: &DistanceParts,
     best: Option<OrientedCandidate>,
@@ -12,22 +12,18 @@ pub(crate) fn nearest_probe_to_parts(
 ) -> crate::error::Result<Option<OrientedCandidate>> {
     // The incoming best may belong to the OTHER orientation; keep its tag
     // unless this sweep improves on it.
-    let incoming = best;
-    let mut best = incoming.as_ref().map(|oriented| NearestCandidate {
-        probe: oriented.candidate.probe,
-        target: oriented.candidate.target,
-        distance_squared: oriented.candidate.distance_squared,
-        distance_key: oriented.candidate.distance_key,
-    });
-    let incoming_distance = best.as_ref().map(|b| b.distance_squared);
-    best = match target.bvh() {
-        Some(bvh) => bvh.nearest_to_points(&target.linework, probe.probe_points(), best)?,
+    let incoming_swapped = best.as_ref().map_or(swapped, |best| best.swapped);
+    let mut best = best.map(|oriented| oriented.candidate);
+    let mut changed = match target.bvh() {
+        Some(bvh) => {
+            bvh.nearest_to_points::<SQUARED>(&target.linework, probe.probe_points(), &mut best)?
+        },
         None => target
             .linework
-            .nearest_to_points(probe.probe_points(), best)?,
+            .nearest_to_points::<SQUARED>(probe.probe_points(), &mut best)?,
     };
     if !target.point_only.is_empty() {
-        if let Some(index) = target.point_index() {
+        if SQUARED && let Some(index) = target.point_index() {
             // Indexed: each probe point's nearest target point in O(log points).
             for probe_point in probe.probe_points() {
                 if let Some((target_point, distance_squared)) = index.nearest(probe_point) {
@@ -39,10 +35,11 @@ pub(crate) fn nearest_probe_to_parts(
                     }
                     best = Some(NearestCandidate {
                         probe: probe_point,
-                        target: target_point,
+                        target: NearestTarget::Point(target_point),
                         distance_squared,
                         distance_key,
                     });
+                    changed = true;
                 }
             }
         } else {
@@ -50,20 +47,22 @@ pub(crate) fn nearest_probe_to_parts(
             let mut failure = None;
             probe.linework.for_each_chain_xy_columns(|xs, ys| {
                 if failure.is_none() {
-                    failure = nearest_point_pairs(
+                    match nearest_point_pairs(
                         xs.iter().copied().zip(ys.iter().copied()).enumerate(),
                         |ordinal| probe.linework.vertex_at(offset.wrapping_add(ordinal)),
                         &target.point_only,
                         &mut best,
-                    )
-                    .err();
+                    ) {
+                        Ok(improved) => changed |= improved,
+                        Err(error) => failure = Some(error),
+                    }
                 }
                 offset = offset.wrapping_add(xs.len());
             });
             if let Some(error) = failure {
                 return Err(error);
             }
-            nearest_point_pairs(
+            changed |= nearest_point_pairs(
                 probe
                     .point_only
                     .iter()
@@ -80,27 +79,10 @@ pub(crate) fn nearest_probe_to_parts(
             )?;
         }
     }
-    let improved = match incoming.as_ref() {
-        None => true,
-        Some(previous) => match best.as_ref() {
-            None => false,
-            Some(candidate) => {
-                Some(candidate.distance_squared) != incoming_distance
-                    || !same_point(candidate.probe, previous.candidate.probe)
-                    || !same_point(candidate.target, previous.candidate.target)
-                    || candidate
-                        .distance_key
-                        .cmp(&previous.candidate.distance_key)?
-                        .is_lt()
-            },
-        },
-    };
-    Ok(match (best, incoming, improved) {
-        (Some(candidate), _, true) | (Some(candidate), None, _) => {
-            Some(OrientedCandidate { candidate, swapped })
-        },
-        (_, incoming, _) => incoming,
-    })
+    Ok(best.map(|candidate| OrientedCandidate {
+        candidate,
+        swapped: if changed { swapped } else { incoming_swapped },
+    }))
 }
 
 fn nearest_point_pairs(
@@ -108,7 +90,8 @@ fn nearest_point_pairs(
     full_point: impl Fn(usize) -> Point,
     targets: &[Point],
     best: &mut Option<NearestCandidate>,
-) -> crate::error::Result<()> {
+) -> crate::error::Result<bool> {
+    let mut changed = false;
     let mut limit = best
         .as_ref()
         .map_or(f64::INFINITY, point_pair_rejection_limit);
@@ -129,15 +112,16 @@ fn nearest_point_pairs(
             }
             let candidate = NearestCandidate {
                 probe: full_point(ordinal),
-                target,
+                target: NearestTarget::Point(target),
                 distance_squared: point_distance_squared(probe, target),
                 distance_key,
             };
             limit = point_pair_rejection_limit(&candidate);
             *best = Some(candidate);
+            changed = true;
         }
     }
-    Ok(())
+    Ok(changed)
 }
 
 fn point_pair_rejection_limit(candidate: &NearestCandidate) -> f64 {

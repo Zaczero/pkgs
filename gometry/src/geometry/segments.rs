@@ -16,9 +16,8 @@ use crate::geometry::tessellation::exact::{
     ExactDyadic, compare_ratios, round_ratio, round_sqrt_ratio,
 };
 use crate::geometry::{
-    Bounds, Coordinates, MOrdinate, Ordering, Point, PointKey, Segment, Shape, ShapeCountQuery, XY,
-    ZOrdinate, admit_shape_vector_capacity, axis_pow2_scale, same_point,
-    same_topological_coordinate, scaled_residual,
+    Bounds, Coordinates, MOrdinate, Ordering, Point, PointKey, Segment, XY, ZOrdinate,
+    axis_pow2_scale, same_point, same_topological_coordinate, scaled_residual,
 };
 
 mod exact;
@@ -425,69 +424,7 @@ pub(in crate::geometry) fn try_dedup_by<T>(
     failure.map_or(Ok(()), Err)
 }
 
-pub(super) fn nearest_points(left: &Shape, right: &Shape) -> Result<Option<(Point, Point)>> {
-    let mut nearest = NearestPoints::default();
-    // Vertex-pair lists are hoisted once per side; this lane carries FULL
-    // ordinates so witness feet interpolate Z/M like the vertices they
-    // sit between (the planar `Segment` is XY-only by design).
-    let mut counts = ShapeCountQuery::default();
-    let left_count = counts.segments(left)?;
-    let left_capacity = admit_shape_vector_capacity::<(Point, Point)>(left_count)?;
-    let right_count = counts.segments(right)?;
-    let right_capacity = admit_shape_vector_capacity::<(Point, Point)>(right_count)?;
-    let mut left_pairs = Vec::with_capacity(left_capacity);
-    left.for_each_vertex_pair(|start, end| left_pairs.push((start, end)));
-    let mut right_pairs = Vec::with_capacity(right_capacity);
-    right.for_each_vertex_pair(|start, end| right_pairs.push((start, end)));
-
-    let mut missing = false;
-    left.try_for_each_point(|point| {
-        match nearest_point_with_segments(point, right, &right_pairs)? {
-            Some(candidate) => nearest.add(point, candidate.point, &candidate.distance_key)?,
-            None => missing = true,
-        }
-        Ok::<_, crate::error::Error>(())
-    })?;
-    right.try_for_each_point(|point| {
-        match nearest_point_with_segments(point, left, &left_pairs)? {
-            Some(candidate) => nearest.add(candidate.point, point, &candidate.distance_key)?,
-            None => missing = true,
-        }
-        Ok::<_, crate::error::Error>(())
-    })?;
-    if missing {
-        return Ok(None);
-    }
-    for left_pair in &left_pairs {
-        for right_pair in &right_pairs {
-            let candidate = pair_nearest_points(left_pair, right_pair)?;
-            nearest.add(candidate.left, candidate.right, &candidate.distance_key)?;
-        }
-    }
-
-    Ok(nearest.points)
-}
-
-/// [`segment_nearest_points`] over full-ordinate vertex pairs: the planar
-/// kernel finds the XY witnesses, and each foot lifts back through its
-/// host pair so Z/M interpolate.
-fn pair_nearest_points(left: &(Point, Point), right: &(Point, Point)) -> Result<FullPairNearest> {
-    let left_xy = Segment {
-        start: left.0.xy(),
-        end: left.1.xy(),
-    };
-    let right_xy = Segment {
-        start: right.0.xy(),
-        end: right.1.xy(),
-    };
-    let nearest = segment_pair_nearest(left_xy, right_xy)?;
-    Ok(FullPairNearest {
-        left: nearest.left.interpolate_point(left, left_xy)?,
-        right: nearest.right.interpolate_point(right, right_xy)?,
-        distance_key: nearest.distance_key,
-    })
-}
-
+#[cfg(test)]
 #[derive(Clone, Debug)]
 enum SegmentWitness {
     Start,
@@ -496,8 +433,8 @@ enum SegmentWitness {
     RoundedIntersection(XY),
 }
 
+#[cfg(test)]
 impl SegmentWitness {
-    #[cfg(test)]
     fn xy(&self, segment: Segment) -> XY {
         match self {
             Self::Start => segment.start,
@@ -506,110 +443,13 @@ impl SegmentWitness {
             Self::RoundedIntersection(point) => *point,
         }
     }
-
-    fn interpolate_point(&self, pair: &(Point, Point), segment: Segment) -> Result<Point> {
-        Ok(match self {
-            Self::Start => pair.0,
-            Self::Projection(projection) => projection.interpolate_point(pair.0, pair.1)?,
-            Self::End => pair.1,
-            Self::RoundedIntersection(point) => {
-                segment_projection(*point, segment)?.interpolate_point(pair.0, pair.1)?
-            },
-        })
-    }
 }
 
+#[cfg(test)]
 struct SegmentPairNearest {
     left: SegmentWitness,
     right: SegmentWitness,
     distance_key: SquaredDistanceKey,
-}
-
-struct FullPairNearest {
-    left: Point,
-    right: Point,
-    distance_key: SquaredDistanceKey,
-}
-
-#[derive(Default)]
-pub(super) struct NearestPoints {
-    points: Option<(Point, Point)>,
-    distance_key: Option<SquaredDistanceKey>,
-}
-
-impl NearestPoints {
-    fn add(&mut self, left: Point, right: Point, distance_key: &SquaredDistanceKey) -> Result<()> {
-        let closer = match self.distance_key {
-            None => true,
-            Some(incumbent) => distance_key.cmp(&incumbent)?.is_lt(),
-        };
-        if closer {
-            self.points = Some((left, right));
-            self.distance_key = Some(*distance_key);
-        }
-        Ok(())
-    }
-}
-
-struct NearestPointResult {
-    point: Point,
-    distance_key: SquaredDistanceKey,
-}
-
-/// Nearest point on `geometry` to `point`, with the geometry's segments
-/// precomputed so batch callers hoist the segment gather out of their
-/// per-vertex loop.
-fn nearest_point_with_segments(
-    point: Point,
-    geometry: &Shape,
-    pairs: &[(Point, Point)],
-) -> Result<Option<NearestPointResult>> {
-    if geometry.contains_point(point) {
-        return Ok(Some(NearestPointResult {
-            point,
-            distance_key: point_pair_distance_key(point.xy(), point.xy()),
-        }));
-    }
-
-    let mut nearest = None;
-    let mut best_key = None;
-    for pair in pairs {
-        let segment = Segment {
-            start: pair.0.xy(),
-            end: pair.1.xy(),
-        };
-        let selection = point_segment_selection(point.xy(), segment)?;
-        let closer = match best_key {
-            None => true,
-            Some(incumbent) => selection.cmp(point.xy(), segment, &incumbent)?.is_lt(),
-        };
-        if closer {
-            nearest = Some(
-                selection
-                    .projection(point.xy(), segment)?
-                    .interpolate_point(pair.0, pair.1)?,
-            );
-            best_key = Some(selection.distance_key(point.xy(), segment));
-        }
-    }
-    geometry.try_for_each_point(|candidate| {
-        let distance_key = point_pair_distance_key(point.xy(), candidate.xy());
-        let closer = match best_key {
-            None => true,
-            Some(incumbent) => distance_key.cmp(&incumbent)?.is_lt(),
-        };
-        if closer {
-            nearest = Some(candidate);
-            best_key = Some(distance_key);
-        }
-        Ok::<_, crate::error::Error>(())
-    })?;
-    Ok(nearest
-        .zip(best_key)
-        .map(|(point, distance_key)| NearestPointResult {
-            point,
-            distance_key,
-        }))
 }
 
 /// Exact endpoints of a segment's closed intersection with a rectangle.
@@ -981,6 +821,7 @@ pub(super) fn segment_nearest_points(left: Segment, right: Segment) -> Result<(X
     Ok((nearest.left.xy(left), nearest.right.xy(right)))
 }
 
+#[cfg(test)]
 fn segment_pair_nearest(left: Segment, right: Segment) -> Result<SegmentPairNearest> {
     // One contact computation, not an `intersects` probe followed by a
     // separate placement. When the pair meets, the shared point IS the
@@ -1485,15 +1326,22 @@ impl PointSegmentSelection {
         self.filter.bind(self.witness(point, segment))
     }
 
-    pub(crate) fn cmp(
+    pub(crate) fn precedes(
         &self,
         point: XY,
         segment: Segment,
         incumbent: &SquaredDistanceKey,
-    ) -> Result<Ordering> {
+        tie: impl FnOnce() -> bool,
+    ) -> Result<bool> {
         self.filter.disjoint_cmp(incumbent.filter).map_or_else(
-            || exact_witness_cmp_with_identity(self.witness(point, segment), incumbent.witness),
-            Ok,
+            || {
+                let ordering = exact_witness_cmp_with_identity(
+                    self.witness(point, segment),
+                    incumbent.witness,
+                )?;
+                Ok(ordering.is_lt() || ordering.is_eq() && tie())
+            },
+            |ordering| Ok(ordering.is_lt()),
         )
     }
 }
@@ -1736,6 +1584,20 @@ impl SquaredDistanceKey {
         self.filter.hi
     }
 
+    pub(super) fn distance_upper_bound(&self) -> Result<f64> {
+        let value = if self.filter.hi.is_finite() {
+            self.filter.hi.sqrt()
+        } else {
+            let exact = self.witness.squared()?;
+            match round_sqrt_ratio(&exact.numerator, &exact.denominator) {
+                Ok(value) => value,
+                Err(error) if matches!(error.kind(), ErrorKind::Resource(_)) => return Err(error),
+                Err(_) => f64::INFINITY,
+            }
+        };
+        Ok((value * (1.0 + 16.0 * f64::EPSILON) + f64::from_bits(8)).next_up())
+    }
+
     #[cfg(test)]
     fn contains_exact(self) -> bool {
         if !self.filter.lo.is_finite() || !self.filter.hi.is_finite() {
@@ -1831,6 +1693,7 @@ pub(super) fn point_segment_exact_distance_key(point: XY, segment: Segment) -> S
     SquaredDistanceFilter::unbounded().bind(ExactDistanceWitness::ClampedPointPair(point, segment))
 }
 
+#[cfg(test)]
 pub(super) fn point_segment_distance_key(
     point: XY,
     segment: Segment,

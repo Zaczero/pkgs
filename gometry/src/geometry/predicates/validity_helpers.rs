@@ -3,10 +3,10 @@ use ahash::HashMapExt as _;
 
 use crate::geometry::predicates::{LineworkChains, indexed_segments_are_simple, validate_line};
 use crate::geometry::{
-    Component, CoordSeq, Coordinates, HashMap, Ordering, Point, PointKey, PointSetIndex, Polygon,
-    SEGMENT_INDEX_MIN_PAIRS, Segment, SegmentIndex, Shape, ShapeCountQuery, VertexProvenance, XY,
-    admit_shape_vector_capacity, point_distance, point_distance_squared, point_in_ccw_triangle,
-    point_segment_distance, ring_winding, same_point, segment_projection,
+    Component, CoordSeq, Coordinates, FacetBvh, HashMap, Ordering, Point, PointKey, PointSetIndex,
+    Polygon, PreparedLinework, SEGMENT_INDEX_MIN_PAIRS, Segment, Shape, ShapeCountQuery,
+    VertexProvenance, XY, admit_shape_vector_capacity, point_distance, point_distance_squared,
+    point_in_ccw_triangle, point_segment_distance, ring_winding, same_point, segment_projection,
     squared_norm_is_trustworthy, try_point_distance_squared, try_point_segment_distance_squared,
 };
 
@@ -175,7 +175,7 @@ pub(crate) fn minimum_clearance_witness(
         .saturating_mul(points.len().max(segments.len()))
         >= SEGMENT_INDEX_MIN_PAIRS
     {
-        minimum_clearance_witness_indexed(&points, &segments)?
+        minimum_clearance_witness_indexed(shape, &points, &segments)?
     } else {
         minimum_clearance_witness_brute(&points, &segments)?
     };
@@ -190,6 +190,7 @@ pub(crate) fn minimum_clearance_witness(
 
 /// Indexed nearest-query path (large multipoints / dense linework).
 fn minimum_clearance_witness_indexed(
+    shape: &Shape,
     points: &[Point],
     segments: &[IndexedSegment],
 ) -> crate::error::Result<Option<([VertexProvenance; 2], f64)>> {
@@ -218,20 +219,34 @@ fn minimum_clearance_witness_indexed(
             ));
         }
     }
-    let segment_index = SegmentIndex::build_from_iter(segments.iter().map(|segment| segment.xy));
+    let linework = PreparedLinework::build_all(shape)?;
+    let bvh = FacetBvh::build(&linework);
+    let mut stack = Vec::new();
     for (point_index, point) in points.iter().enumerate() {
-        // Untrustworthy best must not prune the R-tree (would hide nearer segments).
+        // Untrustworthy best must not prune the tree (would hide nearer segments).
         let probe_best = if clearance_squared.is_normal() {
             clearance_squared
         } else {
             f64::INFINITY
         };
-        if let Some((seg_i, _segment, raw_sq)) =
-            segment_index.nearest_segment_ordinal_if(*point, probe_best, |segment, _distance| {
-                !same_point(*point, segment.start) && !same_point(*point, segment.end)
-            })?
+        let mut nearest = None;
+        if let Some(bvh) = &bvh {
+            bvh.nearest_point_with_stack::<false, true, true>(
+                &linework,
+                *point,
+                probe_best,
+                f64::INFINITY,
+                &|probe, segment| {
+                    !same_point(probe, segment.start) && !same_point(probe, segment.end)
+                },
+                &mut stack,
+                &mut nearest,
+            )?;
+        }
+        if let Some(nearest) = nearest
+            && let Some(seg_i) = nearest.segment_ordinal()
             && let Some(distance_squared) =
-                admit_clearance_squared(raw_sq, clearance_squared, || {
+                admit_clearance_squared(nearest.distance_squared, clearance_squared, || {
                     point_segment_distance(
                         *point,
                         segments
@@ -626,7 +641,7 @@ mod clearance_index_tests {
         let segments = indexed_segments(&shape).unwrap();
         assert!(points.len() * points.len().max(segments.len()) >= SEGMENT_INDEX_MIN_PAIRS);
         let (indexed_plan, indexed_distance) =
-            minimum_clearance_witness_indexed(&points, &segments)
+            minimum_clearance_witness_indexed(&shape, &points, &segments)
                 .unwrap()
                 .expect("finite indexed clearance");
         let (brute_plan, brute_distance) = minimum_clearance_witness_brute(&points, &segments)

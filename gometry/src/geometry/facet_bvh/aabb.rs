@@ -10,16 +10,28 @@ pub(crate) fn aabb_distance_squared(a: [f64; 4], b: [f64; 4]) -> f64 {
     dx * dx + dy * dy
 }
 
-/// Lower-bound distance between two AABBs. Guarded sqrt: `hypot` is a
-/// libm call per visited node; overflow falls back to it (underflow to
-/// `0.0` only weakens a lower bound, which stays sound).
+/// Lower-bound distance between two AABBs. Ordinary squares use sqrt;
+/// overflow and underflow use a scaled downward-rounded norm.
 pub(crate) fn aabb_distance(a: [f64; 4], b: [f64; 4]) -> f64 {
     let (dx, dy) = aabb_gaps(a, b);
     let squared = dx * dx + dy * dy;
-    if squared.is_finite() {
+    if squared.is_normal() || (dx == 0.0 && dy == 0.0) {
         squared.sqrt()
     } else {
-        dx.hypot(dy)
+        let dx = dx.next_down().max(0.0);
+        let dy = dy.next_down().max(0.0);
+        let scale = dx.max(dy);
+        if scale == 0.0 {
+            return 0.0;
+        }
+        let nx = (dx / scale).next_down().max(0.0);
+        let ny = (dy / scale).next_down().max(0.0);
+        let sum = ((nx * nx).next_down().max(0.0) + (ny * ny).next_down().max(0.0))
+            .next_down()
+            .max(0.0);
+        (sum.sqrt().next_down().max(0.0) * scale)
+            .next_down()
+            .max(0.0)
     }
 }
 
@@ -65,4 +77,17 @@ pub(crate) const fn union_aabb(left: [f64; 4], right: [f64; 4]) -> [f64; 4] {
 /// have touching boxes).
 pub(crate) fn aabbs_overlap(a: [f64; 4], b: [f64; 4]) -> bool {
     a[0] <= b[2] && b[0] <= a[2] && a[1] <= b[3] && b[1] <= a[3]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn distance_bound_retains_a_gap_whose_square_underflows() {
+        let gap = f64::from_bits(323_u64 << 52);
+        let bound = aabb_distance(point_aabb(0.0, 0.0), point_aabb(gap, 0.0));
+        assert!(bound > 0.0);
+        assert!(bound <= gap);
+    }
 }

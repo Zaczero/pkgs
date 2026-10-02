@@ -183,7 +183,7 @@ pub(crate) use distance::{
 };
 use distance::{GeodesicSweepCaps, line_length_3d};
 pub(crate) use facet_bvh::{
-    BVH_MIN_INDEXED_SEGMENTS, FacetBvh, NearestCandidate, PreparedLinework,
+    BVH_MIN_INDEXED_SEGMENTS, FacetBvh, NearestCandidate, NearestTarget, PreparedLinework,
 };
 pub(crate) use generated_budget::{ExpansionBudget, GENERATED_ITEM_LIMIT};
 use geodesic_bvh::{
@@ -294,13 +294,15 @@ pub(in crate::geometry) use segment_index::{
     for_each_overlapping_bounds_pair, sign_of, single_chain,
 };
 pub(crate) use segment_index::{PointSetIndex, SEGMENT_INDEX_MIN_PAIRS, SegmentIndex};
+#[cfg(test)]
+use segments::point_segment_distance_key;
 use segments::{
     CCW_ERRBOUND_A, Contact, ON_SEGMENT_EPSILON, SegmentProjection, SquaredDistanceKey,
-    nearest_points, orientation_xy, point_pair_distance_key, point_segment_distance_and_projection,
-    point_segment_distance_key, point_segment_distance_squared, point_segment_exact_distance_key,
-    ray_crossing_is_right, segment_contact_exact, segment_contact_point, segment_cross_point,
-    segment_envelopes_disjoint, segment_projection, segments_intersect, shared_segment_part,
-    try_point_distance_squared, try_point_segment_distance_squared, undirected_segment_edge_key,
+    orientation_xy, point_pair_distance_key, point_segment_distance_and_projection,
+    point_segment_distance_squared, point_segment_exact_distance_key, ray_crossing_is_right,
+    segment_contact_exact, segment_contact_point, segment_cross_point, segment_envelopes_disjoint,
+    segment_projection, segments_intersect, shared_segment_part, try_point_distance_squared,
+    try_point_segment_distance_squared, undirected_segment_edge_key,
 };
 /// The guarded-sqrt distance is the one segment-kernel helper the broadcast
 /// lanes call directly (packed point columns).

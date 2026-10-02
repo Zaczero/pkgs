@@ -5,7 +5,7 @@ use crate::geometry::facet_bvh::{
     FACET_SEGMENTS, NearestCandidate, aabb_distance, aabb_distance_squared, point_aabb,
 };
 use crate::geometry::{
-    Bounds, CoordSeq, Point, RunIdentity, Segment, Shape, XY, point_on_segment,
+    Bounds, Component, CoordSeq, Point, RunIdentity, Segment, Shape, XY, point_on_segment,
     point_segment_distance_squared, segments_intersect, xy_bounds_columns,
 };
 
@@ -31,9 +31,6 @@ pub(crate) struct PreparedLinework {
     /// Global vertex index where each chain starts (`offsets[i]` is chain
     /// `i`'s first vertex in the packed probe API).
     chain_vertex_offsets: Vec<usize>,
-    /// Whether every chain agrees on axis presence (Z/M). Mixed axes make
-    /// `nearest_points` fall back to the brute shape path.
-    uniform_ordinates: bool,
     pub(crate) facets: Vec<Facet>,
     segment_count: usize,
     /// Total bounds over every linework vertex (`None` when empty) — the
@@ -140,7 +137,6 @@ impl PreparedLinework {
         Self {
             chains: Vec::new(),
             chain_vertex_offsets: Vec::new(),
-            uniform_ordinates: true,
             facets: Vec::new(),
             segment_count: 0,
             aabb: None,
@@ -149,36 +145,47 @@ impl PreparedLinework {
 
     pub(crate) fn build(shape: &Shape) -> Result<Self> {
         let mut chains = Vec::new();
+        shape.try_for_each_first_segment_chain(RunIdentity::Full, |chain| {
+            chains.push(chain.clone());
+            Ok::<_, crate::error::Error>(())
+        })?;
+        Self::from_chains(chains)
+    }
+
+    pub(crate) fn build_all(shape: &Shape) -> Result<Self> {
+        let mut chains = Vec::new();
+        shape.for_each_component(&mut |component| match component {
+            Component::Point(_) => {},
+            Component::LineString(line) => chains.push(line.as_coords().clone()),
+            Component::Polygon(polygon) => {
+                chains.extend(polygon.rings().map(|ring| ring.coords().clone()));
+            },
+        });
+        Self::from_chains(chains)
+    }
+
+    pub(crate) fn from_chains(chains: Vec<CoordSeq>) -> Result<Self> {
+        let chains: Vec<_> = chains
+            .into_iter()
+            .filter(|chain| chain.len() >= 2)
+            .collect();
         let mut chain_vertex_offsets = Vec::new();
         let mut facets = Vec::new();
-        let mut reference_axes = None;
-        let mut uniform_ordinates = true;
         let mut global_vertices = 0_usize;
         let mut global_segments = 0_usize;
-        shape.try_for_each_first_segment_chain(RunIdentity::Full, |chain| {
+        for (chain_index, chain) in chains.iter().enumerate() {
             let vertices = chain.len();
-            if vertices < 2 {
-                return Ok::<(), crate::error::Error>(());
-            }
             let chain_index =
-                u32::try_from(chains.len()).map_err(|_| ResourceError::SizeOverflow)?;
+                u32::try_from(chain_index).map_err(|_| ResourceError::SizeOverflow)?;
             let segments = push_chain_facets(&mut facets, chain_index, vertices, global_segments)?;
-            let chain_axes = chain.axes();
-            match reference_axes {
-                None => reference_axes = Some(chain_axes),
-                Some(axes) if axes != chain_axes => uniform_ordinates = false,
-                _ => {},
-            }
             chain_vertex_offsets.push(global_vertices);
-            chains.push(chain.clone());
             global_vertices = global_vertices
                 .checked_add(vertices)
                 .ok_or(ResourceError::SizeOverflow)?;
             global_segments = global_segments
                 .checked_add(segments)
                 .ok_or(ResourceError::SizeOverflow)?;
-            Ok(())
-        })?;
+        }
         if chains.is_empty() {
             return Ok(Self::empty());
         }
@@ -193,7 +200,6 @@ impl PreparedLinework {
         Ok(Self {
             chains,
             chain_vertex_offsets,
-            uniform_ordinates,
             facets,
             segment_count: global_segments,
             aabb,
@@ -220,25 +226,38 @@ impl PreparedLinework {
         (chain, global - self.chain_vertex_offsets[chain])
     }
 
-    /// Whether Z/M reconstruction through [`vertex_at`](Self::vertex_at) is
-    /// faithful (no chain carried an ordinate the columns dropped).
-    pub(crate) const fn uniform_ordinates(&self) -> bool {
-        self.uniform_ordinates
-    }
-
     /// The full vertex (with any Z/M) at a global column index.
     pub(crate) fn vertex_at(&self, index: usize) -> Point {
         let (chain, local) = self.locate_vertex(index);
         self.chains[chain].point_at(local)
     }
 
-    /// The `index`-th edge of `facet` as its two FULL-ordinate vertices —
-    /// the witness lanes lift their planar feet back through these so Z/M
-    /// interpolate.
-    pub(crate) fn vertex_pair_full(&self, facet: Facet, index: usize) -> (Point, Point) {
-        let chain = &self.chains[facet.chain as usize];
-        let v = facet.first_vertex as usize + index;
-        (chain.point_at(v), chain.point_at(v + 1))
+    pub(crate) fn segment_ordinal(&self, facet: Facet, index: usize) -> usize {
+        self.chain_vertex_offsets[facet.chain as usize]
+            .wrapping_sub(facet.chain as usize)
+            .wrapping_add(facet.first_vertex as usize)
+            .wrapping_add(index)
+    }
+
+    /// Full source endpoints at the ordinal retained by nearest selection.
+    pub(crate) fn vertex_pair_at_segment(&self, ordinal: usize) -> (Point, Point) {
+        let mut low = 0;
+        let mut high = self.chains.len();
+        while low < high {
+            let middle = low + (high - low) / 2;
+            if self.chain_vertex_offsets[middle].wrapping_sub(middle) <= ordinal {
+                low = middle.wrapping_add(1);
+            } else {
+                high = middle;
+            }
+        }
+        let chain = low.saturating_sub(1);
+        let local = ordinal.wrapping_sub(self.chain_vertex_offsets[chain].wrapping_sub(chain));
+        let coords = &self.chains[chain];
+        (
+            coords.point_at(local),
+            coords.point_at(local.wrapping_add(1)),
+        )
     }
 
     /// Every linework vertex as streamed XY pairs — the probe source for the
@@ -398,31 +417,66 @@ impl PreparedLinework {
 
     /// Flat-scan argmin nearest (below the tree crossover) — see
     /// [`FacetBvh::nearest_to_points`].
-    pub(crate) fn nearest_to_points(
+    pub(crate) fn nearest_to_points<const SQUARED: bool>(
         &self,
         probes: impl Iterator<Item = Point>,
-        mut best: Option<NearestCandidate>,
-    ) -> crate::error::Result<Option<NearestCandidate>> {
+        best: &mut Option<NearestCandidate>,
+    ) -> crate::error::Result<bool> {
+        let mut changed = false;
         let Some(aabb) = self.aabb else {
-            return Ok(best);
+            return Ok(false);
         };
         for probe in probes {
             let limit = best
                 .as_ref()
-                .map_or(f64::INFINITY, |b| b.distance_key.upper_bound());
-            if aabb_distance_squared(aabb, point_aabb(probe.x, probe.y)) > limit {
+                .map(|b| {
+                    if SQUARED {
+                        Ok(b.distance_key.upper_bound())
+                    } else {
+                        b.distance_key.distance_upper_bound()
+                    }
+                })
+                .transpose()?
+                .unwrap_or(f64::INFINITY);
+            let bound = if SQUARED {
+                aabb_distance_squared(aabb, point_aabb(probe.x, probe.y))
+            } else {
+                aabb_distance(aabb, point_aabb(probe.x, probe.y))
+            };
+            if bound > limit {
                 continue;
             }
             for &facet in &self.facets {
                 let limit = best
                     .as_ref()
-                    .map_or(f64::INFINITY, |b| b.distance_key.upper_bound());
-                if self.facet_point_distance_squared(facet, probe.x, probe.y)? <= limit {
-                    refine_facet_nearest(self, facet, probe, &mut best)?;
+                    .map(|b| {
+                        if SQUARED {
+                            Ok(b.distance_key.upper_bound())
+                        } else {
+                            b.distance_key.distance_upper_bound()
+                        }
+                    })
+                    .transpose()?
+                    .unwrap_or(f64::INFINITY);
+                let distance = if SQUARED {
+                    self.facet_point_distance_squared(facet, probe.x, probe.y)?
+                } else {
+                    self.facet_point_distance(facet, probe)?
+                };
+                if distance <= limit {
+                    changed |= refine_facet_nearest::<false>(
+                        self,
+                        facet,
+                        probe,
+                        f64::INFINITY,
+                        f64::INFINITY,
+                        &|_, _| true,
+                        best,
+                    )?;
                 }
             }
         }
-        Ok(best)
+        Ok(changed)
     }
 
     /// Flat-scan first touching/crossing pair against another linework
@@ -583,11 +637,10 @@ mod tests {
         assert_eq!(linework.facets[0].chain, 0);
         assert_eq!(linework.facets[1].chain, 1);
         assert_eq!(linework.facets[2].chain, 2);
-        assert!(linework.uniform_ordinates());
     }
 
     #[test]
-    fn mixed_axes_are_not_uniform() {
+    fn mixed_axes_retain_full_ordinate_chain_views() {
         let xy = Shape::LineString(line_xy(&[(0.0, 0.0), (1.0, 0.0)]));
         let xyz = Shape::LineString(
             LineSeq::try_new(
@@ -603,7 +656,15 @@ mod tests {
         let linework = PreparedLinework::build(&shape).unwrap();
         assert_eq!(linework.segment_count(), 2);
         assert_eq!(linework.facets.len(), 2);
-        assert!(!linework.uniform_ordinates());
+        assert_eq!(linework.vertex_at(0), Point::new_raw_xy(0.0, 0.0));
+        assert_eq!(
+            linework.vertex_at(2),
+            Point::new_raw_axes(0.0, 1.0, ZOrdinate(Some(1.0)), MOrdinate(None)),
+        );
+        assert_eq!(
+            linework.vertex_at(3),
+            Point::new_raw_axes(1.0, 1.0, ZOrdinate(Some(2.0)), MOrdinate(None)),
+        );
     }
 
     #[test]

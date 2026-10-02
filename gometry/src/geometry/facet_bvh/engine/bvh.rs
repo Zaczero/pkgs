@@ -7,53 +7,106 @@ use crate::geometry::facet_bvh::{
 };
 use crate::geometry::{
     BvhCode, BvhNode, Point, Segment, SquaredDistanceKey, point_on_segment,
-    point_segment_distance_squared, point_segment_selection, segments_intersect,
+    point_segment_distance_squared, point_segment_selection, segment_projection,
+    segments_intersect,
 };
 
-/// One nearest-pair candidate: a probe vertex, its projection onto the
-/// target linework, and the squared distance between them.
+#[cfg(test)]
+std::thread_local! {
+    pub(crate) static NEAREST_WORK: std::cell::Cell<usize> =
+        const { std::cell::Cell::new(0) };
+}
+
+/// One nearest-pair candidate. Source segments retain their ordinal until
+/// the final witness is emitted with full source ordinates.
 pub(crate) struct NearestCandidate {
     pub(in crate::geometry) probe: Point,
-    pub(in crate::geometry) target: Point,
+    pub(in crate::geometry) target: NearestTarget,
     pub(in crate::geometry) distance_squared: f64,
     pub(in crate::geometry) distance_key: SquaredDistanceKey,
 }
 
-/// Scalar-refine one facet for the argmin sweeps: full-ordinate segments,
-/// exact projection (Z/M interpolated like the brute path). The COMPARISON
-/// distance and exact-selection key come from [`point_segment_selection`].
-/// The projected witness point is built only for an improving candidate.
-pub(super) fn refine_facet_nearest(
+pub(crate) enum NearestTarget {
+    Segment(usize),
+    Point(Point),
+}
+
+impl NearestCandidate {
+    pub(crate) fn segment_ordinal(&self) -> Option<usize> {
+        match self.target {
+            NearestTarget::Segment(ordinal) => Some(ordinal),
+            NearestTarget::Point(_) => None,
+        }
+    }
+
+    pub(crate) fn target_point(&self, linework: &PreparedLinework) -> crate::error::Result<Point> {
+        match self.target {
+            NearestTarget::Point(point) => Ok(point),
+            NearestTarget::Segment(ordinal) => {
+                let (start, end) = linework.vertex_pair_at_segment(ordinal);
+                let segment = Segment {
+                    start: start.xy(),
+                    end: end.xy(),
+                };
+                segment_projection(self.probe, segment)?.interpolate_point(start, end)
+            },
+        }
+    }
+}
+
+/// Scalar-refine one facet's exact selection keys, deferring projection
+/// and ordinate interpolation until the selected witness is emitted.
+pub(super) fn refine_facet_nearest<const BOUNDED: bool>(
     linework: &PreparedLinework,
     facet: Facet,
     probe: Point,
+    upper_bound: f64,
+    tolerance: f64,
+    keep: &impl Fn(Point, Segment) -> bool,
     best: &mut Option<NearestCandidate>,
-) -> crate::error::Result<()> {
+) -> crate::error::Result<bool> {
+    let mut changed = false;
     for index in 0..facet.segment_count as usize {
-        let (start, end) = linework.vertex_pair_full(facet, index);
-        let segment = Segment {
-            start: start.xy(),
-            end: end.xy(),
-        };
+        #[cfg(test)]
+        NEAREST_WORK.with(|work| work.set(work.get().saturating_add(1)));
+        let segment = linework.segment(facet, index);
+        if !keep(probe, segment) {
+            continue;
+        }
         let selection = point_segment_selection(probe.xy(), segment)?;
+        if BOUNDED && selection.distance_squared > upper_bound {
+            continue;
+        }
+        if BOUNDED
+            && (selection.distance() > tolerance
+                || tolerance == 0.0
+                    && !selection
+                        .distance_key(probe.xy(), segment)
+                        .is_exact_zero()?)
+        {
+            continue;
+        }
         let closer = match best.as_ref() {
             None => true,
-            Some(candidate) => selection
-                .cmp(probe.xy(), segment, &candidate.distance_key)?
-                .is_lt(),
+            Some(candidate) => {
+                selection.precedes(probe.xy(), segment, &candidate.distance_key, || {
+                    candidate
+                        .segment_ordinal()
+                        .is_some_and(|best| linework.segment_ordinal(facet, index) < best)
+                })?
+            },
         };
         if closer {
-            let projection = selection.projection(probe.xy(), segment)?;
-            let target = projection.interpolate_point(start, end)?;
+            changed = true;
             *best = Some(NearestCandidate {
                 probe,
-                target,
+                target: NearestTarget::Segment(linework.segment_ordinal(facet, index)),
                 distance_squared: selection.distance_squared,
                 distance_key: selection.distance_key(probe.xy(), segment),
             });
         }
     }
-    Ok(())
+    Ok(changed)
 }
 
 /// Flat binary AABB tree over a [`PreparedLinework`]'s facets,
@@ -68,6 +121,85 @@ pub(super) fn refine_facet_nearest(
 pub(crate) struct FacetBvh {
     aabbs: Box<[[f64; 4]]>,
     codes: Box<[u32]>,
+    slabs: Option<Box<[DirectionalSlab]>>,
+}
+
+#[derive(Clone, Copy, Default)]
+struct DirectionalSlab {
+    normal: [f64; 2],
+    low: f64,
+    high: f64,
+}
+
+impl DirectionalSlab {
+    fn build(linework: &PreparedLinework, ids: &[u32]) -> Self {
+        let facet = facet_for_leaf(linework, ids[ids.len() / 2] as usize);
+        let mut direction = [0.0_f64; 2];
+        let mut longest = 0.0_f64;
+        for index in 0..facet.segment_count as usize {
+            let segment = linework.segment(facet, index);
+            let dx = segment.end.x - segment.start.x;
+            let dy = segment.end.y - segment.start.y;
+            let length = dx.abs().max(dy.abs());
+            if length > longest {
+                longest = length;
+                direction = [-dy / length, dx / length];
+            }
+        }
+        if longest == 0.0 || !longest.is_finite() {
+            return Self::default();
+        }
+        let mut slab = Self {
+            normal: direction,
+            low: f64::INFINITY,
+            high: f64::NEG_INFINITY,
+        };
+        for &id in ids {
+            let facet = facet_for_leaf(linework, id as usize);
+            for index in 0..facet.segment_count as usize {
+                let segment = linework.segment(facet, index);
+                for point in [segment.start, segment.end] {
+                    let Some([low, high]) = slab.project(point.x, point.y) else {
+                        return Self::default();
+                    };
+                    slab.low = slab.low.min(low);
+                    slab.high = slab.high.max(high);
+                }
+            }
+        }
+        slab
+    }
+
+    fn project(self, x: f64, y: f64) -> Option<[f64; 2]> {
+        let left = x * self.normal[0];
+        let right = y * self.normal[1];
+        let value = left + right;
+        // Two products and their sum, including gradual-underflow error.
+        let error = (left.abs() + right.abs()) * (4.0 * f64::EPSILON) + f64::MIN_POSITIVE;
+        let low = (value - error).next_down();
+        let high = (value + error).next_up();
+        (low.is_finite() && high.is_finite()).then_some([low, high])
+    }
+
+    fn distance_squared(self, point: Point) -> f64 {
+        let Some([low, high]) = self.project(point.x, point.y) else {
+            return 0.0;
+        };
+        let gap = if low > self.high {
+            (low - self.high).next_down()
+        } else if high < self.low {
+            (self.low - high).next_down()
+        } else {
+            return 0.0;
+        };
+        let [nx, ny] = self.normal;
+        let norm = ((nx * nx).next_up() + (ny * ny).next_up()).next_up();
+        if norm == 0.0 {
+            return 0.0;
+        }
+        let squared = (gap * gap).next_down().max(0.0);
+        (squared / norm).next_down().max(0.0)
+    }
 }
 
 fn facet_for_leaf(linework: &PreparedLinework, index: usize) -> Facet {
@@ -83,6 +215,10 @@ impl FacetBvh {
     /// first-child code would read as a leaf (those astronomically large
     /// shapes keep the flat facet scans, which are index-width-agnostic).
     pub(crate) fn build(linework: &PreparedLinework) -> Option<Self> {
+        Self::build_with_bounds(linework, false)
+    }
+
+    fn build_with_bounds(linework: &PreparedLinework, clearance: bool) -> Option<Self> {
         let facet_count = u32::try_from(linework.facets.len()).ok()?;
         if facet_count == 0 || facet_count > BvhCode::LEAF_BIT / 2 {
             return None;
@@ -92,20 +228,55 @@ impl FacetBvh {
             .iter()
             .map(|&facet| linework.facet_aabb(facet))
             .collect();
+        let tight = clearance && {
+            let extent = facet_aabbs
+                .iter()
+                .copied()
+                .reduce(union_aabb)
+                .expect("nonempty linework has facet bounds");
+            let span = (extent[2] - extent[0]).max(extent[3] - extent[1]);
+            let mut lengths = 0.0;
+            linework.for_each_segment(|segment| {
+                lengths += (segment.end.x - segment.start.x)
+                    .abs()
+                    .max((segment.end.y - segment.start.y).abs());
+            });
+            lengths / linework.segment_count() as f64 * 16.0 > span
+        };
         let mut ids: Vec<u32> = (0..facet_count).collect();
+        let directions = tight.then(|| {
+            (0..facet_count)
+                .map(|id| {
+                    let [mut x, mut y] = DirectionalSlab::build(linework, &[id]).normal;
+                    if y < 0.0 || y == 0.0 && x < 0.0 {
+                        x = -x;
+                        y = -y;
+                    }
+                    y.atan2(x)
+                })
+                .collect::<Vec<_>>()
+        });
         let node_count = (facet_count as usize).wrapping_mul(2).wrapping_sub(1);
         let mut tree = Self {
             aabbs: vec![[0.0; 4]; node_count].into_boxed_slice(),
             codes: vec![0; node_count].into_boxed_slice(),
+            slabs: tight.then(|| vec![DirectionalSlab::default(); node_count].into_boxed_slice()),
         };
         // Root at 0; children allocated in adjacent pairs from the cursor.
         let mut next = 1;
-        tree.fill_node(0, &mut next, &facet_aabbs, &mut ids);
+        tree.fill_node(
+            0,
+            &mut next,
+            &facet_aabbs,
+            &mut ids,
+            linework,
+            directions.as_deref(),
+        );
         Some(tree)
     }
 
-    /// Longest-axis median split of `ids` (facet indices into `facet_aabbs`)
-    /// into the node slot `node`, allocating child pairs from `next`.
+    /// Median split of facet centers, or their normal directions when using
+    /// directional slabs, into the node slot `node`.
     #[expect(
         clippy::indexing_slicing,
         reason = "Facet ids are below facet_aabbs.len(); recursive node ids are builder-produced and below the allocated 2F-1 aabbs/codes lengths"
@@ -120,7 +291,12 @@ impl FacetBvh {
         next: &mut usize,
         facet_aabbs: &[[f64; 4]],
         ids: &mut [u32],
+        linework: &PreparedLinework,
+        directions: Option<&[f64]>,
     ) {
+        if let Some(slabs) = &mut self.slabs {
+            slabs[node] = DirectionalSlab::build(linework, ids);
+        }
         if let [id] = ids {
             self.aabbs[node] = facet_aabbs[*id as usize];
             self.codes[node] = BvhCode::leaf(*id as usize).raw();
@@ -131,12 +307,16 @@ impl FacetBvh {
             .map(|&id| facet_aabbs[id as usize])
             .reduce(union_aabb)
             .expect("split halves are non-empty");
-        // Median split on facet centers along the box's longer axis; ties
-        // break by facet index so the build is deterministic.
+        // Facet ordinals break equal partition keys deterministically.
         let axis = usize::from(aabb[3] - aabb[1] > aabb[2] - aabb[0]);
         let center = |id: u32| {
-            let facet = facet_aabbs[id as usize];
-            facet[axis] + facet[axis + 2]
+            directions.map_or_else(
+                || {
+                    let facet = facet_aabbs[id as usize];
+                    facet[axis] + facet[axis + 2]
+                },
+                |directions| directions[id as usize],
+            )
         };
         let mid = ids.len() / 2;
         ids.select_nth_unstable_by(mid, |&a, &b| {
@@ -147,8 +327,15 @@ impl FacetBvh {
         *next += 2;
         self.aabbs[node] = aabb;
         self.codes[node] = BvhCode::internal(first_child as u32).raw();
-        self.fill_node(first_child, next, facet_aabbs, lower);
-        self.fill_node(first_child + 1, next, facet_aabbs, upper);
+        self.fill_node(first_child, next, facet_aabbs, lower, linework, directions);
+        self.fill_node(
+            first_child + 1,
+            next,
+            facet_aabbs,
+            upper,
+            linework,
+            directions,
+        );
     }
 
     fn node_aabb(&self, index: u32) -> [f64; 4] {
@@ -545,42 +732,127 @@ impl FacetBvh {
 
     /// Argmin sibling of the min sweep: the nearest `(probe vertex,
     /// projection)` pair from a full-point probe stream to the linework.
-    /// The SIMD kernel prunes; the winning facet is scalar-refined with full
-    /// ordinates (Z/M interpolate exactly like the brute path).
-    pub(crate) fn nearest_to_points(
+    /// Safe squares use SIMD facet bounds; other exponents use distance space.
+    /// Winning segments retain their full source ordinates.
+    pub(crate) fn nearest_to_points<const SQUARED: bool>(
         &self,
         linework: &PreparedLinework,
         probes: impl Iterator<Item = Point>,
-        mut best: Option<NearestCandidate>,
-    ) -> crate::error::Result<Option<NearestCandidate>> {
+        best: &mut Option<NearestCandidate>,
+    ) -> crate::error::Result<bool> {
         let mut stack: Vec<u32> = Vec::new();
+        let mut changed = false;
         for probe in probes {
-            let probe_aabb = point_aabb(probe.x, probe.y);
-            let bound = |aabb: [f64; 4]| aabb_distance_squared(aabb, probe_aabb);
-            stack.clear();
-            stack.push(0);
-            while let Some(index) = stack.pop() {
-                let limit = best
+            changed |= self.nearest_point_with_stack::<false, SQUARED, false>(
+                linework,
+                probe,
+                f64::INFINITY,
+                f64::INFINITY,
+                &|_, _| true,
+                &mut stack,
+                best,
+            )?;
+        }
+        Ok(changed)
+    }
+
+    pub(crate) fn nearest_point_with_stack<
+        const TIGHT: bool,
+        const SQUARED: bool,
+        const BOUNDED: bool,
+    >(
+        &self,
+        linework: &PreparedLinework,
+        probe: Point,
+        upper_bound: f64,
+        tolerance: f64,
+        keep: &impl Fn(Point, Segment) -> bool,
+        stack: &mut Vec<u32>,
+        best: &mut Option<NearestCandidate>,
+    ) -> crate::error::Result<bool> {
+        let mut changed_any = false;
+        let probe_aabb = point_aabb(probe.x, probe.y);
+        let bound = |aabb: [f64; 4]| {
+            if SQUARED {
+                aabb_distance_squared(aabb, probe_aabb)
+            } else {
+                aabb_distance(aabb, probe_aabb)
+            }
+        };
+        let mut distance_limit = if SQUARED {
+            upper_bound
+        } else {
+            best.as_ref()
+                .map(|best| best.distance_key.distance_upper_bound())
+                .transpose()?
+                .unwrap_or(upper_bound)
+        };
+        stack.clear();
+        stack.push(0);
+        while let Some(index) = stack.pop() {
+            #[cfg(test)]
+            NEAREST_WORK.with(|work| work.set(work.get().saturating_add(1)));
+            let limit = if SQUARED {
+                best.as_ref().map_or(upper_bound, |b| {
+                    if BOUNDED {
+                        upper_bound.min(b.distance_key.upper_bound())
+                    } else {
+                        b.distance_key.upper_bound()
+                    }
+                })
+            } else {
+                distance_limit
+            };
+            if bound(self.node_aabb(index)) > limit {
+                continue;
+            }
+            if TIGHT
+                && self
+                    .slabs
                     .as_ref()
-                    .map_or(f64::INFINITY, |b| b.distance_key.upper_bound());
-                if bound(self.node_aabb(index)) > limit {
-                    continue;
-                }
-                match self.decode_node(index) {
-                    BvhNode::Leaf(facet_index) => {
-                        let facet = facet_for_leaf(linework, facet_index);
-                        if linework.facet_point_distance_squared(facet, probe.x, probe.y)? <= limit
-                        {
-                            refine_facet_nearest(linework, facet, probe, &mut best)?;
+                    .is_some_and(|slabs| slabs[index as usize].distance_squared(probe) > limit)
+            {
+                continue;
+            }
+            match self.decode_node(index) {
+                BvhNode::Leaf(facet_index) => {
+                    let facet = facet_for_leaf(linework, facet_index);
+                    let facet_distance = if SQUARED {
+                        linework.facet_point_distance_squared(facet, probe.x, probe.y)?
+                    } else {
+                        linework.facet_point_distance(facet, probe)?
+                    };
+                    if facet_distance <= limit {
+                        let changed = refine_facet_nearest::<BOUNDED>(
+                            linework,
+                            facet,
+                            probe,
+                            upper_bound,
+                            tolerance,
+                            keep,
+                            best,
+                        )?;
+                        changed_any |= changed;
+                        if !SQUARED && changed {
+                            distance_limit = best
+                                .as_ref()
+                                .expect("refinement improved the nearest candidate")
+                                .distance_key
+                                .distance_upper_bound()?;
                         }
-                    },
-                    BvhNode::Internal(first_child) => {
-                        self.push_nearer_last(&mut stack, first_child as u32, &bound);
-                    },
-                }
+                    }
+                },
+                BvhNode::Internal(first_child) => {
+                    if BOUNDED {
+                        stack.push(first_child as u32);
+                        stack.push((first_child as u32).wrapping_add(1));
+                    } else {
+                        self.push_nearer_last(stack, first_child as u32, &bound);
+                    }
+                },
             }
         }
-        Ok(best)
+        Ok(changed_any)
     }
 
     #[expect(
@@ -653,5 +925,10 @@ impl HeapSize for FacetBvh {
         self.aabbs
             .heap_bytes()
             .saturating_add(self.codes.heap_bytes())
+            .saturating_add(self.slabs.as_ref().map_or(0, |slabs| {
+                slabs
+                    .len()
+                    .saturating_mul(std::mem::size_of::<DirectionalSlab>())
+            }))
     }
 }

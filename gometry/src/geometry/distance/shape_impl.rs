@@ -7,7 +7,7 @@ use crate::geometry::distance::{
 };
 use crate::geometry::{
     Coordinates as _, DistanceParts, GeodesicMetric, GeodesicParts, Point, PreparedLinework,
-    RunIdentity, Shape, distance, finish_planar_squared_min, nearest_points,
+    RunIdentity, Shape, distance, finish_planar_squared_min,
 };
 impl Shape {
     /// Build this shape's [`DistanceParts`] (vertices, packed linework,
@@ -184,7 +184,8 @@ impl Shape {
     /// The closest pair of points, one on each geometry; `None` only when an
     /// operand is empty (the surfaces map it to `(POINT EMPTY, POINT EMPTY)`).
     pub fn nearest_points(&self, other: &Self) -> Result<Option<(Point, Point)>> {
-        nearest_points(self, other)
+        crate::geometry::PreparedPlan::new(self.clone())
+            .nearest_points(&crate::geometry::PreparedPlan::new(other.clone()))
     }
 
     pub(crate) fn frechet_distance_with_scratch(
