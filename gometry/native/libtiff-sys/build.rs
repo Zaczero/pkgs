@@ -3,6 +3,9 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::{env, fs};
 
+#[path = "../cmake_flags.rs"]
+mod cmake_flags;
+
 const LIBTIFF_VERSION: &str = "4.7.2";
 const LIBTIFF_PATH: &str = "libtiff";
 const LIBTIFF_COMMIT: &str = "d01a94be176f5f6a87f7ee1c0b32e65416aa2b4d";
@@ -47,18 +50,8 @@ fn main() -> BuildResult {
     if env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("linux") {
         config.define("CMAKE_REQUIRED_LIBRARIES", "m");
     }
-    if let Some(flags) = release_native_flags("CFLAGS")?
-        && env::var_os("CFLAGS").is_none()
-        && !flags.is_empty()
-    {
-        config.cflag(&flags);
-    }
-    if let Some(flags) = release_native_flags("CXXFLAGS")?
-        && env::var_os("CXXFLAGS").is_none()
-        && !flags.is_empty()
-    {
-        config.cxxflag(&flags);
-    }
+    cmake_flags::configure_path_remapping(&mut config);
+    cmake_flags::configure_release_native_flags(&mut config)?;
 
     let dst = config.build();
     let lib_dir = if dst.join("lib/libtiff.a").exists() || dst.join("lib/tiff.lib").exists() {
@@ -142,30 +135,4 @@ fn verify_pinned_source(source: &Path) -> BuildResult {
         );
     }
     Ok(())
-}
-
-fn release_native_flags(name: &str) -> BuildResult<Option<String>> {
-    let declared_name = format!("GOMETRY_RELEASE_{name}");
-    println!("cargo:rerun-if-env-changed={declared_name}");
-    println!("cargo:rerun-if-env-changed={name}");
-    let target_suffix = env::var("TARGET").unwrap_or_default().replace('-', "_");
-    let target_name = format!("{name}_{target_suffix}");
-    println!("cargo:rerun-if-env-changed={target_name}");
-    let Some(declared) = env::var_os(&declared_name) else {
-        return Ok(None);
-    };
-    let declared = declared.to_string_lossy().into_owned();
-    for ambient_name in [name.to_owned(), target_name] {
-        if let Some(ambient) = env::var_os(&ambient_name) {
-            let ambient = ambient.to_string_lossy();
-            if ambient != declared {
-                return Err(format!(
-                    "release native flags disagree: {declared_name}={declared:?}, \
-                     {ambient_name}={ambient:?}"
-                )
-                .into());
-            }
-        }
-    }
-    Ok(Some(declared))
 }

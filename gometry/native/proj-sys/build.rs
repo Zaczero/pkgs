@@ -5,6 +5,10 @@ use std::path::{Path, PathBuf};
 use flate2::read::GzDecoder;
 use tar::Archive;
 
+#[cfg(not(feature = "nobuild"))]
+#[path = "../cmake_flags.rs"]
+mod cmake_flags;
+
 const MINIMUM_PROJ_VERSION: &str = "9.6.2";
 const PROJ_ARCHIVE_SIZE: usize = 6_394_614;
 const PROJ_ARCHIVE_FNV1A64: u64 = 0x0F8C94421730578E;
@@ -202,7 +206,7 @@ fn build_from_source() -> Result<std::path::PathBuf, Box<dyn std::error::Error>>
         // version that results in linker errors
         config.profile("Release");
     }
-    configure_release_native_flags(&mut config);
+    cmake_flags::configure_release_native_flags(&mut config)?;
 
     let proj = config.build();
     // Tell cargo to tell rustc to link libproj, and where to find it
@@ -777,16 +781,12 @@ fn apply_pinned_semantic_patches(source_dir: &Path) -> Result<(), Box<dyn std::e
 }
 
 fn configure_path_remapping(config: &mut cmake::Config) {
+    cmake_flags::configure_path_remapping(config);
     if env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("msvc") {
         return;
     }
-    if let Some(remap) = env::var_os("CARGO_TRIM_PATHS_REMAP") {
-        for pair in env::split_paths(&remap).filter(|pair| !pair.as_os_str().is_empty()) {
-            add_file_prefix_map(config, pair.display());
-        }
-    }
     if let Some(sqlite_include) = env::var_os("DEP_SQLITE3_INCLUDE") {
-        add_file_prefix_map(
+        cmake_flags::add_file_prefix_map(
             config,
             format!(
                 "{}=/cargo/libsqlite3",
@@ -794,45 +794,4 @@ fn configure_path_remapping(config: &mut cmake::Config) {
             ),
         );
     }
-}
-
-fn add_file_prefix_map(config: &mut cmake::Config, mapping: impl std::fmt::Display) {
-    let flag = format!("-ffile-prefix-map={mapping}");
-    config.cflag(&flag).cxxflag(&flag);
-}
-
-fn configure_release_native_flags(config: &mut cmake::Config) {
-    if let Some(flags) = release_native_flags("CFLAGS") {
-        if env::var_os("CFLAGS").is_none() && !flags.is_empty() {
-            config.cflag(&flags);
-        }
-    }
-    if let Some(flags) = release_native_flags("CXXFLAGS") {
-        if env::var_os("CXXFLAGS").is_none() && !flags.is_empty() {
-            config.cxxflag(&flags);
-        }
-    }
-}
-
-fn release_native_flags(name: &str) -> Option<String> {
-    let declared_name = format!("GOMETRY_RELEASE_{name}");
-    println!("cargo:rerun-if-env-changed={declared_name}");
-    println!("cargo:rerun-if-env-changed={name}");
-    let target_suffix = env::var("TARGET").unwrap_or_default().replace('-', "_");
-    let target_name = format!("{name}_{target_suffix}");
-    println!("cargo:rerun-if-env-changed={target_name}");
-    let declared = env::var_os(&declared_name)?;
-    let declared = declared.to_string_lossy().into_owned();
-    for ambient_name in [name.to_owned(), target_name] {
-        if let Some(ambient) = env::var_os(&ambient_name) {
-            let ambient = ambient.to_string_lossy();
-            if ambient != declared {
-                panic!(
-                    "release native flags disagree: {declared_name}={declared:?}, \
-                     {ambient_name}={ambient:?}"
-                );
-            }
-        }
-    }
-    Some(declared)
 }
