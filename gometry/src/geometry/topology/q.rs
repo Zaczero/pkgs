@@ -235,12 +235,6 @@ struct SpanOccurrence {
 }
 
 #[derive(Clone, Debug)]
-struct ExactFaceGerm {
-    leading: (ExactRational, ExactRational),
-    perturbation: (ExactRational, ExactRational),
-}
-
-#[derive(Clone, Debug)]
 struct HostGerm {
     point: ExactChartPoint,
     dx: ExactRational,
@@ -1675,40 +1669,17 @@ fn compare_span_to_query(
         .try_cmp(&ExactRational::zero())
 }
 
-fn east_face_for_span(
-    topology: &QuotientFaces,
-    span_id: usize,
-    query: &HostGerm,
-    hit_x: &ExactRational,
-) -> Result<QLocalFaceId> {
+/// The face east of a span that a westward host ray crosses.
+///
+/// The ray runs at the query height perturbed to one side, so the sweep status holds exactly
+/// the spans crossing it there, and the region just east of the hit span holds the query. That
+/// is the span's right side by orientation, whatever nodes lie at the ray's exact height;
+/// resolving the hit through a node fan instead needs a perturbed tie-break that the span
+/// orientation never does.
+fn east_face_of_span(topology: &QuotientFaces, span_id: usize) -> Result<QLocalFaceId> {
     let span = topology.spans.get(span_id).ok_or_else(|| {
         GeometryErrorKind::Invalid("host hit references an unknown Q span".into())
     })?;
-    for port_id in span.ports {
-        let port = topology
-            .ports
-            .get(port_id.0 as usize)
-            .ok_or_else(|| GeometryErrorKind::Invalid("host hit has an unknown Q port".into()))?;
-        if port.point.y.try_cmp(&query.point.y)?.is_eq() && port.point.x.try_cmp(hit_x)?.is_eq() {
-            let leading = (
-                query.point.x.try_subtract(&port.point.x)?,
-                query.point.y.try_subtract(&port.point.y)?,
-            );
-            return face_in_germ(
-                &topology.ports,
-                &topology.nodes,
-                &topology.darts,
-                &topology.outgoing,
-                &topology.outgoing_offsets,
-                &topology.dart_faces,
-                port.node,
-                &ExactFaceGerm {
-                    leading,
-                    perturbation: (query.dx.clone(), query.dy.clone()),
-                },
-            );
-        }
-    }
     let local_faces = topology
         .span_local_faces
         .get(span_id)
@@ -1767,13 +1738,7 @@ fn resolve_host_queries(
                 )
                 .into());
             }
-            let (hit_x, _) = span_x_slope(
-                &topology.ports,
-                &topology.spans,
-                span_id,
-                &query.germ.point.y,
-            )?;
-            east_face_for_span(topology, span_id, &query.germ, &hit_x)?
+            east_face_of_span(topology, span_id)?
         } else {
             let side = if query.germ.dy.try_cmp(&ExactRational::zero())?.is_lt() {
                 -1
@@ -2828,41 +2793,6 @@ fn exact_ray_half(ray: &(ExactRational, ExactRational)) -> u8 {
     )
 }
 
-fn compare_ray_to_germ(
-    ray: &(ExactRational, ExactRational),
-    germ: &ExactFaceGerm,
-) -> Result<Ordering> {
-    if germ.leading.0.is_zero() && germ.leading.1.is_zero() {
-        return Err(GeometryErrorKind::Invalid(
-            "an exact face germ has no leading direction".into(),
-        )
-        .into());
-    }
-    let leading_order = compare_exact_rays_allow_equal(ray, &germ.leading)?;
-    if !leading_order.is_eq() {
-        return Ok(leading_order);
-    }
-    let leading_half = exact_ray_half(&germ.leading);
-    let germ_half = if !germ.leading.1.is_zero() {
-        leading_half
-    } else if germ.perturbation.1.sign() == ExactSign::Negative {
-        1
-    } else if germ.perturbation.1.sign() == ExactSign::Positive {
-        0
-    } else {
-        leading_half
-    };
-    let ray_half = exact_ray_half(ray);
-    if ray_half != germ_half {
-        return Ok(ray_half.cmp(&germ_half));
-    }
-    match vector_cross(&germ.leading, &germ.perturbation)?.sign() {
-        ExactSign::Positive => Ok(Ordering::Less),
-        ExactSign::Negative => Ok(Ordering::Greater),
-        ExactSign::Zero => Ok(Ordering::Equal),
-    }
-}
-
 fn pole_tangent_ray(
     origin: &ExactChartPoint,
     target: &ExactChartPoint,
@@ -2955,82 +2885,6 @@ fn face_in_direction(
         .get(dart.0 as usize)
         .copied()
         .ok_or_else(|| GeometryErrorKind::Invalid("Q face query found no dart face".into()).into())
-}
-
-fn compare_q_dart_to_germ(
-    ports: &[QPort],
-    nodes: &[QNode],
-    darts: &[QDart],
-    dart: QDartId,
-    germ: &ExactFaceGerm,
-) -> Result<Ordering> {
-    let dart = darts
-        .get(dart.0 as usize)
-        .ok_or_else(|| GeometryErrorKind::Invalid("Q germ references an unknown dart".into()))?;
-    let node = nodes
-        .get(dart.from_node.0 as usize)
-        .ok_or_else(|| GeometryErrorKind::Invalid("Q germ references an unknown node".into()))?;
-    if node.pole.is_some() {
-        return Err(GeometryErrorKind::Invalid(
-            "a planar face germ cannot order a pole fan".into(),
-        )
-        .into());
-    }
-    let origin = ports
-        .get(dart.from_port.0 as usize)
-        .ok_or_else(|| GeometryErrorKind::Invalid("Q germ has no origin port".into()))?;
-    let target = ports
-        .get(dart.to_port.0 as usize)
-        .ok_or_else(|| GeometryErrorKind::Invalid("Q germ has no target port".into()))?;
-    compare_ray_to_germ(&vector_difference(&origin.point, &target.point)?, germ)
-}
-
-#[expect(
-    clippy::indexing_slicing,
-    clippy::arithmetic_side_effects,
-    reason = "the Q outgoing range is the admitted CSR fan for this dense node ID"
-)]
-fn face_in_germ(
-    ports: &[QPort],
-    nodes: &[QNode],
-    darts: &[QDart],
-    outgoing: &[QDartId],
-    offsets: &[usize],
-    dart_faces: &[QLocalFaceId],
-    node: QNodeId,
-    germ: &ExactFaceGerm,
-) -> Result<QLocalFaceId> {
-    let node_index = node.0 as usize;
-    let start = *offsets
-        .get(node_index)
-        .ok_or_else(|| GeometryErrorKind::Invalid("Q germ references an unknown node".into()))?;
-    let end = *offsets
-        .get(node_index + 1)
-        .ok_or_else(|| GeometryErrorKind::Invalid("Q germ references an incomplete fan".into()))?;
-    if start == end {
-        return Err(GeometryErrorKind::Invalid("Q germ reached an isolated node".into()).into());
-    }
-    let mut low = start;
-    let mut high = end;
-    while low < high {
-        let middle = low + (high - low) / 2;
-        match compare_q_dart_to_germ(ports, nodes, darts, outgoing[middle], germ)? {
-            Ordering::Less => low = middle + 1,
-            Ordering::Equal => {
-                return Err(GeometryErrorKind::Invalid(
-                    "Q face germ overlaps an exact source tangent".into(),
-                )
-                .into());
-            },
-            Ordering::Greater => high = middle,
-        }
-    }
-    let preceding = if low == start { end - 1 } else { low - 1 };
-    let dart = outgoing[preceding];
-    dart_faces
-        .get(dart.0 as usize)
-        .copied()
-        .ok_or_else(|| GeometryErrorKind::Invalid("Q germ found no incident face".into()).into())
 }
 
 fn compare_pole_dart_to_longitude(
@@ -8320,5 +8174,238 @@ mod tests {
         assert!(large.host_status_max_height <= 22);
         assert!(large.host_status_comparisons < 256 * 1_024);
         assert!(large.host_status_comparisons < small.host_status_comparisons * 6);
+    }
+
+    fn box_polygon(x0: f64, y0: f64, x1: f64, y1: f64) -> Polygon {
+        Polygon::new(
+            ring(&[(x0, y0), (x1, y0), (x1, y1), (x0, y1), (x0, y0)]),
+            Vec::new(),
+        )
+    }
+
+    fn exact_topology_rows(shapes: &[Shape]) -> ExactGeographicTopology {
+        let frame = degrees();
+        let views = shapes
+            .iter()
+            .map(|shape| {
+                crate::geographic::ScalarGeographicView::try_new(frame, shape)
+                    .expect("fixture admits")
+            })
+            .collect::<Vec<_>>();
+        ExactGeographicTopology::from_views(frame, views.into_iter()).unwrap()
+    }
+
+    fn polygon_count(shape: &Shape) -> usize {
+        let wkt = crate::io::to_wkt(shape).unwrap();
+        if wkt.starts_with("MULTIPOLYGON") {
+            wkt.matches(")), ((").count() + 1
+        } else {
+            usize::from(wkt.starts_with("POLYGON ("))
+        }
+    }
+
+    fn quotient_union_polygons(topology: &ExactGeographicTopology) -> usize {
+        polygon_count(
+            &crate::geometry::topology::overlay::exact_geographic_overlay(
+                topology,
+                crate::geometry::overlay::OverlayOp::Union,
+                CoordinateAxes::XY,
+                false,
+            )
+            .unwrap(),
+        )
+    }
+
+    fn planar_union_polygons(polygons: &[Polygon]) -> usize {
+        let shapes = polygons
+            .iter()
+            .cloned()
+            .map(Shape::Polygon)
+            .collect::<Vec<_>>();
+        polygon_count(
+            &crate::geometry::overlay::overlay_all(
+                &shapes,
+                crate::geometry::TopologyDomain::Cartesian,
+                crate::geometry::overlay::OverlayOp::Union,
+                crate::geometry::overlay::Strictness::Lenient,
+            )
+            .unwrap(),
+        )
+    }
+
+    fn location(topology: &ExactGeographicTopology, x: f64, y: f64) -> (Loc, Loc) {
+        let at = topology
+            .locate_point(crate::geometry::Point::new_raw_xy(x, y))
+            .unwrap();
+        (at.geometry, at.area)
+    }
+
+    fn relation(rows: &[Shape]) -> String {
+        String::from_utf8(exact_topology_rows(rows).relate_pair().unwrap().0.to_vec()).unwrap()
+    }
+
+    /// A westward host ray that ends on a node holding an exact east dart must still place
+    /// the component in the face east of the span it hit, not in the face CCW of that dart.
+    #[test]
+    fn host_ray_ending_at_an_east_dart_node_keeps_the_component_in_the_outer_face() {
+        let seam_box = || box_polygon(170.0, 20.0, 190.0, 40.0);
+        let step = |points: &[(f64, f64)]| {
+            let mut closed = points.to_vec();
+            closed.push(points[0]);
+            Polygon::new(ring(&closed), Vec::new())
+        };
+        let pentagon = step(&[
+            (0.0, 10.0),
+            (20.0, 10.0),
+            (20.0, 20.0),
+            (40.0, 20.0),
+            (0.0, 30.0),
+        ]);
+        let step_ring = step(&[
+            (0.0, 10.0),
+            (20.0, 10.0),
+            (20.0, 20.0),
+            (40.0, 20.0),
+            (40.0, 30.0),
+            (0.0, 30.0),
+        ]);
+        let corner_touching = [
+            box_polygon(20.0, 20.0, 40.0, 30.0),
+            box_polygon(0.0, 10.0, 20.0, 20.0),
+        ];
+        for (name, members, faces, union_polygons) in [
+            ("pentagon", vec![pentagon], 3_usize, 2_usize),
+            ("step ring", vec![step_ring], 3, 2),
+            ("corner-touching boxes", corner_touching.to_vec(), 4, 3),
+        ] {
+            let mut polygons = members;
+            polygons.push(seam_box());
+            let topology = exact_topology(&multipolygon(polygons));
+            assert_eq!(
+                topology.q.global_face_count, faces,
+                "{name}: one face per interior plus one outer face"
+            );
+            assert!(
+                topology
+                    .q
+                    .component_hosts
+                    .windows(2)
+                    .all(|pair| pair[0] == pair[1]),
+                "{name}: every component's outer face is the one global outer face"
+            );
+            assert_eq!(
+                location(&topology, 170.0, 30.0),
+                (Loc::Boundary, Loc::Boundary),
+                "{name}"
+            );
+            assert_eq!(
+                location(&topology, 175.0, 30.0),
+                (Loc::Interior, Loc::Interior),
+                "{name}"
+            );
+            assert_eq!(
+                location(&topology, 165.0, 30.0),
+                (Loc::Exterior, Loc::Exterior),
+                "{name}"
+            );
+            assert_eq!(quotient_union_polygons(&topology), union_polygons, "{name}");
+        }
+    }
+
+    /// The same ray ends on a node without an east dart, or misses every node: unchanged.
+    #[test]
+    fn host_ray_ending_at_a_node_without_an_east_dart_or_missing_it_stays_correct() {
+        for seam_south in [20.0, 19.0] {
+            let topology = exact_topology(&multipolygon(vec![
+                box_polygon(0.0, 10.0, 20.0, 20.0),
+                box_polygon(170.0, seam_south, 190.0, seam_south + 20.0),
+            ]));
+            assert_eq!(topology.q.global_face_count, 3);
+            assert_eq!(
+                location(&topology, 170.0, seam_south + 10.0),
+                (Loc::Boundary, Loc::Boundary)
+            );
+            assert_eq!(quotient_union_polygons(&topology), 2);
+        }
+    }
+
+    /// Row occupancy follows the faces: a third component hosted beside a shared edge or an
+    /// overlap must not inherit the neighbouring polygon's interior.
+    #[test]
+    fn host_row_occupancy_does_not_leak_from_a_neighbouring_polygon_interior() {
+        let a = box_polygon(20.0, 20.0, 40.0, 40.0);
+        let d = box_polygon(100.0, 20.0, 120.0, 40.0);
+        for (name, b) in [
+            ("shared edge", box_polygon(10.0, 0.0, 30.0, 20.0)),
+            ("overlap", box_polygon(10.0, 0.0, 30.0, 25.0)),
+        ] {
+            let members = multipolygon(vec![a.clone(), b, d.clone()]);
+            for shift in [0.0, 360.0] {
+                let outside = Shape::Polygon(box_polygon(130.0 + shift, 25.0, 140.0 + shift, 35.0));
+                assert_eq!(
+                    relation(&[members.clone(), outside]),
+                    "FF2FF1212",
+                    "{name} shift {shift}: a polygon over empty background is not occupied"
+                );
+            }
+            let inside_d = Shape::Polygon(box_polygon(105.0, 25.0, 115.0, 35.0));
+            assert_eq!(
+                relation(&[members.clone(), inside_d]),
+                "212FF1FF2",
+                "{name}"
+            );
+        }
+    }
+
+    /// An isolated point queries upward; a hit node with an east dart is already correct there.
+    #[test]
+    fn host_ray_for_an_isolated_point_ending_at_an_east_dart_node_is_outside() {
+        let members = multipolygon(vec![
+            box_polygon(20.0, 20.0, 40.0, 30.0),
+            box_polygon(40.0, 10.0, 60.0, 20.0),
+        ]);
+        let point = Shape::Point(crate::geometry::Point::new_raw_xy(100.0, 20.0));
+        assert_eq!(relation(&[members, point]), "FF2FF10F2");
+    }
+
+    /// The quotient route agrees with the planar partition on boxes that never touch the seam.
+    #[test]
+    fn host_quotient_route_matches_the_planar_partition_without_a_seam() {
+        let pentagon = Polygon::new(
+            ring(&[
+                (0.0, 10.0),
+                (20.0, 10.0),
+                (20.0, 20.0),
+                (40.0, 20.0),
+                (0.0, 30.0),
+                (0.0, 10.0),
+            ]),
+            Vec::new(),
+        );
+        let ordinary = box_polygon(100.0, 20.0, 120.0, 40.0);
+        let mut fixtures = vec![vec![pentagon, ordinary.clone()]];
+        for (offset_x, offset_y) in [(5.0, 10.0), (10.0, 10.0), (20.0, 10.0)] {
+            fixtures.push(vec![
+                box_polygon(0.0, -10.0, 20.0, 10.0),
+                box_polygon(offset_x, offset_y - 10.0, offset_x + 20.0, offset_y + 10.0),
+                box_polygon(100.0, 0.0, 120.0, 20.0),
+            ]);
+        }
+        for polygons in fixtures {
+            let topology = exact_topology(&multipolygon(polygons.clone()));
+            assert_eq!(
+                quotient_union_polygons(&topology),
+                planar_union_polygons(&polygons),
+                "{polygons:?}"
+            );
+            assert!(
+                topology
+                    .q
+                    .component_hosts
+                    .windows(2)
+                    .all(|pair| pair[0] == pair[1]),
+                "{polygons:?}: components share one outer face"
+            );
+        }
     }
 }
