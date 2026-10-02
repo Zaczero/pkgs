@@ -8,13 +8,16 @@ use ahash::{HashMapExt as _, HashSetExt as _};
 use rstar::AABB;
 use rstar::primitives::{GeomWithData, Rectangle};
 
+use super::earcut_bridges::BridgeArena;
 use crate::error::Result;
+#[cfg(test)]
+use crate::geometry::orientation_xy;
 use crate::geometry::{
     Bounds, BulkRTree, CoordSeqBuilder, CoordinateAxes, Coordinates, GeometryErrorKind, HasM, HasZ,
     HashMap, HashSet, MOrdinate, Orientation, Point, PointKey, Polygon, Ring, RingWinding, Segment,
     SegmentIndex, Shape, XY, ZOrdinate, dedup_consecutive_points, open_point_cycle_winding,
-    orientation, orientation_xy, point_on_segment, ring_contains_interior, same_point,
-    segments_intersect, wrap_index,
+    orientation, point_on_segment, ring_contains_interior, same_point, segments_intersect,
+    wrap_index,
 };
 
 /// Walk a polygon's ear-cut triangles through one caller-owned sink. The
@@ -253,6 +256,7 @@ impl<'ring> EarcutCycle<'ring> {
         RingVertexId(wrap_index(vertex.0.wrapping_add(1), self.points.len()))
     }
 
+    #[cfg(test)]
     const fn previous(&self, vertex: RingVertexId) -> RingVertexId {
         let prior = vertex.0.wrapping_add(self.points.len()).wrapping_sub(1);
         RingVertexId(wrap_index(prior, self.points.len()))
@@ -266,6 +270,7 @@ impl<'ring> EarcutCycle<'ring> {
             .map(|(index, (start, end))| (RingVertexId(index), *start, *end))
     }
 
+    #[cfg(test)]
     fn vertices_from(
         &self,
         start: RingVertexId,
@@ -467,21 +472,30 @@ const fn ring_segments_adjacent(len: usize, left: usize, right: usize) -> bool {
 }
 
 pub(crate) fn eliminate_holes(ring: &mut Vec<Point>, holes: &[Vec<Point>]) -> Result<()> {
+    if holes.is_empty() {
+        return Ok(());
+    }
     let holes = HoleList::new(holes);
     let mut order: Vec<_> = holes.ids().collect();
     order.sort_unstable_by(|&left, &right| {
         compare_hole_leftmost_xy_slope(holes.ring(left), holes.ring(right))
             .then_with(|| left.index().cmp(&right.index()))
     });
-    for hole_id in order {
+    let capacity = holes.rings.iter().fold(ring.len(), |count, hole| {
+        count.wrapping_add(hole.len()).wrapping_add(2)
+    });
+    let mut arena = BridgeArena::new(ring, capacity);
+    for (batch, hole_id) in order.into_iter().enumerate() {
         let hole_ring = holes.ring(hole_id);
         let hole = rotate_ring(hole_ring, leftmost_vertex(hole_ring));
-        let bridge = find_hole_bridge(ring, &hole).ok_or_else(|| {
-            GeometryErrorKind::triangulation("failed to find a visible bridge for polygon hole")
-        })?;
-        splice_hole_bridge(ring, bridge, &hole);
-        filter_earcut_ring_points(ring);
+        let bridge = arena
+            .find_bridge(*hole.first().expect("validated holes are non-empty"))
+            .ok_or_else(|| {
+                GeometryErrorKind::triangulation("failed to find a visible bridge for polygon hole")
+            })?;
+        arena.splice(bridge, &hole, batch.wrapping_add(1));
     }
+    *ring = arena.into_points();
     Ok(())
 }
 
@@ -543,6 +557,7 @@ fn rotate_ring(ring: &[Point], start: RingVertexId) -> Vec<Point> {
         .collect()
 }
 
+#[cfg(test)]
 pub(crate) fn filter_earcut_ring_points(ring: &mut Vec<Point>) {
     dedup_consecutive_points(ring);
     strip_collinear_vertices(ring);
@@ -552,6 +567,7 @@ pub(crate) fn filter_earcut_ring_points(ring: &mut Vec<Point>) {
     clippy::float_cmp,
     reason = "exact comparison is intentional (sentinel / degenerate / exact-literal check)"
 )]
+#[cfg(test)]
 fn find_hole_bridge(ring: &[Point], hole: &[Point]) -> Option<RingVertexId> {
     let hole_point = *hole.first()?;
     let (hx, hy) = (hole_point.x, hole_point.y);
@@ -611,7 +627,7 @@ fn find_hole_bridge(ring: &[Point], hole: &[Point]) -> Option<RingVertexId> {
     Some(m)
 }
 
-fn point_in_triangle(
+pub(super) fn point_in_triangle(
     ax: f64,
     ay: f64,
     bx: f64,
@@ -626,6 +642,7 @@ fn point_in_triangle(
         && (bx - px) * (cy - py) >= (cx - px) * (by - py)
 }
 
+#[cfg(test)]
 fn locally_inside_for_bridge(cycle: &EarcutCycle<'_>, p: RingVertexId, target: Point) -> bool {
     let prev = cycle.point(cycle.previous(p));
     let curr = cycle.point(p);
@@ -644,6 +661,7 @@ fn locally_inside_for_bridge(cycle: &EarcutCycle<'_>, p: RingVertexId, target: P
     }
 }
 
+#[cfg(test)]
 fn hole_bridge_sector_ok(cycle: &EarcutCycle<'_>, m: RingVertexId, p: RingVertexId) -> bool {
     let m_prev = cycle.point(cycle.previous(m));
     let m_curr = cycle.point(m);
@@ -656,6 +674,7 @@ fn hole_bridge_sector_ok(cycle: &EarcutCycle<'_>, m: RingVertexId, p: RingVertex
             == Orientation::CounterClockwise
 }
 
+#[cfg(test)]
 fn splice_hole_bridge(ring: &mut Vec<Point>, bridge: RingVertexId, hole: &[Point]) {
     let bridge_point = EarcutCycle::new(ring).point(bridge);
     let hole_point = *hole.first().expect("validated holes are non-empty");
@@ -668,6 +687,87 @@ fn splice_hole_bridge(ring: &mut Vec<Point>, bridge: RingVertexId, hole: &[Point
     spliced.push(bridge_point);
     spliced.extend(ring.iter().skip(head_len).copied());
     *ring = spliced;
+}
+
+#[cfg(test)]
+mod bridge_tests {
+    use super::*;
+
+    #[test]
+    fn indexed_hole_bridges_preserve_linear_selection_and_filtering() {
+        for (count, offset, scale) in [
+            (1_usize, 0.0, 1.0),
+            (2, 0.0, 1.0),
+            (4, 0.0, 1.0),
+            (8, 0.0, 1.0),
+            (16, 0.0, 1.0),
+            (32, 0.0, 1.0),
+            (64, 0.0, 1.0),
+            (8, 1.0e12, 0.125),
+            (8, 0.0, 1.0e-170),
+            (8, 0.0, 1.0e150),
+        ] {
+            let width = (count as f64).sqrt().ceil() as usize;
+            let side = width as f64 + 1.0;
+            let mut shell = vec![
+                Point::new_raw_xy(0.0, 0.0),
+                Point::new_raw_xy(side, 0.0),
+                Point::new_raw_xy(side, side),
+                Point::new_raw_xy(0.0, side),
+            ];
+            let mut holes = Vec::new();
+            for index in 0..count {
+                let x = (index % width) as f64;
+                let y = (index / width) as f64;
+                let mut hole = vec![
+                    Point::new_raw_xy(x + 0.2, y + 0.2),
+                    Point::new_raw_xy(x + 0.8, y + 0.2),
+                    Point::new_raw_xy(x + 0.8, y + 0.8),
+                    Point::new_raw_xy(x + 0.2, y + 0.8),
+                ];
+                orient_earcut_ring(&mut hole, true);
+                holes.push(hole);
+            }
+            for point in shell.iter_mut().chain(holes.iter_mut().flatten()) {
+                point.x = offset + point.x * scale;
+                point.y = offset + point.y * scale;
+            }
+            holes.reverse();
+            let mut reference = shell.clone();
+            let mut indexed =
+                BridgeArena::new(&shell, shell.len().wrapping_add(count.wrapping_mul(6)));
+            let mut order: Vec<_> = holes.iter().enumerate().collect();
+            order.sort_unstable_by(|(li, left), (ri, right)| {
+                compare_hole_leftmost_xy_slope(left, right).then_with(|| li.cmp(ri))
+            });
+            for (batch, (_, hole)) in order.into_iter().enumerate() {
+                let hole = rotate_ring(hole, leftmost_vertex(hole));
+                let bridge = find_hole_bridge(&reference, &hole).expect("visible reference bridge");
+                let walk = indexed.filtered_walk();
+                assert_eq!(
+                    indexed.find_bridge(*hole.first().expect("nonempty hole")),
+                    walk.get(bridge.0).map(|(id, _)| *id),
+                    "{count} holes, bridge {batch}"
+                );
+                splice_hole_bridge(&mut reference, bridge, &hole);
+                filter_earcut_ring_points(&mut reference);
+                indexed.splice(
+                    walk.get(bridge.0).expect("reference bridge").0,
+                    &hole,
+                    batch.wrapping_add(1),
+                );
+                assert_eq!(
+                    indexed
+                        .filtered_walk()
+                        .into_iter()
+                        .map(|(_, point)| point)
+                        .collect::<Vec<_>>(),
+                    reference,
+                    "{count} holes, filtered splice {batch}"
+                );
+            }
+        }
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -1020,6 +1120,8 @@ pub(crate) fn earcut_linked_ring_with(
 }
 
 fn is_ear(arena: &EarArena, index: NodeId) -> bool {
+    #[cfg(test)]
+    EAR_SCAN_STEPS.with(|count| count.set(count.get().wrapping_add(1)));
     let (prev, next) = {
         let node = arena.node(index);
         (node.prev, node.next)
@@ -1107,13 +1209,20 @@ fn candidate_inside_ear(
 #[cfg(test)]
 thread_local! {
     static EAR_CANDIDATE_VISITS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    static EAR_SCAN_STEPS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 #[cfg(test)]
 pub(super) fn count_ear_candidates<T>(operation: impl FnOnce() -> T) -> (T, usize) {
     EAR_CANDIDATE_VISITS.with(|count| count.set(0));
+    EAR_SCAN_STEPS.with(|count| count.set(0));
     let result = operation();
     (result, EAR_CANDIDATE_VISITS.with(std::cell::Cell::get))
+}
+
+#[cfg(test)]
+pub(super) fn ear_scan_steps() -> usize {
+    EAR_SCAN_STEPS.with(std::cell::Cell::get)
 }
 
 pub(crate) fn open_ring<C: Coordinates + ?Sized>(points: &C) -> Vec<Point> {

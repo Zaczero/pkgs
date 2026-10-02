@@ -7,6 +7,7 @@ mod circumcenter;
 mod delaunay;
 pub(crate) use delaunay::exact_delaunay::{EMPTY, Triangulation, next_halfedge, prev_halfedge};
 mod earcut;
+mod earcut_bridges;
 pub(in crate::geometry) mod exact;
 mod sampling;
 mod shape;

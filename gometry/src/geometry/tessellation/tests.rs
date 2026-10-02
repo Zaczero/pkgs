@@ -1504,10 +1504,8 @@ fn axis_aligned_square(center_x: f64, center_y: f64, half_side: f64) -> Vec<Poin
 
 #[test]
 fn earcut_holes_curated_corpus_preserves_triangulation_invariants() {
-    // Symmetric multi-hole layouts create collinear bridge edges. Earcut
-    // correctly omits their degenerate triangles, so the helper's area
-    // completeness check is the correctness invariant; these counts are
-    // recorded regression characterizations, not V + 2H - 2 derivations.
+    // Retaining collinear bridge occurrences gives V + 2H - 2 triangles
+    // without T-junctions even in symmetric multi-hole layouts.
     // convex_small_one_hole
     assert_earcut_oracle(
         polygon(convex_ring(8, 100.0), vec![axis_aligned_square(
@@ -1528,7 +1526,7 @@ fn earcut_holes_curated_corpus_preserves_triangulation_invariants() {
             axis_aligned_square(-20.0, 0.0, 3.0),
             axis_aligned_square(20.0, 0.0, 3.0),
         ]),
-        39,
+        41,
     );
     // star_medium_three_holes
     assert_earcut_oracle(
@@ -1537,7 +1535,7 @@ fn earcut_holes_curated_corpus_preserves_triangulation_invariants() {
             axis_aligned_square(15.0, -10.0, 2.0),
             axis_aligned_square(0.0, 15.0, 2.0),
         ]),
-        78,
+        80,
     );
     // convex_max_four_holes
     assert_earcut_oracle(
@@ -1547,7 +1545,7 @@ fn earcut_holes_curated_corpus_preserves_triangulation_invariants() {
             axis_aligned_square(-30.0, 30.0, 5.0),
             axis_aligned_square(30.0, 30.0, 5.0),
         ]),
-        274,
+        278,
     );
     // star_max_four_holes
     assert_earcut_oracle(
@@ -1557,7 +1555,7 @@ fn earcut_holes_curated_corpus_preserves_triangulation_invariants() {
             axis_aligned_square(-10.0, 15.0, 2.0),
             axis_aligned_square(12.0, 15.0, 2.0),
         ]),
-        273,
+        277,
     );
 }
 
@@ -1603,34 +1601,50 @@ fn earcut_rejects_nested_holes_via_containment_index() {
 }
 
 #[test]
-fn earcut_holes_containment_scales_linearly_in_triangle_count() {
-    // Structural subquadratic property (no wall-clock): a shell with h
-    // simple interior holes triangulates, and triangle count grows as
-    // Θ(vertices) — specifically the earcut output length is monotone in
-    // hole_count and at most linear in total ring vertices (Euler: a
-    // polygonal region with n boundary verts and h holes has ≤ n + 2h − 2
-    // triangles; we assert the realized count stays within a small factor
-    // of the vertex count, ruling out a quadratic fan-out of triangles).
-    let mut prev_triangles = 0_usize;
+fn earcut_grid_holes_preserve_euler_triangle_count() {
     for hole_count in [10_usize, 20, 40, 80] {
         let poly = square_shell_with_grid_holes(hole_count);
-        let vertex_count = crate::geometry::ShapeCountQuery::default()
-            .polygon_coordinates(&poly)
-            .unwrap();
+        let expected_count = polygon_vertices(&poly)
+            .len()
+            .wrapping_add(poly.holes.len().wrapping_mul(2))
+            .wrapping_sub(2);
         let source = Shape::Polygon(poly);
         let triangles = source
             .polygon_triangles()
             .expect("many-hole polygon triangulates");
-        let n_tri = triangles.len();
-        assert!(
-            n_tri > prev_triangles,
-            "triangle count must grow with holes: hole_count={hole_count} n_tri={n_tri} prev={prev_triangles}"
+        assert_eq!(triangles.len(), expected_count, "{hole_count} grid holes");
+    }
+}
+
+#[test]
+fn polygon_triangles_grid_bridge_work_scales_subquadratically() {
+    let mut counts = Vec::new();
+    for holes in [64_usize, 256, 1_024] {
+        let poly = square_shell_with_grid_holes(holes);
+        let expected = polygon_vertices(&poly)
+            .len()
+            .wrapping_add(holes.wrapping_mul(2))
+            .wrapping_sub(2);
+        let source = Shape::Polygon(poly);
+        let ((triangles, ear_work), bridge_work) = super::earcut_bridges::count_bridge_work(|| {
+            super::earcut::count_ear_candidates(|| {
+                source.polygon_triangles().expect("grid triangulates")
+            })
+        });
+        assert_eq!(triangles.len(), expected);
+        eprintln!(
+            "{holes} holes: bridge work {bridge_work}, ear work {ear_work}, ear scans {}",
+            super::earcut::ear_scan_steps()
         );
-        assert!(
-            n_tri <= vertex_count.saturating_mul(2),
-            "triangle count must stay linear in vertices: hole_count={hole_count} n_tri={n_tri} verts={vertex_count}"
-        );
-        prev_triangles = n_tri;
+        counts.push(bridge_work);
+    }
+    for pair in counts.windows(2) {
+        if let &[small, large] = pair {
+            assert!(
+                large < small.wrapping_mul(6),
+                "quadrupling holes: {counts:?}"
+            );
+        }
     }
 }
 
