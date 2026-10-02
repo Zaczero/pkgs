@@ -7725,7 +7725,7 @@ class GeometryArray(Sequence[_GeometryT_co]):
         >>> import gometry as gm
         >>> groups = gm.GeometryArray([gm.box(0, 0, 2, 2)]).triangulate(method='earcut')
         >>> groups[0].to_wkt()
-        ['POLYGON ((0 2, 0 0, 2 0, 0 2))', 'POLYGON ((2 0, 2 2, 0 2, 2 0))']
+        ['POLYGON ((0 2, 0 0, 2 0, 0 2))', 'POLYGON ((2 2, 0 2, 2 0, 2 2))']
         """
 
     def smooth(
@@ -10612,7 +10612,7 @@ class Groups(Sequence[_GroupValuesT_co], Generic[_GroupValuesT_co]):
         >>> import gometry as gm
         >>> groups = gm.GeometryArray([gm.box(0, 0, 2, 2)]).triangulate(method='earcut')
         >>> [g.to_wkt() for g in groups.to_list()[0]]
-        ['POLYGON ((0 2, 0 0, 2 0, 0 2))', 'POLYGON ((2 0, 2 2, 0 2, 2 0))']
+        ['POLYGON ((0 2, 0 0, 2 0, 0 2))', 'POLYGON ((2 2, 0 2, 2 0, 2 2))']
         """
     def index(self, value: object, start: int = 0, stop: int | None = None) -> int:
         """First index of an equal row in ``[start, stop)``.

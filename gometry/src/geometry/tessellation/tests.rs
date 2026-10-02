@@ -33,8 +33,7 @@ use crate::error::ErrorKind;
 use crate::geometry::segments::Orientation;
 use crate::geometry::tessellation::delaunay::cleanup_constraint_lines;
 use crate::geometry::tessellation::earcut::{
-    EarArena, ZScale, cleaned_earcut_ring, open_ring, validate_earcut_ring,
-    validate_hole_interactions,
+    cleaned_earcut_ring, open_ring, validate_earcut_ring, validate_hole_interactions,
 };
 use crate::geometry::{
     CdtRefinement, CoordSeq, CoordinateAxes, Coordinates as _, ExpansionBudget,
@@ -1399,6 +1398,28 @@ fn large_convex_ring(vertex_count: usize) -> Vec<Point> {
 }
 
 #[test]
+fn polygon_triangles_circle_candidate_work_scales_near_linearly() {
+    let mut counts = Vec::new();
+    for vertices in [2_048_usize, 4_096] {
+        let shape = Shape::Polygon(polygon(large_convex_ring(vertices), Vec::new()));
+        let (triangles, candidates) = super::earcut::count_ear_candidates(|| {
+            shape.polygon_triangles().expect("circle triangulates")
+        });
+        assert_eq!(triangles.len(), vertices.wrapping_sub(2));
+        assert!(
+            candidates < vertices.wrapping_mul(128),
+            "{vertices}: {candidates} candidate inspections"
+        );
+        counts.push(candidates);
+    }
+    eprintln!("circle candidate work: {counts:?}");
+    assert!(
+        counts[1].wrapping_mul(10) < counts[0].wrapping_mul(28),
+        "doubling the circle must not quadruple candidate work: {counts:?}"
+    );
+}
+
+#[test]
 fn validate_earcut_ring_accepts_large_simple_ring() {
     let ring = large_convex_ring(10_000);
     validate_earcut_ring(&ring).expect("large simple ring is valid");
@@ -1410,20 +1431,6 @@ fn validate_earcut_ring_rejects_large_self_intersecting_ring() {
     let mut ring = large_convex_ring(10_000);
     ring[5_000] = ring[100];
     assert!(validate_earcut_ring(&ring).is_err());
-}
-
-#[test]
-fn zscale_one_d_morton_orders_horizontal_sliver() {
-    let ring: Vec<Point> = (0..1_000).map(|index| xy(f64::from(index), 0.0)).collect();
-    let scale = ZScale::new(&ring).expect("horizontal sliver has x extent");
-    assert_eq!(scale.height, 0.0);
-    assert!(scale.width > 0.0);
-    let keys: Vec<u64> = ring.iter().map(|&point| scale.key(point)).collect();
-    let mut sorted = keys.clone();
-    sorted.sort_unstable();
-    assert_eq!(keys, sorted, "x-ordered ring should have monotone z keys");
-    let arena = EarArena::new(&ring);
-    assert!(arena.has_z_scale());
 }
 
 #[test]
@@ -1643,8 +1650,7 @@ fn assert_offset_hole_shell_bridges(shell_vertices: usize) {
 
 // The size ladder is one test per rung rather than one loop over all of them:
 // the rungs are independent, so separate tests run concurrently and a failure
-// names its own size. Earcut has no size-dependent threshold (`z_order` is
-// built unconditionally), so these figures are a scale ladder, not a boundary.
+// names its own size. These figures are a scale ladder, not a boundary.
 #[test]
 fn earcut_holes_bridge_succeeds_for_a_500_vertex_shell() {
     assert_offset_hole_shell_bridges(500);

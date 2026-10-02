@@ -2,15 +2,16 @@
     clippy::similar_names,
     reason = "axis and formula symbols name paired quantities here (minx/miny, xs/ys, lat_rad/lam_rad, step/stop), which this lint reads as typos"
 )]
-use ahash::HashSetExt as _;
+use std::collections::BTreeSet;
+
+use ahash::{HashMapExt as _, HashSetExt as _};
 use rstar::AABB;
 use rstar::primitives::{GeomWithData, Rectangle};
 
-use crate::curves::morton_interleave;
 use crate::error::Result;
 use crate::geometry::{
     Bounds, BulkRTree, CoordSeqBuilder, CoordinateAxes, Coordinates, GeometryErrorKind, HasM, HasZ,
-    HashSet, MOrdinate, Orientation, Point, PointKey, Polygon, Ring, RingWinding, Segment,
+    HashMap, HashSet, MOrdinate, Orientation, Point, PointKey, Polygon, Ring, RingWinding, Segment,
     SegmentIndex, Shape, XY, ZOrdinate, dedup_consecutive_points, open_point_cycle_winding,
     orientation, orientation_xy, point_on_segment, ring_contains_interior, same_point,
     segments_intersect, wrap_index,
@@ -328,6 +329,9 @@ fn push_ring_segments(ring: &[Point], id: EarcutRingId, segments: &mut RingSegme
 }
 
 pub(crate) fn validate_hole_interactions(shell: &[Point], holes: &[Vec<Point>]) -> Result<()> {
+    if holes.is_empty() {
+        return Ok(());
+    }
     let mut segments = RingSegments::new();
     push_ring_segments(shell, EarcutRingId::Shell, &mut segments);
     for (index, hole) in holes.iter().enumerate() {
@@ -671,11 +675,9 @@ struct EarNode {
     point: Point,
     prev: NodeId,
     next: NodeId,
-    active: bool,
-    z: u64,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 struct NodeId(usize);
 
 impl NodeId {
@@ -688,16 +690,14 @@ impl NodeId {
     }
 }
 
-pub(crate) struct EarArena {
+struct EarArena {
     nodes: Vec<EarNode>,
-    z_order: Vec<NodeId>,
     active: usize,
-    z_scale: Option<ZScale>,
+    candidates: Option<EarCandidateTree>,
 }
 
 impl EarArena {
-    pub(crate) fn new(points: &[Point]) -> Self {
-        let z_scale = ZScale::new(points);
+    fn new(points: &[Point]) -> Self {
         let nodes: Vec<EarNode> = points
             .iter()
             .copied()
@@ -709,21 +709,13 @@ impl EarArena {
                     points.len(),
                 )),
                 next: NodeId::from_index(wrap_index(index.wrapping_add(1), points.len())),
-                active: true,
-                z: z_scale.map_or(0, |scale| scale.key(point)),
             })
             .collect();
-        let mut z_order = nodes
-            .iter()
-            .enumerate()
-            .map(|(index, _)| NodeId::from_index(index))
-            .collect::<Vec<_>>();
-        z_order.sort_unstable_by_key(|&node| arena_node(&nodes, node).z);
+        let candidates = (points.len() > 64).then(|| EarCandidateTree::new(points));
         Self {
             nodes,
-            z_order,
             active: points.len(),
-            z_scale,
+            candidates,
         }
     }
 
@@ -742,30 +734,219 @@ impl EarArena {
         };
         self.node_mut(prev).next = next;
         self.node_mut(next).prev = prev;
-        self.node_mut(id).active = false;
+        if self.candidates.is_some() {
+            self.candidates
+                .as_mut()
+                .expect("indexed ring")
+                .convex
+                .remove(&id);
+            for neighbor in [prev, next] {
+                let node = self.node(neighbor);
+                let reflex = orientation(
+                    self.node(node.prev).point,
+                    node.point,
+                    self.node(node.next).point,
+                ) != Orientation::CounterClockwise;
+                self.candidates
+                    .as_mut()
+                    .expect("indexed ring")
+                    .set_reflex(neighbor, reflex);
+            }
+        }
         self.active = self.active.wrapping_sub(1);
     }
+}
 
-    fn active_ids(&self) -> impl Iterator<Item = NodeId> + '_ {
-        self.nodes
+enum EarCandidateBranch {
+    Vertex(NodeId),
+    Children([usize; 2]),
+}
+
+struct EarCandidateNode {
+    bounds: Bounds,
+    parent: Option<usize>,
+    live: usize,
+    branch: EarCandidateBranch,
+}
+
+struct EarCandidateTree {
+    // An ear obstruction has a reflex or collinear witness. Subtree counts
+    // and boxes track those corners; cuts update the two surviving neighbors.
+    nodes: Vec<EarCandidateNode>,
+    // Bridge copies at one XY share a geometric witness but retain distinct
+    // corner orientations in the ring.
+    leaves: Vec<usize>,
+    reflex: Vec<bool>,
+    // Removal preserves original ring ordinal order, including wraparound.
+    convex: BTreeSet<NodeId>,
+}
+
+#[expect(
+    clippy::indexing_slicing,
+    reason = "candidate node indices and leaf addresses are created together by the balanced tree builder"
+)]
+impl EarCandidateTree {
+    fn new(points: &[Point]) -> Self {
+        fn build(
+            tree: &mut EarCandidateTree,
+            points: &[Point],
+            live: &[usize],
+            order: &mut [NodeId],
+            parent: Option<usize>,
+        ) -> usize {
+            let bounds = Bounds::from_xy_iter(order.iter().map(|id| points[id.index()].xy()));
+            let index = tree.nodes.len();
+            tree.nodes.push(EarCandidateNode {
+                bounds,
+                parent,
+                live: order.len(),
+                branch: EarCandidateBranch::Vertex(order[0]),
+            });
+            if order.len() == 1 {
+                let vertex = order[0].index();
+                tree.leaves[vertex] = index;
+                tree.nodes[index].live = live[vertex];
+            } else {
+                let split = order.len() / 2;
+                let x_axis = bounds.maxx() - bounds.minx() >= bounds.maxy() - bounds.miny();
+                order.select_nth_unstable_by(split, |left, right| {
+                    let l = points[left.index()];
+                    let r = points[right.index()];
+                    (if x_axis {
+                        l.x.total_cmp(&r.x)
+                    } else {
+                        l.y.total_cmp(&r.y)
+                    })
+                    .then_with(|| left.index().cmp(&right.index()))
+                });
+                let (left, right) = order.split_at_mut(split);
+                let left = build(tree, points, live, left, Some(index));
+                let right = build(tree, points, live, right, Some(index));
+                tree.nodes[index].branch = EarCandidateBranch::Children([left, right]);
+                tree.refresh(index);
+            }
+            index
+        }
+        let mut representatives = HashMap::with_capacity(points.len());
+        let mut order = Vec::with_capacity(points.len());
+        let mut aliases = Vec::with_capacity(points.len());
+        let mut live = vec![0_usize; points.len()];
+        let mut reflex = Vec::with_capacity(points.len());
+        for (index, &point) in points.iter().enumerate() {
+            let vertex = NodeId::from_index(index);
+            let representative =
+                *representatives
+                    .entry(PointKey::new(point))
+                    .or_insert_with(|| {
+                        order.push(vertex);
+                        vertex
+                    });
+            aliases.push(representative);
+            let previous = wrap_index(
+                index.wrapping_add(points.len()).wrapping_sub(1),
+                points.len(),
+            );
+            let next = wrap_index(index.wrapping_add(1), points.len());
+            let is_reflex =
+                orientation(points[previous], point, points[next]) != Orientation::CounterClockwise;
+            reflex.push(is_reflex);
+            live[representative.index()] =
+                live[representative.index()].wrapping_add(usize::from(is_reflex));
+        }
+        let mut tree = Self {
+            nodes: Vec::with_capacity(order.len().wrapping_mul(2).wrapping_sub(1)),
+            leaves: vec![0; points.len()],
+            convex: reflex
+                .iter()
+                .enumerate()
+                .filter_map(|(index, &reflex)| (!reflex).then_some(NodeId::from_index(index)))
+                .collect(),
+            reflex,
+        };
+        build(&mut tree, points, &live, &mut order, None);
+        tree.leaves = aliases
             .iter()
-            .enumerate()
-            .filter_map(|(index, node)| node.active.then_some(NodeId::from_index(index)))
+            .map(|vertex| tree.leaves[vertex.index()])
+            .collect();
+        tree
     }
 
-    #[cfg(test)]
-    pub(crate) const fn has_z_scale(&self) -> bool {
-        self.z_scale.is_some()
+    fn is_reflex(&self, vertex: NodeId) -> bool {
+        self.reflex[vertex.index()]
     }
 
-    fn z_window(&self, min: u64, max: u64) -> Option<&[NodeId]> {
-        let lo = self
-            .z_order
-            .partition_point(|&candidate| self.node(candidate).z < min);
-        let hi = self
-            .z_order
-            .partition_point(|&candidate| self.node(candidate).z <= max);
-        self.z_order.get(lo..hi)
+    fn next_convex(&self, vertex: NodeId) -> Option<NodeId> {
+        self.convex
+            .range(vertex..)
+            .next()
+            .or_else(|| self.convex.first())
+            .copied()
+    }
+
+    fn refresh(&mut self, index: usize) {
+        let EarCandidateBranch::Children([left, right]) = self.nodes[index].branch else {
+            unreachable!("only internal candidate nodes are refreshed");
+        };
+        let left = &self.nodes[left];
+        let right = &self.nodes[right];
+        let live = left.live.wrapping_add(right.live);
+        let bounds = if left.live == 0 {
+            right.bounds
+        } else if right.live == 0 {
+            left.bounds
+        } else {
+            let mut bounds = left.bounds;
+            bounds.include_bounds(right.bounds);
+            bounds
+        };
+        self.nodes[index].live = live;
+        self.nodes[index].bounds = bounds;
+    }
+
+    fn set_reflex(&mut self, vertex: NodeId, reflex: bool) {
+        if self.is_reflex(vertex) == reflex {
+            return;
+        }
+        let leaf = self.leaves[vertex.index()];
+        self.reflex[vertex.index()] = reflex;
+        if reflex {
+            self.convex.remove(&vertex);
+        } else {
+            self.convex.insert(vertex);
+        }
+        self.nodes[leaf].live = if reflex {
+            self.nodes[leaf].live.wrapping_add(1)
+        } else {
+            self.nodes[leaf].live.wrapping_sub(1)
+        };
+        let mut cursor = self.nodes[leaf].parent;
+        while let Some(index) = cursor {
+            self.refresh(index);
+            cursor = self.nodes[index].parent;
+        }
+    }
+
+    fn any_in(&self, bounds: Bounds, mut predicate: impl FnMut(NodeId) -> bool) -> bool {
+        fn visit(
+            tree: &EarCandidateTree,
+            index: usize,
+            bounds: Bounds,
+            predicate: &mut impl FnMut(NodeId) -> bool,
+        ) -> bool {
+            #[cfg(test)]
+            EAR_CANDIDATE_VISITS.with(|count| count.set(count.get().wrapping_add(1)));
+            let node = &tree.nodes[index];
+            if node.live == 0 || !node.bounds.intersects(bounds) {
+                return false;
+            }
+            match node.branch {
+                EarCandidateBranch::Vertex(vertex) => predicate(vertex),
+                EarCandidateBranch::Children([left, right]) => {
+                    visit(tree, left, bounds, predicate) || visit(tree, right, bounds, predicate)
+                },
+            }
+        }
+        visit(self, 0, bounds, &mut predicate)
     }
 }
 
@@ -785,76 +966,6 @@ const fn arena_node_mut(nodes: &mut [EarNode], id: NodeId) -> &mut EarNode {
     &mut nodes[id.index()]
 }
 
-#[derive(Clone, Copy)]
-pub(crate) struct ZScale {
-    pub(crate) minx: f64,
-    pub(crate) miny: f64,
-    pub(crate) width: f64,
-    pub(crate) height: f64,
-}
-
-impl ZScale {
-    pub(crate) fn new(points: &[Point]) -> Option<Self> {
-        let first = *points.first()?;
-        let (mut minx, mut miny, mut maxx, mut maxy) = (first.x, first.y, first.x, first.y);
-        for point in points.iter().skip(1) {
-            minx = minx.min(point.x);
-            miny = miny.min(point.y);
-            maxx = maxx.max(point.x);
-            maxy = maxy.max(point.y);
-        }
-        let bounds = Bounds::new_raw(minx, miny, maxx, maxy);
-        let width = bounds.maxx() - bounds.minx();
-        let height = bounds.maxy() - bounds.miny();
-        (width.is_finite()
-            && height.is_finite()
-            && (width > 0.0 || height > 0.0)
-            && !(width == 0.0 && height == 0.0))
-            .then_some(Self {
-                minx: bounds.minx(),
-                miny: bounds.miny(),
-                width,
-                height,
-            })
-    }
-
-    pub(crate) fn key(self, point: Point) -> u64 {
-        let cell = |value: f64, min: f64, span: f64| {
-            (((value - min) / span).clamp(0.0, 1.0) * f64::from(u32::MAX)) as u32
-        };
-        if self.width == 0.0 {
-            u64::from(cell(point.y, self.miny, self.height))
-        } else if self.height == 0.0 {
-            u64::from(cell(point.x, self.minx, self.width))
-        } else {
-            morton_interleave(
-                cell(point.x, self.minx, self.width),
-                cell(point.y, self.miny, self.height),
-            )
-        }
-    }
-
-    pub(crate) fn range(self, a: Point, b: Point, c: Point) -> (u64, u64) {
-        if self.width == 0.0 {
-            let min_y = a.y.min(b.y).min(c.y);
-            let max_y = a.y.max(b.y).max(c.y);
-            let min = Point::new_raw_xy(a.x, min_y);
-            let max = Point::new_raw_xy(a.x, max_y);
-            (self.key(min), self.key(max))
-        } else if self.height == 0.0 {
-            let min_x = a.x.min(b.x).min(c.x);
-            let max_x = a.x.max(b.x).max(c.x);
-            let min = Point::new_raw_xy(min_x, a.y);
-            let max = Point::new_raw_xy(max_x, a.y);
-            (self.key(min), self.key(max))
-        } else {
-            let min = Point::new_raw_xy(a.x.min(b.x).min(c.x), a.y.min(b.y).min(c.y));
-            let max = Point::new_raw_xy(a.x.max(b.x).max(c.x), a.y.max(b.y).max(c.y));
-            (self.key(min), self.key(max))
-        }
-    }
-}
-
 pub(crate) fn earcut_linked_ring_with(
     points: &[Point],
     emit: &mut impl FnMut(Point, Point, Point) -> Result<()>,
@@ -866,6 +977,11 @@ pub(crate) fn earcut_linked_ring_with(
     let mut current = NodeId::from_index(0);
     let mut guard = 0_usize;
     while arena.active > 3 {
+        if let Some(candidates) = &arena.candidates
+            && candidates.is_reflex(current)
+        {
+            current = candidates.next_convex(current).unwrap_or(current);
+        }
         if is_ear(&arena, current) {
             let (prev, next) = {
                 let node = arena.node(current);
@@ -878,7 +994,7 @@ pub(crate) fn earcut_linked_ring_with(
             );
             emit(triangle.0, triangle.1, triangle.2)?;
             arena.remove(current);
-            current = next;
+            current = arena.node(next).next;
             guard = 0;
             continue;
         }
@@ -891,10 +1007,7 @@ pub(crate) fn earcut_linked_ring_with(
         }
     }
     if arena.active == 3 {
-        let first = arena
-            .active_ids()
-            .next()
-            .expect("three active nodes remain");
+        let first = current;
         let second = arena.node(first).next;
         let third = arena.node(second).next;
         emit(
@@ -907,9 +1020,6 @@ pub(crate) fn earcut_linked_ring_with(
 }
 
 fn is_ear(arena: &EarArena, index: NodeId) -> bool {
-    if !arena.node(index).active {
-        return false;
-    }
     let (prev, next) = {
         let node = arena.node(index);
         (node.prev, node.next)
@@ -919,7 +1029,11 @@ fn is_ear(arena: &EarArena, index: NodeId) -> bool {
         arena.node(index).point,
         arena.node(next).point,
     );
-    if orientation(a, b, c) != Orientation::CounterClockwise {
+    let reflex = arena.candidates.as_ref().map_or_else(
+        || orientation(a, b, c) != Orientation::CounterClockwise,
+        |tree| tree.is_reflex(index),
+    );
+    if reflex {
         return false;
     }
     !ear_contains_vertex(arena, prev, index, next, a, b, c)
@@ -934,24 +1048,39 @@ fn ear_contains_vertex(
     b: Point,
     c: Point,
 ) -> bool {
-    if let Some(scale) = arena.z_scale {
-        let (min_z, max_z) = scale.range(a, b, c);
-        // `z_order` is sorted by `node.z`, so the candidates in the ear's
-        // z-range are a CONTIGUOUS slice — binary-search its bounds and scan
-        // only that window (mapbox earcut's O(log n + k) hashing) instead of
-        // the whole list, which made every ear test O(n) (overall O(n²)).
-        return arena.z_window(min_z, max_z).is_some_and(|window| {
-            window.iter().copied().any(|candidate| {
-                let node = arena.node(candidate);
-                node.active
-                    && candidate_inside_ear(candidate, prev, current, next, node.point, a, b, c)
-            })
+    let minx = a.x.min(b.x).min(c.x);
+    let miny = a.y.min(b.y).min(c.y);
+    let maxx = a.x.max(b.x).max(c.x);
+    let maxy = a.y.max(b.y).max(c.y);
+    if let Some(candidates) = &arena.candidates {
+        let bounds = Bounds::new_raw(minx, miny, maxx, maxy);
+        return candidates.any_in(bounds, |candidate| {
+            candidate_inside_ear(
+                candidate,
+                prev,
+                current,
+                next,
+                arena.node(candidate).point,
+                a,
+                b,
+                c,
+            )
         });
     }
-    arena.active_ids().any(|candidate| {
+    let mut candidate = arena.node(next).next;
+    while candidate != prev {
         let point = arena.node(candidate).point;
-        candidate_inside_ear(candidate, prev, current, next, point, a, b, c)
-    })
+        if point.x >= minx
+            && point.x <= maxx
+            && point.y >= miny
+            && point.y <= maxy
+            && candidate_inside_ear(candidate, prev, current, next, point, a, b, c)
+        {
+            return true;
+        }
+        candidate = arena.node(candidate).next;
+    }
+    false
 }
 
 fn candidate_inside_ear(
@@ -964,6 +1093,8 @@ fn candidate_inside_ear(
     b: Point,
     c: Point,
 ) -> bool {
+    #[cfg(test)]
+    EAR_CANDIDATE_VISITS.with(|count| count.set(count.get().wrapping_add(1)));
     candidate != prev
         && candidate != current
         && candidate != next
@@ -971,6 +1102,18 @@ fn candidate_inside_ear(
         && !same_point(point, b)
         && !same_point(point, c)
         && point_in_ccw_triangle(point, a, b, c)
+}
+
+#[cfg(test)]
+thread_local! {
+    static EAR_CANDIDATE_VISITS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+pub(super) fn count_ear_candidates<T>(operation: impl FnOnce() -> T) -> (T, usize) {
+    EAR_CANDIDATE_VISITS.with(|count| count.set(0));
+    let result = operation();
+    (result, EAR_CANDIDATE_VISITS.with(std::cell::Cell::get))
 }
 
 pub(crate) fn open_ring<C: Coordinates + ?Sized>(points: &C) -> Vec<Point> {

@@ -1028,7 +1028,7 @@ impl Groups {
     /// >>> import gometry as gm
     /// >>> groups = gm.GeometryArray([gm.box(0, 0, 2, 2)]).triangulate(method='earcut')
     /// >>> [g.to_wkt() for g in groups.to_list()[0]]
-    /// ['POLYGON ((0 2, 0 0, 2 0, 0 2))', 'POLYGON ((2 0, 2 2, 0 2, 2 0))']
+    /// ['POLYGON ((0 2, 0 0, 2 0, 0 2))', 'POLYGON ((2 2, 0 2, 2 0, 2 2))']
     fn to_list(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         let mut rows = Vec::with_capacity(self.rows.len());
         for row in 0..self.rows.len() {
