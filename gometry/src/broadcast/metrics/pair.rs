@@ -1,11 +1,12 @@
-use crate::array::{ArrayRow, PackedStorage, PointRows, PyGeometryArray};
+use crate::array::{ArrayRow, PyGeometryArray};
 use crate::broadcast::metrics::{
     CoordinateAxes, DistanceUnit, GeometryArrayStorage, GeometryError, GeometryKind, Point,
     PyGeometry, PyResult, Shape, ShapeData, crs,
 };
 use crate::dispatch::MetricOp;
 use crate::geographic::{GeographicFrame, lonlat as geographic};
-use crate::geometry::{FrameDependentCaches, LineSeq, PreparedPlan, ShapeCountQuery};
+use crate::geometry::storage::{PackedStorage, PointRows};
+use crate::geometry::{FrameDependentCaches, LineSeq, PreparedPlan, ShapeCountQuery, storage};
 use crate::py::support;
 #[cfg(test)]
 use crate::test_support::binary_dispatch_counters;
@@ -296,7 +297,7 @@ fn compact_lonlat_points(
             },
             ArrayRow::Present(row) => {
                 let logical = row.logical();
-                let crate::array::ShapeRow::Point(point) = row.row() else {
+                let storage::ShapeRow::Point(point) = row.row() else {
                     unreachable!("compact point storage yields point rows")
                 };
                 xs.push(point.x);
@@ -564,7 +565,7 @@ pub(crate) fn same_storage_similarity_metric_zeros(storage: &GeometryArrayStorag
             offsets, row_map, ..
         }) => {
             let map = row_map.as_deref();
-            let rows = crate::array::line_logical_len(offsets.as_slice(), map);
+            let rows = storage::line_logical_len(offsets.as_slice(), map);
             for logical in 0..rows {
                 values.push(if map.csr_window(offsets.as_slice(), logical).is_empty() {
                     f64::INFINITY
@@ -574,7 +575,7 @@ pub(crate) fn same_storage_similarity_metric_zeros(storage: &GeometryArrayStorag
             }
         },
         GeometryArrayStorage::Packed(PackedStorage::Points { coords, row_map }) => {
-            let rows = crate::array::point_logical_len(coords, row_map.as_deref());
+            let rows = storage::point_logical_len(coords, row_map.as_deref());
             values.resize(rows, 0.0);
         },
         GeometryArrayStorage::Packed(PackedStorage::Polygons {
@@ -584,7 +585,7 @@ pub(crate) fn same_storage_similarity_metric_zeros(storage: &GeometryArrayStorag
             ..
         }) => {
             let map = row_map.as_deref();
-            let rows = crate::array::polygon_logical_len(polygon_offsets.as_slice(), map);
+            let rows = storage::polygon_logical_len(polygon_offsets.as_slice(), map);
             for logical in 0..rows {
                 let rings = map.csr_window(polygon_offsets.as_slice(), logical);
                 values.push(
@@ -981,8 +982,9 @@ mod dwithin_parity_tests {
 #[cfg(test)]
 mod lonlat_points_tests {
     use super::{LonLatPointRows, LonLatPointsError, lonlat_points};
-    use crate::array::{PyGeometryArray, ValidityMask};
+    use crate::array::PyGeometryArray;
     use crate::crs::frame::{Frame, crs_arc_static};
+    use crate::geometry::storage::ValidityMask;
     use crate::geometry::{CoordSeq, Point};
     use crate::io::parse_wkt;
 

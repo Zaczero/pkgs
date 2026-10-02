@@ -8,6 +8,7 @@
 //! broadcast/prepared surfaces. Geographic nearest/`dwithin` queries prune the
 //! immutable runs with the sound geodesic lower bound in [`geodesic`].
 
+use crate::geometry::storage;
 mod geodesic;
 mod live_handles;
 mod str_tree;
@@ -725,7 +726,7 @@ impl IndexRows {
             shapes.push(shape);
         }
         let present = PyGeometryArray::from_shapes(shapes, frame)?;
-        let Some(missing) = crate::array::ValidityMask::from_missing_iter(
+        let Some(missing) = storage::ValidityMask::from_missing_iter(
             self.live.len(),
             self.live.iter().map(|&live| live == 0),
         ) else {

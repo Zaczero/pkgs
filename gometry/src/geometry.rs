@@ -70,6 +70,7 @@ pub(crate) use area::{
     polygon_area_measure_with, ring_winding,
 };
 pub(crate) use segments::{Orientation, held_axis_interpolate, orientation};
+pub(crate) mod storage;
 pub(crate) mod types;
 pub(crate) use types::{
     Bounds, BufferCapStyle, BufferJoinStyle, BufferSide, ChartMetric, CoordSeq, CoordSeqBuilder,
@@ -162,8 +163,8 @@ use access::{
 pub(crate) use arrangement::Arrangement;
 pub(crate) use bvh_code::{BvhCode, BvhNode};
 pub(crate) use constructive::{
-    AffineLinear, DEFAULT_MITER_LIMIT, GeographicRdpGuard, OriginAffine, PlanarRdpGuard,
-    RdpEdgeSpanGuard, SegmentPlacement, densify_points_budgeted_with_placement,
+    AffineLinear, DEFAULT_MITER_LIMIT, GeographicRdpGuard, OriginAffine, OriginSpec,
+    PlanarRdpGuard, RdpEdgeSpanGuard, SegmentPlacement, densify_points_budgeted_with_placement,
     rdp_keep_with_edge_guard, segmentize_points_budgeted, stable_affine_xy, stable_snap_ordinate,
     verify_planar_segmentize_output, verify_planar_segmentize_shape, vw_keep, vw_keep_geographic,
 };

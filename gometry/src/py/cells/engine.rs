@@ -388,6 +388,7 @@ pub(super) fn rect_cells_to_polygon<C: RectCell>(cells: Vec<C>) -> PyResult<Type
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::crs::frame;
 
     #[test]
     fn grouped_cover_budget_is_cumulative_and_overflow_safe() {
@@ -439,7 +440,7 @@ mod tests {
         let array = crate::PyGeometryArray::packed_points(
             crate::geometry::CoordSeq::try_from_vecs(vec![13.4, 0.0], vec![52.5, 95.0], None, None)
                 .unwrap(),
-            crate::crs::frame::Frame::None,
+            frame::Frame::None,
         )
         .unwrap();
         let admission = GridSourceAdmission::new(&array.frame).unwrap();

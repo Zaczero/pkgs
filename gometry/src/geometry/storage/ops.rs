@@ -2,14 +2,16 @@
     clippy::similar_names,
     reason = "axis and formula symbols name paired quantities here (minx/miny, xs/ys, lat_rad/lam_rad, step/stop), which this lint reads as typos"
 )]
-use crate::array::{
-    Bounds, CoordSeq, CoordinateAxes, CsrOffsetColumn, GeometryArrayStorage, PackedRow,
-    PackedStorage, Polygon, RowSelectionRef, RowsIter, Shape, ShapeRow, ShapesIter, column_window,
-    csr_value_window, line_logical_len, point_logical_len, polygon_logical_len,
+use super::{
+    GeometryArrayStorage, PackedRow, PackedStorage, RowSelectionRef, RowsIter, ShapeRow,
+    ShapesIter, column_window, csr_value_window, line_logical_len, point_logical_len,
+    polygon_logical_len,
 };
 use crate::error::Result;
-use crate::geometry::GeometryKind;
 use crate::geometry::types::ShapeHeapMemo;
+use crate::geometry::{
+    Bounds, CoordSeq, CoordinateAxes, CsrOffsetColumn, GeometryKind, Polygon, Shape, storage,
+};
 
 impl GeometryArrayStorage {
     pub(crate) const fn uniform_kind(&self) -> Option<crate::geometry::GeometryKind> {
@@ -106,8 +108,11 @@ impl GeometryArrayStorage {
                     let mut output = Vec::with_capacity(len);
                     for logical in 0..len {
                         let rings = map.csr_window(polygon_offsets, logical);
-                        let polygon_value =
-                            crate::array::packed_polygon_view!(coords, ring_offsets, rings)?;
+                        let polygon_value = crate::geometry::storage::packed_polygon_view!(
+                            coords,
+                            ring_offsets,
+                            rings
+                        )?;
                         output.push(polygon(polygon_value.as_ref())?);
                     }
                     Ok(output)
@@ -123,7 +128,7 @@ impl GeometryArrayStorage {
     /// mask is present — dense input uses [`lines_bool`].
     pub(crate) fn lines_bool_masked(
         &self,
-        missing: Option<&crate::array::ValidityMask>,
+        missing: Option<&storage::ValidityMask>,
         line: impl Fn(&CoordSeq) -> Result<bool>,
     ) -> Option<Result<Vec<bool>>> {
         let Some(mask) = missing else {
@@ -164,7 +169,7 @@ impl GeometryArrayStorage {
     /// present — dense input uses [`polygons_bool`].
     pub(crate) fn polygons_bool_masked(
         &self,
-        missing: Option<&crate::array::ValidityMask>,
+        missing: Option<&storage::ValidityMask>,
         polygon: impl Fn(Option<&Polygon>) -> Result<bool>,
     ) -> Option<Result<Vec<bool>>> {
         let Some(mask) = missing else {
@@ -189,8 +194,11 @@ impl GeometryArrayStorage {
                             false
                         } else {
                             let rings = map.csr_window(polygon_offsets, logical);
-                            let polygon_value =
-                                crate::array::packed_polygon_view!(coords, ring_offsets, rings)?;
+                            let polygon_value = crate::geometry::storage::packed_polygon_view!(
+                                coords,
+                                ring_offsets,
+                                rings
+                            )?;
                             polygon(polygon_value.as_ref())?
                         };
                         output.push(value);

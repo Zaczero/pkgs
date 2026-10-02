@@ -11,7 +11,9 @@
 use pyo3::prelude::*;
 
 use crate::geographic::lonlat::{MAX_LATITUDE, MAX_LONGITUDE, MIN_LATITUDE, MIN_LONGITUDE};
-use crate::geometry::{CoordSeq, CoordSeqBuilder, CoordinateAxes, GeometryKind, LineSeq, Point};
+use crate::geometry::{
+    CoordSeq, CoordSeqBuilder, CoordinateAxes, GeometryKind, LineSeq, Point, storage,
+};
 use crate::py::errors;
 use crate::py::errors::{InvalidGeometryError, ParseError};
 use crate::py::functions::bulk_rows::{StreamedRow, stream_bulk};
@@ -264,7 +266,7 @@ pub(crate) fn present_polylines_of(
     require_polyline_crs(array.crs_str())?;
     let present_count = array
         .missing()
-        .map_or(array.len(), crate::array::ValidityMask::present_count);
+        .map_or(array.len(), storage::ValidityMask::present_count);
     let mut output = Vec::with_capacity(present_count);
     for row in array.row_operation().present_rows() {
         let logical = row.logical();

@@ -748,6 +748,7 @@ pub(crate) fn rect_cell_array_for<S: RectCoverSpec>(
 mod tests {
     use super::{GridCoverError, GridSourceAdmission, SortedCells};
     use crate::Frame;
+    use crate::crs::frame;
     use crate::error::ErrorKind;
     use crate::geographic::{GeographicFrame, ScalarGeographicView};
     use crate::geometry::{GeometryErrorKind, Point, Shape};
@@ -808,7 +809,7 @@ mod tests {
         crate::crs::clear_cache();
         let geometry = crate::PyGeometry::with_frame(
             Shape::Point(Point::new_raw_xy(-104.0, 40.0)),
-            Frame::Crs(crate::crs::frame::crs_arc_static("EPSG:4267")),
+            Frame::Crs(frame::crs_arc_static("EPSG:4267")),
         );
         let admission = GridSourceAdmission::new(&geometry.frame).unwrap();
         let execution = admission

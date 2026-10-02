@@ -1,8 +1,8 @@
-use crate::array::{PackedRow, ShapeRow};
 use crate::error::Result;
 use crate::geometry::distance::{bounds_distance_squared, bounds_squared_safe};
 use crate::geometry::facet_bvh::{FACET_SEGMENTS, facet_point_distance_columns};
 use crate::geometry::source_support::cartesian_row_area_covers_point;
+use crate::geometry::storage::{PackedRow, ShapeRow};
 use crate::geometry::{
     Bounds, GeometryKind, Point, Segment, Shape, XY, finish_planar_squared_min, point_distance,
     point_distance_squared, point_segment_distance, point_segment_distance_squared, points_dwithin,

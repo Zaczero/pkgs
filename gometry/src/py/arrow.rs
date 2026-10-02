@@ -9,11 +9,11 @@ use pyo3::prelude::*;
 use pyo3::sync::PyOnceLock;
 use pyo3::types::{PyAny, PyModule, PyTuple};
 
-use crate::array::{GeometryArrayStorage, PackedStorage};
 use crate::crs::frame::{
     Frame, epochs_equal, optional_crs_labels_operationally_equal, optional_epochs_equal,
 };
-use crate::geometry::{CoordSeqBuilder, CoordinateAxes, CsrOffsetBuilder};
+use crate::geometry::storage::{GeometryArrayStorage, PackedStorage};
+use crate::geometry::{CoordSeqBuilder, CoordinateAxes, CsrOffsetBuilder, storage};
 use crate::py::arrow_c::{
     NativeArrowBatch, NativeArrowClassification, NativeArrowDecodeError, NativeDecodedBatch,
     NativeDecodedStorage,
@@ -330,7 +330,7 @@ impl NativeArrowAccumulator {
         let epoch = reconcile_arrow_epoch(metadata_epoch, epoch)?;
         let frame = Frame::new(crs, epoch)?;
         let storage = combine_native_storage(storage)?;
-        let missing = crate::array::ValidityMask::from_sparse(length, &missing_rows);
+        let missing = storage::ValidityMask::from_sparse(length, &missing_rows);
         let output = PyGeometryArray::from_result_storage(
             Arc::new(storage),
             frame,
@@ -479,7 +479,7 @@ fn combine_packed_parts(
             let coords = Arc::new(builder.finish()?);
             Ok(Some(GeometryArrayStorage::Packed(PackedStorage::Points {
                 coords,
-                row_map: crate::array::RowSelection::Identity,
+                row_map: storage::RowSelection::Identity,
             })))
         },
         NativePackedFamily::Lines(axes) => {
@@ -510,7 +510,7 @@ fn combine_packed_parts(
             Ok(Some(GeometryArrayStorage::Packed(PackedStorage::Lines {
                 coords: Arc::new(coords),
                 offsets: offsets.finish(coord_len)?,
-                row_map: crate::array::RowSelection::Identity,
+                row_map: storage::RowSelection::Identity,
             })))
         },
         NativePackedFamily::Polygons(axes) => {
@@ -558,7 +558,7 @@ fn combine_packed_parts(
                     coords: Arc::new(coords),
                     ring_offsets: ring_offsets.finish(coord_len)?.cast_level(),
                     polygon_offsets: polygon_offsets.finish(rings)?.cast_level(),
-                    row_map: crate::array::RowSelection::Identity,
+                    row_map: storage::RowSelection::Identity,
                 },
             )))
         },

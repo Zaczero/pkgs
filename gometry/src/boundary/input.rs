@@ -10,10 +10,11 @@ use pyo3::prelude::*;
 use pyo3::types::{PyBool, PyBytes, PyDict, PyFloat, PyInt, PyString};
 
 use crate::boundary::FloatInput;
+use crate::geometry::OriginSpec;
 use crate::py::errors;
 use crate::py::errors::{GeometryError, InvalidGeometryError};
 use crate::py::numpy::reject_masked_array;
-use crate::{Positive, Shape, crs, float_values_exact};
+use crate::{Positive, crs, float_values_exact};
 
 pub(crate) fn py_i64_required(name: &str, value: &Bound<'_, PyAny>) -> PyResult<i64> {
     // A non-int where an int is required is a plain `TypeError` (like the
@@ -457,27 +458,6 @@ pub(crate) fn parse_affine_matrix(matrix: &Bound<'_, PyAny>) -> PyResult<[f64; 6
     values
         .try_into()
         .map_err(|_| GeometryError::new_err("affine matrix must have exactly 6 elements"))
-}
-
-/// A parsed `origin` argument for the ergonomic affine helpers: parsed
-/// once per call, resolved per shape — which also lets array bindings
-/// notice when the origin is per-shape (`Centroid`/`Center`, an identity
-/// for packed point rows) versus one fixed pivot.
-#[derive(Clone, Copy)]
-pub enum OriginSpec {
-    Centroid,
-    Center,
-    Fixed(f64, f64),
-}
-
-impl OriginSpec {
-    pub(crate) fn resolve_shape(self, shape: &Shape) -> crate::error::Result<(f64, f64)> {
-        Ok(match self {
-            Self::Centroid => shape.centroid_xy()?,
-            Self::Center => shape.bounds_center_xy(),
-            Self::Fixed(x, y) => (x, y),
-        })
-    }
 }
 
 impl<'a, 'py> FromPyObject<'a, 'py> for OriginSpec {

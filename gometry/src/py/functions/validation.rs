@@ -6,7 +6,7 @@
 
 use pyo3::prelude::*;
 
-use crate::array::GeometryArrayStorage;
+use crate::geometry::storage::GeometryArrayStorage;
 use crate::geometry::types::ShapeHeapMemo;
 use crate::py::errors::crs_mismatch_error;
 use crate::py::functions::bulk_rows::{StreamedRow, stream_bulk};

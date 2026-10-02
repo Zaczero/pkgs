@@ -6,15 +6,16 @@
 use pyo3::types::{PyBytes, PyTuple};
 
 use crate::array::{
-    Arc, ArrayRow, Bound, CollectRows as _, DefaultedF64Input, Error, F64Param, Frame,
-    GeometryArrayStorage, I64Param, InvalidGeometryError, PackedStorage, Py, PyAny,
-    PyAnyMethods as _, PyErr, PyGeometryArray, PyResult, PyValidationReport, Python, RepairMethod,
-    Result, Shape, VoronoiClipInput, bool_array, cdt_refinement_values, exact_geometry,
-    exact_geometry_array, expected_geometry_or_array, geometry, io, non_negative_int,
-    note_array_row, owned_voronoi_boundary, pair_packed_equals_exact, parse_precision,
-    require_geojson_crs, row_sample_seed, rows_err, validate_equals_exact_tolerance,
-    validate_subdivide_max_vertices,
+    Arc, ArrayRow, Bound, CollectRows as _, DefaultedF64Input, Error, F64Param, Frame, I64Param,
+    InvalidGeometryError, Py, PyAny, PyAnyMethods as _, PyErr, PyGeometryArray, PyResult,
+    PyValidationReport, Python, RepairMethod, Result, Shape, VoronoiClipInput, bool_array,
+    cdt_refinement_values, exact_geometry, exact_geometry_array, expected_geometry_or_array,
+    geometry, io, non_negative_int, note_array_row, owned_voronoi_boundary,
+    pair_packed_equals_exact, parse_precision, require_geojson_crs, row_sample_seed, rows_err,
+    validate_equals_exact_tolerance, validate_subdivide_max_vertices,
 };
+use crate::geometry::storage;
+use crate::geometry::storage::{GeometryArrayStorage, PackedStorage};
 use crate::py::support;
 use crate::py::vectors::Groups;
 
@@ -195,7 +196,7 @@ impl PyGeometryArray {
                 let mut all_present_valid = true;
                 let mut shapes = Vec::with_capacity(
                     self.missing()
-                        .map_or(self.len(), crate::array::ValidityMask::present_count),
+                        .map_or(self.len(), storage::ValidityMask::present_count),
                 );
                 for logical_row in self.row_operation().rows_with_missing(|| ()) {
                     let ArrayRow::Present(row) = logical_row else {
@@ -648,7 +649,7 @@ impl PyGeometryArray {
         // sentinel) and missing rows stay missing via the scatter machinery.
         let present_count = self
             .missing()
-            .map_or(self.len(), crate::array::ValidityMask::present_count);
+            .map_or(self.len(), storage::ValidityMask::present_count);
         let mut columns: [Vec<Shape>; 4] =
             std::array::from_fn(|_| Vec::with_capacity(present_count));
         for row in self.row_operation().present_rows() {

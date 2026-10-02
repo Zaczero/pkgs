@@ -2,7 +2,8 @@
     clippy::similar_names,
     reason = "axis and formula symbols name paired quantities here (minx/miny, xs/ys, lat_rad/lam_rad, step/stop), which this lint reads as typos"
 )]
-use crate::array::{Bounds, OriginSpec, Point, Result};
+use crate::error::Result;
+use crate::geometry::{Bounds, OriginSpec, Point, storage};
 
 /// Planar bounds of one row's contiguous vertex columns; `None` when empty.
 pub(crate) fn row_bounds(xs: &[f64], ys: &[f64]) -> Option<Bounds> {
@@ -36,7 +37,7 @@ pub(crate) fn packed_surface_point(point: Option<Point>) -> Result<Point> {
     )
 }
 
-/// Per-row pivot for packed-line affine ops — matches [`OriginSpec::resolve`]
+/// Per-row pivot for packed-line affine ops — matches [`OriginSpec::resolve_shape`]
 /// on a `LineString` row (`centroid_xy` / `bounds_center_xy`).
 pub(crate) fn packed_line_row_pivot(
     spec: OriginSpec,
@@ -75,12 +76,12 @@ pub(crate) fn packed_line_bounds_center_pivot(
 }
 
 /// Per-row pivot for packed-polygon affine ops — matches
-/// [`OriginSpec::resolve`] on a `Polygon` row (all rings for bounds center).
+/// [`OriginSpec::resolve_shape`] on a `Polygon` row (all rings for bounds center).
 pub(crate) fn packed_polygon_row_pivot(
     spec: OriginSpec,
-    row: crate::array::PackedRow<'_>,
+    row: storage::PackedRow<'_>,
 ) -> Result<(f64, f64)> {
-    let crate::array::PackedRow::Polygons {
+    let crate::geometry::storage::PackedRow::Polygons {
         coords,
         ring_offsets,
         ..

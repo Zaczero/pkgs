@@ -8,7 +8,7 @@ use std::simd::cmp::{SimdPartialEq as _, SimdPartialOrd as _};
 use pyo3::types::PyAny;
 
 use crate::PackedColumnError;
-use crate::array::{ArrayRow, ArrayRowOperation, ValidityMask, missing};
+use crate::array::{ArrayRow, ArrayRowOperation};
 use crate::broadcast::bool_array_mask_missing;
 use crate::broadcast::metrics::{
     Arc, Bounds, CollectRows as _, DistanceUnit, F64Param, Frame, GeometryInput, Point, Py,
@@ -20,8 +20,9 @@ use crate::broadcast::metrics::{
 };
 use crate::dispatch::MetricOp;
 use crate::geometry::packed_line_metrics::scale_metric_values;
+use crate::geometry::storage::{ValidityMask, validity as missing};
 use crate::geometry::{
-    PreparedPlan, ReduceSimd, pair_map4_guarded_f64, pair_select_mask, points_dwithin,
+    PreparedPlan, ReduceSimd, pair_map4_guarded_f64, pair_select_mask, points_dwithin, storage,
 };
 
 fn float64_array_mask_missing(
@@ -188,8 +189,8 @@ where
     C: Fn(&[f64], &[f64], &[f64], &[f64]) -> crate::error::Result<Vec<T>> + Send,
     Q: FnMut(
             &mut crate::geometry::RowMetricPair<'a>,
-            crate::array::ShapeRow<'a>,
-            crate::array::ShapeRow<'a>,
+            storage::ShapeRow<'a>,
+            storage::ShapeRow<'a>,
             Option<Bounds>,
             Option<Bounds>,
         ) -> crate::error::Result<Option<T>>
@@ -364,7 +365,7 @@ pub(crate) fn array_crs_distances<'a>(
                     py.detach(move || {
                         let mut rows = array.row_operation();
                         let mut scratch = crate::geometry::RowMetricPair::new();
-                        let fixed = crate::array::ShapeRow::Shape(right_shape.shape());
+                        let fixed = storage::ShapeRow::Shape(right_shape.shape());
                         let fixed_bounds = right_shape.bounds();
                         let element_bounds = array.existing_element_bounds();
                         rows.rows_with_missing(|| f64::NAN)
@@ -604,8 +605,8 @@ pub(crate) fn array_crs_distances<'a>(
                             None::<
                                 fn(
                                     &mut crate::geometry::RowMetricPair<'a>,
-                                    crate::array::ShapeRow<'a>,
-                                    crate::array::ShapeRow<'a>,
+                                    storage::ShapeRow<'a>,
+                                    storage::ShapeRow<'a>,
                                     Option<Bounds>,
                                     Option<Bounds>,
                                 )
@@ -776,8 +777,8 @@ pub(crate) fn array_crs_dwithin<'a>(
                             None::<
                                 fn(
                                     &mut crate::geometry::RowMetricPair<'a>,
-                                    crate::array::ShapeRow<'a>,
-                                    crate::array::ShapeRow<'a>,
+                                    storage::ShapeRow<'a>,
+                                    storage::ShapeRow<'a>,
                                     Option<Bounds>,
                                     Option<Bounds>,
                                 )
@@ -871,7 +872,7 @@ fn array_crs_dwithin_per_element_values(
                     let left_bounds = array.existing_element_bounds();
                     let mut rows = array.row_operation();
                     let mut scratch = crate::geometry::RowMetricPair::new();
-                    let fixed = crate::array::ShapeRow::Shape(right_plan.shape());
+                    let fixed = storage::ShapeRow::Shape(right_plan.shape());
                     try_collect_dwithin_rows(
                         array.len(),
                         rows.rows_with_missing(|| false).map(|left| {
@@ -1055,7 +1056,7 @@ pub(crate) fn array_crs_dwithin_scalar(
             crs::ResolvedMetric::Planar { to_metre } => {
                 let mut rows = array_owned.row_operation();
                 let mut scratch = crate::geometry::RowMetricPair::new();
-                let fixed = crate::array::ShapeRow::Shape(other_shape.shape());
+                let fixed = storage::ShapeRow::Shape(other_shape.shape());
                 let fixed_bounds = other_shape.bounds();
                 let element_bounds = array.existing_element_bounds();
                 let limit = distance / to_metre.get();
@@ -1150,7 +1151,7 @@ pub(crate) fn array_crs_dwithin_scalar(
                 py.detach(move || {
                     let mut rows = array.row_operation();
                     let mut scratch = crate::geometry::RowMetricPair::new();
-                    let fixed = crate::array::ShapeRow::Shape(other_shape.shape());
+                    let fixed = storage::ShapeRow::Shape(other_shape.shape());
                     try_collect_dwithin_rows(
                         row_count,
                         rows.rows_with_missing(|| false).map(|row| {

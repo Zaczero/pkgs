@@ -12,7 +12,7 @@ use crate::geometry::tessellation::exact;
 use crate::geometry::tessellation::exact::{ExactDyadic, ExactRational as Rational};
 use crate::geometry::{
     CoordSeq, Coordinates as _, DdInterval, ExpansionBudget, LineSeq, PackedLineColumnView, Point,
-    Polygonal, Segment, Shape, XY,
+    Polygonal, Segment, Shape, XY, storage,
 };
 
 mod index;
@@ -51,7 +51,7 @@ pub(crate) struct PreparedSupport {
 
 impl PreparedSupport {
     pub(in crate::geometry) fn from_shape<'a>(
-        shape: impl Into<crate::array::ShapeRow<'a>>,
+        shape: impl Into<storage::ShapeRow<'a>>,
         budget: &mut ExpansionBudget,
     ) -> Result<Self> {
         let shape = shape.into();
@@ -3425,8 +3425,8 @@ pub(crate) fn directed_inradius_scaled(
 }
 
 pub(crate) fn distance<'a>(
-    left: impl Into<crate::array::ShapeRow<'a>>,
-    right: impl Into<crate::array::ShapeRow<'a>>,
+    left: impl Into<storage::ShapeRow<'a>>,
+    right: impl Into<storage::ShapeRow<'a>>,
     max_error: Option<f64>,
     scale: f64,
 ) -> Result<f64> {

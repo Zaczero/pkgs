@@ -2,10 +2,10 @@ use numpy::PyArrayMethods as _;
 use pyo3::IntoPyObjectExt as _;
 
 use crate::array::{
-    ArrayRow, ArrowEncoding, Bound, F64Param, GeometryArrayStorage, GeometryError, PackedStorage,
-    Py, PyAny, PyAnyMethods as _, PyGeometry, PyGeometryArray, PyResult, PyValueError, Python,
-    SimplifyMethod, Typed, pymethods,
+    ArrayRow, ArrowEncoding, Bound, F64Param, GeometryError, Py, PyAny, PyAnyMethods as _,
+    PyGeometry, PyGeometryArray, PyResult, PyValueError, Python, SimplifyMethod, Typed, pymethods,
 };
+use crate::geometry::storage::{GeometryArrayStorage, PackedStorage};
 use crate::py::functions::polyline;
 use crate::py::numpy::numpy_module;
 use crate::py::{arrow, arrow_c, errors};

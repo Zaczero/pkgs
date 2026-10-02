@@ -1,8 +1,9 @@
 use crate::array::{
-    Arc, Bound, CRSError, CoordinateAxes, FrameEdit, GeometryArrayStorage, GeometryTransformFrame,
-    Point, Py, PyAny, PyErr, PyGeometryArray, PyResult, Python, Result, Shape, TransformOptionArgs,
-    ValidityMask, coordinate_epoch_option, crs, note_array_row, parse_crs, pymethods,
+    Arc, Bound, CRSError, CoordinateAxes, FrameEdit, GeometryTransformFrame, Point, Py, PyAny,
+    PyErr, PyGeometryArray, PyResult, Python, Result, Shape, TransformOptionArgs,
+    coordinate_epoch_option, crs, note_array_row, parse_crs, pymethods,
 };
+use crate::geometry::storage::{GeometryArrayStorage, ValidityMask};
 use crate::geometry::{OrdinateAxis, set_point_ordinate};
 use crate::predicates::unary;
 use crate::py::crs::drain_accuracy_warning;

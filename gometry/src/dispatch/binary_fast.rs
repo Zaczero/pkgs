@@ -11,7 +11,7 @@ use crate::dispatch::binary::{
 use crate::dispatch::kernels;
 use crate::dispatch::metric::GeodesicBinaryRow;
 use crate::dispatch::operation::{MetricOp, Operation};
-use crate::geometry::{GeometryKind, PreparedPlan, TopologyDomain};
+use crate::geometry::{GeometryKind, PreparedPlan, TopologyDomain, storage};
 use crate::predicates::engine;
 use crate::predicates::engine::Predicate;
 use crate::{DistanceUnit, DwithinDistance, Frame, OverlayOp};
@@ -50,7 +50,7 @@ impl BinaryArrayFastPath<bool> for PredicateFastPath {
         _op_name: &str,
         frame: &Frame,
         domain: crate::geometry::TopologyDomain,
-        missing: Option<&crate::array::ValidityMask>,
+        missing: Option<&storage::ValidityMask>,
         _model: Option<&MetricModel>,
         _metric: Option<&ResolvedMetric>,
     ) -> Option<PyResult<Py<PyAny>>> {
@@ -94,7 +94,7 @@ impl BinaryArrayFastPath<crate::geometry::Shape> for OverlayFastPath {
         _op_name: &str,
         _frame: &Frame,
         _domain: crate::geometry::TopologyDomain,
-        _missing: Option<&crate::array::ValidityMask>,
+        _missing: Option<&storage::ValidityMask>,
         _model: Option<&MetricModel>,
         _metric: Option<&ResolvedMetric>,
     ) -> Option<PyResult<Py<PyAny>>> {
@@ -463,11 +463,11 @@ mod tests {
     use pyo3::prelude::*;
 
     use crate::PyGeometry;
-    use crate::array::{
-        PyGeometryArray, ValidityMask, reset_shape_iter_materializations,
-        shape_iter_materializations,
-    };
+    use crate::array::PyGeometryArray;
     use crate::crs::frame::{Frame, crs_arc_static};
+    use crate::geometry::storage::{
+        ValidityMask, reset_shape_iter_materializations, shape_iter_materializations,
+    };
     use crate::geometry::{LineSeq, Point, Shape};
     use crate::predicates::engine::Predicate;
     use crate::py::errors::InvalidGeometryError;

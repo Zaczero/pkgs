@@ -8,6 +8,7 @@ use pyo3::prelude::*;
 use pyo3::types::{PyBool, PyInt, PyString, PyType};
 
 use crate::boundary::buffer_endian::{buffer_item_count, try_typed_buffer};
+use crate::geometry::storage;
 use crate::grid::geohash::{GEOHASH_MAX_PRECISION, Geohash};
 use crate::grid::s2::cellid::CellId;
 use crate::grid::tile::Tile;
@@ -449,7 +450,7 @@ fn parse_uint64_ids(ids: &Bound<'_, PyAny>) -> PyResult<Option<Vec<u64>>> {
 
 pub(super) struct CollectedCellIds {
     pub(super) ids: Vec<u64>,
-    pub(super) missing: Option<crate::array::ValidityMask>,
+    pub(super) missing: Option<storage::ValidityMask>,
 }
 
 pub(super) fn append_cell_row(
@@ -495,8 +496,7 @@ fn collect_ids_from_iter<'py>(
         }
         Ok(())
     })?;
-    let missing =
-        missing.and_then(|missing| crate::array::ValidityMask::from_vec(ids.len(), missing));
+    let missing = missing.and_then(|missing| storage::ValidityMask::from_vec(ids.len(), missing));
     Ok(CollectedCellIds { ids, missing })
 }
 
@@ -558,8 +558,7 @@ fn collect_inferred_from_iter<'py>(
         }
     })?;
     debug_assert!(pending.is_empty());
-    let missing =
-        missing.and_then(|missing| crate::array::ValidityMask::from_vec(ids.len(), missing));
+    let missing = missing.and_then(|missing| storage::ValidityMask::from_vec(ids.len(), missing));
     Ok((kind, CollectedCellIds { ids, missing }))
 }
 

@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use pyo3::prelude::*;
 
-use crate::array::{ArrayRow, ArrayRowOperation, ShapeRow, ValidityMask, missing};
+use crate::array::{ArrayRow, ArrayRowOperation};
 use crate::broadcast::{
     BulkElement, CollectRows as _, GeometryInput, classify_required, rows_err,
     validate_paired_arrays,
@@ -18,6 +18,7 @@ use crate::dispatch::metric::{
     CachelessRowContext, GeodesicBinaryRow, Lane, MetricCtx, MetricScratch,
 };
 use crate::error::Result;
+use crate::geometry::storage::{ShapeRow, ValidityMask, validity as missing};
 use crate::geometry::{PreparedPlan, Shape, ShapeData, TopologyDomain};
 #[cfg(test)]
 use crate::test_support::binary_dispatch_counters;

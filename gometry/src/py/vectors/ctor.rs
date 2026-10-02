@@ -189,9 +189,10 @@ mod self_intersection_csr_tests {
     use pyo3::prelude::*;
 
     use super::{Groups, GroupsValues, self_intersection_csr};
-    use crate::array::{PyGeometryArray, ValidityMask};
+    use crate::array::PyGeometryArray;
     use crate::crs::frame::{Frame, crs_arc_static};
     use crate::geometry::Shape;
+    use crate::geometry::storage::ValidityMask;
     use crate::io::parse_wkt;
 
     #[test]

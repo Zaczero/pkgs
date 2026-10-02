@@ -11,19 +11,22 @@
 use std::borrow::Cow;
 use std::sync::Arc;
 
-use crate::array::missing::MissingIter;
 #[cfg(test)]
 use crate::array::packed_column_kernels;
 use crate::array::{
     ComputedCaches, CoordSeq, CoordinateAxes, CoordinateReplacement, CsrOffsetBuilder,
-    CsrOffsetColumn, Frame, GeometryArrayStorage, PackedColumnBuilder, PackedRow, PackedStorage,
-    Point, PointRowLayout, PolygonLevel, PyErr, PyGeometryArray, PyResult, Python, ReplacementAxis,
-    RingLevel, RowSelectionRef, StorageLayout, ValidityMask, admit_packed_total, csr_value_window,
-    map_masked_point_columns_to_crs, materialized_packed_lines_len,
-    materialized_packed_polygons_len, rows_err,
+    CsrOffsetColumn, Frame, PackedColumnBuilder, Point, PointRowLayout, PolygonLevel, PyErr,
+    PyGeometryArray, PyResult, Python, ReplacementAxis, RingLevel, StorageLayout,
+    map_masked_point_columns_to_crs, rows_err,
 };
 use crate::crs::TransformFailure;
-use crate::geometry::{CoordSeqBuilder, CoordWindow, MOrdinate, ZOrdinate};
+use crate::geometry::storage::validity::MissingIter;
+use crate::geometry::storage::{
+    GeometryArrayStorage, PackedRow, PackedStorage, RowSelectionRef, ValidityMask,
+    admit_packed_total, csr_value_window, materialized_packed_lines_len,
+    materialized_packed_polygons_len,
+};
+use crate::geometry::{CoordSeqBuilder, CoordWindow, MOrdinate, ZOrdinate, storage};
 
 pub(crate) enum PackedColumnError {
     Batch(crate::error::Error),
@@ -222,8 +225,8 @@ impl PointColumns<'_> {
             RowSelectionRef::Gather(_) => return None,
         };
         Some(XyColumns {
-            xs: crate::array::column_window(self.coords.xs(), &range),
-            ys: crate::array::column_window(self.coords.ys(), &range),
+            xs: storage::column_window(self.coords.xs(), &range),
+            ys: storage::column_window(self.coords.ys(), &range),
         })
     }
 
@@ -332,7 +335,7 @@ impl<'a> LineColumns<'a> {
 
     /// Reverse each selected CSR window into identity columns. Identity
     /// reverse keeps sharing the source offset table via
-    /// [`crate::array::reverse_coord_windows`] instead.
+    /// [`crate::geometry::storage::reverse_coord_windows`] instead.
     pub(crate) fn reverse_selected(&self) -> crate::error::Result<(CoordSeq, CsrOffsetColumn)> {
         let vertices = self.materialized_vertex_len()?;
         let mut builder = PackedColumnBuilder::like(self.coords, vertices, self.rows());
@@ -725,13 +728,13 @@ fn assemble_packed_output(output: PackedColumnOutput) -> GeometryArrayStorage {
     match output {
         PackedColumnOutput::Points(coords) => GeometryArrayStorage::Packed(PackedStorage::Points {
             coords: Arc::new(coords),
-            row_map: crate::array::RowSelection::Identity,
+            row_map: storage::RowSelection::Identity,
         }),
         PackedColumnOutput::Lines { coords, offsets } => {
             GeometryArrayStorage::Packed(PackedStorage::Lines {
                 coords: Arc::new(coords),
                 offsets,
-                row_map: crate::array::RowSelection::Identity,
+                row_map: storage::RowSelection::Identity,
             })
         },
         PackedColumnOutput::Polygons {
@@ -742,7 +745,7 @@ fn assemble_packed_output(output: PackedColumnOutput) -> GeometryArrayStorage {
             coords: Arc::new(coords),
             ring_offsets,
             polygon_offsets,
-            row_map: crate::array::RowSelection::Identity,
+            row_map: storage::RowSelection::Identity,
         }),
     }
 }
@@ -837,7 +840,7 @@ fn replace_point_columns<const HAS_MISSING: bool>(
     } else {
         rows.len()
     };
-    crate::array::admit_packed_coord_count(capacity).map_err(batch_err)?;
+    storage::admit_packed_coord_count(capacity).map_err(batch_err)?;
     let mut builder = CoordSeqBuilder::with_capacity(old.axes(), capacity);
     for (_row, physical) in rows.cursor() {
         if let Some(physical) = physical {
@@ -1042,7 +1045,7 @@ fn map_selected_points(
             } else {
                 rows.len()
             };
-            crate::array::admit_packed_coord_count(capacity).map_err(batch_err)?;
+            storage::admit_packed_coord_count(capacity).map_err(batch_err)?;
             let mut builder = CoordSeqBuilder::with_capacity(output_axes, capacity);
             let mut has_missing = false;
             for (logical, physical) in rows.cursor() {
@@ -1219,7 +1222,7 @@ fn map_selected_to_crs(
                 })?;
                 return Ok(PackedColumnOutput::Points(coords));
             }
-            crate::array::admit_packed_coord_count(points.len()).map_err(batch_err)?;
+            storage::admit_packed_coord_count(points.len()).map_err(batch_err)?;
             let coords = transform_selected_coords(
                 transformer,
                 points.coords(),
@@ -1641,7 +1644,7 @@ impl PyGeometryArray {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::array::RowSelection;
+    use crate::geometry::storage::RowSelection;
     use crate::test_support::allocation_count;
 
     fn coords() -> CoordSeq {

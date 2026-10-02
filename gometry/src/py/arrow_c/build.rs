@@ -5,6 +5,8 @@ use std::ptr;
 use serde_json::Number;
 
 use crate::geometry::SharedSlice;
+#[cfg(test)]
+use crate::geometry::storage;
 use crate::py::arrow_c::{
     ArrayPrivate, ArrowArray, ArrowSchema, CoordSeq, CoordinateAxes, GeometryEncoding,
     GeometryError, NativeArrowExportError, NativeArrowExportResult, PyResult, SchemaNode,
@@ -334,7 +336,7 @@ fn make_array_with_offset(
 #[cfg(test)]
 pub(crate) fn apply_top_level_validity(
     array: &mut GometryArrowArray,
-    mask: &crate::array::ValidityMask,
+    mask: &storage::ValidityMask,
 ) -> PyResult<()> {
     let array = array.as_mut();
     let logical_len = usize::try_from(array.length).map_err(|_| {
@@ -740,16 +742,16 @@ mod owner_export_tests {
     fn validity_mask_length_checked_in_release() {
         ensure_python();
         let mut array = make_array(2, [OwnedBufferSlot::Null], Vec::new()).unwrap();
-        let short = crate::array::ValidityMask::from_vec(1, vec![true]).unwrap();
+        let short = storage::ValidityMask::from_vec(1, vec![true]).unwrap();
         assert!(apply_top_level_validity(&mut array, &short).is_err());
-        let mask = crate::array::ValidityMask::from_vec(2, vec![false, true]).unwrap();
+        let mask = storage::ValidityMask::from_vec(2, vec![false, true]).unwrap();
         apply_top_level_validity(&mut array, &mask).unwrap();
     }
 
     #[test]
     fn aligned_validity_window_shares_arc_with_arrow_owner() {
         ensure_python();
-        let parent = crate::array::ValidityMask::from_vec(8, vec![
+        let parent = storage::ValidityMask::from_vec(8, vec![
             false, false, false, true, false, true, false, false,
         ])
         .unwrap();

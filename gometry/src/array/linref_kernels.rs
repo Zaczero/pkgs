@@ -1,13 +1,15 @@
 use std::sync::Arc;
 
 use crate::array::{
-    Bound, CollectRows as _, DistanceUnit, GeometryArrayStorage, GeometryError, I64Param,
-    InterpolatePlan, PackedStorage, PointRows, Py, PyAny, PyGeometryArray, PyResult, Python,
-    RowSelection, Shape, ValidityMask, crs, line_interpolate_points_coordseq,
+    Bound, CollectRows as _, DistanceUnit, GeometryError, I64Param, InterpolatePlan, Py, PyAny,
+    PyGeometryArray, PyResult, Python, Shape, crs, line_interpolate_points_coordseq,
     line_interpolate_points_shape, line_locate_coordseq, note_array_row, parse_interpolate_plan,
     positive_int, resolve_line_metric, rows_err,
 };
 use crate::broadcast::degrade_linref_float;
+use crate::geometry::storage::{
+    GeometryArrayStorage, PackedStorage, PointRows, RowSelection, ValidityMask,
+};
 use crate::geometry::{CoordSeq, CsrOffsetColumn};
 use crate::py::numpy::float64_array;
 use crate::py::vectors::Groups;
@@ -226,9 +228,10 @@ fn interpolate_mixed_row_groups(
 mod tests {
     use super::{RowInterpolatePlan, interpolate_mixed_row_groups};
     use crate::InterpolatePlan;
-    use crate::array::{GeometryArrayStorage, PyGeometryArray, ValidityMask};
+    use crate::array::PyGeometryArray;
     use crate::crs::frame::Frame;
     use crate::crs::{DistanceMode, MetricModel};
+    use crate::geometry::storage::{GeometryArrayStorage, ValidityMask};
     use crate::geometry::{CoordSeq, LineSeq, Shape};
 
     fn line_seq(xs: Vec<f64>, ys: Vec<f64>, zs: Option<Vec<f64>>, ms: Option<Vec<f64>>) -> LineSeq {

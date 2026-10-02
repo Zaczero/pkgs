@@ -1,8 +1,8 @@
 use pyo3::IntoPyObjectExt as _;
 use pyo3::prelude::*;
 
-use crate::array::ValidityMask;
 use crate::crs::frame::Frame;
+use crate::geometry::storage::ValidityMask;
 use crate::geometry::{Bounds, Shape};
 use crate::py::numpy::{bool_array, bounds_array, float64_array};
 use crate::{PyGeometry, PyGeometryArray, Typed};

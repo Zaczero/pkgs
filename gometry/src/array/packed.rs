@@ -2,14 +2,16 @@ use std::sync::Arc;
 
 use crate::array::{
     ArrayRows, Bounds, CoordSeq, CoordinateAxes, Crs, CsrOffsetBuilder, CsrOffsetColumn,
-    ElementBounds, Frame, GeometryArrayStorage, GeometryKind, InvalidGeometryError, LogicalRow,
-    LogicalRows, OriginSpec, PackedColumns, PackedStorage, Point, PointColumnBuilder, PolygonLevel,
-    Py, PyAny, PyGeometry, PyGeometryArray, PyResult, Python, RingLevel, RowSelection,
-    RowSelectionRef, Shape, StorageLayout, TotalBoundsCache, ValidityMask,
-    packed_per_row_self_origin_affine_columns, physical_row, point_logical_len, prepared,
-    row_map_is_identity, row_ord_extremes, row_selection_from_logical_rows,
+    ElementBounds, Frame, GeometryKind, InvalidGeometryError, LogicalRow, LogicalRows, OriginSpec,
+    PackedColumns, Point, PointColumnBuilder, PolygonLevel, Py, PyAny, PyGeometry, PyGeometryArray,
+    PyResult, Python, RingLevel, Shape, StorageLayout, TotalBoundsCache,
+    packed_per_row_self_origin_affine_columns, prepared,
 };
-use crate::geometry::CoordSeqBuilder;
+use crate::geometry::storage::{
+    GeometryArrayStorage, PackedStorage, RowSelection, RowSelectionRef, ValidityMask, physical_row,
+    point_logical_len, row_map_is_identity, row_ord_extremes, row_selection_from_logical_rows,
+};
+use crate::geometry::{CoordSeqBuilder, storage};
 use crate::py::numpy::optional_float64_array;
 
 /// Geometry-derived cache owners supplied to the computed-data constructor.
@@ -336,7 +338,7 @@ impl PyGeometryArray {
             return Ok(None);
         };
         let axes = coords.axes();
-        crate::array::admit_packed_coord_count(self.len())?;
+        storage::admit_packed_coord_count(self.len())?;
         let mut builder = CoordSeqBuilder::with_capacity(axes, self.len());
         for row in self.row_operation().rows_with_missing(|| ()) {
             match row {
@@ -459,7 +461,7 @@ impl PyGeometryArray {
         row_map: RowSelectionRef<'_>,
     ) -> crate::error::Result<CoordSeq> {
         let rows = point_logical_len(coords, row_map);
-        crate::array::admit_packed_coord_count(rows)?;
+        storage::admit_packed_coord_count(rows)?;
         let mut builder = PointColumnBuilder::with_capacity(coords.axes(), rows);
         for logical in 0..rows {
             builder.push_at(coords, physical_row(row_map, logical));
@@ -483,7 +485,7 @@ impl PyGeometryArray {
             ));
         }
         let rows = mask.present_count();
-        crate::array::admit_packed_coord_count(rows)?;
+        storage::admit_packed_coord_count(rows)?;
         let mut builder = PointColumnBuilder::with_capacity(coords.axes(), rows);
         for (logical, present) in mask.cursor() {
             if present.is_some() {
@@ -597,14 +599,18 @@ impl PyGeometryArray {
                         row_map: RowSelection::Identity,
                     }));
                 }
-                let vertices =
-                    crate::array::materialized_packed_lines_len(offsets.as_slice(), map)?;
+                let vertices = storage::materialized_packed_lines_len(offsets.as_slice(), map)?;
                 let mut builder = PointColumnBuilder::with_capacity(coords.axes(), vertices);
                 let mut logical_offsets = CsrOffsetBuilder::with_capacity(mask.len());
                 let mut present_row = 0;
                 for (_, present_index) in mask.cursor() {
                     if present_index.is_some() {
-                        let row = crate::array::PackedRow::line(present_row, coords, offsets, map);
+                        let row = crate::geometry::storage::PackedRow::line(
+                            present_row,
+                            coords,
+                            offsets,
+                            map,
+                        );
                         for vertex in row
                             .vertex_window()
                             .expect("present line row has a coordinate window")
@@ -650,7 +656,7 @@ impl PyGeometryArray {
                         row_map: RowSelection::Identity,
                     }));
                 }
-                let (vertices, ring_capacity) = crate::array::materialized_packed_polygons_len(
+                let (vertices, ring_capacity) = storage::materialized_packed_polygons_len(
                     ring_offsets.as_slice(),
                     polygon_offsets.as_slice(),
                     map,
@@ -662,7 +668,7 @@ impl PyGeometryArray {
                 let mut rings = 0_usize;
                 for (_, present_index) in mask.cursor() {
                     if present_index.is_some() {
-                        let row = crate::array::PackedRow::polygon(
+                        let row = crate::geometry::storage::PackedRow::polygon(
                             present_row,
                             coords,
                             ring_offsets,
@@ -996,9 +1002,9 @@ impl PyGeometryArray {
                 "packed triangle vertex stream length must be a multiple of 4, got {len}"
             )));
         }
-        crate::array::admit_packed_coord_count(len)?;
+        storage::admit_packed_coord_count(len)?;
         let count = len / 4;
-        crate::array::admit_packed_coord_count(count)?;
+        storage::admit_packed_coord_count(count)?;
         let capacity = count
             .checked_add(1)
             .expect("an admitted triangle count is below the coordinate width");
@@ -1245,7 +1251,7 @@ impl PyGeometryArray {
 #[cfg(test)]
 mod compact_nullable_tests {
     use super::*;
-    use crate::array::{ShapeRow, missing};
+    use crate::geometry::storage::{ShapeRow, validity as missing};
     use crate::geometry::{CoordWindow, MColumn, SharedSlice};
     use crate::heap_size::HeapSize as _;
 

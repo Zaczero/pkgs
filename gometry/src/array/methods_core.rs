@@ -6,20 +6,22 @@ use pyo3::types::{PyInt, PyList};
 
 use crate::array::{
     ArrayRow, Bound, Bounds, CRSError, CoordSeq, CoordinateReplacement, Crs, CsrOffsetColumn,
-    FrameAdoption, GeometryArrayStorage, GeometryKind, InvalidGeometryError, PackedStorage, Py,
-    PyAny, PyAnyMethods as _, PyCoordinates, PyCrs, PyDict, PyDictMethods as _, PyGeometry,
-    PyGeometryArray, PyListMethods as _, PyRef, PyResult, PyTuple, PyTypeError, PyTypeMethods as _,
-    Python, Result, RingLevel, SVG_ARRAY_PREVIEW, Shape, bool_array, coerce_present_geometry_items,
-    coordinate_epoch_option, crs, crs_arc, exact_geometry, geometry,
-    geometry_array_svg_grid_html_masked, line_is_ccw, line_is_closed, line_is_simple,
-    line_is_valid, map_coordinates_callback, parse_coordinate_replacement, parse_crs, physical_row,
-    polygon_is_valid, pymethods, replace_shape_coordinates, require_geojson_crs,
-    slice_replacement_for_shape, total_bounds_from_columns,
+    FrameAdoption, GeometryKind, InvalidGeometryError, Py, PyAny, PyAnyMethods as _, PyCoordinates,
+    PyCrs, PyDict, PyDictMethods as _, PyGeometry, PyGeometryArray, PyListMethods as _, PyRef,
+    PyResult, PyTuple, PyTypeError, PyTypeMethods as _, Python, Result, RingLevel,
+    SVG_ARRAY_PREVIEW, Shape, bool_array, coerce_present_geometry_items, coordinate_epoch_option,
+    crs, crs_arc, exact_geometry, geometry, geometry_array_svg_grid_html_masked, line_is_ccw,
+    line_is_closed, line_is_simple, line_is_valid, map_coordinates_callback,
+    parse_coordinate_replacement, parse_crs, polygon_is_valid, pymethods,
+    replace_shape_coordinates, require_geojson_crs, slice_replacement_for_shape,
+    total_bounds_from_columns,
 };
 use crate::boundary::coordinates::checked_vector_len;
+use crate::boundary::metadata;
 use crate::crs::frame;
 use crate::crs::frame::FrameError;
-use crate::geometry::ShapeCountQuery;
+use crate::geometry::storage::{GeometryArrayStorage, PackedStorage, physical_row};
+use crate::geometry::{ShapeCountQuery, storage};
 use crate::predicates::unary;
 use crate::py::functions::bulk_rows::{StreamedShape, stream_bulk_owned};
 use crate::py::functions::geometry_io;
@@ -216,7 +218,7 @@ fn replace_array_coordinates(
     let mut shapes = Vec::with_capacity(
         array
             .missing()
-            .map_or(array.len(), crate::array::ValidityMask::present_count),
+            .map_or(array.len(), storage::ValidityMask::present_count),
     );
     for row in array.row_operation().present_rows() {
         let count = row.row().coordinates(&mut counts).map_err(PyErr::from)?;
@@ -362,7 +364,7 @@ impl PyGeometryArray {
         let py = values.py();
         let result = py.detach(move || -> Result<Self> {
             let mut items = coerced;
-            let frame = crate::boundary::metadata::resolve_geometry_frames(
+            let frame = metadata::resolve_geometry_frames(
                 &mut items,
                 FrameAdoption {
                     crs: explicit_crs,
@@ -621,7 +623,7 @@ impl PyGeometryArray {
             GeometryArrayStorage::Packed(storage) => {
                 if self
                     .missing()
-                    .map_or(self.len(), crate::array::ValidityMask::present_count)
+                    .map_or(self.len(), storage::ValidityMask::present_count)
                     == 0
                 {
                     return Vec::new();
@@ -1136,12 +1138,12 @@ impl PyGeometryArray {
                     let value = match row {
                         crate::array::ArrayRow::Missing { value, .. } => value,
                         crate::array::ArrayRow::Present(row) => match row.row() {
-                            crate::array::ShapeRow::Point(point) => {
+                            storage::ShapeRow::Point(point) => {
                                 point.x.is_finite() && point.y.is_finite()
                             },
-                            crate::array::ShapeRow::Handle(_)
-                            | crate::array::ShapeRow::Shape(_)
-                            | crate::array::ShapeRow::Packed(_) => false,
+                            storage::ShapeRow::Handle(_)
+                            | storage::ShapeRow::Shape(_)
+                            | storage::ShapeRow::Packed(_) => false,
                         },
                     };
                     values.push(value);

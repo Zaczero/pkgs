@@ -5,10 +5,9 @@ use std::cell::Cell;
 use std::ops::Deref;
 use std::sync::{Arc, Mutex, OnceLock};
 
-use crate::array::{
-    GeometryArrayStorage, LogicalRow, PyGeometry, PyGeometryArray, RowSelection, ShapeRow,
-};
-use crate::geometry::{Bounds, FrameDependentCaches, PreparedPlan, Shape, ShapeData};
+use crate::array::{LogicalRow, PyGeometry, PyGeometryArray};
+use crate::geometry::storage::{GeometryArrayStorage, RowSelection, ShapeRow};
+use crate::geometry::{Bounds, FrameDependentCaches, PreparedPlan, Shape, ShapeData, storage};
 use crate::heap_size::HeapSize;
 
 const ROWS_PER_CHUNK: usize = 64;
@@ -55,7 +54,7 @@ impl RowProductChunk {
 
     fn heap_bytes_for_selection(
         &self,
-        selection: crate::array::RowSelectionRef<'_>,
+        selection: storage::RowSelectionRef<'_>,
         chunk_index: usize,
     ) -> usize {
         let mut retained = crate::heap_size::ARC_CONTROL_BYTES
@@ -67,7 +66,7 @@ impl RowProductChunk {
             );
         let chunk_start = chunk_index.saturating_mul(ROWS_PER_CHUNK);
         match selection {
-            crate::array::RowSelectionRef::Window { start, len } => {
+            crate::geometry::storage::RowSelectionRef::Window { start, len } => {
                 let end = start.saturating_add(len);
                 let first = start.saturating_sub(chunk_start);
                 let last = end.saturating_sub(chunk_start).min(self.cells.len());
@@ -81,7 +80,7 @@ impl RowProductChunk {
                         .fold(retained, usize::saturating_add);
                 }
             },
-            crate::array::RowSelectionRef::Gather(rows) => {
+            storage::RowSelectionRef::Gather(rows) => {
                 let mut selected = 0_u64;
                 for &row in rows {
                     if row / ROWS_PER_CHUNK == chunk_index {
@@ -94,7 +93,7 @@ impl RowProductChunk {
                     }
                 }
             },
-            crate::array::RowSelectionRef::Identity => unreachable!(),
+            storage::RowSelectionRef::Identity => unreachable!(),
         }
         retained
     }
@@ -201,7 +200,7 @@ pub(crate) struct RowProductsHandle {
 pub(crate) struct ArrayRowOperation<'a> {
     array: &'a PyGeometryArray,
     products: RowProductsHandle,
-    compact_rank: Option<crate::array::ValidityRank<'a>>,
+    compact_rank: Option<storage::ValidityRank<'a>>,
 }
 
 #[derive(Clone, Copy)]
@@ -304,7 +303,7 @@ impl<'a> ArrayRowOperation<'a> {
             && let Some(mask) = self.array.missing()
             && matches!(
                 self.array.storage(),
-                GeometryArrayStorage::Packed(crate::array::PackedStorage::Points { .. })
+                GeometryArrayStorage::Packed(storage::PackedStorage::Points { .. })
             )
         {
             let present = self
@@ -525,7 +524,7 @@ impl RowProducts {
     fn selected(&self, rows: impl IntoIterator<Item = usize>) -> Self {
         let current = self.selection.as_deref();
         let physical_len = self.owner.physical_len;
-        let selection = crate::array::row_selection_from_logical_rows(current, physical_len, rows);
+        let selection = storage::row_selection_from_logical_rows(current, physical_len, rows);
         Self {
             owner: Arc::clone(&self.owner),
             selection,
@@ -647,7 +646,7 @@ impl HeapSize for RowProducts {
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             match self.selection.as_deref() {
-                crate::array::RowSelectionRef::Identity => chunks
+                storage::RowSelectionRef::Identity => chunks
                     .capacity()
                     .saturating_mul(std::mem::size_of::<(usize, Arc<RowProductChunk>)>())
                     .saturating_add(
@@ -656,8 +655,8 @@ impl HeapSize for RowProducts {
                             .map(HeapSize::heap_bytes)
                             .fold(0, usize::saturating_add),
                     ),
-                selection @ (crate::array::RowSelectionRef::Window { .. }
-                | crate::array::RowSelectionRef::Gather(_)) => chunks
+                selection @ (crate::geometry::storage::RowSelectionRef::Window { .. }
+                | storage::RowSelectionRef::Gather(_)) => chunks
                     .iter()
                     .filter(|&(&chunk_index, chunk)| {
                         selection_touches_chunk(selection, chunk_index, chunk.cells.len())
@@ -677,17 +676,17 @@ impl HeapSize for RowProducts {
 }
 
 fn selection_touches_chunk(
-    selection: crate::array::RowSelectionRef<'_>,
+    selection: storage::RowSelectionRef<'_>,
     chunk_index: usize,
     chunk_len: usize,
 ) -> bool {
     match selection {
-        crate::array::RowSelectionRef::Identity => true,
-        crate::array::RowSelectionRef::Window { start, len } => {
+        storage::RowSelectionRef::Identity => true,
+        crate::geometry::storage::RowSelectionRef::Window { start, len } => {
             let chunk_start = chunk_index.saturating_mul(ROWS_PER_CHUNK);
             start < chunk_start.saturating_add(chunk_len) && chunk_start < start.saturating_add(len)
         },
-        crate::array::RowSelectionRef::Gather(rows) => {
+        storage::RowSelectionRef::Gather(rows) => {
             rows.iter().any(|&row| row / ROWS_PER_CHUNK == chunk_index)
         },
     }
@@ -695,13 +694,13 @@ fn selection_touches_chunk(
 
 macro_rules! packed_row_persistent {
     ($row:expr) => {{
-        use $crate::array::ShapeRow;
+        use $crate::geometry::storage::ShapeRow;
         use $crate::geometry::uses_linear_plan_for_len;
         match $row {
-            ShapeRow::Packed(row @ crate::array::PackedRow::Lines { .. }) => row
+            ShapeRow::Packed(row @ crate::geometry::storage::PackedRow::Lines { .. }) => row
                 .vertex_window()
                 .is_some_and(|window| !uses_linear_plan_for_len(window.len().saturating_sub(1))),
-            ShapeRow::Packed(row @ crate::array::PackedRow::Polygons { .. }) => {
+            ShapeRow::Packed(row @ crate::geometry::storage::PackedRow::Polygons { .. }) => {
                 let rings = row
                     .polygon_rings()
                     .expect("packed polygon rows carry a ring range");
@@ -886,7 +885,7 @@ mod frame_cache_row_tests {
         let dense = points();
         let masked = PyGeometryArray::scatter_present_rows(
             &dense,
-            crate::array::ValidityMask::from_vec(5, vec![false, true, false, true, false])
+            storage::ValidityMask::from_vec(5, vec![false, true, false, true, false])
                 .expect("validity length"),
         )
         .unwrap();
@@ -928,7 +927,7 @@ mod frame_cache_row_tests {
     fn arbitrary_present_row_resolution_keeps_logical_and_payload_identity() {
         let source = PyGeometryArray::scatter_present_rows(
             &points(),
-            crate::array::ValidityMask::from_vec(5, vec![false, true, false, true, false]).unwrap(),
+            storage::ValidityMask::from_vec(5, vec![false, true, false, true, false]).unwrap(),
         )
         .unwrap();
         let mut operation = source.row_operation();
@@ -959,8 +958,7 @@ mod frame_cache_row_tests {
         )
         .unwrap()
         .with_missing_mask(Some(
-            crate::array::ValidityMask::from_vec(3, vec![false, true, false])
-                .expect("validity length"),
+            storage::ValidityMask::from_vec(3, vec![false, true, false]).expect("validity length"),
         ))
         .unwrap();
         let mut operation = source.row_operation();
@@ -1324,8 +1322,7 @@ mod frame_cache_row_tests {
         )
         .unwrap()
         .with_missing_mask(Some(
-            crate::array::ValidityMask::from_vec(3, vec![false, true, false])
-                .expect("validity length"),
+            storage::ValidityMask::from_vec(3, vec![false, true, false]).expect("validity length"),
         ))
         .unwrap();
 

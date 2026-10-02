@@ -1,13 +1,16 @@
 use std::sync::Arc;
 
 use crate::array::{
-    ArrayRow, Bound, CoordSeq, CsrOffsetColumn, GeometryArrayStorage, PackedColumnBuilder,
-    PackedRow, PackedStorage, Point, PyAny, PyGeometry, PyGeometryArray, PyResult, Python, Result,
-    RowSelectionRef, Shape, column_window, csr_value_window, curves, line_logical_len,
-    note_array_row, parse_curve_bounds, physical_row, rows_err,
+    ArrayRow, Bound, CoordSeq, CsrOffsetColumn, PackedColumnBuilder, Point, PyAny, PyGeometry,
+    PyGeometryArray, PyResult, Python, Result, Shape, curves, note_array_row, parse_curve_bounds,
+    rows_err,
 };
 use crate::boundary::input;
 use crate::geographic::PeriodicAxis;
+use crate::geometry::storage::{
+    GeometryArrayStorage, PackedRow, PackedStorage, RowSelectionRef, column_window,
+    csr_value_window, line_logical_len, physical_row,
+};
 use crate::geometry::types::ShapeHeapMemo;
 use crate::py::vectors::Groups;
 

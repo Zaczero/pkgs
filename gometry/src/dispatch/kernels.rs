@@ -1,6 +1,5 @@
 use std::num::NonZeroU32;
 
-use crate::boundary::input::OriginSpec;
 use crate::broadcast::{degrade_linref_linestring, degrade_linref_point};
 use crate::crs::ResolvedMetric;
 use crate::dispatch::MetricOp;
@@ -8,8 +7,8 @@ use crate::dispatch::metric::{CachelessRowContext, GeodesicBinaryRow, LinearRefe
 use crate::error::Result;
 use crate::geometry::{
     Bounds, BufferCapStyle, BufferJoinStyle, BufferSide, DerivedPointStrategy, Dimension,
-    GeometryKind, MeasureRange, PreparedPlan, Shape, SimplifyMethod, SmoothMethod, Strictness,
-    same_topological_coordinate,
+    GeometryKind, MeasureRange, OriginSpec, PreparedPlan, Shape, SimplifyMethod, SmoothMethod,
+    Strictness, same_topological_coordinate,
 };
 use crate::numeric::Positive;
 use crate::{

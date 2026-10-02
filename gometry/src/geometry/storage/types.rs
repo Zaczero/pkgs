@@ -2,13 +2,12 @@
 use std::cell::Cell;
 use std::sync::Arc;
 
+use super::{ShapeRow, column_window, row_bounds};
 use crate::HeapSize;
-use crate::array::storage_helpers::{column_window, row_bounds};
-use crate::array::{
-    Bounds, CoordSeq, CsrOffsetColumn, GeometryKind, Point, Polygon, PolygonLevel, RingLevel,
-    Shape, ShapeRow,
+use crate::geometry::{
+    Bounds, CoordSeq, CoordWindow, CsrOffsetColumn, GeometryErrorKind, GeometryKind, LineSeq,
+    Point, Polygon, PolygonLevel, RingLevel, Shape, SharedSlice,
 };
-use crate::geometry::{CoordWindow, GeometryErrorKind, LineSeq, SharedSlice};
 
 #[cfg(test)]
 std::thread_local! {
@@ -203,7 +202,7 @@ macro_rules! packed_line_row {
         let __logical = $logical;
         let __coords = $coords;
         let __vertices = $row_map.csr_window($offsets, __logical);
-        $crate::array::PackedRow::Lines {
+        $crate::geometry::storage::PackedRow::Lines {
             logical: __logical,
             coords: __coords,
             vertices_start: __vertices.start,
@@ -242,13 +241,13 @@ macro_rules! packed_polygon_bounds {
         let __rings_start = $rings_start;
         let __rings_end = $rings_end;
         if __rings_start < __rings_end {
-            let __vertices = $crate::array::packed_polygon_vertex_window!(
+            let __vertices = $crate::geometry::storage::packed_polygon_vertex_window!(
                 $ring_offsets,
                 __rings_start..__rings_end,
             );
-            $crate::array::storage_helpers::row_bounds(
-                $crate::array::storage_helpers::column_window(__coords.xs(), &__vertices),
-                $crate::array::storage_helpers::column_window(__coords.ys(), &__vertices),
+            $crate::geometry::storage::columns::row_bounds(
+                $crate::geometry::storage::columns::column_window(__coords.xs(), &__vertices),
+                $crate::geometry::storage::columns::column_window(__coords.ys(), &__vertices),
             )
         } else {
             None
@@ -267,21 +266,22 @@ macro_rules! packed_polygon_view {
         let __ring_offsets = $ring_offsets;
         let __rings = $rings;
         if __rings.is_empty() {
-            Ok::<Option<$crate::array::Polygon>, $crate::error::Error>(None)
+            Ok::<Option<$crate::geometry::Polygon>, $crate::error::Error>(None)
         } else {
             let __shell_vertices =
-                $crate::array::admitted_csr_window!(__ring_offsets, __rings.start);
-            let __shell = $crate::array::Ring::try_from_closed(__coords.view(
+                $crate::geometry::storage::admitted_csr_window!(__ring_offsets, __rings.start);
+            let __shell = $crate::geometry::Ring::try_from_closed(__coords.view(
                 $crate::geometry::CoordWindow::from_range(__shell_vertices, __coords.len()),
             ))?;
             let mut __holes = Vec::with_capacity(__rings.len().saturating_sub(1));
             for __ring in __rings.start.wrapping_add(1)..__rings.end {
-                let __vertices = $crate::array::admitted_csr_window!(__ring_offsets, __ring);
-                __holes.push($crate::array::Ring::try_from_closed(__coords.view(
+                let __vertices =
+                    $crate::geometry::storage::admitted_csr_window!(__ring_offsets, __ring);
+                __holes.push($crate::geometry::Ring::try_from_closed(__coords.view(
                     $crate::geometry::CoordWindow::from_range(__vertices, __coords.len()),
                 ))?);
             }
-            Ok(Some($crate::array::Polygon::new(__shell, __holes)))
+            Ok(Some($crate::geometry::Polygon::new(__shell, __holes)))
         }
     }};
 }
@@ -309,7 +309,7 @@ pub(crate) enum GeometryArrayStorage {
     /// Heterogeneous (or non-packable) rows owned as plain shapes.
     ///
     /// The array frame, missing mask, prepared-row cache, and frame-cache
-    /// sidecars live on [`PyGeometryArray`] — not per-row scalar wrappers.
+    /// sidecars live on `PyGeometryArray` — not per-row scalar wrappers.
     /// Scalar extract (`arr[i]`) and prepared kernels materialize
     /// [`crate::geometry::PreparedPlan`] once into the array-side prepared
     /// cache.

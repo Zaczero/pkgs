@@ -33,8 +33,8 @@ pub(crate) use writer_ordinate_policy;
 mod boundary;
 use boundary::{
     CoordSeqBuffer, CoordSeqBufferMode, CoordSeqStructure, CoordinateInput, CrsCoordinateArgs,
-    DefaultedF64Input, DefaultedI64Input, F64Param, GridOrigin, I64Param, OriginSpec,
-    TransformOptionArgs, angle_radians, broadcast_coordinate_group, broadcast_coordinate_input,
+    DefaultedF64Input, DefaultedI64Input, F64Param, GridOrigin, I64Param, TransformOptionArgs,
+    angle_radians, broadcast_coordinate_group, broadcast_coordinate_input,
     broadcast_crs_coordinate_inputs, buffer_copy_to_slice_u64, buffer_to_vec_u64,
     cdt_refinement_values, check_python_signals, collect_bool_mask, collect_bytes_rows,
     collect_i64_sequence, collect_py_iter, collect_py_iter_at_most_from_iter,
@@ -96,9 +96,8 @@ use measures::{
     shared_paths, snap, split,
 };
 mod array;
-pub(crate) use array::{
-    GeometryArrayStorage, PackedColumnError, PointRows, PyGeometryArray, ShapeRow,
-};
+pub(crate) use array::{PackedColumnError, PyGeometryArray};
+pub(crate) use geometry::storage::{GeometryArrayStorage, PointRows, ShapeRow};
 mod broadcast;
 use broadcast::{
     CollectRows, DistanceUnit, GeometryInput, LonLatPointsError, broadcast2, broadcast2_geometry,
@@ -146,9 +145,9 @@ use boundary::coordinates::CoordinateAxis;
 use error::Result;
 use geometry::{
     Bounds, BufferCapStyle, BufferJoinStyle, BufferSide, CoordSeq, CoordinateAxes, Coordinates,
-    GeometryErrorKind, GeometryKind, LineIndex, PlanarMetric, Point, Polygon, PolygonizeFull,
-    PreparedPlan, RepairMethod, Ring, Shape, ShapeData, SimplifyMethod, SmoothMethod,
-    ValidationIssue, VoronoiBoundary, point_distance, row_sample_seed,
+    GeometryErrorKind, GeometryKind, LineIndex, OriginSpec, PlanarMetric, Point, Polygon,
+    PolygonizeFull, PreparedPlan, RepairMethod, Ring, Shape, ShapeData, SimplifyMethod,
+    SmoothMethod, ValidationIssue, VoronoiBoundary, point_distance, row_sample_seed,
 };
 use py::arrow::ArrowEncoding;
 use py::crs::PyCrs;

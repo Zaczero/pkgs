@@ -2,10 +2,13 @@
 
 use crate::array::packed_columns::{PackedColumnResult, batch_err};
 use crate::array::{
-    Arc, CoordSeq, CsrOffsetBuilder, CsrOffsetColumn, GeometryArrayStorage, PackedColumnBuilder,
-    PackedStorage, PointColumnBuilder, PolygonLevel, Result, RingLevel, RowSelection,
-    RowSelectionRef, admit_packed_coord_count, materialized_packed_lines_len,
-    materialized_packed_polygons_len,
+    Arc, CoordSeq, CsrOffsetBuilder, CsrOffsetColumn, PackedColumnBuilder, PointColumnBuilder,
+    PolygonLevel, Result, RingLevel,
+};
+use crate::geometry::storage;
+use crate::geometry::storage::{
+    GeometryArrayStorage, PackedStorage, RowSelection, RowSelectionRef, admit_packed_coord_count,
+    materialized_packed_lines_len, materialized_packed_polygons_len,
 };
 
 pub(crate) fn gather_point_columns(coords: &CoordSeq, map: &[usize]) -> Result<CoordSeq> {
@@ -22,7 +25,7 @@ pub(crate) fn gather_line_columns(
     offsets: &[i32],
     selection: RowSelectionRef<'_>,
 ) -> Result<(CoordSeq, CsrOffsetColumn)> {
-    let rows = crate::array::line_logical_len(offsets, selection);
+    let rows = storage::line_logical_len(offsets, selection);
     let vertices = materialized_packed_lines_len(offsets, selection)?;
     let mut builder = PackedColumnBuilder::like(coords, vertices, rows);
     for row in 0..rows {

@@ -16,13 +16,15 @@ use pyo3::exceptions::{PyIndexError, PyTypeError, PyValueError};
 use pyo3::types::{PyBool, PyInt, PyList, PySequence, PyTuple};
 
 use crate::array::{
-    Arc, ArrayRow, Bound, GeometryArrayStorage, GeometryError, HeapSize, IntoPyObject as _,
-    OverlayOp, PackedStorage, Py, PyAny, PyAnyMethods as _, PyCoordinates, PyErr, PyGeometryArray,
-    PyGeometryArrayIter, PyListMethods as _, PyResult, PyTupleMethods as _, PyTypeMethods as _,
-    Python, Shape, StorageLayout, Typed, ValidityMask, exact_geometry, exact_geometry_array,
-    missing, overlay_operator,
+    Arc, ArrayRow, Bound, GeometryError, HeapSize, IntoPyObject as _, OverlayOp, Py, PyAny,
+    PyAnyMethods as _, PyCoordinates, PyErr, PyGeometryArray, PyGeometryArrayIter,
+    PyListMethods as _, PyResult, PyTupleMethods as _, PyTypeMethods as _, Python, Shape,
+    StorageLayout, Typed, exact_geometry, exact_geometry_array, overlay_operator,
 };
 use crate::boundary::coordinates::measure_storage_payload_bytes;
+use crate::geometry::storage::{
+    GeometryArrayStorage, PackedStorage, ValidityMask, validity as missing,
+};
 use crate::py::numpy::{false_bool_array, reject_masked_array};
 use crate::py::row::{RowContainer, RowGetItemContainer, array_getitem, slice_row_indices};
 use crate::py::sizeof::python_sizeof;

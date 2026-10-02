@@ -6,7 +6,7 @@
 )]
 use pyo3::types::{PyAny, PyAnyMethods as _};
 
-use crate::array::{ArrayRow, GeometryArrayStorage, LineRows, PackedStorage, ValidityMask};
+use crate::array::ArrayRow;
 use crate::broadcast::metrics;
 use crate::broadcast::metrics::pair::{ensure_hausdorff_geodesic_shape, metric_hausdorff};
 use crate::broadcast::metrics::{
@@ -15,7 +15,8 @@ use crate::broadcast::metrics::{
     same_storage_similarity_metric_zeros,
 };
 use crate::dispatch::{CachelessRowContext, MetricOp};
-use crate::geometry::{FrechetDpScratch, PackedLineColumnView, PreparedPlan};
+use crate::geometry::storage::{GeometryArrayStorage, LineRows, PackedStorage, ValidityMask};
+use crate::geometry::{FrechetDpScratch, PackedLineColumnView, PreparedPlan, storage};
 use crate::py::errors;
 use crate::py::errors::GeometryError;
 
@@ -114,8 +115,8 @@ impl SimilarityOp {
     pub(crate) fn eval_rows_at(
         &self,
         model: &crs::MetricModel,
-        left: crate::array::ShapeRow<'_>,
-        right: crate::array::ShapeRow<'_>,
+        left: storage::ShapeRow<'_>,
+        right: storage::ShapeRow<'_>,
         row: usize,
         scratch: &mut FrechetDpScratch,
     ) -> crate::error::Result<f64> {

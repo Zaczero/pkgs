@@ -1,4 +1,5 @@
-use crate::geometry::TopologyDomain;
+use crate::boundary::metadata;
+use crate::geometry::{TopologyDomain, storage};
 use crate::py::index::{
     Bound, Frame, GeometryArrayStorage, GeometryError, IndexEntry, IndexRows, PackedStore, PyAny,
     PyAnyMethods as _, PyGeometry, PyGeometryArray, PyResult, PySpatialIndex, Python, ShapeData,
@@ -124,7 +125,7 @@ fn packed_index_payload(
     let mut non_prunable_live = 0_usize;
     let element_bounds = (!matches!(
         array.storage(),
-        GeometryArrayStorage::Packed(crate::array::PackedStorage::Points { .. })
+        GeometryArrayStorage::Packed(storage::PackedStorage::Points { .. })
     ))
     .then(|| array.element_bounds())
     .flatten();
@@ -164,7 +165,7 @@ fn packed_index_payload(
         if matches!(domain, TopologyDomain::Geographic(_)) {
             non_prunable_live = non_prunable_live.wrapping_add(usize::from(!matches!(
                 shape_row,
-                crate::array::ShapeRow::Point(point)
+                storage::ShapeRow::Point(point)
                     if (-180.0..=180.0).contains(&point.x) && (-90.0..=90.0).contains(&point.y)
             )));
         }
@@ -389,10 +390,7 @@ pub(crate) fn index_metadata(items: &[PyGeometry]) -> PyResult<Option<Frame>> {
         return Ok(None);
     }
     // The canonical shared-frame gate: per-axis CRSMismatchError messages.
-    Ok(Some(crate::boundary::metadata::common_frame(
-        items,
-        "spatial index",
-    )?))
+    Ok(Some(metadata::common_frame(items, "spatial index")?))
 }
 
 #[cfg(test)]
@@ -452,7 +450,7 @@ mod ownership_tests {
             Frame::None,
         )
         .unwrap();
-        let missing = crate::array::ValidityMask::from_vec(missing.len(), missing)
+        let missing = storage::ValidityMask::from_vec(missing.len(), missing)
             .expect("fixture contains a missing row");
         PyGeometryArray::scatter_present_rows(&source, missing).unwrap()
     }
@@ -464,7 +462,7 @@ mod ownership_tests {
             Frame::None,
         )
         .unwrap();
-        let missing = crate::array::ValidityMask::from_vec(3, vec![false, true, false])
+        let missing = storage::ValidityMask::from_vec(3, vec![false, true, false])
             .expect("fixture contains a missing row");
         PyGeometryArray::scatter_present_rows(&source, missing).unwrap()
     }
@@ -495,7 +493,7 @@ mod ownership_tests {
     fn nullable_packed_points_keep_logical_handles_without_row_publication() {
         let source = compact_points(vec![true, false, true, false]);
         let before = source.row_products.initialized_counts();
-        crate::array::reset_shape_iter_materializations();
+        storage::reset_shape_iter_materializations();
         let index = packed_spatial_index(&source).unwrap().unwrap();
 
         assert_eq!(index.rows.live, [0, 1, 0, 1]);
@@ -503,14 +501,14 @@ mod ownership_tests {
         assert!(index.rows.packed.is_some());
         assert!(index.rows.boxed.is_empty());
         assert_eq!(source.row_products.initialized_counts(), before);
-        assert_eq!(crate::array::shape_iter_materializations(), 0);
+        assert_eq!(storage::shape_iter_materializations(), 0);
 
         let mut rows = index.rows.operation();
         let mut point = |handle| match rows.row(handle).unwrap() {
-            crate::array::ShapeRow::Point(point) => point,
-            crate::array::ShapeRow::Handle(_)
-            | crate::array::ShapeRow::Shape(_)
-            | crate::array::ShapeRow::Packed(_) => {
+            storage::ShapeRow::Point(point) => point,
+            storage::ShapeRow::Handle(_)
+            | storage::ShapeRow::Shape(_)
+            | storage::ShapeRow::Packed(_) => {
                 panic!("compact point index resolved a non-point row")
             },
         };
@@ -552,10 +550,10 @@ mod ownership_tests {
 
         let mut rows = index.rows.operation();
         let mut point_x = |handle| match rows.row(handle).unwrap() {
-            crate::array::ShapeRow::Point(point) => point.x,
-            crate::array::ShapeRow::Handle(_)
-            | crate::array::ShapeRow::Shape(_)
-            | crate::array::ShapeRow::Packed(_) => {
+            storage::ShapeRow::Point(point) => point.x,
+            storage::ShapeRow::Handle(_)
+            | storage::ShapeRow::Shape(_)
+            | storage::ShapeRow::Packed(_) => {
                 panic!("compact point window resolved a non-point row")
             },
         };
@@ -568,10 +566,10 @@ mod ownership_tests {
         assert_eq!(gathered_index.live_handles_sorted(), [0, 1, 2, 3]);
         let mut gathered_rows = gathered_index.rows.operation();
         let mut point_x = |handle| match gathered_rows.row(handle).unwrap() {
-            crate::array::ShapeRow::Point(point) => point.x,
-            crate::array::ShapeRow::Handle(_)
-            | crate::array::ShapeRow::Shape(_)
-            | crate::array::ShapeRow::Packed(_) => {
+            storage::ShapeRow::Point(point) => point.x,
+            storage::ShapeRow::Handle(_)
+            | storage::ShapeRow::Shape(_)
+            | storage::ShapeRow::Packed(_) => {
                 panic!("duplicate point gather resolved a non-point row")
             },
         };
@@ -670,7 +668,7 @@ mod ownership_tests {
                 Frame::None,
             )
             .unwrap(),
-            crate::array::ValidityMask::from_vec(2, vec![true, false]).unwrap(),
+            storage::ValidityMask::from_vec(2, vec![true, false]).unwrap(),
         )
         .unwrap();
         let restored = restore_spatial_index(&source, false).unwrap();

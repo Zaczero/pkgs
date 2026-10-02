@@ -17,11 +17,12 @@ use pyo3::types::{PyAnyMethods as _, PyInt};
 use pyo3::{Bound, PyResult, Python};
 
 use crate::GeometryArrayStorage;
-use crate::array::{PackedStorage, RingLevel, RowSelectionRef, ValidityMask, csr_value_window};
+use crate::array::RingLevel;
+use crate::geometry::storage::{PackedStorage, RowSelectionRef, ValidityMask, csr_value_window};
 use crate::geometry::types::ShapeOwnerKey;
 use crate::geometry::{
     CoordRun, CoordSeq, CoordWindow, CoordinateAxes, CsrOffsetColumn, MOrdinate, Point, Polygon,
-    Shape, ShapeData, ZOrdinate,
+    Shape, ShapeData, ZOrdinate, storage,
 };
 
 #[derive(Clone)]
@@ -389,7 +390,7 @@ fn packed_range_count_and_axes(
     // Vec-bounded row selections and i32 CSR coordinates keep totals below 2^92.
     match storage {
         PackedStorage::Points { coords, row_map } => {
-            let storage_rows = crate::array::point_logical_len(coords, row_map.as_deref());
+            let storage_rows = storage::point_logical_len(coords, row_map.as_deref());
             let logical_len = missing.map_or(storage_rows, ValidityMask::len);
             debug_assert!(rows.start <= rows.end);
             debug_assert!(rows.end <= logical_len);
@@ -420,7 +421,7 @@ fn packed_range_count_and_axes(
         } => {
             let offsets = offsets.as_slice();
             let map = row_map.as_deref();
-            let storage_rows = crate::array::line_logical_len(offsets, map);
+            let storage_rows = storage::line_logical_len(offsets, map);
             let logical_len = missing.map_or(storage_rows, ValidityMask::len);
             debug_assert!(rows.start <= rows.end);
             debug_assert!(rows.end <= logical_len);
@@ -453,7 +454,7 @@ fn packed_range_count_and_axes(
             let rings = ring_offsets.as_slice();
             let polygons = polygon_offsets.as_slice();
             let map = row_map.as_deref();
-            let storage_rows = crate::array::polygon_logical_len(polygons, map);
+            let storage_rows = storage::polygon_logical_len(polygons, map);
             let logical_len = missing.map_or(storage_rows, ValidityMask::len);
             debug_assert!(rows.start <= rows.end);
             debug_assert!(rows.end <= logical_len);
@@ -966,7 +967,7 @@ impl CoordinatePointCursor {
             CoordinateOwner::Array { storage, missing } => {
                 let (rows, compact_point_rank) = match storage.as_ref() {
                     GeometryArrayStorage::Packed(PackedStorage::Points { coords, row_map }) => {
-                        let rows = crate::array::point_logical_len(coords, row_map.as_deref());
+                        let rows = storage::point_logical_len(coords, row_map.as_deref());
                         let compact = missing.as_ref().filter(|mask| mask.len() != rows);
                         (
                             compact.map_or(rows, ValidityMask::len),
@@ -1205,7 +1206,7 @@ impl CoordinateFrame {
                             row
                         };
                         CoordinateStep::Point(
-                            coords.point_at(crate::array::physical_row(map, physical_row)),
+                            coords.point_at(storage::physical_row(map, physical_row)),
                         )
                     },
                     GeometryArrayStorage::Packed(PackedStorage::Lines {
@@ -1343,26 +1344,26 @@ impl CoordinateView {
                 GeometryArrayStorage::Packed(PackedStorage::Points { coords, row_map }) => {
                     let map = row_map.as_deref();
                     if let Some(mask) = missing
-                        && mask.len() != crate::array::point_logical_len(coords, map)
+                        && mask.len() != storage::point_logical_len(coords, map)
                     {
                         for (row, present) in mask.cursor() {
                             let Some(present) = present else { continue };
                             visit(
                                 Some(row),
                                 CoordRun::Point(
-                                    coords.point_at(crate::array::physical_row(map, present)),
+                                    coords.point_at(storage::physical_row(map, present)),
                                 ),
                             )?;
                         }
                         return ControlFlow::Continue(());
                     }
-                    for row in 0..crate::array::point_logical_len(coords, map) {
+                    for row in 0..storage::point_logical_len(coords, map) {
                         if missing.as_ref().is_some_and(|mask| mask.is_missing(row)) {
                             continue;
                         }
                         visit(
                             Some(row),
-                            CoordRun::Point(coords.point_at(crate::array::physical_row(map, row))),
+                            CoordRun::Point(coords.point_at(storage::physical_row(map, row))),
                         )?;
                     }
                     ControlFlow::Continue(())
@@ -1375,7 +1376,7 @@ impl CoordinateView {
                     row_map,
                 }) => {
                     let map = row_map.as_deref();
-                    let rows = crate::array::line_logical_len(offsets.as_slice(), map);
+                    let rows = storage::line_logical_len(offsets.as_slice(), map);
                     for row in 0..rows {
                         if missing.as_ref().is_some_and(|mask| mask.is_missing(row)) {
                             continue;
@@ -1397,7 +1398,7 @@ impl CoordinateView {
                 }) => {
                     let map = row_map.as_deref();
                     let ring_offsets = ring_offsets.as_slice();
-                    let rows = crate::array::polygon_logical_len(polygon_offsets.as_slice(), map);
+                    let rows = storage::polygon_logical_len(polygon_offsets.as_slice(), map);
                     for row in 0..rows {
                         if missing.as_ref().is_some_and(|mask| mask.is_missing(row)) {
                             continue;
@@ -1862,7 +1863,7 @@ impl CoordinateView {
             } => match storage.as_ref() {
                 GeometryArrayStorage::Packed(PackedStorage::Points { coords, row_map }) => {
                     let map = row_map.as_deref();
-                    let len = crate::array::point_logical_len(coords, map);
+                    let len = storage::point_logical_len(coords, map);
                     if index >= len {
                         return None;
                     }
@@ -1877,11 +1878,11 @@ impl CoordinateView {
                     let map = row_map.as_deref();
                     let offsets = offsets.as_slice();
                     match map {
-                        crate::array::RowSelectionRef::Identity
-                        | crate::array::RowSelectionRef::Window { .. } => {
+                        storage::RowSelectionRef::Identity
+                        | crate::geometry::storage::RowSelectionRef::Window { .. } => {
                             packed_line_point_at(coords, offsets, map, index)
                         },
-                        crate::array::RowSelectionRef::Gather(_) => None,
+                        storage::RowSelectionRef::Gather(_) => None,
                     }
                 },
                 GeometryArrayStorage::Packed(PackedStorage::Polygons {
@@ -1892,15 +1893,17 @@ impl CoordinateView {
                 }) => {
                     let map = row_map.as_deref();
                     match map {
-                        crate::array::RowSelectionRef::Identity
-                        | crate::array::RowSelectionRef::Window { .. } => packed_polygon_point_at(
-                            coords,
-                            ring_offsets.as_slice(),
-                            polygon_offsets.as_slice(),
-                            map,
-                            index,
-                        ),
-                        crate::array::RowSelectionRef::Gather(_) => None,
+                        storage::RowSelectionRef::Identity
+                        | crate::geometry::storage::RowSelectionRef::Window { .. } => {
+                            packed_polygon_point_at(
+                                coords,
+                                ring_offsets.as_slice(),
+                                polygon_offsets.as_slice(),
+                                map,
+                                index,
+                            )
+                        },
+                        storage::RowSelectionRef::Gather(_) => None,
                     }
                 },
                 // Mixed / masked / gather-of-ragged: flat index is not a
@@ -2157,16 +2160,14 @@ fn coord_views_bit_eq(
     coordseq_columns_bit_eq(&left, &right)
 }
 
-fn row_selection_eq(left: &crate::array::RowSelection, right: &crate::array::RowSelection) -> bool {
+fn row_selection_eq(left: &storage::RowSelection, right: &storage::RowSelection) -> bool {
     match (left.as_deref(), right.as_deref()) {
-        (crate::array::RowSelectionRef::Identity, crate::array::RowSelectionRef::Identity) => true,
+        (storage::RowSelectionRef::Identity, storage::RowSelectionRef::Identity) => true,
         (
-            crate::array::RowSelectionRef::Window { start: sa, len: la },
-            crate::array::RowSelectionRef::Window { start: sb, len: lb },
+            crate::geometry::storage::RowSelectionRef::Window { start: sa, len: la },
+            crate::geometry::storage::RowSelectionRef::Window { start: sb, len: lb },
         ) => sa == sb && la == lb,
-        (crate::array::RowSelectionRef::Gather(a), crate::array::RowSelectionRef::Gather(b)) => {
-            a == b
-        },
+        (storage::RowSelectionRef::Gather(a), storage::RowSelectionRef::Gather(b)) => a == b,
         _ => false,
     }
 }
@@ -2265,9 +2266,9 @@ fn packed_columnar_equal(
 )]
 fn packed_points_columnar_eq(
     ca: &CoordSeq,
-    ma: &crate::array::RowSelection,
+    ma: &storage::RowSelection,
     cb: &CoordSeq,
-    mb: &crate::array::RowSelection,
+    mb: &storage::RowSelection,
 ) -> Option<bool> {
     // Cross row-map pairs (identity vs window/gather, gather vs rebuild) can
     // still be value-equal — never answer False solely from map shape.
@@ -2275,14 +2276,14 @@ fn packed_points_columnar_eq(
         return None;
     }
     match ma.as_deref() {
-        crate::array::RowSelectionRef::Identity => Some(coordseq_columns_bit_eq(ca, cb)),
-        crate::array::RowSelectionRef::Window { start, len } => {
+        storage::RowSelectionRef::Identity => Some(coordseq_columns_bit_eq(ca, cb)),
+        crate::geometry::storage::RowSelectionRef::Window { start, len } => {
             let la = ca.view(CoordWindow::from_range(start..start + len, ca.len()));
             let lb = cb.view(CoordWindow::from_range(start..start + len, cb.len()));
             Some(coordseq_columns_bit_eq(&la, &lb))
         },
         // Gathered points: physical rows may differ — stream is the safe path.
-        crate::array::RowSelectionRef::Gather(_) => None,
+        storage::RowSelectionRef::Gather(_) => None,
     }
 }
 
@@ -2292,10 +2293,10 @@ fn packed_points_columnar_eq(
 fn packed_lines_columnar_eq(
     ca: &CoordSeq,
     oa: &[i32],
-    ma: &crate::array::RowSelection,
+    ma: &storage::RowSelection,
     cb: &CoordSeq,
     ob: &[i32],
-    mb: &crate::array::RowSelection,
+    mb: &storage::RowSelection,
 ) -> Option<bool> {
     if !row_selection_eq(ma, mb) {
         return None;
@@ -2303,8 +2304,8 @@ fn packed_lines_columnar_eq(
     match ma.as_deref() {
         // Identity: flattened stream IS the coord columns (offsets only
         // partition rows; different breaks with the same verts stay equal).
-        crate::array::RowSelectionRef::Identity => Some(coordseq_columns_bit_eq(ca, cb)),
-        crate::array::RowSelectionRef::Window { start, len } => {
+        storage::RowSelectionRef::Identity => Some(coordseq_columns_bit_eq(ca, cb)),
+        crate::geometry::storage::RowSelectionRef::Window { start, len } => {
             // Per-side absolute spans (prefixes may differ); compare only the
             // visible coordinate slices, never the absolute offset numbers.
             let Some(left) = line_window_coord_span(oa, ca.len(), start, len) else {
@@ -2315,7 +2316,7 @@ fn packed_lines_columnar_eq(
             };
             Some(coord_views_bit_eq(ca, left, cb, right))
         },
-        crate::array::RowSelectionRef::Gather(_) => None,
+        storage::RowSelectionRef::Gather(_) => None,
     }
 }
 
@@ -2323,11 +2324,11 @@ fn packed_polygons_columnar_eq(
     ca: &CoordSeq,
     ra: &[i32],
     pa: &[i32],
-    ma: &crate::array::RowSelection,
+    ma: &storage::RowSelection,
     cb: &CoordSeq,
     rb: &[i32],
     pb: &[i32],
-    mb: &crate::array::RowSelection,
+    mb: &storage::RowSelection,
 ) -> Option<bool> {
     if !row_selection_eq(ma, mb) {
         return None;
@@ -2335,8 +2336,8 @@ fn packed_polygons_columnar_eq(
     match ma.as_deref() {
         // Same as lines: flatten order is the packed coord column; CSR only
         // partitions rings/polygons.
-        crate::array::RowSelectionRef::Identity => Some(coordseq_columns_bit_eq(ca, cb)),
-        crate::array::RowSelectionRef::Window { start, len } => {
+        storage::RowSelectionRef::Identity => Some(coordseq_columns_bit_eq(ca, cb)),
+        crate::geometry::storage::RowSelectionRef::Window { start, len } => {
             // Visible polygons start..end → ring range via polygon_offsets →
             // coord span via ring_offsets. Different absolute prefixes are fine.
             let Some(left) = polygon_window_coord_span(ra, pa, ca.len(), start, len) else {
@@ -2347,7 +2348,7 @@ fn packed_polygons_columnar_eq(
             };
             Some(coord_views_bit_eq(ca, left, cb, right))
         },
-        crate::array::RowSelectionRef::Gather(_) => None,
+        storage::RowSelectionRef::Gather(_) => None,
     }
 }
 
@@ -2437,18 +2438,18 @@ impl CoordinateView {
 fn packed_line_point_at(
     coords: &CoordSeq,
     offsets: &[i32],
-    map: crate::array::RowSelectionRef<'_>,
+    map: storage::RowSelectionRef<'_>,
     index: usize,
 ) -> Option<Point> {
     if offsets.len() < 2 {
         return None;
     }
     let span = match map {
-        crate::array::RowSelectionRef::Identity => 0..offsets[offsets.len() - 1] as usize,
-        crate::array::RowSelectionRef::Window { start, len } => {
+        storage::RowSelectionRef::Identity => 0..offsets[offsets.len() - 1] as usize,
+        crate::geometry::storage::RowSelectionRef::Window { start, len } => {
             offsets[start] as usize..offsets[start + len] as usize
         },
-        crate::array::RowSelectionRef::Gather(_) => return None,
+        storage::RowSelectionRef::Gather(_) => return None,
     };
     (index < span.len()).then(|| coords.point_at(span.start + index))
 }
@@ -2464,18 +2465,18 @@ fn packed_polygon_point_at(
     coords: &CoordSeq,
     rings: &[i32],
     polys: &[i32],
-    map: crate::array::RowSelectionRef<'_>,
+    map: storage::RowSelectionRef<'_>,
     index: usize,
 ) -> Option<Point> {
     if rings.len() < 2 || polys.len() < 2 {
         return None;
     }
     let span = match map {
-        crate::array::RowSelectionRef::Identity => 0..rings[rings.len() - 1] as usize,
-        crate::array::RowSelectionRef::Window { start, len } => {
+        storage::RowSelectionRef::Identity => 0..rings[rings.len() - 1] as usize,
+        crate::geometry::storage::RowSelectionRef::Window { start, len } => {
             rings[polys[start] as usize] as usize..rings[polys[start + len] as usize] as usize
         },
-        crate::array::RowSelectionRef::Gather(_) => return None,
+        storage::RowSelectionRef::Gather(_) => return None,
     };
     (index < span.len()).then(|| coords.point_at(span.start + index))
 }
@@ -2483,7 +2484,7 @@ fn packed_polygon_point_at(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::array::RowSelection;
+    use crate::geometry::storage::RowSelection;
     use crate::geometry::{LineSeq, PolygonLevel, Ring, SharedSlice};
     use crate::{Frame, PyGeometryArray};
 
@@ -2788,8 +2789,8 @@ mod tests {
             ring_offsets,
             polygon_offsets,
             Frame::default(),
-            crate::array::row_selection_from_logical_rows(
-                crate::array::RowSelectionRef::Identity,
+            storage::row_selection_from_logical_rows(
+                storage::RowSelectionRef::Identity,
                 n_polygons,
                 rows,
             ),
@@ -2960,11 +2961,7 @@ mod tests {
             coords.clone(),
             offsets,
             Frame::default(),
-            crate::array::row_selection_from_logical_rows(
-                crate::array::RowSelectionRef::Identity,
-                3,
-                1..3,
-            ),
+            storage::row_selection_from_logical_rows(storage::RowSelectionRef::Identity, 3, 1..3),
         )
         .unwrap();
         let view = array.coordinate_view();

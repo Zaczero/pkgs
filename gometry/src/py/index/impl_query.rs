@@ -1,6 +1,6 @@
 use super::impl_nearest::{HeapNearest, NearestState, OneNearest};
 use crate::CsrBuilder;
-use crate::array::ValidityMask;
+use crate::geometry::storage::ValidityMask;
 use crate::geometry::{PreparedPlan, TopologyDomain};
 use crate::predicates::engine::{GateOperand, PredicateSpec, PreparedTopologyPair, row_kind_empty};
 use crate::py::errors::{crs_mismatch_error, epoch_mismatch_error};
@@ -1509,13 +1509,14 @@ const fn candidate_policy(spec: &PredicateSpec) -> IndexEnvelope {
 mod tests {
     use super::*;
     use crate::array::BoundsSeed;
+    use crate::crs::frame;
     use crate::geometry::{CoordSeq, CsrOffsetColumn, LineSeq, PolygonLevel, RingLevel};
     use crate::py::index::spatial_index;
 
     #[test]
     fn refinement_kind_gate_precedes_geographic_admission() {
         crate::test_support::initialize_python();
-        let frame = Frame::new(Some(crate::crs::frame::crs_arc_static("EPSG:4326")), None).unwrap();
+        let frame = Frame::new(Some(frame::crs_arc_static("EPSG:4326")), None).unwrap();
         let index = spatial_index(vec![PyGeometry::with_frame(
             ShapeData::new(Shape::Point(Point::new_raw_xy(0.0, 0.0))),
             frame.clone(),
@@ -1580,7 +1581,7 @@ mod tests {
 
     #[test]
     fn projected_candidate_preparation_does_not_materialize_polygon_shape() {
-        let frame = Frame::new(Some(crate::crs::frame::crs_arc_static("EPSG:3857")), None).unwrap();
+        let frame = Frame::new(Some(frame::crs_arc_static("EPSG:3857")), None).unwrap();
         let array = PyGeometryArray::packed_polygons(
             CoordSeq::try_from_vecs(
                 vec![0.0, 1.0, 1.0, 0.0, 0.0],

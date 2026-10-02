@@ -6,9 +6,10 @@ use std::sync::Arc;
 use pyo3::exceptions::{PyOverflowError, PyTypeError};
 use pyo3::prelude::{Bound, PyAny, PyResult};
 
-use crate::array::missing::union_many;
 use crate::collections::{HashMap, HashMapExt as _};
 use crate::crs::frame;
+use crate::geometry::storage;
+use crate::geometry::storage::validity::union_many;
 use crate::py::arrow::WkbOffsetWidth;
 use crate::py::arrow_c::admitted::{
     AdmittedArrowSchema, ArrowReleaseGuard, MovedArrowShell, classify_admitted_geometry_schema,
@@ -790,7 +791,7 @@ struct NativeNode {
     )]
     field_names: Arc<Vec<String>>,
     /// Combined ancestor and self validity, sharing owned Arrow bitmap bytes.
-    effective_missing: Option<crate::array::ValidityMask>,
+    effective_missing: Option<storage::ValidityMask>,
 }
 
 /// Classification resolved at the attached ingress boundary and carried with
@@ -859,13 +860,13 @@ impl NativeNode {
     fn missing_count(&self) -> usize {
         self.effective_missing
             .as_ref()
-            .map_or(0, crate::array::ValidityMask::missing_count)
+            .map_or(0, storage::ValidityMask::missing_count)
     }
 
     fn present_count(&self) -> usize {
         self.effective_missing
             .as_ref()
-            .map_or(self.length, crate::array::ValidityMask::present_count)
+            .map_or(self.length, storage::ValidityMask::present_count)
     }
 
     fn bytes_at(&self, index: usize) -> Option<&[u8]> {
@@ -930,7 +931,7 @@ impl NativeNode {
 fn build_owned_node_admitted(
     validated: &mut CaptureLayout,
     schema: &AdmittedArrowSchema,
-    effective_missing: Option<crate::array::ValidityMask>,
+    effective_missing: Option<storage::ValidityMask>,
 ) -> PyResult<NativeNode> {
     let buffers = snapshot_native_buffers(validated)?;
     // Own-row nulls from owned validity, OR'd with any ancestor mask.
@@ -1033,9 +1034,9 @@ fn build_owned_node_admitted(
 fn project_ancestor_missing(
     parent: &CaptureLayout,
     parent_buffers: &OwnedBufferSlots,
-    parent_effective: Option<&crate::array::ValidityMask>,
+    parent_effective: Option<&storage::ValidityMask>,
     child_length: usize,
-) -> PyResult<Option<crate::array::ValidityMask>> {
+) -> PyResult<Option<storage::ValidityMask>> {
     let Some(parent_missing) = parent_effective else {
         return Ok(None);
     };
@@ -1090,7 +1091,7 @@ fn project_ancestor_missing(
                 usize::try_from(value)
                     .map_err(|_| arrow::geoarrow_parse_error("Arrow offsets must be non-negative"))
             };
-            let mut missing = crate::array::ValidityBuilder::with_capacity(child_length);
+            let mut missing = storage::ValidityBuilder::with_capacity(child_length);
             for (row, is_missing) in parent_missing.iter().enumerate() {
                 if !is_missing {
                     continue;
@@ -1122,7 +1123,7 @@ fn project_ancestor_missing(
                     "Arrow fixed-size-list child visible length does not match parent",
                 ));
             }
-            let mut missing = crate::array::ValidityBuilder::with_capacity(child_length);
+            let mut missing = storage::ValidityBuilder::with_capacity(child_length);
             for is_missing in parent_missing.iter() {
                 if is_missing {
                     missing.extend_missing(width);
@@ -1144,8 +1145,8 @@ fn project_ancestor_missing(
 fn merge_owned_row_missing(
     array: &CaptureLayout,
     buffers: &OwnedBufferSlots,
-    ancestor: Option<crate::array::ValidityMask>,
-) -> PyResult<Option<crate::array::ValidityMask>> {
+    ancestor: Option<storage::ValidityMask>,
+) -> PyResult<Option<storage::ValidityMask>> {
     let len = array.length;
     if ancestor.as_ref().is_some_and(|mask| mask.len() != len) {
         return Err(PyTypeError::new_err(
@@ -1175,7 +1176,7 @@ fn merge_owned_row_missing(
             "Arrow validity bitmap is shorter than declared",
         ));
     }
-    let own = crate::array::ValidityMask::from_bitmap(
+    let own = storage::ValidityMask::from_bitmap(
         crate::geometry::SharedSlice::from_arc_vec(Arc::clone(bitmap)),
         bit_offset,
         len,
@@ -2857,8 +2858,8 @@ mod layout_validation_tests {
             assert_eq!(decoded.storage.len(), 1);
             assert!(matches!(
                 decoded.storage,
-                NativeDecodedStorage::Packed(crate::array::GeometryArrayStorage::Packed(
-                    crate::array::PackedStorage::Points { .. }
+                NativeDecodedStorage::Packed(storage::GeometryArrayStorage::Packed(
+                    storage::PackedStorage::Points { .. }
                 ))
             ));
         });
@@ -2953,8 +2954,8 @@ mod layout_validation_tests {
             );
             assert!(matches!(
                 decoded.storage,
-                NativeDecodedStorage::Packed(crate::array::GeometryArrayStorage::Packed(
-                    crate::array::PackedStorage::Points { .. }
+                NativeDecodedStorage::Packed(storage::GeometryArrayStorage::Packed(
+                    storage::PackedStorage::Points { .. }
                 ))
             ));
         });

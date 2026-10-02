@@ -37,7 +37,7 @@ use crate::geometry::{
     Bounds, Contact, CoordSeq, CoordinateAxes, ExpansionBudget, GeometryErrorKind, GeometryKind,
     HashMap, LineSeq, Loc, MultiLineString, Point, PointKey, Polygon, PolygonizeFull, Result, Ring,
     RingKind, Segment, Shape, SharedShapeOwners, XY, for_each_candidate_pair, same_point,
-    segment_contact_exact, single_chain,
+    segment_contact_exact, single_chain, storage,
 };
 
 mod construction;
@@ -594,12 +594,12 @@ impl ExactSourceInventory {
         Self::from_rows(
             shapes
                 .iter()
-                .map(|shape| crate::array::ShapeRow::Shape(shape.borrow())),
+                .map(|shape| storage::ShapeRow::Shape(shape.borrow())),
         )
     }
 
     pub(in crate::geometry) fn from_rows<'a>(
-        rows: impl ExactSizeIterator<Item = crate::array::ShapeRow<'a>>,
+        rows: impl ExactSizeIterator<Item = storage::ShapeRow<'a>>,
     ) -> Result<Self> {
         Self::stage_rows(rows, |staged, row, operand| {
             let mut owners = SharedShapeOwners::for_collections();
@@ -615,29 +615,27 @@ impl ExactSourceInventory {
         Self::from_rows_with_occurrences(
             shapes
                 .iter()
-                .map(|shape| crate::array::ShapeRow::Shape(shape.borrow())),
+                .map(|shape| storage::ShapeRow::Shape(shape.borrow())),
         )
     }
 
     pub(in crate::geometry) fn from_rows_with_occurrences<'a>(
-        rows: impl ExactSizeIterator<Item = crate::array::ShapeRow<'a>>,
+        rows: impl ExactSizeIterator<Item = storage::ShapeRow<'a>>,
     ) -> Result<Self> {
         Self::stage_rows(rows, |staged, row, operand| match row {
-            crate::array::ShapeRow::Shape(shape) => {
-                staged.append_shape_with_occurrences(shape, operand)
-            },
-            crate::array::ShapeRow::Handle(plan) => {
+            storage::ShapeRow::Shape(shape) => staged.append_shape_with_occurrences(shape, operand),
+            storage::ShapeRow::Handle(plan) => {
                 staged.append_shape_with_occurrences(plan.shape(), operand)
             },
-            row @ (crate::array::ShapeRow::Point(_) | crate::array::ShapeRow::Packed(_)) => {
+            row @ (storage::ShapeRow::Point(_) | storage::ShapeRow::Packed(_)) => {
                 staged.append_row(row, operand, &mut SharedShapeOwners::for_collections())
             },
         })
     }
 
     fn stage_rows<'a>(
-        rows: impl ExactSizeIterator<Item = crate::array::ShapeRow<'a>>,
-        mut append: impl FnMut(&mut StagedExactSources, crate::array::ShapeRow<'a>, u32) -> Result<()>,
+        rows: impl ExactSizeIterator<Item = storage::ShapeRow<'a>>,
+        mut append: impl FnMut(&mut StagedExactSources, storage::ShapeRow<'a>, u32) -> Result<()>,
     ) -> Result<Self> {
         let mut staged = StagedExactSources::new(rows.len());
         for (operand, row) in rows.enumerate() {
@@ -2741,11 +2739,11 @@ impl StagedExactSources {
 
     fn append_row(
         &mut self,
-        row: crate::array::ShapeRow<'_>,
+        row: storage::ShapeRow<'_>,
         operand: u32,
         owners: &mut SharedShapeOwners,
     ) -> Result<()> {
-        use crate::array::{PackedRow, ShapeRow};
+        use crate::geometry::storage::{PackedRow, ShapeRow};
         match row {
             ShapeRow::Handle(plan) => self.append_shape(plan.shape(), operand, owners),
             ShapeRow::Shape(shape) => self.append_shape(shape, operand, owners),
@@ -2760,7 +2758,7 @@ impl StagedExactSources {
                 Ok(())
             },
             ShapeRow::Packed(row @ PackedRow::Lines { coords, .. }) => {
-                let coords = crate::array::shape_row::CoordRow::new(
+                let coords = crate::geometry::storage::row::CoordRow::new(
                     coords,
                     row.vertex_window().expect("line row has a vertex window"),
                 );
@@ -2774,7 +2772,7 @@ impl StagedExactSources {
                 }
                 self.append_polygon_rings(
                     rings.map(|ring| {
-                        crate::array::shape_row::CoordRow::new(
+                        crate::geometry::storage::row::CoordRow::new(
                             coords,
                             row.polygon_ring_window(ring)
                                 .expect("admitted polygon ring"),

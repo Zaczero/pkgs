@@ -2,7 +2,8 @@ use pyo3::PyErr;
 use pyo3::exceptions::{PyIndexError, PyOverflowError, PyTypeError, PyValueError};
 use pyo3::types::PyInt;
 
-use crate::array::PackedStorage;
+use crate::geometry::storage;
+use crate::geometry::storage::PackedStorage;
 use crate::py::classes::coordinate_methods::{
     Bound, CoordinateAxes, CoordinateAxis, GeometryArrayStorage, GeometryError, Py, PyAny,
     PyAnyMethods as _, PyCoordinates, PyCoordinatesIter, PyDict, PyDictMethods as _, PyList, PyRef,
@@ -393,30 +394,30 @@ impl PyCoordinates {
                     GeometryArrayStorage::Packed(PackedStorage::Points { coords, row_map }) => {
                         let map = row_map.as_deref();
                         if let Some(mask) = missing
-                            && mask.len() != crate::array::point_logical_len(coords, map)
+                            && mask.len() != storage::point_logical_len(coords, map)
                         {
-                            let nested =
-                                mask.cursor()
-                                    .filter_map(|(_, present)| present)
-                                    .map(|present| {
-                                        coordinates_object(
-                                            py,
-                                            &Shape::Point(coords.point_at(
-                                                crate::array::physical_row(map, present),
-                                            )),
-                                            self.layout,
-                                        )
-                                    })
-                                    .collect::<PyResult<Vec<_>>>()?;
+                            let nested = mask
+                                .cursor()
+                                .filter_map(|(_, present)| present)
+                                .map(|present| {
+                                    coordinates_object(
+                                        py,
+                                        &Shape::Point(
+                                            coords.point_at(storage::physical_row(map, present)),
+                                        ),
+                                        self.layout,
+                                    )
+                                })
+                                .collect::<PyResult<Vec<_>>>()?;
                             return Ok(PyList::new(py, nested)?.unbind().into());
                         }
-                        (0..crate::array::point_logical_len(coords, map))
+                        (0..storage::point_logical_len(coords, map))
                             .filter(|&index| !missing.is_some_and(|mask| mask.is_missing(index)))
                             .map(|index| {
                                 coordinates_object(
                                     py,
                                     &Shape::Point(
-                                        coords.point_at(crate::array::physical_row(map, index)),
+                                        coords.point_at(storage::physical_row(map, index)),
                                     ),
                                     self.layout,
                                 )

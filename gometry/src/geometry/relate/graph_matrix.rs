@@ -16,7 +16,7 @@ use crate::geometry::topology::{
 };
 use crate::geometry::{
     Bounds, Coordinates as _, ExactGeographicTopology, GeographicTopologyRoute, PreparedPlan, Ring,
-    Shape,
+    Shape, storage,
 };
 #[cfg(test)]
 use crate::geometry::{CoordSeq, HashMap, PointKey, Polygon, overlay, same_point, topology};
@@ -139,8 +139,8 @@ pub(crate) fn graph_relate_data(left: &PreparedPlan, right: &PreparedPlan) -> Re
 }
 
 pub(in crate::geometry) fn exact_cartesian_relate<'a>(
-    left: impl Into<crate::array::ShapeRow<'a>>,
-    right: impl Into<crate::array::ShapeRow<'a>>,
+    left: impl Into<storage::ShapeRow<'a>>,
+    right: impl Into<storage::ShapeRow<'a>>,
 ) -> Result<De9im> {
     let inventory =
         ExactSourceInventory::from_rows_with_occurrences([left.into(), right.into()].into_iter())?;

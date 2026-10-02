@@ -6,7 +6,8 @@ use libc::{EINVAL, ENOMEM};
 use pyo3::exceptions::PyKeyboardInterrupt;
 use pyo3::types::PyList;
 
-use crate::geometry::{LineSeq, Point, Polygon, Ring, Shape};
+use crate::crs::frame;
+use crate::geometry::{LineSeq, Point, Polygon, Ring, Shape, storage};
 use crate::py::arrow::ArrowEncoding;
 use crate::py::arrow_c::capsule_lifecycle::stream_from_export;
 use crate::py::arrow_c::*;
@@ -371,7 +372,7 @@ fn native_signal_stream(
 fn release_callbacks_are_idempotent_for_native_exports() {
     let point = PyGeometry::with_frame(
         Shape::Point(Point::new_raw_xy(1.0, 2.0)),
-        crate::crs::frame::Frame::None,
+        frame::Frame::None,
     );
     release_twice(exported(&point));
 
@@ -386,7 +387,7 @@ fn release_callbacks_are_idempotent_for_native_exports() {
             )
             .expect("test line is valid"),
         ),
-        crate::crs::frame::Frame::None,
+        frame::Frame::None,
     );
     release_twice(exported(&line));
 
@@ -399,7 +400,7 @@ fn release_callbacks_are_idempotent_for_native_exports() {
     .unwrap();
     let polygon = PyGeometry::with_frame(
         Shape::Polygon(Polygon::new(ring, Vec::new())),
-        crate::crs::frame::Frame::None,
+        frame::Frame::None,
     );
     release_twice(exported(&polygon));
 }
@@ -408,7 +409,7 @@ fn release_callbacks_are_idempotent_for_native_exports() {
 fn schema_only_export_releases_without_array_export() {
     let point = PyGeometry::with_frame(
         Shape::Point(Point::new_raw_xy(1.0, 2.0)),
-        crate::crs::frame::Frame::None,
+        frame::Frame::None,
     );
     reset_schema_release_callbacks();
     release_schema_twice(exported_schema(&point));
@@ -419,7 +420,7 @@ fn schema_only_export_releases_without_array_export() {
             crate::geometry::GeometryKind::GeometryCollection,
             crate::geometry::CoordinateAxes::XY,
         ),
-        crate::crs::frame::Frame::None,
+        frame::Frame::None,
     );
     reset_schema_release_callbacks();
     release_schema_twice(exported_schema(&collection));
@@ -439,37 +440,34 @@ fn schema_only_uses_borrowed_description_without_payload_work() {
                 Shape::Point(Point::new_raw_xy(1.0, 2.0)),
                 Shape::Point(Point::new_raw_xy(3.0, 4.0)),
             ],
-            crate::crs::frame::Frame::None,
+            frame::Frame::None,
         )?;
-        let mask = crate::array::ValidityMask::from_vec(3, vec![false, true, false])
-            .expect("one missing row");
+        let mask =
+            storage::ValidityMask::from_vec(3, vec![false, true, false]).expect("one missing row");
         let nullable = PyGeometryArray::scatter_present_rows(&present, mask)?;
         let gathered = nullable.gather_logical_rows(&[2, 1, 0])?;
         let line = PyGeometryArray::from_shapes(
             vec![crate::io::parse_wkt("LINESTRING ZM (0 0 1 2, 1 1 3 4)")?],
-            crate::crs::frame::Frame::None,
+            frame::Frame::None,
         )?;
         let polygon = PyGeometryArray::from_shapes(
             vec![crate::io::parse_wkt("POLYGON ((0 0, 1 0, 0 1, 0 0))")?],
-            crate::crs::frame::Frame::None,
+            frame::Frame::None,
         )?;
         let mixed_wkb = PyGeometryArray::from_shapes(
             vec![
                 Shape::Point(Point::new_raw_xy(5.0, 6.0)),
                 crate::io::parse_wkt("POINT Z (7 8 9)")?,
             ],
-            crate::crs::frame::Frame::None,
+            frame::Frame::None,
         )?;
         let empty_wkb = PyGeometryArray::from_shapes(
             vec![crate::io::parse_wkt("LINESTRING ZM EMPTY")?],
-            crate::crs::frame::Frame::None,
+            frame::Frame::None,
         )?;
         let framed = PyGeometryArray::from_shapes(
             vec![Shape::Point(Point::new_raw_xy(9.0, 10.0))],
-            crate::crs::frame::Frame::new(
-                Some(crate::crs::frame::crs_arc_static("EPSG:4326")),
-                None,
-            )?,
+            frame::Frame::new(Some(frame::crs_arc_static("EPSG:4326")), None)?,
         )?;
 
         for array in [&gathered, &line, &polygon, &mixed_wkb, &empty_wkb, &framed] {
@@ -514,7 +512,7 @@ fn schema_snapshot_node_count(snapshot: &SchemaSnapshot) -> usize {
 fn stream_export_release_is_idempotent_after_batch_move() {
     let point = PyGeometry::with_frame(
         Shape::Point(Point::new_raw_xy(1.0, 2.0)),
-        crate::crs::frame::Frame::None,
+        frame::Frame::None,
     );
     let mut stream = stream_from_export(exported(&point));
     let mut array = empty_array();
@@ -541,7 +539,7 @@ fn stream_import_checks_native_pending_interrupt_before_exhaustion() {
         let _signal_guard = crate::test_support::PythonSignalTestGuard::new(py);
         let point = PyGeometry::with_frame(
             Shape::Point(Point::new_raw_xy(1.0, 2.0)),
-            crate::crs::frame::Frame::None,
+            frame::Frame::None,
         );
         let batch_count = 65;
         let (mut stream, remaining_at_release, released) =

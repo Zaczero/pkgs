@@ -2,13 +2,13 @@
 use pyo3::IntoPyObjectExt as _;
 use pyo3::types::PyAny;
 
-use crate::array::missing::{LogicalRowIndex, PresentRowIndex, union_many};
-use crate::array::{GeometryArrayStorage, PackedStorage, ValidityMask, ValidityRank};
 use crate::dispatch::MetricOp;
 use crate::geographic::{GeographicFrame, lonlat as geographic};
+use crate::geometry::storage::validity::{LogicalRowIndex, PresentRowIndex, union_many};
+use crate::geometry::storage::{GeometryArrayStorage, PackedStorage, ValidityMask, ValidityRank};
 use crate::geometry::{
     CoordSeq, CoordSeqBuilder, CoordinateAxes, HasM, HasZ, MOrdinate, ZOrdinate,
-    same_topological_coordinate,
+    same_topological_coordinate, storage,
 };
 use crate::py::errors::{CRSError, GeometryError, InvalidGeometryError};
 use crate::py::numpy::float64_array;
@@ -617,8 +617,8 @@ enum PointOperand<'a> {
 struct PhysicalPointRow(usize);
 
 impl PhysicalPointRow {
-    fn from_present(row_map: crate::array::RowSelectionRef<'_>, present: PresentRowIndex) -> Self {
-        Self(crate::array::physical_row(row_map, present.get()))
+    fn from_present(row_map: storage::RowSelectionRef<'_>, present: PresentRowIndex) -> Self {
+        Self(storage::physical_row(row_map, present.get()))
     }
 
     const fn get(self) -> usize {

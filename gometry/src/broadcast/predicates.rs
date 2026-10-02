@@ -5,7 +5,7 @@
 
 use pyo3::types::PyAny;
 
-use crate::array::{ArrayRow, PackedStorage, ValidityMask, missing};
+use crate::array::ArrayRow;
 use crate::broadcast::{
     Bound, CollectRows as _, CoordinateInput, GeometryArrayStorage, GeometryErrorKind,
     GeometryInput, Point, PredicateSpec, Py, PyErr, PyGeometry, PyGeometryArray, PyResult, Python,
@@ -15,7 +15,8 @@ use crate::broadcast::{
 };
 use crate::crs::frame::Frame;
 use crate::error::Result;
-use crate::geometry::{PointSet, PreparedPlan, TopologyDomain};
+use crate::geometry::storage::{PackedStorage, ValidityMask, validity as missing};
+use crate::geometry::{PointSet, PreparedPlan, TopologyDomain, storage};
 use crate::predicates::engine;
 use crate::predicates::engine::{
     GateOperand, Predicate, PreparedTopologyPair, topology_scalar_pair,
@@ -208,22 +209,22 @@ pub(crate) fn splitter_points_from_array(splitters: &PyGeometryArray) -> Result<
         && !splitters.is_compact_nullable()
     {
         let map = row_map.as_deref();
-        let logical_len = crate::array::point_logical_len(coords, map);
+        let logical_len = storage::point_logical_len(coords, map);
         points.reserve(
             splitters
                 .missing()
-                .map_or(logical_len, crate::array::ValidityMask::present_count),
+                .map_or(logical_len, storage::ValidityMask::present_count),
         );
         points.extend(
             (0..logical_len)
                 .filter(|&logical| !splitters.is_row_missing(logical))
-                .map(|logical| coords.point_at(crate::array::physical_row(map, logical))),
+                .map(|logical| coords.point_at(storage::physical_row(map, logical))),
         );
         return Ok(points);
     }
     for row in splitters.row_operation().present_rows() {
         // A compact nullable point column still yields point rows directly.
-        if let crate::array::ShapeRow::Point(point) = row.row() {
+        if let storage::ShapeRow::Point(point) = row.row() {
             points.push(point);
             continue;
         }

@@ -1,5 +1,6 @@
 use std::marker::PhantomData;
 
+use crate::collections::csr;
 use crate::error::Result;
 use crate::geometry::types::{GeometryErrorKind, Shape, SharedSlice};
 
@@ -59,13 +60,13 @@ impl GeometryKind {
 
 /// Amortized CSR offset column builder for hot mutators (simplify, densify, …).
 pub(crate) struct CsrOffsetBuilder {
-    builder: crate::collections::csr::CsrBuilder<(), i32>,
+    builder: csr::CsrBuilder<(), i32>,
 }
 
 impl Default for CsrOffsetBuilder {
     fn default() -> Self {
         Self {
-            builder: crate::collections::csr::CsrBuilder::new(),
+            builder: csr::CsrBuilder::new(),
         }
     }
 }
@@ -78,7 +79,7 @@ impl CsrOffsetBuilder {
 
     pub(crate) fn with_capacity(rows: usize) -> Self {
         Self {
-            builder: crate::collections::csr::CsrBuilder::with_capacity(0, rows),
+            builder: csr::CsrBuilder::with_capacity(0, rows),
         }
     }
 

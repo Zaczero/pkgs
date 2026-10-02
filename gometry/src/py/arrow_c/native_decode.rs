@@ -8,11 +8,12 @@ use std::num::NonZeroU32;
 use std::sync::Arc;
 
 use super::{ArrowFormat, NativeArrowBatch, NativeNode};
-use crate::array::{GeometryArrayStorage, PackedColumnBuilder, PackedStorage, RowSelection};
+use crate::array::PackedColumnBuilder;
+use crate::geometry::storage::{GeometryArrayStorage, PackedStorage, RowSelection};
 use crate::geometry::{
     CoordSeq, CoordSeqBuilder, CoordWindow, CoordinateAxes, CsrOffsetBuilder, GeometryKind,
     LineSeq, MColumn, MultiLineString, MultiMember, MultiPolygon, Point, Polygon, Ring, Shape,
-    SharedSlice, column_all_finite,
+    SharedSlice, column_all_finite, storage,
 };
 use crate::io;
 use crate::py::arrow;
@@ -744,7 +745,7 @@ type InterleavedColumns = (Vec<f64>, Vec<f64>, Option<Vec<f64>>, Option<Vec<f64>
 
 struct NativeCoordinates {
     coords: CoordSeq,
-    validity: Option<crate::array::ValidityMask>,
+    validity: Option<storage::ValidityMask>,
 }
 
 impl NativeCoordinates {
@@ -1093,8 +1094,8 @@ fn arrow_ring_error(error: crate::error::Error) -> NativeArrowDecodeError {
 fn combined_validity(
     length: usize,
     missing: impl Fn(usize) -> bool,
-) -> Option<crate::array::ValidityMask> {
-    crate::array::ValidityMask::from_missing_iter(length, (0..length).map(missing))
+) -> Option<storage::ValidityMask> {
+    storage::ValidityMask::from_missing_iter(length, (0..length).map(missing))
 }
 
 #[cfg(test)]
@@ -1105,6 +1106,7 @@ mod tests {
         NativeArrowBatch, NativeArrowClassification, OwnedBuffer, OwnedBufferSlots,
     };
     use super::{ArrowFormat, NativeDecodedStorage, NativeNode};
+    use crate::geometry::storage;
     use crate::py::arrow::WkbOffsetWidth;
     use crate::py::geoarrow::GeometryEncoding;
 
@@ -1165,7 +1167,7 @@ mod tests {
             schema_name: Arc::new(String::new()),
             field_names: Arc::new(Vec::new()),
             effective_missing: missing
-                .and_then(|missing| crate::array::ValidityMask::from_vec(missing.len(), missing)),
+                .and_then(|missing| storage::ValidityMask::from_vec(missing.len(), missing)),
         }
     }
 
@@ -1195,8 +1197,8 @@ mod tests {
         }
         .decode()
         .expect("direct linestring decode");
-        let NativeDecodedStorage::Packed(crate::array::GeometryArrayStorage::Packed(
-            crate::array::PackedStorage::Lines {
+        let NativeDecodedStorage::Packed(storage::GeometryArrayStorage::Packed(
+            storage::PackedStorage::Lines {
                 coords, offsets, ..
             },
         )) = decoded.storage
@@ -1220,8 +1222,8 @@ mod tests {
         }
         .decode()
         .expect("direct polygon decode");
-        let NativeDecodedStorage::Packed(crate::array::GeometryArrayStorage::Packed(
-            crate::array::PackedStorage::Polygons {
+        let NativeDecodedStorage::Packed(storage::GeometryArrayStorage::Packed(
+            storage::PackedStorage::Polygons {
                 coords,
                 ring_offsets,
                 polygon_offsets,

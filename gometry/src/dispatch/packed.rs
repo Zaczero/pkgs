@@ -2,16 +2,18 @@ use std::sync::Arc;
 
 use pyo3::prelude::*;
 
-use crate::array::{GeometryArrayStorage, PackedStorage, RowSelection, RowSelectionRef};
-use crate::boundary::input::OriginSpec;
 use crate::broadcast::{
     CollectRows as _, degrade_linref_linestring, degrade_linref_point, rows_err,
 };
 use crate::crs::MetricModel;
 use crate::dispatch::Lane;
 use crate::dispatch::operation::{MetricOp, Operation};
+use crate::geometry::storage::{
+    GeometryArrayStorage, PackedStorage, RowSelection, RowSelectionRef,
+};
 use crate::geometry::{
-    Bounds, CoordSeq, CsrOffsetColumn, MeasureRange, Shape, SimplifyMethod, TopologyDomain,
+    Bounds, CoordSeq, CsrOffsetColumn, MeasureRange, OriginSpec, Shape, SimplifyMethod,
+    TopologyDomain,
 };
 use crate::py::numpy::{bool_array, bounds_array, float64_array};
 use crate::{

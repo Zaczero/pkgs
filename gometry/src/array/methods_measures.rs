@@ -2,15 +2,17 @@ use pyo3::types::PyDict;
 
 use crate::array::packed_columns::XyColumns;
 use crate::array::{
-    Bound, DistanceUnit, GeometryArrayStorage, GeometryError, IntoPyObject as _, PackedColumnError,
-    PackedColumns, PackedStorage, Py, PyAny, PyAnyMethods as _, PyDictMethods as _, PyErr,
-    PyGeometryArray, PyResult, PyTupleMethods as _, PyTypeError, PyTypeMethods as _, Python, Shape,
-    SpatialCurve, bounds_values_from_columns_masked, crs, crs_label, geodesic_line_measure,
+    Bound, DistanceUnit, GeometryError, IntoPyObject as _, PackedColumnError, PackedColumns, Py,
+    PyAny, PyAnyMethods as _, PyDictMethods as _, PyErr, PyGeometryArray, PyResult,
+    PyTupleMethods as _, PyTypeError, PyTypeMethods as _, Python, Shape, SpatialCurve,
+    bounds_values_from_columns_masked, crs, crs_label, geodesic_line_measure,
     geodesic_polygon_measure, geographic_bounds_values_from_columns, pymethods,
     reduce_lines_or_polygons, resolve_metric, segmented_planar_lengths,
     segmented_planar_lengths_3d,
 };
 use crate::dispatch::{MetricOp, kernels};
+use crate::geometry::storage;
+use crate::geometry::storage::{GeometryArrayStorage, PackedStorage};
 use crate::py::errors;
 use crate::py::numpy::float64_array;
 
@@ -25,7 +27,7 @@ fn coordinate_payload_len(array: &PyGeometryArray) -> Option<usize> {
         },
         GeometryArrayStorage::Packed(PackedStorage::Lines {
             offsets, row_map, ..
-        }) => Some(crate::array::packed_lines_coord_len(
+        }) => Some(storage::packed_lines_coord_len(
             offsets.as_slice(),
             row_map.as_deref(),
         )),
@@ -34,7 +36,7 @@ fn coordinate_payload_len(array: &PyGeometryArray) -> Option<usize> {
             polygon_offsets,
             row_map,
             ..
-        }) => Some(crate::array::packed_polygons_coord_len(
+        }) => Some(storage::packed_polygons_coord_len(
             ring_offsets.as_slice(),
             polygon_offsets.as_slice(),
             row_map.as_deref(),
@@ -49,7 +51,7 @@ fn ring_payload_len(array: &PyGeometryArray) -> Option<usize> {
             polygon_offsets,
             row_map,
             ..
-        }) => Some(crate::array::packed_polygons_ring_len(
+        }) => Some(storage::packed_polygons_ring_len(
             polygon_offsets.as_slice(),
             row_map.as_deref(),
         )),
@@ -683,8 +685,8 @@ impl PyGeometryArray {
 #[cfg(test)]
 mod geographic_masked_bounds_tests {
     use super::*;
-    use crate::array::ValidityMask;
     use crate::crs::frame::{Frame, crs_arc_static};
+    use crate::geometry::storage::ValidityMask;
     use crate::geometry::{CoordSeq, LineSeq, Point, Polygon, Ring};
 
     fn line(points: &[(f64, f64)]) -> Shape {
@@ -794,12 +796,12 @@ mod geographic_masked_bounds_tests {
 #[cfg(test)]
 mod concat_bulk_tests {
     use super::*;
-    use crate::array::ValidityMask;
     use crate::array::streaming::{
         reset_stream_bulk_extensions, reset_stream_row_advances, stream_bulk_extensions,
         stream_bulk_rows, stream_row_advances,
     };
     use crate::crs::frame::Frame;
+    use crate::geometry::storage::ValidityMask;
     use crate::geometry::{CoordSeq, LineSeq, Point, Polygon, Ring};
 
     fn line(start: f64) -> Shape {
@@ -876,14 +878,14 @@ mod concat_bulk_tests {
     fn reset_bulk_observations() {
         reset_stream_bulk_extensions();
         reset_stream_row_advances();
-        crate::array::reset_shape_iter_materializations();
+        storage::reset_shape_iter_materializations();
     }
 
     fn assert_bulk_counts() {
         assert_eq!(stream_bulk_extensions(), 2);
         assert_eq!(stream_bulk_rows(), 5);
         assert_eq!(stream_row_advances(), 0);
-        assert_eq!(crate::array::shape_iter_materializations(), 0);
+        assert_eq!(storage::shape_iter_materializations(), 0);
     }
 
     #[test]
@@ -991,7 +993,7 @@ mod concat_bulk_tests {
         assert_eq!(result.len(), points.len() + lines.len());
         assert_eq!(stream_bulk_extensions(), 1);
         assert_eq!(stream_row_advances(), 3);
-        assert_eq!(crate::array::shape_iter_materializations(), 0);
+        assert_eq!(storage::shape_iter_materializations(), 0);
 
         let xyz = PyGeometryArray::from_shapes(
             vec![Shape::Point(Point::new_raw_axes(
@@ -1030,7 +1032,7 @@ mod concat_bulk_tests {
         assert_eq!(stream_bulk_extensions(), 0);
         assert_eq!(stream_bulk_rows(), 0);
         assert_eq!(stream_row_advances(), 3);
-        assert_eq!(crate::array::shape_iter_materializations(), 0);
+        assert_eq!(storage::shape_iter_materializations(), 0);
         let GeometryArrayStorage::Packed(PackedStorage::Lines {
             coords, offsets, ..
         }) = merged.storage()

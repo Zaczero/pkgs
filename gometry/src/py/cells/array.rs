@@ -14,11 +14,13 @@ use pyo3::types::{
 use pyo3::{Bound, Py, PyErr};
 
 use crate::HeapSize;
-use crate::array::missing::ValidityMask;
-use crate::array::{RowSelection, RowSelectionRef, physical_row, row_selection_from_logical_rows};
 use crate::broadcast::py_bool_or_not_implemented;
 use crate::collections::{HashMap, HashMapExt as _};
-use crate::geometry::{CoordSeq, CoordSeqBuilder, CoordinateAxes};
+use crate::geometry::storage::validity::ValidityMask;
+use crate::geometry::storage::{
+    RowSelection, RowSelectionRef, physical_row, row_selection_from_logical_rows,
+};
+use crate::geometry::{CoordSeq, CoordSeqBuilder, CoordinateAxes, storage};
 use crate::grid::cell::{GridCell, HierarchicalCell as _};
 use crate::grid::cell_set;
 use crate::grid::geohash::{GEOHASH_MAX_PRECISION, Geohash};
@@ -79,11 +81,11 @@ struct CellStorage {
     ids: crate::geometry::SharedSlice<u64>,
     /// Per-physical-row missing flags. `None` means every row is present
     /// (the common dense factory path). When `Some`, length equals `ids`.
-    missing: Option<crate::array::ValidityMask>,
+    missing: Option<storage::ValidityMask>,
 }
 
 impl CellStorage {
-    fn new(kind: GridKind, ids: Vec<u64>, missing: Option<crate::array::ValidityMask>) -> Self {
+    fn new(kind: GridKind, ids: Vec<u64>, missing: Option<storage::ValidityMask>) -> Self {
         debug_assert!(missing.as_ref().is_none_or(|mask| mask.len() == ids.len()));
         Self {
             kind,
@@ -251,7 +253,7 @@ impl PyCellArray {
     /// Build with a parallel missing mask (one flag per id). Used by bulk
     /// factories that degrade missing geometry rows instead of rejecting them.
     pub(crate) fn from_ids_with_missing(kind: GridKind, ids: Vec<u64>, missing: Vec<bool>) -> Self {
-        let missing = crate::array::ValidityMask::from_vec(ids.len(), missing);
+        let missing = storage::ValidityMask::from_vec(ids.len(), missing);
         Self {
             storage: CellStorage::new(kind, ids, missing),
             selection: RowSelection::Identity,
@@ -1794,7 +1796,7 @@ pub(crate) fn _unpickle_cell_array_v1(
                 0
             });
         }
-        let missing = crate::array::ValidityMask::from_missing_iter(
+        let missing = storage::ValidityMask::from_missing_iter(
             bytes.len(),
             bytes.iter().map(|&value| value == 1),
         );

@@ -2,8 +2,7 @@ use std::sync::Arc;
 
 use pyo3::prelude::*;
 
-use crate::array::missing::union_many;
-use crate::array::{ArrayRow, PackedStorage, line_locate_point_on_lines};
+use crate::array::{ArrayRow, line_locate_point_on_lines};
 use crate::broadcast::{
     CollectRows as _, GeometryInput, classify_required, degrade_linref_float, detach_collect_f64,
     validate_paired_arrays,
@@ -11,6 +10,8 @@ use crate::broadcast::{
 use crate::crs::frame::Frame;
 use crate::dispatch::Lane;
 use crate::dispatch::operation::{MetricOp, Operation};
+use crate::geometry::storage::PackedStorage;
+use crate::geometry::storage::validity::union_many;
 use crate::geometry::{FrameDependentCaches, Point, PreparedPlan};
 use crate::py::support::LineReferenceBasis;
 use crate::{

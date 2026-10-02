@@ -1,8 +1,10 @@
 use std::sync::Arc;
 
-use crate::array::{
-    GeometryArrayStorage, PackedStorage, PyGeometryArray, RowSelection, StorageLayout,
-    ValidityMask, row_selection_from_logical_rows,
+use crate::array::{PyGeometryArray, StorageLayout};
+use crate::geometry::storage;
+use crate::geometry::storage::{
+    GeometryArrayStorage, PackedStorage, RowSelection, ValidityMask,
+    row_selection_from_logical_rows,
 };
 
 impl PyGeometryArray {
@@ -178,7 +180,7 @@ impl PyGeometryArray {
             });
         }
         if let Some(window) =
-            crate::array::contiguous_physical_range(row_map.as_deref(), present.clone())
+            storage::contiguous_physical_range(row_map.as_deref(), present.clone())
         {
             return GeometryArrayStorage::Packed(PackedStorage::Points {
                 coords: Arc::new(coords.view(crate::geometry::CoordWindow::from_range(

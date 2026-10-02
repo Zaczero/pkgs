@@ -5,7 +5,8 @@
 use crate::array::packed_ops::{
     PyGeometryArray, PyResult, Python, Result, Shape, note_array_row, rows_err,
 };
-use crate::array::{Arc, ComputedCaches, GeometryArrayStorage, PackedStorage, StorageLayout};
+use crate::array::{Arc, ComputedCaches, StorageLayout};
+use crate::geometry::storage::{GeometryArrayStorage, PackedStorage};
 
 /// One monomorphized row walker for every per-shape map. `T` lets callers
 /// collect either replacement shapes or optional replacements without an
@@ -249,9 +250,9 @@ impl PyGeometryArray {
 mod tests {
 
     use super::*;
-    use crate::array::ValidityMask;
     use crate::crs::frame::Frame;
     use crate::geometry::Point;
+    use crate::geometry::storage::ValidityMask;
 
     fn mixed_with_missing() -> PyGeometryArray {
         let shapes = (0..3)

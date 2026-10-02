@@ -19,7 +19,7 @@ use crate::geometry::Ring;
 use crate::geometry::exact_arith::ExactSign;
 use crate::geometry::segments::stored_orientation_sign;
 use crate::geometry::{
-    Loc, Point, Polygon, Shape, SharedShapeOwners, XY, point_on_segment, same_point,
+    Loc, Point, Polygon, Shape, SharedShapeOwners, XY, point_on_segment, same_point, storage,
 };
 
 /// Whether a stored ring supplies areal winding or collapsed line support.
@@ -742,10 +742,10 @@ impl StreamingLocation {
 
     fn visit_row(
         &mut self,
-        row: crate::array::ShapeRow<'_>,
+        row: storage::ShapeRow<'_>,
         owners: &mut Option<&mut SharedShapeOwners>,
     ) {
-        use crate::array::{PackedRow, ShapeRow};
+        use crate::geometry::storage::{PackedRow, ShapeRow};
         match row {
             ShapeRow::Handle(plan) => self.visit_shape(plan.shape(), owners),
             ShapeRow::Shape(shape) => self.visit_shape(shape, owners),
@@ -1438,7 +1438,7 @@ pub(crate) fn cartesian_point_location(shape: &Shape, point: Point) -> Loc {
 }
 
 pub(crate) fn cartesian_row_point_location(
-    row: crate::array::ShapeRow<'_>,
+    row: storage::ShapeRow<'_>,
     point: Point,
     coverage: bool,
 ) -> Loc {
@@ -1459,10 +1459,7 @@ pub(crate) fn cartesian_area_covers_point(shape: &Shape, point: Point) -> bool {
     cartesian_row_area_covers_point(shape.into(), point)
 }
 
-pub(crate) fn cartesian_row_area_covers_point(
-    row: crate::array::ShapeRow<'_>,
-    point: Point,
-) -> bool {
+pub(crate) fn cartesian_row_area_covers_point(row: storage::ShapeRow<'_>, point: Point) -> bool {
     let mut location = StreamingLocation::new(point.xy(), LocationMode::Area);
     let mut shared_owners = SharedShapeOwners::for_collections();
     let mut owners = Some(&mut shared_owners);

@@ -1515,7 +1515,7 @@ mod tests {
         let ring_offsets =
             crate::geometry::CsrOffsetColumn::<crate::geometry::RingLevel>::try_new(vec![0, 5], 5)
                 .expect("test ring offsets are valid");
-        let row = ShapeRow::from_packed(crate::array::PackedRow::polygon_window(
+        let row = ShapeRow::from_packed(crate::geometry::storage::PackedRow::polygon_window(
             0,
             &coords,
             &ring_offsets,

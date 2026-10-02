@@ -1,8 +1,8 @@
 //! The `GeometryArray` Python method surface (`#[pymethods] impl
 //! PyGeometryArray`).
 //!
-//! Cohesive `#[pymethods]` blocks are split across files beside the packed
-//! array storage they operate on. Broadcast dispatch and sibling crate types
+//! Cohesive `#[pymethods]` blocks are split across files over native
+//! storage in `geometry::storage`. Broadcast dispatch and sibling crate types
 //! enter through `use super::*`; methods auto-register with the
 //! `GeometryArray` class wherever the impl is compiled.
 
@@ -18,6 +18,9 @@ use pyo3::types::{PyAny, PyDict, PyTuple};
 pub(crate) use crate::broadcast::{CollectRows, rows_err};
 use crate::error::{Error, Result};
 use crate::geometry::CsrOffsetColumn;
+use crate::geometry::storage::{
+    GeometryArrayStorage, PackedStorage, RowsIter, ShapeRow, ValidityMask, validity,
+};
 pub(crate) use crate::geometry::{
     CsrOffsetBuilder, PolygonLevel, RingLevel, line_is_ccw, line_is_closed, line_is_simple,
     line_is_valid, polygon_is_valid,
@@ -27,20 +30,19 @@ use crate::py::numpy::bool_array;
 use crate::{
     Arc, ArrowEncoding, Bounds, CoordSeq, CoordinateAxes, Crs, DefaultedF64Input, DistanceUnit,
     F64Param, Frame, FrameAdoption, FrameEdit, GeometryKind, GeometryTransformFrame, HeapSize,
-    I64Param, InterpolatePlan, OriginSpec, OverlayOp, Point, Polygon, PyCoordinates, PyCrs,
-    PyGeometry, PyTypeError, PyValidationReport, PyValueError, RepairMethod, Ring,
-    SVG_ARRAY_PREVIEW, Shape, SimplifyMethod, SpatialCurve, TransformOptionArgs, Typed,
-    VoronoiClipInput, cdt_refinement_values, coerce_present_geometry_items,
-    coordinate_epoch_option, coordinates, crs, crs_arc, crs_label, curves, exact_geometry,
-    exact_geometry_array, expected_geometry_or_array, geometry,
-    geometry_array_svg_grid_html_masked, io, line_interpolate_points_coordseq,
-    line_interpolate_points_shape, line_locate_coordseq, map_coordinates_callback,
-    non_negative_int, note_array_row, overlay_operator, owned_voronoi_boundary,
-    parse_coordinate_replacement, parse_crs, parse_curve_bounds, parse_interpolate_plan,
-    parse_precision, positive_int, pyclass, replace_shape_coordinates, require_geojson_crs,
-    resolve_line_metric, resolve_metric, row_sample_seed, slice_replacement_for_shape,
-    validate_densify_fraction, validate_equals_exact_tolerance, validate_max_segment_length,
-    validate_subdivide_max_vertices,
+    I64Param, InterpolatePlan, OriginSpec, OverlayOp, Point, PyCoordinates, PyCrs, PyGeometry,
+    PyTypeError, PyValidationReport, PyValueError, RepairMethod, SVG_ARRAY_PREVIEW, Shape,
+    SimplifyMethod, SpatialCurve, TransformOptionArgs, Typed, VoronoiClipInput,
+    cdt_refinement_values, coerce_present_geometry_items, coordinate_epoch_option, coordinates,
+    crs, crs_arc, crs_label, curves, exact_geometry, exact_geometry_array,
+    expected_geometry_or_array, geometry, geometry_array_svg_grid_html_masked, io,
+    line_interpolate_points_coordseq, line_interpolate_points_shape, line_locate_coordseq,
+    map_coordinates_callback, non_negative_int, note_array_row, overlay_operator,
+    owned_voronoi_boundary, parse_coordinate_replacement, parse_crs, parse_curve_bounds,
+    parse_interpolate_plan, parse_precision, positive_int, pyclass, replace_shape_coordinates,
+    require_geojson_crs, resolve_line_metric, resolve_metric, row_sample_seed,
+    slice_replacement_for_shape, validate_densify_fraction, validate_equals_exact_tolerance,
+    validate_max_segment_length, validate_subdivide_max_vertices,
 };
 
 /// An immutable array of geometries sharing one CRS/epoch frame.
@@ -108,11 +110,11 @@ enum LogicalRowsState<'a> {
     Dense(RowsIter<'a>),
     RowAligned {
         rows: RowsIter<'a>,
-        validity: missing::ValidityCursor<'a>,
+        validity: validity::ValidityCursor<'a>,
     },
     CompactPoints {
         rows: RowsIter<'a>,
-        validity: missing::ValidityCursor<'a>,
+        validity: validity::ValidityCursor<'a>,
     },
 }
 
@@ -353,8 +355,6 @@ mod methods_interop;
 mod methods_measures;
 mod methods_predicates;
 mod methods_topology;
-pub(crate) mod missing;
-pub(crate) use missing::{ValidityBuilder, ValidityMask, ValidityRank};
 
 mod methods_unary_io;
 mod ops;
@@ -362,19 +362,13 @@ pub(crate) use linref_kernels::{line_interpolate_points_rows, line_locate_point_
 mod iter;
 pub(crate) use iter::PyGeometryArrayIter;
 mod prepared;
-pub(crate) use prepared::{
-    ArrayRow, ArrayRowOperation, BoundsSeed, PreparedRow, RowProducts, packed_row_persistent,
-};
-mod storage_helpers;
-mod storage_types;
 pub(crate) use packed_column_builder::{
     PackedColumnBuilder, PointColumnBuilder, concat_packed_line_columns,
 };
-pub(crate) use storage_helpers::{
-    column_window, packed_centroid_xy, packed_surface_point, row_bounds, row_bounds_values,
-    row_ord_extremes,
+pub(crate) use prepared::{
+    ArrayRow, ArrayRowOperation, BoundsSeed, PreparedRow, RowProducts, packed_row_persistent,
 };
-pub(crate) use storage_impl::reverse_coord_windows;
+
 mod coordinate_replacement;
 pub(crate) use coordinate_replacement::{CoordinateReplacement, ReplacementAxis};
 mod packed;
@@ -399,21 +393,6 @@ mod streaming;
 mod uniform_columns;
 pub(crate) use pack_admission::{CheckedRingWindow, RingWindowError, polygon_pack_axes};
 pub(crate) use packed::ComputedCaches;
-pub(crate) use streaming::StreamingShapes;
-pub(crate) mod shape_row;
-mod storage_impl;
 pub(crate) use packed_equal::pair_packed_equals_exact;
+pub(crate) use streaming::StreamingShapes;
 mod tests;
-
-pub(crate) use shape_row::ShapeRow;
-pub(crate) use storage_types::{
-    GeometryArrayStorage, LineRows, PackedRow, PackedStorage, PointRows, RowSelection,
-    RowSelectionRef, RowsIter, ShapesIter, admit_packed_coord_count, admit_packed_total,
-    admitted_csr_window, contiguous_physical_range, csr_value_window, line_logical_len,
-    materialized_packed_lines_len, materialized_packed_polygons_len, packed_line_row,
-    packed_lines_coord_len, packed_polygon_bounds, packed_polygon_vertex_window,
-    packed_polygon_view, packed_polygons_coord_len, packed_polygons_ring_len, physical_row,
-    point_logical_len, polygon_logical_len, row_map_is_identity, row_selection_from_logical_rows,
-};
-#[cfg(test)]
-pub(crate) use storage_types::{reset_shape_iter_materializations, shape_iter_materializations};

@@ -3,15 +3,18 @@
 use std::sync::Arc;
 
 use crate::array::{
-    ComputedCaches, CoordSeq, CoordinateAxes, Frame, GeometryArrayStorage, GeometryKind, PackedRow,
-    PackedStorage, PolygonLevel, PyGeometryArray, RingLevel, RowSelectionRef, Shape, ShapeRow,
-    StorageLayout, ValidityBuilder, ValidityMask, admit_packed_total, csr_value_window,
-    materialized_packed_lines_len, materialized_packed_polygons_len,
+    ComputedCaches, CoordSeq, CoordinateAxes, Frame, GeometryKind, PolygonLevel, PyGeometryArray,
+    RingLevel, Shape, StorageLayout,
+};
+use crate::geometry::storage::{
+    GeometryArrayStorage, PackedRow, PackedStorage, RowSelectionRef, ShapeRow, ValidityBuilder,
+    ValidityMask, admit_packed_total, csr_value_window, materialized_packed_lines_len,
+    materialized_packed_polygons_len,
 };
 use crate::geometry::types::checked_csr_window;
 use crate::geometry::{
     CoordWindow, CsrOffsetBuilder, CsrOffsetColumn, GeometryErrorKind, LineSeq, Polygon,
-    ShapeCountQuery,
+    ShapeCountQuery, storage,
 };
 
 #[cfg(test)]
@@ -637,7 +640,7 @@ impl StreamingShapes {
                 (
                     GeometryArrayStorage::Packed(PackedStorage::Points {
                         coords: Arc::new(coords),
-                        row_map: crate::array::RowSelection::Identity,
+                        row_map: storage::RowSelection::Identity,
                     }),
                     StorageLayout::PresentOnly,
                 )
@@ -653,7 +656,7 @@ impl StreamingShapes {
                     GeometryArrayStorage::Packed(PackedStorage::Lines {
                         coords: Arc::new(coords),
                         offsets,
-                        row_map: crate::array::RowSelection::Identity,
+                        row_map: storage::RowSelection::Identity,
                     }),
                     StorageLayout::LogicalRows,
                 )
@@ -670,7 +673,7 @@ impl StreamingShapes {
                         coords: Arc::new(coords),
                         ring_offsets,
                         polygon_offsets,
-                        row_map: crate::array::RowSelection::Identity,
+                        row_map: storage::RowSelection::Identity,
                     }),
                     StorageLayout::LogicalRows,
                 )
@@ -1166,15 +1169,15 @@ mod demotion_tests {
         )
         .unwrap();
 
-        crate::array::reset_shape_iter_materializations();
+        storage::reset_shape_iter_materializations();
         let staged = source.storage().iter_shapes().count();
         assert_eq!(staged, 3);
         assert!(
-            crate::array::shape_iter_materializations() > 0,
+            storage::shape_iter_materializations() > 0,
             "the staged negative control must exercise shape materialization"
         );
 
-        crate::array::reset_shape_iter_materializations();
+        storage::reset_shape_iter_materializations();
         let mut builder = StreamingShapes::with_capacity(6, 3);
         for row in source.row_operation().rows_with_missing(|| ()) {
             match row {
@@ -1204,7 +1207,7 @@ mod demotion_tests {
         assert_eq!(direct_coords.ys(), source_coords.ys());
         assert_eq!(direct_offsets.as_slice(), source_offsets.as_slice());
         assert_eq!(
-            crate::array::shape_iter_materializations(),
+            storage::shape_iter_materializations(),
             0,
             "native row append must not stage Shape values"
         );

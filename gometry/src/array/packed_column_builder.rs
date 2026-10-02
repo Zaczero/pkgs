@@ -1,10 +1,11 @@
 use std::ops::Range;
 
-use crate::array::column_window;
 use crate::error::Result as CrateResult;
+use crate::geometry::storage::column_window;
 use crate::geometry::types::ensure_coordseq_vertex_capacity;
 use crate::geometry::{
     CoordSeq, CoordSeqBuilder, CoordWindow, CsrOffsetBuilder, CsrOffsetColumn, GeometryErrorKind,
+    storage,
 };
 
 /// One point per output row — direct column push, no `Vec<Point>` staging.
@@ -280,9 +281,9 @@ pub(crate) fn concat_packed_line_columns(
         if n_lines == 0 {
             continue;
         }
-        vertices = crate::array::admit_packed_total(
+        vertices = storage::admit_packed_total(
             vertices,
-            crate::array::csr_value_window(offsets.as_slice(), 0..n_lines).len(),
+            storage::csr_value_window(offsets.as_slice(), 0..n_lines).len(),
         )?;
         rows = rows
             .checked_add(n_lines)

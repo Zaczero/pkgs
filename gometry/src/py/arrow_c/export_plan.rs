@@ -5,8 +5,9 @@ use std::cell::Cell;
 use pyo3::prelude::PyResult;
 
 use crate::PyGeometryArray;
-use crate::array::{ArrayRow, GeometryArrayStorage, PackedStorage, RowSelectionRef};
-use crate::geometry::{CoordSeq, CoordinateAxes, LineSeq, Polygon, Shape};
+use crate::array::ArrayRow;
+use crate::geometry::storage::{GeometryArrayStorage, PackedStorage, RowSelectionRef};
+use crate::geometry::{CoordSeq, CoordinateAxes, LineSeq, Polygon, Shape, storage};
 use crate::py::arrow::{ArrowEncoding, accumulate_geometry_axes};
 #[cfg(test)]
 use crate::py::arrow_c::GometryArrowSchema;
@@ -896,7 +897,7 @@ fn validate_binary_offsets(offsets: &[i32], child_len: usize) -> NativeArrowExpo
 }
 
 fn plan_validity(
-    mask: &crate::array::ValidityMask,
+    mask: &storage::ValidityMask,
     offset: usize,
 ) -> NativeArrowExportResult<ValidityPlan> {
     let (owned, mask_offset) = mask.arrow_bitmap();

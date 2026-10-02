@@ -9,9 +9,11 @@ use pyo3::{
 };
 
 use crate::HeapSize;
-use crate::array::{RowSelection, RowSelectionRef, physical_row, row_selection_from_logical_rows};
 use crate::broadcast::py_bool_or_not_implemented;
 use crate::collections::{HashMap, HashMapExt as _};
+use crate::geometry::storage::{
+    RowSelection, RowSelectionRef, physical_row, row_selection_from_logical_rows,
+};
 use crate::geometry::{CoordSeq, CoordSeqBuilder, CoordinateAxes, LineSeq};
 use crate::py::cells::grid_kind::membership_id;
 use crate::py::cells::h3::{

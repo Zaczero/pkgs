@@ -5,13 +5,15 @@
 
 use crate::array::packed_columns::{PackedColumnResult, XyColumns};
 use crate::array::{
-    Arc, ComputedCaches, CoordSeq, CoordinateAxes, Frame, GeometryArrayStorage, GeometryKind,
-    PackedColumnError, PackedColumnOutput, PackedColumns, PackedRow, PackedStorage, Point,
-    PointColumnBuilder, PolygonLevel, PyGeometryArray, PyResult, Python, Result, RingLevel,
-    RowSelection, Shape, StorageLayout, column_window, packed_centroid_xy, packed_polygon_bounds,
-    packed_surface_point,
+    Arc, ComputedCaches, CoordSeq, CoordinateAxes, Frame, GeometryKind, PackedColumnError,
+    PackedColumnOutput, PackedColumns, Point, PointColumnBuilder, PolygonLevel, PyGeometryArray,
+    PyResult, Python, Result, RingLevel, Shape, StorageLayout,
 };
-use crate::geometry::{CoordWindow, DerivedPointStrategy, LineSeq};
+use crate::geometry::storage::{
+    GeometryArrayStorage, PackedRow, PackedStorage, RowSelection, column_window,
+    packed_centroid_xy, packed_polygon_bounds, packed_surface_point,
+};
+use crate::geometry::{CoordWindow, DerivedPointStrategy, LineSeq, storage};
 
 fn point_from_unary_shape(shape: Shape) -> Point {
     match shape {
@@ -65,7 +67,7 @@ fn polygon_row_crosses_antimeridian(
     row: PackedRow<'_>,
     domain: crate::geometry::TopologyDomain,
 ) -> bool {
-    let crate::array::PackedRow::Polygons { coords, .. } = row else {
+    let crate::geometry::storage::PackedRow::Polygons { coords, .. } = row else {
         unreachable!("antimeridian ring traversal requires a packed polygon row")
     };
     row.polygon_rings()
@@ -105,7 +107,7 @@ where
             let XyColumns { xs, ys } = line_columns.physical_xy();
             let may_cross_antimeridian =
                 domain.is_geographic() && !longitude_span_cannot_cross_antimeridian(xs);
-            crate::array::admit_packed_coord_count(columns.row_count())
+            storage::admit_packed_coord_count(columns.row_count())
                 .map_err(PackedColumnError::Batch)?;
             let mut builder =
                 PointColumnBuilder::with_capacity(CoordinateAxes::XY, columns.row_count());
@@ -151,7 +153,7 @@ where
             let XyColumns { xs, ys } = polygon_columns.physical_xy();
             let may_cross_antimeridian =
                 domain.is_geographic() && !longitude_span_cannot_cross_antimeridian(xs);
-            crate::array::admit_packed_coord_count(columns.row_count())
+            storage::admit_packed_coord_count(columns.row_count())
                 .map_err(PackedColumnError::Batch)?;
             let mut builder =
                 PointColumnBuilder::with_capacity(CoordinateAxes::XY, columns.row_count());
@@ -214,7 +216,8 @@ impl PyGeometryArray {
                     ))
                 },
                 |xs, ys, row, _crossings| {
-                    let crate::array::PackedRow::Polygons { ring_offsets, .. } = row else {
+                    let crate::geometry::storage::PackedRow::Polygons { ring_offsets, .. } = row
+                    else {
                         unreachable!("packed polygon centroid requires polygon storage")
                     };
                     packed_centroid_xy(crate::geometry::centroid_polygon_row_columns(
@@ -260,7 +263,7 @@ impl PyGeometryArray {
                     ))
                 },
                 |xs, ys, row, crossings| {
-                    let crate::array::PackedRow::Polygons {
+                    let crate::geometry::storage::PackedRow::Polygons {
                         coords,
                         ring_offsets,
                         rings_start,

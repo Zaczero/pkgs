@@ -13,14 +13,18 @@ use crate::array::packed_columns::{
     LineColumns, PackedColumnResult, PackedColumns, PointColumns, PointRows, PolygonColumns,
     SegmentedRuns, XyColumns, batch_err, row_err,
 };
-use crate::array::storage_helpers::{packed_line_row_pivot, packed_polygon_row_pivot};
 use crate::array::{
     Bounds, CoordSeq, CsrOffsetBuilder, OriginSpec, PackedColumnBuilder, PackedColumnOutput,
-    PackedRow, PointRowLayout, Result, RingLevel, RowSelectionRef, Shape, ValidityMask,
-    column_window, crs, packed_line_row, packed_polygon_bounds, packed_polygon_vertex_window,
-    row_bounds, row_bounds_values,
+    PointRowLayout, Result, RingLevel, Shape, crs,
 };
-use crate::geometry::{CoordSeqBuilder, CoordWindow, LineSeq, MOrdinate, Point, ZOrdinate};
+use crate::geometry::storage::columns::{packed_line_row_pivot, packed_polygon_row_pivot};
+use crate::geometry::storage::{
+    PackedRow, RowSelectionRef, ValidityMask, column_window, packed_line_row,
+    packed_polygon_bounds, packed_polygon_vertex_window, row_bounds, row_bounds_values,
+};
+use crate::geometry::{
+    CoordSeqBuilder, CoordWindow, LineSeq, MOrdinate, Point, ZOrdinate, storage,
+};
 
 /// Expand coordinate validation into the packed row loop. Its `?` returns the
 /// first invalid coordinate through the detached batch operation.
@@ -42,7 +46,7 @@ macro_rules! validate_geographic_columns {
 /// range check or `Option` callback.
 macro_rules! measure_admitted_polygon_ring {
     ($ring_offsets:expr, $ring:expr, $xs:expr, $ys:expr, $measure:expr $(,)?) => {{
-        let __window = $crate::array::admitted_csr_window!($ring_offsets, $ring);
+        let __window = $crate::geometry::storage::admitted_csr_window!($ring_offsets, $ring);
         ($measure)(
             column_window($xs, &__window),
             column_window($ys, &__window),
@@ -83,7 +87,7 @@ pub(crate) fn buffer_point_columns(
     let total = present_rows.checked_mul(vertices_per_row).ok_or_else(|| {
         batch_err(crate::geometry::GeometryErrorKind::OffsetCapacityExceeded.into())
     })?;
-    crate::array::admit_packed_coord_count(total).map_err(batch_err)?;
+    storage::admit_packed_coord_count(total).map_err(batch_err)?;
 
     let mut unit_x = Vec::with_capacity(steps);
     let mut unit_y = Vec::with_capacity(steps);
@@ -705,7 +709,7 @@ pub(crate) fn map_masked_point_columns_to_crs(
     let rows = PointRows::new(coords.len(), selection, Some(missing), layout);
     let present_count = rows.present_count();
     let compact = rows.is_compact();
-    crate::array::admit_packed_coord_count(if compact { present_count } else { rows.len() })
+    storage::admit_packed_coord_count(if compact { present_count } else { rows.len() })
         .map_err(crate::crs::TransformFailure::from)?;
     let mut xs = Vec::with_capacity(present_count);
     let mut ys = Vec::with_capacity(present_count);
@@ -1080,8 +1084,7 @@ pub(crate) fn packed_per_row_self_origin_affine_columns(
                     coords
                 } else {
                     let rows = point_columns.rows();
-                    crate::array::admit_packed_coord_count(rows.present_count())
-                        .map_err(batch_err)?;
+                    storage::admit_packed_coord_count(rows.present_count()).map_err(batch_err)?;
                     let mut builder = CoordSeqBuilder::with_capacity(
                         point_columns.coords().axes(),
                         rows.present_count(),
@@ -1104,7 +1107,7 @@ pub(crate) fn packed_per_row_self_origin_affine_columns(
                 } else {
                     rows.len()
                 };
-                crate::array::admit_packed_coord_count(capacity).map_err(batch_err)?;
+                storage::admit_packed_coord_count(capacity).map_err(batch_err)?;
                 let mut builder = CoordSeqBuilder::with_capacity(axes, capacity);
                 let mut has_missing = false;
                 for (logical, physical) in rows.cursor() {

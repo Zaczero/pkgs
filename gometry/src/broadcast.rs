@@ -9,6 +9,7 @@
 use pyo3::prelude::*;
 use pyo3::types::PyAny;
 
+use crate::geometry::storage;
 use crate::{
     Arc, Bound, Bounds, CoordinateAxes, CoordinateInput, F64Param, Frame, GeoJsonDecodeContext,
     GeometryArrayStorage, GeometryError, GeometryErrorKind, GeometryKind, Point, PreparedPlan, Py,
@@ -120,7 +121,7 @@ pub(crate) fn rows_err((row, error): (usize, crate::error::Error)) -> PyErr {
 
 pub(crate) fn mask_missing<T: Copy>(
     values: &mut [T],
-    missing: Option<&crate::array::ValidityMask>,
+    missing: Option<&storage::ValidityMask>,
     sentinel: T,
 ) {
     if let Some(mask) = missing {

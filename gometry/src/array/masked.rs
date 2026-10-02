@@ -1,6 +1,5 @@
-use crate::array::{
-    Arc, Py, PyAny, PyGeometryArray, PyResult, Python, Shape, ValidityMask, coordinates,
-};
+use crate::array::{Arc, Py, PyAny, PyGeometryArray, PyResult, Python, Shape, coordinates};
+use crate::geometry::storage::ValidityMask;
 
 impl PyGeometryArray {
     /// Publish logical-row outputs as a Python list with ``None`` at missing rows.

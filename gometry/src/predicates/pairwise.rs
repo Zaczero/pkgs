@@ -1,7 +1,7 @@
 use pyo3::IntoPyObjectExt as _;
 use pyo3::types::PyAny;
 
-use crate::array::missing::union_many;
+use crate::geometry::storage::validity::union_many;
 use crate::{
     Bound, CollectRows as _, DistanceUnit, GeometryInput, IntoPyObject as _, Py, PyGeometry,
     PyResult, Python, classify_required, crs, exact_geometry_array,

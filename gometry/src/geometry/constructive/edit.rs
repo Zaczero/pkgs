@@ -26,6 +26,27 @@ use crate::geometry::{
     set_point_ordinate, simd_xy_map_f64, simd_xy_map_one_f64,
 };
 
+/// A parsed `origin` argument for the ergonomic affine helpers: parsed
+/// once per call, resolved per shape — which also lets array bindings
+/// notice when the origin is per-shape (`Centroid`/`Center`, an identity
+/// for packed point rows) versus one fixed pivot.
+#[derive(Clone, Copy)]
+pub enum OriginSpec {
+    Centroid,
+    Center,
+    Fixed(f64, f64),
+}
+
+impl OriginSpec {
+    pub(crate) fn resolve_shape(self, shape: &Shape) -> crate::error::Result<(f64, f64)> {
+        Ok(match self {
+            Self::Centroid => shape.centroid_xy()?,
+            Self::Center => shape.bounds_center_xy(),
+            Self::Fixed(x, y) => (x, y),
+        })
+    }
+}
+
 /// Expand the fixed residual merge at its call site; omitted low limbs accrue
 /// in `error`, and checked forms use `?` when an intermediate is unsafe.
 macro_rules! add_affine_expansion_product {

@@ -1,10 +1,9 @@
 use std::num::NonZeroU32;
 
-use crate::array::{
-    GeometryArrayStorage, PackedColumns, PackedStorage, PyGeometryArray, PyResult, Python,
-};
+use crate::array::{PackedColumns, PyGeometryArray, PyResult, Python};
 use crate::crs::MetricModel;
 use crate::geometry::BufferSide;
+use crate::geometry::storage::{GeometryArrayStorage, PackedStorage};
 use crate::{DistanceUnit, F64Param};
 
 impl PyGeometryArray {

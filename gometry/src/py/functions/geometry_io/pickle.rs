@@ -4,9 +4,9 @@ use pyo3::IntoPyObjectExt as _;
 use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyTuple};
 
-use crate::array::{
-    CheckedRingWindow, GeometryArrayStorage, PackedStorage, PointRowLayout, RowSelectionRef,
-    ValidityMask,
+use crate::array::{CheckedRingWindow, PointRowLayout};
+use crate::geometry::storage::{
+    GeometryArrayStorage, PackedStorage, RowSelectionRef, ValidityMask,
 };
 use crate::geometry::{CsrOffsetColumn, SharedSlice};
 use crate::{CoordSeq, Crs, Frame, PyGeometry, PyGeometryArray, ShapeData, Typed};

@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
-use crate::array::{PackedRow, Result};
+use super::PackedRow;
+use crate::error::Result;
 use crate::geometry::{
     Bounds, CoordSeq, CoordinateAxes, Coordinates, GeometryKind, Point, PreparedPlan, Shape,
     ShapeCountQuery,
@@ -103,7 +104,7 @@ pub(crate) enum ShapeRow<'a> {
     /// Persistent prepared handle (index boxed rows, scalar geometry).
     Handle(&'a Arc<PreparedPlan>),
     /// Array-owned mixed storage: plain shape; prepared state lives in the
-    /// array-side prepared-row cache (see [`PyGeometryArray::prepared_row`]).
+    /// array-side prepared-row cache (see `PyGeometryArray::prepared_row`).
     Shape(&'a Shape),
     Point(Point),
     /// Homogeneous packed row with its admitted selector/CSR windows.

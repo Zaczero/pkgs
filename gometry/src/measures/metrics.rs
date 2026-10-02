@@ -1,5 +1,6 @@
 use pyo3::prelude::*;
 
+use crate::boundary::metadata;
 use crate::dispatch::{MetricOp, kernels};
 use crate::{DistanceUnit, PyGeometry, PyGeometryArray, finite_f64_required};
 
@@ -103,7 +104,7 @@ fn measure_natural_or_override(
             crate::dispatch::dispatch_unary(py, geom, op, unit, None, kernel)
         },
         crate::GeometryValues::Collected(mut items) => {
-            let frame = crate::boundary::metadata::resolve_geometry_frames(
+            let frame = metadata::resolve_geometry_frames(
                 &mut items,
                 crate::FrameAdoption {
                     crs: None,

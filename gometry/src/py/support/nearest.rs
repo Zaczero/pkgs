@@ -1,5 +1,6 @@
-use crate::array::{ArrayRow, ValidityMask};
+use crate::array::ArrayRow;
 use crate::geographic::GeographicFrame;
+use crate::geometry::storage::ValidityMask;
 use crate::py::support::{
     CollectRows as _, CoordinateAxes, Frame, Point, PyGeometry, PyGeometryArray, PyResult, Python,
     Shape, metric_nearest_points_resolved, rows_err,

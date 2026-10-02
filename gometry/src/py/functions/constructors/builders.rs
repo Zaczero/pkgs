@@ -2,7 +2,7 @@
     clippy::similar_names,
     reason = "axis and formula symbols name paired quantities here (minx/miny, xs/ys, lat_rad/lam_rad, step/stop), which this lint reads as typos"
 )]
-use crate::boundary::FloatInput;
+use crate::boundary::{FloatInput, metadata};
 use crate::geometry::{
     Bounds, CoordSeqBuilder, HasM, HasZ, MOrdinate, MultiLineString, MultiMember, MultiPoint,
     MultiPolygon, ZOrdinate, geographic_bounds_to_shape,
@@ -56,7 +56,7 @@ fn multipart_members(
             Ok(PyGeometry::with_frame(raw(&item)?, Frame::None))
         }
     })?;
-    let frame = crate::boundary::metadata::resolve_geometry_frames(
+    let frame = metadata::resolve_geometry_frames(
         &mut members,
         FrameAdoption {
             crs: parse_crs(crs)?,
@@ -1256,7 +1256,7 @@ pub(crate) fn build_geometry_collection(
     })?;
     let explicit_crs = parse_crs(crs)?;
     let explicit_epoch = coordinate_epoch_option("epoch", epoch)?;
-    let frame = crate::boundary::metadata::resolve_geometry_frames(
+    let frame = metadata::resolve_geometry_frames(
         &mut members,
         FrameAdoption {
             crs: explicit_crs,
