@@ -362,6 +362,81 @@ mod coordseq_builder_tests {
     }
 
     #[test]
+    fn try_from_points_preserves_ordinate_bits_and_order() {
+        assert_eq!(
+            CoordSeq::try_from_points(&[]).unwrap().axes(),
+            CoordinateAxes::XY
+        );
+        for axes in [
+            CoordinateAxes::XY,
+            CoordinateAxes::XYZ,
+            CoordinateAxes::XYM,
+            CoordinateAxes::XYZM,
+        ] {
+            let points: Vec<_> = (0..256)
+                .map(|index| {
+                    let zero = if index % 2 == 0 { -0.0 } else { 0.0 };
+                    Point::new_raw_axes(
+                        zero,
+                        f64::from(index / 3),
+                        ZOrdinate(axes.has_z().then_some(zero)),
+                        MOrdinate(axes.has_m().then_some(f64::from(index))),
+                    )
+                })
+                .collect();
+            let (coords, allocations) =
+                allocation_count(|| CoordSeq::try_from_points(&points).unwrap());
+            assert_eq!(coords.axes(), axes);
+            assert_eq!(coords.len(), points.len());
+            assert_eq!(
+                allocations,
+                2 * (2 + usize::from(axes.has_z()) + usize::from(axes.has_m()))
+            );
+            for (actual, expected) in coords.iter().zip(points) {
+                assert_eq!(actual.x.to_bits(), expected.x.to_bits());
+                assert_eq!(actual.y.to_bits(), expected.y.to_bits());
+                assert_eq!(actual.z().map(f64::to_bits), expected.z().map(f64::to_bits));
+                assert_eq!(actual.m().map(f64::to_bits), expected.m().map(f64::to_bits));
+            }
+        }
+    }
+
+    #[test]
+    fn try_from_points_rejects_nonfinite_active_ordinates() {
+        for value in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            for point in [
+                Point::new_raw_xy(value, 0.0),
+                Point::new_raw_xy(0.0, value),
+                Point::new_raw_axes(0.0, 0.0, ZOrdinate(Some(value)), MOrdinate(None)),
+                Point::new_raw_axes(0.0, 0.0, ZOrdinate(None), MOrdinate(Some(value))),
+            ] {
+                let error = CoordSeq::try_from_points(&[point, point]).unwrap_err();
+                assert!(matches!(
+                    error.kind(),
+                    ErrorKind::Geometry(GeometryErrorKind::NonFiniteCoordinate)
+                ));
+            }
+        }
+    }
+
+    #[test]
+    fn try_from_points_first_axes_mismatch_precedes_finiteness() {
+        let points = [
+            Point::new_raw_xy(f64::NAN, 0.0),
+            Point::new_raw_axes(1.0, 1.0, ZOrdinate(Some(2.0)), MOrdinate(None)),
+            Point::new_raw_axes(1.0, 1.0, ZOrdinate(None), MOrdinate(Some(2.0))),
+        ];
+        let error = CoordSeq::try_from_points(&points).unwrap_err();
+        assert!(matches!(
+            error.kind(),
+            ErrorKind::Geometry(GeometryErrorKind::CoordinateAxesMismatch {
+                declared: CoordinateAxes::XY,
+                got: CoordinateAxes::XYZ,
+            })
+        ));
+    }
+
+    #[test]
     fn point_mapping_publishes_directly_into_coordinate_columns() {
         let source = CoordSeq::try_from_points(
             &(0..256)

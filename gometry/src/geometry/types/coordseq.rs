@@ -438,11 +438,23 @@ impl CoordSeq {
             }
             .into());
         }
-        let mut builder = CoordSeqBuilder::with_capacity(first.axes, points.len());
-        for &point in points {
-            builder.push(point);
+        ensure_coordseq_vertex_capacity(points.len())?;
+        let mut xs = Vec::with_capacity(points.len());
+        let mut ys = Vec::with_capacity(points.len());
+        let mut zs = first.axes.has_z().then(|| Vec::with_capacity(points.len()));
+        let mut ms = first.axes.has_m().then(|| Vec::with_capacity(points.len()));
+        xs.extend(points.iter().map(|point| point.x));
+        ys.extend(points.iter().map(|point| point.y));
+        if let Some(zs) = &mut zs {
+            zs.extend(points.iter().map(|point| point.z));
         }
-        builder.finish()
+        if let Some(ms) = &mut ms {
+            ms.extend(points.iter().map(|point| point.m));
+        }
+        if !columns_all_finite(&xs, &ys, zs.as_deref(), ms.as_deref()) {
+            return Err(GeometryErrorKind::NonFiniteCoordinate.into());
+        }
+        Self::try_from_vecs(xs, ys, zs, ms)
     }
 
     /// Map stored points directly into new columns, inferring axes from the

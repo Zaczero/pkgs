@@ -724,9 +724,7 @@ impl PyGeometryArray {
         for row in self.row_operation().rows_with_missing(|| ()) {
             let measure = match row {
                 ArrayRow::Missing { .. } => None,
-                ArrayRow::Present(row) => {
-                    Some(row.row().with_shape(|shape| query.shape(py, shape))??)
-                },
+                ArrayRow::Present(row) => Some(query.row(py, row.row())?),
             };
             let narrow = measure
                 .as_ref()

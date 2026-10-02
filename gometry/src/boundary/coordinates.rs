@@ -18,7 +18,9 @@ use pyo3::{Bound, PyResult, Python};
 
 use crate::GeometryArrayStorage;
 use crate::array::RingLevel;
-use crate::geometry::storage::{PackedStorage, RowSelectionRef, ValidityMask, csr_value_window};
+use crate::geometry::storage::{
+    PackedStorage, RowSelectionRef, ShapeRow, ValidityMask, csr_value_window,
+};
 use crate::geometry::types::ShapeOwnerKey;
 use crate::geometry::{
     CoordRun, CoordSeq, CoordWindow, CoordinateAxes, CsrOffsetColumn, MOrdinate, Point, Polygon,
@@ -490,6 +492,25 @@ pub(crate) struct CoordinateMeasureQuery<'py> {
 }
 
 impl<'py> CoordinateMeasureQuery<'py> {
+    pub(crate) fn row(
+        &mut self,
+        py: Python<'py>,
+        row: ShapeRow<'_>,
+    ) -> PyResult<CoordinateMeasure<'py>> {
+        match row {
+            ShapeRow::Packed(row) => Ok(CoordinateMeasure::from_count_and_axes(
+                row.coord_count() as u128,
+                row.axes(),
+            )),
+            ShapeRow::Point(point) => Ok(CoordinateMeasure::from_count_and_axes(
+                1,
+                CoordinateAxes::from_point(point),
+            )),
+            ShapeRow::Handle(handle) => self.shape(py, handle.shape()),
+            ShapeRow::Shape(shape) => self.shape(py, shape),
+        }
+    }
+
     pub(crate) fn shape(
         &mut self,
         py: Python<'py>,
@@ -663,15 +684,13 @@ fn sequence_measure<'py>(seq: &CoordSeq) -> CoordinateMeasure<'py> {
     )
 }
 
-fn polygon_measure<'py>(
-    py: Python<'py>,
-    polygon: &crate::geometry::Polygon,
-) -> PyResult<CoordinateMeasure<'py>> {
-    let mut measure = sequence_measure(polygon.shell.coords());
-    for ring in polygon.holes.iter() {
-        measure = measure.add(py, &sequence_measure(ring.coords()))?;
-    }
-    Ok(measure.with_shape_axes(polygon.axes()))
+fn polygon_coordinate_count(polygon: &crate::geometry::Polygon) -> u128 {
+    // A Vec-bounded ring list and i32 coordinate windows fit in u128,
+    // including the widest four-ordinate payload.
+    polygon
+        .rings()
+        .map(|ring| ring.coords().len() as u128)
+        .sum()
 }
 
 fn shape_measure<'py>(
@@ -687,17 +706,34 @@ fn shape_measure<'py>(
         Shape::MultiPoint(seq) => Ok(sequence_measure(seq)),
         Shape::LineString(line) => Ok(sequence_measure(line.as_coords())),
         Shape::MultiLineString(lines) => {
-            let mut measure = CoordinateMeasure::ZERO;
-            for line in lines.iter() {
-                measure = measure.add(py, &sequence_measure(line.as_coords()))?;
-            }
-            Ok(measure.with_shape_axes(lines.axes()))
+            let count = lines.iter().map(|line| line.len() as u128).sum();
+            Ok(CoordinateMeasure::from_count_and_axes(count, lines.axes()))
         },
-        Shape::Polygon(polygon) => polygon_measure(py, polygon),
+        Shape::Polygon(polygon) => Ok(CoordinateMeasure::from_count_and_axes(
+            polygon_coordinate_count(polygon),
+            polygon.axes(),
+        )),
         Shape::MultiPolygon(polygons) => {
+            let count = polygons.iter().try_fold(0_u128, |count, polygon| {
+                count.checked_add(polygon_coordinate_count(polygon))
+            });
+            if let Some(count) = count
+                && count
+                    .checked_mul(polygons.axes().byte_width(1) as u128)
+                    .is_some()
+            {
+                return Ok(CoordinateMeasure::from_count_and_axes(
+                    count,
+                    polygons.axes(),
+                ));
+            }
             let mut measure = CoordinateMeasure::ZERO;
             for polygon in polygons.iter() {
-                measure = measure.add(py, &polygon_measure(py, polygon)?)?;
+                let polygon = CoordinateMeasure::from_count_and_axes(
+                    polygon_coordinate_count(polygon),
+                    polygon.axes(),
+                );
+                measure = measure.add(py, &polygon)?;
             }
             Ok(measure.with_shape_axes(polygons.axes()))
         },
