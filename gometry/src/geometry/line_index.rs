@@ -354,20 +354,34 @@ macro_rules! locate_point_body {
                 }
             }
         } else {
+            let mut best_projection = None;
             for ($index, ($segment, &$offset)) in
                 std::iter::zip(&($this).segments, &($this).prefix).enumerate()
             {
                 let $length = ($this).prefix[$index + 1] - $offset;
                 $skip_zero_segments;
-                let Some((distance, along)) =
-                    locate_planar_segment!($probe, $segment.start, $segment.end, $length)?
-                else {
+                let gap = (($probe).x - ($segment).start.x.max(($segment).end.x))
+                    .max(($segment).start.x.min(($segment).end.x) - ($probe).x)
+                    .max(($probe).y - ($segment).start.y.max(($segment).end.y))
+                    .max(($segment).start.y.min(($segment).end.y) - ($probe).y);
+                // Axis separation bounds Euclidean distance from below. Leave
+                // a factor-two margin against the measurement's rounding;
+                // overflow and underflow stay on the existing metric path.
+                if gap.is_normal() && gap > best_distance * 2.0 {
                     continue;
-                };
+                }
+                let (distance, projection) =
+                    point_segment_distance_and_projection(($probe).xy(), Segment {
+                        start: ($segment).start.into(),
+                        end: ($segment).end.into(),
+                    })?;
                 if distance < best_distance {
                     best_distance = distance;
-                    best_offset = $offset + along;
+                    best_projection = Some((projection, $offset, $length));
                 }
+            }
+            if let Some((projection, offset, length)) = best_projection {
+                best_offset = offset + projection.scale(length)?;
             }
         }
         if $normalized {
