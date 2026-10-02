@@ -1,13 +1,12 @@
 use std::ops::ControlFlow;
 
-use super::super::aabb::aabb_distance_with_scales;
 use crate::HeapSize;
 use crate::geometry::facet_bvh::{
     Facet, PreparedLinework, aabb_distance, aabb_distance_squared, aabb_max_distance_squared,
     aabbs_overlap, point_aabb, segment_aabb, union_aabb,
 };
 use crate::geometry::{
-    AxisFrame, BvhCode, BvhNode, Point, Segment, SquaredDistanceKey, point_on_segment,
+    BvhCode, BvhNode, Point, Segment, SquaredDistanceKey, point_on_segment,
     point_segment_distance_squared, point_segment_selection, segments_intersect,
 };
 
@@ -246,27 +245,6 @@ impl FacetBvh {
             } else {
                 linework.facet_point_distance(facet, Point::new_raw_xy(x, y))
             }
-        })
-    }
-
-    /// One probe's branch-and-bound descent in the original metric of an
-    /// anisotropic local frame. The caller refines a leaf facet because its
-    /// metric and witness are owned by the operation using the frame.
-    pub(crate) fn min_point_distance_with_stack_framed(
-        &self,
-        linework: &PreparedLinework,
-        point: Point,
-        frame: AxisFrame,
-        stack: &mut Vec<u32>,
-        best: f64,
-        mut refine: impl FnMut(Facet) -> f64,
-    ) -> crate::error::Result<f64> {
-        let probe = point_aabb(point.x, point.y);
-        let bound = |aabb: [f64; 4]| {
-            aabb_distance_with_scales(aabb, probe, frame.scale_x(), frame.scale_y())
-        };
-        self.min_point_distance_with_stack_by(linework, stack, best, bound, |facet| {
-            Ok(refine(facet))
         })
     }
 

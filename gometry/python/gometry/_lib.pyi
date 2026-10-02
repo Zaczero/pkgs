@@ -1711,8 +1711,12 @@ class Geometry:
         unit: DistanceUnit | None = None,
     ) -> Point:
         """Pole of inaccessibility: an approximate most-distant interior point
-        for label placement. Its CRS metric matches maximum_inscribed_circle, but the
-        certified planar circle search may retain a different representable center.
+        for label placement. Uses a tolerance-based cell search; its clearance is within the requested tolerance
+        of the global inradius for planar/projected input.
+        For a nonempty polygon with no filled interior, returns the midpoint of its
+        stored bounds with radius zero, including when its rings cancel the entire
+        support.
+        Empty geometries return ``POINT EMPTY``.
 
         See Also
         --------
@@ -1723,7 +1727,8 @@ class Geometry:
         Parameters
         ----------
         tolerance : float, optional
-            Positive finite search precision, interpreted for the CRS (see ``unit``).
+            Positive absolute bound on the planar global-inradius gap, interpreted
+            for the CRS (see ``unit``).
             Omitted selects a scale-aware tolerance from the geometry's extent.
         unit : {'planar', 'meters'}, default None
             ``None`` (the default) follows the CRS: geographic measurements use
@@ -2753,6 +2758,9 @@ class Geometry:
         Planar/projected input uses one deterministic representable center and
         certifies the global inradius against the requested absolute tolerance.
         Geographic input retains the documented local-projection approximation.
+        Empty geometries return ``POLYGON EMPTY``.
+        A nonempty polygon with no filled interior returns the midpoint of its stored
+        bounds with radius zero, including when its rings cancel the entire support.
         Mirrors minimum_bounding_circle.
 
         Parameters
@@ -2774,8 +2782,9 @@ class Geometry:
         -------
         Point or Polygon
             The fixed-resolution filled polygonal approximation of the inscribed
-            circle. A degenerate (zero-area) polygon, or a certified subnormal-radius
-            result, returns its center `Point`.
+            circle, or the stored-bounds midpoint for a nonempty polygon with no
+            filled interior.
+            A certified subnormal-radius result returns its center ``Point``.
 
         See Also
         --------
@@ -2831,7 +2840,8 @@ class Geometry:
         Returns
         -------
         float
-            The inscribed radius in the requested/CRS metric units (see ``unit``); ``NaN`` for empty input.
+            The inscribed radius in the requested/CRS metric units (see ``unit``);
+            ``NaN`` for empty input and zero for a polygon with no filled interior.
 
 
         Raises
@@ -7469,8 +7479,12 @@ class GeometryArray(Sequence[_GeometryT_co]):
         unit: DistanceUnit | None = None,
     ) -> GeometryArray[Point | None]:
         """Pole of inaccessibility: an approximate most-distant interior point
-        for label placement. Its CRS metric matches maximum_inscribed_circle, but the
-        certified planar circle search may retain a different representable center.
+        for label placement. Uses a tolerance-based cell search; its clearance is within the requested tolerance
+        of the global inradius for planar/projected input.
+        For a nonempty polygon with no filled interior, returns the midpoint of its
+        stored bounds with radius zero, including when its rings cancel the entire
+        support.
+        Empty geometries return ``POINT EMPTY``.
 
         See Also
         --------
@@ -7481,8 +7495,9 @@ class GeometryArray(Sequence[_GeometryT_co]):
         Parameters
         ----------
         tolerance : float or sequence of float, optional
-            Positive finite search precision, interpreted for the CRS (see ``unit``) —
-            a scalar applies to every geometry, or pass one value per geometry.
+            Positive absolute bound on the planar global-inradius gap, interpreted
+            for the CRS (see ``unit``) — a scalar applies to every geometry, or pass
+            one value per geometry.
             Omitted selects a scale-aware tolerance independently for each geometry.
         unit : {'planar', 'meters'}, default None
             ``None`` (the default) follows the CRS: geographic measurements use
@@ -8788,6 +8803,9 @@ class GeometryArray(Sequence[_GeometryT_co]):
         Planar/projected input uses one deterministic representable center and
         certifies the global inradius against the requested absolute tolerance.
         Geographic input retains the documented local-projection approximation.
+        Empty geometries return ``POLYGON EMPTY``.
+        A nonempty polygon with no filled interior returns the midpoint of its stored
+        bounds with radius zero, including when its rings cancel the entire support.
         Mirrors minimum_bounding_circle.
 
         Parameters

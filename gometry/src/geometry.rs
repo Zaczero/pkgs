@@ -81,11 +81,10 @@ pub(crate) use types::{
     GeodesicSegmentQueryResult, GeodesicSegmentSample, GeodesicSegmentScratch, GeodesicWitnessNeed,
     GeometryErrorKind, GeometryKind, HasM, HasZ, IndexedSegment, IntoSharedShape, LineSeq,
     MAX_NESTING, MColumn, MOrdinate, MultiLineString, MultiMember, MultiPoint, MultiPolygon, Point,
-    PointKey, Polygon, PolygonLevel, PolygonizeFull, PolylabelCell, PreparedPlan, RepairMethod,
-    Ring, RingLevel, Segment, SegmentContact, SegmentPairWitness, Shape, ShapeCountQuery,
-    ShapeData, ShapeOwnerKey, SharedSlice, SimplifyMethod, SmoothMethod, ValidationIssue,
-    VisiblePointRunKey, VisibleXYKey, VoronoiBoundary, XY, ZOrdinate, canonical_f64_bits,
-    coerce_to_common_axes,
+    PointKey, Polygon, PolygonLevel, PolygonizeFull, PreparedPlan, RepairMethod, Ring, RingLevel,
+    Segment, SegmentContact, SegmentPairWitness, Shape, ShapeCountQuery, ShapeData, ShapeOwnerKey,
+    SharedSlice, SimplifyMethod, SmoothMethod, ValidationIssue, VisiblePointRunKey, VisibleXYKey,
+    VoronoiBoundary, XY, ZOrdinate, canonical_f64_bits, coerce_to_common_axes,
 };
 mod antimeridian;
 pub(crate) use antimeridian::{

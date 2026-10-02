@@ -41,8 +41,8 @@ pub(crate) use shape_data::{
     GeodesicNumericalPolicy, GeodesicPreparedSegment, GeodesicSegmentDerivative,
     GeodesicSegmentMinimum, GeodesicSegmentQuery, GeodesicSegmentQueryResult,
     GeodesicSegmentSample, GeodesicSegmentScratch, GeodesicWitnessNeed, IndexedSegment,
-    IntoSharedShape, PointKey, PolygonizeFull, PolylabelCell, PreparedPlan, SegmentContact,
-    SegmentPairWitness, ShapeData, ValidationIssue, canonical_f64_bits,
+    IntoSharedShape, PointKey, PolygonizeFull, PreparedPlan, SegmentContact, SegmentPairWitness,
+    ShapeData, ValidationIssue, canonical_f64_bits,
 };
 pub(crate) use shared_slice::{SharedSlice, SharedSliceIter};
 

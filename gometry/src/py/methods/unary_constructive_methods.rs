@@ -342,6 +342,9 @@ circle center; ``maximum_inscribed_radius`` gives its numerical radius.
 Planar/projected input uses one deterministic representable center and
 certifies the global inradius against the requested absolute tolerance.
 Geographic input retains the documented local-projection approximation.
+Empty geometries return ``POLYGON EMPTY``.
+A nonempty polygon with no filled interior returns the midpoint of its stored
+bounds with radius zero, including when its rings cancel the entire support.
 Mirrors minimum_bounding_circle.
 
 Parameters
@@ -356,8 +359,9 @@ Returns
 -------
 Point or Polygon
     The fixed-resolution filled polygonal approximation of the inscribed
-    circle. A degenerate (zero-area) polygon, or a certified subnormal-radius
-    result, returns its center `Point`.
+    circle, or the stored-bounds midpoint for a nonempty polygon with no
+    filled interior.
+    A certified subnormal-radius result returns its center ``Point``.
 
 ");
     array: (r"
@@ -419,7 +423,8 @@ tolerance : float, optional
 Returns
 -------
 float
-    The inscribed radius in the requested/CRS metric units (see ``unit``); ``NaN`` for empty input.
+    The inscribed radius in the requested/CRS metric units (see ``unit``);
+    ``NaN`` for empty input and zero for a polygon with no filled interior.
 
 ");
     array: (r"
@@ -772,8 +777,12 @@ Examples
 method_doc! {
     doc_polylabel;
     pre: r"Pole of inaccessibility: an approximate most-distant interior point
-for label placement. Its CRS metric matches maximum_inscribed_circle, but the
-certified planar circle search may retain a different representable center.
+for label placement. Uses a tolerance-based cell search; its clearance is within the requested tolerance
+of the global inradius for planar/projected input.
+For a nonempty polygon with no filled interior, returns the midpoint of its
+stored bounds with radius zero, including when its rings cancel the entire
+support.
+Empty geometries return ``POINT EMPTY``.
 
 See Also
 --------
@@ -785,7 +794,8 @@ Parameters
 ----------";
     scalar: (r"
 tolerance : float, optional
-    Positive finite search precision, interpreted for the CRS (see ``unit``).
+    Positive absolute bound on the planar global-inradius gap, interpreted
+    for the CRS (see ``unit``).
     Omitted selects a scale-aware tolerance from the geometry's extent.
 ", r"
 
@@ -797,8 +807,9 @@ Point
 ");
     array: (r"
 tolerance : float or sequence of float, optional
-    Positive finite search precision, interpreted for the CRS (see ``unit``) —
-    a scalar applies to every geometry, or pass one value per geometry.
+    Positive absolute bound on the planar global-inradius gap, interpreted
+    for the CRS (see ``unit``) — a scalar applies to every geometry, or pass
+    one value per geometry.
     Omitted selects a scale-aware tolerance independently for each geometry.
 ", r"
 

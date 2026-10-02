@@ -3,11 +3,159 @@ orientation, normalize, clip, polygonize, summaries, and Z interpolation.
 """
 
 import itertools
+import json
+from pathlib import Path
 from typing import Any, cast
 
 import gometry as gm
 import numpy as np
 import pytest
+
+
+@pytest.mark.parametrize('aspect', [100, 100_000, 1_000_000])
+def test_inscribed_circle_on_high_aspect_ratio_triangle(aspect: int) -> None:
+    polygon = gm.Polygon([(0, 0), (aspect, 1), (2 * aspect, 0), (0, 0)])
+    disk = polygon.maximum_inscribed_circle()
+    radius = polygon.maximum_inscribed_radius()
+    assert disk.geometry_type == 'Polygon'
+    assert gm.covers(polygon, disk)
+    # The isosceles triangle's inradius is area / semiperimeter. The omitted
+    # tolerance is the one-unit short extent divided by 500.
+    expected = aspect / (aspect + np.hypot(aspect, 1))
+    assert expected - 0.002 <= radius <= expected
+
+
+def test_inscribed_triangle_radius_matches_shapely() -> None:
+    import shapely
+
+    polygon = gm.Polygon([(0, 0), (100, 1), (200, 0), (0, 0)])
+    reference = shapely.Polygon([(0, 0), (100, 1), (200, 0), (0, 0)])
+    expected = shapely.maximum_inscribed_circle(reference, tolerance=0.002).length
+    assert polygon.maximum_inscribed_radius() == pytest.approx(expected, abs=0.002)
+
+
+@pytest.mark.parametrize(
+    'aspect', [10, 30, 100, 300, 1000, 3000, 10_000, 100_000, 1_000_000]
+)
+@pytest.mark.parametrize('kind', ['triangle', 'trapezoid', 'rectangle'])
+def test_pole_searches_meet_their_tolerance_on_thin_nonrectangular_support(
+    aspect: int, kind: str
+) -> None:
+    if kind == 'triangle':
+        points = [(0, 0), (aspect, 0), (0, 1), (0, 0)]
+        expected = aspect / (aspect + 1 + np.hypot(aspect, 1))
+    elif kind == 'trapezoid':
+        points = [(0, 0), (aspect, 0), (aspect, 0.9), (0, 1), (0, 0)]
+        expected = 1 / (1 + 0.1 / aspect + np.hypot(1, 0.1 / aspect))
+    else:
+        points = [(0, 0), (aspect, 0), (aspect, 1), (0, 1), (0, 0)]
+        expected = 0.5
+    polygon = gm.Polygon(points)
+    label = polygon.polylabel(tolerance=0.001)
+    disk = polygon.maximum_inscribed_circle(tolerance=0.001)
+    radius = polygon.maximum_inscribed_radius(tolerance=0.001)
+    assert gm.contains(polygon, label)
+    assert gm.covers(polygon, disk)
+    assert expected - 0.001 <= radius <= expected + 1e-15
+    assert (
+        expected - 0.001 <= gm.distance(label, polygon.boundary()) <= expected + 1e-15
+    )
+
+
+@pytest.mark.parametrize(
+    ('wkt', 'center'),
+    [
+        ('POLYGON((0 0,2 2,4 4,0 0))', (2, 2)),
+        (
+            'POLYGON((0 0,4 0,4 4,0 4,0 0),(0 0,4 0,4 4,0 4,0 0))',
+            (2, 2),
+        ),
+        ('POLYGON((8 4,8 8,0 2,8 8,8 4))', (4, 5)),
+    ],
+)
+def test_inscribed_degenerate_polygon_uses_polylabel_representative(
+    wkt: str, center: tuple[int, int]
+) -> None:
+    polygon = gm.from_wkt(wkt)
+    circle = polygon.maximum_inscribed_circle()
+    label = polygon.polylabel()
+    assert circle.geometry_type == 'Point'
+    assert (circle.x, circle.y) == center
+    assert gm.equals_exact(circle, label)
+    assert polygon.maximum_inscribed_radius() == 0
+    array = gm.GeometryArray([polygon])
+    assert gm.equals_exact(array.maximum_inscribed_circle()[0], circle)
+    assert array.maximum_inscribed_radius()[0] == 0
+
+
+@pytest.mark.parametrize(
+    'wkt', ['POLYGON EMPTY', 'MULTIPOLYGON EMPTY', 'MULTIPOLYGON(EMPTY,EMPTY)']
+)
+def test_empty_polygon_pole_operations_keep_their_typed_empty_contract(
+    wkt: str,
+) -> None:
+    polygon = gm.from_wkt(wkt)
+    label = polygon.polylabel()
+    circle = polygon.maximum_inscribed_circle()
+    assert label.geometry_type == 'Point'
+    assert label.is_empty
+    assert circle.geometry_type == 'Polygon'
+    assert circle.is_empty
+    assert np.isnan(polygon.maximum_inscribed_radius())
+    array = gm.GeometryArray([polygon])
+    assert array.polylabel()[0].is_empty
+    assert array.maximum_inscribed_circle()[0].is_empty
+    assert np.isnan(array.maximum_inscribed_radius()[0])
+
+
+@pytest.mark.parametrize(
+    ('country', 'attained_radius'),
+    [
+        ('NZ', 1.5943274923002981),
+        ('KI', 0.5287821533585101),
+        ('FJ', 1.474348875000004),
+        ('TV', 0.3169333745952573),
+        ('FR', 3.6830364815762566),
+    ],
+)
+def test_country_pole_clearance_reaches_an_attained_inscribed_radius(
+    country: str, attained_radius: float
+) -> None:
+    fixture = Path(__file__).parents[1] / 'fixtures/osm_countries_0_1.geojson'
+    features = json.loads(fixture.read_text())['features']
+    geometry = next(
+        row['geometry']
+        for row in features
+        if row['properties']['tags'].get('ISO3166-1:alpha2') == country
+    )
+    polygon = gm.from_geojson(json.dumps(geometry)).set_crs(None)
+    minx, miny, maxx, maxy = polygon.bounds
+    tolerance = min(maxx - minx, maxy - miny) / 500
+    label = polygon.polylabel()
+    # These source clearances were attained by the certified circle search;
+    # they are independent witnesses against an inaccurate label search.
+    clearance = gm.distance(label, polygon.boundary())
+    assert gm.contains(polygon, label)
+    assert clearance >= attained_radius - tolerance
+    assert polygon.maximum_inscribed_radius() >= attained_radius - tolerance
+
+
+def test_pole_search_covers_parts_beyond_a_unit_normalized_start_cell() -> None:
+    polygon = gm.from_wkt(
+        'MULTIPOLYGON('
+        '((174 0,178 0,178 4,174 4,174 0)),'
+        '((174 6,178 6,178 8,174 8,174 6)),'
+        '((-179 12,-178 12,-178 14,-179 14,-179 12)))'
+    )
+    tolerance = 0.001
+    label = polygon.polylabel(tolerance=tolerance)
+    clearance = gm.distance(label, polygon.boundary())
+    assert gm.contains(polygon, label)
+    # The four-unit square has inradius two. The global horizontal chord
+    # selects the thinner rectangle, while a unit power-of-two start cell
+    # misses all three parts.
+    assert 2 - tolerance <= clearance <= 2
+    assert polygon.maximum_inscribed_radius(tolerance=tolerance) == 2
 
 
 def test_constructive_summary_geometries_are_rust_backed() -> None:

@@ -1423,14 +1423,6 @@ pub(crate) struct IndexedSegment {
     pub closed: bool,
 }
 
-#[derive(Clone, Copy, Debug)]
-pub(crate) struct PolylabelCell {
-    pub center: Point,
-    pub half_size: f64,
-    pub distance: f64,
-    pub max_distance: f64,
-}
-
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub(crate) struct PointKey {
     pub x: u64,
