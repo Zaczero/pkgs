@@ -32,6 +32,7 @@ mod proj;
 mod cache;
 mod catalog;
 mod error;
+pub(crate) mod frame;
 mod geodesic;
 mod grids;
 mod in_core;

@@ -10,7 +10,7 @@ use pyo3::sync::PyOnceLock;
 use pyo3::types::{PyAny, PyModule, PyTuple};
 
 use crate::array::{GeometryArrayStorage, PackedStorage};
-use crate::boundary::metadata::{
+use crate::crs::frame::{
     Frame, epochs_equal, optional_crs_labels_operationally_equal, optional_epochs_equal,
 };
 use crate::geometry::{CoordSeqBuilder, CoordinateAxes, CsrOffsetBuilder};

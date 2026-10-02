@@ -1,11 +1,11 @@
 use pyo3::prelude::*;
 
 use crate::array::{ArrayRow, ArrayRowOperation};
-use crate::boundary::metadata::Frame;
 use crate::broadcast::{
     BulkElement, CollectRows as _, GeometryInput, classify_input, expected_geometry_or_array,
     rows_err,
 };
+use crate::crs::frame::Frame;
 use crate::dispatch::metric::{
     CachelessRowContext, Lane, LinearReferenceRow, MetricCtx, MetricScratch,
 };

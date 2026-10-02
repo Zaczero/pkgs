@@ -1,12 +1,12 @@
 //! Binary-op operand classification: a Python argument resolved once into a
 //! scalar `Geometry` or a `GeometryArray`, plus the native-type extractors.
 
-use crate::boundary::metadata::Frame;
 use crate::broadcast::{
     Bound, GeoJsonDecodeContext, PyAny, PyAnyMethods as _, PyErr, PyGeometry, PyGeometryArray,
     PyResult, PyTypeError, PyTypeMethods as _, coerce_geojson_geometry_value, crs_arc,
     ensure_same_len, is_mapping_like, is_one_byte_buffer, parse_geojson_geometry_value,
 };
+use crate::crs::frame::Frame;
 #[cfg(test)]
 use crate::test_support::binary_dispatch_counters;
 

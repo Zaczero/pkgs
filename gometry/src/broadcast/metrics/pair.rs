@@ -983,7 +983,7 @@ mod dwithin_parity_tests {
 mod lonlat_points_tests {
     use super::{LonLatPointRows, LonLatPointsError, lonlat_points};
     use crate::array::{PyGeometryArray, ValidityMask};
-    use crate::boundary::{Frame, crs_arc_static};
+    use crate::crs::frame::{Frame, crs_arc_static};
     use crate::geometry::{CoordSeq, Point};
     use crate::io::parse_wkt;
 

@@ -7,11 +7,11 @@ use std::sync::Arc;
 use pyo3::prelude::*;
 
 use crate::array::{ArrayRow, ArrayRowOperation, ShapeRow, ValidityMask, missing};
-use crate::boundary::metadata::Frame;
 use crate::broadcast::{
     BulkElement, CollectRows as _, GeometryInput, classify_required, rows_err,
     validate_paired_arrays,
 };
+use crate::crs::frame::Frame;
 use crate::crs::{MetricModel, ResolvedMetric};
 use crate::dispatch::MetricOp;
 use crate::dispatch::metric::{

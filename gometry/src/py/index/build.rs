@@ -389,7 +389,10 @@ pub(crate) fn index_metadata(items: &[PyGeometry]) -> PyResult<Option<Frame>> {
         return Ok(None);
     }
     // The canonical shared-frame gate: per-axis CRSMismatchError messages.
-    Ok(Some(crate::Frame::common(items, "spatial index")?))
+    Ok(Some(crate::boundary::metadata::common_frame(
+        items,
+        "spatial index",
+    )?))
 }
 
 #[cfg(test)]

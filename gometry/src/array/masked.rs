@@ -114,7 +114,7 @@ mod tests {
     use pyo3::prelude::*;
 
     use super::*;
-    use crate::boundary::Frame;
+    use crate::crs::frame::Frame;
     use crate::geometry::Point;
 
     #[test]

@@ -1120,7 +1120,7 @@ mod tests {
     }
 
     use super::*;
-    use crate::boundary::Frame;
+    use crate::crs::frame::Frame;
     use crate::geometry::{CoordSeq, LineSeq, Point, Polygon, Ring};
 
     fn degrees() -> crate::geographic::GeographicFrame {

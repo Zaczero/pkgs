@@ -684,7 +684,7 @@ impl PyGeometryArray {
 mod geographic_masked_bounds_tests {
     use super::*;
     use crate::array::ValidityMask;
-    use crate::boundary::{Frame, crs_arc_static};
+    use crate::crs::frame::{Frame, crs_arc_static};
     use crate::geometry::{CoordSeq, LineSeq, Point, Polygon, Ring};
 
     fn line(points: &[(f64, f64)]) -> Shape {
@@ -799,7 +799,7 @@ mod concat_bulk_tests {
         reset_stream_bulk_extensions, reset_stream_row_advances, stream_bulk_extensions,
         stream_bulk_rows, stream_row_advances,
     };
-    use crate::boundary::Frame;
+    use crate::crs::frame::Frame;
     use crate::geometry::{CoordSeq, LineSeq, Point, Polygon, Ring};
 
     fn line(start: f64) -> Shape {

@@ -1,8 +1,8 @@
 use std::simd::cmp::SimdPartialOrd as _;
 use std::simd::num::SimdFloat as _;
 
-use crate::boundary::metadata::Frame;
 use crate::crs::CrsError;
+use crate::crs::frame::Frame;
 use crate::geographic::{GeographicFrame, ScalarGeographicView, SeamIdentity};
 use crate::geometry::{
     Coordinates, Point, REDUCE_LANES, ReduceSimd, Shape, ShapeData, TopologyDomain,

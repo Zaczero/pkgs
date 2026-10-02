@@ -2,8 +2,8 @@ use pyo3::types::{PyBytes, PyTuple, PyTupleMethods as _};
 use pyo3::{IntoPyObject as _, pyclass, pyfunction, pymethods};
 use serde_json::Value;
 
-use crate::boundary::metadata::{optional_crs_labels_operationally_equal, optional_epochs_equal};
 use crate::boundary::reserve::try_reserve_total;
+use crate::crs::frame::{optional_crs_labels_operationally_equal, optional_epochs_equal};
 use crate::py::arrow::{
     Bound, GeometryEncoding, Py, PyAny, PyAnyMethods as _, PyErr, PyModule, PyResult, PyTypeError,
     PyTypeMethods as _, Python, WkbOffsetWidth,

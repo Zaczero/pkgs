@@ -63,10 +63,6 @@ impl<'a, 'py> FromPyObject<'a, 'py> for Wgs84DefaultCrs {
     }
 }
 
-pub(crate) fn crs_label(crs: Option<&str>) -> String {
-    crs.map_or_else(|| "None".to_owned(), |value| format!("{value:?}"))
-}
-
 /// Validate a coordinate epoch arriving from a serialized source (pickle /
 /// Arrow extension metadata): finite, canonical (`-0.0 → 0.0`), and present
 /// only on a dynamic CRS (the `epoch ⟹ dynamic crs` invariant). Deserialization is an

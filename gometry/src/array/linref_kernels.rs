@@ -227,7 +227,7 @@ mod tests {
     use super::{RowInterpolatePlan, interpolate_mixed_row_groups};
     use crate::InterpolatePlan;
     use crate::array::{GeometryArrayStorage, PyGeometryArray, ValidityMask};
-    use crate::boundary::Frame;
+    use crate::crs::frame::Frame;
     use crate::crs::{DistanceMode, MetricModel};
     use crate::geometry::{CoordSeq, LineSeq, Shape};
 

@@ -2,8 +2,8 @@ use std::num::NonZeroU32;
 
 use pyo3::prelude::*;
 
-use crate::boundary::metadata;
-use crate::boundary::metadata::FrameError;
+use crate::crs::frame;
+use crate::crs::frame::FrameError;
 use crate::py::wire_crs::{SharedRowCrs, SridFrameAdmission};
 use crate::{Crs, Frame, PyGeometryArray, Shape, guard_epoch_frame};
 
@@ -125,7 +125,7 @@ where
                         }
                         if let Some(explicit) = explicit_epoch
                             && let Some(row_epoch) = epoch
-                            && !metadata::epochs_equal(row_epoch, explicit)
+                            && !frame::epochs_equal(row_epoch, explicit)
                         {
                             return Err(FrameError::SharedEpoch {
                                 context: crs_context.unwrap_or("GeometryArray").to_owned().into(),
@@ -226,7 +226,7 @@ pub(crate) fn stream_bulk<'py>(
         }
         if let Some(explicit) = explicit_epoch
             && let Some(row_epoch) = epoch
-            && !metadata::epochs_equal(row_epoch, explicit)
+            && !frame::epochs_equal(row_epoch, explicit)
         {
             return Err(crate::note_array_row(
                 crate::error::Error::from(FrameError::SharedEpoch {
@@ -471,7 +471,7 @@ where
                 }
                 if let Some(explicit) = explicit_epoch
                     && let Some(row_epoch) = epoch
-                    && !metadata::epochs_equal(row_epoch, explicit)
+                    && !frame::epochs_equal(row_epoch, explicit)
                 {
                     return Err(BatchError::Row(
                         row,

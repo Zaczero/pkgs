@@ -1515,7 +1515,7 @@ mod tests {
     #[test]
     fn refinement_kind_gate_precedes_geographic_admission() {
         crate::test_support::initialize_python();
-        let frame = Frame::new(Some(crate::boundary::crs_arc_static("EPSG:4326")), None).unwrap();
+        let frame = Frame::new(Some(crate::crs::frame::crs_arc_static("EPSG:4326")), None).unwrap();
         let index = spatial_index(vec![PyGeometry::with_frame(
             ShapeData::new(Shape::Point(Point::new_raw_xy(0.0, 0.0))),
             frame.clone(),
@@ -1580,7 +1580,7 @@ mod tests {
 
     #[test]
     fn projected_candidate_preparation_does_not_materialize_polygon_shape() {
-        let frame = Frame::new(Some(crate::boundary::crs_arc_static("EPSG:3857")), None).unwrap();
+        let frame = Frame::new(Some(crate::crs::frame::crs_arc_static("EPSG:3857")), None).unwrap();
         let array = PyGeometryArray::packed_polygons(
             CoordSeq::try_from_vecs(
                 vec![0.0, 1.0, 1.0, 0.0, 0.0],

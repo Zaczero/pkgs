@@ -103,7 +103,7 @@ fn measure_natural_or_override(
             crate::dispatch::dispatch_unary(py, geom, op, unit, None, kernel)
         },
         crate::GeometryValues::Collected(mut items) => {
-            let frame = crate::Frame::resolve_items(
+            let frame = crate::boundary::metadata::resolve_geometry_frames(
                 &mut items,
                 crate::FrameAdoption {
                     crs: None,

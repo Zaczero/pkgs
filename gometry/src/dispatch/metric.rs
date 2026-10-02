@@ -1,7 +1,7 @@
 use super::operation::MetricOp;
 use crate::DistanceUnit;
-use crate::boundary::metadata::Frame;
 use crate::broadcast::resolve_metric;
+use crate::crs::frame::Frame;
 use crate::crs::{self, MetricModel, ResolvedMetric};
 use crate::geometry::TopologyDomain;
 #[cfg(test)]

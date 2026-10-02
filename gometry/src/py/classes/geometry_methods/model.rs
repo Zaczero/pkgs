@@ -652,7 +652,7 @@ impl PyGeometry {
 #[cfg(test)]
 mod frame_cache_ownership_tests {
     use super::*;
-    use crate::boundary::crs_arc_static;
+    use crate::crs::frame::crs_arc_static;
 
     #[test]
     fn scalar_retag_preserves_row_products_but_new_shapes_are_fresh() {

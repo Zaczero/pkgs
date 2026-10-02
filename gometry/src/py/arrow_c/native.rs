@@ -7,8 +7,8 @@ use pyo3::exceptions::{PyOverflowError, PyTypeError};
 use pyo3::prelude::{Bound, PyAny, PyResult};
 
 use crate::array::missing::union_many;
-use crate::boundary::metadata;
 use crate::collections::{HashMap, HashMapExt as _};
+use crate::crs::frame;
 use crate::py::arrow::WkbOffsetWidth;
 use crate::py::arrow_c::admitted::{
     AdmittedArrowSchema, ArrowReleaseGuard, MovedArrowShell, classify_admitted_geometry_schema,
@@ -637,10 +637,10 @@ fn validate_direct_physical_schema(
         let metadata = schema.extension_metadata_bytes();
         let (crs, epoch) =
             arrow::parse_geoarrow_extension_metadata_for(&metadata, Some(classification.encoding))?;
-        if !metadata::optional_crs_labels_operationally_equal(
+        if !frame::optional_crs_labels_operationally_equal(
             classification.crs.as_deref().map(String::as_str),
             crs.as_deref(),
-        )? || !metadata::optional_epochs_equal(classification.epoch, epoch)
+        )? || !frame::optional_epochs_equal(classification.epoch, epoch)
         {
             return Err(arrow::geoarrow_parse_error(
                 "Arrow C physical schema metadata conflicts with admitted Arrow metadata",

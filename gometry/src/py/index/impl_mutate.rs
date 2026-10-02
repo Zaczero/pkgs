@@ -378,7 +378,7 @@ mod tests {
         let coordinates = CoordSeq::try_from_vecs(vec![170.0, -170.0], vec![0.0, 0.0], None, None)
             .expect("crossing coordinates");
         let shape = Shape::LineString(LineSeq::try_new(coordinates).expect("crossing line"));
-        let frame = Frame::new(Some(crate::boundary::crs_arc_static("EPSG:4326")), None)
+        let frame = Frame::new(Some(crate::crs::frame::crs_arc_static("EPSG:4326")), None)
             .expect("geographic frame");
         PyGeometry::with_frame(ShapeData::new(shape), frame)
     }
@@ -391,7 +391,7 @@ mod tests {
     }
 
     fn clone_fixture() -> PySpatialIndex {
-        let frame = Frame::new(Some(crate::boundary::crs_arc_static("EPSG:4326")), None)
+        let frame = Frame::new(Some(crate::crs::frame::crs_arc_static("EPSG:4326")), None)
             .expect("geographic frame");
         let bulk = (0..4)
             .map(|handle| framed_point(f64::from(handle), 0.0, &frame))
@@ -539,7 +539,7 @@ mod tests {
         counted.collect_intersecting(&spatial_query, &mut clone_hits);
         assert_eq!(source_hits, clone_hits);
 
-        let query_frame = Frame::new(Some(crate::boundary::crs_arc_static("EPSG:4326")), None)
+        let query_frame = Frame::new(Some(crate::crs::frame::crs_arc_static("EPSG:4326")), None)
             .expect("query frame");
         let query = framed_point(14.25, 0.0, &query_frame);
         let source_nearest = source

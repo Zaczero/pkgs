@@ -1,7 +1,7 @@
 use std::num::NonZeroU32;
 
-use crate::boundary::metadata;
-use crate::boundary::metadata::FrameError;
+use crate::crs::frame;
+use crate::crs::frame::FrameError;
 use crate::{Crs, PyResult, crs_arc, io};
 
 pub(crate) enum SharedRowCrs {
@@ -12,9 +12,8 @@ pub(crate) enum SharedRowCrs {
 impl SharedRowCrs {
     /// One shared CRS across the bulk rows: with an explicit ``crs=`` every
     /// embedded SRID already matched it (the conflict guard runs per row),
-    /// and without one every row must agree with row 0 — the exact contract
-    /// (and `SharedCrs` error) `Frame::resolve_items` enforced when these
-    /// lanes staged per-row geometry handles.
+    /// and without one every row must agree with row 0. Conflicts use the
+    /// geometry frame-admission boundary's `SharedCrs` error.
     ///
     /// A CRS-free row against a shared frame established by an embedded SRID
     /// (or vice versa) is a mismatch when no explicit payload/argument CRS
@@ -31,7 +30,7 @@ impl SharedRowCrs {
             Self::Shared(existing) if fallback.is_none() => {
                 let agrees = match (existing.as_ref(), row_crs.as_ref()) {
                     (None, None) => true,
-                    (Some(left), Some(right)) => metadata::crs_operationally_equal(left, right)?,
+                    (Some(left), Some(right)) => frame::crs_operationally_equal(left, right)?,
                     _ => false,
                 };
                 if !agrees {
@@ -181,7 +180,7 @@ pub(crate) fn guard_embedded_crs_conflict(
     if let (Some(embedded), Some(explicit)) = (embedded, explicit)
         && embedded != explicit
         && !io::is_wire_alias_restore(explicit, embedded)
-        && !metadata::crs_labels_operationally_equal(embedded, explicit)?
+        && !frame::crs_labels_operationally_equal(embedded, explicit)?
     {
         return Err(FrameError::EmbeddedCrsConflict {
             explicit: explicit.into(),

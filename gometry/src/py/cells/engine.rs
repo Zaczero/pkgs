@@ -438,7 +438,7 @@ mod tests {
         let array = crate::PyGeometryArray::packed_points(
             crate::geometry::CoordSeq::try_from_vecs(vec![13.4, 0.0], vec![52.5, 95.0], None, None)
                 .unwrap(),
-            crate::boundary::Frame::None,
+            crate::crs::frame::Frame::None,
         )
         .unwrap();
         let admission = GridSourceAdmission::new(&array.frame).unwrap();

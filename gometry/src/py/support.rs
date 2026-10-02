@@ -1,19 +1,15 @@
-use smol_str::SmolStr;
-
 use crate::{
     AABB, Bound, Bounds, BufferCapStyle, BufferJoinStyle, BufferSide, CRSError, CollectRows,
-    CoordSeq, CoordinateAxes, DistanceUnit, DwithinDistance, Frame, FromPyObject, GeometryError,
-    GeometryErrorKind, GeometryInput, InvalidGeometryError, LineIndex, NonNegative, PlanarMetric,
-    Point, Polygon, PolygonizeFull, Positive, Py, PyAny, PyAnyMethods, PyBool, PyBoolMethods,
-    PyDictMethods, PyErr, PyFloatMethods, PyGeometry, PyGeometryArray, PyInt, PyListMethods,
-    PyOnceLock, PyResult, PyStringMethods, PyTuple, PyTupleMethods, PyTypeError, PyTypeMethods,
-    Python, RepairMethod, Result, Ring, Shape, SimplifyMethod, SmoothMethod, Value,
+    CoordSeq, CoordinateAxes, Crs, DistanceUnit, DwithinDistance, Frame, FromPyObject,
+    GeometryError, GeometryErrorKind, GeometryInput, InvalidGeometryError, LineIndex, NonNegative,
+    PlanarMetric, Point, Polygon, PolygonizeFull, Positive, Py, PyAny, PyAnyMethods, PyBool,
+    PyBoolMethods, PyDictMethods, PyErr, PyFloatMethods, PyGeometry, PyGeometryArray, PyInt,
+    PyListMethods, PyOnceLock, PyResult, PyStringMethods, PyTuple, PyTupleMethods, PyTypeError,
+    PyTypeMethods, Python, RepairMethod, Result, Ring, Shape, SimplifyMethod, SmoothMethod, Value,
     VoronoiBoundary, classify_input, coerce_geometry, coordinate_epoch_option, exact_geometry,
     float_values, float_values_at_most, float_values_exact, metric_nearest_points_resolved,
     non_negative_int, py_i64_bounded, pyfunction, resolve_metric, rows_err, wgs84_crs,
 };
-
-pub(crate) type Crs = SmolStr;
 
 pub(crate) const QUADRANT_SEGMENTS_DEFAULT_I64: i64 = 8;
 
@@ -79,7 +75,7 @@ pub(crate) use extract::{
     optional_coordinates, own_geometry_item, parse_owned_geometry_item,
 };
 pub(crate) use frame_args::{
-    Wgs84DefaultCrs, crs_label, deserialized_epoch, guard_epoch_frame, parse_crs, parse_crs_epoch,
+    Wgs84DefaultCrs, deserialized_epoch, guard_epoch_frame, parse_crs, parse_crs_epoch,
     py_text_borrow,
 };
 pub(crate) use geojson::{

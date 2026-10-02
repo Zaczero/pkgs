@@ -2,7 +2,7 @@
 
 use pyo3::types::PyDict;
 
-use crate::boundary::metadata::FrameEdit;
+use crate::crs::frame::FrameEdit;
 use crate::py::classes::geometry_methods::{
     Bound, CRSError, PyAny, PyErr, PyGeometry, PyResult, Python, Typed, pymethods,
 };

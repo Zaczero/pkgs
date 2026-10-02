@@ -56,7 +56,7 @@ fn multipart_members(
             Ok(PyGeometry::with_frame(raw(&item)?, Frame::None))
         }
     })?;
-    let frame = Frame::resolve_items(
+    let frame = crate::boundary::metadata::resolve_geometry_frames(
         &mut members,
         FrameAdoption {
             crs: parse_crs(crs)?,
@@ -1256,7 +1256,7 @@ pub(crate) fn build_geometry_collection(
     })?;
     let explicit_crs = parse_crs(crs)?;
     let explicit_epoch = coordinate_epoch_option("epoch", epoch)?;
-    let frame = Frame::resolve_items(
+    let frame = crate::boundary::metadata::resolve_geometry_frames(
         &mut members,
         FrameAdoption {
             crs: explicit_crs,

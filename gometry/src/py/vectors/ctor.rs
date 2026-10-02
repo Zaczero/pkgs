@@ -190,7 +190,7 @@ mod self_intersection_csr_tests {
 
     use super::{Groups, GroupsValues, self_intersection_csr};
     use crate::array::{PyGeometryArray, ValidityMask};
-    use crate::boundary::{Frame, crs_arc_static};
+    use crate::crs::frame::{Frame, crs_arc_static};
     use crate::geometry::Shape;
     use crate::io::parse_wkt;
 

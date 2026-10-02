@@ -250,7 +250,7 @@ mod tests {
 
     use super::*;
     use crate::array::ValidityMask;
-    use crate::boundary::Frame;
+    use crate::crs::frame::Frame;
     use crate::geometry::Point;
 
     fn mixed_with_missing() -> PyGeometryArray {

@@ -4,7 +4,7 @@ use std::ops::ControlFlow;
 
 use serde_json::Value;
 
-use crate::boundary::metadata;
+use crate::crs::frame;
 use crate::geometry::{
     CoordSeqBuilder, MOrdinate, MultiLineString, MultiMember, MultiPoint, MultiPolygon,
     SharedShapeOwners, TopologyDomain, ZOrdinate,
@@ -937,7 +937,7 @@ pub(crate) fn validate_legacy_geojson_crs(
             "legacy GeoJSON CRS member is not supported",
         ));
     };
-    if !metadata::crs_labels_operationally_equal(&legacy_definition, target)? {
+    if !frame::crs_labels_operationally_equal(&legacy_definition, target)? {
         return Err(IoError::geojson(format!(
             "legacy GeoJSON CRS member ({legacy_definition}) conflicts with crs={target}"
         )));

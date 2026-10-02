@@ -869,7 +869,7 @@ impl PyGeometryArray {
 mod frame_cache_row_tests {
 
     use super::*;
-    use crate::boundary::{Frame, crs_arc_static};
+    use crate::crs::frame::{Frame, crs_arc_static};
     use crate::geometry::{CoordSeq, LineSeq, PlanarMetric, Point};
     use crate::test_support::allocation_count;
 
@@ -1521,7 +1521,7 @@ mod prepared_row_ownership_tests {
 
     use super::*;
     use crate::array::{CoordSeq, CsrOffsetColumn, PolygonLevel, RingLevel};
-    use crate::boundary::Frame;
+    use crate::crs::frame::Frame;
     use crate::geometry::{Point, uses_linear_plan_for_len};
 
     fn lines(vertices: usize) -> PyGeometryArray {

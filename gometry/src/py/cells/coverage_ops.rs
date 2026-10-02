@@ -808,7 +808,7 @@ mod tests {
         crate::crs::clear_cache();
         let geometry = crate::PyGeometry::with_frame(
             Shape::Point(Point::new_raw_xy(-104.0, 40.0)),
-            Frame::Crs(crate::boundary::crs_arc_static("EPSG:4267")),
+            Frame::Crs(crate::crs::frame::crs_arc_static("EPSG:4267")),
         );
         let admission = GridSourceAdmission::new(&geometry.frame).unwrap();
         let execution = admission

@@ -1110,7 +1110,7 @@ mod fancy_index_tests {
 mod replacement_tests {
     use super::*;
     use crate::PyGeometry;
-    use crate::boundary::Frame;
+    use crate::crs::frame::Frame;
     use crate::geometry::{Point, ShapeData};
 
     #[test]

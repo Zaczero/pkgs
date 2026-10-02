@@ -6,8 +6,8 @@ use pyo3::types::{PyInt, PyList};
 
 use crate::array::{
     ArrayRow, Bound, Bounds, CRSError, CoordSeq, CoordinateReplacement, Crs, CsrOffsetColumn,
-    Frame, FrameAdoption, GeometryArrayStorage, GeometryKind, InvalidGeometryError, PackedStorage,
-    Py, PyAny, PyAnyMethods as _, PyCoordinates, PyCrs, PyDict, PyDictMethods as _, PyGeometry,
+    FrameAdoption, GeometryArrayStorage, GeometryKind, InvalidGeometryError, PackedStorage, Py,
+    PyAny, PyAnyMethods as _, PyCoordinates, PyCrs, PyDict, PyDictMethods as _, PyGeometry,
     PyGeometryArray, PyListMethods as _, PyRef, PyResult, PyTuple, PyTypeError, PyTypeMethods as _,
     Python, Result, RingLevel, SVG_ARRAY_PREVIEW, Shape, bool_array, coerce_present_geometry_items,
     coordinate_epoch_option, crs, crs_arc, exact_geometry, geometry,
@@ -17,8 +17,8 @@ use crate::array::{
     slice_replacement_for_shape, total_bounds_from_columns,
 };
 use crate::boundary::coordinates::checked_vector_len;
-use crate::boundary::metadata;
-use crate::boundary::metadata::FrameError;
+use crate::crs::frame;
+use crate::crs::frame::FrameError;
 use crate::geometry::ShapeCountQuery;
 use crate::predicates::unary;
 use crate::py::functions::bulk_rows::{StreamedShape, stream_bulk_owned};
@@ -44,7 +44,7 @@ fn normalize_streamed_geometry(
 ) -> Result<PyGeometry> {
     if let Some(expected) = explicit_crs {
         if let Some(actual) = geometry.crs_ref()
-            && !metadata::crs_operationally_equal(actual, expected)?
+            && !frame::crs_operationally_equal(actual, expected)?
         {
             return Err(FrameError::SharedCrs {
                 context: "GeometryArray".into(),
@@ -58,7 +58,7 @@ fn normalize_streamed_geometry(
     }
     if let Some(expected) = explicit_epoch {
         if let Some(actual) = geometry.epoch()
-            && !metadata::epochs_equal(actual, expected)
+            && !frame::epochs_equal(actual, expected)
         {
             return Err(FrameError::SharedEpoch {
                 context: "GeometryArray".into(),
@@ -362,7 +362,7 @@ impl PyGeometryArray {
         let py = values.py();
         let result = py.detach(move || -> Result<Self> {
             let mut items = coerced;
-            let frame = Frame::resolve_items(
+            let frame = crate::boundary::metadata::resolve_geometry_frames(
                 &mut items,
                 FrameAdoption {
                     crs: explicit_crs,

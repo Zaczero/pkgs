@@ -31,12 +31,6 @@ pub(crate) use input::{
     py_u64_required, strict_i32, strict_i32_overflow, strict_i64, strict_i64_overflow, strict_i128,
     strict_optional_i64, strict_u64, validate_subdivide_max_vertices,
 };
-#[cfg(test)]
-pub(crate) use metadata::crs_arc_static;
-pub(crate) use metadata::{
-    Frame, FrameAdoption, FrameEdit, FrameError, GeometryTransformFrame, crs_arc,
-    crs_operationally_equal, epoch_label, wgs84_crs,
-};
 pub(crate) use reserve::{
     CsrBuilder, check_python_signals, collect_bool_mask, collect_bytes_rows, collect_i64_sequence,
     collect_py_iter, collect_py_iter_at_most_from_iter, collect_py_iter_exact,

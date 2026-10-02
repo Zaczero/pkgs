@@ -6,7 +6,6 @@
 use pyo3::types::PyAny;
 
 use crate::array::{ArrayRow, PackedStorage, ValidityMask, missing};
-use crate::boundary::metadata::Frame;
 use crate::broadcast::{
     Bound, CollectRows as _, CoordinateInput, GeometryArrayStorage, GeometryErrorKind,
     GeometryInput, Point, PredicateSpec, Py, PyErr, PyGeometry, PyGeometryArray, PyResult, Python,
@@ -14,6 +13,7 @@ use crate::broadcast::{
     coordinate_sequence_len_hint, expected_geometry_or_array_for, mask_missing, py_bool,
     scalar_vs_shapes,
 };
+use crate::crs::frame::Frame;
 use crate::error::Result;
 use crate::geometry::{PointSet, PreparedPlan, TopologyDomain};
 use crate::predicates::engine;
@@ -660,7 +660,7 @@ mod geographic_tests {
     use pyo3::types::PyAnyMethods as _;
 
     use super::*;
-    use crate::boundary::crs_arc_static;
+    use crate::crs::frame::crs_arc_static;
     use crate::geometry::{CoordSeq, Polygon, Ring};
 
     #[test]

@@ -4,7 +4,7 @@
 //! (`impl From<Error> for PyErr` in `crate::py::errors`, which also owns the
 //! exception classes). Domain vocabulary stays in the owning module —
 //! `GeometryErrorKind` in `geometry`, `CrsError` in `crs`, `IoError` in `io`,
-//! `FrameError` in `metadata` — and composes
+//! `FrameError` in `crs::frame` — and composes
 //! here. Domain payloads are boxed; entropy failure and size overflow use
 //! static kinds.
 

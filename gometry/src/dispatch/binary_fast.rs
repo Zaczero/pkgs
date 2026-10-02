@@ -467,7 +467,7 @@ mod tests {
         PyGeometryArray, ValidityMask, reset_shape_iter_materializations,
         shape_iter_materializations,
     };
-    use crate::boundary::{Frame, crs_arc_static};
+    use crate::crs::frame::{Frame, crs_arc_static};
     use crate::geometry::{LineSeq, Point, Shape};
     use crate::predicates::engine::Predicate;
     use crate::py::errors::InvalidGeometryError;

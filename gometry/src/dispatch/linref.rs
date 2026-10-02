@@ -4,11 +4,11 @@ use pyo3::prelude::*;
 
 use crate::array::missing::union_many;
 use crate::array::{ArrayRow, PackedStorage, line_locate_point_on_lines};
-use crate::boundary::metadata::Frame;
 use crate::broadcast::{
     CollectRows as _, GeometryInput, classify_required, degrade_linref_float, detach_collect_f64,
     validate_paired_arrays,
 };
+use crate::crs::frame::Frame;
 use crate::dispatch::Lane;
 use crate::dispatch::operation::{MetricOp, Operation};
 use crate::geometry::{FrameDependentCaches, Point, PreparedPlan};
