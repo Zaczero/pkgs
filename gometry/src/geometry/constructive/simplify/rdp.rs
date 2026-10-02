@@ -1,9 +1,31 @@
 //! Exact Douglas–Peucker decisions over stored coordinates.
 
+mod farthest;
+mod index;
+
+pub(super) use index::Index;
+
 use crate::error::Result;
 use crate::geometry::{Segment, XY, point_pair_distance_key, point_segment_exact_distance_key};
 
+#[cfg(test)]
+std::thread_local! {
+    static SOURCE_VISITS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+pub(super) fn record_source_visits(count: usize) {
+    SOURCE_VISITS.with(|visits| visits.set(visits.get().wrapping_add(count)));
+}
+
+#[cfg(test)]
+pub(super) fn take_source_visits() -> usize {
+    SOURCE_VISITS.with(|visits| visits.replace(0))
+}
+
 pub(super) fn point(xs: &[f64], ys: &[f64], index: usize) -> XY {
+    #[cfg(test)]
+    record_source_visits(1);
     XY::new(
         *xs.get(index).expect("RDP ordinal belongs to its source"),
         *ys.get(index).expect("RDP ordinal belongs to its source"),
@@ -180,6 +202,8 @@ macro_rules! split_inline {
             let interior = start.wrapping_add(1)..end;
             let xs = xs.get(interior.clone()).expect("RDP interior source range");
             let ys = ys.get(interior.clone()).expect("RDP interior source range");
+            #[cfg(test)]
+            $crate::geometry::constructive::simplify::rdp::record_source_visits(xs.len());
             let (dx, dy) = (chord.end.x - chord.start.x, chord.end.y - chord.start.y);
             let collapsed = dx == 0.0 && dy == 0.0;
             let length_squared = if collapsed { 1.0 } else { dx * dx + dy * dy };
@@ -261,7 +285,6 @@ macro_rules! split_inline {
 
 pub(super) use split_inline;
 
-#[cfg(test)]
 pub(super) fn split(
     xs: &[f64],
     ys: &[f64],
@@ -284,6 +307,8 @@ pub(super) fn resolve(
     (length_squared, maximum, error, collapsed): (f64, f64, f64, bool),
 ) -> Result<Option<usize>> {
     let mut best = None;
+    #[cfg(test)]
+    record_source_visits(xs.len());
     for (offset, (&x, &y)) in xs.iter().zip(ys).enumerate() {
         let vertex = XY::new(x, y);
         if error.is_finite() && score(vertex, chord, length_squared).0 < maximum - 2.0 * error {

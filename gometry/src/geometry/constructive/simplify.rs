@@ -308,10 +308,32 @@ pub(crate) fn rdp_keep_with_edge_guard<G: RdpEdgeSpanGuard>(
     if !tolerance.is_finite() {
         return rdp_keep_with_query(xs, edge_guard, keep, stack, |_, _| Ok(None));
     }
-    let tolerance_squared = tolerance * tolerance;
-    rdp_keep_with_query(xs, edge_guard, keep, stack, |start, end| {
-        rdp::split_inline!(xs, ys, start, end, tolerance, tolerance_squared)
-    })
+    if count > 1024 {
+        let mut index: Option<rdp::Index<'_>> = None;
+        let mut scanned = 0_usize;
+        // Balanced partitions fit this scan budget. An unbalanced chain builds
+        // the range index before repeated scans can become quadratic.
+        let budget = count.saturating_mul(8 * count.ilog2() as usize);
+        rdp_keep_with_query(xs, edge_guard, keep, stack, |start, end| {
+            if let Some(index) = &index {
+                return index.split(start, end, tolerance);
+            }
+            scanned = scanned.saturating_add(end.wrapping_sub(start));
+            if scanned > budget {
+                let accelerated = rdp::Index::new(xs, ys)?;
+                let split = accelerated.split(start, end, tolerance)?;
+                index = Some(accelerated);
+                Ok(split)
+            } else {
+                rdp::split(xs, ys, start, end, tolerance)
+            }
+        })
+    } else {
+        let tolerance_squared = tolerance * tolerance;
+        rdp_keep_with_query(xs, edge_guard, keep, stack, |start, end| {
+            rdp::split_inline!(xs, ys, start, end, tolerance, tolerance_squared)
+        })
+    }
 }
 
 fn rdp_keep_with_query<G: RdpEdgeSpanGuard>(
@@ -1669,6 +1691,24 @@ mod keep_identity_tests {
         };
         assert_eq!(got.xs().as_ptr(), src.xs().as_ptr());
         assert_eq!(out, line);
+    }
+
+    #[test]
+    fn dp_sawtooth_source_work_grows_below_quadratic() {
+        let mut counts = Vec::new();
+        for count in [2048, 4096] {
+            let xs: Vec<_> = (0..count).map(|index| index as f64).collect();
+            let ys: Vec<_> = (0..count).map(|index| (index % 2) as f64).collect();
+            let line = Shape::LineString(line_xy(&xs, &ys));
+            super::rdp::take_source_visits();
+            let simplified = line.simplify_dp(0.1, false).unwrap();
+            counts.push(super::rdp::take_source_visits());
+            assert_eq!(simplified, line);
+        }
+        assert!(
+            counts[1] * 10 < counts[0] * 27,
+            "doubling sawtooth source visits must stay below 2.7×: {counts:?}",
+        );
     }
 
     #[test]

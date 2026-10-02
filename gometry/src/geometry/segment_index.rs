@@ -13,6 +13,7 @@ use rstar::{RTreeNode, RTreeObject};
 
 use super::BulkRTree;
 
+mod hull;
 mod index;
 mod order_tree;
 mod stabbing;
@@ -45,6 +46,7 @@ fn bulk_rtree_heap_bytes<T: RTreeObject>(tree: &BulkRTree<T>) -> usize {
         .fold(0_usize, usize::saturating_add)
 }
 
+pub(in crate::geometry) use hull::StoredHull;
 pub(crate) use index::{PointSetIndex, SegmentIndex};
 pub(in crate::geometry) use order_tree::OrderTree;
 pub(crate) use stabbing::{

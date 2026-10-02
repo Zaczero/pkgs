@@ -504,7 +504,7 @@ pub(in crate::geometry) fn round_support_circle(support: &[XY]) -> Result<(XY, f
     Ok((center, radius, circle.radius_numerator.is_zero()))
 }
 
-pub(super) fn incircle(a: XY, b: XY, c: XY, d: XY) -> Result<ExactSign> {
+pub(in crate::geometry) fn incircle(a: XY, b: XY, c: XY, d: XY) -> Result<ExactSign> {
     if let Some(sign) = incircle_float(a, b, c, d) {
         return Ok(sign);
     }
@@ -1019,7 +1019,7 @@ fn verify_interval(numerator: &ExactDyadic, denominator: &ExactDyadic, bounds: I
 }
 
 impl ExactPoint {
-    pub(super) fn from_xy(point: XY) -> Self {
+    pub(in crate::geometry) fn from_xy(point: XY) -> Self {
         Self {
             coords: Coords::Double {
                 xy: point,
@@ -1036,7 +1036,7 @@ impl ExactPoint {
         })
     }
 
-    pub(super) fn same_position(&self, other: &Self) -> Result<bool> {
+    pub(in crate::geometry) fn same_position(&self, other: &Self) -> Result<bool> {
         if let (Coords::Certified { recipe: left, .. }, Coords::Certified { recipe: right, .. }) =
             (&self.coords, &other.coords)
             && left.same_construction(right)
@@ -1076,14 +1076,14 @@ impl ExactPoint {
         ))
     }
 
-    pub(super) fn compare_x(&self, other: &Self) -> Result<Ordering> {
+    pub(in crate::geometry) fn compare_x(&self, other: &Self) -> Result<Ordering> {
         if let Some(order) = self.bounds[0].compare(other.bounds[0]) {
             return Ok(order);
         }
         compare_ratios(self.x()?, self.w()?, other.x()?, other.w()?)
     }
 
-    pub(super) fn compare_y(&self, other: &Self) -> Result<Ordering> {
+    pub(in crate::geometry) fn compare_y(&self, other: &Self) -> Result<Ordering> {
         if let Some(order) = self.bounds[1].compare(other.bounds[1]) {
             return Ok(order);
         }
@@ -1428,7 +1428,7 @@ fn squared_distance_cmp_point_filtered(
     }
 }
 
-pub(super) fn squared_distance_cmp_point(
+pub(in crate::geometry) fn squared_distance_cmp_point(
     origin: &ExactPoint,
     left: XY,
     right: XY,
@@ -1798,7 +1798,7 @@ fn intersection_homogeneous(a: &ExactLine, b: &ExactLine) -> Result<Homogeneous>
 }
 
 /// Cross product of two exact homogeneous lines, with certified bounds.
-pub(super) fn line_intersection(a: &ExactLine, b: &ExactLine) -> Result<ExactPoint> {
+pub(in crate::geometry) fn line_intersection(a: &ExactLine, b: &ExactLine) -> Result<ExactPoint> {
     let Homogeneous { x, y, w } = intersection_homogeneous(a, b)?;
     Ok(ExactPoint::homogeneous(x, y, w))
 }
@@ -1947,7 +1947,7 @@ fn distance_within_exact(origin: XY, point: XY, radius: f64) -> Result<bool> {
     Ok(squared_distance(origin, point)?.cmp(&radius.try_product(&radius)?) == Ordering::Less)
 }
 
-pub(super) fn circumcenter(a: XY, b: XY, c: XY) -> Result<ExactPoint> {
+pub(in crate::geometry) fn circumcenter(a: XY, b: XY, c: XY) -> Result<ExactPoint> {
     if orient2d(a, b, c) == ExactSign::Zero {
         return Err(GeometryErrorKind::voronoi(
             "cannot construct a circumcenter for collinear sites",
