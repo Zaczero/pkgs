@@ -749,12 +749,12 @@ struct PlanarChord {
 }
 
 #[derive(Clone)]
-struct PlanarClassState {
+pub(super) struct PlanarClassState {
     pairs_by_rank: Vec<Vec<usize>>,
     fans_by_rank: Vec<Vec<usize>>,
 }
 
-struct PlanarProblem<'p, 's, 'e> {
+pub(super) struct PlanarProblem<'p, 's, 'e> {
     partition: &'p ExactPartition<'s>,
     emissions: Vec<&'e Emission>,
     chords: Vec<PlanarChord>,
@@ -821,7 +821,7 @@ fn exact_chord_radius(
 }
 
 impl<'p, 's, 'e> PlanarProblem<'p, 's, 'e> {
-    fn new(
+    pub(super) fn new(
         partition: &'p ExactPartition<'s>,
         emissions: &[&'e Emission],
         seeds: &[NodeId],
@@ -918,6 +918,107 @@ impl<'p, 's, 'e> PlanarProblem<'p, 's, 'e> {
             movable_cache: RefCell::new(movable_cache),
             initial_evaluations,
         })
+    }
+
+    fn check_local_pairs(
+        &self,
+        class_state: &PlanarClassState,
+        class: usize,
+        rank: usize,
+        assigned: &[Option<XY>],
+        budget: &mut EvaluationBudget,
+    ) -> Result<bool> {
+        let proximity = self.proximity.borrow();
+        let proximity_pairs = &proximity
+            .as_ref()
+            .expect("proximity state was prepared before class search")
+            .0;
+        for &pair_index in class_state
+            .pairs_by_rank
+            .get(rank)
+            .expect("rank belongs to its class")
+        {
+            budget.charge(1)?;
+            let &(left, right) = proximity_pairs
+                .get(pair_index)
+                .expect("class pair index belongs to the problem");
+            let left_chord = self.chords[left];
+            let right_chord = self.chords[right];
+            if !emitted_pair_preserves_incidence(
+                [
+                    (
+                        left_chord.nodes[0],
+                        self.local_xy(left_chord.nodes[0], class, assigned),
+                    ),
+                    (
+                        left_chord.nodes[1],
+                        self.local_xy(left_chord.nodes[1], class, assigned),
+                    ),
+                ],
+                [
+                    (
+                        right_chord.nodes[0],
+                        self.local_xy(right_chord.nodes[0], class, assigned),
+                    ),
+                    (
+                        right_chord.nodes[1],
+                        self.local_xy(right_chord.nodes[1], class, assigned),
+                    ),
+                ],
+            ) {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    }
+
+    fn check_local_fans(
+        &self,
+        class_state: &PlanarClassState,
+        class: usize,
+        rank: usize,
+        assigned: &[Option<XY>],
+        budget: &mut EvaluationBudget,
+    ) -> Result<bool> {
+        // Prune local fan inversions before G composes the candidate face table.
+        for &row_index in class_state
+            .fans_by_rank
+            .get(rank)
+            .expect("rank belongs to its class")
+        {
+            budget.charge(1)?;
+            let row = self
+                .fan_rows
+                .get(row_index)
+                .expect("class fan index belongs to the problem");
+            let emission = self
+                .emissions
+                .get(row.emission)
+                .expect("fan row belongs to an emission");
+            let items = emission
+                .items
+                .get(..emission.chords)
+                .expect("emission chord prefix is within its items");
+            if !fan_ok(row.origin, items, &row.departures, |node| {
+                self.local_xy(node, class, assigned)
+            }) {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    }
+
+    #[cfg(test)]
+    pub(super) fn check_local_without_fans(
+        &self,
+        class_state: &PlanarClassState,
+        class: usize,
+        _variables: &[NodeId],
+        rank: usize,
+        assigned: &[Option<XY>],
+        budget: &mut EvaluationBudget,
+    ) -> Result<bool> {
+        self.check_local_pairs(class_state, class, rank, assigned, budget)
     }
 
     fn chord_has_member(&self, chord: PlanarChord) -> bool {
@@ -1845,72 +1946,10 @@ impl Problem for PlanarProblem<'_, '_, '_> {
         assigned: &[Option<Self::Candidate>],
         budget: &mut EvaluationBudget,
     ) -> Result<bool> {
-        let proximity = self.proximity.borrow();
-        let proximity_pairs = &proximity
-            .as_ref()
-            .expect("proximity state was prepared before class search")
-            .0;
-        for &pair_index in class_state
-            .pairs_by_rank
-            .get(rank)
-            .expect("rank belongs to its class")
-        {
-            budget.charge(1)?;
-            let &(left, right) = proximity_pairs
-                .get(pair_index)
-                .expect("class pair index belongs to the problem");
-            let left_chord = self.chords[left];
-            let right_chord = self.chords[right];
-            if !emitted_pair_preserves_incidence(
-                [
-                    (
-                        left_chord.nodes[0],
-                        self.local_xy(left_chord.nodes[0], class, assigned),
-                    ),
-                    (
-                        left_chord.nodes[1],
-                        self.local_xy(left_chord.nodes[1], class, assigned),
-                    ),
-                ],
-                [
-                    (
-                        right_chord.nodes[0],
-                        self.local_xy(right_chord.nodes[0], class, assigned),
-                    ),
-                    (
-                        right_chord.nodes[1],
-                        self.local_xy(right_chord.nodes[1], class, assigned),
-                    ),
-                ],
-            ) {
-                return Ok(false);
-            }
+        if !self.check_local_pairs(class_state, class, rank, assigned, budget)? {
+            return Ok(false);
         }
-        for &row_index in class_state
-            .fans_by_rank
-            .get(rank)
-            .expect("rank belongs to its class")
-        {
-            budget.charge(1)?;
-            let row = self
-                .fan_rows
-                .get(row_index)
-                .expect("class fan index belongs to the problem");
-            let emission = self
-                .emissions
-                .get(row.emission)
-                .expect("fan row belongs to an emission");
-            let items = emission
-                .items
-                .get(..emission.chords)
-                .expect("emission chord prefix is within its items");
-            if !fan_ok(row.origin, items, &row.departures, |node| {
-                self.local_xy(node, class, assigned)
-            }) {
-                return Ok(false);
-            }
-        }
-        Ok(true)
+        self.check_local_fans(class_state, class, rank, assigned, budget)
     }
 
     fn check_global(

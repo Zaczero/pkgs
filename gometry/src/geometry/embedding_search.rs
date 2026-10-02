@@ -26,6 +26,8 @@ pub(in crate::geometry) struct ClassSolution<N, C> {
 #[derive(Debug)]
 pub(in crate::geometry) struct SearchAssignment<N, C> {
     pub classes: Vec<ClassSolution<N, C>>,
+    #[cfg(test)]
+    pub evaluations: u64,
 }
 
 /// A global G result; rejection names indices from `Problem::classes()` to advance.
@@ -358,6 +360,18 @@ impl<P: Problem> Search<P> {
         })
     }
 
+    #[cfg(test)]
+    pub(in crate::geometry) fn with_evaluation_limit(
+        problem: P,
+        operation: &'static str,
+        constructed: usize,
+        limit: u64,
+    ) -> Result<Self> {
+        let mut search = Self::new(problem, operation, constructed)?;
+        search.budget.limit = limit;
+        Ok(search)
+    }
+
     pub(in crate::geometry) fn run(mut self) -> Result<SearchAssignment<P::Node, P::Candidate>> {
         self.budget
             .charge_completed(self.problem.initial_evaluations())?;
@@ -394,7 +408,11 @@ impl<P: Problem> Search<P> {
                             values,
                         });
                     }
-                    return Ok(SearchAssignment { classes });
+                    return Ok(SearchAssignment {
+                        classes,
+                        #[cfg(test)]
+                        evaluations: self.budget.evaluations,
+                    });
                 },
                 GlobalCheck::Reject(blamed_classes) => {
                     if blamed_classes.is_empty() {
@@ -1056,6 +1074,31 @@ mod tests {
                 evaluations
             }) if *evaluations == BASE_EVALUATION_LIMIT
         ));
+    }
+
+    #[test]
+    fn tiny_budget_is_a_search_limit_and_default_budget_accepts_the_same_problem() {
+        let error = Search::with_evaluation_limit(
+            FixtureProblem::new(vec![vec![0]], vec![vec![7]]),
+            "search_test",
+            1,
+            0,
+        )
+        .unwrap()
+        .run()
+        .unwrap_err();
+        assert!(matches!(
+            error.kind(),
+            ErrorKind::Geometry(GeometryErrorKind::ExactEmbeddingSearchLimit {
+                operation: "search_test",
+                constructed: 1,
+                evaluations: 0
+            })
+        ));
+
+        let assignment =
+            search_fixture(FixtureProblem::new(vec![vec![0]], vec![vec![7]]), 1).unwrap();
+        assert_eq!(assignment.classes.first().unwrap().values, [7]);
     }
 
     #[test]
