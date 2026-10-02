@@ -250,6 +250,12 @@ pub(crate) fn distance_3d(
 /// interiors require ``unit='planar'`` or a projected CRS. Planar results use
 /// a certified relative bound by default or a caller-supplied absolute bound.
 ///
+/// Planar polygons are filled sets, including their interiors. For example,
+/// a square ``[-2, 2] by [-2, 2]`` and the same square with a diamond hole at
+/// ``(0, 1), (1, 0), (0, -1), (-1, 0)`` have filled-set Hausdorff distance
+/// ``1 / sqrt(2)``, whereas their boundary Hausdorff distance is ``1.5``.
+/// Shapely's discrete and densified Hausdorff forms measure boundaries instead.
+///
 /// Parameters
 /// ----------
 /// left, right : Geometry or GeometryArray
