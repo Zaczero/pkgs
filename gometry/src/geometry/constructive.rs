@@ -7,6 +7,7 @@ mod buffer;
 mod edit;
 mod offset;
 mod ring;
+mod segmentize;
 mod simplify;
 mod smooth;
 mod snap;
@@ -20,16 +21,19 @@ pub(crate) use ring::{
     decimal_scale, normalized_line, orient_ring, quantize_column_simd, quantize_to_scale,
     snap_column_simd, stable_snap_ordinate, vw_keep, vw_keep_geographic,
 };
+#[cfg(test)]
+pub(crate) use segmentize::densify_points_budgeted;
+pub(crate) use segmentize::{
+    SegmentPlacement, SegmentPlacementOwned, densify_points_budgeted_with_placement,
+    segmentize_points_budgeted,
+};
 pub(crate) use simplify::{
     GeographicRdpGuard, PlanarRdpGuard, RdpEdgeSpanGuard, raw_offset_loop,
     rdp_keep_with_edge_guard, split, strict_cycle, validate_buffer_style,
 };
-#[cfg(test)]
-pub(crate) use snap::densify_points_budgeted;
 pub(crate) use snap::{
-    SegmentPlacement, SegmentPlacementOwned, SnapReference, densify_points_budgeted_with_placement,
-    remove_repeated_line_points, remove_repeated_points, remove_repeated_ring_points,
-    segmentize_points_budgeted, snap_ring_to_reference,
+    SnapReference, remove_repeated_line_points, remove_repeated_points,
+    remove_repeated_ring_points, snap_ring_to_reference,
 };
 pub(in crate::geometry) use walk::winding_region;
 pub(crate) use walk::{
