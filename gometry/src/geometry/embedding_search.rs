@@ -1,0 +1,1041 @@
+//! Deterministic search over finite embedding domains.
+#![cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "A7 connects this tested generic core to the production embedding path"
+    )
+)]
+
+use std::cmp::Ordering;
+use std::hash::Hash;
+
+use crate::collections::{HashSet, try_hash_map_with_capacity, try_hash_set_with_capacity};
+use crate::error::{ResourceError, Result};
+use crate::geometry::GeometryErrorKind;
+
+const BASE_EVALUATION_LIMIT: u64 = 1 << 16;
+const EVALUATIONS_PER_CONSTRUCTED_NODE: u64 = 1 << 12;
+
+/// A candidate assignment for one independent class of movable nodes.
+///
+/// `class` is the corresponding index in [`Problem::classes`].
+#[derive(Clone, Copy)]
+pub(in crate::geometry) struct ClassAssignment<'a, N, C> {
+    pub class: usize,
+    pub variables: &'a [N],
+    pub values: &'a [C],
+}
+
+#[derive(Debug)]
+pub(in crate::geometry) struct ClassSolution<N, C> {
+    pub class: usize,
+    pub variables: Vec<N>,
+    pub values: Vec<C>,
+}
+
+#[derive(Debug)]
+pub(in crate::geometry) struct SearchAssignment<N, C> {
+    pub classes: Vec<ClassSolution<N, C>>,
+}
+
+/// A global G result; rejection names indices from `Problem::classes()` to advance.
+pub(in crate::geometry) enum GlobalCheck {
+    Pass,
+    Reject(Vec<usize>),
+}
+
+/// Domain-specific predicates around the common matching and search algorithm.
+///
+/// Classes and variables may arrive in any order. Candidate comparison orders
+/// values by exact displacement, then by the domain's deterministic tie-break.
+/// `fixed_keys` contains the nearest cells occupied by nodes outside the
+/// current class, including members of other classes. `check_local` evaluates
+/// ready pair and fan predicates for the assigned prefix; each predicate
+/// charges the shared budget before running.
+pub(in crate::geometry) trait Problem {
+    type Node: Copy;
+    type Candidate: Copy;
+    type Key: Copy + Eq + Hash;
+    type ClassState;
+
+    /// Each movable node appears in exactly one nonempty class.
+    fn classes(&self) -> &[Vec<Self::Node>];
+
+    /// Nearest-coordinate keys for all live nodes outside this class.
+    fn fixed_keys(&self, class: usize, variables: &[Self::Node]) -> Result<Vec<Self::Key>>;
+
+    fn compare_nodes(&self, left: Self::Node, right: Self::Node) -> Result<Ordering>;
+
+    /// Append domain-admitted candidates for `node`; their input order is ignored.
+    fn fill_candidates(
+        &self,
+        node: Self::Node,
+        candidates: &mut Vec<Self::Candidate>,
+    ) -> Result<()>;
+
+    /// Exact displacement order, followed by the domain's coordinate tie-break.
+    fn compare_candidates(
+        &self,
+        node: Self::Node,
+        left: Self::Candidate,
+        right: Self::Candidate,
+    ) -> Result<Ordering>;
+
+    fn candidate_key(&self, candidate: Self::Candidate) -> Self::Key;
+
+    /// Prepare proximity-partner and ready-predicate data for one ordered class.
+    ///
+    /// Charge any closure sweep before performing it.
+    fn prepare_class(
+        &self,
+        class: usize,
+        variables: &[Self::Node],
+        budget: &mut EvaluationBudget,
+    ) -> Result<Self::ClassState>;
+
+    /// Run ready P/F predicates for `assigned`, which contains the ordered prefix through `rank`.
+    fn check_local(
+        &self,
+        class_state: &Self::ClassState,
+        class: usize,
+        variables: &[Self::Node],
+        rank: usize,
+        assigned: &[Option<Self::Candidate>],
+        budget: &mut EvaluationBudget,
+    ) -> Result<bool>;
+
+    /// Run G on the composed assignment and name classes that may repair a failing face.
+    ///
+    /// Charge `items.len().div_ceil(16)` for each G sweep before running it.
+    fn check_global(
+        &self,
+        assignments: &[ClassAssignment<'_, Self::Node, Self::Candidate>],
+        budget: &mut EvaluationBudget,
+    ) -> Result<GlobalCheck>;
+
+    /// Work units for closure sweeps already performed while building seeds and classes.
+    fn initial_evaluations(&self) -> u64 {
+        0
+    }
+}
+
+pub(in crate::geometry) struct EvaluationBudget {
+    operation: &'static str,
+    constructed: usize,
+    limit: u64,
+    evaluations: u64,
+}
+
+impl EvaluationBudget {
+    fn new(operation: &'static str, constructed: usize) -> Result<Self> {
+        let constructed = u64::try_from(constructed).map_err(|_| ResourceError::SizeOverflow)?;
+        let per_node = EVALUATIONS_PER_CONSTRUCTED_NODE
+            .checked_mul(constructed)
+            .ok_or(ResourceError::SizeOverflow)?;
+        Ok(Self {
+            operation,
+            constructed: usize::try_from(constructed).map_err(|_| ResourceError::SizeOverflow)?,
+            limit: BASE_EVALUATION_LIMIT.max(per_node),
+            evaluations: 0,
+        })
+    }
+
+    /// Charge a completed-work unit before running the corresponding predicate.
+    pub(in crate::geometry) fn charge(&mut self, units: u64) -> Result<()> {
+        let Some(next) = self.evaluations.checked_add(units) else {
+            return Err(self.limit_error());
+        };
+        if next > self.limit {
+            return Err(self.limit_error());
+        }
+        self.evaluations = next;
+        Ok(())
+    }
+
+    fn limit_error(&self) -> crate::error::Error {
+        GeometryErrorKind::ExactEmbeddingSearchLimit {
+            operation: self.operation,
+            constructed: self.constructed,
+            evaluations: self.evaluations,
+        }
+        .into()
+    }
+
+    fn unrepresentable(&self) -> crate::error::Error {
+        GeometryErrorKind::ExactEmbeddingUnrepresentable {
+            operation: self.operation,
+            constructed: self.constructed,
+        }
+        .into()
+    }
+}
+
+struct ClassSpec<N> {
+    class: usize,
+    variables: Vec<N>,
+}
+
+struct PreparedClass<N, C, K, S> {
+    class: usize,
+    variables: Vec<N>,
+    options: Vec<Vec<(C, K)>>,
+    local: S,
+}
+
+struct ClassSearchState<C, K> {
+    next_candidate: Vec<usize>,
+    selected: Vec<Option<C>>,
+    selected_keys: Vec<Option<K>>,
+    used_keys: HashSet<K>,
+    yielded: bool,
+    exhausted: bool,
+}
+
+impl<C: Copy, K: Copy + Eq + Hash> ClassSearchState<C, K> {
+    fn new<N, S>(class: &PreparedClass<N, C, K, S>) -> Result<Self> {
+        let candidate_count = class.options.iter().try_fold(0_usize, |count, options| {
+            count
+                .checked_add(options.len())
+                .ok_or(ResourceError::SizeOverflow)
+        })?;
+        let mut next_candidate = Vec::with_capacity(class.variables.len());
+        next_candidate.resize(class.variables.len(), 0);
+        let mut selected = Vec::with_capacity(class.variables.len());
+        selected.resize(class.variables.len(), None);
+        let mut selected_keys = Vec::with_capacity(class.variables.len());
+        selected_keys.resize(class.variables.len(), None);
+        Ok(Self {
+            next_candidate,
+            selected,
+            selected_keys,
+            used_keys: try_hash_set_with_capacity(candidate_count)?,
+            yielded: false,
+            exhausted: false,
+        })
+    }
+
+    fn reset(&mut self) {
+        self.next_candidate.fill(0);
+        self.selected.fill(None);
+        self.selected_keys.fill(None);
+        self.used_keys.clear();
+        self.yielded = false;
+        self.exhausted = false;
+    }
+
+    fn unassign(&mut self, rank: usize) {
+        if let Some(key) = self
+            .selected_keys
+            .get_mut(rank)
+            .expect("rank belongs to the class search state")
+            .take()
+        {
+            self.used_keys.remove(&key);
+        }
+        *self
+            .selected
+            .get_mut(rank)
+            .expect("rank belongs to the class search state") = None;
+    }
+
+    fn next_solution<P>(
+        &mut self,
+        class: &PreparedClass<P::Node, P::Candidate, P::Key, P::ClassState>,
+        problem: &P,
+        budget: &mut EvaluationBudget,
+    ) -> Result<Option<Vec<P::Candidate>>>
+    where
+        P: Problem<Key = K, Candidate = C>,
+    {
+        if self.exhausted {
+            return Ok(None);
+        }
+        let variable_count = class.variables.len();
+
+        let mut rank = if self.yielded {
+            self.yielded = false;
+            let last = variable_count.wrapping_sub(1);
+            self.unassign(last);
+            last
+        } else {
+            0
+        };
+
+        loop {
+            let options = class
+                .options
+                .get(rank)
+                .expect("rank is within the prepared class");
+            let next = self
+                .next_candidate
+                .get_mut(rank)
+                .expect("rank is within the class search state");
+            if *next >= options.len() {
+                *next = 0;
+                if rank == 0 {
+                    self.exhausted = true;
+                    return Ok(None);
+                }
+                rank = rank.wrapping_sub(1);
+                self.unassign(rank);
+                continue;
+            }
+
+            let candidate_index = *next;
+            *next = next.wrapping_add(1);
+            let (candidate, key) = *options
+                .get(candidate_index)
+                .expect("candidate ordinal is bounded by its option row");
+            budget.charge(1)?;
+            if !self.used_keys.insert(key) {
+                continue;
+            }
+            *self
+                .selected
+                .get_mut(rank)
+                .expect("rank is within the class search state") = Some(candidate);
+            *self
+                .selected_keys
+                .get_mut(rank)
+                .expect("rank is within the class search state") = Some(key);
+
+            let assigned = self
+                .selected
+                .get(..rank.wrapping_add(1))
+                .expect("assigned values are the class prefix");
+            if !problem.check_local(
+                &class.local,
+                class.class,
+                &class.variables,
+                rank,
+                assigned,
+                budget,
+            )? {
+                self.unassign(rank);
+                continue;
+            }
+            if rank.wrapping_add(1) == variable_count {
+                self.yielded = true;
+                let mut solution = Vec::with_capacity(variable_count);
+                solution.extend(self.selected.iter().map(|value| {
+                    value.expect("a complete local solution assigns every class member")
+                }));
+                return Ok(Some(solution));
+            }
+            rank = rank.wrapping_add(1);
+            *self
+                .next_candidate
+                .get_mut(rank)
+                .expect("the next rank belongs to the class search state") = 0;
+        }
+    }
+}
+
+pub(in crate::geometry) struct Search<P: Problem> {
+    problem: P,
+    budget: EvaluationBudget,
+}
+
+impl<P: Problem> Search<P> {
+    /// `constructed` is the number of conflicting constructed vertices; it sizes
+    /// the predicate budget and is retained in any search-limit error.
+    pub(in crate::geometry) fn new(
+        problem: P,
+        operation: &'static str,
+        constructed: usize,
+    ) -> Result<Self> {
+        Ok(Self {
+            problem,
+            budget: EvaluationBudget::new(operation, constructed)?,
+        })
+    }
+
+    pub(in crate::geometry) fn run(mut self) -> Result<SearchAssignment<P::Node, P::Candidate>> {
+        self.budget.charge(self.problem.initial_evaluations())?;
+        let (prepared, class_positions) = prepare_classes(&self.problem, &mut self.budget)?;
+        let mut states = Vec::with_capacity(prepared.len());
+        let mut current_solutions = Vec::with_capacity(prepared.len());
+        for class in &prepared {
+            let mut state = ClassSearchState::new(class)?;
+            let Some(solution) = state.next_solution(class, &self.problem, &mut self.budget)?
+            else {
+                return Err(self.budget.unrepresentable());
+            };
+            states.push(state);
+            current_solutions.push(solution);
+        }
+
+        loop {
+            let global = {
+                let mut assignments = Vec::with_capacity(prepared.len());
+                for (class, values) in prepared.iter().zip(&current_solutions) {
+                    assignments.push(ClassAssignment {
+                        class: class.class,
+                        variables: &class.variables,
+                        values,
+                    });
+                }
+                self.problem.check_global(&assignments, &mut self.budget)?
+            };
+            match global {
+                GlobalCheck::Pass => {
+                    let mut classes = Vec::with_capacity(prepared.len());
+                    for (class, values) in prepared.into_iter().zip(current_solutions) {
+                        classes.push(ClassSolution {
+                            class: class.class,
+                            variables: class.variables,
+                            values,
+                        });
+                    }
+                    return Ok(SearchAssignment { classes });
+                },
+                GlobalCheck::Reject(blamed_classes) => {
+                    if blamed_classes.is_empty() {
+                        return Err(self.budget.unrepresentable());
+                    }
+                    let mut blamed_positions = Vec::with_capacity(blamed_classes.len());
+                    for class in blamed_classes {
+                        let position = class_positions.get(class).copied().ok_or_else(|| {
+                            GeometryErrorKind::Invalid(
+                                "embedding search blamed an unknown variable class".into(),
+                            )
+                        })?;
+                        if position == usize::MAX {
+                            return Err(GeometryErrorKind::Invalid(
+                                "embedding search blamed an empty variable class".into(),
+                            )
+                            .into());
+                        }
+                        blamed_positions.push(position);
+                    }
+                    blamed_positions.sort_unstable();
+                    blamed_positions.dedup();
+
+                    let mut advanced = false;
+                    for position in blamed_positions {
+                        let class = prepared
+                            .get(position)
+                            .expect("blamed class rank is within prepared classes");
+                        let state = states
+                            .get_mut(position)
+                            .expect("blamed class rank is within class search states");
+                        if let Some(solution) =
+                            state.next_solution(class, &self.problem, &mut self.budget)?
+                        {
+                            *current_solutions
+                                .get_mut(position)
+                                .expect("blamed class rank is within current solutions") = solution;
+                            advanced = true;
+                            break;
+                        }
+
+                        state.reset();
+                        let Some(solution) =
+                            state.next_solution(class, &self.problem, &mut self.budget)?
+                        else {
+                            return Err(self.budget.unrepresentable());
+                        };
+                        *current_solutions
+                            .get_mut(position)
+                            .expect("blamed class rank is within current solutions") = solution;
+                    }
+                    if !advanced {
+                        return Err(self.budget.unrepresentable());
+                    }
+                },
+            }
+        }
+    }
+}
+
+fn prepare_classes<P: Problem>(
+    problem: &P,
+    budget: &mut EvaluationBudget,
+) -> Result<(
+    Vec<PreparedClass<P::Node, P::Candidate, P::Key, P::ClassState>>,
+    Vec<usize>,
+)> {
+    let classes = problem.classes();
+
+    let mut specs = Vec::with_capacity(classes.len());
+    for (class, variables) in classes.iter().enumerate() {
+        if variables.is_empty() {
+            return Err(GeometryErrorKind::Invalid(
+                "embedding search received an empty variable class".into(),
+            )
+            .into());
+        }
+        let mut variables = variables.clone();
+        sort_fallible(&mut variables, |left, right| {
+            problem.compare_nodes(*left, *right)
+        })?;
+        specs.push(ClassSpec { class, variables });
+    }
+    sort_fallible(&mut specs, |left, right| {
+        let left_class = left.class;
+        let right_class = right.class;
+        let left_node = *left
+            .variables
+            .first()
+            .expect("variable classes are nonempty");
+        let right_node = *right
+            .variables
+            .first()
+            .expect("variable classes are nonempty");
+        let order = problem.compare_nodes(left_node, right_node)?;
+        Ok(if order == Ordering::Equal {
+            left_class.cmp(&right_class)
+        } else {
+            order
+        })
+    })?;
+
+    let mut candidate_scratch = Vec::new();
+    let _candidate_hint = candidate_scratch.try_reserve(9);
+    let mut seen_keys = Vec::new();
+    let _key_hint = seen_keys.try_reserve(9);
+    let mut prepared = Vec::with_capacity(specs.len());
+    let mut class_positions = Vec::with_capacity(classes.len());
+    class_positions.resize(classes.len(), usize::MAX);
+    for spec in specs {
+        let fixed_candidates = problem.fixed_keys(spec.class, &spec.variables)?;
+        let mut fixed_keys = try_hash_set_with_capacity(fixed_candidates.len())?;
+        for key in fixed_candidates {
+            fixed_keys.insert(key);
+        }
+        let local = problem.prepare_class(spec.class, &spec.variables, budget)?;
+        let mut options = Vec::with_capacity(spec.variables.len());
+        for &node in &spec.variables {
+            candidate_scratch.clear();
+            problem.fill_candidates(node, &mut candidate_scratch)?;
+            sort_candidates(problem, node, &mut candidate_scratch)?;
+            seen_keys.clear();
+            let mut node_options = Vec::with_capacity(candidate_scratch.len());
+            for candidate in candidate_scratch.iter().copied() {
+                let key = problem.candidate_key(candidate);
+                budget.charge(1)?;
+                if fixed_keys.contains(&key) || seen_keys.contains(&key) {
+                    continue;
+                }
+                seen_keys.push(key);
+                node_options.push((candidate, key));
+            }
+            if node_options.is_empty() {
+                return Err(budget.unrepresentable());
+            }
+            options.push(node_options);
+        }
+
+        let class = PreparedClass {
+            class: spec.class,
+            variables: spec.variables,
+            options,
+            local,
+        };
+        if !has_perfect_matching(&class)? {
+            return Err(budget.unrepresentable());
+        }
+        let position = prepared.len();
+        *class_positions
+            .get_mut(class.class)
+            .expect("class IDs are the indexes in Problem::classes") = position;
+        prepared.push(class);
+    }
+    Ok((prepared, class_positions))
+}
+
+fn sort_fallible<T>(
+    values: &mut [T],
+    mut compare: impl FnMut(&T, &T) -> Result<Ordering>,
+) -> Result<()> {
+    let mut failure = None;
+    values.sort_unstable_by(|left, right| {
+        if failure.is_some() {
+            return Ordering::Equal;
+        }
+        match compare(left, right) {
+            Ok(ordering) => ordering,
+            Err(error) => {
+                failure = Some(error);
+                Ordering::Equal
+            },
+        }
+    });
+    match failure {
+        Some(error) => Err(error),
+        None => Ok(()),
+    }
+}
+
+fn sort_candidates<P: Problem>(
+    problem: &P,
+    node: P::Node,
+    candidates: &mut [P::Candidate],
+) -> Result<()> {
+    for index in 1..candidates.len() {
+        let candidate = *candidates
+            .get(index)
+            .expect("candidate index is within the vector");
+        let mut position = index;
+        while position > 0 {
+            let previous = *candidates
+                .get(position.wrapping_sub(1))
+                .expect("previous candidate is within the sorted prefix");
+            if problem.compare_candidates(node, candidate, previous)? != Ordering::Less {
+                break;
+            }
+            candidates.swap(position, position.wrapping_sub(1));
+            position = position.wrapping_sub(1);
+        }
+    }
+    Ok(())
+}
+
+fn has_perfect_matching<N, C, K, S>(class: &PreparedClass<N, C, K, S>) -> Result<bool>
+where
+    K: Copy + Eq + Hash,
+{
+    let variable_count = class.variables.len();
+    let candidate_count = class.options.iter().try_fold(0_usize, |count, options| {
+        count
+            .checked_add(options.len())
+            .ok_or(ResourceError::SizeOverflow)
+    })?;
+    let mut owners = try_hash_map_with_capacity(candidate_count)?;
+    let mut seen_keys = try_hash_set_with_capacity(candidate_count)?;
+    let mut seen_variables = Vec::with_capacity(variable_count);
+    seen_variables.resize(variable_count, usize::MAX);
+    let mut parents = Vec::with_capacity(variable_count);
+    parents.resize(variable_count, None::<(usize, K)>);
+    let mut stack = Vec::with_capacity(variable_count);
+
+    for root in 0..variable_count {
+        seen_keys.clear();
+        stack.clear();
+        *seen_variables
+            .get_mut(root)
+            .expect("root variable is within the class") = root;
+        *parents
+            .get_mut(root)
+            .expect("root variable is within the class") = None;
+        stack.push(MatchFrame {
+            variable: root,
+            next_candidate: 0,
+        });
+
+        let mut free_cell = None;
+        loop {
+            let (variable, candidate_index) = {
+                let Some(frame) = stack.last_mut() else {
+                    break;
+                };
+                let options = class
+                    .options
+                    .get(frame.variable)
+                    .expect("matching variable is within the class");
+                if frame.next_candidate == options.len() {
+                    stack.pop();
+                    continue;
+                }
+                let index = frame.next_candidate;
+                frame.next_candidate = frame.next_candidate.wrapping_add(1);
+                (frame.variable, index)
+            };
+            let (_, key) = *class
+                .options
+                .get(variable)
+                .and_then(|options| options.get(candidate_index))
+                .expect("matching candidate is within its row");
+            if !seen_keys.insert(key) {
+                continue;
+            }
+            match owners.get(&key).copied() {
+                None => {
+                    free_cell = Some((variable, key));
+                    break;
+                },
+                Some(owner) => {
+                    if *seen_variables
+                        .get(owner)
+                        .expect("matched variable is within the class")
+                        == root
+                    {
+                        continue;
+                    }
+                    *seen_variables
+                        .get_mut(owner)
+                        .expect("matched variable is within the class") = root;
+                    *parents
+                        .get_mut(owner)
+                        .expect("matched variable is within the class") = Some((variable, key));
+                    stack.push(MatchFrame {
+                        variable: owner,
+                        next_candidate: 0,
+                    });
+                },
+            }
+        }
+
+        let Some((mut variable, mut key)) = free_cell else {
+            return Ok(false);
+        };
+        loop {
+            owners.insert(key, variable);
+            let Some((parent, parent_key)) = parents
+                .get(variable)
+                .copied()
+                .expect("matched variable is within the class")
+            else {
+                break;
+            };
+            variable = parent;
+            key = parent_key;
+        }
+    }
+    Ok(true)
+}
+
+struct MatchFrame {
+    variable: usize,
+    next_candidate: usize,
+}
+
+#[cfg(test)]
+mod tests {
+    use std::cell::Cell;
+    use std::rc::Rc;
+
+    use super::*;
+    use crate::error::ErrorKind;
+
+    struct FixtureProblem {
+        classes: Vec<Vec<usize>>,
+        candidates: Vec<Vec<u8>>,
+        fixed_keys_by_class: Vec<Vec<u8>>,
+        rejected: Vec<(usize, usize, u8)>,
+        global_target: Option<Vec<(usize, u8)>>,
+        blamed_classes: Vec<usize>,
+        initial_evaluations: u64,
+        local_calls: Rc<Cell<usize>>,
+        global_calls: Rc<Cell<usize>>,
+    }
+
+    impl FixtureProblem {
+        fn new(classes: Vec<Vec<usize>>, candidates: Vec<Vec<u8>>) -> Self {
+            let fixed_keys_by_class = vec![Vec::new(); classes.len()];
+            Self {
+                classes,
+                candidates,
+                fixed_keys_by_class,
+                rejected: Vec::new(),
+                global_target: None,
+                blamed_classes: Vec::new(),
+                initial_evaluations: 0,
+                local_calls: Rc::new(Cell::new(0)),
+                global_calls: Rc::new(Cell::new(0)),
+            }
+        }
+    }
+
+    impl Problem for FixtureProblem {
+        type Node = usize;
+        type Candidate = u8;
+        type Key = u8;
+        type ClassState = ();
+
+        fn classes(&self) -> &[Vec<Self::Node>] {
+            &self.classes
+        }
+
+        fn fixed_keys(&self, class: usize, _variables: &[Self::Node]) -> Result<Vec<Self::Key>> {
+            self.fixed_keys_by_class
+                .get(class)
+                .cloned()
+                .ok_or_else(|| GeometryErrorKind::Invalid("fixture class is unknown".into()).into())
+        }
+
+        fn compare_nodes(&self, left: Self::Node, right: Self::Node) -> Result<Ordering> {
+            Ok(left.cmp(&right))
+        }
+
+        fn fill_candidates(
+            &self,
+            node: Self::Node,
+            candidates: &mut Vec<Self::Candidate>,
+        ) -> Result<()> {
+            let options = self.candidates.get(node).ok_or_else(|| {
+                GeometryErrorKind::Invalid("fixture node has no candidate row".into())
+            })?;
+            candidates.extend(options.iter().copied());
+            Ok(())
+        }
+
+        fn compare_candidates(
+            &self,
+            _node: Self::Node,
+            left: Self::Candidate,
+            right: Self::Candidate,
+        ) -> Result<Ordering> {
+            Ok(left.cmp(&right))
+        }
+
+        fn candidate_key(&self, candidate: Self::Candidate) -> Self::Key {
+            candidate
+        }
+
+        fn prepare_class(
+            &self,
+            _class: usize,
+            _variables: &[Self::Node],
+            _budget: &mut EvaluationBudget,
+        ) -> Result<Self::ClassState> {
+            Ok(())
+        }
+
+        fn check_local(
+            &self,
+            class_state: &Self::ClassState,
+            class: usize,
+            _variables: &[Self::Node],
+            rank: usize,
+            assigned: &[Option<Self::Candidate>],
+            budget: &mut EvaluationBudget,
+        ) -> Result<bool> {
+            let () = class_state;
+            self.local_calls.set(self.local_calls.get().wrapping_add(1));
+            budget.charge(1)?;
+            let candidate = assigned
+                .get(rank)
+                .copied()
+                .flatten()
+                .expect("search checks only a completed candidate prefix");
+            Ok(!self.rejected.contains(&(class, rank, candidate)))
+        }
+
+        fn check_global(
+            &self,
+            assignments: &[ClassAssignment<'_, Self::Node, Self::Candidate>],
+            budget: &mut EvaluationBudget,
+        ) -> Result<GlobalCheck> {
+            debug_assert!(assignments.iter().all(|assignment| {
+                self.classes.get(assignment.class).is_some_and(|variables| {
+                    variables.len() == assignment.variables.len()
+                        && assignment
+                            .variables
+                            .iter()
+                            .all(|variable| variables.contains(variable))
+                })
+            }));
+            self.global_calls
+                .set(self.global_calls.get().wrapping_add(1));
+            budget.charge(1)?;
+            let Some(target) = &self.global_target else {
+                return Ok(GlobalCheck::Pass);
+            };
+            let actual_count = assignments
+                .iter()
+                .map(|class| class.values.len())
+                .sum::<usize>();
+            let matches = actual_count == target.len()
+                && target.iter().all(|&(node, value)| {
+                    assignments.iter().any(|class| {
+                        class
+                            .variables
+                            .iter()
+                            .copied()
+                            .zip(class.values.iter().copied())
+                            .any(|actual| actual == (node, value))
+                    })
+                });
+            Ok(if matches {
+                GlobalCheck::Pass
+            } else {
+                GlobalCheck::Reject(self.blamed_classes.clone())
+            })
+        }
+
+        fn initial_evaluations(&self) -> u64 {
+            self.initial_evaluations
+        }
+    }
+
+    fn search_fixture(
+        problem: FixtureProblem,
+        constructed: usize,
+    ) -> Result<SearchAssignment<usize, u8>> {
+        Search::new(problem, "search_test", constructed)?.run()
+    }
+
+    #[test]
+    fn search_sorts_variables_and_candidates_before_returning_the_first_solution() {
+        let problem = FixtureProblem::new(vec![vec![3, 1]], vec![
+            Vec::new(),
+            vec![3, 2],
+            Vec::new(),
+            vec![8, 6],
+        ]);
+        let assignment = search_fixture(problem, 2).unwrap();
+        let class = assignment.classes.first().unwrap();
+        assert_eq!(class.class, 0);
+        assert_eq!(class.variables, [1, 3]);
+        assert_eq!(class.values, [2, 6]);
+    }
+
+    #[test]
+    fn matching_rearranges_an_earlier_cell_to_find_a_perfect_assignment() {
+        let problem = FixtureProblem::new(vec![vec![0, 1]], vec![vec![0, 1], vec![0]]);
+        let assignment = search_fixture(problem, 2).unwrap();
+        let class = assignment.classes.first().unwrap();
+        assert_eq!(class.variables, [0, 1]);
+        assert_eq!(class.values, [1, 0]);
+    }
+
+    #[test]
+    fn fixed_nearest_cells_are_removed_before_search() {
+        let mut problem = FixtureProblem::new(vec![vec![0]], vec![vec![0, 1]]);
+        problem.fixed_keys_by_class.get_mut(0).unwrap().push(0);
+        let assignment = search_fixture(problem, 1).unwrap();
+        assert_eq!(assignment.classes.first().unwrap().values, [1]);
+    }
+
+    #[test]
+    fn each_class_reserves_nearest_cells_of_other_classes() {
+        let mut problem = FixtureProblem::new(vec![vec![0], vec![1]], vec![vec![0, 1], vec![0, 1]]);
+        problem.fixed_keys_by_class.get_mut(0).unwrap().push(0);
+        problem.fixed_keys_by_class.get_mut(1).unwrap().push(1);
+        let assignment = search_fixture(problem, 2).unwrap();
+
+        let first = assignment.classes.first().unwrap();
+        let second = assignment.classes.get(1).unwrap();
+        assert_eq!(
+            (
+                *first.variables.first().unwrap(),
+                *first.values.first().unwrap()
+            ),
+            (0, 1)
+        );
+        assert_eq!(
+            (
+                *second.variables.first().unwrap(),
+                *second.values.first().unwrap()
+            ),
+            (1, 0)
+        );
+    }
+
+    #[test]
+    fn hall_failure_is_unrepresentable_before_depth_first_search() {
+        let problem = FixtureProblem::new(vec![vec![0, 1, 2]], vec![vec![0, 1], vec![0, 1], vec![
+            0, 1,
+        ]]);
+        let local_calls = Rc::clone(&problem.local_calls);
+        let error = search_fixture(problem, 3).unwrap_err();
+
+        assert_eq!(local_calls.get(), 0);
+        assert!(matches!(
+            error.kind(),
+            ErrorKind::Geometry(GeometryErrorKind::ExactEmbeddingUnrepresentable {
+                operation: "search_test",
+                constructed: 3
+            })
+        ));
+    }
+
+    #[test]
+    fn local_failure_backtracks_to_the_next_lexicographic_candidate() {
+        let mut problem = FixtureProblem::new(vec![vec![1, 0]], vec![vec![1, 0], vec![1, 0]]);
+        problem.rejected.push((0, 0, 0));
+        let assignment = search_fixture(problem, 2).unwrap();
+        let class = assignment.classes.first().unwrap();
+        assert_eq!(class.variables, [0, 1]);
+        assert_eq!(class.values, [1, 0]);
+    }
+
+    #[test]
+    fn global_failure_advances_blamed_classes_in_variable_order() {
+        let mut problem = FixtureProblem::new(
+            vec![vec![10], vec![0]],
+            (0..=10).map(|_| Vec::new()).collect(),
+        );
+        *problem.candidates.get_mut(0).unwrap() = vec![1, 0];
+        *problem.candidates.get_mut(10).unwrap() = vec![3, 2];
+        problem.global_target = Some(vec![(0, 1), (10, 3)]);
+        problem.blamed_classes = vec![0, 1];
+        let global_calls = Rc::clone(&problem.global_calls);
+        let assignment = search_fixture(problem, 2).unwrap();
+
+        assert_eq!(global_calls.get(), 4);
+        let first = assignment.classes.first().unwrap();
+        assert_eq!(first.class, 1);
+        assert_eq!(first.variables, [0]);
+        assert_eq!(first.values, [1]);
+        let second = assignment.classes.get(1).unwrap();
+        assert_eq!(second.class, 0);
+        assert_eq!(second.variables, [10]);
+        assert_eq!(second.values, [3]);
+    }
+
+    #[test]
+    fn global_failure_without_a_blame_class_is_unrepresentable() {
+        let mut problem = FixtureProblem::new(vec![vec![0]], vec![vec![0]]);
+        problem.global_target = Some(vec![(0, 1)]);
+        let error = search_fixture(problem, 1).unwrap_err();
+
+        assert!(matches!(
+            error.kind(),
+            ErrorKind::Geometry(GeometryErrorKind::ExactEmbeddingUnrepresentable {
+                operation: "search_test",
+                constructed: 1
+            })
+        ));
+    }
+
+    #[test]
+    fn exhausting_every_blamed_class_is_unrepresentable() {
+        let mut problem = FixtureProblem::new(vec![vec![0]], vec![vec![0]]);
+        problem.global_target = Some(vec![(0, 1)]);
+        problem.blamed_classes = vec![0];
+        let error = search_fixture(problem, 1).unwrap_err();
+
+        assert!(matches!(
+            error.kind(),
+            ErrorKind::Geometry(GeometryErrorKind::ExactEmbeddingUnrepresentable {
+                operation: "search_test",
+                constructed: 1
+            })
+        ));
+    }
+
+    #[test]
+    fn one_budget_covers_candidate_admission_and_all_classes() {
+        let mut problem = FixtureProblem::new(vec![vec![0], vec![1]], vec![vec![7], vec![8]]);
+        problem.initial_evaluations = BASE_EVALUATION_LIMIT - 2;
+        let error = search_fixture(problem, 1).unwrap_err();
+
+        assert!(matches!(
+            error.kind(),
+            ErrorKind::Geometry(GeometryErrorKind::ExactEmbeddingSearchLimit {
+                operation: "search_test",
+                constructed: 1,
+                evaluations
+            }) if *evaluations == BASE_EVALUATION_LIMIT
+        ));
+    }
+
+    #[test]
+    fn budget_grows_with_the_number_of_constructed_nodes() {
+        let mut budget = EvaluationBudget::new("search_test", 17).unwrap();
+        let limit = 17 * EVALUATIONS_PER_CONSTRUCTED_NODE;
+        budget.charge(limit).unwrap();
+        let error = budget.charge(1).unwrap_err();
+        assert!(matches!(
+            error.kind(),
+            ErrorKind::Geometry(GeometryErrorKind::ExactEmbeddingSearchLimit {
+                operation: "search_test",
+                constructed: 17,
+                evaluations
+            }) if *evaluations == limit
+        ));
+    }
+}

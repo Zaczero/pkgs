@@ -113,6 +113,7 @@ pub(crate) use derived::{
 mod distance;
 pub(crate) use distance::{RowMetricPair, discrete_frechet_distance_with_scratch};
 pub(crate) use types::coordinate_columns_eq;
+mod embedding_search;
 mod facet_bvh;
 mod generated_budget;
 mod geodesic_bvh;
