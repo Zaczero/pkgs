@@ -42,7 +42,20 @@ def _assert_local_delaunay(triangles: gm.GeometryArray[gm.Polygon]) -> None:
         a, b, c = incident[0]
         d = incident[1][2]
         if _orientation(c, d, a) * _orientation(c, d, b) < 0:
-            assert _incircle(a, b, c, d) <= 0, (
+            determinant = _incircle(a, b, c, d)
+            if determinant == 0:
+                cofactors = [
+                    _orientation(b, c, d),
+                    -_orientation(a, c, d),
+                    _orientation(a, b, d),
+                    -_orientation(a, b, c),
+                ]
+                site_order = sorted(range(4), key=(a, b, c, d).__getitem__)
+                determinant = next(
+                    (cofactors[index] for index in site_order if cofactors[index]),
+                    Fraction(0),
+                )
+            assert determinant <= 0, (
                 'illegal unconstrained interior edge',
                 tuple(tuple(map(float, point)) for point in (a, b, c, d)),
             )
@@ -76,3 +89,23 @@ def test_constraint_recovery_legalizes_the_seed_35_polygon(surface: str) -> None
         triangles = polygon.triangulate(method=method)
 
     _assert_local_delaunay(triangles)
+
+
+@pytest.mark.parametrize('method', ['delaunay', 'constrained'])
+def test_exact_cocircular_square_uses_the_lexicographic_lift(method: str) -> None:
+    source = gm.Polygon([(0, 0), (1, 0), (1, 1), (0, 1)])
+    triangles = source.triangulate(method=method)
+
+    assert len(triangles) == 2
+    _assert_local_delaunay(triangles)
+    edge_counts: dict[tuple[tuple[float, float], tuple[float, float]], int] = {}
+    for triangle in triangles:
+        coordinates = [(x, y) for x, y, *_ in triangle.exterior.coords[:3]]
+        for left, right in zip(
+            coordinates, coordinates[1:] + coordinates[:1], strict=True
+        ):
+            first, second = sorted((left, right))
+            edge_counts[(first, second)] = edge_counts.get((first, second), 0) + 1
+    assert [edge for edge, count in edge_counts.items() if count == 2] == [
+        ((0.0, 1.0), (1.0, 0.0))
+    ]

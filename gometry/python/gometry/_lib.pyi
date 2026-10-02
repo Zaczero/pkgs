@@ -1896,7 +1896,9 @@ class Geometry:
         method : {'earcut', 'delaunay', 'constrained'}
             Required algorithm choice: ``earcut`` triangulates polygon interiors,
             ``delaunay`` triangulates input vertices, and ``constrained`` preserves
-            polygon boundaries.
+            polygon boundaries. Delaunay methods resolve exact cocircular ties with
+            a canonical rule keyed by lexicographic XY coordinates, independent of
+            insertion order.
         min_angle : float, optional
             Minimum triangle angle in degrees; positive finite values up to 30 are
             valid with ``method='constrained'``.
@@ -1917,7 +1919,8 @@ class Geometry:
         Returns
         -------
         GeometryArray[Polygon]
-            The generated triangles.
+            The generated triangles. Delaunay methods return counter-clockwise
+            triangles starting at their smallest XY corner, sorted by corner coordinates.
 
         Raises
         ------
@@ -7736,7 +7739,9 @@ class GeometryArray(Sequence[_GeometryT_co]):
         Parameters
         ----------
         method : {'earcut', 'delaunay', 'constrained'}
-            Required triangulation algorithm.
+            Required triangulation algorithm. Delaunay methods resolve exact
+            cocircular ties with a canonical rule keyed by lexicographic XY
+            coordinates, independent of insertion order.
         min_angle : float or sequence of float, optional
             Minimum triangle angle in degrees; each value must be positive, finite,
             and at most 30. Valid only with ``method='constrained'``.
@@ -7756,7 +7761,9 @@ class GeometryArray(Sequence[_GeometryT_co]):
         Returns
         -------
         Groups of GeometryArray[Polygon]
-            One ragged triangle group per input geometry.
+            One ragged triangle group per input geometry. Delaunay methods return
+            counter-clockwise triangles starting at their smallest XY corner,
+            sorted by corner coordinates within each group.
 
         Raises
         ------

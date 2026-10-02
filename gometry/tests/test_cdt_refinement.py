@@ -413,7 +413,14 @@ def test_delaunay_duplicate_xy_uses_the_same_source_site_for_scalar_and_array() 
         triangle.to_wkt() for triangle in scalar
     ]
     assert all(triangle.coordinate_axes == 'XYZM' for triangle in scalar)
-    assert all('0 0 1 10' in triangle.to_wkt() for triangle in scalar)
+    origin_corners = [
+        tuple(coordinate)
+        for triangle in scalar
+        for coordinate in triangle.exterior.coords
+        if coordinate[0] == 0 and coordinate[1] == 0
+    ]
+    assert origin_corners
+    assert set(origin_corners) == {(0.0, 0.0, 1.0, 10.0)}
 
 
 def test_constrained_delaunay_records_flipped_source_constraints() -> None:

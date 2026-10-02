@@ -176,10 +176,8 @@ impl Shape {
         note_delaunay_output_reserve();
         let mut vertices = Vec::with_capacity(capacity);
         let mut triangles = triangulation.triangles().to_vec();
-        triangles.sort_unstable_by_key(|triangle| {
-            let mut key = *triangle;
-            key.sort_unstable();
-            key
+        super::delaunay::exact_delaunay::canonicalize_triangles(&mut triangles, |site| {
+            super::delaunay::exact_delaunay::site_xy(&points, site)
         });
         for triangle in triangles {
             vertices.extend_from_slice(&selected_triangle_points(&points, triangle, false));

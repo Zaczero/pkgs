@@ -163,8 +163,122 @@ pub(super) fn exact_delaunay(points: &[Point]) -> Result<ExactMesh> {
     clippy::indexing_slicing,
     reason = "site ordinals are admitted by this exact mesh from the same point slice"
 )]
-pub(super) const fn site_xy(points: &[Point], site: usize) -> XY {
+pub(in crate::geometry::tessellation) const fn site_xy(points: &[Point], site: usize) -> XY {
     points[site].xy()
+}
+
+pub(super) fn compare_xy(left: XY, right: XY) -> std::cmp::Ordering {
+    let coordinate = |left: f64, right: f64| {
+        if left == right {
+            std::cmp::Ordering::Equal
+        } else {
+            left.total_cmp(&right)
+        }
+    };
+    coordinate(left.x, right.x).then_with(|| coordinate(left.y, right.y))
+}
+
+/// Lexicographically ordered infinitesimal vertical lifts of the paraboloid.
+/// On a zero determinant, its first nonzero lift cofactor selects one diagonal;
+/// the exact geometric predicate remains unchanged for circumcenter certificates.
+fn symbolic_incircle_tie(a: XY, b: XY, c: XY, d: XY) -> ExactSign {
+    let mut sites = [(a, 0), (b, 1), (c, 2), (d, 3)];
+    sites.sort_unstable_by(|&(left, _), &(right, _)| compare_xy(left, right));
+    for (_, row) in sites {
+        let (sign, negate) = match row {
+            0 => (exact::orient2d(b, c, d), false),
+            1 => (exact::orient2d(a, c, d), true),
+            2 => (exact::orient2d(a, b, d), false),
+            _ => (exact::orient2d(a, b, c), true),
+        };
+        if sign != ExactSign::Zero {
+            return if negate {
+                match sign {
+                    ExactSign::Positive => ExactSign::Negative,
+                    ExactSign::Negative => ExactSign::Positive,
+                    ExactSign::Zero => ExactSign::Zero,
+                }
+            } else {
+                sign
+            };
+        }
+    }
+    ExactSign::Zero
+}
+
+macro_rules! canonical_incircle {
+    ($a:expr, $b:expr, $c:expr, $d:expr) => {{
+        let [a, b, c, d] = [$a, $b, $c, $d];
+        match exact::incircle(a, b, c, d)? {
+            ExactSign::Zero => symbolic_incircle_tie(a, b, c, d),
+            sign => sign,
+        }
+    }};
+}
+
+#[cfg(test)]
+fn canonical_incircle(a: XY, b: XY, c: XY, d: XY) -> Result<ExactSign> {
+    Ok(canonical_incircle!(a, b, c, d))
+}
+
+pub(in crate::geometry::tessellation) fn canonicalize_triangles(
+    triangles: &mut [[usize; 3]],
+    xy: impl Fn(usize) -> XY,
+) {
+    for triangle in triangles.iter_mut() {
+        let [a, b, c] = *triangle;
+        *triangle = if compare_xy(xy(b), xy(a)).is_lt() && compare_xy(xy(b), xy(c)).is_lt() {
+            [b, c, a]
+        } else if compare_xy(xy(c), xy(a)).is_lt() {
+            [c, a, b]
+        } else {
+            [a, b, c]
+        };
+    }
+    triangles.sort_unstable_by(|left, right| {
+        left.iter()
+            .zip(right)
+            .map(|(&left, &right)| compare_xy(xy(left), xy(right)))
+            .find(|order| !order.is_eq())
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+}
+
+#[cfg(test)]
+#[derive(Clone, Copy)]
+enum InsertionOrder {
+    Original,
+    Brio,
+    Reversed,
+}
+
+#[cfg(test)]
+thread_local! {
+    static INSERTION_ORDER: std::cell::Cell<InsertionOrder> =
+        const { std::cell::Cell::new(InsertionOrder::Brio) };
+}
+
+fn order_interior(interior: &mut [(u32, usize)]) {
+    #[cfg(test)]
+    match INSERTION_ORDER.with(std::cell::Cell::get) {
+        InsertionOrder::Original => {
+            interior.sort_unstable();
+            return;
+        },
+        InsertionOrder::Reversed => {
+            interior.sort_unstable();
+            interior.reverse();
+            return;
+        },
+        InsertionOrder::Brio => {},
+    }
+    interior.sort_unstable_by_key(|&(hilbert, site)| {
+        let mut sample = (site as u64).wrapping_add(264);
+        sample = (sample ^ (sample >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        sample = (sample ^ (sample >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        sample ^= sample >> 31;
+        (std::cmp::Reverse(sample.leading_zeros()), hilbert, site)
+    });
 }
 
 impl Mesh {
@@ -195,7 +309,7 @@ impl Mesh {
                 interior.push((hilbert16(xy(site), min, max), site));
             }
         }
-        interior.sort_unstable();
+        order_interior(&mut interior);
 
         let mut last = FaceId::from_index(0);
         for (_, site) in interior {
@@ -519,8 +633,20 @@ impl Mesh {
     /// Every halfedge slot leaving `u`, walking its fan both ways so a hull
     /// vertex's open fan is covered too.
     pub(super) fn outgoing(&self, u: usize) -> Vec<HalfedgeId> {
+        let mut slots = Vec::new();
+        let _ = self.find_outgoing(u, |edge| {
+            slots.push(edge);
+            false
+        });
+        slots
+    }
+
+    fn find_outgoing(
+        &self,
+        u: usize,
+        mut matches: impl FnMut(HalfedgeId) -> bool,
+    ) -> Option<HalfedgeId> {
         let start = self.incident(u);
-        let mut slots = Vec::with_capacity(self.triangle_count());
         let start = HalfedgeId::from_index(start);
         if start.index() == EMPTY || !self.alive(start.face()) || self.edge_start(start) != u {
             // The remembered slot died in a cavity: fall back to a scan.
@@ -536,23 +662,28 @@ impl Mesh {
                     (FaceSide::Third, third),
                 ] {
                     if vertex == u {
-                        slots.push(HalfedgeId::in_face(face, side));
+                        let edge = HalfedgeId::in_face(face, side);
+                        if matches(edge) {
+                            return Some(edge);
+                        }
                     }
                 }
             }
-            return slots;
+            return None;
         }
         // Counter-clockwise: across the edge into `u`.
         let mut e = start;
         loop {
-            slots.push(e);
+            if matches(e) {
+                return Some(e);
+            }
             let twin = self.twin(e.prev());
             if twin == EMPTY {
                 break;
             }
             e = HalfedgeId::from_index(twin);
             if e == start {
-                return slots;
+                return None;
             }
         }
         // Clockwise from the start: across the edge out of `u`.
@@ -566,9 +697,11 @@ impl Mesh {
             if e == start {
                 break;
             }
-            slots.push(e);
+            if matches(e) {
+                return Some(e);
+            }
         }
-        slots
+        None
     }
 
     /// The slot of the edge between `u` and `v` in either direction, if it
@@ -581,9 +714,7 @@ impl Mesh {
     }
 
     fn directed_slot(&self, u: usize, v: usize) -> Option<HalfedgeId> {
-        self.outgoing(u)
-            .into_iter()
-            .find(|&e| self.edge_end(e) == v)
+        self.find_outgoing(u, |edge| self.edge_end(edge) == v)
     }
 
     /// Lawson legalization of every interior edge: flip while the twin's apex
@@ -606,7 +737,7 @@ impl Mesh {
             }
             let [a, b, c] = self.triangle(edge.face());
             let d = self.edge_apex(HalfedgeId::from_index(twin));
-            if exact::incircle(xy(a), xy(b), xy(c), xy(d))? != ExactSign::Positive {
+            if canonical_incircle!(xy(a), xy(b), xy(c), xy(d)) != ExactSign::Positive {
                 continue;
             }
             let diagonal = self.flip(edge);
@@ -633,7 +764,7 @@ impl Mesh {
             }
             let [a, b, c] = self.triangle(edge.face());
             let opposite = self.edge_apex(HalfedgeId::from_index(twin));
-            if exact::incircle(xy(a), xy(b), xy(c), xy(opposite))? != ExactSign::Positive {
+            if canonical_incircle!(xy(a), xy(b), xy(c), xy(opposite)) != ExactSign::Positive {
                 continue;
             }
             let diagonal = self.flip_carrying(edge, constrained, false);
@@ -874,7 +1005,7 @@ impl Mesh {
             self.epoch = 1;
         }
         let epoch = self.epoch;
-        let mut cavity = Vec::with_capacity(self.triangle_count());
+        let mut cavity = Vec::new();
         let mut stack = seeds;
         for &face in &stack {
             self.set_stamp(face, epoch);
@@ -892,7 +1023,7 @@ impl Mesh {
                     continue;
                 }
                 let [a, b, c] = self.triangle(neighbor);
-                if exact::incircle(xy(a), xy(b), xy(c), p)? == ExactSign::Positive {
+                if canonical_incircle!(xy(a), xy(b), xy(c), p) == ExactSign::Positive {
                     self.set_stamp(neighbor, epoch);
                     stack.push(neighbor);
                 }
@@ -1002,6 +1133,7 @@ impl Mesh {
                 self.set_twin(next_edge, second_edge.index());
             }
             self.set_incident(a, first_edge.index());
+            self.set_incident(b, second_edge.index());
             self.set_incident(site, third_edge.index());
             last = face;
         }
@@ -1346,6 +1478,145 @@ mod tests {
             .collect()
     }
 
+    #[test]
+    fn symbolic_lift_ties_are_alternating_and_geometric_zeros_remain_zeros() {
+        let [a, b, c, d] = [
+            XY::new(0.0, 0.0),
+            XY::new(1.0, 0.0),
+            XY::new(1.0, 1.0),
+            XY::new(0.0, 1.0),
+        ];
+        assert_eq!(exact::incircle(a, b, c, d).unwrap(), ExactSign::Zero);
+        assert_eq!(canonical_incircle(a, b, c, d).unwrap(), ExactSign::Positive);
+        assert_eq!(canonical_incircle(b, a, c, d).unwrap(), ExactSign::Negative);
+        assert_eq!(canonical_incircle(a, c, b, d).unwrap(), ExactSign::Negative);
+        assert_eq!(canonical_incircle(a, b, d, c).unwrap(), ExactSign::Negative);
+    }
+
+    #[test]
+    fn public_delaunay_triangles_are_canonical_across_insertion_orders() {
+        use pyo3::prelude::*;
+        use pyo3::types::{PyDict, PyModule};
+
+        struct RestoreOrder(InsertionOrder);
+        impl Drop for RestoreOrder {
+            fn drop(&mut self) {
+                INSERTION_ORDER.with(|order| order.set(self.0));
+            }
+        }
+
+        crate::test_support::initialize_python();
+        let _restore = RestoreOrder(INSERTION_ORDER.with(std::cell::Cell::get));
+        Python::attach(|py| {
+            let module = PyModule::new(py, "gometry._lib").unwrap();
+            crate::lib(&module).unwrap();
+            let grid = (0..8)
+                .flat_map(|x| (0..8).map(move |y| format!("({x} {y})")))
+                .collect::<Vec<_>>()
+                .join(",");
+            let holes = (0..8)
+                .map(|index| {
+                    let x = f64::from(index);
+                    format!(
+                        ",({} 1,{} 1,{} 2,{} 2,{} 1)",
+                        x + 0.2,
+                        x + 0.8,
+                        x + 0.8,
+                        x + 0.2,
+                        x + 0.2
+                    )
+                })
+                .collect::<String>();
+            let fixtures = [
+                (format!("MULTIPOINT({grid})"), "delaunay"),
+                (
+                    format!("POLYGON((0 0,9 0,9 3,0 3,0 0){holes})"),
+                    "constrained",
+                ),
+                (
+                    "POLYGON((0 0,8 0,8 8,4 3,0 8,0 0))".to_owned(),
+                    "constrained",
+                ),
+            ];
+            for (wkt, method) in fixtures {
+                let polygon = module.getattr("from_wkt").unwrap().call1((wkt,)).unwrap();
+                let options = PyDict::new(py);
+                options.set_item("method", method).unwrap();
+                let mut expected = None;
+                for order in [
+                    InsertionOrder::Original,
+                    InsertionOrder::Brio,
+                    InsertionOrder::Reversed,
+                ] {
+                    INSERTION_ORDER.with(|cell| cell.set(order));
+                    let output = polygon
+                        .call_method("triangulate", (), Some(&options))
+                        .unwrap()
+                        .call_method0("to_wkt")
+                        .unwrap()
+                        .extract::<Vec<String>>()
+                        .unwrap();
+                    if let Some(expected) = &expected {
+                        assert_eq!(&output, expected);
+                    } else {
+                        expected = Some(output);
+                    }
+                }
+            }
+
+            let globals = PyDict::new(py);
+            globals.set_item("gm", &module).unwrap();
+            py.run(
+                c"import math, random
+rng = random.Random(0xCD7)
+corpus = []
+for case in range(200):
+    n = rng.randint(4, 8)
+    step = math.tau / n
+    offset = rng.random() * math.tau
+    ring = []
+    for index in range(n):
+        angle = offset + index * step + rng.uniform(-0.15, 0.15) * step
+        radius = rng.randint(20, 80)
+        ring.append((float(round(radius * math.cos(angle))), float(round(radius * math.sin(angle)))))
+    polygon = gm.Polygon(ring)
+    corpus.append((polygon, {'method': 'constrained'}))
+",
+                Some(&globals),
+                None,
+            )
+            .unwrap();
+            let corpus = globals
+                .get_item("corpus")
+                .unwrap()
+                .unwrap()
+                .extract::<Vec<(Bound<'_, PyAny>, Bound<'_, PyDict>)>>()
+                .unwrap();
+            for (case, (polygon, options)) in corpus.into_iter().enumerate() {
+                let mut expected = None;
+                for order in [
+                    InsertionOrder::Original,
+                    InsertionOrder::Brio,
+                    InsertionOrder::Reversed,
+                ] {
+                    INSERTION_ORDER.with(|cell| cell.set(order));
+                    let output = polygon
+                        .call_method("triangulate", (), Some(&options))
+                        .unwrap()
+                        .call_method0("to_wkt")
+                        .unwrap()
+                        .extract::<Vec<String>>()
+                        .unwrap();
+                    if let Some(expected) = &expected {
+                        assert_eq!(&output, expected, "corpus observation {case}");
+                    } else {
+                        expected = Some(output);
+                    }
+                }
+            }
+        });
+    }
+
     fn grid(side: usize) -> Vec<Point> {
         (0..side)
             .flat_map(|y| (0..side).map(move |x| Point::new_raw_xy(x as f64, y as f64)))
@@ -1395,6 +1666,11 @@ mod tests {
                     sign,
                     ExactSign::Positive,
                     "opposite vertex {opposite} inside circumcircle of {face}"
+                );
+                assert_ne!(
+                    canonical_incircle(xy(a), xy(b), xy(c), xy(opposite)).unwrap(),
+                    ExactSign::Positive,
+                    "opposite vertex {opposite} violates the canonical lift of {face}"
                 );
                 assert_eq!(
                     sign == ExactSign::Zero,

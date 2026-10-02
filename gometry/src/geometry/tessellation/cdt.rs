@@ -1285,6 +1285,7 @@ impl ConstrainedMesh {
                 faces.push(self.mesh.triangle(face));
             }
         }
+        super::exact_delaunay::canonicalize_triangles(&mut faces, |site| site_xy(&points, site));
         Ok(ConstrainedMeshPlan {
             vertices: points,
             faces,
