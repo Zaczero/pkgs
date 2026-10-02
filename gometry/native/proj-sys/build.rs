@@ -1,13 +1,13 @@
+#[cfg(not(feature = "nobuild"))]
+#[path = "../cmake_flags.rs"]
+mod cmake_flags;
+
 use std::env;
 use std::fs::{self, File};
 use std::path::{Path, PathBuf};
 
 use flate2::read::GzDecoder;
 use tar::Archive;
-
-#[cfg(not(feature = "nobuild"))]
-#[path = "../cmake_flags.rs"]
-mod cmake_flags;
 
 const MINIMUM_PROJ_VERSION: &str = "9.6.2";
 const PROJ_ARCHIVE_SIZE: usize = 6_394_614;

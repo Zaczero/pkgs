@@ -1,10 +1,10 @@
+#[path = "../cmake_flags.rs"]
+mod cmake_flags;
+
 use std::error::Error;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::{env, fs};
-
-#[path = "../cmake_flags.rs"]
-mod cmake_flags;
 
 const LIBTIFF_VERSION: &str = "4.7.2";
 const LIBTIFF_PATH: &str = "libtiff";
