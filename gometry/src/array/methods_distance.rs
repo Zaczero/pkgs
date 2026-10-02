@@ -3,11 +3,13 @@
     reason = "PyO3 special-method receivers must retain their binding-compatible ownership shape"
 )]
 
-use crate::array::packed_columns::{PackedColumnResult, XyColumns};
 use crate::array::{
-    Arc, ComputedCaches, CoordSeq, CoordinateAxes, Frame, GeometryKind, PackedColumnError,
-    PackedColumnOutput, PackedColumns, Point, PointColumnBuilder, PolygonLevel, PyGeometryArray,
-    PyResult, Python, Result, RingLevel, Shape, StorageLayout,
+    Arc, ComputedCaches, CoordSeq, CoordinateAxes, Frame, GeometryKind, Point, PolygonLevel,
+    PyGeometryArray, PyResult, Python, Result, RingLevel, Shape, StorageLayout,
+};
+use crate::geometry::storage::builder::PointColumnBuilder;
+use crate::geometry::storage::packed_columns::{
+    PackedColumnError, PackedColumnOutput, PackedColumnResult, PackedColumns, XyColumns,
 };
 use crate::geometry::storage::{
     GeometryArrayStorage, PackedRow, PackedStorage, RowSelection, column_window,

@@ -3,11 +3,13 @@ use std::cell::Cell;
 use pyo3::types::{PyDict, PyTuple};
 
 use crate::boundary::coordinate_input::coordinate_column_values;
+use crate::geometry::storage::admission::{CheckedRingWindow, RingWindowError};
+use crate::geometry::storage::replacement::{CoordinateReplacement, ReplacementAxis};
 use crate::geometry::{MOrdinate, SharedSlice, ZOrdinate};
 use crate::py::classes::coordinate_methods::{
-    Bound, CoordSeq, CoordinateAxes, CoordinateAxis, CoordinateReplacement, Point, PyAny,
-    PyAnyMethods as _, PyCoordinates, PyDictMethods as _, PyErr, PyRef, PyResult,
-    PyTupleMethods as _, Python, ReplacementAxis, Shape, coordinate_axis_order, coordinates,
+    Bound, CoordSeq, CoordinateAxes, CoordinateAxis, Point, PyAny, PyAnyMethods as _,
+    PyCoordinates, PyDictMethods as _, PyErr, PyRef, PyResult, PyTupleMethods as _, Python, Shape,
+    coordinate_axis_order, coordinates,
 };
 use crate::py::errors::{GeometryError, InvalidGeometryError};
 use crate::py::numpy::numpy_module;
@@ -379,21 +381,19 @@ fn replacement_point(
 }
 
 fn validate_ring(seq: &CoordSeq) -> PyResult<()> {
-    match crate::array::CheckedRingWindow::checked(seq, 0..seq.len()) {
+    match CheckedRingWindow::checked(seq, 0..seq.len()) {
         Ok(_) => Ok(()),
-        Err(crate::array::RingWindowError::TooShort(len)) => {
+        Err(RingWindowError::TooShort(len)) => {
             let error: crate::error::Error =
                 crate::geometry::GeometryErrorKind::RingTooShort(len).into();
             Err(error.into())
         },
-        Err(crate::array::RingWindowError::Open) => {
+        Err(RingWindowError::Open) => {
             Err(InvalidGeometryError::new_err("polygon ring must be closed"))
         },
-        Err(
-            crate::array::RingWindowError::Inverted | crate::array::RingWindowError::OutOfRange,
-        ) => Err(InvalidGeometryError::new_err(
-            "polygon ring range is invalid",
-        )),
+        Err(RingWindowError::Inverted | RingWindowError::OutOfRange) => Err(
+            InvalidGeometryError::new_err("polygon ring range is invalid"),
+        ),
     }
 }
 

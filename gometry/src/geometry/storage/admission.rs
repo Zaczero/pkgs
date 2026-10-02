@@ -13,7 +13,7 @@ pub(crate) trait RingCoordinateColumns {
     fn m(&self, index: usize) -> Option<f64>;
 }
 
-impl RingCoordinateColumns for crate::geometry::Ring {
+impl RingCoordinateColumns for Ring {
     fn width(&self) -> usize {
         self.coords().width()
     }

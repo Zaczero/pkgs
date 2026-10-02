@@ -8,7 +8,7 @@ use std::num::NonZeroU32;
 use std::sync::Arc;
 
 use super::{ArrowFormat, NativeArrowBatch, NativeNode};
-use crate::array::PackedColumnBuilder;
+use crate::geometry::storage::builder::PackedColumnBuilder;
 use crate::geometry::storage::{GeometryArrayStorage, PackedStorage, RowSelection};
 use crate::geometry::{
     CoordSeq, CoordSeqBuilder, CoordWindow, CoordinateAxes, CsrOffsetBuilder, GeometryKind,

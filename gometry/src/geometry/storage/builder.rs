@@ -1,7 +1,7 @@
 use std::ops::Range;
 
+use super::column_window;
 use crate::error::Result as CrateResult;
-use crate::geometry::storage::column_window;
 use crate::geometry::types::ensure_coordseq_vertex_capacity;
 use crate::geometry::{
     CoordSeq, CoordSeqBuilder, CoordWindow, CsrOffsetBuilder, CsrOffsetColumn, GeometryErrorKind,

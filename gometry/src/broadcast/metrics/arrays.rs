@@ -7,7 +7,6 @@ use std::simd::cmp::{SimdPartialEq as _, SimdPartialOrd as _};
 
 use pyo3::types::PyAny;
 
-use crate::PackedColumnError;
 use crate::array::{ArrayRow, ArrayRowOperation};
 use crate::broadcast::bool_array_mask_missing;
 use crate::broadcast::metrics::{
@@ -20,6 +19,7 @@ use crate::broadcast::metrics::{
 };
 use crate::dispatch::MetricOp;
 use crate::geometry::packed_line_metrics::scale_metric_values;
+use crate::geometry::storage::packed_columns::PackedColumnError;
 use crate::geometry::storage::{ValidityMask, validity as missing};
 use crate::geometry::{
     PreparedPlan, ReduceSimd, pair_map4_guarded_f64, pair_select_mask, points_dwithin, storage,

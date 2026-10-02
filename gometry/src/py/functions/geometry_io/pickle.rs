@@ -4,7 +4,8 @@ use pyo3::IntoPyObjectExt as _;
 use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyTuple};
 
-use crate::array::{CheckedRingWindow, PointRowLayout};
+use crate::geometry::storage::admission::CheckedRingWindow;
+use crate::geometry::storage::packed_columns::PointRowLayout;
 use crate::geometry::storage::{
     GeometryArrayStorage, PackedStorage, RowSelectionRef, ValidityMask,
 };

@@ -1,14 +1,16 @@
 //! Contiguous coordinate and CSR materialization of selected packed rows.
 
-use crate::array::packed_columns::{PackedColumnResult, batch_err};
-use crate::array::{
-    Arc, CoordSeq, CsrOffsetBuilder, CsrOffsetColumn, PackedColumnBuilder, PointColumnBuilder,
-    PolygonLevel, Result, RingLevel,
-};
-use crate::geometry::storage;
+use std::sync::Arc;
+
+use super::builder::{PackedColumnBuilder, PointColumnBuilder};
+use super::packed_columns::{PackedColumnResult, batch_err};
+use crate::error::Result;
 use crate::geometry::storage::{
     GeometryArrayStorage, PackedStorage, RowSelection, RowSelectionRef, admit_packed_coord_count,
     materialized_packed_lines_len, materialized_packed_polygons_len,
+};
+use crate::geometry::{
+    CoordSeq, CsrOffsetBuilder, CsrOffsetColumn, PolygonLevel, RingLevel, storage,
 };
 
 pub(crate) fn gather_point_columns(coords: &CoordSeq, map: &[usize]) -> Result<CoordSeq> {

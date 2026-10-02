@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use crate::geometry::storage::builder::concat_packed_line_columns;
 use crate::geometry::{
     GeodesicMetric as _, Point, PointKey, ShapeCountQuery, VertexProvenance, emit_from_original,
     geometric_xy_cmp, shape_from_selected_hull, smallest_enclosing_circle,
@@ -189,7 +190,7 @@ pub(crate) fn voronoi_edges_flatten(
         "voronoi_edges",
         Shape::voronoi_edge_column_budgeted,
     )?;
-    let (coords, offsets) = crate::array::concat_packed_line_columns(columns)?;
+    let (coords, offsets) = concat_packed_line_columns(columns)?;
     Ok(if coords.is_empty() {
         PyGeometryArray::from_shapes(Vec::new(), frame)?
     } else {

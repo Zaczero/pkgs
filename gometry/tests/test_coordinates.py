@@ -732,6 +732,43 @@ def test_set_coordinates_validation_errors() -> None:
         poly.set_coordinates(opened)
 
 
+@pytest.mark.parametrize(
+    ('axis', 'kind'),
+    [
+        pytest.param('z', 'point', id='point-z'),
+        pytest.param('m', 'point', id='point-m'),
+        pytest.param('z', 'line', id='line-z'),
+        pytest.param('m', 'line', id='line-m'),
+    ],
+)
+def test_set_coordinates_keyword_axis_rejects_members_without_that_axis(
+    axis: str,
+    kind: str,
+) -> None:
+    if kind == 'point':
+        with_axis = gm.Point(0.0, 1.0, **{axis: 2.0})
+        without_axis = gm.Point(3.0, 4.0)
+    else:
+        ordinate = 'Z' if axis == 'z' else 'M'
+        with_axis = gm.from_wkt(f'LINESTRING {ordinate} (0 1 2, 3 4 5)')
+        without_axis = gm.LineString([(6.0, 7.0), (8.0, 9.0)])
+    geometry = gm.GeometryCollection([with_axis, without_axis])
+    count = with_axis.num_coordinates + without_axis.num_coordinates
+    replacement = {
+        'x': [10.0 + index for index in range(count)],
+        'y': [20.0 + index for index in range(count)],
+        axis: [30.0 + index for index in range(count)],
+    }
+
+    for source in (geometry, gm.GeometryArray([geometry])):
+        with pytest.raises(gm.InvalidGeometryError) as error:
+            source.set_coordinates(**replacement)
+        assert (
+            str(error.value)
+            == 'coordinates must preserve each coordinate sequence axes'
+        )
+
+
 def test_points_reject_mismatched_z_and_m_column_lengths() -> None:
     with pytest.raises(gm.InvalidGeometryError, match='same length'):
         gm.points([0.0, 1.0], [0.0, 1.0], z=[2.0])
@@ -800,15 +837,17 @@ def test_set_coordinates_rejects_active_ordinate_open_ring(wkt: str) -> None:
     # Break only the last vertex's first measure ordinate (Z or M column).
     # Width is 3 for Z/M, 4 for ZM — always mutate the last column index >= 2.
     coords[-1, 2] = 9.0
-    with pytest.raises(gm.InvalidGeometryError, match='ring must be closed'):
+    with pytest.raises(gm.InvalidGeometryError) as error:
         poly.set_coordinates(coords)
+    assert str(error.value) == 'polygon ring must be closed'
 
     # Packed-array path (uniform polygon column)
     arr = gm.GeometryArray([poly])
     arr_coords = np.asarray(arr.coords).copy()
     arr_coords[-1, 2] = 9.0
-    with pytest.raises(gm.InvalidGeometryError, match='ring must be closed'):
+    with pytest.raises(gm.InvalidGeometryError) as error:
         arr.set_coordinates(arr_coords)
+    assert str(error.value) == 'polygon ring must be closed'
 
     # map_coordinates opens the same way
     def open_measure(c: np.ndarray) -> np.ndarray:
@@ -887,8 +926,9 @@ def test_set_coordinates_selection_rejects_z_open_ring(select) -> None:
     opened = np.asarray(view.coords).copy()
     # Break Z on the last vertex of the view's coordinate matrix.
     opened[-1, 2] = 9.0
-    with pytest.raises(gm.InvalidGeometryError, match='ring must be closed'):
+    with pytest.raises(gm.InvalidGeometryError) as error:
         view.set_coordinates(opened)
+    assert str(error.value) == 'polygon ring must be closed'
 
     def open_measure(c: np.ndarray) -> np.ndarray:
         out = np.array(c, copy=True)

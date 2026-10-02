@@ -1,12 +1,13 @@
 use std::sync::Arc;
 
 use crate::array::{
-    ArrayRow, Bound, CoordSeq, CsrOffsetColumn, PackedColumnBuilder, Point, PyAny, PyGeometry,
-    PyGeometryArray, PyResult, Python, Result, Shape, curves, note_array_row, parse_curve_bounds,
-    rows_err,
+    ArrayRow, Bound, CoordSeq, CsrOffsetColumn, Point, PyAny, PyGeometry, PyGeometryArray,
+    PyResult, Python, Result, Shape, curves, note_array_row, parse_curve_bounds, rows_err,
 };
 use crate::boundary::input;
 use crate::geographic::PeriodicAxis;
+use crate::geometry::storage::builder::PackedColumnBuilder;
+use crate::geometry::storage::gather::gather_line_columns;
 use crate::geometry::storage::{
     GeometryArrayStorage, PackedRow, PackedStorage, RowSelectionRef, column_window,
     csr_value_window, line_logical_len, physical_row,
@@ -132,8 +133,7 @@ impl PyGeometryArray {
         offsets: &[i32],
         row_map: impl Into<RowSelectionRef<'a>>,
     ) -> PyResult<Self> {
-        let (out_coords, out_offsets) =
-            super::packed_gather::gather_line_columns(coords, offsets, row_map.into())?;
+        let (out_coords, out_offsets) = gather_line_columns(coords, offsets, row_map.into())?;
         Ok(Self::packed_lines(
             out_coords,
             out_offsets,

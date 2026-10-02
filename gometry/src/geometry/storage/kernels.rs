@@ -9,21 +9,21 @@
 //! retains its separate ordered length-reduction contract.
 use std::num::NonZeroU32;
 
-use crate::array::packed_columns::{
-    LineColumns, PackedColumnResult, PackedColumns, PointColumns, PointRows, PolygonColumns,
-    SegmentedRuns, XyColumns, batch_err, row_err,
+use super::builder::PackedColumnBuilder;
+use super::packed_columns::{
+    LineColumns, PackedColumnOutput, PackedColumnResult, PackedColumns, PointColumns,
+    PointRowLayout, PointRows, PolygonColumns, SegmentedRuns, XyColumns, batch_err, row_err,
 };
-use crate::array::{
-    Bounds, CoordSeq, CsrOffsetBuilder, OriginSpec, PackedColumnBuilder, PackedColumnOutput,
-    PointRowLayout, Result, RingLevel, Shape, crs,
-};
+use crate::crs;
+use crate::error::Result;
 use crate::geometry::storage::columns::{packed_line_row_pivot, packed_polygon_row_pivot};
 use crate::geometry::storage::{
     PackedRow, RowSelectionRef, ValidityMask, column_window, packed_line_row,
     packed_polygon_bounds, packed_polygon_vertex_window, row_bounds, row_bounds_values,
 };
 use crate::geometry::{
-    CoordSeqBuilder, CoordWindow, LineSeq, MOrdinate, Point, ZOrdinate, storage,
+    Bounds, CoordSeq, CoordSeqBuilder, CoordWindow, CsrOffsetBuilder, LineSeq, MOrdinate,
+    OriginSpec, Point, RingLevel, Shape, ZOrdinate, storage,
 };
 
 /// Expand coordinate validation into the packed row loop. Its `?` returns the

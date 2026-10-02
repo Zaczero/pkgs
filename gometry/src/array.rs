@@ -18,6 +18,7 @@ use pyo3::types::{PyAny, PyDict, PyTuple};
 pub(crate) use crate::broadcast::{CollectRows, rows_err};
 use crate::error::{Error, Result};
 use crate::geometry::CsrOffsetColumn;
+use crate::geometry::storage::packed_columns::PointRowLayout;
 use crate::geometry::storage::{
     GeometryArrayStorage, PackedStorage, RowsIter, ShapeRow, ValidityMask, validity,
 };
@@ -73,14 +74,6 @@ enum ArrayRows {
     },
 }
 
-/// Physical layout of packed point rows relative to a validity mask.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum PointRowLayout {
-    Dense,
-    RowAligned,
-    Compact,
-}
-
 /// Physical layout presented to a nullable-array constructor.
 ///
 /// The layout is an admission fact supplied by the producer, not something a
@@ -92,12 +85,6 @@ pub(crate) enum StorageLayout {
     LogicalRows,
     /// The payload contains only the rows selected by present mask bits.
     PresentOnly,
-}
-
-impl PointRowLayout {
-    pub(crate) const fn is_compact(self) -> bool {
-        matches!(self, Self::Compact)
-    }
 }
 
 #[derive(Clone, Copy)]
@@ -362,36 +349,17 @@ pub(crate) use linref_kernels::{line_interpolate_points_rows, line_locate_point_
 mod iter;
 pub(crate) use iter::PyGeometryArrayIter;
 mod prepared;
-pub(crate) use packed_column_builder::{
-    PackedColumnBuilder, PointColumnBuilder, concat_packed_line_columns,
-};
 pub(crate) use prepared::{
     ArrayRow, ArrayRowOperation, BoundsSeed, PreparedRow, RowProducts, packed_row_persistent,
 };
 
-mod coordinate_replacement;
-pub(crate) use coordinate_replacement::{CoordinateReplacement, ReplacementAxis};
 mod packed;
-mod packed_column_kernels;
-mod packed_columns;
-mod packed_gather;
-pub(crate) use packed_column_kernels::{
-    bounds_values_from_columns_masked, buffer_point_columns, geodesic_line_measure,
-    geodesic_polygon_measure, geographic_bounds_values_from_columns,
-    map_masked_point_columns_to_crs, packed_per_row_self_origin_affine_columns,
-    reduce_lines_or_polygons, segmented_planar_lengths, segmented_planar_lengths_3d,
-    subdivide_line_columns, subdivide_polygon_columns, total_bounds_from_columns,
-};
-pub(crate) use packed_columns::{PackedColumnError, PackedColumnOutput, PackedColumns};
-pub(crate) use packed_gather::materialized_gather;
-mod pack_admission;
 mod packed_builders;
-mod packed_column_builder;
+mod packed_columns;
 mod packed_equal;
 mod packed_ops;
 mod streaming;
 mod uniform_columns;
-pub(crate) use pack_admission::{CheckedRingWindow, RingWindowError, polygon_pack_axes};
 pub(crate) use packed::ComputedCaches;
 pub(crate) use packed_equal::pair_packed_equals_exact;
 pub(crate) use streaming::StreamingShapes;

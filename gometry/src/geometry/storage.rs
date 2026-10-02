@@ -1,7 +1,13 @@
 //! Native geometry rows, packed coordinate storage, selectors, and validity.
 
+pub(crate) mod admission;
+pub(crate) mod builder;
 pub(crate) mod columns;
+pub(crate) mod gather;
+pub(crate) mod kernels;
 mod ops;
+pub(crate) mod packed_columns;
+pub(crate) mod replacement;
 pub(crate) mod row;
 mod types;
 pub(crate) mod validity;

@@ -7,10 +7,10 @@ use std::simd::num::SimdFloat as _;
 
 use pyo3::Python;
 
-use crate::array::packed_columns::{
+use crate::array::{PyGeometryArray, PyResult};
+use crate::geometry::storage::packed_columns::{
     LineColumns, PackedColumns, PointColumns, PolygonColumns, XyColumns,
 };
-use crate::array::{PyGeometryArray, PyResult};
 use crate::geometry::storage::{GeometryArrayStorage, PackedStorage, column_window};
 use crate::geometry::{
     ReduceSimd, pair_select_mask, same_topological_coordinate, topology_coordinate_bits_simd,

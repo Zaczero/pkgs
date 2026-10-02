@@ -5,21 +5,23 @@ use pyo3::PyErr;
 use pyo3::types::{PyInt, PyList};
 
 use crate::array::{
-    ArrayRow, Bound, Bounds, CRSError, CoordSeq, CoordinateReplacement, Crs, CsrOffsetColumn,
-    FrameAdoption, GeometryKind, InvalidGeometryError, Py, PyAny, PyAnyMethods as _, PyCoordinates,
-    PyCrs, PyDict, PyDictMethods as _, PyGeometry, PyGeometryArray, PyListMethods as _, PyRef,
-    PyResult, PyTuple, PyTypeError, PyTypeMethods as _, Python, Result, RingLevel,
-    SVG_ARRAY_PREVIEW, Shape, bool_array, coerce_present_geometry_items, coordinate_epoch_option,
-    crs, crs_arc, exact_geometry, geometry, geometry_array_svg_grid_html_masked, line_is_ccw,
-    line_is_closed, line_is_simple, line_is_valid, map_coordinates_callback,
-    parse_coordinate_replacement, parse_crs, polygon_is_valid, pymethods,
-    replace_shape_coordinates, require_geojson_crs, slice_replacement_for_shape,
-    total_bounds_from_columns,
+    ArrayRow, Bound, Bounds, CRSError, CoordSeq, Crs, CsrOffsetColumn, FrameAdoption, GeometryKind,
+    InvalidGeometryError, Py, PyAny, PyAnyMethods as _, PyCoordinates, PyCrs, PyDict,
+    PyDictMethods as _, PyGeometry, PyGeometryArray, PyListMethods as _, PyRef, PyResult, PyTuple,
+    PyTypeError, PyTypeMethods as _, Python, Result, RingLevel, SVG_ARRAY_PREVIEW, Shape,
+    bool_array, coerce_present_geometry_items, coordinate_epoch_option, crs, crs_arc,
+    exact_geometry, geometry, geometry_array_svg_grid_html_masked, line_is_ccw, line_is_closed,
+    line_is_simple, line_is_valid, map_coordinates_callback, parse_coordinate_replacement,
+    parse_crs, polygon_is_valid, pymethods, replace_shape_coordinates, require_geojson_crs,
+    slice_replacement_for_shape,
 };
 use crate::boundary::coordinates::checked_vector_len;
 use crate::boundary::metadata;
 use crate::crs::frame;
 use crate::crs::frame::FrameError;
+use crate::geometry::storage::admission::{CheckedRingWindow, RingWindowError};
+use crate::geometry::storage::kernels::total_bounds_from_columns;
+use crate::geometry::storage::replacement::CoordinateReplacement;
 use crate::geometry::storage::{GeometryArrayStorage, PackedStorage, physical_row};
 use crate::geometry::{ShapeCountQuery, storage};
 use crate::predicates::unary;
@@ -118,19 +120,17 @@ fn validate_packed_replacement_rings(
     for [start, end] in ring_offsets.array_windows::<2>() {
         let start = *start as usize;
         let end = *end as usize;
-        match crate::array::CheckedRingWindow::checked(coords, start..end) {
+        match CheckedRingWindow::checked(coords, start..end) {
             Ok(_) => {},
-            Err(crate::array::RingWindowError::TooShort(len)) => {
+            Err(RingWindowError::TooShort(len)) => {
                 let error: crate::error::Error =
                     crate::geometry::GeometryErrorKind::RingTooShort(len).into();
                 return Err(error.into());
             },
-            Err(crate::array::RingWindowError::Open) => {
+            Err(RingWindowError::Open) => {
                 return Err(InvalidGeometryError::new_err("polygon ring must be closed"));
             },
-            Err(
-                crate::array::RingWindowError::Inverted | crate::array::RingWindowError::OutOfRange,
-            ) => {
+            Err(RingWindowError::Inverted | RingWindowError::OutOfRange) => {
                 return Err(InvalidGeometryError::new_err(
                     "polygon ring range is invalid",
                 ));

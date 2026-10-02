@@ -6,6 +6,7 @@ use crate::array::{
     ComputedCaches, CoordSeq, CoordinateAxes, Frame, GeometryKind, PolygonLevel, PyGeometryArray,
     RingLevel, Shape, StorageLayout,
 };
+use crate::geometry::storage::admission::{CheckedRingWindow, polygon_pack_axes};
 use crate::geometry::storage::{
     GeometryArrayStorage, PackedRow, PackedStorage, RowSelectionRef, ShapeRow, ValidityBuilder,
     ValidityMask, admit_packed_total, csr_value_window, materialized_packed_lines_len,
@@ -387,7 +388,7 @@ impl StreamingShapes {
         match shape {
             Shape::Point(point) => self.push_point_native(*point),
             Shape::LineString(line) => self.try_push_line_native(line),
-            Shape::Polygon(polygon) if super::polygon_pack_axes(polygon).is_some() => {
+            Shape::Polygon(polygon) if polygon_pack_axes(polygon).is_some() => {
                 self.try_push_polygon_native(polygon)
             },
             Shape::MultiPoint(_)
@@ -473,7 +474,7 @@ impl StreamingShapes {
     }
 
     fn try_push_polygon_native(&mut self, polygon: &Polygon) -> crate::error::Result<bool> {
-        let axes = super::polygon_pack_axes(polygon).expect("polygon admission checked");
+        let axes = polygon_pack_axes(polygon).expect("polygon admission checked");
         if matches!(self.state, StreamingState::Shapes(_))
             || !self.admit_kind(RowKind::Polygon(axes))
         {
@@ -515,7 +516,7 @@ impl StreamingShapes {
                 .expect("polygon ring range is bounded by its admitted offsets");
             let start = start as usize;
             let end = end as usize;
-            super::CheckedRingWindow::checked(coords, start..end).is_err()
+            CheckedRingWindow::checked(coords, start..end).is_err()
         }) {
             return Ok(false);
         }

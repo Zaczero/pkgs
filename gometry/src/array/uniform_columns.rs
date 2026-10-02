@@ -8,6 +8,7 @@ use crate::array::{
 };
 use crate::error::{ErrorKind, Result};
 use crate::geometry::CoordSeqBuilder;
+use crate::geometry::storage::admission::{CheckedRingWindow, polygon_pack_axes};
 
 type PackedPolygonColumns = (
     CoordSeq,
@@ -113,7 +114,7 @@ impl PyGeometryArray {
             };
             // Shared structural pack-admission (shell, ≥4 XY-closed rings,
             // uniform axes) — same predicate as streaming + packed GeoArrow.
-            let Some(row_axes) = super::polygon_pack_axes(polygon) else {
+            let Some(row_axes) = polygon_pack_axes(polygon) else {
                 return Ok(None);
             };
             match axes {
@@ -123,7 +124,7 @@ impl PyGeometryArray {
             }
             let mut poly_rings = 0_usize;
             for seq in polygon.rings() {
-                debug_assert!(super::CheckedRingWindow::checked(seq, 0..seq.len()).is_ok());
+                debug_assert!(CheckedRingWindow::checked(seq, 0..seq.len()).is_ok());
                 let Some(next) = total_vertices.checked_add(seq.len()) else {
                     return Ok(None);
                 };

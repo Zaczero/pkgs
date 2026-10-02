@@ -1,11 +1,13 @@
-use crate::array::packed_columns::{LineColumns, PolygonColumns};
 use crate::array::{
-    Arc, Bounds, ComputedCaches, CoordSeq, F64Param, OriginSpec, PackedColumnError, PackedColumns,
-    PyErr, PyGeometryArray, PyResult, Python, Result, Shape, StorageLayout, geometry,
-    note_array_row, subdivide_line_columns, subdivide_polygon_columns, validate_densify_fraction,
+    Arc, Bounds, ComputedCaches, CoordSeq, F64Param, OriginSpec, PyErr, PyGeometryArray, PyResult,
+    Python, Result, Shape, StorageLayout, geometry, note_array_row, validate_densify_fraction,
     validate_max_segment_length,
 };
 use crate::geographic::GeographicFrame;
+use crate::geometry::storage::kernels::{subdivide_line_columns, subdivide_polygon_columns};
+use crate::geometry::storage::packed_columns::{
+    LineColumns, PackedColumnError, PackedColumns, PolygonColumns,
+};
 use crate::geometry::storage::{
     GeometryArrayStorage, PackedRow, PackedStorage, RowSelection, reverse_coord_windows,
 };

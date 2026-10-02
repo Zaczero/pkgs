@@ -153,7 +153,7 @@ pub(crate) fn same_point(left: impl Into<XY>, right: impl Into<XY>) -> bool {
 }
 
 /// Whether two positions match on every active ordinate (X/Y plus Z/M when
-/// declared). Used by GeoJSON ring-closure admission and pack_admission so a
+/// declared). Used by GeoJSON ring-closure admission and storage::admission so a
 /// ring whose first/last differ only in Z is not treated as closed.
 ///
 /// Axes must agree (homogeneous sequences already guarantee this). Inactive

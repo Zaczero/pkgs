@@ -1,8 +1,10 @@
 use std::num::NonZeroU32;
 
-use crate::array::{PackedColumns, PyGeometryArray, PyResult, Python};
+use crate::array::{PyGeometryArray, PyResult, Python};
 use crate::crs::MetricModel;
 use crate::geometry::BufferSide;
+use crate::geometry::storage::kernels::buffer_point_columns;
+use crate::geometry::storage::packed_columns::PackedColumns;
 use crate::geometry::storage::{GeometryArrayStorage, PackedStorage};
 use crate::{DistanceUnit, F64Param};
 
@@ -52,7 +54,7 @@ impl PyGeometryArray {
         let output =
             self.try_map_packed_columns_detached(py, self.frame.clone(), move |columns| {
                 match columns {
-                    PackedColumns::Points(points) => crate::array::buffer_point_columns(
+                    PackedColumns::Points(points) => buffer_point_columns(
                         &points,
                         distance,
                         quadrant_segments,

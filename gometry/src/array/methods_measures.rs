@@ -1,17 +1,18 @@
 use pyo3::types::PyDict;
 
-use crate::array::packed_columns::XyColumns;
 use crate::array::{
-    Bound, DistanceUnit, GeometryError, IntoPyObject as _, PackedColumnError, PackedColumns, Py,
-    PyAny, PyAnyMethods as _, PyDictMethods as _, PyErr, PyGeometryArray, PyResult,
-    PyTupleMethods as _, PyTypeError, PyTypeMethods as _, Python, Shape, SpatialCurve,
-    bounds_values_from_columns_masked, crs, crs_label, geodesic_line_measure,
-    geodesic_polygon_measure, geographic_bounds_values_from_columns, pymethods,
-    reduce_lines_or_polygons, resolve_metric, segmented_planar_lengths,
-    segmented_planar_lengths_3d,
+    Bound, DistanceUnit, GeometryError, IntoPyObject as _, Py, PyAny, PyAnyMethods as _,
+    PyDictMethods as _, PyErr, PyGeometryArray, PyResult, PyTupleMethods as _, PyTypeError,
+    PyTypeMethods as _, Python, Shape, SpatialCurve, crs, crs_label, pymethods, resolve_metric,
 };
 use crate::dispatch::{MetricOp, kernels};
 use crate::geometry::storage;
+use crate::geometry::storage::kernels::{
+    bounds_values_from_columns_masked, geodesic_line_measure, geodesic_polygon_measure,
+    geographic_bounds_values_from_columns, geographic_bounds_values_from_columns_masked,
+    reduce_lines_or_polygons, segmented_planar_lengths, segmented_planar_lengths_3d,
+};
+use crate::geometry::storage::packed_columns::{PackedColumnError, PackedColumns, XyColumns};
 use crate::geometry::storage::{GeometryArrayStorage, PackedStorage};
 use crate::py::errors;
 use crate::py::numpy::float64_array;
@@ -587,11 +588,7 @@ impl PyGeometryArray {
                 missing.as_ref().map_or_else(
                     || geographic_bounds_values_from_columns(&columns, frame),
                     |missing| {
-                        super::packed_column_kernels::geographic_bounds_values_from_columns_masked(
-                            &columns,
-                            frame,
-                            Some(missing),
-                        )
+                        geographic_bounds_values_from_columns_masked(&columns, frame, Some(missing))
                     },
                 )
             } else {

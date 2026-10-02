@@ -3,10 +3,12 @@ use std::sync::Arc;
 use crate::array::{
     ArrayRows, Bounds, CoordSeq, CoordinateAxes, Crs, CsrOffsetBuilder, CsrOffsetColumn,
     ElementBounds, Frame, GeometryKind, InvalidGeometryError, LogicalRow, LogicalRows, OriginSpec,
-    PackedColumns, Point, PointColumnBuilder, PolygonLevel, Py, PyAny, PyGeometry, PyGeometryArray,
-    PyResult, Python, RingLevel, Shape, StorageLayout, TotalBoundsCache,
-    packed_per_row_self_origin_affine_columns, prepared,
+    Point, PolygonLevel, Py, PyAny, PyGeometry, PyGeometryArray, PyResult, Python, RingLevel,
+    Shape, StorageLayout, TotalBoundsCache, prepared,
 };
+use crate::geometry::storage::builder::PointColumnBuilder;
+use crate::geometry::storage::kernels::packed_per_row_self_origin_affine_columns;
+use crate::geometry::storage::packed_columns::{PackedColumns, PointRowLayout};
 use crate::geometry::storage::{
     GeometryArrayStorage, PackedStorage, RowSelection, RowSelectionRef, ValidityMask, physical_row,
     point_logical_len, row_map_is_identity, row_ord_extremes, row_selection_from_logical_rows,
@@ -70,7 +72,7 @@ impl PyGeometryArray {
         self.rows.is_compact_nullable()
     }
 
-    pub(crate) const fn point_row_layout(&self) -> crate::array::PointRowLayout {
+    pub(crate) const fn point_row_layout(&self) -> PointRowLayout {
         self.rows.point_row_layout()
     }
 

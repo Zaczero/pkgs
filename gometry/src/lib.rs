@@ -96,7 +96,7 @@ use measures::{
     shared_paths, snap, split,
 };
 mod array;
-pub(crate) use array::{PackedColumnError, PyGeometryArray};
+pub(crate) use array::PyGeometryArray;
 pub(crate) use geometry::storage::{GeometryArrayStorage, PointRows, ShapeRow};
 mod broadcast;
 use broadcast::{

@@ -15,6 +15,7 @@ use crate::array::{
     validate_equals_exact_tolerance, validate_subdivide_max_vertices,
 };
 use crate::geometry::storage;
+use crate::geometry::storage::builder::concat_packed_line_columns;
 use crate::geometry::storage::{GeometryArrayStorage, PackedStorage};
 use crate::py::support;
 use crate::py::vectors::Groups;
@@ -565,8 +566,7 @@ impl PyGeometryArray {
             })
             .map_err(rows_err)?;
         let (columns, group_offsets) = packed;
-        let (coords, line_offsets) =
-            py.detach(move || crate::array::concat_packed_line_columns(columns))?;
+        let (coords, line_offsets) = py.detach(move || concat_packed_line_columns(columns))?;
         Groups::from_packed_line_groups(frame, coords, line_offsets, group_offsets)
     }
 

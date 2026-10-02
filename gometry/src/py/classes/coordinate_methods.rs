@@ -39,8 +39,6 @@ pub struct PyCoordinates {
     pub(crate) layout: Option<CoordinateAxes>,
 }
 
-pub(crate) use crate::array::{CoordinateReplacement, ReplacementAxis};
-
 impl PyCoordinates {
     pub(crate) fn to_numpy_internal(
         &self,

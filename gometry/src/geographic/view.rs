@@ -6,8 +6,8 @@ use std::ops::ControlFlow;
 use super::{
     CanonicalLongitude, GeographicError, GeographicFrame, Latitude, RingTurn, SeamIdentity,
 };
-use crate::array::CheckedRingWindow;
 use crate::collections::HashSet;
+use crate::geometry::storage::admission::CheckedRingWindow;
 use crate::geometry::{
     CoordSeq, MultiMember, Point, Ring, RunIdentity, Shape, ShapeOwnerKey, SharedShapeOwners, XY,
 };
