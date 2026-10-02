@@ -164,6 +164,10 @@ def main() -> int:
     print(f'Python: {python} (GIL enabled: {probe.stdout.strip()})', flush=True)
 
     environment = os.environ.copy()
+    # Use configured target flags; sanitizer instrumentation belongs only on
+    # the extension invocation below, never on dependencies or host tools.
+    environment.pop('RUSTFLAGS', None)
+    environment.pop('CARGO_ENCODED_RUSTFLAGS', None)
     environment.update({
         'CC': 'clang',
         'CXX': 'clang++',
@@ -175,9 +179,6 @@ def main() -> int:
             for entry in (str(ROOT / 'python'), environment.get('PYTHONPATH', ''))
             if entry
         ),
-        # Match the repository's x86_64 target configuration while keeping
-        # the sanitizer off host/procedural-macro crates.
-        'RUSTFLAGS': '-C target-cpu=x86-64-v2',
         'LD_PRELOAD': os.pathsep.join(
             entry
             for entry in (str(runtime), environment.get('LD_PRELOAD', ''))
@@ -255,7 +256,7 @@ def main() -> int:
         _verify_bundled_archives(target_dir)
 
         _run(
-            [str(python), '-m', 'pytest', '-q', '--no-header', *TESTS],
+            [str(python), '-m', 'pytest', '--no-header', *TESTS],
             environment,
         )
     return 0
