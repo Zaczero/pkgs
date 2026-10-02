@@ -1,12 +1,14 @@
 #[cfg(test)]
 use ahash::HashMapExt as _;
 
+#[cfg(test)]
+use crate::geometry::HashMap;
 use crate::geometry::predicates::{LineworkChains, indexed_segments_are_simple, validate_line};
 use crate::geometry::{
-    Component, CoordSeq, Coordinates, FacetBvh, HashMap, Ordering, Point, PointKey, PointSetIndex,
-    Polygon, PreparedLinework, SEGMENT_INDEX_MIN_PAIRS, Segment, Shape, ShapeCountQuery,
-    VertexProvenance, XY, admit_shape_vector_capacity, point_distance, point_distance_squared,
-    point_in_ccw_triangle, point_segment_distance, ring_winding, same_point, segment_projection,
+    Component, CoordSeq, Coordinates, FacetBvh, Ordering, Point, PointKey, PointSetIndex, Polygon,
+    PreparedLinework, SEGMENT_INDEX_MIN_PAIRS, Segment, Shape, ShapeCountQuery, VertexProvenance,
+    XY, admit_shape_vector_capacity, point_distance, point_distance_squared, point_in_ccw_triangle,
+    point_segment_distance, ring_winding, same_point, segment_projection,
     squared_norm_is_trustworthy, try_point_distance_squared, try_point_segment_distance_squared,
 };
 
@@ -194,9 +196,8 @@ fn minimum_clearance_witness_indexed(
     points: &[Point],
     segments: &[IndexedSegment],
 ) -> crate::error::Result<Option<([VertexProvenance; 2], f64)>> {
-    let first_point_index_by_xy = first_point_index_by_xy(points)?;
     let vertex_index = PointSetIndex::build(points.iter().copied());
-    let mut witness = None;
+    let mut vertex_witness = None;
     let mut clearance_squared = f64::INFINITY;
     for (point_index, point) in points.iter().enumerate() {
         if let Some((other, raw_sq)) = vertex_index.nearest_other(*point)
@@ -206,42 +207,64 @@ fn minimum_clearance_witness_indexed(
                 })?
         {
             clearance_squared = distance_squared;
-            let other_index = first_point_index_by_xy
-                .get(&PointKey::new(other))
-                .copied()
-                .expect("every indexed point was admitted to the coordinate map");
-            witness = Some((
-                [
-                    VertexProvenance::Input(point_index),
-                    VertexProvenance::Input(other_index),
-                ],
-                distance_squared,
-            ));
+            vertex_witness = Some((point_index, other, distance_squared));
         }
     }
+    let mut witness = vertex_witness.map(|(point_index, other, distance_squared)| {
+        let key = PointKey::new(other);
+        let other_index = points
+            .iter()
+            .position(|point| PointKey::new(*point) == key)
+            .expect("the selected indexed vertex belongs to the source points");
+        (
+            [
+                VertexProvenance::Input(point_index),
+                VertexProvenance::Input(other_index),
+            ],
+            distance_squared,
+        )
+    });
     let linework = PreparedLinework::build_all(shape)?;
-    let bvh = FacetBvh::build(&linework);
+    let bvh = FacetBvh::build_for_clearance(&linework);
+    if bvh.is_none() && !segments.is_empty() {
+        return Err(crate::error::ResourceError::SizeOverflow.into());
+    }
     let mut stack = Vec::new();
     for (point_index, point) in points.iter().enumerate() {
-        // Untrustworthy best must not prune the tree (would hide nearer segments).
-        let probe_best = if clearance_squared.is_normal() {
+        // Express the clearance fold's strict bound as an inclusive predecessor.
+        // An untrustworthy square cannot prune candidate distances.
+        let probe_best = (if clearance_squared.is_normal() {
             clearance_squared
         } else {
             f64::INFINITY
-        };
+        })
+        .next_down();
         let mut nearest = None;
         if let Some(bvh) = &bvh {
-            bvh.nearest_point_with_stack::<false, true, true>(
-                &linework,
-                *point,
-                probe_best,
-                f64::INFINITY,
-                &|probe, segment| {
-                    !same_point(probe, segment.start) && !same_point(probe, segment.end)
-                },
-                &mut stack,
-                &mut nearest,
-            )?;
+            let keep = |probe, segment: Segment| {
+                !same_point(probe, segment.start) && !same_point(probe, segment.end)
+            };
+            if bvh.has_slabs() {
+                bvh.nearest_point_with_stack::<true, true, true>(
+                    &linework,
+                    *point,
+                    probe_best,
+                    f64::INFINITY,
+                    &keep,
+                    &mut stack,
+                    &mut nearest,
+                )?;
+            } else {
+                bvh.nearest_point_with_stack::<false, true, true>(
+                    &linework,
+                    *point,
+                    probe_best,
+                    f64::INFINITY,
+                    &keep,
+                    &mut stack,
+                    &mut nearest,
+                )?;
+            }
         }
         if let Some(nearest) = nearest
             && let Some(seg_i) = nearest.segment_ordinal()
@@ -391,14 +414,6 @@ struct IndexedSegment {
     xy: Segment,
     start: usize,
     end: usize,
-}
-
-fn first_point_index_by_xy(points: &[Point]) -> crate::error::Result<HashMap<PointKey, usize>> {
-    let mut indices = crate::collections::try_hash_map_with_capacity(points.len())?;
-    for (index, &point) in points.iter().enumerate() {
-        indices.entry(PointKey::new(point)).or_insert(index);
-    }
-    Ok(indices)
 }
 
 fn indexed_segments(shape: &Shape) -> crate::error::Result<Vec<IndexedSegment>> {
@@ -619,19 +634,6 @@ mod clearance_index_tests {
             .map(|index| Point::new_raw_xy(f64::from(index), 0.0))
             .collect();
         line(&points)
-    }
-
-    #[test]
-    fn first_point_index_keeps_the_first_repeated_coordinate() {
-        let points = [
-            Point::new_raw_xy(0.0, 0.0),
-            Point::new_raw_xy(1.0, 0.0),
-            Point::new_raw_xy(0.0, 0.0),
-        ];
-        let indices = first_point_index_by_xy(&points).unwrap();
-        assert_eq!(indices[&PointKey::new(points[0])], 0);
-        assert_eq!(indices[&PointKey::new(points[1])], 1);
-        assert_eq!(indices.len(), 2);
     }
 
     #[test]

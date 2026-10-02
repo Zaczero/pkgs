@@ -218,6 +218,14 @@ impl FacetBvh {
         Self::build_with_bounds(linework, false)
     }
 
+    pub(crate) fn build_for_clearance(linework: &PreparedLinework) -> Option<Self> {
+        Self::build_with_bounds(linework, true)
+    }
+
+    pub(crate) fn has_slabs(&self) -> bool {
+        self.slabs.is_some()
+    }
+
     fn build_with_bounds(linework: &PreparedLinework, clearance: bool) -> Option<Self> {
         let facet_count = u32::try_from(linework.facets.len()).ok()?;
         if facet_count == 0 || facet_count > BvhCode::LEAF_BIT / 2 {
@@ -930,5 +938,67 @@ impl HeapSize for FacetBvh {
                     .len()
                     .saturating_mul(std::mem::size_of::<DirectionalSlab>())
             }))
+    }
+}
+
+#[cfg(test)]
+mod public_nearest_work_tests {
+    use pyo3::prelude::*;
+    use pyo3::types::PyList;
+
+    use super::NEAREST_WORK;
+    #[test]
+    fn public_clearance_bounds_radial_candidate_work() {
+        crate::test_support::initialize_python();
+        Python::attach(|py| {
+            let module = PyModule::new(py, "gometry._lib").unwrap();
+            crate::lib(&module).unwrap();
+            let mut previous = None;
+            for count in [1024_usize, 4096] {
+                let coords = PyList::empty(py);
+                for index in 0..count {
+                    let radius = 0.5 + (index.wrapping_mul(17) % 31) as f64 / 31.0;
+                    let angle = std::f64::consts::TAU * index as f64 / count as f64;
+                    coords
+                        .append((radius * angle.cos(), radius * angle.sin()))
+                        .unwrap();
+                }
+                let polygon = module
+                    .getattr("Polygon")
+                    .unwrap()
+                    .call1((&coords,))
+                    .unwrap();
+                for operation in ["minimum_clearance", "minimum_clearance_line"] {
+                    NEAREST_WORK.with(|work| work.set(0));
+                    let result = polygon.call_method0(operation).unwrap();
+                    if operation == "minimum_clearance" {
+                        assert!(result.extract::<f64>().unwrap() > 0.0);
+                    } else {
+                        assert!(
+                            !result
+                                .getattr("is_empty")
+                                .unwrap()
+                                .extract::<bool>()
+                                .unwrap()
+                        );
+                    }
+                    let work = NEAREST_WORK.with(std::cell::Cell::get);
+                    eprintln!("{operation}: {count} vertices, {work} candidate visits");
+                    assert!(
+                        work > count,
+                        "the public call did not reach nearest queries"
+                    );
+                    if let Some(previous) = previous {
+                        assert!(
+                            work < previous * 6,
+                            "{count} radial vertices took {work} visits versus {previous} at one quarter the size",
+                        );
+                    }
+                    if operation == "minimum_clearance_line" {
+                        previous = Some(work);
+                    }
+                }
+            }
+        });
     }
 }
