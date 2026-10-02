@@ -31,8 +31,9 @@ fn main() {
         profile => profile.to_owned(),
     };
     let opt_level = env::var("OPT_LEVEL").unwrap_or_else(|_| "unknown".to_owned());
-    let debug_assertions =
-        env::var("CARGO_CFG_DEBUG_ASSERTIONS").is_ok_and(|value| !value.is_empty());
+    // Cargo exports a set flag cfg such as `debug_assertions` with an empty
+    // value, so presence alone carries the answer.
+    let debug_assertions = env::var_os("CARGO_CFG_DEBUG_ASSERTIONS").is_some();
     let target = env::var("TARGET").unwrap_or_else(|_| "unknown".to_owned());
     let target_arch = env::var("CARGO_CFG_TARGET_ARCH").unwrap_or_else(|_| "unknown".to_owned());
     let target_features = {
