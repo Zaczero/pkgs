@@ -6,7 +6,7 @@ use crate::error::Result;
 use crate::geometry::exact_arith::ExactSign;
 use crate::geometry::facet_bvh::Facet;
 use crate::geometry::tessellation::exact::{
-    self, ExactDyadic, ExactRational as Rational, compare_ratios,
+    self, ExactDyadic, ExactRational as Rational, Interval, compare_ratios,
 };
 use crate::geometry::{
     AxisFrame, BVH_MIN_INDEXED_SEGMENTS, Bounds, CoordSeq, CoordSeqBuilder, Coordinates as _,
@@ -179,6 +179,30 @@ impl MinimumCircle {
 }
 
 impl CertifiedDisk {
+    fn enclosure(&self) -> Result<Option<DiskEnclosure>> {
+        // A finite disk need not have a finite squared-radius enclosure.
+        let largest_squared =
+            ExactDyadic::from_f64(f64::MAX).try_product(&self.radius_squared_denominator)?;
+        if self.radius_squared_numerator.cmp(&largest_squared) == Ordering::Greater {
+            return Ok(None);
+        }
+        let interval = |numerator: &ExactDyadic, denominator: &ExactDyadic| {
+            exact::outward_ratio_bounds(numerator, denominator).map(|(lo, hi)| Interval { lo, hi })
+        };
+        let enclosure = DiskEnclosure {
+            x: interval(&self.center_x, &self.center_w)?,
+            y: interval(&self.center_y, &self.center_w)?,
+            squared_radius: interval(
+                &self.radius_squared_numerator,
+                &self.radius_squared_denominator,
+            )?,
+        };
+        Ok((enclosure.x.is_finite()
+            && enclosure.y.is_finite()
+            && enclosure.squared_radius.is_finite())
+        .then_some(enclosure))
+    }
+
     pub(crate) fn center(&self) -> Result<Point> {
         self.source_center.map_or_else(
             || {
@@ -271,6 +295,44 @@ impl CertifiedDisk {
             .try_product(&center_w_squared)?
             .try_product(&edge_squared)?;
         Ok(left_side.cmp(&right_side) != Ordering::Less)
+    }
+}
+
+/// Outward enclosures of the source-certified disk, not of the emitted ring.
+/// An inconclusive comparison still reaches the homogeneous exact certificate.
+struct DiskEnclosure {
+    x: Interval,
+    y: Interval,
+    squared_radius: Interval,
+}
+
+impl DiskEnclosure {
+    fn proves_vertex_outside(&self, point: XY) -> bool {
+        let dx = Interval::exact(point.x).sub(self.x);
+        let dy = Interval::exact(point.y).sub(self.y);
+        if !dx.is_finite() || !dy.is_finite() {
+            return false;
+        }
+        let distance = dx.mul(dx).add(dy.mul(dy));
+        distance.is_finite() && distance.lo > self.squared_radius.hi
+    }
+
+    fn proves_ccw_edge_encloses(&self, left: XY, right: XY) -> bool {
+        let dx = Interval::exact(right.x).sub(Interval::exact(left.x));
+        let dy = Interval::exact(right.y).sub(Interval::exact(left.y));
+        let cx = self.x.sub(Interval::exact(left.x));
+        let cy = self.y.sub(Interval::exact(left.y));
+        if !dx.is_finite() || !dy.is_finite() || !cx.is_finite() || !cy.is_finite() {
+            return false;
+        }
+        let cross = dx.mul(cy).sub(dy.mul(cx));
+        let norm = dx.mul(dx).add(dy.mul(dy));
+        if !cross.is_finite() || !norm.is_finite() || cross.lo < 0.0 {
+            return false;
+        }
+        let left_side = cross.mul(cross);
+        let right_side = self.squared_radius.mul(norm);
+        left_side.is_finite() && right_side.is_finite() && left_side.lo >= right_side.hi
     }
 }
 
@@ -546,17 +608,24 @@ fn certify_minimum_circle_polygon(
         return Err(unrepresentable_minimum_circle());
     }
 
+    let enclosure = disk.enclosure().map_err(circle_emission_error)?;
     for (left, right) in open
         .iter()
         .copied()
         .zip(open.iter().copied().cycle().skip(1))
     {
-        if !disk
-            .vertex_is_strictly_outside(left)
-            .map_err(circle_emission_error)?
-            || !disk
-                .ccw_edge_encloses(left, right)
-                .map_err(circle_emission_error)?
+        if (!enclosure
+            .as_ref()
+            .is_some_and(|enclosure| enclosure.proves_vertex_outside(left))
+            && !disk
+                .vertex_is_strictly_outside(left)
+                .map_err(circle_emission_error)?)
+            || (!enclosure
+                .as_ref()
+                .is_some_and(|enclosure| enclosure.proves_ccw_edge_encloses(left, right))
+                && !disk
+                    .ccw_edge_encloses(left, right)
+                    .map_err(circle_emission_error)?)
         {
             return Err(unrepresentable_minimum_circle());
         }
@@ -697,7 +766,18 @@ pub(crate) fn emit_minimum_bounding_circle(
     // `tangent_circle_polygon` commits one complete fixed-size ring before
     // allocating it, and the operation's generated-item budget charges each
     // retry.
-    let mut candidate_radius = radius;
+    // Both the center and translated vertices are rounded at the coordinate
+    // scale. Cover that scale before the certificate; radius-only ulp retries
+    // can otherwise repeat the same realized ring dozens of times.
+    let coordinate_scale = center.x.abs().max(center.y.abs()) + radius;
+    let coordinate_spacing = if coordinate_scale == f64::MAX {
+        coordinate_scale - coordinate_scale.next_down()
+    } else {
+        coordinate_scale.next_up() - coordinate_scale
+    };
+    let mut candidate_radius = (radius + 8.0 * coordinate_spacing)
+        .max(radius.next_up())
+        .min(f64::MAX);
     let mut retries = 0_u32;
     loop {
         let output =
@@ -713,7 +793,17 @@ pub(crate) fn emit_minimum_bounding_circle(
             Err(_) => {},
         }
         retries += 1;
-        let next = next_realization_radius(radius, candidate_radius, retries, true);
+        // Rounding the center and each translated vertex costs coordinate
+        // ulps, which can dwarf a radius ulp on a small translated disk.
+        // Cover that construction scale before retrying the exact certificate.
+        let coordinate_scale = center.x.abs().max(center.y.abs()) + candidate_radius;
+        let coordinate_spacing = if coordinate_scale == f64::MAX {
+            coordinate_scale - coordinate_scale.next_down()
+        } else {
+            coordinate_scale.next_up() - coordinate_scale
+        };
+        let next = next_realization_radius(radius, candidate_radius, retries, true)
+            .max(candidate_radius + 4.0 * coordinate_spacing);
         if !next.is_finite() {
             break;
         }
