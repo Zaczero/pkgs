@@ -1,4 +1,4 @@
-//! Shared chart-edge geometry and numerical integrals for geographic measures.
+//! Shared chart-edge geometry, measures, and arclength parametrization.
 //!
 //! Longitude direction comes from `PeriodicAxis::shortest_edge`; latitude stays
 //! in native units until pole-referenced colatitude is formed.
@@ -6,7 +6,7 @@
 use geographiclib_rs::Geodesic;
 
 use crate::error::Result;
-use crate::geographic::{EdgeDirection, GeographicFrame, Latitude, SeamIdentity};
+use crate::geographic::{EdgeDirection, GeographicFrame, Latitude, PeriodicAxis, SeamIdentity};
 use crate::geometry::types::ChartMetric;
 use crate::geometry::{GeometryErrorKind, Point};
 
@@ -146,6 +146,10 @@ fn one_minus_sinc_small(value: f64) -> f64 {
 pub(crate) struct ChartEdge {
     meridian: Option<MeridianCoordinates>,
     seam_meridian: bool,
+    start_longitude: f64,
+    longitude_delta_native: f64,
+    longitude_axis: PeriodicAxis,
+    frame: GeographicFrame,
     start_latitude: f64,
     end_latitude: f64,
     latitude_delta: f64,
@@ -177,6 +181,10 @@ impl ChartEdge {
                 ));
             },
         };
+        let start_longitude = axis
+            .canonicalize(start.x)
+            .expect("chart-edge coordinates were admitted before measurement")
+            .get();
         let start_latitude = Latitude::from_admitted(frame, start.y).get();
         let end_latitude = Latitude::from_admitted(frame, end.y).get();
         let latitude_delta = end_latitude - start_latitude;
@@ -200,6 +208,10 @@ impl ChartEdge {
         Ok(Self {
             meridian,
             seam_meridian,
+            start_longitude,
+            longitude_delta_native,
+            longitude_axis: axis,
+            frame,
             start_latitude,
             end_latitude,
             latitude_delta,
@@ -235,18 +247,129 @@ impl ChartEdge {
             ));
         }
 
+        self.integrate(0.0, 1.0, geodesic)
+    }
+
+    pub(crate) fn is_parallel(self) -> bool {
+        self.latitude_delta == 0.0
+    }
+
+    /// Ellipsoidal arclength from the stored start to parameter `t`.
+    pub(crate) fn arclength(self, t: f64, geodesic: &Geodesic) -> Result<f64> {
+        debug_assert!((0.0..=1.0).contains(&t));
+        if t <= 0.0 {
+            return Ok(0.0);
+        }
+        if t >= 1.0 {
+            return self.length(geodesic);
+        }
+        if self.latitude_delta == 0.0 {
+            return self.finite_length(self.length(geodesic)? * t);
+        }
+        if let Some(meridian) = self.meridian {
+            let position = self.position(t);
+            let (_, latitude) = self
+                .frame
+                .to_geodesic_xy(position.x, position.y)
+                .expect("chart-edge position belongs to its admitted frame");
+            return self.finite_length(super::inverse_distance(
+                geodesic,
+                meridian.longitude,
+                meridian.start_latitude,
+                meridian.longitude,
+                latitude,
+            ));
+        }
+        self.integrate(0.0, t, geodesic)
+    }
+
+    /// Parameter whose accumulated ellipsoidal arclength is `distance`.
+    pub(crate) fn locate_t(self, distance: f64, geodesic: &Geodesic) -> Result<f64> {
+        let length = self.length(geodesic)?;
+        if distance <= 0.0 || length == 0.0 {
+            return Ok(0.0);
+        }
+        if distance >= length {
+            return Ok(1.0);
+        }
+        if self.latitude_delta == 0.0 {
+            return Ok(distance / length);
+        }
+
+        let dphi = self.latitude_delta * self.latitude_unit;
+        let e2 = geodesic.f * (2.0 - geodesic.f);
+        let mut lower = 0.0;
+        let mut upper = 1.0;
+        let mut parameter = distance / length;
+        let mut best = (parameter, f64::INFINITY);
+        let tolerance = RELATIVE_LENGTH_ERROR * length;
+
+        for _ in 0..64 {
+            let arclength = self.arclength(parameter, geodesic)?;
+            let residual = arclength - distance;
+            let error = residual.abs();
+            if error < best.1 {
+                best = (parameter, error);
+            }
+            if error <= tolerance {
+                return Ok(parameter);
+            }
+            if residual > 0.0 {
+                upper = parameter;
+            } else {
+                lower = parameter;
+            }
+
+            let speed = self.speed(parameter, geodesic.a, e2, dphi);
+            let newton = parameter - residual / speed;
+            let midpoint = f64::midpoint(lower, upper);
+            parameter = if newton > lower && newton < upper {
+                newton
+            } else {
+                midpoint
+            };
+            if parameter == lower || parameter == upper {
+                break;
+            }
+        }
+
+        Ok(best.0)
+    }
+
+    /// Position on the chart edge in its native angular frame.
+    pub(crate) fn position(self, t: f64) -> crate::geometry::Point {
+        let longitude = self
+            .longitude_axis
+            .canonicalize(self.start_longitude + t * self.longitude_delta_native)
+            .expect("chart-edge position is finite")
+            .get();
+        let latitude = crate::geometry::interpolate_subdivision_ordinate(
+            self.start_latitude,
+            self.end_latitude,
+            t,
+        );
+        crate::geometry::Point::new_raw_xy(longitude, latitude)
+    }
+
+    fn integrate(self, start: f64, end: f64, geodesic: &Geodesic) -> Result<f64> {
+        if start == end {
+            return Ok(0.0);
+        }
         let e2 = geodesic.f * (2.0 - geodesic.f);
         let dphi = self.latitude_delta * self.latitude_unit;
         if self.admits_gl4(dphi) {
+            let width = end - start;
             let value = std::iter::zip(GL4_NODES, GL4_WEIGHTS)
-                .map(|(node, weight)| weight * self.speed(node, geodesic.a, e2, dphi))
-                .sum();
+                .map(|(node, weight)| {
+                    weight * self.speed(start + width * node, geodesic.a, e2, dphi)
+                })
+                .sum::<f64>()
+                * width;
             return self.finite_length(value);
         }
 
-        let mut evaluations = 0;
-        let (initial, initial_error) = self.gk15(0.0, 1.0, geodesic.a, e2, dphi);
-        evaluations += 15;
+        let mut evaluations = 15;
+        let (initial, initial_error) = self.gk15(start, end, geodesic.a, e2, dphi);
         let tolerance = RELATIVE_LENGTH_ERROR * initial.abs();
         if initial_error <= tolerance {
             return self.finite_length(initial);
@@ -255,8 +378,8 @@ impl ChartEdge {
         let mut total = initial;
         let mut total_error = initial_error;
         let mut intervals = vec![Interval {
-            start: 0.0,
-            end: 1.0,
+            start,
+            end,
             value: initial,
             error: initial_error,
         }];
@@ -571,6 +694,65 @@ mod tests {
                 "{label}: actual={actual:.17}, expected={expected:.17}, relative_error={relative_error:.3e}"
             );
         }
+    }
+
+    #[test]
+    fn chart_edge_partial_arclength_and_inverse_match_mpmath() {
+        let geodesic = wgs84();
+        let edge = ChartEdge::new(
+            Point::new_raw_xy(0.0, 10.0),
+            Point::new_raw_xy(120.0, 60.0),
+            degrees(),
+        )
+        .unwrap();
+        let expected_partial = 6_723_143.426_641_406_156_391_42;
+        let expected_half_length = 6_004_860.750_429_569_135_504_388;
+        let partial = edge.arclength(0.5, &geodesic).unwrap();
+        assert!(
+            (partial - expected_partial).abs() <= 1.0e-8,
+            "partial={partial:.17}, expected={expected_partial:.17}"
+        );
+
+        let parameter = edge.locate_t(expected_half_length, &geodesic).unwrap();
+        assert!(
+            (parameter - 0.442_288_586_250_222_77).abs() <= 2.0e-15,
+            "parameter={parameter:.17}"
+        );
+        assert!(
+            (edge.arclength(parameter, &geodesic).unwrap() - expected_half_length).abs() <= 1.0e-8
+        );
+        let point = edge.position(parameter);
+        assert!((point.x - 53.074_630_350_026_73).abs() <= 3.0e-14);
+        assert!((point.y - 32.114_429_312_511_14).abs() <= 3.0e-14);
+    }
+
+    #[test]
+    fn chart_edge_parallel_inversion_is_exact_and_seam_positions_are_canonical() {
+        let geodesic = wgs84();
+        let parallel = ChartEdge::new(
+            Point::new_raw_xy(0.0, 60.0),
+            Point::new_raw_xy(90.0, 60.0),
+            degrees(),
+        )
+        .unwrap();
+        assert!(parallel.is_parallel());
+        assert_eq!(
+            parallel
+                .locate_t(parallel.length(&geodesic).unwrap() / 2.0, &geodesic)
+                .unwrap(),
+            0.5
+        );
+        assert_eq!(parallel.position(0.5).x, 45.0);
+        assert_eq!(parallel.position(0.5).y, 60.0);
+
+        let seam = ChartEdge::new(
+            Point::new_raw_xy(179.0, 10.0),
+            Point::new_raw_xy(-179.0, 10.0),
+            degrees(),
+        )
+        .unwrap();
+        assert_eq!(seam.position(0.5).x, -180.0);
+        assert_eq!(seam.position(0.5).y, 10.0);
     }
 
     #[test]

@@ -1,4 +1,5 @@
 use std::num::NonZeroU32;
+use std::sync::Arc;
 
 use crate::broadcast::{degrade_linref_linestring, degrade_linref_point};
 use crate::crs::ResolvedMetric;
@@ -475,6 +476,45 @@ pub(crate) fn unary_smooth_budgeted(
     )
 }
 
+/// Resolve segmentize's route option against its CRS-aware metric.
+pub(crate) fn segmentize_placement(
+    metric: &ResolvedMetric,
+    path: Option<crate::NavigationPath>,
+) -> Result<(crate::geometry::SegmentPlacementOwned, f64)> {
+    Ok(match metric {
+        ResolvedMetric::Geodesic(metric) => {
+            let placement = match path {
+                None => {
+                    crate::geometry::SegmentPlacementOwned::Chart(*metric.geodesic, metric.frame)
+                },
+                Some(crate::NavigationPath::Geodesic) => {
+                    crate::geometry::SegmentPlacementOwned::Geodesic(*metric.geodesic, metric.frame)
+                },
+                Some(crate::NavigationPath::Rhumb) => {
+                    crate::geometry::SegmentPlacementOwned::Rhumb {
+                        crs: Arc::clone(&metric.crs),
+                        state: Arc::clone(&metric.state),
+                        frame: metric.frame,
+                    }
+                },
+            };
+            (placement, 1.0)
+        },
+        ResolvedMetric::Planar { to_metre } => {
+            if matches!(path, Some(crate::NavigationPath::Rhumb)) {
+                return Err(crate::crs::CrsError::message(
+                    "segmentize requires a geographic CRS; use set_crs(...) or to_crs(...) to attach one",
+                )
+                .into());
+            }
+            (
+                crate::geometry::SegmentPlacementOwned::Planar,
+                to_metre.get(),
+            )
+        },
+    })
+}
+
 /// Segmentize kernel shared by the spine-routed free function.
 pub(crate) fn unary_segmentize(
     data: &PreparedPlan,
@@ -484,32 +524,12 @@ pub(crate) fn unary_segmentize(
     let metric = ctx.metric.require_resolved(MetricOp::Segmentize)?;
     let mut budget = crate::geometry::ExpansionBudget::new("segmentize", "max_length");
     let length = max_segment_length.get(ctx.lane.row());
-    match metric {
-        // A geographic CRS measures and places along the ellipsoid: the
-        // distance the caller named is a real-world one, exactly as it is for
-        // `length`. `segmentize` only INSERTS vertices, so every original
-        // survives bit-exactly under either placement.
-        ResolvedMetric::Geodesic(metric) => {
-            crate::crs::ensure_geographic_domain_in_frame(metric.frame, data.shape())?;
-            data.shape().segmentize_budgeted(
-                length,
-                crate::geometry::SegmentPlacement::Geodesic(&metric.geodesic, metric.frame),
-                &mut budget,
-            )
-        },
-        // Projected: `to_metre` is 1.0 for the CRS's own units and the axis
-        // factor under `unit='meters'`, so a metre input divides into
-        // coordinate units the same way `buffer`'s distance does.
-        ResolvedMetric::Planar { to_metre } => {
-            let output = data.shape().segmentize_budgeted(
-                length / to_metre.get(),
-                crate::geometry::SegmentPlacement::Planar,
-                &mut budget,
-            )?;
-            crate::geometry::verify_planar_segmentize_shape(&output, length / to_metre.get())?;
-            Ok(output)
-        },
+    let (placement, to_metre) = segmentize_placement(metric, None)?;
+    if let Some(frame) = placement.frame() {
+        crate::crs::ensure_geographic_domain_in_frame(frame, data.shape())?;
     }
+    data.shape()
+        .segmentize_budgeted(length / to_metre, placement.as_borrowed(), &mut budget)
 }
 
 /// Densify kernel shared by the spine-routed free function.
@@ -519,21 +539,16 @@ pub(crate) fn unary_densify(
     fraction: &F64Param,
 ) -> Result<Shape> {
     let fraction = fraction.get(ctx.lane.row());
-    match ctx.metric.require_resolved(MetricOp::Segmentize)? {
-        ResolvedMetric::Geodesic(metric) => {
-            crate::crs::ensure_geographic_domain_in_frame(metric.frame, data.shape())?;
-            let mut budget = crate::geometry::ExpansionBudget::new("segmentize", "fraction");
-            data.shape().densified_budgeted_with_placement(
-                fraction,
-                crate::geometry::SegmentPlacement::Geodesic(&metric.geodesic, metric.frame),
-                &mut budget,
-            )
-        },
-        ResolvedMetric::Planar { .. } => data.shape().densified_budgeted(
-            fraction,
-            &mut crate::geometry::ExpansionBudget::new("segmentize", "fraction"),
-        ),
+    let metric = ctx.metric.require_resolved(MetricOp::Segmentize)?;
+    let (placement, _) = segmentize_placement(metric, None)?;
+    if let Some(frame) = placement.frame() {
+        crate::crs::ensure_geographic_domain_in_frame(frame, data.shape())?;
     }
+    data.shape().densified_budgeted_with_placement(
+        fraction,
+        placement.as_borrowed(),
+        &mut crate::geometry::ExpansionBudget::new("segmentize", "fraction"),
+    )
 }
 
 /// Area kernel shared by the spine-routed free function.

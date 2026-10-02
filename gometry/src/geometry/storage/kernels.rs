@@ -11,8 +11,9 @@ use std::num::NonZeroU32;
 
 use super::builder::PackedColumnBuilder;
 use super::packed_columns::{
-    LineColumns, PackedColumnOutput, PackedColumnResult, PackedColumns, PointColumns,
-    PointRowLayout, PointRows, PolygonColumns, SegmentedRuns, XyColumns, batch_err, row_err,
+    LineColumns, PackedColumnError, PackedColumnOutput, PackedColumnResult, PackedColumns,
+    PointColumns, PointRowLayout, PointRows, PolygonColumns, SegmentedRuns, XyColumns, batch_err,
+    row_err,
 };
 use crate::crs;
 use crate::error::Result;
@@ -1011,22 +1012,28 @@ pub(crate) fn subdivide_line_columns(
     operation: &'static str,
     parameter: &'static str,
     subdivide: impl Fn(&CoordSeq, &mut crate::geometry::ExpansionBudget) -> Result<CoordSeq>,
-) -> Result<PackedColumnOutput> {
+) -> PackedColumnResult<PackedColumnOutput> {
     let coords = columns.coords();
     let rows = columns.rows();
-    let selected_len = columns.materialized_present_vertices(0)?;
+    let selected_len = columns
+        .materialized_present_vertices(0)
+        .map_err(PackedColumnError::Batch)?;
     let mut builder = PackedColumnBuilder::like(coords, selected_len, rows);
     for row in 0..rows {
         if columns.is_missing(row) {
-            builder.close_row()?;
+            builder
+                .close_row()
+                .map_err(|error| PackedColumnError::Row { row, error })?;
             continue;
         }
         let window = columns.row_window(row);
         let mut budget = crate::geometry::ExpansionBudget::new(operation, parameter);
-        builder.push_subdivided(coords, window, &subdivide, &mut budget)?;
+        builder
+            .push_subdivided(coords, window, &subdivide, &mut budget)
+            .map_err(|error| PackedColumnError::Row { row, error })?;
     }
     let cap = builder.vertex_len();
-    let (out_coords, out_offsets) = builder.finish(cap)?;
+    let (out_coords, out_offsets) = builder.finish(cap).map_err(PackedColumnError::Batch)?;
     Ok(PackedColumnOutput::Lines {
         coords: out_coords,
         offsets: out_offsets,
@@ -1038,15 +1045,19 @@ pub(crate) fn subdivide_polygon_columns(
     operation: &'static str,
     parameter: &'static str,
     subdivide: impl Fn(&CoordSeq, &mut crate::geometry::ExpansionBudget) -> Result<CoordSeq>,
-) -> Result<PackedColumnOutput> {
+) -> PackedColumnResult<PackedColumnOutput> {
     let coords = columns.coords();
-    let (selected_len, rings) = columns.materialized_present_sizes()?;
+    let (selected_len, rings) = columns
+        .materialized_present_sizes()
+        .map_err(PackedColumnError::Batch)?;
     let mut builder = PackedColumnBuilder::like(coords, selected_len, rings);
     let mut polygon_builder = CsrOffsetBuilder::with_capacity(columns.rows());
     let mut output_rings = 0;
     for row in 0..columns.rows() {
         if columns.is_missing(row) {
-            polygon_builder.push_end(output_rings, i32::MAX as usize)?;
+            polygon_builder
+                .push_end(output_rings, i32::MAX as usize)
+                .map_err(|error| PackedColumnError::Row { row, error })?;
             continue;
         }
         let mut budget = crate::geometry::ExpansionBudget::new(operation, parameter);
@@ -1058,17 +1069,24 @@ pub(crate) fn subdivide_polygon_columns(
             let ring_window = packed_row
                 .polygon_ring_window(ring)
                 .expect("ring lies in its admitted polygon row");
-            builder.push_subdivided(coords, ring_window, &subdivide, &mut budget)?;
+            builder
+                .push_subdivided(coords, ring_window, &subdivide, &mut budget)
+                .map_err(|error| PackedColumnError::Row { row, error })?;
         }
         output_rings = output_rings.wrapping_add(row_rings.len());
-        polygon_builder.push_end(output_rings, i32::MAX as usize)?;
+        polygon_builder
+            .push_end(output_rings, i32::MAX as usize)
+            .map_err(|error| PackedColumnError::Row { row, error })?;
     }
     let cap = builder.vertex_len();
-    let (out_coords, out_ring_offsets) = builder.finish(cap)?;
+    let (out_coords, out_ring_offsets) = builder.finish(cap).map_err(PackedColumnError::Batch)?;
     Ok(PackedColumnOutput::Polygons {
         coords: out_coords,
         ring_offsets: out_ring_offsets.cast_level::<RingLevel>(),
-        polygon_offsets: polygon_builder.finish(output_rings)?.cast_level(),
+        polygon_offsets: polygon_builder
+            .finish(output_rings)
+            .map_err(PackedColumnError::Batch)?
+            .cast_level(),
     })
 }
 

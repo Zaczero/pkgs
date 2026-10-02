@@ -180,7 +180,7 @@ pub(crate) use bearing::{
     geodesic_for_crs_at, geodesic_point_between,
 };
 pub(crate) use cache::{with_geodesic_at, with_geodesic_cache_at, with_geodesic_chart_cache_at};
-pub(crate) use chart_edge::AuthalicSeries;
+pub(crate) use chart_edge::{AuthalicSeries, ChartEdge};
 pub(crate) use distance::{
     geodesic_frechet_at_with_scratch, geodesic_hausdorff_at, geodesic_point_distances,
     geodesic_point_pair_distance, geodesic_point_pair_distances, geodesic_point_pair_dwithin,

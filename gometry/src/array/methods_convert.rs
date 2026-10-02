@@ -1,116 +1,13 @@
 use crate::array::{
-    Arc, Bounds, ComputedCaches, CoordSeq, F64Param, OriginSpec, PyErr, PyGeometryArray, PyResult,
-    Python, Result, Shape, StorageLayout, geometry, note_array_row, validate_densify_fraction,
-    validate_max_segment_length,
+    Arc, Bounds, ComputedCaches, CoordSeq, F64Param, OriginSpec, PyGeometryArray, PyResult, Python,
+    Result, Shape, StorageLayout, geometry, validate_densify_fraction, validate_max_segment_length,
 };
-use crate::geographic::GeographicFrame;
 use crate::geometry::storage::kernels::{subdivide_line_columns, subdivide_polygon_columns};
-use crate::geometry::storage::packed_columns::{
-    LineColumns, PackedColumnError, PackedColumns, PolygonColumns,
-};
+use crate::geometry::storage::packed_columns::{LineColumns, PackedColumns, PolygonColumns};
 use crate::geometry::storage::{
-    GeometryArrayStorage, PackedRow, PackedStorage, RowSelection, reverse_coord_windows,
+    GeometryArrayStorage, PackedStorage, RowSelection, reverse_coord_windows,
 };
 use crate::geometry::{ExpansionBudget, ShapeCountQuery, TopologyDomain};
-
-fn verify_planar_segmentize_array(
-    result: &PyGeometryArray,
-    max_segment_length: &F64Param,
-    to_metre: f64,
-) -> PyResult<()> {
-    match result.storage() {
-        GeometryArrayStorage::Packed(PackedStorage::Points { .. }) => Ok(()),
-        GeometryArrayStorage::Packed(PackedStorage::Lines {
-            coords,
-            offsets,
-            row_map,
-        }) => {
-            for row in 0..result.len() {
-                if result.is_row_missing(row) {
-                    continue;
-                }
-                let packed_row = PackedRow::line(row, coords, offsets, row_map.as_deref());
-                let window = packed_row
-                    .vertex_window()
-                    .expect("packed line row has a coordinate window");
-                verify_planar_segmentize_window(
-                    coords,
-                    window.start,
-                    window.end,
-                    max_segment_length.get(row) / to_metre,
-                    row,
-                )?;
-            }
-            Ok(())
-        },
-        GeometryArrayStorage::Packed(PackedStorage::Polygons {
-            coords,
-            ring_offsets,
-            polygon_offsets,
-            row_map,
-        }) => {
-            for row in 0..result.len() {
-                if result.is_row_missing(row) {
-                    continue;
-                }
-                let packed_row = PackedRow::polygon(
-                    row,
-                    coords,
-                    ring_offsets,
-                    polygon_offsets,
-                    row_map.as_deref(),
-                );
-                for ring in packed_row
-                    .polygon_rings()
-                    .expect("packed polygon row has a ring range")
-                {
-                    let window = packed_row
-                        .polygon_ring_window(ring)
-                        .expect("ring lies in its admitted polygon row");
-                    verify_planar_segmentize_window(
-                        coords,
-                        window.start,
-                        window.end,
-                        max_segment_length.get(row) / to_metre,
-                        row,
-                    )?;
-                }
-            }
-            Ok(())
-        },
-        GeometryArrayStorage::Mixed(_) => {
-            for row in result.row_operation().present_rows() {
-                let logical = row.logical();
-                row.row()
-                    .with_shape(|shape| {
-                        crate::geometry::verify_planar_segmentize_shape(
-                            shape,
-                            max_segment_length.get(logical) / to_metre,
-                        )
-                    })
-                    .map_err(PyErr::from)?
-                    .map_err(|error| note_array_row(error.into(), logical))?;
-            }
-            Ok(())
-        },
-    }
-}
-
-fn verify_planar_segmentize_window(
-    coords: &CoordSeq,
-    start: usize,
-    end: usize,
-    max_segment_length: f64,
-    row: usize,
-) -> PyResult<()> {
-    let window = coords.view(crate::geometry::CoordWindow::from_range(
-        start..end,
-        coords.len(),
-    ));
-    crate::geometry::verify_planar_segmentize_output(&window, max_segment_length)
-        .map_err(|error| note_array_row(error.into(), row))?;
-    Ok(())
-}
 
 #[derive(Clone, Copy)]
 pub(crate) struct GridSize {
@@ -149,32 +46,30 @@ impl From<(f64, f64)> for GridOrigin {
 }
 
 impl PyGeometryArray {
-    /// Packed `segmentize` under a resolved placement.
+    /// Packed `segmentize` under the resolved placement.
     ///
-    /// The placement is captured by VALUE (a `Geodesic` is a handful of `f64`
-    /// ellipsoid constants, cheap to clone and trivially `Send`) because the
-    /// packed lane hands its kernels to a detached worker: a borrowed
-    /// placement could not satisfy the `Send + 'static` bound.
+    /// The packed lane hands its kernels to detached workers, so the resolved
+    /// placement is owned; its CRS and runtime state are shared by `Arc`.
     #[expect(
         clippy::large_types_passed_by_value,
-        reason = "the packed kernels are `Send + 'static` closures, so the ellipsoid must be \
-                  owned rather than borrowed; it is `Copy` and resolved once per call"
+        reason = "the detached kernels need owned placement data; the ellipsoid is copied and \
+                  shared route metadata is held by Arc"
     )]
     pub(crate) fn segmentize_unary_packed(
         &self,
         max_segment_length: &F64Param,
-        geodesic: Option<(geographiclib_rs::Geodesic, GeographicFrame)>,
+        placement: crate::geometry::SegmentPlacementOwned,
         to_metre: f64,
     ) -> PyResult<Self> {
-        let for_columns = geodesic;
-        let for_shapes = geodesic;
+        let for_columns = placement.clone();
+        let for_shapes = placement;
         let result = self.subdivide_unary_packed(
             "segmentize",
             "max_length",
             max_segment_length,
             |value| validate_max_segment_length(value).map(|_| ()),
             move |points, length, budget| {
-                if let Some((_, frame)) = for_columns {
+                if let Some(frame) = for_columns.frame() {
                     crate::crs::ensure_geographic_columns_in_frame(
                         frame,
                         points.xs(),
@@ -184,55 +79,38 @@ impl PyGeometryArray {
                 crate::geometry::segmentize_points_budgeted(
                     points,
                     length / to_metre,
-                    for_columns.as_ref().map_or(
-                        crate::geometry::SegmentPlacement::Planar,
-                        |(geodesic, frame)| {
-                            crate::geometry::SegmentPlacement::Geodesic(geodesic, *frame)
-                        },
-                    ),
+                    for_columns.as_borrowed(),
                     budget,
                 )
             },
             move |shape, length, budget| {
-                if let Some((_, frame)) = for_shapes {
+                if let Some(frame) = for_shapes.frame() {
                     crate::crs::ensure_geographic_domain_in_frame(frame, shape)?;
                 }
-                shape.segmentize_budgeted(
-                    length / to_metre,
-                    for_shapes.as_ref().map_or(
-                        crate::geometry::SegmentPlacement::Planar,
-                        |(geodesic, frame)| {
-                            crate::geometry::SegmentPlacement::Geodesic(geodesic, *frame)
-                        },
-                    ),
-                    budget,
-                )
+                shape.segmentize_budgeted(length / to_metre, for_shapes.as_borrowed(), budget)
             },
         )?;
-        if geodesic.is_none() {
-            verify_planar_segmentize_array(&result, max_segment_length, to_metre)?;
-        }
         Ok(result)
     }
 
     #[expect(
         clippy::large_types_passed_by_value,
-        reason = "the packed kernels are detached, so the resolved ellipsoid is owned once per call"
+        reason = "the detached kernels need owned placement data; shared route metadata is held by Arc"
     )]
     pub(crate) fn densify_unary_packed(
         &self,
         fraction: &F64Param,
-        geodesic: Option<(geographiclib_rs::Geodesic, GeographicFrame)>,
+        placement: crate::geometry::SegmentPlacementOwned,
     ) -> PyResult<Self> {
-        let for_columns = geodesic;
-        let for_shapes = geodesic;
+        let for_columns = placement.clone();
+        let for_shapes = placement;
         self.subdivide_unary_packed(
             "densify",
             "fraction",
             fraction,
             |value| validate_densify_fraction(value).map(|_| ()),
             move |points, fraction, budget| {
-                if let Some((_, frame)) = for_columns {
+                if let Some(frame) = for_columns.frame() {
                     crate::crs::ensure_geographic_columns_in_frame(
                         frame,
                         points.xs(),
@@ -242,29 +120,15 @@ impl PyGeometryArray {
                 crate::geometry::densify_points_budgeted_with_placement(
                     points,
                     fraction,
-                    for_columns.as_ref().map_or(
-                        crate::geometry::SegmentPlacement::Planar,
-                        |(geodesic, frame)| {
-                            crate::geometry::SegmentPlacement::Geodesic(geodesic, *frame)
-                        },
-                    ),
+                    for_columns.as_borrowed(),
                     budget,
                 )
             },
             move |shape, fraction, budget| {
-                if let Some((_, frame)) = for_shapes {
+                if let Some(frame) = for_shapes.frame() {
                     crate::crs::ensure_geographic_domain_in_frame(frame, shape)?;
                 }
-                shape.densified_budgeted_with_placement(
-                    fraction,
-                    for_shapes.as_ref().map_or(
-                        crate::geometry::SegmentPlacement::Planar,
-                        |(geodesic, frame)| {
-                            crate::geometry::SegmentPlacement::Geodesic(geodesic, *frame)
-                        },
-                    ),
-                    budget,
-                )
+                shape.densified_budgeted_with_placement(fraction, for_shapes.as_borrowed(), budget)
             },
         )
     }
@@ -276,11 +140,11 @@ impl PyGeometryArray {
         param: &F64Param,
         validate: impl Fn(f64) -> PyResult<()>,
         subdivide: impl Fn(&CoordSeq, f64, &mut ExpansionBudget) -> Result<CoordSeq>
-        + Copy
+        + Clone
         + Send
         + 'static,
         shape_fallback: impl Fn(&Shape, f64, &mut ExpansionBudget) -> Result<Shape>
-        + Copy
+        + Clone
         + Send
         + 'static,
     ) -> PyResult<Self> {
@@ -294,6 +158,7 @@ impl PyGeometryArray {
         if !self.has_missing()
             && let Some(value) = param.as_scalar()
             && let Some(subdivided) = Python::attach(|py| {
+                let subdivide = subdivide.clone();
                 self.map_packed_columns_detached(py, self.frame.clone(), move |columns| {
                     match columns {
                         PackedColumns::Lines(line_columns) => subdivide_line_columns(
@@ -301,15 +166,13 @@ impl PyGeometryArray {
                             operation,
                             parameter,
                             |points, budget| subdivide(points, value, budget),
-                        )
-                        .map_err(PackedColumnError::Batch),
+                        ),
                         PackedColumns::Polygons(polygon_columns) => subdivide_polygon_columns(
                             &polygon_columns,
                             operation,
                             parameter,
                             |points, budget| subdivide(points, value, budget),
-                        )
-                        .map_err(PackedColumnError::Batch),
+                        ),
                         PackedColumns::Points(_) => unreachable!("points identity above"),
                     }
                 })
@@ -318,6 +181,7 @@ impl PyGeometryArray {
             return Ok(subdivided);
         }
         Python::attach(|py| {
+            let shape_fallback = shape_fallback.clone();
             self.map_shapes_detached_indexed_budgeted(
                 py,
                 operation,

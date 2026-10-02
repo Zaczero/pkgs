@@ -2270,10 +2270,7 @@ impl Shape {
     #[cfg(test)]
     pub fn segmentize(&self, max_segment_length: f64) -> Result<Self> {
         let mut budget = ExpansionBudget::new("segmentize", "max_length");
-        let output =
-            self.segmentize_budgeted(max_segment_length, SegmentPlacement::Planar, &mut budget)?;
-        crate::geometry::verify_planar_segmentize_shape(&output, max_segment_length)?;
-        Ok(output)
+        self.segmentize_budgeted(max_segment_length, SegmentPlacement::Planar, &mut budget)
     }
 
     pub(crate) fn segmentize_budgeted(

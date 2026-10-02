@@ -748,12 +748,12 @@ pub(crate) fn metric_frechet_densified_with_scratch(
                     (
                         a.densified_budgeted_with_placement(
                             fraction,
-                            crate::geometry::SegmentPlacement::Geodesic(&geodesic, *frame),
+                            crate::geometry::SegmentPlacement::Chart(&geodesic, *frame),
                             &mut budget,
                         )?,
                         b.densified_budgeted_with_placement(
                             fraction,
-                            crate::geometry::SegmentPlacement::Geodesic(&geodesic, *frame),
+                            crate::geometry::SegmentPlacement::Chart(&geodesic, *frame),
                             &mut budget,
                         )?,
                     )

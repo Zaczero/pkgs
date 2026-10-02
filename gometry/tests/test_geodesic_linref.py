@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import math
+
 import gometry as gm
 import pytest
 
@@ -91,24 +93,26 @@ def test_array_multi_line_string_lrs_matches_scalar() -> None:
     assert canon(array_points) == canon(gm.GeometryArray([scalar_point, scalar_point]))
 
 
-def test_geographic_fraction_densify_matches_geodesic_sampling_scalar_and_bulk() -> (
-    None
-):
+def test_geographic_fraction_densify_keeps_chart_edges_scalar_and_bulk() -> None:
     line = gm.LineString([(0.0, 0.0), (10.0, 10.0)], crs=4326)
-    expected = line.line_interpolate(0.5, normalized=True)
     scalar = line.segmentize(fraction=0.5)
     bulk = gm.GeometryArray([line]).segmentize(fraction=0.5)[0]
     length_scalar = line.segmentize(1_000_000.0)
     length_bulk = gm.GeometryArray([line]).segmentize(1_000_000.0)[0]
 
-    assert tuple(scalar.coords[1]) == pytest.approx(
-        (4.961882922527124, 5.01950880089445), abs=1e-12, rel=0.0
-    )
-    assert tuple(scalar.coords[1]) == pytest.approx((expected.x, expected.y))
-    assert tuple(bulk.coords[1]) == pytest.approx((expected.x, expected.y))
-    assert scalar.coords[1][1] != pytest.approx(5.0)
-    assert tuple(length_scalar.coords[1]) == pytest.approx((expected.x, expected.y))
-    assert tuple(length_bulk.coords[1]) == pytest.approx((expected.x, expected.y))
+    assert scalar.coords[1][0] == scalar.coords[1][1]
+    assert tuple(bulk.coords[1]) == tuple(scalar.coords[1])
+    assert tuple(length_scalar.coords[1]) == tuple(scalar.coords[1])
+    assert tuple(length_bulk.coords[1]) == tuple(scalar.coords[1])
+
+    geodesic_midpoint = line.line_interpolate(0.5, normalized=True)
+    assert abs(scalar.coords[1][0] - geodesic_midpoint.x) > 0.01
+
+    piece_lengths = [
+        gm.LineString([scalar.coords[index], scalar.coords[index + 1]], crs=4326).length
+        for index in range(2)
+    ]
+    assert piece_lengths[0] == pytest.approx(piece_lengths[1], rel=2e-15)
 
 
 def test_geographic_refinement_validates_coordinates_and_skips_missing_rows() -> None:
@@ -121,6 +125,11 @@ def test_geographic_refinement_validates_coordinates_and_skips_missing_rows() ->
     ):
         with pytest.raises(ValueError, match='invalid longitude/latitude'):
             refine()
+
+    valid_row = gm.LineString([(0.0, 0.0), (1.0, 1.0)], crs=4326)
+    with pytest.raises(ValueError, match='invalid longitude/latitude') as error:
+        gm.GeometryArray([valid_row, invalid], crs=4326).segmentize(100_000.0)
+    assert error.value.__notes__ == ['while processing array element 1']
 
     valid = gm.LineString([(0.0, 0.0), (10.0, 10.0)], crs=4326)
     refined = gm.GeometryArray([valid, None], crs=4326).segmentize(fraction=0.5)
@@ -144,15 +153,94 @@ def test_geographic_segmentize_preserves_xyzm_and_array_metadata_with_missing_ro
     assert refined.is_missing.tolist() == [False, True]
     assert refined.crs is not None and refined.crs.to_epsg() == 4326
     assert refined.epoch == 2020.0
-    assert refined[0].coords.to_nested() == pytest.approx(
-        [
-            (0.0, 0.0, 10.0, 100.0),
-            (4.961882922527124, 5.01950880089445, 20.0, 200.0),
-            (10.0, 10.0, 30.0, 300.0),
-        ],
-        abs=1e-12,
-        rel=0.0,
+    coordinates = refined[0].coords.to_nested()
+    assert coordinates[0] == (0.0, 0.0, 10.0, 100.0)
+    assert coordinates[1][0] == coordinates[1][1]
+    assert coordinates[1][2:] == (20.0, 200.0)
+    assert coordinates[2] == (10.0, 10.0, 30.0, 300.0)
+
+
+def test_geographic_segmentize_conserves_chart_shape_and_piece_lengths() -> None:
+    polygon = gm.Polygon(
+        [(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0), (0.0, 0.0)],
+        crs=4326,
     )
+    refined = polygon.segmentize(500_000.0)
+
+    assert gm.equals(polygon, refined)
+    assert refined.area == pytest.approx(polygon.area, rel=3e-15)
+    assert refined.length == pytest.approx(polygon.length, rel=3e-15)
+    ring = refined.exterior.coords
+    lengths = [
+        gm.LineString([ring[index], ring[index + 1]], crs=4326).length
+        for index in range(len(ring) - 1)
+    ]
+    assert max(lengths) <= 500_000.0
+    for start in range(0, len(lengths), 3):
+        edge_lengths = lengths[start : start + 3]
+        assert max(edge_lengths) == pytest.approx(min(edge_lengths), rel=3e-15)
+
+
+def test_geographic_segmentize_insertions_stay_on_sloped_chart_edge() -> None:
+    line = gm.LineString([(0.0, 10.0), (120.0, 60.0)], crs=4326)
+    refined = line.segmentize(1_500_000.0)
+    coordinates = refined.coords
+
+    assert coordinates[0] == (0.0, 10.0)
+    assert coordinates[-1] == (120.0, 60.0)
+    assert len(coordinates) > 2
+    for index in range(1, len(coordinates) - 1):
+        longitude, latitude = coordinates[index]
+        expected_latitude = 10.0 + 50.0 * (longitude / 120.0)
+        assert abs(latitude - expected_latitude) <= 4.0 * math.ulp(expected_latitude)
+    assert max(
+        gm.LineString([coordinates[index], coordinates[index + 1]], crs=4326).length
+        for index in range(len(coordinates) - 1)
+    ) <= 1_500_000.0
+
+
+def test_geographic_frechet_densify_uses_segmentize_chart_placement() -> None:
+    left = gm.LineString([(0.0, 0.0), (10.0, 10.0)], crs=4326)
+    geodesic_midpoint = left.line_interpolate(0.5, normalized=True)
+    right = gm.LineString(
+        [(0.0, 0.0), (geodesic_midpoint.x, geodesic_midpoint.y), (10.0, 10.0)],
+        crs=4326,
+    )
+    left_points = list(left.segmentize(fraction=0.5).coords)
+    right_points = list(right.segmentize(fraction=0.5).coords)
+
+    previous = [math.inf] * len(right_points)
+    for left_index, left_xy in enumerate(left_points):
+        current = [math.inf] * len(right_points)
+        for right_index, right_xy in enumerate(right_points):
+            distance = gm.distance(
+                gm.Point(*left_xy, crs=4326),
+                gm.Point(*right_xy, crs=4326),
+            )
+            if left_index == 0 and right_index == 0:
+                current[right_index] = distance
+            else:
+                current[right_index] = max(
+                    distance,
+                    min(
+                        previous[right_index],
+                        current[right_index - 1] if right_index else math.inf,
+                        previous[right_index - 1] if right_index else math.inf,
+                    ),
+                )
+        previous = current
+
+    assert gm.frechet_distance(left, right, densify=0.5) == pytest.approx(
+        previous[-1], abs=1e-8, rel=0.0
+    )
+
+
+def test_fraction_densify_keeps_step_count_independent_of_shared_budget() -> None:
+    line = gm.LineString([(0.0, 0.0), (10.0, 10.0)], crs=4326)
+    collection = gm.GeometryCollection([line, line])
+
+    refined = collection.segmentize(fraction=0.5)
+    assert gm.get_coordinates(refined).shape == (6, 2)
 
 
 @pytest.mark.parametrize(

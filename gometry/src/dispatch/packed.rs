@@ -312,19 +312,18 @@ pub(crate) fn try_unary_packed_array(
             Operation::Metric(MetricOp::Segmentize),
             PackedUnary::Segmentize { max_segment_length },
         ) => {
-            // `segmentize` measures and places under the array's metric, so
-            // the ellipsoid is resolved ONCE here and cloned into the kernels
-            // rather than re-derived per row.
+            // Resolve the ellipsoid and chart-edge placement once, then carry
+            // it through the detached packed kernels.
             match segmentize_metric(array, resolver) {
-                Ok((geodesic, to_metre)) => {
-                    Some(array.segmentize_unary_packed(max_segment_length, geodesic, to_metre))
+                Ok((placement, to_metre)) => {
+                    Some(array.segmentize_unary_packed(max_segment_length, placement, to_metre))
                 },
                 Err(error) => Some(Err(error)),
             }
         },
         (Operation::Metric(MetricOp::Segmentize), PackedUnary::Densify { fraction }) => {
             match segmentize_metric(array, resolver) {
-                Ok((geodesic, _)) => Some(array.densify_unary_packed(fraction, geodesic)),
+                Ok((placement, _)) => Some(array.densify_unary_packed(fraction, placement)),
                 Err(error) => Some(Err(error)),
             }
         },
@@ -592,29 +591,19 @@ fn linref_substring_packed_inner(
     }
 }
 
-/// `segmentize`'s resolved metric for the packed lane: the ellipsoid to place
-/// along (`None` = planar), and the coordinate-units-per-input-unit divisor.
+/// `segmentize`'s resolved placement and coordinate-unit divisor for the
+/// packed lane.
 ///
 /// Must stay the exact counterpart of `kernels::unary_segmentize` — a packed
 /// array and a scalar geometry in the same CRS have to subdivide identically.
 fn segmentize_metric(
     array: &PyGeometryArray,
     resolver: super::MetricResolver,
-) -> PyResult<(
-    Option<(
-        geographiclib_rs::Geodesic,
-        crate::geographic::GeographicFrame,
-    )>,
-    f64,
-)> {
+) -> PyResult<(crate::geometry::SegmentPlacementOwned, f64)> {
     let super::MetricResolver::Metric { op, unit } = resolver else {
-        return Ok((None, 1.0));
+        return Ok((crate::geometry::SegmentPlacementOwned::Planar, 1.0));
     };
     let model = crate::broadcast::resolve_metric(array.crs_str(), unit, op)?;
-    match crate::crs::ResolvedMetric::from_model(&model)? {
-        crate::crs::ResolvedMetric::Geodesic(metric) => {
-            Ok((Some((*metric.geodesic, metric.frame)), 1.0))
-        },
-        crate::crs::ResolvedMetric::Planar { to_metre } => Ok((None, to_metre.get())),
-    }
+    let metric = crate::crs::ResolvedMetric::from_model(&model)?;
+    crate::dispatch::kernels::segmentize_placement(&metric, None).map_err(Into::into)
 }

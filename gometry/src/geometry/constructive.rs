@@ -27,10 +27,9 @@ pub(crate) use simplify::{
 #[cfg(test)]
 pub(crate) use snap::densify_points_budgeted;
 pub(crate) use snap::{
-    SegmentPlacement, SnapReference, densify_points_budgeted_with_placement,
+    SegmentPlacement, SegmentPlacementOwned, SnapReference, densify_points_budgeted_with_placement,
     remove_repeated_line_points, remove_repeated_points, remove_repeated_ring_points,
-    segmentize_points_budgeted, snap_ring_to_reference, verify_planar_segmentize_output,
-    verify_planar_segmentize_shape,
+    segmentize_points_budgeted, snap_ring_to_reference,
 };
 pub(in crate::geometry) use walk::winding_region;
 pub(crate) use walk::{

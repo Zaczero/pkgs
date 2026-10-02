@@ -1,5 +1,6 @@
 use std::convert::Infallible;
 use std::ops::ControlFlow;
+use std::sync::Arc;
 
 use crate::NonNegative;
 use crate::geographic::GeographicFrame;
@@ -393,59 +394,17 @@ pub(crate) fn segmentize_points_budgeted(
     if points.len() < 2 {
         return Ok(points.clone());
     }
-    if let SegmentPlacement::Geodesic(geodesic, frame) = placement {
-        // Keep the inverse solution only for segments whose admitted output
-        // contains an interior vertex. The empty vector preserves the
-        // zero-generated path's existing storage behavior.
-        let mut solutions = Vec::new();
-        let steps = collect_steps(points, |segment_index, _segment| {
-            let plan = geodesic_segment_plan(
-                geodesic,
-                frame,
-                point_xy_at(points, segment_index),
-                point_xy_at(points, segment_index.wrapping_add(1)),
-            )?;
-            let steps = segmentize_steps(plan.solution.3, max_segment_length);
-            if steps.max(1) > 1 {
-                solutions.push(plan);
-            }
-            Ok(steps)
-        })?;
-        return subdivide_columns_from_steps(
-            points,
-            SubdivisionEmission::Geodesic(GeodesicEmitter::retained(
-                geodesic,
-                frame,
-                solutions.as_slice(),
-            )),
-            &steps,
-            budget,
-        );
-    }
-    segmentize_planar_candidate(points, max_segment_length, budget)
-}
-
-fn segmentize_planar_candidate(
-    points: &CoordSeq,
-    max_segment_length: f64,
-    budget: &mut ExpansionBudget,
-) -> Result<CoordSeq> {
+    let mut plans = plan_segments(
+        points,
+        placement,
+        SubdivisionTarget::MaxLength(max_segment_length),
+    )?;
     // One extra piece supplies slack for a count that landed exactly on the
-    // requested limit. If that candidate still cannot satisfy the strict
-    // bound, the owning post-pass preserves its unrepresentable error.
+    // requested limit. The same selected-route verifier owns every placement.
     const MAX_REPRESENTABILITY_RETRIES: usize = 1;
-    let mut steps = collect_steps(points, |_, segment| {
-        Ok(planar_segmentize_steps(segment, max_segment_length))
-    })?;
-    let mut last = None;
     for retry in 0..=MAX_REPRESENTABILITY_RETRIES {
-        let (output, generated) = subdivide_columns_from_steps_uncommitted(
-            points,
-            SubdivisionEmission::Planar,
-            &steps,
-            budget,
-        )?;
-        match verify_planar_segmentize_output(&output, max_segment_length) {
+        let (output, generated) = subdivide_columns_from_plans_uncommitted(points, &plans, budget)?;
+        match verify_segmentize_output(&output, max_segment_length, placement) {
             Ok(()) => {
                 budget.add(generated)?;
                 return Ok(output);
@@ -456,26 +415,25 @@ fn segmentize_planar_candidate(
                     crate::error::ErrorKind::Geometry(GeometryErrorKind::UnrepresentableOutput {
                         operation: "segmentize"
                     })
-                ) =>
+                ) && retry < MAX_REPRESENTABILITY_RETRIES =>
             {
-                last = Some((output, generated));
+                for (plan, segment) in plans.iter_mut().zip(line_segments(points)) {
+                    let nonzero = match plan.route {
+                        SegmentRoutePlan::Planar => !same_point(segment.start, segment.end),
+                        _ => plan.length > 0.0,
+                    };
+                    if nonzero {
+                        plan.steps = plan
+                            .steps
+                            .checked_add(1)
+                            .ok_or(crate::error::ResourceError::SizeOverflow)?;
+                    }
+                }
             },
             Err(error) => return Err(error),
         }
-        if retry == MAX_REPRESENTABILITY_RETRIES {
-            break;
-        }
-        for (step, segment) in steps.iter_mut().zip(line_segments(points)) {
-            if !same_point(segment.start, segment.end) {
-                *step = step
-                    .checked_add(1)
-                    .ok_or(crate::error::ResourceError::SizeOverflow)?;
-            }
-        }
     }
-    let (output, generated) = last.expect("segmentize always emits a planar candidate");
-    budget.add(generated)?;
-    Ok(output)
+    unreachable!("the final representability retry returns its verification error")
 }
 
 fn segmentize_steps(length: f64, max_segment_length: f64) -> usize {
@@ -540,10 +498,7 @@ fn planar_segmentize_steps(segment: Segment, max_segment_length: f64) -> usize {
 /// coordinates that the emitter actually stores. Audit the resulting chain so
 /// the public maximum-length promise is about every emitted chord, including
 /// source-to-source chords that can survive as repeated interior points.
-pub(crate) fn verify_planar_segmentize_output(
-    points: &CoordSeq,
-    max_segment_length: f64,
-) -> Result<()> {
+fn verify_planar_segmentize_output(points: &CoordSeq, max_segment_length: f64) -> Result<()> {
     if !max_segment_length.is_finite() || max_segment_length <= 0.0 {
         return Ok(());
     }
@@ -556,27 +511,6 @@ pub(crate) fn verify_planar_segmentize_output(
         }
     }
     Ok(())
-}
-
-pub(crate) fn verify_planar_segmentize_shape(shape: &Shape, max_segment_length: f64) -> Result<()> {
-    match shape {
-        Shape::Point(_) | Shape::MultiPoint(_) | Shape::Empty(..) => Ok(()),
-        Shape::LineString(line) => verify_planar_segmentize_output(line, max_segment_length),
-        Shape::MultiLineString(lines) => lines
-            .iter()
-            .try_for_each(|line| verify_planar_segmentize_output(line, max_segment_length)),
-        Shape::Polygon(polygon) => polygon.rings().try_for_each(|ring| {
-            verify_planar_segmentize_output(ring.coords(), max_segment_length)
-        }),
-        Shape::MultiPolygon(polygons) => polygons.iter().try_for_each(|polygon| {
-            polygon.rings().try_for_each(|ring| {
-                verify_planar_segmentize_output(ring.coords(), max_segment_length)
-            })
-        }),
-        Shape::GeometryCollection(geometries) => geometries
-            .iter()
-            .try_for_each(|geometry| verify_planar_segmentize_shape(geometry, max_segment_length)),
-    }
 }
 
 /// Insert `ceil(1 / fraction) - 1` evenly spaced vertices into every segment
@@ -601,21 +535,12 @@ pub(crate) fn densify_points_budgeted_with_placement(
 ) -> Result<CoordSeq> {
     // One segment's steps already past the budget stop here, before a
     // saturated count (a subnormal `fraction`) reaches the step arithmetic.
-    let steps = budget.check_additional((1.0 / fraction).ceil() as usize)?;
-    subdivide_columns(
-        points,
-        placement,
-        |segment| Ok(densify_steps(segment, steps)),
-        budget,
-    )
-}
-
-fn densify_steps(segment: Segment, steps: usize) -> usize {
-    if same_point(segment.start, segment.end) {
-        1
-    } else {
-        steps
-    }
+    let steps = (1.0 / fraction).ceil() as usize;
+    // The returned value is cumulative usage, not this edge's step count; the
+    // budget may already include vertices from another part of this shape.
+    budget.check_additional(steps)?;
+    let plans = plan_segments(points, placement, SubdivisionTarget::Fraction(steps))?;
+    subdivide_columns_from_plans(points, &plans, budget)
 }
 
 #[derive(Clone, Copy)]
@@ -624,17 +549,48 @@ struct GeodesicSegmentPlan {
     canonical_end: XY,
 }
 
-fn point_xy_at(points: &CoordSeq, index: usize) -> Point {
-    Point::new_raw_xy(
-        *points
-            .xs()
-            .get(index)
-            .expect("geodesic source vertex belongs to the X column"),
-        *points
-            .ys()
-            .get(index)
-            .expect("geodesic source vertex belongs to the Y column"),
-    )
+#[derive(Clone, Copy)]
+struct RhumbSegmentPlan {
+    start: Point,
+    bearing: f64,
+    length: f64,
+}
+
+#[derive(Clone, Copy)]
+enum SegmentRoutePlan<'a> {
+    Planar,
+    Chart {
+        edge: crate::crs::ChartEdge,
+        geodesic: &'a geographiclib_rs::Geodesic,
+    },
+    Geodesic {
+        plan: GeodesicSegmentPlan,
+        geodesic: &'a geographiclib_rs::Geodesic,
+        frame: GeographicFrame,
+    },
+    Rhumb {
+        plan: RhumbSegmentPlan,
+        crs: &'a str,
+        state: &'a crate::crs::RuntimeState,
+        frame: GeographicFrame,
+    },
+}
+
+#[derive(Clone, Copy)]
+struct SegmentPlan<'a> {
+    route: SegmentRoutePlan<'a>,
+    length: f64,
+    steps: usize,
+}
+
+#[derive(Clone, Copy)]
+enum SubdivisionTarget {
+    MaxLength(f64),
+    Fraction(usize),
+}
+
+fn point_from_xy(point: XY) -> Point {
+    Point::new_raw_xy(point.x, point.y)
 }
 
 fn geodesic_segment_plan(
@@ -656,109 +612,145 @@ fn geodesic_segment_plan(
     })
 }
 
-enum GeodesicPlanSource<'a> {
-    Recompute,
-    Retained(std::slice::Iter<'a, GeodesicSegmentPlan>),
+fn plan_segment<'a>(
+    placement: SegmentPlacement<'a>,
+    segment: Segment,
+) -> Result<(SegmentRoutePlan<'a>, f64)> {
+    Ok(match placement {
+        SegmentPlacement::Planar => (SegmentRoutePlan::Planar, 0.0),
+        SegmentPlacement::Chart(geodesic, frame) => {
+            let edge = crate::crs::ChartEdge::new(
+                point_from_xy(segment.start),
+                point_from_xy(segment.end),
+                frame,
+            )?;
+            let length = edge.length(geodesic)?;
+            (SegmentRoutePlan::Chart { edge, geodesic }, length)
+        },
+        SegmentPlacement::Geodesic(geodesic, frame) => {
+            let plan = geodesic_segment_plan(
+                geodesic,
+                frame,
+                point_from_xy(segment.start),
+                point_from_xy(segment.end),
+            )?;
+            (
+                SegmentRoutePlan::Geodesic {
+                    plan,
+                    geodesic,
+                    frame,
+                },
+                plan.solution.3,
+            )
+        },
+        SegmentPlacement::Rhumb { crs, state, frame } => {
+            let start = frame
+                .to_geodesic_point(point_from_xy(segment.start))
+                .expect("rhumb subdivision received admitted coordinates");
+            let end = frame
+                .to_geodesic_point(point_from_xy(segment.end))
+                .expect("rhumb subdivision received admitted coordinates");
+            let length =
+                crate::crs::rhumb_distance_crs_at(crs, start.x, start.y, end.x, end.y, state)?;
+            let bearing =
+                crate::crs::rhumb_bearing_crs_at(crs, start.x, start.y, end.x, end.y, state)?;
+            (
+                SegmentRoutePlan::Rhumb {
+                    plan: RhumbSegmentPlan {
+                        start,
+                        bearing,
+                        length,
+                    },
+                    crs,
+                    state,
+                    frame,
+                },
+                length,
+            )
+        },
+    })
 }
 
-struct GeodesicEmitter<'a> {
-    geodesic: &'a geographiclib_rs::Geodesic,
-    frame: GeographicFrame,
-    plans: GeodesicPlanSource<'a>,
+fn plan_segments<'a>(
+    points: &CoordSeq,
+    placement: SegmentPlacement<'a>,
+    target: SubdivisionTarget,
+) -> Result<Vec<SegmentPlan<'a>>> {
+    let mut plans = Vec::with_capacity(points.len().saturating_sub(1));
+    for segment in line_segments(points) {
+        let (route, length) = plan_segment(placement, segment)?;
+        let steps = match target {
+            SubdivisionTarget::MaxLength(max_length) => match route {
+                SegmentRoutePlan::Planar => planar_segmentize_steps(segment, max_length),
+                _ => segmentize_steps(length, max_length),
+            },
+            SubdivisionTarget::Fraction(steps) => match route {
+                SegmentRoutePlan::Planar if same_point(segment.start, segment.end) => 1,
+                SegmentRoutePlan::Planar => steps,
+                _ if length > 0.0 => steps,
+                _ => 1,
+            },
+        };
+        plans.push(SegmentPlan {
+            route,
+            length,
+            steps,
+        });
+    }
+    Ok(plans)
 }
 
-impl<'a> GeodesicEmitter<'a> {
-    const fn recompute(geodesic: &'a geographiclib_rs::Geodesic, frame: GeographicFrame) -> Self {
-        Self {
-            geodesic,
+fn measure_segment(placement: SegmentPlacement<'_>, segment: Segment) -> Result<f64> {
+    Ok(match placement {
+        SegmentPlacement::Planar => point_distance(segment.start, segment.end),
+        SegmentPlacement::Chart(geodesic, frame) => crate::crs::ChartEdge::new(
+            point_from_xy(segment.start),
+            point_from_xy(segment.end),
             frame,
-            plans: GeodesicPlanSource::Recompute,
-        }
-    }
-
-    fn retained(
-        geodesic: &'a geographiclib_rs::Geodesic,
-        frame: GeographicFrame,
-        plans: &'a [GeodesicSegmentPlan],
-    ) -> Self {
-        Self {
-            geodesic,
-            frame,
-            plans: GeodesicPlanSource::Retained(plans.iter()),
-        }
-    }
-
-    fn emit(
-        &mut self,
-        points: &CoordSeq,
-        xs: &mut Vec<f64>,
-        ys: &mut Vec<f64>,
-        segment_index: usize,
-        steps: usize,
-    ) -> Result<()> {
-        let geodesic = self.geodesic;
-        let frame = self.frame;
-        let recompute_plan = || {
+        )?
+        .length(geodesic)?,
+        SegmentPlacement::Geodesic(geodesic, frame) => {
             geodesic_segment_plan(
                 geodesic,
                 frame,
-                point_xy_at(points, segment_index),
-                point_xy_at(points, segment_index.wrapping_add(1)),
-            )
-        };
-        let plan = match &mut self.plans {
-            GeodesicPlanSource::Recompute => {
-                if steps == 1 {
-                    // Densify has no planning solve to reuse. Preserve the
-                    // existing inverse-error boundary even when no vertex is
-                    // emitted for this segment.
-                    recompute_plan()?;
-                    return Ok(());
-                }
-                recompute_plan()?
-            },
-            GeodesicPlanSource::Retained(plans) => {
-                if steps == 1 {
-                    // The same admitted endpoint conversion and inverse have
-                    // already succeeded during planning. Geodesic and frame
-                    // are immutable here, so this materializer has no work.
-                    return Ok(());
-                }
-                *plans
-                    .next()
-                    .expect("geodesic subdivision plan matches segment steps")
-            },
-        };
-        emit_geodesic_plan(self.geodesic, self.frame, plan, steps, xs, ys)
-    }
-
-    fn assert_exhausted(&self) {
-        if let GeodesicPlanSource::Retained(plans) = &self.plans {
-            debug_assert!(plans.as_slice().is_empty());
-        }
-    }
+                point_from_xy(segment.start),
+                point_from_xy(segment.end),
+            )?
+            .solution
+            .3
+        },
+        SegmentPlacement::Rhumb { crs, state, frame } => {
+            let start = frame
+                .to_geodesic_point(point_from_xy(segment.start))
+                .expect("rhumb verification received admitted coordinates");
+            let end = frame
+                .to_geodesic_point(point_from_xy(segment.end))
+                .expect("rhumb verification received admitted coordinates");
+            crate::crs::rhumb_distance_crs_at(crs, start.x, start.y, end.x, end.y, state)?
+        },
+    })
 }
 
-enum SubdivisionEmission<'a> {
-    Planar,
-    Geodesic(GeodesicEmitter<'a>),
-}
-
-impl<'a> SubdivisionEmission<'a> {
-    const fn recompute(placement: SegmentPlacement<'a>) -> Self {
-        match placement {
-            SegmentPlacement::Planar => Self::Planar,
-            SegmentPlacement::Geodesic(geodesic, frame) => {
-                Self::Geodesic(GeodesicEmitter::recompute(geodesic, frame))
-            },
+fn verify_segmentize_output(
+    points: &CoordSeq,
+    max_segment_length: f64,
+    placement: SegmentPlacement<'_>,
+) -> Result<()> {
+    if !max_segment_length.is_finite() || max_segment_length <= 0.0 {
+        return Ok(());
+    }
+    if matches!(placement, SegmentPlacement::Planar) {
+        return verify_planar_segmentize_output(points, max_segment_length);
+    }
+    for segment in line_segments(points) {
+        if measure_segment(placement, segment)?
+            .partial_cmp(&max_segment_length)
+            .is_none_or(std::cmp::Ordering::is_gt)
+        {
+            return Err(GeometryErrorKind::unrepresentable_output("segmentize"));
         }
     }
-
-    fn assert_exhausted(&self) {
-        if let Self::Geodesic(emitter) = self {
-            emitter.assert_exhausted();
-        }
-    }
+    Ok(())
 }
 
 trait SubdivisionSink {
@@ -769,10 +761,10 @@ trait SubdivisionSink {
 /// Run the exact same segment plan through a counting sink and a materializing
 /// sink.  Keeping this as one traversal shape makes the budget admission
 /// mechanically match the coordinates subsequently emitted.
-fn emit_subdivision(steps: &[usize], sink: &mut impl SubdivisionSink) -> Result<()> {
+fn emit_subdivision(plans: &[SegmentPlan<'_>], sink: &mut impl SubdivisionSink) -> Result<()> {
     sink.source(0)?;
-    for (segment_index, &segment_steps) in steps.iter().enumerate() {
-        sink.interior(segment_index, segment_steps.max(1))?;
+    for (segment_index, plan) in plans.iter().enumerate() {
+        sink.interior(segment_index, plan.steps.max(1))?;
         sink.source(segment_index.wrapping_add(1))?;
     }
     Ok(())
@@ -812,35 +804,82 @@ impl SubdivisionSink for SubdivisionCount {
 
 /// How interior vertices are placed along a segment.
 ///
-/// X and Y are a PAIR under a geodesic: the point at a fraction of a geodesic
-/// is not the per-axis interpolation of the endpoints. Z and M stay per-column
-/// under both placements — they are attribute ramps, not positions.
+/// Z and M stay per-column under every placement — they are attribute ramps,
+/// not positions.
 #[derive(Clone, Copy)]
 pub(crate) enum SegmentPlacement<'a> {
     /// Straight line in coordinate space (projected or CRS-free input).
     Planar,
-    /// Along the ellipsoid for coordinates stored in a typed native angular
-    /// frame; the inserted points are emitted back in that same frame.
+    /// Along the straight coordinate-chart edge, at equal ellipsoidal
+    /// arclength, for geographic coordinates in the typed native frame.
+    Chart(&'a geographiclib_rs::Geodesic, GeographicFrame),
+    /// Along the shortest ellipsoidal path between geographic endpoints.
     Geodesic(&'a geographiclib_rs::Geodesic, GeographicFrame),
+    /// Along the constant-bearing route between geographic endpoints.
+    Rhumb {
+        crs: &'a str,
+        state: &'a crate::crs::RuntimeState,
+        frame: GeographicFrame,
+    },
 }
 
-struct SubdivisionColumns<'a> {
-    points: &'a CoordSeq,
-    emission: SubdivisionEmission<'a>,
+#[derive(Clone)]
+pub(crate) enum SegmentPlacementOwned {
+    Planar,
+    Chart(geographiclib_rs::Geodesic, GeographicFrame),
+    Geodesic(geographiclib_rs::Geodesic, GeographicFrame),
+    Rhumb {
+        crs: Arc<String>,
+        state: Arc<crate::crs::RuntimeState>,
+        frame: GeographicFrame,
+    },
+}
+
+impl SegmentPlacementOwned {
+    pub(crate) fn as_borrowed(&self) -> SegmentPlacement<'_> {
+        match self {
+            Self::Planar => SegmentPlacement::Planar,
+            Self::Chart(geodesic, frame) => SegmentPlacement::Chart(geodesic, *frame),
+            Self::Geodesic(geodesic, frame) => SegmentPlacement::Geodesic(geodesic, *frame),
+            Self::Rhumb { crs, state, frame } => SegmentPlacement::Rhumb {
+                crs,
+                state,
+                frame: *frame,
+            },
+        }
+    }
+
+    pub(crate) const fn frame(&self) -> Option<GeographicFrame> {
+        match self {
+            Self::Planar => None,
+            Self::Chart(_, frame) | Self::Geodesic(_, frame) | Self::Rhumb { frame, .. } => {
+                Some(*frame)
+            },
+        }
+    }
+}
+
+struct SubdivisionColumns<'points, 'plans, 'metric> {
+    points: &'points CoordSeq,
+    plans: &'plans [SegmentPlan<'metric>],
     xs: Vec<f64>,
     ys: Vec<f64>,
     zs: Option<Vec<f64>>,
     ms: Option<Vec<f64>>,
 }
 
-impl<'a> SubdivisionColumns<'a> {
-    fn new(points: &'a CoordSeq, emission: SubdivisionEmission<'a>, total: usize) -> Result<Self> {
+impl<'points, 'plans, 'metric> SubdivisionColumns<'points, 'plans, 'metric> {
+    fn new(
+        points: &'points CoordSeq,
+        plans: &'plans [SegmentPlan<'metric>],
+        total: usize,
+    ) -> Result<Self> {
         ensure_coordseq_vertex_capacity(total)?;
         let z_column = points.zs();
         let m_column = points.ms();
         Ok(Self {
             points,
-            emission,
+            plans,
             xs: Vec::with_capacity(total),
             ys: Vec::with_capacity(total),
             zs: z_column.map(|_| Vec::with_capacity(total)),
@@ -914,7 +953,72 @@ fn emit_geodesic_plan(
     Ok(())
 }
 
-impl SubdivisionSink for SubdivisionColumns<'_> {
+fn emit_chart_plan(
+    edge: crate::crs::ChartEdge,
+    geodesic: &geographiclib_rs::Geodesic,
+    length: f64,
+    steps: usize,
+    xs: &mut Vec<f64>,
+    ys: &mut Vec<f64>,
+) -> Result<()> {
+    for step in 1..steps {
+        let fraction = step as f64 / steps as f64;
+        let parameter = if edge.is_parallel() {
+            fraction
+        } else {
+            edge.locate_t(length * fraction, geodesic)?
+        };
+        let point = edge.position(parameter);
+        if !(point.x.is_finite() && point.y.is_finite()) {
+            return Err(GeometryErrorKind::message(
+                "chart-edge subdivision calculation produced a non-finite coordinate",
+            ));
+        }
+        xs.push(point.x);
+        ys.push(point.y);
+    }
+    Ok(())
+}
+
+fn emit_rhumb_plan(
+    plan: RhumbSegmentPlan,
+    crs: &str,
+    state: &crate::crs::RuntimeState,
+    frame: GeographicFrame,
+    steps: usize,
+    xs: &mut Vec<f64>,
+    ys: &mut Vec<f64>,
+) -> Result<()> {
+    for step in 1..steps {
+        let fraction = step as f64 / steps as f64;
+        let Some((longitude, latitude)) = crate::crs::rhumb_destination_crs_at(
+            crs,
+            plan.start.x,
+            plan.start.y,
+            plan.bearing,
+            plan.length * fraction,
+            state,
+        )?
+        else {
+            return Err(GeometryErrorKind::message(
+                "rhumb subdivision calculation crosses a pole",
+            ));
+        };
+        let point = frame
+            .point_from_geodesic(Point::new_raw_xy(longitude, latitude))
+            .expect("rhumb subdivision produced a finite coordinate");
+        if !(point.x.is_finite() && point.y.is_finite()) {
+            return Err(GeometryErrorKind::message(
+                "rhumb subdivision calculation produced a non-finite coordinate",
+            ));
+        }
+        xs.push(point.x);
+        ys.push(point.y);
+    }
+    Ok(())
+}
+
+impl SubdivisionSink for SubdivisionColumns<'_, '_, '_> {
     fn source(&mut self, source_index: usize) -> Result<()> {
         self.xs.push(
             *self
@@ -954,20 +1058,36 @@ impl SubdivisionSink for SubdivisionColumns<'_> {
     }
 
     fn interior(&mut self, segment_index: usize, steps: usize) -> Result<()> {
-        match &mut self.emission {
-            SubdivisionEmission::Planar => {
+        let plan = self
+            .plans
+            .get(segment_index)
+            .expect("subdivision plan matches source segments");
+        match plan.route {
+            SegmentRoutePlan::Planar => {
                 Self::push_interpolated(&mut self.xs, self.points.xs(), segment_index, steps);
                 Self::push_interpolated(&mut self.ys, self.points.ys(), segment_index, steps);
             },
-            SubdivisionEmission::Geodesic(emitter) => {
-                emitter.emit(
-                    self.points,
+            SegmentRoutePlan::Chart { edge, geodesic } => {
+                emit_chart_plan(
+                    edge,
+                    geodesic,
+                    plan.length,
+                    steps,
                     &mut self.xs,
                     &mut self.ys,
-                    segment_index,
-                    steps,
                 )?;
             },
+            SegmentRoutePlan::Geodesic {
+                plan,
+                geodesic,
+                frame,
+            } => emit_geodesic_plan(geodesic, frame, plan, steps, &mut self.xs, &mut self.ys)?,
+            SegmentRoutePlan::Rhumb {
+                plan,
+                crs,
+                state,
+                frame,
+            } => emit_rhumb_plan(plan, crs, state, frame, steps, &mut self.xs, &mut self.ys)?,
         }
         if let (Some(output), Some(column)) = (&mut self.zs, self.points.zs()) {
             Self::push_interpolated(output, column, segment_index, steps);
@@ -979,65 +1099,24 @@ impl SubdivisionSink for SubdivisionColumns<'_> {
     }
 }
 
-fn collect_steps(
+fn subdivide_columns_from_plans(
     points: &CoordSeq,
-    mut steps_for: impl FnMut(usize, Segment) -> Result<usize>,
-) -> Result<Vec<usize>> {
-    let mut steps = Vec::with_capacity(points.len().saturating_sub(1));
-    for (segment_index, segment) in line_segments(points).enumerate() {
-        let step_count = steps_for(segment_index, segment)?;
-        steps.push(step_count);
-    }
-    Ok(steps)
-}
-
-/// Split every segment of a chain into `steps_for(segment)` equal pieces,
-/// keeping every original vertex — the shared engine behind `segmentize`
-/// (length-driven) and `densify` (fraction-driven). Columnar: every
-/// Z/M ordinate interpolates straight from its column into the output column;
-/// XY follows `placement` — no 40-byte `Point` staging, no transpose.
-pub(crate) fn subdivide_columns(
-    points: &CoordSeq,
-    placement: SegmentPlacement<'_>,
-    mut steps_for: impl FnMut(Segment) -> Result<usize>,
+    plans: &[SegmentPlan<'_>],
     budget: &mut ExpansionBudget,
 ) -> Result<CoordSeq> {
-    let count = points.len();
-    if count < 2 {
-        return Ok(points.clone());
-    }
-    // `steps_for` runs once per segment (not per output vertex); the exact
-    // output size keeps every column a single allocation.
-    let steps = collect_steps(points, |_, segment| steps_for(segment))?;
-    subdivide_columns_from_steps(
-        points,
-        SubdivisionEmission::recompute(placement),
-        &steps,
-        budget,
-    )
-}
-
-fn subdivide_columns_from_steps<'a>(
-    points: &'a CoordSeq,
-    emission: SubdivisionEmission<'a>,
-    steps: &[usize],
-    budget: &mut ExpansionBudget,
-) -> Result<CoordSeq> {
-    let (output, generated) =
-        subdivide_columns_from_steps_uncommitted(points, emission, steps, budget)?;
+    let (output, generated) = subdivide_columns_from_plans_uncommitted(points, plans, budget)?;
     budget.add(generated)?;
     Ok(output)
 }
 
-fn subdivide_columns_from_steps_uncommitted<'a>(
-    points: &'a CoordSeq,
-    emission: SubdivisionEmission<'a>,
-    steps: &[usize],
+fn subdivide_columns_from_plans_uncommitted(
+    points: &CoordSeq,
+    plans: &[SegmentPlan<'_>],
     budget: &ExpansionBudget,
 ) -> Result<(CoordSeq, usize)> {
     let count = points.len();
     let mut count_sink = SubdivisionCount { emitted: 0 };
-    emit_subdivision(steps, &mut count_sink)?;
+    emit_subdivision(plans, &mut count_sink)?;
     let total = count_sink.emitted;
     // Existing source vertices are input-sized work. Charge only the vertices
     // this operation creates, once for the whole caller-owned budget.
@@ -1049,9 +1128,8 @@ fn subdivide_columns_from_steps_uncommitted<'a>(
         // the input IS the output, share it.
         return Ok((points.clone(), 0));
     }
-    let mut output = SubdivisionColumns::new(points, emission, total)?;
-    emit_subdivision(steps, &mut output)?;
-    output.emission.assert_exhausted();
+    let mut output = SubdivisionColumns::new(points, plans, total)?;
+    emit_subdivision(plans, &mut output)?;
     let output = output.finish()?;
     Ok((output, generated))
 }
@@ -1399,9 +1477,13 @@ mod tests {
 
     #[test]
     fn subdivision_admits_exact_generated_limit_without_charging_input_vertices() {
-        let steps = [GENERATED_ITEM_LIMIT + 1];
+        let plans = [SegmentPlan {
+            route: SegmentRoutePlan::Planar,
+            length: 0.0,
+            steps: GENERATED_ITEM_LIMIT + 1,
+        }];
         let mut count = SubdivisionCount { emitted: 0 };
-        emit_subdivision(&steps, &mut count).unwrap();
+        emit_subdivision(&plans, &mut count).unwrap();
         let generated = count.generated(2);
         assert_eq!(generated, GENERATED_ITEM_LIMIT);
 
@@ -1410,8 +1492,13 @@ mod tests {
         budget.add(generated).unwrap();
         assert_eq!(budget.used(), GENERATED_ITEM_LIMIT);
 
+        let plans = [SegmentPlan {
+            route: SegmentRoutePlan::Planar,
+            length: 0.0,
+            steps: GENERATED_ITEM_LIMIT + 2,
+        }];
         let mut count = SubdivisionCount { emitted: 0 };
-        emit_subdivision(&[GENERATED_ITEM_LIMIT + 2], &mut count).unwrap();
+        emit_subdivision(&plans, &mut count).unwrap();
         let generated = count.generated(2);
         let over_budget = ExpansionBudget::new("segmentize", "max_length");
         let error = over_budget.check_additional(generated).unwrap_err();
@@ -1430,7 +1517,7 @@ mod tests {
     #[test]
     fn subdivision_rejects_coordinate_width_before_reserving_columns() {
         let points = CoordSeq::try_from_xy(&[XY::new(0.0, 0.0), XY::new(1.0, 0.0)]).unwrap();
-        let error = SubdivisionColumns::new(&points, SubdivisionEmission::Planar, usize::MAX)
+        let error = SubdivisionColumns::new(&points, &[], usize::MAX)
             .err()
             .expect("unrepresentable coordinate width is rejected");
         assert!(matches!(
@@ -1451,6 +1538,30 @@ mod tests {
             segmentize_steps((GENERATED_ITEM_LIMIT + 2) as f64, 1.0),
             GENERATED_ITEM_LIMIT + 2
         );
+    }
+
+    #[test]
+    fn fractional_step_count_does_not_include_prior_budget_usage() {
+        let line = CoordSeq::try_from_xy(&[XY::new(0.0, 0.0), XY::new(10.0, 10.0)]).unwrap();
+        let mut budget = ExpansionBudget::new("segmentize", "fraction");
+        let first = densify_points_budgeted_with_placement(
+            &line,
+            0.5,
+            SegmentPlacement::Planar,
+            &mut budget,
+        )
+        .unwrap();
+        let second = densify_points_budgeted_with_placement(
+            &line,
+            0.5,
+            SegmentPlacement::Planar,
+            &mut budget,
+        )
+        .unwrap();
+
+        assert_eq!(first.len(), 3);
+        assert_eq!(second.len(), 3);
+        assert_eq!(budget.used(), 2);
     }
 
     #[test]
