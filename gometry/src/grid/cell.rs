@@ -146,16 +146,7 @@ impl<T: RectGridCell> GridCell for T {
     fn boundary_shape(self) -> crate::error::Result<Shape> {
         let bounds = self.bounds();
         let frame = GeographicFrame::crs84();
-        let longitude = frame.longitude();
-        if bounds.minx().to_bits() == (-longitude.half_period()).to_bits()
-            && bounds.maxx().to_bits() == longitude.half_period().to_bits()
-        {
-            // A full-world rectangle needs parallel segments through the map;
-            // four seam-only corners collapse its horizontal edges.
-            crate::geometry::geographic_bounds_to_shape(bounds, frame)
-        } else {
-            crate::geometry::rect_polygon(bounds).map(Shape::Polygon)
-        }
+        crate::geometry::geographic_bounds_to_shape(bounds, frame)
     }
 
     fn area_m2(self) -> f64 {

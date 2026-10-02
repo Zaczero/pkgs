@@ -252,6 +252,7 @@ def test_world_tile_polygon_uses_geographic_rectangle_for_scalar_and_array() -> 
     polygon = world.polygon
     assert polygon.bounds == expected
     assert polygon.to_wkt() == gm.box(*expected, crs=4326).to_wkt()
+    assert len(polygon.exterior.coords) == 9
     assert gm.contains(polygon, gm.Point(0.0, 0.0, crs=4326))
 
     polygons = gm.CellArray([world], type=gm.Tile).polygon
@@ -259,7 +260,20 @@ def test_world_tile_polygon_uses_geographic_rectangle_for_scalar_and_array() -> 
     assert polygons.total_bounds == expected
     assert gm.contains(polygons[0], gm.Point(0.0, 0.0, crs=4326))
 
-    ordinary = gm.Tile(x=1, y=1, zoom=1).polygon
+    hemisphere = gm.Tile(x=1, y=1, zoom=1).polygon
+    minx, miny, maxx, maxy = hemisphere.bounds
+    midpoint = minx + (maxx - minx) / 2.0
+    assert gm.get_coordinates(hemisphere).tolist() == [
+        [minx, miny],
+        [midpoint, miny],
+        [maxx, miny],
+        [maxx, maxy],
+        [midpoint, maxy],
+        [minx, maxy],
+        [minx, miny],
+    ]
+
+    ordinary = gm.Tile(x=1, y=1, zoom=2).polygon
     minx, miny, maxx, maxy = ordinary.bounds
     four_corner_polygon = gm.Polygon(
         [(minx, miny), (maxx, miny), (maxx, maxy), (minx, maxy), (minx, miny)],

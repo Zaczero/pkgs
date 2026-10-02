@@ -348,58 +348,18 @@ value.
 
 ### Geographic box boundary fidelity
 
-For ordinary native-range, non-wrapping geographic [`gm.box`][gometry.box]
-calls with positive width and height, the horizontal sides use equal-longitude
-vertices rather than one geodesic between the corners. The constructor
-converts the longitude span to radians and sets the interval count to
-`ceil(Δλ / 0.247)`, so each stored horizontal chord spans at most `0.247`
-radians (about `14.152°`). The `wrap='split'` path remains the separate
-EPSG:4326 seam-splitting constructor.
-`gm.length` measures each stored straight longitude/latitude edge on the
-ellipsoid. Its equal-latitude sides therefore measure the mathematical
-constant-latitude parallels named by the box bounds, to rounding.
+For nondegenerate geographic bounds with `wrap=None` whose longitude and
+latitude values all lie within the CRS frame's native ranges, `box` constructs
+edges along parallels and meridians. It inserts only enough intermediate
+longitudes to keep each step strictly below half the longitude period. A span
+below half a period has five ring positions including closure; a span from half
+to less than a full period has seven, and a full-world band has nine. Geographic
+area and length measure these stored chart edges.
 
-The reference parallel length in the example below is
-`N(φ) cos(φ) Δλ`, where
-`N(φ) = a / sqrt(1 - e² sin²φ)` is the WGS 84 prime-vertical radius (`a` is the
-semi-major axis and `e` the eccentricity); the angular values are in radians.
-
-```python exec="on" source="block" result="text"
-import math
-
-import gometry as gm
-
-minx, miny, maxx, maxy = 0.0, 44.0, 90.0, 45.0
-box = gm.box(minx, miny, maxx, maxy, crs=4326)
-crs = gm.CRS(4326)
-coordinates = gm.get_coordinates(box).tolist()
-north_latitude = max(point[1] for point in coordinates)
-north = [point for point in coordinates if point[1] == north_latitude]
-stored_edge_length = gm.LineString(north, crs=crs).length
-ellipsoid = crs.ellipsoid
-a = ellipsoid["semi_major_metre"]
-flattening = 1.0 / ellipsoid["inverse_flattening"]
-eccentricity_squared = flattening * (2.0 - flattening)
-latitude = math.radians(north_latitude)
-longitude_span = math.radians(maxx - minx)
-parallel_length = (
-    a
-    / math.sqrt(1.0 - eccentricity_squared * math.sin(latitude) ** 2)
-    * math.cos(latitude)
-    * longitude_span
-)
-length_difference = stored_edge_length - parallel_length
-print(f"northern-side chord intervals: {len(north) - 1}")
-print(f"northern-side stored-edge length: {stored_edge_length:,.3f} m")
-print(f"WGS 84 parallel reference: {parallel_length:,.3f} m")
-print(f"difference: {length_difference:,.3f} m ({length_difference / parallel_length * 100.0:.6f}%)")
-
-```
-
-This measured example is not a per-call error bound. If a closer approximation
-is required, provide more intermediate vertices when constructing the polygon;
-`gm.length` measures the resulting stored straight longitude/latitude edges on
-the ellipsoid.
+Degenerate or out-of-range `wrap=None` bounds retain the ordinary corner-only,
+unwrapped construction; the native-range directed-span guarantee does not
+apply on that path. Antimeridian-crossing bounds use the separate EPSG:4326
+`wrap='split'` construction.
 
 ### Geographic geodesic numerical domain
 

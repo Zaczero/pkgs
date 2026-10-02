@@ -40,37 +40,32 @@ pub(crate) fn bounds_to_shape(bounds: Bounds) -> crate::error::Result<Shape> {
     Ok(Shape::Polygon(rect_polygon(bounds)?))
 }
 
-/// Build a geographic rectangle whose horizontal sides approximate parallels.
+/// Build a geographic rectangle whose sides follow chart parallels and meridians.
 pub(crate) fn geographic_bounds_to_shape(
     bounds: Bounds,
     frame: crate::geographic::GeographicFrame,
 ) -> crate::error::Result<Shape> {
-    // Geographic box parallels use equal-longitude geodesic chords at this
-    // angular spacing; the resulting metric fidelity is documented in the
-    // geographic CRS guide.
-    const MAX_CHORD_RADIANS: f64 = 0.247;
     if same_topological_coordinate(bounds.minx(), bounds.maxx()) {
         return bounds_to_shape(bounds);
     }
-    let segments = ((bounds.maxx() - bounds.minx()) * frame.longitude().unit().radians_per_unit()
-        / MAX_CHORD_RADIANS)
-        .ceil()
-        .max(1.0) as usize;
+    let span = bounds.maxx() - bounds.minx();
+    // Each step must stay strictly below the topology's half-period so its
+    // short-way longitude direction is unambiguous.
+    let steps = ((span / frame.longitude().half_period()).floor() as usize)
+        .checked_add(1)
+        .ok_or(crate::error::ResourceError::SizeOverflow)?;
     let capacity = if same_topological_coordinate(bounds.miny(), bounds.maxy()) {
-        segments.checked_add(1)
+        steps.checked_add(1)
     } else {
-        segments
-            .checked_mul(2)
-            .and_then(|value| value.checked_add(3))
+        steps.checked_mul(2).and_then(|value| value.checked_add(3))
     }
     .ok_or(crate::error::ResourceError::SizeOverflow)?;
     let mut points = Vec::new();
     points.reserve_exact(capacity);
-    let span = bounds.maxx() - bounds.minx();
     points.push(Point::new_raw_xy(bounds.minx(), bounds.miny()));
-    for index in 1..segments {
+    for index in 1..steps {
         points.push(Point::new_raw_xy(
-            bounds.minx() + span * index as f64 / segments as f64,
+            bounds.minx() + span * index as f64 / steps as f64,
             bounds.miny(),
         ));
     }
@@ -81,9 +76,9 @@ pub(crate) fn geographic_bounds_to_shape(
         )));
     }
     points.push(Point::new_raw_xy(bounds.maxx(), bounds.maxy()));
-    for index in (1..segments).rev() {
+    for index in (1..steps).rev() {
         points.push(Point::new_raw_xy(
-            bounds.minx() + span * index as f64 / segments as f64,
+            bounds.minx() + span * index as f64 / steps as f64,
             bounds.maxy(),
         ));
     }

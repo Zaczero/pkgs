@@ -637,10 +637,6 @@ pub(super) fn build_box_shape(
                     "box minx ({minx}) must not exceed maxx ({maxx}) unless wrap='split'"
                 )));
             }
-            // `box` names a lat/lon rectangle, so its horizontal edges are
-            // parallels rather than one long geodesic between corners. Add
-            // the minimum number of equal-longitude chords at the documented
-            // angular limit.
             if let Some(crs) = crs
                 && let Some(frame) = crs::info(crs).map_err(PyErr::from)?.geographic_frame()
                 && (-frame.longitude().half_period()..=frame.longitude().half_period())
@@ -667,8 +663,7 @@ pub(super) fn build_box_shape(
                 },
             }
             if maxx - minx >= 360.0 {
-                // A full turn is a geographic latitude band, not a pair of
-                // geodesic edges between the antimeridian endpoints.
+                // Every full turn denotes the complete longitude band.
                 if miny < maxy {
                     let frame = crs::info("EPSG:4326")
                         .map_err(PyErr::from)?

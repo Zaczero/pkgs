@@ -856,7 +856,7 @@ def test_non_degree_geographic_crs_uses_native_units_for_geodesic_metrics() -> N
         ),
     ],
 )
-def test_geographic_box_subdivision_uses_native_angular_ranges(
+def test_geographic_box_uses_frame_native_half_period(
     physical_bounds: tuple[float, float, float, float],
     grad_latitude_above_90: bool,
     grad_longitude_above_180: bool,
@@ -878,7 +878,7 @@ def test_geographic_box_subdivision_uses_native_angular_ranges(
         assert box.bounds == bounds
 
     reference = _physical_coordinates(boxes[0], crss[0])
-    assert len(reference) > 5
+    assert len(reference) == 5
     for box, crs in zip(boxes[1:], crss[1:], strict=True):
         actual = _physical_coordinates(box, crs)
         assert len(actual) == len(reference)

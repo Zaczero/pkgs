@@ -58,10 +58,9 @@ def test_box_can_explicitly_split_antimeridian_crossing_bounds() -> None:
 
 
 def test_geographic_box_preserves_wide_directed_longitude_interval() -> None:
-    """Geographic boxes are latitude bands, without a 180-degree area cliff."""
-    # The representation for normal city/tile/small-country extents is exactly
-    # the old four-corner polygon: coordinates, WKB, and geodesic metrics all
-    # remain bit-identical.
+    """Wide geographic boxes keep their eastward longitude span unambiguous."""
+    # A box narrower than half the longitude period needs only its four
+    # corners, with the same canonical ring spelling as an ordinary polygon.
     for extent in [
         (0.0, 50.0, 0.01, 50.01),
         (0.0, 50.0, 0.1, 50.1),
@@ -81,68 +80,22 @@ def test_geographic_box_preserves_wide_directed_longitude_interval() -> None:
         assert actual.area == legacy.area
         assert actual.length == legacy.length
 
-    # The equal-chord limit, rather than a span switch, keeps the normal path
-    # byte-identical on both sides of one degree at a typical latitude.
-    near_one = [0.9999, 1.0, 1.0001]
-    near_one_boxes = [
-        gm.box(20.0, 52.0, 20.0 + span, 53.0, crs=4326) for span in near_one
-    ]
-    assert [len(box.exterior.coords) for box in near_one_boxes] == [5, 5, 5]
-    near_one_areas = np.array([box.area for box in near_one_boxes])
-    assert np.all(np.diff(near_one_areas) > 0.0)
-    assert np.ptp(near_one_areas / near_one) / np.mean(near_one_areas / near_one) < 1e-6
-
-    # Continental boxes and long/thin bands cross the materiality threshold.
-    for extent in [
-        (0.0, 40.0, 20.0, 60.0),
-        (-10.0, 35.0, 30.0, 65.0),
-        (-30.0, -30.0, 30.0, 30.0),
-        (0.0, 50.0, 20.0, 50.1),
+    # Split a side only when its longitude span would otherwise reach half a
+    # period. Every edge stays strictly below 180 degrees.
+    for span, expected_positions in [
+        (0.01, 5),
+        (179.9, 5),
+        (180.0, 7),
+        (180.1, 7),
+        (200.0, 7),
+        (358.0, 7),
+        (360.0, 9),
     ]:
-        assert len(gm.box(*extent, crs=4326).exterior.coords) > 5
-
-    # The previous four-corner expectation at a hemisphere described geodesic
-    # edges instead of this latitude rectangle, so it remains tessellated.
-    half = gm.box(-90.0, -10.0, 90.0, 10.0, crs=4326)
-    assert len(half.exterior.coords) > 5
-
-    # Span sampling includes both sides of the former threshold. A true
-    # latitude rectangle has area proportional to longitude span, so this
-    # catches both the old complement and any representation-fidelity cliff.
-    spans = np.unique(np.r_[np.linspace(0.01, 360.0, 3601), [179.9, 180.0, 180.1]])
-    areas = np.array([
-        gm.box(-span / 2.0, -10.0, span / 2.0, 10.0, crs=4326).area for span in spans
-    ])
-    # Equal-chord refinements can produce a tiny backward blip when the
-    # partition gains a chord. The contract is no material discontinuity.
-    assert np.all(np.diff(areas) > -0.005 * areas[:-1])
-    # A representative partition transition remains within the same budget
-    # of the increment for a true latitude rectangle.
-    before = gm.box(0.0, -10.0, 56.608, 10.0, crs=4326)
-    after = gm.box(0.0, -10.0, 56.708, 10.0, crs=4326)
-    expected_increment = before.area * (56.708 - 56.608) / 56.608
-    assert abs(after.area - before.area - expected_increment) / before.area < 0.005
-
-    # Equal longitude chords approximate the parallel edges within the
-    # materiality budget against a much denser polygonal reference.
-    for extent in [
-        (0.0, 40.0, 20.0, 60.0),
-        (-10.0, 35.0, 30.0, 65.0),
-        (-100.0, -10.0, 100.0, 10.0),
-        (-179.0, -10.0, 179.0, 10.0),
-        (-180.0, -10.0, 180.0, 10.0),
-    ]:
-        minx, miny, maxx, maxy = extent
-        longitudes = np.linspace(minx, maxx, 10_001)
-        reference = gm.Polygon(
-            [(float(lon), miny) for lon in longitudes]
-            + [(maxx, maxy)]
-            + [(float(lon), maxy) for lon in longitudes[-2::-1]]
-            + [(minx, miny)],
-            crs=4326,
-        )
-        actual = gm.box(*extent, crs=4326)
-        assert abs(actual.area / reference.area - 1.0) < 0.005
+        band = gm.box(-span / 2.0, -10.0, span / 2.0, 10.0, crs=4326)
+        coordinates = gm.get_coordinates(band)
+        assert len(band.exterior.coords) == expected_positions
+        assert np.all(np.abs(np.diff(coordinates[:, 0])) < 180.0)
+        assert band.bounds == (-span / 2.0, -10.0, span / 2.0, 10.0)
 
     # `box(-100, ..., 100, ...)` is the 200-degree band, not the 160-degree
     # complement, and every public region consumer sees that same band.
@@ -165,9 +118,7 @@ def test_geographic_box_preserves_wide_directed_longitude_interval() -> None:
         assert gm.S2Cell(point, level=1) in s2
 
 
-def test_geographic_box_tessellation_leaves_projected_and_split_boxes_unchanged() -> (
-    None
-):
+def test_geographic_box_building_leaves_projected_and_split_boxes_unchanged() -> None:
     projected = gm.box(0.0, 0.0, 1000.0, 1000.0, crs=3857)
     assert projected.to_wkt() == 'POLYGON ((0 0, 1000 0, 1000 1000, 0 1000, 0 0))'
     split = gm.box(170.0, -10.0, -170.0, 10.0, crs=4326, wrap='split')
@@ -179,6 +130,7 @@ def test_geographic_box_tessellation_leaves_projected_and_split_boxes_unchanged(
     values = gm.boxes(
         [-100.0, 20.0], [-10.0, 51.0], [100.0, 21.0], [10.0, 52.0], crs=4326
     )
+    assert [len(values[index].exterior.coords) for index in range(2)] == [7, 5]
     assert values[0].to_wkb() == gm.box(-100.0, -10.0, 100.0, 10.0, crs=4326).to_wkb()
     assert values[1].to_wkb() == gm.box(20.0, 51.0, 21.0, 52.0, crs=4326).to_wkb()
 

@@ -27,11 +27,13 @@ use crate::py::numpy;
 /// crs : str or int, optional
 ///     CRS label (EPSG code, authority string, or WKT); attached as metadata,
 ///     coordinates are not transformed.
-///     With a geographic CRS, horizontal sides approximate constant-latitude
-///     parallels in the CRS-native angular coordinates using equal-longitude
-///     chord vertices, rather than corner-to-corner geodesics. See the
-///     [CRS, units & measurement guide](https://gometry.monicz.dev/guide/crs/)
-///     for the native-range scope and measured fidelity of this approximation.
+///     With a geographic CRS, positive-size ``wrap=None`` bounds wholly inside
+///     the frame's native longitude and latitude ranges use chart edges along
+///     parallels and meridians. Only enough intermediate longitudes are
+///     inserted to keep each step below half the period; geographic area and
+///     length measure those stored edges. Other ``wrap=None`` bounds use the
+///     corner-only, unwrapped construction; the native-range directed-span
+///     guarantee does not apply on that path.
 ///
 /// wrap : {'split'}, optional
 ///     Antimeridian handling for geographic (EPSG:4326) boxes. ``'split'``
@@ -283,11 +285,9 @@ fn try_points_from_arc_columns(
 ///     broadcast numpy-style.
 ///
 /// crs : str or int, optional
-///     CRS applied to every box. With a geographic CRS, horizontal sides
-///     approximate constant-latitude parallels in the CRS-native angular
-///     coordinates using equal-longitude chord vertices. See the
-///     [CRS, units & measurement guide](https://gometry.monicz.dev/guide/crs/)
-///     for the native-range scope and measured fidelity of this approximation.
+///     CRS applied to every box. Geographic rows follow the same native-range
+///     chart-edge and corner-only ``wrap=None`` rules as `box`. Geographic area
+///     and length measure the stored chart edges when the chart-edge path applies.
 ///
 /// wrap : {'split'}, optional
 ///     Antimeridian handling for geographic (EPSG:4326) boxes — same as `box`.

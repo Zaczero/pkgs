@@ -24,6 +24,51 @@ def test_chart_area_is_ellipsoidal_and_keeps_holes() -> None:
     assert polygon.area != pytest.approx(12.0, rel=1e-6)
 
 
+def test_geographic_box_uses_four_corners_and_zone_area() -> None:
+    polygon = gm.box(-45.0, 70.0, 45.0, 80.0, crs=4326)
+    assert gm.get_coordinates(polygon).tolist() == [
+        [-45.0, 70.0],
+        [45.0, 70.0],
+        [45.0, 80.0],
+        [-45.0, 80.0],
+        [-45.0, 70.0],
+    ]
+    expected = chart_zone_area(
+        -45.0,
+        45.0,
+        70.0,
+        80.0,
+        semi_major=6_378_137.0,
+        flattening=1.0 / 298.257223563,
+    )
+    assert polygon.area == pytest.approx(expected, rel=1e-13)
+
+
+def test_full_world_box_uses_minimal_valid_chart_band() -> None:
+    band = gm.box(-180.0, 70.0, 180.0, 80.0, crs=4326)
+    assert gm.get_coordinates(band).tolist() == [
+        [-180.0, 70.0],
+        [-60.0, 70.0],
+        [60.0, 70.0],
+        [180.0, 70.0],
+        [180.0, 80.0],
+        [60.0, 80.0],
+        [-60.0, 80.0],
+        [-180.0, 80.0],
+        [-180.0, 70.0],
+    ]
+    assert band.is_valid is True
+    expected = chart_zone_area(
+        -180.0,
+        180.0,
+        70.0,
+        80.0,
+        semi_major=6_378_137.0,
+        flattening=1.0 / 298.257223563,
+    )
+    assert band.area == pytest.approx(expected, rel=1e-13)
+
+
 def test_chart_area_preserves_empty_and_missing_rows() -> None:
     polygon = gm.box(0.0, 0.0, 1.0, 1.0, crs=4326)
     values = gm.GeometryArray(
