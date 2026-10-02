@@ -13,8 +13,8 @@
 use std::f64::consts::PI;
 use std::ops::ControlFlow;
 
-use crate::boundary::geographic::normalized_geographic_pole;
 use crate::curves::{morton_deinterleave, morton_interleave};
+use crate::geographic::lonlat::normalized_geographic_pole;
 use crate::geometry::{Bounds, Point, Shape};
 use crate::grid::coverer::RectCell;
 

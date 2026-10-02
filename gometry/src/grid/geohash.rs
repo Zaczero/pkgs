@@ -5,7 +5,7 @@
 //! token's lexicographic order — the property that makes sorted cell sets
 //! and range membership work like the numeric systems. Even bit positions
 //! (from the top) refine longitude, odd refine latitude.
-use crate::boundary::geographic::{MAX_LATITUDE, MAX_LONGITUDE, MIN_LATITUDE, MIN_LONGITUDE};
+use crate::geographic::lonlat::{MAX_LATITUDE, MAX_LONGITUDE, MIN_LATITUDE, MIN_LONGITUDE};
 use crate::geometry::Bounds;
 use crate::grid::coverer::RectCell;
 

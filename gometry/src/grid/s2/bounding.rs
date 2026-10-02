@@ -31,7 +31,7 @@
 //!
 //! Coverer fail-open `Boundary` is intentionally unused here (correct for
 //! outer covers, not multi-face proof). No amplification beyond the bbox.
-use crate::boundary::geographic::normalize_accepted_latitude;
+use crate::geographic::lonlat::normalize_accepted_latitude;
 use crate::geometry::{Bounds, Shape, ShapeCountQuery};
 use crate::grid::s2::cell::Cell;
 use crate::grid::s2::cellid::{CellId, Face};

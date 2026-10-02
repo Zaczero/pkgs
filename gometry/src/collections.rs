@@ -1,5 +1,4 @@
-//! Project-wide hash collections — one place that picks the hasher so every map
-//! and set in the crate is consistent.
+//! Native collection builders, capacity planning, and shared hash policy.
 //!
 //! [`HashMap`]/[`HashSet`] use `ahash` (a fast, high-quality non-cryptographic
 //! hasher) as the default for all crate-owned maps/sets, including public-path
@@ -19,6 +18,8 @@
 
 use std::hash::{BuildHasher as _, BuildHasherDefault, Hash, Hasher};
 use std::sync::{LazyLock, OnceLock};
+
+pub(crate) mod csr;
 
 pub(crate) use ahash::{HashMap, HashMapExt, HashSet, HashSetExt};
 
@@ -298,5 +299,35 @@ mod row_id_sort_tests {
         let mut dense = vec![511, 4, 255, 1023, 64, 4, 65, 0, 511];
         super::sort_unique_row_ids(&mut dense, 0, 1024);
         assert_eq!(dense, [0, 4, 64, 65, 255, 511, 1023]);
+    }
+}
+
+/// Initial reservation bound for advisory Rust iterator and serde size hints.
+pub(crate) const MAX_RESERVE_HINT: usize = 1 << 12; // 4096 elements
+
+/// Reserve from an untrusted **hint** without letting the hint affect
+/// validity. The reservation is clamped to both the advisory bound and `T`'s
+/// remaining addressable layout.
+pub(crate) fn reserve_hint<T>(vec: &mut Vec<T>, additional: usize) {
+    let element_size = std::mem::size_of::<T>();
+    let max_capacity = (isize::MAX as usize)
+        .checked_div(element_size)
+        .unwrap_or(usize::MAX);
+    let additional = additional
+        .min(MAX_RESERVE_HINT)
+        .min(max_capacity.saturating_sub(vec.len()));
+    vec.reserve(additional);
+}
+
+#[cfg(test)]
+mod capacity_tests {
+    use super::{MAX_RESERVE_HINT, reserve_hint};
+
+    #[test]
+    fn reserve_hint_clamps_instead_of_rejecting() {
+        let mut v: Vec<u8> = Vec::new();
+        reserve_hint(&mut v, MAX_RESERVE_HINT + 1);
+        assert!(v.capacity() <= MAX_RESERVE_HINT);
+        assert!(v.capacity() > 0);
     }
 }

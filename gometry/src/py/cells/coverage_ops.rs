@@ -1,10 +1,10 @@
 //! Grid factory and rectangular-grid cell-array helpers.
 use pyo3::prelude::*;
 
-use crate::boundary::geographic;
 use crate::error::{Error, ResourceError};
 use crate::geographic::{
     GeographicDiagnostic, GeographicFrame, GeographicViewError, ScalarGeographicView,
+    lonlat as geographic,
 };
 use crate::geometry::{CoordSeq, LineSeq, Shape, TopologyDomain};
 use crate::grid::affine_source::normalize_grid_source;

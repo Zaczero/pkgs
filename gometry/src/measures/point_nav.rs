@@ -4,9 +4,8 @@ use pyo3::types::PyAny;
 
 use crate::array::missing::{LogicalRowIndex, PresentRowIndex, union_many};
 use crate::array::{GeometryArrayStorage, PackedStorage, ValidityMask, ValidityRank};
-use crate::boundary::geographic;
 use crate::dispatch::MetricOp;
-use crate::geographic::GeographicFrame;
+use crate::geographic::{GeographicFrame, lonlat as geographic};
 use crate::geometry::{
     CoordSeq, CoordSeqBuilder, CoordinateAxes, HasM, HasZ, MOrdinate, ZOrdinate,
     same_topological_coordinate,

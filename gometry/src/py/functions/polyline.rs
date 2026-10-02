@@ -10,7 +10,7 @@
 
 use pyo3::prelude::*;
 
-use crate::boundary::geographic::{MAX_LATITUDE, MAX_LONGITUDE, MIN_LATITUDE, MIN_LONGITUDE};
+use crate::geographic::lonlat::{MAX_LATITUDE, MAX_LONGITUDE, MIN_LATITUDE, MIN_LONGITUDE};
 use crate::geometry::{CoordSeq, CoordSeqBuilder, CoordinateAxes, GeometryKind, LineSeq, Point};
 use crate::py::errors;
 use crate::py::errors::{InvalidGeometryError, ParseError};

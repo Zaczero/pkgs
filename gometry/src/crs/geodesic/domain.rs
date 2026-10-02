@@ -1,9 +1,8 @@
-use crate::boundary::geographic;
-use crate::boundary::geographic::invalid_lonlat_error;
 use crate::crs::RuntimeState;
 use crate::crs::geodesic::geographic_metric_frame_at;
 use crate::error::Result;
-use crate::geographic::{GeographicFrame, ScalarGeographicView};
+use crate::geographic::lonlat::invalid_lonlat_error;
+use crate::geographic::{GeographicFrame, ScalarGeographicView, lonlat as geographic};
 use crate::geometry::{CoordSeq, Shape};
 
 /// Expand one longitude/latitude domain check inside a coordinate loop. The
@@ -17,7 +16,7 @@ macro_rules! geographic_lonlat_result {
             .canonicalize(__lon)
             .and_then(|_| $crate::geographic::Latitude::try_new($frame, __lat))
             .map(|_| ())
-            .map_err(|_| $crate::boundary::geographic::invalid_lonlat_error(__lon, __lat))
+            .map_err(|_| $crate::geographic::lonlat::invalid_lonlat_error(__lon, __lat))
     }};
 }
 pub(crate) use geographic_lonlat_result;

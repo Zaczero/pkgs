@@ -3,8 +3,7 @@
 //! Rectangular grids blanket-implement from [`RectGridCell`]; H3 and S2 hand-implement
 //! in `src/py/cells/{h3,s2}/` where their PyO3-facing kernels live.
 
-use crate::boundary::geographic;
-use crate::geographic::GeographicFrame;
+use crate::geographic::{GeographicFrame, lonlat as geographic};
 use crate::geometry::{Point, Shape};
 use crate::grid::cell_set;
 use crate::grid::coverer::RectCell;

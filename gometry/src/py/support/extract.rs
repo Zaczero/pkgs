@@ -13,6 +13,13 @@ use crate::py::support::{
     float_values_exact, is_mapping_like, is_py_bytes_or_bytearray, parse_geojson_geometry_value,
 };
 
+pub(crate) fn point_xy(shape: &Shape) -> PyResult<(f64, f64)> {
+    let Shape::Point(point) = shape else {
+        return Err(errors::geometry_type_err("expected Point geometry"));
+    };
+    Ok((point.x, point.y))
+}
+
 pub(crate) enum OwnedBytes {
     Backed(PyBackedBytes),
     Copied(Vec<u8>),

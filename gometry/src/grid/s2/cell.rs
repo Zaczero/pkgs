@@ -2,7 +2,7 @@
 //! and exact spherical area. Decoded once from a [`CellId`], all `Copy` —
 //! no heap, no wrapper types.
 
-use crate::boundary::geographic::EARTH_AUTHALIC_RADIUS_M;
+use crate::geographic::lonlat::EARTH_AUTHALIC_RADIUS_M;
 use crate::geometry::{CoordSeq, Point, Polygon, Ring, Shape};
 use crate::grid::s2::cellid::{CellId, Face};
 use crate::grid::s2::projection::{

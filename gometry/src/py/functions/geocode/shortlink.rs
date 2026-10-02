@@ -1,4 +1,4 @@
-use crate::boundary::geographic::{MAX_LATITUDE, MIN_LATITUDE};
+use crate::geographic::lonlat::{MAX_LATITUDE, MIN_LATITUDE};
 use crate::py::errors;
 use crate::py::functions::geocode::PyResult;
 

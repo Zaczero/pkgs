@@ -927,13 +927,13 @@ fn select_growable(
     let mut ys = Vec::new();
     let mut zs = zs_src.map(|_| Vec::new());
     let mut ms = ms_src.map(|_| Vec::new());
-    crate::boundary::reserve_hint(&mut xs, capacity);
-    crate::boundary::reserve_hint(&mut ys, capacity);
+    crate::collections::reserve_hint(&mut xs, capacity);
+    crate::collections::reserve_hint(&mut ys, capacity);
     if let Some(zs) = &mut zs {
-        crate::boundary::reserve_hint(zs, capacity);
+        crate::collections::reserve_hint(zs, capacity);
     }
     if let Some(ms) = &mut ms {
-        crate::boundary::reserve_hint(ms, capacity);
+        crate::collections::reserve_hint(ms, capacity);
     }
     for row in rows {
         push_row(

@@ -40,7 +40,7 @@ use std::cmp::Ordering;
 use h3o::Resolution;
 use rstar::AABB;
 
-use crate::boundary::geographic::{
+use crate::geographic::lonlat::{
     normalize_accepted_geographic_latitudes, normalized_geographic_pole,
 };
 use crate::geographic::{GeographicFrame, GeographicRing, RingDomain, RingSummary, RingTurn};

@@ -59,13 +59,13 @@ impl GeometryKind {
 
 /// Amortized CSR offset column builder for hot mutators (simplify, densify, …).
 pub(crate) struct CsrOffsetBuilder {
-    builder: crate::boundary::CsrBuilder<(), i32>,
+    builder: crate::collections::csr::CsrBuilder<(), i32>,
 }
 
 impl Default for CsrOffsetBuilder {
     fn default() -> Self {
         Self {
-            builder: crate::boundary::CsrBuilder::new(),
+            builder: crate::collections::csr::CsrBuilder::new(),
         }
     }
 }
@@ -78,7 +78,7 @@ impl CsrOffsetBuilder {
 
     pub(crate) fn with_capacity(rows: usize) -> Self {
         Self {
-            builder: crate::boundary::CsrBuilder::with_capacity(0, rows),
+            builder: crate::collections::csr::CsrBuilder::with_capacity(0, rows),
         }
     }
 

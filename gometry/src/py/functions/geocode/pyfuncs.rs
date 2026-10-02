@@ -1,7 +1,7 @@
 use pyo3::types::PyTuple;
 
-use crate::boundary::geographic;
 use crate::crs::frame::WGS84_LONLAT;
+use crate::geographic::lonlat as geographic;
 use crate::py::errors;
 use crate::py::functions::geocode::pluscode::{
     olc_decode, olc_encode, olc_recover, olc_require_full, olc_shorten, validate_pluscode_length,

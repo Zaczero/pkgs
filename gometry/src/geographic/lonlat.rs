@@ -1,16 +1,9 @@
-//! Geographic (lon/lat) domain validation and small geo-rs conversions.
-//!
-//! `validate_lonlat_*` enforce the WGS84 angular domain before grid/S2 ops;
-//! `point_xy` is the shared `Shape` -> coordinate adapter.
-//! Re-exported at the crate root for `use super::*` and `crate::` consumers.
+//! Degree-based longitude/latitude admission and physical-pole normalization.
 
 use std::collections::HashMap;
 use std::ops::ControlFlow;
 
-use pyo3::prelude::*;
-
 use crate::geometry::ShapeOwnerKey;
-use crate::py::errors::geometry_type_err;
 use crate::{GeometryErrorKind, Shape};
 
 pub(crate) fn invalid_lonlat_error(lon: f64, lat: f64) -> crate::error::Error {
@@ -148,13 +141,6 @@ pub(crate) fn validate_lonlat_xy(lon: f64, lat: f64) -> crate::error::Result<()>
         return Err(invalid_lonlat_error(lon, lat));
     }
     Ok(())
-}
-
-pub(crate) fn point_xy(shape: &Shape) -> PyResult<(f64, f64)> {
-    let Shape::Point(point) = shape else {
-        return Err(geometry_type_err("expected Point geometry"));
-    };
-    Ok((point.x, point.y))
 }
 
 #[cfg(test)]

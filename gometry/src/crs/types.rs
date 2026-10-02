@@ -868,3 +868,20 @@ impl<'py> IntoPyObject<'py> for AuthorityObjectInfo {
         Ok(dict)
     }
 }
+
+/// Z/T lane state: absent, Z-only, T-only, or Z+T.
+#[derive(Clone, Copy)]
+#[expect(
+    clippy::enum_variant_names,
+    reason = "Zt::Zt mirrors the compact Z/T lane vocabulary"
+)]
+pub(crate) enum Zt<T> {
+    None,
+    Z(T),
+    T(T),
+    Zt { z: T, t: T },
+}
+
+pub(crate) type ZtLanes<'a> = Zt<&'a mut [f64]>;
+pub(crate) type ZtLaneRefs<'a> = Zt<&'a [f64]>;
+pub(crate) type ZtValues = Zt<f64>;

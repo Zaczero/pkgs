@@ -155,7 +155,7 @@ pub(crate) use types::{
     OperationInfo, OperationParameterInfo, PrimeMeridianCatalogInfo, PrimeMeridianInfo,
     ProjDirection, ProjOperationCatalogInfo, ProjectionFactorColumns, ProjectionFactors,
     RuntimeConfig, RuntimeState, TransformExecution, TransformFailure, TransformOptions, UnitInfo,
-    UtmCatalogOptions, WktAxisRule, WktVersion,
+    UtmCatalogOptions, WktAxisRule, WktVersion, Zt, ZtLaneRefs, ZtLanes, ZtValues,
 };
 
 const WEB_MERCATOR_RADIUS: f64 = 6_378_137.0;

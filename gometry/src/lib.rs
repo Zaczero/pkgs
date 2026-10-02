@@ -33,32 +33,36 @@ pub(crate) use writer_ordinate_policy;
 mod boundary;
 use boundary::{
     CoordSeqBuffer, CoordSeqBufferMode, CoordSeqStructure, CoordinateInput, CrsCoordinateArgs,
-    CsrBuilder, DefaultedF64Input, DefaultedI64Input, F64Param, GridOrigin, I64Param, OriginSpec,
-    TransformOptionArgs, Zt, ZtLaneRefs, ZtLanes, ZtValues, angle_radians,
-    broadcast_coordinate_group, broadcast_coordinate_input, broadcast_crs_coordinate_inputs,
-    buffer_copy_to_slice_u64, buffer_to_vec_u64, cdt_refinement_values, check_python_signals,
-    collect_bool_mask, collect_bytes_rows, collect_i64_sequence, collect_py_iter,
-    collect_py_iter_at_most_from_iter, collect_py_iter_exact, collect_py_iter_exact_from_iter,
-    collect_py_iter_from_iter, collect_py_strings, collect_sequence_items, collect_u64_sequence,
-    coordinate_column_values, coordinate_column_values_exact, coordinate_column_values_from_buffer,
-    coordinate_epoch_option, coordinate_input_with_expected, coordinate_inputs_are_scalar,
-    coordinate_sequence_len_hint, coordinates, coordinates_object, copy_one_byte_buffer,
-    f64_required, f64_scalar_named, finite_coordinate_required, finite_f64_required, float_values,
-    float_values_at_most, float_values_exact, is_one_byte_buffer, json_to_py, non_negative_int,
+    DefaultedF64Input, DefaultedI64Input, F64Param, GridOrigin, I64Param, OriginSpec,
+    TransformOptionArgs, angle_radians, broadcast_coordinate_group, broadcast_coordinate_input,
+    broadcast_crs_coordinate_inputs, buffer_copy_to_slice_u64, buffer_to_vec_u64,
+    cdt_refinement_values, check_python_signals, collect_bool_mask, collect_bytes_rows,
+    collect_i64_sequence, collect_py_iter, collect_py_iter_at_most_from_iter,
+    collect_py_iter_exact, collect_py_iter_exact_from_iter, collect_py_iter_from_iter,
+    collect_py_strings, collect_sequence_items, collect_u64_sequence, coordinate_column_values,
+    coordinate_column_values_exact, coordinate_column_values_from_buffer, coordinate_epoch_option,
+    coordinate_input_with_expected, coordinate_inputs_are_scalar, coordinate_sequence_len_hint,
+    coordinates, coordinates_object, copy_one_byte_buffer, f64_required, f64_scalar_named,
+    finite_coordinate_required, finite_f64_required, float_values, float_values_at_most,
+    float_values_exact, is_one_byte_buffer, json_to_py, non_negative_int,
     optional_coordinate_column_values, optional_coordinate_column_values_from_buffer,
     optional_coordinate_input_with_expected, optional_len, parameter_input_with_expected,
     parse_affine_matrix, parse_area, parse_cdt_refinement, parse_grid_size, parse_sample_count,
-    parse_sample_seed, point_tuple, point_xy, positive_int, py_i64_bounded, py_i64_required,
-    py_index_check, py_index_object, py_isize_required, py_iter_or_error, py_u64_if_index,
-    py_u64_required, reject_multidimensional_coordinate_array, reserve_from_py_len, reserve_hint,
-    strict_i32, strict_i32_overflow, strict_i64, strict_i64_overflow, strict_i128,
-    strict_optional_i64, strict_u64, try_coordseq_from_nd_buffer, validate_lonlat_shape,
-    validate_subdivide_max_vertices, visit_py_iter_from_iter, with_one_byte_buffer,
+    parse_sample_seed, point_tuple, positive_int, py_i64_bounded, py_i64_required, py_index_check,
+    py_index_object, py_isize_required, py_iter_or_error, py_u64_if_index, py_u64_required,
+    reject_multidimensional_coordinate_array, reserve_from_py_len, strict_i32, strict_i32_overflow,
+    strict_i64, strict_i64_overflow, strict_i128, strict_optional_i64, strict_u64,
+    try_coordseq_from_nd_buffer, validate_subdivide_max_vertices, visit_py_iter_from_iter,
+    with_one_byte_buffer,
 };
+use collections::csr::CsrBuilder;
+use collections::reserve_hint;
 use crs::frame::{
     Crs, Frame, FrameAdoption, FrameEdit, FrameError, GeometryTransformFrame, crs_arc, crs_label,
     crs_operationally_equal, epoch_label, wgs84_crs,
 };
+use crs::{Zt, ZtLaneRefs, ZtLanes, ZtValues};
+use geographic::lonlat::validate_lonlat_shape;
 mod collections;
 #[cfg(test)]
 mod compile_fail_gate;
@@ -170,7 +174,7 @@ use py::support::{
     metric_optional_constructive_shape, missing_geometry_items_error, nearest_point_columns_masked,
     note_array_row, optional_coordinates, owned_voronoi_boundary, parse_crs, parse_crs_epoch,
     parse_curve_bounds, parse_geojson_geometry_value, parse_geojson_slice, parse_interpolate_plan,
-    parse_precision, parse_spatial_index_handle, point_from_bounds, py_polygonize_full,
+    parse_precision, parse_spatial_index_handle, point_from_bounds, point_xy, py_polygonize_full,
     py_text_borrow, py_to_json_value, require_geojson_crs, resolve_line_metric,
     validate_buffer_miter_limit, validate_buffer_quadrant_segments, validate_densify_fraction,
     validate_distance, validate_dwithin_distance, validate_dwithin_distance_arg,

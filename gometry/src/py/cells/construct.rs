@@ -5,7 +5,7 @@ use pyo3::exceptions::PyTypeError;
 use pyo3::types::PyAny;
 
 use super::grid_kind::append_cell_row;
-use crate::boundary::geographic;
+use crate::geographic::lonlat as geographic;
 use crate::grid::geohash::Geohash;
 use crate::grid::tile::{TILE_MAX_LATITUDE, Tile};
 use crate::py::cells::coverage_ops::{GridSourceAdmission, admit_grid_geometry};

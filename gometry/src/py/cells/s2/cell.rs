@@ -200,7 +200,7 @@ use pyo3::pymethods;
 use pyo3::types::PyBool;
 
 use crate::Typed;
-use crate::boundary::geographic::validate_lonlat_xy;
+use crate::geographic::lonlat::validate_lonlat_xy;
 use crate::grid::cell::{GridCell, HierarchicalCell as _};
 use crate::grid::s2::cell::Cell as S2GeomCell;
 use crate::grid::s2::cellid::{CellId, S2Level};

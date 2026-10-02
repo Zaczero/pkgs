@@ -1,7 +1,8 @@
 use pyo3::IntoPyObjectExt as _;
 use pyo3::exceptions::PyTypeError;
 
-use crate::boundary::{FloatInput, geographic};
+use crate::boundary::FloatInput;
+use crate::geographic::lonlat as geographic;
 use crate::grid::CoverBudgetExceeded;
 use crate::grid::coverer::RectCell;
 use crate::py::cells::coverage_ops::{

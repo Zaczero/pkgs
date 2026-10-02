@@ -8,7 +8,7 @@
 
 use thiserror::Error;
 
-use crate::boundary::geographic;
+use crate::geographic::lonlat as geographic;
 
 /// Default cell-output budget for covering factories when `max_cells` is
 /// omitted. Secure-by-default against runaway coverings of untrusted boxes;

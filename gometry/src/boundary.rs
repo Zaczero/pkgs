@@ -2,7 +2,6 @@ pub(crate) mod buffer_endian;
 pub(crate) mod convert;
 pub(crate) mod coordinate_input;
 pub(crate) mod coordinates;
-pub(crate) mod geographic;
 pub(crate) mod input;
 pub(crate) mod metadata;
 pub(crate) mod reserve;
@@ -11,17 +10,15 @@ pub(crate) use buffer_endian::{buffer_copy_to_slice_u64, buffer_to_vec_u64};
 pub(crate) use convert::{coordinates_object, json_text_to_py, json_to_py, point_tuple};
 pub(crate) use coordinate_input::{
     CoordSeqBuffer, CoordSeqBufferMode, CoordSeqStructure, CoordinateInput, CrsCoordinateArgs,
-    DefaultedF64Input, DefaultedI64Input, F64Param, FloatInput, I64Param, Zt, ZtLaneRefs, ZtLanes,
-    ZtValues, broadcast_coordinate_group, broadcast_coordinate_input,
-    broadcast_crs_coordinate_inputs, coordinate_column_values, coordinate_column_values_exact,
-    coordinate_column_values_from_buffer, coordinate_input_with_expected,
-    coordinate_inputs_are_scalar, coordinate_sequence_len_hint, float_values, float_values_at_most,
-    float_values_exact, optional_coordinate_column_values,
+    DefaultedF64Input, DefaultedI64Input, F64Param, FloatInput, I64Param,
+    broadcast_coordinate_group, broadcast_coordinate_input, broadcast_crs_coordinate_inputs,
+    coordinate_column_values, coordinate_column_values_exact, coordinate_column_values_from_buffer,
+    coordinate_input_with_expected, coordinate_inputs_are_scalar, coordinate_sequence_len_hint,
+    float_values, float_values_at_most, float_values_exact, optional_coordinate_column_values,
     optional_coordinate_column_values_from_buffer, optional_coordinate_input_with_expected,
     parameter_input_with_expected, reject_multidimensional_coordinate_array,
     try_coordseq_from_nd_buffer,
 };
-pub(crate) use geographic::{point_xy, validate_lonlat_shape};
 pub(crate) use input::{
     GridOrigin, OriginSpec, TransformOptionArgs, angle_radians, cdt_refinement_values,
     coordinate_epoch_option, f64_required, f64_scalar_named, finite_coordinate_required,
@@ -32,10 +29,10 @@ pub(crate) use input::{
     strict_optional_i64, strict_u64, validate_subdivide_max_vertices,
 };
 pub(crate) use reserve::{
-    CsrBuilder, check_python_signals, collect_bool_mask, collect_bytes_rows, collect_i64_sequence,
+    check_python_signals, collect_bool_mask, collect_bytes_rows, collect_i64_sequence,
     collect_py_iter, collect_py_iter_at_most_from_iter, collect_py_iter_exact,
     collect_py_iter_exact_from_iter, collect_py_iter_from_iter, collect_py_strings,
     collect_sequence_items, collect_u64_sequence, copy_one_byte_buffer, is_one_byte_buffer,
-    optional_len, py_iter_or_error, reserve_from_py_len, reserve_hint, visit_py_iter_from_iter,
+    optional_len, py_iter_or_error, reserve_from_py_len, visit_py_iter_from_iter,
     with_one_byte_buffer,
 };

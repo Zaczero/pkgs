@@ -1,8 +1,8 @@
 use std::borrow::Borrow;
 use std::ops::ControlFlow;
 
-use crate::boundary::geographic::invalid_lonlat_error;
 use crate::error::{ResourceError, Result};
+use crate::geographic::lonlat::invalid_lonlat_error;
 use crate::geographic::{GeographicInputs, GeographicViewError};
 use crate::geometry::overlay::{
     ExactSourceInventory, OverlayOp, Strictness, build_certified_overlay_shape,

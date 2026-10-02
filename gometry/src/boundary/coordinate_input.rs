@@ -14,6 +14,7 @@ use crate::boundary::buffer_endian;
 use crate::boundary::buffer_endian::{
     buffer_item_count, buffer_to_column_f64, buffer_to_vec_f64, try_typed_buffer,
 };
+use crate::crs::{Zt, ZtLaneRefs, ZtLanes};
 use crate::geometry::{CoordWindow, column_all_finite};
 use crate::py::errors;
 use crate::py::errors::{GeometryError, InvalidGeometryError};
@@ -1252,24 +1253,7 @@ pub(crate) fn coordinate_inputs_are_scalar(
     x.scalar && y.scalar && z.is_none_or(|value| value.scalar) && t.is_none_or(|value| value.scalar)
 }
 
-/// Z/T lane state: absent, Z-only, T-only, or Z+T.
-#[derive(Clone, Copy)]
-#[expect(
-    clippy::enum_variant_names,
-    reason = "Zt::Zt mirrors the compact Z/T lane vocabulary"
-)]
-pub(crate) enum Zt<T> {
-    None,
-    Z(T),
-    T(T),
-    Zt { z: T, t: T },
-}
-
 pub(crate) type ZtInput = Zt<CoordinateInput>;
-pub(crate) type ZtLanes<'a> = Zt<&'a mut [f64]>;
-pub(crate) type ZtLaneRefs<'a> = Zt<&'a [f64]>;
-pub(crate) type ZtValues = Zt<f64>;
-
 impl ZtInput {
     fn parse_with_expected(
         py: Python<'_>,

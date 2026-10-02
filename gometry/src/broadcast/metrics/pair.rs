@@ -1,11 +1,10 @@
 use crate::array::{ArrayRow, PackedStorage, PointRows, PyGeometryArray};
-use crate::boundary::geographic;
 use crate::broadcast::metrics::{
     CoordinateAxes, DistanceUnit, GeometryArrayStorage, GeometryError, GeometryKind, Point,
     PyGeometry, PyResult, Shape, ShapeData, crs,
 };
 use crate::dispatch::MetricOp;
-use crate::geographic::GeographicFrame;
+use crate::geographic::{GeographicFrame, lonlat as geographic};
 use crate::geometry::{FrameDependentCaches, LineSeq, PreparedPlan, ShapeCountQuery};
 use crate::py::support;
 #[cfg(test)]

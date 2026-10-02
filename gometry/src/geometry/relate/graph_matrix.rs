@@ -1,10 +1,10 @@
 #[cfg(test)]
 use ahash::HashMapExt as _;
 
-use crate::boundary::geographic::invalid_lonlat_error;
 #[cfg(test)]
 use crate::collections::HashSet;
 use crate::error::Result;
+use crate::geographic::lonlat::invalid_lonlat_error;
 use crate::geographic::{GeographicFrame, ScalarGeographicView};
 use crate::geometry::overlay::ExactSourceInventory;
 use crate::geometry::relate::De9im;

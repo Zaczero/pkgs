@@ -1,6 +1,7 @@
 //! Semantic values for periodic geographic coordinates.
 
 mod interval;
+pub(crate) mod lonlat;
 mod value;
 mod view;
 
