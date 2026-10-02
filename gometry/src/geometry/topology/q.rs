@@ -6058,32 +6058,318 @@ fn consider_cut_gap(
         true
     };
     if is_larger {
-        let mut midpoint = low.try_midpoint(high)?;
-        if midpoint.try_cmp(half)?.is_ge() {
-            midpoint = midpoint.try_subtract(period)?;
-        }
-        if midpoint.try_cmp(negative_half)?.is_lt() {
-            midpoint = midpoint.try_add(period)?;
-        }
+        let midpoint =
+            canonicalize_cut_longitude(&low.try_midpoint(high)?, half, negative_half, period)?;
         *largest_gap = Some(width);
         *cut = Some(midpoint);
     }
     Ok(())
 }
 
+fn canonicalize_cut_longitude(
+    longitude: &ExactRational,
+    half: &ExactRational,
+    negative_half: &ExactRational,
+    period: &ExactRational,
+) -> Result<ExactRational> {
+    let mut canonical = longitude.clone();
+    if canonical.try_cmp(half)?.is_ge() {
+        canonical = canonical.try_subtract(period)?;
+    }
+    if canonical.try_cmp(negative_half)?.is_lt() {
+        canonical = canonical.try_add(period)?;
+    }
+    Ok(canonical)
+}
+
+type LongitudeInterval = (ExactRational, ExactRational);
+
+fn chart_edge_longitude_intervals(
+    frame: GeographicFrame,
+    chart: &NodedExactChart,
+) -> Result<Vec<LongitudeInterval>> {
+    let north = ExactRational::from_f64(frame.pole());
+    let south = ExactRational::from_f64(-frame.pole());
+    let half = ExactRational::from_f64(frame.longitude().half_period());
+    let negative_half = ExactRational::from_f64(-frame.longitude().half_period());
+    let mut intervals = Vec::with_capacity(chart.atoms.len());
+    for atom in &chart.atoms {
+        let [start_id, end_id] = atom.ports;
+        let start = chart
+            .ports
+            .get(start_id.0 as usize)
+            .ok_or_else(|| GeometryErrorKind::Invalid("Q atom has an unknown start port".into()))?;
+        let end = chart
+            .ports
+            .get(end_id.0 as usize)
+            .ok_or_else(|| GeometryErrorKind::Invalid("Q atom has an unknown end port".into()))?;
+        let start_at_north = start.point.y.try_cmp(&north)?.is_eq();
+        let end_at_north = end.point.y.try_cmp(&north)?.is_eq();
+        let start_at_south = start.point.y.try_cmp(&south)?.is_eq();
+        let end_at_south = end.point.y.try_cmp(&south)?.is_eq();
+        if (start_at_north && end_at_north) || (start_at_south && end_at_south) {
+            continue;
+        }
+        let longitude_order = start.point.x.try_cmp(&end.point.x)?;
+        let (low, high) = if longitude_order.is_gt() {
+            (end.point.x.clone(), start.point.x.clone())
+        } else {
+            (start.point.x.clone(), end.point.x.clone())
+        };
+        intervals.push((low, high));
+    }
+    let mut has_point_support = false;
+    for &point_id in &chart.source_point_ports {
+        let point = chart
+            .ports
+            .get(point_id.0 as usize)
+            .ok_or_else(|| GeometryErrorKind::Invalid("Q point has an unknown port".into()))?;
+        if point.point.y.try_cmp(&north)?.is_eq() || point.point.y.try_cmp(&south)?.is_eq() {
+            continue;
+        }
+        let longitude = if point.point.x.try_cmp(&half)?.is_eq() {
+            negative_half.clone()
+        } else {
+            point.point.x.clone()
+        };
+        intervals.push((longitude.clone(), longitude));
+        has_point_support = true;
+    }
+    // Noded atoms follow lexicographic endpoint order. Source-point supports
+    // are appended separately and can disturb that interval order.
+    if has_point_support {
+        try_sort_by(&mut intervals, |left, right| {
+            let longitude_order = left.0.try_cmp(&right.0)?;
+            if longitude_order.is_eq() {
+                left.1.try_cmp(&right.1)
+            } else {
+                Ok(longitude_order)
+            }
+        })?;
+    }
+
+    let mut union: Vec<LongitudeInterval> = Vec::with_capacity(intervals.len());
+    for (low, high) in intervals {
+        if let Some((_, union_high)) = union.last_mut()
+            && low.try_cmp(union_high)?.is_le()
+        {
+            if high.try_cmp(union_high)?.is_gt() {
+                *union_high = high;
+            }
+            continue;
+        }
+        union.push((low, high));
+    }
+    Ok(union)
+}
+
+struct EdgeFreeGap {
+    low: ExactRational,
+    high: ExactRational,
+    width: ExactRational,
+    cut: ExactRational,
+}
+
+fn consider_edge_free_gap(
+    low: &ExactRational,
+    high: &ExactRational,
+    half: &ExactRational,
+    negative_half: &ExactRational,
+    period: &ExactRational,
+    widest: &mut Option<EdgeFreeGap>,
+) -> Result<()> {
+    let width = high.try_subtract(low)?;
+    if width.is_zero() {
+        return Ok(());
+    }
+
+    let cut = canonicalize_cut_longitude(&low.try_midpoint(high)?, half, negative_half, period)?;
+
+    let replace = if let Some(widest_gap) = widest.as_ref() {
+        match width.try_cmp(&widest_gap.width)? {
+            Ordering::Greater => true,
+            Ordering::Less => false,
+            Ordering::Equal => cut.try_cmp(&widest_gap.cut)?.is_lt(),
+        }
+    } else {
+        true
+    };
+    if replace {
+        *widest = Some(EdgeFreeGap {
+            low: low.clone(),
+            high: high.clone(),
+            width,
+            cut,
+        });
+    }
+    Ok(())
+}
+
+// The noder assigns port IDs in lexicographic (x, y) order.
+#[expect(
+    clippy::arithmetic_side_effects,
+    reason = "binary-search bounds keep middle and middle + 1 below ports.len()"
+)]
+fn chart_has_port_at_longitude(chart: &NodedExactChart, longitude: &ExactRational) -> Result<bool> {
+    let mut low = 0;
+    let mut high = chart.ports.len();
+    while low < high {
+        let middle = low + (high - low) / 2;
+        let port = chart
+            .ports
+            .get(middle)
+            .ok_or_else(|| GeometryErrorKind::Invalid("Q port index is out of range".into()))?;
+        match port.point.x.try_cmp(longitude)? {
+            Ordering::Less => low = middle + 1,
+            Ordering::Greater => high = middle,
+            Ordering::Equal => return Ok(true),
+        }
+    }
+    Ok(false)
+}
+
+fn chart_has_cut_port(
+    frame: GeographicFrame,
+    chart: &NodedExactChart,
+    cut: &ExactRational,
+) -> Result<bool> {
+    if chart_has_port_at_longitude(chart, cut)? {
+        return Ok(true);
+    }
+    let axis = frame.longitude();
+    let negative_half = ExactRational::from_f64(-axis.half_period());
+    if cut.try_cmp(&negative_half)?.is_eq() {
+        return chart_has_port_at_longitude(chart, &ExactRational::from_f64(axis.half_period()));
+    }
+    Ok(false)
+}
+
+fn select_port_free_cut(
+    frame: GeographicFrame,
+    chart: &NodedExactChart,
+    low: &ExactRational,
+    high: &ExactRational,
+) -> Result<ExactRational> {
+    let axis = frame.longitude();
+    let half = ExactRational::from_f64(axis.half_period());
+    let negative_half = ExactRational::from_f64(-axis.half_period());
+    let period = ExactRational::from_f64(axis.period());
+    let mut port_longitudes = Vec::with_capacity(chart.ports.len());
+    for port in &chart.ports {
+        let longitude = if port.point.x.try_cmp(low)?.is_le() {
+            port.point.x.try_add(&period)?
+        } else {
+            port.point.x.clone()
+        };
+        if longitude.try_cmp(low)?.is_gt() && longitude.try_cmp(high)?.is_lt() {
+            port_longitudes.push(longitude);
+        }
+    }
+    try_sort_by(&mut port_longitudes, ExactRational::try_cmp)?;
+
+    let mut widest = None;
+    let mut gap_low = low.clone();
+    let mut previous: Option<ExactRational> = None;
+    for longitude in port_longitudes {
+        if let Some(previous) = &previous
+            && longitude.try_cmp(previous)?.is_eq()
+        {
+            continue;
+        }
+        consider_edge_free_gap(
+            &gap_low,
+            &longitude,
+            &half,
+            &negative_half,
+            &period,
+            &mut widest,
+        )?;
+        gap_low = longitude.clone();
+        previous = Some(longitude);
+    }
+    consider_edge_free_gap(&gap_low, high, &half, &negative_half, &period, &mut widest)?;
+    widest.map(|gap: EdgeFreeGap| gap.cut).ok_or_else(|| {
+        GeometryErrorKind::Invalid("Q edge-free gap has no port-free cut".into()).into()
+    })
+}
+
+fn select_edge_free_cut(
+    frame: GeographicFrame,
+    chart: &NodedExactChart,
+) -> Result<Option<ExactRational>> {
+    let intervals = chart_edge_longitude_intervals(frame, chart)?;
+    if intervals.is_empty() {
+        let zero = ExactRational::zero();
+        if chart_has_cut_port(frame, chart, &zero)? {
+            let axis = frame.longitude();
+            let low = ExactRational::from_f64(-axis.half_period());
+            let high = ExactRational::from_f64(axis.half_period());
+            return Ok(Some(select_port_free_cut(frame, chart, &low, &high)?));
+        }
+        return Ok(Some(zero));
+    }
+
+    let axis = frame.longitude();
+    let half = ExactRational::from_f64(axis.half_period());
+    let negative_half = ExactRational::from_f64(-axis.half_period());
+    let period = ExactRational::from_f64(axis.period());
+    let mut widest = None;
+    for adjacent in intervals.windows(2) {
+        let [(.., low), (high, ..)] = adjacent else {
+            unreachable!("windows(2) yields adjacent longitude intervals");
+        };
+        consider_edge_free_gap(low, high, &half, &negative_half, &period, &mut widest)?;
+    }
+    let (first_low, _) = intervals
+        .first()
+        .expect("a nonempty interval vector has a first interval");
+    let (_, last_high) = intervals
+        .last()
+        .expect("a nonempty interval vector has a last interval");
+    let wrap_high = first_low.try_add(&period)?;
+    consider_edge_free_gap(
+        last_high,
+        &wrap_high,
+        &half,
+        &negative_half,
+        &period,
+        &mut widest,
+    )?;
+    if let Some(gap) = widest {
+        if chart_has_cut_port(frame, chart, &gap.cut)? {
+            return Ok(Some(select_port_free_cut(
+                frame, chart, &gap.low, &gap.high,
+            )?));
+        }
+        return Ok(Some(gap.cut));
+    }
+    Ok(None)
+}
+
 fn select_cut(frame: GeographicFrame, chart: &NodedExactChart) -> Result<ExactRational> {
+    // A port gap can still be crossed by a straight chart edge; same-pole
+    // spans are quotient points and do not occupy longitude intervals.
+    if let Some(cut) = select_edge_free_cut(frame, chart)? {
+        return Ok(cut);
+    }
+    // When source edges cover the full longitude circle, preserve the prior
+    // port-gap choice because no edge-free cut exists.
+    select_cut_from_ports(frame, chart)
+}
+
+fn select_cut_from_ports(frame: GeographicFrame, chart: &NodedExactChart) -> Result<ExactRational> {
     let axis = frame.longitude();
     let half = ExactRational::from_f64(axis.half_period());
     let negative_half = ExactRational::from_f64(-axis.half_period());
     let period = ExactRational::from_f64(axis.period());
     let mut longitudes = Vec::with_capacity(chart.ports.len());
     for port in &chart.ports {
-        let longitude = if port.point.x.try_cmp(&half)?.is_eq() {
-            negative_half.clone()
-        } else {
-            port.point.x.clone()
-        };
-        longitudes.push(longitude);
+        longitudes.push(canonicalize_cut_longitude(
+            &port.point.x,
+            &half,
+            &negative_half,
+            &period,
+        )?);
     }
     try_sort_by(&mut longitudes, ExactRational::try_cmp)?;
     let mut unique: Vec<ExactRational> = Vec::with_capacity(longitudes.len());
@@ -6693,6 +6979,16 @@ mod tests {
         (sources, q)
     }
 
+    fn noded_chart_for_shapes(shapes: &[Shape]) -> (GeographicFrame, NodedExactChart) {
+        let frame = degrees();
+        let inputs =
+            crate::geographic::GeographicInputs::try_from_shapes(frame, shapes.iter()).unwrap();
+        let sources = ExactGeographicChartInventory::collect(&inputs).unwrap();
+        let mut budget = ExpansionBudget::new("test", "exact chart");
+        let chart = sources.node(&mut budget).unwrap();
+        (frame, chart)
+    }
+
     fn q_graph(shape: &Shape) -> (ExactGeographicChartInventory, ExactGeographicQ) {
         q_graph_for_shapes(std::slice::from_ref(shape))
     }
@@ -7047,6 +7343,63 @@ mod tests {
         };
         end.checked_sub(*start)
             .expect("outgoing fan offsets are monotone")
+    }
+
+    #[test]
+    fn selected_edge_free_cut_avoids_a_pole_port_at_the_gap_midpoint() {
+        let shapes = [
+            line(&[(180.0, -80.0), (180.0, 80.0)]),
+            Shape::Point(Point::new_raw_xy(0.0, 90.0)),
+        ];
+        let (frame, chart) = noded_chart_for_shapes(&shapes);
+        let zero = ExactRational::zero();
+        let half = ExactRational::from_f64(frame.longitude().half_period());
+        let negative_half = ExactRational::from_f64(-frame.longitude().half_period());
+        let intervals = chart_edge_longitude_intervals(frame, &chart).unwrap();
+        assert!(!intervals.is_empty());
+        assert!(intervals.iter().all(|(low, high)| {
+            low.try_cmp(high).unwrap().is_eq()
+                && (low.try_cmp(&half).unwrap().is_eq()
+                    || low.try_cmp(&negative_half).unwrap().is_eq())
+        }));
+        assert!(chart_has_cut_port(frame, &chart, &zero).unwrap());
+
+        assert!(
+            select_edge_free_cut(frame, &chart).unwrap().is_some(),
+            "the seam-only edge support leaves an open longitude gap"
+        );
+        let cut = select_cut(frame, &chart).unwrap();
+        assert!(!chart_has_cut_port(frame, &chart, &cut).unwrap());
+        assert!(
+            !cut.try_cmp(&zero).unwrap().is_eq(),
+            "the midpoint collides with the north-pole port"
+        );
+    }
+
+    #[test]
+    fn no_edge_free_cut_fallback_avoids_a_pole_port() {
+        let shapes = [
+            line(&[(-180.0, 0.0), (-60.0, 0.0), (60.0, 0.0), (180.0, 0.0)]),
+            Shape::Point(Point::new_raw_xy(-120.0, 90.0)),
+        ];
+        let (frame, chart) = noded_chart_for_shapes(&shapes);
+        let pole_port_longitude = ExactRational::from_f64(-120.0);
+        let north_pole = ExactRational::from_f64(frame.pole());
+        assert!(
+            chart.ports.iter().any(|port| {
+                port.point.x.try_cmp(&pole_port_longitude).unwrap().is_eq()
+                    && port.point.y.try_cmp(&north_pole).unwrap().is_eq()
+            }),
+            "the fixture includes a north-pole chart port at the port-gap midpoint"
+        );
+        assert!(select_edge_free_cut(frame, &chart).unwrap().is_none());
+
+        let cut = select_cut(frame, &chart).unwrap();
+        assert!(!chart_has_cut_port(frame, &chart, &cut).unwrap());
+        assert!(
+            !cut.try_cmp(&pole_port_longitude).unwrap().is_eq(),
+            "the port-gap fallback must include pole-port longitudes"
+        );
     }
 
     #[test]

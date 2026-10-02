@@ -28,6 +28,326 @@ def _north_polar_cap() -> gm.Polygon:
     )
 
 
+RingPoints = tuple[tuple[float, float], ...]
+BoxRings = tuple[RingPoints, ...]
+
+_COLLINEAR_BOX_CASES: tuple[tuple[str, BoxRings], ...] = (
+    (
+        'north-pole-short',
+        (((-60.0, 80.0), (60.0, 80.0), (60.0, 90.0), (-60.0, 90.0), (-60.0, 80.0)),),
+    ),
+    (
+        'north-pole-wide',
+        (
+            (
+                (-120.0, 70.0),
+                (0.0, 70.0),
+                (120.0, 70.0),
+                (120.0, 90.0),
+                (0.0, 90.0),
+                (-120.0, 90.0),
+                (-120.0, 70.0),
+            ),
+        ),
+    ),
+    (
+        'north-pole-full-longitude',
+        (
+            (
+                (-180.0, 70.0),
+                (-60.0, 70.0),
+                (60.0, 70.0),
+                (180.0, 70.0),
+                (180.0, 90.0),
+                (60.0, 90.0),
+                (-60.0, 90.0),
+                (-180.0, 90.0),
+                (-180.0, 70.0),
+            ),
+        ),
+    ),
+    (
+        'south-pole-short',
+        (
+            (
+                (-60.0, -90.0),
+                (60.0, -90.0),
+                (60.0, -80.0),
+                (-60.0, -80.0),
+                (-60.0, -90.0),
+            ),
+        ),
+    ),
+    (
+        'south-pole-wide',
+        (
+            (
+                (-120.0, -90.0),
+                (0.0, -90.0),
+                (120.0, -90.0),
+                (120.0, -70.0),
+                (0.0, -70.0),
+                (-120.0, -70.0),
+                (-120.0, -90.0),
+            ),
+        ),
+    ),
+    (
+        'south-pole-full-longitude',
+        (
+            (
+                (-180.0, -90.0),
+                (-60.0, -90.0),
+                (60.0, -90.0),
+                (180.0, -90.0),
+                (180.0, -70.0),
+                (60.0, -70.0),
+                (-60.0, -70.0),
+                (-180.0, -70.0),
+                (-180.0, -90.0),
+            ),
+        ),
+    ),
+    (
+        'full-longitude-band',
+        (
+            (
+                (-180.0, 70.0),
+                (-60.0, 70.0),
+                (60.0, 70.0),
+                (180.0, 70.0),
+                (180.0, 80.0),
+                (60.0, 80.0),
+                (-60.0, 80.0),
+                (-180.0, 80.0),
+                (-180.0, 70.0),
+            ),
+        ),
+    ),
+    (
+        'seam-crossing',
+        (
+            (
+                (170.0, -10.0),
+                (180.0, -10.0),
+                (180.0, 10.0),
+                (170.0, 10.0),
+                (170.0, -10.0),
+            ),
+            (
+                (-180.0, -10.0),
+                (-170.0, -10.0),
+                (-170.0, 10.0),
+                (-180.0, 10.0),
+                (-180.0, -10.0),
+            ),
+        ),
+    ),
+    (
+        'ordinary',
+        (((-20.0, 10.0), (20.0, 10.0), (20.0, 20.0), (-20.0, 20.0), (-20.0, 10.0)),),
+    ),
+)
+
+
+def _polygonal_box(rings: BoxRings) -> gm.Geometry:
+    polygons = [gm.Polygon(ring, crs=4326) for ring in rings]
+    if len(polygons) == 1:
+        return polygons[0]
+    return gm.MultiPolygon(polygons, crs=4326)
+
+
+def _densify_box_edges(
+    geometry: gm.Geometry, *, tile_domain: bool = False
+) -> gm.Geometry:
+    polygons = (
+        [geometry] if geometry.geometry_type == 'Polygon' else list(geometry.parts)
+    )
+    rings = []
+    for polygon in polygons:
+        coordinates = gm.get_coordinates(polygon).tolist()
+        dense = []
+        for start, end in pairwise(coordinates):
+            dense.append((float(start[0]), float(start[1])))
+            start_is_pole = abs(float(start[1])) == 90.0
+            end_is_pole = abs(float(end[1])) == 90.0
+            subdivisions = 2 if tile_domain and (start_is_pole != end_is_pole) else 3
+            for step in range(1, subdivisions):
+                fraction = step / subdivisions
+                dense.append((
+                    float(start[0] + (end[0] - start[0]) * fraction),
+                    float(start[1] + (end[1] - start[1]) * fraction),
+                ))
+        dense.append((float(coordinates[-1][0]), float(coordinates[-1][1])))
+        rings.append(tuple(dense))
+    return _polygonal_box(tuple(rings))
+
+
+def _exact_predicate_signature(
+    left: gm.Geometry, right: gm.Geometry
+) -> tuple[bool, bool, bool, bool, bool, str]:
+    return (
+        gm.intersects(left, right),
+        gm.covers(left, right),
+        gm.within(left, right),
+        gm.contains(left, right),
+        gm.touches(left, right),
+        gm.relate(left, right),
+    )
+
+
+def test_short_north_polar_box_is_disjoint_from_antimeridian_tile() -> None:
+    polar_box = _polygonal_box((
+        (
+            (-60.0, 80.0),
+            (60.0, 80.0),
+            (60.0, 90.0),
+            (-60.0, 90.0),
+            (-60.0, 80.0),
+        ),
+    ))
+    tile = _polygonal_box((
+        (
+            (-180.0, 82.67628497834903),
+            (-157.5, 82.67628497834903),
+            (-157.5, 85.0511287798066),
+            (-180.0, 85.0511287798066),
+            (-180.0, 82.67628497834903),
+        ),
+    ))
+    assert gm.relate(polar_box, tile) == 'FF2FF1212'
+
+
+@pytest.mark.parametrize(
+    ('name', 'rings'),
+    _COLLINEAR_BOX_CASES,
+    ids=[name for name, _ in _COLLINEAR_BOX_CASES],
+)
+def test_geographic_predicates_ignore_collinear_box_subdivision(
+    name: str,
+    rings: BoxRings,
+) -> None:
+    minimal = _polygonal_box(rings)
+    densified = _densify_box_edges(minimal)
+
+    points = [
+        gm.Point(longitude, latitude, crs=4326)
+        for longitude, latitude in [
+            (-180.0, -90.0),
+            (-180.0, 85.0),
+            (-60.0, -85.0),
+            (-60.0, 80.0),
+            (0.0, -90.0),
+            (0.0, 0.0),
+            (0.0, 85.0),
+            (0.0, 90.0),
+            (60.0, -80.0),
+            (60.0, 85.0),
+            (180.0, 0.0),
+            (180.0, 90.0),
+        ]
+    ]
+    longitude_windows = [(-180.0, -157.5), (-60.0, 60.0), (157.5, 180.0)]
+    latitude_windows = [(-90.0, -80.0), (-10.0, 10.0), (70.0, 80.0), (80.0, 90.0)]
+    rectangles = [
+        _polygonal_box((
+            (
+                (-180.0, 82.67628497834903),
+                (-157.5, 82.67628497834903),
+                (-157.5, 85.0511287798066),
+                (-180.0, 85.0511287798066),
+                (-180.0, 82.67628497834903),
+            ),
+        ))
+    ]
+    rectangles.extend(
+        _polygonal_box((
+            (
+                (west, south),
+                (east, south),
+                (east, north),
+                (west, north),
+                (west, south),
+            ),
+        ))
+        for west, east in longitude_windows
+        for south, north in latitude_windows
+    )
+
+    for probe_index, probe in enumerate([*rectangles, *points]):
+        for reverse in (False, True):
+            if reverse:
+                left, right = probe, minimal
+                dense_left, dense_right = probe, densified
+            else:
+                left, right = minimal, probe
+                dense_left, dense_right = densified, probe
+            assert _exact_predicate_signature(
+                left, right
+            ) == _exact_predicate_signature(dense_left, dense_right), (
+                f'{name}: probe {probe_index}, reverse={reverse}'
+            )
+
+
+@pytest.mark.parametrize(
+    ('name', 'rings'),
+    _COLLINEAR_BOX_CASES,
+    ids=[name for name, _ in _COLLINEAR_BOX_CASES],
+)
+def test_geographic_grid_covers_ignore_collinear_box_subdivision(
+    name: str,
+    rings: BoxRings,
+) -> None:
+    minimal = _polygonal_box(rings)
+    densified = _densify_box_edges(minimal, tile_domain=True)
+
+    def cover_tokens(geometry: gm.Geometry) -> tuple[tuple[str, ...], ...]:
+        return (
+            tuple(
+                sorted(cell.token for cell in gm.h3_cover(geometry, 0, max_cells=None))
+            ),
+            tuple(
+                sorted(
+                    cell.token
+                    for cell in gm.s2_cover(geometry, level=2, max_cells=None)
+                )
+            ),
+            tuple(
+                sorted(
+                    cell.token for cell in gm.geohash_cover(geometry, 1, max_cells=None)
+                )
+            ),
+            tuple(
+                sorted(
+                    cell.token for cell in gm.tile_cover(geometry, 3, max_cells=None)
+                )
+            ),
+        )
+
+    assert cover_tokens(minimal) == cover_tokens(densified), name
+
+
+@pytest.mark.parametrize(
+    ('name', 'rings'),
+    _COLLINEAR_BOX_CASES,
+    ids=[name for name, _ in _COLLINEAR_BOX_CASES],
+)
+def test_geographic_measures_ignore_collinear_box_subdivision(
+    name: str,
+    rings: BoxRings,
+) -> None:
+    minimal = _polygonal_box(rings)
+    densified = _densify_box_edges(minimal)
+    assert minimal.area == pytest.approx(densified.area, rel=1e-13, abs=1e-7), name
+    assert minimal.length == pytest.approx(densified.length, rel=1e-13, abs=1e-7), name
+
+    values = gm.GeometryArray([minimal, densified], crs=4326)
+    assert values.area[0] == pytest.approx(values.area[1], rel=1e-13, abs=1e-7), name
+    assert values.length[0] == pytest.approx(values.length[1], rel=1e-13, abs=1e-7), (
+        name
+    )
+
+
 def _country_source_edges(
     geojson: dict[str, Any],
 ) -> list[tuple[tuple[float, float], tuple[float, float]]]:
