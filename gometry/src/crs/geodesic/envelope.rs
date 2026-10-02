@@ -99,6 +99,182 @@ impl GeodesicEnvelopeBound {
     }
 }
 
+/// Auxiliary-sphere lower bound between two chart rectangles.
+///
+/// Each rectangle maps to a patch on the unit auxiliary sphere. The patch is
+/// enclosed by an outward-rounded Cartesian box; the gap between those boxes
+/// lower-bounds the chord between any two patch points. Converting that chord
+/// to a central angle and multiplying by the semi-minor axis gives an
+/// oblate-ellipsoid geodesic lower bound.
+pub(crate) struct GeodesicBoxEnvelopeBound {
+    minor_radius: f64,
+    backend_floor: f64,
+    one_minus_f: f64,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct GeodesicChartBox(UnitBox);
+
+#[derive(Clone, Copy)]
+struct UnitBox {
+    x: (f64, f64),
+    y: (f64, f64),
+    z: (f64, f64),
+}
+
+impl GeodesicBoxEnvelopeBound {
+    pub(crate) fn new(semi_major: f64, flattening: f64) -> Self {
+        let policy = GeodesicNumericalPolicy::new(semi_major);
+        let one_minus_f = 1.0 - flattening;
+        Self {
+            minor_radius: semi_major * one_minus_f,
+            backend_floor: policy.backend_floor(),
+            one_minus_f,
+        }
+    }
+
+    /// Lower bound (meters) between every point in the two chart boxes.
+    ///
+    /// Prolate ellipsoids use zero because the auxiliary-sphere inequality
+    /// does not provide a lower bound there.
+    #[cfg(test)]
+    pub(crate) fn lower_bound(&self, first: ChartBox, second: ChartBox) -> f64 {
+        if self.one_minus_f > 1.0 {
+            return 0.0;
+        }
+        self.lower_bound_prepared(self.prepare(first), self.prepare(second))
+    }
+
+    pub(crate) fn prepare(&self, bounds: ChartBox) -> GeodesicChartBox {
+        GeodesicChartBox(unit_box(bounds, self.one_minus_f))
+    }
+
+    pub(crate) fn lower_bound_prepared(
+        &self,
+        first: GeodesicChartBox,
+        second: GeodesicChartBox,
+    ) -> f64 {
+        if self.one_minus_f > 1.0 {
+            return 0.0;
+        }
+        let first = first.0;
+        let second = second.0;
+        let chord = component_gap(first.x, second.x)
+            .hypot(component_gap(first.y, second.y))
+            .hypot(component_gap(first.z, second.z))
+            .min(2.0);
+        let angle = 2.0 * (chord / 2.0).asin();
+        (self.minor_radius * angle - self.backend_floor).max(0.0)
+    }
+}
+
+fn unit_box(bounds: ChartBox, one_minus_f: f64) -> UnitBox {
+    let beta_south = reduced_latitude(bounds.south, one_minus_f);
+    let beta_north = reduced_latitude(bounds.north, one_minus_f);
+    let abs_min = if beta_south <= 0.0 && beta_north >= 0.0 {
+        0.0
+    } else {
+        beta_south.abs().min(beta_north.abs())
+    };
+    let cos_latitude = (beta_south.abs().max(beta_north.abs()).cos(), abs_min.cos());
+    let mut longitude = longitude_windows(bounds).into_iter().flatten();
+    let first = longitude.next().expect("chart box has longitude coverage");
+    let first_sine = sin_range(first);
+    let first_cosine = cos_range(first);
+    let (sin_longitude, cos_longitude) =
+        longitude
+            .next()
+            .map_or((first_sine, first_cosine), |second| {
+                (
+                    range_union(first_sine, sin_range(second)),
+                    range_union(first_cosine, cos_range(second)),
+                )
+            });
+    UnitBox {
+        x: outward(product_range(cos_longitude, cos_latitude)),
+        y: outward(product_range(sin_longitude, cos_latitude)),
+        z: outward((beta_south.sin(), beta_north.sin())),
+    }
+}
+
+fn sin_range([west, east]: [f64; 2]) -> (f64, f64) {
+    trig_range(west, east, false)
+}
+
+fn cos_range([west, east]: [f64; 2]) -> (f64, f64) {
+    trig_range(west, east, true)
+}
+
+fn trig_range(west: f64, east: f64, cosine: bool) -> (f64, f64) {
+    if east - west >= 360.0 {
+        return (-1.0, 1.0);
+    }
+    let to_radians = f64::to_radians;
+    let start = if cosine {
+        to_radians(west).cos()
+    } else {
+        to_radians(west).sin()
+    };
+    let end = if cosine {
+        to_radians(east).cos()
+    } else {
+        to_radians(east).sin()
+    };
+    let mut lower = start.min(end);
+    let mut upper = start.max(end);
+    let (minimum_phase, maximum_phase) = if cosine { (180.0, 0.0) } else { (-90.0, 90.0) };
+    if contains_periodic_phase(west, east, minimum_phase) {
+        lower = -1.0;
+    }
+    if contains_periodic_phase(west, east, maximum_phase) {
+        upper = 1.0;
+    }
+    (lower, upper)
+}
+
+fn contains_periodic_phase(west: f64, east: f64, phase: f64) -> bool {
+    let first = ((west - phase) / 360.0).ceil() * 360.0 + phase;
+    first <= east
+}
+
+const fn range_union(first: (f64, f64), second: (f64, f64)) -> (f64, f64) {
+    (first.0.min(second.0), first.1.max(second.1))
+}
+
+fn product_range(first: (f64, f64), second: (f64, f64)) -> (f64, f64) {
+    let products = [
+        first.0 * second.0,
+        first.0 * second.1,
+        first.1 * second.0,
+        first.1 * second.1,
+    ];
+    let mut lower = f64::INFINITY;
+    let mut upper = f64::NEG_INFINITY;
+    for product in products {
+        lower = lower.min(product);
+        upper = upper.max(product);
+    }
+    (lower, upper)
+}
+
+fn outward((lower, upper): (f64, f64)) -> (f64, f64) {
+    const ROUNDING_PAD: f64 = 64.0 * f64::EPSILON;
+    (
+        (lower - ROUNDING_PAD).max(-1.0),
+        (upper + ROUNDING_PAD).min(1.0),
+    )
+}
+
+fn component_gap(first: (f64, f64), second: (f64, f64)) -> f64 {
+    if first.1 < second.0 {
+        second.0 - first.1
+    } else if second.1 < first.0 {
+        first.0 - second.1
+    } else {
+        0.0
+    }
+}
+
 fn reduced_latitude(latitude_degrees: f64, one_minus_f: f64) -> f64 {
     let phi = latitude_degrees.to_radians();
     (one_minus_f * phi.tan())
@@ -127,5 +303,115 @@ fn longitude_windows(bounds: ChartBox) -> [Option<[f64; 2]>; 2] {
         [Some([bounds.west, bounds.east]), None]
     } else {
         [Some([bounds.west, 180.0]), Some([-180.0, bounds.east])]
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use geographiclib_rs::{Geodesic, InverseGeodesic as _};
+
+    use super::*;
+
+    fn box_(west: f64, south: f64, east: f64, north: f64) -> ChartBox {
+        ChartBox {
+            west,
+            south,
+            east,
+            north,
+        }
+    }
+
+    fn samples(bounds: ChartBox) -> Vec<(f64, f64)> {
+        let mut points = Vec::new();
+        for [west, east] in longitude_windows(bounds).into_iter().flatten() {
+            for longitude_index in 0..=4 {
+                let fraction = f64::from(longitude_index) / 4.0;
+                let longitude = west + (east - west) * fraction;
+                for latitude_index in 0..=4 {
+                    let fraction = f64::from(latitude_index) / 4.0;
+                    let latitude = bounds.south + (bounds.north - bounds.south) * fraction;
+                    points.push((longitude, latitude));
+                }
+            }
+        }
+        points
+    }
+
+    fn sampled_distance(geodesic: &Geodesic, first: ChartBox, second: ChartBox) -> f64 {
+        let first_points = samples(first);
+        let second_points = samples(second);
+        let mut minimum = f64::INFINITY;
+        for &(first_longitude, first_latitude) in &first_points {
+            for &(second_longitude, second_latitude) in &second_points {
+                let distance: f64 = geodesic.inverse(
+                    first_latitude,
+                    first_longitude,
+                    second_latitude,
+                    second_longitude,
+                );
+                minimum = minimum.min(distance);
+            }
+        }
+        minimum
+    }
+
+    #[test]
+    fn chart_box_lower_bound_stays_below_sampled_ellipsoidal_distances() {
+        let geodesic = Geodesic::wgs84();
+        let bound = GeodesicBoxEnvelopeBound::new(geodesic.a, geodesic.f);
+        let cases = [
+            (box_(-1.0, -1.0, 1.0, 1.0), box_(9.0, -1.0, 11.0, 1.0)),
+            (box_(0.0, 0.0, 1.0, 1.0), box_(0.0, 3.0, 1.0, 4.0)),
+            (
+                box_(179.0, -1.0, 180.0, 1.0),
+                box_(-180.0, -1.0, -179.0, 1.0),
+            ),
+            (box_(179.0, -1.0, -179.0, 1.0), box_(-1.0, -1.0, 1.0, 1.0)),
+            (box_(-180.0, 80.0, 180.0, 90.0), box_(-1.0, 0.0, 1.0, 1.0)),
+            (box_(-180.0, -1.0, 180.0, 1.0), box_(20.0, 10.0, 21.0, 11.0)),
+            (box_(0.0, 80.0, 1.0, 81.0), box_(10.0, 80.0, 11.0, 81.0)),
+            (box_(-10.0, -5.0, 10.0, 5.0), box_(9.0, 4.0, 11.0, 6.0)),
+            (box_(0.0, 0.0, 0.0, 0.0), box_(90.0, 0.0, 90.0, 0.0)),
+            (
+                box_(0.0, 0.0, 0.0, 0.0),
+                box_(179.999, 0.001, 179.999, 0.001),
+            ),
+            (
+                box_(179.999, 80.0, 179.999, 80.0),
+                box_(-179.999, 80.0, -179.999, 80.0),
+            ),
+        ];
+        for (first, second) in cases {
+            let lower_bound = bound.lower_bound(first, second);
+            let sampled = sampled_distance(&geodesic, first, second);
+            assert!(
+                lower_bound <= sampled + 1e-6,
+                "bound {lower_bound} exceeds sampled distance {sampled}: {first:?} / {second:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn chart_box_lower_bound_is_useful_and_keeps_overlaps_at_zero() {
+        let geodesic = Geodesic::wgs84();
+        let bound = GeodesicBoxEnvelopeBound::new(geodesic.a, geodesic.f);
+        assert!(bound.lower_bound(box_(0.0, -1.0, 1.0, 1.0), box_(10.0, -1.0, 11.0, 1.0)) > 0.0);
+        assert_eq!(
+            bound.lower_bound(box_(0.0, -1.0, 2.0, 1.0), box_(1.0, 0.0, 3.0, 2.0)),
+            0.0
+        );
+        assert_eq!(
+            bound.lower_bound(box_(180.0, 0.0, 180.0, 0.0), box_(-180.0, 0.0, -180.0, 0.0)),
+            0.0
+        );
+    }
+
+    #[test]
+    fn prolate_chart_box_lower_bound_fails_open() {
+        let bound = GeodesicBoxEnvelopeBound::new(6_378_137.0, -1.0 / 300.0);
+        assert_eq!(
+            bound.lower_bound(box_(0.0, 0.0, 1.0, 1.0), box_(10.0, 0.0, 11.0, 1.0)),
+            0.0
+        );
     }
 }

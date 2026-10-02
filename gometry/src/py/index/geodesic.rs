@@ -1,9 +1,7 @@
 //! Geodesic lower-bound pruning for the spatial index.
 //!
-//! A sound, tight lower bound on the ellipsoidal geodesic distance between a
-//! query point and any point inside a lon/lat envelope, so geographic
-//! nearest/`dwithin` queries prune the immutable runs instead of
-//! Karney-evaluating every entry.
+//! Point queries use a point-to-envelope bound; shape queries use a
+//! chart-box-to-chart-box bound over the shared geographic index cover.
 //!
 //! **Soundness.** Karney's auxiliary-sphere construction gives the geodesic
 //! length as `s = b · ∫√(1 + k²sin²σ′) dσ′ ≥ b · σ`, where `b` is the
@@ -18,17 +16,15 @@
 //! equatorial-micro-delta, polar, antimeridian, and near-antipodal pairs in
 //! `tests/test_index.py`.
 //!
-//! Pruning applies only when both realized point sets are exactly bounded by
-//! their envelopes — a **point** query against an **all-point** index (the
-//! canonical geographic KNN/radius workload). Non-point geodesic shapes
-//! realize edge points on geodesic arcs that can bulge outside their planar
-//! envelope, so those queries keep the exact full scan.
+//! Chart-edge shapes stay within their shared chart envelopes, so either bound
+//! can prune rows of any shape type. Unsupported frames and invalid raw
+//! geodesic coordinates fail open to exact refinement.
 
 use rstar::AABB;
 
-use crate::crs::GeodesicEnvelopeBound;
+use crate::crs;
+use crate::crs::{GeodesicBoxEnvelopeBound, GeodesicChartBox, GeodesicEnvelopeBound};
 use crate::geometry::{ChartBox, Point};
-use crate::{HeapSize, crs};
 
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Degrees(pub f64);
@@ -72,6 +68,7 @@ impl DwithinWindows {
 }
 
 /// Reduced (parametric) latitude in radians: `tan β = (1−f) tan φ`.
+#[cfg(test)]
 fn reduced_latitude(lat: Degrees, one_minus_f: f64) -> Radians {
     let phi = lat.0.to_radians();
     // ±90° maps to ±π/2 (tan overflows but atan saturates correctly).
@@ -88,17 +85,6 @@ fn geodetic_latitude(beta: Radians, one_minus_f: f64) -> Degrees {
             .to_degrees()
             .clamp(-90.0, 90.0),
     )
-}
-
-/// Haversine central angle between two auxiliary-sphere points.
-fn central_angle(beta1: Radians, beta2: Radians, delta_lon: Radians) -> Radians {
-    let sin_lat = ((beta2.0 - beta1.0) / 2.0).sin();
-    let sin_lon = (delta_lon.0 / 2.0).sin();
-    // Plain ops: scalar `mul_add` is a libm call below x86-64-v3, and the
-    // clamped haversine bound gains nothing from fused rounding (sin/cos
-    // already carry ~1 ulp).
-    let h = (sin_lon * sin_lon * beta1.0.cos() * beta2.0.cos() + sin_lat * sin_lat).clamp(0.0, 1.0);
-    Radians(2.0 * h.sqrt().asin())
 }
 
 /// Geodesic distance lower bounds from one fixed query point, on one CRS
@@ -205,6 +191,61 @@ impl GeodesicPruner {
             [lon_lo, lat_lo.0],
             [lon_hi, lat_hi.0],
         )))
+    }
+}
+
+/// Geodesic lower bounds from a chart-box cover to one index envelope.
+pub(crate) struct GeodesicBoxPruner {
+    bound: GeodesicBoxEnvelopeBound,
+    query: Box<[GeodesicChartBox]>,
+}
+
+impl GeodesicBoxPruner {
+    pub(crate) fn new(semi_major: f64, flattening: f64, query: Vec<AABB<[f64; 2]>>) -> Self {
+        let bound = GeodesicBoxEnvelopeBound::new(semi_major, flattening);
+        let query = query
+            .iter()
+            .map(|envelope| bound.prepare(chart_box_from_aabb(envelope)))
+            .collect::<Vec<_>>()
+            .into_boxed_slice();
+        Self { bound, query }
+    }
+
+    pub(crate) fn lower_bound(&self, envelope: &AABB<[f64; 2]>) -> f64 {
+        let target = self.bound.prepare(chart_box_from_aabb(envelope));
+        let mut lower = f64::INFINITY;
+        for &query in &self.query {
+            lower = lower.min(self.bound.lower_bound_prepared(query, target));
+            if lower == 0.0 {
+                return 0.0;
+            }
+        }
+        if lower.is_finite() { lower } else { 0.0 }
+    }
+}
+
+fn chart_box_from_aabb(envelope: &AABB<[f64; 2]>) -> ChartBox {
+    let [west, south] = envelope.lower();
+    let [east, north] = envelope.upper();
+    ChartBox {
+        west,
+        south,
+        east,
+        north,
+    }
+}
+
+pub(crate) enum GeodesicIndexPruner {
+    Point(GeodesicPruner),
+    Boxes(GeodesicBoxPruner),
+}
+
+impl GeodesicIndexPruner {
+    pub(crate) fn lower_bound(&self, envelope: &AABB<[f64; 2]>) -> f64 {
+        match self {
+            Self::Point(pruner) => pruner.envelope_lower_bound(envelope),
+            Self::Boxes(pruner) => pruner.lower_bound(envelope),
+        }
     }
 }
 
@@ -342,210 +383,5 @@ mod tests {
                 }
             }
         }
-    }
-}
-
-/// Per-row auxiliary-sphere caps for the index's one CRS frame: each row
-/// stores an anchor (its first vertex, reduced) plus a PROVEN upper bound
-/// on the row's angular reach from it in meters (`σ ≤ s/b` turns
-/// `s(anchor, segment.start) + length` into a bound that covers bowed
-/// geodesic edges — which can leave their lon/lat envelope, the reason the
-/// planar envelope bound is unsound here). Gives a sound lower bound on the
-/// geodesic distance from any query cap to any point of the row.
-#[derive(Debug)]
-enum RowCapStorage {
-    Dense {
-        anchors: Vec<(Radians, Radians)>,
-        reaches: Vec<f64>,
-    },
-    Sparse(crate::collections::IndexMap<usize, ((Radians, Radians), f64)>),
-}
-
-const MAX_SPARSE_ROW_CAP_ENTRIES: usize = 64;
-
-#[derive(Debug)]
-pub(crate) struct GeodesicRowCaps {
-    minor_radius: f64,
-    /// Slack for the backend's distance accuracy, as in [`GeodesicPruner`].
-    backend_floor: f64,
-    one_minus_f: f64,
-    rows: RowCapStorage,
-}
-
-impl GeodesicRowCaps {
-    /// Assemble from per-row `(anchor, reach_meters)` pairs for the given
-    /// `(semi_major, flattening)` ellipsoid (resolved by the CALLER —
-    /// `ellipsoid_shape` re-enters the geodesic handle cache and must not
-    /// run inside a metric scope). `None` outside the bound's proof domain
-    /// (callers fall back to the exact full scan).
-    /// Per-handle caps for live index rows only. Tombstoned slots keep
-    /// no storage. Handles remain stable across index mutation.
-    pub(crate) fn from_live_handles(
-        shape: crs::EllipsoidShape,
-        row_count: usize,
-        live_row_count: usize,
-        live_entry_count: usize,
-        live: impl Iterator<Item = (usize, Option<(Point, f64)>)>,
-    ) -> Option<Self> {
-        let major = shape.semi_major.get();
-        let flattening = shape.flattening;
-        let one_minus_f = 1.0 - flattening;
-        let rows = if live_entry_count <= MAX_SPARSE_ROW_CAP_ENTRIES
-            && live_entry_count <= row_count / 4
-        {
-            let mut rows = crate::collections::IndexMap::default();
-            rows.reserve(live_row_count);
-            for (handle, row) in live {
-                let (anchor, reach) = row?;
-                rows.insert(handle, row_cap(anchor, reach, one_minus_f)?);
-            }
-            RowCapStorage::Sparse(rows)
-        } else {
-            let mut anchors = vec![(Radians(0.0), Radians(0.0)); row_count];
-            let mut reaches = vec![0.0; row_count];
-            for (handle, row) in live {
-                let (anchor, reach) = row?;
-                let ((beta, lon), reach) = row_cap(anchor, reach, one_minus_f)?;
-                *anchors
-                    .get_mut(handle)
-                    .expect("live handle is within row storage") = (beta, lon);
-                *reaches
-                    .get_mut(handle)
-                    .expect("live handle is within row storage") = reach;
-            }
-            RowCapStorage::Dense { anchors, reaches }
-        };
-        Some(Self {
-            minor_radius: major * one_minus_f,
-            backend_floor: crate::geometry::GeodesicNumericalPolicy::new(major).backend_floor(),
-            one_minus_f,
-            rows,
-        })
-    }
-
-    /// The query side of the bound: a reduced anchor for `point`. `None`
-    /// out of domain (exact path owns the error).
-    pub(crate) fn query_anchor(&self, point: Point) -> Option<(Radians, Radians)> {
-        if !(-180.0..=180.0).contains(&point.x) || !(-90.0..=90.0).contains(&point.y) {
-            return None;
-        }
-        Some((
-            reduced_latitude(Degrees(point.y), self.one_minus_f),
-            Radians(point.x.to_radians()),
-        ))
-    }
-
-    /// Sound lower bound (meters) on the geodesic distance between any
-    /// point within `query_reach` of the query anchor and any point of row
-    /// `handle`.
-    pub(crate) fn lower_bound(
-        &self,
-        query: (Radians, Radians),
-        query_reach: f64,
-        handle: usize,
-    ) -> f64 {
-        #[expect(
-            clippy::indexing_slicing,
-            reason = "Dense cap arrays span the index's stable handle range"
-        )]
-        let ((beta, lon), reach) = match &self.rows {
-            RowCapStorage::Dense { anchors, reaches } => (anchors[handle], reaches[handle]),
-            RowCapStorage::Sparse(rows) => {
-                let Some(&cap) = rows.get(&handle) else {
-                    // A missing cap cannot safely exclude a live row.
-                    return 0.0;
-                };
-                cap
-            },
-        };
-        let delta = (query.1.0 - lon.0).abs();
-        let gap = if delta >= std::f64::consts::TAU {
-            delta - std::f64::consts::TAU
-        } else {
-            delta
-        };
-        let gap = Radians(gap.min(std::f64::consts::TAU - gap));
-        let sigma = central_angle(query.0, beta, gap);
-        (self.minor_radius * sigma.0 - reach - query_reach - self.backend_floor).max(0.0)
-    }
-}
-
-impl HeapSize for GeodesicRowCaps {
-    fn heap_bytes(&self) -> usize {
-        match &self.rows {
-            RowCapStorage::Dense { anchors, reaches } => {
-                anchors.heap_bytes().saturating_add(reaches.heap_bytes())
-            },
-            RowCapStorage::Sparse(rows) => crate::scratch_pool::hash_map_retained_bytes(rows),
-        }
-    }
-}
-
-fn row_cap(anchor: Point, reach: f64, one_minus_f: f64) -> Option<((Radians, Radians), f64)> {
-    if !(-180.0..=180.0).contains(&anchor.x) || !(-90.0..=90.0).contains(&anchor.y) {
-        // Out-of-domain rows must reach the exact path so they raise its
-        // domain error instead of being silently pruned.
-        return None;
-    }
-    Some((
-        (
-            reduced_latitude(Degrees(anchor.y), one_minus_f),
-            Radians(anchor.x.to_radians()),
-        ),
-        reach,
-    ))
-}
-
-#[cfg(test)]
-mod row_cap_storage_tests {
-    use super::*;
-
-    #[test]
-    fn sparse_caps_keep_duplicate_window_handles_and_fail_open() {
-        let shape = crs::EllipsoidShape::new(6_378_137.0, 1.0 / 298.257_223_563)
-            .expect("valid WGS84 ellipsoid");
-        let anchor = Point::new_raw_xy(10.0, 20.0);
-        let aliases = |count| std::iter::repeat_n((7, Some((anchor, 100.0))), count);
-
-        // One live row may occur in many geographic cover windows. Count
-        // those staged entries for the cutover, but retain only its stable key.
-        let sparse = GeodesicRowCaps::from_live_handles(shape, 256, 1, 64, aliases(64))
-            .expect("all row caps are in domain");
-        let RowCapStorage::Sparse(sparse_rows) = &sparse.rows else {
-            panic!("64 staged entries at one-quarter density use sparse storage");
-        };
-        assert_eq!(sparse_rows.len(), 1);
-
-        // The next alias crosses the bounded sparse-entry cutover even though
-        // the distinct live-row count remains one.
-        let by_entry_count = GeodesicRowCaps::from_live_handles(shape, 512, 1, 65, aliases(65))
-            .expect("all row caps are in domain");
-        assert!(matches!(&by_entry_count.rows, RowCapStorage::Dense { .. }));
-
-        // A small historical table stays dense above one-quarter density.
-        let by_density = GeodesicRowCaps::from_live_handles(shape, 16, 1, 5, aliases(5))
-            .expect("all row caps are in domain");
-        assert!(matches!(&by_density.rows, RowCapStorage::Dense { .. }));
-
-        let query = sparse
-            .query_anchor(Point::new_raw_xy(-20.0, 30.0))
-            .expect("query is in domain");
-        let bound = sparse.lower_bound(query, 50.0, 7);
-        assert!(bound > 0.0);
-        assert_eq!(by_entry_count.lower_bound(query, 50.0, 7), bound);
-        assert_eq!(by_density.lower_bound(query, 50.0, 7), bound);
-        assert_eq!(sparse.lower_bound(query, 50.0, 8), 0.0);
-
-        let invalid = Point::new_raw_xy(181.0, 0.0);
-        assert!(
-            GeodesicRowCaps::from_live_handles(
-                shape,
-                256,
-                1,
-                1,
-                std::iter::once((7, Some((invalid, 100.0)))),
-            )
-            .is_none()
-        );
     }
 }

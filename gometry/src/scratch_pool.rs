@@ -1,4 +1,5 @@
 use std::cell::Cell;
+#[cfg(test)]
 use std::collections::HashMap;
 use std::ops::{Deref, DerefMut};
 use std::thread::LocalKey;
@@ -36,6 +37,7 @@ pub(crate) const fn flat_vec_retained_bytes<T>(value: &Vec<T>) -> usize {
 
 /// Conservatively charges one machine word of hash-table metadata per entry.
 /// This deliberately avoids depending on hashbrown's private bucket layout.
+#[cfg(test)]
 pub(crate) fn hash_map_retained_bytes<K, V, S>(value: &HashMap<K, V, S>) -> usize {
     allocation_bytes(
         value.capacity(),

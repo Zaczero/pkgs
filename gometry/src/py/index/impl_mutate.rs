@@ -3,7 +3,7 @@
 
 use crate::py::index::{
     Frame, GeometryError, IndexEntry, PyGeometry, PyGeometryArray, PyResult, PySpatialIndex,
-    TopologyDomain, geodesic_prunable_point, index_envelopes, index_metadata,
+    geodesic_domain_invalid, index_envelopes, index_metadata,
 };
 
 fn checked_total_rows(start: usize, count: usize) -> PyResult<usize> {
@@ -85,10 +85,8 @@ impl PySpatialIndex {
         let effective_frame = self.metadata.as_ref().unwrap_or(&geometry.frame);
         let domain = crate::geometry::topology_domain(effective_frame)?;
         let cover = index_envelopes(geometry.shape.shape(), bounds, domain)?;
-        let non_prunable_live = usize::from(
-            matches!(domain, TopologyDomain::Geographic(_))
-                && !geodesic_prunable_point(&geometry.shape),
-        );
+        let non_prunable_live =
+            usize::from(geodesic_domain_invalid(geometry.shape.shape(), domain));
         let adopt_frame = self.metadata.is_none().then(|| geometry.frame.clone());
         let mut entry_counts = [0_usize; 1];
         let mut entries = Vec::with_capacity(cover.entries().len());
@@ -147,10 +145,9 @@ impl PySpatialIndex {
                 });
             }
             entry_counts.push(cover.entries().len());
-            if matches!(domain, TopologyDomain::Geographic(_)) {
-                non_prunable_live = non_prunable_live
-                    .wrapping_add(usize::from(!geodesic_prunable_point(&geometry.shape)));
-            }
+            non_prunable_live = non_prunable_live.wrapping_add(usize::from(
+                geodesic_domain_invalid(geometry.shape.shape(), domain),
+            ));
         }
         self.insert_prepared_batch(
             items,
@@ -197,10 +194,8 @@ impl PySpatialIndex {
             }
             entry_counts.push(cover.entries().len());
             let plan = array.prepared_row(offset, row)?.into_owned_plan();
-            if matches!(domain, TopologyDomain::Geographic(_)) {
-                non_prunable_live = non_prunable_live
-                    .wrapping_add(usize::from(!geodesic_prunable_point(plan.shape())));
-            }
+            non_prunable_live = non_prunable_live
+                .wrapping_add(usize::from(geodesic_domain_invalid(plan.shape(), domain)));
             items.push(PyGeometry::from_prepared_plan(plan, array.frame.clone()));
         }
         self.insert_prepared_batch(
@@ -290,9 +285,10 @@ impl PySpatialIndex {
         let non_prunable = if self.non_prunable_live == 0 {
             false
         } else {
+            let domain = self.domain()?;
             let mut rows = self.rows.operation();
             rows.row(handle)?
-                .with_shape(|shape| !geodesic_prunable_point(shape))?
+                .with_shape(|shape| geodesic_domain_invalid(shape, domain))?
         };
         let removed = if handle < self.bulk.initial_len() {
             let removed_entries = self.bulk_entry_counts.as_ref().map_or(1, |counts| {
@@ -447,14 +443,6 @@ mod tests {
         assert_eq!(index.overflow.dead_entry_count(), 1);
         assert_eq!(index.rows.live_count(), 13);
         assert_eq!(index.mutation_gen, 11);
-        assert!(
-            index
-                .geodesic_caps
-                .lock()
-                .expect("caps lock")
-                .caps
-                .is_none()
-        );
     }
 
     #[test]

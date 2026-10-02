@@ -450,14 +450,6 @@ impl PreparedPlan {
         Ok(entry.and_then(|entry| entry.line_index).unwrap_or(index))
     }
 
-    pub(in crate::geometry) fn cached_geodesic_parts(
-        &self,
-        frame_cache: &FrameDependentCaches,
-        key: &GeodesicPartsKey,
-    ) -> Option<Arc<GeodesicParts>> {
-        frame_cache.get(key).and_then(|entry| entry.parts)
-    }
-
     pub(in crate::geometry) fn geodesic_parts(
         &self,
         frame_cache: &FrameDependentCaches,

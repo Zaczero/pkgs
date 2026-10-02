@@ -2,8 +2,8 @@
 use crate::geometry::ShapeData;
 use crate::geometry::distance::{
     Result, any_parts_within, collect_point_only_into, discrete_frechet_distance_with_scratch,
-    ensure_geodesic_linework, geodesic_cap_streaming, geodesic_directed_hausdorff_distance,
-    geodesic_scratch, min_parts_to_parts, squared_space_safe,
+    ensure_geodesic_linework, geodesic_directed_hausdorff_distance, geodesic_scratch,
+    min_parts_to_parts, squared_space_safe,
 };
 use crate::geometry::{
     Coordinates as _, DistanceParts, GeodesicMetric, GeodesicParts, Point, PreparedLinework,
@@ -61,15 +61,6 @@ impl Shape {
             point_only,
             facet_bvh: std::sync::OnceLock::new(),
         })
-    }
-
-    /// Build the existing index-pruning cap until its consumer migrates to the
-    /// shared chart-box lower bound.
-    pub(crate) fn geodesic_cap(
-        &self,
-        metric: &impl GeodesicMetric,
-    ) -> Result<Option<(Point, f64)>> {
-        geodesic_cap_streaming(self, metric)
     }
 
     #[cfg(test)]

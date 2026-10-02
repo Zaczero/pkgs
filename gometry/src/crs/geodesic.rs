@@ -182,7 +182,7 @@ pub(crate) use edge_distance::PointEdgeScratch;
 pub(crate) use ellipsoid_metric::{
     EllipsoidMetric, inverse_azimuths, inverse_distance, inverse_distance_azimuths,
 };
-pub(crate) use envelope::GeodesicEnvelopeBound;
+pub(crate) use envelope::{GeodesicBoxEnvelopeBound, GeodesicChartBox, GeodesicEnvelopeBound};
 #[cfg(test)]
 pub(crate) use measure::with_ellipsoid_metric;
 pub(crate) use measure::{

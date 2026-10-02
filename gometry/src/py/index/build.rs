@@ -4,7 +4,7 @@ use crate::py::index::{
     Bound, Frame, GeometryArrayStorage, GeometryError, IndexEntry, IndexRows, PackedStore, PyAny,
     PyAnyMethods as _, PyGeometry, PyGeometryArray, PyResult, PySpatialIndex, Python, ShapeData,
     StaticStrForest, StaticStrTree, bounds_envelope, exact_geometry, exact_geometry_array,
-    geodesic_prunable_point, index_envelopes,
+    geodesic_domain_invalid, index_envelopes,
 };
 pub(crate) fn spatial_index(mut items: Vec<PyGeometry>) -> PyResult<PySpatialIndex> {
     let metadata = index_metadata(&items)?;
@@ -73,8 +73,9 @@ fn scan_spatial_index_rows<'a>(
         }
         live.push(1);
         if matches!(domain, TopologyDomain::Geographic(_)) {
-            non_prunable_live =
-                non_prunable_live.wrapping_add(usize::from(!geodesic_prunable_point(&item.shape)));
+            non_prunable_live = non_prunable_live.wrapping_add(usize::from(
+                geodesic_domain_invalid(item.shape.shape(), domain),
+            ));
         }
     }
     Ok(IndexScan {
@@ -107,7 +108,6 @@ fn finish_spatial_index(
         bulk_dead_entries: 0,
         bulk_entry_counts,
         overflow: StaticStrForest::new(total_rows),
-        geodesic_caps: std::sync::Mutex::default(),
         mutation_gen: 0,
         metadata,
         non_prunable_live: scan.non_prunable_live,
@@ -145,6 +145,7 @@ fn packed_index_payload(
             live.push(0);
             continue;
         };
+        let mut row_non_prunable = false;
         match domain {
             TopologyDomain::Cartesian => {
                 entries.push(IndexEntry {
@@ -158,16 +159,13 @@ fn packed_index_payload(
                     idx: logical,
                     envelope,
                 }));
+                row_non_prunable = geodesic_domain_invalid(shape, domain);
                 Ok::<_, pyo3::PyErr>(())
             })?,
         }
         live.push(1);
         if matches!(domain, TopologyDomain::Geographic(_)) {
-            non_prunable_live = non_prunable_live.wrapping_add(usize::from(!matches!(
-                shape_row,
-                storage::ShapeRow::Point(point)
-                    if (-180.0..=180.0).contains(&point.x) && (-90.0..=90.0).contains(&point.y)
-            )));
+            non_prunable_live = non_prunable_live.wrapping_add(usize::from(row_non_prunable));
         }
     }
     Ok((entries, live, non_prunable_live))
@@ -207,7 +205,6 @@ pub(crate) fn packed_spatial_index(array: &PyGeometryArray) -> PyResult<Option<P
         bulk_dead_entries: 0,
         bulk_entry_counts,
         overflow: StaticStrForest::new(total_rows),
-        geodesic_caps: std::sync::Mutex::default(),
         mutation_gen: 0,
         metadata,
         non_prunable_live,
@@ -329,8 +326,9 @@ pub(crate) fn restore_spatial_index(
                 });
             }
             if matches!(domain, TopologyDomain::Geographic(_)) {
-                non_prunable_live = non_prunable_live
-                    .wrapping_add(usize::from(!geodesic_prunable_point(&geometry.shape)));
+                non_prunable_live = non_prunable_live.wrapping_add(usize::from(
+                    geodesic_domain_invalid(geometry.shape.shape(), domain),
+                ));
             }
             live.push(1);
             geometry
@@ -358,7 +356,6 @@ pub(crate) fn restore_spatial_index(
         bulk_dead_entries: 0,
         bulk_entry_counts,
         overflow: StaticStrForest::new(total_rows),
-        geodesic_caps: std::sync::Mutex::default(),
         mutation_gen: 0,
         metadata,
         non_prunable_live,

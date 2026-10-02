@@ -1919,6 +1919,57 @@ def test_index_entries_at_domain_corners_stay_searchable() -> None:
     assert ids(idx.nearest(gm.Point(45.0, 89.0, crs=4326), k=1)) == [2]
 
 
+@pytest.mark.parametrize('longitude', [180.0, -180.0], ids=['positive-seam', 'negative-seam'])
+def test_geographic_index_keeps_linework_at_seam_aliases(longitude: float) -> None:
+    line = gm.LineString([(179.5, 9.5), (180.0, 9.5), (180.0, 10.5)], crs=4326)
+    index = gm.SpatialIndex([line])
+    query = gm.Point(longitude, 10.0, crs=4326)
+    assert gm.intersects(query, line)
+    assert gm.distance(query, line) == 0.0
+    assert gm.dwithin(query, line, 0.0)
+    assert ids(index.candidates(query)) == [0]
+    assert ids(index.query(query, predicate='intersects')) == [0]
+    assert ids(index.query(query, predicate='dwithin', distance=0.0)) == [0]
+
+
+def test_seam_alias_candidates_survive_dense_sparse_and_gathered_rows() -> None:
+    canonical = [(179.5, 9.5), (180.0, 9.5), (180.0, 10.5)]
+    far = gm.LineString([(-40.0, -10.0), (-39.0, -10.0)], crs=4326)
+
+    dense_target = gm.LineString(canonical[::-1], crs=4326)
+    dense_rows = [
+        gm.LineString(
+            [(-160.0 + index, -30.0), (-159.5 + index, -30.0)], crs=4326
+        )
+        for index in range(64)
+    ]
+    dense_rows.append(dense_target)
+    dense_index = gm.SpatialIndex(dense_rows)
+
+    shifted_positive = gm.LineString([(x + 360.0, y) for x, y in canonical], crs=4326)
+    sparse_rows = gm.GeometryArray([None, shifted_positive, far, None], crs=4326)
+    sparse_index = gm.SpatialIndex(sparse_rows)
+
+    shifted_negative = gm.LineString([(x - 360.0, y) for x, y in canonical], crs=4326)
+    gathered_source = gm.GeometryArray([far, shifted_negative, far], crs=4326)
+    gathered_index = gm.SpatialIndex(gathered_source[[1, 0, 1]])
+
+    cases = (
+        ('dense/reversed', dense_index, dense_target, [64]),
+        ('sparse/positive-period', sparse_index, shifted_positive, [1]),
+        ('gathered/negative-period', gathered_index, shifted_negative, [0, 2]),
+    )
+    for name, index, line, expected in cases:
+        for longitude in (180.0, -180.0):
+            query = gm.Point(longitude, 10.0, crs=4326)
+            assert gm.intersects(query, line), name
+            assert gm.distance(query, line) == 0.0, name
+            assert gm.dwithin(query, line, 0.0), name
+            assert ids(index.candidates(query)) == expected, name
+            assert ids(index.query(query, predicate='intersects')) == expected, name
+            assert ids(index.query(query, predicate='dwithin', distance=0.0)) == expected, name
+
+
 def test_geodesic_nearest_mixed_shapes_match_brute_force() -> None:
     items = gm.GeometryArray(
         [
@@ -1930,7 +1981,17 @@ def test_geodesic_nearest_mixed_shapes_match_brute_force() -> None:
     )
     idx = gm.SpatialIndex(items)
     rows = list(items)
-    for query in (gm.Point(180.0, 10.0, crs=4326), gm.Point(170.0, 12.0, crs=4326)):
+    queries = (
+        gm.Point(180.0, 10.0, crs=4326),
+        gm.Point(170.0, 12.0, crs=4326),
+        gm.box(178.0, 9.8, 179.5, 10.2, crs=4326),
+    )
+    for query in queries:
+        exact_intersections = ids(idx.query(query, predicate='intersects'))
+        assert ids(idx.query(query, predicate='dwithin', distance=0.0)) == exact_intersections
+        for item in rows:
+            if gm.intersects(query, item):
+                assert gm.distance(query, item) == 0.0
         brute = sorted(
             ((i, gm.distance(query, item)) for i, item in enumerate(rows)),
             key=lambda pair: (pair[1], pair[0]),
@@ -1944,11 +2005,11 @@ def test_geodesic_nearest_mixed_shapes_match_brute_force() -> None:
             ]
 
 
-def test_sparse_geodesic_caps_scale_with_live_lines_through_mutation_and_clone() -> (
+def test_sparse_geodesic_chart_bounds_scale_with_live_lines_through_mutation_and_clone() -> (
     None
 ):
-    # Line rows disable the all-point envelope pruner; the seam-crossing row
-    # also appears through multiple geographic cover windows.
+    # Line rows use chart-box bounds; the seam-crossing row appears through
+    # multiple geographic cover windows.
     live_coordinates = [
         [(-40.0, 20.0), (-39.9, 20.1)],
         [(179.8, 0.0), (-179.8, 0.0)],
@@ -2017,7 +2078,7 @@ def test_sparse_geodesic_caps_scale_with_live_lines_through_mutation_and_clone()
             [distance for _, distance in distances],
             atol=1e-9,
         )
-        return size_growth
+        return max(0, size_growth)
 
     def check_dwithin(
         candidate: gm.SpatialIndex,
@@ -2027,7 +2088,7 @@ def test_sparse_geodesic_caps_scale_with_live_lines_through_mutation_and_clone()
         got = candidate.query(query, predicate='dwithin', distance=radius)
         size_growth = candidate.__sizeof__() - size_before
         assert ids(got) == expected
-        return size_growth
+        return max(0, size_growth)
 
     small_history = 512
     large_history = 4096
@@ -2075,13 +2136,13 @@ def test_sparse_geodesic_caps_scale_with_live_lines_through_mutation_and_clone()
     with pytest.raises(gm.InvalidGeometryError, match=domain_error):
         large.nearest(bad_query)
 
-    # History differs eightfold with the same four live lines. Allow a 2x
-    # cache-growth range for row-cache details; dense cap arrays track history.
+    # History differs eightfold with the same four live lines. Query-local
+    # chart bounds must not retain a cap table proportional to dead history.
     assert (
-        0 < large_nearest_growth < 2 * small_nearest_growth
-        and 0 < large_dwithin_growth < 2 * small_dwithin_growth
+        large_nearest_growth <= 2 * small_nearest_growth
+        and large_dwithin_growth <= 2 * small_dwithin_growth
     ), (
-        f'cap-cache growth followed history: nearest {small_nearest_growth} '
+        f'query-cache growth followed history: nearest {small_nearest_growth} '
         f'to {large_nearest_growth}, dwithin {small_dwithin_growth} '
         f'to {large_dwithin_growth}'
     )

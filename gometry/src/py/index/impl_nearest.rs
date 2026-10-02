@@ -4,7 +4,7 @@ use crate::py::index::{
     AABB, BinaryHeap, DistanceUnit, Frontier, FrontierNode, NearestCandidate, NearestOptions,
     NonNegative, PyGeometry, PyResult, PySpatialIndex, QueryDomain, Shape, aabb_box_distance_2,
     crs, index_envelopes, nearest_candidates_from_heap, pair_distance_geodesic,
-    pair_distance_planar, push_nearest_candidate, resolve_metric, shape_pruner_point,
+    pair_distance_planar, push_nearest_candidate, resolve_metric,
 };
 
 #[derive(Default)]
@@ -414,16 +414,14 @@ impl PySpatialIndex {
         leaf_frontier: &mut Vec<LeafFrontierEntry>,
         visited: &mut NearestVisited,
     ) -> PyResult<Vec<NearestCandidate>> {
-        let Some(_query_bounds) = query.bounds().filter(|_| k > 0) else {
+        let Some(query_bounds) = query.bounds().filter(|_| k > 0) else {
             return Ok(Vec::new());
         };
         let exclude = exclusive.then_some(query.shape());
-        if let Some(pruner) = self.geodesic_pruner(metric, shape_pruner_point(query.shape())) {
+        if let Some(pruner) = self.geodesic_index_pruner(metric, resolved, query, query_bounds)? {
             let query_cache_owner = query_cache();
             let mut rows = self.rows.operation();
-            // Geodesic point query over an all-point index: prune with the
-            // sound lower bound instead of Karney-evaluating every entry.
-            let bound = |envelope: &AABB<[f64; 2]>| pruner.envelope_lower_bound(envelope);
+            let bound = |envelope: &AABB<[f64; 2]>| pruner.lower_bound(envelope);
             let exact = |idx| {
                 if let Some(exclude) = exclude
                     && rows.row(idx)?.with_shape(|other| *other == *exclude)?
@@ -459,14 +457,6 @@ impl PySpatialIndex {
                 leaf_frontier,
                 visited,
             );
-        }
-        // Geodesic metric without a sound envelope bound (non-point shapes
-        // realize edge points outside their planar envelope): cap-ordered
-        // scan when the per-row cap table holds, exact full scan otherwise.
-        if let Some(result) =
-            self.geodesic_capped_nearest(resolved, query, query_cache, k, max_distance, exclude)?
-        {
-            return Ok(result);
         }
         if k == 1 {
             return self.geodesic_full_scan_shared(

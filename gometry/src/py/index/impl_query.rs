@@ -1,18 +1,17 @@
-use super::impl_nearest::{HeapNearest, NearestState, OneNearest};
+use super::shape_pruner_point;
 use crate::CsrBuilder;
 use crate::geometry::storage::ValidityMask;
 use crate::geometry::{PreparedPlan, TopologyDomain};
 use crate::predicates::engine::{GateOperand, PredicateSpec, PreparedTopologyPair, row_kind_empty};
 use crate::py::errors::{crs_mismatch_error, epoch_mismatch_error};
 use crate::py::index::{
-    AABB, Arc, BinaryHeap, Bounds, CapBound, Crs, DistanceUnit, DwithinDistance, Frame,
-    GeodesicCapsCache, GeodesicPruner, GeodesicRowCaps, IndexEntry, IndexEnvelope, IndexPredicate,
-    IndexRowOperation, NearestCandidate, NonNegative, Point, PointRows, Predicate,
-    PreparedIndexQuery, PyGeometry, PyGeometryArray, PyResult, PySpatialIndex, QueryDomain,
-    RowMatches, Shape, ShapeData, ShapeRow, bounds_envelope, crs, crs_label, csr_rows, epoch_label,
-    global_geographic_candidate_envelope, index_envelopes, pair_distance_geodesic,
-    pair_dwithin_geodesic, pair_dwithin_planar, point_from_bounds, retain_row, sort_unique_row_ids,
-    topology_pair_after_gates, topology_scalar_pair,
+    AABB, Arc, Bounds, Crs, DistanceUnit, DwithinDistance, Frame, GeodesicBoxPruner,
+    GeodesicIndexPruner, GeodesicPruner, IndexEntry, IndexEnvelope, IndexPredicate,
+    IndexRowOperation, Point, PointRows, Predicate, PreparedIndexQuery, PyGeometry,
+    PyGeometryArray, PyResult, PySpatialIndex, QueryDomain, RowMatches, Shape, ShapeData, ShapeRow,
+    bounds_envelope, crs, crs_label, csr_rows, epoch_label, global_geographic_candidate_envelope,
+    index_envelopes, pair_dwithin_geodesic, pair_dwithin_planar, point_from_bounds, retain_row,
+    sort_unique_row_ids, topology_pair_after_gates, topology_scalar_pair,
 };
 
 fn geographic_keep(
@@ -138,12 +137,12 @@ impl PySpatialIndex {
                 self.candidate_ids_core(
                     prepared.bounds,
                     prepared.pruner_point,
-                    prepared.cap,
+                    prepared.box_pruner,
                     predicate,
                     distance,
                     metric,
                     &mut candidates,
-                )?;
+                );
             }
             candidates.retain(|&j| j > i);
             match (spec, resolved) {
@@ -301,205 +300,6 @@ impl PySpatialIndex {
             .or(query_crs)
     }
 
-    /// The geodesic candidate pruner for `geometry`, when the sound lower
-    /// bound applies: a geodesic metric, a point query, and an all-point index
-    /// (planar envelopes bound exactly the realized point sets).
-    /// The lazy per-row geodesic cap table — built once per `(row count,
-    /// mutation generation, CRS runtime generation)` so inserts/removes and
-    /// ellipsoid reconfiguration both invalidate; a cached `None` records a
-    /// known-unsound frame (out-of-domain rows, non-oblate ellipsoid) so failed
-    /// builds never repeat under the same key.
-    pub(crate) fn geodesic_row_caps(
-        &self,
-        metric: &crs::MetricModel,
-    ) -> PyResult<Option<Arc<GeodesicRowCaps>>> {
-        let crs::MetricModel::Geodesic { crs, frame, state } = metric else {
-            return Ok(None);
-        };
-        if *frame != crate::geographic::GeographicFrame::crs84() {
-            return Ok(None);
-        }
-        self.geodesic_row_caps_at(crs, *frame, state)
-    }
-
-    fn geodesic_row_caps_at(
-        &self,
-        crs: &str,
-        frame: crate::geographic::GeographicFrame,
-        runtime_state: &crs::RuntimeState,
-    ) -> PyResult<Option<Arc<GeodesicRowCaps>>> {
-        if frame != crate::geographic::GeographicFrame::crs84() {
-            return Ok(None);
-        }
-        let runtime_gen = runtime_state.generation;
-        let mut cache = self
-            .geodesic_caps
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if cache.row_count == self.rows.len()
-            && cache.generation == self.mutation_gen
-            && cache.runtime_generation == runtime_gen
-            && self.rows.len() > 0
-        {
-            return Ok(cache.caps.clone());
-        }
-        // Resolve the ellipsoid OUTSIDE the metric scope: `with_geodesic`
-        // holds the thread-local handle cache borrow across its closure.
-        let Ok(shape) = crs::ellipsoid_shape_at(crs, runtime_state) else {
-            *cache = GeodesicCapsCache {
-                row_count: self.rows.len(),
-                generation: self.mutation_gen,
-                runtime_generation: runtime_gen,
-                caps: None,
-            };
-            return Ok(None);
-        };
-        let mut products = self.rows.operation();
-        let live_row_count = self.rows.live_count();
-        let mut live = Vec::with_capacity(live_row_count);
-        for entry in self.live_entries() {
-            let data = products.prepared(entry.idx)?;
-            let cache = products.frame_cache(entry.idx)?;
-            live.push((entry.idx, data, cache));
-        }
-        let live_entry_count = live.len();
-        let built = match crs::with_ellipsoid_metric_at(crs, &[], runtime_state, |ellipsoid| {
-            Ok(GeodesicRowCaps::from_live_handles(
-                shape,
-                self.rows.len(),
-                live_row_count,
-                live_entry_count,
-                live.iter().map(|(idx, data, cache)| {
-                    let (semi_major, flattening) = ellipsoid.ellipsoid_parameters();
-                    (
-                        *idx,
-                        data.geodesic_cap_cached(
-                            cache,
-                            crs,
-                            semi_major,
-                            flattening,
-                            ellipsoid,
-                            runtime_state,
-                        )
-                        .ok()
-                        .flatten(),
-                    )
-                }),
-            ))
-        }) {
-            Ok(Some(caps)) => Some(Arc::new(caps)),
-            Ok(None) | Err(_) => None,
-        };
-        *cache = GeodesicCapsCache {
-            row_count: self.rows.len(),
-            generation: self.mutation_gen,
-            runtime_generation: runtime_gen,
-            caps: built.clone(),
-        };
-        drop(cache);
-        Ok(built)
-    }
-
-    /// Cap-ordered geodesic nearest over non-point rows: sound per-row
-    /// lower bounds order the exact evaluations and stop the scan once no
-    /// bound can beat the running k-th best (or `max_distance`). `None`
-    /// when the cap table or the query cap cannot be built — the exact
-    /// full scan owns those (including their domain errors).
-    pub(crate) fn geodesic_capped_nearest(
-        &self,
-        metric: &crs::GeodesicMetric,
-        query: &PreparedPlan,
-        query_cache: &mut impl FnMut() -> Arc<crate::geometry::FrameDependentCaches>,
-        k: usize,
-        max_distance: Option<NonNegative>,
-        exclude: Option<&Shape>,
-    ) -> PyResult<Option<Vec<NearestCandidate>>> {
-        let Some(caps) = self.geodesic_row_caps_at(&metric.crs, metric.frame, &metric.state)?
-        else {
-            return Ok(None);
-        };
-        let query_cache_owner = query_cache();
-        let Some((anchor, reach)) =
-            crs::with_ellipsoid_metric_at(&metric.crs, &[], &metric.state, |ellipsoid| {
-                let (semi_major, flattening) = ellipsoid.ellipsoid_parameters();
-                query.geodesic_cap_cached(
-                    &query_cache_owner,
-                    &metric.crs,
-                    semi_major,
-                    flattening,
-                    ellipsoid,
-                    &metric.state,
-                )
-            })
-            .ok()
-            .flatten()
-        else {
-            return Ok(None);
-        };
-        let Some(query_anchor) = caps.query_anchor(anchor) else {
-            return Ok(None);
-        };
-        let mut order = Vec::new();
-        for entry in self.live_entries() {
-            order.push(CapBound {
-                bound: caps.lower_bound(query_anchor, reach, entry.idx),
-                idx: entry.idx,
-            });
-        }
-        order.sort_unstable_by_key(|entry| entry.idx);
-        order.dedup_by_key(|entry| entry.idx);
-        let order = BinaryHeap::from(order);
-        let mut products = self.rows.operation();
-        let exact = |idx| {
-            if let Some(exclude) = exclude
-                && products.row(idx)?.with_shape(|other| *other == *exclude)?
-            {
-                return Ok(None);
-            }
-            let data = products.prepared(idx)?;
-            Ok(Some(pair_distance_geodesic(
-                metric,
-                &data,
-                &*products.frame_cache(idx)?,
-                query,
-                &query_cache_owner,
-            )?))
-        };
-        if k == 1 {
-            return self.geodesic_capped_nearest_shared(
-                order,
-                exact,
-                OneNearest::default(),
-                max_distance,
-            );
-        }
-        self.geodesic_capped_nearest_shared(
-            order,
-            exact,
-            HeapNearest::new(k, self.__len__()),
-            max_distance,
-        )
-    }
-
-    fn geodesic_capped_nearest_shared<S: NearestState>(
-        &self,
-        mut order: BinaryHeap<CapBound>,
-        mut exact: impl FnMut(usize) -> PyResult<Option<f64>>,
-        mut state: S,
-        max_distance: Option<NonNegative>,
-    ) -> PyResult<Option<Vec<NearestCandidate>>> {
-        while let Some(CapBound { bound, idx }) = order.pop() {
-            if state
-                .ceiling(max_distance)
-                .is_some_and(|limit| bound > limit)
-            {
-                break;
-            }
-            self.consider_nearest_candidate(idx, &mut exact, max_distance, &mut state)?;
-        }
-        Ok(Some(state.finish()))
-    }
-
     pub(crate) fn geodesic_pruner(
         &self,
         metric: &crs::MetricModel,
@@ -517,30 +317,59 @@ impl PySpatialIndex {
         GeodesicPruner::new_at(crs, query?, state)
     }
 
-    /// The candidate walk for one ALREADY frame-checked query: its bounds,
-    /// its point identity (the geodesic pruner's precondition), and the
-    /// once-resolved distance model — the shared core of the scalar lane
-    /// and the per-row array lane (which never stages a `PyGeometry`).
+    pub(crate) fn geodesic_index_pruner(
+        &self,
+        metric: &crs::MetricModel,
+        resolved: &crs::GeodesicMetric,
+        query: &PreparedPlan,
+        query_bounds: Bounds,
+    ) -> PyResult<Option<GeodesicIndexPruner>> {
+        if let Some(point) = shape_pruner_point(query.shape()) {
+            return Ok(self
+                .geodesic_pruner(metric, Some(point))
+                .map(GeodesicIndexPruner::Point));
+        }
+        crs::ensure_geographic_domain_in_frame(resolved.frame, query.shape())
+            .map_err(pyo3::PyErr::from)?;
+        if resolved.frame != crate::geographic::GeographicFrame::crs84()
+            || self.non_prunable_live != 0
+        {
+            return Ok(None);
+        }
+        let cover = index_envelopes(
+            query.shape(),
+            query_bounds,
+            TopologyDomain::Geographic(resolved.frame),
+        )?;
+        Ok(Some(GeodesicIndexPruner::Boxes(GeodesicBoxPruner::new(
+            resolved.geodesic.a,
+            resolved.geodesic.f,
+            cover.entries().to_vec(),
+        ))))
+    }
+
+    /// Candidate walk for one frame-checked query, shared by scalar and array
+    /// lanes.
     pub(crate) fn candidate_ids_core(
         &self,
         query_bounds: Option<Bounds>,
         pruner_point: Option<Point>,
-        query_cap: Option<(Point, f64)>,
+        box_pruner: Option<GeodesicBoxPruner>,
         predicate: Option<IndexPredicate>,
         distance: Option<DwithinDistance>,
         distance_model: Option<&crs::MetricModel>,
         out: &mut Vec<usize>,
-    ) -> PyResult<()> {
+    ) {
         out.clear();
         self.candidate_ids_core_append(
             query_bounds,
             pruner_point,
-            query_cap,
+            box_pruner,
             predicate,
             distance,
             distance_model,
             out,
-        )
+        );
     }
 
     /// [`candidate_ids_core`](Self::candidate_ids_core) without clearing the
@@ -550,40 +379,39 @@ impl PySpatialIndex {
         &self,
         query_bounds: Option<Bounds>,
         pruner_point: Option<Point>,
-        query_cap: Option<(Point, f64)>,
+        box_pruner: Option<GeodesicBoxPruner>,
         _predicate: Option<IndexPredicate>,
         distance: Option<DwithinDistance>,
         distance_model: Option<&crs::MetricModel>,
         out: &mut Vec<usize>,
-    ) -> PyResult<()> {
+    ) {
         let start = out.len();
         self.candidate_ids_core_append_inner(
             query_bounds,
             pruner_point,
-            query_cap,
+            box_pruner,
             distance,
             distance_model,
             out,
-        )?;
+        );
         self.finish_candidates(out, start);
-        Ok(())
     }
 
     fn candidate_ids_core_append_inner(
         &self,
         query_bounds: Option<Bounds>,
         pruner_point: Option<Point>,
-        query_cap: Option<(Point, f64)>,
+        box_pruner: Option<GeodesicBoxPruner>,
         distance: Option<DwithinDistance>,
         distance_model: Option<&crs::MetricModel>,
         out: &mut Vec<usize>,
-    ) -> PyResult<()> {
+    ) {
         let Some(query_bounds) = query_bounds else {
-            return Ok(());
+            return;
         };
         if distance.is_some_and(|distance| distance.get() == f64::INFINITY) {
             self.append_live_handles(out);
-            return Ok(());
+            return;
         }
         let coordinate_distance = distance.and_then(|distance| {
             distance_model
@@ -600,12 +428,12 @@ impl PySpatialIndex {
             });
         if let Some((query, distance_2)) = point_distance_query {
             self.collect_within_distance_2(query, distance_2, out);
-            return Ok(());
+            return;
         }
         if let Some(distance) = coordinate_distance {
             let query_envelope = bounds_envelope(query_bounds.expand(distance));
             self.collect_intersecting(&query_envelope, out);
-            return Ok(());
+            return;
         }
         if let Some(distance) = distance {
             let distance = distance.get();
@@ -622,33 +450,26 @@ impl PySpatialIndex {
                 for window in windows.iter() {
                     self.collect_intersecting(window, out);
                 }
-                return Ok(());
+                return;
             }
-            // Cap-table fallback — non-point queries and non-point rows
-            // both get a SOUND row filter (a superset of every true dwithin
-            // match) instead of the all-rows envelope.
-            if let Some((anchor, reach)) = query_cap {
-                let row_caps = match distance_model {
-                    Some(model) => self.geodesic_row_caps(model)?,
-                    None => None,
-                };
-                if let Some(caps) = row_caps
-                    && let Some(query_anchor) = caps.query_anchor(anchor)
-                {
-                    for entry in self.live_entries().filter(|entry| {
-                        caps.lower_bound(query_anchor, reach, entry.idx) <= distance
-                    }) {
+            // Shape queries use their chart cover against each indexed row's
+            // chart envelope. Invalid geodesic rows fail open so refinement
+            // still reports the same coordinate-domain error.
+            if self.non_prunable_live == 0
+                && let Some(box_pruner) = box_pruner
+            {
+                for entry in self.live_entries() {
+                    if box_pruner.lower_bound(&entry.envelope) <= distance {
                         out.push(entry.idx);
                     }
-                    return Ok(());
                 }
+                return;
             }
             let query_envelope = global_geographic_candidate_envelope();
             self.collect_intersecting(&query_envelope, out);
-            return Ok(());
+            return;
         }
         self.collect_intersecting(&bounds_envelope(query_bounds), out);
-        Ok(())
     }
 
     /// Candidate handles, sorted (the public `candidates` contract).
@@ -677,12 +498,12 @@ impl PySpatialIndex {
         self.candidate_ids_core(
             row.bounds,
             row.pruner_point,
-            row.cap,
+            row.box_pruner,
             predicate,
             distance,
             metric,
             &mut ids,
-        )?;
+        );
         Ok(ids)
     }
 
@@ -717,12 +538,12 @@ impl PySpatialIndex {
         self.candidate_ids_core_append(
             prepared.bounds,
             prepared.pruner_point,
-            prepared.cap,
+            prepared.box_pruner,
             predicate,
             candidate_distance,
             candidate_metric,
             matches,
-        )?;
+        );
         let PreparedIndexQuery::Dwithin {
             resolved, distance, ..
         } = plan
@@ -757,12 +578,12 @@ impl PySpatialIndex {
         self.candidate_ids_core_append(
             prepared.bounds,
             prepared.pruner_point,
-            prepared.cap,
+            prepared.box_pruner,
             predicate,
             candidate_distance,
             candidate_metric,
             matches,
-        )?;
+        );
         let PreparedIndexQuery::Dwithin { distance, .. } = plan else {
             unreachable!("dwithin matcher is called only with a dwithin plan")
         };
@@ -1113,12 +934,12 @@ impl PySpatialIndex {
         self.candidate_ids_core(
             prepared.bounds,
             prepared.pruner_point,
-            prepared.cap,
+            prepared.box_pruner,
             candidate_predicate,
             candidate_distance,
             metric,
             &mut candidates,
-        )?;
+        );
         self.refine_prepared(geometry, candidates, &plan)
     }
 

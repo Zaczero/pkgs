@@ -221,6 +221,10 @@ fn geographic_view_py_error(error: GeographicViewError) -> pyo3::PyErr {
     InvalidGeometryError::new_err(error.to_string())
 }
 
+#[expect(
+    clippy::float_cmp,
+    reason = "only exact canonical endpoints denote a window touching the longitude seam"
+)]
 fn geographic_index_envelopes(
     shape: &Shape,
     frame: GeographicFrame,
@@ -259,20 +263,26 @@ fn geographic_index_envelopes(
         union_circular_intervals(frame.longitude(), intervals)
     };
     let mut envelopes = Vec::with_capacity(2);
+    let half_period = frame.longitude().half_period();
     let mut push = |window: [f64; 2]| {
         envelopes.push(AABB::from_bounds([window[0], south], [window[1], north]));
     };
     match longitude.windows(frame.longitude()) {
-        Some(LongitudeWindows::One(window)) => push(window),
+        Some(LongitudeWindows::One(window)) => {
+            let [west, east] = window;
+            push(window);
+            if west == -half_period && east != half_period {
+                push([half_period, half_period]);
+            } else if east == half_period && west != -half_period {
+                push([-half_period, -half_period]);
+            }
+        },
         Some(LongitudeWindows::Two(left, right)) => {
             push(left);
             push(right);
         },
         Some(LongitudeWindows::Full) => {
-            push([
-                -frame.longitude().half_period(),
-                frame.longitude().half_period(),
-            ]);
+            push([-half_period, half_period]);
         },
         None => {},
     }
@@ -1461,6 +1471,38 @@ mod periodic_tests {
         assert_eq!(seam.len(), 2);
         assert_eq!((seam[0].upper()[0] - seam[0].lower()[0]).abs(), 1.0);
         assert_eq!((seam[1].upper()[0] - seam[1].lower()[0]).abs(), 1.0);
+    }
+
+    #[test]
+    #[expect(
+        clippy::float_cmp,
+        reason = "the regression pins exact canonical seam and mirrored endpoint coordinates"
+    )]
+    fn seam_touching_line_cover_contains_the_mirrored_endpoint() {
+        for native in [
+            frame(std::f64::consts::PI / 180.0),
+            frame(1.0),
+            frame(std::f64::consts::TAU / 400.0),
+        ] {
+            let half = native.longitude().half_period();
+            let shape = line(&[half * 0.75, half, half, half * 0.75, half * 0.75], &[
+                0.0, 0.0, 1.0, 1.0, 0.0,
+            ]);
+            let windows =
+                geographic_index_envelopes(&shape, native).expect("seam line is admitted");
+            assert_eq!(windows.len(), 2);
+            let has_positive_seam = windows.iter().any(|window| {
+                let [west, _] = window.lower();
+                let [east, _] = window.upper();
+                west == half * 0.75 && east == half
+            });
+            let has_negative_alias = windows.iter().any(|window| {
+                let [west, _] = window.lower();
+                let [east, _] = window.upper();
+                west == -half && east == -half
+            });
+            assert!(has_positive_seam && has_negative_alias, "{windows:?}");
+        }
     }
 
     #[test]

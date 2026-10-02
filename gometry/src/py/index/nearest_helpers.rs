@@ -47,38 +47,6 @@ pub(crate) struct NearestCandidate {
     pub(crate) idx: usize,
 }
 
-/// One row in a cap-lower-bound nearest scan, min-ordered by bound so a
-/// `BinaryHeap` can stop without globally sorting rows that will never be
-/// exact-evaluated.
-#[derive(Clone, Copy, Debug)]
-pub(crate) struct CapBound {
-    pub(crate) bound: f64,
-    pub(crate) idx: usize,
-}
-
-impl PartialEq for CapBound {
-    fn eq(&self, other: &Self) -> bool {
-        self.bound.total_cmp(&other.bound).is_eq() && self.idx == other.idx
-    }
-}
-
-impl Eq for CapBound {}
-
-impl PartialOrd for CapBound {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        Some(self.cmp(other))
-    }
-}
-
-impl Ord for CapBound {
-    fn cmp(&self, other: &Self) -> Ordering {
-        other
-            .bound
-            .total_cmp(&self.bound)
-            .then_with(|| other.idx.cmp(&self.idx))
-    }
-}
-
 impl NearestCandidate {
     pub(crate) const fn new(distance: f64, idx: usize) -> Self {
         Self { distance, idx }
@@ -285,26 +253,5 @@ mod tests {
         });
         assert_eq!(message, "first refinement error");
         assert_eq!(visited, [1, 2]);
-    }
-
-    #[test]
-    fn cap_bound_heap_pops_smallest_bound_then_row() {
-        let mut heap = BinaryHeap::from(vec![
-            CapBound { bound: 2.0, idx: 0 },
-            CapBound { bound: 1.0, idx: 4 },
-            CapBound { bound: 1.0, idx: 2 },
-        ]);
-        assert_eq!(
-            heap.pop().map(|entry| (entry.bound, entry.idx)),
-            Some((1.0, 2))
-        );
-        assert_eq!(
-            heap.pop().map(|entry| (entry.bound, entry.idx)),
-            Some((1.0, 4))
-        );
-        assert_eq!(
-            heap.pop().map(|entry| (entry.bound, entry.idx)),
-            Some((2.0, 0))
-        );
     }
 }

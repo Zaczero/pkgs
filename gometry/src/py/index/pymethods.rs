@@ -321,9 +321,8 @@ impl PySpatialIndex {
 
     /// `sys.getsizeof` support: the wrapper plus the retained Rust-side
     /// index payload — packed or boxed row geometry coordinates, the immutable
-    /// STR tree, overflow STR runs, frame metadata, and any built geodesic cap
-    /// cache. Shared buffers are reported as this index's logical retained
-    /// footprint.
+    /// STR tree, overflow STR runs, and frame metadata. Shared buffers are
+    /// reported as this index's logical retained footprint.
     ///
     /// Raises
     /// ------
@@ -741,12 +740,12 @@ impl PySpatialIndex {
                         self.candidate_ids_core_append(
                             prepared.bounds,
                             prepared.pruner_point,
-                            prepared.cap,
+                            prepared.box_pruner,
                             predicate,
                             distance,
                             metric,
                             ids,
-                        )?;
+                        );
                     }
                 }
                 let end = builder.len();

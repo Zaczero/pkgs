@@ -17,7 +17,7 @@ use std::cmp::Ordering;
 use std::collections::BinaryHeap;
 use std::sync::Arc;
 
-use geodesic::{GeodesicPruner, GeodesicRowCaps};
+use geodesic::{GeodesicBoxPruner, GeodesicIndexPruner, GeodesicPruner};
 use pyo3::prelude::*;
 use rstar::AABB;
 use str_tree::{StaticStrForest, StaticStrTree};
@@ -49,7 +49,7 @@ mod pymethods;
 pub(crate) use build::{build_spatial_index, index_metadata, restore_spatial_index, spatial_index};
 pub(crate) use free_functions::{join, join_indexed, nearest};
 pub(crate) use nearest_helpers::{
-    CapBound, Frontier, FrontierNode, NearestCandidate, RowMatches, aabb_box_distance_2, csr_rows,
+    Frontier, FrontierNode, NearestCandidate, RowMatches, aabb_box_distance_2, csr_rows,
     format_nearest, format_nearest_rows, nearest_candidates_from_heap, parse_max_distance,
     push_nearest_candidate, retain_row,
 };
@@ -256,7 +256,7 @@ pub(crate) struct NearestOptions {
 pub(crate) struct PreparedIndexRow {
     pub(crate) bounds: Option<Bounds>,
     pub(crate) pruner_point: Option<Point>,
-    pub(crate) cap: Option<(Point, f64)>,
+    pub(crate) box_pruner: Option<GeodesicBoxPruner>,
 }
 
 impl PreparedIndexQuery {
@@ -405,7 +405,7 @@ impl PreparedIndexQuery {
     /// [`existing_element_bounds`] already computed.
     pub(crate) fn row(
         &self,
-        _index: &PySpatialIndex,
+        index: &PySpatialIndex,
         row: ShapeRow<'_>,
         seeded_bounds: BoundsSeed,
         logical_row: Option<usize>,
@@ -414,65 +414,52 @@ impl PreparedIndexQuery {
             .query_domain()
             .admit_row(row, seeded_bounds, logical_row)?;
         let pruner_point = row.point();
-        // Gate shape materialization: only pay `with_shape` when a geodesic
-        // distance cap is actually needed, or when geographic antimeridian
-        // correction may apply. Candidates with `distance=None` on a
-        // projected/CRS-free index never build a temporary polygon.
-        let geodesic_metric = if let Self::CandidatesDwithin {
-            metric: crs::MetricModel::Geodesic { crs, state, .. },
-            ..
-        }
-        | Self::Dwithin {
-            metric: crs::MetricModel::Geodesic { crs, state, .. },
-            ..
-        } = self
-        {
-            Some((crs, state))
-        } else {
-            None
-        };
-        let need_geodesic_cap = pruner_point.is_none() && geodesic_metric.is_some();
-        let cap = match pruner_point {
-            Some(point) => Some((point, 0.0)),
-            None if need_geodesic_cap => row
-                .try_with_shape(|shape| {
-                    Ok::<Option<(Point, f64)>, crate::error::Error>(geodesic_metric.and_then(
-                        |(crs, state)| {
-                            crs::with_ellipsoid_metric_at(crs, &[shape], state, |ellipsoid| {
-                                shape.geodesic_cap(ellipsoid)
-                            })
-                            .ok()
-                            .flatten()
-                        },
-                    ))
-                })
-                .map_err(pyo3::PyErr::from)?,
-            None => None,
-        };
         let bounds = admitted_bounds.or_else(|| match seeded_bounds {
             BoundsSeed::Unset => row.quick_bounds(),
             BoundsSeed::Value(bounds) => bounds,
         });
+        // Shape-query pruning uses the shared chart cover, not a geodesic
+        // anchor/reach cap. Admit the metric coordinates before the cover can
+        // exclude an invalid query row.
+        let box_pruner = match (self, pruner_point, bounds) {
+            (
+                Self::CandidatesDwithin {
+                    metric: crs::MetricModel::Geodesic { crs, frame, state },
+                    ..
+                }
+                | Self::Dwithin {
+                    metric: crs::MetricModel::Geodesic { crs, frame, state },
+                    ..
+                },
+                None,
+                Some(bounds),
+            ) => Some(row.try_with_shape(|shape| {
+                crs::ensure_geographic_domain_in_frame(*frame, shape).map_err(pyo3::PyErr::from)?;
+                if *frame != crate::geographic::GeographicFrame::crs84()
+                    || index.non_prunable_live != 0
+                {
+                    return Ok(None);
+                }
+                let cover = index_envelopes(shape, bounds, TopologyDomain::Geographic(*frame))?;
+                let boxes = cover.entries().to_vec();
+                crs::with_ellipsoid_metric_at(crs, &[shape], state, |metric| {
+                    let (semi_major, flattening) = metric.ellipsoid_parameters();
+                    Ok(GeodesicBoxPruner::new(semi_major, flattening, boxes))
+                })
+                .map(Some)
+                .map_err(pyo3::PyErr::from)
+            })?),
+            _ => None,
+        }
+        .flatten();
         Ok(PreparedIndexRow {
             bounds,
             pruner_point,
-            cap,
+            box_pruner,
         })
     }
 }
 // ---- SpatialIndex pyclass + STR entry + builders ----
-
-#[derive(Debug, Default)]
-pub(crate) struct GeodesicCapsCache {
-    pub(crate) row_count: usize,
-    /// Index mutation generation (insert/remove).
-    pub(crate) generation: u64,
-    /// CRS runtime config generation — ellipsoid/search-path reconfiguration
-    /// must invalidate caps so a rebuilt table cannot mix the old ellipsoid
-    /// with a new metric configuration.
-    pub(crate) runtime_generation: u64,
-    pub(crate) caps: Option<Arc<GeodesicRowCaps>>,
-}
 
 /// A packed STR-tree over geometries sharing one CRS/epoch frame.
 ///
@@ -503,26 +490,15 @@ pub(crate) struct PySpatialIndex {
     bulk_entry_counts: Option<Arc<Vec<usize>>>,
     /// Post-build inserts — immutable STR runs maintained by binary carries.
     overflow: StaticStrForest,
-    /// Lazy per-row geodesic caps (anchor + proven aux reach), built on the
-    /// first geodesic nearest over non-point rows. Each mutable index owns its
-    /// cache: clones may subsequently diverge while retaining equal row counts
-    /// and mutation generations, so sharing would make those values an
-    /// insufficient cache identity.
-    /// keyed by `(row count, mutation generation)` so inserts/removes
-    /// invalidate. `(len, gen, None)` caches a known-unsound frame
-    /// (out-of-domain rows / non-oblate ellipsoid).
-    geodesic_caps: std::sync::Mutex<GeodesicCapsCache>,
-    /// Bumped on every successful insert/remove so the geodesic cap cache
-    /// invalidates when the live row set changes without a row-count change.
+    /// Insert/remove generation used by live index iterators.
     mutation_gen: u64,
     // The CRS + coordinate epoch shared by every indexed geometry, learned from
     // the first item. Queries must match it (predicate/distance refinement
     // compares coordinates directly, so mixed frames would silently mis-match).
     // `None` until the first geometry is indexed.
     metadata: Option<Frame>,
-    // Count of live geographic geometries that are not points inside the lon/lat domain.
-    // Geodesic lower-bound pruning is sound exactly when this is zero. Keeping
-    // the count incrementally makes removal O(tree mutation), not O(live rows).
+    // Count of live CRS84 points outside the raw point-metric domain. Shape
+    // metrics normalize periodic longitude aliases at their chart boundary.
     non_prunable_live: usize,
 }
 
@@ -534,8 +510,6 @@ impl Clone for PySpatialIndex {
             bulk_dead_entries: self.bulk_dead_entries,
             bulk_entry_counts: self.bulk_entry_counts.clone(),
             overflow: self.overflow.clone(),
-            // A copied index can diverge on its next mutation.
-            geodesic_caps: std::sync::Mutex::default(),
             mutation_gen: self.mutation_gen,
             metadata: self.metadata.clone(),
             non_prunable_live: self.non_prunable_live,
@@ -774,10 +748,6 @@ impl PySpatialIndex {
             .map_or(0, HeapSize::heap_bytes)
     }
 
-    fn geodesic_caps_heap_bytes(&self) -> usize {
-        self.geodesic_caps.heap_bytes()
-    }
-
     fn retained_heap_bytes(&self) -> usize {
         self.rows
             .heap_bytes()
@@ -785,13 +755,6 @@ impl PySpatialIndex {
             .saturating_add(self.bulk_entry_counts.heap_bytes())
             .saturating_add(self.overflow.heap_bytes())
             .saturating_add(self.metadata_heap_bytes())
-            .saturating_add(self.geodesic_caps_heap_bytes())
-    }
-}
-
-impl HeapSize for GeodesicCapsCache {
-    fn heap_bytes(&self) -> usize {
-        self.caps.as_ref().map_or(0, HeapSize::heap_bytes)
     }
 }
 
@@ -822,11 +785,21 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
         .call_method1("register", (m.getattr("SpatialIndex")?,))?;
     Ok(())
 }
-/// Whether a shape is a point inside the lon/lat domain — see
-/// `PySpatialIndex::non_prunable_live`.
-pub(crate) fn geodesic_prunable_point(shape: &Shape) -> bool {
-    matches!(shape, Shape::Point(point)
-        if (-180.0..=180.0).contains(&point.x) && (-90.0..=90.0).contains(&point.y))
+/// Whether a CRS84 point must reach exact metric refinement before an
+/// envelope can exclude its row. Shape metrics normalize periodic longitude
+/// aliases when they admit their chart edges; point-pair metrics use raw lon/lat.
+pub(crate) fn geodesic_domain_invalid(shape: &Shape, domain: TopologyDomain) -> bool {
+    let TopologyDomain::Geographic(frame) = domain else {
+        return false;
+    };
+    if frame != crate::geographic::GeographicFrame::crs84() {
+        return false;
+    }
+    matches!(
+        shape,
+        Shape::Point(point)
+            if !((-180.0..=180.0).contains(&point.x) && (-90.0..=90.0).contains(&point.y))
+    )
 }
 
 pub(crate) const fn shape_pruner_point(shape: &Shape) -> Option<Point> {
