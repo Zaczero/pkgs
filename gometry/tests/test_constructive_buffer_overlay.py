@@ -8,6 +8,7 @@ from typing import cast
 import gometry as gm
 import numpy as np
 import pytest
+import shapely
 
 
 def test_planar_buffer_simplify_and_polygon_overlay_are_rust_backed() -> None:
@@ -313,6 +314,25 @@ def test_multipart_buffer_normalizes_areal_union_before_erosion() -> None:
     assert gm.equals(nested.buffer(-0.5), expected)
 
 
+def test_multipoint_buffer_repairs_neighbor_float_collision() -> None:
+    result = gm.from_wkt('MULTIPOINT((3 2),(4 1))').buffer(1.0)
+
+    assert not result.is_empty
+    assert result.is_valid
+    assert shapely.from_wkb(result.to_wkb()).is_valid
+
+
+def test_union_of_point_buffers_repairs_neighbor_float_collision() -> None:
+    result = gm.union(
+        gm.Point(3, 2).buffer(1.0),
+        gm.Point(4, 1).buffer(1.0),
+    )
+
+    assert not result.is_empty
+    assert result.is_valid
+    assert shapely.from_wkb(result.to_wkb()).is_valid
+
+
 def test_array_disjoint_overlay_handles_mixed_ordinate_axes() -> None:
     z_line = gm.LineString([(0, 0), (1, 0)], z=[1, 2])
     xy_line = gm.LineString([(10, 0), (11, 0)])
@@ -608,8 +628,6 @@ def test_binary_array_dispatch_preserves_operand_order_and_missing_masks() -> No
 def test_intersection_all_and_symmetric_difference_all_reductions() -> None:
     import functools
     import warnings
-
-    import shapely
 
     boxes = [gm.box(0, 0, 4, 4), gm.box(1, 1, 5, 5), gm.box(2, 0, 6, 3)]
     s_boxes = [
