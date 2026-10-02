@@ -926,15 +926,29 @@ impl Mesh {
         );
         let mut ordered = Vec::with_capacity(boundary.len());
         let mut at = start;
-        for _ in 0..boundary.len() {
-            let (index, &(a, b, twin)) = boundary
-                .iter()
-                .enumerate()
-                .find(|(_, entry)| entry.0 == at)
-                .expect("a cavity boundary is one chain");
-            ordered.push((a, b, twin));
-            boundary.swap_remove(index);
-            at = b;
+        if boundary.len() <= 16 {
+            for _ in 0..boundary.len() {
+                let (index, &(a, b, twin)) = boundary
+                    .iter()
+                    .enumerate()
+                    .find(|(_, entry)| entry.0 == at)
+                    .expect("a cavity boundary is one chain");
+                ordered.push((a, b, twin));
+                boundary.swap_remove(index);
+                at = b;
+            }
+        } else {
+            boundary.sort_unstable_by_key(|&(a, ..)| a);
+            for _ in 0..boundary.len() {
+                let index = boundary
+                    .binary_search_by_key(&at, |&(a, ..)| a)
+                    .expect("a cavity boundary is one chain");
+                let &(a, b, twin) = boundary
+                    .get(index)
+                    .expect("the boundary lookup returns its own index");
+                ordered.push((a, b, twin));
+                at = b;
+            }
         }
         debug_assert!(
             split_hull.is_some_and(|(a, _)| a == at) || at == start,

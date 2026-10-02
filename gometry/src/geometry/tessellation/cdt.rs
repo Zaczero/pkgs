@@ -38,6 +38,7 @@ pub(super) struct RefinementWorkCounters {
     pub(super) bad_face_scans: usize,
     pub(super) constraint_reconstruction_passes: usize,
     pub(super) flag_remark_passes: usize,
+    pub(super) source_piece_visits: usize,
 }
 
 #[cfg(test)]
@@ -48,6 +49,7 @@ thread_local! {
             bad_face_scans: 0,
             constraint_reconstruction_passes: 0,
             flag_remark_passes: 0,
+            source_piece_visits: 0,
         }) };
 }
 
@@ -1157,33 +1159,30 @@ impl ConstrainedMesh {
         }
     }
 
-    fn validate_source_chains(&self, points: &[Point]) -> Result<()> {
+    fn validate_source_chains(&self, points: &[Point], pieces: &[SourcePiece]) -> Result<()> {
         let one = exact::ExactRational::one();
         let constrained = self.constrained_pairs()?;
         let has_split_certificates = !self.split_certificates.is_empty();
+        let mut remaining = pieces;
         for source in &self.source_constraints {
-            let mut pieces = Vec::with_capacity(self.source_pieces.len());
-            for piece in self
-                .source_pieces
-                .values()
-                .filter(|piece| piece.source == source.id)
-            {
-                pieces.push(piece);
-            }
+            let count = remaining
+                .iter()
+                .take_while(|piece| {
+                    #[cfg(test)]
+                    update_work(|work| {
+                        work.source_piece_visits = work.source_piece_visits.saturating_add(1);
+                    });
+                    piece.source == source.id
+                })
+                .count();
+            let (pieces, rest) = remaining.split_at(count);
+            remaining = rest;
             if pieces.is_empty() {
                 return Err(GeometryErrorKind::triangulation(format!(
                     "source constraint {} has no emitted boundary chain",
                     source.id
                 )));
             }
-            crate::geometry::try_sort_by(&mut pieces, |left, right| {
-                let order = left.lo.try_cmp(&right.lo)?;
-                if order.is_eq() {
-                    left.hi.try_cmp(&right.hi)
-                } else {
-                    Ok(order)
-                }
-            })?;
             let mut cursor = exact::ExactRational::zero();
             for piece in pieces {
                 if piece.lo.try_cmp(&cursor)? != std::cmp::Ordering::Equal
@@ -1270,12 +1269,15 @@ impl ConstrainedMesh {
     }
 
     pub(super) fn finish_plan(
-        self,
+        mut self,
         points: Vec<Point>,
         refinement: super::CdtRefinement,
         force_xy: bool,
     ) -> Result<ConstrainedMeshPlan> {
-        self.validate_source_chains(&points)?;
+        let mut constraint_pieces = Vec::with_capacity(self.source_pieces.len());
+        constraint_pieces.extend(self.source_pieces.drain().map(|(_, piece)| piece));
+        crate::geometry::try_sort_by(&mut constraint_pieces, compare_source_pieces)?;
+        self.validate_source_chains(&points, &constraint_pieces)?;
         let inside = self.inside_faces();
         let mut faces = Vec::with_capacity(self.mesh.triangle_count());
         for (face, &kept) in self.mesh.face_ids().zip(&inside) {
@@ -1283,9 +1285,6 @@ impl ConstrainedMesh {
                 faces.push(self.mesh.triangle(face));
             }
         }
-        let mut constraint_pieces = Vec::with_capacity(self.source_pieces.len());
-        constraint_pieces.extend(self.source_pieces.into_values());
-        crate::geometry::try_sort_by(&mut constraint_pieces, compare_source_pieces)?;
         Ok(ConstrainedMeshPlan {
             vertices: points,
             faces,
@@ -1393,6 +1392,50 @@ fn in_diametral_circle(s: XY, t: XY, p: XY) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn public_constrained_source_chain_work_is_linear() {
+        use pyo3::prelude::*;
+        use pyo3::types::{PyDict, PyModule};
+
+        crate::test_support::initialize_python();
+        Python::attach(|py| {
+            let module = PyModule::new(py, "gometry._lib").unwrap();
+            crate::lib(&module).unwrap();
+            let options = PyDict::new(py);
+            options.set_item("method", "constrained").unwrap();
+            for count in [128_u32, 512] {
+                let points = (0..count)
+                    .map(|index| {
+                        let angle = f64::from(index) * std::f64::consts::TAU / f64::from(count);
+                        format!("{} {}", angle.cos(), angle.sin())
+                    })
+                    .collect::<Vec<_>>();
+                let ring = points
+                    .iter()
+                    .chain(points.first())
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .join(",");
+                let polygon = module
+                    .getattr("from_wkt")
+                    .unwrap()
+                    .call1((format!("POLYGON(({ring}))"),))
+                    .unwrap();
+                let _ = take_refinement_work_counters();
+                let triangles = polygon
+                    .call_method("triangulate", (), Some(&options))
+                    .unwrap();
+                assert_eq!(triangles.len().unwrap(), count as usize - 2);
+                let work = take_refinement_work_counters();
+                assert!(
+                    work.source_piece_visits <= count as usize * 2,
+                    "{count} source edges inspected {} pieces",
+                    work.source_piece_visits
+                );
+            }
+        });
+    }
 
     fn points(xy: &[(f64, f64)]) -> Vec<Point> {
         xy.iter().map(|&(x, y)| Point::new_raw_xy(x, y)).collect()
