@@ -293,7 +293,7 @@ pub(in crate::geometry) use segment_index::{
     for_each_indexed_overlapping_bounds_pair, for_each_overlapping_bounds_cross_pair,
     for_each_overlapping_bounds_pair, sign_of, single_chain,
 };
-pub(crate) use segment_index::{PointSetIndex, SEGMENT_INDEX_MIN_PAIRS, SegmentIndex};
+pub(crate) use segment_index::{PointEntry, PointSetIndex, SEGMENT_INDEX_MIN_PAIRS, SegmentIndex};
 #[cfg(test)]
 use segments::point_segment_distance_key;
 use segments::{

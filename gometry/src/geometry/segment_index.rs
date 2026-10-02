@@ -51,7 +51,7 @@ pub(in crate::geometry) use chord::ChordIndex;
 #[cfg(test)]
 pub(in crate::geometry) use chord::take_contact_visits;
 pub(in crate::geometry) use hull::StoredHull;
-pub(crate) use index::{PointSetIndex, SegmentIndex};
+pub(crate) use index::{PointEntry, PointSetIndex, SegmentIndex};
 pub(in crate::geometry) use order_tree::OrderTree;
 pub(crate) use stabbing::{
     EdgeId, EdgeYIndex, YStabbingIndex, checked_index_count, uses_linear_plan_for_len,

@@ -1,7 +1,7 @@
 use crate::geometry::distance::parts_covers_point;
 use crate::geometry::{
     BVH_MIN_INDEXED_SEGMENTS, DistanceParts, FacetBvh, NearestCandidate, NearestTarget, Point,
-    PointSetIndex, Segment, Shape, point_distance_squared, point_pair_distance_key,
+    PointEntry, PointSetIndex, Segment, Shape, point_distance_squared, point_pair_distance_key,
     segment_contact_point,
 };
 pub(crate) fn nearest_probe_to_parts<const SQUARED: bool>(
@@ -26,7 +26,11 @@ pub(crate) fn nearest_probe_to_parts<const SQUARED: bool>(
         if SQUARED && let Some(index) = target.point_index() {
             // Indexed: each probe point's nearest target point in O(log points).
             for probe_point in probe.probe_points() {
-                if let Some((target_point, distance_squared)) = index.nearest(probe_point) {
+                if let Some((ordinal, distance_squared)) = index.nearest_ordinal(probe_point)? {
+                    let target_point = *target
+                        .point_only
+                        .get(ordinal)
+                        .expect("the point index ordinal belongs to its full-ordinate source");
                     let distance_key = point_pair_distance_key(probe_point.xy(), target_point.xy());
                     if let Some(candidate) = best.as_ref()
                         && !distance_key.cmp(&candidate.distance_key)?.is_lt()
@@ -251,11 +255,11 @@ impl DistanceParts {
     /// The cached R-tree over this side's isolated points, built on first use
     /// once the point count clears the crossover (`None` below it — a short
     /// brute scan wins under the rstar bulk-load setup cost).
-    pub(crate) fn point_index(&self) -> Option<&PointSetIndex> {
+    pub(crate) fn point_index(&self) -> Option<&PointSetIndex<PointEntry>> {
         self.point_index
             .get_or_init(|| {
                 (self.point_only.len() >= POINT_INDEX_MIN_POINTS)
-                    .then(|| PointSetIndex::build(self.point_only.iter().copied()))
+                    .then(|| PointSetIndex::build_with_ordinals(self.point_only.iter().copied()))
             })
             .as_ref()
     }

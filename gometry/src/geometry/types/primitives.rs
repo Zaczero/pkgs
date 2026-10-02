@@ -4,7 +4,7 @@
 )]
 use crate::geometry::types::{CoordSeq, Ring, SharedSlice};
 use crate::geometry::{
-    FacetBvh, GeodesicFacetBvh, GeodesicSweepCaps, PointSetIndex, PreparedLinework,
+    FacetBvh, GeodesicFacetBvh, GeodesicSweepCaps, PointEntry, PointSetIndex, PreparedLinework,
     xy_bounds_columns,
 };
 
@@ -329,7 +329,7 @@ pub(crate) struct DistanceParts {
     /// — turns the nearest-points point-vs-point phase from an O(probe·points)
     /// brute scan into O(probe·log points) for point-heavy operands (multipoint
     /// targets), amortized across a scalar-vs-array batch.
-    pub(crate) point_index: std::sync::OnceLock<Option<PointSetIndex>>,
+    pub(crate) point_index: std::sync::OnceLock<Option<PointSetIndex<PointEntry>>>,
 }
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]

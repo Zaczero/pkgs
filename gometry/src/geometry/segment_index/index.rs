@@ -1,9 +1,9 @@
-use rstar::{AABB, RTreeObject};
+use rstar::{AABB, PointDistance, RTreeObject};
 
 use crate::HeapSize;
 #[cfg(test)]
 use crate::geometry::point_on_segment;
-use crate::geometry::{BulkRTree, Point, Segment, same_point};
+use crate::geometry::{BulkRTree, Point, Segment, point_pair_distance_key, same_point};
 
 /// One segment as an R-tree leaf, carrying its position in the build slice
 /// (so pair-once sweeps can keep `ordinal > i` candidates).
@@ -99,25 +99,16 @@ impl SegmentIndex {
 }
 
 /// An R-tree over a point set (Hausdorff refinement, clearance candidates).
-pub(crate) struct PointSetIndex {
-    tree: BulkRTree<[f64; 2]>,
+pub(crate) struct PointSetIndex<T: RTreeObject = [f64; 2]> {
+    tree: BulkRTree<T>,
 }
 
-impl PointSetIndex {
+impl PointSetIndex<[f64; 2]> {
     pub(crate) fn build(points: impl IntoIterator<Item = Point>) -> Self {
         let coords = points.into_iter().map(|point| [point.x, point.y]).collect();
         Self {
             tree: BulkRTree::bulk_load_with_params(coords),
         }
-    }
-
-    /// The nearest indexed point (INCLUDING a coincident one, distance 0) with
-    /// its squared distance — the nearest-points/shortest-line query. `None`
-    /// only for an empty set.
-    pub(crate) fn nearest(&self, point: Point) -> Option<(Point, f64)> {
-        self.tree
-            .nearest_neighbor_with_distance_2([point.x, point.y])
-            .map(|(coords, distance)| (Point::new_raw_xy(coords[0], coords[1]), distance))
     }
 
     /// The nearest indexed point that is not bit-identical to `point`, with
@@ -137,7 +128,73 @@ impl PointSetIndex {
     }
 }
 
-impl HeapSize for PointSetIndex {
+/// A point-index leaf retains its position in the full-ordinate source.
+pub(crate) struct PointEntry {
+    coords: [f64; 2],
+    ordinal: usize,
+}
+
+impl RTreeObject for PointEntry {
+    type Envelope = AABB<[f64; 2]>;
+
+    fn envelope(&self) -> Self::Envelope {
+        AABB::from_point(self.coords)
+    }
+}
+
+impl PointDistance for PointEntry {
+    fn distance_2(&self, point: &[f64; 2]) -> f64 {
+        self.coords.distance_2(point)
+    }
+}
+
+impl PointSetIndex<PointEntry> {
+    pub(crate) fn build_with_ordinals(points: impl IntoIterator<Item = Point>) -> Self {
+        let entries = points
+            .into_iter()
+            .enumerate()
+            .map(|(ordinal, point)| PointEntry {
+                coords: [point.x, point.y],
+                ordinal,
+            })
+            .collect();
+        Self {
+            tree: BulkRTree::bulk_load_with_params(entries),
+        }
+    }
+
+    pub(crate) fn nearest_ordinal(
+        &self,
+        point: Point,
+    ) -> crate::error::Result<Option<(usize, f64)>> {
+        let mut best = None;
+        let mut limit = f64::INFINITY;
+        for (entry, distance) in self
+            .tree
+            .nearest_neighbor_iter_with_distance_2([point.x, point.y])
+        {
+            if distance.is_normal() && distance > limit {
+                break;
+            }
+            let target = crate::geometry::XY::new(entry.coords[0], entry.coords[1]);
+            let key = point_pair_distance_key(point.xy(), target);
+            let replace = match best.as_ref() {
+                None => true,
+                Some((ordinal, _, incumbent)) => {
+                    let order = key.cmp(incumbent)?;
+                    order.is_lt() || order.is_eq() && entry.ordinal < *ordinal
+                },
+            };
+            if replace {
+                limit = key.upper_bound() * (1.0 + 4.0 * f64::EPSILON);
+                best = Some((entry.ordinal, distance, key));
+            }
+        }
+        Ok(best.map(|(ordinal, distance, _)| (ordinal, distance)))
+    }
+}
+
+impl<T: RTreeObject> HeapSize for PointSetIndex<T> {
     fn heap_bytes(&self) -> usize {
         super::bulk_rtree_heap_bytes(&self.tree)
     }
