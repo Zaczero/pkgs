@@ -640,7 +640,7 @@ impl Mesh {
             let twin = self.twin(diagonal);
             if twin == EMPTY {
                 return Err(crate::geometry::GeometryErrorKind::triangulation(
-                    "outside-site legalization lost an interior diagonal",
+                    "constrained legalization lost an interior diagonal",
                 ));
             }
             let twin = HalfedgeId::from_index(twin);

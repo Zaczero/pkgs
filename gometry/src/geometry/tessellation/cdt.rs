@@ -497,6 +497,22 @@ impl ConstrainedMesh {
         lo: exact::ExactRational,
         hi: exact::ExactRational,
     ) -> Result<()> {
+        let mut legalization = Vec::new();
+        self.recover_constraint(xy, u, v, source, lo, hi, &mut legalization)?;
+        self.mesh
+            .try_legalize_constrained_from(xy, &mut self.constrained, legalization)
+    }
+
+    fn recover_constraint(
+        &mut self,
+        xy: &impl Fn(usize) -> XY,
+        u: usize,
+        v: usize,
+        source: usize,
+        lo: exact::ExactRational,
+        hi: exact::ExactRational,
+        legalization: &mut Vec<HalfedgeId>,
+    ) -> Result<()> {
         if u == v {
             return Ok(());
         }
@@ -521,15 +537,15 @@ impl ConstrainedMesh {
             if sa == ExactSign::Zero && between(pu, pv, xy(a)) {
                 let split = interpolate_source_parameter(&lo, &hi, pu, pv, xy(a))?;
                 self.certify_source_boundary_point(source, &split, xy(a))?;
-                self.insert_constraint(xy, u, a, source, lo, split.clone())?;
-                self.insert_constraint(xy, a, v, source, split, hi)?;
+                self.recover_constraint(xy, u, a, source, lo, split.clone(), legalization)?;
+                self.recover_constraint(xy, a, v, source, split, hi, legalization)?;
                 return Ok(());
             }
             if sb == ExactSign::Zero && between(pu, pv, xy(b)) {
                 let split = interpolate_source_parameter(&lo, &hi, pu, pv, xy(b))?;
                 self.certify_source_boundary_point(source, &split, xy(b))?;
-                self.insert_constraint(xy, u, b, source, lo, split.clone())?;
-                self.insert_constraint(xy, b, v, source, split, hi)?;
+                self.recover_constraint(xy, u, b, source, lo, split.clone(), legalization)?;
+                self.recover_constraint(xy, b, v, source, split, hi, legalization)?;
                 return Ok(());
             }
             if sa == ExactSign::Positive && sb == ExactSign::Negative {
@@ -577,9 +593,9 @@ impl ConstrainedMesh {
                 self.certify_source_boundary_point(source, &split, pa)?;
                 // Passes exactly through `apex`: constrain u->apex by flipping
                 // what we have so far, then continue from apex.
-                self.flip_until_clear(xy, u, apex, crossing)?;
-                self.insert_constraint(xy, u, apex, source, lo, split.clone())?;
-                self.insert_constraint(xy, apex, v, source, split, hi)?;
+                self.flip_until_clear(xy, u, apex, crossing, legalization)?;
+                self.recover_constraint(xy, u, apex, source, lo, split.clone(), legalization)?;
+                self.recover_constraint(xy, apex, v, source, split, hi, legalization)?;
                 return Ok(());
             }
             // The twin runs left to right, so its next edge leaves the right
@@ -592,7 +608,7 @@ impl ConstrainedMesh {
                 twin.prev()
             };
         }
-        self.flip_until_clear(xy, u, v, crossing)?;
+        self.flip_until_clear(xy, u, v, crossing, legalization)?;
         self.record_source_piece(u, v, source, lo, hi);
         Ok(())
     }
@@ -646,6 +662,7 @@ impl ConstrainedMesh {
         u: usize,
         v: usize,
         mut crossing: Vec<(HalfedgeId, (usize, usize))>,
+        legalization: &mut Vec<HalfedgeId>,
     ) -> Result<()> {
         let (pu, pv) = (xy(u), xy(v));
         let mut steps = 0_usize;
@@ -695,6 +712,17 @@ impl ConstrainedMesh {
                 continue;
             }
             let new_edge = self.mesh.flip_carrying(edge, &mut self.constrained, false);
+            let twin = HalfedgeId::from_index(self.mesh.twin(new_edge));
+            // Recovery can make any of the six affected slots illegal. Defer
+            // Lawson flips until the complete source chain has been constrained.
+            legalization.extend([
+                new_edge,
+                new_edge.next(),
+                new_edge.prev(),
+                twin,
+                twin.next(),
+                twin.prev(),
+            ]);
             let (new_start, new_end) = self.mesh.edge_vertices(new_edge);
             if segments_properly_cross(pu, pv, xy(new_start), xy(new_end)) {
                 crossing.insert(0, (new_edge, ordered(new_start, new_end)));
