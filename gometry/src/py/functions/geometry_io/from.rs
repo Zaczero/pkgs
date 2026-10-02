@@ -3,7 +3,7 @@ use pyo3::prelude::*;
 use pyo3::pybacked::PyBackedStr;
 
 use crate::py::functions::bulk_rows::{StreamedSridRow, batch_bulk_srid, stream_bulk_srid};
-use crate::py::wire_crs::{resolve_wire_crs, split_ewkt_srid};
+use crate::py::wire_crs::{rebase_ewkt_parse_error, resolve_wire_crs, split_ewkt_srid};
 use crate::{
     OwnedBytes, PyGeometry, Typed, coordinate_epoch_option, copy_wkb_payload, exact_backed_bytes,
     guard_epoch_frame, io, parse_crs, parse_wkb_geometry,
@@ -73,7 +73,7 @@ pub(crate) fn from_wkt(
         let crs = resolve_wire_crs(embedded, fallback.as_ref(), "EWKT SRID")?;
         guard_epoch_frame(parsed_epoch, crs.as_ref())?;
         Ok(PyGeometry::with_epoch(
-            io::parse_wkt(body)?,
+            io::parse_wkt(body).map_err(|error| rebase_ewkt_parse_error(error, text, body))?,
             crs,
             parsed_epoch,
         )?)
@@ -263,9 +263,10 @@ pub(crate) fn from_wkb(
 }
 
 fn parse_wkt_stream_row(text: PyBackedStr) -> crate::error::Result<StreamedSridRow> {
-    let (body, srid) = split_ewkt_srid(text.as_ref())?;
+    let source = text.as_ref();
+    let (body, srid) = split_ewkt_srid(source)?;
     Ok(StreamedSridRow {
-        shape: io::parse_wkt(body)?,
+        shape: io::parse_wkt(body).map_err(|error| rebase_ewkt_parse_error(error, source, body))?,
         srid,
     })
 }

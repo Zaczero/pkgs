@@ -73,20 +73,37 @@ def test_structured_error_defaults_and_parse_position() -> None:
 
 
 @pytest.mark.parametrize(
-    'text',
+    ('text', 'position'),
     [
-        'POINT (1)',
-        'POINT (1 bad)',
-        'POINT (1 2) garbage',
-        'POLYGON ((0 0, 1 bad, 2 2, 0 0))',
-        'GEOMETRYCOLLECTION (POINT (0 0), POINT (1 bad))',
-        'GEOMETRYCOLLECTION (POINT (0 0), POINT (é bad))',
+        ('POINT (1)', 8),
+        ('POINT (1 bad)', 9),
+        ('POINT M (1 2 bad)', 13),
+        ('POINT Q (1 2)', 6),
+        ('POINT (1 2) garbage', 12),
+        ('POLYGON ((0 0, 1 bad, 2 2, 0 0))', 17),
+        ('GEOMETRYCOLLECTION (POINT (0 0), POINT (1 bad))', 42),
+        ('GEOMETRYCOLLECTION (POINT (0 0), POINT (é bad))', 40),
     ],
 )
-def test_wkt_position_is_utf8_input_length(text: str) -> None:
+def test_wkt_position_is_detected_utf8_byte_offset(text: str, position: int) -> None:
     with pytest.raises(errors.ParseError) as excinfo:
         gm.from_wkt(text)
-    assert excinfo.value.position == len(text.encode())
+    assert excinfo.value.position == position
+
+
+def test_ewkt_position_includes_prefix_for_each_parser_ingress() -> None:
+    text = 'SRID=4326;POINT (1 bad)'
+    for parse in (gm.from_wkt, lambda value: gm.from_wkt([value]), gm.require):
+        with pytest.raises(errors.ParseError) as excinfo:
+            parse(text)
+        assert excinfo.value.position == 19
+
+
+def test_axis_conflict_position_points_to_the_child_tag() -> None:
+    text = 'GEOMETRYCOLLECTION Z (POINT M (1 2 3))'
+    with pytest.raises(errors.ParseError) as excinfo:
+        gm.from_wkt(text)
+    assert excinfo.value.position == 28
 
 
 def test_exceptions_pickle() -> None:

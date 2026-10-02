@@ -11,7 +11,7 @@ use crate::geometry::types::ShapeHeapMemo;
 use crate::py::errors::crs_mismatch_error;
 use crate::py::functions::bulk_rows::{StreamedRow, stream_bulk};
 use crate::py::sizeof::python_sizeof;
-use crate::py::wire_crs::{resolve_wire_crs, split_ewkt_srid};
+use crate::py::wire_crs::{rebase_ewkt_parse_error, resolve_wire_crs, split_ewkt_srid};
 use crate::py::{errors, support, vectors};
 use crate::{
     CoordinateAxes, Crs, FrameEdit, GeoJsonDecodeContext, HeapSize, PyGeometry, PyGeometryArray,
@@ -319,7 +319,11 @@ fn parse_require_wkt(text: &str, fallback: Option<&Crs>) -> PyResult<PyGeometry>
     let embedded = io::crs_from_optional_srid(srid)?;
     let crs = resolve_wire_crs(embedded.map(crs_arc), fallback, "EWKT SRID")?;
     guard_epoch_frame(None, crs.as_ref())?;
-    Ok(PyGeometry::with_epoch(io::parse_wkt(body)?, crs, None)?)
+    Ok(PyGeometry::with_epoch(
+        io::parse_wkt(body).map_err(|error| rebase_ewkt_parse_error(error, text, body))?,
+        crs,
+        None,
+    )?)
 }
 
 fn parse_require_geojson_value(

@@ -127,7 +127,7 @@ handlers act on data instead of parsing messages. Class-level defaults are
 | [`left`][gometry.CRSMismatchError.left] / [`right`][gometry.CRSMismatchError.right] | `CRSMismatchError` | Raw conflicting values (CRS identifiers or epoch floats; not quoted presentation strings) |
 | [`index`][gometry.CRSMismatchError.index] | `CRSMismatchError` | Collection item that disagreed (when applicable) |
 | [`format`][gometry.ParseError.format] | [`ParseError`][gometry.ParseError] | Lowercase space-free codec key, including `'pickle'` alongside `'wkt'`, `'wkb'`, `'geojson'`, `'geoarrow'`, `'geoparquet'`, grid codecs, and geocoders |
-| [`position`][gometry.ParseError.position] | `ParseError` | WKT reports the UTF-8 input length for every failure; cursor-based codecs such as WKB report the byte offset where parsing detected it |
+| [`position`][gometry.ParseError.position] | `ParseError` | WKT/EWKT reports the zero-based UTF-8 byte offset where parsing detected the error, including an EWKT prefix; WKB reports its zero-based binary byte offset; other codecs report `None` when unavailable |
 | [`param`][gometry.GeometryError.param] / [`value`][gometry.GeometryError.value] | [`GeometryError`][gometry.GeometryError] (value lanes) | Offending keyword and value |
 | [`parameter`][gometry.GeometryError.parameter] / [`produced`][gometry.GeometryError.produced] / [`limit`][gometry.GeometryError.limit] | bounded-output `GeometryError` | Controlling parameter, produced count, and configured limit |
 | [`expected`][gometry.GeometryTypeError.expected] / [`got`][gometry.GeometryTypeError.got] | [`GeometryTypeError`][gometry.GeometryTypeError] | Required and received geometry kinds |

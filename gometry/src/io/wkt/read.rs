@@ -2,179 +2,1006 @@
     clippy::similar_names,
     reason = "axis and formula symbols name paired quantities here (minx/miny, xs/ys, lat_rad/lam_rad, step/stop), which this lint reads as typos"
 )]
+#[cfg(test)]
+use std::cell::Cell;
+
 use crate::geometry::{
-    CoordSeqBuilder, HasM, HasZ, MultiLineString, MultiMember, MultiPoint, MultiPolygon,
+    CoordSeqBuilder, HasM, HasZ, MOrdinate, MultiLineString, MultiMember, MultiPoint, MultiPolygon,
+    ZOrdinate,
 };
-use crate::io::wkt::{
+use crate::io::{
     CoordSeq, CoordinateAxes, GeometryKind, IoError, LineSeq, MAX_NESTING, ParseFormat, Point,
-    Polygon, Result, Ring, Shape, WktHeader, parse_content,
+    Polygon, Result, Shape, parse_content,
 };
+
+#[cfg(test)]
+std::thread_local! {
+    static WKT_CURSOR_WORK: Cell<usize> = const { Cell::new(0) };
+}
+
+macro_rules! skip_wkt_whitespace {
+    ($parser:ident) => {{
+        loop {
+            let Some(byte) = $parser.cursor.peek() else {
+                break;
+            };
+            if byte.is_ascii_whitespace() {
+                $parser.cursor.advance();
+                continue;
+            }
+            if byte.is_ascii() {
+                break;
+            }
+            let Some(character) = $parser
+                .input
+                .get($parser.cursor.position..)
+                .and_then(|tail| tail.chars().next())
+            else {
+                break;
+            };
+            if !character.is_whitespace() {
+                break;
+            }
+            $parser.cursor.advance_by(character.len_utf8());
+        }
+    }};
+}
+
+macro_rules! parse_wkt_ordinate {
+    ($parser:ident, $name:literal, $comma_delimiter:expr) => {{
+        skip_wkt_whitespace!($parser);
+        let start = $parser.cursor.position;
+        while let Some(byte) = $parser.cursor.peek() {
+            if byte == b')' || ($comma_delimiter && byte == b',') || byte.is_ascii_whitespace() {
+                break;
+            }
+            if byte == b'(' {
+                $parser.open_parenthesis();
+            } else if byte.is_ascii() {
+                $parser.cursor.advance();
+            } else {
+                let character = $parser
+                    .input
+                    .get($parser.cursor.position..)
+                    .and_then(|tail| tail.chars().next())
+                    .ok_or_else(|| $parser.error_at(start, "invalid WKT coordinate"))?;
+                if character.is_whitespace() {
+                    break;
+                }
+                $parser.cursor.advance_by(character.len_utf8());
+            }
+        }
+        if start == $parser.cursor.position {
+            return $parser.fail(format!("coordinate is missing {}", $name));
+        }
+        let token = $parser
+            .cursor
+            .bytes
+            .get(start..$parser.cursor.position)
+            .ok_or_else(|| $parser.error_at(start, "invalid WKT coordinate"))?;
+        lexical_core::parse::<f64>(token)
+            .map_err(|_| $parser.error_at(start, format!("{} coordinate must be numeric", $name)))?
+    }};
+}
+
+macro_rules! read_wkt_coordinate_axes {
+    ($parser:ident, $has_z:ident, $has_m:ident, $comma_delimiter:expr) => {{
+        let x = parse_wkt_ordinate!($parser, "x", $comma_delimiter);
+        let y = parse_wkt_ordinate!($parser, "y", $comma_delimiter);
+        let z = if $has_z {
+            Some(parse_wkt_ordinate!($parser, "z", $comma_delimiter))
+        } else {
+            None
+        };
+        let m = if $has_m {
+            Some(parse_wkt_ordinate!($parser, "m", $comma_delimiter))
+        } else {
+            None
+        };
+        (x, y, z, m)
+    }};
+}
 
 pub(crate) fn parse_wkt(value: &str) -> Result<Shape> {
-    parse_wkt_inner(value, 0, None)
+    let mut parser = WktParser::new(value);
+    parser
+        .parse_document()
         .map_err(|error| parse_content(ParseFormat::Wkt, error))
-        // The recursive WKT parser works on borrowed sub-slices and does not
-        // carry an original-input cursor. Its public position is therefore the
-        // UTF-8 input length for every failure. WKB has a real reader cursor
-        // and reports the varying detection offset instead.
-        .map_err(|error| error.with_parse_position(value.len()))
+        .map_err(|error| error.with_parse_position(parser.cursor.position))
 }
 
-/// Parse one WKT geometry. `inherited_axes` is set when this geometry is a
-/// member of a dimension-tagged GeometryCollection: untagged members adopt
-/// those axes; an explicit conflicting tag is rejected. An untagged outer
-/// collection leaves this `None` so heterogeneous children remain valid.
-fn parse_wkt_inner(
-    value: &str,
-    depth: usize,
-    inherited_axes: Option<CoordinateAxes>,
-) -> Result<Shape> {
-    if depth > MAX_NESTING {
-        return Err(IoError::wkt(format!(
-            "WKT geometry nesting exceeds the limit of {MAX_NESTING}"
-        )));
+struct WktParser<'a> {
+    input: &'a str,
+    cursor: WktByteCursor<'a>,
+    parenthesis_depth: usize,
+}
+
+struct WktHeader {
+    geometry_type: GeometryKind,
+    axes: CoordinateAxes,
+    axes_explicit: bool,
+    axes_position: Option<usize>,
+    body: Option<()>,
+}
+
+#[derive(Clone, Copy)]
+enum ParentScope {
+    Root,
+    Collection,
+}
+
+impl<'a> WktParser<'a> {
+    fn new(input: &'a str) -> Self {
+        Self {
+            input,
+            cursor: WktByteCursor::new(input.as_bytes()),
+            parenthesis_depth: 0,
+        }
     }
-    let text = value.trim();
-    let mut header = parse_wkt_header(text)?;
-    let axes = resolve_wkt_member_axes(&header, inherited_axes)?;
-    header.axes = axes;
-    // Axes are fixed when tagged (compact or spaced) or inherited from a
-    // tagged GeometryCollection. Untagged free geometries allow PostGIS EWKT
-    // ordinate-count inference (`POINT(1 2 3)` → XYZ, `POINT(1 2 3 4)` → XYZM).
-    let axes_fixed = header.axes_explicit || inherited_axes.is_some();
-    match header.geometry_type {
-        GeometryKind::GeometryCollection => {
-            let Some(body) = header.body else {
-                return Ok(Shape::typed_empty(
-                    GeometryKind::GeometryCollection,
-                    header.axes,
-                ));
-            };
-            // Propagate an explicit tag on this collection, or an axes constraint
-            // inherited from an outer tagged collection, into untagged children.
-            let child_axes = if header.axes_explicit {
-                Some(header.axes)
-            } else {
-                inherited_axes
-            };
-            let members = split_wkt_collection_members(body)?
-                .into_iter()
-                .map(|value| parse_wkt_inner(value, depth.wrapping_add(1), child_axes))
-                .collect::<Result<Vec<_>>>()?;
-            Ok(Shape::geometry_collection(members)?)
-        },
-        GeometryKind::MultiPoint => {
-            let Some(body) = header.body else {
-                return Ok(Shape::typed_empty(GeometryKind::MultiPoint, header.axes));
-            };
-            let axes = if axes_fixed {
-                header.axes
-            } else {
-                infer_wkt_axes_from_multipoint_body(body)?
-            };
-            Ok(Shape::MultiPoint(parse_wkt_multi_points(body, axes)?))
-        },
-        GeometryKind::MultiLineString => {
-            let Some(body) = header.body else {
-                return Ok(Shape::typed_empty(
-                    GeometryKind::MultiLineString,
-                    header.axes,
-                ));
-            };
-            let members = split_wkt_members(body)?;
-            if members.is_empty() {
-                return Ok(Shape::typed_empty(
-                    GeometryKind::MultiLineString,
-                    header.axes,
-                ));
+
+    fn parse_document(&mut self) -> Result<Shape> {
+        self.parse_geometry(0, None, ParentScope::Root)
+            .map_err(|error| self.position_error(error))
+    }
+
+    fn parse_geometry(
+        &mut self,
+        depth: usize,
+        inherited_axes: Option<CoordinateAxes>,
+        parent_scope: ParentScope,
+    ) -> Result<Shape> {
+        if depth > MAX_NESTING {
+            return self.fail(format!(
+                "WKT geometry nesting exceeds the limit of {MAX_NESTING}"
+            ));
+        }
+
+        let header = self
+            .read_header(parent_scope)
+            .map_err(|error| self.position_error(error))?;
+        let axes = match resolve_wkt_member_axes(&header, inherited_axes) {
+            Ok(axes) => axes,
+            Err(error) => {
+                let position = header.axes_position.unwrap_or(self.cursor.position);
+                return Err(error.with_parse_position(position));
+            },
+        };
+        let axes_fixed = header.axes_explicit || inherited_axes.is_some();
+        if header.body.is_none() {
+            self.check_parent_boundary(parent_scope)?;
+            return Ok(Shape::typed_empty(header.geometry_type, axes));
+        }
+
+        let body_depth = self.parenthesis_depth;
+        let result = self.parse_body(header.geometry_type, axes, axes_fixed, depth, &header);
+        let shape = match result {
+            Ok(shape) => shape,
+            Err(error) => {
+                let error = self.position_error(error);
+                if !self.recover_to_geometry_close(body_depth) {
+                    return self.fail("WKT is missing closing parenthesis");
+                }
+                self.check_parent_boundary(parent_scope)?;
+                return Err(error);
+            },
+        };
+
+        self.close_parenthesis()?;
+        self.check_parent_boundary(parent_scope)?;
+        Ok(shape)
+    }
+
+    fn read_header(&mut self, parent_scope: ParentScope) -> Result<WktHeader> {
+        let start = self.cursor.position;
+        let mut body_opened = false;
+        while let Some(byte) = self.cursor.peek() {
+            if byte == b'(' {
+                self.open_parenthesis();
+                body_opened = true;
+                break;
             }
-            let axes = if axes_fixed {
-                header.axes
-            } else {
-                infer_wkt_axes_from_members(&members)?
-            };
-            Ok(Shape::MultiLineString(MultiLineString::try_new(
-                axes,
-                members
-                    .into_iter()
-                    .map(|member| match member {
-                        WktMember::Empty => Ok(MultiMember::Empty),
-                        WktMember::Group(line) => Ok(MultiMember::Value(LineSeq::try_new(
-                            parse_wkt_points(line, axes)?,
-                        )?)),
-                    })
-                    .collect::<Result<_>>()?,
-            )?))
-        },
-        GeometryKind::MultiPolygon => {
-            let Some(body) = header.body else {
-                return Ok(Shape::typed_empty(GeometryKind::MultiPolygon, header.axes));
-            };
-            let members = split_wkt_members(body)?;
-            let axes = if axes_fixed {
-                header.axes
-            } else if let Some(first) = members.iter().find_map(|m| match m {
-                WktMember::Group(g) => Some(*g),
-                WktMember::Empty => None,
-            }) {
-                infer_wkt_axes_from_polygon_body(first)?
-            } else {
-                header.axes
-            };
-            if members.is_empty() {
-                return Ok(Shape::typed_empty(GeometryKind::MultiPolygon, axes));
+            if matches!(parent_scope, ParentScope::Collection) && matches!(byte, b',' | b')') {
+                break;
             }
-            Ok(Shape::MultiPolygon(MultiPolygon::try_new(
-                axes,
-                members
-                    .into_iter()
-                    .map(|member| match member {
-                        WktMember::Empty => Ok(MultiMember::Empty),
-                        WktMember::Group(polygon) => {
-                            Ok(MultiMember::Value(parse_wkt_polygon_body(polygon, axes)?))
+            self.advance_char();
+        }
+
+        let text = self
+            .input
+            .get(start..self.cursor.position)
+            .ok_or_else(|| self.error_at(start, "invalid WKT geometry header"))?;
+        parse_wkt_header(text, body_opened, start)
+    }
+
+    fn parse_body(
+        &mut self,
+        geometry_type: GeometryKind,
+        axes: CoordinateAxes,
+        axes_fixed: bool,
+        depth: usize,
+        header: &WktHeader,
+    ) -> Result<Shape> {
+        match geometry_type {
+            GeometryKind::GeometryCollection => {
+                self.parse_geometry_collection_body(depth, header, axes_fixed.then_some(axes))
+            },
+            GeometryKind::MultiPoint => {
+                self.parse_multi_point_body(axes_fixed.then_some(axes), axes)
+            },
+            GeometryKind::MultiLineString => {
+                self.parse_multi_line_body(axes_fixed.then_some(axes), axes)
+            },
+            GeometryKind::MultiPolygon => {
+                self.parse_multi_polygon_body(axes_fixed.then_some(axes), axes)
+            },
+            GeometryKind::Point => {
+                let axes = if axes_fixed {
+                    axes
+                } else {
+                    self.infer_axes(false, false)?
+                };
+                let point = self.parse_coordinate(axes, false)?;
+                let point = validate_wkt_point(point)?;
+                Ok(Shape::Point(point))
+            },
+            GeometryKind::LineString => {
+                let axes = if axes_fixed {
+                    axes
+                } else {
+                    self.infer_axes(true, true)?
+                };
+                let coordinates = self.parse_coordinate_sequence(axes, true)?;
+                Ok(Shape::LineString(LineSeq::try_new(coordinates)?))
+            },
+            GeometryKind::Polygon => {
+                let mut polygon_axes = axes_fixed.then_some(axes);
+                let polygon = self.parse_polygon_rings(&mut polygon_axes)?;
+                Ok(Shape::Polygon(polygon))
+            },
+        }
+    }
+
+    fn parse_geometry_collection_body(
+        &mut self,
+        depth: usize,
+        header: &WktHeader,
+        inherited_axes: Option<CoordinateAxes>,
+    ) -> Result<Shape> {
+        let child_axes = if header.axes_explicit {
+            Some(header.axes)
+        } else {
+            inherited_axes
+        };
+        if self.at_parenthesis_close() {
+            return self
+                .fail("empty parenthesized WKT member list; use EMPTY for an empty geometry");
+        }
+
+        let mut members = Vec::new();
+        let mut first_error = None;
+        let mut after_comma = false;
+        loop {
+            self.skip_whitespace();
+            if self.at_parenthesis_close() {
+                if after_comma {
+                    return self.fail("trailing comma in geometry collection");
+                }
+                break;
+            }
+            if self.cursor.is_empty() {
+                return self.fail("WKT is missing closing parenthesis");
+            }
+            if !self
+                .cursor
+                .peek()
+                .is_some_and(|byte| byte.is_ascii_alphabetic())
+            {
+                return self.fail("expected geometry type in geometry collection member list");
+            }
+
+            let member_depth = self.parenthesis_depth;
+            match self.parse_geometry(depth.wrapping_add(1), child_axes, ParentScope::Collection) {
+                Ok(member) => members.push(member),
+                Err(error) => {
+                    remember_first(&mut first_error, error);
+                    self.recover_collection_member(member_depth);
+                },
+            }
+
+            self.skip_whitespace();
+            match self.cursor.peek() {
+                Some(b',') => {
+                    self.cursor.advance();
+                    after_comma = true;
+                },
+                Some(b')') => break,
+                None => return self.fail("WKT is missing closing parenthesis"),
+                Some(_) => {
+                    self.recover_collection_member(member_depth);
+                    match self.cursor.peek() {
+                        Some(b',') => {
+                            self.cursor.advance();
+                            after_comma = true;
                         },
-                    })
-                    .collect::<Result<_>>()?,
-            )?))
-        },
-        GeometryKind::Point => match header.body {
-            Some(body) => {
-                let axes = if axes_fixed {
-                    header.axes
-                } else {
-                    infer_wkt_axes_from_coordinate(body)?
-                };
-                Ok(Shape::Point(parse_wkt_point(body, axes)?))
-            },
-            None => Ok(Shape::typed_empty(GeometryKind::Point, header.axes)),
-        },
-        GeometryKind::LineString => {
-            let Some(body) = header.body else {
-                return Ok(Shape::typed_empty(GeometryKind::LineString, header.axes));
-            };
-            let axes = if axes_fixed {
-                header.axes
+                        Some(b')') => break,
+                        None => return self.fail("WKT is missing closing parenthesis"),
+                        Some(_) => {
+                            return self
+                                .fail("expected geometry type in geometry collection member list");
+                        },
+                    }
+                },
+            }
+        }
+
+        if let Some(error) = first_error {
+            return Err(error);
+        }
+        Ok(Shape::geometry_collection(members)?)
+    }
+
+    fn parse_multi_point_body(
+        &mut self,
+        mut axes: Option<CoordinateAxes>,
+        default_axes: CoordinateAxes,
+    ) -> Result<Shape> {
+        if !self.is_wkt_member_list() {
+            let axes = if let Some(axes) = axes {
+                axes
             } else {
-                infer_wkt_axes_from_coordinate_list(body)?
+                self.infer_axes(true, true)?
             };
-            let points = parse_wkt_points(body, axes)?;
-            Ok(Shape::LineString(LineSeq::try_new(points)?))
-        },
-        GeometryKind::Polygon => match header.body {
-            Some(body) => {
-                let axes = if axes_fixed {
-                    header.axes
+            let coordinates = self.parse_coordinate_sequence(axes, true)?;
+            return Ok(Shape::MultiPoint(MultiPoint::from_coordseq(coordinates)?));
+        }
+        if self.at_parenthesis_close() {
+            return self
+                .fail("empty parenthesized WKT member list; use EMPTY for an empty geometry");
+        }
+
+        let mut members = Vec::new();
+        let mut first_error = None;
+        let mut inference_error = None;
+        let mut after_comma = false;
+        loop {
+            self.skip_whitespace();
+            if self.at_parenthesis_close() {
+                if after_comma {
+                    return self.fail("trailing comma in WKT member list");
+                }
+                break;
+            }
+            if self.cursor.is_empty() {
+                return self.fail("WKT is missing closing parenthesis");
+            }
+
+            if self.is_wkt_empty_keyword() {
+                self.cursor.advance_by(5);
+                members.push(MultiMember::Empty);
+            } else if self.cursor.peek() == Some(b'(') {
+                self.open_parenthesis();
+                let group_depth = self.parenthesis_depth;
+                if axes.is_none() {
+                    match self.infer_axes(false, false) {
+                        Ok(inferred) => axes = Some(inferred),
+                        Err(error) => {
+                            remember_first(&mut inference_error, error);
+                            axes = Some(CoordinateAxes::XY);
+                            if !self.recover_to_group_close(group_depth) {
+                                return self.fail("WKT is missing closing parenthesis");
+                            }
+                            self.finish_member_separator(&mut after_comma)?;
+                            continue;
+                        },
+                    }
+                }
+                let point_axes = axes.unwrap_or(default_axes);
+                match self.parse_coordinate(point_axes, false) {
+                    Ok(point) => {
+                        if let Err(error) = self.close_parenthesis() {
+                            remember_first(&mut first_error, error);
+                            if !self.recover_to_group_close(group_depth) {
+                                return self.fail("WKT is missing closing parenthesis");
+                            }
+                        } else {
+                            match validate_wkt_point(point) {
+                                Ok(point) => members.push(MultiMember::Value(point)),
+                                Err(error) => {
+                                    remember_first(&mut first_error, self.position_error(error));
+                                },
+                            }
+                        }
+                    },
+                    Err(error) => {
+                        remember_first(&mut first_error, error);
+                        if !self.recover_to_group_close(group_depth) {
+                            return self.fail("WKT is missing closing parenthesis");
+                        }
+                    },
+                }
+            } else {
+                return self.fail("expected WKT member (parenthesized group or EMPTY)");
+            }
+
+            self.finish_member_separator(&mut after_comma)?;
+        }
+
+        if let Some(error) = inference_error {
+            return Err(error);
+        }
+        if let Some(error) = first_error {
+            return Err(error);
+        }
+        Ok(Shape::MultiPoint(MultiPoint::try_new(
+            axes.unwrap_or(default_axes),
+            members,
+        )?))
+    }
+
+    fn parse_multi_line_body(
+        &mut self,
+        mut axes: Option<CoordinateAxes>,
+        default_axes: CoordinateAxes,
+    ) -> Result<Shape> {
+        if self.at_parenthesis_close() {
+            return self
+                .fail("empty parenthesized WKT member list; use EMPTY for an empty geometry");
+        }
+
+        let mut members = Vec::new();
+        let mut first_error = None;
+        let mut inference_error = None;
+        let mut after_comma = false;
+        loop {
+            self.skip_whitespace();
+            if self.at_parenthesis_close() {
+                if after_comma {
+                    return self.fail("trailing comma in WKT member list");
+                }
+                break;
+            }
+            if self.cursor.is_empty() {
+                return self.fail("WKT is missing closing parenthesis");
+            }
+
+            if self.is_wkt_empty_keyword() {
+                self.cursor.advance_by(5);
+                members.push(MultiMember::Empty);
+            } else if self.cursor.peek() == Some(b'(') {
+                self.open_parenthesis();
+                let group_depth = self.parenthesis_depth;
+                if axes.is_none() {
+                    match self.infer_axes(true, true) {
+                        Ok(inferred) => axes = Some(inferred),
+                        Err(error) => {
+                            remember_first(&mut inference_error, error);
+                            axes = Some(CoordinateAxes::XY);
+                            if !self.recover_to_group_close(group_depth) {
+                                return self.fail("WKT is missing closing parenthesis");
+                            }
+                            self.finish_member_separator(&mut after_comma)?;
+                            continue;
+                        },
+                    }
+                }
+                let line_axes = axes.unwrap_or(default_axes);
+                match self.parse_coordinate_sequence(line_axes, false) {
+                    Ok(coordinates) => match self.close_parenthesis() {
+                        Ok(()) => match LineSeq::try_new(coordinates) {
+                            Ok(line) => members.push(MultiMember::Value(line)),
+                            Err(error) => {
+                                remember_first(&mut first_error, self.position_error(error));
+                            },
+                        },
+                        Err(error) => {
+                            remember_first(&mut first_error, error);
+                            if !self.recover_to_group_close(group_depth) {
+                                return self.fail("WKT is missing closing parenthesis");
+                            }
+                        },
+                    },
+                    Err(error) => {
+                        remember_first(&mut first_error, error);
+                        if !self.recover_to_group_close(group_depth) {
+                            return self.fail("WKT is missing closing parenthesis");
+                        }
+                    },
+                }
+            } else {
+                return self.fail("expected WKT member (parenthesized group or EMPTY)");
+            }
+
+            self.finish_member_separator(&mut after_comma)?;
+        }
+
+        if let Some(error) = inference_error {
+            return Err(error);
+        }
+        if let Some(error) = first_error {
+            return Err(error);
+        }
+        Ok(Shape::MultiLineString(MultiLineString::try_new(
+            axes.unwrap_or(default_axes),
+            members,
+        )?))
+    }
+
+    fn parse_multi_polygon_body(
+        &mut self,
+        mut axes: Option<CoordinateAxes>,
+        default_axes: CoordinateAxes,
+    ) -> Result<Shape> {
+        if self.at_parenthesis_close() {
+            return self
+                .fail("empty parenthesized WKT member list; use EMPTY for an empty geometry");
+        }
+
+        let mut members = Vec::new();
+        let mut first_error = None;
+        let mut inference_error = None;
+        let mut after_comma = false;
+        loop {
+            self.skip_whitespace();
+            if self.at_parenthesis_close() {
+                if after_comma {
+                    return self.fail("trailing comma in WKT member list");
+                }
+                break;
+            }
+            if self.cursor.is_empty() {
+                return self.fail("WKT is missing closing parenthesis");
+            }
+
+            if self.is_wkt_empty_keyword() {
+                self.cursor.advance_by(5);
+                members.push(MultiMember::Empty);
+            } else if self.cursor.peek() == Some(b'(') {
+                self.open_parenthesis();
+                let group_depth = self.parenthesis_depth;
+                let axes_before = axes;
+                match self.parse_polygon_rings(&mut axes) {
+                    Ok(polygon) => match self.close_parenthesis() {
+                        Ok(()) => members.push(MultiMember::Value(polygon)),
+                        Err(error) => {
+                            remember_first(&mut first_error, error);
+                            if !self.recover_to_group_close(group_depth) {
+                                return self.fail("WKT is missing closing parenthesis");
+                            }
+                        },
+                    },
+                    Err(error) => {
+                        if axes_before.is_none() && axes.is_none() {
+                            remember_first(&mut inference_error, error);
+                            axes = Some(CoordinateAxes::XY);
+                        } else {
+                            remember_first(&mut first_error, error);
+                        }
+                        if !self.recover_to_group_close(group_depth) {
+                            return self.fail("WKT is missing closing parenthesis");
+                        }
+                    },
+                }
+            } else {
+                return self.fail("expected WKT member (parenthesized group or EMPTY)");
+            }
+
+            self.finish_member_separator(&mut after_comma)?;
+        }
+
+        if let Some(error) = inference_error {
+            return Err(error);
+        }
+        if let Some(error) = first_error {
+            return Err(error);
+        }
+        Ok(Shape::MultiPolygon(MultiPolygon::try_new(
+            axes.unwrap_or(default_axes),
+            members,
+        )?))
+    }
+
+    fn parse_polygon_rings(&mut self, axes: &mut Option<CoordinateAxes>) -> Result<Polygon> {
+        if self.at_parenthesis_close() {
+            return self
+                .fail("empty parenthesized WKT member list; use EMPTY for an empty geometry");
+        }
+
+        let mut rings = Vec::new();
+        let mut holes = Vec::new();
+        let mut first_error = None;
+        let mut inference_error = None;
+        let mut saw_group = false;
+        let mut empty_before_axes_position = None;
+        let mut after_comma = false;
+        loop {
+            self.skip_whitespace();
+            if self.at_parenthesis_close() {
+                if after_comma {
+                    return self.fail("trailing comma in WKT member list");
+                }
+                break;
+            }
+            if self.cursor.is_empty() {
+                return self.fail("WKT is missing closing parenthesis");
+            }
+
+            if self.is_wkt_empty_keyword() {
+                let empty_position = self.cursor.position;
+                self.cursor.advance_by(5);
+                if axes.is_some() {
+                    remember_first(
+                        &mut first_error,
+                        self.error_at(empty_position, "POLYGON ring cannot be EMPTY"),
+                    );
                 } else {
-                    infer_wkt_axes_from_polygon_body(body)?
-                };
-                Ok(Shape::Polygon(parse_wkt_polygon_body(body, axes)?))
+                    empty_before_axes_position.get_or_insert(empty_position);
+                }
+            } else if self.cursor.peek() == Some(b'(') {
+                saw_group = true;
+                self.open_parenthesis();
+                let ring_depth = self.parenthesis_depth;
+                if axes.is_none() {
+                    match self.infer_axes(true, true) {
+                        Ok(inferred) => {
+                            *axes = Some(inferred);
+                            if let Some(empty_position) = empty_before_axes_position {
+                                remember_first(
+                                    &mut first_error,
+                                    self.error_at(empty_position, "POLYGON ring cannot be EMPTY"),
+                                );
+                            }
+                        },
+                        Err(error) => {
+                            remember_first(&mut inference_error, error);
+                            *axes = Some(CoordinateAxes::XY);
+                            if !self.recover_to_group_close(ring_depth) {
+                                return self.fail("WKT is missing closing parenthesis");
+                            }
+                            self.finish_member_separator(&mut after_comma)?;
+                            continue;
+                        },
+                    }
+                }
+                if inference_error.is_some() {
+                    if !self.recover_to_group_close(ring_depth) {
+                        return self.fail("WKT is missing closing parenthesis");
+                    }
+                    self.finish_member_separator(&mut after_comma)?;
+                    continue;
+                }
+                let ring_axes = axes.unwrap_or(CoordinateAxes::XY);
+                match self.parse_coordinate_sequence(ring_axes, false) {
+                    Ok(coordinates) => match self.close_parenthesis() {
+                        Ok(()) => match crate::io::admit_closed_ring(coordinates) {
+                            Ok(ring) => {
+                                if rings.is_empty() {
+                                    rings.push(ring);
+                                } else {
+                                    holes.push(ring);
+                                }
+                            },
+                            Err(error) => {
+                                remember_first(&mut first_error, self.position_error(error));
+                            },
+                        },
+                        Err(error) => {
+                            remember_first(&mut first_error, error);
+                            if !self.recover_to_group_close(ring_depth) {
+                                return self.fail("WKT is missing closing parenthesis");
+                            }
+                        },
+                    },
+                    Err(error) => {
+                        remember_first(&mut first_error, error);
+                        if !self.recover_to_group_close(ring_depth) {
+                            return self.fail("WKT is missing closing parenthesis");
+                        }
+                    },
+                }
+            } else {
+                return self.fail("expected WKT member (parenthesized group or EMPTY)");
+            }
+
+            self.finish_member_separator(&mut after_comma)?;
+        }
+
+        if let Some(error) = inference_error {
+            return Err(error);
+        }
+        if !saw_group {
+            return self.fail("POLYGON requires a shell");
+        }
+        if let Some(error) = first_error {
+            return Err(error);
+        }
+        let Some(shell) = rings.into_iter().next() else {
+            return self.fail("POLYGON requires a shell");
+        };
+        Ok(Polygon::new(shell, holes))
+    }
+
+    fn parse_coordinate_sequence(
+        &mut self,
+        axes: CoordinateAxes,
+        reserve_from_input_tail: bool,
+    ) -> Result<CoordSeq> {
+        crate::geometry::dispatch_axes!((axes.has_z(), axes.has_m()), HAS_Z, HAS_M, {
+            self.parse_coordinate_sequence_axes::<HAS_Z, HAS_M>(reserve_from_input_tail)
+        })
+    }
+
+    fn parse_coordinate_sequence_axes<const Z: bool, const M: bool>(
+        &mut self,
+        reserve_from_input_tail: bool,
+    ) -> Result<CoordSeq> {
+        let axes = CoordinateAxes::new(HasZ(Z), HasM(M));
+        let first_start = self.cursor.position;
+        let first = read_wkt_coordinate_axes!(self, Z, M, true);
+        let first_end = self.cursor.position;
+        let stride = first_end
+            .saturating_sub(first_start)
+            .saturating_add(2)
+            .max(1);
+        let capacity = if reserve_from_input_tail {
+            self.cursor.bytes.len().saturating_sub(first_start) / stride
+        } else {
+            1
+        };
+        let mut builder = CoordSeqBuilder::with_capacity(axes, capacity);
+        builder.push_xyzm(first.0, first.1, first.2, first.3);
+
+        loop {
+            skip_wkt_whitespace!(self);
+            match self.cursor.peek() {
+                Some(b',') => {
+                    self.cursor.advance();
+                    let coordinate = read_wkt_coordinate_axes!(self, Z, M, true);
+                    builder.push_xyzm(coordinate.0, coordinate.1, coordinate.2, coordinate.3);
+                },
+                Some(b')') | None => break,
+                Some(_) => {
+                    return self.fail("coordinate has too many ordinates");
+                },
+            }
+        }
+        builder.finish().map_err(|error| self.position_error(error))
+    }
+
+    fn parse_coordinate(&mut self, axes: CoordinateAxes, comma_delimiter: bool) -> Result<Point> {
+        crate::geometry::dispatch_axes!((axes.has_z(), axes.has_m()), HAS_Z, HAS_M, {
+            self.parse_coordinate_axes::<HAS_Z, HAS_M>(comma_delimiter)
+        })
+    }
+
+    fn parse_coordinate_axes<const Z: bool, const M: bool>(
+        &mut self,
+        comma_delimiter: bool,
+    ) -> Result<Point> {
+        let (x, y, z, m) = read_wkt_coordinate_axes!(self, Z, M, comma_delimiter);
+        self.validate_coordinate_end(comma_delimiter)?;
+        Ok(Point::new_raw_axes(x, y, ZOrdinate(z), MOrdinate(m)))
+    }
+
+    fn validate_coordinate_end(&mut self, comma_delimiter: bool) -> Result<()> {
+        skip_wkt_whitespace!(self);
+        if self
+            .cursor
+            .peek()
+            .is_some_and(|byte| byte != b')' && (!comma_delimiter || byte != b','))
+        {
+            return self.fail("coordinate has too many ordinates");
+        }
+        Ok(())
+    }
+
+    fn infer_axes(
+        &self,
+        comma_delimiter: bool,
+        empty_means_missing_x: bool,
+    ) -> Result<CoordinateAxes> {
+        let start = self.cursor.position;
+        let end = self.coordinate_group_end(start, comma_delimiter);
+        let coordinate = self
+            .input
+            .get(start..end)
+            .ok_or_else(|| self.error_at(start, "invalid WKT coordinate"))?;
+        if empty_means_missing_x && coordinate.trim().is_empty() {
+            return self.fail_at(end, "coordinate is missing x");
+        }
+        let count = coordinate.split_whitespace().count();
+        infer_wkt_axes_from_ordinate_count(count).map_err(|error| error.with_parse_position(end))
+    }
+
+    fn coordinate_group_end(&self, start: usize, comma_delimiter: bool) -> usize {
+        let bytes = self.cursor.bytes;
+        let mut position = start;
+        let mut nested = 0_usize;
+        while let Some(byte) = bytes.get(position).copied() {
+            if comma_delimiter && byte == b',' {
+                break;
+            }
+            if byte == b'(' {
+                nested = nested.wrapping_add(1);
+            } else if byte == b')' {
+                if nested == 0 {
+                    break;
+                }
+                nested = nested.wrapping_sub(1);
+            }
+            position = position.wrapping_add(1);
+        }
+        position
+    }
+
+    fn finish_member_separator(&mut self, after_comma: &mut bool) -> Result<()> {
+        self.skip_whitespace();
+        match self.cursor.peek() {
+            Some(b',') => {
+                self.cursor.advance();
+                *after_comma = true;
+                Ok(())
             },
-            None => Ok(Shape::typed_empty(GeometryKind::Polygon, header.axes)),
-        },
+            Some(b')') => {
+                *after_comma = false;
+                Ok(())
+            },
+            None => self.fail("WKT is missing closing parenthesis"),
+            Some(_) => self.fail("expected comma between WKT members"),
+        }
+    }
+
+    fn check_parent_boundary(&mut self, scope: ParentScope) -> Result<()> {
+        self.skip_whitespace();
+        match (scope, self.cursor.peek()) {
+            (ParentScope::Root, None) => Ok(()),
+            (ParentScope::Collection, None | Some(b',' | b')')) => Ok(()),
+            (_, Some(_)) => self.fail("trailing text after WKT geometry"),
+        }
+    }
+
+    fn is_wkt_member_list(&mut self) -> bool {
+        self.skip_whitespace();
+        self.cursor.peek() == Some(b'(') || self.is_wkt_empty_keyword()
+    }
+
+    fn is_wkt_empty_keyword(&mut self) -> bool {
+        self.cursor
+            .bytes
+            .get(self.cursor.position..)
+            .and_then(|tail| tail.get(..5))
+            .is_some_and(|keyword| keyword.eq_ignore_ascii_case(b"EMPTY"))
+            && !self
+                .cursor
+                .bytes
+                .get(self.cursor.position.wrapping_add(5))
+                .is_some_and(u8::is_ascii_alphanumeric)
+    }
+
+    fn at_parenthesis_close(&mut self) -> bool {
+        self.skip_whitespace();
+        self.cursor.peek() == Some(b')')
+    }
+
+    fn skip_whitespace(&mut self) {
+        skip_wkt_whitespace!(self);
+    }
+
+    fn advance_char(&mut self) {
+        let Some(byte) = self.cursor.peek() else {
+            return;
+        };
+        if byte.is_ascii() {
+            self.cursor.advance();
+        } else if let Some(character) = self
+            .input
+            .get(self.cursor.position..)
+            .and_then(|tail| tail.chars().next())
+        {
+            self.cursor.advance_by(character.len_utf8());
+        }
+    }
+
+    fn open_parenthesis(&mut self) {
+        self.cursor.advance();
+        self.parenthesis_depth = self.parenthesis_depth.wrapping_add(1);
+    }
+
+    fn close_parenthesis(&mut self) -> Result<()> {
+        self.skip_whitespace();
+        if self.cursor.peek() != Some(b')') {
+            return if self.cursor.is_empty() {
+                self.fail("WKT is missing closing parenthesis")
+            } else {
+                self.fail("invalid WKT parentheses")
+            };
+        }
+        self.cursor.advance();
+        self.parenthesis_depth = self.parenthesis_depth.wrapping_sub(1);
+        Ok(())
+    }
+
+    fn recover_to_geometry_close(&mut self, body_depth: usize) -> bool {
+        let mut nested = self.parenthesis_depth.saturating_sub(body_depth);
+        while let Some(byte) = self.cursor.peek() {
+            match byte {
+                b'(' => {
+                    nested = nested.wrapping_add(1);
+                    self.open_parenthesis();
+                },
+                b')' if nested == 0 => {
+                    self.cursor.advance();
+                    self.parenthesis_depth = self.parenthesis_depth.wrapping_sub(1);
+                    return true;
+                },
+                b')' => {
+                    nested = nested.wrapping_sub(1);
+                    self.cursor.advance();
+                    self.parenthesis_depth = self.parenthesis_depth.wrapping_sub(1);
+                },
+                _ => self.advance_char(),
+            }
+        }
+        false
+    }
+
+    fn recover_to_group_close(&mut self, group_depth: usize) -> bool {
+        self.recover_to_geometry_close(group_depth)
+    }
+
+    fn recover_collection_member(&mut self, base_depth: usize) {
+        let mut nested = self.parenthesis_depth.saturating_sub(base_depth);
+        while let Some(byte) = self.cursor.peek() {
+            match byte {
+                b'(' => {
+                    nested = nested.wrapping_add(1);
+                    self.open_parenthesis();
+                },
+                b')' if nested == 0 => break,
+                b')' => {
+                    nested = nested.wrapping_sub(1);
+                    self.cursor.advance();
+                    self.parenthesis_depth = self.parenthesis_depth.wrapping_sub(1);
+                },
+                b',' if nested == 0 => break,
+                _ => self.advance_char(),
+            }
+        }
+        debug_assert!(self.parenthesis_depth >= base_depth);
+    }
+
+    fn error_at(&self, position: usize, message: impl Into<Box<str>>) -> crate::error::Error {
+        IoError::parse_at(ParseFormat::Wkt, position, message)
+    }
+
+    fn position_error(&self, error: crate::error::Error) -> crate::error::Error {
+        match error.kind() {
+            crate::error::ErrorKind::Geometry(_) => {
+                IoError::parse_at(ParseFormat::Wkt, self.cursor.position, error.to_string())
+            },
+            crate::error::ErrorKind::Io(_) => error.with_parse_position(self.cursor.position),
+            _ => error,
+        }
+    }
+
+    fn fail<T>(&self, message: impl Into<Box<str>>) -> Result<T> {
+        self.fail_at(self.cursor.position, message)
+    }
+
+    fn fail_at<T>(&self, position: usize, message: impl Into<Box<str>>) -> Result<T> {
+        Err(self.error_at(position, message))
     }
 }
 
-/// PostGIS EWKT ordinate-count inference for an untagged coordinate token list.
+fn validate_wkt_point(point: Point) -> Result<Point> {
+    Point::new_axes(point.x, point.y, ZOrdinate(point.z()), MOrdinate(point.m()))
+}
+
+fn remember_first(slot: &mut Option<crate::error::Error>, error: crate::error::Error) {
+    if slot.is_none() {
+        *slot = Some(error);
+    }
+}
+
 fn infer_wkt_axes_from_ordinate_count(count: usize) -> Result<CoordinateAxes> {
     match count {
         2 => Ok(CoordinateAxes::XY),
@@ -185,55 +1012,9 @@ fn infer_wkt_axes_from_ordinate_count(count: usize) -> Result<CoordinateAxes> {
     }
 }
 
-fn infer_wkt_axes_from_coordinate(value: &str) -> Result<CoordinateAxes> {
-    infer_wkt_axes_from_ordinate_count(value.split_whitespace().count())
-}
-
-fn infer_wkt_axes_from_coordinate_list(value: &str) -> Result<CoordinateAxes> {
-    let first = value
-        .split(',')
-        .next()
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .ok_or_else(|| IoError::wkt("coordinate is missing x"))?;
-    infer_wkt_axes_from_coordinate(first)
-}
-
-fn infer_wkt_axes_from_members(members: &[WktMember<'_>]) -> Result<CoordinateAxes> {
-    for member in members {
-        if let WktMember::Group(body) = member {
-            return infer_wkt_axes_from_coordinate_list(body);
-        }
-    }
-    Ok(CoordinateAxes::XY)
-}
-
-fn infer_wkt_axes_from_polygon_body(value: &str) -> Result<CoordinateAxes> {
-    let members = split_wkt_members(value)?;
-    for member in members {
-        if let WktMember::Group(ring) = member {
-            return infer_wkt_axes_from_coordinate_list(ring);
-        }
-    }
-    Err(IoError::wkt("POLYGON requires a shell"))
-}
-
-fn infer_wkt_axes_from_multipoint_body(value: &str) -> Result<CoordinateAxes> {
-    if is_wkt_member_list(value) {
-        let members = split_wkt_members(value)?;
-        for member in members {
-            if let WktMember::Group(point) = member {
-                return infer_wkt_axes_from_coordinate(point);
-            }
-        }
-        return Ok(CoordinateAxes::XY);
-    }
-    infer_wkt_axes_from_coordinate_list(value)
-}
-
 /// Resolve axes for a geometry that may sit under a tagged GeometryCollection.
 fn resolve_wkt_member_axes(
-    header: &WktHeader<'_>,
+    header: &WktHeader,
     inherited_axes: Option<CoordinateAxes>,
 ) -> Result<CoordinateAxes> {
     if header.axes_explicit {
@@ -254,7 +1035,6 @@ pub(crate) const WKT_MAX_TYPE_TOKEN_LEN: usize = 20;
 
 /// Strip a trailing compact PostGIS axes suffix (`ZM` / `Z` / `M`).
 fn strip_wkt_compact_axes(token: &[u8]) -> (&[u8], Option<CoordinateAxes>) {
-    // Longest axes suffix first so `ZM` is not parsed as bare `M`.
     if let Some(base) = token.strip_suffix(b"ZM") {
         return (base, Some(CoordinateAxes::XYZM));
     }
@@ -300,41 +1080,66 @@ fn parse_wkt_type_keyword_upper(upper: &[u8]) -> Option<(GeometryKind, Option<Co
     Some((geometry_type, compact_axes))
 }
 
-fn parse_wkt_header(text: &str) -> Result<WktHeader<'_>> {
+fn parse_wkt_header(source: &str, body_opened: bool, input_offset: usize) -> Result<WktHeader> {
+    let leading_whitespace = source.len().saturating_sub(source.trim_start().len());
+    let text = source.trim();
+    let header_error = |position: usize, message: Box<str>| {
+        IoError::parse_at(
+            ParseFormat::Wkt,
+            input_offset.wrapping_add(position),
+            message,
+        )
+    };
     let keyword_len = text
         .find(|ch: char| !ch.is_ascii_alphabetic())
         .unwrap_or(text.len());
-    // Uppercase the keyword into a stack buffer. Longest token is
-    // GEOMETRYCOLLECTIONZM (20). Compact PostGIS suffixes (`POINTM`,
-    // `LINESTRINGZ`, …) are accepted alongside spaced tags (`POINT M`).
     let keyword = text
         .get(..keyword_len)
-        .ok_or_else(|| IoError::wkt("invalid WKT geometry type"))?;
+        .ok_or_else(|| header_error(leading_whitespace, "invalid WKT geometry type".into()))?;
     if keyword_len == 0 || keyword_len > WKT_MAX_TYPE_TOKEN_LEN {
-        return Err(IoError::wkt(unsupported_wkt_geometry_type_message(keyword)));
+        return Err(header_error(
+            leading_whitespace,
+            unsupported_wkt_geometry_type_message(keyword).into_boxed_str(),
+        ));
     }
     let Some((geometry_type, compact_axes)) = classify_wkt_type_token(keyword) else {
-        return Err(IoError::wkt(unsupported_wkt_geometry_type_message(keyword)));
+        return Err(header_error(
+            leading_whitespace,
+            unsupported_wkt_geometry_type_message(keyword).into_boxed_str(),
+        ));
     };
-    let mut rest = text
+    let raw_rest = text
         .get(keyword_len..)
-        .ok_or_else(|| IoError::wkt("invalid WKT geometry type"))?
-        .trim_start();
+        .ok_or_else(|| header_error(leading_whitespace, "invalid WKT geometry type".into()))?;
+    let mut rest = raw_rest.trim_start();
+    let mut rest_position =
+        leading_whitespace + keyword_len + raw_rest.len().saturating_sub(rest.len());
     let (mut axes, mut axes_explicit) =
         compact_axes.map_or((CoordinateAxes::XY, false), |compact| (compact, true));
+    let compact_axes_length = match compact_axes {
+        Some(CoordinateAxes::XYZM) => 2,
+        Some(_) => 1,
+        None => 0,
+    };
+    let mut axes_position = compact_axes.map(|_| {
+        input_offset
+            .wrapping_add(leading_whitespace)
+            .wrapping_add(keyword_len.saturating_sub(compact_axes_length))
+    });
     if let Some(axis_len) = rest
         .find(|ch: char| !ch.is_ascii_alphabetic())
         .filter(|_| !rest.starts_with("EMPTY"))
     {
         if axis_len > 0 {
-            // Spaced axis tags (`POINT Z`, `LINESTRING M`) — rejected when a
-            // compact suffix already fixed the axes (e.g. `POINTM Z`).
             if axes_explicit {
-                return Err(IoError::wkt("invalid WKT dimensional tag"));
+                return Err(header_error(
+                    rest_position,
+                    "invalid WKT dimensional tag".into(),
+                ));
             }
             let axis = rest
                 .get(..axis_len)
-                .ok_or_else(|| IoError::wkt("invalid WKT dimensional tag"))?;
+                .ok_or_else(|| header_error(rest_position, "invalid WKT dimensional tag".into()))?;
             axes = if axis.eq_ignore_ascii_case("Z") {
                 CoordinateAxes::XYZ
             } else if axis.eq_ignore_ascii_case("M") {
@@ -342,16 +1147,26 @@ fn parse_wkt_header(text: &str) -> Result<WktHeader<'_>> {
             } else if axis.eq_ignore_ascii_case("ZM") {
                 CoordinateAxes::XYZM
             } else {
-                return Err(IoError::wkt("invalid WKT dimensional tag"));
+                return Err(header_error(
+                    rest_position,
+                    "invalid WKT dimensional tag".into(),
+                ));
             };
             axes_explicit = true;
-            rest = rest
+            axes_position = Some(input_offset.wrapping_add(rest_position));
+            let after_axis = rest
                 .get(axis_len..)
-                .ok_or_else(|| IoError::wkt("invalid WKT dimensional tag"))?
-                .trim_start();
+                .ok_or_else(|| header_error(rest_position, "invalid WKT dimensional tag".into()))?;
+            rest = after_axis.trim_start();
+            rest_position = rest_position
+                .wrapping_add(axis_len)
+                .wrapping_add(after_axis.len().saturating_sub(rest.len()));
         }
     } else if !rest.is_empty() && !rest.starts_with('(') && !rest.eq_ignore_ascii_case("EMPTY") {
-        return Err(IoError::wkt("invalid WKT dimensional tag"));
+        return Err(header_error(
+            rest_position,
+            "invalid WKT dimensional tag".into(),
+        ));
     }
 
     if rest.eq_ignore_ascii_case("EMPTY") {
@@ -359,17 +1174,27 @@ fn parse_wkt_header(text: &str) -> Result<WktHeader<'_>> {
             geometry_type,
             axes,
             axes_explicit,
+            axes_position,
             body: None,
         });
     }
-    if !rest.starts_with('(') {
-        return Err(IoError::wkt("WKT is missing opening parenthesis"));
+    if !body_opened || !rest.starts_with('(') {
+        let position = if rest.is_empty() {
+            source.len()
+        } else {
+            rest_position
+        };
+        return Err(header_error(
+            position,
+            "WKT is missing opening parenthesis".into(),
+        ));
     }
     Ok(WktHeader {
         geometry_type,
         axes,
         axes_explicit,
-        body: Some(paren_body(rest)?),
+        axes_position,
+        body: Some(()),
     })
 }
 
@@ -389,414 +1214,6 @@ fn unsupported_wkt_geometry_type_message(keyword: &str) -> String {
     format!("unsupported WKT geometry type {rendered}")
 }
 
-fn paren_body(value: &str) -> Result<&str> {
-    let value = value.trim();
-    if !value.starts_with('(') {
-        return Err(IoError::wkt("WKT is missing opening parenthesis"));
-    }
-    let bytes = value.as_bytes();
-    let close = find_wkt_closing_parenthesis(bytes, 0, "WKT is missing closing parenthesis")?;
-    let after_close = value
-        .get(close..)
-        .and_then(|tail| tail.strip_prefix(')'))
-        .ok_or_else(|| IoError::wkt("invalid WKT parentheses"))?;
-    if !after_close.trim().is_empty() {
-        return Err(IoError::wkt("trailing text after WKT geometry"));
-    }
-    value
-        .get(1..close)
-        .map(str::trim)
-        .ok_or_else(|| IoError::wkt("invalid WKT parentheses"))
-}
-
-fn find_wkt_closing_parenthesis(
-    bytes: &[u8],
-    open: usize,
-    unclosed_error: &'static str,
-) -> Result<usize> {
-    debug_assert_eq!(bytes.get(open), Some(&b'('));
-    let mut depth = 1_usize;
-    let mut cursor = WktByteCursor::at(bytes, open.wrapping_add(1));
-    while let Some(byte) = cursor.peek() {
-        match byte {
-            b'(' => depth = depth.wrapping_add(1),
-            b')' => {
-                depth = depth.wrapping_sub(1);
-                if depth == 0 {
-                    return Ok(cursor.position);
-                }
-            },
-            _ => {},
-        }
-        cursor.advance();
-    }
-    Err(IoError::wkt(unclosed_error))
-}
-
-fn parse_wkt_polygon_body(value: &str, axes: CoordinateAxes) -> Result<Polygon> {
-    let members = split_wkt_members(value)?;
-    let mut rings = members.into_iter().map(|member| match member {
-        WktMember::Empty => Err(IoError::wkt("POLYGON ring cannot be EMPTY")),
-        WktMember::Group(ring) => parse_wkt_ring(ring, axes),
-    });
-    let Some(shell) = rings.next() else {
-        return Err(IoError::wkt("POLYGON requires a shell"));
-    };
-    Ok(Polygon::new(shell?, rings.collect::<Result<_>>()?))
-}
-
-/// Strict GeometryCollection member list: comma-separated full WKT geometries.
-/// Consumes every byte; rejects trailing/leading commas, empty slots, and
-/// non-keyword garbage between members.
-fn split_wkt_collection_members(value: &str) -> Result<Vec<&str>> {
-    let bytes = value.as_bytes();
-    let mut cursor = WktByteCursor::new(bytes);
-    let mut members = Vec::new();
-
-    cursor.skip_ascii_whitespace();
-    // Empty parenthesized bodies (`GEOMETRYCOLLECTION ()`) are invalid; the
-    // empty spelling is the `EMPTY` keyword, not `()`.
-    if cursor.is_empty() {
-        return Err(IoError::wkt(
-            "empty parenthesized WKT member list; use EMPTY for an empty geometry",
-        ));
-    }
-
-    loop {
-        cursor.skip_ascii_whitespace();
-        if cursor.is_empty() {
-            return Err(IoError::wkt("trailing comma in geometry collection"));
-        }
-        // Members are full WKT geometries — must begin with a type keyword.
-        if !cursor.peek().is_some_and(|byte| byte.is_ascii_alphabetic()) {
-            return Err(IoError::wkt(
-                "expected geometry type in geometry collection member list",
-            ));
-        }
-        let start = cursor.position;
-        let mut depth = 0_usize;
-        while let Some(byte) = cursor.peek() {
-            match byte {
-                b'(' => depth = depth.wrapping_add(1),
-                b')' => {
-                    depth = depth
-                        .checked_sub(1)
-                        .ok_or_else(|| IoError::wkt("invalid geometry collection parentheses"))?;
-                },
-                b',' if depth == 0 => break,
-                _ => {},
-            }
-            cursor.advance();
-        }
-        if depth != 0 {
-            return Err(IoError::wkt("unclosed geometry collection parentheses"));
-        }
-        let member = value
-            .get(start..cursor.position)
-            .ok_or_else(|| IoError::wkt("invalid geometry collection member"))?
-            .trim_end();
-        if member.is_empty() {
-            return Err(IoError::wkt("empty geometry collection member"));
-        }
-        members.push(member);
-        if cursor.is_empty() {
-            return Ok(members);
-        }
-        // Comma at depth 0 — another member is required.
-        debug_assert_eq!(cursor.peek(), Some(b','));
-        cursor.advance();
-    }
-}
-
-fn parse_wkt_ring(value: &str, axes: CoordinateAxes) -> Result<Ring> {
-    // Shared untrusted admission: silent-close XY-open; reject Z/M-open (see
-    // [`crate::io::admit_closed_ring`]).
-    crate::io::admit_closed_ring(parse_wkt_points(value, axes)?)
-}
-
-fn parse_wkt_multi_points(value: &str, axes: CoordinateAxes) -> Result<MultiPoint> {
-    // Parenthesized / EMPTY members vs bare "x y, x y" coordinate list.
-    if is_wkt_member_list(value) {
-        let members = split_wkt_members(value)?;
-        return MultiPoint::try_new(
-            axes,
-            members
-                .into_iter()
-                .map(|member| match member {
-                    WktMember::Empty => Ok(MultiMember::Empty),
-                    WktMember::Group(point) => {
-                        Ok(MultiMember::Value(parse_wkt_point(point, axes)?))
-                    },
-                })
-                .collect::<Result<_>>()?,
-        );
-    }
-    crate::geometry::dispatch_axes!((axes.has_z(), axes.has_m()), HAS_Z, HAS_M, {
-        parse_wkt_points_impl::<HAS_Z, HAS_M>(value).and_then(MultiPoint::from_coordseq)
-    })
-}
-
-/// True when the multipoint body uses parenthesized members and/or EMPTY
-/// keywords rather than a bare coordinate list (`1 2, 3 4`).
-fn is_wkt_member_list(value: &str) -> bool {
-    let value = value.trim_start();
-    value.starts_with('(')
-        || (value.len() >= 5
-            && value
-                .as_bytes()
-                .get(..5)
-                .is_some_and(|prefix| prefix.eq_ignore_ascii_case(b"EMPTY"))
-            && value
-                .as_bytes()
-                .get(5)
-                .is_none_or(|byte| !byte.is_ascii_alphanumeric()))
-}
-
-/// One member of a multipart WKT body: the EMPTY keyword or a parenthesized group.
-#[derive(Debug, Clone, Copy)]
-enum WktMember<'a> {
-    Empty,
-    Group(&'a str),
-}
-
-/// Strict group-list scanner for multipart members and polygon rings.
-///
-/// Yields EMPTY keywords and parenthesized groups. Consumes every
-/// non-whitespace byte, requires commas between members, and rejects trailing
-/// commas and leftover garbage. GeometryCollection uses
-/// [`split_wkt_collection_members`] (full child WKT texts, not groups).
-fn split_wkt_members(value: &str) -> Result<Vec<WktMember<'_>>> {
-    let bytes = value.as_bytes();
-    let mut cursor = WktByteCursor::new(bytes);
-    let mut members = Vec::new();
-
-    cursor.skip_ascii_whitespace();
-    // Empty parenthesized bodies (`MULTILINESTRING ()`) are invalid; the
-    // empty spelling is the `EMPTY` keyword, not `()`.
-    if cursor.is_empty() {
-        return Err(IoError::wkt(
-            "empty parenthesized WKT member list; use EMPTY for an empty geometry",
-        ));
-    }
-
-    loop {
-        cursor.skip_ascii_whitespace();
-        if cursor.is_empty() {
-            return Err(IoError::wkt("trailing comma in WKT member list"));
-        }
-
-        if is_wkt_empty_keyword(bytes, cursor.position) {
-            cursor.advance_by(5);
-            members.push(WktMember::Empty);
-        } else if cursor.peek() == Some(b'(') {
-            let open = cursor.position;
-            let close =
-                find_wkt_closing_parenthesis(bytes, open, "unclosed WKT member parentheses")?;
-            let group = value
-                .get(open..close)
-                .and_then(|group| group.strip_prefix('('))
-                .ok_or_else(|| IoError::wkt("invalid WKT member parentheses"))?
-                .trim();
-            cursor.seek_after(close);
-            members.push(WktMember::Group(group));
-        } else {
-            return Err(IoError::wkt(
-                "expected WKT member (parenthesized group or EMPTY)",
-            ));
-        }
-
-        cursor.skip_ascii_whitespace();
-        if cursor.is_empty() {
-            return Ok(members);
-        }
-        if cursor.peek() == Some(b',') {
-            cursor.advance();
-            continue;
-        }
-        return Err(IoError::wkt("expected comma between WKT members"));
-    }
-}
-
-fn is_wkt_empty_keyword(bytes: &[u8], index: usize) -> bool {
-    let Some(tail) = bytes.get(index..) else {
-        return false;
-    };
-    tail.get(..5)
-        .is_some_and(|keyword| keyword.eq_ignore_ascii_case(b"EMPTY"))
-        && !tail.get(5).is_some_and(|byte| byte.is_ascii_alphanumeric())
-}
-
-fn parse_wkt_points(value: &str, axes: CoordinateAxes) -> Result<CoordSeq> {
-    crate::geometry::dispatch_axes!((axes.has_z(), axes.has_m()), HAS_Z, HAS_M, {
-        parse_wkt_points_impl::<HAS_Z, HAS_M>(value)
-    })
-}
-
-#[expect(
-    clippy::naive_bytecount,
-    reason = "this is an advisory reservation hint; bytecount is not a direct package dependency"
-)]
-fn parse_wkt_points_impl<const Z: bool, const M: bool>(value: &str) -> Result<CoordSeq> {
-    let bytes = value.as_bytes();
-    let capacity = bytes
-        .iter()
-        .filter(|byte| **byte == b',')
-        .count()
-        .wrapping_add(1);
-    match parse_wkt_ascii_points_impl::<Z, M>(bytes, capacity) {
-        Ok(sequence) => Ok(sequence),
-        Err(error) if bytes.is_ascii() => Err(error),
-        Err(_) => {
-            let mut builder =
-                CoordSeqBuilder::with_capacity(CoordinateAxes::new(HasZ(Z), HasM(M)), capacity);
-            for coordinate in value.split(',') {
-                parse_wkt_coordinate_into::<Z, M>(coordinate, &mut builder)?;
-            }
-            builder.finish()
-        },
-    }
-}
-
-/// Parse the ASCII WKT coordinate lists produced by normal serializers without
-/// layering `split(',')` and `split_whitespace()` iterators for every vertex.
-/// Non-ASCII input falls back to the Unicode-aware path above if byte parsing
-/// encounters it.
-fn parse_wkt_ascii_points_impl<const Z: bool, const M: bool>(
-    bytes: &[u8],
-    capacity: usize,
-) -> Result<CoordSeq> {
-    let mut builder =
-        CoordSeqBuilder::with_capacity(CoordinateAxes::new(HasZ(Z), HasM(M)), capacity);
-    let mut cursor = WktByteCursor::new(bytes);
-    loop {
-        let x = parse_wkt_ascii_float_at(&mut cursor, "x", true)?;
-        let y = parse_wkt_ascii_float_at(&mut cursor, "y", true)?;
-        let z = Z
-            .then(|| parse_wkt_ascii_float_at(&mut cursor, "z", true))
-            .transpose()?;
-        let m = M
-            .then(|| parse_wkt_ascii_float_at(&mut cursor, "m", true))
-            .transpose()?;
-        cursor.skip_ascii_whitespace();
-        if cursor.peek().is_some_and(|byte| byte != b',') {
-            return Err(IoError::wkt("coordinate has too many ordinates"));
-        }
-        builder.push_xyzm(x, y, z, m);
-        if cursor.is_empty() {
-            break;
-        }
-        cursor.advance();
-    }
-    builder.finish()
-}
-
-fn parse_wkt_coordinate_into<const Z: bool, const M: bool>(
-    value: &str,
-    builder: &mut CoordSeqBuilder,
-) -> Result<()> {
-    let mut values = value.split_whitespace();
-    let x = parse_wkt_float_token(
-        values
-            .next()
-            .ok_or_else(|| IoError::wkt("coordinate is missing x"))?,
-        "x",
-    )?;
-    let y = parse_wkt_float_token(
-        values
-            .next()
-            .ok_or_else(|| IoError::wkt("coordinate is missing y"))?,
-        "y",
-    )?;
-    let z = Z
-        .then(|| parse_wkt_ordinate(&mut values, "z"))
-        .transpose()?;
-    let m = M
-        .then(|| parse_wkt_ordinate(&mut values, "m"))
-        .transpose()?;
-    if values.next().is_some() {
-        return Err(IoError::wkt("coordinate has too many ordinates"));
-    }
-    builder.push_xyzm(x, y, z, m);
-    Ok(())
-}
-
-fn parse_wkt_float_token(token: &str, name: &str) -> Result<f64> {
-    lexical_core::parse::<f64>(token.as_bytes())
-        .map_err(|_| IoError::wkt(format!("{name} coordinate must be numeric")))
-}
-
-fn parse_wkt_point(value: &str, axes: CoordinateAxes) -> Result<Point> {
-    crate::geometry::dispatch_axes!((axes.has_z(), axes.has_m()), HAS_Z, HAS_M, {
-        parse_wkt_point_impl::<HAS_Z, HAS_M>(value)
-    })
-}
-
-fn parse_wkt_point_impl<const Z: bool, const M: bool>(value: &str) -> Result<Point> {
-    let bytes = value.as_bytes();
-    match parse_wkt_ascii_point_impl::<Z, M>(bytes) {
-        Ok(point) => return Ok(point),
-        Err(error) if bytes.is_ascii() => return Err(error),
-        Err(_) => {},
-    }
-    let mut builder = CoordSeqBuilder::with_capacity(CoordinateAxes::new(HasZ(Z), HasM(M)), 1);
-    parse_wkt_coordinate_into::<Z, M>(value, &mut builder)?;
-    finish_wkt_point(builder)
-}
-
-fn parse_wkt_ascii_point_impl<const Z: bool, const M: bool>(bytes: &[u8]) -> Result<Point> {
-    let mut builder = CoordSeqBuilder::with_capacity(CoordinateAxes::new(HasZ(Z), HasM(M)), 1);
-    let mut cursor = WktByteCursor::new(bytes);
-    let x = parse_wkt_ascii_float_at(&mut cursor, "x", false)?;
-    let y = parse_wkt_ascii_float_at(&mut cursor, "y", false)?;
-    let z = Z
-        .then(|| parse_wkt_ascii_float_at(&mut cursor, "z", false))
-        .transpose()?;
-    let m = M
-        .then(|| parse_wkt_ascii_float_at(&mut cursor, "m", false))
-        .transpose()?;
-    cursor.skip_ascii_whitespace();
-    if !cursor.is_empty() {
-        return Err(IoError::wkt("coordinate has too many ordinates"));
-    }
-    builder.push_xyzm(x, y, z, m);
-    finish_wkt_point(builder)
-}
-
-fn finish_wkt_point(builder: CoordSeqBuilder) -> Result<Point> {
-    builder
-        .finish()?
-        .first()
-        .ok_or_else(|| IoError::wkt("coordinate is missing x"))
-}
-
-/// Read one ASCII numeric token. The comma delimiter is enabled for coordinate
-/// lists and disabled for Points so malformed point commas retain the old
-/// numeric-token error.
-fn parse_wkt_ascii_float_at(
-    cursor: &mut WktByteCursor<'_>,
-    name: &str,
-    comma_delimiter: bool,
-) -> Result<f64> {
-    cursor.skip_ascii_whitespace();
-    let start = cursor.position;
-    while let Some(byte) = cursor.peek()
-        && !byte.is_ascii_whitespace()
-        && (!comma_delimiter || byte != b',')
-    {
-        cursor.advance();
-    }
-    if start == cursor.position {
-        return Err(IoError::wkt(format!("coordinate is missing {name}")));
-    }
-    lexical_core::parse::<f64>(
-        cursor
-            .bytes
-            .get(start..cursor.position)
-            .expect("WKT byte cursor remains within its input"),
-    )
-    .map_err(|_| IoError::wkt(format!("{name} coordinate must be numeric")))
-}
-
 struct WktByteCursor<'a> {
     bytes: &'a [u8],
     position: usize,
@@ -807,10 +1224,6 @@ impl<'a> WktByteCursor<'a> {
         Self { bytes, position: 0 }
     }
 
-    const fn at(bytes: &'a [u8], position: usize) -> Self {
-        Self { bytes, position }
-    }
-
     fn peek(&self) -> Option<u8> {
         self.bytes.get(self.position).copied()
     }
@@ -819,44 +1232,17 @@ impl<'a> WktByteCursor<'a> {
         self.position == self.bytes.len()
     }
 
-    #[expect(
-        clippy::missing_const_for_fn,
-        reason = "keep the WKT parser cursor's runtime call shape unchanged"
-    )]
     fn advance(&mut self) {
         self.position = self.position.wrapping_add(1);
+        #[cfg(test)]
+        WKT_CURSOR_WORK.with(|work| work.set(work.get().wrapping_add(1)));
     }
 
-    #[expect(
-        clippy::missing_const_for_fn,
-        reason = "keep the WKT parser cursor's runtime call shape unchanged"
-    )]
     fn advance_by(&mut self, count: usize) {
         self.position = self.position.wrapping_add(count);
+        #[cfg(test)]
+        WKT_CURSOR_WORK.with(|work| work.set(work.get().wrapping_add(count)));
     }
-
-    #[expect(
-        clippy::missing_const_for_fn,
-        reason = "keep the WKT parser cursor's runtime call shape unchanged"
-    )]
-    fn seek_after(&mut self, position: usize) {
-        self.position = position.wrapping_add(1);
-    }
-
-    fn skip_ascii_whitespace(&mut self) {
-        while self.peek().is_some_and(|byte| byte.is_ascii_whitespace()) {
-            self.advance();
-        }
-    }
-}
-
-fn parse_wkt_ordinate<'a>(values: &mut impl Iterator<Item = &'a str>, name: &str) -> Result<f64> {
-    parse_wkt_float_token(
-        values
-            .next()
-            .ok_or_else(|| IoError::wkt(format!("coordinate is missing {name}")))?,
-        name,
-    )
 }
 
 #[cfg(test)]
@@ -864,29 +1250,28 @@ mod tests {
     use super::*;
 
     #[test]
-    fn ascii_coordinate_cursor_preserves_float_bits() {
-        let sequence = parse_wkt_ascii_points_impl::<false, false>(
-            b"-0.0 1.2345678901234567, 1e308 -1e-308",
-            2,
-        )
-        .expect("ASCII coordinate list parses");
-        assert_eq!(sequence.xs()[0].to_bits(), (-0.0_f64).to_bits());
+    fn coordinate_cursor_preserves_float_bits_and_ordinates() {
+        let line = parse_wkt("LINESTRING (-0.0 1.2345678901234567, 1e308 -1e-308)")
+            .expect("ASCII coordinates parse");
+        let Shape::LineString(line) = line else {
+            panic!("expected line string");
+        };
+        assert_eq!(line.as_coords().xs()[0].to_bits(), (-0.0_f64).to_bits());
         assert_eq!(
-            sequence.ys()[0].to_bits(),
+            line.as_coords().ys()[0].to_bits(),
             1.234_567_890_123_456_7_f64.to_bits()
         );
-        assert_eq!(sequence.xs()[1].to_bits(), 1e308_f64.to_bits());
-        assert_eq!(sequence.ys()[1].to_bits(), (-1e-308_f64).to_bits());
-    }
+        assert_eq!(line.as_coords().xs()[1].to_bits(), 1e308_f64.to_bits());
+        assert_eq!(line.as_coords().ys()[1].to_bits(), (-1e-308_f64).to_bits());
 
-    #[test]
-    fn ascii_point_cursor_preserves_ordinates() {
-        let point =
-            parse_wkt_ascii_point_impl::<true, true>(b"1 2 3 4").expect("ASCII point parses");
-        assert_eq!(point.x, 1.0);
-        assert_eq!(point.y, 2.0);
-        assert_eq!(point.z(), Some(3.0));
-        assert_eq!(point.m(), Some(4.0));
+        let point = parse_wkt("POINT ZM (1 2 3 4)").expect("tagged point parses");
+        let Shape::Point(point) = point else {
+            panic!("expected point");
+        };
+        assert_eq!(
+            (point.x, point.y, point.z(), point.m()),
+            (1.0, 2.0, Some(3.0), Some(4.0))
+        );
     }
 
     #[test]
@@ -918,5 +1303,50 @@ mod tests {
         let error = parse_wkt("POINT (1\u{00a0}not-a-number)")
             .expect_err("Unicode whitespace cannot make a bad number valid");
         assert!(error.to_string().contains("y coordinate must be numeric"));
+    }
+
+    fn parse_wkt_counted(value: &str) -> (Shape, usize) {
+        WKT_CURSOR_WORK.with(|work| work.set(0));
+        let shape = parse_wkt(value).expect("counted WKT parses");
+        let work = WKT_CURSOR_WORK.with(Cell::get);
+        (shape, work)
+    }
+
+    #[test]
+    fn nested_collections_advance_a_linear_number_of_cursor_bytes() {
+        let mut input = "GEOMETRYCOLLECTION (".repeat(128);
+        input.push_str("POINT (0.1 0.2)");
+        input.push_str(&")".repeat(128));
+
+        let (_, work) = parse_wkt_counted(&input);
+        assert!(
+            work <= input.len().saturating_mul(2),
+            "cursor advanced {} times for {} UTF-8 bytes",
+            work,
+            input.len()
+        );
+    }
+
+    #[test]
+    fn fixed_size_nested_vertex_input_does_not_repeat_member_scans() {
+        let depth = 128;
+        let prefix = "GEOMETRYCOLLECTION (".repeat(depth);
+        let suffix = ")".repeat(depth);
+        let coordinates = "0.1 0.2, ".repeat(8191) + "0.1 0.2";
+        let body_length = 131_072_usize;
+        let fixed = prefix.len() + "LINESTRING (".len() + coordinates.len() + suffix.len() + 1;
+        let input = format!(
+            "{prefix}LINESTRING ({}{padding}){suffix}",
+            coordinates,
+            padding = " ".repeat(body_length.saturating_sub(fixed)),
+        );
+
+        let (_, work) = parse_wkt_counted(&input);
+        assert!(
+            work <= input.len().saturating_mul(2),
+            "cursor advanced {} times for {} UTF-8 bytes",
+            work,
+            input.len()
+        );
     }
 }

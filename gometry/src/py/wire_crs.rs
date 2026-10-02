@@ -257,3 +257,11 @@ pub(crate) fn split_ewkt_srid(text: &str) -> crate::error::Result<(&str, Option<
         .map_err(|_| io::IoError::wkt(format!("EWKT SRID {code:?}; expected an EPSG code")))?;
     Ok((body, io::normalize_wire_srid(Some(code))))
 }
+
+pub(crate) fn rebase_ewkt_parse_error(
+    error: crate::error::Error,
+    text: &str,
+    body: &str,
+) -> crate::error::Error {
+    error.with_parse_position_offset(text.len().saturating_sub(body.len()))
+}

@@ -88,6 +88,15 @@ impl Error {
         self
     }
 
+    pub(crate) fn with_parse_position_offset(mut self, offset: usize) -> Self {
+        if let ErrorStorage::Owned(kind) = &mut self.0
+            && let ErrorKind::Io(error) = kind.as_mut()
+        {
+            error.offset_position(offset);
+        }
+        self
+    }
+
     pub(crate) fn with_parse_path(mut self, path: &str) -> Self {
         if let ErrorStorage::Owned(kind) = &mut self.0
             && let ErrorKind::Io(error) = kind.as_mut()

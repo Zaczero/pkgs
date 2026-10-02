@@ -72,6 +72,12 @@ impl IoError {
         }
     }
 
+    pub(crate) fn offset_position(&mut self, offset: usize) {
+        if let Some(position) = self.position.as_mut() {
+            *position = position.wrapping_add(offset);
+        }
+    }
+
     pub(crate) fn parse(format: ParseFormat, detail: impl Into<Box<str>>) -> CrateError {
         Self {
             format,
@@ -739,16 +745,6 @@ impl SridCrsCache {
 pub(crate) struct WkbGeometry {
     pub shape: Shape,
     pub srid: Option<NonZeroU32>,
-}
-
-struct WktHeader<'a> {
-    geometry_type: GeometryKind,
-    axes: CoordinateAxes,
-    /// True when a Z / M / ZM dimensional tag was present on the type keyword.
-    /// Untagged members of a tagged GeometryCollection inherit the outer axes;
-    /// an explicit conflicting tag is rejected.
-    axes_explicit: bool,
-    body: Option<&'a str>,
 }
 
 fn parse_content(format: ParseFormat, error: CrateError) -> CrateError {
