@@ -172,6 +172,109 @@ fn extreme_exponent_spread_hausdorff_uses_bounded_refinement_work() {
     }
 }
 
+#[test]
+fn nominated_sites_respect_noded_span_windows() {
+    let source = Segment {
+        start: XY::new(0.0, 0.0),
+        end: XY::new(10.0, 0.0),
+    };
+    let full = test_span(source);
+    let denominator = ExactDyadic::from_f64(5.0);
+    let spans: Vec<_> = (0_usize..5)
+        .map(|index| {
+            let low =
+                Rational::new(ExactDyadic::from_f64(index as f64), denominator.clone()).unwrap();
+            let high = Rational::new(
+                ExactDyadic::from_f64(index.wrapping_add(1) as f64),
+                denominator.clone(),
+            )
+            .unwrap();
+            let start = span_point(&full, &low).unwrap();
+            let end = span_point(&full, &high).unwrap();
+            let bounds = FloatBox::from_point(&start)
+                .unwrap()
+                .include(FloatBox::from_point(&end).unwrap());
+            SupportSpan {
+                source,
+                carrier: std::sync::OnceLock::new(),
+                range: Some(Box::new(SelectedSpan {
+                    parameters: [low, high],
+                    start,
+                })),
+                bounds,
+            }
+        })
+        .collect();
+    let support = PreparedSupport::from_parts(spans, Vec::new(), Vec::new()).unwrap();
+    let point = ExactPoint::from_xy(XY::new(9.5, 0.0));
+
+    let nominated = support.index.nominate(&support, &point).unwrap();
+
+    assert_eq!(nominated.first(), Some(&PrimitiveId::Span(4)));
+}
+
+#[test]
+fn invalid_polygon_pair_stays_within_a_refinement_budget() {
+    let left = crate::io::parse_wkt("POLYGON ((6 5, 4 6, 2 2, 6 6, 7 7, 7 8, 7 0, 6 5))").unwrap();
+    let right = crate::io::parse_wkt(
+        "POLYGON ((5 3, 0 2, 1 8, 1 0, 3 1, 5 3), \
+         (8 2, 8 2, 1 6, 2 3, 2 1, 8 2))",
+    )
+    .unwrap();
+    let limit = 256;
+    let _guard = limit_refinement_work(limit);
+
+    let result = distance(&left, &right, None, 1.0);
+    let work = refinement_work();
+
+    assert!(
+        work <= limit,
+        "invalid polygon Hausdorff used {work} refinements: {result:?}"
+    );
+    assert!(
+        result.is_ok()
+            || result.as_ref().is_err_and(|error| !matches!(
+                error.kind(),
+                crate::error::ErrorKind::Geometry(
+                    crate::geometry::GeometryErrorKind::GeneratedOutputTooLarge { .. }
+                )
+            )),
+        "refinement budget error escaped instead of an answer or domain error: {result:?}"
+    );
+}
+
+#[test]
+fn hausdorff_f64_max_endpoint_rounds_to_max_before_refinement() {
+    let point = Shape::Point(Point::new_raw_xy(-1.0, 1e-15));
+    let line = line(&[(1e15, 0.0), (f64::MAX, 0.0)]);
+    let _guard = limit_refinement_work(32);
+
+    let actual = distance(&point, &line, None, 1.0).unwrap();
+
+    assert_eq!(actual, f64::MAX);
+    assert_eq!(refinement_work(), 0);
+}
+
+#[test]
+fn hausdorff_unrepresentable_diagonal_fails_before_refinement() {
+    let point = Shape::Point(Point::new_raw_xy(0.0, 0.0));
+    let line = line(&[(1.0, 1.0), (f64::MAX, f64::MAX)]);
+    let _guard = limit_refinement_work(32);
+
+    let error = distance(&point, &line, None, 1.0).unwrap_err();
+
+    assert!(
+        matches!(
+            error.kind(),
+            crate::error::ErrorKind::Geometry(crate::geometry::GeometryErrorKind::Invalid(message))
+                if message.as_ref()
+                    == "hausdorff_distance cannot represent the effective accuracy"
+        ),
+        "{error}"
+    );
+    assert_eq!(refinement_work(), 0);
+}
+
 fn reduced_point_span_distance_squared(point: &ExactPoint, span: &SupportSpan) -> Result<Rational> {
     let carrier = span.carrier().unwrap();
     let px = point.x().try_subtract(&carrier.ax)?;

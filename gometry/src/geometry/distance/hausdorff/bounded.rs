@@ -1072,16 +1072,18 @@ fn force_exact_sqrt_path(force: bool) -> ExactSqrtPathGuard {
     ExactSqrtPathGuard(FORCE_EXACT_SQRT.with(|forced| forced.replace(force)))
 }
 
-fn point_segment_squared_f64(point: XY, start: XY, end: XY) -> f64 {
+/// Squared distance from `point` to the segment's sub-span whose projection
+/// parameters lie in `[low, high]` (`(0.0, 1.0)` is the whole segment).
+fn point_segment_squared_f64(point: XY, start: XY, end: XY, (low, high): (f64, f64)) -> f64 {
     let (dx, dy) = (end.x - start.x, end.y - start.y);
     let (px, py) = (point.x - start.x, point.y - start.y);
     let length = dx * dx + dy * dy;
-    let t = if length > 0.0 {
-        ((px * dx + py * dy) / length).clamp(0.0, 1.0)
+    let parameter = if length > 0.0 {
+        ((px * dx + py * dy) / length).clamp(low, high)
     } else {
-        0.0
+        low
     };
-    let (ex, ey) = (px - t * dx, py - t * dy);
+    let (ex, ey) = (px - parameter * dx, py - parameter * dy);
     ex * ex + ey * ey
 }
 
@@ -2054,6 +2056,26 @@ impl PatchQueue {
         (!entry.key.is_infinite()).then(|| Rational::from_f64(entry.key))
     }
 
+    fn max_overflow_upper(&self) -> Result<Option<Rational>> {
+        let mut maximum: Option<Rational> = None;
+        for entry in &self.heap {
+            if !entry.key.is_infinite() {
+                continue;
+            }
+            let Some(upper) = &entry.record.upper else {
+                return Ok(None);
+            };
+            let replaces = match &maximum {
+                None => true,
+                Some(current) => upper.try_cmp(current)? == Ordering::Greater,
+            };
+            if replaces {
+                maximum = Some(upper.clone());
+            }
+        }
+        Ok(maximum)
+    }
+
     fn is_empty(&self) -> bool {
         self.heap.is_empty()
     }
@@ -2860,6 +2882,23 @@ fn candidate_certified(
     Ok(lower_squared.try_cmp(&low_squared)? != Ordering::Less)
 }
 
+fn check_hausdorff_output_range(context: &SearchContext<'_>) -> Result<()> {
+    let Some(lower) = &context.lower_squared else {
+        return Ok(());
+    };
+    let maximum = Rational::from_f64(f64::MAX);
+    if lower.try_cmp(&maximum.try_square()?)? != Ordering::Greater {
+        return Ok(());
+    }
+    let error = context.accuracy.absolute_error(lower, f64::MAX)?;
+    if lower.try_cmp(&maximum.try_add(&error)?.try_square()?)? == Ordering::Greater {
+        return Err(crate::geometry::GeometryErrorKind::message(
+            "hausdorff_distance cannot represent the effective accuracy",
+        ));
+    }
+    Ok(())
+}
+
 fn queue_upper(queue: &PatchQueue, context: &SearchContext<'_>) -> Result<Option<Rational>> {
     let Some(lower) = context.lower_squared.clone() else {
         return Ok(None);
@@ -2869,9 +2908,22 @@ fn queue_upper(queue: &PatchQueue, context: &SearchContext<'_>) -> Result<Option
         return Ok(None);
     };
     if queue.is_empty() {
+        if !context.exact_upper && interval.upper.is_none() {
+            check_hausdorff_output_range(context)?;
+        }
         return Ok(Some(witness_upper));
     }
-    let Some(mut upper) = queue.max_upper() else {
+    let maximum = match queue.max_upper() {
+        Some(upper) => Some(upper),
+        None if !context.exact_upper => {
+            if interval.upper.is_none() {
+                check_hausdorff_output_range(context)?;
+            }
+            queue.max_overflow_upper()?
+        },
+        None => None,
+    };
+    let Some(mut upper) = maximum else {
         return Ok(None);
     };
     if upper.try_cmp(&witness_upper)? == Ordering::Less {
@@ -3432,6 +3484,7 @@ fn symmetric_distance(
             }
         }
     }
+    check_hausdorff_output_range(context)?;
     if context
         .lower_squared
         .as_ref()

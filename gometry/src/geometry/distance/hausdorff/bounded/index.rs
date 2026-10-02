@@ -6,8 +6,8 @@
 
 use super::{
     BinaryHeap, ExactPoint, ExactSign, FloatBox, HULL_SEPARATION_LIMIT, NEAREST_CANDIDATE_LIMIT,
-    NOMINATED_SITE_COUNT, PreparedSupport, Rational, Result, SquaredBounds, SupportSpan, Tightness,
-    XY, box_distance_lower, exact, line_filter_enabled, nonnegative_bounds,
+    NOMINATED_SITE_COUNT, PreparedSupport, Rational, Result, SelectedSpan, SquaredBounds,
+    SupportSpan, Tightness, XY, box_distance_lower, exact, line_filter_enabled, nonnegative_bounds,
     nonnegative_upper_bound, point_segment_squared_f64, span_point, supporting_line_lower_squared,
 };
 use crate::scratch_pool::ScratchPool;
@@ -42,6 +42,22 @@ pub(super) struct NearestSupport<B = SquaredBounds> {
     /// The smallest-upper-bound primitive; exact nearest when bounds are exact.
     pub(super) primitive: PrimitiveId,
     pub(super) bounds: B,
+}
+
+/// Approximate squared distance for candidate ranking, restricted to the
+/// span's selected parameter window: a noded subspan must not rank by its
+/// whole carrier, or every span sharing a carrier ties and nomination stalls.
+fn span_nomination_squared(point: XY, span: &SupportSpan) -> Result<f64> {
+    let window = match span.range.as_deref() {
+        Some(SelectedSpan { parameters, .. }) => (parameters[0].round()?, parameters[1].round()?),
+        None => (0.0, 1.0),
+    };
+    Ok(point_segment_squared_f64(
+        point,
+        span.source.start,
+        span.source.end,
+        window,
+    ))
 }
 
 trait NearestBounds: Sized {
@@ -416,8 +432,7 @@ impl SupportIndex {
                 let item = self.items[*order_index];
                 let squared = match item.primitive {
                     PrimitiveId::Span(index) => {
-                        let source = support.spans[index].source;
-                        point_segment_squared_f64(XY::new(x, y), source.start, source.end)
+                        span_nomination_squared(XY::new(x, y), &support.spans[index])?
                     },
                     PrimitiveId::Point(_) => box_distance_lower(query, item.bounds),
                 };
