@@ -565,12 +565,16 @@ class TestGeodesic:
         ends = _endpoints(line_geom)
         assert ends[0] == pytest.approx((0.5, 0.5))
         assert 0.0 <= ends[1][0] <= 10.0
-        assert ends[1][1] == pytest.approx(0.0, abs=1e-06)
+        assert ends[1][1] == 0.0
         geod = Geod(ellps='WGS84')
         reference = geod.inv(0.5, 0.5, 0.5, 0.0)[2]
         attained = geod.inv(0.5, 0.5, *ends[1])[2]
-        assert attained <= reference + 4e-11 * 6_378_137.0
-        assert gm.distance(point, line) == pytest.approx(reference, abs=1e-3)
+        minimum_gap = 4e-11 * 6_378_137.0
+        rounding_floor = 32.0 * math.ulp(max(reference, attained, 1.0))
+        assert attained <= reference + minimum_gap + rounding_floor
+        distance = gm.distance(point, line)
+        distance_floor = 32.0 * math.ulp(max(reference, distance, 1.0))
+        assert abs(distance - reference) <= minimum_gap + distance_floor
 
     def test_planar_override(self) -> None:
         point = gm.Point(0.5, 0.5, crs=4326)

@@ -78,6 +78,10 @@ impl Ord for EdgeInterval {
     }
 }
 
+#[expect(
+    clippy::float_cmp,
+    reason = "an exact pole coordinate selects a distinct analytic distance family"
+)]
 pub(crate) fn point_edge_query(
     geodesic: &Geodesic,
     frame: GeographicFrame,
@@ -129,13 +133,13 @@ pub(crate) fn point_edge_query(
     }
 
     if edge.is_geodesically_degenerate(geodesic) {
-        let distance = inverse_distance(point, edge.geodetic_position(0.0)?, geodesic);
-        return direct_result(distance, 0.0, 1, cutoff, threshold);
+        let distance = inverse_distance(point, edge.geodetic_position(0.0), geodesic);
+        return Ok(direct_result(distance, 0.0, 1, cutoff, threshold));
     }
 
     if point.y.abs() == 90.0 {
-        let start = edge.geodetic_position(0.0)?;
-        let end = edge.geodetic_position(1.0)?;
+        let start = edge.geodetic_position(0.0);
+        let end = edge.geodetic_position(1.0);
         let parameter = if point.y > 0.0 {
             if end.y > start.y { 1.0 } else { 0.0 }
         } else {
@@ -143,16 +147,16 @@ pub(crate) fn point_edge_query(
         };
         let target = if parameter == 0.0 { start } else { end };
         let distance = inverse_distance(point, target, geodesic);
-        return direct_result(distance, parameter, 1, cutoff, threshold);
+        return Ok(direct_result(distance, parameter, 1, cutoff, threshold));
     }
 
-    let (d0, azimuth0) = sample(geodesic, point, edge, 0.0)?;
+    let (d0, azimuth0) = sample(geodesic, point, edge, 0.0);
     if let Some(limit) = threshold
         && d0 <= limit
     {
         return Ok(PointEdgeQueryResult::Within { evaluations: 1 });
     }
-    let (d1, azimuth1) = sample(geodesic, point, edge, 1.0)?;
+    let (d1, azimuth1) = sample(geodesic, point, edge, 1.0);
     if let Some(limit) = threshold
         && d1 <= limit
     {
@@ -177,7 +181,13 @@ pub(crate) fn point_edge_query(
     };
     if best.distance == 0.0 {
         best.lower_bound = 0.0;
-        return direct_result(best.distance, best.parameter, 2, cutoff, threshold);
+        return Ok(direct_result(
+            best.distance,
+            best.parameter,
+            2,
+            cutoff,
+            threshold,
+        ));
     }
 
     let derivative_bounds = edge.sampled_derivative_bounds(geodesic);
@@ -229,7 +239,7 @@ pub(crate) fn point_edge_query(
         } else {
             f64::midpoint(interval.t0, interval.t1)
         };
-        let (distance, azimuth) = sample(geodesic, point, edge, parameter)?;
+        let (distance, azimuth) = sample(geodesic, point, edge, parameter);
         best.evaluations = best.evaluations.wrapping_add(1);
         if let Some(limit) = threshold
             && distance <= limit
@@ -278,26 +288,30 @@ pub(crate) fn point_edge_query(
         );
     }
 
-    direct_result(
-        best.distance,
-        best.parameter,
-        best.evaluations,
-        cutoff,
-        threshold,
+    Ok(
+        match direct_result(
+            best.distance,
+            best.parameter,
+            best.evaluations,
+            cutoff,
+            threshold,
+        ) {
+            PointEdgeQueryResult::Minimum(mut minimum) => {
+                minimum.lower_bound = best.lower_bound;
+                minimum.budget_exhausted = best.budget_exhausted;
+                PointEdgeQueryResult::Minimum(minimum)
+            },
+            PointEdgeQueryResult::Outside { .. } => PointEdgeQueryResult::Outside {
+                lower_bound: best.lower_bound,
+                evaluations: best.evaluations,
+                budget_exhausted: best.budget_exhausted,
+            },
+            PointEdgeQueryResult::Excluded => PointEdgeQueryResult::Excluded,
+            PointEdgeQueryResult::Within { evaluations } => {
+                PointEdgeQueryResult::Within { evaluations }
+            },
+        },
     )
-    .map(|result| match result {
-        PointEdgeQueryResult::Minimum(mut minimum) => {
-            minimum.lower_bound = best.lower_bound;
-            minimum.budget_exhausted = best.budget_exhausted;
-            PointEdgeQueryResult::Minimum(minimum)
-        },
-        PointEdgeQueryResult::Outside { .. } => PointEdgeQueryResult::Outside {
-            lower_bound: best.lower_bound,
-            evaluations: best.evaluations,
-            budget_exhausted: best.budget_exhausted,
-        },
-        other => other,
-    })
 }
 
 fn inverse_distance(point: Point, target: Point, geodesic: &Geodesic) -> f64 {
@@ -310,9 +324,9 @@ fn direct_result(
     evaluations: usize,
     cutoff: f64,
     threshold: Option<f64>,
-) -> Result<PointEdgeQueryResult> {
+) -> PointEdgeQueryResult {
     if let Some(limit) = threshold {
-        return Ok(if distance <= limit {
+        return if distance <= limit {
             PointEdgeQueryResult::Within { evaluations }
         } else {
             PointEdgeQueryResult::Outside {
@@ -320,30 +334,25 @@ fn direct_result(
                 evaluations,
                 budget_exhausted: false,
             }
-        });
+        };
     }
     if distance >= cutoff {
-        return Ok(PointEdgeQueryResult::Excluded);
+        return PointEdgeQueryResult::Excluded;
     }
-    Ok(PointEdgeQueryResult::Minimum(PointEdgeMinimum {
+    PointEdgeQueryResult::Minimum(PointEdgeMinimum {
         distance,
         parameter,
         lower_bound: distance,
         evaluations,
         budget_exhausted: false,
-    }))
+    })
 }
 
-fn sample(
-    geodesic: &Geodesic,
-    point: Point,
-    edge: &ChartEdge,
-    parameter: f64,
-) -> Result<(f64, f64)> {
-    let target = edge.geodetic_position(parameter)?;
+fn sample(geodesic: &Geodesic, point: Point, edge: &ChartEdge, parameter: f64) -> (f64, f64) {
+    let target = edge.geodetic_position(parameter);
     let (distance, _azimuth1, azimuth2) =
         inverse_distance_azimuths(geodesic, point.x, point.y, target.x, target.y);
-    Ok((distance, azimuth2))
+    (distance, azimuth2)
 }
 
 fn distance_derivative(
@@ -464,13 +473,13 @@ mod tests {
     use super::*;
     use crate::crs::GeodesicMetric as EllipsoidChartMetric;
     use crate::crs::geodesic::AuthalicSeries;
-    use crate::geometry::ChartMetric;
+    use crate::geometry::ChartMetric as _;
 
-    fn metric(geodesic: Geodesic, frame: GeographicFrame) -> EllipsoidChartMetric {
-        let authalic_series = AuthalicSeries::new(&geodesic);
+    fn metric(geodesic: &Geodesic, frame: GeographicFrame) -> EllipsoidChartMetric {
+        let authalic_series = AuthalicSeries::new(geodesic);
         EllipsoidChartMetric {
             crs: Arc::new("test geographic CRS".to_owned()),
-            geodesic: Box::new(geodesic),
+            geodesic: Box::new(*geodesic),
             authalic_series,
             frame,
             state: crate::crs::runtime_state_snapshot().expect("runtime state"),
@@ -498,7 +507,11 @@ mod tests {
             .expect("point-edge query")
         {
             PointEdgeQueryResult::Minimum(minimum) => minimum,
-            result => panic!("unbounded point-edge query did not return a minimum: {result:?}"),
+            result @ (PointEdgeQueryResult::Excluded
+            | PointEdgeQueryResult::Within { .. }
+            | PointEdgeQueryResult::Outside { .. }) => {
+                panic!("unbounded point-edge query did not return a minimum: {result:?}")
+            },
         }
     }
 
@@ -512,9 +525,7 @@ mod tests {
             .frame
             .to_geodesic_point(point)
             .expect("oracle point is admitted");
-        let target = edge
-            .geodetic_position(parameter)
-            .expect("oracle edge point is finite");
+        let target = edge.geodetic_position(parameter);
         let distance: f64 = metric
             .geodesic
             .inverse(point.y, point.x, target.y, target.x);
@@ -538,13 +549,15 @@ mod tests {
             best_distance = best_distance.min(*last);
         }
         let golden = 0.5 * (5.0_f64.sqrt() - 1.0);
-        for index in 1..LAST_SAMPLE {
-            let before = samples[index as usize - 1];
-            let current = samples[index as usize];
-            let after = samples[index as usize + 1];
+        let parameter_step = 1.0 / f64::from(LAST_SAMPLE);
+        for (index, window) in (1..LAST_SAMPLE).zip(samples.windows(3)) {
+            let [before, current, after] = window else {
+                unreachable!("a three-sample window has three values")
+            };
             if current <= before && current <= after && (current < before || current < after) {
-                let mut left = f64::from(index - 1) / f64::from(LAST_SAMPLE);
-                let mut right = f64::from(index + 1) / f64::from(LAST_SAMPLE);
+                let center = f64::from(index) * parameter_step;
+                let mut left = center - parameter_step;
+                let mut right = center + parameter_step;
                 let mut x1 = right - golden * (right - left);
                 let mut x2 = left + golden * (right - left);
                 let mut f1 = oracle_distance(metric, point, edge, x1);
@@ -573,7 +586,7 @@ mod tests {
     #[test]
     fn point_edge_fixed_minima_agree_with_dense_karney_and_golden_oracle() {
         let frame = GeographicFrame::crs84();
-        let metric = metric(Geodesic::wgs84(), frame);
+        let metric = metric(&Geodesic::wgs84(), frame);
         let cases = [
             (
                 "short equatorial interior",
@@ -641,7 +654,7 @@ mod tests {
     #[test]
     fn near_antipodal_short_edge_uses_the_lipschitz_fallback() {
         let frame = GeographicFrame::crs84();
-        let metric = metric(Geodesic::wgs84(), frame);
+        let metric = metric(&Geodesic::wgs84(), frame);
         let point = Point::new_raw_xy(179.999, 0.001);
         let start = Point::new_raw_xy(0.0, 0.0);
         let end = Point::new_raw_xy(1.0e-10, 0.0);
@@ -657,7 +670,7 @@ mod tests {
     #[test]
     fn point_edge_cutoff_is_strict_and_threshold_is_inclusive() {
         let frame = GeographicFrame::crs84();
-        let metric = metric(Geodesic::wgs84(), frame);
+        let metric = metric(&Geodesic::wgs84(), frame);
         let point = Point::new_raw_xy(1.0, 0.0);
         let target = Point::new_raw_xy(0.0, 0.0);
         let edge = metric.chart_edge(target, target).unwrap();
@@ -738,7 +751,7 @@ mod tests {
     #[test]
     fn point_edge_pole_plateaus_close_within_the_budget() {
         let frame = GeographicFrame::crs84();
-        let metric = metric(Geodesic::wgs84(), frame);
+        let metric = metric(&Geodesic::wgs84(), frame);
         for (name, point, start, end) in [
             (
                 "exact north pole",
@@ -780,7 +793,7 @@ mod tests {
     #[test]
     fn chart_box_lower_bound_is_sound_for_seams_and_poles() {
         let frame = GeographicFrame::crs84();
-        let metric = metric(Geodesic::wgs84(), frame);
+        let metric = metric(&Geodesic::wgs84(), frame);
         let cases = [
             (
                 Point::new_raw_xy(-180.0, 0.0),
@@ -821,7 +834,7 @@ mod tests {
     #[test]
     fn point_edge_exact_degenerate_pole_sphere_and_prolate_families() {
         let frame = GeographicFrame::crs84();
-        let wgs84 = metric(Geodesic::wgs84(), frame);
+        let wgs84 = metric(&Geodesic::wgs84(), frame);
         let point = Point::new_raw_xy(0.0, 30.0);
         let degenerate = point_edge_minimum(&wgs84, Point::new_raw_xy(2.0, 31.0), point, point);
         assert_eq!(degenerate.evaluations, 1);
@@ -874,7 +887,7 @@ mod tests {
                 Point::new_raw_xy(-100.0, 87.0),
             ),
         ] {
-            let metric = metric(Geodesic::new(6_371_000.0, flattening), frame);
+            let metric = metric(&Geodesic::new(6_371_000.0, flattening), frame);
             let edge = metric.chart_edge(start, end).unwrap();
             let minimum = point_edge_minimum(&metric, point, start, end);
             let oracle = dense_oracle(&metric, point, &edge);

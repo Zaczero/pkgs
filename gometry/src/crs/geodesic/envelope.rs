@@ -48,6 +48,10 @@ impl GeodesicEnvelopeBound {
     /// The prolate case deliberately returns zero: `b·σ` is not a lower
     /// bound there. `ChartBox` keeps a seam-crossing longitude interval as
     /// `west > east`, and a full-longitude band as `[-180, 180]`.
+    #[expect(
+        clippy::float_cmp,
+        reason = "full longitude uses its exact canonical sentinel bounds"
+    )]
     pub(crate) fn lower_bound(&self, bounds: ChartBox) -> f64 {
         if self.one_minus_f > 1.0 {
             return 0.0;

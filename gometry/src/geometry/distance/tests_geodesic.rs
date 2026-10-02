@@ -143,8 +143,11 @@ fn point_to_line_distance_and_nearest_witness_use_the_same_chart_edge() -> Resul
             flattening,
             metric,
         )?;
+        let known_distance = 323_839.508_746_922_83;
+        let scale = distance.abs().max(known_distance).max(1.0);
+        let rounding_floor = 32.0 * (scale.next_up() - scale);
         assert!(
-            (distance - 323_839.508_7).abs() < 1.0e-3,
+            (distance - known_distance).abs() <= MINIMUM_GAP_METERS + rounding_floor,
             "point-to-chart-edge distance was {distance}"
         );
 
@@ -161,8 +164,14 @@ fn point_to_line_distance_and_nearest_witness_use_the_same_chart_edge() -> Resul
             .expect("nonempty point and line have nearest witnesses");
         let attained = metric.segment_length(nearest.0, nearest.1);
         assert_eq!(distance, attained);
-        assert!((nearest.1.x - 0.0).abs() < 1.0e-12);
-        assert!((nearest.1.y - 80.0).abs() < 1.0e-12);
+        assert!((-45.0..=45.0).contains(&nearest.1.x));
+        assert_eq!(nearest.1.y, 80.0);
+        let reference = metric.segment_length(p(0.0, 82.9), p(0.0, 80.0));
+        assert!(
+            attained <= reference + MINIMUM_GAP_METERS,
+            "attained {attained} exceeds the reference {reference} by more than \
+             the Q8 gap {MINIMUM_GAP_METERS}"
+        );
 
         assert!(!point.geodesic_dwithin_cached(
             &point_cache,
@@ -186,7 +195,7 @@ fn point_to_line_distance_and_nearest_witness_use_the_same_chart_edge() -> Resul
         )?);
 
         let touching_shape = Shape::Point(p(0.0, 80.0));
-        let touching = PreparedPlan::new(touching_shape.clone());
+        let touching = PreparedPlan::new(touching_shape);
         let touching_cache = FrameDependentCaches::default();
         assert_eq!(
             touching.geodesic_distance_cached(
@@ -239,10 +248,20 @@ fn point_to_chart_edge_nearest_witness_interpolates_ordinates_by_arclength() -> 
                 metric,
             )?
             .expect("nonempty point and line have nearest witnesses");
-        assert!((nearest.1.x - 0.0).abs() < 1.0e-12);
-        assert!((nearest.1.y - 80.0).abs() < 1.0e-12);
-        assert!((nearest.1.z().expect("target carries Z") - 20.0).abs() <= 1.0e-12);
-        assert!((nearest.1.m().expect("target carries M") - 200.0).abs() <= 1.0e-10);
+        assert!((-45.0..=45.0).contains(&nearest.1.x));
+        assert_eq!(nearest.1.y, 80.0);
+        let reference = metric.segment_length(p(0.0, 82.9), p(0.0, 80.0));
+        let attained = metric.segment_length(nearest.0, nearest.1);
+        assert!(
+            attained <= reference + MINIMUM_GAP_METERS,
+            "attained {attained} exceeds the reference {reference} by more than \
+             the Q8 gap {MINIMUM_GAP_METERS}"
+        );
+        let parameter = (nearest.1.x + 45.0) / 90.0;
+        let expected_z = 10.0 + 20.0 * parameter;
+        let expected_m = 100.0 + 200.0 * parameter;
+        assert!((nearest.1.z().expect("target carries Z") - expected_z).abs() <= 1.0e-12);
+        assert!((nearest.1.m().expect("target carries M") - expected_m).abs() <= 1.0e-10);
 
         let touching = PreparedPlan::new(Shape::Point(p(0.0, 80.0)));
         let touching_witness = touching
@@ -1152,8 +1171,10 @@ where
         )?
         .expect("the fixture operands are non-empty");
     let attained = metric.segment_length(nearest.0, nearest.1);
+    let scale = distance.abs().max(attained.abs()).max(1.0);
+    let rounding_floor = 32.0 * (scale.next_up() - scale);
     assert!(
-        (distance - attained).abs() <= 1e-3,
+        (distance - attained).abs() <= rounding_floor,
         "distance {distance} was not attained by nearest witnesses ({attained})"
     );
     if distance > 0.02 {

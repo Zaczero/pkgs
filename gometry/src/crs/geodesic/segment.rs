@@ -1,7 +1,3 @@
-#![expect(
-    clippy::similar_names,
-    reason = "latitude, longitude and azimuth triples are named by axis and endpoint"
-)]
 use geographiclib_rs::{Geodesic, GeodesicLine, InverseGeodesic as _, geodesic_capability as caps};
 
 #[cfg(test)]

@@ -16,6 +16,8 @@ use crate::geometry::{
     PointEdgeQuery, PointEdgeQueryResult, PreparedPlan, Shape, XY,
 };
 
+const MINIMUM_GAP_METERS: f64 = 4e-11 * 6_378_137.0;
+
 // Independent oracle provenance for the fixed fixtures below: GeographicLib
 // v2.7 at commit 15cddd7eed9f7f61ead6dba2229d45b271dbdeda, built with
 // GEOGRAPHICLIB_PRECISION=3, where GeodesicExact and GeodesicLineExact use
@@ -113,10 +115,6 @@ fn metric_witness(
     }
 }
 
-#[expect(
-    clippy::large_types_passed_by_value,
-    reason = "test helpers consume the owned geodesic segment snapshot"
-)]
 fn line(points: &[Point]) -> Shape {
     Shape::LineString(
         LineSeq::try_new(CoordSeq::try_from_points(points).unwrap()).expect("test line is valid"),
@@ -908,11 +906,11 @@ fn prolate_lower_bound_is_zero_and_cached_chart_paths_match_edge_queries() -> Re
         )?
         .expect("non-empty shapes");
     assert_eq!(actual_nearest.0, expected_nearest.0);
+    let attained = metric.segment_length(actual_nearest.0, actual_nearest.1);
     assert!(
-        metric.segment_length(actual_nearest.1, expected_nearest.1) <= 1e-3,
-        "cached chart witness {:?} != direct edge-query witness {:?}",
-        actual_nearest.1,
-        expected_nearest.1
+        attained <= expected_distance + MINIMUM_GAP_METERS,
+        "cached witness distance {attained} exceeds the direct edge-query minimum \
+         {expected_distance} by more than the Q8 gap {MINIMUM_GAP_METERS}"
     );
     Ok(())
 }

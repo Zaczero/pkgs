@@ -222,15 +222,19 @@ impl ChartEdge {
         })
     }
 
-    pub(super) fn geodetic_position(self, parameter: f64) -> Result<Point> {
+    pub(super) fn geodetic_position(self, parameter: f64) -> Point {
         let point = self.position(parameter);
         let (longitude, latitude) = self
             .frame
             .to_geodesic_xy(point.x, point.y)
             .expect("an admitted chart-edge position stays in its geographic frame");
-        Ok(Point::new_raw_xy(longitude, latitude))
+        Point::new_raw_xy(longitude, latitude)
     }
 
+    #[expect(
+        clippy::float_cmp,
+        reason = "an exact pole endpoint requires a full-longitude edge bound"
+    )]
     pub(super) fn bounds(self) -> ChartBox {
         let (start_longitude, start_latitude) = self
             .frame
@@ -264,8 +268,9 @@ impl ChartEdge {
             }
         };
         let (west, east) = match interval.windows(axis) {
-            Some(LongitudeWindows::One([west, east])) => (west, east),
-            Some(LongitudeWindows::Two([west, _], [_, east])) => (west, east),
+            Some(
+                LongitudeWindows::One([west, east]) | LongitudeWindows::Two([west, _], [_, east]),
+            ) => [west, east].into(),
             Some(LongitudeWindows::Full) | None => (-180.0, 180.0),
         };
         ChartBox {

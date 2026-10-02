@@ -1644,7 +1644,6 @@ def test_artificial_seam_is_not_a_topological_boundary() -> None:
         assert gm.contains(crossing, point)
         assert not gm.touches(crossing, point)
         assert gm.contains_xy(crossing, longitude, 0)
-        assert gm.contains_xy(crossing, longitude, 0)
     assert gm.covers(endpoint, gm.Point(180, 0, crs=4326))
     assert gm.touches(endpoint, gm.Point(180, 0, crs=4326))
     assert not gm.contains_xy(endpoint, 180, 0)
