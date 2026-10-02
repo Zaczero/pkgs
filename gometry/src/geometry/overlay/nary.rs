@@ -25,7 +25,7 @@ thread_local! {
     static NARY_CANDIDATE_WORK: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
-/// Canonical operand order for every overlay entry: difference keeps its left
+/// Canonical operand order for partition overlay: difference keeps its left
 /// operand first and orders the subtrahends; other operations order all
 /// operands. A macro so the generic owner keeps its original single body on the
 /// ordinary path; a helper call there measured as overhead on every overlay.
@@ -40,6 +40,24 @@ macro_rules! sort_overlay_inputs {
             ($inputs).sort_unstable_by(|left, right| crate::geometry::compare_shapes(left, right));
         }
     };
+}
+
+/// Admit point unions and parity at the caller, before entering the membership
+/// owner's larger frame. Nonpoint overlays retain their ordinary call path.
+/// Returns the admitted result from the caller.
+macro_rules! puntal_nary_lane {
+    ($inputs:expr, $operation:expr, $strictness:expr, $frame:expr) => {{
+        let inputs: &[&Shape] = $inputs;
+        let operation = $operation;
+        if matches!(operation, OverlayOp::Union | OverlayOp::SymmetricDifference)
+            && inputs
+                .iter()
+                .all(|shape| shape.topological_dimension() == Dimension::Point)
+            && let Some(shape) = exact_puntal_nary_overlay(inputs, operation, $strictness, $frame)?
+        {
+            return Ok(shape);
+        }
+    }};
 }
 
 #[derive(Clone, Copy)]
@@ -234,6 +252,7 @@ fn exact_cartesian_binary_overlay(
     bounds_certificates: bool,
     partition_budget: ExactPartitionBudget,
 ) -> Result<Shape> {
+    puntal_nary_lane!(inputs, operation, strictness, None);
     sort_overlay_inputs!(inputs, operation);
     let sorted_inputs: &[&Shape] = inputs;
     let fast_result = match lane {
@@ -258,6 +277,171 @@ fn exact_cartesian_binary_overlay(
     )
 }
 
+// Point support is a set within each operand. XOR counts those operand sets,
+// while all incident occurrences still participate in ordinate reconciliation.
+fn exact_puntal_nary_overlay(
+    inputs: &[&Shape],
+    operation: OverlayOp,
+    strictness: Strictness,
+    quotient_frame: Option<crate::geographic::GeographicFrame>,
+) -> Result<Option<Shape>> {
+    struct Membership {
+        xy: XY,
+        z: crate::geometry::ordinates::AxisValue,
+        m: crate::geometry::ordinates::AxisValue,
+        last_operand: usize,
+        odd: bool,
+    }
+    let mut membership =
+        crate::geometry::HashMap::with_hasher(crate::collections::collection_hash_state()?.clone());
+    let mut points = Vec::new();
+    let identity = |point: Point| {
+        if let Some(frame) = quotient_frame {
+            let latitude = crate::geographic::Latitude::from_admitted(frame, point.y);
+            let longitude = frame
+                .longitude()
+                .canonicalize(point.x)
+                .expect("admitted geographic points have canonical longitudes")
+                .get();
+            let key_longitude = if latitude.identity(frame) == crate::geographic::SeamIdentity::Pole
+            {
+                0.0
+            } else {
+                longitude
+            };
+            (
+                PointKey::new(XY::new(key_longitude, latitude.get())),
+                XY::new(point.x, latitude.get()),
+            )
+        } else {
+            (PointKey::new(point), point.xy())
+        }
+    };
+    let mut order_sources = false;
+    for (operand, shape) in inputs.iter().enumerate() {
+        points.clear();
+        let mut owners = SharedShapeOwners::for_collections();
+        if !collect_puntal_points(shape, &mut points, &mut owners) {
+            return Ok(None);
+        }
+        for &point in &points {
+            #[cfg(test)]
+            NARY_CANDIDATE_WORK.with(|work| work.set(work.get().saturating_add(1)));
+            let (key, xy) = identity(point);
+            let value = membership.entry(key).or_insert_with(|| Membership {
+                xy,
+                z: crate::geometry::ordinates::AxisValue::default(),
+                m: crate::geometry::ordinates::AxisValue::default(),
+                last_operand: usize::MAX,
+                odd: false,
+            });
+            if value.last_operand != operand {
+                order_sources |= xy.x.to_bits() != value.xy.x.to_bits()
+                    || xy.y.to_bits() != value.xy.y.to_bits();
+                value.last_operand = operand;
+                value.odd = !value.odd;
+            }
+            value.z.observe(point.z());
+            value.m.observe(point.m());
+        }
+    }
+    if order_sources {
+        // Only signed-zero or geographic aliases need canonical source order
+        // to choose a spelling. Ordinary point support never sorts its rows.
+        let mut order: Vec<_> = (0..inputs.len()).collect();
+        let mut equal_collections =
+            HashSet::with_hasher(crate::collections::collection_hash_state()?.clone());
+        order.sort_unstable_by(|&left, &right| {
+            compare_puntal_sources(inputs[left], inputs[right], &mut equal_collections)
+        });
+        for value in membership.values_mut() {
+            value.last_operand = usize::MAX;
+        }
+        for operand in order {
+            points.clear();
+            let mut owners = SharedShapeOwners::for_collections();
+            let _ = collect_puntal_points(inputs[operand], &mut points, &mut owners);
+            for &point in &points {
+                let (key, xy) = identity(point);
+                let value = membership
+                    .get_mut(&key)
+                    .expect("the admitted source point has a membership entry");
+                if value.last_operand == usize::MAX {
+                    value.last_operand = operand;
+                    value.xy = xy;
+                }
+            }
+        }
+    }
+    points.clear();
+    points.reserve(membership.len());
+    for value in membership.into_values() {
+        if operation == OverlayOp::Union || value.odd {
+            points.push(Point::new_raw_axes(
+                value.xy.x,
+                value.xy.y,
+                crate::geometry::ZOrdinate(value.z.value()),
+                crate::geometry::MOrdinate(value.m.value()),
+            ));
+        }
+    }
+    if points.is_empty() {
+        return Ok(Some(empty_nary_overlay_shape(inputs, operation)));
+    }
+    let axes = points
+        .iter()
+        .map(|point| point.axes())
+        .reduce(CoordinateAxes::intersection)
+        .expect("nonempty point result");
+    let declared_axes = overlay_declared_axes(inputs, operation);
+    if strictness.is_strict() && axes != declared_axes {
+        return Err(GeometryErrorKind::ordinate_dropped(operation.name()));
+    }
+    for point in &mut points {
+        *point = Point::new_raw_axes(
+            point.x,
+            point.y,
+            crate::geometry::ZOrdinate(point.z().filter(|_| axes.has_z())),
+            crate::geometry::MOrdinate(point.m().filter(|_| axes.has_m())),
+        );
+    }
+    build_certified_overlay_shape(points, Vec::new(), Vec::new()).map(Some)
+}
+
+fn compare_puntal_sources(
+    left: &Shape,
+    right: &Shape,
+    equal_collections: &mut HashSet<(usize, usize, usize, usize)>,
+) -> std::cmp::Ordering {
+    let (Shape::GeometryCollection(left), Shape::GeometryCollection(right)) = (left, right) else {
+        return crate::geometry::compare_shapes(left, right);
+    };
+    let left = left.as_slice();
+    let right = right.as_slice();
+    let pair = (
+        left.as_ptr().addr(),
+        left.len(),
+        right.as_ptr().addr(),
+        right.len(),
+    );
+    // Literal source order still determines coordinate spelling, but equal
+    // shared prefixes cost their owners rather than their expanded occurrences.
+    if std::ptr::eq(left, right) || equal_collections.contains(&pair) {
+        return std::cmp::Ordering::Equal;
+    }
+    for (left, right) in left.iter().zip(right) {
+        let order = compare_puntal_sources(left, right, equal_collections);
+        if !order.is_eq() {
+            return order;
+        }
+    }
+    let order = left.len().cmp(&right.len());
+    if order.is_eq() {
+        equal_collections.insert(pair);
+    }
+    order
+}
+
 fn exact_partition_overlay_with_bounds_certificates(
     mut inputs: Vec<&Shape>,
     operation: OverlayOp,
@@ -266,6 +450,7 @@ fn exact_partition_overlay_with_bounds_certificates(
     preserve_geographic_vertices: bool,
     partition_budget: ExactPartitionBudget,
 ) -> Result<Shape> {
+    puntal_nary_lane!(&inputs, operation, strictness, None);
     sort_overlay_inputs!(inputs, operation);
     let inputs = inputs.as_slice();
     // Declared axes are a fact about the whole input, not any one component.
@@ -333,42 +518,18 @@ fn exact_cartesian_puntal_overlay(
     let right_points = puntal_points(right);
     match (left_points, right_points) {
         (Some(left_points), Some(right_points)) => {
+            debug_assert!(matches!(
+                operation,
+                OverlayOp::Intersection | OverlayOp::Difference
+            ));
             let left_points = unique_xy_points(left_points)?;
             let right_points = unique_xy_points(right_points)?;
-            let points = match operation {
-                OverlayOp::Intersection | OverlayOp::Difference => {
-                    let right_keys = point_keys(&right_points)?;
-                    let intersection = operation == OverlayOp::Intersection;
-                    left_points
-                        .into_iter()
-                        .filter(|point| right_keys.contains(&PointKey::new(*point)) == intersection)
-                        .collect()
-                },
-                OverlayOp::Union => {
-                    let left_keys = point_keys(&left_points)?;
-                    let mut points = left_points;
-                    points.extend(
-                        right_points
-                            .into_iter()
-                            .filter(|point| !left_keys.contains(&PointKey::new(*point))),
-                    );
-                    points
-                },
-                OverlayOp::SymmetricDifference => {
-                    let left_keys = point_keys(&left_points)?;
-                    let right_keys = point_keys(&right_points)?;
-                    let mut points: Vec<_> = left_points
-                        .into_iter()
-                        .filter(|point| !right_keys.contains(&PointKey::new(*point)))
-                        .collect();
-                    points.extend(
-                        right_points
-                            .into_iter()
-                            .filter(|point| !left_keys.contains(&PointKey::new(*point))),
-                    );
-                    points
-                },
-            };
+            let right_keys = point_keys(&right_points)?;
+            let intersection = operation == OverlayOp::Intersection;
+            let points = left_points
+                .into_iter()
+                .filter(|point| right_keys.contains(&PointKey::new(*point)) == intersection)
+                .collect();
             point_overlay_shape(points, inputs, operation, strictness).map(Some)
         },
         (Some(points), None) => {
@@ -453,41 +614,44 @@ fn point_keys(points: &[Point]) -> Result<HashSet<PointKey>> {
 }
 
 fn puntal_points(shape: &Shape) -> Option<Vec<Point>> {
-    fn collect(shape: &Shape, points: &mut Vec<Point>, owners: &mut SharedShapeOwners) -> bool {
-        match shape {
-            Shape::Point(point) => points.push(*point),
-            Shape::MultiPoint(multipoint) => points.extend(multipoint.points()),
-            Shape::Empty(
-                GeometryKind::Point | GeometryKind::MultiPoint | GeometryKind::GeometryCollection,
-                _,
-            ) => {},
-            Shape::GeometryCollection(collection) => {
-                if !owners.first_collection(collection.as_slice(), collection.members_are_shared())
-                {
-                    return true;
-                }
-                for part in collection {
-                    if !collect(part, points, owners) {
-                        return false;
-                    }
-                }
-            },
-            Shape::LineString(_)
-            | Shape::MultiLineString(_)
-            | Shape::Polygon(_)
-            | Shape::MultiPolygon(_)
-            | Shape::Empty(..) => return false,
-        }
-        true
-    }
-
     if shape.topological_dimension() != Dimension::Point {
         return None;
     }
 
     let mut points = Vec::new();
     let mut owners = SharedShapeOwners::for_collections();
-    collect(shape, &mut points, &mut owners).then_some(points)
+    collect_puntal_points(shape, &mut points, &mut owners).then_some(points)
+}
+
+fn collect_puntal_points(
+    shape: &Shape,
+    points: &mut Vec<Point>,
+    owners: &mut SharedShapeOwners,
+) -> bool {
+    match shape {
+        Shape::Point(point) => points.push(*point),
+        Shape::MultiPoint(multipoint) => points.extend(multipoint.points()),
+        Shape::Empty(
+            GeometryKind::Point | GeometryKind::MultiPoint | GeometryKind::GeometryCollection,
+            _,
+        ) => {},
+        Shape::GeometryCollection(collection) => {
+            if !owners.first_collection(collection.as_slice(), collection.members_are_shared()) {
+                return true;
+            }
+            for part in collection {
+                if !collect_puntal_points(part, points, owners) {
+                    return false;
+                }
+            }
+        },
+        Shape::LineString(_)
+        | Shape::MultiLineString(_)
+        | Shape::Polygon(_)
+        | Shape::MultiPolygon(_)
+        | Shape::Empty(..) => return false,
+    }
+    true
 }
 
 fn line_segment_midpoint(segment: Segment) -> Option<XY> {
@@ -1570,6 +1734,7 @@ fn exact_geographic_q_overlay(
 ) -> Result<Shape> {
     let frame = originals.frame();
     let declared_axes = overlay_declared_axes(original_refs, op);
+    puntal_nary_lane!(original_refs, op, strictness, Some(frame));
 
     if bounds_certificates && op == OverlayOp::Intersection && originals.views().len() > 1 {
         let facts = overlay_bounds_facts_geographic(originals);
