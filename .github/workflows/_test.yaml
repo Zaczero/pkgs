@@ -112,7 +112,7 @@ jobs:
           cache-key: ${{ env.PACKAGE }}
           cache-on-failure: false
           cache-save-if: ${{ github.ref == 'refs/heads/main' }}
-          # Empty: avoid RUSTFLAGS env overriding .cargo/config.toml target-cpu.
+          # Empty: preserve the .cargo/config.toml x86-64-v2 development baseline.
           rustflags: ""
 
       - name: Install cargo-nextest
@@ -285,7 +285,8 @@ jobs:
         ${{ inputs.package == 'gometry'
             && 'python "{project}/tools/wheel_smoke.py" --installed'
             || format('python -c "import {0}"', needs.resolve.outputs.import-name) }}
-      # Wheels built here are what publish. maturin's PEP 517 default is `--release`,
+      # Wheels built here are what publish. x86_64 targets use x86-64-v2;
+      # arm64 keeps its native target. maturin's PEP 517 default is `--release`,
       # which is now the fast local profile (thin LTO, unstripped) — publishing that
       # would ship a ~5x larger artifact. `release-dist` is the published configuration:
       # fat LTO, one codegen unit, DWARF dropped, symbol table kept for named frames.
@@ -382,7 +383,7 @@ jobs:
               print(f"{key}={value}")
           PY
 
-      - name: Configure gometry portable release target
+      - name: Configure gometry x86-64-v2 release target
         if: inputs.package == 'gometry'
         shell: bash
         run: |

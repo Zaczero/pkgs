@@ -66,7 +66,27 @@ MATURIN_VERSION = '1.14.1'
 RELEASE_PROFILE = 'release-dist'
 RELEASE_MATURIN_ARGS = f'--locked --profile {RELEASE_PROFILE}'
 SOURCE_INPUTS_FORMAT = 'sha256-path-nul-content-nul-v5'
-BUILD_INFO_SCHEMA_VERSION = 3
+X86_64_V2_TARGET_FEATURES = frozenset({
+    'cmpxchg16b',
+    'lahfsahf',
+    'popcnt',
+    'sse3',
+    'sse4.1',
+    'sse4.2',
+    'ssse3',
+})
+X86_64_V3_PLUS_TARGET_FEATURES = frozenset({
+    'avx',
+    'avx2',
+    'bmi1',
+    'bmi2',
+    'fma',
+    'f16c',
+    'lzcnt',
+    'movbe',
+    'xsave',
+})
+_TARGET_FEATURE_LIST = re.compile(rb'[a-z0-9_.]+(?:,[a-z0-9_.]+)+')
 SOURCE_MANIFEST_NAME = 'gometry-source-manifest.json'
 RUNNER_RECEIPT_NAME = 'gometry-wheel-receipt.json'
 RELEASE_MANIFEST_NAME = 'gometry-release-manifest.json'
@@ -245,9 +265,9 @@ def _target_architecture(target: str) -> str:
 def release_target_policy(target: str) -> dict[str, Any]:
     """Return the release compiler policy for one Rust target triple.
 
-    Rust's target-cpu is the authoritative x86 baseline. Native compilers use
-    the equivalent generic ``-march`` spelling where that is meaningful;
-    MSVC's x64 default and every non-x86 target retain the compiler default.
+    Rust targets x86_64 at x86-64-v2 on every operating system. Other native
+    compilers use the equivalent ``-march`` spelling where meaningful; MSVC
+    has no exact x86-64-v2 mode, so its C/C++ compiler default is retained.
     """
     if (
         not isinstance(target, str)
@@ -262,13 +282,13 @@ def release_target_policy(target: str) -> dict[str, Any]:
     cflags: list[str] = []
     cxxflags: list[str] = []
     if architecture == 'x86_64':
-        rustflags = ['-C', 'target-cpu=x86-64']
+        rustflags = ['-C', 'target-cpu=x86-64-v2']
         if not target.endswith('-msvc'):
-            cflags = ['-march=x86-64']
-            cxxflags = ['-march=x86-64']
-            target_policy = 'generic-x86-64'
+            cflags = ['-march=x86-64-v2']
+            cxxflags = ['-march=x86-64-v2']
+            target_policy = 'x86-64-v2'
         else:
-            target_policy = 'compiler-default-x86-64'
+            target_policy = 'x86-64-v2-msvc-c-default'
     elif architecture == 'arm64':
         target_policy = 'compiler-default-arm64'
     else:
@@ -474,9 +494,8 @@ def release_build_env(*, target: str | None = None) -> dict[str, str]:
     env.pop('RUSTC_WRAPPER', None)
     env.pop('NIX_LDFLAGS', None)
     # Cargo's environment flags have precedence over target-specific config.
-    # Replace, rather than append to, inherited values so a developer's
-    # x86-64-v2 setting cannot enter a distribution build and arm64 cannot
-    # inherit an x86 setting from the host.
+    # Replace inherited values so the selected release policy is explicit and
+    # arm64 cannot inherit an x86 setting from the host.
     for variable in (
         'RUSTFLAGS',
         'CARGO_ENCODED_RUSTFLAGS',
@@ -1753,12 +1772,8 @@ def inspect_wheel(path: Path) -> str:
         raise AssertionError(
             f'wheel contains generated Python bytecode: {generated_members[:20]}'
         )
-    if any(
-        forbidden in payload
-        for payload in binary_members.values()
-        for forbidden in (b'x86-64-v2', b'x86_64-v2')
-    ):
-        raise AssertionError('wheel native extension contains an x86-64-v2 marker')
+    if _wheel_architecture(path) == 'x86_64':
+        _verify_x86_64_v2_markers(binary_members, path)
     if leaks := _content_leaks(text_members, binary_members):
         raise AssertionError(f'wheel contents leak absolute build paths: {leaks}')
     if pth_files and not package:
@@ -1780,6 +1795,40 @@ def inspect_wheel(path: Path) -> str:
             f'{filename_version!r} != {metadata_version!r}'
         )
     return metadata_version
+
+
+def _verify_x86_64_v2_markers(binary_members: Mapping[str, bytes], path: Path) -> None:
+    if not binary_members:
+        raise AssertionError(f'x86_64 wheel has no native extension to verify: {path}')
+    missing = sorted(
+        name
+        for name, payload in binary_members.items()
+        if not _has_x86_64_v2_target_features(payload)
+    )
+    if missing:
+        raise AssertionError(
+            f'x86_64 wheel native extension is missing x86-64-v2 target features: {missing}'
+        )
+
+
+def _has_x86_64_v2_target_features(payload: bytes) -> bool:
+    if b'target_features' not in payload:
+        return False
+    for field in re.finditer(b'target_features', payload):
+        start = field.end()
+        while start < len(payload) and payload[start] in b'\x00:= ':
+            start += 1
+        marker = _TARGET_FEATURE_LIST.match(payload, start)
+        if marker is None:
+            continue
+        features = frozenset(marker.group().decode('ascii').split(','))
+        if features >= X86_64_V2_TARGET_FEATURES:
+            return True
+    for marker in _TARGET_FEATURE_LIST.finditer(payload):
+        features = frozenset(marker.group().decode('ascii').split(','))
+        if features >= X86_64_V2_TARGET_FEATURES:
+            return True
+    return False
 
 
 def _wheel_tags(path: Path) -> list[str]:
@@ -2306,6 +2355,13 @@ def _smoke_environment(
         SMOKE_EXPECTED_VERSION_ENV: expected_version,
         SMOKE_EXPECTED_TARGET_ENV: policy['target'],
         SMOKE_EXPECTED_ARCHITECTURE_ENV: policy['architecture'],
+        'GOMETRY_SMOKE_CPU_FEATURES': json.dumps(
+            {
+                'v2': sorted(X86_64_V2_TARGET_FEATURES),
+                'v3_plus': sorted(X86_64_V3_PLUS_TARGET_FEATURES),
+            },
+            separators=(',', ':'),
+        ),
     }
     env = os.environ.copy()
     env.update(values)
@@ -2811,12 +2867,12 @@ for key, expected in expected_build_info.items():
 target_features = build_info.get('target_features')
 assert isinstance(target_features, str)
 if expected_build_info['target_arch'] == 'x86_64':
-    forbidden_features = {
-        'avx', 'avx2', 'bmi1', 'bmi2', 'fma', 'popcnt', 'sse4.1', 'sse4.2'
-    }
-    assert not forbidden_features.intersection(
-        set(target_features.split(','))
-    ), target_features
+    cpu_features = json.loads(os.environ['GOMETRY_SMOKE_CPU_FEATURES'])
+    features = set(target_features.split(','))
+    required_v2_features = set(cpu_features['v2'])
+    forbidden_v3_features = set(cpu_features['v3_plus'])
+    assert required_v2_features <= features, target_features
+    assert not forbidden_v3_features.intersection(features), target_features
 
 machine = platform.machine().lower()
 machine_architecture = (

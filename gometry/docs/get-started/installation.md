@@ -25,6 +25,12 @@ gometry installs from PyPI:
 | Python | **CPython 3.11–3.14; free-threaded CPython 3.14t.** |
 | Runtime dependencies | **NumPy.** Bulk numeric, boolean, index, and coordinate results are read-only `numpy.ndarray` objects. |
 | System libraries | **None.** No GEOS, GDAL, or system PROJ. |
+| CPU | **x86_64: x86-64-v2** (roughly 2009 or newer); **arm64: native arm64.** |
+
+On x86_64, importing a wheel checks detectable baseline features before loading
+the native extension. If required features are missing, `ImportError` names
+them and recommends an x86-64-v2-capable CPU. When the operating system cannot
+report CPU features, the check does not block import.
 
 The wheel carries the geometry engine and the CRS authority together: the
 bundled PROJ database, its datum pipelines, and the grid files shipped with the

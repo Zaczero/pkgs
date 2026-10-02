@@ -56,6 +56,12 @@ fn main() {
     for variable in RELEASE_ENV_VARS {
         println!("cargo:rerun-if-env-changed={variable}");
     }
+    for prefix in ["CFLAGS", "CXXFLAGS"] {
+        println!(
+            "cargo:rerun-if-env-changed={}",
+            target_flag_variable(prefix, &target)
+        );
+    }
     println!("cargo::rustc-env=GOMETRY_BUILD_SOURCE_INPUTS_FORMAT={SOURCE_INPUTS_FORMAT}");
     println!("cargo::rustc-env=GOMETRY_BUILD_SOURCE_INPUTS_SHA256={source_inputs_sha256}");
     println!("cargo::rustc-env=GOMETRY_BUILD_NATIVE_SOURCE_INPUTS_FORMAT={SOURCE_INPUTS_FORMAT}");
@@ -113,63 +119,45 @@ fn validate_release_identity(
          profile={profile_family:?}, opt-level={opt_level:?}, \
          debug-assertions={debug_assertions}"
     );
-    validate_release_compiler_policy(target);
+    validate_release_compiler_flags(target);
 }
 
-fn validate_release_compiler_policy(target: &str) {
-    let architecture = target.split('-').next().unwrap_or_default();
-    let (expected_policy, expected_rustflags, expected_cflags) = match architecture {
-        "x86_64" if target.ends_with("-msvc") => {
-            ("compiler-default-x86-64", "-C target-cpu=x86-64", "")
-        },
-        "x86_64" => ("generic-x86-64", "-C target-cpu=x86-64", "-march=x86-64"),
-        "aarch64" | "arm64" => ("compiler-default-arm64", "", ""),
-        other => {
-            let policy = format!("compiler-default-{other}");
-            let release_rustflags = env::var("GOMETRY_RELEASE_RUSTFLAGS")
-                .expect("validated release identity contains GOMETRY_RELEASE_RUSTFLAGS");
-            let release_cflags = env::var("GOMETRY_RELEASE_CFLAGS")
-                .expect("validated release identity contains GOMETRY_RELEASE_CFLAGS");
-            let release_cxxflags = env::var("GOMETRY_RELEASE_CXXFLAGS")
-                .expect("validated release identity contains GOMETRY_RELEASE_CXXFLAGS");
-            assert!(
-                release_rustflags.is_empty()
-                    && release_cflags.is_empty()
-                    && release_cxxflags.is_empty(),
-                "non-x86 release targets must use compiler-default flags"
-            );
-            assert_eq!(
-                policy,
-                env::var("GOMETRY_RELEASE_TARGET_POLICY")
-                    .expect("validated release identity contains target policy"),
-                "release target policy does not match Cargo TARGET"
-            );
-            return;
-        },
-    };
+fn validate_release_compiler_flags(target: &str) {
+    // wheel_smoke owns target-to-policy mapping; verify Cargo received its
+    // exported flags without duplicating that policy table here.
+    let policy_rustflags = env::var("GOMETRY_RELEASE_RUSTFLAGS")
+        .expect("validated release identity contains GOMETRY_RELEASE_RUSTFLAGS")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join("\u{1f}");
+    let actual_flag_variables = [
+        (
+            "GOMETRY_RELEASE_CFLAGS",
+            target_flag_variable("CFLAGS", target),
+        ),
+        (
+            "GOMETRY_RELEASE_CXXFLAGS",
+            target_flag_variable("CXXFLAGS", target),
+        ),
+    ];
     assert_eq!(
-        env::var("GOMETRY_RELEASE_TARGET_POLICY")
-            .expect("validated release identity contains target policy"),
-        expected_policy,
-        "release compiler policy does not match Cargo TARGET"
+        env::var("CARGO_ENCODED_RUSTFLAGS").unwrap_or_default(),
+        policy_rustflags,
+        "Cargo rust flags do not match GOMETRY_RELEASE_RUSTFLAGS"
     );
-    assert_eq!(
-        env::var("GOMETRY_RELEASE_RUSTFLAGS")
-            .expect("validated release identity contains Rust flags"),
-        expected_rustflags,
-        "release compiler policy does not match Cargo TARGET"
-    );
-    assert_eq!(
-        env::var("GOMETRY_RELEASE_CFLAGS").expect("validated release identity contains C flags"),
-        expected_cflags,
-        "release compiler policy does not match Cargo TARGET"
-    );
-    assert_eq!(
-        env::var("GOMETRY_RELEASE_CXXFLAGS")
-            .expect("validated release identity contains C++ flags"),
-        expected_cflags,
-        "release compiler policy does not match Cargo TARGET"
-    );
+    for (policy_variable, actual_variable) in actual_flag_variables {
+        let policy_flags = env::var(policy_variable)
+            .unwrap_or_else(|_| panic!("validated release identity contains {policy_variable}"));
+        let actual_flags = env::var(&actual_variable).unwrap_or_default();
+        assert_eq!(
+            actual_flags, policy_flags,
+            "{actual_variable} does not match exported release flags {policy_variable}"
+        );
+    }
+}
+
+fn target_flag_variable(prefix: &str, target: &str) -> String {
+    format!("{prefix}_{}", target.replace('-', "_"))
 }
 
 fn source_input_digests(manifest_dir: &Path) -> (String, String) {

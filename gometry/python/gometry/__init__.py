@@ -37,6 +37,11 @@ from typing import get_type_hints as _get_type_hints
 TYPE_CHECKING = False
 del TYPE_CHECKING
 
+from gometry._cpu import ensure_supported_cpu as _ensure_supported_cpu
+
+_ensure_supported_cpu()
+del _ensure_supported_cpu
+
 from gometry._from_pandas import from_pandas
 from gometry._geopandas import from_geopandas
 from gometry._geoparquet import from_geoparquet

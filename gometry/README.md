@@ -90,6 +90,10 @@ Install the core package from PyPI:
 uv add gometry # or: pip install gometry
 ```
 
+On x86_64, wheels require an x86-64-v2 CPU (roughly 2009 or newer); arm64
+wheels target native arm64. See the [installation guide](https://gometry.monicz.dev/get-started/installation/)
+for CPU-check behavior.
+
 Optional integrations are available as extras:
 
 ```bash

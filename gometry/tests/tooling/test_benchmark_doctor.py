@@ -342,9 +342,21 @@ def test_source_identity_ignores_packaging_metadata_but_detects_code_changes(
     [
         (
             'x86_64-unknown-linux-gnu',
-            'generic-x86-64',
-            '-C target-cpu=x86-64',
-            '-march=x86-64',
+            'x86-64-v2',
+            '-C target-cpu=x86-64-v2',
+            '-march=x86-64-v2',
+        ),
+        (
+            'x86_64-apple-darwin',
+            'x86-64-v2',
+            '-C target-cpu=x86-64-v2',
+            '-march=x86-64-v2',
+        ),
+        (
+            'x86_64-pc-windows-msvc',
+            'x86-64-v2-msvc-c-default',
+            '-C target-cpu=x86-64-v2',
+            '',
         ),
         (
             'aarch64-unknown-linux-gnu',
@@ -499,7 +511,7 @@ def test_receipt_identity_mutations_are_rejected(tmp_path: Path) -> None:
     )
 
     value = json.loads(receipt.read_text(encoding='utf-8'))
-    value['build']['rustflags'] = ['-C', 'target-cpu=x86-64-v2']
+    value['build']['rustflags'] = ['-C', 'target-cpu=x86-64']
     receipt.write_text(json.dumps(value), encoding='utf-8')
     with pytest.raises(AssertionError, match='release flags'):
         wheel_smoke.validate_runner_receipt(
@@ -529,6 +541,28 @@ def test_receipt_identity_mutations_are_rejected(tmp_path: Path) -> None:
             wheel_dir,
             source_manifest,
             inspect_archives=False,
+        )
+
+
+def test_x86_64_v2_marker_check_requires_evidence(tmp_path: Path) -> None:
+    with pytest.raises(AssertionError, match='no native extension'):
+        wheel_smoke._verify_x86_64_v2_markers({}, tmp_path / 'empty.whl')
+
+    extension = 'gometry/_lib.cpython-314-x86_64-linux-gnu.so'
+    v2_features = wheel_smoke.X86_64_V2_TARGET_FEATURES | {
+        'fxsr',
+        'sse',
+        'sse2',
+        'x87',
+    }
+    wheel_smoke._verify_x86_64_v2_markers(
+        {extension: b'target_features' + ','.join(sorted(v2_features)).encode('ascii')},
+        tmp_path / 'v2.whl',
+    )
+    with pytest.raises(AssertionError, match='missing x86-64-v2 target features'):
+        wheel_smoke._verify_x86_64_v2_markers(
+            {extension: b'target_featuresfxsr,sse,sse2,x87'},
+            tmp_path / 'generic.whl',
         )
 
 
