@@ -178,8 +178,9 @@ same distance scale:
   significant vertices first — the smallest effective triangle spanned
   with its two neighbors — for a smoother, more natural cartographic
   result. The effective-area threshold is ``tolerance**2 / 2``.
-- ``'dp'`` (Douglas-Peucker) removes vertices whose perpendicular distance
-  from the retained chord is within ``tolerance``.
+- ``'dp'`` (Douglas-Peucker) compares exact distances to the closed retained
+  chord against ``tolerance``. Equal maximum distances select the earliest
+  source vertex.
 
 Parameters
 ----------";

@@ -694,6 +694,51 @@ impl CoordSeq {
         select_growable(xs_src, ys_src, zs_src, ms_src, rows, upper.unwrap_or(lower))
     }
 
+    pub(in crate::geometry) fn select_mask(&self, keep: &[bool], kept: usize) -> Self {
+        debug_assert_eq!(keep.len(), self.len());
+        let xs_src = self.xs();
+        let ys_src = self.ys();
+        let zs_src = self.zs();
+        let ms_src = self.ms();
+        let mut xs = Vec::with_capacity(kept);
+        let mut ys = Vec::with_capacity(kept);
+        let mut zs = zs_src.map(|_| Vec::with_capacity(kept));
+        let mut ms = ms_src.map(|_| Vec::with_capacity(kept));
+        let mut append = |range: std::ops::Range<usize>| {
+            xs.extend_from_slice(xs_src.get(range.clone()).expect("selected source run"));
+            ys.extend_from_slice(ys_src.get(range.clone()).expect("selected source run"));
+            if let (Some(output), Some(source)) = (&mut zs, zs_src) {
+                output.extend_from_slice(source.get(range.clone()).expect("selected source run"));
+            }
+            if let (Some(output), Some(source)) = (&mut ms, ms_src) {
+                output.extend_from_slice(source.get(range).expect("selected source run"));
+            }
+        };
+        let mut start = 0_usize;
+        while start < keep.len() {
+            if !keep.get(start).copied().expect("selection mask cursor") {
+                start = start.wrapping_add(1);
+                continue;
+            }
+            let end = start.wrapping_add(
+                keep.get(start..)
+                    .expect("selection mask suffix")
+                    .iter()
+                    .position(|&selected| !selected)
+                    .unwrap_or(keep.len().wrapping_sub(start)),
+            );
+            append(start..end);
+            start = end.wrapping_add(1);
+        }
+        let xs = SharedSlice::from_vec(xs);
+        let ys = SharedSlice::from_vec(ys);
+        let zs = zs.map(SharedSlice::from_vec);
+        let ms = ms.map(|values| MColumn::Shared(SharedSlice::from_vec(values)));
+        // SAFETY: the same source runs populate every column once, preserving
+        // parallel lengths and the source sequence's admitted vertex capacity.
+        unsafe { Self::from_shared_columns_unchecked(xs, ys, zs, ms) }
+    }
+
     /// Concatenate two sequences of identical axes. `Ok(None)` means only an
     /// axes mismatch; size or layout overflow is returned as `Err`.
     #[cfg(test)]
@@ -896,6 +941,41 @@ fn select_growable(
         );
     }
     CoordSeq::try_from_vecs(xs, ys, zs, ms)
+}
+
+#[cfg(test)]
+mod mask_selection_tests {
+    use super::CoordSeq;
+
+    #[test]
+    fn mask_selection_copies_disjoint_runs_and_all_ordinates() {
+        let source = CoordSeq::try_from_vecs(
+            vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0],
+            vec![11.0, 12.0, 13.0, 14.0, 15.0, 16.0],
+            Some(vec![21.0, 22.0, 23.0, 24.0, 25.0, 26.0]),
+            Some(vec![31.0, 32.0, 33.0, 34.0, 35.0, 36.0]),
+        )
+        .unwrap();
+        let selected = source.select_mask(&[true, true, false, true, false, true], 4);
+        assert_eq!(selected.xs(), &[1.0, 2.0, 4.0, 6.0]);
+        assert_eq!(selected.ys(), &[11.0, 12.0, 14.0, 16.0]);
+        assert_eq!(selected.zs().unwrap(), &[21.0, 22.0, 24.0, 26.0]);
+        assert_eq!(selected.ms().unwrap(), &[31.0, 32.0, 34.0, 36.0]);
+    }
+
+    #[test]
+    fn mask_selection_handles_empty_and_boundary_runs() {
+        let source =
+            CoordSeq::try_from_vecs(vec![1.0, 2.0, 3.0], vec![11.0, 12.0, 13.0], None, None)
+                .unwrap();
+        assert!(source.select_mask(&[false, false, false], 0).is_empty());
+        let selected = source.select_mask(&[false, true, true], 2);
+        assert_eq!(selected.xs(), &[2.0, 3.0]);
+        assert_eq!(selected.ys(), &[12.0, 13.0]);
+        let selected = source.select_mask(&[true, true, false], 2);
+        assert_eq!(selected.xs(), &[1.0, 2.0]);
+        assert_eq!(selected.ys(), &[11.0, 12.0]);
+    }
 }
 
 pub struct CoordIterColumns<'a, const HAS_Z: bool, const HAS_M: bool> {

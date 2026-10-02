@@ -3,6 +3,39 @@
 from __future__ import annotations
 
 import gometry as gm
+import pytest
+
+
+@pytest.mark.parametrize('preserve_topology', [False, True])
+@pytest.mark.parametrize(
+    ('tolerance', 'expected'),
+    [
+        (0.70710679, [(0.0, 0.0), (268435457.0, 268435457.0)]),
+        (
+            0.7,
+            [
+                (0.0, 0.0),
+                (134217728.0, 134217729.0),
+                (268435457.0, 268435457.0),
+            ],
+        ),
+    ],
+)
+def test_dp_uses_exact_distance_and_lowest_index(
+    preserve_topology: bool,
+    tolerance: float,
+    expected: list[tuple[float, float]],
+) -> None:
+    """All three interior distances are exactly 1/sqrt(2)."""
+    line = gm.LineString([
+        (0.0, 0.0),
+        (134217728.0, 134217729.0),
+        (134217732.0, 134217733.0),
+        (134217736.0, 134217737.0),
+        (268435457.0, 268435457.0),
+    ])
+    result = line.simplify(tolerance, method='dp', preserve_topology=preserve_topology)
+    assert list(result.coords) == expected
 
 
 def test_dp_zero_l_bend_keeps_the_corner() -> None:

@@ -1636,6 +1636,7 @@ fn point_segment_metric_exact(point: XY, segment: Segment) -> Result<PointSegmen
 pub(super) enum ExactDistanceWitness {
     PointPair(XY, XY),
     ProjectedPointPair(XY, Segment),
+    ClampedPointPair(XY, Segment),
 }
 
 /// Order-faithful key for one nearest-witness candidate.
@@ -1707,6 +1708,16 @@ impl SquaredDistanceFilter {
 }
 
 impl SquaredDistanceKey {
+    pub(in crate::geometry) fn cmp_distance(&self, other: &Self) -> Result<Ordering> {
+        if self.witness.same_distance_as(other.witness) {
+            return Ok(Ordering::Equal);
+        }
+        self.filter.disjoint_cmp(other.filter).map_or_else(
+            || exact_distance_witness_cmp(self.witness, other.witness),
+            Ok,
+        )
+    }
+
     pub(super) fn is_exact_zero(&self) -> Result<bool> {
         Ok(self.witness.squared()?.numerator.is_zero())
     }
@@ -1759,6 +1770,65 @@ pub(super) fn point_pair_distance_key(left: XY, right: XY) -> SquaredDistanceKey
     } else {
         SquaredDistanceFilter::unbounded().bind(witness)
     }
+}
+
+#[expect(
+    clippy::float_cmp,
+    reason = "axis-aligned carriers are exact identities over stored coordinates"
+)]
+pub(super) fn point_segment_exact_distance_key(point: XY, segment: Segment) -> SquaredDistanceKey {
+    if segment.start.y == segment.end.y
+        && point.x >= segment.start.x.min(segment.end.x)
+        && point.x <= segment.start.x.max(segment.end.x)
+    {
+        return point_pair_distance_key(point, XY::new(point.x, segment.start.y));
+    }
+    if segment.start.x == segment.end.x
+        && point.y >= segment.start.y.min(segment.end.y)
+        && point.y <= segment.start.y.max(segment.end.y)
+    {
+        return point_pair_distance_key(point, XY::new(segment.start.x, point.y));
+    }
+    let filtered = (|| {
+        let dx = source_difference(segment.end.x, segment.start.x)?;
+        let dy = source_difference(segment.end.y, segment.start.y)?;
+        let qx = source_difference(point.x, segment.start.x)?;
+        let qy = source_difference(point.y, segment.start.y)?;
+        let denominator = SourcePair::new(source_product(dx, dx)?, source_product(dy, dy)?, false)?;
+        let numerator = SourcePair::new(source_product(qx, dx)?, source_product(qy, dy)?, false)?;
+        if numerator.upper() < 0.0 {
+            return Some(point_pair_distance_key(point, segment.start));
+        }
+        if numerator.lower() > denominator.upper() {
+            return Some(point_pair_distance_key(point, segment.end));
+        }
+        if numerator.lower() <= 0.0 || numerator.upper() >= denominator.lower() {
+            return None;
+        }
+        let determinant = SourcePair::new(source_product(dx, qy)?, source_product(dy, qx)?, true)?;
+        let (low, high) = (determinant.lower(), determinant.upper());
+        let minimum = if low <= 0.0 && high >= 0.0 {
+            0.0
+        } else {
+            low.abs().min(high.abs())
+        };
+        let maximum = low.abs().max(high.abs());
+        let lower_square = (minimum * minimum).next_down().max(0.0);
+        let upper_square = (maximum * maximum).next_up();
+        let lower = (lower_square / denominator.upper()).next_down().max(0.0);
+        let upper = (upper_square / denominator.lower()).next_up();
+        upper.is_finite().then(|| {
+            SquaredDistanceFilter {
+                lo: lower,
+                hi: upper,
+            }
+            .bind(ExactDistanceWitness::ProjectedPointPair(point, segment))
+        })
+    })();
+    if let Some(key) = filtered {
+        return key;
+    }
+    SquaredDistanceFilter::unbounded().bind(ExactDistanceWitness::ClampedPointPair(point, segment))
 }
 
 pub(super) fn point_segment_distance_key(
@@ -1835,16 +1905,39 @@ impl ExactDistanceWitness {
         match self {
             // On an exact source-distance tie, retain an interior projection's
             // ordinate provenance rather than collapsing it to an endpoint.
-            Self::ProjectedPointPair(..) => 0,
+            Self::ProjectedPointPair(..) | Self::ClampedPointPair(..) => 0,
             Self::PointPair(..) => 1,
         }
     }
 
+    #[expect(
+        clippy::float_cmp,
+        reason = "equal axis-aligned offsets certify the same exact source distance"
+    )]
     fn same_distance_as(self, other: Self) -> bool {
+        let equal_sum = |a, b, c, d| {
+            let (left, left_tail) = crate::geometry::exact_arith::two_sum(a, b);
+            let (right, right_tail) = crate::geometry::exact_arith::two_sum(c, d);
+            left.is_finite() && right.is_finite() && left == right && left_tail == right_tail
+        };
         match (self, other) {
             (Self::PointPair(left_a, left_b), Self::PointPair(right_a, right_b)) => {
                 (same_point(left_a, right_a) && same_point(left_b, right_b))
                     || (same_point(left_a, right_b) && same_point(left_b, right_a))
+                    || (left_a.x == left_b.x
+                        && right_a.x == right_b.x
+                        && ((left_a.y == right_a.y && left_b.y == right_b.y)
+                            || (left_a.y == right_b.y && left_b.y == right_a.y)))
+                    || (left_a.y == left_b.y
+                        && right_a.y == right_b.y
+                        && ((left_a.x == right_a.x && left_b.x == right_b.x)
+                            || (left_a.x == right_b.x && left_b.x == right_a.x)))
+            },
+            (Self::ProjectedPointPair(left, a), Self::ProjectedPointPair(right, b)) => {
+                ((same_point(a.start, b.start) && same_point(a.end, b.end))
+                    || (same_point(a.start, b.end) && same_point(a.end, b.start)))
+                    && equal_sum(left.x, right.x, a.start.x, a.end.x)
+                    && equal_sum(left.y, right.y, a.start.y, a.end.y)
             },
             _ => false,
         }
@@ -1854,6 +1947,19 @@ impl ExactDistanceWitness {
         match self {
             Self::PointPair(left, right) => ExactSquaredDistance::point_pair(left, right),
             Self::ProjectedPointPair(point, segment) => exact_source_squared(point, segment),
+            Self::ClampedPointPair(point, segment) => {
+                match classify_segment_projection_exact(point, segment)? {
+                    ExactClassifiedSegmentProjection::Start => {
+                        ExactSquaredDistance::point_pair(point, segment.start)
+                    },
+                    ExactClassifiedSegmentProjection::End => {
+                        ExactSquaredDistance::point_pair(point, segment.end)
+                    },
+                    ExactClassifiedSegmentProjection::Interior(terms) => {
+                        ExactSquaredDistance::interior(&terms)
+                    },
+                }
+            },
         }
     }
 }
