@@ -163,6 +163,8 @@ pub(crate) struct GeodesicLineKey {
 
 mod bearing;
 mod cache;
+#[cfg(test)]
+mod chart_edge;
 mod distance;
 mod domain;
 mod ellipsoid_metric;

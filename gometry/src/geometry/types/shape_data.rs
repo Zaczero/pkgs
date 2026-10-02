@@ -1414,6 +1414,18 @@ pub(crate) trait GeodesicMetric {
     }
 }
 
+/// Metric operations on the straight edges of an admitted coordinate chart.
+///
+/// The edge representation belongs to the metric provider; geometry code
+/// remains independent of the CRS and ellipsoid implementation.
+#[cfg(test)]
+pub(crate) trait ChartMetric {
+    type Edge: Copy;
+
+    fn chart_edge(&self, start: Point, end: Point) -> Result<Self::Edge>;
+    fn chart_edge_length(&self, edge: &Self::Edge) -> Result<f64>;
+}
+
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct IndexedSegment {
     pub segment: Segment,

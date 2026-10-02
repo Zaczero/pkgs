@@ -1,0 +1,547 @@
+use geographiclib_rs::Geodesic;
+
+use crate::error::Result;
+use crate::geographic::{EdgeDirection, GeographicFrame, Latitude};
+use crate::geometry::types::ChartMetric;
+use crate::geometry::{GeometryErrorKind, Point};
+
+const GL4_NODES: [f64; 4] = [
+    0.069_431_844_202_973_71,
+    0.330_009_478_207_571_87,
+    0.669_990_521_792_428_1,
+    0.930_568_155_797_026_2,
+];
+const GL4_WEIGHTS: [f64; 4] = [
+    0.173_927_422_568_726_93,
+    0.326_072_577_431_273_07,
+    0.326_072_577_431_273_07,
+    0.173_927_422_568_726_93,
+];
+
+const GK15_NODES: [f64; 8] = [
+    0.991_455_371_120_812_6,
+    0.949_107_912_342_758_5,
+    0.864_864_423_359_769_1,
+    0.741_531_185_599_394_5,
+    0.586_087_235_467_691_1,
+    0.405_845_151_377_397_2,
+    0.207_784_955_007_898_48,
+    0.0,
+];
+const GK15_WEIGHTS: [f64; 8] = [
+    0.022_935_322_010_529_224,
+    0.063_092_092_629_978_55,
+    0.104_790_010_322_250_18,
+    0.140_653_259_715_525_92,
+    0.169_004_726_639_267_9,
+    0.190_350_578_064_785_42,
+    0.204_432_940_075_298_89,
+    0.209_482_141_084_727_82,
+];
+const G7_WEIGHTS: [f64; 4] = [
+    0.129_484_966_168_869_7,
+    0.279_705_391_489_276_67,
+    0.381_830_050_505_118_9,
+    0.417_959_183_673_469_4,
+];
+
+const MAX_GK15_EVALUATIONS: usize = 5_000;
+const RELATIVE_LENGTH_ERROR: f64 = 4.0 * f64::EPSILON;
+const ONE_DEGREE: f64 = std::f64::consts::PI / 180.0;
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct ChartEdge {
+    start_longitude_degrees: f64,
+    start_latitude_degrees: f64,
+    end_latitude_degrees: f64,
+    start_latitude: f64,
+    end_latitude: f64,
+    latitude_delta: f64,
+    longitude_delta: f64,
+    latitude_unit: f64,
+    pole: f64,
+}
+
+impl ChartEdge {
+    pub(crate) fn new(start: Point, end: Point, frame: GeographicFrame) -> Result<Self> {
+        let axis = frame.longitude();
+        let longitude_delta = match axis
+            .shortest_edge(start.x, end.x)
+            .expect("chart-edge coordinates were admitted before measurement")
+        {
+            EdgeDirection::Minor(delta) => delta,
+            EdgeDirection::HalfTurn(direction) => {
+                return Err(GeometryErrorKind::parameter(
+                    "longitude",
+                    EdgeDirection::HalfTurn(direction).delta(axis),
+                    "edge spans exactly half the longitude period; add a vertex",
+                ));
+            },
+        };
+        let start_latitude = Latitude::from_admitted(frame, start.y).get();
+        let end_latitude = Latitude::from_admitted(frame, end.y).get();
+        let (start_longitude_degrees, start_latitude_degrees) = frame
+            .to_geodesic_xy(start.x, start_latitude)
+            .expect("chart-edge coordinates were admitted before measurement");
+        let (_, end_latitude_degrees) = frame
+            .to_geodesic_xy(end.x, end_latitude)
+            .expect("chart-edge coordinates were admitted before measurement");
+
+        Ok(Self {
+            start_longitude_degrees,
+            start_latitude_degrees,
+            end_latitude_degrees,
+            start_latitude,
+            end_latitude,
+            latitude_delta: end_latitude - start_latitude,
+            longitude_delta: longitude_delta * axis.unit().radians_per_unit(),
+            latitude_unit: frame.latitude_unit().radians_per_unit(),
+            pole: frame.pole(),
+        })
+    }
+
+    pub(crate) fn length(self, geodesic: &Geodesic) -> Result<f64> {
+        if self.latitude_delta == 0.0 {
+            let colatitude = self.pole - self.start_latitude.abs();
+            let theta = colatitude * self.latitude_unit;
+            let cos_latitude = theta.sin();
+            let sin_latitude = theta.cos().copysign(self.start_latitude);
+            let w = (1.0 - geodesic.f * (2.0 - geodesic.f) * sin_latitude * sin_latitude).sqrt();
+            let result = geodesic.a / w * cos_latitude * self.longitude_delta.abs();
+            return self.finite_length(result);
+        }
+
+        if self.longitude_delta == 0.0 {
+            return self.finite_length(super::inverse_distance(
+                geodesic,
+                self.start_longitude_degrees,
+                self.start_latitude_degrees,
+                self.start_longitude_degrees,
+                self.end_latitude_degrees,
+            ));
+        }
+
+        let e2 = geodesic.f * (2.0 - geodesic.f);
+        let dphi = self.latitude_delta * self.latitude_unit;
+        if self.admits_gl4(dphi) {
+            let value = std::iter::zip(GL4_NODES, GL4_WEIGHTS)
+                .map(|(node, weight)| weight * self.speed(node, geodesic.a, e2, dphi))
+                .sum();
+            return self.finite_length(value);
+        }
+
+        let mut evaluations = 0;
+        let (initial, initial_error) = self.gk15(0.0, 1.0, geodesic.a, e2, dphi);
+        evaluations += 15;
+        let tolerance = RELATIVE_LENGTH_ERROR * initial.abs();
+        if initial_error <= tolerance {
+            return self.finite_length(initial);
+        }
+
+        let mut total = initial;
+        let mut total_error = initial_error;
+        let mut intervals = vec![Interval {
+            start: 0.0,
+            end: 1.0,
+            value: initial,
+            error: initial_error,
+        }];
+        while total_error > tolerance {
+            let largest = intervals
+                .iter()
+                .enumerate()
+                .max_by(|(_, left), (_, right)| left.error.total_cmp(&right.error))
+                .map(|(index, _)| index)
+                .expect("an unconverged quadrature has an interval");
+            let parent = intervals.swap_remove(largest);
+            if evaluations + 30 > MAX_GK15_EVALUATIONS {
+                return Err(GeometryErrorKind::message(
+                    "chart-edge length quadrature did not converge within 5,000 evaluations",
+                ));
+            }
+            let middle = f64::midpoint(parent.start, parent.end);
+            let (left, left_error) = self.gk15(parent.start, middle, geodesic.a, e2, dphi);
+            let (right, right_error) = self.gk15(middle, parent.end, geodesic.a, e2, dphi);
+            evaluations += 30;
+            total += (left + right) - parent.value;
+            total_error = (total_error - parent.error).max(0.0) + left_error + right_error;
+            intervals.push(Interval {
+                start: parent.start,
+                end: middle,
+                value: left,
+                error: left_error,
+            });
+            intervals.push(Interval {
+                start: middle,
+                end: parent.end,
+                value: right,
+                error: right_error,
+            });
+        }
+        self.finite_length(total)
+    }
+
+    fn finite_length(self, length: f64) -> Result<f64> {
+        if length.is_finite() && length >= 0.0 {
+            Ok(length)
+        } else {
+            Err(GeometryErrorKind::message(
+                "chart-edge length is not representable in binary64 metres",
+            ))
+        }
+    }
+
+    fn admits_gl4(self, dphi: f64) -> bool {
+        let latitude0 = self.start_latitude;
+        let latitude1 = self.end_latitude;
+        let colatitude0 = (self.pole - latitude0.abs()) * self.latitude_unit;
+        let colatitude1 = (self.pole - latitude1.abs()) * self.latitude_unit;
+        let crosses_equator =
+            (latitude0 <= 0.0 && latitude1 >= 0.0) || (latitude1 <= 0.0 && latitude0 >= 0.0);
+        let max_cos_latitude = if crosses_equator {
+            1.0
+        } else {
+            colatitude0.max(colatitude1).sin()
+        };
+        let extent = dphi
+            .abs()
+            .max(self.longitude_delta.abs() * max_cos_latitude);
+        let colatitude = colatitude0.min(colatitude1);
+        extent <= ONE_DEGREE && extent / colatitude <= 0.1
+    }
+
+    fn speed(self, t: f64, semi_major: f64, e2: f64, dphi: f64) -> f64 {
+        let (sin_latitude, cos_latitude) = self.latitude_sincos(t);
+        let w2 = 1.0 - e2 * sin_latitude * sin_latitude;
+        let w = w2.sqrt();
+        let prime_vertical = semi_major / w;
+        let meridian = semi_major * (1.0 - e2) / (w2 * w);
+        (meridian * dphi).hypot(prime_vertical * cos_latitude * self.longitude_delta)
+    }
+
+    fn latitude_sincos(self, t: f64) -> (f64, f64) {
+        let latitude0 = self.start_latitude;
+        let latitude1 = self.end_latitude;
+        let latitude_delta = self.latitude_delta;
+        let sign0 = latitude0.signum().copysign(1.0);
+        let sign1 = latitude1.signum().copysign(1.0);
+        let crosses_equator =
+            (latitude0 < 0.0 && latitude1 > 0.0) || (latitude1 < 0.0 && latitude0 > 0.0);
+        let (anchor, parameter, sign) = if crosses_equator {
+            let crossing = -latitude0 / latitude_delta;
+            if t <= crossing {
+                (latitude0, t, sign0)
+            } else {
+                (latitude1, t - 1.0, sign1)
+            }
+        } else {
+            (latitude0, t, sign0)
+        };
+        let anchor_colatitude = self.pole - sign * anchor;
+        let colatitude =
+            (anchor_colatitude - sign * parameter * latitude_delta) * self.latitude_unit;
+        let (sin_colatitude, cos_colatitude) = colatitude.sin_cos();
+        (sign * cos_colatitude, sin_colatitude)
+    }
+
+    fn gk15(self, start: f64, end: f64, semi_major: f64, e2: f64, dphi: f64) -> (f64, f64) {
+        let center = f64::midpoint(start, end);
+        let half = (end - start) / 2.0;
+        let center_value = self.speed(center, semi_major, e2, dphi);
+        let mut kronrod = center_value * GK15_WEIGHTS[7];
+        let mut gauss = center_value * G7_WEIGHTS[3];
+        for index in 0..7 {
+            let offset = half * GK15_NODES[index];
+            let pair = self.speed(center - offset, semi_major, e2, dphi)
+                + self.speed(center + offset, semi_major, e2, dphi);
+            kronrod += GK15_WEIGHTS[index] * pair;
+            if index % 2 == 1 {
+                gauss += G7_WEIGHTS[index / 2] * pair;
+            }
+        }
+        let value = kronrod * half;
+        (value, ((kronrod - gauss) * half).abs())
+    }
+}
+
+impl ChartMetric for super::GeodesicMetric {
+    type Edge = ChartEdge;
+
+    fn chart_edge(&self, start: Point, end: Point) -> Result<Self::Edge> {
+        ChartEdge::new(start, end, self.frame)
+    }
+
+    fn chart_edge_length(&self, edge: &Self::Edge) -> Result<f64> {
+        edge.length(&self.geodesic)
+    }
+}
+
+#[derive(Clone, Copy)]
+struct Interval {
+    start: f64,
+    end: f64,
+    value: f64,
+    error: f64,
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use geographiclib_rs::Geodesic;
+
+    use super::super::GeodesicMetric;
+    use super::{ChartEdge, ONE_DEGREE};
+    use crate::geographic::{AngularFactor, EdgeDirection, GeographicFrame, PeriodicAxis};
+    use crate::geometry::types::ChartMetric;
+    use crate::geometry::{GeometryErrorKind, Point};
+
+    fn degrees() -> GeographicFrame {
+        GeographicFrame::crs84()
+    }
+
+    fn grads() -> GeographicFrame {
+        let factor = AngularFactor::try_new("grad", std::f64::consts::PI / 200.0).unwrap();
+        GeographicFrame::try_new(factor, factor, 0.0).unwrap()
+    }
+
+    fn radians() -> GeographicFrame {
+        let factor = AngularFactor::try_new("radian", 1.0).unwrap();
+        GeographicFrame::try_new(factor, factor, 0.0).unwrap()
+    }
+
+    fn wgs84() -> Geodesic {
+        Geodesic::new(6_378_137.0, 1.0 / 298.257_223_563)
+    }
+
+    fn edge_length(
+        frame: GeographicFrame,
+        start: (f64, f64),
+        end: (f64, f64),
+    ) -> crate::error::Result<f64> {
+        ChartEdge::new(
+            Point::new_raw_xy(start.0, start.1),
+            Point::new_raw_xy(end.0, end.1),
+            frame,
+        )?
+        .length(&wgs84())
+    }
+
+    #[test]
+    fn chart_edge_matches_mpmath_length_literals() {
+        let cases = [
+            (
+                "general ellipsoidal edge",
+                edge_length(degrees(), (-10.0, 35.0), (10.0, 48.0)).unwrap(),
+                2_205_762.711_444_021_484_697_706_486_400_154_249_267_664_244_430_293_772,
+            ),
+            (
+                "near-pole chart edge",
+                edge_length(degrees(), (0.0, 89.9999), (100.0, 89.99995)).unwrap(),
+                15.684_865_577_474_261_319_323_114_261_000_244_174_390_118_724_580_350_24,
+            ),
+            (
+                "parallel closed form",
+                edge_length(degrees(), (0.0, 60.0), (90.0, 60.0)).unwrap(),
+                5_022_000.141_519_251_583_393_985_617_689_302_237_201_497_525_118_898_693,
+            ),
+            (
+                "meridian closed form",
+                edge_length(degrees(), (15.0, -20.0), (15.0, 70.0)).unwrap(),
+                9_981_346.981_941_827_186_123_967_737_420_675_801_600_371_943_871_469_972,
+            ),
+        ];
+        for (label, actual, expected) in cases {
+            let relative_error = (actual - expected).abs() / expected;
+            assert!(
+                relative_error <= 1.0e-15,
+                "{label}: actual={actual:.17}, expected={expected:.17}, relative_error={relative_error:.3e}"
+            );
+        }
+    }
+
+    #[test]
+    fn chart_edge_length_is_invariant_between_degree_grad_and_radian_frames() {
+        let degree_length = edge_length(degrees(), (20.0, 35.0), (40.0, 48.0)).unwrap();
+        let grad_length = edge_length(
+            grads(),
+            (20.0 * 10.0 / 9.0, 35.0 * 10.0 / 9.0),
+            (40.0 * 10.0 / 9.0, 48.0 * 10.0 / 9.0),
+        )
+        .unwrap();
+        let radian_length = edge_length(
+            radians(),
+            (20.0_f64.to_radians(), 35.0_f64.to_radians()),
+            (40.0_f64.to_radians(), 48.0_f64.to_radians()),
+        )
+        .unwrap();
+
+        for actual in [grad_length, radian_length] {
+            assert!(
+                (actual - degree_length).abs() <= 2.0e-9,
+                "frame mismatch: degree={degree_length:.17}, actual={actual:.17}"
+            );
+        }
+    }
+
+    #[test]
+    fn chart_edge_colatitude_uses_native_subtraction_before_conversion() {
+        for frame in [degrees(), grads(), radians()] {
+            let latitude = frame.pole().next_down();
+            let edge = ChartEdge::new(
+                Point::new_raw_xy(0.0, latitude),
+                Point::new_raw_xy(0.25, latitude),
+                frame,
+            )
+            .unwrap();
+            let expected =
+                (frame.pole() - latitude.abs()) * frame.latitude_unit().radians_per_unit();
+            let actual = (edge.pole - edge.start_latitude.abs()) * edge.latitude_unit;
+            assert_eq!(actual.to_bits(), expected.to_bits());
+        }
+    }
+
+    #[test]
+    fn chart_edge_rejects_exact_half_periods_with_an_actionable_geometry_error() {
+        for frame in [degrees(), grads(), radians()] {
+            let error = ChartEdge::new(
+                Point::new_raw_xy(0.0, 10.0),
+                Point::new_raw_xy(frame.longitude().half_period(), 10.0),
+                frame,
+            )
+            .unwrap_err();
+            assert!(
+                matches!(
+                    error.kind(),
+                    crate::error::ErrorKind::Geometry(
+                        GeometryErrorKind::Parameter { message, .. }
+                    ) if message.as_ref() == "edge spans exactly half the longitude period; add a vertex"
+                ),
+                "{error}"
+            );
+        }
+    }
+
+    #[test]
+    fn chart_metric_trait_constructs_and_measures_a_chart_edge() {
+        let metric = GeodesicMetric {
+            crs: Arc::new("EPSG:4326".to_owned()),
+            geodesic: Box::new(wgs84()),
+            frame: degrees(),
+            state: crate::crs::runtime_state_snapshot().unwrap(),
+        };
+        let edge = metric
+            .chart_edge(Point::new_raw_xy(0.0, 60.0), Point::new_raw_xy(90.0, 60.0))
+            .unwrap();
+        let measured = metric.chart_edge_length(&edge).unwrap();
+        let expected = 5_022_000.141_519_251_583_393_985_617_689_302_237_201_497_525_118_898_693;
+        assert!((measured - expected).abs() <= 2.0e-9);
+    }
+
+    #[test]
+    fn chart_edge_unwrapping_matches_topology_for_seams_ties_and_random_pairs() {
+        let frames = [degrees(), grads(), radians()];
+        let mut state = 0x4D59_5DF4_D0F3_3173_u64;
+        for frame in frames {
+            let axis: PeriodicAxis = frame.longitude();
+            let half = axis.half_period();
+            let period = axis.period();
+            for (from, to) in [
+                (0.0, half.next_down()),
+                (0.0, half),
+                (0.0, half.next_up()),
+                (0.0, -half.next_down()),
+                (0.0, -half),
+                (0.0, -half.next_up()),
+                (-period, period),
+                (2.0 * period, 3.0 * period),
+                (-3.0 * period, -2.0 * period),
+            ] {
+                assert_topology_delta(frame, from, to);
+            }
+            for index in 0..100_000 {
+                let from = pseudo_random(&mut state) * axis.period() * 12.0;
+                let to = if index % 4 == 0 {
+                    let seam = axis.half_period();
+                    match index % 8 {
+                        0 => seam.next_down(),
+                        4 => -seam.next_down(),
+                        _ => pseudo_random(&mut state) * axis.period() * 12.0,
+                    }
+                } else {
+                    pseudo_random(&mut state) * axis.period() * 12.0
+                };
+                assert_topology_delta(frame, from, to);
+            }
+        }
+    }
+
+    fn assert_topology_delta(frame: GeographicFrame, from: f64, to: f64) {
+        let axis = frame.longitude();
+        let direction = axis.shortest_edge(from, to).unwrap();
+        let EdgeDirection::Minor(delta) = direction else {
+            assert!(
+                ChartEdge::new(
+                    Point::new_raw_xy(from, 0.0),
+                    Point::new_raw_xy(to, 0.0),
+                    frame
+                )
+                .is_err(),
+                "half-period edge was accepted: frame={frame:?}, from={from:?}, to={to:?}"
+            );
+            return;
+        };
+        let edge = ChartEdge::new(
+            Point::new_raw_xy(from, 0.0),
+            Point::new_raw_xy(to, 0.0),
+            frame,
+        )
+        .unwrap();
+        assert_eq!(
+            edge.longitude_delta.to_bits(),
+            (delta * axis.unit().radians_per_unit()).to_bits(),
+            "frame={frame:?}, from={from:?}, to={to:?}"
+        );
+
+        let from_canonical = axis.canonicalize(from).unwrap().get();
+        let to_canonical = axis.canonicalize(to).unwrap().get();
+        let expected_transit = if delta > 0.0 && to_canonical < from_canonical {
+            1
+        } else if delta < 0.0 && to_canonical > from_canonical {
+            -1
+        } else {
+            0
+        };
+        assert_eq!(
+            axis.seam_transit(from, to).unwrap(),
+            expected_transit,
+            "frame={frame:?}, from={from:?}, to={to:?}"
+        );
+    }
+
+    #[test]
+    fn gauss_legendre_admission_is_bounded_to_one_degree_and_near_pole_ratio() {
+        let edge = ChartEdge::new(
+            Point::new_raw_xy(0.0, 45.0),
+            Point::new_raw_xy(0.01, 45.01),
+            degrees(),
+        )
+        .unwrap();
+        assert!(edge.admits_gl4(edge.latitude_delta * edge.latitude_unit));
+        assert!(ONE_DEGREE > edge.latitude_delta * edge.latitude_unit);
+        let polar = ChartEdge::new(
+            Point::new_raw_xy(0.0, 89.99),
+            Point::new_raw_xy(0.9, 89.991),
+            degrees(),
+        )
+        .unwrap();
+        assert!(!polar.admits_gl4(polar.latitude_delta * polar.latitude_unit));
+    }
+
+    fn pseudo_random(state: &mut u64) -> f64 {
+        *state ^= *state << 13;
+        *state ^= *state >> 7;
+        *state ^= *state << 17;
+        (*state >> 11) as f64 * (1.0 / ((1_u64 << 53) as f64)) - 0.5
+    }
+}
