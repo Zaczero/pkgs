@@ -278,8 +278,8 @@ TriangulationMethod: TypeAlias = Literal['earcut', 'delaunay', 'constrained']
 SpatialCurve: TypeAlias = Literal['hilbert', 'morton']
 #: Distance or stored-M stationing selected by the ``line_*`` reference methods.
 LineReferenceBasis: TypeAlias = Literal['distance', 'm']
-#: Route model for point-navigation functions. ``'geodesic'`` follows the
-#: shortest ellipsoidal path; ``'rhumb'`` follows a constant-bearing loxodrome.
+#: Route model for point navigation and ``segmentize``. ``'geodesic'`` follows
+#: the shortest ellipsoidal path; ``'rhumb'`` follows a constant-bearing route.
 NavigationPath: TypeAlias = Literal['geodesic', 'rhumb']
 #: Corner join shape for ``buffer``.
 JoinStyle: TypeAlias = Literal['round', 'miter', 'bevel']

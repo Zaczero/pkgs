@@ -744,22 +744,22 @@ impl Polygon {
     fn segmentize_budgeted(
         &self,
         max_segment_length: f64,
-        placement: SegmentPlacement<'_>,
+        placement: &SegmentPlacement<'_>,
         budget: &mut ExpansionBudget,
     ) -> Result<Self> {
         self.try_map_ring_seqs(|ring| {
-            segmentize_points_budgeted(ring, max_segment_length, placement, budget)
+            segmentize_points_budgeted(ring, max_segment_length, *placement, budget)
         })
     }
 
     fn densified_budgeted_with_placement(
         &self,
         fraction: f64,
-        placement: SegmentPlacement<'_>,
+        placement: &SegmentPlacement<'_>,
         budget: &mut ExpansionBudget,
     ) -> Result<Self> {
         self.try_map_ring_seqs(|ring| {
-            densify_points_budgeted_with_placement(ring, fraction, placement, budget)
+            densify_points_budgeted_with_placement(ring, fraction, *placement, budget)
         })
     }
 

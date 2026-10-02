@@ -6,8 +6,8 @@ use crate::broadcast::{
     CollectRows as _, degrade_linref_linestring, degrade_linref_point, rows_err,
 };
 use crate::crs::MetricModel;
-use crate::dispatch::Lane;
 use crate::dispatch::operation::{MetricOp, Operation};
+use crate::dispatch::{Lane, kernels};
 use crate::geometry::storage::{
     GeometryArrayStorage, PackedStorage, RowSelection, RowSelectionRef,
 };
@@ -17,7 +17,8 @@ use crate::geometry::{
 };
 use crate::py::numpy::{bool_array, bounds_array, float64_array};
 use crate::{
-    DistanceUnit, F64Param, PyGeometryArray, line_interpolate_coordseq, line_substring_coordseq,
+    DistanceUnit, F64Param, NavigationPath, PyGeometryArray, line_interpolate_coordseq,
+    line_substring_coordseq,
 };
 
 /// Per-op parameters for the parameterized unary packed-column fast paths.
@@ -33,9 +34,11 @@ pub(crate) enum PackedUnary {
     Synthesized,
     Segmentize {
         max_segment_length: F64Param,
+        path: Option<NavigationPath>,
     },
     Densify {
         fraction: F64Param,
+        path: Option<NavigationPath>,
     },
     Simplify {
         tolerance: F64Param,
@@ -310,19 +313,22 @@ pub(crate) fn try_unary_packed_array(
         },
         (
             Operation::Metric(MetricOp::Segmentize),
-            PackedUnary::Segmentize { max_segment_length },
+            PackedUnary::Segmentize {
+                max_segment_length,
+                path,
+            },
         ) => {
             // Resolve the ellipsoid and chart-edge placement once, then carry
             // it through the detached packed kernels.
-            match segmentize_metric(array, resolver) {
+            match segmentize_metric(array, resolver, *path) {
                 Ok((placement, to_metre)) => {
                     Some(array.segmentize_unary_packed(max_segment_length, placement, to_metre))
                 },
                 Err(error) => Some(Err(error)),
             }
         },
-        (Operation::Metric(MetricOp::Segmentize), PackedUnary::Densify { fraction }) => {
-            match segmentize_metric(array, resolver) {
+        (Operation::Metric(MetricOp::Segmentize), PackedUnary::Densify { fraction, path }) => {
+            match segmentize_metric(array, resolver, *path) {
                 Ok((placement, _)) => Some(array.densify_unary_packed(fraction, placement)),
                 Err(error) => Some(Err(error)),
             }
@@ -599,11 +605,12 @@ fn linref_substring_packed_inner(
 fn segmentize_metric(
     array: &PyGeometryArray,
     resolver: super::MetricResolver,
+    path: Option<NavigationPath>,
 ) -> PyResult<(crate::geometry::SegmentPlacementOwned, f64)> {
     let super::MetricResolver::Metric { op, unit } = resolver else {
-        return Ok((crate::geometry::SegmentPlacementOwned::Planar, 1.0));
+        return kernels::segmentize_placement(None, path).map_err(Into::into);
     };
     let model = crate::broadcast::resolve_metric(array.crs_str(), unit, op)?;
     let metric = crate::crs::ResolvedMetric::from_model(&model)?;
-    crate::dispatch::kernels::segmentize_placement(&metric, None).map_err(Into::into)
+    kernels::segmentize_placement(Some(&metric), path).map_err(Into::into)
 }

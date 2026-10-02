@@ -42,7 +42,7 @@ crate::tokens::token_enum! {
 }
 
 crate::tokens::token_enum! {
-    /// Route model used by point-navigation operations.
+    /// Route model used by point navigation and `segmentize`.
     pub enum NavigationPath("navigation path", token = none, param = "path") {
         Geodesic = "geodesic",
         Rhumb = "rhumb",

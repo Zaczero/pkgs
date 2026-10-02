@@ -542,6 +542,10 @@ if TYPE_CHECKING:
     )
     assert_type(LINE.segmentize(1.0, fraction=None), gm.LineString)
     assert_type(LINE.segmentize(None, fraction=0.5), gm.LineString)
+    assert_type(LINE.segmentize(1.0, path='geodesic'), gm.LineString)
+    assert_type(LINE.segmentize(1.0, path='rhumb', unit=None), gm.LineString)
+    assert_type(LINE.segmentize(fraction=0.5, path='geodesic'), gm.LineString)
+    assert_type(LINES.segmentize(1.0, path='rhumb'), gm.GeometryArray[gm.LineString])
     assert_type(
         MEASURED_LINE.line_substring(0.0, 10.0, basis='m', normalized=False, unit=None),
         gm.LineString | gm.Point,
@@ -762,8 +766,11 @@ assert_type(POINTS.sort_by_spatial_key(), gm.GeometryArray[gm.Point])
 assert_type(POINTS.sort_by_spatial_key(curve='morton'), gm.GeometryArray[gm.Point])
 assert_type(LINE.segmentize(0.5), gm.LineString)
 assert_type(LINE.segmentize(fraction=0.5), gm.LineString)
+assert_type(LINE.segmentize(0.5, path='geodesic'), gm.LineString)
+assert_type(LINE.segmentize(fraction=0.5, path='rhumb'), gm.LineString)
 assert_type(LINES.segmentize(0.5), gm.GeometryArray[gm.LineString])
 assert_type(LINES.segmentize(fraction=0.5), gm.GeometryArray[gm.LineString])
+assert_type(LINES.segmentize(0.5, path='geodesic'), gm.GeometryArray[gm.LineString])
 assert_type(LINE.line_interpolate(0.5), gm.Point)
 assert_type(LINE.line_interpolate(at=0.5), gm.Point)
 assert_type(LINES.line_interpolate(at=0.5), gm.GeometryArray[gm.Point])

@@ -483,6 +483,8 @@ def test_public_signatures_keep_pythonic_defaults_after_native_validation() -> N
     signatures = {
         'Geometry.buffer': str(inspect.signature(geom.buffer)),
         'GeometryArray.buffer': str(inspect.signature(arr.buffer)),
+        'Geometry.segmentize': str(inspect.signature(geom.segmentize)),
+        'GeometryArray.segmentize': str(inspect.signature(arr.segmentize)),
         'SpatialIndex.nearest': str(inspect.signature(idx.nearest)),
         'gm.nearest': str(inspect.signature(gm.nearest)),
         'gm.bearing': str(inspect.signature(gm.bearing)),
@@ -506,6 +508,11 @@ def test_public_signatures_keep_pythonic_defaults_after_native_validation() -> N
     }
     assert 'quadrant_segments=8' in signatures['Geometry.buffer']
     assert 'quadrant_segments=8' in signatures['GeometryArray.buffer']
+    assert (
+        signatures['Geometry.segmentize']
+        == '(max_length=None, /, *, fraction=None, path=None, unit=None)'
+    )
+    assert signatures['GeometryArray.segmentize'] == signatures['Geometry.segmentize']
     assert 'k=1' in signatures['SpatialIndex.nearest']
     assert 'k=1' in signatures['gm.nearest']
     assert signatures['gm.bearing'] == "(left, right, *, path='geodesic')"

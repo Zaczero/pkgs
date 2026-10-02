@@ -198,8 +198,8 @@ pub(crate) use ellipsoid_metric::{
 pub(crate) use measure::with_ellipsoid_metric;
 pub(crate) use measure::{
     DistanceMode, chart_line_length_columns, chart_shape_area, chart_shape_length,
-    geodesic_interpolate_on_line, geodesic_line_solution, geodesic_witness_distance_at,
-    with_ellipsoid_metric_at, with_resolved_ellipsoid_metric_at,
+    geodesic_interpolate_on_line, geodesic_witness_distance_at, with_ellipsoid_metric_at,
+    with_resolved_ellipsoid_metric_at,
 };
 pub(crate) use metric_model::{
     GeodesicMetric, MetricModel, ResolvedMetric, ensure_3d_metric, geographic_metric_frame_at,
@@ -211,7 +211,5 @@ pub(crate) use nearest_lrs::{
     with_geodesic_coordseq_collect_rows_at, with_geodesic_coordseq_metric_at,
     with_geodesic_erased_at,
 };
-pub(crate) use segment::sincos_degrees;
-use segment::{
-    IntersectSolver, checked_geodesic_segment, geodesic_point_segment_query, geodesic_unit_vector,
-};
+use segment::{IntersectSolver, geodesic_point_segment_query, geodesic_unit_vector};
+pub(crate) use segment::{checked_geodesic_segment, sincos_degrees};

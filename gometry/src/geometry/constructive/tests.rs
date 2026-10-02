@@ -2126,7 +2126,7 @@ mod subdivide_columns_tests {
     }
 
     #[test]
-    fn geographic_segmentize_keeps_antipodal_equator_on_geodesic_path() {
+    fn geodesic_segmentize_rejects_an_ambiguous_antipodal_route() {
         let line = CoordSeq::try_from_points(&[
             Point::new(0.0, 0.0).unwrap(),
             Point::new(180.0, 0.0).unwrap(),
@@ -2134,16 +2134,19 @@ mod subdivide_columns_tests {
         .unwrap();
         let geodesic = Geodesic::wgs84();
         let mut budget = ExpansionBudget::new("segmentize", "max_length");
-        let segmented = segmentize_points_budgeted(
+        let error = segmentize_points_budgeted(
             &line,
             11_000_000.0,
             crate::geometry::SegmentPlacement::Geodesic(&geodesic, GeographicFrame::crs84()),
             &mut budget,
         )
-        .unwrap();
+        .unwrap_err();
 
-        assert_eq!(segmented.len(), 3);
-        assert!((segmented.ys()[1].abs() - 90.0).abs() <= 1e-12);
+        assert!(
+            error
+                .to_string()
+                .contains("geodesic segment endpoints have multiple shortest geodesics")
+        );
     }
 
     #[test]

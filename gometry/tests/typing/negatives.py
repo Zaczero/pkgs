@@ -60,6 +60,9 @@ if TYPE_CHECKING:
     LINE.segmentize(0.5, fraction=0.5)  # type: ignore[call-overload]
     LINE.segmentize()  # type: ignore[call-overload]
     LINE.segmentize(None)  # type: ignore[call-overload]
+    LINE.segmentize(0.5, path='straight')  # type: ignore[call-overload]
+    LINE.segmentize(0.5, path='rhumb', unit='meters')  # type: ignore[call-overload]
+    LINE.segmentize(fraction=0.5, path='geodesic', unit='planar')  # type: ignore[call-overload]
 
     # ``basis`` is a closed vocabulary. The native boundary validates
     # distance-only kwargs whenever runtime ``basis='m'`` is chosen; the

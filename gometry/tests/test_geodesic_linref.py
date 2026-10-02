@@ -1,10 +1,12 @@
-"""Geodesic linear referencing on arrays and MultiLineString."""
+"""Geographic linear referencing and segmentize routes on arrays."""
 
 from __future__ import annotations
 
 import math
+from itertools import pairwise
 
 import gometry as gm
+import pyproj
 import pytest
 
 from tests._support import canon
@@ -96,11 +98,13 @@ def test_array_multi_line_string_lrs_matches_scalar() -> None:
 def test_geographic_fraction_densify_keeps_chart_edges_scalar_and_bulk() -> None:
     line = gm.LineString([(0.0, 0.0), (10.0, 10.0)], crs=4326)
     scalar = line.segmentize(fraction=0.5)
+    explicit_default = line.segmentize(fraction=0.5, path=None)
     bulk = gm.GeometryArray([line]).segmentize(fraction=0.5)[0]
     length_scalar = line.segmentize(1_000_000.0)
     length_bulk = gm.GeometryArray([line]).segmentize(1_000_000.0)[0]
 
     assert scalar.coords[1][0] == scalar.coords[1][1]
+    assert list(explicit_default.coords) == list(scalar.coords)
     assert tuple(bulk.coords[1]) == tuple(scalar.coords[1])
     assert tuple(length_scalar.coords[1]) == tuple(scalar.coords[1])
     assert tuple(length_bulk.coords[1]) == tuple(scalar.coords[1])
@@ -197,6 +201,184 @@ def test_geographic_segmentize_insertions_stay_on_sloped_chart_edge() -> None:
         gm.LineString([coordinates[index], coordinates[index + 1]], crs=4326).length
         for index in range(len(coordinates) - 1)
     ) <= 1_500_000.0
+
+
+def test_geodesic_segmentize_matches_pyproj_npts_for_scalar_array_and_fraction() -> None:
+    start = (-73.0, 41.0)
+    end = (-74.0, 42.0)
+    line = gm.LineString([start, end], crs=4326)
+    geod = pyproj.Geod(ellps='WGS84')
+    _, _, route_length = geod.inv(*start, *end)
+    expected = geod.npts(*start, *end, 3)
+    max_length = route_length / 4.0 * (1.0 + 1e-12)
+
+    scalar = line.segmentize(max_length, path='geodesic')
+    bulk = gm.GeometryArray([line]).segmentize(max_length, path='geodesic')[0]
+    fractional = line.segmentize(fraction=0.25, path='geodesic')
+
+    for result in (scalar, bulk, fractional):
+        coordinates = list(result.coords)
+        assert len(coordinates) == 5
+        assert coordinates[0] == start
+        assert coordinates[-1] == end
+        # Separate Karney builds should agree within about 22 μm in degrees.
+        for point, expected_point in zip(
+            coordinates[1:-1], expected, strict=True
+        ):
+            assert tuple(point[:2]) == pytest.approx(expected_point, abs=2e-10)
+        pieces = [
+            geod.inv(*left[:2], *right[:2])[2]
+            for left, right in pairwise(coordinates)
+        ]
+        # Inverse distances independently confirm four equal route intervals.
+        assert pieces == pytest.approx([route_length / 4.0] * 4, abs=1e-7, rel=0.0)
+
+    assert list(scalar.coords) == list(bulk.coords)
+    assert list(scalar.coords) == list(fractional.coords)
+
+
+def test_rhumb_segmentize_matches_rhumbsolve_parallel_literal_and_array() -> None:
+    # GeographicLib RhumbSolve gives the endpoint for a 1,000 km due-east
+    # route from (-10, 45); equal rhumb arclength on this parallel is linear
+    # in longitude.
+    line = gm.LineString([(-10.0, 45.0), (2.682817246984, 45.0)], crs=4326)
+    rhumb_length = gm.rhumb_distance(
+        gm.Point(-10.0, 45.0, crs=4326),
+        gm.Point(2.682817246984, 45.0, crs=4326),
+    )
+    max_length = rhumb_length / 2.0 * (1.0 + 1e-12)
+
+    by_length = line.segmentize(max_length, path='rhumb')
+    by_fraction = line.segmentize(fraction=0.5, path='rhumb')
+    bulk = gm.GeometryArray([line]).segmentize(fraction=0.5, path='rhumb')[0]
+
+    expected_midpoint = (-3.658591376508, 45.0)
+    for result in (by_length, by_fraction, bulk):
+        assert len(result.coords) == 3
+        # The RhumbSolve endpoint is rounded to 1e-12 degrees.
+        assert tuple(result.coords[1]) == pytest.approx(
+            expected_midpoint, abs=1e-10, rel=0.0
+        )
+    assert list(by_length.coords) == list(by_fraction.coords)
+    assert list(by_fraction.coords) == list(bulk.coords)
+
+
+@pytest.mark.parametrize(
+    ('path', 'unit'),
+    [
+        pytest.param('geodesic', 'meters', id='geodesic-meters'),
+        pytest.param('rhumb', 'meters', id='rhumb-meters'),
+        pytest.param('rhumb', 'planar', id='rhumb-planar'),
+    ],
+)
+@pytest.mark.parametrize('array', [False, True], ids=['scalar', 'array'])
+def test_segmentize_explicit_path_rejects_unit(
+    path: str,
+    unit: str,
+    array: bool,
+) -> None:
+    geographic = gm.LineString([(0.0, 0.0), (1.0, 1.0)], crs=4326)
+    target = gm.GeometryArray([geographic]) if array else geographic
+
+    with pytest.raises(
+        gm.GeometryError,
+        match='segmentize does not accept unit when path is set; route distances are meters',
+    ):
+        target.segmentize(100_000.0, path=path, unit=unit)
+
+
+def test_segmentize_path_unit_error_precedes_fraction_unit_error() -> None:
+    line = gm.LineString([(0.0, 0.0), (1.0, 1.0)], crs=4326)
+    with pytest.raises(
+        gm.GeometryError,
+        match='segmentize does not accept unit when path is set; route distances are meters',
+    ):
+        line.segmentize(fraction=0.5, path='rhumb', unit='meters')
+
+
+@pytest.mark.parametrize(
+    'crs',
+    [None, 3857],
+    ids=['crs-free', 'projected'],
+)
+def test_geodesic_segmentize_is_planar_without_geographic_crs(
+    crs: int | None,
+) -> None:
+    line = gm.LineString([(0.0, 0.0), (10.0, 10.0)], crs=crs)
+    planar = line.segmentize(2.0)
+    geodesic = line.segmentize(2.0, path='geodesic')
+    array = gm.GeometryArray([line])
+
+    assert list(geodesic.coords) == list(planar.coords)
+    assert list(array.segmentize(2.0, path='geodesic')[0].coords) == list(
+        planar.coords
+    )
+
+
+@pytest.mark.parametrize(
+    'crs',
+    [None, 3857],
+    ids=['crs-free', 'projected'],
+)
+@pytest.mark.parametrize('array', [False, True], ids=['scalar', 'array'])
+def test_rhumb_segmentize_requires_geographic_crs(
+    crs: int | None,
+    array: bool,
+) -> None:
+    line = gm.LineString([(0.0, 0.0), (10.0, 10.0)], crs=crs)
+    target = gm.GeometryArray([line]) if array else line
+
+    with pytest.raises(
+        gm.CRSError, match=r"path='rhumb'.*requires a geographic CRS"
+    ):
+        target.segmentize(2.0, path='rhumb')
+
+
+def test_geodesic_segmentize_matches_near_antipodal_unique_route() -> None:
+    start = (0.0, 10.0)
+    end = (179.999, -9.999)
+    line = gm.LineString([start, end], crs=4326)
+    expected = pyproj.Geod(ellps='WGS84').npts(*start, *end, 1)[0]
+
+    midpoint = line.segmentize(fraction=0.5, path='geodesic').coords[1]
+    # Near-antipodal inverse conditioning permits a millimetre-scale coordinate
+    # delta while still pinning the selected shortest route.
+    assert tuple(midpoint) == pytest.approx(expected, abs=2e-8, rel=0.0)
+
+
+def test_geodesic_segmentize_rejects_non_unique_antipodal_route() -> None:
+    line = gm.LineString([(0.0, 0.0), (180.0, 0.0)], crs=4326)
+
+    with pytest.raises(gm.CRSError, match='multiple shortest geodesics'):
+        line.segmentize(11_000_000.0, path='geodesic')
+
+
+def test_array_geodesic_segmentize_keeps_ambiguous_route_row_note() -> None:
+    valid = gm.LineString([(0.0, 0.0), (1.0, 1.0)], crs=4326)
+    ambiguous = gm.LineString([(0.0, 0.0), (180.0, 0.0)], crs=4326)
+    geometries = gm.GeometryArray([valid, ambiguous], crs=4326)
+
+    with pytest.raises(gm.CRSError, match='multiple shortest geodesics') as error:
+        geometries.segmentize(11_000_000.0, path='geodesic')
+    assert error.value.__notes__ == ['while processing array element 1']
+
+
+def test_geodesic_segmentize_length_excess_scales_with_piece_size() -> None:
+    start = gm.Point(0.0, 60.0, crs=4326)
+    end = start.destination(90.0, 1_000_000.0)
+    line = gm.LineString([(start.x, start.y), (end.x, end.y)], crs=4326)
+    route_length = gm.distance(start, end)
+
+    coarse = line.segmentize(2_000.0, path='geodesic')
+    fine = line.segmentize(1_000.0, path='geodesic')
+    coarse_excess = coarse.length - route_length
+    fine_excess = fine.length - route_length
+
+    assert len(fine.coords) >= 1_001
+    assert coarse_excess >= -1e-5
+    assert fine_excess >= -1e-5
+    # The chart-chord excess is second-order in piece size; allow rounding slack.
+    assert fine_excess <= max(coarse_excess, 0.0) * 0.26 + 1e-5
 
 
 def test_geographic_frechet_densify_uses_segmentize_chart_placement() -> None:

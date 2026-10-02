@@ -3,8 +3,8 @@ use geographiclib_rs::Geodesic;
 use crate::crs::RuntimeState;
 use crate::crs::geodesic::{
     CrsError, DirectGeodesic as _, EllipsoidMetric, GeodesicDirectInfo,
-    ensure_geographic_domain_in_frame, geographic_metric_frame_at, inverse_distance,
-    inverse_distance_azimuths, normalize, with_geodesic_at, with_geodesic_erased_at,
+    ensure_geographic_domain_in_frame, geographic_metric_frame_at, inverse_distance, normalize,
+    with_geodesic_at, with_geodesic_erased_at,
 };
 use crate::error::Result;
 use crate::geographic::GeographicFrame;
@@ -420,22 +420,6 @@ pub(crate) fn geodesic_direct_on_ellipsoid(
     Ok(info)
 }
 
-pub(crate) fn geodesic_line_solution(
-    geodesic: &Geodesic,
-    lon1: f64,
-    lat1: f64,
-    lon2: f64,
-    lat2: f64,
-) -> Result<(f64, f64, f64, f64)> {
-    let (total, forward_azimuth, _) = inverse_distance_azimuths(geodesic, lon1, lat1, lon2, lat2);
-    if !total.is_finite() || !forward_azimuth.is_finite() {
-        return Err(CrsError::invalid(
-            "geodesic interpolate calculation failed".to_owned(),
-        ));
-    }
-    Ok((lon1, lat1, forward_azimuth, total))
-}
-
 /// The point `fraction` of the way along a solved geodesic line, clamped to
 /// its endpoints.
 pub(crate) fn geodesic_interpolate_on_line(
@@ -520,6 +504,10 @@ mod chart_measure_tests {
     }
 
     #[test]
+    #[expect(
+        clippy::excessive_precision,
+        reason = "40-digit mpmath oracle literals preserve the independent reference value"
+    )]
     fn chart_area_series_matches_spherical_oblate_and_prolate_literals() {
         let frame = GeographicFrame::crs84();
         let zone = polygon(
@@ -611,6 +599,10 @@ mod chart_measure_tests {
     }
 
     #[test]
+    #[expect(
+        clippy::excessive_precision,
+        reason = "40-digit mpmath oracle literal preserves the independent reference value"
+    )]
     fn chart_area_subtracts_holes_against_high_precision_literals() {
         let metric = metric();
         let frame = metric.frame;
@@ -630,6 +622,10 @@ mod chart_measure_tests {
     }
 
     #[test]
+    #[expect(
+        clippy::excessive_precision,
+        reason = "40-digit mpmath oracle literal preserves the independent reference value"
+    )]
     fn chart_area_uses_topology_poles_and_keeps_the_open_q1_closure() {
         let metric = metric();
         let frame = metric.frame;

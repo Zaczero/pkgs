@@ -3,9 +3,9 @@ use pyo3::types::PyAny;
 
 use crate::{
     Bounds, BufferCapStyle, BufferJoinStyle, BufferSide, DefaultedF64Input, DefaultedI64Input,
-    DistanceUnit, F64Param, GeometryArrayStorage, GridOrigin, OriginSpec, PyGeometry,
-    PyGeometryArray, QUADRANT_SEGMENTS_DEFAULT_I64, SimplifyMethod, SmoothMethod, angle_radians,
-    finite_f64_required, parse_affine_matrix, parse_grid_size, parse_precision,
+    DistanceUnit, F64Param, GeometryArrayStorage, GridOrigin, NavigationPath, OriginSpec,
+    PyGeometry, PyGeometryArray, QUADRANT_SEGMENTS_DEFAULT_I64, SimplifyMethod, SmoothMethod,
+    angle_radians, finite_f64_required, parse_affine_matrix, parse_grid_size, parse_precision,
     validate_buffer_miter_limit, validate_buffer_quadrant_segments, validate_densify_fraction,
     validate_max_segment_length, validate_smooth_iterations,
 };
@@ -416,13 +416,17 @@ method_doc! {
     pre: r"Densify linework by inserting vertices so no segment exceeds
 ``max_length`` (or a fraction of its length).
 
-``max_length`` is a real-world distance measured for the CRS, exactly like
-``length``: a geographic CRS subdivides along the ellipsoid in meters, a
-projected CRS uses its native linear units, and a CRS-free geometry uses
-raw coordinate units. Every original vertex survives unchanged — this operation
-only inserts. Consecutive equal-X/Y vertices with distinct active Z/M
-ordinates remain in their stored order; their zero-length segments are not
-subdivided.
+By default, each geographic edge keeps its stored shape: the straight line
+between its longitude/latitude vertices. ``max_length`` is measured along that
+edge on the ellipsoid. ``path='geodesic'`` or ``path='rhumb'`` instead places
+new vertices along the shortest ellipsoidal route or the constant-bearing route
+between each pair of endpoints. The result remains a polyline with straight
+longitude/latitude edges, so its length approaches the selected route length as
+the pieces get shorter. Projected geometries use native linear units, and
+CRS-free geometries use raw coordinate units. Every original vertex survives
+unchanged — this operation only inserts. Consecutive equal-X/Y vertices with
+distinct active Z/M ordinates remain in their stored order; their zero-length
+segments are not subdivided.
 
 Parameters
 ----------";
@@ -435,6 +439,12 @@ max_length : float, optional
 fraction : float, optional
     Fraction in ``(0, 1]`` of each source segment. Keyword-only; use when
     the subdivision is naturally relative rather than expressed in units.
+path : {'geodesic', 'rhumb'}, optional
+    Route for inserted geographic vertices. ``None`` keeps each stored edge;
+    ``'geodesic'`` follows the shortest ellipsoidal route and is planar for
+    projected or CRS-free inputs; ``'rhumb'`` follows a constant-bearing route
+    and requires a geographic CRS. ``fraction`` is measured along the selected
+    route.
 ", r"
 
 Returns
@@ -452,6 +462,12 @@ max_length : float or sequence of float, optional
 fraction : float or sequence of float, optional
     Fraction in ``(0, 1]`` of each source segment. Keyword-only; a scalar
     applies to every geometry, or pass one value per geometry.
+path : {'geodesic', 'rhumb'}, optional
+    Route for inserted geographic vertices. ``None`` keeps each stored edge;
+    ``'geodesic'`` follows the shortest ellipsoidal route and is planar for
+    projected or CRS-free inputs; ``'rhumb'`` follows a constant-bearing route
+    and requires a geographic CRS. ``fraction`` is measured along the selected
+    route.
 ", r"
 
 Returns
@@ -463,19 +479,22 @@ GeometryArray
     post: concat!(
         unit_parameter_doc!(),
         r"    The override applies only to ``max_length``; ``fraction`` has no unit
-    and cannot be combined with ``unit``."
+    and cannot be combined with ``unit``. ``path`` cannot be combined with
+    ``unit``; geographic route distances are meters."
     );
     tail: r"
 Raises
 ------
 CRSError
-    If ``unit='meters'`` is requested and the CRS lacks linear axis units.
+    If ``unit='meters'`` is requested and the CRS lacks linear axis units, or
+    ``path='rhumb'`` is requested without a geographic CRS, or the selected
+    geodesic route has multiple shortest paths.
 GeometryError
     If neither or both constraints are supplied, ``max_length`` is not a
     positive finite number, ``fraction`` is outside ``(0, 1]``, ``unit`` is
-    combined with ``fraction``, ``unit='meters'`` is requested for a
-    CRS-free geometry, or the endpoint-preserving binary64 output cannot
-    satisfy ``max_length``.
+    combined with ``fraction``, ``path`` is combined with ``unit``,
+    ``unit='meters'`` is requested for a CRS-free geometry, or the
+    endpoint-preserving binary64 output cannot satisfy ``max_length``.
 
 Examples
 --------

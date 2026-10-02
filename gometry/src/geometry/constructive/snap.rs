@@ -605,10 +605,15 @@ fn geodesic_segment_plan(
     let end = frame
         .to_geodesic_point(end)
         .expect("geographic subdivision received admitted coordinates");
-    let solution = crate::crs::geodesic_line_solution(geodesic, start.x, start.y, end.x, end.y)?;
+    let segment = crate::crs::checked_geodesic_segment(geodesic, start, end)?;
     Ok(GeodesicSegmentPlan {
-        solution,
-        canonical_end: end.xy(),
+        solution: (
+            segment.start.x,
+            segment.start.y,
+            segment.azimuth0,
+            segment.length,
+        ),
+        canonical_end: segment.end.xy(),
     })
 }
 

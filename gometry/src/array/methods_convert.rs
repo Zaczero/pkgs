@@ -50,11 +50,6 @@ impl PyGeometryArray {
     ///
     /// The packed lane hands its kernels to detached workers, so the resolved
     /// placement is owned; its CRS and runtime state are shared by `Arc`.
-    #[expect(
-        clippy::large_types_passed_by_value,
-        reason = "the detached kernels need owned placement data; the ellipsoid is copied and \
-                  shared route metadata is held by Arc"
-    )]
     pub(crate) fn segmentize_unary_packed(
         &self,
         max_segment_length: &F64Param,
@@ -93,10 +88,6 @@ impl PyGeometryArray {
         Ok(result)
     }
 
-    #[expect(
-        clippy::large_types_passed_by_value,
-        reason = "the detached kernels need owned placement data; shared route metadata is held by Arc"
-    )]
     pub(crate) fn densify_unary_packed(
         &self,
         fraction: &F64Param,

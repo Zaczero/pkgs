@@ -2250,11 +2250,11 @@ impl Shape {
                 })?)
             },
             Self::Polygon(polygon) => Self::Polygon(
-                polygon.densified_budgeted_with_placement(fraction, placement, budget)?,
+                polygon.densified_budgeted_with_placement(fraction, &placement, budget)?,
             ),
             Self::MultiPolygon(polygons) => {
                 Self::MultiPolygon(polygons.try_map_values(polygons.axes(), |polygon| {
-                    polygon.densified_budgeted_with_placement(fraction, placement, budget)
+                    polygon.densified_budgeted_with_placement(fraction, &placement, budget)
                 })?)
             },
             Self::GeometryCollection(geometries) => {
@@ -2290,12 +2290,14 @@ impl Shape {
                     line.segmentize(max_segment_length, placement, budget)
                 })?)
             },
-            Self::Polygon(polygon) => {
-                Self::Polygon(polygon.segmentize_budgeted(max_segment_length, placement, budget)?)
-            },
+            Self::Polygon(polygon) => Self::Polygon(polygon.segmentize_budgeted(
+                max_segment_length,
+                &placement,
+                budget,
+            )?),
             Self::MultiPolygon(polygons) => {
                 Self::MultiPolygon(polygons.try_map_values(polygons.axes(), |polygon| {
-                    polygon.segmentize_budgeted(max_segment_length, placement, budget)
+                    polygon.segmentize_budgeted(max_segment_length, &placement, budget)
                 })?)
             },
             Self::GeometryCollection(geometries) => {

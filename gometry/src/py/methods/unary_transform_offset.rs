@@ -7,13 +7,32 @@ use crate::geometry::DEFAULT_MITER_LIMIT;
 use crate::py::errors::GeometryError;
 use crate::py::methods::unary_transform_methods::{
     Bound, Bounds, BufferCapStyle, BufferJoinStyle, BufferSide, DefaultedF64Input,
-    DefaultedI64Input, DistanceUnit, F64Param, GridOrigin, PyAny, PyGeometry, PyGeometryArray,
-    PyResult, Python, QUADRANT_SEGMENTS_DEFAULT_I64, SimplifyMethod, SmoothMethod,
+    DefaultedI64Input, DistanceUnit, F64Param, GridOrigin, NavigationPath, PyAny, PyGeometry,
+    PyGeometryArray, PyResult, Python, QUADRANT_SEGMENTS_DEFAULT_I64, SimplifyMethod, SmoothMethod,
     finite_f64_required, parse_grid_size, pymethods, validate_buffer_miter_limit,
     validate_buffer_quadrant_segments, validate_densify_fraction, validate_max_segment_length,
     validate_smooth_iterations,
 };
 use crate::py::vectors::Groups;
+
+fn validate_segmentize_units(
+    fraction: bool,
+    path: Option<NavigationPath>,
+    unit: Option<DistanceUnit>,
+) -> PyResult<()> {
+    if path.is_some() && unit.is_some() {
+        return Err(GeometryError::new_err(
+            "segmentize does not accept unit when path is set; route distances are meters",
+        ));
+    }
+    if fraction && unit.is_some() {
+        return Err(GeometryError::new_err(
+            "segmentize fraction= subdivides by a share of each segment and has no unit; \
+             pass max_length= to use unit=",
+        ));
+    }
+    Ok(())
+}
 
 #[pymethods]
 impl PyGeometry {
@@ -205,25 +224,18 @@ impl PyGeometry {
 
     #[doc = doc_segmentize!(scalar)]
     #[pyo3(
-        signature = (max_length = None, /, *, fraction = None, unit = None),
-        text_signature = "($self, max_length=None, /, *, fraction=None, unit=None)"
+        signature = (max_length = None, /, *, fraction = None, path = None, unit = None),
+        text_signature = "($self, max_length=None, /, *, fraction=None, path=None, unit=None)"
     )]
     pub fn segmentize(
         &self,
         py: Python<'_>,
         max_length: Option<&Bound<'_, PyAny>>,
         fraction: Option<&Bound<'_, PyAny>>,
+        path: Option<NavigationPath>,
         unit: Option<DistanceUnit>,
     ) -> PyResult<crate::Typed> {
-        // `fraction` subdivides each segment into a share of ITS OWN length, so
-        // it has no unit to override — pairing the two is a request that cannot
-        // be honoured either way round.
-        if fraction.is_some() && unit.is_some() {
-            return Err(GeometryError::new_err(
-                "segmentize fraction= subdivides by a share of each segment and has no unit; \
-                 pass max_length= to use unit=",
-            ));
-        }
+        validate_segmentize_units(fraction.is_some(), path, unit)?;
         match (max_length, fraction) {
             (Some(max_length), None) => {
                 let max_length = F64Param::parse(max_length, "max_length", unary_len!(scalar))?;
@@ -235,7 +247,7 @@ impl PyGeometry {
                     crate::dispatch::Operation::Metric(MetricOp::Segmentize),
                     unit,
                     default,
-                    move |data, ctx| { kernels::unary_segmentize(data, ctx, &max_length) }
+                    move |data, ctx| { kernels::unary_segmentize(data, ctx, &max_length, path) }
                 )
             },
             (None, Some(fraction)) => {
@@ -248,7 +260,7 @@ impl PyGeometry {
                     crate::dispatch::Operation::Metric(MetricOp::Segmentize),
                     None,
                     default,
-                    move |data, ctx| { kernels::unary_densify(data, ctx, &fraction) }
+                    move |data, ctx| { kernels::unary_densify(data, ctx, &fraction, path) }
                 )
             },
             _ => Err(GeometryError::new_err(
@@ -512,25 +524,18 @@ impl PyGeometryArray {
 
     #[doc = doc_segmentize!(array)]
     #[pyo3(
-        signature = (max_length = None, /, *, fraction = None, unit = None),
-        text_signature = "($self, max_length=None, /, *, fraction=None, unit=None)"
+        signature = (max_length = None, /, *, fraction = None, path = None, unit = None),
+        text_signature = "($self, max_length=None, /, *, fraction=None, path=None, unit=None)"
     )]
     pub fn segmentize(
         &self,
         py: Python<'_>,
         max_length: Option<&Bound<'_, PyAny>>,
         fraction: Option<&Bound<'_, PyAny>>,
+        path: Option<NavigationPath>,
         unit: Option<DistanceUnit>,
     ) -> PyResult<Self> {
-        // `fraction` subdivides each segment into a share of ITS OWN length, so
-        // it has no unit to override — pairing the two is a request that cannot
-        // be honoured either way round.
-        if fraction.is_some() && unit.is_some() {
-            return Err(GeometryError::new_err(
-                "segmentize fraction= subdivides by a share of each segment and has no unit; \
-                 pass max_length= to use unit=",
-            ));
-        }
+        validate_segmentize_units(fraction.is_some(), path, unit)?;
         match (max_length, fraction) {
             (Some(max_length), None) => {
                 let max_length =
@@ -543,9 +548,10 @@ impl PyGeometryArray {
                     crate::dispatch::Operation::Metric(MetricOp::Segmentize),
                     unit,
                     crate::dispatch::PackedUnary::Segmentize {
-                        max_segment_length: max_length.clone()
+                        max_segment_length: max_length.clone(),
+                        path,
                     },
-                    move |data, ctx| kernels::unary_segmentize(data, ctx, &max_length)
+                    move |data, ctx| kernels::unary_segmentize(data, ctx, &max_length, path)
                 )
             },
             (None, Some(fraction)) => {
@@ -558,9 +564,10 @@ impl PyGeometryArray {
                     crate::dispatch::Operation::Metric(MetricOp::Segmentize),
                     None,
                     crate::dispatch::PackedUnary::Densify {
-                        fraction: fraction.clone()
+                        fraction: fraction.clone(),
+                        path,
                     },
-                    move |data, ctx| kernels::unary_densify(data, ctx, &fraction)
+                    move |data, ctx| kernels::unary_densify(data, ctx, &fraction, path)
                 )
             },
             _ => Err(GeometryError::new_err(

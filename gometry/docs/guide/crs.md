@@ -40,7 +40,7 @@ construction operate on stored coordinates.
 | **Geodesic measures** | [`area`][gometry.area], [`length`][gometry.length], [`distance`][gometry.distance], [`dwithin`][gometry.dwithin], LRS | CRS-natural units (ellipsoidal metres on a geographic CRS); optional `unit=` override; short-way geodesic across the antimeridian; pairwise distance operations use points and linework on geographic CRSs |
 | **Metric constructive** | [`buffer`][gometry.Geometry.buffer], [`offset_curve`][gometry.Geometry.offset_curve] | Distance *inputs* use CRS-natural units (and may use a local-projection construction on a geographic CRS); shapes are **coordinate-planar** — **not** antimeridian auto-split |
 | **Topology** | predicates, overlay, [`relate`][gometry.relate], [`clip_by_rect`][gometry.Geometry.clip_by_rect] | strict frame match; geographic topology resolves longitude aliases and seam and pole equivalence in the CRS-native frame; seam-crossing inputs are split into straight chart pieces in an unwrapped longitude/latitude plane. `clip_by_rect` admits canonical geographic rectangle endpoints in `[-180, 180]`, with west > east selecting the seam-crossing interval; non-canonical subjects use frame-aware overlay, while canonical seam-free inputs clip directly. Geographic rectangle parallels match [`box`][gometry.box]. |
-| **Coordinate refinement** | [`segmentize(max_length)`][gometry.Geometry.segmentize], [`line_interpolate`][gometry.Geometry.line_interpolate] | `max_length` and distances follow the CRS metric; `fraction=` is unitless; original vertices are retained |
+| **Coordinate refinement** | [`segmentize(max_length)`][gometry.Geometry.segmentize], [`line_interpolate`][gometry.Geometry.line_interpolate] | `segmentize` follows stored geographic edges by default; `path=` selects geodesic or rhumb routing; distances follow the CRS metric and original vertices are retained |
 | **Coordinate edit** | [`quantize`][gometry.Geometry.quantize], [`snap_to_grid`][gometry.Geometry.snap_to_grid], affine | raw coordinate space; no metric conversion |
 | **Planar constructive** | [`convex_hull`][gometry.Geometry.convex_hull], [`concave_hull`][gometry.Geometry.concave_hull], [`simplify`][gometry.Geometry.simplify], Voronoi, Delaunay | operate on stored XY; may need local projection or [`split_antimeridian`][gometry.Geometry.split_antimeridian] |
 
@@ -644,19 +644,32 @@ and an `XY` point) the witnesses drop to the ordinates both carry.
 
 !!! note "`segmentize` inserts vertices without moving originals"
     [`segmentize`][gometry.Geometry.segmentize] only *inserts* vertices along
-    existing segments, so every original survives untouched. Its `max_length` is
-    a real-world distance measured like
+    existing segments, so every original survives untouched. By default,
+    geographic edges stay straight in longitude/latitude, and `max_length` is
+    their ellipsoidal arclength, measured like
     [`length`][gometry.length] — meters along the ellipsoid on a geographic CRS,
     native linear units on a projected one, raw coordinate units when CRS-free — with the
     same `unit='planar'` / `unit='meters'` escapes as every other metric.
 
+    Use `path='geodesic'` to space vertices along the shortest ellipsoidal route;
+    on projected or CRS-free input it is planar. `path='rhumb'` follows a
+    constant-bearing route and requires a geographic CRS. Both still return
+    straight longitude/latitude edges, so a routed result's `length` approaches
+    the route length as `max_length` shrinks. `fraction=` spaces vertices by
+    equal fractions of the selected path's arclength. A non-`None` `path` cannot
+    be combined with `unit=`.
+
     ```python exec="on" source="block" result="text"
     import gometry as gm
 
-    line = gm.LineString([(0, 0), (1, 0)], crs=4326)
+    line = gm.LineString([(0, 60), (90, 60)], crs=4326)
     print(f"length: {gm.length(line):,.0f} m")
-    print(f"segmentize(20_000): {len(list(line.segmentize(20_000).coords))} vertices")
-    print(f"unit='planar': {len(list(line.segmentize(0.25, unit='planar').coords))} vertices")
+    print(f"stored edge: {len(list(line.segmentize(500_000).coords))} vertices")
+    print(
+        "geodesic route:",
+        len(list(line.segmentize(500_000, path='geodesic').coords)),
+        "vertices",
+    )
     ```
 
 ## Picking a projected CRS automatically

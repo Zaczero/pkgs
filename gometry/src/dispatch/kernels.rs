@@ -478,11 +478,11 @@ pub(crate) fn unary_smooth_budgeted(
 
 /// Resolve segmentize's route option against its CRS-aware metric.
 pub(crate) fn segmentize_placement(
-    metric: &ResolvedMetric,
+    metric: Option<&ResolvedMetric>,
     path: Option<crate::NavigationPath>,
 ) -> Result<(crate::geometry::SegmentPlacementOwned, f64)> {
     Ok(match metric {
-        ResolvedMetric::Geodesic(metric) => {
+        Some(ResolvedMetric::Geodesic(metric)) => {
             let placement = match path {
                 None => {
                     crate::geometry::SegmentPlacementOwned::Chart(*metric.geodesic, metric.frame)
@@ -500,19 +500,28 @@ pub(crate) fn segmentize_placement(
             };
             (placement, 1.0)
         },
-        ResolvedMetric::Planar { to_metre } => {
+        Some(ResolvedMetric::Planar { to_metre }) => {
             if matches!(path, Some(crate::NavigationPath::Rhumb)) {
-                return Err(crate::crs::CrsError::message(
-                    "segmentize requires a geographic CRS; use set_crs(...) or to_crs(...) to attach one",
-                )
-                .into());
+                return Err(segmentize_rhumb_crs_error());
             }
             (
                 crate::geometry::SegmentPlacementOwned::Planar,
                 to_metre.get(),
             )
         },
+        None => {
+            if matches!(path, Some(crate::NavigationPath::Rhumb)) {
+                return Err(segmentize_rhumb_crs_error());
+            }
+            (crate::geometry::SegmentPlacementOwned::Planar, 1.0)
+        },
     })
+}
+
+fn segmentize_rhumb_crs_error() -> crate::error::Error {
+    crate::crs::CrsError::message(
+        "segmentize path='rhumb' requires a geographic CRS; use set_crs(...) or to_crs(...) to attach one",
+    )
 }
 
 /// Segmentize kernel shared by the spine-routed free function.
@@ -520,11 +529,12 @@ pub(crate) fn unary_segmentize(
     data: &PreparedPlan,
     ctx: &CachelessRowContext<'_>,
     max_segment_length: &F64Param,
+    path: Option<crate::NavigationPath>,
 ) -> Result<Shape> {
     let metric = ctx.metric.require_resolved(MetricOp::Segmentize)?;
     let mut budget = crate::geometry::ExpansionBudget::new("segmentize", "max_length");
     let length = max_segment_length.get(ctx.lane.row());
-    let (placement, to_metre) = segmentize_placement(metric, None)?;
+    let (placement, to_metre) = segmentize_placement(Some(metric), path)?;
     if let Some(frame) = placement.frame() {
         crate::crs::ensure_geographic_domain_in_frame(frame, data.shape())?;
     }
@@ -537,10 +547,11 @@ pub(crate) fn unary_densify(
     data: &PreparedPlan,
     ctx: &CachelessRowContext<'_>,
     fraction: &F64Param,
+    path: Option<crate::NavigationPath>,
 ) -> Result<Shape> {
     let fraction = fraction.get(ctx.lane.row());
     let metric = ctx.metric.require_resolved(MetricOp::Segmentize)?;
-    let (placement, _) = segmentize_placement(metric, None)?;
+    let (placement, _) = segmentize_placement(Some(metric), path)?;
     if let Some(frame) = placement.frame() {
         crate::crs::ensure_geographic_domain_in_frame(frame, data.shape())?;
     }

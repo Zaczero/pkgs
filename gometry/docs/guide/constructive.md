@@ -307,20 +307,30 @@ print(before_after(with_vertices(noisy), with_vertices(snapped),
 
 [`segmentize`][gometry.Geometry.segmentize] has two explicit constraints. Pass a
 positional `max_length` when every output segment must be no longer than that
-distance, or pass `fraction=` to split every input segment into equal pieces
-(`fraction=0.25` produces four pieces). Both preserve the represented shape and
-only raise vertex density. See [CRS, units & measurement](crs.md) for the
-`max_length` metric. The `max_length` path guarantees that no output segment
-exceeds the requested distance and preserves every original vertex. When
-binary64 rounding would otherwise break that guarantee, it emits additional
-vertices so the result still satisfies the maximum. `fraction=` has no unit
-and cannot be combined with `unit=`. A request that would generate more than
+distance, or pass `fraction=` to split each input edge into equal-arclength
+pieces (`fraction=0.25` produces four). By default, geographic vertices stay on
+the stored straight longitude/latitude edges, preserving their shape. See
+[CRS, units & measurement](crs.md) for the `max_length` metric. The `max_length`
+path guarantees that no output segment exceeds the requested distance and
+preserves every original vertex. When binary64 rounding would otherwise break
+that guarantee, it emits additional vertices so the result still satisfies the
+maximum. `fraction=` has no unit and cannot be combined with `unit=`.
+
+For a geographic geometry, `path='geodesic'` samples the shortest ellipsoidal
+route and `path='rhumb'` samples a constant-bearing route. Their inserted
+vertices are route-spaced, but the output remains a polyline with straight
+longitude/latitude edges; its length approaches the chosen route length as the
+pieces get shorter. `path='geodesic'` is planar on projected or CRS-free input;
+`path='rhumb'` requires a geographic CRS. A non-`None` `path` cannot be combined
+with `unit=`.
+
+A request that would generate more than
 **16,000,000** output items from one geometry is refused with a
 [`GeometryError`][gometry.GeometryError] whose message names the operation,
 produced count, limit, and controlling parameter. The limit bounds what a
 parameter makes of each geometry; an array's length is not charged against it:
 
-Both modes retain original Z/M-bearing vertices in their stored order. A
+All modes retain original Z/M-bearing vertices in their stored order. A
 zero-length X/Y segment is not subdivided, so consecutive same-X/Y vertices
 with different active ordinates remain present.
 
