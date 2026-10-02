@@ -59,8 +59,8 @@ pub(crate) use access::{
     REDUCE_SIMD_MIN, ReduceSimd, RunIdentity, SharedShapeOwners, SupportRunKind, canonicalize_zero,
     centroid_ring_sums, column_all_finite, column_mean2, column_minmax, line_length_3d_columns,
     line_length_columns, pair_map4_guarded_f64, pair_select_mask, shape_axes_all_z,
-    simd_argmin_f64, simd_indexed_map_f64, simd_map_f64, simd_mask_all, simd_mask_any,
-    simd_xy_map_f64, squared_norm_untrusted_mask, try_simd_map_f64, xy_bounds_columns,
+    simd_argmin_f64, simd_indexed_map_f64, simd_map_f64, simd_mask_any, simd_xy_map_f64,
+    squared_norm_untrusted_mask, try_simd_map_f64, xy_bounds_columns,
 };
 #[cfg(test)]
 pub(crate) use area::{AreaSign, open_point_cycle_magnitude, open_xy_cycle_sign};

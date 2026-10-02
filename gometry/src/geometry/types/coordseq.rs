@@ -3,15 +3,13 @@
     reason = "axis and formula symbols name paired quantities here (minx/miny, xs/ys, lat_rad/lam_rad, step/stop), which this lint reads as typos"
 )]
 use std::ops::Range;
-use std::simd::cmp::SimdPartialEq as _;
-use std::simd::num::SimdFloat as _;
 
 use crate::error::Result;
+use crate::geometry::column_all_finite;
 use crate::geometry::types::{
     CoordinateAxes, GeometryErrorKind, HasM, HasZ, MOrdinate, Point, SharedSlice, XY, ZOrdinate,
     ensure_coordseq_vertex_capacity,
 };
-use crate::geometry::{REDUCE_LANES, ReduceSimd, column_all_finite, simd_mask_all};
 
 /// One sequence's shared column storage and coordinate row window (see
 /// [`CoordSeq::column_arcs`]).
@@ -1386,19 +1384,7 @@ impl CoordSeqBuilder {
 /// Compare two columns by bit pattern (so `NaN` is deterministic and
 /// `-0.0`/`0.0` stay distinct), mirroring [`Point`]'s structural identity.
 fn columns_bits_eq(left: &[f64], right: &[f64]) -> bool {
-    left.len() == right.len()
-        && simd_mask_all(
-            left.len(),
-            |index| left[index].to_bits() == right[index].to_bits(),
-            |start| {
-                let chunk = start / REDUCE_LANES;
-                let (left_chunks, _) = left.as_chunks::<REDUCE_LANES>();
-                let (right_chunks, _) = right.as_chunks::<REDUCE_LANES>();
-                ReduceSimd::from_array(left_chunks[chunk])
-                    .to_bits()
-                    .simd_eq(ReduceSimd::from_array(right_chunks[chunk]).to_bits())
-            },
-        )
+    bytemuck::cast_slice::<f64, u8>(left) == bytemuck::cast_slice::<f64, u8>(right)
 }
 
 impl PartialEq for CoordSeq {

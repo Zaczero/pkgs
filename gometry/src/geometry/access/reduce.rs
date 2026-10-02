@@ -177,28 +177,6 @@ pub(crate) fn simd_indexed_map_f64(
     }
 }
 
-/// Bit-exact boolean reduction: `true` iff EVERY index satisfies `scalar` /
-/// `vector`. Full `REDUCE_LANES` chunks run `vector` (chunk-start index);
-/// inputs below [`REDUCE_SIMD_MIN`] and the tail use `scalar` exclusively.
-/// Vertical-AND accumulates chunk masks, then `.all()` — plain ops only
-/// (decision/validation paths).
-pub(crate) fn simd_mask_all(
-    len: usize,
-    scalar: impl FnMut(usize) -> bool,
-    vector: impl FnMut(usize) -> std::simd::Mask<i64, REDUCE_LANES>,
-) -> bool {
-    simd_mask_reduce(
-        len,
-        scalar,
-        vector,
-        true,
-        |acc, mask| acc & mask,
-        |acc| (!acc.all()).then_some(false),
-        |acc, value| acc && value,
-        |acc| (!acc).then_some(false),
-    )
-}
-
 fn simd_mask_reduce(
     len: usize,
     scalar: impl FnMut(usize) -> bool,
