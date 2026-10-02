@@ -10,27 +10,28 @@
 
 use crate::HeapSize;
 use crate::error::Result;
+use crate::geometry::distance::ChartEdgePart;
 use crate::geometry::{
-    BvhCode, BvhNode, GeodesicMetric, GeodesicParts, GeodesicSegment, GeodesicSegmentQuery,
-    GeodesicSegmentQueryResult, GeodesicSegmentScratch, GeodesicWitnessNeed, Point,
+    BvhCode, BvhNode, ChartBox, ChartMetric, GeodesicMetric, GeodesicParts, GeodesicSegment,
+    GeodesicSegmentQuery, GeodesicSegmentQueryResult, GeodesicSegmentScratch, GeodesicWitnessNeed,
+    Point,
 };
 
-const GEODESIC_LEAF_SEGMENTS: usize = 8;
+const BVH_LEAF_SIZE: usize = 8;
 
-fn geodesic_leaf_count(segment_count: usize) -> usize {
-    if segment_count <= GEODESIC_LEAF_SEGMENTS {
+fn balanced_bvh_leaf_count(entry_count: usize) -> usize {
+    if entry_count <= BVH_LEAF_SIZE {
         return 1;
     }
-    let quotient = segment_count / GEODESIC_LEAF_SEGMENTS;
+    let quotient = entry_count / BVH_LEAF_SIZE;
     let base = 1_usize << quotient.ilog2();
-    // At `base * threshold` segments the balanced tree has `base` leaves;
-    // it gains one leaf per segment until the next complete level. `build`
-    // admits at most `LEAF_BIT / 2` segments before calling this helper, so the
-    // leaf formula and its node count are representable in `usize`.
+    // At `base * BVH_LEAF_SIZE` entries the balanced tree has `base` leaves;
+    // it gains one leaf per entry until the next complete level. Builders
+    // admit at most `LEAF_BIT / 2` entries, so the leaf and node counts fit.
     let complete_level = base.wrapping_mul(2);
     let partial_level = base
-        .wrapping_add(segment_count)
-        .wrapping_sub(GEODESIC_LEAF_SEGMENTS.wrapping_mul(base));
+        .wrapping_add(entry_count)
+        .wrapping_sub(BVH_LEAF_SIZE.wrapping_mul(base));
     complete_level.min(partial_level)
 }
 
@@ -109,7 +110,7 @@ impl GeodesicFacetBvh {
         if segment_count == 0 || segment_count > BvhCode::LEAF_BIT / 2 {
             return None;
         }
-        let leaf_count = geodesic_leaf_count(segments.len());
+        let leaf_count = balanced_bvh_leaf_count(segments.len());
         let node_count = leaf_count.wrapping_mul(2).wrapping_sub(1);
         let mut tree = Self {
             anchors: vec![Point::new_raw_xy(0.0, 0.0); node_count].into_boxed_slice(),
@@ -164,7 +165,7 @@ impl GeodesicFacetBvh {
         next_segment_id: &mut usize,
         metric: &impl GeodesicMetric,
     ) {
-        if ids.len() <= GEODESIC_LEAF_SEGMENTS {
+        if ids.len() <= BVH_LEAF_SIZE {
             ids.sort_unstable_by_key(|entry| entry.index);
             let first = *next_segment_id as u32;
             for entry in ids.iter() {
@@ -243,81 +244,15 @@ impl GeodesicFacetBvh {
         clippy::indexing_slicing,
         reason = "traversal node and leaf IDs are decoded from codes emitted by this immutable BVH builder"
     )]
-    pub(super) fn min_point_distance(
+    pub(super) fn witness_point(
         &self,
         point: Point,
         parts: &GeodesicParts,
         metric: &impl GeodesicMetric,
         stack: &mut Vec<u32>,
         segment_scratch: &mut GeodesicSegmentScratch,
-        mut best: f64,
-    ) -> Result<f64> {
-        stack.clear();
-        stack.push(0);
-        while let Some(node) = stack.pop() {
-            let node = node as usize;
-            if self.bound(point, node, metric)? > best {
-                continue;
-            }
-            match BvhCode::new(self.codes[node]).decode() {
-                BvhNode::Leaf(leaf_index) => {
-                    let leaf = self.leaves[leaf_index];
-                    for edge_index in self.leaf_segment_ids(leaf) {
-                        let edge_index = *edge_index as usize;
-                        let segment = parts.segments[edge_index];
-                        let bound = metric.point_distance_lower_bound(point, segment.start)?
-                            - segment.length;
-                        if bound <= best {
-                            let result = metric.point_segment_query(
-                                point,
-                                &segment,
-                                GeodesicSegmentQuery::Minimum {
-                                    cutoff: best,
-                                    witness: GeodesicWitnessNeed::No,
-                                },
-                                segment_scratch,
-                            )?;
-                            if let GeodesicSegmentQueryResult::Attained { minimum, .. } = result {
-                                best = best.min(minimum.distance);
-                            }
-                        }
-                    }
-                },
-                BvhNode::Internal(first_child) => {
-                    self.push_nearer_last(point, first_child as u32, metric, stack)?;
-                },
-            }
-        }
-        for &target in &parts.point_only {
-            if metric.point_distance_lower_bound(point, target)? <= best {
-                best = best.min(metric.segment_length(point, target));
-            }
-        }
-        Ok(best)
-    }
-
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "the BVH traversal keeps node order, segment scratch, witness order, and tie state explicit at one hot call boundary"
-    )]
-    #[expect(
-        clippy::indexing_slicing,
-        reason = "traversal node and leaf IDs are decoded from codes emitted by this immutable BVH builder"
-    )]
-    pub(super) fn witness_point(
-        &self,
-        vertex: Point,
-        vertex_index: usize,
-        parts: &GeodesicParts,
-        metric: &impl GeodesicMetric,
-        stack: &mut Vec<u32>,
-        segment_scratch: &mut GeodesicSegmentScratch,
-        mut best: Option<GeodesicWitnessCandidate>,
-        order_offset: WitnessOrder,
-        swapped: bool,
-        width: u128,
     ) -> Result<Option<GeodesicWitnessCandidate>> {
-        let row_order = WitnessOrder::after_rows(order_offset, vertex_index, width);
+        let mut best: Option<GeodesicWitnessCandidate> = None;
         stack.clear();
         stack.push(0);
         while let Some(node) = stack.pop() {
@@ -325,7 +260,7 @@ impl GeodesicFacetBvh {
             let best_distance = best
                 .as_ref()
                 .map_or(f64::INFINITY, |candidate| candidate.distance);
-            if self.bound(vertex, node, metric)? > best_distance {
+            if self.bound(point, node, metric)? > best_distance {
                 continue;
             }
             match BvhCode::new(self.codes[node]).decode() {
@@ -334,15 +269,15 @@ impl GeodesicFacetBvh {
                     for edge_index in self.leaf_segment_ids(leaf) {
                         let edge_index = *edge_index as usize;
                         let segment = parts.segments[edge_index];
-                        let order = row_order.with_column(edge_index as u128);
+                        let order = WitnessOrder::ordinal(edge_index);
                         let best_distance = witness_refine_limit(best.as_ref(), order);
-                        let bound = metric.point_distance_lower_bound(vertex, segment.start)?
+                        let bound = metric.point_distance_lower_bound(point, segment.start)?
                             - segment.length;
                         if bound > best_distance {
                             continue;
                         }
                         let result = metric.point_segment_query(
-                            vertex,
+                            point,
                             &segment,
                             GeodesicSegmentQuery::Minimum {
                                 cutoff: best_distance,
@@ -358,7 +293,6 @@ impl GeodesicFacetBvh {
                             continue;
                         };
                         let candidate = GeodesicWitnessCandidate {
-                            probe: vertex,
                             target,
                             distance: minimum.distance,
                             lower: minimum.lower,
@@ -368,7 +302,6 @@ impl GeodesicFacetBvh {
                                 along: minimum.along,
                             },
                             order,
-                            swapped,
                         };
                         if geodesic_witness_is_better(best.as_ref(), &candidate) {
                             best = Some(candidate);
@@ -376,31 +309,29 @@ impl GeodesicFacetBvh {
                     }
                 },
                 BvhNode::Internal(first_child) => {
-                    self.push_nearer_last(vertex, first_child as u32, metric, stack)?;
+                    self.push_nearer_last(point, first_child as u32, metric, stack)?;
                 },
             }
         }
         if !parts.point_only.is_empty() {
-            for (point_index, &point) in parts.point_only.iter().enumerate() {
-                let order = row_order.with_column(WitnessOrder::point_feature(
+            for (point_index, &target) in parts.point_only.iter().enumerate() {
+                let order = WitnessOrder::from_rank(WitnessOrder::point_feature(
                     parts.segments.len(),
                     point_index,
                 ));
                 let best_distance = witness_refine_limit(best.as_ref(), order);
-                if metric.point_distance_lower_bound(vertex, point)? > best_distance {
+                if metric.point_distance_lower_bound(point, target)? > best_distance {
                     continue;
                 }
-                let distance = metric.segment_length(vertex, point);
+                let distance = metric.segment_length(point, target);
                 let evaluation_error = metric.geodesic_numerical_policy().evaluation_allowance(1.0);
                 let candidate = GeodesicWitnessCandidate {
-                    probe: vertex,
-                    target: point,
+                    target,
                     distance,
                     lower: (distance - evaluation_error).max(0.0),
                     evaluation_error,
                     feature: GeodesicTargetFeature::Point,
                     order,
-                    swapped,
                 };
                 if geodesic_witness_is_better(best.as_ref(), &candidate) {
                     best = Some(candidate);
@@ -408,78 +339,6 @@ impl GeodesicFacetBvh {
             }
         }
         Ok(best)
-    }
-
-    #[expect(
-        clippy::indexing_slicing,
-        reason = "traversal node and leaf IDs are decoded from codes emitted by this immutable BVH builder"
-    )]
-    pub(super) fn dwithin_point(
-        &self,
-        point: Point,
-        parts: &GeodesicParts,
-        metric: &impl GeodesicMetric,
-        stack: &mut Vec<u32>,
-        segment_scratch: &mut GeodesicSegmentScratch,
-        limit: f64,
-    ) -> Result<bool> {
-        if limit.is_infinite() && limit.is_sign_positive() {
-            return Ok(!parts.segments.is_empty() || !parts.point_only.is_empty());
-        }
-        stack.clear();
-        stack.push(0);
-        while let Some(node) = stack.pop() {
-            let node = node as usize;
-            if self.bound(point, node, metric)? > limit {
-                continue;
-            }
-            match BvhCode::new(self.codes[node]).decode() {
-                BvhNode::Leaf(leaf_index) => {
-                    let leaf = self.leaves[leaf_index];
-                    for edge_index in self.leaf_segment_ids(leaf) {
-                        let edge_index = *edge_index as usize;
-                        let segment = parts.segments[edge_index];
-                        if metric.point_distance_lower_bound(point, segment.start)? - segment.length
-                            > limit
-                        {
-                            continue;
-                        }
-                        let result = metric.point_segment_query(
-                            point,
-                            &segment,
-                            GeodesicSegmentQuery::Threshold {
-                                limit,
-                                witness: GeodesicWitnessNeed::No,
-                            },
-                            segment_scratch,
-                        )?;
-                        match result {
-                            GeodesicSegmentQueryResult::Attained { .. } => return Ok(true),
-                            GeodesicSegmentQueryResult::ThresholdOutside
-                            | GeodesicSegmentQueryResult::Excluded => {},
-                            GeodesicSegmentQueryResult::ThresholdResolvedOutside { minimum } => {
-                                if minimum <= limit {
-                                    return Ok(true);
-                                }
-                            },
-                        }
-                    }
-                },
-                BvhNode::Internal(first_child) => {
-                    let first_child = first_child as u32;
-                    stack.push(first_child);
-                    stack.push(first_child.wrapping_add(1));
-                },
-            }
-        }
-        for &target in &parts.point_only {
-            if metric.point_distance_lower_bound(point, target)? <= limit
-                && metric.segment_length(point, target) <= limit
-            {
-                return Ok(true);
-            }
-        }
-        Ok(false)
     }
 
     fn push_nearer_last(
@@ -596,54 +455,24 @@ pub(super) enum GeodesicTargetFeature {
 
 #[derive(Clone, Copy, Debug)]
 pub(super) struct GeodesicWitnessCandidate {
-    pub(super) probe: Point,
     pub(super) target: Point,
     pub(super) distance: f64,
     pub(super) lower: f64,
     pub(super) evaluation_error: f64,
     pub(super) feature: GeodesicTargetFeature,
     pub(super) order: WitnessOrder,
-    pub(super) swapped: bool,
 }
 
-/// Exact row-major order among candidate witnesses.
-///
-/// Each stored point and segment occupies at least 16 bytes, and each vector is
-/// bounded by `isize::MAX` bytes. On the supported 64-bit targets, one source
-/// count is below 2^59, one combined target-feature width is below 2^60, and
-/// both directed products together remain below 2^120.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub(super) struct WitnessOrder(u128);
 
 impl WitnessOrder {
-    pub(super) const ZERO: Self = Self(0);
-
     pub(super) const fn from_rank(rank: u128) -> Self {
         Self(rank)
     }
 
     pub(super) const fn ordinal(index: usize) -> Self {
         Self(index as u128)
-    }
-
-    #[expect(
-        clippy::missing_const_for_fn,
-        reason = "making this shared width helper const would newly make the out-of-scope target_feature_width caller lint"
-    )]
-    pub(super) fn feature_width(segments: usize, point_only: usize) -> u128 {
-        (segments as u128).wrapping_add(point_only as u128)
-    }
-
-    pub(super) const fn row_major(base: Self, row: usize, width: u128, column: u128) -> Self {
-        Self::after_rows(base, row, width).with_column(column)
-    }
-
-    pub(super) const fn after_rows(base: Self, rows: usize, width: u128) -> Self {
-        Self(base.0.wrapping_add((rows as u128).wrapping_mul(width)))
-    }
-
-    pub(super) const fn with_column(self, column: u128) -> Self {
-        Self(self.0.wrapping_add(column))
     }
 
     pub(super) const fn point_feature(segments: usize, point: usize) -> u128 {
@@ -664,6 +493,299 @@ pub(super) fn witness_refine_limit(
     })
 }
 
+#[derive(Clone, Copy)]
+struct ChartEdgeBuild {
+    index: u32,
+    center: [f64; 2],
+}
+
+#[derive(Clone, Copy)]
+struct ChartEdgeLeaf {
+    first: u32,
+    len: u8,
+}
+crate::heapless!(ChartEdgeLeaf);
+
+/// Flat BVH over the chart boxes of one prepared geometry.
+pub(crate) struct ChartEdgeBvh {
+    boxes: Box<[ChartBox]>,
+    codes: Box<[u32]>,
+    leaves: Box<[ChartEdgeLeaf]>,
+    edge_ids: Box<[u32]>,
+}
+
+impl ChartEdgeBvh {
+    pub(crate) fn build(edges: &[ChartEdgePart]) -> Option<Self> {
+        let edge_count = u32::try_from(edges.len()).ok()?;
+        if edge_count == 0 || edge_count > BvhCode::LEAF_BIT / 2 {
+            return None;
+        }
+        let leaf_count = balanced_bvh_leaf_count(edges.len());
+        let node_count = leaf_count.checked_mul(2)?.checked_sub(1)?;
+        let world_box = ChartBox {
+            west: -180.0,
+            south: -90.0,
+            east: 180.0,
+            north: 90.0,
+        };
+        let mut tree = Self {
+            boxes: vec![world_box; node_count].into_boxed_slice(),
+            codes: vec![0; node_count].into_boxed_slice(),
+            leaves: vec![ChartEdgeLeaf { first: 0, len: 0 }; leaf_count].into_boxed_slice(),
+            edge_ids: vec![0; edges.len()].into_boxed_slice(),
+        };
+        let mut entries = edges
+            .iter()
+            .enumerate()
+            .map(|(index, edge)| ChartEdgeBuild {
+                index: index as u32,
+                center: chart_box_center(edge.bounds),
+            })
+            .collect::<Vec<_>>();
+        let mut next_node = 1;
+        let mut next_leaf = 0;
+        let mut next_edge = 0;
+        tree.fill_node(
+            0,
+            &mut next_node,
+            &mut next_leaf,
+            &mut next_edge,
+            edges,
+            &mut entries,
+        );
+        debug_assert_eq!(next_node, node_count);
+        debug_assert_eq!(next_leaf, leaf_count);
+        debug_assert_eq!(next_edge, edges.len());
+        Some(tree)
+    }
+
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "node, leaf, and edge indexes are generated together within the admitted u32-sized chart BVH"
+    )]
+    #[expect(
+        clippy::arithmetic_side_effects,
+        reason = "the admitted node count bounds adjacent child slots and cursor increments"
+    )]
+    fn fill_node(
+        &mut self,
+        node: usize,
+        next_node: &mut usize,
+        next_leaf: &mut usize,
+        next_edge: &mut usize,
+        edges: &[ChartEdgePart],
+        entries: &mut [ChartEdgeBuild],
+    ) {
+        self.boxes[node] = chart_box_union(
+            entries
+                .iter()
+                .map(|entry| edges[entry.index as usize].bounds),
+        );
+        if entries.len() <= BVH_LEAF_SIZE {
+            entries.sort_unstable_by_key(|entry| entry.index);
+            let first = *next_edge as u32;
+            for entry in entries.iter() {
+                self.edge_ids[*next_edge] = entry.index;
+                *next_edge = (*next_edge).wrapping_add(1);
+            }
+            let leaf_index = *next_leaf as u32;
+            self.leaves[*next_leaf] = ChartEdgeLeaf {
+                first,
+                len: entries.len() as u8,
+            };
+            *next_leaf = (*next_leaf).wrapping_add(1);
+            self.codes[node] = BvhCode::leaf(leaf_index as usize).raw();
+            return;
+        }
+
+        let axis = chart_split_axis(self.boxes[node]);
+        let middle = entries.len() / 2;
+        entries.select_nth_unstable_by(middle, |left, right| {
+            left.center[axis]
+                .total_cmp(&right.center[axis])
+                .then_with(|| left.index.cmp(&right.index))
+        });
+        let (lower, upper) = entries.split_at_mut(middle);
+        let first_child = *next_node;
+        *next_node = (*next_node).wrapping_add(2);
+        self.codes[node] = BvhCode::internal(first_child as u32).raw();
+        self.fill_node(first_child, next_node, next_leaf, next_edge, edges, lower);
+        self.fill_node(
+            first_child + 1,
+            next_node,
+            next_leaf,
+            next_edge,
+            edges,
+            upper,
+        );
+    }
+
+    /// Visit candidate edges from the nearer chart boxes first. `limit` is
+    /// inclusive for threshold queries and an improving upper bound for
+    /// minima; the visitor may lower `best` or stop with a value.
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "Traversal IDs and leaf ranges are encoded by this immutable chart BVH builder"
+    )]
+    pub(crate) fn visit_point_candidates<T>(
+        &self,
+        edges: &[ChartEdgePart],
+        point: Point,
+        metric: &impl ChartMetric,
+        best: &mut f64,
+        limit: Option<f64>,
+        stack: &mut Vec<(u32, f64)>,
+        mut visit: impl FnMut(usize, f64, &mut f64) -> Result<Option<T>>,
+    ) -> Result<Option<T>> {
+        stack.clear();
+        let bound = metric.point_envelope_bound(point);
+        let root_bound = bound(self.boxes[0]);
+        if chart_bound_prunes(root_bound, *best, limit) {
+            return Ok(None);
+        }
+        stack.push((0, root_bound));
+        while let Some((node, lower_bound)) = stack.pop() {
+            if chart_bound_prunes(lower_bound, *best, limit) {
+                continue;
+            }
+            match BvhCode::new(self.codes[node as usize]).decode() {
+                BvhNode::Leaf(leaf_index) => {
+                    let leaf = self.leaves[leaf_index];
+                    let Some(edge_ids) = self
+                        .edge_ids
+                        .get(leaf.first as usize..)
+                        .and_then(|remaining| remaining.get(..leaf.len as usize))
+                    else {
+                        unreachable!("chart BVH leaf range belongs to its edge-id table")
+                    };
+                    for &edge_id in edge_ids {
+                        let edge_index = edge_id as usize;
+                        let edge_bound = bound(edges[edge_index].bounds);
+                        if chart_bound_prunes(edge_bound, *best, limit) {
+                            continue;
+                        }
+                        if let Some(result) = visit(edge_index, edge_bound, best)? {
+                            return Ok(Some(result));
+                        }
+                    }
+                },
+                BvhNode::Internal(first_child) => {
+                    let lower_child = first_child as u32;
+                    let upper_child = lower_child.wrapping_add(1);
+                    let lower_bound = bound(self.boxes[lower_child as usize]);
+                    let upper_bound = bound(self.boxes[upper_child as usize]);
+                    let lower_admitted = !chart_bound_prunes(lower_bound, *best, limit);
+                    let upper_admitted = !chart_bound_prunes(upper_bound, *best, limit);
+                    match (lower_admitted, upper_admitted) {
+                        (true, true) if lower_bound <= upper_bound => {
+                            stack.push((upper_child, upper_bound));
+                            stack.push((lower_child, lower_bound));
+                        },
+                        (true, true) => {
+                            stack.push((lower_child, lower_bound));
+                            stack.push((upper_child, upper_bound));
+                        },
+                        (true, false) => stack.push((lower_child, lower_bound)),
+                        (false, true) => stack.push((upper_child, upper_bound)),
+                        (false, false) => {},
+                    }
+                },
+            }
+        }
+        Ok(None)
+    }
+}
+
+impl HeapSize for ChartEdgeBvh {
+    fn heap_bytes(&self) -> usize {
+        self.boxes
+            .heap_bytes()
+            .saturating_add(self.codes.heap_bytes())
+            .saturating_add(self.leaves.heap_bytes())
+            .saturating_add(self.edge_ids.heap_bytes())
+    }
+}
+
+fn chart_bound_prunes(lower_bound: f64, best: f64, limit: Option<f64>) -> bool {
+    limit.map_or_else(|| lower_bound > best.next_up(), |limit| lower_bound > limit)
+}
+
+#[expect(
+    clippy::float_cmp,
+    reason = "the exact (-180, 180) endpoints encode the canonical full-longitude sentinel"
+)]
+fn chart_box_union(boxes: impl Iterator<Item = ChartBox>) -> ChartBox {
+    let mut south = f64::INFINITY;
+    let mut north = f64::NEG_INFINITY;
+    let mut west = 180.0_f64;
+    let mut east = -180.0_f64;
+    let mut full_longitude = false;
+    for bounds in boxes {
+        south = south.min(bounds.south);
+        north = north.max(bounds.north);
+        if bounds.west > bounds.east || (bounds.west == -180.0 && bounds.east == 180.0) {
+            full_longitude = true;
+        } else {
+            west = west.min(bounds.west);
+            east = east.max(bounds.east);
+        }
+    }
+    if full_longitude {
+        ChartBox {
+            west: -180.0,
+            south,
+            east: 180.0,
+            north,
+        }
+    } else {
+        ChartBox {
+            west,
+            south,
+            east,
+            north,
+        }
+    }
+}
+
+#[expect(
+    clippy::float_cmp,
+    reason = "the exact (-180, 180) endpoints encode the canonical full-longitude sentinel"
+)]
+fn chart_box_center(bounds: ChartBox) -> [f64; 2] {
+    let longitude = if bounds.west == -180.0 && bounds.east == 180.0 {
+        0.0
+    } else if bounds.west <= bounds.east {
+        f64::midpoint(bounds.west, bounds.east)
+    } else {
+        let sweep = (180.0 - bounds.west) + (bounds.east + 180.0);
+        let unwrapped = bounds.west + sweep / 2.0;
+        if unwrapped > 180.0 {
+            unwrapped - 360.0
+        } else {
+            unwrapped
+        }
+    };
+    [longitude, f64::midpoint(bounds.south, bounds.north)]
+}
+
+#[expect(
+    clippy::float_cmp,
+    reason = "the exact (-180, 180) endpoints encode the canonical full-longitude sentinel"
+)]
+fn chart_longitude_span(bounds: ChartBox) -> f64 {
+    if bounds.west == -180.0 && bounds.east == 180.0 {
+        360.0
+    } else if bounds.west <= bounds.east {
+        bounds.east - bounds.west
+    } else {
+        (180.0 - bounds.west) + (bounds.east + 180.0)
+    }
+}
+
+fn chart_split_axis(bounds: ChartBox) -> usize {
+    usize::from(chart_longitude_span(bounds) < bounds.north - bounds.south)
+}
+
 #[expect(clippy::float_cmp, reason = "exact tie-break preserves brute order")]
 pub(super) fn geodesic_witness_is_better(
     best: Option<&GeodesicWitnessCandidate>,
@@ -677,7 +799,7 @@ pub(super) fn geodesic_witness_is_better(
 
 #[cfg(test)]
 mod tests {
-    use super::{WitnessOrder, geodesic_leaf_count};
+    use super::balanced_bvh_leaf_count;
 
     #[test]
     fn balanced_leaf_count_matches_split_boundaries() {
@@ -688,6 +810,7 @@ mod tests {
             (16, 2),
             (17, 3),
             (18, 4),
+            (23, 4),
             (32, 4),
             (33, 5),
             (34, 6),
@@ -695,7 +818,9 @@ mod tests {
             (36, 8),
             (64, 8),
             (65, 9),
+            (71, 15),
             (72, 16),
+            (95, 16),
             (128, 16),
             (129, 17),
             (144, 32),
@@ -704,27 +829,8 @@ mod tests {
             (512, 64),
             (513, 65),
         ] {
-            let leaves = geodesic_leaf_count(segment_count);
+            let leaves = balanced_bvh_leaf_count(segment_count);
             assert_eq!(leaves, expected_leaves, "segments={segment_count}");
         }
-    }
-
-    #[test]
-    fn witness_order_preserves_wide_forward_and_reverse_ranks() {
-        let width = usize::MAX as u128;
-        let last_forward =
-            WitnessOrder::row_major(WitnessOrder::ZERO, 2, width, width.wrapping_sub(1));
-        let first_reverse = WitnessOrder::row_major(
-            WitnessOrder::after_rows(WitnessOrder::ZERO, 3, width),
-            0,
-            width,
-            0,
-        );
-        let same_forward =
-            WitnessOrder::row_major(WitnessOrder::ZERO, 2, width, width.wrapping_sub(1));
-
-        assert!(last_forward.0 > width);
-        assert!(last_forward < first_reverse);
-        assert_eq!(same_forward, last_forward);
     }
 }

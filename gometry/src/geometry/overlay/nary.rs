@@ -2074,7 +2074,8 @@ fn exact_geographic_q_overlay(
             crate::geometry::compare_shapes(left.shape(), right.shape())
         });
     }
-    let topology = crate::geometry::ExactGeographicTopology::from_views(frame, views.into_iter())?;
+    let topology =
+        crate::geometry::ExactGeographicTopology::from_views_as_set(frame, views.into_iter())?;
     let output = exact_geographic_overlay(&topology, op, declared_axes, strictness.is_strict())?;
     Ok(if output.is_empty() {
         empty_nary_overlay_shape(original_refs, op)

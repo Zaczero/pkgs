@@ -21,8 +21,8 @@ mod shape_data_nearest;
 mod shape_impl;
 
 pub(crate) use chart_parts::{
-    ChartParts, cached_point_chart_distance, cached_point_chart_dwithin,
-    cached_point_chart_minimum, uses_chart_edge_model,
+    ChartEdgePart, ChartParts, cached_chart_distance, cached_chart_dwithin,
+    cached_chart_nearest_points, point_chart_distance, point_chart_dwithin,
 };
 #[cfg(test)]
 pub(crate) use distance_3d::distance_3d_brute_parts;
@@ -37,17 +37,10 @@ pub(crate) use geodesic_hausdorff_helpers::{
     GEODESIC_HAUSDORFF_TOLERANCE, GeodesicHausdorffWitness, geodesic_hausdorff_counters,
     geodesic_max_min_on_source_segment,
 };
-pub(crate) use geodesic_parts::{
-    ensure_geodesic_linework, geodesic_cap_streaming, geodesic_distance_with_parts,
-    geodesic_dwithin_with_parts, geodesic_nearest_points_with_parts,
-    geodesic_point_distance_with_parts_and_scratch, geodesic_point_dwithin_with_parts_and_scratch,
-};
-pub(crate) use geodesic_scratch::{GeodesicScratch, collect_point_only_into, geodesic_scratch};
-pub(in crate::geometry) use geodesic_sweep::GeodesicSweepCaps;
-pub(crate) use geodesic_sweep::{
-    GeodesicSweepCapsAccum, RowProbe, geodesic_capped_dwithin_with_parts,
-    geodesic_capped_sweep_with_parts, geodesic_witness_sweep_with_parts,
-};
+pub(crate) use geodesic_parts::{ensure_geodesic_linework, geodesic_cap_streaming};
+#[cfg(test)]
+pub(crate) use geodesic_scratch::GeodesicScratch;
+pub(crate) use geodesic_scratch::{collect_point_only_into, geodesic_scratch};
 pub(crate) use hausdorff::{
     DirectedOptimizationResult, PreparedSupport, directed_inradius_scaled, hausdorff_distance,
     hausdorff_distance_line_columns, hausdorff_distance_line_columns_batch,

@@ -2,12 +2,11 @@ use std::collections::BinaryHeap;
 
 use super::geodesic_hausdorff_helpers::HausdorffInterval;
 use crate::crs::PointEdgeScratch;
-use crate::geometry::distance::RowProbe;
 use crate::geometry::{GeodesicSegmentScratch, Point, RunIdentity, Shape};
 #[derive(Default)]
 pub(crate) struct GeodesicScratch {
-    pub(crate) rows: Vec<RowProbe>,
     pub(crate) stack: Vec<u32>,
+    pub(crate) chart_stack: Vec<(u32, f64)>,
     pub(crate) outer: BinaryHeap<HausdorffInterval>,
     pub(crate) segment: GeodesicSegmentScratch,
     pub(crate) point_edge: PointEdgeScratch,
@@ -16,8 +15,8 @@ pub(crate) struct GeodesicScratch {
 impl GeodesicScratch {
     const fn new() -> Self {
         Self {
-            rows: Vec::new(),
             stack: Vec::new(),
+            chart_stack: Vec::new(),
             outer: BinaryHeap::new(),
             segment: GeodesicSegmentScratch::new(),
             point_edge: PointEdgeScratch::new(),
@@ -27,16 +26,18 @@ impl GeodesicScratch {
 
 impl crate::scratch_pool::RetainScratch for GeodesicScratch {
     fn clear_for_reuse(&mut self) {
-        self.rows.clear();
         self.stack.clear();
+        self.chart_stack.clear();
         self.outer.clear();
         self.segment.clear();
         self.point_edge.clear();
     }
 
     fn retained_bytes(&self) -> usize {
-        crate::scratch_pool::flat_vec_retained_bytes(&self.rows)
-            .saturating_add(crate::scratch_pool::flat_vec_retained_bytes(&self.stack))
+        crate::scratch_pool::flat_vec_retained_bytes(&self.stack)
+            .saturating_add(crate::scratch_pool::flat_vec_retained_bytes(
+                &self.chart_stack,
+            ))
             .saturating_add(
                 self.outer
                     .capacity()

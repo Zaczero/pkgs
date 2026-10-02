@@ -6,6 +6,7 @@ from typing import cast
 import gometry as gm
 import numpy as np
 import pytest
+from pyproj import Geod
 
 
 def test_split_antimeridian_lines_and_seam_latitudes() -> None:
@@ -1152,25 +1153,26 @@ def test_crossing_line_geographic_distance_to_seam_is_zero() -> None:
     assert gm.distance(crossing, seam) == 0.0
 
 
-def test_geodesic_distance_rejects_split_crossing_polygon() -> None:
+def test_geodesic_distance_measures_split_crossing_polygons() -> None:
     split = _crossing_band_polygon().split_antimeridian()
     east_lobe = gm.box(172, 42, 178, 48, crs=4326)
-    with pytest.raises(gm.CRSError, match='polygon interiors is unsupported'):
-        gm.distance(split, east_lobe)
-    with pytest.raises(gm.CRSError, match='polygon interiors is unsupported'):
-        gm.distance(split, gm.Point(175, 45, crs=4326))
+    inside = gm.Point(175, 45, crs=4326)
+    assert gm.distance(split, east_lobe) == 0.0
+    assert gm.dwithin(split, east_lobe, 0.0)
+    assert gm.distance(split, inside) == 0.0
+    assert gm.dwithin(split, inside, 0.0)
     assert gm.distance(split, east_lobe, unit='planar') == 0.0
-    assert gm.distance(split, gm.Point(175, 45, crs=4326), unit='planar') == 0.0
+    assert gm.distance(split, inside, unit='planar') == 0.0
 
 
-def test_geodesic_distance_rejects_unsplit_crossing_polygon() -> None:
+def test_geodesic_distance_measures_unsplit_crossing_polygon() -> None:
     poly = _crossing_band_polygon()
-    with pytest.raises(gm.CRSError, match='polygon interiors is unsupported'):
-        gm.distance(poly, gm.Point(175, 45, crs=4326))
-    with pytest.raises(gm.CRSError, match='polygon interiors is unsupported'):
-        gm.distance(poly, gm.box(172, 42, 178, 48, crs=4326))
-    with pytest.raises(gm.CRSError, match='polygon interiors is unsupported'):
-        gm.dwithin(poly, gm.Point(175, 45, crs=4326), 1.0)
+    inside = gm.Point(175, 45, crs=4326)
+    east_lobe = gm.box(172, 42, 178, 48, crs=4326)
+    assert gm.distance(poly, inside) == 0.0
+    assert gm.distance(poly, east_lobe) == 0.0
+    assert gm.dwithin(poly, inside, 0.0)
+    assert gm.dwithin(poly, east_lobe, 0.0)
 
 
 def test_nad83_crossing_polygon_predicates_match_split_form() -> None:
@@ -1658,15 +1660,30 @@ def test_derived_points_and_bounds_handle_pole_enclosure() -> None:
     assert gm.contains(band, band.point_on_surface())
 
 
-def test_geodesic_shortest_line_rejects_filled_polygon_operands() -> None:
+def test_geodesic_shortest_line_uses_crossing_polygon_boundary() -> None:
     poly = _crossing_band()
     probe = gm.Point(179, 12, crs=4326)
-    with pytest.raises(gm.CRSError, match='polygon interiors is unsupported'):
-        gm.shortest_line(poly, probe)
-    with pytest.raises(gm.CRSError, match='polygon interiors is unsupported'):
-        gm.shortest_line(poly.split_antimeridian(), probe)
-    with pytest.raises(gm.CRSError, match='polygon interiors is unsupported'):
-        gm.shortest_line(gm.GeometryArray([poly]), probe)
+    left, right = gm.nearest_points(poly, probe)
+    assert left.y == 10.0
+    assert 170.0 <= left.x <= 180.0
+    assert (right.x, right.y) == (probe.x, probe.y)
+
+    geod = Geod(ellps='WGS84')
+    sampled_minimum = min(
+        geod.inv(179.0, 12.0, 170.0 + 20.0 * step / 4096.0, 10.0)[2]
+        for step in range(4097)
+    )
+    witnesses = (
+        gm.shortest_line(poly, probe),
+        gm.shortest_line(poly.split_antimeridian(), probe),
+        gm.shortest_line(gm.GeometryArray([poly]), probe)[0],
+    )
+    for shortest in witnesses:
+        (lon, lat), (query_lon, query_lat) = list(shortest.coords)
+        assert lat == 10.0
+        assert 170.0 <= lon <= 180.0
+        assert (query_lon, query_lat) == (probe.x, probe.y)
+        assert geod.inv(probe.x, probe.y, lon, lat)[2] <= sampled_minimum
 
 
 def test_zm_polygon_crossing_antimeridian_overlay() -> None:

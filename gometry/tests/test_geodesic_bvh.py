@@ -11,6 +11,17 @@ from pyproj import Geod
 
 GEOD = Geod(ellps='WGS84')
 MIN_BVH_SEGMENTS = 64
+# Q8's documented chart-edge search gap, 4e-11 times the WGS 84 semi-major axis.
+WITNESS_GAP_METERS = 4e-11 * 6_378_137.0
+
+
+def _assert_point_witness(
+    actual: gm.Point, expected: tuple[float, float]
+) -> None:
+    error = GEOD.inv(expected[0], expected[1], actual.x, actual.y)[2]
+    assert error <= WITNESS_GAP_METERS, (
+        f'witness error {error} m exceeds the Q8 gap {WITNESS_GAP_METERS} m'
+    )
 
 
 def _geodesic_dense_line(
@@ -106,7 +117,16 @@ def test_geodesic_distance_dense_line_matches_pyproj_segment_oracle() -> None:
             lat = start[1] + frac * (end[1] - start[1])
             _, _, d = GEOD.inv(probe.x, probe.y, lon, lat)
             best = min(best, d)
+    # No sampled chart-edge point may beat the returned minimum.
+    assert gometry_dist <= best + 1e-9
     assert gometry_dist == pytest.approx(best, rel=1e-05)
+    left, right = gm.nearest_points(probe, line)
+    assert left.to_wkt() == probe.to_wkt()
+    assert abs(gm.distance(left, right) - gometry_dist) <= 1e-9
+    assert list(gm.shortest_line(probe, line).coords) == [
+        next(iter(left.coords)),
+        next(iter(right.coords)),
+    ]
 
 
 @pytest.mark.parametrize(
@@ -140,15 +160,137 @@ def test_geodesic_dwithin_dense_ring_line_near_and_far() -> None:
     assert not gm.dwithin(far, target, 100000.0)
 
 
-def test_geodesic_metrics_reject_filled_polygon_interiors() -> None:
+def test_geodesic_polygon_distance_and_dwithin_measure_filled_support() -> None:
     target = gm.box(-1.0, -1.0, 1.0, 1.0, crs=4326)
-    probe = gm.Point(0.0, 0.0, crs=4326)
+    inside = gm.Point(0.0, 0.0, crs=4326)
+    outside = gm.Point(3.0, 0.0, crs=4326)
+    expected = 222_638.98158654713
+    assert gm.intersects(inside, target)
+    assert gm.distance(inside, target) == 0.0
+    assert gm.dwithin(inside, target, 0.0)
+    assert not gm.intersects(outside, target)
+    assert not gm.dwithin(outside, target, 0.0)
+    assert gm.distance(outside, target) == pytest.approx(expected, abs=1e-3)
+    assert not gm.dwithin(outside, target, expected - 0.01)
+    assert gm.dwithin(outside, target, expected + 0.01)
+
+
+def test_geodesic_polygon_nearest_points_and_shortest_line_return_chart_witnesses() -> None:
+    target = gm.box(-1.0, -1.0, 1.0, 1.0, crs=4326)
+    inside = gm.Point(0.0, 0.0, crs=4326)
+    outside = gm.Point(3.0, 0.0, crs=4326)
+
+    left, right = gm.nearest_points(outside, target)
+    assert left.to_wkt() == outside.to_wkt()
+    assert right.x == 1.0
+    _assert_point_witness(right, (1.0, 0.0))
+    shortest = gm.shortest_line(outside, target)
+    assert list(shortest.coords) == [
+        next(iter(left.coords)),
+        next(iter(right.coords)),
+    ]
+    inside_left, inside_right = gm.nearest_points(inside, target)
+    assert inside_left.to_wkt() == inside.to_wkt()
+    assert inside_right.to_wkt() == inside.to_wkt()
+
+
+def test_shortest_line_length_tracks_geodesic_distance_for_short_edges() -> None:
+    first = gm.LineString([(10.0, 20.0), (10.004, 20.003)], crs=4326)
+    second = gm.LineString(
+        [(10.0008, 19.9992), (10.0048, 20.0022)], crs=4326
+    )
+    assert first.length < 1000.0
+    assert second.length < 1000.0
+
+    left, right = gm.nearest_points(first, second)
+    exact = GEOD.inv(left.x, left.y, right.x, right.y)[2]
+    distance = gm.distance(first, second)
+    shortest = gm.shortest_line(first, second)
+
+    assert distance == pytest.approx(exact, abs=1e-9)
+    assert shortest.length >= distance - 1e-9
+    assert shortest.length == pytest.approx(exact, abs=1e-9)
+    assert list(shortest.coords) == [
+        next(iter(left.coords)),
+        next(iter(right.coords)),
+    ]
+
+
+def test_geodesic_point_distance_to_polygon_hole_uses_hole_boundary() -> None:
+    polygon_with_hole = gm.Polygon(
+        [(-2, -2), (2, -2), (2, 2), (-2, 2), (-2, -2)],
+        holes=[[(-1, -1), (1, -1), (1, 1), (-1, 1), (-1, -1)]],
+        crs=4326,
+    )
+    hole_probe = gm.Point(0.0, 0.0, crs=4326)
+    hole_distance = gm.distance(hole_probe, polygon_with_hole)
+    assert hole_distance == pytest.approx(110574.38855779878, abs=1e-3)
+    assert not gm.dwithin(hole_probe, polygon_with_hole, 0.0)
+    assert gm.dwithin(hole_probe, polygon_with_hole, hole_distance + 0.01)
+
+
+def test_packed_geodesic_point_columns_measure_polygons() -> None:
+    target = gm.box(-1.0, -1.0, 1.0, 1.0, crs=4326)
+    expected = 222_638.98158654713
+    points = gm.points([0.0, 3.0], [0.0, 0.0], crs=4326)
+    assert gm.distance(points, target) == pytest.approx([0.0, expected], abs=1e-3)
+    assert gm.intersects(points, target).tolist() == [True, False]
+    assert gm.dwithin(points, target, [0.0, 0.0]).tolist() == [True, False]
+    assert gm.dwithin(points, target, [0.0, expected - 0.01]).tolist() == [True, False]
+
+
+def test_geodesic_polygon_arrays_broadcast_against_a_point() -> None:
+    inside = gm.Point(0.0, 0.0, crs=4326)
+    polygons = gm.GeometryArray([
+        gm.box(-1.0, -1.0, 1.0, 1.0, crs=4326),
+        gm.box(4.0, -1.0, 6.0, 1.0, crs=4326),
+    ])
+    expected = GEOD.inv(0.0, 0.0, 4.0, 0.0)[2]
+    assert gm.distance(polygons, inside) == pytest.approx([0.0, expected], abs=1e-3)
+    assert gm.intersects(polygons, inside).tolist() == [True, False]
+    assert gm.dwithin(polygons, inside, [0.0, 0.0]).tolist() == [True, False]
+    assert gm.dwithin(polygons, inside, [0.0, expected - 0.01]).tolist() == [True, False]
+
+    nearest_left, nearest_right = gm.nearest_points(polygons, inside)
+    assert nearest_left[0].to_wkt() == inside.to_wkt()
+    assert nearest_right[0].to_wkt() == inside.to_wkt()
+    assert nearest_left[1].x == 4.0
+    _assert_point_witness(nearest_left[1], (4.0, 0.0))
+    assert nearest_right[1].to_wkt() == inside.to_wkt()
+    lines = gm.shortest_line(polygons, inside)
+    assert lines[0].to_wkt() == 'LINESTRING (0 0, 0 0)'
+    assert list(lines[1].coords) == [
+        next(iter(nearest_left[1].coords)),
+        next(iter(nearest_right[1].coords)),
+    ]
+
+
+def test_fixed_polygon_nearest_and_shortest_line_broadcast_over_packed_points() -> None:
+    target = gm.box(-1.0, -1.0, 1.0, 1.0, crs=4326)
+    points = gm.points([0.0, 3.0], [0.0, 0.0], crs=4326)
+    inside = gm.Point(0.0, 0.0, crs=4326)
+    outside = gm.Point(3.0, 0.0, crs=4326)
+    assert gm.intersects(points, target).tolist() == [True, False]
+    assert gm.dwithin(points, target, [0.0, 0.0]).tolist() == [True, False]
+    nearest_left, nearest_right = gm.nearest_points(points, target)
+    assert nearest_left[0].to_wkt() == inside.to_wkt()
+    assert nearest_right[0].to_wkt() == inside.to_wkt()
+    assert nearest_left[1].to_wkt() == outside.to_wkt()
+    assert nearest_right[1].x == 1.0
+    _assert_point_witness(nearest_right[1], (1.0, 0.0))
+    lines = gm.shortest_line(points, target)
+    assert lines[0].to_wkt() == 'LINESTRING (0 0, 0 0)'
+    assert list(lines[1].coords) == [
+        next(iter(nearest_left[1].coords)),
+        next(iter(nearest_right[1].coords)),
+    ]
+
+
+def test_geodesic_hausdorff_remains_linework_only() -> None:
+    target = gm.box(-1.0, -1.0, 1.0, 1.0, crs=4326)
+    inside = gm.Point(0.0, 0.0, crs=4326)
     with pytest.raises(gm.CRSError, match='polygon interiors is unsupported'):
-        gm.distance(probe, target)
-    with pytest.raises(gm.CRSError, match='polygon interiors is unsupported'):
-        gm.dwithin(probe, target, 100000.0)
-    with pytest.raises(gm.CRSError, match='polygon interiors is unsupported'):
-        gm.hausdorff_distance(probe, target)
+        gm.hausdorff_distance(inside, target)
     with pytest.raises(gm.CRSError, match='polygon interiors is unsupported'):
         gm.hausdorff_distance(target, target)
     target_array = gm.GeometryArray([target])
@@ -156,21 +298,18 @@ def test_geodesic_metrics_reject_filled_polygon_interiors() -> None:
         gm.hausdorff_distance(target_array, target_array)
     empty_target = gm.from_wkt('POLYGON EMPTY', crs=4326)
     assert gm.hausdorff_distance(empty_target, empty_target) == math.inf
-    assert gm.hausdorff_distance(empty_target, probe) == math.inf
-    with pytest.raises(gm.CRSError, match='polygon interiors is unsupported'):
-        gm.nearest_points(probe, target)
-    with pytest.raises(gm.CRSError, match='polygon interiors is unsupported'):
-        gm.shortest_line(probe, target)
-    with pytest.raises(gm.CRSError, match='polygon interiors is unsupported'):
-        gm.dwithin(gm.points([0.0], [0.0], crs=4326), target, math.inf)
-    with pytest.raises(gm.CRSError, match='polygon interiors is unsupported'):
-        gm.dwithin(gm.points([0.0], [0.0], crs=4326), target, [math.inf])
-    with pytest.raises(gm.GeometryError, match='invalid longitude/latitude'):
-        gm.dwithin(gm.points([0.0], [95.0], crs=4326), probe, [math.inf])
 
-    # The explicit planar escape still measures filled polygon interiors.
-    assert gm.distance(probe, target, unit='planar') == 0.0
-    assert gm.dwithin(probe, target, 0.0, unit='planar')
+
+def test_packed_geodesic_polygon_dwithin_still_validates_latitudes() -> None:
+    inside = gm.Point(0.0, 0.0, crs=4326)
+    with pytest.raises(gm.GeometryError, match='invalid longitude/latitude'):
+        gm.dwithin(gm.points([0.0], [95.0], crs=4326), inside, [math.inf])
+
+def test_planar_polygon_distance_contract_is_unchanged() -> None:
+    target = gm.box(-1.0, -1.0, 1.0, 1.0, crs=4326)
+    inside = gm.Point(0.0, 0.0, crs=4326)
+    assert gm.distance(inside, target, unit='planar') == 0.0
+    assert gm.dwithin(inside, target, 0.0, unit='planar')
 
 
 def test_dwithin_infinity_keeps_missing_and_empty_rows() -> None:

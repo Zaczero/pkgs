@@ -43,8 +43,9 @@ geometry decides which one you asked for. On a geographic CRS,
 straight longitude/latitude edges; `unit="planar"` measures the raw coordinates
 as they stand; and reprojecting first returns that frame's own answer, which at
 this latitude Web Mercator inflates 2.3 times. Geographic [`length`][gometry.Geometry.length]
-uses the same chart-edge model, while [`distance`][gometry.distance] follows an
-ellipsoidal geodesic.
+uses the same chart-edge model. Pairwise geographic distance uses ellipsoidal
+point-to-point distance over straight chart edges and includes filled polygon
+interiors.
 
 <div class="grid cards" markdown>
 

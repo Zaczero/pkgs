@@ -1,7 +1,9 @@
 use crate::array::{ArrayRow, PyGeometryArray};
+#[cfg(test)]
+use crate::broadcast::metrics::ShapeData;
 use crate::broadcast::metrics::{
     CoordinateAxes, DistanceUnit, GeometryArrayStorage, GeometryError, GeometryKind, Point,
-    PyGeometry, PyResult, Shape, ShapeData, crs,
+    PyGeometry, PyResult, Shape, crs,
 };
 use crate::dispatch::MetricOp;
 use crate::geographic::{GeographicFrame, lonlat as geographic};
@@ -55,13 +57,7 @@ pub(crate) fn ensure_geodesic_shape(
     frame: GeographicFrame,
     shape: &Shape,
 ) -> crate::error::Result<()> {
-    crs::ensure_geographic_domain_in_frame(frame, shape)?;
-    if shape.has_area_parts() {
-        return Err(crs::CrsError::message(
-            "geodesic distance for polygon interiors is unsupported",
-        ));
-    }
-    Ok(())
+    crs::ensure_geographic_domain_in_frame(frame, shape)
 }
 
 pub(crate) fn ensure_hausdorff_geodesic_shape(
@@ -376,70 +372,6 @@ pub(crate) fn lonlat_points(
 /// raw coordinate units for CRS-free geometry, and geodesic meters on the CRS
 /// ellipsoid (between the closest pair of points) for geographic geometry.
 ///
-/// Geodesic antimeridian prelude: the seam-split forms of a pair when a geodesic
-/// metric meets a crossing geographic operand, else `None` (use the originals).
-/// THE single place the geodesic metric family — distance, dwithin,
-/// nearest_points, shortest_line — normalizes crossings, so the kernels cannot
-/// drift (a witness or containment test on the unsplit 340° band lands on the
-/// wrong edge). hausdorff/frechet deliberately opt out (their per-segment
-/// coupling is already geodesic). Recursing on the split form terminates: it no
-/// longer crosses.
-pub(crate) fn geodesic_split_operands(
-    metric: &crs::ResolvedMetric,
-    a: &PreparedPlan,
-    b: &PreparedPlan,
-) -> crate::error::Result<Option<(PreparedPlan, PreparedPlan)>> {
-    if let crs::ResolvedMetric::Geodesic(metric) = metric {
-        return split_geodesic_operands(metric.frame, a, b);
-    }
-    Ok(None)
-}
-
-fn split_geodesic_operands(
-    frame: GeographicFrame,
-    a: &PreparedPlan,
-    b: &PreparedPlan,
-) -> crate::error::Result<Option<(PreparedPlan, PreparedPlan)>> {
-    // Filled polygon interiors are not a geodesic linework operand. Leave
-    // them untouched so the shared geometry guard reports that contract
-    // instead of seam-splitting an unsupported shape first.
-    if a.shape().has_area_parts() || b.shape().has_area_parts() {
-        return Ok(None);
-    }
-    if !a.shape().is_empty() && !b.shape().is_empty() {
-        // Cached verdicts; split ONLY the operand that actually crosses — the
-        // other is passed through unchanged (no needless seam walk + rebuild).
-        let a_crosses = crate::geometry::crosses_antimeridian_in_frame(a.shape(), frame);
-        let b_crosses = crate::geometry::crosses_antimeridian_in_frame(b.shape(), frame);
-        if a_crosses || b_crosses {
-            let normalize = |x: &PreparedPlan,
-                             crosses: bool|
-             -> crate::error::Result<(PreparedPlan, bool)> {
-                if !crosses {
-                    return Ok((PreparedPlan::new(ShapeData::new(x.shape().clone())), false));
-                }
-                let normalized_shape = x.shape().split_antimeridian_in_frame(frame)?;
-                let changed = normalized_shape != *x.shape()
-                    && !crate::geometry::crosses_antimeridian_in_frame(&normalized_shape, frame);
-                Ok((
-                    PreparedPlan::new(ShapeData::from(if changed {
-                        normalized_shape
-                    } else {
-                        x.shape().clone()
-                    })),
-                    changed,
-                ))
-            };
-            let (a, a_changed) = normalize(a, a_crosses)?;
-            let (b, b_changed) = normalize(b, b_crosses)?;
-            if a_changed || b_changed {
-                return Ok(Some((a, b)));
-            }
-        }
-    }
-    Ok(None)
-}
-
 pub(crate) fn pair_distance_planar(
     to_metre: f64,
     a: &PreparedPlan,
@@ -455,15 +387,6 @@ pub(crate) fn pair_distance_geodesic(
     b: &PreparedPlan,
     b_cache: &FrameDependentCaches,
 ) -> crate::error::Result<f64> {
-    if let Some((a, b)) = split_geodesic_operands(metric.frame, a, b)? {
-        return pair_distance_geodesic(
-            metric,
-            &a,
-            &FrameDependentCaches::default(),
-            &b,
-            &FrameDependentCaches::default(),
-        );
-    }
     if a.shape().is_empty() || b.shape().is_empty() {
         return Ok(f64::INFINITY);
     }
@@ -522,16 +445,6 @@ pub(crate) fn pair_dwithin_geodesic(
         ensure_geodesic_shape(metric.frame, a.shape())?;
         ensure_geodesic_shape(metric.frame, b.shape())?;
         return Ok(true);
-    }
-    if let Some((a, b)) = split_geodesic_operands(metric.frame, a, b)? {
-        return pair_dwithin_geodesic(
-            metric,
-            &a,
-            &FrameDependentCaches::default(),
-            &b,
-            &FrameDependentCaches::default(),
-            distance,
-        );
     }
     let (ellipsoid, semi_major, flattening) = prepare_geodesic_pair(
         &metric.geodesic,
@@ -776,15 +689,6 @@ pub(crate) fn metric_nearest_points_resolved(
     b: &PreparedPlan,
     b_cache: &FrameDependentCaches,
 ) -> crate::error::Result<Option<(Point, Point)>> {
-    if let Some((a, b)) = geodesic_split_operands(metric, a, b)? {
-        return metric_nearest_points_resolved(
-            metric,
-            &a,
-            &FrameDependentCaches::default(),
-            &b,
-            &FrameDependentCaches::default(),
-        );
-    }
     if a.shape().is_empty() || b.shape().is_empty() {
         return Ok(None);
     }

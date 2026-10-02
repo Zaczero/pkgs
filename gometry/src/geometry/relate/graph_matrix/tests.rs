@@ -1,5 +1,5 @@
 use super::*;
-use crate::geometry::{LineSeq, Point};
+use crate::geometry::LineSeq;
 
 fn rectangle(minx: f64, miny: f64, maxx: f64, maxy: f64) -> Polygon {
     Polygon::new(
@@ -32,6 +32,59 @@ fn donut() -> Polygon {
         )
         .unwrap(),
     ])
+}
+
+#[test]
+fn prepared_geographic_point_membership_reuses_seam_topology() {
+    let shape = Shape::LineString(
+        LineSeq::try_new(
+            CoordSeq::try_from_points(&[
+                Point::new_raw_xy(175.0, 60.0),
+                Point::new_raw_xy(-175.0, 62.0),
+            ])
+            .unwrap(),
+        )
+        .unwrap(),
+    );
+    let plan = PreparedPlan::new(shape);
+    let cache = crate::geometry::FrameDependentCaches::default();
+    let prepared = GeographicPrepared::try_new(&plan, &cache, GeographicFrame::crs84()).unwrap();
+    assert!(
+        !prepared
+            .point_covers(Point::new_raw_xy(180.0, 30.0))
+            .unwrap()
+    );
+    assert_eq!(cache.geographic_exact_topology_builds(), 0);
+    for longitude in [180.0, -180.0, 540.0] {
+        assert!(
+            prepared
+                .point_covers(Point::new_raw_xy(longitude, 61.0))
+                .unwrap()
+        );
+        assert!(
+            !prepared
+                .point_covers(Point::new_raw_xy(longitude, 61.25))
+                .unwrap()
+        );
+    }
+    assert_eq!(cache.geographic_exact_topology_builds(), 1);
+}
+
+#[test]
+fn prepared_geographic_point_membership_uses_the_open_chart() {
+    let plan = PreparedPlan::new(Shape::Polygon(donut()));
+    let cache = crate::geometry::FrameDependentCaches::default();
+    let prepared = GeographicPrepared::try_new(&plan, &cache, GeographicFrame::crs84()).unwrap();
+    for (point, covered) in [
+        (Point::new_raw_xy(1.0, 1.0), true),
+        (Point::new_raw_xy(361.0, 1.0), true),
+        (Point::new_raw_xy(5.0, 5.0), false),
+        (Point::new_raw_xy(3.0, 5.0), true),
+        (Point::new_raw_xy(20.0, 20.0), false),
+    ] {
+        assert_eq!(prepared.point_covers(point).unwrap(), covered);
+    }
+    assert_eq!(cache.geographic_exact_topology_builds(), 0);
 }
 
 fn polygon(points: &[[f64; 2]]) -> Polygon {

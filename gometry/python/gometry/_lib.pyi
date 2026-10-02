@@ -10905,9 +10905,8 @@ class SpatialIndex(Mapping[int, Geometry]):
     def __sizeof__(self) -> int:
         """`sys.getsizeof` support: the wrapper plus the retained Rust-side
         index payload — packed or boxed row geometry coordinates, the immutable
-        STR tree, overflow STR runs, frame metadata, and any built geodesic cap
-        cache. Shared buffers are reported as this index's logical retained
-        footprint.
+        STR tree, overflow STR runs, and frame metadata. Shared buffers are
+        reported as this index's logical retained footprint.
 
         Raises
         ------
@@ -17209,9 +17208,10 @@ def distance(
     """Compute the minimum distance between ``left`` and ``right``.
 
     CRS-aware: geodesic meters on a geographic CRS, native linear units on a
-    projected CRS, raw coordinate units when CRS-free. Geographic distance supports
-    point and linework operands only; filled polygon interiors require
-    ``unit='planar'`` or a projected CRS.
+    projected CRS, raw coordinate units when CRS-free. On a geographic CRS,
+    point-to-point distances use ellipsoidal geodesics, and shape edges are
+    straight in the CRS's longitude/latitude chart with short-way longitude
+    across the antimeridian. Filled polygon interiors participate.
 
     Parameters
     ----------
@@ -17237,8 +17237,7 @@ def distance(
     Raises
     ------
     CRSError
-        If the CRS lacks linear axis units for a metric result, or a geographic
-        operand includes a filled polygon interior.
+        If the CRS lacks linear axis units for a metric result.
     CRSMismatchError
         If the operands' CRS or coordinate-epoch metadata differ.
     GeometryError
@@ -17599,13 +17598,13 @@ def nearest_points(
 ):
     """Return the closest pair of points between two geometries.
 
-    Realizes the same minimizer as ``distance``: the geodesically closest pair
-    on a geographic CRS, the planar-closest pair on a projected one, and the
-    coordinate-space closest pair when CRS-free. Planar and projected metrics
-    accept any geometry pair, not only points (the witness on a polygon/line may
-    be an edge-interior point). Geographic metrics support point and linework
-    operands only; filled polygon interiors require ``unit='planar'`` or a
-    projected CRS. The connecting line is ``shortest_line``. An empty operand yields
+    Realizes the same minimizer as ``distance``: point-to-point distance is
+    geodesic on a geographic CRS, planar on a projected one, and in coordinate
+    space when CRS-free. Geographic shape edges are straight in the CRS's
+    longitude/latitude chart, using short-way longitude across the antimeridian;
+    filled polygon interiors participate. Planar and projected metrics accept
+    any geometry pair, not only points (the witness on a polygon/line may be an
+    edge-interior point). The connecting line is ``shortest_line``. An empty operand yields
     ``(POINT EMPTY, POINT EMPTY)``, and the pair is dropped to the operands'
     common axes so it matches ``shortest_line``'s endpoints exactly.
 
@@ -17636,8 +17635,6 @@ def nearest_points(
     ------
     CRSMismatchError
         If the operands' CRS or coordinate-epoch metadata differ.
-    CRSError
-        If a geographic operand includes a filled polygon interior.
 
     See Also
     --------
@@ -17714,9 +17711,10 @@ def shortest_line(
     ``nearest_points`` as a ``LineString`` — degenerate when the geometries
     touch. Planar and projected metrics accept any geometry pair, not only
     points, and the witness is the true closest approach, so an endpoint may
-    land on an edge interior rather than a vertex. Geographic metrics support
-    point and linework operands only; filled polygon interiors require
-    ``unit='planar'`` or a projected CRS. An empty operand yields
+    land on an edge interior rather than a vertex. On a geographic CRS,
+    point-to-point distances use ellipsoidal geodesics, and shape edges are
+    straight in the CRS's longitude/latitude chart with short-way longitude
+    across the antimeridian. Filled polygon interiors participate. An empty operand yields
     ``LINESTRING EMPTY`` (the output-type sentinel, like ``distance``'s ``inf``).
     Output ordinates are the operands' common axes (an XYZM line versus an XY
     point gives an XY line). See `nearest_points` (the endpoints) and `distance`
@@ -17747,8 +17745,6 @@ def shortest_line(
     ------
     CRSMismatchError
         If the operands' CRS or coordinate-epoch metadata differ.
-    CRSError
-        If a geographic operand includes a filled polygon interior.
 
     See Also
     --------
@@ -17873,8 +17869,10 @@ def dwithin(
 ) -> bool | npt.NDArray[np.bool_]:
     """Test whether ``left`` and ``right`` are within ``distance`` of each other.
 
-    Geographic metrics support point and linework operands only; filled polygon
-    interiors require ``unit='planar'`` or a projected CRS.
+    On a geographic CRS, point-to-point distances use ellipsoidal geodesics, and
+    shape edges are straight in the CRS's longitude/latitude chart with
+    short-way longitude across the antimeridian. Filled polygon interiors
+    participate.
 
     Parameters
     ----------
@@ -17915,8 +17913,6 @@ def dwithin(
         ``unit='meters'`` is requested for a CRS-free geometry. Positive
         infinity is accepted and matches every pair of admitted non-empty
         operands.
-    CRSError
-        If a geographic operand includes a filled polygon interior.
 
     See Also
     --------

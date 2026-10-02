@@ -855,9 +855,7 @@ mod tests {
             .expect("point-segment minimum should succeed")
         {
             GeodesicSegmentQueryResult::Attained { minimum, .. } => minimum,
-            result @ (GeodesicSegmentQueryResult::Excluded
-            | GeodesicSegmentQueryResult::ThresholdOutside
-            | GeodesicSegmentQueryResult::ThresholdResolvedOutside { .. }) => {
+            result @ GeodesicSegmentQueryResult::Excluded => {
                 panic!("point-segment minimum did not attain: {result:?}")
             },
         };

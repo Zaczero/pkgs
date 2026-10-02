@@ -11,9 +11,9 @@ use crate::geometry::distance::ChartParts;
 use crate::geometry::topology::ExactGeographicTopology;
 use crate::geometry::types::{Bounds, GeodesicSegment, Point, Segment, Shape, XY};
 use crate::geometry::{
-    DistanceParts, GeodesicParts, GeodesicPartsKey, GeodesicSweepCaps, GeographicSeamFacts,
-    GeographicTopologyRoute, LineIndex, LineIndexSlot, MeasuredLineIndex, MeasuredLineIndexSlot,
-    PlanarMetric, PointBatchTester, SegmentMetric,
+    DistanceParts, GeodesicParts, GeodesicPartsKey, GeographicSeamFacts, GeographicTopologyRoute,
+    LineIndex, LineIndexSlot, MeasuredLineIndex, MeasuredLineIndexSlot, PlanarMetric,
+    PointBatchTester, SegmentMetric,
 };
 
 /// Sidecar for products derived from immutable coordinates. Geodesic products
@@ -156,7 +156,7 @@ impl FrameDependentCaches {
         #[cfg(test)]
         self.geographic_exact_topology_builds
             .fetch_add(1, Ordering::Relaxed);
-        let built = Arc::new(ExactGeographicTopology::from_views(
+        let built = Arc::new(ExactGeographicTopology::from_views_as_set(
             view.frame(),
             std::iter::once(view),
         )?);
@@ -611,14 +611,7 @@ impl HeapSize for GeodesicParts {
             .heap_bytes()
             .saturating_add(self.segments.heap_bytes())
             .saturating_add(self.point_only.heap_bytes())
-            .saturating_add(self.caps.heap_bytes())
             .saturating_add(self.facet_bvh.heap_bytes())
-    }
-}
-
-impl HeapSize for GeodesicSweepCaps {
-    fn heap_bytes(&self) -> usize {
-        self.groups.heap_bytes()
     }
 }
 
@@ -1094,12 +1087,6 @@ pub(crate) enum GeodesicSegmentQuery {
         cutoff: f64,
         witness: GeodesicWitnessNeed,
     },
-    /// Return an attained threshold hit after globally processing the live
-    /// interval frontier.
-    Threshold {
-        limit: f64,
-        witness: GeodesicWitnessNeed,
-    },
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -1168,35 +1155,9 @@ pub(crate) enum GeodesicSegmentQueryResult {
     },
     /// A pruning fact, never a metric value.
     Excluded,
-    /// The standing conservative backend lower bound is above the threshold.
-    ThresholdOutside,
-    /// The resolved numerical minimum is outside a threshold. This result is
-    /// not a real-arithmetic lower-bound certificate.
-    ThresholdResolvedOutside { minimum: f64 },
 }
 
-/// The contact state of two admitted finite geodesic segments.
-///
-/// `Unresolved` deliberately retains an attained candidate rather than
-/// promoting proximity to structural contact. It is an internal numerical
-/// state; callers that need a value can use its witness and lower estimate.
-#[derive(Clone, Copy, Debug)]
-pub(crate) enum SegmentContact {
-    Contact { first_along: f64, second_along: f64 },
-    Disjoint,
-    Unresolved { candidate: SegmentPairWitness },
-}
-
-#[derive(Clone, Copy, Debug)]
-pub(crate) struct SegmentPairWitness {
-    pub(crate) first: Point,
-    pub(crate) second: Point,
-    pub(crate) first_along: f64,
-    pub(crate) second_along: f64,
-    pub(crate) distance: f64,
-}
-
-/// Numerical budgets shared by the geodesic minimum, threshold, and Hausdorff
+/// Numerical budgets shared by the geodesic minimum and Hausdorff
 /// resolvers. Search runs in normalized units; public metric values use
 /// `semi_major`.
 #[derive(Clone, Copy, Debug)]
@@ -1330,9 +1291,9 @@ pub(crate) trait GeodesicPreparedSegment: Copy {
     fn tangent(&self, along: f64) -> Result<Option<[f64; 3]>>;
 }
 
-/// Ellipsoidal distance primitive injected into [`Shape::geodesic_distance`] so
-/// the geometry layer stays free of any CRS/ellipsoid dependency. Implemented
-/// in `crs.rs` over a `geographiclib` `Geodesic`.
+/// Ellipsoidal primitives for point-to-point distance and operations that still
+/// use geodesic segments, including continuous Hausdorff and linear referencing.
+/// Chart-edge pair distance uses [`ChartMetric`] and the same ellipsoid adapter.
 pub(crate) trait GeodesicMetric {
     type PreparedSegment: GeodesicPreparedSegment;
 
@@ -1378,15 +1339,6 @@ pub(crate) trait GeodesicMetric {
         query: GeodesicSegmentQuery,
         scratch: &mut GeodesicSegmentScratch,
     ) -> Result<GeodesicSegmentQueryResult>;
-
-    /// Resolve contact for two already-admitted geodesic segments. The
-    /// segments retain their source-frame endpoints and metric along-track
-    /// lengths; an implementation may only convert that frame here.
-    fn segment_contact(
-        &self,
-        first: &GeodesicSegment,
-        second: &GeodesicSegment,
-    ) -> Result<SegmentContact>;
 
     /// Geodesic length (meters) of segment `a`–`b`.
     fn segment_length(&self, a: Point, b: Point) -> f64;
@@ -1449,6 +1401,7 @@ pub(crate) struct ChartBox {
     pub(crate) east: f64,
     pub(crate) north: f64,
 }
+crate::heapless!(ChartBox);
 
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum PointEdgeQuery {
@@ -1487,7 +1440,6 @@ pub(crate) trait ChartMetric {
     fn chart_edge(&self, start: Point, end: Point) -> Result<Self::Edge>;
     fn chart_edge_length(&self, edge: &Self::Edge) -> Result<f64>;
     fn chart_edge_bounds(&self, edge: &Self::Edge) -> ChartBox;
-    fn chart_edge_parameter_for_point(&self, point: Point, edge: &Self::Edge) -> Option<f64>;
     fn chart_edge_witness(
         &self,
         start: Point,
@@ -1499,11 +1451,11 @@ pub(crate) trait ChartMetric {
         &self,
         point: Point,
         edge: &Self::Edge,
-        bounds: ChartBox,
+        envelope_lower: f64,
         query: PointEdgeQuery,
         scratch: &mut Self::PointEdgeScratch,
     ) -> Result<PointEdgeQueryResult>;
-    fn envelope_lower_bound(&self, point: Point, bounds: ChartBox) -> Result<f64>;
+    fn point_envelope_bound(&self, point: Point) -> impl Fn(ChartBox) -> f64;
     fn chart_edge_seam_span(&self, edge: &Self::Edge) -> Option<[f64; 2]>;
     fn chart_seam_span_length(&self, south: f64, north: f64) -> Result<f64>;
     fn chart_area_edge_term(&self, edge: &Self::Edge, north: bool) -> f64;

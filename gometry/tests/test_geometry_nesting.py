@@ -604,16 +604,24 @@ assert gm.hausdorff_distance(source, target, max_error=1e-12) == 2.0
     assert result.returncode == 0, result.stderr
 
 
-def test_shared_depth_128_geodesic_line_distance_uses_one_owner() -> None:
+def test_shared_depth_128_geodesic_set_operations_use_one_owner() -> None:
     script = r"""
 import gometry as gm
 
-source = gm.LineString([(0.0, 0.0), (1.0, 0.0)], crs=4326)
-for _ in range(128):
-    source = gm.GeometryCollection([source, source], crs=4326)
+for coordinates in (
+    [(0.0, 0.0), (1.0, 0.0)],
+    [(179.0, 0.0), (-179.0, 0.0)],
+):
+    source = gm.LineString(coordinates, crs=4326)
+    for _ in range(128):
+        source = gm.GeometryCollection([source, source], crs=4326)
 
-target = gm.LineString([(0.0, 0.0), (1.0, 0.0)], crs=4326)
-assert gm.distance(source, target) == 0.0
+    target = gm.LineString(coordinates, crs=4326)
+    assert gm.distance(source, target) == 0.0
+    assert gm.dwithin(source, target, 0.0)
+    left, right = gm.nearest_points(source, target)
+    assert gm.distance(left, right) == 0.0
+    assert gm.shortest_line(source, target).length == 0.0
 """
     result = subprocess.run(
         [sys.executable, '-c', script],

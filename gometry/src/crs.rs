@@ -81,8 +81,6 @@ pub(crate) use catalog::{
 use context::{ProjContext, with_proj_context, with_proj_context_at};
 pub(crate) use error::{CrsError, preserve_resource_error};
 #[cfg(test)]
-pub(crate) use geodesic::geodesic_counters;
-#[cfg(test)]
 pub(crate) use geodesic::with_ellipsoid_metric;
 pub(crate) use geodesic::{
     ChartEdge, DistanceMode, EllipsoidMetric, EllipsoidShape, GeodesicCalculation,

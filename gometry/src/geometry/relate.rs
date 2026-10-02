@@ -20,8 +20,9 @@ mod operands;
 
 pub(crate) use de9im::{De9im, Loc};
 pub(crate) use graph_matrix::{
-    GeographicPrepared, graph_relate_data, graph_relate_data_geographic, graph_relate_shapes,
-    is_axis_aligned_rectangle, line_scalar_prefers_direct_polygon_relate,
+    GeographicPrepared, graph_intersects_data_geographic, graph_relate_data,
+    graph_relate_data_geographic, graph_relate_shapes, is_axis_aligned_rectangle,
+    line_scalar_prefers_direct_polygon_relate,
 };
 pub(crate) use interval::{De9imInterval, OperandShape};
 #[cfg(test)]

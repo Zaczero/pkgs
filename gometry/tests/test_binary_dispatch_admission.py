@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import gometry as gm
 import numpy as np
-import pytest
 
 
 def test_scalar_array_metric_directions_preserve_missing_and_empty_rows() -> None:
@@ -42,13 +41,12 @@ def test_three_d_no_fast_scalar_array_lane_preserves_direction_and_missing() -> 
         )
 
 
-def test_geographic_filled_metric_errors_are_order_independent() -> None:
+def test_geographic_filled_metric_results_are_order_independent() -> None:
     polygon = gm.box(0.0, 0.0, 1.0, 1.0, crs=4326)
     point = gm.Point(0.5, 0.5, crs=4326)
 
-    messages: list[str] = []
-    for operands in ((polygon, point), (point, polygon)):
-        with pytest.raises(gm.CRSError) as error:
-            gm.distance(*operands)
-        messages.append(str(error.value))
-    assert messages[0] == messages[1]
+    distances = [gm.distance(*operands) for operands in ((polygon, point), (point, polygon))]
+    within = [gm.dwithin(*operands, 0.0) for operands in ((polygon, point), (point, polygon))]
+
+    assert distances == [0.0, 0.0]
+    assert within == [True, True]

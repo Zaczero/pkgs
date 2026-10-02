@@ -31,7 +31,6 @@ def test_packed_geodesic_point_pair_distance_matches_scalar_row_oracle() -> None
     right = gm.points([x + 0.1 for x in xs], [y + 0.1 for y in ys], crs=WGS84)
     expected = _scalar_row_oracle_distance(left, right)
     assert floats(gm.distance(left, right)) == expected
-    assert floats(gm.distance(left, right)) == expected
 
 
 def test_packed_geodesic_distance_keeps_ellipsoid_units_and_poles() -> None:
@@ -75,7 +74,6 @@ def test_packed_geodesic_point_pair_dwithin_matches_scalar_row_oracle() -> None:
     right = gm.points([x + 0.1 for x in xs], [y + 0.1 for y in ys], crs=WGS84)
     distance = 50000.0
     expected = _scalar_row_oracle_dwithin(left, right, distance)
-    assert list(gm.dwithin(left, right, distance)) == expected
     assert list(gm.dwithin(left, right, distance)) == expected
 
 

@@ -1890,6 +1890,26 @@ impl Shape {
         &'a self,
         visit: &mut impl FnMut(Component<'a>) -> Result<(), E>,
     ) -> Result<(), E> {
+        self.try_for_each_component_inner(&mut None, visit)
+    }
+
+    /// Visit components in order, traversing each shared collection owner once.
+    /// Set-valued topology does not need to expand repeated immutable subtrees.
+    pub(crate) fn try_for_each_first_component<'a, E>(
+        &'a self,
+        visit: &mut impl FnMut(Component<'a>) -> Result<(), E>,
+    ) -> Result<(), E> {
+        let Some(mut owners) = SharedShapeOwners::for_shape(self) else {
+            return self.try_for_each_component(visit);
+        };
+        self.try_for_each_component_inner(&mut Some(&mut owners), visit)
+    }
+
+    fn try_for_each_component_inner<'a, E>(
+        &'a self,
+        owners: &mut Option<&mut SharedShapeOwners>,
+        visit: &mut impl FnMut(Component<'a>) -> Result<(), E>,
+    ) -> Result<(), E> {
         match self {
             Self::Point(point) => visit(Component::Point(*point))?,
             Self::LineString(line) => visit(Component::LineString(line))?,
@@ -1910,8 +1930,12 @@ impl Shape {
                 }
             },
             Self::GeometryCollection(parts) => {
-                for part in parts {
-                    part.try_for_each_component(visit)?;
+                if owners.as_mut().is_none_or(|owners| {
+                    owners.first_collection(parts.as_slice(), parts.members_are_shared())
+                }) {
+                    for part in parts {
+                        part.try_for_each_component_inner(owners, visit)?;
+                    }
                 }
             },
             Self::Empty(..) => {},

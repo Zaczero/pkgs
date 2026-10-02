@@ -82,10 +82,10 @@ pub(crate) use types::{
     GeometryErrorKind, GeometryKind, HasM, HasZ, IndexedSegment, IntoSharedShape, LineSeq,
     MAX_NESTING, MColumn, MOrdinate, MultiLineString, MultiMember, MultiPoint, MultiPolygon, Point,
     PointEdgeMinimum, PointEdgeQuery, PointEdgeQueryResult, PointKey, Polygon, PolygonLevel,
-    PolygonizeFull, PreparedPlan, RepairMethod, Ring, RingLevel, Segment, SegmentContact,
-    SegmentPairWitness, Shape, ShapeCountQuery, ShapeData, ShapeOwnerKey, SharedSlice,
-    SimplifyMethod, SmoothMethod, ValidationIssue, VisiblePointRunKey, VisibleXYKey,
-    VoronoiBoundary, XY, ZOrdinate, canonical_f64_bits, coerce_to_common_axes,
+    PolygonizeFull, PreparedPlan, RepairMethod, Ring, RingLevel, Segment, Shape, ShapeCountQuery,
+    ShapeData, ShapeOwnerKey, SharedSlice, SimplifyMethod, SmoothMethod, ValidationIssue,
+    VisiblePointRunKey, VisibleXYKey, VoronoiBoundary, XY, ZOrdinate, canonical_f64_bits,
+    coerce_to_common_axes,
 };
 mod antimeridian;
 pub(crate) use antimeridian::{
@@ -178,17 +178,18 @@ pub(crate) use coverage::{
     coverage_simplify, coverage_union_topo,
 };
 pub(in crate::geometry) use coverage::{TopologyGuard, simplify_chain_guarded, triangle_area};
+use distance::line_length_3d;
 pub(crate) use distance::{
     DirectedOptimizationResult, Distance3dParts, FrechetDpScratch, PreparedSupport,
     bounds_distance_squared, directed_inradius_scaled, distance_3d_with_parts,
     frechet_distance_line_columns, frechet_distance_line_columns_batch, hausdorff_distance,
     hausdorff_distance_line_columns, hausdorff_distance_line_columns_batch,
 };
-use distance::{GeodesicSweepCaps, line_length_3d};
 pub(crate) use facet_bvh::{
     BVH_MIN_INDEXED_SEGMENTS, FacetBvh, NearestCandidate, NearestTarget, PreparedLinework,
 };
 pub(crate) use generated_budget::{ExpansionBudget, GENERATED_ITEM_LIMIT};
+pub(crate) use geodesic_bvh::ChartEdgeBvh;
 use geodesic_bvh::{
     GeodesicFacetBvh, GeodesicTargetFeature, GeodesicWitnessCandidate, WitnessOrder,
     geodesic_witness_is_better, witness_refine_limit,
@@ -287,9 +288,9 @@ pub(crate) fn raw_coordinate_bounds_are_sound_in_frame(
 }
 
 pub(crate) use relate::{
-    De9im, De9imInterval, GeographicPrepared, Loc, OperandShape, graph_relate_data,
-    graph_relate_data_geographic, graph_relate_shapes, is_axis_aligned_rectangle,
-    line_scalar_prefers_direct_polygon_relate,
+    De9im, De9imInterval, GeographicPrepared, Loc, OperandShape, graph_intersects_data_geographic,
+    graph_relate_data, graph_relate_data_geographic, graph_relate_shapes,
+    is_axis_aligned_rectangle, line_scalar_prefers_direct_polygon_relate,
 };
 pub(in crate::geometry) use segment_index::{
     MonotoneRun, candidate_pairs_over_staged_runs, for_each_candidate_pair,

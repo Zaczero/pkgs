@@ -3366,6 +3366,9 @@ impl ExactGeographicQ {
             )
             .into());
         }
+        if topology.sources.polygons.is_empty() {
+            return Ok(location_in_area_face(false));
+        }
         self.location_from_cut_ray(&point, row)
     }
 
@@ -3682,6 +3685,14 @@ impl ExactGeographicTopology {
         Self::build_from_views(frame, views, false)
     }
 
+    pub(crate) fn from_views_as_set<'a>(
+        frame: GeographicFrame,
+        views: impl ExactSizeIterator<Item = crate::geographic::ScalarGeographicView<'a>>,
+    ) -> Result<Self> {
+        let sources = ExactGeographicChartInventory::collect_views_as_set(frame, views)?;
+        Self::build(frame, sources, false)
+    }
+
     pub(crate) fn from_views_with_seam_cut_edge_pairs<'a>(
         frame: GeographicFrame,
         views: impl ExactSizeIterator<Item = crate::geographic::ScalarGeographicView<'a>>,
@@ -3695,6 +3706,14 @@ impl ExactGeographicTopology {
         capture_seam_cut_edge_pairs: bool,
     ) -> Result<Self> {
         let sources = ExactGeographicChartInventory::collect_views(frame, views)?;
+        Self::build(frame, sources, capture_seam_cut_edge_pairs)
+    }
+
+    fn build(
+        frame: GeographicFrame,
+        sources: ExactGeographicChartInventory,
+        capture_seam_cut_edge_pairs: bool,
+    ) -> Result<Self> {
         let mut budget =
             crate::geometry::ExpansionBudget::new("geographic topology", "exact chart noding");
         let chart = sources.node(&mut budget)?;

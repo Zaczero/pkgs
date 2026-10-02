@@ -1,16 +1,14 @@
 use crate::crs::PointEdgeScratch;
 use crate::geometry::distance::{
     Result, area_overlap_probe, bounds_distance_squared, bounds_squared_safe,
-    cached_point_chart_distance, cached_point_chart_dwithin, coordinate_squared_safe,
-    ensure_geodesic_linework, geodesic_distance_with_parts, geodesic_dwithin_with_parts,
-    geodesic_point_distance_with_parts_and_scratch, geodesic_point_dwithin_with_parts_and_scratch,
-    parts_boundary_contact, parts_covers_point, puntal_brute_distance,
-    puntal_brute_distance_squared, quick_area_overlap, squared_space_safe, uses_chart_edge_model,
+    cached_chart_distance, cached_chart_dwithin, coordinate_squared_safe, parts_boundary_contact,
+    parts_covers_point, point_chart_distance, point_chart_dwithin, puntal_brute_distance,
+    puntal_brute_distance_squared, quick_area_overlap, squared_space_safe,
 };
 use crate::geometry::{
     ChartMetric, DistanceParts, FacetBvh, FrameDependentCaches, GeodesicMetric, GeodesicPartsKey,
-    Point, PointBatchTester, PreparedPlan, Shape, distance, finish_planar_squared_min,
-    point_distance, points_dwithin,
+    GeographicPrepared, Point, PointBatchTester, PreparedPlan, Shape, distance,
+    finish_planar_squared_min, point_distance, points_dwithin,
 };
 impl PreparedPlan {
     /// Planar distance with both sides' prepared state cached on the handle —
@@ -134,55 +132,14 @@ impl PreparedPlan {
             metric.ensure_shape(other.shape())?;
             return Ok(metric.segment_length(*a, *b));
         }
-        if let Shape::Point(point) = self.shape()
-            && uses_chart_edge_model(other.shape())
-        {
-            return cached_point_chart_distance(
-                *point,
-                self,
-                self_cache,
-                other,
-                other_cache,
-                crs,
-                semi_major,
-                flattening,
-                metric,
-            );
-        }
-        if let Shape::Point(point) = other.shape()
-            && uses_chart_edge_model(self.shape())
-        {
-            return cached_point_chart_distance(
-                *point,
-                other,
-                other_cache,
-                self,
-                self_cache,
-                crs,
-                semi_major,
-                flattening,
-                metric,
-            );
-        }
-        let self_key = GeodesicPartsKey::new_at_generation(
+        cached_chart_distance(
+            self,
+            self_cache,
+            other,
+            other_cache,
             crs,
             semi_major,
             flattening,
-            metric.runtime_generation(),
-        );
-        let other_key = GeodesicPartsKey::new_at_generation(
-            crs,
-            semi_major,
-            flattening,
-            metric.runtime_generation(),
-        );
-        let self_parts = self.geodesic_parts(self_cache, self_key, metric)?;
-        let other_parts = other.geodesic_parts(other_cache, other_key, metric)?;
-        geodesic_distance_with_parts(
-            self.shape(),
-            &self_parts,
-            other.shape(),
-            &other_parts,
             metric,
         )
     }
@@ -204,8 +161,8 @@ impl PreparedPlan {
         M: GeodesicMetric + ChartMetric<PointEdgeScratch = PointEdgeScratch>,
     {
         if distance.is_infinite() && distance.is_sign_positive() {
-            ensure_geodesic_linework(self.shape(), metric)?;
-            ensure_geodesic_linework(other.shape(), metric)?;
+            metric.ensure_shape(self.shape())?;
+            metric.ensure_shape(other.shape())?;
             return Ok(!self.shape().is_empty() && !other.shape().is_empty());
         }
         if let (Shape::Point(a), Shape::Point(b)) = (self.shape(), other.shape()) {
@@ -213,57 +170,14 @@ impl PreparedPlan {
             metric.ensure_shape(other.shape())?;
             return Ok(metric.segment_length(*a, *b) <= distance);
         }
-        if let Shape::Point(point) = self.shape()
-            && uses_chart_edge_model(other.shape())
-        {
-            return cached_point_chart_dwithin(
-                *point,
-                self,
-                self_cache,
-                other,
-                other_cache,
-                crs,
-                semi_major,
-                flattening,
-                metric,
-                distance,
-            );
-        }
-        if let Shape::Point(point) = other.shape()
-            && uses_chart_edge_model(self.shape())
-        {
-            return cached_point_chart_dwithin(
-                *point,
-                other,
-                other_cache,
-                self,
-                self_cache,
-                crs,
-                semi_major,
-                flattening,
-                metric,
-                distance,
-            );
-        }
-        let self_key = GeodesicPartsKey::new_at_generation(
+        cached_chart_dwithin(
+            self,
+            self_cache,
+            other,
+            other_cache,
             crs,
             semi_major,
             flattening,
-            metric.runtime_generation(),
-        );
-        let other_key = GeodesicPartsKey::new_at_generation(
-            crs,
-            semi_major,
-            flattening,
-            metric.runtime_generation(),
-        );
-        let self_parts = self.geodesic_parts(self_cache, self_key, metric)?;
-        let other_parts = other.geodesic_parts(other_cache, other_key, metric)?;
-        geodesic_dwithin_with_parts(
-            self.shape(),
-            &self_parts,
-            other.shape(),
-            &other_parts,
             metric,
             distance,
         )
@@ -465,33 +379,32 @@ impl PreparedPlan {
         crs: &str,
         semi_major: f64,
         flattening: f64,
-        metric: &impl GeodesicMetric,
+        metric: &(impl GeodesicMetric + ChartMetric<PointEdgeScratch = PointEdgeScratch>),
         frame: crate::geographic::GeographicFrame,
     ) -> Result<Vec<f64>> {
         let probe_count = probes.len();
         for (x, y) in probes.clone() {
             crate::crs::ensure_geographic_lonlat_in_frame(frame, x, y)?;
         }
+        let prepared = GeographicPrepared::try_new(self, frame_cache, frame)?;
         let key = GeodesicPartsKey::new_at_generation(
             crs,
             semi_major,
             flattening,
             metric.runtime_generation(),
         );
-        let parts = self.geodesic_parts(frame_cache, key, metric)?;
-        let bvh = parts.geodesic_bvh(metric);
+        let parts = self.cached_chart_parts(frame_cache, &key, metric)?;
         let mut scratch = distance::geodesic_scratch();
-        let mut stack = Vec::new();
+        let scratch = &mut *scratch;
+        let (point_edge, chart_stack) = (&mut scratch.point_edge, &mut scratch.chart_stack);
         let mut values = Vec::with_capacity(probe_count);
         for (x, y) in probes {
-            let value = geodesic_point_distance_with_parts_and_scratch(
-                Point::new_raw_xy(x, y),
-                &parts,
-                metric,
-                bvh,
-                &mut scratch,
-                Some(&mut stack),
-            )?;
+            let point = Point::new_raw_xy(x, y);
+            let value = if prepared.point_covers(point)? {
+                0.0
+            } else {
+                point_chart_distance(point, &parts, metric, point_edge, chart_stack)?
+            };
             values.push(value);
         }
         Ok(values)
@@ -506,7 +419,7 @@ impl PreparedPlan {
         crs: &str,
         semi_major: f64,
         flattening: f64,
-        metric: &impl GeodesicMetric,
+        metric: &(impl GeodesicMetric + ChartMetric<PointEdgeScratch = PointEdgeScratch>),
         distance: f64,
         frame: crate::geographic::GeographicFrame,
     ) -> Result<Vec<bool>> {
@@ -514,36 +427,37 @@ impl PreparedPlan {
         for (x, y) in probes.clone() {
             crate::crs::ensure_geographic_lonlat_in_frame(frame, x, y)?;
         }
+        metric.ensure_shape(self.shape())?;
         if distance.is_infinite() && distance.is_sign_positive() {
-            ensure_geodesic_linework(self.shape(), metric)?;
             let present = !self.shape().is_empty();
-            let mut values = Vec::with_capacity(probe_count);
-            for _ in 0..probe_count {
-                values.push(present);
-            }
-            return Ok(values);
+            return Ok(vec![present; probe_count]);
         }
+        let prepared = GeographicPrepared::try_new(self, frame_cache, frame)?;
         let key = GeodesicPartsKey::new_at_generation(
             crs,
             semi_major,
             flattening,
             metric.runtime_generation(),
         );
-        let parts = self.geodesic_parts(frame_cache, key, metric)?;
-        let bvh = parts.geodesic_bvh(metric);
+        let parts = self.cached_chart_parts(frame_cache, &key, metric)?;
         let mut scratch = distance::geodesic_scratch();
-        let mut stack = Vec::new();
+        let scratch = &mut *scratch;
+        let (point_edge, chart_stack) = (&mut scratch.point_edge, &mut scratch.chart_stack);
         let mut values = Vec::with_capacity(probe_count);
         for (x, y) in probes {
-            let value = geodesic_point_dwithin_with_parts_and_scratch(
-                Point::new_raw_xy(x, y),
-                &parts,
-                metric,
-                distance,
-                bvh,
-                &mut scratch,
-                Some(&mut stack),
-            )?;
+            if distance.is_nan() {
+                return Err(crate::crs::CrsError::message(
+                    "geodesic dwithin limit is not finite",
+                ));
+            }
+            let point = Point::new_raw_xy(x, y);
+            let value = if distance < 0.0 || distance.is_infinite() && distance.is_sign_negative() {
+                false
+            } else if prepared.point_covers(point)? {
+                true
+            } else {
+                point_chart_dwithin(point, &parts, metric, distance, point_edge, chart_stack)?
+            };
             values.push(value);
         }
         Ok(values)

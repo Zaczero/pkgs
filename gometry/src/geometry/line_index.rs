@@ -207,10 +207,6 @@ impl<M: GeodesicMetric> SegmentMetric for M {
                 Ok(Some((minimum.distance, minimum.along)))
             },
             GeodesicSegmentQueryResult::Excluded => Ok(None),
-            GeodesicSegmentQueryResult::ThresholdOutside
-            | GeodesicSegmentQueryResult::ThresholdResolvedOutside { .. } => {
-                unreachable!("minimum query returned a threshold outcome")
-            },
         }
     }
 }

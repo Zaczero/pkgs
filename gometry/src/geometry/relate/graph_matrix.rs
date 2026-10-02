@@ -9,14 +9,14 @@ use crate::geographic::{GeographicFrame, ScalarGeographicView};
 use crate::geometry::overlay::ExactSourceInventory;
 use crate::geometry::relate::De9im;
 #[cfg(test)]
-use crate::geometry::relate::{Loc, polygon_has_nondegenerate_area};
+use crate::geometry::relate::polygon_has_nondegenerate_area;
 #[cfg(test)]
 use crate::geometry::topology::{
     AreaSupport, TopologyGraph, TopologyKey, TopologyLocation, TopologyNodeId,
 };
 use crate::geometry::{
-    Bounds, Coordinates as _, ExactGeographicTopology, GeographicTopologyRoute, PreparedPlan, Ring,
-    Shape, storage,
+    Bounds, Coordinates as _, ExactGeographicTopology, GeographicTopologyRoute, Loc, Point,
+    PreparedPlan, Ring, Shape, storage,
 };
 #[cfg(test)]
 use crate::geometry::{CoordSeq, HashMap, PointKey, Polygon, overlay, same_point, topology};
@@ -104,6 +104,37 @@ impl GeographicPrepared<'_> {
     pub(crate) fn exact_topology(self) -> Result<std::sync::Arc<ExactGeographicTopology>> {
         self.frame_cache.geographic_exact_topology(self.view)
     }
+
+    /// Exact set membership of an admitted point in this prepared frame.
+    pub(crate) fn point_covers(self, point: Point) -> Result<bool> {
+        let Some(bounds) = self.plan.bounds() else {
+            return Ok(false);
+        };
+        let longitude = self
+            .frame()
+            .longitude()
+            .canonicalize(point.x)
+            .expect("the query point was admitted in the prepared geographic frame");
+        let point = Point::new_raw_xy(longitude.get(), point.y);
+        if self.chart_route == GeographicTopologyRoute::ExactPartition {
+            if point.x < bounds.minx()
+                || point.x > bounds.maxx()
+                || point.y < bounds.miny()
+                || point.y > bounds.maxy()
+            {
+                return Ok(false);
+            }
+            return self.plan.cartesian_point_covers(point);
+        }
+        // Chart linework cannot leave its source latitude interval. Polygon
+        // interiors may enclose a pole beyond their boundary vertices.
+        if !self.plan.shape().has_area_parts()
+            && (point.y < bounds.miny() || point.y > bounds.maxy())
+        {
+            return Ok(false);
+        }
+        Ok(self.exact_topology()?.locate_point(point)?.geometry != Loc::Exterior)
+    }
 }
 
 /// Compute the complete Cartesian relation matrix on the exact partition.
@@ -162,6 +193,35 @@ pub(crate) fn graph_relate_data_geographic(
         return exact_cartesian_relate(left.plan().shape(), right.plan().shape());
     }
     graph_relate_data_geographic_q(left, right)
+}
+
+/// Set intersection is insensitive to repeated shared collection owners.
+/// Full DE-9IM relations keep their occurrence-aware source inventory.
+pub(crate) fn graph_intersects_data_geographic(
+    left: &GeographicPrepared<'_>,
+    right: &GeographicPrepared<'_>,
+) -> Result<bool> {
+    debug_assert_eq!(left.frame(), right.frame());
+    if let Shape::Point(point) = left.plan().shape() {
+        return right.point_covers(*point);
+    }
+    if let Shape::Point(point) = right.plan().shape() {
+        return left.point_covers(*point);
+    }
+    if left.chart_route().combine(right.chart_route()) == GeographicTopologyRoute::ExactPartition {
+        let shapes = [left.plan().shape(), right.plan().shape()];
+        let inventory = ExactSourceInventory::from_shapes(&shapes)?;
+        let mut budget =
+            crate::geometry::ExpansionBudget::new("geographic intersects", "exact partition");
+        let partition = inventory.partition(&mut budget)?;
+        return Ok(inventory.relate(&partition)?.is_intersects());
+    }
+    ExactGeographicTopology::from_views_as_set(
+        left.frame(),
+        [left.view(), right.view()].into_iter(),
+    )?
+    .relate_pair()
+    .map(|relation| relation.is_intersects())
 }
 
 fn graph_relate_data_geographic_q(

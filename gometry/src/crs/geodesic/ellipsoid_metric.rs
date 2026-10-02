@@ -2,20 +2,19 @@ use geographiclib_rs::Geodesic;
 
 use super::chart_edge::{AuthalicSeries, ChartEdge};
 use crate::crs::geodesic::segment::{
-    PreparedSegment, geodesic_curvature_domain, geodesic_segment_contact, longitude_difference,
+    PreparedSegment, geodesic_curvature_domain, longitude_difference,
     spherical_meridional_branch_parameters,
 };
 use crate::crs::geodesic::{
-    DirectGeodesic, IntersectSolver, InverseGeodesic as _, checked_geodesic_segment,
-    geodesic_point_segment_query, geodesic_unit_vector,
+    DirectGeodesic, InverseGeodesic as _, checked_geodesic_segment, geodesic_point_segment_query,
+    geodesic_unit_vector,
 };
 use crate::geographic::GeographicFrame;
 use crate::geometry::{
     ChartBox, ChartMetric, GeodesicMetric, GeodesicNumericalPolicy, GeodesicPreparedSegment,
     GeodesicSegment, GeodesicSegmentDerivative, GeodesicSegmentQuery, GeodesicSegmentQueryResult,
-    GeodesicSegmentSample, GeodesicSegmentScratch, GeodesicWitnessNeed, MOrdinate, Point,
-    PointEdgeQuery, PointEdgeQueryResult, SegmentContact, SegmentPairWitness, XY, ZOrdinate,
-    interpolate_optional_ordinate,
+    GeodesicSegmentSample, GeodesicSegmentScratch, MOrdinate, Point, PointEdgeQuery,
+    PointEdgeQueryResult, XY, ZOrdinate, interpolate_optional_ordinate,
 };
 
 pub(crate) fn inverse_distance(
@@ -76,7 +75,6 @@ pub(crate) struct EllipsoidMetric<'a> {
     policy: GeodesicNumericalPolicy,
     authalic: std::cell::OnceCell<AuthalicSeries>,
     normalized: std::cell::OnceCell<Geodesic>,
-    intersection: std::cell::OnceCell<IntersectSolver>,
 }
 
 #[derive(Clone, Copy)]
@@ -146,7 +144,6 @@ impl<'a> EllipsoidMetric<'a> {
             policy: GeodesicNumericalPolicy::new(geodesic.a),
             authalic: std::cell::OnceCell::new(),
             normalized: std::cell::OnceCell::new(),
-            intersection: std::cell::OnceCell::new(),
         }
     }
 
@@ -253,10 +250,6 @@ impl GeodesicMetric for EllipsoidMetric<'_> {
         query: GeodesicSegmentQuery,
         scratch: &mut GeodesicSegmentScratch,
     ) -> crate::error::Result<GeodesicSegmentQueryResult> {
-        let threshold = match query {
-            GeodesicSegmentQuery::Threshold { limit, witness } => Some((limit, witness)),
-            GeodesicSegmentQuery::Minimum { .. } => None,
-        };
         let query = normalize_query(query, self.geodesic.a);
         let point = self.to_geodesic_point(point);
         let segment = self.to_geodesic_segment(segment);
@@ -265,72 +258,12 @@ impl GeodesicMetric for EllipsoidMetric<'_> {
         Ok(match result {
             GeodesicSegmentQueryResult::Attained { minimum, foot } => {
                 let minimum = scale_minimum(minimum, self.geodesic.a)?;
-                if let Some((limit, witness)) = threshold
-                    && minimum.witness.distance > limit
-                {
-                    return resolve_threshold_rounding(
-                        self, point, &segment, limit, witness, scratch,
-                    );
-                }
                 GeodesicSegmentQueryResult::Attained {
                     minimum,
                     foot: map_geodesic_foot(self, foot),
                 }
             },
-            GeodesicSegmentQueryResult::Excluded | GeodesicSegmentQueryResult::ThresholdOutside => {
-                result
-            },
-            GeodesicSegmentQueryResult::ThresholdResolvedOutside { minimum } => {
-                if let Some((limit, witness)) = threshold {
-                    let returned = self.scale_distance(minimum);
-                    if returned <= limit {
-                        return resolve_threshold_rounding(
-                            self, point, &segment, limit, witness, scratch,
-                        );
-                    }
-                    GeodesicSegmentQueryResult::ThresholdResolvedOutside { minimum: returned }
-                } else {
-                    GeodesicSegmentQueryResult::ThresholdResolvedOutside { minimum }
-                }
-            },
-        })
-    }
-
-    fn segment_contact(
-        &self,
-        first: &GeodesicSegment,
-        second: &GeodesicSegment,
-    ) -> crate::error::Result<SegmentContact> {
-        let first = self.to_geodesic_segment(first);
-        let second = self.to_geodesic_segment(second);
-        let solver = self
-            .intersection
-            .get_or_try_init(|| IntersectSolver::new(self.normalized()))?;
-        let contact = geodesic_segment_contact(self.normalized(), solver, &first, &second)?;
-        Ok(match contact {
-            SegmentContact::Contact {
-                first_along,
-                second_along,
-            } => SegmentContact::Contact {
-                first_along: self.scale_distance(first_along),
-                second_along: self.scale_distance(second_along),
-            },
-            SegmentContact::Disjoint => SegmentContact::Disjoint,
-            SegmentContact::Unresolved { candidate } => SegmentContact::Unresolved {
-                candidate: SegmentPairWitness {
-                    first: self
-                        .frame
-                        .point_from_geodesic(candidate.first)
-                        .expect("geodesic candidate is finite"),
-                    second: self
-                        .frame
-                        .point_from_geodesic(candidate.second)
-                        .expect("geodesic candidate is finite"),
-                    first_along: self.scale_distance(candidate.first_along),
-                    second_along: self.scale_distance(candidate.second_along),
-                    distance: self.scale_distance(candidate.distance),
-                },
-            },
+            GeodesicSegmentQueryResult::Excluded => result,
         })
     }
 
@@ -492,10 +425,6 @@ impl ChartMetric for EllipsoidMetric<'_> {
         edge.bounds()
     }
 
-    fn chart_edge_parameter_for_point(&self, point: Point, edge: &Self::Edge) -> Option<f64> {
-        edge.parameter_for_point(point)
-    }
-
     fn chart_edge_witness(
         &self,
         start: Point,
@@ -510,11 +439,10 @@ impl ChartMetric for EllipsoidMetric<'_> {
         &self,
         point: Point,
         edge: &Self::Edge,
-        bounds: ChartBox,
+        envelope_lower: f64,
         query: PointEdgeQuery,
         scratch: &mut Self::PointEdgeScratch,
     ) -> crate::error::Result<PointEdgeQueryResult> {
-        let envelope_lower = self.envelope_lower_bound(point, bounds)?;
         super::edge_distance::point_edge_query(
             self.geodesic,
             self.frame,
@@ -527,15 +455,14 @@ impl ChartMetric for EllipsoidMetric<'_> {
         )
     }
 
-    fn envelope_lower_bound(&self, point: Point, bounds: ChartBox) -> crate::error::Result<f64> {
+    fn point_envelope_bound(&self, point: Point) -> impl Fn(ChartBox) -> f64 {
         let point = self
             .frame
             .to_geodesic_point(point)
             .expect("the query point was admitted before envelope pruning");
-        Ok(
-            super::envelope::GeodesicEnvelopeBound::new(self.geodesic.a, self.geodesic.f, point)
-                .lower_bound(bounds),
-        )
+        let bound =
+            super::envelope::GeodesicEnvelopeBound::new(self.geodesic.a, self.geodesic.f, point);
+        move |bounds| bound.lower_bound(bounds)
     }
 
     fn chart_edge_seam_span(&self, edge: &Self::Edge) -> Option<[f64; 2]> {
@@ -578,56 +505,11 @@ fn map_geodesic_foot(metric: &EllipsoidMetric<'_>, foot: Option<Point>) -> Optio
     })
 }
 
-fn resolve_threshold_rounding(
-    metric: &EllipsoidMetric<'_>,
-    point: Point,
-    segment: &GeodesicSegment,
-    limit: f64,
-    witness: GeodesicWitnessNeed,
-    scratch: &mut GeodesicSegmentScratch,
-) -> crate::error::Result<GeodesicSegmentQueryResult> {
-    let result = geodesic_point_segment_query(
-        metric.normalized(),
-        point,
-        *segment,
-        GeodesicSegmentQuery::Minimum {
-            cutoff: f64::INFINITY,
-            witness,
-        },
-        scratch,
-    )?;
-    let GeodesicSegmentQueryResult::Attained { minimum, foot } = result else {
-        return Ok(GeodesicSegmentQueryResult::ThresholdResolvedOutside {
-            minimum: f64::INFINITY,
-        });
-    };
-    let minimum = scale_minimum(minimum, metric.geodesic.a)?;
-    if minimum.witness.distance <= limit {
-        Ok(GeodesicSegmentQueryResult::Attained {
-            minimum,
-            foot: map_geodesic_foot(metric, foot),
-        })
-    } else {
-        Ok(GeodesicSegmentQueryResult::ThresholdResolvedOutside {
-            minimum: minimum.witness.distance,
-        })
-    }
-}
-
 fn normalize_query(query: GeodesicSegmentQuery, scale: f64) -> GeodesicSegmentQuery {
     match query {
         GeodesicSegmentQuery::Minimum { cutoff, witness } => GeodesicSegmentQuery::Minimum {
             cutoff: cutoff / scale,
             witness,
-        },
-        GeodesicSegmentQuery::Threshold { limit, witness } => {
-            let limit = limit / scale;
-            let limit = if limit > 0.0 && limit.is_finite() {
-                limit.next_up()
-            } else {
-                limit
-            };
-            GeodesicSegmentQuery::Threshold { limit, witness }
         },
     }
 }

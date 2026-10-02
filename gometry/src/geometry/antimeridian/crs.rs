@@ -31,13 +31,12 @@ impl GeographicTopologyRoute {
 /// edges, and no full-longitude ring. Seam and pole topology remains Q-owned.
 pub(crate) fn classify_geographic_chart(view: ScalarGeographicView<'_>) -> GeographicTopologyRoute {
     let frame = view.frame();
-    let mut canonical_ordinary_coordinates = true;
-    view.for_each_coordinate(|coordinate| {
-        canonical_ordinary_coordinates &= coordinate.identity(frame) == SeamIdentity::Ordinary
-            && canonical_f64_bits(coordinate.native().x)
-                == canonical_f64_bits(coordinate.longitude().get());
+    let has_noncanonical_coordinate = view.any_first_xy_coordinate(|coordinate| {
+        coordinate.identity(frame) != SeamIdentity::Ordinary
+            || canonical_f64_bits(coordinate.native().x)
+                != canonical_f64_bits(coordinate.longitude().get())
     });
-    if canonical_ordinary_coordinates
+    if !has_noncanonical_coordinate
         && !crosses_antimeridian_in_frame(view.shape(), frame)
         && !shape_has_polar_ring_in_frame(view.shape(), frame)
     {

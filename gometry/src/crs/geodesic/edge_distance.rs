@@ -489,7 +489,7 @@ mod tests {
             .point_edge_query(
                 point,
                 &edge,
-                metric.chart_edge_bounds(&edge),
+                metric.point_envelope_bound(point)(metric.chart_edge_bounds(&edge)),
                 PointEdgeQuery::Minimum {
                     cutoff: f64::INFINITY,
                 },
@@ -806,9 +806,7 @@ mod tests {
         for (point, start, end) in cases {
             let edge = metric.chart_edge(start, end).expect("admitted chart edge");
             let bounds = metric.chart_edge_bounds(&edge);
-            let lower = metric
-                .envelope_lower_bound(point, bounds)
-                .expect("admitted envelope query");
+            let lower = metric.point_envelope_bound(point)(bounds);
             for sample in 0..=256_u32 {
                 let parameter = f64::from(sample) / 256.0;
                 let distance = oracle_distance(&metric, point, &edge, parameter);

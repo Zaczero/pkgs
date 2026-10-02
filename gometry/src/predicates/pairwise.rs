@@ -15,9 +15,10 @@ use crate::{
 /// ``nearest_points`` as a ``LineString`` — degenerate when the geometries
 /// touch. Planar and projected metrics accept any geometry pair, not only
 /// points, and the witness is the true closest approach, so an endpoint may
-/// land on an edge interior rather than a vertex. Geographic metrics support
-/// point and linework operands only; filled polygon interiors require
-/// ``unit='planar'`` or a projected CRS. An empty operand yields
+/// land on an edge interior rather than a vertex. On a geographic CRS,
+/// point-to-point distances use ellipsoidal geodesics, and shape edges are
+/// straight in the CRS's longitude/latitude chart with short-way longitude
+/// across the antimeridian. Filled polygon interiors participate. An empty operand yields
 /// ``LINESTRING EMPTY`` (the output-type sentinel, like ``distance``'s ``inf``).
 /// Output ordinates are the operands' common axes (an XYZM line versus an XY
 /// point gives an XY line). See `nearest_points` (the endpoints) and `distance`
@@ -39,8 +40,6 @@ use crate::{
 /// ------
 /// CRSMismatchError
 ///     If the operands' CRS or coordinate-epoch metadata differ.
-/// CRSError
-///     If a geographic operand includes a filled polygon interior.
 ///
 /// See Also
 /// --------
@@ -74,17 +73,9 @@ pub(crate) fn shortest_line(
         let model = resolve_metric(admission.frame.crs_str(), unit, operation)?;
         match (admission.left, admission.right) {
             (GeometryInput::One(geometry), GeometryInput::Many(array)) => {
-                // A crossing scalar can't share one prepared cache across the
-                // seam — fall through to the split-normalizing broadcast below
-                // for it.
-                if let crs::MetricModel::Geodesic { crs, frame, state } = &model
-                    && !crate::geometry::crosses_antimeridian_in_frame(
-                        geometry.shape.shape(),
-                        *frame,
-                    )
-                {
+                if let crs::MetricModel::Geodesic { crs, state, .. } = &model {
                     let result = fixed_geometry_array_shortest_line_geodesic(
-                        py, geometry, array, true, crs, *frame, state,
+                        py, geometry, array, true, crs, state,
                     )?;
                     return Ok(result.into_pyobject(py)?.unbind().into());
                 }
@@ -98,9 +89,9 @@ pub(crate) fn shortest_line(
                 )
             },
             (GeometryInput::Many(array), GeometryInput::One(geometry)) => {
-                if let crs::MetricModel::Geodesic { crs, frame, state } = &model {
+                if let crs::MetricModel::Geodesic { crs, state, .. } = &model {
                     let result = fixed_geometry_array_shortest_line_geodesic(
-                        py, geometry, array, false, crs, *frame, state,
+                        py, geometry, array, false, crs, state,
                     )?;
                     return Ok(result.into_pyobject(py)?.unbind().into());
                 }
@@ -113,8 +104,28 @@ pub(crate) fn shortest_line(
                     move |left, right, _ctx| metric_shortest_line_resolved(&resolved, left, right),
                 )
             },
-            (GeometryInput::One(_), GeometryInput::One(_))
-            | (GeometryInput::Many(_), GeometryInput::Many(_)) => {
+            (GeometryInput::One(left), GeometryInput::One(right)) => {
+                let resolved = crate::crs::ResolvedMetric::from_model(&model)?;
+                let left_plan = left.prepared_plan();
+                let right_plan = right.prepared_plan();
+                let left_cache = left.frame_cache();
+                let right_cache = right.frame_cache();
+                let pair = py.detach(move || {
+                    metric_nearest_points_resolved(
+                        &resolved,
+                        &left_plan,
+                        &left_cache,
+                        &right_plan,
+                        &right_cache,
+                    )
+                })?;
+                let shape = crate::geometry::nearest_line(
+                    pair.as_ref(),
+                    crate::geometry::common_axes(left.shape.shape(), right.shape.shape()),
+                )?;
+                crate::Typed(PyGeometry::with_frame(shape, admission.frame)).into_py_any(py)
+            },
+            (GeometryInput::Many(_), GeometryInput::Many(_)) => {
                 let resolved = crate::crs::ResolvedMetric::from_model(&model)?;
                 crate::dispatch::dispatch_binary_geometry_admitted(
                     py,
@@ -131,9 +142,10 @@ pub(crate) fn shortest_line(
 /// Compute the minimum distance between ``left`` and ``right``.
 ///
 /// CRS-aware: geodesic meters on a geographic CRS, native linear units on a
-/// projected CRS, raw coordinate units when CRS-free. Geographic distance supports
-/// point and linework operands only; filled polygon interiors require
-/// ``unit='planar'`` or a projected CRS.
+/// projected CRS, raw coordinate units when CRS-free. On a geographic CRS,
+/// point-to-point distances use ellipsoidal geodesics, and shape edges are
+/// straight in the CRS's longitude/latitude chart with short-way longitude
+/// across the antimeridian. Filled polygon interiors participate.
 ///
 /// Parameters
 /// ----------
@@ -150,8 +162,7 @@ pub(crate) fn shortest_line(
 /// Raises
 /// ------
 /// CRSError
-///     If the CRS lacks linear axis units for a metric result, or a geographic
-///     operand includes a filled polygon interior.
+///     If the CRS lacks linear axis units for a metric result.
 /// CRSMismatchError
 ///     If the operands' CRS or coordinate-epoch metadata differ.
 /// GeometryError
@@ -378,13 +389,13 @@ pub(crate) fn frechet_distance(
 
 /// Return the closest pair of points between two geometries.
 ///
-/// Realizes the same minimizer as ``distance``: the geodesically closest pair
-/// on a geographic CRS, the planar-closest pair on a projected one, and the
-/// coordinate-space closest pair when CRS-free. Planar and projected metrics
-/// accept any geometry pair, not only points (the witness on a polygon/line may
-/// be an edge-interior point). Geographic metrics support point and linework
-/// operands only; filled polygon interiors require ``unit='planar'`` or a
-/// projected CRS. The connecting line is ``shortest_line``. An empty operand yields
+/// Realizes the same minimizer as ``distance``: point-to-point distance is
+/// geodesic on a geographic CRS, planar on a projected one, and in coordinate
+/// space when CRS-free. Geographic shape edges are straight in the CRS's
+/// longitude/latitude chart, using short-way longitude across the antimeridian;
+/// filled polygon interiors participate. Planar and projected metrics accept
+/// any geometry pair, not only points (the witness on a polygon/line may be an
+/// edge-interior point). The connecting line is ``shortest_line``. An empty operand yields
 /// ``(POINT EMPTY, POINT EMPTY)``, and the pair is dropped to the operands'
 /// common axes so it matches ``shortest_line``'s endpoints exactly.
 ///
@@ -406,8 +417,6 @@ pub(crate) fn frechet_distance(
 /// ------
 /// CRSMismatchError
 ///     If the operands' CRS or coordinate-epoch metadata differ.
-/// CRSError
-///     If a geographic operand includes a filled polygon interior.
 ///
 /// See Also
 /// --------
@@ -447,8 +456,8 @@ pub(crate) fn nearest_points(
             let common = crate::geometry::common_axes(left.shape.shape(), right.shape.shape());
             let left_plan = left.prepared_plan();
             let right_plan = right.prepared_plan();
-            let left_cache = crate::geometry::FrameDependentCaches::default();
-            let right_cache = crate::geometry::FrameDependentCaches::default();
+            let left_cache = left.frame_cache();
+            let right_cache = right.frame_cache();
             let resolved = crate::crs::ResolvedMetric::from_model(&model)?;
             let pair = py.detach(move || {
                 metric_nearest_points_resolved(
@@ -535,8 +544,10 @@ pub(crate) fn nearest_points(
 
 /// Test whether ``left`` and ``right`` are within ``distance`` of each other.
 ///
-/// Geographic metrics support point and linework operands only; filled polygon
-/// interiors require ``unit='planar'`` or a projected CRS.
+/// On a geographic CRS, point-to-point distances use ellipsoidal geodesics, and
+/// shape edges are straight in the CRS's longitude/latitude chart with
+/// short-way longitude across the antimeridian. Filled polygon interiors
+/// participate.
 ///
 /// Parameters
 /// ----------
@@ -568,8 +579,6 @@ pub(crate) fn nearest_points(
 ///     ``unit='meters'`` is requested for a CRS-free geometry. Positive
 ///     infinity is accepted and matches every pair of admitted non-empty
 ///     operands.
-/// CRSError
-///     If a geographic operand includes a filled polygon interior.
 ///
 /// See Also
 /// --------

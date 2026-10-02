@@ -11,8 +11,8 @@ use crate::geographic::{
 };
 use crate::geometry::types::ChartMetric;
 use crate::geometry::{
-    ChartBox, GeometryErrorKind, MOrdinate, Orientation, Point, PointEdgeQuery,
-    PointEdgeQueryResult, XY, ZOrdinate, interpolate_optional_ordinate, orientation,
+    ChartBox, GeometryErrorKind, MOrdinate, Point, PointEdgeQuery, PointEdgeQueryResult, ZOrdinate,
+    interpolate_optional_ordinate,
 };
 
 const GL4_NODES: [f64; 4] = [
@@ -276,56 +276,14 @@ impl ChartEdge {
         }
     }
 
-    #[expect(
-        clippy::float_cmp,
-        reason = "pole aliases and degenerate chart points use exact topological identity"
-    )]
-    pub(super) fn parameter_for_point(self, point: Point) -> Option<f64> {
-        let axis = self.frame.longitude();
-        let start_longitude = axis.canonicalize(self.start_longitude).ok()?.get();
-        let point_longitude = axis.canonicalize(point.x).ok()?.get();
-        let point_latitude = Latitude::try_new(self.frame, point.y).ok()?.get();
-        if point_latitude.abs() == self.pole {
-            if self.start_latitude.abs() == self.pole && self.start_latitude == point_latitude {
-                return Some(0.0);
-            }
-            if self.end_latitude.abs() == self.pole && self.end_latitude == point_latitude {
-                return Some(1.0);
-            }
-        }
-        let point_delta = match axis.shortest_edge(start_longitude, point_longitude).ok()? {
-            EdgeDirection::Minor(delta) => delta,
-            EdgeDirection::HalfTurn(_) => return None,
-        };
-        let start = XY::new(start_longitude, self.start_latitude);
-        let end = XY::new(
-            start_longitude + self.longitude_delta_native,
-            self.end_latitude,
-        );
-        let probe = XY::new(start_longitude + point_delta, point_latitude);
-        if orientation(start, probe, end) != Orientation::Collinear
-            || probe.x < start.x.min(end.x)
-            || probe.x > start.x.max(end.x)
-            || probe.y < start.y.min(end.y)
-            || probe.y > start.y.max(end.y)
-        {
-            return None;
-        }
-        if self.longitude_delta_native == 0.0 && self.latitude_delta == 0.0 {
-            return Some(0.0);
-        }
-        let parameter = if self.longitude_delta_native.abs() >= self.latitude_delta.abs() {
-            (probe.x - start.x) / (end.x - start.x)
-        } else {
-            (probe.y - start.y) / (end.y - start.y)
-        };
-        (0.0..=1.0).contains(&parameter).then_some(parameter)
-    }
-
     pub(super) fn is_geodesically_degenerate(self, geodesic: &Geodesic) -> bool {
         self.derivatives(0.5, geodesic).speed == 0.0
     }
 
+    #[expect(
+        clippy::suspicious_operation_groupings,
+        reason = "the azimuth derivative is the 2D cross product divided by squared speed"
+    )]
     pub(super) fn derivatives(self, parameter: f64, geodesic: &Geodesic) -> ChartEdgeDerivatives {
         let e2 = geodesic.f * (2.0 - geodesic.f);
         let dphi = self.latitude_delta * self.latitude_unit;
@@ -829,10 +787,6 @@ impl ChartMetric for super::GeodesicMetric {
         edge.bounds()
     }
 
-    fn chart_edge_parameter_for_point(&self, point: Point, edge: &Self::Edge) -> Option<f64> {
-        edge.parameter_for_point(point)
-    }
-
     fn chart_edge_witness(
         &self,
         start: Point,
@@ -847,11 +801,10 @@ impl ChartMetric for super::GeodesicMetric {
         &self,
         point: Point,
         edge: &Self::Edge,
-        bounds: ChartBox,
+        envelope_lower: f64,
         query: PointEdgeQuery,
         scratch: &mut Self::PointEdgeScratch,
     ) -> Result<PointEdgeQueryResult> {
-        let envelope_lower = self.envelope_lower_bound(point, bounds)?;
         super::edge_distance::point_edge_query(
             &self.geodesic,
             self.frame,
@@ -864,15 +817,14 @@ impl ChartMetric for super::GeodesicMetric {
         )
     }
 
-    fn envelope_lower_bound(&self, point: Point, bounds: ChartBox) -> Result<f64> {
+    fn point_envelope_bound(&self, point: Point) -> impl Fn(ChartBox) -> f64 {
         let point = self
             .frame
             .to_geodesic_point(point)
             .expect("the query point was admitted before envelope pruning");
-        Ok(
-            super::envelope::GeodesicEnvelopeBound::new(self.geodesic.a, self.geodesic.f, point)
-                .lower_bound(bounds),
-        )
+        let bound =
+            super::envelope::GeodesicEnvelopeBound::new(self.geodesic.a, self.geodesic.f, point);
+        move |bounds| bound.lower_bound(bounds)
     }
 
     fn chart_area_edge_term(&self, edge: &Self::Edge, north: bool) -> f64 {

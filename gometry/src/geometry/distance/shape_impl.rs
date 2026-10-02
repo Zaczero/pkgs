@@ -1,9 +1,9 @@
 #[cfg(test)]
 use crate::geometry::ShapeData;
 use crate::geometry::distance::{
-    GeodesicSweepCapsAccum, Result, any_parts_within, collect_point_only_into,
-    discrete_frechet_distance_with_scratch, ensure_geodesic_linework, geodesic_cap_streaming,
-    geodesic_directed_hausdorff_distance, geodesic_scratch, min_parts_to_parts, squared_space_safe,
+    Result, any_parts_within, collect_point_only_into, discrete_frechet_distance_with_scratch,
+    ensure_geodesic_linework, geodesic_cap_streaming, geodesic_directed_hausdorff_distance,
+    geodesic_scratch, min_parts_to_parts, squared_space_safe,
 };
 use crate::geometry::{
     Coordinates as _, DistanceParts, GeodesicMetric, GeodesicParts, Point, PreparedLinework,
@@ -41,7 +41,6 @@ impl Shape {
         if let Some(segment_count) = segment_count {
             let _reservation = segments.try_reserve(segment_count);
         }
-        let mut caps_accum = GeodesicSweepCapsAccum::new(segment_count);
         self.try_for_each_first_segment_chain(RunIdentity::Full, |chain| {
             for [start, end] in chain.segment_pairs() {
                 let segment = metric.make_segment(start, end)?;
@@ -52,19 +51,25 @@ impl Shape {
                     point_only.push(start);
                     continue;
                 }
-                caps_accum.push_segment(&segment, metric);
                 segments.push(segment);
             }
             Ok::<_, crate::error::Error>(())
         })?;
-        let caps = caps_accum.finish(&point_only, metric);
         Ok(GeodesicParts {
             points,
             segments,
             point_only,
-            caps,
             facet_bvh: std::sync::OnceLock::new(),
         })
+    }
+
+    /// Build the existing index-pruning cap until its consumer migrates to the
+    /// shared chart-box lower bound.
+    pub(crate) fn geodesic_cap(
+        &self,
+        metric: &impl GeodesicMetric,
+    ) -> Result<Option<(Point, f64)>> {
+        geodesic_cap_streaming(self, metric)
     }
 
     #[cfg(test)]
@@ -109,20 +114,6 @@ impl Shape {
         let mut best = f64::INFINITY;
         best = min_parts_to_parts::<false>(self_parts, other_parts, best)?;
         min_parts_to_parts::<false>(other_parts, self_parts, best)
-    }
-
-    /// Build the shape's auxiliary-sphere cap under `metric`: its first
-    /// vertex (the anchor) and a conservative upper bound (meters) on any
-    /// shape point's geodesic distance from it — `max(s(anchor, start) +
-    /// length)` over segments plus isolated points (`σ ≤ s/b` covers
-    /// geodesic edges that bow outside their lon/lat envelope). `None` for
-    /// empty shapes. The spatial index's geodesic row caps and capped
-    /// sweeps share this bound.
-    pub(crate) fn geodesic_cap(
-        &self,
-        metric: &impl GeodesicMetric,
-    ) -> Result<Option<(Point, f64)>> {
-        geodesic_cap_streaming(self, metric)
     }
 
     /// Directed and symmetric geodesic Hausdorff distance (meters) — the

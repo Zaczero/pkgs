@@ -1,11 +1,12 @@
 //! CRS-aware metric broadcasts: planar/geodesic distance, dwithin, and the
 //! point operations (bearing/destination/interpolate) that depend on the CRS.
 
+#[cfg(test)]
+use crate::broadcast::ShapeData;
 use crate::broadcast::{
     Arc, Bound, Bounds, CollectRows, CoordinateAxes, F64Param, Frame, GeometryArrayStorage,
     GeometryError, GeometryInput, GeometryKind, Point, Py, PyGeometry, PyGeometryArray, PyResult,
-    Python, Result, Shape, ShapeData, bool_array, crs, float64_array, mask_missing, point_distance,
-    rows_err,
+    Python, Result, Shape, bool_array, crs, float64_array, mask_missing, point_distance, rows_err,
 };
 
 crate::tokens::token_enum! {

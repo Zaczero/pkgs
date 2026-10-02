@@ -1,11 +1,10 @@
 use crate::crs::PointEdgeScratch;
-use crate::geographic::GeographicFrame;
 use crate::geometry::distance::{
-    Result, cached_point_chart_minimum, geodesic_nearest_points_with_parts, nearest_probe_to_parts,
-    parts_boundary_witness, quick_area_overlap, squared_space_safe, uses_chart_edge_model,
+    Result, cached_chart_nearest_points, nearest_probe_to_parts, parts_boundary_witness,
+    quick_area_overlap, squared_space_safe,
 };
 use crate::geometry::{
-    ChartMetric, FrameDependentCaches, GeodesicMetric, GeodesicPartsKey, Point, PreparedPlan, Shape,
+    ChartMetric, FrameDependentCaches, GeodesicMetric, Point, PreparedPlan, Shape,
 };
 impl PreparedPlan {
     /// Nearest point pair on cached prepared state — argmin vertex sweeps
@@ -56,8 +55,7 @@ impl PreparedPlan {
         .transpose()
     }
 
-    /// Geodesic nearest-point pair with cached geodesic working state. The
-    /// witness tie order is identical to `Shape::geodesic_nearest_points`.
+    /// Geodesic nearest-point pair with cached chart-edge parts and witnesses.
     pub(crate) fn geodesic_nearest_points_cached<M>(
         &self,
         self_cache: &FrameDependentCaches,
@@ -72,132 +70,15 @@ impl PreparedPlan {
         M: GeodesicMetric + ChartMetric<PointEdgeScratch = PointEdgeScratch>,
     {
         if let (Shape::Point(left), Shape::Point(right)) = (self.shape(), other.shape()) {
+            metric.ensure_shape(self.shape())?;
+            metric.ensure_shape(other.shape())?;
             return Ok(Some((*left, *right)));
         }
-        if let Shape::Point(point) = self.shape()
-            && uses_chart_edge_model(other.shape())
-        {
-            return Ok(cached_point_chart_minimum(
-                *point,
-                self,
-                self_cache,
-                other,
-                other_cache,
-                crs,
-                semi_major,
-                flattening,
-                metric,
-            )?
-            .map(|minimum| (minimum.first, minimum.second)));
-        }
-        if let Shape::Point(point) = other.shape()
-            && uses_chart_edge_model(self.shape())
-        {
-            return Ok(cached_point_chart_minimum(
-                *point,
-                other,
-                other_cache,
-                self,
-                self_cache,
-                crs,
-                semi_major,
-                flattening,
-                metric,
-            )?
-            .map(|minimum| (minimum.second, minimum.first)));
-        }
-        let self_key = GeodesicPartsKey::new_at_generation(
-            crs,
-            semi_major,
-            flattening,
-            metric.runtime_generation(),
-        );
-        let other_key = GeodesicPartsKey::new_at_generation(
-            crs,
-            semi_major,
-            flattening,
-            metric.runtime_generation(),
-        );
-        let self_parts = self.geodesic_parts(self_cache, self_key, metric)?;
-        let other_parts = other.geodesic_parts(other_cache, other_key, metric)?;
-        geodesic_nearest_points_with_parts(
-            self.shape(),
-            &self_parts,
-            other.shape(),
-            &other_parts,
-            metric,
-        )
-    }
-
-    /// [`geodesic_nearest_points_cached`](Self::geodesic_nearest_points_cached)
-    /// that first seam-splits whichever operand crosses the antimeridian, so the
-    /// prepared geometry×array / array nearest-points fast paths stay
-    /// seam-correct (a witness computed on the unsplit 340° band lands on the
-    /// wrong edge). The non-crossing operand is borrowed — the common all-rows-
-    /// non-crossing case keeps the prepared cache and pays nothing; only a
-    /// crossing row allocates a split form.
-    pub(crate) fn geodesic_nearest_points_cached_split<M>(
-        &self,
-        self_cache: &FrameDependentCaches,
-        other: &Self,
-        other_cache: &FrameDependentCaches,
-        crs: &str,
-        semi_major: f64,
-        flattening: f64,
-        metric: &M,
-        frame: GeographicFrame,
-    ) -> Result<Option<(Point, Point)>>
-    where
-        M: GeodesicMetric + ChartMetric<PointEdgeScratch = PointEdgeScratch>,
-    {
-        let self_crosses = crate::geometry::crosses_antimeridian_in_frame(self.shape(), frame);
-        let other_crosses = crate::geometry::crosses_antimeridian_in_frame(other.shape(), frame);
-        if !self_crosses && !other_crosses {
-            return self.geodesic_nearest_points_cached(
-                self_cache,
-                other,
-                other_cache,
-                crs,
-                semi_major,
-                flattening,
-                metric,
-            );
-        }
-        // Borrow the non-crossing operand; only a crossing one allocates a split
-        // form (held in these deferred-init locals so the borrows outlive the call).
-        let (self_split, other_split);
-        let left = if self_crosses {
-            self_split = Self::new(crate::geometry::ShapeData::from(
-                self.shape().split_antimeridian_in_frame(frame)?,
-            ));
-            &self_split
-        } else {
-            self
-        };
-        let right = if other_crosses {
-            other_split = Self::new(crate::geometry::ShapeData::from(
-                other.shape().split_antimeridian_in_frame(frame)?,
-            ));
-            &other_split
-        } else {
-            other
-        };
-        let split_left_cache = FrameDependentCaches::default();
-        let split_right_cache = FrameDependentCaches::default();
-        let left_cache = if std::ptr::eq(left, self) {
-            self_cache
-        } else {
-            &split_left_cache
-        };
-        let right_cache = if std::ptr::eq(right, other) {
-            other_cache
-        } else {
-            &split_right_cache
-        };
-        left.geodesic_nearest_points_cached(
-            left_cache,
-            right,
-            right_cache,
+        cached_chart_nearest_points(
+            self,
+            self_cache,
+            other,
+            other_cache,
             crs,
             semi_major,
             flattening,

@@ -9,6 +9,7 @@ from typing import cast
 import gometry as gm
 import numpy as np
 import pytest
+from pyproj import Geod
 
 
 def test_line_interpolate_and_locate_point_are_rust_backed_and_preserve_axes() -> None:
@@ -115,25 +116,23 @@ def test_nearest_points_are_rust_backed_and_preserve_crs() -> None:
     geo_left, geo_right = gm.nearest_points(line, point)
     assert geo_left.crs == 'EPSG:4326'
     assert geo_right.crs == 'EPSG:4326'
-    # The equator is a geodesic and the meridian through the query crosses it at
-    # a right angle, so the exact ellipsoidal foot is the planar one. The bound
-    # is sub-micrometre at the equator, well below any geometric meaning.
-    assert geo_left.x == pytest.approx(1.0, abs=1e-12)
-    # Two-sided: the returned witness must attain the reported distance, which
-    # a foot displaced along a flat minimum does not.
+    assert geo_left.y == 0.0
+    assert 0.0 <= geo_left.x <= 4.0
+    geod = Geod(ellps='WGS84')
+    reference = geod.inv(point.x, point.y, 1.0, 0.0)[2]
+    attained = geod.inv(point.x, point.y, geo_left.x, geo_left.y)[2]
+    assert attained <= reference + 4e-11 * 6_378_137.0
+    # The returned point must attain the reported metric minimum.
     assert gm.distance(
         gm.Point(geo_left.x, geo_left.y, crs=4326), point
     ) == pytest.approx(gm.distance(line, point), abs=1e-9)
-    # A parallel is not a geodesic, so there the ellipsoidal foot genuinely
-    # differs from the planar one. That difference is what distinguishes the two
-    # paths; an equatorial segment cannot, because on it they agree exactly.
-    parallel = gm.LineString([(0, 10), (4, 10)], crs=4326)
-    off_parallel = gm.Point(1, 13, crs=4326)
-    bowed, _ = gm.nearest_points(parallel, off_parallel)
-    flat, _ = gm.nearest_points(parallel, off_parallel, unit='planar')
-    assert flat.x == pytest.approx(1.0, abs=1e-12)
+    oblique = gm.LineString([(0, 10), (4, 12)], crs=4326)
+    off_oblique = gm.Point(1, 13, crs=4326)
+    bowed, _ = gm.nearest_points(oblique, off_oblique)
+    flat, _ = gm.nearest_points(oblique, off_oblique, unit='planar')
+    assert (flat.x, flat.y) == pytest.approx((2.0, 11.0), abs=1e-12)
     assert bowed.x != flat.x
-    assert gm.distance(bowed, off_parallel) < gm.distance(flat, off_parallel)
+    assert gm.distance(bowed, off_oblique) + 1.0 < gm.distance(flat, off_oblique)
     with pytest.raises(
         ValueError, match='nearest_points requires matching CRS metadata'
     ):

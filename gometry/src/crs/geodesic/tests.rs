@@ -3,16 +3,17 @@ use geographiclib_rs::Geodesic;
 use super::distance::{
     geodesic_frechet_dp, geodesic_frechet_dp_with_scratch, geodesic_point_distances,
 };
-use super::segment::{cached_geodesic_line, geodesic_point_segment_query};
+use super::segment::{PreparedSegment, geodesic_point_segment_query};
 use super::{EllipsoidMetric, GEODESIC_BACKEND_RELATIVE_FLOOR, geodesic_counters};
-use crate::crs::GEODESIC_LINE_CACHE;
 use crate::crs::cache::clear_thread_caches;
+use crate::crs::{GEODESIC_LINE_CACHE, PointEdgeScratch};
 use crate::error::Result;
 use crate::geographic::{AngularFactor, GeographicFrame};
 use crate::geometry::{
-    CoordSeq, Coordinates, FrameDependentCaches, FrechetDpScratch, GeodesicMetric, GeodesicSegment,
-    GeodesicSegmentMinimum, GeodesicSegmentQuery, GeodesicSegmentQueryResult,
-    GeodesicSegmentScratch, GeodesicWitnessNeed, LineSeq, Point, PreparedPlan, Shape, XY,
+    ChartMetric as _, CoordSeq, Coordinates, FrameDependentCaches, FrechetDpScratch,
+    GeodesicMetric, GeodesicSegment, GeodesicSegmentMinimum, GeodesicSegmentQuery,
+    GeodesicSegmentQueryResult, GeodesicSegmentScratch, GeodesicWitnessNeed, LineSeq, Point,
+    PointEdgeQuery, PointEdgeQueryResult, PreparedPlan, Shape, XY,
 };
 
 // Independent oracle provenance for the fixed fixtures below: GeographicLib
@@ -69,10 +70,6 @@ fn raw_minimum(
         GeodesicSegmentQueryResult::Excluded => {
             panic!("unpruned test query was unexpectedly excluded")
         },
-        GeodesicSegmentQueryResult::ThresholdOutside
-        | GeodesicSegmentQueryResult::ThresholdResolvedOutside { .. } => {
-            panic!("minimum query returned a threshold outcome")
-        },
     }
 }
 
@@ -113,10 +110,6 @@ fn metric_witness(
         GeodesicSegmentQueryResult::Excluded => {
             panic!("unpruned test query was unexpectedly excluded")
         },
-        GeodesicSegmentQueryResult::ThresholdOutside
-        | GeodesicSegmentQueryResult::ThresholdResolvedOutside { .. } => {
-            panic!("minimum query returned a threshold outcome")
-        },
     }
 }
 
@@ -124,29 +117,6 @@ fn metric_witness(
     clippy::large_types_passed_by_value,
     reason = "test helpers consume the owned geodesic segment snapshot"
 )]
-fn metric_threshold(
-    metric: &impl GeodesicMetric,
-    point: Point,
-    segment: GeodesicSegment,
-    limit: f64,
-) -> bool {
-    let mut scratch = GeodesicSegmentScratch::default();
-    matches!(
-        metric
-            .point_segment_query(
-                point,
-                &segment,
-                GeodesicSegmentQuery::Threshold {
-                    limit,
-                    witness: GeodesicWitnessNeed::No,
-                },
-                &mut scratch,
-            )
-            .expect("threshold query should succeed"),
-        GeodesicSegmentQueryResult::Attained { .. }
-    )
-}
-
 fn line(points: &[Point]) -> Shape {
     Shape::LineString(
         LineSeq::try_new(CoordSeq::try_from_points(points).unwrap()).expect("test line is valid"),
@@ -155,45 +125,6 @@ fn line(points: &[Point]) -> Shape {
 
 fn multipoint(points: Vec<Point>) -> Shape {
     Shape::MultiPoint(points.into())
-}
-
-fn full_edges(shape: &Shape, metric: &impl GeodesicMetric) -> Vec<GeodesicSegment> {
-    let mut edges = Vec::new();
-    shape.for_each_vertex_pair(|start, end| {
-        edges.push(
-            metric
-                .make_segment(start, end)
-                .expect("unique test segment"),
-        );
-    });
-    edges
-}
-
-fn point_only_points(shape: &Shape) -> Vec<Point> {
-    let mut points = Vec::new();
-    append_point_only(shape, &mut points);
-    points
-}
-
-fn append_point_only(shape: &Shape, out: &mut Vec<Point>) {
-    match shape {
-        Shape::Point(point) => out.push(*point),
-        Shape::MultiPoint(points) => {
-            for point in points {
-                out.push(point);
-            }
-        },
-        Shape::GeometryCollection(geometries) => {
-            for geometry in geometries {
-                append_point_only(geometry, out);
-            }
-        },
-        Shape::LineString(_)
-        | Shape::MultiLineString(_)
-        | Shape::Polygon(_)
-        | Shape::MultiPolygon(_)
-        | Shape::Empty(..) => {},
-    }
 }
 
 #[test]
@@ -343,119 +274,6 @@ fn geodesic_point_segment_distance_is_attained_at_refined_argument() {
 }
 
 #[test]
-fn geodesic_point_to_segment_threshold_is_inclusive() {
-    let geodesic = Geodesic::wgs84();
-    let metric = EllipsoidMetric::for_crs84_geometry_test(&geodesic);
-    let segment = metric
-        .make_segment(p(-10.0, 0.0), p(10.0, 0.0))
-        .expect("unique test segment");
-
-    let on_segment = p(0.0, 0.0);
-    let on_segment_distance = metric_witness(&metric, on_segment, segment, f64::INFINITY).distance;
-    assert!(
-        metric_threshold(&metric, on_segment, segment, 0.0),
-        "sampled on-segment distance: {on_segment_distance}"
-    );
-    assert!(!metric_threshold(&metric, p(0.0, 1.0), segment, 0.0));
-    let off_segment = metric_witness(&metric, p(0.0, 1.0), segment, f64::INFINITY).distance;
-    assert!(!metric_threshold(
-        &metric,
-        p(0.0, 1.0),
-        segment,
-        off_segment.next_down()
-    ));
-    assert!(metric_threshold(&metric, p(0.0, 1.0), segment, off_segment));
-    assert!(metric_threshold(
-        &metric,
-        p(0.0, 1.0),
-        segment,
-        off_segment.next_up()
-    ));
-}
-
-#[test]
-fn geodesic_threshold_owner_keeps_clear_cases_cheaper_than_full_minimum() {
-    let geodesic = Geodesic::wgs84();
-    let metric = EllipsoidMetric::for_crs84_geometry_test(&geodesic);
-    let segment = metric
-        .make_segment(p(-1.0, 0.0), p(1.0, 1.0))
-        .expect("supported segment");
-
-    geodesic_counters::reset();
-    let far = metric
-        .point_segment_query(
-            p(0.0, 10.0),
-            &segment,
-            GeodesicSegmentQuery::Threshold {
-                limit: 1.0,
-                witness: GeodesicWitnessNeed::No,
-            },
-            &mut GeodesicSegmentScratch::default(),
-        )
-        .expect("far threshold query");
-    let far_threshold_stats = geodesic_counters::snapshot();
-    assert!(matches!(
-        far,
-        GeodesicSegmentQueryResult::ThresholdOutside
-            | GeodesicSegmentQueryResult::ThresholdResolvedOutside { .. }
-    ));
-
-    geodesic_counters::reset();
-    let _ = metric
-        .point_segment_query(
-            p(0.0, 10.0),
-            &segment,
-            GeodesicSegmentQuery::Minimum {
-                cutoff: f64::INFINITY,
-                witness: GeodesicWitnessNeed::No,
-            },
-            &mut GeodesicSegmentScratch::default(),
-        )
-        .expect("far minimum query");
-    let far_minimum_stats = geodesic_counters::snapshot();
-    assert!(segment_work(&far_threshold_stats) < segment_work(&far_minimum_stats));
-}
-
-const fn segment_work(stats: &super::geodesic_counters::Snapshot) -> u64 {
-    stats
-        .segment_value_evaluations
-        .saturating_add(stats.segment_derivative_evaluations)
-        .saturating_add(stats.segment_interval_pops)
-        .saturating_add(stats.segment_interval_splits)
-        .saturating_add(stats.segment_convex_closures)
-        .saturating_add(stats.segment_derivative_declines)
-}
-
-#[test]
-fn geodesic_zero_threshold_stall_fixture_closes_with_a_numerical_result() {
-    let geodesic = Geodesic::wgs84();
-    let metric = EllipsoidMetric::for_crs84_geometry_test(&geodesic);
-    let segment = metric
-        .make_segment(p(-1.0, 1e-12), p(1.0, 1e-12))
-        .expect("supported segment");
-
-    geodesic_counters::reset();
-    let result = metric
-        .point_segment_query(
-            p(-1.0, 0.0),
-            &segment,
-            GeodesicSegmentQuery::Threshold {
-                limit: 0.0,
-                witness: GeodesicWitnessNeed::No,
-            },
-            &mut GeodesicSegmentScratch::default(),
-        )
-        .expect("zero threshold query");
-    let stats = geodesic_counters::snapshot();
-    assert!(matches!(
-        result,
-        GeodesicSegmentQueryResult::ThresholdOutside
-            | GeodesicSegmentQueryResult::ThresholdResolvedOutside { .. }
-    ));
-    assert!(stats.segment_interval_splits < 1024, "{stats:?}");
-}
-
-#[test]
 fn exact_geodesic_contact_preserves_query_xy() {
     let geodesic = Geodesic::wgs84();
     let metric = EllipsoidMetric::for_crs84_geometry_test(&geodesic);
@@ -526,7 +344,6 @@ fn near_geodesic_contact_is_not_tolerance_contact() {
         let witness = metric_witness(&metric, query, segment, f64::INFINITY);
 
         assert!(witness.distance > 0.0);
-        assert!(!metric_threshold(&metric, query, segment, 0.0));
         assert!(witness.foot.x.abs() <= 1e-12);
         assert!(witness.foot.y.abs() <= 1e-12);
         assert_ne!(witness.foot.y.to_bits(), query.y.to_bits());
@@ -537,7 +354,6 @@ fn near_geodesic_contact_is_not_tolerance_contact() {
         .expect("reversed equatorial segment is unique");
     let witness = metric_witness(&metric, p(0.0, -1e-12), reversed, f64::INFINITY);
     assert!(witness.along > 0.0 && witness.along < reversed.length);
-    assert!(!metric_threshold(&metric, p(0.0, -1e-12), reversed, 0.0));
 }
 
 #[test]
@@ -585,37 +401,6 @@ fn typed_queries_keep_attainment_exclusion_and_probe_state_distinct() {
         .expect("equal cutoff query should succeed");
     let GeodesicSegmentQueryResult::Excluded = equal_cutoff else {
         panic!("equal cutoff must not be an attained strict improvement");
-    };
-
-    let equal_limit = metric
-        .point_segment_query(
-            query,
-            &segment,
-            GeodesicSegmentQuery::Threshold {
-                limit: minimum.distance,
-                witness: GeodesicWitnessNeed::No,
-            },
-            &mut scratch,
-        )
-        .expect("equal threshold query should succeed");
-    assert!(matches!(
-        equal_limit,
-        GeodesicSegmentQueryResult::Attained { .. }
-    ));
-
-    let outside = metric
-        .point_segment_query(
-            query,
-            &segment,
-            GeodesicSegmentQuery::Threshold {
-                limit: 0.0,
-                witness: GeodesicWitnessNeed::No,
-            },
-            &mut scratch,
-        )
-        .expect("outside threshold query should succeed");
-    let GeodesicSegmentQueryResult::ThresholdOutside = outside else {
-        panic!("zero threshold must be proven outside");
     };
 }
 
@@ -690,26 +475,16 @@ fn geodesic_line_cache_reuses_a_published_line_without_allocating() {
         let mut cache = cache.borrow_mut();
         *cache = Default::default();
     });
-    let run = || cached_geodesic_line(&geodesic, &segment);
+    let run = || PreparedSegment::new(&geodesic, &segment);
     let expected = run();
-    let (_, expected_lat, expected_lon, expected_azimuth, ..) =
-        expected._gen_position(false, 1_000.0, super::GEODESIC_LINE_OUTMASK);
+    let expected_position = expected.position(1_000.0).unwrap();
     for _ in 0..2 {
         let (actual, allocations) = allocation_count(run);
         assert_eq!(allocations, 0);
-        let (_, actual_lat, actual_lon, actual_azimuth, ..) =
-            actual._gen_position(false, 1_000.0, super::GEODESIC_LINE_OUTMASK);
+        let actual_position = actual.position(1_000.0).unwrap();
         assert_eq!(
-            (
-                actual_lat.to_bits(),
-                actual_lon.to_bits(),
-                actual_azimuth.to_bits()
-            ),
-            (
-                expected_lat.to_bits(),
-                expected_lon.to_bits(),
-                expected_azimuth.to_bits()
-            )
+            (actual_position.x.to_bits(), actual_position.y.to_bits()),
+            (expected_position.x.to_bits(), expected_position.y.to_bits())
         );
     }
 }
@@ -889,118 +664,6 @@ fn point_segment_global_frontier_keeps_multiple_local_minima() {
             <= 32.0 * f64::EPSILON * witness.distance
     );
     assert!(witness.along >= 0.0 && witness.along <= segment.length);
-
-    let threshold = metric
-        .point_segment_query(
-            query,
-            &segment,
-            GeodesicSegmentQuery::Threshold {
-                limit: 10_000_000.0,
-                witness: GeodesicWitnessNeed::Yes,
-            },
-            &mut GeodesicSegmentScratch::default(),
-        )
-        .expect("complete threshold query should process the global frontier");
-    let GeodesicSegmentQueryResult::Attained {
-        minimum,
-        foot: Some(foot),
-    } = threshold
-    else {
-        panic!("the global minimum must satisfy the threshold");
-    };
-    assert!(minimum.distance <= 10_000_000.0);
-    assert!(
-        (minimum.distance - metric.segment_length(query, foot)).abs()
-            <= 32.0 * f64::EPSILON * minimum.distance
-    );
-}
-
-#[test]
-fn geodesic_segment_intersection_uses_ellipsoidal_solver() {
-    let geodesic = Geodesic::wgs84();
-    let metric = EllipsoidMetric::for_crs84_geometry_test(&geodesic);
-    let first = metric
-        .make_segment(p(0.0, 0.0), p(10.0, 0.0))
-        .expect("supported segment");
-    let second = metric
-        .make_segment(p(5.0, -1.0), p(5.0, 1.0))
-        .expect("supported segment");
-    assert!(matches!(
-        metric
-            .segment_contact(&first, &second)
-            .expect("supported intersection"),
-        crate::geometry::SegmentContact::Contact { .. }
-    ));
-    let disjoint = metric
-        .make_segment(p(20.0, -1.0), p(20.0, 1.0))
-        .expect("supported segment");
-    assert!(!matches!(
-        metric
-            .segment_contact(&first, &disjoint)
-            .expect("supported intersection"),
-        crate::geometry::SegmentContact::Contact { .. }
-    ));
-    let overlap = metric
-        .make_segment(p(5.0, 0.0), p(15.0, 0.0))
-        .expect("supported segment");
-    assert!(matches!(
-        metric
-            .segment_contact(&first, &overlap)
-            .expect("supported intersection"),
-        crate::geometry::SegmentContact::Contact { .. }
-    ));
-}
-
-#[test]
-fn geodesic_segment_contact_does_not_promote_parallel_proximity() {
-    let geodesic = Geodesic::wgs84();
-    let metric = EllipsoidMetric::for_crs84_geometry_test(&geodesic);
-    let first = metric
-        .make_segment(p(-1.0, 0.0), p(1.0, 0.0))
-        .expect("supported segment");
-    let second = metric
-        .make_segment(p(-1.0, 1e-14), p(1.0, 1e-14))
-        .expect("supported segment");
-    let contact = metric
-        .segment_contact(&first, &second)
-        .expect("parallel contact query should resolve numerically");
-    match contact {
-        crate::geometry::SegmentContact::Unresolved { candidate } => {
-            assert!(candidate.distance > 0.0);
-            assert!(candidate.first_along >= 0.0 && candidate.second_along >= 0.0);
-        },
-        crate::geometry::SegmentContact::Disjoint => {},
-        crate::geometry::SegmentContact::Contact { .. } => {
-            panic!("parallel proximity must not establish contact")
-        },
-    }
-}
-
-#[test]
-fn geodesic_segment_intersection_returns_on_curve_witnesses() {
-    let geodesic = Geodesic::wgs84();
-    let metric = EllipsoidMetric::for_crs84_geometry_test(&geodesic);
-    let first = metric
-        .make_segment(p(-20.0, -10.0), p(30.0, 20.0))
-        .expect("unique test segment");
-    let second = metric
-        .make_segment(p(-15.0, 20.0), p(25.0, -10.0))
-        .expect("unique test segment");
-    let crate::geometry::SegmentContact::Contact {
-        first_along,
-        second_along,
-        ..
-    } = metric
-        .segment_contact(&first, &second)
-        .expect("supported intersection")
-    else {
-        panic!("segments cross");
-    };
-    let on_first = metric.interpolate(first.start, first.end, first_along / first.length);
-    let on_second = metric.interpolate(second.start, second.end, second_along / second.length);
-    assert!(metric.segment_length(on_first, on_second) <= 1e-3);
-    assert!(metric_witness(&metric, on_first, first, f64::INFINITY).distance <= 1e-3);
-    assert!(metric_witness(&metric, on_second, second, f64::INFINITY).distance <= 1e-3);
 }
 
 #[test]
@@ -1118,69 +781,12 @@ fn disabled_lower_bound_is_zero_across_latitudes() {
     }
 }
 
-fn brute_geodesic_distance_and_nearest_points(
-    left: &Shape,
-    right: &Shape,
-    metric: &impl GeodesicMetric,
-) -> Option<(f64, (Point, Point))> {
-    let left_points = left.points_vec().expect("representable left points");
-    let right_points = right.points_vec().expect("representable right points");
-    if left_points.is_empty() || right_points.is_empty() {
-        return None;
-    }
-    if left.intersects(right).unwrap() {
-        return left
-            .nearest_points(right)
-            .unwrap()
-            .map(|pair| (metric.segment_length(pair.0, pair.1), pair));
-    }
-    let left_edges = full_edges(left, metric);
-    let right_edges = full_edges(right, metric);
-    let left_point_only = point_only_points(left);
-    let right_point_only = point_only_points(right);
-    let mut best = f64::INFINITY;
-    let mut pair = None;
-    for &probe in &left_points {
-        for &segment in &right_edges {
-            let witness = metric_witness(metric, probe, segment, f64::INFINITY);
-            if witness.distance < best {
-                best = witness.distance;
-                pair = Some((probe, witness.foot));
-            }
-        }
-        for &target in &right_point_only {
-            let distance = metric.segment_length(probe, target);
-            if distance < best {
-                best = distance;
-                pair = Some((probe, target));
-            }
-        }
-    }
-    for &probe in &right_points {
-        for &segment in &left_edges {
-            let witness = metric_witness(metric, probe, segment, f64::INFINITY);
-            if witness.distance < best {
-                best = witness.distance;
-                pair = Some((witness.foot, probe));
-            }
-        }
-        for &target in &left_point_only {
-            let distance = metric.segment_length(probe, target);
-            if distance < best {
-                best = distance;
-                pair = Some((target, probe));
-            }
-        }
-    }
-    pair.map(|pair| (best, pair))
-}
-
 #[test]
 #[expect(
     clippy::panic_in_result_fn,
     reason = "the test returns Result for fallible setup and uses normal assertion macros for its oracle"
 )]
-fn prolate_lower_bound_is_zero_and_cached_distance_paths_match_brute() -> Result<()> {
+fn prolate_lower_bound_is_zero_and_cached_chart_paths_match_edge_queries() -> Result<()> {
     let semi_major: f64 = 6_378_137.0;
     let flattening: f64 = -0.02;
     let semi_minor = semi_major * (1.0 - flattening);
@@ -1220,9 +826,40 @@ fn prolate_lower_bound_is_zero_and_cached_distance_paths_match_brute() -> Result
     ];
     let right = line(&right_table.map(|(_, point)| point));
 
-    let (expected_distance, expected_nearest) =
-        brute_geodesic_distance_and_nearest_points(&left, &right, &metric)
-            .expect("non-empty shapes");
+    let left_points = left.points_vec()?;
+    let right_points = right.points_vec()?;
+    let mut expected_distance = f64::INFINITY;
+    let mut expected_nearest = None;
+    let mut point_edge_scratch = PointEdgeScratch::default();
+    for probe in left_points {
+        for endpoints in right_points.windows(2) {
+            let [start, end] = endpoints else {
+                unreachable!("a two-point window has exactly two entries")
+            };
+            let edge = metric.chart_edge(*start, *end)?;
+            let bounds = metric.chart_edge_bounds(&edge);
+            let result = metric.point_edge_query(
+                probe,
+                &edge,
+                metric.point_envelope_bound(probe)(bounds),
+                PointEdgeQuery::Minimum {
+                    cutoff: f64::INFINITY,
+                },
+                &mut point_edge_scratch,
+            )?;
+            let PointEdgeQueryResult::Minimum(minimum) = result else {
+                unreachable!("an infinite cutoff admits every chart-edge minimum")
+            };
+            if minimum.distance < expected_distance {
+                expected_distance = minimum.distance;
+                expected_nearest = Some((
+                    probe,
+                    metric.chart_edge_witness(*start, *end, &edge, minimum.parameter)?,
+                ));
+            }
+        }
+    }
+    let expected_nearest = expected_nearest.expect("non-empty points and chart edges");
     let left_data = PreparedPlan::new(left);
     let right_data = PreparedPlan::new(right);
     let left_cache = FrameDependentCaches::default();
@@ -1271,7 +908,12 @@ fn prolate_lower_bound_is_zero_and_cached_distance_paths_match_brute() -> Result
         )?
         .expect("non-empty shapes");
     assert_eq!(actual_nearest.0, expected_nearest.0);
-    assert_eq!(actual_nearest.1, expected_nearest.1);
+    assert!(
+        metric.segment_length(actual_nearest.1, expected_nearest.1) <= 1e-3,
+        "cached chart witness {:?} != direct edge-query witness {:?}",
+        actual_nearest.1,
+        expected_nearest.1
+    );
     Ok(())
 }
 

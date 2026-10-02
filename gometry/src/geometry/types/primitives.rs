@@ -4,8 +4,7 @@
 )]
 use crate::geometry::types::{CoordSeq, Ring, SharedSlice};
 use crate::geometry::{
-    FacetBvh, GeodesicFacetBvh, GeodesicSweepCaps, PointEntry, PointSetIndex, PreparedLinework,
-    xy_bounds_columns,
+    FacetBvh, GeodesicFacetBvh, PointEntry, PointSetIndex, PreparedLinework, xy_bounds_columns,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -372,14 +371,12 @@ impl crate::HeapSize for GeodesicPartsKey {
     }
 }
 
-/// Reusable geodesic distance/dwithin/nearest working set for one shape and
-/// one ellipsoid.
+/// Cached geodesic segment inventory and witness BVH for one shape and ellipsoid.
 pub(crate) struct GeodesicParts {
     pub(in crate::geometry) points: Vec<Point>,
-    /// Full-ordinate segments, so nearest witnesses preserve Z/M exactly.
+    /// Full-ordinate segments, so Hausdorff witnesses preserve Z/M by arclength.
     pub(in crate::geometry) segments: Vec<GeodesicSegment>,
     pub(in crate::geometry) point_only: Vec<Point>,
-    pub(in crate::geometry) caps: Option<GeodesicSweepCaps>,
     pub(in crate::geometry) facet_bvh: std::sync::OnceLock<Option<GeodesicFacetBvh>>,
 }
 

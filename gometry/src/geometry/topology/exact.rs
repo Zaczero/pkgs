@@ -953,6 +953,21 @@ impl ExactGeographicChartInventory {
         frame: GeographicFrame,
         views: impl ExactSizeIterator<Item = ScalarGeographicView<'a>>,
     ) -> Result<Self> {
+        Self::collect_views_inner(frame, views, false)
+    }
+
+    pub(super) fn collect_views_as_set<'a>(
+        frame: GeographicFrame,
+        views: impl ExactSizeIterator<Item = ScalarGeographicView<'a>>,
+    ) -> Result<Self> {
+        Self::collect_views_inner(frame, views, true)
+    }
+
+    fn collect_views_inner<'a>(
+        frame: GeographicFrame,
+        views: impl ExactSizeIterator<Item = ScalarGeographicView<'a>>,
+        as_set: bool,
+    ) -> Result<Self> {
         let mut inventory = Self::new(frame, views.len());
         for (row, view) in views.enumerate() {
             if view.frame() != frame {
@@ -962,7 +977,11 @@ impl ExactGeographicChartInventory {
                 .into());
             }
             let row = SourceRowId(u32::try_from(row).map_err(|_| ResourceError::SizeOverflow)?);
-            inventory.append_shape(view.shape(), row)?;
+            if as_set {
+                inventory.append_shape_as_set(view.shape(), row)?;
+            } else {
+                inventory.append_shape(view.shape(), row)?;
+            }
         }
         Ok(inventory)
     }
@@ -981,14 +1000,22 @@ impl ExactGeographicChartInventory {
     }
 
     fn append_shape(&mut self, shape: &Shape, row: SourceRowId) -> Result<()> {
-        shape.try_for_each_component(&mut |source| match source {
+        shape.try_for_each_component(&mut |source| self.append_component(source, row))
+    }
+
+    fn append_shape_as_set(&mut self, shape: &Shape, row: SourceRowId) -> Result<()> {
+        shape.try_for_each_first_component(&mut |source| self.append_component(source, row))
+    }
+
+    fn append_component(&mut self, source: Component<'_>, row: SourceRowId) -> Result<()> {
+        match source {
             Component::Point(point) => {
                 self.points.push(ExactSourcePoint { point, row });
                 Ok(())
             },
             Component::LineString(line) => self.push_line(line.as_coords(), row),
             Component::Polygon(polygon) => self.push_polygon(polygon, row),
-        })
+        }
     }
 
     fn push_line(

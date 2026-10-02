@@ -3,7 +3,7 @@
 `shortest_line`, `nearest_points`, and `distance` accept any geometry pair in
 planar and projected modes and compute the true closest approach — the witness
 may land on an edge interior, not only a vertex. Geographic geodesic modes
-support point and linework operands; filled polygon interiors are unsupported.
+support point, linework, and filled polygon operands.
 These tests lock that down across rotated/oblique inputs and cross-type pairs,
 and pin the two deliberate contracts:
 
@@ -22,6 +22,7 @@ from fractions import Fraction
 
 import gometry as gm
 import pytest
+from pyproj import Geod
 
 
 def _endpoints(line: gm.Geometry) -> list[tuple[float, float]]:
@@ -455,7 +456,10 @@ class TestGeodesic:
         first, second = gm.nearest_points(query, line)
         assert first.to_wkt() == query.to_wkt()
         assert second.to_wkt() == endpoint.to_wkt()
-        assert gm.distance(query, line) == gm.distance(query, endpoint)
+        line_distance = gm.distance(query, line)
+        endpoint_distance = gm.distance(query, endpoint)
+        rounding_floor = 32.0 * math.ulp(max(line_distance, endpoint_distance, 1.0))
+        assert abs(line_distance - endpoint_distance) <= rounding_floor
         assert gm.shortest_line(query, line).to_wkt() == 'LINESTRING (6 3, 5 0)'
         assert line.line_locate(query) == line.length
 
@@ -560,11 +564,13 @@ class TestGeodesic:
         line_geom = gm.shortest_line(point, line)
         ends = _endpoints(line_geom)
         assert ends[0] == pytest.approx((0.5, 0.5))
-        # The equator is a geodesic, and the query's perpendicular meridian
-        # meets it at the same longitude as the query.
-        assert ends[1][0] == pytest.approx(0.5, abs=1e-12)
+        assert 0.0 <= ends[1][0] <= 10.0
         assert ends[1][1] == pytest.approx(0.0, abs=1e-06)
-        assert gm.distance(point, line) == pytest.approx(55287.15, rel=0.0001)
+        geod = Geod(ellps='WGS84')
+        reference = geod.inv(0.5, 0.5, 0.5, 0.0)[2]
+        attained = geod.inv(0.5, 0.5, *ends[1])[2]
+        assert attained <= reference + 4e-11 * 6_378_137.0
+        assert gm.distance(point, line) == pytest.approx(reference, abs=1e-3)
 
     def test_planar_override(self) -> None:
         point = gm.Point(0.5, 0.5, crs=4326)

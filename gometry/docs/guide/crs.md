@@ -37,7 +37,7 @@ construction operate on stored coordinates.
 
 | Family | Examples | Frame / unit / seam behavior |
 |---|---|---|
-| **Geodesic measures** | [`area`][gometry.area], [`length`][gometry.length], [`distance`][gometry.distance], [`dwithin`][gometry.dwithin], LRS | CRS-natural units (ellipsoidal metres on a geographic CRS); optional `unit=` override; short-way geodesic across the antimeridian; pairwise distance operations use points and linework on geographic CRSs |
+| **Geodesic measures** | [`area`][gometry.area], [`length`][gometry.length], [`distance`][gometry.distance], [`dwithin`][gometry.dwithin], LRS | CRS-natural units (ellipsoidal metres on a geographic CRS); optional `unit=` override; pairwise `distance`, `dwithin`, `nearest_points`, and `shortest_line` use geodesic point-to-point distance and straight chart edges with short-way longitude across the antimeridian; these pairwise operations include filled polygons |
 | **Metric constructive** | [`buffer`][gometry.Geometry.buffer], [`offset_curve`][gometry.Geometry.offset_curve] | Distance *inputs* use CRS-natural units (and may use a local-projection construction on a geographic CRS); shapes are **coordinate-planar** — **not** antimeridian auto-split |
 | **Topology** | predicates, overlay, [`relate`][gometry.relate], [`clip_by_rect`][gometry.Geometry.clip_by_rect] | strict frame match; geographic topology resolves longitude aliases and seam and pole equivalence in the CRS-native frame; seam-crossing inputs are split into straight chart pieces in an unwrapped longitude/latitude plane. `clip_by_rect` admits canonical geographic rectangle endpoints in `[-180, 180]`, with west > east selecting the seam-crossing interval; non-canonical subjects use frame-aware overlay, while canonical seam-free inputs clip directly. Geographic rectangle parallels match [`box`][gometry.box]. |
 | **Coordinate refinement** | [`segmentize(max_length)`][gometry.Geometry.segmentize], [`line_interpolate`][gometry.Geometry.line_interpolate] | `segmentize` follows stored geographic edges by default; `path=` selects geodesic or rhumb routing; distances follow the CRS metric and original vertices are retained |
@@ -324,13 +324,18 @@ rhumb route. Split or otherwise disambiguate half-period edges that have no
 unique chart direction.
 
 Geographic pairwise metrics — [`distance`][gometry.distance],
-[`dwithin`][gometry.dwithin], [`hausdorff_distance`][gometry.hausdorff_distance],
+[`dwithin`][gometry.dwithin],
 [`nearest_points`][gometry.nearest_points], and
-[`shortest_line`][gometry.shortest_line] — support point and linework operands.
-Filled `Polygon` and `MultiPolygon` interiors are unsupported and raise
-`CRSError`. Use `polygon.boundary()` for its boundary linework,
-`unit='planar'` for coordinate-space areal distance, or reproject to a suitable
-projected CRS.
+[`shortest_line`][gometry.shortest_line] — measure geographic shape edges as
+straight paths in the longitude/latitude chart. `distance`, `dwithin`,
+`nearest_points`, and `shortest_line` treat `Polygon` and `MultiPolygon` as
+filled areas: an interior point or overlapping pair has zero distance, while
+disjoint shapes are measured boundary-to-boundary. Continuous geographic
+`hausdorff_distance` remains a linework operation over the geodesic segments
+between stored endpoints; polygon operands raise
+[`CRSError`][gometry.CRSError]. Use `polygon.boundary()` when the question is
+about the boundary itself, `unit='planar'` for coordinate-space areal distance,
+or reproject to a suitable projected CRS.
 
 Hausdorff's planar path is a certified computation rather than an unchecked
 floating-point approximation. By default its relative error is at most
@@ -835,11 +840,12 @@ print("point matches:", matches.values.tolist())
 
 Spatial indexes widen periodic seam-crossing envelopes before candidate search and
 still run exact refinement, so the middle-of-map false positives are removed by the
-predicate step. Topology and indexing normalize for you; supported geographic
-linework metrics also take the short geodesic way. Filled polygon interiors are
-not supported by those geodesic pairwise metrics. The planar constructive ops
-listed in the operation-family table are the places manual splitting is still
-required.
+predicate step. Topology and indexing normalize for you. Geographic pairwise
+distance operations use the same straight chart edges as topology and include
+filled polygon interiors; continuous geographic Hausdorff distance remains
+linework-only over geodesic segments between stored endpoints.
+The planar constructive ops listed in the operation-family table are the places
+manual splitting is still required.
 
 ## Z and M under transformation
 

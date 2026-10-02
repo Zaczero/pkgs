@@ -1,5 +1,4 @@
 use crate::array::ArrayRow;
-use crate::geographic::GeographicFrame;
 use crate::geometry::storage::ValidityMask;
 use crate::py::support::{
     CollectRows as _, CoordinateAxes, Frame, Point, PyGeometry, PyGeometryArray, PyResult, Python,
@@ -45,7 +44,7 @@ pub(crate) fn fixed_geometry_array_nearest_points_admitted(
     let fixed_plan = fixed.prepared_plan();
     let fixed_cache = fixed.frame_cache();
     let array_owned = array.clone();
-    if let crate::crs::MetricModel::Geodesic { crs, frame, state } = model {
+    if let crate::crs::MetricModel::Geodesic { crs, state, .. } = model {
         let rows = py.detach(move || {
             let mut rows = array_owned.row_operation();
             crate::crs::with_resolved_ellipsoid_metric_at(
@@ -54,15 +53,6 @@ pub(crate) fn fixed_geometry_array_nearest_points_admitted(
                 &state,
                 |crs, metric| {
                     let (semi_major, flattening) = metric.ellipsoid_parameters();
-                    if !crate::geometry::crosses_antimeridian_in_frame(fixed_plan.shape(), frame) {
-                        fixed_plan.prepare_geodesic_parts(
-                            &fixed_cache,
-                            crs,
-                            semi_major,
-                            flattening,
-                            metric,
-                        )?;
-                    }
                     Ok(rows
                         .rows_with_missing(|| (None::<(Point, Point)>, CoordinateAxes::XY))
                         .map(|logical_row| {
@@ -75,7 +65,7 @@ pub(crate) fn fixed_geometry_array_nearest_points_admitted(
                             let common =
                                 crate::geometry::common_axes(fixed_plan.shape(), element.shape());
                             if fixed_is_left {
-                                fixed_plan.geodesic_nearest_points_cached_split(
+                                fixed_plan.geodesic_nearest_points_cached(
                                     &fixed_cache,
                                     &element,
                                     &element_cache,
@@ -83,10 +73,9 @@ pub(crate) fn fixed_geometry_array_nearest_points_admitted(
                                     semi_major,
                                     flattening,
                                     metric,
-                                    frame,
                                 )
                             } else {
-                                element.geodesic_nearest_points_cached_split(
+                                element.geodesic_nearest_points_cached(
                                     &element_cache,
                                     &fixed_plan,
                                     &fixed_cache,
@@ -94,7 +83,6 @@ pub(crate) fn fixed_geometry_array_nearest_points_admitted(
                                     semi_major,
                                     flattening,
                                     metric,
-                                    frame,
                                 )
                             }
                             .map(|pair| (pair, common))
@@ -154,7 +142,6 @@ pub(crate) fn fixed_geometry_array_shortest_line_geodesic(
     array: &PyGeometryArray,
     fixed_is_left: bool,
     crs: &str,
-    frame: GeographicFrame,
     state: &crate::crs::RuntimeState,
 ) -> PyResult<PyGeometryArray> {
     let output_frame = if fixed_is_left {
@@ -176,13 +163,6 @@ pub(crate) fn fixed_geometry_array_shortest_line_geodesic(
             state,
             |crs, metric| {
                 let (semi_major, flattening) = metric.ellipsoid_parameters();
-                fixed_plan.prepare_geodesic_parts(
-                    &fixed_cache,
-                    crs,
-                    semi_major,
-                    flattening,
-                    metric,
-                )?;
                 let present = (|| -> Result<Vec<Shape>, (usize, crate::error::Error)> {
                     let mut shapes = Vec::with_capacity(present_count);
                     for row in array_rows.present_rows() {
@@ -191,7 +171,7 @@ pub(crate) fn fixed_geometry_array_shortest_line_geodesic(
                         let element_cache = array_rows.frame_cache(logical);
                         let pair = if fixed_is_left {
                             fixed_plan
-                                .geodesic_nearest_points_cached_split(
+                                .geodesic_nearest_points_cached(
                                     &fixed_cache,
                                     &element,
                                     &element_cache,
@@ -199,12 +179,11 @@ pub(crate) fn fixed_geometry_array_shortest_line_geodesic(
                                     semi_major,
                                     flattening,
                                     metric,
-                                    frame,
                                 )
                                 .map_err(|error| (logical, error))?
                         } else {
                             element
-                                .geodesic_nearest_points_cached_split(
+                                .geodesic_nearest_points_cached(
                                     &element_cache,
                                     &fixed_plan,
                                     &fixed_cache,
@@ -212,7 +191,6 @@ pub(crate) fn fixed_geometry_array_shortest_line_geodesic(
                                     semi_major,
                                     flattening,
                                     metric,
-                                    frame,
                                 )
                                 .map_err(|error| (logical, error))?
                         };

@@ -1124,18 +1124,30 @@ def test_geographic_masked_shortest_line_matches_the_dense_answer() -> None:
     ]
 
 
-def test_geographic_shortest_line_error_note_uses_logical_row_after_missing() -> None:
+def test_geographic_shortest_line_keeps_missing_rows_with_polygon_contacts() -> None:
     rows = gm.GeometryArray([
         gm.Point(0.0, 0.0, crs=4326),
         None,
         gm.from_wkt('POLYGON ((0 0, 1 0, 1 1, 0 1, 0 0))', crs=4326),
     ])
     probe = gm.Point(1.0, 1.0, crs=4326)
-    with pytest.raises(
-        gm.CRSError, match='polygon interiors is unsupported'
-    ) as excinfo:
-        gm.shortest_line(rows, probe)
-    assert excinfo.value.__notes__ == ['while processing array element 2']
+    result = gm.shortest_line(rows, probe)
+    assert result.is_missing.tolist() == [False, True, False]
+    assert result[2].to_wkt() == 'LINESTRING (1 1, 1 1)'
+
+
+def test_geographic_nearest_points_validates_point_pair_array_latitudes() -> None:
+    rows = gm.points([0.0, 1.0], [0.0, 95.0], crs=4326)
+    fixed = gm.Point(0.0, 0.0, crs=4326)
+    with pytest.raises(gm.GeometryError, match='invalid longitude/latitude'):
+        gm.nearest_points(rows, fixed)
+
+
+def test_geographic_shortest_line_validates_point_pair_array_latitudes() -> None:
+    rows = gm.points([0.0, 1.0], [0.0, 95.0], crs=4326)
+    fixed = gm.Point(0.0, 0.0, crs=4326)
+    with pytest.raises(gm.GeometryError, match='invalid longitude/latitude'):
+        gm.shortest_line(rows, fixed)
 
 
 def test_masked_string_and_xy_predicate_surfaces() -> None:
