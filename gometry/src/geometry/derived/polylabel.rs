@@ -5,8 +5,10 @@ use std::num::NonZeroU32;
 use crate::error::Result;
 use crate::geometry::exact_arith::ExactSign;
 use crate::geometry::facet_bvh::Facet;
+#[cfg(test)]
+use crate::geometry::tessellation::exact::compare_ratios;
 use crate::geometry::tessellation::exact::{
-    self, ExactDyadic, ExactRational as Rational, Interval, compare_ratios,
+    self, ExactDyadic, ExactRational as Rational, Interval,
 };
 use crate::geometry::{
     AxisFrame, BVH_MIN_INDEXED_SEGMENTS, Bounds, CoordSeq, CoordSeqBuilder, Coordinates as _,
@@ -1018,18 +1020,36 @@ pub(crate) fn polylabel_point(shape: &Shape, tolerance: Option<f64>) -> Result<P
 /// The omitted search tolerance used by both polylabel and the certified
 /// maximum-inscribed-circle owner. The frame is only used to form stable
 /// extent differences; the returned value is in the caller's Euclidean units.
-pub(crate) fn scale_aware_default_tolerance(shape: &Shape) -> Result<f64> {
+pub(crate) fn scale_aware_default_tolerance(shape: &Shape) -> f64 {
     let Some(bounds) = shape.bounds() else {
-        return Ok(f64::from_bits(1));
+        return f64::from_bits(1);
     };
-    let Some(frame) = normalized_polylabel_frame(shape, bounds)? else {
-        return Ok(f64::from_bits(1));
+    let midpoint = degenerate_polygon_center(bounds);
+    let half_width = bounds.maxx() / 2.0 - bounds.minx() / 2.0;
+    let half_height = bounds.maxy() / 2.0 - bounds.miny() / 2.0;
+    let Some(frame) = AxisFrame::from_origin_extents(
+        midpoint,
+        half_width
+            .abs()
+            .max(bounds.minx().abs())
+            .max(bounds.maxx().abs()),
+        half_height
+            .abs()
+            .max(bounds.miny().abs())
+            .max(bounds.maxy().abs()),
+    ) else {
+        return f64::from_bits(1);
     };
-    Ok(frame.default_tolerance.max(f64::from_bits(1)))
+    let min = frame.frame_xy(bounds.minx(), bounds.miny());
+    let max = frame.frame_xy(bounds.maxx(), bounds.maxy());
+    (((max.x - min.x).abs() / frame.scale_x()).min((max.y - min.y).abs() / frame.scale_y()) / 500.0)
+        .max(f64::from_bits(1))
 }
 
+#[cfg(test)]
 type ExactRatio = (ExactDyadic, ExactDyadic);
 
+#[cfg(test)]
 fn compare_exact_ratios(left: &ExactRatio, right: &ExactRatio) -> Result<Ordering> {
     compare_ratios(&left.0, &left.1, &right.0, &right.1)
 }
@@ -1038,16 +1058,19 @@ fn exact_difference(left: f64, right: f64) -> Result<ExactDyadic> {
     ExactDyadic::from_f64(left).try_subtract(ExactDyadic::from_f64(right))
 }
 
+#[cfg(test)]
 fn exact_squared_sum(left: &ExactDyadic, right: &ExactDyadic) -> Result<ExactDyadic> {
     left.try_product(left)?.try_add(right.try_product(right)?)
 }
 
+#[cfg(test)]
 fn exact_point_pair_squared(left: XY, right: XY) -> Result<ExactRatio> {
     let dx = exact_difference(left.x, right.x)?;
     let dy = exact_difference(left.y, right.y)?;
     Ok((exact_squared_sum(&dx, &dy)?, ExactDyadic::from_f64(1.0)))
 }
 
+#[cfg(test)]
 fn exact_point_segment_squared(point: Point, segment: Segment) -> Result<ExactRatio> {
     let point = point.xy();
     let dx = exact_difference(segment.end.x, segment.start.x)?;
@@ -1075,6 +1098,7 @@ fn exact_point_segment_squared(point: Point, segment: Segment) -> Result<ExactRa
     ))
 }
 
+#[cfg(test)]
 fn exact_boundary_distance_ratio(shape: &Shape, center: Point) -> Result<Option<ExactRatio>> {
     let mut best: Option<ExactRatio> = None;
     let mut error = None;
@@ -1108,13 +1132,15 @@ fn exact_boundary_distance_ratio(shape: &Shape, center: Point) -> Result<Option<
     Ok(best)
 }
 
-pub(crate) fn exact_boundary_squared(shape: &Shape, center: Point) -> Result<Rational> {
+#[cfg(test)]
+fn exact_boundary_squared(shape: &Shape, center: Point) -> Result<Rational> {
     exact_boundary_distance_ratio(shape, center)?.map_or_else(
         || Ok(Rational::zero()),
         |(numerator, denominator)| Rational::new(numerator, denominator),
     )
 }
 
+#[cfg(test)]
 fn exact_boundary_radius(shape: &Shape, center: Point) -> Result<f64> {
     exact_boundary_squared(shape, center).and_then(|distance| distance.round_sqrt())
 }
@@ -1333,14 +1359,6 @@ fn source_vertex_outside_candidate(shape: &Shape, candidate: &[Point]) -> bool {
     false
 }
 
-pub(crate) fn polylabel_center_radius(
-    shape: &Shape,
-    tolerance: Option<f64>,
-) -> Result<(Point, f64)> {
-    let center = polylabel_point(shape, tolerance)?;
-    Ok((center, exact_boundary_radius(shape, center)?))
-}
-
 pub(crate) fn emit_zero_radius_point(shape: &Shape, center: Point) -> Result<Shape> {
     // A zero or subnormal clearance cannot support a stable fixed-resolution
     // ring; closed membership, not the rounded radius, decides whether the
@@ -1366,7 +1384,7 @@ pub(crate) fn build_inscribed_circle(
     center: Point,
     radius: f64,
     quadrant_segments: NonZeroU32,
-    support: Option<(&PreparedSupport, &PreparedSupport)>,
+    support: Option<(&PreparedSupport, &PreparedSupport, &Rational)>,
 ) -> Result<Shape> {
     let steps = 4_usize
         .checked_mul(quadrant_segments.get() as usize)
@@ -1428,7 +1446,7 @@ fn build_inscribed_circle_once(
     steps: usize,
     vertices: usize,
     quadrant_segments: NonZeroU32,
-    support: Option<(&PreparedSupport, &PreparedSupport)>,
+    support: Option<(&PreparedSupport, &PreparedSupport, &Rational)>,
 ) -> Result<Shape> {
     let mut points = Vec::with_capacity(steps);
     let quadrant = quadrant_segments.get() as usize;
@@ -1474,9 +1492,13 @@ fn build_inscribed_circle_once(
         candidate_center_is_strictly_inside(&points, center, counter_clockwise);
     let source_contained = match support {
         None => true,
-        Some((source, boundary)) => {
-            source.candidate_is_contained(boundary, center, &points, counter_clockwise)?
-        },
+        Some((source, boundary, clearance)) => source.candidate_is_contained(
+            boundary,
+            center,
+            clearance,
+            &points,
+            counter_clockwise,
+        )?,
     };
     if !center_in_candidate || !source_contained {
         return Err(crate::geometry::GeometryErrorKind::unrepresentable_output(
@@ -1487,6 +1509,13 @@ fn build_inscribed_circle_once(
         Ring::try_from_closed(seq)?,
         Vec::new(),
     )))
+}
+
+pub(crate) const fn degenerate_polygon_center(bounds: Bounds) -> Point {
+    Point::new_raw_xy(
+        f64::midpoint(bounds.minx(), bounds.maxx()),
+        f64::midpoint(bounds.miny(), bounds.maxy()),
+    )
 }
 
 /// Whether some polygon ring spans an area: a shape whose rings all lie on

@@ -475,15 +475,14 @@ impl Shape {
     /// Visit every line segment — linework edges of (multi)linestrings, ring
     /// edges of (multi)polygons, recursively through collections — without
     /// materializing a `Vec`. Point-only shapes have no segments.
+    #[cfg(test)]
     pub(crate) fn for_each_segment(&self, mut visit: impl FnMut(Segment)) {
         self.for_each_segment_chain(|chain| {
             line_segments(chain).for_each(&mut visit);
         });
     }
 
-    /// [`for_each_segment`](Self::for_each_segment) with FULL ordinate
-    /// carry: each edge as its two `Point`s (Z/M intact) — the ordinate
-    /// lanes' traversal (the planar `Segment` is XY-only by design).
+    /// Visit every line segment as its two `Point`s, preserving Z/M.
     pub(crate) fn for_each_vertex_pair(&self, mut visit: impl FnMut(Point, Point)) {
         self.for_each_segment_chain(|chain| {
             for [start, end] in chain.segment_pairs() {

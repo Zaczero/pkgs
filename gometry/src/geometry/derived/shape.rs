@@ -3,10 +3,10 @@ use std::num::NonZeroU32;
 use crate::error::Result;
 use crate::geometry::derived::{
     areal_centroid, build_inscribed_circle, canonicalize_concave_hull_points, centroid_is_empty,
-    collection_surface_point, emit_minimum_bounding_circle, emit_zero_radius_point,
-    lineal_centroid, lineal_surface_point, minimum_area_rectangle, monotone_chain_hull,
-    multipoint_surface_point, native_concave_hull, point_centroid, point_on_surface_line_columns,
-    polygonal_surface_point, polylabel_center_radius, polylabel_point,
+    collection_surface_point, degenerate_polygon_center, emit_minimum_bounding_circle,
+    emit_zero_radius_point, lineal_centroid, lineal_surface_point, minimum_area_rectangle,
+    monotone_chain_hull, multipoint_surface_point, native_concave_hull, point_centroid,
+    point_on_surface_line_columns, polygonal_surface_point, polylabel_point,
     scale_aware_default_tolerance, shape_from_open_hull, shape_from_selected_hull,
     smallest_enclosing_circle,
 };
@@ -297,15 +297,14 @@ impl Shape {
         if self.is_empty() {
             return Ok(Self::empty_polygon());
         }
-        let (center, radius, result) = if certify_source {
-            let result = self.certified_inradius(tolerance, "maximum_inscribed_circle", 1.0)?;
-            let center = result.center();
-            let radius = result.radius_in_scale(1.0)?;
-            (center, radius, Some(result))
-        } else {
-            let (center, radius) = polylabel_center_radius(self, tolerance)?;
-            (center, radius, None)
+        let Some(result) = self.certified_inradius(tolerance, "maximum_inscribed_circle", 1.0)?
+        else {
+            return Ok(Self::Point(degenerate_polygon_center(
+                self.bounds().expect("nonempty polygon has bounds"),
+            )));
         };
+        let center = result.center();
+        let radius = result.radius_in_scale(1.0)?;
         if radius == 0.0 || (radius > 0.0 && radius < f64::MIN_POSITIVE) {
             return emit_zero_radius_point(self, center);
         }
@@ -313,24 +312,23 @@ impl Shape {
             center,
             radius,
             CIRCLE_QUADRANT_SEGMENTS,
-            result
-                .as_ref()
-                .map(|result| (result.source_support(), result.boundary_support())),
+            certify_source.then(|| {
+                (
+                    result.source_support(),
+                    result.boundary_support(),
+                    &result.center_squared,
+                )
+            }),
         )
     }
 
-    pub(crate) fn maximum_inscribed_radius_in_frame(
-        &self,
-        tolerance: Option<f64>,
-        certify_source: bool,
-    ) -> Result<f64> {
-        self.maximum_inscribed_radius_in_scale(tolerance, certify_source, 1.0)
+    pub(crate) fn maximum_inscribed_radius_in_frame(&self, tolerance: Option<f64>) -> Result<f64> {
+        self.maximum_inscribed_radius_in_scale(tolerance, 1.0)
     }
 
     pub(crate) fn maximum_inscribed_radius_in_scale(
         &self,
         tolerance: Option<f64>,
-        certify_source: bool,
         scale: f64,
     ) -> Result<f64> {
         let tolerance = tolerance
@@ -340,13 +338,8 @@ impl Shape {
         if self.is_empty() {
             return Ok(f64::NAN);
         }
-        if certify_source {
-            Ok(self
-                .certified_inradius(tolerance, "maximum_inscribed_radius", scale)?
-                .radius_in_scale(scale)?)
-        } else {
-            Ok(polylabel_center_radius(self, tolerance)?.1 * scale)
-        }
+        self.certified_inradius(tolerance, "maximum_inscribed_radius", scale)?
+            .map_or(Ok(0.0), |result| result.radius_in_scale(scale))
     }
 
     fn certified_inradius(
@@ -354,7 +347,7 @@ impl Shape {
         tolerance: Option<f64>,
         operation: &'static str,
         scale: f64,
-    ) -> Result<DirectedOptimizationResult> {
+    ) -> Result<Option<DirectedOptimizationResult>> {
         let finite = matches!(
             self.try_for_each_first_xy_point_run(|point| {
                 if point.x.is_finite() && point.y.is_finite() {
@@ -370,7 +363,7 @@ impl Shape {
         }
         let tolerance = match tolerance {
             Some(tolerance) => tolerance,
-            None => scale_aware_default_tolerance(self)? * scale,
+            None => scale_aware_default_tolerance(self) * scale,
         };
         directed_inradius_scaled(self, tolerance, scale)
     }

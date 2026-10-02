@@ -1,6 +1,6 @@
 use super::*;
 use crate::error::ErrorKind;
-use crate::geometry::{LineSeq, constructive, overlay};
+use crate::geometry::{constructive, overlay};
 
 fn circle_points(center: Point, radius: f64) -> Vec<Point> {
     let mut points = Vec::with_capacity(64);
@@ -76,66 +76,6 @@ fn dense_reciprocal_polygon(subdivisions: usize) -> Shape {
     ))
 }
 
-fn dense_unit_polygon(subdivisions: usize) -> Shape {
-    let mut points = Vec::with_capacity(dense_ring_capacity(subdivisions));
-    for index in 0..=subdivisions {
-        let fraction = index as f64 / subdivisions as f64;
-        points.push(Point::new_raw_xy(-1.0 + 2.0 * fraction, -1.0));
-    }
-    for index in (0..=subdivisions).rev() {
-        let fraction = index as f64 / subdivisions as f64;
-        points.push(Point::new_raw_xy(-1.0 + 2.0 * fraction, 1.0));
-    }
-    points.push(points[0]);
-    Shape::Polygon(Polygon::new(
-        Ring::from_closed(CoordSeq::try_from_points(&points).unwrap()).unwrap(),
-        Vec::new(),
-    ))
-}
-
-fn normalized_dense_reciprocal_polygon() -> PolylabelFrame {
-    let shape = dense_reciprocal_polygon(256);
-    let bounds = shape.bounds().expect("dense polygon has bounds");
-    normalized_polylabel_frame(&shape, bounds)
-        .unwrap()
-        .expect("reciprocal axes have a frame")
-}
-
-fn flat_framed_distance(frame: AxisFrame, linework: &PreparedLinework, point: Point) -> f64 {
-    let mut best = f64::INFINITY;
-    linework.for_each_segment(|segment| {
-        best = best.min(framed_metric_nearest_on_segment(frame, point, segment).1);
-    });
-    best
-}
-
-fn indexed_framed_distance(
-    frame: AxisFrame,
-    linework: &PreparedLinework,
-    bvh: &FacetBvh,
-    point: Point,
-) -> f64 {
-    let mut stack = Vec::new();
-    bvh.min_point_distance_with_stack_framed(
-        linework,
-        point,
-        frame,
-        &mut stack,
-        f64::INFINITY,
-        |facet| {
-            let mut best = f64::INFINITY;
-            for index in 0..facet.segment_count as usize {
-                best = best.min(
-                    framed_metric_nearest_on_segment(frame, point, linework.segment(facet, index))
-                        .1,
-                );
-            }
-            best
-        },
-    )
-    .unwrap()
-}
-
 #[test]
 fn reciprocal_ribbon_keeps_the_physical_nearest_edge() {
     let extent = 1.0e162;
@@ -159,127 +99,18 @@ fn reciprocal_ribbon_keeps_the_physical_nearest_edge() {
 }
 
 #[test]
-fn reciprocal_axis_dense_indexed_field_preserves_framed_distance() {
-    let normalized = normalized_dense_reciprocal_polygon();
-    let linework = PreparedLinework::build(&normalized.shape).unwrap();
-    let bvh = FacetBvh::build(&linework).expect("dense linework has an index");
-    let mut field = PolylabelField::new(
-        &normalized.shape,
-        normalized.max_inradius,
-        Some(normalized.frame),
-    )
-    .unwrap();
-
-    for point in [
-        Point::new_raw_xy(0.0, 0.0),
-        Point::new_raw_xy(0.25, -0.2),
-        Point::new_raw_xy(-0.75, 0.4),
-    ] {
-        let flat_distance = flat_framed_distance(normalized.frame, &linework, point);
-        let indexed_distance = indexed_framed_distance(normalized.frame, &linework, &bvh, point);
-        let field_distance = field.boundary_distance(point, f64::INFINITY).unwrap();
-        assert_eq!(indexed_distance.to_bits(), flat_distance.to_bits());
-        assert_eq!(field_distance.to_bits(), flat_distance.to_bits());
-    }
-}
-
-#[test]
-fn framed_subnormal_seed_stays_in_unsquared_distance_units() {
-    let frame = AxisFrame::from_origin_extents(Point::new_raw_xy(0.0, 0.0), 1.0, 1.0e-320)
-        .expect("positive frame extents");
-    let shape = Shape::LineString(
-        LineSeq::try_new(CoordSeq::try_from_xy(&[XY::new(0.0, 1.0), XY::new(1.0, 1.0)]).unwrap())
-            .unwrap(),
+fn dense_reciprocal_polygon_retains_a_physical_center() {
+    let shape = dense_reciprocal_polygon(256);
+    assert_eq!(
+        shape.polylabel(None).unwrap(),
+        Shape::Point(Point::new_raw_xy(0.0, 0.0)),
     );
-    let linework = PreparedLinework::build(&shape).unwrap();
-    let bvh = FacetBvh::build(&linework).expect("one facet has a tree root");
-    let point = Point::new_raw_xy(0.0, 0.0);
-    let expected =
-        framed_metric_nearest_on_segment(frame, point, linework.segment(linework.facets[0], 0)).1;
-    assert!(expected > 0.0 && expected < f64::MIN_POSITIVE);
-    let mut stack = Vec::new();
-    let actual = bvh
-        .min_point_distance_with_stack_framed(
-            &linework,
-            point,
-            frame,
-            &mut stack,
-            expected,
-            |facet| {
-                let mut best = f64::INFINITY;
-                for index in 0..facet.segment_count as usize {
-                    best = best.min(
-                        framed_metric_nearest_on_segment(
-                            frame,
-                            point,
-                            linework.segment(facet, index),
-                        )
-                        .1,
-                    );
-                }
-                best
-            },
-        )
-        .unwrap();
-    assert_eq!(actual.to_bits(), expected.to_bits());
-}
-
-#[test]
-fn unframed_positive_seed_underflow_does_not_prune_positive_distance() {
-    let shape = dense_unit_polygon(256);
-    let mut field = PolylabelField::new(&shape, 1.0, None).unwrap();
-    let tiny_seed = f64::from_bits(1);
-    assert_eq!(tiny_seed * tiny_seed, 0.0);
-    let distance = field
-        .boundary_distance(Point::new_raw_xy(0.0, 0.0), tiny_seed)
-        .unwrap();
-    assert_eq!(distance.to_bits(), 1.0_f64.to_bits());
-}
-
-#[test]
-fn reciprocal_axis_index_refines_fewer_facets_and_segments_than_flat() {
-    let normalized = normalized_dense_reciprocal_polygon();
-    let linework = PreparedLinework::build(&normalized.shape).unwrap();
-    let bvh = FacetBvh::build(&linework).expect("dense linework has an index");
-    let point = Point::new_raw_xy(0.0, 0.0);
-    let mut refined_facets = 0;
-    let mut refined_segments = 0;
-    let mut stack = Vec::new();
-    let indexed_distance = bvh
-        .min_point_distance_with_stack_framed(
-            &linework,
-            point,
-            normalized.frame,
-            &mut stack,
-            f64::INFINITY,
-            |facet| {
-                refined_facets += 1;
-                refined_segments += facet.segment_count as usize;
-                let mut best = f64::INFINITY;
-                for index in 0..facet.segment_count as usize {
-                    best = best.min(
-                        framed_metric_nearest_on_segment(
-                            normalized.frame,
-                            point,
-                            linework.segment(facet, index),
-                        )
-                        .1,
-                    );
-                }
-                best
-            },
-        )
-        .unwrap();
-    let flat_distance = flat_framed_distance(normalized.frame, &linework, point);
-    assert_eq!(indexed_distance.to_bits(), flat_distance.to_bits());
-    assert!(refined_facets < linework.facets.len());
-    assert!(refined_segments < linework.segment_count());
 }
 
 #[test]
 fn zero_radius_boundary_point_uses_closed_membership() {
     let shape = degenerate_line_shape();
-    let result = shape.maximum_inscribed_circle(None).unwrap();
+    let result = emit_zero_radius_point(&shape, Point::new_raw_xy(0.0, 0.0)).unwrap();
     let Shape::Point(point) = result else {
         panic!("degenerate maximum circle must emit its point center");
     };
@@ -526,8 +357,9 @@ fn inscribed_circle_retries_after_a_rounded_radius_overrun() {
         Vec::new(),
     ));
     let (prepared, boundary) = exact_inscribed_support(&source);
-    let support = Some((&prepared, &boundary));
     let center = Point::new_raw_xy(0.5, 0.5);
+    let clearance = exact_boundary_squared(&source, center).unwrap();
+    let support = Some((&prepared, &boundary, &clearance));
     let quadrants = NonZeroU32::new(16).expect("non-zero");
     let steps = quadrants.get() as usize * 4;
     let radius = 0.5_f64.next_up();
@@ -564,34 +396,6 @@ fn candidate_center_must_be_strictly_inside_every_edge() {
         Point::new_raw_xy(5.0, 6.0),
         true,
     ));
-}
-
-#[test]
-fn representative_point_uses_an_interior_chord_instead_of_the_box_center() {
-    let shape = Shape::Polygon(Polygon::new(
-        Ring::from_closed(
-            crate::geometry::CoordSeq::try_from_points(&[
-                Point::new_raw_xy(0.0, 0.0),
-                Point::new_raw_xy(4.0, 0.0),
-                Point::new_raw_xy(0.0, 4.0),
-                Point::new_raw_xy(0.0, 0.0),
-            ])
-            .unwrap(),
-        )
-        .unwrap(),
-        Vec::new(),
-    ));
-    let bounds = shape.bounds().expect("nonempty polygon");
-    let bbox_seed = Point::new_raw_xy(
-        bounds.minx() + (bounds.maxx() - bounds.minx()) / 2.0,
-        bounds.miny() + (bounds.maxy() - bounds.miny()) / 2.0,
-    );
-    let representative = representative_point(&shape, bounds).expect("representative point");
-    assert_eq!((representative.x, representative.y), (1.0, 2.0));
-    assert_ne!(
-        (representative.x, representative.y),
-        (bbox_seed.x, bbox_seed.y)
-    );
 }
 
 #[test]
@@ -788,10 +592,7 @@ fn minimum_circle_emission_retries_when_rounded_radius_is_below_tangent() {
 }
 
 #[test]
-fn minimum_circle_polygon_reports_the_realization_budget_for_a_collapsed_ring() {
-    // At 2^60 a radius step is 256 units, so the first retries cannot
-    // certify, and each charges one more ring. Three rings of headroom run
-    // out before the inflation reaches a representable ring.
+fn minimum_circle_polygon_admits_the_complete_requested_ring_before_emission() {
     let points = [
         Point::new_raw_xy(2.0_f64.powi(60), 2.0_f64.powi(60)),
         Point::new_raw_xy(2.0_f64.powi(60) + 1024.0, 2.0_f64.powi(60)),
@@ -804,8 +605,8 @@ fn minimum_circle_polygon_reports_the_realization_budget_for_a_collapsed_ring() 
     let quadrants = NonZeroU32::new(16).expect("non-zero");
     let mut budget = realization_budget();
     budget
-        .add(crate::geometry::GENERATED_ITEM_LIMIT - 3 * (4 * 16 + 1))
-        .expect("headroom for three rings");
+        .add(crate::geometry::GENERATED_ITEM_LIMIT - 4 * 16)
+        .expect("one vertex less than the requested ring");
     let error = emit_minimum_bounding_circle(&disk, quadrants, &mut budget).unwrap_err();
     assert!(matches!(
         error.kind(),

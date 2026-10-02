@@ -80,9 +80,9 @@ impl PreparedSupport {
     pub(in crate::geometry) fn from_shape_with_boundary(
         shape: &Shape,
         budget: &mut ExpansionBudget,
-    ) -> Result<Self> {
+    ) -> Result<Option<Self>> {
         if !shape.has_area_parts() {
-            return Self::from_shape(shape, budget);
+            return Self::from_shape(shape, budget).map(Some);
         }
         // Valid polygon rings already are their filled support boundary.
         // Invalid/overlapping inputs still need the union partition to select
@@ -90,12 +90,15 @@ impl PreparedSupport {
         if let Some(polygonal) = shape.polygonal()
             && shape.validate()?.is_none()
         {
-            return Self::from_valid_polygonal(&polygonal);
+            return Self::from_valid_polygonal(&polygonal).map(Some);
         }
         let inventory = ExactSourceInventory::from_shapes(&[shape])?;
         let partition = inventory.partition(budget)?;
         let support = inventory.metric_support_with_boundary(&partition)?;
-        Self::from_metric_support(support)
+        if support.faces.is_empty() {
+            return Ok(None);
+        }
+        Self::from_metric_support(support).map(Some)
     }
 
     fn from_valid_polygonal(shape: &Polygonal<'_>) -> Result<Self> {
@@ -405,16 +408,15 @@ impl PreparedSupport {
         &self,
         boundary: &Self,
         center: Point,
+        clearance_squared: &Rational,
         candidate: &[Point],
         counter_clockwise: bool,
     ) -> Result<bool> {
         let center = ExactPoint::from_xy(center.xy());
-        if !self.contains_area(&center)? {
-            return Ok(false);
-        }
+        // The directed result has already certified this center's membership
+        // and clearance against the retained source and boundary views.
         // A convex polygon whose vertices lie in the center's clearance disk
         // cannot cross the source boundary, including an enclosed hole.
-        let clearance_squared = boundary.distance_squared(&center)?;
         let mut inside_disk = true;
         let mut radius_squared = Rational::zero();
         for &point in candidate {
@@ -423,7 +425,7 @@ impl PreparedSupport {
             if squared.try_cmp(&radius_squared)? == Ordering::Greater {
                 radius_squared = squared.clone();
             }
-            if squared.try_cmp(&clearance_squared)? == Ordering::Greater {
+            if squared.try_cmp(clearance_squared)? == Ordering::Greater {
                 inside_disk = false;
                 if !self.covers_support(&point)? {
                     return Ok(false);
@@ -468,7 +470,7 @@ impl PreparedSupport {
         Ok(true)
     }
 
-    const fn has_positive_area(&self) -> bool {
+    pub(in crate::geometry) const fn has_positive_area(&self) -> bool {
         // Faces come from either valid polygon rings or selected non-exterior
         // partition faces; collapsed support lives only in spans and points.
         !self.faces.is_empty()
@@ -2252,6 +2254,197 @@ fn exact_parallel(left: &SupportSpan, right: &SupportSpan) -> Result<bool> {
         .is_zero())
 }
 
+struct InradiusPlane<'a> {
+    span: &'a SupportSpan,
+    dx: Rational,
+    dy: Rational,
+    clearance: Rational,
+    length_lower: Rational,
+    side: crate::geometry::Orientation,
+}
+
+impl InradiusPlane<'_> {
+    fn encloses_source(&self, source: &PreparedSupport) -> Result<bool> {
+        for point in source.faces.iter().flatten().flatten() {
+            let side = match point.stored_xy() {
+                Some(point) => crate::geometry::orientation(
+                    self.span.source.start,
+                    self.span.source.end,
+                    point,
+                ),
+                None => match carrier_line_value(self.span, point)?.sign() {
+                    ExactSign::Positive => crate::geometry::Orientation::CounterClockwise,
+                    ExactSign::Negative => crate::geometry::Orientation::Clockwise,
+                    ExactSign::Zero => crate::geometry::Orientation::Collinear,
+                },
+            };
+            if side != self.side && side != crate::geometry::Orientation::Collinear {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    }
+
+    #[expect(
+        clippy::arithmetic_side_effects,
+        reason = "the finite normalized equations only propose a witness; source membership and clearance are recomputed exactly"
+    )]
+    fn normalized_equation(&self, radius: f64) -> Result<Option<(f64, f64, f64)>> {
+        let length = self.length_lower.round()?;
+        let nx = -self.dy.round()? / length;
+        let ny = self.dx.round()? / length;
+        let rhs = radius - self.clearance.round()? / length;
+        Ok((nx.is_finite() && ny.is_finite() && rhs.is_finite()).then_some((nx, ny, rhs)))
+    }
+}
+
+#[expect(
+    clippy::arithmetic_side_effects,
+    reason = "the finite linear solve is a witness nomination, never an upper bound or membership decision"
+)]
+fn inradius_plane_witness(
+    planes: [&InradiusPlane<'_>; 3],
+    upper: &Rational,
+    probe: &ExactPoint,
+) -> Result<Option<ExactPoint>> {
+    let radius = upper.round()?;
+    let [left, middle, right] = planes.map(|plane| plane.normalized_equation(radius));
+    let [Some(left), Some(middle), Some(right)] = [left?, middle?, right?] else {
+        return Ok(None);
+    };
+    let mut best = None;
+    let mut best_determinant = 0.0;
+    for ((ax, ay, ar), (bx, by, br)) in [(left, middle), (left, right), (middle, right)] {
+        let determinant = ax * by - ay * bx;
+        if determinant.abs() > best_determinant {
+            best_determinant = determinant.abs();
+            best = Some((
+                (ar * by - ay * br) / determinant,
+                (ax * br - ar * bx) / determinant,
+            ));
+        }
+    }
+    let Some((dx, dy)) = best else {
+        return Ok(None);
+    };
+    let origin = probe.rounded_xy()?;
+    let xy = XY::new(origin.x + dx, origin.y + dy);
+    Ok((xy.x.is_finite() && xy.y.is_finite()).then(|| ExactPoint::from_xy(xy)))
+}
+
+/// A nonnegative combination of three enclosing half-planes eliminates the
+/// center coordinates. For oriented edge directions `e_i`, the cyclic cross
+/// products give weights with `sum(weight_i * e_i) == 0` exactly. Consequently
+/// every contained disk obeys `radius <= sum(weight_i * H_i) /
+/// sum(weight_i * |e_i|)`. Downward length enclosures make that quotient an
+/// upper bound; nominated floating centers are independently source-certified.
+fn inradius_carrier_enclosure(
+    source: &PreparedSupport,
+    target: &PreparedSupport,
+    context: &SearchContext<'_>,
+    current_upper: &Rational,
+) -> Result<Option<(Rational, Option<ExactPoint>)>> {
+    let Some(probe) = &context.lower_witness else {
+        return Ok(None);
+    };
+    let nominated = target.index.nominate(target, probe)?;
+    let mut planes = Vec::with_capacity(nominated.len());
+    for primitive in nominated {
+        let PrimitiveId::Span(index) = primitive else {
+            continue;
+        };
+        let span = target.spans.get(index).expect("nominated boundary span");
+        let clearance = carrier_line_value(span, probe)?;
+        let sign = clearance.sign();
+        if sign == ExactSign::Zero {
+            continue;
+        }
+        let carrier = span.carrier()?;
+        let orient = |value: &Rational| {
+            if sign == ExactSign::Negative {
+                Rational::zero().try_subtract(value)
+            } else {
+                Ok(value.clone())
+            }
+        };
+        let interval = SqrtInterval::from_squared_with_error(&carrier.norm_squared, None)?;
+        let length_lower = Rational::from_dyadic(interval.lower);
+        if length_lower.is_zero() {
+            continue;
+        }
+        planes.push(InradiusPlane {
+            span,
+            dx: orient(&carrier.dx)?,
+            dy: orient(&carrier.dy)?,
+            clearance: orient(&clearance)?,
+            length_lower,
+            side: if sign == ExactSign::Positive {
+                crate::geometry::Orientation::CounterClockwise
+            } else {
+                crate::geometry::Orientation::Clockwise
+            },
+        });
+    }
+    let cross = |left: &InradiusPlane<'_>, right: &InradiusPlane<'_>| {
+        left.dx
+            .try_product(&right.dy)?
+            .try_subtract(&left.dy.try_product(&right.dx)?)
+    };
+    let mut best = None;
+    for (left_index, left) in planes.iter().enumerate() {
+        for (middle_index, middle) in planes.iter().enumerate().skip(left_index.wrapping_add(1)) {
+            for right in planes.iter().skip(middle_index.wrapping_add(1)) {
+                let triple = [left, middle, right];
+                let mut weights = [
+                    cross(middle, right)?,
+                    cross(right, left)?,
+                    cross(left, middle)?,
+                ];
+                if weights
+                    .iter()
+                    .all(|weight| weight.sign() != ExactSign::Positive)
+                {
+                    for weight in &mut weights {
+                        *weight = Rational::zero().try_subtract(weight)?;
+                    }
+                }
+                if weights
+                    .iter()
+                    .any(|weight| weight.sign() == ExactSign::Negative)
+                {
+                    continue;
+                }
+                let mut numerator = Rational::zero();
+                let mut denominator = Rational::zero();
+                for (weight, plane) in weights.iter().zip(triple) {
+                    numerator = numerator.try_add(&weight.try_product(&plane.clearance)?)?;
+                    denominator = denominator.try_add(&weight.try_product(&plane.length_lower)?)?;
+                }
+                if denominator.is_zero() {
+                    continue;
+                }
+                let upper = numerator.try_quotient(&denominator)?;
+                let ceiling = best.as_ref().map_or(current_upper, |(upper, _)| upper);
+                if upper.try_cmp(ceiling)? != Ordering::Less {
+                    continue;
+                }
+                let mut valid = true;
+                for (weight, plane) in weights.iter().zip(triple) {
+                    if !weight.is_zero() && !plane.encloses_source(source)? {
+                        valid = false;
+                        break;
+                    }
+                }
+                if valid {
+                    let witness = inradius_plane_witness(triple, &upper, probe)?;
+                    best = Some((upper, witness));
+                }
+            }
+        }
+    }
+    Ok(best)
+}
+
 fn projection_is_in_span(point: &ExactPoint, span: &SupportSpan) -> Result<bool> {
     let parameter = span_projection_parameter(point, span)?;
     Ok(parameter.try_cmp(span.lo())? != Ordering::Less
@@ -3005,12 +3198,93 @@ fn directed_candidate(
     }))
 }
 
+#[expect(
+    clippy::arithmetic_side_effects,
+    reason = "each seed is inset from a finite box edge by at most its short-axis half-extent"
+)]
+fn directed_seed_candidate(
+    source: &PreparedSupport,
+    target: &PreparedSupport,
+    context: &mut SearchContext<'_>,
+) -> Result<Option<DirectedCandidate>> {
+    // Every clearance disk is inside the source's enclosing rectangle.
+    // Its short-axis half-extent bounds the inradius independently of the
+    // long-axis Lipschitz radius used by individual search patches.
+    let Some(bounds) = source.area_bounds.filter(|bounds| {
+        // A long-axis bisection still leaves an elongated cell. Ordinary
+        // near-square cells already localize both axes together.
+        let width = bounds.max_x / 2.0 - bounds.min_x / 2.0;
+        let height = bounds.max_y / 2.0 - bounds.min_y / 2.0;
+        width > 2.0 * height || height > 2.0 * width
+    }) else {
+        return Ok(None);
+    };
+    let width = Rational::from_f64(bounds.max_x).try_subtract(&Rational::from_f64(bounds.min_x))?;
+    let height =
+        Rational::from_f64(bounds.max_y).try_subtract(&Rational::from_f64(bounds.min_y))?;
+    let shortest = if width.try_cmp(&height)? == Ordering::Less {
+        width
+    } else {
+        height
+    };
+    let upper = shortest.try_product(&Rational::from_f64(0.5))?;
+    {
+        let radius = nonnegative_bounds(&upper)?.0;
+        let x = f64::midpoint(bounds.min_x, bounds.max_x);
+        let y = f64::midpoint(bounds.min_y, bounds.max_y);
+        let ends = if compare_box_extents(bounds) == Some(Ordering::Less) {
+            [
+                XY::new(x, bounds.min_y + radius),
+                XY::new(x, bounds.max_y - radius),
+            ]
+        } else {
+            [
+                XY::new(bounds.min_x + radius, y),
+                XY::new(bounds.max_x - radius, y),
+            ]
+        };
+        let mut previous = None;
+        for xy in [XY::new(x, y), ends[0], ends[1]] {
+            if previous == Some(xy) {
+                continue;
+            }
+            previous = Some(xy);
+            let witness = ExactPoint::from_xy(xy);
+            if source.contains_area(&witness)? {
+                let squared = target.distance_squared(&witness)?;
+                if !squared.is_zero() {
+                    context.update_lower_with_witness(squared, &witness)?;
+                    if let Some(result) = directed_candidate(source, target, &upper, context)? {
+                        return Ok(Some(result));
+                    }
+                }
+            }
+        }
+    }
+    if let Some((enclosure, witness)) = inradius_carrier_enclosure(source, target, context, &upper)?
+    {
+        if let Some(witness) = witness
+            && source.contains_area(&witness)?
+        {
+            let squared = target.distance_squared(&witness)?;
+            context.update_lower_with_witness(squared, &witness)?;
+        }
+        if let Some(result) = directed_candidate(source, target, &enclosure, context)? {
+            return Ok(Some(result));
+        }
+    }
+    Ok(None)
+}
+
 fn run_directed(
     source: &PreparedSupport,
     target: &PreparedSupport,
     context: &mut SearchContext<'_>,
 ) -> Result<DirectedCandidate> {
     context.require_positive_witness = source.has_positive_area();
+    if let Some(candidate) = directed_seed_candidate(source, target, context)? {
+        return Ok(candidate);
+    }
     let mut queue = PatchQueue::new(context.exact_upper);
     for patch in source.inradius_initial_patches()? {
         if let Some(record) = build_patch(patch, source, target, context)? {
@@ -3061,7 +3335,7 @@ pub(crate) fn directed_inradius_scaled(
     shape: &Shape,
     tolerance: f64,
     output_scale: f64,
-) -> Result<DirectedOptimizationResult> {
+) -> Result<Option<DirectedOptimizationResult>> {
     if !(tolerance.is_finite() && tolerance > 0.0) {
         return Err(crate::geometry::GeometryErrorKind::message(
             "maximum inscribed circle tolerance must be positive and finite",
@@ -3076,7 +3350,13 @@ pub(crate) fn directed_inradius_scaled(
     let output_scale = Rational::from_f64(output_scale);
     let output_tolerance = Rational::from_f64(tolerance);
     let mut context = SearchContext::new_directed(&accuracy, output_scale, output_tolerance);
-    let mut source = PreparedSupport::from_shape_with_boundary(shape, &mut context.budget)?;
+    let Some(mut source) = PreparedSupport::from_shape_with_boundary(shape, &mut context.budget)?
+    else {
+        return Ok(None);
+    };
+    if !source.has_positive_area() {
+        return Ok(None);
+    }
     let target = source.boundary_clone()?;
     // Boundary incidence is only needed while constructing the independent
     // boundary view. The directed result keeps the source support for final
@@ -3084,12 +3364,12 @@ pub(crate) fn directed_inradius_scaled(
     source.boundary_spans = None;
     source.boundary_points = None;
     let candidate = run_directed(&source, &target, &mut context)?;
-    Ok(DirectedOptimizationResult {
+    Ok(Some(DirectedOptimizationResult {
         center: candidate.center,
         center_squared: candidate.center_squared,
         source,
         boundary: target,
-    })
+    }))
 }
 
 pub(crate) fn distance<'a>(

@@ -82,9 +82,48 @@ fn directed_candidate_for(shape: &Shape, tolerance: f64, scale: f64) -> Directed
         Rational::from_f64(scale),
         Rational::from_f64(tolerance),
     );
-    let source = PreparedSupport::from_shape_with_boundary(shape, &mut context.budget).unwrap();
+    let source = PreparedSupport::from_shape_with_boundary(shape, &mut context.budget)
+        .unwrap()
+        .unwrap();
     let boundary = source.boundary_clone().unwrap();
     run_directed(&source, &boundary, &mut context).unwrap()
+}
+
+#[test]
+fn public_inscribed_circle_work_does_not_follow_aspect_ratio() {
+    for extent in [100.0, 1000.0, 10_000.0, 100_000.0, 1_000_000.0] {
+        let shape = polygon(&[(0.0, 0.0), (extent, 1.0), (2.0 * extent, 0.0), (0.0, 0.0)]);
+        let _guard = limit_refinement_work(32);
+        reset_exact_span_evaluations();
+        let circle = shape.maximum_inscribed_circle(None).unwrap();
+        assert!(matches!(circle, Shape::Polygon(_)));
+        assert!(refinement_work() <= 32, "extent {extent}");
+        assert!(exact_span_evaluations() <= 512, "extent {extent}");
+    }
+}
+
+#[test]
+fn shared_polygon_pole_search_is_bounded_on_thin_nonrectangular_support() {
+    for extent in [10.0, 30.0, 100.0, 300.0, 1000.0, 3000.0, 10_000.0] {
+        for shape in [
+            polygon(&[(0.0, 0.0), (extent, 0.0), (0.0, 1.0), (0.0, 0.0)]),
+            polygon(&[
+                (0.0, 0.0),
+                (extent, 0.0),
+                (extent, 0.9),
+                (0.0, 1.0),
+                (0.0, 0.0),
+            ]),
+        ] {
+            let _guard = limit_refinement_work(32);
+            reset_exact_span_evaluations();
+            let label = shape.polylabel(Some(0.001)).unwrap();
+            let circle = shape.maximum_inscribed_circle(Some(0.001)).unwrap();
+            assert!(matches!(label, Shape::Point(_)));
+            assert!(matches!(circle, Shape::Polygon(_)));
+            assert!(exact_span_evaluations() <= 512, "extent {extent}");
+        }
+    }
 }
 
 fn test_span(source: Segment) -> SupportSpan {
@@ -209,7 +248,7 @@ fn ordinary_l_shape_refinement_work_stays_bounded() {
 fn directed_adjacent_box_refinement_work_scales_with_boundary_spans() {
     for count in [8, 16, 32, 64] {
         let shape = adjacent_box_union(count);
-        let tolerance = derived::scale_aware_default_tolerance(&shape).unwrap();
+        let tolerance = derived::scale_aware_default_tolerance(&shape);
         let (source, boundary) = adjacent_box_prepared_support(count);
         let limit = count * 64;
         let (result, work) = {
@@ -704,7 +743,9 @@ fn disjoint_carrier_slopes_skip_only_impossible_parallel_strips() {
 fn original_polygon_edges_share_distance_and_membership_indices() {
     let shape = polygon(&[(0.0, 0.0), (4.0, 0.0), (4.0, 4.0), (0.0, 4.0), (0.0, 0.0)]);
     let mut budget = ExpansionBudget::new("maximum_inscribed_circle", "tolerance");
-    let support = PreparedSupport::from_shape_with_boundary(&shape, &mut budget).unwrap();
+    let support = PreparedSupport::from_shape_with_boundary(&shape, &mut budget)
+        .unwrap()
+        .unwrap();
     assert!(Arc::ptr_eq(&support.index, &support.area_index));
 }
 
@@ -1397,7 +1438,21 @@ fn directed_inradius_accounts_for_rounding_an_exact_witness_center() {
         (1.0, 4.0),
         (1.0, 0.0),
     ]);
-    let result = directed_candidate_for(&shape, 1.0, 1.0);
+    let accuracy = Accuracy::new(Some(1.0), 1.0).unwrap();
+    let mut context = SearchContext::new_directed(&accuracy, Rational::one(), Rational::one());
+    let source = PreparedSupport::from_shape_with_boundary(&shape, &mut context.budget)
+        .unwrap()
+        .unwrap();
+    let target = source.boundary_clone().unwrap();
+    let (witness, _) = SourcePatch::Box(source.area_bounds.unwrap())
+        .center_and_radius_squared(&source)
+        .unwrap();
+    context
+        .update_lower_with_witness(target.distance_squared(&witness).unwrap(), &witness)
+        .unwrap();
+    let result = directed_candidate(&source, &target, &Rational::from_f64(2.0), &context)
+        .unwrap()
+        .unwrap();
     let rounded = ExactPoint::from_xy(result.center.xy());
     assert!(
         result.proof.witness.x().try_cmp(rounded.x()).unwrap() != Ordering::Equal
@@ -1504,7 +1559,15 @@ fn selected_source_candidate_proof_checks_vertices_chords_and_hole_cycles() {
     ];
     assert!(
         source
-            .candidate_is_contained(&boundary, Point::new_raw_xy(2.0, 2.0), &valid, true)
+            .candidate_is_contained(
+                &boundary,
+                Point::new_raw_xy(2.0, 2.0),
+                &boundary
+                    .distance_squared(&ExactPoint::from_xy(XY::new(2.0, 2.0)))
+                    .unwrap(),
+                &valid,
+                true,
+            )
             .unwrap()
     );
     let hole_enclosing = [
@@ -1518,6 +1581,9 @@ fn selected_source_candidate_proof_checks_vertices_chords_and_hole_cycles() {
             .candidate_is_contained(
                 &boundary,
                 Point::new_raw_xy(0.0, 0.0),
+                &boundary
+                    .distance_squared(&ExactPoint::from_xy(XY::new(0.0, 0.0)))
+                    .unwrap(),
                 &hole_enclosing,
                 true,
             )
@@ -1534,10 +1600,14 @@ fn boundary_target_cancels_shared_edges_of_filled_multipart_support() {
     )
     .unwrap();
     let mut budget = ExpansionBudget::new("test", "support");
-    let source = PreparedSupport::from_shape_with_boundary(&shape, &mut budget).unwrap();
+    let source = PreparedSupport::from_shape_with_boundary(&shape, &mut budget)
+        .unwrap()
+        .unwrap();
     let target = source.boundary_clone().unwrap();
     assert_eq!(target.spans.len(), 8);
-    let result = directed_inradius_scaled(&shape, 1e-9, 1.0).unwrap();
+    let result = directed_inradius_scaled(&shape, 1e-9, 1.0)
+        .unwrap()
+        .unwrap();
     assert_eq!((result.center.x, result.center.y), (22.5, 22.5));
     assert_eq!(downward_sqrt(&result.center_squared).unwrap(), 7.5);
     let center = ExactPoint::from_xy(result.center.xy());
@@ -1556,7 +1626,9 @@ fn boundary_target_cancels_shared_edges_of_filled_multipart_support() {
 #[test]
 fn directed_result_drops_boundary_incidence_after_boundary_clone() {
     let shape = polygon(&[(0.0, 0.0), (4.0, 0.0), (4.0, 4.0), (0.0, 4.0), (0.0, 0.0)]);
-    let result = directed_inradius_scaled(&shape, 1e-3, 1.0).unwrap();
+    let result = directed_inradius_scaled(&shape, 1e-3, 1.0)
+        .unwrap()
+        .unwrap();
 
     assert!(
         result.source.boundary_spans.is_none(),
@@ -1585,7 +1657,9 @@ fn directed_inradius_ignores_collapsed_support_inside_positive_area() {
     let shape =
         Shape::geometry_collection(vec![outer, line, Shape::Point(Point::new_raw_xy(2.0, 2.0))])
             .unwrap();
-    let result = directed_inradius_scaled(&shape, 1e-9, 1.0).unwrap();
+    let result = directed_inradius_scaled(&shape, 1e-9, 1.0)
+        .unwrap()
+        .unwrap();
     assert_eq!(downward_sqrt(&result.center_squared).unwrap(), 2.0);
     assert!(
         result
