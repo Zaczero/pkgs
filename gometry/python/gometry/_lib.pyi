@@ -10650,10 +10650,9 @@ class GroupsIterator(Iterator[_GroupValuesT_co]):
 
 @final
 class SpatialIndexIterator(Iterator[int]):
-    """Lazy ascending-handle iterator over a live index. It scans the sparse handle
-    table on demand instead of collecting and sorting the live entries before
-    the first result. Mutation invalidates iteration, matching mapping iterator
-    semantics and keeping ``__length_hint__`` exact.
+    """Lazy ascending-handle iterator over the live range directory. Mutation
+    invalidates iteration, matching mapping iterator semantics and keeping
+    ``__length_hint__`` exact.
     """
     def __iter__(self) -> Self: ...
     def __next__(self) -> int: ...

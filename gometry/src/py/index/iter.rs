@@ -7,10 +7,9 @@ use crate::HeapSize as _;
 use crate::py::index::PySpatialIndex;
 use crate::py::sizeof::python_sizeof;
 
-/// Lazy ascending-handle iterator over a live index. It scans the sparse handle
-/// table on demand instead of collecting and sorting the live entries before
-/// the first result. Mutation invalidates iteration, matching mapping iterator
-/// semantics and keeping ``__length_hint__`` exact.
+/// Lazy ascending-handle iterator over the live range directory. Mutation
+/// invalidates iteration, matching mapping iterator semantics and keeping
+/// ``__length_hint__`` exact.
 #[pyclass(name = "SpatialIndexIterator", module = "gometry", immutable_type)]
 pub(crate) struct PySpatialIndexIter {
     pub(super) source: Py<PySpatialIndex>,
@@ -50,13 +49,7 @@ impl PySpatialIndexIter {
                 "spatial index changed during iteration",
             ));
         }
-        let live_rows = index
-            .rows
-            .live
-            .get(self.next_handle..)
-            .expect("iterator cursor stays within the stable handle table");
-        if let Some((offset, _)) = live_rows.iter().enumerate().find(|(_, live)| **live != 0) {
-            let handle = self.next_handle.wrapping_add(offset);
+        if let Some(handle) = index.rows.live_handles.next_at_or_after(self.next_handle) {
             self.next_handle = handle.wrapping_add(1);
             self.remaining = self.remaining.wrapping_sub(1);
             return Ok(Some(handle));

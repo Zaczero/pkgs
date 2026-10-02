@@ -96,6 +96,7 @@ fn finish_spatial_index(
     let bulk_entry_counts = bulk_entry_counts(&scan.entries, live_count, total_rows);
     Ok(PySpatialIndex {
         rows: IndexRows {
+            live_handles: super::live_handles::LiveHandles::from_live(&scan.live, live_count),
             packed: None,
             boxed: rows,
             live: scan.live,
@@ -193,6 +194,7 @@ pub(crate) fn packed_spatial_index(array: &PyGeometryArray) -> PyResult<Option<P
     let bulk_entry_counts = bulk_entry_counts(&entries, live_count, total_rows);
     Ok(Some(PySpatialIndex {
         rows: IndexRows {
+            live_handles: super::live_handles::LiveHandles::from_live(&live, live_count),
             packed: Some(PackedStore {
                 source: array.clone(),
             }),
@@ -345,6 +347,7 @@ pub(crate) fn restore_spatial_index(
     let metadata = (has_metadata || present).then(|| values.frame.clone());
     Ok(PySpatialIndex {
         rows: IndexRows {
+            live_handles: super::live_handles::LiveHandles::from_live(&live, live_count),
             packed: None,
             boxed: rows,
             live,

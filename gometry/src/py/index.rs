@@ -9,6 +9,7 @@
 //! immutable runs with the sound geodesic lower bound in [`geodesic`].
 
 mod geodesic;
+mod live_handles;
 mod str_tree;
 
 use std::cmp::Ordering;
@@ -568,6 +569,7 @@ pub(crate) struct IndexRows {
     /// both immutable bulk entries and mutable overflow entries.
     live: Vec<u8>,
     live_count: usize,
+    live_handles: live_handles::LiveHandles,
 }
 
 /// Operation-scoped access to the index's arbitrary live handles.
@@ -698,6 +700,7 @@ impl IndexRows {
         self.boxed.push(geometry);
         self.live.push(1);
         self.live_count = self.live_count.wrapping_add(1);
+        self.live_handles.insert(handle);
         handle
     }
 
@@ -749,6 +752,7 @@ impl IndexRows {
         }
         *live = 0;
         self.live_count = self.live_count.wrapping_sub(1);
+        self.live_handles.remove(handle);
         true
     }
 
@@ -797,6 +801,7 @@ impl HeapSize for IndexRows {
             .map_or(0, |packed| HeapSize::heap_bytes(&packed.source))
             .saturating_add(self.boxed.heap_bytes())
             .saturating_add(self.live.heap_bytes())
+            .saturating_add(self.live_handles.heap_bytes())
     }
 }
 
