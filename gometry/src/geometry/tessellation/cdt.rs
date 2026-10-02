@@ -22,7 +22,9 @@
     reason = "a, b, c, d name the vertices of a quad and e, f, t, u its slots, the geometry kernel convention"
 )]
 
-use std::collections::VecDeque;
+use std::collections::{BinaryHeap, VecDeque};
+
+use rstar::{AABB, RTree, RTreeObject};
 
 use super::exact_delaunay::{EMPTY, FaceId, FaceSide, HalfedgeId, Located, Mesh, site_xy};
 use crate::collections::{HashMap, HashSet};
@@ -37,7 +39,7 @@ pub(super) struct RefinementWorkCounters {
     pub(super) inside_label_passes: usize,
     pub(super) bad_face_scans: usize,
     pub(super) constraint_reconstruction_passes: usize,
-    pub(super) flag_remark_passes: usize,
+    pub(super) quality_checks: usize,
     pub(super) source_piece_visits: usize,
 }
 
@@ -48,7 +50,7 @@ thread_local! {
             inside_label_passes: 0,
             bad_face_scans: 0,
             constraint_reconstruction_passes: 0,
-            flag_remark_passes: 0,
+            quality_checks: 0,
             source_piece_visits: 0,
         }) };
 }
@@ -385,6 +387,311 @@ pub(super) struct ConstrainedMesh {
 
 struct FaceLabels(Vec<Option<bool>>);
 
+#[derive(Clone, Copy)]
+struct BadTriangle {
+    face: FaceId,
+    triangle: [usize; 3],
+    corners: [XY; 3],
+    angle: f64,
+    area: f64,
+}
+
+impl PartialEq for BadTriangle {
+    fn eq(&self, other: &Self) -> bool {
+        self.cmp(other).is_eq()
+    }
+}
+
+impl Eq for BadTriangle {}
+
+impl PartialOrd for BadTriangle {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for BadTriangle {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.angle
+            .total_cmp(&other.angle)
+            .then_with(|| self.area.total_cmp(&other.area))
+            .then_with(|| {
+                self.corners
+                    .iter()
+                    .zip(other.corners)
+                    .map(|(&left, right)| super::exact_delaunay::compare_xy(right, left))
+                    .find(|order| !order.is_eq())
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
+    }
+}
+
+impl BadTriangle {
+    fn new(
+        face: FaceId,
+        triangle: [usize; 3],
+        points: &[Point],
+        min_angle: Option<f64>,
+        max_area: Option<f64>,
+    ) -> Option<Self> {
+        #[cfg(test)]
+        update_work(|work| {
+            work.quality_checks = work.quality_checks.saturating_add(1);
+        });
+        let mut corners = triangle.map(|site| site_xy(points, site));
+        if max_area.is_some() {
+            corners
+                .sort_unstable_by(|&left, &right| super::exact_delaunay::compare_xy(left, right));
+        }
+        let [a, b, c] = corners;
+        let angle_bad = min_angle.is_some_and(|limit| triangle_min_angle_degrees(a, b, c) < limit);
+        let area = max_area.map_or(0.0, |_| open_xy_cycle_magnitude(&[a, b, c]).get());
+        if !angle_bad && !max_area.is_some_and(|limit| area > limit) {
+            return None;
+        }
+        if max_area.is_none() {
+            corners
+                .sort_unstable_by(|&left, &right| super::exact_delaunay::compare_xy(left, right));
+        }
+        let [a, b, c] = corners;
+        Some(Self {
+            face,
+            triangle,
+            corners,
+            angle: if angle_bad {
+                radius_edge_ratio(a, b, c)
+            } else {
+                0.0
+            },
+            area,
+        })
+    }
+}
+
+fn radius_edge_ratio(a: XY, b: XY, c: XY) -> f64 {
+    let scale = [a.x, a.y, b.x, b.y, c.x, c.y]
+        .into_iter()
+        .map(f64::abs)
+        .fold(0.0_f64, f64::max);
+    let normalized = |point: XY| XY::new(point.x / scale, point.y / scale);
+    let (a, b, c) = (normalized(a), normalized(b), normalized(c));
+    let length = |left: XY, right: XY| (left.x - right.x).hypot(left.y - right.y);
+    let mut lengths = [length(a, b), length(b, c), length(c, a)];
+    lengths.sort_unstable_by(f64::total_cmp);
+    let [_, middle, longest] = lengths;
+    let cross = ((b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x)).abs();
+    if cross == 0.0 {
+        f64::INFINITY
+    } else {
+        middle * longest / (2.0 * cross)
+    }
+}
+
+impl FaceLabels {
+    fn from_inside(mesh: &Mesh, inside: &[bool]) -> Self {
+        let mut faces = Vec::with_capacity(mesh.triangle_count());
+        for (face, &inside) in mesh.face_ids().zip(inside) {
+            faces.push(mesh.alive(face).then_some(inside));
+        }
+        Self(faces)
+    }
+
+    fn label(&mut self, face: FaceId, value: bool) -> Result<bool> {
+        let Some(inside) = self.0.get_mut(face.index()) else {
+            return Err(GeometryErrorKind::triangulation(
+                "refinement label references an absent face",
+            ));
+        };
+        if let Some(previous) = inside {
+            if *previous != value {
+                return Err(GeometryErrorKind::triangulation(
+                    "refinement boundary has inconsistent inside labels",
+                ));
+            }
+            return Ok(false);
+        }
+        *inside = Some(value);
+        Ok(true)
+    }
+
+    fn refresh(
+        &mut self,
+        mesh: &Mesh,
+        constrained: &[bool],
+        changed: &mut Vec<FaceId>,
+    ) -> Result<()> {
+        changed.sort_unstable_by_key(|face| face.index());
+        changed.dedup();
+        self.0.resize(mesh.triangle_count(), None);
+        for &face in changed.iter() {
+            let previous = self.0.get_mut(face.index()).ok_or_else(|| {
+                GeometryErrorKind::triangulation("refinement changed a missing face")
+            })?;
+            *previous = None;
+        }
+        let mut queue = VecDeque::new();
+        for &face in changed.iter() {
+            if !mesh.alive(face) {
+                continue;
+            }
+            for side in FaceSide::ALL {
+                let edge = HalfedgeId::in_face(face, side);
+                let twin = mesh.twin(edge);
+                let across = if twin == EMPTY {
+                    Some(false)
+                } else {
+                    self.get(HalfedgeId::from_index(twin).face())
+                };
+                if let Some(across) = across {
+                    let label = across ^ Mesh::side_value(constrained, edge);
+                    if self.label(face, label)? {
+                        queue.push_back((face, label));
+                    }
+                }
+            }
+        }
+        while let Some((face, inside)) = queue.pop_front() {
+            for side in FaceSide::ALL {
+                let edge = HalfedgeId::in_face(face, side);
+                let twin = mesh.twin(edge);
+                if twin == EMPTY {
+                    continue;
+                }
+                let neighbor = HalfedgeId::from_index(twin).face();
+                if self.get(neighbor).is_none() {
+                    let label = inside ^ Mesh::side_value(constrained, edge);
+                    if self.label(neighbor, label)? {
+                        queue.push_back((neighbor, label));
+                    }
+                }
+            }
+        }
+        for &face in changed.iter() {
+            if mesh.alive(face) && self.get(face).is_none() {
+                return Err(GeometryErrorKind::triangulation(
+                    "refinement could not label a changed face",
+                ));
+            }
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, PartialEq)]
+struct ConstraintCircle {
+    sites: (usize, usize),
+    corners: [XY; 2],
+    envelope: AABB<[f64; 2]>,
+}
+
+impl RTreeObject for ConstraintCircle {
+    type Envelope = AABB<[f64; 2]>;
+
+    fn envelope(&self) -> Self::Envelope {
+        self.envelope
+    }
+}
+
+impl ConstraintCircle {
+    fn new(points: &[Point], start: usize, end: usize, scale: f64) -> Self {
+        let sites = ordered(start, end);
+        let (start, end) = (site_xy(points, sites.0), site_xy(points, sites.1));
+        let normalized = |point: XY| XY::new(point.x / scale, point.y / scale);
+        let (a, b) = (normalized(start), normalized(end));
+        let center = XY::new(f64::midpoint(a.x, b.x), f64::midpoint(a.y, b.y));
+        // Include the division and circle-envelope rounding in the broad phase.
+        let radius = ((a.x - b.x).hypot(a.y - b.y) / 2.0).next_up() + 4.0 * f64::EPSILON;
+        let mut corners = [start, end];
+        corners.sort_unstable_by(|&left, &right| super::exact_delaunay::compare_xy(left, right));
+        Self {
+            sites,
+            corners,
+            envelope: AABB::from_corners(
+                [
+                    (center.x - radius).next_down(),
+                    (center.y - radius).next_down(),
+                ],
+                [(center.x + radius).next_up(), (center.y + radius).next_up()],
+            ),
+        }
+    }
+}
+
+struct ConstraintIndex {
+    scale: f64,
+    tree: RTree<ConstraintCircle>,
+}
+
+impl ConstraintIndex {
+    fn new(pieces: &HashMap<(usize, usize), SourcePiece>, points: &[Point]) -> Self {
+        let scale = points
+            .iter()
+            .map(|point| point.x.abs().max(point.y.abs()))
+            .fold(0.0_f64, f64::max);
+        Self {
+            scale,
+            tree: RTree::bulk_load(
+                pieces
+                    .values()
+                    .map(|piece| {
+                        ConstraintCircle::new(points, piece.start_site, piece.end_site, scale)
+                    })
+                    .collect(),
+            ),
+        }
+    }
+
+    fn normalized(&self, point: XY) -> [f64; 2] {
+        [point.x / self.scale, point.y / self.scale]
+    }
+
+    fn encroached(&self, mesh: &Mesh, points: &[Point], center: XY) -> Result<Option<HalfedgeId>> {
+        let selected = self
+            .tree
+            .locate_in_envelope_intersecting(AABB::from_point(self.normalized(center)))
+            .filter(|circle| {
+                in_diametral_circle(
+                    site_xy(points, circle.sites.0),
+                    site_xy(points, circle.sites.1),
+                    center,
+                )
+            })
+            .min_by(|left, right| {
+                left.corners
+                    .iter()
+                    .zip(right.corners)
+                    .map(|(&left, right)| super::exact_delaunay::compare_xy(left, right))
+                    .find(|order| !order.is_eq())
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            });
+        selected
+            .map(|circle| {
+                mesh.edge_slot(circle.sites.0, circle.sites.1)
+                    .ok_or_else(|| {
+                        GeometryErrorKind::triangulation(
+                            "refinement constraint index references an absent edge",
+                        )
+                    })
+            })
+            .transpose()
+            .map_err(Into::into)
+    }
+
+    fn remove(&mut self, points: &[Point], piece: &SourcePiece) {
+        self.tree.remove(&ConstraintCircle::new(
+            points,
+            piece.start_site,
+            piece.end_site,
+            self.scale,
+        ));
+    }
+
+    fn insert(&mut self, points: &[Point], start: usize, end: usize) {
+        self.tree
+            .insert(ConstraintCircle::new(points, start, end, self.scale));
+    }
+}
+
 impl FaceLabels {
     fn new(count: usize) -> Self {
         Self(vec![None; count])
@@ -498,11 +805,16 @@ impl ConstrainedMesh {
         source: usize,
         lo: exact::ExactRational,
         hi: exact::ExactRational,
-    ) -> Result<()> {
+    ) -> Result<Vec<FaceId>> {
         let mut legalization = Vec::new();
         self.recover_constraint(xy, u, v, source, lo, hi, &mut legalization)?;
-        self.mesh
-            .try_legalize_constrained_from(xy, &mut self.constrained, legalization)
+        let mut changed: Vec<_> = legalization.iter().map(|edge| edge.face()).collect();
+        changed.extend(self.mesh.try_legalize_constrained_from(
+            xy,
+            &mut self.constrained,
+            legalization,
+        )?);
+        Ok(changed)
     }
 
     fn recover_constraint(
@@ -803,38 +1115,39 @@ impl ConstrainedMesh {
         max_area: Option<f64>,
         limit: usize,
     ) -> Result<bool> {
-        let mut inserted = 0_usize;
-        loop {
-            let inside = self.inside_faces();
-            let xy = |site, points: &[Point]| site_xy(points, site);
-            let mut bad = None;
-            #[cfg(test)]
-            update_work(|counters| {
-                counters.bad_face_scans = counters.bad_face_scans.saturating_add(1);
-            });
-            for (face, &kept) in self.mesh.face_ids().zip(&inside) {
-                if !kept || !self.mesh.alive(face) {
-                    continue;
-                }
-                let [a, b, c] = self.mesh.triangle(face);
-                let (pa, pb, pc) = (xy(a, points), xy(b, points), xy(c, points));
-                let violates = min_angle
-                    .is_some_and(|limit| triangle_min_angle_degrees(pa, pb, pc) < limit)
-                    || max_area
-                        .is_some_and(|limit| open_xy_cycle_magnitude(&[pa, pb, pc]).get() > limit);
-                if violates {
-                    bad = Some(face);
-                    break;
-                }
+        let inside = self.inside_faces();
+        let mut bad = BinaryHeap::new();
+        #[cfg(test)]
+        update_work(|counters| {
+            counters.bad_face_scans = counters.bad_face_scans.saturating_add(1);
+        });
+        for (face, &kept) in self.mesh.face_ids().zip(&inside) {
+            if kept
+                && self.mesh.alive(face)
+                && let Some(entry) =
+                    BadTriangle::new(face, self.mesh.triangle(face), points, min_angle, max_area)
+            {
+                bad.push(entry);
             }
-            let Some(face) = bad else {
-                return Ok(true);
-            };
+        }
+        if bad.is_empty() {
+            return Ok(true);
+        }
+        let mut faces = FaceLabels::from_inside(&self.mesh, &inside);
+        let mut circles = ConstraintIndex::new(&self.source_pieces, points);
+        let mut inserted = 0_usize;
+        while let Some(entry) = bad.pop() {
+            let face = entry.face;
+            if !self.mesh.alive(face)
+                || self.mesh.triangle(face) != entry.triangle
+                || faces.get(face) != Some(true)
+            {
+                continue;
+            }
             if inserted >= limit {
                 return Ok(false);
             }
-            let [a, b, c] = self.mesh.triangle(face);
-            let (pa, pb, pc) = (xy(a, points), xy(b, points), xy(c, points));
+            let [pa, pb, pc] = entry.corners;
             // No finite binary64 can represent this center. Ruppert can
             // still make progress with the explicitly chosen longest-edge
             // midpoint; this is not a recovery for construction errors.
@@ -842,29 +1155,24 @@ impl ConstrainedMesh {
                 circumcenter(pa, pb, pc)?.unwrap_or_else(|| longest_edge_midpoint(pa, pb, pc));
             // A constrained edge or the hull stops this center's location walk.
             // Rounded source splits carry a half-ULP incidence certificate.
-            let encroached = self.mesh.edge_ids().find(|&edge| {
-                self.is_constrained(edge) && self.mesh.alive(edge.face()) && {
-                    let (s, t2) = self.mesh.edge_vertices(edge);
-                    in_diametral_circle(xy(s, points), xy(t2, points), center)
-                }
-            });
+            let encroached = circles.encroached(&self.mesh, points, center)?;
             let xy_now = |s| site_xy(points, s);
             let placed = if let Some(edge) = encroached {
-                self.prepare_split(&xy_now, points, edge)?
+                self.prepare_split(&xy_now, points, &circles, edge)?
             } else {
                 match self
                     .mesh
                     .locate_bounded(&xy_now, face, center, &self.constrained)
                 {
                     Ok(Located::OnEdge(edge)) if self.is_constrained(edge) => {
-                        self.prepare_split(&xy_now, points, edge)?
+                        self.prepare_split(&xy_now, points, &circles, edge)?
                     },
                     Ok(located) => Some(PreparedSplit {
                         candidate: center,
                         located,
                         source: None,
                     }),
-                    Err(edge) => self.prepare_split(&xy_now, points, edge)?,
+                    Err(edge) => self.prepare_split(&xy_now, points, &circles, edge)?,
                 }
             };
             let Some(PreparedSplit {
@@ -879,14 +1187,25 @@ impl ConstrainedMesh {
                 return Err(GeometryErrorKind::unrepresentable_output("triangulate"));
             }
             let site = points.len();
-            // The cavity reuses slots, so remember constraints as vertex pairs
-            // and re-mark from those once the mesh has settled; a split
-            // constraint becomes its two halves.
-            let mut pairs = self.constrained_pairs()?;
             if let Some(split) = &source {
-                pairs.remove(&ordered(split.piece.start_site, split.piece.end_site));
-                pairs.insert(ordered(split.piece.start_site, site));
-                pairs.insert(ordered(site, split.piece.end_site));
+                let edge = self
+                    .mesh
+                    .edge_slot(split.piece.start_site, split.piece.end_site)
+                    .ok_or_else(|| {
+                        GeometryErrorKind::triangulation(
+                            "constrained source edge disappeared before splitting",
+                        )
+                    })?;
+                Self::set_constrained(&mut self.constrained, edge, false);
+                let twin = self.mesh.twin(edge);
+                if twin != EMPTY {
+                    Self::set_constrained(
+                        &mut self.constrained,
+                        HalfedgeId::from_index(twin),
+                        false,
+                    );
+                }
+                circles.remove(points, &split.piece);
                 self.source_pieces.reserve(2);
                 self.split_certificates.reserve(1);
             }
@@ -907,63 +1226,76 @@ impl ConstrainedMesh {
                 },
             ));
             let xy2 = |s| site_xy(points, s);
-            let outside_seeds = if matches!(located, Located::Outside) {
-                let (_, seeds) = self.mesh.insert_outside(&xy2, site)?;
-                Some(seeds)
+            let mut changed = if let Located::Outside(visible_edge) = located {
+                let insertion =
+                    self.mesh
+                        .insert_outside(&xy2, site, visible_edge, &mut self.constrained)?;
+                let mut changed = insertion.changed;
+                changed.extend(self.mesh.try_legalize_constrained_from(
+                    &xy2,
+                    &mut self.constrained,
+                    insertion.legalization,
+                )?);
+                changed
             } else {
-                let mut skip = Vec::with_capacity(self.constrained.len());
-                skip.extend_from_slice(&self.constrained);
-                if let Some(split) = &source {
-                    let old_edge = self
-                        .mesh
-                        .edge_slot(split.0.start_site, split.0.end_site)
-                        .ok_or_else(|| {
-                            GeometryErrorKind::triangulation(
-                                "constrained source edge disappeared before splitting",
-                            )
-                        })?;
-                    Self::set_constrained(&mut skip, old_edge, false);
-                    let twin = self.mesh.twin(old_edge);
-                    if twin != EMPTY {
-                        Self::set_constrained(&mut skip, HalfedgeId::from_index(twin), false);
-                    }
-                }
-                self.mesh.insert_constrained(&xy2, site, located, &skip)?;
-                None
-            };
-            self.remark(&pairs);
-            if let Some(seeds) = outside_seeds {
                 self.mesh
-                    .try_legalize_constrained_from(&xy2, &mut self.constrained, seeds)?;
-            }
+                    .insert_constrained(&xy2, site, located, &mut self.constrained)?
+                    .changed
+            };
             if let Some((piece, parameter, _)) = source {
                 self.source_pieces
                     .remove(&ordered(piece.start_site, piece.end_site));
-                self.insert_constraint(
+                changed.extend(self.insert_constraint(
                     &xy2,
                     piece.start_site,
                     site,
                     piece.source,
                     piece.lo.clone(),
                     parameter.clone(),
-                )?;
-                self.insert_constraint(
+                )?);
+                changed.extend(self.insert_constraint(
                     &xy2,
                     site,
                     piece.end_site,
                     piece.source,
                     parameter,
                     piece.hi,
-                )?;
+                )?);
+                circles.insert(points, piece.start_site, site);
+                circles.insert(points, site, piece.end_site);
+            }
+            faces.refresh(&self.mesh, &self.constrained, &mut changed)?;
+            for &face in &changed {
+                if self.mesh.alive(face)
+                    && faces.get(face) == Some(true)
+                    && let Some(entry) = BadTriangle::new(
+                        face,
+                        self.mesh.triangle(face),
+                        points,
+                        min_angle,
+                        max_area,
+                    )
+                {
+                    bad.push(entry);
+                }
+            }
+            if !changed.contains(&entry.face)
+                && self.mesh.alive(entry.face)
+                && self.mesh.triangle(entry.face) == entry.triangle
+                && faces.get(entry.face) == Some(true)
+            {
+                bad.push(entry);
             }
             inserted = inserted.wrapping_add(1);
         }
+        Ok(true)
     }
 
     fn prepare_split(
         &self,
         xy: &impl Fn(usize) -> XY,
         points: &[Point],
+        circles: &ConstraintIndex,
         e: HalfedgeId,
     ) -> Result<Option<PreparedSplit>> {
         let (start, end) = self.mesh.edge_vertices(e);
@@ -979,11 +1311,11 @@ impl ConstrainedMesh {
             let start = xy(piece.start_site);
             let end = xy(piece.end_site);
             // Splitting the current edge in its interior preserves the mesh
-            // embedding; bent rounded segments require the global incidence scan.
+            // embedding; bent rounded segments require the incidence query.
             if exact::orient2d(start, end, candidate) != ExactSign::Zero
                 || !between(start, end, candidate)
             {
-                self.certify_split_incidence(xy, piece, candidate)?;
+                self.certify_split_incidence(xy, circles, piece, candidate)?;
             }
             let located = self.locate_boundary_split(xy, e, candidate)?;
             return Ok(Some(PreparedSplit {
@@ -1006,7 +1338,7 @@ impl ConstrainedMesh {
                 Located::OnEdge(e)
             },
             Ok(Located::Inside(face)) => Located::Inside(face),
-            Ok(Located::OnVertex | Located::OnEdge(_) | Located::Outside) | Err(_) => {
+            Ok(Located::OnVertex | Located::OnEdge(_) | Located::Outside(_)) | Err(_) => {
                 return Err(GeometryErrorKind::unrepresentable_output("triangulate"));
             },
         };
@@ -1057,6 +1389,7 @@ impl ConstrainedMesh {
     fn certify_split_incidence(
         &self,
         xy: &impl Fn(usize) -> XY,
+        circles: &ConstraintIndex,
         piece: &SourcePiece,
         candidate: XY,
     ) -> Result<()> {
@@ -1067,15 +1400,19 @@ impl ConstrainedMesh {
             (start, candidate, piece.start_site),
             (candidate, end, piece.end_site),
         ];
-        for edge in self.mesh.edge_ids() {
-            if !self.is_constrained(edge) || !self.mesh.alive(edge.face()) {
-                continue;
-            }
-            let twin = self.mesh.twin(edge);
-            if twin != EMPTY && twin < edge.index() {
-                continue;
-            }
-            let (other_start, other_end) = self.mesh.edge_vertices(edge);
+        let [a, b, c] = [start, candidate, end].map(|point| circles.normalized(point));
+        let envelope = AABB::from_corners(
+            [
+                a[0].min(b[0]).min(c[0]).next_down(),
+                a[1].min(b[1]).min(c[1]).next_down(),
+            ],
+            [
+                a[0].max(b[0]).max(c[0]).next_up(),
+                a[1].max(b[1]).max(c[1]).next_up(),
+            ],
+        );
+        for circle in circles.tree.locate_in_envelope_intersecting(envelope) {
+            let (other_start, other_end) = circle.sites;
             if ordered(other_start, other_end) == old_pair {
                 continue;
             }
@@ -1108,7 +1445,7 @@ impl ConstrainedMesh {
         let twin = self.mesh.twin(e);
         let twin = (twin != EMPTY).then(|| HalfedgeId::from_index(twin));
         match self.mesh.locate_bounded(xy, e.face(), point, &[]) {
-            Ok(Located::OnVertex | Located::Outside) => {
+            Ok(Located::OnVertex | Located::Outside(_)) => {
                 Err(GeometryErrorKind::unrepresentable_output("triangulate"))
             },
             Ok(Located::Inside(face)) => Ok(Located::Inside(face)),
@@ -1117,8 +1454,15 @@ impl ConstrainedMesh {
                 Err(GeometryErrorKind::unrepresentable_output("triangulate"))
             },
             Ok(Located::OnEdge(slot)) => Ok(Located::OnEdge(slot)),
-            Err(_) if self.mesh.outside_hull(xy, point) => Ok(Located::Outside),
-            Err(_) => Err(GeometryErrorKind::unrepresentable_output("triangulate")),
+            Err(edge) => {
+                if self.mesh.twin(edge) == EMPTY {
+                    Ok(Located::Outside(edge))
+                } else if let Some(edge) = self.mesh.outside_edge(xy, point) {
+                    Ok(Located::Outside(edge))
+                } else {
+                    Err(GeometryErrorKind::unrepresentable_output("triangulate"))
+                }
+            },
         }
     }
 
@@ -1136,27 +1480,6 @@ impl ConstrainedMesh {
             }
         }
         Ok(pairs)
-    }
-
-    /// Re-derive the per-slot flags from the constrained vertex pairs after
-    /// an insertion has renumbered the cavity's slots.
-    fn remark(&mut self, pairs: &HashSet<(usize, usize)>) {
-        #[cfg(test)]
-        update_work(|counters| {
-            counters.flag_remark_passes = counters.flag_remark_passes.saturating_add(1);
-        });
-        self.constrained = vec![false; self.mesh.edge_count()];
-        for edge in self.mesh.edge_ids() {
-            if !self.mesh.alive(edge.face()) {
-                continue;
-            }
-            if pairs.contains(&ordered(
-                self.mesh.edge_start(edge),
-                self.mesh.edge_end(edge),
-            )) {
-                Self::set_constrained(&mut self.constrained, edge, true);
-            }
-        }
     }
 
     fn validate_source_chains(&self, points: &[Point], pieces: &[SourcePiece]) -> Result<()> {
@@ -1438,6 +1761,43 @@ mod tests {
         });
     }
 
+    #[test]
+    fn public_refinement_quality_work_scales_with_output() {
+        use pyo3::prelude::*;
+        use pyo3::types::{PyDict, PyModule};
+
+        crate::test_support::initialize_python();
+        Python::attach(|py| {
+            let module = PyModule::new(py, "gometry._lib").unwrap();
+            crate::lib(&module).unwrap();
+            let polygon = module
+                .getattr("from_wkt")
+                .unwrap()
+                .call1(("POLYGON((0 0,2 0,2 2,0 2,0 0))",))
+                .unwrap();
+            let mut observations = Vec::new();
+            for count in [128_u32, 512] {
+                let options = PyDict::new(py);
+                options.set_item("method", "constrained").unwrap();
+                options
+                    .set_item("max_area", 4.0 / f64::from(count))
+                    .unwrap();
+                let _ = take_refinement_work_counters();
+                let triangles = polygon
+                    .call_method("triangulate", (), Some(&options))
+                    .unwrap();
+                let output = triangles.len().unwrap();
+                assert!(output >= count as usize);
+                let work = take_refinement_work_counters();
+                assert_eq!(work.bad_face_scans, 1);
+                assert_eq!(work.constraint_reconstruction_passes, 1);
+                assert!(work.quality_checks <= output * 16, "{work:?}");
+                observations.push(work.quality_checks);
+            }
+            assert!(observations[1] <= observations[0] * 5, "{observations:?}");
+        });
+    }
+
     fn points(xy: &[(f64, f64)]) -> Vec<Point> {
         xy.iter().map(|&(x, y)| Point::new_raw_xy(x, y)).collect()
     }
@@ -1602,17 +1962,17 @@ mod tests {
     }
 
     #[test]
-    fn refinement_rebuild_work_counters_cover_the_existing_passes() {
+    fn refinement_initializes_global_state_once() {
         let _ = take_refinement_work_counters();
         let mut pts = points(&[(0.0, 0.0), (20.0, 0.0), (20.0, 20.0), (0.0, 20.0)]);
         let edges: Vec<[usize; 2]> = (0..4).map(|i| [i, (i + 1) % 4]).collect();
         let mut mesh = ConstrainedMesh::build(&pts, &edges).unwrap();
         assert!(mesh.refine(&mut pts, None, Some(100.0), 100).unwrap());
         let counters = take_refinement_work_counters();
-        assert!(counters.inside_label_passes > 0);
-        assert!(counters.bad_face_scans > 0);
-        assert!(counters.constraint_reconstruction_passes > 0);
-        assert!(counters.flag_remark_passes > 0);
+        assert_eq!(counters.inside_label_passes, 1);
+        assert_eq!(counters.bad_face_scans, 1);
+        assert_eq!(counters.constraint_reconstruction_passes, 0);
+        assert!(counters.quality_checks <= mesh.mesh.triangle_count() * 8);
     }
 
     #[test]

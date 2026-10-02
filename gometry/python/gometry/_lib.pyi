@@ -1912,6 +1912,11 @@ class Geometry:
             without either option, duplicate XY sites use their first source
             occurrence and triangle corners preserve the selected source ordinates.
             Refinement inserts Steiner vertices and therefore returns uniform XY.
+            Refinement processes the worst triangle first: angle violations by
+            circumradius-to-shortest-edge ratio, then by area when ``max_area`` is
+            also set; triangles meeting the angle target follow in descending area.
+            Equal priorities use sorted numeric XY corners. Refinement is independent
+            of insertion order and input ring rotation or reversal.
             Each boundary Steiner vertex is the nearest binary64 coordinate pair to
             its exact position on the source edge, so the triangles cover the source
             polygon up to that rounding.
@@ -7753,6 +7758,11 @@ class GeometryArray(Sequence[_GeometryT_co]):
             coordinate units. Valid only with ``method='constrained'``. Setting
             either option enables refinement;
             inserted Steiner vertices return uniform XY. Scalar and array rows use
+            quality-first refinement: angle violations by circumradius-to-shortest-edge
+            ratio, then area when both options are set; triangles meeting the angle
+            target follow in descending area. Equal priorities use sorted numeric XY
+            corners. Refinement is independent of insertion order and input ring
+            rotation or reversal. Scalar and array rows use
             the same first-occurrence source-site and ordinate policy. Each boundary
             Steiner vertex is the nearest binary64 coordinate pair to its exact
             position on the source edge, so the triangles cover the source polygon

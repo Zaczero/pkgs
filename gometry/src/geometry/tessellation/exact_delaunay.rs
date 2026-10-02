@@ -245,7 +245,7 @@ pub(in crate::geometry::tessellation) fn canonicalize_triangles(
 }
 
 #[cfg(test)]
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 enum InsertionOrder {
     Original,
     Brio,
@@ -314,7 +314,7 @@ impl Mesh {
         let mut last = FaceId::from_index(0);
         for (_, site) in interior {
             let located = mesh.locate(&xy, last, xy(site));
-            last = mesh.try_insert_with(&xy, site, located, None)?;
+            last = mesh.try_insert_with(&xy, site, located, None)?.last;
         }
         Ok(Some(mesh))
     }
@@ -390,13 +390,112 @@ pub(super) enum Located {
     /// Exactly on an existing vertex: nothing to insert.
     OnVertex,
     /// Outside the current convex hull, where the insertion must extend it.
-    Outside,
+    Outside(HalfedgeId),
+}
+
+pub(super) struct Insertion {
+    pub(super) last: FaceId,
+    pub(super) changed: Vec<FaceId>,
+}
+
+pub(super) struct OutsideInsertion {
+    pub(super) changed: Vec<FaceId>,
+    pub(super) legalization: Vec<HalfedgeId>,
+}
+
+#[derive(Debug)]
+struct MeshHull {
+    first: usize,
+    links: Vec<[usize; 2]>,
+    len: usize,
+}
+
+impl MeshHull {
+    fn new(vertices: &[usize], vertex_count: usize) -> Self {
+        let mut links = vec![[EMPTY; 2]; vertex_count];
+        for (&start, &end) in vertices.iter().zip(vertices.iter().cycle().skip(1)) {
+            links
+                .get_mut(start)
+                .expect("hull vertices belong to the mesh")[1] = end;
+            links
+                .get_mut(end)
+                .expect("hull vertices belong to the mesh")[0] = start;
+        }
+        Self {
+            first: vertices.first().copied().unwrap_or(EMPTY),
+            links,
+            len: vertices.len(),
+        }
+    }
+
+    const fn len(&self) -> usize {
+        self.len
+    }
+
+    fn iter(&self) -> impl Iterator<Item = &usize> + Clone {
+        std::iter::successors((self.len != 0).then_some(&self.first), |&&site| {
+            self.links.get(site).map(|link| &link[1])
+        })
+        .take(self.len)
+    }
+
+    fn split(&mut self, start: usize, site: usize) {
+        let end = self.next(start);
+        self.replace_chain(start, end, site, 1);
+    }
+
+    fn next(&self, site: usize) -> usize {
+        self.links.get(site).expect("the site belongs to the hull")[1]
+    }
+
+    fn previous(&self, site: usize) -> usize {
+        self.links.get(site).expect("the site belongs to the hull")[0]
+    }
+
+    fn replace_chain(&mut self, start: usize, end: usize, site: usize, edges: usize) {
+        self.links
+            .resize(self.links.len().max(site + 1), [EMPTY; 2]);
+        let mut at = self.next(start);
+        while at != end {
+            let next = self.next(at);
+            *self
+                .links
+                .get_mut(at)
+                .expect("the removed site belongs to the hull") = [EMPTY; 2];
+            at = next;
+        }
+        *self
+            .links
+            .get_mut(site)
+            .expect("the new hull site is admitted") = [start, end];
+        self.links
+            .get_mut(start)
+            .expect("the chain starts on the hull")[1] = site;
+        self.links.get_mut(end).expect("the chain ends on the hull")[0] = site;
+        self.len = self.len - edges + 2;
+    }
+
+    fn expand(&mut self, start: usize, end: usize, site: usize, edges: usize) {
+        self.replace_chain(start, end, site, edges);
+        self.first = start;
+    }
+
+    fn into_vertices(self) -> Vec<usize> {
+        self.iter().copied().collect()
+    }
+}
+
+#[cfg(test)]
+impl PartialEq<Vec<usize>> for MeshHull {
+    fn eq(&self, other: &Vec<usize>) -> bool {
+        self.iter().eq(other.iter())
+    }
 }
 
 pub(super) struct Mesh {
     triangles: Vec<usize>,
     halfedges: Vec<usize>,
-    hull: Vec<usize>,
+    hull: MeshHull,
     /// One outgoing halfedge slot per vertex (`EMPTY` for a vertex not in
     /// the mesh), kept valid across insertions so a fan can be walked.
     incident: Vec<usize>,
@@ -495,7 +594,7 @@ impl Mesh {
         clippy::indexing_slicing,
         reason = "the side table is admitted with one entry for every mesh halfedge"
     )]
-    const fn side_value<T: Copy>(side: &[T], edge: HalfedgeId) -> T {
+    pub(super) const fn side_value<T: Copy>(side: &[T], edge: HalfedgeId) -> T {
         Self::slot(&side.as_chunks::<3>().0[edge.face().index()], edge.side())
     }
 
@@ -613,7 +712,7 @@ impl Mesh {
         Self {
             triangles,
             halfedges,
-            hull: hull.to_vec(),
+            hull: MeshHull::new(hull, vertex_count),
             incident,
             free: Vec::new(),
             stamp: vec![0; count],
@@ -756,7 +855,8 @@ impl Mesh {
         xy: &impl Fn(usize) -> XY,
         constrained: &mut [bool],
         mut stack: Vec<HalfedgeId>,
-    ) -> Result<()> {
+    ) -> Result<Vec<FaceId>> {
+        let mut changed = Vec::new();
         while let Some(edge) = stack.pop() {
             let twin = self.twin(edge);
             if twin == EMPTY || Self::side_value(constrained, edge) {
@@ -768,6 +868,7 @@ impl Mesh {
                 continue;
             }
             let diagonal = self.flip_carrying(edge, constrained, false);
+            changed.push(diagonal.face());
             let twin = self.twin(diagonal);
             if twin == EMPTY {
                 return Err(crate::geometry::GeometryErrorKind::triangulation(
@@ -775,11 +876,12 @@ impl Mesh {
                 ));
             }
             let twin = HalfedgeId::from_index(twin);
+            changed.push(twin.face());
             for edge in [diagonal.next(), diagonal.prev(), twin.next(), twin.prev()] {
                 stack.push(edge);
             }
         }
-        Ok(())
+        Ok(changed)
     }
 
     /// Flip the edge at slot `e` (`a -> b`, apex `c`; twin apex `d`) to
@@ -908,18 +1010,19 @@ impl Mesh {
         }
     }
 
-    pub(super) fn outside_hull(&self, xy: &impl Fn(usize) -> XY, point: XY) -> bool {
+    pub(super) fn outside_edge(&self, xy: &impl Fn(usize) -> XY, point: XY) -> Option<HalfedgeId> {
         let hull_len = self.hull.len();
         if hull_len < 3 {
-            return true;
+            return None;
         }
-        self.hull.iter().enumerate().any(|(index, &start)| {
-            self.hull
-                .get(index.wrapping_add(1) % hull_len)
-                .is_some_and(|&end| {
-                    exact::orient2d(xy(start), xy(end), point) == ExactSign::Negative
-                })
-        })
+        self.hull
+            .iter()
+            .zip(self.hull.iter().cycle().skip(1))
+            .find_map(|(&start, &end)| {
+                (exact::orient2d(xy(start), xy(end), point) == ExactSign::Negative)
+                    .then(|| self.directed_slot(start, end))
+                    .flatten()
+            })
     }
 
     /// Where `p` stands relative to live triangle `t`: `Err(e)` names the
@@ -973,15 +1076,20 @@ impl Mesh {
         xy: &impl Fn(usize) -> XY,
         site: usize,
         located: Located,
-        skip: Option<&[bool]>,
-    ) -> Result<FaceId> {
+        mut skip: Option<&mut Vec<bool>>,
+    ) -> Result<Insertion> {
         // A site on a hull edge splits that edge: the cavity boundary is then
         // an open chain from the edge's end to its start, the site joins the
         // hull between them, and the two chain ends become hull edges.
         let (split_hull, seeds) = match located {
-            Located::OnVertex => return Ok(self.any_alive()),
+            Located::OnVertex => {
+                return Ok(Insertion {
+                    last: self.any_alive(),
+                    changed: Vec::new(),
+                });
+            },
             Located::Inside(t) => (None, vec![t]),
-            Located::Outside => {
+            Located::Outside(_) => {
                 return Err(crate::geometry::GeometryErrorKind::triangulation(
                     "outside insertion requires the hull expansion path",
                 ));
@@ -1015,7 +1123,11 @@ impl Mesh {
             for side in FaceSide::ALL {
                 let edge = HalfedgeId::in_face(face, side);
                 let twin = self.twin(edge);
-                if twin == EMPTY || skip.is_some_and(|skip| Self::side_value(skip, edge)) {
+                if twin == EMPTY
+                    || skip
+                        .as_deref()
+                        .is_some_and(|skip| Self::side_value(skip, edge))
+                {
                     continue;
                 }
                 let neighbor = HalfedgeId::from_index(twin).face();
@@ -1032,7 +1144,7 @@ impl Mesh {
         // The cavity boundary: halfedges of cavity triangles whose twin is
         // outside the cavity (or the hull). Each becomes one new triangle
         // with the site as its third vertex, in the boundary's own order.
-        let mut boundary: Vec<(usize, usize, usize)> = Vec::new(); // (a, b, twin slot)
+        let mut boundary: Vec<(usize, usize, usize, bool)> = Vec::new();
         let boundary_capacity = cavity.len().wrapping_mul(3);
         boundary.reserve(boundary_capacity);
         for &face in &cavity {
@@ -1044,7 +1156,10 @@ impl Mesh {
                     continue; // the split edge is not a boundary: the site lies on it
                 }
                 if twin == EMPTY || self.stamp(HalfedgeId::from_index(twin).face()) != epoch {
-                    boundary.push((ends.0, ends.1, twin));
+                    let constrained = skip
+                        .as_deref()
+                        .is_some_and(|skip| Self::side_value(skip, edge));
+                    boundary.push((ends.0, ends.1, twin, constrained));
                 }
             }
         }
@@ -1059,12 +1174,12 @@ impl Mesh {
         let mut at = start;
         if boundary.len() <= 16 {
             for _ in 0..boundary.len() {
-                let (index, &(a, b, twin)) = boundary
+                let (index, &(a, b, twin, constrained)) = boundary
                     .iter()
                     .enumerate()
                     .find(|(_, entry)| entry.0 == at)
                     .expect("a cavity boundary is one chain");
-                ordered.push((a, b, twin));
+                ordered.push((a, b, twin, constrained));
                 boundary.swap_remove(index);
                 at = b;
             }
@@ -1074,10 +1189,10 @@ impl Mesh {
                 let index = boundary
                     .binary_search_by_key(&at, |&(a, ..)| a)
                     .expect("a cavity boundary is one chain");
-                let &(a, b, twin) = boundary
+                let &(a, b, twin, constrained) = boundary
                     .get(index)
                     .expect("the boundary lookup returns its own index");
-                ordered.push((a, b, twin));
+                ordered.push((a, b, twin, constrained));
                 at = b;
             }
         }
@@ -1092,12 +1207,12 @@ impl Mesh {
         self.triangles.reserve(new_triangles);
         self.halfedges.reserve(new_triangles);
         self.stamp.reserve(new_slots);
-        if split_hull.is_some() {
-            self.hull.reserve(1);
-        }
         let mut slots = Vec::with_capacity(ordered.len());
         for &face in &cavity {
             self.set_face_vertex(face, FaceSide::First, EMPTY);
+            if let Some(skip) = skip.as_deref_mut() {
+                Self::set_side_face(skip, face, [false; 3]);
+            }
             self.free.push(face.index());
         }
         // New triangles (a, b, site): slot 0 = a->b twins the outside, slot 1 =
@@ -1106,10 +1221,15 @@ impl Mesh {
         for _ in 0..ordered.len() {
             slots.push(self.take_slot());
         }
+        if let Some(skip) = skip.as_deref_mut() {
+            skip.resize(self.edge_count(), false);
+        }
+        let mut changed = cavity;
+        changed.extend(slots.iter().copied());
         let first = *slots.first().expect("a cavity has a boundary");
         let mut slots = slots.into_iter().peekable();
         let mut last = first;
-        for (a, b, twin) in ordered.iter().copied() {
+        for (a, b, twin, constrained) in ordered.iter().copied() {
             let face = slots.next().expect("each boundary edge has one face slot");
             let next = slots.peek().copied();
             self.set_face_vertex(face, FaceSide::First, a);
@@ -1118,6 +1238,9 @@ impl Mesh {
             let first_edge = HalfedgeId::in_face(face, FaceSide::First);
             let second_edge = HalfedgeId::in_face(face, FaceSide::Second);
             let third_edge = HalfedgeId::in_face(face, FaceSide::Third);
+            if let Some(skip) = skip.as_deref_mut() {
+                Self::set_side_face(skip, face, [constrained, false, false]);
+            }
             self.set_twin(first_edge, twin);
             if twin != EMPTY {
                 self.set_twin(HalfedgeId::from_index(twin), first_edge.index());
@@ -1141,14 +1264,9 @@ impl Mesh {
             self.set_twin(HalfedgeId::in_face(first, FaceSide::Third), EMPTY);
         }
         if let Some((a, _)) = split_hull {
-            let position = self
-                .hull
-                .iter()
-                .position(|&h| h == a)
-                .expect("a hull edge starts on the hull");
-            self.hull.insert(position.wrapping_add(1), site);
+            self.hull.split(a, site);
         }
-        Ok(last)
+        Ok(Insertion { last, changed })
     }
 
     pub(super) fn insert_constrained(
@@ -1156,8 +1274,8 @@ impl Mesh {
         xy: &impl Fn(usize) -> XY,
         site: usize,
         located: Located,
-        skip: &[bool],
-    ) -> Result<FaceId> {
+        skip: &mut Vec<bool>,
+    ) -> Result<Insertion> {
         self.try_insert_with(xy, site, located, Some(skip))
     }
 
@@ -1165,7 +1283,9 @@ impl Mesh {
         &mut self,
         xy: &impl Fn(usize) -> XY,
         site: usize,
-    ) -> Result<(FaceId, Vec<HalfedgeId>)> {
+        visible_edge: HalfedgeId,
+        constrained: &mut Vec<bool>,
+    ) -> Result<OutsideInsertion> {
         let hull_len = self.hull.len();
         if hull_len < 3 {
             return Err(crate::geometry::GeometryErrorKind::triangulation(
@@ -1173,98 +1293,52 @@ impl Mesh {
             ));
         }
         let point = xy(site);
-        let mut visible = vec![false; hull_len];
-        let mut visible_count = 0_usize;
-        for (index, &start) in self.hull.iter().enumerate() {
-            let end_index = index.wrapping_add(1) % hull_len;
-            let Some(&end) = self.hull.get(end_index) else {
+        let (mut start, end) = self.edge_vertices(visible_edge);
+        if self.twin(visible_edge) != EMPTY
+            || exact::orient2d(xy(start), xy(end), point) != ExactSign::Negative
+        {
+            return Err(crate::geometry::GeometryErrorKind::triangulation(
+                "outside insertion needs a visible hull edge",
+            ));
+        }
+        let first_visible = start;
+        loop {
+            let previous = self.hull.previous(start);
+            if exact::orient2d(xy(previous), xy(start), point) != ExactSign::Negative {
+                break;
+            }
+            start = previous;
+            if start == first_visible {
                 return Err(crate::geometry::GeometryErrorKind::triangulation(
-                    "outside insertion found an incomplete hull",
+                    "outside insertion has no visible hull chain",
                 ));
-            };
-            if exact::orient2d(xy(start), xy(end), point) == ExactSign::Negative {
-                if let Some(is_visible) = visible.get_mut(index) {
-                    *is_visible = true;
-                    visible_count = visible_count.wrapping_add(1);
-                }
             }
         }
-        if visible_count == 0 {
-            return Err(crate::geometry::GeometryErrorKind::triangulation(
-                "outside point cannot see the mesh hull",
-            ));
-        }
-        let Some(start_index) = visible
-            .iter()
-            .cycle()
-            .skip(hull_len.wrapping_sub(1))
-            .zip(&visible)
-            .position(|(previous, current)| !*previous && *current)
-        else {
-            return Err(crate::geometry::GeometryErrorKind::triangulation(
-                "outside insertion has no visible hull chain",
-            ));
-        };
-        let mut chain_len = 0_usize;
-        while visible
-            .get(start_index.wrapping_add(chain_len) % hull_len)
-            .is_some_and(|&is_visible| is_visible)
-        {
-            chain_len = chain_len.wrapping_add(1);
-        }
-        if chain_len != visible_count {
-            return Err(crate::geometry::GeometryErrorKind::triangulation(
-                "outside point sees disjoint hull chains",
-            ));
-        }
-        let mut visible_edges = Vec::with_capacity(chain_len);
-        for offset in 0..chain_len {
-            let index = start_index.wrapping_add(offset) % hull_len;
-            let Some(&start) = self.hull.get(index) else {
-                return Err(crate::geometry::GeometryErrorKind::triangulation(
-                    "outside insertion found an incomplete hull",
-                ));
-            };
-            let Some(&end) = self.hull.get(index.wrapping_add(1) % hull_len) else {
-                return Err(crate::geometry::GeometryErrorKind::triangulation(
-                    "outside insertion found an incomplete hull",
-                ));
-            };
-            let Some(edge) = self.directed_slot(start, end) else {
+        let mut visible_edges = Vec::new();
+        let mut at = start;
+        loop {
+            let end = self.hull.next(at);
+            if exact::orient2d(xy(at), xy(end), point) != ExactSign::Negative {
+                break;
+            }
+            let Some(edge) = self.directed_slot(at, end) else {
                 return Err(crate::geometry::GeometryErrorKind::triangulation(
                     "outside insertion could not find a hull edge",
                 ));
             };
-            if self.twin(edge) != EMPTY
-                || self.edge_vertices(edge) != (start, end)
-                || exact::orient2d(xy(end), xy(start), point) != ExactSign::Positive
-            {
+            visible_edges.push((at, end, edge));
+            at = end;
+            if at == start {
                 return Err(crate::geometry::GeometryErrorKind::triangulation(
-                    "outside insertion found an invalid visible hull edge",
+                    "outside insertion sees the entire hull",
                 ));
             }
-            visible_edges.push((start, end, edge));
         }
-        let start = visible_edges
-            .first()
-            .map(|&(start, ..)| start)
-            .ok_or_else(|| {
-                crate::geometry::GeometryErrorKind::triangulation(
-                    "outside insertion has no visible hull edge",
-                )
-            })?;
-        let end_index = start_index.wrapping_add(chain_len) % hull_len;
-        let mut new_hull = Vec::with_capacity(hull_len.wrapping_sub(chain_len).wrapping_add(2));
-        new_hull.push(start);
-        new_hull.push(site);
-        for offset in 0..hull_len.wrapping_sub(chain_len) {
-            let index = end_index.wrapping_add(offset) % hull_len;
-            let Some(&vertex) = self.hull.get(index) else {
-                return Err(crate::geometry::GeometryErrorKind::triangulation(
-                    "outside insertion found an incomplete hull",
-                ));
-            };
-            new_hull.push(vertex);
+        let chain_len = visible_edges.len();
+        if chain_len == 0 {
+            return Err(crate::geometry::GeometryErrorKind::triangulation(
+                "outside insertion has no visible hull edge",
+            ));
         }
         let new_slots = chain_len.saturating_sub(self.free.len());
         let new_edges = new_slots
@@ -1279,6 +1353,8 @@ impl Mesh {
         for _ in 0..chain_len {
             faces.push(self.take_slot());
         }
+        constrained.resize(self.edge_count(), false);
+        let mut changed = faces.clone();
         let mut seeds = Vec::with_capacity(chain_len);
         for (index, &(start, end, old_edge)) in visible_edges.iter().enumerate() {
             let Some(&face) = faces.get(index) else {
@@ -1292,6 +1368,9 @@ impl Mesh {
             self.set_face_vertex(face, FaceSide::First, end);
             self.set_face_vertex(face, FaceSide::Second, start);
             self.set_face_vertex(face, FaceSide::Third, site);
+            let base_constrained = Self::side_value(constrained, old_edge);
+            Self::set_side_face(constrained, face, [base_constrained, false, false]);
+            changed.push(old_edge.face());
             self.set_twin(first, old_edge.index());
             self.set_twin(old_edge, first.index());
             if index == 0 {
@@ -1323,13 +1402,11 @@ impl Mesh {
             self.set_incident(site, third.index());
             seeds.push(old_edge);
         }
-        let Some(&first) = faces.first() else {
-            return Err(crate::geometry::GeometryErrorKind::triangulation(
-                "outside insertion lost its first triangle",
-            ));
-        };
-        self.hull = new_hull;
-        Ok((first, seeds))
+        self.hull.expand(start, at, site, chain_len);
+        Ok(OutsideInsertion {
+            changed,
+            legalization: seeds,
+        })
     }
 
     pub(super) fn triangle(&self, face: FaceId) -> [usize; 3] {
@@ -1420,7 +1497,7 @@ impl Mesh {
         Ok(ExactMesh {
             triangles,
             halfedges,
-            hull: self.hull,
+            hull: self.hull.into_vertices(),
             cocircular,
         })
     }
@@ -1615,6 +1692,240 @@ for case in range(200):
                 }
             }
         });
+    }
+
+    #[test]
+    fn public_refinement_is_canonical_across_insertion_and_ring_orders() {
+        use pyo3::prelude::*;
+        use pyo3::types::{PyDict, PyModule};
+
+        struct RestoreOrder(InsertionOrder);
+        impl Drop for RestoreOrder {
+            fn drop(&mut self) {
+                INSERTION_ORDER.with(|order| order.set(self.0));
+            }
+        }
+        crate::test_support::initialize_python();
+        let _restore = RestoreOrder(INSERTION_ORDER.with(std::cell::Cell::get));
+        Python::attach(|py| {
+            let module = PyModule::new(py, "gometry._lib").unwrap();
+            crate::lib(&module).unwrap();
+            let globals = PyDict::new(py);
+            globals.set_item("gm", &module).unwrap();
+            py.run(
+                c"corpus = []
+rings = [
+    [(-75,16),(-63,-42),(-11,-75),(31,-39),(39,-9),(25,20),(4,70),(-18,23)],
+    [(0,0),(20,0),(20,20),(0,20)],
+    [(0,0),(8,0),(8,8),(4,3),(0,8)],
+    [(0,0),(20,0),(20,2),(0,1)],
+    [(33,-5),(43,32),(5,67),(-58,36),(-22,-7),(-15,-47),(26,-60)],
+    [(-19,34),(-38,5),(-8,-45),(57,-55),(66,34)],
+    [(54,59),(-1,46),(-64,46),(-74,-28),(-22,-71),(12,-21),(36,-5)],
+    [(-50,-54),(4,-46),(46,-44),(22,2),(42,49),(-10,61),(-17,15),(-22,-3)],
+    [(-37,6),(-36,-17),(-13,-42),(18,-25),(55,-20),(35,16),(5,40),(-38,63)],
+]
+for ring in rings:
+    area = gm.Polygon(ring).area / 8
+    for quality in [{'max_area': area}, {'min_angle': 20}, {'min_angle': 20, 'max_area': area}]:
+        variants = []
+        for reverse in (False, True):
+            vertices = list(reversed(ring)) if reverse else ring
+            for offset in range(len(vertices)):
+                variants.append(gm.Polygon(vertices[offset:] + vertices[:offset]))
+        corpus.append((variants, {'method': 'constrained', **quality}))
+corpus.append(([gm.Polygon(rings[0])], {'method': 'constrained', 'max_area': 1117.5625}))
+",
+                Some(&globals),
+                None,
+            )
+            .unwrap();
+            let corpus = globals
+                .get_item("corpus")
+                .unwrap()
+                .unwrap()
+                .extract::<Vec<(Vec<Bound<'_, PyAny>>, Bound<'_, PyDict>)>>()
+                .unwrap();
+            for (case, (variants, options)) in corpus.into_iter().enumerate() {
+                let mut expected = None;
+                for polygon in variants {
+                    for order in [
+                        InsertionOrder::Original,
+                        InsertionOrder::Brio,
+                        InsertionOrder::Reversed,
+                    ] {
+                        INSERTION_ORDER.with(|cell| cell.set(order));
+                        let output = polygon
+                            .call_method("triangulate", (), Some(&options))
+                            .unwrap()
+                            .call_method0("to_wkt")
+                            .unwrap()
+                            .extract::<Vec<String>>()
+                            .unwrap();
+                        assert!(!output.is_empty(), "refinement case {case}");
+                        if let Some(expected) = &expected {
+                            assert_eq!(&output, expected, "refinement case {case}, {order:?}");
+                        } else {
+                            expected = Some(output);
+                        }
+                    }
+                }
+            }
+        });
+    }
+
+    fn assert_refinement_order_identity(wkt: &str, option: &str, value: f64) {
+        use pyo3::prelude::*;
+        use pyo3::types::PyDict;
+
+        struct RestoreOrder(InsertionOrder);
+        impl Drop for RestoreOrder {
+            fn drop(&mut self) {
+                INSERTION_ORDER.with(|order| order.set(self.0));
+            }
+        }
+        crate::test_support::initialize_python();
+        let _restore = RestoreOrder(INSERTION_ORDER.with(std::cell::Cell::get));
+        Python::attach(|py| {
+            let module = PyModule::new(py, "gometry._lib").unwrap();
+            crate::lib(&module).unwrap();
+            let polygon = module.getattr("from_wkt").unwrap().call1((wkt,)).unwrap();
+            let options = PyDict::new(py);
+            options.set_item("method", "constrained").unwrap();
+            options.set_item(option, value).unwrap();
+            let mut expected = None;
+            for order in [
+                InsertionOrder::Original,
+                InsertionOrder::Brio,
+                InsertionOrder::Reversed,
+            ] {
+                INSERTION_ORDER.with(|cell| cell.set(order));
+                let output = polygon
+                    .call_method("triangulate", (), Some(&options))
+                    .unwrap()
+                    .call_method0("to_wkt")
+                    .unwrap()
+                    .extract::<Vec<String>>()
+                    .unwrap();
+                assert!(!output.is_empty(), "{wkt}, {option}={value}");
+                if let Some(expected) = &expected {
+                    assert_eq!(&output, expected, "{wkt}, {option}={value}, {order:?}");
+                } else {
+                    expected = Some(output);
+                }
+            }
+        });
+    }
+
+    macro_rules! refinement_order_case {
+        ($name:ident, $wkt:literal, $option:literal, $value:expr) => {
+            #[test]
+            fn $name() {
+                assert_refinement_order_identity($wkt, $option, $value);
+            }
+        };
+    }
+
+    refinement_order_case!(
+        area_1024_order_identity,
+        "POLYGON((0 0,2 0,2 2,0 2,0 0))",
+        "max_area",
+        4.0 / 1024.0
+    );
+    refinement_order_case!(
+        area_2048_order_identity,
+        "POLYGON((0 0,2 0,2 2,0 2,0 0))",
+        "max_area",
+        4.0 / 2048.0
+    );
+    refinement_order_case!(
+        area_4096_order_identity,
+        "POLYGON((0 0,2 0,2 2,0 2,0 0))",
+        "max_area",
+        4.0 / 4096.0
+    );
+    refinement_order_case!(
+        area_8192_order_identity,
+        "POLYGON((0 0,2 0,2 2,0 2,0 0))",
+        "max_area",
+        4.0 / 8192.0
+    );
+    refinement_order_case!(
+        angle_1024_order_identity,
+        "POLYGON((0 0,256 0,256 1,0 1,0 0))",
+        "min_angle",
+        20.0
+    );
+    refinement_order_case!(
+        angle_2048_order_identity,
+        "POLYGON((0 0,512 0,512 1,0 1,0 0))",
+        "min_angle",
+        20.0
+    );
+    refinement_order_case!(
+        angle_4096_order_identity,
+        "POLYGON((0 0,1024 0,1024 1,0 1,0 0))",
+        "min_angle",
+        20.0
+    );
+    refinement_order_case!(
+        angle_8192_order_identity,
+        "POLYGON((0 0,2048 0,2048 1,0 1,0 0))",
+        "min_angle",
+        20.0
+    );
+    refinement_order_case!(
+        angle_16384_order_identity,
+        "POLYGON((0 0,4096 0,4096 1,0 1,0 0))",
+        "min_angle",
+        20.0
+    );
+
+    #[test]
+    fn outside_insertions_replace_only_the_visible_hull_chain() {
+        let points: Vec<_> = [
+            (0.0, 0.0),
+            (2.0, 0.0),
+            (2.0, 2.0),
+            (0.0, 2.0),
+            (-2.0, 1.0),
+            (1.0, -3.0),
+            (5.0, 2.0),
+            (2.0, 6.0),
+        ]
+        .map(|(x, y)| Point::new_raw_xy(x, y))
+        .into();
+        let xy = |site| site_xy(&points, site);
+        let mut mesh = Mesh::try_delaunay(&points[..4]).unwrap().unwrap();
+        let mut constrained = vec![false; mesh.edge_count()];
+        for site in 4..points.len() {
+            let visible = mesh.outside_edge(&xy, xy(site)).unwrap();
+            let insertion = mesh
+                .insert_outside(&xy, site, visible, &mut constrained)
+                .unwrap();
+            mesh.try_legalize_constrained_from(&xy, &mut constrained, insertion.legalization)
+                .unwrap();
+            let expected = Mesh::try_delaunay(&points[..=site]).unwrap().unwrap();
+            let face_set = |mesh: &Mesh| {
+                let mut triangles: Vec<_> = mesh
+                    .face_ids()
+                    .filter(|&face| mesh.alive(face))
+                    .map(|face| {
+                        let mut corners = mesh.triangle(face);
+                        corners.sort_unstable();
+                        corners
+                    })
+                    .collect();
+                triangles.sort_unstable();
+                triangles
+            };
+            assert_eq!(face_set(&mesh), face_set(&expected));
+            for (&start, &end) in mesh.hull.iter().zip(mesh.hull.iter().cycle().skip(1)) {
+                assert_eq!(mesh.hull.previous(end), start);
+                let edge = mesh.directed_slot(start, end).unwrap();
+                assert_eq!(mesh.twin(edge), EMPTY);
+            }
+        }
     }
 
     fn grid(side: usize) -> Vec<Point> {
