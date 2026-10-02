@@ -947,6 +947,7 @@ mod public_nearest_work_tests {
     use pyo3::types::PyList;
 
     use super::NEAREST_WORK;
+
     #[test]
     fn public_clearance_bounds_radial_candidate_work() {
         crate::test_support::initialize_python();
@@ -998,6 +999,55 @@ mod public_nearest_work_tests {
                         previous = Some(work);
                     }
                 }
+            }
+        });
+    }
+
+    #[test]
+    fn public_split_bounds_point_projection_work() {
+        crate::test_support::initialize_python();
+        Python::attach(|py| {
+            let module = PyModule::new(py, "gometry._lib").unwrap();
+            crate::lib(&module).unwrap();
+            let mut previous = None;
+            for count in [128_usize, 512] {
+                let coords = PyList::new(
+                    py,
+                    (0..=count).map(|index| (index as f64, (index % 2) as f64)),
+                )
+                .unwrap();
+                let points =
+                    PyList::new(py, (0..count).map(|index| (index as f64 + 0.5, 0.5))).unwrap();
+                let line = module
+                    .getattr("LineString")
+                    .unwrap()
+                    .call1((&coords,))
+                    .unwrap();
+                let points = module
+                    .getattr("MultiPoint")
+                    .unwrap()
+                    .call1((&points,))
+                    .unwrap();
+                NEAREST_WORK.with(|work| work.set(0));
+                let pieces = module
+                    .getattr("split")
+                    .unwrap()
+                    .call1((&line, &points))
+                    .unwrap();
+                assert_eq!(pieces.len().unwrap(), count + 1);
+                let work = NEAREST_WORK.with(std::cell::Cell::get);
+                eprintln!("split: {count} segments/points, {work} candidate visits");
+                assert!(
+                    work > count,
+                    "the public call did not reach nearest queries"
+                );
+                if let Some(previous) = previous {
+                    assert!(
+                        work < previous * 6,
+                        "{count} split segments/points took {work} visits versus {previous} at one quarter the size",
+                    );
+                }
+                previous = Some(work);
             }
         });
     }

@@ -26,6 +26,8 @@ pub(crate) use aabb::{
     aabb_distance, aabb_distance_squared, aabb_max_distance_squared, aabbs_overlap, point_aabb,
     segment_aabb, union_aabb,
 };
+#[cfg(test)]
+pub(crate) use engine::NEAREST_WORK;
 pub(crate) use engine::{
     Facet, FacetBvh, NearestCandidate, NearestTarget, PreparedLinework,
     facet_point_distance_columns,

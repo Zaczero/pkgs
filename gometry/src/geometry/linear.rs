@@ -11,10 +11,11 @@ use crate::error::Result;
 #[cfg(test)]
 use crate::geometry::LineIndex;
 use crate::geometry::{
-    CoordSeq, CoordinateAxes, Coordinates, Distance3dParts, GeometryErrorKind, GeometryKind, HasM,
-    HasZ, LineSeq, Lineal, MColumn, MultiLineString, Ordering, PlanarMetric, Point, PreparedPlan,
-    Segment, SegmentMetric, SegmentProjection, Shape, SharedSlice, distance_3d_with_parts,
-    interpolate_fraction, point_distance, point_segment_selection, push_distinct_active_position,
+    CoordSeq, CoordinateAxes, Coordinates, Distance3dParts, FacetBvh, GeometryErrorKind,
+    GeometryKind, HasM, HasZ, LineSeq, Lineal, MColumn, MultiLineString, Ordering, PlanarMetric,
+    Point, PreparedLinework, PreparedPlan, Segment, SegmentMetric, SegmentProjection, Shape,
+    SharedSlice, distance_3d_with_parts, interpolate_fraction, point_distance,
+    point_segment_selection, push_distinct_active_position, same_point, segment_projection,
     shape_axes_all_z, squared_norm_is_trustworthy,
 };
 use crate::{Finite, HeapSize};
@@ -698,10 +699,45 @@ pub(super) fn split_line_by_points<C: Coordinates + ?Sized>(
         .rposition(|pair| point_distance(pair[0], pair[1]) > 0.0)
         .expect("a first live segment has a last live segment");
 
-    let mut cuts = points
-        .iter()
-        .filter_map(|point| line_point_offset(&coords, *point, tolerance).transpose())
-        .collect::<crate::error::Result<Vec<_>>>()?;
+    let mut cuts = if coords.len().saturating_mul(points.len()) <= 256 {
+        points
+            .iter()
+            .filter_map(|point| line_point_offset(&coords, *point, tolerance).transpose())
+            .collect::<crate::error::Result<Vec<_>>>()?
+    } else {
+        let linework = PreparedLinework::from_chains(vec![CoordSeq::try_from_points(&coords)?])?;
+        let bvh = FacetBvh::build(&linework).expect("a live line has an indexable facet");
+        let mut stack = Vec::new();
+        let mut cuts = Vec::new();
+        let upper_bound = tolerance.next_up() * tolerance.next_up();
+        for point in points {
+            let mut nearest = None;
+            bvh.nearest_point_with_stack::<false, true, true>(
+                &linework,
+                *point,
+                upper_bound,
+                tolerance,
+                &|_, segment| !same_point(segment.start, segment.end),
+                &mut stack,
+                &mut nearest,
+            )?;
+            if let Some(nearest) = nearest
+                && let Some(ordinal) = nearest.segment_ordinal()
+            {
+                let pair = coords
+                    .get(ordinal..ordinal.wrapping_add(2))
+                    .expect("the selected source segment has two coordinates");
+                cuts.push((
+                    ordinal,
+                    segment_projection(*point, Segment {
+                        start: pair[0].xy(),
+                        end: pair[1].xy(),
+                    })?,
+                ));
+            }
+        }
+        cuts
+    };
     cuts.retain(|(index, projection)| {
         !(*index == first_live && projection.is_start()
             || *index == last_live && projection.is_end())
@@ -720,7 +756,7 @@ pub(super) fn split_line_by_points<C: Coordinates + ?Sized>(
             if tolerance != 0.0 {
                 #[expect(
                     clippy::indexing_slicing,
-                    reason = "line_point_offset returns the ordinal of an existing coordinate pair"
+                    reason = "cut ordinals address existing coordinate pairs in the original line"
                 )]
                 let (start, end) = (coords[cut.0], coords[cut.0.wrapping_add(1)]);
                 if point_distance(
@@ -773,6 +809,9 @@ pub(super) fn line_point_offset<C: Coordinates + ?Sized>(
     let mut best = None;
     let mut best_key = None;
     for (segment_index, [start, end]) in line.segment_pairs().enumerate() {
+        #[cfg(test)]
+        crate::geometry::facet_bvh::NEAREST_WORK
+            .with(|work| work.set(work.get().saturating_add(1)));
         let length = point_distance(start, end);
         if length == 0.0 {
             continue;
