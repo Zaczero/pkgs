@@ -54,7 +54,7 @@ pub(crate) fn shape_from_selected_hull(
 pub(crate) fn geometric_xy_cmp(left: impl Into<XY>, right: impl Into<XY>) -> Ordering {
     let left = left.into();
     let right = right.into();
-    geometric_ordinate_cmp(left.x, right.x).then(geometric_ordinate_cmp(left.y, right.y))
+    geometric_ordinate_cmp(left.x, right.x).then_with(|| geometric_ordinate_cmp(left.y, right.y))
 }
 
 fn geometric_ordinate_cmp(left: f64, right: f64) -> Ordering {

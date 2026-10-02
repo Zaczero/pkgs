@@ -206,6 +206,61 @@ fn convex_hull_copies_first_seen_vertex_at_duplicate_xy() {
 }
 
 #[test]
+fn axis_column_hull_keeps_first_extrema_ordinates() {
+    let first = Point::new_axes(-0.0, -0.0, ZOrdinate(Some(10.0)), MOrdinate(Some(20.0))).unwrap();
+    for vertical in [false, true] {
+        let mut points = vec![first];
+        for ordinal in 1..=300 {
+            let (x, y) = if vertical {
+                (-0.0, f64::from(ordinal))
+            } else {
+                (f64::from(ordinal), -0.0)
+            };
+            points.push(
+                Point::new_axes(
+                    x,
+                    y,
+                    ZOrdinate(Some(1000.0 + f64::from(ordinal))),
+                    MOrdinate(Some(2000.0 + f64::from(ordinal))),
+                )
+                .unwrap(),
+            );
+        }
+        let last = if vertical {
+            Point::new_axes(
+                -0.0,
+                300.0,
+                ZOrdinate(Some(1300.0)),
+                MOrdinate(Some(2300.0)),
+            )
+        } else {
+            Point::new_axes(
+                300.0,
+                -0.0,
+                ZOrdinate(Some(1300.0)),
+                MOrdinate(Some(2300.0)),
+            )
+        }
+        .unwrap();
+        points
+            .push(Point::new_axes(0.0, 0.0, ZOrdinate(Some(99.0)), MOrdinate(Some(99.0))).unwrap());
+        points.push(
+            Point::new_axes(last.x, last.y, ZOrdinate(Some(99.0)), MOrdinate(Some(99.0))).unwrap(),
+        );
+        for source in [
+            multipoint(&points),
+            Shape::LineString(
+                LineSeq::try_new(CoordSeq::try_from_points(&points).unwrap()).unwrap(),
+            ),
+        ] {
+            assert_eq!(source.convex_hull().unwrap().points_vec().unwrap(), vec![
+                first, last
+            ]);
+        }
+    }
+}
+
+#[test]
 fn geometric_xy_cmp_equates_signed_zeros() {
     assert_eq!(
         super::geometric_xy_cmp(point(-0.0, 1.0), point(0.0, 1.0)),

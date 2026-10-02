@@ -142,7 +142,11 @@ impl Shape {
 
     #[expect(
         clippy::indexing_slicing,
-        reason = "monotone_chain_hull returns source ordinals into this points vector"
+        reason = "hull extrema and chain indices are source ordinals into admitted columns or collected points"
+    )]
+    #[expect(
+        clippy::float_cmp,
+        reason = "axis-aligned degeneracy is exact numeric coordinate equality, including signed zeros"
     )]
     pub fn convex_hull(&self) -> Result<Self> {
         // Native monotone chain over first-seen XY vertices (robust
@@ -150,6 +154,45 @@ impl Shape {
         // reduce to Point/LineString like every degenerate polygon. Surviving
         // vertices are copies of those source points, including Z/M and
         // signed-zero spelling.
+        let columns: Option<&crate::geometry::CoordSeq> = match self {
+            Self::LineString(line) => Some(line.as_coords()),
+            Self::MultiPoint(points) => Some(points),
+            Self::Point(_)
+            | Self::MultiLineString(_)
+            | Self::Polygon(_)
+            | Self::MultiPolygon(_)
+            | Self::GeometryCollection(_)
+            | Self::Empty(..) => None,
+        };
+        if let Some(coords) = columns
+            && let Some((&x, &y)) = coords.xs().first().zip(coords.ys().first())
+        {
+            let order = if coords.ys().iter().all(|&value| value == y) {
+                Some(coords.xs())
+            } else if coords.xs().iter().all(|&value| value == x) {
+                Some(coords.ys())
+            } else {
+                None
+            };
+            if let Some(order) = order {
+                let (mut low, mut high) = (0, 0);
+                for (index, &value) in order.iter().enumerate().skip(1) {
+                    if value < order[low] {
+                        low = index;
+                    }
+                    if value > order[high] {
+                        high = index;
+                    }
+                }
+                if low == high {
+                    return Ok(Self::Point(coords.point_at(low)));
+                }
+                return shape_from_selected_hull(
+                    &[coords.point_at(low), coords.point_at(high)],
+                    Self::empty_polygon,
+                );
+            }
+        }
         let points = self.first_seen_xy_vertices()?;
         if points.is_empty() {
             return Ok(Self::empty_polygon());
