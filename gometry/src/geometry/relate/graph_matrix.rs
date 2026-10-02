@@ -699,6 +699,9 @@ fn pair_edges(left: &TopologyGraph, right: &TopologyGraph) -> crate::error::Resu
     }
     let mut edges = Vec::with_capacity(by_segment.len());
     edges.extend(by_segment.into_values());
+    edges.sort_unstable_by_key(|(segment, _)| {
+        crate::geometry::undirected_segment_edge_key(*segment)
+    });
     Ok((edges, hints))
 }
 

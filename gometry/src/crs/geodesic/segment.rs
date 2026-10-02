@@ -9,7 +9,7 @@ use crate::crs::geodesic::geodesic_counters;
 use crate::crs::geodesic::{
     GEODESIC_BACKEND_RELATIVE_FLOOR, GEODESIC_LINE_CAPS, GEODESIC_LINE_OUTMASK, inverse_distance,
 };
-use crate::crs::{CrsError, GEODESIC_LINE_CACHE, GEODESIC_LINE_CACHE_CAPACITY, GeodesicLineKey};
+use crate::crs::{CrsError, GEODESIC_LINE_CACHE, GeodesicLineKey};
 use crate::error::Result;
 use crate::geometry::{
     GeodesicInnerInterval, GeodesicMinimum, GeodesicNumericalPolicy, GeodesicSegment,
@@ -834,11 +834,6 @@ fn cached_geodesic_line_with_caps(
             return *line;
         }
         count_line_cache_miss!();
-        if cache.len() == GEODESIC_LINE_CACHE_CAPACITY
-            && let Some(evict) = cache.keys().next().copied()
-        {
-            cache.remove(&evict);
-        }
         let line = GeodesicLine::new(
             geodesic,
             segment.start.y,
@@ -848,7 +843,7 @@ fn cached_geodesic_line_with_caps(
             None,
             None,
         );
-        cache.insert(key, line);
+        cache.insert_new(key, line);
         line
     })
 }

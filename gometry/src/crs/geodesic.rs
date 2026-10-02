@@ -150,7 +150,7 @@ macro_rules! count_line_cache_miss {
     () => {};
 }
 
-#[derive(Clone, Copy, Eq, Hash, PartialEq)]
+#[derive(Clone, Copy, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub(crate) struct GeodesicLineKey {
     semi_major_bits: u64,
     flattening_bits: u64,

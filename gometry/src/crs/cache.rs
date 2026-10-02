@@ -5,7 +5,7 @@
 
 use smol_str::SmolStr;
 
-use crate::collections::{HashMap, HashMapExt as _};
+use crate::collections::HashMap;
 use crate::crs::{
     AuthorityObjectInfo, CacheBucketInfo, CacheInfo, CelestialBodyInfo, Confidence, CrsCatalogInfo,
     CrsCatalogOptions, CrsComparison, CrsError, CrsInfo, CrsProjJsonOptions, CrsProjOptions,
@@ -129,6 +129,47 @@ pub(super) struct CachedGeodesicObject {
     pub definition: String,
     pub object: Geodesic,
     pub authalic_series: crate::crs::geodesic::AuthalicSeries,
+}
+
+#[derive(Default)]
+pub(crate) struct GeodesicLineCache {
+    entries: HashMap<GeodesicLineKey, GeodesicLine>,
+    eviction_order: std::collections::BinaryHeap<std::cmp::Reverse<GeodesicLineKey>>,
+}
+
+impl GeodesicLineCache {
+    pub(crate) fn get(&self, key: &GeodesicLineKey) -> Option<&GeodesicLine> {
+        self.entries.get(key)
+    }
+
+    pub(crate) fn insert_new(&mut self, key: GeodesicLineKey, line: GeodesicLine) {
+        debug_assert!(!self.entries.contains_key(&key));
+        if self.entries.len() == GEODESIC_LINE_CACHE_CAPACITY {
+            let mut evict = self
+                .eviction_order
+                .peek_mut()
+                .expect("every cached line has an eviction key");
+            self.entries.remove(&evict.0);
+            *evict = std::cmp::Reverse(key);
+        } else {
+            self.eviction_order.push(std::cmp::Reverse(key));
+        }
+        self.entries.insert(key, line);
+    }
+
+    pub(crate) fn clear(&mut self) {
+        self.entries.clear();
+        self.eviction_order.clear();
+    }
+
+    pub(crate) fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
 }
 
 pub(in crate::crs) struct CachedRhumbEllipsoid {
@@ -266,7 +307,7 @@ macro_rules! crs_cache {
         clear: { $($clear:tt)* }
         buckets: [ $($buckets:tt)* ]
         rest: [
-            map $name:ident, $cap_name:ident, $key:ty => $ty:ty, $capacity:literal, $label:literal;
+            keyed $name:ident, $cap_name:ident, $ty:ty, $capacity:literal, $label:literal;
             $($rest:tt)*
         ]
     ) => {
@@ -274,8 +315,8 @@ macro_rules! crs_cache {
             @expand
             thread_local: {
                 $($thread_local)*
-                pub static $name: RefCell<HashMap<$key, $ty>> =
-                    RefCell::new(HashMap::new());
+                pub static $name: RefCell<$ty> =
+                    RefCell::new(<$ty>::default());
             }
             capacities: {
                 $($capacities)*
@@ -326,7 +367,7 @@ crs_cache! {
     internal CRS_RHUMB_CACHE, CRS_RHUMB_CACHE_CAPACITY, CachedRhumbEllipsoid, 256;
     internal CRS_IN_CORE_DESCRIPTOR_CACHE, CRS_IN_CORE_DESCRIPTOR_CACHE_CAPACITY, super::in_core::CachedInCoreDescriptor, 256;
     reported CRS_EXPORT_CACHE, CRS_EXPORT_CACHE_CAPACITY, CachedCrsExport, 32, "crs_export";
-    map GEODESIC_LINE_CACHE, GEODESIC_LINE_CACHE_CAPACITY, GeodesicLineKey => GeodesicLine, 4096, "geodesic_line";
+    keyed GEODESIC_LINE_CACHE, GEODESIC_LINE_CACHE_CAPACITY, GeodesicLineCache, 4096, "geodesic_line";
 }
 
 pub(super) fn ensure_thread_caches_current(state: &RuntimeState) {

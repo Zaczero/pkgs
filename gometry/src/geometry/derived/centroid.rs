@@ -46,17 +46,6 @@ where
         self.rest.as_ref().and_then(|rest| rest.get(key))
     }
 
-    fn get_mut(&mut self, key: &K) -> Option<&mut V> {
-        for slot in &mut self.inline {
-            if let Some((owner, value)) = slot
-                && owner == key
-            {
-                return Some(value);
-            }
-        }
-        self.rest.as_mut().and_then(|rest| rest.get_mut(key))
-    }
-
     /// Insert an owner already established as absent by `get`.
     fn insert_new(&mut self, key: &K, value: V) {
         debug_assert!(self.get(key).is_none());
@@ -69,14 +58,6 @@ where
             .get_or_insert_with(|| HashMap::with_capacity(1))
             .insert(*key, value);
         debug_assert!(old.is_none());
-    }
-
-    fn into_values(self) -> impl Iterator<Item = V> {
-        self.inline
-            .into_iter()
-            .flatten()
-            .map(|(_, value)| value)
-            .chain(self.rest.into_iter().flat_map(|rest| rest.into_values()))
     }
 }
 
@@ -1340,30 +1321,49 @@ impl<'owner> ExactOwnerFold<'owner> {
     }
 
     fn shape_children(&mut self, children: &'owner [Shape]) -> CoreResult<GrowableCentroidSums> {
-        let mut shared: Option<CentroidOwnerMap<ShapeOwnerKey, (&'owner Shape, usize)>> = None;
+        let mut first_shared: Option<(ShapeOwnerKey, &'owner Shape, usize)> = None;
+        let mut indices: Option<HashMap<ShapeOwnerKey, usize>> = None;
+        let mut shared = Vec::<(&'owner Shape, usize)>::new();
         let mut summary = GrowableCentroidSums::zero();
         for child in children {
             if let Shape::GeometryCollection(collection) = child
                 && collection.members_are_shared()
             {
                 let key = ShapeOwnerKey::new(collection.as_slice());
-                let owners = shared.get_or_insert_with(CentroidOwnerMap::default);
-                if let Some((_, occurrences)) = owners.get_mut(&key) {
-                    *occurrences = occurrences
-                        .checked_add(1)
-                        .expect("one collection's repeated slots fit its slice length");
-                } else {
-                    owners.insert_new(&key, (child, 1));
-                }
+                let occurrences = match &mut first_shared {
+                    None => {
+                        first_shared = Some((key, child, 1));
+                        continue;
+                    },
+                    Some((first, _, count)) if *first == key => count,
+                    Some(_) => match indices
+                        .get_or_insert_with(|| HashMap::with_capacity(1))
+                        .entry(key)
+                    {
+                        std::collections::hash_map::Entry::Occupied(entry) => {
+                            &mut shared[*entry.get()].1
+                        },
+                        std::collections::hash_map::Entry::Vacant(entry) => {
+                            entry.insert(shared.len());
+                            shared.push((child, 1));
+                            continue;
+                        },
+                    },
+                };
+                *occurrences = occurrences
+                    .checked_add(1)
+                    .expect("one collection's repeated slots fit its slice length");
             } else {
                 summary = summary.add(self.shape_summary(child)?)?;
             }
         }
-        if let Some(shared) = shared {
-            for (child, occurrences) in shared.into_values() {
-                let child = self.shape_summary(child)?.scaled(occurrences)?;
-                summary = summary.add(child)?;
-            }
+        for (child, occurrences) in first_shared
+            .into_iter()
+            .map(|(_, child, occurrences)| (child, occurrences))
+            .chain(shared)
+        {
+            let child = self.shape_summary(child)?.scaled(occurrences)?;
+            summary = summary.add(child)?;
         }
         Ok(summary)
     }

@@ -644,6 +644,42 @@ fn point_segment_query_reuses_one_prepared_line_and_closes_practically() {
 }
 
 #[test]
+fn geodesic_line_cache_evicts_in_key_order_after_hits_and_clear() {
+    let geodesic = Geodesic::wgs84();
+    let line = geographiclib_rs::GeodesicLine::new(&geodesic, 0.0, 0.0, 90.0, None, None, None);
+    let key = |index| super::GeodesicLineKey {
+        semi_major_bits: geodesic.a.to_bits(),
+        flattening_bits: geodesic.f.to_bits(),
+        start_lon_bits: index,
+        start_lat_bits: 0,
+        azimuth_bits: 90.0_f64.to_bits(),
+        caps: 0,
+    };
+    GEODESIC_LINE_CACHE.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        cache.clear();
+        for index in 0..crate::crs::cache::GEODESIC_LINE_CACHE_CAPACITY as u64 {
+            cache.insert_new(key(index), line);
+        }
+        assert!(cache.get(&key(0)).is_some());
+        cache.insert_new(key(u64::MAX), line);
+        assert!(cache.get(&key(0)).is_none());
+        assert!(cache.get(&key(1)).is_some());
+        cache.insert_new(key(0), line);
+        assert!(cache.get(&key(1)).is_none());
+        assert!(cache.get(&key(0)).is_some());
+        cache.insert_new(key(u64::MAX - 1), line);
+        assert!(cache.get(&key(0)).is_none());
+        assert!(cache.get(&key(2)).is_some());
+        cache.clear();
+        cache.insert_new(key(1), line);
+        assert_eq!(cache.len(), 1);
+        assert!(cache.get(&key(0)).is_none());
+        assert!(cache.get(&key(1)).is_some());
+    });
+}
+
+#[test]
 fn geodesic_line_cache_reuses_a_published_line_without_allocating() {
     use crate::test_support::allocation_count;
 
@@ -652,8 +688,7 @@ fn geodesic_line_cache_reuses_a_published_line_without_allocating() {
     let segment = metric.make_segment(p(-1.0, 0.0), p(1.0, 0.0)).unwrap();
     GEODESIC_LINE_CACHE.with(|cache| {
         let mut cache = cache.borrow_mut();
-        cache.clear();
-        cache.shrink_to_fit();
+        *cache = Default::default();
     });
     let run = || cached_geodesic_line(&geodesic, &segment);
     let expected = run();

@@ -38,6 +38,7 @@ pub(crate) fn prune_dangles(segments: &mut Vec<Segment>) {
         .iter()
         .filter_map(|(key, &value)| (value == 1).then_some(*key))
         .collect();
+    worklist.sort_unstable();
 
     while let Some(vertex) = worklist.pop() {
         if degree.get(&vertex).copied().unwrap_or(0) != 1 {

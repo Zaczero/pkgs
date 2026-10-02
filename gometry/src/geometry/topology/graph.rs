@@ -1743,23 +1743,20 @@ impl QuotientArrangement {
                 adjacency[right].push((left, edge));
             }
         }
-        let mut seed_for_component = HashMap::new();
+        let mut seeded_components = HashSet::new();
+        let mut seeds = Vec::new();
         for (face, &component) in self.face_component.iter().enumerate() {
-            seed_for_component.entry(component).or_insert(face);
-        }
-        let seeds: Vec<FaceSeed> = seed_for_component
-            .values()
-            .map(|&face| {
+            if seeded_components.insert(component) {
                 let dart = self.face_seed[face];
                 let edge = self.darts[dart].edge;
-                FaceSeed {
+                seeds.push(FaceSeed {
                     face,
                     segment: self.darts[dart].segment,
                     edge,
                     forward: dart == edge * 2,
-                }
-            })
-            .collect();
+                });
+            }
+        }
         propagate_face_interior(
             self.face_component.len(),
             &adjacency,

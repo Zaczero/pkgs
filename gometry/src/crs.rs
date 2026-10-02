@@ -63,10 +63,10 @@ use cache::{
     CachedCelestialBodies, CachedCrsAuthorityMatches, CachedCrsCatalog, CachedCrsComparison,
     CachedCrsExport, CachedCrsInfo, CachedCrsOperations, CachedCrsSearch, CachedGeodesicObject,
     CachedProjectionFactorsObject, CachedUnits, CrsComparisonKey, CrsExportKey, CrsExportKind,
-    GEODESIC_LINE_CACHE, GEODESIC_LINE_CACHE_CAPACITY, NON_DEPRECATED_CACHE,
-    NON_DEPRECATED_CACHE_CAPACITY, begin_transform_observation, ensure_thread_caches_current,
-    record_transform_engine, with_proj_diagnostic_pipeline_at, with_proj_operation_at,
-    with_proj_pipeline_at, with_proj_pipeline_indexed_at,
+    GEODESIC_LINE_CACHE, NON_DEPRECATED_CACHE, NON_DEPRECATED_CACHE_CAPACITY,
+    begin_transform_observation, ensure_thread_caches_current, record_transform_engine,
+    with_proj_diagnostic_pipeline_at, with_proj_operation_at, with_proj_pipeline_at,
+    with_proj_pipeline_indexed_at,
 };
 pub(crate) use cache::{cache_info, lru_insert, lru_promote, lru_resolve};
 pub(crate) use catalog::{
