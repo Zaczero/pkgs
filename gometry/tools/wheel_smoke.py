@@ -555,7 +555,25 @@ def release_build_env(*, target: str | None = None) -> dict[str, str]:
             if value:
                 env[target_variable] = value
     env[f'NIX_DONT_SET_RPATH_{target.replace("-", "_")}'] = '1'
-    env.setdefault('CARGO_TARGET_DIR', str(ROOT / 'target'))
+    # Keep staged-sdist builds on the checkout's configured Cargo cache.
+    # Cargo resolves workspace, configuration, and relative environment paths.
+    metadata = json.loads(
+        subprocess.check_output(
+            [
+                'cargo',
+                'metadata',
+                '--no-deps',
+                '--locked',
+                '--format-version=1',
+                '--manifest-path',
+                str(ROOT / 'Cargo.toml'),
+            ],
+            cwd=ROOT,
+            env=env,
+            text=True,
+        )
+    )
+    env['CARGO_TARGET_DIR'] = metadata['target_directory']
     return env
 
 
