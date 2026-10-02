@@ -275,6 +275,8 @@ pub(super) enum Located {
     OnEdge(HalfedgeId),
     /// Exactly on an existing vertex: nothing to insert.
     OnVertex,
+    /// Outside the current convex hull, where the insertion must extend it.
+    Outside,
 }
 
 pub(super) struct Mesh {
@@ -618,6 +620,37 @@ impl Mesh {
         Ok(())
     }
 
+    pub(super) fn try_legalize_constrained_from(
+        &mut self,
+        xy: &impl Fn(usize) -> XY,
+        constrained: &mut [bool],
+        mut stack: Vec<HalfedgeId>,
+    ) -> Result<()> {
+        while let Some(edge) = stack.pop() {
+            let twin = self.twin(edge);
+            if twin == EMPTY || Self::side_value(constrained, edge) {
+                continue;
+            }
+            let [a, b, c] = self.triangle(edge.face());
+            let opposite = self.edge_apex(HalfedgeId::from_index(twin));
+            if exact::incircle(xy(a), xy(b), xy(c), xy(opposite))? != ExactSign::Positive {
+                continue;
+            }
+            let diagonal = self.flip_carrying(edge, constrained, false);
+            let twin = self.twin(diagonal);
+            if twin == EMPTY {
+                return Err(crate::geometry::GeometryErrorKind::triangulation(
+                    "outside-site legalization lost an interior diagonal",
+                ));
+            }
+            let twin = HalfedgeId::from_index(twin);
+            for edge in [diagonal.next(), diagonal.prev(), twin.next(), twin.prev()] {
+                stack.push(edge);
+            }
+        }
+        Ok(())
+    }
+
     /// Flip the edge at slot `e` (`a -> b`, apex `c`; twin apex `d`) to
     /// `c -> d`, returning the slot of `c -> d`. The caller has checked the
     /// quad is convex.
@@ -744,6 +777,20 @@ impl Mesh {
         }
     }
 
+    pub(super) fn outside_hull(&self, xy: &impl Fn(usize) -> XY, point: XY) -> bool {
+        let hull_len = self.hull.len();
+        if hull_len < 3 {
+            return true;
+        }
+        self.hull.iter().enumerate().any(|(index, &start)| {
+            self.hull
+                .get(index.wrapping_add(1) % hull_len)
+                .is_some_and(|&end| {
+                    exact::orient2d(xy(start), xy(end), point) == ExactSign::Negative
+                })
+        })
+    }
+
     /// Where `p` stands relative to live triangle `t`: `Err(e)` names the
     /// first edge `p` is strictly to the right of.
     pub(super) fn classify(
@@ -803,6 +850,11 @@ impl Mesh {
         let (split_hull, seeds) = match located {
             Located::OnVertex => return Ok(self.any_alive()),
             Located::Inside(t) => (None, vec![t]),
+            Located::Outside => {
+                return Err(crate::geometry::GeometryErrorKind::triangulation(
+                    "outside insertion requires the hull expansion path",
+                ));
+            },
             Located::OnEdge(edge) => {
                 let twin = self.twin(edge);
                 if twin == EMPTY {
@@ -961,6 +1013,177 @@ impl Mesh {
         skip: &[bool],
     ) -> Result<FaceId> {
         self.try_insert_with(xy, site, located, Some(skip))
+    }
+
+    pub(super) fn insert_outside(
+        &mut self,
+        xy: &impl Fn(usize) -> XY,
+        site: usize,
+    ) -> Result<(FaceId, Vec<HalfedgeId>)> {
+        let hull_len = self.hull.len();
+        if hull_len < 3 {
+            return Err(crate::geometry::GeometryErrorKind::triangulation(
+                "outside insertion needs a two-dimensional hull",
+            ));
+        }
+        let point = xy(site);
+        let mut visible = vec![false; hull_len];
+        let mut visible_count = 0_usize;
+        for (index, &start) in self.hull.iter().enumerate() {
+            let end_index = index.wrapping_add(1) % hull_len;
+            let Some(&end) = self.hull.get(end_index) else {
+                return Err(crate::geometry::GeometryErrorKind::triangulation(
+                    "outside insertion found an incomplete hull",
+                ));
+            };
+            if exact::orient2d(xy(start), xy(end), point) == ExactSign::Negative {
+                if let Some(is_visible) = visible.get_mut(index) {
+                    *is_visible = true;
+                    visible_count = visible_count.wrapping_add(1);
+                }
+            }
+        }
+        if visible_count == 0 {
+            return Err(crate::geometry::GeometryErrorKind::triangulation(
+                "outside point cannot see the mesh hull",
+            ));
+        }
+        let Some(start_index) = visible
+            .iter()
+            .cycle()
+            .skip(hull_len.wrapping_sub(1))
+            .zip(&visible)
+            .position(|(previous, current)| !*previous && *current)
+        else {
+            return Err(crate::geometry::GeometryErrorKind::triangulation(
+                "outside insertion has no visible hull chain",
+            ));
+        };
+        let mut chain_len = 0_usize;
+        while visible
+            .get(start_index.wrapping_add(chain_len) % hull_len)
+            .is_some_and(|&is_visible| is_visible)
+        {
+            chain_len = chain_len.wrapping_add(1);
+        }
+        if chain_len != visible_count {
+            return Err(crate::geometry::GeometryErrorKind::triangulation(
+                "outside point sees disjoint hull chains",
+            ));
+        }
+        let mut visible_edges = Vec::with_capacity(chain_len);
+        for offset in 0..chain_len {
+            let index = start_index.wrapping_add(offset) % hull_len;
+            let Some(&start) = self.hull.get(index) else {
+                return Err(crate::geometry::GeometryErrorKind::triangulation(
+                    "outside insertion found an incomplete hull",
+                ));
+            };
+            let Some(&end) = self.hull.get(index.wrapping_add(1) % hull_len) else {
+                return Err(crate::geometry::GeometryErrorKind::triangulation(
+                    "outside insertion found an incomplete hull",
+                ));
+            };
+            let Some(edge) = self.directed_slot(start, end) else {
+                return Err(crate::geometry::GeometryErrorKind::triangulation(
+                    "outside insertion could not find a hull edge",
+                ));
+            };
+            if self.twin(edge) != EMPTY
+                || self.edge_vertices(edge) != (start, end)
+                || exact::orient2d(xy(end), xy(start), point) != ExactSign::Positive
+            {
+                return Err(crate::geometry::GeometryErrorKind::triangulation(
+                    "outside insertion found an invalid visible hull edge",
+                ));
+            }
+            visible_edges.push((start, end, edge));
+        }
+        let start = visible_edges
+            .first()
+            .map(|&(start, ..)| start)
+            .ok_or_else(|| {
+                crate::geometry::GeometryErrorKind::triangulation(
+                    "outside insertion has no visible hull edge",
+                )
+            })?;
+        let end_index = start_index.wrapping_add(chain_len) % hull_len;
+        let mut new_hull = Vec::with_capacity(hull_len.wrapping_sub(chain_len).wrapping_add(2));
+        new_hull.push(start);
+        new_hull.push(site);
+        for offset in 0..hull_len.wrapping_sub(chain_len) {
+            let index = end_index.wrapping_add(offset) % hull_len;
+            let Some(&vertex) = self.hull.get(index) else {
+                return Err(crate::geometry::GeometryErrorKind::triangulation(
+                    "outside insertion found an incomplete hull",
+                ));
+            };
+            new_hull.push(vertex);
+        }
+        let new_slots = chain_len.saturating_sub(self.free.len());
+        let new_edges = new_slots
+            .checked_mul(3)
+            .ok_or(crate::error::ResourceError::SizeOverflow)?;
+        self.triangles.reserve(new_edges);
+        self.halfedges.reserve(new_edges);
+        self.stamp.reserve(new_slots);
+        self.free.reserve(chain_len);
+        self.admit_vertex(site);
+        let mut faces = Vec::with_capacity(chain_len);
+        for _ in 0..chain_len {
+            faces.push(self.take_slot());
+        }
+        let mut seeds = Vec::with_capacity(chain_len);
+        for (index, &(start, end, old_edge)) in visible_edges.iter().enumerate() {
+            let Some(&face) = faces.get(index) else {
+                return Err(crate::geometry::GeometryErrorKind::triangulation(
+                    "outside insertion lost a triangle slot",
+                ));
+            };
+            let first = HalfedgeId::in_face(face, FaceSide::First);
+            let second = HalfedgeId::in_face(face, FaceSide::Second);
+            let third = HalfedgeId::in_face(face, FaceSide::Third);
+            self.set_face_vertex(face, FaceSide::First, end);
+            self.set_face_vertex(face, FaceSide::Second, start);
+            self.set_face_vertex(face, FaceSide::Third, site);
+            self.set_twin(first, old_edge.index());
+            self.set_twin(old_edge, first.index());
+            if index == 0 {
+                self.set_twin(second, EMPTY);
+            } else {
+                let Some(&previous) = faces.get(index.wrapping_sub(1)) else {
+                    return Err(crate::geometry::GeometryErrorKind::triangulation(
+                        "outside insertion lost a previous triangle",
+                    ));
+                };
+                let previous_third = HalfedgeId::in_face(previous, FaceSide::Third);
+                self.set_twin(second, previous_third.index());
+                self.set_twin(previous_third, second.index());
+            }
+            if index.wrapping_add(1) == chain_len {
+                self.set_twin(third, EMPTY);
+            } else {
+                let Some(&next) = faces.get(index.wrapping_add(1)) else {
+                    return Err(crate::geometry::GeometryErrorKind::triangulation(
+                        "outside insertion lost a next triangle",
+                    ));
+                };
+                let next_second = HalfedgeId::in_face(next, FaceSide::Second);
+                self.set_twin(third, next_second.index());
+                self.set_twin(next_second, third.index());
+            }
+            self.set_incident(end, first.index());
+            self.set_incident(start, second.index());
+            self.set_incident(site, third.index());
+            seeds.push(old_edge);
+        }
+        let Some(&first) = faces.first() else {
+            return Err(crate::geometry::GeometryErrorKind::triangulation(
+                "outside insertion lost its first triangle",
+            ));
+        };
+        self.hull = new_hull;
+        Ok((first, seeds))
     }
 
     pub(super) fn triangle(&self, face: FaceId) -> [usize; 3] {

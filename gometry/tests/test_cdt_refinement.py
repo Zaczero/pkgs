@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import math
+import random
+from fractions import Fraction
+from itertools import combinations
 from typing import cast
 
 import gometry as gm
@@ -49,6 +52,186 @@ def _z_polygon() -> gm.Polygon:
         [(0, 0, 1), (10, 0, 2), (10, 10, 3), (0, 10, 4)],
         holes=[[(3, 3, 5), (7, 3, 6), (7, 7, 7), (3, 7, 8)]],
     )
+
+
+def _source_parameter(
+    point: tuple[float, float],
+    start: tuple[float, float],
+    end: tuple[float, float],
+) -> tuple[Fraction, Fraction] | None:
+    lower, upper = Fraction(0), Fraction(1)
+    for coordinate, source_start, source_end in zip(point, start, end, strict=True):
+        value = Fraction(coordinate)
+        previous = Fraction(math.nextafter(coordinate, -math.inf))
+        following = Fraction(math.nextafter(coordinate, math.inf))
+        rounded_low = (previous + value) / 2
+        rounded_high = (value + following) / 2
+        origin = Fraction(source_start)
+        delta = Fraction(source_end) - origin
+        if delta == 0:
+            if not rounded_low <= origin <= rounded_high:
+                return None
+            continue
+        first = (rounded_low - origin) / delta
+        second = (rounded_high - origin) / delta
+        lower = max(lower, min(first, second))
+        upper = min(upper, max(first, second))
+        if lower > upper:
+            return None
+    return lower, upper
+
+
+def _exactly_on_segment(
+    point: tuple[float, float],
+    start: tuple[float, float],
+    end: tuple[float, float],
+) -> bool:
+    px, py = map(Fraction, point)
+    sx, sy = map(Fraction, start)
+    ex, ey = map(Fraction, end)
+    return (ex - sx) * (py - sy) == (ey - sy) * (px - sx)
+
+
+def _constraint_has_emitted_chain(
+    boundary_edges: list[tuple[tuple[float, float], tuple[float, float]]],
+    start: tuple[float, float],
+    end: tuple[float, float],
+) -> bool:
+    intervals: list[tuple[Fraction, Fraction]] = []
+    for left, right in boundary_edges:
+        left_parameter = _source_parameter(left, start, end)
+        right_parameter = _source_parameter(right, start, end)
+        if left_parameter is not None and right_parameter is not None:
+            intervals.append((
+                min(left_parameter[0], right_parameter[0]),
+                max(left_parameter[1], right_parameter[1]),
+            ))
+    cursor = Fraction(0)
+    for lo, hi in sorted(intervals):
+        if lo > cursor:
+            return False
+        cursor = max(cursor, hi)
+        if cursor >= 1:
+            return True
+    return False
+
+
+def _boundary_edges(
+    triangles: gm.GeometryArray[gm.Polygon],
+) -> list[tuple[tuple[float, float], tuple[float, float]]]:
+    edge_counts: dict[tuple[tuple[float, float], tuple[float, float]], int] = {}
+    for triangle in triangles:
+        coordinates = _triangle_coords(cast('gm.Polygon', triangle))
+        for left, right in zip(
+            coordinates, coordinates[1:] + coordinates[:1], strict=True
+        ):
+            edge = tuple(sorted((left, right)))
+            edge_counts[edge] = edge_counts.get(edge, 0) + 1
+    return [edge for edge, count in edge_counts.items() if count == 1]
+
+
+def _rounding_half_ulp(value: float) -> Fraction:
+    exact = Fraction(value)
+    previous = Fraction(math.nextafter(value, -math.inf))
+    following = Fraction(math.nextafter(value, math.inf))
+    return max(exact - previous, following - exact) / 2
+
+
+def _exact_ring_area(ring: list[tuple[float, float]]) -> Fraction:
+    return (
+        abs(
+            sum(
+                Fraction(left[0]) * Fraction(right[1])
+                - Fraction(left[1]) * Fraction(right[0])
+                for left, right in zip(ring, ring[1:] + ring[:1], strict=True)
+            )
+        )
+        / 2
+    )
+
+
+def _assert_mesh_properties(
+    triangles: gm.GeometryArray[gm.Polygon],
+    polygon: gm.Polygon,
+    ring: list[tuple[float, float]],
+    *,
+    min_angle: float | None = None,
+    max_area: float | None = None,
+    require_rounded_boundary: bool = False,
+) -> None:
+    assert triangles
+    triangle_area = Fraction(0)
+    for triangle in triangles:
+        coordinates = _triangle_coords(cast('gm.Polygon', triangle))
+        assert triangle.area > 0
+        exact_coordinates = [(Fraction(x), Fraction(y)) for x, y in coordinates]
+        signed_area = (
+            sum(
+                left[0] * right[1] - left[1] * right[0]
+                for left, right in zip(
+                    exact_coordinates,
+                    exact_coordinates[1:] + exact_coordinates[:1],
+                    strict=True,
+                )
+            )
+            / 2
+        )
+        assert signed_area > 0
+        triangle_area += signed_area
+        if min_angle is not None:
+            assert (
+                min(_interior_angles_deg(cast('gm.Polygon', triangle))) + 1e-7
+                >= min_angle
+            )
+        if max_area is not None:
+            assert triangle.area <= max_area * (1 + 1e-9)
+    for left, right in combinations(triangles, 2):
+        assert gm.relate_pattern(left, right, 'F********'), gm.relate(left, right)
+    boundary_edges = _boundary_edges(triangles)
+    area_error_bound = Fraction(0)
+    for left, right in boundary_edges:
+        matching = [
+            (start, end)
+            for start, end in zip(ring, ring[1:] + ring[:1], strict=True)
+            if _source_parameter(left, start, end) is not None
+            and _source_parameter(right, start, end) is not None
+        ]
+        assert len(matching) == 1, (left, right, matching)
+        left_error = (_rounding_half_ulp(left[0]), _rounding_half_ulp(left[1]))
+        right_error = (_rounding_half_ulp(right[0]), _rounding_half_ulp(right[1]))
+        edge_x = abs(Fraction(right[0]) - Fraction(left[0]))
+        edge_y = abs(Fraction(right[1]) - Fraction(left[1]))
+        true_edge_x = edge_x + left_error[0] + right_error[0]
+        true_edge_y = edge_y + left_error[1] + right_error[1]
+        # The shoelace difference for each boundary quadrilateral is bounded
+        # by endpoint half-ULP errors times its incident source-edge lengths.
+        area_error_bound += (
+            (left_error[1] + right_error[1]) * true_edge_x
+            + (left_error[0] + right_error[0]) * true_edge_y
+            + left_error[0] * right_error[1]
+            + left_error[1] * right_error[0]
+        ) / 2
+    boundary_vertices = {point for edge in boundary_edges for point in edge}
+    assert set(ring) <= boundary_vertices
+    source_area = _exact_ring_area(ring)
+    assert abs(triangle_area - source_area) <= area_error_bound
+    for start, end in zip(ring, ring[1:] + ring[:1], strict=True):
+        assert _constraint_has_emitted_chain(boundary_edges, start, end), (start, end)
+    source_vertices = set(ring)
+    for point in {point for edge in boundary_edges for point in edge} - source_vertices:
+        matches = [
+            (start, end)
+            for start, end in zip(ring, ring[1:] + ring[:1], strict=True)
+            if _source_parameter(point, start, end) is not None
+        ]
+        assert len(matches) == 1, (point, matches)
+    if require_rounded_boundary:
+        assert any(
+            not _exactly_on_segment(point, start, end)
+            for point in boundary_vertices - source_vertices
+            for start, end in zip(ring, ring[1:] + ring[:1], strict=True)
+            if _source_parameter(point, start, end) is not None
+        )
 
 
 @pytest.fixture
@@ -150,15 +333,13 @@ def test_array_refinement_drops_zm_while_plain_mesh_preserves_it() -> None:
     assert len(varied[1]) > len(varied[0])
 
 
-def test_free_and_array_surfaces_match(sliver: gm.Polygon) -> None:
+def test_scalar_and_array_surfaces_match(sliver: gm.Polygon) -> None:
     kwargs = {'min_angle': 25.0}
-    method = sliver.triangulate(method='constrained', **kwargs)
-    free = sliver.triangulate(method='constrained', **kwargs)
+    scalar = sliver.triangulate(method='constrained', **kwargs)
     # Array is per-row Groups; row 0 is this single geometry's triangles.
     array = gm.GeometryArray([sliver]).triangulate(method='constrained', **kwargs)[0]
-    assert len(method) == len(free) == len(array)
-    assert [t.to_wkt() for t in method] == [t.to_wkt() for t in free]
-    assert [t.to_wkt() for t in method] == [t.to_wkt() for t in array]
+    assert len(scalar) == len(array)
+    assert [t.to_wkt() for t in scalar] == [t.to_wkt() for t in array]
 
 
 def test_rounded_source_midpoint_is_an_unrepresentable_output() -> None:
@@ -233,3 +414,159 @@ def test_delaunay_duplicate_xy_uses_the_same_source_site_for_scalar_and_array() 
     ]
     assert all(triangle.coordinate_axes == 'XYZM' for triangle in scalar)
     assert all('0 0 1 10' in triangle.to_wkt() for triangle in scalar)
+
+
+def test_constrained_delaunay_records_flipped_source_constraints() -> None:
+    ring = [(4.0, 3.0), (5.0, 1.0), (1.0, 4.0), (1.0, 0.0), (6.0, 1.0)]
+    polygon = gm.Polygon(ring)
+    assert polygon.is_valid
+
+    triangles = polygon.triangulate(method='constrained')
+
+    _assert_mesh_properties(triangles, polygon, ring)
+
+
+@pytest.mark.parametrize(
+    'ring',
+    [
+        pytest.param(
+            [(7.0, 1.0), (2.0, 8.0), (8.0, 3.0), (1.0, 2.0), (2.0, 7.0)],
+            id='pentagram-edge-flip',
+        ),
+        pytest.param(
+            [
+                (8.0, 8.0),
+                (3.0, 0.0),
+                (1.0, 6.0),
+                (5.0, 0.0),
+                (6.0, 7.0),
+                (4.0, 1.0),
+            ],
+            id='pentagram-flip-cycle',
+        ),
+        pytest.param(
+            [
+                (8.0, 8.0),
+                (1.0, 2.0),
+                (2.0, 4.0),
+                (8.0, 5.0),
+                (3.0, 3.0),
+                (8.0, 1.0),
+            ],
+            id='pentagram-stale-halfedge',
+        ),
+    ],
+)
+def test_invalid_constraints_return_invalid_geometry_error(
+    ring: list[tuple[float, float]],
+) -> None:
+    polygon = gm.Polygon(ring)
+    assert not polygon.is_valid
+
+    with pytest.raises(gm.InvalidGeometryError):
+        polygon.triangulate(method='constrained')
+
+
+@pytest.mark.parametrize(
+    ('option', 'value'),
+    [('min_angle', 20.0), ('max_area', 50.0)],
+)
+def test_reported_polygon_refines_with_exact_source_chains(
+    option: str,
+    value: float,
+) -> None:
+    ring = [
+        (15.28, 53.13),
+        (21.72, 36.65),
+        (22.67, 41.11),
+        (40.29, 16.93),
+        (48.68, 39.6),
+    ]
+    polygon = gm.Polygon(ring)
+    assert polygon.is_valid
+
+    triangles = polygon.triangulate(method='constrained', **{option: value})
+
+    _assert_mesh_properties(
+        triangles,
+        polygon,
+        ring,
+        min_angle=value if option == 'min_angle' else None,
+        max_area=value if option == 'max_area' else None,
+    )
+
+
+def test_refined_acute_source_corner_uses_nearest_binary64_boundary_nodes() -> None:
+    ring = [
+        (83.61, 61.84),
+        (74.31, 79.69),
+        (56.51, 68.12),
+        (47.38, 70.5),
+        (41.3, 91.42),
+        (41.79, 83.06),
+        (25.5, 21.18),
+        (43.42, 14.3),
+        (33.98, 15.0),
+        (34.84, 9.08),
+        (45.46, 2.96),
+        (53.31, 26.0),
+        (61.72, 35.4),
+        (75.05, 35.75),
+        (99.45, 46.32),
+    ]
+    polygon = gm.Polygon(ring)
+    assert polygon.is_valid
+
+    triangles = polygon.triangulate(method='constrained', min_angle=20.0)
+
+    _assert_mesh_properties(
+        triangles,
+        polygon,
+        ring,
+        min_angle=20.0,
+        require_rounded_boundary=True,
+    )
+
+
+def test_seeded_constrained_triangulation_properties_against_other_methods() -> None:
+    seed = 0xCD7
+    random_source = random.Random(seed)
+    for case in range(200):
+        vertex_count = random_source.randint(4, 8)
+        step = math.tau / vertex_count
+        offset = random_source.random() * math.tau
+        ring = []
+        for index in range(vertex_count):
+            angle = offset + index * step + random_source.uniform(-0.15, 0.15) * step
+            radius = random_source.randint(20, 80)
+            ring.append((
+                float(round(radius * math.cos(angle))),
+                float(round(radius * math.sin(angle))),
+            ))
+
+        polygon = gm.Polygon(ring)
+        assert polygon.is_valid, (seed, case, ring)
+        earcut = polygon.triangulate(method='earcut')
+        delaunay = polygon.triangulate(method='delaunay')
+        constrained = polygon.triangulate(method='constrained')
+
+        assert math.isclose(
+            math.fsum(triangle.area for triangle in earcut),
+            polygon.area,
+            rel_tol=1e-12,
+            abs_tol=1e-12,
+        ), (seed, case, 'earcut')
+        assert math.isclose(
+            math.fsum(triangle.area for triangle in delaunay),
+            polygon.convex_hull().area,
+            rel_tol=1e-12,
+            abs_tol=1e-12,
+        ), (seed, case, 'delaunay')
+        _assert_mesh_properties(constrained, polygon, ring)
+
+        if case < 6:
+            angle_mesh = polygon.triangulate(method='constrained', min_angle=20.0)
+            _assert_mesh_properties(angle_mesh, polygon, ring, min_angle=20.0)
+            area_limit = polygon.area / 8
+            area_mesh = polygon.triangulate(method='constrained', max_area=area_limit)
+            _assert_mesh_properties(area_mesh, polygon, ring, max_area=area_limit)

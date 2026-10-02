@@ -1902,6 +1902,9 @@ class Geometry:
             without either option, duplicate XY sites use their first source
             occurrence and triangle corners preserve the selected source ordinates.
             Refinement inserts Steiner vertices and therefore returns uniform XY.
+            Each boundary Steiner vertex is the nearest binary64 coordinate pair to
+            its exact position on the source edge, so the triangles cover the source
+            polygon up to that rounding.
 
         Returns
         -------
@@ -1912,9 +1915,11 @@ class Geometry:
         ------
         GeometryError
             If a quality constraint is invalid or method-specific options are used
-            with the wrong algorithm.
+            with the wrong algorithm. A boundary Steiner point that cannot be
+            represented at float resolution raises this error with
+            ``operation='triangulate'``.
         InvalidGeometryError
-            If the triangulation cannot be constructed.
+            If the input polygon is invalid or the triangulation cannot be constructed.
 
         Examples
         --------
@@ -7707,7 +7712,10 @@ class GeometryArray(Sequence[_GeometryT_co]):
             coordinate units. Valid only with ``method='constrained'``. Setting
             either option enables refinement;
             inserted Steiner vertices return uniform XY. Scalar and array rows use
-            the same first-occurrence source-site and ordinate policy.
+            the same first-occurrence source-site and ordinate policy. Each boundary
+            Steiner vertex is the nearest binary64 coordinate pair to its exact
+            position on the source edge, so the triangles cover the source polygon
+            up to that rounding.
 
         Returns
         -------
@@ -7718,7 +7726,11 @@ class GeometryArray(Sequence[_GeometryT_co]):
         ------
         GeometryError
             If a quality constraint is invalid or method-specific options are used
-            with the wrong algorithm.
+            with the wrong algorithm. A boundary Steiner point that cannot be
+            represented at float resolution raises this error with
+            ``operation='triangulate'``.
+        InvalidGeometryError
+            If an input polygon is invalid or its triangulation cannot be constructed.
 
         Examples
         --------
