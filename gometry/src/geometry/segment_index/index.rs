@@ -16,6 +16,16 @@ pub(crate) struct SegmentEntry {
     envelope: AABB<[f64; 2]>,
 }
 
+impl SegmentEntry {
+    pub(super) fn new(segment: Segment, ordinal: usize) -> Self {
+        Self {
+            segment,
+            ordinal,
+            envelope: segment_envelope(segment),
+        }
+    }
+}
+
 impl RTreeObject for SegmentEntry {
     type Envelope = AABB<[f64; 2]>;
 
@@ -60,11 +70,7 @@ impl SegmentIndex {
         let entries = segments
             .into_iter()
             .enumerate()
-            .map(|(ordinal, segment)| SegmentEntry {
-                segment,
-                ordinal,
-                envelope: segment_envelope(segment),
-            })
+            .map(|(ordinal, segment)| SegmentEntry::new(segment, ordinal))
             .collect();
         Self {
             tree: BulkRTree::bulk_load_with_params(entries),
@@ -207,6 +213,121 @@ mod query_tests {
         ];
         let index = SegmentIndex::build(&segments);
         assert!(index.covers_point(Point::new_raw_xy(0.5, 0.0)));
+    }
+
+    #[test]
+    fn chord_query_prunes_diagonal_envelope_amplification() {
+        use crate::geometry::XY;
+        use crate::geometry::segment_index::ChordIndex;
+
+        let segments: Vec<_> = (0..4096)
+            .map(|index| {
+                let coordinate = f64::from(index);
+                Segment {
+                    start: XY::new(coordinate, coordinate + 32.0),
+                    end: XY::new(coordinate + 0.25, coordinate + 32.0),
+                }
+            })
+            .collect();
+        let index = ChordIndex::build(&segments);
+        let chord = Segment {
+            start: XY::new(0.0, 0.0),
+            end: XY::new(8192.0, 8192.0),
+        };
+        assert_eq!(
+            SegmentIndex::build(&segments)
+                .intersecting_candidates(chord)
+                .count(),
+            4096
+        );
+        let mut checked = 0;
+        assert!(index.all_candidates(chord, |_| {
+            checked += 1;
+            true
+        }));
+        assert_eq!(checked, 0);
+    }
+
+    #[test]
+    fn chord_query_retains_contacts_and_uncertain_boxes() {
+        use crate::geometry::segment_index::ChordIndex;
+        use crate::geometry::{XY, segments_intersect};
+
+        let cases = [
+            (
+                Segment {
+                    start: XY::new(0.0, 0.0),
+                    end: XY::new(4.0, 4.0),
+                },
+                [
+                    Segment {
+                        start: XY::new(1.0, 1.0),
+                        end: XY::new(3.0, 3.0),
+                    },
+                    Segment {
+                        start: XY::new(0.0, 1.0),
+                        end: XY::new(1.0, 0.0),
+                    },
+                    Segment {
+                        start: XY::new(4.0, 4.0),
+                        end: XY::new(5.0, 3.0),
+                    },
+                ],
+            ),
+            (
+                Segment {
+                    start: XY::new(-1e308, -1e308),
+                    end: XY::new(1e308, 1e308),
+                },
+                [
+                    Segment {
+                        start: XY::new(-1.0, 1.0),
+                        end: XY::new(1.0, -1.0),
+                    },
+                    Segment {
+                        start: XY::new(0.0, 0.0),
+                        end: XY::new(0.0, 0.0),
+                    },
+                    Segment {
+                        start: XY::new(1e308, 1e308),
+                        end: XY::new(1e308, 0.0),
+                    },
+                ],
+            ),
+            (
+                Segment {
+                    start: XY::new(0.0, 0.0),
+                    end: XY::new(f64::from_bits(4), f64::from_bits(4)),
+                },
+                [
+                    Segment {
+                        start: XY::new(f64::from_bits(2), 0.0),
+                        end: XY::new(f64::from_bits(2), f64::from_bits(4)),
+                    },
+                    Segment {
+                        start: XY::new(0.0, 0.0),
+                        end: XY::new(0.0, 0.0),
+                    },
+                    Segment {
+                        start: XY::new(f64::from_bits(4), f64::from_bits(4)),
+                        end: XY::new(f64::from_bits(4), 0.0),
+                    },
+                ],
+            ),
+        ];
+        for (chord, segments) in cases {
+            let segments: Vec<_> = segments.into_iter().cycle().take(2048).collect();
+            let index = ChordIndex::build(&segments);
+            let mut retained = vec![false; segments.len()];
+            assert!(index.all_candidates(chord, |entry| {
+                retained[entry.ordinal] = true;
+                true
+            }));
+            for (ordinal, &segment) in segments.iter().enumerate() {
+                assert!(segments_intersect(chord, segment));
+                assert!(retained[ordinal], "{chord:?} against {segment:?}");
+            }
+        }
     }
 
     #[test]

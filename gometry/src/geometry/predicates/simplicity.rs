@@ -2,11 +2,11 @@ use std::ops::ControlFlow;
 
 use ahash::HashSetExt as _;
 
+use crate::geometry::segment_index::ChordIndex;
 use crate::geometry::{
     Contact, CoordSeq, Coordinates as _, HashSet, IndexedSegment, LineworkChains, Orientation,
-    Point, PointKey, Polygon, Ring, SegmentIndex, Shape, ValidationIssue, XY, orientation,
-    point_on_segment, ring_winding, same_point, segment_contact_exact, segment_cross_point,
-    segments_intersect,
+    Point, PointKey, Polygon, Ring, Shape, ValidationIssue, XY, orientation, point_on_segment,
+    ring_winding, same_point, segment_contact_exact, segment_cross_point, segments_intersect,
 };
 /// Whether a vertex-SUBSET simplification of a polygon kept its linework
 /// simple, checked on the DELTA only: removals replace vertex paths with
@@ -91,10 +91,10 @@ pub(in crate::geometry) fn simplified_polygon_delta_is_simple(
     if chords.is_empty() {
         return Ok(true);
     }
-    let index = SegmentIndex::build(&chains.segments);
+    let index = ChordIndex::build(&chains.segments);
     Ok(chords.iter().all(|&ordinal| {
         let chord = chains.at(ordinal);
-        index.intersecting_candidates(chord.segment).all(|entry| {
+        index.all_candidates(chord.segment, |entry| {
             entry.ordinal == ordinal || {
                 let other = chains.at(entry.ordinal);
                 !(segments_are_adjacent(chord, other)

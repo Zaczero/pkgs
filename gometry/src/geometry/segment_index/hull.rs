@@ -139,4 +139,30 @@ impl<Site: Copy> StoredHull<Site> {
             }
         })
     }
+
+    pub(in crate::geometry) fn merged_sites(
+        &self,
+        other: &Self,
+        point: impl Fn(Site) -> XY,
+    ) -> Vec<Site> {
+        let mut left = self.sorted_sites(&point).peekable();
+        let mut right = other.sorted_sites(&point).peekable();
+        let mut sites = Vec::with_capacity(self.vertices.len().wrapping_add(other.vertices.len()));
+        while let (Some(&a), Some(&b)) = (left.peek(), right.peek()) {
+            let (a, b) = (point(a), point(b));
+            if a.x
+                .partial_cmp(&b.x)
+                .expect("finite hull X")
+                .then(a.y.partial_cmp(&b.y).expect("finite hull Y"))
+                .is_le()
+            {
+                sites.push(left.next().expect("nonempty lower merge head"));
+            } else {
+                sites.push(right.next().expect("nonempty upper merge head"));
+            }
+        }
+        sites.extend(left);
+        sites.extend(right);
+        sites
+    }
 }

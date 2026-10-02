@@ -6,8 +6,8 @@ use crate::geometry::coverage::{AABB, HashMap, Reverse, valid_coverage_rows};
 use crate::geometry::overlay::{ExactChainView, ExactPartition, ExactSourceInventory, NodeId};
 use crate::geometry::{
     BulkRTree, CoordSeq, Coordinates as _, GeometryErrorKind, Orientation, Point, PointKey,
-    Polygon, Ring, Segment, SegmentIndex, Shape, SimplifyMethod, XY, dedup_consecutive_points,
-    line_segments, orientation, point_segment_distance, same_point, same_topological_coordinate,
+    Polygon, Ring, Segment, Shape, SimplifyMethod, XY, dedup_consecutive_points, line_segments,
+    orientation, point_segment_distance, same_point, same_topological_coordinate,
     segment_contact_exact, undirected_segment_edge_key,
 };
 
@@ -283,7 +283,7 @@ pub(in crate::geometry) struct TopologyGuard<'a> {
     // Both trees build LAZILY on the first probe: exact-collinear removals
     // (the dominant case on digitized/gridded inputs) are accepted without
     // probing, so an all-collinear pass never pays either bulk load.
-    segment_index: std::cell::OnceCell<SegmentIndex>,
+    segment_index: std::cell::OnceCell<crate::geometry::segment_index::ChordIndex>,
     vertex_cloud: std::cell::Cell<Vec<[f64; 2]>>,
     vertex_tree: std::cell::OnceCell<BulkRTree<[f64; 2]>>,
 }
@@ -305,9 +305,9 @@ impl<'a> TopologyGuard<'a> {
         }
     }
 
-    fn segment_index(&self) -> &SegmentIndex {
+    fn segment_index(&self) -> &crate::geometry::segment_index::ChordIndex {
         self.segment_index
-            .get_or_init(|| SegmentIndex::build(self.segments))
+            .get_or_init(|| crate::geometry::segment_index::ChordIndex::build(self.segments))
     }
 
     fn vertex_tree(&self) -> &BulkRTree<[f64; 2]> {
@@ -342,44 +342,41 @@ impl<'a> TopologyGuard<'a> {
             start: prev,
             end: next,
         };
-        let contact = self
-            .segment_index()
-            .intersecting_candidates(shortcut)
-            .any(|entry| {
-                let chain_segment = if chain_segments.is_empty() {
-                    // The public scalar simplifier has no shared-chain
-                    // provenance. Preserve its established local-endpoint
-                    // exemption; coverage callers always provide the exact
-                    // source segment view above.
-                    [entry.segment.start, entry.segment.end]
-                        .into_iter()
-                        .any(|point| {
-                            same_point(point, prev)
-                                || same_point(point, vertex)
-                                || same_point(point, next)
-                        })
-                } else {
-                    chain_segments.iter().any(|segment| {
-                        undirected_segment_edge_key(*segment)
-                            == undirected_segment_edge_key(entry.segment)
+        let no_contact = self.segment_index().all_candidates(shortcut, |entry| {
+            let chain_segment = if chain_segments.is_empty() {
+                // The public scalar simplifier has no shared-chain
+                // provenance. Preserve its established local-endpoint
+                // exemption; coverage callers always provide the exact
+                // source segment view above.
+                [entry.segment.start, entry.segment.end]
+                    .into_iter()
+                    .any(|point| {
+                        same_point(point, prev)
+                            || same_point(point, vertex)
+                            || same_point(point, next)
                     })
-                };
-                if chain_segment {
-                    return false;
-                }
-                match segment_contact_exact(shortcut, entry.segment) {
-                    crate::geometry::Contact::Disjoint => false,
-                    crate::geometry::Contact::Cross => true,
-                    crate::geometry::Contact::Touch { point } => {
-                        !same_point(point, prev) && !same_point(point, next)
-                    },
-                    crate::geometry::Contact::Collinear { span } => {
-                        !same_point(span.start, span.end)
-                            || (!same_point(span.start, prev) && !same_point(span.start, next))
-                    },
-                }
-            });
-        if contact {
+            } else {
+                chain_segments.iter().any(|segment| {
+                    undirected_segment_edge_key(*segment)
+                        == undirected_segment_edge_key(entry.segment)
+                })
+            };
+            if chain_segment {
+                return true;
+            }
+            match segment_contact_exact(shortcut, entry.segment) {
+                crate::geometry::Contact::Disjoint => true,
+                crate::geometry::Contact::Cross => false,
+                crate::geometry::Contact::Touch { point } => {
+                    same_point(point, prev) || same_point(point, next)
+                },
+                crate::geometry::Contact::Collinear { span } => {
+                    same_point(span.start, span.end)
+                        && (same_point(span.start, prev) || same_point(span.start, next))
+                },
+            }
+        });
+        if !no_contact {
             return false;
         }
         // No foreign vertex strictly inside the swept triangle. On the

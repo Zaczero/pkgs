@@ -1712,6 +1712,36 @@ mod keep_identity_tests {
     }
 
     #[test]
+    fn guarded_radial_simplification_contact_work_stays_below_quadratic() {
+        let mut counts = Vec::new();
+        for count in [2048, 4096] {
+            let mut xs = Vec::new();
+            let mut ys = Vec::new();
+            for index in 0..count {
+                let angle = index as f64 * std::f64::consts::TAU / count as f64;
+                let radius = 0.8 + 0.2 * ((index * 37 % 101) as f64 / 100.0);
+                xs.push(radius * angle.cos());
+                ys.push(radius * angle.sin());
+            }
+            xs.push(xs[0]);
+            ys.push(ys[0]);
+            let polygon = Shape::Polygon(Polygon::new(closed_ring(&xs, &ys), Vec::new()));
+            crate::geometry::segment_index::take_contact_visits();
+            let simplified = polygon
+                .simplify_vw((1.0 / count as f64).sqrt(), true)
+                .unwrap();
+            counts.push(crate::geometry::segment_index::take_contact_visits());
+            assert!(!simplified.is_empty());
+            assert!(simplified.is_simple().unwrap());
+        }
+        assert!(counts[0] > 0, "the fixture must probe chord contacts");
+        assert!(
+            counts[1] * 10 < counts[0] * 30,
+            "doubling dense radial input must not quadruple contact probes: {counts:?}",
+        );
+    }
+
+    #[test]
     fn vw_zero_preserves_nan_and_signed_zero_bits() {
         let nan = f64::NAN;
         let line = Shape::LineString(LineSeq::from_proven(
