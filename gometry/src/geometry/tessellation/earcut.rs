@@ -9,6 +9,7 @@ use rstar::AABB;
 use rstar::primitives::{GeomWithData, Rectangle};
 
 use super::earcut_bridges::BridgeArena;
+use super::earcut_sweep::ring_has_contact;
 use super::exact::orient2d_normal_components;
 use crate::error::Result;
 use crate::geometry::exact_arith::ExactSign;
@@ -155,7 +156,17 @@ pub(crate) fn validate_earcut_ring(ring: &[Point]) -> Result<()> {
             ));
         }
     }
-    let segments: Vec<Segment> = cycle
+    if ring_has_contact(ring) {
+        return Err(GeometryErrorKind::triangulation(
+            "polygon ring self-intersects",
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+pub(super) fn ring_has_contact_box_scan(ring: &[Point]) -> bool {
+    let segments: Vec<Segment> = EarcutCycle::new(ring)
         .edges()
         .map(|(_, start, end)| ring_segment_points(start, end))
         .collect();
@@ -171,14 +182,13 @@ pub(crate) fn validate_earcut_ring(ring: &[Point]) -> Result<()> {
                 reason = "candidate ordinals come from the SegmentIndex built from this exact segment slice"
             )]
             let right_segment = segments[right];
+            super::earcut_sweep::record_work();
             if segments_intersect(left_segment, right_segment) {
-                return Err(GeometryErrorKind::triangulation(
-                    "polygon ring self-intersects",
-                ));
+                return true;
             }
         }
     }
-    Ok(())
+    false
 }
 
 pub(crate) fn validate_hole_inside_shell(shell: &[Point], hole: &[Point]) -> Result<()> {
@@ -469,7 +479,7 @@ const fn ring_segment_points(start: Point, end: Point) -> Segment {
     }
 }
 
-const fn ring_segments_adjacent(len: usize, left: usize, right: usize) -> bool {
+pub(super) const fn ring_segments_adjacent(len: usize, left: usize, right: usize) -> bool {
     left.abs_diff(right) == 1 || (left == 0 && right == len.wrapping_sub(1))
 }
 

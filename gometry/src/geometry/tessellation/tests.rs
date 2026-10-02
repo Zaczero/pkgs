@@ -1420,6 +1420,98 @@ fn polygon_triangles_circle_candidate_work_scales_near_linearly() {
 }
 
 #[test]
+fn polygon_triangles_radial_validation_work_scales_near_linearly() {
+    let mut counts = Vec::new();
+    for vertices in [2_048_usize, 4_096] {
+        let mut seed = 42_u64;
+        let points = (0..vertices)
+            .map(|index| {
+                seed = seed.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
+                let radius = 0.8 + 0.2 * f64::from((seed >> 32) as u32) / f64::from(u32::MAX);
+                let angle = index as f64 * std::f64::consts::TAU / vertices as f64;
+                xy(radius * angle.cos(), radius * angle.sin())
+            })
+            .collect();
+        let shape = Shape::Polygon(polygon(points, Vec::new()));
+        let (triangles, work) = super::earcut_sweep::count_work(|| {
+            shape
+                .polygon_triangles()
+                .expect("simple radial ring triangulates")
+        });
+        assert_eq!(triangles.len(), vertices.wrapping_sub(2));
+        counts.push(work);
+    }
+    eprintln!("radial validation work: {counts:?}");
+    assert!(
+        counts[1].wrapping_mul(10) < counts[0].wrapping_mul(25),
+        "doubling the ring must not quadruple intersection decision work: {counts:?}"
+    );
+}
+
+#[test]
+fn earcut_sweep_preserves_box_scan_contact_decisions() {
+    let cases = [
+        // Vertical sides and permitted wrap-around adjacency.
+        vec![xy(0.0, 0.0), xy(4.0, 0.0), xy(4.0, 4.0), xy(0.0, 4.0)],
+        // A non-adjacent vertex lies inside the first edge.
+        vec![
+            xy(0.0, 0.0),
+            xy(4.0, 0.0),
+            xy(4.0, 4.0),
+            xy(2.0, 0.0),
+            xy(0.0, 4.0),
+        ],
+        // Overlapping vertical carriers.
+        vec![
+            xy(0.0, 0.0),
+            xy(0.0, 4.0),
+            xy(2.0, 4.0),
+            xy(0.0, 3.0),
+            xy(0.0, 1.0),
+            xy(2.0, 0.0),
+        ],
+        // Crossing through a vertical side.
+        vec![xy(0.0, 0.0), xy(4.0, 4.0), xy(0.0, 4.0), xy(4.0, 0.0)],
+        // Distinct collinear starts with disjoint vertical intervals.
+        vec![
+            xy(0.0, 0.0),
+            xy(0.0, 1.0),
+            xy(1.0, 2.0),
+            xy(0.0, 3.0),
+            xy(0.0, 4.0),
+            xy(4.0, 4.0),
+            xy(4.0, 0.0),
+        ],
+    ];
+    for (case, ring) in cases.iter().enumerate() {
+        let mut long = ring.clone();
+        let first = ring[0];
+        let last = *ring.last().unwrap();
+        for step in 1..=48 {
+            let t = f64::from(step) / 49.0;
+            let outward = 1.0 + 0.1 * f64::from(step % 2);
+            long.push(if first.x == last.x {
+                xy(first.x - outward, last.y + (first.y - last.y) * t)
+            } else {
+                xy(last.x + (first.x - last.x) * t, first.y - outward)
+            });
+        }
+        // The outer chain retains the contact under test while exercising
+        // both the direct lane and the event sweep.
+        for (variant, ring) in [ring, &long].into_iter().enumerate() {
+            for scale in [1e-170, 1.0, 1e150] {
+                let points: Vec<_> = ring.iter().map(|p| xy(p.x * scale, p.y * scale)).collect();
+                assert_eq!(
+                    super::earcut_sweep::ring_has_contact(&points),
+                    super::earcut::ring_has_contact_box_scan(&points),
+                    "case {case}, variant {variant}, scale {scale}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
 fn validate_earcut_ring_accepts_large_simple_ring() {
     let ring = large_convex_ring(10_000);
     validate_earcut_ring(&ring).expect("large simple ring is valid");
