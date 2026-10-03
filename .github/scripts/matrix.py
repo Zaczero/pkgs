@@ -328,6 +328,15 @@ def resolve_matrix(
     catalog: Sequence[dict[str, Any]] | None = None,
 ) -> dict[str, str]:
     info = package_info(package)
+    if info['type'] == 'rust':
+        return {
+            **info,
+            'python-versions': '[]',
+            'test-matrix': '[]',
+            'build-runners': '[]',
+            'rust-test-runners': '["ubuntu-latest","ubuntu-24.04-arm"]',
+            'rust-toolchain': rust_toolchain_channel(package),
+        }
     catalog_entries = list(catalog) if catalog is not None else load_uv_catalog()
 
     declared = read_declared_minors(versions_file_for(package))
@@ -386,6 +395,8 @@ def resolve_matrix(
     build_runners = RUSTY_BUILD_RUNNERS if is_rusty else PURE_BUILD_RUNNERS
 
     return {
+        'type': info['type'],
+        'rust-test-runners': '["ubuntu-latest"]',
         'import-name': info['import-name'],
         'is-release': info['is-release'],
         'is-rusty': info['is-rusty'],

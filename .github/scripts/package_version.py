@@ -21,9 +21,15 @@ def validate_version(version: str) -> None:
 
 def package_path(package: str) -> Path:
     path = Path(package)
-    if path.name != package or not (path / 'pyproject.toml').is_file():
+    if path.name != package or not any(
+        (path / manifest).is_file() for manifest in ('pyproject.toml', 'Cargo.toml')
+    ):
         valid = ', '.join(
-            sorted(path.parent.name for path in Path('.').glob('*/pyproject.toml'))
+            sorted({
+                path.parent.name
+                for pattern in ('*/pyproject.toml', '*/Cargo.toml')
+                for path in Path('.').glob(pattern)
+            })
         )
         fail(f'unknown package {package!r}; valid packages: {valid}')
     return path
@@ -77,7 +83,7 @@ def list_packages(kind: Literal['release', 'test'] = 'release') -> list[str]:
     """List monorepo packages by capability set.
 
     kind='release' (default): dynamic-version packages eligible for release tags.
-    kind='test': every top-level directory that has a pyproject.toml.
+    kind='test': every top-level Python or Cargo package.
     """
     if kind == 'release':
         packages = []
@@ -88,9 +94,11 @@ def list_packages(kind: Literal['release', 'test'] = 'release') -> list[str]:
         return packages
 
     if kind == 'test':
-        packages = [
-            pyproject.parent.name for pyproject in Path('.').glob('*/pyproject.toml')
-        ]
+        packages = {
+            manifest.parent.name
+            for pattern in ('*/pyproject.toml', '*/Cargo.toml')
+            for manifest in Path('.').glob(pattern)
+        }
         # GitHub schedules matrix entries in declaration order when capacity is
         # constrained. Start the critical-path native builds before short jobs.
         return sorted(
@@ -108,6 +116,21 @@ def require_release_package(package: str) -> None:
 
 def package_info(package: str) -> dict[str, str]:
     path = package_path(package)
+    if not (path / 'pyproject.toml').is_file():
+        cargo = load_toml(path / 'Cargo.toml')['package']
+        return {
+            'import-name': '',
+            'is-release': 'false',
+            'is-rusty': 'true',
+            'package': package,
+            'pypy': 'false',
+            'ci-test-group': 'false',
+            'requires-python': '',
+            'type': 'rust',
+            'version': cargo['version'],
+            'version_path': (path / 'Cargo.toml').as_posix(),
+            'crate': cargo['name'],
+        }
     pyproject = load_toml(path / 'pyproject.toml')
     project = pyproject['project']
     dependency_groups = pyproject.get('dependency-groups', {})

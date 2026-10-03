@@ -51,7 +51,10 @@ def reverse_uv_consumers(test_packages: Sequence[str]) -> dict[str, set[str]]:
     test_set = set(test_packages)
 
     for consumer in test_packages:
-        data = load_toml(Path(consumer) / 'pyproject.toml')
+        pyproject = Path(consumer) / 'pyproject.toml'
+        if not pyproject.is_file():
+            continue
+        data = load_toml(pyproject)
         sources = data.get('tool', {}).get('uv', {}).get('sources', {})
         if not isinstance(sources, dict):
             continue
