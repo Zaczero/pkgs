@@ -1,10 +1,10 @@
 use crate::geometry::{
-    Bounds, Contact, Coordinates, HashMap, HashMapExt as _, IndexedSegment, LineworkChains,
-    Orientation, Point, PointKey, Polygon, Ring, SeamCutEdgePairs, SegmentParameter,
-    ValidationIssue, XY, classify_ring_pair, classify_ring_pair_with_contacts,
-    clip_segment_parameter, face_interior_point, for_each_overlapping_bounds_pair, orient_ring,
-    orientation_xy, ray_crossing_is_right, ring_probe_point, same_point, segment_contact_exact,
-    settle_touches, topology, visit_interacting_pairs,
+    Bounds, Coordinates, HashMap, HashMapExt as _, IndexedSegment, LineworkChains, Orientation,
+    Point, PointKey, Polygon, Ring, SeamCutEdgePairs, SegmentParameter, ValidationIssue, XY,
+    classify_ring_pair, classify_ring_pair_with_contacts, clip_segment_parameter,
+    face_interior_point, for_each_overlapping_bounds_pair, orient_ring, orientation_xy,
+    ray_crossing_is_right, ring_probe_point, same_point, segment_contact_exact, settle_touches,
+    topology, visit_interacting_pairs,
 };
 /// Where a probe point sits relative to one ring.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -208,10 +208,9 @@ pub(in crate::geometry) fn is_seam_cut_pair(
     if !seam_cut_edge_pairs.contains(left_edge, right_edge) {
         return Ok(false);
     }
-    Ok(matches!(
-        segment_contact_exact(left.segment, right.segment),
-        Contact::Collinear { span } if !same_point(span.start, span.end)
-    ))
+    Ok(segment_contact_exact(left.segment, right.segment)
+        .shared_span(left.segment, right.segment)
+        .is_some_and(|span| !same_point(span.start, span.end)))
 }
 
 pub(crate) fn ring_label(ring: usize) -> String {

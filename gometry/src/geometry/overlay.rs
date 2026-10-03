@@ -135,12 +135,9 @@ pub(crate) use clip::intersect_rectangular_polygonal;
 pub(super) use clip::polygon_parts_to_shape;
 #[cfg(test)]
 pub(crate) use exact_partition::cartesian_support_nonempty;
-#[cfg_attr(
-    not(test),
-    expect(
-        unused_imports,
-        reason = "the relate evaluator consumes staged exact sources"
-    )
+#[expect(
+    unused_imports,
+    reason = "the relate evaluator consumes staged exact sources"
 )]
 pub(in crate::geometry) use exact_partition::{
     ExactChainView, ExactLineEmission, ExactMetricSpan, ExactMetricSupport, ExactPartition,

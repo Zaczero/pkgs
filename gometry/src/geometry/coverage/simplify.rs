@@ -367,10 +367,14 @@ impl<'a> TopologyGuard<'a> {
             match segment_contact_exact(shortcut, entry.segment) {
                 crate::geometry::Contact::Disjoint => true,
                 crate::geometry::Contact::Cross => false,
-                crate::geometry::Contact::Touch { point } => {
+                crate::geometry::Contact::Touch(endpoint) => {
+                    let point = endpoint.point(shortcut, entry.segment);
                     same_point(point, prev) || same_point(point, next)
                 },
-                crate::geometry::Contact::Collinear { span } => {
+                contact @ crate::geometry::Contact::Collinear => {
+                    let span = contact
+                        .shared_span(shortcut, entry.segment)
+                        .expect("collinear contact has a shared span");
                     same_point(span.start, span.end)
                         && (same_point(span.start, prev) || same_point(span.start, next))
                 },

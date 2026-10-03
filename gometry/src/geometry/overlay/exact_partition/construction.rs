@@ -7,6 +7,8 @@
 //! homogeneous point only when a comparison ties.
 
 use std::borrow::Cow;
+#[cfg(test)]
+use std::cell::Cell;
 use std::cmp::Ordering;
 use std::collections::hash_map::Entry;
 use std::mem;
@@ -19,15 +21,45 @@ use super::{Axis, ExactPartition, ExactSpan, KeptNodes, NodeId, NodeRecipe, Ordi
 use crate::error::{Error, ResourceError};
 use crate::geometry::exact_arith::ExactSign;
 use crate::geometry::overlay::noding::{SegmentProvenance, SegmentSource};
+#[cfg(test)]
+use crate::geometry::segments::TouchEndpoint;
 use crate::geometry::segments::{
-    SegmentClipInterval, SegmentClipPoint, crossing_homogeneous, crossing_point,
-    point_in_segment_envelope, segment_envelopes_disjoint, stored_orientation_sign,
+    SegmentClipInterval, SegmentClipPoint, SegmentEndpoint, TouchLocation, crossing_homogeneous,
+    crossing_point, point_in_segment_envelope, segment_contact_exact_impl, stored_orientation_sign,
+    strictly_inside,
 };
 use crate::geometry::tessellation::exact::{ExactDyadic, compare_ratios, round_ratio};
 use crate::geometry::{
-    Bounds, ExpansionBudget, GeometryErrorKind, HashMap, PointKey, Result, Segment, XY,
+    Bounds, Contact, ExpansionBudget, GeometryErrorKind, HashMap, PointKey, Result, Segment, XY,
     for_each_candidate_pair, same_point, same_topological_coordinate, single_chain,
 };
+
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum PartitionProjectionEffect {
+    Disjoint,
+    Shared(TouchEndpoint),
+    LeftInterior(SegmentEndpoint),
+    RightInterior(SegmentEndpoint),
+    Collinear,
+    Cross,
+}
+
+#[cfg(test)]
+thread_local! {
+    static PARTITION_PROJECTION_EFFECT: Cell<Option<PartitionProjectionEffect>> =
+        const { Cell::new(None) };
+}
+
+#[cfg(test)]
+fn record_partition_projection_effect(effect: PartitionProjectionEffect) {
+    PARTITION_PROJECTION_EFFECT.with(|last| last.set(Some(effect)));
+}
+
+#[cfg(test)]
+pub(super) fn take_partition_projection_effect() -> Option<PartitionProjectionEffect> {
+    PARTITION_PROJECTION_EFFECT.with(Cell::take)
+}
 
 /// Stored endpoints and segment crossings: each point's nearest-even binary64
 /// and, for a crossing, its exact homogeneous point built on first demand.
@@ -468,14 +500,6 @@ pub(super) fn segment_axis(segment: Segment) -> (Axis, bool) {
     } else {
         (Axis::Y, dy > 0.0)
     }
-}
-
-/// Whether `point`, on the carrier of the nondegenerate `segment`, lies
-/// strictly between its endpoints.
-pub(super) fn strictly_inside(segment: Segment, point: XY) -> bool {
-    let (axis, _) = segment_axis(segment);
-    let (start, end, value) = (axis.of(segment.start), axis.of(segment.end), axis.of(point));
-    start.min(end) < value && value < start.max(end)
 }
 
 pub(in crate::geometry) fn partition_unique_segments<'a, const ORDINATES: bool>(
@@ -966,6 +990,13 @@ pub(super) struct EndpointHandles<'h> {
     extra: &'h [u32],
 }
 
+#[cfg(test)]
+impl<'h> EndpointHandles<'h> {
+    pub(super) fn from_columns(start: &'h [u32], end: &'h [u32], extra: &'h [u32]) -> Self {
+        Self { start, end, extra }
+    }
+}
+
 #[expect(
     clippy::indexing_slicing,
     reason = "candidate pair IDs index the exact pool partition and its parallel endpoint-handle columns"
@@ -1045,42 +1076,9 @@ pub(super) fn push_point_on_source(
     Ok(())
 }
 
-/// Cut two collinear segments at every endpoint of one strictly inside the
-/// other.
 #[expect(
     clippy::indexing_slicing,
-    reason = "overlap pair IDs index the unique segments' aligned start/end handle columns"
-)]
-pub(super) fn push_overlap(
-    [a, b]: [Segment; 2],
-    [left, right]: [usize; 2],
-    handles: &EndpointHandles<'_>,
-    contacts: &mut Vec<(u32, u32)>,
-    window: Option<Bounds>,
-) -> Result<()> {
-    #[cfg(test)]
-    let before = contacts.len();
-    for (host, host_index, guest, guest_index) in [(a, left, b, right), (b, right, a, left)] {
-        for (point, handle) in [
-            (guest.start, handles.start[guest_index]),
-            (guest.end, handles.end[guest_index]),
-        ] {
-            if strictly_inside(host, point) && window.is_none_or(|bounds| bounds.contains_xy(point))
-            {
-                push_contact(contacts, host_index, handle)?;
-            }
-        }
-    }
-    #[cfg(test)]
-    if contacts.len() > before {
-        record_overlap(contacts.len().wrapping_sub(before));
-    }
-    Ok(())
-}
-
-#[expect(
-    clippy::indexing_slicing,
-    reason = "candidate pair IDs index the unique segment and endpoint-handle columns"
+    reason = "candidate pair IDs index the admitted unique-segment pool"
 )]
 #[expect(
     clippy::float_cmp,
@@ -1097,137 +1095,141 @@ pub(super) fn classify_pair_into(
 ) -> Result<bool> {
     let a = unique[left];
     let b = unique[right];
-    if same_point(a.start, a.end) {
-        return push_point_on_source(b, right, a.start, handles.start[left], contacts, window)
-            .map(|()| false);
-    }
-    if same_point(b.start, b.end) {
-        return push_point_on_source(a, left, b.start, handles.start[right], contacts, window)
-            .map(|()| false);
-    }
-    if segment_envelopes_disjoint(a, b) {
-        return Ok(false);
-    }
     #[cfg(test)]
     let _contact_phase = crate::test_support::allocation_phase(
         crate::test_support::AllocationPhase::OverlapContacts,
     );
-    let orient = |segment: Segment, point: XY| {
-        stored_orientation_sign(
-            segment.start.x,
-            segment.start.y,
-            segment.end.x,
-            segment.end.y,
-            point.x,
-            point.y,
-        )
-    };
-    // A shared endpoint lies on both segments, so the pair meets elsewhere
-    // only along a collinear overlap. Adjacent ring segments are most pairs,
-    // and their zero orientation is the one the floating filter cannot certify.
-    let shared = |point: XY| same_point(point, a.start) || same_point(point, a.end);
-    let unshared = match (shared(b.start), shared(b.end)) {
-        // Unique segments never repeat, so this is `a` itself.
-        (true, true) => return Ok(false),
-        (true, false) => Some(b.end),
-        (false, true) => Some(b.start),
-        (false, false) => None,
-    };
-    if let Some(other) = unshared {
-        if orient(a, other) == ExactSign::Zero {
-            return push_overlap([a, b], [left, right], handles, contacts, window).map(|()| true);
-        }
-        return Ok(false);
-    }
-    let (o_b0, o_b1) = (orient(a, b.start), orient(a, b.end));
-    if o_b0 == ExactSign::Zero && o_b1 == ExactSign::Zero {
-        return push_overlap([a, b], [left, right], handles, contacts, window).map(|()| true);
-    }
-    // One endpoint on the other carrier: a touch when it lies strictly
-    // inside, otherwise the segments do not meet.
-    for (zero, host, index, point, handle) in [
-        (
-            o_b0 == ExactSign::Zero,
-            a,
-            left,
-            b.start,
-            handles.start[right],
-        ),
-        (o_b1 == ExactSign::Zero, a, left, b.end, handles.end[right]),
-    ] {
-        if zero {
-            if strictly_inside(host, point) && window.is_none_or(|bounds| bounds.contains_xy(point))
-            {
-                push_contact(contacts, index, handle)?;
-            }
-            return Ok(false);
-        }
-    }
-    let (o_a0, o_a1) = (orient(b, a.start), orient(b, a.end));
-    for (zero, host, index, point, handle) in [
-        (
-            o_a0 == ExactSign::Zero,
-            b,
-            right,
-            a.start,
-            handles.start[left],
-        ),
-        (o_a1 == ExactSign::Zero, b, right, a.end, handles.end[left]),
-    ] {
-        if zero {
-            if strictly_inside(host, point) && window.is_none_or(|bounds| bounds.contains_xy(point))
-            {
-                push_contact(contacts, index, handle)?;
-            }
-            return Ok(false);
-        }
-    }
-    // Strictly opposite sides on both carriers: a proper crossing, interior
-    // to both segments.
-    if o_b0 != o_b1 && o_a0 != o_a1 {
-        let segments = [
-            u32::try_from(left.min(right)).map_err(|_| ResourceError::SizeOverflow)?,
-            u32::try_from(left.max(right)).map_err(|_| ResourceError::SizeOverflow)?,
-        ];
-        let handle = if let Some(bounds) = window {
-            let crossing = crossing_point(a, b)?;
-            let rounded = crossing.point;
-            if rounded.x < bounds.minx()
-                || rounded.x > bounds.maxx()
-                || rounded.y < bounds.miny()
-                || rounded.y > bounds.maxy()
-            {
-                return Ok(false);
-            }
-            let exact = if rounded.x == bounds.minx()
-                || rounded.x == bounds.maxx()
-                || rounded.y == bounds.miny()
-                || rounded.y == bounds.maxy()
-            {
-                Some(
-                    crossing
-                        .exact
-                        .map_or_else(|| crossing_homogeneous(a, b), Ok)?,
-                )
-            } else {
-                crossing.exact
+    macro_rules! cut_endpoint {
+        ($location:expr) => {{
+            let (point, index, handle) = match $location {
+                TouchLocation::LeftInterior(SegmentEndpoint::Start) => {
+                    (b.start, left, handles.start[right])
+                },
+                TouchLocation::LeftInterior(SegmentEndpoint::End) => {
+                    (b.end, left, handles.end[right])
+                },
+                TouchLocation::RightInterior(SegmentEndpoint::Start) => {
+                    (a.start, right, handles.start[left])
+                },
+                TouchLocation::RightInterior(SegmentEndpoint::End) => {
+                    (a.end, right, handles.end[left])
+                },
+                TouchLocation::Shared(_) => unreachable!("shared endpoints do not cut a segment"),
             };
-            if let Some(exact_point) = &exact
-                && !homogeneous_point_in_bounds(exact_point, bounds)?
-            {
-                return Ok(false);
+            if window.is_none_or(|bounds| bounds.contains_xy(point)) {
+                push_contact(contacts, index, handle)?;
             }
-            match exact {
-                Some(exact) => forest.push_crossing_with_exact(segments, rounded, exact)?,
-                None => forest.push_crossing(segments)?,
-            }
-        } else {
-            forest.push_crossing(segments)?
-        };
-        push_contact(contacts, left, handle)?;
-        push_contact(contacts, right, handle)?;
+        }};
     }
-    Ok(false)
+
+    match segment_contact_exact_impl!(a, b) {
+        Contact::Disjoint => {
+            #[cfg(test)]
+            record_partition_projection_effect(PartitionProjectionEffect::Disjoint);
+            Ok(false)
+        },
+        Contact::Touch(TouchLocation::Shared(_endpoint)) => {
+            #[cfg(test)]
+            #[expect(
+                clippy::used_underscore_binding,
+                reason = "the shared endpoint identity is observed only in test builds"
+            )]
+            record_partition_projection_effect(PartitionProjectionEffect::Shared(_endpoint));
+            Ok(false)
+        },
+        Contact::Touch(TouchLocation::LeftInterior(SegmentEndpoint::Start)) => {
+            #[cfg(test)]
+            record_partition_projection_effect(PartitionProjectionEffect::LeftInterior(
+                SegmentEndpoint::Start,
+            ));
+            cut_endpoint!(TouchLocation::LeftInterior(SegmentEndpoint::Start));
+            Ok(false)
+        },
+        Contact::Touch(TouchLocation::LeftInterior(SegmentEndpoint::End)) => {
+            #[cfg(test)]
+            record_partition_projection_effect(PartitionProjectionEffect::LeftInterior(
+                SegmentEndpoint::End,
+            ));
+            cut_endpoint!(TouchLocation::LeftInterior(SegmentEndpoint::End));
+            Ok(false)
+        },
+        Contact::Touch(TouchLocation::RightInterior(SegmentEndpoint::Start)) => {
+            #[cfg(test)]
+            record_partition_projection_effect(PartitionProjectionEffect::RightInterior(
+                SegmentEndpoint::Start,
+            ));
+            cut_endpoint!(TouchLocation::RightInterior(SegmentEndpoint::Start));
+            Ok(false)
+        },
+        Contact::Touch(TouchLocation::RightInterior(SegmentEndpoint::End)) => {
+            #[cfg(test)]
+            record_partition_projection_effect(PartitionProjectionEffect::RightInterior(
+                SegmentEndpoint::End,
+            ));
+            cut_endpoint!(TouchLocation::RightInterior(SegmentEndpoint::End));
+            Ok(false)
+        },
+        Contact::Collinear => {
+            #[cfg(test)]
+            let before = contacts.len();
+            #[cfg(test)]
+            record_partition_projection_effect(PartitionProjectionEffect::Collinear);
+            segment_contact_exact_impl!(@collinear_cuts a, b; |location| {
+                cut_endpoint!(location);
+            });
+            #[cfg(test)]
+            if contacts.len() > before {
+                record_overlap(contacts.len().wrapping_sub(before));
+            }
+            Ok(true)
+        },
+        Contact::Cross => {
+            #[cfg(test)]
+            record_partition_projection_effect(PartitionProjectionEffect::Cross);
+            let segments = [
+                u32::try_from(left.min(right)).map_err(|_| ResourceError::SizeOverflow)?,
+                u32::try_from(left.max(right)).map_err(|_| ResourceError::SizeOverflow)?,
+            ];
+            let handle = if let Some(bounds) = window {
+                let crossing = crossing_point(a, b)?;
+                let rounded = crossing.point;
+                if rounded.x < bounds.minx()
+                    || rounded.x > bounds.maxx()
+                    || rounded.y < bounds.miny()
+                    || rounded.y > bounds.maxy()
+                {
+                    return Ok(false);
+                }
+                let exact = if rounded.x == bounds.minx()
+                    || rounded.x == bounds.maxx()
+                    || rounded.y == bounds.miny()
+                    || rounded.y == bounds.maxy()
+                {
+                    Some(
+                        crossing
+                            .exact
+                            .map_or_else(|| crossing_homogeneous(a, b), Ok)?,
+                    )
+                } else {
+                    crossing.exact
+                };
+                if let Some(exact_point) = &exact
+                    && !homogeneous_point_in_bounds(exact_point, bounds)?
+                {
+                    return Ok(false);
+                }
+                match exact {
+                    Some(exact) => forest.push_crossing_with_exact(segments, rounded, exact)?,
+                    None => forest.push_crossing(segments)?,
+                }
+            } else {
+                forest.push_crossing(segments)?
+            };
+            push_contact(contacts, left, handle)?;
+            push_contact(contacts, right, handle)?;
+            Ok(false)
+        },
+    }
 }
 
 fn homogeneous_point_in_bounds(point: &[ExactDyadic; 3], bounds: Bounds) -> Result<bool> {

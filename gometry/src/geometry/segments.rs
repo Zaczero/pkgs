@@ -883,12 +883,13 @@ fn segment_pair_nearest(left: Segment, right: Segment) -> Result<SegmentPairNear
 /// on neither segment — or a non-finite one — with no way to tell. It backed
 /// the public `nearest_points`/`shortest_line` witness.
 pub(super) fn segment_contact_point(left: Segment, right: Segment) -> Result<Option<XY>> {
-    Ok(match segment_contact_exact(left, right) {
+    let contact = segment_contact_exact(left, right);
+    Ok(match contact {
         Contact::Cross => Some(crossing_point(left, right)?.point),
-        Contact::Touch { point } => Some(point),
+        Contact::Touch(endpoint) => Some(endpoint.point(left, right)),
         // A positive-length overlap has no single crossing; its near end is a
         // real point of both segments and is the conventional witness.
-        Contact::Collinear { span } => Some(span.start),
+        Contact::Collinear => contact.shared_span(left, right).map(|span| span.start),
         Contact::Disjoint => None,
     })
 }
@@ -2035,8 +2036,8 @@ pub(super) const ON_SEGMENT_EPSILON: f64 = 1e-9;
 pub(super) fn segment_cross_point(a: Segment, b: Segment) -> Result<Option<XY>> {
     Ok(match segment_contact_exact(a, b) {
         Contact::Cross => Some(crossing_point(a, b)?.point),
-        Contact::Touch { point } => Some(point),
-        Contact::Disjoint | Contact::Collinear { .. } => None,
+        Contact::Touch(endpoint) => Some(endpoint.point(a, b)),
+        Contact::Disjoint | Contact::Collinear => None,
     })
 }
 
@@ -2274,63 +2275,306 @@ pub(super) struct SharedSpan {
     pub end: XY,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+/// Exact touches are stored endpoints; defer copying their coordinate until a
+/// consumer needs it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum TouchEndpoint {
+    LeftStart,
+    RightStart,
+    RightEnd,
+}
+
+impl TouchEndpoint {
+    pub(super) const fn point(self, left: Segment, right: Segment) -> XY {
+        match self {
+            Self::LeftStart => left.start,
+            Self::RightStart => right.start,
+            Self::RightEnd => right.end,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum SegmentEndpoint {
+    Start,
+    End,
+}
+
+impl SegmentEndpoint {
+    const fn point(self, segment: Segment) -> XY {
+        match self {
+            Self::Start => segment.start,
+            Self::End => segment.end,
+        }
+    }
+}
+
+/// Which segment contains a touch in its interior, or which stored endpoints
+/// are shared.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum TouchLocation {
+    Shared(TouchEndpoint),
+    LeftInterior(SegmentEndpoint),
+    RightInterior(SegmentEndpoint),
+}
+
+impl TouchLocation {
+    pub(super) const fn point(self, left: Segment, right: Segment) -> XY {
+        match self {
+            Self::Shared(endpoint) => endpoint.point(left, right),
+            Self::LeftInterior(endpoint) => endpoint.point(right),
+            Self::RightInterior(endpoint) => endpoint.point(left),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Contact {
     Disjoint,
     /// A proper crossing, interior to both segments; [`crossing_point`]
     /// places it.
     Cross,
-    Touch {
-        point: XY,
-    },
-    Collinear {
-        span: SharedSpan,
-    },
+    Touch(TouchLocation),
+    /// The carriers coincide; consumers that need run endpoints ask for them.
+    Collinear,
 }
+
+impl Contact {
+    /// Construct the shared run only for consumers that need its endpoints.
+    pub(super) fn shared_span(self, left: Segment, right: Segment) -> Option<SharedSpan> {
+        match self {
+            Self::Collinear => collinear_shared_span_exact(left, right),
+            Self::Disjoint | Self::Cross | Self::Touch(_) => None,
+        }
+    }
+}
+
+// The partition expands the same exact decisions as ordinary callers.
+macro_rules! segment_contact_exact_impl {
+    (@collinear_cuts $left:expr, $right:expr; |$location:ident| $effect:block) => {{
+        use $crate::geometry::segments::{SegmentEndpoint, TouchLocation, strictly_inside};
+
+        let left = $left;
+        let right = $right;
+        if strictly_inside(left, right.start) {
+            let $location = TouchLocation::LeftInterior(SegmentEndpoint::Start);
+            $effect
+        }
+        if strictly_inside(left, right.end) {
+            let $location = TouchLocation::LeftInterior(SegmentEndpoint::End);
+            $effect
+        }
+        if strictly_inside(right, left.start) {
+            let $location = TouchLocation::RightInterior(SegmentEndpoint::Start);
+            $effect
+        }
+        if strictly_inside(right, left.end) {
+            let $location = TouchLocation::RightInterior(SegmentEndpoint::End);
+            $effect
+        }
+    }};
+    ($left:expr, $right:expr) => {{
+        use $crate::geometry::exact_arith::ExactSign;
+        use $crate::geometry::same_point;
+        use $crate::geometry::segments::{
+            Contact, SegmentEndpoint, TouchEndpoint, TouchLocation, stored_orientation_sign,
+            strictly_inside,
+        };
+
+        let left = $left;
+        let right = $right;
+        'contact: {
+            'decide: {
+                if same_point(left.start, left.end) {
+                    if same_point(right.start, right.end) {
+                        if same_point(left.start, right.start) {
+                            break 'contact Contact::Touch(TouchLocation::Shared(
+                                TouchEndpoint::LeftStart,
+                            ));
+                        }
+                        break 'contact Contact::Disjoint;
+                    }
+                    if !$crate::geometry::segments::point_in_segment_envelope(left.start, right) {
+                        break 'contact Contact::Disjoint;
+                    }
+                    if stored_orientation_sign(
+                        right.start.x,
+                        right.start.y,
+                        right.end.x,
+                        right.end.y,
+                        left.start.x,
+                        left.start.y,
+                    ) != ExactSign::Zero
+                    {
+                        break 'contact Contact::Disjoint;
+                    }
+                    if same_point(left.start, right.start) || same_point(left.start, right.end) {
+                        break 'contact Contact::Touch(TouchLocation::Shared(
+                            TouchEndpoint::LeftStart,
+                        ));
+                    }
+                    break 'contact Contact::Touch(TouchLocation::RightInterior(
+                        SegmentEndpoint::Start,
+                    ));
+                }
+                if same_point(right.start, right.end) {
+                    if !$crate::geometry::segments::point_in_segment_envelope(right.start, left) {
+                        break 'contact Contact::Disjoint;
+                    }
+                    if stored_orientation_sign(
+                        left.start.x,
+                        left.start.y,
+                        left.end.x,
+                        left.end.y,
+                        right.start.x,
+                        right.start.y,
+                    ) != ExactSign::Zero
+                    {
+                        break 'contact Contact::Disjoint;
+                    }
+                    if same_point(right.start, left.start) || same_point(right.start, left.end) {
+                        break 'contact Contact::Touch(TouchLocation::Shared(
+                            TouchEndpoint::RightStart,
+                        ));
+                    }
+                    break 'contact Contact::Touch(TouchLocation::LeftInterior(
+                        SegmentEndpoint::Start,
+                    ));
+                }
+
+                if $crate::geometry::segments::segment_envelopes_disjoint(left, right) {
+                    break 'contact Contact::Disjoint;
+                }
+
+                let right_start_shared =
+                    same_point(right.start, left.start) || same_point(right.start, left.end);
+                let right_end_shared =
+                    same_point(right.end, left.start) || same_point(right.end, left.end);
+                let shared = match (right_start_shared, right_end_shared) {
+                    (true, true) => break 'decide,
+                    (true, false) => Some((TouchEndpoint::RightStart, right.end)),
+                    (false, true) => Some((TouchEndpoint::RightEnd, right.start)),
+                    (false, false) => None,
+                };
+                if let Some((shared, other)) = shared {
+                    if stored_orientation_sign(
+                        left.start.x,
+                        left.start.y,
+                        left.end.x,
+                        left.end.y,
+                        other.x,
+                        other.y,
+                    ) == ExactSign::Zero
+                    {
+                        break 'decide;
+                    }
+                    break 'contact Contact::Touch(TouchLocation::Shared(shared));
+                }
+
+                let right_start = stored_orientation_sign(
+                    left.start.x,
+                    left.start.y,
+                    left.end.x,
+                    left.end.y,
+                    right.start.x,
+                    right.start.y,
+                );
+                let right_end = stored_orientation_sign(
+                    left.start.x,
+                    left.start.y,
+                    left.end.x,
+                    left.end.y,
+                    right.end.x,
+                    right.end.y,
+                );
+                if $crate::geometry::segments::strictly_same_side(right_start, right_end) {
+                    break 'contact Contact::Disjoint;
+                }
+                if right_start == ExactSign::Zero && right_end == ExactSign::Zero {
+                    break 'decide;
+                }
+                if right_start == ExactSign::Zero {
+                    if strictly_inside(left, right.start) {
+                        break 'contact Contact::Touch(TouchLocation::LeftInterior(
+                            SegmentEndpoint::Start,
+                        ));
+                    }
+                    break 'contact Contact::Disjoint;
+                }
+                if right_end == ExactSign::Zero {
+                    if strictly_inside(left, right.end) {
+                        break 'contact Contact::Touch(TouchLocation::LeftInterior(
+                            SegmentEndpoint::End,
+                        ));
+                    }
+                    break 'contact Contact::Disjoint;
+                }
+
+                let left_start = stored_orientation_sign(
+                    right.start.x,
+                    right.start.y,
+                    right.end.x,
+                    right.end.y,
+                    left.start.x,
+                    left.start.y,
+                );
+                let left_end = stored_orientation_sign(
+                    right.start.x,
+                    right.start.y,
+                    right.end.x,
+                    right.end.y,
+                    left.end.x,
+                    left.end.y,
+                );
+                if $crate::geometry::segments::strictly_same_side(left_start, left_end) {
+                    break 'contact Contact::Disjoint;
+                }
+                if left_start == ExactSign::Zero && left_end == ExactSign::Zero {
+                    break 'decide;
+                }
+                if left_start == ExactSign::Zero {
+                    if strictly_inside(right, left.start) {
+                        break 'contact Contact::Touch(TouchLocation::RightInterior(
+                            SegmentEndpoint::Start,
+                        ));
+                    }
+                    break 'contact Contact::Disjoint;
+                }
+                if left_end == ExactSign::Zero {
+                    if strictly_inside(right, left.end) {
+                        break 'contact Contact::Touch(TouchLocation::RightInterior(
+                            SegmentEndpoint::End,
+                        ));
+                    }
+                    break 'contact Contact::Disjoint;
+                }
+
+                if left_start != left_end {
+                    break 'contact Contact::Cross;
+                }
+                break 'contact Contact::Disjoint;
+            }
+
+            Contact::Collinear
+        }
+    }};
+}
+
+pub(super) use segment_contact_exact_impl;
 
 pub(super) fn segment_contact_exact(left: Segment, right: Segment) -> Contact {
-    let right_start = orientation(left.start, left.end, right.start);
-    let right_end = orientation(left.start, left.end, right.end);
-    // Strictly same-side endpoints prove separation; defer the other carrier's
-    // two filtered orientations unless the first carrier allows contact.
-    if strictly_same_side(right_start, right_end) {
-        return Contact::Disjoint;
-    }
-    let left_start = orientation(right.start, right.end, left.start);
-    let left_end = orientation(right.start, right.end, left.end);
-    if strictly_same_side(left_start, left_end) {
-        return Contact::Disjoint;
-    }
-    let orientations = PairOrientations {
-        right_start,
-        right_end,
-        left_start,
-        left_end,
-    };
-    if orientations.all_collinear() {
-        collinear_shared_span_exact(left, right)
-            .map_or(Contact::Disjoint, |span| Contact::Collinear { span })
-    } else if orientations.straddles_or_touches() {
-        if orientations.has_collinear() {
-            touch_endpoint(left, right, orientations)
-                .map_or(Contact::Disjoint, |point| Contact::Touch { point })
-        } else {
-            Contact::Cross
-        }
-    } else {
-        Contact::Disjoint
-    }
+    segment_contact_exact_impl!(left, right)
 }
 
-fn strictly_same_side(left: Orientation, right: Orientation) -> bool {
-    left == right && left != Orientation::Collinear
+pub(super) fn strictly_same_side(left: ExactSign, right: ExactSign) -> bool {
+    left == right && left != ExactSign::Zero
 }
 
 pub(super) fn segment_contact(left: Segment, right: Segment) -> SegmentContact {
     match segment_contact_exact(left, right) {
         Contact::Disjoint => SegmentContact::None,
         Contact::Cross => SegmentContact::Cross,
-        Contact::Touch { .. } | Contact::Collinear { .. } => SegmentContact::Touch,
+        Contact::Touch(_) | Contact::Collinear => SegmentContact::Touch,
     }
 }
 
@@ -2418,6 +2662,21 @@ impl Axis {
     }
 }
 
+/// Whether `point`, already known to lie on the carrier of this segment, is
+/// strictly between its endpoints.
+pub(super) fn strictly_inside(segment: Segment, point: XY) -> bool {
+    let axis = if (segment.end.x - segment.start.x).abs() >= (segment.end.y - segment.start.y).abs()
+    {
+        Axis::X
+    } else {
+        Axis::Y
+    };
+    let start = axis.value(segment.start);
+    let end = axis.value(segment.end);
+    let value = axis.value(point);
+    start.min(end) < value && value < start.max(end)
+}
+
 fn endpoint_at_collinear_order(
     left: Segment,
     right: Segment,
@@ -2462,9 +2721,7 @@ pub(super) fn shared_segment_part(left: Segment, right: Segment) -> Option<Share
     // endpoints differ by coordinate identity. No scale-dependent `1e-12` cutoff
     // (which misgraded a tiny-but-real shared edge as a point on large
     // coordinates) and no interpolation jitter.
-    let Contact::Collinear { span } = segment_contact_exact(left, right) else {
-        return None;
-    };
+    let span = segment_contact_exact(left, right).shared_span(left, right)?;
     if same_point(span.start, span.end) {
         return None;
     }

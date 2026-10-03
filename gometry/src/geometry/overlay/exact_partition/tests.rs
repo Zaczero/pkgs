@@ -4,6 +4,7 @@ use crate::geometry::embedding_search::{
 };
 use crate::geometry::overlay::Strictness;
 use crate::geometry::overlay::rect::rect_polygon;
+use crate::geometry::segments::{SegmentEndpoint, SharedSpan, TouchEndpoint, TouchLocation};
 
 #[test]
 fn planar_embedding_domain_admits_finite_coordinates_only() {
@@ -1577,9 +1578,7 @@ fn staged_source_occurrences_are_readable_and_can_omit_zm_carriers() {
     let shared = Shape::geometry_collection(vec![owner.clone(), owner]).unwrap();
     let rows = || [storage::ShapeRow::Shape(&shared)].into_iter();
 
-    let staged =
-        crate::geometry::overlay::StagedExactSources::from_rows_with_occurrences(rows(), false)
-            .unwrap();
+    let staged = StagedExactSources::from_rows_with_occurrences(rows(), false).unwrap();
     assert_eq!(staged.segments().len(), 10);
     assert_eq!(staged.source_operands(), &[0; 10]);
     assert_eq!(
@@ -1603,7 +1602,14 @@ fn staged_source_occurrences_are_readable_and_can_omit_zm_carriers() {
     assert_eq!(staged.ring_holes(), &[false, false]);
     assert_eq!(staged.polygon_operands(), &[0, 0]);
     assert_eq!(staged.polygon_ring_ranges(), &[0..1, 1..2]);
-    assert_eq!(staged.polygon_rings()[0], [0..1, 1..2]);
+    assert_eq!(
+        staged
+            .polygon_rings()
+            .first()
+            .expect("one operand has two polygon ring ranges")
+            .as_slice(),
+        &[0..1, 1..2]
+    );
     assert_eq!(staged.isolated().len(), 2);
     assert_eq!(staged.isolated_operands(), &[0, 0]);
     assert_eq!(staged.line_boundaries().len(), 4);
@@ -1616,13 +1622,393 @@ fn staged_source_occurrences_are_readable_and_can_omit_zm_carriers() {
         10
     );
 
-    let staged_xy =
-        crate::geometry::overlay::StagedExactSources::from_rows_with_occurrences(rows(), true)
-            .unwrap();
+    let staged_xy = StagedExactSources::from_rows_with_occurrences(rows(), true).unwrap();
     assert_eq!(staged_xy.segments().len(), staged.segments().len());
     assert_eq!(staged_xy.source_operands(), staged.source_operands());
     assert_eq!(staged_xy.source_rings(), staged.source_rings());
     assert!(staged_xy.source_points.is_none());
+}
+
+#[test]
+fn segment_contact_classifies_pairs_and_defers_collinear_spans() {
+    let segment = |start: (f64, f64), end: (f64, f64)| Segment {
+        start: XY::new(start.0, start.1),
+        end: XY::new(end.0, end.1),
+    };
+    let cases = [
+        (
+            segment((0.0, 0.0), (1.0, 0.0)),
+            segment((3.0, 0.0), (4.0, 1.0)),
+            Contact::Disjoint,
+            None,
+            None,
+        ),
+        (
+            segment((0.0, 0.0), (4.0, 4.0)),
+            segment((0.0, 4.0), (4.0, 0.0)),
+            Contact::Cross,
+            None,
+            None,
+        ),
+        (
+            segment((0.0, 0.0), (2.0, 0.0)),
+            segment((2.0, 0.0), (2.0, 2.0)),
+            Contact::Touch(TouchLocation::Shared(TouchEndpoint::RightStart)),
+            None,
+            Some(XY::new(2.0, 0.0)),
+        ),
+        (
+            segment((0.0, 0.0), (4.0, 0.0)),
+            segment((2.0, -2.0), (2.0, 0.0)),
+            Contact::Touch(TouchLocation::LeftInterior(SegmentEndpoint::End)),
+            None,
+            Some(XY::new(2.0, 0.0)),
+        ),
+        (
+            segment((0.0, 0.0), (4.0, 0.0)),
+            segment((2.0, 0.0), (2.0, 2.0)),
+            Contact::Touch(TouchLocation::LeftInterior(SegmentEndpoint::Start)),
+            None,
+            Some(XY::new(2.0, 0.0)),
+        ),
+        (
+            segment((2.0, -2.0), (2.0, 0.0)),
+            segment((0.0, 0.0), (4.0, 0.0)),
+            Contact::Touch(TouchLocation::RightInterior(SegmentEndpoint::End)),
+            None,
+            Some(XY::new(2.0, 0.0)),
+        ),
+        (
+            segment((0.0, 0.0), (4.0, 0.0)),
+            segment((2.0, 0.0), (6.0, 0.0)),
+            Contact::Collinear,
+            Some(SharedSpan {
+                same_direction: true,
+                start: XY::new(2.0, 0.0),
+                end: XY::new(4.0, 0.0),
+            }),
+            None,
+        ),
+        (
+            segment((0.0, 0.0), (2.0, 0.0)),
+            segment((2.0, 0.0), (4.0, 0.0)),
+            Contact::Collinear,
+            Some(SharedSpan {
+                same_direction: true,
+                start: XY::new(2.0, 0.0),
+                end: XY::new(2.0, 0.0),
+            }),
+            None,
+        ),
+        (
+            segment((2.0, 0.0), (2.0, 0.0)),
+            segment((0.0, 0.0), (4.0, 0.0)),
+            Contact::Touch(TouchLocation::RightInterior(SegmentEndpoint::Start)),
+            None,
+            Some(XY::new(2.0, 0.0)),
+        ),
+        (
+            segment((0.0, 0.0), (0.0, 0.0)),
+            segment((0.0, 0.0), (4.0, 0.0)),
+            Contact::Touch(TouchLocation::Shared(TouchEndpoint::LeftStart)),
+            None,
+            Some(XY::new(0.0, 0.0)),
+        ),
+        (
+            segment((0.0, 0.0), (4.0, 4.0)),
+            segment((4.0, 4.0), (0.0, 0.0)),
+            Contact::Collinear,
+            Some(SharedSpan {
+                same_direction: false,
+                start: XY::new(0.0, 0.0),
+                end: XY::new(4.0, 4.0),
+            }),
+            None,
+        ),
+    ];
+    for (index, (left, right, expected, expected_span, expected_touch)) in
+        cases.into_iter().enumerate()
+    {
+        let contact = segment_contact_exact(left, right);
+        assert_eq!(contact, expected, "pair {index}");
+        let actual_touch = match contact {
+            Contact::Touch(endpoint) => Some(endpoint.point(left, right)),
+            Contact::Disjoint | Contact::Cross | Contact::Collinear => None,
+        };
+        assert_eq!(actual_touch, expected_touch, "touch point for pair {index}");
+        assert_eq!(
+            contact.shared_span(left, right),
+            expected_span,
+            "shared span for pair {index}",
+        );
+    }
+}
+
+#[test]
+fn partition_projection_matches_contact_for_seeded_degenerate_pairs() {
+    fn next(state: &mut u64) -> u64 {
+        *state = (*state).wrapping_add(0x9E37_79B9_7F4A_7C15);
+        let mut value = *state;
+        value = (value ^ (value >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        value = (value ^ (value >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        value ^ (value >> 31)
+    }
+
+    fn point(state: &mut u64) -> (i32, i32) {
+        let x = (next(state) % 17) as i32 - 8;
+        let y = (next(state) % 17) as i32 - 8;
+        (x, y)
+    }
+
+    fn offset(origin: (i32, i32), delta: (i32, i32), scale: i32) -> (i32, i32) {
+        (origin.0 + delta.0 * scale, origin.1 + delta.1 * scale)
+    }
+
+    let segment = |start: (i32, i32), end: (i32, i32)| Segment {
+        start: XY::new(f64::from(start.0), f64::from(start.1)),
+        end: XY::new(f64::from(end.0), f64::from(end.1)),
+    };
+    let mut pairs = vec![
+        (segment((0, 0), (2, 0)), segment((4, 0), (4, 1))),
+        (segment((0, 0), (4, 4)), segment((0, 4), (4, 0))),
+        (segment((0, 0), (2, 0)), segment((2, 0), (2, 2))),
+        (segment((0, 0), (4, 0)), segment((2, -2), (2, 0))),
+        (segment((2, -2), (2, 0)), segment((0, 0), (4, 0))),
+        (segment((0, 0), (4, 0)), segment((2, 0), (6, 0))),
+        (segment((0, 0), (2, 0)), segment((2, 0), (4, 0))),
+        (segment((0, 0), (0, 0)), segment((0, 0), (4, 0))),
+        (segment((2, 0), (2, 0)), segment((0, 0), (4, 0))),
+        (segment((0, 1), (0, 1)), segment((0, 0), (4, 0))),
+    ];
+
+    let mut seed = 0x7A31_09D5_C462_EF81;
+    for index in 0..512 {
+        let left_start = point(&mut seed);
+        let left_end = if index % 17 == 0 {
+            left_start
+        } else {
+            point(&mut seed)
+        };
+        let right_start = match index % 5 {
+            0 => left_start,
+            1 => left_end,
+            _ => point(&mut seed),
+        };
+        let right_end = if index % 19 == 0 {
+            right_start
+        } else if index % 11 == 0 {
+            left_start
+        } else {
+            point(&mut seed)
+        };
+        pairs.push((
+            segment(left_start, left_end),
+            segment(right_start, right_end),
+        ));
+    }
+    for _ in 0..128 {
+        let origin = point(&mut seed);
+        let mut delta = (
+            (next(&mut seed) % 7) as i32 - 3,
+            (next(&mut seed) % 7) as i32 - 3,
+        );
+        if delta == (0, 0) {
+            delta.0 = 1;
+        }
+        let left = segment(origin, offset(origin, delta, 4));
+        let right = segment(
+            offset(origin, delta, (next(&mut seed) % 8) as i32 - 2),
+            offset(origin, delta, (next(&mut seed) % 8) as i32 - 2),
+        );
+        pairs.push((left, right));
+    }
+    for _ in 0..64 {
+        let origin = point(&mut seed);
+        let mut delta = (
+            (next(&mut seed) % 5) as i32 - 2,
+            (next(&mut seed) % 5) as i32 - 2,
+        );
+        if delta == (0, 0) {
+            delta.0 = 1;
+        }
+        let middle = offset(origin, delta, 2);
+        let perpendicular = (-delta.1, delta.0);
+        pairs.push((
+            segment(origin, offset(origin, delta, 4)),
+            segment(middle, offset(middle, perpendicular, 2)),
+        ));
+    }
+
+    let mut saw_disjoint = false;
+    let mut saw_shared = false;
+    let mut saw_left_interior = false;
+    let mut saw_right_interior = false;
+    let mut saw_collinear = false;
+    let mut saw_cross = false;
+
+    for (pair_index, (left, right)) in pairs.into_iter().enumerate() {
+        let expected = segment_contact_exact(left, right);
+        let unique = [left, right];
+        let mut forest = construction::Forest::with_capacity(&unique, 4);
+        let mut start_handles = Vec::with_capacity(unique.len());
+        let mut end_handles = Vec::with_capacity(unique.len());
+        for segment in &unique {
+            start_handles.push(
+                forest
+                    .push_stored(segment.start)
+                    .expect("stored start handle admits"),
+            );
+            end_handles.push(
+                forest
+                    .push_stored(segment.end)
+                    .expect("stored end handle admits"),
+            );
+        }
+        let handles =
+            construction::EndpointHandles::from_columns(&start_handles, &end_handles, &[]);
+        let mut contacts = Vec::new();
+        let _ = construction::take_partition_projection_effect();
+        let has_overlap = construction::classify_pair_into(
+            &unique,
+            0,
+            1,
+            &handles,
+            &mut contacts,
+            &mut forest,
+            None,
+        )
+        .expect("small finite integer pairs stay representable");
+        let effect = construction::take_partition_projection_effect()
+            .expect("partition projection records its selected effect");
+        let projected = match effect {
+            construction::PartitionProjectionEffect::Disjoint => {
+                saw_disjoint = true;
+                assert!(
+                    contacts.is_empty(),
+                    "disjoint pair {pair_index} emitted a cut"
+                );
+                Contact::Disjoint
+            },
+            construction::PartitionProjectionEffect::Shared(endpoint) => {
+                saw_shared = true;
+                assert!(
+                    contacts.is_empty(),
+                    "shared endpoint pair {pair_index} emitted a cut"
+                );
+                Contact::Touch(TouchLocation::Shared(endpoint))
+            },
+            construction::PartitionProjectionEffect::LeftInterior(endpoint) => {
+                saw_left_interior = true;
+                assert_eq!(contacts.len(), 1, "left-interior pair {pair_index}");
+                let Some(&(source, handle)) = contacts.first() else {
+                    unreachable!("the asserted single contact is present")
+                };
+                assert_eq!(source, 0, "left-interior cut source for pair {pair_index}");
+                let expected_handle = match endpoint {
+                    SegmentEndpoint::Start => *start_handles.get(1).expect("right start handle"),
+                    SegmentEndpoint::End => *end_handles.get(1).expect("right end handle"),
+                };
+                assert_eq!(
+                    handle, expected_handle,
+                    "left-interior cut for pair {pair_index}"
+                );
+                Contact::Touch(TouchLocation::LeftInterior(endpoint))
+            },
+            construction::PartitionProjectionEffect::RightInterior(endpoint) => {
+                saw_right_interior = true;
+                assert_eq!(contacts.len(), 1, "right-interior pair {pair_index}");
+                let Some(&(source, handle)) = contacts.first() else {
+                    unreachable!("the asserted single contact is present")
+                };
+                assert_eq!(source, 1, "right-interior cut source for pair {pair_index}");
+                let expected_handle = match endpoint {
+                    SegmentEndpoint::Start => *start_handles.first().expect("left start handle"),
+                    SegmentEndpoint::End => *end_handles.first().expect("left end handle"),
+                };
+                assert_eq!(
+                    handle, expected_handle,
+                    "right-interior cut for pair {pair_index}"
+                );
+                Contact::Touch(TouchLocation::RightInterior(endpoint))
+            },
+            construction::PartitionProjectionEffect::Collinear => {
+                saw_collinear = true;
+                let expected_cuts = [
+                    (
+                        left,
+                        right.start,
+                        0,
+                        *start_handles.get(1).expect("right start handle"),
+                    ),
+                    (
+                        left,
+                        right.end,
+                        0,
+                        *end_handles.get(1).expect("right end handle"),
+                    ),
+                    (
+                        right,
+                        left.start,
+                        1,
+                        *start_handles.first().expect("left start handle"),
+                    ),
+                    (
+                        right,
+                        left.end,
+                        1,
+                        *end_handles.first().expect("left end handle"),
+                    ),
+                ]
+                .into_iter()
+                .filter(|(segment, point, ..)| {
+                    *point != segment.start
+                        && *point != segment.end
+                        && point.x >= segment.start.x.min(segment.end.x)
+                        && point.x <= segment.start.x.max(segment.end.x)
+                        && point.y >= segment.start.y.min(segment.end.y)
+                        && point.y <= segment.start.y.max(segment.end.y)
+                })
+                .map(|(_, _, source, handle)| (source, handle))
+                .collect::<Vec<_>>();
+                assert_eq!(
+                    contacts, expected_cuts,
+                    "collinear interior cuts for pair {pair_index}"
+                );
+                Contact::Collinear
+            },
+            construction::PartitionProjectionEffect::Cross => {
+                saw_cross = true;
+                assert_eq!(contacts.len(), 2, "crossing pair {pair_index}");
+                let [(left_source, left_handle), (right_source, right_handle)] =
+                    contacts.as_slice()
+                else {
+                    unreachable!("the asserted two crossing contacts are present")
+                };
+                assert_eq!((*left_source, *right_source), (0, 1));
+                assert_eq!(left_handle, right_handle);
+                Contact::Cross
+            },
+        };
+        assert_eq!(
+            projected, expected,
+            "projection mismatch for pair {pair_index}"
+        );
+        assert_eq!(
+            has_overlap,
+            matches!(expected, Contact::Collinear),
+            "overlap result for pair {pair_index}"
+        );
+    }
+
+    assert!(
+        saw_disjoint
+            && saw_shared
+            && saw_left_interior
+            && saw_right_interior
+            && saw_collinear
+            && saw_cross,
+        "the corpus must exercise every classifier projection arm"
+    );
 }
 
 #[test]

@@ -429,10 +429,11 @@ pub(crate) fn segment_offends_row(
         match segment_contact_exact(segment, other_seg) {
             // A proper crossing is interior to both segments.
             Contact::Cross => true,
-            Contact::Touch { point } => {
+            Contact::Touch(endpoint) => {
+                let point = endpoint.point(segment, other_seg);
                 !same_point(point, segment.start) && !same_point(point, segment.end)
             },
-            Contact::Disjoint | Contact::Collinear { .. } => false,
+            Contact::Disjoint | Contact::Collinear => false,
         }
     });
     if crossing {

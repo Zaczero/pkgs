@@ -1312,10 +1312,6 @@ fn line_polygon_contact_events(
                 (true, true) if line_is_monotone => ControlFlow::Continue(()),
                 (true, true) => {
                     let contact = segment_contact_exact(left_segment, right_segment);
-                    if let Contact::Collinear { span } = contact {
-                        deduplicate_line_edges |=
-                            !crate::geometry::same_point(span.start, span.end);
-                    }
                     match push_line_self_contact(
                         left,
                         left_segment,
@@ -1324,7 +1320,10 @@ fn line_polygon_contact_events(
                         contact,
                         &mut cut_events,
                     ) {
-                        Ok(()) => ControlFlow::Continue(()),
+                        Ok(deduplicate) => {
+                            deduplicate_line_edges |= deduplicate;
+                            ControlFlow::Continue(())
+                        },
                         Err(error) => ControlFlow::Break(error),
                     }
                 },
@@ -1378,7 +1377,8 @@ fn push_line_polygon_contact(
                 true,
             );
         },
-        Contact::Touch { point } => {
+        Contact::Touch(endpoint) => {
+            let point = endpoint.point(line, boundary);
             push_line_cut(
                 cuts,
                 source_segment,
@@ -1387,7 +1387,10 @@ fn push_line_polygon_contact(
                 true,
             );
         },
-        Contact::Collinear { span } => {
+        Contact::Collinear => {
+            let span = contact
+                .shared_span(line, boundary)
+                .expect("collinear contact has a shared span");
             push_line_cut(
                 cuts,
                 source_segment,
@@ -1414,7 +1417,8 @@ fn push_line_self_contact(
     right: Segment,
     contact: Contact,
     cuts: &mut Vec<LineCutEvent>,
-) -> Result<()> {
+) -> Result<bool> {
+    let mut deduplicate_line_edges = false;
     match contact {
         Contact::Disjoint => {},
         Contact::Cross => {
@@ -1434,7 +1438,8 @@ fn push_line_self_contact(
                 false,
             );
         },
-        Contact::Touch { point } => {
+        Contact::Touch(endpoint) => {
+            let point = endpoint.point(left, right);
             push_line_cut(
                 cuts,
                 left_source,
@@ -1450,7 +1455,11 @@ fn push_line_self_contact(
                 false,
             );
         },
-        Contact::Collinear { span } => {
+        Contact::Collinear => {
+            let span = contact
+                .shared_span(left, right)
+                .expect("collinear contact has a shared span");
+            deduplicate_line_edges = !crate::geometry::same_point(span.start, span.end);
             push_line_cut(
                 cuts,
                 left_source,
@@ -1481,7 +1490,7 @@ fn push_line_self_contact(
             );
         },
     }
-    Ok(())
+    Ok(deduplicate_line_edges)
 }
 
 fn push_line_cut(

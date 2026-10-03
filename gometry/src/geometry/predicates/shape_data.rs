@@ -104,14 +104,16 @@ pub(in crate::geometry) fn classify_ring_pair_with_contacts(
     }
     // A proper crossing is interior to both segments: the rings cross. Any
     // other contact is an endpoint of one on the other, a touch.
-    match segment_contact_exact(left.segment, right.segment) {
+    let contact = segment_contact_exact(left.segment, right.segment);
+    match contact {
         Contact::Cross => Ok(Some(ValidationIssue::new(
             "ring_intersection",
             describe(left.line, right.line),
             Some(crossing_point(left.segment, right.segment)?.point.point()),
             "$",
         ))),
-        Contact::Touch { point } => {
+        Contact::Touch(endpoint) => {
+            let point = endpoint.point(left.segment, right.segment);
             let (include_left, include_right) = include_touch_directions(left, right, point)?;
             record_touch_filtered(
                 touches,
@@ -124,17 +126,21 @@ pub(in crate::geometry) fn classify_ring_pair_with_contacts(
             on_touch(left, right, point)?;
             Ok(None)
         },
-        Contact::Collinear { span } if !same_point(span.start, span.end) => {
-            Ok(Some(ValidationIssue::new(
-                "shared_linework",
-                format!("{} on a line", describe(left.line, right.line)),
-                Some(span.start.point()),
-                "$",
-            )))
-        },
-        Contact::Collinear { span } => {
-            on_touch(left, right, span.start)?;
-            Ok(None)
+        Contact::Collinear => {
+            let span = contact
+                .shared_span(left.segment, right.segment)
+                .expect("collinear contact has a shared span");
+            if same_point(span.start, span.end) {
+                on_touch(left, right, span.start)?;
+                Ok(None)
+            } else {
+                Ok(Some(ValidationIssue::new(
+                    "shared_linework",
+                    format!("{} on a line", describe(left.line, right.line)),
+                    Some(span.start.point()),
+                    "$",
+                )))
+            }
         },
         Contact::Disjoint => Ok(None),
     }

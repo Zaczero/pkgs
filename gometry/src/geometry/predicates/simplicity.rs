@@ -169,11 +169,16 @@ pub(crate) fn segments_are_adjacent(left: IndexedSegment, right: IndexedSegment)
 /// boundary, so any contact with it offends). Positive-extent collinear
 /// overlaps are never a finite point contact.
 pub(crate) fn cross_line_touch_is_simple(left: IndexedSegment, right: IndexedSegment) -> bool {
-    let contact = match segment_contact_exact(left.segment, right.segment) {
+    let pair = segment_contact_exact(left.segment, right.segment);
+    let contact = match pair {
         // Interior to both segments, so an endpoint of neither line.
         Contact::Cross => return false,
-        Contact::Touch { point } => point,
-        Contact::Collinear { span } => return same_point(span.start, span.end),
+        Contact::Touch(endpoint) => endpoint.point(left.segment, right.segment),
+        Contact::Collinear => {
+            return pair
+                .shared_span(left.segment, right.segment)
+                .is_some_and(|span| same_point(span.start, span.end));
+        },
         // Envelope-only candidates that never actually touch.
         Contact::Disjoint => return true,
     };
