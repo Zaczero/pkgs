@@ -4,6 +4,7 @@ use std::ops::ControlFlow;
 use crate::error::{ResourceError, Result};
 use crate::geographic::lonlat::invalid_lonlat_error;
 use crate::geographic::{GeographicFrame, GeographicInputs, GeographicViewError};
+use crate::geometry::ordinates::AxisValue;
 use crate::geometry::overlay::{
     ExactSourceInventory, OverlayOp, Strictness, build_certified_overlay_shape,
     intersect_rectangular_polygonal, merge_chains, overlay_declared_axes, rect_polygon,
@@ -228,14 +229,16 @@ fn overlay_operand_bounds(
     index: usize,
     shape: &Shape,
 ) -> Option<Bounds> {
-    match known_bounds {
-        Some(bounds) => bounds
-            .get(index)
-            .copied()
-            .flatten()
-            .or_else(|| shape.bounds()),
-        None => shape.bounds(),
-    }
+    known_bounds.map_or_else(
+        || shape.bounds(),
+        |bounds| {
+            bounds
+                .get(index)
+                .copied()
+                .flatten()
+                .or_else(|| shape.bounds())
+        },
+    )
 }
 
 fn rectangle_operation_result(
@@ -427,8 +430,10 @@ fn exact_cartesian_overlay(
     bounds_certificates: bool,
     partition_budget: ExactPartitionBudget,
 ) -> Result<Shape> {
-    if inputs.len() == 1 && operation == OverlayOp::Intersection {
-        return Ok(inputs[0].clone());
+    if operation == OverlayOp::Intersection
+        && let [input] = inputs.as_slice()
+    {
+        return Ok((**input).clone());
     }
     exact_partition_overlay_with_bounds_certificates(
         inputs,
@@ -477,6 +482,10 @@ fn exact_cartesian_binary_overlay(
 
 // Point support is a set within each operand. XOR counts those operand sets,
 // while all incident occurrences still participate in ordinate reconciliation.
+#[expect(
+    clippy::indexing_slicing,
+    reason = "source ordinals are initialized from 0..inputs.len() and sorting preserves that admitted domain"
+)]
 fn exact_puntal_nary_overlay(
     inputs: &[&Shape],
     operation: OverlayOp,
@@ -485,8 +494,8 @@ fn exact_puntal_nary_overlay(
 ) -> Result<Option<Shape>> {
     struct Membership {
         xy: XY,
-        z: crate::geometry::ordinates::AxisValue,
-        m: crate::geometry::ordinates::AxisValue,
+        z: AxisValue,
+        m: AxisValue,
         last_operand: usize,
         odd: bool,
     }
@@ -494,26 +503,27 @@ fn exact_puntal_nary_overlay(
         crate::geometry::HashMap::with_hasher(crate::collections::collection_hash_state()?.clone());
     let mut points = Vec::new();
     let identity = |point: Point| {
-        if let Some(frame) = quotient_frame {
-            let latitude = crate::geographic::Latitude::from_admitted(frame, point.y);
-            let longitude = frame
-                .longitude()
-                .canonicalize(point.x)
-                .expect("admitted geographic points have canonical longitudes")
-                .get();
-            let key_longitude = if latitude.identity(frame) == crate::geographic::SeamIdentity::Pole
-            {
-                0.0
-            } else {
-                longitude
-            };
-            (
-                PointKey::new(XY::new(key_longitude, latitude.get())),
-                XY::new(point.x, latitude.get()),
-            )
-        } else {
-            (PointKey::new(point), point.xy())
-        }
+        quotient_frame.map_or_else(
+            || (PointKey::new(point), point.xy()),
+            |frame| {
+                let latitude = crate::geographic::Latitude::from_admitted(frame, point.y);
+                let longitude = frame
+                    .longitude()
+                    .canonicalize(point.x)
+                    .expect("admitted geographic points have canonical longitudes")
+                    .get();
+                let key_longitude =
+                    if latitude.identity(frame) == crate::geographic::SeamIdentity::Pole {
+                        0.0
+                    } else {
+                        longitude
+                    };
+                (
+                    PointKey::new(XY::new(key_longitude, latitude.get())),
+                    XY::new(point.x, latitude.get()),
+                )
+            },
+        )
     };
     let mut order_sources = false;
     for (operand, shape) in inputs.iter().enumerate() {
@@ -528,8 +538,8 @@ fn exact_puntal_nary_overlay(
             let (key, xy) = identity(point);
             let value = membership.entry(key).or_insert_with(|| Membership {
                 xy,
-                z: crate::geometry::ordinates::AxisValue::default(),
-                m: crate::geometry::ordinates::AxisValue::default(),
+                z: AxisValue::default(),
+                m: AxisValue::default(),
                 last_operand: usize::MAX,
                 odd: false,
             });
@@ -552,6 +562,10 @@ fn exact_puntal_nary_overlay(
         order.sort_unstable_by(|&left, &right| {
             compare_puntal_sources(inputs[left], inputs[right], &mut equal_collections)
         });
+        #[expect(
+            clippy::iter_over_hash_type,
+            reason = "the idempotent sentinel reset is independent of membership iteration order"
+        )]
         for value in membership.values_mut() {
             value.last_operand = usize::MAX;
         }
@@ -681,6 +695,10 @@ fn exact_partition_overlay_with_bounds_certificates(
             for component in components {
                 subset.clear();
                 subset.reserve(component.len());
+                #[expect(
+                    clippy::indexing_slicing,
+                    reason = "component ordinals are returned from the same input-sized bounds array"
+                )]
                 subset.extend(component.iter().map(|&index| inputs[index]));
                 shapes.push(exact_partition_overlay(
                     &subset,
@@ -1884,7 +1902,7 @@ pub(in crate::geometry) fn overlay_all_geographic_from(
 ) -> Result<Shape> {
     let mut original_refs = Vec::with_capacity(originals.views().len());
     original_refs.extend(originals.views().iter().map(|view| view.shape()));
-    if let Some(shape) = geographic_rectangle_operation_result(originals, &original_refs, op)? {
+    if let Some(shape) = geographic_rectangle_operation_result(originals, &original_refs, op) {
         return Ok(shape);
     }
     if crate::geometry::geographic_topology_route(originals.views().iter().copied())
@@ -1912,15 +1930,15 @@ fn geographic_rectangle_operation_result(
     originals: &GeographicInputs<'_>,
     shapes: &[&Shape],
     operation: OverlayOp,
-) -> Result<Option<Shape>> {
+) -> Option<Shape> {
     let [left, right] = shapes else {
-        return Ok(None);
+        return None;
     };
     let frame = originals.frame();
-    let left_rectangle = canonical_geographic_rectangle_bounds(left, frame)?;
-    let right_rectangle = canonical_geographic_rectangle_bounds(right, frame)?;
+    let left_rectangle = canonical_geographic_rectangle_bounds(left, frame);
+    let right_rectangle = canonical_geographic_rectangle_bounds(right, frame);
     if left_rectangle.is_none() && right_rectangle.is_none() {
-        return Ok(None);
+        return None;
     }
     let left_bounds = left.bounds();
     let right_bounds = right.bounds();
@@ -1929,9 +1947,9 @@ fn geographic_rectangle_operation_result(
     }) || !right_bounds.is_some_and(|bounds| {
         crate::geometry::raw_coordinate_bounds_are_sound_in_frame(Some(right), bounds, frame)
     }) {
-        return Ok(None);
+        return None;
     }
-    Ok(rectangle_operation_result(
+    rectangle_operation_result(
         left,
         right,
         operation,
@@ -1939,23 +1957,27 @@ fn geographic_rectangle_operation_result(
         right_bounds,
         left_rectangle,
         right_rectangle,
-    ))
+    )
 }
 
+#[expect(
+    clippy::float_cmp,
+    reason = "rectangle recognition requires exact stored-coordinate equality while preserving signed-zero equality"
+)]
 fn canonical_geographic_rectangle_bounds(
     shape: &Shape,
     frame: crate::geographic::GeographicFrame,
-) -> Result<Option<Bounds>> {
+) -> Option<Bounds> {
     let Shape::Polygon(polygon) = shape else {
-        return Ok(None);
+        return None;
     };
     if !polygon.holes.is_empty() || polygon.axes() != CoordinateAxes::XY {
-        return Ok(None);
+        return None;
     }
     let ring = polygon.shell.coords();
     let coordinate_count = ring.coord_count();
     if coordinate_count < 5 || coordinate_count.wrapping_sub(3) % 2 != 0 {
-        return Ok(None);
+        return None;
     }
     let segments = coordinate_count.wrapping_sub(3) / 2;
     let first = ring.point_at(0);
@@ -1966,43 +1988,39 @@ fn canonical_geographic_rectangle_bounds(
     let east = east_south.x;
     let north = east_north.y;
     if !(west < east && south < north && east_south.y == south && east_north.x == east) {
-        return Ok(None);
+        return None;
     }
 
     let mut previous_x = west;
     for index in 1..=segments {
         let point = ring.point_at(index);
         if point.y != south || point.x <= previous_x {
-            return Ok(None);
+            return None;
         }
         previous_x = point.x;
     }
     if previous_x != east {
-        return Ok(None);
+        return None;
     }
 
     previous_x = east;
     for index in segments.wrapping_add(2)..=segments.wrapping_mul(2).wrapping_add(1) {
         let point = ring.point_at(index);
         if point.y != north || point.x >= previous_x {
-            return Ok(None);
+            return None;
         }
         previous_x = point.x;
     }
     let closing = ring.point_at(coordinate_count.wrapping_sub(1));
     if previous_x != west || !crate::geometry::same_point(first, closing) {
-        return Ok(None);
+        return None;
     }
     let Ok(bounds) = Bounds::new(west, south, east, north) else {
-        return Ok(None);
+        return None;
     };
-    if crate::geometry::raw_coordinate_bounds_are_sound_in_frame(None, bounds, frame)
-        && crate::geometry::raw_coordinate_bounds_are_sound_in_frame(Some(shape), bounds, frame)
-    {
-        Ok(Some(bounds))
-    } else {
-        Ok(None)
-    }
+    (crate::geometry::raw_coordinate_bounds_are_sound_in_frame(None, bounds, frame)
+        && crate::geometry::raw_coordinate_bounds_are_sound_in_frame(Some(shape), bounds, frame))
+    .then_some(bounds)
 }
 
 #[cfg(test)]
@@ -2106,6 +2124,10 @@ fn overlay_bounds_facts_geographic(originals: &GeographicInputs<'_>) -> OverlayB
 
 /// Inputs whose certified bounds never meet cannot interact in the Cartesian
 /// lane. Geographic Q instead owns every admitted row in one global face table.
+#[expect(
+    clippy::indexing_slicing,
+    reason = "parent IDs stay in the bounds domain; sweep links stay in the entries domain plus its terminal sentinel"
+)]
 fn interacting_components(bounds: &[Option<Bounds>], op: OverlayOp) -> Option<Vec<Vec<usize>>> {
     const fn root(parent: &mut [usize], mut node: usize) -> usize {
         while parent[node] != node {
@@ -2339,6 +2361,10 @@ fn intersection_bounds_empty(bounds: &[Option<Bounds>]) -> bool {
     false
 }
 
+#[expect(
+    clippy::indexing_slicing,
+    reason = "difference preserves the first operand and callers admit a non-empty input slice"
+)]
 pub(crate) fn empty_nary_overlay_shape(inputs: &[&Shape], op: OverlayOp) -> Shape {
     debug_assert!(!inputs.is_empty());
     let dimension = match op {
