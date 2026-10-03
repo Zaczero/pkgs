@@ -34,6 +34,10 @@ impl IndexedTopology {
         Ok(slots)
     }
 
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "slot, target, and reciprocal twin IDs belong to this admitted CSR topology"
+    )]
     pub(crate) fn successor_slot(&self, slot: u32) -> u32 {
         let slot = slot as usize;
         let target = self.targets[slot] as usize;
@@ -41,12 +45,16 @@ impl IndexedTopology {
         let end = self.starts[target + 1] as usize;
         let reverse = self.twins[slot] as usize;
         if reverse == start {
-            (end - 1) as u32
+            end.wrapping_sub(1) as u32
         } else {
-            (reverse - 1) as u32
+            reverse.wrapping_sub(1) as u32
         }
     }
 
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "slot and origin IDs belong to this admitted CSR topology"
+    )]
     pub(crate) fn predecessor_slot(&self, slot: u32) -> u32 {
         let slot = slot as usize;
         let origin = self.owners[slot] as usize;
@@ -68,6 +76,10 @@ impl IndexedTopology {
         self.face_slots.clear();
     }
 
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "edge, vertex, twin, successor, and face slots are derived from the admitted CSR columns built here"
+    )]
     pub(crate) fn finish(
         &mut self,
         edge_of_slot: &[u32],
@@ -91,7 +103,7 @@ impl IndexedTopology {
         debug_assert!(scratch.edge_slots.capacity() >= slots / 2);
         self.owners.clear();
         for vertex in 0..vertices {
-            let row = self.starts[vertex] as usize..self.starts[vertex + 1] as usize;
+            let row = self.starts[vertex] as usize..self.starts[vertex.wrapping_add(1)] as usize;
             debug_assert!(row.end <= slots);
             self.owners
                 .extend(std::iter::repeat_n(vertex as u32, row.len()));
@@ -139,15 +151,11 @@ impl IndexedTopology {
                     }
                 }
             }
-            component_count += 1;
+            component_count = component_count.wrapping_add(1);
         }
 
         scratch.successor.clear();
         scratch.successor.resize(slots, u32::MAX);
-        #[expect(
-            clippy::indexing_slicing,
-            reason = "CSR row slots and their reciprocal twins were admitted from the same slot domain"
-        )]
         for &[start, end] in self.starts.array_windows::<2>() {
             let row = start as usize..end as usize;
             let mut previous = end.wrapping_sub(1);
@@ -165,7 +173,7 @@ impl IndexedTopology {
             if self.face_of[seed] != u32::MAX {
                 continue;
             }
-            let face = (self.face_starts.len() - 1) as u32;
+            let face = self.face_starts.len().wrapping_sub(1) as u32;
             let mut slot = seed;
             for _ in 0..slots {
                 debug_assert_eq!(self.face_of[slot], u32::MAX);

@@ -30,7 +30,8 @@ pub(crate) fn positional_loop_cuts(
             return Ok(None);
         }
         if (start..end).any(|index| {
-            let next = if index + 1 < end { index + 1 } else { start };
+            let next = index.wrapping_add(1);
+            let next = if next < end { next } else { start };
             PointKey::new(segments[index as usize].end)
                 != PointKey::new(segments[next as usize].start)
         }) {
@@ -85,21 +86,21 @@ pub(crate) fn positional_loop_cuts(
     while run < n_events {
         let first = by_key[run] as usize;
         let key = PointKey::new(events[first].1);
-        let mut end = run + 1;
+        let mut end = run.wrapping_add(1);
         while end < n_events && PointKey::new(events[by_key[end] as usize].1) == key {
-            end += 1;
+            end = end.wrapping_add(1);
         }
-        if end - run != 2 {
+        if end.wrapping_sub(run) != 2 {
             return Ok(None);
         }
-        let second = by_key[run + 1] as usize;
+        let second = by_key[run.wrapping_add(1)] as usize;
         if events[first].0 == events[second].0 {
             return Ok(None);
         }
         group_of[first] = group_count;
         group_of[second] = group_count;
         keys.push(key);
-        group_count += 1;
+        group_count = group_count.wrapping_add(1);
         run = end;
     }
     // Key-coincident vertices — repeated loop vertices, T-junctions (a cut
@@ -123,9 +124,9 @@ pub(crate) fn positional_loop_cuts(
     let mut slice_start = 0;
     while slice_start < n_events {
         let ordinal = events[slice_start].0;
-        let mut slice_end = slice_start + 1;
+        let mut slice_end = slice_start.wrapping_add(1);
         while slice_end < n_events && events[slice_end].0 == ordinal {
-            slice_end += 1;
+            slice_end = slice_end.wrapping_add(1);
         }
         let segment = segments[ordinal as usize];
         let slice = &mut cuts[slice_start..slice_end];
@@ -187,7 +188,7 @@ pub(crate) fn positional_loop_pieces(
         for ordinal in start..end {
             while cursor < cuts.len() && cuts[cursor].ordinal == ordinal {
                 let cut = cuts[cursor];
-                cursor += 1;
+                cursor = cursor.wrapping_add(1);
                 let slot = &mut group_vertex[cut.group as usize];
                 let id = if *slot == u32::MAX {
                     let id = points.len() as u32;
@@ -201,7 +202,7 @@ pub(crate) fn positional_loop_pieces(
                 pieces.push((current, id, loop_index));
                 current = id;
             }
-            let segment_end = if ordinal + 1 < end {
+            let segment_end = if ordinal.wrapping_add(1) < end {
                 let id = points.len() as u32;
                 // FIRST-ENCOUNTER raw bits, exactly like the general dedup.
                 points.push(segments[ordinal as usize].end);
@@ -230,17 +231,18 @@ pub(crate) fn order_single_loop_rows<W: WindingWeight>(
     multiplicities: &mut [W],
     edge_of_slot: &mut [u32],
 ) -> bool {
-    for vertex in 0..starts.len() - 1 {
-        let row = starts[vertex] as usize..starts[vertex + 1] as usize;
+    for (vertex, [start, end]) in starts.array_windows::<2>().enumerate() {
+        let row = *start as usize..*end as usize;
         if row.len() == 2 {
-            let (a, b) = (targets[row.start], targets[row.start + 1]);
+            let second = row.start.wrapping_add(1);
+            let (a, b) = (targets[row.start], targets[second]);
             if a == b {
                 return false;
             }
             if a > b {
-                targets.swap(row.start, row.start + 1);
-                multiplicities.swap(row.start, row.start + 1);
-                edge_of_slot.swap(row.start, row.start + 1);
+                targets.swap(row.start, second);
+                multiplicities.swap(row.start, second);
+                edge_of_slot.swap(row.start, second);
             }
         } else {
             let origin = points[vertex];

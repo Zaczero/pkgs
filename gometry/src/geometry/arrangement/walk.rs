@@ -11,15 +11,15 @@ use crate::geometry::{Orientation, XY, orientation};
 /// Assign one face to every directed half-edge and retain its exact area sign.
 #[cfg(test)]
 pub(crate) fn arrangement_faces(points: &[XY], topology: &IndexedTopology) -> Vec<Face> {
-    let mut faces = Vec::with_capacity(topology.face_starts.len() - 1);
+    let mut faces = Vec::with_capacity(topology.face_starts.len().wrapping_sub(1));
     let mut cycle = Vec::new();
-    for face in 0..topology.face_starts.len() - 1 {
-        let cycle_len = (topology.face_starts[face + 1] - topology.face_starts[face]) as usize + 1;
+    for [start, end] in topology.face_starts.array_windows::<2>() {
+        let cycle_len = (*end as usize)
+            .wrapping_sub(*start as usize)
+            .wrapping_add(1);
         cycle.clear();
         cycle.reserve(cycle_len);
-        for &slot in &topology.face_slots
-            [topology.face_starts[face] as usize..topology.face_starts[face + 1] as usize]
-        {
+        for &slot in &topology.face_slots[*start as usize..*end as usize] {
             let slot = slot as usize;
             if cycle.is_empty() {
                 cycle.push(points[topology.owners[slot] as usize]);
@@ -30,9 +30,8 @@ pub(crate) fn arrangement_faces(points: &[XY], topology: &IndexedTopology) -> Ve
         let area_sign = open_xy_cycle_sign(&cycle);
         faces.push(Face {
             area_sign,
-            component: topology.component_of[topology.owners
-                [topology.face_slots[topology.face_starts[face] as usize] as usize]
-                as usize],
+            component: topology.component_of
+                [topology.owners[topology.face_slots[*start as usize] as usize] as usize],
         });
     }
     faces
@@ -132,11 +131,14 @@ pub(crate) fn build_csr<W: WindingWeight>(
     starts.reserve(start_count);
     starts.resize(start_count, 0);
     for &(a, b, _) in edges {
-        starts[a as usize + 1] += 1;
-        starts[b as usize + 1] += 1;
+        let a_next = (a as usize).wrapping_add(1);
+        starts[a_next] = starts[a_next].wrapping_add(1);
+        let b_next = (b as usize).wrapping_add(1);
+        starts[b_next] = starts[b_next].wrapping_add(1);
     }
     for index in 0..vertex_count {
-        starts[index + 1] += starts[index];
+        let next = index.wrapping_add(1);
+        starts[next] = starts[next].wrapping_add(starts[index]);
     }
     let mut cursor = starts.clone();
     targets.clear();
@@ -153,12 +155,12 @@ pub(crate) fn build_csr<W: WindingWeight>(
         targets[slot_a] = b;
         multiplicities[slot_a] = multiplicity;
         edge_of_slot[slot_a] = edge as u32;
-        cursor[a as usize] += 1;
+        cursor[a as usize] = cursor[a as usize].wrapping_add(1);
         let slot_b = cursor[b as usize] as usize;
         targets[slot_b] = a;
         multiplicities[slot_b] = multiplicity.neg();
         edge_of_slot[slot_b] = edge as u32;
-        cursor[b as usize] += 1;
+        cursor[b as usize] = cursor[b as usize].wrapping_add(1);
     }
     Ok((starts, targets, multiplicities, edge_of_slot))
 }
@@ -175,8 +177,8 @@ pub(crate) fn sort_rows_counterclockwise<W: WindingWeight>(
     // One scratch row reused across every vertex (rows are tiny; per-row
     // allocations dominated this pass).
     let mut row: Vec<(u32, W, u32)> = Vec::new();
-    for vertex in 0..starts.len() - 1 {
-        let range = starts[vertex] as usize..starts[vertex + 1] as usize;
+    for (vertex, [start, end]) in starts.array_windows::<2>().enumerate() {
+        let range = *start as usize..*end as usize;
         // Degree <= 2 needs NO ordering work at all: a two-neighbor fan has
         // exactly one cyclic order — and chained-loop interiors (the vast
         // majority of noded-stroke vertices) are all degree 2.
