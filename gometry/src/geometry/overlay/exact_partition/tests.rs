@@ -1579,6 +1579,7 @@ fn staged_source_occurrences_are_readable_and_can_omit_zm_carriers() {
     let rows = || [storage::ShapeRow::Shape(&shared)].into_iter();
 
     let staged = StagedExactSources::from_rows_with_occurrences(rows(), false).unwrap();
+    assert!(staged.relation_components().is_none());
     assert_eq!(staged.segments().len(), 10);
     assert_eq!(staged.source_operands(), &[0; 10]);
     assert_eq!(
@@ -1627,6 +1628,58 @@ fn staged_source_occurrences_are_readable_and_can_omit_zm_carriers() {
     assert_eq!(staged_xy.source_operands(), staged.source_operands());
     assert_eq!(staged_xy.source_rings(), staged.source_rings());
     assert!(staged_xy.source_points.is_none());
+}
+
+#[test]
+fn relation_staging_keeps_closed_and_collapsed_line_components() {
+    let closed = crate::io::parse_wkt("LINESTRING (0 0,4 0,4 4,0 0)").unwrap();
+    let reversed = crate::io::parse_wkt("LINESTRING (0 0,4 4,4 0,0 0)").unwrap();
+    let collapsed = crate::io::parse_wkt("LINESTRING (7 7,7 7)").unwrap();
+    let polygon = crate::io::parse_wkt("POLYGON ((20 20,24 20,24 24,20 24,20 20))").unwrap();
+    let shapes = [closed, reversed, collapsed, polygon];
+    let staged =
+        StagedExactSources::from_rows_for_relate(shapes.iter().map(storage::ShapeRow::Shape))
+            .unwrap();
+
+    assert_eq!(staged.segments().len(), 11);
+    assert!(staged.line_boundaries().is_empty());
+    assert_eq!(staged.isolated(), &[XY::new(7.0, 7.0), XY::new(7.0, 7.0)]);
+    assert_eq!(staged.isolated_operands(), &[2, 2]);
+
+    let components = staged
+        .relation_components()
+        .expect("relation staging retains component ranges");
+    assert_eq!(components.len(), 4);
+    assert_eq!(components[0].operand, 0);
+    assert_eq!(components[0].segments, 0..3);
+    assert_eq!(components[0].ring, None);
+    assert!(components[0].has_nonzero_segment);
+    assert_eq!(components[1].operand, 1);
+    assert_eq!(components[1].segments, 3..6);
+    assert_eq!(components[1].ring, None);
+    assert!(components[1].has_nonzero_segment);
+    assert_eq!(components[2].operand, 2);
+    assert_eq!(components[2].segments, 6..7);
+    assert_eq!(components[2].ring, None);
+    assert!(!components[2].has_nonzero_segment);
+    assert_eq!(components[3].operand, 3);
+    assert_eq!(components[3].segments, 7..11);
+    assert_eq!(components[3].ring, Some(0));
+    assert_eq!(components[3].ring_kind, Some(RingKind::Winding));
+    assert!(components[3].has_nonzero_segment);
+    assert_eq!(
+        staged.relation_source_order(),
+        Some(
+            [
+                StagedRelationItem::Component(0),
+                StagedRelationItem::Component(1),
+                StagedRelationItem::Isolated(0),
+                StagedRelationItem::Isolated(1),
+                StagedRelationItem::Component(3),
+            ]
+            .as_slice()
+        )
+    );
 }
 
 #[test]

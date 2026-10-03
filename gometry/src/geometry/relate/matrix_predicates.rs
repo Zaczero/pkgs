@@ -152,7 +152,7 @@ pub(crate) enum Cell {
 }
 
 impl Cell {
-    const ALL: [Self; 9] = [
+    pub(crate) const ALL: [Self; 9] = [
         Self::Ii,
         Self::Ib,
         Self::Ie,
@@ -176,6 +176,93 @@ impl Cell {
             Self::Eb => 7,
             Self::Ee => 8,
         }
+    }
+}
+
+/// The matrix cells a query can inspect. The cell formulas and their read masks
+/// live together, and a test ties the masks to the cells the formulas read.
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct CellMask([bool; 9]);
+
+#[cfg(test)]
+impl CellMask {
+    pub(crate) const fn all() -> Self {
+        Self([true; 9])
+    }
+
+    pub(crate) const fn empty() -> Self {
+        Self([false; 9])
+    }
+
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "the closed Cell enum maps only to one of the nine mask entries"
+    )]
+    pub(crate) const fn contains(self, cell: Cell) -> bool {
+        self.0[cell.index()]
+    }
+
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "the closed Cell enum maps only to one of the nine mask entries"
+    )]
+    const fn with(mut self, cell: Cell) -> Self {
+        self.0[cell.index()] = true;
+        self
+    }
+
+    pub(crate) const fn for_predicate(predicate: Predicate) -> Self {
+        let ii = Cell::Ii;
+        let ib = Cell::Ib;
+        let ie = Cell::Ie;
+        let bi = Cell::Bi;
+        let bb = Cell::Bb;
+        let be = Cell::Be;
+        let ei = Cell::Ei;
+        let eb = Cell::Eb;
+        match predicate {
+            Predicate::Intersects | Predicate::Disjoint | Predicate::Touches => {
+                Self::empty().with(ii).with(ib).with(bi).with(bb)
+            },
+            Predicate::Contains => Self::empty().with(ii).with(ei).with(eb),
+            Predicate::Within => Self::empty().with(ii).with(ie).with(be),
+            Predicate::Covers => Self::empty()
+                .with(ii)
+                .with(ib)
+                .with(bi)
+                .with(bb)
+                .with(ei)
+                .with(eb),
+            Predicate::CoveredBy => Self::empty()
+                .with(ii)
+                .with(ib)
+                .with(bi)
+                .with(bb)
+                .with(ie)
+                .with(be),
+            Predicate::ContainsProperly => {
+                Self::empty().with(ii).with(bi).with(bb).with(ei).with(eb)
+            },
+            Predicate::Equals => Self::all(),
+            Predicate::Crosses | Predicate::Overlaps => {
+                Self::empty().with(ii).with(ib).with(ie).with(bi).with(ei)
+            },
+        }
+    }
+
+    pub(crate) fn for_pattern(pattern: CompiledPattern) -> Self {
+        let mut mask = Self::empty();
+        for (cell, literal) in Cell::ALL.into_iter().zip(pattern.cells()) {
+            if literal != b'*' {
+                mask = mask.with(cell);
+            }
+        }
+        mask
+    }
+
+    pub(crate) const fn needs_dimensions(predicate: Predicate) -> bool {
+        matches!(predicate, Predicate::Crosses | Predicate::Overlaps)
     }
 }
 
@@ -366,4 +453,67 @@ pub(crate) fn eval_pattern(pattern: CompiledPattern, cells: &impl Cells) -> Tri 
 
 pub(crate) fn decided(predicate: Predicate, matrix: De9im) -> bool {
     eval(predicate, &Decided(matrix)) == Tri::True
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct RecordingCells(std::cell::Cell<CellMask>);
+
+    impl RecordingCells {
+        fn new() -> Self {
+            Self(std::cell::Cell::new(CellMask::empty()))
+        }
+
+        fn record(&self, cell: Cell) {
+            self.0.set(self.0.get().with(cell));
+        }
+    }
+
+    impl Cells for RecordingCells {
+        fn at_least(&self, cell: Cell, _: Dimension) -> Tri {
+            self.record(cell);
+            Tri::Unknown
+        }
+
+        fn is_empty(&self, cell: Cell) -> Tri {
+            self.record(cell);
+            Tri::Unknown
+        }
+
+        fn exactly(&self, cell: Cell, _: Dimension) -> Tri {
+            self.record(cell);
+            Tri::Unknown
+        }
+
+        fn interior_dim(&self, operand: Operand) -> DimRange {
+            let cells = match operand {
+                Operand::Left => [Cell::Ii, Cell::Ib, Cell::Ie],
+                Operand::Right => [Cell::Ii, Cell::Bi, Cell::Ei],
+            };
+            for cell in cells {
+                self.record(cell);
+            }
+            DimRange::from_bounds(None, Some(Dimension::Surface))
+        }
+    }
+
+    #[test]
+    fn query_cell_masks_cover_every_cell_read_by_their_matrix_formula() {
+        for predicate in Predicate::ALL {
+            let cells = RecordingCells::new();
+            let _ = eval(predicate, &cells);
+            assert_eq!(
+                cells.0.get(),
+                CellMask::for_predicate(predicate),
+                "{predicate:?}"
+            );
+        }
+
+        let pattern = CompiledPattern::new("T*F***1**").expect("pattern is valid");
+        let cells = RecordingCells::new();
+        let _ = eval_pattern(pattern, &cells);
+        assert_eq!(cells.0.get(), CellMask::for_pattern(pattern), "pattern");
+    }
 }

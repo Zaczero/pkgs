@@ -12,7 +12,7 @@ use crate::geometry::distance::ChartParts;
 #[cfg(test)]
 use crate::geometry::source_support::{
     OccupiedToward, SourcePointLocation, cartesian_exact_offset_location_and_area,
-    cartesian_exact_point_location_and_area, occupied_toward,
+    cartesian_exact_point_location_and_area, cartesian_point_location_and_area, occupied_toward,
 };
 #[cfg(test)]
 use crate::geometry::tessellation::exact::ExactDyadic;
@@ -21,7 +21,7 @@ use crate::geometry::types::{Bounds, GeodesicSegment, Point, Segment, Shape, XY}
 use crate::geometry::{
     ChartLineIndex, DistanceParts, GeodesicParts, GeodesicPartsKey, GeographicPrepared,
     GeographicSeamFacts, GeographicTopologyRoute, LineIndex, LineIndexSlot, MeasuredLineIndex,
-    MeasuredLineIndexSlot, PlanarMetric, PointBatchTester, SegmentMetric, ShapeCountQuery,
+    MeasuredLineIndexSlot, PlanarMetric, PointBatchTester, ShapeCountQuery,
 };
 
 const POINT_SCANS_BEFORE_INDEXING: u32 = 3;
@@ -558,6 +558,14 @@ impl PreparedPlan {
             self.shape(),
             point,
         ))
+    }
+
+    #[cfg(test)]
+    pub(in crate::geometry) fn locate_stored(&self, point: Point) -> Result<SourcePointLocation> {
+        if let Some(tester) = self.point_tester_for_location()? {
+            return Ok(tester.location_and_area(point));
+        }
+        Ok(cartesian_point_location_and_area(self.shape(), point))
     }
 
     #[cfg(test)]

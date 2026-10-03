@@ -155,9 +155,19 @@ fn assert_polygon_line_case(name: &str, polygon: &Shape, line: &Shape, expected:
     let forward = graph_relate_data(&polygon_plan, &line_plan).unwrap();
     assert_eq!(forward.text(), expected, "{name}: known matrix");
     assert_eq!(
+        super::super::evaluator::relate(&polygon_plan, &line_plan).unwrap(),
+        forward,
+        "{name}: witness evaluator"
+    );
+    assert_eq!(
         graph_relate_data(&line_plan, &polygon_plan).unwrap().0,
         forward.transpose().0,
         "{name}: transpose"
+    );
+    assert_eq!(
+        super::super::evaluator::relate(&line_plan, &polygon_plan).unwrap(),
+        forward.transpose(),
+        "{name}: witness evaluator transpose"
     );
     assert_eq!(
         graph_relate_shapes(polygon, line).unwrap().0,
@@ -212,9 +222,21 @@ fn geographic_near_vertical_box_keeps_planar_boundary_dimension() {
 }
 
 fn assert_exact_relation_transposes(name: &str, left: &Shape, right: &Shape) {
-    let forward = graph_relate_shapes(left, right).unwrap();
-    let reverse = graph_relate_shapes(right, left).unwrap();
+    let left_plan = PreparedPlan::transient(left);
+    let right_plan = PreparedPlan::transient(right);
+    let forward = graph_relate_data(&left_plan, &right_plan).unwrap();
+    let reverse = graph_relate_data(&right_plan, &left_plan).unwrap();
     assert_eq!(reverse.0, forward.transpose().0, "{name}: transpose");
+    assert_eq!(
+        super::super::evaluator::relate(&left_plan, &right_plan).unwrap(),
+        forward,
+        "{name}: witness evaluator"
+    );
+    assert_eq!(
+        super::super::evaluator::relate(&right_plan, &left_plan).unwrap(),
+        forward.transpose(),
+        "{name}: witness evaluator transpose"
+    );
 }
 
 fn assert_relation_case(name: &str, left: &Shape, right: &Shape, expected: &str) {
@@ -223,9 +245,19 @@ fn assert_relation_case(name: &str, left: &Shape, right: &Shape, expected: &str)
     let forward = graph_relate_data(&left_plan, &right_plan).unwrap();
     assert_eq!(forward.text(), expected, "{name}: forward");
     assert_eq!(
+        super::super::evaluator::relate(&left_plan, &right_plan).unwrap(),
+        forward,
+        "{name}: witness evaluator"
+    );
+    assert_eq!(
         graph_relate_data(&right_plan, &left_plan).unwrap().0,
         forward.transpose().0,
         "{name}: transpose"
+    );
+    assert_eq!(
+        super::super::evaluator::relate(&right_plan, &left_plan).unwrap(),
+        forward.transpose(),
+        "{name}: witness evaluator transpose"
     );
 }
 

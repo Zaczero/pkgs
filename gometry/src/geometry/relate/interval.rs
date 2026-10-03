@@ -16,6 +16,8 @@
 #[cfg(test)]
 use super::De9im;
 use super::de9im::Loc;
+#[cfg(test)]
+use super::matrix_predicates::CellMask;
 use super::matrix_predicates::{
     self, Cell as MatrixCell, Cells as MatrixCells, DimRange, Operand as MatrixOperand, Tri,
 };
@@ -78,6 +80,7 @@ impl OperandShape {
 pub(crate) struct De9imInterval {
     lo: [Cell; 9],
     hi: [Cell; 9],
+    interior_floor: [Option<Dimension>; 2],
 }
 
 const fn index(row: Loc, col: Loc) -> usize {
@@ -116,7 +119,11 @@ impl De9imInterval {
         }
         let mut lo = [Cell::Empty; 9];
         *interval_cell_mut(&mut lo, Loc::Exterior, Loc::Exterior) = Cell::Dim(Dimension::Surface);
-        Self { lo, hi }
+        Self {
+            lo,
+            hi,
+            interior_floor: [None; 2],
+        }
     }
 
     /// Evidence that `row` of the left operand meets `col` of the right at
@@ -134,10 +141,49 @@ impl De9imInterval {
         }
     }
 
+    /// A structural certificate that an operand has at least this interior
+    /// dimension, even before an intersecting witness has been found.
+    #[cfg(test)]
+    pub(crate) fn floor(&mut self, operand: MatrixOperand, dimension: Dimension) {
+        let (index, cap) = match operand {
+            MatrixOperand::Left => (
+                0,
+                max_dimension(
+                    [MatrixCell::Ii, MatrixCell::Ib, MatrixCell::Ie]
+                        .map(|cell| interval_matrix_cell(&self.hi, cell)),
+                ),
+            ),
+            MatrixOperand::Right => (
+                1,
+                max_dimension(
+                    [MatrixCell::Ii, MatrixCell::Bi, MatrixCell::Ei]
+                        .map(|cell| interval_matrix_cell(&self.hi, cell)),
+                ),
+            ),
+        };
+        debug_assert!(
+            cap.is_some_and(|cap| cap >= dimension),
+            "certified interior dimension exceeds the interval cap"
+        );
+        if self.interior_floor[index].is_none_or(|current| current < dimension) {
+            self.interior_floor[index] = Some(dimension);
+        }
+    }
+
     /// Proof that nothing left to do can raise `(row, col)` further.
     pub(crate) const fn settle(&mut self, row: Loc, col: Loc) {
         let minimum = *interval_cell(&self.lo, row, col);
         *interval_cell_mut(&mut self.hi, row, col) = minimum;
+    }
+
+    #[cfg(test)]
+    pub(crate) fn settled_for(&self, cells: CellMask) -> bool {
+        MatrixCell::ALL
+            .into_iter()
+            .filter(|&cell| cells.contains(cell))
+            .all(|cell| {
+                interval_matrix_cell(&self.lo, cell) == interval_matrix_cell(&self.hi, cell)
+            })
     }
 
     #[cfg(test)]
@@ -216,11 +262,14 @@ impl MatrixCells for De9imInterval {
     }
 
     fn interior_dim(&self, operand: MatrixOperand) -> DimRange {
-        let cells = match operand {
-            MatrixOperand::Left => [MatrixCell::Ii, MatrixCell::Ib, MatrixCell::Ie],
-            MatrixOperand::Right => [MatrixCell::Ii, MatrixCell::Bi, MatrixCell::Ei],
+        let (index, cells) = match operand {
+            MatrixOperand::Left => (0, [MatrixCell::Ii, MatrixCell::Ib, MatrixCell::Ie]),
+            MatrixOperand::Right => (1, [MatrixCell::Ii, MatrixCell::Bi, MatrixCell::Ei]),
         };
-        let lower = max_dimension(cells.map(|cell| interval_matrix_cell(&self.lo, cell)));
+        let lower = max_dimension(cells.map(|cell| interval_matrix_cell(&self.lo, cell)))
+            .into_iter()
+            .chain(self.interior_floor[index])
+            .max();
         let upper = max_dimension(cells.map(|cell| interval_matrix_cell(&self.hi, cell)));
         DimRange::from_bounds(lower, upper)
     }

@@ -66,14 +66,14 @@ pub(super) fn take_partition_projection_effect() -> Option<PartitionProjectionEf
 /// Construction handles and the partition nodes they compact into share this
 /// one owner of the rounding-order rule.
 #[derive(Debug)]
-pub(super) struct PointArena<'a> {
+pub(in crate::geometry) struct PointArena<'a> {
     pub(super) unique: &'a [Segment],
     pub(super) recipes: Vec<NodeRecipe>,
     pub(super) rounded: Vec<XY>,
 }
 
 impl<'a> PointArena<'a> {
-    pub(super) fn with_capacity(unique: &'a [Segment], capacity: usize) -> Self {
+    pub(in crate::geometry) fn with_capacity(unique: &'a [Segment], capacity: usize) -> Self {
         Self {
             unique,
             recipes: Vec::with_capacity(capacity),
@@ -93,7 +93,7 @@ impl<'a> PointArena<'a> {
     }
 
     /// A stored endpoint, keeping the source spelling of signed zero.
-    pub(super) fn push_stored(&mut self, point: XY) -> Result<u32> {
+    pub(in crate::geometry) fn push_stored(&mut self, point: XY) -> Result<u32> {
         self.push(NodeRecipe::Stored, point)
     }
 
@@ -104,7 +104,7 @@ impl<'a> PointArena<'a> {
         clippy::indexing_slicing,
         reason = "crossing segment IDs are admitted from the unique-segment candidate sweep"
     )]
-    pub(super) fn push_crossing(&mut self, segments: [u32; 2]) -> Result<u32> {
+    pub(in crate::geometry) fn push_crossing(&mut self, segments: [u32; 2]) -> Result<u32> {
         let [first, second] = segments;
         let (first, second) = (self.unique[first as usize], self.unique[second as usize]);
         let crossing = crossing_point(first, second)?;
@@ -120,7 +120,7 @@ impl<'a> PointArena<'a> {
         self.push(NodeRecipe::Crossing { segments, exact }, crossing.point)
     }
 
-    pub(super) fn push_crossing_with_exact(
+    pub(in crate::geometry) fn push_crossing_with_exact(
         &mut self,
         segments: [u32; 2],
         rounded: XY,
@@ -160,11 +160,11 @@ impl<'a> PointArena<'a> {
         clippy::indexing_slicing,
         reason = "the admitted PointArena node ID addresses its recipe column"
     )]
-    pub(super) fn is_stored(&self, index: u32) -> bool {
+    pub(in crate::geometry) fn is_stored(&self, index: u32) -> bool {
         matches!(self.recipes[index as usize], NodeRecipe::Stored)
     }
 
-    pub(super) fn same_exact_point(&self, left: u32, right: u32) -> Result<bool> {
+    pub(in crate::geometry) fn same_exact_point(&self, left: u32, right: u32) -> Result<bool> {
         if left == right {
             return Ok(true);
         }
@@ -182,7 +182,7 @@ impl<'a> PointArena<'a> {
         clippy::indexing_slicing,
         reason = "the admitted PointArena node ID addresses its rounded point column"
     )]
-    pub(super) fn stored_key(&self, index: u32) -> Option<PointKey> {
+    pub(in crate::geometry) fn stored_key(&self, index: u32) -> Option<PointKey> {
         self.is_stored(index)
             .then(|| PointKey::new(self.rounded[index as usize]))
     }
@@ -191,7 +191,7 @@ impl<'a> PointArena<'a> {
         clippy::indexing_slicing,
         reason = "the admitted PointArena node ID addresses aligned recipe and rounded columns; crossing segment IDs came from the candidate sweep"
     )]
-    pub(super) fn exact(&self, index: u32) -> Result<Cow<'_, [ExactDyadic; 3]>> {
+    pub(in crate::geometry) fn exact(&self, index: u32) -> Result<Cow<'_, [ExactDyadic; 3]>> {
         match &self.recipes[index as usize] {
             NodeRecipe::Stored => {
                 let point = self.rounded[index as usize];
@@ -268,7 +268,7 @@ impl<'a> PointArena<'a> {
 
     /// Order items whose points lie on `segment`'s carrier from its start to
     /// its end, reporting each adjacent pair at one point to `equal`.
-    pub(super) fn order_along<T: Copy>(
+    pub(in crate::geometry) fn order_along<T: Copy>(
         &self,
         segment: Segment,
         items: &mut [T],
@@ -377,13 +377,13 @@ pub(super) fn interpolate_ordinate(
 
 /// Construction handles: interned stored endpoints and crossings, unioned
 /// where they denote one point.
-pub(super) struct Forest<'a> {
+pub(in crate::geometry) struct Forest<'a> {
     parent: Vec<u32>,
     points: PointArena<'a>,
 }
 
 impl<'a> Forest<'a> {
-    pub(super) fn with_capacity(unique: &'a [Segment], capacity: usize) -> Self {
+    pub(in crate::geometry) fn with_capacity(unique: &'a [Segment], capacity: usize) -> Self {
         Self {
             parent: Vec::with_capacity(capacity),
             points: PointArena::with_capacity(unique, capacity),
@@ -394,7 +394,7 @@ impl<'a> Forest<'a> {
         clippy::indexing_slicing,
         reason = "every DSU handle was admitted by adopt and the parent column stays one-for-one with PointArena"
     )]
-    pub(super) fn find(&mut self, mut node: u32) -> u32 {
+    pub(in crate::geometry) fn find(&mut self, mut node: u32) -> u32 {
         while self.parent[node as usize] != node {
             self.parent[node as usize] = self.parent[self.parent[node as usize] as usize];
             node = self.parent[node as usize];
@@ -408,17 +408,17 @@ impl<'a> Forest<'a> {
         handle
     }
 
-    pub(super) fn push_stored(&mut self, point: XY) -> Result<u32> {
+    pub(in crate::geometry) fn push_stored(&mut self, point: XY) -> Result<u32> {
         let handle = self.points.push_stored(point)?;
         Ok(self.adopt(handle))
     }
 
-    pub(super) fn push_crossing(&mut self, segments: [u32; 2]) -> Result<u32> {
+    pub(in crate::geometry) fn push_crossing(&mut self, segments: [u32; 2]) -> Result<u32> {
         let handle = self.points.push_crossing(segments)?;
         Ok(self.adopt(handle))
     }
 
-    pub(super) fn push_crossing_with_exact(
+    pub(in crate::geometry) fn push_crossing_with_exact(
         &mut self,
         segments: [u32; 2],
         rounded: XY,
@@ -441,7 +441,7 @@ impl<'a> Forest<'a> {
         clippy::indexing_slicing,
         reason = "find returns roots from the same admitted forest and PointArena"
     )]
-    pub(super) fn union(&mut self, a: u32, b: u32) -> Result<()> {
+    pub(in crate::geometry) fn union(&mut self, a: u32, b: u32) -> Result<()> {
         let a = self.find(a);
         let b = self.find(b);
         if a == b {
@@ -485,6 +485,11 @@ impl<'a> Forest<'a> {
         };
         self.parent[merge as usize] = keep;
         Ok(())
+    }
+
+    #[cfg(test)]
+    pub(in crate::geometry) fn points(&self) -> &PointArena<'a> {
+        &self.points
     }
 }
 

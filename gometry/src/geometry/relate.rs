@@ -15,6 +15,8 @@
 use crate::geometry::Dimension;
 
 mod de9im;
+#[cfg(test)]
+mod evaluator;
 mod graph_matrix;
 pub(in crate::geometry) use graph_matrix::exact_cartesian_relate;
 mod interval;

@@ -10,7 +10,12 @@ use super::{
     select_operation,
 };
 use crate::error::ResourceError;
+#[cfg(test)]
+use crate::geometry::GeometryErrorKind;
 use crate::geometry::arrangement::IndexedTopology;
+use crate::geometry::source_support::SourcePointLocation;
+#[cfg(test)]
+use crate::geometry::tessellation::exact::ExactDyadic;
 use crate::geometry::{De9im, Dimension, HashMap, Loc, Result, RingKind};
 
 impl ExactSourceInventory {
@@ -40,7 +45,7 @@ impl ExactSourceInventory {
             }
         }
         for node in 0..partition.node_count() {
-            let left = self.node_location_from_facts(
+            let left = self.node_location_and_area_from_facts(
                 0,
                 NodeId(node as u32),
                 &topology,
@@ -50,7 +55,7 @@ impl ExactSourceInventory {
                 &line_boundaries,
                 &facts.point_membership,
             );
-            let right = self.node_location_from_facts(
+            let right = self.node_location_and_area_from_facts(
                 1,
                 NodeId(node as u32),
                 &topology,
@@ -60,11 +65,96 @@ impl ExactSourceInventory {
                 &line_boundaries,
                 &facts.point_membership,
             );
-            if left != Loc::Exterior || right != Loc::Exterior {
-                matrix.set_at_least(left, right, Dimension::Point);
+            if left.location != Loc::Exterior || right.location != Loc::Exterior {
+                matrix.set_at_least(left.location, right.location, Dimension::Point);
             }
         }
         Ok(matrix)
+    }
+
+    #[cfg(test)]
+    pub(in crate::geometry) fn relation_location_samples(
+        &self,
+        partition: &ExactPartition<'_>,
+    ) -> Result<(
+        Vec<([ExactDyadic; 3], [SourcePointLocation; 2])>,
+        Vec<([ExactDyadic; 3], [SourcePointLocation; 2])>,
+    )> {
+        let (topology, edges) = partition.local_topology()?;
+        let global = partition.global_faces(&topology, &edges)?;
+        let winding_rings = self.winding_source_rings();
+        let facts =
+            self.build_cell_facts(partition, &topology, &edges, &global, &winding_rings, false)?;
+        let operands = self.operand_count();
+        let line_boundaries = self.node_source_flags(partition, facts.point_membership.len())?;
+        let mut nodes = Vec::with_capacity(partition.node_count());
+        for index in 0..partition.node_count() {
+            let node = NodeId(u32::try_from(index).map_err(|_| ResourceError::SizeOverflow)?);
+            let exact = partition.exact(node)?.into_owned();
+            let locations = [
+                self.node_location_and_area_from_facts(
+                    0,
+                    node,
+                    &topology,
+                    &edges,
+                    &global,
+                    &facts,
+                    &line_boundaries,
+                    &facts.point_membership,
+                ),
+                self.node_location_and_area_from_facts(
+                    1,
+                    node,
+                    &topology,
+                    &edges,
+                    &global,
+                    &facts,
+                    &line_boundaries,
+                    &facts.point_membership,
+                ),
+            ];
+            nodes.push((exact, locations));
+        }
+
+        let mut spans = Vec::with_capacity(partition.spans.len());
+        let face_area = |face: usize, operand: usize| -> Result<bool> {
+            let index = face
+                .checked_mul(operands)
+                .and_then(|base| base.checked_add(operand))
+                .ok_or(ResourceError::SizeOverflow)?;
+            facts.face_membership.get(index).copied().ok_or_else(|| {
+                GeometryErrorKind::Invalid(
+                    "span face exceeds the exact relation membership table".into(),
+                )
+                .into()
+            })
+        };
+        for (index, span) in partition.spans.iter().enumerate() {
+            let faces = *facts
+                .span_faces
+                .get(index)
+                .expect("each exact span has its incident global faces");
+            let left_face = usize::try_from(faces[0]).map_err(|_| ResourceError::SizeOverflow)?;
+            let right_face = usize::try_from(faces[1]).map_err(|_| ResourceError::SizeOverflow)?;
+            let locations = [
+                SourcePointLocation {
+                    location: self.span_location_from_facts(
+                        0, index, left_face, right_face, &facts, operands,
+                    ),
+                    area: face_area(left_face, 0)? || face_area(right_face, 0)?,
+                },
+                SourcePointLocation {
+                    location: self.span_location_from_facts(
+                        1, index, left_face, right_face, &facts, operands,
+                    ),
+                    area: face_area(left_face, 1)? || face_area(right_face, 1)?,
+                },
+            ];
+            let start = partition.exact(span.start)?.into_owned();
+            let end = partition.exact(span.end)?.into_owned();
+            spans.push((super::homogeneous_midpoint(&start, &end)?, locations));
+        }
+        Ok((nodes, spans))
     }
 
     #[expect(
@@ -486,7 +576,7 @@ impl ExactSourceInventory {
         clippy::arithmetic_side_effects,
         reason = "flattened fact indices stay within their node/span rows; residual degree is only a mod-2 boundary count"
     )]
-    pub(super) fn node_location_from_facts(
+    pub(super) fn node_location_and_area_from_facts(
         &self,
         operand: usize,
         node: NodeId,
@@ -496,7 +586,7 @@ impl ExactSourceInventory {
         facts: &CellFacts,
         line_boundaries: &[bool],
         point_membership: &[bool],
-    ) -> Loc {
+    ) -> SourcePointLocation {
         let operands = self.operand_count();
         let range = topology.starts[node.0 as usize] as usize
             ..topology.starts[node.0 as usize + 1] as usize;
@@ -517,10 +607,13 @@ impl ExactSourceInventory {
             (any, all)
         };
         if any_area {
-            return if all_area {
-                Loc::Interior
-            } else {
-                Loc::Boundary
+            return SourcePointLocation {
+                location: if all_area {
+                    Loc::Interior
+                } else {
+                    Loc::Boundary
+                },
+                area: true,
             };
         }
 
@@ -538,16 +631,22 @@ impl ExactSourceInventory {
         }
         let node_index = node.0 as usize * operands + operand;
         if line {
-            return if line_boundaries[node_index] ^ (residual_degree % 2 == 1) {
-                Loc::Boundary
-            } else {
-                Loc::Interior
+            return SourcePointLocation {
+                location: if line_boundaries[node_index] ^ (residual_degree % 2 == 1) {
+                    Loc::Boundary
+                } else {
+                    Loc::Interior
+                },
+                area: false,
             };
         }
-        if point_membership[node_index] {
-            Loc::Interior
-        } else {
-            Loc::Exterior
+        SourcePointLocation {
+            location: if point_membership[node_index] {
+                Loc::Interior
+            } else {
+                Loc::Exterior
+            },
+            area: false,
         }
     }
 
@@ -608,7 +707,7 @@ impl ExactSourceInventory {
         let mut boundary_nodes = Vec::new();
         for node in 0..partition.node_count() {
             let node = NodeId(node as u32);
-            if self.node_location_from_facts(
+            if self.node_location_and_area_from_facts(
                 0,
                 node,
                 topology,
@@ -617,7 +716,7 @@ impl ExactSourceInventory {
                 &facts,
                 &line_boundaries,
                 &facts.point_membership,
-            ) == crate::geometry::Loc::Boundary
+            ).location == crate::geometry::Loc::Boundary
             {
                 boundary_nodes.push(node);
             }

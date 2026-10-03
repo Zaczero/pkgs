@@ -416,7 +416,7 @@ impl PolygonPointIndex {
         location.visit_indexed_polygon_views(rings)
     }
 
-    fn location_and_area(&self, point: Point) -> SourcePointLocation {
+    pub(in crate::geometry) fn location_and_area(&self, point: Point) -> SourcePointLocation {
         if let Some(occupied) = self.occupied_off_boundary(point.x, point.y) {
             return SourcePointLocation {
                 location: if occupied {
@@ -682,7 +682,7 @@ impl PointBatchTester {
         self.location_and_area(point).location
     }
 
-    fn location_and_area(&self, point: Point) -> SourcePointLocation {
+    pub(in crate::geometry) fn location_and_area(&self, point: Point) -> SourcePointLocation {
         match self {
             Self::Polygon { index } => index.location_and_area(point),
             Self::MultiPolygon { parts } => {

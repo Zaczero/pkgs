@@ -294,6 +294,19 @@ pub(in crate::geometry) struct SourcePointLocation {
     pub(in crate::geometry) area: bool,
 }
 
+impl SourcePointLocation {
+    /// Project a full node query onto the areal label of a one-dimensional
+    /// ring atom. Point and line support cannot label that atom.
+    #[cfg(test)]
+    pub(in crate::geometry) const fn edge_atom_location(self) -> Loc {
+        if self.area {
+            self.location
+        } else {
+            Loc::Exterior
+        }
+    }
+}
+
 pub(in crate::geometry) trait RingEdgeCandidates {
     fn ring_view(&self) -> RingView<'_>;
     fn visit_stabbed_edges(
@@ -2042,6 +2055,21 @@ pub(crate) fn cartesian_row_point_location(
         .expect("stored point location does not construct exact values")
 }
 
+#[cfg(test)]
+pub(in crate::geometry) fn cartesian_row_point_location_and_area(
+    row: storage::ShapeRow<'_>,
+    point: Point,
+) -> SourcePointLocation {
+    let mut location = StreamingLocation::for_stored_point(point);
+    let mut owners = None;
+    location
+        .visit_row(row, &mut owners)
+        .expect("stored point location does not construct exact values");
+    location
+        .finish()
+        .expect("stored point location does not construct exact values")
+}
+
 /// Boolean point coverage is a set-membership query: duplicate components can
 /// change a line point's boundary/interior label, but not whether it is present.
 pub(crate) fn cartesian_point_covers(shape: &Shape, point: Point) -> bool {
@@ -2106,6 +2134,29 @@ pub(in crate::geometry) fn cartesian_exact_offset_location_and_area(
 }
 
 #[cfg(test)]
+pub(in crate::geometry) fn cartesian_row_exact_point_location_and_area(
+    row: storage::ShapeRow<'_>,
+    point: &[ExactDyadic; 3],
+) -> Result<SourcePointLocation> {
+    let mut location = StreamingLocation::for_exact_point(point)?;
+    let mut owners = None;
+    location.visit_row(row, &mut owners)?;
+    location.finish()
+}
+
+#[cfg(test)]
+pub(in crate::geometry) fn cartesian_row_exact_offset_location_and_area(
+    row: storage::ShapeRow<'_>,
+    point: &[ExactDyadic; 3],
+    direction: &[ExactDyadic; 2],
+) -> Result<SourcePointLocation> {
+    let mut location = StreamingLocation::for_exact_offset(point, direction)?;
+    let mut owners = None;
+    location.visit_row(row, &mut owners)?;
+    location.finish()
+}
+
+#[cfg(test)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(in crate::geometry) enum OccupiedToward {
     Yes,
@@ -2132,6 +2183,51 @@ mod tests {
 
     fn location(wkt: &str, x: f64, y: f64) -> Loc {
         cartesian_point_location(&shape(wkt), Point::new_raw_xy(x, y))
+    }
+
+    #[test]
+    fn boundary_tangent_probe_remains_unresolved() {
+        let polygon = shape("POLYGON ((0 0,2 0,2 2,0 2,0 0))");
+        let plan = crate::geometry::PreparedPlan::transient(&polygon);
+        let point = [
+            crate::geometry::tessellation::exact::ExactDyadic::from_f64(1.0),
+            crate::geometry::tessellation::exact::ExactDyadic::from_f64(0.0),
+            crate::geometry::tessellation::exact::ExactDyadic::one(),
+        ];
+        let tangent = [
+            crate::geometry::tessellation::exact::ExactDyadic::one(),
+            crate::geometry::tessellation::exact::ExactDyadic::from_f64(0.0),
+        ];
+        let location = plan.locate_exact_offset(&point, &tangent).unwrap();
+        assert_eq!(location, SourcePointLocation {
+            location: Loc::Boundary,
+            area: true,
+        });
+        assert_eq!(occupied_toward(location), OccupiedToward::Tangent);
+    }
+
+    #[test]
+    fn edge_atom_label_drops_isolated_point_support_at_an_external_hole_vertex() {
+        let source = shape(
+            "GEOMETRYCOLLECTION (\
+             POLYGON ((0 0,2 0,2 2,0 2,0 0),\
+                      (10 10,12 10,12 12,10 12,10 10)),\
+             POINT (10 10))",
+        );
+        let node = cartesian_point_location_and_area(&source, Point::new_raw_xy(10.0, 10.0));
+        assert_eq!(node.location, Loc::Interior);
+        assert!(!node.area);
+        assert_eq!(node.edge_atom_location(), Loc::Exterior);
+
+        let filled = shape(
+            "GEOMETRYCOLLECTION (\
+             POLYGON ((0 0,20 0,20 20,0 20,0 0)),\
+             POINT (5 5))",
+        );
+        let node = cartesian_point_location_and_area(&filled, Point::new_raw_xy(5.0, 5.0));
+        assert_eq!(node.location, Loc::Interior);
+        assert!(node.area);
+        assert_eq!(node.edge_atom_location(), Loc::Interior);
     }
 
     fn assert_streaming_matches_reference(shape: &Shape, point: Point) {

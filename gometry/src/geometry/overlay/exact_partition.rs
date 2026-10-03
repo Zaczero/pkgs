@@ -54,6 +54,8 @@ mod metrics;
 mod rays;
 mod relate;
 
+#[cfg(test)]
+pub(in crate::geometry) use construction::Forest as ExactPointForest;
 use construction::{
     AxisValue, PointArena, interpolate_ordinate, parameter_along, partition_unique_segments,
     partition_unique_segments_in_window, partition_unique_segments_unbudgeted,
@@ -2951,6 +2953,33 @@ pub(in crate::geometry) struct StagedExactSources {
     isolated_points: Vec<Point>,
     isolated_operands: Vec<u32>,
     line_boundaries: Vec<(u32, PointKey)>,
+    #[cfg(test)]
+    relation_components: Option<RelationComponents>,
+}
+
+#[cfg(test)]
+#[derive(Default)]
+struct RelationComponents {
+    components: Vec<StagedSourceComponent>,
+    source_order: Vec<StagedRelationItem>,
+}
+
+/// A source line or ring and the contiguous pool segment range it contributed.
+#[cfg(test)]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(in crate::geometry) struct StagedSourceComponent {
+    pub(in crate::geometry) operand: u32,
+    pub(in crate::geometry) segments: Range<usize>,
+    pub(in crate::geometry) ring: Option<u32>,
+    pub(in crate::geometry) ring_kind: Option<RingKind>,
+    pub(in crate::geometry) has_nonzero_segment: bool,
+}
+
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(in crate::geometry) enum StagedRelationItem {
+    Component(usize),
+    Isolated(usize),
 }
 
 #[cfg_attr(
@@ -2987,16 +3016,23 @@ impl StagedExactSources {
             isolated_points: Vec::new(),
             isolated_operands: Vec::new(),
             line_boundaries: Vec::new(),
+            #[cfg(test)]
+            relation_components: None,
         }
     }
 
     fn from_rows<'a>(
         rows: impl ExactSizeIterator<Item = storage::ShapeRow<'a>>,
     ) -> Result<Self> {
-        Self::stage_rows(rows, false, |staged, row, operand| {
-            let mut owners = SharedShapeOwners::for_collections();
-            staged.append_row(row, operand, &mut owners)
-        })
+        Self::stage_rows(
+            rows,
+            false,
+            |_| {},
+            |staged, row, operand| {
+                let mut owners = SharedShapeOwners::for_collections();
+                staged.append_row(row, operand, &mut owners)
+            },
+        )
     }
 
     /// Stage every source occurrence. XY-only consumers can skip retaining
@@ -3005,7 +3041,29 @@ impl StagedExactSources {
         rows: impl ExactSizeIterator<Item = storage::ShapeRow<'a>>,
         xy_only: bool,
     ) -> Result<Self> {
-        Self::stage_rows(rows, xy_only, |staged, row, operand| match row {
+        Self::stage_rows(rows, xy_only, |_| {}, Self::append_occurrence_row)
+    }
+
+    /// Relation staging keeps each component boundary without partition
+    /// deduplication, including closed lines with no endpoint occurrences.
+    #[cfg(test)]
+    pub(in crate::geometry) fn from_rows_for_relate<'a>(
+        rows: impl ExactSizeIterator<Item = storage::ShapeRow<'a>>,
+    ) -> Result<Self> {
+        Self::stage_rows(
+            rows,
+            true,
+            |staged| staged.relation_components = Some(RelationComponents::default()),
+            Self::append_occurrence_row,
+        )
+    }
+
+    fn append_occurrence_row(
+        staged: &mut Self,
+        row: storage::ShapeRow<'_>,
+        operand: u32,
+    ) -> Result<()> {
+        match row {
             storage::ShapeRow::Shape(shape) => {
                 staged.append_shape_with_occurrences(shape, operand)
             },
@@ -3015,15 +3073,17 @@ impl StagedExactSources {
             row @ (storage::ShapeRow::Point(_) | storage::ShapeRow::Packed(_)) => {
                 staged.append_row(row, operand, &mut SharedShapeOwners::for_collections())
             },
-        })
+        }
     }
 
     fn stage_rows<'a>(
         rows: impl ExactSizeIterator<Item = storage::ShapeRow<'a>>,
         xy_only: bool,
+        initialize: impl FnOnce(&mut Self),
         mut append: impl FnMut(&mut Self, storage::ShapeRow<'a>, u32) -> Result<()>,
     ) -> Result<Self> {
         let mut staged = Self::with_xy_only(rows.len(), xy_only);
+        initialize(&mut staged);
         for (operand, row) in rows.enumerate() {
             let operand = u32::try_from(operand).map_err(|_| ResourceError::SizeOverflow)?;
             append(&mut staged, row, operand)?;
@@ -3083,6 +3143,20 @@ impl StagedExactSources {
         &self.line_boundaries
     }
 
+    #[cfg(test)]
+    pub(in crate::geometry) fn relation_components(&self) -> Option<&[StagedSourceComponent]> {
+        self.relation_components
+            .as_ref()
+            .map(|layout| layout.components.as_slice())
+    }
+
+    #[cfg(test)]
+    pub(in crate::geometry) fn relation_source_order(&self) -> Option<&[StagedRelationItem]> {
+        self.relation_components
+            .as_ref()
+            .map(|layout| layout.source_order.as_slice())
+    }
+
     fn append_row(
         &mut self,
         row: storage::ShapeRow<'_>,
@@ -3108,8 +3182,7 @@ impl StagedExactSources {
                     coords,
                     row.vertex_window().expect("line row has a vertex window"),
                 );
-                self.append_line_coords(&coords, operand);
-                Ok(())
+                self.append_line_coords(&coords, operand)
             },
             ShapeRow::Packed(row @ PackedRow::Polygons { coords, .. }) => {
                 let rings = row.polygon_rings().expect("polygon row has a ring window");
@@ -3162,8 +3235,7 @@ impl StagedExactSources {
                 Ok(())
             },
             crate::geometry::Component::LineString(line) => {
-                self.append_line_coords(line.as_coords(), operand);
-                Ok(())
+                self.append_line_coords(line.as_coords(), operand)
             },
             crate::geometry::Component::Polygon(polygon) => self.append_polygon(polygon, operand),
         }
@@ -3213,18 +3285,28 @@ impl StagedExactSources {
     /// One point with no segment to carry it: the three isolated columns move
     /// together, so they reserve together.
     fn append_isolated_point(&mut self, point: Point, operand: u32) {
+        #[cfg(test)]
+        let index = self.isolated.len();
         self.isolated.push(point.xy());
         self.isolated_points.push(point);
         self.isolated_operands.push(operand);
+        #[cfg(test)]
+        if let Some(components) = &mut self.relation_components {
+            components
+                .source_order
+                .push(StagedRelationItem::Isolated(index));
+        }
     }
 
     fn append_line_coords(
         &mut self,
         line: &(impl crate::geometry::Coordinates + ?Sized),
         operand: u32,
-    ) {
+    ) -> Result<()> {
         self.retain_source_ordinates(line);
         self.reserve_segments(line.coord_count().saturating_sub(1));
+        #[cfg(test)]
+        let segment_start = self.segments.len();
         let mut first = None;
         let mut last = None;
         for [start, end] in line.segment_pairs() {
@@ -3244,16 +3326,31 @@ impl StagedExactSources {
                 None,
             );
         }
+        #[cfg(test)]
+        if let Some(components) = &mut self.relation_components {
+            let component = components.components.len();
+            let has_nonzero_segment = first.is_some();
+            components.components.push(StagedSourceComponent {
+                operand,
+                segments: segment_start..self.segments.len(),
+                ring: None,
+                ring_kind: None,
+                has_nonzero_segment,
+            });
+            if has_nonzero_segment {
+                components
+                    .source_order
+                    .push(StagedRelationItem::Component(component));
+            }
+        }
         if first.is_none() {
             self.isolated.reserve(line.coord_count());
             self.isolated_points.reserve(line.coord_count());
             self.isolated_operands.reserve(line.coord_count());
             for point in line.iter_coords() {
-                self.isolated.push(point.xy());
-                self.isolated_points.push(point);
-                self.isolated_operands.push(operand);
+                self.append_isolated_point(point, operand);
             }
-            return;
+            return Ok(());
         }
         if let (Some(first), Some(last)) = (first, last)
             && !same_point(first, last)
@@ -3262,6 +3359,7 @@ impl StagedExactSources {
             self.line_boundaries.push((operand, PointKey::new(first)));
             self.line_boundaries.push((operand, PointKey::new(last)));
         }
+        Ok(())
     }
 
     fn append_polygon(&mut self, polygon: &Polygon, operand: u32) -> Result<()> {
@@ -3297,6 +3395,8 @@ impl StagedExactSources {
             } else {
                 RingKind::Winding
             };
+            #[cfg(test)]
+            let segment_start = self.segments.len();
             self.ring_polygons.push(polygon_id);
             self.ring_holes.push(ring_index > 0);
             self.ring_kinds.push(kind);
@@ -3306,20 +3406,35 @@ impl StagedExactSources {
             let mut pairs = ring.segment_pairs();
             let [first, first_end] = pairs.next().expect("a Ring has at least four coordinates");
             let mut pairs = std::iter::once([first, first_end]).chain(pairs).peekable();
+            #[cfg(test)]
+            let mut has_nonzero_segment = false;
             while let Some([start, mut end]) = pairs.next() {
                 if pairs.peek().is_none() {
                     end = first;
                 }
-                self.push_segment(
-                    Segment {
-                        start: start.xy(),
-                        end: end.xy(),
-                    },
-                    &[start, end],
+                let segment = Segment {
+                    start: start.xy(),
+                    end: end.xy(),
+                };
+                #[cfg(test)]
+                if !same_point(segment.start, segment.end) {
+                    has_nonzero_segment = true;
+                }
+                self.push_segment(segment, &[start, end], operand, Some(ring_id), Some(kind));
+            }
+            #[cfg(test)]
+            if let Some(components) = &mut self.relation_components {
+                let component = components.components.len();
+                components.components.push(StagedSourceComponent {
                     operand,
-                    Some(ring_id),
-                    Some(kind),
-                );
+                    segments: segment_start..self.segments.len(),
+                    ring: Some(ring_id),
+                    ring_kind: Some(kind),
+                    has_nonzero_segment,
+                });
+                components
+                    .source_order
+                    .push(StagedRelationItem::Component(component));
             }
         }
         self.polygon_rings[operand as usize].push(first_ring..self.ring_count);
@@ -3414,7 +3529,7 @@ fn rectangle_side_outward(
     Ok(None)
 }
 
-fn homogeneous_midpoint(
+pub(in crate::geometry) fn homogeneous_midpoint(
     left: &[ExactDyadic; 3],
     right: &[ExactDyadic; 3],
 ) -> Result<[ExactDyadic; 3]> {
