@@ -39,7 +39,7 @@ def _assert_geodesic_distance(actual: float, expected: float, label: str) -> Non
     )
 
 
-def _geodesic_dense_line(
+def _chart_edge_dense_line(
     start: tuple[float, float], end: tuple[float, float], count: int
 ) -> gm.LineString:
     base = gm.LineString([start, end], crs=4326)
@@ -88,9 +88,9 @@ def _subsample_line(line: gm.LineString, stride: int) -> gm.LineString:
     return gm.LineString(sampled, crs=line.crs)
 
 
-def test_geodesic_distance_dense_line_matches_coarse_same_shape() -> None:
-    """≥64-segment geodesic line matches a subsampled twin on the same path."""
-    dense = _geodesic_dense_line((0.0, 0.0), (10.0, 0.0), 96)
+def test_geographic_distance_dense_chart_line_matches_coarse_same_shape() -> None:
+    """A subsampled chart-edge line retains the dense line's support."""
+    dense = _chart_edge_dense_line((0.0, 0.0), (10.0, 0.0), 96)
     coarse = _subsample_line(dense, stride=12)
     probe = gm.Point(5.0, 0.5, crs=4326)
     assert len(list(dense.coords)) >= MIN_BVH_SEGMENTS
@@ -118,7 +118,7 @@ def test_geodesic_distance_dense_ring_line_matches_coarser_circle() -> None:
     )
 
 
-def test_geodesic_distance_dense_line_matches_pyproj_segment_oracle() -> None:
+def test_geographic_distance_dense_chart_line_matches_pyproj_segment_oracle() -> None:
     """Point-to-wavy-line distance matches a pyproj Geod segment minimum."""
     line = _wavy_dense_line(-2.0, 0.0, 72)
     probe = gm.Point(0.0, 0.5, crs=4326)
@@ -152,12 +152,12 @@ def test_geodesic_distance_dense_line_matches_pyproj_segment_oracle() -> None:
     ],
     ids=['antimeridian-seam', 'near-antipodal-probe'],
 )
-def test_dense_seam_and_near_antipodal_lines_match_coarse_twins(
+def test_dense_seam_and_long_chart_edges_match_coarse_twins(
     start: tuple[float, float],
     end: tuple[float, float],
     probe: tuple[float, float],
 ) -> None:
-    dense = _geodesic_dense_line(start, end, 65)
+    dense = _chart_edge_dense_line(start, end, 65)
     coarse = _subsample_line(dense, stride=8)
     point = gm.Point(*probe, crs=4326)
     assert len(list(dense.coords)) - 1 >= MIN_BVH_SEGMENTS

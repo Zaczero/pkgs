@@ -3,11 +3,13 @@ use std::sync::Arc;
 use geographiclib_rs::Geodesic;
 
 use crate::crs::geodesic::{
-    AuthalicSeries, CrsError, CrsInfo, Result, ensure_geodesic_lonlat_crs_at,
+    AuthalicSeries, CrsError, CrsInfo, EllipsoidMetric, Result, ensure_geodesic_lonlat_crs_at,
+    ensure_geographic_domain_in_frame, normalize, with_geodesic_cache_at,
     with_geodesic_chart_cache_at,
 };
-use crate::crs::info_with_state;
+use crate::crs::{RuntimeState, info_with_state};
 use crate::geographic::GeographicFrame;
+use crate::geometry::Shape;
 use crate::text::str_contains_ignore_ascii_case;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -130,6 +132,24 @@ impl GeodesicMetric {
             state: Arc::clone(state),
         })
     }
+}
+
+pub(crate) fn with_geographic_metric_erased_at<T, E>(
+    crs: &str,
+    shapes: &[&Shape],
+    state: &RuntimeState,
+    map_err: impl Fn(crate::error::Error) -> E,
+    f: impl FnOnce(&str, &EllipsoidMetric<'_>) -> Result<T, E>,
+) -> Result<T, E> {
+    let frame = geographic_metric_frame_at(crs, state).map_err(&map_err)?;
+    for shape in shapes {
+        ensure_geographic_domain_in_frame(frame, shape).map_err(&map_err)?;
+    }
+    let crs = normalize(crs).map_err(&map_err)?;
+    with_geodesic_cache_at(&crs, state, map_err, |geodesic| {
+        let metric = EllipsoidMetric::for_geodesic_at_frame(geodesic, state.generation, frame);
+        f(&crs, &metric)
+    })
 }
 
 /// A [`MetricModel`] with its batch-invariant CRS resolution done once.

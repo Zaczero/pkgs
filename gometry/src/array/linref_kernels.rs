@@ -52,7 +52,7 @@ pub(crate) fn line_locate_point_on_lines(
     let result = py
         .detach(move || match &model {
             crs::MetricModel::Geodesic { crs, state, .. } => {
-                crs::with_geodesic_coordseq_collect_rows_at(crs, state, |metric| {
+                crs::with_geographic_coordseq_collect_rows_at(crs, state, |metric| {
                     let map = row_map.as_deref();
                     (0..logical_len)
                         .map(|row| {
@@ -61,7 +61,7 @@ pub(crate) fn line_locate_point_on_lines(
                             }
                             let line = GeometryArrayStorage::line_view(&coords, &offsets, map, row);
                             degrade_linref_float(
-                                crs::geodesic_line_locate_coordseq(
+                                crs::chart_line_locate_coordseq(
                                     &line,
                                     queries.get(row),
                                     normalized,

@@ -466,7 +466,7 @@ fn search_point_segment(
                 geodesic_counters::segment_interval_pop();
                 if minimum.distance >= interval.lower
                     && minimum.distance - interval.lower
-                        <= GeodesicNumericalPolicy::new(geodesic.a).normalized_minimum_gap()
+                        <= GeodesicNumericalPolicy::new(geodesic.a).minimum_gap()
                 {
                     lower = interval.lower;
                     return finish_query(prepared, query, minimum, lower);
@@ -482,7 +482,7 @@ fn search_point_segment(
                     update_minimum(&mut minimum, closed.distance, closed.along);
                     lower = lower.max(interval.lower).max(closed_lower);
                     if minimum.distance - lower
-                        <= GeodesicNumericalPolicy::new(geodesic.a).normalized_minimum_gap()
+                        <= GeodesicNumericalPolicy::new(geodesic.a).minimum_gap()
                     {
                         return finish_query(prepared, query, minimum, lower);
                     }
@@ -529,7 +529,7 @@ fn search_point_segment(
                 }
                 if let Some(next) = scratch.inner.peek()
                     && minimum.distance - next.lower
-                        <= GeodesicNumericalPolicy::new(geodesic.a).normalized_minimum_gap()
+                        <= GeodesicNumericalPolicy::new(geodesic.a).minimum_gap()
                 {
                     lower = next.lower;
                     return finish_query(prepared, query, minimum, lower);
@@ -593,7 +593,7 @@ fn complete_minimum_bound(
 ) -> GeodesicMinimum {
     let policy = GeodesicNumericalPolicy::new(prepared.geodesic.a);
     let evaluation_error = policy.evaluation_allowance(POINT_SEGMENT_BACKEND_SLACK_MULTIPLIER);
-    let numerical_gap = policy.normalized_minimum_gap();
+    let numerical_gap = policy.minimum_gap();
     GeodesicMinimum {
         witness,
         lower: lower.max((witness.distance - evaluation_error - numerical_gap).max(0.0)),
@@ -645,7 +645,7 @@ fn convex_cell_minimum(
     let center_sample = prepared.sample(point, center, false)?;
     update_minimum(minimum, center_sample.distance, center);
     let half_width = width / 2.0;
-    let Some((omega, _, d_star)) = geodesic_curvature_domain(geodesic) else {
+    let Some((omega, _, d_star)) = geodesic_curvature_domain(geodesic.a, geodesic._b) else {
         return Ok(None);
     };
     let d = center_sample.distance + half_width + backend_floor(geodesic);
@@ -804,9 +804,7 @@ fn stationary_trial(left: f64, left_slope: f64, right: f64, right_slope: f64) ->
     }
 }
 
-pub(crate) fn geodesic_curvature_domain(geodesic: &Geodesic) -> Option<(f64, f64, f64)> {
-    let a = geodesic.a;
-    let b = geodesic._b;
+pub(crate) fn geodesic_curvature_domain(a: f64, b: f64) -> Option<(f64, f64, f64)> {
     if !(a.is_finite() && a > 0.0 && b.is_finite() && b > 0.0) {
         return None;
     }

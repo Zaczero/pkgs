@@ -562,8 +562,8 @@ def test_geodesic_nearest_points_collection_tie_keeps_source_order() -> None:
     assert (left_nearest.x, left_nearest.y) == (-1.0, 0.0)
 
 
-def test_geodesic_lrs_is_metre_based_and_self_consistent() -> None:
-    """Geographic LRS absolute distances are ellipsoidal meters, consistent with length()."""
+def test_geographic_lrs_is_metre_based_and_self_consistent() -> None:
+    """Meridian chart edges are geodesics; geographic LRS reports ellipsoidal metres."""
     line = gm.LineString([(0, 0), (0, 10)], crs=4326)
     length = line.length
     assert length == pytest.approx(1105854.8332343723)
@@ -574,15 +574,15 @@ def test_geodesic_lrs_is_metre_based_and_self_consistent() -> None:
     assert line.line_substring(0, loc).length == pytest.approx(loc)
 
 
-def test_normalized_lrs_fraction_is_geodesic() -> None:
-    """normalized=True LRS fractions are consistent with geodesic length()."""
+def test_normalized_lrs_fraction_uses_chart_edge_length() -> None:
+    """normalized=True uses the chart-edge total; a meridian is also geodesic."""
     line = gm.LineString([(0, 0), (0, 10)], crs=4326)
     half = line.line_interpolate(0.5, normalized=True)
     loc = line.line_locate(half, normalized=True)
     assert loc == pytest.approx(0.5)
 
 
-def test_geodesic_lrs_zm_interpolation_never_corrupts_xy() -> None:
+def test_geographic_chart_lrs_zm_interpolation_never_corrupts_xy() -> None:
     """A huge-but-finite Z must not overflow into a non-finite ordinate that
     snaps the whole geodesic point back to an endpoint (robust convex form).
     """

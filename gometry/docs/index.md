@@ -86,11 +86,12 @@ interiors.
 
 The usual stack makes you remember whether a metric means degrees or meters. gometry has one
 [`geom.area`][gometry.Geometry.area], one [`geom.length`][gometry.Geometry.length], one [`gm.distance(a, b)`][gometry.distance] — the geometry's CRS decides how
-they are computed and the result is **native** for that CRS: geographic shape
-area and length measure straight longitude/latitude edges on the ellipsoid,
-point distances follow geodesics, a projected CRS uses its native linear units
-(feet stay feet; meters stay meters), and a CRS-free geometry stays in raw
-coordinate units. Geographic
+they are computed and the result is **native** for that CRS: by default,
+geographic shape area, length, and linear referencing measure straight
+longitude/latitude chart edges on the ellipsoid, while point-to-point distances
+follow geodesics. A projected CRS uses its native linear units (feet stay feet;
+meters stay meters), and a CRS-free geometry stays in raw coordinate units.
+`unit='planar'` selects Cartesian measurement in stored coordinates. Geographic
 longitude and latitude values remain in the CRS's native angular units; the
 periodic seam, pole, and prime meridian come from that same frame. Pass
 `unit='meters'` for forced SI, or reproject with [`geom.to_crs(...)`][gometry.Geometry.to_crs] to change the frame.

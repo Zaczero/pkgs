@@ -462,6 +462,17 @@ Linear referencing uses the geometry's CRS metric by default. Values are absolut
 distances unless `normalized=True`, when `0.0` and `1.0` mean the start and end.
 Pass `basis='m'` when the line's M ordinate is the route measure instead.
 
+With CRS-aware units (the default on a geographic CRS), linework edges are
+straight in the CRS's longitude/latitude chart and LRS measures their
+ellipsoidal arclength, rather than the shortest geodesic between each pair of
+vertices. `line_locate` minimizes against those same chart edges and returns the
+first route station on an exact distance tie. Repeated support and self-crossings
+can have several stations at one location, so locate/interpolate is not a unique
+inverse there.
+An independently interpolated point has canonical longitude, while a
+`line_substring` cut stays in the retained source edge's lifted chart.
+`unit='planar'` instead uses Cartesian distance in the stored coordinate space.
+
 Zero-length X/Y segments consume no distance, but their stored vertices remain
 on the route. Interpolation at an interior prefix shared by a zero-length run
 selects its first stored vertex; normalized `0.0` and `1.0` select the first
@@ -500,6 +511,19 @@ section between two measures. They require every vertex to carry a monotonic,
 non-decreasing M. The extent accessors mirror the Z family:
 [`min_m`][gometry.Geometry.min_m] / [`max_m`][gometry.Geometry.max_m] summarize the measure span (`None` for a scalar, `nan` for an
 array element, when no vertex carries M).
+
+Within each edge, M varies linearly with arclength. For increasing endpoint
+measures, a requested `m` selects the arclength fraction
+`(m - m0) / (m1 - m0)`; equal endpoint measures remain constant.
+Z is carried at that same fraction, and `line_locate(..., basis='m')`
+converts the nearest point's arclength fraction back to M. On a geographic
+CRS this is ellipsoidal arclength along the straight source-chart edge;
+the fraction is generally different from its longitude/latitude parameter.
+For example, a WGS 84 meridian from latitude −10° to 10° with endpoint
+measures 100 and 300 places M=150 at latitude approximately
+−5.00037949475414°, not −5°. Distance-basis interpolation and substring use
+the same Z/M carry rule; `interpolate_m` assigns vertex measures by cumulative
+edge arclength without moving X/Y/Z.
 
 **Empty input and bad measures.** Empty linework has no positions, so every
 form answers it instead of raising: `line_locate` returns `nan`,

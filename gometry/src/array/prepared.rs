@@ -901,7 +901,7 @@ mod frame_cache_row_tests {
     use super::*;
     use crate::crs::frame::{Frame, crs_arc_static};
     use crate::geographic::GeographicFrame;
-    use crate::geometry::{CoordSeq, GeographicTopologyRoute, LineSeq, PlanarMetric, Point};
+    use crate::geometry::{CoordSeq, GeographicTopologyRoute, LineSeq, Point};
     use crate::test_support::allocation_count;
 
     fn points() -> PyGeometryArray {
@@ -1457,6 +1457,12 @@ mod frame_cache_row_tests {
 
     #[test]
     fn retags_share_the_inner_keyed_frame_cache_and_prepared_plan() {
+        let geodesic = geographiclib_rs::Geodesic::wgs84();
+        let metric = crate::crs::EllipsoidMetric::for_geodesic_at_frame(
+            &geodesic,
+            4,
+            crate::geographic::GeographicFrame::crs84(),
+        );
         let a = mixed_shapes().retag_frame(Frame::Crs(crs_arc_static("EPSG:4326")));
         let prepared_a = a
             .prepared_row(1, a.storage().row(1))
@@ -1464,13 +1470,13 @@ mod frame_cache_row_tests {
             .into_owned_plan();
         let cache_a = a.row_products.frame_cache(1);
         let index_a = prepared_a
-            .geodesic_line_index(
+            .chart_line_index(
                 &cache_a,
                 "EPSG:4326",
                 6_378_137.0,
                 1.0 / 298.257_223_563,
                 4,
-                &PlanarMetric,
+                &metric,
             )
             .expect("first keyed line index");
 
@@ -1483,13 +1489,13 @@ mod frame_cache_row_tests {
         assert!(Arc::ptr_eq(&prepared_a, &prepared_b));
         assert!(Arc::ptr_eq(&cache_a, &cache_b));
         let index_b = prepared_b
-            .geodesic_line_index(
+            .chart_line_index(
                 &cache_b,
                 "EPSG:4269",
                 6_378_137.0,
                 1.0 / 298.257_222_101,
                 4,
-                &PlanarMetric,
+                &metric,
             )
             .expect("retagged keyed line index");
         assert!(!Arc::ptr_eq(&index_a, &index_b));
@@ -1498,13 +1504,13 @@ mod frame_cache_row_tests {
         let cache_a2 = back_to_a.row_products.frame_cache(1);
         assert!(Arc::ptr_eq(&cache_a, &cache_a2));
         let index_a2 = prepared_a
-            .geodesic_line_index(
+            .chart_line_index(
                 &cache_a2,
                 "EPSG:4326",
                 6_378_137.0,
                 1.0 / 298.257_223_563,
                 4,
-                &PlanarMetric,
+                &metric,
             )
             .expect("restored keyed line index");
         assert!(!Arc::ptr_eq(&index_a, &index_a2));

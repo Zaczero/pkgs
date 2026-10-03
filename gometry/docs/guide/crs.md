@@ -7,9 +7,12 @@ description: CRS declaration and transformation in gometry — units for area, l
 A coordinate reference system (CRS) is the contract that says what your numbers
 *mean*: whether `(21.0, 52.0)` is "21 degrees east, 52 degrees north on the
 [WGS 84](https://epsg.org/crs_4326/WGS-84.html) ellipsoid" or "21 meters east of
-some local origin." The CRS is also gometry's metric selector: geographic CRSs
-use geodesic metres and square metres, projected CRSs use native linear units
-and their squared area units, and CRS-free geometries use raw coordinate units.
+some local origin." The CRS is also gometry's metric selector: by default,
+geographic shape area, length, and linear referencing use the ellipsoid along
+straight longitude/latitude chart edges, while point-to-point distances follow
+geodesics. `unit='planar'` explicitly selects Cartesian measurement in stored
+coordinates. Projected CRSs use native linear units and their squared area
+units, and CRS-free geometries use raw coordinate units.
 Geographic coordinates themselves remain in the CRS-native angular units, which
 may be degrees, radians, grads, or another admitted angular unit.
 
@@ -25,22 +28,22 @@ CRS assignment and transformation have different effects:
 ## Operation families
 
 A geometry's *frame* is its CRS plus (optionally) a coordinate epoch. Ops fall
-into a few families rather than one exception-free slogan. The first family is
-the only one that computes geodesic measures. Topology remains a coordinate-plane
-X/Y operation: in a geographic CRS it resolves longitude aliases, seam spellings,
-and pole longitudes in the CRS-native frame before construction, and is not a
-geodesic operation. A seam split uses straight edges in an unwrapped
-longitude/latitude chart; it does not construct geodesic edges. Metric
-constructive operations use CRS-native distance
-inputs but can construct in a local projection. Coordinate edits and planar
-construction operate on stored coordinates.
+into a few families rather than one exception-free slogan. Geographic
+measurements use either ellipsoidal arclength/area on straight chart edges or
+geodesic point distances, depending on the operation. Topology remains a
+coordinate-plane X/Y operation: in a geographic CRS it resolves longitude
+aliases, seam spellings, and pole longitudes in the CRS-native frame before
+construction. A seam split uses straight edges in an unwrapped longitude/latitude
+chart; it does not construct geodesic edges. Metric constructive operations use
+CRS-native distance inputs but can construct in a local projection. Coordinate
+edits and planar construction operate on stored coordinates.
 
 | Family | Examples | Frame / unit / seam behavior |
 |---|---|---|
-| **Geodesic measures** | [`area`][gometry.area], [`length`][gometry.length], [`distance`][gometry.distance], [`dwithin`][gometry.dwithin], LRS | CRS-natural units (ellipsoidal metres on a geographic CRS); optional `unit=` override; pairwise `distance`, `dwithin`, `nearest_points`, and `shortest_line` use geodesic point-to-point distance and straight chart edges with short-way longitude across the antimeridian; these pairwise operations include filled polygons |
+| **CRS-aware measures** | [`area`][gometry.area], [`length`][gometry.length], [`distance`][gometry.distance], [`dwithin`][gometry.dwithin], LRS | By default, geographic area, length, LRS, and linework distance use ellipsoidal chart edges; point-to-point distances use geodesics. `dwithin`, `nearest_points`, and `shortest_line` use straight chart edges with short-way longitude across the antimeridian and include filled polygons. `unit='planar'` instead selects Cartesian measurement in stored coordinates. |
 | **Metric constructive** | [`buffer`][gometry.Geometry.buffer], [`offset_curve`][gometry.Geometry.offset_curve] | Distance *inputs* use CRS-natural units (and may use a local-projection construction on a geographic CRS); shapes are **coordinate-planar** — **not** antimeridian auto-split |
 | **Topology** | predicates, overlay, [`relate`][gometry.relate], [`clip_by_rect`][gometry.Geometry.clip_by_rect] | strict frame match; geographic topology resolves longitude aliases and seam and pole equivalence in the CRS-native frame; seam-crossing inputs are split into straight chart pieces in an unwrapped longitude/latitude plane. `clip_by_rect` admits canonical geographic rectangle endpoints in `[-180, 180]`, with west > east selecting the seam-crossing interval; non-canonical subjects use frame-aware overlay, while canonical seam-free inputs clip directly. Geographic rectangle parallels match [`box`][gometry.box]. |
-| **Coordinate refinement** | [`segmentize(max_length)`][gometry.Geometry.segmentize], [`line_interpolate`][gometry.Geometry.line_interpolate] | `segmentize` follows stored geographic edges by default; `path=` selects geodesic or rhumb routing; distances follow the CRS metric and original vertices are retained |
+| **Coordinate refinement** | [`segmentize(max_length)`][gometry.Geometry.segmentize], [`line_interpolate`][gometry.Geometry.line_interpolate] | `segmentize` follows stored geographic edges by default; `path=` selects geodesic or rhumb routing. With CRS-aware units, geographic LRS inverts ellipsoidal arclength on those chart edges and retains original vertices. |
 | **Coordinate edit** | [`quantize`][gometry.Geometry.quantize], [`snap_to_grid`][gometry.Geometry.snap_to_grid], affine | raw coordinate space; no metric conversion |
 | **Planar constructive** | [`convex_hull`][gometry.Geometry.convex_hull], [`concave_hull`][gometry.Geometry.concave_hull], [`simplify`][gometry.Geometry.simplify], Voronoi, Delaunay | operate on stored XY; may need local projection or [`split_antimeridian`][gometry.Geometry.split_antimeridian] |
 
@@ -67,10 +70,11 @@ distance is metres, but the produced outline is a local-projection approximation
   its inputs, so metadata never silently drops out of a pipeline.
 - **`unit=None` means the CRS-natural unit**, everywhere a `unit=` parameter
   exists: geographic shape area and length use ellipsoidal chart-edge measures,
-  geographic point distances use geodesics, projected measurements use native
-  linear units, and CRS-free measurements use raw coordinate units (area
-  results square the corresponding unit). `unit='planar'` uses Cartesian
-  coordinate space, with geographic coordinates in their native angular units.
+  geographic LRS uses the same edge arclength, geographic point distances use
+  geodesics, projected measurements use native linear units, and CRS-free
+  measurements use raw coordinate units (area results square the corresponding
+  unit). `unit='planar'` uses Cartesian coordinate space, with geographic
+  coordinates in their native angular units.
   `unit='meters'` uses the CRS-aware metric and requires a CRS.
 - **`to_crs` transforms X/Y; Z and M follow the [ordinate rules](#z-and-m-under-transformation)** — Z is
   carried unchanged through horizontal projections and transformed when the
@@ -402,13 +406,19 @@ apply on that path. Antimeridian-crossing bounds use the separate EPSG:4326
 
 ### Geographic geodesic numerical domain
 
-Geographic inverse, direct, interpolation, linework distance, nearest-point,
-intersection, and Hausdorff operations use the pinned order-six binary64
-series backend. For a CRS that PROJ resolves to an ellipsoid, its semi-major
-axis and `b = a(1 - f)` must be positive and finite, and its flattening must
-be within the ordinary supported domain `|f| <= 0.02`. A CRS outside that
-domain raises `CRSError` before the geodesic object is constructed. Exact
-elliptic support is not shipped for wider flattenings.
+With CRS-aware units, geographic point-to-point inverse/direct calculations and
+operations that explicitly follow geodesic routes use the pinned order-six
+binary64 series backend. In this model, geographic chart-edge length uses
+ellipsoidal quadrature, while point-to-chart-edge minimization uses geodesic
+inverse samples inside its own bounded search. Continuous geographic Hausdorff
+remains over geodesic segments between stored endpoints. `unit='planar'` selects
+Cartesian measurement in stored coordinates instead. These composite
+operations are distinct from exact geographic topology. For a CRS that PROJ
+resolves to an ellipsoid, its
+semi-major axis and `b = a (1 - f)` must be positive and finite, and its
+flattening must be within the ordinary supported domain `|f| <= 0.02`. A CRS
+outside that domain raises `CRSError` before the geodesic object is
+constructed. Exact elliptic support is not shipped for wider flattenings.
 
 The [GeographicLib geodesic documentation](https://geographiclib.sourceforge.io/html/python/interface.html)
 identifies `f ∈ [-1/50, 1/50]` as the full-accuracy series range and reports an
@@ -418,40 +428,33 @@ composite algorithms.
 
 ### Geographic point-to-segment accuracy
 
-Point-to-linework distance and its nearest-feature witness use one prepared
-geodesic line and a global interval query over its along-track parameter. The
-query keeps conservative endpoint-cone and squared-distance lower bounds in a
-priority frontier. It closes short, well-conditioned convex cells with a
-stationary-point solve; cells that do not meet that admission test are
-subdivided and returned to the same global frontier. When a witness is
-requested, gometry materializes the actual foot on the prepared line and
-preserves the segment's along-track position and optional ordinates.
+With CRS-aware units, geographic linework distance, nearest-point witnesses,
+and `line_locate` use a minimum over each straight chart edge's parameter `t`.
+Each sample evaluates geodesic distance from the query to the chart position. A
+global interval search combines a Lipschitz lower bound with a sampled
+second-order bound; degenerate edges and pole queries use their exact families.
+A witness lies on the chart edge, and LRS carries its ordinates by the fraction
+of edge arclength.
 
-The geodesic owner resolves a binary64 numerical minimum with one
-radius-relative policy: the point-to-segment search gap is `4e-11 × a`,
-while backend position and inverse allowances are tracked separately. These
-are numerical quality budgets, not universal real-arithmetic error
-certificates. Segment candidates are witnesses, not contact assertions:
-exact represented endpoint/equator/meridian families and strictly verified
-regular transverse roots may establish zero, while a merely close or
-unresolved candidate retains its attained positive separation. A backend zero
-for distinct point inputs remains the selected numerical answer and is not
-relabelled as certified contact.
-The [Geographic geodesic numerical domain](#geographic-geodesic-numerical-domain)
-section describes the scope of the underlying GeographicLib primitive; that
-primitive scope does not certify this composite point-to-segment query.
-`dwithin` uses that same deterministic minimum resolver and compares its
-returned value inclusively with the supplied radius. It does not add a contact
-tolerance or widen the radius by pruning slack. A positive infinite radius
-returns `True` for admitted non-empty operands without forcing an
+The attained binary64 minimum uses the radius-scaled gap `4e-11 × a` and a
+maximum of 128 evaluations per point-edge query. If the search reaches that
+budget, it returns its best attained distance and parameter. These are numerical
+quality budgets, not universal real-arithmetic error certificates. Search
+results are attained witnesses, not topological contacts. Exact chart topology
+establishes contact; a small positive distance does not.
+`line_locate` uses the attained parameter's ellipsoidal chart-edge arclength and
+adds the prefix before that edge. Point-to-chart-edge `dwithin` compares the
+same attained distance inclusively with the supplied radius. It does not add a
+contact tolerance or widen the radius by pruning slack. A positive infinite
+radius returns `True` for admitted non-empty operands without forcing an
 unrepresentable distance result. Vectorized results retain one boolean per
-input pair: missing rows and present empty geometries remain in place as
-`False`.
+input pair: missing rows and present empty geometries remain in place as `False`.
 
-Geodesic Hausdorff evaluates every source vertex and uses one global
-along-track frontier for each source segment. Each target query is complete
-over the target's segments and isolated points, and the returned pair is an
-actual source/target witness rather than an interval upper bound. Regular
+Continuous geographic Hausdorff remains a linework operation over geodesic
+segments between stored endpoints. It evaluates every source vertex and uses
+one global along-track frontier for each source segment. Each target query is
+complete over the target's segments and isolated points, and the returned pair
+is an actual source/target witness rather than an interval upper bound. Regular
 finite-foot branches, near-coincident moving witnesses, and exact
 spherical/equatorial/polar families can close a source interval directly;
 other intervals use the radius-relative algorithmic gap

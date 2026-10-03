@@ -40,7 +40,7 @@ impl Locate<'_> {
                 LineReferenceBasis::Distance => {
                     line_locate_shape(self.model, plan, cache, query, self.normalized)
                 },
-                LineReferenceBasis::M => line_locate_shape_m(self.model, plan, query),
+                LineReferenceBasis::M => line_locate_shape_m(self.model, plan, cache, query),
             },
             lane,
         )

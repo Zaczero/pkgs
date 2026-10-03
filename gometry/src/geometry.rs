@@ -197,7 +197,9 @@ use geodesic_bvh::{
     GeodesicFacetBvh, GeodesicTargetFeature, GeodesicWitnessCandidate, WitnessOrder,
     geodesic_witness_is_better, witness_refine_limit,
 };
-pub(crate) use line_index::{LineIndex, LineIndexSlot, PlanarMetric, SegmentMetric};
+pub(crate) use line_index::{
+    ChartLineIndex, LineIndex, LineIndexSlot, PlanarMetric, SegmentMetric,
+};
 use linear::normalize_line_distance;
 pub(crate) use linear::{MeasureRange, MeasuredLineIndex, MeasuredLineIndexSlot};
 pub(crate) use ordinates::carry_overlay_ordinates;
@@ -309,7 +311,7 @@ use segments::{
     orientation_xy, point_pair_distance_key, point_segment_distance_and_projection,
     point_segment_distance_squared, point_segment_exact_distance_key, ray_crossing_is_right,
     segment_contact_exact, segment_contact_point, segment_cross_point, segment_envelopes_disjoint,
-    segment_projection, segments_intersect, shared_segment_part, try_point_distance_squared,
+    segments_intersect, shared_segment_part, try_point_distance_squared,
     try_point_segment_distance_squared, undirected_segment_edge_key,
 };
 /// The guarded-sqrt distance is the one segment-kernel helper the broadcast
@@ -325,7 +327,7 @@ pub(crate) use segments::{
     interpolate_f64, interpolate_fraction, interpolate_optional_ordinate,
     interpolate_subdivision_ordinate,
 };
-pub(crate) use segments::{point_segment_distance, point_segment_selection};
+pub(crate) use segments::{point_segment_distance, point_segment_selection, segment_projection};
 pub(in crate::geometry) use segments::{try_dedup_by, try_sort_by};
 pub(crate) use tessellation::{CdtRefinement, row_sample_seed};
 use tessellation::{delaunay_triangulation, point_in_ccw_triangle};

@@ -6,17 +6,19 @@
 //! locate / substring (by distance/fraction and by M), plus the geodesic-aware
 //! splitting helpers.
 
+use super::line_index::InterpolationProvenance;
 use super::linear_3d;
 use crate::error::Result;
 #[cfg(test)]
 use crate::geometry::LineIndex;
+use crate::geometry::distance::{ChartParts, point_chart_locate};
 use crate::geometry::{
-    CoordSeq, CoordinateAxes, Coordinates, Distance3dParts, FacetBvh, GeometryErrorKind,
-    GeometryKind, HasM, HasZ, LineSeq, Lineal, MColumn, MultiLineString, Ordering, PlanarMetric,
-    Point, PreparedLinework, PreparedPlan, Segment, SegmentMetric, SegmentProjection, Shape,
-    SharedSlice, distance_3d_with_parts, interpolate_fraction, point_distance,
-    point_segment_selection, push_distinct_active_position, same_point, segment_projection,
-    shape_axes_all_z, squared_norm_is_trustworthy,
+    ChartMetric, CoordSeq, CoordinateAxes, Coordinates, Distance3dParts, FacetBvh,
+    GeometryErrorKind, GeometryKind, HasM, HasZ, LineSeq, Lineal, MColumn, MultiLineString,
+    Ordering, PlanarMetric, Point, PreparedLinework, PreparedPlan, Segment, SegmentMetric,
+    SegmentProjection, Shape, SharedSlice, distance_3d_with_parts, interpolate_fraction,
+    point_distance, point_segment_selection, push_distinct_active_position, same_point,
+    segment_projection, shape_axes_all_z, squared_norm_is_trustworthy,
 };
 use crate::{Finite, HeapSize};
 /// Validated `(start, end)` pair for linear-referencing measure/distance bounds.
@@ -117,9 +119,9 @@ impl PreparedPlan {
     pub(crate) fn line_interpolate_point(&self, distance: f64, normalized: bool) -> Result<Shape> {
         let index = self.line_index()?;
         Ok(Shape::Point(if index.has_zero_length_segments() {
-            index.interpolate_with_zero_length_segments(distance, normalized, &PlanarMetric)
+            index.interpolate_with_zero_length_segments(distance, normalized, &PlanarMetric)?
         } else {
-            index.interpolate(distance, normalized, &PlanarMetric)
+            index.interpolate(distance, normalized, &PlanarMetric)?
         }))
     }
 
@@ -179,16 +181,16 @@ impl Shape {
     /// of this lineal geometry, stationing by `segment_length` between
     /// consecutive vertices — continuous across parts (the `PostGIS`
     /// ``ST_AddMeasure`` shape, so multipart M stays usable by the
-    /// monotonic-M linear referencing). The CRS-aware surfaces pass a
-    /// geodesic `segment_length` (so M reflects real-world distance on a
-    /// geographic CRS, like the rest of the LRS family); the planar surface
-    /// passes 2D distance. X/Y/Z are untouched — only M is (re)assigned,
+    /// monotonic-M linear referencing). Resolved geographic metrics pass
+    /// ellipsoidal chart-edge length; planar metrics pass 2D coordinate
+    /// distance, including an explicit planar override on a geographic CRS.
+    /// X/Y/Z are untouched — only M is (re)assigned,
     /// and existing M requires `overwrite`.
     pub(crate) fn interpolate_m(
         &self,
         range: MeasureRange,
         overwrite: bool,
-        segment_length: impl Fn(Point, Point) -> f64,
+        segment_length: impl Fn(Point, Point) -> Result<f64>,
     ) -> Result<Self> {
         let (start_m, end_m) = (range.start(), range.end());
         let parts = self.linework()?;
@@ -214,14 +216,14 @@ impl Shape {
         // consumes no measure (parts abut in measure space, the PostGIS
         // multipart behavior). Segment lengths are evaluated ONCE into a
         // prefix buffer (was twice — total pass then assign pass — which
-        // doubled every geodesic inverse on a geographic CRS).
+        // doubled every chart-edge measurement on a geographic CRS).
         let segment_count = parts.iter().map(|part| part.len().saturating_sub(1)).sum();
         let mut segment_lengths = Vec::with_capacity(segment_count);
         let mut part_seg_ends = Vec::with_capacity(parts.len());
         let mut total = 0.0_f64;
         for part in &parts {
             for [start, end] in part.segment_pairs() {
-                let length = segment_length(start, end);
+                let length = segment_length(start, end)?;
                 total += length;
                 segment_lengths.push(length);
             }
@@ -333,10 +335,10 @@ impl Shape {
     }
 
     #[cfg(test)]
-    pub(crate) fn line_locate_point_m_with<M: SegmentMetric>(
+    pub(crate) fn line_locate_point_m_with(
         &self,
         point: Point,
-        metric: &M,
+        metric: &PlanarMetric,
     ) -> Result<f64> {
         let index = MeasuredLineIndex::build(self)?;
         index.locate(point, metric)
@@ -372,10 +374,10 @@ impl PreparedPlan {
         ))
     }
 
-    pub(crate) fn line_locate_point_m_with<M: SegmentMetric>(
+    pub(crate) fn line_locate_point_m_with(
         &self,
         point: Point,
-        metric: &M,
+        metric: &PlanarMetric,
     ) -> Result<f64> {
         self.measured_line_index()?.locate(point, metric)
     }
@@ -423,6 +425,44 @@ pub(crate) struct MeasuredLineIndex {
 }
 
 impl MeasuredLineIndex {
+    pub(crate) fn points(&self) -> impl Iterator<Item = Point> {
+        self.parts.iter().flat_map(|part| part.into_iter())
+    }
+
+    pub(crate) fn chart_locate<M>(
+        &self,
+        point: Point,
+        parts: &ChartParts,
+        metric: &M,
+    ) -> Result<f64>
+    where
+        M: crate::geometry::GeodesicMetric
+            + crate::geometry::ChartMetric<PointEdgeScratch = crate::crs::PointEdgeScratch>,
+    {
+        if point.x.is_nan() {
+            return Ok(f64::NAN);
+        }
+        let Some((ordinal, parameter)) = point_chart_locate(point, parts, metric, |_| true)? else {
+            return Ok(self.first_measure);
+        };
+        let part = parts
+            .edges
+            .get(ordinal)
+            .expect("measured ordinal belongs to the flattened route");
+        let length = metric.chart_edge_length(&part.edge)?;
+        let along = metric.chart_edge_length_to(&part.edge, parameter)?;
+        let fraction = if length == 0.0 {
+            0.0
+        } else {
+            (along / length).clamp(0.0, 1.0)
+        };
+        Ok(crate::geometry::interpolate_f64(
+            part.start.m().unwrap_or(0.0),
+            part.end.m().unwrap_or(0.0),
+            fraction,
+        ))
+    }
+
     pub(crate) fn build(shape: &Shape) -> Result<Self> {
         let parts = match shape {
             Shape::LineString(line) => std::slice::from_ref(line),
@@ -483,14 +523,21 @@ impl MeasuredLineIndex {
             .expect("measured line index has a last point")
     }
 
-    fn for_each_window(&self, mut visit: impl FnMut(Point, Point) -> Result<bool>) -> Result<()> {
+    fn for_each_window(
+        &self,
+        mut visit: impl FnMut(usize, Point, Point) -> Result<bool>,
+    ) -> Result<()> {
         let mut previous = None;
+        let mut ordinal = 0;
         for part in &self.parts {
             for point in part {
                 if let Some(start) = previous
-                    && !visit(start, point)?
+                    && !visit(ordinal, start, point)?
                 {
                     return Ok(());
+                }
+                if previous.is_some() {
+                    ordinal = ordinal.wrapping_add(1);
                 }
                 previous = Some(point);
             }
@@ -499,10 +546,37 @@ impl MeasuredLineIndex {
     }
 
     fn interpolate_finite<M: SegmentMetric>(&self, target: f64, metric: &M) -> Result<Point> {
+        self.interpolate_using(target, |_, start, end, fraction, provenance| {
+            let length = metric.admitted_length(start, end)?;
+            metric.interpolate(start, end, length, fraction, provenance)
+        })
+    }
+
+    pub(crate) fn chart_interpolate(
+        &self,
+        target: f64,
+        parts: &ChartParts,
+        metric: &impl ChartMetric,
+    ) -> Result<Point> {
+        let target = Finite::try_new("m", target)?.get();
+        self.interpolate_using(target, |ordinal, _, _, fraction, provenance| {
+            let part = parts
+                .edges
+                .get(ordinal)
+                .expect("measured ordinal belongs to the route");
+            let length = metric.chart_edge_length(&part.edge)?;
+            metric.interpolate_prepared(part, length, fraction, provenance)
+        })
+    }
+
+    fn interpolate_using(
+        &self,
+        target: f64,
+        mut interpolate: impl FnMut(usize, Point, Point, f64, InterpolationProvenance) -> Result<Point>,
+    ) -> Result<Point> {
         let target = target.clamp(self.first_measure, self.last_measure);
         let mut result = None;
-        self.for_each_window(|start, end| -> Result<bool> {
-            let _ = metric.admitted_length(start, end)?;
+        self.for_each_window(|ordinal, start, end| -> Result<bool> {
             let (start_m, end_m) = (start.m().unwrap_or(0.0), end.m().unwrap_or(0.0));
             if target > end_m {
                 return Ok(true);
@@ -518,19 +592,25 @@ impl MeasuredLineIndex {
                 return Ok(false);
             }
             let fraction = interpolate_fraction(start_m, end_m, target)?;
-            result = Some(metric.interpolate(start, end, fraction));
+            result = Some(interpolate(
+                ordinal,
+                start,
+                end,
+                fraction,
+                InterpolationProvenance::Independent,
+            )?);
             Ok(false)
         })?;
         Ok(result.unwrap_or_else(|| self.last_point()))
     }
 
-    fn locate<M: SegmentMetric>(&self, point: Point, metric: &M) -> Result<f64> {
+    fn locate(&self, point: Point, metric: &PlanarMetric) -> Result<f64> {
         if point.x.is_nan() {
             return Ok(f64::NAN);
         }
         let mut best_distance = f64::INFINITY;
         let mut best_measure = self.first_measure;
-        let mut segment_scratch = crate::geometry::GeodesicSegmentScratch::default();
+        let mut segment_scratch = ();
         let mut previous = None;
         for part in &self.parts {
             for end in part {
@@ -538,16 +618,11 @@ impl MeasuredLineIndex {
                     previous = Some(end);
                     continue;
                 };
-                let length = if M::LOCATE_WITH_MEASURE_NEEDS_LENGTH {
-                    metric.admitted_length(start, end)?
-                } else {
-                    0.0
-                };
                 let Some((distance, measure)) = metric.locate_with_measure(
                     point,
                     start,
                     end,
-                    length,
+                    0.0,
                     best_distance,
                     &mut segment_scratch,
                 )?
@@ -566,16 +641,44 @@ impl MeasuredLineIndex {
     }
 
     fn substring<M: SegmentMetric>(&self, range: MeasureRange, metric: &M) -> Result<Shape> {
+        self.substring_using(range, |_, start, end, fraction, provenance| {
+            let length = metric.admitted_length(start, end)?;
+            metric.interpolate(start, end, length, fraction, provenance)
+        })
+    }
+
+    pub(crate) fn chart_substring(
+        &self,
+        range: MeasureRange,
+        parts: &ChartParts,
+        metric: &impl ChartMetric,
+    ) -> Result<Shape> {
+        self.substring_using(range, |ordinal, _, _, fraction, provenance| {
+            let part = parts
+                .edges
+                .get(ordinal)
+                .expect("measured ordinal belongs to the route");
+            let length = metric.chart_edge_length(&part.edge)?;
+            metric.interpolate_prepared(part, length, fraction, provenance)
+        })
+    }
+
+    fn substring_using(
+        &self,
+        range: MeasureRange,
+        mut interpolate: impl FnMut(usize, Point, Point, f64, InterpolationProvenance) -> Result<Point>,
+    ) -> Result<Shape> {
         let (m0, m1) = (range.start(), range.end());
         let (lo, hi) = (self.first_measure, self.last_measure);
         let start = m0.clamp(lo, hi);
         let end = m1.clamp(lo, hi);
         if start.total_cmp(&end) == Ordering::Equal {
-            return Ok(Shape::Point(self.interpolate_finite(start, metric)?));
+            return Ok(Shape::Point(
+                self.interpolate_using(start, &mut interpolate)?,
+            ));
         }
         let mut result = Vec::new();
-        self.for_each_window(|segment_start, segment_end| -> Result<bool> {
-            let _ = metric.admitted_length(segment_start, segment_end)?;
+        self.for_each_window(|ordinal, segment_start, segment_end| -> Result<bool> {
             let (start_m, end_m) = (
                 segment_start.m().unwrap_or(0.0),
                 segment_end.m().unwrap_or(0.0),
@@ -585,13 +688,19 @@ impl MeasuredLineIndex {
             }
             let fraction = |measure: f64| interpolate_fraction(start_m, end_m, measure);
             #[expect(clippy::float_cmp, reason = "exact M boundary identity")]
-            let at = |measure: f64| -> Result<Point> {
+            let mut at = |measure: f64| -> Result<Point> {
                 if measure == start_m {
                     Ok(segment_start)
                 } else if measure == end_m {
                     Ok(segment_end)
                 } else {
-                    Ok(metric.interpolate(segment_start, segment_end, fraction(measure)?))
+                    interpolate(
+                        ordinal,
+                        segment_start,
+                        segment_end,
+                        fraction(measure)?,
+                        InterpolationProvenance::Embedded,
+                    )
                 }
             };
             push_distinct_active_position(&mut result, at(start.max(start_m))?);
@@ -599,7 +708,7 @@ impl MeasuredLineIndex {
             Ok(true)
         })?;
         Ok(match result.as_slice() {
-            [] => Shape::Point(self.interpolate_finite(start, metric)?),
+            [] => Shape::Point(self.interpolate_using(start, &mut interpolate)?),
             [point] => Shape::Point(*point),
             _ => Shape::LineString(LineSeq::from_proven(CoordSeq::try_from_points(&result)?)),
         })
@@ -854,7 +963,7 @@ mod measured_window_tests {
                 .unwrap();
         let range = MeasureRange::interpolate_m(10.0, 40.0).unwrap();
         let Shape::MultiLineString(lines) = source
-            .interpolate_m(range, false, point_distance)
+            .interpolate_m(range, false, |a, b| Ok(point_distance(a, b)))
             .expect("measured interpolation")
         else {
             panic!("multipart output");
@@ -880,7 +989,7 @@ mod measured_window_tests {
             .interpolate_m(
                 MeasureRange::interpolate_m(10.0, 40.0).unwrap(),
                 false,
-                point_distance,
+                |a, b| Ok(point_distance(a, b)),
             )
             .unwrap();
         let Shape::LineString(line) = &output else {

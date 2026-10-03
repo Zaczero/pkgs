@@ -324,6 +324,15 @@ pub(crate) fn unary_array_linref_shapes(
         PackedLinearReference::InterpolatePoint { metric, .. }
         | PackedLinearReference::Substring { metric, .. } => metric,
     };
+    unary_array_linref_with_model(py, array, model, kernel)
+}
+
+pub(crate) fn unary_array_linref_with_model(
+    py: Python<'_>,
+    array: &PyGeometryArray,
+    model: &crate::crs::MetricModel,
+    kernel: impl Fn(&PreparedPlan, &LinearReferenceRow<'_>) -> Result<Shape> + Send + Sync,
+) -> PyResult<PyGeometryArray> {
     let frame = array.frame.clone();
     let output_frame = frame.clone();
     let domain = crate::geometry::topology_domain(&frame)?;

@@ -93,12 +93,14 @@ pub(crate) fn point_edge_query(
     scratch: &mut PointEdgeScratch,
 ) -> Result<PointEdgeQueryResult> {
     scratch.clear();
+    let source_point = point;
     let point = frame
         .to_geodesic_point(point)
         .expect("geographic point was admitted before chart-edge distance");
 
-    let (cutoff, threshold) = match query {
-        PointEdgeQuery::Minimum { cutoff } => (cutoff, None),
+    let (cutoff, threshold, locate) = match query {
+        PointEdgeQuery::Minimum { cutoff } => (cutoff, None, false),
+        PointEdgeQuery::Locate { cutoff } => (cutoff, None, true),
         PointEdgeQuery::Dwithin { limit } => {
             if limit.is_nan() {
                 return Err(crate::crs::CrsError::message(
@@ -115,7 +117,7 @@ pub(crate) fn point_edge_query(
             if limit.is_infinite() {
                 return Ok(PointEdgeQueryResult::Within { evaluations: 0 });
             }
-            (f64::INFINITY, Some(limit))
+            (f64::INFINITY, Some(limit), false)
         },
     };
 
@@ -132,7 +134,8 @@ pub(crate) fn point_edge_query(
         });
     }
 
-    if edge.is_geodesically_degenerate(geodesic) {
+    let midpoint_derivative = edge.derivatives(0.5, geodesic);
+    if midpoint_derivative.speed == 0.0 {
         let distance = inverse_distance(point, edge.geodetic_position(0.0), geodesic);
         return Ok(direct_result(distance, 0.0, 1, cutoff, threshold));
     }
@@ -190,23 +193,76 @@ pub(crate) fn point_edge_query(
         ));
     }
 
-    let derivative_bounds = edge.sampled_derivative_bounds(geodesic);
-    let g0 = distance_derivative(geodesic, edge, 0.0, d0, azimuth0);
-    let g1 = distance_derivative(geodesic, edge, 1.0, d1, azimuth1);
-    push_interval(
-        scratch,
-        IntervalEndpoints {
-            t0: 0.0,
-            d0,
-            g0,
+    let start_derivative = edge.derivatives(0.0, geodesic);
+    let end_derivative = edge.derivatives(1.0, geodesic);
+    let derivative_bounds = edge.sampled_derivative_bounds(geodesic, &[
+        start_derivative,
+        midpoint_derivative,
+        end_derivative,
+    ]);
+    let g0 = distance_derivative(start_derivative, d0, azimuth0);
+    let g1 = distance_derivative(end_derivative, d1, azimuth1);
+    let mut best_correction = 0.0;
+    // Minimum certifies an objective gap. Locate also certifies a station, so
+    // its evaluated chart projection splits the frontier before refinement.
+    let proposal = if locate {
+        let parameter = edge.projection_parameter(source_point)?;
+        if parameter > 0.0 && parameter < 1.0 {
+            let (distance, azimuth) = sample(geodesic, point, edge, parameter);
+            best.evaluations = best.evaluations.wrapping_add(1);
+            update_minimum(&mut best, distance, parameter);
+            if best.distance == 0.0 {
+                best.lower_bound = 0.0;
+                return Ok(direct_result(
+                    best.distance,
+                    best.parameter,
+                    best.evaluations,
+                    cutoff,
+                    threshold,
+                ));
+            }
+            Some(IntervalEndpoints {
+                t0: 0.0,
+                d0,
+                g0,
+                t1: parameter,
+                d1: distance,
+                g1: distance_derivative(edge.derivatives(parameter, geodesic), distance, azimuth),
+            })
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+    if let Some(left) = proposal {
+        let parameter = left.t1;
+        let right = IntervalEndpoints {
+            t0: parameter,
+            d0: left.d1,
+            g0: left.g1,
             t1: 1.0,
             d1,
             g1,
-        },
-        derivative_bounds,
-        geodesic,
-        policy,
-    );
+        };
+        push_interval(scratch, left, derivative_bounds, geodesic, policy);
+        push_interval(scratch, right, derivative_bounds, geodesic, policy);
+    } else {
+        push_interval(
+            scratch,
+            IntervalEndpoints {
+                t0: 0.0,
+                d0,
+                g0,
+                t1: 1.0,
+                d1,
+                g1,
+            },
+            derivative_bounds,
+            geodesic,
+            policy,
+        );
+    }
 
     loop {
         let Some(interval) = scratch.frontier.pop() else {
@@ -248,16 +304,21 @@ pub(crate) fn point_edge_query(
                 evaluations: best.evaluations,
             });
         }
-        if distance < best.distance {
-            best.distance = distance;
-            best.parameter = parameter;
-        }
+        let improved = update_minimum(&mut best, distance, parameter);
         if best.distance == 0.0 {
             best.lower_bound = 0.0;
             break;
         }
 
-        let derivative = distance_derivative(geodesic, edge, parameter, distance, azimuth);
+        let geometry = edge.derivatives(parameter, geodesic);
+        let derivative = distance_derivative(geometry, distance, azimuth);
+        #[expect(
+            clippy::suspicious_operation_groupings,
+            reason = "the distance gradient divided by squared chart speed is the tangent projection correction"
+        )]
+        if improved {
+            best_correction = distance * derivative / (geometry.speed * geometry.speed);
+        }
         push_interval(
             scratch,
             IntervalEndpoints {
@@ -288,30 +349,64 @@ pub(crate) fn point_edge_query(
         );
     }
 
-    Ok(
-        match direct_result(
-            best.distance,
-            best.parameter,
-            best.evaluations,
-            cutoff,
-            threshold,
-        ) {
-            PointEdgeQueryResult::Minimum(mut minimum) => {
-                minimum.lower_bound = best.lower_bound;
-                minimum.budget_exhausted = best.budget_exhausted;
-                PointEdgeQueryResult::Minimum(minimum)
-            },
-            PointEdgeQueryResult::Outside { .. } => PointEdgeQueryResult::Outside {
-                lower_bound: best.lower_bound,
-                evaluations: best.evaluations,
-                budget_exhausted: best.budget_exhausted,
-            },
-            PointEdgeQueryResult::Excluded => PointEdgeQueryResult::Excluded,
-            PointEdgeQueryResult::Within { evaluations } => {
-                PointEdgeQueryResult::Within { evaluations }
-            },
+    if threshold.is_none()
+        && best.evaluations < MAX_EVALUATIONS
+        && best.parameter > 0.0
+        && best.parameter < 1.0
+        && best.distance > 0.0
+    {
+        let parameter = best.parameter - best_correction;
+        if parameter > 0.0 && parameter < 1.0 && parameter != best.parameter {
+            let (distance, _) = sample(geodesic, point, edge, parameter);
+            best.evaluations = best.evaluations.wrapping_add(1);
+            update_minimum(&mut best, distance, parameter);
+            best.lower_bound = best.lower_bound.min(best.distance);
+        }
+    }
+    Ok(finalize_query(best, cutoff, threshold))
+}
+
+#[expect(
+    clippy::float_cmp,
+    reason = "exact attained-distance ties retain the earliest parameter on this source edge"
+)]
+fn update_minimum(best: &mut PointEdgeMinimum, distance: f64, parameter: f64) -> bool {
+    if distance < best.distance || (distance == best.distance && parameter < best.parameter) {
+        best.distance = distance;
+        best.parameter = parameter;
+        true
+    } else {
+        false
+    }
+}
+
+fn finalize_query(
+    best: PointEdgeMinimum,
+    cutoff: f64,
+    threshold: Option<f64>,
+) -> PointEdgeQueryResult {
+    match direct_result(
+        best.distance,
+        best.parameter,
+        best.evaluations,
+        cutoff,
+        threshold,
+    ) {
+        PointEdgeQueryResult::Minimum(mut minimum) => {
+            minimum.lower_bound = best.lower_bound;
+            minimum.budget_exhausted = best.budget_exhausted;
+            PointEdgeQueryResult::Minimum(minimum)
         },
-    )
+        PointEdgeQueryResult::Outside { .. } => PointEdgeQueryResult::Outside {
+            lower_bound: best.lower_bound,
+            evaluations: best.evaluations,
+            budget_exhausted: best.budget_exhausted,
+        },
+        PointEdgeQueryResult::Excluded => PointEdgeQueryResult::Excluded,
+        PointEdgeQueryResult::Within { evaluations } => {
+            PointEdgeQueryResult::Within { evaluations }
+        },
+    }
 }
 
 fn inverse_distance(point: Point, target: Point, geodesic: &Geodesic) -> f64 {
@@ -356,16 +451,13 @@ fn sample(geodesic: &Geodesic, point: Point, edge: &ChartEdge, parameter: f64) -
 }
 
 fn distance_derivative(
-    geodesic: &Geodesic,
-    edge: &ChartEdge,
-    parameter: f64,
+    derivative: super::chart_edge::ChartEdgeDerivatives,
     distance: f64,
     azimuth: f64,
 ) -> f64 {
     if distance == 0.0 {
         return 0.0;
     }
-    let derivative = edge.derivatives(parameter, geodesic);
     derivative.speed * (derivative.azimuth - azimuth.to_radians()).cos()
 }
 
@@ -788,6 +880,65 @@ mod tests {
             );
             assert!(minimum.evaluations <= 128, "{name}");
         }
+    }
+
+    #[test]
+    fn chart_parameter_trial_closes_the_near_edge_station_counterexample() {
+        let frame = GeographicFrame::crs84();
+        let metric = metric(&Geodesic::wgs84(), frame);
+        let start = Point::new_raw_xy(0.0, 10.0);
+        let end = Point::new_raw_xy(120.0, 60.0);
+        // Independent 60-digit mpmath arclength inversion of the WGS 84 chart
+        // edge gives station 6,004,860.750429569 m at this represented query.
+        let point = Point::new_raw_xy(53.074_630_350_026_74, 32.114_429_312_511_14);
+        let target_station = 6_004_860.750_429_569;
+
+        let edge = metric.chart_edge(start, end).expect("admitted chart edge");
+        let PointEdgeQueryResult::Minimum(minimum) = metric
+            .point_edge_query(
+                point,
+                &edge,
+                0.0,
+                PointEdgeQuery::Locate {
+                    cutoff: f64::INFINITY,
+                },
+                &mut PointEdgeScratch::default(),
+            )
+            .expect("station minimum")
+        else {
+            panic!("unbounded station query must return a minimum");
+        };
+        let with_station = metric
+            .chart_edge_length_to(&edge, minimum.parameter)
+            .expect("trial station");
+
+        // The precomputed allowance is 30.704 ns: two 4-epsilon length
+        // inversions, a four-ULP physical coordinate envelope, four ULPs of
+        // parameter propagated by the sampled edge speed, and two station ULPs.
+        assert!((with_station - target_station).abs() <= 30.71e-9);
+        assert!(minimum.distance < 2.0e-9);
+        assert!(minimum.evaluations <= 3);
+        assert!(!minimum.budget_exhausted);
+    }
+
+    #[test]
+    fn chart_edge_minimum_matches_independent_ellipsoid_quadrature() {
+        let frame = GeographicFrame::crs84();
+        let metric = metric(&Geodesic::wgs84(), frame);
+        let start = Point::new_raw_xy(-70.0, 30.3);
+        let end = Point::new_raw_xy(-68.0, 31.3);
+        let point = Point::new_raw_xy(-68.0, 31.0);
+        // Independent 70-digit auxiliary-sphere geodesic quadrature and
+        // stationary-point shooting: no chart-edge search or length code.
+        let expected_distance = 28_757.993_325_000_867;
+        let minimum = point_edge_minimum(&metric, point, start, end);
+        // Four-epsilon ellipsoid-scale arithmetic and four coordinate ULPs
+        // propagated through WGS 84's local longitude/latitude scales.
+        assert!(
+            (minimum.distance - expected_distance).abs() <= 13.0e-9,
+            "distance {} differs from the independent minimum",
+            minimum.distance
+        );
     }
 
     #[test]

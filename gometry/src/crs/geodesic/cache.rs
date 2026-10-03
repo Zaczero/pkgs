@@ -15,12 +15,12 @@ use crate::error::Result;
 /// whose primitive error grows with flattening.
 pub(crate) const GEODESIC_SERIES_MAX_FLATTENING: f64 = 0.02;
 
-fn validate_geodesic_ellipsoid(
+fn admit_geodesic_ellipsoid(
     crs: &str,
     semi_major: f64,
     semi_minor: f64,
     flattening: f64,
-) -> Result<()> {
+) -> Result<Geodesic> {
     if !(semi_major.is_finite() && semi_major > 0.0) {
         return Err(CrsError::invalid(format!(
             "{crs} exposes an invalid geodesic ellipsoid: semi-major axis must be positive and finite"
@@ -47,7 +47,29 @@ fn validate_geodesic_ellipsoid(
             "{crs} geodesic operations support only the order-six binary64 series domain |f| <= 0.02; exact elliptic support is not shipped (got f={flattening})"
         )));
     }
-    Ok(())
+    let geodesic = Geodesic::new(semi_major, flattening);
+    // The constructor squares both axes before forming the authalic radius;
+    // chart area uses half a² and the backend's full area uses 4πc².
+    let semi_major_squared = semi_major * semi_major;
+    let semi_minor_squared = geodesic._b * geodesic._b;
+    if ![
+        semi_major_squared,
+        semi_minor_squared,
+        semi_major_squared / 2.0,
+        geodesic._c2,
+        geodesic.area(),
+    ]
+    .into_iter()
+    .all(f64::is_normal)
+    {
+        return Err(CrsError::invalid(format!(
+            "{crs} geodesic ellipsoid axes are outside the representable binary64 range: squared axes, half the squared semi-major axis, authalic radius squared and full surface area must be finite normal values in [{:.17e}, {:.17e}] (a={semi_major:.17e}, b={:.17e}, f={flattening})",
+            f64::MIN_POSITIVE,
+            f64::MAX,
+            geodesic._b,
+        )));
+    }
+    Ok(geodesic)
 }
 
 fn cached_geodesic_object(crs: &str, state: &RuntimeState) -> Result<CachedGeodesicObject> {
@@ -70,13 +92,12 @@ fn cached_geodesic_object(crs: &str, state: &RuntimeState) -> Result<CachedGeode
                 "{crs} exposes an invalid ellipsoid for geodesic use"
             )));
         };
-    validate_geodesic_ellipsoid(
+    let object = admit_geodesic_ellipsoid(
         crs,
         ellipsoid.semi_major_metre,
         ellipsoid.semi_minor_metre,
         flattening,
     )?;
-    let object = Geodesic::new(ellipsoid.semi_major_metre, flattening);
     Ok(CachedGeodesicObject {
         definition: crs.to_owned(),
         authalic_series: super::AuthalicSeries::new(&object),
@@ -148,7 +169,7 @@ pub(crate) fn with_geodesic_at<T>(
 
 #[cfg(test)]
 mod tests {
-    use super::{GEODESIC_SERIES_MAX_FLATTENING, validate_geodesic_ellipsoid};
+    use super::{GEODESIC_SERIES_MAX_FLATTENING, admit_geodesic_ellipsoid};
 
     #[test]
     fn series_domain_admits_sphere_and_both_boundaries() {
@@ -158,7 +179,7 @@ mod tests {
             GEODESIC_SERIES_MAX_FLATTENING,
         ] {
             let semi_minor = 6_378_137.0 * (1.0 - flattening);
-            validate_geodesic_ellipsoid("test", 6_378_137.0, semi_minor, flattening)
+            admit_geodesic_ellipsoid("test", 6_378_137.0, semi_minor, flattening)
                 .expect("series boundary is admitted");
         }
     }
@@ -169,7 +190,7 @@ mod tests {
             f64::next_up(GEODESIC_SERIES_MAX_FLATTENING),
             f64::next_down(-GEODESIC_SERIES_MAX_FLATTENING),
         ] {
-            let error = validate_geodesic_ellipsoid(
+            let error = admit_geodesic_ellipsoid(
                 "test",
                 6_378_137.0,
                 6_378_137.0 * (1.0 - flattening),
@@ -179,11 +200,53 @@ mod tests {
             assert!(error.to_string().contains("|f| <= 0.02"));
             assert!(error.to_string().contains("binary64"));
         }
-        validate_geodesic_ellipsoid("test", 0.0, 1.0, 0.0)
+        admit_geodesic_ellipsoid("test", 0.0, 1.0, 0.0)
             .expect_err("zero semi-major axis must be rejected");
-        validate_geodesic_ellipsoid("test", 1.0, 0.0, 0.0)
+        admit_geodesic_ellipsoid("test", 1.0, 0.0, 0.0)
             .expect_err("zero semi-minor axis must be rejected");
-        validate_geodesic_ellipsoid("test", 1.0, 1.0, f64::NAN)
+        admit_geodesic_ellipsoid("test", 1.0, 1.0, f64::NAN)
             .expect_err("non-finite flattening must be rejected");
+    }
+
+    #[test]
+    fn axis_arithmetic_boundaries_admit_scaled_physical_distances() {
+        for axis in [
+            f64::from_bits(0x2006_A09E_667F_3BCD),
+            f64::from_bits(0x5FD2_0DD7_5042_9B6D),
+        ] {
+            let crs = format!("+proj=longlat +a={axis:.17e} +b={axis:.17e} +type=crs");
+            let model = crate::crs::metric_model(Some(&crs)).unwrap();
+            let metric = crate::crs::GeodesicMetric::from_model(&model).unwrap();
+            let distance = crate::crs::geodesic_point_pair_distance(
+                &metric.geodesic,
+                crate::geometry::Point::new_raw_xy(0.0, 0.0),
+                crate::geometry::Point::new_raw_xy(90.0, 0.0),
+                metric.frame,
+                metric.state.generation,
+            )
+            .unwrap();
+            assert!(distance.is_finite() && distance > 0.0);
+            assert!((distance / axis - std::f64::consts::FRAC_PI_2).abs() <= 4.0 * f64::EPSILON);
+        }
+    }
+
+    #[test]
+    fn axis_arithmetic_boundaries_reject_adjacent_unrepresentable_areas() {
+        for axis in [
+            f64::from_bits(0x2006_A09E_667F_3BCC),
+            f64::from_bits(0x5FD2_0DD7_5042_9B6E),
+        ] {
+            let crs = format!("+proj=longlat +a={axis:.17e} +b={axis:.17e} +type=crs");
+            let model = crate::crs::metric_model(Some(&crs)).unwrap();
+            let Err(error) = crate::crs::GeodesicMetric::from_model(&model) else {
+                panic!("an adjacent axis outside the arithmetic range is admitted");
+            };
+            let message = error.to_string();
+            assert!(
+                message.contains("outside the representable binary64 range"),
+                "{message}"
+            );
+            assert!(message.contains("finite normal values"), "{message}");
+        }
     }
 }

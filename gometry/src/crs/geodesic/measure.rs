@@ -4,7 +4,7 @@ use crate::crs::RuntimeState;
 use crate::crs::geodesic::{
     CrsError, DirectGeodesic as _, EllipsoidMetric, GeodesicDirectInfo,
     ensure_geographic_domain_in_frame, geographic_metric_frame_at, inverse_distance, normalize,
-    with_geodesic_at, with_geodesic_erased_at,
+    with_geodesic_at, with_geographic_metric_erased_at,
 };
 use crate::error::Result;
 use crate::geographic::{GeographicFrame, Pole};
@@ -83,7 +83,7 @@ pub(crate) fn with_resolved_ellipsoid_metric_at<T>(
     state: &RuntimeState,
     f: impl FnOnce(&str, &EllipsoidMetric<'_>) -> Result<T>,
 ) -> Result<T> {
-    with_geodesic_erased_at(crs, shapes, state, |error| error, f)
+    with_geographic_metric_erased_at(crs, shapes, state, |error| error, f)
 }
 
 pub(crate) fn chart_shape_area(

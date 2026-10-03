@@ -22,7 +22,7 @@ mod shape_impl;
 
 pub(crate) use chart_parts::{
     ChartEdgePart, ChartParts, cached_chart_distance, cached_chart_dwithin,
-    cached_chart_nearest_points, point_chart_distance, point_chart_dwithin,
+    cached_chart_nearest_points, point_chart_distance, point_chart_dwithin, point_chart_locate,
 };
 #[cfg(test)]
 pub(crate) use distance_3d::distance_3d_brute_parts;

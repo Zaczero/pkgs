@@ -182,10 +182,12 @@ preserved unchanged — never invented, never silently dropped.
 ### `Geod` → point navigation
 
 pyproj's `Geod` (Karney/[GeographicLib](https://geographiclib.sourceforge.io/)
-WGS 84 ellipsoidal geodesy) maps onto [`gm.bearing`][gometry.bearing], `point.destination`,
-[`gm.point_between`][gometry.point_between], point-to-point distances, and LRS.
-Geographic shape area and length instead measure straight longitude/latitude
-edges on the CRS ellipsoid. There is no `Geod` object to construct. For a
+WGS 84 ellipsoidal geodesy) maps onto [`gm.bearing`][gometry.bearing],
+`point.destination`, [`gm.point_between`][gometry.point_between], and
+point-to-point distances. Geographic shape area, length, and default LRS instead
+measure the ellipsoid along straight longitude/latitude chart edges; `unit='planar'`
+selects Cartesian measurement in stored coordinates. There is no `Geod` object
+to construct. For a
 non-WGS 84 ellipsoid, give the points that geographic CRS (for example
 `gm.Point(lon, lat, crs=4230)`); every geodesic operation runs on the CRS's own
 ellipsoid.

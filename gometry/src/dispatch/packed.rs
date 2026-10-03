@@ -509,11 +509,11 @@ fn linref_point_between_packed_inner(
     // clamps out-of-range stationing by design, so a non-finite distance
     // must be rejected here (the scalar path's kernel owns its own check).
     if let MetricModel::Geodesic { crs, state, .. } = model {
-        crate::crs::with_geodesic_coordseq_collect_rows_at(crs, state, |metric| {
+        crate::crs::with_geographic_coordseq_collect_rows_at(crs, state, |metric| {
             (0..len)
                 .map(|row| {
                     let line = GeometryArrayStorage::line_view(coords, offsets, row_map, row);
-                    let point = crate::crs::geodesic_line_interpolate_coordseq(
+                    let point = crate::crs::chart_line_interpolate_coordseq(
                         &line,
                         distance.get(row),
                         normalized,
@@ -574,7 +574,7 @@ fn linref_substring_packed_inner(
     normalized: bool,
 ) -> Result<Vec<Shape>, (usize, crate::error::Error)> {
     if let MetricModel::Geodesic { crs, state, .. } = model {
-        crate::crs::with_geodesic_coordseq_collect_rows_at(crs, state, |metric| {
+        crate::crs::with_geographic_coordseq_collect_rows_at(crs, state, |metric| {
             (0..len)
                 .map(|row| {
                     let line = GeometryArrayStorage::line_view(coords, offsets, row_map, row);
@@ -582,9 +582,8 @@ fn linref_substring_packed_inner(
                         start_distance.get(row),
                         end_distance.get(row),
                     )?;
-                    let substring = crate::crs::geodesic_line_substring_coordseq(
-                        &line, range, normalized, metric,
-                    );
+                    let substring =
+                        crate::crs::chart_line_substring_coordseq(&line, range, normalized, metric);
                     degrade_linref_linestring(substring, Lane::Array(row))
                 })
                 .collect_rows()

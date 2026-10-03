@@ -5,15 +5,16 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use crate::HeapSize;
+use crate::crs::ChartEdge;
 use crate::error::Result;
 use crate::geographic::GeographicFrame;
 use crate::geometry::distance::ChartParts;
 use crate::geometry::topology::ExactGeographicTopology;
 use crate::geometry::types::{Bounds, GeodesicSegment, Point, Segment, Shape, XY};
 use crate::geometry::{
-    DistanceParts, GeodesicParts, GeodesicPartsKey, GeographicSeamFacts, GeographicTopologyRoute,
-    LineIndex, LineIndexSlot, MeasuredLineIndex, MeasuredLineIndexSlot, PlanarMetric,
-    PointBatchTester, SegmentMetric,
+    ChartLineIndex, DistanceParts, GeodesicParts, GeodesicPartsKey, GeographicPrepared,
+    GeographicSeamFacts, GeographicTopologyRoute, LineIndex, LineIndexSlot, MeasuredLineIndex,
+    MeasuredLineIndexSlot, PlanarMetric, PointBatchTester,
 };
 
 /// Sidecar for products derived from immutable coordinates. Geodesic products
@@ -95,9 +96,10 @@ struct GeographicExactTopologySlot {
 
 #[derive(Clone, Default)]
 struct FrameDependentEntry {
-    line_index: Option<Arc<LineIndex>>,
+    line_index: Option<Arc<ChartLineIndex>>,
     parts: Option<Arc<GeodesicParts>>,
     chart_parts: Option<Arc<ChartParts>>,
+    measured_chart_parts: Option<Arc<ChartParts>>,
 }
 
 impl FrameDependentCaches {
@@ -241,10 +243,20 @@ impl FrameDependentCaches {
 
 impl HeapSize for FrameDependentEntry {
     fn heap_bytes(&self) -> usize {
+        let shared_chart_parts = self
+            .line_index
+            .as_ref()
+            .zip(self.chart_parts.as_ref())
+            .is_some_and(|(index, parts)| Arc::ptr_eq(index.parts(), parts));
         self.line_index
             .heap_bytes()
             .saturating_add(self.parts.heap_bytes())
-            .saturating_add(self.chart_parts.heap_bytes())
+            .saturating_add(if shared_chart_parts {
+                0
+            } else {
+                self.chart_parts.heap_bytes()
+            })
+            .saturating_add(self.measured_chart_parts.heap_bytes())
     }
 }
 
@@ -428,26 +440,64 @@ impl PreparedPlan {
             .get()
     }
 
-    pub(crate) fn geodesic_line_index(
+    pub(crate) fn chart_line_index(
         &self,
         frame_cache: &FrameDependentCaches,
         crs: &str,
         semi_major: f64,
         flattening: f64,
         runtime_generation: u64,
-        metric: &impl SegmentMetric,
-    ) -> Result<Arc<LineIndex>> {
+        metric: &impl ChartMetric,
+    ) -> Result<Arc<ChartLineIndex>> {
         let key =
             GeodesicPartsKey::new_at_generation(crs, semi_major, flattening, runtime_generation);
         let cached = frame_cache.get(&key).and_then(|entry| entry.line_index);
         if let Some(index) = cached {
             return Ok(index);
         }
-        let index = Arc::new(LineIndex::build(self.shape(), metric)?);
+        if frame_cache.cached_chart_parts(&key).is_none() {
+            GeographicPrepared::try_new(self, frame_cache, metric.chart_frame())?;
+        }
+        self.shape().linework()?;
+        let parts = self.cached_chart_parts(frame_cache, &key, metric)?;
+        let index = Arc::new(ChartLineIndex::from_chart_parts(
+            self.shape(),
+            parts,
+            metric,
+        )?);
         let entry = frame_cache.merge(key, |entry| {
             entry.line_index.get_or_insert_with(|| Arc::clone(&index));
         });
         Ok(entry.and_then(|entry| entry.line_index).unwrap_or(index))
+    }
+
+    pub(crate) fn measured_chart_parts(
+        &self,
+        frame_cache: &FrameDependentCaches,
+        crs: &str,
+        semi_major: f64,
+        flattening: f64,
+        generation: u64,
+        metric: &impl ChartMetric,
+    ) -> Result<Arc<ChartParts>> {
+        let key = GeodesicPartsKey::new_at_generation(crs, semi_major, flattening, generation);
+        if let Some(parts) = frame_cache
+            .get(&key)
+            .and_then(|entry| entry.measured_chart_parts)
+        {
+            return Ok(parts);
+        }
+        GeographicPrepared::try_new(self, frame_cache, metric.chart_frame())?;
+        let index = self.measured_line_index()?;
+        let parts = Arc::new(ChartParts::measured_route(index.points(), metric)?);
+        let entry = frame_cache.merge(key, |entry| {
+            entry
+                .measured_chart_parts
+                .get_or_insert_with(|| Arc::clone(&parts));
+        });
+        Ok(entry
+            .and_then(|entry| entry.measured_chart_parts)
+            .unwrap_or(parts))
     }
 
     pub(in crate::geometry) fn geodesic_parts(
@@ -755,11 +805,17 @@ mod frame_cache_tests {
             .expect("line coordinate sequence must contain at least two vertices"),
         ));
         let cache = FrameDependentCaches::default();
+        let geodesic = geographiclib_rs::Geodesic::wgs84();
+        let metric = crate::crs::EllipsoidMetric::for_geodesic_at_frame(
+            &geodesic,
+            0,
+            GeographicFrame::crs84(),
+        );
         let first = shape
-            .geodesic_line_index(&cache, "TEST", 1.0, 0.0, 0, &PlanarMetric)
+            .chart_line_index(&cache, "TEST", geodesic.a, geodesic.f, 0, &metric)
             .expect("line index");
         let second = shape
-            .geodesic_line_index(&cache, "TEST", 1.0, 0.0, 0, &PlanarMetric)
+            .chart_line_index(&cache, "TEST", geodesic.a, geodesic.f, 0, &metric)
             .expect("cached line index");
         assert!(Arc::ptr_eq(&first, &second));
     }
@@ -974,8 +1030,14 @@ mod frame_cache_tests {
             .expect("line coordinate sequence must contain at least two vertices"),
         ));
         let cache = FrameDependentCaches::default();
+        let geodesic = geographiclib_rs::Geodesic::wgs84();
+        let metric = crate::crs::EllipsoidMetric::for_geodesic_at_frame(
+            &geodesic,
+            0,
+            GeographicFrame::crs84(),
+        );
         shape
-            .geodesic_line_index(&cache, "TEST", 1.0, 0.0, 0, &PlanarMetric)
+            .chart_line_index(&cache, "TEST", geodesic.a, geodesic.f, 0, &metric)
             .expect("line index");
         let before = cache.heap_bytes();
         assert!(before > 0);
@@ -1083,6 +1145,7 @@ pub(crate) enum GeodesicSegmentQuery {
 
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum GeodesicWitnessNeed {
+    #[cfg(test)]
     No,
     Yes,
 }
@@ -1149,9 +1212,8 @@ pub(crate) enum GeodesicSegmentQueryResult {
     Excluded,
 }
 
-/// Numerical budgets shared by the geodesic minimum and Hausdorff
-/// resolvers. Search runs in normalized units; public metric values use
-/// `semi_major`.
+/// Numerical budgets shared by the geodesic minimum and Hausdorff resolvers.
+/// Metric searches use metres; dimensionless supports use relative budgets.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct GeodesicNumericalPolicy {
     semi_major: f64,
@@ -1172,10 +1234,6 @@ impl GeodesicNumericalPolicy {
 
     pub(crate) const fn normalized_backend_floor(self) -> f64 {
         Self::BACKEND_RELATIVE
-    }
-
-    pub(crate) const fn normalized_minimum_gap(self) -> f64 {
-        Self::MINIMUM_GAP_RELATIVE
     }
 
     pub(crate) const fn normalized_hausdorff_gap(self) -> f64 {
@@ -1284,8 +1342,8 @@ pub(crate) trait GeodesicPreparedSegment: Copy {
 }
 
 /// Ellipsoidal primitives for point-to-point distance and operations that still
-/// use geodesic segments, including continuous Hausdorff and linear referencing.
-/// Chart-edge pair distance uses [`ChartMetric`] and the same ellipsoid adapter.
+/// use geodesic segments, including continuous Hausdorff.
+/// Chart-edge operations use [`ChartMetric`] and the same ellipsoid adapter.
 pub(crate) trait GeodesicMetric {
     type PreparedSegment: GeodesicPreparedSegment;
 
@@ -1336,7 +1394,9 @@ pub(crate) trait GeodesicMetric {
     fn segment_length(&self, a: Point, b: Point) -> f64;
 
     /// The point a `fraction` of the geodesic length along `a`→`b`, with Z and
-    /// M interpolated linearly by `fraction`.
+    /// M interpolated linearly by `fraction`. Retained for geodesic-segment
+    /// kernel oracles; geographic LRS uses chart-edge interpolation.
+    #[cfg(test)]
     fn interpolate(&self, a: Point, b: Point, fraction: f64) -> Point;
 
     /// A cheap (no-inverse) lower bound on the geodesic distance between two
@@ -1398,6 +1458,7 @@ crate::heapless!(ChartBox);
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum PointEdgeQuery {
     Minimum { cutoff: f64 },
+    Locate { cutoff: f64 },
     Dwithin { limit: f64 },
 }
 
@@ -1425,32 +1486,41 @@ pub(crate) enum PointEdgeQueryResult {
 }
 
 pub(crate) trait ChartMetric {
-    type Edge: Copy;
     type PointEdgeScratch: Default;
 
     fn chart_frame(&self) -> GeographicFrame;
-    fn chart_edge(&self, start: Point, end: Point) -> Result<Self::Edge>;
-    fn chart_edge_length(&self, edge: &Self::Edge) -> Result<f64>;
-    fn chart_edge_bounds(&self, edge: &Self::Edge) -> ChartBox;
+    fn chart_edge(&self, start: Point, end: Point) -> Result<ChartEdge>;
+    fn chart_edge_length(&self, edge: &ChartEdge) -> Result<f64>;
+    fn chart_edge_length_to(&self, edge: &ChartEdge, parameter: f64) -> Result<f64>;
+    fn chart_edge_locate_t(&self, edge: &ChartEdge, distance: f64, length: f64) -> Result<f64>;
+    fn chart_edge_bounds(&self, edge: &ChartEdge) -> ChartBox;
     fn chart_edge_witness(
         &self,
         start: Point,
         end: Point,
-        edge: &Self::Edge,
+        edge: &ChartEdge,
         parameter: f64,
+    ) -> Result<Point>;
+    fn chart_edge_witness_with_length(
+        &self,
+        start: Point,
+        end: Point,
+        edge: &ChartEdge,
+        parameter: f64,
+        length: f64,
     ) -> Result<Point>;
     fn point_edge_query(
         &self,
         point: Point,
-        edge: &Self::Edge,
+        edge: &ChartEdge,
         envelope_lower: f64,
         query: PointEdgeQuery,
         scratch: &mut Self::PointEdgeScratch,
     ) -> Result<PointEdgeQueryResult>;
     fn point_envelope_bound(&self, point: Point) -> impl Fn(ChartBox) -> f64;
-    fn chart_edge_seam_span(&self, edge: &Self::Edge) -> Option<[f64; 2]>;
+    fn chart_edge_seam_span(&self, edge: &ChartEdge) -> Option<[f64; 2]>;
     fn chart_seam_span_length(&self, south: f64, north: f64) -> Result<f64>;
-    fn chart_area_edge_term(&self, edge: &Self::Edge, north: bool) -> f64;
+    fn chart_area_edge_term(&self, edge: &ChartEdge, north: bool) -> f64;
     fn chart_area_factor(&self) -> f64;
 }
 

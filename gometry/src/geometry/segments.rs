@@ -207,7 +207,7 @@ impl SegmentProjection {
         matches!(self, Self::CertifiedInterior(_) | Self::ExactInterior(_))
     }
 
-    pub(super) fn fraction(&self) -> f64 {
+    pub(crate) fn fraction(&self) -> f64 {
         match self {
             Self::Start => 0.0,
             Self::Interior(projection) => projection.fraction,
@@ -897,7 +897,7 @@ pub(super) fn segment_contact_point(left: Segment, right: Segment) -> Result<Opt
 /// binary64 domain. The outward interval is an allocation-free proof for the
 /// common case. Any unresolved overlap, underflow, overflow, or cancellation
 /// falls through to the exact stored-dyadic numerator/denominator owner.
-pub(super) fn segment_projection(
+pub(crate) fn segment_projection(
     point: impl Into<XY>,
     segment: Segment,
 ) -> Result<SegmentProjection> {

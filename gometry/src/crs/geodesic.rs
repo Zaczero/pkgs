@@ -153,9 +153,9 @@ mod domain;
 mod edge_distance;
 mod ellipsoid_metric;
 mod envelope;
+mod lrs;
 mod measure;
 mod metric_model;
-mod nearest_lrs;
 mod segment;
 #[cfg(test)]
 mod tests;
@@ -183,6 +183,11 @@ pub(crate) use ellipsoid_metric::{
     EllipsoidMetric, inverse_azimuths, inverse_distance, inverse_distance_azimuths,
 };
 pub(crate) use envelope::{GeodesicBoxEnvelopeBound, GeodesicChartBox, GeodesicEnvelopeBound};
+pub(crate) use lrs::{
+    chart_line_interpolate, chart_line_interpolate_coordseq, chart_line_locate,
+    chart_line_locate_coordseq, chart_line_substring, chart_line_substring_coordseq,
+    with_geographic_coordseq_collect_rows_at, with_geographic_coordseq_metric_at,
+};
 #[cfg(test)]
 pub(crate) use measure::with_ellipsoid_metric;
 pub(crate) use measure::{
@@ -192,13 +197,7 @@ pub(crate) use measure::{
 };
 pub(crate) use metric_model::{
     GeodesicMetric, MetricModel, ResolvedMetric, ensure_3d_metric, geographic_metric_frame_at,
-    metric_model, metric_model_meters,
-};
-pub(crate) use nearest_lrs::{
-    geodesic_line_interpolate, geodesic_line_interpolate_coordseq, geodesic_line_locate,
-    geodesic_line_locate_coordseq, geodesic_line_substring, geodesic_line_substring_coordseq,
-    with_geodesic_coordseq_collect_rows_at, with_geodesic_coordseq_metric_at,
-    with_geodesic_erased_at,
+    metric_model, metric_model_meters, with_geographic_metric_erased_at,
 };
 pub(crate) use segment::{checked_geodesic_segment, sincos_degrees};
 use segment::{geodesic_point_segment_query, geodesic_unit_vector};

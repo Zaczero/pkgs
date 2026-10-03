@@ -496,11 +496,11 @@ fn geodesic_minimum_bounding_radius(
     }
 }
 
-/// CRS-aware `interpolate_m`: distribute M by arc length, stationing
-/// geodesically on a geographic CRS (so M reflects real-world distance, like
-/// the rest of the LRS family) and by planar 2D distance otherwise. Unlike the
-/// constructive ops this NEVER reprojects — X/Y/Z stay exact; only the geodesic
-/// segment lengths feed the stationing.
+/// CRS-aware `interpolate_m`: resolved geographic metrics use ellipsoidal
+/// chart-edge arclength, while planar metrics use 2D coordinate distance,
+/// including an explicit planar override on a geographic CRS. Unlike the
+/// constructive ops this NEVER reprojects — X/Y/Z stay exact; only edge lengths
+/// feed the stationing.
 pub(crate) fn metric_interpolate_m(
     model: &crate::crs::MetricModel,
     shape: &Shape,
@@ -510,16 +510,19 @@ pub(crate) fn metric_interpolate_m(
     match model {
         // The M fraction (traveled / total) is scale-invariant, so planar
         // stationing uses raw 2D distance regardless of `to_metre`.
-        crate::crs::MetricModel::Planar { .. } => {
-            shape.interpolate_m(range, overwrite, crate::geometry::point_distance)
-        },
+        crate::crs::MetricModel::Planar { .. } => shape.interpolate_m(range, overwrite, |a, b| {
+            Ok(crate::geometry::point_distance(a, b))
+        }),
         crate::crs::MetricModel::Geodesic {
             crs: geodesic_crs,
             state,
             ..
         } => crate::crs::with_ellipsoid_metric_at(geodesic_crs, &[shape], state, |metric| {
-            use crate::geometry::GeodesicMetric as _;
-            shape.interpolate_m(range, overwrite, |a, b| metric.segment_length(a, b))
+            use crate::geometry::ChartMetric as _;
+            shape.interpolate_m(range, overwrite, |a, b| {
+                let edge = metric.chart_edge(a, b)?;
+                metric.chart_edge_length(&edge)
+            })
         }),
     }
 }

@@ -953,35 +953,29 @@ pub(crate) fn unary_line_substring(
 /// ``line_interpolate_point_m`` kernel shared by the spine-routed free function.
 pub(crate) fn unary_line_interpolate_point_m(
     data: &PreparedPlan,
-    ctx: &CachelessRowContext<'_>,
+    ctx: &LinearReferenceRow<'_>,
     m: &F64Param,
 ) -> Result<Shape> {
     degrade_linref_point(
-        line_interpolate_shape_m(
-            ctx.metric.require_model(MetricOp::LineInterpolate)?,
-            data,
-            m.get(ctx.lane.row()),
-        ),
-        ctx.lane,
+        line_interpolate_shape_m(ctx.model, data, ctx.cache, m.get(ctx.op.lane.row())),
+        ctx.op.lane,
     )
 }
 
 /// ``line_substring_m`` kernel shared by the spine-routed free function.
 pub(crate) fn unary_line_substring_m(
     data: &PreparedPlan,
-    ctx: &CachelessRowContext<'_>,
+    ctx: &LinearReferenceRow<'_>,
     start_m: &F64Param,
     end_m: &F64Param,
 ) -> Result<Shape> {
-    let range =
-        MeasureRange::substring_measure(start_m.get(ctx.lane.row()), end_m.get(ctx.lane.row()))?;
+    let range = MeasureRange::substring_measure(
+        start_m.get(ctx.op.lane.row()),
+        end_m.get(ctx.op.lane.row()),
+    )?;
     degrade_linref_linestring(
-        line_substring_shape_m(
-            ctx.metric.require_model(MetricOp::LineSubstring)?,
-            data,
-            range,
-        ),
-        ctx.lane,
+        line_substring_shape_m(ctx.model, data, ctx.cache, range),
+        ctx.op.lane,
     )
 }
 

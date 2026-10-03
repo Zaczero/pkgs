@@ -1,9 +1,9 @@
 //! Prefix-length linear-referencing engine: one build walks the linework
 //! and caches per-segment lengths + cumulative offsets, then interpolate /
 //! substring / locate run off the prefix table instead of re-measuring every
-//! segment per call. Parameterized by a [`SegmentMetric`] so the planar and
-//! geodesic engines share one lifecycle — for the geodesic metric the build
-//! pays the per-segment Karney inverse exactly once per (shape, CRS).
+//! segment per call. Parameterized by a [`SegmentMetric`] so planar and
+//! geographic chart-edge referencing share one lifecycle — each build measures
+//! every source edge once and caches cumulative offsets.
 //!
 //! Zero-length segments stay in the route sequence at their unchanged prefix
 //! and contribute their stored vertices to interpolation and substrings.
@@ -12,138 +12,79 @@
 //! which resolves to the last stored vertex.
 
 use crate::HeapSize;
+use crate::crs::{ChartEdge, PointEdgeScratch};
 use crate::error::Result;
+use crate::geometry::distance::{ChartEdgePart, ChartParts, point_chart_locate};
 use crate::geometry::{
-    CoordSeq, Coordinates as _, GeodesicMetric, GeodesicSegmentQuery, GeodesicSegmentQueryResult,
-    GeodesicSegmentScratch, GeodesicWitnessNeed, GeometryErrorKind, LineSeq, MeasureRange,
-    Ordering, Point, Segment, Shape, ShapeCountQuery, interpolate_f64, lerp_point,
+    ChartMetric, CoordSeq, Coordinates as _, GeodesicMetric, GeometryErrorKind, LineSeq,
+    MeasureRange, Ordering, Point, Segment, Shape, ShapeCountQuery, lerp_point,
     linework_first_point, normalize_line_distance, point_distance,
     point_segment_distance_and_projection, push_distinct_active_position, same_point,
 };
 
 #[derive(Clone, Copy, Eq, PartialEq)]
-pub(crate) enum LocateStrategy {
-    Planar,
-    Ordered,
+pub(crate) enum InterpolationProvenance {
+    Independent,
+    Embedded,
 }
 
 /// Per-segment measurement for the linear-referencing engine.
 pub(crate) trait SegmentMetric {
     /// Length of the segment `start`–`end` in this metric.
-    fn length(&self, start: Point, end: Point) -> f64;
-    /// Admit the segment and return its length. Geodesic metrics use this
-    /// boundary to reject non-unique shortest arcs before an index is cached.
-    fn admitted_length(&self, start: Point, end: Point) -> Result<f64> {
-        Ok(self.length(start, end))
-    }
-    /// The point at `fraction` (`[0, 1]`) along the segment.
-    fn interpolate(&self, start: Point, end: Point, fraction: f64) -> Point;
-    /// Candidate ordering and projection kernel selected by this metric.
-    const LOCATE_STRATEGY: LocateStrategy;
-    /// Whether `locate_with_measure` needs the segment length argument.
-    /// Planar M interpolation keeps the certified projection ratio and does
-    /// not use the length; geodesic refinement needs its along-track scale.
-    const LOCATE_WITH_MEASURE_NEEDS_LENGTH: bool = true;
-
-    /// Cheap lower bound on this segment's locate distance (`0.0` when the
-    /// metric has none). Sound: never exceeds the true distance; preparation
-    /// failures are returned instead of disabling the bound.
-    fn locate_bound(&self, _probe: Point, _start: Point, _end: Point, _length: f64) -> Result<f64> {
-        Ok(0.0)
-    }
-
-    /// `(distance to probe, along-segment offset of the projection)`, or
-    /// `None` when the segment is excluded by the running bound.
-    /// `length` is the segment's cached metric length and `best` the running
-    /// minimum distance. Metrics with expensive refinement (geodesic)
-    /// may return `None` once a cheap bound proves the segment cannot improve
-    /// on it.
-    fn locate(
+    fn admitted_length(&self, start: Point, end: Point) -> Result<f64>;
+    /// The point at an arclength fraction, with spelling selected by its
+    /// output context.
+    fn interpolate(
         &self,
-        probe: Point,
         start: Point,
         end: Point,
         length: f64,
-        best: f64,
-        scratch: &mut GeodesicSegmentScratch,
-    ) -> Result<Option<(f64, f64)>>;
-
-    /// Locate a probe and return the interpolated M value at its foot. Planar
-    /// metrics override this to retain certified projection ratios that may be
-    /// too small to survive conversion through an along-distance.
-    fn locate_with_measure(
+        fraction: f64,
+        provenance: InterpolationProvenance,
+    ) -> Result<Point>;
+    fn interpolate_prepared(
         &self,
-        probe: Point,
-        start: Point,
-        end: Point,
+        part: &ChartEdgePart,
         length: f64,
-        best: f64,
-        scratch: &mut GeodesicSegmentScratch,
-    ) -> Result<Option<(f64, f64)>> {
-        let Some((distance, along)) = self.locate(probe, start, end, length, best, scratch)? else {
-            return Ok(None);
-        };
-        let fraction = if length == 0.0 {
-            0.0
-        } else {
-            (along / length).clamp(0.0, 1.0)
-        };
-        Ok(Some((
-            distance,
-            interpolate_f64(start.m().unwrap_or(0.0), end.m().unwrap_or(0.0), fraction),
-        )))
+        fraction: f64,
+        provenance: InterpolationProvenance,
+    ) -> Result<Point> {
+        self.interpolate(part.start, part.end, length, fraction, provenance)
     }
-}
-
-macro_rules! locate_planar_segment {
-    ($probe:expr, $start:expr, $end:expr, $length:expr) => {{
-        let (distance, projection) =
-            point_segment_distance_and_projection(($probe).xy(), Segment {
-                start: ($start).into(),
-                end: ($end).into(),
-            })?;
-        Ok::<Option<(f64, f64)>, crate::error::Error>(Some((distance, projection.scale($length)?)))
-    }};
 }
 
 /// Planar (coordinate-unit) metric.
 pub(crate) struct PlanarMetric;
 
 impl SegmentMetric for PlanarMetric {
-    const LOCATE_STRATEGY: LocateStrategy = LocateStrategy::Planar;
-    const LOCATE_WITH_MEASURE_NEEDS_LENGTH: bool = false;
-
-    fn length(&self, start: Point, end: Point) -> f64 {
+    fn admitted_length(&self, start: Point, end: Point) -> Result<f64> {
         // The guarded sqrt form: a libm `hypot` per segment is the dominant
         // cost of the cold prefix build (38% of `line_interpolate_point` in
         // profile), and lengths are measurement arithmetic.
-        point_distance(start, end)
+        Ok(point_distance(start, end))
     }
 
-    fn interpolate(&self, start: Point, end: Point, fraction: f64) -> Point {
-        lerp_point(start, end, fraction)
-    }
-
-    fn locate(
+    fn interpolate(
         &self,
-        probe: Point,
         start: Point,
         end: Point,
-        length: f64,
-        _best: f64,
-        _scratch: &mut GeodesicSegmentScratch,
-    ) -> Result<Option<(f64, f64)>> {
-        locate_planar_segment!(probe, start, end, length)
+        _length: f64,
+        fraction: f64,
+        _provenance: InterpolationProvenance,
+    ) -> Result<Point> {
+        Ok(lerp_point(start, end, fraction))
     }
+}
 
-    fn locate_with_measure(
+impl PlanarMetric {
+    pub(crate) fn locate_with_measure(
         &self,
         probe: Point,
         start: Point,
         end: Point,
         _length: f64,
         _best: f64,
-        _scratch: &mut GeodesicSegmentScratch,
+        _scratch: &mut (),
     ) -> Result<Option<(f64, f64)>> {
         let (distance, projection) = point_segment_distance_and_projection(probe.xy(), Segment {
             start: start.into(),
@@ -158,57 +99,59 @@ impl SegmentMetric for PlanarMetric {
     }
 }
 
-/// Any [`GeodesicMetric`] is a [`SegmentMetric`] (lengths in meters).
-impl<M: GeodesicMetric> SegmentMetric for M {
-    const LOCATE_STRATEGY: LocateStrategy = LocateStrategy::Ordered;
-
+/// Geographic linear referencing uses the same chart-edge owner as proximity.
+impl<M: ChartMetric> SegmentMetric for M {
     fn admitted_length(&self, start: Point, end: Point) -> Result<f64> {
-        Ok(self.make_segment(start, end)?.length)
+        let edge = self.chart_edge(start, end)?;
+        self.chart_edge_length(&edge)
     }
 
-    fn locate_bound(&self, probe: Point, start: Point, end: Point, length: f64) -> Result<f64> {
-        // Triangle inequality off the auxiliary-sphere endpoint bounds: the
-        // foot is at least the farther-bounded endpoint minus the segment.
-        Ok((self
-            .point_distance_lower_bound(probe, start)?
-            .max(self.point_distance_lower_bound(probe, end)?)
-            - length)
-            .max(0.0))
-    }
-
-    fn length(&self, start: Point, end: Point) -> f64 {
-        self.segment_length(start, end)
-    }
-
-    fn interpolate(&self, start: Point, end: Point, fraction: f64) -> Point {
-        GeodesicMetric::interpolate(self, start, end, fraction)
-    }
-
-    fn locate(
+    fn interpolate(
         &self,
-        probe: Point,
         start: Point,
         end: Point,
-        _length: f64,
-        best: f64,
-        scratch: &mut GeodesicSegmentScratch,
-    ) -> Result<Option<(f64, f64)>> {
-        let result = self.point_segment_query(
-            probe,
-            &self.make_segment(start, end)?,
-            GeodesicSegmentQuery::Minimum {
-                cutoff: best,
-                witness: GeodesicWitnessNeed::No,
-            },
-            scratch,
-        )?;
-        match result {
-            GeodesicSegmentQueryResult::Attained { minimum, .. } => {
-                Ok(Some((minimum.distance, minimum.along)))
-            },
-            GeodesicSegmentQueryResult::Excluded => Ok(None),
-        }
+        length: f64,
+        fraction: f64,
+        provenance: InterpolationProvenance,
+    ) -> Result<Point> {
+        let edge = self.chart_edge(start, end)?;
+        interpolate_chart_edge(self, start, end, &edge, length, fraction, provenance)
     }
+
+    fn interpolate_prepared(
+        &self,
+        part: &ChartEdgePart,
+        length: f64,
+        fraction: f64,
+        provenance: InterpolationProvenance,
+    ) -> Result<Point> {
+        interpolate_chart_edge(
+            self, part.start, part.end, &part.edge, length, fraction, provenance,
+        )
+    }
+}
+
+fn interpolate_chart_edge(
+    metric: &impl ChartMetric,
+    start: Point,
+    end: Point,
+    edge: &ChartEdge,
+    length: f64,
+    fraction: f64,
+    provenance: InterpolationProvenance,
+) -> Result<Point> {
+    let parameter = metric.chart_edge_locate_t(edge, length * fraction, length)?;
+    let point = metric.chart_edge_witness_with_length(start, end, edge, parameter, length)?;
+    if provenance == InterpolationProvenance::Independent {
+        return Ok(point);
+    }
+    let lifted_position = edge.chart_position(parameter);
+    let longitude = metric
+        .chart_frame()
+        .longitude()
+        .nearest_longitude_alias(lifted_position.x, point.x)
+        .map_err(|error| crate::crs::CrsError::message(error.to_string()))?;
+    Ok(point.with_xy_raw(longitude, point.y))
 }
 
 /// Cache slot for a built (or unbuildable) [`LineIndex`].
@@ -255,12 +198,90 @@ impl LineIndexSlot {
 /// Each stored segment has FULL ordinate carry — the planar [`Segment`] is
 /// XY-only by design, and LRS interpolates Z/M.
 #[derive(Clone, Copy)]
-struct OrdinateSegment {
+pub(crate) struct OrdinateSegment {
     start: Point,
     end: Point,
 }
 
 crate::heapless!(OrdinateSegment);
+
+pub(crate) trait LineSegments: HeapSize {
+    fn len(&self) -> usize;
+    fn segment(&self, index: usize) -> OrdinateSegment;
+    fn iter(&self) -> impl Iterator<Item = OrdinateSegment>;
+    fn interpolate<M: SegmentMetric>(
+        &self,
+        index: usize,
+        metric: &M,
+        length: f64,
+        fraction: f64,
+        provenance: InterpolationProvenance,
+    ) -> Result<Point>;
+}
+
+impl LineSegments for Box<[OrdinateSegment]> {
+    fn len(&self) -> usize {
+        self.as_ref().len()
+    }
+    fn segment(&self, index: usize) -> OrdinateSegment {
+        *self
+            .as_ref()
+            .get(index)
+            .expect("segment ordinal belongs to the route")
+    }
+    fn iter(&self) -> impl Iterator<Item = OrdinateSegment> {
+        self.as_ref().iter().copied()
+    }
+    fn interpolate<M: SegmentMetric>(
+        &self,
+        index: usize,
+        metric: &M,
+        length: f64,
+        fraction: f64,
+        provenance: InterpolationProvenance,
+    ) -> Result<Point> {
+        let segment = self.segment(index);
+        metric.interpolate(segment.start, segment.end, length, fraction, provenance)
+    }
+}
+
+impl LineSegments for std::sync::Arc<ChartParts> {
+    fn len(&self) -> usize {
+        self.edges.len()
+    }
+    fn segment(&self, index: usize) -> OrdinateSegment {
+        let part = self
+            .edges
+            .get(index)
+            .expect("chart-edge ordinal belongs to the route");
+        OrdinateSegment {
+            start: part.start,
+            end: part.end,
+        }
+    }
+    fn iter(&self) -> impl Iterator<Item = OrdinateSegment> {
+        self.edges.iter().map(|part| OrdinateSegment {
+            start: part.start,
+            end: part.end,
+        })
+    }
+    fn interpolate<M: SegmentMetric>(
+        &self,
+        index: usize,
+        metric: &M,
+        length: f64,
+        fraction: f64,
+        provenance: InterpolationProvenance,
+    ) -> Result<Point> {
+        let part = self
+            .edges
+            .get(index)
+            .expect("chart-edge ordinal belongs to the route");
+        metric.interpolate_prepared(part, length, fraction, provenance)
+    }
+}
+
+pub(crate) type ChartLineIndex = LineIndex<std::sync::Arc<ChartParts>>;
 
 macro_rules! locate_point_body {
     (
@@ -277,79 +298,7 @@ macro_rules! locate_point_body {
     ) => {{
         let mut best_distance = f64::INFINITY;
         let mut best_offset = 0.0;
-        let mut segment_scratch = GeodesicSegmentScratch::default();
-        if <$metric_type as SegmentMetric>::LOCATE_STRATEGY == LocateStrategy::Ordered {
-            #[derive(Clone, Copy)]
-            struct BoundEntry {
-                bound: f64,
-                index: usize,
-            }
-            impl PartialEq for BoundEntry {
-                fn eq(&self, other: &Self) -> bool {
-                    self.bound.to_bits() == other.bound.to_bits() && self.index == other.index
-                }
-            }
-            impl Eq for BoundEntry {}
-            impl PartialOrd for BoundEntry {
-                fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-                    Some(self.cmp(other))
-                }
-            }
-            impl Ord for BoundEntry {
-                fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-                    other
-                        .bound
-                        .total_cmp(&self.bound)
-                        .then_with(|| other.index.cmp(&self.index))
-                }
-            }
-            let mut entries = Vec::with_capacity(($this).segments.len());
-            for ($index, ($segment, &$offset)) in
-                std::iter::zip(&($this).segments, &($this).prefix).enumerate()
-            {
-                let $length = ($this).prefix[$index + 1] - $offset;
-                $skip_zero_segments;
-                let bound =
-                    ($metric).locate_bound($probe, $segment.start, $segment.end, $length)?;
-                entries.push(BoundEntry {
-                    bound,
-                    index: $index,
-                });
-            }
-            let mut order = std::collections::BinaryHeap::from(entries);
-            let mut best_index = usize::MAX;
-            while let Some(BoundEntry { bound, index }) = order.pop() {
-                if bound > best_distance {
-                    break;
-                }
-                #[expect(clippy::float_cmp, reason = "exact tie against the refined best")]
-                let skippable_tie = bound == best_distance && index > best_index;
-                if skippable_tie {
-                    continue;
-                }
-                let segment = ($this).segments[index];
-                let offset = ($this).prefix[index];
-                let length = ($this).prefix[index.wrapping_add(1)] - offset;
-                let Some((distance, along)) = ($metric).locate(
-                    $probe,
-                    segment.start,
-                    segment.end,
-                    length,
-                    best_distance,
-                    &mut segment_scratch,
-                )?
-                else {
-                    continue;
-                };
-                #[expect(clippy::float_cmp, reason = "tie-break preserves first-wins order")]
-                let tie = distance == best_distance && index < best_index;
-                if distance < best_distance || tie {
-                    best_distance = distance;
-                    best_offset = offset + along;
-                    best_index = index;
-                }
-            }
-        } else {
+        {
             let mut best_projection = None;
             for ($index, ($segment, &$offset)) in
                 std::iter::zip(&($this).segments, &($this).prefix).enumerate()
@@ -388,10 +337,10 @@ macro_rules! locate_point_body {
     }};
 }
 
-pub(crate) struct LineIndex {
+pub(crate) struct LineIndex<S = Box<[OrdinateSegment]>> {
     /// All stored segments, in linework order. Zero-length segments share a
     /// prefix with the surrounding route vertices.
-    segments: Box<[OrdinateSegment]>,
+    segments: S,
     /// `prefix[i]` = cumulative length before segment `i`; the last entry is
     /// the cached total length. Lengths are cached here — locate's
     /// `mul_add(length, fraction, offset)` and every interpolation walk read
@@ -451,7 +400,7 @@ impl LineIndex {
                     continue;
                 }
                 // Plain sum: blanket Kahan on LRS prefixes is nonfree (+4–33%
-                // planar) — N11 closed under free-or-nearly-free. Geodesic
+                // planar) — N11 closed under free-or-nearly-free. Standalone
                 // shape-length folds compensate separately in measure.rs.
                 total += length;
                 if !total.is_finite() {
@@ -528,12 +477,116 @@ impl LineIndex {
             has_zero_segments,
         })
     }
+}
 
+impl ChartLineIndex {
+    pub(crate) fn build_chart(shape: &Shape, metric: &impl ChartMetric) -> Result<Self> {
+        let parts = std::sync::Arc::new(ChartParts::build(shape, metric)?);
+        Self::from_chart_parts(shape, parts, metric)
+    }
+
+    pub(crate) fn build_chart_coordseq(
+        coords: &CoordSeq,
+        metric: &impl ChartMetric,
+    ) -> Result<Self> {
+        Self::build_chart(
+            &Shape::LineString(LineSeq::from_proven(coords.clone())),
+            metric,
+        )
+    }
+
+    pub(crate) fn from_chart_parts(
+        shape: &Shape,
+        parts: std::sync::Arc<ChartParts>,
+        metric: &impl ChartMetric,
+    ) -> Result<Self> {
+        let lines = shape.linework()?;
+        let first = linework_first_point(&lines).ok_or(GeometryErrorKind::EmptyLinework)?;
+        let last = lines
+            .iter()
+            .rev()
+            .find_map(|line| line.last())
+            .unwrap_or(first);
+        let mut prefix = Vec::with_capacity(parts.edges.len().saturating_add(1));
+        prefix.push(0.0);
+        let mut total = 0.0;
+        let mut has_zero_segments = false;
+        for part in &parts.edges {
+            let length = metric.chart_edge_length(&part.edge)?;
+            if !length.is_finite() {
+                return Err(GeometryErrorKind::message(
+                    "line index cannot include a non-finite segment length",
+                ));
+            }
+            has_zero_segments |= length == 0.0;
+            total += length;
+            if !total.is_finite() {
+                return Err(GeometryErrorKind::message(
+                    "line index total length must be finite",
+                ));
+            }
+            prefix.push(total);
+        }
+        Ok(Self {
+            segments: parts,
+            prefix: prefix.into_boxed_slice(),
+            total,
+            first,
+            last,
+            has_zero_segments,
+        })
+    }
+
+    pub(crate) fn locate_chart_point<M>(
+        &self,
+        probe: Point,
+        normalized: bool,
+        metric: &M,
+    ) -> Result<f64>
+    where
+        M: GeodesicMetric + ChartMetric<PointEdgeScratch = PointEdgeScratch>,
+    {
+        if probe.x.is_nan() {
+            return Ok(f64::NAN);
+        }
+        if self.total == 0.0 {
+            return Ok(0.0);
+        }
+        let Some((ordinal, parameter)) =
+            point_chart_locate(probe, &self.segments, metric, |part| {
+                !part.edge.is_degenerate()
+            })?
+        else {
+            return Ok(0.0);
+        };
+        let part = self
+            .segments
+            .edges
+            .get(ordinal)
+            .expect("nearest ordinal belongs to the route");
+        let prefix = *self
+            .prefix
+            .get(ordinal)
+            .expect("nearest ordinal has a station prefix");
+        let station = prefix + metric.chart_edge_length_to(&part.edge, parameter)?;
+        Ok(if normalized {
+            station / self.total
+        } else {
+            station
+        })
+    }
+
+    pub(crate) const fn parts(&self) -> &std::sync::Arc<ChartParts> {
+        &self.segments
+    }
+}
+
+impl<S: LineSegments> LineIndex<S> {
     /// The segment containing `target` (a clamped `[0, total]` measure) and
     /// the local offset into it. An exact boundary resolves to the segment it
     /// ends, matching the old `target <= length` walk.
     fn segment_at(&self, target: f64) -> Option<(usize, f64)> {
-        if self.segments.is_empty() {
+        if self.segments.len() == 0 {
             return None;
         }
         let index = self
@@ -555,32 +608,34 @@ impl LineIndex {
         distance: f64,
         normalized: bool,
         metric: &impl SegmentMetric,
-    ) -> Point {
+    ) -> Result<Point> {
         if self.total == 0.0 {
-            return self.first;
+            return Ok(self.first);
         }
         let target = normalize_line_distance(distance, self.total, normalized);
         let Some((index, local)) = self.segment_at(target) else {
-            return self.last;
+            return Ok(self.last);
         };
-        #[expect(
-            clippy::indexing_slicing,
-            reason = "segment_at returns an index in the segment slice"
-        )]
-        let segment = self.segments[index];
+        let segment = self.segments.segment(index);
         #[expect(
             clippy::indexing_slicing,
             reason = "segment_at returns an index with a following prefix entry"
         )]
         let length = self.prefix[index.wrapping_add(1)] - self.prefix[index];
         if local == 0.0 {
-            return segment.start;
+            return Ok(segment.start);
         }
         #[expect(clippy::float_cmp, reason = "exact prefix boundary identity")]
         if local == length {
-            return segment.end;
+            return Ok(segment.end);
         }
-        metric.interpolate(segment.start, segment.end, local / length)
+        self.segments.interpolate(
+            index,
+            metric,
+            length,
+            local / length,
+            InterpolationProvenance::Independent,
+        )
     }
 
     pub(crate) fn interpolate_route_position(
@@ -588,7 +643,7 @@ impl LineIndex {
         distance: f64,
         normalized: bool,
         metric: &impl SegmentMetric,
-    ) -> Point {
+    ) -> Result<Point> {
         if self.has_zero_segments {
             self.interpolate_with_zero_length_segments(distance, normalized, metric)
         } else {
@@ -601,35 +656,37 @@ impl LineIndex {
         distance: f64,
         normalized: bool,
         metric: &impl SegmentMetric,
-    ) -> Point {
+    ) -> Result<Point> {
         if self.total == 0.0 {
-            return self.interpolate_zero_total(distance, normalized);
+            return Ok(self.interpolate_zero_total(distance, normalized));
         }
         let target = normalize_line_distance(distance, self.total, normalized);
         if target.total_cmp(&self.total) == Ordering::Equal {
-            return self.last;
+            return Ok(self.last);
         }
         let Some((index, local)) = self.segment_at(target) else {
-            return self.last;
+            return Ok(self.last);
         };
-        #[expect(
-            clippy::indexing_slicing,
-            reason = "segment_at returns an index in the segment slice"
-        )]
-        let segment = self.segments[index];
+        let segment = self.segments.segment(index);
         #[expect(
             clippy::indexing_slicing,
             reason = "segment_at returns an index with a following prefix entry"
         )]
         let length = self.prefix[index.wrapping_add(1)] - self.prefix[index];
         if local == 0.0 {
-            return segment.start;
+            return Ok(segment.start);
         }
         #[expect(clippy::float_cmp, reason = "exact prefix boundary identity")]
         if local == length {
-            return segment.end;
+            return Ok(segment.end);
         }
-        metric.interpolate(segment.start, segment.end, local / length)
+        self.segments.interpolate(
+            index,
+            metric,
+            length,
+            local / length,
+            InterpolationProvenance::Independent,
+        )
     }
 
     fn interpolate_zero_total(&self, distance: f64, normalized: bool) -> Point {
@@ -673,7 +730,7 @@ impl LineIndex {
         }
         if start.total_cmp(&end) == Ordering::Equal && !zero_length_normalized_span {
             return Ok(Shape::Point(
-                self.interpolate_route_position(start, false, metric),
+                self.interpolate_route_position(start, false, metric)?,
             ));
         }
 
@@ -681,10 +738,11 @@ impl LineIndex {
         // Only the overlapping prefix window is walked; semantics (distinct
         // consecutive points, segment-end offsets) match the full scan.
         let from_index = self.prefix.partition_point(|&boundary| boundary < start);
-        for (segment, prefix_pair) in self
+        for (index, (segment, prefix_pair)) in self
             .segments
             .iter()
             .zip(self.prefix.array_windows::<2>())
+            .enumerate()
             .skip(from_index.saturating_sub(1))
         {
             let [segment_start, segment_end] = *prefix_pair;
@@ -709,34 +767,38 @@ impl LineIndex {
             }
             // Boundary fractions resolve to the exact stored endpoints — no
             // metric call (the interior windows of a substring walk are all
-            // full segments, so this skips ~all the geodesic directs). The
+            // full segments, so this skips their edge evaluations). The
             // comparisons are exact by design: `from`/`to` are clamped to
             // the same prefix values they compare against.
             #[expect(clippy::float_cmp, reason = "exact prefix boundary identity")]
-            let at = |target: f64| {
+            let at = |target: f64| -> Result<Point> {
                 if target == segment_start {
-                    segment.start
+                    Ok(segment.start)
                 } else if target == segment_end {
-                    segment.end
+                    Ok(segment.end)
                 } else {
-                    metric.interpolate(
-                        segment.start,
-                        segment.end,
+                    self.segments.interpolate(
+                        index,
+                        metric,
+                        length,
                         (target - segment_start) / length,
+                        InterpolationProvenance::Embedded,
                     )
                 }
             };
-            push_distinct_active_position(&mut result, at(from));
-            push_distinct_active_position(&mut result, at(to));
+            push_distinct_active_position(&mut result, at(from)?);
+            push_distinct_active_position(&mut result, at(to)?);
         }
 
         Ok(match result.as_slice() {
-            [] => Shape::Point(self.interpolate_route_position(start, false, metric)),
+            [] => Shape::Point(self.interpolate_route_position(start, false, metric)?),
             [point] => Shape::Point(*point),
             _ => Shape::LineString(LineSeq::from_proven(CoordSeq::try_from_points(&result)?)),
         })
     }
+}
 
+impl LineIndex {
     /// The along-line offset of `probe`'s nearest projection (the engine
     /// behind `line_locate_point`). First-wins tie ordering, like the scan.
     #[expect(
@@ -797,7 +859,7 @@ impl LineIndex {
             {
                 if length == 0.0
                     && (same_point(segment.start, segment.end)
-                        || metric.length(segment.start, segment.end) == 0.0)
+                        || metric.admitted_length(segment.start, segment.end)? == 0.0)
                 {
                     continue;
                 }
@@ -816,7 +878,7 @@ impl HeapSize for LineIndexSlot {
     }
 }
 
-impl HeapSize for LineIndex {
+impl<S: LineSegments> HeapSize for LineIndex<S> {
     fn heap_bytes(&self) -> usize {
         self.segments
             .heap_bytes()
@@ -844,5 +906,194 @@ mod tests {
             index.locate_point(points[2], true, &PlanarMetric).unwrap(),
             1.0
         );
+    }
+
+    #[test]
+    fn chart_locate_ordinals_preserve_zero_edges_and_shared_multipart_occurrences() {
+        use geographiclib_rs::Geodesic;
+
+        use crate::crs::EllipsoidMetric;
+        use crate::geographic::GeographicFrame;
+        use crate::geometry::{MultiLineString, MultiMember};
+
+        let chain = LineSeq::try_new(
+            CoordSeq::try_from_points(&[
+                Point::new_raw_xy(0.0, 0.0),
+                Point::new_raw_xy(0.0, 0.0),
+                Point::new_raw_xy(1.0, 0.0),
+                Point::new_raw_xy(2.0, 0.0),
+            ])
+            .unwrap(),
+        )
+        .unwrap();
+        let shape = Shape::MultiLineString(
+            MultiLineString::try_new(chain.axes(), vec![
+                MultiMember::Value(chain.clone()),
+                MultiMember::Value(chain),
+            ])
+            .unwrap(),
+        );
+        let geodesic = Geodesic::wgs84();
+        let metric = EllipsoidMetric::for_geodesic_at_frame(&geodesic, 0, GeographicFrame::crs84());
+        let index = ChartLineIndex::build_chart(&shape, &metric).unwrap();
+        assert_eq!(index.parts().edges.len(), 6);
+        assert_eq!(index.prefix.len(), 7);
+        assert_eq!(index.prefix[0].to_bits(), index.prefix[1].to_bits());
+        assert_eq!(index.prefix[3].to_bits(), index.prefix[4].to_bits());
+        let probe = Point::new_raw_xy(1.5, 0.0);
+        let (ordinal, parameter) = point_chart_locate(probe, index.parts(), &metric, |part| {
+            !part.edge.is_degenerate()
+        })
+        .unwrap()
+        .unwrap();
+        assert_eq!(ordinal, 2);
+        assert!((parameter - 0.5).abs() < 1e-14);
+        let station = index.locate_chart_point(probe, false, &metric).unwrap();
+        assert!((station - 166_979.236_189_910_36).abs() < 4e-9);
+        assert!((index.locate_chart_point(probe, true, &metric).unwrap() - 0.375).abs() < 2e-15);
+    }
+
+    #[test]
+    fn full_turn_parallel_lrs_round_trips_across_the_circle() {
+        use geographiclib_rs::Geodesic;
+
+        use crate::crs::EllipsoidMetric;
+        use crate::geographic::GeographicFrame;
+
+        let shape =
+            crate::io::parse_wkt("LINESTRING (10 60, 370 60)").expect("one explicit full turn");
+        let geodesic = Geodesic::wgs84();
+        let metric = EllipsoidMetric::for_geodesic_at_frame(&geodesic, 0, GeographicFrame::crs84());
+        let index = ChartLineIndex::build_chart(&shape, &metric).expect("chart-edge line index");
+        let cases = [28.0, 100.0, -170.0, -80.0, -8.0];
+        let start_ulp = 10.0_f64.next_up() - 10.0;
+        let latitude_ulp = 60.0_f64.next_up() - 60.0;
+        let mut first_station = None;
+        let mut previous_station = f64::NEG_INFINITY;
+
+        for longitude in cases {
+            let query = Point::new_raw_xy(longitude, 60.0);
+            let station = index
+                .locate_chart_point(query, true, &metric)
+                .expect("full-turn chart locate");
+            assert!(
+                station > previous_station,
+                "full-turn stations must increase: {previous_station} then {station}"
+            );
+            if first_station.is_none() {
+                first_station = Some(station);
+            }
+            let interpolated = index
+                .interpolate_route_position(station, true, &metric)
+                .expect("full-turn chart interpolate");
+            let longitude_ulp = longitude.abs().next_up() - longitude.abs();
+            let longitude_budget = 4.0 * start_ulp.max(longitude_ulp) + 360.0 * 4.0 * f64::EPSILON;
+            let latitude_budget = 4.0 * latitude_ulp;
+            assert!(
+                (interpolated.x - longitude).abs() <= longitude_budget,
+                "round-trip longitude {} differs from {longitude} by more than {longitude_budget}",
+                interpolated.x
+            );
+            assert!(
+                (interpolated.y - 60.0).abs() <= latitude_budget,
+                "round-trip latitude {} differs from 60 by more than {latitude_budget}",
+                interpolated.y
+            );
+            previous_station = station;
+        }
+        assert!(first_station.is_some_and(|station| station < 0.1));
+        assert!(previous_station > 0.9);
+    }
+
+    #[test]
+    fn chart_bvh_locate_keeps_earliest_ordinal_when_a_later_leaf_is_visited_first() {
+        use geographiclib_rs::Geodesic;
+
+        use crate::crs::EllipsoidMetric;
+        use crate::geographic::GeographicFrame;
+        let shape = crate::io::parse_wkt(
+            "MULTILINESTRING ((0 1, 2 1), (10 20, 11 20), (20 20, 21 20), \
+             (30 20, 31 20), (40 20, 41 20), (-40 20, -39 20), \
+             (-30 20, -29 20), (-20 20, -19 20), (-10 1, 0 1))",
+        )
+        .unwrap();
+        let geodesic = Geodesic::wgs84();
+        let metric = EllipsoidMetric::for_geodesic_at_frame(&geodesic, 0, GeographicFrame::crs84());
+        let index = ChartLineIndex::build_chart(&shape, &metric).unwrap();
+        let probe = Point::new_raw_xy(0.0, 0.0);
+        let mut best = f64::INFINITY;
+        let mut visited = Vec::new();
+        index
+            .parts()
+            .bvh()
+            .unwrap()
+            .visit_point_candidates(
+                &index.parts().edges,
+                probe,
+                &metric,
+                &mut best,
+                None,
+                &mut Vec::new(),
+                |ordinal, _, _| {
+                    visited.push(ordinal);
+                    Ok::<_, crate::error::Error>(None::<()>)
+                },
+            )
+            .unwrap();
+        assert!(
+            visited.iter().position(|&ordinal| ordinal == 8).unwrap()
+                < visited.iter().position(|&ordinal| ordinal == 0).unwrap()
+        );
+        let (ordinal, _) = point_chart_locate(probe, index.parts(), &metric, |_| true)
+            .unwrap()
+            .unwrap();
+        assert_eq!(ordinal, 0);
+        assert_eq!(
+            index
+                .locate_chart_point(probe, false, &metric)
+                .unwrap()
+                .to_bits(),
+            0.0_f64.to_bits()
+        );
+    }
+
+    #[test]
+    fn cached_chart_locate_preserves_source_then_query_domain_error_precedence() {
+        let model = crate::crs::metric_model(Some("OGC:CRS84")).unwrap();
+        let invalid = crate::geometry::PreparedPlan::new(
+            crate::io::parse_wkt("LINESTRING (0 100, 1 100)").unwrap(),
+        );
+        let invalid_probe = Point::new_raw_xy(2.0, 101.0);
+        let cache = crate::geometry::FrameDependentCaches::default();
+        let source_error = crate::crs::ensure_geographic_domain_in_frame(
+            crate::geographic::GeographicFrame::crs84(),
+            invalid.shape(),
+        )
+        .unwrap_err()
+        .to_string();
+        assert_eq!(
+            crate::line_locate_shape(&model, &invalid, &cache, invalid_probe, false)
+                .unwrap_err()
+                .to_string(),
+            source_error,
+        );
+        let valid = crate::geometry::PreparedPlan::new(
+            crate::io::parse_wkt("LINESTRING (0 10, 1 10)").unwrap(),
+        );
+        let query_error = crate::crs::ensure_geographic_lonlat_in_frame(
+            crate::geographic::GeographicFrame::crs84(),
+            invalid_probe.x,
+            invalid_probe.y,
+        )
+        .unwrap_err()
+        .to_string();
+        for _ in 0..2 {
+            assert_eq!(
+                crate::line_locate_shape(&model, &valid, &cache, invalid_probe, false)
+                    .unwrap_err()
+                    .to_string(),
+                query_error,
+            );
+        }
     }
 }

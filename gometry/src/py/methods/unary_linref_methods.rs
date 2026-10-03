@@ -29,6 +29,12 @@ stored vertex; normalized ``0`` and ``1`` select the first and last stored
 vertices. M-basis interpolation follows the stored monotonic measure and keeps
 vertices whose active Z/M ordinates differ even when X/Y is equal.
 
+With CRS-aware units (the default on a geographic CRS), each source edge is
+straight in the CRS's longitude and latitude chart and distance is ellipsoidal
+arclength along that edge. An independently interpolated point uses canonical
+longitude; original endpoints retain their stored spelling. ``unit='planar'``
+instead uses Cartesian distance in the stored coordinate space.
+
 Parameters
 ----------
 at : float or sequence of float, optional
@@ -66,8 +72,8 @@ GeometryArray[Point] or Groups[GeometryArray[Point]]
     post: concat!(r"
 basis : {'distance', 'm'}, default 'distance'
     Use CRS-aware distance, or the line's monotonic M ordinate. For ``basis='m'``,
-    synthesized coordinates follow the CRS metric: geodesic on a geographic CRS,
-    planar otherwise.
+    the M fraction selects the same arclength fraction on each edge: ellipsoidal
+    chart-edge arclength on a geographic CRS, planar length otherwise.
 
 normalized : bool, default False
     Interpret distance-basis ``at`` values as fractions in [0, 1]. Invalid
@@ -89,7 +95,7 @@ GeometryError
 
 See Also
 --------
-line_locate : Project a geometry onto the line (inverse of interpolate).
+line_locate : Locate the first nearest route position; repeated support makes the inverse non-unique.
 line_substring : Extract a contiguous portion of the line.
 interpolate_m : Assign M ordinates along arc length.
 
@@ -111,6 +117,11 @@ no distance but remain in the result when their active ordinates differ,
 including consecutive vertices with identical X/Y. This applies to distance
 and M basis.
 
+With CRS-aware units, geographic cut points are inverted by ellipsoidal
+arclength along straight source-chart edges. New endpoints embedded in a
+retained source edge keep that edge's continuous longitude spelling.
+``unit='planar'`` instead interpolates in the stored coordinate space.
+
 Parameters
 ----------
 start, end : float or sequence of float
@@ -119,8 +130,8 @@ start, end : float or sequence of float
 
 basis : {'distance', 'm'}, default 'distance'
     Use CRS-aware distance, or the line's monotonic M ordinate. For ``basis='m'``,
-    synthesized coordinates follow the CRS metric: geodesic on a geographic CRS,
-    planar otherwise.
+    the M fraction selects the same arclength fraction on each edge: ellipsoidal
+    chart-edge arclength on a geographic CRS, planar length otherwise.
 
 normalized : bool, default False
     Interpret distance-basis positions as fractions in [0, 1]. Invalid with
@@ -158,7 +169,7 @@ GeometryError
 See Also
 --------
 line_interpolate : Point at a location along the line.
-line_locate : Project a geometry onto the line.
+line_locate : Locate the nearest route position on the line.
 interpolate_m : Assign M ordinates along arc length.
 
 Examples
@@ -171,15 +182,16 @@ Examples
 
 method_doc! {
     doc_interpolate_m;
-    pre: r"Interpolate an M ordinate along the line's arc length (CRS-aware). M runs
+pre: r"Interpolate an M ordinate along the line's arc length (CRS-aware). M runs
 from ``start_m`` at the start to ``end_m`` at the end, continuously across
 multipart linework (the PostGIS ``ST_AddMeasure`` shape). The stationing
-uses geodesic distance on geographic CRSs and planar distance otherwise;
-coordinates are never moved. Geographic 2D length and perimeter measure chart
-edges, so their values can differ from LRS stationing. Z is preserved; existing
-M requires ``overwrite=True``. Every stored vertex is retained; a zero-length
-X/Y segment has equal M values at both ends. Empty linework returns the same
-empty with an M axis.
+uses ellipsoidal arclength along straight source-chart edges on geographic CRSs
+and planar distance otherwise; ``unit='planar'`` always uses Cartesian
+coordinate space. Coordinates are never moved. Geographic length, perimeter,
+and LRS use the same chart-edge model with CRS-aware units. Z is preserved;
+existing M requires ``overwrite=True``. Every stored vertex is retained; a
+zero-length X/Y segment has equal M values at both ends. Empty linework returns
+the same empty with an M axis.
 
 Parameters
 ----------";
@@ -224,7 +236,7 @@ See Also
 --------
 line_interpolate : Point at a distance or M location along the line.
 line_substring : Extract a contiguous portion of the line.
-line_locate : Project a geometry onto the line.
+line_locate : Locate the nearest route position on the line.
 
 Examples
 --------
@@ -244,6 +256,11 @@ and equal-distance projections keep the first route position. With
 ``basis='m'``, the returned M is likewise taken from the first nearest
 projection.
 
+With CRS-aware units on a geographic CRS, locate minimizes geodesic distance to
+the straight chart edges and returns cumulative ellipsoidal arclength to the
+nearest point. ``unit='planar'`` instead uses Cartesian distance in the stored
+coordinate space.
+
 Parameters
 ----------
 geom : Geometry or GeometryArray
@@ -251,8 +268,8 @@ geom : Geometry or GeometryArray
 
 basis : {'distance', 'm'}, default 'distance'
     Return a CRS-aware distance, or the line's monotonic M ordinate. For
-    ``basis='m'``, nearest-point projection follows the CRS metric: geodesic on a
-    geographic CRS, planar otherwise.
+    ``basis='m'``, nearest-point projection follows the same chart-edge metric:
+    ellipsoidal arclength on a geographic CRS, planar length otherwise.
 
 normalized : bool, default False
     Return a distance-basis fraction in [0, 1]. Invalid with ``basis='m'``.
@@ -292,7 +309,7 @@ GeometryError
 
 See Also
 --------
-line_interpolate : Point at a location along the line (inverse of locate).
+line_interpolate : Point at a route station; locate/interpolate round-trip only at a unique nearest position.
 line_substring : Extract a contiguous portion of the line.
 interpolate_m : Assign M ordinates along arc length.
 
@@ -339,14 +356,13 @@ impl PyGeometry {
             reject_m_basis_distance_options(normalized, unit)?;
             let m = F64Param::Scalar(at);
             m.ensure_finite("at")?;
-            let value = unary_spine_shapes!(
-                scalar,
+            let op = crate::dispatch::Operation::Metric(MetricOp::LineInterpolate);
+            let value = crate::dispatch::unary_scalar_linref_shape(
                 py,
                 self,
-                crate::dispatch::Operation::Metric(MetricOp::LineInterpolate),
-                None,
-                default,
-                move |data, ctx| kernels::unary_line_interpolate_point_m(data, ctx, &m)
+                op,
+                op.resolver_with_line_unit(None, false),
+                move |data, ctx| kernels::unary_line_interpolate_point_m(data, ctx, &m),
             )?;
             return value.into_pyobject(py).map(Bound::unbind);
         }
@@ -386,14 +402,13 @@ impl PyGeometry {
             let end = F64Param::parse_raw(end, "end", unary_len!(scalar))?;
             start.ensure_finite("start")?;
             end.ensure_finite("end")?;
-            return unary_spine_shapes!(
-                scalar,
+            let op = crate::dispatch::Operation::Metric(MetricOp::LineSubstring);
+            return crate::dispatch::unary_scalar_linref_shape(
                 py,
                 self,
-                crate::dispatch::Operation::Metric(MetricOp::LineSubstring),
-                None,
-                default,
-                move |data, ctx| kernels::unary_line_substring_m(data, ctx, &start, &end)
+                op,
+                op.resolver_with_line_unit(None, false),
+                move |data, ctx| kernels::unary_line_substring_m(data, ctx, &start, &end),
             );
         }
         let op = crate::dispatch::Operation::Metric(MetricOp::LineSubstring);
@@ -548,14 +563,13 @@ impl PyGeometryArray {
             reject_m_basis_distance_options(normalized, unit)?;
             let m = F64Param::parse_raw(at, "at", unary_len!(array, self))?;
             m.ensure_finite("at")?;
-            let value = unary_spine_shapes!(
-                array,
+            let model =
+                crate::resolve_line_metric(self.crs_str(), None, false, MetricOp::LineInterpolate)?;
+            let value = crate::dispatch::unary_array_linref_with_model(
                 py,
                 self,
-                crate::dispatch::Operation::Metric(MetricOp::LineInterpolate),
-                None,
-                default,
-                move |data, ctx| kernels::unary_line_interpolate_point_m(data, ctx, &m)
+                &model,
+                move |data, ctx| kernels::unary_line_interpolate_point_m(data, ctx, &m),
             )?;
             return value.into_pyobject(py).map(|value| value.unbind().into());
         }
@@ -599,14 +613,13 @@ impl PyGeometryArray {
             let end = F64Param::parse_raw(end, "end", unary_len!(array, self))?;
             start.ensure_finite("start")?;
             end.ensure_finite("end")?;
-            return unary_spine_shapes!(
-                array,
+            let model =
+                crate::resolve_line_metric(self.crs_str(), None, false, MetricOp::LineSubstring)?;
+            return crate::dispatch::unary_array_linref_with_model(
                 py,
                 self,
-                crate::dispatch::Operation::Metric(MetricOp::LineSubstring),
-                None,
-                default,
-                move |data, ctx| kernels::unary_line_substring_m(data, ctx, &start, &end)
+                &model,
+                move |data, ctx| kernels::unary_line_substring_m(data, ctx, &start, &end),
             );
         }
         let op = crate::dispatch::Operation::Metric(MetricOp::LineSubstring);

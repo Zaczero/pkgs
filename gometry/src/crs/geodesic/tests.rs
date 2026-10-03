@@ -704,13 +704,13 @@ fn spherical_antipodal_latitude_sign_selects_the_original_meridian_branch() {
 }
 
 #[test]
-fn geodesic_lrs_index_rejects_nonunique_shortest_endpoints() {
+fn chart_lrs_index_rejects_half_period_edges() {
     let geodesic = Geodesic::new(6_378_137.0, 0.0);
     let metric = EllipsoidMetric::for_crs84_geometry_test(&geodesic);
     let shape = PreparedPlan::new(line(&[p(0.0, 10.0), p(180.0, -10.0)]));
     assert!(
         shape
-            .geodesic_line_index(
+            .chart_line_index(
                 &FrameDependentCaches::default(),
                 "TEST",
                 geodesic.a,

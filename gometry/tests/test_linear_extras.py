@@ -22,8 +22,8 @@ def test_line_interpolate_counts_distances_and_index_reuse() -> None:
     points = line.line_interpolate([0.25, 0.75], normalized=True)
     assert [p.x for p in points] == [2.5, 7.5]
     assert line.line_interpolate(at=2.5).x == 2.5
-    geodesic = gm.LineString([(0, 0), (1, 0)], crs=4326)
-    metre_points = geodesic.line_interpolate([55000.0])
+    geographic = gm.LineString([(0, 0), (1, 0)], crs=4326)
+    metre_points = geographic.line_interpolate([55000.0])
     assert metre_points.crs == 'EPSG:4326'
     assert metre_points[0].x == pytest.approx(0.494, abs=0.01)
     rows = gm.GeometryArray([line, gm.LineString([(0, 0), (4, 0)])])
@@ -37,11 +37,11 @@ def test_line_interpolate_counts_distances_and_index_reuse() -> None:
         [0.0, 2.0, 4.0],
     ]
     assert [(p.z, p.m) for p in per_row[0]] == [(0.0, 10.0), (10.0, 20.0)]
-    geodesic_rows = gm.GeometryArray([geodesic, geodesic])
-    geodesic_groups = geodesic_rows.line_interpolate(count=2)
-    assert isinstance(geodesic_groups, gm.Groups)
-    assert geodesic_groups[0][0].x == pytest.approx(0.0)
-    assert geodesic_groups[0][1].x == pytest.approx(1.0, abs=0.01)
+    geographic_rows = gm.GeometryArray([geographic, geographic])
+    geographic_groups = geographic_rows.line_interpolate(count=2)
+    assert isinstance(geographic_groups, gm.Groups)
+    assert geographic_groups[0][0].x == pytest.approx(0.0)
+    assert geographic_groups[0][1].x == pytest.approx(1.0, abs=0.01)
     mixed_missing = gm.GeometryArray([line, None, gm.LineString([(0, 0), (4, 0)])])
     missing_groups = mixed_missing.line_interpolate(count=2)
     assert [[p.x for p in part] for part in missing_groups] == [
@@ -391,15 +391,27 @@ def test_rhumb_pole_endpoints_and_slope_continuity() -> None:
     assert gm.rhumb_distance(p, q2) == pytest.approx(64.059933538, abs=0.001)
 
 
-def test_interpolate_m_stations_geodesically_on_a_geographic_crs() -> None:
-    line = gm.LineString([(0, 0), (0, 60), (10, 60)], crs=4326)
-    geodesic = [point[2] for point in line.interpolate_m(0, 100).coords]
+def test_interpolate_m_stations_by_geographic_chart_edge_length() -> None:
+    line = gm.LineString([(0, 0), (0, 60), (120, 60)], crs=4326)
+    geographic = [point[2] for point in line.interpolate_m(0, 100).coords]
     planar = [point[2] for point in line.interpolate_m(0, 100, unit='planar').coords]
-    assert planar[1] == pytest.approx(85.714, abs=0.01)
-    assert geodesic[1] == pytest.approx(92.27, abs=0.1)
-    assert geodesic[1] > planar[1]
+    # Independent WGS 84 values: the meridian's GeographicLib inverse is
+    # 6,654,072.819490512 m; the 120-degree parallel uses N*cos(60°)*Δλ =
+    # 6,696,000.188692336 m. A shortest geodesic chord for that parallel is
+    # substantially shorter and gives a different station.
+    expected_m = 49.84296951343965
+    assert geographic[1] == pytest.approx(expected_m, rel=0.0, abs=5e-13)
+    assert planar[1] == pytest.approx(100.0 / 3.0, rel=0.0, abs=1e-13)
     xy = [(p[0], p[1]) for p in line.interpolate_m(0, 100).coords]
-    assert xy == [(0.0, 0.0), (0.0, 60.0), (10.0, 60.0)]
+    assert xy == [(0.0, 0.0), (0.0, 60.0), (120.0, 60.0)]
+    mixed_edge_rows = gm.GeometryArray([line, line])
+    mixed_rows = gm.from_wkt([line.to_wkt(), line.to_wkt()], crs=4326)
+    for rows in (mixed_edge_rows, mixed_rows):
+        measured_rows = rows.interpolate_m(0.0, 100.0)
+        for measured in measured_rows:
+            assert list(measured.coords)[1][2] == pytest.approx(
+                expected_m, rel=0.0, abs=5e-13
+            )
     free = list(gm.LineString([(0, 0), (10, 0)]).interpolate_m(0, 100).coords)
     assert (free[0][2], free[-1][2]) == (0.0, 100.0)
 

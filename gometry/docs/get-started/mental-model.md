@@ -42,10 +42,12 @@ for a cell selection, use [exact source membership after a grid cover](../guide/
 
 gometry does not use one Earth model for every operation:
 
-- **Measure in the geometry's frame** — geographic CRSs use geodesic measurement;
-  their longitude and latitude remain in native angular units, and projected and
-  CRS-free geometries use planar coordinate measurement in their respective units.
-  See [CRS, units & measurement](../guide/crs.md).
+- **Measure in the geometry's frame** — by default, geographic area, length, and
+  LRS use ellipsoidal arclength or area on straight longitude/latitude chart
+  edges; point-to-point distance follows geodesics. `unit='planar'` explicitly
+  selects Cartesian measurement in stored coordinates. Projected and CRS-free
+  geometries use planar measurement in their respective units. See
+  [CRS, units & measurement](../guide/crs.md).
 - **Reason with coordinate-plane X/Y topology** — predicates, overlays, and
   constructive topology use planar coordinates. In a geographic CRS, topology
   first resolves longitude aliases and seam and pole equivalence in the

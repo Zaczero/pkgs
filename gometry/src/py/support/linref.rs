@@ -1,6 +1,6 @@
 use crate::boundary::{FloatInput, input};
 use crate::dispatch::MetricOp;
-use crate::geometry::PreparedPlan;
+use crate::geometry::{GeographicPrepared, PreparedPlan};
 use crate::py::support::{
     Bound, CoordSeq, DistanceUnit, GeometryError, LineIndex, PlanarMetric, Point, PyAny, PyResult,
     Result, Shape, float_values, resolve_metric,
@@ -9,18 +9,22 @@ use crate::py::support::{
 pub(crate) fn line_interpolate_shape_m(
     model: &crate::crs::MetricModel,
     line: &PreparedPlan,
+    cache: &crate::geometry::FrameDependentCaches,
     m: f64,
 ) -> Result<Shape> {
     match model {
         crate::crs::MetricModel::Planar { .. } => {
             line.line_interpolate_point_m_with(m, &PlanarMetric)
         },
-        crate::crs::MetricModel::Geodesic {
-            crs, frame, state, ..
-        } => {
-            crate::crs::ensure_geographic_domain_in_frame(*frame, line.shape())?;
-            crate::crs::with_ellipsoid_metric_at(crs, &[line.shape()], state, |metric| {
-                line.line_interpolate_point_m_with(m, metric)
+        crate::crs::MetricModel::Geodesic { crs, state, .. } => {
+            crate::crs::with_ellipsoid_metric_at(crs, &[], state, |metric| {
+                let (a, f) = metric.ellipsoid_parameters();
+                let parts =
+                    line.measured_chart_parts(cache, crs, a, f, state.generation, metric)?;
+                Ok(Shape::Point(
+                    line.measured_line_index()?
+                        .chart_interpolate(m, &parts, metric)?,
+                ))
             })
         },
     }
@@ -29,6 +33,7 @@ pub(crate) fn line_interpolate_shape_m(
 pub(crate) fn line_locate_shape_m(
     model: &crate::crs::MetricModel,
     line: &PreparedPlan,
+    cache: &crate::geometry::FrameDependentCaches,
     query: Point,
 ) -> Result<f64> {
     match model {
@@ -36,12 +41,16 @@ pub(crate) fn line_locate_shape_m(
             line.line_locate_point_m_with(query, &PlanarMetric)
         },
         crate::crs::MetricModel::Geodesic { crs, frame, state } => {
-            crate::crs::ensure_geographic_domain_in_frame(*frame, line.shape())?;
+            GeographicPrepared::try_new(line, cache, *frame)?;
             if !query.x.is_nan() {
                 crate::crs::ensure_geographic_lonlat_in_frame(*frame, query.x, query.y)?;
             }
-            crate::crs::with_ellipsoid_metric_at(crs, &[line.shape()], state, |metric| {
-                line.line_locate_point_m_with(query, metric)
+            crate::crs::with_ellipsoid_metric_at(crs, &[], state, |metric| {
+                let (a, f) = metric.ellipsoid_parameters();
+                let parts =
+                    line.measured_chart_parts(cache, crs, a, f, state.generation, metric)?;
+                line.measured_line_index()?
+                    .chart_locate(query, &parts, metric)
             })
         },
     }
@@ -50,16 +59,18 @@ pub(crate) fn line_locate_shape_m(
 pub(crate) fn line_substring_shape_m(
     model: &crate::crs::MetricModel,
     line: &PreparedPlan,
+    cache: &crate::geometry::FrameDependentCaches,
     range: crate::geometry::MeasureRange,
 ) -> Result<Shape> {
     match model {
         crate::crs::MetricModel::Planar { .. } => line.line_substring_m_with(range, &PlanarMetric),
-        crate::crs::MetricModel::Geodesic {
-            crs, frame, state, ..
-        } => {
-            crate::crs::ensure_geographic_domain_in_frame(*frame, line.shape())?;
-            crate::crs::with_ellipsoid_metric_at(crs, &[line.shape()], state, |metric| {
-                line.line_substring_m_with(range, metric)
+        crate::crs::MetricModel::Geodesic { crs, state, .. } => {
+            crate::crs::with_ellipsoid_metric_at(crs, &[], state, |metric| {
+                let (a, f) = metric.ellipsoid_parameters();
+                let parts =
+                    line.measured_chart_parts(cache, crs, a, f, state.generation, metric)?;
+                line.measured_line_index()?
+                    .chart_substring(range, &parts, metric)
             })
         },
     }
@@ -184,7 +195,7 @@ pub(crate) fn line_interpolate_points_coordseq(
                     InterpolatePlan::count_fraction(sample, *count),
                     true,
                     &PlanarMetric,
-                )));
+                )?));
             }
         },
         InterpolatePlan::Distances(distances, mode) => {
@@ -193,7 +204,7 @@ pub(crate) fn line_interpolate_points_coordseq(
                     mode.planar_along(distance, to_metre.get()),
                     mode.is_normalized(),
                     &PlanarMetric,
-                )));
+                )?));
             }
         },
     }
@@ -264,16 +275,14 @@ fn line_interpolate_shape_with_mode(
             distance_mode.planar_along(distance, to_metre.get()),
             distance_mode.is_normalized(),
         )?,
-        crate::crs::MetricModel::Geodesic { crs, state, .. } => {
-            crate::crs::geodesic_line_interpolate(
-                crs,
-                line,
-                frame_cache,
-                distance,
-                distance_mode,
-                state,
-            )?
-        },
+        crate::crs::MetricModel::Geodesic { crs, state, .. } => crate::crs::chart_line_interpolate(
+            crs,
+            line,
+            frame_cache,
+            distance,
+            distance_mode,
+            state,
+        )?,
     })
 }
 
@@ -295,14 +304,7 @@ pub(crate) fn line_substring_shape(
             distance_mode.is_normalized(),
         )?,
         crate::crs::MetricModel::Geodesic { crs, state, .. } => {
-            crate::crs::geodesic_line_substring(
-                crs,
-                line,
-                frame_cache,
-                range,
-                distance_mode,
-                state,
-            )?
+            crate::crs::chart_line_substring(crs, line, frame_cache, range, distance_mode, state)?
         },
     })
 }
@@ -323,16 +325,11 @@ pub(crate) fn line_interpolate_coordseq(
                 distance_mode.planar_along(distance, to_metre.get()),
                 distance_mode.is_normalized(),
                 &PlanarMetric,
-            ))
+            )?)
         },
         crate::crs::MetricModel::Geodesic { crs, state, .. } => {
-            crate::crs::with_geodesic_coordseq_metric_at(crs, state, |metric| {
-                crate::crs::geodesic_line_interpolate_coordseq(
-                    line,
-                    distance,
-                    distance_mode,
-                    metric,
-                )
+            crate::crs::with_geographic_coordseq_metric_at(crs, state, |metric| {
+                crate::crs::chart_line_interpolate_coordseq(line, distance, distance_mode, metric)
             })
         },
     }
@@ -360,8 +357,8 @@ pub(crate) fn line_substring_coordseq(
             )
         },
         crate::crs::MetricModel::Geodesic { crs, state, .. } => {
-            crate::crs::with_geodesic_coordseq_metric_at(crs, state, |metric| {
-                crate::crs::geodesic_line_substring_coordseq(line, range, distance_mode, metric)
+            crate::crs::with_geographic_coordseq_metric_at(crs, state, |metric| {
+                crate::crs::chart_line_substring_coordseq(line, range, distance_mode, metric)
             })
         },
     }
@@ -388,8 +385,8 @@ pub(crate) fn line_locate_coordseq(
             })
         },
         crate::crs::MetricModel::Geodesic { crs, state, .. } => {
-            crate::crs::with_geodesic_coordseq_metric_at(crs, state, |metric| {
-                crate::crs::geodesic_line_locate_coordseq(line, query, distance_mode, metric)
+            crate::crs::with_geographic_coordseq_metric_at(crs, state, |metric| {
+                crate::crs::chart_line_locate_coordseq(line, query, distance_mode, metric)
             })
         },
     }
@@ -416,7 +413,7 @@ pub(crate) fn line_locate_shape(
             }
         },
         crate::crs::MetricModel::Geodesic { crs, state, .. } => {
-            crate::crs::geodesic_line_locate(crs, line, frame_cache, query, distance_mode, state)?
+            crate::crs::chart_line_locate(crs, line, frame_cache, query, distance_mode, state)?
         },
     })
 }
