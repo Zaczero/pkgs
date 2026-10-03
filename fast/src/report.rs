@@ -7,7 +7,7 @@ use fast::runner::{Activity, Observation, Task};
 use unicode_width::{UnicodeWidthChar as _, UnicodeWidthStr as _};
 
 use crate::cli::{Cli, Color};
-use crate::experiment::{Phase, Result, Role, Text, id};
+use crate::experiment::{Phase, Result, Role, id};
 use crate::statistics::{Comparison, Decision};
 
 const HEADING: Style = Style::new()
@@ -62,15 +62,11 @@ pub(crate) fn print(result: &Result, options: &Cli) -> io::Result<()> {
     )?;
     writeln!(out)?;
     for candidate in &result.candidates {
-        let words: Vec<_> = if result.execution == "sh_c" {
-            candidate.argv.iter().skip(2).map(Text::display).collect()
-        } else {
-            candidate
-                .argv
-                .iter()
-                .map(|arg| format!("'{}'", arg.display().replace('\'', "'\\''")))
-                .collect()
-        };
+        let words: Vec<_> = candidate
+            .argv
+            .iter()
+            .map(|arg| format!("'{}'", arg.display().replace('\'', "'\\''")))
+            .collect();
         wrapped(
             &mut out,
             &format!("{}  {}", candidate.id, words.join(" ")),

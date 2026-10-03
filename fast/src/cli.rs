@@ -20,8 +20,8 @@ pub(crate) enum Color {
 #[command(
     version,
     about = "Run the work. Compare fairly. Print the answer.",
-    override_usage = "fast [OPTIONS] 'COMMAND' ['COMMAND' ...]\n       fast [OPTIONS] -- PROGRAM [ARG ...]",
-    after_help = "Examples:\n  fast 'old input.dat' 'new input.dat'\n  fast -- ./program --input 'file with spaces'\n  fast --once -- ./expensive-job\n  fast --runs 100 --check 1% 'old' 'new'\n  fast --json 'old' 'new' > result.json\n\nCommands run sequentially in randomized complete blocks. Expressions use sh -c;\narguments after -- are one exact argv. Stdin and stdout are null; --input reopens\nan existing regular file for every run. Stderr is drained with bounded capture.\nThe default plans roughly 30 seconds, including a separate pilot. --time plans;\n--timeout terminates. No caches, result files, configuration, or input spooling.\n\nExit: 0 completed (possibly unresolved), 1 workload failure, 2 usage error,\n3 collector failure, 4 regression, 5 inconclusive check, 128+signal interrupted.\nBroken output pipes return 141. Hooks default to a 30s timeout."
+    override_usage = "fast [OPTIONS] [--] PROGRAM [ARG ...] [::: PROGRAM [ARG ...]] ...",
+    after_help = "Examples:\n  fast ./old input.dat ::: ./new input.dat\n  fast ./program --input 'file with spaces'\n  fast --once ./expensive-job\n  fast --runs 100 --check 1% ./old ::: ./new\n  fast --json ./old ::: ./new > result.json\n  fast sh -c 'producer | consumer' ::: sh -c 'producer | improved'\n  fast --separator +++ printf '%s' ::: +++ true\n\nPut fast options before the first program; its arguments are passed unchanged.\nA standalone ::: separates commands, even after an initial --. Use --separator\nwhen a command needs a literal ::: argument; quoting the marker does not escape it.\nCommands run sequentially in randomized complete blocks, without an implicit shell.\nStdin and stdout are null; --input reopens an existing regular file for every run.\nStderr is drained with bounded capture. The default plans roughly 30 seconds,\nincluding a separate pilot. --time plans; --timeout terminates.\nNo caches, result files, configuration, or input spooling.\n\nExit: 0 completed (possibly unresolved), 1 workload failure, 2 usage error,\n3 collector failure, 4 regression, 5 inconclusive check, 128+signal interrupted.\nBroken output pipes return 141. Hooks default to a 30s timeout."
 )]
 pub(crate) struct Cli {
     /// Execute each command exactly once, without a pilot or warmup
@@ -72,8 +72,11 @@ pub(crate) struct Cli {
     /// Reproduce randomized ordering with this hexadecimal seed
     #[arg(long, value_parser = seed, value_name = "HEX")]
     pub seed: Option<u64>,
-    /// Shell expressions, or one exact argv after --
-    #[arg(required = true, num_args = 1.., value_name = "COMMAND")]
+    /// Separate commands with this standalone argument
+    #[arg(long, default_value = ":::", value_name = "MARKER")]
+    pub separator: OsString,
+    /// Programs and arguments, separated by :::
+    #[arg(required = true, num_args = 1.., trailing_var_arg = true, value_name = "COMMAND")]
     pub commands: Vec<OsString>,
 }
 

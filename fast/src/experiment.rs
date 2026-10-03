@@ -435,39 +435,33 @@ pub(crate) fn id(mut index: usize) -> String {
     String::from_utf8(bytes).expect("ASCII candidate ID")
 }
 
-fn commands(options: &Cli, exact: bool) -> io::Result<(Vec<Command>, Option<OsString>)> {
+fn commands(options: &Cli) -> io::Result<(Vec<Command>, Option<OsString>)> {
     if options.once && options.warmup != 0 {
         return Err(io::Error::other("--once cannot include warmup runs"));
     }
-    let shell = if !exact || options.prepare.is_some() || options.verify.is_some() {
+    if options.separator.is_empty() {
+        return Err(io::Error::other("--separator must not be empty"));
+    }
+    let shell = if options.prepare.is_some() || options.verify.is_some() {
         Some(runner::shell()?)
     } else {
         None
     };
-    let commands: Vec<_> = if exact {
-        vec![Command {
-            argv: options.commands.clone(),
-        }]
-    } else {
-        options
-            .commands
-            .iter()
-            .map(|expression| Command {
-                argv: vec![
-                    shell.as_ref().expect("expression shell resolved").clone(),
-                    "-c".into(),
-                    expression.clone(),
-                ],
-            })
-            .collect()
-    };
-    for command in &commands {
+    let commands: Vec<_> = options
+        .commands
+        .split(|argument| argument == &options.separator)
+        .map(|argv| Command {
+            argv: argv.to_vec(),
+        })
+        .collect();
+    for (index, command) in commands.iter().enumerate() {
         if command.argv.first().is_none_or(|arg| arg.is_empty())
             || command.argv.iter().any(|arg| arg.as_bytes().contains(&0))
         {
-            return Err(io::Error::other(
-                "commands require a nonempty executable and NUL-free arguments",
-            ));
+            return Err(io::Error::other(format!(
+                "command {} requires a nonempty executable and NUL-free arguments; put a program on each side of the separator",
+                id(index),
+            )));
         }
     }
     if options.check.is_some() && commands.len() < 2 {
@@ -538,8 +532,8 @@ fn protocol(options: &Cli, runner: &Runner) -> io::Result<Protocol> {
     })
 }
 
-pub(crate) fn run(options: Cli, exact: bool) -> std::result::Result<(Result, Cli), Failure> {
-    let (commands, shell) = commands(&options, exact).map_err(Failure::Usage)?;
+pub(crate) fn run(options: Cli) -> std::result::Result<(Result, Cli), Failure> {
+    let (commands, shell) = commands(&options).map_err(Failure::Usage)?;
     let max_blocks = capacity(&options, commands.len()).map_err(Failure::Usage)?;
     runner::check_jobserver().map_err(Failure::Usage)?;
     let seed = options.seed.unwrap_or_else(|| rand::rng().random());
@@ -548,7 +542,7 @@ pub(crate) fn run(options: Cli, exact: bool) -> std::result::Result<(Result, Cli
         schema: 1,
         version: env!("CARGO_PKG_VERSION"),
         seed: format!("{seed:016x}"),
-        execution: if exact { "exact_argv" } else { "sh_c" },
+        execution: "exact_argv",
         candidates: commands
             .iter()
             .enumerate()

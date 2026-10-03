@@ -24,18 +24,47 @@ Publication and licensing are intentionally undecided.
 ## Compare commands
 
 ```sh
-fast 'gzip -c input.dat' 'zstd -c input.dat'
-fast -- ./program --input 'file with spaces'
-fast --once -- ./expensive-job
-fast --runs 100 'old input.dat' 'new input.dat'
-fast --time 2m 'old input.dat' 'new input.dat'
-fast --json 'old input.dat' 'new input.dat' > result.json
+fast gzip -c input.dat ::: zstd -c input.dat
+fast ./program --input 'file with spaces'
+fast --once ./expensive-job
+fast --runs 100 ./old input.dat ::: ./new input.dat
+fast --time 2m ./old input.dat ::: ./new input.dat
+fast --json ./old input.dat ::: ./new input.dat > result.json
 ```
 
-Replace the example programs and input files with your workload. Each positional
-argument is one complete `sh -c` expression. Everything after `--` is one exact
-argument vector, without shell expansion. Shell expressions include shell startup
-in their timing.
+Replace the example programs and input files with your workload. Programs run
+directly, with their arguments passed unchanged. A standalone `:::` separates
+commands. Quote individual arguments when your shell needs it, such as a filename
+containing spaces; do not quote the entire command.
+
+Put `fast` options before the first program. After that point, flags such as
+`--help`, `--input`, and `--` belong to the command. An optional initial `--`
+explicitly ends `fast` options:
+
+```sh
+fast --runs 100 -- ./old --threads 4 ::: ./new --threads 4
+```
+
+The command separator still applies after that initial `--`. If a command needs
+a literal `:::` argument, choose another marker:
+
+```sh
+fast --separator +++ printf '%s' ::: +++ printf '%s' other
+```
+
+Only a complete argument matching the marker is special; `name:::suffix` is
+ordinary data. Quoting `:::` does not escape it because the shell removes those
+quotes before calling `fast`. Empty commands and empty separators are errors.
+To use pipelines, redirections, shell expansion, or shell builtins, explicitly
+invoke the shell, for example `sh -c 'producer | consumer'`. Shell startup is then
+part of that command's timing.
+
+Use ordinary command wrappers for other execution settings, such as environment
+variables:
+
+```sh
+fast env MODE=old ./program ::: env MODE=new ./program
+```
 
 Commands run sequentially, with their internal parallelism intact. Each block
 runs every command once in randomized order. The first command is the displayed
@@ -55,8 +84,8 @@ regular file at offset zero for every invocation. Incoming pipes are not spooled
 or consumed as workload input. To measure a pipeline, include it in the expression:
 
 ```sh
-fast 'producer | consumer'
-fast --input input.dat 'old' 'new'
+fast sh -c 'producer | consumer'
+fast --input input.dat ./old ::: ./new
 ```
 
 Successful exit status is the default correctness check, not proof that outputs
@@ -66,8 +95,8 @@ are equivalent. Use a verifier or a wrapper script when correctness matters:
 fast --runs 40 \
   --prepare 'rm -f output.dat' \
   --verify 'cmp expected.dat output.dat' \
-  './old input.dat > output.dat' \
-  './new input.dat > output.dat'
+  sh -c './old input.dat > output.dat' ::: \
+  sh -c './new input.dat > output.dat'
 ```
 
 Both hooks apply to every invocation, including pilots and requested warmups.
@@ -143,8 +172,8 @@ Human text and `--json` are alternative stdout formats. Redirection and `tee`
 save them without application-managed files:
 
 ```sh
-fast 'old' 'new' | tee comparison.txt
-fast --details 'old' 'new' > detailed.txt
+fast ./old ::: ./new | tee comparison.txt
+fast --details ./old ::: ./new > detailed.txt
 ```
 
 `--color always|never|auto` controls styling. Automatic color requires a terminal,
@@ -152,7 +181,9 @@ honors nonempty `NO_COLOR`, and is disabled for `TERM=dumb`. Explicit always/nev
 wins. JSON never contains ANSI. `--ascii` selects plain symbols; `--quiet`
 suppresses progress.
 
-JSON schema 1 uses tagged UTF-8 or byte-array strings for Unix arguments. Elapsed
+JSON schema 1 records each candidate as its exact argument vector and uses tagged
+UTF-8 or byte-array strings for Unix arguments. Explicit shell commands include
+the shell executable and `-c` in that vector. Elapsed
 and CPU nanoseconds and PMU counters are decimal strings to avoid JavaScript
 integer rounding. Missing measurements are `null` with availability metadata.
 Readers should ignore unfamiliar fields. Raw invocations preserve phase, order,

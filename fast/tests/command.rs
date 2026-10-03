@@ -72,6 +72,119 @@ fn exact_arguments_preserve_spaces_and_shell_metacharacters() {
 }
 
 #[test]
+fn command_arguments_stop_fast_option_parsing_and_preserve_double_dash() {
+    for explicit_end in [false, true] {
+        let mut args = vec!["--once", "--json"];
+        if explicit_end {
+            args.push("--");
+        }
+        args.extend([
+            "sh", "-c",
+            "test \"$#\" -eq 7 && test \"$1\" = --json && test \"$5\" = -- && test \"$6\" = --separator && test -z \"$7\"",
+            "fixture", "--json", "--runs", "7", "--help", "--", "--separator", "",
+            ":::", "true", "embedded:::marker",
+        ]);
+        let output = fast(&args);
+        assert!(output.status.success(), "{output:?}");
+        let result = json(&output);
+        assert_eq!(result["candidates"].as_array().expect("commands").len(), 2);
+        assert_eq!(result["invocations"].as_array().expect("runs").len(), 2);
+        assert_eq!(
+            result["candidates"][1]["argv"][1]["value"],
+            "embedded:::marker"
+        );
+    }
+}
+
+#[test]
+fn custom_separator_preserves_literal_default_marker() {
+    let output = fast(&[
+        "--once",
+        "--json",
+        "--separator",
+        "+++",
+        "sh",
+        "-c",
+        "test \"$1\" = :::",
+        "fixture",
+        ":::",
+        "+++",
+        "true",
+    ]);
+    assert!(output.status.success(), "{output:?}");
+    let result = json(&output);
+    assert_eq!(result["candidates"].as_array().expect("commands").len(), 2);
+    assert_eq!(result["candidates"][0]["argv"][4]["value"], ":::");
+}
+
+#[test]
+fn custom_separator_can_be_non_utf8() {
+    let marker = OsString::from_vec(vec![0xFF]);
+    let output = Command::new(env!("CARGO_BIN_EXE_fast"))
+        .args(["--once", "--json", "--separator"])
+        .arg(&marker)
+        .args(["true", ":::"])
+        .arg(&marker)
+        .arg("true")
+        .output()
+        .expect("custom byte separator");
+    assert!(output.status.success(), "{output:?}");
+    let result = json(&output);
+    assert_eq!(result["candidates"].as_array().expect("commands").len(), 2);
+    assert_eq!(result["candidates"][0]["argv"][1]["value"], ":::");
+}
+
+#[test]
+fn empty_command_groups_are_rejected_before_hooks_or_execution() {
+    for commands in [
+        vec![":::", "true"],
+        vec!["true", ":::"],
+        vec!["true", ":::", ":::", "true"],
+        vec!["true", ":::", ""],
+    ] {
+        let mut args = vec!["--once", "--json", "--prepare", "exit 77"];
+        args.extend(commands);
+        let output = fast(&args);
+        assert_eq!(output.status.code(), Some(2), "{output:?}");
+        assert!(output.stdout.is_empty());
+        assert!(String::from_utf8_lossy(&output.stderr).contains("nonempty executable"));
+    }
+    let output = fast(&["--once", "--separator", "", "true"]);
+    assert_eq!(output.status.code(), Some(2), "{output:?}");
+    assert!(String::from_utf8_lossy(&output.stderr).contains("--separator must not be empty"));
+}
+
+#[test]
+fn direct_commands_do_not_require_a_shell_on_path() {
+    let output = Command::new(env!("CARGO_BIN_EXE_fast"))
+        .env_clear()
+        .args(["--once", "--json", env!("CARGO_BIN_EXE_fast"), "--version"])
+        .output()
+        .expect("direct command without PATH");
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(
+        json(&output)["candidates"][0]["argv"]
+            .as_array()
+            .expect("argv")
+            .len(),
+        2
+    );
+}
+
+#[test]
+fn whole_command_strings_are_not_implicitly_reparsed() {
+    let executable = "/proc/no such fast command";
+    let output = fast(&["--once", "--json", executable]);
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let result = json(&output);
+    assert_eq!(result["candidates"][0]["argv"][0]["value"], executable);
+    assert_eq!(
+        result["invocations"][0]["observation"]["outcome"]["kind"],
+        "exec_error"
+    );
+}
+
+#[test]
 fn non_utf8_arguments_are_losslessly_reported() {
     let output = Command::new(env!("CARGO_BIN_EXE_fast"))
         .args(["--once", "--json", "--", "true"])
@@ -90,22 +203,35 @@ fn non_utf8_arguments_are_losslessly_reported() {
 }
 
 #[test]
-fn shell_expressions_use_shell_semantics() {
+fn explicit_shell_commands_use_shell_semantics() {
     let output = fast(&[
         "--once",
         "--json",
+        "sh",
+        "-c",
         "v='hello world'; test \"$v\" = 'hello world'",
+        ":::",
+        "sh",
+        "-c",
         "printf hidden",
     ]);
     assert!(output.status.success(), "{output:?}");
     let value = json(&output);
     assert_eq!(value["invocations"].as_array().expect("array").len(), 2);
-    assert_eq!(value["execution"], "sh_c");
+    assert_eq!(value["execution"], "exact_argv");
+    assert_eq!(value["candidates"][0]["argv"][0]["value"], "sh");
 }
 
 #[test]
 fn failures_abort_without_replacement_and_retain_diagnostics() {
-    let output = fast(&["--runs", "7", "--json", "printf failure >&2; exit 23"]);
+    let output = fast(&[
+        "--runs",
+        "7",
+        "--json",
+        "sh",
+        "-c",
+        "printf failure >&2; exit 23",
+    ]);
     assert_eq!(output.status.code(), Some(1));
     let result = json(&output);
     assert_eq!(result["invocations"].as_array().expect("array").len(), 1);
@@ -118,7 +244,13 @@ fn failures_abort_without_replacement_and_retain_diagnostics() {
 
 #[test]
 fn stderr_is_drained_after_capture_fills() {
-    let output = fast(&["--once", "--json", "head -c 262144 /dev/zero >&2; exit 9"]);
+    let output = fast(&[
+        "--once",
+        "--json",
+        "sh",
+        "-c",
+        "head -c 262144 /dev/zero >&2; exit 9",
+    ]);
     assert_eq!(output.status.code(), Some(1));
     let result = json(&output);
     let diagnostics = &result["invocations"][0]["observation"]["diagnostics"];
@@ -135,7 +267,7 @@ fn stderr_is_drained_after_capture_fills() {
 
 #[test]
 fn timeout_is_not_a_successful_timing_sample() {
-    let output = fast(&["--once", "--json", "--timeout", "20ms", "sleep 30"]);
+    let output = fast(&["--once", "--json", "--timeout", "20ms", "sleep", "30"]);
     assert_eq!(output.status.code(), Some(1));
     assert_eq!(
         json(&output)["invocations"][0]["observation"]["outcome"]["kind"],
@@ -162,7 +294,7 @@ fn verify_runs_once_and_failure_aborts() {
 #[test]
 fn explicit_count_has_no_pilot_and_balances_candidates() {
     let output = fast(&[
-        "--runs", "3", "--json", "--seed", "badc0ffe", "true", "true", "true",
+        "--runs", "3", "--json", "--seed", "badc0ffe", "true", ":::", "true", ":::", "true",
     ]);
     assert!(output.status.success(), "{output:?}");
     let result = json(&output);
@@ -182,7 +314,7 @@ fn explicit_count_has_no_pilot_and_balances_candidates() {
 #[test]
 fn stdin_is_null_even_when_fast_receives_a_pipe() {
     let mut child = Command::new(env!("CARGO_BIN_EXE_fast"))
-        .args(["--once", "--json", "test -z \"$(cat)\""])
+        .args(["--once", "--json", "sh", "-c", "test -z \"$(cat)\""])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .spawn()
@@ -213,7 +345,9 @@ fn default_does_not_need_writable_working_or_home_directories() {
 
 #[test]
 fn check_with_insufficient_data_is_inconclusive() {
-    let output = fast(&["--runs", "2", "--check", "1%", "--json", "true", "true"]);
+    let output = fast(&[
+        "--runs", "2", "--check", "1%", "--json", "true", ":::", "true",
+    ]);
     assert_eq!(output.status.code(), Some(5));
     assert_eq!(json(&output)["exit_code"], 5);
 }
@@ -233,14 +367,14 @@ fn invalid_effort_and_options_are_usage_errors() {
 
 #[test]
 fn broken_pipe_does_not_panic() {
-    let mut child = Command::new(env!("CARGO_BIN_EXE_fast"))
+    let (read, write) = rustix::pipe::pipe().expect("output pipe");
+    drop(read);
+    let output = Command::new(env!("CARGO_BIN_EXE_fast"))
         .args(["--once", "--json", "--", "true"])
-        .stdout(Stdio::piped())
+        .stdout(Stdio::from(write))
         .stderr(Stdio::piped())
-        .spawn()
-        .expect("spawn");
-    drop(child.stdout.take());
-    let output = child.wait_with_output().expect("wait");
+        .output()
+        .expect("closed output pipe");
     assert_eq!(output.status.code(), Some(141));
     assert!(!String::from_utf8_lossy(&output.stderr).contains("panicked"));
 }
@@ -262,7 +396,14 @@ fn control_characters_are_escaped_in_human_output() {
 #[test]
 fn interruption_returns_partial_json_after_cleanup() {
     let mut child = Command::new(env!("CARGO_BIN_EXE_fast"))
-        .args(["--runs", "3", "--json", "kill -INT \"$PPID\"; sleep 30"])
+        .args([
+            "--runs",
+            "3",
+            "--json",
+            "sh",
+            "-c",
+            "kill -INT \"$PPID\"; sleep 30",
+        ])
         .stdout(Stdio::piped())
         .spawn()
         .expect("spawn");
@@ -284,7 +425,12 @@ fn inherited_counters_include_synchronous_child_work() {
     let output = fast(&[
         "--once",
         "--json",
+        "sh",
+        "-c",
         "(:) & wait",
+        ":::",
+        "sh",
+        "-c",
         "(i=0; while [ \"$i\" -lt 10000 ]; do i=$((i+1)); done) & wait",
     ]);
     assert!(output.status.success(), "{output:?}");
@@ -385,6 +531,8 @@ fn input_file_is_reopened_for_each_invocation() {
         "--json",
         "--input",
         "/proc/version",
+        "sh",
+        "-c",
         "read -r first rest; test \"$first\" = Linux",
     ]);
     assert!(output.status.success(), "{output:?}");
@@ -403,7 +551,7 @@ fn no_enoexec_shell_fallback_for_exact_argv() {
 
 #[test]
 fn command_signal_death_remains_distinct_from_exit_status() {
-    let output = fast(&["--once", "--json", "kill -KILL $$"]);
+    let output = fast(&["--once", "--json", "sh", "-c", "kill -KILL $$"]);
     assert_eq!(output.status.code(), Some(1));
     assert_eq!(
         json(&output)["invocations"][0]["observation"]["outcome"]["signal"],
@@ -413,7 +561,14 @@ fn command_signal_death_remains_distinct_from_exit_status() {
 
 #[test]
 fn surviving_descendant_aborts_repetition_without_waiting_for_stderr_eof() {
-    let output = fast(&["--runs", "3", "--json", "sleep 30 & echo $! >&2"]);
+    let output = fast(&[
+        "--runs",
+        "3",
+        "--json",
+        "sh",
+        "-c",
+        "sleep 30 & echo $! >&2",
+    ]);
     let result = json(&output);
     let diagnostic = &result["invocations"][0]["observation"]["diagnostics"];
     let bytes: Vec<u8> = diagnostic["first"]
@@ -443,7 +598,9 @@ fn surviving_descendant_aborts_repetition_without_waiting_for_stderr_eof() {
 
 #[test]
 fn details_does_not_change_the_number_of_executions() {
-    let plain = fast(&["--runs", "2", "--json", "--seed", "1234", "true", "true"]);
+    let plain = fast(&[
+        "--runs", "2", "--json", "--seed", "1234", "true", ":::", "true",
+    ]);
     let detailed = fast(&[
         "--runs",
         "2",
@@ -452,6 +609,7 @@ fn details_does_not_change_the_number_of_executions() {
         "--seed",
         "1234",
         "true",
+        ":::",
         "true",
     ]);
     let order = |output: &Output| {
@@ -489,7 +647,15 @@ fn prepare_stdout_is_captured_as_diagnostics() {
 
 #[test]
 fn stopped_command_is_killed_by_timeout() {
-    let output = fast(&["--once", "--json", "--timeout", "10ms", "kill -STOP $$"]);
+    let output = fast(&[
+        "--once",
+        "--json",
+        "--timeout",
+        "10ms",
+        "sh",
+        "-c",
+        "kill -STOP $$",
+    ]);
     assert_eq!(output.status.code(), Some(1));
     assert_eq!(
         json(&output)["invocations"][0]["observation"]["outcome"]["kind"],
@@ -556,7 +722,7 @@ fn inherited_jobserver_descriptors_keep_their_numbers() {
     );
     let output = Command::new(env!("CARGO_BIN_EXE_fast"))
         .env("MAKEFLAGS", auth)
-        .args(["--once", "--json", &expression])
+        .args(["--once", "--json", "sh", "-c", &expression])
         .output()
         .expect("run");
     assert!(output.status.success(), "{output:?}");
@@ -564,7 +730,7 @@ fn inherited_jobserver_descriptors_keep_their_numbers() {
 
 #[test]
 fn activity_is_attached_to_one_measured_invocation() {
-    let output = fast(&["--runs", "2", "--json", "sleep 0.3 & wait"]);
+    let output = fast(&["--runs", "2", "--json", "sh", "-c", "sleep 0.3 & wait"]);
     assert!(output.status.success(), "{output:?}");
     let result = json(&output);
     let invocations = result["invocations"].as_array().expect("observations");
@@ -587,7 +753,7 @@ fn activity_is_attached_to_one_measured_invocation() {
 
 #[test]
 fn signal_mask_and_sigpipe_are_restored_for_the_workload() {
-    let output = fast(&["--once", "--json", "kill -PIPE $$; exit 17"]);
+    let output = fast(&["--once", "--json", "sh", "-c", "kill -PIPE $$; exit 17"]);
     assert_eq!(output.status.code(), Some(1));
     assert_eq!(
         json(&output)["invocations"][0]["observation"]["outcome"]["signal"],
@@ -626,7 +792,7 @@ fn pilot_only_report_keeps_the_resource_overview() {
 fn closed_stdin_does_not_alias_internal_descriptors() {
     use std::os::unix::process::CommandExt as _;
     let mut command = Command::new(env!("CARGO_BIN_EXE_fast"));
-    command.args(["--once", "--json", "test -z \"$(cat)\""]);
+    command.args(["--once", "--json", "sh", "-c", "test -z \"$(cat)\""]);
     // SAFETY: the child only closes a descriptor before exec; no allocation or locks.
     unsafe {
         command.pre_exec(|| {

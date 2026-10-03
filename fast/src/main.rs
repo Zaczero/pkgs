@@ -10,20 +10,11 @@ use fast::{runner, statistics};
 
 fn main() -> ExitCode {
     let raw: Vec<_> = std::env::args_os().collect();
-    let exact = raw.iter().position(|arg| arg == "--");
     let cli = match parse_args(&raw) {
         Ok(cli) => cli,
         Err(error) => return output_status(error.print(), error.exit_code() as u8),
     };
-    if exact
-        .is_some_and(|index| raw.len().wrapping_sub(index).wrapping_sub(1) != cli.commands.len())
-    {
-        eprintln!(
-            "fast: put either shell expressions before -- or one exact argv after --, not both"
-        );
-        return ExitCode::from(2);
-    }
-    match experiment::run(cli, exact.is_some()) {
+    match experiment::run(cli) {
         Ok((result, options)) => {
             let code = result.exit_code;
             output_status(report::print(&result, &options), code)
