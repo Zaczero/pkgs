@@ -3,10 +3,10 @@ use crate::geometry::{AreaSign, HashMap, PointKey, XY};
 use crate::scratch_pool::{
     RetainScratch, ScratchLease, ScratchPool, flat_vec_retained_bytes, hash_map_retained_bytes,
 };
-/// Per-half-edge winding weight: `i32` for single-selection consumers
-/// (buffers, coverage, dissolve), `[i32; 2]` for binary overlays (one
-/// winding per operand). The trait keeps the columns and the BFS fill
-/// monomorphized — no boxing, no per-edge branching.
+/// Winding weights for the geographic and areal test oracles. Each face
+/// winding is bounded by the sum of absolute edge multiplicities, at most the
+/// admitted `u32` source-segment count; it fits in `i64` and cannot equal the
+/// `i64::MIN` unvisited sentinel.
 pub(crate) trait WindingWeight: Copy + Eq + Sized + 'static {
     /// BFS sentinel — a value real fills can never produce.
     const UNSET: Self;
@@ -16,39 +16,63 @@ pub(crate) trait WindingWeight: Copy + Eq + Sized + 'static {
     fn typed_spares() -> ScratchLease<TypedSpares<Self>>;
 }
 
-impl WindingWeight for i32 {
+impl WindingWeight for i64 {
     const UNSET: Self = Self::MIN;
 
     fn add(self, other: Self) -> Self {
-        self + other
+        self.checked_add(other)
+            .expect("winding magnitude is bounded by the u32-admitted source-segment count")
     }
 
     fn sub(self, other: Self) -> Self {
-        self - other
+        self.checked_sub(other)
+            .expect("winding magnitude is bounded by the u32-admitted source-segment count")
     }
 
     fn neg(self) -> Self {
-        -self
+        self.checked_neg()
+            .expect("winding magnitude cannot reach i64::MIN under the u32 segment bound")
     }
 
     fn typed_spares() -> ScratchLease<TypedSpares<Self>> {
-        ScratchPool::checkout(&I32_TYPED_SPARES)
+        ScratchPool::checkout(&I64_TYPED_SPARES)
     }
 }
 
-impl WindingWeight for [i32; 2] {
-    const UNSET: Self = [i32::MIN; 2];
+impl WindingWeight for [i64; 2] {
+    const UNSET: Self = [i64::MIN; 2];
 
     fn add(self, other: Self) -> Self {
-        [self[0] + other[0], self[1] + other[1]]
+        [
+            self[0].checked_add(other[0]).expect(
+                "operand winding magnitude is bounded by the u32-admitted source-segment count",
+            ),
+            self[1].checked_add(other[1]).expect(
+                "operand winding magnitude is bounded by the u32-admitted source-segment count",
+            ),
+        ]
     }
 
     fn sub(self, other: Self) -> Self {
-        [self[0] - other[0], self[1] - other[1]]
+        [
+            self[0].checked_sub(other[0]).expect(
+                "operand winding magnitude is bounded by the u32-admitted source-segment count",
+            ),
+            self[1].checked_sub(other[1]).expect(
+                "operand winding magnitude is bounded by the u32-admitted source-segment count",
+            ),
+        ]
     }
 
     fn neg(self) -> Self {
-        [-self[0], -self[1]]
+        [
+            self[0].checked_neg().expect(
+                "operand winding magnitude cannot reach i64::MIN under the u32 segment bound",
+            ),
+            self[1].checked_neg().expect(
+                "operand winding magnitude cannot reach i64::MIN under the u32 segment bound",
+            ),
+        ]
     }
 
     fn typed_spares() -> ScratchLease<TypedSpares<Self>> {
@@ -133,7 +157,7 @@ impl ArrangementSpares {
 }
 
 /// Weight-typed buffers for the geographic graph test oracle, pooled per `W`.
-/// Its weights are `i32` or `[i32; 2]`.
+/// Its weights are `i64` or `[i64; 2]`.
 pub(crate) struct TypedSpares<W> {
     pub(crate) edges: Vec<(u32, u32, W)>,
     pub(crate) multiplicities: Vec<W>,
@@ -161,9 +185,9 @@ impl<W: 'static> RetainScratch for TypedSpares<W> {
 }
 
 thread_local! {
-    static I32_TYPED_SPARES: ScratchPool<TypedSpares<i32>> =
+    static I64_TYPED_SPARES: ScratchPool<TypedSpares<i64>> =
         ScratchPool::new(TypedSpares::default());
-    static PAIR_TYPED_SPARES: ScratchPool<TypedSpares<[i32; 2]>> =
+    static PAIR_TYPED_SPARES: ScratchPool<TypedSpares<[i64; 2]>> =
         ScratchPool::new(TypedSpares::default());
 }
 
@@ -180,7 +204,7 @@ pub(crate) fn arrangement_spares() -> ScratchLease<ArrangementSpares> {
 }
 
 /// The arrangement over one noded segment set.
-pub(crate) struct Arrangement<W: WindingWeight = i32> {
+pub(crate) struct Arrangement<W: WindingWeight = i64> {
     pub(crate) core: ScratchLease<ArrangementSpares>,
     /// CSR adjacency: neighbors of vertex `v` are
     /// `targets[starts[v]..starts[v+1]]`, CCW by departure angle. `owners`
@@ -404,18 +428,18 @@ mod tests {
     fn typed_edge_buffers_evict_when_each_lane_exceeds_budget() {
         let _budget = crate::scratch_pool::RetainBudgetGuard::new();
         assert_lane_evicted(
-            "typed i32 edges",
-            size_of::<(u32, u32, i32)>(),
-            clear_typed_pool::<i32>,
-            typed_spares::<i32>,
+            "typed i64 edges",
+            size_of::<(u32, u32, i64)>(),
+            clear_typed_pool::<i64>,
+            typed_spares::<i64>,
             |scratch, capacity| scratch.edges.reserve_exact(capacity),
             |scratch| scratch.edges.capacity(),
         );
         assert_lane_evicted(
             "typed pair edges",
-            size_of::<(u32, u32, [i32; 2])>(),
-            clear_typed_pool::<[i32; 2]>,
-            typed_spares::<[i32; 2]>,
+            size_of::<(u32, u32, [i64; 2])>(),
+            clear_typed_pool::<[i64; 2]>,
+            typed_spares::<[i64; 2]>,
             |scratch, capacity| scratch.edges.reserve_exact(capacity),
             |scratch| scratch.edges.capacity(),
         );
@@ -437,19 +461,19 @@ mod tests {
 
         for pair in [false, true] {
             if pair {
-                let mut scratch = typed_spares::<[i32; 2]>();
+                let mut scratch = typed_spares::<[i64; 2]>();
                 scratch.edges.reserve_exact(64);
                 drop(scratch);
                 let ((), allocations) = crate::test_support::allocation_count(|| {
-                    typed_spares::<[i32; 2]>().edges.reserve_exact(64);
+                    typed_spares::<[i64; 2]>().edges.reserve_exact(64);
                 });
                 assert_eq!(allocations, 0);
             } else {
-                let mut scratch = typed_spares::<i32>();
+                let mut scratch = typed_spares::<i64>();
                 scratch.edges.reserve_exact(64);
                 drop(scratch);
                 let ((), allocations) = crate::test_support::allocation_count(|| {
-                    typed_spares::<i32>().edges.reserve_exact(64);
+                    typed_spares::<i64>().edges.reserve_exact(64);
                 });
                 assert_eq!(allocations, 0);
             }
@@ -467,20 +491,20 @@ mod tests {
         assert_eq!(allocations, 0);
 
         {
-            let mut scratch = typed_spares::<i32>();
+            let mut scratch = typed_spares::<i64>();
             scratch
                 .multiplicities
-                .reserve_exact(SCRATCH_RETAIN_BYTES / size_of::<i32>() + 1);
+                .reserve_exact(SCRATCH_RETAIN_BYTES / size_of::<i64>() + 1);
         }
-        assert_eq!(typed_spares::<i32>().multiplicities.capacity(), 0);
+        assert_eq!(typed_spares::<i64>().multiplicities.capacity(), 0);
 
         {
-            let mut scratch = typed_spares::<[i32; 2]>();
+            let mut scratch = typed_spares::<[i64; 2]>();
             scratch
                 .multiplicities
-                .reserve_exact(SCRATCH_RETAIN_BYTES / size_of::<[i32; 2]>() + 1);
+                .reserve_exact(SCRATCH_RETAIN_BYTES / size_of::<[i64; 2]>() + 1);
         }
-        assert_eq!(typed_spares::<[i32; 2]>().multiplicities.capacity(), 0);
+        assert_eq!(typed_spares::<[i64; 2]>().multiplicities.capacity(), 0);
     }
 
     #[test]

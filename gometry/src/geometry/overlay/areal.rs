@@ -38,6 +38,7 @@ pub(in crate::geometry) use reference::build_areal_arrangement;
 mod reference {
     use super::ray_crossing;
     use crate::error::{ResourceError, Result};
+    use crate::geometry::arrangement::WindingWeight as _;
     use crate::geometry::overlay::self_node_segments_sourced;
     use crate::geometry::{
         Arrangement, Bounds, Polygon, Ring, RingWinding, Segment, SegmentIndex, XY, ring_winding,
@@ -246,7 +247,7 @@ mod reference {
     pub(in crate::geometry) fn build_areal_arrangement<P: AsRef<Polygon>, Q: AsRef<Polygon>>(
         left: &[P],
         right: &[Q],
-    ) -> Result<Vec<[i32; 2]>> {
+    ) -> Result<Vec<[i64; 2]>> {
         // Ring lengths and ring count provide cheap upper bounds for staged data.
         let (left_segments, left_rings) = areal_operand_inventory(left);
         let (right_segments, right_rings) = areal_operand_inventory(right);
@@ -299,7 +300,7 @@ mod reference {
         // T-junctions, collinear overlaps, cross-loop vertex coincidence)
         // falls back to the exact general oracle.
         let mut arrangement = if let Some(arrangement) =
-            Arrangement::<[i32; 2]>::from_loops(&segments, &loop_ranges, |loop_id| {
+            Arrangement::<[i64; 2]>::from_loops(&segments, &loop_ranges, |loop_id| {
                 if loop_operand[loop_id] == 0 {
                     [1, 0]
                 } else {
@@ -313,20 +314,18 @@ mod reference {
             // flipping sign when that ordinal owned the reverse of the noded
             // representative. Exact undirected dedup keeps `atomic` unique-sized
             // so stacked multiparts never re-expand into O(E) weighted pieces.
-            Arrangement::<[i32; 2]>::weighted(atomic.iter().copied(), |piece| {
-                let mut weight = [0_i32, 0_i32];
+            Arrangement::<[i64; 2]>::weighted(atomic.iter().copied(), |piece| {
+                let mut weight = [0_i64, 0_i64];
                 for &(ordinal, reversed) in &sources[piece] {
                     let unit = if tags[ordinal as usize] == 0 {
-                        [1, 0]
+                        [1_i64, 0]
                     } else {
-                        [0, 1]
+                        [0, 1_i64]
                     };
                     if reversed {
-                        weight[0] -= unit[0];
-                        weight[1] -= unit[1];
+                        weight = weight.sub(unit);
                     } else {
-                        weight[0] += unit[0];
-                        weight[1] += unit[1];
+                        weight = weight.add(unit);
                     }
                 }
                 weight
@@ -376,7 +375,7 @@ mod reference {
         probes: &[XY],
         ranges: &mut Vec<(u32, u32)>,
         boxes: &mut Vec<Bounds>,
-    ) -> Vec<[i32; 2]> {
+    ) -> Vec<[i64; 2]> {
         // Loops are contiguous runs of the soup: recover each loop's segment
         // range and bbox in one pass (the arm choice needs the longest run).
         let loop_count = loop_component.len();
@@ -413,16 +412,23 @@ mod reference {
                 .iter()
                 .enumerate()
                 .map(|(component, &probe)| {
-                    let mut seed = [0, 0];
+                    let mut seed = [0_i64, 0_i64];
                     for index in 0..loop_count {
                         let bounds = boxes[index];
                         if loop_component[index] != component as u32 && bounds.contains_xy(probe) {
                             let (start, end) = ranges[index];
-                            seed[segment_operand[start as usize] as usize] += segments
-                                [start as usize..end as usize]
+                            let operand = segment_operand[start as usize] as usize;
+                            let winding = segments[start as usize..end as usize]
                                 .iter()
-                                .map(|&segment| ray_crossing(segment, probe))
-                                .sum::<i32>();
+                                .try_fold(0_i64, |sum, segment| {
+                                    sum.checked_add(i64::from(ray_crossing(*segment, probe)))
+                                })
+                                .expect(
+                                    "winding magnitude is bounded by the u32-admitted source-segment count",
+                                );
+                            seed[operand] = seed[operand].checked_add(winding).expect(
+                                "winding magnitude is bounded by the u32-admitted source-segment count",
+                            );
                         }
                     }
                     seed
@@ -441,11 +447,15 @@ mod reference {
                     start: probe,
                     end: XY::new(ray_end, probe.y),
                 };
-                let mut seed = [0, 0];
+                let mut seed = [0_i64, 0_i64];
                 for entry in index.intersecting_candidates(ray) {
                     if loop_component[segment_loop[entry.ordinal] as usize] != component as u32 {
-                        seed[segment_operand[entry.ordinal] as usize] +=
-                            ray_crossing(entry.segment, probe);
+                        let operand = segment_operand[entry.ordinal] as usize;
+                        seed[operand] = seed[operand]
+                            .checked_add(i64::from(ray_crossing(entry.segment, probe)))
+                            .expect(
+                                "winding magnitude is bounded by the u32-admitted source-segment count",
+                            );
                     }
                 }
                 seed
