@@ -148,6 +148,39 @@ The raw-coordinate [`CRS.factors`][gometry.CRS.factors] retains its documented
 degree/radian argument switch; the native-frame rule above describes geometry
 metrics and topology.
 
+### Polar rings and full-turn edges
+
+Geographic topology distinguishes an explicit one-period edge between ordinary
+longitude spellings from the two spellings of the seam. For example, `0 → 360`
+degrees is a full circle, while `-180 → 180` is the same seam point. A ring's
+signed chart turn determines whether its unmarked boundary winds once around a
+pole. A once-winding ring is unambiguous when its latitude range stays in one
+closed hemisphere and extends beyond the equator: touching the equator is
+allowed. A ring that crosses the equator, or lies entirely on it, does not name
+a unique pole and is rejected at geographic admission. Use an explicit pole
+closure or split the region into unambiguous rings.
+
+The edge direction is part of the ring's total: a closing full-period edge can
+cancel earlier full-circle traversals. A full-period edge alone therefore does
+not declare that a ring encloses a pole.
+
+```python exec="on" source="block" result="text"
+import gometry as gm
+
+ambiguous = gm.Polygon(
+    [(0, -10), (360, -10), (300, 10), (0, -10)],
+    crs=4326,
+)
+explicit_closure = gm.Polygon(
+    [(0, 60), (360, 60), (360, 90), (0, 90), (0, 60)],
+    crs=4326,
+)
+
+print("unmarked ring:", ambiguous.validate().code)
+print("explicit pole closure:", explicit_closure.validate().valid)
+
+```
+
 <a id="set-crs-vs-to-crs"></a>
 
 ## `set_crs` vs `to_crs`

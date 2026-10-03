@@ -1,3 +1,5 @@
+use std::cmp::Ordering;
+
 use super::GeographicError;
 use crate::geometry::Point;
 
@@ -162,6 +164,14 @@ impl PeriodicAxis {
             .then_some(period)
     }
 
+    pub(crate) fn ordinary_longitude_bound(self) -> f64 {
+        self.conventional_integer_period()
+            .filter(|period| (period / 2.0).fract() == 0.0)
+            .map_or(self.half_period, |period| {
+                self.half_period.min(period / 2.0)
+            })
+    }
+
     pub(crate) fn canonicalize(self, value: f64) -> Result<CanonicalLongitude, GeographicError> {
         if !value.is_finite() {
             return Err(GeographicError::NonFinite {
@@ -180,7 +190,7 @@ impl PeriodicAxis {
         reason = "the nominal half-period alias is an exact seam spelling"
     )]
     pub(crate) fn ordinary_longitude(self, value: f64) -> Option<CanonicalLongitude> {
-        if !(value.abs() < self.half_period) {
+        if value.abs().partial_cmp(&self.half_period) != Some(Ordering::Less) {
             return None;
         }
         // A rounded nominal half-period can lie just inside the derived half,

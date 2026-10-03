@@ -20,6 +20,12 @@ match, or you get [`CRSMismatchError`][gometry.CRSMismatchError] like every othe
 adaptive-precision, so boundary-touching and near-degenerate input answer
 consistently rather than flickering with floating-point noise.
 
+Geographic admission rejects an unmarked once-winding ring when its latitude
+range spans both hemispheres or lies entirely on the equator: neither case
+identifies which pole bounds the ring. Equator-touching rings contained in one
+hemisphere remain admissible. See [native geographic units and polar rings](crs.md#polar-rings-and-full-turn-edges)
+for the edge and explicit-closure conventions.
+
 ## The predicate vocabulary
 
 | Predicate | True when… | Symmetric? |

@@ -8,6 +8,7 @@ use crate::broadcast::{
 use crate::crs::MetricModel;
 use crate::dispatch::operation::{MetricOp, Operation};
 use crate::dispatch::{Lane, kernels};
+use crate::geometry::storage::packed_columns::resolve_packed_columns;
 use crate::geometry::storage::{
     GeometryArrayStorage, PackedStorage, RowSelection, RowSelectionRef,
 };
@@ -212,22 +213,26 @@ fn packed_bool_values(array: &PyGeometryArray, op: Operation) -> Option<PyResult
         Operation::IsRing | Operation::IsSimple | Operation::IsValid
     ) && let TopologyDomain::Geographic(frame) = domain
     {
-        for row in array.row_operation().present_rows() {
-            let facts = match row.row().with_shape(|shape| {
-                crate::geographic::ScalarGeographicView::try_new_with_seam_facts(frame, shape)
-                    .ok()
-                    .map(|(_, facts)| facts)
-            }) {
-                Ok(Some(facts)) => facts,
-                Ok(None) => return None,
-                Err(error) => return Some(Err(error.into())),
-            };
-            if facts.crosses || facts.possible_contact {
-                // Packed validity/simplicity kernels intentionally know nothing
-                // about frames. Domain failures, seam crossings, and possible
-                // seam contacts take the shared per-row lane; ordinary
-                // geographic columns keep the packed fast path.
-                return None;
+        let columns =
+            resolve_packed_columns(array.storage(), array.missing(), array.point_row_layout())?;
+        if !columns.ordinary_geographic_predicates(frame) {
+            for row in array.row_operation().present_rows() {
+                let facts = match row.row().with_shape(|shape| {
+                    crate::geographic::ScalarGeographicView::try_new_with_seam_facts(frame, shape)
+                        .ok()
+                        .map(|(_, facts)| facts)
+                }) {
+                    Ok(Some(facts)) => facts,
+                    Ok(None) => return None,
+                    Err(error) => return Some(Err(error.into())),
+                };
+                if facts.crosses || facts.possible_contact {
+                    // Packed validity/simplicity kernels intentionally know nothing
+                    // about frames. Domain failures, seam crossings, and possible
+                    // seam contacts take the shared per-row lane; ordinary
+                    // geographic columns keep the packed fast path.
+                    return None;
+                }
             }
         }
     }
@@ -617,4 +622,325 @@ fn segmentize_metric(
     let model = crate::broadcast::resolve_metric(array.crs_str(), unit, op)?;
     let metric = crate::crs::ResolvedMetric::from_model(&model)?;
     kernels::segmentize_placement(Some(&metric), path).map_err(Into::into)
+}
+
+#[cfg(test)]
+mod geographic_mixed_storage_tests {
+    use super::*;
+    use crate::crs::frame::{Frame, crs_arc_static};
+    use crate::geometry::storage::ValidityMask;
+    use crate::geometry::{CoordinateAxes, MultiMember, MultiPolygon, Point, Polygon, Ring};
+    use crate::predicates::unary::{is_ring_array, is_simple_array, is_valid_array};
+    use crate::py::functions::validation::require;
+
+    fn ring(points: &[(f64, f64)]) -> Ring {
+        Ring::closed(
+            points
+                .iter()
+                .map(|&(x, y)| Point::new_raw_xy(x, y))
+                .collect(),
+        )
+        .expect("test ring is closed")
+    }
+
+    fn polygon(points: &[(f64, f64)]) -> Polygon {
+        Polygon::new(ring(points), Vec::new())
+    }
+
+    fn seam_polygon() -> Shape {
+        Shape::Polygon(polygon(&[
+            (170.0, -10.0),
+            (-170.0, -10.0),
+            (-170.0, 10.0),
+            (170.0, 10.0),
+            (170.0, -10.0),
+        ]))
+    }
+
+    fn multi_polygon(north: f64) -> Shape {
+        Shape::MultiPolygon(
+            MultiPolygon::try_new(CoordinateAxes::XY, vec![MultiMember::Value(polygon(&[
+                (0.0, 0.0),
+                (1.0, 0.0),
+                (1.0, north),
+                (0.0, north),
+                (0.0, 0.0),
+            ]))])
+            .expect("one XY polygon forms a MultiPolygon"),
+        )
+    }
+
+    fn array(shapes: Vec<Shape>) -> PyGeometryArray {
+        let array = array_from_shapes(shapes);
+        assert!(
+            matches!(array.storage(), GeometryArrayStorage::Mixed(_)),
+            "Polygon and MultiPolygon rows require mixed storage",
+        );
+        array
+    }
+
+    fn packed_array(shapes: Vec<Shape>) -> PyGeometryArray {
+        let array = array_from_shapes(shapes);
+        assert!(
+            matches!(array.storage(), GeometryArrayStorage::Packed(_)),
+            "homogeneous polygon rows require packed storage",
+        );
+        array
+    }
+
+    fn array_from_shapes(shapes: Vec<Shape>) -> PyGeometryArray {
+        let frame = Frame::new(Some(crs_arc_static("EPSG:4326")), None)
+            .expect("EPSG:4326 is a valid geographic frame");
+        PyGeometryArray::from_shapes(shapes, frame).unwrap()
+    }
+
+    fn valid_polygon(west: f64, north: f64) -> Shape {
+        Shape::Polygon(polygon(&[
+            (west, 30.0),
+            (west + 1.0, 30.0),
+            (west + 1.0, north),
+            (west, north),
+            (west, 30.0),
+        ]))
+    }
+
+    fn ambiguous_polygon() -> Shape {
+        Shape::Polygon(polygon(&[
+            (0.0, -10.0),
+            (360.0, -10.0),
+            (300.0, 10.0),
+            (0.0, -10.0),
+        ]))
+    }
+
+    fn bool_values(py: Python<'_>, result: PyResult<Py<PyAny>>) -> Vec<bool> {
+        result
+            .expect("boolean array operation succeeds")
+            .bind(py)
+            .extract::<Vec<bool>>()
+            .expect("boolean array result extracts")
+    }
+
+    fn require_error_row(py: Python<'_>, array: &PyGeometryArray, expected_row: usize) {
+        let argument = Bound::new(py, array.clone())
+            .expect("mixed array binds for the public require boundary")
+            .into_any();
+        let error =
+            require(py, &argument, None, None).expect_err("require returns the first invalid row");
+        let value = error.value(py);
+        assert_eq!(
+            value
+                .getattr("row")
+                .expect("invalid-geometry error has a row")
+                .extract::<usize>()
+                .expect("row is an integer"),
+            expected_row,
+        );
+        assert_eq!(
+            value
+                .getattr("code")
+                .expect("invalid-geometry error has a code")
+                .extract::<String>()
+                .expect("code is text"),
+            "latitude_out_of_range",
+        );
+    }
+
+    fn assert_error_note_row(py: Python<'_>, error: &PyErr, expected_row: usize) {
+        let notes = error
+            .value(py)
+            .getattr("__notes__")
+            .expect("row fallback annotates its first error")
+            .extract::<Vec<String>>()
+            .expect("array error notes are strings");
+        assert_eq!(notes, [format!(
+            "while processing array element {expected_row}"
+        )]);
+    }
+
+    #[test]
+    fn mixed_geographic_predicates_keep_values_with_seam_row_at_either_end() {
+        crate::test_support::initialize_python();
+        Python::attach(|py| {
+            for shapes in [vec![seam_polygon(), multi_polygon(1.0)], vec![
+                multi_polygon(1.0),
+                seam_polygon(),
+            ]] {
+                let array = array(shapes);
+                assert!(
+                    packed_bool_values(&array, Operation::IsValid).is_none(),
+                    "mixed storage cannot use the packed validity kernel",
+                );
+                assert!(
+                    packed_bool_values(&array, Operation::IsSimple).is_none(),
+                    "mixed storage cannot use the packed simplicity kernel",
+                );
+                assert!(
+                    packed_bool_values(&array, Operation::IsRing).is_none(),
+                    "mixed storage uses the ordered row lane for ring status",
+                );
+                assert_eq!(bool_values(py, is_valid_array(py, &array)), [true, true],);
+                assert_eq!(bool_values(py, is_simple_array(py, &array)), [true, true],);
+                assert_eq!(bool_values(py, is_ring_array(py, &array)), [false, false],);
+            }
+        });
+    }
+
+    #[test]
+    fn mixed_geographic_preflight_keeps_first_error_before_or_after_seam_row() {
+        crate::test_support::initialize_python();
+        Python::attach(|py| {
+            for (shapes, expected_row, expected_validity) in [
+                (vec![seam_polygon(), multi_polygon(91.0)], 1, [true, false]),
+                (vec![multi_polygon(91.0), seam_polygon()], 0, [false, true]),
+            ] {
+                let array = array(shapes);
+                assert!(
+                    packed_bool_values(&array, Operation::IsValid).is_none(),
+                    "mixed storage goes directly to the ordered row lane",
+                );
+                assert_eq!(
+                    bool_values(py, is_valid_array(py, &array)),
+                    expected_validity,
+                );
+
+                let reports = array
+                    .validate_impl(py)
+                    .expect("validation reports both rows");
+                let issue_codes = reports
+                    .iter()
+                    .map(|report| {
+                        report
+                            .as_ref()
+                            .and_then(|report| report.issue.as_ref())
+                            .map(|issue| issue.code)
+                    })
+                    .collect::<Vec<_>>();
+                let expected_codes = if expected_row == 0 {
+                    [Some("latitude_out_of_range"), None]
+                } else {
+                    [None, Some("latitude_out_of_range")]
+                };
+                assert_eq!(issue_codes, expected_codes);
+
+                require_error_row(py, &array, expected_row);
+                let error =
+                    is_simple_array(py, &array).expect_err("is_simple reports the invalid row");
+                assert_error_note_row(py, &error, expected_row);
+                let error = is_ring_array(py, &array).expect_err("is_ring reports the invalid row");
+                assert_error_note_row(py, &error, expected_row);
+            }
+        });
+    }
+
+    #[test]
+    fn packed_ambiguous_ring_declines_the_column_and_reaches_row_validity() {
+        crate::test_support::initialize_python();
+        Python::attach(|py| {
+            let array = packed_array(vec![
+                valid_polygon(0.0, 31.0),
+                ambiguous_polygon(),
+                valid_polygon(4.0, 31.0),
+            ]);
+            assert!(
+                packed_bool_values(&array, Operation::IsValid).is_none(),
+                "the explicit-period row declines the ordinary column certificate",
+            );
+            assert_eq!(bool_values(py, is_valid_array(py, &array)), [
+                true, false, true
+            ],);
+        });
+    }
+
+    #[test]
+    fn packed_geographic_fallback_preserves_nullable_gathered_error_order() {
+        crate::test_support::initialize_python();
+        Python::attach(|py| {
+            let source = packed_array(vec![
+                valid_polygon(0.0, 31.0),
+                valid_polygon(2.0, 91.0),
+                valid_polygon(4.0, 31.0),
+                ambiguous_polygon(),
+            ]);
+            let gathered = source
+                .gather_logical_rows(&[2, 0, 2])
+                .expect("ordinary gathered rows preserve their selection");
+            assert!(
+                packed_bool_values(&gathered, Operation::IsValid).is_some(),
+                "the screen admits only selected present rows",
+            );
+            assert_eq!(bool_values(py, is_valid_array(py, &gathered)), [
+                true, true, true
+            ],);
+
+            let window = source
+                .gather_logical_row_range(2..3)
+                .expect("ordinary windows preserve their source range");
+            assert!(
+                packed_bool_values(&window, Operation::IsValid).is_some(),
+                "the window certificate ignores unselected rows",
+            );
+            let masked = source
+                .clone()
+                .with_missing_mask(Some(
+                    ValidityMask::from_vec(4, vec![false, true, false, true])
+                        .expect("row-aligned mask"),
+                ))
+                .expect("invalid hidden rows can be masked");
+            assert!(
+                packed_bool_values(&masked, Operation::IsValid).is_some(),
+                "missing payload rows are never admitted",
+            );
+            assert_eq!(bool_values(py, is_valid_array(py, &masked)), [
+                true, false, true, false
+            ],);
+
+            let reordered = source
+                .gather_logical_rows(&[3, 1, 0])
+                .expect("gather retains selected logical order");
+            assert!(
+                packed_bool_values(&reordered, Operation::IsValid).is_none(),
+                "a failed column certificate returns to ordered row preflight",
+            );
+            assert_eq!(bool_values(py, is_valid_array(py, &reordered)), [
+                false, false, true
+            ],);
+            for operation in [is_simple_array, is_ring_array] {
+                let error = operation(py, &reordered).expect_err("invalid row is reported");
+                assert_error_note_row(py, &error, 0);
+            }
+            let argument = Bound::new(py, reordered)
+                .expect("gathered packed array binds")
+                .into_any();
+            let error =
+                require(py, &argument, None, None).expect_err("require returns first error");
+            assert_eq!(
+                error
+                    .value(py)
+                    .getattr("row")
+                    .expect("validation error includes logical row")
+                    .extract::<usize>()
+                    .expect("row is integer"),
+                0,
+            );
+
+            let latitude_first = source
+                .gather_logical_rows(&[1, 3, 0])
+                .expect("gather keeps selected order");
+            let argument = Bound::new(py, latitude_first)
+                .expect("latitude-first array binds")
+                .into_any();
+            let error = require(py, &argument, None, None)
+                .expect_err("the earliest latitude error wins over a later ambiguous ring");
+            assert_eq!(
+                error
+                    .value(py)
+                    .getattr("code")
+                    .expect("validation error includes issue code")
+                    .extract::<String>()
+                    .expect("issue code is text"),
+                "latitude_out_of_range",
+            );
+        });
+    }
 }

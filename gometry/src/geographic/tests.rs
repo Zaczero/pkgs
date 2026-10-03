@@ -117,6 +117,7 @@ fn ordinary_chart_certificate_matches_edge_and_period_rounding_contracts() {
 
     let axis = rounded_up.longitude();
     assert!(200.0 < axis.half_period());
+    assert_eq!(axis.ordinary_longitude_bound(), 200.0);
     let nominal_half = axis.canonicalize(200.0).unwrap();
     assert_eq!(
         nominal_half.get().to_bits(),
@@ -125,6 +126,10 @@ fn ordinary_chart_certificate_matches_edge_and_period_rounding_contracts() {
     assert_eq!(nominal_half.identity(axis), SeamIdentity::Seam);
     let rounded_down_axis = frame(std::f64::consts::TAU / 400.0).longitude();
     assert!(200.0 > rounded_down_axis.half_period());
+    assert_eq!(
+        rounded_down_axis.ordinary_longitude_bound().to_bits(),
+        rounded_down_axis.half_period().to_bits()
+    );
     assert_eq!(
         rounded_down_axis
             .canonicalize(200.0)

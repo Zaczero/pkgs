@@ -379,6 +379,74 @@ def test_geographic_seam_bowtie_is_invalid_with_exact_q_witness(crs: int | str) 
     assert reports[0] is not None and reports[0].location == report.location
 
 
+def test_geographic_latitude_domain_is_a_validity_issue_and_operations_still_raise() -> (
+    None
+):
+    polygon = gm.Polygon([(0, 0), (10, 0), (10, 100), (0, 0)], crs=4326)
+
+    report = polygon.validate()
+
+    assert (report.code, report.path, report.location) == (
+        'latitude_out_of_range',
+        '$.shell',
+        (10.0, 100.0),
+    )
+    assert not polygon.is_valid
+    rows = gm.GeometryArray([polygon, gm.box(0, 0, 1, 1, crs=4326)], crs=4326)
+    np.testing.assert_array_equal(rows.is_valid, [False, True])
+    assert rows.validate()[0].code == 'latitude_out_of_range'
+    with pytest.raises(
+        gm.InvalidGeometryError,
+        match=r'invalid longitude/latitude \(10, 100\)',
+    ):
+        _ = polygon.area
+    for geometry in (polygon, rows):
+        with pytest.raises(
+            gm.InvalidGeometryError,
+            match=r'invalid longitude/latitude \(10, 100\)',
+        ):
+            _ = geometry.is_simple
+    with pytest.raises(
+        gm.InvalidGeometryError,
+        match=r'invalid longitude/latitude \(10, 100\)',
+    ):
+        _ = polygon.is_ring
+    with pytest.raises(
+        gm.InvalidGeometryError,
+        match=r'invalid longitude/latitude \(10, 100\)',
+    ):
+        _ = rows.is_ring
+    with pytest.raises(gm.InvalidGeometryError, match='geometry repair failed'):
+        polygon.repair()
+
+
+def test_ambiguous_full_turn_ring_is_reported_and_rejected_at_admission() -> None:
+    polygon = gm.Polygon([(0, -10), (360, -10), (300, 10), (0, -10)], crs=4326)
+
+    report = polygon.validate()
+
+    assert (report.code, report.path, report.location) == (
+        'ambiguous_full_turn_ring',
+        '$.shell',
+        (0.0, -10.0),
+    )
+    assert 'ring winds once around the globe and spans the equator' in report.detail
+    assert not polygon.is_valid
+    rows = gm.GeometryArray([polygon], crs=4326)
+    np.testing.assert_array_equal(rows.is_valid, [False])
+    assert rows.validate()[0].code == 'ambiguous_full_turn_ring'
+
+    message = 'ring winds once around the globe and spans the equator'
+    with pytest.raises(gm.InvalidGeometryError, match=message):
+        _ = polygon.area
+    with pytest.raises(gm.InvalidGeometryError, match=message):
+        _ = rows.area
+    with pytest.raises(gm.InvalidGeometryError, match=message):
+        gm.SpatialIndex([polygon])
+    with pytest.raises(gm.InvalidGeometryError, match='geometry repair failed'):
+        polygon.repair()
+
+
 @pytest.mark.parametrize('crs', [4326, 'OGC:CRS84'], ids=['epsg4326', 'crs84'])
 def test_geographic_seam_hole_touches_keep_planar_ogc_validity(crs: int | str) -> None:
     shell = [(170, -10), (-170, -10), (-170, 10), (170, 10), (170, -10)]

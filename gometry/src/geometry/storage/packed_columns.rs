@@ -8,6 +8,8 @@
 //! Output-producing kernels write logical rows once into their final coordinate
 //! and offset columns.
 
+mod geographic;
+
 use std::borrow::Cow;
 use std::sync::Arc;
 
@@ -1356,7 +1358,11 @@ pub(crate) fn map_selected_to_crs(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::PyGeometryArray;
+    use crate::crs::frame::{Frame, crs_arc_static};
+    use crate::geographic::{AngularFactor, GeographicFrame};
     use crate::geometry::storage::RowSelection;
+    use crate::geometry::{LineSeq, Polygon, Ring, Shape};
     use crate::test_support::allocation_count;
 
     fn coords() -> CoordSeq {
@@ -1367,6 +1373,46 @@ mod tests {
             None,
         )
         .expect("valid coordinates")
+    }
+
+    fn geographic_array(shapes: Vec<Shape>) -> PyGeometryArray {
+        let frame = Frame::new(Some(crs_arc_static("EPSG:4326")), None)
+            .expect("EPSG:4326 is a valid geographic frame");
+        let array = PyGeometryArray::from_shapes(shapes, frame).unwrap();
+        assert!(
+            matches!(array.storage(), GeometryArrayStorage::Packed(_)),
+            "homogeneous rows use packed storage",
+        );
+        array
+    }
+
+    fn ordinary_geographic(array: &PyGeometryArray, frame: GeographicFrame) -> bool {
+        resolve_packed_columns(array.storage(), array.missing(), array.point_row_layout())
+            .expect("packed array resolves to column descriptors")
+            .ordinary_geographic_predicates(frame)
+    }
+
+    fn geographic_ring(points: &[(f64, f64)]) -> Ring {
+        Ring::closed(
+            points
+                .iter()
+                .map(|&(x, y)| Point::new_raw_xy(x, y))
+                .collect(),
+        )
+        .expect("test ring is closed")
+    }
+
+    fn geographic_polygon(west: f64, north: f64) -> Shape {
+        Shape::Polygon(Polygon::new(
+            geographic_ring(&[
+                (west, 30.0),
+                (west + 1.0, 30.0),
+                (west + 1.0, north),
+                (west, north),
+                (west, 30.0),
+            ]),
+            Vec::new(),
+        ))
     }
 
     #[test]
@@ -1491,6 +1537,130 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn ordinary_geographic_screen_declines_a_seam_vertex_in_row_k() {
+        let rows = geographic_array(vec![
+            geographic_polygon(0.0, 31.0),
+            geographic_polygon(179.0, 31.0),
+            geographic_polygon(4.0, 31.0),
+        ]);
+        assert!(!ordinary_geographic(&rows, GeographicFrame::crs84()));
+
+        let explicit_period = geographic_array(vec![Shape::Polygon(Polygon::new(
+            geographic_ring(&[(0.0, -10.0), (360.0, -10.0), (300.0, 10.0), (0.0, -10.0)]),
+            Vec::new(),
+        ))]);
+        assert!(!ordinary_geographic(
+            &explicit_period,
+            GeographicFrame::crs84()
+        ));
+    }
+
+    #[test]
+    fn ordinary_geographic_screen_resets_at_each_row_and_obeys_frame_bounds() {
+        let rows = geographic_array(vec![
+            geographic_polygon(-160.0, 31.0),
+            geographic_polygon(150.0, 31.0),
+        ]);
+        assert!(
+            ordinary_geographic(&rows, GeographicFrame::crs84()),
+            "the longitude jump between rows is not a source edge",
+        );
+
+        let invalid_latitude = geographic_array(vec![geographic_polygon(0.0, 91.0)]);
+        assert!(!ordinary_geographic(
+            &invalid_latitude,
+            GeographicFrame::crs84()
+        ));
+
+        let factor = AngularFactor::try_new("unit", std::f64::consts::TAU / 400.0_f64.next_up())
+            .expect("rounded-up grad period has a valid angular factor");
+        let grads = GeographicFrame::try_new(factor, factor, 0.0)
+            .expect("rounded-up grad period has a valid frame");
+        let rounded_alias = geographic_array(vec![geographic_polygon(199.0, 31.0)]);
+        assert!(!ordinary_geographic(&rounded_alias, grads));
+
+        let exterior_pole_ulp = geographic_array(vec![geographic_polygon(0.0, 90.0_f64.next_up())]);
+        assert!(!ordinary_geographic(
+            &exterior_pole_ulp,
+            GeographicFrame::crs84()
+        ));
+    }
+
+    #[test]
+    fn ordinary_geographic_screen_handles_points_lines_and_selected_rows() {
+        let points = geographic_array(vec![
+            Shape::Point(Point::new_raw_xy(1.0, 2.0)),
+            Shape::Point(Point::new_raw_xy(180.0, 2.0)),
+            Shape::Point(Point::new_raw_xy(4.0, 5.0)),
+        ]);
+        assert!(!ordinary_geographic(&points, GeographicFrame::crs84()));
+        assert!(ordinary_geographic(
+            &points.gather_logical_rows(&[2, 0, 2]).unwrap(),
+            GeographicFrame::crs84()
+        ));
+
+        let present = geographic_array(vec![
+            Shape::Point(Point::new_raw_xy(1.0, 2.0)),
+            Shape::Point(Point::new_raw_xy(4.0, 5.0)),
+        ]);
+        let compact = PyGeometryArray::scatter_present_rows(
+            &present,
+            ValidityMask::from_vec(4, vec![true, false, true, false]).expect("compact point mask"),
+        )
+        .expect("present points scatter into compact nullable storage");
+        assert!(ordinary_geographic(&compact, GeographicFrame::crs84()));
+
+        let line = |xs| {
+            Shape::LineString(
+                LineSeq::try_new(
+                    CoordSeq::try_from_vecs(xs, vec![30.0, 31.0], None, None).unwrap(),
+                )
+                .unwrap(),
+            )
+        };
+        let lines = geographic_array(vec![
+            line(vec![-160.0, -150.0]),
+            line(vec![150.0, 160.0]),
+            line(vec![-170.0, 170.0]),
+        ]);
+        assert!(!ordinary_geographic(&lines, GeographicFrame::crs84()));
+        assert!(ordinary_geographic(
+            &lines.gather_logical_row_range(0..2).unwrap(),
+            GeographicFrame::crs84()
+        ));
+    }
+
+    #[test]
+    fn ordinary_geographic_screen_resets_at_each_hole_boundary() {
+        let shell = geographic_ring(&[
+            (-170.0, -20.0),
+            (0.0, -20.0),
+            (170.0, -20.0),
+            (170.0, 20.0),
+            (0.0, 20.0),
+            (-170.0, 20.0),
+            (-170.0, -20.0),
+        ]);
+        let hole = |west| {
+            geographic_ring(&[
+                (west, -10.0),
+                (west + 10.0, -10.0),
+                (west + 10.0, 10.0),
+                (west, 10.0),
+                (west, -10.0),
+            ])
+        };
+        let polygon = geographic_array(vec![Shape::Polygon(Polygon::new(shell, vec![
+            hole(-160.0),
+            hole(150.0),
+        ]))]);
+        assert!(
+            ordinary_geographic(&polygon, GeographicFrame::crs84()),
+            "the longitude jump between holes is not a source edge",
+        );
     }
 
     #[test]

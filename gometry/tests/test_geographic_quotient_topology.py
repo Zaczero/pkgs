@@ -584,10 +584,15 @@ def test_country_union_rounding_residuals_are_nearest_even_crossings() -> None:
         'ca8c0a9019e2ab11c880ce85ecf7dd73d9b2a4b15e3265d41daf1af2bbfcfe66'
     )
     source_data = json.loads(fixture_bytes)
-    countries = list(gm.from_geojson(fixture_bytes.decode('utf-8'), crs=4326))
+    country_array = gm.from_geojson(fixture_bytes.decode('utf-8'), crs=4326)
+    countries = list(country_array)
     assert len(countries) == 217
     validity = [country.is_valid for country in countries]
     assert sum(validity) == 217
+    assert country_array.is_valid.tolist() == validity
+    assert country_array.is_simple.tolist() == [
+        country.is_simple for country in countries
+    ]
     countries_by_code = {
         feature['properties']['tags']['ISO3166-1:alpha2']: (country, validity[index])
         for index, (feature, country) in enumerate(

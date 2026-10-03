@@ -1013,12 +1013,12 @@ impl RingSummary {
             }
             west = west.min(x);
             east = east.max(x);
-            if let Some(previous_x) = previous_x {
-                if !axis.ordinary_chart_edge(previous_x, x) {
-                    chart_turn = axis
-                        .add_chart_transit(chart_turn, previous_x, x)
-                        .map_err(|source| fail(index, source))?;
-                }
+            if let Some(previous_x) = previous_x
+                && !axis.ordinary_chart_edge(previous_x, x)
+            {
+                chart_turn = axis
+                    .add_chart_transit(chart_turn, previous_x, x)
+                    .map_err(|source| fail(index, source))?;
             }
             previous_x = Some(x);
         }

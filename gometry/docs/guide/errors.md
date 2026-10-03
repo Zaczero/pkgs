@@ -115,6 +115,7 @@ for catch in (TypeError, gm.GeometryTypeError):
 | `GeometryError: <operation> could not certify ... within its search budget` | the bounded search stopped before certifying an assignment; this does not prove that no assignment exists | simplify or snap near-coincident input boundaries when the application allows it, or split the operation |
 | `GeometryError: unknown ... did you mean ...?` | a token typo (`'mitter'` vs `'miter'`, …) | take the suggestion; tokens are also `Literal`-typed, so a type checker catches this before runtime |
 | `InvalidGeometryError: invalid longitude/latitude (...)` | geographic input outside the CRS-native longitude period or latitude/pole domain | check axis order — gometry is always `(x, y)`; under a geographic CRS that is `(lon, lat)` in native angular units; [`swap_xy()`][gometry.Geometry.swap_xy] repairs latitude-first data |
+| `ambiguous_full_turn_ring` in a geographic validation report | an unmarked ring winds once around the longitude period but its latitude span crosses the equator or lies entirely on it | close the boundary explicitly through a pole or split it into unambiguous rings |
 | metric looks unexpectedly large or small | raw angular coordinates were mistaken for a metric unit | let the CRS drive (no `unit=`), and check the geometry carries the intended CRS |
 
 ## Error attributes
