@@ -1,15 +1,26 @@
 use std::num::NonZeroUsize;
 use std::ops::ControlFlow;
 
-use crate::crs::{
-    LocalCrsDefinition, LocalProjectionCertificate, RuntimeState, estimate_local_crs_at,
-    geodesic_for_crs_at, info_with_state, local_projection_refinement_budget, transform_at,
-};
+use super::certificate::LocalProjectionCertificate;
+use super::frame::{LocalCrsDefinition, estimate_local_crs_at, local_crs_fits_at};
+use crate::crs::{RuntimeState, geodesic_for_crs_at, info_with_state, transform_at};
 use crate::error::Result;
 use crate::geometry::{
     ExpansionBudget, RefinedChainProvenance, RunIdentity, SegmentPlacement, Shape, line_segments,
     segmentize_points_with_piece_counts_budgeted,
 };
+
+const LOCAL_INPUT_REFINEMENT_FRACTION: f64 = 1.0e-4;
+
+fn local_projection_refinement_budget(
+    frame_extent_m: f64,
+    operation_distance_m: Option<f64>,
+) -> f64 {
+    let extent = operation_distance_m.map_or(frame_extent_m, |distance| {
+        frame_extent_m.min(distance.abs())
+    });
+    extent * LOCAL_INPUT_REFINEMENT_FRACTION
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum LocalInputPurpose {
@@ -65,7 +76,7 @@ impl PreparedLocalInput {
     }
 
     /// Select one datum-preserving local frame for the shapes that must fit it.
-    pub(crate) fn select_local_frame(
+    pub(super) fn select_local_frame(
         fitting_shapes: &[&Shape],
         source_crs: &str,
         state: &RuntimeState,
@@ -78,7 +89,7 @@ impl PreparedLocalInput {
     /// The fitting shapes can include a prior result during the single
     /// constructive refit, while the refinement budget remains based on the
     /// original source shape's projected extent.
-    pub(crate) fn prepare_selected(
+    pub(super) fn prepare_selected(
         shape: &Shape,
         local: LocalCrsDefinition,
         source_crs: &str,
@@ -220,12 +231,12 @@ impl PreparedLocalInput {
         }))
     }
 
-    pub(crate) const fn local_crs(&self) -> &LocalCrsDefinition {
+    pub(super) const fn local_crs(&self) -> &LocalCrsDefinition {
         &self.local
     }
 
     /// Original projected vertices for site and provenance semantics.
-    pub(crate) const fn projected_original(&self) -> &Shape {
+    pub(super) const fn projected_original(&self) -> &Shape {
         &self.projected_original
     }
 
@@ -240,35 +251,32 @@ impl PreparedLocalInput {
             .unwrap_or(&self.projected_original)
     }
 
-    pub(crate) fn source_working<'a>(&'a self, original: &'a Shape) -> &'a Shape {
+    pub(super) fn source_working<'a>(&'a self, original: &'a Shape) -> &'a Shape {
         self.source_refined
             .as_ref()
             .unwrap_or_else(|| self.source_original(original))
     }
 
-    pub(crate) fn refined_chains(&self) -> &[RefinedChainProvenance] {
+    pub(super) fn refined_chains(&self) -> &[RefinedChainProvenance] {
         &self.refined_chains
     }
 
-    pub(crate) fn restored_result_fits(
+    pub(super) fn restored_result_fits(
         &self,
         result: &Shape,
         source_crs: &str,
         state: &RuntimeState,
     ) -> Result<bool> {
-        crate::crs::local_crs_fits_at(result, source_crs, &self.local.definition, state)
+        local_crs_fits_at(result, source_crs, &self.local.definition, state)
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::super::geodesic_by_identity;
+    use super::super::operations::geodesic_by_identity;
     use super::*;
     use crate::crs::runtime_state_snapshot;
-    use crate::geometry::{
-        BufferCapStyle, BufferJoinStyle, CoordSeq, Coordinates as _, GeodesicMetric as _, LineSeq,
-        XY,
-    };
+    use crate::geometry::{CoordSeq, Coordinates as _, LineSeq, XY};
 
     fn sampled_projection_deviation(
         source_crs: &str,
@@ -418,38 +426,6 @@ mod tests {
     }
 
     #[test]
-    fn minimum_bounding_radius_keeps_point_sets_geodesic_and_lines_local() {
-        let coordinates = CoordSeq::try_from_xy(&[XY::new(0.0, 0.0), XY::new(0.0, 1.0)]).unwrap();
-        let point_set = Shape::MultiPoint(
-            crate::geometry::MultiPoint::from_coordseq(coordinates.clone()).unwrap(),
-        );
-        let line = Shape::LineString(LineSeq::try_new(coordinates).unwrap());
-        let state = runtime_state_snapshot().unwrap();
-
-        let exact_point_radius =
-            super::super::geodesic_minimum_bounding_radius(&point_set, "EPSG:4326", &state)
-                .unwrap();
-        let edge_radius =
-            super::super::geodesic_minimum_bounding_radius(&line, "EPSG:4326", &state).unwrap();
-        let local = PreparedLocalInput::select_local_frame(&[&line], "EPSG:4326", &state).unwrap();
-        let projected =
-            crate::crs::transform_at(&line, "EPSG:4326", &local.definition, &state).unwrap();
-        let expected_edge_radius = projected.minimum_bounding_radius().unwrap();
-
-        let exact_geodesic_distance =
-            crate::crs::with_ellipsoid_metric_at("EPSG:4326", &[&point_set], &state, |metric| {
-                Ok(metric.segment_length(
-                    crate::geometry::Point::new_raw_xy(0.0, 0.0),
-                    crate::geometry::Point::new_raw_xy(0.0, 1.0),
-                ))
-            })
-            .unwrap();
-        assert_eq!(exact_point_radius, exact_geodesic_distance / 2.0);
-        assert_eq!(edge_radius, expected_edge_radius);
-        assert!((edge_radius - exact_point_radius).abs() > 1.0);
-    }
-
-    #[test]
     fn selected_projection_pieces_stay_within_budget_for_each_family() {
         const SAMPLES_PER_PIECE: usize = 129;
 
@@ -530,7 +506,7 @@ mod tests {
                 .map_or(0.0, |bounds| {
                     (bounds.maxx() - bounds.minx()).hypot(bounds.maxy() - bounds.miny())
                 });
-            let piece_budget = crate::crs::local_projection_refinement_budget(extent_m, distance);
+            let piece_budget = super::local_projection_refinement_budget(extent_m, distance);
             let Shape::LineString(source_pieces) = prepared.source_working(&shape) else {
                 panic!("line source remains a line");
             };
@@ -685,96 +661,6 @@ mod tests {
                 &state,
             ) > input_budget,
             "the parallel-only model omitted observed meridian deviation",
-        );
-    }
-
-    #[test]
-    fn projected_buffer_path_charges_refinement_before_kernel_work() {
-        let half_width = 6.926_294_673_429_263 / 60.0;
-        let west = 3.0 - half_width;
-        let east = 3.0 + half_width;
-        let source = Shape::LineString(
-            LineSeq::try_new(
-                CoordSeq::try_from_xy(&[XY::new(west, 39.0), XY::new(east, 39.0)]).unwrap(),
-            )
-            .unwrap(),
-        );
-        let state = runtime_state_snapshot().unwrap();
-        let local =
-            PreparedLocalInput::select_local_frame(&[&source], "EPSG:4326", &state).unwrap();
-        assert_eq!(local.definition, "EPSG:32631");
-        let distance = 100.0;
-        let quadrant_segments = std::num::NonZeroU32::new(8).unwrap();
-        let miter_limit = crate::Positive::try_new("miter_limit", 5.0).unwrap();
-        let mut actual_budget = ExpansionBudget::new("buffer", "quadrant_segments");
-        let actual = super::super::geodesic_local_shape(
-            &source,
-            Some("EPSG:4326"),
-            true,
-            Some(distance),
-            &state,
-            &mut actual_budget,
-            |projected, budget| {
-                projected.buffer_with_style_budgeted(
-                    distance,
-                    BufferCapStyle::Round,
-                    BufferJoinStyle::Round,
-                    quadrant_segments,
-                    miter_limit,
-                    budget,
-                )
-            },
-        )
-        .unwrap();
-        assert!(!actual.is_empty());
-        assert!(actual_budget.used() > 0);
-
-        let mut expected_budget = ExpansionBudget::new("buffer", "quadrant_segments");
-        let prepared = PreparedLocalInput::prepare(
-            &source,
-            &[&source],
-            "EPSG:4326",
-            Some(distance),
-            LocalInputPurpose::BoundarySupport,
-            &state,
-            &mut expected_budget,
-        )
-        .unwrap()
-        .unwrap();
-        let expected_input_charge = expected_budget.used();
-        assert!(expected_input_charge > 0);
-        let expected = prepared
-            .projected_working()
-            .buffer_with_style_budgeted(
-                distance,
-                BufferCapStyle::Round,
-                BufferJoinStyle::Round,
-                quadrant_segments,
-                miter_limit,
-                &mut expected_budget,
-            )
-            .unwrap();
-        let restored_expected =
-            crate::crs::transform_at(&expected, &local.definition, "EPSG:4326", &state).unwrap();
-        assert_eq!(actual, restored_expected);
-        assert_eq!(actual_budget.used(), expected_budget.used());
-
-        let unrefined_input =
-            crate::crs::transform_at(&source, "EPSG:4326", &local.definition, &state).unwrap();
-        let mut unrefined_budget = ExpansionBudget::new("buffer", "quadrant_segments");
-        let _unrefined = unrefined_input
-            .buffer_with_style_budgeted(
-                distance,
-                BufferCapStyle::Round,
-                BufferJoinStyle::Round,
-                quadrant_segments,
-                miter_limit,
-                &mut unrefined_budget,
-            )
-            .unwrap();
-        assert!(
-            expected_budget.used() > unrefined_budget.used(),
-            "unrefined buffer did not record the planned input subdivision work",
         );
     }
 

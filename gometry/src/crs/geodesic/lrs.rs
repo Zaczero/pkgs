@@ -163,3 +163,34 @@ pub(crate) fn chart_line_locate_coordseq(
     let index = ChartLineIndex::build_chart_coordseq(line, metric)?;
     index.locate_chart_point(query, distance_mode.is_normalized(), metric)
 }
+
+/// CRS-aware `interpolate_m`: resolved geographic metrics use ellipsoidal
+/// chart-edge arclength, while planar metrics use 2D coordinate distance,
+/// including an explicit planar override on a geographic CRS. Unlike the
+/// constructive ops this NEVER reprojects — X/Y/Z stay exact; only edge lengths
+/// feed the stationing.
+pub(crate) fn metric_interpolate_m(
+    model: &crate::crs::MetricModel,
+    shape: &Shape,
+    range: crate::geometry::MeasureRange,
+    overwrite: bool,
+) -> Result<Shape> {
+    match model {
+        // The M fraction (traveled / total) is scale-invariant, so planar
+        // stationing uses raw 2D distance regardless of `to_metre`.
+        crate::crs::MetricModel::Planar { .. } => shape.interpolate_m(range, overwrite, |a, b| {
+            Ok(crate::geometry::point_distance(a, b))
+        }),
+        crate::crs::MetricModel::Geodesic {
+            crs: geodesic_crs,
+            state,
+            ..
+        } => crate::crs::with_ellipsoid_metric_at(geodesic_crs, &[shape], state, |metric| {
+            use crate::geometry::ChartMetric as _;
+            shape.interpolate_m(range, overwrite, |a, b| {
+                let edge = metric.chart_edge(a, b)?;
+                metric.chart_edge_length(&edge)
+            })
+        }),
+    }
+}

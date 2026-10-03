@@ -276,10 +276,9 @@ impl PyGeometryArray {
             ));
         }
         let collection = Shape::geometry_collection(shapes)?;
-        Ok(PyCrs::from_definition(crs_arc(crs::estimate_local_crs(
-            &collection,
-            source,
-        )?)))
+        Ok(PyCrs::from_definition(crs_arc(
+            crs::local::estimate_local_crs(&collection, source)?,
+        )))
     }
 
     // NEP 13: opt out of numpy ufunc dispatch (we have our own & | - ^ /

@@ -2,7 +2,12 @@ use std::num::NonZeroU32;
 use std::sync::Arc;
 
 use crate::broadcast::{degrade_linref_linestring, degrade_linref_point};
-use crate::crs::ResolvedMetric;
+use crate::crs::local::{
+    metric_concave_hull, metric_constructive_shape_budgeted, metric_maximum_inscribed_circle,
+    metric_minimum_bounding_circle, metric_minimum_bounding_radius,
+    metric_optional_constructive_shape,
+};
+use crate::crs::{ResolvedMetric, metric_interpolate_m};
 use crate::dispatch::MetricOp;
 use crate::dispatch::metric::{CachelessRowContext, GeodesicBinaryRow, LinearReferenceRow};
 use crate::error::Result;
@@ -14,10 +19,8 @@ use crate::geometry::{
 use crate::numeric::Positive;
 use crate::{
     F64Param, I64Param, line_interpolate_shape, line_interpolate_shape_m, line_substring_shape,
-    line_substring_shape_m, metric_concave_hull, metric_constructive_shape_budgeted,
-    metric_interpolate_m, metric_maximum_inscribed_circle, metric_maximum_inscribed_radius,
-    metric_minimum_bounding_circle, metric_minimum_bounding_radius, metric_minimum_clearance,
-    metric_minimum_clearance_line, metric_optional_constructive_shape,
+    line_substring_shape_m, metric_maximum_inscribed_radius, metric_minimum_clearance,
+    metric_minimum_clearance_line,
 };
 
 fn scale_length(value: f64, to_metre: f64) -> f64 {

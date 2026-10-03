@@ -5,11 +5,11 @@ use crate::broadcast::metrics::{
     CoordinateAxes, DistanceUnit, GeometryArrayStorage, GeometryError, GeometryKind, Point,
     PyGeometry, PyResult, Shape, crs,
 };
+use crate::crs::local::{LocalInputPurpose, PreparedLocalInput, geodesic_by_identity};
 use crate::dispatch::MetricOp;
 use crate::geographic::{GeographicFrame, lonlat as geographic};
 use crate::geometry::storage::{PackedStorage, PointRows};
 use crate::geometry::{FrameDependentCaches, LineSeq, PreparedPlan, ShapeCountQuery, storage};
-use crate::py::support;
 #[cfg(test)]
 use crate::test_support::binary_dispatch_counters;
 use crate::{NonNegative, validate_lonlat_shape};
@@ -754,12 +754,12 @@ pub(crate) fn metric_minimum_clearance_line(
         |_, _, state| {
             let mut budget =
                 crate::geometry::ExpansionBudget::new("minimum_clearance", "input_refinement");
-            support::geodesic_by_identity(
+            geodesic_by_identity(
                 shape,
                 crs,
                 state,
                 &mut budget,
-                support::LocalInputPurpose::BoundarySupport,
+                LocalInputPurpose::BoundarySupport,
                 |sites, support, refined_chains| {
                     Ok(sites
                         .minimum_clearance_plan_with_support(support, refined_chains)?
@@ -821,12 +821,12 @@ pub(crate) fn metric_maximum_inscribed_radius(
                 "maximum_inscribed_radius",
                 "input_refinement",
             );
-            let Some(prepared) = support::PreparedLocalInput::prepare(
+            let Some(prepared) = PreparedLocalInput::prepare(
                 shape,
                 &[shape],
                 source,
                 None,
-                support::LocalInputPurpose::BoundarySupport,
+                LocalInputPurpose::BoundarySupport,
                 state,
                 &mut budget,
             )?

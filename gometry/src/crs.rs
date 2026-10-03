@@ -38,7 +38,7 @@ mod grids;
 mod in_core;
 mod info;
 mod introspect;
-mod local;
+pub(crate) mod local;
 mod operations;
 mod options_impls;
 mod pipeline;
@@ -96,8 +96,8 @@ pub(crate) use geodesic::{
     geodesic_interpolate_on_line, geodesic_point_between, geodesic_point_distances,
     geodesic_point_pair_distance, geodesic_point_pair_distances, geodesic_point_pair_dwithin,
     geodesic_point_pair_dwithin_one, geodesic_witness_distance_at, geographic_lonlat_result,
-    metric_model, metric_model_meters, sincos_degrees, with_ellipsoid_metric_at,
-    with_geodesic_cache_at, with_geographic_coordseq_collect_rows_at,
+    metric_interpolate_m, metric_model, metric_model_meters, sincos_degrees,
+    with_ellipsoid_metric_at, with_geodesic_cache_at, with_geographic_coordseq_collect_rows_at,
     with_geographic_coordseq_metric_at, with_resolved_ellipsoid_metric_at,
 };
 pub(crate) use grids::grid_info;
@@ -118,10 +118,6 @@ use introspect::{
     geographic_frame, id_authority, live_crs_admits_geometry_epoch, operation_info_from_pj,
     owned_authority_object_info, owned_crs_coordinate_operation_info, prime_meridian_info,
     split_authority, sub_crs_infos, validate_min_confidence,
-};
-pub(crate) use local::{
-    LOCAL_SCALE_ERROR_LIMIT, LocalCrsDefinition, LocalProjectionCertificate, estimate_local_crs,
-    estimate_local_crs_at, local_crs_fits_at, local_projection_refinement_budget,
 };
 pub(crate) use operations::{operations_info_with_state, roundtrip_errors};
 pub(crate) use options_impls::c_option_ptrs;

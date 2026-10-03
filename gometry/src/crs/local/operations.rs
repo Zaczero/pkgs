@@ -1,0 +1,558 @@
+use std::ops::ControlFlow;
+
+use super::frame::LOCAL_SCALE_ERROR_LIMIT;
+use super::input::{LocalInputPurpose, PreparedLocalInput};
+use crate::error::Result;
+use crate::geometry::{
+    GeodesicMetric as _, Point, PointKey, Shape, ShapeCountQuery, VertexProvenance,
+    emit_from_original, geometric_xy_cmp, shape_from_selected_hull, smallest_enclosing_circle,
+};
+
+/// CRS-aware constructive operation with one generated-work budget threaded
+/// through projection-input refinement and the projected kernel.
+pub(crate) fn metric_constructive_shape_budgeted(
+    model: &crate::crs::MetricModel,
+    crs: Option<&str>,
+    shape: &Shape,
+    distance: f64,
+    budget: &mut crate::geometry::ExpansionBudget,
+    mut kernel: impl FnMut(&Shape, f64, &mut crate::geometry::ExpansionBudget) -> Result<Shape>,
+) -> Result<Shape> {
+    match model {
+        crate::crs::MetricModel::Planar { to_metre } => {
+            kernel(shape, distance / to_metre.get(), budget)
+        },
+        crate::crs::MetricModel::Geodesic { state, .. } => geodesic_local_shape(
+            shape,
+            crs,
+            true,
+            Some(distance),
+            state,
+            budget,
+            |shape, budget| kernel(shape, distance, budget),
+        ),
+    }
+}
+
+/// CRS-aware constructive whose precision is optional. An omitted tolerance
+/// stays omitted until the kernel sees the working geometry, allowing its
+/// scale-aware default to be computed in the actual execution frame.
+pub(crate) fn metric_optional_constructive_shape(
+    model: &crate::crs::MetricModel,
+    crs: Option<&str>,
+    shape: &Shape,
+    tolerance: Option<f64>,
+    kernel: impl Fn(&Shape, Option<f64>) -> Result<Shape>,
+) -> Result<Shape> {
+    match model {
+        crate::crs::MetricModel::Planar { to_metre } => {
+            kernel(shape, tolerance.map(|value| value / to_metre.get()))
+        },
+        crate::crs::MetricModel::Geodesic { state, .. } => {
+            let mut budget = crate::geometry::ExpansionBudget::new("polylabel", "input_refinement");
+            geodesic_local_shape(shape, crs, true, None, state, &mut budget, |shape, _| {
+                kernel(shape, tolerance)
+            })
+        },
+    }
+}
+
+/// CRS-aware maximum-inscribed-circle construction. Geographic results run
+/// the planar kernel in a local projection and retain that operation's
+/// approximation contract rather than asserting source-frame containment.
+pub(crate) fn metric_maximum_inscribed_circle(
+    model: &crate::crs::MetricModel,
+    crs: Option<&str>,
+    shape: &Shape,
+    tolerance: Option<f64>,
+) -> Result<Shape> {
+    match model {
+        crate::crs::MetricModel::Planar { to_metre } => {
+            shape.maximum_inscribed_circle(tolerance.map(|value| value / to_metre.get()))
+        },
+        crate::crs::MetricModel::Geodesic { state, .. } => {
+            let mut budget = crate::geometry::ExpansionBudget::new(
+                "maximum_inscribed_circle",
+                "quadrant_segments",
+            );
+            geodesic_local_shape(
+                shape,
+                crs,
+                true,
+                None,
+                state,
+                &mut budget,
+                |shape, budget| shape.maximum_inscribed_circle_in_frame(tolerance, false, budget),
+            )
+        },
+    }
+}
+
+/// CRS-aware concave hull. Projected/CRS-free inputs run the native kernel in
+/// the receiver coordinate frame (scaling `length_threshold` for projected SI
+/// metrics). Geographic inputs use a local projection only to decide which
+/// input vertices survive, then emit the original vertices bit-for-bit.
+pub(crate) fn metric_concave_hull(
+    model: &crate::crs::MetricModel,
+    crs: Option<&str>,
+    shape: &Shape,
+    concavity: f64,
+    length_threshold: f64,
+) -> Result<Shape> {
+    match model {
+        crate::crs::MetricModel::Planar { to_metre } => {
+            shape.concave_hull(concavity, length_threshold / to_metre.get())
+        },
+        crate::crs::MetricModel::Geodesic { state, .. } => {
+            let mut budget =
+                crate::geometry::ExpansionBudget::new("concave_hull", "input_refinement");
+            geodesic_by_identity(
+                shape,
+                crs,
+                state,
+                &mut budget,
+                LocalInputPurpose::OriginalSites,
+                |projected, _, _| {
+                    let capacity = ShapeCountQuery::default().coordinates(projected).ok();
+                    let mut seen = crate::collections::try_hash_set()?;
+                    let mut pairs = Vec::new();
+                    if let Some(capacity) = capacity {
+                        let _seen_reservation = seen.try_reserve(capacity);
+                        let _pairs_reservation = pairs.try_reserve(capacity);
+                    }
+                    let mut point_index = 0_usize;
+                    projected.for_each_point(|point| {
+                        // Projected vertices are 1:1 with the source; the original
+                        // index is the enumeration order (no identity-index slice).
+                        let original_index = point_index;
+                        point_index = point_index.wrapping_add(1);
+                        if seen.insert(PointKey::new(point)) {
+                            // A count-derived reservation, when representable,
+                            // covers every source vertex.
+                            pairs.push((point, original_index));
+                        }
+                    });
+                    if pairs.is_empty() {
+                        return Ok(Vec::new());
+                    }
+                    pairs.sort_unstable_by(|(left, _), (right, _)| geometric_xy_cmp(*left, *right));
+                    let mut projected_points = Vec::with_capacity(pairs.len());
+                    for &(point, _) in &pairs {
+                        projected_points.push(point.to_xy());
+                    }
+                    let mut provenance = Vec::with_capacity(projected_points.len());
+                    for index in crate::geometry::native_concave_hull(
+                        &projected_points,
+                        concavity,
+                        length_threshold,
+                    )? {
+                        let (_, original_index) = pairs
+                            .get(index)
+                            .expect("hull vertex index is in the projected input");
+                        provenance.push(VertexProvenance::Input(*original_index));
+                    }
+                    Ok(provenance)
+                },
+                |points| shape_from_selected_hull(&points, Shape::empty_polygon),
+            )
+        },
+    }
+}
+
+pub(crate) fn geodesic_by_identity(
+    shape: &Shape,
+    crs: Option<&str>,
+    state: &crate::crs::RuntimeState,
+    budget: &mut crate::geometry::ExpansionBudget,
+    purpose: LocalInputPurpose,
+    plan_fn: impl FnOnce(
+        &Shape,
+        &Shape,
+        &[crate::geometry::RefinedChainProvenance],
+    ) -> Result<Vec<VertexProvenance>>,
+    rebuild: impl FnOnce(Vec<Point>) -> Result<Shape>,
+) -> Result<Shape> {
+    if shape.is_empty() {
+        return rebuild(Vec::new());
+    }
+    let source = crs.unwrap_or("EPSG:4326");
+    let prepared =
+        PreparedLocalInput::prepare(shape, &[shape], source, None, purpose, state, budget)?
+            .expect("nonempty identity input prepares a local frame");
+    let original = prepared.source_original(shape).points_vec()?;
+    let projected_original = prepared.projected_original();
+    if ShapeCountQuery::default().coordinates(projected_original)? != original.len() {
+        return Err(crate::crs::CrsError::invalid(
+            "internal identity projection changed point count",
+        ));
+    }
+    let plan = plan_fn(
+        projected_original,
+        prepared.projected_working(),
+        prepared.refined_chains(),
+    )?;
+    if plan
+        .iter()
+        .any(|vertex| matches!(vertex, VertexProvenance::OnSegment { .. }))
+    {
+        let support_points = prepared.source_working(shape).points_vec()?;
+        let total = original
+            .len()
+            .checked_add(support_points.len())
+            .ok_or(crate::error::ResourceError::SizeOverflow)?;
+        let mut source_points = Vec::with_capacity(crate::geometry::admit_shape_vector_capacity::<
+            Point,
+        >(total)?);
+        source_points.extend(original);
+        source_points.extend(support_points);
+        rebuild(emit_from_original(&source_points, &plan)?)
+    } else {
+        rebuild(emit_from_original(&original, &plan)?)
+    }
+}
+
+/// CRS-aware minimum enclosing circle. Planar/projected frames build the circle
+/// in the receiver coordinates after scaling the requested metric; geographic
+/// frames use the same local-projection approximation as metric constructive
+/// geometry, so the returned shape is tagged in the source CRS.
+pub(crate) fn metric_minimum_bounding_circle(
+    model: &crate::crs::MetricModel,
+    crs: Option<&str>,
+    shape: &Shape,
+) -> Result<Shape> {
+    match model {
+        crate::crs::MetricModel::Planar { .. } => shape.minimum_bounding_circle(),
+        // The bounding circle is an approximate bounding primitive, not a
+        // distance-accurate metric op, so it uses the local projection WITHOUT
+        // the scale-error fit check (`checked = false`) and stays usable at
+        // city-to-continental extent — unlike buffer/offset above.
+        crate::crs::MetricModel::Geodesic { state, .. } => {
+            let mut budget =
+                crate::geometry::ExpansionBudget::new("minimum_bounding_circle", "realization");
+            geodesic_local_shape(
+                shape,
+                crs,
+                false,
+                None,
+                state,
+                &mut budget,
+                |shape, budget| shape.minimum_bounding_circle_budgeted(budget),
+            )
+        },
+    }
+}
+
+/// CRS-aware minimum enclosing radius. Planar/projected results follow the
+/// metric model (native linear units by default; SI meters under
+/// ``unit='meters'``). Geographic point sets retain the exact ellipsoidal
+/// midpoint radius for two distinct sites and the ellipsoidal support-distance
+/// calculation for larger sets. Line and ring inputs use the shared prepared
+/// local projection, including certified chart-edge refinement, so their
+/// radius matches the corresponding local-projection circle construction.
+pub(crate) fn metric_minimum_bounding_radius(
+    model: &crate::crs::MetricModel,
+    shape: &Shape,
+) -> Result<f64> {
+    match model {
+        crate::crs::MetricModel::Planar { to_metre } => {
+            let points = shape.try_unique_xy_points()?;
+            if points.is_empty() {
+                return Ok(f64::NAN);
+            }
+            let circle = smallest_enclosing_circle(&points)?;
+            circle
+                .certified_disk(&points)?
+                .radius_in_scale(to_metre.get())
+        },
+        crate::crs::MetricModel::Geodesic {
+            crs: geodesic_crs,
+            state,
+            ..
+        } => geodesic_minimum_bounding_radius(shape, geodesic_crs, state),
+    }
+}
+
+fn geodesic_minimum_bounding_radius(
+    shape: &Shape,
+    crs: &str,
+    state: &crate::crs::RuntimeState,
+) -> Result<f64> {
+    let has_edges = matches!(
+        shape.for_each_first_segment_chain(crate::geometry::RunIdentity::XY, |chain| {
+            if chain.len() >= 2 {
+                ControlFlow::Break(())
+            } else {
+                ControlFlow::Continue(())
+            }
+        }),
+        ControlFlow::Break(())
+    );
+    if has_edges {
+        let mut budget =
+            crate::geometry::ExpansionBudget::new("minimum_bounding_radius", "input_refinement");
+        let prepared = PreparedLocalInput::prepare(
+            shape,
+            &[shape],
+            crs,
+            None,
+            LocalInputPurpose::BoundarySupport,
+            state,
+            &mut budget,
+        )?
+        .expect("edge-bearing input prepares a local frame");
+        let points = prepared.projected_working().try_unique_xy_points()?;
+        if points.is_empty() {
+            return Ok(f64::NAN);
+        }
+        let circle = smallest_enclosing_circle(&points)?;
+        return circle.certified_disk(&points)?.radius();
+    }
+
+    let points = shape.try_unique_xy_points()?;
+    match points.as_slice() {
+        [] => Ok(f64::NAN),
+        [_] => Ok(0.0),
+        [left, right] => crate::crs::with_ellipsoid_metric_at(crs, &[shape], state, |metric| {
+            Ok(metric.segment_length(*left, *right) / 2.0)
+        }),
+        _ => {
+            let circle = smallest_enclosing_circle(&points)?;
+            let center = circle.certified_disk(&points)?.center()?;
+            crate::crs::with_ellipsoid_metric_at(crs, &[shape], state, |metric| {
+                let mut radius: f64 = 0.0;
+                for point in points {
+                    radius = radius.max(metric.segment_length(center, point));
+                }
+                Ok(radius)
+            })
+        },
+    }
+}
+
+/// Run a meter-based planar operation in the shape's best local projection,
+/// returning the result in the source CRS after a linear scale-error fit check.
+/// Used by the geodesic constructive paths; pure shape work, so array lanes
+/// run it detached.
+///
+/// The operation is a **local projection approximation** of geodesic
+/// construction: one extent-validated local frame is chosen, the shape is
+/// transformed there, the planar kernel runs at meter scale, and the result is
+/// transformed back. The frame must hold the input and the result together. Distortion accumulates when the geometry spans many UTM
+/// zones, sits far from the anchor, or uses a large distance relative to the
+/// feature size. The returned geometry is tagged with the input CRS; it is a
+/// CRS-aware local projection result, not an exact ellipsoidal buffer.
+fn geodesic_local_shape(
+    shape: &Shape,
+    crs: Option<&str>,
+    checked: bool,
+    operation_distance_m: Option<f64>,
+    state: &crate::crs::RuntimeState,
+    budget: &mut crate::geometry::ExpansionBudget,
+    mut op: impl FnMut(&Shape, &mut crate::geometry::ExpansionBudget) -> Result<Shape>,
+) -> Result<Shape> {
+    if shape.is_empty() {
+        return op(shape, budget);
+    }
+    let source = crs.unwrap_or("EPSG:4326");
+    let starting_budget = budget.clone();
+    *budget = starting_budget.clone();
+    let initial = PreparedLocalInput::prepare(
+        shape,
+        &[shape],
+        source,
+        operation_distance_m,
+        LocalInputPurpose::BoundarySupport,
+        state,
+        budget,
+    )?
+    .expect("nonempty geometry prepares a local frame");
+    let initial_definition = initial.local_crs().definition.clone();
+    let restored = run_local_projected_operation(&initial, source, state, budget, &mut op)?;
+    let initial_fits = !checked || initial.restored_result_fits(&restored, source, state)?;
+    drop(initial);
+    // Distance-driven ops (buffer/offset/densify) demand metric accuracy, so
+    // they reject a result that exceeds the local projection's linear
+    // scale-error budget. The minimum bounding *circle* is an intentionally
+    // approximate bounding primitive (like bounds/centroid) that must remain
+    // usable at city-to-continental scale, so it skips the fit check.
+    if initial_fits {
+        return Ok(restored);
+    }
+    // The frame was fitted to the input, and an operation's reach (a buffer
+    // distance) carries the result past it: a point beside a UTM zone edge
+    // fits that zone while its buffer does not. Fit one frame to the input
+    // and the result together, since the operation measures between them,
+    // and run once more there.
+    let exceeded = || {
+        crate::crs::CrsError::invalid(format!(
+            "constructive result exceeds the {:.1}% linear scale-error limit in one local projection; use a smaller distance, split the geometry, or choose a projected CRS explicitly",
+            LOCAL_SCALE_ERROR_LIMIT * 100.0
+        ))
+    };
+    *budget = starting_budget;
+    let fitting_shapes = [shape, &restored];
+    let refit_local = PreparedLocalInput::select_local_frame(&fitting_shapes, source, state)
+        .map_err(|error| crate::crs::preserve_resource_error(error, |_| exceeded()))?;
+    let refit = PreparedLocalInput::prepare_selected(
+        shape,
+        refit_local,
+        source,
+        operation_distance_m,
+        LocalInputPurpose::BoundarySupport,
+        state,
+        budget,
+    )?;
+    let refit = refit.expect("nonempty geometry prepares a refitted local frame");
+    if refit.local_crs().definition != initial_definition {
+        let refitted_result =
+            run_local_projected_operation(&refit, source, state, budget, &mut op)?;
+        if refit.restored_result_fits(&refitted_result, source, state)? {
+            return Ok(refitted_result);
+        }
+    }
+    Err(exceeded())
+}
+
+fn run_local_projected_operation(
+    prepared: &PreparedLocalInput,
+    source: &str,
+    state: &crate::crs::RuntimeState,
+    budget: &mut crate::geometry::ExpansionBudget,
+    op: &mut impl FnMut(&Shape, &mut crate::geometry::ExpansionBudget) -> Result<Shape>,
+) -> Result<Shape> {
+    let local = prepared.local_crs();
+    let result = op(prepared.projected_working(), budget)?;
+    crate::crs::transform_at(&result, &local.definition, source, state)
+        .map_err(|error| local.annotate_error(error))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::crs::runtime_state_snapshot;
+    use crate::geometry::{BufferCapStyle, BufferJoinStyle, CoordSeq, LineSeq, XY};
+
+    #[test]
+    fn minimum_bounding_radius_keeps_point_sets_geodesic_and_lines_local() {
+        let coordinates = CoordSeq::try_from_xy(&[XY::new(0.0, 0.0), XY::new(0.0, 1.0)]).unwrap();
+        let point_set = Shape::MultiPoint(
+            crate::geometry::MultiPoint::from_coordseq(coordinates.clone()).unwrap(),
+        );
+        let line = Shape::LineString(LineSeq::try_new(coordinates).unwrap());
+        let state = runtime_state_snapshot().unwrap();
+
+        let exact_point_radius =
+            super::geodesic_minimum_bounding_radius(&point_set, "EPSG:4326", &state).unwrap();
+        let edge_radius =
+            super::geodesic_minimum_bounding_radius(&line, "EPSG:4326", &state).unwrap();
+        let local = PreparedLocalInput::select_local_frame(&[&line], "EPSG:4326", &state).unwrap();
+        let projected =
+            crate::crs::transform_at(&line, "EPSG:4326", &local.definition, &state).unwrap();
+        let expected_edge_radius = projected.minimum_bounding_radius().unwrap();
+
+        let exact_geodesic_distance =
+            crate::crs::with_ellipsoid_metric_at("EPSG:4326", &[&point_set], &state, |metric| {
+                Ok(metric.segment_length(
+                    crate::geometry::Point::new_raw_xy(0.0, 0.0),
+                    crate::geometry::Point::new_raw_xy(0.0, 1.0),
+                ))
+            })
+            .unwrap();
+        assert_eq!(exact_point_radius, exact_geodesic_distance / 2.0);
+        assert_eq!(edge_radius, expected_edge_radius);
+        assert!((edge_radius - exact_point_radius).abs() > 1.0);
+    }
+
+    #[test]
+    fn projected_buffer_path_charges_refinement_before_kernel_work() {
+        let half_width = 6.926_294_673_429_263 / 60.0;
+        let west = 3.0 - half_width;
+        let east = 3.0 + half_width;
+        let source = Shape::LineString(
+            LineSeq::try_new(
+                CoordSeq::try_from_xy(&[XY::new(west, 39.0), XY::new(east, 39.0)]).unwrap(),
+            )
+            .unwrap(),
+        );
+        let state = runtime_state_snapshot().unwrap();
+        let local =
+            PreparedLocalInput::select_local_frame(&[&source], "EPSG:4326", &state).unwrap();
+        assert_eq!(local.definition, "EPSG:32631");
+        let distance = 100.0;
+        let quadrant_segments = std::num::NonZeroU32::new(8).unwrap();
+        let miter_limit = crate::Positive::try_new("miter_limit", 5.0).unwrap();
+        let mut actual_budget =
+            crate::geometry::ExpansionBudget::new("buffer", "quadrant_segments");
+        let actual = super::geodesic_local_shape(
+            &source,
+            Some("EPSG:4326"),
+            true,
+            Some(distance),
+            &state,
+            &mut actual_budget,
+            |projected, budget| {
+                projected.buffer_with_style_budgeted(
+                    distance,
+                    BufferCapStyle::Round,
+                    BufferJoinStyle::Round,
+                    quadrant_segments,
+                    miter_limit,
+                    budget,
+                )
+            },
+        )
+        .unwrap();
+        assert!(!actual.is_empty());
+        assert!(actual_budget.used() > 0);
+
+        let mut expected_budget =
+            crate::geometry::ExpansionBudget::new("buffer", "quadrant_segments");
+        let prepared = PreparedLocalInput::prepare(
+            &source,
+            &[&source],
+            "EPSG:4326",
+            Some(distance),
+            LocalInputPurpose::BoundarySupport,
+            &state,
+            &mut expected_budget,
+        )
+        .unwrap()
+        .unwrap();
+        let expected_input_charge = expected_budget.used();
+        assert!(expected_input_charge > 0);
+        let expected = prepared
+            .projected_working()
+            .buffer_with_style_budgeted(
+                distance,
+                BufferCapStyle::Round,
+                BufferJoinStyle::Round,
+                quadrant_segments,
+                miter_limit,
+                &mut expected_budget,
+            )
+            .unwrap();
+        let restored_expected =
+            crate::crs::transform_at(&expected, &local.definition, "EPSG:4326", &state).unwrap();
+        assert_eq!(actual, restored_expected);
+        assert_eq!(actual_budget.used(), expected_budget.used());
+
+        let unrefined_input =
+            crate::crs::transform_at(&source, "EPSG:4326", &local.definition, &state).unwrap();
+        let mut unrefined_budget =
+            crate::geometry::ExpansionBudget::new("buffer", "quadrant_segments");
+        let _unrefined = unrefined_input
+            .buffer_with_style_budgeted(
+                distance,
+                BufferCapStyle::Round,
+                BufferJoinStyle::Round,
+                quadrant_segments,
+                miter_limit,
+                &mut unrefined_budget,
+            )
+            .unwrap();
+        assert!(
+            expected_budget.used() > unrefined_budget.used(),
+            "unrefined buffer did not record the planned input subdivision work",
+        );
+    }
+}

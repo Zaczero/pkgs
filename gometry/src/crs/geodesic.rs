@@ -186,7 +186,8 @@ pub(crate) use envelope::{GeodesicBoxEnvelopeBound, GeodesicChartBox, GeodesicEn
 pub(crate) use lrs::{
     chart_line_interpolate, chart_line_interpolate_coordseq, chart_line_locate,
     chart_line_locate_coordseq, chart_line_substring, chart_line_substring_coordseq,
-    with_geographic_coordseq_collect_rows_at, with_geographic_coordseq_metric_at,
+    metric_interpolate_m, with_geographic_coordseq_collect_rows_at,
+    with_geographic_coordseq_metric_at,
 };
 #[cfg(test)]
 pub(crate) use measure::with_ellipsoid_metric;
