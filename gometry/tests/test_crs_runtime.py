@@ -4,6 +4,7 @@ runtime config, cache info, and the PROJ authority metadata surface.
 
 from __future__ import annotations
 
+import math
 import shutil
 import subprocess
 import sys
@@ -24,6 +25,10 @@ _GRS80_TMERC_PODER = (
 _GRS80_TMERC_EVENDEN = (
     '+proj=tmerc +ellps=GRS80 +lat_0=0 +lon_0=0 +k=1 +x_0=0 +y_0=0 '
     '+algo=evenden_snyder +type=crs'
+)
+_SPHERICAL_TMERC = (
+    '+proj=tmerc +R=6371007 +lat_0=0.05 +lon_0=0 +k=1 '
+    '+x_0=0 +y_0=0 +units=m +type=crs'
 )
 _TMERC_AOI = (-10.0, 40.0, 30.0, 60.0)
 _HOSTILE_INI = '[general]\nnetwork = on\ntmerc_default_algo = evenden_snyder\n'
@@ -310,3 +315,59 @@ def test_crs_runtime_tmerc_ignores_hostile_proj_ini(
         assert _proj_tmerc_xy(_GRS80_TMERC) == poder
     finally:
         assert gm.crs_reset() == original
+
+
+def test_crs_runtime_spherical_tmerc_witness_edge_scales_smoothly() -> None:
+    """A spherical transverse-Mercator CRS keeps the 1 km witness edge smooth."""
+    source = 'EPSG:4047'
+    target = gm.CRS(_SPHERICAL_TMERC)
+    start = (-0.0038941767844891924, -0.002248304014796826)
+    end = (0.0038941767844891924, 0.002248304014796826)
+    delta_lon = end[0] - start[0]
+    delta_lat = end[1] - start[1]
+    center = 0.5001342587859315
+    radius = 6_371_007.0
+
+    gm.crs_clear_cache()
+    for half_width in (1e-5, 1e-9):
+        t0 = center - half_width
+        t1 = center + half_width
+        edge = [
+            (start[0] + t * delta_lon, start[1] + t * delta_lat)
+            for t in (t0, t1)
+        ]
+        middle = (start[0] + center * delta_lon, start[1] + center * delta_lat)
+        transformed = gm.crs_transform(
+            source,
+            target,
+            [point[0] for point in edge],
+            [point[1] for point in edge],
+            area_of_interest=(-0.01, -0.01, 0.01, 0.01),
+        )
+        assert gm.crs_cache_info()['last_transform_engine'] == 'proj'
+
+        source_dlon = math.radians(edge[1][0] - edge[0][0])
+        source_dlat = math.radians(edge[1][1] - edge[0][1])
+        middle_lat = math.radians((edge[0][1] + edge[1][1]) * 0.5)
+        source_length = radius * math.hypot(
+            math.cos(middle_lat) * source_dlon,
+            source_dlat,
+        )
+        local_scales = [
+            target.factors(*point)
+            for point in (edge[0], middle, edge[1])
+        ]
+        local_scale = max(
+            max(
+                float(factors['meridional_scale']),
+                float(factors['parallel_scale']),
+            )
+            for factors in local_scales
+        )
+        image_separation = math.hypot(
+            float(transformed[1][0] - transformed[0][0]),
+            float(transformed[1][1] - transformed[0][1]),
+        )
+
+        assert image_separation >= 0.5 * source_length * local_scale
+        assert image_separation <= 2.0 * source_length * local_scale

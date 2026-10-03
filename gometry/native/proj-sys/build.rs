@@ -764,6 +764,22 @@ fn apply_pinned_semantic_patches(source_dir: &Path) -> Result<(), Box<dyn std::e
         "    if (isAxisOrderReversal(methodEPSGCode)) {\n        formatter->addStep(\"axisswap\");\n        formatter->addParam(\"order\", \"2,1\");",
     )?;
 
+    // Upstream PROJ 9.8 (PR #4674) zeroes northing when cos(phi) rounds to 1;
+    // this patch uses the equivalent atan2 form, which keeps the true northing
+    // in that band and removes the acos conditioning step.
+    replace_pinned_source(
+        source_dir,
+        "src/projections/tmerc.cpp",
+        "    xy.y = cosphi * cos(lp.lam) / sqrt(1. - b * b);\n\n    b = fabs(xy.y);\n    if (cosphi == 1 && (lp.lam < -M_HALFPI || lp.lam > M_HALFPI)) {\n        /* Helps to be able to roundtrip |longitudes| > 90 at lat=0 */\n        /* We could also map to -M_PI ... */\n        xy.y = M_PI;\n    } else if (b >= 1.) {\n        if ((b - 1.) > EPS10) {\n            proj_errno_set(P, PROJ_ERR_COORD_TRANSFM_OUTSIDE_PROJECTION_DOMAIN);\n            return xy;\n        } else\n            xy.y = 0.;\n    } else\n        xy.y = acos(xy.y);",
+        "    xy.y = atan2(fabs(sin(lp.phi)), cosphi * cos(lp.lam));",
+    )?;
+    replace_pinned_source(
+        source_dir,
+        "src/projections/tmerc.cpp",
+        "    h = cos(D);\n    lp.phi = asin(sqrt((1. - h * h) / (1. + g * g)));",
+        "    h = cos(D);\n    lp.phi = atan2(fabs(sin(D)), hypot(g, h));",
+    )?;
+
     replace_pinned_source(
         source_dir,
         "src/proj_json_streaming_writer.cpp",

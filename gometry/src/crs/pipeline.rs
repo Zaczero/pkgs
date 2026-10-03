@@ -405,6 +405,53 @@ fn first_nonfinite_coordinate(
 mod tests {
     use super::*;
 
+    const SPHERICAL_TM_RADIUS: f64 = 6_371_007.0;
+    const SPHERICAL_TM_DEFINITION: &str =
+        "+proj=tmerc +R=6371007 +lon_0=0 +lat_0=0.05 +k=1";
+
+    fn spherical_tm_pipeline(state: &RuntimeState) -> ProjPipeline {
+        ProjPipeline::from_definition_with_state(SPHERICAL_TM_DEFINITION, state)
+            .expect("spherical transverse Mercator pipeline")
+    }
+
+    fn transform_xy(
+        pipeline: &ProjPipeline,
+        x: &mut [f64],
+        y: &mut [f64],
+        direction: ProjDirection,
+    ) {
+        pipeline
+            .transform_lanes(
+                x,
+                y,
+                None,
+                None,
+                direction,
+                &TransformExecution::default(),
+            )
+            .expect("spherical transverse Mercator transform");
+    }
+
+    fn spherical_tm_scale(pipeline: &ProjPipeline, longitude: f64, latitude: f64) -> f64 {
+        // SAFETY: The live projection is owned by `pipeline` on this test
+        // thread; the coordinate is passed by value and PROJ retains no pointer.
+        let factors = unsafe {
+            proj_sys::proj_factors(
+                pipeline.transform.as_ptr(),
+                proj_sys::proj_coord(longitude, latitude, 0.0, 0.0),
+            )
+        };
+        factors.meridional_scale.max(factors.parallel_scale)
+    }
+
+    fn spherical_witness_position(parameter: f64) -> (f64, f64) {
+        let longitude = -0.003_894_176_784_489_192_4
+            + parameter * (2.0 * 0.003_894_176_784_489_192_4);
+        let latitude =
+            -0.002_248_304_014_796_826 + parameter * (2.0 * 0.002_248_304_014_796_826);
+        (longitude.to_radians(), latitude.to_radians())
+    }
+
     #[test]
     fn operation_info_at_rejects_nonfinite_optional_output() {
         let _guard = crate::crs::RUNTIME_STATE_TEST_LOCK.lock().unwrap();
@@ -527,5 +574,139 @@ mod tests {
         assert_eq!(x, [1.0, 2.0]);
         assert_eq!(y, [2.0, 3.0]);
         assert_eq!(singleton_t, [2020.0]);
+    }
+
+    #[test]
+    fn spherical_tmerc_forward_scales_through_the_equatorial_acos_band() {
+        let _guard = crate::crs::RUNTIME_STATE_TEST_LOCK.lock().unwrap();
+        let state = crate::crs::runtime_state_snapshot().unwrap();
+        let pipeline = spherical_tm_pipeline(&state);
+        let center = 0.500_134_258_785_931_5;
+
+        for half_width in [1.0e-5, 1.0e-9] {
+            let start = spherical_witness_position(center - half_width);
+            let end = spherical_witness_position(center + half_width);
+            let middle = spherical_witness_position(center);
+            let delta_longitude = end.0 - start.0;
+            let delta_latitude = end.1 - start.1;
+            let middle_latitude = f64::midpoint(start.1, end.1);
+            let source_length = SPHERICAL_TM_RADIUS
+                * (delta_longitude * middle_latitude.cos()).hypot(delta_latitude);
+            let local_scale = [start, middle, end]
+                .into_iter()
+                .map(|(longitude, latitude)| {
+                    spherical_tm_scale(&pipeline, longitude, latitude)
+                })
+                .fold(0.0_f64, f64::max);
+
+            let mut x = [start.0, end.0];
+            let mut y = [start.1, end.1];
+            transform_xy(&pipeline, &mut x, &mut y, ProjDirection::Forward);
+            let [x0, x1] = x;
+            let [y0, y1] = y;
+            let image_separation = (x1 - x0).hypot(y1 - y0);
+
+            assert!(
+                image_separation <= 2.0 * source_length * local_scale,
+                "half-width={half_width:e}, source={source_length:e} m, \
+                 image={image_separation:e} m, local scale={local_scale:e}"
+            );
+        }
+    }
+
+    #[test]
+    fn spherical_tmerc_zero_latitude_backside_is_positive_pi() {
+        let _guard = crate::crs::RUNTIME_STATE_TEST_LOCK.lock().unwrap();
+        let state = crate::crs::runtime_state_snapshot().unwrap();
+        let pipeline = spherical_tm_pipeline(&state);
+        let mut x = [2.0, -2.0, 2.0, -2.0];
+        let mut y = [0.0, 0.0, -0.0, -0.0];
+        transform_xy(&pipeline, &mut x, &mut y, ProjDirection::Forward);
+
+        let expected = SPHERICAL_TM_RADIUS
+            * (std::f64::consts::PI - 0.05_f64.to_radians());
+        assert_eq!(y, [expected; 4]);
+    }
+
+    #[test]
+    fn spherical_tmerc_inverse_scales_near_the_pole_and_roundtrips() {
+        let _guard = crate::crs::RUNTIME_STATE_TEST_LOCK.lock().unwrap();
+        let state = crate::crs::runtime_state_snapshot().unwrap();
+        let pipeline = spherical_tm_pipeline(&state);
+        let latitude_of_origin = 0.05_f64.to_radians();
+
+        for interval_length in [0.02, 2.0e-6] {
+            let center_northing = SPHERICAL_TM_RADIUS
+                * (std::f64::consts::FRAC_PI_2 - 5.0e-9 - latitude_of_origin);
+            let expected_y = [
+                center_northing - interval_length * 0.5,
+                center_northing + interval_length * 0.5,
+            ];
+            let mut x = [0.0, 0.0];
+            let mut y = expected_y;
+            transform_xy(&pipeline, &mut x, &mut y, ProjDirection::Inverse);
+
+            let [longitude0, longitude1] = x;
+            let [latitude0, latitude1] = y;
+            let mean_latitude = f64::midpoint(latitude0, latitude1);
+            let image_separation = SPHERICAL_TM_RADIUS
+                * ((longitude1 - longitude0) * mean_latitude.cos())
+                    .hypot(latitude1 - latitude0);
+            assert!(
+                image_separation >= interval_length * 0.5,
+                "interval={interval_length:e} m, inverse image={image_separation:e} m"
+            );
+
+            transform_xy(&pipeline, &mut x, &mut y, ProjDirection::Forward);
+            let [x0, x1] = x;
+            assert!(
+                x0.abs() <= 1.0e-6 && x1.abs() <= 1.0e-6,
+                "inverse/forward easting errors: {x0:e}, {x1:e}"
+            );
+            for (actual, expected) in y.into_iter().zip(expected_y) {
+                assert!(
+                    (actual - expected).abs() <= 1.0e-6,
+                    "inverse/forward northing error: actual={actual:e}, expected={expected:e}"
+                );
+            }
+        }
+
+        let latitudes = [
+            -std::f64::consts::FRAC_PI_2,
+            -std::f64::consts::FRAC_PI_2 + 1.0e-8,
+            -1.05e-8,
+            -0.0,
+            0.0,
+            1.05e-8,
+            std::f64::consts::FRAC_PI_2 - 1.0e-8,
+            std::f64::consts::FRAC_PI_2,
+        ];
+        let longitudes = [-2.0, -0.2, 0.0, 0.2, 2.0];
+        let mut x = Vec::with_capacity(latitudes.len() * longitudes.len());
+        let mut y = Vec::with_capacity(latitudes.len() * longitudes.len());
+        for latitude in latitudes {
+            for longitude in longitudes {
+                x.push(longitude);
+                y.push(latitude);
+            }
+        }
+        transform_xy(&pipeline, &mut x, &mut y, ProjDirection::Forward);
+        let expected_x = x.clone();
+        let expected_y = y.clone();
+        transform_xy(&pipeline, &mut x, &mut y, ProjDirection::Inverse);
+        transform_xy(&pipeline, &mut x, &mut y, ProjDirection::Forward);
+
+        for ((actual_x, expected_x), (actual_y, expected_y)) in x
+            .into_iter()
+            .zip(expected_x)
+            .zip(y.into_iter().zip(expected_y))
+        {
+            assert!(
+                (actual_x - expected_x).abs() <= 1.0e-6
+                    && (actual_y - expected_y).abs() <= 1.0e-6,
+                "forward/inverse/forward error: ({actual_x:e}, {actual_y:e}) \
+                 vs ({expected_x:e}, {expected_y:e})"
+            );
+        }
     }
 }
