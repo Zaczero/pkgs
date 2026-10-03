@@ -256,6 +256,7 @@ enum InsertionOrder {
 thread_local! {
     static INSERTION_ORDER: std::cell::Cell<InsertionOrder> =
         const { std::cell::Cell::new(InsertionOrder::Brio) };
+    static PERIMETER_STEPS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 fn order_interior(interior: &mut [(u32, usize)]) {
@@ -314,7 +315,7 @@ impl Mesh {
         let mut last = FaceId::from_index(0);
         for (_, site) in interior {
             let located = mesh.locate(&xy, last, xy(site));
-            last = mesh.try_insert_with(&xy, site, located, None)?.last;
+            last = mesh.try_insert_with(&xy, site, located, None, |_, _| ())?.0;
         }
         Ok(Some(mesh))
     }
@@ -391,11 +392,6 @@ pub(super) enum Located {
     OnVertex,
     /// Outside the current convex hull, where the insertion must extend it.
     Outside(HalfedgeId),
-}
-
-pub(super) struct Insertion {
-    pub(super) last: FaceId,
-    pub(super) changed: Vec<FaceId>,
 }
 
 pub(super) struct OutsideInsertion {
@@ -1071,22 +1067,24 @@ impl Mesh {
     /// Insert `site` at `located`, returning a triangle incident to it for the
     /// next walk to start from. A cavity never crosses a slot `skip` marks:
     /// that is how a constraint, once in, stays in.
-    pub(super) fn try_insert_with(
+    #[expect(
+        clippy::panic_in_result_fn,
+        reason = "a broken admitted cavity is a topology invariant failure, not recoverable input"
+    )]
+    pub(super) fn try_insert_with<R>(
         &mut self,
         xy: &impl Fn(usize) -> XY,
         site: usize,
         located: Located,
         mut skip: Option<&mut Vec<bool>>,
-    ) -> Result<Insertion> {
+        finish_changes: impl FnOnce(Vec<FaceId>, &[FaceId]) -> R,
+    ) -> Result<(FaceId, R)> {
         // A site on a hull edge splits that edge: the cavity boundary is then
         // an open chain from the edge's end to its start, the site joins the
         // hull between them, and the two chain ends become hull edges.
         let (split_hull, seeds) = match located {
             Located::OnVertex => {
-                return Ok(Insertion {
-                    last: self.any_alive(),
-                    changed: Vec::new(),
-                });
+                return Ok((self.any_alive(), finish_changes(Vec::new(), &[])));
             },
             Located::Inside(t) => (None, vec![t]),
             Located::Outside(_) => {
@@ -1141,64 +1139,63 @@ impl Mesh {
                 }
             }
         }
-        // The cavity boundary: halfedges of cavity triangles whose twin is
-        // outside the cavity (or the hull). Each becomes one new triangle
-        // with the site as its third vertex, in the boundary's own order.
-        let mut boundary: Vec<(usize, usize, usize, bool)> = Vec::new();
-        let boundary_capacity = cavity.len().wrapping_mul(3);
-        boundary.reserve(boundary_capacity);
-        for &face in &cavity {
-            for side in FaceSide::ALL {
-                let edge = HalfedgeId::in_face(face, side);
-                let twin = self.twin(edge);
-                let ends = self.edge_vertices(edge);
-                if split_hull == Some(ends) {
-                    continue; // the split edge is not a boundary: the site lies on it
-                }
-                if twin == EMPTY || self.stamp(HalfedgeId::from_index(twin).face()) != epoch {
-                    let constrained = skip
-                        .as_deref()
-                        .is_some_and(|skip| Self::side_value(skip, edge));
-                    boundary.push((ends.0, ends.1, twin, constrained));
-                }
-            }
-        }
-        // Chain the boundary edges: a -> b, then the edge starting at b, and
-        // so on. A closed cycle around an interior site; for a hull split, an
-        // open chain from the split edge's end around to its start.
-        let start = split_hull.map_or_else(
-            || boundary.first().expect("a cavity has a boundary").0,
-            |(_, b)| b,
-        );
-        let mut ordered = Vec::with_capacity(boundary.len());
-        let mut at = start;
-        if boundary.len() <= 16 {
-            for _ in 0..boundary.len() {
-                let (index, &(a, b, twin, constrained)) = boundary
+        let excluded = match located {
+            Located::OnEdge(edge) if split_hull.is_some() => Some(edge),
+            Located::Inside(_) | Located::Outside(_) | Located::OnVertex | Located::OnEdge(_) => {
+                None
+            },
+        };
+        let first = excluded.map_or_else(
+            || {
+                cavity
                     .iter()
-                    .enumerate()
-                    .find(|(_, entry)| entry.0 == at)
-                    .expect("a cavity boundary is one chain");
+                    .flat_map(|&face| FaceSide::ALL.map(|side| HalfedgeId::in_face(face, side)))
+                    .find(|&edge| {
+                        let twin = self.twin(edge);
+                        twin == EMPTY || self.stamp(HalfedgeId::from_index(twin).face()) != epoch
+                    })
+                    .expect("a cavity has a boundary")
+            },
+            HalfedgeId::next,
+        );
+        let end = excluded.unwrap_or(first);
+        let budget = cavity.len().wrapping_mul(3);
+        let mut ordered = Vec::with_capacity(budget);
+        let mut edge = first;
+        #[cfg(test)]
+        let mut visited = crate::collections::try_hash_set()?;
+        // Twin crossing and face-next permute the admitted cavity halfedges.
+        // Stop at the excluded hull edge, or close the interior perimeter.
+        for _ in 0..budget {
+            #[cfg(test)]
+            assert!(
+                visited.insert(edge.index()),
+                "fan revisited a directed edge"
+            );
+            let twin = self.twin(edge);
+            if twin != EMPTY && self.stamp(HalfedgeId::from_index(twin).face()) == epoch {
+                edge = HalfedgeId::from_index(twin).next();
+            } else {
+                let (a, b) = self.edge_vertices(edge);
+                let constrained = skip
+                    .as_deref()
+                    .is_some_and(|skip| Self::side_value(skip, edge));
                 ordered.push((a, b, twin, constrained));
-                boundary.swap_remove(index);
-                at = b;
+                edge = edge.next();
             }
-        } else {
-            boundary.sort_unstable_by_key(|&(a, ..)| a);
-            for _ in 0..boundary.len() {
-                let index = boundary
-                    .binary_search_by_key(&at, |&(a, ..)| a)
-                    .expect("a cavity boundary is one chain");
-                let &(a, b, twin, constrained) = boundary
-                    .get(index)
-                    .expect("the boundary lookup returns its own index");
-                ordered.push((a, b, twin, constrained));
-                at = b;
+            if edge == end {
+                break;
             }
         }
-        debug_assert!(
-            split_hull.is_some_and(|(a, _)| a == at) || at == start,
-            "the cavity boundary closed"
+        assert_eq!(edge, end, "a cavity perimeter ends within its halfedges");
+        #[cfg(test)]
+        PERIMETER_STEPS.with(|steps| steps.set(visited.len()));
+        #[cfg(test)]
+        self.check_perimeter_order(
+            &cavity,
+            split_hull,
+            skip.as_deref().map(Vec::as_slice),
+            &ordered,
         );
         let free_after_cavity = self.free.len().wrapping_add(cavity.len());
         let new_slots = ordered.len().saturating_sub(free_after_cavity);
@@ -1224,8 +1221,7 @@ impl Mesh {
         if let Some(skip) = skip.as_deref_mut() {
             skip.resize(self.edge_count(), false);
         }
-        let mut changed = cavity;
-        changed.extend(slots.iter().copied());
+        let changed = finish_changes(cavity, &slots);
         let first = *slots.first().expect("a cavity has a boundary");
         let mut slots = slots.into_iter().peekable();
         let mut last = first;
@@ -1266,7 +1262,7 @@ impl Mesh {
         if let Some((a, _)) = split_hull {
             self.hull.split(a, site);
         }
-        Ok(Insertion { last, changed })
+        Ok((last, changed))
     }
 
     pub(super) fn insert_constrained(
@@ -1275,8 +1271,72 @@ impl Mesh {
         site: usize,
         located: Located,
         skip: &mut Vec<bool>,
-    ) -> Result<Insertion> {
-        self.try_insert_with(xy, site, located, Some(skip))
+    ) -> Result<Vec<FaceId>> {
+        self.try_insert_with(xy, site, located, Some(skip), |mut cavity, slots| {
+            cavity.extend_from_slice(slots);
+            cavity
+        })
+        .map(|(_, changed)| changed)
+    }
+
+    #[cfg(test)]
+    fn check_perimeter_order(
+        &self,
+        cavity: &[FaceId],
+        split_hull: Option<(usize, usize)>,
+        skip: Option<&[bool]>,
+        actual: &[(usize, usize, usize, bool)],
+    ) {
+        let mut boundary = Vec::new();
+        for &face in cavity {
+            for side in FaceSide::ALL {
+                let edge = HalfedgeId::in_face(face, side);
+                let twin = self.twin(edge);
+                let ends = self.edge_vertices(edge);
+                if split_hull == Some(ends) {
+                    continue;
+                }
+                if twin == EMPTY || self.stamp(HalfedgeId::from_index(twin).face()) != self.epoch {
+                    boundary.push((
+                        ends.0,
+                        ends.1,
+                        twin,
+                        skip.is_some_and(|skip| Self::side_value(skip, edge)),
+                    ));
+                }
+            }
+        }
+        let start = split_hull.map_or_else(
+            || boundary.first().expect("a cavity has a boundary").0,
+            |(_, b)| b,
+        );
+        let mut expected = Vec::with_capacity(boundary.len());
+        let mut at = start;
+        if boundary.len() <= 16 {
+            for _ in 0..boundary.len() {
+                let (index, &(a, b, twin, constrained)) = boundary
+                    .iter()
+                    .enumerate()
+                    .find(|(_, entry)| entry.0 == at)
+                    .expect("a cavity boundary is one chain");
+                expected.push((a, b, twin, constrained));
+                boundary.swap_remove(index);
+                at = b;
+            }
+        } else {
+            boundary.sort_unstable_by_key(|&(a, ..)| a);
+            for _ in 0..boundary.len() {
+                let index = boundary
+                    .binary_search_by_key(&at, |&(a, ..)| a)
+                    .expect("a cavity boundary is one chain");
+                let &(a, b, twin, constrained) = boundary
+                    .get(index)
+                    .expect("the boundary lookup returns its own index");
+                expected.push((a, b, twin, constrained));
+                at = b;
+            }
+        }
+        assert_eq!(actual, expected, "fan changed the ordered boundary tuples");
     }
 
     pub(super) fn insert_outside(
@@ -2175,6 +2235,67 @@ corpus.append(([gm.Polygon(rings[0])], {'method': 'constrained', 'max_area': 111
     }
 
     #[test]
+    fn late_center_insertion_walks_large_cavities_in_boundary_order() {
+        for n in [32, 128, 512] {
+            let mut pts: Vec<_> = (0..n)
+                .map(|i| {
+                    let angle = std::f64::consts::TAU * i as f64 / n as f64;
+                    Point::new_raw_xy(angle.cos(), angle.sin())
+                })
+                .collect();
+            pts.push(Point::new_raw_xy(0.0, 0.0));
+            let xy = |site: usize| pts[site].xy();
+            let hull: Vec<_> = (0..n).collect();
+            let mut mesh = Mesh::seed(&hull, pts.len());
+            mesh.try_legalize(&xy).unwrap();
+            let located = mesh.locate(&xy, FaceId::from_index(0), xy(n));
+            let (_, changed) = mesh
+                .try_insert_with(&xy, n, located, None, |mut cavity, slots| {
+                    assert_eq!(cavity.len(), n - 2);
+                    assert_eq!(slots.len(), n);
+                    cavity.extend_from_slice(slots);
+                    cavity
+                })
+                .unwrap();
+            assert_eq!(changed.len(), 2 * n - 2);
+            let steps = PERIMETER_STEPS.with(std::cell::Cell::get);
+            assert_eq!(steps, 3 * (n - 2));
+            eprintln!("late center: boundary={n}, cavity={}, steps={steps}", n - 2);
+            let result = mesh.finish(xy).unwrap();
+            assert_halfedges_consistent(&result);
+            assert_delaunay(&result, &pts);
+        }
+    }
+
+    #[test]
+    fn insertion_reports_cavity_faces_before_replacement_slots() {
+        let pts = points(&[(0.0, 0.0), (4.0, 0.0), (4.0, 4.0), (0.0, 4.0), (1.0, 0.5)]);
+        let xy = |site: usize| pts[site].xy();
+        let mut mesh = Mesh::seed(&[0, 1, 2, 3], pts.len());
+        mesh.try_legalize(&xy).unwrap();
+        let located = mesh.locate(&xy, FaceId::from_index(0), xy(4));
+        let (last, changed) = mesh
+            .try_insert_with(&xy, 4, located, None, |mut cavity, slots| {
+                cavity.extend_from_slice(slots);
+                cavity
+            })
+            .unwrap();
+        assert_eq!(
+            changed.iter().map(|face| face.index()).collect::<Vec<_>>(),
+            [1, 0, 0, 1, 2, 3]
+        );
+        assert_eq!(last.index(), 3);
+        let repeated = mesh.locate(&xy, last, xy(4));
+        let (_, changed) = mesh
+            .try_insert_with(&xy, 4, repeated, None, |mut cavity, slots| {
+                cavity.extend_from_slice(slots);
+                cavity
+            })
+            .unwrap();
+        assert!(changed.is_empty());
+    }
+
+    #[test]
     fn cavity_stamp_rollover_keeps_unvisited_neighbor_reachable() {
         let pts = points(&[(0.0, 0.0), (4.0, 0.0), (4.0, 4.0), (0.0, 4.0), (1.0, 0.5)]);
         let xy = |site: usize| pts[site].xy();
@@ -2189,8 +2310,12 @@ corpus.append(([gm.Polygon(rings[0])], {'method': 'constrained', 'max_area': 111
         wrapped.stamp.fill(1);
         let located = ordinary.locate(&xy, FaceId::from_index(0), xy(4));
         assert!(matches!(located, Located::Inside(_)));
-        ordinary.try_insert_with(&xy, 4, located, None).unwrap();
-        wrapped.try_insert_with(&xy, 4, located, None).unwrap();
+        ordinary
+            .try_insert_with(&xy, 4, located, None, |_, _| ())
+            .unwrap();
+        wrapped
+            .try_insert_with(&xy, 4, located, None, |_, _| ())
+            .unwrap();
         let ordinary = ordinary.finish(xy).unwrap();
         let wrapped = wrapped.finish(xy).unwrap();
         assert_delaunay(&ordinary, &pts);

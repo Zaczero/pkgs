@@ -375,12 +375,148 @@ struct PreparedSourceSplit {
     certificate: CertifiedBoundarySplit,
 }
 
+struct PieceNode {
+    piece: Option<SourcePiece>,
+    next: Option<usize>,
+}
+
+enum PieceCursor {
+    Replace(usize),
+    After(usize),
+}
+
+// Source IDs own the first slots. A split replaces its existing slot so
+// predecessors and source roots stay valid when the edge-index key changes.
+struct SourcePieces {
+    edges: HashMap<(usize, usize), usize>,
+    nodes: Vec<PieceNode>,
+}
+
+impl SourcePieces {
+    fn new(source_count: usize) -> Result<Self> {
+        Ok(Self {
+            edges: crate::collections::try_hash_map_with_capacity(source_count)?,
+            nodes: std::iter::repeat_with(|| PieceNode {
+                piece: None,
+                next: None,
+            })
+            .take(source_count)
+            .collect(),
+        })
+    }
+
+    fn piece(&self, index: usize) -> &SourcePiece {
+        self.nodes
+            .get(index)
+            .and_then(|node| node.piece.as_ref())
+            .expect("the edge index names a recorded source piece")
+    }
+
+    fn get(&self, edge: (usize, usize)) -> Option<&SourcePiece> {
+        self.edges.get(&edge).map(|&index| self.piece(index))
+    }
+
+    fn values(&self) -> impl Iterator<Item = &SourcePiece> {
+        self.edges.values().map(|&index| self.piece(index))
+    }
+
+    fn reserve(&mut self, additional: usize) {
+        self.edges.reserve(additional);
+        self.nodes.reserve(additional);
+    }
+
+    fn remove(&mut self, edge: (usize, usize)) -> Option<PieceCursor> {
+        self.edges.remove(&edge).map(PieceCursor::Replace)
+    }
+
+    fn record(&mut self, piece: SourcePiece, cursor: &mut PieceCursor) {
+        let entry = self.edges.entry(ordered(piece.start_site, piece.end_site));
+        if let std::collections::hash_map::Entry::Vacant(entry) = entry {
+            let index = match *cursor {
+                PieceCursor::Replace(index) => {
+                    self.nodes
+                        .get_mut(index)
+                        .expect("replacement uses an admitted source slot")
+                        .piece = Some(piece);
+                    index
+                },
+                PieceCursor::After(previous) => {
+                    let next = self
+                        .nodes
+                        .get(previous)
+                        .expect("the insertion cursor names an admitted source slot")
+                        .next;
+                    let index = self.nodes.len();
+                    self.nodes.push(PieceNode {
+                        piece: Some(piece),
+                        next,
+                    });
+                    self.nodes
+                        .get_mut(previous)
+                        .expect("the insertion cursor names an admitted source slot")
+                        .next = Some(index);
+                    index
+                },
+            };
+            entry.insert(index);
+            *cursor = PieceCursor::After(index);
+        }
+    }
+
+    #[cfg_attr(
+        test,
+        expect(
+            clippy::panic_in_result_fn,
+            reason = "test-only assertions characterize source-chain order against the sorted oracle"
+        )
+    )]
+    fn take_ordered(&mut self, source_count: usize) -> Result<Vec<SourcePiece>> {
+        #[cfg(test)]
+        let expected = {
+            let mut pieces: Vec<_> = self.values().cloned().collect();
+            crate::geometry::try_sort_by(&mut pieces, compare_source_pieces)?;
+            pieces
+        };
+        let mut pieces = Vec::with_capacity(self.edges.len());
+        for source in 0..source_count {
+            let mut at = Some(source);
+            while let Some(index) = at {
+                let node = self
+                    .nodes
+                    .get_mut(index)
+                    .expect("source successors name admitted piece slots");
+                let piece = node.piece.take().ok_or_else(|| {
+                    GeometryErrorKind::triangulation(format!(
+                        "source constraint {source} has no emitted boundary chain"
+                    ))
+                })?;
+                pieces.push(piece);
+                at = node.next;
+            }
+        }
+        debug_assert_eq!(pieces.len(), self.edges.len());
+        #[cfg(test)]
+        {
+            assert_eq!(pieces.len(), expected.len());
+            for (actual, expected) in pieces.iter().zip(&expected) {
+                assert_eq!(
+                    compare_source_pieces(actual, expected)?,
+                    std::cmp::Ordering::Equal
+                );
+            }
+        }
+        self.edges.clear();
+        self.nodes.clear();
+        Ok(pieces)
+    }
+}
+
 /// The mesh with its constraint flags, one per halfedge slot.
 pub(super) struct ConstrainedMesh {
     pub(super) mesh: Mesh,
     pub(super) constrained: Vec<bool>,
     source_constraints: Vec<SourceConstraint>,
-    source_pieces: HashMap<(usize, usize), SourcePiece>,
+    source_pieces: SourcePieces,
     provenance: Vec<NodeProvenance>,
     split_certificates: Vec<CertifiedBoundarySplit>,
 }
@@ -623,7 +759,7 @@ struct ConstraintIndex {
 }
 
 impl ConstraintIndex {
-    fn new(pieces: &HashMap<(usize, usize), SourcePiece>, points: &[Point]) -> Self {
+    fn new(pieces: &SourcePieces, points: &[Point]) -> Self {
         let scale = points
             .iter()
             .map(|point| point.x.abs().max(point.y.abs()))
@@ -767,7 +903,7 @@ impl ConstrainedMesh {
         };
         let constrained = vec![false; mesh.edge_count()];
         let source_constraints = sources.to_vec();
-        let source_pieces = crate::collections::try_hash_map_with_capacity(sources.len())?;
+        let source_pieces = SourcePieces::new(sources.len())?;
         let provenance = occurrences
             .iter()
             .copied()
@@ -785,11 +921,14 @@ impl ConstrainedMesh {
         for source in sources {
             this.insert_constraint(
                 &xy,
-                source.start_site,
-                source.end_site,
-                source.id,
-                exact::ExactRational::zero(),
-                exact::ExactRational::one(),
+                SourcePiece {
+                    source: source.id,
+                    start_site: source.start_site,
+                    end_site: source.end_site,
+                    lo: exact::ExactRational::zero(),
+                    hi: exact::ExactRational::one(),
+                },
+                &mut PieceCursor::Replace(source.id),
             )?;
         }
         Ok(Some(this))
@@ -800,14 +939,14 @@ impl ConstrainedMesh {
     fn insert_constraint(
         &mut self,
         xy: &impl Fn(usize) -> XY,
-        u: usize,
-        v: usize,
-        source: usize,
-        lo: exact::ExactRational,
-        hi: exact::ExactRational,
+        piece: SourcePiece,
+        cursor: &mut PieceCursor,
     ) -> Result<Vec<FaceId>> {
         let mut legalization = Vec::new();
-        self.recover_constraint(xy, u, v, source, lo, hi, &mut legalization)?;
+        self.recover_constraint(xy, piece, cursor, &mut legalization)?;
+        if legalization.is_empty() {
+            return Ok(Vec::new());
+        }
         let mut changed: Vec<_> = legalization.iter().map(|edge| edge.face()).collect();
         changed.extend(self.mesh.try_legalize_constrained_from(
             xy,
@@ -820,18 +959,31 @@ impl ConstrainedMesh {
     fn recover_constraint(
         &mut self,
         xy: &impl Fn(usize) -> XY,
-        u: usize,
-        v: usize,
-        source: usize,
-        lo: exact::ExactRational,
-        hi: exact::ExactRational,
+        piece: SourcePiece,
+        cursor: &mut PieceCursor,
         legalization: &mut Vec<HalfedgeId>,
     ) -> Result<()> {
+        let SourcePiece {
+            source,
+            start_site: u,
+            end_site: v,
+            lo,
+            hi,
+        } = piece;
         if u == v {
             return Ok(());
         }
         if let Some(slot) = self.mesh.edge_slot(u, v) {
-            self.record_source_piece(u, v, source, lo, hi);
+            self.source_pieces.record(
+                SourcePiece {
+                    source,
+                    start_site: u,
+                    end_site: v,
+                    lo,
+                    hi,
+                },
+                cursor,
+            );
             self.mark(slot);
             return Ok(());
         }
@@ -851,15 +1003,59 @@ impl ConstrainedMesh {
             if sa == ExactSign::Zero && between(pu, pv, xy(a)) {
                 let split = interpolate_source_parameter(&lo, &hi, pu, pv, xy(a))?;
                 self.certify_source_boundary_point(source, &split, xy(a))?;
-                self.recover_constraint(xy, u, a, source, lo, split.clone(), legalization)?;
-                self.recover_constraint(xy, a, v, source, split, hi, legalization)?;
+                self.recover_constraint(
+                    xy,
+                    SourcePiece {
+                        source,
+                        start_site: u,
+                        end_site: a,
+                        lo,
+                        hi: split.clone(),
+                    },
+                    cursor,
+                    legalization,
+                )?;
+                self.recover_constraint(
+                    xy,
+                    SourcePiece {
+                        source,
+                        start_site: a,
+                        end_site: v,
+                        lo: split,
+                        hi,
+                    },
+                    cursor,
+                    legalization,
+                )?;
                 return Ok(());
             }
             if sb == ExactSign::Zero && between(pu, pv, xy(b)) {
                 let split = interpolate_source_parameter(&lo, &hi, pu, pv, xy(b))?;
                 self.certify_source_boundary_point(source, &split, xy(b))?;
-                self.recover_constraint(xy, u, b, source, lo, split.clone(), legalization)?;
-                self.recover_constraint(xy, b, v, source, split, hi, legalization)?;
+                self.recover_constraint(
+                    xy,
+                    SourcePiece {
+                        source,
+                        start_site: u,
+                        end_site: b,
+                        lo,
+                        hi: split.clone(),
+                    },
+                    cursor,
+                    legalization,
+                )?;
+                self.recover_constraint(
+                    xy,
+                    SourcePiece {
+                        source,
+                        start_site: b,
+                        end_site: v,
+                        lo: split,
+                        hi,
+                    },
+                    cursor,
+                    legalization,
+                )?;
                 return Ok(());
             }
             if sa == ExactSign::Positive && sb == ExactSign::Negative {
@@ -908,8 +1104,30 @@ impl ConstrainedMesh {
                 // Passes exactly through `apex`: constrain u->apex by flipping
                 // what we have so far, then continue from apex.
                 self.flip_until_clear(xy, u, apex, crossing, legalization)?;
-                self.recover_constraint(xy, u, apex, source, lo, split.clone(), legalization)?;
-                self.recover_constraint(xy, apex, v, source, split, hi, legalization)?;
+                self.recover_constraint(
+                    xy,
+                    SourcePiece {
+                        source,
+                        start_site: u,
+                        end_site: apex,
+                        lo,
+                        hi: split.clone(),
+                    },
+                    cursor,
+                    legalization,
+                )?;
+                self.recover_constraint(
+                    xy,
+                    SourcePiece {
+                        source,
+                        start_site: apex,
+                        end_site: v,
+                        lo: split,
+                        hi,
+                    },
+                    cursor,
+                    legalization,
+                )?;
                 return Ok(());
             }
             // The twin runs left to right, so its next edge leaves the right
@@ -923,7 +1141,16 @@ impl ConstrainedMesh {
             };
         }
         self.flip_until_clear(xy, u, v, crossing, legalization)?;
-        self.record_source_piece(u, v, source, lo, hi);
+        self.source_pieces.record(
+            SourcePiece {
+                source,
+                start_site: u,
+                end_site: v,
+                lo,
+                hi,
+            },
+            cursor,
+        );
         Ok(())
     }
 
@@ -948,25 +1175,6 @@ impl ConstrainedMesh {
             return Err(GeometryErrorKind::unrepresentable_output("triangulate"));
         }
         Ok(())
-    }
-
-    fn record_source_piece(
-        &mut self,
-        start_site: usize,
-        end_site: usize,
-        source: usize,
-        lo: exact::ExactRational,
-        hi: exact::ExactRational,
-    ) {
-        self.source_pieces
-            .entry(ordered(start_site, end_site))
-            .or_insert(SourcePiece {
-                source,
-                start_site,
-                end_site,
-                lo,
-                hi,
-            });
     }
 
     /// Flip the crossed edges until none cross `u -> v`, then mark the edge.
@@ -1240,26 +1448,33 @@ impl ConstrainedMesh {
             } else {
                 self.mesh
                     .insert_constrained(&xy2, site, located, &mut self.constrained)?
-                    .changed
             };
             if let Some((piece, parameter, _)) = source {
-                self.source_pieces
-                    .remove(&ordered(piece.start_site, piece.end_site));
+                let mut cursor = self
+                    .source_pieces
+                    .remove(ordered(piece.start_site, piece.end_site))
+                    .expect("the split owns an indexed source piece");
                 changed.extend(self.insert_constraint(
                     &xy2,
-                    piece.start_site,
-                    site,
-                    piece.source,
-                    piece.lo.clone(),
-                    parameter.clone(),
+                    SourcePiece {
+                        source: piece.source,
+                        start_site: piece.start_site,
+                        end_site: site,
+                        lo: piece.lo.clone(),
+                        hi: parameter.clone(),
+                    },
+                    &mut cursor,
                 )?);
                 changed.extend(self.insert_constraint(
                     &xy2,
-                    site,
-                    piece.end_site,
-                    piece.source,
-                    parameter,
-                    piece.hi,
+                    SourcePiece {
+                        source: piece.source,
+                        start_site: site,
+                        end_site: piece.end_site,
+                        lo: parameter,
+                        hi: piece.hi,
+                    },
+                    &mut cursor,
                 )?);
                 circles.insert(points, piece.start_site, site);
                 circles.insert(points, site, piece.end_site);
@@ -1300,7 +1515,7 @@ impl ConstrainedMesh {
     ) -> Result<Option<PreparedSplit>> {
         let (start, end) = self.mesh.edge_vertices(e);
         if self.is_constrained(e) {
-            let Some(piece) = self.source_pieces.get(&ordered(start, end)) else {
+            let Some(piece) = self.source_pieces.get(ordered(start, end)) else {
                 return Err(GeometryErrorKind::triangulation(
                     "constrained edge has no source interval",
                 ));
@@ -1597,9 +1812,9 @@ impl ConstrainedMesh {
         refinement: super::CdtRefinement,
         force_xy: bool,
     ) -> Result<ConstrainedMeshPlan> {
-        let mut constraint_pieces = Vec::with_capacity(self.source_pieces.len());
-        constraint_pieces.extend(self.source_pieces.drain().map(|(_, piece)| piece));
-        crate::geometry::try_sort_by(&mut constraint_pieces, compare_source_pieces)?;
+        let constraint_pieces = self
+            .source_pieces
+            .take_ordered(self.source_constraints.len())?;
         self.validate_source_chains(&points, &constraint_pieces)?;
         let inside = self.inside_faces();
         let mut faces = Vec::with_capacity(self.mesh.triangle_count());
@@ -1626,6 +1841,7 @@ const fn ordered(a: usize, b: usize) -> (usize, usize) {
     if a < b { (a, b) } else { (b, a) }
 }
 
+#[cfg(test)]
 fn compare_source_pieces(left: &SourcePiece, right: &SourcePiece) -> Result<std::cmp::Ordering> {
     let source = left.source.cmp(&right.source);
     if source.is_ne() {
