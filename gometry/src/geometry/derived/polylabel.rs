@@ -1595,15 +1595,23 @@ pub(crate) fn emit_zero_radius_point(shape: &Shape, center: Point) -> Result<Sha
 /// callers pass the prepared filled/boundary pair retained by the directed
 /// search; `None` is the geographic local-projection path, which intentionally
 /// keeps its existing approximate containment contract.
-#[expect(
-    clippy::arithmetic_side_effects,
-    reason = "each retry charges a nonzero ring against the 16-million item budget"
-)]
+#[cfg(test)]
 pub(crate) fn build_inscribed_circle(
     center: Point,
     radius: f64,
     quadrant_segments: NonZeroU32,
     support: Option<(&PreparedSupport, &PreparedSupport, &Rational)>,
+) -> Result<Shape> {
+    let mut budget = ExpansionBudget::new("maximum_inscribed_circle", "quadrant_segments");
+    build_inscribed_circle_budgeted(center, radius, quadrant_segments, support, &mut budget)
+}
+
+pub(crate) fn build_inscribed_circle_budgeted(
+    center: Point,
+    radius: f64,
+    quadrant_segments: NonZeroU32,
+    support: Option<(&PreparedSupport, &PreparedSupport, &Rational)>,
+    budget: &mut ExpansionBudget,
 ) -> Result<Shape> {
     let steps = 4_usize
         .checked_mul(quadrant_segments.get() as usize)
@@ -1611,7 +1619,6 @@ pub(crate) fn build_inscribed_circle(
     let vertices = steps
         .checked_add(1)
         .ok_or(crate::error::ResourceError::SizeOverflow)?;
-    let mut budget = ExpansionBudget::new("maximum_inscribed_circle", "quadrant_segments");
     budget.check_additional(vertices)?;
     if !center.x.is_finite() || !center.y.is_finite() || !radius.is_finite() {
         return Err(crate::geometry::GeometryErrorKind::unrepresentable_output(
@@ -1643,7 +1650,7 @@ pub(crate) fn build_inscribed_circle(
                         )
                     ) =>
             {
-                retries += 1;
+                retries = retries.wrapping_add(1);
                 let next = next_realization_radius(radius, candidate_radius, retries, false);
                 if !(next > 0.0 && next.is_finite()) {
                     return Err(error);

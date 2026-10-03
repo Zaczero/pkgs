@@ -74,7 +74,7 @@ impl PyGeometryArray {
                 crate::geometry::segmentize_points_budgeted(
                     points,
                     length / to_metre,
-                    for_columns.as_borrowed(),
+                    &for_columns.as_borrowed(),
                     budget,
                 )
             },
@@ -82,7 +82,7 @@ impl PyGeometryArray {
                 if let Some(frame) = for_shapes.frame() {
                     crate::crs::ensure_geographic_domain_in_frame(frame, shape)?;
                 }
-                shape.segmentize_budgeted(length / to_metre, for_shapes.as_borrowed(), budget)
+                shape.segmentize_budgeted(length / to_metre, &for_shapes.as_borrowed(), budget)
             },
         )?;
         Ok(result)
@@ -111,7 +111,7 @@ impl PyGeometryArray {
                 crate::geometry::densify_points_budgeted_with_placement(
                     points,
                     fraction,
-                    for_columns.as_borrowed(),
+                    &for_columns.as_borrowed(),
                     budget,
                 )
             },
@@ -119,7 +119,7 @@ impl PyGeometryArray {
                 if let Some(frame) = for_shapes.frame() {
                     crate::crs::ensure_geographic_domain_in_frame(frame, shape)?;
                 }
-                shape.densified_budgeted_with_placement(fraction, for_shapes.as_borrowed(), budget)
+                shape.densified_budgeted_with_placement(fraction, &for_shapes.as_borrowed(), budget)
             },
         )
     }

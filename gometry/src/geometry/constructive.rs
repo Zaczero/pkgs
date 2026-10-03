@@ -25,7 +25,7 @@ pub(crate) use ring::{
 pub(crate) use segmentize::densify_points_budgeted;
 pub(crate) use segmentize::{
     SegmentPlacement, SegmentPlacementOwned, densify_points_budgeted_with_placement,
-    segmentize_points_budgeted,
+    segmentize_points_budgeted, segmentize_points_with_piece_counts_budgeted,
 };
 pub(crate) use simplify::{
     GeographicRdpGuard, PlanarRdpGuard, RdpEdgeSpanGuard, raw_offset_loop,

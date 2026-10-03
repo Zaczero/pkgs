@@ -15,6 +15,14 @@ method_doc! {
     pre: r"Buffer a geometry by ``distance``, returning the offset region (measured for
 the CRS).
 
+On a geographic CRS, stored source-chart edges are refined when their projected
+curves cannot be certified within the local-frame input budget before the planar
+kernel runs. This input-fidelity budget is separate from the 0.1% frame-fit
+limit and from round-arc resolution, which ``quadrant_segments`` controls; it
+does not promise an end-to-end ellipsoidal distance error.
+For single-sided buffers, chord directions determine endpoint normals, so the
+input-fidelity budget does not bound output endpoint displacement.
+
 Parameters
 ----------";
     scalar: (r"
@@ -101,6 +109,12 @@ method_doc! {
     doc_offset_curve;
     pre: r"Compute a line offset to one side of a linestring by ``distance`` (measured
 for the CRS).
+
+Geographic input uses the same local-frame admission and source-chart edge
+refinement as ``buffer``. Its input-fidelity budget is separate from the 0.1%
+frame-fit limit and round-join resolution, which ``quadrant_segments`` controls.
+Chord directions determine endpoint normals, so the input-fidelity budget does
+not bound output endpoint displacement.
 
 Parameters
 ----------";

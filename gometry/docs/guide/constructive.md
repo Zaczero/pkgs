@@ -112,6 +112,26 @@ print(panels([
     specific accuracy budget matters, choose and validate the projected frame
     explicitly.
 
+### Geographic local-frame input refinement
+
+For geographic operations that use line or ring boundaries, gometry checks each
+stored source-chart edge against the selected local projection before running
+the planar kernel. If the projected curve's certified maximum distance from its
+endpoint chord exceeds the input-refinement budget, the edge is subdivided at
+equal ellipsoidal arclength and checked piece by piece. The budget is
+`1e-4 × min(projected input extent, abs(distance))` for distance-bearing
+operations, and `1e-4 × projected input extent` otherwise. The projected input
+extent is the diagonal of its local-frame bounds.
+
+This input-fidelity budget is separate from the frame-fit check: the chosen
+frame must still hold the input and constructive result within its existing
+0.1% linear-scale-error limit. It is also separate from round-arc
+polygonization, whose resolution is controlled by `quadrant_segments`. These
+bounds do not by themselves promise an end-to-end ellipsoidal distance error.
+For open offsets and single-sided buffers, the budget bounds input fidelity rather than output endpoint displacement, because the refined chord's direction determines the endpoint normal.
+Site-based operations such as `concave_hull` continue to select from original
+input vertices; refinement samples represent edge support, not new sites.
+
 ## Overlay (set operations)
 
 The four boolean overlays combine two geometries. Python operator spellings are

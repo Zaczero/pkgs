@@ -385,6 +385,8 @@ Geographic input retains the documented local-projection approximation.
 Empty geometries return ``POLYGON EMPTY``.
 A nonempty polygon with no filled interior returns the midpoint of its stored
 bounds with radius zero, including when its rings cancel the entire support.
+Geographic line and ring inputs may be refined in the source chart to bound
+projected input-edge deviation; this does not change round-arc resolution.
 Mirrors minimum_bounding_circle.
 
 Parameters
@@ -451,6 +453,8 @@ the global inradius against the requested absolute tolerance. Geographic
 input uses the documented local-projection approximation. The numeric twin
 of minimum_bounding_radius; the polygonal approximation is
 maximum_inscribed_circle.
+Geographic boundary edges may be refined before the planar search; ``tolerance``
+controls the inradius search, not that input-refinement budget.
 
 Parameters
 ----------";
@@ -510,7 +514,9 @@ circumscribed 64-gon. Every edge encloses the disk and every vertex lies outside
 it. A single distinct vertex returns itself; empty input returns
 ``POLYGON EMPTY``. CRS-aware via local projection (approximate) on a
 geographic CRS; projected CRS distances default to the CRS's native linear units
-and scale through the CRS linear unit only with ``unit='meters'``.
+and scale through the CRS linear unit only with ``unit='meters'``. Geographic
+line and ring inputs use certified source-chart edge refinement in that local
+projection before their enclosing support circle is computed.
 
 Parameters
 ----------
@@ -559,7 +565,10 @@ sets with three or more distinct vertices use the planar center and
 ellipsoidal support measurement (an approximation); two-point geographic
 inputs are the exact geodesic half-distance. For a projected
 ``unit='meters'`` result, the exact squared radius is scaled before the one
-binary64 rounding.
+binary64 rounding. Geographic line and ring inputs instead use the same
+local-projection support calculation as ``minimum_bounding_circle`` after
+chart-edge refinement. A two-coordinate line is edge-bearing and does not use
+the point-set two-point geodesic case.
 
 Parameters
 ----------
@@ -593,6 +602,9 @@ method_doc! {
 On a geographic CRS, the witness is selected in the geometry's best local
 projection and then measured geodesically in source coordinates; this is a
 local-projection approximation, not an exact ellipsoidal clearance search.
+Original vertices remain clearance sites. Refined chart-edge samples improve
+boundary support without becoming new sites; an on-edge witness is interpolated
+on its original source segment.
 Projected CRS and CRS-free geometries measure in the active planar units.
 
 Parameters
@@ -627,7 +639,9 @@ method_doc! {
 minimum_clearance: on a geographic CRS, the witness is selected in the
 geometry's best local projection and returned in source coordinates, so it is a
 local-projection approximation rather than an exact ellipsoidal clearance
-search.
+search. Original vertices remain clearance sites; inserted chart-edge support
+samples do not become new sites, and an on-edge witness is interpolated on the
+original source segment.
 ``LINESTRING EMPTY`` when the clearance is infinite (fewer than two distinct
 vertices).
 
@@ -822,9 +836,12 @@ Examples
 
 method_doc! {
     doc_polylabel;
-    pre: r"Pole of inaccessibility: an approximate most-distant interior point
+pre: r"Pole of inaccessibility: an approximate most-distant interior point
 for label placement. Uses a tolerance-based cell search; its clearance is within the requested tolerance
 of the global inradius for planar/projected input.
+Geographic line and ring boundaries may be refined in the local projection
+before the search; ``tolerance`` controls the search, not the separate
+input-refinement budget.
 For a nonempty polygon with no filled interior, returns the midpoint of its
 stored bounds with radius zero, including when its rings cancel the entire
 support.

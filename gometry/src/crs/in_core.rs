@@ -19,11 +19,39 @@ use params::Projected;
 pub(in crate::crs) use params::{ParamUnit, parse_param_value};
 use webmerc::WGS84_WEB_MERCATOR;
 
-use crate::crs::in_core::kernel::{DEG_TO_RAD, ProjectionKernel, RAD_TO_DEG};
+use crate::crs::in_core::kernel::{DEG_TO_RAD, Ellipsoid, ProjectionKernel, RAD_TO_DEG};
 use crate::crs::local::UtmZone as LocalUtmZone;
 use crate::crs::{TransformFailure, parse_epsg};
 use crate::error::Result;
 pub(in crate::crs) use crate::geographic::Pole;
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct TmercCertificateTerms {
+    pub(crate) cbg: [f64; 6],
+    pub(crate) gtu: [f64; 6],
+    pub(crate) qn: f64,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct PolarCertificateTerms {
+    pub(crate) a: f64,
+    pub(crate) e: f64,
+    pub(crate) akm1: f64,
+    pub(crate) pole: Pole,
+}
+
+pub(crate) const fn tmerc_certificate_terms(a: f64, f: f64, k0: f64) -> TmercCertificateTerms {
+    tmerc::certificate_terms(Ellipsoid::from_a_f(a, f), k0)
+}
+
+pub(crate) fn polar_certificate_terms(
+    a: f64,
+    f: f64,
+    latitude_of_origin_degrees: f64,
+    k0: f64,
+) -> Option<PolarCertificateTerms> {
+    stere::certificate_terms(Ellipsoid::from_a_f(a, f), latitude_of_origin_degrees, k0)
+}
 
 #[derive(Clone, Copy, Debug)]
 pub(super) enum ProjSetup {
@@ -374,7 +402,6 @@ impl UtmZone {
 
 #[cfg(test)]
 mod tests {
-    use super::kernel::Ellipsoid;
     use super::params::{OperationSpec, ProjectionFrame};
     use super::*;
     use crate::numeric::AxisScale;

@@ -522,6 +522,15 @@ def test_minimum_bounding_radius_is_crs_aware_with_planar_escape() -> None:
         1.0,
     ))
 
+    edge = gm.LineString([(0.0, 0.0), (0.0, 1.0)], crs=4326)
+    edge_local = edge.to_crs(edge.estimate_local_crs())
+    edge_radius = edge.minimum_bounding_radius()
+    assert edge_radius == pytest.approx(
+        edge_local.minimum_bounding_radius(unit='planar'),
+        rel=1e-12,
+    )
+    assert abs(edge_radius - radius) > 1.0
+
 
 def test_minimum_bounding_radius_does_not_accept_relative_containment_slack() -> None:
     """A point just outside a diameter must drive the binary64 circle."""

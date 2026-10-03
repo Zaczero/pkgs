@@ -20,7 +20,7 @@ pub(crate) use hull::{
 };
 pub(crate) use minimum_rectangle::minimum_area_rectangle;
 pub(crate) use polylabel::{
-    build_inscribed_circle, degenerate_polygon_center, emit_minimum_bounding_circle,
+    build_inscribed_circle_budgeted, degenerate_polygon_center, emit_minimum_bounding_circle,
     emit_zero_radius_point, polylabel_point, scale_aware_default_tolerance,
     smallest_enclosing_circle,
 };

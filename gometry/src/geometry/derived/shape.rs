@@ -2,17 +2,17 @@ use std::num::NonZeroU32;
 
 use crate::error::Result;
 use crate::geometry::derived::{
-    areal_centroid, build_inscribed_circle, canonicalize_concave_hull_points, centroid_is_empty,
-    collection_surface_point, degenerate_polygon_center, emit_minimum_bounding_circle,
-    emit_zero_radius_point, lineal_centroid, lineal_surface_point, minimum_area_rectangle,
-    monotone_chain_hull, multipoint_surface_point, native_concave_hull, point_centroid,
-    point_on_surface_line_columns, polygonal_surface_point, polylabel_point,
+    areal_centroid, build_inscribed_circle_budgeted, canonicalize_concave_hull_points,
+    centroid_is_empty, collection_surface_point, degenerate_polygon_center,
+    emit_minimum_bounding_circle, emit_zero_radius_point, lineal_centroid, lineal_surface_point,
+    minimum_area_rectangle, monotone_chain_hull, multipoint_surface_point, native_concave_hull,
+    point_centroid, point_on_surface_line_columns, polygonal_surface_point, polylabel_point,
     scale_aware_default_tolerance, shape_from_open_hull, shape_from_selected_hull,
     smallest_enclosing_circle,
 };
 use crate::geometry::{
-    DirectedOptimizationResult, GeometryErrorKind, LineSeq, Point, Polygon, Ring, Shape,
-    bounds_to_shape, carry_ordinates, directed_inradius_scaled,
+    DirectedOptimizationResult, ExpansionBudget, GeometryErrorKind, LineSeq, Point, Polygon, Ring,
+    Shape, bounds_to_shape, carry_ordinates, directed_inradius_scaled,
 };
 use crate::{NonNegative, Positive};
 
@@ -268,6 +268,14 @@ impl Shape {
     /// certified circumscribed 64-gon whose edges enclose that minimum disk and
     /// whose vertices lie outside it.
     pub fn minimum_bounding_circle(&self) -> Result<Self> {
+        let mut budget = ExpansionBudget::new("minimum_bounding_circle", "realization");
+        self.minimum_bounding_circle_budgeted(&mut budget)
+    }
+
+    pub(crate) fn minimum_bounding_circle_budgeted(
+        &self,
+        budget: &mut ExpansionBudget,
+    ) -> Result<Self> {
         let source_finite = matches!(
             self.try_for_each_first_xy_point_run(|point| {
                 if point.x.is_finite() && point.y.is_finite() {
@@ -294,11 +302,7 @@ impl Shape {
             // point, including its stored signed-zero spelling.
             return Ok(Self::Point(disk.center()?));
         }
-        emit_minimum_bounding_circle(
-            &disk,
-            CIRCLE_QUADRANT_SEGMENTS,
-            &mut crate::geometry::ExpansionBudget::new("minimum_bounding_circle", "realization"),
-        )
+        emit_minimum_bounding_circle(&disk, CIRCLE_QUADRANT_SEGMENTS, budget)
     }
 
     /// Radius of the smallest circle enclosing the geometry. Empty input
@@ -322,7 +326,8 @@ impl Shape {
     /// Geographic callers use the documented local-projection approximation
     /// through the CRS-aware wrapper.
     pub fn maximum_inscribed_circle(&self, tolerance: Option<f64>) -> Result<Self> {
-        self.maximum_inscribed_circle_in_frame(tolerance, true)
+        let mut budget = ExpansionBudget::new("maximum_inscribed_circle", "quadrant_segments");
+        self.maximum_inscribed_circle_in_frame(tolerance, true, &mut budget)
     }
 
     /// Run the planar maximum-circle kernel in a local projected frame. The
@@ -332,6 +337,7 @@ impl Shape {
         &self,
         tolerance: Option<f64>,
         certify_source: bool,
+        budget: &mut ExpansionBudget,
     ) -> Result<Self> {
         let tolerance = tolerance
             .map(|value| Positive::try_new("tolerance", value).map(Positive::get))
@@ -351,7 +357,7 @@ impl Shape {
         if radius == 0.0 || (radius > 0.0 && radius < f64::MIN_POSITIVE) {
             return emit_zero_radius_point(self, center);
         }
-        build_inscribed_circle(
+        build_inscribed_circle_budgeted(
             center,
             radius,
             CIRCLE_QUADRANT_SEGMENTS,
@@ -362,6 +368,7 @@ impl Shape {
                     &result.center_squared,
                 )
             }),
+            budget,
         )
     }
 

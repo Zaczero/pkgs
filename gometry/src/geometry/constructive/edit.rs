@@ -1132,7 +1132,7 @@ impl LineSeq {
     pub(crate) fn densify(
         &self,
         fraction: f64,
-        placement: SegmentPlacement<'_>,
+        placement: &SegmentPlacement<'_>,
         budget: &mut ExpansionBudget,
     ) -> Result<Self> {
         crate::geometry::densify_points_budgeted_with_placement(self, fraction, placement, budget)
@@ -1142,7 +1142,7 @@ impl LineSeq {
     pub(crate) fn segmentize(
         &self,
         max_segment_length: f64,
-        placement: SegmentPlacement<'_>,
+        placement: &SegmentPlacement<'_>,
         budget: &mut ExpansionBudget,
     ) -> Result<Self> {
         segmentize_points_budgeted(self, max_segment_length, placement, budget)
@@ -2128,7 +2128,7 @@ impl Shape {
     /// original chain (cheap column clone, no re-materialization).
     pub(crate) fn map_chains(
         &self,
-        transform: &impl Fn(&CoordSeq) -> Result<Option<CoordSeq>>,
+        transform: &mut impl FnMut(&CoordSeq) -> Result<Option<CoordSeq>>,
     ) -> Result<Self> {
         Ok(match self {
             Self::Point(_) | Self::MultiPoint(_) | Self::Empty(..) => self.clone(),
@@ -2156,6 +2156,169 @@ impl Shape {
                 geometries.try_map_members(|geometry| geometry.map_chains(transform))?,
             ),
         })
+    }
+
+    /// Visit corresponding line and ring chains from a geometry and its
+    /// `map_chains` result with each chain's global site-coordinate offset.
+    pub(crate) fn any_paired_chain(
+        &self,
+        support: &Self,
+        visitor: &mut impl FnMut(usize, usize, &CoordSeq, &CoordSeq) -> Result<bool>,
+    ) -> Result<bool> {
+        #[derive(Default)]
+        struct Offsets {
+            sites: usize,
+            chain: usize,
+        }
+
+        fn advance(offset: &mut usize, amount: usize) -> Result<()> {
+            *offset = offset
+                .checked_add(amount)
+                .ok_or(crate::error::ResourceError::SizeOverflow)?;
+            Ok(())
+        }
+
+        fn visit_chain(
+            sites: &CoordSeq,
+            support: &CoordSeq,
+            offsets: &mut Offsets,
+            visitor: &mut impl FnMut(usize, usize, &CoordSeq, &CoordSeq) -> Result<bool>,
+        ) -> Result<bool> {
+            let chain = offsets.chain;
+            offsets.chain = (offsets.chain)
+                .checked_add(1)
+                .ok_or(crate::error::ResourceError::SizeOverflow)?;
+            let stop = visitor(chain, offsets.sites, sites, support)?;
+            advance(&mut offsets.sites, sites.len())?;
+            Ok(stop)
+        }
+
+        fn visit_shape(
+            sites: &Shape,
+            support: &Shape,
+            offsets: &mut Offsets,
+            visitor: &mut impl FnMut(usize, usize, &CoordSeq, &CoordSeq) -> Result<bool>,
+        ) -> Result<bool> {
+            match (sites, support) {
+                (Shape::Point(_), Shape::Point(_)) => advance(&mut offsets.sites, 1)?,
+                (Shape::MultiPoint(sites), Shape::MultiPoint(_)) => {
+                    advance(&mut offsets.sites, sites.len())?;
+                },
+                (Shape::LineString(sites), Shape::LineString(support)) => {
+                    if visit_chain(sites, support, offsets, visitor)? {
+                        return Ok(true);
+                    }
+                },
+                (Shape::MultiLineString(sites), Shape::MultiLineString(support)) => {
+                    if sites.member_count() != support.member_count() {
+                        return Err(GeometryErrorKind::message(
+                            "paired geometries have different line member counts",
+                        ));
+                    }
+                    for (site, working) in sites
+                        .members_with_values()
+                        .zip(support.members_with_values())
+                    {
+                        match (site, working) {
+                            (
+                                crate::geometry::MultiMember::Value(site),
+                                crate::geometry::MultiMember::Value(working),
+                            ) => {
+                                if visit_chain(site, working, offsets, visitor)? {
+                                    return Ok(true);
+                                }
+                            },
+                            (
+                                crate::geometry::MultiMember::Empty,
+                                crate::geometry::MultiMember::Empty,
+                            ) => {},
+                            _ => {
+                                return Err(GeometryErrorKind::message(
+                                    "paired geometries have different line member layouts",
+                                ));
+                            },
+                        }
+                    }
+                },
+                (Shape::Polygon(sites), Shape::Polygon(support)) => {
+                    if sites.rings().count() != support.rings().count() {
+                        return Err(GeometryErrorKind::message(
+                            "paired geometries have different polygon ring counts",
+                        ));
+                    }
+                    for (site, working) in sites.rings().zip(support.rings()) {
+                        if visit_chain(site.coords(), working.coords(), offsets, visitor)? {
+                            return Ok(true);
+                        }
+                    }
+                },
+                (Shape::MultiPolygon(sites), Shape::MultiPolygon(support)) => {
+                    if sites.member_count() != support.member_count() {
+                        return Err(GeometryErrorKind::message(
+                            "paired geometries have different polygon member counts",
+                        ));
+                    }
+                    for (site, working) in sites
+                        .members_with_values()
+                        .zip(support.members_with_values())
+                    {
+                        match (site, working) {
+                            (
+                                crate::geometry::MultiMember::Value(site),
+                                crate::geometry::MultiMember::Value(working),
+                            ) => {
+                                if site.rings().count() != working.rings().count() {
+                                    return Err(GeometryErrorKind::message(
+                                        "paired geometries have different polygon ring counts",
+                                    ));
+                                }
+                                for (site, working) in site.rings().zip(working.rings()) {
+                                    if visit_chain(
+                                        site.coords(),
+                                        working.coords(),
+                                        offsets,
+                                        visitor,
+                                    )? {
+                                        return Ok(true);
+                                    }
+                                }
+                            },
+                            (
+                                crate::geometry::MultiMember::Empty,
+                                crate::geometry::MultiMember::Empty,
+                            ) => {},
+                            _ => {
+                                return Err(GeometryErrorKind::message(
+                                    "paired geometries have different polygon member layouts",
+                                ));
+                            },
+                        }
+                    }
+                },
+                (Shape::GeometryCollection(sites), Shape::GeometryCollection(support)) => {
+                    if sites.len() != support.len() {
+                        return Err(GeometryErrorKind::message(
+                            "paired geometries have different collection member counts",
+                        ));
+                    }
+                    for (site, working) in sites.iter().zip(support.iter()) {
+                        if visit_shape(site, working, offsets, visitor)? {
+                            return Ok(true);
+                        }
+                    }
+                },
+                (Shape::Empty(site_kind, _), Shape::Empty(support_kind, _))
+                    if site_kind == support_kind => {},
+                _ => {
+                    return Err(GeometryErrorKind::message(
+                        "paired geometries have different structures",
+                    ));
+                },
+            }
+            Ok(false)
+        }
+
+        visit_shape(self, support, &mut Offsets::default(), visitor)
     }
 
     pub fn remove_repeated_points(&self, tolerance: f64) -> Result<Self> {
@@ -2230,13 +2393,13 @@ impl Shape {
         fraction: f64,
         budget: &mut ExpansionBudget,
     ) -> Result<Self> {
-        self.densified_budgeted_with_placement(fraction, SegmentPlacement::Planar, budget)
+        self.densified_budgeted_with_placement(fraction, &SegmentPlacement::Planar, budget)
     }
 
     pub(crate) fn densified_budgeted_with_placement(
         &self,
         fraction: f64,
-        placement: SegmentPlacement<'_>,
+        placement: &SegmentPlacement<'_>,
         budget: &mut ExpansionBudget,
     ) -> Result<Self> {
         Ok(match self {
@@ -2250,11 +2413,11 @@ impl Shape {
                 })?)
             },
             Self::Polygon(polygon) => Self::Polygon(
-                polygon.densified_budgeted_with_placement(fraction, &placement, budget)?,
+                polygon.densified_budgeted_with_placement(fraction, placement, budget)?,
             ),
             Self::MultiPolygon(polygons) => {
                 Self::MultiPolygon(polygons.try_map_values(polygons.axes(), |polygon| {
-                    polygon.densified_budgeted_with_placement(fraction, &placement, budget)
+                    polygon.densified_budgeted_with_placement(fraction, placement, budget)
                 })?)
             },
             Self::GeometryCollection(geometries) => {
@@ -2270,13 +2433,13 @@ impl Shape {
     #[cfg(test)]
     pub fn segmentize(&self, max_segment_length: f64) -> Result<Self> {
         let mut budget = ExpansionBudget::new("segmentize", "max_length");
-        self.segmentize_budgeted(max_segment_length, SegmentPlacement::Planar, &mut budget)
+        self.segmentize_budgeted(max_segment_length, &SegmentPlacement::Planar, &mut budget)
     }
 
     pub(crate) fn segmentize_budgeted(
         &self,
         max_segment_length: f64,
-        placement: SegmentPlacement<'_>,
+        placement: &SegmentPlacement<'_>,
         budget: &mut ExpansionBudget,
     ) -> Result<Self> {
         Ok(match self {
@@ -2290,14 +2453,12 @@ impl Shape {
                     line.segmentize(max_segment_length, placement, budget)
                 })?)
             },
-            Self::Polygon(polygon) => Self::Polygon(polygon.segmentize_budgeted(
-                max_segment_length,
-                &placement,
-                budget,
-            )?),
+            Self::Polygon(polygon) => {
+                Self::Polygon(polygon.segmentize_budgeted(max_segment_length, placement, budget)?)
+            },
             Self::MultiPolygon(polygons) => {
                 Self::MultiPolygon(polygons.try_map_values(polygons.axes(), |polygon| {
-                    polygon.segmentize_budgeted(max_segment_length, &placement, budget)
+                    polygon.segmentize_budgeted(max_segment_length, placement, budget)
                 })?)
             },
             Self::GeometryCollection(geometries) => {

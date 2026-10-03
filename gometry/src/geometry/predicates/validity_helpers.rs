@@ -6,10 +6,11 @@ use crate::geometry::HashMap;
 use crate::geometry::predicates::{LineworkChains, indexed_segments_are_simple, validate_line};
 use crate::geometry::{
     Component, CoordSeq, Coordinates, FacetBvh, Ordering, Point, PointKey, PointSetIndex, Polygon,
-    PreparedLinework, SEGMENT_INDEX_MIN_PAIRS, Segment, Shape, ShapeCountQuery, VertexProvenance,
-    XY, admit_shape_vector_capacity, point_distance, point_distance_squared, point_in_ccw_triangle,
-    point_segment_distance, ring_winding, same_point, segment_projection,
-    squared_norm_is_trustworthy, try_point_distance_squared, try_point_segment_distance_squared,
+    PreparedLinework, RefinedChainProvenance, SEGMENT_INDEX_MIN_PAIRS, Segment, Shape,
+    ShapeCountQuery, VertexProvenance, XY, admit_shape_vector_capacity, point_distance,
+    point_distance_squared, point_in_ccw_triangle, point_segment_distance, ring_winding,
+    same_point, segment_projection, squared_norm_is_trustworthy, try_point_distance_squared,
+    try_point_segment_distance_squared,
 };
 
 /// Iteratively remove segments with a degree-1 endpoint (dangles) from the
@@ -172,15 +173,10 @@ pub(crate) fn minimum_clearance_witness(
         return Ok(None);
     }
     let segments = indexed_segments(shape)?;
-    let witness = if points
-        .len()
-        .saturating_mul(points.len().max(segments.len()))
-        >= SEGMENT_INDEX_MIN_PAIRS
-    {
-        minimum_clearance_witness_indexed(shape, &points, &segments)?
-    } else {
-        minimum_clearance_witness_brute(&points, &segments)?
+    let keep = |point: Point, _: usize, segment: Segment| {
+        !same_point(point, segment.start) && !same_point(point, segment.end)
     };
+    let witness = minimum_clearance_candidates(shape, &points, &segments, &keep)?;
     Ok(
         witness.map(|(plan, distance_squared)| MinimumClearanceWitness {
             plan,
@@ -190,11 +186,164 @@ pub(crate) fn minimum_clearance_witness(
     )
 }
 
+pub(crate) fn minimum_clearance_witness_with_support(
+    sites: &Shape,
+    support: &Shape,
+    refined_chains: &[RefinedChainProvenance],
+) -> crate::error::Result<Option<MinimumClearanceWitness>> {
+    let site_points = sites.points_vec()?;
+    if site_points.len() < 2 {
+        return Ok(None);
+    }
+    let segments = indexed_segments(support)?;
+    let mut lineages: Vec<SupportChainLineage> = Vec::new();
+    let mut refined_index = 0_usize;
+    let mut segment_cursor = 0_usize;
+    let mut mismatch = false;
+    let stop = sites.any_paired_chain(
+        support,
+        &mut |chain_index, site_start, site_chain, support_chain| {
+            let refined_lineage_index = if let Some(lineage) = refined_chains
+                .get(refined_index)
+                .filter(|lineage| lineage.chain_index == chain_index)
+            {
+                refined_index = refined_index
+                    .checked_add(1)
+                    .ok_or(crate::error::ResourceError::SizeOverflow)?;
+                let piece_ends = &lineage.piece_ends;
+                if piece_ends.len() != site_chain.len().saturating_sub(1)
+                    || piece_ends.last().copied().unwrap_or(0)
+                        != support_chain.len().saturating_sub(1)
+                {
+                    mismatch = true;
+                    return Ok(true);
+                }
+                Some(refined_index.wrapping_sub(1))
+            } else {
+                if site_chain.len() != support_chain.len() {
+                    mismatch = true;
+                    return Ok(true);
+                }
+                None
+            };
+            let support_segment_count = support_chain.len().saturating_sub(1);
+            if support_segment_count > 0 {
+                lineages.push(SupportChainLineage {
+                    first_segment: segment_cursor,
+                    segment_count: support_segment_count,
+                    site_start,
+                    refined_lineage_index,
+                });
+            }
+            segment_cursor = segment_cursor
+                .checked_add(support_segment_count)
+                .ok_or(crate::error::ResourceError::SizeOverflow)?;
+            Ok(false)
+        },
+    )?;
+    if stop || mismatch || segment_cursor != segments.len() || refined_index != refined_chains.len()
+    {
+        return Err(crate::geometry::GeometryErrorKind::message(
+            "prepared minimum-clearance support lost its source-chain correspondence",
+        ));
+    }
+
+    let keep = |point: Point, segment_index: usize, _segment: Segment| {
+        let chain_index = lineages
+            .partition_point(|chain| chain.first_segment <= segment_index)
+            .saturating_sub(1);
+        let Some(chain) = lineages.get(chain_index) else {
+            return true;
+        };
+        let local_segment = segment_index.wrapping_sub(chain.first_segment);
+        if local_segment >= chain.segment_count {
+            return true;
+        }
+        let original_edge = chain.refined_lineage_index.map_or(local_segment, |index| {
+            refined_chains
+                .get(index)
+                .expect("refined-chain lineage index was admitted")
+                .piece_ends
+                .partition_point(|&piece_end| piece_end <= local_segment)
+        });
+        let start_index = chain.site_start.wrapping_add(original_edge);
+        let end_index = start_index.wrapping_add(1);
+        let start = *site_points
+            .get(start_index)
+            .expect("paired line-chain site start belongs to the site coordinate slice");
+        let end = *site_points
+            .get(end_index)
+            .expect("paired line-chain site end belongs to the site coordinate slice");
+        !same_point(point, start) && !same_point(point, end)
+    };
+    let witness = minimum_clearance_candidates(support, &site_points, &segments, &keep)?;
+    let Some((mut plan, distance_squared)) = witness else {
+        return Ok(None);
+    };
+    let has_segment_witness = plan
+        .iter()
+        .any(|vertex| matches!(vertex, VertexProvenance::OnSegment { .. }));
+    let points = if has_segment_witness {
+        let support_points = support.points_vec()?;
+        let offset = site_points.len();
+        for vertex in &mut plan {
+            if let VertexProvenance::OnSegment { i, j, .. } = vertex {
+                *i = i
+                    .checked_add(offset)
+                    .ok_or(crate::error::ResourceError::SizeOverflow)?;
+                *j = j
+                    .checked_add(offset)
+                    .ok_or(crate::error::ResourceError::SizeOverflow)?;
+            }
+        }
+        let total = offset
+            .checked_add(support_points.len())
+            .ok_or(crate::error::ResourceError::SizeOverflow)?;
+        let mut points = Vec::with_capacity(admit_shape_vector_capacity::<Point>(total)?);
+        points.extend(site_points);
+        points.extend(support_points);
+        points
+    } else {
+        site_points
+    };
+    Ok(Some(MinimumClearanceWitness {
+        plan,
+        distance_squared,
+        points,
+    }))
+}
+
+struct SupportChainLineage {
+    first_segment: usize,
+    segment_count: usize,
+    site_start: usize,
+    refined_lineage_index: Option<usize>,
+}
+
+fn minimum_clearance_candidates(
+    shape: &Shape,
+    points: &[Point],
+    segments: &[IndexedSegment],
+    keep: &impl Fn(Point, usize, Segment) -> bool,
+) -> crate::error::Result<Option<([VertexProvenance; 2], f64)>> {
+    let witness = if points
+        .len()
+        .saturating_mul(points.len().max(segments.len()))
+        >= SEGMENT_INDEX_MIN_PAIRS
+    {
+        minimum_clearance_witness_indexed(shape, points, segments, keep)?
+    } else {
+        minimum_clearance_witness_brute(points, segments, keep)?
+    };
+    Ok(witness)
+}
+
 /// Indexed nearest-query path (large multipoints / dense linework).
 fn minimum_clearance_witness_indexed(
     shape: &Shape,
     points: &[Point],
     segments: &[IndexedSegment],
+    keep: &impl Fn(Point, usize, Segment) -> bool,
 ) -> crate::error::Result<Option<([VertexProvenance; 2], f64)>> {
     let vertex_index = PointSetIndex::build(points.iter().copied());
     let mut vertex_witness = None;
@@ -241,26 +390,23 @@ fn minimum_clearance_witness_indexed(
         .next_down();
         let mut nearest = None;
         if let Some(bvh) = &bvh {
-            let keep = |probe, segment: Segment| {
-                !same_point(probe, segment.start) && !same_point(probe, segment.end)
-            };
             if bvh.has_slabs() {
-                bvh.nearest_point_with_stack::<true, true, true>(
+                bvh.nearest_point_with_stack_and_ordinal::<true, true, true>(
                     &linework,
                     *point,
                     probe_best,
                     f64::INFINITY,
-                    &keep,
+                    keep,
                     &mut stack,
                     &mut nearest,
                 )?;
             } else {
-                bvh.nearest_point_with_stack::<false, true, true>(
+                bvh.nearest_point_with_stack_and_ordinal::<false, true, true>(
                     &linework,
                     *point,
                     probe_best,
                     f64::INFINITY,
-                    &keep,
+                    keep,
                     &mut stack,
                     &mut nearest,
                 )?;
@@ -303,6 +449,7 @@ fn minimum_clearance_witness_indexed(
 fn minimum_clearance_witness_brute(
     points: &[Point],
     segments: &[IndexedSegment],
+    keep: &impl Fn(Point, usize, Segment) -> bool,
 ) -> crate::error::Result<Option<([VertexProvenance; 2], f64)>> {
     let mut witness = None;
     let mut clearance_squared = f64::INFINITY;
@@ -336,8 +483,8 @@ fn minimum_clearance_witness_brute(
         }
     }
     for (point_index, point) in points.iter().enumerate() {
-        for segment in segments {
-            if same_point(*point, segment.xy.start) || same_point(*point, segment.xy.end) {
+        for (segment_index, segment) in segments.iter().enumerate() {
+            if !keep(*point, segment_index, segment.xy) {
                 continue;
             }
             let Some(distance_squared) = admit_clearance_from_try(
@@ -650,18 +797,126 @@ mod clearance_index_tests {
         let shape = indexed_line();
         let points = shape.points_vec().unwrap();
         let segments = indexed_segments(&shape).unwrap();
+        let keep = |point: Point, _: usize, segment: Segment| {
+            !same_point(point, segment.start) && !same_point(point, segment.end)
+        };
         assert!(points.len() * points.len().max(segments.len()) >= SEGMENT_INDEX_MIN_PAIRS);
         let (indexed_plan, indexed_distance) =
-            minimum_clearance_witness_indexed(&shape, &points, &segments)
+            minimum_clearance_witness_indexed(&shape, &points, &segments, &keep)
                 .unwrap()
                 .expect("finite indexed clearance");
-        let (brute_plan, brute_distance) = minimum_clearance_witness_brute(&points, &segments)
-            .unwrap()
-            .expect("finite brute-force clearance");
+        let (brute_plan, brute_distance) =
+            minimum_clearance_witness_brute(&points, &segments, &keep)
+                .unwrap()
+                .expect("finite brute-force clearance");
         assert_eq!(indexed_distance, brute_distance);
         assert_eq!(
             crate::geometry::emit_from_original(&points, &indexed_plan).unwrap(),
             crate::geometry::emit_from_original(&points, &brute_plan).unwrap()
         );
+    }
+
+    #[test]
+    fn refined_support_keeps_inserted_samples_out_of_clearance_site_candidates() {
+        let sites = Shape::geometry_collection(vec![
+            line(&[Point::new_raw_xy(0.0, 0.0), Point::new_raw_xy(10.0, 0.0)]),
+            Shape::Point(Point::new_raw_xy(5.0, 1.0)),
+        ])
+        .unwrap();
+        let support = Shape::geometry_collection(vec![
+            line(&[
+                Point::new_raw_xy(0.0, 0.0),
+                Point::new_raw_xy(5.0, 0.0),
+                Point::new_raw_xy(10.0, 0.0),
+            ]),
+            Shape::Point(Point::new_raw_xy(5.0, 1.0)),
+        ])
+        .unwrap();
+        let refined_chains = [RefinedChainProvenance {
+            chain_index: 0,
+            piece_ends: vec![2],
+        }];
+
+        let witness = minimum_clearance_witness_with_support(&sites, &support, &refined_chains)
+            .unwrap()
+            .expect("source line has a finite clearance");
+        assert_eq!(witness.distance_squared, 1.0);
+        assert!(matches!(witness.plan[0], VertexProvenance::Input(2)));
+        assert!(matches!(
+            witness.plan[1],
+            VertexProvenance::OnSegment { .. }
+        ));
+        assert_eq!(
+            crate::geometry::emit_from_original(&witness.points, &witness.plan).unwrap(),
+            [Point::new_raw_xy(5.0, 1.0), Point::new_raw_xy(5.0, 0.0)]
+        );
+
+        let subdivided_site_witness = minimum_clearance_witness(&support)
+            .unwrap()
+            .expect("subdivided line has a finite clearance");
+        assert!(matches!(
+            subdivided_site_witness.plan[0],
+            VertexProvenance::Input(_)
+        ));
+        assert!(matches!(
+            subdivided_site_witness.plan[1],
+            VertexProvenance::Input(_)
+        ));
+    }
+
+    #[test]
+    fn indexed_refined_support_preserves_original_clearance_sites() {
+        let mut source_line = Vec::with_capacity(64);
+        let mut support_line = Vec::with_capacity(65);
+        for x in 0..64 {
+            let point = Point::new_raw_xy(f64::from(x), 0.0);
+            source_line.push(point);
+            support_line.push(point);
+            if x == 31 {
+                support_line.push(Point::new_raw_xy(31.5, 0.0));
+            }
+        }
+        let sites = Shape::geometry_collection(vec![
+            line(&source_line),
+            Shape::Point(Point::new_raw_xy(31.5, 0.25)),
+        ])
+        .unwrap();
+        let support = Shape::geometry_collection(vec![
+            line(&support_line),
+            Shape::Point(Point::new_raw_xy(31.5, 0.25)),
+        ])
+        .unwrap();
+        let mut piece_ends = Vec::with_capacity(source_line.len() - 1);
+        let mut end = 0_usize;
+        for edge in 0..source_line.len() - 1 {
+            end += if edge == 31 { 2 } else { 1 };
+            piece_ends.push(end);
+        }
+        let refined_chains = [RefinedChainProvenance {
+            chain_index: 0,
+            piece_ends,
+        }];
+
+        let witness = minimum_clearance_witness_with_support(&sites, &support, &refined_chains)
+            .unwrap()
+            .expect("the point and line have a finite clearance");
+        assert_eq!(witness.distance_squared, 0.0625);
+        assert!(matches!(witness.plan[0], VertexProvenance::Input(64)));
+        assert!(matches!(
+            witness.plan[1],
+            VertexProvenance::OnSegment { .. }
+        ));
+
+        let inserted_site_witness = minimum_clearance_witness(&support)
+            .unwrap()
+            .expect("the subdivided line has a finite clearance");
+        assert!(matches!(
+            inserted_site_witness.plan[0],
+            VertexProvenance::Input(_)
+        ));
+        assert!(matches!(
+            inserted_site_witness.plan[1],
+            VertexProvenance::Input(_)
+        ));
     }
 }

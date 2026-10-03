@@ -661,12 +661,12 @@ pub(crate) fn metric_frechet_densified_with_scratch(
                     (
                         a.densified_budgeted_with_placement(
                             fraction,
-                            crate::geometry::SegmentPlacement::Chart(&geodesic, *frame),
+                            &crate::geometry::SegmentPlacement::Chart(&geodesic, *frame),
                             &mut budget,
                         )?,
                         b.densified_budgeted_with_placement(
                             fraction,
-                            crate::geometry::SegmentPlacement::Chart(&geodesic, *frame),
+                            &crate::geometry::SegmentPlacement::Chart(&geodesic, *frame),
                             &mut budget,
                         )?,
                     )
@@ -752,13 +752,17 @@ pub(crate) fn metric_minimum_clearance_line(
         model,
         |_| shape.minimum_clearance_line(),
         |_, _, state| {
+            let mut budget =
+                crate::geometry::ExpansionBudget::new("minimum_clearance", "input_refinement");
             support::geodesic_by_identity(
                 shape,
                 crs,
                 state,
-                |projected| {
-                    Ok(projected
-                        .minimum_clearance_plan()?
+                &mut budget,
+                support::LocalInputPurpose::BoundarySupport,
+                |sites, support, refined_chains| {
+                    Ok(sites
+                        .minimum_clearance_plan_with_support(support, refined_chains)?
                         .map_or_else(Vec::new, |witness| witness.plan.to_vec()))
                 },
                 |points| {
@@ -813,9 +817,24 @@ pub(crate) fn metric_maximum_inscribed_radius(
         |to_metre| shape.maximum_inscribed_radius_in_scale(tolerance, to_metre),
         |_, _, state| {
             let source = crs.unwrap_or("EPSG:4326");
-            let local = crs::estimate_local_crs_at(&[shape], source, state)?;
-            crs::transform_at(shape, source, &local.definition, state)
-                .map_err(|error| local.annotate_error(error))?
+            let mut budget = crate::geometry::ExpansionBudget::new(
+                "maximum_inscribed_radius",
+                "input_refinement",
+            );
+            let Some(prepared) = support::PreparedLocalInput::prepare(
+                shape,
+                &[shape],
+                source,
+                None,
+                support::LocalInputPurpose::BoundarySupport,
+                state,
+                &mut budget,
+            )?
+            else {
+                return Ok(f64::NAN);
+            };
+            prepared
+                .projected_working()
                 .maximum_inscribed_radius_in_frame(tolerance)
         },
     )

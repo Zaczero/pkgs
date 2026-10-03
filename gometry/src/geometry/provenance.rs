@@ -21,6 +21,18 @@ pub(crate) enum VertexProvenance {
     },
 }
 
+/// Per-edge subdivision counts for one original line or ring chain.
+///
+/// The chain ordinal is in the geometry's logical line/ring traversal order.
+/// Counts preserve which generated support segments belong to each original
+/// edge without treating inserted coordinates as new vertex sites.
+#[derive(Clone, Debug)]
+pub(crate) struct RefinedChainProvenance {
+    pub(crate) chain_index: usize,
+    /// End offsets of original edges in the refined chain's segment sequence.
+    pub(crate) piece_ends: Vec<usize>,
+}
+
 /// Materialize a vertex-provenance plan in the original source frame.
 ///
 /// `Input(i)` is a bit-exact copy of `original[i]`. `OnSegment` interpolates

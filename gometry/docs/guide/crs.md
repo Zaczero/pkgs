@@ -755,6 +755,11 @@ or array whose full extent must fit. It prefers a datum-aware
 [UTM](https://en.wikipedia.org/wiki/Universal_Transverse_Mercator_coordinate_system)
 or UPS authority CRS, then a local conformal CRS, and accepts a candidate only
 when estimated linear scale error stays within 0.1% over the extent.
+Geographic constructive operations keep this frame-admission check and may
+refine source-chart edges to control the projected input chord deviation before
+their planar kernels run. That input-refinement budget is separate from the
+0.1% frame-fit limit and from round-arc resolution; see
+[geographic local-frame input refinement](constructive.md#geographic-local-frame-input-refinement).
 
 ```python exec="on" source="block" result="text"
 import gometry as gm

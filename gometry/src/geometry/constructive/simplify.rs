@@ -1361,7 +1361,7 @@ impl Shape {
                 candidate(prev, vertex, next)
             }
         };
-        self.map_chains(&|points: &CoordSeq| {
+        self.map_chains(&mut |points: &CoordSeq| {
             let xs = points.xs();
             let ys = points.ys();
             let count = xs.len();

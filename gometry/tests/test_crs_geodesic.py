@@ -4,10 +4,12 @@ best-UTM selection, runtime config, cache info, and PROJ authority metadata.
 
 import json
 import math
+from itertools import pairwise
 from typing import cast
 
 import gometry as gm
 import pytest
+import shapely
 from pyproj import Geod
 
 from tests._support import (
@@ -17,6 +19,76 @@ from tests._support import (
 )
 
 GEOD = Geod(ellps='WGS84')
+LONG_PARALLEL_WEST = -0.463_147_336_714_631_5
+LONG_PARALLEL_EAST = 6.463_147_336_714_631_5
+LONG_PARALLEL_SOUTH = 39.0
+LONG_PARALLEL_NORTH = 39.2
+
+
+def _six_hundred_kilometer_parallel() -> gm.Polygon:
+    return gm.Polygon(
+        [
+            (LONG_PARALLEL_WEST, LONG_PARALLEL_SOUTH),
+            (LONG_PARALLEL_EAST, LONG_PARALLEL_SOUTH),
+            (LONG_PARALLEL_EAST, LONG_PARALLEL_NORTH),
+            (LONG_PARALLEL_WEST, LONG_PARALLEL_NORTH),
+            (LONG_PARALLEL_WEST, LONG_PARALLEL_SOUTH),
+        ],
+        crs=4326,
+    )
+
+
+def _projected_chart_outline(
+    geometry: gm.Geometry,
+    local: gm.CRS,
+) -> shapely.Geometry:
+    chart_densified = geometry.segmentize(250.0)
+    return shapely.from_wkt(chart_densified.to_crs(local).to_wkt())
+
+
+def _distance_to_long_parallel_boundary(longitude: float, latitude: float) -> float:
+    clamped_longitude = min(
+        LONG_PARALLEL_EAST,
+        max(LONG_PARALLEL_WEST, longitude),
+    )
+    closest = min(
+        GEOD.inv(
+            longitude,
+            latitude,
+            clamped_longitude,
+            LONG_PARALLEL_SOUTH,
+        )[2],
+        GEOD.inv(
+            longitude,
+            latitude,
+            clamped_longitude,
+            LONG_PARALLEL_NORTH,
+        )[2],
+    )
+    for meridian in (LONG_PARALLEL_WEST, LONG_PARALLEL_EAST):
+        low, high = LONG_PARALLEL_SOUTH, LONG_PARALLEL_NORTH
+        for _ in range(44):
+            left = low + (high - low) / 3.0
+            right = high - (high - low) / 3.0
+            if (
+                GEOD.inv(longitude, latitude, meridian, left)[2]
+                < GEOD.inv(
+                    longitude,
+                    latitude,
+                    meridian,
+                    right,
+                )[2]
+            ):
+                high = right
+            else:
+                low = left
+        closest = min(
+            closest,
+            GEOD.inv(longitude, latitude, meridian, low)[2],
+            GEOD.inv(longitude, latitude, meridian, LONG_PARALLEL_SOUTH)[2],
+            GEOD.inv(longitude, latitude, meridian, LONG_PARALLEL_NORTH)[2],
+        )
+    return closest
 
 
 def _custom_geographic_crs(flattening: float) -> str:
@@ -350,6 +422,176 @@ def test_geodesic_buffer_does_not_depend_on_the_utm_zone_position(
     central = gm.Point(3.0, 0, crs=4326).buffer(200_000)
     assert buffered.geometry_type == 'Polygon'
     assert buffered.area == pytest.approx(central.area, rel=2e-3)
+
+
+def test_geographic_buffer_refines_a_long_chart_parallel_before_construction() -> None:
+    source = _six_hundred_kilometer_parallel()
+    local = source.estimate_local_crs()
+    assert local.to_epsg() == 32631
+    fine_input = source.segmentize(250.0)
+
+    line = gm.LineString(
+        [
+            (LONG_PARALLEL_WEST, LONG_PARALLEL_SOUTH),
+            (LONG_PARALLEL_EAST, LONG_PARALLEL_SOUTH),
+        ],
+        crs=4326,
+    )
+    fine_line = line.segmentize(250.0)
+
+    for distance, budget in ((1_000.0, 0.1), (10_000.0, 1.0)):
+        # The selected TM certificate bounds projected curvature K between
+        # 1e-7 and 2e-7 /m on this parallel and image scale by 1.02 (native
+        # certificate coverage checks these envelopes). Its K*l²/8 refinement
+        # gives l <= sqrt(8*budget/K_lower). Tangent rotation is at most K*l;
+        # comparing two endpoint normals adds the fine reference's piece.
+        curvature_upper = 2.0e-7
+        maximum_piece_length = math.sqrt(8.0 * budget / 1.0e-7)
+        fine_piece_length = 1.02 * 250.0
+        fine_budget = curvature_upper * fine_piece_length**2 / 8.0
+        angle_bound = curvature_upper * (maximum_piece_length + fine_piece_length)
+        endpoint_bound = 2.0 * distance * math.sin(angle_bound / 2.0)
+        arc_error = distance * (1.0 - math.cos(math.pi / (4.0 * 64)))
+        # Distance functions and round Minkowski dilation are 1-Lipschitz in
+        # input Hausdorff distance. The inscribed round-arc polygon contributes
+        # d*(1-cos(pi/(4*q))); endpoint tangent displacement is separate.
+        interior_bound = budget + fine_budget + arc_error
+        result = source.buffer(distance, quadrant_segments=64)
+        reference = fine_input.buffer(distance, quadrant_segments=64)
+        actual_projected = shapely.from_wkt(result.to_crs(local).to_wkt())
+        reference_projected = shapely.from_wkt(reference.to_crs(local).to_wkt())
+        hausdorff = shapely.hausdorff_distance(actual_projected, reference_projected)
+        assert hausdorff <= interior_bound
+
+        actual_offset = line.offset_curve(distance, quadrant_segments=64)
+        reference_offset = fine_line.offset_curve(distance, quadrant_segments=64)
+        actual_offset_local = shapely.from_wkt(actual_offset.to_crs(local).to_wkt())
+        reference_offset_local = shapely.from_wkt(
+            reference_offset.to_crs(local).to_wkt()
+        )
+        for actual_end, reference_end in (
+            (actual_offset_local.coords[0], reference_offset_local.coords[0]),
+            (actual_offset_local.coords[-1], reference_offset_local.coords[-1]),
+        ):
+            assert math.dist(actual_end, reference_end) <= endpoint_bound
+        fine_line_local = shapely.from_wkt(fine_line.to_crs(local).to_wkt())
+        interior_samples = 0
+        for start, end in pairwise(actual_offset_local.coords):
+            for fraction in (0.0, 0.25, 0.5, 0.75):
+                point = shapely.Point(
+                    start[0] + fraction * (end[0] - start[0]),
+                    start[1] + fraction * (end[1] - start[1]),
+                )
+                along = reference_offset_local.project(point)
+                if (
+                    maximum_piece_length
+                    < along
+                    < (reference_offset_local.length - maximum_piece_length)
+                ):
+                    interior_samples += 1
+                    assert (
+                        abs(fine_line_local.distance(point) - distance)
+                        <= interior_bound
+                    )
+        assert interior_samples > 0
+
+        if distance == 1_000.0:
+            batch = gm.GeometryArray([source, None, source], crs=4326).buffer(
+                distance,
+                quadrant_segments=64,
+            )
+            assert batch[0].to_wkb() == result.to_wkb()
+            assert batch[1] is None
+            assert batch[2].to_wkb() == result.to_wkb()
+
+        if distance == 1_000.0:
+
+            def maximum_relative_distance_error(
+                geometry: gm.Geometry,
+                operation_distance: float,
+            ) -> float:
+                samples = list(geometry.exterior.coords)
+                errors = []
+                for start, end in pairwise(samples):
+                    for fraction in (0.0, 0.25, 0.5, 0.75):
+                        longitude = start[0] + fraction * (end[0] - start[0])
+                        latitude = start[1] + fraction * (end[1] - start[1])
+                        errors.append(
+                            abs(
+                                _distance_to_long_parallel_boundary(longitude, latitude)
+                                / operation_distance
+                                - 1.0
+                            )
+                        )
+                return max(errors)
+
+            coarse_projected = source.to_crs(local).buffer(
+                distance,
+                quadrant_segments=64,
+            )
+            coarse_result = coarse_projected.to_crs(4326)
+            assert maximum_relative_distance_error(result, distance) <= 0.001
+            assert maximum_relative_distance_error(coarse_result, distance) > 0.001
+
+
+def test_geographic_interior_searches_use_refined_boundary_support() -> None:
+    source = _six_hundred_kilometer_parallel()
+    fine_input = source.segmentize(250.0)
+    local = source.estimate_local_crs()
+    assert local.to_epsg() == 32631
+    projected_bounds = source.to_crs(local).bounds
+    assert projected_bounds is not None
+    extent = math.hypot(
+        projected_bounds[2] - projected_bounds[0],
+        projected_bounds[3] - projected_bounds[1],
+    )
+    input_budget = 1.0e-4 * extent
+
+    actual_label = source.polylabel(tolerance=1.0)
+    actual_label_local = actual_label.to_crs(local)
+    fine_polygon_local = shapely.from_wkt(fine_input.to_crs(local).to_wkt())
+    label_local = shapely.Point(actual_label_local.x, actual_label_local.y)
+    assert fine_polygon_local.covers(label_local)
+    actual_clearance = fine_polygon_local.boundary.distance(label_local)
+    # Each input chord approximation perturbs both candidate clearance and
+    # optimum radius; the candidate search can lose another tolerance.
+    fine_input_budget = 2.0e-7 * (1.02 * 250.0) ** 2 / 8.0
+    clearance_bound = 2.0 * (input_budget + fine_input_budget) + 1.0
+    independent_radius_line = shapely.maximum_inscribed_circle(
+        fine_polygon_local,
+        tolerance=1.0,
+    )
+    reference_clearance = independent_radius_line.length
+    assert abs(actual_clearance - reference_clearance) <= clearance_bound
+
+    actual_radius = source.maximum_inscribed_radius(tolerance=1.0)
+    reference_radius = fine_input.maximum_inscribed_radius(tolerance=1.0)
+    assert abs(actual_radius - reference_clearance) <= clearance_bound
+    assert abs(actual_radius - reference_radius) <= clearance_bound
+
+    actual_circle = source.maximum_inscribed_circle(tolerance=1.0)
+    actual_circle_local = _projected_chart_outline(actual_circle, local)
+    assert shapely.covers(
+        shapely.buffer(fine_polygon_local, input_budget),
+        actual_circle_local,
+    )
+
+    actual_enclosing_radius = source.minimum_bounding_radius()
+    reference_enclosing_radius = fine_input.to_crs(local).minimum_bounding_radius(
+        unit='planar'
+    )
+    assert (
+        abs(actual_enclosing_radius - reference_enclosing_radius) <= 4.0 * input_budget
+    )
+    enclosing_circle_local = source.minimum_bounding_circle().to_crs(local)
+    circle_vertices = list(enclosing_circle_local.exterior.coords)[:-1]
+    center_x = sum(point[0] for point in circle_vertices) / len(circle_vertices)
+    center_y = sum(point[1] for point in circle_vertices) / len(circle_vertices)
+    realized_radius = max(
+        math.hypot(point[0] - center_x, point[1] - center_y)
+        for point in circle_vertices
+    ) * math.cos(math.pi / 64.0)
+    assert abs(realized_radius - actual_enclosing_radius) <= 4.0 * input_budget
 
 
 def test_large_polar_buffer_uses_concise_local_crs_diagnostic() -> None:

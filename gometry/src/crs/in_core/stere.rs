@@ -73,6 +73,24 @@ pub(super) fn polar_stereo_setup(ellipsoid: Ellipsoid, params: PolarStereoParams
     })
 }
 
+pub(super) fn certificate_terms(
+    ellipsoid: Ellipsoid,
+    latitude_of_origin_degrees: f64,
+    k0: f64,
+) -> Option<super::PolarCertificateTerms> {
+    let setup = polar_stereo_setup(ellipsoid, PolarStereoParams {
+        lat_0_deg: latitude_of_origin_degrees,
+        lat_ts_deg: latitude_of_origin_degrees,
+        k0,
+    })?;
+    Some(super::PolarCertificateTerms {
+        a: setup.a,
+        e: setup.e,
+        akm1: setup.akm1,
+        pole: setup.pole,
+    })
+}
+
 pub(super) fn geographic_to_polar_stereo_unframed(
     lam_rad: f64,
     lat_rad: f64,

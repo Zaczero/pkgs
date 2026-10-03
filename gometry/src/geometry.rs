@@ -132,7 +132,7 @@ pub(crate) mod packed_line_metrics;
 mod point_location;
 mod predicates;
 mod provenance;
-pub(crate) use provenance::{VertexProvenance, emit_from_original};
+pub(crate) use provenance::{RefinedChainProvenance, VertexProvenance, emit_from_original};
 mod relate;
 mod relate_pattern;
 pub(crate) use relate_pattern::CompiledPattern;
@@ -171,7 +171,8 @@ pub(crate) use constructive::{
     AffineLinear, DEFAULT_MITER_LIMIT, GeographicRdpGuard, OriginAffine, OriginSpec,
     PlanarRdpGuard, RdpEdgeSpanGuard, SegmentPlacement, SegmentPlacementOwned,
     densify_points_budgeted_with_placement, rdp_keep_with_edge_guard, segmentize_points_budgeted,
-    stable_affine_xy, stable_snap_ordinate, vw_keep, vw_keep_geographic,
+    segmentize_points_with_piece_counts_budgeted, stable_affine_xy, stable_snap_ordinate, vw_keep,
+    vw_keep_geographic,
 };
 use constructive::{
     SnapReference, decimal_scale, orient_ring, quantize_to_scale, snap_ring_to_reference,
@@ -757,7 +758,7 @@ impl Polygon {
         budget: &mut ExpansionBudget,
     ) -> Result<Self> {
         self.try_map_ring_seqs(|ring| {
-            segmentize_points_budgeted(ring, max_segment_length, *placement, budget)
+            segmentize_points_budgeted(ring, max_segment_length, placement, budget)
         })
     }
 
@@ -768,7 +769,7 @@ impl Polygon {
         budget: &mut ExpansionBudget,
     ) -> Result<Self> {
         self.try_map_ring_seqs(|ring| {
-            densify_points_budgeted_with_placement(ring, fraction, *placement, budget)
+            densify_points_budgeted_with_placement(ring, fraction, placement, budget)
         })
     }
 

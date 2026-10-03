@@ -333,23 +333,6 @@ pub(crate) fn reversed_points<C: Coordinates + ?Sized>(points: &C) -> Vec<Point>
 }
 
 impl Shape {
-    pub(crate) fn offset_curve(
-        &self,
-        distance: f64,
-        join_style: BufferJoinStyle,
-        quadrant_segments: NonZeroU32,
-        miter_limit: Positive,
-    ) -> Result<Self> {
-        let mut budget = ExpansionBudget::new("offset_curve", "quadrant_segments");
-        self.offset_curve_budgeted(
-            distance,
-            join_style,
-            quadrant_segments,
-            miter_limit,
-            &mut budget,
-        )
-    }
-
     pub(crate) fn offset_curve_budgeted(
         &self,
         distance: f64,

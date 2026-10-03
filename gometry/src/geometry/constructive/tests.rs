@@ -1927,7 +1927,7 @@ mod subdivide_columns_tests {
         let segmented = segmentize_points_budgeted(
             &line,
             1.0,
-            crate::geometry::SegmentPlacement::Planar,
+            &crate::geometry::SegmentPlacement::Planar,
             &mut budget,
         )
         .unwrap();
@@ -1946,7 +1946,7 @@ mod subdivide_columns_tests {
         let segmented = segmentize_points_budgeted(
             &line,
             1e308,
-            crate::geometry::SegmentPlacement::Planar,
+            &crate::geometry::SegmentPlacement::Planar,
             &mut budget,
         )
         .unwrap();
@@ -1968,7 +1968,7 @@ mod subdivide_columns_tests {
         let unchanged = segmentize_points_budgeted(
             &line,
             4.0,
-            crate::geometry::SegmentPlacement::Planar,
+            &crate::geometry::SegmentPlacement::Planar,
             &mut unchanged_budget,
         )
         .unwrap();
@@ -1979,7 +1979,7 @@ mod subdivide_columns_tests {
         let split = segmentize_points_budgeted(
             &line,
             2.0,
-            crate::geometry::SegmentPlacement::Planar,
+            &crate::geometry::SegmentPlacement::Planar,
             &mut split_budget,
         )
         .unwrap();
@@ -1996,7 +1996,7 @@ mod subdivide_columns_tests {
         let exact = segmentize_points_budgeted(
             &adjacent_line,
             2.0_f64.powi(-52),
-            crate::geometry::SegmentPlacement::Planar,
+            &crate::geometry::SegmentPlacement::Planar,
             &mut adjacent_budget,
         )
         .unwrap();
@@ -2038,7 +2038,7 @@ mod subdivide_columns_tests {
         let segmented = segmentize_points_budgeted(
             &line,
             1_000_000.0,
-            crate::geometry::SegmentPlacement::Geodesic(&geodesic, GeographicFrame::crs84()),
+            &crate::geometry::SegmentPlacement::Geodesic(&geodesic, GeographicFrame::crs84()),
             &mut budget,
         )
         .unwrap();
@@ -2067,7 +2067,7 @@ mod subdivide_columns_tests {
         let segmented = segmentize_points_budgeted(
             &line,
             1_000_000.0,
-            crate::geometry::SegmentPlacement::Geodesic(&geodesic, GeographicFrame::crs84()),
+            &crate::geometry::SegmentPlacement::Geodesic(&geodesic, GeographicFrame::crs84()),
             &mut budget,
         )
         .unwrap();
@@ -2093,7 +2093,7 @@ mod subdivide_columns_tests {
         let segmented = segmentize_points_budgeted(
             &line,
             1_000_000.0,
-            crate::geometry::SegmentPlacement::Geodesic(&geodesic, GeographicFrame::crs84()),
+            &crate::geometry::SegmentPlacement::Geodesic(&geodesic, GeographicFrame::crs84()),
             &mut budget,
         )
         .unwrap();
@@ -2137,7 +2137,7 @@ mod subdivide_columns_tests {
         let error = segmentize_points_budgeted(
             &line,
             11_000_000.0,
-            crate::geometry::SegmentPlacement::Geodesic(&geodesic, GeographicFrame::crs84()),
+            &crate::geometry::SegmentPlacement::Geodesic(&geodesic, GeographicFrame::crs84()),
             &mut budget,
         )
         .unwrap_err();
@@ -2161,7 +2161,7 @@ mod subdivide_columns_tests {
         let segmented = segmentize_points_budgeted(
             &line,
             2_000_000.0,
-            crate::geometry::SegmentPlacement::Geodesic(&geodesic, GeographicFrame::crs84()),
+            &crate::geometry::SegmentPlacement::Geodesic(&geodesic, GeographicFrame::crs84()),
             &mut budget,
         )
         .unwrap();
@@ -2182,7 +2182,7 @@ mod subdivide_columns_tests {
         let segmentize = segmentize_points_budgeted(
             &line,
             f64::MIN_POSITIVE,
-            crate::geometry::SegmentPlacement::Planar,
+            &crate::geometry::SegmentPlacement::Planar,
             &mut segmentize_budget,
         )
         .unwrap_err();
@@ -2325,7 +2325,7 @@ mod expansion_budget_threading_tests {
         ])
         .segmentize_budgeted(
             0.5,
-            crate::geometry::SegmentPlacement::Planar,
+            &crate::geometry::SegmentPlacement::Planar,
             &mut parts_budget,
         )
         .unwrap_err();
@@ -2348,7 +2348,7 @@ mod expansion_budget_threading_tests {
         Shape::Polygon(Polygon::new(square(0.0, 1.0), vec![square(0.25, 0.75)]))
             .segmentize_budgeted(
                 0.25,
-                crate::geometry::SegmentPlacement::Planar,
+                &crate::geometry::SegmentPlacement::Planar,
                 &mut rings_budget,
             )
             .unwrap_err();

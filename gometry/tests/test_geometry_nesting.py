@@ -214,6 +214,77 @@ print(sys.argv[1])
     assert result.stdout.strip() == 'depth-128-ok'
 
 
+@pytest.mark.parametrize(
+    'operation',
+    [
+        'buffer',
+        'offset_curve',
+        'polylabel',
+        'maximum_inscribed_circle',
+        'maximum_inscribed_radius',
+        'minimum_clearance',
+        'minimum_clearance_line',
+        'minimum_bounding_circle',
+        'minimum_bounding_radius',
+        'concave_hull',
+        'estimate_local_crs',
+    ],
+)
+def test_shared_depth_128_local_frame_consumers_use_first_members(
+    operation: str,
+) -> None:
+    script = r"""
+import math
+import sys
+import gometry as gm
+import pytest
+
+operation = sys.argv[1]
+source = (
+    gm.LineString([(2.9, 39.0), (3.1, 39.0)], crs=4326)
+    if operation == 'offset_curve'
+    else gm.box(2.9, 39.0, 3.1, 39.2, crs=4326)
+)
+shape = source
+for _ in range(128):
+    shape = gm.GeometryCollection([shape, shape])
+
+def run(value):
+    method = getattr(value, operation)
+    if operation in ('buffer', 'offset_curve'):
+        return method(100.0)
+    if operation in ('polylabel', 'maximum_inscribed_circle', 'maximum_inscribed_radius'):
+        return method(tolerance=1.0)
+    if operation == 'concave_hull':
+        return method(concavity=10.0)
+    return method()
+
+expected = run(source)
+if operation in ('polylabel', 'maximum_inscribed_circle', 'maximum_inscribed_radius'):
+    # These operations admit Polygon/MultiPolygon, not collections; shared
+    # preparation must reach the type error without occurrence expansion.
+    with pytest.raises(gm.GeometryTypeError, match='a Polygon or MultiPolygon is required'):
+        run(shape)
+    sys.exit(0)
+actual = run(shape)
+if isinstance(actual, float):
+    assert math.isclose(actual, expected, rel_tol=1e-12, abs_tol=1e-8), (actual, expected)
+elif operation == 'estimate_local_crs':
+    assert actual == expected
+else:
+    assert actual.crs == 'EPSG:4326'
+    assert gm.equals(actual, expected), (actual, expected)
+"""
+    result = subprocess.run(
+        [sys.executable, '-c', script, operation],
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=10,
+    )
+    assert result.returncode == 0, result.stderr
+
+
 def test_shared_depth_128_delaunay_uses_first_full_xy_site() -> None:
     script = r"""
 import gometry as gm

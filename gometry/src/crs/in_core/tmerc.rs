@@ -191,6 +191,18 @@ pub(super) const fn poder_engsager(ellipsoid: Ellipsoid, k0: f64) -> PoderEngsag
     }
 }
 
+pub(super) const fn certificate_terms(
+    ellipsoid: Ellipsoid,
+    k0: f64,
+) -> super::TmercCertificateTerms {
+    let series = poder_engsager(ellipsoid, k0);
+    super::TmercCertificateTerms {
+        cbg: series.cbg,
+        gtu: series.gtu,
+        qn: series.qn,
+    }
+}
+
 pub(super) fn geographic_to_tmerc_unframed(
     lam_rad: f64,
     lat_rad: f64,

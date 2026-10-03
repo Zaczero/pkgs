@@ -26,6 +26,7 @@ impl Shape {
         )
     }
 
+    #[cfg(test)]
     pub(crate) fn buffer_with_style(
         &self,
         distance: f64,
@@ -213,28 +214,6 @@ impl Shape {
             },
             Self::Empty(..) => Ok(Some(Self::empty_polygon())),
         }
-    }
-
-    /// One-sided buffer of lineal geometry, with flat ends and styled joins.
-    /// Symmetric (`side='both'`) buffers take the regular
-    /// [`Self::buffer_with_style`] path at the caller.
-    pub(crate) fn buffer_sided(
-        &self,
-        distance: f64,
-        side: BufferSide,
-        join_style: BufferJoinStyle,
-        quadrant_segments: NonZeroU32,
-        miter_limit: Positive,
-    ) -> Result<Self> {
-        let mut budget = ExpansionBudget::new("buffer", "quadrant_segments");
-        self.buffer_sided_budgeted(
-            distance,
-            side,
-            join_style,
-            quadrant_segments,
-            miter_limit,
-            &mut budget,
-        )
     }
 
     pub(crate) fn buffer_sided_budgeted(

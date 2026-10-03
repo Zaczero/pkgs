@@ -1,5 +1,6 @@
 //! Route-aware subdivision of coordinate sequences.
 
+use std::num::NonZeroUsize;
 use std::ops::Range;
 use std::sync::Arc;
 
@@ -15,7 +16,7 @@ use crate::geometry::{
 pub(crate) fn segmentize_points_budgeted(
     points: &CoordSeq,
     max_segment_length: f64,
-    placement: SegmentPlacement<'_>,
+    placement: &SegmentPlacement<'_>,
     budget: &mut ExpansionBudget,
 ) -> Result<CoordSeq> {
     subdivide_placed(
@@ -24,6 +25,27 @@ pub(crate) fn segmentize_points_budgeted(
         Target::MaxLength(max_segment_length),
         budget,
     )
+}
+
+/// Place chart-edge vertices using counts certified by the geographic local
+/// projection certificate. The ordinary subdivision path provides route
+/// evaluation, ordinate interpolation, output columns, and the caller-owned
+/// generated-work budget.
+pub(crate) fn segmentize_points_with_piece_counts_budgeted(
+    points: &CoordSeq,
+    piece_counts: &[NonZeroUsize],
+    placement: &SegmentPlacement<'_>,
+    budget: &mut ExpansionBudget,
+) -> Result<CoordSeq> {
+    if piece_counts.len() != points.len().saturating_sub(1) {
+        return Err(GeometryErrorKind::message(
+            "chart-edge piece counts do not match the coordinate sequence",
+        ));
+    }
+    if piece_counts.iter().all(|pieces| pieces.get() == 1) {
+        return Ok(points.clone());
+    }
+    subdivide_placed(points, placement, Target::Pieces(piece_counts), budget)
 }
 
 fn segmentize_steps(length: f64, max_segment_length: f64) -> usize {
@@ -107,13 +129,13 @@ pub(crate) fn densify_points_budgeted(
     fraction: f64,
     budget: &mut ExpansionBudget,
 ) -> Result<CoordSeq> {
-    densify_points_budgeted_with_placement(points, fraction, SegmentPlacement::Planar, budget)
+    densify_points_budgeted_with_placement(points, fraction, &SegmentPlacement::Planar, budget)
 }
 
 pub(crate) fn densify_points_budgeted_with_placement(
     points: &CoordSeq,
     fraction: f64,
-    placement: SegmentPlacement<'_>,
+    placement: &SegmentPlacement<'_>,
     budget: &mut ExpansionBudget,
 ) -> Result<CoordSeq> {
     let steps = (1.0 / fraction).ceil() as usize;
@@ -131,7 +153,7 @@ trait Route {
     type Solution: Copy;
 
     /// Returns a reusable solution and the same route length as `measure`.
-    fn solve(&self, segment: Segment, target: Target) -> Result<(f64, Self::Solution)>;
+    fn solve(&self, segment: Segment, target: Target<'_>) -> Result<(f64, Self::Solution)>;
 
     fn splittable(&self, _segment: Segment, length: f64) -> bool {
         length > 0.0
@@ -172,9 +194,10 @@ struct Rhumb<'a> {
 }
 
 #[derive(Clone, Copy)]
-enum Target {
+enum Target<'a> {
     MaxLength(f64),
     Fraction(usize),
+    Pieces(&'a [NonZeroUsize]),
 }
 
 struct Plan<S> {
@@ -202,12 +225,12 @@ fn lifted_longitude_delta(frame: GeographicFrame, segment: Segment) -> f64 {
 impl Route for Planar {
     type Solution = ();
 
-    fn solve(&self, segment: Segment, target: Target) -> Result<(f64, Self::Solution)> {
+    fn solve(&self, segment: Segment, target: Target<'_>) -> Result<(f64, Self::Solution)> {
         let length = match target {
             Target::MaxLength(max_length) if max_length.is_finite() && max_length > 0.0 => {
                 point_distance(segment.start, segment.end)
             },
-            Target::MaxLength(_) | Target::Fraction(_) => 0.0,
+            Target::MaxLength(_) | Target::Fraction(_) | Target::Pieces(_) => 0.0,
         };
         Ok((length, ()))
     }
@@ -241,7 +264,7 @@ impl Route for Planar {
 impl Route for Chart<'_> {
     type Solution = f64;
 
-    fn solve(&self, segment: Segment, _target: Target) -> Result<(f64, Self::Solution)> {
+    fn solve(&self, segment: Segment, _target: Target<'_>) -> Result<(f64, Self::Solution)> {
         let edge = crate::crs::ChartEdge::new(
             point_from_xy(segment.start),
             point_from_xy(segment.end),
@@ -280,7 +303,7 @@ impl Route for Chart<'_> {
 impl Route for GeodesicRoute<'_> {
     type Solution = DirectedLength;
 
-    fn solve(&self, segment: Segment, _target: Target) -> Result<(f64, Self::Solution)> {
+    fn solve(&self, segment: Segment, _target: Target<'_>) -> Result<(f64, Self::Solution)> {
         let start = self
             .frame
             .to_geodesic_point(point_from_xy(segment.start))
@@ -343,7 +366,7 @@ impl Route for GeodesicRoute<'_> {
 impl Route for Rhumb<'_> {
     type Solution = DirectedLength;
 
-    fn solve(&self, segment: Segment, _target: Target) -> Result<(f64, Self::Solution)> {
+    fn solve(&self, segment: Segment, _target: Target<'_>) -> Result<(f64, Self::Solution)> {
         let start = self
             .frame
             .to_geodesic_point(point_from_xy(segment.start))
@@ -428,9 +451,38 @@ impl Route for Rhumb<'_> {
 fn plan<R: Route>(
     route: &R,
     points: &CoordSeq,
-    target: Target,
+    target: Target<'_>,
     retry: usize,
 ) -> Result<Plan<R::Solution>> {
+    if let Target::Pieces(requested) = target {
+        let edge_count = points.len().saturating_sub(1);
+        if requested.len() != edge_count {
+            return Err(GeometryErrorKind::message(
+                "chart-edge piece counts do not match the coordinate sequence",
+            ));
+        }
+        let mut steps = Vec::with_capacity(edge_count);
+        let mut solutions = Vec::new();
+        let mut generated = 0_usize;
+        for (segment, &requested_pieces) in line_segments(points).zip(requested) {
+            let pieces = requested_pieces.get();
+            if pieces > 1 {
+                // Only failed source edges need a ChartEdge solution. Safe
+                // edges carry their certified count of one through the plan.
+                let (_, solution) = route.solve(segment, target)?;
+                solutions.push(solution);
+                generated = generated.saturating_add(pieces.wrapping_sub(1));
+            }
+            steps.push(pieces);
+        }
+        return Ok(Plan {
+            steps,
+            solutions,
+            generated,
+            source_exceeds_max_length: false,
+        });
+    }
+
     let mut steps = Vec::with_capacity(points.len().saturating_sub(1));
     let mut solutions = Vec::new();
     let mut generated = 0_usize;
@@ -443,6 +495,7 @@ fn plan<R: Route>(
             Target::MaxLength(max_length) => route.pieces(segment, length, max_length),
             Target::Fraction(fraction_pieces) if splittable => fraction_pieces,
             Target::Fraction(_) => 1,
+            Target::Pieces(_) => unreachable!("piece-count targets were planned above"),
         };
         if retry > 0 && splittable {
             pieces = pieces
@@ -474,21 +527,40 @@ fn plan<R: Route>(
 
 fn subdivide_placed(
     points: &CoordSeq,
-    placement: SegmentPlacement<'_>,
-    target: Target,
+    placement: &SegmentPlacement<'_>,
+    target: Target<'_>,
     budget: &mut ExpansionBudget,
 ) -> Result<CoordSeq> {
     match placement {
         SegmentPlacement::Planar => subdivide(&Planar, points, target, budget),
-        SegmentPlacement::Chart(geodesic, frame) => {
-            subdivide(&Chart { geodesic, frame }, points, target, budget)
-        },
-        SegmentPlacement::Geodesic(geodesic, frame) => {
-            subdivide(&GeodesicRoute { geodesic, frame }, points, target, budget)
-        },
-        SegmentPlacement::Rhumb { crs, state, frame } => {
-            subdivide(&Rhumb { crs, state, frame }, points, target, budget)
-        },
+        SegmentPlacement::Chart(geodesic, frame) => subdivide(
+            &Chart {
+                geodesic,
+                frame: *frame,
+            },
+            points,
+            target,
+            budget,
+        ),
+        SegmentPlacement::Geodesic(geodesic, frame) => subdivide(
+            &GeodesicRoute {
+                geodesic,
+                frame: *frame,
+            },
+            points,
+            target,
+            budget,
+        ),
+        SegmentPlacement::Rhumb { crs, state, frame } => subdivide(
+            &Rhumb {
+                crs,
+                state,
+                frame: *frame,
+            },
+            points,
+            target,
+            budget,
+        ),
     }
 }
 
@@ -497,11 +569,11 @@ const MAX_REPRESENTABILITY_RETRIES: usize = 1;
 fn subdivide<R: Route>(
     route: &R,
     points: &CoordSeq,
-    target: Target,
+    target: Target<'_>,
     budget: &mut ExpansionBudget,
 ) -> Result<CoordSeq> {
     match target {
-        Target::Fraction(_) => {
+        Target::Fraction(_) | Target::Pieces(_) => {
             let plan = plan(route, points, target, 0)?;
             budget.check_additional(plan.generated)?;
             let output = materialize(route, points, &plan)?;
@@ -938,14 +1010,14 @@ mod tests {
         let first = densify_points_budgeted_with_placement(
             &line,
             0.5,
-            SegmentPlacement::Planar,
+            &SegmentPlacement::Planar,
             &mut budget,
         )
         .unwrap();
         let second = densify_points_budgeted_with_placement(
             &line,
             0.5,
-            SegmentPlacement::Planar,
+            &SegmentPlacement::Planar,
             &mut budget,
         )
         .unwrap();
@@ -953,6 +1025,65 @@ mod tests {
         assert_eq!(first.len(), 3);
         assert_eq!(second.len(), 3);
         assert_eq!(budget.used(), 2);
+    }
+
+    #[test]
+    fn chart_piece_counts_refine_only_requested_edges_and_preserve_ordinates() {
+        let line = CoordSeq::try_from_vecs(
+            vec![0.0, 1.0, 1.0, 2.0],
+            vec![0.0, 0.0, 1.0, 1.0],
+            Some(vec![1.0, 2.0, 32.0, 33.0]),
+            Some(vec![10.0, 20.0, 80.0, 90.0]),
+        )
+        .unwrap();
+        let geodesic = geographiclib_rs::Geodesic::new(6_371_000.0, 0.0);
+        let counts = [
+            NonZeroUsize::new(1).unwrap(),
+            NonZeroUsize::new(3).unwrap(),
+            NonZeroUsize::new(1).unwrap(),
+        ];
+        let mut budget = ExpansionBudget::new("buffer", "quadrant_segments");
+        budget.add(7).unwrap();
+        let refined = segmentize_points_with_piece_counts_budgeted(
+            &line,
+            &counts,
+            &SegmentPlacement::Chart(&geodesic, GeographicFrame::crs84()),
+            &mut budget,
+        )
+        .unwrap();
+
+        assert_eq!(refined.xs(), &[0.0, 1.0, 1.0, 1.0, 1.0, 2.0]);
+        assert_eq!(refined.ys(), &[0.0, 0.0, 1.0 / 3.0, 2.0 / 3.0, 1.0, 1.0]);
+        assert_eq!(refined.zs().unwrap(), &[1.0, 2.0, 12.0, 22.0, 32.0, 33.0]);
+        assert_eq!(refined.ms().unwrap(), &[10.0, 20.0, 40.0, 60.0, 80.0, 90.0]);
+        assert_eq!(budget.used(), 9);
+    }
+
+    #[test]
+    fn one_piece_counts_return_the_shared_source_without_allocating() {
+        use crate::test_support::allocation_count;
+
+        let points =
+            CoordSeq::try_from_xy(&[XY::new(0.0, 0.0), XY::new(0.1, 0.0), XY::new(0.2, 0.0)])
+                .unwrap();
+        let counts = [NonZeroUsize::MIN, NonZeroUsize::MIN];
+        let geodesic = geographiclib_rs::Geodesic::new(6_378_137.0, 1.0 / 298.257_223_563);
+        let mut budget = ExpansionBudget::new("buffer", "quadrant_segments");
+
+        let (refined, allocations) = allocation_count(|| {
+            segmentize_points_with_piece_counts_budgeted(
+                &points,
+                &counts,
+                &SegmentPlacement::Chart(&geodesic, GeographicFrame::crs84()),
+                &mut budget,
+            )
+            .unwrap()
+        });
+
+        assert_eq!(allocations, 0);
+        assert_eq!(refined.xs(), points.xs());
+        assert_eq!(refined.ys(), points.ys());
+        assert_eq!(budget.used(), 0);
     }
 
     #[test]
@@ -1058,7 +1189,7 @@ mod tests {
 
         let mut budget = ExpansionBudget::new("segmentize", "max_length");
         let output =
-            segmentize_points_budgeted(&points, max_length, SegmentPlacement::Planar, &mut budget)
+            segmentize_points_budgeted(&points, max_length, &SegmentPlacement::Planar, &mut budget)
                 .unwrap();
         assert_eq!(output.len(), 5);
         assert_eq!(output.xs(), &[0.0, 0.25, 0.5, 0.75, 1.0]);
@@ -1074,7 +1205,11 @@ mod tests {
         impl Route for Underplanned {
             type Solution = ();
 
-            fn solve(&self, _segment: Segment, _target: Target) -> Result<(f64, Self::Solution)> {
+            fn solve(
+                &self,
+                _segment: Segment,
+                _target: Target<'_>,
+            ) -> Result<(f64, Self::Solution)> {
                 Ok((2.0, ()))
             }
 
@@ -1122,7 +1257,7 @@ mod tests {
             let segmented = segmentize_points_budgeted(
                 points,
                 1.0,
-                SegmentPlacement::Planar,
+                &SegmentPlacement::Planar,
                 &mut segmentize_budget,
             )
             .unwrap();
@@ -1133,7 +1268,7 @@ mod tests {
             let densified = densify_points_budgeted_with_placement(
                 points,
                 f64::MIN_POSITIVE,
-                SegmentPlacement::Planar,
+                &SegmentPlacement::Planar,
                 &mut densify_budget,
             )
             .unwrap();

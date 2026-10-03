@@ -65,12 +65,33 @@ pub(super) fn refine_facet_nearest<const BOUNDED: bool>(
     keep: &impl Fn(Point, Segment) -> bool,
     best: &mut Option<NearestCandidate>,
 ) -> crate::error::Result<bool> {
+    refine_facet_nearest_with_ordinal::<BOUNDED>(
+        linework,
+        facet,
+        probe,
+        upper_bound,
+        tolerance,
+        &|probe, _, segment| keep(probe, segment),
+        best,
+    )
+}
+
+pub(super) fn refine_facet_nearest_with_ordinal<const BOUNDED: bool>(
+    linework: &PreparedLinework,
+    facet: Facet,
+    probe: Point,
+    upper_bound: f64,
+    tolerance: f64,
+    keep: &impl Fn(Point, usize, Segment) -> bool,
+    best: &mut Option<NearestCandidate>,
+) -> crate::error::Result<bool> {
     let mut changed = false;
     for index in 0..facet.segment_count as usize {
         #[cfg(test)]
         NEAREST_WORK.with(|work| work.set(work.get().saturating_add(1)));
         let segment = linework.segment(facet, index);
-        if !keep(probe, segment) {
+        let ordinal = linework.segment_ordinal(facet, index);
+        if !keep(probe, ordinal, segment) {
             continue;
         }
         let selection = point_segment_selection(probe.xy(), segment)?;
@@ -92,7 +113,7 @@ pub(super) fn refine_facet_nearest<const BOUNDED: bool>(
                 selection.precedes(probe.xy(), segment, &candidate.distance_key, || {
                     candidate
                         .segment_ordinal()
-                        .is_some_and(|best| linework.segment_ordinal(facet, index) < best)
+                        .is_some_and(|best| ordinal < best)
                 })?
             },
         };
@@ -100,7 +121,7 @@ pub(super) fn refine_facet_nearest<const BOUNDED: bool>(
             changed = true;
             *best = Some(NearestCandidate {
                 probe,
-                target: NearestTarget::Segment(linework.segment_ordinal(facet, index)),
+                target: NearestTarget::Segment(ordinal),
                 distance_squared: selection.distance_squared,
                 distance_key: selection.distance_key(probe.xy(), segment),
             });
@@ -781,6 +802,31 @@ impl FacetBvh {
         stack: &mut Vec<u32>,
         best: &mut Option<NearestCandidate>,
     ) -> crate::error::Result<bool> {
+        self.nearest_point_with_stack_and_ordinal::<TIGHT, SQUARED, BOUNDED>(
+            linework,
+            probe,
+            upper_bound,
+            tolerance,
+            &|point, _, segment| keep(point, segment),
+            stack,
+            best,
+        )
+    }
+
+    pub(crate) fn nearest_point_with_stack_and_ordinal<
+        const TIGHT: bool,
+        const SQUARED: bool,
+        const BOUNDED: bool,
+    >(
+        &self,
+        linework: &PreparedLinework,
+        probe: Point,
+        upper_bound: f64,
+        tolerance: f64,
+        keep: &impl Fn(Point, usize, Segment) -> bool,
+        stack: &mut Vec<u32>,
+        best: &mut Option<NearestCandidate>,
+    ) -> crate::error::Result<bool> {
         let mut changed_any = false;
         let probe_aabb = point_aabb(probe.x, probe.y);
         let bound = |aabb: [f64; 4]| {
@@ -837,7 +883,7 @@ impl FacetBvh {
                         linework.facet_point_distance(facet, probe)?
                     };
                     if facet_distance <= limit {
-                        let changed = refine_facet_nearest::<BOUNDED>(
+                        let changed = refine_facet_nearest_with_ordinal::<BOUNDED>(
                             linework,
                             facet,
                             probe,

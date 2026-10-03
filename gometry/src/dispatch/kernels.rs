@@ -14,11 +14,10 @@ use crate::geometry::{
 use crate::numeric::Positive;
 use crate::{
     F64Param, I64Param, line_interpolate_shape, line_interpolate_shape_m, line_substring_shape,
-    line_substring_shape_m, metric_concave_hull, metric_constructive_shape,
-    metric_constructive_shape_budgeted, metric_interpolate_m, metric_maximum_inscribed_circle,
-    metric_maximum_inscribed_radius, metric_minimum_bounding_circle,
-    metric_minimum_bounding_radius, metric_minimum_clearance, metric_minimum_clearance_line,
-    metric_optional_constructive_shape,
+    line_substring_shape_m, metric_concave_hull, metric_constructive_shape_budgeted,
+    metric_interpolate_m, metric_maximum_inscribed_circle, metric_maximum_inscribed_radius,
+    metric_minimum_bounding_circle, metric_minimum_bounding_radius, metric_minimum_clearance,
+    metric_minimum_clearance_line, metric_optional_constructive_shape,
 };
 
 fn scale_length(value: f64, to_metre: f64) -> f64 {
@@ -91,39 +90,17 @@ pub(crate) fn unary_buffer(
     miter_limit: Positive,
     side: BufferSide,
 ) -> Result<Shape> {
-    let distance = distance.get(ctx.lane.row());
-    if same_topological_coordinate(distance, 0.0) {
-        return match side {
-            BufferSide::Both => data.shape().buffer_with_style(
-                distance,
-                cap_style,
-                join_style,
-                quadrant_segments,
-                miter_limit,
-            ),
-            BufferSide::Left | BufferSide::Right => data.shape().buffer_sided(
-                distance,
-                side,
-                join_style,
-                quadrant_segments,
-                miter_limit,
-            ),
-        };
-    }
-    let model = ctx.metric.require_model(MetricOp::Buffer)?;
-    metric_constructive_shape(
-        model,
-        ctx.frame.crs_str(),
-        data.shape(),
+    let mut budget = crate::geometry::ExpansionBudget::new("buffer", "quadrant_segments");
+    unary_buffer_budgeted(
+        data,
+        ctx,
         distance,
-        |shape, d| match side {
-            BufferSide::Both => {
-                shape.buffer_with_style(d, cap_style, join_style, quadrant_segments, miter_limit)
-            },
-            BufferSide::Left | BufferSide::Right => {
-                shape.buffer_sided(d, side, join_style, quadrant_segments, miter_limit)
-            },
-        },
+        cap_style,
+        join_style,
+        quadrant_segments,
+        miter_limit,
+        side,
+        &mut budget,
     )
 }
 
@@ -196,19 +173,15 @@ pub(crate) fn unary_offset_curve(
     quadrant_segments: NonZeroU32,
     miter_limit: Positive,
 ) -> Result<Shape> {
-    let distance = distance.get(ctx.lane.row());
-    if same_topological_coordinate(distance, 0.0) {
-        return data
-            .shape()
-            .offset_curve(distance, join_style, quadrant_segments, miter_limit);
-    }
-    let model = ctx.metric.require_model(MetricOp::OffsetCurve)?;
-    metric_constructive_shape(
-        model,
-        ctx.frame.crs_str(),
-        data.shape(),
+    let mut budget = crate::geometry::ExpansionBudget::new("offset_curve", "quadrant_segments");
+    unary_offset_curve_budgeted(
+        data,
+        ctx,
         distance,
-        |shape, d| shape.offset_curve(d, join_style, quadrant_segments, miter_limit),
+        join_style,
+        quadrant_segments,
+        miter_limit,
+        &mut budget,
     )
 }
 
@@ -542,7 +515,7 @@ pub(crate) fn unary_segmentize(
         crate::crs::ensure_geographic_domain_in_frame(frame, data.shape())?;
     }
     data.shape()
-        .segmentize_budgeted(length / to_metre, placement.as_borrowed(), &mut budget)
+        .segmentize_budgeted(length / to_metre, &placement.as_borrowed(), &mut budget)
 }
 
 /// Densify kernel shared by the spine-routed free function.
@@ -560,7 +533,7 @@ pub(crate) fn unary_densify(
     }
     data.shape().densified_budgeted_with_placement(
         fraction,
-        placement.as_borrowed(),
+        &placement.as_borrowed(),
         &mut crate::geometry::ExpansionBudget::new("segmentize", "fraction"),
     )
 }

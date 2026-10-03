@@ -6,14 +6,16 @@ use crate::error::Result;
 use crate::geometry::predicates::{
     LineworkChains, MinimumClearanceWitness, collect_duplicate_points, collect_offending_pair,
     is_seam_cut_pair, line_is_ccw, line_is_closed, line_is_closed_in_domain, line_is_simple,
-    line_repair, minimum_clearance_witness, multi_polygon_members_issue,
-    multi_polygon_members_issue_with_seam_cuts, multiline_is_simple, multiline_repair,
-    polygonal_repair, shell_is_convex, validate_line, validate_point, validate_points,
+    line_repair, minimum_clearance_witness, minimum_clearance_witness_with_support,
+    multi_polygon_members_issue, multi_polygon_members_issue_with_seam_cuts, multiline_is_simple,
+    multiline_repair, polygonal_repair, shell_is_convex, validate_line, validate_point,
+    validate_points,
 };
 use crate::geometry::{
     Component, CoordinateAxes, Coordinates as _, GeometryErrorKind, GeometryKind, HashSet, LineSeq,
-    Point, PointKey, RepairMethod, SeamCutEdgePairs, Shape, SharedShapeOwners, ValidationIssue,
-    carry_ordinates, emit_from_original, point_distance, unique_xy_points,
+    Point, PointKey, RefinedChainProvenance, RepairMethod, SeamCutEdgePairs, Shape,
+    SharedShapeOwners, ValidationIssue, carry_ordinates, emit_from_original, point_distance,
+    unique_xy_points,
 };
 
 fn advance_source_edge_base(source_edge_base: &mut u32, coordinate_count: usize) -> Result<()> {
@@ -319,8 +321,12 @@ impl Shape {
         })
     }
 
-    pub(crate) fn minimum_clearance_plan(&self) -> Result<Option<MinimumClearanceWitness>> {
-        minimum_clearance_witness(self)
+    pub(crate) fn minimum_clearance_plan_with_support(
+        &self,
+        support: &Self,
+        refined_chains: &[RefinedChainProvenance],
+    ) -> Result<Option<MinimumClearanceWitness>> {
+        minimum_clearance_witness_with_support(self, support, refined_chains)
     }
 
     /// The two-point `LineString` realizing `minimum_clearance` —
