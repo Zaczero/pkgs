@@ -13,9 +13,8 @@ impl<Site: Copy> StoredHull<Site> {
     pub(in crate::geometry) fn new(sorted: &[Site], point: impl Fn(Site) -> XY) -> Self {
         let mut vertices = Vec::with_capacity(sorted.len().wrapping_mul(2));
         for &site in sorted {
-            while vertices.len() >= 2 {
-                let a = vertices[vertices.len() - 2];
-                let b = vertices[vertices.len() - 1];
+            while let Some([a, b]) = vertices.last_chunk::<2>() {
+                let (a, b) = (*a, *b);
                 if orientation(point(a), point(b), point(site)) == Orientation::CounterClockwise {
                     break;
                 }
@@ -26,9 +25,10 @@ impl<Site: Copy> StoredHull<Site> {
         let rightmost = vertices.len().wrapping_sub(1);
         let lower_count = vertices.len();
         for &site in sorted.iter().rev().skip(1) {
-            while vertices.len() > lower_count {
-                let a = vertices[vertices.len() - 2];
-                let b = vertices[vertices.len() - 1];
+            while vertices.len() > lower_count
+                && let Some([a, b]) = vertices.last_chunk::<2>()
+            {
+                let (a, b) = (*a, *b);
                 if orientation(point(a), point(b), point(site)) == Orientation::CounterClockwise {
                     break;
                 }
@@ -87,8 +87,18 @@ impl<Site: Copy> StoredHull<Site> {
         let (mut low, mut high) = (0_usize, edge_count);
         while low < high {
             let middle = low.wrapping_add(high.wrapping_sub(low) / 2);
-            let a = point(self.vertices[position(middle)]);
-            let b = point(self.vertices[position(middle.wrapping_add(1))]);
+            let a = point(
+                *self
+                    .vertices
+                    .get(position(middle))
+                    .expect("hull support edge starts at a vertex"),
+            );
+            let b = point(
+                *self
+                    .vertices
+                    .get(position(middle.wrapping_add(1)))
+                    .expect("hull support edge ends at a vertex"),
+            );
             let (a, b) = if DOT {
                 (XY::new(-a.y, a.x), XY::new(-b.y, b.x))
             } else {
@@ -115,8 +125,16 @@ impl<Site: Copy> StoredHull<Site> {
     ) -> impl Iterator<Item = Site> {
         let (mut lower, mut upper) = (0_usize, self.vertices.len().wrapping_sub(1));
         std::iter::from_fn(move || {
-            let left = (lower <= self.rightmost).then(|| self.vertices[lower]);
-            let right = (upper > self.rightmost).then(|| self.vertices[upper]);
+            let left = if lower <= self.rightmost {
+                self.vertices.get(lower).copied()
+            } else {
+                None
+            };
+            let right = if upper > self.rightmost {
+                self.vertices.get(upper).copied()
+            } else {
+                None
+            };
             let take_lower = match (left, right) {
                 (Some(left), Some(right)) => {
                     let (left, right) = (point(left), point(right));

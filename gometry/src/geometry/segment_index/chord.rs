@@ -87,21 +87,30 @@ impl ChordIndex {
 
 impl HullSegments {
     fn build(&mut self, range: Range<usize>) -> usize {
-        let children = if range.len() > LEAF {
+        let children = (range.len() > LEAF).then(|| {
             let middle = range.start.wrapping_add(range.len() / 2);
-            Some([
+            [
                 self.build(range.start..middle),
                 self.build(middle..range.end),
-            ])
-        } else {
-            None
-        };
+            ]
+        });
         let mut points = if let Some([left, right]) = children {
-            self.nodes[left]
+            self.nodes
+                .get(left)
+                .expect("left child precedes its parent")
                 .hull
-                .merged_sites(&self.nodes[right].hull, |point| point)
+                .merged_sites(
+                    &self
+                        .nodes
+                        .get(right)
+                        .expect("right child precedes its parent")
+                        .hull,
+                    |point| point,
+                )
         } else {
-            self.entries[range.clone()]
+            self.entries
+                .get(range.clone())
+                .expect("leaf range belongs to segment entries")
                 .iter()
                 .flat_map(|entry| [entry.segment.start, entry.segment.end])
                 .collect()
@@ -139,22 +148,35 @@ impl HullSegments {
         envelope: &AABB<[f64; 2]>,
         check: &mut impl FnMut(&SegmentEntry) -> bool,
     ) -> bool {
-        let node = &self.nodes[ordinal];
+        let node = self
+            .nodes
+            .get(ordinal)
+            .expect("query node belongs to the built hull tree");
         if !node.envelope.intersects(envelope) {
             return true;
         }
-        let maximum = node.hull.vertices[node.hull.support::<false>(query, false, |point| point)];
+        let maximum = *node
+            .hull
+            .vertices
+            .get(node.hull.support::<false>(query, false, |point| point))
+            .expect("hull maximum support belongs to its vertices");
         if orientation(query.start, query.end, maximum) == Orientation::Clockwise {
             return true;
         }
-        let minimum = node.hull.vertices[node.hull.support::<false>(query, true, |point| point)];
+        let minimum = *node
+            .hull
+            .vertices
+            .get(node.hull.support::<false>(query, true, |point| point))
+            .expect("hull minimum support belongs to its vertices");
         if orientation(query.start, query.end, minimum) == Orientation::CounterClockwise {
             return true;
         }
         if let Some([left, right]) = node.children {
             self.query(left, query, envelope, check) && self.query(right, query, envelope, check)
         } else {
-            self.entries[node.range.clone()]
+            self.entries
+                .get(node.range.clone())
+                .expect("leaf range belongs to segment entries")
                 .iter()
                 .filter(|entry| segment_envelope(entry.segment).intersects(envelope))
                 .all(check)
@@ -173,8 +195,8 @@ mod tests {
             let scale = 2.0_f64.powi(exponent);
             let segments: Vec<_> = (0..2048)
                 .map(|index| {
-                    let x = (index % 64) as f64 - 32.0;
-                    let y = (index / 64) as f64 - 16.0;
+                    let x = f64::from(index % 64) - 32.0;
+                    let y = f64::from(index / 64) - 16.0;
                     Segment {
                         start: XY::new(x * scale, y * scale),
                         end: XY::new((x + 0.75) * scale, (y + 0.25) * scale),
