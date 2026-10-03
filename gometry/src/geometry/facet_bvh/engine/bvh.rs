@@ -32,7 +32,7 @@ pub(crate) enum NearestTarget {
 }
 
 impl NearestCandidate {
-    pub(crate) fn segment_ordinal(&self) -> Option<usize> {
+    pub(crate) const fn segment_ordinal(&self) -> Option<usize> {
         match self.target {
             NearestTarget::Segment(ordinal) => Some(ordinal),
             NearestTarget::Point(_) => None,
@@ -133,7 +133,10 @@ struct DirectionalSlab {
 
 impl DirectionalSlab {
     fn build(linework: &PreparedLinework, ids: &[u32]) -> Self {
-        let facet = facet_for_leaf(linework, ids[ids.len() / 2] as usize);
+        let facet = facet_for_leaf(
+            linework,
+            *ids.get(ids.len() / 2).expect("slab leaf has a facet") as usize,
+        );
         let mut direction = [0.0_f64; 2];
         let mut longest = 0.0_f64;
         for index in 0..facet.segment_count as usize {
@@ -222,7 +225,7 @@ impl FacetBvh {
         Self::build_with_bounds(linework, true)
     }
 
-    pub(crate) fn has_slabs(&self) -> bool {
+    pub(crate) const fn has_slabs(&self) -> bool {
         self.slabs.is_some()
     }
 
@@ -815,10 +818,13 @@ impl FacetBvh {
                 continue;
             }
             if TIGHT
-                && self
-                    .slabs
-                    .as_ref()
-                    .is_some_and(|slabs| slabs[index as usize].distance_squared(probe) > limit)
+                && self.slabs.as_ref().is_some_and(|slabs| {
+                    slabs
+                        .get(index as usize)
+                        .expect("BVH traversal node index is within the built slabs")
+                        .distance_squared(probe)
+                        > limit
+                })
             {
                 continue;
             }

@@ -59,19 +59,19 @@ fn push_chain_facets(
     if vertices < 2 {
         return Ok(0);
     }
-    let segments = vertices - 1;
+    let segments = vertices.wrapping_sub(1);
     packed_index_count(global_segments, segments)?;
     facets.reserve(segments.div_ceil(FACET_SEGMENTS));
     let mut offset = 0;
     while offset < segments {
-        let count = (segments - offset).min(FACET_SEGMENTS);
+        let count = segments.wrapping_sub(offset).min(FACET_SEGMENTS);
         debug_assert!(u32::try_from(offset).is_ok(), "CoordSeq window is u32");
         facets.push(Facet {
             chain,
             first_vertex: offset as u32,
             segment_count: count as u8,
         });
-        offset += count;
+        offset = offset.wrapping_add(count);
     }
     Ok(segments)
 }
@@ -207,14 +207,21 @@ impl PreparedLinework {
     }
 
     fn facet_chain(&self, facet: Facet) -> (&CoordSeq, Facet) {
-        (&self.chains[facet.chain as usize], facet)
+        (
+            self.chains
+                .get(facet.chain as usize)
+                .expect("facet chain belongs to prepared linework"),
+            facet,
+        )
     }
 
     /// Total linework vertex count across every chain.
     pub(crate) fn vertex_count(&self) -> usize {
         self.chains.last().map_or(0, |chain| {
-            let chain_idx = self.chains.len() - 1;
-            self.chain_vertex_offsets[chain_idx] + chain.len()
+            self.chain_vertex_offsets
+                .last()
+                .expect("every prepared chain has a global offset")
+                .wrapping_add(chain.len())
         })
     }
 
@@ -223,17 +230,26 @@ impl PreparedLinework {
             .chain_vertex_offsets
             .partition_point(|&offset| offset <= global)
             .saturating_sub(1);
-        (chain, global - self.chain_vertex_offsets[chain])
+        let offset = *self
+            .chain_vertex_offsets
+            .get(chain)
+            .expect("global vertex belongs to a prepared chain");
+        (chain, global.wrapping_sub(offset))
     }
 
     /// The full vertex (with any Z/M) at a global column index.
     pub(crate) fn vertex_at(&self, index: usize) -> Point {
         let (chain, local) = self.locate_vertex(index);
-        self.chains[chain].point_at(local)
+        self.chains
+            .get(chain)
+            .expect("global vertex belongs to a prepared chain")
+            .point_at(local)
     }
 
     pub(crate) fn segment_ordinal(&self, facet: Facet, index: usize) -> usize {
-        self.chain_vertex_offsets[facet.chain as usize]
+        self.chain_vertex_offsets
+            .get(facet.chain as usize)
+            .expect("facet chain belongs to prepared linework")
             .wrapping_sub(facet.chain as usize)
             .wrapping_add(facet.first_vertex as usize)
             .wrapping_add(index)
@@ -244,16 +260,29 @@ impl PreparedLinework {
         let mut low = 0;
         let mut high = self.chains.len();
         while low < high {
-            let middle = low + (high - low) / 2;
-            if self.chain_vertex_offsets[middle].wrapping_sub(middle) <= ordinal {
+            let middle = low.wrapping_add(high.wrapping_sub(low) / 2);
+            if self
+                .chain_vertex_offsets
+                .get(middle)
+                .expect("binary-search midpoint belongs to prepared chains")
+                .wrapping_sub(middle)
+                <= ordinal
+            {
                 low = middle.wrapping_add(1);
             } else {
                 high = middle;
             }
         }
         let chain = low.saturating_sub(1);
-        let local = ordinal.wrapping_sub(self.chain_vertex_offsets[chain].wrapping_sub(chain));
-        let coords = &self.chains[chain];
+        let offset = *self
+            .chain_vertex_offsets
+            .get(chain)
+            .expect("segment ordinal belongs to a prepared chain");
+        let local = ordinal.wrapping_sub(offset.wrapping_sub(chain));
+        let coords = self
+            .chains
+            .get(chain)
+            .expect("segment ordinal belongs to a prepared chain");
         (
             coords.point_at(local),
             coords.point_at(local.wrapping_add(1)),
@@ -321,16 +350,23 @@ impl PreparedLinework {
     /// kernels read no other ordinates).
     pub(crate) fn segment(&self, facet: Facet, index: usize) -> Segment {
         let (chain, facet) = self.facet_chain(facet);
-        let v = facet.first_vertex as usize + index;
+        let v = (facet.first_vertex as usize).wrapping_add(index);
         let xs = chain.xs();
         let ys = chain.ys();
+        let end = v.wrapping_add(2);
+        let Some([start_x, end_x]) = xs.get(v..end) else {
+            unreachable!("facet segment x range belongs to its prepared chain");
+        };
+        let Some([start_y, end_y]) = ys.get(v..end) else {
+            unreachable!("facet segment y range belongs to its prepared chain");
+        };
         // Direct `XY` construction — the segment kernels are XY-only, so the
         // packed columns build the endpoints straight (no full `Point` with its
         // z/m/axes, then narrow): this `segment` is the per-pair contact sweep's
         // hot pool-fill, run for every linework vertex of every batch element.
         Segment {
-            start: XY::new(xs[v], ys[v]),
-            end: XY::new(xs[v + 1], ys[v + 1]),
+            start: XY::new(*start_x, *start_y),
+            end: XY::new(*end_x, *end_y),
         }
     }
 
@@ -555,9 +591,15 @@ impl PreparedLinework {
     pub(crate) fn facet_aabb(&self, facet: Facet) -> [f64; 4] {
         let (chain, facet) = self.facet_chain(facet);
         let first = facet.first_vertex as usize;
-        let last = first + facet.segment_count as usize;
-        let xs = &chain.xs()[first..=last];
-        let ys = &chain.ys()[first..=last];
+        let last = first.wrapping_add(facet.segment_count as usize);
+        let xs = chain
+            .xs()
+            .get(first..=last)
+            .expect("facet x window belongs to its prepared chain");
+        let ys = chain
+            .ys()
+            .get(first..=last)
+            .expect("facet y window belongs to its prepared chain");
         xy_bounds_columns(xs, ys)
     }
 }
