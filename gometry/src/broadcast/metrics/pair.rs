@@ -65,12 +65,7 @@ pub(crate) fn ensure_hausdorff_geodesic_shape(
     shape: &Shape,
 ) -> crate::error::Result<()> {
     crs::ensure_geographic_domain_in_frame(frame, shape)?;
-    if shape.has_area_parts() {
-        return Err(crs::CrsError::message(
-            "geodesic distance for polygon interiors is unsupported",
-        ));
-    }
-    Ok(())
+    crate::geometry::ensure_geographic_hausdorff_linework(shape)
 }
 
 pub(crate) fn geodesic_point_columns_to_shape_values(

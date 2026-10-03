@@ -9,8 +9,9 @@ use crate::geographic::{GeographicFrame, GeographicInputs};
 use crate::geometry::overlay::overlay_all_geographic_from;
 use crate::geometry::{
     ChartBox, ChartEdgeBvh, ChartMetric, Coordinates as _, FrameDependentCaches, GeodesicMetric,
-    GeodesicPartsKey, GeographicPrepared, OverlayOp, Point, PointEdgeQuery, PointEdgeQueryResult,
-    PreparedPlan, RunIdentity, Shape, Strictness, graph_intersects_data_geographic,
+    GeographicMetricKey, GeographicPrepared, OverlayOp, Point, PointEdgeQuery,
+    PointEdgeQueryResult, PreparedPlan, RunIdentity, Shape, Strictness,
+    graph_intersects_data_geographic,
 };
 
 const CHART_BVH_MIN_EDGES: usize = 8;
@@ -44,7 +45,7 @@ impl ChartParts {
                 edges.push(ChartEdgePart {
                     start,
                     end,
-                    bounds: metric.chart_edge_bounds(&edge),
+                    bounds: edge.bounds(),
                     edge,
                 });
             }
@@ -84,7 +85,7 @@ impl ChartParts {
                 edges.push(ChartEdgePart {
                     start,
                     end,
-                    bounds: metric.chart_edge_bounds(&edge),
+                    bounds: edge.bounds(),
                     edge,
                 });
             }
@@ -130,7 +131,7 @@ impl PreparedPlan {
     pub(in crate::geometry) fn cached_chart_parts(
         &self,
         frame_cache: &crate::geometry::FrameDependentCaches,
-        key: &crate::geometry::GeodesicPartsKey,
+        key: &crate::geometry::GeographicMetricKey,
         metric: &impl ChartMetric,
     ) -> Result<std::sync::Arc<ChartParts>> {
         if let Some(parts) = frame_cache.cached_chart_parts(key) {
@@ -183,6 +184,7 @@ pub(crate) struct ChartPairMinimum {
     pub(crate) first: Point,
     pub(crate) second: Point,
     pub(crate) distance: f64,
+    pub(crate) lower_bound: f64,
     order: u128,
 }
 
@@ -195,6 +197,7 @@ enum ChartTarget {
 #[derive(Clone, Copy)]
 struct ChartPairCandidate {
     distance: f64,
+    lower_bound: f64,
     order: u128,
     target: ChartTarget,
 }
@@ -225,6 +228,7 @@ where
             unreachable!("minimum search requires an objective query")
         },
     };
+    let mut lower_bound = f64::INFINITY;
     let mut visit_edge = |edge_index: usize, envelope_lower: f64, best_distance: &mut f64| {
         let part = target
             .edges
@@ -250,10 +254,12 @@ where
         };
         match metric.point_edge_query(point, &part.edge, envelope_lower, query, scratch)? {
             PointEdgeQueryResult::Minimum(minimum) => {
+                lower_bound = lower_bound.min(minimum.lower_bound);
                 if candidate_is_better(minimum.distance, edge_index as u128, best.as_ref()) {
                     *best_distance = minimum.distance;
                     best = Some(ChartPairCandidate {
                         distance: minimum.distance,
+                        lower_bound: minimum.lower_bound,
                         order: edge_index as u128,
                         target: ChartTarget::Edge {
                             parameter: minimum.parameter,
@@ -290,9 +296,9 @@ where
         .enumerate()
         .filter(|_| matches!(query, PointEdgeQuery::Minimum { .. }))
     {
-        if best_distance.is_finite()
-            && metric.point_distance_lower_bound(point, target_point)? > best_distance.next_up()
-        {
+        let point_lower_bound = metric.point_distance_lower_bound(point, target_point)?;
+        lower_bound = lower_bound.min(point_lower_bound);
+        if best_distance.is_finite() && point_lower_bound > best_distance.next_up() {
             continue;
         }
         let distance = metric.segment_length(point, target_point);
@@ -301,12 +307,19 @@ where
             best_distance = best_distance.min(distance);
             best = Some(ChartPairCandidate {
                 distance,
+                lower_bound: point_lower_bound,
                 order,
                 target: ChartTarget::Point(target_point),
             });
         }
     }
-    Ok(best)
+    Ok(best.map(|mut candidate| {
+        candidate.lower_bound = candidate
+            .lower_bound
+            .min(lower_bound)
+            .min(candidate.distance);
+        candidate
+    }))
 }
 
 fn materialize_point_chart_candidate<M>(
@@ -325,13 +338,14 @@ where
                 .edges
                 .get(candidate.order as usize)
                 .expect("candidate ordinal belongs to chart parts");
-            metric.chart_edge_witness(part.start, part.end, &part.edge, parameter)?
+            metric.chart_edge_witness(part.start, part.end, &part.edge, parameter, None)?
         },
     };
     Ok(ChartPairMinimum {
         first: point,
         second: target,
         distance: candidate.distance,
+        lower_bound: candidate.lower_bound,
         order: candidate.order,
     })
 }
@@ -394,14 +408,14 @@ pub(crate) fn point_chart_locate<M>(
 where
     M: GeodesicMetric + ChartMetric<PointEdgeScratch = PointEdgeScratch>,
 {
-    let mut scratch = super::geodesic_scratch();
+    let mut scratch = super::chart_scratch();
     let scratch = &mut *scratch;
     let candidate = point_chart_candidate(
         point,
         target,
         metric,
         &mut scratch.point_edge,
-        &mut scratch.chart_stack,
+        &mut scratch.stack,
         PointEdgeQuery::Locate {
             cutoff: f64::INFINITY,
         },
@@ -644,7 +658,7 @@ where
     if geographic_intersects_cached(left, left_cache, right, right_cache, metric.chart_frame())? {
         return Ok(0.0);
     }
-    let key = GeodesicPartsKey::new_at_generation(
+    let key = GeographicMetricKey::new_at_generation(
         crs,
         semi_major,
         flattening,
@@ -652,9 +666,9 @@ where
     );
     let left_parts = left.cached_chart_parts(left_cache, &key, metric)?;
     let right_parts = right.cached_chart_parts(right_cache, &key, metric)?;
-    let mut scratch = super::geodesic_scratch();
+    let mut scratch = super::chart_scratch();
     let scratch = &mut *scratch;
-    let (point_edge, chart_stack) = (&mut scratch.point_edge, &mut scratch.chart_stack);
+    let (point_edge, chart_stack) = (&mut scratch.point_edge, &mut scratch.stack);
     chart_distance_with_parts(&left_parts, &right_parts, metric, point_edge, chart_stack)
 }
 
@@ -696,7 +710,7 @@ where
     if limit == 0.0 {
         return Ok(false);
     }
-    let key = GeodesicPartsKey::new_at_generation(
+    let key = GeographicMetricKey::new_at_generation(
         crs,
         semi_major,
         flattening,
@@ -704,9 +718,9 @@ where
     );
     let left_parts = left.cached_chart_parts(left_cache, &key, metric)?;
     let right_parts = right.cached_chart_parts(right_cache, &key, metric)?;
-    let mut scratch = super::geodesic_scratch();
+    let mut scratch = super::chart_scratch();
     let scratch = &mut *scratch;
-    let (point_edge, chart_stack) = (&mut scratch.point_edge, &mut scratch.chart_stack);
+    let (point_edge, chart_stack) = (&mut scratch.point_edge, &mut scratch.stack);
     chart_dwithin_with_parts(
         &left_parts,
         &right_parts,
@@ -748,7 +762,7 @@ where
         })?;
         return Ok(Some((witness, witness)));
     }
-    let key = GeodesicPartsKey::new_at_generation(
+    let key = GeographicMetricKey::new_at_generation(
         crs,
         semi_major,
         flattening,
@@ -756,9 +770,9 @@ where
     );
     let left_parts = left.cached_chart_parts(left_cache, &key, metric)?;
     let right_parts = right.cached_chart_parts(right_cache, &key, metric)?;
-    let mut scratch = super::geodesic_scratch();
+    let mut scratch = super::chart_scratch();
     let scratch = &mut *scratch;
-    let (point_edge, chart_stack) = (&mut scratch.point_edge, &mut scratch.chart_stack);
+    let (point_edge, chart_stack) = (&mut scratch.point_edge, &mut scratch.stack);
     chart_nearest_points_with_parts(&left_parts, &right_parts, metric, point_edge, chart_stack)
 }
 

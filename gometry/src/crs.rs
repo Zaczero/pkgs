@@ -18,7 +18,7 @@ use std::os::raw::c_char;
 use std::ptr;
 use std::sync::{OnceLock, RwLock};
 
-use geographiclib_rs::{Geodesic, GeodesicLine};
+use geographiclib_rs::Geodesic;
 
 use crate::geometry::{CoordSeq, GeometryErrorKind, Point, Shape};
 
@@ -64,10 +64,9 @@ use cache::{
     CachedCelestialBodies, CachedCrsAuthorityMatches, CachedCrsCatalog, CachedCrsComparison,
     CachedCrsExport, CachedCrsInfo, CachedCrsOperations, CachedCrsSearch, CachedGeodesicObject,
     CachedProjectionFactorsObject, CachedUnits, CrsComparisonKey, CrsExportKey, CrsExportKind,
-    GEODESIC_LINE_CACHE, NON_DEPRECATED_CACHE, NON_DEPRECATED_CACHE_CAPACITY,
-    begin_transform_observation, ensure_thread_caches_current, record_transform_engine,
-    with_proj_diagnostic_pipeline_at, with_proj_operation_at, with_proj_pipeline_at,
-    with_proj_pipeline_indexed_at,
+    NON_DEPRECATED_CACHE, NON_DEPRECATED_CACHE_CAPACITY, begin_transform_observation,
+    ensure_thread_caches_current, record_transform_engine, with_proj_diagnostic_pipeline_at,
+    with_proj_operation_at, with_proj_pipeline_at, with_proj_pipeline_indexed_at,
 };
 pub(crate) use cache::{cache_info, lru_insert, lru_promote, lru_resolve};
 pub(crate) use catalog::{
@@ -84,10 +83,10 @@ pub(crate) use error::{CrsError, preserve_resource_error};
 pub(crate) use geodesic::with_ellipsoid_metric;
 pub(crate) use geodesic::{
     ChartEdge, DistanceMode, EllipsoidMetric, GeodesicBoxEnvelopeBound, GeodesicCalculation,
-    GeodesicChartBox, GeodesicEnvelopeBound, GeodesicLineKey, GeodesicMetric, MetricModel,
-    PointEdgeScratch, ResolvedMetric, chart_line_interpolate, chart_line_interpolate_coordseq,
+    GeodesicChartBox, GeodesicEnvelopeBound, GeodesicMetric, MetricModel, PointEdgeScratch,
+    ResolvedMetric, chart_line_interpolate, chart_line_interpolate_coordseq,
     chart_line_length_columns, chart_line_locate, chart_line_locate_coordseq, chart_line_substring,
-    chart_line_substring_coordseq, chart_shape_area, chart_shape_length, checked_geodesic_segment,
+    chart_line_substring_coordseq, chart_shape_area, chart_shape_length, checked_geodesic_route,
     ellipsoid_shape_at, ensure_3d_metric, ensure_geographic_columns_in_frame,
     ensure_geographic_domain_in_frame, ensure_geographic_lonlat, ensure_geographic_lonlat_in_frame,
     finite, geodesic_bearing, geodesic_cross_track_crs_at, geodesic_cross_track_radius_crs_at,

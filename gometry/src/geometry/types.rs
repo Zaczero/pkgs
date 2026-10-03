@@ -25,10 +25,10 @@ pub(crate) use csr::{
     ensure_coordseq_vertex_capacity,
 };
 pub(crate) use error::GeometryErrorKind;
-pub(in crate::geometry) use primitives::GeodesicPartsKey;
+pub(in crate::geometry) use primitives::GeographicMetricKey;
 pub(crate) use primitives::{
-    Bounds, CoordinateAxes, DistanceParts, GeodesicParts, GeodesicSegment, HasM, HasZ, MOrdinate,
-    Point, Polygon, Segment, XY, ZOrdinate,
+    Bounds, CoordinateAxes, DistanceParts, HasM, HasZ, MOrdinate, Point, Polygon, Segment, XY,
+    ZOrdinate,
 };
 pub(crate) use ring::{Coordinates, Ring};
 pub(crate) use shape::{
@@ -37,12 +37,10 @@ pub(crate) use shape::{
     ShapeOwnerKey, SimplifyMethod, SmoothMethod, VoronoiBoundary,
 };
 pub(crate) use shape_data::{
-    ChartBox, ChartMetric, FrameDependentCaches, GeodesicInnerInterval, GeodesicMetric,
-    GeodesicMinimum, GeodesicNumericalPolicy, GeodesicPreparedSegment, GeodesicSegmentDerivative,
-    GeodesicSegmentMinimum, GeodesicSegmentQuery, GeodesicSegmentQueryResult,
-    GeodesicSegmentSample, GeodesicSegmentScratch, GeodesicWitnessNeed, IndexedSegment,
-    IntoSharedShape, PointEdgeMinimum, PointEdgeQuery, PointEdgeQueryResult, PointKey,
-    PolygonizeFull, PreparedPlan, ShapeData, ValidationIssue, canonical_f64_bits,
+    ChartBox, ChartEdgeDifferential, ChartEdgeDifferentialBounds, ChartMetric,
+    ChartPointDistanceSample, FrameDependentCaches, GeodesicMetric, GeodesicNumericalPolicy,
+    IndexedSegment, IntoSharedShape, PointEdgeMinimum, PointEdgeQuery, PointEdgeQueryResult,
+    PointKey, PolygonizeFull, PreparedPlan, ShapeData, ValidationIssue, canonical_f64_bits,
 };
 pub(crate) use shared_slice::{SharedSlice, SharedSliceIter};
 

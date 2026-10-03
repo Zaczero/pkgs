@@ -3,9 +3,7 @@
     reason = "axis and formula symbols name paired quantities here (minx/miny, xs/ys, lat_rad/lam_rad, step/stop), which this lint reads as typos"
 )]
 use crate::geometry::types::{CoordSeq, Ring, SharedSlice};
-use crate::geometry::{
-    FacetBvh, GeodesicFacetBvh, PointEntry, PointSetIndex, PreparedLinework, xy_bounds_columns,
-};
+use crate::geometry::{FacetBvh, PointEntry, PointSetIndex, PreparedLinework, xy_bounds_columns};
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct Polygon {
@@ -331,15 +329,16 @@ pub(crate) struct DistanceParts {
     pub(crate) point_index: std::sync::OnceLock<Option<PointSetIndex<PointEntry>>>,
 }
 
+/// Frame and runtime identity shared by chart-part and line-index products.
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
-pub(in crate::geometry) struct GeodesicPartsKey {
+pub(in crate::geometry) struct GeographicMetricKey {
     crs: Box<str>,
     semi_major_bits: u64,
     flattening_bits: u64,
     runtime_generation: u64,
 }
 
-impl GeodesicPartsKey {
+impl GeographicMetricKey {
     pub(in crate::geometry) fn same_frame_parameters(&self, other: &Self) -> bool {
         self.crs == other.crs
             && self.semi_major_bits == other.semi_major_bits
@@ -365,31 +364,13 @@ impl GeodesicPartsKey {
     }
 }
 
-impl crate::HeapSize for GeodesicPartsKey {
+impl crate::HeapSize for GeographicMetricKey {
     fn heap_bytes(&self) -> usize {
         self.crs.len()
     }
 }
 
-/// Cached geodesic segment inventory and witness BVH for one shape and ellipsoid.
-pub(crate) struct GeodesicParts {
-    pub(in crate::geometry) points: Vec<Point>,
-    /// Full-ordinate segments, so Hausdorff witnesses preserve Z/M by arclength.
-    pub(in crate::geometry) segments: Vec<GeodesicSegment>,
-    pub(in crate::geometry) point_only: Vec<Point>,
-    pub(in crate::geometry) facet_bvh: std::sync::OnceLock<Option<GeodesicFacetBvh>>,
-}
-
-#[derive(Clone, Copy, Debug)]
-pub(crate) struct GeodesicSegment {
-    pub(crate) start: Point,
-    pub(crate) end: Point,
-    pub(crate) length: f64,
-    /// Forward azimuth at `start` (= `azi1` of inverse(start, end)).
-    pub(crate) azimuth0: f64,
-}
-
-crate::heapless!(Point, Bounds, XY, Segment, GeodesicSegment);
+crate::heapless!(Point, Bounds, XY, Segment);
 
 #[cfg(test)]
 mod tests {

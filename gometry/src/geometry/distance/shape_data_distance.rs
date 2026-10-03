@@ -6,9 +6,9 @@ use crate::geometry::distance::{
     puntal_brute_distance_squared, quick_area_overlap, squared_space_safe,
 };
 use crate::geometry::{
-    ChartMetric, DistanceParts, FacetBvh, FrameDependentCaches, GeodesicMetric, GeodesicPartsKey,
-    GeographicPrepared, Point, PointBatchTester, PreparedPlan, Shape, distance,
-    finish_planar_squared_min, point_distance, points_dwithin,
+    ChartMetric, DistanceParts, FacetBvh, FrameDependentCaches, GeodesicMetric,
+    GeographicMetricKey, GeographicPrepared, Point, PointBatchTester, PreparedPlan, Shape,
+    distance, finish_planar_squared_min, point_distance, points_dwithin,
 };
 impl PreparedPlan {
     /// Planar distance with both sides' prepared state cached on the handle —
@@ -387,23 +387,23 @@ impl PreparedPlan {
             crate::crs::ensure_geographic_lonlat_in_frame(frame, x, y)?;
         }
         let prepared = GeographicPrepared::try_new(self, frame_cache, frame)?;
-        let key = GeodesicPartsKey::new_at_generation(
+        let key = GeographicMetricKey::new_at_generation(
             crs,
             semi_major,
             flattening,
             metric.runtime_generation(),
         );
         let parts = self.cached_chart_parts(frame_cache, &key, metric)?;
-        let mut scratch = distance::geodesic_scratch();
+        let mut scratch = distance::chart_scratch();
         let scratch = &mut *scratch;
-        let (point_edge, chart_stack) = (&mut scratch.point_edge, &mut scratch.chart_stack);
+        let (point_edge, stack) = (&mut scratch.point_edge, &mut scratch.stack);
         let mut values = Vec::with_capacity(probe_count);
         for (x, y) in probes {
             let point = Point::new_raw_xy(x, y);
             let value = if prepared.point_covers(point)? {
                 0.0
             } else {
-                point_chart_distance(point, &parts, metric, point_edge, chart_stack)?
+                point_chart_distance(point, &parts, metric, point_edge, stack)?
             };
             values.push(value);
         }
@@ -433,16 +433,16 @@ impl PreparedPlan {
             return Ok(vec![present; probe_count]);
         }
         let prepared = GeographicPrepared::try_new(self, frame_cache, frame)?;
-        let key = GeodesicPartsKey::new_at_generation(
+        let key = GeographicMetricKey::new_at_generation(
             crs,
             semi_major,
             flattening,
             metric.runtime_generation(),
         );
         let parts = self.cached_chart_parts(frame_cache, &key, metric)?;
-        let mut scratch = distance::geodesic_scratch();
+        let mut scratch = distance::chart_scratch();
         let scratch = &mut *scratch;
-        let (point_edge, chart_stack) = (&mut scratch.point_edge, &mut scratch.chart_stack);
+        let (point_edge, stack) = (&mut scratch.point_edge, &mut scratch.stack);
         let mut values = Vec::with_capacity(probe_count);
         for (x, y) in probes {
             if distance.is_nan() {
@@ -456,7 +456,7 @@ impl PreparedPlan {
             } else if prepared.point_covers(point)? {
                 true
             } else {
-                point_chart_dwithin(point, &parts, metric, distance, point_edge, chart_stack)?
+                point_chart_dwithin(point, &parts, metric, distance, point_edge, stack)?
             };
             values.push(value);
         }

@@ -3,7 +3,6 @@
 //! each CRS-aware operation. The geodesic instance cache (`with_geodesic`)
 //! reaches its thread-local storage in the parent via `super`.
 
-use geographiclib_rs::geodesic_capability as caps;
 pub(crate) use geographiclib_rs::{DirectGeodesic, InverseGeodesic};
 
 use crate::crs::{
@@ -11,139 +10,6 @@ use crate::crs::{
     GeodesicDirectInfo, ensure_thread_caches_current, lru_insert, lru_promote, normalize,
 };
 use crate::error::Result;
-use crate::geometry::GeodesicNumericalPolicy;
-
-const GEODESIC_LINE_OUTMASK: u64 =
-    caps::LATITUDE | caps::LONGITUDE | caps::AZIMUTH | caps::REDUCEDLENGTH | caps::GEODESICSCALE;
-// Compatibility name for native tests. The numerical value lives in
-// `GeodesicNumericalPolicy`.
-pub(crate) const GEODESIC_BACKEND_RELATIVE_FLOOR: f64 = GeodesicNumericalPolicy::BACKEND_RELATIVE;
-
-#[cfg(test)]
-pub(crate) mod geodesic_counters {
-    use std::cell::Cell;
-
-    #[derive(Clone, Copy, Debug, Default)]
-    pub(crate) struct Snapshot {
-        pub line_cache_hits: u64,
-        pub line_cache_misses: u64,
-        pub segment_queries: u64,
-        pub segment_value_evaluations: u64,
-        pub segment_derivative_evaluations: u64,
-        pub segment_interval_pops: u64,
-        pub segment_interval_splits: u64,
-        pub segment_convex_closures: u64,
-        pub segment_derivative_declines: u64,
-    }
-
-    thread_local! {
-        static LINE_CACHE_HITS: Cell<u64> = const { Cell::new(0) };
-        static LINE_CACHE_MISSES: Cell<u64> = const { Cell::new(0) };
-        static SEGMENT_QUERIES: Cell<u64> = const { Cell::new(0) };
-        static SEGMENT_VALUE_EVALUATIONS: Cell<u64> = const { Cell::new(0) };
-        static SEGMENT_DERIVATIVE_EVALUATIONS: Cell<u64> = const { Cell::new(0) };
-        static SEGMENT_INTERVAL_POPS: Cell<u64> = const { Cell::new(0) };
-        static SEGMENT_INTERVAL_SPLITS: Cell<u64> = const { Cell::new(0) };
-        static SEGMENT_CONVEX_CLOSURES: Cell<u64> = const { Cell::new(0) };
-        static SEGMENT_DERIVATIVE_DECLINES: Cell<u64> = const { Cell::new(0) };
-    }
-
-    pub(super) fn line_cache_hit() {
-        LINE_CACHE_HITS.set(LINE_CACHE_HITS.get().saturating_add(1));
-    }
-
-    pub(super) fn line_cache_miss() {
-        LINE_CACHE_MISSES.set(LINE_CACHE_MISSES.get().saturating_add(1));
-    }
-
-    pub(super) fn segment_query() {
-        SEGMENT_QUERIES.set(SEGMENT_QUERIES.get().saturating_add(1));
-    }
-
-    pub(super) fn segment_value_evaluation() {
-        SEGMENT_VALUE_EVALUATIONS.set(SEGMENT_VALUE_EVALUATIONS.get().saturating_add(1));
-    }
-
-    pub(super) fn segment_derivative_evaluation() {
-        SEGMENT_DERIVATIVE_EVALUATIONS.set(SEGMENT_DERIVATIVE_EVALUATIONS.get().saturating_add(1));
-    }
-
-    pub(super) fn segment_interval_pop() {
-        SEGMENT_INTERVAL_POPS.set(SEGMENT_INTERVAL_POPS.get().saturating_add(1));
-    }
-
-    pub(super) fn segment_interval_split() {
-        SEGMENT_INTERVAL_SPLITS.set(SEGMENT_INTERVAL_SPLITS.get().saturating_add(1));
-    }
-
-    pub(super) fn segment_convex_closure() {
-        SEGMENT_CONVEX_CLOSURES.set(SEGMENT_CONVEX_CLOSURES.get().saturating_add(1));
-    }
-
-    pub(super) fn segment_derivative_decline() {
-        SEGMENT_DERIVATIVE_DECLINES.set(SEGMENT_DERIVATIVE_DECLINES.get().saturating_add(1));
-    }
-
-    pub(crate) fn reset() {
-        LINE_CACHE_HITS.set(0);
-        LINE_CACHE_MISSES.set(0);
-        SEGMENT_QUERIES.set(0);
-        SEGMENT_VALUE_EVALUATIONS.set(0);
-        SEGMENT_DERIVATIVE_EVALUATIONS.set(0);
-        SEGMENT_INTERVAL_POPS.set(0);
-        SEGMENT_INTERVAL_SPLITS.set(0);
-        SEGMENT_CONVEX_CLOSURES.set(0);
-        SEGMENT_DERIVATIVE_DECLINES.set(0);
-    }
-
-    pub(crate) fn snapshot() -> Snapshot {
-        Snapshot {
-            line_cache_hits: LINE_CACHE_HITS.get(),
-            line_cache_misses: LINE_CACHE_MISSES.get(),
-            segment_queries: SEGMENT_QUERIES.get(),
-            segment_value_evaluations: SEGMENT_VALUE_EVALUATIONS.get(),
-            segment_derivative_evaluations: SEGMENT_DERIVATIVE_EVALUATIONS.get(),
-            segment_interval_pops: SEGMENT_INTERVAL_POPS.get(),
-            segment_interval_splits: SEGMENT_INTERVAL_SPLITS.get(),
-            segment_convex_closures: SEGMENT_CONVEX_CLOSURES.get(),
-            segment_derivative_declines: SEGMENT_DERIVATIVE_DECLINES.get(),
-        }
-    }
-}
-
-#[cfg(test)]
-macro_rules! count_line_cache_hit {
-    () => {
-        geodesic_counters::line_cache_hit();
-    };
-}
-
-#[cfg(not(test))]
-macro_rules! count_line_cache_hit {
-    () => {};
-}
-
-#[cfg(test)]
-macro_rules! count_line_cache_miss {
-    () => {
-        geodesic_counters::line_cache_miss();
-    };
-}
-
-#[cfg(not(test))]
-macro_rules! count_line_cache_miss {
-    () => {};
-}
-
-#[derive(Clone, Copy, Eq, Hash, Ord, PartialEq, PartialOrd)]
-pub(crate) struct GeodesicLineKey {
-    semi_major_bits: u64,
-    flattening_bits: u64,
-    start_lon_bits: u64,
-    start_lat_bits: u64,
-    azimuth_bits: u64,
-    caps: u64,
-}
 
 mod bearing;
 mod cache;
@@ -156,7 +22,7 @@ mod envelope;
 mod lrs;
 mod measure;
 mod metric_model;
-mod segment;
+mod route;
 #[cfg(test)]
 mod tests;
 
@@ -200,5 +66,4 @@ pub(crate) use metric_model::{
     GeodesicMetric, MetricModel, ResolvedMetric, ensure_3d_metric, geographic_metric_frame_at,
     metric_model, metric_model_meters, with_geographic_metric_erased_at,
 };
-pub(crate) use segment::{checked_geodesic_segment, sincos_degrees};
-use segment::{geodesic_point_segment_query, geodesic_unit_vector};
+pub(crate) use route::{checked_geodesic_route, sincos_degrees};

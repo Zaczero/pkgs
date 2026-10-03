@@ -17552,9 +17552,10 @@ def hausdorff_distance(
 
     CRS-aware: geodesic meters on a geographic CRS, native linear units on a
     projected CRS, raw coordinate units when CRS-free. Geographic Hausdorff
-    distance supports point and linework operands only; filled polygon
-    interiors require ``unit='planar'`` or a projected CRS. Planar results use
-    a certified relative bound by default or a caller-supplied absolute bound.
+    ranges continuously over straight chart edges and supports point and
+    linework operands only; filled polygon interiors require ``unit='planar'``
+    or a projected CRS. Planar results use a certified relative bound by
+    default or a caller-supplied absolute bound.
 
     Planar polygons are filled sets, including their interiors. For example,
     a square ``[-2, 2] by [-2, 2]`` and the same square with a diamond hole at
@@ -17570,8 +17571,8 @@ def hausdorff_distance(
     max_error : float, optional
         Positive finite scalar absolute error bound in final result units.
         Planar results default to a certified relative error of at most
-        ``1e-9``. Omit it for the numerical geodesic Hausdorff path; geodesic
-        results do not provide this certification contract.
+        ``1e-9``. Omit it for geographic Hausdorff, which uses a fixed
+        radius-scaled algorithmic gap rather than a caller-requested bound.
     unit : {'planar', 'meters'}, default None
         ``None`` (the default) follows the CRS: geographic shape area and length
         use ellipsoidal chart-edge measures while point distances use geodesics;

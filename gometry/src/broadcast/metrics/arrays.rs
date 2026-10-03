@@ -440,9 +440,9 @@ pub(crate) fn array_crs_distances<'a>(
             {
                 return float64_array(py, values);
             }
-            // Geodesic scalar-fixed general rows: resolve the CRS/ellipsoid once,
-            // build the fixed operand's geodesic parts once, then let every array
-            // row use its own persistent handle cache.
+            // Geodesic scalar-fixed general rows: resolve the CRS/ellipsoid
+            // once; chart parts for the fixed operand are cached on its handle
+            // when the first live row reaches the shared chart-distance kernel.
             if let crs::MetricModel::Geodesic { crs, state, .. } = model {
                 let array = array.clone();
                 let right_shape = right.prepared_plan();
@@ -455,13 +455,6 @@ pub(crate) fn array_crs_distances<'a>(
                         &state,
                         |crs, metric| {
                             let (semi_major, flattening) = metric.ellipsoid_parameters();
-                            right_shape.prepare_geodesic_parts(
-                                &right_cache,
-                                crs,
-                                semi_major,
-                                flattening,
-                                metric,
-                            )?;
                             Ok(rows
                                 .rows_with_missing(|| f64::NAN)
                                 .map(|logical_row| {
@@ -1231,13 +1224,6 @@ pub(crate) fn array_crs_dwithin_scalar(
                             ));
                         }
                         let (semi_major, flattening) = metric.ellipsoid_parameters();
-                        other_shape.prepare_geodesic_parts(
-                            &other_cache,
-                            crs,
-                            semi_major,
-                            flattening,
-                            metric,
-                        )?;
                         let mut rows = array_owned.row_operation();
                         Ok(try_collect_dwithin_rows(
                             row_count,

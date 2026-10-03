@@ -1,4 +1,3 @@
-use std::collections::BinaryHeap;
 use std::fmt;
 #[cfg(test)]
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -17,9 +16,9 @@ use crate::geometry::source_support::{
 };
 use crate::geometry::tessellation::exact::ExactDyadic;
 use crate::geometry::topology::ExactGeographicTopology;
-use crate::geometry::types::{Bounds, GeodesicSegment, Point, Segment, Shape, XY};
+use crate::geometry::types::{Bounds, Point, Segment, Shape, XY};
 use crate::geometry::{
-    ChartLineIndex, DistanceParts, GeodesicParts, GeodesicPartsKey, GeographicPrepared,
+    ChartLineIndex, DistanceParts, GeographicMetricKey, GeographicPrepared,
     GeographicTopologyRoute, LineIndex, LineIndexSlot, MeasuredLineIndex, MeasuredLineIndexSlot,
     PlanarMetric, PointBatchTester, ShapeCountQuery,
 };
@@ -40,7 +39,7 @@ const SMALL_POINT_INDEX_OPERAND: usize = 16;
 /// Sidecar for geodesic products keyed by ellipsoid and PROJ runtime generation.
 #[derive(Default)]
 pub(crate) struct FrameDependentCaches {
-    entry: Mutex<Option<(GeodesicPartsKey, FrameDependentEntry)>>,
+    entry: Mutex<Option<(GeographicMetricKey, FrameDependentEntry)>>,
     /// Admission facts for one geographic frame.
     admission: Mutex<
         Option<(
@@ -104,7 +103,6 @@ struct GeographicTopologyProducts {
 #[derive(Clone, Default)]
 struct FrameDependentEntry {
     line_index: Option<Arc<ChartLineIndex>>,
-    parts: Option<Arc<GeodesicParts>>,
     chart_parts: Option<Arc<ChartParts>>,
     measured_chart_parts: Option<Arc<ChartParts>>,
 }
@@ -136,7 +134,7 @@ impl FrameDependentCaches {
             Some((frame, bounds_sound, route));
     }
 
-    fn get(&self, key: &GeodesicPartsKey) -> Option<FrameDependentEntry> {
+    fn get(&self, key: &GeographicMetricKey) -> Option<FrameDependentEntry> {
         self.entry
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -147,7 +145,7 @@ impl FrameDependentCaches {
 
     fn merge(
         &self,
-        key: GeodesicPartsKey,
+        key: GeographicMetricKey,
         update: impl FnOnce(&mut FrameDependentEntry),
     ) -> Option<FrameDependentEntry> {
         let mut slot = self
@@ -172,14 +170,14 @@ impl FrameDependentCaches {
 
     pub(in crate::geometry) fn cached_chart_parts(
         &self,
-        key: &GeodesicPartsKey,
+        key: &GeographicMetricKey,
     ) -> Option<Arc<ChartParts>> {
         self.get(key).and_then(|entry| entry.chart_parts)
     }
 
     pub(in crate::geometry) fn merge_chart_parts(
         &self,
-        key: &GeodesicPartsKey,
+        key: &GeographicMetricKey,
         parts: &Arc<ChartParts>,
     ) -> Option<Arc<ChartParts>> {
         self.merge(key.clone(), |entry| {
@@ -198,7 +196,6 @@ impl HeapSize for FrameDependentEntry {
             .is_some_and(|(index, parts)| Arc::ptr_eq(index.parts(), parts));
         self.line_index
             .heap_bytes()
-            .saturating_add(self.parts.heap_bytes())
             .saturating_add(if shared_chart_parts {
                 0
             } else {
@@ -474,7 +471,7 @@ impl PreparedPlan {
         metric: &impl ChartMetric,
     ) -> Result<Arc<ChartLineIndex>> {
         let key =
-            GeodesicPartsKey::new_at_generation(crs, semi_major, flattening, runtime_generation);
+            GeographicMetricKey::new_at_generation(crs, semi_major, flattening, runtime_generation);
         let cached = frame_cache.get(&key).and_then(|entry| entry.line_index);
         if let Some(index) = cached {
             return Ok(index);
@@ -504,7 +501,7 @@ impl PreparedPlan {
         generation: u64,
         metric: &impl ChartMetric,
     ) -> Result<Arc<ChartParts>> {
-        let key = GeodesicPartsKey::new_at_generation(crs, semi_major, flattening, generation);
+        let key = GeographicMetricKey::new_at_generation(crs, semi_major, flattening, generation);
         if let Some(parts) = frame_cache
             .get(&key)
             .and_then(|entry| entry.measured_chart_parts)
@@ -522,40 +519,6 @@ impl PreparedPlan {
         Ok(entry
             .and_then(|entry| entry.measured_chart_parts)
             .unwrap_or(parts))
-    }
-
-    pub(in crate::geometry) fn geodesic_parts(
-        &self,
-        frame_cache: &FrameDependentCaches,
-        key: GeodesicPartsKey,
-        metric: &impl GeodesicMetric,
-    ) -> Result<Arc<GeodesicParts>> {
-        let cached = frame_cache.get(&key).and_then(|entry| entry.parts);
-        if let Some(parts) = cached {
-            return Ok(parts);
-        }
-        let parts = Arc::new(self.shape().geodesic_parts(metric)?);
-        let entry = frame_cache.merge(key, |entry| {
-            entry.parts.get_or_insert_with(|| Arc::clone(&parts));
-        });
-        Ok(entry.and_then(|entry| entry.parts).unwrap_or(parts))
-    }
-
-    pub(crate) fn prepare_geodesic_parts(
-        &self,
-        frame_cache: &FrameDependentCaches,
-        crs: &str,
-        semi_major: f64,
-        flattening: f64,
-        metric: &impl GeodesicMetric,
-    ) -> Result<()> {
-        let key = GeodesicPartsKey::new_at_generation(
-            crs,
-            semi_major,
-            flattening,
-            metric.runtime_generation(),
-        );
-        self.geodesic_parts(frame_cache, key, metric).map(|_| ())
     }
 
     /// Exact Cartesian location of `point`. Early probes scan the source;
@@ -860,16 +823,6 @@ impl HeapSize for DistanceParts {
     }
 }
 
-impl HeapSize for GeodesicParts {
-    fn heap_bytes(&self) -> usize {
-        self.points
-            .heap_bytes()
-            .saturating_add(self.segments.heap_bytes())
-            .saturating_add(self.point_only.heap_bytes())
-            .saturating_add(self.facet_bvh.heap_bytes())
-    }
-}
-
 crate::heapless!(PointKey);
 
 impl std::ops::Deref for ShapeData {
@@ -962,31 +915,62 @@ mod frame_cache_tests {
 
     #[test]
     fn frame_cache_key_includes_crs_ellipsoid_and_runtime_generation() {
-        let base =
-            GeodesicPartsKey::new_at_generation("EPSG:4326", 6_378_137.0, 1.0 / 298.257_223_563, 4);
-        assert_ne!(
-            base,
-            GeodesicPartsKey::new_at_generation("EPSG:4267", 6_378_137.0, 1.0 / 298.257_223_563, 4,)
+        let base = GeographicMetricKey::new_at_generation(
+            "EPSG:4326",
+            6_378_137.0,
+            1.0 / 298.257_223_563,
+            4,
         );
         assert_ne!(
             base,
-            GeodesicPartsKey::new_at_generation("EPSG:4326", 6_378_136.0, 1.0 / 298.257_223_563, 4,)
+            GeographicMetricKey::new_at_generation(
+                "EPSG:4267",
+                6_378_137.0,
+                1.0 / 298.257_223_563,
+                4,
+            )
         );
         assert_ne!(
             base,
-            GeodesicPartsKey::new_at_generation("EPSG:4326", 6_378_137.0, 1.0 / 298.257_223_563, 5,)
+            GeographicMetricKey::new_at_generation(
+                "EPSG:4326",
+                6_378_136.0,
+                1.0 / 298.257_223_563,
+                4,
+            )
+        );
+        assert_ne!(
+            base,
+            GeographicMetricKey::new_at_generation(
+                "EPSG:4326",
+                6_378_137.0,
+                1.0 / 298.257_223_563,
+                5,
+            )
         );
     }
 
     #[test]
     fn differing_frame_or_generation_replaces_the_single_entry() {
         let cache = FrameDependentCaches::default();
-        let first =
-            GeodesicPartsKey::new_at_generation("EPSG:4326", 6_378_137.0, 1.0 / 298.257_223_563, 4);
-        let next_generation =
-            GeodesicPartsKey::new_at_generation("EPSG:4326", 6_378_137.0, 1.0 / 298.257_223_563, 5);
-        let other_frame =
-            GeodesicPartsKey::new_at_generation("EPSG:4267", 6_378_206.4, 1.0 / 294.978_698_2, 5);
+        let first = GeographicMetricKey::new_at_generation(
+            "EPSG:4326",
+            6_378_137.0,
+            1.0 / 298.257_223_563,
+            4,
+        );
+        let next_generation = GeographicMetricKey::new_at_generation(
+            "EPSG:4326",
+            6_378_137.0,
+            1.0 / 298.257_223_563,
+            5,
+        );
+        let other_frame = GeographicMetricKey::new_at_generation(
+            "EPSG:4267",
+            6_378_206.4,
+            1.0 / 294.978_698_2,
+            5,
+        );
         drop(cache.merge(first.clone(), |_| {}));
         assert!(cache.get(&first).is_some());
         drop(cache.merge(next_generation.clone(), |_| {}));
@@ -1000,8 +984,8 @@ mod frame_cache_tests {
     #[test]
     fn stale_generation_cannot_replace_a_newer_entry() {
         let cache = FrameDependentCaches::default();
-        let older = GeodesicPartsKey::new_at_generation("EPSG:4326", 6_378_137.0, 0.0, 4);
-        let newer = GeodesicPartsKey::new_at_generation("EPSG:4326", 6_378_137.0, 0.0, 5);
+        let older = GeographicMetricKey::new_at_generation("EPSG:4326", 6_378_137.0, 0.0, 4);
+        let newer = GeographicMetricKey::new_at_generation("EPSG:4326", 6_378_137.0, 0.0, 5);
         assert!(cache.merge(newer.clone(), |_| {}).is_some());
         assert!(cache.merge(older.clone(), |_| {}).is_none());
         assert!(cache.get(&newer).is_some());
@@ -1297,7 +1281,7 @@ mod frame_cache_tests {
     #[test]
     fn single_entry_container_adds_no_heap_allocation() {
         let cache = FrameDependentCaches::default();
-        let key = GeodesicPartsKey::new_at_generation("TEST", 1.0, 0.0, 0);
+        let key = GeographicMetricKey::new_at_generation("TEST", 1.0, 0.0, 0);
         let key_heap = key.heap_bytes();
         drop(cache.merge(key, |_| {}));
         // The key's existing string storage and the empty entry account for
@@ -1314,7 +1298,7 @@ mod frame_cache_tests {
                 let cache = Arc::clone(&cache);
                 scope.spawn(move || {
                     for generation in 0..64_u64 {
-                        let key = GeodesicPartsKey::new_at_generation(
+                        let key = GeographicMetricKey::new_at_generation(
                             "EPSG:4326",
                             6_378_137.0,
                             1.0 / 298.257_223_563,
@@ -1325,7 +1309,7 @@ mod frame_cache_tests {
                 });
             }
         });
-        let latest = GeodesicPartsKey::new_at_generation(
+        let latest = GeographicMetricKey::new_at_generation(
             "EPSG:4326",
             6_378_137.0,
             1.0 / 298.257_223_563,
@@ -1349,87 +1333,7 @@ impl fmt::Debug for ShapeData {
     }
 }
 
-/// Operation requested from the geodesic point-to-segment owner.
-#[derive(Clone, Copy, Debug)]
-pub(crate) enum GeodesicSegmentQuery {
-    /// Return an attained minimum only when it is strictly below `cutoff`.
-    Minimum {
-        cutoff: f64,
-        witness: GeodesicWitnessNeed,
-    },
-}
-
-#[derive(Clone, Copy, Debug)]
-pub(crate) enum GeodesicWitnessNeed {
-    #[cfg(test)]
-    No,
-    Yes,
-}
-
-/// Attained point-to-segment witness in the segment's along-track parameter.
-#[derive(Clone, Copy, Debug)]
-pub(crate) struct GeodesicSegmentMinimum {
-    pub(crate) distance: f64,
-    pub(crate) along: f64,
-}
-
-impl GeodesicSegmentMinimum {
-    pub(crate) const fn new(distance: f64, along: f64) -> Self {
-        Self { distance, along }
-    }
-}
-
-/// A resolved geodesic numerical minimum.
-///
-/// `witness` is the attained value and parameter. `lower` is the completed
-/// search lower estimate, while `evaluation_error` names the position/inverse
-/// allowance used to attain the witness. Neither field is a universal
-/// real-arithmetic certificate.
-#[derive(Clone, Copy, Debug)]
-pub(crate) struct GeodesicMinimum {
-    pub(crate) witness: GeodesicSegmentMinimum,
-    pub(crate) lower: f64,
-    pub(crate) evaluation_error: f64,
-}
-
-impl GeodesicMinimum {
-    pub(crate) const fn from_witness(witness: GeodesicSegmentMinimum) -> Self {
-        Self {
-            witness,
-            lower: 0.0,
-            evaluation_error: 0.0,
-        }
-    }
-}
-
-impl std::ops::Deref for GeodesicMinimum {
-    type Target = GeodesicSegmentMinimum;
-
-    fn deref(&self) -> &Self::Target {
-        &self.witness
-    }
-}
-
-impl std::ops::DerefMut for GeodesicMinimum {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.witness
-    }
-}
-
-/// Typed result of a point-to-segment query.
-#[derive(Clone, Copy, Debug)]
-pub(crate) enum GeodesicSegmentQueryResult {
-    /// An attained value, with an optional actual foot when requested.
-    Attained {
-        minimum: GeodesicMinimum,
-        foot: Option<Point>,
-    },
-    /// A pruning fact, never a metric value.
-    Excluded,
-}
-
-/// Numerical budgets shared by the geodesic minimum and Hausdorff resolvers.
-/// Metric searches use metres; dimensionless supports use relative budgets.
+/// Numerical quality budgets shared by geographic point-edge and Hausdorff searches.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct GeodesicNumericalPolicy {
     semi_major: f64,
@@ -1444,18 +1348,6 @@ impl GeodesicNumericalPolicy {
         Self { semi_major }
     }
 
-    pub(crate) const fn semi_major(self) -> f64 {
-        self.semi_major
-    }
-
-    pub(crate) const fn normalized_backend_floor(self) -> f64 {
-        Self::BACKEND_RELATIVE
-    }
-
-    pub(crate) const fn normalized_hausdorff_gap(self) -> f64 {
-        Self::HAUSDORFF_GAP_RELATIVE
-    }
-
     pub(crate) fn backend_floor(self) -> f64 {
         self.semi_major * Self::BACKEND_RELATIVE
     }
@@ -1465,7 +1357,7 @@ impl GeodesicNumericalPolicy {
     }
 
     pub(crate) fn hausdorff_gap(self) -> f64 {
-        self.semi_major * self.normalized_hausdorff_gap()
+        self.semi_major * Self::HAUSDORFF_GAP_RELATIVE
     }
 
     pub(crate) fn evaluation_allowance(self, evaluations: f64) -> f64 {
@@ -1473,96 +1365,9 @@ impl GeodesicNumericalPolicy {
     }
 }
 
-/// Reusable inner branch-and-bound frontier for one geodesic operation.
-pub(crate) struct GeodesicSegmentScratch {
-    pub(crate) inner: BinaryHeap<GeodesicInnerInterval>,
-}
-
-impl GeodesicSegmentScratch {
-    pub(crate) const fn new() -> Self {
-        Self {
-            inner: BinaryHeap::new(),
-        }
-    }
-
-    pub(crate) fn clear(&mut self) {
-        self.inner.clear();
-    }
-
-    pub(crate) fn retained_bytes(&self) -> usize {
-        self.inner
-            .capacity()
-            .saturating_mul(std::mem::size_of::<GeodesicInnerInterval>())
-    }
-}
-
-impl Default for GeodesicSegmentScratch {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-#[derive(Clone, Copy, Debug)]
-pub(crate) struct GeodesicInnerInterval {
-    pub(crate) lower: f64,
-    pub(crate) left: f64,
-    pub(crate) right: f64,
-    pub(crate) left_value: f64,
-    pub(crate) right_value: f64,
-}
-
-impl PartialEq for GeodesicInnerInterval {
-    fn eq(&self, other: &Self) -> bool {
-        self.lower.to_bits() == other.lower.to_bits()
-            && self.left.to_bits() == other.left.to_bits()
-            && self.right.to_bits() == other.right.to_bits()
-    }
-}
-
-impl Eq for GeodesicInnerInterval {}
-
-impl PartialOrd for GeodesicInnerInterval {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        Some(self.cmp(other))
-    }
-}
-
-impl Ord for GeodesicInnerInterval {
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        other
-            .lower
-            .total_cmp(&self.lower)
-            .then_with(|| other.left.total_cmp(&self.left))
-            .then_with(|| other.right.total_cmp(&self.right))
-    }
-}
-
-#[derive(Clone, Copy, Debug)]
-pub(crate) struct GeodesicSegmentDerivative {
-    pub(crate) value: f64,
-    pub(crate) error: f64,
-}
-
-#[derive(Clone, Copy, Debug)]
-pub(crate) struct GeodesicSegmentSample {
-    pub(crate) derivative: Option<GeodesicSegmentDerivative>,
-}
-
-/// One cached geodesic line with source-frame point, tangent, and sample
-/// access for a continuous Hausdorff search.
-pub(crate) trait GeodesicPreparedSegment: Copy {
-    fn segment(&self) -> GeodesicSegment;
-    fn sample(&self, point: Point, along: f64, derivative: bool) -> Result<GeodesicSegmentSample>;
-    fn position(&self, along: f64) -> Result<Point>;
-    fn tangent(&self, along: f64) -> Result<Option<[f64; 3]>>;
-}
-
-/// Ellipsoidal primitives for point-to-point distance and operations that still
-/// use geodesic segments, including continuous Hausdorff.
-/// Chart-edge operations use [`ChartMetric`] and the same ellipsoid adapter.
+/// Ellipsoidal point-to-point distance primitives. Chart-edge operations use
+/// [`ChartMetric`] and the same ellipsoid adapter.
 pub(crate) trait GeodesicMetric {
-    type PreparedSegment: GeodesicPreparedSegment;
-
     /// Runtime generation used to namespace CRS-dependent prepared state.
     /// Geometry-only test metrics use the default zero generation.
     fn runtime_generation(&self) -> u64 {
@@ -1576,84 +1381,15 @@ pub(crate) trait GeodesicMetric {
         Ok(())
     }
 
-    /// Auxiliary-sphere location used only to partition the geodesic facet
-    /// tree. Providers receive native-frame XY only: Z/M and axis presence are
-    /// not part of this heuristic. Implementations with a native angular frame
-    /// convert here; the default retains the historical degree-frame behavior
-    /// for geometry-only metrics.
-    fn auxiliary_unit(&self, point: XY) -> [f64; 3] {
-        let lon = point.x.to_radians();
-        let lat = point.y.to_radians();
-        let beta = f64::atan((1.0 - 1.0 / 298.257_223_563) * lat.tan())
-            .clamp(-std::f64::consts::FRAC_PI_2, std::f64::consts::FRAC_PI_2);
-        [beta.cos() * lon.cos(), beta.cos() * lon.sin(), beta.sin()]
-    }
-
-    /// Precompute the ellipsoidal metadata shared by every exact probe of one
-    /// segment.
-    fn make_segment(&self, start: Point, end: Point) -> Result<GeodesicSegment>;
-
-    /// Prepare one reusable geodesic line for continuous source/target
-    /// interval work.
-    fn prepare_segment(&self, segment: &GeodesicSegment) -> Result<Self::PreparedSegment>;
-
-    /// Run the shared point-to-segment query owner.
-    fn point_segment_query(
-        &self,
-        point: Point,
-        segment: &GeodesicSegment,
-        query: GeodesicSegmentQuery,
-        scratch: &mut GeodesicSegmentScratch,
-    ) -> Result<GeodesicSegmentQueryResult>;
-
     /// Geodesic length (meters) of segment `a`–`b`.
     fn segment_length(&self, a: Point, b: Point) -> f64;
 
-    /// The point a `fraction` of the geodesic length along `a`→`b`, with Z and
-    /// M interpolated linearly by `fraction`. Retained for geodesic-segment
-    /// kernel oracles; geographic LRS uses chart-edge interpolation.
-    #[cfg(test)]
-    fn interpolate(&self, a: Point, b: Point, fraction: f64) -> Point;
-
-    /// A cheap (no-inverse) lower bound on the geodesic distance between two
-    /// points — the auxiliary-sphere reduced-latitude bound. Drives the
-    /// segment pruning in batch locate sweeps; preparation failures propagate
-    /// instead of disabling the bound.
+    /// A cheap lower bound on the geodesic distance between two points.
+    /// Preparation failures propagate instead of disabling the bound.
     fn point_distance_lower_bound(&self, a: Point, b: Point) -> Result<f64>;
-
-    /// Curvature and injectivity bounds for the admitted ellipsoid.
-    fn geodesic_curvature_domain(&self) -> Option<(f64, f64, f64)>;
 
     /// Shared numerical policy for this ellipsoid.
     fn geodesic_numerical_policy(&self) -> GeodesicNumericalPolicy;
-
-    /// Radius-scaled allowance for the binary64 geodesic backend.
-    fn geodesic_backend_floor(&self) -> f64 {
-        self.geodesic_numerical_policy().backend_floor()
-    }
-
-    /// Semi-major radius used by exact spherical family formulas.
-    fn geodesic_radius(&self) -> f64 {
-        self.geodesic_numerical_policy().semi_major()
-    }
-
-    /// Unit surface vector in the ellipsoid's canonical Cartesian frame.
-    fn surface_unit(&self, point: Point) -> Option<[f64; 3]>;
-
-    /// Exact family predicates used only to close focal plateaus.
-    fn is_spherical(&self) -> bool;
-    fn is_equatorial_segment(&self, segment: &GeodesicSegment) -> bool;
-    fn is_polar_point(&self, point: Point) -> bool;
-
-    /// Along-track parameter of an equatorial source at the target point's
-    /// opposite meridian, when the metric can apply that exact family.
-    fn equatorial_opposite_meridian_parameter(
-        &self,
-        _segment: &GeodesicSegment,
-        _target: Point,
-    ) -> Option<f64> {
-        None
-    }
 }
 
 /// Metric operations on the straight edges of an admitted coordinate chart.
@@ -1688,6 +1424,26 @@ pub(crate) struct PointEdgeMinimum {
 }
 
 #[derive(Clone, Copy, Debug)]
+pub(crate) struct ChartEdgeDifferential {
+    pub(crate) speed: f64,
+    pub(crate) azimuth: f64,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct ChartEdgeDifferentialBounds {
+    pub(crate) speed: f64,
+    pub(crate) lipschitz_speed: f64,
+    pub(crate) acceleration: f64,
+    pub(crate) curvature: f64,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct ChartPointDistanceSample {
+    pub(crate) distance: f64,
+    pub(crate) derivative: f64,
+}
+
+#[derive(Clone, Copy, Debug)]
 pub(crate) enum PointEdgeQueryResult {
     Minimum(PointEdgeMinimum),
     Excluded,
@@ -1709,22 +1465,17 @@ pub(crate) trait ChartMetric {
     fn chart_edge_length(&self, edge: &ChartEdge) -> Result<f64>;
     fn chart_edge_length_to(&self, edge: &ChartEdge, parameter: f64) -> Result<f64>;
     fn chart_edge_locate_t(&self, edge: &ChartEdge, distance: f64, length: f64) -> Result<f64>;
-    fn chart_edge_bounds(&self, edge: &ChartEdge) -> ChartBox;
     fn chart_edge_witness(
         &self,
         start: Point,
         end: Point,
         edge: &ChartEdge,
         parameter: f64,
+        length: Option<f64>,
     ) -> Result<Point>;
-    fn chart_edge_witness_with_length(
-        &self,
-        start: Point,
-        end: Point,
-        edge: &ChartEdge,
-        parameter: f64,
-        length: f64,
-    ) -> Result<Point>;
+    fn chart_edge_differential(&self, edge: &ChartEdge, parameter: f64) -> ChartEdgeDifferential;
+    fn chart_edge_differential_bounds(&self, edge: &ChartEdge) -> ChartEdgeDifferentialBounds;
+    fn chart_edge_pole_distance_upper_bound(&self, edge: &ChartEdge, target: Point) -> Option<f64>;
     fn point_edge_query(
         &self,
         point: Point,
@@ -1733,6 +1484,14 @@ pub(crate) trait ChartMetric {
         query: PointEdgeQuery,
         scratch: &mut Self::PointEdgeScratch,
     ) -> Result<PointEdgeQueryResult>;
+    fn chart_point_distance_sample(
+        &self,
+        source: Point,
+        target: Point,
+        source_speed: f64,
+        source_azimuth: f64,
+    ) -> Result<ChartPointDistanceSample>;
+    fn geodesic_distance_hessian_upper_bound(&self, lower_distance: f64) -> f64;
     fn point_envelope_bound(&self, point: Point) -> impl Fn(ChartBox) -> f64;
     fn chart_edge_seam_span(&self, edge: &ChartEdge) -> Option<[f64; 2]>;
     fn chart_seam_span_length(&self, south: f64, north: f64) -> Result<f64>;

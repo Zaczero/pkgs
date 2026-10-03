@@ -73,19 +73,16 @@ pub(crate) use segments::{Orientation, held_axis_interpolate, orientation};
 pub(crate) mod storage;
 pub(crate) mod types;
 pub(crate) use types::{
-    Bounds, BufferCapStyle, BufferJoinStyle, BufferSide, ChartBox, ChartMetric, CoordSeq,
-    CoordSeqBuilder, CoordWindow, CoordinateAxes, Coordinates, CsrOffsetBuilder, CsrOffsetColumn,
-    DistanceParts, FrameDependentCaches, GeodesicInnerInterval, GeodesicMetric, GeodesicMinimum,
-    GeodesicNumericalPolicy, GeodesicParts, GeodesicPreparedSegment, GeodesicSegment,
-    GeodesicSegmentDerivative, GeodesicSegmentMinimum, GeodesicSegmentQuery,
-    GeodesicSegmentQueryResult, GeodesicSegmentSample, GeodesicSegmentScratch, GeodesicWitnessNeed,
-    GeometryErrorKind, GeometryKind, HasM, HasZ, IndexedSegment, IntoSharedShape, LineSeq,
-    MAX_NESTING, MColumn, MOrdinate, MultiLineString, MultiMember, MultiPoint, MultiPolygon, Point,
-    PointEdgeMinimum, PointEdgeQuery, PointEdgeQueryResult, PointKey, Polygon, PolygonLevel,
-    PolygonizeFull, PreparedPlan, RepairMethod, Ring, RingLevel, Segment, Shape, ShapeCountQuery,
-    ShapeData, ShapeOwnerKey, SharedSlice, SimplifyMethod, SmoothMethod, ValidationIssue,
-    VisiblePointRunKey, VisibleXYKey, VoronoiBoundary, XY, ZOrdinate, canonical_f64_bits,
-    coerce_to_common_axes,
+    Bounds, BufferCapStyle, BufferJoinStyle, BufferSide, ChartBox, ChartEdgeDifferential,
+    ChartEdgeDifferentialBounds, ChartMetric, ChartPointDistanceSample, CoordSeq, CoordSeqBuilder,
+    CoordWindow, CoordinateAxes, Coordinates, CsrOffsetBuilder, CsrOffsetColumn, DistanceParts,
+    FrameDependentCaches, GeodesicMetric, GeodesicNumericalPolicy, GeometryErrorKind, GeometryKind,
+    HasM, HasZ, IndexedSegment, IntoSharedShape, LineSeq, MAX_NESTING, MColumn, MOrdinate,
+    MultiLineString, MultiMember, MultiPoint, MultiPolygon, Point, PointEdgeMinimum,
+    PointEdgeQuery, PointEdgeQueryResult, PointKey, Polygon, PolygonLevel, PolygonizeFull,
+    PreparedPlan, RepairMethod, Ring, RingLevel, Segment, Shape, ShapeCountQuery, ShapeData,
+    ShapeOwnerKey, SharedSlice, SimplifyMethod, SmoothMethod, ValidationIssue, VisiblePointRunKey,
+    VisibleXYKey, VoronoiBoundary, XY, ZOrdinate, canonical_f64_bits, coerce_to_common_axes,
 };
 mod antimeridian;
 mod boundary;
@@ -104,6 +101,7 @@ pub(crate) use antimeridian::{
 pub(crate) use boundary::boundary;
 mod arrangement;
 mod bvh_code;
+mod chart_bvh;
 mod constructive;
 mod coverage;
 pub(crate) use coverage::vw_area_tolerance;
@@ -123,7 +121,6 @@ pub(crate) use types::coordinate_columns_eq;
 mod embedding_search;
 mod facet_bvh;
 mod generated_budget;
-mod geodesic_bvh;
 mod line_index;
 mod linear;
 mod linear_3d;
@@ -170,6 +167,7 @@ use access::{
 #[cfg(test)]
 pub(crate) use arrangement::Arrangement;
 pub(crate) use bvh_code::{BvhCode, BvhNode};
+pub(crate) use chart_bvh::ChartEdgeBvh;
 pub(crate) use constructive::{
     AffineLinear, DEFAULT_MITER_LIMIT, GeographicRdpGuard, OriginAffine, OriginSpec,
     PlanarRdpGuard, RdpEdgeSpanGuard, SegmentPlacement, SegmentPlacementOwned,
@@ -189,18 +187,14 @@ use distance::line_length_3d;
 pub(crate) use distance::{
     DirectedOptimizationResult, Distance3dParts, FrechetDpScratch, PreparedSupport,
     bounds_distance_squared, directed_inradius_scaled, distance_3d_with_parts,
-    frechet_distance_line_columns, frechet_distance_line_columns_batch, hausdorff_distance,
-    hausdorff_distance_line_columns, hausdorff_distance_line_columns_batch,
+    ensure_geographic_hausdorff_linework, frechet_distance_line_columns,
+    frechet_distance_line_columns_batch, hausdorff_distance, hausdorff_distance_line_columns,
+    hausdorff_distance_line_columns_batch,
 };
 pub(crate) use facet_bvh::{
     BVH_MIN_INDEXED_SEGMENTS, FacetBvh, NearestCandidate, NearestTarget, PreparedLinework,
 };
 pub(crate) use generated_budget::{ExpansionBudget, GENERATED_ITEM_LIMIT};
-pub(crate) use geodesic_bvh::ChartEdgeBvh;
-use geodesic_bvh::{
-    GeodesicFacetBvh, GeodesicTargetFeature, GeodesicWitnessCandidate, WitnessOrder,
-    geodesic_witness_is_better, witness_refine_limit,
-};
 pub(crate) use line_index::{
     ChartLineIndex, LineIndex, LineIndexSlot, PlanarMetric, SegmentMetric,
 };
@@ -337,7 +331,7 @@ pub(crate) use segments::{point_segment_distance, point_segment_selection, segme
 pub(in crate::geometry) use segments::{try_dedup_by, try_sort_by};
 pub(crate) use tessellation::{CdtRefinement, row_sample_seed};
 use tessellation::{delaunay_triangulation, point_in_ccw_triangle};
-pub(in crate::geometry) use types::GeodesicPartsKey;
+pub(in crate::geometry) use types::GeographicMetricKey;
 
 use crate::collections::{HashMap, HashSet};
 use crate::error::Result;

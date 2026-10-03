@@ -76,7 +76,7 @@ Conventions: `import gometry as gm`; `geom` is a gometry geometry; and
 | `a.distance(b)` / `shapely.distance(a, b)` | [`gm.distance(a, b)`][gometry.distance] |
 | change the metric frame / units | [`geom.to_crs(target)`][gometry.Geometry.to_crs] / [`gm.area(geom, unit=…)`][gometry.area] |
 | `minimum_clearance(g)` | [`g.minimum_clearance()`][gometry.Geometry.minimum_clearance] |
-| `hausdorff_distance` / `frechet_distance` | [`gm.hausdorff_distance(...)`][gometry.hausdorff_distance] / [`gm.frechet_distance(...)`][gometry.frechet_distance] | Planar Hausdorff uses a certified relative default; a supplied positive finite `max_error` is an absolute output-unit bound. Geodesic calls require it to be omitted. |
+| `hausdorff_distance` / `frechet_distance` | [`gm.hausdorff_distance(...)`][gometry.hausdorff_distance] / [`gm.frechet_distance(...)`][gometry.frechet_distance] | Planar Hausdorff uses a certified relative default; a supplied positive finite `max_error` is an absolute output-unit bound. Geographic Hausdorff measures point and linework supports over straight chart edges and requires `max_error` to be omitted. |
 
 ### Constructive operations
 

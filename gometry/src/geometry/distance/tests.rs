@@ -268,22 +268,6 @@ pub(super) fn dense_line(start_lon: f64, start_lat: f64, count: usize) -> Shape 
     )
 }
 
-pub(super) fn assert_geodesic_close(name: &str, actual: f64, expected: f64) {
-    if actual.is_infinite() || expected.is_infinite() {
-        assert!(
-            actual.is_infinite()
-                && expected.is_infinite()
-                && actual.is_sign_positive() == expected.is_sign_positive(),
-            "{name}: actual {actual} expected {expected}"
-        );
-    } else {
-        assert!(
-            (actual - expected).abs() <= 1e-3,
-            "{name}: actual {actual} expected {expected}"
-        );
-    }
-}
-
 fn assert_hausdorff_close(actual: f64, expected: f64, error: f64) {
     assert!(actual.is_finite(), "{actual}");
     assert!(

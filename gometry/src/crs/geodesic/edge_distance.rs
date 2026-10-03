@@ -536,7 +536,7 @@ fn interval_lower_bound(
     (lower - policy.backend_floor()).max(0.0)
 }
 
-fn curvature_hessian_bound(geodesic: &Geodesic, distance: f64) -> f64 {
+pub(super) fn curvature_hessian_bound(geodesic: &Geodesic, distance: f64) -> f64 {
     if distance <= 0.0 {
         return f64::INFINITY;
     }
@@ -590,7 +590,7 @@ mod tests {
             .point_edge_query(
                 point,
                 &edge,
-                metric.point_envelope_bound(point)(metric.chart_edge_bounds(&edge)),
+                metric.point_envelope_bound(point)(edge.bounds()),
                 PointEdgeQuery::Minimum {
                     cutoff: f64::INFINITY,
                 },
@@ -969,7 +969,7 @@ mod tests {
         ];
         for (point, start, end) in cases {
             let edge = metric.chart_edge(start, end).expect("admitted chart edge");
-            let bounds = metric.chart_edge_bounds(&edge);
+            let bounds = edge.bounds();
             let lower = metric.point_envelope_bound(point)(bounds);
             for sample in 0..=256_u32 {
                 let parameter = f64::from(sample) / 256.0;

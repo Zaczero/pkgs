@@ -8,19 +8,16 @@ use pyo3::prelude::*;
 use crate::crs::frame::{Frame, crs_arc_static};
 use crate::crs::{PointEdgeScratch, with_ellipsoid_metric};
 use crate::error::Result;
+use crate::geographic::{AngularFactor, GeographicFrame};
 use crate::geometry::distance::frechet::frechet_dp_columns;
-use crate::geometry::distance::geodesic_sweep::geodesic_target_witness;
-use crate::geometry::distance::tests::{
-    assert_geodesic_close, dense_line, line, multipoint, p, polygon,
-};
+use crate::geometry::distance::tests::{line, p, polygon};
 use crate::geometry::distance::{
-    GEODESIC_HAUSDORFF_TOLERANCE, GeodesicHausdorffWitness, GeodesicScratch,
-    collect_point_only_into, geodesic_directed_hausdorff_distance, geodesic_hausdorff_counters,
-    geodesic_max_min_on_source_segment, geodesic_scratch,
+    ChartHausdorffWitness, ChartParts, chart_directed_hausdorff_distance, chart_hausdorff_counters,
+    chart_scratch,
 };
 use crate::geometry::{
-    ChartMetric, FrameDependentCaches, GeodesicMetric, GeodesicSegmentScratch, GeographicPrepared,
-    MOrdinate, Point, PreparedPlan, Shape, ZOrdinate, graph_relate_data_geographic,
+    ChartMetric, FrameDependentCaches, GeodesicMetric, GeographicPrepared, MOrdinate, Point,
+    PreparedPlan, Shape, ZOrdinate, graph_relate_data_geographic,
 };
 
 const MINIMUM_GAP_METERS: f64 = 4e-11 * 6_378_137.0;
@@ -37,93 +34,355 @@ fn disconnected_bvh_target() -> Shape {
     .expect("disconnected BVH target is valid")
 }
 
-fn brute_geodesic_directed_hausdorff(
+fn directed_chart_hausdorff(
     source: &Shape,
     target: &Shape,
-    metric: &impl GeodesicMetric,
+    metric: &(impl GeodesicMetric + ChartMetric<PointEdgeScratch = PointEdgeScratch>),
+) -> ChartHausdorffWitness {
+    let source_parts = ChartParts::build(source, metric).expect("source chart parts");
+    let target_parts = ChartParts::build(target, metric).expect("target chart parts");
+    let mut scratch = chart_scratch();
+    chart_directed_hausdorff_distance(&source_parts, &target_parts, metric, &mut scratch)
+        .expect("directed chart Hausdorff")
+}
+
+fn parallel_point_distance(geodesic: &Geodesic, colatitude: f64, parameter: f64) -> f64 {
+    geodesic.inverse(90.0 - colatitude, 10.0, 85.0, 179.0 * parameter)
+}
+
+fn parallel_point_maximum_oracle(geodesic: &Geodesic, colatitude: f64) -> f64 {
+    const LAST_SAMPLE: u32 = 4_000;
+    let distances = (0..=LAST_SAMPLE)
+        .map(|index| {
+            parallel_point_distance(
+                geodesic,
+                colatitude,
+                f64::from(index) / f64::from(LAST_SAMPLE),
+            )
+        })
+        .collect::<Vec<_>>();
+    let (maximum_index, mut maximum) = distances
+        .iter()
+        .copied()
+        .enumerate()
+        .max_by(|left, right| left.1.total_cmp(&right.1))
+        .expect("the oracle includes the parallel endpoints");
+    let step = 1.0 / f64::from(LAST_SAMPLE);
+    let mut lower = (f64::from(maximum_index as u32) * step - step).max(0.0);
+    let mut upper = (f64::from(maximum_index as u32) * step + step).min(1.0);
+    let golden = (5.0_f64.sqrt() - 1.0) / 2.0;
+    let mut left = upper - golden * (upper - lower);
+    let mut right = lower + golden * (upper - lower);
+    let mut left_value = parallel_point_distance(geodesic, colatitude, left);
+    let mut right_value = parallel_point_distance(geodesic, colatitude, right);
+    for _ in 0..80 {
+        if left_value >= right_value {
+            upper = right;
+            right = left;
+            right_value = left_value;
+            left = upper - golden * (upper - lower);
+            left_value = parallel_point_distance(geodesic, colatitude, left);
+        } else {
+            lower = left;
+            left = right;
+            left_value = right_value;
+            right = lower + golden * (upper - lower);
+            right_value = parallel_point_distance(geodesic, colatitude, right);
+        }
+    }
+    maximum = maximum.max(left_value).max(right_value);
+    maximum.max(
+        parallel_point_distance(geodesic, colatitude, 0.0)
+            .max(parallel_point_distance(geodesic, colatitude, 1.0)),
+    )
+}
+
+fn chart_edge_point_distance(
+    geodesic: &Geodesic,
+    start: Point,
+    end: Point,
+    target: Point,
+    parameter: f64,
 ) -> f64 {
-    const SAMPLE_FRACTIONS: [f64; 9] = [
-        0.0,
-        1.0 / 8.0,
-        2.0 / 8.0,
-        3.0 / 8.0,
-        4.0 / 8.0,
-        5.0 / 8.0,
-        6.0 / 8.0,
-        7.0 / 8.0,
-        1.0,
+    let mut longitude_delta = end.x - start.x;
+    if longitude_delta > 180.0 {
+        longitude_delta -= 360.0;
+    } else if longitude_delta <= -180.0 {
+        longitude_delta += 360.0;
+    }
+    let longitude = start.x + longitude_delta * parameter;
+    let latitude = start.y + (end.y - start.y) * parameter;
+    geodesic.inverse(target.y, target.x, latitude, longitude)
+}
+
+fn chart_edge_point_maximum_oracle(start: Point, end: Point, target: Point) -> f64 {
+    const LAST_SAMPLE: u32 = 4_000;
+    let geodesic = Geodesic::wgs84();
+    let distance = |parameter| chart_edge_point_distance(&geodesic, start, end, target, parameter);
+    let samples = (0..=LAST_SAMPLE)
+        .map(|index| distance(f64::from(index) / f64::from(LAST_SAMPLE)))
+        .collect::<Vec<_>>();
+    let (index, mut maximum) = samples
+        .iter()
+        .copied()
+        .enumerate()
+        .max_by(|left, right| left.1.total_cmp(&right.1))
+        .expect("the oracle includes both chart-edge endpoints");
+    let step = 1.0 / f64::from(LAST_SAMPLE);
+    let mut lower = (index as f64 * step - step).max(0.0);
+    let mut upper = (index as f64 * step + step).min(1.0);
+    let golden = (5.0_f64.sqrt() - 1.0) / 2.0;
+    let mut left = upper - golden * (upper - lower);
+    let mut right = lower + golden * (upper - lower);
+    let mut left_value = distance(left);
+    let mut right_value = distance(right);
+    for _ in 0..80 {
+        if left_value >= right_value {
+            upper = right;
+            right = left;
+            right_value = left_value;
+            left = upper - golden * (upper - lower);
+            left_value = distance(left);
+        } else {
+            lower = left;
+            left = right;
+            left_value = right_value;
+            right = lower + golden * (upper - lower);
+            right_value = distance(right);
+        }
+    }
+    maximum = maximum.max(left_value).max(right_value);
+    maximum.max(distance(0.0).max(distance(1.0)))
+}
+
+fn assert_chart_edge_point_hausdorff(
+    name: &str,
+    start: Point,
+    end: Point,
+    target_point: Point,
+) -> Result<()> {
+    let source = line(vec![start, end]);
+    let target = Shape::Point(target_point);
+    let expected = chart_edge_point_maximum_oracle(start, end, target_point);
+    with_ellipsoid_metric("EPSG:4326", &[&source, &target], |metric| {
+        let witness = directed_chart_hausdorff(&source, &target, metric);
+        let attained = metric.segment_length(witness.source, witness.target);
+        let scale = expected.max(witness.distance).max(1.0);
+        let rounding = 32.0 * (scale.next_up() - scale);
+        assert!(
+            witness.distance <= expected + rounding,
+            "{name}: reported {} above the independent maximum {expected}",
+            witness.distance,
+        );
+        assert!(
+            expected - witness.distance <= 0.01 + rounding,
+            "{name}: reported {} below the independent maximum {expected}",
+            witness.distance,
+        );
+        assert!(
+            (attained - witness.distance).abs() <= rounding,
+            "{name}: witness distance {attained} does not attain {}",
+            witness.distance,
+        );
+        Ok(())
+    })?;
+    Ok(())
+}
+
+#[test]
+fn geographic_hausdorff_parallel_pole_plateaus_close_with_second_order_bounds() -> Result<()> {
+    let source = line(vec![p(0.0, 85.0), p(179.0, 85.0)]);
+    let geodesic = Geodesic::wgs84();
+    let cases = [
+        ("colatitude_0_01_degree", 0.01),
+        ("colatitude_0_1_degree", 0.1),
+        ("colatitude_1_degree", 1.0),
+        ("colatitude_3_degrees", 3.0),
     ];
-    let target_parts = target.geodesic_parts(metric).expect("unique test segments");
-    let mut scratch = geodesic_scratch();
-    let scratch = &mut *scratch;
-    let (stack, segment_scratch) = (&mut scratch.stack, &mut scratch.segment);
-    let mut cmax = 0.0_f64;
-    let mut evaluate = |point: Point| {
-        let Some(candidate) =
-            geodesic_target_witness(point, &target_parts, metric, stack, segment_scratch)
-                .expect("complete target query should succeed")
-        else {
-            return;
-        };
-        cmax = cmax.max(candidate.distance);
-    };
-    source.for_each_point(&mut evaluate);
-    source.for_each_vertex_pair(|start, end| {
-        for fraction in SAMPLE_FRACTIONS {
-            evaluate(metric.interpolate(start, end, fraction));
+    with_ellipsoid_metric("EPSG:4326", &[&source], |metric| {
+        for (name, colatitude) in cases {
+            let target = Shape::Point(p(10.0, 90.0 - colatitude));
+            chart_hausdorff_counters::reset();
+            let witness = directed_chart_hausdorff(&source, &target, metric);
+            let evaluations = chart_hausdorff_counters::source_evaluations();
+            let expected = parallel_point_maximum_oracle(&geodesic, colatitude);
+            let attained = metric.segment_length(witness.source, witness.target);
+            let scale = expected.max(witness.distance).max(1.0);
+            let rounding = 32.0 * (scale.next_up() - scale);
+
+            assert!(
+                witness.distance <= expected + rounding,
+                "{name}: reported {} above the independent maximum {expected}",
+                witness.distance,
+            );
+            assert!(
+                expected - witness.distance <= 0.01 + rounding,
+                "{name}: reported {} below the independent maximum {expected}",
+                witness.distance,
+            );
+            assert!(
+                (attained - witness.distance).abs() <= rounding,
+                "{name}: source/target witness distance {attained} does not attain {}",
+                witness.distance,
+            );
+            assert!(
+                evaluations <= 100,
+                "{name}: source frontier used {evaluations} evaluations",
+            );
         }
-    });
-    cmax
+        Ok(())
+    })?;
+    Ok(())
 }
 
-fn directed_geodesic_witness(
-    source: &Shape,
-    target: &Shape,
-    metric: &impl GeodesicMetric,
-) -> GeodesicHausdorffWitness {
-    let source_parts = source.geodesic_parts(metric).unwrap();
-    let target_parts = target.geodesic_parts(metric).unwrap();
-    let mut scratch = geodesic_scratch();
-    geodesic_directed_hausdorff_distance(&source_parts, &target_parts, metric, &mut scratch)
-        .unwrap()
+#[test]
+fn geographic_hausdorff_endpoint_maximum_is_attained() -> Result<()> {
+    assert_chart_edge_point_hausdorff(
+        "maximum at the source endpoint",
+        p(0.0, 0.0),
+        p(1.0, 0.0),
+        p(10.0, 5.0),
+    )
 }
 
-fn brute_geodesic_target_witness(
-    point: Point,
-    parts: &crate::geometry::GeodesicParts,
-    metric: &impl GeodesicMetric,
-) -> Result<Option<(f64, Point)>> {
-    let mut best = f64::INFINITY;
-    let mut target_witness = None;
-    let mut scratch = GeodesicSegmentScratch::default();
-    for &segment in &parts.segments {
-        let result = metric.point_segment_query(
-            point,
-            &segment,
-            crate::geometry::GeodesicSegmentQuery::Minimum {
-                cutoff: best,
-                witness: crate::geometry::GeodesicWitnessNeed::Yes,
-            },
-            &mut scratch,
-        )?;
-        if let crate::geometry::GeodesicSegmentQueryResult::Attained {
-            minimum,
-            foot: Some(target),
-        } = result
-            && minimum.distance < best
-        {
-            best = minimum.distance;
-            target_witness = Some(target);
-        }
+#[test]
+fn geographic_hausdorff_short_way_seam_edge_uses_chart_interpolation() -> Result<()> {
+    assert_chart_edge_point_hausdorff(
+        "short-way seam crossing",
+        p(179.5, 45.0),
+        p(-179.5, 45.0),
+        p(170.0, 43.0),
+    )
+}
+
+#[test]
+fn geographic_hausdorff_near_antipodal_point_target_is_attained() -> Result<()> {
+    assert_chart_edge_point_hausdorff(
+        "near-antipodal target",
+        p(-1.0, 0.0),
+        p(1.0, 0.0),
+        p(178.0, 5.0),
+    )
+}
+
+#[test]
+fn geographic_hausdorff_closes_a_nearest_point_feature_switch() -> Result<()> {
+    let source = line(vec![p(0.0, 0.0), p(10.0, 0.0)]);
+    let target =
+        Shape::geometry_collection(vec![Shape::Point(p(-1.0, 0.0)), Shape::Point(p(11.0, 0.0))])
+            .expect("two-point target is valid");
+    with_ellipsoid_metric("EPSG:4326", &[&source, &target], |metric| {
+        let witness = directed_chart_hausdorff(&source, &target, metric);
+        let expected = metric.segment_length(p(5.0, 0.0), p(-1.0, 0.0));
+        assert!((witness.distance - expected).abs() <= 0.01);
+        assert!((witness.source.x - 5.0).abs() <= 1.0e-8);
+        Ok(())
+    })?;
+    Ok(())
+}
+
+#[test]
+fn geographic_hausdorff_keeps_a_farther_reverse_point_minimum() -> Result<()> {
+    let source = line(vec![p(0.0, 0.0), p(10.0, 0.0)]);
+    let target = Shape::geometry_collection(vec![
+        Shape::Point(p(-1.0, 0.0)),
+        Shape::Point(p(170.0, 0.0)),
+    ])
+    .expect("two-point target is valid");
+    with_ellipsoid_metric("EPSG:4326", &[&source, &target], |metric| {
+        // The 160-degree equatorial arc to the eastern source endpoint
+        // dominates every source-to-target minimum.
+        let distance = source.chart_hausdorff_distance(&target, metric)?;
+        assert!(
+            (distance - 17_811_118.526_923_772).abs() <= 0.01,
+            "reverse point maximum was {distance}; expected the 160-degree equatorial arc"
+        );
+        Ok(())
+    })?;
+    Ok(())
+}
+
+#[test]
+fn geographic_hausdorff_closes_an_exact_polar_parallel_family() -> Result<()> {
+    let source = line(vec![p(-45.0, 85.0), p(45.0, 85.0)]);
+    let pole = Shape::Point(p(10.0, 90.0));
+    with_ellipsoid_metric("EPSG:4326", &[&source, &pole], |metric| {
+        chart_hausdorff_counters::reset();
+        let witness = directed_chart_hausdorff(&source, &pole, metric);
+        let evaluations = chart_hausdorff_counters::source_evaluations();
+        let expected = metric.segment_length(p(0.0, 85.0), p(10.0, 90.0));
+        assert!((witness.distance - expected).abs() <= 0.01);
+        assert!(
+            evaluations <= 3,
+            "polar family used {evaluations} evaluations"
+        );
+        Ok(())
+    })?;
+    Ok(())
+}
+
+#[test]
+fn geographic_hausdorff_plateau_uses_native_grad_and_radian_frames() {
+    let geodesic = Geodesic::wgs84();
+    let expected = 569_423.751_409_724;
+    for (name, unit_name, radians_per_unit) in [
+        ("grad", "grad", std::f64::consts::PI / 200.0),
+        ("radian", "radian", 1.0),
+    ] {
+        let unit = AngularFactor::try_new(unit_name, radians_per_unit)
+            .expect("angular frame unit is valid");
+        let frame = GeographicFrame::try_new(unit, unit, 0.0).expect("native frame is valid");
+        let to_native = (std::f64::consts::PI / 180.0) / radians_per_unit;
+        let source = line(vec![
+            p(0.0, 85.0 * to_native),
+            p(179.0 * to_native, 85.0 * to_native),
+        ]);
+        let target = Shape::Point(p(10.0 * to_native, 89.9 * to_native));
+        let metric = crate::crs::EllipsoidMetric::for_geodesic_at_frame(&geodesic, 0, frame);
+
+        chart_hausdorff_counters::reset();
+        let witness = directed_chart_hausdorff(&source, &target, &metric);
+        let evaluations = chart_hausdorff_counters::source_evaluations();
+        assert!(
+            (witness.distance - expected).abs() <= 0.01,
+            "{name}: chart-edge plateau was {}; expected {expected}",
+            witness.distance,
+        );
+        assert!(
+            (metric.segment_length(witness.source, witness.target) - witness.distance).abs()
+                <= 1.0e-7,
+            "{name}: chart-edge witness does not attain the reported distance",
+        );
+        assert!(
+            evaluations <= 100,
+            "{name}: {evaluations} source evaluations"
+        );
     }
-    for &target in &parts.point_only {
-        let distance = metric.segment_length(point, target);
-        if distance < best {
-            best = distance;
-            target_witness = Some(target);
-        }
-    }
-    Ok(target_witness.map(|target| (best, target)))
+}
+
+#[test]
+fn geographic_hausdorff_returns_exact_zero_for_reversed_equal_chart_line() -> Result<()> {
+    let original = line(vec![p(-10.0, 30.0), p(15.0, 40.0)]);
+    let reversed = line(vec![p(15.0, 40.0), p(-10.0, 30.0)]);
+    with_ellipsoid_metric("EPSG:4326", &[&original, &reversed], |metric| {
+        assert_eq!(original.chart_hausdorff_distance(&reversed, metric)?, 0.0);
+        Ok(())
+    })?;
+    Ok(())
+}
+
+#[test]
+fn geographic_hausdorff_pole_equality_folds_exterior_latitude_before_bounds() -> Result<()> {
+    let source = line(vec![p(0.0, 90.0), p(180.0, 90.0)]);
+    let target = Shape::Point(p(0.0, 90.000_000_000_000_01));
+    with_ellipsoid_metric("EPSG:4326", &[&source, &target], |metric| {
+        assert_eq!(
+            source.chart_hausdorff_distance(&target, metric)?.to_bits(),
+            0.0_f64.to_bits(),
+        );
+        Ok(())
+    })?;
+    Ok(())
 }
 
 #[test]
@@ -347,138 +606,6 @@ fn cached_point_pair_nearest_validates_both_geographic_operands() -> Result<()> 
     Ok(())
 }
 
-fn dense_directed_geodesic(
-    source: &Shape,
-    target: &Shape,
-    metric: &impl GeodesicMetric,
-    steps: usize,
-) -> f64 {
-    let target_parts = target.geodesic_parts(metric).unwrap();
-    let mut scratch = geodesic_scratch();
-    let scratch = &mut *scratch;
-    let (stack, segment) = (&mut scratch.stack, &mut scratch.segment);
-    let mut maximum = 0.0_f64;
-    let mut evaluate = |point: Point| {
-        let candidate = geodesic_target_witness(point, &target_parts, metric, stack, segment)
-            .unwrap()
-            .unwrap();
-        maximum = maximum.max(candidate.distance);
-    };
-    source.for_each_point(&mut evaluate);
-    source.for_each_vertex_pair(|start, end| {
-        for step in 0..=steps {
-            evaluate(metric.interpolate(start, end, step as f64 / steps.max(1) as f64));
-        }
-    });
-    maximum
-}
-
-fn assert_geodesic_witness_attained(
-    witness: &GeodesicHausdorffWitness,
-    metric: &impl GeodesicMetric,
-) {
-    let recomputed = metric.segment_length(witness.source, witness.target);
-    let allowance =
-        8.0 * metric.geodesic_backend_floor() + 128.0 * f64::EPSILON * witness.distance.max(1.0);
-    assert!(
-        (witness.distance - recomputed).abs() <= allowance,
-        "witness distance {} was not attained by {} within {}",
-        witness.distance,
-        recomputed,
-        allowance
-    );
-}
-
-#[test]
-fn geodesic_point_collection_preserves_nested_source_order() {
-    let nested = Shape::geometry_collection(vec![
-        multipoint(vec![p(2.0, 0.0), p(3.0, 0.0)]),
-        Shape::geometry_collection(vec![Shape::Point(p(4.0, 0.0))])
-            .expect("nested point collection is valid"),
-    ])
-    .expect("point collection is valid");
-    let shape = Shape::geometry_collection(vec![
-        Shape::Point(p(1.0, 0.0)),
-        nested,
-        Shape::geometry_collection(Vec::new()).expect("empty collection is valid"),
-        line(vec![p(10.0, 0.0), p(11.0, 0.0)]),
-    ])
-    .expect("mixed collection is valid");
-    let mut points = vec![p(-1.0, 0.0)];
-
-    collect_point_only_into(&shape, &mut points);
-
-    assert_eq!(points, vec![
-        p(1.0, 0.0),
-        p(2.0, 0.0),
-        p(3.0, 0.0),
-        p(4.0, 0.0)
-    ]);
-}
-
-#[test]
-fn geodesic_parts_retain_degenerate_line_support() -> Result<()> {
-    let degenerate = line(vec![p(0.0, 0.0), p(0.0, 0.0)]);
-    with_ellipsoid_metric("EPSG:4326", &[&degenerate], |metric| {
-        let parts = degenerate.geodesic_parts(metric)?;
-        assert!(parts.segments.is_empty());
-        assert_eq!(parts.point_only.len(), 1);
-        Ok(())
-    })?;
-    Ok(())
-}
-
-#[test]
-fn geodesic_parts_coalesce_depth_128_shared_line_owners() -> Result<()> {
-    for coordinates in [vec![p(0.0, 0.0), p(1.0, 0.0)], vec![
-        p(179.0, 0.0),
-        p(-179.0, 0.0),
-    ]] {
-        let target = line(coordinates.clone());
-        let mut shared = line(coordinates);
-        for _ in 0..128 {
-            shared = Shape::geometry_collection(vec![shared.clone(), shared])
-                .expect("shared line DAG stays within the collection depth");
-        }
-
-        with_ellipsoid_metric("EPSG:4326", &[&shared, &target], |metric| {
-            let parts = shared.geodesic_parts(metric)?;
-            assert_eq!(parts.segments.len(), 1);
-            assert!(parts.point_only.is_empty());
-
-            let left = PreparedPlan::new(shared.clone());
-            let right = PreparedPlan::new(target.clone());
-            let left_cache = FrameDependentCaches::default();
-            let right_cache = FrameDependentCaches::default();
-            let (semi_major, flattening) = metric.ellipsoid_parameters();
-            assert_eq!(
-                left.geodesic_distance_cached(
-                    &left_cache,
-                    &right,
-                    &right_cache,
-                    "EPSG:4326",
-                    semi_major,
-                    flattening,
-                    metric,
-                )?,
-                0.0
-            );
-            assert!(left.geodesic_dwithin_cached(
-                &left_cache,
-                &right,
-                &right_cache,
-                "EPSG:4326",
-                semi_major,
-                flattening,
-                metric,
-                0.0,
-            )?);
-            Ok(())
-        })?;
-    }
-    Ok(())
-}
-
 #[test]
 fn scalar_geodesic_dwithin_at_infinity_does_not_allocate() -> Result<()> {
     let left_shape = line(vec![p(-2.0, 0.0), p(2.0, 0.0)]);
@@ -502,600 +629,6 @@ fn scalar_geodesic_dwithin_at_infinity_does_not_allocate() -> Result<()> {
             )
         };
         assert!(crate::test_support::assert_no_allocations(infinite)?);
-        Ok(())
-    })?;
-    Ok(())
-}
-
-#[test]
-fn geodesic_parts_collapse_periodic_zero_edge_support() -> Result<()> {
-    let seam = line(vec![p(-180.0, 0.0), p(180.0, 0.0)]);
-    with_ellipsoid_metric("EPSG:4326", &[&seam], |metric| {
-        let parts = seam.geodesic_parts(metric)?;
-        assert!(parts.segments.is_empty());
-        assert_eq!(parts.point_only, [p(-180.0, 0.0)]);
-        Ok(())
-    })?;
-    Ok(())
-}
-
-#[test]
-#[expect(
-    clippy::panic_in_result_fn,
-    reason = "the test returns Result for fallible setup and uses normal assertion macros for its oracle"
-)]
-fn geodesic_hausdorff_is_segment_aware() -> Result<()> {
-    let source = line(vec![p(0.0, 0.0), p(0.5, 0.0)]);
-    let target = line(vec![p(0.0, 0.05), p(0.25, 0.4), p(0.5, 0.05)]);
-    with_ellipsoid_metric("EPSG:4326", &[&source, &target], |metric| {
-        let source_points = source.points_vec()?;
-        let target_points = target.points_vec()?;
-        let source_parts = source.geodesic_parts(metric)?;
-        let target_parts = target.geodesic_parts(metric)?;
-        let mut scratch = geodesic_scratch();
-        let scratch = &mut *scratch;
-
-        let source_to_target =
-            geodesic_directed_hausdorff_distance(&source_parts, &target_parts, metric, scratch)?;
-        let source_vertices_only =
-            brute_geodesic_directed_hausdorff(&multipoint(source_points), &target, metric);
-        assert!(
-            source_to_target.distance > source_vertices_only,
-            "source interior did not affect the directed maximum: {} <= {source_vertices_only}",
-            source_to_target.distance
-        );
-
-        let target_vertices_only =
-            brute_geodesic_directed_hausdorff(&source, &multipoint(target_points), metric);
-        assert!(
-            source_to_target.distance < target_vertices_only,
-            "target interior did not affect the directed maximum: {} >= {target_vertices_only}",
-            source_to_target.distance
-        );
-
-        let expected_source_to_target = brute_geodesic_directed_hausdorff(&source, &target, metric);
-        assert_geodesic_close(
-            "source_to_target",
-            source_to_target.distance,
-            expected_source_to_target,
-        );
-
-        let actual = source.geodesic_hausdorff_distance(&target, metric)?;
-        let target_to_source = brute_geodesic_directed_hausdorff(&target, &source, metric);
-        assert_geodesic_close(
-            "symmetric",
-            actual,
-            source_to_target.distance.max(target_to_source),
-        );
-        Ok(())
-    })?;
-    Ok(())
-}
-
-#[test]
-fn geodesic_hausdorff_zero_and_polar_plateaus_use_attained_witnesses() -> Result<()> {
-    let source = line(vec![p(-10.0, 0.0), p(10.0, 0.0)]);
-    let reversed = line(vec![p(10.0, 0.0), p(-10.0, 0.0)]);
-    let pole = Shape::Point(p(0.0, 90.0));
-    with_ellipsoid_metric("EPSG:4326", &[&source, &reversed, &pole], |metric| {
-        geodesic_hausdorff_counters::reset();
-        let identical = directed_geodesic_witness(&source, &source, metric);
-        assert_eq!(identical.distance, 0.0);
-        assert_geodesic_witness_attained(&identical, metric);
-        let identical_stats = geodesic_hausdorff_counters::snapshot();
-        assert_eq!(identical_stats.outer_source_segments, 1);
-        assert!(identical_stats.outer_complete_target_queries >= 3);
-        assert!(identical_stats.outer_interval_pops > 0);
-        assert_eq!(identical_stats.outer_interval_splits, 0);
-        assert!(identical_stats.outer_moving_supports > 0);
-        assert!(identical_stats.outer_support_closures > 0);
-
-        geodesic_hausdorff_counters::reset();
-        let reversed_witness = directed_geodesic_witness(&source, &reversed, metric);
-        assert_eq!(reversed_witness.distance, 0.0);
-        assert_geodesic_witness_attained(&reversed_witness, metric);
-        assert!(geodesic_hausdorff_counters::snapshot().outer_moving_supports > 0);
-
-        geodesic_hausdorff_counters::reset();
-        let polar_witness = directed_geodesic_witness(&source, &pole, metric);
-        let polar_distance = metric.segment_length(p(0.0, 0.0), p(0.0, 90.0));
-        assert_geodesic_close("polar plateau", polar_witness.distance, polar_distance);
-        assert_geodesic_witness_attained(&polar_witness, metric);
-        let polar_stats = geodesic_hausdorff_counters::snapshot();
-        assert!(polar_stats.outer_family_supports > 0);
-        assert!(polar_stats.outer_support_closures > 0);
-
-        let symmetric = source.geodesic_hausdorff_distance(&pole, metric)?;
-        assert_geodesic_close("symmetric polar plateau", symmetric, polar_distance);
-        Ok(())
-    })?;
-    Ok(())
-}
-
-#[test]
-fn geodesic_hausdorff_smooth_and_cusp_extrema_are_attained() -> Result<()> {
-    let source = line(vec![p(0.0, 0.0), p(10.0, 0.0)]);
-    let smooth_target = line(vec![p(0.0, 1.0), p(5.0, 8.0), p(10.0, 1.0)]);
-    let cusp_target = line(vec![p(0.0, 1.0), p(5.0, 0.2), p(10.0, 1.0)]);
-    with_ellipsoid_metric(
-        "EPSG:4326",
-        &[&source, &smooth_target, &cusp_target],
-        |metric| {
-            for (name, target) in [("smooth", &smooth_target), ("cusp", &cusp_target)] {
-                geodesic_hausdorff_counters::reset();
-                let witness = directed_geodesic_witness(&source, target, metric);
-                let dense = dense_directed_geodesic(&source, target, metric, 512);
-                let allowance = GEODESIC_HAUSDORFF_TOLERANCE
-                    + 8.0 * metric.geodesic_backend_floor()
-                    + 128.0 * f64::EPSILON * dense.max(1.0);
-                assert!(
-                    dense <= witness.distance + allowance,
-                    "{name}: dense {dense} exceeded {} by more than {allowance}",
-                    witness.distance
-                );
-                assert_geodesic_witness_attained(&witness, metric);
-                let stats = geodesic_hausdorff_counters::snapshot();
-                assert!(stats.outer_interval_pops > 0);
-                assert!(stats.outer_complete_target_queries >= 3);
-                assert!(
-                    stats.outer_interval_splits > 0 || stats.outer_support_closures > 0,
-                    "{name}: {stats:?}"
-                );
-                if name == "smooth" {
-                    assert!(stats.outer_regular_supports > 0, "{stats:?}");
-                }
-                if name == "cusp" {
-                    assert!(stats.outer_regular_derivative_declines > 0, "{stats:?}");
-                }
-            }
-            let reverse = directed_geodesic_witness(&smooth_target, &source, metric);
-            let reverse_dense = dense_directed_geodesic(&smooth_target, &source, metric, 512);
-            assert!(reverse_dense <= reverse.distance + GEODESIC_HAUSDORFF_TOLERANCE);
-            assert_geodesic_witness_attained(&reverse, metric);
-            let symmetric = source.geodesic_hausdorff_distance(&smooth_target, metric)?;
-            assert_geodesic_close(
-                "symmetric smooth",
-                symmetric,
-                directed_geodesic_witness(&source, &smooth_target, metric)
-                    .distance
-                    .max(reverse.distance),
-            );
-            Ok(())
-        },
-    )?;
-    Ok(())
-}
-
-#[test]
-fn geodesic_hausdorff_endpoint_transition_falls_back_safely() -> Result<()> {
-    let source = line(vec![p(-5.0, 0.0), p(5.0, 0.0)]);
-    let target = line(vec![p(0.0, 0.1), p(0.0, 5.0)]);
-    with_ellipsoid_metric("EPSG:4326", &[&source, &target], |metric| {
-        let witness = directed_geodesic_witness(&source, &target, metric);
-        let dense = dense_directed_geodesic(&source, &target, metric, 512);
-        let allowance = GEODESIC_HAUSDORFF_TOLERANCE
-            + 8.0 * metric.geodesic_backend_floor()
-            + 128.0 * f64::EPSILON * dense.max(1.0);
-        assert!(dense <= witness.distance + allowance);
-        assert_geodesic_witness_attained(&witness, metric);
-        let reverse = directed_geodesic_witness(&target, &source, metric);
-        assert_geodesic_witness_attained(&reverse, metric);
-        Ok(())
-    })?;
-    Ok(())
-}
-
-#[test]
-fn geodesic_hausdorff_regular_support_declines_at_domain_boundary() -> Result<()> {
-    let source = line(vec![p(0.0, 0.0), p(1.0, 0.0)]);
-    let target = line(vec![p(90.0, -10.0), p(90.0, 10.0)]);
-    with_ellipsoid_metric("EPSG:4326", &[&source, &target], |metric| {
-        geodesic_hausdorff_counters::reset();
-        let witness = directed_geodesic_witness(&source, &target, metric);
-        let dense = dense_directed_geodesic(&source, &target, metric, 256);
-        assert!(dense <= witness.distance + GEODESIC_HAUSDORFF_TOLERANCE);
-        assert_geodesic_witness_attained(&witness, metric);
-        let stats = geodesic_hausdorff_counters::snapshot();
-        assert!(stats.outer_regular_attempts > 0, "{stats:?}");
-        assert!(stats.outer_regular_domain_declines > 0, "{stats:?}");
-        assert_eq!(stats.outer_regular_supports, 0, "{stats:?}");
-        assert!(stats.outer_interval_splits > 0, "{stats:?}");
-        Ok(())
-    })?;
-    Ok(())
-}
-
-#[test]
-fn geodesic_hausdorff_near_cut_fallback_is_endpoint_governed() -> Result<()> {
-    let source = line(vec![p(-1.0, 0.0), p(1.0, 0.0)]);
-    // The short target segment is unambiguous, but its selected near-antipodal
-    // connector ends at a target endpoint, so regular interior-foot support
-    // must decline and the global fallback must finish the case.
-    let target = line(vec![p(179.0, -1.0), p(179.0, 1.0)]);
-    with_ellipsoid_metric("EPSG:4326", &[&source, &target], |metric| {
-        geodesic_hausdorff_counters::reset();
-        let witness = directed_geodesic_witness(&source, &target, metric);
-        let dense = dense_directed_geodesic(&source, &target, metric, 256);
-        assert!(dense <= witness.distance + GEODESIC_HAUSDORFF_TOLERANCE);
-        assert_geodesic_witness_attained(&witness, metric);
-        let stats = geodesic_hausdorff_counters::snapshot();
-        assert!(stats.outer_regular_attempts > 0, "{stats:?}");
-        assert!(stats.outer_regular_foot_endpoint_declines > 0, "{stats:?}");
-        assert_eq!(stats.outer_regular_domain_declines, 0, "{stats:?}");
-        assert_eq!(stats.outer_regular_supports, 0, "{stats:?}");
-        assert!(stats.outer_interval_pops > 0, "{stats:?}");
-        assert!(stats.outer_interval_splits > 0, "{stats:?}");
-        Ok(())
-    })?;
-    Ok(())
-}
-
-#[test]
-fn geodesic_hausdorff_regular_support_declines_at_target_patch_endpoint() -> Result<()> {
-    let source = line(vec![p(0.0, 0.0), p(10.0, 0.0)]);
-    let target = line(vec![p(5.0, 0.1), p(5.0, 5.0)]);
-    with_ellipsoid_metric("EPSG:4326", &[&source, &target], |metric| {
-        geodesic_hausdorff_counters::reset();
-        let witness = directed_geodesic_witness(&source, &target, metric);
-        let dense = dense_directed_geodesic(&source, &target, metric, 256);
-        assert!(dense <= witness.distance + GEODESIC_HAUSDORFF_TOLERANCE);
-        assert_geodesic_witness_attained(&witness, metric);
-        let stats = geodesic_hausdorff_counters::snapshot();
-        assert!(stats.outer_regular_attempts > 0, "{stats:?}");
-        assert!(stats.outer_regular_foot_endpoint_declines > 0, "{stats:?}");
-        assert_eq!(stats.outer_regular_supports, 0, "{stats:?}");
-        assert!(stats.outer_interval_splits > 0, "{stats:?}");
-        Ok(())
-    })?;
-    Ok(())
-}
-
-#[test]
-fn geodesic_hausdorff_regular_support_declines_for_near_zero_distance() -> Result<()> {
-    let source = line(vec![p(0.0, 0.0), p(20.0, 0.0)]);
-    let target = line(vec![p(0.0, 1e-12), p(20.0, 1e-12)]);
-    with_ellipsoid_metric("EPSG:4326", &[&source, &target], |metric| {
-        geodesic_hausdorff_counters::reset();
-        let witness = directed_geodesic_witness(&source, &target, metric);
-        let dense = dense_directed_geodesic(&source, &target, metric, 256);
-        assert!(dense <= witness.distance + GEODESIC_HAUSDORFF_TOLERANCE);
-        assert_geodesic_witness_attained(&witness, metric);
-        let stats = geodesic_hausdorff_counters::snapshot();
-        assert!(stats.outer_regular_attempts > 0, "{stats:?}");
-        assert!(stats.outer_regular_near_zero_declines > 0, "{stats:?}");
-        assert!(stats.outer_moving_supports > 0, "{stats:?}");
-        assert_eq!(stats.outer_interval_splits, 0, "{stats:?}");
-        Ok(())
-    })?;
-    Ok(())
-}
-
-#[test]
-fn geodesic_hausdorff_finite_foot_branch_keeps_shifted_peak() -> Result<()> {
-    let source = line(vec![p(0.0, 0.0), p(10.0, 0.0)]);
-    let target = line(vec![p(0.0, 0.5), p(7.0, 8.0), p(10.0, 0.5)]);
-    with_ellipsoid_metric("EPSG:4326", &[&source, &target], |metric| {
-        geodesic_hausdorff_counters::reset();
-        let witness = directed_geodesic_witness(&source, &target, metric);
-        let dense = dense_directed_geodesic(&source, &target, metric, 1_024);
-        let allowance = GEODESIC_HAUSDORFF_TOLERANCE
-            + 8.0 * metric.geodesic_backend_floor()
-            + 128.0 * f64::EPSILON * dense.max(1.0);
-        assert!(dense <= witness.distance + allowance);
-        assert_geodesic_witness_attained(&witness, metric);
-        let stats = geodesic_hausdorff_counters::snapshot();
-        assert!(stats.outer_regular_supports > 0, "{stats:?}");
-        assert!(
-            witness.source.x > 5.0,
-            "shifted peak was not found: {witness:?}"
-        );
-        Ok(())
-    })?;
-    Ok(())
-}
-
-#[test]
-fn spherical_geodesic_hausdorff_closes_focal_plateaus() -> Result<()> {
-    let radius = 6_378_137.0;
-    let geodesic = geographiclib_rs::Geodesic::new(radius, 0.0);
-    let metric = crate::crs::EllipsoidMetric::for_crs84_geometry_test(&geodesic);
-    let source = line(vec![p(-30.0, 0.0), p(30.0, 0.0)]);
-    let target = Shape::Point(p(0.0, 90.0));
-    let witness = directed_geodesic_witness(&source, &target, &metric);
-    let expected = metric.segment_length(p(0.0, 0.0), p(0.0, 90.0));
-    assert_geodesic_close("spherical polar", witness.distance, expected);
-    assert_geodesic_witness_attained(&witness, &metric);
-    let parts = source.geodesic_parts(&metric)?;
-    let target_parts = target.geodesic_parts(&metric)?;
-    let mut scratch = geodesic_scratch();
-    let source_witness =
-        geodesic_directed_hausdorff_distance(&parts, &target_parts, &metric, &mut scratch)?;
-    assert_eq!(source_witness.distance.to_bits(), expected.to_bits());
-
-    let oblique_source = line(vec![p(-20.0, -20.0), p(40.0, 30.0)]);
-    let oblique_target = Shape::Point(p(120.0, 10.0));
-    geodesic_hausdorff_counters::reset();
-    let oblique_witness = directed_geodesic_witness(&oblique_source, &oblique_target, &metric);
-    let oblique_dense = dense_directed_geodesic(&oblique_source, &oblique_target, &metric, 512);
-    assert!(oblique_dense <= oblique_witness.distance + GEODESIC_HAUSDORFF_TOLERANCE);
-    assert_geodesic_witness_attained(&oblique_witness, &metric);
-    assert!(geodesic_hausdorff_counters::snapshot().outer_family_supports > 0);
-    Ok(())
-}
-
-#[test]
-fn spherical_geodesic_hausdorff_closes_descendant_fixed_target_phase() {
-    let radius = 6_378_137.0;
-    let geodesic = geographiclib_rs::Geodesic::new(radius, 0.0);
-    let metric = crate::crs::EllipsoidMetric::for_crs84_geometry_test(&geodesic);
-    let source = line(vec![p(0.0, 0.0), p(120.0, 0.0)]);
-    let target = Shape::Point(p(-105.0, 20.0));
-
-    geodesic_hausdorff_counters::reset();
-    let witness = directed_geodesic_witness(&source, &target, &metric);
-    let expected = metric.segment_length(p(75.0, 0.0), p(-105.0, 20.0));
-    let dense = dense_directed_geodesic(&source, &target, &metric, 1_024);
-    assert_geodesic_close("spherical descendant phase", witness.distance, expected);
-    assert!(dense <= witness.distance + GEODESIC_HAUSDORFF_TOLERANCE);
-    assert!(
-        (witness.source.x - 75.0).abs() <= 1e-12,
-        "stationary source longitude: {}",
-        witness.source.x
-    );
-    assert_geodesic_witness_attained(&witness, &metric);
-    let stats = geodesic_hausdorff_counters::snapshot();
-    assert!(stats.outer_interval_splits > 0, "{stats:?}");
-    assert!(stats.outer_family_supports > 0, "{stats:?}");
-}
-
-#[test]
-fn geodesic_hausdorff_equatorial_fixed_point_family_is_not_polar_only() -> Result<()> {
-    let source = line(vec![p(-30.0, 0.0), p(30.0, 0.0)]);
-    let target = Shape::Point(p(0.0, 89.999));
-    let crossing_source = line(vec![p(100.0, 0.0), p(-100.0, 0.0)]);
-    let crossing_target = Shape::Point(p(0.0, 10.0));
-    with_ellipsoid_metric(
-        "EPSG:4326",
-        &[&source, &target, &crossing_source, &crossing_target],
-        |metric| {
-            geodesic_hausdorff_counters::reset();
-            let witness = directed_geodesic_witness(&source, &target, metric);
-            let center = metric.segment_length(p(0.0, 0.0), p(0.0, 89.999));
-            let endpoint = metric.segment_length(p(30.0, 0.0), p(0.0, 89.999));
-            let dense = dense_directed_geodesic(&source, &target, metric, 512);
-            assert!(endpoint > center);
-            assert!(witness.distance > center);
-            assert!(dense <= witness.distance + GEODESIC_HAUSDORFF_TOLERANCE);
-            assert_geodesic_witness_attained(&witness, metric);
-            assert!(geodesic_hausdorff_counters::snapshot().outer_family_supports > 0);
-
-            geodesic_hausdorff_counters::reset();
-            let crossing_witness =
-                directed_geodesic_witness(&crossing_source, &crossing_target, metric);
-            let crossing_dense =
-                dense_directed_geodesic(&crossing_source, &crossing_target, metric, 512);
-            assert_eq!(
-                crossing_witness.source.x.abs().to_bits(),
-                180.0_f64.to_bits()
-            );
-            assert!(crossing_dense <= crossing_witness.distance + GEODESIC_HAUSDORFF_TOLERANCE);
-            assert_geodesic_witness_attained(&crossing_witness, metric);
-            assert!(geodesic_hausdorff_counters::snapshot().outer_family_supports > 0);
-            Ok(())
-        },
-    )?;
-    Ok(())
-}
-
-#[test]
-fn geodesic_hausdorff_point_only_and_mixed_targets_are_complete() -> Result<()> {
-    let source = line(vec![p(-4.0, 0.0), p(4.0, 0.0)]);
-    let points = multipoint(vec![p(-2.0, 1.0), p(2.0, 1.0)]);
-    let mixed =
-        Shape::geometry_collection(vec![points.clone(), line(vec![p(-3.0, 2.0), p(3.0, 2.0)])])
-            .expect("mixed target is valid");
-    with_ellipsoid_metric("EPSG:4326", &[&source, &points, &mixed], |metric| {
-        for target in [&points, &mixed] {
-            let witness = directed_geodesic_witness(&source, target, metric);
-            let dense = dense_directed_geodesic(&source, target, metric, 256);
-            assert!(dense <= witness.distance + GEODESIC_HAUSDORFF_TOLERANCE);
-            assert_geodesic_witness_attained(&witness, metric);
-        }
-        let forward = source.geodesic_hausdorff_distance(&mixed, metric)?;
-        let reverse = mixed.geodesic_hausdorff_distance(&source, metric)?;
-        assert!(forward.is_finite() && reverse.is_finite());
-        assert!(
-            Shape::empty_point()
-                .geodesic_hausdorff_distance(&source, metric)?
-                .is_infinite()
-        );
-        Ok(())
-    })?;
-    Ok(())
-}
-
-#[test]
-fn geodesic_hausdorff_complete_target_uses_bvh_witnesses() -> Result<()> {
-    let source = line(vec![p(0.0, 1.0), p(4.0, 1.0)]);
-    let target = dense_line(0.0, 0.0, 65);
-    with_ellipsoid_metric("EPSG:4326", &[&source, &target], |metric| {
-        let target_parts = target.geodesic_parts(metric)?;
-        assert!(target_parts.geodesic_bvh(metric).is_some());
-        geodesic_hausdorff_counters::reset();
-        let witness = directed_geodesic_witness(&source, &target, metric);
-        let stats = geodesic_hausdorff_counters::snapshot();
-        assert!(stats.outer_bvh_target_queries > 0, "{stats:?}");
-        let dense = dense_directed_geodesic(&source, &target, metric, 256);
-        assert!(dense <= witness.distance + GEODESIC_HAUSDORFF_TOLERANCE);
-        assert_geodesic_witness_attained(&witness, metric);
-        Ok(())
-    })?;
-    Ok(())
-}
-
-#[test]
-#[expect(
-    clippy::panic_in_result_fn,
-    reason = "the test returns Result for metric and part setup and checks retained scratch reuse"
-)]
-fn geodesic_hausdorff_frontier_reuses_retained_scratch() -> Result<()> {
-    use crate::test_support::allocation_count;
-
-    let source = line(vec![p(0.0, 0.0), p(10.0, 0.0), p(20.0, 0.0), p(30.0, 0.0)]);
-    let target = line(vec![p(0.0, 1.0), p(15.0, 8.0), p(30.0, 1.0)]);
-    with_ellipsoid_metric("EPSG:4326", &[&source, &target], |metric| {
-        let source_parts = source.geodesic_parts(metric)?;
-        let target_parts = target.geodesic_parts(metric)?;
-        let mut target_prepared = Vec::with_capacity(target_parts.segments.len());
-        for segment in &target_parts.segments {
-            target_prepared.push(metric.prepare_segment(segment)?);
-        }
-        let mut scratch = GeodesicScratch::default();
-        for segment in &source_parts.segments {
-            geodesic_max_min_on_source_segment(
-                segment,
-                &target_parts,
-                &target_prepared,
-                metric,
-                0.0,
-                &mut scratch,
-            )?;
-        }
-        assert!(scratch.outer.capacity() > 0);
-        let ((), allocations) = allocation_count(|| {
-            for segment in &source_parts.segments {
-                geodesic_max_min_on_source_segment(
-                    segment,
-                    &target_parts,
-                    &target_prepared,
-                    metric,
-                    0.0,
-                    &mut scratch,
-                )
-                .expect("warmed frontier must remain reusable");
-            }
-        });
-        assert_eq!(allocations, 0, "warmed outer scratch allocations");
-        Ok(())
-    })?;
-    Ok(())
-}
-
-#[test]
-fn geodesic_facet_bvh_matches_brute_hausdorff_target_witness() -> Result<()> {
-    let target = disconnected_bvh_target();
-    let probes = [p(-1.0, 1.5), p(45.0, 1.5), p(128.0, 2.0)];
-    with_ellipsoid_metric("EPSG:4326", &[&target], |metric| {
-        let target_parts = target.geodesic_parts(metric)?;
-        assert!(target_parts.geodesic_bvh(metric).is_some());
-        let mut stack = Vec::new();
-        let mut scratch = GeodesicSegmentScratch::default();
-        for probe in probes {
-            let expected = brute_geodesic_target_witness(probe, &target_parts, metric)?
-                .expect("target has linework");
-            let actual =
-                geodesic_target_witness(probe, &target_parts, metric, &mut stack, &mut scratch)?
-                    .expect("target has linework");
-            assert_eq!((actual.distance, actual.target), expected);
-            assert_eq!(
-                (actual.distance - metric.segment_length(probe, actual.target)).abs(),
-                0.0
-            );
-        }
-        Ok(())
-    })?;
-    Ok(())
-}
-
-fn straight_ordinate_line(z: bool) -> Shape {
-    line(
-        (0..65)
-            .map(|index| {
-                let x = -2.0 + f64::from(index) / 16.0;
-                if z {
-                    Point::new_axes(
-                        x,
-                        0.0,
-                        ZOrdinate(Some(100.0 + f64::from(index))),
-                        MOrdinate(None),
-                    )
-                } else {
-                    Point::new_axes(
-                        x,
-                        0.0,
-                        ZOrdinate(None),
-                        MOrdinate(Some(200.0 + f64::from(index))),
-                    )
-                }
-                .expect("finite ordinate test point")
-            })
-            .collect(),
-    )
-}
-
-#[test]
-fn geodesic_bvh_witnesses_preserve_ordinates_across_shared_xy() -> Result<()> {
-    let z_line = straight_ordinate_line(true);
-    let m_line = straight_ordinate_line(false);
-    let probe = p(0.0, 1.0);
-    let cases = [
-        (
-            "xyz_first",
-            Shape::geometry_collection(vec![z_line.clone(), m_line.clone()])
-                .expect("mixed ordinate collection"),
-            Some(132.0),
-            None,
-        ),
-        (
-            "xym_first",
-            Shape::geometry_collection(vec![m_line, z_line]).expect("mixed ordinate collection"),
-            None,
-            Some(232.0),
-        ),
-    ];
-
-    with_ellipsoid_metric("EPSG:4326", &[], |metric| {
-        for (name, target, expected_z, expected_m) in cases {
-            let target_parts = target.geodesic_parts(metric)?;
-            assert!(
-                target_parts.geodesic_bvh(metric).is_some(),
-                "{name} bvh presence"
-            );
-            let expected = brute_geodesic_target_witness(probe, &target_parts, metric)?
-                .expect("non-empty witness");
-            let actual = geodesic_target_witness(
-                probe,
-                &target_parts,
-                metric,
-                &mut Vec::new(),
-                &mut GeodesicSegmentScratch::default(),
-            )?
-            .expect("non-empty witness");
-            assert_eq!((actual.distance, actual.target), expected, "{name} witness");
-            assert_eq!(actual.target.z(), expected_z, "{name} target Z");
-            assert_eq!(actual.target.m(), expected_m, "{name} target M");
-            assert!(
-                (actual.distance - metric.segment_length(probe, actual.target)).abs() <= 1e-3,
-                "{name} witness is not attained"
-            );
-        }
-        Ok(())
-    })?;
-    Ok(())
-}
-
-#[test]
-fn geodesic_bvh_none_remains_for_empty_and_below_threshold_parts() -> Result<()> {
-    let small = line(vec![p(0.0, 0.0), p(1.0, 0.0)]);
-    let empty = Shape::empty_point();
-    with_ellipsoid_metric("EPSG:4326", &[&small, &empty], |metric| {
-        let small_parts = small.geodesic_parts(metric)?;
-        let small_result =
-            crate::test_support::assert_no_allocations(|| small_parts.geodesic_bvh(metric));
-        assert!(small_result.is_none());
-
-        let empty_parts = empty.geodesic_parts(metric)?;
-        assert!(empty_parts.geodesic_bvh(metric).is_none());
         Ok(())
     })?;
     Ok(())

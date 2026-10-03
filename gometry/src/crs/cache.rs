@@ -5,14 +5,13 @@
 
 use smol_str::SmolStr;
 
-use crate::collections::HashMap;
 use crate::crs::{
     AuthorityObjectInfo, CacheBucketInfo, CacheInfo, CelestialBodyInfo, Confidence, CrsCatalogInfo,
     CrsCatalogOptions, CrsComparison, CrsError, CrsInfo, CrsProjJsonOptions, CrsProjOptions,
-    CrsSearchOptions, CrsWktOptions, Geodesic, GeodesicLine, GeodesicLineKey, IdentifyCandidate,
-    OperationInfo, ProjObject, ProjPipeline, ProjStringVersion, RefCell, RuntimeState,
-    TransformExecution, TransformFailure, TransformOptions, UnitInfo, WktVersion,
-    preserve_resource_error, runtime, runtime_state_snapshot,
+    CrsSearchOptions, CrsWktOptions, Geodesic, IdentifyCandidate, OperationInfo, ProjObject,
+    ProjPipeline, ProjStringVersion, RefCell, RuntimeState, TransformExecution, TransformFailure,
+    TransformOptions, UnitInfo, WktVersion, preserve_resource_error, runtime,
+    runtime_state_snapshot,
 };
 use crate::error::Result;
 
@@ -129,47 +128,6 @@ pub(super) struct CachedGeodesicObject {
     pub definition: String,
     pub object: Geodesic,
     pub authalic_series: crate::crs::geodesic::AuthalicSeries,
-}
-
-#[derive(Default)]
-pub(crate) struct GeodesicLineCache {
-    entries: HashMap<GeodesicLineKey, GeodesicLine>,
-    eviction_order: std::collections::BinaryHeap<std::cmp::Reverse<GeodesicLineKey>>,
-}
-
-impl GeodesicLineCache {
-    pub(crate) fn get(&self, key: &GeodesicLineKey) -> Option<&GeodesicLine> {
-        self.entries.get(key)
-    }
-
-    pub(crate) fn insert_new(&mut self, key: GeodesicLineKey, line: GeodesicLine) {
-        debug_assert!(!self.entries.contains_key(&key));
-        if self.entries.len() == GEODESIC_LINE_CACHE_CAPACITY {
-            let mut evict = self
-                .eviction_order
-                .peek_mut()
-                .expect("every cached line has an eviction key");
-            self.entries.remove(&evict.0);
-            *evict = std::cmp::Reverse(key);
-        } else {
-            self.eviction_order.push(std::cmp::Reverse(key));
-        }
-        self.entries.insert(key, line);
-    }
-
-    pub(crate) fn clear(&mut self) {
-        self.entries.clear();
-        self.eviction_order.clear();
-    }
-
-    pub(crate) fn len(&self) -> usize {
-        self.entries.len()
-    }
-
-    #[cfg(test)]
-    pub(crate) fn is_empty(&self) -> bool {
-        self.entries.is_empty()
-    }
 }
 
 pub(in crate::crs) struct CachedRhumbEllipsoid {
@@ -300,43 +258,6 @@ macro_rules! crs_cache {
             rest: [ $($rest)* ]
         }
     };
-    (
-        @expand
-        thread_local: { $($thread_local:tt)* }
-        capacities: { $($capacities:tt)* }
-        clear: { $($clear:tt)* }
-        buckets: [ $($buckets:tt)* ]
-        rest: [
-            keyed $name:ident, $cap_name:ident, $ty:ty, $capacity:literal, $label:literal;
-            $($rest:tt)*
-        ]
-    ) => {
-        crs_cache! {
-            @expand
-            thread_local: {
-                $($thread_local)*
-                pub static $name: RefCell<$ty> =
-                    RefCell::new(<$ty>::default());
-            }
-            capacities: {
-                $($capacities)*
-                pub(crate) const $cap_name: usize = $capacity;
-            }
-            clear: {
-                $($clear)*
-                $name.with(|cache| cache.borrow_mut().clear());
-            }
-            buckets: [
-                $($buckets)*
-                CacheBucketInfo {
-                    name: $label,
-                    entries: $name.with(|cache| cache.borrow().len()),
-                    capacity: $cap_name,
-                },
-            ]
-            rest: [ $($rest)* ]
-        }
-    };
     ( $( $decl:tt )+ ) => {
         crs_cache! {
             @expand
@@ -367,7 +288,6 @@ crs_cache! {
     internal CRS_RHUMB_CACHE, CRS_RHUMB_CACHE_CAPACITY, CachedRhumbEllipsoid, 256;
     internal CRS_IN_CORE_DESCRIPTOR_CACHE, CRS_IN_CORE_DESCRIPTOR_CACHE_CAPACITY, super::in_core::CachedInCoreDescriptor, 256;
     reported CRS_EXPORT_CACHE, CRS_EXPORT_CACHE_CAPACITY, CachedCrsExport, 32, "crs_export";
-    keyed GEODESIC_LINE_CACHE, GEODESIC_LINE_CACHE_CAPACITY, GeodesicLineCache, 4096, "geodesic_line";
 }
 
 pub(super) fn ensure_thread_caches_current(state: &RuntimeState) {

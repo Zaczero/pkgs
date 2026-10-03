@@ -40,7 +40,7 @@ edits and planar construction operate on stored coordinates.
 
 | Family | Examples | Frame / unit / seam behavior |
 |---|---|---|
-| **CRS-aware measures** | [`area`][gometry.area], [`length`][gometry.length], [`distance`][gometry.distance], [`dwithin`][gometry.dwithin], LRS | By default, geographic area, length, LRS, and linework distance use ellipsoidal chart edges; point-to-point distances use geodesics. `dwithin`, `nearest_points`, and `shortest_line` use straight chart edges with short-way longitude across the antimeridian and include filled polygons. `unit='planar'` instead selects Cartesian measurement in stored coordinates. |
+| **CRS-aware measures** | [`area`][gometry.area], [`length`][gometry.length], [`distance`][gometry.distance], [`dwithin`][gometry.dwithin], [`hausdorff_distance`][gometry.hausdorff_distance], LRS | By default, geographic area, length, LRS, and linework distance use ellipsoidal chart edges; point-to-point distances use geodesics. `dwithin`, `nearest_points`, and `shortest_line` use straight chart edges with short-way longitude across the antimeridian and include filled polygons. Hausdorff ranges continuously over straight chart edges and accepts point and linework operands only. `unit='planar'` instead selects Cartesian measurement in stored coordinates. |
 | **Metric constructive** | [`buffer`][gometry.Geometry.buffer], [`offset_curve`][gometry.Geometry.offset_curve] | Distance *inputs* use CRS-natural units (and may use a local-projection construction on a geographic CRS); shapes are **coordinate-planar** — **not** antimeridian auto-split |
 | **Topology** | predicates, overlay, [`relate`][gometry.relate], [`clip_by_rect`][gometry.Geometry.clip_by_rect] | strict frame match; geographic topology resolves longitude aliases and seam and pole equivalence in the CRS-native frame; seam-crossing inputs are split into straight chart pieces in an unwrapped longitude/latitude plane. `clip_by_rect` admits canonical geographic rectangle endpoints in `[-180, 180]`, with west > east selecting the seam-crossing interval; non-canonical subjects use frame-aware overlay, while canonical seam-free inputs clip directly. Geographic rectangle parallels match [`box`][gometry.box]. |
 | **Coordinate refinement** | [`segmentize(max_length)`][gometry.Geometry.segmentize], [`line_interpolate`][gometry.Geometry.line_interpolate] | `segmentize` follows stored geographic edges by default; `path=` selects geodesic or rhumb routing. With CRS-aware units, geographic LRS inverts ellipsoidal arclength on those chart edges and retains original vertices. |
@@ -368,8 +368,8 @@ straight paths in the longitude/latitude chart. `distance`, `dwithin`,
 `nearest_points`, and `shortest_line` treat `Polygon` and `MultiPolygon` as
 filled areas: an interior point or overlapping pair has zero distance, while
 disjoint shapes are measured boundary-to-boundary. Continuous geographic
-`hausdorff_distance` remains a linework operation over the geodesic segments
-between stored endpoints; polygon operands raise
+`hausdorff_distance` ranges over straight chart edges and remains a linework
+operation; polygon operands raise
 [`CRSError`][gometry.CRSError]. Use
 [`polygon.boundary()`][gometry.Geometry.boundary] when the question is
 about the boundary itself, `unit='planar'` for coordinate-space areal distance,
@@ -380,8 +380,9 @@ floating-point approximation. By default its relative error is at most
 `1e-9`. Pass a positive, finite scalar `max_error` to replace that default
 with an absolute bound in the final result units. A projected result uses
 native linear units by default or metres with `unit='meters'`, so an absolute bound
-follows the same choice. The numerical geodesic path has no per-call
-certificate; supplying `max_error` to it raises instead of implying one.
+follows the same choice. The geographic path uses a fixed radius-scaled
+algorithmic gap rather than a per-call certificate; supplying `max_error` to it
+raises instead of implying one.
 Neither error contract blurs set equality:
 planar Hausdorff returns zero exactly for equal closed supports, while a
 positive distance smaller than the effective error bound remains positive. If
@@ -411,7 +412,7 @@ operations that explicitly follow geodesic routes use the pinned order-six
 binary64 series backend. In this model, geographic chart-edge length uses
 ellipsoidal quadrature, while point-to-chart-edge minimization uses geodesic
 inverse samples inside its own bounded search. Continuous geographic Hausdorff
-remains over geodesic segments between stored endpoints. `unit='planar'` selects
+ranges over those same straight chart edges. `unit='planar'` selects
 Cartesian measurement in stored coordinates instead. These composite
 operations are distinct from exact geographic topology. For a CRS that PROJ
 resolves to an ellipsoid, its
@@ -450,28 +451,21 @@ radius returns `True` for admitted non-empty operands without forcing an
 unrepresentable distance result. Vectorized results retain one boolean per
 input pair: missing rows and present empty geometries remain in place as `False`.
 
-Continuous geographic Hausdorff remains a linework operation over geodesic
-segments between stored endpoints. It evaluates every source vertex and uses
-one global along-track frontier for each source segment. Each target query is
-complete over the target's segments and isolated points, and the returned pair
-is an actual source/target witness rather than an interval upper bound. Regular
-finite-foot branches, near-coincident moving witnesses, and exact
-spherical/equatorial/polar families can close a source interval directly;
-other intervals use the radius-relative algorithmic gap
-`a * (0.01 / 6_378_137)`. The complete target minimum contributes its lower
-estimate to the outer lower bound, while its attained witness supplies the
-upper estimate. Backend position/inverse and parameter/arithmetic allowances
-remain separate from that algorithmic gap. The scalar is selected from an
-attained source/target sample; it is not an interval upper bound or a contact
-certificate.
-The geodesic path requires `max_error` to be omitted; its numerical quality
-budgets do not turn a requested bound into a certificate.
+Geographic Hausdorff measures the continuous linework supports of the stored
+chart edges: the source ranges over each straight longitude/latitude edge, and
+its distance to the target is the minimum geodesic distance to target edges and
+isolated points. A global frontier combines a Lipschitz upper bound with a
+second-order Taylor bound from fixed target witnesses; each reported value is
+an attained source/target pair, not an interval bound. Its algorithmic gap is
+`a * (0.01 / 6_378_137)`, about one centimetre for WGS 84. These binary64
+budgets are numerical quality targets, not real-arithmetic certificates.
+Geographic Hausdorff supports point and linework operands only; filled polygon
+interiors require `unit='planar'` or a projected CRS. Omit `max_error` on the
+geographic path; its algorithmic gap does not promise a caller-requested bound.
 
-Segment construction, curvature bounds, and search parameters are normalized
-to semi-major axis `1` and rescaled only for final metric outputs. Positive
-finite axes are admitted when the requested binary64 result is representable;
-an unrepresentable final distance is an explicit error rather than an
-intermediate squared-axis rejection.
+Geodesic calculations use the physical ellipsoid's semi-major axis and
+flattening. Positive finite axes are admitted when the requested binary64 result
+is representable; an unrepresentable final distance is an explicit error.
 
 !!! note "Why geodesic and projected answers differ"
     [Web Mercator](https://epsg.org/crs_3857/WGS-84-Pseudo-Mercator.html) is a
@@ -921,8 +915,8 @@ Spatial indexes widen periodic seam-crossing envelopes before candidate search a
 still run exact refinement, so the middle-of-map false positives are removed by the
 predicate step. Topology and indexing normalize for you. Geographic pairwise
 distance operations use the same straight chart edges as topology and include
-filled polygon interiors; continuous geographic Hausdorff distance remains
-linework-only over geodesic segments between stored endpoints.
+filled polygon interiors; continuous geographic Hausdorff distance ranges over
+those chart edges but remains linework-only.
 The planar constructive ops listed in the operation-family table are the places
 manual splitting is still required.
 

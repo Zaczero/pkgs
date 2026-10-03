@@ -240,6 +240,45 @@ def test_geodesic_hausdorff_gap_scales_with_radius(radius: float) -> None:
     )
 
 
+def test_geographic_hausdorff_uses_chart_edges_across_scalar_and_gathered_rows() -> (
+    None
+):
+    source = gm.LineString([(0.0, 85.0), (179.0, 85.0)], crs=4326)
+    target = gm.Point(10.0, 89.9, crs=4326)
+    # The independent PyProj geodesic inverse samples the stored parallel edge;
+    # its farthest point is the 179-degree endpoint for this fixed fixture.
+    expected = max(
+        GEOD.inv(10.0, 89.9, 179.0 * index / 4_000.0, 85.0)[2] for index in range(4_001)
+    )
+    assert expected == pytest.approx(569_423.751_409_724, abs=1e-6)
+
+    scalar = gm.hausdorff_distance(source, target)
+    assert abs(scalar - expected) <= 0.010000_001
+
+    sources = gm.GeometryArray([source, None, source])
+    targets = gm.GeometryArray([target, target, target])
+    values = gm.hausdorff_distance(sources, targets)
+    assert abs(values[0] - expected) <= 0.010000_001
+    assert math.isnan(values[1])
+    assert abs(values[2] - expected) <= 0.010000_001
+
+    gathered = gm.hausdorff_distance(sources[[2, 1, 0]], targets[[2, 1, 0]])
+    assert abs(gathered[0] - expected) <= 0.010000_001
+    assert math.isnan(gathered[1])
+    assert abs(gathered[2] - expected) <= 0.010000_001
+
+
+def test_geographic_hausdorff_rejects_max_error() -> None:
+    source = gm.LineString([(0.0, 85.0), (179.0, 85.0)], crs=4326)
+    target = gm.Point(10.0, 89.9, crs=4326)
+
+    with pytest.raises(
+        gm.GeometryError,
+        match='max_error is only supported for planar Hausdorff distance',
+    ):
+        gm.hausdorff_distance(source, target, max_error=0.01)
+
+
 @pytest.mark.parametrize(
     'flattening',
     [

@@ -313,10 +313,10 @@ impl Route for GeodesicRoute<'_> {
             .to_geodesic_point(point_from_xy(segment.end))
             .expect("geographic subdivision received admitted coordinates");
         let longitude_delta_native = lifted_longitude_delta(self.frame, segment);
-        let geodesic_segment = crate::crs::checked_geodesic_segment(self.geodesic, start, end)?;
-        Ok((geodesic_segment.length, DirectedLength {
-            bearing: geodesic_segment.azimuth0,
-            length: geodesic_segment.length,
+        let route = crate::crs::checked_geodesic_route(self.geodesic, start, end)?;
+        Ok((route.length, DirectedLength {
+            bearing: route.azimuth,
+            length: route.length,
             longitude_delta_native,
         }))
     }
@@ -359,7 +359,7 @@ impl Route for GeodesicRoute<'_> {
             .frame
             .to_geodesic_point(point_from_xy(segment.end))
             .expect("geographic verification received admitted coordinates");
-        Ok(crate::crs::checked_geodesic_segment(self.geodesic, start, end)?.length)
+        Ok(crate::crs::checked_geodesic_route(self.geodesic, start, end)?.length)
     }
 }
 

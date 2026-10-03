@@ -669,8 +669,13 @@ impl GeographicFrame {
                 .to_degrees()
         };
         let longitude = Self::crs84().longitude().canonicalize(longitude)?.get();
+        let latitude = self.to_geodesic_latitude(latitude)?;
+        Ok((longitude, latitude))
+    }
+
+    pub(crate) fn to_geodesic_latitude(self, latitude: f64) -> Result<f64, GeographicError> {
         let admitted_latitude = Latitude::try_new(self, latitude)?.get();
-        let latitude = if self == Self::crs84() {
+        Ok(if self == Self::crs84() {
             // The canonical CRS84 lane is already in kernel degrees. Keep
             // its signed zero while still applying the admission check.
             if latitude == 0.0 {
@@ -680,8 +685,7 @@ impl GeographicFrame {
             }
         } else {
             (admitted_latitude * self.latitude_unit.radians_per_unit()).to_degrees()
-        };
-        Ok((longitude, latitude))
+        })
     }
 
     fn xy_from_geodesic(

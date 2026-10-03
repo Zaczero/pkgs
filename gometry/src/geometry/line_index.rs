@@ -141,7 +141,7 @@ fn interpolate_chart_edge(
     provenance: InterpolationProvenance,
 ) -> Result<Point> {
     let parameter = metric.chart_edge_locate_t(edge, length * fraction, length)?;
-    let point = metric.chart_edge_witness_with_length(start, end, edge, parameter, length)?;
+    let point = metric.chart_edge_witness(start, end, edge, parameter, Some(length))?;
     if provenance == InterpolationProvenance::Independent {
         return Ok(point);
     }

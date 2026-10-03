@@ -1,13 +1,13 @@
 #[cfg(test)]
 use crate::geometry::ShapeData;
 use crate::geometry::distance::{
-    Result, any_parts_within, collect_point_only_into, discrete_frechet_distance_with_scratch,
-    ensure_geodesic_linework, geodesic_directed_hausdorff_distance, geodesic_scratch,
+    ChartParts, Result, any_parts_within, chart_directed_hausdorff_distance, chart_scratch,
+    discrete_frechet_distance_with_scratch, ensure_geographic_hausdorff_linework,
     min_parts_to_parts, squared_space_safe,
 };
 use crate::geometry::{
-    Coordinates as _, DistanceParts, GeodesicMetric, GeodesicParts, Point, PreparedLinework,
-    RunIdentity, Shape, distance, finish_planar_squared_min,
+    ChartMetric, DistanceParts, GeodesicMetric, Point, PreparedLinework, Shape, distance,
+    finish_planar_squared_min,
 };
 impl Shape {
     /// Build this shape's [`DistanceParts`] (vertices, packed linework,
@@ -22,44 +22,6 @@ impl Shape {
             squared_safe: std::sync::OnceLock::new(),
             facet_bvh: std::sync::OnceLock::new(),
             point_index: std::sync::OnceLock::new(),
-        })
-    }
-
-    /// Build this shape's geodesic working set for one ellipsoid. Domain
-    /// validation happens before any allocation is cached by `ShapeData`.
-    pub(crate) fn geodesic_parts(&self, metric: &impl GeodesicMetric) -> Result<GeodesicParts> {
-        ensure_geodesic_linework(self, metric)?;
-        let mut points = Vec::new();
-        if let Some(capacity) = self.point_set_capacity_hint(RunIdentity::Full) {
-            let _reservation = points.try_reserve(capacity);
-        }
-        self.for_each_first_point_run(|point| points.push(point));
-        let mut point_only = Vec::new();
-        collect_point_only_into(self, &mut point_only);
-        let segment_count = self.segment_count_capacity_hint(RunIdentity::Full);
-        let mut segments = Vec::new();
-        if let Some(segment_count) = segment_count {
-            let _reservation = segments.try_reserve(segment_count);
-        }
-        self.try_for_each_first_segment_chain(RunIdentity::Full, |chain| {
-            for [start, end] in chain.segment_pairs() {
-                let segment = metric.make_segment(start, end)?;
-                if segment.length == 0.0 {
-                    if points.last().is_some_and(|point| *point == end) {
-                        points.pop();
-                    }
-                    point_only.push(start);
-                    continue;
-                }
-                segments.push(segment);
-            }
-            Ok::<_, crate::error::Error>(())
-        })?;
-        Ok(GeodesicParts {
-            points,
-            segments,
-            point_only,
-            facet_bvh: std::sync::OnceLock::new(),
         })
     }
 
@@ -107,30 +69,77 @@ impl Shape {
         min_parts_to_parts::<false>(other_parts, self_parts, best)
     }
 
-    /// Directed and symmetric geodesic Hausdorff distance (meters) — the
-    /// segment-aware sibling of [`Shape::hausdorff_distance`]. Each directed
-    /// sweep evaluates source vertices and a global along-track frontier over
-    /// source segment interiors. Complete target witnesses provide the
-    /// returned values, while conservative interval supports close regular,
-    /// near-coincident, and exact-family cells.
-    pub(crate) fn geodesic_hausdorff_distance(
-        &self,
-        other: &Self,
-        metric: &impl GeodesicMetric,
-    ) -> Result<f64> {
-        ensure_geodesic_linework(self, metric)?;
-        ensure_geodesic_linework(other, metric)?;
+    /// Directed and symmetric geographic Hausdorff distance in ellipsoidal
+    /// metres over the shapes' straight longitude/latitude edges.
+    pub(crate) fn chart_hausdorff_distance<M>(&self, other: &Self, metric: &M) -> Result<f64>
+    where
+        M: GeodesicMetric + ChartMetric<PointEdgeScratch = crate::crs::PointEdgeScratch>,
+    {
+        metric.ensure_shape(self)?;
+        metric.ensure_shape(other)?;
+        ensure_geographic_hausdorff_linework(self)?;
+        ensure_geographic_hausdorff_linework(other)?;
         if self.is_empty() || other.is_empty() {
             return Ok(f64::INFINITY);
         }
-        let source_parts = self.geodesic_parts(metric)?;
-        let target_parts = other.geodesic_parts(metric)?;
-        let mut scratch = geodesic_scratch();
+        let frame = metric.chart_frame();
+        let latitude_overlap = self
+            .bounds()
+            .zip(other.bounds())
+            .is_none_or(|(left, right)| {
+                let latitude =
+                    |value| crate::geographic::Latitude::from_admitted(frame, value).get();
+                latitude(left.maxy()) >= latitude(right.miny())
+                    && latitude(right.maxy()) >= latitude(left.miny())
+            });
+        if latitude_overlap {
+            let left_plan = crate::geometry::PreparedPlan::transient(self);
+            let right_plan = crate::geometry::PreparedPlan::transient(other);
+            let left_cache = crate::geometry::FrameDependentCaches::default();
+            let right_cache = crate::geometry::FrameDependentCaches::default();
+            let left =
+                crate::geometry::GeographicPrepared::try_new(&left_plan, &left_cache, frame)?;
+            let right =
+                crate::geometry::GeographicPrepared::try_new(&right_plan, &right_cache, frame)?;
+            let bounds_may_match = !left.bounds_sound()
+                || !right.bounds_sound()
+                || left.plan().bounds() == right.plan().bounds();
+            if bounds_may_match
+                && crate::geometry::graph_relate_data_geographic(left, right)?.is_equal_topo()
+            {
+                return Ok(0.0);
+            }
+        }
+        let source_parts = ChartParts::build(self, metric)?;
+        let target_parts = ChartParts::build(other, metric)?;
+        let mut scratch = chart_scratch();
         let scratch = &mut *scratch;
         let forward =
-            geodesic_directed_hausdorff_distance(&source_parts, &target_parts, metric, scratch)?;
+            chart_directed_hausdorff_distance(&source_parts, &target_parts, metric, scratch)?;
+        if target_parts.edges.is_empty()
+            && let Some((first, last)) = source_parts
+                .vertices
+                .first()
+                .zip(source_parts.vertices.last())
+        {
+            // Each source witness bounds a reverse point minimum. Keep the
+            // minimum-search and sample allowances before discarding the query.
+            let policy = metric.geodesic_numerical_policy();
+            let allowance = policy.minimum_gap()
+                + policy.evaluation_allowance(4.0)
+                + 128.0 * f64::EPSILON * forward.distance.max(1.0);
+            let cutoff = forward.distance - allowance;
+            if cutoff > 0.0
+                && target_parts.point_only.iter().all(|&point| {
+                    metric.segment_length(point, *first) < cutoff
+                        || metric.segment_length(point, *last) < cutoff
+                })
+            {
+                return Ok(forward.distance);
+            }
+        }
         let reverse =
-            geodesic_directed_hausdorff_distance(&target_parts, &source_parts, metric, scratch)?;
+            chart_directed_hausdorff_distance(&target_parts, &source_parts, metric, scratch)?;
         Ok(forward.distance.max(reverse.distance))
     }
 

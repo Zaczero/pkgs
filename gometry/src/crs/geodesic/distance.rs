@@ -142,13 +142,7 @@ pub(crate) fn geodesic_point_distances(
     })
 }
 
-/// Segment-aware geodesic Hausdorff distance (meters) on `crs`'s ellipsoid.
-///
-/// The geodesic sibling of `Shape::hausdorff_distance`. Each directed sweep
-/// evaluates source vertices and a global along-track frontier over source
-/// segment interiors. Complete target witnesses provide the returned values;
-/// conservative interval supports close regular, near-coincident, and
-/// exact-family cells.
+/// Geographic Hausdorff distance (meters) between chart-edge supports.
 pub(crate) fn geodesic_hausdorff_at(
     crs: &str,
     a: &Shape,
@@ -157,7 +151,7 @@ pub(crate) fn geodesic_hausdorff_at(
 ) -> Result<f64> {
     with_ellipsoid_metric_at(crs, &[a, b], state, |metric| {
         finite(
-            a.geodesic_hausdorff_distance(b, metric)?,
+            a.chart_hausdorff_distance(b, metric)?,
             GeodesicCalculation::HausdorffDistance,
         )
     })
