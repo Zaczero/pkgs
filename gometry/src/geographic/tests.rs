@@ -525,6 +525,29 @@ fn longitude_canonicalization_pins_aliases_neighbors_and_nonfinite() {
 }
 
 #[test]
+fn nearest_longitude_alias_reduces_before_rounding_and_keeps_tie_direction() {
+    let axis = degrees().longitude();
+    let source = 122.427_194_f64;
+    let lifted = source + axis.period();
+    let canonical = axis.canonicalize(lifted).unwrap().get();
+
+    assert_bits(canonical, source.next_down());
+    // Reducing the lifted displacement first recovers the chart spelling;
+    // canonicalizing the rounded alias first loses one bit of the source.
+    assert_bits(
+        axis.nearest_longitude_alias(lifted, canonical).unwrap(),
+        lifted,
+    );
+    assert_bits(axis.nearest_longitude_alias(530.0, 170.0).unwrap(), 530.0);
+
+    // At a half-period tie, retain the route point's spelling in the
+    // source-directed tie direction.
+    assert_bits(axis.nearest_longitude_alias(180.0, 0.0).unwrap(), 0.0);
+    assert_bits(axis.nearest_longitude_alias(0.0, 180.0).unwrap(), 180.0);
+    assert_bits(axis.nearest_longitude_alias(540.0, 0.0).unwrap(), 360.0);
+}
+
+#[test]
 fn huge_finite_longitudes_match_binary_oracle() {
     let values = [
         f64::MAX,

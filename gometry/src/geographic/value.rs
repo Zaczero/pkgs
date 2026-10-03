@@ -128,6 +128,67 @@ impl PeriodicAxis {
         Ok(self.wrap_admitted(value))
     }
 
+    /// Choose the longitude alias nearest a position already lifted in this
+    /// axis. Reduce the displacement before combining it with the reference,
+    /// so adding several periods cannot erase the longitude's low bits.
+    #[expect(
+        clippy::float_cmp,
+        reason = "exact zero, whole-period aliases, and half-period ties define longitude spelling"
+    )]
+    pub(crate) fn nearest_longitude_alias(
+        self,
+        lifted_reference: f64,
+        longitude: f64,
+    ) -> Result<f64, GeographicError> {
+        if !lifted_reference.is_finite() {
+            return Err(GeographicError::NonFinite {
+                name: "longitude",
+                value: lifted_reference,
+            });
+        }
+        if !longitude.is_finite() {
+            return Err(GeographicError::NonFinite {
+                name: "longitude",
+                value: longitude,
+            });
+        }
+
+        let difference = lifted_reference - longitude;
+        if difference.is_finite() && difference.abs() <= self.half_period {
+            return Ok(if longitude == 0.0 { 0.0 } else { longitude });
+        }
+
+        let delta = if difference.is_finite()
+            && difference.fract() == 0.0
+            && let Some(period) = self.conventional_integer_period()
+        {
+            let remainder = difference % period;
+            if remainder == 0.0 {
+                return Ok(if lifted_reference == 0.0 {
+                    0.0
+                } else {
+                    lifted_reference
+                });
+            }
+            if remainder.abs() == period / 2.0 {
+                (period / 2.0).copysign(difference)
+            } else {
+                self.wrap_admitted(difference).get()
+            }
+        } else {
+            self.shortest_edge(longitude, lifted_reference)?.delta(self)
+        };
+        let alias = lifted_reference - delta;
+        if alias.is_finite() {
+            Ok(if alias == 0.0 { 0.0 } else { alias })
+        } else {
+            Err(GeographicError::NonFinite {
+                name: "longitude",
+                value: alias,
+            })
+        }
+    }
+
     /// Wrap a finite longitude with the canonical remainder, integer-period
     /// aliases, and signed-zero spelling. Ingress must already have rejected
     /// non-finite values.
@@ -323,6 +384,26 @@ impl GeographicFrame {
         Ok(point.with_xy_raw(longitude, latitude))
     }
 
+    /// Convert a route point without wrapping its longitude, then choose the
+    /// alias nearest a caller-supplied lifted chart position.
+    pub(crate) fn point_from_geodesic_in_lifted_chart(
+        self,
+        point: Point,
+        lifted_reference: f64,
+    ) -> Result<Point, GeographicError> {
+        let (longitude, latitude) = self.xy_from_geodesic_unwrapped(point.x, point.y)?;
+        let longitude = self
+            .longitude
+            .nearest_longitude_alias(lifted_reference, longitude)?;
+        if !latitude.is_finite() {
+            return Err(GeographicError::NonFinite {
+                name: "native coordinate",
+                value: latitude,
+            });
+        }
+        Ok(point.with_xy_raw(longitude, latitude))
+    }
+
     /// Convert mutable XY lanes to canonical Greenwich degrees. Z/T lanes are
     /// deliberately outside this owner and remain untouched by callers.
     pub(crate) fn to_geodesic_lanes(
@@ -408,41 +489,56 @@ impl GeographicFrame {
         longitude: f64,
         latitude: f64,
     ) -> Result<(f64, f64), GeographicError> {
-        if !longitude.is_finite() || !latitude.is_finite() {
+        ensure_geodesic_coordinates(longitude, latitude)?;
+        let longitude = Self::crs84().longitude().canonicalize(longitude)?.get();
+        let (longitude, latitude) = self.native_xy_from_geodesic(longitude, latitude);
+        let longitude = self.longitude.canonicalize(longitude)?.get();
+        if !latitude.is_finite() {
             return Err(GeographicError::NonFinite {
-                name: "geodesic coordinate",
-                value: if longitude.is_finite() {
-                    latitude
-                } else {
-                    longitude
-                },
+                name: "native coordinate",
+                value: latitude,
             });
         }
-        let longitude = Self::crs84().longitude().canonicalize(longitude)?.get();
+        Ok((longitude, latitude))
+    }
+
+    fn xy_from_geodesic_unwrapped(
+        self,
+        longitude: f64,
+        latitude: f64,
+    ) -> Result<(f64, f64), GeographicError> {
+        ensure_geodesic_coordinates(longitude, latitude)?;
+        Ok(self.native_xy_from_geodesic(longitude, latitude))
+    }
+
+    fn native_xy_from_geodesic(self, longitude: f64, latitude: f64) -> (f64, f64) {
         let longitude = if self == Self::crs84() {
             longitude
         } else {
-            let longitude = (longitude.to_radians() - self.prime_meridian_radians)
-                / self.longitude.unit().radians_per_unit();
-            self.longitude.canonicalize(longitude)?.get()
+            (longitude.to_radians() - self.prime_meridian_radians)
+                / self.longitude.unit().radians_per_unit()
         };
         let latitude = if self == Self::crs84() {
             latitude
         } else {
             latitude.to_radians() / self.latitude_unit.radians_per_unit()
         };
-        if !longitude.is_finite() || !latitude.is_finite() {
-            return Err(GeographicError::NonFinite {
-                name: "native coordinate",
-                value: if longitude.is_finite() {
-                    latitude
-                } else {
-                    longitude
-                },
-            });
-        }
-        Ok((longitude, latitude))
+        (longitude, latitude)
     }
+}
+
+const fn ensure_geodesic_coordinates(longitude: f64, latitude: f64) -> Result<(), GeographicError> {
+    if !longitude.is_finite() || !latitude.is_finite() {
+        return Err(GeographicError::NonFinite {
+            name: "geodesic coordinate",
+            value: if longitude.is_finite() {
+                latitude
+            } else {
+                longitude
+            },
+        });
+    }
+    Ok(())
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]

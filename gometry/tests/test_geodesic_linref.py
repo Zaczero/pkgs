@@ -3,13 +3,67 @@
 from __future__ import annotations
 
 import math
+import struct
 from itertools import pairwise
+from typing import Literal
 
 import gometry as gm
 import pyproj
 import pytest
 
 from tests._support import canon
+
+RADIAN_CRS = (
+    'GEOGCS["WGS 84 rad",'
+    'DATUM["WGS_1984",SPHEROID["WGS 84",6378137,298.257223563]],'
+    'PRIMEM["Greenwich",0],UNIT["radian",1],'
+    'AXIS["Longitude",EAST],AXIS["Latitude",NORTH]]'
+)
+
+# Canonical k=0 results pin the established route coordinates and WKB bytes.
+_CANONICAL_MERIDIAN_WKB = {
+    (None, 'fraction'): bytes.fromhex(
+        '010200000003000000000000000000244000000000000000000000000000002440'
+        'caa0da340300f03f00000000000024400000000000000040'
+    ),
+    (None, 'max_length'): bytes.fromhex(
+        '010200000004000000000000000000244000000000000000000000000000002440'
+        '64c687665a55e53f0000000000002440339303805855f53f0000000000002440'
+        '0000000000000040'
+    ),
+    ('geodesic', 'fraction'): bytes.fromhex(
+        '010200000003000000000000000000244000000000000000000000000000002440'
+        'caa0da340300f03f00000000000024400000000000000040'
+    ),
+    ('geodesic', 'max_length'): bytes.fromhex(
+        '010200000004000000000000000000244000000000000000000000000000002440'
+        '64c687665a55e53f0000000000002440339303805855f53f0000000000002440'
+        '0000000000000040'
+    ),
+    ('rhumb', 'fraction'): bytes.fromhex(
+        '010200000003000000000000000000244000000000000000000000000000002440'
+        'cba0da340300f03f00000000000024400000000000000040'
+    ),
+    ('rhumb', 'max_length'): bytes.fromhex(
+        '010200000004000000000000000000244000000000000000000000000000002440'
+        '67c687665a55e53f0000000000002440359303805855f53f0000000000002440'
+        '0000000000000040'
+    ),
+}
+
+
+def _xy_bits(coordinate: tuple[float, ...]) -> tuple[bytes, bytes]:
+    return (struct.pack('>d', coordinate[0]), struct.pack('>d', coordinate[1]))
+
+
+def _segmentize_target(
+    line: gm.LineString,
+    target: Literal['fraction', 'max_length'],
+    path: Literal['geodesic', 'rhumb'] | None,
+) -> gm.LineString:
+    if target == 'fraction':
+        return line.segmentize(fraction=0.5, path=path)
+    return line.segmentize(100_000.0, path=path)
 
 
 def test_geodesic_line_cache_isolated_across_frame_retag() -> None:
@@ -261,6 +315,122 @@ def test_rhumb_segmentize_matches_rhumbsolve_parallel_literal_and_array() -> Non
         )
     assert list(by_length.coords) == list(by_fraction.coords)
     assert list(by_fraction.coords) == list(bulk.coords)
+
+
+@pytest.mark.parametrize(
+    'path',
+    [None, 'geodesic', 'rhumb'],
+    ids=['chart', 'geodesic', 'rhumb'],
+)
+@pytest.mark.parametrize('target', ['fraction', 'max_length'])
+@pytest.mark.parametrize('turns', [-2, -1, 0, 1, 2])
+def test_segmentize_periodic_longitude_aliases_preserve_line_topology(
+    path: Literal['geodesic', 'rhumb'] | None,
+    target: Literal['fraction', 'max_length'],
+    turns: int,
+) -> None:
+    longitude = 10.0 + 360.0 * turns
+    line = gm.LineString([(longitude, 0.0), (longitude, 2.0)], crs=4326)
+    source_wkb = line.to_wkb()
+
+    refined = _segmentize_target(line, target, path)
+    coordinates = list(refined.coords)
+
+    assert gm.relate(line, refined) == '1FFF0FFF2'
+    assert _xy_bits(coordinates[0]) == _xy_bits(tuple(line.coords[0]))
+    assert _xy_bits(coordinates[-1]) == _xy_bits(tuple(line.coords[-1]))
+    assert line.to_wkb() == source_wkb
+    assert refined.length == pytest.approx(line.length, rel=1e-12, abs=1e-8)
+
+    if turns == 0:
+        assert refined.to_wkb() == _CANONICAL_MERIDIAN_WKB[(path, target)]
+    elif turns == 1:
+        # The former canonical emission inserts longitude 10 into a line
+        # whose source vertices are spelled at 370 degrees.
+        canonical = gm.LineString([(10.0, 0.0), (10.0, 2.0)], crs=4326)
+        canonical_refined = _segmentize_target(canonical, target, path)
+        old_coordinates = [
+            tuple(line.coords[0]),
+            *((10.0, coordinate[1]) for coordinate in canonical_refined.coords[1:-1]),
+            tuple(line.coords[-1]),
+        ]
+        old_canonical_emission = gm.LineString(old_coordinates, crs=4326)
+        assert gm.relate(line, old_canonical_emission) != '1FFF0FFF2'
+
+
+@pytest.mark.parametrize(
+    ('crs', 'base_longitude', 'period', 'end_latitude'),
+    [
+        pytest.param(
+            RADIAN_CRS,
+            math.radians(10.0),
+            math.tau,
+            math.radians(2.0),
+            id='radian',
+        ),
+        pytest.param(4807, 0.0, 400.0, 2.0, id='epsg-4807-grads'),
+    ],
+)
+@pytest.mark.parametrize('path', [None, 'geodesic', 'rhumb'], ids=['chart', 'geodesic', 'rhumb'])
+@pytest.mark.parametrize('target', ['fraction', 'max_length'])
+@pytest.mark.parametrize('turns', [-1, 1])
+def test_segmentize_periodic_aliases_in_radian_and_grad_frames(
+    crs: int | str,
+    base_longitude: float,
+    period: float,
+    end_latitude: float,
+    path: Literal['geodesic', 'rhumb'] | None,
+    target: Literal['fraction', 'max_length'],
+    turns: int,
+) -> None:
+    longitude = base_longitude + period * turns
+    line = gm.LineString([(longitude, 0.0), (longitude, end_latitude)], crs=crs)
+    source_wkb = line.to_wkb()
+
+    refined = _segmentize_target(line, target, path)
+    coordinates = list(refined.coords)
+
+    assert gm.relate(line, refined) == '1FFF0FFF2'
+    assert _xy_bits(coordinates[0]) == _xy_bits(tuple(line.coords[0]))
+    assert _xy_bits(coordinates[-1]) == _xy_bits(tuple(line.coords[-1]))
+    assert line.to_wkb() == source_wkb
+    assert refined.length == pytest.approx(line.length, rel=1e-12, abs=1e-8)
+
+
+@pytest.mark.parametrize('turns', [-1, 0, 1])
+def test_chart_segmentize_periodic_aliases_conserve_polygon_area_and_length(
+    turns: int,
+) -> None:
+    longitude = 10.0 + 360.0 * turns
+    polygon = gm.Polygon(
+        [
+            (longitude, 0.0),
+            (longitude + 1.0, 0.0),
+            (longitude + 1.0, 2.0),
+            (longitude, 2.0),
+            (longitude, 0.0),
+        ],
+        crs=4326,
+    )
+    source_wkb = polygon.to_wkb()
+    refined = polygon.segmentize(fraction=0.5)
+
+    assert gm.relate(polygon, refined) == '2FFF1FFF2'
+    assert refined.area == pytest.approx(polygon.area, rel=1e-12, abs=1e-6)
+    assert refined.length == pytest.approx(polygon.length, rel=1e-12, abs=1e-8)
+    assert polygon.to_wkb() == source_wkb
+
+
+@pytest.mark.parametrize('turns', [-2, -1, 0, 1, 2])
+def test_planar_unit_segmentize_keeps_periodic_source_aliases(turns: int) -> None:
+    longitude = 10.0 + 360.0 * turns
+    line = gm.LineString([(longitude, 0.0), (longitude, 2.0)], crs=4326)
+    refined = line.segmentize(0.5, unit='planar')
+    coordinates = list(refined.coords)
+
+    assert gm.relate(line, refined) == '1FFF0FFF2'
+    assert _xy_bits(coordinates[0]) == _xy_bits(tuple(line.coords[0]))
+    assert _xy_bits(coordinates[-1]) == _xy_bits(tuple(line.coords[-1]))
 
 
 @pytest.mark.parametrize(
