@@ -370,6 +370,27 @@ impl GeographicFrame {
         self.pole
     }
 
+    /// Identity of one stored vertex in this frame's geographic quotient.
+    ///
+    /// The coordinate columns retain their source spelling; this key folds
+    /// longitude aliases, the two seam spellings, and each pole to the
+    /// identities used by exact geographic topology.
+    pub(crate) fn quotient_vertex(self, x: f64, y: f64) -> QuotientVertex {
+        let longitude = self.longitude.wrap_admitted(x);
+        let latitude = Latitude::from_admitted(self, y);
+        if latitude.identity(self) == SeamIdentity::Pole {
+            return if latitude.get().is_sign_negative() {
+                QuotientVertex::SouthPole
+            } else {
+                QuotientVertex::NorthPole
+            };
+        }
+        if longitude.identity(self.longitude) == SeamIdentity::Seam {
+            return QuotientVertex::Seam(latitude.get().to_bits());
+        }
+        QuotientVertex::Ordinary(longitude.get().to_bits(), latitude.get().to_bits())
+    }
+
     /// Convert one admitted native-frame point to the canonical
     /// degree/Greenwich lanes consumed by geodesic and in-core kernels.
     pub(crate) fn to_geodesic_point(self, point: Point) -> Result<Point, GeographicError> {
@@ -627,6 +648,14 @@ pub(crate) enum SeamIdentity {
     Ordinary,
     Seam,
     Pole,
+}
+
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub(crate) enum QuotientVertex {
+    Ordinary(u64, u64),
+    Seam(u64),
+    NorthPole,
+    SouthPole,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

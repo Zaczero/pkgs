@@ -5,8 +5,8 @@ use ahash::HashSetExt as _;
 use crate::error::Result;
 use crate::geometry::predicates::{
     LineworkChains, MinimumClearanceWitness, collect_duplicate_points, collect_offending_pair,
-    is_seam_cut_pair, line_is_ccw, line_is_closed, line_is_simple, line_repair,
-    minimum_clearance_witness, multi_polygon_members_issue,
+    is_seam_cut_pair, line_is_ccw, line_is_closed, line_is_closed_in_domain, line_is_simple,
+    line_repair, minimum_clearance_witness, multi_polygon_members_issue,
     multi_polygon_members_issue_with_seam_cuts, multiline_is_simple, multiline_repair,
     polygonal_repair, shell_is_convex, validate_line, validate_point, validate_points,
 };
@@ -85,16 +85,7 @@ impl Shape {
     }
 
     pub fn is_closed(&self) -> bool {
-        match self {
-            Self::LineString(points) => line_is_closed(points),
-            Self::MultiLineString(lines) => !lines.is_empty() && lines.iter().all(line_is_closed),
-            Self::Point(_)
-            | Self::MultiPoint(_)
-            | Self::Polygon(_)
-            | Self::MultiPolygon(_)
-            | Self::GeometryCollection(_)
-            | Self::Empty(..) => false,
-        }
+        shape_is_closed_in_domain(self, crate::geometry::TopologyDomain::Cartesian)
     }
 
     pub fn is_ring(&self) -> crate::error::Result<bool> {
@@ -263,6 +254,27 @@ impl Shape {
             self,
             crate::geographic::GeographicFrame::crs84(),
         )
+    }
+}
+
+pub(crate) fn shape_is_closed_in_domain(
+    shape: &Shape,
+    domain: crate::geometry::TopologyDomain,
+) -> bool {
+    match shape {
+        Shape::LineString(points) => line_is_closed_in_domain(points, domain),
+        Shape::MultiLineString(lines) => {
+            !lines.is_empty()
+                && lines
+                    .iter()
+                    .all(|line| line_is_closed_in_domain(line, domain))
+        },
+        Shape::Point(_)
+        | Shape::MultiPoint(_)
+        | Shape::Polygon(_)
+        | Shape::MultiPolygon(_)
+        | Shape::GeometryCollection(_)
+        | Shape::Empty(..) => false,
     }
 }
 

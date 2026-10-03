@@ -462,8 +462,17 @@ fn indexed_segments(shape: &Shape) -> crate::error::Result<Vec<IndexedSegment>> 
 }
 
 pub(crate) fn line_is_closed<C: Coordinates + ?Sized>(points: &C) -> bool {
+    line_is_closed_in_domain(points, crate::geometry::TopologyDomain::Cartesian)
+}
+
+pub(crate) fn line_is_closed_in_domain<C: Coordinates + ?Sized>(
+    points: &C,
+    domain: crate::geometry::TopologyDomain,
+) -> bool {
     let len = points.coord_count();
-    len >= 2 && same_point(points.nth_coord(0), points.nth_coord(len.wrapping_sub(1)))
+    len >= 2
+        && crate::geometry::VertexKey::new(points.nth_coord(0), domain)
+            == crate::geometry::VertexKey::new(points.nth_coord(len.wrapping_sub(1)), domain)
 }
 
 /// `LineString` CCW test (the `Shape::is_ccw` line arm): a closed ring

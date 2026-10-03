@@ -369,8 +369,11 @@ pub(crate) fn unary_is_empty(data: &PreparedPlan, _ctx: &CachelessRowContext<'_>
     clippy::unnecessary_wraps,
     reason = "dispatch spine requires Result<bool>"
 )]
-pub(crate) fn unary_is_closed(data: &PreparedPlan, _ctx: &CachelessRowContext<'_>) -> Result<bool> {
-    Ok(data.shape().is_closed())
+pub(crate) fn unary_is_closed(data: &PreparedPlan, ctx: &CachelessRowContext<'_>) -> Result<bool> {
+    Ok(crate::geometry::shape_is_closed_in_domain(
+        data.shape(),
+        ctx.domain,
+    ))
 }
 
 /// ``is_ring`` kernel shared by the spine-routed free function.

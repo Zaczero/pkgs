@@ -9,7 +9,7 @@ pub(crate) use interval::{CircularInterval, LongitudeWindows, union_circular_int
 use thiserror::Error;
 pub(crate) use value::{
     AngularFactor, CanonicalLongitude, EdgeDirection, GeographicFrame, Latitude, PeriodicAxis,
-    RingTurn, SeamIdentity, TurnDirection,
+    QuotientVertex, RingTurn, SeamIdentity, TurnDirection,
 };
 #[cfg(test)]
 pub(crate) use view::GeographicAdmissionWork;

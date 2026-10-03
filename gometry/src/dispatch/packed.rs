@@ -229,8 +229,8 @@ fn packed_bool_values(array: &PyGeometryArray, op: Operation) -> Option<PyResult
     }
     match op {
         Operation::IsEmpty => packed_bool_lane(array, Some(array.is_empty_unary_packed())),
-        Operation::IsClosed => packed_bool_lane(array, Some(array.is_closed_unary_packed())),
-        Operation::IsRing => packed_bool_lane(array, Some(array.is_ring_unary_packed())),
+        Operation::IsClosed => packed_bool_lane(array, Some(array.is_closed_unary_packed(domain))),
+        Operation::IsRing => packed_bool_lane(array, Some(array.is_ring_unary_packed(domain))),
         Operation::IsCcw => packed_bool_lane(array, Some(array.is_ccw_unary_packed())),
         // is_simple / is_valid kernels are mask-aware (skip placeholders, write
         // false for missing); skip the second mask pass in packed_bool_lane.

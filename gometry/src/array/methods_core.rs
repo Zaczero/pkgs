@@ -10,9 +10,9 @@ use crate::array::{
     PyDictMethods as _, PyGeometry, PyGeometryArray, PyListMethods as _, PyRef, PyResult, PyTuple,
     PyTypeError, PyTypeMethods as _, Python, Result, RingLevel, SVG_ARRAY_PREVIEW, Shape,
     bool_array, coerce_present_geometry_items, coordinate_epoch_option, crs, crs_arc,
-    exact_geometry, geometry, geometry_array_svg_grid_html_masked, line_is_ccw, line_is_closed,
-    line_is_simple, line_is_valid, map_coordinates_callback, parse_coordinate_replacement,
-    parse_crs, polygon_is_valid, pymethods, replace_shape_coordinates, require_geojson_crs,
+    exact_geometry, geometry, geometry_array_svg_grid_html_masked, line_is_ccw, line_is_simple,
+    line_is_valid, map_coordinates_callback, parse_coordinate_replacement, parse_crs,
+    polygon_is_valid, pymethods, replace_shape_coordinates, require_geojson_crs,
     slice_replacement_for_shape,
 };
 use crate::boundary::coordinates::checked_vector_len;
@@ -23,7 +23,9 @@ use crate::geometry::storage::admission::{CheckedRingWindow, RingWindowError};
 use crate::geometry::storage::kernels::total_bounds_from_columns;
 use crate::geometry::storage::replacement::CoordinateReplacement;
 use crate::geometry::storage::{GeometryArrayStorage, PackedStorage, physical_row};
-use crate::geometry::{ShapeCountQuery, storage};
+use crate::geometry::{
+    ShapeCountQuery, TopologyDomain, line_is_closed_in_domain, shape_is_closed_in_domain, storage,
+};
 use crate::predicates::unary;
 use crate::py::functions::bulk_rows::{StreamedShape, stream_bulk_owned};
 use crate::py::functions::geometry_io;
@@ -1057,26 +1059,28 @@ impl PyGeometryArray {
         Ok(output)
     }
 
-    pub(crate) fn is_closed_unary_packed(&self) -> PyResult<Vec<bool>> {
+    pub(crate) fn is_closed_unary_packed(&self, domain: TopologyDomain) -> PyResult<Vec<bool>> {
         if let Some(closed) = self
             .storage()
-            .lines_bool(|coords| Ok(line_is_closed(coords)))
+            .lines_bool(|coords| Ok(line_is_closed_in_domain(coords, domain)))
         {
             return Ok(closed?);
         }
         Ok(self
             .storage()
-            .const_or_shape_bool(false, |shape| Ok(shape.is_closed()))?)
+            .const_or_shape_bool(false, |shape| Ok(shape_is_closed_in_domain(shape, domain)))?)
     }
 
-    pub(crate) fn is_ring_unary_packed(&self) -> PyResult<Vec<bool>> {
-        if let Some(ring) = self
-            .storage()
-            .lines_bool(|coords| Ok(line_is_closed(coords) && line_is_simple(coords)?))
-        {
+    pub(crate) fn is_ring_unary_packed(&self, domain: TopologyDomain) -> PyResult<Vec<bool>> {
+        if let Some(ring) = self.storage().lines_bool(|coords| {
+            Ok(line_is_closed_in_domain(coords, domain) && line_is_simple(coords)?)
+        }) {
             return Ok(ring?);
         }
-        Ok(self.storage().const_or_shape_bool(false, Shape::is_ring)?)
+        Ok(self.storage().const_or_shape_bool(false, |shape| {
+            let data = crate::geometry::PreparedPlan::transient(shape);
+            crate::geometry::is_ring_data_in_frame(&data, domain)
+        })?)
     }
 
     pub(crate) fn is_ccw_unary_packed(&self) -> PyResult<Vec<bool>> {

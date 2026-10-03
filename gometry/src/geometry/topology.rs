@@ -5,7 +5,8 @@ use std::simd::num::SimdFloat as _;
 
 use crate::geometry::access::crossover::RAY_CROSSING;
 use crate::geometry::{
-    CCW_ERRBOUND_A, REDUCE_LANES, ReduceSimd, XY, ray_crossing_is_right, simd_reduce_f64,
+    CCW_ERRBOUND_A, Point, PointKey, REDUCE_LANES, ReduceSimd, XY, ray_crossing_is_right,
+    simd_reduce_f64,
 };
 
 /// Coordinate domain of a topology operation. Geographic operations carry
@@ -19,6 +20,24 @@ pub(crate) enum TopologyDomain {
 impl TopologyDomain {
     pub(crate) const fn is_geographic(self) -> bool {
         matches!(self, Self::Geographic(_))
+    }
+}
+
+/// Identity of a stored vertex in a topology operation's coordinate domain.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub(crate) enum VertexKey {
+    Cartesian(PointKey),
+    Geographic(crate::geographic::QuotientVertex),
+}
+
+impl VertexKey {
+    pub(crate) fn new(point: Point, domain: TopologyDomain) -> Self {
+        match domain {
+            TopologyDomain::Cartesian => Self::Cartesian(PointKey::new(point)),
+            TopologyDomain::Geographic(frame) => {
+                Self::Geographic(frame.quotient_vertex(point.x, point.y))
+            },
+        }
     }
 }
 

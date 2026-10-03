@@ -2077,6 +2077,90 @@ mod tests {
             .expect("the exact seam node exists")
     }
 
+    #[test]
+    fn stored_vertex_identity_matches_exact_geographic_quotient() {
+        let degrees = degrees();
+        let degree_unit = AngularFactor::try_new("test degree", std::f64::consts::PI / 180.0)
+            .expect("degree unit is valid");
+        let grads_unit = AngularFactor::try_new("test grad", std::f64::consts::PI / 200.0)
+            .expect("grad unit is valid");
+        let grads = GeographicFrame::try_new(grads_unit, grads_unit, 0.0).unwrap();
+        let prime_meridian = GeographicFrame::try_new(degree_unit, degree_unit, 0.1).unwrap();
+
+        for (frame, points) in [
+            (degrees, vec![
+                XY::new(0.0, 0.0),
+                XY::new(360.0, -0.0),
+                XY::new(-0.0, 0.0),
+                XY::new(180.0, 15.0),
+                XY::new(-180.0, 15.0),
+                XY::new(180.0, -15.0),
+                XY::new(-180.0, -15.0),
+                XY::new(0.0, 90.0),
+                XY::new(123.0, 90.0),
+                XY::new(-180.0, -90.0),
+                XY::new(47.0, -90.0),
+                XY::new(180.0_f64.next_down(), 15.0),
+            ]),
+            (grads, vec![
+                XY::new(0.0, 0.0),
+                XY::new(400.0, -0.0),
+                XY::new(200.0, 25.0),
+                XY::new(-200.0, 25.0),
+                XY::new(200.0, -25.0),
+                XY::new(-200.0, -25.0),
+                XY::new(0.0, 100.0),
+                XY::new(137.0, 100.0),
+                XY::new(0.0, -100.0),
+                XY::new(-91.0, -100.0),
+            ]),
+            (prime_meridian, vec![
+                XY::new(0.0, 0.0),
+                XY::new(360.0, -0.0),
+                XY::new(180.0, 12.0),
+                XY::new(-180.0, 12.0),
+                XY::new(0.0, 90.0),
+                XY::new(91.0, 90.0),
+            ]),
+        ] {
+            let exact = points
+                .iter()
+                .copied()
+                .map(|point| {
+                    quotient_key(
+                        frame,
+                        &source_chart_point(frame, Point::new_raw_xy(point.x, point.y)),
+                    )
+                    .expect("stored coordinates form exact quotient keys")
+                })
+                .collect::<Vec<_>>();
+            let stored = points
+                .iter()
+                .copied()
+                .map(|point| {
+                    crate::geometry::VertexKey::new(
+                        Point::new_raw_xy(point.x, point.y),
+                        crate::geometry::TopologyDomain::Geographic(frame),
+                    )
+                })
+                .collect::<Vec<_>>();
+
+            for ((left_point, left_exact), left_stored) in points.iter().zip(&exact).zip(&stored) {
+                for ((right_point, right_exact), right_stored) in
+                    points.iter().zip(&exact).zip(&stored)
+                {
+                    assert_eq!(
+                        left_stored == right_stored,
+                        compare_quotient_keys(left_exact, right_exact)
+                            .expect("exact quotient keys compare")
+                            .is_eq(),
+                        "frame={frame:?}, left={left_point:?}, right={right_point:?}",
+                    );
+                }
+            }
+        }
+    }
+
     fn source_uses_node(
         chart: &NodedExactChart,
         source: SourceEdgeId,

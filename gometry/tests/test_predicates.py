@@ -320,6 +320,21 @@ def test_structural_predicates_and_minimum_clearance_are_rust_backed() -> None:
     assert clearance[:3] == pytest.approx([1.0, 2 ** (-0.5), 2 ** (-0.5)])
 
 
+def test_geographic_closed_and_ring_use_quotient_endpoint_identity() -> None:
+    ring = gm.LineString(
+        [(180, 10), (170, 20), (175, 30), (-180, 10)], crs=4326
+    )
+    open_line = gm.LineString([(180, 10), (170, 20), (-180, 11)], crs=4326)
+
+    assert ring.is_closed
+    assert ring.is_ring
+    assert not open_line.is_closed
+
+    array = gm.GeometryArray([ring, open_line, None], crs=4326)
+    np.testing.assert_array_equal(array.is_closed, [True, False, False])
+    np.testing.assert_array_equal(array.is_ring, [True, False, False])
+
+
 def test_de9im_predicates_are_exposed_for_scalar_array_index_and_join() -> None:
     horizontal = gm.LineString([(-1, 0), (1, 0)])
     vertical = gm.LineString([(0, -1), (0, 1)])

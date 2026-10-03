@@ -513,7 +513,7 @@ pub(crate) fn is_ring_data_in_frame(data: &PreparedPlan, domain: TopologyDomain)
     let TopologyDomain::Geographic(frame) = domain else {
         return data.shape().is_ring();
     };
-    if !data.shape().is_closed() {
+    if !crate::geometry::shape_is_closed_in_domain(data.shape(), domain) {
         return Ok(false);
     }
     let facts = seam_facts_for_data(data, frame);
@@ -540,7 +540,7 @@ pub(crate) fn is_ring_data_in_frame(data: &PreparedPlan, domain: TopologyDomain)
             Err(_) => Ok(false),
         }
     } else {
-        data.shape().is_ring()
+        data.is_simple_cached()
     }
 }
 

@@ -2,6 +2,40 @@ use crate::geometry::predicates::*;
 use crate::geometry::*;
 
 #[test]
+fn geographic_line_closedness_uses_quotient_vertex_identity() {
+    let point = Point::new_raw_xy;
+    let line = |points: &[Point]| CoordSeq::try_from_points(points).unwrap();
+    let crs84 = TopologyDomain::Geographic(crate::geographic::GeographicFrame::crs84());
+
+    assert!(line_is_closed_in_domain(
+        &line(&[point(0.0, 10.0), point(360.0, 10.0)]),
+        crs84,
+    ));
+    assert!(line_is_closed_in_domain(
+        &line(&[point(180.0, 0.0), point(170.0, 20.0), point(-180.0, 0.0)]),
+        crs84,
+    ));
+    assert!(!line_is_closed_in_domain(
+        &line(&[point(180.0, 0.0), point(170.0, 20.0), point(-180.0, 1.0)]),
+        crs84,
+    ));
+    assert!(line_is_closed_in_domain(
+        &line(&[point(-35.0, 90.0), point(135.0, 90.0)]),
+        crs84,
+    ));
+    assert!(line_is_closed_in_domain(
+        &line(&[point(-0.0, -0.0), point(0.0, 0.0)]),
+        crs84,
+    ));
+
+    assert!(!line_is_closed(&line(&[
+        point(0.0, 10.0),
+        point(360.0, 10.0)
+    ])));
+    assert!(line_is_closed(&line(&[point(-0.0, -0.0), point(0.0, 0.0)])));
+}
+
+#[test]
 fn ogc_mod2_multiline_point_relations_have_known_answers() {
     let point = Point::new_raw_xy;
     let multiline = Shape::MultiLineString(
