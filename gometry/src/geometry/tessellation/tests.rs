@@ -1705,7 +1705,9 @@ fn earcut_grid_holes_preserve_euler_triangle_count() {
 #[test]
 fn polygon_triangles_grid_bridge_work_scales_subquadratically() {
     let mut counts = Vec::new();
-    for holes in [64_usize, 256, 1_024] {
+    // At 4x4/8x8/16x16, fixed shell work hides an exhaustive quadratic
+    // bridge scan. The next square-grid ladder rejects that scan below.
+    for holes in [25_usize, 100, 400] {
         let poly = square_shell_with_grid_holes(holes);
         let expected = polygon_vertices(&poly)
             .len()
