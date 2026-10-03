@@ -1909,6 +1909,9 @@ impl ExactSourceInventory {
     /// arrangement. The cut rectangles are separate polygon operands, but
     /// their seam and every source crossing share the same node recipes,
     /// topology, rounding pass, and ordinate resolution.
+    /// The axis-aligned cut ordinate is exactly representable and pinned by
+    /// the embedding. Dissolving a straight seam in one child cannot move a
+    /// vertex retained by the other child off that seam.
     #[expect(
         clippy::indexing_slicing,
         reason = "plan node IDs are admitted by this partition and index its node-aligned seen flags"

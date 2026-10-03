@@ -690,6 +690,50 @@ def test_subdivide_parts_preserves_coordinate_epoch() -> None:
     assert all(part.epoch == 2020.0 for part in parts)
 
 
+def test_subdivide_shared_seam_allows_rounded_exterior_crossings() -> None:
+    parent = gm.Polygon([
+        (0, 0),
+        (3, 1),
+        (3, 2),
+        (2, 2),
+        (1, 2),
+        (0, 2),
+        (-1, 2),
+        (-1, 1),
+        (-1, 0),
+    ])
+    children = parent.subdivide(max_vertices=8)
+    assert len(children) == 2
+    left, right = children
+    seam = gm.LineString([(0.5, 0.16666666666666666), (0.5, 2)])
+    assert gm.equals(gm.intersection(left, right), seam)
+    assert gm.relate(left, right).startswith('F')
+    union = gm.union_all(children)
+    assert union.is_valid
+    assert isinstance(union, gm.Polygon)
+    assert len(union.interiors) == 0
+    # The exact crossing ordinate 1/6 is not representable in binary64.
+    assert not gm.equals(union, parent)
+
+
+def test_subdivide_disconnected_parent_can_have_an_empty_seam() -> None:
+    parent = gm.from_wkt(
+        'MULTIPOLYGON (((0 0,1 0,2 0,2 1,2 2,1 2,0 2,0 1,0 0)),'
+        '((10 0,11 0,12 0,12 1,12 2,11 2,10 2,10 1,10 0)))'
+    )
+    children = parent.subdivide(max_vertices=8)
+    assert len(children) == 2
+    left, right = children
+    assert gm.intersection(left, right).is_empty
+    assert gm.relate(left, right).startswith('F')
+    union = gm.union_all(children)
+    assert union.is_valid
+    assert isinstance(union, gm.MultiPolygon)
+    assert len(union) == 2
+    assert all(len(polygon.interiors) == 0 for polygon in union)
+    assert gm.equals(union, parent)
+
+
 def test_dissolve_unions_per_group_in_first_occurrence_order() -> None:
     array = gm.GeometryArray([
         gm.box(0, 0, 1, 1),
