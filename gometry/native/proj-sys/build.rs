@@ -12,6 +12,11 @@ use tar::Archive;
 const MINIMUM_PROJ_VERSION: &str = "9.6.2";
 const PROJ_ARCHIVE_SIZE: usize = 6_394_614;
 const PROJ_ARCHIVE_FNV1A64: u64 = 0x0F8C94421730578E;
+const PROJ_SOURCE_OVERRIDES: [(&str, &str); 3] = [
+    ("aea.cpp", "src/projections/aea.cpp"),
+    ("merc.cpp", "src/projections/merc.cpp"),
+    ("gometry_proj_context.cpp", "src/gometry_proj_context.cpp"),
+];
 
 #[cfg(feature = "nobuild")]
 fn main() {} // Skip the build script on docs.rs
@@ -20,7 +25,7 @@ fn main() {} // Skip the build script on docs.rs
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-changed=PROJSRC/proj-9.6.2.tar.gz");
-    for source in ["aea.cpp", "merc.cpp", "gometry_proj_context.cpp"] {
+    for &(source, _) in &PROJ_SOURCE_OVERRIDES {
         println!("cargo:rerun-if-changed=PROJSRC/patches/proj-9.6.2/{source}");
     }
     let include_path = if cfg!(feature = "bundled_proj") {
@@ -120,11 +125,7 @@ fn build_from_source() -> Result<std::path::PathBuf, Box<dyn std::error::Error>>
     archive.unpack(&source_root)?;
     let source_dir = source_root.join(format!("proj-{MINIMUM_PROJ_VERSION}"));
     let patch_dir = PathBuf::from(format!("PROJSRC/patches/proj-{MINIMUM_PROJ_VERSION}"));
-    for (source, destination) in [
-        ("aea.cpp", "src/projections/aea.cpp"),
-        ("merc.cpp", "src/projections/merc.cpp"),
-        ("gometry_proj_context.cpp", "src/gometry_proj_context.cpp"),
-    ] {
+    for &(source, destination) in &PROJ_SOURCE_OVERRIDES {
         let patch_path = patch_dir.join(source);
         if !patch_path.is_file() {
             return Err(format!(
