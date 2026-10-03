@@ -137,8 +137,7 @@ impl GeographicPrepared<'_> {
     }
 }
 
-/// Compute the complete Cartesian relation matrix on the exact partition.
-/// Every named predicate is a projection of this result.
+/// Compute the complete Cartesian relation matrix from exact source witnesses.
 pub(crate) fn graph_relate_shapes(left: &Shape, right: &Shape) -> Result<De9im> {
     graph_relate_data(
         &PreparedPlan::transient(left),
@@ -166,10 +165,12 @@ fn graph_relate_shapes_geographic(left: &Shape, right: &Shape) -> De9im {
 }
 
 pub(crate) fn graph_relate_data(left: &PreparedPlan, right: &PreparedPlan) -> Result<De9im> {
-    exact_cartesian_relate(left.shape(), right.shape())
+    super::evaluator::relate(left, right)
 }
 
-pub(in crate::geometry) fn exact_cartesian_relate<'a>(
+/// The global partition relation remains the owner for geographic chart pairs
+/// that require its domain-specific face topology.
+fn exact_partition_relate<'a>(
     left: impl Into<storage::ShapeRow<'a>>,
     right: impl Into<storage::ShapeRow<'a>>,
 ) -> Result<De9im> {
@@ -178,6 +179,11 @@ pub(in crate::geometry) fn exact_cartesian_relate<'a>(
     let mut budget = crate::geometry::ExpansionBudget::new("relate", "exact partition");
     let partition = inventory.partition(&mut budget)?;
     inventory.relate(&partition)
+}
+
+#[cfg(test)]
+pub(crate) fn partition_relate_data(left: &PreparedPlan, right: &PreparedPlan) -> Result<De9im> {
+    exact_partition_relate(left.shape(), right.shape())
 }
 
 #[expect(
@@ -190,7 +196,7 @@ pub(crate) fn graph_relate_data_geographic(
 ) -> Result<De9im> {
     debug_assert_eq!(left.frame(), right.frame());
     if left.chart_route().combine(right.chart_route()) == GeographicTopologyRoute::ExactPartition {
-        return exact_cartesian_relate(left.plan().shape(), right.plan().shape());
+        return exact_partition_relate(left.plan().shape(), right.plan().shape());
     }
     graph_relate_data_geographic_q(left, right)
 }
@@ -233,54 +239,68 @@ fn graph_relate_data_geographic_q(
         .relate_pair()
 }
 
-/// Whether a scalar operand broadcast against `row` reaches the direct
-/// polygon/line fold instead of two source topology graphs.
-///
-/// The asymmetry is the point: a polygon scalar keeps a reusable graph across
-/// the whole broadcast, so caching it is right, while a line scalar has no
-/// reusable support and would build a graph only for the fold to transpose the
-/// polygon-side answer. Batch seams ask this before resolving that graph.
-pub(crate) const fn line_scalar_prefers_direct_polygon_relate(scalar: &Shape, row: &Shape) -> bool {
-    matches!((scalar, row), (Shape::LineString(_), Shape::Polygon(_)))
-}
-
 /// A closed ring with real extent and a nonzero exact area.
 pub(crate) fn ring_has_area(ring: &Ring) -> bool {
     ring.coord_count() >= Ring::MIN_VERTICES_CLOSED
         && !crate::geometry::ring_winding(ring).is_degenerate()
 }
 
-#[expect(
-    clippy::float_cmp,
-    reason = "the certificate compares vertices with their exact bounds"
-)]
 /// Whether `shape` is exactly the box `bounds`: a hole-free polygon whose every
 /// vertex sits on the box, whose every step runs along one of its sides, which
 /// reaches all four corners, and whose winding encloses the box. Extra
 /// collinear vertices along a side are admitted; a degenerate box, or a ring
 /// whose traversals cancel, is not.
 pub(crate) fn is_axis_aligned_rectangle(shape: &Shape, bounds: Bounds) -> bool {
-    let Shape::Polygon(polygon) = shape else {
+    is_axis_aligned_rectangle_row(storage::ShapeRow::Shape(shape), bounds)
+}
+
+/// Whether a storage row is one exactly filled axis-aligned rectangle.
+pub(crate) fn is_axis_aligned_rectangle_row(
+    row: storage::ShapeRow<'_>,
+    bounds: Bounds,
+) -> bool {
+    let Some(mut rings) = row.polygon_rings() else {
         return false;
     };
-    if !polygon.holes.is_empty() || bounds.minx() == bounds.maxx() || bounds.miny() == bounds.maxy()
-    {
+    let Some(shell) = rings.next() else {
+        return false;
+    };
+    if rings.next().is_some() {
         return false;
     }
-    let shell = polygon.shell.coords();
+    is_axis_aligned_rectangle_ring(&shell, bounds)
+}
+
+#[expect(
+    clippy::float_cmp,
+    reason = "rectangle certification compares represented coordinates with their exact bounds"
+)]
+fn is_axis_aligned_rectangle_ring(
+    shell: &(impl crate::geometry::Coordinates + ?Sized),
+    bounds: Bounds,
+) -> bool {
+    if bounds.minx() == bounds.maxx() || bounds.miny() == bounds.maxy() {
+        return false;
+    }
     if shell.coord_count() < 5 {
         return false;
     }
-    let (xs, ys) = (shell.xs(), shell.ys());
+    let Some((xs, ys)) = shell.xy_columns() else {
+        return false;
+    };
     let mut seen = [false; 4];
-    for point in shell.points().take(shell.coord_count().saturating_sub(1)) {
-        let on_vertical = point.x == bounds.minx() || point.x == bounds.maxx();
-        let on_horizontal = point.y == bounds.miny() || point.y == bounds.maxy();
+    for (&x, &y) in xs
+        .iter()
+        .zip(ys)
+        .take(shell.coord_count().saturating_sub(1))
+    {
+        let on_vertical = x == bounds.minx() || x == bounds.maxx();
+        let on_horizontal = y == bounds.miny() || y == bounds.maxy();
         if !on_vertical && !on_horizontal {
             return false;
         }
         if on_vertical && on_horizontal {
-            match (point.x == bounds.maxx(), point.y == bounds.maxy()) {
+            match (x == bounds.maxx(), y == bounds.maxy()) {
                 (false, false) => seen[0] = true,
                 (false, true) => seen[1] = true,
                 (true, false) => seen[2] = true,
@@ -289,13 +309,13 @@ pub(crate) fn is_axis_aligned_rectangle(shape: &Shape, bounds: Bounds) -> bool {
         }
     }
     if xs
-        .windows(2)
-        .zip(ys.windows(2))
-        .any(|(x_pair, y_pair)| x_pair.first() != x_pair.get(1) && y_pair.first() != y_pair.get(1))
+        .array_windows::<2>()
+        .zip(ys.array_windows::<2>())
+        .any(|([x0, x1], [y0, y1])| x0 != x1 && y0 != y1)
     {
         return false;
     }
-    seen.iter().all(|&corner| corner) && ring_has_area(&polygon.shell)
+    seen.iter().all(|&corner| corner) && !crate::geometry::ring_winding(shell).is_degenerate()
 }
 
 #[expect(

@@ -1,10 +1,11 @@
-//! Exact Cartesian source support for ordinary point queries.
+//! Exact Cartesian source support for point and contact-witness queries.
 //!
 //! This module owns the source-side fold used by scalar, packed, prepared,
-//! and indexed point membership.  It deliberately does not build an
+//! and indexed point membership, plus the stored, rational, and infinitesimal
+//! probes used by DE-9IM evaluation. It deliberately does not build an
 //! arrangement: away from source contact, directed winding is locally
-//! constant; at contact, the only relevant topology is the exact fan of
-//! source rays incident to the queried stored point.
+//! constant; at contact, the relevant topology is the exact fan of source
+//! rays incident to the query.
 
 #![expect(
     clippy::float_cmp,
@@ -16,15 +17,14 @@ use std::ops::Range;
 
 use crate::error::Result;
 #[cfg(test)]
-use crate::geometry::Bounds;
-#[cfg(test)]
 use crate::geometry::Ring;
 use crate::geometry::exact_arith::ExactSign;
 use crate::geometry::segments::{stored_orientation_sign, try_sort_by};
-#[cfg(test)]
-use crate::geometry::tessellation::exact::{ExactDyadic, compare_ratios, outward_ratio_bounds};
+use crate::geometry::tessellation::exact::{
+    ExactDyadic, compare_ratios, outward_ratio_bounds, round_ratio,
+};
 use crate::geometry::{
-    Loc, Point, Polygon, Shape, SharedShapeOwners, XY, point_on_segment, same_point,
+    Bounds, Loc, Point, Polygon, Shape, SharedShapeOwners, XY, point_on_segment, same_point,
     same_topological_coordinate, storage,
 };
 
@@ -104,7 +104,6 @@ impl PointQuery for StoredQuery {
     }
 }
 
-#[cfg(test)]
 #[derive(Clone, Copy)]
 pub(in crate::geometry) struct ExactQuery<'a> {
     point: &'a [ExactDyadic; 3],
@@ -112,7 +111,6 @@ pub(in crate::geometry) struct ExactQuery<'a> {
     y_bounds: (f64, f64),
 }
 
-#[cfg(test)]
 impl<'a> ExactQuery<'a> {
     fn new(point: &'a [ExactDyadic; 3]) -> Result<Self> {
         let [x, y, w] = point;
@@ -124,7 +122,6 @@ impl<'a> ExactQuery<'a> {
     }
 }
 
-#[cfg(test)]
 impl PointQuery for ExactQuery<'_> {
     fn compare_axis(self, axis: QueryAxis, value: f64) -> Result<Ordering> {
         let (lower, upper) = match axis {
@@ -178,7 +175,6 @@ impl PointQuery for ExactQuery<'_> {
     }
 }
 
-#[cfg(test)]
 fn compare_exact_axis(point: &[ExactDyadic; 3], axis: QueryAxis, value: f64) -> Result<Ordering> {
     let [x, y, w] = point;
     let numerator = match axis {
@@ -193,13 +189,12 @@ fn compare_exact_axis(point: &[ExactDyadic; 3], axis: QueryAxis, value: f64) -> 
     )
 }
 
-#[cfg(test)]
 fn exact_query_coordinate(
     numerator: &ExactDyadic,
     denominator: &ExactDyadic,
     direction: Option<&ExactDyadic>,
 ) -> Result<f64> {
-    let rounded = crate::geometry::tessellation::exact::round_ratio(numerator, denominator)?;
+    let rounded = round_ratio(numerator, denominator)?;
     let order = compare_ratios(
         numerator,
         denominator,
@@ -212,7 +207,6 @@ fn exact_query_coordinate(
     Ok(if below { rounded.next_down() } else { rounded })
 }
 
-#[cfg(test)]
 pub(in crate::geometry) fn exact_query_y(
     point: &[ExactDyadic; 3],
     direction_y: Option<&ExactDyadic>,
@@ -221,7 +215,6 @@ pub(in crate::geometry) fn exact_query_y(
     exact_query_coordinate(y, w, direction_y)
 }
 
-#[cfg(test)]
 pub(in crate::geometry) fn exact_query_xy(
     point: &[ExactDyadic; 3],
     direction: Option<&[ExactDyadic; 2]>,
@@ -237,14 +230,12 @@ pub(in crate::geometry) fn exact_query_xy(
     ))
 }
 
-#[cfg(test)]
 #[derive(Clone, Copy)]
 pub(in crate::geometry) struct InfinitesimalQuery<'a> {
     point: ExactQuery<'a>,
     direction: &'a [ExactDyadic; 2],
 }
 
-#[cfg(test)]
 impl PointQuery for InfinitesimalQuery<'_> {
     fn compare_axis(self, axis: QueryAxis, value: f64) -> Result<Ordering> {
         let order = self.point.compare_axis(axis, value)?;
@@ -294,10 +285,27 @@ pub(in crate::geometry) struct SourcePointLocation {
     pub(in crate::geometry) area: bool,
 }
 
+pub(in crate::geometry) fn exact_stored_point(point: &[ExactDyadic; 3]) -> Result<Option<Point>> {
+    let [x, y, weight] = point;
+    if !weight.is_one() && !weight.is_two() {
+        return Ok(None);
+    }
+    let x = round_ratio(x, weight)?;
+    let y = round_ratio(y, weight)?;
+    let one = ExactDyadic::one();
+    let exact_x = ExactDyadic::from_f64(x);
+    let exact_y = ExactDyadic::from_f64(y);
+    if compare_ratios(&point[0], weight, &exact_x, &one)? != Ordering::Equal
+        || compare_ratios(&point[1], weight, &exact_y, &one)? != Ordering::Equal
+    {
+        return Ok(None);
+    }
+    Ok(Some(Point::new_raw_xy(x, y)))
+}
+
 impl SourcePointLocation {
     /// Project a full node query onto the areal label of a one-dimensional
     /// ring atom. Point and line support cannot label that atom.
-    #[cfg(test)]
     pub(in crate::geometry) const fn edge_atom_location(self) -> Loc {
         if self.area {
             self.location
@@ -1094,14 +1102,12 @@ impl StreamingLocation<StoredQuery> {
     }
 }
 
-#[cfg(test)]
 impl<'a> StreamingLocation<ExactQuery<'a>> {
     pub(in crate::geometry) fn for_exact_point(point: &'a [ExactDyadic; 3]) -> Result<Self> {
         Ok(Self::new(ExactQuery::new(point)?, LocationMode::Full))
     }
 }
 
-#[cfg(test)]
 impl<'a> StreamingLocation<InfinitesimalQuery<'a>> {
     pub(in crate::geometry) fn for_exact_offset(
         point: &'a [ExactDyadic; 3],
@@ -1733,10 +1739,6 @@ fn compare_query_rays<Q: PointQuery>(query: Q, left: XY, right: XY) -> Result<Or
 }
 
 #[cfg(test)]
-#[expect(
-    clippy::indexing_slicing,
-    reason = "start and end advance only within the sorted ray slice being grouped"
-)]
 fn ray_groups(query: XY, rays: &[Ray]) -> Vec<RayGroup> {
     let mut groups = Vec::new();
     let mut start = 0_usize;
@@ -1799,7 +1801,6 @@ pub(crate) fn edge_winding(start: XY, end: XY, query: XY) -> Option<i64> {
     Some(if orientation == sign { direction } else { 0 })
 }
 
-#[cfg(test)]
 pub(in crate::geometry) fn exact_point_in_bounds(
     bounds: Bounds,
     point: &[ExactDyadic; 3],
@@ -1807,7 +1808,6 @@ pub(in crate::geometry) fn exact_point_in_bounds(
     point_in_bounds(ExactQuery::new(point)?, bounds)
 }
 
-#[cfg(test)]
 pub(in crate::geometry) fn exact_offset_point_in_bounds(
     bounds: Bounds,
     point: &[ExactDyadic; 3],
@@ -1822,7 +1822,6 @@ pub(in crate::geometry) fn exact_offset_point_in_bounds(
     )
 }
 
-#[cfg(test)]
 fn point_in_bounds(query: impl PointQuery, bounds: Bounds) -> Result<bool> {
     Ok(
         query.compare_axis(QueryAxis::X, bounds.minx())? != Ordering::Less
@@ -1832,7 +1831,6 @@ fn point_in_bounds(query: impl PointQuery, bounds: Bounds) -> Result<bool> {
     )
 }
 
-#[cfg(test)]
 pub(in crate::geometry) fn exact_edge_winding(
     start: XY,
     end: XY,
@@ -1841,7 +1839,6 @@ pub(in crate::geometry) fn exact_edge_winding(
     edge_winding_for_query(start, end, ExactQuery::new(point)?)
 }
 
-#[cfg(test)]
 pub(in crate::geometry) fn exact_offset_edge_winding(
     start: XY,
     end: XY,
@@ -1854,7 +1851,6 @@ pub(in crate::geometry) fn exact_offset_edge_winding(
     })
 }
 
-#[cfg(test)]
 fn edge_winding_for_query(start: XY, end: XY, query: impl PointQuery) -> Result<Option<i64>> {
     if same_point(start, end) {
         return Ok(Some(0));
@@ -1871,14 +1867,15 @@ fn edge_winding_for_query(start: XY, end: XY, query: impl PointQuery) -> Result<
         || (x_start == Ordering::Greater && x_end == Ordering::Greater);
     let outside_y = (y_start == Ordering::Less && y_end == Ordering::Less)
         || (y_start == Ordering::Greater && y_end == Ordering::Greater);
-    let mut orientation = None;
-    if !outside_x && !outside_y {
+    let orientation = if !outside_x && !outside_y {
         let sign = query.orientation(start, end)?;
         if sign == ExactSign::Zero {
             return Ok(None);
         }
-        orientation = Some(sign);
-    }
+        Some(sign)
+    } else {
+        None
+    };
     let direction = if y_start != Ordering::Less && y_end == Ordering::Less {
         1
     } else if y_end != Ordering::Less && y_start == Ordering::Less {
@@ -2055,7 +2052,6 @@ pub(crate) fn cartesian_row_point_location(
         .expect("stored point location does not construct exact values")
 }
 
-#[cfg(test)]
 pub(in crate::geometry) fn cartesian_row_point_location_and_area(
     row: storage::ShapeRow<'_>,
     point: Point,
@@ -2093,6 +2089,19 @@ pub(crate) fn cartesian_row_area_covers_point(row: storage::ShapeRow<'_>, point:
         .area
 }
 
+pub(in crate::geometry) fn cartesian_exact_point_location_and_area(
+    shape: &Shape,
+    point: &[ExactDyadic; 3],
+) -> Result<SourcePointLocation> {
+    if let Some(point) = exact_stored_point(point)? {
+        return Ok(cartesian_point_location_and_area(shape, point));
+    }
+    let mut location = StreamingLocation::for_exact_point(point)?;
+    let mut owners = None;
+    location.visit_shape(shape, &mut owners)?;
+    location.finish()
+}
+
 #[cfg(test)]
 pub(in crate::geometry) fn cartesian_exact_point_location(
     shape: &Shape,
@@ -2101,12 +2110,12 @@ pub(in crate::geometry) fn cartesian_exact_point_location(
     Ok(cartesian_exact_point_location_and_area(shape, point)?.location)
 }
 
-#[cfg(test)]
-pub(in crate::geometry) fn cartesian_exact_point_location_and_area(
+pub(in crate::geometry) fn cartesian_exact_offset_location_and_area(
     shape: &Shape,
     point: &[ExactDyadic; 3],
+    direction: &[ExactDyadic; 2],
 ) -> Result<SourcePointLocation> {
-    let mut location = StreamingLocation::for_exact_point(point)?;
+    let mut location = StreamingLocation::for_exact_offset(point, direction)?;
     let mut owners = None;
     location.visit_shape(shape, &mut owners)?;
     location.finish()
@@ -2121,30 +2130,19 @@ pub(in crate::geometry) fn cartesian_exact_offset_location(
     Ok(cartesian_exact_offset_location_and_area(shape, point, direction)?.location)
 }
 
-#[cfg(test)]
-pub(in crate::geometry) fn cartesian_exact_offset_location_and_area(
-    shape: &Shape,
-    point: &[ExactDyadic; 3],
-    direction: &[ExactDyadic; 2],
-) -> Result<SourcePointLocation> {
-    let mut location = StreamingLocation::for_exact_offset(point, direction)?;
-    let mut owners = None;
-    location.visit_shape(shape, &mut owners)?;
-    location.finish()
-}
-
-#[cfg(test)]
 pub(in crate::geometry) fn cartesian_row_exact_point_location_and_area(
     row: storage::ShapeRow<'_>,
     point: &[ExactDyadic; 3],
 ) -> Result<SourcePointLocation> {
+    if let Some(point) = exact_stored_point(point)? {
+        return Ok(cartesian_row_point_location_and_area(row, point));
+    }
     let mut location = StreamingLocation::for_exact_point(point)?;
     let mut owners = None;
     location.visit_row(row, &mut owners)?;
     location.finish()
 }
 
-#[cfg(test)]
 pub(in crate::geometry) fn cartesian_row_exact_offset_location_and_area(
     row: storage::ShapeRow<'_>,
     point: &[ExactDyadic; 3],
@@ -2156,7 +2154,6 @@ pub(in crate::geometry) fn cartesian_row_exact_offset_location_and_area(
     location.finish()
 }
 
-#[cfg(test)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(in crate::geometry) enum OccupiedToward {
     Yes,
@@ -2164,7 +2161,6 @@ pub(in crate::geometry) enum OccupiedToward {
     Tangent,
 }
 
-#[cfg(test)]
 pub(in crate::geometry) const fn occupied_toward(location: SourcePointLocation) -> OccupiedToward {
     match (location.location, location.area) {
         (Loc::Interior, true) => OccupiedToward::Yes,

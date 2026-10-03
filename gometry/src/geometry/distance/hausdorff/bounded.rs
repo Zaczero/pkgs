@@ -7,7 +7,6 @@ use std::sync::Arc;
 use crate::error::Result;
 use crate::geometry::exact_arith::ExactSign;
 use crate::geometry::overlay::{ExactMetricSpan, ExactMetricSupport, ExactSourceInventory};
-use crate::geometry::relate::exact_cartesian_relate;
 use crate::geometry::tessellation::exact;
 use crate::geometry::tessellation::exact::{ExactDyadic, ExactRational as Rational};
 use crate::geometry::{
@@ -3447,12 +3446,12 @@ pub(crate) fn distance<'a>(
         &source,
         &target,
         &mut context,
-        || exact_cartesian_relate(left, right).map(|matrix| matrix.is_equal_topo()),
+        || crate::geometry::predicate_rows(left, right, crate::predicates::Predicate::Equals),
         |forward| {
             if forward {
-                exact_cartesian_relate(right, left).map(|matrix| matrix.is_covers())
+                crate::geometry::predicate_rows(right, left, crate::predicates::Predicate::Covers)
             } else {
-                exact_cartesian_relate(left, right).map(|matrix| matrix.is_covers())
+                crate::geometry::predicate_rows(left, right, crate::predicates::Predicate::Covers)
             }
         },
     )

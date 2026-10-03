@@ -1,8 +1,8 @@
 //! Exact DE-9IM matrices derived from domain-owned topology.
 //!
-//! Cartesian pairs use the exact partition; geographic pairs use one exact
-//! source-chart Q with global faces and source-row occupancy. Named predicates
-//! and pattern matching project their answers from the matrix owned here.
+//! Cartesian pairs use exact source-contact witnesses; geographic pairs use
+//! their domain-specific exact chart relation. Named predicates and pattern
+//! matching share the same DE-9IM evidence model.
 //!
 //! A `MultiLineString` follows the OGC Simple Feature Access mod-2 boundary
 //! rule: an endpoint belongs to the collection boundary when it occurs in an
@@ -15,19 +15,20 @@
 use crate::geometry::Dimension;
 
 mod de9im;
-#[cfg(test)]
 mod evaluator;
 mod graph_matrix;
-pub(in crate::geometry) use graph_matrix::exact_cartesian_relate;
 mod interval;
 mod matrix_predicates;
 mod operands;
 
 pub(crate) use de9im::{De9im, Loc};
+pub(crate) use evaluator::{
+    pattern as evaluate_cartesian_pattern, predicate as evaluate_cartesian_predicate,
+    predicate_prepared_row as evaluate_cartesian_prepared_row, predicate_rows,
+};
 pub(crate) use graph_matrix::{
     GeographicPrepared, graph_intersects_data_geographic, graph_relate_data,
-    graph_relate_data_geographic, graph_relate_shapes, is_axis_aligned_rectangle,
-    line_scalar_prefers_direct_polygon_relate,
+    graph_relate_data_geographic, graph_relate_shapes, is_axis_aligned_rectangle, is_axis_aligned_rectangle_row,
 };
 pub(crate) use interval::{De9imInterval, OperandShape};
 #[cfg(test)]

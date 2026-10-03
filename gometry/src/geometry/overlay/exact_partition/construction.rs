@@ -487,8 +487,7 @@ impl<'a> Forest<'a> {
         Ok(())
     }
 
-    #[cfg(test)]
-    pub(in crate::geometry) fn points(&self) -> &PointArena<'a> {
+    pub(in crate::geometry) const fn points(&self) -> &PointArena<'a> {
         &self.points
     }
 }

@@ -179,13 +179,11 @@ impl Cell {
     }
 }
 
-/// The matrix cells a query can inspect. The cell formulas and their read masks
-/// live together, and a test ties the masks to the cells the formulas read.
-#[cfg(test)]
+/// The matrix cells a query can inspect. Cell formulas and their read masks
+/// share one definition.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct CellMask([bool; 9]);
 
-#[cfg(test)]
 impl CellMask {
     pub(crate) const fn all() -> Self {
         Self([true; 9])

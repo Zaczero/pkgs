@@ -2,9 +2,10 @@
 //!
 //! Every surface that evaluates a named predicate — free functions, `Geometry`
 //! and `GeometryArray` methods, the spatial index refine
-//! loop, and `join` — reads its facts from [`Predicate::spec`] and projects the
-//! complete matrix produced by the domain's topology relation owner. Batch and
-//! scalar surfaces therefore cannot drift in predicate semantics.
+//! loop, and `join` — reads dispatch facts from [`Predicate::spec`] and asks
+//! the domain's topology owner for an exact answer. Cartesian predicates use
+//! the witness evaluator, with `intersects` and `disjoint` retaining their
+//! prepared kernel; geographic predicates use their chart relation.
 
 use std::cell::OnceCell;
 
@@ -12,8 +13,7 @@ use crate::geometry::source_support::cartesian_row_point_location;
 use crate::geometry::storage::PackedRow;
 use crate::geometry::{
     Bounds, CompiledPattern, GeographicPrepared, GeographicTopologyRoute, Loc, PreparedPlan, Shape,
-    SharedShapeOwners, TopologyDomain, graph_relate_data,
-    line_scalar_prefers_direct_polygon_relate, ring_winding,
+    SharedShapeOwners, TopologyDomain, graph_relate_data, ring_winding,
 };
 
 #[derive(Clone, Copy)]
@@ -64,20 +64,11 @@ impl<'a> PreparedTopologyPair<'a> {
         ))
     }
 
-    pub(crate) fn from_geographic(
+    pub(crate) const fn from_geographic(
         left: GeographicPrepared<'a>,
         right: GeographicPrepared<'a>,
     ) -> Self {
-        if left.chart_route().combine(right.chart_route())
-            == GeographicTopologyRoute::ExactPartition
-        {
-            Self::Cartesian {
-                left: left.plan(),
-                right: right.plan(),
-            }
-        } else {
-            Self::Geographic { left, right }
-        }
+        Self::Geographic { left, right }
     }
 
     /// The two operands as the pre-topology gates read them.
@@ -583,11 +574,6 @@ pub(crate) fn scalar_vs_shapes<'a>(
                 {
                     return Ok(None);
                 }
-                if row.with_shape(|shape| {
-                    line_scalar_prefers_direct_polygon_relate(scalar.shape(), shape)
-                })? {
-                    return Ok(None);
-                }
                 row.try_with_shape(|shape| {
                     let Some(bounds) = shape.bounds() else {
                         return Ok(None);
@@ -614,27 +600,28 @@ pub(crate) fn scalar_vs_shapes<'a>(
                     if let Some(verdict) = gate(index, row)? {
                         return Ok(verdict);
                     }
-                    if !point_tester_ready && row_kind_empty(row).0 == GeometryKind::Point {
-                        scalar.point_tester()?;
-                        point_tester_ready = true;
-                    }
-                    if let Some(verdict) =
-                        fixed_row_point_predicate(spec, scalar, row, scalar_is_left)?
-                    {
-                        return Ok(verdict);
+                    if matches!(spec.predicate, Predicate::Intersects | Predicate::Disjoint) {
+                        if !point_tester_ready && row_kind_empty(row).0 == GeometryKind::Point {
+                            scalar.point_tester()?;
+                            point_tester_ready = true;
+                        }
+                        if let Some(verdict) =
+                            fixed_row_point_intersection(spec, scalar, row, scalar_is_left)?
+                        {
+                            return Ok(verdict);
+                        }
+                    } else {
+                        return crate::geometry::evaluate_cartesian_prepared_row(
+                            scalar,
+                            row,
+                            scalar_is_left,
+                            spec.predicate,
+                        );
                     }
                     let element = row_operation.as_mut().map_or_else(
                         || crate::array::PreparedRow::transient(row),
                         |operation| operation.prepared_at(index, row),
                     )?;
-                    if line_scalar_prefers_direct_polygon_relate(scalar.shape(), element.shape()) {
-                        let matrix = if scalar_is_left {
-                            graph_relate_data(scalar, &element)
-                        } else {
-                            graph_relate_data(&element, scalar)
-                        }?;
-                        return Ok(predicate_matrix_value(spec, matrix));
-                    }
                     let operands = if scalar_is_left {
                         PreparedTopologyPair::Cartesian {
                             left: scalar,
@@ -791,75 +778,70 @@ pub(crate) fn topology_scalar_pair(
     topology_pair_after_gates(spec, operands)
 }
 
-/// The pair decision once a caller's pre-topology gates have declined: the
-/// exact location of a point operand, otherwise the relation matrix.
+pub(crate) fn topology_shapes_predicate(
+    predicate: Predicate,
+    left: &Shape,
+    right: &Shape,
+) -> crate::error::Result<bool> {
+    let left = PreparedPlan::transient(left);
+    let right = PreparedPlan::transient(right);
+    topology_scalar_pair(
+        &predicate.spec(),
+        &PreparedTopologyPair::cartesian(&left, &right),
+    )
+}
+
+/// Decide a pair after its caller's pre-topology gates have declined.
 pub(crate) fn topology_pair_after_gates(
     spec: &PredicateSpec,
     operands: &PreparedTopologyPair<'_>,
 ) -> crate::error::Result<bool> {
-    if let Some(verdict) = local_point_predicate(spec, operands)? {
-        return Ok(verdict);
-    }
     if let PreparedTopologyPair::Cartesian { left, right } = *operands
         && matches!(spec.predicate, Predicate::Intersects | Predicate::Disjoint)
     {
+        if let Some(verdict) = point_intersection_value(
+            spec,
+            ShapeRow::Shape(left.shape()).point(),
+            ShapeRow::Shape(right.shape()).point(),
+            |left_side, point| {
+                if left_side {
+                    left.cartesian_point_covers(point)
+                } else {
+                    right.cartesian_point_covers(point)
+                }
+            },
+        )? {
+            return Ok(verdict);
+        }
         return Ok(left.intersects(right)? == (spec.predicate == Predicate::Intersects));
+    }
+    if let PreparedTopologyPair::Cartesian { left, right } = *operands {
+        return crate::geometry::evaluate_cartesian_predicate(left, right, spec.predicate);
     }
     Ok(predicate_matrix_value(spec, operands.relate()?))
 }
 
-fn local_point_predicate(
+pub(crate) fn row_point_intersection(
     spec: &PredicateSpec,
-    operands: &PreparedTopologyPair<'_>,
+    left: ShapeRow<'_>,
+    right: ShapeRow<'_>,
 ) -> crate::error::Result<Option<bool>> {
-    let PreparedTopologyPair::Cartesian { left, right } = *operands else {
+    if !matches!(spec.predicate, Predicate::Intersects | Predicate::Disjoint) {
         return Ok(None);
-    };
-    point_predicate(
-        spec,
-        ShapeRow::Shape(left.shape()).point(),
-        ShapeRow::Shape(right.shape()).point(),
-        |left_side, point, coverage| {
-            let plan = if left_side { left } else { right };
-            if coverage {
-                plan.cartesian_point_covers(point).map(|covered| {
-                    if covered {
-                        Loc::Interior
-                    } else {
-                        Loc::Exterior
-                    }
-                })
-            } else {
-                plan.cartesian_point_location(point)
-            }
-        },
-    )
-}
-
-pub(crate) fn row_point_predicate<'a>(
-    spec: &PredicateSpec,
-    left: ShapeRow<'a>,
-    right: ShapeRow<'a>,
-) -> crate::error::Result<Option<bool>> {
+    }
     let target = if right.point().is_some() { left } else { right };
     if crate::array::packed_row_persistent!(target) {
         return Ok(None);
     }
-    point_predicate(
-        spec,
-        left.point(),
-        right.point(),
-        |left_side, point, coverage| {
-            Ok(cartesian_row_point_location(
-                if left_side { left } else { right },
-                point,
-                coverage,
-            ))
-        },
-    )
+    point_intersection_value(spec, left.point(), right.point(), |left_side, point| {
+        Ok(
+            cartesian_row_point_location(if left_side { left } else { right }, point, true)
+                != Loc::Exterior,
+        )
+    })
 }
 
-fn fixed_row_point_predicate(
+fn fixed_row_point_intersection(
     spec: &PredicateSpec,
     fixed: &PreparedPlan,
     row: ShapeRow<'_>,
@@ -869,102 +851,37 @@ fn fixed_row_point_predicate(
     if fixed_point.is_some() && crate::array::packed_row_persistent!(row) {
         return Ok(None);
     }
-    let (left, right) = if fixed_left {
+    let (left_point, right_point) = if fixed_left {
         (fixed_point, row.point())
     } else {
         (row.point(), fixed_point)
     };
-    point_predicate(spec, left, right, |left_side, point, coverage| {
+    point_intersection_value(spec, left_point, right_point, |left_side, point| {
         if left_side == fixed_left {
-            if coverage {
-                fixed.cartesian_point_covers(point).map(|covered| {
-                    if covered {
-                        Loc::Interior
-                    } else {
-                        Loc::Exterior
-                    }
-                })
-            } else {
-                fixed.cartesian_point_location(point)
-            }
+            fixed.cartesian_point_covers(point)
         } else {
-            Ok(cartesian_row_point_location(row, point, coverage))
+            Ok(cartesian_row_point_location(row, point, true) != Loc::Exterior)
         }
     })
 }
 
-fn point_predicate(
+fn point_intersection_value(
     spec: &PredicateSpec,
     left_point: Option<crate::geometry::Point>,
     right_point: Option<crate::geometry::Point>,
-    mut locate: impl FnMut(bool, crate::geometry::Point, bool) -> crate::error::Result<Loc>,
+    mut covers: impl FnMut(bool, crate::geometry::Point) -> crate::error::Result<bool>,
 ) -> crate::error::Result<Option<bool>> {
-    if let Some(right_point) = right_point {
-        if let Some(left_point) = left_point {
-            let same = crate::geometry::same_point(left_point, right_point);
-            return Ok(Some(match spec.predicate {
-                Predicate::Disjoint => !same,
-                Predicate::Touches | Predicate::Crosses | Predicate::Overlaps => false,
-                Predicate::Intersects
-                | Predicate::Contains
-                | Predicate::ContainsProperly
-                | Predicate::Within
-                | Predicate::Covers
-                | Predicate::CoveredBy
-                | Predicate::Equals => same,
-            }));
-        }
-        let set_membership = matches!(
-            spec.predicate,
-            Predicate::Intersects | Predicate::Disjoint | Predicate::Covers
-        );
-        if set_membership {
-            let covered = locate(true, right_point, true)? != Loc::Exterior;
-            return Ok(Some(if spec.predicate == Predicate::Disjoint {
-                !covered
-            } else {
-                covered
-            }));
-        }
-        let mut location = || locate(true, right_point, false);
-        return Ok(Some(match spec.predicate {
-            Predicate::Contains | Predicate::ContainsProperly => location()? == Loc::Interior,
-            Predicate::Touches => location()? == Loc::Boundary,
-            Predicate::Intersects
-            | Predicate::Disjoint
-            | Predicate::Covers
-            | Predicate::Within
-            | Predicate::CoveredBy
-            | Predicate::Equals => return Ok(None),
-            Predicate::Crosses | Predicate::Overlaps => false,
-        }));
-    }
-    if let Some(left_point) = left_point {
-        let set_membership = matches!(
-            spec.predicate,
-            Predicate::Intersects | Predicate::Disjoint | Predicate::CoveredBy
-        );
-        if set_membership {
-            let covered = locate(false, left_point, true)? != Loc::Exterior;
-            return Ok(Some(if spec.predicate == Predicate::Disjoint {
-                !covered
-            } else {
-                covered
-            }));
-        }
-        let location = locate(false, left_point, false)?;
-        return Ok(Some(match spec.predicate {
-            Predicate::Within => location == Loc::Interior,
-            Predicate::Touches => location == Loc::Boundary,
-            Predicate::Contains
-            | Predicate::ContainsProperly
-            | Predicate::Covers
-            | Predicate::Equals => return Ok(None),
-            Predicate::Intersects | Predicate::Disjoint | Predicate::CoveredBy => return Ok(None),
-            Predicate::Crosses | Predicate::Overlaps => false,
-        }));
-    }
-    Ok(None)
+    let intersects = match (left_point, right_point) {
+        (Some(left), Some(right)) => crate::geometry::same_point(left, right),
+        (Some(point), None) => covers(false, point)?,
+        (None, Some(point)) => covers(true, point)?,
+        (None, None) => return Ok(None),
+    };
+    Ok(Some(if spec.predicate == Predicate::Disjoint {
+        !intersects
+    } else {
+        intersects
+    }))
 }
 
 /// A DE-9IM pattern over a scalar pair, decided as early as the evidence
@@ -976,6 +893,9 @@ pub(crate) fn topology_scalar_pattern(
     pattern: CompiledPattern,
     operands: &PreparedTopologyPair<'_>,
 ) -> crate::error::Result<bool> {
+    if let PreparedTopologyPair::Cartesian { left, right } = *operands {
+        return crate::geometry::evaluate_cartesian_pattern(left, right, pattern);
+    }
     let (left, right) = operands.gate_operands();
     if let Some(verdict) = pattern_bounds_gate(pattern, &left, &right)? {
         return Ok(verdict);
@@ -1724,20 +1644,20 @@ mod tests {
     }
 
     #[test]
-    fn disjoint_contains_gate_skips_partition_allocations() {
+    fn disjoint_contains_gate_skips_relation_evaluator_allocations() {
         let (left, right) = prepared_pair(
-            &rectangle(0.0, 0.0, 10.0, 10.0),
-            &rectangle(100.0, 100.0, 110.0, 110.0),
+            &crate::io::parse_wkt("POLYGON ((0 0,10 0,2 8,0 0))").unwrap(),
+            &crate::io::parse_wkt("POLYGON ((100 100,110 100,102 108,100 100))").unwrap(),
         );
         assert!(left.bounds().is_some());
         assert!(right.bounds().is_some());
         let pair = PreparedTopologyPair::cartesian(&left, &right);
         let spec = Predicate::Contains.spec();
-        let (matrix, partition_allocations) =
+        let (matrix, evaluator_allocations) =
             crate::test_support::allocation_count(|| pair.relate().expect("matrix succeeds"));
         assert!(
-            partition_allocations > 0,
-            "exact partition is the counter control"
+            evaluator_allocations > 0,
+            "the general evaluator is the allocation control"
         );
         assert!(!predicate_matrix_value(&spec, matrix));
 
@@ -1745,7 +1665,10 @@ mod tests {
             topology_scalar_pair(&spec, &pair).expect("Cartesian predicate succeeds")
         });
         assert!(!answer);
-        assert_eq!(gate_allocations, 0, "disjoint bounds stop before partition");
+        assert_eq!(
+            gate_allocations, 0,
+            "disjoint bounds stop before witness evaluation"
+        );
     }
 
     #[test]

@@ -14,14 +14,14 @@ use crate::geometry::relate::{De9im, De9imInterval, Loc, OperandShape};
 use crate::geometry::segments::{TouchLocation, crossing_homogeneous, crossing_point};
 use crate::geometry::source_support::{
     OccupiedToward, SourcePointLocation, cartesian_row_exact_offset_location_and_area,
-    cartesian_row_exact_point_location_and_area, cartesian_row_point_location_and_area,
-    occupied_toward,
+    cartesian_row_exact_point_location_and_area, cartesian_row_point_location,
+    cartesian_row_point_location_and_area, occupied_toward,
 };
 use crate::geometry::tessellation::exact::{ExactDyadic, compare_ratios};
 use crate::geometry::{
-    CompiledPattern, Contact, Coordinates as _, Dimension, GeometryErrorKind, HashMap, Point,
-    PointKey, PreparedPlan, RingKind, Segment, Shape, XY, dimension, for_each_candidate_pair,
-    ring_winding, same_point, segment_contact_exact,
+    Bounds, CompiledPattern, Contact, Coordinates as _, Dimension, GeometryErrorKind, HashMap,
+    Point, PointKey, PreparedPlan, RingKind, Segment, Shape, XY, dimension,
+    for_each_candidate_pair, ring_winding, same_point, segment_contact_exact,
 };
 use crate::predicates::Predicate;
 
@@ -32,8 +32,37 @@ trait Query {
 
     fn verdict(&self, interval: &De9imInterval) -> Option<Self::Output>;
     fn finish(&self, interval: &De9imInterval) -> Result<Self::Output>;
+    fn decided_matrix(&self, matrix: De9im) -> Self::Output;
+    fn same_stored_geometry(&self) -> Option<Self::Output>;
+    fn point_membership(
+        &self,
+        point_operand: matrix_predicates::Operand,
+    ) -> Option<PointMembershipQuery<Self::Output>>;
     fn cells(&self) -> CellMask;
     fn needs_dimensions(&self) -> bool;
+}
+
+#[derive(Clone, Copy)]
+enum PointMembership {
+    Strict,
+    BoundaryInclusive,
+}
+
+#[derive(Clone, Copy)]
+struct PointMembershipQuery<T> {
+    membership: PointMembership,
+    all_match: T,
+    some_miss: T,
+}
+
+impl<T: Copy> PointMembershipQuery<T> {
+    const fn result(self, all_points_match: bool) -> T {
+        if all_points_match {
+            self.all_match
+        } else {
+            self.some_miss
+        }
+    }
 }
 
 struct MatrixQuery;
@@ -50,6 +79,21 @@ impl Query for MatrixQuery {
             GeometryErrorKind::Invalid("Cartesian relation left undecided DE-9IM cells".into())
                 .into()
         })
+    }
+
+    fn decided_matrix(&self, matrix: De9im) -> Self::Output {
+        matrix
+    }
+
+    fn same_stored_geometry(&self) -> Option<Self::Output> {
+        None
+    }
+
+    fn point_membership(
+        &self,
+        _: matrix_predicates::Operand,
+    ) -> Option<PointMembershipQuery<Self::Output>> {
+        None
     }
 
     fn cells(&self) -> CellMask {
@@ -74,6 +118,37 @@ impl Query for PredicateQuery {
         self.verdict(interval).ok_or_else(|| {
             GeometryErrorKind::Invalid("Cartesian predicate left undecided DE-9IM cells".into())
                 .into()
+        })
+    }
+
+    fn decided_matrix(&self, matrix: De9im) -> Self::Output {
+        matrix_predicates::decided(self.0, matrix)
+    }
+
+    fn same_stored_geometry(&self) -> Option<Self::Output> {
+        (self.0 == Predicate::Equals).then_some(true)
+    }
+
+    fn point_membership(
+        &self,
+        point_operand: matrix_predicates::Operand,
+    ) -> Option<PointMembershipQuery<Self::Output>> {
+        let membership = match (self.0, point_operand) {
+            (
+                Predicate::Contains | Predicate::ContainsProperly,
+                matrix_predicates::Operand::Right,
+            )
+            | (Predicate::Within, matrix_predicates::Operand::Left) => PointMembership::Strict,
+            (Predicate::Covers, matrix_predicates::Operand::Right)
+            | (Predicate::CoveredBy, matrix_predicates::Operand::Left) => {
+                PointMembership::BoundaryInclusive
+            },
+            _ => return None,
+        };
+        Some(PointMembershipQuery {
+            membership,
+            all_match: true,
+            some_miss: false,
         })
     }
 
@@ -102,6 +177,21 @@ impl Query for PatternQuery {
         })
     }
 
+    fn decided_matrix(&self, matrix: De9im) -> Self::Output {
+        matrix.matches(self.0)
+    }
+
+    fn same_stored_geometry(&self) -> Option<Self::Output> {
+        None
+    }
+
+    fn point_membership(
+        &self,
+        _: matrix_predicates::Operand,
+    ) -> Option<PointMembershipQuery<Self::Output>> {
+        None
+    }
+
     fn cells(&self) -> CellMask {
         CellMask::for_pattern(self.0)
     }
@@ -114,8 +204,10 @@ impl Query for PatternQuery {
     }
 }
 
+#[cfg(test)]
 struct EndOnly<Q>(Q);
 
+#[cfg(test)]
 impl<Q: Query> Query for EndOnly<Q> {
     type Output = Q::Output;
 
@@ -125,6 +217,21 @@ impl<Q: Query> Query for EndOnly<Q> {
 
     fn finish(&self, interval: &De9imInterval) -> Result<Self::Output> {
         self.0.finish(interval)
+    }
+
+    fn decided_matrix(&self, matrix: De9im) -> Self::Output {
+        self.0.decided_matrix(matrix)
+    }
+
+    fn same_stored_geometry(&self) -> Option<Self::Output> {
+        None
+    }
+
+    fn point_membership(
+        &self,
+        _: matrix_predicates::Operand,
+    ) -> Option<PointMembershipQuery<Self::Output>> {
+        None
     }
 
     fn cells(&self) -> CellMask {
@@ -158,53 +265,113 @@ impl<'a> Operand<'a> {
         }
     }
 
-    fn bounds(self) -> Option<crate::geometry::Bounds> {
+    fn bounds(&self) -> Option<crate::geometry::Bounds> {
         self.plan
-            .and_then(|plan| plan.shape_data().bounds())
-            .or_else(|| self.row.quick_bounds())
+            .map_or_else(|| self.row.quick_bounds(), |plan| plan.bounds())
     }
 
-    fn locate_stored(self, point: Point) -> Result<SourcePointLocation> {
-        match self.plan {
-            Some(plan) => plan.locate_stored(point),
-            None => Ok(cartesian_row_point_location_and_area(self.row, point)),
-        }
+    fn locate_stored(&self, point: Point) -> Result<SourcePointLocation> {
+        self.plan.map_or_else(
+            || Ok(cartesian_row_point_location_and_area(self.row, point)),
+            |plan| plan.locate_stored(point),
+        )
     }
 
-    fn locate_exact(self, point: &[ExactDyadic; 3]) -> Result<SourcePointLocation> {
-        match self.plan {
-            Some(plan) => plan.locate_exact(point),
-            None => cartesian_row_exact_point_location_and_area(self.row, point),
-        }
+    fn locate_exact(&self, point: &[ExactDyadic; 3]) -> Result<SourcePointLocation> {
+        self.plan.map_or_else(
+            || cartesian_row_exact_point_location_and_area(self.row, point),
+            |plan| plan.locate_exact(point),
+        )
     }
 
     fn locate_exact_offset(
-        self,
+        &self,
         point: &[ExactDyadic; 3],
         direction: &[ExactDyadic; 2],
     ) -> Result<SourcePointLocation> {
-        match self.plan {
-            Some(plan) => plan.locate_exact_offset(point, direction),
-            None => cartesian_row_exact_offset_location_and_area(self.row, point, direction),
-        }
+        self.plan.map_or_else(
+            || cartesian_row_exact_offset_location_and_area(self.row, point, direction),
+            |plan| plan.locate_exact_offset(point, direction),
+        )
     }
 
     fn occupied_toward_exact(
-        self,
+        &self,
         point: &[ExactDyadic; 3],
         direction: &[ExactDyadic; 2],
     ) -> Result<OccupiedToward> {
-        self.locate_exact_offset(point, direction)
-            .map(occupied_toward)
+        self.plan.map_or_else(
+            || {
+                self.locate_exact_offset(point, direction)
+                    .map(occupied_toward)
+            },
+            |plan| plan.occupied_toward_exact(point, direction),
+        )
+    }
+
+    fn point_membership(&self, point: Point, membership: PointMembership) -> Result<bool> {
+        let location = match (self.plan, membership) {
+            (Some(plan), PointMembership::BoundaryInclusive) => {
+                return plan.cartesian_point_covers(point);
+            },
+            (Some(plan), PointMembership::Strict) => {
+                return plan
+                    .cartesian_point_location(point)
+                    .map(|location| location == Loc::Interior);
+            },
+            (None, PointMembership::BoundaryInclusive) => {
+                cartesian_row_point_location(self.row, point, true)
+            },
+            (None, PointMembership::Strict) => cartesian_row_point_location(self.row, point, false),
+        };
+        Ok(match membership {
+            PointMembership::Strict => location == Loc::Interior,
+            PointMembership::BoundaryInclusive => location != Loc::Exterior,
+        })
+    }
+}
+
+const fn by_operand<T>(values: &[T; 2], operand: matrix_predicates::Operand) -> &T {
+    let [left, right] = values;
+    match operand {
+        matrix_predicates::Operand::Left => left,
+        matrix_predicates::Operand::Right => right,
+    }
+}
+
+const fn by_operand_mut<T>(values: &mut [T; 2], operand: matrix_predicates::Operand) -> &mut T {
+    let [left, right] = values;
+    match operand {
+        matrix_predicates::Operand::Left => left,
+        matrix_predicates::Operand::Right => right,
+    }
+}
+
+const fn opposite_operand(operand: matrix_predicates::Operand) -> matrix_predicates::Operand {
+    match operand {
+        matrix_predicates::Operand::Left => matrix_predicates::Operand::Right,
+        matrix_predicates::Operand::Right => matrix_predicates::Operand::Left,
     }
 }
 
 #[derive(Clone)]
 struct Component {
     source: StagedSourceComponent,
+    side: matrix_predicates::Operand,
     dirty: bool,
     seed: Option<SourcePointLocation>,
     left_area: Option<bool>,
+}
+
+fn staged_operand(operand: u32) -> Result<matrix_predicates::Operand> {
+    match operand {
+        0 => Ok(matrix_predicates::Operand::Left),
+        1 => Ok(matrix_predicates::Operand::Right),
+        _ => Err(GeometryErrorKind::Invalid(
+            "binary relation staging produced a non-pair operand".into(),
+        )
+        .into()),
+    }
 }
 
 struct StagedGeometry {
@@ -261,10 +428,8 @@ enum AtomPoint {
 }
 
 pub(crate) fn relate(left: &PreparedPlan, right: &PreparedPlan) -> Result<De9im> {
-    evaluate(
-        [Operand::from_plan(left), Operand::from_plan(right)],
-        MatrixQuery,
-    )
+    let operands = [Operand::from_plan(left), Operand::from_plan(right)];
+    evaluate(&operands, &MatrixQuery)
 }
 
 pub(crate) fn predicate(
@@ -272,10 +437,33 @@ pub(crate) fn predicate(
     right: &PreparedPlan,
     predicate: Predicate,
 ) -> Result<bool> {
-    evaluate(
-        [Operand::from_plan(left), Operand::from_plan(right)],
-        PredicateQuery(predicate),
-    )
+    let operands = [Operand::from_plan(left), Operand::from_plan(right)];
+    evaluate(&operands, &PredicateQuery(predicate))
+}
+
+pub(crate) fn predicate_rows(
+    left: ShapeRow<'_>,
+    right: ShapeRow<'_>,
+    predicate: Predicate,
+) -> Result<bool> {
+    let operands = [Operand::from_row(left), Operand::from_row(right)];
+    evaluate(&operands, &PredicateQuery(predicate))
+}
+
+pub(crate) fn predicate_prepared_row(
+    plan: &PreparedPlan,
+    row: ShapeRow<'_>,
+    plan_is_left: bool,
+    predicate: Predicate,
+) -> Result<bool> {
+    let plan = Operand::from_plan(plan);
+    let row = Operand::from_row(row);
+    let operands = if plan_is_left {
+        [plan, row]
+    } else {
+        [row, plan]
+    };
+    evaluate(&operands, &PredicateQuery(predicate))
 }
 
 pub(crate) fn pattern(
@@ -283,25 +471,52 @@ pub(crate) fn pattern(
     right: &PreparedPlan,
     pattern: CompiledPattern,
 ) -> Result<bool> {
-    evaluate(
-        [Operand::from_plan(left), Operand::from_plan(right)],
-        PatternQuery(pattern),
-    )
+    let operands = [Operand::from_plan(left), Operand::from_plan(right)];
+    evaluate(&operands, &PatternQuery(pattern))
 }
 
-fn evaluate<Q: Query>(operands: [Operand<'_>; 2], query: Q) -> Result<Q::Output> {
+fn evaluate<Q: Query>(operands: &[Operand<'_>; 2], query: &Q) -> Result<Q::Output> {
     evaluate_mode::<Q, true>(operands, query)
 }
 
 fn evaluate_mode<Q: Query, const SATURATE: bool>(
-    operands: [Operand<'_>; 2],
-    query: Q,
+    operands: &[Operand<'_>; 2],
+    query: &Q,
 ) -> Result<Q::Output> {
+    if SATURATE {
+        for point_operand in [
+            matrix_predicates::Operand::Left,
+            matrix_predicates::Operand::Right,
+        ] {
+            let Some(point_query) = query.point_membership(point_operand) else {
+                continue;
+            };
+            let [left, right] = operands;
+            let (point_operand, target) = match point_operand {
+                matrix_predicates::Operand::Left => (left, right),
+                matrix_predicates::Operand::Right => (right, left),
+            };
+            let Some(point) = point_operand.row.point() else {
+                continue;
+            };
+            let matches = target.point_membership(point, point_query.membership)?;
+            return Ok(point_query.result(matches));
+        }
+    }
+    if SATURATE
+        && let Some(answer) = query.same_stored_geometry()
+        && operands[0].row.same_stored_geometry(operands[1].row)
+    {
+        return Ok(answer);
+    }
+    let bounds = [operands[0].bounds(), operands[1].bounds()];
+    if SATURATE && let Some(matrix) = rectangle_relation(operands, &bounds) {
+        return Ok(query.decided_matrix(matrix));
+    }
     let dimensions = [
         row_dimension(operands[0].row),
         row_dimension(operands[1].row),
     ];
-    let bounds = [operands[0].bounds(), operands[1].bounds()];
     let shapes = [
         operand_shape(operands[0].row, dimensions[0]),
         operand_shape(operands[1].row, dimensions[1]),
@@ -318,19 +533,22 @@ fn evaluate_mode<Q: Query, const SATURATE: bool>(
         return Ok(answer);
     }
 
-    let certificates = [
-        row_certificates(operands[0].row)?,
-        row_certificates(operands[1].row)?,
-    ];
-    if query.needs_dimensions() {
+    let certificates = if query.needs_dimensions() {
+        let certificates = [
+            row_certificates(operands[0].row)?,
+            row_certificates(operands[1].row)?,
+        ];
         apply_dimension_certificates(&mut interval, dimensions, certificates);
-    }
+        certificates
+    } else {
+        [SourceCertificates::default(); 2]
+    };
     if let Some(answer) = query.verdict(&interval) {
         return Ok(answer);
     }
 
     if let Some(answer) =
-        point_only_phase(&mut interval, operands, dimensions, certificates, &query)?
+        point_only_phase::<Q, SATURATE>(&mut interval, operands, dimensions, certificates, query)?
     {
         return Ok(answer);
     }
@@ -339,15 +557,16 @@ fn evaluate_mode<Q: Query, const SATURATE: bool>(
     }
 
     let staged_sources =
-        StagedExactSources::from_rows_for_relate([operands[0].row, operands[1].row].into_iter())?;
-    let mut staged = stage_components(staged_sources, [operands[0].row, operands[1].row])?;
+        StagedExactSources::from_rows_for_relation([operands[0].row, operands[1].row].into_iter())?;
+    let rows = [operands[0].row, operands[1].row];
+    let mut staged = stage_components(staged_sources, &rows)?;
     apply_staged_dimension_floors(&mut interval, dimensions, &staged, query.needs_dimensions());
     if let Some(answer) = query.verdict(&interval) {
         return Ok(answer);
     }
 
     if let Some(answer) =
-        representative_probes::<Q, SATURATE>(&mut interval, operands, &mut staged, &query)?
+        representative_probes::<Q, SATURATE>(&mut interval, operands, &mut staged, query)?
     {
         return Ok(answer);
     }
@@ -366,7 +585,7 @@ fn evaluate_mode<Q: Query, const SATURATE: bool>(
     if let Some(answer) = contact_sweep::<Q, SATURATE>(
         &mut interval,
         operands,
-        &query,
+        query,
         sources,
         components,
         segment_component,
@@ -379,7 +598,7 @@ fn evaluate_mode<Q: Query, const SATURATE: bool>(
     if let Some(answer) = exhaustive_pass::<Q, SATURATE>(
         &mut interval,
         operands,
-        &query,
+        query,
         sources,
         components,
         segment_component,
@@ -391,6 +610,170 @@ fn evaluate_mode<Q: Query, const SATURATE: bool>(
         return Ok(answer);
     }
     query.finish(&interval)
+}
+
+/// The exact relation of two certified rectangles is the product of their
+/// one-dimensional endpoint/open-interval partitions.
+fn rectangle_relation(operands: &[Operand<'_>; 2], bounds: &[Option<Bounds>; 2]) -> Option<De9im> {
+    let [Some(left_bounds), Some(right_bounds)] = *bounds else {
+        return None;
+    };
+    if !is_rectangle_matrix_operand(operands[0].row, left_bounds)
+        || !is_rectangle_matrix_operand(operands[1].row, right_bounds)
+    {
+        return None;
+    }
+
+    let x = AxisPartition::new(
+        left_bounds.minx(),
+        left_bounds.maxx(),
+        right_bounds.minx(),
+        right_bounds.maxx(),
+    );
+    let y = AxisPartition::new(
+        left_bounds.miny(),
+        left_bounds.maxy(),
+        right_bounds.miny(),
+        right_bounds.maxy(),
+    );
+    let mut matrix = De9im::empty_disjoint();
+    for x_index in 0..x.cell_count() {
+        let x_cell = x.cell(x_index);
+        let left_x = x_cell.location(left_bounds.minx(), left_bounds.maxx());
+        let right_x = x_cell.location(right_bounds.minx(), right_bounds.maxx());
+        for y_index in 0..y.cell_count() {
+            let y_cell = y.cell(y_index);
+            let left_y = y_cell.location(left_bounds.miny(), left_bounds.maxy());
+            let right_y = y_cell.location(right_bounds.miny(), right_bounds.maxy());
+            matrix.set_at_least(
+                rectangle_location(left_x, left_y),
+                rectangle_location(right_x, right_y),
+                match x_cell.dimension().wrapping_add(y_cell.dimension()) {
+                    0 => Dimension::Point,
+                    1 => Dimension::Curve,
+                    2 => Dimension::Surface,
+                    _ => unreachable!("a planar cell has dimension at most two"),
+                },
+            );
+        }
+    }
+    Some(matrix)
+}
+
+fn is_rectangle_matrix_operand(row: ShapeRow<'_>, bounds: crate::geometry::Bounds) -> bool {
+    let Some(mut rings) = row.polygon_rings() else {
+        return false;
+    };
+    let Some(shell) = rings.next() else {
+        return false;
+    };
+    // This certificate targets canonical box rows; collinear subdivisions and
+    // richer polygon structures stay on the general contact evaluator.
+    shell.coord_count() == 5
+        && rings.next().is_none()
+        && crate::geometry::is_axis_aligned_rectangle_row(row, bounds)
+}
+
+#[derive(Clone, Copy)]
+struct AxisPartition {
+    cuts: [f64; 4],
+    len: usize,
+}
+
+#[derive(Clone, Copy)]
+struct AxisCell {
+    start: Option<f64>,
+    end: Option<f64>,
+    point: bool,
+}
+
+impl AxisPartition {
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "the partition owns exactly four rectangle endpoints, so every unique cut fits its fixed array"
+    )]
+    #[expect(
+        clippy::float_cmp,
+        reason = "exact equality identifies shared represented rectangle endpoints without merging nearby cuts"
+    )]
+    fn new(left_min: f64, left_max: f64, right_min: f64, right_max: f64) -> Self {
+        let mut endpoints = [left_min, left_max, right_min, right_max];
+        endpoints.sort_unstable_by(f64::total_cmp);
+        let mut cuts = [endpoints[0]; 4];
+        let mut len: usize = 1;
+        for endpoint in endpoints.into_iter().skip(1) {
+            if cuts[len.wrapping_sub(1)] != endpoint {
+                cuts[len] = endpoint;
+                len = len.wrapping_add(1);
+            }
+        }
+        Self { cuts, len }
+    }
+
+    const fn cell_count(self) -> usize {
+        self.len.wrapping_mul(2).wrapping_add(1)
+    }
+
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "the cell ordinal is admitted by cell_count and every endpoint is in the fixed four-cut array"
+    )]
+    fn cell(self, ordinal: usize) -> AxisCell {
+        if ordinal % 2 == 1 {
+            let point = self.cuts[ordinal / 2];
+            AxisCell {
+                start: Some(point),
+                end: None,
+                point: true,
+            }
+        } else {
+            let interval = ordinal / 2;
+            AxisCell {
+                start: interval.checked_sub(1).map(|index| self.cuts[index]),
+                end: (interval < self.len).then(|| self.cuts[interval]),
+                point: false,
+            }
+        }
+    }
+}
+
+impl AxisCell {
+    fn dimension(self) -> u8 {
+        u8::from(!self.point)
+    }
+
+    #[expect(
+        clippy::float_cmp,
+        reason = "exact endpoint equality distinguishes the rectangle boundary from its interior"
+    )]
+    fn location(self, min: f64, max: f64) -> Loc {
+        if self.point {
+            let point = self.start.expect("point cell has one coordinate");
+            if point < min || point > max {
+                Loc::Exterior
+            } else if point == min || point == max {
+                Loc::Boundary
+            } else {
+                Loc::Interior
+            }
+        } else if self.start.is_some_and(|start| start >= min)
+            && self.end.is_some_and(|end| end <= max)
+        {
+            Loc::Interior
+        } else {
+            Loc::Exterior
+        }
+    }
+}
+
+fn rectangle_location(x: Loc, y: Loc) -> Loc {
+    if x == Loc::Exterior || y == Loc::Exterior {
+        Loc::Exterior
+    } else if x == Loc::Boundary || y == Loc::Boundary {
+        Loc::Boundary
+    } else {
+        Loc::Interior
+    }
 }
 
 fn operand_shape(row: ShapeRow<'_>, dimension: Option<Dimension>) -> OperandShape {
@@ -474,7 +857,7 @@ fn point_keys(row: ShapeRow<'_>) -> Vec<PointKey> {
     points
 }
 
-fn point_from_key(point: PointKey) -> Point {
+const fn point_from_key(point: PointKey) -> Point {
     Point::new_raw_xy(f64::from_bits(point.x), f64::from_bits(point.y))
 }
 
@@ -482,18 +865,21 @@ fn point_only(row: ShapeRow<'_>, dimension: Option<Dimension>) -> bool {
     !row.has_area_parts() && dimension == Some(Dimension::Point)
 }
 
-fn point_only_phase<Q: Query>(
+fn point_only_phase<Q: Query, const SATURATE: bool>(
     interval: &mut De9imInterval,
-    operands: [Operand<'_>; 2],
+    operands: &[Operand<'_>; 2],
     dimensions: [Option<Dimension>; 2],
     certificates: [SourceCertificates; 2],
     query: &Q,
 ) -> Result<Option<Q::Output>> {
-    let left_point_only = point_only(operands[0].row, dimensions[0]);
-    let right_point_only = point_only(operands[1].row, dimensions[1]);
+    let [left, right] = operands;
+    let [left_dimension, right_dimension] = dimensions;
+    let [left_certificates, right_certificates] = certificates;
+    let left_point_only = point_only(left.row, left_dimension);
+    let right_point_only = point_only(right.row, right_dimension);
     if left_point_only && right_point_only {
-        let left = point_keys(operands[0].row);
-        let right = point_keys(operands[1].row);
+        let left = point_keys(left.row);
+        let right = point_keys(right.row);
         let mut left = left.into_iter().peekable();
         let mut right = right.into_iter().peekable();
         loop {
@@ -532,57 +918,83 @@ fn point_only_phase<Q: Query>(
     }
 
     let point_operand = if left_point_only {
-        Some(0)
+        Some(matrix_predicates::Operand::Left)
     } else if right_point_only {
-        Some(1)
+        Some(matrix_predicates::Operand::Right)
     } else {
         None
     };
     let Some(point_operand) = point_operand else {
         return Ok(None);
     };
-    let target = point_operand ^ 1;
-    let points = point_keys(operands[point_operand].row);
-    let mut target_area = certificates[target].hole_free_area;
-    for key in points {
-        let point = point_from_key(key);
-        let target_location = operands[target].locate_stored(point)?;
-        let (left_location, right_location) = if point_operand == 0 {
-            (
-                SourcePointLocation {
-                    location: Loc::Interior,
-                    area: false,
-                },
-                target_location,
-            )
-        } else {
-            (target_location, SourcePointLocation {
+    let (points, target, target_certificates) = match point_operand {
+        matrix_predicates::Operand::Left => (left, right, right_certificates),
+        matrix_predicates::Operand::Right => (right, left, left_certificates),
+    };
+    if SATURATE && let Some(point_query) = query.point_membership(point_operand) {
+        if let Some(point) = points.row.point() {
+            return target
+                .point_membership(point, point_query.membership)
+                .map(|matches| Some(point_query.result(matches)));
+        }
+        for key in point_keys(points.row) {
+            if !target.point_membership(point_from_key(key), point_query.membership)? {
+                return Ok(Some(point_query.result(false)));
+            }
+        }
+        return Ok(Some(point_query.result(true)));
+    }
+    let mut target_area = target_certificates.hole_free_area;
+    let answer = {
+        let mut probe = |point| -> Result<Option<Q::Output>> {
+            let target_location = target.locate_stored(point)?;
+            let isolated = SourcePointLocation {
                 location: Loc::Interior,
                 area: false,
-            })
+            };
+            let (left_location, right_location) = match point_operand {
+                matrix_predicates::Operand::Left => (isolated, target_location),
+                matrix_predicates::Operand::Right => (target_location, isolated),
+            };
+            witness_point(
+                interval,
+                left_location,
+                right_location,
+                query.needs_dimensions(),
+            );
+            target_area |= target_location.area;
+            Ok(query.verdict(interval))
         };
-        witness_point(
-            interval,
-            left_location,
-            right_location,
-            query.needs_dimensions(),
-        );
-        target_area |= target_location.area;
-        if let Some(answer) = query.verdict(interval) {
-            return Ok(Some(answer));
+        if let Some(point) = points.row.point() {
+            probe(point)?
+        } else {
+            let mut answer = None;
+            for key in point_keys(points.row) {
+                answer = probe(point_from_key(key))?;
+                if answer.is_some() {
+                    break;
+                }
+            }
+            answer
         }
+    };
+    if let Some(answer) = answer {
+        return Ok(Some(answer));
     }
 
+    if !target_area {
+        target_area = row_certificates(target.row)?.hole_free_area;
+    }
     if target_area {
-        let (area_row, boundary_row) = if point_operand == 0 {
-            (Loc::Exterior, Loc::Exterior)
-        } else {
-            (Loc::Interior, Loc::Boundary)
-        };
-        let (area_col, boundary_col) = if point_operand == 0 {
-            (Loc::Interior, Loc::Boundary)
-        } else {
-            (Loc::Exterior, Loc::Exterior)
+        let ((area_row, area_col), (boundary_row, boundary_col)) = match point_operand {
+            matrix_predicates::Operand::Left => (
+                (Loc::Exterior, Loc::Interior),
+                (Loc::Exterior, Loc::Boundary),
+            ),
+            matrix_predicates::Operand::Right => (
+                (Loc::Interior, Loc::Exterior),
+                (Loc::Boundary, Loc::Exterior),
+            ),
         };
         interval.witness(area_row, area_col, Dimension::Surface);
         interval.witness(boundary_row, boundary_col, Dimension::Curve);
@@ -596,9 +1008,11 @@ fn point_only_phase<Q: Query>(
         // remaining faces and boundary outside those finitely many points.
         for row in LOCATIONS {
             for col in LOCATIONS {
-                if (point_operand == 0 && row == Loc::Interior)
-                    || (point_operand == 1 && col == Loc::Interior)
-                {
+                let point_cell_is_interior = match point_operand {
+                    matrix_predicates::Operand::Left => row == Loc::Interior,
+                    matrix_predicates::Operand::Right => col == Loc::Interior,
+                };
+                if point_cell_is_interior {
                     interval.settle(row, col);
                 }
             }
@@ -737,7 +1151,7 @@ fn apply_dimension_certificates(
 
 fn stage_components(
     sources: StagedExactSources,
-    rows: [ShapeRow<'_>; 2],
+    rows: &[ShapeRow<'_>; 2],
 ) -> Result<StagedGeometry> {
     let staged_components = sources
         .relation_components()
@@ -751,13 +1165,7 @@ fn stage_components(
         if component_id == u32::MAX {
             return Err(ResourceError::SizeOverflow.into());
         }
-        let operand = usize::try_from(source.operand).map_err(|_| ResourceError::SizeOverflow)?;
-        let Some(has_ring) = operand_has_ring.get_mut(operand) else {
-            return Err(GeometryErrorKind::Invalid(
-                "relation staging produced a non-pair operand".into(),
-            )
-            .into());
-        };
+        let side = staged_operand(source.operand)?;
         let range = segment_component
             .get_mut(source.segments.clone())
             .ok_or_else(|| {
@@ -767,7 +1175,7 @@ fn stage_components(
             })?;
         range.fill(component_id);
         if let Some(ring) = source.ring {
-            *has_ring = true;
+            *by_operand_mut(&mut operand_has_ring, side) = true;
             if usize::try_from(ring).map_err(|_| ResourceError::SizeOverflow)?
                 >= sources.ring_kinds().len()
             {
@@ -779,6 +1187,7 @@ fn stage_components(
         }
         components.push(Component {
             source: source.clone(),
+            side,
             dirty: source.ring_kind == Some(RingKind::Collapsed),
             seed: None,
             left_area: None,
@@ -808,15 +1217,12 @@ fn apply_staged_dimension_floors(
     if !needs_dimensions {
         return;
     }
-    for (index, owner) in [
+    for owner in [
         matrix_predicates::Operand::Left,
         matrix_predicates::Operand::Right,
-    ]
-    .into_iter()
-    .enumerate()
-    {
+    ] {
         if staged.components.iter().any(|component| {
-            component.source.operand as usize == index
+            component.side == owner
                 && component.source.ring.is_none()
                 && component.source.has_nonzero_segment
         }) {
@@ -832,7 +1238,7 @@ enum SweepStop<T> {
 
 fn contact_sweep<Q: Query, const SATURATE: bool>(
     interval: &mut De9imInterval,
-    operands: [Operand<'_>; 2],
+    operands: &[Operand<'_>; 2],
     query: &Q,
     sources: &StagedExactSources,
     components: &mut [Component],
@@ -874,7 +1280,7 @@ fn contact_sweep<Q: Query, const SATURATE: bool>(
 
 fn process_pair<Q: Query, const SATURATE: bool>(
     interval: &mut De9imInterval,
-    operands: [Operand<'_>; 2],
+    operands: &[Operand<'_>; 2],
     query: &Q,
     segments: &[Segment],
     components: &mut [Component],
@@ -900,17 +1306,15 @@ fn process_pair<Q: Query, const SATURATE: bool>(
         usize::try_from(left_component_id).map_err(|_| ResourceError::SizeOverflow)?;
     let right_component =
         usize::try_from(right_component_id).map_err(|_| ResourceError::SizeOverflow)?;
-    let (left_operand, right_operand) = (
+    let (left_side, right_side) = (
         components
             .get(left_component)
             .ok_or_else(|| GeometryErrorKind::Invalid("left component id is out of range".into()))?
-            .source
-            .operand,
+            .side,
         components
             .get(right_component)
             .ok_or_else(|| GeometryErrorKind::Invalid("right component id is out of range".into()))?
-            .source
-            .operand,
+            .side,
     );
     if !components
         .get(left_component)
@@ -925,9 +1329,8 @@ fn process_pair<Q: Query, const SATURATE: bool>(
     {
         return Ok(None);
     }
-    let same_operand = left_operand == right_operand;
-    let operand_index = usize::try_from(left_operand).map_err(|_| ResourceError::SizeOverflow)?;
-    if same_operand && !operand_has_ring[operand_index] {
+    let same_operand = left_side == right_side;
+    if same_operand && !*by_operand(&operand_has_ring, left_side) {
         return Ok(None);
     }
 
@@ -989,9 +1392,22 @@ fn process_pair<Q: Query, const SATURATE: bool>(
         let Some(point) = event.points.get_mut(point_index).and_then(Option::as_mut) else {
             continue;
         };
-        let exact = event_point_exact(point, segments)?;
-        let left_location = operands[0].locate_exact(&exact)?;
-        let right_location = operands[1].locate_exact(&exact)?;
+        let (left_location, right_location) = match point.kind {
+            EventPointKind::Stored(coordinate) => {
+                let point = Point::new_raw_xy(coordinate.x, coordinate.y);
+                (
+                    operands[0].locate_stored(point)?,
+                    operands[1].locate_stored(point)?,
+                )
+            },
+            EventPointKind::Crossing { .. } => {
+                let exact = event_point_exact(point, segments)?;
+                (
+                    operands[0].locate_exact(&exact)?,
+                    operands[1].locate_exact(&exact)?,
+                )
+            },
+        };
         witness_point(
             interval,
             left_location,
@@ -1038,16 +1454,15 @@ fn process_pair<Q: Query, const SATURATE: bool>(
                         "collinear event refers to a missing right component".into(),
                     )
                 })?;
-                let (left_edge, right_edge) = if left_operand == 0 {
-                    (
+                let (left_edge, right_edge) = match left_side {
+                    matrix_predicates::Operand::Left => (
                         component_edge_atom_location(left_source, left_location),
                         component_edge_atom_location(right_source, right_location),
-                    )
-                } else {
-                    (
+                    ),
+                    matrix_predicates::Operand::Right => (
                         component_edge_atom_location(right_source, left_location),
                         component_edge_atom_location(left_source, right_location),
-                    )
+                    ),
                 };
                 if left_edge != Loc::Exterior || right_edge != Loc::Exterior {
                     interval.witness(left_edge, right_edge, Dimension::Curve);
@@ -1069,10 +1484,10 @@ fn process_pair<Q: Query, const SATURATE: bool>(
                 for direction in segment_directions(a)? {
                     match operands[1].occupied_toward_exact(&point, &direction)? {
                         OccupiedToward::Yes => {
-                            interval.witness(Loc::Interior, Loc::Interior, Dimension::Curve)
+                            interval.witness(Loc::Interior, Loc::Interior, Dimension::Curve);
                         },
                         OccupiedToward::No => {
-                            interval.witness(Loc::Interior, Loc::Exterior, Dimension::Curve)
+                            interval.witness(Loc::Interior, Loc::Exterior, Dimension::Curve);
                         },
                         OccupiedToward::Tangent => {},
                     }
@@ -1085,10 +1500,10 @@ fn process_pair<Q: Query, const SATURATE: bool>(
                 for direction in segment_directions(b)? {
                     match operands[0].occupied_toward_exact(&point, &direction)? {
                         OccupiedToward::Yes => {
-                            interval.witness(Loc::Interior, Loc::Interior, Dimension::Curve)
+                            interval.witness(Loc::Interior, Loc::Interior, Dimension::Curve);
                         },
                         OccupiedToward::No => {
-                            interval.witness(Loc::Exterior, Loc::Interior, Dimension::Curve)
+                            interval.witness(Loc::Exterior, Loc::Interior, Dimension::Curve);
                         },
                         OccupiedToward::Tangent => {},
                     }
@@ -1197,7 +1612,7 @@ fn benign_self_touch(
 }
 
 impl EventPoint {
-    fn stored(point: XY) -> Self {
+    const fn stored(point: XY) -> Self {
         Self {
             kind: EventPointKind::Stored(point),
             exact: None,
@@ -1327,7 +1742,7 @@ struct RunCache {
 }
 
 fn atom_owner_label(
-    operand: Operand<'_>,
+    operand: &Operand<'_>,
     component: &Component,
     start: &[ExactDyadic; 3],
     direction: &[ExactDyadic; 2],
@@ -1362,15 +1777,16 @@ fn component_edge_atom_location(component: &Component, location: SourcePointLoca
 }
 
 fn atom_sides(
-    operand: Operand<'_>,
+    operand: &Operand<'_>,
     component: &Component,
     has_area: bool,
-    midpoint: &[ExactDyadic; 3],
+    midpoint: Option<&[ExactDyadic; 3]>,
     direction: &[ExactDyadic; 2],
 ) -> Result<AtomSides> {
     if !has_area {
         return Ok(AtomSides::new(false, false));
     }
+    let midpoint = midpoint.expect("areal atom labels require an interior probe");
     if !component.dirty {
         match component.source.ring_kind {
             Some(RingKind::Winding) => {
@@ -1415,7 +1831,7 @@ fn atom_sides(
 }
 
 fn occupied_area_side(
-    operand: Operand<'_>,
+    operand: &Operand<'_>,
     point: &[ExactDyadic; 3],
     direction: &[ExactDyadic; 2],
 ) -> Result<bool> {
@@ -1434,12 +1850,12 @@ fn segment_left_normal_from_direction(direction: &[ExactDyadic; 2]) -> [ExactDya
 }
 
 fn run_label(
-    operand: Operand<'_>,
+    operand: &Operand<'_>,
     component: u32,
     start: AtomPoint,
     start_exact: &[ExactDyadic; 3],
     direction: &[ExactDyadic; 2],
-    cache: &Option<RunCache>,
+    cache: Option<&RunCache>,
     forest: &mut ExactPointForest<'_>,
     cross_stored: &HashSet<PointKey>,
     cross_constructed: &HashSet<u32>,
@@ -1463,7 +1879,7 @@ fn run_label(
 
 fn exhaustive_pass<Q: Query, const SATURATE: bool>(
     interval: &mut De9imInterval,
-    operands: [Operand<'_>; 2],
+    operands: &[Operand<'_>; 2],
     query: &Q,
     sources: &StagedExactSources,
     components: &[Component],
@@ -1510,9 +1926,8 @@ fn exhaustive_pass<Q: Query, const SATURATE: bool>(
         let component = components.get(component_index).ok_or_else(|| {
             GeometryErrorKind::Invalid("segment component ID is out of range".into())
         })?;
-        let operand_index =
-            usize::try_from(component.source.operand).map_err(|_| ResourceError::SizeOverflow)?;
-        let target_index = operand_index ^ 1;
+        let side = component.side;
+        let target_side = opposite_operand(side);
         let cuts = boundaries.get(segment_index).ok_or_else(|| {
             GeometryErrorKind::Invalid("segment has no ordered boundaries".into())
         })?;
@@ -1535,38 +1950,54 @@ fn exhaustive_pass<Q: Query, const SATURATE: bool>(
             }
             let start_exact = atom_point_exact(start, forest)?;
             let end_exact = atom_point_exact(end, forest)?;
-            let midpoint = homogeneous_midpoint(&start_exact, &end_exact)?;
-            let own =
-                atom_owner_label(operands[operand_index], component, &start_exact, &direction)?;
+            let own = atom_owner_label(
+                by_operand(operands, side),
+                component,
+                &start_exact,
+                &direction,
+            )?;
             let cover = atom_cover.get(atom_index).copied().flatten();
+            let midpoint = if *by_operand(&operand_has_area, side)
+                || cover.is_some() && *by_operand(&operand_has_area, target_side)
+            {
+                Some(homogeneous_midpoint(&start_exact, &end_exact)?)
+            } else {
+                None
+            };
             let (foreign, foreign_sides) = if let Some(cover) = cover {
                 let partner_index = usize::try_from(cover.partner_component)
                     .map_err(|_| ResourceError::SizeOverflow)?;
                 let partner = components.get(partner_index).ok_or_else(|| {
                     GeometryErrorKind::Invalid("coverage partner component is out of range".into())
                 })?;
-                let foreign =
-                    atom_owner_label(operands[target_index], partner, &start_exact, &direction)?;
-                let mut sides = atom_sides(
-                    operands[target_index],
+                let foreign = atom_owner_label(
+                    by_operand(operands, target_side),
                     partner,
-                    operand_has_area[target_index],
-                    &midpoint,
+                    &start_exact,
                     &direction,
                 )?;
-                if !cover.same_direction {
+                let mut sides = atom_sides(
+                    by_operand(operands, target_side),
+                    partner,
+                    *by_operand(&operand_has_area, target_side),
+                    midpoint.as_ref(),
+                    &direction,
+                )?;
+                // Dirty components were probed in this segment's direction;
+                // cached clean-ring sides still follow their own carrier.
+                if !partner.dirty && !cover.same_direction {
                     sides = sides.swap();
                 }
                 (foreign, sides)
             } else {
-                let foreign = if operand_has_area[target_index] {
+                let foreign = if *by_operand(&operand_has_area, target_side) {
                     run_label(
-                        operands[target_index],
+                        by_operand(operands, target_side),
                         component_id,
                         start,
                         &start_exact,
                         &direction,
-                        &mut run_cache,
+                        run_cache.as_ref(),
                         forest,
                         &cross_stored,
                         &cross_constructed,
@@ -1579,31 +2010,29 @@ fn exhaustive_pass<Q: Query, const SATURATE: bool>(
                 (foreign, AtomSides::new(occupied, occupied))
             };
             let own_sides = atom_sides(
-                operands[operand_index],
+                by_operand(operands, side),
                 component,
-                operand_has_area[operand_index],
-                &midpoint,
+                *by_operand(&operand_has_area, side),
+                midpoint.as_ref(),
                 &direction,
             )?;
 
-            let (left_label, right_label) = if operand_index == 0 {
-                (own, foreign)
-            } else {
-                (foreign, own)
+            let (left_label, right_label) = match side {
+                matrix_predicates::Operand::Left => (own, foreign),
+                matrix_predicates::Operand::Right => (foreign, own),
             };
             if left_label != Loc::Exterior || right_label != Loc::Exterior {
                 interval.witness(left_label, right_label, Dimension::Curve);
             }
-            let side_pairs = if operand_index == 0 {
-                [
+            let side_pairs = match side {
+                matrix_predicates::Operand::Left => [
                     (own_sides.left, foreign_sides.left),
                     (own_sides.right, foreign_sides.right),
-                ]
-            } else {
-                [
+                ],
+                matrix_predicates::Operand::Right => [
                     (foreign_sides.left, own_sides.left),
                     (foreign_sides.right, own_sides.right),
-                ]
+                ],
             };
             for (left_occupied, right_occupied) in side_pairs {
                 interval.witness(
@@ -1622,7 +2051,7 @@ fn exhaustive_pass<Q: Query, const SATURATE: bool>(
             }
             if cover.is_some() {
                 run_cache = None;
-            } else if operand_has_area[target_index] {
+            } else if *by_operand(&operand_has_area, target_side) {
                 run_cache = Some(RunCache {
                     component: component_id,
                     end,
@@ -1689,11 +2118,13 @@ fn intern_event_points(
     Ok(segment_cuts)
 }
 
+type OrderedEventCuts = (Vec<Vec<AtomPoint>>, HashMap<(usize, u32), usize>);
+
 fn order_event_cuts(
     segments: &[Segment],
     segment_cuts: &mut [Vec<u32>],
     forest: &mut ExactPointForest<'_>,
-) -> Result<(Vec<Vec<AtomPoint>>, HashMap<(usize, u32), usize>)> {
+) -> Result<OrderedEventCuts> {
     for (segment_index, cuts) in segment_cuts.iter_mut().enumerate() {
         let segment = *segments
             .get(segment_index)
@@ -1836,17 +2267,15 @@ fn build_atom_coverage(
             usize::try_from(event.components[0]).map_err(|_| ResourceError::SizeOverflow)?;
         let right_component =
             usize::try_from(event.components[1]).map_err(|_| ResourceError::SizeOverflow)?;
-        let left_operand = components
+        let left_side = components
             .get(left_component)
             .expect("event left component is admitted")
-            .source
-            .operand;
-        let right_operand = components
+            .side;
+        let right_side = components
             .get(right_component)
             .expect("event right component is admitted")
-            .source
-            .operand;
-        if left_operand == right_operand {
+            .side;
+        if left_side == right_side {
             continue;
         }
         let (Some(start), Some(end)) = (
@@ -1868,8 +2297,12 @@ fn build_atom_coverage(
         };
         let start = forest.find(start);
         let end = forest.find(end);
-        for (side, other_component) in [(0, event.components[1]), (1, event.components[0])] {
-            let segment_index = event.segments[side];
+        let [left_segment, right_segment] = event.segments;
+        let [left_component, right_component] = event.components;
+        for (segment_index, other_component) in [
+            (left_segment, right_component),
+            (right_segment, left_component),
+        ] {
             let segment = *segments
                 .get(segment_index)
                 .expect("event segment index is admitted");
@@ -1913,13 +2346,11 @@ fn cross_event_nodes(
         let left = components
             .get(usize::try_from(event.components[0]).map_err(|_| ResourceError::SizeOverflow)?)
             .expect("event left component is admitted")
-            .source
-            .operand;
+            .side;
         let right = components
             .get(usize::try_from(event.components[1]).map_err(|_| ResourceError::SizeOverflow)?)
             .expect("event right component is admitted")
-            .source
-            .operand;
+            .side;
         if left == right {
             continue;
         }
@@ -1960,7 +2391,7 @@ fn is_cross_event_node(
 
 fn event_node_witnesses<Q: Query>(
     interval: &mut De9imInterval,
-    operands: [Operand<'_>; 2],
+    operands: &[Operand<'_>; 2],
     query: &Q,
     events: &[ContactEvent],
     forest: &mut ExactPointForest<'_>,
@@ -1978,9 +2409,19 @@ fn event_node_witnesses<Q: Query>(
             if !seen.insert(root) {
                 continue;
             }
-            let exact = forest.points().exact(root)?;
-            let left = operands[0].locate_exact(&exact)?;
-            let right = operands[1].locate_exact(&exact)?;
+            let (left, right) = if let Some(key) = forest.points().stored_key(root) {
+                let point = point_from_key(key);
+                (
+                    operands[0].locate_stored(point)?,
+                    operands[1].locate_stored(point)?,
+                )
+            } else {
+                let exact = forest.points().exact(root)?;
+                (
+                    operands[0].locate_exact(&exact)?,
+                    operands[1].locate_exact(&exact)?,
+                )
+            };
             witness_point(interval, left, right, query.needs_dimensions());
             if let Some(answer) = query.verdict(interval) {
                 return Ok(Some(answer));
@@ -1992,7 +2433,7 @@ fn event_node_witnesses<Q: Query>(
 
 fn representative_probes<Q: Query, const SATURATE: bool>(
     interval: &mut De9imInterval,
-    operands: [Operand<'_>; 2],
+    operands: &[Operand<'_>; 2],
     staged: &mut StagedGeometry,
     query: &Q,
 ) -> Result<Option<Q::Output>> {
@@ -2026,12 +2467,12 @@ fn representative_probes<Q: Query, const SATURATE: bool>(
                 );
             },
             StagedRelationItem::Component(index) => {
-                let component = staged
+                let staged_component = staged
                     .components
                     .get(index)
-                    .expect("staged component ordinal lies within its table")
-                    .source
-                    .clone();
+                    .expect("staged component ordinal lies within its table");
+                let side = staged_component.side;
+                let component = staged_component.source.clone();
                 let mut representative = None;
                 let mut last = None;
                 visit_component_representatives(
@@ -2050,23 +2491,26 @@ fn representative_probes<Q: Query, const SATURATE: bool>(
                     )
                     .into());
                 };
-                let operand_index =
-                    usize::try_from(component.operand).map_err(|_| ResourceError::SizeOverflow)?;
-                let first_location =
-                    operands[operand_index].locate_stored(Point::new_raw_xy(first.x, first.y))?;
+                let first_location = by_operand(operands, side)
+                    .locate_stored(Point::new_raw_xy(first.x, first.y))?;
                 let last_location = if let Some(last) = last {
-                    Some(operands[operand_index].locate_stored(Point::new_raw_xy(last.x, last.y))?)
+                    Some(
+                        by_operand(operands, side)
+                            .locate_stored(Point::new_raw_xy(last.x, last.y))?,
+                    )
                 } else {
                     None
                 };
-                let (left_location, right_location) = if operand_index == 0 {
+                let (left_location, right_location) = if side == matrix_predicates::Operand::Left {
                     (
                         first_location,
-                        operands[1].locate_stored(Point::new_raw_xy(first.x, first.y))?,
+                        by_operand(operands, matrix_predicates::Operand::Right)
+                            .locate_stored(Point::new_raw_xy(first.x, first.y))?,
                     )
                 } else {
                     (
-                        operands[0].locate_stored(Point::new_raw_xy(first.x, first.y))?,
+                        by_operand(operands, matrix_predicates::Operand::Left)
+                            .locate_stored(Point::new_raw_xy(first.x, first.y))?,
                         first_location,
                     )
                 };
@@ -2079,14 +2523,16 @@ fn representative_probes<Q: Query, const SATURATE: bool>(
                 if let Some(last) = last
                     && let Some(last_location) = last_location
                 {
-                    let (left, right) = if operand_index == 0 {
+                    let (left, right) = if side == matrix_predicates::Operand::Left {
                         (
                             last_location,
-                            operands[1].locate_stored(Point::new_raw_xy(last.x, last.y))?,
+                            by_operand(operands, matrix_predicates::Operand::Right)
+                                .locate_stored(Point::new_raw_xy(last.x, last.y))?,
                         )
                     } else {
                         (
-                            operands[0].locate_stored(Point::new_raw_xy(last.x, last.y))?,
+                            by_operand(operands, matrix_predicates::Operand::Left)
+                                .locate_stored(Point::new_raw_xy(last.x, last.y))?,
                             last_location,
                         )
                     };
@@ -2144,7 +2590,7 @@ fn visit_component_representatives(
     }
 }
 
-fn ring_left_area(operand: Operand<'_>, segment: Segment) -> Result<bool> {
+fn ring_left_area(operand: &Operand<'_>, segment: Segment) -> Result<bool> {
     let start = [
         ExactDyadic::from_f64(segment.start.x),
         ExactDyadic::from_f64(segment.start.y),
@@ -2168,7 +2614,7 @@ fn ring_left_area(operand: Operand<'_>, segment: Segment) -> Result<bool> {
 }
 
 fn initialize_clean_ring_sides(
-    operands: [Operand<'_>; 2],
+    operands: &[Operand<'_>; 2],
     sources: &StagedExactSources,
     components: &mut [Component],
 ) -> Result<()> {
@@ -2188,9 +2634,10 @@ fn initialize_clean_ring_sides(
             .ok_or_else(|| {
                 GeometryErrorKind::Invalid("a clean winding ring has no nonzero segment".into())
             })?;
-        let operand =
-            usize::try_from(component.source.operand).map_err(|_| ResourceError::SizeOverflow)?;
-        component.left_area = Some(ring_left_area(operands[operand], segment)?);
+        component.left_area = Some(ring_left_area(
+            by_operand(operands, component.side),
+            segment,
+        )?);
     }
     Ok(())
 }
@@ -2285,26 +2732,154 @@ mod tests {
         }
     }
 
+    #[test]
+    fn certified_rectangle_matrices_match_partition_across_axis_relations() {
+        let axis_relations = [
+            ((0.0, 1.0), (3.0, 4.0)),
+            ((0.0, 1.0), (1.0, 2.0)),
+            ((0.0, 2.0), (1.0, 3.0)),
+            ((0.0, 3.0), (1.0, 2.0)),
+            ((0.0, 3.0), (0.0, 3.0)),
+            ((0.0, 3.0), (0.0, 2.0)),
+            ((0.0, 3.0), (1.0, 3.0)),
+            ((1.0, 2.0), (0.0, 3.0)),
+            ((1.0, 3.0), (0.0, 2.0)),
+            ((1.0, 2.0), (0.0, 1.0)),
+            ((3.0, 4.0), (0.0, 1.0)),
+            ((-0.0, 1.0), (0.0, 2.0)),
+            ((-1.0, -0.0), (0.0, 1.0)),
+        ];
+        let rectangle = |x: (f64, f64), y: (f64, f64)| {
+            Shape::Polygon(
+                crate::geometry::rect_polygon(
+                    crate::geometry::Bounds::new(x.0, y.0, x.1, y.1).unwrap(),
+                )
+                .unwrap(),
+            )
+        };
+
+        for (x_index, &(left_x, right_x)) in axis_relations.iter().enumerate() {
+            for (y_index, &(left_y, right_y)) in axis_relations.iter().enumerate() {
+                let left = rectangle(left_x, left_y);
+                let right = rectangle(right_x, right_y);
+                let left_plan = PreparedPlan::transient(&left);
+                let right_plan = PreparedPlan::transient(&right);
+                let oracle = partition_oracle(&left, &right).unwrap();
+                let pair = [
+                    Operand::from_plan(&left_plan),
+                    Operand::from_plan(&right_plan),
+                ];
+                let name = format!("x relation {x_index}, y relation {y_index}");
+
+                let bounds = [pair[0].bounds(), pair[1].bounds()];
+                assert!(
+                    rectangle_relation(&pair, &bounds).is_some(),
+                    "{name}: rectangle proof"
+                );
+                assert_eq!(relate(&left_plan, &right_plan).unwrap(), oracle, "{name}");
+                assert_eq!(
+                    evaluate_mode::<MatrixQuery, false>(&pair, &MatrixQuery).unwrap(),
+                    oracle,
+                    "{name}: saturation-off",
+                );
+                for predicate in Predicate::ALL {
+                    assert_eq!(
+                        self::predicate(&left_plan, &right_plan, predicate).unwrap(),
+                        matrix_predicates::decided(predicate, oracle),
+                        "{name}: {predicate:?}",
+                    );
+                }
+                let matrix_pattern =
+                    CompiledPattern::new(&oracle.text()).expect("matrix text is a valid pattern");
+                assert_eq!(
+                    self::pattern(&left_plan, &right_plan, matrix_pattern).unwrap(),
+                    oracle.matches(matrix_pattern),
+                    "{name}: exact matrix pattern",
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn noncanonical_rectangle_rows_fall_through_to_the_general_evaluator() {
+        let box_shape = |minx, miny, maxx, maxy| {
+            Shape::Polygon(
+                crate::geometry::rect_polygon(
+                    crate::geometry::Bounds::new(minx, miny, maxx, maxy).unwrap(),
+                )
+                .unwrap(),
+            )
+        };
+        let cases = [
+            (
+                "rectangle with a collinear side vertex",
+                crate::io::parse_wkt("POLYGON ((0 0,1 0,2 0,2 2,0 2,0 0))").unwrap(),
+                box_shape(1.0, 0.5, 3.0, 1.5),
+            ),
+            (
+                "rectangle with a hole",
+                crate::io::parse_wkt("POLYGON ((0 0,4 0,4 4,0 4,0 0),(1 1,3 1,3 3,1 3,1 1))")
+                    .unwrap(),
+                box_shape(1.5, 1.5, 2.5, 2.5),
+            ),
+            (
+                "two-part multipolygon",
+                crate::io::parse_wkt(
+                    "MULTIPOLYGON (((0 0,1 0,1 1,0 1,0 0)),((2 0,3 0,3 1,2 1,2 0)))",
+                )
+                .unwrap(),
+                box_shape(0.5, 0.25, 2.5, 0.75),
+            ),
+            (
+                "rectangle against a non-rectangle polygon",
+                box_shape(0.0, 0.0, 2.0, 2.0),
+                crate::io::parse_wkt("POLYGON ((1 -1,3 1,1 3,-1 1,1 -1))").unwrap(),
+            ),
+        ];
+
+        for (name, left, right) in cases {
+            let left_plan = PreparedPlan::transient(&left);
+            let right_plan = PreparedPlan::transient(&right);
+            let pair = [
+                Operand::from_plan(&left_plan),
+                Operand::from_plan(&right_plan),
+            ];
+            let bounds = [pair[0].bounds(), pair[1].bounds()];
+            assert!(
+                rectangle_relation(&pair, &bounds).is_none(),
+                "{name}: expected general evaluator route",
+            );
+            let oracle = partition_oracle(&left, &right).unwrap();
+            assert_eq!(relate(&left_plan, &right_plan).unwrap(), oracle, "{name}");
+            for predicate in Predicate::ALL {
+                assert_eq!(
+                    self::predicate(&left_plan, &right_plan, predicate).unwrap(),
+                    matrix_predicates::decided(predicate, oracle),
+                    "{name}: {predicate:?}",
+                );
+            }
+        }
+    }
+
     fn clean_ring_atom_labels(
         left: &Shape,
         right: &Shape,
-        ring_operand: usize,
+        ring_operand: matrix_predicates::Operand,
         representative: XY,
     ) -> Result<(Loc, Loc)> {
         let [left_row, right_row] = [ShapeRow::Shape(left), ShapeRow::Shape(right)];
-        let (ring_row, other_row) = if ring_operand == 0 {
-            (left_row, right_row)
-        } else {
-            (right_row, left_row)
+        let (ring_row, other_row) = match ring_operand {
+            matrix_predicates::Operand::Left => (left_row, right_row),
+            matrix_predicates::Operand::Right => (right_row, left_row),
         };
         let rows = [left_row, right_row];
-        let sources = StagedExactSources::from_rows_for_relate(rows.into_iter())?;
-        let mut staged = stage_components(sources, rows)?;
+        let sources = StagedExactSources::from_rows_for_relation(rows.into_iter())?;
+        let mut staged = stage_components(sources, &rows)?;
         let segments = staged.sources.segments();
         let ring_owner = Operand::from_row(ring_row);
         let other_owner = Operand::from_row(other_row);
         for component in &mut staged.components {
-            if component.source.operand as usize != ring_operand
+            if component.side != ring_operand
                 || component.source.ring_kind != Some(RingKind::Winding)
             {
                 continue;
@@ -2319,7 +2894,7 @@ mod tests {
             component.seed = Some(ring_owner.locate_stored(point)?);
             let exact = stored_exact_point(segment.start);
             let direction = segment_direction(segment)?;
-            let own = atom_owner_label(ring_owner, component, &exact, &direction)?;
+            let own = atom_owner_label(&ring_owner, component, &exact, &direction)?;
             let other_location = other_owner.locate_exact_offset(&exact, &direction)?;
             let other = component_edge_atom_location(component, other_location);
             return Ok((own, other));
@@ -2348,28 +2923,22 @@ mod tests {
             Operand::from_plan(&left_plan),
             Operand::from_plan(&right_plan),
         ];
+        let production = relate(&left_plan, &right_plan).unwrap();
+        let saturation_off = evaluate_mode::<MatrixQuery, false>(&pair, &MatrixQuery).unwrap();
+        let end_only =
+            evaluate_mode::<EndOnly<MatrixQuery>, false>(&pair, &EndOnly(MatrixQuery)).unwrap();
         assert_eq!(
-            relate(&left_plan, &right_plan).unwrap(),
-            oracle,
-            "{name} {direction}: production matrix"
-        );
-        assert_eq!(
-            evaluate_mode::<MatrixQuery, false>(pair, MatrixQuery).unwrap(),
-            oracle,
-            "{name} {direction}: saturation-off matrix"
-        );
-        assert_eq!(
-            evaluate_mode::<EndOnly<MatrixQuery>, false>(pair, EndOnly(MatrixQuery)).unwrap(),
-            oracle,
-            "{name} {direction}: end-only matrix"
+            (production, saturation_off, end_only),
+            (oracle, oracle, oracle),
+            "{name} {direction}: production/saturation-off/end-only matrices"
         );
         assert_eq!(
             evaluate_mode::<MatrixQuery, false>(
-                [
+                &[
                     Operand::from_row(ShapeRow::Shape(left)),
                     Operand::from_row(ShapeRow::Shape(right)),
                 ],
-                MatrixQuery,
+                &MatrixQuery,
             )
             .unwrap(),
             oracle,
@@ -2383,14 +2952,14 @@ mod tests {
                 "{name} {direction}: {predicate:?}: production query"
             );
             assert_eq!(
-                evaluate_mode::<PredicateQuery, false>(pair, PredicateQuery(predicate)).unwrap(),
+                evaluate_mode::<PredicateQuery, false>(&pair, &PredicateQuery(predicate)).unwrap(),
                 expected,
                 "{name} {direction}: {predicate:?}: saturation-off query"
             );
             assert_eq!(
                 evaluate_mode::<EndOnly<PredicateQuery>, false>(
-                    pair,
-                    EndOnly(PredicateQuery(predicate)),
+                    &pair,
+                    &EndOnly(PredicateQuery(predicate)),
                 )
                 .unwrap(),
                 expected,
@@ -2402,9 +2971,9 @@ mod tests {
             CompiledPattern::new("*********").expect("wildcard pattern is valid"),
         ];
         for cell in 0..9 {
-            for literal in [b'F', b'T', b'0', b'1', b'2'] {
+            for literal in b"FT012" {
                 let mut bytes = *b"*********";
-                *bytes.get_mut(cell).expect("DE-9IM has nine cells") = literal;
+                *bytes.get_mut(cell).expect("DE-9IM has nine cells") = *literal;
                 patterns.push(
                     CompiledPattern::new(std::str::from_utf8(&bytes).expect("ASCII pattern"))
                         .expect("single-cell pattern is valid"),
@@ -2434,14 +3003,14 @@ mod tests {
                 "{name} {direction}: {pattern:?}: production query"
             );
             assert_eq!(
-                evaluate_mode::<PatternQuery, false>(pair, PatternQuery(pattern)).unwrap(),
+                evaluate_mode::<PatternQuery, false>(&pair, &PatternQuery(pattern)).unwrap(),
                 expected,
                 "{name} {direction}: {pattern:?}: saturation-off query"
             );
             assert_eq!(
                 evaluate_mode::<EndOnly<PatternQuery>, false>(
-                    pair,
-                    EndOnly(PatternQuery(pattern)),
+                    &pair,
+                    &EndOnly(PatternQuery(pattern)),
                 )
                 .unwrap(),
                 expected,
@@ -2465,20 +3034,20 @@ mod tests {
         ];
         assert_eq!(relate(&left_plan, &right_plan).unwrap(), oracle);
         assert_eq!(
-            evaluate_mode::<MatrixQuery, false>(pair, MatrixQuery).unwrap(),
+            evaluate_mode::<MatrixQuery, false>(&pair, &MatrixQuery).unwrap(),
             oracle
         );
         assert_eq!(
-            evaluate_mode::<EndOnly<MatrixQuery>, false>(pair, EndOnly(MatrixQuery)).unwrap(),
+            evaluate_mode::<EndOnly<MatrixQuery>, false>(&pair, &EndOnly(MatrixQuery)).unwrap(),
             oracle
         );
         assert_eq!(
             evaluate_mode::<MatrixQuery, false>(
-                [
+                &[
                     Operand::from_row(ShapeRow::Shape(&left)),
                     Operand::from_row(ShapeRow::Shape(&right)),
                 ],
-                MatrixQuery,
+                &MatrixQuery,
             )
             .unwrap(),
             oracle
@@ -2775,6 +3344,13 @@ mod tests {
                 Some((Predicate::Equals, true)),
             ),
             (
+                "bow-tie and polygonized lobes with an exterior point",
+                "GEOMETRYCOLLECTION (POINT (2 5), POLYGON ((0 0,4 4,4 0,0 4,0 0)))",
+                "GEOMETRYCOLLECTION (POINT (2 5), MULTIPOLYGON (((0 0,2 2,0 4,0 0)), ((2 2,4 0,4 4,2 2))))",
+                Some("2FFF1FFF2"),
+                Some((Predicate::Equals, true)),
+            ),
+            (
                 "point inside hole",
                 "POINT (5 5)",
                 "POLYGON ((0 0,10 0,10 10,0 10,0 0),(3 3,7 3,7 7,3 7,3 3))",
@@ -2834,8 +3410,8 @@ mod tests {
             if let Some(expected) = expected_matrix {
                 assert_eq!(oracle.text(), expected, "{name}: oracle matrix");
             }
-            assert_full_oracle_and_controls(name, &left, &right, oracle);
             assert_locator_oracle_parity(name, &left, &right);
+            assert_full_oracle_and_controls(name, &left, &right, oracle);
             if let Some((predicate, expected)) = expected_predicate {
                 let left_plan = PreparedPlan::transient(&left);
                 let right_plan = PreparedPlan::transient(&right);
@@ -2862,7 +3438,7 @@ mod tests {
     fn large_polygon_locator_matches_partition_cell_facts() {
         let mut points = (0..256)
             .map(|index| {
-                let angle = std::f64::consts::TAU * index as f64 / 256.0;
+                let angle = std::f64::consts::TAU * f64::from(index) / 256.0;
                 Point::new_raw_xy(10.0 * angle.cos(), 10.0 * angle.sin())
             })
             .collect::<Vec<_>>();
@@ -2993,8 +3569,13 @@ mod tests {
             let external =
                 crate::io::parse_wkt(&format!("GEOMETRYCOLLECTION ({external_hole},{point_wkt})"))
                     .unwrap();
-            let (edge, _) =
-                clean_ring_atom_labels(&external, &line, 0, XY::new(10.0, 10.0)).unwrap();
+            let (edge, _) = clean_ring_atom_labels(
+                &external,
+                &line,
+                matrix_predicates::Operand::Left,
+                XY::new(10.0, 10.0),
+            )
+            .unwrap();
             assert_eq!(edge, Loc::Exterior, "{point_wkt}: external-hole edge atom");
         }
 
@@ -3004,8 +3585,13 @@ mod tests {
         )
         .unwrap();
         let inner_ring = crate::io::parse_wkt("POLYGON ((5 5,10 5,10 10,5 10,5 5))").unwrap();
-        let (_, filled_edge) =
-            clean_ring_atom_labels(&filled, &inner_ring, 1, XY::new(5.0, 5.0)).unwrap();
+        let (_, filled_edge) = clean_ring_atom_labels(
+            &filled,
+            &inner_ring,
+            matrix_predicates::Operand::Right,
+            XY::new(5.0, 5.0),
+        )
+        .unwrap();
         assert_eq!(filled_edge, Loc::Interior);
     }
 }

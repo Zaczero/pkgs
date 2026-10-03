@@ -152,7 +152,7 @@ fn line(points: &[[f64; 2]]) -> Shape {
 fn assert_polygon_line_case(name: &str, polygon: &Shape, line: &Shape, expected: &str) {
     let polygon_plan = PreparedPlan::transient(polygon);
     let line_plan = PreparedPlan::transient(line);
-    let forward = graph_relate_data(&polygon_plan, &line_plan).unwrap();
+    let forward = partition_relate_data(&polygon_plan, &line_plan).unwrap();
     assert_eq!(forward.text(), expected, "{name}: known matrix");
     assert_eq!(
         super::super::evaluator::relate(&polygon_plan, &line_plan).unwrap(),
@@ -160,7 +160,7 @@ fn assert_polygon_line_case(name: &str, polygon: &Shape, line: &Shape, expected:
         "{name}: witness evaluator"
     );
     assert_eq!(
-        graph_relate_data(&line_plan, &polygon_plan).unwrap().0,
+        partition_relate_data(&line_plan, &polygon_plan).unwrap().0,
         forward.transpose().0,
         "{name}: transpose"
     );
@@ -224,8 +224,8 @@ fn geographic_near_vertical_box_keeps_planar_boundary_dimension() {
 fn assert_exact_relation_transposes(name: &str, left: &Shape, right: &Shape) {
     let left_plan = PreparedPlan::transient(left);
     let right_plan = PreparedPlan::transient(right);
-    let forward = graph_relate_data(&left_plan, &right_plan).unwrap();
-    let reverse = graph_relate_data(&right_plan, &left_plan).unwrap();
+    let forward = partition_relate_data(&left_plan, &right_plan).unwrap();
+    let reverse = partition_relate_data(&right_plan, &left_plan).unwrap();
     assert_eq!(reverse.0, forward.transpose().0, "{name}: transpose");
     assert_eq!(
         super::super::evaluator::relate(&left_plan, &right_plan).unwrap(),
@@ -242,7 +242,7 @@ fn assert_exact_relation_transposes(name: &str, left: &Shape, right: &Shape) {
 fn assert_relation_case(name: &str, left: &Shape, right: &Shape, expected: &str) {
     let left_plan = PreparedPlan::transient(left);
     let right_plan = PreparedPlan::transient(right);
-    let forward = graph_relate_data(&left_plan, &right_plan).unwrap();
+    let forward = partition_relate_data(&left_plan, &right_plan).unwrap();
     assert_eq!(forward.text(), expected, "{name}: forward");
     assert_eq!(
         super::super::evaluator::relate(&left_plan, &right_plan).unwrap(),
@@ -250,7 +250,7 @@ fn assert_relation_case(name: &str, left: &Shape, right: &Shape, expected: &str)
         "{name}: witness evaluator"
     );
     assert_eq!(
-        graph_relate_data(&right_plan, &left_plan).unwrap().0,
+        partition_relate_data(&right_plan, &left_plan).unwrap().0,
         forward.transpose().0,
         "{name}: transpose"
     );

@@ -9,12 +9,11 @@ use crate::crs::ChartEdge;
 use crate::error::Result;
 use crate::geographic::GeographicFrame;
 use crate::geometry::distance::ChartParts;
-#[cfg(test)]
 use crate::geometry::source_support::{
     OccupiedToward, SourcePointLocation, cartesian_exact_offset_location_and_area,
-    cartesian_exact_point_location_and_area, cartesian_point_location_and_area, occupied_toward,
+    cartesian_exact_point_location_and_area, cartesian_point_location_and_area, exact_stored_point,
+    occupied_toward,
 };
-#[cfg(test)]
 use crate::geometry::tessellation::exact::ExactDyadic;
 use crate::geometry::topology::ExactGeographicTopology;
 use crate::geometry::types::{Bounds, GeodesicSegment, Point, Segment, Shape, XY};
@@ -560,7 +559,6 @@ impl PreparedPlan {
         ))
     }
 
-    #[cfg(test)]
     pub(in crate::geometry) fn locate_stored(&self, point: Point) -> Result<SourcePointLocation> {
         if let Some(tester) = self.point_tester_for_location()? {
             return Ok(tester.location_and_area(point));
@@ -568,11 +566,13 @@ impl PreparedPlan {
         Ok(cartesian_point_location_and_area(self.shape(), point))
     }
 
-    #[cfg(test)]
     pub(in crate::geometry) fn locate_exact(
         &self,
         point: &[ExactDyadic; 3],
     ) -> Result<SourcePointLocation> {
+        if let Some(point) = exact_stored_point(point)? {
+            return self.locate_stored(point);
+        }
         if let Some(tester) = self.point_tester_for_location()?
             && let Some(location) = tester.location_and_area_exact(point)?
         {
@@ -581,7 +581,6 @@ impl PreparedPlan {
         cartesian_exact_point_location_and_area(self.shape(), point)
     }
 
-    #[cfg(test)]
     pub(in crate::geometry) fn locate_exact_offset(
         &self,
         point: &[ExactDyadic; 3],
@@ -595,7 +594,6 @@ impl PreparedPlan {
         cartesian_exact_offset_location_and_area(self.shape(), point, direction)
     }
 
-    #[cfg(test)]
     pub(in crate::geometry) fn occupied_toward_exact(
         &self,
         point: &[ExactDyadic; 3],

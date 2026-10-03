@@ -151,20 +151,29 @@ pub(crate) fn predicate_pairwise_arrays(
                         if let Some(verdict) = spec.pre_topology(&left_gate, &right_gate)? {
                             return Ok(verdict);
                         }
-                        if let Some(verdict) = engine::row_point_predicate(&spec, left, right)? {
-                            return Ok(verdict);
+                        if matches!(spec.predicate, Predicate::Intersects | Predicate::Disjoint) {
+                            if let Some(verdict) =
+                                engine::row_point_intersection(&spec, left, right)?
+                            {
+                                return Ok(verdict);
+                            }
+                            let left = left_rows.prepared_at_with_bounds(
+                                index,
+                                left,
+                                left_gate.bounds(),
+                            )?;
+                            let right = right_rows.prepared_at_with_bounds(
+                                index,
+                                right,
+                                right_gate.bounds(),
+                            )?;
+                            engine::topology_pair_after_gates(
+                                &spec,
+                                &PreparedTopologyPair::cartesian(&left, &right),
+                            )
+                        } else {
+                            crate::geometry::predicate_rows(left, right, spec.predicate)
                         }
-                        let left =
-                            left_rows.prepared_at_with_bounds(index, left, left_gate.bounds())?;
-                        let right = right_rows.prepared_at_with_bounds(
-                            index,
-                            right,
-                            right_gate.bounds(),
-                        )?;
-                        engine::topology_pair_after_gates(
-                            &spec,
-                            &PreparedTopologyPair::cartesian(&left, &right),
-                        )
                     })
                 },
                 TopologyDomain::Geographic(frame) => {
@@ -630,7 +639,12 @@ pub(crate) fn xy_predicate_values(
     let original = geometry.prepared_plan();
     let original_cache = geometry.frame_cache();
     if scalar {
-        let point = Point::new(x[0], y[0])?;
+        let (Some(x), Some(y)) = (x.into_iter().next(), y.into_iter().next()) else {
+            return Err(InvalidGeometryError::new_err(
+                "scalar x and y inputs must each contain a coordinate",
+            ));
+        };
+        let point = Point::new(x, y)?;
         if domain == TopologyDomain::Cartesian {
             let matches = py.detach(move || cartesian_xy_matches(&original, point, inclusive))?;
             return Ok(py_bool(py, matches));

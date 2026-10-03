@@ -1637,9 +1637,10 @@ fn relation_staging_keeps_closed_and_collapsed_line_components() {
     let collapsed = crate::io::parse_wkt("LINESTRING (7 7,7 7)").unwrap();
     let polygon = crate::io::parse_wkt("POLYGON ((20 20,24 20,24 24,20 24,20 20))").unwrap();
     let shapes = [closed, reversed, collapsed, polygon];
-    let staged =
-        StagedExactSources::from_rows_for_relate(shapes.iter().map(storage::ShapeRow::Shape))
-            .unwrap();
+    let staged = StagedExactSources::from_rows_for_relation(
+        shapes.iter().map(storage::ShapeRow::Shape),
+    )
+    .unwrap();
 
     assert_eq!(staged.segments().len(), 11);
     assert!(staged.line_boundaries().is_empty());

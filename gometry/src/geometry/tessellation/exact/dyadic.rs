@@ -404,6 +404,10 @@ impl ExactDyadic {
         !self.negative && self.exponent == 0 && self.limbs.as_slice() == [1]
     }
 
+    pub(in crate::geometry) fn is_two(&self) -> bool {
+        !self.negative && self.exponent == 1 && self.limbs.as_slice() == [1]
+    }
+
     pub(in crate::geometry) const fn sign(&self) -> ExactSign {
         if self.is_zero() {
             ExactSign::Zero

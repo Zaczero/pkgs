@@ -54,7 +54,6 @@ mod metrics;
 mod rays;
 mod relate;
 
-#[cfg(test)]
 pub(in crate::geometry) use construction::Forest as ExactPointForest;
 use construction::{
     AxisValue, PointArena, interpolate_ordinate, parameter_along, partition_unique_segments,
@@ -2953,11 +2952,9 @@ pub(in crate::geometry) struct StagedExactSources {
     isolated_points: Vec<Point>,
     isolated_operands: Vec<u32>,
     line_boundaries: Vec<(u32, PointKey)>,
-    #[cfg(test)]
-    relation_components: Option<RelationComponents>,
+    relation_components: Option<Box<RelationComponents>>,
 }
 
-#[cfg(test)]
 #[derive(Default)]
 struct RelationComponents {
     components: Vec<StagedSourceComponent>,
@@ -2965,7 +2962,6 @@ struct RelationComponents {
 }
 
 /// A source line or ring and the contiguous pool segment range it contributed.
-#[cfg(test)]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(in crate::geometry) struct StagedSourceComponent {
     pub(in crate::geometry) operand: u32,
@@ -2975,20 +2971,12 @@ pub(in crate::geometry) struct StagedSourceComponent {
     pub(in crate::geometry) has_nonzero_segment: bool,
 }
 
-#[cfg(test)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(in crate::geometry) enum StagedRelationItem {
     Component(usize),
     Isolated(usize),
 }
 
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "the relate evaluator consumes these staged-source accessors"
-    )
-)]
 impl StagedExactSources {
     fn new(operand_count: usize) -> Self {
         Self::with_xy_only(operand_count, false)
@@ -3016,7 +3004,6 @@ impl StagedExactSources {
             isolated_points: Vec::new(),
             isolated_operands: Vec::new(),
             line_boundaries: Vec::new(),
-            #[cfg(test)]
             relation_components: None,
         }
     }
@@ -3046,14 +3033,13 @@ impl StagedExactSources {
 
     /// Relation staging keeps each component boundary without partition
     /// deduplication, including closed lines with no endpoint occurrences.
-    #[cfg(test)]
-    pub(in crate::geometry) fn from_rows_for_relate<'a>(
+    pub(in crate::geometry) fn from_rows_for_relation<'a>(
         rows: impl ExactSizeIterator<Item = storage::ShapeRow<'a>>,
     ) -> Result<Self> {
         Self::stage_rows(
             rows,
             true,
-            |staged| staged.relation_components = Some(RelationComponents::default()),
+            |staged| staged.relation_components = Some(Box::default()),
             Self::append_occurrence_row,
         )
     }
@@ -3095,14 +3081,17 @@ impl StagedExactSources {
         &self.segments
     }
 
+    #[cfg(test)]
     pub(in crate::geometry) fn source_operands(&self) -> &[u32] {
         &self.source_operands
     }
 
+    #[cfg(test)]
     pub(in crate::geometry) fn source_rings(&self) -> &[Option<u32>] {
         &self.source_rings
     }
 
+    #[cfg(test)]
     pub(in crate::geometry) fn source_ring_kinds(&self) -> &[Option<RingKind>] {
         &self.source_ring_kinds
     }
@@ -3111,22 +3100,27 @@ impl StagedExactSources {
         &self.ring_kinds
     }
 
+    #[cfg(test)]
     pub(in crate::geometry) fn ring_polygons(&self) -> &[u32] {
         &self.ring_polygons
     }
 
+    #[cfg(test)]
     pub(in crate::geometry) fn ring_holes(&self) -> &[bool] {
         &self.ring_holes
     }
 
+    #[cfg(test)]
     pub(in crate::geometry) fn polygon_operands(&self) -> &[u32] {
         &self.polygon_operands
     }
 
+    #[cfg(test)]
     pub(in crate::geometry) fn polygon_ring_ranges(&self) -> &[Range<usize>] {
         &self.polygon_ring_ranges
     }
 
+    #[cfg(test)]
     pub(in crate::geometry) fn polygon_rings(&self) -> &[Vec<Range<usize>>] {
         &self.polygon_rings
     }
@@ -3135,25 +3129,25 @@ impl StagedExactSources {
         &self.isolated
     }
 
+    #[cfg(test)]
     pub(in crate::geometry) fn isolated_operands(&self) -> &[u32] {
         &self.isolated_operands
     }
 
+    #[cfg(test)]
     pub(in crate::geometry) fn line_boundaries(&self) -> &[(u32, PointKey)] {
         &self.line_boundaries
     }
 
-    #[cfg(test)]
     pub(in crate::geometry) fn relation_components(&self) -> Option<&[StagedSourceComponent]> {
         self.relation_components
-            .as_ref()
+            .as_deref()
             .map(|layout| layout.components.as_slice())
     }
 
-    #[cfg(test)]
     pub(in crate::geometry) fn relation_source_order(&self) -> Option<&[StagedRelationItem]> {
         self.relation_components
-            .as_ref()
+            .as_deref()
             .map(|layout| layout.source_order.as_slice())
     }
 
@@ -3182,7 +3176,8 @@ impl StagedExactSources {
                     coords,
                     row.vertex_window().expect("line row has a vertex window"),
                 );
-                self.append_line_coords(&coords, operand)
+                self.append_line_coords(&coords, operand);
+                Ok(())
             },
             ShapeRow::Packed(row @ PackedRow::Polygons { coords, .. }) => {
                 let rings = row.polygon_rings().expect("polygon row has a ring window");
@@ -3235,7 +3230,8 @@ impl StagedExactSources {
                 Ok(())
             },
             crate::geometry::Component::LineString(line) => {
-                self.append_line_coords(line.as_coords(), operand)
+                self.append_line_coords(line.as_coords(), operand);
+                Ok(())
             },
             crate::geometry::Component::Polygon(polygon) => self.append_polygon(polygon, operand),
         }
@@ -3285,13 +3281,11 @@ impl StagedExactSources {
     /// One point with no segment to carry it: the three isolated columns move
     /// together, so they reserve together.
     fn append_isolated_point(&mut self, point: Point, operand: u32) {
-        #[cfg(test)]
         let index = self.isolated.len();
         self.isolated.push(point.xy());
         self.isolated_points.push(point);
         self.isolated_operands.push(operand);
-        #[cfg(test)]
-        if let Some(components) = &mut self.relation_components {
+        if let Some(components) = self.relation_components.as_deref_mut() {
             components
                 .source_order
                 .push(StagedRelationItem::Isolated(index));
@@ -3302,10 +3296,9 @@ impl StagedExactSources {
         &mut self,
         line: &(impl crate::geometry::Coordinates + ?Sized),
         operand: u32,
-    ) -> Result<()> {
+    ) {
         self.retain_source_ordinates(line);
         self.reserve_segments(line.coord_count().saturating_sub(1));
-        #[cfg(test)]
         let segment_start = self.segments.len();
         let mut first = None;
         let mut last = None;
@@ -3326,8 +3319,7 @@ impl StagedExactSources {
                 None,
             );
         }
-        #[cfg(test)]
-        if let Some(components) = &mut self.relation_components {
+        if let Some(components) = self.relation_components.as_deref_mut() {
             let component = components.components.len();
             let has_nonzero_segment = first.is_some();
             components.components.push(StagedSourceComponent {
@@ -3350,7 +3342,7 @@ impl StagedExactSources {
             for point in line.iter_coords() {
                 self.append_isolated_point(point, operand);
             }
-            return Ok(());
+            return;
         }
         if let (Some(first), Some(last)) = (first, last)
             && !same_point(first, last)
@@ -3359,7 +3351,6 @@ impl StagedExactSources {
             self.line_boundaries.push((operand, PointKey::new(first)));
             self.line_boundaries.push((operand, PointKey::new(last)));
         }
-        Ok(())
     }
 
     fn append_polygon(&mut self, polygon: &Polygon, operand: u32) -> Result<()> {
@@ -3395,7 +3386,6 @@ impl StagedExactSources {
             } else {
                 RingKind::Winding
             };
-            #[cfg(test)]
             let segment_start = self.segments.len();
             self.ring_polygons.push(polygon_id);
             self.ring_holes.push(ring_index > 0);
@@ -3406,8 +3396,6 @@ impl StagedExactSources {
             let mut pairs = ring.segment_pairs();
             let [first, first_end] = pairs.next().expect("a Ring has at least four coordinates");
             let mut pairs = std::iter::once([first, first_end]).chain(pairs).peekable();
-            #[cfg(test)]
-            let mut has_nonzero_segment = false;
             while let Some([start, mut end]) = pairs.next() {
                 if pairs.peek().is_none() {
                     end = first;
@@ -3416,15 +3404,14 @@ impl StagedExactSources {
                     start: start.xy(),
                     end: end.xy(),
                 };
-                #[cfg(test)]
-                if !same_point(segment.start, segment.end) {
-                    has_nonzero_segment = true;
-                }
                 self.push_segment(segment, &[start, end], operand, Some(ring_id), Some(kind));
             }
-            #[cfg(test)]
-            if let Some(components) = &mut self.relation_components {
+            if let Some(components) = self.relation_components.as_deref_mut() {
                 let component = components.components.len();
+                let has_nonzero_segment = kind == RingKind::Winding
+                    || ring
+                        .iter_coords()
+                        .any(|point| !same_point(first.xy(), point.xy()));
                 components.components.push(StagedSourceComponent {
                     operand,
                     segments: segment_start..self.segments.len(),

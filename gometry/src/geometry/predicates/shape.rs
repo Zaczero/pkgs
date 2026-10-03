@@ -5,12 +5,13 @@ use crate::geometry::{
     Loc, Point, RunIdentity, Shape, SharedShapeOwners, SupportRunKind, cartesian_point_covers,
     cartesian_point_location, graph_relate_shapes, point_equals_exact, points_equal_exact,
 };
+use crate::predicates::engine::{Predicate, topology_shapes_predicate};
 #[cfg(test)]
 use crate::predicates::engine::{PreparedTopologyPair, topology_scalar_pattern};
 
 impl Shape {
     /// Strict point membership used by coordinate operations and geometry
-    /// algorithms. Topological predicates use the complete relation matrix.
+    /// algorithms. Topological predicates use the shared DE-9IM evidence model.
     pub fn contains_point(&self, point: Point) -> bool {
         self.point_membership::<false>(point)
     }
@@ -33,33 +34,33 @@ impl Shape {
     }
 
     pub fn contains(&self, other: &Self) -> Result<bool> {
-        Ok(graph_relate_shapes(self, other)?.is_contains())
+        topology_shapes_predicate(Predicate::Contains, self, other)
     }
 
     /// `contains` with no boundary contact: *other* lies in the interior of
     /// *self* and never touches its boundary (DE-9IM `T**FF*FF*`).
     #[cfg(test)]
     pub fn contains_properly(&self, other: &Self) -> Result<bool> {
-        Ok(graph_relate_shapes(self, other)?.is_contains_properly())
+        topology_shapes_predicate(Predicate::ContainsProperly, self, other)
     }
 
     #[cfg(test)]
     pub fn within(&self, other: &Self) -> Result<bool> {
-        Ok(graph_relate_shapes(self, other)?.transpose().is_contains())
+        topology_shapes_predicate(Predicate::Within, self, other)
     }
 
     pub fn covers(&self, other: &Self) -> Result<bool> {
-        Ok(graph_relate_shapes(self, other)?.is_covers())
+        topology_shapes_predicate(Predicate::Covers, self, other)
     }
 
     #[cfg(test)]
     pub fn covered_by(&self, other: &Self) -> Result<bool> {
-        Ok(graph_relate_shapes(self, other)?.transpose().is_covers())
+        topology_shapes_predicate(Predicate::CoveredBy, self, other)
     }
 
     #[cfg(test)]
     pub fn intersects(&self, other: &Self) -> Result<bool> {
-        Ok(graph_relate_shapes(self, other)?.is_intersects())
+        topology_shapes_predicate(Predicate::Intersects, self, other)
     }
 
     /// Visit one representative vertex per connected 1D/2D component (first
@@ -169,17 +170,17 @@ impl Shape {
 
     #[cfg(test)]
     pub fn disjoint(&self, other: &Self) -> Result<bool> {
-        Ok(graph_relate_shapes(self, other)?.is_disjoint())
+        topology_shapes_predicate(Predicate::Disjoint, self, other)
     }
 
     #[cfg(test)]
     pub fn touches(&self, other: &Self) -> Result<bool> {
-        Ok(graph_relate_shapes(self, other)?.is_touches())
+        topology_shapes_predicate(Predicate::Touches, self, other)
     }
 
     #[cfg(test)]
     pub fn overlaps(&self, other: &Self) -> Result<bool> {
-        Ok(graph_relate_shapes(self, other)?.is_overlaps_by_dimension())
+        topology_shapes_predicate(Predicate::Overlaps, self, other)
     }
 
     pub fn relate(&self, other: &Self) -> Result<String> {
@@ -210,7 +211,7 @@ impl Shape {
     }
 
     pub fn equals(&self, other: &Self) -> Result<bool> {
-        Ok(graph_relate_shapes(self, other)?.is_equal_topo())
+        topology_shapes_predicate(Predicate::Equals, self, other)
     }
 
     /// Coordinate equality within `tolerance` (per-ordinate `|Δ| ≤ tolerance`):
