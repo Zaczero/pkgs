@@ -9,7 +9,7 @@ use crate::geometry::exact_arith::ExactSign;
 use crate::geometry::exact_arith::product_sum::ExactSum;
 use crate::geometry::tessellation::exact::{ExactDyadic, round_ratio};
 use crate::geometry::types::{Coordinates, Point, XY};
-use crate::geometry::{axis_pow2_scale, scaled_residual, unscale_area, wrap_index};
+use crate::geometry::{axis_pow2_scale, scaled_residual, unscale_area};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 #[repr(transparent)]
@@ -171,10 +171,6 @@ const EPSILON: f64 = f64::EPSILON;
 ///
 /// Staging, validity, canonicalization and areal topology share this
 /// original-coordinate predicate, independently of rounded area measurement.
-#[expect(
-    clippy::indexing_slicing,
-    reason = "pairs counts adjacent entries in equal closed-ring columns, including the terminal vertex"
-)]
 pub(crate) fn exact_ring_area_sign_columns(xs: &[f64], ys: &[f64], pairs: usize) -> AreaSign {
     if pairs == 0 {
         return AreaSign::Zero;
@@ -184,10 +180,10 @@ pub(crate) fn exact_ring_area_sign_columns(xs: &[f64], ys: &[f64], pairs: usize)
     }
 
     let mut sum = ExactSum::zero();
-    for ((&x0, &x1), (&y0, &y1)) in xs[..pairs]
-        .iter()
-        .zip(&xs[1..=pairs])
-        .zip(ys[..pairs].iter().zip(&ys[1..=pairs]))
+    for (&[x0, x1], &[y0, y1]) in xs
+        .array_windows::<2>()
+        .zip(ys.array_windows::<2>())
+        .take(pairs)
     {
         sum.add_product(x0, y1);
         sum.subtract_product(x1, y0);
@@ -195,20 +191,19 @@ pub(crate) fn exact_ring_area_sign_columns(xs: &[f64], ys: &[f64], pairs: usize)
     area_sign_from_ordering(sum.ordering())
 }
 
-fn cycle_sign(edge_count: usize, mut edge_at: impl FnMut(usize) -> (XY, XY)) -> AreaSign {
+fn cycle_sign(edge_count: usize, edges: impl Iterator<Item = (XY, XY)> + Clone) -> AreaSign {
     if edge_count == 0 {
         return AreaSign::Zero;
     }
-    if let Some(sign) = rounded_translated_cycle_sign(edge_count, &mut edge_at) {
+    if let Some(sign) = rounded_translated_cycle_sign(edge_count, edges.clone()) {
         return sign;
     }
-    exact_cycle_sign(edge_count, &mut edge_at)
+    exact_cycle_sign(edges)
 }
 
-fn exact_cycle_sign(edge_count: usize, mut edge_at: impl FnMut(usize) -> (XY, XY)) -> AreaSign {
+fn exact_cycle_sign(edges: impl Iterator<Item = (XY, XY)>) -> AreaSign {
     let mut sum = ExactSum::zero();
-    for index in 0..edge_count {
-        let (a, b) = edge_at(index);
+    for (a, b) in edges {
         sum.add_product(a.x, b.y);
         sum.subtract_product(b.x, a.y);
     }
@@ -226,15 +221,14 @@ const fn area_sign_from_ordering(ordering: std::cmp::Ordering) -> AreaSign {
 /// Running filter over a cycle whose vertices are exposed by an edge reader.
 fn rounded_translated_cycle_sign(
     edge_count: usize,
-    mut edge_at: impl FnMut(usize) -> (XY, XY),
+    edges: impl Iterator<Item = (XY, XY)> + Clone,
 ) -> Option<AreaSign> {
     if edge_count > 1 << 26 {
         return None;
     }
-    let (origin, _) = edge_at(0);
+    let (origin, _) = edges.clone().next()?;
     let mut filter = CycleSignFilter::new(origin, edge_count)?;
-    for index in 0..edge_count {
-        let (_, destination) = edge_at(index);
+    for (_, destination) in edges {
         filter.push(destination);
     }
     filter.finish()
@@ -243,10 +237,6 @@ fn rounded_translated_cycle_sign(
 /// Column-specialized filter: the contiguous slices make each vertex pair
 /// bounds-free in the loop, and the running product magnitude removes the
 /// NaN-aware maxima from the prior per-edge error estimate.
-#[expect(
-    clippy::indexing_slicing,
-    reason = "edge_count pairs each vertex with its following stored column entry"
-)]
 fn rounded_translated_cycle_sign_columns(
     xs: &[f64],
     ys: &[f64],
@@ -258,7 +248,7 @@ fn rounded_translated_cycle_sign_columns(
     let (&origin_x, &origin_y) = xs.first().zip(ys.first())?;
     let origin = XY::new(origin_x, origin_y);
     let mut filter = CycleSignFilter::new(origin, edge_count)?;
-    for (&x, &y) in xs[1..=edge_count].iter().zip(&ys[1..=edge_count]) {
+    for (&x, &y) in xs.iter().skip(1).zip(ys.iter().skip(1)).take(edge_count) {
         filter.push(XY::new(x, y));
     }
     filter.finish()
@@ -447,9 +437,14 @@ fn exact_open_xy_sign(points: &[XY]) -> AreaSign {
     if count < 2 {
         return AreaSign::Zero;
     }
-    cycle_sign(count, |index| {
-        (points[index], points[wrap_index(index + 1, count)])
-    })
+    cycle_sign(
+        count,
+        points
+            .iter()
+            .copied()
+            .zip(points.iter().copied().cycle().skip(1))
+            .take(count),
+    )
 }
 
 fn exact_open_point_sign(points: &[Point]) -> AreaSign {
@@ -457,12 +452,14 @@ fn exact_open_point_sign(points: &[Point]) -> AreaSign {
     if count < 2 {
         return AreaSign::Zero;
     }
-    cycle_sign(count, |index| {
-        (
-            points[index].xy(),
-            points[wrap_index(index + 1, count)].xy(),
-        )
-    })
+    cycle_sign(
+        count,
+        points
+            .iter()
+            .map(Point::xy)
+            .zip(points.iter().map(Point::xy).cycle().skip(1))
+            .take(count),
+    )
 }
 
 /// Ring vertex-pair counts below this use the scalar fold — LLVM auto-vectorizes
@@ -644,10 +641,10 @@ fn shoelace_shifted_roundoff(
 ) -> f64 {
     let identity = sx.to_bits() == 1.0_f64.to_bits() && sy.to_bits() == 1.0_f64.to_bits();
     let mut product_scale = 0.0_f64;
-    for ((&x0, &x1), (&y0, &y1)) in xs[..pairs]
-        .iter()
-        .zip(&xs[1..=pairs])
-        .zip(ys[..pairs].iter().zip(&ys[1..=pairs]))
+    for (&[x0, x1], &[y0, y1]) in xs
+        .array_windows::<2>()
+        .zip(ys.array_windows::<2>())
+        .take(pairs)
     {
         let (x0, y0) = if identity {
             (x0 - ox, y0 - oy)
@@ -810,10 +807,20 @@ fn open_cycle_sum_columns(xs: &[f64], ys: &[f64]) -> ExactSum {
     if count < 2 {
         return sum;
     }
-    for index in 0..count - 1 {
-        sum.add_cross(xs[index], ys[index], xs[index + 1], ys[index + 1]);
+    for (&[x0, x1], &[y0, y1]) in xs.array_windows::<2>().zip(ys.array_windows::<2>()) {
+        sum.add_cross(x0, y0, x1, y1);
     }
-    sum.add_cross(xs[count - 1], ys[count - 1], xs[0], ys[0]);
+    let (first_x, first_y) = xs
+        .first()
+        .zip(ys.first())
+        .map(|(&x, &y)| (x, y))
+        .expect("a cycle with at least two coordinates has a first coordinate");
+    let (last_x, last_y) = xs
+        .last()
+        .zip(ys.last())
+        .map(|(&x, &y)| (x, y))
+        .expect("a cycle with at least two coordinates has a last coordinate");
+    sum.add_cross(last_x, last_y, first_x, first_y);
     sum
 }
 
@@ -884,7 +891,7 @@ pub(crate) fn polygon_area_measure_with(
         let (signed_ring, ring_error) =
             shoelace_shifted_with_roundoff(xs, ys, pairs, ox, oy, sx, sy);
         let ring = signed_ring.abs();
-        rings += 1;
+        rings = rings.saturating_add(1);
         magnitude += ring;
         error += ring_error;
         if hole {
@@ -915,21 +922,29 @@ fn exact_polygon_area_measure_with(visit: impl Fn(&mut dyn FnMut(&[f64], &[f64],
             return;
         }
         let mut ring = ExactSum::zero();
-        for index in 0..pairs {
-            ring.add_cross(xs[index], ys[index], xs[index + 1], ys[index + 1]);
+        for (&[x0, x1], &[y0, y1]) in xs
+            .array_windows::<2>()
+            .zip(ys.array_windows::<2>())
+            .take(pairs)
+        {
+            ring.add_cross(x0, y0, x1, y1);
         }
         let ordering = ring.ordering();
         if ordering == std::cmp::Ordering::Equal {
             return;
         }
         let negate = (ordering == std::cmp::Ordering::Less) ^ hole;
-        for index in 0..pairs {
+        for (&[x0, x1], &[y0, y1]) in xs
+            .array_windows::<2>()
+            .zip(ys.array_windows::<2>())
+            .take(pairs)
+        {
             if negate {
-                total.subtract_product(xs[index], ys[index + 1]);
-                total.add_product(xs[index + 1], ys[index]);
+                total.subtract_product(x0, y1);
+                total.add_product(x1, y0);
             } else {
-                total.add_product(xs[index], ys[index + 1]);
-                total.subtract_product(xs[index + 1], ys[index]);
+                total.add_product(x0, y1);
+                total.subtract_product(x1, y0);
             }
         }
     });
@@ -991,6 +1006,26 @@ fn reference_polygon_area_measure_with(
     unscale_area(area, sx, sy)
 }
 
+fn selected_ring_columns<'a>(
+    ring_offsets: &[i32],
+    xs: &'a [f64],
+    ys: &'a [f64],
+    ring_index: usize,
+) -> (&'a [f64], &'a [f64], usize) {
+    let start = *ring_offsets
+        .get(ring_index)
+        .expect("selected ring ID fits the offset column") as usize;
+    let end = *ring_offsets
+        .get(ring_index.wrapping_add(1))
+        .expect("selected ring successor fits the offset column") as usize;
+    let pairs = end.saturating_sub(start.wrapping_add(1));
+    (
+        xs.get(start..end).expect("ring offsets fit the x column"),
+        ys.get(start..end).expect("ring offsets fit the y column"),
+        pairs,
+    )
+}
+
 /// Packed polygon area with a fused ordinary path.
 ///
 /// Most packed polygons have short, finite rings whose per-ring origin shift
@@ -1011,11 +1046,8 @@ pub(crate) fn polygon_area_measure_columns(
     let mut fast = !rings.is_empty();
 
     for ring_index in rings.clone() {
-        let start = ring_offsets[ring_index] as usize;
-        let end = ring_offsets[ring_index + 1] as usize;
-        let pairs = end.saturating_sub(start + 1);
-        let Some((signed, bound)) = fast_ring_area_columns(&xs[start..end], &ys[start..end], pairs)
-        else {
+        let (ring_xs, ring_ys, pairs) = selected_ring_columns(ring_offsets, xs, ys, ring_index);
+        let Some((signed, bound)) = fast_ring_area_columns(ring_xs, ring_ys, pairs) else {
             fast = false;
             break;
         };
@@ -1040,9 +1072,8 @@ pub(crate) fn polygon_area_measure_columns(
 
     polygon_area_measure_with(|visit| {
         for ring_index in rings.clone() {
-            let start = ring_offsets[ring_index] as usize;
-            let end = ring_offsets[ring_index + 1] as usize;
-            visit(&xs[start..end], &ys[start..end], ring_index != rings.start);
+            let (ring_xs, ring_ys, _) = selected_ring_columns(ring_offsets, xs, ys, ring_index);
+            visit(ring_xs, ring_ys, ring_index != rings.start);
         }
     })
 }
@@ -1056,15 +1087,14 @@ fn fast_ring_area_columns(xs: &[f64], ys: &[f64], pairs: usize) -> Option<(f64, 
     if pairs == 0 {
         return Some((0.0, 0.0));
     }
-    let ox = xs[0];
-    let oy = ys[0];
+    let (&ox, &oy) = xs.first().zip(ys.first())?;
+    let x0s = xs.get(..pairs).expect("pairs fit the closed x column");
+    let x1s = xs.get(1..=pairs).expect("pairs fit the closed x column");
+    let y0s = ys.get(..pairs).expect("pairs fit the closed y column");
+    let y1s = ys.get(1..=pairs).expect("pairs fit the closed y column");
     let mut cross = 0.0_f64;
     let mut product_scale = 0.0_f64;
-    for ((&x0, &x1), (&y0, &y1)) in xs[..pairs]
-        .iter()
-        .zip(&xs[1..=pairs])
-        .zip(ys[..pairs].iter().zip(&ys[1..=pairs]))
-    {
+    for ((&x0, &x1), (&y0, &y1)) in x0s.iter().zip(x1s).zip(y0s.iter().zip(y1s)) {
         let x0 = x0 - ox;
         let y0 = y0 - oy;
         let x1 = x1 - ox;
