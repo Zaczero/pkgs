@@ -26,7 +26,8 @@ macro_rules! skip_wkt_whitespace {
                 break;
             };
             if byte.is_ascii_whitespace() {
-                $parser.cursor.advance();
+                let whitespace = $parser.cursor.ascii_whitespace_len();
+                $parser.advance_cursor_by(whitespace)?;
                 continue;
             }
             if byte.is_ascii() {
@@ -34,7 +35,7 @@ macro_rules! skip_wkt_whitespace {
             }
             let Some(character) = $parser
                 .input
-                .get($parser.cursor.position..)
+                .get($parser.position()..)
                 .and_then(|tail| tail.chars().next())
             else {
                 break;
@@ -42,7 +43,7 @@ macro_rules! skip_wkt_whitespace {
             if !character.is_whitespace() {
                 break;
             }
-            $parser.cursor.advance_by(character.len_utf8());
+            $parser.advance_cursor_by(character.len_utf8())?;
         }
     }};
 }
@@ -50,37 +51,55 @@ macro_rules! skip_wkt_whitespace {
 macro_rules! parse_wkt_ordinate {
     ($parser:ident, $name:literal, $comma_delimiter:expr) => {{
         skip_wkt_whitespace!($parser);
-        let start = $parser.cursor.position;
-        while let Some(byte) = $parser.cursor.peek() {
-            if byte == b')' || ($comma_delimiter && byte == b',') || byte.is_ascii_whitespace() {
-                break;
-            }
-            if byte == b'(' {
-                $parser.open_parenthesis();
-            } else if byte.is_ascii() {
-                $parser.cursor.advance();
-            } else {
-                let character = $parser
-                    .input
-                    .get($parser.cursor.position..)
-                    .and_then(|tail| tail.chars().next())
-                    .ok_or_else(|| $parser.error_at(start, "invalid WKT coordinate"))?;
-                if character.is_whitespace() {
+        let value = if let Some(value) = $parser.take_ascii_ordinate($comma_delimiter) {
+            value
+        } else {
+            let remaining = $parser.cursor.remaining;
+            while let Some(byte) = $parser.cursor.peek() {
+                if byte == b')' || ($comma_delimiter && byte == b',') || byte.is_ascii_whitespace()
+                {
                     break;
                 }
-                $parser.cursor.advance_by(character.len_utf8());
+                if byte == b'(' {
+                    $parser.open_parenthesis()?;
+                } else if byte.is_ascii() {
+                    $parser.advance_cursor()?;
+                } else {
+                    let character = $parser
+                        .input
+                        .get($parser.position()..)
+                        .and_then(|tail| tail.chars().next())
+                        .ok_or_else(|| {
+                            $parser.error_at($parser.position(), "invalid WKT coordinate")
+                        })?;
+                    if character.is_whitespace() {
+                        break;
+                    }
+                    $parser.advance_cursor_by(character.len_utf8())?;
+                }
             }
-        }
-        if start == $parser.cursor.position {
-            return $parser.fail(format!("coordinate is missing {}", $name));
-        }
-        let token = $parser
-            .cursor
-            .bytes
-            .get(start..$parser.cursor.position)
-            .ok_or_else(|| $parser.error_at(start, "invalid WKT coordinate"))?;
-        lexical_core::parse::<f64>(token)
-            .map_err(|_| $parser.error_at(start, format!("{} coordinate must be numeric", $name)))?
+            let token_length = remaining
+                .len()
+                .checked_sub($parser.cursor.remaining.len())
+                .ok_or_else(|| $parser.error_at($parser.position(), "invalid WKT coordinate"))?;
+            let token = remaining
+                .get(..token_length)
+                .ok_or_else(|| $parser.error_at($parser.position(), "invalid WKT coordinate"))?;
+            if token.is_empty() {
+                return $parser.fail(format!("coordinate is missing {}", $name));
+            }
+            match lexical_core::parse_partial::<f64>(token) {
+                Ok((value, parsed_length)) if parsed_length == token_length => value,
+                _ => {
+                    let end = $parser.position();
+                    let start = end
+                        .checked_sub(token_length)
+                        .ok_or_else(|| $parser.error_at(end, "invalid WKT coordinate"))?;
+                    return $parser.fail_at(start, format!("{} coordinate must be numeric", $name));
+                },
+            }
+        };
+        value
     }};
 }
 
@@ -107,7 +126,7 @@ pub(crate) fn parse_wkt(value: &str) -> Result<Shape> {
     parser
         .parse_document()
         .map_err(|error| parse_content(ParseFormat::Wkt, error))
-        .map_err(|error| error.with_parse_position(parser.cursor.position))
+        .map_err(|error| error.with_parse_position(parser.position()))
 }
 
 struct WktParser<'a> {
@@ -131,12 +150,19 @@ enum ParentScope {
 }
 
 impl<'a> WktParser<'a> {
-    fn new(input: &'a str) -> Self {
+    const fn new(input: &'a str) -> Self {
         Self {
             input,
             cursor: WktByteCursor::new(input.as_bytes()),
             parenthesis_depth: 0,
         }
+    }
+
+    const fn position(&self) -> usize {
+        self.input
+            .len()
+            .checked_sub(self.cursor.remaining.len())
+            .expect("WKT cursor remains a suffix of its input")
     }
 
     fn parse_document(&mut self) -> Result<Shape> {
@@ -162,7 +188,7 @@ impl<'a> WktParser<'a> {
         let axes = match resolve_wkt_member_axes(&header, inherited_axes) {
             Ok(axes) => axes,
             Err(error) => {
-                let position = header.axes_position.unwrap_or(self.cursor.position);
+                let position = header.axes_position.unwrap_or_else(|| self.position());
                 return Err(error.with_parse_position(position));
             },
         };
@@ -178,7 +204,7 @@ impl<'a> WktParser<'a> {
             Ok(shape) => shape,
             Err(error) => {
                 let error = self.position_error(error);
-                if !self.recover_to_geometry_close(body_depth) {
+                if !self.recover_to_geometry_close(body_depth)? {
                     return self.fail("WKT is missing closing parenthesis");
                 }
                 self.check_parent_boundary(parent_scope)?;
@@ -192,23 +218,23 @@ impl<'a> WktParser<'a> {
     }
 
     fn read_header(&mut self, parent_scope: ParentScope) -> Result<WktHeader> {
-        let start = self.cursor.position;
+        let start = self.position();
         let mut body_opened = false;
         while let Some(byte) = self.cursor.peek() {
             if byte == b'(' {
-                self.open_parenthesis();
+                self.open_parenthesis()?;
                 body_opened = true;
                 break;
             }
             if matches!(parent_scope, ParentScope::Collection) && matches!(byte, b',' | b')') {
                 break;
             }
-            self.advance_char();
+            self.advance_char()?;
         }
 
         let text = self
             .input
-            .get(start..self.cursor.position)
+            .get(start..self.position())
             .ok_or_else(|| self.error_at(start, "invalid WKT geometry header"))?;
         parse_wkt_header(text, body_opened, start)
     }
@@ -272,7 +298,7 @@ impl<'a> WktParser<'a> {
         } else {
             inherited_axes
         };
-        if self.at_parenthesis_close() {
+        if self.at_parenthesis_close()? {
             return self
                 .fail("empty parenthesized WKT member list; use EMPTY for an empty geometry");
         }
@@ -281,8 +307,8 @@ impl<'a> WktParser<'a> {
         let mut first_error = None;
         let mut after_comma = false;
         loop {
-            self.skip_whitespace();
-            if self.at_parenthesis_close() {
+            self.skip_whitespace()?;
+            if self.at_parenthesis_close()? {
                 if after_comma {
                     return self.fail("trailing comma in geometry collection");
                 }
@@ -300,27 +326,30 @@ impl<'a> WktParser<'a> {
             }
 
             let member_depth = self.parenthesis_depth;
-            match self.parse_geometry(depth.wrapping_add(1), child_axes, ParentScope::Collection) {
+            let child_depth = depth
+                .checked_add(1)
+                .ok_or_else(|| self.error_at(self.position(), "WKT nesting depth overflow"))?;
+            match self.parse_geometry(child_depth, child_axes, ParentScope::Collection) {
                 Ok(member) => members.push(member),
                 Err(error) => {
                     remember_first(&mut first_error, error);
-                    self.recover_collection_member(member_depth);
+                    self.recover_collection_member(member_depth)?;
                 },
             }
 
-            self.skip_whitespace();
+            self.skip_whitespace()?;
             match self.cursor.peek() {
                 Some(b',') => {
-                    self.cursor.advance();
+                    self.advance_cursor()?;
                     after_comma = true;
                 },
                 Some(b')') => break,
                 None => return self.fail("WKT is missing closing parenthesis"),
                 Some(_) => {
-                    self.recover_collection_member(member_depth);
+                    self.recover_collection_member(member_depth)?;
                     match self.cursor.peek() {
                         Some(b',') => {
-                            self.cursor.advance();
+                            self.advance_cursor()?;
                             after_comma = true;
                         },
                         Some(b')') => break,
@@ -337,7 +366,7 @@ impl<'a> WktParser<'a> {
         if let Some(error) = first_error {
             return Err(error);
         }
-        Ok(Shape::geometry_collection(members)?)
+        Shape::geometry_collection(members)
     }
 
     fn parse_multi_point_body(
@@ -345,7 +374,7 @@ impl<'a> WktParser<'a> {
         mut axes: Option<CoordinateAxes>,
         default_axes: CoordinateAxes,
     ) -> Result<Shape> {
-        if !self.is_wkt_member_list() {
+        if !self.is_wkt_member_list()? {
             let axes = if let Some(axes) = axes {
                 axes
             } else {
@@ -354,7 +383,7 @@ impl<'a> WktParser<'a> {
             let coordinates = self.parse_coordinate_sequence(axes, true)?;
             return Ok(Shape::MultiPoint(MultiPoint::from_coordseq(coordinates)?));
         }
-        if self.at_parenthesis_close() {
+        if self.at_parenthesis_close()? {
             return self
                 .fail("empty parenthesized WKT member list; use EMPTY for an empty geometry");
         }
@@ -364,8 +393,8 @@ impl<'a> WktParser<'a> {
         let mut inference_error = None;
         let mut after_comma = false;
         loop {
-            self.skip_whitespace();
-            if self.at_parenthesis_close() {
+            self.skip_whitespace()?;
+            if self.at_parenthesis_close()? {
                 if after_comma {
                     return self.fail("trailing comma in WKT member list");
                 }
@@ -376,10 +405,10 @@ impl<'a> WktParser<'a> {
             }
 
             if self.is_wkt_empty_keyword() {
-                self.cursor.advance_by(5);
+                self.advance_cursor_by(5)?;
                 members.push(MultiMember::Empty);
             } else if self.cursor.peek() == Some(b'(') {
-                self.open_parenthesis();
+                self.open_parenthesis()?;
                 let group_depth = self.parenthesis_depth;
                 if axes.is_none() {
                     match self.infer_axes(false, false) {
@@ -387,7 +416,7 @@ impl<'a> WktParser<'a> {
                         Err(error) => {
                             remember_first(&mut inference_error, error);
                             axes = Some(CoordinateAxes::XY);
-                            if !self.recover_to_group_close(group_depth) {
+                            if !self.recover_to_group_close(group_depth)? {
                                 return self.fail("WKT is missing closing parenthesis");
                             }
                             self.finish_member_separator(&mut after_comma)?;
@@ -400,7 +429,7 @@ impl<'a> WktParser<'a> {
                     Ok(point) => {
                         if let Err(error) = self.close_parenthesis() {
                             remember_first(&mut first_error, error);
-                            if !self.recover_to_group_close(group_depth) {
+                            if !self.recover_to_group_close(group_depth)? {
                                 return self.fail("WKT is missing closing parenthesis");
                             }
                         } else {
@@ -414,7 +443,7 @@ impl<'a> WktParser<'a> {
                     },
                     Err(error) => {
                         remember_first(&mut first_error, error);
-                        if !self.recover_to_group_close(group_depth) {
+                        if !self.recover_to_group_close(group_depth)? {
                             return self.fail("WKT is missing closing parenthesis");
                         }
                     },
@@ -443,7 +472,7 @@ impl<'a> WktParser<'a> {
         mut axes: Option<CoordinateAxes>,
         default_axes: CoordinateAxes,
     ) -> Result<Shape> {
-        if self.at_parenthesis_close() {
+        if self.at_parenthesis_close()? {
             return self
                 .fail("empty parenthesized WKT member list; use EMPTY for an empty geometry");
         }
@@ -453,8 +482,8 @@ impl<'a> WktParser<'a> {
         let mut inference_error = None;
         let mut after_comma = false;
         loop {
-            self.skip_whitespace();
-            if self.at_parenthesis_close() {
+            self.skip_whitespace()?;
+            if self.at_parenthesis_close()? {
                 if after_comma {
                     return self.fail("trailing comma in WKT member list");
                 }
@@ -465,10 +494,10 @@ impl<'a> WktParser<'a> {
             }
 
             if self.is_wkt_empty_keyword() {
-                self.cursor.advance_by(5);
+                self.advance_cursor_by(5)?;
                 members.push(MultiMember::Empty);
             } else if self.cursor.peek() == Some(b'(') {
-                self.open_parenthesis();
+                self.open_parenthesis()?;
                 let group_depth = self.parenthesis_depth;
                 if axes.is_none() {
                     match self.infer_axes(true, true) {
@@ -476,7 +505,7 @@ impl<'a> WktParser<'a> {
                         Err(error) => {
                             remember_first(&mut inference_error, error);
                             axes = Some(CoordinateAxes::XY);
-                            if !self.recover_to_group_close(group_depth) {
+                            if !self.recover_to_group_close(group_depth)? {
                                 return self.fail("WKT is missing closing parenthesis");
                             }
                             self.finish_member_separator(&mut after_comma)?;
@@ -495,14 +524,14 @@ impl<'a> WktParser<'a> {
                         },
                         Err(error) => {
                             remember_first(&mut first_error, error);
-                            if !self.recover_to_group_close(group_depth) {
+                            if !self.recover_to_group_close(group_depth)? {
                                 return self.fail("WKT is missing closing parenthesis");
                             }
                         },
                     },
                     Err(error) => {
                         remember_first(&mut first_error, error);
-                        if !self.recover_to_group_close(group_depth) {
+                        if !self.recover_to_group_close(group_depth)? {
                             return self.fail("WKT is missing closing parenthesis");
                         }
                     },
@@ -531,7 +560,7 @@ impl<'a> WktParser<'a> {
         mut axes: Option<CoordinateAxes>,
         default_axes: CoordinateAxes,
     ) -> Result<Shape> {
-        if self.at_parenthesis_close() {
+        if self.at_parenthesis_close()? {
             return self
                 .fail("empty parenthesized WKT member list; use EMPTY for an empty geometry");
         }
@@ -541,8 +570,8 @@ impl<'a> WktParser<'a> {
         let mut inference_error = None;
         let mut after_comma = false;
         loop {
-            self.skip_whitespace();
-            if self.at_parenthesis_close() {
+            self.skip_whitespace()?;
+            if self.at_parenthesis_close()? {
                 if after_comma {
                     return self.fail("trailing comma in WKT member list");
                 }
@@ -553,10 +582,10 @@ impl<'a> WktParser<'a> {
             }
 
             if self.is_wkt_empty_keyword() {
-                self.cursor.advance_by(5);
+                self.advance_cursor_by(5)?;
                 members.push(MultiMember::Empty);
             } else if self.cursor.peek() == Some(b'(') {
-                self.open_parenthesis();
+                self.open_parenthesis()?;
                 let group_depth = self.parenthesis_depth;
                 let axes_before = axes;
                 match self.parse_polygon_rings(&mut axes) {
@@ -564,7 +593,7 @@ impl<'a> WktParser<'a> {
                         Ok(()) => members.push(MultiMember::Value(polygon)),
                         Err(error) => {
                             remember_first(&mut first_error, error);
-                            if !self.recover_to_group_close(group_depth) {
+                            if !self.recover_to_group_close(group_depth)? {
                                 return self.fail("WKT is missing closing parenthesis");
                             }
                         },
@@ -576,7 +605,7 @@ impl<'a> WktParser<'a> {
                         } else {
                             remember_first(&mut first_error, error);
                         }
-                        if !self.recover_to_group_close(group_depth) {
+                        if !self.recover_to_group_close(group_depth)? {
                             return self.fail("WKT is missing closing parenthesis");
                         }
                     },
@@ -601,7 +630,7 @@ impl<'a> WktParser<'a> {
     }
 
     fn parse_polygon_rings(&mut self, axes: &mut Option<CoordinateAxes>) -> Result<Polygon> {
-        if self.at_parenthesis_close() {
+        if self.at_parenthesis_close()? {
             return self
                 .fail("empty parenthesized WKT member list; use EMPTY for an empty geometry");
         }
@@ -614,8 +643,8 @@ impl<'a> WktParser<'a> {
         let mut empty_before_axes_position = None;
         let mut after_comma = false;
         loop {
-            self.skip_whitespace();
-            if self.at_parenthesis_close() {
+            self.skip_whitespace()?;
+            if self.at_parenthesis_close()? {
                 if after_comma {
                     return self.fail("trailing comma in WKT member list");
                 }
@@ -626,8 +655,8 @@ impl<'a> WktParser<'a> {
             }
 
             if self.is_wkt_empty_keyword() {
-                let empty_position = self.cursor.position;
-                self.cursor.advance_by(5);
+                let empty_position = self.position();
+                self.advance_cursor_by(5)?;
                 if axes.is_some() {
                     remember_first(
                         &mut first_error,
@@ -638,7 +667,7 @@ impl<'a> WktParser<'a> {
                 }
             } else if self.cursor.peek() == Some(b'(') {
                 saw_group = true;
-                self.open_parenthesis();
+                self.open_parenthesis()?;
                 let ring_depth = self.parenthesis_depth;
                 if axes.is_none() {
                     match self.infer_axes(true, true) {
@@ -654,7 +683,7 @@ impl<'a> WktParser<'a> {
                         Err(error) => {
                             remember_first(&mut inference_error, error);
                             *axes = Some(CoordinateAxes::XY);
-                            if !self.recover_to_group_close(ring_depth) {
+                            if !self.recover_to_group_close(ring_depth)? {
                                 return self.fail("WKT is missing closing parenthesis");
                             }
                             self.finish_member_separator(&mut after_comma)?;
@@ -663,7 +692,7 @@ impl<'a> WktParser<'a> {
                     }
                 }
                 if inference_error.is_some() {
-                    if !self.recover_to_group_close(ring_depth) {
+                    if !self.recover_to_group_close(ring_depth)? {
                         return self.fail("WKT is missing closing parenthesis");
                     }
                     self.finish_member_separator(&mut after_comma)?;
@@ -686,14 +715,14 @@ impl<'a> WktParser<'a> {
                         },
                         Err(error) => {
                             remember_first(&mut first_error, error);
-                            if !self.recover_to_group_close(ring_depth) {
+                            if !self.recover_to_group_close(ring_depth)? {
                                 return self.fail("WKT is missing closing parenthesis");
                             }
                         },
                     },
                     Err(error) => {
                         remember_first(&mut first_error, error);
-                        if !self.recover_to_group_close(ring_depth) {
+                        if !self.recover_to_group_close(ring_depth)? {
                             return self.fail("WKT is missing closing parenthesis");
                         }
                     },
@@ -735,15 +764,20 @@ impl<'a> WktParser<'a> {
         reserve_from_input_tail: bool,
     ) -> Result<CoordSeq> {
         let axes = CoordinateAxes::new(HasZ(Z), HasM(M));
-        let first_start = self.cursor.position;
+        let first_start = self.position();
+        let remaining_bytes = self.cursor.remaining.len();
         let first = read_wkt_coordinate_axes!(self, Z, M, true);
-        let first_end = self.cursor.position;
-        let stride = first_end
-            .saturating_sub(first_start)
-            .saturating_add(2)
-            .max(1);
+        let first_bytes = remaining_bytes
+            .checked_sub(self.cursor.remaining.len())
+            .ok_or_else(|| self.error_at(first_start, "invalid WKT coordinate"))?;
+        let stride = first_bytes
+            .checked_add(2)
+            .map(|stride| stride.max(1))
+            .ok_or_else(|| self.error_at(first_start, "WKT coordinate size overflow"))?;
         let capacity = if reserve_from_input_tail {
-            self.cursor.bytes.len().saturating_sub(first_start) / stride
+            remaining_bytes
+                .checked_div(stride)
+                .ok_or_else(|| self.error_at(first_start, "WKT coordinate size overflow"))?
         } else {
             1
         };
@@ -754,7 +788,7 @@ impl<'a> WktParser<'a> {
             skip_wkt_whitespace!(self);
             match self.cursor.peek() {
                 Some(b',') => {
-                    self.cursor.advance();
+                    self.advance_cursor()?;
                     let coordinate = read_wkt_coordinate_axes!(self, Z, M, true);
                     builder.push_xyzm(coordinate.0, coordinate.1, coordinate.2, coordinate.3);
                 },
@@ -782,6 +816,29 @@ impl<'a> WktParser<'a> {
         Ok(Point::new_raw_axes(x, y, ZOrdinate(z), MOrdinate(m)))
     }
 
+    fn take_ascii_ordinate(&mut self, comma_delimiter: bool) -> Option<f64> {
+        let remaining = self.cursor.remaining;
+        let (value, length) = lexical_core::parse_partial::<f64>(remaining).ok()?;
+        if length == 0 {
+            return None;
+        }
+        let tail = remaining.get(length..)?;
+        if let Some(&byte) = tail.first() {
+            if byte.is_ascii() {
+                if byte != b')' && (!comma_delimiter || byte != b',') && !byte.is_ascii_whitespace()
+                {
+                    return None;
+                }
+            } else {
+                let position = self.position().checked_add(length)?;
+                if !self.input.get(position..)?.chars().next()?.is_whitespace() {
+                    return None;
+                }
+            }
+        }
+        self.cursor.advance_by(length).then_some(value)
+    }
+
     fn validate_coordinate_end(&mut self, comma_delimiter: bool) -> Result<()> {
         skip_wkt_whitespace!(self);
         if self
@@ -799,8 +856,8 @@ impl<'a> WktParser<'a> {
         comma_delimiter: bool,
         empty_means_missing_x: bool,
     ) -> Result<CoordinateAxes> {
-        let start = self.cursor.position;
-        let end = self.coordinate_group_end(start, comma_delimiter);
+        let start = self.position();
+        let end = self.coordinate_group_end(start, comma_delimiter)?;
         let coordinate = self
             .input
             .get(start..end)
@@ -812,32 +869,38 @@ impl<'a> WktParser<'a> {
         infer_wkt_axes_from_ordinate_count(count).map_err(|error| error.with_parse_position(end))
     }
 
-    fn coordinate_group_end(&self, start: usize, comma_delimiter: bool) -> usize {
-        let bytes = self.cursor.bytes;
-        let mut position = start;
+    fn coordinate_group_end(&self, start: usize, comma_delimiter: bool) -> Result<usize> {
+        let bytes = self.cursor.remaining;
         let mut nested = 0_usize;
-        while let Some(byte) = bytes.get(position).copied() {
+        for (offset, byte) in bytes.iter().copied().enumerate() {
             if comma_delimiter && byte == b',' {
-                break;
+                return start
+                    .checked_add(offset)
+                    .ok_or_else(|| self.error_at(start, "WKT input position overflow"));
             }
             if byte == b'(' {
-                nested = nested.wrapping_add(1);
+                nested = nested
+                    .checked_add(1)
+                    .ok_or_else(|| self.error_at(start, "WKT nesting depth overflow"))?;
             } else if byte == b')' {
                 if nested == 0 {
-                    break;
+                    return start
+                        .checked_add(offset)
+                        .ok_or_else(|| self.error_at(start, "WKT input position overflow"));
                 }
-                nested = nested.wrapping_sub(1);
+                nested = nested
+                    .checked_sub(1)
+                    .ok_or_else(|| self.error_at(start, "WKT nesting depth underflow"))?;
             }
-            position = position.wrapping_add(1);
         }
-        position
+        Ok(self.input.len())
     }
 
     fn finish_member_separator(&mut self, after_comma: &mut bool) -> Result<()> {
-        self.skip_whitespace();
+        self.skip_whitespace()?;
         match self.cursor.peek() {
             Some(b',') => {
-                self.cursor.advance();
+                self.advance_cursor()?;
                 *after_comma = true;
                 Ok(())
             },
@@ -851,63 +914,69 @@ impl<'a> WktParser<'a> {
     }
 
     fn check_parent_boundary(&mut self, scope: ParentScope) -> Result<()> {
-        self.skip_whitespace();
+        self.skip_whitespace()?;
         match (scope, self.cursor.peek()) {
-            (ParentScope::Root, None) => Ok(()),
-            (ParentScope::Collection, None | Some(b',' | b')')) => Ok(()),
+            (ParentScope::Root | ParentScope::Collection, None)
+            | (ParentScope::Collection, Some(b',' | b')')) => Ok(()),
             (_, Some(_)) => self.fail("trailing text after WKT geometry"),
         }
     }
 
-    fn is_wkt_member_list(&mut self) -> bool {
-        self.skip_whitespace();
-        self.cursor.peek() == Some(b'(') || self.is_wkt_empty_keyword()
+    fn is_wkt_member_list(&mut self) -> Result<bool> {
+        self.skip_whitespace()?;
+        Ok(self.cursor.peek() == Some(b'(') || self.is_wkt_empty_keyword())
     }
 
-    fn is_wkt_empty_keyword(&mut self) -> bool {
+    fn is_wkt_empty_keyword(&self) -> bool {
         self.cursor
-            .bytes
-            .get(self.cursor.position..)
-            .and_then(|tail| tail.get(..5))
+            .remaining
+            .get(..5)
             .is_some_and(|keyword| keyword.eq_ignore_ascii_case(b"EMPTY"))
             && !self
                 .cursor
-                .bytes
-                .get(self.cursor.position.wrapping_add(5))
+                .remaining
+                .get(5)
                 .is_some_and(u8::is_ascii_alphanumeric)
     }
 
-    fn at_parenthesis_close(&mut self) -> bool {
-        self.skip_whitespace();
-        self.cursor.peek() == Some(b')')
+    fn at_parenthesis_close(&mut self) -> Result<bool> {
+        self.skip_whitespace()?;
+        Ok(self.cursor.peek() == Some(b')'))
     }
 
-    fn skip_whitespace(&mut self) {
+    fn skip_whitespace(&mut self) -> Result<()> {
         skip_wkt_whitespace!(self);
+        Ok(())
     }
 
-    fn advance_char(&mut self) {
+    fn advance_char(&mut self) -> Result<()> {
         let Some(byte) = self.cursor.peek() else {
-            return;
+            return Ok(());
         };
         if byte.is_ascii() {
-            self.cursor.advance();
+            self.advance_cursor()?;
         } else if let Some(character) = self
             .input
-            .get(self.cursor.position..)
+            .get(self.position()..)
             .and_then(|tail| tail.chars().next())
         {
-            self.cursor.advance_by(character.len_utf8());
+            self.advance_cursor_by(character.len_utf8())?;
         }
+        Ok(())
     }
 
-    fn open_parenthesis(&mut self) {
-        self.cursor.advance();
-        self.parenthesis_depth = self.parenthesis_depth.wrapping_add(1);
+    fn open_parenthesis(&mut self) -> Result<()> {
+        let depth = self
+            .parenthesis_depth
+            .checked_add(1)
+            .ok_or_else(|| self.error_at(self.position(), "WKT nesting depth overflow"))?;
+        self.advance_cursor()?;
+        self.parenthesis_depth = depth;
+        Ok(())
     }
 
     fn close_parenthesis(&mut self) -> Result<()> {
-        self.skip_whitespace();
+        self.skip_whitespace()?;
         if self.cursor.peek() != Some(b')') {
             return if self.cursor.is_empty() {
                 self.fail("WKT is missing closing parenthesis")
@@ -915,58 +984,97 @@ impl<'a> WktParser<'a> {
                 self.fail("invalid WKT parentheses")
             };
         }
-        self.cursor.advance();
-        self.parenthesis_depth = self.parenthesis_depth.wrapping_sub(1);
+        let depth = self
+            .parenthesis_depth
+            .checked_sub(1)
+            .ok_or_else(|| self.error_at(self.position(), "WKT nesting depth underflow"))?;
+        self.advance_cursor()?;
+        self.parenthesis_depth = depth;
         Ok(())
     }
 
-    fn recover_to_geometry_close(&mut self, body_depth: usize) -> bool {
+    fn recover_to_geometry_close(&mut self, body_depth: usize) -> Result<bool> {
         let mut nested = self.parenthesis_depth.saturating_sub(body_depth);
         while let Some(byte) = self.cursor.peek() {
             match byte {
                 b'(' => {
-                    nested = nested.wrapping_add(1);
-                    self.open_parenthesis();
+                    nested = nested.checked_add(1).ok_or_else(|| {
+                        self.error_at(self.position(), "WKT nesting depth overflow")
+                    })?;
+                    self.open_parenthesis()?;
                 },
                 b')' if nested == 0 => {
-                    self.cursor.advance();
-                    self.parenthesis_depth = self.parenthesis_depth.wrapping_sub(1);
-                    return true;
+                    let depth = self.parenthesis_depth.checked_sub(1).ok_or_else(|| {
+                        self.error_at(self.position(), "WKT nesting depth underflow")
+                    })?;
+                    self.advance_cursor()?;
+                    self.parenthesis_depth = depth;
+                    return Ok(true);
                 },
                 b')' => {
-                    nested = nested.wrapping_sub(1);
-                    self.cursor.advance();
-                    self.parenthesis_depth = self.parenthesis_depth.wrapping_sub(1);
+                    nested = nested.checked_sub(1).ok_or_else(|| {
+                        self.error_at(self.position(), "WKT nesting depth underflow")
+                    })?;
+                    let depth = self.parenthesis_depth.checked_sub(1).ok_or_else(|| {
+                        self.error_at(self.position(), "WKT nesting depth underflow")
+                    })?;
+                    self.advance_cursor()?;
+                    self.parenthesis_depth = depth;
                 },
-                _ => self.advance_char(),
+                _ => self.advance_char()?,
             }
         }
-        false
+        Ok(false)
     }
 
-    fn recover_to_group_close(&mut self, group_depth: usize) -> bool {
+    fn recover_to_group_close(&mut self, group_depth: usize) -> Result<bool> {
         self.recover_to_geometry_close(group_depth)
     }
 
-    fn recover_collection_member(&mut self, base_depth: usize) {
+    fn recover_collection_member(&mut self, base_depth: usize) -> Result<()> {
         let mut nested = self.parenthesis_depth.saturating_sub(base_depth);
         while let Some(byte) = self.cursor.peek() {
             match byte {
                 b'(' => {
-                    nested = nested.wrapping_add(1);
-                    self.open_parenthesis();
+                    nested = nested.checked_add(1).ok_or_else(|| {
+                        self.error_at(self.position(), "WKT nesting depth overflow")
+                    })?;
+                    self.open_parenthesis()?;
                 },
-                b')' if nested == 0 => break,
+                b')' | b',' if nested == 0 => break,
                 b')' => {
-                    nested = nested.wrapping_sub(1);
-                    self.cursor.advance();
-                    self.parenthesis_depth = self.parenthesis_depth.wrapping_sub(1);
+                    nested = nested.checked_sub(1).ok_or_else(|| {
+                        self.error_at(self.position(), "WKT nesting depth underflow")
+                    })?;
+                    let depth = self.parenthesis_depth.checked_sub(1).ok_or_else(|| {
+                        self.error_at(self.position(), "WKT nesting depth underflow")
+                    })?;
+                    self.advance_cursor()?;
+                    self.parenthesis_depth = depth;
                 },
-                b',' if nested == 0 => break,
-                _ => self.advance_char(),
+                _ => self.advance_char()?,
             }
         }
         debug_assert!(self.parenthesis_depth >= base_depth);
+        Ok(())
+    }
+
+    fn advance_cursor(&mut self) -> Result<()> {
+        if !self.cursor.advance() {
+            return self.fail("WKT input position overflow");
+        }
+        #[cfg(test)]
+        WKT_CURSOR_WORK.with(|work| work.set(work.get().wrapping_add(1)));
+        Ok(())
+    }
+
+    fn advance_cursor_by(&mut self, count: usize) -> Result<()> {
+        if !self.cursor.advance_by(count) {
+            return self.fail("WKT input position overflow");
+        }
+        #[cfg(test)]
+        WKT_CURSOR_WORK.with(|work| work.set(work.get().wrapping_add(count)));
+        Ok(())
     }
 
     fn error_at(&self, position: usize, message: impl Into<Box<str>>) -> crate::error::Error {
@@ -976,15 +1084,17 @@ impl<'a> WktParser<'a> {
     fn position_error(&self, error: crate::error::Error) -> crate::error::Error {
         match error.kind() {
             crate::error::ErrorKind::Geometry(_) => {
-                IoError::parse_at(ParseFormat::Wkt, self.cursor.position, error.to_string())
+                IoError::parse_at(ParseFormat::Wkt, self.position(), error.to_string())
             },
-            crate::error::ErrorKind::Io(_) => error.with_parse_position(self.cursor.position),
-            _ => error,
+            crate::error::ErrorKind::Io(_) => error.with_parse_position(self.position()),
+            crate::error::ErrorKind::Crs(_)
+            | crate::error::ErrorKind::Frame(_)
+            | crate::error::ErrorKind::Resource(_) => error,
         }
     }
 
     fn fail<T>(&self, message: impl Into<Box<str>>) -> Result<T> {
-        self.fail_at(self.cursor.position, message)
+        self.fail_at(self.position(), message)
     }
 
     fn fail_at<T>(&self, position: usize, message: impl Into<Box<str>>) -> Result<T> {
@@ -1081,15 +1191,16 @@ fn parse_wkt_type_keyword_upper(upper: &[u8]) -> Option<(GeometryKind, Option<Co
 }
 
 fn parse_wkt_header(source: &str, body_opened: bool, input_offset: usize) -> Result<WktHeader> {
-    let leading_whitespace = source.len().saturating_sub(source.trim_start().len());
+    let header_error =
+        |position: usize, message: Box<str>| match checked_wkt_position(input_offset, position) {
+            Ok(position) => IoError::parse_at(ParseFormat::Wkt, position, message),
+            Err(error) => error,
+        };
+    let leading_whitespace = source
+        .len()
+        .checked_sub(source.trim_start().len())
+        .ok_or_else(|| header_error(0, "WKT input position overflow".into()))?;
     let text = source.trim();
-    let header_error = |position: usize, message: Box<str>| {
-        IoError::parse_at(
-            ParseFormat::Wkt,
-            input_offset.wrapping_add(position),
-            message,
-        )
-    };
     let keyword_len = text
         .find(|ch: char| !ch.is_ascii_alphabetic())
         .unwrap_or(text.len());
@@ -1112,8 +1223,14 @@ fn parse_wkt_header(source: &str, body_opened: bool, input_offset: usize) -> Res
         .get(keyword_len..)
         .ok_or_else(|| header_error(leading_whitespace, "invalid WKT geometry type".into()))?;
     let mut rest = raw_rest.trim_start();
-    let mut rest_position =
-        leading_whitespace + keyword_len + raw_rest.len().saturating_sub(rest.len());
+    let leading_rest_whitespace = raw_rest
+        .len()
+        .checked_sub(rest.len())
+        .ok_or_else(|| header_error(leading_whitespace, "invalid WKT geometry header".into()))?;
+    let mut rest_position = leading_whitespace
+        .checked_add(keyword_len)
+        .and_then(|position| position.checked_add(leading_rest_whitespace))
+        .ok_or_else(|| header_error(leading_whitespace, "WKT input position overflow".into()))?;
     let (mut axes, mut axes_explicit) =
         compact_axes.map_or((CoordinateAxes::XY, false), |compact| (compact, true));
     let compact_axes_length = match compact_axes {
@@ -1121,11 +1238,24 @@ fn parse_wkt_header(source: &str, body_opened: bool, input_offset: usize) -> Res
         Some(_) => 1,
         None => 0,
     };
-    let mut axes_position = compact_axes.map(|_| {
-        input_offset
-            .wrapping_add(leading_whitespace)
-            .wrapping_add(keyword_len.saturating_sub(compact_axes_length))
-    });
+    let mut axes_position = if compact_axes.is_some() {
+        let suffix_start = keyword_len
+            .checked_sub(compact_axes_length)
+            .ok_or_else(|| {
+                header_error(
+                    leading_whitespace,
+                    "invalid compact WKT dimensional tag".into(),
+                )
+            })?;
+        let position = leading_whitespace
+            .checked_add(suffix_start)
+            .ok_or_else(|| {
+                header_error(leading_whitespace, "WKT input position overflow".into())
+            })?;
+        Some(checked_wkt_position(input_offset, position)?)
+    } else {
+        None
+    };
     if let Some(axis_len) = rest
         .find(|ch: char| !ch.is_ascii_alphabetic())
         .filter(|_| !rest.starts_with("EMPTY"))
@@ -1153,14 +1283,19 @@ fn parse_wkt_header(source: &str, body_opened: bool, input_offset: usize) -> Res
                 ));
             };
             axes_explicit = true;
-            axes_position = Some(input_offset.wrapping_add(rest_position));
+            axes_position = Some(checked_wkt_position(input_offset, rest_position)?);
             let after_axis = rest
                 .get(axis_len..)
                 .ok_or_else(|| header_error(rest_position, "invalid WKT dimensional tag".into()))?;
             rest = after_axis.trim_start();
+            let following_whitespace = after_axis
+                .len()
+                .checked_sub(rest.len())
+                .ok_or_else(|| header_error(rest_position, "invalid WKT dimensional tag".into()))?;
             rest_position = rest_position
-                .wrapping_add(axis_len)
-                .wrapping_add(after_axis.len().saturating_sub(rest.len()));
+                .checked_add(axis_len)
+                .and_then(|position| position.checked_add(following_whitespace))
+                .ok_or_else(|| header_error(rest_position, "WKT input position overflow".into()))?;
         }
     } else if !rest.is_empty() && !rest.starts_with('(') && !rest.eq_ignore_ascii_case("EMPTY") {
         return Err(header_error(
@@ -1198,6 +1333,12 @@ fn parse_wkt_header(source: &str, body_opened: bool, input_offset: usize) -> Res
     })
 }
 
+fn checked_wkt_position(offset: usize, relative: usize) -> Result<usize> {
+    offset
+        .checked_add(relative)
+        .ok_or_else(|| IoError::parse_at(ParseFormat::Wkt, offset, "WKT input position overflow"))
+}
+
 fn unsupported_wkt_geometry_type_message(keyword: &str) -> String {
     let rendered = match keyword {
         "CIRCULARSTRING" => "CircularString",
@@ -1215,33 +1356,44 @@ fn unsupported_wkt_geometry_type_message(keyword: &str) -> String {
 }
 
 struct WktByteCursor<'a> {
-    bytes: &'a [u8],
-    position: usize,
+    remaining: &'a [u8],
 }
 
 impl<'a> WktByteCursor<'a> {
     const fn new(bytes: &'a [u8]) -> Self {
-        Self { bytes, position: 0 }
+        Self { remaining: bytes }
     }
 
-    fn peek(&self) -> Option<u8> {
-        self.bytes.get(self.position).copied()
+    const fn peek(&self) -> Option<u8> {
+        self.remaining.first().copied()
     }
 
     const fn is_empty(&self) -> bool {
-        self.position == self.bytes.len()
+        self.remaining.is_empty()
     }
 
-    fn advance(&mut self) {
-        self.position = self.position.wrapping_add(1);
-        #[cfg(test)]
-        WKT_CURSOR_WORK.with(|work| work.set(work.get().wrapping_add(1)));
+    fn ascii_whitespace_len(&self) -> usize {
+        self.remaining
+            .iter()
+            .position(|byte| !byte.is_ascii_whitespace())
+            .unwrap_or(self.remaining.len())
     }
 
-    fn advance_by(&mut self, count: usize) {
-        self.position = self.position.wrapping_add(count);
-        #[cfg(test)]
-        WKT_CURSOR_WORK.with(|work| work.set(work.get().wrapping_add(count)));
+    const fn advance(&mut self) -> bool {
+        if let Some((_, tail)) = self.remaining.split_first() {
+            self.remaining = tail;
+            true
+        } else {
+            false
+        }
+    }
+
+    fn advance_by(&mut self, count: usize) -> bool {
+        let Some(remaining) = self.remaining.get(count..) else {
+            return false;
+        };
+        self.remaining = remaining;
+        true
     }
 }
 
@@ -1332,8 +1484,9 @@ mod tests {
         let depth = 128;
         let prefix = "GEOMETRYCOLLECTION (".repeat(depth);
         let suffix = ")".repeat(depth);
-        let coordinates = "0.1 0.2, ".repeat(8191) + "0.1 0.2";
-        let body_length = 131_072_usize;
+        let mut coordinates = "0.1 0.2, ".repeat(8191);
+        coordinates.push_str("0.1 0.2");
+        let body_length = 0x0002_0000_usize;
         let fixed = prefix.len() + "LINESTRING (".len() + coordinates.len() + suffix.len() + 1;
         let input = format!(
             "{prefix}LINESTRING ({}{padding}){suffix}",
