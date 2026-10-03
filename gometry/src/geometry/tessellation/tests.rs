@@ -938,9 +938,8 @@ fn assert_earcut_oracle(polygon: Polygon, expected_triangles: usize) -> Vec<Shap
     let holes = polygon_holes(&polygon);
     let source_area = polygon_area_for_oracle(&polygon);
     let source = Shape::Polygon(polygon);
-    // One prepared source for every centroid: the shape-level predicate
-    // rebuilds both topology graphs per call, so the oracle otherwise pays a
-    // full graph construction per triangle.
+    // Exact point location reuses the source index across centroids. For a
+    // polygon and a point, contains means strictly interior membership.
     let source_plan = crate::geometry::PreparedPlan::transient(&source);
     let triangles = source
         .polygon_triangles()
@@ -978,14 +977,9 @@ fn assert_earcut_oracle(polygon: Polygon, expected_triangles: usize) -> Vec<Shap
             (corners[0].x + corners[1].x + corners[2].x) / 3.0,
             (corners[0].y + corners[1].y + corners[2].y) / 3.0,
         );
-        let centroid = Shape::Point(centroid_point);
-        assert!(
-            crate::geometry::graph_relate_data(
-                &source_plan,
-                &crate::geometry::PreparedPlan::transient(&centroid),
-            )
-            .unwrap()
-            .is_contains(),
+        assert_eq!(
+            source_plan.cartesian_point_location(centroid_point).unwrap(),
+            crate::geometry::Loc::Interior,
             "triangle centroid outside source"
         );
         for hole in &holes {
