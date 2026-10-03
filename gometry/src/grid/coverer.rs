@@ -25,6 +25,7 @@ use crate::grid::affine_source::{
     GeographicCoverageSource, PackedBvh, PackedBvhEntry, RectClass as AffineRectClass,
     RectangularCandidate, SphericalGridTarget,
 };
+use crate::grid::cell::HierarchicalCell;
 use crate::grid::{CoverError, ensure_cover_budget};
 use crate::predicates::engine::{Predicate, PreparedTopologyPair, topology_scalar_pair};
 
@@ -40,11 +41,12 @@ pub(crate) trait RectCell: Copy + Eq + Ord {
     fn depth(self) -> u8;
     /// The cell's exact lon/lat bounding rectangle.
     fn bounds(self) -> Bounds;
-    /// The children one level finer.
+    /// The children one level finer, in increasing hierarchy-range order.
     fn children(self) -> impl ExactSizeIterator<Item = Self>;
     /// Push each child with its lon/lat bounds into `out`, derived from
     /// `parent_bounds` when the grid allows (tiles: four children from parent
-    /// edges + one shared latitude split). Default recomputes `child.bounds()`.
+    /// edges + one shared latitude split), retaining child order. Default
+    /// recomputes `child.bounds()`.
     fn push_children_bounds(self, parent_bounds: Bounds, out: &mut Vec<(Self, Bounds)>) {
         let _ = parent_bounds;
         let children = self.children();
@@ -532,11 +534,10 @@ const fn rect_probe(bounds: Bounds) -> Segment {
 /// boundary cells, `Center` retains interior cells and boundary cells whose
 /// binary64 midpoint is covered, and `Within` retains only interior cells.
 ///
-/// The emitted cell count is bounded by `max_cells` (when `Some`), checked at
-/// every emission: a world-scale geometry at a fine `target_depth` fails with
-/// [`CoverBudgetExceeded`] (naming `max_cells`) before publishing the next
-/// output cell instead of flooding memory. `None` = unlimited.
-pub(crate) fn cover<C: RectCell>(
+/// The emitted cell count is bounded by `max_cells` (when `Some`). Certified
+/// interior subtrees charge their exact descendant count before expansion;
+/// boundary leaves charge at emission. `None` = unlimited.
+pub(crate) fn cover<C: RectCell + HierarchicalCell>(
     authority: &Shape,
     working: &Shape,
     authority_plan: &PreparedPlan,
@@ -581,7 +582,7 @@ pub(crate) fn cover<C: RectCell>(
 /// for grids whose cells are lon/lat rectangles. Cell and window are both
 /// axis-aligned in lon/lat, so meeting is closed-interval overlap on each
 /// axis and no source geometry is built.
-pub(crate) fn cover_windows<C: RectCell>(
+pub(crate) fn cover_windows<C: RectCell + HierarchicalCell>(
     windows: &[Bounds],
     roots: Vec<C>,
     target_depth: u8,
@@ -620,63 +621,105 @@ pub(crate) fn cover_windows<C: RectCell>(
     )
 }
 
+#[cfg(test)]
+thread_local! {
+    static COVER_CELL_VISITS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    static COVER_ENUMERATION_VISITS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 /// The shared descent: `classify` places a cell rectangle against the source,
-/// and `boundary_leaf` decides a boundary cell at the target depth. Interior
-/// cells stream their descendants without further classification.
-fn traverse<C: RectCell>(
-    roots: Vec<C>,
+/// and `boundary_leaf` decides a boundary cell at the target depth. Count the
+/// guaranteed output before enumerating certified interior descendants.
+fn traverse<C: RectCell + HierarchicalCell>(
+    mut roots: Vec<C>,
     target_depth: u8,
     max_cells: Option<usize>,
     mut classify: impl FnMut(Bounds) -> Result<RectClass, CoverError>,
     mut boundary_leaf: impl FnMut(Bounds) -> Result<bool, CoverError>,
 ) -> Result<Vec<C>, CoverError> {
-    let mut cells = Vec::new();
     // Carry bounds through every traversal step so the terminal can be
     // refined without recomputing a cell's rectangle.
+    roots.sort_unstable_by_key(|cell| cell.range_min());
     let mut boundary = Vec::with_capacity(roots.len());
     boundary.extend(roots.into_iter().map(|cell| (cell, cell.bounds())));
-    let mut interior: Vec<C> = Vec::new();
-    let mut emit = |cell| {
-        ensure_cover_budget(cells.len().saturating_add(1), max_cells)?;
-        cells.push(cell);
-        Ok::<_, CoverError>(())
-    };
-    loop {
-        while let Some(cell) = interior.pop() {
-            if cell.depth() >= target_depth {
-                emit(cell)?;
-            } else {
-                let children = cell.children();
-                interior.reserve(children.len());
-                interior.extend(children);
+    let mut next_boundary = Vec::new();
+    let mut covered: Vec<C> = Vec::new();
+    let mut level_covered: Vec<C> = Vec::new();
+    let mut merged_covered: Vec<C> = Vec::new();
+    let mut output_count = 0_usize;
+    while !boundary.is_empty() {
+        for &(cell, bounds) in &boundary {
+            #[cfg(test)]
+            COVER_CELL_VISITS.with(|count| count.set(count.get().wrapping_add(1)));
+            match classify(bounds)? {
+                RectClass::Outside => {},
+                RectClass::Interior => {
+                    let descendants = usize::try_from(cell.descendant_count(target_depth))
+                        .expect("rectangular descendant counts fit usize");
+                    output_count = output_count.saturating_add(descendants);
+                    ensure_cover_budget(output_count, max_cells)?;
+                    level_covered.push(cell);
+                },
+                RectClass::Boundary => {
+                    if RectCell::depth(cell) >= target_depth {
+                        if boundary_leaf(bounds)? {
+                            output_count = output_count.saturating_add(1);
+                            ensure_cover_budget(output_count, max_cells)?;
+                            level_covered.push(cell);
+                        }
+                    } else {
+                        // Coarse certificates can reject the cover before
+                        // any fine boundary or descendant enumeration.
+                        cell.push_children_bounds(bounds, &mut next_boundary);
+                    }
+                },
             }
         }
-        let Some((cell, bounds)) = boundary.pop() else {
-            break;
-        };
-        match classify(bounds)? {
-            RectClass::Outside => {},
-            RectClass::Interior => {
-                if cell.depth() >= target_depth {
-                    emit(cell)?;
+        boundary.clear();
+        if covered.is_empty() {
+            std::mem::swap(&mut covered, &mut level_covered);
+        } else if !level_covered.is_empty() {
+            // Each frontier is range-ordered. Merge its certified seeds
+            // without a second general sort or interleaved final output.
+            merged_covered.reserve(covered.len().wrapping_add(level_covered.len()));
+            let mut old = covered.as_slice();
+            let mut new = level_covered.as_slice();
+            while let (Some((left, old_tail)), Some((right, new_tail))) =
+                (old.split_first(), new.split_first())
+            {
+                if left.range_min() < right.range_min() {
+                    merged_covered.push(*left);
+                    old = old_tail;
                 } else {
-                    let children = cell.children();
-                    interior.reserve(children.len());
-                    interior.extend(children);
+                    merged_covered.push(*right);
+                    new = new_tail;
                 }
-            },
-            RectClass::Boundary => {
-                if cell.depth() >= target_depth {
-                    if boundary_leaf(bounds)? {
-                        emit(cell)?;
-                    }
-                } else {
-                    // Expand in place onto `boundary` — avoid a side buffer
-                    // that copies twice. Children derived from parent edges
-                    // (Tile: one shared mid-lat) rather than full recompute.
-                    cell.push_children_bounds(bounds, &mut boundary);
-                }
-            },
+            }
+            merged_covered.extend_from_slice(old);
+            merged_covered.extend_from_slice(new);
+            covered.clear();
+            level_covered.clear();
+            std::mem::swap(&mut covered, &mut merged_covered);
+        }
+        std::mem::swap(&mut boundary, &mut next_boundary);
+    }
+    drop(boundary);
+    drop(next_boundary);
+    drop(level_covered);
+    drop(merged_covered);
+    let mut cells = Vec::with_capacity(output_count);
+    while let Some(cell) = covered.pop() {
+        #[cfg(test)]
+        {
+            COVER_CELL_VISITS.with(|count| count.set(count.get().wrapping_add(1)));
+            COVER_ENUMERATION_VISITS.with(|count| count.set(count.get().wrapping_add(1)));
+        }
+        if RectCell::depth(cell) >= target_depth {
+            cells.push(cell);
+        } else {
+            let children = RectCell::children(cell);
+            covered.reserve(children.len());
+            covered.extend(children);
         }
     }
     cells.sort_unstable();
@@ -823,8 +866,8 @@ mod tests {
     }
 
     /// A near-world polygon covered at a fine depth expands past the shared
-    /// cell budget; the coverer fails deterministically (naming its depth
-    /// parameter) during descendant emission rather than flooding memory.
+    /// cell budget; the coverer returns the max_cells budget error before
+    /// enumerating the certified output.
     #[test]
     fn cover_rejects_world_scale_fine_depth_before_flooding() {
         use crate::geometry::Ring;
@@ -841,6 +884,8 @@ mod tests {
         ));
         let authority_plan = PreparedPlan::new(world.clone());
         let authority_cache = crate::geometry::FrameDependentCaches::default();
+        COVER_CELL_VISITS.with(|count| count.set(0));
+        COVER_ENUMERATION_VISITS.with(|count| count.set(0));
         match cover(
             &world,
             &world,
@@ -854,6 +899,13 @@ mod tests {
         ) {
             Ok(_) => panic!("world at precision 10 must exceed the cell budget"),
             Err(CoverError::Budget(err)) => {
+                let visits = COVER_CELL_VISITS.with(std::cell::Cell::get);
+                eprintln!("cover visits {visits}");
+                assert_eq!(
+                    COVER_ENUMERATION_VISITS.with(std::cell::Cell::get),
+                    0,
+                    "an over-budget cover must reject before output enumeration"
+                );
                 assert_eq!(
                     err.limit,
                     usize::try_from(crate::grid::GRID_MAX_CELLS).unwrap()
@@ -862,6 +914,25 @@ mod tests {
             },
             Err(CoverError::Preparation(err)) => panic!("unexpected preparation error: {err}"),
         }
+    }
+
+    #[test]
+    fn interior_cover_budget_counts_disjoint_subtrees_before_expansion() {
+        let windows = [Bounds::new_raw(-180.0, -90.0, 180.0, 90.0)];
+        COVER_CELL_VISITS.with(|count| count.set(0));
+        COVER_ENUMERATION_VISITS.with(|count| count.set(0));
+        let error = cover_windows(&windows, geohash::roots(), 2, Some(40)).unwrap_err();
+        let CoverError::Budget(error) = error else {
+            panic!("whole-world rectangles need no geometric preparation");
+        };
+        assert_eq!(error.limit, 40);
+        assert_eq!(COVER_CELL_VISITS.with(std::cell::Cell::get), 2);
+        assert_eq!(COVER_ENUMERATION_VISITS.with(std::cell::Cell::get), 0);
+
+        let bounded = cover_windows(&windows, geohash::roots(), 2, Some(1_024)).unwrap();
+        let unlimited = cover_windows(&windows, geohash::roots(), 2, None).unwrap();
+        assert_eq!(bounded.len(), 1_024);
+        assert_eq!(bounded, unlimited);
     }
 
     #[test]
