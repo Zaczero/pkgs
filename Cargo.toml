@@ -4,6 +4,7 @@ cargo-features = ["trim-paths"]
 resolver = "3"
 members = [
   "blurhash-rs",
+  "fast",
   "h2corn",
   "lrucache-rs",
   "osm-shortlink",

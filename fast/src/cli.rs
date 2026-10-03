@@ -1,0 +1,119 @@
+use std::ffi::OsString;
+use std::num::NonZeroUsize;
+use std::path::PathBuf;
+use std::time::Duration;
+
+use clap::{Parser, ValueEnum};
+
+#[derive(Clone, Copy, Debug, ValueEnum)]
+pub(crate) enum Color {
+    Auto,
+    Always,
+    Never,
+}
+
+#[derive(Debug, Parser)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "Independent command-line switches are not mutually exclusive state"
+)]
+#[command(
+    version,
+    about = "Run the work. Compare fairly. Print the answer.",
+    override_usage = "fast [OPTIONS] 'COMMAND' ['COMMAND' ...]\n       fast [OPTIONS] -- PROGRAM [ARG ...]",
+    after_help = "Examples:\n  fast 'old input.dat' 'new input.dat'\n  fast -- ./program --input 'file with spaces'\n  fast --once -- ./expensive-job\n  fast --runs 100 --check 1% 'old' 'new'\n  fast --json 'old' 'new' > result.json\n\nCommands run sequentially in randomized complete blocks. Expressions use sh -c;\narguments after -- are one exact argv. Stdin and stdout are null; --input reopens\nan existing regular file for every run. Stderr is drained with bounded capture.\nThe default plans roughly 30 seconds, including a separate pilot. --time plans;\n--timeout terminates. No caches, result files, configuration, or input spooling.\n\nExit: 0 completed (possibly unresolved), 1 workload failure, 2 usage error,\n3 collector failure, 4 regression, 5 inconclusive check, 128+signal interrupted.\nBroken output pipes return 141. Hooks default to a 30s timeout."
+)]
+pub(crate) struct Cli {
+    /// Execute each command exactly once, without a pilot or warmup
+    #[arg(long, conflicts_with_all = ["runs", "time"])]
+    pub once: bool,
+    /// Measure N runs per command, without a pilot
+    #[arg(long, value_name = "N", conflicts_with = "time")]
+    pub runs: Option<NonZeroUsize>,
+    /// Plan this much total effort, then freeze the measured run count
+    #[arg(long, value_parser = duration, value_name = "DURATION")]
+    pub time: Option<Duration>,
+    /// Run N additional warmup blocks
+    #[arg(long, default_value_t = 0, value_name = "N")]
+    pub warmup: usize,
+    /// Terminate an invocation or hook after this duration
+    #[arg(long, value_parser = duration, value_name = "DURATION")]
+    pub timeout: Option<Duration>,
+    /// Reopen this regular file as stdin for every invocation
+    #[arg(long, value_name = "FILE")]
+    pub input: Option<PathBuf>,
+    /// Run sh -c EXPR before every invocation, outside timing
+    #[arg(long, value_name = "EXPR")]
+    pub prepare: Option<OsString>,
+    /// Run sh -c EXPR after every successful invocation, outside timing
+    #[arg(long, value_name = "EXPR")]
+    pub verify: Option<OsString>,
+    /// Interpret practical equivalence within this symmetric percentage
+    #[arg(long, value_parser = percent, value_name = "PERCENT")]
+    pub margin: Option<f64>,
+    /// Establish no more than this regression versus A (requires --runs)
+    #[arg(long, requires = "runs", value_parser = percent, value_name = "PERCENT")]
+    pub check: Option<f64>,
+    /// Print spread, all comparisons, and sampled task activity
+    #[arg(long)]
+    pub details: bool,
+    /// Print one JSON document on stdout
+    #[arg(long)]
+    pub json: bool,
+    /// Control color (explicit always/never overrides NO_COLOR)
+    #[arg(long, value_enum, default_value = "auto")]
+    pub color: Color,
+    /// Use plain ASCII symbols
+    #[arg(long)]
+    pub ascii: bool,
+    /// Suppress progress, retaining results and errors
+    #[arg(short, long)]
+    pub quiet: bool,
+    /// Reproduce randomized ordering with this hexadecimal seed
+    #[arg(long, value_parser = seed, value_name = "HEX")]
+    pub seed: Option<u64>,
+    /// Shell expressions, or one exact argv after --
+    #[arg(required = true, num_args = 1.., value_name = "COMMAND")]
+    pub commands: Vec<OsString>,
+}
+
+fn duration(text: &str) -> Result<Duration, String> {
+    let units = [
+        ("ns", 1e-9),
+        ("us", 1e-6),
+        ("ms", 1e-3),
+        ("s", 1.0),
+        ("m", 60.0),
+        ("h", 3600.0),
+    ];
+    for (suffix, scale) in units {
+        if let Some(number) = text.strip_suffix(suffix) {
+            let seconds = number
+                .parse::<f64>()
+                .map_err(|_| "expected a duration such as 250ms, 30s, or 2m")?
+                * scale;
+            return Duration::try_from_secs_f64(seconds)
+                .ok()
+                .filter(|value| !value.is_zero() && value.as_nanos() <= u128::from(u64::MAX))
+                .ok_or_else(|| "duration must be finite, positive, and representable".into());
+        }
+    }
+    Err("expected a duration with ns, us, ms, s, m, or h suffix".into())
+}
+
+fn percent(text: &str) -> Result<f64, String> {
+    let value = text
+        .trim_end_matches('%')
+        .parse::<f64>()
+        .map_err(|_| "expected a percentage such as 1%")?;
+    if value.is_finite() && (0.0..100.0).contains(&value) {
+        Ok(value / 100.0)
+    } else {
+        Err("percentage must be finite and between 0% (inclusive) and 100%".into())
+    }
+}
+
+fn seed(text: &str) -> Result<u64, String> {
+    u64::from_str_radix(text.strip_prefix("0x").unwrap_or(text), 16)
+        .map_err(|_| "expected up to 16 hexadecimal digits".into())
+}
