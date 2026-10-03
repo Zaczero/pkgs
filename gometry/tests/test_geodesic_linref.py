@@ -344,7 +344,13 @@ def test_segmentize_periodic_longitude_aliases_preserve_line_topology(
 
     if turns == 0:
         assert refined.to_wkb() == _CANONICAL_MERIDIAN_WKB[(path, target)]
-    elif turns == 1:
+    else:
+        assert all(
+            _xy_bits(coordinate)[0] == _xy_bits((longitude, 0.0))[0]
+            for coordinate in coordinates[1:-1]
+        )
+
+    if turns == 1:
         # The former canonical emission inserts longitude 10 into a line
         # whose source vertices are spelled at 370 degrees.
         canonical = gm.LineString([(10.0, 0.0), (10.0, 2.0)], crs=4326)

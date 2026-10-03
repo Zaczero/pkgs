@@ -2556,7 +2556,10 @@ fn canonicalize_ring_vertices(
     for (vertex, point) in vertices.iter().zip(chart_points.iter_mut()).skip(1) {
         let latitude = Latitude::try_new(frame, vertex.point.y)
             .map_err(|error| GeometryErrorKind::Invalid(error.to_string().into()))?;
-        point.x = nearest_longitude_alias(frame, vertex.point.x, reference)?;
+        point.x = frame
+            .longitude()
+            .nearest_longitude_alias(reference, vertex.point.x)
+            .map_err(|error| GeometryErrorKind::Invalid(error.to_string().into()))?;
         point.y = latitude.get();
         reference = point.x;
     }
@@ -2579,41 +2582,10 @@ fn canonicalize_ring_vertices(
     Ok(())
 }
 
-fn nearest_longitude_alias(
-    frame: crate::geographic::GeographicFrame,
-    raw: f64,
-    reference: f64,
-) -> Result<f64> {
-    let axis = frame.longitude();
-    let canonical = axis
-        .canonicalize(raw)
-        .map_err(|error| GeometryErrorKind::Invalid(error.to_string().into()))?
-        .get();
-    let period = axis.period();
-    [canonical - period, canonical, canonical + period]
-        .into_iter()
-        .filter(|longitude| longitude.is_finite())
-        .min_by(|left, right| {
-            (left - reference)
-                .abs()
-                .total_cmp(&(right - reference).abs())
-                .then_with(|| {
-                    // At a half-period tie, preserve the alias chosen by Q's lifted chart.
-                    (left - raw)
-                        .abs()
-                        .total_cmp(&(right - raw).abs())
-                        .then_with(|| left.total_cmp(right))
-                })
-        })
-        .ok_or_else(|| {
-            GeometryErrorKind::Invalid("Q output longitude has no finite chart alias".into()).into()
-        })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::geographic::{GeographicFrame, GeographicInputs};
+    use crate::geographic::{AngularFactor, GeographicFrame, GeographicInputs};
 
     fn exact_boundary(shape: &Shape) -> Shape {
         let frame = GeographicFrame::crs84();
@@ -2660,6 +2632,36 @@ mod tests {
         }
         edges.sort_unstable();
         edges
+    }
+
+    fn q_ring_chart_points(
+        frame: GeographicFrame,
+        coordinates: &[(f64, f64)],
+        repeated_start_nodes: &[usize],
+    ) -> Result<Vec<Point>> {
+        let last = coordinates.len().wrapping_sub(1);
+        let vertices = coordinates
+            .iter()
+            .enumerate()
+            .map(|(index, &(longitude, latitude))| {
+                let node = if index == 0 || index == last || repeated_start_nodes.contains(&index) {
+                    QNodeId(0)
+                } else {
+                    QNodeId(u32::try_from(index).expect("fixed Q cycle fits its node IDs"))
+                };
+                EmittedVertex {
+                    node,
+                    port: QPortId(u32::try_from(index).expect("fixed Q cycle fits its port IDs")),
+                    point: Point::new_raw_xy(longitude, latitude),
+                }
+            })
+            .collect::<Vec<_>>();
+        let mut chart_points = vertices
+            .iter()
+            .map(|vertex| vertex.point)
+            .collect::<Vec<_>>();
+        canonicalize_ring_vertices(frame, &vertices, &mut chart_points)?;
+        Ok(chart_points)
     }
 
     #[test]
@@ -2776,5 +2778,128 @@ mod tests {
         ];
         expected.sort_unstable();
         assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn q_ring_cycles_keep_the_lifted_alias_after_two_native_periods() {
+        let grads_unit = AngularFactor::try_new("grad", std::f64::consts::TAU / 400.0).unwrap();
+        let radians_unit = AngularFactor::try_new("radian", 1.0).unwrap();
+        let cases: [(&str, GeographicFrame, &[f64], f64, f64); 3] = [
+            (
+                "degree",
+                GeographicFrame::crs84(),
+                [
+                    122.427_194,
+                    -177.572_806,
+                    -117.572_806,
+                    -57.572_806,
+                    2.427_194,
+                    62.427_194,
+                ]
+                .as_slice(),
+                842.427_194,
+                -597.572_806,
+            ),
+            (
+                "grad",
+                GeographicFrame::try_new(grads_unit, grads_unit, 0.0).unwrap(),
+                [
+                    25.0,
+                    75.0,
+                    124.999_999_999_999_99,
+                    174.999_999_999_999_97,
+                    -174.999_999_999_999_97,
+                    -124.999_999_999_999_97,
+                    -74.999_999_999_999_99,
+                    -24.999_999_999_999_993,
+                ]
+                .as_slice(),
+                824.999_999_999_999_9,
+                -774.999_999_999_999_9,
+            ),
+            (
+                "radian",
+                GeographicFrame::try_new(radians_unit, radians_unit, 0.0).unwrap(),
+                [
+                    0.25,
+                    1.035_398_163_397_448_3,
+                    1.820_796_326_794_896_6,
+                    2.606_194_490_192_345,
+                    -2.891_592_653_589_793,
+                    -2.106_194_490_192_345,
+                    -1.320_796_326_794_896_6,
+                    -0.535_398_163_397_448_3,
+                ]
+                .as_slice(),
+                12.816_370_614_359_172,
+                -12.316_370_614_359_172,
+            ),
+        ];
+
+        for (name, frame, lap, positive, negative) in cases {
+            for (direction, expected) in [(1.0, positive), (-1.0, negative)] {
+                let path = if direction > 0.0 {
+                    lap.to_vec()
+                } else {
+                    std::iter::once(lap[0])
+                        .chain(lap[1..].iter().rev().copied())
+                        .collect()
+                };
+                let mut coordinates = path
+                    .iter()
+                    .map(|&longitude| (longitude, 0.1))
+                    .collect::<Vec<_>>();
+                let repeated_start = coordinates.len();
+                coordinates.push((lap[0], 0.1));
+                coordinates.extend(path.iter().skip(1).map(|&longitude| (longitude, 0.1)));
+                let high_latitude_vertex = coordinates.len();
+                coordinates.push((lap[0], 0.2));
+                coordinates.push((lap[0], 0.1));
+
+                let chart_points =
+                    q_ring_chart_points(frame, &coordinates, &[repeated_start]).unwrap();
+
+                assert_eq!(
+                    chart_points[high_latitude_vertex].x.to_bits(),
+                    expected.to_bits(),
+                    "{name} frame, direction {direction}"
+                );
+                assert_eq!(
+                    chart_points.last().unwrap().x.to_bits(),
+                    chart_points.first().unwrap().x.to_bits(),
+                    "{name} frame closure"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn q_ring_half_period_ties_keep_each_native_seam_spelling() {
+        let grads_unit = AngularFactor::try_new("grad", std::f64::consts::TAU / 400.0).unwrap();
+        let radians_unit = AngularFactor::try_new("radian", 1.0).unwrap();
+        let cases = [
+            ("degree", GeographicFrame::crs84(), -180.0),
+            (
+                "grad",
+                GeographicFrame::try_new(grads_unit, grads_unit, 0.0).unwrap(),
+                -199.999_999_999_999_97,
+            ),
+            (
+                "radian",
+                GeographicFrame::try_new(radians_unit, radians_unit, 0.0).unwrap(),
+                -std::f64::consts::PI,
+            ),
+        ];
+
+        for (name, frame, seam) in cases {
+            let chart_points =
+                q_ring_chart_points(frame, &[(0.0, 0.1), (seam, 0.1), (0.0, 0.1)], &[]).unwrap();
+            assert_eq!(chart_points[1].x.to_bits(), seam.to_bits(), "{name} seam");
+            assert_eq!(
+                chart_points.last().unwrap().x.to_bits(),
+                chart_points.first().unwrap().x.to_bits(),
+                "{name} closure"
+            );
+        }
     }
 }

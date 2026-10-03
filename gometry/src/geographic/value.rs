@@ -500,7 +500,15 @@ impl GeographicFrame {
     /// Convert a finite degree/Greenwich result back to this CRS's native
     /// angular axes, retaining any Z/M ordinates.
     pub(crate) fn point_from_geodesic(self, point: Point) -> Result<Point, GeographicError> {
-        let (longitude, latitude) = self.xy_from_geodesic(point.x, point.y)?;
+        let (longitude, latitude) = self.native_geodesic_result(point.x, point.y)?;
+        self.canonical_computed_point(point.with_xy_raw(longitude, latitude))
+    }
+
+    /// Canonicalize one newly computed point already expressed in this frame.
+    /// Source points bypass this boundary so their stored coordinate bytes stay
+    /// intact.
+    pub(crate) fn canonical_computed_point(self, point: Point) -> Result<Point, GeographicError> {
+        let (longitude, latitude) = self.canonical_computed_xy(point.x, point.y)?;
         Ok(point.with_xy_raw(longitude, latitude))
     }
 
@@ -609,9 +617,25 @@ impl GeographicFrame {
         longitude: f64,
         latitude: f64,
     ) -> Result<(f64, f64), GeographicError> {
+        let (longitude, latitude) = self.native_geodesic_result(longitude, latitude)?;
+        self.canonical_computed_xy(longitude, latitude)
+    }
+
+    fn native_geodesic_result(
+        self,
+        longitude: f64,
+        latitude: f64,
+    ) -> Result<(f64, f64), GeographicError> {
         ensure_geodesic_coordinates(longitude, latitude)?;
         let longitude = Self::crs84().longitude().canonicalize(longitude)?.get();
-        let (longitude, latitude) = self.native_xy_from_geodesic(longitude, latitude);
+        Ok(self.native_xy_from_geodesic(longitude, latitude))
+    }
+
+    fn canonical_computed_xy(
+        self,
+        longitude: f64,
+        latitude: f64,
+    ) -> Result<(f64, f64), GeographicError> {
         let longitude = self.longitude.canonicalize(longitude)?.get();
         if !latitude.is_finite() {
             return Err(GeographicError::NonFinite {

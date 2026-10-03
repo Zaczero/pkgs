@@ -736,6 +736,38 @@ fn frame_conversion_uses_one_greenwich_seam_for_points_and_lanes() {
     assert_eq!(xs, [0.0, -180.0]);
 }
 
+#[test]
+fn computed_native_points_canonicalize_longitude_and_preserve_other_axes() {
+    for (frame, longitude, expected) in [
+        (degrees(), 180.0, -180.0),
+        (
+            frame(std::f64::consts::TAU / 400.0),
+            200.0,
+            -199.999_999_999_999_97,
+        ),
+        (frame(1.0), std::f64::consts::PI, -std::f64::consts::PI),
+    ] {
+        let point = crate::geometry::Point::new_axes(
+            longitude,
+            -0.0,
+            crate::geometry::ZOrdinate(Some(-0.0)),
+            crate::geometry::MOrdinate(Some(7.0)),
+        )
+        .unwrap();
+        let emitted = frame.canonical_computed_point(point).unwrap();
+
+        assert_bits(emitted.x, expected);
+        assert_bits(emitted.y, -0.0);
+        assert_bits(emitted.z().unwrap(), -0.0);
+        assert_eq!(emitted.m(), Some(7.0));
+    }
+
+    let zero = degrees()
+        .canonical_computed_point(crate::geometry::Point::new_raw_xy(-0.0, 0.0))
+        .unwrap();
+    assert_bits(zero.x, 0.0);
+}
+
 #[expect(
     clippy::float_cmp,
     reason = "the rejected latitude is the stored 100.0 spelling, not a nearby out-of-range value"
@@ -824,6 +856,32 @@ fn nearest_longitude_alias_reduces_before_rounding_and_keeps_tie_direction() {
     assert_bits(axis.nearest_longitude_alias(180.0, 0.0).unwrap(), 0.0);
     assert_bits(axis.nearest_longitude_alias(0.0, 180.0).unwrap(), 180.0);
     assert_bits(axis.nearest_longitude_alias(540.0, 0.0).unwrap(), 360.0);
+}
+
+#[test]
+fn nearest_longitude_alias_pins_native_ties_and_finite_subtraction_overflow() {
+    for (axis, half, period) in [
+        (degrees().longitude(), 180.0, 360.0),
+        (
+            frame(std::f64::consts::TAU / 400.0).longitude(),
+            199.999_999_999_999_97,
+            399.999_999_999_999_94,
+        ),
+        (
+            frame(1.0).longitude(),
+            std::f64::consts::PI,
+            std::f64::consts::TAU,
+        ),
+    ] {
+        assert_bits(axis.nearest_longitude_alias(half, 0.0).unwrap(), 0.0);
+        assert_bits(axis.nearest_longitude_alias(0.0, half).unwrap(), half);
+        assert_bits(axis.nearest_longitude_alias(period, 0.0).unwrap(), period);
+        assert_bits(axis.nearest_longitude_alias(-period, 0.0).unwrap(), -period);
+        assert_bits(
+            axis.nearest_longitude_alias(f64::MAX, -f64::MAX).unwrap(),
+            f64::MAX,
+        );
+    }
 }
 
 #[test]

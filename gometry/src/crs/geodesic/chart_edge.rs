@@ -203,7 +203,7 @@ impl ChartEdge {
     }
 
     pub(super) fn geodetic_position(self, parameter: f64) -> Point {
-        let point = self.position(parameter);
+        let point = self.chart_position(parameter);
         let (longitude, latitude) = self
             .frame
             .to_geodesic_xy(point.x, point.y)
@@ -358,19 +358,18 @@ impl ChartEdge {
         } else {
             (self.length_to(parameter, geodesic)? / total).clamp(0.0, 1.0)
         };
-        let position = self.position(parameter);
-        let longitude = self
-            .frame
-            .longitude()
-            .canonicalize(position.x)
-            .expect("an admitted chart-edge witness has finite longitude");
-        Ok(Point::new_axes(
-            longitude.get(),
+        let position = self.chart_position(parameter);
+        let point = Point::new_axes(
+            position.x,
             position.y,
             ZOrdinate(interpolate_optional_ordinate(start.z(), end.z(), fraction)),
             MOrdinate(interpolate_optional_ordinate(start.m(), end.m(), fraction)),
         )
-        .expect("an admitted chart-edge witness is finite"))
+        .expect("an admitted chart-edge witness is finite");
+        Ok(self
+            .frame
+            .canonical_computed_point(point)
+            .expect("an admitted chart-edge witness is finite"))
     }
 
     pub(super) fn seam_span(&self) -> Option<[f64; 2]> {
@@ -424,7 +423,7 @@ impl ChartEdge {
             return self.finite_length(self.length(geodesic)? * t);
         }
         if let Some(meridian) = self.meridian {
-            let position = self.position(t);
+            let position = self.chart_position(t);
             let (_, latitude) = frame
                 .to_geodesic_xy(position.x, position.y)
                 .expect("chart-edge position belongs to its admitted frame");
@@ -497,8 +496,8 @@ impl ChartEdge {
         Ok(best.0)
     }
 
-    /// Position on the chart edge in its native angular frame.
-    pub(crate) fn position(&self, t: f64) -> crate::geometry::Point {
+    /// Intended position on the chart edge before canonical point emission.
+    pub(crate) fn chart_position(&self, t: f64) -> crate::geometry::Point {
         let longitude = self.start_longitude + t * self.longitude_delta_native;
         let latitude = crate::geometry::interpolate_subdivision_ordinate(
             self.start_latitude,
@@ -867,7 +866,7 @@ mod tests {
         AngularFactor, ChartStep, EdgeDirection, GeographicFrame, PeriodicAxis,
     };
     use crate::geometry::types::ChartMetric;
-    use crate::geometry::{GeometryErrorKind, Point};
+    use crate::geometry::{GeometryErrorKind, MOrdinate, Point, ZOrdinate};
 
     fn degrees() -> GeographicFrame {
         GeographicFrame::crs84()
@@ -962,7 +961,7 @@ mod tests {
             (edge.arclength(parameter, &geodesic, degrees()).unwrap() - expected_half_length).abs()
                 <= 1.0e-8
         );
-        let point = edge.position(parameter);
+        let point = edge.chart_position(parameter);
         assert!((point.x - 53.074_630_350_026_73).abs() <= 3.0e-14);
         assert!((point.y - 32.114_429_312_511_14).abs() <= 3.0e-14);
     }
@@ -984,8 +983,8 @@ mod tests {
                 .unwrap(),
             0.5
         );
-        assert_eq!(parallel.position(0.5).x, 45.0);
-        assert_eq!(parallel.position(0.5).y, 60.0);
+        assert_eq!(parallel.chart_position(0.5).x, 45.0);
+        assert_eq!(parallel.chart_position(0.5).y, 60.0);
 
         let seam = ChartEdge::new(
             Point::new_raw_xy(170.0, 10.0),
@@ -996,8 +995,8 @@ mod tests {
         // The lifted edge runs 170°→190°; retain +180° rather than the
         // equivalent canonical spelling -180° so inserted vertices stay on
         // the source edge's chart.
-        assert_eq!(seam.position(0.5).x, 180.0);
-        assert_eq!(seam.position(0.5).y, 10.0);
+        assert_eq!(seam.chart_position(0.5).x, 180.0);
+        assert_eq!(seam.chart_position(0.5).y, 10.0);
 
         let aliased_seam = ChartEdge::new(
             Point::new_raw_xy(530.0, 10.0),
@@ -1005,7 +1004,7 @@ mod tests {
             degrees(),
         )
         .unwrap();
-        let midpoint = aliased_seam.position(0.5).x;
+        let midpoint = aliased_seam.chart_position(0.5).x;
         assert_eq!(midpoint, 540.0);
         let axis = degrees().longitude();
         for (start, middle, end) in [(170.0, 180.0, -170.0), (530.0, 540.0, 190.0)] {
@@ -1098,6 +1097,22 @@ mod tests {
         )
         .unwrap();
         assert_eq!(ordinary.seam_span(), None);
+    }
+
+    #[test]
+    fn chart_edge_witness_uses_canonical_point_emission_and_arclength_axes() {
+        let start =
+            Point::new_axes(170.0, 10.0, ZOrdinate(Some(2.0)), MOrdinate(Some(-0.0))).unwrap();
+        let end =
+            Point::new_axes(-170.0, 10.0, ZOrdinate(Some(6.0)), MOrdinate(Some(8.0))).unwrap();
+        let edge = ChartEdge::new(start, end, degrees()).unwrap();
+        let witness = edge.witness(start, end, 0.5, &wgs84()).unwrap();
+
+        assert_eq!(witness.x, -180.0);
+        assert_eq!(witness.y, 10.0);
+        assert_eq!(witness.z(), Some(4.0));
+        assert_eq!(witness.m(), Some(4.0));
+        assert_eq!(edge.chart_position(0.5).x, 180.0);
     }
 
     #[test]
