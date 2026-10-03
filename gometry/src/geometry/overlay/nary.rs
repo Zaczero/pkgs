@@ -2,7 +2,7 @@ use std::borrow::Borrow;
 use std::ops::ControlFlow;
 
 use crate::error::{ResourceError, Result};
-use crate::geographic::lonlat::invalid_lonlat_error;
+use crate::geographic::lonlat::geographic_admission_error;
 use crate::geographic::{GeographicFrame, GeographicInputs, GeographicViewError};
 use crate::geometry::ordinates::AxisValue;
 use crate::geometry::overlay::{
@@ -2099,7 +2099,7 @@ struct OverlayBoundsFacts {
 }
 
 pub(in crate::geometry) fn overlay_view_error(error: &GeographicViewError) -> crate::error::Error {
-    invalid_lonlat_error(error.native.x, error.native.y)
+    geographic_admission_error(error)
 }
 
 fn overlay_bounds_facts_geographic(originals: &GeographicInputs<'_>) -> OverlayBoundsFacts {

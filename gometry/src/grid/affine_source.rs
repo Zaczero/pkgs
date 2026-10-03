@@ -43,7 +43,9 @@ use rstar::AABB;
 use crate::geographic::lonlat::{
     normalize_accepted_geographic_latitudes, normalized_geographic_pole,
 };
-use crate::geographic::{GeographicFrame, GeographicRing, RingDomain, RingSummary, RingTurn};
+use crate::geographic::{
+    FullTurnPole, GeographicFrame, GeographicRing, Pole, RingDomain, RingSummary,
+};
 use crate::geometry::{
     Bounds, CoordSeq, Coordinates as _, EdgeId, EdgeYIndex, Shape, uses_linear_plan_for_len,
 };
@@ -402,23 +404,20 @@ struct PeriodicPoleRoof {
     span: ExactExpansion,
 }
 
-/// Select the physical pole enclosed by a full-longitude ring.
+/// Select the physical pole enclosed by a nonzero-degree ring.
 ///
 /// The direction of the longitude walk is not a geographic pole signal: it
-/// changes when a valid ring is reversed. As in `ring_encloses_pole`, a ring
-/// strictly in the northern or southern latitude hemisphere has one
-/// unambiguous pole; a mixed or equatorial ring has no certified pole roof.
+/// changes when a valid ring is reversed. Use the shared closed-hemisphere
+/// rule, including rings that touch the equator without crossing it.
 fn physical_pole_for_chain(chain: &LiftedChain) -> Option<PhysicalEndpointKey> {
     let (minimum, maximum) = chain.vertices.iter().map(|vertex| vertex.latitude).fold(
         (f64::INFINITY, f64::NEG_INFINITY),
         |(minimum, maximum), latitude| (minimum.min(latitude), maximum.max(latitude)),
     );
-    if minimum > 0.0 {
-        Some(PhysicalEndpointKey::NorthPole)
-    } else if maximum < 0.0 {
-        Some(PhysicalEndpointKey::SouthPole)
-    } else {
-        None
+    match FullTurnPole::of_latitude_span(minimum, maximum) {
+        FullTurnPole::Bounded(Pole::North) => Some(PhysicalEndpointKey::NorthPole),
+        FullTurnPole::Bounded(Pole::South) => Some(PhysicalEndpointKey::SouthPole),
+        FullTurnPole::Ambiguous => None,
     }
 }
 

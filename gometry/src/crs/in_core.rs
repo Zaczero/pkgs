@@ -17,13 +17,13 @@ pub(crate) use admission::try_in_core_transform_with_state;
 pub(in crate::crs) use admission::{CachedInCoreDescriptor, DatumKey, datum_key};
 use params::Projected;
 pub(in crate::crs) use params::{ParamUnit, parse_param_value};
-pub(in crate::crs) use stere::Pole;
 use webmerc::WGS84_WEB_MERCATOR;
 
 use crate::crs::in_core::kernel::{DEG_TO_RAD, ProjectionKernel, RAD_TO_DEG};
 use crate::crs::local::UtmZone as LocalUtmZone;
 use crate::crs::{TransformFailure, parse_epsg};
 use crate::error::Result;
+pub(in crate::crs) use crate::geographic::Pole;
 
 #[derive(Clone, Copy, Debug)]
 pub(super) enum ProjSetup {

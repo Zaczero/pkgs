@@ -7,10 +7,10 @@ use crate::crs::geodesic::{
     with_geodesic_at, with_geodesic_erased_at,
 };
 use crate::error::Result;
-use crate::geographic::GeographicFrame;
+use crate::geographic::{GeographicFrame, Pole};
 use crate::geometry::{
-    ChartMetric, Coordinates, Point, Polygon, Ring, RingAreaPole, Shape, canonicalize_zero,
-    ring_area_pole, same_topological_coordinate,
+    ChartMetric, Coordinates, Point, Polygon, Ring, Shape, canonicalize_zero, ring_bounded_pole,
+    same_topological_coordinate,
 };
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -135,15 +135,10 @@ fn chart_polygon_area(
 }
 
 fn chart_ring_area(metric: &impl ChartMetric, ring: &Ring, frame: GeographicFrame) -> Result<f64> {
-    let pole = ring_area_pole(ring, frame);
-    let (north, full_turn) = match pole {
-        RingAreaPole::None => (ring.nth_coord(0).y >= 0.0, false),
-        RingAreaPole::North => (true, true),
-        RingAreaPole::South => (false, true),
-        RingAreaPole::Straddling => {
-            // Q1 remains open; match split_antimeridian's current north closure.
-            (true, true)
-        },
+    let north = match ring_bounded_pole(ring, frame) {
+        Some(Pole::North) => true,
+        Some(Pole::South) => false,
+        None => ring.nth_coord(0).y >= 0.0,
     };
 
     let mut integral = 0.0;
@@ -156,14 +151,7 @@ fn chart_ring_area(metric: &impl ChartMetric, ring: &Ring, frame: GeographicFram
             metric.chart_area_edge_term(&edge, north),
         );
     }
-    let area = metric.chart_area_factor() * integral.abs();
-    let surface_area = metric.chart_surface_area();
-    let area = if full_turn && area > surface_area / 2.0 {
-        surface_area - area
-    } else {
-        area
-    };
-    Ok(area)
+    Ok(metric.chart_area_factor() * integral.abs())
 }
 
 pub(crate) fn chart_shape_length(metric: &impl ChartMetric, shape: &Shape) -> Result<f64> {
@@ -441,7 +429,7 @@ mod chart_measure_tests {
     use crate::crs::geodesic::{AuthalicSeries, GeodesicMetric};
     use crate::geographic::{AngularFactor, GeographicFrame};
     use crate::geometry::types::ChartMetric;
-    use crate::geometry::{Point, Polygon, Ring, RingAreaPole, ring_area_pole};
+    use crate::geometry::{Point, Polygon, Ring, Shape, ring_bounded_pole};
 
     fn metric_with_flattening_and_frame(flattening: f64, frame: GeographicFrame) -> GeodesicMetric {
         let geodesic = Geodesic::new(6_378_137.0, flattening);
@@ -626,7 +614,7 @@ mod chart_measure_tests {
         clippy::excessive_precision,
         reason = "40-digit mpmath oracle literal preserves the independent reference value"
     )]
-    fn chart_area_uses_topology_poles_and_keeps_the_open_q1_closure() {
+    fn chart_area_uses_typed_topology_poles_and_rejects_ambiguous_turns() {
         let metric = metric();
         let frame = metric.frame;
         let north_cap = polygon(
@@ -639,7 +627,10 @@ mod chart_measure_tests {
             ],
             &[],
         );
-        assert_eq!(ring_area_pole(&north_cap.shell, frame), RingAreaPole::North);
+        assert_eq!(
+            ring_bounded_pole(&north_cap.shell, frame),
+            Some(crate::geographic::Pole::North)
+        );
         let north_cap_area = chart_polygon_area(&metric, &north_cap, frame).unwrap();
         let north_cap_expected =
             3_908_572_761_836.572_209_792_944_327_893_186_980_909_264_547_994_116_673_544_607_356_9;
@@ -648,7 +639,6 @@ mod chart_measure_tests {
             "north cap area={north_cap_area:.17}, expected={north_cap_expected:.17}"
         );
 
-        // Q1 is open: straddling full-turn rings retain split_antimeridian's current north closure.
         let straddling = polygon(
             &[
                 (-180.0, 20.0),
@@ -659,16 +649,14 @@ mod chart_measure_tests {
             ],
             &[],
         );
-        assert_eq!(
-            ring_area_pole(&straddling.shell, frame),
-            RingAreaPole::Straddling
-        );
-        let straddling_area = chart_polygon_area(&metric, &straddling, frame).unwrap();
-        let north_hemisphere =
-            255_032_810_862_044.254_686_559_003_616_048_988_307_808_250_765_468_377_018_878_358_31;
-        assert!(
-            (straddling_area - north_hemisphere).abs() <= 1.0e-14 * north_hemisphere,
-            "Q1 north closure area={straddling_area:.17}, expected={north_hemisphere:.17}"
-        );
+        let shape = Shape::Polygon(straddling);
+        assert!(matches!(
+            crate::geographic::ScalarGeographicView::try_new(frame, &shape),
+            Err(diagnostic)
+                if matches!(
+                    diagnostic.source,
+                    crate::geographic::GeographicError::AmbiguousFullTurnRing { .. }
+                )
+        ));
     }
 }

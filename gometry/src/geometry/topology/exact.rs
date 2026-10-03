@@ -11,16 +11,15 @@ use crate::error::{ResourceError, Result};
 #[cfg(test)]
 use crate::geographic::GeographicInputs;
 use crate::geographic::{
-    EdgeDirection, GeographicFrame, Latitude, RingDomain, RingSummary, ScalarGeographicView,
-    SeamIdentity, TurnDirection,
+    ChartStep, EdgeDirection, GeographicFrame, Latitude, RingDomain, RingSummary,
+    ScalarGeographicView, SeamIdentity, TurnDirection,
 };
 use crate::geometry::exact_arith::ExactSign;
 use crate::geometry::segments::try_sort_by;
 use crate::geometry::tessellation::exact::{CompactLimbs, ExactDyadic, ExactRational};
 use crate::geometry::{
     Bounds, Component, Coordinates as _, ExpansionBudget, GeometryErrorKind, Point, Polygon,
-    RingKind, RingWinding, Segment, Shape, XY, for_each_candidate_pair,
-    for_each_overlapping_bounds_cross_pair,
+    RingKind, Segment, Shape, XY, for_each_candidate_pair, for_each_overlapping_bounds_cross_pair,
 };
 
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -837,7 +836,6 @@ pub(super) struct ExactSourceRing {
     pub hole: bool,
     pub kind: RingKind,
     pub summary: RingSummary,
-    pub axis_band_winding: Option<RingWinding>,
     pub source_edges: Range<usize>,
 }
 
@@ -847,7 +845,7 @@ impl ExactSourceRing {
     pub(super) const fn has_areal_winding(&self) -> bool {
         !matches!(self.summary.domain, RingDomain::SeamOnly)
             && (matches!(self.kind, RingKind::Winding)
-                || self.summary.seam_transits != 0
+                || self.summary.chart_turn != 0
                 || self.summary.exact_axis_band)
     }
 }
@@ -1091,9 +1089,6 @@ impl ExactGeographicChartInventory {
             } else {
                 stored_kind
             };
-            let axis_band_winding = summary
-                .exact_axis_band
-                .then(|| crate::geometry::ring_winding(ring));
             let first_edge = self.edges.len();
             for [start, end] in ring.segment_pairs() {
                 let source = self.push_source_edge(start, end, row, SourceEdgeKind::Ring {
@@ -1110,7 +1105,6 @@ impl ExactGeographicChartInventory {
                 hole: ring_index != 0,
                 kind,
                 summary,
-                axis_band_winding,
                 source_edges: first_edge..self.edges.len(),
             });
         }
@@ -1966,7 +1960,11 @@ fn interpolate_rational(
     start.try_add(&delta.try_product(parameter)?)
 }
 
-fn local_longitude_edge(frame: GeographicFrame, from: f64, to: f64) -> Result<(f64, ExactDyadic)> {
+pub(super) fn local_longitude_edge(
+    frame: GeographicFrame,
+    from: f64,
+    to: f64,
+) -> Result<(f64, ExactDyadic)> {
     let axis = frame.longitude();
     let from_canonical = axis
         .canonicalize(from)
@@ -1976,15 +1974,18 @@ fn local_longitude_edge(frame: GeographicFrame, from: f64, to: f64) -> Result<(f
         .canonicalize(to)
         .expect("source longitude was admitted")
         .get();
-    if let Some(full_turn) = axis.full_turn_delta(from, to) {
+    let direction = axis
+        .chart_step(from, to)
+        .expect("source longitude was admitted");
+    if let ChartStep::Circle(direction) = direction {
         return Ok((
             seam_start_spelling(axis, from, from_canonical),
-            ExactDyadic::from_f64(full_turn),
+            ExactDyadic::from_f64(ChartStep::Circle(direction).delta(axis)),
         ));
     }
-    let direction = axis
-        .shortest_edge(from, to)
-        .expect("source longitude was admitted");
+    let ChartStep::Shortest(direction) = direction else {
+        unreachable!("circle chart steps returned above");
+    };
     let from_exact = ExactDyadic::from_f64(from_canonical);
     let to_exact = ExactDyadic::from_f64(to_canonical);
     let period = ExactDyadic::from_f64(axis.period());
@@ -2051,6 +2052,99 @@ mod tests {
             .unwrap(),
         )
         .unwrap()
+    }
+
+    fn chart_step_identity_holds(frame: GeographicFrame, from: f64, to: f64) -> bool {
+        let axis = frame.longitude();
+        let transit = axis.chart_transit(from, to).unwrap();
+        let (_, delta) = local_longitude_edge(frame, from, to).unwrap();
+        let canonical = |value: f64| ExactDyadic::from_f64(axis.canonicalize(value).unwrap().get());
+        let period = ExactDyadic::from_f64(axis.period());
+        let turn = match transit {
+            0 => ExactDyadic::zero(),
+            1 => period,
+            -1 => period.neg(),
+            other => panic!("an edge transits the seam at most once, got {other}"),
+        };
+        let expected = canonical(to)
+            .try_subtract_ref(&canonical(from))
+            .unwrap()
+            .try_add(turn)
+            .unwrap();
+        delta.cmp(&expected).is_eq()
+    }
+
+    #[test]
+    fn chart_transit_is_the_integer_quotient_of_the_exact_chart_step() {
+        let radians = GeographicFrame::try_new(
+            AngularFactor::try_new("radians", 1.0).unwrap(),
+            AngularFactor::try_new("radians", 1.0).unwrap(),
+            0.0,
+        )
+        .unwrap();
+        let grad_unit = AngularFactor::try_new("grads", std::f64::consts::TAU / 400.0).unwrap();
+        let grads = GeographicFrame::try_new(grad_unit, grad_unit, 0.0).unwrap();
+        let tau = std::f64::consts::TAU;
+        let pi = std::f64::consts::PI;
+        let samples: [(&str, GeographicFrame, Vec<f64>); 3] = [
+            ("degrees", degrees(), vec![
+                -720.0, -540.0, -360.0, -300.0, -180.0, -90.0, 0.0, 90.0, 180.0, 270.0, 360.0,
+                540.0, 720.0, 179.5, 359.5, -179.5, 0.25,
+            ]),
+            ("radians", radians, vec![
+                -2.0 * tau,
+                -tau,
+                -pi,
+                -pi / 2.0,
+                0.0,
+                pi / 2.0,
+                pi,
+                tau,
+                2.0 * tau,
+                1.0,
+            ]),
+            ("grads", grads, vec![
+                -400.0, -200.0, -100.0, 0.0, 50.0, 100.0, 200.0, 300.0, 400.0, 600.0,
+            ]),
+        ];
+        let mut checked = 0_usize;
+        let mut failures = Vec::new();
+        for (name, frame, values) in &samples {
+            for &from in values {
+                for &to in values {
+                    if !chart_step_identity_holds(*frame, from, to) {
+                        failures.push(format!("{name}: {from} -> {to}"));
+                    }
+                    checked += 1;
+                }
+            }
+        }
+        assert!(checked > 400);
+        // Grads uses a rounded factor: its nominal 200-grad tie differs from
+        // the frame's derived half-period, which Q uses for its exact lift.
+        let grads_ties = [
+            "grads: -200 -> 400",
+            "grads: -100 -> 100",
+            "grads: -100 -> 300",
+            "grads: 100 -> -100",
+            "grads: 100 -> 300",
+            "grads: 300 -> -100",
+            "grads: 300 -> 100",
+            "grads: 400 -> -200",
+        ];
+        assert_eq!(failures, grads_ties, "{failures:?}");
+    }
+
+    /// `full_turn_delta` subtracts in floating point, so a rounded difference
+    /// of exactly one period can join endpoints that do not alias; Q's exact
+    /// chart then does not close by the rounding residue.
+    #[test]
+    fn rounded_period_differences_break_the_chart_step_identity() {
+        let grad_unit = AngularFactor::try_new("grads", std::f64::consts::TAU / 400.0).unwrap();
+        let grads = GeographicFrame::try_new(grad_unit, grad_unit, 0.0).unwrap();
+        assert!(!chart_step_identity_holds(degrees(), 1.0e-20, 360.0));
+        assert!(!chart_step_identity_holds(degrees(), 360.0, 1.0e-20));
+        assert!(!chart_step_identity_holds(grads, 40.5, 440.5));
     }
 
     fn inventory(frame: GeographicFrame, shapes: &[Shape]) -> ExactGeographicChartInventory {
@@ -2530,7 +2624,7 @@ mod tests {
         assert_eq!(inventory.rings[0].polygon, SourcePolygonId(0));
         assert!(!inventory.rings[0].hole);
         assert_eq!(
-            inventory.rings[0].summary.turn,
+            inventory.rings[0].summary.turn(),
             crate::geographic::RingTurn::Full(crate::geographic::TurnDirection::Positive,)
         );
         assert!(!inventory.rings[0].summary.exact_axis_band);
@@ -2605,10 +2699,10 @@ mod tests {
         let polygon = Polygon::new(shell, Vec::new());
         let inventory = inventory(degrees(), &[Shape::Polygon(polygon)]);
         assert_eq!(
-            inventory.rings[0].summary.turn,
+            inventory.rings[0].summary.turn(),
             crate::geographic::RingTurn::Other
         );
-        assert_eq!(inventory.rings[0].summary.seam_transits, 2);
+        assert_eq!(inventory.rings[0].summary.chart_turn, 2);
     }
 
     #[test]

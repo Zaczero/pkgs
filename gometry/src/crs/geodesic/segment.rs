@@ -7,6 +7,7 @@ use crate::crs::geodesic::{
 };
 use crate::crs::{CrsError, GEODESIC_LINE_CACHE, GeodesicLineKey};
 use crate::error::Result;
+use crate::geographic::GeographicFrame;
 use crate::geometry::{
     GeodesicInnerInterval, GeodesicMinimum, GeodesicNumericalPolicy, GeodesicSegment,
     GeodesicSegmentMinimum, GeodesicSegmentQuery, GeodesicSegmentQueryResult,
@@ -139,13 +140,9 @@ pub(crate) fn spherical_meridional_branch_parameters(
 }
 
 pub(crate) fn longitude_difference(start: f64, end: f64) -> f64 {
-    let mut difference = (end - start) % 360.0;
-    if difference > 180.0 {
-        difference -= 360.0;
-    } else if difference < -180.0 {
-        difference += 360.0;
-    }
-    difference
+    let axis = GeographicFrame::crs84().longitude();
+    axis.shortest_alias_step(start, end)
+        .map_or(f64::NAN, |step| step.delta(axis))
 }
 
 /// Run the point-to-segment minimum owner used by Hausdorff witnesses.
@@ -1075,25 +1072,17 @@ fn ensure_finite_distance(distance: f64) -> Result<()> {
     }
 }
 
-#[expect(
-    clippy::float_cmp,
-    reason = "geographic endpoint aliases are exact pole or period identities, never near-coordinate contacts"
-)]
 fn same_geodesic_vertex(left: Point, right: Point) -> bool {
-    left.y == right.y
-        && (left.x == right.x || left.y.abs() == 90.0 || (left.x - right.x).abs() == 360.0)
+    let frame = GeographicFrame::crs84();
+    frame.quotient_vertex(left.x, left.y) == frame.quotient_vertex(right.x, right.y)
 }
 
-#[expect(
-    clippy::float_cmp,
-    reason = "longitude aliases are exact period identities, never near-coordinate contacts"
-)]
 fn same_geodesic_longitude(left: f64, right: f64) -> bool {
-    if left == right || (left - right).abs() == 360.0 {
-        return true;
-    }
-    let (difference, correction) = angle_difference(left, right);
-    difference == 0.0 && correction == 0.0
+    let axis = GeographicFrame::crs84().longitude();
+    matches!(
+        (axis.canonicalize(left), axis.canonicalize(right)),
+        (Ok(left), Ok(right)) if left == right
+    )
 }
 
 fn can_subdivide(left: f64, right: f64) -> bool {
@@ -1175,4 +1164,19 @@ pub(crate) fn sincos_degrees(value: f64, correction: f64) -> (f64, f64) {
         sine = sine.copysign(value);
     }
     (sine, cosine)
+}
+
+#[cfg(test)]
+mod longitude_identity_tests {
+    use super::same_geodesic_longitude;
+
+    #[test]
+    fn geodesic_longitude_identity_is_the_exact_quotient_alias() {
+        assert!(same_geodesic_longitude(10.0, 370.0));
+        assert!(same_geodesic_longitude(-180.0, 180.0));
+        assert!(same_geodesic_longitude(0.0, -0.0));
+        // The stored values differ by about 2.3e-14 degrees after one period,
+        // although `360.1 - 0.1` rounds to exactly 360 in binary64.
+        assert!(!same_geodesic_longitude(0.1, 360.1));
+    }
 }

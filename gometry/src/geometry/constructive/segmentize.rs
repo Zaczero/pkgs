@@ -189,9 +189,12 @@ const fn point_from_xy(point: XY) -> Point {
     Point::new_raw_xy(point.x, point.y)
 }
 
+/// Geodesic and rhumb paths are defined by their endpoints, so an explicit
+/// full-turn chart edge spans no longitude here; only the chart route reads it
+/// as a circle.
 fn lifted_longitude_delta(frame: GeographicFrame, segment: Segment) -> f64 {
     let axis = frame.longitude();
-    axis.shortest_edge(segment.start.x, segment.end.x)
+    axis.shortest_alias_step(segment.start.x, segment.end.x)
         .expect("geographic subdivision received admitted coordinates")
         .delta(axis)
 }

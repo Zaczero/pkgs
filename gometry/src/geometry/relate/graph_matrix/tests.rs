@@ -1118,7 +1118,7 @@ fn ordinary_country_charts_match_q_relation() {
         let mut probe = None;
         prepared.view().for_each_coordinate(|coordinate| {
             if probe.is_none() {
-                let point = coordinate.native();
+                let point = coordinate.native_xy();
                 probe = Some(Shape::Point(Point::new_raw_xy(point.x, point.y)));
             }
         });

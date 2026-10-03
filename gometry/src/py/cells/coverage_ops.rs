@@ -279,9 +279,9 @@ fn grid_cover_error_py(error: GridCoverError) -> PyErr {
             "latitude {lat} is outside the square Web Mercator tile grid ±85.05112878 degrees"
         )),
         GridCoverError::Geographic(diagnostic) => {
-            let message = diagnostic.to_string();
+            let error = geographic::geographic_admission_error(&diagnostic);
             drop(diagnostic);
-            InvalidGeometryError::new_err(message)
+            error.into()
         },
         GridCoverError::H3Capacity => {
             GeometryError::new_err("H3 coverage traversal exceeded its representable capacity")

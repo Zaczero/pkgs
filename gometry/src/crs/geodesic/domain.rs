@@ -30,9 +30,7 @@ pub(crate) fn ensure_geographic_domain_in_frame(
 ) -> Result<()> {
     ScalarGeographicView::try_new(frame, shape)
         .map(|_| ())
-        .map_err(|diagnostic| {
-            geographic::invalid_lonlat_error(diagnostic.native.x, diagnostic.native.y)
-        })
+        .map_err(|diagnostic| geographic::geographic_admission_error(&diagnostic))
 }
 
 pub(crate) fn ensure_geographic_lonlat_in_frame(

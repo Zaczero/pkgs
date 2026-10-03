@@ -486,10 +486,6 @@ impl ChartMetric for EllipsoidMetric<'_> {
     fn chart_area_factor(&self) -> f64 {
         self.authalic_series().area_factor(self.geodesic.a)
     }
-
-    fn chart_surface_area(&self) -> f64 {
-        self.authalic_series().surface_area(self.geodesic.a)
-    }
 }
 
 #[expect(

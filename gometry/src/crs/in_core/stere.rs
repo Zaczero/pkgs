@@ -13,13 +13,8 @@ use crate::crs::in_core::params::{
     param_field, set_positive_finite,
 };
 use crate::error::Result;
+use crate::geographic::Pole;
 use crate::geometry::GeometryErrorKind;
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(in crate::crs) enum Pole {
-    North,
-    South,
-}
 
 #[derive(Clone, Copy, Debug, Default)]
 pub(in crate::crs) struct PolarStereoParams {

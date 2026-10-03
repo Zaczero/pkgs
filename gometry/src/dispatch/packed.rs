@@ -212,17 +212,21 @@ fn packed_bool_values(array: &PyGeometryArray, op: Operation) -> Option<PyResult
         Operation::IsRing | Operation::IsSimple | Operation::IsValid
     ) && let TopologyDomain::Geographic(frame) = domain
     {
-        for shape in array.storage().iter_shapes() {
-            let shape = match shape {
-                Ok(shape) => shape,
+        for row in array.row_operation().present_rows() {
+            let facts = match row.row().with_shape(|shape| {
+                crate::geographic::ScalarGeographicView::try_new_with_seam_facts(frame, shape)
+                    .ok()
+                    .map(|(_, facts)| facts)
+            }) {
+                Ok(Some(facts)) => facts,
+                Ok(None) => return None,
                 Err(error) => return Some(Err(error.into())),
             };
-            let seam_facts = crate::geometry::geographic_seam_facts_in_frame(&shape, frame);
-            if seam_facts.crosses || seam_facts.possible_contact {
+            if facts.crosses || facts.possible_contact {
                 // Packed validity/simplicity kernels intentionally know nothing
-                // about frames. Seam crossings and possible seam contacts take
-                // the shared per-row lane; ordinary geographic columns keep the
-                // packed fast path.
+                // about frames. Domain failures, seam crossings, and possible
+                // seam contacts take the shared per-row lane; ordinary
+                // geographic columns keep the packed fast path.
                 return None;
             }
         }

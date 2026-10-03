@@ -773,6 +773,49 @@ def test_south_full_turn_ring_emits_its_polar_shell() -> None:
     assert not gm.contains(result, gm.Point(0, -70, crs=4326))
 
 
+def test_explicit_period_edges_keep_q_on_the_lifted_chart_side() -> None:
+    bump = gm.Polygon([(0, 60), (360, 60), (315, 65), (0, 60)], crs=4326)
+    hop_closure = gm.Polygon(
+        [
+            (45, 60),
+            (135, 60),
+            (225, 60),
+            (315, 60),
+            (405, 60),
+            (405, 90),
+            (45, 90),
+            (45, 60),
+        ],
+        crs=4326,
+    )
+    oblique_closure = gm.Polygon(
+        [
+            (0, 60),
+            (90, 60),
+            (180, 60),
+            (270, 60),
+            (360, 60),
+            (450, 90),
+            (360, 90),
+            (270, 90),
+            (180, 90),
+            (90, 90),
+            (0, 60),
+        ],
+        crs=4326,
+    )
+
+    for point in [(0, 80), (150, 80), (150, 62), (310, 62), (305, 63)]:
+        assert gm.contains(bump, gm.Point(*point, crs=4326)), point
+    assert not gm.contains(bump, gm.Point(150, 50, crs=4326))
+
+    for shape in [hop_closure, oblique_closure]:
+        assert gm.contains(shape, gm.Point(0, 75, crs=4326))
+        assert gm.contains(shape, gm.Point(200, 75, crs=4326))
+        assert not gm.contains(shape, gm.Point(0, 50, crs=4326))
+        assert not gm.contains(shape, gm.Point(0, -50, crs=4326))
+
+
 def test_intersection_emits_a_new_shell_at_the_north_pole() -> None:
     cap = gm.Polygon([(0, 80), (90, 80), (180, 80), (-90, 80), (0, 80)], crs=4326)
     wedge = gm.Polygon([(120, 90), (110, 75), (130, 75), (120, 90)], crs=4326)

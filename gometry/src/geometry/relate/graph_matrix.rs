@@ -4,7 +4,7 @@ use ahash::HashMapExt as _;
 #[cfg(test)]
 use crate::collections::HashSet;
 use crate::error::Result;
-use crate::geographic::lonlat::invalid_lonlat_error;
+use crate::geographic::lonlat::geographic_admission_error;
 use crate::geographic::{GeographicFrame, ScalarGeographicView};
 use crate::geometry::overlay::ExactSourceInventory;
 use crate::geometry::relate::De9im;
@@ -75,7 +75,7 @@ impl<'a> GeographicPrepared<'a> {
             });
         }
         let view = ScalarGeographicView::try_new(frame, plan.shape())
-            .map_err(|diagnostic| invalid_lonlat_error(diagnostic.native.x, diagnostic.native.y))?;
+            .map_err(|diagnostic| geographic_admission_error(&diagnostic))?;
         let chart_route = crate::geometry::classify_geographic_chart(view);
         let bounds_sound = plan.bounds().is_some_and(|bounds| {
             crate::geometry::raw_coordinate_bounds_are_sound_in_frame(

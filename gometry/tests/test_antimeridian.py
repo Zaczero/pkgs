@@ -450,10 +450,16 @@ def test_crosses_antimeridian_matches_split_frame() -> None:
     'geometry',
     [
         gm.LineString([(-180, 0), (180, 0)]),
+        gm.LineString([(0, 0), (360, 0)]),
         gm.Polygon([(-180, -30), (180, -30), (180, 30), (-180, 30)]),
         gm.Polygon([(170, 0), (-180, 0), (-180, 10), (170, 10)]),
     ],
-    ids=['seam-to-seam-line', 'full-longitude-band', 'touching-spelled-west'],
+    ids=[
+        'seam-to-seam-line',
+        'explicit-period-circle',
+        'full-longitude-band',
+        'touching-spelled-west',
+    ],
 )
 def test_crosses_antimeridian_agrees_across_crs_and_array_lanes(
     geometry: gm.Geometry, crs: int | None
@@ -522,7 +528,8 @@ def test_split_antimeridian_exact_world_band_and_xy_pole() -> None:
     band = gm.Polygon([(0, -30), (360, -30), (360, 30), (0, 30)], crs=4326)
     split = band.split_antimeridian()
     assert split.to_wkt() == (
-        'POLYGON ((-180 -30, 0 -30, 180 -30, 180 30, 0 30, -180 30, -180 -30))'
+        'POLYGON ((-180 -30, -90 -30, 0 -30, 90 -30, 180 -30, '
+        '180 30, 90 30, 0 30, -90 30, -180 30, -180 -30))'
     )
     for longitude in (-179, 0, 179):
         point = gm.Point(longitude, 0, crs=4326)
@@ -787,9 +794,9 @@ def test_split_antimeridian_crs84_canonical_identity_and_full_turn_rewrite() -> 
     )
     assert nested.split_antimeridian().to_wkt() == nested.to_wkt()
     band = gm.Polygon([(0, -30), (360, -30), (360, 30), (0, 30)], crs=4326)
-    assert (
-        band.split_antimeridian().to_wkt()
-        == 'POLYGON ((-180 -30, 0 -30, 180 -30, 180 30, 0 30, -180 30, -180 -30))'
+    assert band.split_antimeridian().to_wkt() == (
+        'POLYGON ((-180 -30, -90 -30, 0 -30, 90 -30, 180 -30, '
+        '180 30, 90 30, 0 30, -90 30, -180 30, -180 -30))'
     )
 
 

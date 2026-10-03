@@ -5,7 +5,7 @@
 use std::collections::HashMap;
 
 use crate::error::Result;
-use crate::geographic::{EdgeDirection, GeographicFrame, ScalarGeographicView, TurnDirection};
+use crate::geographic::{GeographicError, GeographicFrame, ScalarGeographicView};
 use crate::geometry::{
     Bounds, CoordSeq, Coordinates as _, ExactGeographicTopology, GeographicDerivedPointScan,
     GeometryErrorKind, Point, Polygon, PreparedPlan, RepairMethod, Segment, Shape, ShapeOwnerKey,
@@ -141,21 +141,14 @@ fn unwrap_coordinates(
     let mut turns = 0_i64;
     for point in coordinates.iter_coords().skip(1) {
         let longitude = chart_longitude(point.x, frame)?;
-        let delta = if let Some(full_turn) = axis.full_turn_delta(previous_source.x, point.x) {
-            full_turn
-        } else {
-            match axis
-                .shortest_edge(previous_source.x, point.x)
-                .map_err(|error| {
-                    UnwrapChartError::Geometry(GeometryErrorKind::antimeridian_split_failed(
-                        error.to_string(),
-                    ))
-                })? {
-                EdgeDirection::Minor(delta) => delta,
-                EdgeDirection::HalfTurn(TurnDirection::Positive) => axis.half_period(),
-                EdgeDirection::HalfTurn(TurnDirection::Negative) => -axis.half_period(),
-            }
-        };
+        let step = axis
+            .chart_step(previous_source.x, point.x)
+            .map_err(|error| {
+                UnwrapChartError::Geometry(GeometryErrorKind::antimeridian_split_failed(
+                    error.to_string(),
+                ))
+            })?;
+        let delta = step.delta(axis);
         let chart_delta = longitude - previous_longitude;
         let wrap = if delta - chart_delta > axis.half_period() {
             1
@@ -394,9 +387,66 @@ fn crossing_hole_relationship_issue(
     }
 }
 
+fn geographic_admission_validation_issue(
+    shape: &Shape,
+    frame: GeographicFrame,
+) -> Option<ValidationIssue> {
+    let diagnostic = ScalarGeographicView::try_new(frame, shape).err()?;
+    let member_path = diagnostic
+        .location
+        .members
+        .as_slice()
+        .iter()
+        .fold("$".to_owned(), |path, member| format!("{path}[{member}]"));
+    let path = match diagnostic.location.ring {
+        Some(0) => format!("{member_path}.shell"),
+        Some(ring) => {
+            let hole = ring
+                .checked_sub(1)
+                .expect("non-shell ring indices follow the shell");
+            format!("{member_path}.holes[{hole}]")
+        },
+        None => member_path,
+    };
+    let (code, detail) = match diagnostic.source {
+        GeographicError::NonFinite { .. } => (
+            "non_finite_coordinate",
+            "point coordinates must be finite".to_owned(),
+        ),
+        GeographicError::LatitudeOutOfRange { .. } => {
+            ("latitude_out_of_range", diagnostic.source.to_string())
+        },
+        GeographicError::AmbiguousFullTurnRing { .. } => {
+            ("ambiguous_full_turn_ring", diagnostic.source.to_string())
+        },
+        GeographicError::InvalidAngularFactor { .. }
+        | GeographicError::InvalidSweep { .. }
+        | GeographicError::ChartTurnOverflow => {
+            ("geographic_admission_error", diagnostic.source.to_string())
+        },
+    };
+    Some(ValidationIssue::new(
+        code,
+        detail,
+        Some(Point::new_raw_xy(diagnostic.native.x, diagnostic.native.y)),
+        path,
+    ))
+}
+
 /// Validate stored geometry in its coordinate frame. Projected and CRS-free
 /// geometries retain ordinary planar OGC validity.
 fn validate_geographic_shape(
+    shape: &Shape,
+    frame: GeographicFrame,
+    facts: crate::geometry::GeographicSeamFacts,
+) -> Result<Option<ValidationIssue>> {
+    if let Some(issue) = geographic_admission_validation_issue(shape, frame) {
+        return Ok(Some(issue));
+    }
+    validate_geographic_shape_admitted(shape, frame, facts)
+}
+
+fn validate_geographic_shape_admitted(
     shape: &Shape,
     frame: GeographicFrame,
     facts: crate::geometry::GeographicSeamFacts,
@@ -464,8 +514,11 @@ pub(crate) fn validate_data_in_frame(
         TopologyDomain::Cartesian => Ok(data.validate_cached()?.cloned()),
         TopologyDomain::Geographic(frame) => {
             let facts = seam_facts_for_data(data, frame);
+            if let Some(issue) = geographic_admission_validation_issue(data.shape(), frame) {
+                return Ok(Some(issue));
+            }
             if facts.crosses || facts.possible_contact {
-                validate_geographic_shape(data.shape(), frame, facts)
+                validate_geographic_shape_admitted(data.shape(), frame, facts)
             } else {
                 Ok(data.validate_cached()?.cloned())
             }
@@ -479,6 +532,7 @@ pub(crate) fn is_simple_data_in_frame(data: &PreparedPlan, domain: TopologyDomai
     let TopologyDomain::Geographic(frame) = domain else {
         return data.is_simple_cached();
     };
+    crate::crs::ensure_geographic_domain_in_frame(frame, data.shape())?;
     let facts = seam_facts_for_data(data, frame);
     if facts.possible_contact {
         match exact_source_seam_contact(data.shape(), frame, true) {
@@ -513,6 +567,7 @@ pub(crate) fn is_ring_data_in_frame(data: &PreparedPlan, domain: TopologyDomain)
     let TopologyDomain::Geographic(frame) = domain else {
         return data.shape().is_ring();
     };
+    crate::crs::ensure_geographic_domain_in_frame(frame, data.shape())?;
     if !crate::geometry::shape_is_closed_in_domain(data.shape(), domain) {
         return Ok(false);
     }
@@ -553,6 +608,7 @@ pub(crate) fn self_intersections_in_frame(
     let TopologyDomain::Geographic(frame) = domain else {
         return shape.self_intersections();
     };
+    crate::crs::ensure_geographic_domain_in_frame(frame, shape)?;
     let facts = crate::geometry::geographic_seam_facts_in_frame(shape, frame);
     if facts.possible_contact {
         match exact_source_seam_contact(shape, frame, true) {
@@ -610,6 +666,16 @@ fn repair_invalid_shape(
     Ok(repaired)
 }
 
+fn reject_ambiguous_ring_repair(issue: &ValidationIssue) -> Result<()> {
+    if issue.code == "ambiguous_full_turn_ring" {
+        return Err(GeometryErrorKind::repair_failed(format!(
+            "an ambiguous full-turn ring has no unique pole closure: {}",
+            issue.detail,
+        )));
+    }
+    Ok(())
+}
+
 /// Repair only when frame-aware validation finds a defect. `None` means the
 /// caller must preserve the original frozen handle/storage unchanged.
 pub(crate) fn repair_shape_in_frame(
@@ -617,9 +683,11 @@ pub(crate) fn repair_shape_in_frame(
     domain: TopologyDomain,
     method: RepairMethod,
 ) -> Result<Option<Shape>> {
-    validate_shape_in_frame(shape, domain)?
-        .map(|_| repair_invalid_shape(shape, domain, method))
-        .transpose()
+    let Some(issue) = validate_shape_in_frame(shape, domain)? else {
+        return Ok(None);
+    };
+    reject_ambiguous_ring_repair(&issue)?;
+    repair_invalid_shape(shape, domain, method).map(Some)
 }
 
 /// Cached-handle twin of [`repair_shape_in_frame`].
@@ -628,9 +696,11 @@ pub(crate) fn repair_data_in_frame(
     domain: TopologyDomain,
     method: RepairMethod,
 ) -> Result<Option<Shape>> {
-    validate_data_in_frame(data, domain)?
-        .map(|_| repair_invalid_shape(data.shape(), domain, method))
-        .transpose()
+    let Some(issue) = validate_data_in_frame(data, domain)? else {
+        return Ok(None);
+    };
+    reject_ambiguous_ring_repair(&issue)?;
+    repair_invalid_shape(data.shape(), domain, method).map(Some)
 }
 
 /// Shift canonical western longitudes by one native full turn so a crossing

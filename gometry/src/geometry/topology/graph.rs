@@ -1143,9 +1143,8 @@ impl GraphBuilder {
             )?),
         )
         .expect("validated geographic ring has an exact summary");
-        let full_turn = matches!(summary.turn, crate::geographic::RingTurn::Full(_));
-        let north_pole = full_turn && summary.south.get() > 0.0;
-        let south_pole = full_turn && summary.north.get() < 0.0;
+        let north_pole = summary.bounded_pole() == Some(crate::geographic::Pole::North);
+        let south_pole = summary.bounded_pole() == Some(crate::geographic::Pole::South);
         Ok(StagedChartRing {
             ring: ChartRing {
                 points: points.into_boxed_slice(),
@@ -1383,25 +1382,23 @@ fn chart_segments(
         .canonicalize(segment.start.x)
         .expect("validated longitude")
         .get();
-    let mut delta = axis
-        .shortest_edge(segment.start.x, segment.end.x)
-        .expect("validated longitude")
-        .delta(axis);
-    if delta == 0.0
-        && let Some(full_turn) = axis.full_turn_delta(segment.start.x, segment.end.x)
-    {
-        delta = full_turn;
-    }
+    let step = axis
+        .chart_step(segment.start.x, segment.end.x)
+        .expect("validated longitude");
     let start = XY::new(start_x, segment.start.y);
-    // Select the chart copy from the delta, but retain the source endpoint's
+    // The shared chart transit selects the copy, while the endpoint keeps its
     // exact canonical spelling so adjacent ring segments share a node.
-    let candidate_end_x = start_x + delta;
     let canonical_end_x = axis
         .canonicalize(segment.end.x)
         .expect("validated longitude")
         .get();
-    let turns = ((candidate_end_x - canonical_end_x) / axis.period()).round();
-    let end = XY::new(canonical_end_x + turns * axis.period(), segment.end.y);
+    let transit = step
+        .transit(axis, segment.start.x, segment.end.x)
+        .expect("validated longitude");
+    let end = XY::new(
+        canonical_end_x + f64::from(transit) * axis.period(),
+        segment.end.y,
+    );
     let half = axis.half_period();
     if end.x > half {
         let y = antimeridian::crossing_latitude_in_frame(

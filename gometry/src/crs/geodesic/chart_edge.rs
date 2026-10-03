@@ -1,13 +1,15 @@
 //! Shared chart-edge geometry, measures, and arclength parametrization.
 //!
-//! Longitude direction comes from `PeriodicAxis::shortest_edge`; latitude stays
-//! in native units until pole-referenced colatitude is formed.
+//! Longitude direction and explicit-period circles come from
+//! `PeriodicAxis::chart_step`; latitude stays in native units until
+//! pole-referenced colatitude is formed.
 
 use geographiclib_rs::Geodesic;
 
 use crate::error::Result;
 use crate::geographic::{
-    CircularInterval, EdgeDirection, GeographicFrame, Latitude, LongitudeWindows, SeamIdentity,
+    ChartStep, CircularInterval, EdgeDirection, GeographicFrame, Latitude, LongitudeWindows,
+    SeamIdentity,
 };
 use crate::geometry::types::ChartMetric;
 use crate::geometry::{
@@ -66,7 +68,6 @@ const AUTHALIC_TAIL_RELATIVE: f64 = 1.0e-17;
 pub(crate) struct AuthalicSeries {
     coefficients: [f64; MAX_AUTHALIC_HARMONICS],
     harmonics: usize,
-    polar_q: f64,
 }
 
 impl AuthalicSeries {
@@ -94,29 +95,14 @@ impl AuthalicSeries {
             *coefficient = (1.0 - e2) * sum * if k % 2 == 0 { 1.0 } else { -1.0 };
         }
 
-        let mut polar_q = 0.0;
-        let mut correction = 0.0;
-        for (k, &coefficient) in coefficients.iter().take(harmonics).enumerate() {
-            let value = if k % 2 == 0 {
-                coefficient
-            } else {
-                -coefficient
-            };
-            add_compensated(&mut polar_q, &mut correction, value);
-        }
         Self {
             coefficients,
             harmonics,
-            polar_q,
         }
     }
 
     pub(crate) fn area_factor(self, semi_major: f64) -> f64 {
         semi_major * semi_major / 2.0
-    }
-
-    pub(crate) fn surface_area(self, semi_major: f64) -> f64 {
-        2.0 * std::f64::consts::PI * semi_major * semi_major * self.polar_q
     }
 }
 
@@ -127,13 +113,6 @@ fn binomial(n: usize, k: usize) -> f64 {
         coefficient *= (n + 1 - index) as f64 / index as f64;
     }
     coefficient
-}
-
-fn add_compensated(sum: &mut f64, correction: &mut f64, value: f64) {
-    let adjusted = value - *correction;
-    let next = *sum + adjusted;
-    *correction = (next - *sum) - adjusted;
-    *sum = next;
 }
 
 fn one_minus_sinc_small(value: f64) -> f64 {
@@ -173,12 +152,13 @@ struct MeridianCoordinates {
 impl ChartEdge {
     pub(crate) fn new(start: Point, end: Point, frame: GeographicFrame) -> Result<Self> {
         let axis = frame.longitude();
-        let longitude_delta_native = match axis
-            .shortest_edge(start.x, end.x)
-            .expect("chart-edge coordinates were admitted before measurement")
-        {
-            EdgeDirection::Minor(delta) => delta,
-            EdgeDirection::HalfTurn(direction) => {
+        let step = axis
+            .chart_step(start.x, end.x)
+            .expect("chart-edge coordinates were admitted before measurement");
+        let longitude_delta_native = match step {
+            ChartStep::Circle(_) => step.delta(axis),
+            ChartStep::Shortest(EdgeDirection::Minor(delta)) => delta,
+            ChartStep::Shortest(EdgeDirection::HalfTurn(direction)) => {
                 return Err(GeometryErrorKind::parameter(
                     "longitude",
                     EdgeDirection::HalfTurn(direction).delta(axis),
@@ -233,7 +213,7 @@ impl ChartEdge {
 
     #[expect(
         clippy::float_cmp,
-        reason = "an exact pole endpoint requires a full-longitude edge bound"
+        reason = "exact poles and explicit circle edges require a full-longitude bound"
     )]
     pub(super) fn bounds(self) -> ChartBox {
         let (start_longitude, start_latitude) = self
@@ -247,25 +227,22 @@ impl ChartEdge {
         let south = start_latitude.min(end_latitude).next_down().max(-90.0);
         let north = start_latitude.max(end_latitude).next_up().min(90.0);
         let axis = GeographicFrame::crs84().longitude();
-        let interval = if start_latitude.abs() == 90.0 || end_latitude.abs() == 90.0 {
+        // `ChartEdge::new` stores the selected chart-step delta. A Circle step
+        // spans one full period; shortest steps never exceed half a period.
+        // Canonicalizing both endpoints would erase that distinction.
+        let circle = self.longitude_delta_native.abs() > self.frame.longitude().half_period();
+        let longitude_delta = self.longitude_delta.to_degrees();
+        let interval = if start_latitude.abs() == 90.0 || end_latitude.abs() == 90.0 || circle {
             CircularInterval::Full
         } else {
-            match axis
-                .shortest_edge(start_longitude, end_longitude)
-                .expect("canonical chart-edge endpoints are admitted")
-            {
-                EdgeDirection::Minor(delta) => {
-                    let west = if delta < 0.0 {
-                        end_longitude
-                    } else {
-                        start_longitude
-                    };
-                    let sweep = delta.abs() + 64.0 * f64::EPSILON * 360.0;
-                    CircularInterval::try_arc(axis, west, sweep)
-                        .expect("a chart edge spans less than half a longitude period")
-                },
-                EdgeDirection::HalfTurn(_) => CircularInterval::Full,
-            }
+            let west = if longitude_delta < 0.0 {
+                end_longitude
+            } else {
+                start_longitude
+            };
+            let sweep = longitude_delta.abs() + 64.0 * f64::EPSILON * 360.0;
+            CircularInterval::try_arc(axis, west, sweep)
+                .expect("a chart edge spans less than half a longitude period")
         };
         let (west, east) = match interval.windows(axis) {
             Some(
@@ -853,10 +830,6 @@ impl ChartMetric for super::GeodesicMetric {
     fn chart_area_factor(&self) -> f64 {
         self.authalic_series.area_factor(self.geodesic.a)
     }
-
-    fn chart_surface_area(&self) -> f64 {
-        self.authalic_series.surface_area(self.geodesic.a)
-    }
 }
 
 #[derive(Clone, Copy)]
@@ -890,7 +863,9 @@ mod tests {
 
     use super::super::GeodesicMetric;
     use super::{AuthalicSeries, ChartEdge, ONE_DEGREE};
-    use crate::geographic::{AngularFactor, EdgeDirection, GeographicFrame, PeriodicAxis};
+    use crate::geographic::{
+        AngularFactor, ChartStep, EdgeDirection, GeographicFrame, PeriodicAxis,
+    };
     use crate::geometry::types::ChartMetric;
     use crate::geometry::{GeometryErrorKind, Point};
 
@@ -1036,7 +1011,10 @@ mod tests {
         for (start, middle, end) in [(170.0, 180.0, -170.0), (530.0, 540.0, 190.0)] {
             for (from, to) in [(start, middle), (middle, end)] {
                 assert!(axis.full_turn_delta(from, to).is_none());
-                assert_eq!(axis.shortest_edge(from, to).unwrap().delta(axis), 10.0);
+                assert_eq!(
+                    axis.shortest_alias_step(from, to).unwrap().delta(axis),
+                    10.0
+                );
             }
         }
     }
@@ -1123,6 +1101,19 @@ mod tests {
     }
 
     #[test]
+    fn explicit_full_turn_circle_has_full_longitude_bounds() {
+        let circle = ChartEdge::new(
+            Point::new_raw_xy(10.0, 60.0),
+            Point::new_raw_xy(370.0, 60.0),
+            degrees(),
+        )
+        .unwrap();
+        let bounds = circle.bounds();
+        assert_eq!(bounds.west.to_bits(), (-180.0_f64).to_bits());
+        assert_eq!(bounds.east.to_bits(), 180.0_f64.to_bits());
+    }
+
+    #[test]
     fn chart_metric_trait_constructs_and_measures_a_chart_edge() {
         let metric = GeodesicMetric {
             crs: Arc::new("EPSG:4326".to_owned()),
@@ -1179,8 +1170,9 @@ mod tests {
 
     fn assert_topology_delta(frame: GeographicFrame, from: f64, to: f64) {
         let axis = frame.longitude();
-        let direction = axis.shortest_edge(from, to).unwrap();
-        let EdgeDirection::Minor(delta) = direction else {
+        let step = axis.chart_step(from, to).unwrap();
+        let delta = step.delta(axis);
+        if matches!(step, ChartStep::Shortest(EdgeDirection::HalfTurn(_))) {
             assert!(
                 ChartEdge::new(
                     Point::new_raw_xy(from, 0.0),
@@ -1191,7 +1183,7 @@ mod tests {
                 "half-period edge was accepted: frame={frame:?}, from={from:?}, to={to:?}"
             );
             return;
-        };
+        }
         let edge = ChartEdge::new(
             Point::new_raw_xy(from, 0.0),
             Point::new_raw_xy(to, 0.0),
@@ -1204,17 +1196,9 @@ mod tests {
             "frame={frame:?}, from={from:?}, to={to:?}"
         );
 
-        let from_canonical = axis.canonicalize(from).unwrap().get();
-        let to_canonical = axis.canonicalize(to).unwrap().get();
-        let expected_transit = if delta > 0.0 && to_canonical < from_canonical {
-            1
-        } else if delta < 0.0 && to_canonical > from_canonical {
-            -1
-        } else {
-            0
-        };
+        let expected_transit = step.transit(axis, from, to).unwrap();
         assert_eq!(
-            axis.seam_transit(from, to).unwrap(),
+            axis.chart_transit(from, to).unwrap(),
             expected_transit,
             "frame={frame:?}, from={from:?}, to={to:?}"
         );

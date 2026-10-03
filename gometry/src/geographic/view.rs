@@ -4,12 +4,14 @@ use std::marker::PhantomData;
 use std::ops::ControlFlow;
 
 use super::{
-    CanonicalLongitude, GeographicError, GeographicFrame, Latitude, RingTurn, SeamIdentity,
+    CanonicalLongitude, ChartStep, FullTurnPole, GeographicError, GeographicFrame, Latitude, Pole,
+    RingTurn, SeamIdentity,
 };
 use crate::collections::HashSet;
 use crate::geometry::storage::admission::CheckedRingWindow;
 use crate::geometry::{
-    CoordSeq, MultiMember, Point, Ring, RunIdentity, Shape, ShapeOwnerKey, SharedShapeOwners, XY,
+    CoordSeq, MultiMember, Ring, RunIdentity, Shape, ShapeOwnerKey, SharedShapeOwners,
+    SupportRunKind, XY,
 };
 
 const INLINE_MEMBER_DEPTH: usize = 4;
@@ -226,6 +228,28 @@ impl fmt::Display for GeographicDiagnostic {
 
 pub(crate) type GeographicViewError = Box<GeographicDiagnostic>;
 
+enum GeographicVisitError {
+    Diagnostic(GeographicViewError),
+    OrdinaryScreenMismatch,
+}
+
+impl From<GeographicViewError> for GeographicVisitError {
+    fn from(error: GeographicViewError) -> Self {
+        Self::Diagnostic(error)
+    }
+}
+
+impl GeographicVisitError {
+    fn into_diagnostic(self) -> GeographicViewError {
+        match self {
+            Self::Diagnostic(error) => error,
+            Self::OrdinaryScreenMismatch => {
+                unreachable!("full geographic admission does not run the ordinary screen")
+            },
+        }
+    }
+}
+
 #[derive(Debug)]
 pub(crate) enum GeographicAdmissionError {
     Geographic(GeographicViewError),
@@ -250,14 +274,14 @@ impl std::error::Error for GeographicDiagnostic {
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct GeographicCoordinate {
-    native: Point,
+    native_xy: XY,
     longitude: CanonicalLongitude,
     latitude: Latitude,
 }
 
 impl GeographicCoordinate {
-    pub(crate) const fn native(self) -> Point {
-        self.native
+    pub(crate) const fn native_xy(self) -> XY {
+        self.native_xy
     }
 
     pub(crate) const fn longitude(self) -> CanonicalLongitude {
@@ -278,55 +302,80 @@ impl GeographicCoordinate {
 
 fn coordinate(
     frame: GeographicFrame,
-    point: Point,
+    native_xy: XY,
     location: impl FnOnce() -> GeographicLocation,
 ) -> Result<GeographicCoordinate, GeographicViewError> {
-    let longitude = match frame.longitude().canonicalize(point.x) {
+    let longitude = match frame.longitude().canonicalize(native_xy.x) {
         Ok(longitude) => longitude,
         Err(source) => {
-            return Err(GeographicDiagnostic::boxed(
-                location(),
-                XY::from(point),
-                source,
-            ));
+            return Err(GeographicDiagnostic::boxed(location(), native_xy, source));
         },
     };
-    let latitude = match Latitude::try_new(frame, point.y) {
+    let latitude = match Latitude::try_new(frame, native_xy.y) {
         Ok(latitude) => latitude,
         Err(source) => {
-            return Err(GeographicDiagnostic::boxed(
-                location(),
-                XY::from(point),
-                source,
-            ));
+            return Err(GeographicDiagnostic::boxed(location(), native_xy, source));
         },
     };
     Ok(GeographicCoordinate {
-        native: point,
+        native_xy,
         longitude,
         latitude,
     })
 }
 
-fn visit_coordseq(
+fn coordinate_for_visit<const ORDINARY_SCREEN: bool>(
+    frame: GeographicFrame,
+    native_xy: XY,
+    location: impl FnOnce() -> GeographicLocation,
+) -> Result<GeographicCoordinate, GeographicVisitError> {
+    if ORDINARY_SCREEN {
+        let Some(longitude) = frame.longitude().ordinary_longitude(native_xy.x) else {
+            return Err(GeographicVisitError::OrdinaryScreenMismatch);
+        };
+        let latitude = Latitude::try_new(frame, native_xy.y)
+            .map_err(|_| GeographicVisitError::OrdinaryScreenMismatch)?;
+        return Ok(GeographicCoordinate {
+            native_xy,
+            longitude,
+            latitude,
+        });
+    }
+    coordinate(frame, native_xy, location).map_err(GeographicVisitError::Diagnostic)
+}
+
+fn visit_coordseq<const ORDINARY_SCREEN: bool>(
     frame: GeographicFrame,
     coords: &CoordSeq,
     row: Option<usize>,
     members: &MemberPathBuilder,
     ring: Option<usize>,
     run_owners: &mut Option<SharedShapeOwners>,
-    visit: &mut impl FnMut(GeographicCoordinate) -> Result<(), GeographicViewError>,
-) -> Result<(), GeographicViewError> {
-    if run_owners
-        .as_mut()
-        .is_some_and(|owners| !owners.first_coord_seq(coords, RunIdentity::XY))
-    {
+    visit: &mut impl FnMut(GeographicCoordinate) -> Result<(), GeographicVisitError>,
+) -> Result<(), GeographicVisitError> {
+    let first = run_owners.as_mut().is_none_or(|owners| {
+        if ORDINARY_SCREEN {
+            owners.first_support_run(coords, RunIdentity::XY, SupportRunKind::SegmentChain)
+        } else {
+            owners.first_coord_seq(coords, RunIdentity::XY)
+        }
+    });
+    if !first {
         return Ok(());
     }
-    for coordinate_index in 0..coords.len() {
-        visit(coordinate(
+    let axis = frame.longitude();
+    let mut previous_x = None;
+    for (coordinate_index, (&x, &y)) in coords.xs().iter().zip(coords.ys()).enumerate() {
+        let native_xy = XY::new(x, y);
+        if ORDINARY_SCREEN
+            && let Some(previous_x) = previous_x
+            && !axis.ordinary_chart_edge(previous_x, x)
+        {
+            return Err(GeographicVisitError::OrdinaryScreenMismatch);
+        }
+        visit(coordinate_for_visit::<ORDINARY_SCREEN>(
             frame,
-            coords.point_at(coordinate_index),
+            native_xy,
             || GeographicLocation {
                 row,
                 members: members.location(),
@@ -334,26 +383,146 @@ fn visit_coordseq(
                 coordinate: coordinate_index,
             },
         )?)?;
+        previous_x = Some(x);
     }
     Ok(())
 }
 
-fn visit_shape<'owner>(
+fn ring_gate(
+    chart_turn: i64,
+    south: Latitude,
+    north: Latitude,
+    location: GeographicLocation,
+    native: XY,
+) -> Result<(), GeographicViewError> {
+    if matches!(chart_turn, -1 | 1)
+        && FullTurnPole::of_latitude_span(south.get(), north.get()) == FullTurnPole::Ambiguous
+    {
+        return Err(GeographicDiagnostic::boxed(
+            location,
+            native,
+            GeographicError::AmbiguousFullTurnRing {
+                south: south.get(),
+                north: north.get(),
+            },
+        ));
+    }
+    Ok(())
+}
+
+fn visit_ring_coordseq<const ORDINARY_SCREEN: bool>(
+    frame: GeographicFrame,
+    coords: &CoordSeq,
+    row: Option<usize>,
+    members: &MemberPathBuilder,
+    ring: usize,
+    run_owners: &mut Option<SharedShapeOwners>,
+    pending_gate: &mut Option<GeographicViewError>,
+    visit: &mut impl FnMut(GeographicCoordinate) -> Result<(), GeographicVisitError>,
+) -> Result<(), GeographicVisitError> {
+    let repeated = run_owners.as_mut().is_some_and(|owners| {
+        if ORDINARY_SCREEN {
+            !owners.first_support_run(coords, RunIdentity::XY, SupportRunKind::SegmentChain)
+        } else {
+            !owners.first_coord_seq(coords, RunIdentity::XY)
+        }
+    });
+    if ORDINARY_SCREEN && repeated {
+        return Ok(());
+    }
+    let mut chart_turn = 0_i64;
+    let mut previous: Option<XY> = None;
+    let mut first = None;
+    let axis = frame.longitude();
+    for (index, (&x, &y)) in coords.xs().iter().zip(coords.ys()).enumerate() {
+        let native_xy = XY::new(x, y);
+        let admitted = if repeated && !ORDINARY_SCREEN {
+            admitted_coordinate(frame, native_xy)
+        } else {
+            coordinate_for_visit::<ORDINARY_SCREEN>(frame, native_xy, || GeographicLocation {
+                row,
+                members: members.location(),
+                ring: Some(ring),
+                coordinate: index,
+            })?
+        };
+        if !repeated {
+            visit(admitted)?;
+        }
+        if !ORDINARY_SCREEN {
+            first.get_or_insert_with(|| admitted.native_xy());
+        }
+        if !ORDINARY_SCREEN
+            && let Some(previous) = previous
+            && !axis.ordinary_chart_edge(previous.x, native_xy.x)
+        {
+            chart_turn = axis
+                .add_chart_transit(chart_turn, previous.x, native_xy.x)
+                .map_err(|source| {
+                    GeographicDiagnostic::boxed(
+                        GeographicLocation {
+                            row,
+                            members: members.location(),
+                            ring: Some(ring),
+                            coordinate: index,
+                        },
+                        native_xy,
+                        source,
+                    )
+                })?;
+        }
+        if ORDINARY_SCREEN
+            && let Some(previous) = previous
+            && !axis.ordinary_chart_edge(previous.x, native_xy.x)
+        {
+            return Err(GeographicVisitError::OrdinaryScreenMismatch);
+        }
+        previous = Some(native_xy);
+    }
+    if !ORDINARY_SCREEN {
+        let first = first.expect("polygon rings have at least four admitted coordinates");
+        if pending_gate.is_none() && matches!(chart_turn, -1 | 1) {
+            let span = admitted_latitude_span(frame, coords);
+            if let Err(error) = ring_gate(
+                chart_turn,
+                span.south,
+                span.north,
+                GeographicLocation {
+                    row,
+                    members: members.location(),
+                    ring: Some(ring),
+                    coordinate: 0,
+                },
+                first,
+            ) {
+                *pending_gate = Some(error);
+            }
+        }
+    }
+    Ok(())
+}
+
+fn visit_shape<'owner, const ORDINARY_SCREEN: bool>(
     frame: GeographicFrame,
     shape: &'owner Shape,
     row: Option<usize>,
     members: &mut MemberPathBuilder,
     mut collection_owners: Option<&mut GeographicCollectionOwners<'owner>>,
     run_owners: &mut Option<SharedShapeOwners>,
-    visit: &mut impl FnMut(GeographicCoordinate) -> Result<(), GeographicViewError>,
-) -> Result<(), GeographicViewError> {
+    pending_gate: &mut Option<GeographicViewError>,
+    visit: &mut impl FnMut(GeographicCoordinate) -> Result<(), GeographicVisitError>,
+) -> Result<(), GeographicVisitError> {
     match shape {
-        Shape::Point(point) => visit(coordinate(frame, *point, || GeographicLocation {
-            row,
-            members: members.location(),
-            ring: None,
-            coordinate: 0,
-        })?),
+        Shape::Point(point) => visit(coordinate_for_visit::<ORDINARY_SCREEN>(
+            frame,
+            XY::from(*point),
+            || GeographicLocation {
+                row,
+                members: members.location(),
+                ring: None,
+                coordinate: 0,
+            },
+        )?),
         Shape::MultiPoint(points) => {
             if run_owners
                 .as_mut()
@@ -363,28 +532,42 @@ fn visit_shape<'owner>(
             }
             for (logical, member) in points.members().enumerate() {
                 if let MultiMember::Value(physical) = member {
-                    members.push(logical);
-                    visit(coordinate(frame, points.point_at(physical), || {
-                        GeographicLocation {
+                    if !ORDINARY_SCREEN {
+                        members.push(logical);
+                    }
+                    let native_xy = points
+                        .xs()
+                        .get(physical)
+                        .zip(points.ys().get(physical))
+                        .map(|(&x, &y)| XY::new(x, y))
+                        .expect("MultiPoint member refers to stored XY columns");
+                    visit(coordinate_for_visit::<ORDINARY_SCREEN>(
+                        frame,
+                        native_xy,
+                        || GeographicLocation {
                             row,
                             members: members.location(),
                             ring: None,
                             coordinate: 0,
-                        }
-                    })?)?;
-                    members.pop();
+                        },
+                    )?)?;
+                    if !ORDINARY_SCREEN {
+                        members.pop();
+                    }
                 }
             }
             Ok(())
         },
         Shape::LineString(line) => {
-            visit_coordseq(frame, line, row, members, None, run_owners, visit)
+            visit_coordseq::<ORDINARY_SCREEN>(frame, line, row, members, None, run_owners, visit)
         },
         Shape::MultiLineString(lines) => {
             for (logical, member) in lines.members().enumerate() {
                 if let MultiMember::Value(physical) = member {
-                    members.push(logical);
-                    visit_coordseq(
+                    if !ORDINARY_SCREEN {
+                        members.push(logical);
+                    }
+                    visit_coordseq::<ORDINARY_SCREEN>(
                         frame,
                         &lines.as_slice()[physical],
                         row,
@@ -393,25 +576,49 @@ fn visit_shape<'owner>(
                         run_owners,
                         visit,
                     )?;
-                    members.pop();
+                    if !ORDINARY_SCREEN {
+                        members.pop();
+                    }
                 }
             }
             Ok(())
         },
         Shape::Polygon(polygon) => {
             for (ring, coords) in polygon.rings().enumerate() {
-                visit_coordseq(frame, coords, row, members, Some(ring), run_owners, visit)?;
+                visit_ring_coordseq::<ORDINARY_SCREEN>(
+                    frame,
+                    coords,
+                    row,
+                    members,
+                    ring,
+                    run_owners,
+                    pending_gate,
+                    visit,
+                )?;
             }
             Ok(())
         },
         Shape::MultiPolygon(polygons) => {
             for (logical, member) in polygons.members().enumerate() {
                 if let MultiMember::Value(physical) = member {
-                    members.push(logical);
-                    for (ring, coords) in polygons.as_slice()[physical].rings().enumerate() {
-                        visit_coordseq(frame, coords, row, members, Some(ring), run_owners, visit)?;
+                    if !ORDINARY_SCREEN {
+                        members.push(logical);
                     }
-                    members.pop();
+                    for (ring, coords) in polygons.as_slice()[physical].rings().enumerate() {
+                        visit_ring_coordseq::<ORDINARY_SCREEN>(
+                            frame,
+                            coords,
+                            row,
+                            members,
+                            ring,
+                            run_owners,
+                            pending_gate,
+                            visit,
+                        )?;
+                    }
+                    if !ORDINARY_SCREEN {
+                        members.pop();
+                    }
                 }
             }
             Ok(())
@@ -452,22 +659,46 @@ fn visit_shape<'owner>(
                 if let Some(owners) = collection_owners.as_deref_mut() {
                     owners.record_collection_member_slot();
                 }
-                members.push(member);
-                visit_shape(
+                if !ORDINARY_SCREEN {
+                    members.push(member);
+                }
+                visit_shape::<ORDINARY_SCREEN>(
                     frame,
                     shape,
                     row,
                     members,
                     collection_owners.as_deref_mut(),
                     run_owners,
+                    pending_gate,
                     visit,
                 )?;
-                members.pop();
+                if !ORDINARY_SCREEN {
+                    members.pop();
+                }
             }
             Ok(())
         },
         Shape::Empty(..) => Ok(()),
     }
+}
+
+/// Admit a shape without chart normalization when every stored coordinate and
+/// edge is ordinary in this frame.
+fn ordinary_chart_screen(frame: GeographicFrame, shape: &Shape) -> bool {
+    let mut owners = SharedShapeOwners::for_shape(shape);
+    let mut pending_gate = None;
+    let mut visit = |_: GeographicCoordinate| Ok(());
+    let screened = visit_shape::<true>(
+        frame,
+        shape,
+        None,
+        &mut MemberPathBuilder::default(),
+        None,
+        &mut owners,
+        &mut pending_gate,
+        &mut visit,
+    );
+    matches!(screened, Ok(())) && pending_gate.is_none()
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -482,16 +713,40 @@ impl<'a> ScalarGeographicView<'a> {
         shape: &'a Shape,
     ) -> Result<Self, GeographicViewError> {
         let mut owners = SharedShapeOwners::for_shape(shape);
-        visit_shape(
+        let mut pending_gate = None;
+        let admitted = visit_shape::<false>(
             frame,
             shape,
             None,
             &mut MemberPathBuilder::default(),
             None,
             &mut owners,
+            &mut pending_gate,
             &mut |_| Ok(()),
-        )?;
+        );
+        admitted.map_err(GeographicVisitError::into_diagnostic)?;
+        if let Some(error) = pending_gate {
+            return Err(error);
+        }
         Ok(Self { frame, shape })
+    }
+
+    pub(crate) fn try_new_with_seam_facts(
+        frame: GeographicFrame,
+        shape: &'a Shape,
+    ) -> Result<(Self, crate::geometry::GeographicSeamFacts), GeographicViewError> {
+        // A successful screen is complete admission: every coordinate is in
+        // domain and every ring transit is zero. All other spellings use the
+        // full diagnostic path before seam facts are computed.
+        if ordinary_chart_screen(frame, shape) {
+            return Ok((
+                Self { frame, shape },
+                crate::geometry::GeographicSeamFacts::default(),
+            ));
+        }
+        let view = Self::try_new(frame, shape)?;
+        let facts = crate::geometry::geographic_seam_facts_in_frame(shape, frame);
+        Ok((view, facts))
     }
 
     pub(crate) fn try_new_with_collection_owners(
@@ -507,20 +762,25 @@ impl<'a> ScalarGeographicView<'a> {
             Ok(())
         };
         let mut run_owners = SharedShapeOwners::for_shape(shape);
-        let admitted = visit_shape(
+        let mut pending_gate = None;
+        let admitted = visit_shape::<false>(
             frame,
             shape,
             None,
             &mut MemberPathBuilder::default(),
             Some(&mut *owners),
             &mut run_owners,
+            &mut pending_gate,
             &mut visit,
         );
         #[cfg(test)]
         owners.record_coordinate_visits(coordinate_visits.get());
-        admitted.map_err(GeographicAdmissionError::Geographic)?;
+        admitted.map_err(|error| GeographicAdmissionError::Geographic(error.into_diagnostic()))?;
         if let Some(error) = owners.take_entropy_error() {
             return Err(GeographicAdmissionError::Resource(error));
+        }
+        if let Some(error) = pending_gate {
+            return Err(GeographicAdmissionError::Geographic(error));
         }
         Ok(Self { frame, shape })
     }
@@ -541,7 +801,7 @@ impl<'a> ScalarGeographicView<'a> {
 
     pub(crate) fn for_each_coordinate(self, mut visit: impl FnMut(GeographicCoordinate)) {
         self.shape.for_each_point(|point| {
-            visit(admitted_coordinate(self.frame, point));
+            visit(admitted_coordinate(self.frame, XY::from(point)));
         });
     }
 
@@ -555,7 +815,7 @@ impl<'a> ScalarGeographicView<'a> {
     ) -> bool {
         matches!(
             self.shape.try_for_each_first_xy_point_run(|point| {
-                if predicate(admitted_coordinate(self.frame, point)) {
+                if predicate(admitted_coordinate(self.frame, XY::from(point))) {
                     ControlFlow::Break(())
                 } else {
                     ControlFlow::Continue(())
@@ -606,11 +866,11 @@ impl<'a> GeographicInputs<'a> {
     }
 }
 
-fn admitted_coordinate(frame: GeographicFrame, point: Point) -> GeographicCoordinate {
+fn admitted_coordinate(frame: GeographicFrame, native_xy: XY) -> GeographicCoordinate {
     GeographicCoordinate {
-        native: point,
-        longitude: frame.longitude().wrap_admitted(point.x),
-        latitude: Latitude::from_admitted(frame, point.y),
+        native_xy,
+        longitude: frame.longitude().wrap_admitted(native_xy.x),
+        latitude: Latitude::from_admitted(frame, native_xy.y),
     }
 }
 
@@ -625,6 +885,42 @@ pub(crate) enum RingDomain {
     Ordinary,
     FullLongitude(RingLatitudeSpan),
     SeamOnly,
+}
+
+#[derive(Clone, Copy)]
+struct LatitudeSpan {
+    south: Latitude,
+    north: Latitude,
+}
+
+impl LatitudeSpan {
+    const fn new(latitude: Latitude) -> Self {
+        Self {
+            south: latitude,
+            north: latitude,
+        }
+    }
+
+    fn include(&mut self, latitude: Latitude) {
+        if latitude.get() < self.south.get() {
+            self.south = latitude;
+        }
+        if latitude.get() > self.north.get() {
+            self.north = latitude;
+        }
+    }
+}
+
+fn admitted_latitude_span(frame: GeographicFrame, coords: &CoordSeq) -> LatitudeSpan {
+    let mut latitudes = coords.ys().iter();
+    let first = latitudes
+        .next()
+        .expect("admitted polygon ring has at least four coordinates");
+    let mut span = LatitudeSpan::new(Latitude::from_admitted(frame, *first));
+    for &latitude in latitudes {
+        span.include(Latitude::from_admitted(frame, latitude));
+    }
+    span
 }
 
 #[derive(Clone, Debug)]
@@ -649,10 +945,6 @@ impl<'a> GeographicRing<'a> {
         &self.coords.xs()[self.window.range().clone()]
     }
 
-    pub(crate) fn native_point(&self, index: usize) -> Point {
-        self.coords.point_at(self.window.range().start + index)
-    }
-
     fn x(&self, index: usize) -> f64 {
         self.native_xs()[index]
     }
@@ -664,9 +956,8 @@ impl<'a> GeographicRing<'a> {
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct RingSummary {
-    pub(crate) turn: RingTurn,
-    /// Signed seam-transit total; `turn` is only its coarse semantic class.
-    pub(crate) seam_transits: i64,
+    /// Signed total of the shared exact chart-edge transits.
+    pub(crate) chart_turn: i64,
     pub(crate) domain: RingDomain,
     /// True only when each axis-aligned parallel has an intermediate
     /// longitude or an admitted full-turn edge. An edge between the two seam
@@ -682,7 +973,7 @@ impl RingSummary {
         ring: &GeographicRing<'_>,
     ) -> Result<Self, GeographicViewError> {
         let axis = frame.longitude();
-        let mut seam_transits = 0_i64;
+        let mut chart_turn = 0_i64;
         let mut seam_only_vertices = true;
         let mut has_seam_vertex = false;
         let fail = |index: usize, source: GeographicError| {
@@ -695,17 +986,21 @@ impl RingSummary {
                 source,
             )
         };
-        let mut south = Latitude::try_new(frame, ring.y(0)).map_err(|source| fail(0, source))?;
-        let mut north = south;
+        let mut latitude_span = LatitudeSpan::new(
+            Latitude::try_new(frame, ring.y(0)).map_err(|source| fail(0, source))?,
+        );
         let mut west = ring.x(0);
         let mut east = west;
+        let mut previous_x = None;
         for index in 0..ring.len() {
+            let x = ring.x(index);
             let longitude = frame
                 .longitude()
-                .canonicalize(ring.x(index))
+                .canonicalize(x)
                 .map_err(|source| fail(index, source))?;
             let latitude =
                 Latitude::try_new(frame, ring.y(index)).map_err(|source| fail(index, source))?;
+            latitude_span.include(latitude);
             let identity = if latitude.identity(frame) == SeamIdentity::Pole {
                 SeamIdentity::Pole
             } else {
@@ -716,31 +1011,21 @@ impl RingSummary {
                 SeamIdentity::Pole => {},
                 SeamIdentity::Ordinary => seam_only_vertices = false,
             }
-            if latitude.get() < south.get() {
-                south = latitude;
+            west = west.min(x);
+            east = east.max(x);
+            if let Some(previous_x) = previous_x {
+                if !axis.ordinary_chart_edge(previous_x, x) {
+                    chart_turn = axis
+                        .add_chart_transit(chart_turn, previous_x, x)
+                        .map_err(|source| fail(index, source))?;
+                }
             }
-            if latitude.get() > north.get() {
-                north = latitude;
-            }
-            west = west.min(ring.x(index));
-            east = east.max(ring.x(index));
-            if index + 1 < ring.len() {
-                let transit = axis
-                    .seam_transit(ring.x(index), ring.x(index + 1))
-                    .map_err(|source| fail(index + 1, source))?;
-                seam_transits = seam_transits
-                    .checked_add(i64::from(transit))
-                    .ok_or_else(|| fail(index + 1, GeographicError::SeamTransitOverflow))?;
-            }
+            previous_x = Some(x);
         }
-        let turn = match seam_transits {
-            0 => RingTurn::None,
-            1 => RingTurn::Full(super::TurnDirection::Positive),
-            -1 => RingTurn::Full(super::TurnDirection::Negative),
-            _ => RingTurn::Other,
-        };
+        let south = latitude_span.south;
+        let north = latitude_span.north;
         let exact_axis_band = is_exact_axis_band(frame, ring, west, east, south, north);
-        let full_longitude = matches!(turn, RingTurn::Full(_)) || exact_axis_band;
+        let full_longitude = chart_turn != 0 || exact_axis_band;
         let seam_only = seam_only_vertices && has_seam_vertex && !full_longitude;
         let domain = if full_longitude {
             #[expect(
@@ -760,13 +1045,28 @@ impl RingSummary {
             RingDomain::Ordinary
         };
         Ok(Self {
-            turn,
-            seam_transits,
+            chart_turn,
             domain,
             exact_axis_band,
             south,
             north,
         })
+    }
+
+    pub(crate) const fn turn(&self) -> RingTurn {
+        RingTurn::from_chart_turn(self.chart_turn)
+    }
+
+    pub(crate) fn full_turn_pole(&self) -> Option<FullTurnPole> {
+        (self.chart_turn != 0)
+            .then(|| FullTurnPole::of_latitude_span(self.south.get(), self.north.get()))
+    }
+
+    pub(crate) fn bounded_pole(&self) -> Option<Pole> {
+        match self.full_turn_pole() {
+            Some(FullTurnPole::Bounded(pole)) => Some(pole),
+            Some(FullTurnPole::Ambiguous) | None => None,
+        }
     }
 }
 
@@ -825,7 +1125,11 @@ fn is_exact_axis_band(
         let end_x = ring.x(index + 1);
         let start_y = ring.y(index);
         let end_y = ring.y(index + 1);
-        if start_y.to_bits() == end_y.to_bits() && axis.full_turn_delta(start_x, end_x).is_some() {
+        if start_y.to_bits() == end_y.to_bits()
+            && axis
+                .chart_step(start_x, end_x)
+                .is_ok_and(ChartStep::is_circle)
+        {
             if start_y.to_bits() == south.get().to_bits() {
                 parallel_full_turns |= 1;
             } else if start_y.to_bits() == north.get().to_bits() {

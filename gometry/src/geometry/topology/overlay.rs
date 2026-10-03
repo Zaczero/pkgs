@@ -6,7 +6,7 @@ use super::exact::{
 };
 use super::q::{ExactGeographicTopology, GlobalFaceId, QDartId, QNodeId, QPortId, row_locations};
 use crate::error::{ResourceError, Result};
-use crate::geographic::{GeographicRing, Latitude, RingSummary, SeamIdentity};
+use crate::geographic::{GeographicRing, Latitude, Pole, RingSummary, SeamIdentity};
 use crate::geometry::ordinates::AxisValue;
 use crate::geometry::overlay::{OverlayOp, build_certified_overlay_shape_with_axes};
 use crate::geometry::segments::try_sort_by;
@@ -1810,8 +1810,9 @@ fn source_axis_band_cycles_cover_boundary(
             continue;
         };
         let full_turn = axis
-            .full_turn_delta(edge.source[0].x, edge.source[1].x)
-            .is_some();
+            .chart_step(edge.source[0].x, edge.source[1].x)
+            .expect("Q source longitude was admitted")
+            .is_circle();
         if !full_turn {
             let start = axis
                 .canonicalize(edge.source[0].x)
@@ -2068,7 +2069,7 @@ fn chart_ring_is_hole(frame: crate::geographic::GeographicFrame, ring: &Ring) ->
         RingWinding::Degenerate => {
             let summary = RingSummary::try_new(frame, &GeographicRing::from_ring(ring))
                 .map_err(|error| GeometryErrorKind::Invalid(error.to_string().into()))?;
-            if summary.seam_transits == 0 {
+            if summary.chart_turn == 0 {
                 return Err(GeometryErrorKind::Invalid(
                     "selected Q area boundary has no chart winding".into(),
                 )
@@ -2076,11 +2077,14 @@ fn chart_ring_is_hole(frame: crate::geographic::GeographicFrame, ring: &Ring) ->
             }
             // A polar ring can have zero planar shoelace area; its signed
             // longitude winding places the selected chart side at a pole.
-            Ok(if summary.north.get() > 0.0 {
-                summary.seam_transits < 0
-            } else {
-                summary.seam_transits > 0
-            })
+            match summary.bounded_pole() {
+                Some(Pole::North) => Ok(summary.chart_turn < 0),
+                Some(Pole::South) => Ok(summary.chart_turn > 0),
+                None => Err(GeometryErrorKind::Invalid(
+                    "selected Q area boundary has no bounded pole".into(),
+                )
+                .into()),
+            }
         },
     }
 }

@@ -74,10 +74,10 @@ impl PeriodicAxis {
         if from.abs() < self.half_period && to.abs() < self.half_period {
             return (to - from).abs() > self.half_period;
         }
-        let raw_delta = (to - from).abs();
-        if self.full_turn_delta(from, to).is_some() {
+        if matches!(self.chart_step(from, to), Ok(ChartStep::Circle(_))) {
             return false;
         }
+        let raw_delta = (to - from).abs();
         let (Ok(from), Ok(to)) = (self.canonicalize(from), self.canonicalize(to)) else {
             return false;
         };
@@ -112,6 +112,50 @@ impl PeriodicAxis {
         Some(delta.signum() * self.period)
     }
 
+    /// The chart's single interpretation of one stored longitude edge.
+    /// Explicit non-seam period edges are circles; the two seam spellings
+    /// remain the same quotient point.
+    pub(crate) fn chart_step(self, from: f64, to: f64) -> Result<ChartStep, GeographicError> {
+        if let Some(delta) = self.full_turn_delta(from, to) {
+            return Ok(ChartStep::Circle(if delta.is_sign_negative() {
+                TurnDirection::Negative
+            } else {
+                TurnDirection::Positive
+            }));
+        }
+        Ok(ChartStep::Shortest(
+            self.shortest_edge_after_circle_check(from, to)?,
+        ))
+    }
+
+    /// The strict-interior certificate for an edge with zero quotient-seam
+    /// transit under the shared shortest-edge rule.
+    pub(crate) fn ordinary_chart_edge(self, from: f64, to: f64) -> bool {
+        from.abs() < self.half_period
+            && to.abs() < self.half_period
+            && (to - from).abs() <= self.half_period
+    }
+
+    /// Signed seam crossing of the chart step; ordinary canonical edges avoid
+    /// canonicalization when their represented delta cannot reach the seam.
+    pub(crate) fn chart_transit(self, from: f64, to: f64) -> Result<i8, GeographicError> {
+        if self.ordinary_chart_edge(from, to) {
+            return Ok(0);
+        }
+        self.chart_step(from, to)?.transit(self, from, to)
+    }
+
+    pub(crate) fn add_chart_transit(
+        self,
+        chart_turn: i64,
+        from: f64,
+        to: f64,
+    ) -> Result<i64, GeographicError> {
+        chart_turn
+            .checked_add(i64::from(self.chart_transit(from, to)?))
+            .ok_or(GeographicError::ChartTurnOverflow)
+    }
+
     fn conventional_integer_period(self) -> Option<f64> {
         let period = self.period.round();
         (period > 0.0 && (self.period - period).abs() <= 8.0 * f64::EPSILON * period.abs())
@@ -125,7 +169,30 @@ impl PeriodicAxis {
                 value,
             });
         }
+        if let Some(longitude) = self.ordinary_longitude(value) {
+            return Ok(longitude);
+        }
         Ok(self.wrap_admitted(value))
+    }
+
+    #[expect(
+        clippy::float_cmp,
+        reason = "the nominal half-period alias is an exact seam spelling"
+    )]
+    pub(crate) fn ordinary_longitude(self, value: f64) -> Option<CanonicalLongitude> {
+        if !(value.abs() < self.half_period) {
+            return None;
+        }
+        // A rounded nominal half-period can lie just inside the derived half,
+        // while wrap_admitted still treats that integer alias as the seam.
+        if value.fract() == 0.0
+            && self
+                .conventional_integer_period()
+                .is_some_and(|period| value.abs() == period / 2.0)
+        {
+            return None;
+        }
+        Some(CanonicalLongitude(if value == 0.0 { 0.0 } else { value }))
     }
 
     /// Choose the longitude alias nearest a position already lifted in this
@@ -176,7 +243,8 @@ impl PeriodicAxis {
                 self.wrap_admitted(difference).get()
             }
         } else {
-            self.shortest_edge(longitude, lifted_reference)?.delta(self)
+            self.shortest_alias_step(longitude, lifted_reference)?
+                .delta(self)
         };
         let alias = lifted_reference - delta;
         if alias.is_finite() {
@@ -229,11 +297,25 @@ impl PeriodicAxis {
         CanonicalLongitude(reduced)
     }
 
+    /// Shortest signed step between longitude aliases; a whole-period
+    /// difference is zero. Stored chart edges use [`Self::chart_step`] so an
+    /// explicit non-seam period edge retains its circle.
+    pub(crate) fn shortest_alias_step(
+        self,
+        from: f64,
+        to: f64,
+    ) -> Result<EdgeDirection, GeographicError> {
+        if self.full_turn_delta(from, to).is_some() {
+            return Ok(EdgeDirection::Minor(0.0));
+        }
+        self.shortest_edge_after_circle_check(from, to)
+    }
+
     #[expect(
         clippy::float_cmp,
         reason = "only the exact represented half-period is a directional tie"
     )]
-    pub(crate) fn shortest_edge(
+    fn shortest_edge_after_circle_check(
         self,
         from: f64,
         to: f64,
@@ -252,12 +334,9 @@ impl PeriodicAxis {
         }
         let negative_direction = to < from;
         // Preserve finite source deltas so an exact winding such as three
-        // 120-degree edges remains exact. Reduce only after recognizing a
-        // complete periodic alias; canonical endpoints handle subtraction
-        // overflow and the remaining non-finite cases.
-        let mut delta = if self.full_turn_delta(from, to).is_some() {
-            0.0
-        } else if let Some(raw) = (to - from).is_finite().then_some(to - from) {
+        // 120-degree edges remains exact. Canonical endpoints handle
+        // subtraction overflow and the remaining non-finite cases.
+        let mut delta = if let Some(raw) = (to - from).is_finite().then_some(to - from) {
             raw % self.period
         } else {
             self.canonicalize(to)?.get() - self.canonicalize(from)?.get()
@@ -284,13 +363,23 @@ impl PeriodicAxis {
     }
 
     /// Return the signed number of canonical seam transits made by the
-    /// shortest directed edge. The endpoints are admitted once here, and the
-    /// direction comes from [`Self::shortest_edge`], including its exact
+    /// shortest alias step. The endpoints are admitted once here, and the
+    /// direction comes from [`Self::shortest_alias_step`], including its exact
     /// source-directed half-turn tie.
+    #[cfg(test)]
     pub(crate) fn seam_transit(self, from: f64, to: f64) -> Result<i8, GeographicError> {
+        self.seam_transit_with_direction(from, to, self.shortest_alias_step(from, to)?)
+    }
+
+    fn seam_transit_with_direction(
+        self,
+        from: f64,
+        to: f64,
+        edge: EdgeDirection,
+    ) -> Result<i8, GeographicError> {
         let canonical_from = self.canonicalize(from)?.get();
         let canonical_to = self.canonicalize(to)?.get();
-        let direction = match self.shortest_edge(from, to)? {
+        let direction = match edge {
             EdgeDirection::Minor(delta) if delta > 0.0 => Some(TurnDirection::Positive),
             EdgeDirection::Minor(delta) if delta < 0.0 => Some(TurnDirection::Negative),
             EdgeDirection::HalfTurn(direction) => Some(direction),
@@ -664,6 +753,65 @@ pub(crate) enum TurnDirection {
     Positive,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Pole {
+    North,
+    South,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum FullTurnPole {
+    Bounded(Pole),
+    Ambiguous,
+}
+
+impl FullTurnPole {
+    /// Classify a nonzero chart-turn by the closed hemisphere containing its
+    /// admitted latitude span.
+    pub(crate) fn of_latitude_span(south: f64, north: f64) -> Self {
+        if north > 0.0 && south >= 0.0 {
+            Self::Bounded(Pole::North)
+        } else if south < 0.0 && north <= 0.0 {
+            Self::Bounded(Pole::South)
+        } else {
+            Self::Ambiguous
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum ChartStep {
+    Circle(TurnDirection),
+    Shortest(EdgeDirection),
+}
+
+impl ChartStep {
+    pub(crate) fn delta(self, axis: PeriodicAxis) -> f64 {
+        match self {
+            Self::Circle(TurnDirection::Negative) => -axis.period(),
+            Self::Circle(TurnDirection::Positive) => axis.period(),
+            Self::Shortest(direction) => direction.delta(axis),
+        }
+    }
+
+    pub(crate) const fn is_circle(self) -> bool {
+        matches!(self, Self::Circle(_))
+    }
+
+    pub(crate) fn transit(
+        self,
+        axis: PeriodicAxis,
+        from: f64,
+        to: f64,
+    ) -> Result<i8, GeographicError> {
+        match self {
+            Self::Circle(TurnDirection::Negative) => Ok(-1),
+            Self::Circle(TurnDirection::Positive) => Ok(1),
+            Self::Shortest(direction) => axis.seam_transit_with_direction(from, to, direction),
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) enum EdgeDirection {
     Minor(f64),
@@ -684,4 +832,15 @@ pub(crate) enum RingTurn {
     None,
     Full(TurnDirection),
     Other,
+}
+
+impl RingTurn {
+    pub(crate) const fn from_chart_turn(chart_turn: i64) -> Self {
+        match chart_turn {
+            0 => Self::None,
+            1 => Self::Full(TurnDirection::Positive),
+            -1 => Self::Full(TurnDirection::Negative),
+            _ => Self::Other,
+        }
+    }
 }

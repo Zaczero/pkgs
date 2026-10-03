@@ -5,7 +5,7 @@ use rstar::Envelope as _;
 
 use crate::geographic::{
     CircularInterval, GeographicAdmissionError, GeographicCollectionOwners, GeographicFrame,
-    GeographicRing, GeographicViewError, LongitudeWindows, RingDomain, RingSummary, RingTurn,
+    GeographicRing, GeographicViewError, LongitudeWindows, RingDomain, RingSummary,
     ScalarGeographicView, SeamIdentity, union_circular_intervals,
 };
 use crate::geometry::{CoordSeq, ShapeOwnerKey, TopologyDomain};
@@ -880,19 +880,23 @@ fn append_segment_chain_intervals(
     frame: GeographicFrame,
     intervals: &mut Vec<CircularInterval>,
 ) {
+    let axis = frame.longitude();
     for &[left, right] in chain.xs().array_windows::<2>() {
-        let delta = frame
-            .longitude()
-            .shortest_edge(left, right)
-            .expect("the geographic view admitted every chain coordinate")
-            .delta(frame.longitude());
+        let step = axis
+            .chart_step(left, right)
+            .expect("the geographic view admitted every chain coordinate");
+        if step.is_circle() {
+            intervals.push(CircularInterval::Full);
+            continue;
+        }
+        let delta = step.delta(axis);
         let (start, sweep) = if delta.is_sign_negative() {
             (right, -delta)
         } else {
             (left, delta)
         };
         intervals.push(
-            CircularInterval::try_arc(frame.longitude(), start, sweep)
+            CircularInterval::try_arc(axis, start, sweep)
                 .expect("a shortest edge is a valid circular arc"),
         );
     }
@@ -906,14 +910,12 @@ struct RingEnvelopeEffects {
 }
 
 impl RingEnvelopeEffects {
-    const fn include(&mut self, summary: RingSummary) {
+    fn include(&mut self, summary: RingSummary) {
         self.full_longitude |= matches!(summary.domain, RingDomain::FullLongitude(_));
-        if matches!(summary.turn, RingTurn::Full(_)) {
-            if summary.south.get().is_sign_positive() {
-                self.north_pole = true;
-            } else if summary.north.get().is_sign_negative() {
-                self.south_pole = true;
-            }
+        match summary.bounded_pole() {
+            Some(crate::geographic::Pole::North) => self.north_pole = true,
+            Some(crate::geographic::Pole::South) => self.south_pole = true,
+            None => {},
         }
     }
 
@@ -1556,7 +1558,9 @@ mod periodic_tests {
             );
             let cap = geographic_index_envelopes(&cap, native).unwrap();
             assert_eq!(cap[0].lower(), [-half, pole / 2.0]);
-            assert_eq!(cap[0].upper(), [half, pole]);
+            // D3: the closing explicit-period edge cancels the preceding
+            // chart turn, so the ring spans longitude but does not bound a pole.
+            assert_eq!(cap[0].upper(), [half, pole / 2.0]);
 
             let south_cap = polygon(
                 &[0.0, half * 2.0 / 3.0, half * 4.0 / 3.0, half * 2.0],
@@ -1564,7 +1568,7 @@ mod periodic_tests {
                 Vec::new(),
             );
             let south_cap = geographic_index_envelopes(&south_cap, native).unwrap();
-            assert_eq!(south_cap[0].lower(), [-half, -pole]);
+            assert_eq!(south_cap[0].lower(), [-half, -pole / 2.0]);
             assert_eq!(south_cap[0].upper(), [half, -pole / 2.0]);
 
             let band = polygon(
@@ -1615,7 +1619,7 @@ mod periodic_tests {
             let annulus = geographic_index_envelopes(&annulus, native).unwrap();
             assert_eq!(annulus[0].lower(), [-half, pole / 2.0]);
             assert_eq!(annulus[0].upper()[0], half);
-            assert_eq!(annulus[0].upper()[1], pole);
+            assert_eq!(annulus[0].upper()[1], pole * 3.0 / 4.0);
         }
     }
 }

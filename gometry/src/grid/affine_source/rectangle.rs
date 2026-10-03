@@ -335,7 +335,7 @@ pub(super) fn exact_world_band(source: &Shape) -> Option<Bounds> {
     ) else {
         return None;
     };
-    (summary.turn == RingTurn::None && matches!(summary.domain, RingDomain::FullLongitude(_)))
+    (summary.chart_turn == 0 && matches!(summary.domain, RingDomain::FullLongitude(_)))
         .then(|| Bounds::new_raw(-180.0, summary.south.get(), 180.0, summary.north.get()))
 }
 

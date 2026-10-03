@@ -9,13 +9,13 @@ use super::exact::{
     SourceRingId, SourceRowId, point_on_exact_segment, vector_cross, vector_difference,
 };
 use crate::error::{ResourceError, Result};
-use crate::geographic::GeographicFrame;
+use crate::geographic::{GeographicFrame, Pole};
 use crate::geometry::exact_arith::ExactSign;
 use crate::geometry::segments::try_sort_by;
 use crate::geometry::source_support::RingKind;
 use crate::geometry::tessellation::exact::ExactRational;
 use crate::geometry::{
-    Bounds, De9im, Dimension, GeometryErrorKind, Loc, Point, RingWinding, Segment, SegmentIndex,
+    Bounds, De9im, Dimension, GeometryErrorKind, Loc, Point, Segment, SegmentIndex,
     canonical_f64_bits,
 };
 use crate::heap_size::HeapSize;
@@ -48,12 +48,6 @@ pub(super) struct CutIntervalId(pub u32);
 enum QNodeKey {
     Source(QuotientNodeId),
     Cut(ExactRational),
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum Pole {
-    North,
-    South,
 }
 
 #[derive(Clone, Debug)]
@@ -1844,34 +1838,89 @@ fn node_has_edges(topology: &QuotientFaces, node: QNodeId) -> Result<bool> {
     Ok(start != end)
 }
 
-fn north_pole_ring_windings(sources: &ExactGeographicChartInventory) -> Vec<i64> {
-    sources
-        .rings
-        .iter()
-        .map(|ring| {
-            if matches!(ring.summary.domain, crate::geographic::RingDomain::SeamOnly) {
-                return 0;
-            }
-            if ring.summary.exact_axis_band {
-                if ring.summary.north.get().to_bits() != sources.frame.pole().to_bits() {
-                    return 0;
+fn north_pole_ring_windings(
+    sources: &ExactGeographicChartInventory,
+    cut: &ExactRational,
+) -> Result<Vec<i64>> {
+    let frame = sources.frame;
+    let axis = frame.longitude();
+    let pole = frame.pole();
+    let period = ExactRational::from_f64(axis.period());
+    let mut windings = Vec::with_capacity(sources.rings.len());
+    for ring in &sources.rings {
+        if matches!(ring.summary.domain, crate::geographic::RingDomain::SeamOnly) {
+            windings.push(0);
+            continue;
+        }
+        let mut winding = if ring.summary.bounded_pole() == Some(Pole::North) {
+            ring.summary.chart_turn
+        } else {
+            0
+        };
+        if ring.summary.north.get().to_bits() == pole.to_bits() {
+            let edges = sources
+                .edges
+                .get(ring.source_edges.clone())
+                .ok_or_else(|| {
+                    GeometryErrorKind::Invalid("Q source ring has an invalid edge range".into())
+                })?;
+            for edge in edges {
+                let [start, end] = edge.source;
+                if crate::geographic::Latitude::from_admitted(frame, start.y)
+                    .get()
+                    .to_bits()
+                    != pole.to_bits()
+                    || crate::geographic::Latitude::from_admitted(frame, end.y)
+                        .get()
+                        .to_bits()
+                        != pole.to_bits()
+                {
+                    continue;
                 }
-                return match ring.axis_band_winding {
-                    Some(RingWinding::CounterClockwise) => 1,
-                    Some(RingWinding::Clockwise) => -1,
-                    Some(RingWinding::Degenerate) | None => 0,
+                let (start_x, delta) = super::exact::local_longitude_edge(frame, start.x, end.x)?;
+                if delta.is_zero() {
+                    continue;
+                }
+                let start_x = ExactRational::from_f64(start_x);
+                let delta = ExactRational::from_dyadic(delta);
+                let end_x = start_x.try_add(&delta)?;
+                let (low, high) = if start_x.try_cmp(&end_x)?.is_lt() {
+                    (&start_x, &end_x)
+                } else {
+                    (&end_x, &start_x)
                 };
+
+                // `local_longitude_edge` starts in [-P/2, P/2], except that a
+                // positive seam spelling may use +P/2; its delta is at most P.
+                // The cut is canonical in [-P/2, P/2), so only k=-1, 0, 1
+                // can put a lattice meridian strictly inside this interval.
+                // Its width is at most P, and strict endpoints leave at most
+                // one such meridian.
+                let mut crosses_cut = false;
+                for offset in -1_i8..=1 {
+                    let lattice = cut.try_add(
+                        &period.try_product(&ExactRational::from_f64(f64::from(offset)))?,
+                    )?;
+                    if low.try_cmp(&lattice)?.is_lt() && lattice.try_cmp(high)?.is_lt() {
+                        crosses_cut = true;
+                        break;
+                    }
+                }
+                if crosses_cut {
+                    let delta_winding = if delta.sign() == ExactSign::Negative {
+                        1
+                    } else {
+                        -1
+                    };
+                    winding = winding
+                        .checked_add(delta_winding)
+                        .ok_or(ResourceError::SizeOverflow)?;
+                }
             }
-            if ring.summary.seam_transits == 0 {
-                return 0;
-            }
-            if ring.summary.north.get() > 0.0 {
-                ring.summary.seam_transits
-            } else {
-                0
-            }
-        })
-        .collect()
+        }
+        windings.push(winding);
+    }
+    Ok(windings)
 }
 
 fn apply_span_ring_transitions(
@@ -2447,7 +2496,7 @@ fn build_global_face_topology(
         });
     }
 
-    let mut seed_winding = north_pole_ring_windings(sources);
+    let mut seed_winding = north_pole_ring_windings(sources, &topology.cut)?;
     if let Some(seed) = &structure.seed {
         for event in topology.cut_index.events.iter().rev() {
             if event.y.try_cmp(&seed.germ.point.y)?.is_gt() {
@@ -6750,7 +6799,9 @@ fn make_cut_chart(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::geographic::AngularFactor;
+    use crate::geographic::{AngularFactor, FullTurnPole, ScalarGeographicView};
+    use crate::geometry::overlay::{OverlayOp, Strictness, overlay_all};
+    use crate::geometry::topology::overlay::exact_geographic_overlay;
     use crate::geometry::{
         CoordSeq, CoordinateAxes, ExpansionBudget, LineSeq, MultiMember, MultiPolygon, Polygon,
         Ring, Shape,
@@ -6810,11 +6861,296 @@ mod tests {
         q_graph_for_shapes(std::slice::from_ref(shape))
     }
 
+    fn frame_with_unit(radians_per_unit: f64) -> GeographicFrame {
+        let unit = AngularFactor::try_new("test unit", radians_per_unit).unwrap();
+        GeographicFrame::try_new(unit, unit, 0.0).unwrap()
+    }
+
+    fn native_frames() -> [(&'static str, GeographicFrame); 3] {
+        [
+            ("degrees", degrees()),
+            ("radians", frame_with_unit(1.0)),
+            ("grads", frame_with_unit(std::f64::consts::TAU / 400.0)),
+        ]
+    }
+
+    fn native_ring(frame: GeographicFrame, points: &[(f64, f64)]) -> Ring {
+        fn longitude(period: f64, degrees: f64) -> f64 {
+            if degrees >= 360.0 {
+                longitude(period, degrees - 360.0) + period
+            } else {
+                let scale = 2.0_f64.powi(44);
+                (period * (degrees / 360.0) * scale).round() / scale
+            }
+        }
+        let period = frame.longitude().period();
+        let pole = frame.pole();
+        ring(
+            &points
+                .iter()
+                .map(|&(x, y)| {
+                    let latitude = if y.abs().to_bits() == 90.0_f64.to_bits() {
+                        pole * y.signum()
+                    } else {
+                        pole * (y / 90.0)
+                    };
+                    (longitude(period, x), latitude)
+                })
+                .collect::<Vec<_>>(),
+        )
+    }
+
+    fn q_graph_in_frame(
+        frame: GeographicFrame,
+        shape: &Shape,
+    ) -> (ExactGeographicChartInventory, ExactGeographicQ) {
+        let inputs =
+            crate::geographic::GeographicInputs::try_from_shapes(frame, std::iter::once(shape))
+                .unwrap();
+        let sources = ExactGeographicChartInventory::collect(&inputs).unwrap();
+        let mut budget = ExpansionBudget::new("test", "exact chart");
+        let chart = sources.node(&mut budget).unwrap();
+        let q = ExactGeographicQ::build(frame, &sources, &chart, false).unwrap();
+        (sources, q)
+    }
+
+    /// Independent exact ray-crossing winding of the lifted source ring at the
+    /// north germ of `cut`; only Q's edge lift is shared with the seed.
+    fn reference_north_germ_winding(
+        sources: &ExactGeographicChartInventory,
+        ring_index: usize,
+        cut: &ExactRational,
+    ) -> Option<i64> {
+        use crate::geographic::Latitude;
+        let frame = sources.frame;
+        let ring = &sources.rings[ring_index];
+        let period = ExactRational::from_f64(frame.longitude().period());
+        let edges = sources
+            .edges
+            .get(ring.source_edges.clone())
+            .expect("ring source edges belong to the chart inventory");
+        let latitude = |y: f64| ExactRational::from_f64(Latitude::from_admitted(frame, y).get());
+        let step = |edge: &super::super::exact::ExactSourceEdge| {
+            super::super::exact::local_longitude_edge(frame, edge.source[0].x, edge.source[1].x)
+                .unwrap()
+        };
+        let mut x = ExactRational::from_f64(step(&edges[0]).0);
+        let mut lifted = vec![(x.clone(), latitude(edges[0].source[0].y))];
+        for edge in edges {
+            x = x
+                .try_add(&ExactRational::from_dyadic(step(edge).1))
+                .unwrap();
+            lifted.push((x.clone(), latitude(edge.source[1].y)));
+        }
+        let net = lifted.last().unwrap().0.try_subtract(&lifted[0].0).unwrap();
+        let turns = (-3_i64..=3).find(|&turn| {
+            let multiple = period
+                .try_product(&ExactRational::from_f64(turn as f64))
+                .unwrap();
+            net.try_cmp(&multiple).unwrap().is_eq()
+        })?;
+        if turns.abs() > 1 {
+            return None;
+        }
+        if turns != 0 {
+            let closure_latitude = match ring.summary.full_turn_pole()? {
+                FullTurnPole::Bounded(Pole::North) => frame.pole(),
+                FullTurnPole::Bounded(Pole::South) => -frame.pole(),
+                FullTurnPole::Ambiguous => return None,
+            };
+            let end = lifted.last().unwrap().0.clone();
+            let start = lifted[0].0.clone();
+            lifted.push((end, ExactRational::from_f64(closure_latitude)));
+            lifted.push((start, ExactRational::from_f64(closure_latitude)));
+        }
+        let germ_y = ExactRational::from_f64(frame.pole())
+            .try_subtract(&ExactRational::from_f64(2.0_f64.powi(-60)))
+            .unwrap();
+        let image_radius = i64::try_from(edges.len()).unwrap().checked_add(1).unwrap();
+        let k_low = image_radius.checked_neg().unwrap();
+        let k_high = image_radius;
+        let mut total = 0_i64;
+        for k in k_low..=k_high {
+            let germ_x = cut
+                .try_add(
+                    &period
+                        .try_product(&ExactRational::from_f64(k as f64))
+                        .unwrap(),
+                )
+                .unwrap();
+            for (a, b) in lifted.iter().zip(lifted.iter().cycle().skip(1)) {
+                let a_below = a.1.try_cmp(&germ_y).unwrap().is_le();
+                let b_below = b.1.try_cmp(&germ_y).unwrap().is_le();
+                if a_below == b_below {
+                    continue;
+                }
+                let first =
+                    b.0.try_subtract(&a.0)
+                        .unwrap()
+                        .try_product(&germ_y.try_subtract(&a.1).unwrap())
+                        .unwrap();
+                let second = germ_x
+                    .try_subtract(&a.0)
+                    .unwrap()
+                    .try_product(&b.1.try_subtract(&a.1).unwrap())
+                    .unwrap();
+                match (a_below, first.try_subtract(&second).unwrap().sign()) {
+                    (true, ExactSign::Positive) => {
+                        total = total.checked_add(1).expect("fixture winding fits i64");
+                    },
+                    (false, ExactSign::Negative) => {
+                        total = total.checked_sub(1).expect("fixture winding fits i64");
+                    },
+                    _ => {},
+                }
+            }
+        }
+        Some(total)
+    }
+
+    fn assert_seed_matches_reference(frame: GeographicFrame, shape: &Shape) -> Vec<Option<i64>> {
+        let (sources, q) = q_graph_in_frame(frame, shape);
+        let period = frame.longitude().period();
+        let mut cuts = vec![q.cut];
+        cuts.extend(
+            [17.25, -133.5, 0.5, 179.75, -179.25]
+                .map(|degrees| ExactRational::from_f64(period * (degrees / 360.0))),
+        );
+        let mut compared = Vec::new();
+        for cut in &cuts {
+            let seeds = north_pole_ring_windings(&sources, cut).unwrap();
+            for (index, &seed) in seeds.iter().enumerate() {
+                if matches!(
+                    sources.rings[index].summary.domain,
+                    crate::geographic::RingDomain::SeamOnly
+                ) {
+                    continue;
+                }
+                let reference = reference_north_germ_winding(&sources, index, cut);
+                if let Some(reference) = reference {
+                    assert_eq!(seed, reference, "ring {index} cut {:?}", cut.round());
+                }
+                compared.push(reference);
+            }
+        }
+        compared
+    }
+
+    fn explicit_period_fixtures() -> Vec<(&'static str, Vec<(f64, f64)>)> {
+        let hop = vec![
+            (45.0, 60.0),
+            (135.0, 60.0),
+            (225.0, 60.0),
+            (315.0, 60.0),
+            (405.0, 60.0),
+            (405.0, 90.0),
+            (45.0, 90.0),
+            (45.0, 60.0),
+        ];
+        let stepped = vec![
+            (45.0, 60.0),
+            (135.0, 60.0),
+            (225.0, 60.0),
+            (315.0, 60.0),
+            (405.0, 60.0),
+            (405.0, 90.0),
+            (315.0, 90.0),
+            (225.0, 90.0),
+            (135.0, 90.0),
+            (45.0, 90.0),
+            (45.0, 60.0),
+        ];
+        let oblique = vec![
+            (0.0, 60.0),
+            (90.0, 60.0),
+            (180.0, 60.0),
+            (270.0, 60.0),
+            (360.0, 60.0),
+            (450.0, 90.0),
+            (360.0, 90.0),
+            (270.0, 90.0),
+            (180.0, 90.0),
+            (90.0, 90.0),
+            (0.0, 60.0),
+        ];
+        vec![
+            ("circle plus bump", vec![
+                (0.0, 60.0),
+                (360.0, 60.0),
+                (315.0, 65.0),
+                (0.0, 60.0),
+            ]),
+            ("hop closure", hop),
+            ("stepped closure", stepped),
+            ("oblique closure", oblique),
+            ("explicit full-period cap", vec![
+                (0.0, 60.0),
+                (360.0, 60.0),
+                (360.0, 90.0),
+                (0.0, 90.0),
+                (0.0, 60.0),
+            ]),
+            ("explicit period pole edge, unmarked cap", vec![
+                (0.0, 60.0),
+                (90.0, 60.0),
+                (180.0, 60.0),
+                (270.0, 60.0),
+                (0.0, 90.0),
+                (360.0, 90.0),
+                (0.0, 60.0),
+            ]),
+            ("south circle plus bump", vec![
+                (0.0, -60.0),
+                (360.0, -60.0),
+                (315.0, -65.0),
+                (0.0, -60.0),
+            ]),
+            ("reversed circle plus bump", vec![
+                (0.0, 60.0),
+                (315.0, 65.0),
+                (360.0, 60.0),
+                (0.0, 60.0),
+            ]),
+            ("rotated circle plus bump", vec![
+                (90.0, 60.0),
+                (450.0, 60.0),
+                (405.0, 65.0),
+                (90.0, 60.0),
+            ]),
+        ]
+    }
+
+    #[test]
+    fn seed_equals_the_exact_lifted_winding_for_explicit_period_edges() {
+        for (frame_name, frame) in native_frames() {
+            for (name, points) in explicit_period_fixtures() {
+                let shape = Shape::Polygon(Polygon::new(native_ring(frame, &points), Vec::new()));
+                let compared = assert_seed_matches_reference(frame, &shape);
+                assert!(
+                    compared.iter().any(Option::is_some),
+                    "{frame_name} {name}: the independent reference must cover a cut"
+                );
+            }
+        }
+    }
+
     fn exact_topology(shape: &Shape) -> ExactGeographicTopology {
         let frame = degrees();
         let view =
             crate::geographic::ScalarGeographicView::try_new(frame, shape).expect("fixture admits");
         ExactGeographicTopology::from_views(frame, std::iter::once(view)).unwrap()
+    }
+
+    fn assert_ambiguous_ring_admission(shape: &Shape, members: &[usize]) {
+        let error = crate::geographic::ScalarGeographicView::try_new(degrees(), shape)
+            .expect_err("an unmarked equator-straddling once-winding ring is ambiguous");
+        assert_eq!(error.location.members.as_slice(), members);
+        assert_eq!(error.location.ring, Some(0));
+        assert_eq!(error.location.coordinate, 0);
+        assert!(matches!(
+            error.source,
+            crate::geographic::GeographicError::AmbiguousFullTurnRing { .. }
+        ));
     }
 
     fn exact_topology_with_seam_cuts(shape: &Shape) -> ExactGeographicTopology {
@@ -7316,14 +7652,14 @@ mod tests {
         let shape = Shape::Polygon(Polygon::new(shell, vec![]));
         let (sources, q) = q_graph(&shape);
         let (outside, inside) = source_shell_faces(&q, &sources, 0);
-        assert_eq!(sources.rings.first().unwrap().summary.seam_transits, -1);
+        assert_eq!(sources.rings.first().unwrap().summary.chart_turn, -1);
         assert_eq!(q.face_rows.rows_for(inside), &[SourceRowId(0)]);
         assert!(q.face_rows.rows_for(outside).is_empty());
         assert_source_transition_cycles(&q);
     }
 
     #[test]
-    fn varying_full_turn_crossing_the_equator_uses_source_winding() {
+    fn varying_full_turn_crossing_the_equator_is_rejected_at_admission() {
         let shell = ring(&[
             (0.0, -10.0),
             (90.0, 10.0),
@@ -7332,18 +7668,11 @@ mod tests {
             (0.0, -10.0),
         ]);
         let shape = Shape::Polygon(Polygon::new(shell, vec![]));
-        let (sources, q) = q_graph(&shape);
-        let (left, right) = source_shell_faces(&q, &sources, 0);
-        assert_eq!(sources.rings.first().unwrap().summary.seam_transits, 1);
-        assert_eq!(q.global_face_count, 2);
-        assert_eq!(q.face_rows.rows_for(left), &[SourceRowId(0)]);
-        assert!(q.face_rows.rows_for(right).is_empty());
-        assert_global_cut_event_wedges(&q);
-        assert_source_transition_cycles(&q);
+        assert_ambiguous_ring_admission(&shape, &[]);
     }
 
     #[test]
-    fn reversed_varying_full_turn_crossing_the_equator_keeps_north_pole_occupied() {
+    fn reversed_ambiguous_ring_in_a_collection_is_rejected_at_admission() {
         let polygon = Shape::Polygon(Polygon::new(
             ring(&[
                 (0.0, -10.0),
@@ -7359,16 +7688,7 @@ mod tests {
             Shape::Point(crate::geometry::Point::new_raw_xy(37.0, 90.0)),
         ])
         .unwrap();
-        let (sources, q) = q_graph(&collection);
-        assert_eq!(sources.rings.first().unwrap().summary.seam_transits, -1);
-        let north = q
-            .source_point_faces
-            .first()
-            .copied()
-            .flatten()
-            .expect("the north pole point has an exact cut-interval host");
-        assert_eq!(q.face_rows.rows_for(north), &[SourceRowId(0)]);
-        assert_source_transition_cycles(&q);
+        assert_ambiguous_ring_admission(&collection, &[0]);
     }
 
     #[test]
@@ -7386,7 +7706,7 @@ mod tests {
         let shape = Shape::Polygon(Polygon::new(shell, vec![]));
         let (sources, q) = q_graph(&shape);
         let (north_cap, south_side) = source_shell_faces(&q, &sources, 0);
-        assert_eq!(sources.rings.first().unwrap().summary.seam_transits, 2);
+        assert_eq!(sources.rings.first().unwrap().summary.chart_turn, 2);
         assert!(q.spans.iter().any(|span| {
             let transitions = span
                 .owners
@@ -7416,7 +7736,7 @@ mod tests {
         let shape = Shape::Polygon(Polygon::new(shell, vec![]));
         let (sources, q) = q_graph(&shape);
         let (south_side, north_cap) = source_shell_faces(&q, &sources, 0);
-        assert_eq!(sources.rings.first().unwrap().summary.seam_transits, -2);
+        assert_eq!(sources.rings.first().unwrap().summary.chart_turn, -2);
         assert!(q.spans.iter().any(|span| {
             let transitions = span
                 .owners
@@ -8355,20 +8675,22 @@ mod tests {
 
     fn exact_topology_rows(shapes: &[Shape]) -> ExactGeographicTopology {
         let frame = degrees();
-        let views = shapes
-            .iter()
-            .map(|shape| {
-                crate::geographic::ScalarGeographicView::try_new(frame, shape)
-                    .expect("fixture admits")
-            })
-            .collect::<Vec<_>>();
-        ExactGeographicTopology::from_views(frame, views.into_iter()).unwrap()
+        ExactGeographicTopology::from_views(
+            frame,
+            shapes
+                .iter()
+                .map(|shape| ScalarGeographicView::try_new(frame, shape).expect("fixture admits")),
+        )
+        .unwrap()
     }
 
     fn polygon_count(shape: &Shape) -> usize {
         let wkt = crate::io::to_wkt(shape).unwrap();
         if wkt.starts_with("MULTIPOLYGON") {
-            wkt.matches(")), ((").count() + 1
+            wkt.matches(")), ((")
+                .count()
+                .checked_add(1)
+                .expect("WKT polygon count fits usize")
         } else {
             usize::from(wkt.starts_with("POLYGON ("))
         }
@@ -8376,13 +8698,8 @@ mod tests {
 
     fn quotient_union_polygons(topology: &ExactGeographicTopology) -> usize {
         polygon_count(
-            &crate::geometry::topology::overlay::exact_geographic_overlay(
-                topology,
-                crate::geometry::overlay::OverlayOp::Union,
-                CoordinateAxes::XY,
-                false,
-            )
-            .unwrap(),
+            &exact_geographic_overlay(topology, OverlayOp::Union, CoordinateAxes::XY, false)
+                .unwrap(),
         )
     }
 
@@ -8393,11 +8710,11 @@ mod tests {
             .map(Shape::Polygon)
             .collect::<Vec<_>>();
         polygon_count(
-            &crate::geometry::overlay::overlay_all(
+            &overlay_all(
                 &shapes,
                 crate::geometry::TopologyDomain::Cartesian,
-                crate::geometry::overlay::OverlayOp::Union,
-                crate::geometry::overlay::Strictness::Lenient,
+                OverlayOp::Union,
+                Strictness::Lenient,
             )
             .unwrap(),
         )
@@ -8460,7 +8777,7 @@ mod tests {
                     .q
                     .component_hosts
                     .windows(2)
-                    .all(|pair| pair[0] == pair[1]),
+                    .all(|pair| pair.first() == pair.last()),
                 "{name}: every component's outer face is the one global outer face"
             );
             assert_eq!(
@@ -8519,11 +8836,7 @@ mod tests {
                 );
             }
             let inside_d = Shape::Polygon(box_polygon(105.0, 25.0, 115.0, 35.0));
-            assert_eq!(
-                relation(&[members.clone(), inside_d]),
-                "212FF1FF2",
-                "{name}"
-            );
+            assert_eq!(relation(&[members, inside_d]), "212FF1FF2", "{name}");
         }
     }
 
@@ -8553,7 +8866,7 @@ mod tests {
             Vec::new(),
         );
         let ordinary = box_polygon(100.0, 20.0, 120.0, 40.0);
-        let mut fixtures = vec![vec![pentagon, ordinary.clone()]];
+        let mut fixtures = vec![vec![pentagon, ordinary]];
         for (offset_x, offset_y) in [(5.0, 10.0), (10.0, 10.0), (20.0, 10.0)] {
             fixtures.push(vec![
                 box_polygon(0.0, -10.0, 20.0, 10.0),
@@ -8573,7 +8886,7 @@ mod tests {
                     .q
                     .component_hosts
                     .windows(2)
-                    .all(|pair| pair[0] == pair[1]),
+                    .all(|pair| pair.first() == pair.last()),
                 "{polygons:?}: components share one outer face"
             );
         }

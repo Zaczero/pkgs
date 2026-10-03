@@ -33,7 +33,7 @@ pub(crate) fn classify_geographic_chart(view: ScalarGeographicView<'_>) -> Geogr
     let frame = view.frame();
     let has_noncanonical_coordinate = view.any_first_xy_coordinate(|coordinate| {
         coordinate.identity(frame) != SeamIdentity::Ordinary
-            || canonical_f64_bits(coordinate.native().x)
+            || canonical_f64_bits(coordinate.native_xy().x)
                 != canonical_f64_bits(coordinate.longitude().get())
     });
     if !has_noncanonical_coordinate
@@ -209,7 +209,10 @@ fn inspect_seam_segment(
     );
     let start_side = seam_side(start, start_longitude, axis);
     let end_side = seam_side(end, end_longitude, axis);
-    let crosses = if start_side.is_some() || end_side.is_some() {
+    let step = axis.chart_step(start.x, end.x).ok()?;
+    let crosses = if step.is_circle() {
+        true
+    } else if start_side.is_some() || end_side.is_some() {
         raw_delta > half && raw_delta < axis.period().next_up()
     } else {
         (end_longitude.get() - start_longitude.get()).abs() > half
@@ -514,6 +517,36 @@ mod tests {
         assert_eq!(
             geographic_topology_route([ordinary_view, seam_view]),
             GeographicTopologyRoute::Quotient
+        );
+    }
+
+    #[test]
+    fn explicit_period_circle_is_an_antimeridian_crossing() {
+        let frame = GeographicFrame::crs84();
+        let circle = line(&[(0.0, 0.0), (360.0, 0.0)]);
+        let Shape::LineString(circle_line) = &circle else {
+            unreachable!("line helper constructs a LineString");
+        };
+        assert!(chain_crosses_antimeridian(circle_line, frame,));
+        assert_eq!(
+            geographic_seam_facts_in_frame(&circle, frame),
+            GeographicSeamFacts {
+                crosses: true,
+                possible_contact: false,
+            }
+        );
+
+        let seam_pair = line(&[(-180.0, 0.0), (180.0, 0.0)]);
+        let Shape::LineString(seam_line) = &seam_pair else {
+            unreachable!("line helper constructs a LineString");
+        };
+        assert!(
+            chain_crosses_antimeridian(seam_line, frame),
+            "the raw planar seam-to-seam spelling still spans the chart"
+        );
+        assert_eq!(
+            frame.longitude().chart_step(-180.0, 180.0).unwrap(),
+            crate::geographic::ChartStep::Shortest(crate::geographic::EdgeDirection::Minor(0.0))
         );
     }
 }

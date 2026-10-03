@@ -69,8 +69,8 @@ pub(crate) fn is_simple_array(
     is_simple_array_row_fallback(py, values)
 }
 
-/// Dense + nullable packed is_simple only. Geographic seam crossings and
-/// candidate seam contacts fall through to the frame-aware per-row lane.
+/// Dense + nullable packed is_simple only. Geographic admission failures, seam
+/// crossings and candidate seam contacts fall through to the frame-aware lane.
 fn try_is_simple_packed(
     py: Python<'_>,
     array: &crate::PyGeometryArray,
@@ -81,11 +81,13 @@ fn try_is_simple_packed(
     };
     if let crate::geometry::TopologyDomain::Geographic(frame) = domain {
         for row in array.row_operation().present_rows() {
-            let seam_facts = match row
-                .row()
-                .with_shape(|shape| crate::geometry::geographic_seam_facts_in_frame(shape, frame))
-            {
-                Ok(seam_facts) => seam_facts,
+            let seam_facts = match row.row().with_shape(|shape| {
+                crate::geographic::ScalarGeographicView::try_new_with_seam_facts(frame, shape)
+                    .ok()
+                    .map(|(_, facts)| facts)
+            }) {
+                Ok(Some(seam_facts)) => seam_facts,
+                Ok(None) => return None,
                 Err(error) => return Some(Err(error.into())),
             };
             if seam_facts.crosses || seam_facts.possible_contact {

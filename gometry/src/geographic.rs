@@ -8,8 +8,8 @@ mod view;
 pub(crate) use interval::{CircularInterval, LongitudeWindows, union_circular_intervals};
 use thiserror::Error;
 pub(crate) use value::{
-    AngularFactor, CanonicalLongitude, EdgeDirection, GeographicFrame, Latitude, PeriodicAxis,
-    QuotientVertex, RingTurn, SeamIdentity, TurnDirection,
+    AngularFactor, CanonicalLongitude, ChartStep, EdgeDirection, FullTurnPole, GeographicFrame,
+    Latitude, PeriodicAxis, Pole, QuotientVertex, RingTurn, SeamIdentity, TurnDirection,
 };
 #[cfg(test)]
 pub(crate) use view::GeographicAdmissionWork;
@@ -28,8 +28,12 @@ pub(crate) enum GeographicError {
     LatitudeOutOfRange { value: f64 },
     #[error("circular interval sweep {sweep} is outside [0, {period})")]
     InvalidSweep { sweep: f64, period: f64 },
-    #[error("ring seam transit count overflowed")]
-    SeamTransitOverflow,
+    #[error("ring chart-turn count overflowed")]
+    ChartTurnOverflow,
+    #[error(
+        "ring winds once around the globe and spans the equator (latitudes {south} to {north}); the pole it bounds is ambiguous. Close it explicitly through the pole line or split it"
+    )]
+    AmbiguousFullTurnRing { south: f64, north: f64 },
 }
 
 #[cfg(test)]

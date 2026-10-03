@@ -3,7 +3,9 @@
     reason = "tests assert, and return Result only to propagate setup errors"
 )]
 use geographiclib_rs::{Geodesic, InverseGeodesic as _};
+use pyo3::prelude::*;
 
+use crate::crs::frame::{Frame, crs_arc_static};
 use crate::crs::{PointEdgeScratch, with_ellipsoid_metric};
 use crate::error::Result;
 use crate::geometry::distance::frechet::frechet_dp_columns;
@@ -222,6 +224,40 @@ fn point_to_line_distance_and_nearest_witness_use_the_same_chart_edge() -> Resul
         Ok(())
     })?;
     Ok(())
+}
+
+#[test]
+fn public_distance_measures_a_full_turn_line_as_its_parallel() {
+    crate::test_support::initialize_python();
+    Python::attach(|py| {
+        let frame = Frame::new(Some(crs_arc_static("EPSG:4326")), None)
+            .expect("CRS84 is a valid geographic frame");
+        let point = crate::Typed(crate::PyGeometry::with_frame(
+            Shape::Point(p(200.0, 50.0)),
+            frame.clone(),
+        ))
+        .into_pyobject(py)
+        .expect("point binds as its public typed geometry");
+        let line = crate::Typed(crate::PyGeometry::with_frame(
+            line(vec![p(10.0, 60.0), p(370.0, 60.0)]),
+            frame,
+        ))
+        .into_pyobject(py)
+        .expect("linestring binds as its public typed geometry");
+
+        let distance = crate::distance(py, &point, &line, None)
+            .expect("public distance succeeds")
+            .bind(py)
+            .extract::<f64>()
+            .expect("distance is a scalar");
+        let expected: f64 = Geodesic::wgs84().inverse(50.0, 200.0, 60.0, 200.0);
+        let rounding_floor = 32.0 * (expected.next_up() - expected);
+        assert!(
+            (distance - expected).abs() <= MINIMUM_GAP_METERS + rounding_floor,
+            "full-turn distance {distance} differs from the 60-degree parallel \
+             meridian distance {expected}"
+        );
+    });
 }
 
 #[test]

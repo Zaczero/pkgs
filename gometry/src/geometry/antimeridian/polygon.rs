@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use crate::error::Result;
 use crate::geographic::{
     GeographicFrame, GeographicRing, GeographicViewError, Latitude, RingDomain, RingSummary,
-    RingTurn, ScalarGeographicView,
+    ScalarGeographicView,
 };
 use crate::geometry::antimeridian::{
     SeamRing, collect_points, ring_follows_seam, segment_coords, split_ring_at_seam,
@@ -276,6 +276,32 @@ fn chart_latitude(value: f64, frame: GeographicFrame, scale: f64) -> Result<f64>
         .map_err(|error| GeometryErrorKind::antimeridian_split_failed(error.to_string()))
 }
 
+fn append_circle_witnesses(
+    points: &mut Vec<Point>,
+    start: Point,
+    end: Point,
+    mut transform: impl FnMut(Point) -> Result<Point>,
+) -> Result<()> {
+    for quarter in 1_u32..=3 {
+        let fraction = f64::from(quarter) / 4.0;
+        let interpolate = |start: f64, end: f64| {
+            if quarter == 2 {
+                f64::midpoint(start, end)
+            } else {
+                start + (end - start) * fraction
+            }
+        };
+        let witness = Point::new_axes(
+            interpolate(start.x, end.x),
+            interpolate(start.y, end.y),
+            ZOrdinate(interpolate_optional_ordinate(start.z(), end.z(), fraction)),
+            MOrdinate(interpolate_optional_ordinate(start.m(), end.m(), fraction)),
+        )?;
+        points.push(transform(witness)?);
+    }
+    Ok(())
+}
+
 fn chart_ring(
     ring: &Ring,
     frame: GeographicFrame,
@@ -286,27 +312,27 @@ fn chart_ring(
     let summary =
         RingSummary::try_new(frame, &geographic).map_err(|error| split_view_error(&error))?;
     let mut points = Vec::new();
-    if matches!(summary.domain, RingDomain::FullLongitude(_))
-        && matches!(summary.turn, RingTurn::None)
-    {
-        let axis = frame.longitude();
+    let axis = frame.longitude();
+    let circle_edges = ring
+        .segment_pairs()
+        .filter(|[start, end]| {
+            axis.chart_step(start.x, end.x)
+                .expect("the geographic view admitted every ring coordinate")
+                .is_circle()
+        })
+        .count();
+    let witness_count = circle_edges
+        .checked_mul(3)
+        .ok_or(crate::error::ResourceError::SizeOverflow)?;
+    let output_count = geographic
+        .len()
+        .checked_add(witness_count)
+        .ok_or(crate::error::ResourceError::SizeOverflow)?;
+    points.reserve_exact(output_count);
+    if matches!(summary.domain, RingDomain::FullLongitude(_)) && summary.chart_turn == 0 {
         let xs = geographic.native_xs();
         let west = xs.iter().copied().fold(f64::INFINITY, f64::min);
         let east = xs.iter().copied().fold(f64::NEG_INFINITY, f64::max);
-        let midpoint_count = ring
-            .segment_pairs()
-            .filter_map(|[start, end]| {
-                (start.y.to_bits() == end.y.to_bits()
-                    && axis.full_turn_delta(start.x, end.x).is_some())
-                .then_some(())
-            })
-            .count();
-        #[expect(
-            clippy::arithmetic_side_effects,
-            reason = "the stored f64 coordinate columns bound a ring below half usize::MAX"
-        )]
-        let output_count = geographic.len() + midpoint_count;
-        points.reserve_exact(output_count);
         let band_point = |point: Point| -> Result<Point> {
             let x = if point.x.to_bits() == west.to_bits() {
                 -180.0
@@ -322,31 +348,29 @@ fn chart_ring(
                 points.push(band_point(start)?);
             }
             if start.y.to_bits() == end.y.to_bits()
-                && axis.full_turn_delta(start.x, end.x).is_some()
+                && axis
+                    .chart_step(start.x, end.x)
+                    .expect("the geographic view admitted every ring coordinate")
+                    .is_circle()
             {
-                // A raw full-turn edge needs an ordinary chart witness; its
-                // two seam spellings alone would collapse to a line.
-                let midpoint = f64::midpoint(start.x, end.x);
-                let x = (midpoint - west - axis.half_period()) * longitude_scale;
-                let y = chart_latitude(start.y, frame, latitude_scale)?;
-                points.push(Point::new_axes(
-                    x,
-                    y,
-                    ZOrdinate(interpolate_optional_ordinate(start.z(), end.z(), 0.5)),
-                    MOrdinate(interpolate_optional_ordinate(start.m(), end.m(), 0.5)),
-                )?);
+                append_circle_witnesses(&mut points, start, end, &band_point)?;
             }
             points.push(band_point(end)?);
         }
     } else {
-        points.reserve_exact(geographic.len());
-        for index in 0..geographic.len() {
-            points.push(chart_point(
-                geographic.native_point(index),
-                frame,
-                longitude_scale,
-                latitude_scale,
-            )?);
+        for [start, end] in ring.segment_pairs() {
+            if points.is_empty() {
+                points.push(chart_point(start, frame, longitude_scale, latitude_scale)?);
+            }
+            let step = axis
+                .chart_step(start.x, end.x)
+                .expect("the geographic view admitted every ring coordinate");
+            if step.is_circle() {
+                append_circle_witnesses(&mut points, start, end, |point| {
+                    chart_point(point, frame, longitude_scale, latitude_scale)
+                })?;
+            }
+            points.push(chart_point(end, frame, longitude_scale, latitude_scale)?);
         }
     }
     Ring::try_from_closed(CoordSeq::try_from_points(&points)?)
@@ -661,7 +685,7 @@ fn shape_has_longitude_turn_in_frame(shape: &Shape, frame: GeographicFrame) -> R
     fn ring_has_longitude_turn(ring: &Ring, frame: GeographicFrame) -> Result<bool> {
         let summary = RingSummary::try_new(frame, &GeographicRing::from_ring(ring))
             .map_err(|error| split_view_error(&error))?;
-        Ok(summary.turn != RingTurn::None)
+        Ok(summary.chart_turn != 0)
     }
 
     fn polygon_has_longitude_turn(polygon: &Polygon, frame: GeographicFrame) -> Result<bool> {
@@ -994,7 +1018,9 @@ fn build_rings(mut segments: Vec<Vec<Point>>) -> Vec<Vec<Point>> {
 #[cfg(test)]
 mod tests {
     use crate::geographic::{AngularFactor, GeographicFrame};
-    use crate::geometry::{CoordSeq, LineSeq, MOrdinate, Point, Polygon, Ring, Shape, ZOrdinate};
+    use crate::geometry::{
+        CoordSeq, Coordinates as _, LineSeq, MOrdinate, Point, Polygon, Ring, Shape, ZOrdinate,
+    };
     use crate::test_support::allocation_count;
 
     fn line(xs: &[f64], ys: &[f64]) -> Shape {
@@ -1212,9 +1238,14 @@ mod tests {
         let split = split_crs84(&shape);
         assert_ne!(split, shape);
         let expected = Shape::Polygon(Polygon::new(
-            closed_ring(&[-180.0, 0.0, 180.0, 180.0, 0.0, -180.0, -180.0], &[
-                -30.0, -30.0, -30.0, 30.0, 30.0, 30.0, -30.0,
-            ]),
+            closed_ring(
+                &[
+                    -180.0, -90.0, 0.0, 90.0, 180.0, 180.0, 90.0, 0.0, -90.0, -180.0, -180.0,
+                ],
+                &[
+                    -30.0, -30.0, -30.0, -30.0, -30.0, 30.0, 30.0, 30.0, 30.0, 30.0, -30.0,
+                ],
+            ),
             Vec::new(),
         ));
         assert_eq!(split, expected);
@@ -1316,7 +1347,25 @@ mod tests {
         .unwrap();
         let chart = super::chart_ring(&ring, GeographicFrame::crs84(), 1.0, 1.0).unwrap();
 
-        assert_eq!(chart.coords().point_at(1), point(0.0, -30.0, 180.0, 190.0));
-        assert_eq!(chart.coords().point_at(4), point(0.0, 30.0, 900.0, 910.0));
+        assert_eq!(chart.coords().coord_count(), 11);
+        assert_eq!(chart.coords().point_at(2), point(0.0, -30.0, 180.0, 190.0));
+        assert_eq!(chart.coords().point_at(7), point(0.0, 30.0, 900.0, 910.0));
+    }
+
+    #[test]
+    fn chart_ring_keeps_a_non_band_explicit_circle_edge() {
+        let ring = closed_ring(&[0.0, 360.0, 300.0, 0.0], &[60.0, 60.0, 65.0, 60.0]);
+
+        let chart = super::chart_ring(&ring, GeographicFrame::crs84(), 1.0, 1.0).unwrap();
+
+        assert_eq!(chart.coords().coord_count(), 7);
+        assert_eq!(
+            chart.coords().first_coord(),
+            Some(Point::new_raw_xy(0.0, 60.0))
+        );
+        assert_eq!(
+            chart.coords().last_coord(),
+            Some(Point::new_raw_xy(0.0, 60.0))
+        );
     }
 }

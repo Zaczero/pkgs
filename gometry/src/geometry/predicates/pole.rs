@@ -1,7 +1,8 @@
 use std::collections::HashMap;
 
 use crate::geographic::{
-    GeographicFrame, GeographicRing, RingSummary, RingTurn, ScalarGeographicView, SeamIdentity,
+    GeographicFrame, GeographicRing, Pole, RingSummary, RingTurn, ScalarGeographicView,
+    SeamIdentity,
 };
 use crate::geometry::{Polygon, Ring, Shape, ShapeOwnerKey, VisibleXYKey};
 
@@ -9,21 +10,8 @@ fn ring_summary_in_frame(ring: &Ring, frame: GeographicFrame) -> Option<RingSumm
     RingSummary::try_new(frame, &GeographicRing::from_ring(ring)).ok()
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum RingAreaPole {
-    None,
-    North,
-    South,
-    Straddling,
-}
-
 fn summary_encloses_pole(summary: &RingSummary, north: bool) -> bool {
-    matches!(summary.turn, RingTurn::Full(_))
-        && if north {
-            summary.south.get() > 0.0
-        } else {
-            summary.north.get() < 0.0
-        }
+    summary.bounded_pole() == Some(if north { Pole::North } else { Pole::South })
 }
 
 #[derive(Default)]
@@ -111,7 +99,7 @@ impl PoleMemo {
 
     fn ring_has_full_turn(&mut self, ring: &Ring, frame: GeographicFrame) -> bool {
         self.ring_summary(ring, frame)
-            .is_some_and(|summary| matches!(summary.turn, RingTurn::Full(_)))
+            .is_some_and(|summary| matches!(summary.turn(), RingTurn::Full(_)))
     }
 
     fn shape_has_polar_ring(&mut self, shape: &Shape, frame: GeographicFrame) -> bool {
@@ -163,20 +151,8 @@ pub(crate) fn ring_encloses_pole(ring: &Ring, north: bool) -> bool {
     ring_encloses_pole_in_frame(ring, GeographicFrame::crs84(), north)
 }
 
-pub(crate) fn ring_area_pole(ring: &Ring, frame: GeographicFrame) -> RingAreaPole {
-    let Some(summary) = ring_summary_in_frame(ring, frame) else {
-        return RingAreaPole::None;
-    };
-    if !matches!(summary.turn, RingTurn::Full(_)) {
-        return RingAreaPole::None;
-    }
-    if summary_encloses_pole(&summary, true) {
-        RingAreaPole::North
-    } else if summary_encloses_pole(&summary, false) {
-        RingAreaPole::South
-    } else {
-        RingAreaPole::Straddling
-    }
+pub(crate) fn ring_bounded_pole(ring: &Ring, frame: GeographicFrame) -> Option<Pole> {
+    ring_summary_in_frame(ring, frame).and_then(|summary| summary.bounded_pole())
 }
 
 fn ring_encloses_pole_in_frame(ring: &Ring, frame: GeographicFrame, north: bool) -> bool {

@@ -3,6 +3,7 @@
 use std::collections::HashMap;
 use std::ops::ControlFlow;
 
+use super::{GeographicDiagnostic, GeographicError};
 use crate::geometry::ShapeOwnerKey;
 use crate::{GeometryErrorKind, Shape};
 
@@ -10,6 +11,30 @@ pub(crate) fn invalid_lonlat_error(lon: f64, lat: f64) -> crate::error::Error {
     GeometryErrorKind::message(format!(
         "invalid longitude/latitude ({lon}, {lat}); coordinates are (x, y) = (lon, lat) — use swap_xy() for latitude-first data"
     ))
+}
+
+pub(crate) fn geographic_admission_error(diagnostic: &GeographicDiagnostic) -> crate::error::Error {
+    match diagnostic.source {
+        GeographicError::NonFinite { .. } | GeographicError::LatitudeOutOfRange { .. } => {
+            let coordinates = invalid_lonlat_error(diagnostic.native.x, diagnostic.native.y);
+            let location = &diagnostic.location;
+            if location.row.is_some()
+                || !location.members.as_slice().is_empty()
+                || location.ring.is_some()
+                || location.coordinate != 0
+            {
+                GeometryErrorKind::message(format!("{coordinates} ({diagnostic})"))
+            } else {
+                coordinates
+            }
+        },
+        GeographicError::InvalidAngularFactor { .. }
+        | GeographicError::InvalidSweep { .. }
+        | GeographicError::ChartTurnOverflow
+        | GeographicError::AmbiguousFullTurnRing { .. } => {
+            GeometryErrorKind::message(diagnostic.to_string())
+        },
+    }
 }
 
 /// Minimum WGS84 longitude (degrees west).

@@ -303,7 +303,8 @@ fn map_geographic_conversion_error(error: GeographicError) -> crate::error::Erro
         GeographicError::NonFinite { .. } => GeometryErrorKind::NonFiniteCoordinate.into(),
         other @ (GeographicError::InvalidAngularFactor { .. }
         | GeographicError::InvalidSweep { .. }
-        | GeographicError::SeamTransitOverflow) => CrsError::invalid(other.to_string()),
+        | GeographicError::ChartTurnOverflow
+        | GeographicError::AmbiguousFullTurnRing { .. }) => CrsError::invalid(other.to_string()),
     }
 }
 
