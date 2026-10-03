@@ -10,7 +10,9 @@
 use std::cmp::Ordering;
 
 use crate::geometry::exact_arith::ExactSign;
-use crate::geometry::tessellation::{EMPTY, Triangulation, exact, next_halfedge, prev_halfedge};
+use crate::geometry::tessellation::{
+    EMPTY, RingOwner, Triangulation, exact, next_halfedge, prev_halfedge,
+};
 use crate::geometry::{
     CoordSeq, CoordinateAxes, Coordinates as _, ExpansionBudget, GENERATED_ITEM_LIMIT,
     GeometryErrorKind, HasM, HasZ, MOrdinate, Orientation, Point, PointKey, Result, XY, ZOrdinate,
@@ -488,7 +490,7 @@ fn delaunay_euler_complete(n: usize, triangulation: &Triangulation) -> bool {
 /// every nonzero constraint keeps its original endpoint points and stable
 /// source identity for exact refinement certificates.
 fn constrained_triangle_plan<'a>(
-    rings: impl Iterator<Item = &'a CoordSeq>,
+    rings: impl Iterator<Item = (RingOwner, &'a CoordSeq)>,
     area: f64,
     refinement: CdtRefinement,
 ) -> Result<cdt::ConstrainedMeshPlan> {
@@ -500,9 +502,9 @@ fn constrained_triangle_plan<'a>(
     let force_xy = refinement.active();
     let refinement = effective_refinement(area, refinement);
     validate_refinement_request(area, refinement)?;
-    let (mut vertices, occurrences, sources) = constrained_source_plan(&rings)?;
+    let (mut vertices, occurrences, sources, source_rings) = constrained_source_plan(&rings)?;
     let Some(mut cdt) =
-        cdt::ConstrainedMesh::build_with_sources(&vertices, &occurrences, &sources)?
+        cdt::ConstrainedMesh::build_with_sources(&vertices, &occurrences, &sources, source_rings)?
     else {
         return Err(GeometryErrorKind::triangulation(
             "constrained triangulation needs three non-collinear vertices",
@@ -537,7 +539,7 @@ fn constrained_triangle_plan<'a>(
 /// by both scalar and packed surfaces; it consumes one checked mesh plan and
 /// applies the active-refinement XY policy before emitting.
 pub(crate) fn constrained_triangle_vertices<'a>(
-    rings: impl Iterator<Item = &'a CoordSeq>,
+    rings: impl Iterator<Item = (RingOwner, &'a CoordSeq)>,
     area: f64,
     refinement: CdtRefinement,
     budget: &mut ExpansionBudget,
@@ -657,15 +659,20 @@ pub(super) fn selected_source_sites(points: Vec<Point>) -> Result<(Vec<Point>, V
     reason = "source endpoint keys come from the ring points collected above, and their site IDs index the selected vertex column used to build the map"
 )]
 fn constrained_source_plan(
-    rings: &[&CoordSeq],
-) -> Result<(Vec<Point>, Vec<usize>, Vec<cdt::SourceConstraint>)> {
+    rings: &[(RingOwner, &CoordSeq)],
+) -> Result<(
+    Vec<Point>,
+    Vec<usize>,
+    Vec<cdt::SourceConstraint>,
+    Vec<cdt::SourceRingStart>,
+)> {
     let capacity = rings.iter().try_fold(0_usize, |total, ring| {
         total
-            .checked_add(ring.coord_count())
+            .checked_add(ring.1.coord_count())
             .ok_or(crate::error::ResourceError::SizeOverflow)
     })?;
     let mut source_points = Vec::with_capacity(capacity);
-    for ring in rings {
+    for &(_, ring) in rings {
         for index in 0..ring.coord_count() {
             source_points.push(ring.nth_coord(index));
         }
@@ -676,8 +683,10 @@ fn constrained_source_plan(
         indices.insert(PointKey::new(*point), site);
     }
     let mut sources = Vec::with_capacity(capacity);
+    let mut source_rings = Vec::with_capacity(rings.len());
     let mut seen = crate::collections::try_hash_set_with_capacity(capacity)?;
-    for ring in rings {
+    for &(owner, ring) in rings {
+        source_rings.push(cdt::SourceRingStart::new(sources.len(), owner));
         for index in 0..ring.coord_count().saturating_sub(1) {
             let start = ring.nth_coord(index);
             let end = ring.nth_coord(index.wrapping_add(1));
@@ -686,7 +695,18 @@ fn constrained_source_plan(
             }
             let key = ordered_constraint_key(start.xy(), end.xy());
             if !seen.insert(key) {
-                continue;
+                let previous = sources
+                    .iter()
+                    .find(|source: &&cdt::SourceConstraint| {
+                        ordered_constraint_key(source.start.xy(), source.end.xy()) == key
+                    })
+                    .expect("a seen source edge has an admitted source constraint");
+                let previous_owner = cdt::source_ring_owner(previous.id, &source_rings)
+                    .expect("an admitted source constraint belongs to a source ring");
+                return Err(crate::geometry::tessellation::overlapping_rings_error(
+                    previous_owner,
+                    owner,
+                ));
             }
             let start_site = indices[&PointKey::new(start)];
             let end_site = indices[&PointKey::new(end)];
@@ -700,7 +720,7 @@ fn constrained_source_plan(
             });
         }
     }
-    Ok((vertices, occurrences, sources))
+    Ok((vertices, occurrences, sources, source_rings))
 }
 
 fn ordered_constraint_key(a: XY, b: XY) -> (PointKey, PointKey) {

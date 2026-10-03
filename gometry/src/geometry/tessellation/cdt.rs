@@ -26,6 +26,7 @@ use std::collections::{BinaryHeap, VecDeque};
 
 use rstar::{AABB, RTree, RTreeObject};
 
+use super::super::RingOwner;
 use super::exact_delaunay::{EMPTY, FaceId, FaceSide, HalfedgeId, Located, Mesh, site_xy};
 use crate::collections::{HashMap, HashSet};
 use crate::error::{ErrorKind, Result};
@@ -76,6 +77,31 @@ pub(super) struct SourceConstraint {
     pub(super) end: Point,
     pub(super) start_site: usize,
     pub(super) end_site: usize,
+}
+
+#[derive(Clone, Copy)]
+pub(super) struct SourceRingStart {
+    first_source: usize,
+    owner: RingOwner,
+}
+
+impl SourceRingStart {
+    pub(super) const fn new(first_source: usize, owner: RingOwner) -> Self {
+        Self {
+            first_source,
+            owner,
+        }
+    }
+}
+
+pub(super) fn source_ring_owner(
+    source: usize,
+    source_rings: &[SourceRingStart],
+) -> Option<RingOwner> {
+    let index = source_rings
+        .partition_point(|ring| ring.first_source <= source)
+        .checked_sub(1)?;
+    source_rings.get(index).map(|ring| ring.owner)
 }
 
 #[derive(Clone, Debug)]
@@ -470,7 +496,11 @@ impl SourcePieces {
             reason = "test-only assertions characterize source-chain order against the sorted oracle"
         )
     )]
-    fn take_ordered(&mut self, source_count: usize) -> Result<Vec<SourcePiece>> {
+    fn take_ordered(
+        &mut self,
+        sources: &[SourceConstraint],
+        source_rings: &[SourceRingStart],
+    ) -> Result<Vec<SourcePiece>> {
         #[cfg(test)]
         let expected = {
             let mut pieces: Vec<_> = self.values().cloned().collect();
@@ -478,18 +508,30 @@ impl SourcePieces {
             pieces
         };
         let mut pieces = Vec::with_capacity(self.edges.len());
-        for source in 0..source_count {
+        for source in 0..sources.len() {
             let mut at = Some(source);
             while let Some(index) = at {
                 let node = self
                     .nodes
                     .get_mut(index)
                     .expect("source successors name admitted piece slots");
-                let piece = node.piece.take().ok_or_else(|| {
-                    GeometryErrorKind::triangulation(format!(
+                let Some(piece) = node.piece.take() else {
+                    let missing = sources
+                        .get(source)
+                        .expect("source IDs match their ordered source slots");
+                    if let Some(overlap) = sources.iter().find(|other| {
+                        other.id != missing.id && source_constraints_overlap(missing, other)
+                    }) {
+                        let left = source_ring_owner(missing.id, source_rings)
+                            .expect("a source constraint belongs to a source ring");
+                        let right = source_ring_owner(overlap.id, source_rings)
+                            .expect("an overlapping source constraint belongs to a source ring");
+                        return Err(super::super::overlapping_rings_error(left, right));
+                    }
+                    return Err(GeometryErrorKind::triangulation(format!(
                         "source constraint {source} has no emitted boundary chain"
-                    ))
-                })?;
+                    )));
+                };
                 pieces.push(piece);
                 at = node.next;
             }
@@ -516,6 +558,7 @@ pub(super) struct ConstrainedMesh {
     pub(super) mesh: Mesh,
     pub(super) constrained: Vec<bool>,
     source_constraints: Vec<SourceConstraint>,
+    source_rings: Vec<SourceRingStart>,
     source_pieces: SourcePieces,
     provenance: Vec<NodeProvenance>,
     split_certificates: Vec<CertifiedBoundarySplit>,
@@ -888,15 +931,21 @@ impl ConstrainedMesh {
                 end_site,
             })
             .collect();
-        Self::build_with_sources(points, &(0..points.len()).collect::<Vec<_>>(), &sources)
-            .ok()
-            .flatten()
+        Self::build_with_sources(
+            points,
+            &(0..points.len()).collect::<Vec<_>>(),
+            &sources,
+            vec![SourceRingStart::new(0, RingOwner::new(0, 0))],
+        )
+        .ok()
+        .flatten()
     }
 
     pub(super) fn build_with_sources(
         points: &[Point],
         occurrences: &[usize],
         sources: &[SourceConstraint],
+        source_rings: Vec<SourceRingStart>,
     ) -> Result<Option<Self>> {
         let Some(mesh) = Mesh::try_delaunay(points)? else {
             return Ok(None);
@@ -913,6 +962,7 @@ impl ConstrainedMesh {
             mesh,
             constrained,
             source_constraints,
+            source_rings,
             source_pieces,
             provenance,
             split_certificates: Vec::new(),
@@ -1716,8 +1766,10 @@ impl ConstrainedMesh {
             let (pieces, rest) = remaining.split_at(count);
             remaining = rest;
             if pieces.is_empty() {
+                // `take_ordered` rejects empty source roots first; reaching
+                // this check means a root's pieces were assigned another ID.
                 return Err(GeometryErrorKind::triangulation(format!(
-                    "source constraint {} has no emitted boundary chain",
+                    "source-piece ordering omitted source constraint {}",
                     source.id
                 )));
             }
@@ -1814,7 +1866,7 @@ impl ConstrainedMesh {
     ) -> Result<ConstrainedMeshPlan> {
         let constraint_pieces = self
             .source_pieces
-            .take_ordered(self.source_constraints.len())?;
+            .take_ordered(&self.source_constraints, &self.source_rings)?;
         self.validate_source_chains(&points, &constraint_pieces)?;
         let inside = self.inside_faces();
         let mut faces = Vec::with_capacity(self.mesh.triangle_count());
@@ -1859,6 +1911,18 @@ fn compare_source_pieces(left: &SourcePiece, right: &SourcePiece) -> Result<std:
         .start_site
         .cmp(&right.start_site)
         .then_with(|| left.end_site.cmp(&right.end_site)))
+}
+
+fn source_constraints_overlap(left: &SourceConstraint, right: &SourceConstraint) -> bool {
+    let (a, b, c, d) = (
+        left.start.xy(),
+        left.end.xy(),
+        right.start.xy(),
+        right.end.xy(),
+    );
+    exact::orient2d(a, b, c) == ExactSign::Zero
+        && exact::orient2d(a, b, d) == ExactSign::Zero
+        && (between(a, b, c) || between(a, b, d) || between(c, d, a) || between(c, d, b))
 }
 
 fn interpolate_source_parameter(
@@ -2108,6 +2172,7 @@ mod tests {
                     end_site,
                 })
                 .collect::<Vec<_>>(),
+            vec![SourceRingStart::new(0, RingOwner::new(0, 0))],
         );
         assert!(matches!(
             result.as_ref(),

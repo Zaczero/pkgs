@@ -4,10 +4,10 @@ use crate::NonNegative;
 use crate::error::Result;
 use crate::geometry::overlay::ExactSourceInventory;
 use crate::geometry::tessellation::{
-    CdtRefinement, CertifiedDelaunay, Site, certified_delaunay, collect_sample_triangles,
-    constrained_triangle_vertices, earcut_polygon_with, line_boundary, multiline_boundary,
-    rings_to_boundary, sample_weighted, selected_triangle_points, snap_sites, try_triangle_shape,
-    uniform_f64, voronoi_dcel, weight_scale,
+    CdtRefinement, CertifiedDelaunay, RingOwner, Site, certified_delaunay,
+    collect_sample_triangles, constrained_triangle_vertices, earcut_polygon_with, line_boundary,
+    multiline_boundary, rings_to_boundary, sample_weighted, selected_triangle_points, snap_sites,
+    try_triangle_shape, uniform_f64, voronoi_dcel, weight_scale,
 };
 use crate::geometry::{
     AxisFrame, CoordSeq, CoordinateAxes, CsrOffsetColumn, Dimension, ExpansionBudget,
@@ -224,13 +224,21 @@ impl Shape {
     ) -> Result<Vec<Point>> {
         match self.polygonal().ok_or(GeometryErrorKind::PolygonRequired)? {
             Polygonal::Polygon(polygon) => constrained_triangle_vertices(
-                polygon.rings().map(Ring::coords),
+                polygon
+                    .rings()
+                    .enumerate()
+                    .map(|(ring, value)| (RingOwner::new(0, ring), value.coords())),
                 self.area(),
                 refinement,
                 budget,
             ),
             Polygonal::MultiPolygon(polygons) => constrained_triangle_vertices(
-                polygons.iter().flat_map(Polygon::rings).map(Ring::coords),
+                polygons.iter().enumerate().flat_map(|(polygon, value)| {
+                    value
+                        .rings()
+                        .enumerate()
+                        .map(move |(ring, value)| (RingOwner::new(polygon, ring), value.coords()))
+                }),
                 self.area(),
                 refinement,
                 budget,

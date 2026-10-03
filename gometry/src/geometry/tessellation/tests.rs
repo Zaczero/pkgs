@@ -321,6 +321,17 @@ fn assert_triangulation_error(polygon: Polygon) {
     ));
 }
 
+fn assert_constrained_triangulation_error(polygon: Polygon, expected: &str) {
+    let error = Shape::Polygon(polygon)
+        .constrained_delaunay_vertices(CdtRefinement::default())
+        .expect_err("overlapping ring constraints must fail");
+    assert!(matches!(
+        error.kind(),
+        ErrorKind::Geometry(GeometryErrorKind::Triangulation(message))
+            if message.as_ref() == expected
+    ));
+}
+
 #[test]
 fn triangle_sink_rejects_before_shape_allocation() {
     let mut budget = ExpansionBudget::new("triangulate", "method");
@@ -1790,5 +1801,60 @@ fn constrained_triangulation_rejects_crossing_boundaries() {
     assert!(
         matches!(&result, Err(error) if matches!(error.kind(), ErrorKind::Geometry(_))),
         "{result:?}"
+    );
+}
+
+#[test]
+fn constrained_triangulation_names_partial_shell_hole_overlap() {
+    assert_constrained_triangulation_error(
+        polygon(
+            vec![xy(0.0, 0.0), xy(10.0, 0.0), xy(10.0, 10.0), xy(0.0, 10.0)],
+            vec![vec![xy(0.0, 2.0), xy(4.0, 2.0), xy(4.0, 6.0), xy(0.0, 6.0)]],
+        ),
+        "polygon hole touches or crosses the shell",
+    );
+}
+
+#[test]
+fn constrained_triangulation_names_shared_shell_hole_edge() {
+    assert_constrained_triangulation_error(
+        polygon(
+            vec![xy(0.0, 0.0), xy(10.0, 0.0), xy(10.0, 10.0), xy(0.0, 10.0)],
+            vec![vec![xy(0.0, 0.0), xy(4.0, 5.0), xy(0.0, 10.0)]],
+        ),
+        "polygon hole touches or crosses the shell",
+    );
+}
+
+#[test]
+fn constrained_triangulation_names_shared_hole_edge() {
+    assert_constrained_triangulation_error(
+        polygon(
+            vec![xy(0.0, 0.0), xy(20.0, 0.0), xy(20.0, 20.0), xy(0.0, 20.0)],
+            vec![
+                vec![xy(2.0, 2.0), xy(8.0, 2.0), xy(8.0, 8.0), xy(2.0, 8.0)],
+                vec![xy(8.0, 2.0), xy(14.0, 2.0), xy(14.0, 8.0), xy(8.0, 8.0)],
+            ],
+        ),
+        "polygon holes touch or cross",
+    );
+}
+
+#[test]
+fn constrained_triangulation_names_shell_backtracking() {
+    assert_constrained_triangulation_error(
+        polygon(
+            vec![
+                xy(0.0, 0.0),
+                xy(10.0, 0.0),
+                xy(10.0, 10.0),
+                xy(0.0, 10.0),
+                xy(0.0, 5.0),
+                xy(0.0, 8.0),
+                xy(0.0, 5.0),
+            ],
+            vec![],
+        ),
+        "polygon shell overlaps itself",
     );
 }

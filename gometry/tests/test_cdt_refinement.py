@@ -475,6 +475,35 @@ def test_invalid_constraints_return_invalid_geometry_error(
 
 
 @pytest.mark.parametrize(
+    ('method', 'message'),
+    [
+        (
+            'constrained',
+            'triangulation failed: polygon hole touches or crosses the shell',
+        ),
+        (
+            'earcut',
+            'triangulation failed: polygon hole touches or crosses the shell',
+        ),
+    ],
+    ids=['constrained', 'earcut'],
+)
+def test_triangulation_names_hole_shell_edge_overlap(
+    method: str,
+    message: str,
+) -> None:
+    polygon = gm.from_wkt(
+        'POLYGON ((0 0, 10 0, 10 10, 0 10, 0 0), '
+        '(0 2, 4 2, 4 6, 0 6, 0 2))'
+    )
+
+    with pytest.raises(gm.InvalidGeometryError) as raised:
+        polygon.triangulate(method=method)
+
+    assert str(raised.value) == message
+
+
+@pytest.mark.parametrize(
     ('option', 'value'),
     [('min_angle', 20.0), ('max_area', 50.0)],
 )

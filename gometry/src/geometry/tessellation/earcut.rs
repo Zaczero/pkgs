@@ -380,13 +380,14 @@ pub(crate) fn validate_hole_interactions(shell: &[Point], holes: &[Vec<Point>]) 
             if !segments_intersect(left_segment, right_segment) {
                 continue;
             }
-            return Err(match (left_id, right_id) {
+            let intersection = match (left_id, right_id) {
                 (EarcutRingId::Shell, EarcutRingId::Hole(_))
                 | (EarcutRingId::Hole(_), EarcutRingId::Shell) => {
-                    GeometryErrorKind::triangulation("polygon hole touches or crosses the shell")
+                    super::RingPairIntersection::ShellHole
                 },
-                _ => GeometryErrorKind::triangulation("polygon holes touch or cross"),
-            });
+                _ => super::RingPairIntersection::HoleHole,
+            };
+            return Err(super::ring_pair_intersection_error(intersection));
         }
     }
     validate_holes_disjoint(holes)

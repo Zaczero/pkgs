@@ -15,6 +15,63 @@ mod shape;
 mod voronoi;
 mod voronoi_dcel;
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) struct RingOwner {
+    polygon: usize,
+    ring: usize,
+}
+
+impl RingOwner {
+    pub(super) const fn new(polygon: usize, ring: usize) -> Self {
+        Self { polygon, ring }
+    }
+
+    const fn is_shell(self) -> bool {
+        self.ring == 0
+    }
+}
+
+#[derive(Clone, Copy)]
+pub(super) enum RingPairIntersection {
+    ShellHole,
+    HoleHole,
+}
+
+pub(super) fn ring_pair_intersection_error(
+    intersection: RingPairIntersection,
+) -> crate::error::Error {
+    match intersection {
+        RingPairIntersection::ShellHole => crate::geometry::GeometryErrorKind::triangulation(
+            "polygon hole touches or crosses the shell",
+        ),
+        RingPairIntersection::HoleHole => {
+            crate::geometry::GeometryErrorKind::triangulation("polygon holes touch or cross")
+        },
+    }
+}
+
+pub(super) fn overlapping_rings_error(left: RingOwner, right: RingOwner) -> crate::error::Error {
+    if left.polygon == right.polygon {
+        if left.ring == right.ring {
+            return crate::geometry::GeometryErrorKind::triangulation(if left.is_shell() {
+                "polygon shell overlaps itself"
+            } else {
+                "polygon hole overlaps itself"
+            });
+        }
+        return ring_pair_intersection_error(if left.is_shell() != right.is_shell() {
+            RingPairIntersection::ShellHole
+        } else {
+            RingPairIntersection::HoleHole
+        });
+    }
+    crate::geometry::GeometryErrorKind::triangulation(if left.is_shell() && right.is_shell() {
+        "polygon shells touch or overlap"
+    } else {
+        "polygon boundaries touch or overlap"
+    })
+}
+
 pub(crate) use boundary::{line_boundary, multiline_boundary, rings_to_boundary};
 pub(crate) use delaunay::{CdtRefinement, constrained_triangle_vertices, delaunay_triangulation};
 use delaunay::{
