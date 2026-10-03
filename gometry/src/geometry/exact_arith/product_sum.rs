@@ -117,9 +117,15 @@ impl ExactSum {
             return;
         }
         let negative = subtract ^ lhs_negative ^ rhs_negative;
-        let product = u128::from(lhs_mantissa) * u128::from(rhs_mantissa);
-        let shift = usize::try_from(lhs_exponent + rhs_exponent - PRODUCT_MIN_EXP)
-            .expect("finite f64 product fits the fixed exact accumulator");
+        // Each binary64 significand has at most 53 bits, so this product fits
+        // in the 128-bit temporary without discarding any significant bit.
+        let product = u128::from(lhs_mantissa).wrapping_mul(u128::from(rhs_mantissa));
+        let shift = usize::try_from(
+            lhs_exponent
+                .wrapping_add(rhs_exponent)
+                .wrapping_sub(PRODUCT_MIN_EXP),
+        )
+        .expect("finite f64 product fits the fixed exact accumulator");
         add_shifted_product(
             if negative {
                 &mut self.negative
@@ -298,8 +304,12 @@ impl ExactCubicSum {
         if am == 0 || bm == 0 || cm == 0 {
             return;
         }
-        let shift =
-            usize::try_from(ae + be + ce - CUBIC_MIN_EXP).expect("finite cubic product fits");
+        let shift = usize::try_from(
+            ae.wrapping_add(be)
+                .wrapping_add(ce)
+                .wrapping_sub(CUBIC_MIN_EXP),
+        )
+        .expect("finite cubic product fits");
         debug_assert!(shift <= CUBIC_MAX_PRODUCT_SHIFT);
         let product = multiply_three(am, bm, cm);
         let negative = subtract ^ an ^ bn ^ cn;
@@ -344,11 +354,17 @@ impl ExactCubicSum {
 }
 
 fn multiply_three(a: u64, b: u64, c: u64) -> [u64; 3] {
-    let first = u128::from(a) * u128::from(b);
-    let low = u128::from(first as u64) * u128::from(c);
-    let high = u128::from((first >> 64) as u64) * u128::from(c);
+    // Inputs are 53-bit binary64 significands. Every partial product below is
+    // less than 2^128; the split limbs retain the full 159-bit triple product.
+    let first = u128::from(a).wrapping_mul(u128::from(b));
+    let low = u128::from(first as u64).wrapping_mul(u128::from(c));
+    let high = u128::from((first >> 64) as u64).wrapping_mul(u128::from(c));
     let (middle, carry) = ((low >> 64) as u64).overflowing_add(high as u64);
-    [low as u64, middle, (high >> 64) as u64 + u64::from(carry)]
+    [
+        low as u64,
+        middle,
+        ((high >> 64) as u64).wrapping_add(u64::from(carry)),
+    ]
 }
 
 fn exact_centroid_quotient(
@@ -367,8 +383,8 @@ fn exact_centroid_quotient(
         Ordering::Less | Ordering::Equal => {
             let mut low = 0_u64;
             let mut high = max_bits;
-            while high - low > 1 {
-                let middle = low + (high - low) / 2;
+            while high.wrapping_sub(low) > 1 {
+                let middle = low.wrapping_add(high.wrapping_sub(low) / 2);
                 if cmp_magnitude(
                     &magnitude,
                     &area_candidate_product(area, f64::from_bits(middle)),
@@ -439,14 +455,16 @@ fn area_scaled_product(area: &[u64; LIMBS], mantissa: u64, exponent: i32) -> [u6
     if mantissa == 0 {
         return result;
     }
-    let shift = usize::try_from(exponent + 1074).expect("candidate aligns to cubic quantum");
-    let factor = mantissa * 3;
+    let shift =
+        usize::try_from(exponent.wrapping_add(1074)).expect("candidate aligns to cubic quantum");
+    let factor = mantissa.wrapping_mul(3);
     for (index, &word) in area.iter().enumerate() {
-        let product = u128::from(word) * u128::from(factor);
+        // `factor` is below 3 * 2^53, so this limb product fits in u128.
+        let product = u128::from(word).wrapping_mul(u128::from(factor));
         add_shifted_words(
             &mut result,
             &[product as u64, (product >> 64) as u64],
-            shift + index * 64,
+            shift.wrapping_add(index.wrapping_mul(LIMB_BITS)),
         );
     }
     result
@@ -460,17 +478,26 @@ const fn decompose(value: f64) -> (bool, u64, i32) {
     if stored == 0 {
         (negative, fraction, BINARY64_MIN_EXPONENT)
     } else {
-        (negative, (1_u64 << 52) | fraction, stored - 1075)
+        (
+            negative,
+            (1_u64 << 52) | fraction,
+            stored.wrapping_sub(1075),
+        )
     }
 }
 
 fn add_shifted_words<const N: usize>(target: &mut [u64; N], words: &[u64], shift: usize) {
     let word = shift / 64;
-    let bits = shift % 64;
+    let bits = u32::try_from(shift % 64).expect("limb offset is below 64");
     for (offset, &value) in words.iter().enumerate() {
-        add_word(target, word + offset, value << bits);
+        let index = word.wrapping_add(offset);
+        add_word(target, index, value.wrapping_shl(bits));
         if bits != 0 {
-            add_word(target, word + offset + 1, value >> (64 - bits));
+            add_word(
+                target,
+                index.wrapping_add(1),
+                value.wrapping_shr(64_u32.wrapping_sub(bits)),
+            );
         }
     }
 }
@@ -484,50 +511,74 @@ fn add_shifted_words<const N: usize>(target: &mut [u64; N], words: &[u64], shift
 fn add_shifted_product(target: &mut [u64; LIMBS], product: u128, shift: usize) {
     debug_assert!(shift <= PAIR_MAX_PRODUCT_SHIFT);
     let word = shift / 64;
-    let bits = shift % 64;
+    let bits = u32::try_from(shift % 64).expect("limb offset is below 64");
     let lo = product as u64;
     let hi = (product >> 64) as u64;
     let (low, mid, high) = if bits == 0 {
         (lo, hi, 0_u64)
     } else {
         (
-            lo << bits,
-            (lo >> (64 - bits)) | (hi << bits),
-            hi >> (64 - bits),
+            lo.wrapping_shl(bits),
+            (lo.wrapping_shr(64_u32.wrapping_sub(bits))) | hi.wrapping_shl(bits),
+            hi.wrapping_shr(64_u32.wrapping_sub(bits)),
         )
     };
-    let mut acc = u128::from(target[word]) + u128::from(low);
-    target[word] = acc as u64;
+    let (_, target) = target.split_at_mut(word);
+    let (low_target, target) = target
+        .split_first_mut()
+        .expect("finite product shift selects a limb");
+    let mut acc = u128::from(*low_target).wrapping_add(u128::from(low));
+    *low_target = acc as u64;
     acc >>= 64;
     if mid == 0 && high == 0 && acc == 0 {
         return;
     }
-    acc += u128::from(target[word + 1]) + u128::from(mid);
-    target[word + 1] = acc as u64;
+    let (mid_target, target) = target
+        .split_first_mut()
+        .expect("finite product shift leaves room for the middle limb");
+    acc = acc
+        .wrapping_add(u128::from(*mid_target))
+        .wrapping_add(u128::from(mid));
+    *mid_target = acc as u64;
     acc >>= 64;
     if high == 0 && acc == 0 {
         return;
     }
-    acc += u128::from(target[word + 2]) + u128::from(high);
-    target[word + 2] = acc as u64;
+    let (high_target, mut target) = target
+        .split_first_mut()
+        .expect("finite product shift leaves room for the high limb");
+    acc = acc
+        .wrapping_add(u128::from(*high_target))
+        .wrapping_add(u128::from(high));
+    *high_target = acc as u64;
     acc >>= 64;
-    let mut index = word + 3;
     while acc != 0 {
-        acc += u128::from(target[index]);
-        target[index] = acc as u64;
+        let (limb, remaining) = target
+            .split_first_mut()
+            .expect("exact product carry fits the fixed accumulator");
+        acc = acc.wrapping_add(u128::from(*limb));
+        *limb = acc as u64;
         acc >>= 64;
-        index += 1;
-        debug_assert!(index <= LIMBS);
+        target = remaining;
     }
 }
 
-fn add_word<const N: usize>(target: &mut [u64; N], mut index: usize, mut value: u64) {
-    while value != 0 {
-        let (sum, carry) = target[index].overflowing_add(value);
-        target[index] = sum;
+fn add_word<const N: usize>(target: &mut [u64; N], index: usize, mut value: u64) {
+    if value == 0 {
+        return;
+    }
+    let (_, mut target) = target.split_at_mut(index);
+    loop {
+        let (limb, remaining) = target
+            .split_first_mut()
+            .expect("exact accumulator carry fits its limb array");
+        let (sum, carry) = limb.overflowing_add(value);
+        *limb = sum;
         value = u64::from(carry);
-        index += 1;
-        debug_assert!(index <= N);
+        if value == 0 {
+            return;
+        }
+        target = remaining;
     }
 }
 
@@ -538,10 +589,11 @@ fn add_words<const N: usize>(target: &mut [u64; N], source: &[u64; N]) {
 }
 
 pub(crate) fn cmp_magnitude<const N: usize>(left: &[u64; N], right: &[u64; N]) -> Ordering {
-    for index in (0..N).rev() {
-        match left[index].cmp(&right[index]) {
+    for (left, right) in left.iter().rev().zip(right.iter().rev()) {
+        match left.cmp(right) {
+            Ordering::Less => return Ordering::Less,
             Ordering::Equal => {},
-            ordering => return ordering,
+            Ordering::Greater => return Ordering::Greater,
         }
     }
     Ordering::Equal
@@ -551,10 +603,10 @@ fn subtract_magnitude<const N: usize>(larger: &[u64; N], smaller: &[u64; N]) -> 
     debug_assert_ne!(cmp_magnitude(larger, smaller), Ordering::Less);
     let mut result = [0; N];
     let mut borrow = false;
-    for index in 0..N {
-        let (first, first_borrow) = larger[index].overflowing_sub(smaller[index]);
+    for ((&larger, &smaller), result) in larger.iter().zip(smaller).zip(result.iter_mut()) {
+        let (first, first_borrow) = larger.overflowing_sub(smaller);
         let (difference, second_borrow) = first.overflowing_sub(u64::from(borrow));
-        result[index] = difference;
+        *result = difference;
         borrow = first_borrow || second_borrow;
     }
     debug_assert!(!borrow);
@@ -567,34 +619,36 @@ fn round_nonnegative(magnitude: &[u64; LIMBS], quantum_exp: i32) -> f64 {
     let Some(k) = most_significant_bit(magnitude) else {
         return 0.0;
     };
-    let normal_threshold =
-        usize::try_from(-1022 - quantum_exp).expect("product-sum normal threshold fits usize");
+    let normal_threshold = usize::try_from((-1022_i32).wrapping_sub(quantum_exp))
+        .expect("product-sum normal threshold fits usize");
     if k < normal_threshold {
-        let subnormal_shift =
-            usize::try_from(-1074 - quantum_exp).expect("product-sum subnormal shift fits usize");
-        let mut units = bits_from(magnitude, subnormal_shift + 51, 52);
-        let guard = limb_bit(magnitude, subnormal_shift - 1);
-        let sticky = or_bits_through(magnitude, subnormal_shift - 2);
+        let subnormal_shift = usize::try_from((-1074_i32).wrapping_sub(quantum_exp))
+            .expect("product-sum subnormal shift fits usize");
+        let mut units = bits_from(magnitude, subnormal_shift.wrapping_add(51), 52);
+        let guard = limb_bit(magnitude, subnormal_shift.wrapping_sub(1));
+        let sticky = or_bits_through(magnitude, subnormal_shift.wrapping_sub(2));
         if guard && (sticky || units & 1 != 0) {
-            units += 1;
+            units = units.wrapping_add(1);
         }
         f64::from_bits(units)
     } else {
         let mut mantissa = bits_from(magnitude, k, 53);
-        let guard = limb_bit(magnitude, k - 53);
-        let sticky = or_bits_through(magnitude, k - 54);
+        let guard = limb_bit(magnitude, k.wrapping_sub(53));
+        let sticky = or_bits_through(magnitude, k.wrapping_sub(54));
         if guard && (sticky || mantissa & 1 != 0) {
-            mantissa += 1;
+            mantissa = mantissa.wrapping_add(1);
         }
-        let mut exponent = k as i32 + quantum_exp;
+        let mut exponent = i32::try_from(k)
+            .expect("fixed accumulator bit index fits i32")
+            .wrapping_add(quantum_exp);
         if mantissa == 1_u64 << 53 {
             mantissa = 1_u64 << 52;
-            exponent += 1;
+            exponent = exponent.wrapping_add(1);
         }
         if exponent > 1023 {
             return f64::INFINITY;
         }
-        let biased = (exponent + 1023) as u64;
+        let biased = exponent.wrapping_add(1023) as u64;
         let fraction = mantissa & ((1_u64 << 52) - 1);
         f64::from_bits((biased << 52) | fraction)
     }
@@ -606,10 +660,11 @@ fn round_nonnegative_area(magnitude: &[u64; LIMBS]) -> f64 {
 }
 
 fn most_significant_bit(limbs: &[u64; LIMBS]) -> Option<usize> {
-    for word in (0..LIMBS).rev() {
-        let value = limbs[word];
+    for (word, &value) in limbs.iter().enumerate().rev() {
         if value != 0 {
-            return Some(word * 64 + (63 - value.leading_zeros() as usize));
+            let trailing_bit = 63_usize
+                .wrapping_sub(usize::try_from(value.leading_zeros()).expect("u32 fits usize"));
+            return Some(word.wrapping_mul(LIMB_BITS).wrapping_add(trailing_bit));
         }
     }
     None
@@ -617,35 +672,64 @@ fn most_significant_bit(limbs: &[u64; LIMBS]) -> Option<usize> {
 
 fn limb_bit(limbs: &[u64; LIMBS], bit: usize) -> bool {
     debug_assert!(bit < LIMBS * 64);
-    (limbs[bit / 64] >> (bit % 64)) & 1 != 0
+    (limbs
+        .get(bit / 64)
+        .expect("bit lies within the fixed limb array")
+        >> (bit % 64))
+        & 1
+        != 0
 }
 
 fn or_bits_through(limbs: &[u64; LIMBS], last: usize) -> bool {
     debug_assert!(last < LIMBS * 64);
     let last_word = last / 64;
     let last_off = last % 64;
-    if limbs[..last_word].iter().any(|&word| word != 0) {
+    if limbs
+        .get(..last_word)
+        .expect("bit prefix lies within the fixed limb array")
+        .iter()
+        .any(|&word| word != 0)
+    {
         return true;
     }
     let mask = if last_off == 63 {
         u64::MAX
     } else {
-        (1_u64 << (last_off + 1)) - 1
+        1_u64
+            .wrapping_shl(
+                u32::try_from(last_off)
+                    .expect("bit offset fits u32")
+                    .wrapping_add(1),
+            )
+            .wrapping_sub(1)
     };
-    limbs[last_word] & mask != 0
+    limbs
+        .get(last_word)
+        .expect("bit lies within the fixed limb array")
+        & mask
+        != 0
 }
 
 fn bits_from(limbs: &[u64; LIMBS], high: usize, width: u32) -> u64 {
     debug_assert!((1..=53).contains(&width));
     debug_assert!(high < LIMBS * 64);
-    let low = high + 1 - width as usize;
+    let low = high
+        .wrapping_add(1)
+        .wrapping_sub(usize::try_from(width).expect("bit width fits usize"));
     let word = low / 64;
     let offset = low % 64;
-    let mut value = limbs[word] >> offset;
-    if offset != 0 && word + 1 < LIMBS {
-        value |= limbs[word + 1] << (64 - offset);
+    let (_, limbs) = limbs.split_at(word);
+    let (first, remaining) = limbs
+        .split_first()
+        .expect("requested bits lie within the fixed limb array");
+    let mut value = *first >> offset;
+    if offset != 0
+        && let Some(&next) = remaining.first()
+    {
+        value |= next
+            .wrapping_shl(64_u32.wrapping_sub(u32::try_from(offset).expect("bit offset fits u32")));
     }
-    value & ((1_u64 << width) - 1)
+    value & 1_u64.wrapping_shl(width).wrapping_sub(1)
 }
 
 #[cfg(test)]

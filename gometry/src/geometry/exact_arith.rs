@@ -255,10 +255,6 @@ pub(crate) fn floor_binary_exponent(value: f64) -> i32 {
     }
 }
 
-#[expect(
-    clippy::arithmetic_side_effects,
-    reason = "the i16 shift keeps the i32 adjustment in range and the debug check bounds the encoded exponent"
-)]
 pub(crate) fn exact_power_of_two(shift: i16) -> f64 {
     let stored = i32::from(shift).wrapping_add(1023);
     debug_assert!((1..=2046).contains(&stored));
