@@ -11,8 +11,9 @@ use super::catalog::catalog_with_state;
 use crate::crs::in_core::{DatumKey, ParamUnit, Pole, datum_key, parse_param_value};
 use crate::crs::{
     AreaOfInterest, CrsCatalogOptions, CrsCoordinateOperationInfo, CrsError, CrsInfo,
-    CrsObjectKind, OperationParameterInfo, RuntimeState, Shape, factors_at, info_with_state,
-    is_wgs84_lonlat, normalize, parse_epsg, preserve_resource_error, to_projjson_with_options_at,
+    CrsObjectKind, MethodInfo, OperationInfo, OperationParameterInfo, RuntimeState, Shape,
+    TransformOptions, factors_at, info_with_state, is_wgs84_lonlat, normalize,
+    operation_info_with_state, parse_epsg, preserve_resource_error, to_projjson_with_options_at,
     transform_at, utm_crs,
 };
 use crate::error::{Error, Result};
@@ -73,14 +74,21 @@ pub(crate) fn estimate_local_crs_at(
         Pole::South
     };
     if extent.latitude > 84.0 || extent.latitude < -80.0 {
-        let ups = match pole {
-            Pole::North => "EPSG:5041",
-            Pole::South => "EPSG:5042",
-        };
-        if candidate_fits(ups, &extent.samples, state)? {
-            return Ok(LocalCrsDefinition::authority(ups.to_owned()));
+        if has_wgs84_datum_fast_path(source_crs) {
+            let ups = match pole {
+                Pole::North => "EPSG:5041",
+                Pole::South => "EPSG:5042",
+            };
+            if candidate_fits(ups, &extent.samples, state)? {
+                return validated_local_crs(
+                    LocalCrsDefinition::authority(ups.to_owned()),
+                    source_crs,
+                    state,
+                );
+            }
         }
-        return best_custom_candidate(source_crs, &extent, state);
+        let local = best_custom_candidate(source_crs, &extent, state)?;
+        return validated_local_crs(local, source_crs, state);
     }
 
     let utm = best_utm_from_anchor(
@@ -91,11 +99,15 @@ pub(crate) fn estimate_local_crs_at(
         source_crs,
         state,
     )?;
-    if candidate_fits(&utm, &extent.samples, state)? {
-        return Ok(LocalCrsDefinition::authority(utm));
+    if let Some(utm) = utm
+        && candidate_fits(&utm, &extent.samples, state)?
+    {
+        return validated_local_crs(LocalCrsDefinition::authority(utm), source_crs, state);
     }
 
-    best_custom_candidate(source_crs, &extent, state).map_err(best_custom_candidate_error)
+    let local =
+        best_custom_candidate(source_crs, &extent, state).map_err(best_custom_candidate_error)?;
+    validated_local_crs(local, source_crs, state)
 }
 
 fn best_custom_candidate_error(error: crate::error::Error) -> crate::error::Error {
@@ -117,6 +129,217 @@ pub(crate) fn local_crs_fits_at(
         return Ok(true);
     };
     candidate_fits(candidate, &extent.samples, state)
+}
+
+/// Check the resolved operation that a local-frame certificate will cover.
+///
+/// Projection curvature does not bound a datum transformation. Local frames
+/// must retain the source ellipsoid and prime meridian, and the selected
+/// operation may contain only its projection and coordinate-convention steps.
+pub(crate) fn ensure_datum_preserving_local_operation(
+    source_crs: &str,
+    local_crs: &str,
+    state: &RuntimeState,
+) -> Result<()> {
+    let source_crs_info = info_with_state(source_crs, state)?;
+    let source = geodetic_info(source_crs, state)?;
+    let local = info_with_state(local_crs, state)?;
+    let fail = || {
+        CrsError::invalid(format!(
+            "local projection from {source_crs} to {local_crs} changes the source datum or contains an unowned coordinate operation"
+        ))
+    };
+
+    if !same_ellipsoid(&source, &local)
+        || !same_prime_meridian(&source, &local)
+        || !same_datum(&source, &local)
+    {
+        return Err(fail());
+    }
+
+    // Projected inputs already carry a projection in their source operation.
+    // The local constructive path does not use these frames; their base datum
+    // and the destination ellipsoid are still checked above.
+    if !source_crs_info.is_geographic() {
+        return Ok(());
+    }
+
+    let Some(expected_method) = local
+        .coordinate_operation
+        .as_ref()
+        .and_then(|operation| operation.method.as_ref())
+        .and_then(|method| method.code.as_deref())
+        .filter(|code| matches!(*code, "9807" | "9810"))
+    else {
+        return Err(fail());
+    };
+    let operation =
+        operation_info_with_state(source_crs, local_crs, &TransformOptions::default(), state)?;
+    if !operation_is_datum_preserving(&operation, expected_method) {
+        return Err(fail());
+    }
+    Ok(())
+}
+
+fn validated_local_crs(
+    local: LocalCrsDefinition,
+    source_crs: &str,
+    state: &RuntimeState,
+) -> Result<LocalCrsDefinition> {
+    ensure_datum_preserving_local_operation(source_crs, &local.definition, state)?;
+    Ok(local)
+}
+
+fn geodetic_info(crs: &str, state: &RuntimeState) -> Result<std::sync::Arc<CrsInfo>> {
+    let info = info_with_state(crs, state)?;
+    if info.kind.starts_with("geographic") {
+        return Ok(info);
+    }
+    let Some(geodetic_crs) = info.geodetic_crs.as_ref() else {
+        return Err(CrsError::invalid(format!(
+            "{crs} does not expose a geodetic CRS for a local projection"
+        )));
+    };
+    info_with_state(
+        geodetic_crs
+            .definition
+            .as_deref()
+            .unwrap_or(&geodetic_crs.crs),
+        state,
+    )
+}
+
+fn same_ellipsoid(left: &CrsInfo, right: &CrsInfo) -> bool {
+    let (Some(left), Some(right)) = (&left.ellipsoid, &right.ellipsoid) else {
+        return false;
+    };
+    left.semi_major_metre.to_bits() == right.semi_major_metre.to_bits()
+        && left.semi_minor_metre.to_bits() == right.semi_minor_metre.to_bits()
+}
+
+fn same_prime_meridian(left: &CrsInfo, right: &CrsInfo) -> bool {
+    let longitude_radians = |info: &CrsInfo| {
+        info.prime_meridian.as_ref().map_or(0.0, |meridian| {
+            meridian.longitude * meridian.unit_conversion_factor
+        })
+    };
+    longitude_radians(left).to_bits() == longitude_radians(right).to_bits()
+}
+
+fn same_datum(left: &CrsInfo, right: &CrsInfo) -> bool {
+    match (datum_key(left), datum_key(right)) {
+        (Some(left), Some(right)) => left == right,
+        _ => left
+            .datum
+            .as_ref()
+            .zip(right.datum.as_ref())
+            .is_some_and(|(left, right)| left.kind == right.kind && left.name == right.name),
+    }
+}
+
+fn operation_is_datum_preserving(operation: &OperationInfo, expected_method: &str) -> bool {
+    if operation.has_ballpark_transformation
+        || operation.requires_coordinate_epoch
+        || !operation.grids.is_empty()
+        || !operation_definition_is_projection_only(
+            operation.definition.as_deref().unwrap_or_default(),
+        )
+    {
+        return false;
+    }
+
+    let mut projection_steps = 0_usize;
+    if let Some(method) = operation.method.as_ref()
+        && !allow_local_operation_method(
+            method,
+            &operation.parameters,
+            expected_method,
+            &mut projection_steps,
+        )
+    {
+        return false;
+    }
+    operation.steps.iter().all(|step| {
+        coordinate_operation_is_datum_preserving(step, expected_method, &mut projection_steps)
+    }) && projection_steps == 1
+}
+
+fn coordinate_operation_is_datum_preserving(
+    operation: &CrsCoordinateOperationInfo,
+    expected_method: &str,
+    projection_steps: &mut usize,
+) -> bool {
+    if operation.has_ballpark_transformation
+        || operation.requires_coordinate_epoch
+        || !operation.grids.is_empty()
+    {
+        return false;
+    }
+    if let Some(method) = operation.method.as_ref()
+        && !allow_local_operation_method(
+            method,
+            &operation.parameters,
+            expected_method,
+            projection_steps,
+        )
+    {
+        return false;
+    }
+    operation.steps.iter().all(|step| {
+        coordinate_operation_is_datum_preserving(step, expected_method, projection_steps)
+    })
+}
+
+fn allow_local_operation_method(
+    method: &MethodInfo,
+    parameters: &[OperationParameterInfo],
+    expected_method: &str,
+    projection_steps: &mut usize,
+) -> bool {
+    if method.authority.as_deref() == Some("EPSG")
+        && method.code.as_deref() == Some(expected_method)
+    {
+        *projection_steps = projection_steps.wrapping_add(1);
+        return true;
+    }
+    matches!(method.code.as_deref(), Some("9601" | "9843" | "9844"))
+        || method.name.as_deref().is_some_and(|name| {
+            name.starts_with("Axis Order Reversal")
+                || name.eq_ignore_ascii_case("Unit conversion")
+                || name.eq_ignore_ascii_case("Longitude rotation")
+        })
+        || (method.authority.as_deref() == Some("EPSG")
+            && method.code.as_deref() == Some("9660")
+            && null_geographic_3d_offsets(parameters))
+}
+
+#[expect(
+    clippy::float_cmp,
+    reason = "a Geographic3D-to-2D offset is safe only when every declared coordinate offset is exactly zero"
+)]
+fn null_geographic_3d_offsets(parameters: &[OperationParameterInfo]) -> bool {
+    !parameters.is_empty() && parameters.iter().all(|parameter| parameter.value == 0.0)
+}
+
+fn operation_definition_is_projection_only(definition: &str) -> bool {
+    let mut projection_count = 0_usize;
+    for token in definition.split_ascii_whitespace() {
+        if let Some(projection) = token.strip_prefix("proj=") {
+            match projection {
+                "pipeline" | "unitconvert" | "axisswap" | "longlat" | "noop" => {},
+                "tmerc" | "utm" | "stere" => {
+                    projection_count = projection_count.wrapping_add(1);
+                },
+                _ => return false,
+            }
+        } else if token.starts_with("nadgrids=")
+            || token.starts_with("geoidgrids=")
+            || token.starts_with("towgs84=")
+        {
+            return false;
+        }
+    }
+    projection_count == 1
 }
 
 #[derive(Debug)]
@@ -264,10 +487,16 @@ fn best_custom_candidate(
     state: &RuntimeState,
 ) -> Result<LocalCrsDefinition> {
     let info = info_with_state(source_crs, state)?;
-    let base = info
-        .geodetic_crs
-        .as_ref()
-        .map_or(source_crs, |geodetic| geodetic.crs.as_str());
+    let base = if info.kind.starts_with("geographic") {
+        source_crs
+    } else {
+        info.geodetic_crs.as_ref().map_or(source_crs, |geodetic| {
+            geodetic
+                .definition
+                .as_deref()
+                .unwrap_or(geodetic.crs.as_str())
+        })
+    };
     let mut base_crs: serde_json::Value = serde_json::from_str(&to_projjson_with_options_at(
         base,
         &crate::crs::CrsProjJsonOptions::default(),
@@ -350,29 +579,28 @@ fn best_utm_from_anchor(
     local: LocalProjectionAnchor,
     crs: &str,
     state: &RuntimeState,
-) -> Result<String> {
+) -> Result<Option<String>> {
     let zone = utm_zone(local.longitude, local.latitude);
     let pole = if local.latitude >= 0.0 {
         Pole::North
     } else {
         Pole::South
     };
-    if !has_wgs84_datum_fast_path(crs) {
-        let info = info_with_state(crs, state)?;
-        if let Some(source_datum) = datum_key(&info)
-            && let Some(candidate) = best_utm_from_catalog(
-                &source_datum,
-                local.longitude,
-                local.latitude,
-                zone,
-                pole,
-                state,
-            )?
-        {
-            return Ok(candidate);
-        }
+    if has_wgs84_datum_fast_path(crs) {
+        return Ok(Some(wgs84_utm_crs(zone, pole)));
     }
-    Ok(wgs84_utm_crs(zone, pole))
+    let info = info_with_state(crs, state)?;
+    let Some(source_datum) = datum_key(&info) else {
+        return Ok(None);
+    };
+    best_utm_from_catalog(
+        &source_datum,
+        local.longitude,
+        local.latitude,
+        zone,
+        pole,
+        state,
+    )
 }
 
 fn has_wgs84_datum_fast_path(crs: &str) -> bool {
@@ -669,5 +897,110 @@ mod metadata_tests {
             mapped.kind(),
             ErrorKind::Resource(ResourceError::SizeOverflow)
         ));
+    }
+}
+
+#[cfg(test)]
+mod datum_preserving_tests {
+    use super::{ensure_datum_preserving_local_operation, estimate_local_crs_at};
+    use crate::crs::runtime_state_snapshot;
+    use crate::geometry::{Point, Shape};
+
+    struct Case {
+        name: &'static str,
+        crs: &'static str,
+        point: (f64, f64),
+        expected_authority: Option<&'static str>,
+    }
+
+    #[test]
+    fn selected_local_frames_preserve_the_source_datum() {
+        let state = runtime_state_snapshot().unwrap();
+        let cases = [
+            Case {
+                name: "WGS 84 UTM",
+                crs: "EPSG:4326",
+                point: (-74.0, 40.0),
+                expected_authority: Some("EPSG:32618"),
+            },
+            Case {
+                name: "WGS 84 3D horizontal projection",
+                crs: "EPSG:4979",
+                point: (-74.0, 40.0),
+                expected_authority: Some("EPSG:32618"),
+            },
+            Case {
+                name: "NAD83 datum-matched UTM",
+                crs: "EPSG:4269",
+                point: (-74.0, 41.0),
+                expected_authority: Some("EPSG:26918"),
+            },
+            Case {
+                name: "NAD83 polar custom TM",
+                crs: "EPSG:4269",
+                point: (0.0, -81.0),
+                expected_authority: None,
+            },
+            Case {
+                name: "NTF Paris grads custom TM",
+                crs: "EPSG:4807",
+                point: (0.0, 55.5),
+                expected_authority: None,
+            },
+            Case {
+                name: "ETRS89 datum-matched UTM",
+                crs: "EPSG:4258",
+                point: (10.0, 51.0),
+                expected_authority: Some("EPSG:25832"),
+            },
+            Case {
+                name: "GDA2020 datum-matched UTM",
+                crs: "EPSG:7844",
+                point: (151.2, -33.9),
+                expected_authority: Some("EPSG:7856"),
+            },
+            Case {
+                name: "authalic sphere custom TM",
+                crs: "EPSG:4047",
+                point: (0.0, 0.0),
+                expected_authority: None,
+            },
+            Case {
+                name: "WGS 84 polar UPS",
+                crs: "EPSG:4326",
+                point: (0.0, -81.0),
+                expected_authority: Some("EPSG:5042"),
+            },
+        ];
+
+        for case in cases {
+            let shape = Shape::Point(Point::new_raw_xy(case.point.0, case.point.1));
+            let local = estimate_local_crs_at(&[&shape], case.crs, &state)
+                .unwrap_or_else(|error| panic!("{}: {error}", case.name));
+            ensure_datum_preserving_local_operation(case.crs, &local.definition, &state)
+                .unwrap_or_else(|error| {
+                    panic!("{} selected {}: {error}", case.name, local.definition)
+                });
+            match case.expected_authority {
+                Some(expected) => assert_eq!(local.definition, expected, "{}", case.name),
+                None => assert_eq!(
+                    local.display_name,
+                    Some(super::LOCAL_CRS_DISPLAY_NAME),
+                    "{}",
+                    case.name,
+                ),
+            }
+        }
+    }
+
+    #[test]
+    fn pipeline_owner_rejects_the_previous_cross_datum_fallbacks() {
+        let state = runtime_state_snapshot().unwrap();
+        for (source, previous_target) in [("EPSG:4807", "EPSG:32631"), ("EPSG:4269", "EPSG:5042")] {
+            assert!(
+                ensure_datum_preserving_local_operation(source, previous_target, &state).is_err(),
+                "{source} → {previous_target} must not hide a datum operation",
+            );
+        }
     }
 }

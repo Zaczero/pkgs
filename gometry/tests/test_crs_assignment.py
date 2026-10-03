@@ -192,7 +192,10 @@ def test_estimate_local_crs_normalizes_frames_and_preserves_datums() -> None:
     assert geom.to_crs(3857).estimate_local_crs() == 'EPSG:32634'
     assert geom.to_crs(32634).estimate_local_crs() == 'EPSG:32634'
     assert gm.Point(21, 52, z=9, crs=4979).estimate_local_crs() == 'EPSG:32634'
-    assert gm.Point(530000, 180000, crs=27700).estimate_local_crs() == 'EPSG:32630'
+    osgb = gm.Point(530000, 180000, crs=27700)
+    osgb_local = osgb.estimate_local_crs()
+    assert osgb_local.info['name'] == 'Local conformal CRS'
+    assert osgb_local.info['datum']['name'] == gm.CRS(27700).info['datum']['name']
     assert gm.Point(-74.0, 41.0, crs=4269).estimate_local_crs() == 'EPSG:26918'
     assert gm.Point(500000, 4500000, crs=26918).estimate_local_crs() == 'EPSG:26918'
     assert gm.Point(6.0, 60.0, crs=4326).estimate_local_crs() == 'EPSG:32632'
@@ -256,9 +259,9 @@ _LOCAL_SURVEY_CRS = json.dumps({
         (151.2, -33.9, None, 7844, 'EPSG:7856'),
         (151.2, -33.9, 0.0, 7843, 'EPSG:7856'),
         (151.2, -33.9, None, 4202, 'EPSG:20256'),
-        (21.0, 52.0, None, _LOCAL_SURVEY_CRS, 'EPSG:32634'),
-        (4.0, 60.0, None, 4258, 'EPSG:32632'),
-        (9.0, 78.0, None, 4258, 'EPSG:32633'),
+        (21.0, 52.0, None, _LOCAL_SURVEY_CRS, None),
+        (4.0, 60.0, None, 4258, None),
+        (9.0, 78.0, None, 4258, None),
         (6.0, 60.0, None, 4326, 'EPSG:32632'),
         (9.0, 78.0, None, 4326, 'EPSG:32633'),
         (21.0, 52.0, 9.0, 4979, 'EPSG:32634'),
@@ -278,18 +281,25 @@ _LOCAL_SURVEY_CRS = json.dumps({
         'gda2020_3d_sydney',
         'agd66_sydney',
         'custom_no_id_warsaw',
-        'etrs89_norway_west_fallback',
-        'etrs89_svalbard_fallback',
+        'etrs89_norway_source_datum_tm',
+        'etrs89_svalbard_source_datum_tm',
         'wgs84_norway',
         'wgs84_svalbard',
         'wgs84_3d_warsaw',
     ],
 )
-def test_estimate_local_crs_selects_utm_by_datum_and_operation_metadata(
-    x: float, y: float, z: float | None, crs: int | str, expected: str
+def test_estimate_local_crs_prefers_datum_matched_utm_and_preserves_other_datums(
+    x: float, y: float, z: float | None, crs: int | str, expected: str | None
 ) -> None:
     point = gm.Point(x, y, crs=crs) if z is None else gm.Point(x, y, z=z, crs=crs)
-    assert point.estimate_local_crs() == expected
+    local = point.estimate_local_crs()
+    if expected is not None:
+        assert local == expected
+        return
+
+    source_datum = gm.CRS(crs).info['datum']
+    assert local.info['name'] == 'Local conformal CRS'
+    assert local.info['datum']['name'] == source_datum['name']
 
 
 def test_derived_geometries_inherit_the_full_frame() -> None:

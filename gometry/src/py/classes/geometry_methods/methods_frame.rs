@@ -17,9 +17,10 @@ use crate::{
 impl PyGeometry {
     /// Estimate a conformal metric CRS for this geometry.
     ///
-    /// The complete geometry extent is evaluated against a fixed 0.1% linear
-    /// scale-error ceiling. A datum-aware UTM or UPS CRS is preferred when it
-    /// fits; otherwise a receiver-centered conformal CRS is considered.
+    /// Every local frame retains the source geodetic datum. A datum-matched
+    /// UTM or UPS CRS is preferred when it meets the fixed 0.1% linear scale-
+    /// error ceiling; otherwise a transverse-Mercator frame centered on the
+    /// geometry is built on the source datum.
     /// Empty, CRS-free, or geographically unsafe geometries raise ``CRSError``.
     ///
     /// Returns
