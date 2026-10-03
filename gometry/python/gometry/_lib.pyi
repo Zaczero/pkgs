@@ -398,7 +398,7 @@ class GeometryError(ValueError):
     value: float | None
     """The offending numeric value, for value-lane errors (else ``None``)."""
     operation: str | None
-    """The operation associated with a bounded-output error (else ``None``)."""
+    """The operation associated with a bounded-output or certified-embedding error (else ``None``)."""
     parameter: str | None
     """The parameter that controls bounded output (else ``None``)."""
     produced: int | None
@@ -410,7 +410,7 @@ class InvalidGeometryError(GeometryError):
     """A geometry violates a structural or numeric rule."""
 
     operation: str | None
-    """The operation that failed, for overlay errors (else ``None``)."""
+    """The operation for an empty-sequence or invalid-coverage error (else ``None``)."""
     row: int | None
     """The failing array row, for row-wise validation (else ``None``)."""
     path: str | None
@@ -2092,7 +2092,11 @@ class Geometry:
         ------
         GeometryError
             If the rectangle coordinates are non-finite, south exceeds north, or a
-            geographic west/east endpoint is outside ``[-180, 180]``.
+            geographic west/east endpoint is outside ``[-180, 180]``, or no adjacent
+            binary64 assignment preserves the exact clipped result or the bounded
+            embedding search is exhausted.
+        InvalidGeometryError
+            If the input contains coordinates outside its geographic CRS domain.
 
         Examples
         --------
@@ -2418,6 +2422,9 @@ class Geometry:
 
         Raises
         ------
+        GeometryError
+            If no adjacent binary64 assignment preserves the exact repaired geometry
+            or the bounded embedding search is exhausted.
         InvalidGeometryError
             If the geometry cannot be repaired.
 
@@ -3107,8 +3114,10 @@ class Geometry:
         Raises
         ------
         GeometryError
-            If ``max_vertices`` is below ``8``.
-            If exact partitioning cannot produce parts within the requested bound.
+            If ``max_vertices`` is below ``8``, exact partitioning cannot produce
+            parts within the requested bound, no adjacent binary64 assignment
+            preserves the exact subdivision, or the bounded embedding search is
+            exhausted.
 
         Examples
         --------
@@ -3817,6 +3826,9 @@ class Geometry:
 
         Raises
         ------
+        GeometryError
+            If no adjacent binary64 assignment preserves the exact polygonized output
+            or the bounded embedding search is exhausted.
         InvalidGeometryError
             If polygons cannot be assembled from the linework.
 
@@ -3896,6 +3908,9 @@ class Geometry:
 
         Raises
         ------
+        GeometryError
+            If no adjacent binary64 assignment preserves the exact noded linework or
+            the bounded embedding search is exhausted.
         InvalidGeometryError
             If noding fails on the input linework.
 
@@ -8028,7 +8043,11 @@ class GeometryArray(Sequence[_GeometryT_co]):
         ------
         GeometryError
             If the rectangle coordinates are non-finite, south exceeds north, or a
-            geographic west/east endpoint is outside ``[-180, 180]``.
+            geographic west/east endpoint is outside ``[-180, 180]``, or no adjacent
+            binary64 assignment preserves the exact clipped result or the bounded
+            embedding search is exhausted.
+        InvalidGeometryError
+            If the input contains coordinates outside its geographic CRS domain.
 
         Examples
         --------
@@ -8539,6 +8558,9 @@ class GeometryArray(Sequence[_GeometryT_co]):
 
         Raises
         ------
+        GeometryError
+            If no adjacent binary64 assignment preserves the exact repaired geometry
+            or the bounded embedding search is exhausted.
         InvalidGeometryError
             If the geometry cannot be repaired.
 
@@ -9243,8 +9265,10 @@ class GeometryArray(Sequence[_GeometryT_co]):
         Raises
         ------
         GeometryError
-            If ``max_vertices`` is below ``8``.
-            If exact partitioning cannot produce parts within the requested bound.
+            If ``max_vertices`` is below ``8``, exact partitioning cannot produce
+            parts within the requested bound, no adjacent binary64 assignment
+            preserves the exact subdivision, or the bounded embedding search is
+            exhausted.
 
         Examples
         --------
@@ -10289,6 +10313,9 @@ class GeometryArray(Sequence[_GeometryT_co]):
 
         Raises
         ------
+        GeometryError
+            If no adjacent binary64 assignment preserves the exact polygonized output
+            or the bounded embedding search is exhausted.
         InvalidGeometryError
             If polygons cannot be assembled from the linework.
 
@@ -10380,6 +10407,9 @@ class GeometryArray(Sequence[_GeometryT_co]):
 
         Raises
         ------
+        GeometryError
+            If no adjacent binary64 assignment preserves the exact noded linework or
+            the bounded embedding search is exhausted.
         InvalidGeometryError
             If noding fails on the input linework.
 
@@ -18266,7 +18296,10 @@ def intersection(
     CRSMismatchError
         If the operands' CRS or coordinate-epoch metadata differ.
     InvalidGeometryError
-        If the overlay cannot be constructed.
+        If either operand has coordinates outside its geographic CRS domain.
+    GeometryError
+        If no adjacent binary64 assignment preserves the exact result topology,
+        or the bounded embedding search is exhausted.
 
     Examples
     --------
@@ -18363,7 +18396,10 @@ def union(
     CRSMismatchError
         If the operands' CRS or coordinate-epoch metadata differ.
     InvalidGeometryError
-        If the overlay cannot be constructed.
+        If either operand has coordinates outside its geographic CRS domain.
+    GeometryError
+        If no adjacent binary64 assignment preserves the exact result topology,
+        or the bounded embedding search is exhausted.
 
     See Also
     --------
@@ -18489,7 +18525,10 @@ def difference(
     CRSMismatchError
         If the operands' CRS or coordinate-epoch metadata differ.
     InvalidGeometryError
-        If the overlay cannot be constructed.
+        If either operand has coordinates outside its geographic CRS domain.
+    GeometryError
+        If no adjacent binary64 assignment preserves the exact result topology,
+        or the bounded embedding search is exhausted.
 
     Examples
     --------
@@ -18587,7 +18626,10 @@ def symmetric_difference(
     CRSMismatchError
         If the operands' CRS or coordinate-epoch metadata differ.
     InvalidGeometryError
-        If the overlay cannot be constructed.
+        If either operand has coordinates outside its geographic CRS domain.
+    GeometryError
+        If no adjacent binary64 assignment preserves the exact result topology,
+        or the bounded embedding search is exhausted.
 
     Examples
     --------
@@ -18820,6 +18862,12 @@ def polygonize(
     GeometryArray
         The polygons enclosed by the pooled linework.
 
+    Raises
+    ------
+    GeometryError
+        If no adjacent binary64 assignment preserves the exact polygonized
+        output, or the bounded embedding search is exhausted.
+
     See Also
     --------
     polygonize_full : The same pooled aggregate plus dangles, cut edges, and invalid-ring diagnostics.
@@ -18859,6 +18907,12 @@ def polygonize_full(
     PolygonizeResult
         Pooled polygons plus source-row ``Groups`` for cut edges, dangles, and
         invalid rings.
+
+    Raises
+    ------
+    GeometryError
+        If no adjacent binary64 assignment preserves the exact polygonized
+        output, or the bounded embedding search is exhausted.
 
     Examples
     --------
@@ -18909,7 +18963,8 @@ def coverage_union(
     CRSMismatchError
         If the operands' CRS or coordinate-epoch metadata differ.
     InvalidGeometryError
-        If ``values`` is empty or the rows are not a valid coverage.
+        If ``values`` is empty, the rows are not a valid coverage, or coordinates
+        are outside their geographic CRS domain.
 
     See Also
     --------
@@ -18985,7 +19040,9 @@ def coverage_clean(
     GeometryTypeError
         If a row is not a `Polygon` or `MultiPolygon`.
     GeometryError
-        If ``grid_size`` or ``gap_width`` is negative or non-finite.
+        If ``grid_size`` or ``gap_width`` is negative or non-finite, or no
+        adjacent binary64 assignment preserves the exact cleaned coverage or
+        the bounded embedding search is exhausted.
     InvalidGeometryError
         If ``grid_size > 0`` and snap-repair cannot converge on a valid
         grid-aligned result.
@@ -19030,8 +19087,12 @@ def union_all(
     ------
     CRSMismatchError
         If the operands' CRS or coordinate-epoch metadata differ.
+    GeometryError
+        If no adjacent binary64 assignment preserves the exact result topology,
+        or the bounded embedding search is exhausted.
     InvalidGeometryError
-        If ``values`` is empty or the overlay cannot be constructed.
+        If ``values`` is empty or contains coordinates outside its geographic CRS
+        domain.
 
     See Also
     --------
@@ -19071,8 +19132,12 @@ def intersection_all(
     ------
     CRSMismatchError
         If the operands' CRS or coordinate-epoch metadata differ.
+    GeometryError
+        If no adjacent binary64 assignment preserves the exact result topology,
+        or the bounded embedding search is exhausted.
     InvalidGeometryError
-        If ``values`` is empty or the overlay cannot be constructed.
+        If ``values`` is empty or contains coordinates outside its geographic CRS
+        domain.
 
     Examples
     --------
@@ -19107,8 +19172,12 @@ def symmetric_difference_all(
     ------
     CRSMismatchError
         If the operands' CRS or coordinate-epoch metadata differ.
+    GeometryError
+        If no adjacent binary64 assignment preserves the exact result topology,
+        or the bounded embedding search is exhausted.
     InvalidGeometryError
-        If ``values`` is empty or the overlay cannot be constructed.
+        If ``values`` is empty or contains coordinates outside its geographic CRS
+        domain.
 
     Examples
     --------

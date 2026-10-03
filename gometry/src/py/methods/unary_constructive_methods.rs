@@ -677,6 +677,9 @@ GeometryArray
     tail: r"
 Raises
 ------
+GeometryError
+    If no adjacent binary64 assignment preserves the exact noded linework or
+    the bounded embedding search is exhausted.
 InvalidGeometryError
     If noding fails on the input linework.
 
@@ -762,6 +765,9 @@ Groups of GeometryArray
     tail: r"
 Raises
 ------
+GeometryError
+    If no adjacent binary64 assignment preserves the exact polygonized output
+    or the bounded embedding search is exhausted.
 InvalidGeometryError
     If polygons cannot be assembled from the linework.
 

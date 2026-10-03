@@ -109,7 +109,10 @@ pub(crate) fn overlay_operator(
 /// CRSMismatchError
 ///     If the operands' CRS or coordinate-epoch metadata differ.
 /// InvalidGeometryError
-///     If the overlay cannot be constructed.
+///     If either operand has coordinates outside its geographic CRS domain.
+/// GeometryError
+///     If no adjacent binary64 assignment preserves the exact result topology,
+///     or the bounded embedding search is exhausted.
 ///
 /// Examples
 /// --------
@@ -148,7 +151,10 @@ pub(crate) fn intersection(
 /// CRSMismatchError
 ///     If the operands' CRS or coordinate-epoch metadata differ.
 /// InvalidGeometryError
-///     If the overlay cannot be constructed.
+///     If either operand has coordinates outside its geographic CRS domain.
+/// GeometryError
+///     If no adjacent binary64 assignment preserves the exact result topology,
+///     or the bounded embedding search is exhausted.
 ///
 /// See Also
 /// --------
@@ -191,7 +197,10 @@ pub(crate) fn union(
 /// CRSMismatchError
 ///     If the operands' CRS or coordinate-epoch metadata differ.
 /// InvalidGeometryError
-///     If the overlay cannot be constructed.
+///     If either operand has coordinates outside its geographic CRS domain.
+/// GeometryError
+///     If no adjacent binary64 assignment preserves the exact result topology,
+///     or the bounded embedding search is exhausted.
 ///
 /// Examples
 /// --------
@@ -231,7 +240,10 @@ pub(crate) fn difference(
 /// CRSMismatchError
 ///     If the operands' CRS or coordinate-epoch metadata differ.
 /// InvalidGeometryError
-///     If the overlay cannot be constructed.
+///     If either operand has coordinates outside its geographic CRS domain.
+/// GeometryError
+///     If no adjacent binary64 assignment preserves the exact result topology,
+///     or the bounded embedding search is exhausted.
 ///
 /// Examples
 /// --------
@@ -268,8 +280,12 @@ pub(crate) fn symmetric_difference(
 /// ------
 /// CRSMismatchError
 ///     If the operands' CRS or coordinate-epoch metadata differ.
+/// GeometryError
+///     If no adjacent binary64 assignment preserves the exact result topology,
+///     or the bounded embedding search is exhausted.
 /// InvalidGeometryError
-///     If ``values`` is empty or the overlay cannot be constructed.
+///     If ``values`` is empty or contains coordinates outside its geographic CRS
+///     domain.
 ///
 /// See Also
 /// --------
@@ -327,7 +343,8 @@ pub(crate) fn union_all(py: Python<'_>, values: &Bound<'_, PyAny>) -> PyResult<T
 /// CRSMismatchError
 ///     If the operands' CRS or coordinate-epoch metadata differ.
 /// InvalidGeometryError
-///     If ``values`` is empty or the rows are not a valid coverage.
+///     If ``values`` is empty, the rows are not a valid coverage, or coordinates
+///     are outside their geographic CRS domain.
 ///
 /// See Also
 /// --------
@@ -382,6 +399,12 @@ pub(crate) fn coverage_union(py: Python<'_>, values: &Bound<'_, PyAny>) -> PyRes
 /// GeometryArray
 ///     The polygons enclosed by the pooled linework.
 ///
+/// Raises
+/// ------
+/// GeometryError
+///     If no adjacent binary64 assignment preserves the exact polygonized
+///     output, or the bounded embedding search is exhausted.
+///
 /// See Also
 /// --------
 /// polygonize_full : The same pooled aggregate plus dangles, cut edges, and invalid-ring diagnostics.
@@ -424,6 +447,12 @@ pub(crate) fn polygonize(py: Python<'_>, values: &Bound<'_, PyAny>) -> PyResult<
 ///     Pooled polygons plus source-row ``Groups`` for cut edges, dangles, and
 ///     invalid rings.
 ///
+/// Raises
+/// ------
+/// GeometryError
+///     If no adjacent binary64 assignment preserves the exact polygonized
+///     output, or the bounded embedding search is exhausted.
+///
 /// Examples
 /// --------
 /// >>> import gometry as gm
@@ -464,8 +493,12 @@ pub(crate) fn polygonize_full(py: Python<'_>, values: &Bound<'_, PyAny>) -> PyRe
 /// ------
 /// CRSMismatchError
 ///     If the operands' CRS or coordinate-epoch metadata differ.
+/// GeometryError
+///     If no adjacent binary64 assignment preserves the exact result topology,
+///     or the bounded embedding search is exhausted.
 /// InvalidGeometryError
-///     If ``values`` is empty or the overlay cannot be constructed.
+///     If ``values`` is empty or contains coordinates outside its geographic CRS
+///     domain.
 ///
 /// Examples
 /// --------
@@ -500,8 +533,12 @@ pub(crate) fn intersection_all(py: Python<'_>, values: &Bound<'_, PyAny>) -> PyR
 /// ------
 /// CRSMismatchError
 ///     If the operands' CRS or coordinate-epoch metadata differ.
+/// GeometryError
+///     If no adjacent binary64 assignment preserves the exact result topology,
+///     or the bounded embedding search is exhausted.
 /// InvalidGeometryError
-///     If ``values`` is empty or the overlay cannot be constructed.
+///     If ``values`` is empty or contains coordinates outside its geographic CRS
+///     domain.
 ///
 /// Examples
 /// --------
@@ -756,7 +793,9 @@ pub(crate) fn coverage_simplify(
 /// GeometryTypeError
 ///     If a row is not a `Polygon` or `MultiPolygon`.
 /// GeometryError
-///     If ``grid_size`` or ``gap_width`` is negative or non-finite.
+///     If ``grid_size`` or ``gap_width`` is negative or non-finite, or no
+///     adjacent binary64 assignment preserves the exact cleaned coverage or
+///     the bounded embedding search is exhausted.
 /// InvalidGeometryError
 ///     If ``grid_size > 0`` and snap-repair cannot converge on a valid
 ///     grid-aligned result.

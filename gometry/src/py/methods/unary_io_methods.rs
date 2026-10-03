@@ -252,6 +252,9 @@ GeometryArray
     tail: r"
 Raises
 ------
+GeometryError
+    If no adjacent binary64 assignment preserves the exact repaired geometry
+    or the bounded embedding search is exhausted.
 InvalidGeometryError
     If the geometry cannot be repaired.
 

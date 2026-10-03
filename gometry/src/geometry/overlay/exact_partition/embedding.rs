@@ -12,6 +12,10 @@
 //! that node. Fans with at most two departures have a unique cyclic order and
 //! satisfy F vacuously. Global-face correspondence covers every component and
 //! isolated point in the emission.
+//!
+//! This replaces snap-rounding, which changes already-certified nearest outputs;
+//! collapsing sub-ULP features, which can erase holes and shells; and an
+//! all-eight-neighbours prototype, which handled only two-node conflict classes.
 
 use std::borrow::Cow;
 use std::cell::RefCell;

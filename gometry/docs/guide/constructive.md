@@ -179,6 +179,37 @@ print(panels(
     **conflicting** CRS metadata. Reproject both operands to a common CRS first —
     see the [CRS, units & measurement](crs.md).
 
+### Output coordinates
+
+Overlay decides which pieces exist and how they touch from the exact stored
+coordinates of the operands. Vertices that come from an operand keep their
+stored coordinates. A constructed vertex, such as an edge crossing or a
+clip-rectangle endpoint, is published at the nearest representable binary64
+coordinate to its exact position whenever that assignment preserves the exact
+structure.
+
+Occasionally two constructed vertices would round to the same coordinate, or
+rounding would make an edge touch a vertex it must miss. In that case, gometry
+searches the nearest coordinate and its adjacent binary64 values for the
+constructed vertices in conflict. It publishes only an assignment that
+preserves incidence, cyclic order, and faces, and verifies that assignment
+before returning it. Each moved coordinate stays within 1.5 times the larger
+spacing to its neighboring binary64 values on that axis. A stored vertex, or
+an exactly representable constructed coordinate, never moves. Clip-rectangle
+vertices stay on or inside the rectangle; geographic outputs never move a
+vertex onto a seam or pole. Z/M values are evaluated at the exact constructed
+vertex.
+
+If no adjacent-coordinate assignment passes the certificate, the operation
+raises [`GeometryError`][gometry.GeometryError] instead of returning geometry
+with changed topology. A bounded-search exhaustion also raises
+`GeometryError`; its `operation` attribute names the operation. Simplify the
+operands or [`snap`][gometry.snap] near-coincident borders to a common tolerance
+first. Overlaying a published result again is a new operation on its rounded
+coordinates and is not promised to reproduce the first result.
+The same certificate protects constructed vertices emitted by noding,
+polygonizing, clipping, subdividing, repair, and coverage cleaning.
+
 ### Dissolving many geometries: `union_all`
 
 [`union_all`][gometry.union_all] aggregates the entire sequence in one

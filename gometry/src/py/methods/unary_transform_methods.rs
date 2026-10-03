@@ -561,7 +561,11 @@ Raises
 ------
 GeometryError
     If the rectangle coordinates are non-finite, south exceeds north, or a
-    geographic west/east endpoint is outside ``[-180, 180]``.
+    geographic west/east endpoint is outside ``[-180, 180]``, or no adjacent
+    binary64 assignment preserves the exact clipped result or the bounded
+    embedding search is exhausted.
+InvalidGeometryError
+    If the input contains coordinates outside its geographic CRS domain.
 
 Examples
 --------
@@ -763,8 +767,10 @@ Groups of GeometryArray
 Raises
 ------
 GeometryError
-    If ``max_vertices`` is below ``8``.
-    If exact partitioning cannot produce parts within the requested bound.
+    If ``max_vertices`` is below ``8``, exact partitioning cannot produce
+    parts within the requested bound, no adjacent binary64 assignment
+    preserves the exact subdivision, or the bounded embedding search is
+    exhausted.
 
 Examples
 --------
