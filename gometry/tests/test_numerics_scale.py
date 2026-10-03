@@ -1059,7 +1059,10 @@ def test_snap_to_grid_extreme_origin_and_size() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_native_voronoi_shifted_unrepresentable_partition_is_rejected() -> None:
+@pytest.mark.parametrize('array', [False, True], ids=['scalar', 'array'])
+def test_native_voronoi_shifted_unrepresentable_partition_is_rejected(
+    array: bool,
+) -> None:
     offset = 1e16
     sites = gm.MultiPoint([
         (offset + x, offset + y)
@@ -1072,11 +1075,19 @@ def test_native_voronoi_shifted_unrepresentable_partition_is_rejected() -> None:
             (2.0, 8.0),
         ]
     ])
+    source = gm.GeometryArray([sites]) if array else sites
     with pytest.raises(
-        gm.InvalidGeometryError,
-        match='no topology-preserving binary64 embedding',
-    ):
-        sites.voronoi_polygons(clip='envelope')
+        gm.GeometryError,
+        match=(
+            r'(?m)^voronoi_polygons cannot be represented in binary64: '
+            r'no assignment of adjacent floating-point coordinates to the \d+ '
+            r'constructed vertices in conflict preserves the exact incidence, '
+            r'cyclic order and faces$'
+        ),
+    ) as raised:
+        source.voronoi_polygons(clip='envelope')
+    assert type(raised.value) is gm.GeometryError
+    assert raised.value.operation == 'voronoi_polygons'
 
 
 def _independent_mrr_reference(

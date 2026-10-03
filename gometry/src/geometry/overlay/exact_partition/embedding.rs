@@ -23,23 +23,25 @@ use std::cmp::Ordering;
 use std::mem;
 use std::ops::ControlFlow;
 
-use super::rays::{EmittedPoints, shoot_left};
+#[cfg(test)]
+use super::rays::shoot_left;
+use super::rays::{EmittedPoints, visit_component_faces};
 use super::{Axis, ExactPartition, NodeId};
-use crate::collections::{HashMap, UnionFind, try_hash_map_with_capacity};
+use crate::collections::try_hash_map_with_capacity;
 use crate::error::ResourceError;
 use crate::geographic::{GeographicFrame, Latitude, SeamIdentity};
 use crate::geometry::arrangement::compare_departures;
 use crate::geometry::embedding_search::{
-    ClassAssignment, EvaluationBudget, GlobalCheck, Problem, Search,
+    ClassAssignment, EvaluationBudget, GlobalCheck, Problem, ProximityChord, Search,
+    build_proximity_classes as build_search_proximity_classes, exact_chord_radius,
+    possible_swept_bounds, proximity_limit,
 };
 use crate::geometry::overlay::exact_partition::emission::emitted_pair_preserves_incidence;
 use crate::geometry::tessellation::exact::ExactDyadic;
 use crate::geometry::{
     Bounds, Contact, GeometryErrorKind, PointKey, Result, Segment, XY, for_each_candidate_pair,
-    for_each_overlapping_bounds_cross_pair, segment_contact_exact, single_chain, try_sort_by,
+    for_each_overlapping_bounds_cross_pair, segment_contact_exact, single_chain,
 };
-
-const PROXIMITY_RELATIVE_SLACK: f64 = 9.094_947_017_729_282e-13;
 
 /// The coordinate domain of a partition's output embedding.
 #[derive(Clone, Copy, Debug)]
@@ -89,39 +91,6 @@ impl EmbeddingDomain {
             },
         }
     }
-}
-
-fn single_step_radius(value: f64) -> f64 {
-    if !value.is_finite() {
-        return f64::INFINITY;
-    }
-    (value.next_up() - value).max(value - value.next_down())
-}
-
-fn swept_bounds(segment: Segment, radius: f64) -> Bounds {
-    let bounds = Bounds::from_xy_iter([segment.start, segment.end]);
-    if radius == 0.0 {
-        return bounds;
-    }
-    let radius = if radius.is_finite() {
-        (radius + radius * PROXIMITY_RELATIVE_SLACK).next_up()
-    } else {
-        f64::INFINITY
-    };
-    Bounds::new_raw(
-        (bounds.minx() - radius).next_down(),
-        (bounds.miny() - radius).next_down(),
-        (bounds.maxx() + radius).next_up(),
-        (bounds.maxy() + radius).next_up(),
-    )
-}
-
-fn proximity_limit(left_radius: f64, right_radius: f64) -> f64 {
-    let radius = left_radius + right_radius;
-    if radius == 0.0 || !radius.is_finite() {
-        return radius;
-    }
-    (radius + radius * PROXIMITY_RELATIVE_SLACK).next_up()
 }
 
 fn axis_parameter_interval(point: f64, start: f64, end: f64, limit: f64) -> Option<(f64, f64)> {
@@ -192,7 +161,11 @@ fn point_within_chebyshev_segment(point: XY, segment: Segment, limit: f64) -> bo
 
 /// The minimum L-infinity distance between disjoint segments is attained by
 /// an endpoint-to-segment pair; exact contact handles the zero-distance case.
-fn segments_within_chebyshev(left: Segment, right: Segment, limit: f64) -> bool {
+pub(in crate::geometry) fn segments_within_chebyshev(
+    left: Segment,
+    right: Segment,
+    limit: f64,
+) -> bool {
     if !matches!(segment_contact_exact(left, right), Contact::Disjoint) {
         return true;
     }
@@ -431,10 +404,6 @@ impl<'p> Embedding<'p> {
         self.table.as_ref()
     }
 
-    #[expect(
-        clippy::indexing_slicing,
-        reason = "each NodeId is admitted by the same ExactPartition whose coordinate table this embedding owns"
-    )]
     pub(super) fn xy(&self, node: NodeId) -> XY {
         Self::xy_at(self.coordinates(), node)
     }
@@ -620,10 +589,6 @@ fn visit_item_nodes(
     visit(end)
 }
 
-#[expect(
-    clippy::indexing_slicing,
-    reason = "witness emission and item ordinals are produced by certify from these aligned emissions"
-)]
 fn for_each_witness_node(
     witness: Witness,
     emissions: &[&Emission],
@@ -690,17 +655,22 @@ fn movable_node(
     if let Some(movable) = cache.get(node.0 as usize).copied().flatten() {
         return Ok(movable);
     }
-    let movable = if partition.is_stored(node) {
-        false
-    } else {
-        let nearest = partition.nearest_xy(node);
-        partition.compare_axis_to(node, Axis::X, nearest.x)? != Ordering::Equal
-            || partition.compare_axis_to(node, Axis::Y, nearest.y)? != Ordering::Equal
-    };
+    let movable = exact_movable_node(partition, node)?;
     *cache
         .get_mut(node.0 as usize)
         .expect("node ID belongs to the partition") = Some(movable);
     Ok(movable)
+}
+
+fn exact_movable_node(partition: &ExactPartition<'_>, node: NodeId) -> Result<bool> {
+    if partition.is_stored(node) {
+        return Ok(false);
+    }
+    let nearest = partition.nearest_xy(node);
+    Ok(
+        partition.compare_axis_to(node, Axis::X, nearest.x)? != Ordering::Equal
+            || partition.compare_axis_to(node, Axis::Y, nearest.y)? != Ordering::Equal,
+    )
 }
 
 fn unique_emission_items(emissions: &[&Emission]) -> Result<Vec<(usize, usize)>> {
@@ -773,55 +743,28 @@ pub(super) struct PlanarProblem<'p, 's, 'e> {
     initial_evaluations: u64,
 }
 
-fn possible_chord_radius(partition: &ExactPartition<'_>, nodes: [NodeId; 2]) -> f64 {
-    // This only broadens the sweep; exact movability and radius are resolved
-    // for each candidate pair before it can join the closure.
-    nodes
-        .into_iter()
-        .filter(|&node| !partition.is_stored(node))
-        .map(|node| {
-            let nearest = partition.nearest_xy(node);
-            single_step_radius(nearest.x).max(single_step_radius(nearest.y))
-        })
-        .fold(0.0_f64, f64::max)
+fn proximity_chord(partition: &ExactPartition<'_>, chord: &PlanarChord) -> ProximityChord {
+    ProximityChord {
+        nodes: chord.nodes.map(|node| node.0),
+        nearest: chord.nearest,
+        can_move: chord.nodes.map(|node| !partition.is_stored(node)),
+    }
 }
 
-fn chord_movable_endpoints(
-    partition: &ExactPartition<'_>,
-    nodes: [NodeId; 2],
-    movable_cache: &mut [Option<bool>],
-) -> Result<[Option<NodeId>; 2]> {
-    let first = movable_node(partition, nodes[0], movable_cache)?.then_some(nodes[0]);
-    let second = if nodes[0] == nodes[1] {
-        None
-    } else {
-        movable_node(partition, nodes[1], movable_cache)?.then_some(nodes[1])
-    };
-    Ok([first, second])
-}
-
-fn exact_chord_radius(
+fn exact_planar_chord_radius(
     partition: &ExactPartition<'_>,
     chord_index: usize,
-    chord: PlanarChord,
+    chord: &PlanarChord,
     radius_cache: &mut [Option<f64>],
     movable_cache: &mut [Option<bool>],
 ) -> Result<f64> {
-    if let Some(radius) = radius_cache.get(chord_index).copied().flatten() {
-        return Ok(radius);
-    }
-    let endpoints = chord_movable_endpoints(partition, chord.nodes, movable_cache)?;
-    let mut radius = 0.0_f64;
-    for node in endpoints.into_iter().flatten() {
-        let nearest = partition.nearest_xy(node);
-        radius = radius
-            .max(single_step_radius(nearest.x))
-            .max(single_step_radius(nearest.y));
-    }
-    *radius_cache
-        .get_mut(chord_index)
-        .expect("chord radius cache aligns with the chord table") = Some(radius);
-    Ok(radius)
+    exact_chord_radius(
+        proximity_chord(partition, chord),
+        radius_cache,
+        chord_index,
+        movable_cache,
+        &mut |node| exact_movable_node(partition, NodeId(node)),
+    )
 }
 
 impl<'p, 's, 'e> PlanarProblem<'p, 's, 'e> {
@@ -858,7 +801,12 @@ impl<'p, 's, 'e> PlanarProblem<'p, 's, 'e> {
                 }
             }
             let nearest = Embedding::segment_at(Embedding::nearest(partition).coordinates(), nodes);
-            let sweep_bounds = swept_bounds(nearest, possible_chord_radius(partition, nodes));
+            let can_move = nodes.map(|node| !partition.is_stored(node));
+            let sweep_bounds = possible_swept_bounds(ProximityChord {
+                nodes: nodes.map(|node| node.0),
+                nearest,
+                can_move,
+            });
             let chord_index = chords.len();
             chords.push(PlanarChord {
                 nodes,
@@ -898,14 +846,27 @@ impl<'p, 's, 'e> PlanarProblem<'p, 's, 'e> {
                 incident_chords[chord.nodes[1].0 as usize].push(chord_index);
             }
         }
-        let (closure, initial_evaluations, mut union, radius_cache) = build_proximity_closure(
-            partition,
-            &chords,
+        let search_chords: Vec<_> = chords
+            .iter()
+            .map(|chord| proximity_chord(partition, chord))
+            .collect();
+        let seed_nodes: Vec<_> = seeds.iter().map(|node| node.0).collect();
+        let proximity = build_search_proximity_classes(
+            partition.node_count(),
+            &search_chords,
             &incident_chords,
-            seeds,
+            &seed_nodes,
             &mut movable_cache,
+            |node| exact_movable_node(partition, NodeId(node)),
+            |left, right| partition.compare_nodes(NodeId(left), NodeId(right)),
+            segments_within_chebyshev,
         )?;
-        let (classes, node_location) = build_proximity_classes(partition, closure, &mut union)?;
+        let classes = proximity
+            .classes
+            .into_iter()
+            .map(|class| class.into_iter().map(NodeId).collect())
+            .collect();
+        let node_location = proximity.node_location;
         let emissions = emissions.to_vec();
         let fan_rows = collect_fan_rows(partition, &emissions);
         Ok(Self {
@@ -918,9 +879,9 @@ impl<'p, 's, 'e> PlanarProblem<'p, 's, 'e> {
             node_location,
             fan_rows,
             proximity: RefCell::new(None),
-            radius_cache: RefCell::new(radius_cache),
+            radius_cache: RefCell::new(proximity.radii),
             movable_cache: RefCell::new(movable_cache),
-            initial_evaluations,
+            initial_evaluations: proximity.initial_evaluations,
         })
     }
 
@@ -1062,9 +1023,15 @@ impl<'p, 's, 'e> PlanarProblem<'p, 's, 'e> {
                 if left_index == right {
                     return ControlFlow::Continue(());
                 }
-                let left_chord = self.chords[left_index];
-                let right_chord = self.chords[right];
-                let left_radius = match exact_chord_radius(
+                let left_chord = self
+                    .chords
+                    .get(left_index)
+                    .expect("cross-pair left index belongs to the planar chord table");
+                let right_chord = self
+                    .chords
+                    .get(right)
+                    .expect("cross-pair right index belongs to the planar chord table");
+                let left_radius = match exact_planar_chord_radius(
                     self.partition,
                     left_index,
                     left_chord,
@@ -1077,7 +1044,7 @@ impl<'p, 's, 'e> PlanarProblem<'p, 's, 'e> {
                         return ControlFlow::Break(());
                     },
                 };
-                let right_radius = match exact_chord_radius(
+                let right_radius = match exact_planar_chord_radius(
                     self.partition,
                     right,
                     right_chord,
@@ -1141,187 +1108,6 @@ impl<'p, 's, 'e> PlanarProblem<'p, 's, 'e> {
             }
         }
     }
-}
-
-fn build_proximity_closure(
-    partition: &ExactPartition<'_>,
-    chords: &[PlanarChord],
-    incident_chords: &[Vec<usize>],
-    seeds: &[NodeId],
-    movable_cache: &mut [Option<bool>],
-) -> Result<(Vec<NodeId>, u64, UnionFind, Vec<Option<f64>>)> {
-    let node_count = partition.node_count();
-    let mut closure = vec![false; node_count];
-    let mut closure_nodes = Vec::new();
-    for &node in seeds {
-        if !closure[node.0 as usize] {
-            closure[node.0 as usize] = true;
-            closure_nodes.push(node);
-        }
-    }
-    let mut frontier_nodes = closure_nodes.clone();
-    let mut radius_cache = vec![None; chords.len()];
-    let mut union = UnionFind::new(node_count);
-    let all_bounds: Vec<_> = chords.iter().map(|chord| chord.sweep_bounds).collect();
-    let mut frontier_seen = vec![false; chords.len()];
-    let mut initial_evaluations = 0_u64;
-    while !frontier_nodes.is_empty() {
-        let mut frontier_chords = Vec::new();
-        for node in frontier_nodes.drain(..) {
-            for &chord in incident_chords
-                .get(node.0 as usize)
-                .expect("frontier node belongs to the partition")
-            {
-                let seen = frontier_seen
-                    .get_mut(chord)
-                    .expect("incident chord belongs to the chord table");
-                if !mem::replace(seen, true) {
-                    frontier_chords.push(chord);
-                }
-            }
-        }
-        for &chord in &frontier_chords {
-            *frontier_seen
-                .get_mut(chord)
-                .expect("frontier chord belongs to the chord table") = false;
-        }
-        frontier_chords.sort_unstable();
-        if frontier_chords.is_empty() {
-            break;
-        }
-        let left_bounds: Vec<_> = frontier_chords
-            .iter()
-            .map(|&index| {
-                chords
-                    .get(index)
-                    .expect("frontier chord belongs to the chord table")
-                    .sweep_bounds
-            })
-            .collect();
-        let sweep_cost =
-            u64::try_from(chords.len().div_ceil(16)).map_err(|_| ResourceError::SizeOverflow)?;
-        initial_evaluations = initial_evaluations
-            .checked_add(sweep_cost)
-            .ok_or(ResourceError::SizeOverflow)?;
-        let mut newly_reached = Vec::new();
-        let mut callback_error = None;
-        let flow = for_each_overlapping_bounds_cross_pair(
-            &left_bounds,
-            &all_bounds,
-            |left_index, right_index| {
-                let left_chord_index = frontier_chords[left_index];
-                let left = chords[left_chord_index];
-                let right = chords[right_index];
-                let left_radius = match exact_chord_radius(
-                    partition,
-                    left_chord_index,
-                    left,
-                    &mut radius_cache,
-                    movable_cache,
-                ) {
-                    Ok(radius) => radius,
-                    Err(error) => {
-                        callback_error = Some(error);
-                        return ControlFlow::Break(());
-                    },
-                };
-                let right_radius = match exact_chord_radius(
-                    partition,
-                    right_index,
-                    right,
-                    &mut radius_cache,
-                    movable_cache,
-                ) {
-                    Ok(radius) => radius,
-                    Err(error) => {
-                        callback_error = Some(error);
-                        return ControlFlow::Break(());
-                    },
-                };
-                if !segments_within_chebyshev(
-                    left.nearest,
-                    right.nearest,
-                    proximity_limit(left_radius, right_radius),
-                ) {
-                    return ControlFlow::Continue(());
-                }
-                let left_movable =
-                    match chord_movable_endpoints(partition, left.nodes, movable_cache) {
-                        Ok(nodes) => nodes,
-                        Err(error) => {
-                            callback_error = Some(error);
-                            return ControlFlow::Break(());
-                        },
-                    };
-                let right_movable =
-                    match chord_movable_endpoints(partition, right.nodes, movable_cache) {
-                        Ok(nodes) => nodes,
-                        Err(error) => {
-                            callback_error = Some(error);
-                            return ControlFlow::Break(());
-                        },
-                    };
-                for node in left_movable
-                    .into_iter()
-                    .flatten()
-                    .chain(right_movable.into_iter().flatten())
-                {
-                    let reached = closure
-                        .get_mut(node.0 as usize)
-                        .expect("chord endpoint belongs to the partition");
-                    if !mem::replace(reached, true) {
-                        closure_nodes.push(node);
-                        newly_reached.push(node);
-                    }
-                }
-                for left_node in left_movable.into_iter().flatten() {
-                    for right_node in right_movable.into_iter().flatten() {
-                        union.union(left_node.0 as usize, right_node.0 as usize);
-                    }
-                }
-                ControlFlow::Continue(())
-            },
-        )?;
-        if let Some(error) = callback_error {
-            return Err(error);
-        }
-        debug_assert!(flow.is_continue());
-        frontier_nodes = newly_reached;
-    }
-    closure_nodes.sort_unstable_by_key(|node| node.0);
-    Ok((closure_nodes, initial_evaluations, union, radius_cache))
-}
-
-fn build_proximity_classes(
-    partition: &ExactPartition<'_>,
-    members: Vec<NodeId>,
-    union: &mut UnionFind,
-) -> Result<(Vec<Vec<NodeId>>, Vec<Option<(usize, usize)>>)> {
-    let mut components: HashMap<usize, Vec<NodeId>> =
-        crate::collections::try_hash_map_with_capacity(members.len())?;
-    for node in members {
-        let root = union.find(node.0 as usize);
-        components.entry(root).or_default().push(node);
-    }
-    let mut classes: Vec<_> = components.into_values().collect();
-    for class in &mut classes {
-        try_sort_by(class, |left, right| partition.compare_nodes(*left, *right))?;
-    }
-    try_sort_by(&mut classes, |left, right| {
-        partition.compare_nodes(
-            *left.first().expect("proximity class is nonempty"),
-            *right.first().expect("proximity class is nonempty"),
-        )
-    })?;
-    let mut node_location = vec![None; partition.node_count()];
-    for (class, members) in classes.iter().enumerate() {
-        for (rank, &node) in members.iter().enumerate() {
-            *node_location
-                .get_mut(node.0 as usize)
-                .expect("class member belongs to the partition") = Some((class, rank));
-        }
-    }
-    Ok((classes, node_location))
 }
 
 struct Injectivity {
@@ -1459,7 +1245,6 @@ pub(super) fn certify<S: Sink>(
             embedding,
             &emission.items,
             faces,
-            segments[emission_index],
             emission_index,
             sink,
         )?;
@@ -1993,18 +1778,12 @@ impl Problem for PlanarProblem<'_, '_, '_> {
                 u64::try_from(emission.items.len().div_ceil(16))
                     .map_err(|_| ResourceError::SizeOverflow)?,
             )?;
-            let segments: Vec<_> = emission
-                .items
-                .iter()
-                .map(|&item| Embedding::segment_at(embedding.coordinates(), item))
-                .collect();
             let mut sink = FirstFailure::default();
             if visit_faces(
                 self.partition,
                 &embedding,
                 &emission.items,
                 faces,
-                &segments,
                 emission_index,
                 &mut sink,
             )?
@@ -2062,10 +1841,6 @@ impl Problem for PlanarProblem<'_, '_, '_> {
     }
 }
 
-#[expect(
-    clippy::indexing_slicing,
-    reason = "emitted item, span and node IDs are admitted by the same exact partition"
-)]
 fn visit_fans<S: Sink>(
     partition: &ExactPartition<'_>,
     embedding: &Embedding<'_>,
@@ -2096,27 +1871,72 @@ fn visit_fans<S: Sink>(
     )
 }
 
+fn visit_faces<S: Sink>(
+    partition: &ExactPartition<'_>,
+    embedding: &Embedding<'_>,
+    items: &[[NodeId; 2]],
+    sides: &[[u32; 2]],
+    emission: usize,
+    sink: &mut S,
+) -> Result<ControlFlow<()>> {
+    debug_assert_eq!(sides.len(), items.len());
+    visit_component_faces(
+        &EmittedPoints(embedding.coordinates()),
+        partition.node_count(),
+        items.len(),
+        |index| items[index].map(|node| node.0),
+        |index| sides[index],
+        |root, hit| {
+            sink.report(Witness::Face {
+                emission,
+                root: NodeId(root),
+                hit,
+            })
+        },
+    )
+}
+
 #[cfg(test)]
 pub(super) fn check_global_faces(
     partition: &ExactPartition<'_>,
     embedding: &Embedding<'_>,
     items: &[[NodeId; 2]],
     sides: &[[u32; 2]],
-    segments: &[Segment],
 ) -> Result<()> {
     let mut sink = FirstFailure::default();
-    if visit_faces(partition, embedding, items, sides, segments, 0, &mut sink)?.is_break() {
+    let flow = visit_faces(partition, embedding, items, sides, 0, &mut sink)?;
+    let segments: Vec<_> = items
+        .iter()
+        .map(|&item| Embedding::segment_at(embedding.coordinates(), item))
+        .collect();
+    let mut reference = FirstFailure::default();
+    let reference_flow = visit_faces_legacy(
+        partition,
+        embedding,
+        items,
+        sides,
+        &segments,
+        0,
+        &mut reference,
+    )?;
+    if flow.is_break() != reference_flow.is_break() || sink.witness != reference.witness {
+        return Err(GeometryErrorKind::Invalid(
+            "shared component-face visitor differs from the legacy planar reference".into(),
+        )
+        .into());
+    }
+    if flow.is_break() {
         return Err(sink.into_error());
     }
     Ok(())
 }
 
+#[cfg(test)]
 #[expect(
-    clippy::indexing_slicing,
     clippy::float_cmp,
     reason = "emitted node IDs index the certified coordinate table; face labels and item ordinals are built from those same items"
 )]
-fn visit_faces<S: Sink>(
+fn visit_faces_legacy<S: Sink>(
     partition: &ExactPartition<'_>,
     embedding: &Embedding<'_>,
     items: &[[NodeId; 2]],

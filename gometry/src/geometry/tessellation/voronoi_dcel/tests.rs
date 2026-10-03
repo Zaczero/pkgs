@@ -28,14 +28,24 @@ fn direct_dual_subnormal_admission_matches_legacy_builder() {
 
         match (admitted, dual, legacy) {
             (false, Err(dual), Err(legacy)) => {
-                assert!(matches!(
-                    dual.kind(),
-                    crate::error::ErrorKind::Geometry(GeometryErrorKind::Voronoi(_))
-                ));
-                assert!(matches!(
-                    legacy.kind(),
-                    crate::error::ErrorKind::Geometry(GeometryErrorKind::Voronoi(_))
-                ));
+                assert!(
+                    matches!(
+                        dual.kind(),
+                        crate::error::ErrorKind::Geometry(
+                            GeometryErrorKind::ExactEmbeddingUnrepresentable { .. }
+                        )
+                    ),
+                    "unexpected dual error: {dual}"
+                );
+                assert!(
+                    matches!(
+                        legacy.kind(),
+                        crate::error::ErrorKind::Geometry(
+                            GeometryErrorKind::ExactEmbeddingUnrepresentable { .. }
+                        )
+                    ),
+                    "unexpected legacy error: {legacy}"
+                );
             },
             (true, Ok(dual), Ok(legacy)) => {
                 let clip =
@@ -74,7 +84,6 @@ fn direct_dual_subnormal_admission_matches_legacy_builder() {
 }
 
 use super::*;
-use crate::geometry::overlay::{RayAxis, RayPoints};
 use crate::geometry::segment_index::checked_index_count;
 
 #[test]
@@ -119,8 +128,8 @@ fn rounded_fan_order_matches_exact_stored_points() {
                     &exact::ExactPoint::from_xy(left),
                     &exact::ExactPoint::from_xy(right),
                 );
-                assert_eq!(actual.is_err(), exact.is_err());
-                if let (Ok(actual), Ok(exact)) = (actual, exact) {
+                assert_eq!(actual.is_none(), exact.is_err());
+                if let (Some(actual), Ok(exact)) = (actual, exact) {
                     assert_eq!(actual, exact);
                 }
             }
@@ -1476,17 +1485,13 @@ fn nonrectangular_shell_contacts_keep_scaffold_events_in_source_order() {
     }
 
     let mut edge_budget = ExpansionBudget::new("voronoi_edges", "sites/clip topology");
-    let Err(error) = source.voronoi_edge_column_budgeted(
-        0.0,
-        VoronoiBoundary::Polygon(&polygon),
-        &mut edge_budget,
-    ) else {
-        panic!("the exact nonrectangular contact case has no edge embedding")
-    };
-    assert_eq!(
-        error.to_string(),
-        "Voronoi construction failed: exact Voronoi subdivision has no topology-preserving binary64 embedding"
-    );
+    let (coordinates, offsets) = source
+        .voronoi_edge_column_budgeted(0.0, VoronoiBoundary::Polygon(&polygon), &mut edge_budget)
+        .expect("clip-only shell and hole contacts do not invalidate Voronoi edges");
+    assert_eq!(offsets.as_slice(), [0, 2]);
+    assert_eq!(coordinates.len(), 2);
+    assert_eq!(coordinates.point_at(0).xy(), XY::new(5.0, 0.0));
+    assert_eq!(coordinates.point_at(1).xy(), XY::new(5.0, 15.0));
 }
 
 #[test]
@@ -1755,6 +1760,293 @@ fn extreme_cluster_is_a_valid_binary64_partition() {
 }
 
 #[test]
+fn separated_repair_classes_defer_spanning_ring_orientation_to_global_check() {
+    let sites = sites_xy(&[(0.0, -1.0), (0.0, 0.1), (0.0, 1.0), (100.0, 0.0)]);
+    let source = Shape::MultiPoint(
+        sites
+            .iter()
+            .map(|site| site.point)
+            .collect::<Vec<_>>()
+            .into(),
+    );
+    let clip_polygon = Polygon::new(
+        closed_ring(&[
+            (-1.0, -2.0),
+            (1.0, -2.0),
+            (1.0, -0.45),
+            (1.0, -0.25),
+            (1.0, 0.25),
+            (1.0, 0.55),
+            (1.0, 2.0),
+            (-1.0, 2.0),
+            (-1.0, 0.55),
+            (-1.0, 0.25),
+            (-1.0, -0.25),
+            (-1.0, -0.45),
+        ]),
+        Vec::new(),
+    );
+    assert!(polygon_is_valid(&clip_polygon).unwrap());
+
+    let mut budget = ExpansionBudget::new("voronoi_edges", "cross-class ring regression");
+    let (coordinates, offsets) = source
+        .voronoi_edge_column_budgeted(0.0, VoronoiBoundary::Polygon(&clip_polygon), &mut budget)
+        .expect("edge embedding should defer the spanning ring to the global certificate");
+    assert_eq!(offsets.as_slice(), [0, 2, 4]);
+    assert_eq!(coordinates.len(), 4);
+
+    let clip = Shape::Polygon(clip_polygon);
+    let mut lower_separator = false;
+    let mut upper_separator = false;
+    for [start, end] in offsets.as_slice().array_windows::<2>() {
+        assert_eq!(*end - *start, 2);
+        let points = [
+            coordinates.point_at(*start as usize),
+            coordinates.point_at(*end as usize - 1),
+        ];
+        let [first_point, second_point] = points;
+        let (first, second) = (first_point.xy(), second_point.xy());
+        assert_ne!(first, second, "each emitted chain is nondegenerate");
+        let line = Shape::LineString(
+            LineSeq::try_new(CoordSeq::try_from_points(&points).unwrap()).unwrap(),
+        );
+        assert!(
+            clip.covers(&line).unwrap(),
+            "each emitted chain lies in the clip"
+        );
+
+        let (west, east) = if first.x < second.x {
+            (first, second)
+        } else {
+            (second, first)
+        };
+        assert!(west.x < east.x);
+        let (below, above, seen) = if f64::midpoint(west.y, east.y) < 0.0 {
+            (
+                sites[0].point.xy(),
+                sites[1].point.xy(),
+                &mut lower_separator,
+            )
+        } else {
+            (
+                sites[1].point.xy(),
+                sites[2].point.xy(),
+                &mut upper_separator,
+            )
+        };
+        assert_eq!(
+            exact::orient2d(west, east, below),
+            ExactSign::Negative,
+            "the lower owner lies below its separator"
+        );
+        assert_eq!(
+            exact::orient2d(west, east, above),
+            ExactSign::Positive,
+            "the upper owner lies above its separator"
+        );
+        assert!(!*seen, "each expected site pair has one separator chain");
+        *seen = true;
+    }
+    assert!(lower_separator && upper_separator);
+}
+
+#[test]
+fn thin_hole_clip_never_surfaces_zero_orientation_as_an_internal_error() {
+    let sites = sites_xy(&[(0.0, -1.0), (0.0, 0.1), (0.0, 1.0), (100.0, 0.0)]);
+    let source = Shape::MultiPoint(
+        sites
+            .iter()
+            .map(|site| site.point)
+            .collect::<Vec<_>>()
+            .into(),
+    );
+    let clip = Polygon::new(
+        closed_ring(&[
+            (-1.0, -2.0),
+            (1.0, -2.0),
+            (1.0, -0.45),
+            (1.0, -0.25),
+            (1.0, 0.25),
+            (1.0, 0.55),
+            (1.0, 2.0),
+            (-1.0, 2.0),
+            (-1.0, 0.55),
+            (-1.0, 0.25),
+            (-1.0, -0.25),
+            (-1.0, -0.45),
+        ]),
+        vec![closed_ring(&[
+            (-1.0, 0.5),
+            (-0.999_999_999_999_999_8, 0.75),
+            (-0.5, 0.75),
+        ])],
+    );
+    assert!(polygon_is_valid(&clip).unwrap());
+
+    let mut edge_budget = ExpansionBudget::new("voronoi_edges", "thin-hole embedding regression");
+    let edge_result =
+        source.voronoi_edge_column_budgeted(0.0, VoronoiBoundary::Polygon(&clip), &mut edge_budget);
+    let mut polygon_budget =
+        ExpansionBudget::new("voronoi_polygons", "thin-hole embedding regression");
+    let polygon_result =
+        source.voronoi_polygons_budgeted(0.0, VoronoiBoundary::Polygon(&clip), &mut polygon_budget);
+
+    match edge_result {
+        Ok((coordinates, offsets)) => {
+            assert!(offsets.as_slice().len() > 1);
+            assert_eq!(
+                offsets.as_slice().last().copied().map(|end| end as usize),
+                Some(coordinates.len())
+            );
+            let clip_shape = Shape::Polygon(clip.clone());
+            for [start, end] in offsets.as_slice().array_windows::<2>() {
+                let points = (*start as usize..*end as usize)
+                    .map(|index| coordinates.point_at(index))
+                    .collect::<Vec<_>>();
+                assert!(points.len() >= 2);
+                assert_ne!(points.first().unwrap().xy(), points.last().unwrap().xy());
+                let line = Shape::LineString(
+                    LineSeq::try_new(CoordSeq::try_from_points(&points).unwrap()).unwrap(),
+                );
+                assert!(clip_shape.covers(&line).unwrap());
+            }
+        },
+        Err(error) => assert!(
+            matches!(
+                error.kind(),
+                crate::error::ErrorKind::Geometry(
+                    GeometryErrorKind::ExactEmbeddingUnrepresentable { .. }
+                )
+            ),
+            "unexpected edge error: {error}"
+        ),
+    }
+    match polygon_result {
+        Ok(cells) => assert_cells_cover_clip(&cells, &clip),
+        Err(error) => assert!(
+            matches!(
+                error.kind(),
+                crate::error::ErrorKind::Geometry(
+                    GeometryErrorKind::ExactEmbeddingUnrepresentable { .. }
+                )
+            ),
+            "unexpected polygon error: {error}"
+        ),
+    }
+}
+
+#[test]
+fn five_site_binary64_reproduction_is_valid_for_polygons_and_edges() {
+    let sites = sites_xy(&[(4.0, 3.0), (4.0, 4.0), (3.0, 2.0), (1.0, 3.0), (6.0, 5.0)]);
+    let source = Shape::MultiPoint(
+        sites
+            .iter()
+            .map(|site| site.point)
+            .collect::<Vec<_>>()
+            .into(),
+    );
+
+    let cells = source
+        .voronoi_polygons(0.0, VoronoiBoundary::Padded)
+        .expect("adjacent-float search should repair the public reproduction");
+    assert_eq!(cells.len(), sites.len());
+    assert!(
+        cells.iter().all(
+            |cell| matches!(cell, Shape::Polygon(polygon) if polygon_is_valid(polygon).unwrap())
+        )
+    );
+    assert!(coverage_is_valid(&cells, 0.0).unwrap());
+    for site in &sites {
+        let point = Shape::Point(site.point);
+        assert_eq!(
+            cells
+                .iter()
+                .filter(|cell| cell.covers(&point).unwrap())
+                .count(),
+            1
+        );
+    }
+
+    let mut budget = ExpansionBudget::new("voronoi_edges", "five-site reproduction");
+    let (coordinates, offsets) = source
+        .voronoi_edge_column_budgeted(0.0, VoronoiBoundary::Padded, &mut budget)
+        .expect("the edge product should certify the same binary64 embedding");
+    assert_eq!(
+        offsets.as_slice().last().copied().map(|end| end as usize),
+        Some(coordinates.len())
+    );
+    assert!(offsets.as_slice().len() > 1);
+}
+
+#[test]
+fn rounded_ring_orientation_mutant_is_rejected_by_the_embedding_certificate() {
+    let nearest = [XY::new(0.0, 0.0), XY::new(2.0, 0.0), XY::new(0.0, 2.0)];
+    let mut vertices = EmbeddedVertices::new(nearest.len());
+    for index in 0..nearest.len() {
+        vertices.set(VertexId(index as u32), EmbeddedVertexId(index as u32));
+    }
+    let subdivision = ExactSubdivision {
+        vertices: nearest
+            .iter()
+            .map(|&point| ExactVertex {
+                point: exact::ExactPoint::from_xy(point),
+                fixed_xy: None,
+            })
+            .collect(),
+        edges: Vec::new(),
+        topology: IndexedTopology::default(),
+        edge_of_slot: Vec::new(),
+        labels: Vec::new(),
+    };
+    let ring = ExactSimpleRing {
+        face: BoundaryFaceId(0),
+        vertices: vec![VertexId(0), VertexId(1), VertexId(2), VertexId(0)],
+        edges: Vec::new(),
+        orientation: ExactSign::Positive,
+    };
+    let parts = [ExactCellPart {
+        owner: SiteId(0),
+        face: ring.face,
+        shell: ring,
+        holes: Vec::new(),
+    }];
+    let live_nodes = [VertexId(0), VertexId(1), VertexId(2)];
+    let mut rings_by_node = vec![Vec::new(); nearest.len()];
+    for rings in &mut rings_by_node {
+        rings.push(0);
+    }
+    let embedding = VoronoiEmbedding {
+        subdivision: &subdivision,
+        sites: &[],
+        parts: &parts,
+        includes_polygons: true,
+        live_nodes: &live_nodes,
+        live_edges: &[],
+        vertices: &vertices,
+        coordinates: &nearest,
+        chords: Vec::new(),
+        incident_chords: vec![Vec::new(); nearest.len()],
+        fans: Vec::new(),
+        rings: vec![VoronoiRing {
+            part: 0,
+            hole: None,
+        }],
+        rings_by_node,
+        host_graphs: Vec::new(),
+        separator_chords: Vec::new(),
+    };
+    assert!(embedding.collect_conflicts(&nearest).unwrap().is_empty());
+
+    let inverted = [nearest[0], nearest[1], XY::new(0.0, -2.0)];
+    let conflicts = embedding.collect_conflicts(&inverted).unwrap();
+    assert!(matches!(conflicts.as_slice(), [VoronoiConflict::Ring(0)]));
+
+    let degenerate = [nearest[0], nearest[1], XY::new(1.0, 0.0)];
+    let conflicts = embedding.collect_conflicts(&degenerate).unwrap();
+    assert!(matches!(conflicts.as_slice(), [VoronoiConflict::Ring(0)]));
+}
+
+#[test]
 fn shifted_six_site_diagram_rejects_colliding_binary64_vertices() {
     let offset = 1e16;
     let sites: Vec<_> = [
@@ -1783,9 +2075,14 @@ fn shifted_six_site_diagram_rejects_colliding_binary64_vertices() {
         panic!("colliding exact vertices unexpectedly embedded")
     };
     assert!(
-        error
-            .to_string()
-            .contains("no topology-preserving binary64 embedding")
+        matches!(
+            error.kind(),
+            crate::error::ErrorKind::Geometry(GeometryErrorKind::ExactEmbeddingUnrepresentable {
+                operation: "voronoi_polygons",
+                ..
+            })
+        ),
+        "unexpected error: {error:?}"
     );
 }
 
@@ -1985,9 +2282,15 @@ fn polygon_clip_never_publishes_separator_edges_through_holes() {
     {
         Err(error) => {
             assert!(
-                error
-                    .to_string()
-                    .contains("no topology-preserving binary64 embedding"),
+                matches!(
+                    error.kind(),
+                    crate::error::ErrorKind::Geometry(
+                        GeometryErrorKind::ExactEmbeddingUnrepresentable {
+                            operation: "voronoi_edges",
+                            ..
+                        }
+                    )
+                ),
                 "unexpected Voronoi error: {error}"
             );
         },
@@ -2365,7 +2668,7 @@ fn interior_first_separator_order_emits_one_full_chain() {
 }
 
 #[test]
-fn edges_only_embed_still_rejects_colliding_binary64_vertices() {
+fn edges_only_embedding_publishes_certified_chains_with_colliding_nearest_vertices() {
     let offset = 1e16;
     let sites: Vec<_> = [
         (0.0, 0.0),
@@ -2387,19 +2690,25 @@ fn edges_only_embed_still_rejects_colliding_binary64_vertices() {
         Vec::new(),
     );
     let mut budget = ExpansionBudget::new("test", "edges-only collision");
-    let Err(error) = build_edges(
+    let lines = build_edges(
         &sites,
         VoronoiBoundary::Polygon(&clip),
         &mut budget,
         true,
         &certified_delaunay(&sites).unwrap(),
-    ) else {
-        panic!("colliding exact vertices unexpectedly embedded on the edges-only path")
-    };
+    )
+    .expect("the emitted separator chains have a certified binary64 embedding")
+    .into_line_seqs()
+    .unwrap();
+    assert_eq!(lines.len(), 7);
+    let clip = Shape::Polygon(clip);
     assert!(
-        error
-            .to_string()
-            .contains("no topology-preserving binary64 embedding")
+        lines.iter().all(|line| {
+            line.len() == 2
+                && line.point_at(0).xy() != line.point_at(1).xy()
+                && clip.covers(&Shape::LineString(line.clone())).unwrap()
+        }),
+        "every output chain is a nondegenerate segment contained by the clip"
     );
 }
 

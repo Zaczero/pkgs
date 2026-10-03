@@ -357,7 +357,6 @@ fn check_plan_faces(
             .faces
             .as_deref()
             .expect("boundary plans carry faces"),
-        segments,
     )
 }
 
@@ -5802,7 +5801,6 @@ fn classify_fan_candidates(
                 .faces
                 .as_deref()
                 .expect("fan-pruning emissions retain global faces"),
-            &segments,
         )
         .is_ok();
         classified.push(FanCandidateStatus {

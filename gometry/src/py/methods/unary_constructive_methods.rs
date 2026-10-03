@@ -1111,8 +1111,11 @@ Groups of GeometryArray
     tail: r"
 Raises
 ------
+GeometryError
+    If the output cannot be represented in binary64 or its embedding search
+    exhausts the budget. ``operation`` is ``'voronoi_edges'``.
 InvalidGeometryError
-    If the Voronoi diagram cannot be constructed.
+    If the clip polygon is invalid or exact Voronoi construction fails.
 
 Examples
 --------
@@ -1161,8 +1164,11 @@ Groups of GeometryArray
     tail: r"
 Raises
 ------
+GeometryError
+    If the output cannot be represented in binary64 or its embedding search
+    exhausts the budget. ``operation`` is ``'voronoi_polygons'``.
 InvalidGeometryError
-    If the Voronoi diagram cannot be constructed.
+    If the clip polygon is invalid or exact Voronoi construction fails.
 
 Examples
 --------

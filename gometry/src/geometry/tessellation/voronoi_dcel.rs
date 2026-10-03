@@ -13,17 +13,24 @@
     reason = "the DCEL mirrors the numbered construction and its proof tests keep mutations visibly local"
 )]
 
+use std::cell::RefCell;
 use std::cmp::Ordering;
 use std::collections::{BTreeSet, VecDeque};
 use std::ops::ControlFlow;
 
 use crate::collections::try_hash_map_with_capacity;
 use crate::error::Result;
+use crate::geometry::area::{RingWinding, open_xy_cycle_winding};
 use crate::geometry::arrangement::{IndexedTopology, IndexedTopologyScratch};
+use crate::geometry::embedding_search::{
+    ClassAssignment, EvaluationBudget, GlobalCheck, Problem, ProximityChord, Search,
+    build_proximity_classes, exact_chord_radius, possible_swept_bounds, proximity_limit,
+};
 use crate::geometry::exact_arith::ExactSign;
 use crate::geometry::overlay::{
-    VoronoiIntermediateOverlay, binary_cartesian_overlay_without_partition_budget,
-    certify_emitted_incidence,
+    NodeId, RayAxis, RayPoints, VoronoiIntermediateOverlay,
+    binary_cartesian_overlay_without_partition_budget, emitted_pair_preserves_incidence,
+    segments_within_chebyshev, visit_component_faces,
 };
 use crate::geometry::segment_index::YStabbingIndex;
 use crate::geometry::tessellation::{
@@ -33,8 +40,9 @@ use crate::geometry::types::ensure_coordseq_vertex_capacity;
 use crate::geometry::{
     Bounds, CoordSeq, CsrOffsetColumn, ExpansionBudget, GeometryErrorKind, Point, PointKey,
     Polygon, PolygonPointIndex, Ring, Segment, SegmentParameter, Shape, Strictness,
-    VoronoiBoundary, XY, coverage_is_valid, for_each_indexed_overlapping_bounds_pair,
-    polygon_is_valid, try_dedup_by, try_sort_by,
+    VoronoiBoundary, XY, coverage_is_valid, for_each_candidate_pair,
+    for_each_indexed_overlapping_bounds_pair, for_each_overlapping_bounds_cross_pair,
+    polygon_is_valid, single_chain, try_dedup_by, try_sort_by,
 };
 #[cfg(test)]
 use crate::geometry::{
@@ -702,11 +710,33 @@ fn noded_vertex(vertices: &[NodedVertex], id: VertexId) -> &NodedVertex {
     &vertices[id.0 as usize]
 }
 
-/// The one failure every direct-dual certificate reports: the exact
-/// subdivision is correct but no binary64 rounding of it preserves the
-/// topology, so the caller must not receive a silently repaired diagram.
-fn embedding_failure() -> crate::error::Error {
-    voronoi_error("exact Voronoi subdivision has no topology-preserving binary64 embedding")
+fn exact_embedding_unrepresentable(
+    operation: &'static str,
+    constructed: usize,
+) -> crate::error::Error {
+    GeometryErrorKind::ExactEmbeddingUnrepresentable {
+        operation,
+        constructed,
+    }
+    .into()
+}
+
+#[derive(Debug)]
+enum DualEmbeddingError {
+    Unrepresentable,
+    Other(crate::error::Error),
+}
+
+impl From<crate::error::Error> for DualEmbeddingError {
+    fn from(error: crate::error::Error) -> Self {
+        Self::Other(error)
+    }
+}
+
+impl From<crate::error::ResourceError> for DualEmbeddingError {
+    fn from(error: crate::error::ResourceError) -> Self {
+        Self::Other(error.into())
+    }
 }
 
 #[cfg(test)]
@@ -2171,64 +2201,1600 @@ impl EmbeddedVertices {
             .ok_or_else(|| voronoi_error("live edge has a non-live endpoint"))?;
         Ok(points[embedded.0 as usize])
     }
+
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "the live VertexId was mapped when this same output coordinate column was built"
+    )]
+    fn set_point(&self, vertex: VertexId, points: &mut [XY], point: XY) {
+        let embedded =
+            self.0[vertex.0 as usize].expect("search assignments name live Voronoi vertices");
+        points[embedded.0 as usize] = point;
+    }
 }
 
-fn rounded_fan_angle_cmp(origin: XY, left: XY, right: XY) -> Result<Ordering> {
+#[derive(Clone, Copy)]
+struct VoronoiRing {
+    part: usize,
+    hole: Option<usize>,
+}
+
+impl VoronoiRing {
+    fn exact(self, parts: &[ExactCellPart]) -> &ExactSimpleRing {
+        let part = parts
+            .get(self.part)
+            .expect("Voronoi ring part belongs to its cell table");
+        self.hole.map_or(&part.shell, |hole| {
+            part.holes
+                .get(hole)
+                .expect("Voronoi hole ordinal belongs to its part")
+        })
+    }
+}
+
+struct VoronoiFan {
+    origin: VertexId,
+    edges: Vec<EdgeId>,
+    exact_order: Vec<EdgeId>,
+}
+
+struct VoronoiPoints<'a> {
+    vertices: &'a EmbeddedVertices,
+    coordinates: &'a [XY],
+}
+
+impl RayPoints for VoronoiPoints<'_> {
+    fn rounded(&self, index: u32) -> XY {
+        self.vertices
+            .point(VertexId(index), self.coordinates)
+            .expect("ray sweep queries only live Voronoi vertices")
+    }
+
+    fn compare_axis(&self, left: u32, right: u32, axis: RayAxis) -> Result<Ordering> {
+        let (left, right) = (self.rounded(left), self.rounded(right));
+        let (left, right) = match axis {
+            RayAxis::X => (left.x, right.x),
+            RayAxis::Y => (left.y, right.y),
+        };
+        Ok(if left < right {
+            Ordering::Less
+        } else if left > right {
+            Ordering::Greater
+        } else {
+            Ordering::Equal
+        })
+    }
+
+    fn orientation(&self, a: u32, b: u32, c: u32) -> Result<ExactSign> {
+        let [a, b, c] = [a, b, c].map(|index| self.rounded(index));
+        Ok(exact::orient2d(a, b, c))
+    }
+}
+
+struct VoronoiHostGraph {
+    owner: SiteId,
+    vertices: Vec<u32>,
+    edges: Vec<[u32; 2]>,
+    sides: Vec<[u32; 2]>,
+    chords: Vec<usize>,
+}
+
+impl VoronoiHostGraph {
+    fn edge(&self, index: usize) -> [u32; 2] {
+        *self
+            .edges
+            .get(index)
+            .expect("owner-local edge index belongs to its host graph")
+    }
+
+    fn side_keys(&self, index: usize) -> [u32; 2] {
+        *self
+            .sides
+            .get(index)
+            .expect("owner-local side index belongs to its host graph")
+    }
+
+    fn vertex(&self, index: u32) -> VertexId {
+        VertexId(
+            *self
+                .vertices
+                .get(index as usize)
+                .expect("owner-local vertex ID belongs to its dense vertex table"),
+        )
+    }
+
+    fn chord(&self, index: usize) -> usize {
+        *self
+            .chords
+            .get(index)
+            .expect("owner-local chord index belongs to its host graph")
+    }
+}
+
+struct VoronoiOwnerPoints<'a, 'p> {
+    points: &'a VoronoiPoints<'p>,
+    vertices: &'a [u32],
+}
+
+impl VoronoiOwnerPoints<'_, '_> {
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "owner-local node IDs are dense ordinals paired with this graph's global-vertex column"
+    )]
+    fn global(&self, node: u32) -> u32 {
+        self.vertices[node as usize]
+    }
+}
+
+impl RayPoints for VoronoiOwnerPoints<'_, '_> {
+    fn rounded(&self, index: u32) -> XY {
+        RayPoints::rounded(self.points, self.global(index))
+    }
+
+    fn compare_axis(&self, left: u32, right: u32, axis: RayAxis) -> Result<Ordering> {
+        RayPoints::compare_axis(self.points, self.global(left), self.global(right), axis)
+    }
+
+    fn orientation(&self, a: u32, b: u32, c: u32) -> Result<ExactSign> {
+        RayPoints::orientation(self.points, self.global(a), self.global(b), self.global(c))
+    }
+}
+
+/// Exact DCEL items and the nearest coordinates against which its embedding is
+/// certified. Each host graph contains one owner's rings, so foreign boundaries
+/// are transparent to its shell and hole relationships.
+struct VoronoiEmbedding<'a> {
+    subdivision: &'a ExactSubdivision,
+    sites: &'a [Site],
+    parts: &'a [ExactCellPart],
+    includes_polygons: bool,
+    live_nodes: &'a [VertexId],
+    live_edges: &'a [EdgeId],
+    vertices: &'a EmbeddedVertices,
+    coordinates: &'a [XY],
+    chords: Vec<ProximityChord>,
+    incident_chords: Vec<Vec<usize>>,
+    fans: Vec<VoronoiFan>,
+    rings: Vec<VoronoiRing>,
+    rings_by_node: Vec<Vec<usize>>,
+    host_graphs: Vec<VoronoiHostGraph>,
+    separator_chords: Vec<usize>,
+}
+
+impl<'a> VoronoiEmbedding<'a> {
+    fn chord(&self, index: usize) -> ProximityChord {
+        *self
+            .chords
+            .get(index)
+            .expect("chord index belongs to the Voronoi embedding")
+    }
+
+    fn ring(&self, index: usize) -> VoronoiRing {
+        *self
+            .rings
+            .get(index)
+            .expect("ring index belongs to the Voronoi embedding")
+    }
+
+    fn ring_owner(&self, index: usize) -> SiteId {
+        let ring = self.ring(index);
+        self.parts
+            .get(ring.part)
+            .expect("ring part belongs to the Voronoi embedding")
+            .owner
+    }
+
+    fn new(
+        subdivision: &'a ExactSubdivision,
+        parts: &'a [ExactCellPart],
+        includes_polygons: bool,
+        live_nodes: &'a [VertexId],
+        live_edges: &'a [EdgeId],
+        vertices: &'a EmbeddedVertices,
+        coordinates: &'a [XY],
+        sites: &'a [Site],
+    ) -> Result<Self> {
+        let vertex_count = subdivision.vertices.len();
+        let mut chords = Vec::with_capacity(live_edges.len());
+        let mut incident_chords = Vec::new();
+        incident_chords.resize_with(vertex_count, Vec::new);
+        for (index, &edge_id) in live_edges.iter().enumerate() {
+            let [start, end] = subdivision.edge(edge_id).endpoints;
+            let nearest = Segment {
+                start: vertices.point(start, coordinates)?,
+                end: vertices.point(end, coordinates)?,
+            };
+            let chord = ProximityChord {
+                nodes: [start.0, end.0],
+                nearest,
+                can_move: [start, end].map(|vertex| subdivision.vertex(vertex).fixed_xy.is_none()),
+            };
+            incident_chords
+                .get_mut(start.0 as usize)
+                .expect("live edge start belongs to the admitted vertex table")
+                .push(index);
+            if end != start {
+                incident_chords
+                    .get_mut(end.0 as usize)
+                    .expect("live edge end belongs to the admitted vertex table")
+                    .push(index);
+            }
+            chords.push(chord);
+        }
+        let incidence = LiveEdgeIncidence::build(subdivision, live_edges, vertex_count);
+        let xy_of = |vertex| vertices.point(vertex, coordinates);
+        let mut fans = Vec::new();
+        for (origin, edges) in incidence.rows() {
+            if edges.len() <= 2
+                || (!includes_polygons
+                    && edges
+                        .iter()
+                        .all(|edge| subdivision.edge(*edge).separator.is_none()))
+            {
+                continue;
+            }
+            let mut exact_order = Vec::new();
+            sort_fan(
+                origin,
+                edges,
+                FanSortMode::Exact,
+                subdivision,
+                &xy_of,
+                &mut exact_order,
+            )?;
+            fans.push(VoronoiFan {
+                origin,
+                edges: edges.to_vec(),
+                exact_order,
+            });
+        }
+        let mut rings = Vec::new();
+        for (part, exact_part) in parts.iter().enumerate() {
+            rings.push(VoronoiRing { part, hole: None });
+            rings.extend(
+                exact_part
+                    .holes
+                    .iter()
+                    .enumerate()
+                    .map(|(hole, _)| VoronoiRing {
+                        part,
+                        hole: Some(hole),
+                    }),
+            );
+        }
+        let mut rings_by_node = Vec::new();
+        rings_by_node.resize_with(vertex_count, Vec::new);
+        for (ring_index, ring_ref) in rings.iter().copied().enumerate() {
+            let (_, open_vertices) = ring_ref
+                .exact(parts)
+                .vertices
+                .split_last()
+                .expect("simple Voronoi rings are closed");
+            for &vertex in open_vertices {
+                rings_by_node
+                    .get_mut(vertex.0 as usize)
+                    .expect("ring vertex belongs to the admitted vertex table")
+                    .push(ring_index);
+            }
+        }
+
+        let mut edge_to_chord = Vec::new();
+        edge_to_chord.resize(subdivision.edges.len(), usize::MAX);
+        for (chord, &edge_id) in live_edges.iter().enumerate() {
+            *edge_to_chord
+                .get_mut(edge_id.0 as usize)
+                .expect("live edge belongs to the exact subdivision") = chord;
+        }
+        let mut host_graphs = Vec::new();
+        if includes_polygons {
+            let unassigned_part = u32::try_from(parts.len())
+                .map_err(|_| crate::error::ResourceError::SizeOverflow)?;
+            let mut face_part = Vec::new();
+            face_part.resize(subdivision.labels.len(), unassigned_part);
+            for (part_index, part) in parts.iter().enumerate() {
+                let part_index = u32::try_from(part_index)
+                    .map_err(|_| crate::error::ResourceError::SizeOverflow)?;
+                for ring in std::iter::once(&part.shell).chain(&part.holes) {
+                    let face = face_part
+                        .get_mut(ring.face.0 as usize)
+                        .ok_or_else(exact_cycle_error)?;
+                    if *face != unassigned_part && *face != part_index {
+                        return Err(voronoi_error(
+                            "one exact face belongs to multiple emitted Voronoi parts",
+                        ));
+                    }
+                    *face = part_index;
+                }
+            }
+            let mut edge_faces = Vec::new();
+            edge_faces.resize(subdivision.edges.len(), [u32::MAX; 2]);
+            for (slot, &edge) in subdivision.edge_of_slot.iter().enumerate() {
+                let dart = subdivision.dart(slot as u32);
+                let endpoints = subdivision.edge(EdgeId(edge)).endpoints;
+                let side = usize::from(dart.origin != endpoints[0]);
+                *edge_faces
+                    .get_mut(edge as usize)
+                    .and_then(|sides| sides.get_mut(side))
+                    .ok_or_else(exact_cycle_error)? = dart.face.0;
+            }
+            let mut part_start = 0;
+            while part_start < parts.len() {
+                let owner = parts
+                    .get(part_start)
+                    .expect("owner group starts within the sorted part table")
+                    .owner;
+                let mut part_end = part_start.wrapping_add(1);
+                while part_end < parts.len()
+                    && parts
+                        .get(part_end)
+                        .expect("owner group ends within the sorted part table")
+                        .owner
+                        == owner
+                {
+                    part_end = part_end.wrapping_add(1);
+                }
+                let owner_parts = parts
+                    .get(part_start..part_end)
+                    .expect("owner parts form a bounded slice");
+                let mut owner_edges = Vec::new();
+                for part in owner_parts {
+                    for ring in std::iter::once(&part.shell).chain(&part.holes) {
+                        owner_edges.extend_from_slice(&ring.edges);
+                    }
+                }
+                owner_edges.sort_unstable();
+                owner_edges.dedup();
+                let mut owner_vertices = Vec::with_capacity(owner_edges.len());
+                for &edge in &owner_edges {
+                    owner_vertices.extend(subdivision.edge(edge).endpoints.map(|vertex| vertex.0));
+                }
+                owner_vertices.sort_unstable();
+                owner_vertices.dedup();
+                let mut edges = Vec::with_capacity(owner_edges.len());
+                let mut sides = Vec::with_capacity(owner_edges.len());
+                let mut chords = Vec::with_capacity(owner_edges.len());
+                for edge in owner_edges {
+                    let endpoints = subdivision.edge(edge).endpoints;
+                    let mut local_endpoints = [0_u32; 2];
+                    for (local, vertex) in local_endpoints.iter_mut().zip(endpoints) {
+                        *local = u32::try_from(
+                            owner_vertices
+                                .binary_search(&vertex.0)
+                                .map_err(|_| exact_cycle_error())?,
+                        )
+                        .map_err(|_| crate::error::ResourceError::SizeOverflow)?;
+                    }
+                    let exact_faces = *edge_faces
+                        .get(edge.0 as usize)
+                        .ok_or_else(exact_cycle_error)?;
+                    let mut owner_sides = [0_u32; 2];
+                    for (owner_side, face) in owner_sides.iter_mut().zip(exact_faces) {
+                        if face == u32::MAX {
+                            return Err(exact_cycle_error());
+                        }
+                        let part = face_part
+                            .get(face as usize)
+                            .copied()
+                            .ok_or_else(exact_cycle_error)?;
+                        if part != unassigned_part
+                            && parts
+                                .get(part as usize)
+                                .is_some_and(|part| part.owner == owner)
+                        {
+                            *owner_side = part
+                                .checked_add(1)
+                                .ok_or(crate::error::ResourceError::SizeOverflow)?;
+                        }
+                    }
+                    let chord = *edge_to_chord
+                        .get(edge.0 as usize)
+                        .filter(|&&chord| chord != usize::MAX)
+                        .ok_or_else(exact_cycle_error)?;
+                    edges.push(local_endpoints);
+                    sides.push(owner_sides);
+                    chords.push(chord);
+                }
+                host_graphs.push(VoronoiHostGraph {
+                    owner,
+                    vertices: owner_vertices,
+                    edges,
+                    sides,
+                    chords,
+                });
+                part_start = part_end;
+            }
+        }
+        let separator_chords = live_edges
+            .iter()
+            .enumerate()
+            .filter_map(|(index, &edge)| {
+                subdivision.edge(edge).separator.is_some().then_some(index)
+            })
+            .collect();
+
+        Ok(Self {
+            subdivision,
+            sites,
+            parts,
+            includes_polygons,
+            live_nodes,
+            live_edges,
+            vertices,
+            coordinates,
+            chords,
+            incident_chords,
+            fans,
+            rings,
+            rings_by_node,
+            host_graphs,
+            separator_chords,
+        })
+    }
+
+    fn xy(&self, vertex: VertexId, coordinates: &[XY]) -> Result<XY> {
+        self.vertices.point(vertex, coordinates)
+    }
+
+    fn exact_movable(&self, vertex: VertexId) -> bool {
+        self.subdivision.vertex(vertex).fixed_xy.is_none()
+    }
+
+    fn compare_nodes(&self, left: VertexId, right: VertexId) -> Result<Ordering> {
+        self.subdivision
+            .vertex(left)
+            .point
+            .compare_lex(&self.subdivision.vertex(right).point)
+    }
+
+    fn ring_orientation(&self, ring: usize, coordinates: &[XY]) -> Result<bool> {
+        let ring = self
+            .rings
+            .get(ring)
+            .copied()
+            .expect("ring index belongs to the Voronoi ring table")
+            .exact(self.parts);
+        rounded_ring_orientation_matches(&ring.vertices, ring.orientation, |vertex| {
+            self.xy(vertex, coordinates)
+        })
+    }
+
+    fn extend_ring_seeds(&self, ring: usize, seeds: &mut Vec<VertexId>) {
+        let ring = self
+            .rings
+            .get(ring)
+            .copied()
+            .expect("ring index belongs to the Voronoi ring table")
+            .exact(self.parts);
+        let (_, open_vertices) = ring
+            .vertices
+            .split_last()
+            .expect("simple Voronoi rings are closed");
+        seeds.extend_from_slice(open_vertices);
+    }
+
+    fn segment(&self, chord: usize, coordinates: &[XY]) -> Result<Segment> {
+        let [start, end] = self
+            .subdivision
+            .edge(
+                *self
+                    .live_edges
+                    .get(chord)
+                    .expect("chord index belongs to the Voronoi edge table"),
+            )
+            .endpoints;
+        Ok(Segment {
+            start: self.xy(start, coordinates)?,
+            end: self.xy(end, coordinates)?,
+        })
+    }
+
+    fn certifies_incidence_pair(&self, left: usize, right: usize) -> bool {
+        self.includes_polygons
+            || [left, right].into_iter().any(|chord| {
+                let edge = *self
+                    .live_edges
+                    .get(chord)
+                    .expect("incidence-pair index belongs to the live edge table");
+                self.subdivision.edge(edge).separator.is_some()
+            })
+    }
+
+    fn separator_preserved(
+        &self,
+        chord: usize,
+        mut xy_of: impl FnMut(VertexId) -> Result<XY>,
+    ) -> Result<bool> {
+        let edge_id = *self
+            .live_edges
+            .get(chord)
+            .expect("separator chord belongs to the live edge table");
+        let edge = self.subdivision.edge(edge_id);
+        if edge.separator.is_none() {
+            return Ok(true);
+        }
+        let [start, end] = edge.endpoints;
+        let (start, end) = (xy_of(start)?, xy_of(end)?);
+        let side_of =
+            |site: SiteId| exact::orient2d(start, end, site_by_id(self.sites, site).point.xy());
+        let (left, right) = match edge.forward.owner {
+            OwnerTransition::Boundary { left, right } if left.is_some() || right.is_some() => {
+                (left, right)
+            },
+            OwnerTransition::Boundary { .. } | OwnerTransition::Preserve => {
+                return Err(voronoi_error("live separator has incomplete ownership"));
+            },
+        };
+        Ok(left.is_none_or(|site| side_of(site) == ExactSign::Positive)
+            && right.is_none_or(|site| side_of(site) == ExactSign::Negative))
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+enum VoronoiConflict {
+    Collision(VertexId, VertexId),
+    Contact(usize, usize),
+    Fan(VertexId),
+    Separator(usize),
+    Ring(usize),
+    Host {
+        owner: SiteId,
+        root: VertexId,
+        hit: Option<usize>,
+    },
+}
+
+impl VoronoiEmbedding<'_> {
+    fn collect_conflicts(&self, coordinates: &[XY]) -> Result<Vec<VoronoiConflict>> {
+        let mut conflicts = Vec::new();
+        let mut owners = try_hash_map_with_capacity(self.live_nodes.len())?;
+        for &vertex in self.live_nodes {
+            let point = self.xy(vertex, coordinates)?;
+            if let Some(previous) = owners.insert(PointKey::new(point), vertex)
+                && previous != vertex
+            {
+                conflicts.push(VoronoiConflict::Collision(previous, vertex));
+            }
+        }
+
+        let mut segments = Vec::with_capacity(self.chords.len());
+        for chord in 0..self.chords.len() {
+            segments.push(self.segment(chord, coordinates)?);
+        }
+        let pair_completion = for_each_candidate_pair(&segments, single_chain, |left, right| {
+            if self.certifies_incidence_pair(left, right) {
+                let endpoints = |index: usize| {
+                    let chord = self.chord(index);
+                    let [start, end] = chord.nodes;
+                    let segment = *segments
+                        .get(index)
+                        .expect("candidate-pair index belongs to the emitted segment table");
+                    [(NodeId(start), segment.start), (NodeId(end), segment.end)]
+                };
+                if !emitted_pair_preserves_incidence(endpoints(left), endpoints(right)) {
+                    conflicts.push(VoronoiConflict::Contact(left, right));
+                }
+            }
+            ControlFlow::<()>::Continue(())
+        })?;
+        debug_assert!(pair_completion.is_continue());
+
+        let mut marked = Vec::new();
+        let mut marked_boxes = Vec::new();
+        let mut marked_chords = Vec::new();
+        for (chord, &edge_id) in self.live_edges.iter().enumerate() {
+            if self.subdivision.edge(edge_id).separator.is_none() {
+                continue;
+            }
+            let segment = *segments
+                .get(chord)
+                .expect("separator chord belongs to the emitted segment table");
+            marked.push([segment.start, segment.end]);
+            marked_boxes.push(Some(Bounds::new_raw(
+                segment.start.x.min(segment.end.x),
+                segment.start.y.min(segment.end.y),
+                segment.start.x.max(segment.end.x),
+                segment.start.y.max(segment.end.y),
+            )));
+            marked_chords.push(chord);
+        }
+        let marked_index = BoxIndex::build(&marked_boxes)?;
+        for site in self.sites {
+            let query = exact::ExactPoint::from_xy(site.point.xy());
+            let visit = |separator: usize| -> Result<()> {
+                let [start, end] = *marked
+                    .get(separator)
+                    .expect("separator index belongs to the marked segment table");
+                if exact::segment_intersection(
+                    &exact::ExactPoint::from_xy(start),
+                    &exact::ExactPoint::from_xy(end),
+                    &query,
+                    &query,
+                )?
+                .is_point()
+                {
+                    conflicts.push(VoronoiConflict::Separator(
+                        *marked_chords
+                            .get(separator)
+                            .expect("marked edge maps to its emitted chord"),
+                    ));
+                }
+                Ok(())
+            };
+            marked_index.for_each_containing(Some(site.point.xy()), visit)?;
+        }
+
+        for chord in 0..self.live_edges.len() {
+            if !self.separator_preserved(chord, |vertex| self.xy(vertex, coordinates))? {
+                conflicts.push(VoronoiConflict::Separator(chord));
+            }
+        }
+
+        for fan in &self.fans {
+            let xy_of = |vertex| self.xy(vertex, coordinates);
+            let mut rounded_order = Vec::new();
+            if sort_fan(
+                fan.origin,
+                &fan.edges,
+                FanSortMode::Rounded,
+                self.subdivision,
+                &xy_of,
+                &mut rounded_order,
+            )? != FanSortOutcome::Sorted
+                || rounded_order != fan.exact_order
+            {
+                conflicts.push(VoronoiConflict::Fan(fan.origin));
+            }
+        }
+        for ring in 0..self.rings.len() {
+            if !self.ring_orientation(ring, coordinates)? {
+                conflicts.push(VoronoiConflict::Ring(ring));
+            }
+        }
+
+        let points = VoronoiPoints {
+            vertices: self.vertices,
+            coordinates,
+        };
+        for host_graph in &self.host_graphs {
+            let owner_points = VoronoiOwnerPoints {
+                points: &points,
+                vertices: &host_graph.vertices,
+            };
+            let host_completion = visit_component_faces(
+                &owner_points,
+                host_graph.vertices.len(),
+                host_graph.edges.len(),
+                |edge| host_graph.edge(edge),
+                |edge| host_graph.side_keys(edge),
+                |root, hit| {
+                    conflicts.push(VoronoiConflict::Host {
+                        owner: host_graph.owner,
+                        root: host_graph.vertex(root),
+                        hit: hit.map(|edge| host_graph.chord(edge)),
+                    });
+                    ControlFlow::Continue(())
+                },
+            )?;
+            debug_assert!(host_completion.is_continue());
+        }
+        Ok(conflicts)
+    }
+
+    fn seed_nodes(&self, conflicts: &[VoronoiConflict]) -> Vec<VertexId> {
+        let mut seeds = Vec::new();
+        for &conflict in conflicts {
+            match conflict {
+                VoronoiConflict::Collision(first, second) => {
+                    seeds.extend([first, second]);
+                },
+                VoronoiConflict::Contact(left, right) => {
+                    for chord in [left, right] {
+                        let edge = self.chord(chord);
+                        seeds.extend([VertexId(edge.nodes[0]), VertexId(edge.nodes[1])]);
+                    }
+                },
+                VoronoiConflict::Fan(origin) => {
+                    seeds.push(origin);
+                    if let Some(fan) = self.fans.iter().find(|fan| fan.origin == origin) {
+                        for edge_id in &fan.edges {
+                            let [start, end] = self.subdivision.edge(*edge_id).endpoints;
+                            seeds.extend([start, end]);
+                        }
+                    }
+                },
+                VoronoiConflict::Separator(chord) => {
+                    let edge = self.chord(chord);
+                    seeds.extend([VertexId(edge.nodes[0]), VertexId(edge.nodes[1])]);
+                },
+                VoronoiConflict::Ring(ring) => self.extend_ring_seeds(ring, &mut seeds),
+                VoronoiConflict::Host { owner, root, hit } => {
+                    let rings = self
+                        .rings_by_node
+                        .get(root.0 as usize)
+                        .expect("host root belongs to the Voronoi vertex domain");
+                    let mut found_owner_ring = false;
+                    for ring in rings
+                        .iter()
+                        .copied()
+                        .filter(|&ring| self.ring_owner(ring) == owner)
+                    {
+                        found_owner_ring = true;
+                        self.extend_ring_seeds(ring, &mut seeds);
+                    }
+                    if !found_owner_ring {
+                        seeds.push(root);
+                    }
+                    if let Some(hit) = hit {
+                        let edge = self.chord(hit);
+                        seeds.extend([VertexId(edge.nodes[0]), VertexId(edge.nodes[1])]);
+                    }
+                },
+            }
+        }
+        seeds.sort_unstable();
+        seeds.dedup();
+        seeds
+    }
+}
+
+#[derive(Clone)]
+struct VoronoiClassState {
+    pairs_by_rank: Vec<Vec<usize>>,
+    separators_by_rank: Vec<Vec<usize>>,
+    site_pairs_by_rank: Vec<Vec<usize>>,
+    fans_by_rank: Vec<Vec<usize>>,
+    rings_by_rank: Vec<Vec<usize>>,
+}
+
+struct VoronoiProximity {
+    pairs: Vec<(usize, usize)>,
+    site_pairs: Vec<(usize, usize)>,
+    classes: Vec<VoronoiClassState>,
+}
+
+struct VoronoiProblem<'p, 'a> {
+    embedding: &'p VoronoiEmbedding<'a>,
+    classes: Vec<Vec<VertexId>>,
+    search_seeds: Vec<VertexId>,
+    node_location: Vec<Option<(usize, usize)>>,
+    radius_cache: RefCell<Vec<Option<f64>>>,
+    movable_cache: RefCell<Vec<Option<bool>>>,
+    proximity: RefCell<Option<VoronoiProximity>>,
+    initial_evaluations: u64,
+}
+
+impl<'p, 'a> VoronoiProblem<'p, 'a> {
+    fn new(embedding: &'p VoronoiEmbedding<'a>, seeds: &[VertexId]) -> Result<Self> {
+        let node_count = embedding.subdivision.vertices.len();
+        let mut movable_cache = vec![None; node_count];
+        let mut search_seeds = seeds.to_vec();
+        search_seeds.sort_unstable();
+        search_seeds.dedup();
+        let seed_ids: Vec<_> = seeds.iter().map(|node| node.0).collect();
+        let proximity = build_proximity_classes(
+            node_count,
+            &embedding.chords,
+            &embedding.incident_chords,
+            &seed_ids,
+            &mut movable_cache,
+            |node| Ok(embedding.exact_movable(VertexId(node))),
+            |left, right| {
+                let (left, right) = (VertexId(left), VertexId(right));
+                let left_seeded = search_seeds.binary_search(&left).is_ok();
+                let right_seeded = search_seeds.binary_search(&right).is_ok();
+                Ok(if left_seeded == right_seeded {
+                    embedding.compare_nodes(left, right)?
+                } else {
+                    right_seeded.cmp(&left_seeded)
+                })
+            },
+            segments_within_chebyshev,
+        )?;
+        let classes: Vec<Vec<VertexId>> = proximity
+            .classes
+            .into_iter()
+            .map(|class| class.into_iter().map(VertexId).collect())
+            .collect();
+        Ok(Self {
+            embedding,
+            classes,
+            search_seeds,
+            node_location: proximity.node_location,
+            radius_cache: RefCell::new(proximity.radii),
+            movable_cache: RefCell::new(movable_cache),
+            proximity: RefCell::new(None),
+            initial_evaluations: proximity.initial_evaluations,
+        })
+    }
+
+    fn local_xy(&self, node: VertexId, class: usize, assigned: &[Option<XY>]) -> XY {
+        match self.node_location.get(node.0 as usize).copied().flatten() {
+            Some((owner, rank)) if owner == class => assigned
+                .get(rank)
+                .copied()
+                .flatten()
+                .expect("ready Voronoi predicates have each class endpoint assigned"),
+            _ => self
+                .embedding
+                .xy(node, self.embedding.coordinates)
+                .expect("every checked Voronoi vertex is live"),
+        }
+    }
+
+    fn predicate_class_rank(
+        &self,
+        nodes: impl IntoIterator<Item = VertexId>,
+    ) -> Result<Option<(usize, usize)>> {
+        let mut class = None;
+        let mut ready_rank = 0;
+        for node in nodes {
+            if let Some((owner, rank)) = self.node_location.get(node.0 as usize).copied().flatten()
+            {
+                if class.is_some_and(|known| known != owner) {
+                    return Err(voronoi_error(
+                        "embedding proximity split one Voronoi predicate across classes",
+                    ));
+                }
+                class = Some(owner);
+                ready_rank = ready_rank.max(rank);
+            }
+        }
+        Ok(class.map(|class| (class, ready_rank)))
+    }
+
+    fn ring_class_rank(&self, nodes: impl IntoIterator<Item = VertexId>) -> Option<(usize, usize)> {
+        let mut class = None;
+        let mut ready_rank = 0;
+        for node in nodes {
+            if let Some((owner, rank)) = self.node_location.get(node.0 as usize).copied().flatten()
+            {
+                if class.is_some_and(|known| known != owner) {
+                    return None;
+                }
+                class = Some(owner);
+                ready_rank = ready_rank.max(rank);
+            }
+        }
+        class.map(|class| (class, ready_rank))
+    }
+
+    fn prepare_proximity(&self, budget: &mut EvaluationBudget) -> Result<()> {
+        if self.proximity.borrow().is_some() {
+            return Ok(());
+        }
+        let all_bounds: Vec<_> = self
+            .embedding
+            .chords
+            .iter()
+            .copied()
+            .map(possible_swept_bounds)
+            .collect();
+        let mut left_indices = Vec::new();
+        let mut left_bounds = Vec::new();
+        for (index, chord) in self.embedding.chords.iter().enumerate() {
+            if chord.nodes.iter().any(|&node| {
+                self.node_location
+                    .get(node as usize)
+                    .copied()
+                    .flatten()
+                    .is_some()
+            }) {
+                left_indices.push(index);
+                left_bounds.push(
+                    *all_bounds
+                        .get(index)
+                        .expect("Voronoi chord bounds align with the chord table"),
+                );
+            }
+        }
+        budget.charge(
+            u64::try_from(self.embedding.chords.len().div_ceil(16))
+                .map_err(|_| crate::error::ResourceError::SizeOverflow)?,
+        )?;
+        let mut pairs = Vec::new();
+        let mut radius_cache = self.radius_cache.borrow_mut();
+        let mut movable_cache = self.movable_cache.borrow_mut();
+        let mut callback_error = None;
+        let flow =
+            for_each_overlapping_bounds_cross_pair(&left_bounds, &all_bounds, |left, right| {
+                if callback_error.is_some() {
+                    return ControlFlow::Break(());
+                }
+                let left_index = *left_indices
+                    .get(left)
+                    .expect("overlap pair left index belongs to the frontier table");
+                if left_index == right {
+                    return ControlFlow::Continue(());
+                }
+                let left_chord = self.embedding.chord(left_index);
+                let right_chord = self.embedding.chord(right);
+                if !self.embedding.certifies_incidence_pair(left_index, right) {
+                    return ControlFlow::Continue(());
+                }
+                let radii = (|| {
+                    Ok((
+                        exact_chord_radius(
+                            left_chord,
+                            &mut radius_cache,
+                            left_index,
+                            &mut movable_cache,
+                            &mut |node| Ok(self.embedding.exact_movable(VertexId(node))),
+                        )?,
+                        exact_chord_radius(
+                            right_chord,
+                            &mut radius_cache,
+                            right,
+                            &mut movable_cache,
+                            &mut |node| Ok(self.embedding.exact_movable(VertexId(node))),
+                        )?,
+                    ))
+                })();
+                let (left_radius, right_radius) = match radii {
+                    Ok(radii) => radii,
+                    Err(error) => {
+                        callback_error = Some(error);
+                        return ControlFlow::Break(());
+                    },
+                };
+                if segments_within_chebyshev(
+                    left_chord.nearest,
+                    right_chord.nearest,
+                    proximity_limit(left_radius, right_radius),
+                ) {
+                    pairs.push((left_index.min(right), left_index.max(right)));
+                }
+                ControlFlow::Continue(())
+            })?;
+        if let Some(error) = callback_error {
+            return Err(error);
+        }
+        debug_assert!(flow.is_continue());
+        pairs.sort_unstable();
+        pairs.dedup();
+        drop(radius_cache);
+        drop(movable_cache);
+
+        let mut sites = Vec::with_capacity(self.embedding.sites.len());
+        for site in self.embedding.sites {
+            let point = site.point.xy();
+            sites.push(Bounds::new_raw(point.x, point.y, point.x, point.y));
+        }
+        let mut separator_bounds = Vec::new();
+        let mut separator_indices = Vec::new();
+        for &chord in &self.embedding.separator_chords {
+            if self.embedding.chord(chord).nodes.iter().any(|&node| {
+                self.node_location
+                    .get(node as usize)
+                    .copied()
+                    .flatten()
+                    .is_some()
+            }) {
+                separator_indices.push(chord);
+                separator_bounds.push(
+                    *all_bounds
+                        .get(chord)
+                        .expect("separator bounds align with the emitted chord table"),
+                );
+            }
+        }
+        budget.charge(
+            u64::try_from(sites.len().div_ceil(16))
+                .map_err(|_| crate::error::ResourceError::SizeOverflow)?,
+        )?;
+        let mut site_pairs = Vec::new();
+        let site_pair_completion = for_each_overlapping_bounds_cross_pair(
+            &separator_bounds,
+            &sites,
+            |separator, site| {
+                site_pairs.push((
+                    *separator_indices
+                        .get(separator)
+                        .expect("separator index belongs to the prepared table"),
+                    site,
+                ));
+                ControlFlow::<()>::Continue(())
+            },
+        )?;
+        debug_assert!(site_pair_completion.is_continue());
+        site_pairs.sort_unstable();
+        site_pairs.dedup();
+
+        let mut classes = Vec::with_capacity(self.classes.len());
+        for variables in &self.classes {
+            classes.push(VoronoiClassState {
+                pairs_by_rank: vec![Vec::new(); variables.len()],
+                separators_by_rank: vec![Vec::new(); variables.len()],
+                site_pairs_by_rank: vec![Vec::new(); variables.len()],
+                fans_by_rank: vec![Vec::new(); variables.len()],
+                rings_by_rank: vec![Vec::new(); variables.len()],
+            });
+        }
+        for (pair_index, &(left, right)) in pairs.iter().enumerate() {
+            let left = self.embedding.chord(left);
+            let right = self.embedding.chord(right);
+            if let Some((class, rank)) = self.predicate_class_rank([
+                VertexId(left.nodes[0]),
+                VertexId(left.nodes[1]),
+                VertexId(right.nodes[0]),
+                VertexId(right.nodes[1]),
+            ])? {
+                classes
+                    .get_mut(class)
+                    .expect("pair class belongs to the Voronoi problem")
+                    .pairs_by_rank
+                    .get_mut(rank)
+                    .expect("pair rank belongs to its Voronoi class")
+                    .push(pair_index);
+            }
+        }
+        for (pair_index, &(chord, _site)) in site_pairs.iter().enumerate() {
+            let edge = self.embedding.chord(chord);
+            if let Some((class, rank)) =
+                self.predicate_class_rank([VertexId(edge.nodes[0]), VertexId(edge.nodes[1])])?
+            {
+                classes
+                    .get_mut(class)
+                    .expect("site-pair class belongs to the Voronoi problem")
+                    .site_pairs_by_rank
+                    .get_mut(rank)
+                    .expect("site-pair rank belongs to its Voronoi class")
+                    .push(pair_index);
+            }
+        }
+        for &chord in &self.embedding.separator_chords {
+            let edge = self.embedding.chord(chord);
+            if let Some((class, rank)) =
+                self.predicate_class_rank([VertexId(edge.nodes[0]), VertexId(edge.nodes[1])])?
+            {
+                classes
+                    .get_mut(class)
+                    .expect("separator class belongs to the Voronoi problem")
+                    .separators_by_rank
+                    .get_mut(rank)
+                    .expect("separator rank belongs to its Voronoi class")
+                    .push(chord);
+            }
+        }
+        for (fan_index, fan) in self.embedding.fans.iter().enumerate() {
+            let mut nodes = Vec::with_capacity(fan.edges.len().saturating_mul(2).saturating_add(1));
+            nodes.push(fan.origin);
+            for edge_id in &fan.edges {
+                let [start, end] = self.embedding.subdivision.edge(*edge_id).endpoints;
+                nodes.extend([start, end]);
+            }
+            nodes.sort_unstable();
+            nodes.dedup();
+            if let Some((class, rank)) = self.predicate_class_rank(nodes.iter().copied())? {
+                classes
+                    .get_mut(class)
+                    .expect("fan class belongs to the Voronoi problem")
+                    .fans_by_rank
+                    .get_mut(rank)
+                    .expect("fan rank belongs to its Voronoi class")
+                    .push(fan_index);
+            }
+        }
+        for (ring_index, ring) in self.embedding.rings.iter().copied().enumerate() {
+            let exact_ring = ring.exact(self.embedding.parts);
+            let (_, open_vertices) = exact_ring
+                .vertices
+                .split_last()
+                .expect("simple Voronoi rings are closed");
+            if let Some((class, rank)) = self.ring_class_rank(open_vertices.iter().copied()) {
+                classes
+                    .get_mut(class)
+                    .expect("ring class belongs to the Voronoi problem")
+                    .rings_by_rank
+                    .get_mut(rank)
+                    .expect("ring rank belongs to its Voronoi class")
+                    .push(ring_index);
+            }
+        }
+        *self.proximity.borrow_mut() = Some(VoronoiProximity {
+            pairs,
+            site_pairs,
+            classes,
+        });
+        Ok(())
+    }
+}
+
+impl VoronoiProblem<'_, '_> {
+    fn mark_node_class(&self, node: VertexId, blamed: &mut [bool]) {
+        if let Some((class, _)) = self.node_location.get(node.0 as usize).copied().flatten() {
+            *blamed
+                .get_mut(class)
+                .expect("class ID belongs to the Voronoi search") = true;
+        }
+    }
+
+    fn check_pair(&self, left: usize, right: usize, class: usize, assigned: &[Option<XY>]) -> bool {
+        let endpoints = |chord_index: usize| {
+            let chord = self.embedding.chord(chord_index);
+            let [start, end] = chord.nodes;
+            [
+                (
+                    NodeId(start),
+                    self.local_xy(VertexId(start), class, assigned),
+                ),
+                (NodeId(end), self.local_xy(VertexId(end), class, assigned)),
+            ]
+        };
+        emitted_pair_preserves_incidence(endpoints(left), endpoints(right))
+    }
+
+    fn check_fan(&self, fan_index: usize, class: usize, assigned: &[Option<XY>]) -> Result<bool> {
+        let fan = self
+            .embedding
+            .fans
+            .get(fan_index)
+            .expect("Voronoi fan index belongs to the prepared fan table");
+        let xy_of = |node| Ok(self.local_xy(node, class, assigned));
+        let mut rounded_order = Vec::new();
+        match sort_fan(
+            fan.origin,
+            &fan.edges,
+            FanSortMode::Rounded,
+            self.embedding.subdivision,
+            &xy_of,
+            &mut rounded_order,
+        )? {
+            FanSortOutcome::Sorted => Ok(rounded_order == fan.exact_order),
+            FanSortOutcome::AngularTie => Ok(false),
+        }
+    }
+
+    fn check_ring_orientation(
+        &self,
+        ring_index: usize,
+        class: usize,
+        assigned: &[Option<XY>],
+    ) -> Result<bool> {
+        let ring = self
+            .embedding
+            .rings
+            .get(ring_index)
+            .copied()
+            .expect("ring index belongs to the Voronoi ring table")
+            .exact(self.embedding.parts);
+        rounded_ring_orientation_matches(&ring.vertices, ring.orientation, |vertex| {
+            Ok(self.local_xy(vertex, class, assigned))
+        })
+    }
+
+    fn check_site_pair(&self, pair: usize, class: usize, assigned: &[Option<XY>]) -> Result<bool> {
+        let proximity = self.proximity.borrow();
+        let proximity = proximity
+            .as_ref()
+            .expect("site-pair rows are prepared before local search");
+        let (chord, site) = *proximity
+            .site_pairs
+            .get(pair)
+            .expect("site-pair ordinal belongs to the prepared table");
+        let [start_node, end_node] = self.embedding.chord(chord).nodes;
+        let [start, end] = [
+            self.local_xy(VertexId(start_node), class, assigned),
+            self.local_xy(VertexId(end_node), class, assigned),
+        ];
+        let start = exact::ExactPoint::from_xy(start);
+        let end = exact::ExactPoint::from_xy(end);
+        let site = exact::ExactPoint::from_xy(
+            self.embedding
+                .sites
+                .get(site)
+                .expect("site-pair site belongs to the canonical site table")
+                .point
+                .xy(),
+        );
+        Ok(!exact::segment_intersection(&start, &end, &site, &site)?.is_point())
+    }
+
+    fn check_separator(&self, chord: usize, class: usize, assigned: &[Option<XY>]) -> Result<bool> {
+        self.embedding
+            .separator_preserved(chord, |vertex| Ok(self.local_xy(vertex, class, assigned)))
+    }
+}
+
+impl Problem for VoronoiProblem<'_, '_> {
+    type Node = VertexId;
+    type Candidate = XY;
+    type Key = PointKey;
+    type ClassState = VoronoiClassState;
+
+    fn classes(&self) -> &[Vec<Self::Node>] {
+        &self.classes
+    }
+
+    fn fixed_keys(&self, class: usize, _variables: &[Self::Node]) -> Result<Vec<Self::Key>> {
+        let mut keys = Vec::with_capacity(self.embedding.live_nodes.len());
+        for &node in self.embedding.live_nodes {
+            if self
+                .node_location
+                .get(node.0 as usize)
+                .copied()
+                .flatten()
+                .is_none_or(|(owner, _)| owner != class)
+            {
+                keys.push(PointKey::new(
+                    self.embedding.xy(node, self.embedding.coordinates)?,
+                ));
+            }
+        }
+        Ok(keys)
+    }
+
+    fn compare_nodes(&self, left: Self::Node, right: Self::Node) -> Result<Ordering> {
+        let left_seeded = self.search_seeds.binary_search(&left).is_ok();
+        let right_seeded = self.search_seeds.binary_search(&right).is_ok();
+        Ok(if left_seeded == right_seeded {
+            self.embedding.compare_nodes(left, right)?
+        } else {
+            right_seeded.cmp(&left_seeded)
+        })
+    }
+
+    fn fill_candidates(
+        &self,
+        node: Self::Node,
+        candidates: &mut Vec<Self::Candidate>,
+    ) -> Result<()> {
+        let nearest = self.embedding.xy(node, self.embedding.coordinates)?;
+        let x_values = [nearest.x.next_down(), nearest.x, nearest.x.next_up()];
+        let y_values = [nearest.y.next_down(), nearest.y, nearest.y.next_up()];
+        for &x in &x_values {
+            for &y in &y_values {
+                let candidate = XY::new(x, y);
+                if candidate.x.is_finite() && candidate.y.is_finite() {
+                    candidates.push(candidate);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn compare_candidates(
+        &self,
+        node: Self::Node,
+        left: Self::Candidate,
+        right: Self::Candidate,
+    ) -> Result<Ordering> {
+        let exact = &self.embedding.subdivision.vertex(node).point;
+        Ok(exact::squared_distance_cmp_point(exact, left, right)?
+            .then_with(|| left.x.total_cmp(&right.x))
+            .then_with(|| left.y.total_cmp(&right.y)))
+    }
+
+    fn candidate_key(&self, candidate: Self::Candidate) -> Self::Key {
+        PointKey::new(candidate)
+    }
+
+    fn prepare_class(
+        &self,
+        class: usize,
+        _variables: &[Self::Node],
+        budget: &mut EvaluationBudget,
+    ) -> Result<Self::ClassState> {
+        self.prepare_proximity(budget)?;
+        let prepared = self.proximity.borrow();
+        Ok(prepared
+            .as_ref()
+            .expect("Voronoi proximity state is prepared before class search")
+            .classes
+            .get(class)
+            .expect("class ID belongs to the Voronoi search")
+            .clone())
+    }
+
+    fn check_local(
+        &self,
+        class_state: &Self::ClassState,
+        class: usize,
+        _variables: &[Self::Node],
+        rank: usize,
+        assigned: &[Option<Self::Candidate>],
+        budget: &mut EvaluationBudget,
+    ) -> Result<bool> {
+        let prepared = self.proximity.borrow();
+        let prepared = prepared
+            .as_ref()
+            .expect("Voronoi proximity state is prepared before local search");
+        for &pair in class_state
+            .pairs_by_rank
+            .get(rank)
+            .expect("rank belongs to the Voronoi class")
+        {
+            budget.charge(1)?;
+            let (left, right) = *prepared
+                .pairs
+                .get(pair)
+                .expect("pair index belongs to the Voronoi proximity table");
+            if !self.check_pair(left, right, class, assigned) {
+                return Ok(false);
+            }
+        }
+        for &chord in class_state
+            .separators_by_rank
+            .get(rank)
+            .expect("rank belongs to the Voronoi class")
+        {
+            budget.charge(1)?;
+            if !self.check_separator(chord, class, assigned)? {
+                return Ok(false);
+            }
+        }
+        for &site_pair in class_state
+            .site_pairs_by_rank
+            .get(rank)
+            .expect("rank belongs to the Voronoi class")
+        {
+            budget.charge(1)?;
+            if !self.check_site_pair(site_pair, class, assigned)? {
+                return Ok(false);
+            }
+        }
+        for &fan in class_state
+            .fans_by_rank
+            .get(rank)
+            .expect("rank belongs to the Voronoi class")
+        {
+            budget.charge(1)?;
+            if !self.check_fan(fan, class, assigned)? {
+                return Ok(false);
+            }
+        }
+        for &ring in class_state
+            .rings_by_rank
+            .get(rank)
+            .expect("rank belongs to the Voronoi class")
+        {
+            let vertices = self
+                .embedding
+                .ring(ring)
+                .exact(self.embedding.parts)
+                .vertices
+                .len();
+            budget.charge(
+                u64::try_from(vertices.div_ceil(16))
+                    .map_err(|_| crate::error::ResourceError::SizeOverflow)?,
+            )?;
+            if !self.check_ring_orientation(ring, class, assigned)? {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    }
+
+    fn check_global(
+        &self,
+        assignments: &[ClassAssignment<'_, Self::Node, Self::Candidate>],
+        budget: &mut EvaluationBudget,
+    ) -> Result<GlobalCheck> {
+        let mut coordinates = self.embedding.coordinates.to_vec();
+        for assignment in assignments {
+            for (&node, &candidate) in assignment.variables.iter().zip(assignment.values) {
+                self.embedding
+                    .vertices
+                    .set_point(node, &mut coordinates, candidate);
+            }
+        }
+        let ring_vertices = self
+            .embedding
+            .rings
+            .iter()
+            .try_fold(0_usize, |count, ring| {
+                count
+                    .checked_add(ring.exact(self.embedding.parts).vertices.len())
+                    .ok_or(crate::error::ResourceError::SizeOverflow)
+            })?;
+        let host_items = self
+            .embedding
+            .host_graphs
+            .iter()
+            .try_fold(0_usize, |count, graph| {
+                count
+                    .checked_add(graph.vertices.len())
+                    .and_then(|count| count.checked_add(graph.edges.len()))
+                    .ok_or(crate::error::ResourceError::SizeOverflow)
+            })?;
+        let units = ring_vertices
+            .div_ceil(16)
+            .checked_add(host_items.div_ceil(16))
+            .and_then(|units| units.checked_add(self.embedding.live_nodes.len().div_ceil(16)))
+            .ok_or(crate::error::ResourceError::SizeOverflow)?;
+        budget
+            .charge(u64::try_from(units).map_err(|_| crate::error::ResourceError::SizeOverflow)?)?;
+
+        let mut blamed = vec![false; self.classes.len()];
+        let mut rejected = false;
+        let mut coordinates_by_key = try_hash_map_with_capacity(self.embedding.live_nodes.len())?;
+        for &node in self.embedding.live_nodes {
+            let point = self.embedding.xy(node, &coordinates)?;
+            if let Some(previous) = coordinates_by_key.insert(PointKey::new(point), node)
+                && previous != node
+            {
+                rejected = true;
+                self.mark_node_class(previous, &mut blamed);
+                self.mark_node_class(node, &mut blamed);
+            }
+        }
+        for ring in 0..self.embedding.rings.len() {
+            if !self.embedding.ring_orientation(ring, &coordinates)? {
+                rejected = true;
+                let exact = self.embedding.ring(ring).exact(self.embedding.parts);
+                let (_, open_vertices) = exact
+                    .vertices
+                    .split_last()
+                    .expect("simple Voronoi rings are closed");
+                for &node in open_vertices {
+                    self.mark_node_class(node, &mut blamed);
+                }
+            }
+        }
+        let points = VoronoiPoints {
+            vertices: self.embedding.vertices,
+            coordinates: &coordinates,
+        };
+        for host_graph in &self.embedding.host_graphs {
+            let owner_points = VoronoiOwnerPoints {
+                points: &points,
+                vertices: &host_graph.vertices,
+            };
+            let host_flow = visit_component_faces(
+                &owner_points,
+                host_graph.vertices.len(),
+                host_graph.edges.len(),
+                |edge| host_graph.edge(edge),
+                |edge| host_graph.side_keys(edge),
+                |root, hit| {
+                    rejected = true;
+                    let root = host_graph.vertex(root);
+                    let rings = self
+                        .embedding
+                        .rings_by_node
+                        .get(root.0 as usize)
+                        .expect("host root belongs to the Voronoi vertex domain");
+                    let mut found_owner_ring = false;
+                    for ring in rings
+                        .iter()
+                        .copied()
+                        .filter(|&ring| self.embedding.ring_owner(ring) == host_graph.owner)
+                    {
+                        found_owner_ring = true;
+                        let exact = self.embedding.ring(ring).exact(self.embedding.parts);
+                        let (_, open_vertices) = exact
+                            .vertices
+                            .split_last()
+                            .expect("simple Voronoi rings are closed");
+                        for &node in open_vertices {
+                            self.mark_node_class(node, &mut blamed);
+                        }
+                    }
+                    if !found_owner_ring {
+                        self.mark_node_class(root, &mut blamed);
+                    }
+                    if let Some(hit) = hit {
+                        let edge = self.embedding.chord(host_graph.chord(hit));
+                        self.mark_node_class(VertexId(edge.nodes[0]), &mut blamed);
+                        self.mark_node_class(VertexId(edge.nodes[1]), &mut blamed);
+                    }
+                    ControlFlow::Continue(())
+                },
+            )?;
+            debug_assert!(host_flow.is_continue());
+        }
+        let classes = blamed
+            .into_iter()
+            .enumerate()
+            .filter_map(|(class, blamed)| blamed.then_some(class))
+            .collect::<Vec<_>>();
+        Ok(if rejected {
+            GlobalCheck::Reject(classes)
+        } else {
+            GlobalCheck::Pass
+        })
+    }
+
+    fn initial_evaluations(&self) -> u64 {
+        self.initial_evaluations
+    }
+}
+
+fn rounded_fan_angle_cmp(origin: XY, left: XY, right: XY) -> Option<Ordering> {
     let half = |target: XY| target.y > origin.y || (target.y == origin.y && target.x >= origin.x);
     match (half(left), half(right)) {
-        (true, false) => Ok(Ordering::Less),
-        (false, true) => Ok(Ordering::Greater),
+        (true, false) => Some(Ordering::Less),
+        (false, true) => Some(Ordering::Greater),
         _ => match exact::orient2d(origin, left, right) {
-            ExactSign::Positive => Ok(Ordering::Less),
-            ExactSign::Negative => Ok(Ordering::Greater),
-            ExactSign::Zero => Err(voronoi_error("rounded Voronoi fan contains an angular tie")),
+            ExactSign::Positive => Some(Ordering::Less),
+            ExactSign::Negative => Some(Ordering::Greater),
+            ExactSign::Zero => None,
         },
     }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum FanSortMode {
+    Exact,
+    Rounded,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum FanSortOutcome {
+    Sorted,
+    AngularTie,
 }
 
 fn sort_fan(
     vertex: VertexId,
     incident: &[EdgeId],
-    rounded: bool,
+    mode: FanSortMode,
     subdivision: &ExactSubdivision,
-    exact_to_embedded: &EmbeddedVertices,
-    points: &[XY],
+    xy_of: &impl Fn(VertexId) -> Result<XY>,
     order: &mut Vec<EdgeId>,
-) -> Result<()> {
-    let embedded_point =
-        |vertex: VertexId| -> Result<XY> { exact_to_embedded.point(vertex, points) };
+) -> Result<FanSortOutcome> {
     let exact_origin = &subdivision.vertex(vertex).point;
-    let rounded_origin = rounded.then(|| embedded_point(vertex)).transpose()?;
-    let compare = |left: EdgeId, right: EdgeId| -> Result<Ordering> {
+    let rounded_origin = (mode == FanSortMode::Rounded)
+        .then(|| xy_of(vertex))
+        .transpose()?;
+    let compare = |left: EdgeId, right: EdgeId| -> Result<Option<Ordering>> {
         let left = fan_target(subdivision, left, vertex);
         let right = fan_target(subdivision, right, vertex);
         if let Some(origin) = rounded_origin {
-            rounded_fan_angle_cmp(origin, embedded_point(left)?, embedded_point(right)?)
+            Ok(rounded_fan_angle_cmp(origin, xy_of(left)?, xy_of(right)?))
         } else {
             exact::angle_ccw_cmp(
                 exact_origin,
                 &subdivision.vertex(left).point,
                 &subdivision.vertex(right).point,
             )
+            .map(Some)
         }
     };
 
     order.clear();
     order.reserve(incident.len());
     order.extend_from_slice(incident);
-    try_sort_by(order, |&left, &right| compare(left, right))?;
+    try_sort_by(order, |&left, &right| {
+        Ok(compare(left, right)?.unwrap_or(Ordering::Equal))
+    })?;
     for &[left, right] in order.array_windows::<2>() {
-        compare(left, right)?;
+        if compare(left, right)?.is_none() {
+            return Ok(FanSortOutcome::AngularTie);
+        }
     }
     if let Some((&first, rest)) = order.split_first()
         && let Some(&last) = rest.last()
+        && compare(last, first)?.is_none()
     {
-        compare(last, first)?;
+        return Ok(FanSortOutcome::AngularTie);
     }
     if let Some((least, _)) = order.iter().enumerate().min_by_key(|(_, edge)| *edge) {
         order.rotate_left(least);
     }
-    Ok(())
+    Ok(FanSortOutcome::Sorted)
+}
+
+fn rounded_ring_orientation_matches(
+    vertices: &[VertexId],
+    orientation: ExactSign,
+    mut xy_of: impl FnMut(VertexId) -> Result<XY>,
+) -> Result<bool> {
+    let (_, open_vertices) = vertices
+        .split_last()
+        .expect("simple Voronoi rings are closed");
+    let rounded = open_vertices
+        .iter()
+        .map(|&vertex| xy_of(vertex))
+        .collect::<Result<Vec<_>>>()?;
+    Ok(stored_xy_cycle_matches_orientation(&rounded, orientation))
+}
+
+fn stored_xy_cycle_matches_orientation(rounded: &[XY], orientation: ExactSign) -> bool {
+    match open_xy_cycle_winding(rounded) {
+        RingWinding::Clockwise => orientation == ExactSign::Negative,
+        RingWinding::CounterClockwise => orientation == ExactSign::Positive,
+        RingWinding::Degenerate => false,
+    }
 }
 
 fn polygon_output_count(
@@ -2267,7 +3833,7 @@ fn polygon_output_baseline(polygon: &Polygon) -> Result<usize> {
 
 fn embed(
     subdivision: &ExactSubdivision,
-    parts: Vec<ExactCellPart>,
+    parts: &[ExactCellPart],
     chains: &[ExactEdgeChain],
     clip: &NormalizedClip<'_>,
     sites: &[Site],
@@ -2276,7 +3842,7 @@ fn embed(
 ) -> Result<EmbeddedVoronoi> {
     let mut live = LiveVertices::new(subdivision.vertices.len());
     let mut live_edges = Vec::new();
-    for part in &parts {
+    for part in parts {
         for ring in std::iter::once(&part.shell).chain(&part.holes) {
             live_edges.reserve(ring.edges.len());
             live_edges.extend_from_slice(&ring.edges);
@@ -2310,6 +3876,7 @@ fn embed(
     }
     let mut points = Vec::new();
     let mut exact_to_embedded = EmbeddedVertices::new(subdivision.vertices.len());
+    let mut live_nodes = Vec::new();
     for (index, (vertex, &is_live)) in subdivision.vertices.iter().zip(live.iter()).enumerate() {
         if !is_live {
             continue;
@@ -2318,141 +3885,68 @@ fn embed(
             .fixed_xy
             .map_or_else(|| vertex.point.round_nearest_even(), Ok)?;
         let embedded = EmbeddedVertexId(points.len() as u32);
-        exact_to_embedded.set(VertexId(index as u32), embedded);
+        let vertex = VertexId(index as u32);
+        exact_to_embedded.set(vertex, embedded);
+        live_nodes.push(vertex);
         points.push(point);
     }
-    let mut keys = Vec::with_capacity(points.len());
-    keys.extend(points.iter().map(|&point| PointKey::new(point)));
-    keys.sort_unstable();
-    if keys.array_windows::<2>().any(|[a, b]| a == b) {
-        return Err(embedding_failure());
-    }
-    let rounded_exact = |vertex| {
-        exact_to_embedded
-            .point(vertex, &points)
-            .map(exact::ExactPoint::from_xy)
+    live_nodes.sort_unstable();
+    let operation = if product.includes_polygons() {
+        "voronoi_polygons"
+    } else {
+        "voronoi_edges"
     };
-    for &edge_id in &live_edges {
-        let edge = subdivision.edge(edge_id);
-        let [start, end] = edge.endpoints;
-        let rounded = [rounded_exact(start)?, rounded_exact(end)?];
-        if rounded[0].same_position(&rounded[1])? {
-            return Err(embedding_failure());
-        }
-        if edge.separator.is_none() {
-            continue;
-        }
-        let side_of = |site: SiteId| {
-            exact::orient_points(
-                &rounded[0],
-                &rounded[1],
-                &exact::ExactPoint::from_xy(site_by_id(sites, site).point.xy()),
-            )
-        };
-        let (left, right) = match edge.forward.owner {
-            OwnerTransition::Boundary { left, right } if left.is_some() || right.is_some() => {
-                (left, right)
-            },
-            OwnerTransition::Boundary { .. } | OwnerTransition::Preserve => {
-                return Err(voronoi_error("live separator has incomplete ownership"));
-            },
-        };
-        if let Some(left) = left
-            && side_of(left)? != ExactSign::Positive
-        {
-            return Err(embedding_failure());
-        }
-        if let Some(right) = right
-            && side_of(right)? != ExactSign::Negative
-        {
-            return Err(embedding_failure());
-        }
-    }
-    // No site may lie on a rounded separator: each site probes the boxes of
-    // the separators around it.
-    let mut marked = Vec::new();
-    let mut marked_boxes = Vec::new();
-    for &edge_id in &live_edges {
-        let edge = subdivision.edge(edge_id);
-        if edge.separator.is_some() {
-            let [start, end] = edge
-                .endpoints
-                .map(|vertex| exact_to_embedded.point(vertex, &points));
-            let (start, end) = (start?, end?);
-            marked.push([start, end]);
-            marked_boxes.push(Some(Bounds::new_raw(
-                start.x.min(end.x),
-                start.y.min(end.y),
-                start.x.max(end.x),
-                start.y.max(end.y),
-            )));
-        }
-    }
-    let marked_index = BoxIndex::build(&marked_boxes)?;
-    for site in sites {
-        let point = site.point.xy();
-        #[expect(
-            clippy::indexing_slicing,
-            reason = "marked_index was built from marked_boxes in one-to-one order with this marked segment column"
-        )]
-        let visit = |separator: usize| {
-            let [start, end] = marked[separator].map(exact::ExactPoint::from_xy);
-            let site = exact::ExactPoint::from_xy(point);
-            if exact::segment_intersection(&start, &end, &site, &site)?.is_point() {
-                return Err(embedding_failure());
-            }
-            Ok(())
-        };
-        marked_index.for_each_containing(Some(point), visit)?;
-    }
-    let mut emitted_incidence = Vec::new();
-    for &edge_id in &live_edges {
-        let edge = subdivision.edge(edge_id);
-        let [start, end] = edge.endpoints;
-        emitted_incidence.push(([start.0, end.0], Segment {
-            start: exact_to_embedded.point(start, &points)?,
-            end: exact_to_embedded.point(end, &points)?,
-        }));
-    }
-    certify_emitted_incidence(&emitted_incidence).map_err(|error| {
-        if matches!(error.kind(), crate::error::ErrorKind::Resource(_)) {
-            error
+    let (assignment, constructed) = {
+        let embedding = VoronoiEmbedding::new(
+            subdivision,
+            parts,
+            product.includes_polygons(),
+            &live_nodes,
+            &live_edges,
+            &exact_to_embedded,
+            &points,
+            sites,
+        )?;
+        let conflicts = embedding.collect_conflicts(&points)?;
+        if conflicts.is_empty() {
+            (None, 0)
         } else {
-            embedding_failure()
+            let seeds = embedding.seed_nodes(&conflicts);
+            let problem = VoronoiProblem::new(&embedding, &seeds)?;
+            let constructed = problem.classes.iter().try_fold(0_usize, |count, class| {
+                count
+                    .checked_add(class.len())
+                    .ok_or(crate::error::ResourceError::SizeOverflow)
+            })?;
+            (
+                Some(Search::new(problem, operation, constructed)?.run()?),
+                constructed,
+            )
         }
-    })?;
-    let incidence = LiveEdgeIncidence::build(subdivision, &live_edges, subdivision.vertices.len());
-    let mut exact_order = Vec::new();
-    let mut rounded_order = Vec::new();
-    for (is_live, (vertex, incident)) in live.iter().zip(incidence.rows()) {
-        if !is_live {
-            continue;
+    };
+    if let Some(assignment) = assignment {
+        for class in assignment.classes {
+            for (node, candidate) in class.variables.into_iter().zip(class.values) {
+                exact_to_embedded.set_point(node, &mut points, candidate);
+            }
         }
-        sort_fan(
-            vertex,
-            incident,
-            false,
+        let embedding = VoronoiEmbedding::new(
             subdivision,
+            parts,
+            product.includes_polygons(),
+            &live_nodes,
+            &live_edges,
             &exact_to_embedded,
             &points,
-            &mut exact_order,
+            sites,
         )?;
-        sort_fan(
-            vertex,
-            incident,
-            true,
-            subdivision,
-            &exact_to_embedded,
-            &points,
-            &mut rounded_order,
-        )?;
-        if exact_order != rounded_order {
-            return Err(embedding_failure());
+        if !embedding.collect_conflicts(&points)?.is_empty() {
+            return Err(exact_embedding_unrepresentable(operation, constructed));
         }
     }
     let mut published = 0_usize;
     if product.includes_polygons() {
-        for part in &parts {
+        for part in parts {
             let part_count = polygon_output_count(
                 part.shell.vertices.len(),
                 part.holes.iter().map(|hole| hole.vertices.len()),
@@ -2487,7 +3981,7 @@ fn embed(
     budget.add(published.saturating_sub(baseline))?;
     // A closed ring starts at its lexicographically smallest rounded vertex:
     // the canonical form both lanes publish.
-    let closed_ring = |vertices: &[VertexId], orientation: ExactSign| -> Result<Ring> {
+    let closed_ring = |vertices: &[VertexId]| -> Result<Ring> {
         ensure_coordseq_vertex_capacity(vertices.len())?;
         let (_, open_vertices) = vertices
             .split_last()
@@ -2497,15 +3991,6 @@ fn embed(
         for &vertex in open_vertices {
             let point = exact_to_embedded.point(vertex, &points)?;
             coordinates.push(Point::new_raw_xy(point.x, point.y));
-        }
-        let mut rounded = Vec::with_capacity(open);
-        rounded.extend(
-            coordinates
-                .iter()
-                .map(|point| exact::ExactPoint::from_xy(point.xy())),
-        );
-        if exact::cycle_orientation(&rounded)? != orientation {
-            return Err(embedding_failure());
         }
         if open > 2 {
             let (start, _) = coordinates
@@ -2521,20 +4006,27 @@ fn embed(
         coordinates.push(first);
         Ring::closed(coordinates)
     };
-    let mut labelled = Vec::with_capacity(parts.len());
+    let mut labelled = Vec::with_capacity(if product.includes_polygons() {
+        parts.len()
+    } else {
+        0
+    });
     for part in parts {
         if walk_label(subdivision, part.face).owner != Some(part.owner) {
             return Err(voronoi_error("embedded cell lost its exact face owner"));
         }
-        let shell = closed_ring(&part.shell.vertices, part.shell.orientation)?;
+        if !product.includes_polygons() {
+            continue;
+        }
+        let shell = closed_ring(&part.shell.vertices)?;
         let holes = part
             .holes
             .iter()
-            .map(|hole| closed_ring(&hole.vertices, hole.orientation))
+            .map(|hole| closed_ring(&hole.vertices))
             .collect::<std::result::Result<Vec<_>, _>>()?;
         let polygon = Polygon::new(shell, holes);
         if !polygon_is_valid(&polygon)? {
-            return Err(embedding_failure());
+            return Err(exact_embedding_unrepresentable(operation, constructed));
         }
         labelled.push((part.owner, polygon));
     }
@@ -2593,11 +4085,13 @@ fn embed(
         };
         comparison_clip
     } else {
-        Shape::Polygon(certify_separator_chains_inside_clip(
-            chains,
-            clip,
-            |vertex| exact_to_embedded.point(vertex, &points),
-        )?)
+        let Some(polygon) = certify_separator_chains_inside_clip(chains, clip, |vertex| {
+            exact_to_embedded.point(vertex, &points)
+        })?
+        else {
+            return Err(exact_embedding_unrepresentable(operation, constructed));
+        };
+        Shape::Polygon(polygon)
     };
     if product.includes_polygons() && labelled.is_empty() {
         return Err(voronoi_error(
@@ -2612,7 +4106,7 @@ fn embed(
                 .map(|(_, polygon)| Shape::Polygon(polygon.clone())),
         );
         if !coverage_is_valid(&shape_rows, 0.0)? {
-            return Err(embedding_failure());
+            return Err(exact_embedding_unrepresentable(operation, constructed));
         }
         let mut row_boxes = Vec::with_capacity(shape_rows.len());
         row_boxes.extend(shape_rows.iter().map(Shape::bounds));
@@ -2631,7 +4125,7 @@ fn embed(
                 let (owner, polygon) = &labelled[row];
                 if Shape::Polygon(polygon.clone()).covers(&point)? {
                     if owner.0 as usize != site_index {
-                        return Err(embedding_failure());
+                        return Err(exact_embedding_unrepresentable(operation, constructed));
                     }
                     own = true;
                 }
@@ -2639,7 +4133,7 @@ fn embed(
             };
             row_index.for_each_containing(Some(site.point.xy()), verify_row)?;
             if !own {
-                return Err(embedding_failure());
+                return Err(exact_embedding_unrepresentable(operation, constructed));
             }
         }
         // Exact vertices are rounded once and shared by every incident cell.  The
@@ -2726,17 +4220,13 @@ pub(super) fn build_product(
         node_scaffold_and_separators(scaffold, separators, sites, &adjacency, &clip, &rect)?;
     let mut subdivision = build_exact_subdivision(atoms)?;
     graft_components(&mut subdivision, sites, &adjacency)?;
-    let parts = if product.includes_polygons() {
-        assemble_cells(&subdivision)?
-    } else {
-        Vec::new()
-    };
+    let parts = assemble_cells(&subdivision)?;
     let chains = if product.includes_edges() {
         assemble_edges(&subdivision)?
     } else {
         Vec::new()
     };
-    embed(&subdivision, parts, &chains, &clip, sites, product, budget)
+    embed(&subdivision, &parts, &chains, &clip, sites, product, budget)
 }
 
 pub(super) fn build_edges(
@@ -2971,7 +4461,7 @@ fn certify_separator_chains_inside_clip(
     chains: &[ExactEdgeChain],
     clip: &NormalizedClip<'_>,
     xy_of: impl Fn(VertexId) -> Result<XY>,
-) -> Result<Polygon> {
+) -> Result<Option<Polygon>> {
     let certificate = clip_certificate_data(clip)?;
     let ClipCertificate {
         exact_rings,
@@ -2979,7 +4469,7 @@ fn certify_separator_chains_inside_clip(
         polygon,
     } = certificate;
     if chains.is_empty() {
-        return Ok(polygon);
+        return Ok(Some(polygon));
     }
 
     let clip_edge_count = exact_rings.iter().try_fold(0_usize, |count, ring| {
@@ -3111,11 +4601,11 @@ fn certify_separator_chains_inside_clip(
                 &mut events,
                 &mut parity,
             )? {
-                return Err(embedding_failure());
+                return Ok(None);
             }
         }
     }
-    Ok(polygon)
+    Ok(Some(polygon))
 }
 
 /// Voronoi cells of collinear sites: the strips between consecutive
@@ -3457,22 +4947,25 @@ fn collinear_clip_events(
             let crossing = (start_sign == ExactSign::Negative && end_sign != ExactSign::Negative)
                 || (start_sign != ExactSign::Negative && end_sign == ExactSign::Negative);
             let point = if start_sign == ExactSign::Zero {
-                edge.start.clone()
+                Some(edge.start.clone())
             } else if end_sign == ExactSign::Zero {
-                edge.end.clone()
+                Some(edge.end.clone())
             } else if start_sign != end_sign {
                 let support = exact::ExactLine::through_points(edge.start, edge.end)?;
                 let point = exact::line_intersection(&line, &support)?;
-                if !matches!(
+                matches!(
                     exact::segment_intersection(edge.start, edge.end, &point, &point)?,
                     exact::SegmentIntersection::Point(_)
-                ) {
-                    return Err(embedding_failure());
-                }
-                point
+                )
+                .then_some(())
+                .expect(
+                    "opposite exact endpoint signs put the support intersection on the segment",
+                );
+                Some(point)
             } else {
-                return Err(embedding_failure());
-            };
+                None
+            }
+            .expect("an active clip edge brackets the exact bisector projection level");
             edge_events
                 .get_mut(edge_index)
                 .ok_or_else(|| voronoi_error("clip edge has no event row"))?
@@ -3540,9 +5033,9 @@ fn collinear_clip_events(
                 .checked_add(event.boundary_starts)
                 .ok_or(crate::error::ResourceError::SizeOverflow)?;
         }
-        if inside || boundary_active != 0 {
-            return Err(embedding_failure());
-        }
+        (!inside && boundary_active == 0)
+            .then_some(())
+            .expect("closed clip rings balance exact crossings and boundary interval endpoints");
         if current.len() >= 2 {
             chains.push((bisector.sites, current));
         }
@@ -3748,7 +5241,7 @@ pub(super) fn build_collinear_edges(
     };
     let embedded = embed(
         &subdivision,
-        Vec::new(),
+        &[],
         &chains,
         &split_clip,
         sites,
@@ -4589,9 +6082,9 @@ fn dual_embed(
     sites: &[Site],
     product: VoronoiProduct,
     budget: &mut ExpansionBudget,
-) -> Result<EmbeddedVoronoi> {
+) -> std::result::Result<EmbeddedVoronoi, DualEmbeddingError> {
     if rings.rings.len() != sites.len() {
-        return Err(embedding_failure());
+        return Err(DualEmbeddingError::Unrepresentable);
     }
     // Vertex identity WITHOUT an exact positional sort.
     //
@@ -4640,7 +6133,7 @@ fn dual_embed(
         center_rounded: &mut [Option<(XY, u32)>],
         interned: &mut crate::collections::HashMap<PointKey, (&'r exact::ExactPoint, u32)>,
         vertex_xy: &mut Vec<XY>,
-    ) -> Result<(XY, u32)> {
+    ) -> std::result::Result<(XY, u32), DualEmbeddingError> {
         if let DualVertex::Center(component) = *vertex {
             if let Some(memo) = center_rounded[component] {
                 return Ok(memo);
@@ -4653,7 +6146,7 @@ fn dual_embed(
             std::collections::hash_map::Entry::Occupied(existing) => {
                 let &(representative, id) = existing.get();
                 if !representative.same_position(point)? {
-                    return Err(embedding_failure());
+                    return Err(DualEmbeddingError::Unrepresentable);
                 }
                 // Equal exact generated vertices can reach signed zero through
                 // different algebraic expressions. Reuse the first admitted
@@ -4722,14 +6215,16 @@ fn dual_embed(
             .map_or(0, |(index, _)| index);
         rounded.rotate_left(start);
         let site_xy = site.point.xy();
-        let first = rounded.first().ok_or_else(embedding_failure)?;
+        let first = rounded
+            .first()
+            .expect("dual_build_rings admits only cells with at least three vertices");
         let closed = rounded.iter().chain(std::iter::once(first));
         if !certify_convex_cell(rounded, site_xy) {
+            if !stored_xy_cycle_matches_orientation(rounded, ExactSign::Positive) {
+                return Err(DualEmbeddingError::Unrepresentable);
+            }
             let mut rounded_ring = Vec::with_capacity(rounded.len());
             rounded_ring.extend(rounded.iter().map(|&xy| exact::ExactPoint::from_xy(xy)));
-            if exact::cycle_orientation(&rounded_ring)? != ExactSign::Positive {
-                return Err(embedding_failure());
-            }
             let capacity = rounded
                 .len()
                 .checked_add(1)
@@ -4738,11 +6233,11 @@ fn dual_embed(
             let mut points = Vec::with_capacity(capacity);
             points.extend(closed.clone().map(|xy| Point::new_raw_xy(xy.x, xy.y)));
             if !polygon_is_valid(&Polygon::new(Ring::closed(points)?, Vec::new()))? {
-                return Err(embedding_failure());
+                return Err(DualEmbeddingError::Unrepresentable);
             }
             let site = exact::ExactPoint::from_xy(site_xy);
             if exact::point_in_cycle(&rounded_ring, &site)? == exact::PointInCycle::Outside {
-                return Err(embedding_failure());
+                return Err(DualEmbeddingError::Unrepresentable);
             }
         }
     }
@@ -4771,7 +6266,7 @@ fn dual_embed(
         )]
         let ids = &ids_all[start..end];
         if ids.is_empty() {
-            return Err(embedding_failure());
+            return Err(DualEmbeddingError::Unrepresentable);
         }
         for (&from, &to) in ids.iter().zip(ids.iter().cycle().skip(1)) {
             let (low, high, forward) = if from <= to {
@@ -4792,7 +6287,7 @@ fn dual_embed(
         let key = match run {
             [left, right] => {
                 if left.forward == right.forward {
-                    return Err(embedding_failure());
+                    return Err(DualEmbeddingError::Unrepresentable);
                 }
                 internal_edge_count = internal_edge_count
                     .checked_add(1)
@@ -4800,13 +6295,17 @@ fn dual_embed(
                 continue;
             },
             [key] => key,
-            _ => return Err(embedding_failure()),
+            _ => return Err(DualEmbeddingError::Unrepresentable),
         };
         let forward = key.forward;
         let (low, high) = (key.low as usize, key.high as usize);
         let (a, b) = (
-            *vertex_xy.get(low).ok_or_else(embedding_failure)?,
-            *vertex_xy.get(high).ok_or_else(embedding_failure)?,
+            *vertex_xy
+                .get(low)
+                .expect("directed dual edge IDs come from the resolved vertex column"),
+            *vertex_xy
+                .get(high)
+                .expect("directed dual edge IDs come from the resolved vertex column"),
         );
         let (a, b) = if forward { (a, b) } else { (b, a) };
         let side = if a.y == min_y && b.y == min_y {
@@ -4818,7 +6317,7 @@ fn dual_embed(
         } else if a.x == min_x && b.x == min_x {
             FrameSide::Left
         } else {
-            return Err(embedding_failure());
+            return Err(DualEmbeddingError::Unrepresentable);
         };
         let correctly_directed = match side {
             FrameSide::Bottom => a.x < b.x,
@@ -4827,7 +6326,7 @@ fn dual_embed(
             FrameSide::Left => a.y > b.y,
         };
         if !correctly_directed {
-            return Err(embedding_failure());
+            return Err(DualEmbeddingError::Unrepresentable);
         }
         let (lo, hi) = match side {
             FrameSide::Bottom | FrameSide::Top => (a.x.min(b.x), a.x.max(b.x)),
@@ -4850,12 +6349,12 @@ fn dual_embed(
         let mut cursor = start;
         for &(lo, hi) in side.iter() {
             if lo != cursor {
-                return Err(embedding_failure());
+                return Err(DualEmbeddingError::Unrepresentable);
             }
             cursor = hi;
         }
         if cursor != end {
-            return Err(embedding_failure());
+            return Err(DualEmbeddingError::Unrepresentable);
         }
     }
     let mut published = 0_usize;
@@ -4899,8 +6398,12 @@ fn dual_embed(
                 let low = left.low as usize;
                 let high = left.high as usize;
                 internal_edges.push([
-                    *vertex_xy.get(low).ok_or_else(embedding_failure)?,
-                    *vertex_xy.get(high).ok_or_else(embedding_failure)?,
+                    *vertex_xy
+                        .get(low)
+                        .expect("directed dual edge IDs come from the resolved vertex column"),
+                    *vertex_xy
+                        .get(high)
+                        .expect("directed dual edge IDs come from the resolved vertex column"),
                 ]);
             }
         }
@@ -4915,8 +6418,12 @@ fn dual_embed(
         polygons.reserve(rings.rings.len());
         for window in offsets.array_windows::<2>() {
             let [start, end] = *window;
-            let rounded = rounded_all.get(start..end).ok_or_else(embedding_failure)?;
-            let first = rounded.first().ok_or_else(embedding_failure)?;
+            let rounded = rounded_all
+                .get(start..end)
+                .expect("row offsets bracket appends to this rounded vertex column");
+            let first = rounded
+                .first()
+                .expect("dual_build_rings admits only cells with at least three vertices");
             let capacity = rounded
                 .len()
                 .checked_add(1)
@@ -4960,5 +6467,15 @@ fn dual_build_product(
     }
     let complex = delaunay_complex(mesh, sites)?;
     let rings = dual_build_rings(sites, mesh, complex, &clip)?;
-    dual_embed(&rings, &clip, sites, product, budget)
+    match dual_embed(&rings, &clip, sites, product, budget) {
+        Ok(result) => Ok(result),
+        Err(DualEmbeddingError::Unrepresentable) => {
+            // The optimized lane remains byte-identical when its nearest
+            // embedding passes. Only a binary64 certificate failure uses the
+            // general DCEL lane, where constructed vertices can move to
+            // adjacent floats under the complete cell/face certificate.
+            build_product(sites, boundary, budget, false, mesh, product)
+        },
+        Err(DualEmbeddingError::Other(error)) => Err(error),
+    }
 }

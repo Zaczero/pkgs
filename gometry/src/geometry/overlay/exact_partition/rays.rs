@@ -7,11 +7,13 @@
 //! itself is written once.
 
 use std::cmp::Ordering;
+use std::ops::ControlFlow;
 
 use super::Axis;
 use super::construction::PointArena;
 #[cfg(test)]
 use super::metrics::update as update_partition_metrics;
+use crate::geometry::arrangement::compare_departures;
 use crate::geometry::exact_arith::ExactSign;
 use crate::geometry::segments::{stored_orientation_sign, try_sort_by};
 use crate::geometry::tessellation::exact::{Interval, compare_ratios};
@@ -287,6 +289,151 @@ pub(in crate::geometry) fn shoot_left<R: RayPoints, E: Fn(usize) -> [u32; 2]>(
     queries: &[u32],
 ) -> Result<Vec<Option<usize>>> {
     shoot_left_with_status::<OrderTree<SweepEdge>, _, _>(points, edge_count, edge, queries)
+}
+
+/// Compare each emitted component's local host with the face east of its
+/// leftward ray hit. `sides(edge)` gives the exact face on the left and right
+/// of the directed edge returned by `edge`.
+#[expect(
+    clippy::indexing_slicing,
+    clippy::float_cmp,
+    reason = "emitted node IDs index this face graph; its face-side labels and edge ordinals are paired"
+)]
+pub(in crate::geometry) fn visit_component_faces<
+    R: RayPoints,
+    E: Fn(usize) -> [u32; 2],
+    F: Fn(usize) -> [u32; 2],
+    V: FnMut(u32, Option<usize>) -> ControlFlow<()>,
+>(
+    points: &R,
+    node_count: usize,
+    edge_count: usize,
+    edge: E,
+    sides: F,
+    mut visit: V,
+) -> Result<ControlFlow<()>> {
+    let incidence_rows = node_count.wrapping_add(1);
+    let mut incident_starts = vec![0_usize; incidence_rows];
+    let mut parents = Vec::with_capacity(node_count);
+    parents.extend(0..node_count as u32);
+    for index in 0..edge_count {
+        let [start, end] = edge(index);
+        let start_node = start as usize;
+        let start_offset = start_node.wrapping_add(1);
+        incident_starts[start_offset] = incident_starts[start_offset].wrapping_add(1);
+        if end != start {
+            let end_node = end as usize;
+            let end_offset = end_node.wrapping_add(1);
+            incident_starts[end_offset] = incident_starts[end_offset].wrapping_add(1);
+        }
+        let mut left = start;
+        let mut right = end;
+        while parents[left as usize] != left {
+            parents[left as usize] = parents[parents[left as usize] as usize];
+            left = parents[left as usize];
+        }
+        while parents[right as usize] != right {
+            parents[right as usize] = parents[parents[right as usize] as usize];
+            right = parents[right as usize];
+        }
+        parents[left.max(right) as usize] = left.min(right);
+    }
+    super::construction::prefix_contact_offsets(&mut incident_starts);
+    let incident_count = incident_starts[node_count];
+    let mut incident = vec![0_usize; incident_count];
+    {
+        let mut cursor = Vec::with_capacity(node_count);
+        cursor.extend(incident_starts.iter().take(node_count).copied());
+        for index in 0..edge_count {
+            let [start, end] = edge(index);
+            for node in [start, end]
+                .into_iter()
+                .take(if end == start { 1 } else { 2 })
+            {
+                let node = node as usize;
+                let position = cursor[node];
+                incident[position] = index;
+                cursor[node] = position.wrapping_add(1);
+            }
+        }
+    }
+    let mut roots: Vec<Option<(usize, XY)>> = Vec::with_capacity(node_count);
+    roots.resize(node_count, None);
+    for node in 0..node_count {
+        if incident_starts[node] == incident_starts[node.wrapping_add(1)] {
+            continue;
+        }
+        let mut root = node as u32;
+        while parents[root as usize] != root {
+            root = parents[root as usize];
+        }
+        let point = points.rounded(node as u32);
+        let entry = &mut roots[root as usize];
+        if entry.is_none_or(|(_, prior): (usize, XY)| {
+            point.x < prior.x || (point.x == prior.x && point.y < prior.y)
+        }) {
+            *entry = Some((node, point));
+        }
+    }
+    drop(parents);
+
+    let mut queries = Vec::new();
+    let mut exteriors = Vec::new();
+    for &(node, point) in roots.iter().flatten() {
+        let mut exterior = None;
+        let mut chosen = None;
+        let mut has_upper = false;
+        let range = incident_starts[node]..incident_starts[node.wrapping_add(1)];
+        for &index in &incident[range] {
+            let [start, end] = edge(index);
+            let (target, target_point, face) = if start as usize == node {
+                (end, points.rounded(end), sides(index)[0])
+            } else {
+                (start, points.rounded(start), sides(index)[1])
+            };
+            if target as usize == node {
+                exterior = Some(face);
+                continue;
+            }
+            let upper = target_point.y >= point.y;
+            if chosen.is_none()
+                || (upper && !has_upper)
+                || (upper == has_upper && {
+                    let (prior_target, prior_point) =
+                        chosen.expect("a selected departure exists before comparing the next one");
+                    compare_departures(point, prior_point, prior_target, target_point, target)
+                        == Ordering::Less
+                })
+            {
+                chosen = Some((target, target_point));
+                exterior = Some(face);
+                has_upper = upper;
+            }
+        }
+        queries.push(node as u32);
+        exteriors.push(exterior.expect("a component root has an incident emitted edge"));
+    }
+    drop(roots);
+    drop(incident);
+    drop(incident_starts);
+
+    let hits = shoot_left(points, edge_count, &edge, &queries)?;
+    for ((&root, &exterior), hit) in queries.iter().zip(&exteriors).zip(hits) {
+        let host = if let Some(index) = hit {
+            let [start, end] = edge(index);
+            if points.compare_axis(start, end, Axis::Y)?.is_lt() {
+                sides(index)[1]
+            } else {
+                sides(index)[0]
+            }
+        } else {
+            0
+        };
+        if host != exterior && visit(root, hit).is_break() {
+            return Ok(ControlFlow::Break(()));
+        }
+    }
+    Ok(ControlFlow::Continue(()))
 }
 
 #[cfg(test)]

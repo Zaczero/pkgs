@@ -16,8 +16,12 @@
 
 use std::borrow::{Borrow, Cow};
 use std::cmp::Ordering;
-use std::ops::{ControlFlow, Range};
+#[cfg(test)]
+use std::ops::ControlFlow;
+use std::ops::Range;
 
+#[cfg(test)]
+use crate::collections::HashMap;
 use crate::error::ResourceError;
 #[cfg(test)]
 use crate::geometry::Coordinates as _;
@@ -34,10 +38,12 @@ use crate::geometry::segments::{
 use crate::geometry::tessellation::exact::ExactDyadic;
 use crate::geometry::{
     Bounds, Contact, CoordSeq, CoordinateAxes, ExpansionBudget, GeometryErrorKind, GeometryKind,
-    HashMap, LineSeq, Loc, MOrdinate, MultiLineString, Point, PointKey, Polygon, PolygonizeFull,
-    Result, Ring, RingKind, Segment, Shape, SharedShapeOwners, XY, ZOrdinate,
-    for_each_candidate_pair, same_point, segment_contact_exact, single_chain, storage,
+    LineSeq, Loc, MOrdinate, MultiLineString, Point, PointKey, Polygon, PolygonizeFull, Result,
+    Ring, RingKind, Segment, Shape, SharedShapeOwners, XY, ZOrdinate, same_point,
+    segment_contact_exact, storage,
 };
+#[cfg(test)]
+use crate::geometry::{for_each_candidate_pair, single_chain};
 
 mod construction;
 mod coverage;
@@ -52,10 +58,11 @@ use construction::{
     AxisValue, PointArena, interpolate_ordinate, parameter_along, partition_unique_segments,
     partition_unique_segments_in_window, partition_unique_segments_unbudgeted,
 };
+pub(in crate::geometry) use embedding::segments_within_chebyshev;
+pub(in crate::geometry) use emission::emitted_pair_preserves_incidence;
 use emission::{
-    BoundaryPlan, CellFacts, CoverageFaceState, GlobalFaces, NodeParts,
-    emitted_pair_preserves_incidence, polygonize_faces, polygonize_faces_with_embedding,
-    polygonize_full_emission,
+    BoundaryPlan, CellFacts, CoverageFaceState, GlobalFaces, NodeParts, polygonize_faces,
+    polygonize_faces_with_embedding, polygonize_full_emission,
 };
 #[cfg(test)]
 pub(in crate::geometry) use metrics::{
@@ -65,7 +72,7 @@ pub(in crate::geometry) use metrics::{
 pub(crate) use metrics::{partition_calls, reset_partition_calls};
 #[cfg(test)]
 use metrics::{record_partition_call, update as update_partition_metrics};
-pub(in crate::geometry) use rays::{RayPoints, shoot_left};
+pub(in crate::geometry) use rays::{RayPoints, shoot_left, visit_component_faces};
 
 pub(in crate::geometry) use self::Axis as RayAxis;
 
@@ -3645,10 +3652,7 @@ const fn location(occupied: bool) -> Loc {
 /// different exact construction (currently Voronoi). ExactPartition owns the
 /// final noding/incidence pass; the external owner retains cocircular centers,
 /// clipping policy, and fan order.
-#[expect(
-    clippy::indexing_slicing,
-    reason = "candidate pair IDs address segments built one-for-one from the input items"
-)]
+#[cfg(test)]
 pub(in crate::geometry) fn certify_emitted_incidence(items: &[([u32; 2], Segment)]) -> Result<()> {
     let mut coordinates: HashMap<u32, PointKey> =
         HashMap::with_hasher(crate::collections::collection_hash_state()?.clone());
@@ -3692,7 +3696,9 @@ pub(in crate::geometry) fn certify_emitted_incidence(items: &[([u32; 2], Segment
     if let ControlFlow::Break((first, second)) =
         for_each_candidate_pair(&segments, single_chain, |left, right| {
             let endpoints = |index: usize| {
-                let ([start, end], segment) = items[index];
+                let ([start, end], segment) = *items
+                    .get(index)
+                    .expect("candidate-pair index belongs to the source item table");
                 [(NodeId(start), segment.start), (NodeId(end), segment.end)]
             };
             if emitted_pair_preserves_incidence(endpoints(left), endpoints(right)) {

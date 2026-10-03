@@ -831,7 +831,7 @@ pub(super) fn canonicalize_closed_xy(xs: &mut [f64], ys: &mut [f64]) {
     }
 }
 
-pub(super) fn emitted_pair_preserves_incidence(
+pub(in crate::geometry) fn emitted_pair_preserves_incidence(
     left: [(NodeId, XY); 2],
     right: [(NodeId, XY); 2],
 ) -> bool {
