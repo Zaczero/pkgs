@@ -1490,10 +1490,12 @@ fn incremental_reduction_preserves_a_dense_multiwinding_closure_degree() {
 
 #[test]
 fn authority_edge_index_matches_exhaustive_exact_classification() {
-    let points: Vec<_> = (0..4_000)
+    // A dyadic zigzag retains every vertex and exercises internal, leaf, and
+    // pruned BVH nodes without paying for redundant carrier edges.
+    let points: Vec<_> = (0..1_024)
         .map(|index| {
-            let x = -100.0 + 200.0 * f64::from(index) / 3_999.0;
-            let y = if index % 2 == 0 { 20.0 } else { 20.1 };
+            let x = -125.0 + f64::from(index) * (125.0 / 512.0);
+            let y = if index % 2 == 0 { 20.0 } else { 20.125 };
             Point::new(x, y).unwrap()
         })
         .collect();
@@ -1503,7 +1505,7 @@ fn authority_edge_index_matches_exhaustive_exact_classification() {
     )
     .unwrap();
     assert!(source.authority.edge_index.is_some());
-    assert_eq!(source.chains[0].vertices.len(), 4_000);
+    assert_eq!(source.chains[0].vertices.len(), 1_024);
 
     // The indexed classification is checked against the exhaustive one. The
     // far query also proves the packed BVH prunes the large source before any
@@ -1521,7 +1523,7 @@ fn authority_edge_index_matches_exhaustive_exact_classification() {
     assert_eq!(indexed, exhaustive);
     assert_eq!(indexed, RectClass::Outside);
     assert_eq!(indexed_refinements, 0);
-    assert_eq!(exhaustive_refinements, 3_999);
+    assert_eq!(exhaustive_refinements, 1_023);
 
     let longitude = Bound::new(-1.0, 1.0).unwrap();
     let latitude = Bound::new(19.9, 20.2).unwrap();
