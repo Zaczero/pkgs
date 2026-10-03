@@ -186,7 +186,14 @@ def _check_kind_narrowing(
     assert_type(point.boundary(), gm.GeometryCollection)
     assert_type(collection.boundary(), gm.GeometryCollection)
     assert_type(multiline.boundary(), gm.MultiPoint)
-    assert_type(polygon.boundary(), gm.LineString | gm.MultiLineString)
+    assert_type(
+        polygon.boundary(),
+        gm.MultiPoint | gm.LineString | gm.MultiLineString | gm.GeometryCollection,
+    )
+    assert_type(
+        multipolygon.boundary(),
+        gm.MultiPoint | gm.LineString | gm.MultiLineString | gm.GeometryCollection,
+    )
     assert_type(
         geometry.boundary(),
         gm.MultiPoint | gm.LineString | gm.MultiLineString | gm.GeometryCollection,
@@ -223,8 +230,20 @@ def _check_kind_narrowing(
     assert_type(points.boundary(), gm.GeometryArray[gm.GeometryCollection])
     assert_type(lines.boundary(), gm.GeometryArray[gm.MultiPoint])
     assert_type(
+        polygons.boundary(),
+        gm.GeometryArray[
+            gm.MultiPoint | gm.LineString | gm.MultiLineString | gm.GeometryCollection
+        ],
+    )
+    assert_type(
         nullable_polygons.boundary(),
-        gm.GeometryArray[gm.LineString | gm.MultiLineString | None],
+        gm.GeometryArray[
+            gm.MultiPoint
+            | gm.LineString
+            | gm.MultiLineString
+            | gm.GeometryCollection
+            | None
+        ],
     )
     assert_type(points.buffer(1.0), gm.GeometryArray[gm.Polygon])
     assert_type(nullable_points.buffer(1.0), gm.GeometryArray[gm.Polygon | None])

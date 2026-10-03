@@ -351,8 +351,8 @@ pub(crate) fn unary_minimum_rotated_rectangle(
 }
 
 /// Boundary kernel shared by the spine-routed free function.
-pub(crate) fn unary_boundary(data: &PreparedPlan, _ctx: &CachelessRowContext<'_>) -> Result<Shape> {
-    data.shape().boundary()
+pub(crate) fn unary_boundary(data: &PreparedPlan, ctx: &CachelessRowContext<'_>) -> Result<Shape> {
+    crate::geometry::boundary(data, ctx.domain)
 }
 
 /// ``is_empty`` kernel shared by the spine-routed free function.

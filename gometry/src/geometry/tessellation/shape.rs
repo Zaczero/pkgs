@@ -5,15 +5,15 @@ use crate::error::Result;
 use crate::geometry::overlay::ExactSourceInventory;
 use crate::geometry::tessellation::{
     CdtRefinement, CertifiedDelaunay, RingOwner, Site, certified_delaunay,
-    collect_sample_triangles, constrained_triangle_vertices, earcut_polygon_with, line_boundary,
-    multiline_boundary, rings_to_boundary, sample_weighted, selected_triangle_points, snap_sites,
-    try_triangle_shape, uniform_f64, voronoi_dcel, weight_scale,
+    collect_sample_triangles, constrained_triangle_vertices, earcut_polygon_with, sample_weighted,
+    selected_triangle_points, snap_sites, try_triangle_shape, uniform_f64, voronoi_dcel,
+    weight_scale,
 };
 use crate::geometry::{
     AxisFrame, CoordSeq, CoordinateAxes, CsrOffsetColumn, Dimension, ExpansionBudget,
-    GeometryErrorKind, GeometryKind, Point, PointKey, Polygon, Polygonal, PolygonizeFull, Ring,
-    Segment, Shape, ShapeCountQuery, VoronoiBoundary, admit_shape_vector_capacity, axis_extent,
-    carry_each, empty_geometry, line_segments,
+    GeometryErrorKind, Point, PointKey, Polygon, Polygonal, PolygonizeFull, Ring, Segment, Shape,
+    ShapeCountQuery, VoronoiBoundary, admit_shape_vector_capacity, axis_extent, carry_each,
+    line_segments,
 };
 
 /// The ear-cut emitter owns the admission-before-allocation invariant: every
@@ -497,58 +497,6 @@ impl Shape {
             return voronoi_dcel::build_edges(&canonical, boundary, budget, true, &mesh);
         }
         voronoi_dcel::build_collinear_edges(&canonical, boundary, budget, &mesh)
-    }
-
-    pub fn boundary(&self) -> Result<Self> {
-        Ok(match self {
-            // Points have no boundary; a typed `POLYGON EMPTY` still boundaries
-            // to linework (`MULTILINESTRING EMPTY`), per the polygon contract.
-            Self::Point(_) | Self::MultiPoint(_) => empty_geometry(),
-            // Dimensional empties keep their declared axes on the boundary
-            // sentinel, matching `exterior` (a Z empty polygon's boundary is
-            // MULTILINESTRING Z EMPTY, not an XY collapse).
-            Self::Empty(
-                GeometryKind::Point | GeometryKind::GeometryCollection | GeometryKind::MultiPoint,
-                axes,
-            ) => Self::typed_empty(GeometryKind::GeometryCollection, *axes),
-            Self::Empty(GeometryKind::LineString | GeometryKind::MultiLineString, axes) => {
-                Self::typed_empty(GeometryKind::MultiPoint, *axes)
-            },
-            Self::Empty(GeometryKind::Polygon | GeometryKind::MultiPolygon, axes) => {
-                Self::typed_empty(GeometryKind::MultiLineString, *axes)
-            },
-            Self::LineString(points) => line_boundary(points, points.axes())?,
-            Self::MultiLineString(lines) => multiline_boundary(lines, lines.axes())?,
-            // A polygon's boundary IS its rings as linework: clone the ring
-            // coordinate columns straight into the result (one `LineString`, or
-            // a `MultiLineString` when there are holes / parts) — no per-vertex
-            // `Point` round-trip through `to_vec` + column rebuild.
-            Self::Polygon(polygon) => {
-                rings_to_boundary(polygon.rings().map(Ring::as_line).collect(), polygon.axes())
-            },
-            Self::MultiPolygon(polygons) => rings_to_boundary(
-                polygons
-                    .iter()
-                    .flat_map(Polygon::rings)
-                    .map(Ring::as_line)
-                    .collect(),
-                polygons.axes(),
-            ),
-            Self::GeometryCollection(geometries) => {
-                let mut boundaries = Vec::new();
-                for geometry in geometries {
-                    let boundary = geometry.boundary()?;
-                    if !boundary.is_empty() {
-                        boundaries.push(boundary);
-                    }
-                }
-                if boundaries.is_empty() {
-                    Self::typed_empty(GeometryKind::GeometryCollection, self.axes())
-                } else {
-                    Self::GeometryCollection(geometries.try_rebuild_members(boundaries)?)
-                }
-            },
-        })
     }
 
     pub fn polygonize(&self, strict: bool) -> Result<Vec<Self>> {

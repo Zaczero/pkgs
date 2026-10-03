@@ -43,7 +43,8 @@ Conventions: `import gometry as gm`; `geom` is a gometry geometry; and
 | — | [`geom.epoch`][gometry.Geometry.epoch] | |
 | `geom.crs` (n/a in Shapely) | [`geom.crs`][gometry.Geometry.crs] | |
 | `get_coordinates(geom)` | [`geom.coords`][gometry.Geometry.coords] (`list(...)`, `.x`/`.y`, `.index`) / [`gm.get_coordinates(...)`][gometry.get_coordinates] | Flat matrix; `return_index=True` adds a parallel source-row index. |
-| `get_parts(...)` / `get_rings(...)` | [`geom.parts`][gometry.Geometry.parts] / [`geom.boundary().parts`][gometry.Geometry.boundary] | A scalar gives a sequence view; an array gives row-preserving `Groups`. |
+| `get_parts(...)` | [`geom.parts`][gometry.Geometry.parts] | A scalar gives a sequence view; an array gives row-preserving `Groups`. |
+| `get_rings(...)` | [`polygon.exterior`][gometry.Polygon.exterior] / [`polygon.interiors`][gometry.Polygon.interiors] | These expose stored shell and hole rings. For a MultiPolygon, inspect each polygon in `geom.parts`; use [`geom.boundary()`][gometry.Geometry.boundary] for the topological boundary of occupied support. |
 | `str(geom)` / `f"{geom:.2f}"` / `f"{geom:x}"` | same | WKT text; `.Nf`/`.Ng` round for display, `x`/`X` hex WKB. |
 | `bool(geom)` | same | Falsy when empty. |
 | `match geom: case Point(x, y):` | `match geom: case gm.Point(x, y):` | **gometry addition** — leaves carry `__match_args__`; Shapely 2.x has no positional match on `Point`. Arrays match `[a, *rest]`. |

@@ -5,8 +5,9 @@
 //! interior, boundary and exterior intersections follow from the cell facts.
 
 use super::{
-    ArealCells, CellFacts, ExactPartition, ExactSourceInventory, GlobalFaces, NodeId,
-    PolygonOccupancy, location, node_source_range, ring_occupied, rings_occupied, select_operation,
+    ArealCells, BoundarySelection, CellFacts, ExactPartition, ExactSourceInventory, GlobalFaces,
+    NodeId, PolygonOccupancy, location, node_source_range, ring_occupied, rings_occupied,
+    select_operation,
 };
 use crate::error::ResourceError;
 use crate::geometry::arrangement::IndexedTopology;
@@ -424,6 +425,9 @@ impl ExactSourceInventory {
         cells: usize,
     ) -> Result<Vec<bool>> {
         let operands = self.operand_count();
+        if self.line_boundaries.is_empty() {
+            return Ok(vec![false; cells]);
+        }
         let mut line_boundaries = Vec::with_capacity(cells);
         line_boundaries.resize(cells, false);
 
@@ -568,14 +572,6 @@ impl ExactSourceInventory {
         )
     }
 
-    #[expect(
-        clippy::indexing_slicing,
-        reason = "selected face/span/node IDs are the same IDs used to size the exact fact and cell tables"
-    )]
-    #[expect(
-        clippy::arithmetic_side_effects,
-        reason = "remaining flattened indices are row offsets within those exact tables"
-    )]
     pub(super) fn select_cells_with_winding_rings(
         &self,
         partition: &ExactPartition<'_>,
@@ -586,9 +582,71 @@ impl ExactSourceInventory {
         odd: bool,
         winding_rings: &[Option<u32>],
     ) -> Result<ArealCells> {
-        let operands = self.operand_count();
         let facts =
             self.build_cell_facts(partition, topology, edges, global, winding_rings, odd)?;
+        Ok(self.select_cells_from_facts(partition, topology, global, operation, &facts))
+    }
+
+    pub(super) fn boundary_cells(
+        &self,
+        partition: &ExactPartition<'_>,
+        topology: &IndexedTopology,
+        edges: &[u32],
+        global: &GlobalFaces,
+    ) -> Result<BoundarySelection> {
+        let winding_rings = self.winding_source_rings();
+        let facts =
+            self.build_cell_facts(partition, topology, edges, global, &winding_rings, false)?;
+        let cells = self.select_cells_from_facts(
+            partition,
+            topology,
+            global,
+            crate::geometry::OverlayOp::Union,
+            &facts,
+        );
+        let line_boundaries = self.node_source_flags(partition, facts.point_membership.len())?;
+        let mut boundary_nodes = Vec::new();
+        for node in 0..partition.node_count() {
+            let node = NodeId(node as u32);
+            if self.node_location_from_facts(
+                0,
+                node,
+                topology,
+                edges,
+                global,
+                &facts,
+                &line_boundaries,
+                &facts.point_membership,
+            ) == crate::geometry::Loc::Boundary
+            {
+                boundary_nodes.push(node);
+            }
+        }
+        Ok(BoundarySelection {
+            cells,
+            boundary_nodes,
+            has_curve_support: facts.span_support.iter().any(|&support| support),
+            has_point_support: facts.point_membership.iter().any(|&support| support),
+        })
+    }
+
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "selected face/span/node IDs are the same IDs used to size the exact fact and cell tables"
+    )]
+    #[expect(
+        clippy::arithmetic_side_effects,
+        reason = "flattened fact indices stay within the checked cell-table extents"
+    )]
+    fn select_cells_from_facts(
+        &self,
+        partition: &ExactPartition<'_>,
+        topology: &IndexedTopology,
+        global: &GlobalFaces,
+        operation: crate::geometry::OverlayOp,
+        facts: &CellFacts,
+    ) -> ArealCells {
+        let operands = self.operand_count();
         let mut cells = ArealCells {
             faces: Vec::new(),
             spans: Vec::new(),
@@ -645,7 +703,7 @@ impl ExactSourceInventory {
         {
             *cell_node |= select_operation(operation, membership);
         }
-        Ok(cells)
+        cells
     }
 
     pub(super) fn linework_source_rings(&self) -> Vec<Option<u32>> {

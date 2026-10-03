@@ -3669,6 +3669,33 @@ pub(crate) struct ExactGeographicPointLocation {
     pub(crate) area: Loc,
 }
 
+pub(super) struct QRowLocations<'a> {
+    topology: &'a ExactGeographicTopology,
+    row: SourceRowId,
+}
+
+impl QRowLocations<'_> {
+    pub(super) fn face(&self, face: GlobalFaceId) -> Loc {
+        location_in_global_face(&self.topology.q, face, self.row).geometry
+    }
+
+    pub(super) fn span(&self, span_index: usize) -> Result<Option<Loc>> {
+        let span = self.topology.q.spans.get(span_index).ok_or_else(|| {
+            GeometryErrorKind::Invalid("Q row location has an unknown span".into())
+        })?;
+        if span.nodes[0] == span.nodes[1] {
+            return Ok(None);
+        }
+        Ok(Some(
+            locate_q_span(&self.topology.q, span_index, self.row).geometry,
+        ))
+    }
+
+    pub(super) fn node(&self, node: QNodeId) -> Result<Loc> {
+        Ok(locate_q_node(&self.topology.q, node, self.row)?.geometry)
+    }
+}
+
 /// Spatial relation between a source and a supported, nondegenerate rectangle.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum ExactGeographicRectangleLocation {
@@ -3913,24 +3940,6 @@ fn lift_query_point(
     Ok(point)
 }
 
-fn pair_row_slot(row: SourceRowId) -> Result<usize> {
-    match row.0 {
-        0 => Ok(0),
-        1 => Ok(1),
-        _ => Err(GeometryErrorKind::Invalid(
-            "exact geographic relation received a source row outside its pair".into(),
-        )
-        .into()),
-    }
-}
-
-fn pair_face_membership(q: &ExactGeographicQ, face: GlobalFaceId) -> [bool; 2] {
-    [
-        q.face_rows.contains(face, SourceRowId(0)),
-        q.face_rows.contains(face, SourceRowId(1)),
-    ]
-}
-
 fn q_face_has_row(q: &ExactGeographicQ, face: GlobalFaceId, row: SourceRowId) -> bool {
     q.face_rows.contains(face, row)
 }
@@ -4005,14 +4014,14 @@ fn q_node_fan(q: &ExactGeographicQ, node_index: usize) -> Result<(usize, usize)>
     Ok((*start, *end))
 }
 
-fn locate_q_node(
+pub(super) fn locate_q_node(
     q: &ExactGeographicQ,
     node: QNodeId,
     row: SourceRowId,
 ) -> Result<ExactGeographicPointLocation> {
     let node_index = node.0 as usize;
     let (start, end) = q_node_fan(q, node_index)?;
-    let (area_any, area_all) = if start == end {
+    let (area_any, area_all, curve, collapsed_degree) = if start == end {
         let face = q
             .source_node_faces
             .get(node_index)
@@ -4022,12 +4031,13 @@ fn locate_q_node(
                 GeometryErrorKind::Invalid("an isolated Q node has no host face".into())
             })?;
         let inside = q_face_has_row(q, face, row);
-        (inside, inside)
+        (inside, inside, false, false)
     } else {
         let fan = q.outgoing.get(start..end).ok_or_else(|| {
             GeometryErrorKind::Invalid("Q node has an invalid outgoing fan".into())
         })?;
         let (mut area_any, mut area_all) = (false, true);
+        let (mut curve, mut collapsed_degree) = (false, false);
         for &dart_id in fan {
             let local = *q.dart_faces.get(dart_id.0 as usize).ok_or_else(|| {
                 GeometryErrorKind::Invalid("Q node fan has an unknown dart face".into())
@@ -4041,17 +4051,7 @@ fn locate_q_node(
             let inside = q_face_has_row(q, global, row);
             area_any |= inside;
             area_all &= inside;
-        }
-        (area_any, area_all)
-    };
 
-    let mut curve = false;
-    let mut collapsed_degree = false;
-    if start != end {
-        let fan = q.outgoing.get(start..end).ok_or_else(|| {
-            GeometryErrorKind::Invalid("Q node has an invalid outgoing fan".into())
-        })?;
-        for &dart_id in fan {
             let dart = q.darts.get(dart_id.0 as usize).ok_or_else(|| {
                 GeometryErrorKind::Invalid("Q node fan has an unknown dart".into())
             })?;
@@ -4065,11 +4065,10 @@ fn locate_q_node(
             let line = q.span_line_rows.contains(span_index, row);
             let collapsed = q.span_collapsed_rows.contains(span_index, row);
             curve |= line || collapsed;
-            if collapsed && !line {
-                collapsed_degree = !collapsed_degree;
-            }
+            collapsed_degree ^= collapsed && !line;
         }
-    }
+        (area_any, area_all, curve, collapsed_degree)
+    };
     let line_boundary = q.node_line_boundary_rows.contains(node_index, row);
     let point = q.node_point_rows.contains(node_index, row);
     Ok(point_location_from_support(&PointSupport {
@@ -4083,7 +4082,7 @@ fn locate_q_node(
     }))
 }
 
-fn locate_q_span(
+pub(super) fn locate_q_span(
     q: &ExactGeographicQ,
     span_index: usize,
     row: SourceRowId,
@@ -4110,6 +4109,19 @@ fn locate_q_span(
         },
         point: false,
     })
+}
+
+pub(super) fn row_locations(
+    topology: &ExactGeographicTopology,
+    row: SourceRowId,
+) -> Result<QRowLocations<'_>> {
+    if row.0 as usize >= topology.sources.row_count {
+        return Err(GeometryErrorKind::Invalid(
+            "Q row location references an unknown source row".into(),
+        )
+        .into());
+    }
+    Ok(QRowLocations { topology, row })
 }
 
 fn span_crosses_north_ray(
@@ -4156,34 +4168,6 @@ fn span_crosses_north_ray(
         .x
         .try_add(&point.y.try_subtract(&low.y)?.try_product(&slope)?)?;
     Ok(hit_x.try_cmp(&q.cut)?.is_gt() && hit_x.try_cmp(&point.x)?.is_lt())
-}
-
-fn mark_pair_node_flag(
-    flags: &mut [[bool; 2]],
-    node: QNodeId,
-    side: usize,
-    toggle: bool,
-) -> Result<()> {
-    let flags = flags.get_mut(node.0 as usize).ok_or_else(|| {
-        GeometryErrorKind::Invalid("Q node support references an unknown node".into())
-    })?;
-    let value = flags.get_mut(side).ok_or_else(|| {
-        GeometryErrorKind::Invalid("Q node support has an unknown row side".into())
-    })?;
-    *value = if toggle { !*value } else { true };
-    Ok(())
-}
-
-fn span_pair_support(q: &ExactGeographicQ, span_index: usize) -> ([bool; 2], [bool; 2]) {
-    let collapsed = [
-        q.span_collapsed_rows.contains(span_index, SourceRowId(0)),
-        q.span_collapsed_rows.contains(span_index, SourceRowId(1)),
-    ];
-    let line = [
-        q.span_line_rows.contains(span_index, SourceRowId(0)),
-        q.span_line_rows.contains(span_index, SourceRowId(1)),
-    ];
-    (line, collapsed)
 }
 
 fn build_span_line_rows(
@@ -4248,46 +4232,6 @@ fn build_node_line_boundary_rows(
     GlobalNodeRowSupport::build(topology.nodes.len(), &mut odd_memberships)
 }
 
-fn q_node_location(
-    node_curve_support: &[[bool; 2]],
-    node_line_boundary: &[[bool; 2]],
-    node_collapsed_degree: &[[bool; 2]],
-    node_point_support: &[[bool; 2]],
-    node_index: usize,
-    side: usize,
-    area: Loc,
-) -> Result<Loc> {
-    if area != Loc::Exterior {
-        return Ok(area);
-    }
-    let curve = *node_curve_support
-        .get(node_index)
-        .and_then(|flags| flags.get(side))
-        .ok_or_else(|| GeometryErrorKind::Invalid("Q node has no curve support side".into()))?;
-    if curve {
-        let line_boundary = *node_line_boundary
-            .get(node_index)
-            .and_then(|flags| flags.get(side))
-            .ok_or_else(|| GeometryErrorKind::Invalid("Q node has no line boundary side".into()))?;
-        let collapsed_degree = *node_collapsed_degree
-            .get(node_index)
-            .and_then(|flags| flags.get(side))
-            .ok_or_else(|| {
-                GeometryErrorKind::Invalid("Q node has no collapsed-degree side".into())
-            })?;
-        return Ok(if line_boundary ^ collapsed_degree {
-            Loc::Boundary
-        } else {
-            Loc::Interior
-        });
-    }
-    let point = *node_point_support
-        .get(node_index)
-        .and_then(|flags| flags.get(side))
-        .ok_or_else(|| GeometryErrorKind::Invalid("Q node has no point support side".into()))?;
-    Ok(if point { Loc::Interior } else { Loc::Exterior })
-}
-
 fn exact_pair_relation(topology: &ExactGeographicTopology) -> Result<De9im> {
     if topology.sources.row_count != 2 {
         return Err(GeometryErrorKind::Invalid(
@@ -4296,175 +4240,29 @@ fn exact_pair_relation(topology: &ExactGeographicTopology) -> Result<De9im> {
         .into());
     }
     let q = &topology.q;
+    let left = row_locations(topology, SourceRowId(0))?;
+    let right = row_locations(topology, SourceRowId(1))?;
     let mut matrix = De9im::empty_disjoint();
 
     for face in 0..q.global_face_count {
         let face = GlobalFaceId(u32::try_from(face).map_err(|_| ResourceError::SizeOverflow)?);
-        let [left, right] = pair_face_membership(q, face);
-        matrix.set_at_least(
-            if left { Loc::Interior } else { Loc::Exterior },
-            if right { Loc::Interior } else { Loc::Exterior },
-            Dimension::Surface,
-        );
+        matrix.set_at_least(left.face(face), right.face(face), Dimension::Surface);
     }
 
-    let mut node_point_support = vec![[false; 2]; q.nodes.len()];
-    let mut node_line_boundary = vec![[false; 2]; q.nodes.len()];
-    let mut node_curve_support = vec![[false; 2]; q.nodes.len()];
-    let mut node_collapsed_degree = vec![[false; 2]; q.nodes.len()];
-    for node_index in 0..q.nodes.len() {
-        let rows = q.node_point_rows.row(node_index).ok_or_else(|| {
-            GeometryErrorKind::Invalid("Q node point support rows are incomplete".into())
-        })?;
-        for &row in rows {
-            let side = pair_row_slot(row)?;
-            let flag = node_point_support
-                .get_mut(node_index)
-                .and_then(|flags| flags.get_mut(side))
-                .ok_or_else(|| {
-                    GeometryErrorKind::Invalid("Q node point support row is unknown".into())
-                })?;
-            *flag = true;
-        }
-    }
-    for (node_index, flags) in node_line_boundary.iter_mut().enumerate() {
-        let rows = q.node_line_boundary_rows.row(node_index).ok_or_else(|| {
-            GeometryErrorKind::Invalid("Q node line-boundary rows are incomplete".into())
-        })?;
-        for &row in rows {
-            let side = pair_row_slot(row)?;
-            *flags.get_mut(side).ok_or_else(|| {
-                GeometryErrorKind::Invalid("Q line boundary has an unknown pair row".into())
-            })? = true;
-        }
-    }
-
-    for (span_index, span) in q.spans.iter().enumerate() {
-        if span.nodes[0] == span.nodes[1] {
+    for span_index in 0..q.spans.len() {
+        let (Some(left_location), Some(right_location)) =
+            (left.span(span_index)?, right.span(span_index)?)
+        else {
             continue;
-        }
-        let (line_support, collapsed_support) = span_pair_support(q, span_index);
-        let mut curve_support = line_support;
-        for (curve, collapsed) in curve_support.iter_mut().zip(collapsed_support) {
-            *curve |= collapsed;
-        }
-
-        for (side, ((line, collapsed), curve)) in line_support
-            .into_iter()
-            .zip(collapsed_support)
-            .zip(curve_support)
-            .enumerate()
-        {
-            if curve {
-                mark_pair_node_flag(&mut node_curve_support, span.nodes[0], side, false)?;
-                mark_pair_node_flag(&mut node_curve_support, span.nodes[1], side, false)?;
-            }
-            if collapsed && !line {
-                mark_pair_node_flag(&mut node_collapsed_degree, span.nodes[0], side, true)?;
-                mark_pair_node_flag(&mut node_collapsed_degree, span.nodes[1], side, true)?;
-            }
-        }
-
-        let area_sides =
-            if let Some([left, right]) = q.span_global_faces.get(span_index).copied().flatten() {
-                [
-                    pair_face_membership(q, left),
-                    pair_face_membership(q, right),
-                ]
-            } else {
-                [[false; 2]; 2]
-            };
-        let [left_areas, right_areas] = area_sides;
-        let mut locations = [Loc::Exterior; 2];
-        for (side, ((left_area, right_area), curve)) in left_areas
-            .into_iter()
-            .zip(right_areas)
-            .zip(curve_support)
-            .enumerate()
-        {
-            let location = if left_area && right_area {
-                Loc::Interior
-            } else if left_area || right_area {
-                Loc::Boundary
-            } else if curve {
-                Loc::Interior
-            } else {
-                Loc::Exterior
-            };
-            *locations.get_mut(side).ok_or_else(|| {
-                GeometryErrorKind::Invalid("Q span has an unknown pair row".into())
-            })? = location;
-        }
-        let [left_location, right_location] = locations;
+        };
         if left_location != Loc::Exterior || right_location != Loc::Exterior {
             matrix.set_at_least(left_location, right_location, Dimension::Curve);
         }
     }
 
-    let node_fans = q.outgoing_offsets.windows(2);
-    if node_fans.len() != q.nodes.len() {
-        return Err(
-            GeometryErrorKind::Invalid("Q node fans do not match the node table".into()).into(),
-        );
-    }
-    for (node_index, offsets) in node_fans.enumerate() {
-        let [start, end] = offsets else {
-            return Err(
-                GeometryErrorKind::Invalid("Q node has an invalid outgoing fan".into()).into(),
-            );
-        };
-        let (start, end) = (*start, *end);
-        let (area_any, area_all) = if start == end {
-            let face = q
-                .source_node_faces
-                .get(node_index)
-                .copied()
-                .flatten()
-                .ok_or_else(|| {
-                    GeometryErrorKind::Invalid("an isolated Q node has no host face".into())
-                })?;
-            let membership = pair_face_membership(q, face);
-            (membership, membership)
-        } else {
-            let fan = q.outgoing.get(start..end).ok_or_else(|| {
-                GeometryErrorKind::Invalid("Q node has an invalid outgoing fan".into())
-            })?;
-            let (mut area_any, mut area_all) = ([false; 2], [true; 2]);
-            for &dart_id in fan {
-                let local = *q.dart_faces.get(dart_id.0 as usize).ok_or_else(|| {
-                    GeometryErrorKind::Invalid("Q node fan has an unknown dart face".into())
-                })?;
-                let global = *q
-                    .global_face_of_local
-                    .get(local.0 as usize)
-                    .ok_or_else(|| {
-                        GeometryErrorKind::Invalid("Q node dart face has no global identity".into())
-                    })?;
-                let membership = pair_face_membership(q, global);
-                for ((any, all), member) in
-                    area_any.iter_mut().zip(area_all.iter_mut()).zip(membership)
-                {
-                    *any |= member;
-                    *all &= member;
-                }
-            }
-            (area_any, area_all)
-        };
-        let mut locations = [Loc::Exterior; 2];
-        for (side, (any, all)) in area_any.iter().copied().zip(area_all).enumerate() {
-            *locations.get_mut(side).ok_or_else(|| {
-                GeometryErrorKind::Invalid("Q node has an unknown pair row".into())
-            })? = q_node_location(
-                &node_curve_support,
-                &node_line_boundary,
-                &node_collapsed_degree,
-                &node_point_support,
-                node_index,
-                side,
-                area_location(any, all),
-            )?;
-        }
-        let [left_location, right_location] = locations;
+    for node in &q.nodes {
+        let left_location = left.node(node.id)?;
+        let right_location = right.node(node.id)?;
         if left_location != Loc::Exterior || right_location != Loc::Exterior {
             matrix.set_at_least(left_location, right_location, Dimension::Point);
         }

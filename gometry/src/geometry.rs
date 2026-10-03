@@ -88,6 +88,7 @@ pub(crate) use types::{
     coerce_to_common_axes,
 };
 mod antimeridian;
+mod boundary;
 pub(crate) use antimeridian::{
     DerivedPointStrategy, GeographicDerivedPointScan, GeographicSeamFacts, GeographicTopologyRoute,
     antimeridian_frame, chain_crosses_antimeridian, classify_geographic_chart,
@@ -98,6 +99,7 @@ pub(crate) use antimeridian::{
     self_intersections_in_frame, topology_domain, unary_antimeridian_derived,
     validate_data_in_frame, validate_shape_in_frame,
 };
+pub(crate) use boundary::boundary;
 mod arrangement;
 mod bvh_code;
 mod constructive;

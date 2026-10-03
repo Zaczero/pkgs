@@ -333,7 +333,8 @@ filled areas: an interior point or overlapping pair has zero distance, while
 disjoint shapes are measured boundary-to-boundary. Continuous geographic
 `hausdorff_distance` remains a linework operation over the geodesic segments
 between stored endpoints; polygon operands raise
-[`CRSError`][gometry.CRSError]. Use `polygon.boundary()` when the question is
+[`CRSError`][gometry.CRSError]. Use
+[`polygon.boundary()`][gometry.Geometry.boundary] when the question is
 about the boundary itself, `unit='planar'` for coordinate-space areal distance,
 or reproject to a suitable projected CRS.
 
@@ -475,6 +476,38 @@ print(arrival.to_wkt())
     and the **distance in meters second**. Swapping them produces a
     plausible-but-wrong point with no error.
 
+### Geographic polygon boundary
+
+[`Polygon.boundary`][gometry.Geometry.boundary] and
+[`MultiPolygon.boundary`][gometry.Geometry.boundary] return the
+Boundary-location cells of occupied support. A MultiPolygon's members form one
+areal union, so shared or overlapping internal edges are not part of its
+boundary; a GeometryCollection is handled member by member without dissolving
+between members. Invalid polygonal input follows its occupied support rather
+than returning every stored ring, and collapsed support can produce a
+`MultiPoint` or an empty `GeometryCollection`.
+
+Geographic boundary uses the CRS's longitude period and pole identity. Edges
+that exist only because a ring was cut at the antimeridian, or because a chart
+closes a polar ring, are not boundaries. A genuine one-sided edge on the seam
+remains. The quotient line emitter can include a seam vertex where it splits a
+line run; that vertex does not add a seam edge. CRS and epoch are preserved,
+and no coordinate transformation is performed.
+
+```python exec="on" source="block" result="text"
+import gometry as gm
+
+crossing = gm.Polygon(
+    [(170, 40), (190, 40), (190, 50), (170, 50)],
+    crs=4326,
+)
+print(crossing.boundary().to_wkt())
+```
+
+```text
+LINESTRING (170 50, 170 40, -180 40, -170 40, -170 50, -180 50, 170 50)
+```
+
 ## Projected CRS → native linear units
 
 The same operations on a *projected* geometry are planar arithmetic in the CRS's
@@ -598,9 +631,9 @@ For a supported metric pair, every distance is *realized* by an actual pair of p
 can land on an **edge interior**, not only a vertex.
 
 In the geographic geodesic mode, the same operations accept points and
-linework only. A filled polygon interior raises `CRSError`; pass
-`unit='planar'`, use `polygon.boundary()`, or reproject when that is the
-intended operation.
+linework only; filled polygon interiors raise `CRSError`. Use `unit='planar'`,
+the [polygon's topological boundary](#geographic-polygon-boundary), or reproject
+when that is the intended operation.
 
 ```python exec="on" html="true"
 from _figures import figure

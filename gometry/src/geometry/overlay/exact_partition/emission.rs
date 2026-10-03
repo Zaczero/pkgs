@@ -390,15 +390,7 @@ impl BoundaryPlan {
         for (index, walk) in self.walks.iter().enumerate() {
             let (chords, rest) = remaining.split_at(walk.len());
             remaining = rest;
-            let mut nodes = Vec::new();
-            let node_capacity = walk.len().wrapping_add(1);
-            nodes.reserve(node_capacity);
-            nodes.extend(chords.iter().map(|chord| chord[0]));
-            if let Some(&first) = nodes.first() {
-                nodes.push(first);
-                canonicalize_closed_nodes(partition, &mut nodes)?;
-            }
-            rings[index] = Some(nodes);
+            rings[index] = Some(Self::ring_node_walk(partition, chords)?);
         }
         let mut polygons = Vec::with_capacity(groups.len());
         for group in groups {
@@ -501,6 +493,38 @@ impl BoundaryPlan {
             rings.push(hole);
         }
         Ok(polygons)
+    }
+
+    fn ring_node_walk(
+        partition: &ExactPartition<'_>,
+        chords: &[[NodeId; 2]],
+    ) -> Result<Vec<NodeId>> {
+        let mut nodes = Vec::with_capacity(chords.len().wrapping_add(1));
+        nodes.extend(chords.iter().map(|chord| chord[0]));
+        if let Some(&first) = nodes.first() {
+            nodes.push(first);
+            canonicalize_closed_nodes(partition, &mut nodes)?;
+        }
+        Ok(nodes)
+    }
+
+    pub(super) fn emit_boundary_node_parts(
+        &self,
+        partition: &ExactPartition<'_>,
+        emission: &Emission,
+    ) -> Result<NodeParts> {
+        let mut remaining = emission.items.as_slice();
+        let mut lines = Vec::with_capacity(self.walks.len());
+        for walk in &self.walks {
+            let (chords, rest) = remaining.split_at(walk.len());
+            remaining = rest;
+            lines.push(Self::ring_node_walk(partition, chords)?);
+        }
+        Ok(NodeParts {
+            points: self.points.iter().map(|&(node, _)| node).collect(),
+            lines,
+            polygons: Vec::new(),
+        })
     }
 }
 
@@ -1030,6 +1054,20 @@ impl GlobalFaces {
             points: Vec::new(),
             face_quotient,
         })
+    }
+
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "the node, CSR, component, walk-face, and global-face IDs come from this paired topology"
+    )]
+    pub(super) fn node_host_face(&self, topology: &IndexedTopology, node: NodeId) -> u32 {
+        let index = node.0 as usize;
+        let first = topology.starts[index] as usize;
+        if topology.starts[index] == topology.starts[index + 1] {
+            self.component_hosts[topology.component_of[index] as usize]
+        } else {
+            self.walk_faces[topology.face_of[first] as usize]
+        }
     }
 
     /// Closed boundary walks over the darts whose global face `bounds` its

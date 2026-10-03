@@ -7,13 +7,37 @@ use crate::{DefaultedF64Input, DistanceUnit, F64Param, PyGeometry, PyGeometryArr
 
 method_doc! {
     doc_boundary;
-    body: r"Return the topological boundary of the geometry.";
+    body: r"Return the topological boundary of the geometry's occupied support.";
     scalar: r"
 
 Returns
 -------
 MultiPoint, LineString, MultiLineString, or GeometryCollection
-    The topological boundary, one dimension below the input.
+    Boundary-location cells, one dimension below the effective dimension of
+    the occupied support. A Polygon or MultiPolygon is evaluated as one union
+    of polygonal support, so internal edges, collapsed interior spans, and
+    ring edges outside that support are omitted. A GeometryCollection is
+    processed member by member; non-empty member occurrences are retained.
+
+Notes
+-----
+In a geographic CRS, seam aliases and all longitudes at a pole identify the
+same vertex. Edges introduced only by a chart cut or pole closure are not
+boundaries, although a seam vertex may appear where the geographic line
+emitter splits a run. The CRS and coordinate epoch are preserved; coordinates
+are not transformed. Source Z/M values are kept where emitted vertices have
+unambiguous ordinates; an axis is dropped when an emitted vertex has no value.
+Typed empty inputs keep their dimension-appropriate empty boundary.
+
+Raises
+------
+CRSError
+    If the declared CRS cannot be resolved to a topology frame.
+InvalidGeometryError
+    If a geographic coordinate read by boundary is outside its CRS domain.
+GeometryError
+    If exact work exceeds the generated-item budget or emitted cells cannot
+    be certified.
 
 ";
     array: r"
@@ -21,7 +45,23 @@ MultiPoint, LineString, MultiLineString, or GeometryCollection
 Returns
 -------
 GeometryArray
-    One boundary per row.
+    One boundary per row, retaining missing rows.
+
+Notes
+-----
+Each row is processed independently. Non-missing outputs retain their row's
+CRS and coordinate epoch. Output coordinate axes reflect ordinates available
+at every emitted vertex.
+
+Raises
+------
+CRSError
+    If the declared CRS cannot be resolved to a topology frame.
+InvalidGeometryError
+    If a geographic coordinate read by boundary is outside its CRS domain.
+GeometryError
+    If exact work exceeds the generated-item budget or emitted cells cannot
+    be certified.
 
 ";
     tail: r"Examples

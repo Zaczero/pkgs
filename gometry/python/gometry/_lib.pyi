@@ -1851,12 +1851,36 @@ class Geometry:
     def boundary(
         self,
     ) -> MultiPoint | LineString | MultiLineString | GeometryCollection:
-        """Return the topological boundary of the geometry.
+        """Return the topological boundary of the geometry's occupied support.
 
         Returns
         -------
         MultiPoint, LineString, MultiLineString, or GeometryCollection
-            The topological boundary, one dimension below the input.
+            Boundary-location cells, one dimension below the effective dimension of
+            the occupied support. A Polygon or MultiPolygon is evaluated as one union
+            of polygonal support, so internal edges, collapsed interior spans, and
+            ring edges outside that support are omitted. A GeometryCollection is
+            processed member by member; non-empty member occurrences are retained.
+
+        Notes
+        -----
+        In a geographic CRS, seam aliases and all longitudes at a pole identify the
+        same vertex. Edges introduced only by a chart cut or pole closure are not
+        boundaries, although a seam vertex may appear where the geographic line
+        emitter splits a run. The CRS and coordinate epoch are preserved; coordinates
+        are not transformed. Source Z/M values are kept where emitted vertices have
+        unambiguous ordinates; an axis is dropped when an emitted vertex has no value.
+        Typed empty inputs keep their dimension-appropriate empty boundary.
+
+        Raises
+        ------
+        CRSError
+            If the declared CRS cannot be resolved to a topology frame.
+        InvalidGeometryError
+            If a geographic coordinate read by boundary is outside its CRS domain.
+        GeometryError
+            If exact work exceeds the generated-item budget or emitted cells cannot
+            be certified.
 
         Examples
         --------
@@ -5439,7 +5463,7 @@ class Polygon(Geometry):
         """Interior rings (holes), each a closed ``LineString``."""
     def boundary(
         self,
-    ) -> LineString | MultiLineString: ...
+    ) -> MultiPoint | LineString | MultiLineString | GeometryCollection: ...
     def repair(
         self,
         *,
@@ -5622,7 +5646,7 @@ class MultiPolygon(Geometry):
         """
     def boundary(
         self,
-    ) -> LineString | MultiLineString: ...
+    ) -> MultiPoint | LineString | MultiLineString | GeometryCollection: ...
     def repair(
         self,
         *,
@@ -7716,7 +7740,9 @@ class GeometryArray(Sequence[_GeometryT_co]):
     @overload
     def boundary(
         self: GeometryArray[Polygon | MultiPolygon],
-    ) -> GeometryArray[LineString | MultiLineString]: ...
+    ) -> GeometryArray[
+        MultiPoint | LineString | MultiLineString | GeometryCollection
+    ]: ...
     @overload
     def boundary(
         self: GeometryArray[Point | MultiPoint | GeometryCollection | None],
@@ -7728,7 +7754,9 @@ class GeometryArray(Sequence[_GeometryT_co]):
     @overload
     def boundary(
         self: GeometryArray[Polygon | MultiPolygon | None],
-    ) -> GeometryArray[LineString | MultiLineString | None]: ...
+    ) -> GeometryArray[
+        MultiPoint | LineString | MultiLineString | GeometryCollection | None
+    ]: ...
     @overload
     def boundary(
         self: GeometryArray[Geometry],
@@ -7741,12 +7769,28 @@ class GeometryArray(Sequence[_GeometryT_co]):
     ) -> GeometryArray[
         MultiPoint | LineString | MultiLineString | GeometryCollection | None
     ]:
-        """Return the topological boundary of the geometry.
+        """Return the topological boundary of the geometry's occupied support.
 
         Returns
         -------
         GeometryArray
-            One boundary per row.
+            One boundary per row, retaining missing rows.
+
+        Notes
+        -----
+        Each row is processed independently. Non-missing outputs retain their row's
+        CRS and coordinate epoch. Output coordinate axes reflect ordinates available
+        at every emitted vertex.
+
+        Raises
+        ------
+        CRSError
+            If the declared CRS cannot be resolved to a topology frame.
+        InvalidGeometryError
+            If a geographic coordinate read by boundary is outside its CRS domain.
+        GeometryError
+            If exact work exceeds the generated-item budget or emitted cells cannot
+            be certified.
 
         Examples
         --------

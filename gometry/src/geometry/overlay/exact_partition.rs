@@ -168,6 +168,13 @@ struct ArealCells {
     nodes: Vec<bool>,
 }
 
+struct BoundarySelection {
+    cells: ArealCells,
+    boundary_nodes: Vec<NodeId>,
+    has_curve_support: bool,
+    has_point_support: bool,
+}
+
 impl ArealCells {
     fn emission_plan(
         &self,
@@ -225,14 +232,7 @@ impl ArealCells {
         )?;
         plan.points.reserve(points.len());
         for node in points {
-            let index = node.0 as usize;
-            let first = topology.starts[index] as usize;
-            let host = if topology.starts[index] == topology.starts[index + 1] {
-                global.component_hosts[topology.component_of[index] as usize]
-            } else {
-                // All incident spans were omitted, so their face sectors merge.
-                global.walk_faces[topology.face_of[first] as usize]
-            };
+            let host = global.node_host_face(topology, node);
             plan.points.push((node, plan.face_quotient[host as usize]));
         }
         Ok(plan)
@@ -1791,6 +1791,76 @@ impl ExactSourceInventory {
         build_certified_overlay_shape(points, lines, polygons)
     }
 
+    /// Publish the Boundary-location cells of one polygonal operand. Occupied
+    /// area cycles remain closed linework; only uncovered residual boundary
+    /// nodes become points. Lower-dimensional spans are never emitted.
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "source darts and node IDs are admitted by this partition's plan and topology"
+    )]
+    pub(in crate::geometry) fn occupied_boundary_shape(
+        &self,
+        partition: &ExactPartition<'_>,
+        declared_axes: CoordinateAxes,
+    ) -> Result<Shape> {
+        debug_assert_eq!(self.operand_count(), 1);
+        let (topology, edges) = partition.local_topology()?;
+        let global = partition.global_faces(&topology, &edges)?;
+        let selection = self.boundary_cells(partition, &topology, &edges, &global)?;
+        let has_area = selection.cells.faces.iter().any(|&selected| selected);
+        let ordinate_protected = self.ordinate_protected_nodes(partition, declared_axes)?;
+        let mut plan = global.boundary_plan_with_protected(
+            &[],
+            &topology,
+            &edges,
+            partition,
+            &selection.cells.faces,
+            ordinate_protected.as_deref(),
+        )?;
+
+        let mut covered_by_area_walk = vec![false; partition.node_count()];
+        for chord in plan.walks.iter().flatten() {
+            for &dart in &plan.source_darts[chord.sources.clone()] {
+                covered_by_area_walk[topology.owners[dart as usize] as usize] = true;
+                covered_by_area_walk[topology.targets[dart as usize] as usize] = true;
+            }
+        }
+        plan.points.reserve(selection.boundary_nodes.len());
+        for node in selection.boundary_nodes {
+            if covered_by_area_walk[node.0 as usize] {
+                continue;
+            }
+            let host = global.node_host_face(&topology, node);
+            plan.points.push((node, plan.face_quotient[host as usize]));
+        }
+
+        let emission = plan.emission(&topology, &edges);
+        let embedding = partition.embed(&[&emission], "boundary")?;
+        let parts = plan.emit_boundary_node_parts(partition, &emission)?;
+        let node_capacity = parts
+            .lines
+            .iter()
+            .try_fold(parts.points.len(), |count, line| {
+                count
+                    .checked_add(line.len())
+                    .ok_or(ResourceError::SizeOverflow)
+            })?;
+        let mut nodes = Vec::with_capacity(node_capacity);
+        nodes.extend(parts.points.iter().copied());
+        for line in &parts.lines {
+            nodes.extend(line.iter().copied());
+        }
+        let by_node = self.resolve_node_points(partition, &embedding, &nodes, declared_axes)?;
+        self.boundary_node_parts_to_shape_resolved(
+            parts,
+            &by_node,
+            declared_axes,
+            has_area,
+            selection.has_curve_support,
+            selection.has_point_support,
+        )
+    }
+
     const fn operand_count(&self) -> usize {
         self.polygon_rings.len()
     }
@@ -2177,6 +2247,106 @@ impl ExactSourceInventory {
         Ok(Shape::narrow_lines(line_axes, lines))
     }
 
+    fn coordinates_from_nodes(
+        &self,
+        nodes: &[NodeId],
+        by_node: &ResolvedNodePoints,
+        axes: CoordinateAxes,
+    ) -> Result<CoordSeq> {
+        let mut xs = Vec::with_capacity(nodes.len());
+        let mut ys = Vec::with_capacity(nodes.len());
+        let mut zs = axes.has_z().then(|| Vec::with_capacity(nodes.len()));
+        let mut ms = axes.has_m().then(|| Vec::with_capacity(nodes.len()));
+        for &node in nodes {
+            let point = by_node.point(
+                node,
+                embedding::Embedding::xy_at(by_node.coordinates(), node),
+            );
+            xs.push(point.x);
+            ys.push(point.y);
+            if let Some(zs) = &mut zs {
+                zs.push(point.z().expect("retained Z has a resolved ordinate"));
+            }
+            if let Some(ms) = &mut ms {
+                ms.push(point.m().expect("retained M has a resolved ordinate"));
+            }
+        }
+        CoordSeq::try_from_vecs(xs, ys, zs, ms)
+    }
+
+    fn node_lines_to_shape_resolved(
+        &self,
+        lines: Vec<Vec<NodeId>>,
+        by_node: &ResolvedNodePoints,
+        axes: CoordinateAxes,
+    ) -> Result<Option<Shape>> {
+        if lines.is_empty() {
+            return Ok(None);
+        }
+        let mut output = Vec::with_capacity(lines.len());
+        for line in lines {
+            output.push(LineSeq::from_proven(
+                self.coordinates_from_nodes(&line, by_node, axes)?,
+            ));
+        }
+        Ok(Some(Shape::narrow_lines(axes, output)))
+    }
+
+    fn boundary_node_parts_to_shape_resolved(
+        &self,
+        parts: NodeParts,
+        by_node: &ResolvedNodePoints,
+        declared_axes: CoordinateAxes,
+        has_area: bool,
+        has_curve_support: bool,
+        has_point_support: bool,
+    ) -> Result<Shape> {
+        let point_axes = bucket_axes(&parts.points, by_node, declared_axes, false, "boundary")?;
+        let line_node_count = parts.lines.iter().try_fold(0_usize, |count, line| {
+            count
+                .checked_add(line.len())
+                .ok_or(ResourceError::SizeOverflow)
+        })?;
+        let mut line_nodes = Vec::with_capacity(line_node_count);
+        for line in &parts.lines {
+            line_nodes.extend(line.iter().copied());
+        }
+        let line_axes = bucket_axes(&line_nodes, by_node, declared_axes, false, "boundary")?;
+        let points = if parts.points.is_empty() {
+            None
+        } else {
+            Some(Shape::multi_point(
+                point_axes,
+                self.coordinates_from_nodes(&parts.points, by_node, point_axes)?,
+            ))
+        };
+        let lines = self.node_lines_to_shape_resolved(parts.lines, by_node, line_axes)?;
+
+        if has_area {
+            let lines = lines.unwrap_or_else(|| {
+                Shape::typed_empty(GeometryKind::MultiLineString, declared_axes)
+            });
+            return match points {
+                Some(points) => Shape::geometry_collection(vec![lines, points]),
+                None => Ok(lines),
+            };
+        }
+        if has_curve_support {
+            return Ok(points
+                .unwrap_or_else(|| Shape::typed_empty(GeometryKind::MultiPoint, declared_axes)));
+        }
+        if has_point_support {
+            return Ok(Shape::typed_empty(
+                GeometryKind::GeometryCollection,
+                declared_axes,
+            ));
+        }
+        Ok(Shape::typed_empty(
+            GeometryKind::MultiLineString,
+            declared_axes,
+        ))
+    }
+
     fn node_parts_to_shape_resolved(
         &self,
         parts: NodeParts,
@@ -2244,28 +2414,16 @@ impl ExactSourceInventory {
         }
         let mut lines = Vec::with_capacity(parts.lines.len());
         for line in parts.lines {
-            let mut coordinates = Vec::with_capacity(line.len());
-            for node in line {
-                coordinates.push(with_axes(
-                    by_node.point(node, embedding::Embedding::xy_at(xy, node)),
-                    line_axes,
-                ));
-            }
-            lines.push(CoordSeq::try_from_points(&coordinates)?);
+            lines.push(self.coordinates_from_nodes(&line, by_node, line_axes)?);
         }
         let mut polygons = Vec::with_capacity(parts.polygons.len());
         for polygon in parts.polygons {
             let mut rings = Vec::with_capacity(polygon.len());
             for ring in polygon {
-                let mut coordinates = Vec::with_capacity(ring.len());
-                for node in ring {
-                    coordinates.push(with_axes(
-                        by_node.point(node, embedding::Embedding::xy_at(xy, node)),
-                        polygon_axes,
-                    ));
-                }
-                rings.push(Ring::try_from_closed(CoordSeq::try_from_points(
-                    &coordinates,
+                rings.push(Ring::try_from_closed(self.coordinates_from_nodes(
+                    &ring,
+                    by_node,
+                    polygon_axes,
                 )?)?);
             }
             let mut ring_iter = rings.into_iter();

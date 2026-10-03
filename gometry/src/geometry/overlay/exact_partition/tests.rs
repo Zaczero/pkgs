@@ -271,11 +271,13 @@ fn subdivision_keeps_a_hole_vertex_on_the_other_childs_dissolved_seam() {
     assert!(left_keeps);
     assert!(!right_keeps);
     assert!(
-        right
-            .boundary()
-            .unwrap()
-            .intersects(&Shape::Point(Point::new_raw_xy(0.0, 0.0)))
-            .unwrap()
+        crate::geometry::boundary(
+            &crate::geometry::PreparedPlan::transient(&right),
+            crate::geometry::TopologyDomain::Cartesian,
+        )
+        .unwrap()
+        .intersects(&Shape::Point(Point::new_raw_xy(0.0, 0.0)))
+        .unwrap()
     );
     let seam = crate::io::parse_wkt("LINESTRING(0 -3,0 3)").unwrap();
     assert!(
@@ -367,6 +369,304 @@ impl embedding::Sink for WitnessLog {
         self.0.push(witness);
         std::ops::ControlFlow::Continue(())
     }
+}
+
+fn boundary_of_polygonal_support(wkt: &str) -> String {
+    let shape = crate::io::parse_wkt(wkt).expect("valid boundary fixture");
+    let inventory = ExactSourceInventory::from_polygonal_union(&[&shape])
+        .expect("polygonal union sources stage")
+        .expect("fixture is polygonal");
+    let mut budget = ExpansionBudget::new("boundary", "exact partition");
+    let partition = inventory
+        .partition(&mut budget)
+        .expect("exact partition builds");
+    let boundary = inventory
+        .occupied_boundary_shape(&partition, shape.axes())
+        .expect("boundary cells emit");
+    crate::io::to_wkt(&boundary).expect("boundary WKT writes")
+}
+
+#[test]
+fn boundary_cells_publish_the_outline_of_occupied_area() {
+    let cases = [
+        (
+            "outward retraced spur",
+            "POLYGON ((0 0,4 0,4 4,2 4,2 6,2 4,0 4,0 0))",
+            "LINESTRING (0 0, 4 0, 4 4, 0 4, 0 0)",
+        ),
+        (
+            "inward retraced slit",
+            "POLYGON ((0 0,4 0,4 4,2 4,2 2,2 4,0 4,0 0))",
+            "LINESTRING (0 0, 4 0, 4 4, 0 4, 0 0)",
+        ),
+        (
+            "adjacent multipolygon members",
+            "MULTIPOLYGON (((0 0,2 0,2 2,0 2,0 0)),((2 0,4 0,4 2,2 2,2 0)))",
+            "LINESTRING (0 0, 4 0, 4 2, 0 2, 0 0)",
+        ),
+        (
+            "overlapping multipolygon members",
+            "MULTIPOLYGON (((0 0,4 0,4 2,0 2,0 0)),((2 0,6 0,6 2,2 2,2 0)))",
+            "LINESTRING (0 0, 6 0, 6 2, 0 2, 0 0)",
+        ),
+        (
+            "external hole",
+            "POLYGON ((0 0,4 0,4 4,0 4,0 0),(5 5,6 5,6 6,5 6,5 5))",
+            "LINESTRING (0 0, 4 0, 4 4, 0 4, 0 0)",
+        ),
+    ];
+    for (name, input, expected) in cases {
+        assert_eq!(boundary_of_polygonal_support(input), expected, "{name}");
+    }
+}
+
+#[test]
+fn boundary_cells_publish_only_odd_residual_nodes() {
+    assert_eq!(
+        boundary_of_polygonal_support("POLYGON ((0 0,2 2,4 4,0 0))"),
+        "MULTIPOINT ((0 0), (4 4))",
+    );
+    assert_eq!(
+        boundary_of_polygonal_support("POLYGON ((1 2,1 2,1 2,1 2))"),
+        "GEOMETRYCOLLECTION EMPTY",
+    );
+    assert_eq!(
+        boundary_of_polygonal_support(
+            "MULTIPOLYGON (((0 0,4 0,4 4,0 4,0 0)),((10 0,12 0,14 0,10 0)))"
+        ),
+        "GEOMETRYCOLLECTION (LINESTRING (0 0, 4 0, 4 4, 0 4, 0 0), MULTIPOINT ((10 0), (14 0)))",
+    );
+    assert_eq!(
+        boundary_of_polygonal_support("MULTIPOLYGON (((0 0,4 0,4 4,0 4,0 0)),((1 1,2 2,3 3,1 1)))"),
+        "LINESTRING (0 0, 4 0, 4 4, 0 4, 0 0)",
+    );
+}
+
+#[test]
+fn boundary_emission_preserves_source_zm_for_area_and_residual_points() {
+    let input = "MULTIPOLYGON ZM (\
+        ((0 0 1 11,4 0 2 22,4 4 3 33,2 4 4 44,2 6 5 55,2 4 4 44,0 4 6 66,0 0 1 11)),\
+        ((10 0 5 55,12 0 6 66,14 0 7 77,10 0 5 55))\
+    )";
+    assert_eq!(
+        boundary_of_polygonal_support(input),
+        "GEOMETRYCOLLECTION (LINESTRING ZM (0 0 1 11, 4 0 2 22, 4 4 3 33, 2 4 4 44, 0 4 6 66, 0 0 1 11), MULTIPOINT ZM ((10 0 5 55), (14 0 7 77)))",
+    );
+}
+
+#[test]
+fn boundary_node_serializer_uses_accepted_embedding_for_line_and_residual_zm_point() {
+    let source_point = |xy: XY| {
+        Point::new_axes(xy.x, xy.y, ZOrdinate(Some(17.25)), MOrdinate(Some(73.5))).unwrap()
+    };
+    let mut sources: Vec<_> = lattice_crossing_group(1.0, 2.0_f64.powi(-52))
+        .into_iter()
+        .map(|segment| {
+            Shape::LineString(
+                LineSeq::try_new(
+                    CoordSeq::try_from_points(&[
+                        source_point(segment.start),
+                        source_point(segment.end),
+                    ])
+                    .unwrap(),
+                )
+                .unwrap(),
+            )
+        })
+        .collect();
+    sources.push(Shape::Point(source_point(XY::new(1.0, 1.0))));
+    let source_refs: Vec<_> = sources.iter().collect();
+    let inventory = ExactSourceInventory::from_shapes(&source_refs).unwrap();
+    let mut budget = ExpansionBudget::new("boundary", "accepted embedding serialization");
+    let partition = inventory.partition(&mut budget).unwrap();
+    let mut crossings = partition.crossings();
+    assert_eq!(
+        crossings.len(),
+        2,
+        "the fixed lattice fixture has two crossings"
+    );
+    crate::geometry::try_sort_by(&mut crossings, |left, right| {
+        partition.compare_nodes(*left, *right)
+    })
+    .unwrap();
+    let [residual_node, line_node] = crossings.as_slice() else {
+        panic!("the fixed lattice fixture has two crossings");
+    };
+    let residual_node = *residual_node;
+    let line_node = *line_node;
+
+    let emission = partition.span_emission(0..u32::try_from(partition.spans.len()).unwrap());
+    let accepted = partition.embed(&[&emission], "boundary").unwrap();
+    let xy_bits = |point: XY| (point.x.to_bits(), point.y.to_bits());
+    let nearest = partition.nearest_xy(line_node);
+    assert_eq!(
+        xy_bits(nearest),
+        xy_bits(partition.nearest_xy(residual_node))
+    );
+    assert_ne!(xy_bits(accepted.xy(line_node)), xy_bits(nearest));
+    assert_ne!(xy_bits(accepted.xy(residual_node)), xy_bits(nearest));
+    assert_ne!(
+        xy_bits(accepted.xy(line_node)),
+        xy_bits(accepted.xy(residual_node))
+    );
+
+    let line_nodes = emission
+        .items
+        .iter()
+        .copied()
+        .find(|[start, end]| {
+            (*start == line_node || *end == line_node)
+                && *start != residual_node
+                && *end != residual_node
+        })
+        .expect("the repaired line node has a segment away from the residual node");
+    let [line_start, line_end] = line_nodes;
+    let line_crossing = line_nodes
+        .iter()
+        .position(|&node| node == line_node)
+        .expect("selected line contains the repaired node");
+    let nodes = [residual_node, line_start, line_end];
+    let axes = CoordinateAxes::XYZM;
+    let accepted_nodes = inventory
+        .resolve_node_points(&partition, &accepted, &nodes, axes)
+        .unwrap();
+    let accepted_shape = inventory
+        .boundary_node_parts_to_shape_resolved(
+            NodeParts {
+                points: vec![residual_node],
+                lines: vec![vec![line_start, line_end]],
+                polygons: Vec::new(),
+            },
+            &accepted_nodes,
+            axes,
+            true,
+            true,
+            true,
+        )
+        .unwrap();
+    let Shape::GeometryCollection(accepted_parts) = &accepted_shape else {
+        panic!("area boundary with a residual point is a collection");
+    };
+    let Shape::LineString(accepted_line) = accepted_parts
+        .first()
+        .expect("the area boundary line is first")
+    else {
+        panic!("the area boundary component is one line");
+    };
+    let Shape::MultiPoint(accepted_points) = accepted_parts
+        .get(1)
+        .expect("the residual component follows the area boundary")
+    else {
+        panic!("the residual boundary point remains a MultiPoint");
+    };
+    let accepted_line_xy = XY::new(
+        *accepted_line
+            .xs()
+            .get(line_crossing)
+            .expect("line retains the repaired crossing"),
+        *accepted_line
+            .ys()
+            .get(line_crossing)
+            .expect("line retains the repaired crossing"),
+    );
+    let accepted_residual_xy = XY::new(
+        *accepted_points
+            .xs()
+            .first()
+            .expect("residual MultiPoint retains its node"),
+        *accepted_points
+            .ys()
+            .first()
+            .expect("residual MultiPoint retains its node"),
+    );
+    assert_eq!(xy_bits(accepted_line_xy), xy_bits(accepted.xy(line_node)));
+    assert_eq!(
+        xy_bits(accepted_residual_xy),
+        xy_bits(accepted.xy(residual_node))
+    );
+    assert_ne!(xy_bits(accepted_line_xy), xy_bits(nearest));
+    assert_ne!(xy_bits(accepted_residual_xy), xy_bits(nearest));
+    let line_z = accepted_line.zs().expect("line carries source Z");
+    let line_m = accepted_line.ms().expect("line carries source M");
+    assert_eq!(line_z.len(), 2);
+    assert_eq!(line_m.len(), 2);
+    assert!(
+        line_z
+            .iter()
+            .all(|value| value.to_bits() == 17.25_f64.to_bits())
+    );
+    assert!(
+        line_m
+            .iter()
+            .all(|value| value.to_bits() == 73.5_f64.to_bits())
+    );
+    let accepted_residual = accepted_points.point_at(0);
+    assert_eq!(
+        (
+            accepted_residual.z().map(f64::to_bits),
+            accepted_residual.m().map(f64::to_bits)
+        ),
+        (Some(17.25_f64.to_bits()), Some(73.5_f64.to_bits()))
+    );
+
+    let nearest_embedding = embedding::Embedding::nearest(&partition);
+    let nearest_nodes = inventory
+        .resolve_node_points(&partition, &nearest_embedding, &nodes, axes)
+        .unwrap();
+    let nearest_shape = inventory
+        .boundary_node_parts_to_shape_resolved(
+            NodeParts {
+                points: vec![residual_node],
+                lines: vec![vec![line_start, line_end]],
+                polygons: Vec::new(),
+            },
+            &nearest_nodes,
+            axes,
+            true,
+            true,
+            true,
+        )
+        .unwrap();
+    let Shape::GeometryCollection(nearest_parts) = &nearest_shape else {
+        panic!("the negative control keeps the same output structure");
+    };
+    let Shape::LineString(nearest_line) = nearest_parts
+        .first()
+        .expect("the negative-control line is first")
+    else {
+        panic!("the negative-control area boundary component is one line");
+    };
+    let Shape::MultiPoint(nearest_points) = nearest_parts
+        .get(1)
+        .expect("the negative-control point follows the line")
+    else {
+        panic!("the negative-control residual is a MultiPoint");
+    };
+    let nearest_line_xy = XY::new(
+        *nearest_line
+            .xs()
+            .get(line_crossing)
+            .expect("negative-control line retains its crossing"),
+        *nearest_line
+            .ys()
+            .get(line_crossing)
+            .expect("negative-control line retains its crossing"),
+    );
+    let nearest_residual_xy = XY::new(
+        *nearest_points
+            .xs()
+            .first()
+            .expect("negative-control MultiPoint retains its node"),
+        *nearest_points
+            .ys()
+            .first()
+            .expect("negative-control MultiPoint retains its node"),
+    );
+    assert_eq!(xy_bits(nearest_line_xy), xy_bits(nearest));
+    assert_eq!(xy_bits(nearest_residual_xy), xy_bits(nearest));
+    assert_eq!(xy_bits(nearest_line_xy), xy_bits(nearest_residual_xy));
+    assert_ne!(xy_bits(nearest_line_xy), xy_bits(accepted_line_xy));
+    assert_ne!(xy_bits(nearest_residual_xy), xy_bits(accepted_residual_xy));
 }
 
 #[test]

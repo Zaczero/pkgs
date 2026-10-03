@@ -4,7 +4,7 @@ use super::exact::{
     ExactSourceEdge, ExactSourceRange, ExactSourceRing, SourceEdgeId, SourceEdgeKind, SourceRingId,
     SourceRowId,
 };
-use super::q::{ExactGeographicTopology, GlobalFaceId, QDartId, QNodeId, QPortId};
+use super::q::{ExactGeographicTopology, GlobalFaceId, QDartId, QNodeId, QPortId, row_locations};
 use crate::error::{ResourceError, Result};
 use crate::geographic::{GeographicRing, Latitude, RingSummary, SeamIdentity};
 use crate::geometry::ordinates::AxisValue;
@@ -12,9 +12,9 @@ use crate::geometry::overlay::{OverlayOp, build_certified_overlay_shape_with_axe
 use crate::geometry::segments::try_sort_by;
 use crate::geometry::tessellation::exact::ExactRational;
 use crate::geometry::{
-    CoordSeq, CoordinateAxes, Coordinates as _, GeometryErrorKind, HasM, HasZ, MOrdinate, Point,
-    Polygon, Ring, RingWinding, Shape, XY, ZOrdinate, interpolate_optional_ordinate,
-    open_point_cycle_winding, ring_winding,
+    CoordSeq, CoordSeqBuilder, CoordinateAxes, Coordinates as _, GeometryErrorKind, GeometryKind,
+    HasM, HasZ, LineSeq, Loc, MOrdinate, Point, Polygon, Ring, RingWinding, Shape, XY, ZOrdinate,
+    interpolate_optional_ordinate, open_point_cycle_winding, ring_winding,
 };
 
 #[derive(Clone, Copy)]
@@ -125,16 +125,7 @@ pub(in crate::geometry) fn exact_geographic_overlay(
         return build_certified_overlay_shape_with_axes(points, lines, polygons, declared_axes);
     }
 
-    let mut has_z = declared_axes.has_z();
-    let mut has_m = declared_axes.has_m();
-    for (_, node) in &live_node_keys {
-        let ordinates = ordinates
-            .get(node.0 as usize)
-            .ok_or_else(|| GeometryErrorKind::Invalid("Q emitted an unknown node".into()))?;
-        has_z &= ordinates.z.value().is_some();
-        has_m &= ordinates.m.value().is_some();
-    }
-    let axes = CoordinateAxes::new(HasZ(has_z), HasM(has_m));
+    let axes = emitted_axes(declared_axes, &live_node_keys, &ordinates)?;
     if strict && axes != declared_axes {
         return Err(GeometryErrorKind::ordinate_dropped(operation.name()));
     }
@@ -164,6 +155,186 @@ pub(in crate::geometry) fn exact_geographic_overlay(
         };
     }
     build_certified_overlay_shape_with_axes(points, lines, polygons, axes)
+}
+
+pub(in crate::geometry) fn exact_geographic_boundary(
+    topology: &ExactGeographicTopology,
+    declared_axes: CoordinateAxes,
+) -> Result<Shape> {
+    if topology.sources.row_count != 1 {
+        return Err(GeometryErrorKind::Invalid(
+            "an exact geographic boundary requires one source row".into(),
+        )
+        .into());
+    }
+    let q = &topology.q;
+    let row = SourceRowId(0);
+    let selected_faces = select_faces(q, 1, OverlayOp::Union)?;
+    let has_area = selected_faces.iter().any(|&selected| selected);
+    let (line_paths, covered_by_area_cycles) = {
+        let mut regions = face_regions(q, &selected_faces)?;
+        let cycles = selected_area_boundaries(q, &selected_faces, &mut regions)?;
+        boundary_cycle_line_paths(topology, &cycles)?
+    };
+    let row_locations = row_locations(topology, row)?;
+    let mut point_nodes = Vec::new();
+    let mut has_point_support = false;
+    for (node, &covered) in q.nodes.iter().zip(&covered_by_area_cycles) {
+        let location = row_locations.node(node.id)?;
+        has_point_support |= location == Loc::Interior;
+        if location == Loc::Boundary && !covered {
+            point_nodes.push(node.id);
+        }
+    }
+
+    let mut has_curve_support = false;
+    for span_index in 0..q.spans.len() {
+        if row_locations.span(span_index)? == Some(Loc::Interior) {
+            has_curve_support = true;
+            break;
+        }
+    }
+
+    let plan = QOverlayPlan {
+        whole_sphere: false,
+        polygons: PolygonPlan::Regions {
+            rings: Vec::new(),
+            region_count: q.global_face_count,
+        },
+        cycles: Vec::new(),
+        line_paths,
+        point_nodes,
+    };
+    let coordinates = QCoordinates::build(topology)?;
+    let source_points = boundary_source_points(topology, row)?;
+    let ordinates = node_ordinates(topology)?;
+    let mut live_node_keys = plan.live_node_keys(topology, &coordinates, &source_points)?;
+    certify_node_injectivity(&mut live_node_keys)?;
+    let mut lines = emit_lines(topology, &plan.line_paths, &ordinates, &coordinates)?;
+    let axes = emitted_axes(declared_axes, &live_node_keys, &ordinates)?;
+    let mut points = [];
+    let mut polygons = [];
+    apply_axes(
+        topology.sources.frame,
+        &ordinates,
+        &live_node_keys,
+        axes,
+        &mut points,
+        &mut lines,
+        &mut polygons,
+    )?;
+    let point_part = emit_boundary_points(
+        topology,
+        &plan.point_nodes,
+        &source_points,
+        &coordinates,
+        &ordinates,
+        axes,
+    )?;
+
+    let line_part = if lines.is_empty() {
+        None
+    } else {
+        let mut values = Vec::with_capacity(lines.len());
+        for line in lines {
+            values.push(LineSeq::from_proven(line));
+        }
+        Some(Shape::narrow_lines(axes, values))
+    };
+
+    if has_area {
+        let line_part = line_part
+            .unwrap_or_else(|| Shape::typed_empty(GeometryKind::MultiLineString, declared_axes));
+        return match point_part {
+            Some(point_part) => Shape::geometry_collection(vec![line_part, point_part]),
+            None => Ok(line_part),
+        };
+    }
+    if has_curve_support {
+        return Ok(point_part
+            .unwrap_or_else(|| Shape::typed_empty(GeometryKind::MultiPoint, declared_axes)));
+    }
+    if has_point_support {
+        return Ok(Shape::typed_empty(
+            GeometryKind::GeometryCollection,
+            declared_axes,
+        ));
+    }
+    Ok(Shape::typed_empty(
+        GeometryKind::MultiLineString,
+        declared_axes,
+    ))
+}
+
+fn emitted_axes(
+    declared: CoordinateAxes,
+    live: &[(EmittedNodeKey, QNodeId)],
+    ordinates: &[NodeOrdinates],
+) -> Result<CoordinateAxes> {
+    let mut has_z = declared.has_z();
+    let mut has_m = declared.has_m();
+    for &(_, node) in live {
+        let ordinates = ordinates
+            .get(node.0 as usize)
+            .ok_or_else(|| GeometryErrorKind::Invalid("Q emitted an unknown node".into()))?;
+        has_z &= ordinates.z.value().is_some();
+        has_m &= ordinates.m.value().is_some();
+    }
+    Ok(CoordinateAxes::new(HasZ(has_z), HasM(has_m)))
+}
+
+fn boundary_cycle_line_paths(
+    topology: &ExactGeographicTopology,
+    cycles: &[BoundaryCycle],
+) -> Result<(Vec<Vec<LineStep>>, Vec<bool>)> {
+    let q = &topology.q;
+    let mut paths = Vec::with_capacity(cycles.len());
+    let mut covered = vec![false; q.nodes.len()];
+    for cycle in cycles {
+        let mut path = Vec::with_capacity(cycle.darts.len());
+        for &dart_id in &cycle.darts {
+            let dart = q.darts.get(dart_id.0 as usize).ok_or_else(|| {
+                GeometryErrorKind::Invalid("Q boundary cycle has an unknown dart".into())
+            })?;
+            let span_index = dart.span.0 as usize;
+            let span = q.spans.get(span_index).ok_or_else(|| {
+                GeometryErrorKind::Invalid("Q boundary cycle has an unknown span".into())
+            })?;
+            let from_endpoint = if dart.from_node == span.nodes[0] {
+                SpanEndpoint::Start
+            } else if dart.from_node == span.nodes[1] {
+                SpanEndpoint::End
+            } else {
+                return Err(GeometryErrorKind::Invalid(
+                    "Q boundary dart does not start at a span endpoint".into(),
+                )
+                .into());
+            };
+            let to_node = match from_endpoint {
+                SpanEndpoint::Start => span.nodes[1],
+                SpanEndpoint::End => span.nodes[0],
+            };
+            if dart.to_node != to_node {
+                return Err(GeometryErrorKind::Invalid(
+                    "Q boundary dart does not end at the opposite span endpoint".into(),
+                )
+                .into());
+            }
+            *covered.get_mut(dart.from_node.0 as usize).ok_or_else(|| {
+                GeometryErrorKind::Invalid("Q boundary dart starts at an unknown node".into())
+            })? = true;
+            *covered.get_mut(dart.to_node.0 as usize).ok_or_else(|| {
+                GeometryErrorKind::Invalid("Q boundary dart ends at an unknown node".into())
+            })? = true;
+            path.push(LineStep {
+                span: span_index,
+                from_endpoint,
+                owner: area_owner_index(topology, span_index)?,
+            });
+        }
+        paths.push(path);
+    }
+    Ok((paths, covered))
 }
 
 impl QOverlayPlan {
@@ -288,22 +459,7 @@ impl QOverlayPlan {
             }
         }
         for &node in &self.point_nodes {
-            let point = if let Some(source) = source_points.get(node.0 as usize).copied().flatten()
-            {
-                source
-            } else {
-                let node_data = topology.q.nodes.get(node.0 as usize).ok_or_else(|| {
-                    GeometryErrorKind::Invalid("Q point plan references an unknown node".into())
-                })?;
-                let port_id = *topology
-                    .q
-                    .node_ports
-                    .get(node_data.ports.start)
-                    .ok_or_else(|| {
-                        GeometryErrorKind::Invalid("Q point node has no first port".into())
-                    })?;
-                coordinates.point(topology, port_id)?
-            };
+            let point = emitted_point_for_node(topology, node, source_points, coordinates)?;
             record_emitted_node(topology.sources.frame, node, point, &mut live)?;
         }
         Ok(live)
@@ -2064,24 +2220,60 @@ fn emit_points(
     source_points: &[Option<Point>],
     coordinates: &QCoordinates,
 ) -> Result<Vec<Point>> {
-    let q = &topology.q;
     let mut output = Vec::with_capacity(nodes.len());
     for &node in nodes {
-        let point = if let Some(source) = source_points.get(node.0 as usize).copied().flatten() {
-            source
-        } else {
-            let node_data = q
-                .nodes
-                .get(node.0 as usize)
-                .ok_or_else(|| GeometryErrorKind::Invalid("Q point node is unknown".into()))?;
-            let port_id = *q.node_ports.get(node_data.ports.start).ok_or_else(|| {
-                GeometryErrorKind::Invalid("Q point node has no first port".into())
-            })?;
-            coordinates.point(topology, port_id)?
-        };
-        output.push(point);
+        output.push(emitted_point_for_node(
+            topology,
+            node,
+            source_points,
+            coordinates,
+        )?);
     }
     Ok(output)
+}
+
+fn emitted_point_for_node(
+    topology: &ExactGeographicTopology,
+    node: QNodeId,
+    source_points: &[Option<Point>],
+    coordinates: &QCoordinates,
+) -> Result<Point> {
+    if let Some(source) = source_points.get(node.0 as usize).copied().flatten() {
+        return Ok(source);
+    }
+    let node_data = topology
+        .q
+        .nodes
+        .get(node.0 as usize)
+        .ok_or_else(|| GeometryErrorKind::Invalid("Q point node is unknown".into()))?;
+    let port_id = *topology
+        .q
+        .node_ports
+        .get(node_data.ports.start)
+        .ok_or_else(|| GeometryErrorKind::Invalid("Q point node has no first port".into()))?;
+    coordinates.point(topology, port_id)
+}
+
+fn emit_boundary_points(
+    topology: &ExactGeographicTopology,
+    nodes: &[QNodeId],
+    source_points: &[Option<Point>],
+    coordinates: &QCoordinates,
+    ordinates: &[NodeOrdinates],
+    axes: CoordinateAxes,
+) -> Result<Option<Shape>> {
+    if nodes.is_empty() {
+        return Ok(None);
+    }
+    let mut output = CoordSeqBuilder::with_capacity(axes, nodes.len());
+    for &node in nodes {
+        let point = emitted_point_for_node(topology, node, source_points, coordinates)?;
+        let source = ordinates
+            .get(node.0 as usize)
+            .ok_or_else(|| GeometryErrorKind::Invalid("Q point node has no ordinates".into()))?;
+        output.push(with_axes(point, *source, axes)?);
+    }
+    Ok(Some(Shape::multi_point(axes, output.finish()?)))
 }
 
 fn source_point_coordinates(topology: &ExactGeographicTopology) -> Result<Vec<Option<Point>>> {
@@ -2109,6 +2301,64 @@ fn source_point_coordinates(topology: &ExactGeographicTopology) -> Result<Vec<Op
             });
     }
     Ok(source_points)
+}
+
+fn boundary_source_points(
+    topology: &ExactGeographicTopology,
+    row: SourceRowId,
+) -> Result<Vec<Option<Point>>> {
+    let q = &topology.q;
+    let mut selected = Vec::with_capacity(q.nodes.len());
+    selected.resize(q.nodes.len(), None::<(bool, SourceEdgeId, Point)>);
+    for (span_index, span) in q.spans.iter().enumerate() {
+        if span.nodes[0] == span.nodes[1] || !q.collapsed_rows_for_span(span_index)?.contains(&row)
+        {
+            continue;
+        }
+        for owner in &span.owners {
+            let edge = source_edge_at(topology, owner.source_edge)?;
+            if edge.row != row
+                || !matches!(edge.kind, SourceEdgeKind::Ring {
+                    kind: crate::geometry::RingKind::Collapsed,
+                    ..
+                })
+            {
+                continue;
+            }
+            let (start_parameter, end_parameter) = if owner.reversed {
+                (&owner.source_range.end, &owner.source_range.start)
+            } else {
+                (&owner.source_range.start, &owner.source_range.end)
+            };
+            let [start_node, end_node] = span.nodes;
+            for (node, parameter) in [(start_node, start_parameter), (end_node, end_parameter)] {
+                // Prefer a stored source start at the node; its ring traversal spelling wins
+                // over the canonical chart port and over an incoming edge's endpoint alias.
+                let candidate = if parameter.is_zero() {
+                    Some((false, edge.id, edge.source[0]))
+                } else if parameter.is_one() {
+                    Some((true, edge.id, edge.source[1]))
+                } else {
+                    None
+                };
+                let Some(candidate) = candidate else {
+                    continue;
+                };
+                let stored = selected.get_mut(node.0 as usize).ok_or_else(|| {
+                    GeometryErrorKind::Invalid("Q source endpoint has an unknown node".into())
+                })?;
+                if stored
+                    .is_none_or(|previous| (candidate.0, candidate.1) < (previous.0, previous.1))
+                {
+                    *stored = Some(candidate);
+                }
+            }
+        }
+    }
+    Ok(selected
+        .into_iter()
+        .map(|entry| entry.map(|(_, _, point)| point))
+        .collect())
 }
 
 fn record_emitted_node(
@@ -2240,15 +2490,13 @@ fn apply_axes(
         *point = with_axes(*point, *source, axes)?;
     }
     for line in lines {
-        let mut coordinates = Vec::with_capacity(line.coord_count());
-        for point in line.iter_coords() {
+        *line = line.try_map_points(|point| {
             let node = output_node_for_point(frame, live, point)?;
             let source = ordinates.get(node.0 as usize).ok_or_else(|| {
                 GeometryErrorKind::Invalid("Q output line has no ordinates".into())
             })?;
-            coordinates.push(with_axes(point, *source, axes)?);
-        }
-        *line = CoordSeq::try_from_points(&coordinates)?;
+            with_axes(point, *source, axes)
+        })?;
     }
     for polygon in polygons {
         let shell = carry_ring_axes(frame, &polygon.shell, ordinates, live, axes)?;
@@ -2361,12 +2609,59 @@ fn nearest_longitude_alias(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::geographic::GeographicFrame;
+    use crate::geographic::{GeographicFrame, GeographicInputs};
+
+    fn exact_boundary(shape: &Shape) -> Shape {
+        let frame = GeographicFrame::crs84();
+        let inputs = GeographicInputs::try_from_shapes(frame, std::iter::once(shape))
+            .expect("source admits");
+        let topology =
+            ExactGeographicTopology::from_views(frame, inputs.views().iter().copied()).unwrap();
+        exact_geographic_boundary(&topology, shape.axes()).unwrap()
+    }
+
+    type TestPoint = (u64, u64);
+    type TestEdge = (TestPoint, TestPoint);
+
+    fn edge(left: (f64, f64), right: (f64, f64)) -> TestEdge {
+        let left = (left.0.to_bits(), left.1.to_bits());
+        let right = (right.0.to_bits(), right.1.to_bits());
+        if left <= right {
+            (left, right)
+        } else {
+            (right, left)
+        }
+    }
+
+    fn line_edges(shape: &Shape) -> Vec<TestEdge> {
+        let mut edges = Vec::new();
+        let mut append = |line: &CoordSeq| {
+            for [start, end] in line.segment_pairs() {
+                edges.push(edge((start.x, start.y), (end.x, end.y)));
+            }
+        };
+        match shape {
+            Shape::LineString(line) => append(line.as_coords()),
+            Shape::MultiLineString(lines) => {
+                for line in lines {
+                    append(line.as_coords());
+                }
+            },
+            Shape::Point(_)
+            | Shape::MultiPoint(_)
+            | Shape::Polygon(_)
+            | Shape::MultiPolygon(_)
+            | Shape::GeometryCollection(_)
+            | Shape::Empty(..) => panic!("area boundary emits linework, got {shape:?}"),
+        }
+        edges.sort_unstable();
+        edges
+    }
 
     #[test]
     fn emitted_longitude_reduces_chart_period_before_rounding() {
         let frame = GeographicFrame::crs84();
-        let source = 122.427194_f64;
+        let source = 122.427_194_f64;
         let period = ExactRational::from_f64(frame.longitude().period());
         let shifted = ExactRational::from_f64(source).try_add(&period).unwrap();
         let rounded_chart_alias = source + frame.longitude().period();
@@ -2386,5 +2681,96 @@ mod tests {
                 .to_bits(),
             source.to_bits()
         );
+    }
+
+    #[test]
+    fn boundary_keeps_the_valid_seam_component_in_a_multirow_union() {
+        let shape = crate::io::parse_wkt(
+            "MULTIPOLYGON (\
+             ((20 20,40 20,40 30,20 30,20 20)),\
+             ((0 10,20 10,20 20,0 20,0 10)),\
+             ((170 20,190 20,190 40,170 40,170 20))\
+             )",
+        )
+        .expect("three-box multipolygon parses");
+        let mut expected = vec![
+            edge((0.0, 10.0), (20.0, 10.0)),
+            edge((20.0, 10.0), (20.0, 20.0)),
+            edge((20.0, 20.0), (0.0, 20.0)),
+            edge((0.0, 20.0), (0.0, 10.0)),
+            edge((20.0, 20.0), (40.0, 20.0)),
+            edge((40.0, 20.0), (40.0, 30.0)),
+            edge((40.0, 30.0), (20.0, 30.0)),
+            edge((20.0, 30.0), (20.0, 20.0)),
+            edge((170.0, 40.0), (170.0, 20.0)),
+            edge((170.0, 20.0), (-180.0, 20.0)),
+            edge((-180.0, 20.0), (-170.0, 20.0)),
+            edge((-170.0, 20.0), (-170.0, 40.0)),
+            edge((-170.0, 40.0), (-180.0, 40.0)),
+            edge((-180.0, 40.0), (170.0, 40.0)),
+        ];
+        expected.sort_unstable();
+        let actual = line_edges(&exact_boundary(&shape));
+        assert_eq!(actual, expected);
+        assert!(!actual.contains(&edge((-180.0, 20.0), (-180.0, 40.0))));
+    }
+
+    #[test]
+    fn boundary_keeps_a_pentagon_when_its_host_ray_hits_a_seam_box_node() {
+        let shape = crate::io::parse_wkt(
+            "MULTIPOLYGON (\
+             ((0 10,20 10,20 20,40 20,0 30,0 10)),\
+             ((170 20,190 20,190 40,170 40,170 20))\
+             )",
+        )
+        .expect("pentagon and seam box parse");
+        let mut expected = vec![
+            edge((0.0, 30.0), (0.0, 10.0)),
+            edge((0.0, 10.0), (20.0, 10.0)),
+            edge((20.0, 10.0), (20.0, 20.0)),
+            edge((20.0, 20.0), (40.0, 20.0)),
+            edge((40.0, 20.0), (0.0, 30.0)),
+            edge((170.0, 40.0), (170.0, 20.0)),
+            edge((170.0, 20.0), (-180.0, 20.0)),
+            edge((-180.0, 20.0), (-170.0, 20.0)),
+            edge((-170.0, 20.0), (-170.0, 40.0)),
+            edge((-170.0, 40.0), (-180.0, 40.0)),
+            edge((-180.0, 40.0), (170.0, 40.0)),
+        ];
+        expected.sort_unstable();
+        let actual = line_edges(&exact_boundary(&shape));
+        assert_eq!(actual, expected);
+        assert!(!actual.contains(&edge((-180.0, 20.0), (-180.0, 40.0))));
+    }
+
+    #[test]
+    fn seam_only_collapsed_support_publishes_its_odd_endpoints() {
+        let shape = crate::io::parse_wkt("POLYGON ((-180 -85,180 -85,180 85,-180 85,-180 -85))")
+            .expect("seam-only polygon parses");
+        let Shape::MultiPoint(points) = exact_boundary(&shape) else {
+            panic!("seam-only boundary is multipoint");
+        };
+        let frame = GeographicFrame::crs84();
+        let mut actual = points
+            .iter_coords()
+            .map(|point| {
+                (
+                    frame
+                        .longitude()
+                        .canonicalize(point.x)
+                        .expect("emitted longitude is in the frame")
+                        .get()
+                        .to_bits(),
+                    point.y.to_bits(),
+                )
+            })
+            .collect::<Vec<_>>();
+        actual.sort_unstable();
+        let mut expected = [
+            ((-180.0_f64).to_bits(), (-85.0_f64).to_bits()),
+            ((-180.0_f64).to_bits(), 85.0_f64.to_bits()),
+        ];
+        expected.sort_unstable();
+        assert_eq!(actual, expected);
     }
 }

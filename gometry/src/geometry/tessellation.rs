@@ -1,8 +1,7 @@
 //! Tessellation outputs from `Shape`: Delaunay/constrained triangulation,
-//! ear-cut polygon triangles, Voronoi polygons/edges, boundary, and linework
+//! ear-cut polygon triangles, Voronoi polygons/edges, and linework
 //! polygonization.
 
-mod boundary;
 mod circumcenter;
 mod delaunay;
 pub(crate) use delaunay::exact_delaunay::{EMPTY, Triangulation, next_halfedge, prev_halfedge};
@@ -72,7 +71,6 @@ pub(super) fn overlapping_rings_error(left: RingOwner, right: RingOwner) -> crat
     })
 }
 
-pub(crate) use boundary::{line_boundary, multiline_boundary, rings_to_boundary};
 pub(crate) use delaunay::{CdtRefinement, constrained_triangle_vertices, delaunay_triangulation};
 use delaunay::{
     CertifiedDelaunay, CertifiedPrimalEdge, Site, certified_delaunay, selected_triangle_points,
