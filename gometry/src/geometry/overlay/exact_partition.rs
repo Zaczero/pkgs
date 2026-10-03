@@ -1865,7 +1865,7 @@ impl ExactSourceInventory {
         }
         let emission = plan.emission(&topology, &edges);
         let embedding = partition.embed(&[&emission], operation.name())?;
-        let parts = plan.build_node_parts(partition, &topology)?;
+        let parts = plan.build_node_parts(partition, topology, &emission)?;
         let line_node_count = parts.lines.iter().try_fold(0_usize, |count, line| {
             count
                 .checked_add(line.len())
@@ -1995,8 +1995,8 @@ impl ExactSourceInventory {
         let embedding = partition.embed(&emission_refs, "subdivide")?;
 
         let mut node_parts = Vec::with_capacity(plans.len());
-        for plan in &plans {
-            node_parts.push(plan.build_node_parts(partition, &topology)?);
+        for (plan, emission) in plans.iter().zip(&emissions) {
+            node_parts.push(plan.build_node_parts(partition, &topology, emission)?);
         }
 
         let by_node = self.resolve_node_points(partition, &embedding, &nodes, declared_axes)?;

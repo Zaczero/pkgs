@@ -381,26 +381,19 @@ impl BoundaryPlan {
         &self,
         partition: &ExactPartition<'_>,
         topology: &IndexedTopology,
+        emission: &Emission,
     ) -> Result<NodeParts> {
-        let node_chord = |chord: &PlannedChord| {
-            let first = self.source_darts[chord.sources.start] as usize;
-            let last = self.source_darts[chord.sources.end.wrapping_sub(1)] as usize;
-            [
-                NodeId(topology.owners[first]),
-                NodeId(topology.targets[last]),
-            ]
-        };
-
         let groups = self.polygon_walks(partition, topology)?;
+        let mut remaining = emission.items.as_slice();
         let mut rings: Vec<Option<Vec<NodeId>>> = Vec::with_capacity(self.walks.len());
         rings.resize_with(self.walks.len(), || None);
         for (index, walk) in self.walks.iter().enumerate() {
+            let (chords, rest) = remaining.split_at(walk.len());
+            remaining = rest;
             let mut nodes = Vec::new();
             let node_capacity = walk.len().wrapping_add(1);
             nodes.reserve(node_capacity);
-            for chord in walk {
-                nodes.push(node_chord(chord)[0]);
-            }
+            nodes.extend(chords.iter().map(|chord| chord[0]));
             if let Some(&first) = nodes.first() {
                 nodes.push(first);
                 canonicalize_closed_nodes(partition, &mut nodes)?;
@@ -428,6 +421,7 @@ impl BoundaryPlan {
         }
         drop(rings);
 
+        let (chords, isolated) = remaining.split_at(self.lines.len());
         let line_walks = self.line_walks(topology);
         let mut lines = Vec::with_capacity(line_walks.len());
         for walk in line_walks {
@@ -435,7 +429,7 @@ impl BoundaryPlan {
             let node_capacity = walk.len().wrapping_add(1);
             nodes.reserve(node_capacity);
             for (index, reversed) in walk {
-                let [start, end] = node_chord(&self.lines[index]);
+                let [start, end] = chords[index];
                 let (start, end) = if reversed { (end, start) } else { (start, end) };
                 if nodes.is_empty() {
                     nodes.push(start);
@@ -459,8 +453,8 @@ impl BoundaryPlan {
             }
             lines.push(nodes);
         }
-        let mut points = Vec::with_capacity(self.points.len());
-        points.extend(self.points.iter().map(|&(node, _)| node));
+        let mut points = Vec::with_capacity(isolated.len());
+        points.extend(isolated.iter().map(|item| item[0]));
         Ok(NodeParts {
             points,
             lines,

@@ -601,8 +601,8 @@ impl ExactSourceInventory {
             self.resolve_node_points(partition, &embedding, &output_nodes, declared_axes)?;
 
         let mut outputs = Vec::with_capacity(row_count);
-        for plan in plans {
-            let parts = plan.build_node_parts(partition, &topology)?;
+        for (plan, emission) in plans.into_iter().zip(&emissions) {
+            let parts = plan.build_node_parts(partition, &topology, emission)?;
             outputs.push(Self::coverage_shape_from_node_parts(
                 parts,
                 &by_node,

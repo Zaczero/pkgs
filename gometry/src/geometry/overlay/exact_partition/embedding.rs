@@ -1649,6 +1649,14 @@ fn for_each_fan_row(
         starts[start.wrapping_add(1)] = starts[start.wrapping_add(1)].wrapping_add(1);
         starts[end.wrapping_add(1)] = starts[end.wrapping_add(1)].wrapping_add(1);
     }
+    if !starts
+        .iter()
+        .skip(1)
+        .zip(&areal_nodes)
+        .any(|(&degree, &areal)| areal && degree > 2)
+    {
+        return ControlFlow::Continue(());
+    }
     let mut total = 0_usize;
     for offset in starts.iter_mut().skip(1) {
         total = total.wrapping_add(*offset);
