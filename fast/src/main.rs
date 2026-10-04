@@ -42,10 +42,15 @@ fn parse_args(raw: &[OsString]) -> Result<cli::Cli, clap::Error> {
                 .mut_arg("version", |arg| arg.action(clap::ArgAction::SetTrue))
                 .ignore_errors(true)
                 .try_get_matches_from(raw)?;
-            let color = match matches.get_one::<cli::Color>("color") {
-                Some(cli::Color::Always) => clap::ColorChoice::Always,
-                Some(cli::Color::Never) => clap::ColorChoice::Never,
-                Some(cli::Color::Auto) | None => clap::ColorChoice::Auto,
+            let color = match report::resolve_color(
+                matches
+                    .get_one::<cli::Color>("color")
+                    .copied()
+                    .unwrap_or(cli::Color::Auto),
+            ) {
+                cli::Color::Always => clap::ColorChoice::Always,
+                cli::Color::Never => clap::ColorChoice::Never,
+                cli::Color::Auto => clap::ColorChoice::Auto,
             };
             Err(error.with_cmd(&command.color(color)))
         },

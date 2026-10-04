@@ -31,19 +31,10 @@ pub(crate) fn print(result: &Result, options: &Cli) -> io::Result<()> {
         writeln!(out)?;
         return out.flush();
     }
-    let color = match options.color {
+    let color = match resolve_color(options.color) {
         Color::Always => ColorChoice::Always,
         Color::Never => ColorChoice::Never,
-        Color::Auto => {
-            if stdout.is_terminal()
-                && std::env::var_os("TERM").is_none_or(|v| v != "dumb")
-                && std::env::var_os("NO_COLOR").is_none_or(|v| v.is_empty())
-            {
-                ColorChoice::Always
-            } else {
-                ColorChoice::Never
-            }
-        },
+        Color::Auto => ColorChoice::Auto,
     };
     let mut out = AutoStream::new(stdout.lock(), color);
     let width = terminal_width();
@@ -73,9 +64,9 @@ pub(crate) fn print(result: &Result, options: &Cli) -> io::Result<()> {
             width,
         )?;
     }
-    timing(&mut out, result, options.details, width)?;
+    timing(&mut out, result, options, width)?;
     resources(&mut out, result, options, width)?;
-    conclusions(&mut out, result, options)?;
+    conclusions(&mut out, result, options, width)?;
     if options.details {
         writeln!(
             out,
@@ -105,12 +96,14 @@ pub(crate) fn print(result: &Result, options: &Cli) -> io::Result<()> {
 fn timing(
     out: &mut impl io::Write,
     result: &Result,
-    details: bool,
+    options: &Cli,
     width: usize,
 ) -> io::Result<()> {
     if result.analysis.summaries.is_empty() {
         return partial_timing(out, result, width);
     }
+    let single = result.analysis.blocks < 2;
+    let dash = if options.ascii { "-" } else { "—" };
     let has_intervals = result
         .analysis
         .comparisons
@@ -118,16 +111,18 @@ fn timing(
         .any(|comparison| comparison.interval.is_some());
     let evidence_heading = if has_intervals {
         "Approx. 95% simultaneous interval"
+    } else if single {
+        ""
     } else {
         "Observed range"
     };
     if width < 80 {
         writeln!(out, "\n{HEADING}Timing{HEADING:#}")?;
     } else {
-        writeln!(
-            out,
-            "\n{HEADING}Timing{HEADING:#}          Mean      Run SD       vs A    {evidence_heading}"
-        )?;
+        let header = format!(
+            "{HEADING}Timing{HEADING:#}          Mean      Run SD       vs A    {evidence_heading}"
+        );
+        writeln!(out, "\n{}", header.trim_end())?;
     }
     for (index, summary) in result.analysis.summaries.iter().enumerate() {
         let comparison = result
@@ -144,37 +139,37 @@ fn timing(
                 )
             },
         );
-        let evidence = if has_intervals {
-            interval
+        let (sd, evidence) = if single {
+            (dash.to_owned(), String::new())
+        } else if has_intervals {
+            (duration(summary.sd_ns), interval)
         } else {
-            format!(
-                "{} to {}",
-                duration(summary.min_ns as f64),
-                duration(summary.max_ns as f64)
-            )
+            let range = [summary.min_ns, summary.max_ns].map(|ns| duration(ns as f64));
+            (duration(summary.sd_ns), range.join(" to "))
         };
         if width < 80 {
             writeln!(
                 out,
-                "{}  Mean {}; SD {}; {} vs A",
+                "{}  Mean {}; SD {}; {}{}",
                 id(index),
                 duration(summary.mean_ns),
-                duration(summary.sd_ns),
-                change
+                sd,
+                change,
+                if comparison.is_some() { " vs A" } else { "" }
             )?;
             if !evidence.is_empty() {
                 wrapped(out, &format!("   {evidence_heading}: {evidence}"), width)?;
             }
         } else {
-            writeln!(
-                out,
+            let row = format!(
                 "{:<5} {:>14} {:>11} {:>10}    {}",
                 id(index),
                 duration(summary.mean_ns),
-                duration(summary.sd_ns),
+                sd,
                 change,
                 evidence
-            )?;
+            );
+            writeln!(out, "{}", row.trim_end())?;
         }
         if result.candidates.len() == 1
             && let Some(interval) = result.analysis.comparisons.first().and_then(|c| c.interval)
@@ -186,7 +181,7 @@ fn timing(
                 duration(interval.upper)
             )?;
         }
-        if details {
+        if options.details {
             writeln!(
                 out,
                 "      Median {}; range {} to {}",
@@ -317,18 +312,21 @@ fn resources(
     writeln!(out, "\n{HEADING}{heading}{HEADING:#}")?;
     resource_table(out, &readings, width)?;
     resource_details(out, &readings, options, width)?;
-    writeln!(
+    wrapped(
         out,
-        "Counts/times are per-run means; ratios use pooled counts. Resource changes are descriptive."
+        "Counts/times are per-run means; ratios use pooled counts. Resource changes are descriptive.",
+        width,
     )?;
-    writeln!(
+    wrapped(
         out,
-        "RSS: wait-accounted peak / inherited launch floor; not a simultaneous tree peak."
+        "RSS: wait-accounted peak / inherited launch floor; not a simultaneous tree peak.",
+        width,
     )?;
     if !counters_comparable {
-        writeln!(
+        wrapped(
             out,
-            "Hardware counters were unavailable or insufficiently scheduled for comparison."
+            "Hardware counters were unavailable or insufficiently scheduled for comparison.",
+            width,
         )?;
     }
     Ok(())
@@ -411,7 +409,7 @@ fn resource_details(
                     .sum::<f64>()
                     / count
             )?;
-            activity(out, &selected.activity, options.ascii)?;
+            activity(out, &selected.activity, options.ascii, width)?;
         }
     }
     Ok(())
@@ -563,7 +561,12 @@ fn resource_table(
     Ok(())
 }
 
-fn activity(out: &mut impl io::Write, activity: &Activity, ascii: bool) -> io::Result<()> {
+fn activity(
+    out: &mut impl io::Write,
+    activity: &Activity,
+    ascii: bool,
+    width: usize,
+) -> io::Result<()> {
     if activity.tasks.is_empty() {
         return Ok(());
     }
@@ -638,18 +641,26 @@ fn activity(out: &mut impl io::Write, activity: &Activity, ascii: bool) -> io::R
         "      100% = one CPU. Short-lived tasks may be missed; no per-thread RSS."
     )?;
     if activity.limited {
-        writeln!(
+        wrapped(
             out,
-            "      Task detail is incomplete (sampling or retention limit); timing remains complete."
+            "      Task detail is incomplete (sampling or retention limit); timing remains complete.",
+            width,
         )?;
     }
     Ok(())
 }
 
-fn conclusions(out: &mut impl io::Write, result: &Result, options: &Cli) -> io::Result<()> {
+fn conclusions(
+    out: &mut impl io::Write,
+    result: &Result,
+    options: &Cli,
+    width: usize,
+) -> io::Result<()> {
     writeln!(out)?;
     if let Some(note) = &result.analysis.limitation {
-        writeln!(out, "{UNRESOLVED}{note}{UNRESOLVED:#}")?;
+        write!(out, "{UNRESOLVED}")?;
+        wrapped(out, note, width)?;
+        write!(out, "{UNRESOLVED:#}")?;
     }
     for comparison in &result.analysis.comparisons {
         if comparison.decision == Decision::Insufficient && result.analysis.limitation.is_some() {
@@ -697,19 +708,22 @@ fn conclusions(out: &mut impl io::Write, result: &Result, options: &Cli) -> io::
         overall_conclusion(out, result)?;
     }
     if result.analysis.limitation.is_none() {
-        writeln!(
+        wrapped(
             out,
-            "Approximate intervals assume stationary, weakly dependent runs."
+            "Approximate intervals assume stationary, weakly dependent runs.",
+            width,
         )?;
-        writeln!(
+        wrapped(
             out,
-            "Drift, strong dependence, or unseen rare tails can invalidate them."
+            "Drift, strong dependence, or unseen rare tails can invalidate them.",
+            width,
         )?;
     }
     if result.protocol.verify.is_none() {
-        writeln!(
+        wrapped(
             out,
-            "Correctness: exit status only; output equivalence was not verified."
+            "Correctness: exit status only; output equivalence was not verified.",
+            width,
         )?;
     }
     let measured = result
@@ -824,6 +838,16 @@ fn safe(text: &str) -> String {
     text.chars().flat_map(char::escape_debug).collect()
 }
 
+/// anstream resolves `Auto` from `NO_COLOR`, `CLICOLOR`, `CLICOLOR_FORCE` and `TERM`, but
+/// not `FORCE_COLOR`, which takes the same precedence as `CLICOLOR_FORCE` here.
+pub(crate) fn resolve_color(color: Color) -> Color {
+    let set = |name| std::env::var_os(name).is_some_and(|value| !value.is_empty());
+    match color {
+        Color::Auto if set("FORCE_COLOR") && !set("NO_COLOR") => Color::Always,
+        Color::Auto | Color::Always | Color::Never => color,
+    }
+}
+
 fn terminal_width() -> usize {
     if !io::stdout().is_terminal() {
         return 100;
@@ -840,16 +864,29 @@ fn terminal_width() -> usize {
     }
 }
 
+/// Breaks lines at spaces with a three-cell continuation indent; only a word wider
+/// than the remaining line is split.
 fn wrapped(out: &mut impl io::Write, text: &str, width: usize) -> io::Result<()> {
     let mut used = 0_usize;
-    for character in text.chars() {
-        let cells = character.width().unwrap_or(0);
-        if used.wrapping_add(cells) > width {
-            write!(out, "\n   ")?;
-            used = 3;
+    for (index, word) in text.split(' ').enumerate() {
+        if index > 0 {
+            if used.saturating_add(1).saturating_add(word.width()) <= width {
+                write!(out, " ")?;
+                used = used.saturating_add(1);
+            } else {
+                write!(out, "\n   ")?;
+                used = 3;
+            }
         }
-        write!(out, "{character}")?;
-        used = used.wrapping_add(cells);
+        for character in word.chars() {
+            let cells = character.width().unwrap_or(0);
+            if used > 3 && used.saturating_add(cells) > width {
+                write!(out, "\n   ")?;
+                used = 3;
+            }
+            write!(out, "{character}")?;
+            used = used.saturating_add(cells);
+        }
     }
     writeln!(out)
 }

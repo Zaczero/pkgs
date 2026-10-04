@@ -21,7 +21,7 @@ pub(crate) enum Color {
     version,
     about = "Run the work. Compare fairly. Print the answer.",
     override_usage = "fast [OPTIONS] [--] PROGRAM [ARG ...] [::: PROGRAM [ARG ...]] ...",
-    after_help = "Examples:\n  fast ./old input.dat ::: ./new input.dat\n  fast ./program --input 'file with spaces'\n  fast --once ./expensive-job\n  fast --runs 100 --check 1% ./old ::: ./new\n  fast --json ./old ::: ./new > result.json\n  fast sh -c 'producer | consumer' ::: sh -c 'producer | improved'\n  fast --separator +++ printf '%s' ::: +++ true\n\nPut fast options before the first program; its arguments are passed unchanged.\nA standalone ::: separates commands, even after an initial --. Use --separator\nwhen a command needs a literal ::: argument; quoting the marker does not escape it.\nCommands run sequentially in randomized complete blocks, without an implicit shell.\nStdin and stdout are null; --input reopens an existing regular file for every run.\nStderr is drained with bounded capture. The default plans roughly 30 seconds,\nincluding a separate pilot. --time plans; --timeout terminates.\nNo caches, result files, configuration, or input spooling.\n\nExit: 0 completed (possibly unresolved), 1 workload failure, 2 usage error,\n3 collector failure, 4 regression, 5 inconclusive check, 128+signal interrupted.\nBroken output pipes return 141. Hooks default to a 30s timeout."
+    after_help = "Examples:\n  fast ./old input.dat ::: ./new input.dat\n  fast --input data.json zstd ::: gzip\n  fast --once ./expensive-job\n  fast --runs 100 --check 1% ./old ::: ./new\n  fast --json ./old ::: ./new > result.json\n  fast sh -c 'producer | consumer' ::: sh -c 'producer | improved'\n  fast --separator +++ printf '%s' ::: +++ true\n\nPut fast options before the first program; its arguments are passed unchanged.\nA standalone ::: separates commands, even after an initial --. Use --separator\nwhen a command needs a literal ::: argument; quoting the marker does not escape it.\nCommands run sequentially in randomized complete blocks, without an implicit shell.\nStdin and stdout are null unless --input supplies stdin.\nThe default plans roughly 30 seconds, including a separate pilot.\n--time plans; --timeout terminates. Hooks default to a 30s timeout.\n\nExit: 0 completed (possibly unresolved), 1 workload failure, 2 usage error,\n3 collector failure, 4 regression, 5 inconclusive check, 128+signal interrupted."
 )]
 pub(crate) struct Cli {
     /// Execute each command exactly once, without a pilot or warmup
@@ -60,7 +60,7 @@ pub(crate) struct Cli {
     /// Print one JSON document on stdout
     #[arg(long)]
     pub json: bool,
-    /// Control color (explicit always/never overrides NO_COLOR)
+    /// Control color
     #[arg(long, value_enum, default_value = "auto")]
     pub color: Color,
     /// Use plain ASCII symbols

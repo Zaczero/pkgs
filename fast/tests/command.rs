@@ -696,6 +696,44 @@ fn explicit_color_applies_to_help_without_interpreting_option_payloads() {
 }
 
 #[test]
+fn color_environment_forces_piped_color_unless_disabled() {
+    for (args, no_color, colored) in [
+        (vec!["--once", "true"], false, true),
+        (vec!["--help"], false, true),
+        (vec!["--once", "true"], true, false),
+        (vec!["--once", "--color", "never", "true"], false, false),
+    ] {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_fast"));
+        command
+            .env("FORCE_COLOR", "1")
+            .env("TERM", "dumb")
+            .env_remove("CLICOLOR_FORCE")
+            .env_remove("NO_COLOR");
+        if no_color {
+            command.env("NO_COLOR", "1");
+        }
+        let output = command.args(&args).output().expect("run");
+        assert!(output.status.success(), "{output:?}");
+        assert_eq!(output.stdout.contains(&0x1B), colored, "{args:?}");
+    }
+}
+
+#[test]
+fn legend_wraps_between_arguments() {
+    let long = "x".repeat(60);
+    let output = fast(&["--once", "--color", "never", "true", &long, &long]);
+    assert!(output.status.success(), "{output:?}");
+    let stdout = String::from_utf8(output.stdout).expect("UTF-8 report");
+    let quoted = format!("'{long}'");
+    assert_eq!(
+        stdout.lines().filter(|line| line.contains(&quoted)).count(),
+        2,
+        "{stdout}"
+    );
+    assert!(!stdout.contains("0.000 ns"), "{stdout}");
+}
+
+#[test]
 fn malformed_jobserver_is_rejected_before_workload() {
     let output = Command::new(env!("CARGO_BIN_EXE_fast"))
         .env("MAKEFLAGS", "--jobserver-auth=999998,999999")

@@ -25,7 +25,8 @@ Publication and licensing are intentionally undecided.
 
 ```sh
 fast gzip -c input.dat ::: zstd -c input.dat
-fast ./program --input 'file with spaces'
+fast --input data.json zstd ::: gzip
+fast ./program --threads 4 'file with spaces'
 fast --once ./expensive-job
 fast --runs 100 ./old input.dat ::: ./new input.dat
 fast --time 2m ./old input.dat ::: ./new input.dat
@@ -176,10 +177,9 @@ fast ./old ::: ./new | tee comparison.txt
 fast --details ./old ::: ./new > detailed.txt
 ```
 
-`--color always|never|auto` controls styling. Automatic color requires a terminal,
-honors nonempty `NO_COLOR`, and is disabled for `TERM=dumb`. Explicit always/never
-wins. JSON never contains ANSI. `--ascii` selects plain symbols; `--quiet`
-suppresses progress.
+`--color` controls styling; `auto` follows `NO_COLOR`, `FORCE_COLOR`, `CLICOLOR`
+and `CLICOLOR_FORCE`. JSON never contains ANSI. `--ascii` selects plain symbols;
+`--quiet` suppresses progress.
 
 JSON schema 1 records each candidate as its exact argument vector and uses tagged
 UTF-8 or byte-array strings for Unix arguments. Explicit shell commands include
