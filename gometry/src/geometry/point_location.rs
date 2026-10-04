@@ -24,7 +24,7 @@ use crate::geometry::source_support::{
 };
 use crate::geometry::tessellation::exact::ExactDyadic;
 use crate::geometry::{
-    Bounds, CoordSeq, Loc, Point, Polygon, RingClass, RingView, Shape, SharedSlice, XY,
+    Bounds, CoordSeq, Loc, Point, Polygon, Ring, RingClass, RingView, Shape, SharedSlice, XY,
     edge_winding, ring_kind_columns, xy_bounds_columns,
 };
 
@@ -40,11 +40,13 @@ pub(crate) struct RingPointIndex {
 }
 
 impl RingPointIndex {
-    fn build(coords: &CoordSeq) -> Result<Self> {
+    fn build(ring: &Ring) -> Result<Self> {
+        let coords = ring.coords();
         Self::build_with_kind(coords, ring_kind_columns(coords.xs(), coords.ys()))
     }
 
-    fn build_winding(coords: &CoordSeq) -> Result<Option<Self>> {
+    fn build_winding(ring: &Ring) -> Result<Option<Self>> {
+        let coords = ring.coords();
         let kind = ring_kind_columns(coords.xs(), coords.ys());
         if kind == crate::geometry::RingKind::Collapsed {
             return Ok(None);
@@ -73,7 +75,7 @@ impl RingPointIndex {
             xs: coords.carried_xs(),
             ys: coords.carried_ys(),
             kind,
-            edges: EdgeYIndex::build_closed(ys)?,
+            edges: EdgeYIndex::build(ys)?,
         })
     }
 
@@ -87,17 +89,12 @@ impl RingPointIndex {
 
     fn edge_xy(&self, edge: EdgeId) -> (f64, f64, f64, f64) {
         let e = edge.as_usize();
-        let next = if e.wrapping_add(1) < self.xs.len() {
-            e.wrapping_add(1)
-        } else {
-            0
-        };
+        let next = e.wrapping_add(1);
         debug_assert_eq!(self.xs.len(), self.ys.len());
-        debug_assert!(e < self.xs.len());
-        // SAFETY: EdgeYIndex::build_closed creates one id per adjacent Y pair
-        // plus the last-to-first pair, and its plans only emit those ids. The
-        // index is built from these same columns, whose equal lengths make both
-        // selected ordinals valid (including the closing edge's wrapped end).
+        debug_assert!(next < self.xs.len());
+        // SAFETY: Rings repeat their first coordinate at the end. EdgeYIndex::build
+        // emits only adjacent-pair ordinals from these equally sized columns,
+        // so both the start and its successor lie inside the visible window.
         unsafe {
             (
                 *self.xs.get_unchecked(e),
@@ -251,11 +248,11 @@ pub(crate) struct PolygonPointIndex {
 impl PolygonPointIndex {
     pub(crate) fn build(polygon: &Polygon) -> Result<Self> {
         let hole_count = checked_index_count(polygon.holes.len())?;
-        let shell = RingPointIndex::build(polygon.shell.coords())?;
+        let shell = RingPointIndex::build(&polygon.shell)?;
         let mut winding_rings = shell.kind == crate::geometry::RingKind::Winding;
         let mut hole_rings = Vec::with_capacity(hole_count as usize);
         for hole in polygon.holes.iter() {
-            let ring = RingPointIndex::build(hole.coords())?;
+            let ring = RingPointIndex::build(hole)?;
             winding_rings &= ring.kind == crate::geometry::RingKind::Winding;
             hole_rings.push(ring);
         }
@@ -263,13 +260,13 @@ impl PolygonPointIndex {
     }
 
     pub(crate) fn build_areal(polygon: &Polygon) -> Result<Option<Self>> {
-        let Some(shell) = RingPointIndex::build_winding(polygon.shell.coords())? else {
+        let Some(shell) = RingPointIndex::build_winding(&polygon.shell)? else {
             return Ok(None);
         };
         let hole_count = checked_index_count(polygon.holes.len())?;
         let mut holes = Vec::with_capacity(hole_count as usize);
         for hole in polygon.holes.iter() {
-            let Some(ring) = RingPointIndex::build_winding(hole.coords())? else {
+            let Some(ring) = RingPointIndex::build_winding(hole)? else {
                 return Ok(None);
             };
             holes.push(ring);
@@ -417,6 +414,10 @@ impl PolygonPointIndex {
                 area: occupied,
             };
         }
+        self.location_from_indexed_edges(point)
+    }
+
+    fn location_from_indexed_edges(&self, point: Point) -> SourcePointLocation {
         let mut location = StreamingLocation::for_stored_point(point);
         self.visit_indexed_into(&mut location)
             .expect("stored point location does not construct exact values");
@@ -672,15 +673,15 @@ impl PointBatchTester {
     }
 
     pub(in crate::geometry) fn location_and_area(&self, point: Point) -> SourcePointLocation {
+        if let Some(location) = self.location_off_boundary(point) {
+            return SourcePointLocation {
+                location,
+                area: location == Loc::Interior,
+            };
+        }
         match self {
-            Self::Polygon { index } => index.location_and_area(point),
+            Self::Polygon { index } => index.location_from_indexed_edges(point),
             Self::MultiPolygon { parts } => {
-                if let Some(location) = self.location_off_boundary(point) {
-                    return SourcePointLocation {
-                        location,
-                        area: location == Loc::Interior,
-                    };
-                }
                 let location = StreamingLocation::for_stored_point(point);
                 location_from_indexed_parts(parts, point.x, point.y, location)
                     .expect("stored point location does not construct exact values")
@@ -809,7 +810,7 @@ mod tests {
         OccupiedToward, cartesian_exact_offset_location, cartesian_exact_offset_location_and_area,
         cartesian_exact_point_location, cartesian_exact_point_location_and_area,
     };
-    use crate::geometry::{CoordWindow, LineSeq, MultiPolygon, Ring, ring_classify_point};
+    use crate::geometry::{CoordWindow, LineSeq, MultiPolygon, ring_classify_point, same_point};
 
     fn winding_class(ring: &RingPointIndex, x: f64, y: f64) -> RingClass {
         match ring.winding_off_boundary(x, y) {
@@ -887,6 +888,35 @@ mod tests {
     }
 
     #[test]
+    fn explicitly_closed_ring_indexes_only_its_adjacent_edges() {
+        let ring = closed_ring(&[(0.0, 0.0), (4.0, 0.0), (4.0, 4.0), (0.0, 4.0), (0.0, 0.0)]);
+        let index = RingPointIndex::build(&ring).unwrap();
+        let mut edges = 0;
+        index.edges.for_each_edge(0.0, |edge| {
+            let (ax, ay, bx, by) = index.edge_xy(edge);
+            assert!(!same_point(XY::new(ax, ay), XY::new(bx, by)));
+            edges += 1;
+            ControlFlow::<()>::Continue(())
+        });
+        assert_eq!(edges, 4);
+        for (point, expected) in [
+            (Point::new_raw_xy(0.0, 0.0), Loc::Boundary),
+            (Point::new_raw_xy(0.0, 2.0), Loc::Boundary),
+            (Point::new_raw_xy(2.0, 2.0), Loc::Interior),
+            (Point::new_raw_xy(-1.0, 2.0), Loc::Exterior),
+        ] {
+            let polygon = Polygon::new(ring.clone(), Vec::new());
+            assert_eq!(
+                PolygonPointIndex::build(&polygon)
+                    .unwrap()
+                    .location_and_area(point)
+                    .location,
+                expected,
+            );
+        }
+    }
+
+    #[test]
     fn dense_ring_classification_matches_shape_kernel() {
         let points: Vec<_> = dense_square_points()
             .into_iter()
@@ -894,7 +924,7 @@ mod tests {
             .collect();
         let coords = CoordSeq::try_from_xy(&points).unwrap();
         assert_eq!(coords.xs().len() - 1, 36);
-        let ring = RingPointIndex::build(&coords).unwrap();
+        let ring = RingPointIndex::build(&Ring::from_closed(coords.clone()).unwrap()).unwrap();
         assert!(ring.edges.dense_band_edges(5.0).is_some());
 
         for (x, y) in [(5.0, 0.0), (5.0, 5.0), (9.0, 5.0), (-1.0, 5.0)] {
@@ -918,7 +948,7 @@ mod tests {
         let columns = coords.column_arcs();
         let source_xs = columns.xs.owner().unwrap();
         let source_ys = columns.ys.owner().unwrap();
-        let ring = RingPointIndex::build(&coords).unwrap();
+        let ring = RingPointIndex::build(&Ring::from_closed(coords.clone()).unwrap()).unwrap();
 
         assert!(Arc::ptr_eq(&ring.xs.owner().unwrap(), &source_xs));
         assert!(Arc::ptr_eq(&ring.ys.owner().unwrap(), &source_ys));
@@ -943,7 +973,7 @@ mod tests {
             CoordSeq::from_shared_columns(source_xs.clone(), source_ys.clone(), None, None)
                 .unwrap();
         let visible = coords.view(CoordWindow::from_range(1..6, coords.len()));
-        let ring = RingPointIndex::build(&visible).unwrap();
+        let ring = RingPointIndex::build(&Ring::from_closed(visible.clone()).unwrap()).unwrap();
 
         drop(visible);
         drop(coords);
@@ -970,7 +1000,7 @@ mod tests {
         let z_weak = Arc::downgrade(&columns.zs.as_ref().expect("Z column").owner().unwrap());
         let m = columns.m_parts().expect("M column").0;
         let m_weak = Arc::downgrade(&m.owner().unwrap());
-        let ring = RingPointIndex::build(&coords).unwrap();
+        let ring = RingPointIndex::build(&Ring::from_closed(coords.clone()).unwrap()).unwrap();
 
         assert!(Arc::ptr_eq(
             &ring.xs.owner().unwrap(),

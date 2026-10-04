@@ -18,6 +18,9 @@ use crate::geometry::source_support::SourcePointLocation;
 use crate::geometry::tessellation::exact::ExactDyadic;
 use crate::geometry::{De9im, Dimension, HashMap, Loc, Result, RingKind};
 
+#[cfg(test)]
+type RelationLocationSample = ([ExactDyadic; 3], [SourcePointLocation; 2]);
+
 impl ExactSourceInventory {
     pub(in crate::geometry) fn relate(&self, partition: &ExactPartition<'_>) -> Result<De9im> {
         let (topology, edges) = partition.local_topology()?;
@@ -76,10 +79,7 @@ impl ExactSourceInventory {
     pub(in crate::geometry) fn relation_location_samples(
         &self,
         partition: &ExactPartition<'_>,
-    ) -> Result<(
-        Vec<([ExactDyadic; 3], [SourcePointLocation; 2])>,
-        Vec<([ExactDyadic; 3], [SourcePointLocation; 2])>,
-    )> {
+    ) -> Result<(Vec<RelationLocationSample>, Vec<RelationLocationSample>)> {
         let (topology, edges) = partition.local_topology()?;
         let global = partition.global_faces(&topology, &edges)?;
         let winding_rings = self.winding_source_rings();
@@ -707,16 +707,19 @@ impl ExactSourceInventory {
         let mut boundary_nodes = Vec::new();
         for node in 0..partition.node_count() {
             let node = NodeId(node as u32);
-            if self.node_location_and_area_from_facts(
-                0,
-                node,
-                topology,
-                edges,
-                global,
-                &facts,
-                &line_boundaries,
-                &facts.point_membership,
-            ).location == crate::geometry::Loc::Boundary
+            if self
+                .node_location_and_area_from_facts(
+                    0,
+                    node,
+                    topology,
+                    edges,
+                    global,
+                    &facts,
+                    &line_boundaries,
+                    &facts.point_membership,
+                )
+                .location
+                == crate::geometry::Loc::Boundary
             {
                 boundary_nodes.push(node);
             }

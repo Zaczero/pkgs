@@ -2,7 +2,6 @@ use std::cell::OnceCell;
 use std::cmp::Ordering;
 use std::ops::ControlFlow;
 
-use crate::geometry::storage::{PackedRow, ShapeRow};
 use crate::collections::{HashSet, HashSetExt as _, collection_hash_state};
 use crate::error::{ResourceError, Result};
 use crate::geometry::overlay::{
@@ -13,10 +12,11 @@ use crate::geometry::relate::matrix_predicates::{self, CellMask};
 use crate::geometry::relate::{De9im, De9imInterval, Loc, OperandShape};
 use crate::geometry::segments::{TouchLocation, crossing_homogeneous_stored, crossing_point_with};
 use crate::geometry::source_support::{
-    OccupiedToward, SourcePointLocation, cartesian_row_exact_offset_location_and_area,
-    cartesian_row_exact_point_location_and_area, cartesian_row_point_location,
-    cartesian_row_point_location_and_area, occupied_toward,
+    OccupiedToward, PointMembership, SourcePointLocation,
+    cartesian_row_exact_offset_location_and_area, cartesian_row_exact_point_location_and_area,
+    cartesian_row_point_location, cartesian_row_point_location_and_area, occupied_toward,
 };
+use crate::geometry::storage::{PackedRow, ShapeRow};
 use crate::geometry::tessellation::exact::{ExactDyadic, compare_ratios};
 use crate::geometry::{
     Bounds, CompiledPattern, Contact, Coordinates as _, Dimension, GeometryErrorKind, HashMap,
@@ -40,12 +40,6 @@ trait Query {
     ) -> Option<PointMembershipQuery<Self::Output>>;
     fn cells(&self) -> CellMask;
     fn needs_dimensions(&self) -> bool;
-}
-
-#[derive(Clone, Copy)]
-enum PointMembership {
-    Strict,
-    BoundaryInclusive,
 }
 
 #[derive(Clone, Copy)]
@@ -153,18 +147,9 @@ impl Query for PredicateQuery {
         &self,
         point_operand: matrix_predicates::Operand,
     ) -> Option<PointMembershipQuery<Self::Output>> {
-        let membership = match (self.0, point_operand) {
-            (
-                Predicate::Contains | Predicate::ContainsProperly,
-                matrix_predicates::Operand::Right,
-            )
-            | (Predicate::Within, matrix_predicates::Operand::Left) => PointMembership::Strict,
-            (Predicate::Covers, matrix_predicates::Operand::Right)
-            | (Predicate::CoveredBy, matrix_predicates::Operand::Left) => {
-                PointMembership::BoundaryInclusive
-            },
-            _ => return None,
-        };
+        let membership = self
+            .0
+            .point_membership(point_operand == matrix_predicates::Operand::Left)?;
         Some(PointMembershipQuery {
             membership,
             all_match: true,
@@ -330,19 +315,14 @@ impl<'a> Operand<'a> {
     }
 
     fn point_membership(&self, point: Point, membership: PointMembership) -> Result<bool> {
-        let location = match (self.plan, membership) {
-            (Some(plan), PointMembership::BoundaryInclusive) => {
-                return plan.cartesian_point_covers(point);
-            },
-            (Some(plan), PointMembership::Strict) => {
-                return plan
-                    .cartesian_point_location(point)
-                    .map(|location| location == Loc::Interior);
-            },
-            (None, PointMembership::BoundaryInclusive) => {
+        if let Some(plan) = self.plan {
+            return plan.cartesian_point_membership(point, membership);
+        }
+        let location = match membership {
+            PointMembership::BoundaryInclusive => {
                 cartesian_row_point_location(self.row, point, true)
             },
-            (None, PointMembership::Strict) => cartesian_row_point_location(self.row, point, false),
+            PointMembership::Strict => cartesian_row_point_location(self.row, point, false),
         };
         Ok(match membership {
             PointMembership::Strict => location == Loc::Interior,
@@ -940,9 +920,7 @@ fn row_dimension(row: ShapeRow<'_>) -> Option<Dimension> {
         ShapeRow::Handle(plan) => dimension(plan.shape()),
         ShapeRow::Shape(shape) => dimension(shape),
         ShapeRow::Point(_) => Some(Dimension::Point),
-        ShapeRow::Packed(PackedRow::Points { .. }) => {
-            (!row.is_empty()).then_some(Dimension::Point)
-        },
+        ShapeRow::Packed(PackedRow::Points { .. }) => (!row.is_empty()).then_some(Dimension::Point),
         ShapeRow::Packed(PackedRow::Lines { .. }) => {
             let coordinates = row.line_coords()?;
             let mut nonzero = false;

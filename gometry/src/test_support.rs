@@ -195,6 +195,8 @@ pub(crate) mod binary_dispatch_counters {
         pub(crate) fast_path_taken: usize,
         pub(crate) fast_path_declines: usize,
         pub(crate) general_lane_runs: usize,
+        #[cfg(debug_assertions)]
+        pub(crate) point_predicate_dispatches: usize,
     }
 
     thread_local! {
@@ -209,6 +211,8 @@ pub(crate) mod binary_dispatch_counters {
                 fast_path_taken: 0,
                 fast_path_declines: 0,
                 general_lane_runs: 0,
+                #[cfg(debug_assertions)]
+                point_predicate_dispatches: 0,
             })
         };
     }
@@ -277,6 +281,14 @@ pub(crate) mod binary_dispatch_counters {
     pub(crate) fn general_lane() {
         update(|snapshot| {
             snapshot.general_lane_runs = snapshot.general_lane_runs.saturating_add(1);
+        });
+    }
+
+    #[cfg(debug_assertions)]
+    pub(crate) fn point_predicate_dispatch() {
+        update(|snapshot| {
+            snapshot.point_predicate_dispatches =
+                snapshot.point_predicate_dispatches.saturating_add(1);
         });
     }
 }

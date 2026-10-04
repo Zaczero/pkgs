@@ -28,7 +28,8 @@ pub(crate) use evaluator::{
 };
 pub(crate) use graph_matrix::{
     GeographicPrepared, graph_intersects_data_geographic, graph_relate_data,
-    graph_relate_data_geographic, graph_relate_shapes, is_axis_aligned_rectangle, is_axis_aligned_rectangle_row,
+    graph_relate_data_geographic, graph_relate_shapes, is_axis_aligned_rectangle,
+    is_axis_aligned_rectangle_row,
 };
 pub(crate) use interval::{De9imInterval, OperandShape};
 #[cfg(test)]

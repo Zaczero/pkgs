@@ -1245,6 +1245,8 @@ mod tests {
                 fast_path_taken: 1,
                 fast_path_declines: 0,
                 general_lane_runs: 0,
+                #[cfg(debug_assertions)]
+                point_predicate_dispatches: 0,
             });
         });
     }
@@ -1286,6 +1288,8 @@ mod tests {
                 fast_path_taken: 0,
                 fast_path_declines: 1,
                 general_lane_runs: 1,
+                #[cfg(debug_assertions)]
+                point_predicate_dispatches: 0,
             });
         });
     }
@@ -1333,6 +1337,8 @@ mod tests {
                 fast_path_taken: 0,
                 fast_path_declines: 0,
                 general_lane_runs: 1,
+                #[cfg(debug_assertions)]
+                point_predicate_dispatches: 0,
             });
         });
     }

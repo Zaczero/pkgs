@@ -658,9 +658,7 @@ impl ExactSourceInventory {
         Self::stage_rows(rows)
     }
 
-    fn stage_rows<'a>(
-        rows: impl ExactSizeIterator<Item = storage::ShapeRow<'a>>,
-    ) -> Result<Self> {
+    fn stage_rows<'a>(rows: impl ExactSizeIterator<Item = storage::ShapeRow<'a>>) -> Result<Self> {
         Self::from_staged(StagedExactSources::from_rows_with_occurrences(rows, false)?)
     }
 
@@ -3008,9 +3006,7 @@ impl StagedExactSources {
         }
     }
 
-    fn from_rows<'a>(
-        rows: impl ExactSizeIterator<Item = storage::ShapeRow<'a>>,
-    ) -> Result<Self> {
+    fn from_rows<'a>(rows: impl ExactSizeIterator<Item = storage::ShapeRow<'a>>) -> Result<Self> {
         Self::stage_rows(
             rows,
             false,
@@ -3050,9 +3046,7 @@ impl StagedExactSources {
         operand: u32,
     ) -> Result<()> {
         match row {
-            storage::ShapeRow::Shape(shape) => {
-                staged.append_shape_with_occurrences(shape, operand)
-            },
+            storage::ShapeRow::Shape(shape) => staged.append_shape_with_occurrences(shape, operand),
             storage::ShapeRow::Handle(plan) => {
                 staged.append_shape_with_occurrences(plan.shape(), operand)
             },

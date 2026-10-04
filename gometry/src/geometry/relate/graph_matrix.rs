@@ -255,10 +255,7 @@ pub(crate) fn is_axis_aligned_rectangle(shape: &Shape, bounds: Bounds) -> bool {
 }
 
 /// Whether a storage row is one exactly filled axis-aligned rectangle.
-pub(crate) fn is_axis_aligned_rectangle_row(
-    row: storage::ShapeRow<'_>,
-    bounds: Bounds,
-) -> bool {
+pub(crate) fn is_axis_aligned_rectangle_row(row: storage::ShapeRow<'_>, bounds: Bounds) -> bool {
     let Some(mut rings) = row.polygon_rings() else {
         return false;
     };

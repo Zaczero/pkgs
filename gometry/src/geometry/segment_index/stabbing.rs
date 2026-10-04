@@ -322,6 +322,7 @@ impl EdgeYIndex {
     /// Build over an open ring, including its closing edge from the last point
     /// back to the first. Chart rings use this representation so seam lifting
     /// does not need to repeat the first coordinate.
+    #[cfg(test)]
     pub(crate) fn build_closed(ys: &[f64]) -> Result<Self> {
         let edge_count = ys.len();
         let item_count = checked_index_count(edge_count)?;

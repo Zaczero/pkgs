@@ -296,9 +296,9 @@ pub(crate) fn raw_coordinate_bounds_are_sound_in_frame(
 
 pub(crate) use relate::{
     De9im, De9imInterval, GeographicPrepared, Loc, OperandShape, evaluate_cartesian_pattern,
-    evaluate_cartesian_predicate, evaluate_cartesian_prepared_row, graph_intersects_data_geographic, graph_relate_data,
-    graph_relate_data_geographic, graph_relate_shapes, is_axis_aligned_rectangle,
-    is_axis_aligned_rectangle_row, predicate_rows,
+    evaluate_cartesian_predicate, evaluate_cartesian_prepared_row,
+    graph_intersects_data_geographic, graph_relate_data, graph_relate_data_geographic,
+    graph_relate_shapes, is_axis_aligned_rectangle, is_axis_aligned_rectangle_row, predicate_rows,
 };
 pub(in crate::geometry) use segment_index::{
     MonotoneRun, candidate_pairs_over_staged_runs, for_each_candidate_pair,

@@ -10,7 +10,7 @@ use crate::error::Result;
 use crate::geographic::GeographicFrame;
 use crate::geometry::distance::ChartParts;
 use crate::geometry::source_support::{
-    OccupiedToward, SourcePointLocation, cartesian_exact_offset_location_and_area,
+    OccupiedToward, PointMembership, SourcePointLocation, cartesian_exact_offset_location_and_area,
     cartesian_exact_point_location_and_area, cartesian_point_location_and_area, exact_stored_point,
     occupied_toward,
 };
@@ -627,6 +627,32 @@ impl PreparedPlan {
         }
         self.cartesian_point_location(point)
             .map(|location| location != crate::geometry::Loc::Exterior)
+    }
+
+    pub(crate) fn cartesian_point_membership(
+        &self,
+        point: Point,
+        membership: PointMembership,
+    ) -> Result<bool> {
+        if self
+            .bounds()
+            .is_none_or(|bounds| !bounds.contains_xy(point.xy()))
+        {
+            return Ok(false);
+        }
+        match membership {
+            PointMembership::Strict => self
+                .cartesian_point_location(point)
+                .map(|location| location == crate::geometry::Loc::Interior),
+            PointMembership::BoundaryInclusive => self.cartesian_point_covers(point),
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn point_location_scans(&self) -> u32 {
+        self.topology()
+            .point_scans
+            .load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// The indexed point tester of a polygonal shape, built on first use.

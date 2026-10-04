@@ -66,6 +66,10 @@ pub(in crate::geometry) trait PointQuery: Copy {
 pub(in crate::geometry) struct StoredQuery(XY);
 
 impl PointQuery for StoredQuery {
+    fn misses_height(self, start: f64, end: f64) -> bool {
+        (start < self.0.y && end < self.0.y) || (start > self.0.y && end > self.0.y)
+    }
+
     fn axis_relation(self, axis: QueryAxis, value: f64) -> Result<AxisRelation> {
         let query = match axis {
             QueryAxis::X => self.0.x,
@@ -277,6 +281,12 @@ impl PointQuery for InfinitesimalQuery<'_> {
     fn misses_height(self, start: f64, end: f64) -> bool {
         self.point.misses_height(start, end)
     }
+}
+
+#[derive(Clone, Copy)]
+pub(crate) enum PointMembership {
+    Strict,
+    BoundaryInclusive,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -2167,7 +2177,38 @@ pub(in crate::geometry) const fn occupied_toward(location: SourcePointLocation) 
 
 #[cfg(test)]
 mod tests {
+    use std::cell::Cell;
+
     use super::*;
+
+    #[derive(Clone, Copy)]
+    struct CountedStoredQuery<'a> {
+        query: StoredQuery,
+        axis_probes: &'a Cell<usize>,
+    }
+
+    impl PointQuery for CountedStoredQuery<'_> {
+        fn compare_axis(self, axis: QueryAxis, value: f64) -> Result<Ordering> {
+            self.query.compare_axis(axis, value)
+        }
+
+        fn axis_relation(self, axis: QueryAxis, value: f64) -> Result<AxisRelation> {
+            self.axis_probes.set(self.axis_probes.get().wrapping_add(1));
+            self.query.axis_relation(axis, value)
+        }
+
+        fn orientation(self, start: XY, end: XY) -> Result<ExactSign> {
+            self.query.orientation(start, end)
+        }
+
+        fn index_y(self) -> Result<f64> {
+            self.query.index_y()
+        }
+
+        fn misses_height(self, start: f64, end: f64) -> bool {
+            self.query.misses_height(start, end)
+        }
+    }
 
     fn shape(wkt: &str) -> Shape {
         crate::io::parse_wkt(wkt).expect("test WKT admits")
@@ -2178,18 +2219,37 @@ mod tests {
     }
 
     #[test]
+    fn stored_ring_scans_skip_edges_outside_the_probe_height() {
+        let Shape::Polygon(polygon) = shape(
+            "POLYGON ((0 0,1 0,2 0,3 0,4 0,4 1,4 2,4 3,4 4,\
+             3 4,2 4,1 4,0 4,0 3,0 2,0 1,0 0))",
+        ) else {
+            panic!("fixture is a polygon");
+        };
+        let probes = Cell::new(0);
+        let query = CountedStoredQuery {
+            query: StoredQuery(XY::new(2.0, 1.5)),
+            axis_probes: &probes,
+        };
+        let mut location = StreamingLocation::new(query, LocationMode::Full);
+        location.visit_polygon(&polygon).unwrap();
+        assert_eq!(location.finish().unwrap(), SourcePointLocation {
+            location: Loc::Interior,
+            area: true,
+        });
+        assert!(probes.get() <= 4, "{} endpoint probes", probes.get());
+    }
+
+    #[test]
     fn boundary_tangent_probe_remains_unresolved() {
         let polygon = shape("POLYGON ((0 0,2 0,2 2,0 2,0 0))");
         let plan = crate::geometry::PreparedPlan::transient(&polygon);
         let point = [
-            crate::geometry::tessellation::exact::ExactDyadic::from_f64(1.0),
-            crate::geometry::tessellation::exact::ExactDyadic::from_f64(0.0),
-            crate::geometry::tessellation::exact::ExactDyadic::one(),
+            ExactDyadic::from_f64(1.0),
+            ExactDyadic::from_f64(0.0),
+            ExactDyadic::one(),
         ];
-        let tangent = [
-            crate::geometry::tessellation::exact::ExactDyadic::one(),
-            crate::geometry::tessellation::exact::ExactDyadic::from_f64(0.0),
-        ];
+        let tangent = [ExactDyadic::one(), ExactDyadic::from_f64(0.0)];
         let location = plan.locate_exact_offset(&point, &tangent).unwrap();
         assert_eq!(location, SourcePointLocation {
             location: Loc::Boundary,
