@@ -6,7 +6,7 @@ use std::io;
 use std::process::ExitCode;
 
 use clap::{CommandFactory as _, FromArgMatches as _};
-use fast::{runner, statistics};
+use fast::{random, runner, statistics};
 
 fn main() -> ExitCode {
     let raw: Vec<_> = std::env::args_os().collect();

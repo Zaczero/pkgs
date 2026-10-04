@@ -1,7 +1,7 @@
-use rand::{RngExt as _, SeedableRng as _};
-use rand_chacha::ChaCha12Rng;
 use serde::Serialize;
 use statrs::distribution::{ContinuousCDF as _, Normal, StudentsT};
+
+use crate::random::Random;
 
 const REPLICATES: usize = 20_000;
 /// Complete measured blocks required before timing comparisons receive inferential labels.
@@ -302,7 +302,7 @@ fn bootstrap(
         .iter()
         .map(|&pair| contrast(&observed, pair))
         .collect();
-    let mut rng = ChaCha12Rng::seed_from_u64(seed);
+    let mut rng = Random::new(seed);
     let mut draws = Vec::with_capacity(replicates.wrapping_mul(k));
     let mut sums = vec![0_u128; k];
     let log_continue = (-1.0 / length as f64).ln_1p();
@@ -310,11 +310,11 @@ fn bootstrap(
         sums.fill(0);
         let mut remaining = n;
         while remaining > 0 {
-            let start = rng.random_range(0..n);
+            let start = rng.below(n);
             let size = if length == 1 {
                 1
             } else {
-                let uniform = 1.0 - rng.random::<f64>();
+                let uniform = 1.0 - rng.unit();
                 ((uniform.ln() / log_continue).floor() as usize)
                     .saturating_add(1)
                     .min(remaining)

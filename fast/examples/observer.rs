@@ -3,9 +3,8 @@ use std::io;
 use std::time::Duration;
 
 use clap::Parser;
+use fast::random::Random;
 use fast::{runner, statistics};
-use rand::{RngExt as _, SeedableRng as _};
-use rand_chacha::ChaCha12Rng;
 use serde_json::json;
 
 #[derive(Parser)]
@@ -24,12 +23,12 @@ fn main() -> io::Result<()> {
         argv: options.command,
     };
     let mut counter_policy = None;
-    let mut random = ChaCha12Rng::seed_from_u64(42);
+    let mut random = Random::new(42);
     let mut rows = Vec::with_capacity(options.runs);
     let mut observations = Vec::with_capacity(options.runs.wrapping_mul(2));
     for _ in 0..options.runs {
         let mut row = [0; 2];
-        let order = if random.random::<bool>() {
+        let order = if random.next_u64() >> 63 == 1 {
             [false, true]
         } else {
             [true, false]

@@ -3,12 +3,10 @@ use std::io::{self, IsTerminal as _};
 use std::os::unix::ffi::OsStrExt as _;
 use std::time::{Duration, Instant};
 
-use rand::seq::SliceRandom as _;
-use rand::{RngExt as _, SeedableRng as _};
-use rand_chacha::ChaCha12Rng;
 use serde::Serialize;
 
 use crate::cli::Cli;
+use crate::random::Random;
 use crate::runner::{self, Command, InvocationKind, Observation, Outcome, Runner};
 use crate::statistics::{self, Analysis};
 
@@ -213,7 +211,7 @@ struct Experiment<'a> {
     commands: Vec<Command>,
     shell: Option<OsString>,
     result: Result,
-    rng: ChaCha12Rng,
+    rng: Random,
     start: Instant,
     progress: Instant,
 }
@@ -331,7 +329,7 @@ impl Experiment<'_> {
 
     fn block(&mut self, phase: Phase, block: usize) -> bool {
         let mut order: Vec<_> = (0..self.commands.len()).collect();
-        order.shuffle(&mut self.rng);
+        self.rng.shuffle(&mut order);
         for (position, candidate) in order.into_iter().enumerate() {
             if self.options.prepare.is_some()
                 && !self.invoke(candidate, phase, block, position, Role::Prepare)
@@ -529,7 +527,10 @@ pub(crate) fn run(options: Cli) -> std::result::Result<(Result, Cli), Failure> {
     let (commands, shell) = commands(&options).map_err(Failure::Usage)?;
     let max_blocks = capacity(&options, commands.len()).map_err(Failure::Usage)?;
     runner::check_jobserver().map_err(Failure::Usage)?;
-    let seed = options.seed.unwrap_or_else(|| rand::rng().random());
+    let seed = match options.seed {
+        Some(seed) => seed,
+        None => Random::entropy().map_err(Failure::Collector)?,
+    };
     let runner = Runner::new(true).map_err(Failure::Collector)?;
     let result = Result {
         schema: 1,
@@ -561,7 +562,7 @@ pub(crate) fn run(options: Cli) -> std::result::Result<(Result, Cli), Failure> {
         commands,
         shell,
         result,
-        rng: ChaCha12Rng::seed_from_u64(seed),
+        rng: Random::new(seed),
         start: Instant::now(),
         progress: Instant::now(),
     };

@@ -367,7 +367,7 @@ fn invalid_effort_and_options_are_usage_errors() {
 
 #[test]
 fn broken_pipe_does_not_panic() {
-    let (read, write) = rustix::pipe::pipe().expect("output pipe");
+    let (read, write) = std::io::pipe().expect("output pipe");
     drop(read);
     let output = Command::new(env!("CARGO_BIN_EXE_fast"))
         .args(["--once", "--json", "--", "true"])
@@ -746,8 +746,13 @@ fn malformed_jobserver_is_rejected_before_workload() {
 
 #[test]
 fn inherited_jobserver_descriptors_keep_their_numbers() {
-    use std::os::fd::AsRawFd as _;
-    let (read, write) = rustix::pipe::pipe().expect("jobserver pipe");
+    use std::os::fd::{AsRawFd as _, FromRawFd as _, OwnedFd};
+    let mut fds = [0; 2];
+    // SAFETY: pipe writes two new inheritable descriptors, which OwnedFd then owns.
+    let (read, write) = unsafe {
+        assert_eq!(libc::pipe(fds.as_mut_ptr()), 0, "jobserver pipe");
+        (OwnedFd::from_raw_fd(fds[0]), OwnedFd::from_raw_fd(fds[1]))
+    };
     let auth = format!(
         "--jobserver-auth={},{}",
         read.as_raw_fd(),

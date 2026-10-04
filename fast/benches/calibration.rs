@@ -3,10 +3,8 @@ use std::thread;
 use std::time::Instant;
 
 use clap::{Parser, ValueEnum};
+use fast::random::Random;
 use fast::statistics::{self, Decision};
-use rand::seq::SliceRandom as _;
-use rand::{RngExt as _, SeedableRng as _};
-use rand_chacha::ChaCha12Rng;
 use serde::Serialize;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum, Serialize)]
@@ -56,7 +54,7 @@ struct Totals {
 }
 
 struct Workload {
-    rng: ChaCha12Rng,
+    rng: Random,
     common: f64,
     specific: Vec<f64>,
     previous: usize,
@@ -67,7 +65,7 @@ struct Workload {
 
 impl Workload {
     fn new(options: &Options, trial: usize) -> Self {
-        let mut rng = ChaCha12Rng::seed_from_u64(options.seed.wrapping_add(trial as u64));
+        let mut rng = Random::new(options.seed.wrapping_add(trial as u64));
         let columns = match options.cell {
             Cell::Single => 1,
             Cell::Eight => 8,
@@ -105,7 +103,7 @@ impl Workload {
         self.common = 0.5 * self.common + 0.75_f64.sqrt() * normal(&mut self.rng);
         let mut row = vec![0; self.specific.len()];
         let mut order: Vec<_> = self.specific.iter_mut().zip(&mut row).enumerate().collect();
-        order.shuffle(&mut self.rng);
+        self.rng.shuffle(&mut order);
         for (column, (state, output)) in order {
             let sigma = if self.cell == Cell::Unequal {
                 0.03 + 0.03 * column as f64
@@ -143,8 +141,8 @@ impl Workload {
                     value *= 1.0 + 0.2 * (self.position as f64 * 0.4 + column as f64).sin();
                 },
                 Cell::Carryover if self.previous == 0 => value *= 1.05,
-                Cell::Rare if self.rng.random::<f64>() < 0.001 => value *= 30.0,
-                Cell::AsymmetricTail if column == 1 && self.rng.random::<f64>() < 0.001 => {
+                Cell::Rare if self.rng.unit() < 0.001 => value *= 30.0,
+                Cell::AsymmetricTail if column == 1 && self.rng.unit() < 0.001 => {
                     value *= 100.0;
                 },
                 Cell::Effect if column == 1 => value *= 0.9,
@@ -325,9 +323,9 @@ fn main() {
     );
 }
 
-fn normal(rng: &mut ChaCha12Rng) -> f64 {
-    let u = 1.0 - rng.random::<f64>();
-    let angle = std::f64::consts::TAU * rng.random::<f64>();
+fn normal(rng: &mut Random) -> f64 {
+    let u = 1.0 - rng.unit();
+    let angle = std::f64::consts::TAU * rng.unit();
     (-2.0 * u.ln()).sqrt() * angle.cos()
 }
 

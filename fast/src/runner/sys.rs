@@ -6,10 +6,6 @@ use std::path::Path;
 use std::time::Instant;
 use std::{io, ptr};
 
-use rustix::fd::AsFd as _;
-use rustix::fs::{OFlags, fcntl_getfl, fcntl_setfl};
-use rustix::pipe::{PipeFlags, pipe_with};
-
 pub(super) struct Child {
     pid: i32,
     reaped: bool,
@@ -82,8 +78,8 @@ impl Drop for Child {
 }
 
 pub(super) fn pipe() -> io::Result<(OwnedFd, OwnedFd)> {
-    let (read, write) = pipe_with(PipeFlags::CLOEXEC)?;
-    Ok((above_stdio(read)?, above_stdio(write)?))
+    let (read, write) = io::pipe()?;
+    Ok((above_stdio(read.into())?, above_stdio(write.into())?))
 }
 
 pub(super) fn launch_channel() -> io::Result<(OwnedFd, OwnedFd)> {
@@ -138,7 +134,15 @@ pub fn check_jobserver() -> io::Result<()> {
     Ok(())
 }
 pub(super) fn nonblocking(fd: &OwnedFd) -> io::Result<()> {
-    fcntl_setfl(fd, fcntl_getfl(fd)? | OFlags::NONBLOCK)?;
+    // SAFETY: F_GETFL and F_SETFL read and update flags of a live owned descriptor.
+    unsafe {
+        let flags = cvt(libc::fcntl(fd.as_raw_fd(), libc::F_GETFL))?;
+        cvt(libc::fcntl(
+            fd.as_raw_fd(),
+            libc::F_SETFL,
+            flags | libc::O_NONBLOCK,
+        ))?;
+    }
     Ok(())
 }
 
@@ -264,8 +268,18 @@ pub(super) fn spawn(launch: &Launch<'_>) -> io::Result<i32> {
 }
 
 pub(super) fn release(fd: &OwnedFd) -> io::Result<()> {
-    rustix::io::write(fd, &[1])?;
-    Ok(())
+    let byte = 1_u8;
+    loop {
+        // SAFETY: writes one byte from a live stack value to a live owned descriptor.
+        let written = unsafe { libc::write(fd.as_raw_fd(), (&raw const byte).cast(), 1) };
+        if written >= 0 {
+            return Ok(());
+        }
+        let error = io::Error::last_os_error();
+        if error.kind() != io::ErrorKind::Interrupted {
+            return Err(error);
+        }
+    }
 }
 
 pub(super) fn pidfd(pid: i32) -> io::Result<OwnedFd> {
@@ -365,7 +379,7 @@ pub(super) fn poll(
 }
 
 pub(super) fn poll_pipe(pipe: &File, deadline: Instant) -> io::Result<()> {
-    poll_one(pipe.as_fd().as_raw_fd(), Some(deadline))
+    poll_one(pipe.as_raw_fd(), Some(deadline))
 }
 
 fn poll_one(fd: i32, deadline: Option<Instant>) -> io::Result<()> {
