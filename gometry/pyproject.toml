@@ -164,6 +164,11 @@ reportUnnecessaryTypeIgnoreComment = "error"
 extend = "../ruff.toml"
 exclude = [".venv", ".ruff_cache", "site", "target*"]
 
+[tool.ruff.lint]
+# Throwaway names are `_` and single-word `_name`s; multi-word `_`-prefixed
+# helpers are not, so redefining one still reports F811.
+dummy-variable-rgx = "^_[a-z0-9]*$"
+
 [tool.ruff.lint.per-file-ignores]
 # The docstring lives on the final (canonical) @overload variant by design —
 # stubs cannot carry a bare implementation def (PEP 484), and one copy per

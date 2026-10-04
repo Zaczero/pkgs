@@ -515,7 +515,7 @@ def _validate_block(
     if oracle_a != oracle_b or oracle_a.get('identity') != expected_oracle_identity:
         raise SystemExit(f'{path} arms have mismatched or unexpected oracle identity')
     metric, unit, gometry_median = summaries['A']
-    _other_metric, _other_unit, competitor_median = summaries['B']
+    _, _, competitor_median = summaries['B']
     if gometry_median <= 0.0 or competitor_median <= 0.0:
         raise SystemExit(f'{path} contains a non-positive estimate')
     return (

@@ -1081,12 +1081,8 @@ def _validate_pair_arms(arms: dict[str, Any], case: Path) -> tuple[str, str]:
     try:
         left_observation = left['observation']
         right_observation = right['observation']
-        left_metric, left_unit, _left_estimate, _left_raw = measurement_summary(
-            left_observation
-        )
-        right_metric, right_unit, _right_estimate, _right_raw = measurement_summary(
-            right_observation
-        )
+        left_metric, left_unit, _, _ = measurement_summary(left_observation)
+        right_metric, right_unit, _, _ = measurement_summary(right_observation)
     except (KeyError, TypeError, ValueError) as exc:
         raise SystemExit(f'{case}: paired observation is malformed: {exc}') from exc
     if (left_metric, left_unit) != (right_metric, right_unit):
@@ -1279,7 +1275,7 @@ def compare_paired_ratios(
     unit: str,
 ) -> dict[str, Any]:
     """Estimate the arm ratio from one observation pair per independent block."""
-    expected_unit, _raw_key, _estimate_key, direction = metric_spec(metric)
+    expected_unit, _, _, direction = metric_spec(metric)
     if unit != expected_unit or direction != 'lower_is_better':
         raise ValueError(f'{metric} requires typed unit {expected_unit!r}')
     if not ratios:

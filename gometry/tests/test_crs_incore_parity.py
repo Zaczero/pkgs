@@ -975,7 +975,7 @@ def test_admitted_pair_forward_reverse_roundtrip(pair: tuple[str, str]) -> None:
     # One forward + one reverse transformer per CRS pair (not per coordinate).
     fwd = pyproj.Transformer.from_crs(src, tgt, always_xy=True)
     rev = pyproj.Transformer.from_crs(tgt, src, always_xy=True)
-    for x, y, _coord_kind in _sample_coords(source, target):
+    for x, y, _ in _sample_coords(source, target):
         out_kind = 'lonlat' if _is_wgs84_literal(target) else 'projected'
         out = _compare_forward(source, target, x, y, out_kind, transformer=fwd)
         rev_kind = 'lonlat' if _is_wgs84_literal(source) else 'projected'
@@ -1150,7 +1150,7 @@ def test_oracle_reports_max_errors() -> None:
     capstone is non-vacuous and file-order independent — a bare tolerance check
     against zero-initialized globals would pass without any oracle case running.
     """
-    for x, y, _coord_kind in _sample_coords(WGS84, WEB_MERCATOR):
+    for x, y, _ in _sample_coords(WGS84, WEB_MERCATOR):
         forward = _compare_forward(WGS84, WEB_MERCATOR, x, y, 'projected')
         _compare_forward(WEB_MERCATOR, WGS84, forward[0], forward[1], 'lonlat')
     assert _projected_compare_count > 0, 'no projected oracle comparison recorded'

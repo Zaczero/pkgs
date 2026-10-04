@@ -86,7 +86,7 @@ def validate_observation(value: Any) -> dict[str, Any]:
         raise _fail('unsupported schema version')
     if value.get('observation_type') != OBSERVATION_TYPE:
         raise _fail('unsupported observation type')
-    metric, _unit, _estimate_key, _raw = _validate_raw(value.get('measurement', {}))
+    metric, _unit, _, _raw = _validate_raw(value.get('measurement', {}))
     useful_work = value.get('useful_work')
     if metric == 'scaling_ratio':
         if not isinstance(useful_work, dict) or set(useful_work) != {

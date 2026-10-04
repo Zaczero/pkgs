@@ -964,7 +964,7 @@ def _arrow_c_binary_capsule_provider(length: int):
 
 def test_from_arrow_positive_unrepresentable_span_is_overflow_error() -> None:
     """A positive i64 length whose Binary offsets span cannot fit usize."""
-    provider, counts, _keep_alive = _arrow_c_binary_capsule_provider(2**63 - 1)
+    provider, counts, _keepalive = _arrow_c_binary_capsule_provider(2**63 - 1)
     with pytest.raises(OverflowError, match='Arrow offset window length overflows'):
         gm.from_arrow(provider)
     assert counts == {'schema': 1, 'array': 1}
@@ -972,7 +972,7 @@ def test_from_arrow_positive_unrepresentable_span_is_overflow_error() -> None:
 
 def test_from_arrow_negative_length_remains_type_error() -> None:
     """Negative C fields remain malformed input, not positive-size overflow."""
-    provider, counts, _keep_alive = _arrow_c_binary_capsule_provider(-1)
+    provider, counts, _keepalive = _arrow_c_binary_capsule_provider(-1)
     with pytest.raises(TypeError, match='Arrow array length is negative'):
         gm.from_arrow(provider)
     assert counts == {'schema': 1, 'array': 1}
@@ -1321,7 +1321,7 @@ def test_arrow_c_stream_callback_errno_maps_to_python_error(
     status: int, expected: type[Exception]
 ) -> None:
     """Callback return codes remain observable; no failure becomes TypeError."""
-    ctypes, _ArrowSchema, _ArrowArray, ArrowArrayStream = _f5_arrow_c_structs()
+    ctypes, _, _, ArrowArrayStream = _f5_arrow_c_structs()
 
     @ctypes.CFUNCTYPE(None, ctypes.c_void_p)
     def release(_ptr: int) -> None:
@@ -1902,8 +1902,8 @@ def _selected_struct_child_count_provider(protocol: str, array_children: int):
 )
 def test_arrow_c_selected_struct_child_count_matches_schema(protocol: str) -> None:
     """Selected struct roots reject mismatched schema/array counts and release once."""
-    invalid, invalid_releases, _invalid_keep_alive = (
-        _selected_struct_child_count_provider(protocol, array_children=2)
+    invalid, invalid_releases, _keepinvalid = _selected_struct_child_count_provider(
+        protocol, array_children=2
     )
     # Schema callbacks cover root + point struct + x/y; the extra array child
     # makes the mismatched array tree one callback longer than the valid tree.
@@ -1915,7 +1915,7 @@ def test_arrow_c_selected_struct_child_count_matches_schema(protocol: str) -> No
         'stream': int(protocol == 'stream'),
     }
 
-    valid, valid_releases, _valid_keep_alive = _selected_struct_child_count_provider(
+    valid, valid_releases, _keepvalid = _selected_struct_child_count_provider(
         protocol, array_children=1
     )
     assert gm.from_arrow(valid).to_wkt() == ['POINT (1 2)']
@@ -2107,7 +2107,7 @@ def test_arrow_c_unrepresentable_schema_child_count_is_type_error(
     """A huge positive schema child count is rejected before table traversal."""
     import gc
 
-    provider, releases, _keep_alive = _oversized_schema_child_count_provider(protocol)
+    provider, releases, _keepalive = _oversized_schema_child_count_provider(protocol)
     with pytest.raises(
         TypeError, match='Arrow schema n_children is negative or too large'
     ):

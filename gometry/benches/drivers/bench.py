@@ -325,7 +325,7 @@ def _benchmark_plans(
                 pair_number, block_spec = label.removeprefix('pair-').split(
                     '-block-', 1
                 )
-                _block_number, lead = block_spec.split('-', 1)
+                _, lead = block_spec.split('-', 1)
                 command = _paired_command(
                     gometry=scheduled_rows[0],
                     pair_id=f'{suite}-pair-{pair_number}',

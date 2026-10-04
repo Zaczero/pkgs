@@ -1919,7 +1919,9 @@ def test_index_entries_at_domain_corners_stay_searchable() -> None:
     assert ids(idx.nearest(gm.Point(45.0, 89.0, crs=4326), k=1)) == [2]
 
 
-@pytest.mark.parametrize('longitude', [180.0, -180.0], ids=['positive-seam', 'negative-seam'])
+@pytest.mark.parametrize(
+    'longitude', [180.0, -180.0], ids=['positive-seam', 'negative-seam']
+)
 def test_geographic_index_keeps_linework_at_seam_aliases(longitude: float) -> None:
     line = gm.LineString([(179.5, 9.5), (180.0, 9.5), (180.0, 10.5)], crs=4326)
     index = gm.SpatialIndex([line])
@@ -1938,9 +1940,7 @@ def test_seam_alias_candidates_survive_dense_sparse_and_gathered_rows() -> None:
 
     dense_target = gm.LineString(canonical[::-1], crs=4326)
     dense_rows = [
-        gm.LineString(
-            [(-160.0 + index, -30.0), (-159.5 + index, -30.0)], crs=4326
-        )
+        gm.LineString([(-160.0 + index, -30.0), (-159.5 + index, -30.0)], crs=4326)
         for index in range(64)
     ]
     dense_rows.append(dense_target)
@@ -1967,7 +1967,9 @@ def test_seam_alias_candidates_survive_dense_sparse_and_gathered_rows() -> None:
             assert gm.dwithin(query, line, 0.0), name
             assert ids(index.candidates(query)) == expected, name
             assert ids(index.query(query, predicate='intersects')) == expected, name
-            assert ids(index.query(query, predicate='dwithin', distance=0.0)) == expected, name
+            assert (
+                ids(index.query(query, predicate='dwithin', distance=0.0)) == expected
+            ), name
 
 
 def test_geodesic_nearest_mixed_shapes_match_brute_force() -> None:
@@ -1988,7 +1990,10 @@ def test_geodesic_nearest_mixed_shapes_match_brute_force() -> None:
     )
     for query in queries:
         exact_intersections = ids(idx.query(query, predicate='intersects'))
-        assert ids(idx.query(query, predicate='dwithin', distance=0.0)) == exact_intersections
+        assert (
+            ids(idx.query(query, predicate='dwithin', distance=0.0))
+            == exact_intersections
+        )
         for item in rows:
             if gm.intersects(query, item):
                 assert gm.distance(query, item) == 0.0
@@ -1997,7 +2002,7 @@ def test_geodesic_nearest_mixed_shapes_match_brute_force() -> None:
             key=lambda pair: (pair[1], pair[0]),
         )
         for k in (1, 3):
-            got_ids, _got_distances = idx.nearest(query, k=k, return_distance=True)
+            got_ids, _ = idx.nearest(query, k=k, return_distance=True)
             assert ids(got_ids) == [i for i, _ in brute[:k]]
         for radius in (1.0, 20000.0, 500000.0):
             assert ids(idx.query(query, predicate='dwithin', distance=radius)) == [
