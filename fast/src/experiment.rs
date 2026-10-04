@@ -384,26 +384,19 @@ impl Experiment<'_> {
                 .unwrap_or(Duration::from_secs(30))
                 .as_secs_f64();
             let mut costs = Vec::new();
-            for block in 0..8 {
+            for block in 0.. {
                 let start = Instant::now();
                 if !self.block(Phase::Pilot, block) {
                     return;
                 }
                 costs.push(start.elapsed().as_secs_f64());
-                let mean = costs.iter().sum::<f64>() / costs.len() as f64;
-                if self.start.elapsed().as_secs_f64() + mean > target * 0.2 {
+                if statistics::pilot_complete(self.start.elapsed().as_secs_f64(), &costs, target) {
                     break;
                 }
             }
-            let mean = costs.iter().sum::<f64>() / costs.len() as f64;
-            costs.sort_unstable_by(f64::total_cmp);
-            let rank = costs.len().wrapping_mul(9).div_ceil(10).wrapping_sub(1);
-            let p90 = *costs.get(rank).expect("pilot percentile");
-            let cost = mean.max(p90);
-            let affordable = (0.8 * (target - self.start.elapsed().as_secs_f64()).max(0.0) / cost)
-                .floor() as usize;
-            let desired = statistics::precision_count(&self.result.rows(Phase::Pilot)).max(100);
-            affordable.min(desired).min(10_000).min(max_blocks)
+            let remaining = target - self.start.elapsed().as_secs_f64();
+            statistics::production_count(remaining, &costs, &self.result.rows(Phase::Pilot))
+                .min(max_blocks)
         };
         self.result.planned_blocks = count;
         self.message(&format!("plan frozen: {count} measured runs per command"));

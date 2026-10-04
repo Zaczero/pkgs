@@ -170,28 +170,21 @@ impl Workload {
 
     fn rows(&mut self, count: usize) -> Vec<Vec<u64>> {
         let count = if self.cell == Cell::Auto {
-            let target = count as f64 * self.specific.len() as f64 * 0.001 / 0.8;
+            let target = count as f64 * self.specific.len() as f64 * 0.001;
             let mut pilots = Vec::new();
             let mut costs = Vec::new();
             let mut spent = 0.0;
-            for _ in 0..8 {
+            loop {
                 let row = self.block();
                 let cost = row.iter().map(|&v| v as f64 / 1e9).sum::<f64>();
                 pilots.push(row);
                 costs.push(cost);
                 spent += cost;
-                if spent + costs.iter().sum::<f64>() / costs.len() as f64 > target * 0.2 {
+                if statistics::pilot_complete(spent, &costs, target) {
                     break;
                 }
             }
-            let mean = costs.iter().sum::<f64>() / costs.len() as f64;
-            costs.sort_unstable_by(f64::total_cmp);
-            let p90_index = costs.len().wrapping_mul(9).div_ceil(10).wrapping_sub(1);
-            let cost = mean.max(*costs.get(p90_index).expect("nonempty pilot percentile"));
-            let affordable = (0.8 * (target - spent).max(0.0) / cost).floor() as usize;
-            affordable
-                .min(statistics::precision_count(&pilots).max(100))
-                .min(10_000)
+            statistics::production_count(target - spent, &costs, &pilots)
         } else {
             count
         };

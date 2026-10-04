@@ -4,6 +4,8 @@ use serde::Serialize;
 use statrs::distribution::{ContinuousCDF as _, Normal, StudentsT};
 
 const REPLICATES: usize = 20_000;
+/// Complete measured blocks required before timing comparisons receive inferential labels.
+const MIN_INFERENCE_BLOCKS: usize = 100;
 
 #[derive(Debug, Serialize)]
 pub struct Analysis {
@@ -188,7 +190,7 @@ pub fn analyze(rows: &[Vec<u64>], completed: bool, seed: u64, margin: Option<f64
     let segment = n.isqrt().max(2);
     let limitation = if !completed {
         Some("The planned experiment did not complete; comparisons are descriptive only.")
-    } else if n < 100 {
+    } else if n < MIN_INFERENCE_BLOCKS {
         Some("Too few complete measured blocks for timing conclusions (at least 100 required).")
     } else if summaries.iter().any(|s| s.mean_ns <= 0.0) {
         Some("Clock resolution is insufficient for inference.")
@@ -388,7 +390,7 @@ fn bootstrap(
 )]
 pub fn precision_count(rows: &[Vec<u64>]) -> usize {
     if rows.len() < 4 {
-        return 100;
+        return MIN_INFERENCE_BLOCKS;
     }
     let k = rows.first().expect("at least four pilot blocks").len();
     let pairs = family(k);
@@ -416,6 +418,24 @@ pub fn precision_count(rows: &[Vec<u64>]) -> usize {
         .expect("standard normal")
         .inverse_cdf(1.0 - 0.05 / (2.0 * pairs.len() as f64));
     (2.0 * q * q * variance / 1.01_f64.ln().powi(2)).ceil() as usize
+}
+
+/// The pilot ends after eight blocks, or when one more block at the mean pilot cost
+/// would carry the elapsed effort past 20% of the target.
+pub fn pilot_complete(elapsed: f64, costs: &[f64], target: f64) -> bool {
+    costs.len() >= 8 || elapsed + costs.iter().sum::<f64>() / costs.len() as f64 > 0.2 * target
+}
+
+/// Production blocks whose total at the mean pilot block cost fits in the remaining
+/// target, up to the larger of the precision estimate and the blocks timing
+/// conclusions require. The mean is the planning cost because effort is a sum over
+/// many blocks; a pilot percentile mostly measures one slow block.
+pub fn production_count(remaining: f64, costs: &[f64], pilot: &[Vec<u64>]) -> usize {
+    let mean = costs.iter().sum::<f64>() / costs.len() as f64;
+    let affordable = (remaining.max(0.0) / mean).floor() as usize;
+    affordable
+        .min(precision_count(pilot).max(MIN_INFERENCE_BLOCKS))
+        .min(10_000)
 }
 
 #[cfg(test)]

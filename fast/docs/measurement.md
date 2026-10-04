@@ -73,13 +73,17 @@ the underlying process/thread records and their limitations.
 ## Frozen planning
 
 Explicit counts bypass the pilot. Automatic effort first performs up to eight
-complete pilot blocks, continuing only while another predicted block fits in
-20% of the target. The conservative block-cost estimate is the greater of pilot
-mean and nearest-rank 90th percentile, including hooks and collection.
+complete pilot blocks, continuing only while another block at the mean pilot
+cost fits in 20% of the target. Block cost includes hooks and collection.
 
-Production count is frozen using remaining cost, a pilot influence-function
-precision estimate, and in-memory observation limits. Pilot observations are
-retained but excluded from production estimates. No interval is inspected to
+Production count is the number of blocks at the mean pilot block cost that fit in
+the remaining target, bounded by the larger of a pilot influence-function
+precision estimate and the 100 blocks timing conclusions require, and by
+in-memory observation limits. Effort is a sum over many blocks, so the mean is
+its planning cost; a percentile of eight pilot blocks is effectively the slowest
+one, which a single load spike can inflate several-fold. A pilot that
+underestimates a heavy-tailed cost can overrun the target. Pilot observations
+are retained but excluded from production estimates. No interval is inspected to
 decide whether to stop, extend a run, or remove a candidate.
 
 ## Arithmetic means and simultaneous intervals
@@ -136,7 +140,7 @@ bounds. The fixed held-out seed is `d91453c274b8109a`; each cell below contains
 | One command takes 10% less time | 200 | 98.56% | 0.78% | 100.00% |
 | Single-command arithmetic mean | 200 | 97.38% | Not applicable | — |
 | Eight independent commands | 200 | 99.65% | 0.35% | — |
-| Pilot-selected production count | 180.08 mean | 99.01% | 0.99% | — |
+| Pilot-selected production count | 191.50 mean | 98.61% | 1.39% | — |
 
 Every supported cell has a one-sided 95% lower coverage bound above 94% and
 upper false-direction bound below 6%. These conservative intervals trade width
