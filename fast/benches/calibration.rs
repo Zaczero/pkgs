@@ -29,6 +29,10 @@ enum Model {
     Pair,
     /// Two quiet commands, log SD 0.02, equal means.
     PairNull,
+    /// Two quiet equal commands with command-specific AR(1) correlation 0.5.
+    QuietAr,
+    /// Two quiet equal commands with command-specific AR(1) correlation 0.9.
+    QuietStrongAr,
     /// One command: its mean.
     Single,
     /// Eight independent commands.
@@ -105,7 +109,7 @@ impl Workload {
         let mut random = Random::new(options.seed.wrapping_add(trial as u64));
         let columns = match options.model {
             Model::Single => 1,
-            Model::Pair | Model::PairNull => 2,
+            Model::Pair | Model::PairNull | Model::QuietAr | Model::QuietStrongAr => 2,
             Model::Eight => 8,
             Model::Iid
             | Model::Unequal
@@ -144,7 +148,7 @@ impl Workload {
         for column in order {
             let sigma = match self.model {
                 Model::Unequal => 0.03 + 0.03 * column as f64,
-                Model::Pair | Model::PairNull => 0.02,
+                Model::Pair | Model::PairNull | Model::QuietAr | Model::QuietStrongAr => 0.02,
                 Model::Iid
                 | Model::Common
                 | Model::Ar
@@ -161,8 +165,8 @@ impl Workload {
                 | Model::AsymmetricTail => 0.1,
             };
             let rho = match self.model {
-                Model::Ar => 0.5,
-                Model::StrongAr => 0.9,
+                Model::Ar | Model::QuietAr => 0.5,
+                Model::StrongAr | Model::QuietStrongAr => 0.9,
                 Model::Iid
                 | Model::Unequal
                 | Model::Common
@@ -206,6 +210,8 @@ impl Workload {
                 | Model::Effect
                 | Model::Pair
                 | Model::PairNull
+                | Model::QuietAr
+                | Model::QuietStrongAr
                 | Model::Single
                 | Model::Eight
                 | Model::Cold
@@ -284,6 +290,8 @@ impl Workload {
             | Model::Effect
             | Model::Pair
             | Model::PairNull
+            | Model::QuietAr
+            | Model::QuietStrongAr
             | Model::Single
             | Model::Eight
             | Model::Cold

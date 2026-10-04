@@ -128,18 +128,19 @@ and completion notification. Diagnostic draining after completion is excluded.
 Very short commands can mostly measure process launch.
 
 Timing changes compare **arithmetic means**, not fastest runs, medians, or means
-of per-run ratios. Each comparison is a 95% confidence interval for the ratio of
-mean times, computed from paired runs, and every command pair holds
-simultaneously, even when the compact report shows only comparisons with A.
+of per-run ratios. Comparisons use paired runs to estimate ratios of mean times.
+Their intervals target 95% simultaneous coverage under the method's assumptions,
+including every command pair even when the compact report shows only comparisons
+with A.
 A smaller point estimate alone does not establish a win, and unresolved does not
 mean equivalent.
 
-Two runs can already bound an interval when the difference is large compared
-with the run-to-run noise; three is the practical minimum. With more runs the
-interval narrows, and consecutive runs are grouped so that correlated runs widen
-it instead of making it falsely precise. When the runs show drift or correlation,
-the comparison says so. A single run shows its time and resources without an
-interval.
+Two runs can already bound an interval; three is the default minimum. More runs
+usually improve precision. Grouping consecutive runs into batches reduces the
+effect of short-lived correlation, but does not eliminate it. A diagnostic can
+flag drift or correlation once there are at least 20 runs; an absent flag does
+not establish independence. A single run shows its time and resources without
+an interval.
 
 `--margin 1%` asks about practical differences outside a symmetric one-percent
 margin. `--check 1%` asks whether every alternative can be established as no
@@ -147,9 +148,9 @@ more than one percent slower than A. A check can pass, fail, or remain
 inconclusive.
 
 The statistical method and its calibration evidence are documented in
-[Measurement and inference](docs/measurement.md). Strongly persistent noise and
-rare slow events that the runs never encounter are outside what any interval can
-capture.
+[Measurement and inference](docs/measurement.md). Strongly persistent noise is
+outside this method's validated model. Rare slow events that the runs never
+encounter can also make the result misleading.
 
 ### Resources and sampled activity
 

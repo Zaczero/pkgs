@@ -213,8 +213,8 @@ enum Bound {
     Degenerate,
 }
 
-/// Automatic effort planning. Every decision uses run costs and pilot variation,
-/// never a comparison's outcome, so the stopping point cannot favour a result.
+/// Automatic effort planning from run costs and pilot variation, without inspecting
+/// a comparison's outcome. Calibration includes the variance-dependent selection.
 #[derive(Clone, Copy, Debug)]
 pub struct Planner {
     /// Seconds of total effort, including the pilot and hooks.

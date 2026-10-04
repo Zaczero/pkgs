@@ -97,10 +97,12 @@ is a strict budget, so the plan may stop after the first run.
 
 Planning uses run costs and the pilot's variation, never a comparison's outcome.
 Choosing the run count from the variance is an internal pilot design, and the
-automatic calibration cell below includes it. Interruption is likewise
-independent of the outcome, since no estimate is shown while runs continue: an
-interrupted experiment analyzes its completed runs. A failed run can depend on
-the measured behavior, so a failure leaves the completed runs descriptive.
+automatic calibration cells below include this selection step; fixed-count
+coverage alone does not validate the planner. An interrupted experiment analyzes
+its completed runs. No estimates are shown while runs continue, but stopping
+because of an externally observed result can still bias the comparison. A failed
+run can depend on the measured behavior, so a failure leaves the completed runs
+descriptive.
 
 ## Arithmetic means and simultaneous intervals
 
@@ -212,6 +214,22 @@ A stationary bootstrap with conservative corrections, the previous method, neede
 100 runs before any conclusion and covered 98.6–99.9% where Fieller batch means
 cover close to 95%. At 100 runs of four independent commands its intervals were
 about 45% wider (mean log width 0.136 versus 0.093).
+
+Low variation does not establish independence. Additional automatic-plan cases
+use two quiet commands (log SD 0.02), a target worth 200 runs, and 50,000
+experiments on the separate seed `b7809f3a41c26de5`:
+
+| Model | Mean runs | Coverage | False direction | Correlation flagged |
+| --- | ---: | ---: | ---: | ---: |
+| Independent, equal means | 100.43 | 95.05% | 4.95% | 1.15% |
+| Independent, B takes 5% less time | 100.43 | 95.05% | 0.00% | 1.15% |
+| Command-specific correlation 0.5, equal means | 100.24 | 93.62% | 6.38% | 58.30% |
+| Command-specific correlation 0.9, equal means | 100.00 | 78.19% | 21.81% | 99.81% |
+
+The independent effect case detected the faster command in every experiment.
+The correlated cases show why a quiet pilot alone cannot justify a short plan:
+even the preferred 100 runs do not restore nominal coverage under persistent
+noise. A correlation flag calls the interval into question; it does not correct it.
 
 Reproduce a cell from the repository root:
 
