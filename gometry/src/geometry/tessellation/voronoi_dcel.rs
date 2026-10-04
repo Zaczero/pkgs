@@ -41,8 +41,8 @@ use crate::geometry::{
     Bounds, CoordSeq, CsrOffsetColumn, ExpansionBudget, GeometryErrorKind, Point, PointKey,
     Polygon, PolygonPointIndex, Ring, Segment, SegmentParameter, Shape, Strictness,
     VoronoiBoundary, XY, coverage_is_valid, for_each_candidate_pair,
-    for_each_indexed_overlapping_bounds_pair, for_each_overlapping_bounds_cross_pair,
-    polygon_is_valid, single_chain, try_dedup_by, try_sort_by,
+    for_each_overlapping_bounds_cross_pair, polygon_is_valid, single_chain, try_dedup_by,
+    try_sort_by,
 };
 #[cfg(test)]
 use crate::geometry::{
@@ -529,11 +529,241 @@ struct CollinearClipEdge<'a> {
     end: &'a exact::ExactPoint,
 }
 
-struct ClipCertificateEdge<'a> {
+struct ClipCertificateEdge {
+    ring: usize,
+    atom: EdgeId,
+    start: exact::ExactPoint,
+    end: exact::ExactPoint,
+    rounded: [XY; 2],
+}
+
+#[derive(Clone, Copy)]
+struct ClipSourceSegment<'a> {
     ring: usize,
     start: &'a exact::ExactPoint,
     end: &'a exact::ExactPoint,
-    rounded: [XY; 2],
+    start_vertex: VertexId,
+    end_vertex: VertexId,
+}
+
+#[derive(Default)]
+struct ClipSourceRow {
+    vertices: Vec<VertexId>,
+    edges: Vec<EdgeId>,
+}
+
+#[derive(Clone, Copy)]
+struct ClipTraceAtom {
+    edge: EdgeId,
+    reversed: bool,
+}
+
+#[derive(Default)]
+struct ClipTraceRing {
+    atoms: Vec<ClipTraceAtom>,
+}
+
+struct ClipTrace {
+    rings: Vec<ClipTraceRing>,
+    atom_count: usize,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct ClipBoundaryFailure {
+    ring: usize,
+    atom: Option<EdgeId>,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct ClipHostFailure {
+    chord: usize,
+    boundary: ClipBoundaryFailure,
+}
+
+impl ClipTrace {
+    fn build(
+        subdivision: &ExactSubdivision,
+        clip: &NormalizedClip<'_>,
+        budget: &mut EvaluationBudget,
+    ) -> Result<Self> {
+        let source_segment_count = clip.rings.iter().try_fold(0_usize, |count, ring| {
+            count
+                .checked_add(ring.len())
+                .ok_or(crate::error::ResourceError::SizeOverflow)
+        })?;
+        u32::try_from(source_segment_count)
+            .map_err(|_| crate::error::ResourceError::SizeOverflow)?;
+        budget.charge(
+            u64::try_from(source_segment_count.div_ceil(16))
+                .map_err(|_| crate::error::ResourceError::SizeOverflow)?,
+        )?;
+
+        let mut source_segments = Vec::with_capacity(source_segment_count);
+        for (ring_index, ring) in clip.rings.iter().enumerate() {
+            if ring.len() < 3 {
+                return Err(clip_source_trace_error());
+            }
+            for (start, end) in ring.iter().zip(ring.iter().cycle().skip(1)) {
+                let start_vertex = subdivision
+                    .vertex_at(start)?
+                    .expect("every normalized clip source endpoint is interned by noding");
+                let end_vertex = subdivision
+                    .vertex_at(end)?
+                    .expect("every normalized clip source endpoint is interned by noding");
+                source_segments.push(ClipSourceSegment {
+                    ring: ring_index,
+                    start,
+                    end,
+                    start_vertex,
+                    end_vertex,
+                });
+            }
+        }
+        budget.charge(
+            u64::try_from(subdivision.edges.len().div_ceil(16))
+                .map_err(|_| crate::error::ResourceError::SizeOverflow)?,
+        )?;
+        let source_atom_count = subdivision.edges.iter().try_fold(0_usize, |count, edge| {
+            count
+                .checked_add(edge.clip_sources.len())
+                .ok_or(crate::error::ResourceError::SizeOverflow)
+        })?;
+        let source_atom_units = u64::try_from(source_atom_count.div_ceil(16))
+            .map_err(|_| crate::error::ResourceError::SizeOverflow)?;
+        budget.charge(source_atom_units)?;
+        let mut rows: Vec<_> = std::iter::repeat_with(ClipSourceRow::default)
+            .take(source_segment_count)
+            .collect();
+        for (edge_index, edge) in subdivision.edges.iter().enumerate() {
+            let edge_id = EdgeId(
+                u32::try_from(edge_index).map_err(|_| crate::error::ResourceError::SizeOverflow)?,
+            );
+            for &source in &edge.clip_sources {
+                let source = usize::try_from(source.0)
+                    .map_err(|_| crate::error::ResourceError::SizeOverflow)?;
+                let row = rows.get_mut(source).ok_or_else(clip_source_trace_error)?;
+                row.vertices.extend(edge.endpoints);
+                row.edges.push(edge_id);
+            }
+        }
+
+        budget.charge(source_atom_units)?;
+        let mut rings: Vec<_> = std::iter::repeat_with(ClipTraceRing::default)
+            .take(clip.rings.len())
+            .collect();
+        for (segment, row) in source_segments.iter().zip(&mut rows) {
+            try_sort_by(&mut row.vertices, |&left, &right| {
+                exact::compare_along(
+                    segment.start,
+                    segment.end,
+                    &subdivision.vertex(left).point,
+                    &subdivision.vertex(right).point,
+                )
+            })?;
+            try_dedup_by(&mut row.vertices, |later, earlier| Ok(later == earlier))?;
+            debug_assert_eq!(
+                row.vertices.first(),
+                Some(&segment.start_vertex),
+                "a source trace starts at its noded endpoint"
+            );
+            debug_assert_eq!(
+                row.vertices.last(),
+                Some(&segment.end_vertex),
+                "a source trace ends at its noded endpoint"
+            );
+            let expected_vertex_count = row
+                .edges
+                .len()
+                .checked_add(1)
+                .ok_or(crate::error::ResourceError::SizeOverflow)?;
+            debug_assert_eq!(
+                expected_vertex_count,
+                row.vertices.len(),
+                "each source atom joins consecutive noded vertices"
+            );
+            #[cfg(debug_assertions)]
+            for &vertex in &row.vertices {
+                let point = &subdivision.vertex(vertex).point;
+                let intersection =
+                    exact::segment_intersection(segment.start, segment.end, point, point)
+                        .expect("a noded clip vertex has an exact source-segment classification");
+                debug_assert!(
+                    matches!(intersection, exact::SegmentIntersection::Point(_)),
+                    "each atom endpoint lies on its tagged source segment"
+                );
+            }
+
+            let mut atoms = Vec::with_capacity(row.edges.len());
+            for &edge in &row.edges {
+                let [left, right] = subdivision.edge(edge).endpoints;
+                let along = exact::compare_along(
+                    segment.start,
+                    segment.end,
+                    &subdivision.vertex(left).point,
+                    &subdivision.vertex(right).point,
+                )?;
+                debug_assert_ne!(
+                    along,
+                    Ordering::Equal,
+                    "a source atom has distinct endpoints along its segment"
+                );
+                let reversed = along == Ordering::Greater;
+                atoms.push(ClipTraceAtom { edge, reversed });
+            }
+            try_sort_by(&mut atoms, |left, right| {
+                let [left_start, left_end] = subdivision.edge(left.edge).endpoints;
+                let [right_start, right_end] = subdivision.edge(right.edge).endpoints;
+                let left_start = if left.reversed { left_end } else { left_start };
+                let right_start = if right.reversed {
+                    right_end
+                } else {
+                    right_start
+                };
+                exact::compare_along(
+                    segment.start,
+                    segment.end,
+                    &subdivision.vertex(left_start).point,
+                    &subdivision.vertex(right_start).point,
+                )
+            })?;
+            for (index, atom) in atoms.iter().enumerate() {
+                let [left, right] = subdivision.edge(atom.edge).endpoints;
+                let (start, end) = if atom.reversed {
+                    (right, left)
+                } else {
+                    (left, right)
+                };
+                let next_index = index
+                    .checked_add(1)
+                    .ok_or(crate::error::ResourceError::SizeOverflow)?;
+                debug_assert_eq!(
+                    row.vertices.get(index),
+                    Some(&start),
+                    "ordered source atoms begin at the corresponding trace vertex"
+                );
+                debug_assert_eq!(
+                    row.vertices.get(next_index),
+                    Some(&end),
+                    "ordered source atoms end at the next trace vertex"
+                );
+                rings
+                    .get_mut(segment.ring)
+                    .ok_or_else(clip_source_trace_error)?
+                    .atoms
+                    .push(*atom);
+            }
+        }
+        let atom_count = rings.iter().try_fold(0_usize, |count, ring| {
+            count
+                .checked_add(ring.atoms.len())
+                .ok_or(crate::error::ResourceError::SizeOverflow)
+        })?;
+        debug_assert_eq!(
+            atom_count, source_atom_count,
+            "each source-tagged atomic edge appears in its clip ring trace"
+        );
+        Ok(Self { rings, atom_count })
+    }
 }
 
 struct ClipRingParity {
@@ -594,11 +824,24 @@ impl ClipRingParity {
     fn covers(&self) -> bool {
         self.shell_inside && self.holes_inside == 0
     }
+
+    fn outside_ring(&self) -> Option<usize> {
+        if !self.shell_inside {
+            return Some(0);
+        }
+        self.generations
+            .iter()
+            .zip(&self.inside)
+            .enumerate()
+            .skip(1)
+            .find_map(|(ring, (&generation, &inside))| {
+                (generation == self.generation && inside).then_some(ring)
+            })
+    }
 }
 
 struct ClipCertificate {
-    exact_rings: Vec<Vec<exact::ExactPoint>>,
-    rounded_rings: Vec<Vec<XY>>,
+    edges: Vec<ClipCertificateEdge>,
     polygon: Polygon,
 }
 
@@ -708,6 +951,10 @@ fn site_by_id(sites: &[Site], site: SiteId) -> &Site {
 )]
 fn noded_vertex(vertices: &[NodedVertex], id: VertexId) -> &NodedVertex {
     &vertices[id.0 as usize]
+}
+
+fn clip_source_trace_error() -> crate::error::Error {
+    voronoi_error("exact clip source atoms do not reconstruct the normalized clip boundary")
 }
 
 fn exact_embedding_unrepresentable(
@@ -2345,6 +2592,8 @@ impl RayPoints for VoronoiOwnerPoints<'_, '_> {
 /// are transparent to its shell and hole relationships.
 struct VoronoiEmbedding<'a> {
     subdivision: &'a ExactSubdivision,
+    clip: &'a NormalizedClip<'a>,
+    clip_trace: &'a ClipTrace,
     sites: &'a [Site],
     parts: &'a [ExactCellPart],
     includes_polygons: bool,
@@ -2384,8 +2633,23 @@ impl<'a> VoronoiEmbedding<'a> {
             .owner
     }
 
+    fn visit_clip_ring_vertices(&self, ring: usize, mut visit: impl FnMut(VertexId)) {
+        let ring = self
+            .clip_trace
+            .rings
+            .get(ring)
+            .expect("clip-host failure names an admitted clip ring");
+        for atom in &ring.atoms {
+            for vertex in self.subdivision.edge(atom.edge).endpoints {
+                visit(vertex);
+            }
+        }
+    }
+
     fn new(
         subdivision: &'a ExactSubdivision,
+        clip: &'a NormalizedClip<'a>,
+        clip_trace: &'a ClipTrace,
         parts: &'a [ExactCellPart],
         includes_polygons: bool,
         live_nodes: &'a [VertexId],
@@ -2614,6 +2878,8 @@ impl<'a> VoronoiEmbedding<'a> {
 
         Ok(Self {
             subdivision,
+            clip,
+            clip_trace,
             sites,
             parts,
             includes_polygons,
@@ -2699,6 +2965,162 @@ impl<'a> VoronoiEmbedding<'a> {
             })
     }
 
+    fn clip_host_failures(
+        &self,
+        coordinates: &[XY],
+        budget: &mut EvaluationBudget,
+    ) -> Result<Vec<ClipHostFailure>> {
+        if self.separator_chords.is_empty() {
+            return Ok(Vec::new());
+        }
+        let certificate = clip_certificate_data(
+            self.subdivision,
+            self.clip,
+            self.clip_trace,
+            |vertex| self.xy(vertex, coordinates),
+            budget,
+        )?;
+        let clip_edge_count = certificate.edges.len();
+        let separator_count = self.separator_chords.len();
+        let index_units = clip_edge_count
+            .div_ceil(16)
+            .checked_add(separator_count.div_ceil(16))
+            .ok_or(crate::error::ResourceError::SizeOverflow)?;
+        budget.charge(
+            u64::try_from(index_units).map_err(|_| crate::error::ResourceError::SizeOverflow)?,
+        )?;
+        let bounds = |start: XY, end: XY| {
+            Bounds::new_raw(
+                start.x.min(end.x),
+                start.y.min(end.y),
+                start.x.max(end.x),
+                start.y.max(end.y),
+            )
+        };
+        let clip_bounds: Vec<_> = certificate
+            .edges
+            .iter()
+            .map(|edge| bounds(edge.rounded[0], edge.rounded[1]))
+            .collect();
+        let mut segments = Vec::with_capacity(separator_count);
+        for &chord in &self.separator_chords {
+            segments.push(self.segment(chord, coordinates)?);
+        }
+        let separator_bounds: Vec<_> = segments
+            .iter()
+            .map(|segment| bounds(segment.start, segment.end))
+            .collect();
+
+        let sweep_count = clip_edge_count
+            .checked_add(separator_count)
+            .ok_or(crate::error::ResourceError::SizeOverflow)?;
+        budget.charge(
+            u64::try_from(sweep_count.div_ceil(16))
+                .map_err(|_| crate::error::ResourceError::SizeOverflow)?,
+        )?;
+        let mut candidate_pairs = Vec::new();
+        let mut callback_error = None;
+        let completion = for_each_overlapping_bounds_cross_pair(
+            &separator_bounds,
+            &clip_bounds,
+            |segment, edge| {
+                if callback_error.is_some() {
+                    return ControlFlow::Break(());
+                }
+                if let Err(error) = budget.charge(1) {
+                    callback_error = Some(error);
+                    return ControlFlow::Break(());
+                }
+                candidate_pairs.push((segment, edge));
+                ControlFlow::Continue(())
+            },
+        )?;
+        if let Some(error) = callback_error {
+            return Err(error);
+        }
+        debug_assert!(completion.is_continue());
+        candidate_pairs.sort_unstable();
+        let candidate_units = u64::try_from(candidate_pairs.len().div_ceil(16))
+            .map_err(|_| crate::error::ResourceError::SizeOverflow)?;
+        budget.charge(candidate_units)?;
+
+        let offset_count = separator_count
+            .checked_add(1)
+            .ok_or(crate::error::ResourceError::SizeOverflow)?;
+        let mut candidate_offsets = Vec::with_capacity(offset_count);
+        let mut candidate_edges = Vec::with_capacity(candidate_pairs.len());
+        candidate_offsets.push(0);
+        let mut pairs = candidate_pairs.into_iter().peekable();
+        for segment in 0..separator_count {
+            while pairs
+                .peek()
+                .is_some_and(|&(candidate, _)| candidate == segment)
+            {
+                let (_, edge) = pairs
+                    .next()
+                    .expect("the candidate segment was checked above");
+                candidate_edges.push(edge);
+            }
+            candidate_offsets.push(candidate_edges.len());
+        }
+        if pairs.next().is_some() {
+            return Err(clip_source_trace_error());
+        }
+
+        budget.charge(
+            u64::try_from(clip_edge_count.div_ceil(16))
+                .map_err(|_| crate::error::ResourceError::SizeOverflow)?,
+        )?;
+        let edge_ids: Vec<_> = (0..clip_edge_count).collect();
+        let y_index = YStabbingIndex::build(edge_ids, |&edge| {
+            let [start, end] = certificate
+                .edges
+                .get(edge)
+                .expect("YStabbingIndex ordinals align with the assigned clip edges")
+                .rounded;
+            (
+                start.x.min(end.x),
+                start.x.max(end.x),
+                start.y.min(end.y),
+                start.y.max(end.y),
+            )
+        })?;
+        budget.charge(
+            u64::try_from(self.clip_trace.atom_count.div_ceil(16))
+                .map_err(|_| crate::error::ResourceError::SizeOverflow)?,
+        )?;
+        let point_index = PolygonPointIndex::build(&certificate.polygon)?;
+        let mut events = Vec::new();
+        let mut parity = ClipRingParity::new(self.clip_trace.rings.len());
+        let mut failures = Vec::new();
+        for (segment_index, (&chord, &[start, end])) in self
+            .separator_chords
+            .iter()
+            .zip(candidate_offsets.array_windows::<2>())
+            .enumerate()
+        {
+            let candidates = candidate_edges
+                .get(start..end)
+                .ok_or_else(clip_source_trace_error)?;
+            let segment = *segments
+                .get(segment_index)
+                .expect("separator segment ordinal belongs to the built segment table");
+            if let Some(boundary) = rounded_segment_covered_by_clip(
+                segment,
+                &certificate.edges,
+                candidates,
+                &point_index,
+                &y_index,
+                &mut events,
+                &mut parity,
+                budget,
+            )? {
+                failures.push(ClipHostFailure { chord, boundary });
+            }
+        }
+        Ok(failures)
+    }
+
     fn separator_preserved(
         &self,
         chord: usize,
@@ -2733,6 +3155,7 @@ impl<'a> VoronoiEmbedding<'a> {
 enum VoronoiConflict {
     Collision(VertexId, VertexId),
     Contact(usize, usize),
+    ClipHost(ClipHostFailure),
     Fan(VertexId),
     Separator(usize),
     Ring(usize),
@@ -2744,7 +3167,11 @@ enum VoronoiConflict {
 }
 
 impl VoronoiEmbedding<'_> {
-    fn collect_conflicts(&self, coordinates: &[XY]) -> Result<Vec<VoronoiConflict>> {
+    fn collect_conflicts(
+        &self,
+        coordinates: &[XY],
+        budget: &mut EvaluationBudget,
+    ) -> Result<Vec<VoronoiConflict>> {
         let mut conflicts = Vec::new();
         let mut owners = try_hash_map_with_capacity(self.live_nodes.len())?;
         for &vertex in self.live_nodes {
@@ -2828,6 +3255,9 @@ impl VoronoiEmbedding<'_> {
                 conflicts.push(VoronoiConflict::Separator(chord));
             }
         }
+        for failure in self.clip_host_failures(coordinates, budget)? {
+            conflicts.push(VoronoiConflict::ClipHost(failure));
+        }
 
         for fan in &self.fans {
             let xy_of = |vertex| self.xy(vertex, coordinates);
@@ -2892,6 +3322,13 @@ impl VoronoiEmbedding<'_> {
                         let edge = self.chord(chord);
                         seeds.extend([VertexId(edge.nodes[0]), VertexId(edge.nodes[1])]);
                     }
+                },
+                VoronoiConflict::ClipHost(failure) => {
+                    let chord = self.chord(failure.chord);
+                    seeds.extend([VertexId(chord.nodes[0]), VertexId(chord.nodes[1])]);
+                    self.visit_clip_ring_vertices(failure.boundary.ring, |node| {
+                        seeds.push(node);
+                    });
                 },
                 VoronoiConflict::Fan(origin) => {
                     seeds.push(origin);
@@ -3630,6 +4067,21 @@ impl Problem for VoronoiProblem<'_, '_> {
                 }
             }
         }
+        for failure in self.embedding.clip_host_failures(&coordinates, budget)? {
+            rejected = true;
+            let chord = self.embedding.chord(failure.chord);
+            self.mark_node_class(VertexId(chord.nodes[0]), &mut blamed);
+            self.mark_node_class(VertexId(chord.nodes[1]), &mut blamed);
+            self.embedding
+                .visit_clip_ring_vertices(failure.boundary.ring, |node| {
+                    self.mark_node_class(node, &mut blamed);
+                });
+            if let Some(atom) = failure.boundary.atom {
+                for node in self.embedding.subdivision.edge(atom).endpoints {
+                    self.mark_node_class(node, &mut blamed);
+                }
+            }
+        }
         let points = VoronoiPoints {
             vertices: self.embedding.vertices,
             coordinates: &coordinates,
@@ -3896,9 +4348,13 @@ fn embed(
     } else {
         "voronoi_edges"
     };
+    let mut search_budget = EvaluationBudget::new(operation, 0)?;
+    let clip_trace = ClipTrace::build(subdivision, clip, &mut search_budget)?;
     let (assignment, constructed) = {
         let embedding = VoronoiEmbedding::new(
             subdivision,
+            clip,
+            &clip_trace,
             parts,
             product.includes_polygons(),
             &live_nodes,
@@ -3907,7 +4363,7 @@ fn embed(
             &points,
             sites,
         )?;
-        let conflicts = embedding.collect_conflicts(&points)?;
+        let conflicts = embedding.collect_conflicts(&points, &mut search_budget)?;
         if conflicts.is_empty() {
             (None, 0)
         } else {
@@ -3918,8 +4374,9 @@ fn embed(
                     .checked_add(class.len())
                     .ok_or(crate::error::ResourceError::SizeOverflow)
             })?;
+            search_budget.set_constructed(constructed)?;
             (
-                Some(Search::new(problem, operation, constructed)?.run()?),
+                Some(Search::with_budget(problem, search_budget).run()?),
                 constructed,
             )
         }
@@ -3932,6 +4389,8 @@ fn embed(
         }
         let embedding = VoronoiEmbedding::new(
             subdivision,
+            clip,
+            &clip_trace,
             parts,
             product.includes_polygons(),
             &live_nodes,
@@ -3940,7 +4399,11 @@ fn embed(
             &points,
             sites,
         )?;
-        if !embedding.collect_conflicts(&points)?.is_empty() {
+        let mut verification_budget = EvaluationBudget::new(operation, constructed)?;
+        if !embedding
+            .collect_conflicts(&points, &mut verification_budget)?
+            .is_empty()
+        {
             return Err(exact_embedding_unrepresentable(operation, constructed));
         }
     }
@@ -4030,7 +4493,7 @@ fn embed(
         }
         labelled.push((part.owner, polygon));
     }
-    let comparison_clip = if product.includes_polygons() {
+    if product.includes_polygons() {
         let embedded_ring = |ring: &[exact::ExactPoint]| -> Result<Ring> {
             let capacity = ring
                 .len()
@@ -4083,22 +4546,11 @@ fn embed(
                 ));
             }
         };
-        comparison_clip
-    } else {
-        let Some(polygon) = certify_separator_chains_inside_clip(chains, clip, |vertex| {
-            exact_to_embedded.point(vertex, &points)
-        })?
-        else {
-            return Err(exact_embedding_unrepresentable(operation, constructed));
-        };
-        Shape::Polygon(polygon)
-    };
-    if product.includes_polygons() && labelled.is_empty() {
-        return Err(voronoi_error(
-            "exact Voronoi subdivision produced no labelled cells",
-        ));
-    }
-    if product.includes_polygons() && !labelled.is_empty() {
+        if labelled.is_empty() {
+            return Err(voronoi_error(
+                "exact Voronoi subdivision produced no labelled cells",
+            ));
+        }
         let mut shape_rows = Vec::with_capacity(labelled.len());
         shape_rows.extend(
             labelled
@@ -4257,10 +4709,12 @@ fn point_on_segment_xy(point: XY, start: XY, end: XY) -> bool {
 
 fn exact_point_covered_by_clip_index(
     point: &exact::ExactPoint,
-    edges: &[ClipCertificateEdge<'_>],
+    edges: &[ClipCertificateEdge],
     index: &YStabbingIndex<usize>,
     parity: &mut ClipRingParity,
+    budget: &mut EvaluationBudget,
 ) -> Result<bool> {
+    budget.charge(1)?;
     let query_y = point.round_nearest_even()?.y;
     parity.begin_query();
     let mut boundary = false;
@@ -4274,32 +4728,33 @@ fn exact_point_covered_by_clip_index(
             return ControlFlow::Break(());
         };
         failure = (|| {
+            budget.charge(1)?;
             let (start_y, end_y) = (edge.start.compare_y(point)?, edge.end.compare_y(point)?);
-            let (low_y, high_y) = if edge.start.compare_y(edge.end)?.is_le() {
-                (edge.start, edge.end)
+            let (low_y, high_y) = if edge.start.compare_y(&edge.end)?.is_le() {
+                (&edge.start, &edge.end)
             } else {
-                (edge.end, edge.start)
+                (&edge.end, &edge.start)
             };
             if point.compare_y(low_y)?.is_lt() || point.compare_y(high_y)?.is_gt() {
                 return Ok(());
             }
-            let (low_x, high_x) = if edge.start.compare_x(edge.end)?.is_le() {
-                (edge.start, edge.end)
+            let (low_x, high_x) = if edge.start.compare_x(&edge.end)?.is_le() {
+                (&edge.start, &edge.end)
             } else {
-                (edge.end, edge.start)
+                (&edge.end, &edge.start)
             };
             let in_x_range = point.compare_x(low_x)?.is_ge() && point.compare_x(high_x)?.is_le();
             let crosses_ray = start_y.is_gt() != end_y.is_gt();
             if !in_x_range && !crosses_ray {
                 return Ok(());
             }
-            let orientation = exact::orient_points(edge.start, edge.end, point)?;
+            let orientation = exact::orient_points(&edge.start, &edge.end, point)?;
             if in_x_range && orientation == ExactSign::Zero {
                 boundary = true;
                 return Ok(());
             }
             if crosses_ray
-                && (orientation == ExactSign::Positive) == edge.end.compare_y(edge.start)?.is_gt()
+                && (orientation == ExactSign::Positive) == edge.end.compare_y(&edge.start)?.is_gt()
             {
                 parity.toggle(edge.ring)?;
             }
@@ -4317,17 +4772,19 @@ fn exact_point_covered_by_clip_index(
 
 fn rounded_segment_covered_by_clip(
     segment: Segment,
-    clip_edges: &[ClipCertificateEdge<'_>],
+    clip_edges: &[ClipCertificateEdge],
     candidates: &[usize],
     point_index: &PolygonPointIndex,
     y_index: &YStabbingIndex<usize>,
     events: &mut Vec<exact::ExactPoint>,
     parity: &mut ClipRingParity,
-) -> Result<bool> {
+    budget: &mut EvaluationBudget,
+) -> Result<Option<ClipBoundaryFailure>> {
     let mut interior_contact = false;
     let mut start_on_boundary = false;
     let mut end_on_boundary = false;
     for &edge_index in candidates {
+        budget.charge(1)?;
         let edge = clip_edges.get(edge_index).ok_or_else(exact_cycle_error)?;
         let [start, end] = edge.rounded;
         start_on_boundary |= point_on_segment_xy(segment.start, start, end);
@@ -4343,7 +4800,10 @@ fn rounded_segment_covered_by_clip(
             && segment_start != segment_end
             && edge_start != edge_end
         {
-            return Ok(false);
+            return Ok(Some(ClipBoundaryFailure {
+                ring: edge.ring,
+                atom: Some(edge.atom),
+            }));
         }
         if (point_on_segment_xy(start, segment.start, segment.end)
             && start != segment.start
@@ -4355,29 +4815,45 @@ fn rounded_segment_covered_by_clip(
             interior_contact = true;
         }
     }
-    if (!start_on_boundary
-        && !point_index.covers_point(Point::new_raw_xy(segment.start.x, segment.start.y)))
-        || (!end_on_boundary
-            && !point_index.covers_point(Point::new_raw_xy(segment.end.x, segment.end.y)))
-    {
-        return Ok(false);
+    for (point, on_boundary) in [
+        (segment.start, start_on_boundary),
+        (segment.end, end_on_boundary),
+    ] {
+        if !on_boundary {
+            budget.charge(1)?;
+            if !point_index.covers_point(Point::new_raw_xy(point.x, point.y)) {
+                let point = exact::ExactPoint::from_xy(point);
+                if exact_point_covered_by_clip_index(&point, clip_edges, y_index, parity, budget)? {
+                    return Err(voronoi_error(
+                        "assigned clip point index disagrees with exact ring membership",
+                    ));
+                }
+                return Ok(Some(ClipBoundaryFailure {
+                    ring: parity.outside_ring().ok_or_else(clip_source_trace_error)?,
+                    atom: None,
+                }));
+            }
+        }
     }
     let start = exact::ExactPoint::from_xy(segment.start);
     let end = exact::ExactPoint::from_xy(segment.end);
     if !interior_contact {
-        return exact_point_covered_by_clip_index(
-            &start.midpoint(&end)?,
-            clip_edges,
-            y_index,
-            parity,
-        );
+        let midpoint = start.midpoint(&end)?;
+        if exact_point_covered_by_clip_index(&midpoint, clip_edges, y_index, parity, budget)? {
+            return Ok(None);
+        }
+        return Ok(Some(ClipBoundaryFailure {
+            ring: parity.outside_ring().ok_or_else(clip_source_trace_error)?,
+            atom: None,
+        }));
     }
     events.clear();
     events.reserve(2);
     events.extend([start.clone(), end.clone()]);
     for &edge_index in candidates {
+        budget.charge(1)?;
         let edge = clip_edges.get(edge_index).ok_or_else(exact_cycle_error)?;
-        match exact::segment_intersection(&start, &end, edge.start, edge.end)? {
+        match exact::segment_intersection(&start, &end, &edge.start, &edge.end)? {
             exact::SegmentIntersection::None => {},
             exact::SegmentIntersection::Point(point) => events.push(point),
             exact::SegmentIntersection::Overlap { start, end } => {
@@ -4391,221 +4867,99 @@ fn rounded_segment_covered_by_clip(
         if exact::compare_along(&start, &end, left, right)? != Ordering::Less {
             continue;
         }
-        if !exact_point_covered_by_clip_index(&left.midpoint(right)?, clip_edges, y_index, parity)?
-        {
-            return Ok(false);
+        let midpoint = left.midpoint(right)?;
+        if !exact_point_covered_by_clip_index(&midpoint, clip_edges, y_index, parity, budget)? {
+            return Ok(Some(ClipBoundaryFailure {
+                ring: parity.outside_ring().ok_or_else(clip_source_trace_error)?,
+                atom: None,
+            }));
         }
     }
-    Ok(true)
+    Ok(None)
 }
 
-fn clip_certificate_data(clip: &NormalizedClip<'_>) -> Result<ClipCertificate> {
-    if let Some(source) = clip.source {
-        let ring_count = source
-            .holes
-            .len()
-            .checked_add(1)
-            .ok_or(crate::error::ResourceError::SizeOverflow)?;
-        let mut exact_rings = Vec::with_capacity(ring_count);
-        let mut rounded_rings = Vec::with_capacity(ring_count);
-        for ring in source.rings() {
-            // Source clips reach this point after Polygon validation, with a
-            // closed ring and its terminal coordinate admitted.
-            let open = ring.len().wrapping_sub(1);
-            let mut exact = Vec::with_capacity(open);
-            let mut rounded = Vec::with_capacity(open);
-            for point in ring.iter().take(open) {
-                let xy = point.xy();
-                exact.push(exact::ExactPoint::from_xy(xy));
-                rounded.push(xy);
-            }
-            exact_rings.push(exact);
-            rounded_rings.push(rounded);
-        }
-        return Ok(ClipCertificate {
-            exact_rings,
-            rounded_rings,
-            polygon: source.clone(),
-        });
+fn clip_certificate_data(
+    subdivision: &ExactSubdivision,
+    clip: &NormalizedClip<'_>,
+    trace: &ClipTrace,
+    xy_of: impl Fn(VertexId) -> Result<XY>,
+    budget: &mut EvaluationBudget,
+) -> Result<ClipCertificate> {
+    if trace.rings.len() != clip.rings.len() {
+        return Err(clip_source_trace_error());
     }
+    budget.charge(
+        u64::try_from(trace.atom_count.div_ceil(16))
+            .map_err(|_| crate::error::ResourceError::SizeOverflow)?,
+    )?;
 
-    let rounded_rings = clip.fixed.clone();
-    let mut exact_rings = Vec::with_capacity(rounded_rings.len());
-    let mut output_rings = Vec::with_capacity(rounded_rings.len());
-    for ring in &rounded_rings {
-        let positions = ring
-            .len()
-            .checked_add(1)
-            .ok_or(crate::error::ResourceError::SizeOverflow)?;
-        ensure_coordseq_vertex_capacity(positions)?;
-        let mut exact = Vec::with_capacity(ring.len());
-        let mut points = Vec::with_capacity(ring.len());
-        for &xy in ring {
-            exact.push(exact::ExactPoint::from_xy(xy));
-            points.push(Point::new_raw_xy(xy.x, xy.y));
+    let mut edges = Vec::with_capacity(trace.atom_count);
+    let mut output_rings = Vec::with_capacity(trace.rings.len());
+    for (ring_index, (source_ring, trace_ring)) in clip.rings.iter().zip(&trace.rings).enumerate() {
+        if source_ring.len() < 3 || trace_ring.atoms.len() < source_ring.len() {
+            return Err(clip_source_trace_error());
         }
-        exact_rings.push(exact);
-        output_rings.push(Ring::closed(points)?);
+        let first_atom = trace_ring
+            .atoms
+            .first()
+            .ok_or_else(clip_source_trace_error)?;
+        let [first_left, first_right] = subdivision.edge(first_atom.edge).endpoints;
+        let first_vertex = if first_atom.reversed {
+            first_right
+        } else {
+            first_left
+        };
+        let mut previous_end = None;
+        let mut rounded_ring = Vec::with_capacity(trace_ring.atoms.len());
+        let mut exact_ring = Vec::with_capacity(trace_ring.atoms.len());
+        let mut output_points = Vec::with_capacity(trace_ring.atoms.len());
+        for atom in &trace_ring.atoms {
+            let [left, right] = subdivision.edge(atom.edge).endpoints;
+            let (start, end) = if atom.reversed {
+                (right, left)
+            } else {
+                (left, right)
+            };
+            if previous_end.is_some_and(|previous| previous != start) {
+                return Err(clip_source_trace_error());
+            }
+            let rounded = xy_of(start)?;
+            rounded_ring.push(rounded);
+            exact_ring.push(exact::ExactPoint::from_xy(rounded));
+            output_points.push(Point::new_raw_xy(rounded.x, rounded.y));
+            previous_end = Some(end);
+        }
+        if previous_end != Some(first_vertex) {
+            return Err(clip_source_trace_error());
+        }
+        let atom_pairs = trace_ring
+            .atoms
+            .iter()
+            .zip(exact_ring.iter().zip(exact_ring.iter().cycle().skip(1)))
+            .zip(rounded_ring.iter().zip(rounded_ring.iter().cycle().skip(1)));
+        for ((atom, (start, end)), (rounded_start, rounded_end)) in atom_pairs {
+            edges.push(ClipCertificateEdge {
+                ring: ring_index,
+                atom: atom.edge,
+                start: start.clone(),
+                end: end.clone(),
+                rounded: [*rounded_start, *rounded_end],
+            });
+        }
+        ensure_coordseq_vertex_capacity(
+            output_points
+                .len()
+                .checked_add(1)
+                .ok_or(crate::error::ResourceError::SizeOverflow)?,
+        )?;
+        output_rings.push(Ring::closed(output_points)?);
     }
     let mut output_rings = output_rings.into_iter();
-    let shell = output_rings.next().ok_or_else(exact_cycle_error)?;
-    let polygon = Polygon::new(shell, output_rings.collect());
+    let shell = output_rings.next().ok_or_else(clip_source_trace_error)?;
     Ok(ClipCertificate {
-        exact_rings,
-        rounded_rings,
-        polygon,
+        edges,
+        polygon: Polygon::new(shell, output_rings.collect()),
     })
-}
-
-fn certify_separator_chains_inside_clip(
-    chains: &[ExactEdgeChain],
-    clip: &NormalizedClip<'_>,
-    xy_of: impl Fn(VertexId) -> Result<XY>,
-) -> Result<Option<Polygon>> {
-    let certificate = clip_certificate_data(clip)?;
-    let ClipCertificate {
-        exact_rings,
-        rounded_rings,
-        polygon,
-    } = certificate;
-    if chains.is_empty() {
-        return Ok(Some(polygon));
-    }
-
-    let clip_edge_count = exact_rings.iter().try_fold(0_usize, |count, ring| {
-        count
-            .checked_add(ring.len())
-            .ok_or(crate::error::ResourceError::SizeOverflow)
-    })?;
-    let mut clip_edges = Vec::with_capacity(clip_edge_count);
-    let mut boxes = Vec::with_capacity(clip_edge_count);
-    for (ring_index, (exact_ring, rounded_ring)) in
-        exact_rings.iter().zip(&rounded_rings).enumerate()
-    {
-        if exact_ring.len() != rounded_ring.len() {
-            return Err(exact_cycle_error());
-        }
-        for ((start, end), (rounded_start, rounded_end)) in exact_ring
-            .iter()
-            .zip(exact_ring.iter().cycle().skip(1))
-            .zip(rounded_ring.iter().zip(rounded_ring.iter().cycle().skip(1)))
-        {
-            let rounded = [*rounded_start, *rounded_end];
-            clip_edges.push(ClipCertificateEdge {
-                ring: ring_index,
-                start,
-                end,
-                rounded,
-            });
-            boxes.push(Some(Bounds::new_raw(
-                rounded[0].x.min(rounded[1].x),
-                rounded[0].y.min(rounded[1].y),
-                rounded[0].x.max(rounded[1].x),
-                rounded[0].y.max(rounded[1].y),
-            )));
-        }
-    }
-    let output_segment_count = chains.iter().try_fold(0_usize, |count, chain| {
-        count
-            .checked_add(
-                chain
-                    .vertices
-                    .len()
-                    .checked_sub(1)
-                    .ok_or(crate::error::ResourceError::SizeOverflow)?,
-            )
-            .ok_or(crate::error::ResourceError::SizeOverflow)
-    })?;
-    boxes.reserve(output_segment_count);
-    for chain in chains {
-        for &[left, right] in chain.vertices.array_windows::<2>() {
-            let start = xy_of(left)?;
-            let end = xy_of(right)?;
-            boxes.push(Some(Bounds::new_raw(
-                start.x.min(end.x),
-                start.y.min(end.y),
-                start.x.max(end.x),
-                start.y.max(end.y),
-            )));
-        }
-    }
-
-    let mut candidate_pairs = Vec::new();
-    let _completion = for_each_indexed_overlapping_bounds_pair(&boxes, |left, right| {
-        if left < clip_edge_count && right >= clip_edge_count {
-            let segment = right
-                .checked_sub(clip_edge_count)
-                .expect("separator box ordinals follow all clip-edge ordinals");
-            candidate_pairs.push((segment, left));
-        }
-        ControlFlow::<()>::Continue(())
-    })?;
-    candidate_pairs.sort_unstable();
-    let mut candidate_offsets = Vec::with_capacity(
-        output_segment_count
-            .checked_add(1)
-            .ok_or(crate::error::ResourceError::SizeOverflow)?,
-    );
-    let mut candidate_edges = Vec::with_capacity(candidate_pairs.len());
-    candidate_offsets.push(0);
-    let mut pairs = candidate_pairs.iter().copied();
-    let mut pair = pairs.next();
-    for segment in 0..output_segment_count {
-        while pair.is_some_and(|(candidate_segment, _)| candidate_segment == segment) {
-            let (_, edge) = pair.expect("the candidate segment was checked above");
-            candidate_edges.push(edge);
-            pair = pairs.next();
-        }
-        candidate_offsets.push(candidate_edges.len());
-    }
-    if pair.is_some() {
-        return Err(exact_cycle_error());
-    }
-    let edge_ids: Vec<_> = (0..clip_edge_count).collect();
-    let y_index = YStabbingIndex::build(edge_ids, |&edge| {
-        #[expect(
-            clippy::indexing_slicing,
-            reason = "YStabbingIndex is built from 0..clip_edge_count, and clip_edges contains exactly one row for every clip-edge ordinal"
-        )]
-        let [start, end] = clip_edges[edge].rounded;
-        (
-            start.x.min(end.x),
-            start.x.max(end.x),
-            start.y.min(end.y),
-            start.y.max(end.y),
-        )
-    })?;
-    let point_index = PolygonPointIndex::build(&polygon)?;
-    let ring_count = exact_rings.len();
-    let mut events = Vec::new();
-    let mut parity = ClipRingParity::new(ring_count);
-    let mut offset_windows = candidate_offsets.array_windows::<2>();
-    for chain in chains {
-        for &[left, right] in chain.vertices.array_windows::<2>() {
-            let [start, end] = *offset_windows
-                .next()
-                .expect("one candidate-offset window is built per separator segment");
-            let candidates = candidate_edges
-                .get(start..end)
-                .ok_or_else(exact_cycle_error)?;
-            let segment = Segment {
-                start: xy_of(left)?,
-                end: xy_of(right)?,
-            };
-            if !rounded_segment_covered_by_clip(
-                segment,
-                &clip_edges,
-                candidates,
-                &point_index,
-                &y_index,
-                &mut events,
-                &mut parity,
-            )? {
-                return Ok(None);
-            }
-        }
-    }
-    Ok(Some(polygon))
 }
 
 /// Voronoi cells of collinear sites: the strips between consecutive

@@ -84,6 +84,7 @@ fn direct_dual_subnormal_admission_matches_legacy_builder() {
 }
 
 use super::*;
+use crate::geometry::for_each_indexed_overlapping_bounds_pair;
 use crate::geometry::segment_index::checked_index_count;
 
 #[test]
@@ -244,6 +245,7 @@ fn rounded_clip_segment_certificate(
     events: &mut Vec<exact::ExactPoint>,
     parity: &mut ClipRingParity,
 ) -> Result<bool> {
+    let mut budget = EvaluationBudget::new("rounded clip segment test", 0)?;
     let mut clip_edges = Vec::new();
     for (ring_index, (exact_ring, rounded_ring)) in
         exact_rings.iter().zip(rounded_rings).enumerate()
@@ -255,8 +257,12 @@ fn rounded_clip_segment_certificate(
         {
             clip_edges.push(ClipCertificateEdge {
                 ring: ring_index,
-                start,
-                end,
+                atom: EdgeId(
+                    u32::try_from(clip_edges.len())
+                        .map_err(|_| crate::error::ResourceError::SizeOverflow)?,
+                ),
+                start: start.clone(),
+                end: end.clone(),
                 rounded: [*rounded_start, *rounded_end],
             });
         }
@@ -299,7 +305,9 @@ fn rounded_clip_segment_certificate(
         &y_index,
         events,
         parity,
+        &mut budget,
     )
+    .map(|failure| failure.is_none())
 }
 
 #[test]
@@ -1891,38 +1899,48 @@ fn thin_hole_clip_never_surfaces_zero_orientation_as_an_internal_error() {
     let polygon_result =
         source.voronoi_polygons_budgeted(0.0, VoronoiBoundary::Polygon(&clip), &mut polygon_budget);
 
-    match edge_result {
+    let edge_output = match edge_result {
         Ok((coordinates, offsets)) => {
             assert!(offsets.as_slice().len() > 1);
             assert_eq!(
                 offsets.as_slice().last().copied().map(|end| end as usize),
                 Some(coordinates.len())
             );
-            let clip_shape = Shape::Polygon(clip.clone());
             for [start, end] in offsets.as_slice().array_windows::<2>() {
                 let points = (*start as usize..*end as usize)
                     .map(|index| coordinates.point_at(index))
                     .collect::<Vec<_>>();
                 assert!(points.len() >= 2);
                 assert_ne!(points.first().unwrap().xy(), points.last().unwrap().xy());
-                let line = Shape::LineString(
-                    LineSeq::try_new(CoordSeq::try_from_points(&points).unwrap()).unwrap(),
+                assert!(
+                    points
+                        .array_windows::<2>()
+                        .all(|&[left, right]| left.xy() != right.xy()),
+                    "the edge chain has no zero-length segment"
                 );
-                assert!(clip_shape.covers(&line).unwrap());
+            }
+            Some((coordinates, offsets))
+        },
+        Err(error) => {
+            assert!(
+                matches!(
+                    error.kind(),
+                    crate::error::ErrorKind::Geometry(
+                        GeometryErrorKind::ExactEmbeddingUnrepresentable { .. }
+                    )
+                ),
+                "unexpected edge error: {error}"
+            );
+            None
+        },
+    };
+    match polygon_result {
+        Ok(cells) => {
+            assert_cells_cover_clip(&cells, &clip);
+            if let Some((coordinates, offsets)) = &edge_output {
+                assert_separator_chains_covered_by_cells(coordinates, offsets.as_slice(), &cells);
             }
         },
-        Err(error) => assert!(
-            matches!(
-                error.kind(),
-                crate::error::ErrorKind::Geometry(
-                    GeometryErrorKind::ExactEmbeddingUnrepresentable { .. }
-                )
-            ),
-            "unexpected edge error: {error}"
-        ),
-    }
-    match polygon_result {
-        Ok(cells) => assert_cells_cover_clip(&cells, &clip),
         Err(error) => assert!(
             matches!(
                 error.kind(),
@@ -1979,6 +1997,76 @@ fn five_site_binary64_reproduction_is_valid_for_polygons_and_edges() {
 }
 
 #[test]
+fn near_tangent_separator_uses_the_assigned_clip_boundary() {
+    let sites = sites_xy(&[(8.0, 4.0), (12.0, 5.0), (0.0, -100.0)]);
+    let source = Shape::MultiPoint(
+        sites
+            .iter()
+            .map(|site| site.point)
+            .collect::<Vec<_>>()
+            .into(),
+    );
+    let clip = Polygon::new(
+        closed_ring(&[
+            (0.0, 0.0),
+            (10.0, 0.0),
+            (10.0, 10.0),
+            (4.0, 14.0),
+            (0.0, 10.0),
+        ]),
+        vec![closed_ring(&[
+            (7.0, 12.0),
+            (8.5, 10.999_999_999_999_998),
+            (7.5, 10.5),
+        ])],
+    );
+
+    let mut edge_budget = ExpansionBudget::new("voronoi_edges", "near-tangent assigned clip");
+    let (edge_coordinates, offsets) = source
+        .voronoi_edge_column_budgeted(0.0, VoronoiBoundary::Polygon(&clip), &mut edge_budget)
+        .expect("the edge separator lies in the assigned noded clip");
+    assert_eq!(offsets.as_slice(), [0, 2, 4]);
+    let edge_points: Vec<_> = (0..edge_coordinates.len())
+        .map(|index| edge_coordinates.point_at(index).xy())
+        .collect();
+    let shell_hit = XY::new(8.35, 11.1);
+    let hole_hit = XY::new(8.35, 11.099_999_999_999_998);
+    assert!(edge_points.contains(&shell_hit));
+    assert!(edge_points.contains(&hole_hit));
+    let (edge_pairs, trailing_points) = edge_points.as_chunks::<2>();
+    assert!(trailing_points.is_empty());
+    assert!(edge_pairs.iter().any(|&[start, end]| {
+        (start == shell_hit && end == hole_hit) || (start == hole_hit && end == shell_hit)
+    }));
+
+    let mut polygon_budget = ExpansionBudget::new("voronoi_polygons", "near-tangent assigned clip");
+    let cells = source
+        .voronoi_polygons_budgeted(0.0, VoronoiBoundary::Polygon(&clip), &mut polygon_budget)
+        .expect("the same selected embedding produces valid polygon cells");
+    assert_eq!(cells.len(), 3);
+    assert!(
+        cells.iter().all(
+            |cell| matches!(cell, Shape::Polygon(polygon) if polygon_is_valid(polygon).unwrap())
+        )
+    );
+    let mut polygon_points = Vec::new();
+    for cell in &cells {
+        let Shape::Polygon(polygon) = cell else {
+            panic!("Voronoi polygon output contains only polygons");
+        };
+        polygon_points.extend(polygon.shell.iter().map(|point| point.xy()));
+        for hole in polygon.holes.iter() {
+            polygon_points.extend(hole.iter().map(|point| point.xy()));
+        }
+    }
+    assert!(
+        edge_points
+            .iter()
+            .all(|point| polygon_points.contains(point))
+    );
+}
+
+#[test]
 fn rounded_ring_orientation_mutant_is_rejected_by_the_embedding_certificate() {
     let nearest = [XY::new(0.0, 0.0), XY::new(2.0, 0.0), XY::new(0.0, 2.0)];
     let mut vertices = EmbeddedVertices::new(nearest.len());
@@ -2015,8 +2103,21 @@ fn rounded_ring_orientation_mutant_is_rejected_by_the_embedding_certificate() {
     for rings in &mut rings_by_node {
         rings.push(0);
     }
+    let clip = NormalizedClip {
+        rings: Vec::new(),
+        fixed: Vec::new(),
+        source: None,
+        polygon_baseline: None,
+        contacts: Vec::new(),
+    };
+    let clip_trace = ClipTrace {
+        rings: Vec::new(),
+        atom_count: 0,
+    };
     let embedding = VoronoiEmbedding {
         subdivision: &subdivision,
+        clip: &clip,
+        clip_trace: &clip_trace,
         sites: &[],
         parts: &parts,
         includes_polygons: true,
@@ -2035,15 +2136,223 @@ fn rounded_ring_orientation_mutant_is_rejected_by_the_embedding_certificate() {
         host_graphs: Vec::new(),
         separator_chords: Vec::new(),
     };
-    assert!(embedding.collect_conflicts(&nearest).unwrap().is_empty());
+    let mut budget = EvaluationBudget::new("rounded ring", 0).unwrap();
+    assert!(
+        embedding
+            .collect_conflicts(&nearest, &mut budget)
+            .unwrap()
+            .is_empty()
+    );
 
     let inverted = [nearest[0], nearest[1], XY::new(0.0, -2.0)];
-    let conflicts = embedding.collect_conflicts(&inverted).unwrap();
+    let conflicts = embedding.collect_conflicts(&inverted, &mut budget).unwrap();
     assert!(matches!(conflicts.as_slice(), [VoronoiConflict::Ring(0)]));
 
     let degenerate = [nearest[0], nearest[1], XY::new(1.0, 0.0)];
-    let conflicts = embedding.collect_conflicts(&degenerate).unwrap();
+    let conflicts = embedding
+        .collect_conflicts(&degenerate, &mut budget)
+        .unwrap();
     assert!(matches!(conflicts.as_slice(), [VoronoiConflict::Ring(0)]));
+}
+
+#[test]
+fn assigned_clip_host_conflicts_seed_and_blame_separator_only_class() {
+    let shell_points = [
+        (0.0, 0.0),
+        (10.0, 0.0),
+        (10.0, 10.0),
+        (0.0, 10.0),
+        (0.0, 5.0),
+    ];
+    let hole_points = [(4.0, 4.0), (6.0, 4.0), (6.0, 6.0), (4.0, 6.0)];
+    let clip_polygon = Polygon::new(closed_ring(&shell_points), vec![closed_ring(&hole_points)]);
+    let shell: Vec<_> = shell_points.iter().map(|&(x, y)| XY::new(x, y)).collect();
+    let hole: Vec<_> = hole_points.iter().map(|&(x, y)| XY::new(x, y)).collect();
+    let clip_coordinates: Vec<_> = shell.iter().chain(&hole).copied().collect();
+    let separator_nearest = XY::new(2.0, 5.0);
+    let mut coordinate_table = clip_coordinates.clone();
+    coordinate_table.push(separator_nearest);
+    coordinate_table.sort_unstable_by(|left, right| lex_xy(*left, *right));
+    assert!(
+        coordinate_table
+            .array_windows::<2>()
+            .all(|&[left, right]| left != right),
+        "the fixture assigns one coordinate to each exact vertex"
+    );
+
+    let subdivision_vertices = coordinate_table
+        .iter()
+        .map(|&point| ExactVertex {
+            point: exact::ExactPoint::from_xy(point),
+            fixed_xy: clip_coordinates.contains(&point).then_some(point),
+        })
+        .collect();
+    let vertex_id = |point: XY| {
+        VertexId(
+            u32::try_from(
+                coordinate_table
+                    .binary_search_by(|candidate| lex_xy(*candidate, point))
+                    .unwrap(),
+            )
+            .unwrap(),
+        )
+    };
+    let anchor = vertex_id(XY::new(0.0, 5.0));
+    let separator_only = vertex_id(separator_nearest);
+
+    let clip = NormalizedClip {
+        rings: vec![cycle(&shell_points), cycle(&hole_points)],
+        fixed: vec![shell, hole],
+        source: Some(&clip_polygon),
+        polygon_baseline: None,
+        contacts: Vec::new(),
+    };
+    let mut edges = Vec::new();
+    let mut source_segment = 0_u32;
+    for ring in [&shell_points[..], &hole_points[..]] {
+        for index in 0..ring.len() {
+            let next = index.wrapping_add(1) % ring.len();
+            let start = vertex_id(XY::new(ring[index].0, ring[index].1));
+            let end = vertex_id(XY::new(ring[next].0, ring[next].1));
+            edges.push(AtomicEdge {
+                endpoints: [start, end],
+                forward: Transition {
+                    frame_delta: 0,
+                    clip_delta: 0,
+                    owner: OwnerTransition::Preserve,
+                },
+                separator: None,
+                clip_sources: vec![ClipSegmentId(source_segment)],
+                frame_side: None,
+            });
+            source_segment = source_segment.wrapping_add(1);
+        }
+    }
+    let separator_edge = EdgeId(u32::try_from(edges.len()).unwrap());
+    edges.push(AtomicEdge {
+        endpoints: [anchor, separator_only],
+        forward: Transition {
+            frame_delta: 0,
+            clip_delta: 0,
+            owner: OwnerTransition::Boundary {
+                left: Some(SiteId(0)),
+                right: Some(SiteId(1)),
+            },
+        },
+        separator: Some([SiteId(0), SiteId(1)]),
+        clip_sources: Vec::new(),
+        frame_side: None,
+    });
+    let subdivision = ExactSubdivision {
+        vertices: subdivision_vertices,
+        edges,
+        topology: IndexedTopology::default(),
+        edge_of_slot: Vec::new(),
+        labels: Vec::new(),
+    };
+    let mut trace_budget = EvaluationBudget::new("assigned clip test", 0).unwrap();
+    let clip_trace = ClipTrace::build(&subdivision, &clip, &mut trace_budget).unwrap();
+    let coordinates = coordinate_table.clone();
+    let live_nodes: Vec<_> = (0..coordinates.len())
+        .map(|index| VertexId(u32::try_from(index).unwrap()))
+        .collect();
+    let mut vertices = EmbeddedVertices::new(coordinates.len());
+    for (index, &node) in live_nodes.iter().enumerate() {
+        vertices.set(node, EmbeddedVertexId(u32::try_from(index).unwrap()));
+    }
+    let sites = sites_xy(&[(1.0, 7.0), (1.0, 3.0)]);
+    let chord = ProximityChord {
+        nodes: [anchor.0, separator_only.0],
+        nearest: Segment {
+            start: vertices.point(anchor, &coordinates).unwrap(),
+            end: vertices.point(separator_only, &coordinates).unwrap(),
+        },
+        can_move: [false, true],
+    };
+    let live_edges = [separator_edge];
+    let mut incident_chords = vec![Vec::new(); coordinates.len()];
+    incident_chords[anchor.0 as usize].push(0);
+    incident_chords[separator_only.0 as usize].push(0);
+    let embedding = VoronoiEmbedding {
+        subdivision: &subdivision,
+        clip: &clip,
+        clip_trace: &clip_trace,
+        sites: &sites,
+        parts: &[],
+        includes_polygons: false,
+        live_nodes: &live_nodes,
+        live_edges: &live_edges,
+        vertices: &vertices,
+        coordinates: &coordinates,
+        chords: vec![chord],
+        incident_chords,
+        fans: Vec::new(),
+        rings: Vec::new(),
+        rings_by_node: vec![Vec::new(); coordinates.len()],
+        host_graphs: Vec::new(),
+        separator_chords: vec![0],
+    };
+
+    let seeds = [separator_only];
+    let problem = VoronoiProblem::new(&embedding, &seeds).unwrap();
+    assert_eq!(problem.classes, [vec![separator_only]]);
+    let variables = [separator_only];
+    let accepted_values = [separator_nearest];
+    let accepted_assignment = [ClassAssignment {
+        variables: &variables,
+        values: &accepted_values,
+    }];
+    let mut budget = EvaluationBudget::new("assigned clip test", 1).unwrap();
+    assert!(
+        embedding
+            .collect_conflicts(&coordinates, &mut budget)
+            .unwrap()
+            .is_empty(),
+        "the accepted separator is hosted by the assigned shell and hole"
+    );
+    assert!(matches!(
+        problem
+            .check_global(&accepted_assignment, &mut budget)
+            .unwrap(),
+        GlobalCheck::Pass
+    ));
+
+    for (candidate, ring) in [(XY::new(12.0, 5.0), 0), (XY::new(5.0, 5.0), 1)] {
+        let values = [candidate];
+        let assignment = [ClassAssignment {
+            variables: &variables,
+            values: &values,
+        }];
+        let mut assigned = coordinates.clone();
+        vertices.set_point(separator_only, &mut assigned, candidate);
+        let mut budget = EvaluationBudget::new("assigned clip test", 1).unwrap();
+        let conflicts = embedding.collect_conflicts(&assigned, &mut budget).unwrap();
+        let [VoronoiConflict::ClipHost(failure)] = conflicts.as_slice() else {
+            panic!("outside-shell and inside-hole drawings must have one typed clip-host conflict");
+        };
+        assert_eq!(failure.chord, 0);
+        assert_eq!(failure.boundary.ring, ring);
+        assert!(failure.boundary.atom.is_some());
+        let seeds = embedding.seed_nodes(&conflicts);
+        assert!(seeds.contains(&anchor));
+        assert!(seeds.contains(&separator_only));
+        for atom in &clip_trace.rings[ring].atoms {
+            for vertex in subdivision.edge(atom.edge).endpoints {
+                assert!(seeds.contains(&vertex));
+            }
+        }
+
+        let mut budget = EvaluationBudget::new("assigned clip test", 1).unwrap();
+        let GlobalCheck::Reject(blamed) = problem.check_global(&assignment, &mut budget).unwrap()
+        else {
+            panic!("global certification must reject the assigned-boundary violation");
+        };
+        assert_eq!(
+            blamed,
+            [0],
+            "the separator-only vertex's class is repairable"
+        );
+    }
 }
 
 #[test]
@@ -2277,9 +2586,13 @@ fn polygon_clip_never_publishes_separator_edges_through_holes() {
     let polygon = Polygon::new(rectangle(-10.0, -10.0, 40.0, 10.0), holes);
     assert!(polygon_is_valid(&polygon).unwrap());
 
-    let mut budget = ExpansionBudget::new("voronoi_edges", "sites/clip topology");
-    match source.voronoi_edge_column_budgeted(0.0, VoronoiBoundary::Polygon(&polygon), &mut budget)
-    {
+    let mut edge_budget = ExpansionBudget::new("voronoi_edges", "sites/clip topology");
+    let (coordinates, offsets) = match source.voronoi_edge_column_budgeted(
+        0.0,
+        VoronoiBoundary::Polygon(&polygon),
+        &mut edge_budget,
+    ) {
+        Ok(output) => output,
         Err(error) => {
             assert!(
                 matches!(
@@ -2293,25 +2606,20 @@ fn polygon_clip_never_publishes_separator_edges_through_holes() {
                 ),
                 "unexpected Voronoi error: {error}"
             );
+            return;
         },
-        Ok((coordinates, offsets)) => {
-            assert!(offsets.as_slice().len() > 1);
-            assert_eq!(
-                offsets.as_slice().last().copied().map(|end| end as usize),
-                Some(coordinates.len())
-            );
-            let clip = Shape::Polygon(polygon);
-            for [start, end] in offsets.as_slice().array_windows::<2>() {
-                let points = (*start as usize..*end as usize)
-                    .map(|index| coordinates.point_at(index))
-                    .collect::<Vec<_>>();
-                let line = Shape::LineString(
-                    LineSeq::try_new(CoordSeq::try_from_points(&points).unwrap()).unwrap(),
-                );
-                assert!(clip.covers(&line).unwrap());
-            }
-        },
-    }
+    };
+    assert!(offsets.as_slice().len() > 1);
+    assert_eq!(
+        offsets.as_slice().last().copied().map(|end| end as usize),
+        Some(coordinates.len())
+    );
+
+    let mut polygon_budget = ExpansionBudget::new("voronoi_polygons", "sites/clip topology");
+    let cells = source
+        .voronoi_polygons_budgeted(0.0, VoronoiBoundary::Polygon(&polygon), &mut polygon_budget)
+        .expect("the same clip publishes polygon cells for the edge coverage check");
+    assert_separator_chains_covered_by_cells(&coordinates, offsets.as_slice(), &cells);
 }
 
 #[test]
@@ -2721,6 +3029,50 @@ fn closed_ring(points: &[(f64, f64)]) -> Ring {
             .collect(),
     )
     .unwrap()
+}
+
+fn assert_separator_chains_covered_by_cells(
+    coordinates: &CoordSeq,
+    offsets: &[i32],
+    cells: &[Shape],
+) {
+    let cells_union = Shape::union_all(cells, Strictness::Lenient).unwrap();
+    for &[start, end] in offsets.array_windows::<2>() {
+        let points: Vec<_> = (usize::try_from(start).unwrap()..usize::try_from(end).unwrap())
+            .map(|index| coordinates.point_at(index))
+            .collect();
+        let line = Shape::LineString(
+            LineSeq::try_new(CoordSeq::try_from_points(&points).unwrap()).unwrap(),
+        );
+        assert!(
+            cells_union.covers(&line).unwrap(),
+            "the published cell union does not cover separator {points:?}"
+        );
+    }
+
+    let mut polygon_vertices = Vec::new();
+    for cell in cells {
+        let Shape::Polygon(polygon) = cell else {
+            panic!("Voronoi polygon output contains only polygons");
+        };
+        polygon_vertices.extend(polygon.shell.iter().map(|point| {
+            let point = point.xy();
+            (point.x.to_bits(), point.y.to_bits())
+        }));
+        for hole in polygon.holes.iter() {
+            polygon_vertices.extend(hole.iter().map(|point| {
+                let point = point.xy();
+                (point.x.to_bits(), point.y.to_bits())
+            }));
+        }
+    }
+    for index in 0..coordinates.len() {
+        let point = coordinates.point_at(index).xy();
+        assert!(
+            polygon_vertices.contains(&(point.x.to_bits(), point.y.to_bits())),
+            "edge coordinate {point:?} differs from the polygon product's shared vertex"
+        );
+    }
 }
 
 fn assert_cells_cover_clip(cells: &[Shape], clip: &Polygon) {

@@ -453,7 +453,7 @@ pub(in crate::geometry) struct EvaluationBudget {
 }
 
 impl EvaluationBudget {
-    fn new(operation: &'static str, constructed: usize) -> Result<Self> {
+    pub(in crate::geometry) fn new(operation: &'static str, constructed: usize) -> Result<Self> {
         let constructed = u64::try_from(constructed).map_err(|_| ResourceError::SizeOverflow)?;
         let per_node = EVALUATIONS_PER_CONSTRUCTED_NODE
             .checked_mul(constructed)
@@ -464,6 +464,19 @@ impl EvaluationBudget {
             limit: BASE_EVALUATION_LIMIT.max(per_node),
             evaluations: 0,
         })
+    }
+
+    pub(in crate::geometry) fn set_constructed(&mut self, constructed: usize) -> Result<()> {
+        let constructed = u64::try_from(constructed).map_err(|_| ResourceError::SizeOverflow)?;
+        let per_node = EVALUATIONS_PER_CONSTRUCTED_NODE
+            .checked_mul(constructed)
+            .ok_or(ResourceError::SizeOverflow)?;
+        self.constructed = usize::try_from(constructed).map_err(|_| ResourceError::SizeOverflow)?;
+        self.limit = BASE_EVALUATION_LIMIT.max(per_node);
+        if self.evaluations > self.limit {
+            return Err(self.limit_error());
+        }
+        Ok(())
     }
 
     /// Charge a completed-work unit before running the corresponding predicate.
@@ -694,10 +707,14 @@ impl<P: Problem> Search<P> {
         operation: &'static str,
         constructed: usize,
     ) -> Result<Self> {
-        Ok(Self {
+        Ok(Self::with_budget(
             problem,
-            budget: EvaluationBudget::new(operation, constructed)?,
-        })
+            EvaluationBudget::new(operation, constructed)?,
+        ))
+    }
+
+    pub(in crate::geometry) const fn with_budget(problem: P, budget: EvaluationBudget) -> Self {
+        Self { problem, budget }
     }
 
     #[cfg(test)]
