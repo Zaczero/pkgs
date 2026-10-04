@@ -123,31 +123,28 @@ pub(crate) struct Plan {
 impl Result {
     /// Runs in which every command succeeded, chronologically, each with one command
     /// invocation per candidate in candidate order.
-    fn complete_runs(&self) -> Vec<(Phase, Vec<&Invocation>)> {
-        let mut runs = Vec::new();
-        let mut commands = self
-            .invocations
-            .iter()
-            .filter(|i| i.role == Role::Command)
-            .peekable();
-        while let Some(&&Invocation { run, phase, .. }) = commands.peek() {
-            let mut slots: Vec<Option<&Invocation>> = vec![None; self.candidates.len()];
-            while let Some(invocation) = commands.next_if(|i| i.run == run) {
-                if invocation
-                    .observation
-                    .as_ref()
-                    .is_some_and(|o| o.outcome.success())
-                {
-                    *slots
-                        .get_mut(invocation.candidate)
-                        .expect("recorded command") = Some(invocation);
+    fn complete_runs(&self) -> impl Iterator<Item = (Phase, Vec<&Invocation>)> {
+        self.invocations
+            .chunk_by(|left, right| left.run == right.run)
+            .filter_map(|run| {
+                let phase = run.first()?.phase;
+                let mut slots: Vec<Option<&Invocation>> = vec![None; self.candidates.len()];
+                for invocation in run.iter().filter(|i| i.role == Role::Command) {
+                    if invocation
+                        .observation
+                        .as_ref()
+                        .is_some_and(|o| o.outcome.success())
+                    {
+                        *slots
+                            .get_mut(invocation.candidate)
+                            .expect("recorded command") = Some(invocation);
+                    }
                 }
-            }
-            if let Some(complete) = slots.into_iter().collect::<Option<Vec<_>>>() {
-                runs.push((phase, complete));
-            }
-        }
-        runs
+                slots
+                    .into_iter()
+                    .collect::<Option<Vec<_>>>()
+                    .map(|complete| (phase, complete))
+            })
     }
 
     /// Complete runs used by the analysis: pilot runs after any discarded warmup, then
@@ -155,7 +152,6 @@ impl Result {
     pub(crate) fn measured(&self) -> Vec<Vec<&Invocation>> {
         let mut discard = self.plan.discarded_runs;
         self.complete_runs()
-            .into_iter()
             .filter(|(phase, _)| match phase {
                 Phase::Warmup => false,
                 Phase::Pilot if discard > 0 => {
@@ -171,11 +167,16 @@ impl Result {
     /// Keeps task detail for the first measured run only, analyzes the measured runs,
     /// and settles a requested nonregression check.
     fn conclude(&mut self, margin: Option<f64>, check: Option<f64>) {
-        let first = self
-            .measured()
-            .first()
-            .and_then(|run| run.first())
-            .map(|invocation| invocation.run);
+        let (first, analysis) = {
+            let measured = self.measured();
+            (
+                measured
+                    .first()
+                    .and_then(|run| run.first())
+                    .map(|invocation| invocation.run),
+                statistics::analyze(&Self::rows(&measured), margin),
+            )
+        };
         for invocation in &mut self.invocations {
             if Some(invocation.run) != first
                 && let Some(observation) = &mut invocation.observation
@@ -184,9 +185,8 @@ impl Result {
                 observation.activity.tasks.shrink_to_fit();
             }
         }
-        self.analysis = statistics::analyze(&Self::rows(&self.measured()), margin);
-        // Stopping on a signal is independent of the measured values; stopping on a failed
-        // run is not, so its completed runs stay descriptive.
+        self.analysis = analysis;
+        // Failed runs can select against particular timings, so retain only descriptions.
         if matches!(self.exit_code, 1 | 3) {
             self.analysis.withdraw_inference(
                 "A failed run ended the experiment; comparisons are descriptive.",
@@ -553,7 +553,6 @@ impl Experiment<'_> {
                 let pilot: Vec<_> = self
                     .result
                     .complete_runs()
-                    .into_iter()
                     .filter(|(phase, _)| *phase == Phase::Pilot)
                     .map(|(_, run)| run)
                     .collect();
