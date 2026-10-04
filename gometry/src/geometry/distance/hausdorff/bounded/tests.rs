@@ -1126,10 +1126,11 @@ fn supporting_line_lower_stays_below_exact_segment_distance() {
                 FloatBox::from_point(&point).unwrap(),
                 &span,
             ));
-            let exact = point_span_distance_squared(&point, &span)
-                .unwrap()
-                .to_rational()
-                .unwrap();
+            let exact =
+                point_span_distance_squared(&point, span.carrier().unwrap(), span.lo(), span.hi())
+                    .unwrap()
+                    .to_rational()
+                    .unwrap();
             assert_ne!(lower.try_cmp(&exact).unwrap(), Ordering::Greater);
         }
     }
@@ -1292,8 +1293,11 @@ fn unreduced_distances_match_reduced_point_and_span_references() {
     for (xs, ys, point) in cases {
         let support = PreparedSupport::from_line_columns(&xs, &ys).unwrap();
         let point = ExactPoint::from_xy(XY::new(point.0, point.1));
-        let actual = point_span_distance_squared(&point, &support.spans[0]).unwrap();
-        let expected = reduced_point_span_distance_squared(&point, &support.spans[0]).unwrap();
+        let span = &support.spans[0];
+        let actual =
+            point_span_distance_squared(&point, span.carrier().unwrap(), span.lo(), span.hi())
+                .unwrap();
+        let expected = reduced_point_span_distance_squared(&point, span).unwrap();
         assert_eq!(actual.try_cmp_rational(&expected).unwrap(), Ordering::Equal);
     }
 
@@ -1306,8 +1310,10 @@ fn unreduced_distances_match_reduced_point_and_span_references() {
         start: ExactPoint::from_xy(XY::new(2.0, 0.0)),
     }));
     let point = ExactPoint::from_xy(XY::new(0.0, 0.0));
-    let actual = point_span_distance_squared(&point, &subspan.spans[0]).unwrap();
-    let expected = reduced_point_span_distance_squared(&point, &subspan.spans[0]).unwrap();
+    let span = &subspan.spans[0];
+    let actual =
+        point_span_distance_squared(&point, span.carrier().unwrap(), span.lo(), span.hi()).unwrap();
+    let expected = reduced_point_span_distance_squared(&point, span).unwrap();
     assert_eq!(actual.try_cmp_rational(&expected).unwrap(), Ordering::Equal);
 }
 
@@ -1325,9 +1331,14 @@ fn selected_span_clamps_oblique_projection() {
             parameters: [Rational::from_f64(lo), Rational::from_f64(hi)],
             start: ExactPoint::from_xy(XY::new(3.0 * lo, 4.0 * lo)),
         }));
-        let value =
-            point_span_distance_squared(&ExactPoint::from_xy(XY::new(x, y)), &support.spans[0])
-                .unwrap();
+        let span = &support.spans[0];
+        let value = point_span_distance_squared(
+            &ExactPoint::from_xy(XY::new(x, y)),
+            span.carrier().unwrap(),
+            span.lo(),
+            span.hi(),
+        )
+        .unwrap();
         assert_eq!(
             value
                 .try_cmp_rational(&Rational::from_f64(expected))

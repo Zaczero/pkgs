@@ -114,6 +114,7 @@ pub(crate) use derived::{
     smallest_enclosing_circle,
 };
 mod distance;
+pub(in crate::geometry) use distance::{ExactPoint, point_segment_distance_squared_exact};
 pub(crate) use distance::{RowMetricPair, discrete_frechet_distance_with_scratch};
 pub(crate) use types::coordinate_columns_eq;
 mod embedding_search;

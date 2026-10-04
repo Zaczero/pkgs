@@ -1,21 +1,25 @@
+use std::cmp::Ordering;
+
 use rstar::primitives::{GeomWithData, Rectangle};
 use rstar::{AABB, Envelope as _};
 
 use crate::collections::{try_hash_map, try_hash_map_with_capacity, try_hash_set_with_capacity};
 use crate::geometry::coverage::{HashMap, Result};
+use crate::geometry::tessellation::exact::{ExactDyadic, ExactRational};
 use crate::geometry::{
-    Bounds, BulkRTree, Contact, CoordinateAxes, GeometryErrorKind, GeometryKind, LineSeq, Point,
-    PointKey, Polygon, Segment, Shape, XY, canonical_f64_bits, line_segments, same_point,
-    segment_contact_exact, undirected_segment_edge_key,
+    Bounds, BulkRTree, Contact, CoordinateAxes, ExactPoint, GeometryErrorKind, GeometryKind,
+    LineSeq, PointKey, Polygon, PreparedPlan, Segment, Shape, canonical_f64_bits, line_segments,
+    point_segment_distance_squared_exact, same_point, segment_contact_exact,
+    undirected_segment_edge_key,
 };
 
-/// One row's boundary segments plus its envelope.
+/// One row's boundary segments plus its envelope and lazily prepared locator.
 ///
-/// The validator keeps the source walk as its only row product. Coverage
-/// cleaning sends admitted source segments to `ExactPartition`; it must not
-/// build a second per-row spatial graph before that owner is reached.
+/// Coverage cleaning sends admitted source segments to `ExactPartition`; it
+/// must not build a second per-row segment graph before that owner is reached.
 pub(crate) struct CoverageRow<'a> {
     pub(crate) shape: &'a Shape,
+    plan: std::sync::OnceLock<PreparedPlan>,
     pub(crate) segments: Vec<Segment>,
     pub(crate) bounds: Option<Bounds>,
 }
@@ -71,6 +75,7 @@ pub(crate) fn coverage_rows<S: std::borrow::Borrow<Shape>>(
         }
         prepared.push(CoverageRow {
             shape,
+            plan: std::sync::OnceLock::new(),
             segments,
             bounds: shape.bounds(),
         });
@@ -400,14 +405,13 @@ pub(crate) fn segment_offends_row(
     other: &CoverageRow<'_>,
     gap_width: f64,
 ) -> Result<bool> {
-    let midpoint = Point::new_raw_xy(
-        f64::midpoint(segment.start.x, segment.end.x),
-        f64::midpoint(segment.start.y, segment.end.y),
-    );
+    let midpoint = exact_segment_midpoint(segment)?;
     // Overlap or inexact contact: the midpoint of a matched interface would
     // coincide with the neighbor's own segment — an unmatched one touching
     // (or entering) the neighbor is a T-join, sliver, or true overlap.
-    if other.shape.covers_point(midpoint) {
+    if PreparedPlan::locate_exact_lazy(&other.plan, other.shape, other.bounds, &midpoint)?.location
+        != crate::geometry::Loc::Exterior
+    {
         return Ok(true);
     }
     // Proper crossing without containment (the bowtie-style overlap whose
@@ -442,22 +446,35 @@ pub(crate) fn segment_offends_row(
     // Narrow gap: the segment faces another row's unmatched boundary closer
     // than gap_width without touching it.
     if gap_width > 0.0 {
-        let near = |point: XY| -> Result<bool> {
-            // Distance space retains endpoint-governed gaps when a very small
-            // or very large tolerance cannot be squared faithfully.
+        let midpoint_point = ExactPoint::from_homogeneous_ref(&midpoint)?;
+        let gap_squared = ExactRational::from_f64(gap_width).try_square()?;
+        let near = |point: &ExactPoint| -> Result<bool> {
             for &candidate in &other.segments {
-                let distance = crate::geometry::point_segment_distance(point, candidate)?;
-                if distance > 0.0 && distance < gap_width {
+                let distance_squared = point_segment_distance_squared_exact(point, candidate)?;
+                if !distance_squared.is_zero()
+                    && distance_squared.try_cmp(&gap_squared)? == Ordering::Less
+                {
                     return Ok(true);
                 }
             }
             Ok(false)
         };
-        if near(midpoint.into())? || near(segment.start)? || near(segment.end)? {
+        if near(&midpoint_point)?
+            || near(&ExactPoint::from_xy(segment.start))?
+            || near(&ExactPoint::from_xy(segment.end))?
+        {
             return Ok(true);
         }
     }
     Ok(false)
+}
+
+fn exact_segment_midpoint(segment: Segment) -> Result<[ExactDyadic; 3]> {
+    Ok([
+        ExactDyadic::from_f64(segment.start.x).try_add(ExactDyadic::from_f64(segment.end.x))?,
+        ExactDyadic::from_f64(segment.start.y).try_add(ExactDyadic::from_f64(segment.end.y))?,
+        ExactDyadic::from_f64(2.0),
+    ])
 }
 
 /// Whether the rows form a valid polygonal coverage under `gap_width`.
@@ -499,10 +516,161 @@ pub(crate) fn coverage_invalid_edges<S: std::borrow::Borrow<Shape>>(
 
 #[cfg(test)]
 mod tests {
+    use std::cmp::Ordering;
+
     use pyo3::prelude::*;
     use pyo3::types::PyList;
 
-    use super::ROW_CANDIDATE_WORK;
+    use super::{ROW_CANDIDATE_WORK, coverage_rows, exact_segment_midpoint, segment_offends_row};
+    use crate::geometry::tessellation::exact::ExactRational;
+    use crate::geometry::{
+        CoordSeq, Point, Polygon, Ring, Segment, Shape, XY, coverage_invalid_edges,
+        coverage_is_valid,
+    };
+
+    fn rectangle(minx: f64, miny: f64, maxx: f64, maxy: f64) -> Shape {
+        let points = [
+            Point::new_raw_xy(minx, miny),
+            Point::new_raw_xy(maxx, miny),
+            Point::new_raw_xy(maxx, maxy),
+            Point::new_raw_xy(minx, maxy),
+            Point::new_raw_xy(minx, miny),
+        ];
+        Shape::Polygon(Polygon::new(
+            Ring::from_closed(CoordSeq::try_from_points(&points).unwrap()).unwrap(),
+            Vec::new(),
+        ))
+    }
+
+    #[test]
+    fn one_ulp_segment_midpoint_does_not_alias_a_neighbor_corner() {
+        let lower: f64 = -0.45;
+        let upper = lower.next_up();
+        assert_eq!(f64::midpoint(lower, upper), upper);
+
+        let neighbor = [rectangle(1.0, upper, 2.0, 1.0)];
+        let prepared = coverage_rows(&neighbor, 0.0).unwrap();
+        let edge = Segment {
+            start: XY::new(1.0, lower),
+            end: XY::new(1.0, upper),
+        };
+
+        assert!(
+            prepared.rows[0]
+                .shape
+                .covers_point(Point::new_raw_xy(1.0, f64::midpoint(lower, upper)))
+        );
+        assert!(!segment_offends_row(edge, &prepared.rows[0], 0.0).unwrap());
+    }
+
+    #[test]
+    fn exact_midpoint_gap_contact_survives_rounding_down() {
+        let step = f64::from_bits(1);
+        let neighbor = [rectangle(step, 0.0, 1.0, 1.0)];
+        let prepared = coverage_rows(&neighbor, step).unwrap();
+        let edge = Segment {
+            start: XY::new(0.0, 0.0),
+            end: XY::new(step, 0.0),
+        };
+        assert_eq!(f64::midpoint(0.0, step), 0.0);
+        assert!(segment_offends_row(edge, &prepared.rows[0], step).unwrap());
+    }
+
+    #[test]
+    fn exact_endpoint_gap_contact_survives_distance_rounding_up() {
+        let x = 1.0_f64.next_down();
+        let y = 2.0_f64.powi(-26).next_down();
+        let neighbor = [rectangle(x, y, x + 0.125, 2.0 * y)];
+        let prepared = coverage_rows(&neighbor, 1.0).unwrap();
+        let edge = Segment {
+            start: XY::new(0.0, 0.0),
+            end: XY::new(-10.0, 0.0),
+        };
+        let nearest_boundary = Segment {
+            start: XY::new(x, y),
+            end: XY::new(x + 0.125, y),
+        };
+        let exact_gap_squared = ExactRational::from_f64(x)
+            .try_square()
+            .unwrap()
+            .try_add(&ExactRational::from_f64(y).try_square().unwrap())
+            .unwrap();
+        assert_eq!(
+            exact_gap_squared
+                .try_cmp(&ExactRational::from_f64(1.0).try_square().unwrap())
+                .unwrap(),
+            Ordering::Less
+        );
+
+        assert_eq!(
+            crate::geometry::point_segment_distance(edge.start, nearest_boundary).unwrap(),
+            1.0
+        );
+        assert!(segment_offends_row(edge, &prepared.rows[0], 1.0).unwrap());
+    }
+
+    #[test]
+    fn exact_segment_midpoint_handles_subnormal_and_maximum_coordinates() {
+        let cases = [(0.0, f64::from_bits(1)), (f64::MAX.next_down(), f64::MAX)];
+        for (lower, upper) in cases {
+            let midpoint = exact_segment_midpoint(Segment {
+                start: XY::new(lower, 0.0),
+                end: XY::new(upper, 0.0),
+            })
+            .unwrap();
+            let x = ExactRational::new(midpoint[0].clone(), midpoint[2].clone()).unwrap();
+            assert_eq!(
+                x.try_cmp(&ExactRational::from_f64(lower)).unwrap(),
+                Ordering::Greater
+            );
+            assert_eq!(
+                x.try_cmp(&ExactRational::from_f64(upper)).unwrap(),
+                Ordering::Less
+            );
+        }
+    }
+
+    #[test]
+    fn coverage_midpoint_controls_preserve_overlap_and_contact_rules() {
+        let t_join = [
+            crate::io::parse_wkt("POLYGON ((0 0, 1 0, 1 2, 0 2, 0 0))").unwrap(),
+            crate::io::parse_wkt("POLYGON ((1 0, 2 0, 2 1, 1 1, 1 0))").unwrap(),
+            crate::io::parse_wkt("POLYGON ((1 1, 2 1, 2 2, 1 2, 1 1))").unwrap(),
+        ];
+        let duplicate = [rectangle(0.0, 0.0, 1.0, 1.0), rectangle(0.0, 0.0, 1.0, 1.0)];
+        let one_ulp_overlap = [
+            rectangle(0.0, 0.0, 1.0, 1.0),
+            rectangle(1.0_f64.next_down(), 0.0, 2.0, 1.0),
+        ];
+
+        for rows in [&t_join[..], &duplicate, &one_ulp_overlap] {
+            assert!(!coverage_is_valid(rows, 0.0).unwrap());
+            assert!(
+                coverage_invalid_edges(rows, 0.0)
+                    .unwrap()
+                    .iter()
+                    .any(|edges| !edges.is_empty())
+            );
+        }
+
+        let corner_only = [rectangle(0.0, 0.0, 1.0, 1.0), rectangle(1.0, 1.0, 2.0, 2.0)];
+        let hole_nested = [
+            crate::io::parse_wkt(
+                "POLYGON ((0 0, 10 0, 10 10, 0 10, 0 0), (2 2, 2 8, 8 8, 8 2, 2 2))",
+            )
+            .unwrap(),
+            rectangle(3.0, 3.0, 4.0, 4.0),
+        ];
+        for rows in [&corner_only[..], &hole_nested] {
+            assert!(coverage_is_valid(rows, 0.0).unwrap());
+            assert!(
+                coverage_invalid_edges(rows, 0.0)
+                    .unwrap()
+                    .iter()
+                    .all(Shape::is_empty)
+            );
+        }
+    }
 
     #[test]
     fn public_coverage_operations_visit_only_local_rows() {

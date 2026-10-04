@@ -4,6 +4,7 @@
 use crate::error::Result;
 mod chart_parts;
 mod distance_3d;
+mod exact_segment;
 mod frechet;
 mod geodesic_hausdorff_helpers;
 mod geodesic_parts;
@@ -27,6 +28,7 @@ pub(crate) use chart_parts::{
 #[cfg(test)]
 pub(crate) use distance_3d::distance_3d_brute_parts;
 pub(crate) use distance_3d::{Distance3dParts, distance_3d_with_parts};
+pub(in crate::geometry) use exact_segment::{ExactPoint, point_segment_distance_squared_exact};
 pub(crate) use frechet::{
     FrechetDpScratch, discrete_frechet_distance_with_scratch, frechet_distance_line_columns,
     frechet_distance_line_columns_batch,

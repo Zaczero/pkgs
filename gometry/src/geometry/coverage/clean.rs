@@ -437,4 +437,107 @@ mod tests {
             }
         }
     }
+
+    #[expect(
+        clippy::suboptimal_flops,
+        reason = "separate roundings define the reproducible ULP jitter fixture"
+    )]
+    fn ulp_jitter(value: f64, seed: usize) -> f64 {
+        let magnitude = value.abs().max(1.0);
+        let spacing = f64::from_bits(magnitude.to_bits().wrapping_add(1)) - magnitude;
+        let offset = match seed.wrapping_mul(17).wrapping_add(5) % 7 {
+            0 => -3,
+            1 => -2,
+            2 => -1,
+            3 => 0,
+            4 => 1,
+            5 => 2,
+            _ => 3,
+        };
+        value + f64::from(offset) * spacing
+    }
+
+    fn jittered_grid(mode: &str) -> Vec<Shape> {
+        (0_u8..12)
+            .flat_map(|row| {
+                (0_u8..12).map(move |column| {
+                    if mode == "exact" {
+                        return rectangle(
+                            f64::from(column),
+                            f64::from(row),
+                            f64::from(column.wrapping_add(1)),
+                            f64::from(row.wrapping_add(1)),
+                        );
+                    }
+                    if mode == "coherent" {
+                        let point = |vertex_row: u8, vertex_column: u8| {
+                            let key = usize::from(vertex_row)
+                                .wrapping_mul(13)
+                                .wrapping_add(usize::from(vertex_column));
+                            XY::new(
+                                ulp_jitter(f64::from(vertex_column), key),
+                                ulp_jitter(f64::from(vertex_row), key.wrapping_add(1)),
+                            )
+                        };
+                        let points = [
+                            point(row, column),
+                            point(row, column.wrapping_add(1)),
+                            point(row.wrapping_add(1), column.wrapping_add(1)),
+                            point(row.wrapping_add(1), column),
+                            point(row, column),
+                        ];
+                        return Shape::Polygon(Polygon::new(
+                            Ring::from_closed(CoordSeq::try_from_xy(&points).unwrap()).unwrap(),
+                            Vec::new(),
+                        ));
+                    }
+
+                    let seed = usize::from(row)
+                        .wrapping_mul(12)
+                        .wrapping_add(usize::from(column));
+                    rectangle(
+                        ulp_jitter(f64::from(column), seed),
+                        ulp_jitter(f64::from(row), seed.wrapping_add(1)),
+                        ulp_jitter(f64::from(column.wrapping_add(1)), seed.wrapping_add(2)),
+                        ulp_jitter(f64::from(row.wrapping_add(1)), seed.wrapping_add(3)),
+                    )
+                })
+            })
+            .collect()
+    }
+
+    #[test]
+    fn coverage_clean_repairs_jittered_grid_without_changing_valid_controls() {
+        for mode in ["exact", "coherent"] {
+            let rows = jittered_grid(mode);
+            assert!(
+                crate::geometry::coverage_is_valid(&rows, 0.0).unwrap(),
+                "{mode}"
+            );
+            let cleaned =
+                coverage_clean(&rows, 0.0, 0.0, CoverageOverlapRule::LongestBorder).unwrap();
+            assert_eq!(cleaned, rows, "{mode}");
+            assert!(
+                crate::geometry::coverage_invalid_edges(&cleaned, 0.0)
+                    .unwrap()
+                    .iter()
+                    .all(Shape::is_empty),
+                "{mode}"
+            );
+        }
+
+        let rows = jittered_grid("independent");
+        assert!(!crate::geometry::coverage_is_valid(&rows, 0.0).unwrap());
+        let cleaned = coverage_clean(&rows, 0.0, 0.0, CoverageOverlapRule::LongestBorder).unwrap();
+        assert_eq!(cleaned.len(), 144);
+        assert!(crate::geometry::coverage_is_valid(&cleaned, 0.0).unwrap());
+        assert!(
+            crate::geometry::coverage_invalid_edges(&cleaned, 0.0)
+                .unwrap()
+                .iter()
+                .all(Shape::is_empty)
+        );
+        crate::geometry::coverage_union_topo(&cleaned, crate::geometry::TopologyDomain::Cartesian)
+            .expect("dissolve accepts the repaired jittered coverage");
+    }
 }

@@ -23,6 +23,15 @@ use crate::geometry::{
     MeasuredLineIndexSlot, PlanarMetric, PointBatchTester, ShapeCountQuery,
 };
 
+fn point_outside_bounds(bounds: Option<Bounds>, point: Point) -> bool {
+    bounds.is_none_or(|bounds| {
+        point.x < bounds.minx()
+            || point.x > bounds.maxx()
+            || point.y < bounds.miny()
+            || point.y > bounds.maxy()
+    })
+}
+
 const POINT_SCANS_BEFORE_INDEXING: u32 = 3;
 // The index's fixed setup does not amortize for small source arrays.
 const SMALL_POINT_INDEX_OPERAND: usize = 16;
@@ -570,8 +579,50 @@ impl PreparedPlan {
         &self,
         point: &[ExactDyadic; 3],
     ) -> Result<SourcePointLocation> {
-        if let Some(point) = exact_stored_point(point) {
-            return self.locate_stored(point);
+        self.locate_exact_with_stored(point, exact_stored_point(point))
+    }
+
+    /// Locate from a borrowed source, deferring its owned plan until a stored
+    /// exact point survives the source bounds already available to the caller.
+    pub(in crate::geometry) fn locate_exact_lazy(
+        cached_plan: &OnceLock<Self>,
+        shape: &Shape,
+        bounds: Option<Bounds>,
+        point: &[ExactDyadic; 3],
+    ) -> Result<SourcePointLocation> {
+        let stored = exact_stored_point(point);
+        if stored.is_some_and(|stored| point_outside_bounds(bounds, stored)) {
+            return Ok(SourcePointLocation {
+                location: crate::geometry::Loc::Exterior,
+                area: false,
+            });
+        }
+        let plan = cached_plan.get_or_init(|| {
+            let data = ShapeData::new(shape.clone());
+            data.seed_bounds(bounds);
+            Self::new(data)
+        });
+        plan.locate_exact_with_stored(point, stored)
+    }
+
+    fn locate_exact_with_stored(
+        &self,
+        point: &[ExactDyadic; 3],
+        stored: Option<Point>,
+    ) -> Result<SourcePointLocation> {
+        if let Some(stored) = stored {
+            if self
+                .shape
+                .bounds
+                .get()
+                .is_some_and(|bounds| point_outside_bounds(*bounds, stored))
+            {
+                return Ok(SourcePointLocation {
+                    location: crate::geometry::Loc::Exterior,
+                    area: false,
+                });
+            }
+            return self.locate_stored(stored);
         }
         if let Some(tester) = self.point_tester_for_location()?
             && let Some(location) = tester.location_and_area_exact(point)?

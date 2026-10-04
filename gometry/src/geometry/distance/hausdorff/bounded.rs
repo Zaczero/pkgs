@@ -5,6 +5,9 @@ use std::collections::BinaryHeap;
 use std::sync::Arc;
 
 use crate::error::Result;
+use crate::geometry::distance::exact_segment::{
+    ExactCarrier, ExactPoint, UnreducedRatio, point_span_distance_squared,
+};
 use crate::geometry::exact_arith::ExactSign;
 use crate::geometry::overlay::{ExactMetricSpan, ExactMetricSupport, ExactSourceInventory};
 use crate::geometry::tessellation::exact;
@@ -26,8 +29,8 @@ use instrumentation::{
     limit_refinement_work, refinement_work, reset_exact_span_evaluations, set_line_filter_enabled,
 };
 use numeric::{
-    Accuracy, DistanceInterval, ErrorBound, ExactCarrier, FloatBox, SelectedSpan, SquaredBounds,
-    SupportSpan, Tightness, UnreducedRatio,
+    Accuracy, DistanceInterval, ErrorBound, FloatBox, SelectedSpan, SquaredBounds, SupportSpan,
+    Tightness,
 };
 
 const NOMINATED_SITE_COUNT: usize = 4;
@@ -529,7 +532,8 @@ impl PreparedSupport {
             PrimitiveId::Span(index) => {
                 #[cfg(test)]
                 count_exact_span_evaluation();
-                point_span_distance_squared(point, &self.spans[index])
+                let span = &self.spans[index];
+                point_span_distance_squared(point, span.carrier()?, span.lo(), span.hi())
             },
             PrimitiveId::Point(index) => {
                 let dx = UnreducedRatio::try_difference(point.x(), self.points[index].x())?;
@@ -729,23 +733,6 @@ fn support_span(span: ExactMetricSpan) -> Result<SupportSpan> {
     })
 }
 
-impl ExactCarrier {
-    fn from_segment(source: Segment) -> Result<Self> {
-        let ax = Rational::from_f64(source.start.x);
-        let ay = Rational::from_f64(source.start.y);
-        let dx = Rational::from_f64(source.end.x).try_subtract(&ax)?;
-        let dy = Rational::from_f64(source.end.y).try_subtract(&ay)?;
-        let norm_squared = dx.try_square()?.try_add(&dy.try_square()?)?;
-        Ok(Self {
-            ax,
-            ay,
-            dx,
-            dy,
-            norm_squared,
-        })
-    }
-}
-
 fn span_point(span: &SupportSpan, parameter: &Rational) -> Result<ExactPoint> {
     let carrier = span.carrier()?;
     let x = carrier.ax.try_add(&carrier.dx.try_product(parameter)?)?;
@@ -764,44 +751,6 @@ fn span_projection_parameter(point: &ExactPoint, span: &SupportSpan) -> Result<R
         return Ok(Rational::zero());
     }
     numerator.try_quotient(&carrier.norm_squared)
-}
-
-fn span_coordinate_difference(
-    point: &Rational,
-    origin: &Rational,
-    direction: &Rational,
-    parameter: &Rational,
-) -> Result<UnreducedRatio> {
-    let point = UnreducedRatio::from_rational(point)?;
-    let origin = UnreducedRatio::from_rational(origin)?;
-    let direction = UnreducedRatio::from_rational(direction)?;
-    let parameter = UnreducedRatio::from_rational(parameter)?;
-    origin
-        .try_add(&direction.try_product(&parameter)?)?
-        .try_subtract(&point)
-}
-
-fn point_span_distance_squared(point: &ExactPoint, span: &SupportSpan) -> Result<UnreducedRatio> {
-    let carrier = span.carrier()?;
-    let px = UnreducedRatio::try_difference(point.x(), &carrier.ax)?;
-    let py = UnreducedRatio::try_difference(point.y(), &carrier.ay)?;
-    let dx = UnreducedRatio::from_rational(&carrier.dx)?;
-    let dy = UnreducedRatio::from_rational(&carrier.dy)?;
-    let norm_squared = UnreducedRatio::from_rational(&carrier.norm_squared)?;
-    let dot = px.try_product(&dx)?.try_add(&py.try_product(&dy)?)?;
-    let low = UnreducedRatio::from_rational(span.lo())?.try_product(&norm_squared)?;
-    let high = UnreducedRatio::from_rational(span.hi())?.try_product(&norm_squared)?;
-    let parameter = if carrier.norm_squared.is_zero() || dot.try_cmp(&low)? == Ordering::Less {
-        span.lo()
-    } else if dot.try_cmp(&high)? == Ordering::Greater {
-        span.hi()
-    } else {
-        let cross = px.try_product(&dy)?.try_subtract(&py.try_product(&dx)?)?;
-        return cross.try_square()?.try_quotient(&norm_squared);
-    };
-    let dx = span_coordinate_difference(point.x(), &carrier.ax, &carrier.dx, parameter)?;
-    let dy = span_coordinate_difference(point.y(), &carrier.ay, &carrier.dy, parameter)?;
-    dx.try_square()?.try_add(&dy.try_square()?)
 }
 
 /// Double-double bounds on the squared distance from any point of
@@ -3593,73 +3542,6 @@ pub(crate) fn line_columns_batch(
         *value = line_columns_with_accuracy(left_xs, left_ys, right_xs, right_ys, &accuracy)?;
     }
     Ok(())
-}
-
-#[derive(Clone, Debug)]
-pub(in crate::geometry) enum ExactPoint {
-    Stored {
-        xy: XY,
-        exact: std::sync::OnceLock<Box<[Rational; 2]>>,
-    },
-    Constructed(Box<[Rational; 2]>),
-}
-
-impl ExactPoint {
-    const fn from_xy(point: XY) -> Self {
-        Self::Stored {
-            xy: point,
-            exact: std::sync::OnceLock::new(),
-        }
-    }
-
-    fn new(x: Rational, y: Rational) -> Self {
-        Self::Constructed(Box::new([x, y]))
-    }
-
-    const fn stored_xy(&self) -> Option<XY> {
-        match self {
-            Self::Stored { xy, .. } => Some(*xy),
-            Self::Constructed(_) => None,
-        }
-    }
-
-    fn rounded_xy(&self) -> Result<XY> {
-        if let Some(xy) = self.stored_xy() {
-            return Ok(xy);
-        }
-        Ok(XY::new(self.x().round()?, self.y().round()?))
-    }
-
-    fn components(&self) -> &[Rational; 2] {
-        match self {
-            Self::Stored { xy, exact } => {
-                exact.get_or_init(|| Box::new([Rational::from_f64(xy.x), Rational::from_f64(xy.y)]))
-            },
-            Self::Constructed(exact) => exact,
-        }
-    }
-
-    fn x(&self) -> &Rational {
-        let [x, _] = self.components();
-        x
-    }
-
-    fn y(&self) -> &Rational {
-        let [_, y] = self.components();
-        y
-    }
-
-    fn from_homogeneous(value: [ExactDyadic; 3]) -> crate::error::Result<Self> {
-        let [x, y, w] = value;
-        Ok(Self::new(
-            Rational::new(x, w.clone())?,
-            Rational::new(y, w)?,
-        ))
-    }
-
-    fn same_position(&self, other: &Self) -> crate::error::Result<bool> {
-        Ok(self.x().try_cmp(other.x())?.is_eq() && self.y().try_cmp(other.y())?.is_eq())
-    }
 }
 
 #[cfg(test)]

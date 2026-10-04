@@ -1060,7 +1060,7 @@ def test_snap_to_grid_extreme_origin_and_size() -> None:
 
 
 @pytest.mark.parametrize('array', [False, True], ids=['scalar', 'array'])
-def test_native_voronoi_shifted_unrepresentable_partition_is_rejected(
+def test_native_voronoi_shifted_six_sites_have_a_certified_partition(
     array: bool,
 ) -> None:
     offset = 1e16
@@ -1076,18 +1076,57 @@ def test_native_voronoi_shifted_unrepresentable_partition_is_rejected(
         ]
     ])
     source = gm.GeometryArray([sites]) if array else sites
+    result = source.voronoi_polygons(clip='envelope')
+    cells = result[0] if array else result
+    assert len(cells) == 6
+    assert all(cell.is_valid for cell in cells)
+    assert gm.coverage_is_valid(cells)
+    assert gm.equals(
+        gm.union_all(cells), gm.box(offset, offset, offset + 10, offset + 10)
+    )
+    for point in sites.parts:
+        assert sum(gm.covers(cell, point) for cell in cells) == 1
+
+
+@pytest.mark.parametrize('array', [False, True], ids=['scalar', 'array'])
+@pytest.mark.parametrize('operation', ['voronoi_polygons', 'voronoi_edges'])
+def test_native_voronoi_pinned_clip_vertices_exhaust_adjacent_coordinates(
+    array: bool, operation: str
+) -> None:
+    offset = 1e16
+    sites = gm.MultiPoint([
+        (offset - 4, offset),
+        (offset + 8, offset + 2),
+        (offset, offset + 10),
+    ])
+    clip = gm.Polygon([
+        (offset, offset),
+        (offset + 2, offset),
+        (offset + 4, offset),
+        (offset + 4, offset + 2),
+        (offset + 4, offset + 4),
+        (offset + 2, offset + 4),
+        (offset, offset + 4),
+        (offset, offset + 2),
+        (offset + 2, offset + 2),
+        (offset, offset),
+    ])
+    # The separator hit (13/7, 13/7), relative to offset, rounds to (2, 2).
+    # All nine adjacent-float candidates are pinned source-clip vertices.
+    assert clip.is_valid
+    source = gm.GeometryArray([sites]) if array else sites
     with pytest.raises(
         gm.GeometryError,
         match=(
-            r'(?m)^voronoi_polygons cannot be represented in binary64: '
+            rf'(?m)^{operation} cannot be represented in binary64: '
             r'no assignment of adjacent floating-point coordinates to the \d+ '
             r'constructed vertices in conflict preserves the exact incidence, '
             r'cyclic order and faces$'
         ),
     ) as raised:
-        source.voronoi_polygons(clip='envelope')
+        getattr(source, operation)(clip=clip)
     assert type(raised.value) is gm.GeometryError
-    assert raised.value.operation == 'voronoi_polygons'
+    assert raised.value.operation == operation
 
 
 def _independent_mrr_reference(

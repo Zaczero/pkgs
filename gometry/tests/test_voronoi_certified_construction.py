@@ -305,6 +305,47 @@ def test_seeded_binary64_witnesses_are_repaired_for_both_products() -> None:
         assert all(edge.geometry_type == 'LineString' for edge in edges), index
 
 
+@pytest.mark.parametrize('frontend', ['scalar', 'packed'])
+def test_strip_cells_take_adjacent_floats_beside_colliding_clip_vertices(
+    frontend: str,
+) -> None:
+    points = [(0, -1), (0, 0.1), (0, 1), (100, 0)]
+    sites = gm.MultiPoint(points)
+    clip = gm.Polygon([
+        (-1, -2),
+        (1, -2),
+        (1, -0.45),
+        (1, -0.25),
+        (1, 0.25),
+        (1, 0.55),
+        (1, 2),
+        (-1, 2),
+        (-1, 0.55),
+        (-1, 0.25),
+        (-1, -0.25),
+        (-1, -0.45),
+        (-1, -2),
+    ])
+    cells = _cells(sites, clip, frontend)
+
+    _assert_partition(cells, clip)
+    assert gm.coverage_is_valid(cells)
+    # The exact bisector heights (stored(-1) + stored(0.1)) / 2 and
+    # (stored(1) + stored(0.1)) / 2 round to the stored clip vertices -0.45 and
+    # 0.55, so the only topology-preserving assignment is the adjacent float on
+    # the bisector's side, splitting the rectangle into three horizontal strips.
+    lower = math.nextafter(-0.45, math.inf)
+    upper = math.nextafter(0.55, -math.inf)
+    assert sorted((cell.bounds for cell in cells), key=lambda b: b[1]) == [
+        (-1.0, -2.0, 1.0, lower),
+        (-1.0, lower, 1.0, upper),
+        (-1.0, upper, 1.0, 2.0),
+    ]
+    for point in points[:3]:
+        assert sum(gm.covers(cell, gm.Point(*point)) for cell in cells) == 1
+    assert not any(gm.covers(cell, gm.Point(*points[3])) for cell in cells)
+
+
 @pytest.mark.parametrize('carrier', ['multipart', 'collection'])
 @pytest.mark.parametrize('frontend', ['scalar', 'packed'])
 def test_noncocircular_near_diagram_is_exact_and_permutation_invariant(
