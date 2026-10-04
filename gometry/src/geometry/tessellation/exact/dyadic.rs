@@ -9,6 +9,8 @@ use std::fmt;
 use std::ops::{Deref, DerefMut};
 
 use super::{ExactPoint, ExactSign, GeometryErrorKind, ResourceError, Result, XY};
+#[cfg(all(test, debug_assertions))]
+use crate::test_support::exact_operation_counts;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(in crate::geometry) struct ExactDyadic {
@@ -320,6 +322,8 @@ impl ExactDyadic {
     }
 
     pub(in crate::geometry) fn from_f64(value: f64) -> Self {
+        #[cfg(all(test, debug_assertions))]
+        exact_operation_counts::conversion();
         debug_assert!(value.is_finite());
         if value == 0.0 {
             return Self::zero();
@@ -335,15 +339,39 @@ impl ExactDyadic {
                 encoded_exponent.wrapping_sub(1023).wrapping_sub(52),
             )
         };
-        let mut value = Self {
+        let trailing = significand.trailing_zeros();
+        Self {
             negative: bits >> 63 != 0,
-            limbs: CompactLimbs::single(significand),
-            exponent,
+            limbs: CompactLimbs::single(significand >> trailing),
+            exponent: exponent.wrapping_add(i64::from(trailing)),
+        }
+    }
+
+    /// Recover a binary64 only when the scaled dyadic is exactly representable.
+    pub(in crate::geometry) fn to_f64_exact_scaled(&self, scale: i64) -> Option<f64> {
+        let magnitude = match self.limbs.as_slice() {
+            [] => return Some(0.0),
+            [magnitude] => *magnitude,
+            _ => return None,
         };
-        value
-            .try_trim()
-            .expect("finite binary64 values have representable exponents");
-        value
+        let width = 64_u32.wrapping_sub(magnitude.leading_zeros());
+        if width > 53 {
+            return None;
+        }
+        let exponent = self.exponent.checked_add(scale)?;
+        let top = exponent.checked_add(i64::from(width).wrapping_sub(1))?;
+        if exponent < -1074 || top > 1023 {
+            return None;
+        }
+        let sign = u64::from(self.negative) << 63;
+        let bits = if top >= -1022 {
+            let significand = magnitude << 53_u32.wrapping_sub(width);
+            (u64::try_from(top.wrapping_add(1023)).ok()? << 52)
+                | (significand & ((1_u64 << 52) - 1))
+        } else {
+            magnitude << u32::try_from(exponent.wrapping_add(1074)).ok()?
+        };
+        Some(f64::from_bits(sign | bits))
     }
 
     pub(in crate::geometry) fn try_trim(&mut self) -> Result<()> {

@@ -570,7 +570,7 @@ impl PreparedPlan {
         &self,
         point: &[ExactDyadic; 3],
     ) -> Result<SourcePointLocation> {
-        if let Some(point) = exact_stored_point(point)? {
+        if let Some(point) = exact_stored_point(point) {
             return self.locate_stored(point);
         }
         if let Some(tester) = self.point_tester_for_location()?

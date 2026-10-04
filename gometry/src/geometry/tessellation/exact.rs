@@ -2157,6 +2157,11 @@ pub(in crate::geometry) fn round_ratio(
     numerator: &ExactDyadic,
     denominator: &ExactDyadic,
 ) -> Result<f64> {
+    #[cfg(all(test, debug_assertions))]
+    {
+        use crate::test_support::exact_operation_counts;
+        exact_operation_counts::ratio_rounding();
+    }
     if denominator.is_zero() {
         return Err(GeometryErrorKind::ExactRatioZeroDenominator.into());
     }

@@ -129,6 +129,55 @@ pub(crate) fn allocation_phase_counts() -> [usize; AllocationPhase::COUNT] {
     PHASE_ALLOCATIONS.with(Cell::get)
 }
 
+#[cfg(debug_assertions)]
+pub(crate) mod exact_operation_counts {
+    use super::Cell;
+
+    #[derive(Clone, Copy, Debug, Default)]
+    pub(crate) struct Counts {
+        pub(crate) conversions: usize,
+        pub(crate) ratio_roundings: usize,
+    }
+
+    thread_local! {
+        static COUNTS: Cell<Option<Counts>> = const { Cell::new(None) };
+    }
+
+    pub(crate) fn conversion() {
+        COUNTS.with(|cell| {
+            if let Some(mut counts) = cell.get() {
+                counts.conversions = counts.conversions.wrapping_add(1);
+                cell.set(Some(counts));
+            }
+        });
+    }
+
+    pub(crate) fn ratio_rounding() {
+        COUNTS.with(|cell| {
+            if let Some(mut counts) = cell.get() {
+                counts.ratio_roundings = counts.ratio_roundings.wrapping_add(1);
+                cell.set(Some(counts));
+            }
+        });
+    }
+
+    struct Guard(Option<Counts>);
+
+    impl Drop for Guard {
+        fn drop(&mut self) {
+            COUNTS.with(|cell| cell.set(self.0));
+        }
+    }
+
+    pub(crate) fn measure<T>(operation: impl FnOnce() -> T) -> (T, Counts) {
+        let guard = Guard(COUNTS.with(|cell| cell.replace(Some(Counts::default()))));
+        let result = operation();
+        let counts = COUNTS.with(|cell| cell.get().expect("exact operation counting is active"));
+        drop(guard);
+        (result, counts)
+    }
+}
+
 /// Counters for the binary admission contract. They are deliberately test-only:
 /// production dispatch has no observable registry or diagnostic surface for
 /// these implementation choices.

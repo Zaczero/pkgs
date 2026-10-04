@@ -841,12 +841,12 @@ pub(crate) fn centroid_polygon_row_columns(
 fn areal_centroid_polygon(polygon: &Polygon) -> Option<(f64, f64, f64)> {
     let exact = || {
         exact_areal_centroid(|visit| {
-            polygon_rings(polygon, &mut |ring, hole| {
+            for (ring, hole) in polygon_rings(polygon) {
                 let Some((xs, ys)) = ring.xy_columns() else {
-                    return;
+                    continue;
                 };
                 visit(xs, ys, hole);
-            });
+            }
         })
     };
     let mut base = None;
@@ -856,9 +856,9 @@ fn areal_centroid_polygon(polygon: &Polygon) -> Option<(f64, f64, f64)> {
     let mut max_x = f64::NEG_INFINITY;
     let mut min_y = f64::INFINITY;
     let mut max_y = f64::NEG_INFINITY;
-    polygon_rings(polygon, &mut |ring, hole| {
+    for (ring, hole) in polygon_rings(polygon) {
         let Some((xs, ys)) = ring.xy_columns() else {
-            return;
+            continue;
         };
         for (&x, &y) in xs.iter().zip(ys.iter()) {
             min_x = min_x.min(x);
@@ -867,7 +867,7 @@ fn areal_centroid_polygon(polygon: &Polygon) -> Option<(f64, f64, f64)> {
             max_y = max_y.max(y);
         }
         accumulate_ring_centroid(xs, ys, hole, &mut base, &mut area_sum2, &mut cg3);
-    });
+    }
     let extreme = if min_x.is_finite() {
         let extent = (max_x - min_x).max(max_y - min_y);
         let max_abs = max_x
@@ -1485,11 +1485,11 @@ fn exact_areal_centroid_shape(shape: &Shape) -> Option<(f64, f64, f64)> {
     exact_areal_centroid(|visit| {
         shape.for_each_component(&mut |component| {
             if let Component::Polygon(polygon) = component {
-                polygon_rings(polygon, &mut |ring, hole| {
+                for (ring, hole) in polygon_rings(polygon) {
                     if let Some((xs, ys)) = ring.xy_columns() {
                         visit(xs, ys, hole);
                     }
-                });
+                }
             }
         });
     })
@@ -1684,15 +1684,8 @@ fn try_for_each_lineal(shape: &Shape, visit: &mut impl FnMut(&[f64], &[f64]) -> 
             let stopped = match component {
                 Component::Point(_) => false,
                 Component::LineString(line) => visit(line.xs(), line.ys()),
-                Component::Polygon(polygon) => {
-                    let mut stopped = false;
-                    polygon_rings(polygon, &mut |ring, _| {
-                        if !stopped && let Some((xs, ys)) = ring.xy_columns() {
-                            stopped = visit(xs, ys);
-                        }
-                    });
-                    stopped
-                },
+                Component::Polygon(polygon) => polygon_rings(polygon)
+                    .any(|(ring, _)| ring.xy_columns().is_some_and(|(xs, ys)| visit(xs, ys))),
             };
             if stopped { Err(()) } else { Ok(()) }
         })
@@ -1948,11 +1941,8 @@ pub(crate) fn point_centroid(shape: &Shape) -> CoreResult<Option<(f64, f64)>> {
     }
 }
 
-fn polygon_rings(polygon: &Polygon, visit: &mut impl FnMut(&Ring, bool)) {
-    visit(&polygon.shell, false);
-    for hole in polygon.holes.iter() {
-        visit(hole, true);
-    }
+fn polygon_rings(polygon: &Polygon) -> impl Iterator<Item = (&Ring, bool)> {
+    std::iter::once((&polygon.shell, false)).chain(polygon.holes.iter().map(|hole| (hole, true)))
 }
 
 fn anchor_vertex(xs: &[f64], ys: &[f64], visit: &mut impl FnMut(f64, f64)) {
@@ -1966,11 +1956,11 @@ fn for_each_fallback_point(shape: &Shape, visit: &mut impl FnMut(f64, f64)) {
         Component::Point(point) => visit(point.x, point.y),
         Component::LineString(line) => anchor_vertex(line.xs(), line.ys(), visit),
         Component::Polygon(polygon) => {
-            polygon_rings(polygon, &mut |ring, _| {
+            for (ring, _) in polygon_rings(polygon) {
                 if let Some((xs, ys)) = ring.xy_columns() {
                     anchor_vertex(xs, ys, visit);
                 }
-            });
+            }
         },
     });
 }
@@ -1987,15 +1977,10 @@ fn try_for_each_fallback_point(shape: &Shape, visit: &mut impl FnMut(f64, f64) -
             let stopped = match component {
                 Component::Point(point) => visit(point.x, point.y),
                 Component::LineString(line) => try_anchor_vertex(line.xs(), line.ys(), visit),
-                Component::Polygon(polygon) => {
-                    let mut stopped = false;
-                    polygon_rings(polygon, &mut |ring, _| {
-                        if !stopped && let Some((xs, ys)) = ring.xy_columns() {
-                            stopped = try_anchor_vertex(xs, ys, visit);
-                        }
-                    });
-                    stopped
-                },
+                Component::Polygon(polygon) => polygon_rings(polygon).any(|(ring, _)| {
+                    ring.xy_columns()
+                        .is_some_and(|(xs, ys)| try_anchor_vertex(xs, ys, visit))
+                }),
             };
             if stopped { Err(()) } else { Ok(()) }
         })

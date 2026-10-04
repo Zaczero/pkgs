@@ -23,30 +23,47 @@ pub(in crate::geometry) fn crossing_homogeneous(
     a: Segment,
     b: Segment,
 ) -> Result<[ExactDyadic; 3]> {
-    let difference = |end: f64, start: f64| {
-        ExactDyadic::from_f64(end).try_subtract(ExactDyadic::from_f64(start))
+    let point = |point: XY| {
+        [
+            ExactDyadic::from_f64(point.x),
+            ExactDyadic::from_f64(point.y),
+            ExactDyadic::one(),
+        ]
     };
+    crossing_homogeneous_stored(
+        &point(a.start),
+        &point(a.end),
+        &point(b.start),
+        &point(b.end),
+    )
+}
+
+pub(in crate::geometry) fn crossing_homogeneous_stored(
+    a_start: &[ExactDyadic; 3],
+    a_end: &[ExactDyadic; 3],
+    b_start: &[ExactDyadic; 3],
+    b_end: &[ExactDyadic; 3],
+) -> Result<[ExactDyadic; 3]> {
     let (rx, ry) = (
-        difference(a.end.x, a.start.x)?,
-        difference(a.end.y, a.start.y)?,
+        a_end[0].try_subtract_ref(&a_start[0])?,
+        a_end[1].try_subtract_ref(&a_start[1])?,
     );
     let (sx, sy) = (
-        difference(b.end.x, b.start.x)?,
-        difference(b.end.y, b.start.y)?,
+        b_end[0].try_subtract_ref(&b_start[0])?,
+        b_end[1].try_subtract_ref(&b_start[1])?,
     );
     let (cx, cy) = (
-        difference(b.start.x, a.start.x)?,
-        difference(b.start.y, a.start.y)?,
+        b_start[0].try_subtract_ref(&a_start[0])?,
+        b_start[1].try_subtract_ref(&a_start[1])?,
     );
     let den = rx.try_product(&sy)?.try_subtract(ry.try_product(&sx)?)?;
     let t = cx.try_product(&sy)?.try_subtract(cy.try_product(&sx)?)?;
-    let coordinate = |start: f64, direction: &ExactDyadic| -> Result<ExactDyadic> {
-        den.try_product(&ExactDyadic::from_f64(start))?
-            .try_add(t.try_product(direction)?)
+    let coordinate = |start: &ExactDyadic, direction: &ExactDyadic| -> Result<ExactDyadic> {
+        den.try_product(start)?.try_add(t.try_product(direction)?)
     };
     Ok([
-        coordinate(a.start.x, &rx)?,
-        coordinate(a.start.y, &ry)?,
+        coordinate(&a_start[0], &rx)?,
+        coordinate(&a_start[1], &ry)?,
         den.clone(),
     ])
 }
@@ -98,10 +115,18 @@ pub(in crate::geometry) struct RoundedCrossing {
 /// that meets this crossing agrees on its point, and a crossing inside both
 /// segments rounds inside both envelopes.
 pub(in crate::geometry) fn crossing_point(a: Segment, b: Segment) -> Result<RoundedCrossing> {
+    crossing_point_with(a, b, || crossing_homogeneous(a, b))
+}
+
+pub(in crate::geometry) fn crossing_point_with(
+    a: Segment,
+    b: Segment,
+    exact: impl FnOnce() -> Result<[ExactDyadic; 3]>,
+) -> Result<RoundedCrossing> {
     if let Some(point) = certified_crossing(a, b) {
         return Ok(RoundedCrossing { point, exact: None });
     }
-    let exact = crossing_homogeneous(a, b)?;
+    let exact = exact()?;
     let unsigned = |value: f64| if value == 0.0 { 0.0 } else { value };
     Ok(RoundedCrossing {
         point: XY::new(

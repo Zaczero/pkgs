@@ -285,22 +285,18 @@ pub(in crate::geometry) struct SourcePointLocation {
     pub(in crate::geometry) area: bool,
 }
 
-pub(in crate::geometry) fn exact_stored_point(point: &[ExactDyadic; 3]) -> Result<Option<Point>> {
+pub(in crate::geometry) fn exact_stored_point(point: &[ExactDyadic; 3]) -> Option<Point> {
     let [x, y, weight] = point;
-    if !weight.is_one() && !weight.is_two() {
-        return Ok(None);
-    }
-    let x = round_ratio(x, weight)?;
-    let y = round_ratio(y, weight)?;
-    let one = ExactDyadic::one();
-    let exact_x = ExactDyadic::from_f64(x);
-    let exact_y = ExactDyadic::from_f64(y);
-    if compare_ratios(&point[0], weight, &exact_x, &one)? != Ordering::Equal
-        || compare_ratios(&point[1], weight, &exact_y, &one)? != Ordering::Equal
-    {
-        return Ok(None);
-    }
-    Ok(Some(Point::new_raw_xy(x, y)))
+    let scale = if weight.is_one() {
+        0
+    } else if weight.is_two() {
+        -1
+    } else {
+        return None;
+    };
+    x.to_f64_exact_scaled(scale)
+        .zip(y.to_f64_exact_scaled(scale))
+        .map(|(x, y)| Point::new_raw_xy(x, y))
 }
 
 impl SourcePointLocation {
@@ -2093,7 +2089,7 @@ pub(in crate::geometry) fn cartesian_exact_point_location_and_area(
     shape: &Shape,
     point: &[ExactDyadic; 3],
 ) -> Result<SourcePointLocation> {
-    if let Some(point) = exact_stored_point(point)? {
+    if let Some(point) = exact_stored_point(point) {
         return Ok(cartesian_point_location_and_area(shape, point));
     }
     let mut location = StreamingLocation::for_exact_point(point)?;
@@ -2134,7 +2130,7 @@ pub(in crate::geometry) fn cartesian_row_exact_point_location_and_area(
     row: storage::ShapeRow<'_>,
     point: &[ExactDyadic; 3],
 ) -> Result<SourcePointLocation> {
-    if let Some(point) = exact_stored_point(point)? {
+    if let Some(point) = exact_stored_point(point) {
         return Ok(cartesian_row_point_location_and_area(row, point));
     }
     let mut location = StreamingLocation::for_exact_point(point)?;

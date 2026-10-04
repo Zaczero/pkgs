@@ -1,9 +1,9 @@
+use std::cell::OnceCell;
 use std::cmp::Ordering;
-use std::collections::HashSet;
 use std::ops::ControlFlow;
 
 use crate::geometry::storage::{PackedRow, ShapeRow};
-use crate::collections::collection_hash_state;
+use crate::collections::{HashSet, HashSetExt as _, collection_hash_state};
 use crate::error::{ResourceError, Result};
 use crate::geometry::overlay::{
     ExactPointForest, StagedExactSources, StagedRelationItem, StagedSourceComponent,
@@ -11,7 +11,7 @@ use crate::geometry::overlay::{
 };
 use crate::geometry::relate::matrix_predicates::{self, CellMask};
 use crate::geometry::relate::{De9im, De9imInterval, Loc, OperandShape};
-use crate::geometry::segments::{TouchLocation, crossing_homogeneous, crossing_point};
+use crate::geometry::segments::{TouchLocation, crossing_homogeneous_stored, crossing_point_with};
 use crate::geometry::source_support::{
     OccupiedToward, SourcePointLocation, cartesian_row_exact_offset_location_and_area,
     cartesian_row_exact_point_location_and_area, cartesian_row_point_location,
@@ -33,7 +33,7 @@ trait Query {
     fn verdict(&self, interval: &De9imInterval) -> Option<Self::Output>;
     fn finish(&self, interval: &De9imInterval) -> Result<Self::Output>;
     fn decided_matrix(&self, matrix: De9im) -> Self::Output;
-    fn same_stored_geometry(&self) -> Option<Self::Output>;
+    fn same_stored_geometry(&self, operand: &Operand<'_>) -> Result<Option<Self::Output>>;
     fn point_membership(
         &self,
         point_operand: matrix_predicates::Operand,
@@ -85,8 +85,8 @@ impl Query for MatrixQuery {
         matrix
     }
 
-    fn same_stored_geometry(&self) -> Option<Self::Output> {
-        None
+    fn same_stored_geometry(&self, _: &Operand<'_>) -> Result<Option<Self::Output>> {
+        Ok(None)
     }
 
     fn point_membership(
@@ -125,8 +125,28 @@ impl Query for PredicateQuery {
         matrix_predicates::decided(self.0, matrix)
     }
 
-    fn same_stored_geometry(&self) -> Option<Self::Output> {
-        (self.0 == Predicate::Equals).then_some(true)
+    fn same_stored_geometry(&self, operand: &Operand<'_>) -> Result<Option<Self::Output>> {
+        if self.0 == Predicate::Equals {
+            return Ok(Some(true));
+        }
+        if !matches!(
+            self.0,
+            Predicate::Contains | Predicate::Within | Predicate::Covers | Predicate::CoveredBy
+        ) {
+            return Ok(None);
+        }
+        let Some(point) = operand
+            .row
+            .polygon_rings()
+            .and_then(|mut rings| rings.next())
+            .and_then(|ring| ring.first_coord())
+        else {
+            return Ok(None);
+        };
+        let location = operand.locate_stored(point)?;
+        // A boundary point with occupied area certifies an interior elsewhere.
+        // Empty or cancelled support cannot acquire reflexivity from identity.
+        Ok((location.area || location.location == Loc::Interior).then_some(true))
     }
 
     fn point_membership(
@@ -181,8 +201,8 @@ impl Query for PatternQuery {
         matrix.matches(self.0)
     }
 
-    fn same_stored_geometry(&self) -> Option<Self::Output> {
-        None
+    fn same_stored_geometry(&self, _: &Operand<'_>) -> Result<Option<Self::Output>> {
+        Ok(None)
     }
 
     fn point_membership(
@@ -223,8 +243,8 @@ impl<Q: Query> Query for EndOnly<Q> {
         self.0.decided_matrix(matrix)
     }
 
-    fn same_stored_geometry(&self) -> Option<Self::Output> {
-        None
+    fn same_stored_geometry(&self, _: &Operand<'_>) -> Result<Option<Self::Output>> {
+        Ok(None)
     }
 
     fn point_membership(
@@ -427,6 +447,121 @@ enum AtomPoint {
     Event(u32),
 }
 
+#[derive(Default)]
+struct ExactCoordinates {
+    stored: HashMap<PointKey, [ExactDyadic; 3]>,
+}
+
+impl ExactCoordinates {
+    fn stored(&mut self, point: XY) -> &[ExactDyadic; 3] {
+        self.stored.entry(PointKey::new(point)).or_insert_with(|| {
+            #[cfg(all(test, debug_assertions))]
+            update_atom_metrics(|metrics| {
+                metrics.stored_vertices = metrics.stored_vertices.wrapping_add(1);
+            });
+            stored_exact_point(point)
+        })
+    }
+
+    fn point(
+        &mut self,
+        point: AtomPoint,
+        forest: &ExactPointForest<'_>,
+    ) -> Result<[ExactDyadic; 3]> {
+        match point {
+            AtomPoint::Endpoint(point) => Ok(self.stored(point).clone()),
+            AtomPoint::Event(handle) => {
+                if let Some(key) = forest.points().stored_key(handle) {
+                    Ok(self.stored(point_from_key(key).xy()).clone())
+                } else {
+                    Ok(forest.points().exact(handle)?.as_ref().clone())
+                }
+            },
+        }
+    }
+
+    fn direction(&mut self, segment: Segment) -> Result<[ExactDyadic; 2]> {
+        let [x, y, _] = self.stored(segment.start).clone();
+        let [end_x, end_y, _] = self.stored(segment.end);
+        Ok([end_x.try_subtract_ref(&x)?, end_y.try_subtract_ref(&y)?])
+    }
+
+    fn crossing(&mut self, left: Segment, right: Segment) -> Result<[ExactDyadic; 3]> {
+        let a_start = self.stored(left.start).clone();
+        let a_end = self.stored(left.end).clone();
+        let b_start = self.stored(right.start).clone();
+        let b_end = self.stored(right.end);
+        crossing_homogeneous_stored(&a_start, &a_end, &b_start, b_end)
+    }
+}
+
+struct ExactAtom<'a> {
+    start: AtomPoint,
+    end: AtomPoint,
+    start_exact: OnceCell<[ExactDyadic; 3]>,
+    midpoint: OnceCell<[ExactDyadic; 3]>,
+    segment: Segment,
+    direction: &'a OnceCell<[ExactDyadic; 2]>,
+}
+
+impl ExactAtom<'_> {
+    fn offset<'a>(
+        &'a self,
+        coordinates: &mut ExactCoordinates,
+        forest: &ExactPointForest<'_>,
+    ) -> Result<(&'a [ExactDyadic; 3], &'a [ExactDyadic; 2])> {
+        let start = self
+            .start_exact
+            .get_or_try_init(|| coordinates.point(self.start, forest))?;
+        let direction = self.direction.get_or_try_init(|| {
+            #[cfg(all(test, debug_assertions))]
+            update_atom_metrics(|metrics| metrics.directions = metrics.directions.wrapping_add(1));
+            coordinates.direction(self.segment)
+        })?;
+        Ok((start, direction))
+    }
+
+    fn side_probe<'a>(
+        &'a self,
+        coordinates: &mut ExactCoordinates,
+        forest: &ExactPointForest<'_>,
+    ) -> Result<(&'a [ExactDyadic; 3], &'a [ExactDyadic; 2])> {
+        let (start, direction) = self.offset(coordinates, forest)?;
+        let midpoint = self.midpoint.get_or_try_init(|| {
+            let end = coordinates.point(self.end, forest)?;
+            #[cfg(all(test, debug_assertions))]
+            update_atom_metrics(|metrics| metrics.midpoints = metrics.midpoints.wrapping_add(1));
+            homogeneous_midpoint(start, &end)
+        })?;
+        Ok((midpoint, direction))
+    }
+}
+
+#[cfg(all(test, debug_assertions))]
+#[derive(Clone, Copy, Default, Debug)]
+struct AtomMetrics {
+    stored_vertices: usize,
+    directions: usize,
+    midpoints: usize,
+    node_locations: usize,
+}
+
+#[cfg(all(test, debug_assertions))]
+thread_local! {
+    static ATOM_METRICS: std::cell::Cell<AtomMetrics> = const {
+        std::cell::Cell::new(AtomMetrics { stored_vertices: 0, directions: 0, midpoints: 0, node_locations: 0 })
+    };
+}
+
+#[cfg(all(test, debug_assertions))]
+fn update_atom_metrics(update: impl FnOnce(&mut AtomMetrics)) {
+    ATOM_METRICS.with(|cell| {
+        let mut metrics = cell.get();
+        update(&mut metrics);
+        cell.set(metrics);
+    });
+}
+
 pub(crate) fn relate(left: &PreparedPlan, right: &PreparedPlan) -> Result<De9im> {
     let operands = [Operand::from_plan(left), Operand::from_plan(right)];
     evaluate(&operands, &MatrixQuery)
@@ -504,8 +639,8 @@ fn evaluate_mode<Q: Query, const SATURATE: bool>(
         }
     }
     if SATURATE
-        && let Some(answer) = query.same_stored_geometry()
         && operands[0].row.same_stored_geometry(operands[1].row)
+        && let Some(answer) = query.same_stored_geometry(&operands[0])?
     {
         return Ok(answer);
     }
@@ -575,13 +710,12 @@ fn evaluate_mode<Q: Query, const SATURATE: bool>(
     }
 
     let mut events = Vec::new();
-    let mut stored_points = HashMap::with_hasher(collection_hash_state()?.clone());
+    let mut coordinates = ExactCoordinates::default();
     let mut forest = ExactPointForest::with_capacity(staged.sources.segments(), 0);
     let sources = &staged.sources;
     let components = &mut staged.components;
     let segment_component = &staged.segment_component;
     let operand_has_ring = staged.operand_has_ring;
-    let operand_has_area = staged.operand_has_area;
     if let Some(answer) = contact_sweep::<Q, SATURATE>(
         &mut interval,
         operands,
@@ -591,21 +725,34 @@ fn evaluate_mode<Q: Query, const SATURATE: bool>(
         segment_component,
         operand_has_ring,
         &mut events,
+        &mut coordinates,
     )? {
         return Ok(answer);
     }
-    initialize_clean_ring_sides(operands, sources, components)?;
+    // Adjacent vertices of a clean winding ring have the same own-operand
+    // node and edge labels. Inter-operand contacts retain every exceptional
+    // node; dirty and collapsed components retain their full incidence.
+    events.retain(|event| {
+        let [left, right] = event.components.map(|id| {
+            components
+                .get(id as usize)
+                .expect("contact component was admitted")
+        });
+        left.side != right.side
+            || left.dirty
+            || right.dirty
+            || left.source.ring_kind != Some(RingKind::Winding)
+            || right.source.ring_kind != Some(RingKind::Winding)
+    });
+    initialize_clean_ring_sides(operands, sources, components, &mut coordinates)?;
     if let Some(answer) = exhaustive_pass::<Q, SATURATE>(
         &mut interval,
         operands,
         query,
-        sources,
-        components,
-        segment_component,
-        operand_has_area,
+        &staged,
         &mut events,
         &mut forest,
-        &mut stored_points,
+        &mut coordinates,
     )? {
         return Ok(answer);
     }
@@ -1245,6 +1392,7 @@ fn contact_sweep<Q: Query, const SATURATE: bool>(
     segment_component: &[u32],
     operand_has_ring: [bool; 2],
     events: &mut Vec<ContactEvent>,
+    coordinates: &mut ExactCoordinates,
 ) -> Result<Option<Q::Output>> {
     let segments = sources.segments();
     let flow = for_each_candidate_pair(
@@ -1262,9 +1410,9 @@ fn contact_sweep<Q: Query, const SATURATE: bool>(
             components,
             segment_component,
             operand_has_ring,
-            left,
-            right,
+            [left, right],
             events,
+            coordinates,
         ) {
             Ok(Some(answer)) => ControlFlow::Break(SweepStop::Answer(answer)),
             Ok(None) => ControlFlow::Continue(()),
@@ -1286,9 +1434,9 @@ fn process_pair<Q: Query, const SATURATE: bool>(
     components: &mut [Component],
     segment_component: &[u32],
     operand_has_ring: [bool; 2],
-    left: usize,
-    right: usize,
+    [left, right]: [usize; 2],
     events: &mut Vec<ContactEvent>,
+    coordinates: &mut ExactCoordinates,
 ) -> Result<Option<Q::Output>> {
     let (Some(&a), Some(&b)) = (segments.get(left), segments.get(right)) else {
         return Err(GeometryErrorKind::Invalid(
@@ -1343,6 +1491,7 @@ fn process_pair<Q: Query, const SATURATE: bool>(
         right,
         left_component_id,
         right_component_id,
+        coordinates,
     )?
     else {
         return Ok(None);
@@ -1393,15 +1542,9 @@ fn process_pair<Q: Query, const SATURATE: bool>(
             continue;
         };
         let (left_location, right_location) = match point.kind {
-            EventPointKind::Stored(coordinate) => {
-                let point = Point::new_raw_xy(coordinate.x, coordinate.y);
-                (
-                    operands[0].locate_stored(point)?,
-                    operands[1].locate_stored(point)?,
-                )
-            },
+            EventPointKind::Stored(_) => continue,
             EventPointKind::Crossing { .. } => {
-                let exact = event_point_exact(point, segments)?;
+                let exact = event_point_exact(point, segments, coordinates)?;
                 (
                     operands[0].locate_exact(&exact)?,
                     operands[1].locate_exact(&exact)?,
@@ -1420,58 +1563,9 @@ fn process_pair<Q: Query, const SATURATE: bool>(
     }
 
     match event.kind {
-        EventKind::Touch => {},
-        EventKind::Collinear { .. } => {
-            let (first_point, rest) = event.points.split_at_mut(1);
-            let (Some(start), Some(end)) = (
-                first_point.first_mut().and_then(Option::as_mut),
-                rest.first_mut().and_then(Option::as_mut),
-            ) else {
-                return Err(GeometryErrorKind::Invalid(
-                    "collinear event is missing a span endpoint".into(),
-                )
-                .into());
-            };
-            let start = event_point_exact(start, segments)?;
-            let end = event_point_exact(end, segments)?;
-            if !same_homogeneous_point(&start, &end)? {
-                let midpoint = homogeneous_midpoint(&start, &end)?;
-                let left_location = operands[0].locate_exact(&midpoint)?;
-                let right_location = operands[1].locate_exact(&midpoint)?;
-                witness_point(
-                    interval,
-                    left_location,
-                    right_location,
-                    query.needs_dimensions(),
-                );
-                let left_source = components.get(left_component).ok_or_else(|| {
-                    GeometryErrorKind::Invalid(
-                        "collinear event refers to a missing left component".into(),
-                    )
-                })?;
-                let right_source = components.get(right_component).ok_or_else(|| {
-                    GeometryErrorKind::Invalid(
-                        "collinear event refers to a missing right component".into(),
-                    )
-                })?;
-                let (left_edge, right_edge) = match left_side {
-                    matrix_predicates::Operand::Left => (
-                        component_edge_atom_location(left_source, left_location),
-                        component_edge_atom_location(right_source, right_location),
-                    ),
-                    matrix_predicates::Operand::Right => (
-                        component_edge_atom_location(right_source, left_location),
-                        component_edge_atom_location(left_source, right_location),
-                    ),
-                };
-                if left_edge != Loc::Exterior || right_edge != Loc::Exterior {
-                    interval.witness(left_edge, right_edge, Dimension::Curve);
-                }
-                if let Some(answer) = query.verdict(interval) {
-                    return Ok(Some(answer));
-                }
-            }
-        },
+        // Collinear spans are labeled once in the atom pass, after all
+        // same-operand contacts have established component cleanliness.
+        EventKind::Touch | EventKind::Collinear { .. } => {},
         EventKind::Cross => {
             let Some(point) = event.points.first_mut().and_then(Option::as_mut) else {
                 return Err(GeometryErrorKind::Invalid(
@@ -1479,9 +1573,9 @@ fn process_pair<Q: Query, const SATURATE: bool>(
                 )
                 .into());
             };
-            let point = event_point_exact(point, segments)?;
+            let point = event_point_exact(point, segments, coordinates)?;
             if !operands[0].row.has_area_parts() {
-                for direction in segment_directions(a)? {
+                for direction in segment_directions(a, coordinates)? {
                     match operands[1].occupied_toward_exact(&point, &direction)? {
                         OccupiedToward::Yes => {
                             interval.witness(Loc::Interior, Loc::Interior, Dimension::Curve);
@@ -1497,7 +1591,7 @@ fn process_pair<Q: Query, const SATURATE: bool>(
                 }
             }
             if !operands[1].row.has_area_parts() {
-                for direction in segment_directions(b)? {
+                for direction in segment_directions(b, coordinates)? {
                     match operands[0].occupied_toward_exact(&point, &direction)? {
                         OccupiedToward::Yes => {
                             interval.witness(Loc::Interior, Loc::Interior, Dimension::Curve);
@@ -1513,7 +1607,7 @@ fn process_pair<Q: Query, const SATURATE: bool>(
                 }
             }
             if operands[0].row.has_area_parts() && operands[1].row.has_area_parts() {
-                for direction in crossing_quadrants(a, b)? {
+                for direction in crossing_quadrants(a, b, coordinates)? {
                     let left = operands[0].occupied_toward_exact(&point, &direction)?;
                     let right = operands[1].occupied_toward_exact(&point, &direction)?;
                     let (left, right) = match (left, right) {
@@ -1547,6 +1641,7 @@ fn make_event(
     right_index: usize,
     left_component: u32,
     right_component: u32,
+    coordinates: &mut ExactCoordinates,
 ) -> Result<Option<ContactEvent>> {
     let (kind, points) = match contact {
         Contact::Disjoint => return Ok(None),
@@ -1559,7 +1654,7 @@ fn make_event(
                 u32::try_from(left_index).map_err(|_| ResourceError::SizeOverflow)?,
                 u32::try_from(right_index).map_err(|_| ResourceError::SizeOverflow)?,
             ];
-            let crossing = crossing_point(left, right)?;
+            let crossing = crossing_point_with(left, right, || coordinates.crossing(left, right))?;
             (EventKind::Cross, [
                 Some(EventPoint::crossing(
                     segments,
@@ -1629,12 +1724,16 @@ impl EventPoint {
     }
 }
 
-fn event_point_exact(point: &mut EventPoint, segments: &[Segment]) -> Result<[ExactDyadic; 3]> {
+fn event_point_exact(
+    point: &mut EventPoint,
+    segments: &[Segment],
+    coordinates: &mut ExactCoordinates,
+) -> Result<[ExactDyadic; 3]> {
     if let Some(exact) = &point.exact {
         return Ok(exact.as_ref().clone());
     }
     let exact = match point.kind {
-        EventPointKind::Stored(point) => stored_exact_point(point),
+        EventPointKind::Stored(point) => coordinates.stored(point).clone(),
         EventPointKind::Crossing {
             segments: [left, right],
             ..
@@ -1647,7 +1746,7 @@ fn event_point_exact(point: &mut EventPoint, segments: &[Segment]) -> Result<[Ex
             let right = *segments.get(right).ok_or_else(|| {
                 GeometryErrorKind::Invalid("crossing references a missing right segment".into())
             })?;
-            crossing_homogeneous(left, right)?
+            coordinates.crossing(left, right)?
         },
     };
     point.exact = Some(Box::new(exact.clone()));
@@ -1662,24 +1761,21 @@ fn stored_exact_point(point: XY) -> [ExactDyadic; 3] {
     ]
 }
 
-fn same_homogeneous_point(left: &[ExactDyadic; 3], right: &[ExactDyadic; 3]) -> Result<bool> {
-    Ok(
-        compare_ratios(&left[0], &left[2], &right[0], &right[2])? == Ordering::Equal
-            && compare_ratios(&left[1], &left[2], &right[1], &right[2])? == Ordering::Equal,
-    )
-}
-
-fn segment_directions(segment: Segment) -> Result<[[ExactDyadic; 2]; 2]> {
-    let x = ExactDyadic::from_f64(segment.end.x)
-        .try_subtract(ExactDyadic::from_f64(segment.start.x))?;
-    let y = ExactDyadic::from_f64(segment.end.y)
-        .try_subtract(ExactDyadic::from_f64(segment.start.y))?;
+fn segment_directions(
+    segment: Segment,
+    coordinates: &mut ExactCoordinates,
+) -> Result<[[ExactDyadic; 2]; 2]> {
+    let [x, y] = coordinates.direction(segment)?;
     Ok([[x.clone(), y.clone()], [x.neg(), y.neg()]])
 }
 
-fn crossing_quadrants(left: Segment, right: Segment) -> Result<[[ExactDyadic; 2]; 4]> {
-    let [u, _] = segment_directions(left)?;
-    let [v, _] = segment_directions(right)?;
+fn crossing_quadrants(
+    left: Segment,
+    right: Segment,
+    coordinates: &mut ExactCoordinates,
+) -> Result<[[ExactDyadic; 2]; 4]> {
+    let [u, _] = segment_directions(left, coordinates)?;
+    let [v, _] = segment_directions(right, coordinates)?;
     let combine = |u: &[ExactDyadic; 2],
                    v: &[ExactDyadic; 2],
                    u_sign: bool,
@@ -1744,8 +1840,9 @@ struct RunCache {
 fn atom_owner_label(
     operand: &Operand<'_>,
     component: &Component,
-    start: &[ExactDyadic; 3],
-    direction: &[ExactDyadic; 2],
+    atom: &ExactAtom<'_>,
+    coordinates: &mut ExactCoordinates,
+    forest: &ExactPointForest<'_>,
 ) -> Result<Loc> {
     if !component.dirty {
         return match component.source.ring_kind {
@@ -1765,28 +1862,21 @@ fn atom_owner_label(
             None => Ok(Loc::Interior),
         };
     }
+    let (start, direction) = atom.offset(coordinates, forest)?;
     Ok(operand.locate_exact_offset(start, direction)?.location)
-}
-
-fn component_edge_atom_location(component: &Component, location: SourcePointLocation) -> Loc {
-    if !component.dirty && component.source.ring_kind == Some(RingKind::Winding) {
-        location.edge_atom_location()
-    } else {
-        location.location
-    }
 }
 
 fn atom_sides(
     operand: &Operand<'_>,
     component: &Component,
     has_area: bool,
-    midpoint: Option<&[ExactDyadic; 3]>,
-    direction: &[ExactDyadic; 2],
+    atom: &ExactAtom<'_>,
+    coordinates: &mut ExactCoordinates,
+    forest: &ExactPointForest<'_>,
 ) -> Result<AtomSides> {
     if !has_area {
         return Ok(AtomSides::new(false, false));
     }
-    let midpoint = midpoint.expect("areal atom labels require an interior probe");
     if !component.dirty {
         match component.source.ring_kind {
             Some(RingKind::Winding) => {
@@ -1822,6 +1912,7 @@ fn atom_sides(
             },
         }
     }
+    let (midpoint, direction) = atom.side_probe(coordinates, forest)?;
     let left = segment_left_normal_from_direction(direction);
     let right = [left[0].clone().neg(), left[1].clone().neg()];
     Ok(AtomSides::new(
@@ -1852,21 +1943,21 @@ fn segment_left_normal_from_direction(direction: &[ExactDyadic; 2]) -> [ExactDya
 fn run_label(
     operand: &Operand<'_>,
     component: u32,
-    start: AtomPoint,
-    start_exact: &[ExactDyadic; 3],
-    direction: &[ExactDyadic; 2],
+    atom: &ExactAtom<'_>,
+    coordinates: &mut ExactCoordinates,
     cache: Option<&RunCache>,
     forest: &mut ExactPointForest<'_>,
     cross_stored: &HashSet<PointKey>,
     cross_constructed: &HashSet<u32>,
 ) -> Result<Loc> {
-    if !is_cross_event_node(start, forest, cross_stored, cross_constructed)
+    if !is_cross_event_node(atom.start, forest, cross_stored, cross_constructed)
         && let Some(cache) = cache
         && cache.component == component
-        && same_atom_point(cache.end, start, forest)?
+        && same_atom_point(cache.end, atom.start, forest, coordinates)?
     {
         return Ok(cache.label);
     }
+    let (start_exact, direction) = atom.offset(coordinates, forest)?;
     match operand.occupied_toward_exact(start_exact, direction)? {
         OccupiedToward::Yes => Ok(Loc::Interior),
         OccupiedToward::No => Ok(Loc::Exterior),
@@ -1881,17 +1972,24 @@ fn exhaustive_pass<Q: Query, const SATURATE: bool>(
     interval: &mut De9imInterval,
     operands: &[Operand<'_>; 2],
     query: &Q,
-    sources: &StagedExactSources,
-    components: &[Component],
-    segment_component: &[u32],
-    operand_has_area: [bool; 2],
+    staged: &StagedGeometry,
     events: &mut [ContactEvent],
     forest: &mut ExactPointForest<'_>,
-    stored_points: &mut HashMap<PointKey, u32>,
+    coordinates: &mut ExactCoordinates,
 ) -> Result<Option<Q::Output>> {
+    let StagedGeometry {
+        sources,
+        components,
+        segment_component,
+        operand_has_area,
+        ..
+    } = staged;
+    let mut stored_points = HashMap::with_hasher(collection_hash_state()?.clone());
     let segments = sources.segments();
-    let mut segment_cuts = intern_event_points(events, segments, forest, stored_points)?;
-    let (boundaries, cut_positions) = order_event_cuts(segments, &mut segment_cuts, forest)?;
+    let mut segment_cuts =
+        intern_event_points(events, segments, forest, &mut stored_points, coordinates)?;
+    let (boundaries, cut_positions) =
+        order_event_cuts(segments, &mut segment_cuts, forest, coordinates)?;
     let mut coverage = build_atom_coverage(
         events,
         segments,
@@ -1899,9 +1997,12 @@ fn exhaustive_pass<Q: Query, const SATURATE: bool>(
         &boundaries,
         &cut_positions,
         forest,
+        coordinates,
     )?;
     let (cross_stored, cross_constructed) = cross_event_nodes(events, components, forest)?;
-    if let Some(answer) = event_node_witnesses(interval, operands, query, events, forest)? {
+    if let Some(answer) =
+        event_node_witnesses(interval, operands, query, events, components, forest)?
+    {
         return Ok(Some(answer));
     }
 
@@ -1934,7 +2035,7 @@ fn exhaustive_pass<Q: Query, const SATURATE: bool>(
         let atom_cover = coverage
             .get_mut(segment_index)
             .ok_or_else(|| GeometryErrorKind::Invalid("segment has no atom-coverage row".into()))?;
-        let direction = segment_direction(segment)?;
+        let direction = OnceCell::new();
         for atom_index in 0..cuts.len().saturating_sub(1) {
             if SATURATE && interval.settled_for(query.cells()) {
                 return Ok(query.verdict(interval));
@@ -1945,25 +2046,25 @@ fn exhaustive_pass<Q: Query, const SATURATE: bool>(
             let end = *cuts
                 .get(atom_index.wrapping_add(1))
                 .ok_or_else(|| GeometryErrorKind::Invalid("atom end cut is missing".into()))?;
-            if same_atom_point(start, end, forest)? {
+            if same_atom_point(start, end, forest, coordinates)? {
                 continue;
             }
-            let start_exact = atom_point_exact(start, forest)?;
-            let end_exact = atom_point_exact(end, forest)?;
+            let atom = ExactAtom {
+                start,
+                end,
+                start_exact: OnceCell::new(),
+                midpoint: OnceCell::new(),
+                segment,
+                direction: &direction,
+            };
             let own = atom_owner_label(
                 by_operand(operands, side),
                 component,
-                &start_exact,
-                &direction,
+                &atom,
+                coordinates,
+                forest,
             )?;
             let cover = atom_cover.get(atom_index).copied().flatten();
-            let midpoint = if *by_operand(&operand_has_area, side)
-                || cover.is_some() && *by_operand(&operand_has_area, target_side)
-            {
-                Some(homogeneous_midpoint(&start_exact, &end_exact)?)
-            } else {
-                None
-            };
             let (foreign, foreign_sides) = if let Some(cover) = cover {
                 let partner_index = usize::try_from(cover.partner_component)
                     .map_err(|_| ResourceError::SizeOverflow)?;
@@ -1973,15 +2074,17 @@ fn exhaustive_pass<Q: Query, const SATURATE: bool>(
                 let foreign = atom_owner_label(
                     by_operand(operands, target_side),
                     partner,
-                    &start_exact,
-                    &direction,
+                    &atom,
+                    coordinates,
+                    forest,
                 )?;
                 let mut sides = atom_sides(
                     by_operand(operands, target_side),
                     partner,
-                    *by_operand(&operand_has_area, target_side),
-                    midpoint.as_ref(),
-                    &direction,
+                    *by_operand(operand_has_area, target_side),
+                    &atom,
+                    coordinates,
+                    forest,
                 )?;
                 // Dirty components were probed in this segment's direction;
                 // cached clean-ring sides still follow their own carrier.
@@ -1990,13 +2093,12 @@ fn exhaustive_pass<Q: Query, const SATURATE: bool>(
                 }
                 (foreign, sides)
             } else {
-                let foreign = if *by_operand(&operand_has_area, target_side) {
+                let foreign = if *by_operand(operand_has_area, target_side) {
                     run_label(
                         by_operand(operands, target_side),
                         component_id,
-                        start,
-                        &start_exact,
-                        &direction,
+                        &atom,
+                        coordinates,
                         run_cache.as_ref(),
                         forest,
                         &cross_stored,
@@ -2012,9 +2114,10 @@ fn exhaustive_pass<Q: Query, const SATURATE: bool>(
             let own_sides = atom_sides(
                 by_operand(operands, side),
                 component,
-                *by_operand(&operand_has_area, side),
-                midpoint.as_ref(),
-                &direction,
+                *by_operand(operand_has_area, side),
+                &atom,
+                coordinates,
+                forest,
             )?;
 
             let (left_label, right_label) = match side {
@@ -2051,7 +2154,7 @@ fn exhaustive_pass<Q: Query, const SATURATE: bool>(
             }
             if cover.is_some() {
                 run_cache = None;
-            } else if *by_operand(&operand_has_area, target_side) {
+            } else if *by_operand(operand_has_area, target_side) {
                 run_cache = Some(RunCache {
                     component: component_id,
                     end,
@@ -2072,6 +2175,7 @@ fn intern_event_points(
     segments: &[Segment],
     forest: &mut ExactPointForest<'_>,
     stored_points: &mut HashMap<PointKey, u32>,
+    coordinates: &mut ExactCoordinates,
 ) -> Result<Vec<Vec<u32>>> {
     let mut segment_cuts = Vec::with_capacity(segments.len());
     segment_cuts.resize_with(segments.len(), Vec::new);
@@ -2096,7 +2200,7 @@ fn intern_event_points(
                         segments: crossing_segments,
                         rounded,
                     } => {
-                        let exact = event_point_exact(point, segments)?;
+                        let exact = event_point_exact(point, segments, coordinates)?;
                         forest.push_crossing_with_exact(crossing_segments, rounded, exact)?
                     },
                 };
@@ -2118,12 +2222,40 @@ fn intern_event_points(
     Ok(segment_cuts)
 }
 
-type OrderedEventCuts = (Vec<Vec<AtomPoint>>, HashMap<(usize, u32), usize>);
+enum AtomTable<T, const N: usize> {
+    Uncut([T; N]),
+    Split(Vec<T>),
+}
+
+impl<T, const N: usize> std::ops::Deref for AtomTable<T, N> {
+    type Target = [T];
+
+    fn deref(&self) -> &[T] {
+        match self {
+            Self::Uncut(values) => values,
+            Self::Split(values) => values,
+        }
+    }
+}
+
+impl<T, const N: usize> std::ops::DerefMut for AtomTable<T, N> {
+    fn deref_mut(&mut self) -> &mut [T] {
+        match self {
+            Self::Uncut(values) => values,
+            Self::Split(values) => values,
+        }
+    }
+}
+
+type AtomCuts = AtomTable<AtomPoint, 2>;
+type AtomCoverage = AtomTable<Option<Coverage>, 1>;
+type OrderedEventCuts = (Vec<AtomCuts>, HashMap<(usize, u32), usize>);
 
 fn order_event_cuts(
     segments: &[Segment],
     segment_cuts: &mut [Vec<u32>],
     forest: &mut ExactPointForest<'_>,
+    coordinates: &mut ExactCoordinates,
 ) -> Result<OrderedEventCuts> {
     for (segment_index, cuts) in segment_cuts.iter_mut().enumerate() {
         let segment = *segments
@@ -2155,8 +2287,7 @@ fn order_event_cuts(
     positions.reserve(capacity);
     let mut boundaries = Vec::with_capacity(segments.len());
     for (segment_index, (segment, cuts)) in segments.iter().zip(segment_cuts).enumerate() {
-        let mut ordered = Vec::with_capacity(cuts.len().wrapping_add(2));
-        ordered.push(AtomPoint::Endpoint(segment.start));
+        let mut ordered = Vec::new();
         let mut previous = None;
         for &handle in cuts.iter() {
             let root = forest.find(handle);
@@ -2164,46 +2295,51 @@ fn order_event_cuts(
                 continue;
             }
             previous = Some(root);
-            if point_handle_equals_xy(forest, root, segment.start)?
-                || point_handle_equals_xy(forest, root, segment.end)?
+            if point_handle_equals_xy(forest, root, segment.start, coordinates)?
+                || point_handle_equals_xy(forest, root, segment.end, coordinates)?
             {
                 continue;
             }
-            let position = ordered.len();
+            let position = ordered.len().wrapping_add(1);
             ordered.push(AtomPoint::Event(root));
             positions.insert((segment_index, root), position);
         }
-        ordered.push(AtomPoint::Endpoint(segment.end));
-        boundaries.push(ordered);
+        boundaries.push(if ordered.is_empty() {
+            AtomTable::Uncut([
+                AtomPoint::Endpoint(segment.start),
+                AtomPoint::Endpoint(segment.end),
+            ])
+        } else {
+            ordered.insert(0, AtomPoint::Endpoint(segment.start));
+            ordered.push(AtomPoint::Endpoint(segment.end));
+            AtomTable::Split(ordered)
+        });
     }
     Ok((boundaries, positions))
 }
 
-fn point_handle_equals_xy(forest: &ExactPointForest<'_>, handle: u32, point: XY) -> Result<bool> {
+fn point_handle_equals_xy(
+    forest: &ExactPointForest<'_>,
+    handle: u32,
+    point: XY,
+    coordinates: &mut ExactCoordinates,
+) -> Result<bool> {
     let arena = forest.points();
     if let Some(key) = arena.stored_key(handle) {
         return Ok(key == PointKey::new(point));
     }
     let exact = arena.exact(handle)?;
     let [x, y, weight] = &*exact;
-    Ok(compare_ratios(
-        x,
-        weight,
-        &ExactDyadic::from_f64(point.x),
-        &ExactDyadic::one(),
-    )? == Ordering::Equal
-        && compare_ratios(
-            y,
-            weight,
-            &ExactDyadic::from_f64(point.y),
-            &ExactDyadic::one(),
-        )? == Ordering::Equal)
+    let [stored_x, stored_y, one] = coordinates.stored(point);
+    Ok(compare_ratios(x, weight, stored_x, one)? == Ordering::Equal
+        && compare_ratios(y, weight, stored_y, one)? == Ordering::Equal)
 }
 
 fn same_atom_point(
     left: AtomPoint,
     right: AtomPoint,
     forest: &ExactPointForest<'_>,
+    coordinates: &mut ExactCoordinates,
 ) -> Result<bool> {
     match (left, right) {
         (AtomPoint::Endpoint(left), AtomPoint::Endpoint(right)) => Ok(same_point(left, right)),
@@ -2212,15 +2348,8 @@ fn same_atom_point(
         },
         (AtomPoint::Endpoint(endpoint), AtomPoint::Event(handle))
         | (AtomPoint::Event(handle), AtomPoint::Endpoint(endpoint)) => {
-            point_handle_equals_xy(forest, handle, endpoint)
+            point_handle_equals_xy(forest, handle, endpoint, coordinates)
         },
-    }
-}
-
-fn atom_point_exact(point: AtomPoint, forest: &ExactPointForest<'_>) -> Result<[ExactDyadic; 3]> {
-    match point {
-        AtomPoint::Endpoint(point) => Ok(stored_exact_point(point)),
-        AtomPoint::Event(handle) => Ok(forest.points().exact(handle)?.as_ref().clone()),
     }
 }
 
@@ -2231,11 +2360,12 @@ fn atom_position(
     boundary_count: usize,
     positions: &HashMap<(usize, u32), usize>,
     forest: &ExactPointForest<'_>,
+    coordinates: &mut ExactCoordinates,
 ) -> Result<usize> {
-    if point_handle_equals_xy(forest, handle, segment.start)? {
+    if point_handle_equals_xy(forest, handle, segment.start, coordinates)? {
         return Ok(0);
     }
-    if point_handle_equals_xy(forest, handle, segment.end)? {
+    if point_handle_equals_xy(forest, handle, segment.end, coordinates)? {
         return Ok(boundary_count.wrapping_sub(1));
     }
     positions
@@ -2251,13 +2381,20 @@ fn build_atom_coverage(
     events: &[ContactEvent],
     segments: &[Segment],
     components: &[Component],
-    boundaries: &[Vec<AtomPoint>],
+    boundaries: &[AtomCuts],
     positions: &HashMap<(usize, u32), usize>,
     forest: &mut ExactPointForest<'_>,
-) -> Result<Vec<Vec<Option<Coverage>>>> {
+    coordinates: &mut ExactCoordinates,
+) -> Result<Vec<AtomCoverage>> {
     let mut coverage = boundaries
         .iter()
-        .map(|cuts| vec![None; cuts.len().saturating_sub(1)])
+        .map(|cuts| {
+            if cuts.len() == 2 {
+                AtomTable::Uncut([None])
+            } else {
+                AtomTable::Split(vec![None; cuts.len().saturating_sub(1)])
+            }
+        })
         .collect::<Vec<_>>();
     for event in events {
         let EventKind::Collinear { same_direction } = event.kind else {
@@ -2309,9 +2446,24 @@ fn build_atom_coverage(
             let list = boundaries
                 .get(segment_index)
                 .expect("event segment has its boundary list");
-            let first =
-                atom_position(segment_index, segment, start, list.len(), positions, forest)?;
-            let last = atom_position(segment_index, segment, end, list.len(), positions, forest)?;
+            let first = atom_position(
+                segment_index,
+                segment,
+                start,
+                list.len(),
+                positions,
+                forest,
+                coordinates,
+            )?;
+            let last = atom_position(
+                segment_index,
+                segment,
+                end,
+                list.len(),
+                positions,
+                forest,
+                coordinates,
+            )?;
             let (lo, hi) = (first.min(last), first.max(last));
             let atoms = coverage
                 .get_mut(segment_index)
@@ -2394,9 +2546,28 @@ fn event_node_witnesses<Q: Query>(
     operands: &[Operand<'_>; 2],
     query: &Q,
     events: &[ContactEvent],
+    components: &[Component],
     forest: &mut ExactPointForest<'_>,
 ) -> Result<Option<Q::Output>> {
-    let mut seen = HashSet::new();
+    let mut nodes = HashMap::<u32, [Option<SourcePointLocation>; 2]>::default();
+    for event in events {
+        for point in event.points.iter().flatten() {
+            let root = forest.find(point.handle.expect("event points were interned"));
+            let locations = nodes.entry(root).or_insert([None; 2]);
+            for &id in &event.components {
+                let component = components
+                    .get(id as usize)
+                    .expect("contact component was admitted");
+                if !component.dirty
+                    && component.source.ring_kind == Some(RingKind::Winding)
+                    && let Some(seed) = component.seed
+                    && seed.area
+                {
+                    *by_operand_mut(locations, component.side) = Some(seed);
+                }
+            }
+        }
+    }
     for event in events {
         for point in event.points.iter().flatten() {
             let Some(handle) = point.handle else {
@@ -2406,20 +2577,37 @@ fn event_node_witnesses<Q: Query>(
                 .into());
             };
             let root = forest.find(handle);
-            if !seen.insert(root) {
+            let Some([left, right]) = nodes.remove(&root) else {
                 continue;
-            }
+            };
             let (left, right) = if let Some(key) = forest.points().stored_key(root) {
                 let point = point_from_key(key);
+                let locate = |side: matrix_predicates::Operand,
+                              known: Option<SourcePointLocation>| {
+                    if let Some(known) = known {
+                        return Ok(known);
+                    }
+                    #[cfg(all(test, debug_assertions))]
+                    update_atom_metrics(|metrics| {
+                        metrics.node_locations = metrics.node_locations.wrapping_add(1);
+                    });
+                    by_operand(operands, side).locate_stored(point)
+                };
                 (
-                    operands[0].locate_stored(point)?,
-                    operands[1].locate_stored(point)?,
+                    locate(matrix_predicates::Operand::Left, left)?,
+                    locate(matrix_predicates::Operand::Right, right)?,
                 )
             } else {
                 let exact = forest.points().exact(root)?;
+                #[cfg(all(test, debug_assertions))]
+                update_atom_metrics(|metrics| {
+                    metrics.node_locations = metrics.node_locations.wrapping_add(
+                        usize::from(left.is_none()).wrapping_add(usize::from(right.is_none())),
+                    );
+                });
                 (
-                    operands[0].locate_exact(&exact)?,
-                    operands[1].locate_exact(&exact)?,
+                    left.map_or_else(|| operands[0].locate_exact(&exact), Ok)?,
+                    right.map_or_else(|| operands[1].locate_exact(&exact), Ok)?,
                 )
             };
             witness_point(interval, left, right, query.needs_dimensions());
@@ -2590,19 +2778,15 @@ fn visit_component_representatives(
     }
 }
 
-fn ring_left_area(operand: &Operand<'_>, segment: Segment) -> Result<bool> {
-    let start = [
-        ExactDyadic::from_f64(segment.start.x),
-        ExactDyadic::from_f64(segment.start.y),
-        ExactDyadic::one(),
-    ];
-    let end = [
-        ExactDyadic::from_f64(segment.end.x),
-        ExactDyadic::from_f64(segment.end.y),
-        ExactDyadic::one(),
-    ];
-    let midpoint = homogeneous_midpoint(&start, &end)?;
-    let direction = segment_left_normal(segment)?;
+fn ring_left_area(
+    operand: &Operand<'_>,
+    segment: Segment,
+    coordinates: &mut ExactCoordinates,
+) -> Result<bool> {
+    let start = coordinates.stored(segment.start).clone();
+    let end = coordinates.stored(segment.end);
+    let midpoint = homogeneous_midpoint(&start, end)?;
+    let direction = segment_left_normal_from_direction(&coordinates.direction(segment)?);
     match operand.occupied_toward_exact(&midpoint, &direction)? {
         OccupiedToward::Yes => Ok(true),
         OccupiedToward::No => Ok(false),
@@ -2617,6 +2801,7 @@ fn initialize_clean_ring_sides(
     operands: &[Operand<'_>; 2],
     sources: &StagedExactSources,
     components: &mut [Component],
+    coordinates: &mut ExactCoordinates,
 ) -> Result<()> {
     for component in components {
         if component.dirty
@@ -2637,15 +2822,13 @@ fn initialize_clean_ring_sides(
         component.left_area = Some(ring_left_area(
             by_operand(operands, component.side),
             segment,
+            coordinates,
         )?);
     }
     Ok(())
 }
 
-fn segment_left_normal(segment: Segment) -> Result<[ExactDyadic; 2]> {
-    segment_direction(segment).map(|direction| segment_left_normal_from_direction(&direction))
-}
-
+#[cfg(test)]
 fn segment_direction(segment: Segment) -> Result<[ExactDyadic; 2]> {
     Ok([
         ExactDyadic::from_f64(segment.end.x)
@@ -2660,6 +2843,202 @@ mod tests {
     use super::*;
     use crate::geometry::ExpansionBudget;
     use crate::geometry::overlay::ExactSourceInventory;
+
+    #[test]
+    fn stored_dyadic_recovery_preserves_binary64_edges_without_rounding() {
+        use crate::geometry::source_support::exact_stored_point;
+        for value in [
+            0.0,
+            -0.0,
+            1.0,
+            -1.0,
+            f64::MAX,
+            -f64::MAX,
+            f64::MIN_POSITIVE,
+            f64::from_bits(1),
+            -f64::from_bits(1),
+            f64::from_bits(0x000F_FFFF_FFFF_FFFF),
+            f64::from_bits(0x3FF0_0000_0000_0001),
+        ] {
+            let exact = stored_exact_point(XY {
+                x: value,
+                y: -value,
+            });
+            let point = exact_stored_point(&exact).unwrap();
+            assert_eq!(point.x, value);
+            assert_eq!(point.y, -value);
+        }
+        let midpoint = homogeneous_midpoint(
+            &stored_exact_point(XY { x: 1.0, y: 1.0 }),
+            &stored_exact_point(XY {
+                x: f64::from_bits(0x3FF0_0000_0000_0001),
+                y: 1.0,
+            }),
+        )
+        .unwrap();
+        assert!(exact_stored_point(&midpoint).is_none());
+        let underflow = [
+            ExactDyadic::from_f64(f64::from_bits(1)),
+            ExactDyadic::zero(),
+            ExactDyadic::from_f64(2.0),
+        ];
+        assert!(exact_stored_point(&underflow).is_none());
+    }
+
+    #[test]
+    #[cfg(debug_assertions)]
+    fn stored_recovery_does_not_round_ratios_or_reconvert_coordinates() {
+        use crate::geometry::source_support::exact_stored_point;
+        use crate::geometry::tessellation::exact::round_ratio;
+        use crate::test_support::exact_operation_counts::measure;
+        let point = stored_exact_point(XY::new(7.25, -3.125));
+        let (recovered, counts) = measure(|| exact_stored_point(&point).unwrap());
+        assert_eq!(recovered.x, 7.25);
+        assert_eq!(recovered.y, -3.125);
+        assert_eq!(counts.conversions, 0);
+        assert_eq!(counts.ratio_roundings, 0);
+        let (value, control) = measure(|| ExactDyadic::from_f64(0.75));
+        assert_eq!(control.conversions, 1);
+        let (rounded, control) = measure(|| round_ratio(&value, &ExactDyadic::one()).unwrap());
+        assert_eq!(rounded, 0.75);
+        assert_eq!(control.ratio_roundings, 1);
+    }
+
+    #[test]
+    #[cfg(debug_assertions)]
+    fn clean_shared_boundary_atoms_do_not_construct_exact_probes() {
+        let left = crate::io::parse_wkt("POLYGON ((0 0,1 0,2 0,3 0,4 0,4 3,3 3,2 3,1 3,0 3,0 0))")
+            .unwrap();
+        for (index, right) in [
+            left.clone(),
+            crate::io::parse_wkt("POLYGON ((0 0,1 0,2 0,3 0,4 0,4 -3,3 -3,2 -3,1 -3,0 -3,0 0))")
+                .unwrap(),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let left_plan = PreparedPlan::transient(&left);
+            let right_plan = PreparedPlan::transient(&right);
+            let oracle = partition_oracle(&left, &right).unwrap();
+            ATOM_METRICS.with(|cell| cell.set(AtomMetrics::default()));
+            assert_eq!(relate(&left_plan, &right_plan).unwrap(), oracle);
+            let metrics = ATOM_METRICS.with(std::cell::Cell::get);
+            assert_eq!(metrics.midpoints, 0, "{metrics:?}");
+            assert_eq!(metrics.node_locations, 0, "{metrics:?}");
+            if index == 0 {
+                assert_eq!(metrics.directions, 0, "{metrics:?}");
+                assert!(metrics.stored_vertices <= 2, "{metrics:?}");
+            } else {
+                assert!(metrics.stored_vertices <= 16, "{metrics:?}");
+            }
+        }
+    }
+
+    #[test]
+    #[cfg(debug_assertions)]
+    fn nonareal_atoms_skip_probes_and_dirty_atoms_reuse_stored_vertices() {
+        let left = crate::io::parse_wkt("LINESTRING (0 0,2 0,4 0,6 0)").unwrap();
+        let right = crate::io::parse_wkt("LINESTRING (3 -2,3 2)").unwrap();
+        let left_plan = PreparedPlan::transient(&left);
+        let right_plan = PreparedPlan::transient(&right);
+        ATOM_METRICS.with(|cell| cell.set(AtomMetrics::default()));
+        assert_eq!(
+            relate(&left_plan, &right_plan).unwrap(),
+            partition_oracle(&left, &right).unwrap()
+        );
+        let metrics = ATOM_METRICS.with(std::cell::Cell::get);
+        assert_eq!(metrics.stored_vertices, 4, "{metrics:?}");
+        assert_eq!(metrics.midpoints, 0, "{metrics:?}");
+        assert_eq!(metrics.directions, 0, "{metrics:?}");
+
+        let left = crate::io::parse_wkt("POLYGON ((0 0,4 4,0 4,4 0,0 0))").unwrap();
+        let right = crate::io::parse_wkt("POLYGON ((0 0,4 4,0 4,4 0,0 0))").unwrap();
+        let left_plan = PreparedPlan::transient(&left);
+        let right_plan = PreparedPlan::transient(&right);
+        ATOM_METRICS.with(|cell| cell.set(AtomMetrics::default()));
+        assert_eq!(
+            relate(&left_plan, &right_plan).unwrap(),
+            partition_oracle(&left, &right).unwrap()
+        );
+        let metrics = ATOM_METRICS.with(std::cell::Cell::get);
+        assert!(
+            metrics.midpoints > 0 && metrics.directions > 0,
+            "{metrics:?}"
+        );
+        assert!(
+            metrics.stored_vertices > 0 && metrics.stored_vertices <= 4,
+            "{metrics:?}"
+        );
+    }
+
+    #[test]
+    fn uncut_atom_tables_do_not_allocate_per_segment() {
+        for count in [1, 32, 128] {
+            let segments = (0..count)
+                .map(|i| Segment {
+                    start: XY::new(i as f64, 0.0),
+                    end: XY::new(i as f64 + 1.0, 0.0),
+                })
+                .collect::<Vec<_>>();
+            let mut cuts = vec![Vec::new(); count];
+            let mut forest = ExactPointForest::with_capacity(&segments, 0);
+            let mut coordinates = ExactCoordinates::default();
+            let ((boundaries, coverage), allocations) =
+                crate::test_support::allocation_count(|| {
+                    let (boundaries, positions) =
+                        order_event_cuts(&segments, &mut cuts, &mut forest, &mut coordinates)
+                            .unwrap();
+                    let coverage = build_atom_coverage(
+                        &[],
+                        &segments,
+                        &[],
+                        &boundaries,
+                        &positions,
+                        &mut forest,
+                        &mut coordinates,
+                    )
+                    .unwrap();
+                    (boundaries, coverage)
+                });
+            assert_eq!(boundaries.len(), count);
+            assert_eq!(coverage.len(), count);
+            assert!(
+                allocations <= 2,
+                "{count} uncut segments allocated {allocations} times"
+            );
+        }
+    }
+
+    #[test]
+    fn same_geometry_containment_requires_actual_interior_support() {
+        for wkt in [
+            "POLYGON EMPTY",
+            "POLYGON ((0 0,0 0,0 0,0 0))",
+            "POLYGON ((0 0,1 0,2 0,0 0))",
+            "POLYGON ((0 0,2 0,2 2,0 2,0 0),(0 0,2 0,2 2,0 2,0 0))",
+            "POLYGON ((0 0,2 0,2 2,0 2,0 0,0 2,2 2,2 0,0 0))",
+            "POLYGON ((0 0,4 4,0 4,4 0,0 0))",
+            "POLYGON ((0 0,4 0,4 4,0 4,0 0),(1 1,2 1,2 2,1 2,1 1))",
+            "POLYGON ((0 0,4 0,4 4,0 4,0 0),(5 5,6 5,6 6,5 6,5 5))",
+            "GEOMETRYCOLLECTION (POLYGON ((0 0,1 0,2 0,0 0)), POINT (7 8))",
+        ] {
+            let shape = crate::io::parse_wkt(wkt).unwrap();
+            let plan = PreparedPlan::transient(&shape);
+            let oracle = partition_oracle(&shape, &shape).unwrap();
+            for predicate in [
+                Predicate::Contains,
+                Predicate::Within,
+                Predicate::Covers,
+                Predicate::CoveredBy,
+            ] {
+                assert_eq!(
+                    self::predicate(&plan, &plan, predicate).unwrap(),
+                    matrix_predicates::decided(predicate, oracle),
+                    "{wkt}: {predicate:?}"
+                );
+            }
+        }
+    }
 
     fn partition_oracle(left: &Shape, right: &Shape) -> Result<De9im> {
         let rows = [ShapeRow::Shape(left), ShapeRow::Shape(right)];
@@ -2894,9 +3273,28 @@ mod tests {
             component.seed = Some(ring_owner.locate_stored(point)?);
             let exact = stored_exact_point(segment.start);
             let direction = segment_direction(segment)?;
-            let own = atom_owner_label(&ring_owner, component, &exact, &direction)?;
+            let atom = ExactAtom {
+                start: AtomPoint::Endpoint(segment.start),
+                end: AtomPoint::Endpoint(segment.end),
+                start_exact: OnceCell::new(),
+                midpoint: OnceCell::new(),
+                segment,
+                direction: &OnceCell::new(),
+            };
+            let forest = ExactPointForest::with_capacity(segments, 0);
+            let own = atom_owner_label(
+                &ring_owner,
+                component,
+                &atom,
+                &mut ExactCoordinates::default(),
+                &forest,
+            )?;
             let other_location = other_owner.locate_exact_offset(&exact, &direction)?;
-            let other = component_edge_atom_location(component, other_location);
+            let other = if component.dirty {
+                other_location.location
+            } else {
+                other_location.edge_atom_location()
+            };
             return Ok((own, other));
         }
         Err(GeometryErrorKind::Invalid(
