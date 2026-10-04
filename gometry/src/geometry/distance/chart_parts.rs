@@ -2,9 +2,9 @@ use std::ops::ControlFlow;
 use std::sync::OnceLock;
 
 use crate::HeapSize;
-use crate::geographic::lonlat::invalid_lonlat_error;
 use crate::crs::PointEdgeScratch;
 use crate::error::Result;
+use crate::geographic::lonlat::invalid_lonlat_error;
 use crate::geographic::{GeographicFrame, GeographicInputs};
 use crate::geometry::overlay::overlay_all_geographic_from;
 use crate::geometry::{

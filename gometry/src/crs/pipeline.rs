@@ -406,8 +406,7 @@ mod tests {
     use super::*;
 
     const SPHERICAL_TM_RADIUS: f64 = 6_371_007.0;
-    const SPHERICAL_TM_DEFINITION: &str =
-        "+proj=tmerc +R=6371007 +lon_0=0 +lat_0=0.05 +k=1";
+    const SPHERICAL_TM_DEFINITION: &str = "+proj=tmerc +R=6371007 +lon_0=0 +lat_0=0.05 +k=1";
 
     fn spherical_tm_pipeline(state: &RuntimeState) -> ProjPipeline {
         ProjPipeline::from_definition_with_state(SPHERICAL_TM_DEFINITION, state)
@@ -421,14 +420,7 @@ mod tests {
         direction: ProjDirection,
     ) {
         pipeline
-            .transform_lanes(
-                x,
-                y,
-                None,
-                None,
-                direction,
-                &TransformExecution::default(),
-            )
+            .transform_lanes(x, y, None, None, direction, &TransformExecution::default())
             .expect("spherical transverse Mercator transform");
     }
 
@@ -445,10 +437,9 @@ mod tests {
     }
 
     fn spherical_witness_position(parameter: f64) -> (f64, f64) {
-        let longitude = -0.003_894_176_784_489_192_4
-            + parameter * (2.0 * 0.003_894_176_784_489_192_4);
-        let latitude =
-            -0.002_248_304_014_796_826 + parameter * (2.0 * 0.002_248_304_014_796_826);
+        let longitude =
+            -0.003_894_176_784_489_192_4 + parameter * (2.0 * 0.003_894_176_784_489_192_4);
+        let latitude = -0.002_248_304_014_796_826 + parameter * (2.0 * 0.002_248_304_014_796_826);
         (longitude.to_radians(), latitude.to_radians())
     }
 
@@ -594,9 +585,7 @@ mod tests {
                 * (delta_longitude * middle_latitude.cos()).hypot(delta_latitude);
             let local_scale = [start, middle, end]
                 .into_iter()
-                .map(|(longitude, latitude)| {
-                    spherical_tm_scale(&pipeline, longitude, latitude)
-                })
+                .map(|(longitude, latitude)| spherical_tm_scale(&pipeline, longitude, latitude))
                 .fold(0.0_f64, f64::max);
 
             let mut x = [start.0, end.0];
@@ -623,8 +612,7 @@ mod tests {
         let mut y = [0.0, 0.0, -0.0, -0.0];
         transform_xy(&pipeline, &mut x, &mut y, ProjDirection::Forward);
 
-        let expected = SPHERICAL_TM_RADIUS
-            * (std::f64::consts::PI - 0.05_f64.to_radians());
+        let expected = SPHERICAL_TM_RADIUS * (std::f64::consts::PI - 0.05_f64.to_radians());
         assert_eq!(y, [expected; 4]);
     }
 
@@ -636,8 +624,8 @@ mod tests {
         let latitude_of_origin = 0.05_f64.to_radians();
 
         for interval_length in [0.02, 2.0e-6] {
-            let center_northing = SPHERICAL_TM_RADIUS
-                * (std::f64::consts::FRAC_PI_2 - 5.0e-9 - latitude_of_origin);
+            let center_northing =
+                SPHERICAL_TM_RADIUS * (std::f64::consts::FRAC_PI_2 - 5.0e-9 - latitude_of_origin);
             let expected_y = [
                 center_northing - interval_length * 0.5,
                 center_northing + interval_length * 0.5,
@@ -650,8 +638,7 @@ mod tests {
             let [latitude0, latitude1] = y;
             let mean_latitude = f64::midpoint(latitude0, latitude1);
             let image_separation = SPHERICAL_TM_RADIUS
-                * ((longitude1 - longitude0) * mean_latitude.cos())
-                    .hypot(latitude1 - latitude0);
+                * ((longitude1 - longitude0) * mean_latitude.cos()).hypot(latitude1 - latitude0);
             assert!(
                 image_separation >= interval_length * 0.5,
                 "interval={interval_length:e} m, inverse image={image_separation:e} m"
@@ -702,8 +689,7 @@ mod tests {
             .zip(y.into_iter().zip(expected_y))
         {
             assert!(
-                (actual_x - expected_x).abs() <= 1.0e-6
-                    && (actual_y - expected_y).abs() <= 1.0e-6,
+                (actual_x - expected_x).abs() <= 1.0e-6 && (actual_y - expected_y).abs() <= 1.0e-6,
                 "forward/inverse/forward error: ({actual_x:e}, {actual_y:e}) \
                  vs ({expected_x:e}, {expected_y:e})"
             );
