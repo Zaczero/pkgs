@@ -227,7 +227,7 @@ pub struct Planner {
 
 impl Planner {
     /// Seconds per run. Later pilot runs predict the rest better than a cold first run.
-    fn cost(costs: &[f64]) -> f64 {
+    pub fn cost(costs: &[f64]) -> f64 {
         let steady = costs
             .get(1..)
             .filter(|rest| !rest.is_empty())

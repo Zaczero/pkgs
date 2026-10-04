@@ -7,6 +7,7 @@ use serde::Serialize;
 
 use crate::cli::Cli;
 use crate::random::Random;
+use crate::report::{plural, seconds};
 use crate::runner::{self, Command, InvocationKind, Observation, Outcome, Runner};
 use crate::statistics::{self, Analysis, MINIMUM_RUNS, Planner};
 
@@ -29,15 +30,6 @@ impl Text {
             || Self::Bytes(value.as_bytes().to_vec()),
             |text| Self::Utf8(text.into()),
         )
-    }
-    pub(crate) fn display(&self) -> String {
-        match self {
-            Self::Utf8(text) => text.chars().flat_map(char::escape_debug).collect(),
-            Self::Bytes(bytes) => bytes
-                .iter()
-                .flat_map(|&byte| std::ascii::escape_default(byte).map(char::from))
-                .collect(),
-        }
     }
 }
 
@@ -313,6 +305,10 @@ struct Experiment<'a> {
     result: Result,
     rng: Random,
     next_run: usize,
+    /// Seconds per completed run, hooks included.
+    costs: Vec<f64>,
+    /// Runs to execute once the plan is known, warmup and pilot included.
+    total_runs: Option<usize>,
     start: Instant,
     progress: Instant,
 }
@@ -431,6 +427,7 @@ impl Experiment<'_> {
     }
 
     fn run(&mut self, phase: Phase) -> bool {
+        let started = Instant::now();
         let run = self.next_run;
         self.next_run = run.wrapping_add(1);
         let mut order: Vec<_> = (0..self.commands.len()).collect();
@@ -450,15 +447,69 @@ impl Experiment<'_> {
                 return false;
             }
         }
+        self.costs.push(started.elapsed().as_secs_f64());
         if self.progress.elapsed() >= Duration::from_secs(10) {
-            self.message(&format!(
-                "{}: {} runs complete",
-                phase.name(),
-                run.wrapping_add(1)
-            ));
+            self.progress_line();
             self.progress = Instant::now();
         }
         true
+    }
+
+    /// An appended line, never redrawn: measured runs, a bar, and the time left.
+    fn progress_line(&self) {
+        const BAR: usize = 20;
+        let Some(total) = self.total_runs else {
+            self.message(&format!(
+                "pilot: {} run{} complete",
+                self.next_run,
+                plural(self.next_run)
+            ));
+            return;
+        };
+        let remaining = total.saturating_sub(self.next_run);
+        if remaining == 0 {
+            return;
+        }
+        let planned = self.result.plan.planned_runs;
+        let done = planned.saturating_sub(remaining);
+        let filled = done
+            .saturating_mul(BAR)
+            .checked_div(planned)
+            .unwrap_or(BAR)
+            .min(BAR);
+        let left = remaining as f64 * Planner::cost(&self.costs);
+        self.message(&format!(
+            "run {done} of {planned} {}{} about {} left",
+            "━".repeat(filled),
+            "─".repeat(BAR.saturating_sub(filled)),
+            seconds(left * 1e9)
+        ));
+    }
+
+    /// Announces a plan that takes a while before its remaining runs start. Under the
+    /// default target, a plan past it means the minimum run count was enforced.
+    fn announce(&self, target: Option<f64>) {
+        let Some(total) = self.total_runs else {
+            return;
+        };
+        let cost = Planner::cost(&self.costs);
+        let elapsed = self.start.elapsed().as_secs_f64();
+        let left = total.saturating_sub(self.next_run) as f64 * cost;
+        let planned = self.result.plan.planned_runs;
+        if target.is_some_and(|target| elapsed + left > 1.1 * target) {
+            self.message(&format!(
+                "one run takes about {}; measuring the minimum of {planned} runs, about {} in \
+                 total. Ctrl-C stops early with the completed runs",
+                seconds(cost * 1e9),
+                seconds((elapsed + left) * 1e9)
+            ));
+        } else if left >= 5.0 {
+            self.message(&format!(
+                "measuring {planned} runs, about {} left. Ctrl-C stops early with the completed \
+                 runs",
+                seconds(left * 1e9)
+            ));
+        }
     }
 
     fn message(&self, text: &str) {
@@ -468,17 +519,15 @@ impl Experiment<'_> {
     }
 
     fn execute(&mut self, capacity: usize) {
-        self.message(
-            "running commands in randomized order; Ctrl-C stops and reports completed runs",
-        );
         for _ in 0..self.options.warmup.unwrap_or(0) {
             if !self.run(Phase::Warmup) {
                 return;
             }
             self.result.plan.warmup_runs = self.next_run;
         }
-        let production = match self.result.plan.planning {
-            Planning::Fixed => self.result.plan.planned_runs,
+        // The automatic arm yields the default target, or no target for a strict budget.
+        let (production, automatic) = match self.result.plan.planning {
+            Planning::Fixed => (self.result.plan.planned_runs, None),
             Planning::Automatic {
                 target_seconds,
                 strict,
@@ -519,16 +568,20 @@ impl Experiment<'_> {
                     .len()
                     .wrapping_sub(self.result.plan.discarded_runs)
                     .wrapping_add(additional);
-                additional
+                (additional, Some((!strict).then_some(target_seconds)))
             },
         };
-        self.message(&format!(
-            "plan frozen: {} measured runs per command",
-            self.result.plan.planned_runs
-        ));
-        for _ in 0..production {
+        self.total_runs = Some(self.next_run.wrapping_add(production));
+        if let Some(target) = automatic {
+            self.announce(target);
+        }
+        for index in 0..production {
             if !self.run(Phase::Production) {
                 return;
+            }
+            // A fixed plan learns its run cost from its first run.
+            if index == 0 && automatic.is_none() {
+                self.announce(None);
             }
         }
         self.result.completed = true;
@@ -700,6 +753,8 @@ pub(crate) fn run(options: Cli) -> std::result::Result<(Result, Cli), Failure> {
         result,
         rng: Random::new(seed),
         next_run: 0,
+        costs: Vec::new(),
+        total_runs: None,
         start: Instant::now(),
         progress: Instant::now(),
     };

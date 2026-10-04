@@ -63,9 +63,6 @@ pub(crate) struct Cli {
     /// Control color
     #[arg(long, value_enum, default_value = "auto")]
     pub color: Color,
-    /// Use plain ASCII symbols
-    #[arg(long)]
-    pub ascii: bool,
     /// Suppress progress, retaining results and errors
     #[arg(short, long)]
     pub quiet: bool,

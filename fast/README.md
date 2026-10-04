@@ -191,8 +191,15 @@ fast --details ./old ::: ./new > detailed.txt
 ```
 
 `--color` controls styling; `auto` follows `NO_COLOR`, `FORCE_COLOR`, `CLICOLOR`
-and `CLICOLOR_FORCE`. JSON never contains ANSI. `--ascii` selects plain symbols;
-`--quiet` suppresses progress.
+and `CLICOLOR_FORCE`. JSON never contains ANSI. `--quiet` suppresses progress.
+
+The report lists each command as a shell would read it back: arguments are quoted
+only where needed, and control characters appear as `$'...'` escapes. Each
+command's timeline groups consecutive runs and compares them with its mean, so
+cold starts, drift and outliers are visible; a flat line is a steady command.
+Verdicts state a factor beyond 1.5× and a percentage of time below that, with the
+95% interval. `--details` adds every command pair, medians and ranges, the plan,
+and the assumptions behind the intervals.
 
 JSON schema 2 records each candidate as its exact argument vector and uses tagged
 UTF-8 or byte-array strings for Unix arguments. Explicit shell commands include

@@ -1,14 +1,16 @@
-use std::collections::BTreeMap;
+mod resources;
+
 use std::io::{self, IsTerminal as _, Write as _};
 
 use anstream::{AutoStream, ColorChoice};
 use anstyle::{AnsiColor, Style};
-use fast::runner::{Activity, Observation, Task};
 use unicode_width::{UnicodeWidthChar as _, UnicodeWidthStr as _};
 
+use self::resources::resources;
 use crate::cli::{Cli, Color};
-use crate::experiment::{Invocation, Phase, Result, Role, id};
-use crate::statistics::{Comparison, Decision};
+use crate::experiment::{Candidate, Invocation, Planning, Result, Role, Text, id};
+use crate::runner::Outcome;
+use crate::statistics::{Comparison, Decision, partition};
 
 const HEADING: Style = Style::new()
     .bold()
@@ -16,11 +18,20 @@ const HEADING: Style = Style::new()
 const LESS: Style = Style::new().fg_color(Some(anstyle::Color::Ansi(AnsiColor::Green)));
 const MORE: Style = Style::new().fg_color(Some(anstyle::Color::Ansi(AnsiColor::Red)));
 const UNRESOLVED: Style = Style::new().fg_color(Some(anstyle::Color::Ansi(AnsiColor::Yellow)));
-
-struct ResourceRow {
-    label: &'static str,
-    cells: Vec<String>,
-}
+const PROGRAM: Style = Style::new().bold();
+/// Ratios at or beyond this factor read better as "3.47× slower" than as a percentage.
+const FACTOR: f64 = 1.5;
+const TIMELINE_CELLS: usize = 24;
+/// Upper bounds of a timeline group's mean relative to the command's mean.
+const TIMELINE: [(f64, char); 7] = [
+    (0.9, '▁'),
+    (0.97, '▂'),
+    (1.03, '▃'),
+    (1.1, '▄'),
+    (1.25, '▅'),
+    (1.5, '▆'),
+    (2.0, '▇'),
+];
 
 pub(crate) fn print(result: &Result, options: &Cli) -> io::Result<()> {
     drop(diagnostics(result));
@@ -38,153 +49,132 @@ pub(crate) fn print(result: &Result, options: &Cli) -> io::Result<()> {
     };
     let mut out = AutoStream::new(stdout.lock(), color);
     let width = terminal_width();
-    let separator = if options.ascii { "-" } else { "·" };
+    let runs = result.measured();
+    let commands = result.candidates.len();
     writeln!(
         out,
-        "{HEADING}fast{HEADING:#} {separator} {} command{} {separator} {} measured run{} each",
-        result.candidates.len(),
-        if result.candidates.len() == 1 {
-            ""
-        } else {
-            "s"
-        },
+        "{HEADING}fast{HEADING:#} · {commands} command{} · {} run{}{} · {}\n",
+        plural(commands),
         result.analysis.runs,
-        if result.analysis.runs == 1 { "" } else { "s" }
+        plural(result.analysis.runs),
+        if commands > 1 { " each" } else { "" },
+        seconds(result.wall_ns as f64)
     )?;
-    writeln!(out)?;
     for candidate in &result.candidates {
-        let words: Vec<_> = candidate
-            .argv
-            .iter()
-            .map(|arg| format!("'{}'", arg.display().replace('\'', "'\\''")))
-            .collect();
-        wrapped(
-            &mut out,
-            &format!("{}  {}", candidate.id, words.join(" ")),
-            width,
-        )?;
+        legend(&mut out, candidate, width)?;
     }
-    timing(&mut out, result, options, width)?;
-    resources(&mut out, result, options, width)?;
-    conclusions(&mut out, result, options, width)?;
+    if result.analysis.summaries.is_empty() {
+        partial_timing(&mut out, result, width)?;
+    } else {
+        timing(&mut out, result, &runs, options, width)?;
+        verdicts(&mut out, result, options, width)?;
+    }
+    resources(&mut out, &runs, options, width)?;
+    status(&mut out, result, options, width)?;
     if options.details {
-        writeln!(
-            out,
-            "\nContext: {} Linux {}; allowed CPUs {}; seed {}",
-            result.context.architecture,
-            result.context.kernel.as_deref().unwrap_or("unknown"),
-            result.context.allowed_cpus.as_deref().unwrap_or("unknown"),
-            result.seed
-        )?;
-        if let Some(cpu) = &result.context.cpu_model {
-            writeln!(
-                out,
-                "CPU: {}; microcode {}",
-                safe(cpu),
-                result.context.microcode.as_deref().unwrap_or("unavailable")
-            )?;
-        }
-        writeln!(
-            out,
-            "Method: {}; {} batches",
-            result.analysis.method, result.analysis.batches
-        )?;
+        details(&mut out, result, width)?;
     }
     out.flush()
+}
+
+/// One command as a shell would read it, wrapped between arguments.
+fn legend(out: &mut impl io::Write, candidate: &Candidate, width: usize) -> io::Result<()> {
+    let prefix = format!("{}  ", candidate.id);
+    write!(out, "{prefix}")?;
+    let mut used = prefix.width();
+    for (index, argument) in candidate.argv.iter().enumerate() {
+        let word = shell_word(argument, index == 0);
+        if index > 0 {
+            if used.saturating_add(1).saturating_add(word.width()) <= width {
+                write!(out, " ")?;
+                used = used.saturating_add(1);
+            } else {
+                write!(out, "\n{}", " ".repeat(prefix.width()))?;
+                used = prefix.width();
+            }
+        }
+        if index == 0 {
+            write!(out, "{PROGRAM}{word}{PROGRAM:#}")?;
+        } else {
+            write!(out, "{word}")?;
+        }
+        used = used.saturating_add(word.width());
+    }
+    writeln!(out)
 }
 
 fn timing(
     out: &mut impl io::Write,
     result: &Result,
+    runs: &[Vec<&Invocation>],
     options: &Cli,
     width: usize,
 ) -> io::Result<()> {
-    if result.analysis.summaries.is_empty() {
-        return partial_timing(out, result, width);
-    }
+    let summaries = &result.analysis.summaries;
     let single = result.analysis.runs < 2;
-    let dash = if options.ascii { "-" } else { "—" };
-    let has_intervals = result
-        .analysis
-        .comparisons
+    let means: Vec<_> = summaries.iter().map(|s| duration(s.mean_ns)).collect();
+    let deviations: Vec<_> = summaries
         .iter()
-        .any(|comparison| comparison.interval.is_some());
-    let evidence_heading = if has_intervals {
-        "Approx. 95% simultaneous interval"
-    } else if single {
-        ""
-    } else {
-        "Observed range"
-    };
-    if width < 80 {
-        writeln!(out, "\n{HEADING}Timing{HEADING:#}")?;
-    } else {
-        let header = format!(
-            "{HEADING}Timing{HEADING:#}          Mean      Run SD       vs A    {evidence_heading}"
-        );
-        writeln!(out, "\n{}", header.trim_end())?;
-    }
-    for (index, summary) in result.analysis.summaries.iter().enumerate() {
-        let comparison = result
-            .analysis
-            .comparisons
-            .iter()
-            .find(|c| c.numerator == index && c.denominator == Some(0));
-        let (change, interval) = comparison.map_or_else(
-            || ("baseline".into(), String::new()),
-            |c| {
-                (
-                    format!("{:+.1}%", 100.0 * (c.estimate - 1.0)),
-                    interval_text(c),
-                )
-            },
-        );
-        let (sd, evidence) = if single {
-            (dash.to_owned(), String::new())
-        } else if has_intervals {
-            (duration(summary.sd_ns), interval)
-        } else {
-            let range = [summary.min_ns, summary.max_ns].map(|ns| duration(ns as f64));
-            (duration(summary.sd_ns), range.join(" to "))
-        };
-        if width < 80 {
-            writeln!(
-                out,
-                "{}  Mean {}; SD {}; {}{}",
-                id(index),
-                duration(summary.mean_ns),
-                sd,
-                change,
-                if comparison.is_some() { " vs A" } else { "" }
-            )?;
-            if !evidence.is_empty() {
-                wrapped(out, &format!("   {evidence_heading}: {evidence}"), width)?;
+        .map(|s| {
+            if single {
+                "—".to_owned()
+            } else {
+                duration(s.sd_ns)
             }
-        } else {
-            let row = format!(
-                "{:<5} {:>14} {:>11} {:>10}    {}",
-                id(index),
-                duration(summary.mean_ns),
-                sd,
-                change,
-                evidence
-            );
-            writeln!(out, "{}", row.trim_end())?;
+        })
+        .collect();
+    let column = |title: &str, cells: &[String]| {
+        cells
+            .iter()
+            .map(|cell| cell.width())
+            .fold(title.width(), usize::max)
+    };
+    let ids = (0..summaries.len())
+        .map(|index| id(index).width())
+        .fold("Time".width(), usize::max);
+    let [mean_width, sd_width] = [column("Mean", &means), column("SD", &deviations)];
+    let used = ids
+        .saturating_add(mean_width)
+        .saturating_add(sd_width)
+        .saturating_add(7);
+    let cells = if result.analysis.runs >= 3 {
+        TIMELINE_CELLS
+            .min(result.analysis.runs)
+            .min(width.saturating_sub(used))
+    } else {
+        0
+    };
+    write!(
+        out,
+        "\n{HEADING}{:<ids$}  {:>mean_width$}  {:>sd_width$}",
+        "Time", "Mean", "SD"
+    )?;
+    if cells > 0 {
+        write!(out, "   Timeline")?;
+    }
+    writeln!(out, "{HEADING:#}")?;
+    for (index, summary) in summaries.iter().enumerate() {
+        write!(
+            out,
+            "{:<ids$}  {:>mean_width$}  {:>sd_width$}",
+            id(index),
+            means.get(index).expect("mean cell"),
+            deviations.get(index).expect("deviation cell")
+        )?;
+        if cells > 0 {
+            let values: Vec<_> = runs
+                .iter()
+                .filter_map(|run| run.get(index)?.observation.as_ref())
+                .map(|observation| observation.elapsed_ns)
+                .collect();
+            write!(out, "   {}", timeline(&values, cells))?;
         }
-        if result.candidates.len() == 1
-            && let Some(interval) = result.analysis.comparisons.first().and_then(|c| c.interval)
-        {
+        writeln!(out)?;
+        if options.details && !single {
             writeln!(
                 out,
-                "      Mean-time interval: {} to {}",
-                duration(interval.lower),
-                duration(interval.upper)
-            )?;
-        }
-        if options.details {
-            writeln!(
-                out,
-                "      Median {}; range {} to {}",
+                "{:ids$}  median {}, range {} to {}",
+                "",
                 duration(summary.median_ns),
                 duration(summary.min_ns as f64),
                 duration(summary.max_ns as f64)
@@ -194,11 +184,221 @@ fn timing(
     Ok(())
 }
 
-fn partial_timing(out: &mut impl io::Write, result: &Result, width: usize) -> io::Result<()> {
-    writeln!(out, "\n{HEADING}Timing{HEADING:#}")?;
+/// Chronological groups of runs, each relative to the command's mean time. The fixed
+/// scale keeps a steady command flat and gives slow outliers more room than fast ones.
+fn timeline(values: &[u64], cells: usize) -> String {
+    let mean =
+        values.iter().map(|&value| u128::from(value)).sum::<u128>() as f64 / values.len() as f64;
+    (0..cells)
+        .map(|cell| {
+            let group = values
+                .get(partition(values.len(), cells, cell))
+                .expect("partition within values");
+            let ratio =
+                group.iter().map(|&value| value as f64).sum::<f64>() / group.len() as f64 / mean;
+            TIMELINE
+                .iter()
+                .find(|(limit, _)| ratio < *limit)
+                .map_or('█', |&(_, glyph)| glyph)
+        })
+        .collect()
+}
+
+fn verdicts(
+    out: &mut impl io::Write,
+    result: &Result,
+    options: &Cli,
+    width: usize,
+) -> io::Result<()> {
+    writeln!(out)?;
+    if let Some(limitation) = &result.analysis.limitation {
+        write!(out, "{UNRESOLVED}")?;
+        wrapped(out, limitation, width)?;
+        return write!(out, "{UNRESOLVED:#}");
+    }
+    for comparison in &result.analysis.comparisons {
+        let Some(denominator) = comparison.denominator else {
+            if let Some(interval) = comparison.interval {
+                writeln!(
+                    out,
+                    "A: mean {} (95% CI {} to {})",
+                    duration(comparison.estimate),
+                    duration(interval.lower),
+                    duration(interval.upper)
+                )?;
+            }
+            continue;
+        };
+        if denominator != 0 && !options.details {
+            continue;
+        }
+        let (style, text) = verdict(comparison, result.analysis.runs, options.margin);
+        write!(out, "{style}")?;
+        wrapped(out, &text, width)?;
+        write!(out, "{style:#}")?;
+    }
+    if result.candidates.len() > 2 && !options.details {
+        overall_conclusion(out, result)?;
+    }
+    correlation(out, result, options, width)
+}
+
+/// One note for every shown comparison whose runs drifted or were correlated. Batching
+/// already widens those intervals; strong or long-lived correlation can still defeat it.
+fn correlation(
+    out: &mut impl io::Write,
+    result: &Result,
+    options: &Cli,
+    width: usize,
+) -> io::Result<()> {
+    let flagged: Vec<_> = result
+        .analysis
+        .comparisons
+        .iter()
+        .filter(|c| c.correlated && (options.details || c.denominator.is_none_or(|d| d == 0)))
+        .map(|c| {
+            c.denominator.map_or_else(
+                || id(c.numerator),
+                |denominator| format!("{} vs {}", id(c.numerator), id(denominator)),
+            )
+        })
+        .collect();
+    if flagged.is_empty() {
+        return Ok(());
+    }
     wrapped(
         out,
-        "No complete measured run; these are partial observations:",
+        &format!(
+            "Consecutive runs drifted or were correlated ({}); the interval{} allow{} for this \
+             only approximately.",
+            flagged.join(", "),
+            plural(flagged.len()),
+            if flagged.len() == 1 { "s" } else { "" }
+        ),
+        width,
+    )
+}
+
+fn verdict(comparison: &Comparison, runs: usize, margin: Option<f64>) -> (Style, String) {
+    let numerator = id(comparison.numerator);
+    let denominator = comparison.denominator.map_or_else(String::new, id);
+    let ratio = comparison.estimate;
+    match (comparison.decision, comparison.interval) {
+        (Decision::Less | Decision::More, Some(interval)) => {
+            let style = if comparison.decision == Decision::Less {
+                LESS
+            } else {
+                MORE
+            };
+            let text = if ratio >= FACTOR {
+                format!(
+                    "{numerator} is {}× slower than {denominator} (95% CI {}–{}×)",
+                    factor(ratio),
+                    factor(interval.lower),
+                    factor(interval.upper)
+                )
+            } else if ratio <= FACTOR.recip() {
+                let slowest = factor(interval.upper.recip());
+                let range = if interval.lower > 0.0 {
+                    format!("{slowest}–{}×", factor(interval.lower.recip()))
+                } else {
+                    format!("at least {slowest}×")
+                };
+                format!(
+                    "{numerator} is {}× faster than {denominator} (95% CI {range})",
+                    factor(ratio.recip())
+                )
+            } else if ratio >= 1.0 {
+                format!(
+                    "{numerator} takes {:.1}% more time than {denominator} (95% CI {:.1}–{:.1}%)",
+                    100.0 * (ratio - 1.0),
+                    100.0 * (interval.lower - 1.0),
+                    100.0 * (interval.upper - 1.0)
+                )
+            } else {
+                format!(
+                    "{numerator} takes {:.1}% less time than {denominator} (95% CI {:.1}–{:.1}%)",
+                    100.0 * (1.0 - ratio),
+                    100.0 * (1.0 - interval.upper),
+                    100.0 * (1.0 - interval.lower)
+                )
+            };
+            (style, text)
+        },
+        (Decision::Equivalent, Some(interval)) => (
+            LESS,
+            format!(
+                "{numerator} is within ±{}% of {denominator} (95% CI {} to {})",
+                100.0 * margin.unwrap_or(0.0),
+                change(interval.lower),
+                change(interval.upper)
+            ),
+        ),
+        (Decision::Unresolved, Some(interval)) => (
+            UNRESOLVED,
+            if interval.lower > 0.0 {
+                format!(
+                    "{numerator} vs {denominator}: no clear difference (95% CI {} to {})",
+                    change(interval.lower),
+                    change(interval.upper)
+                )
+            } else {
+                format!(
+                    "{numerator} vs {denominator}: no clear difference (95% CI up to {})",
+                    change(interval.upper)
+                )
+            },
+        ),
+        (Decision::Unresolved, None) => (
+            UNRESOLVED,
+            format!(
+                "{numerator} vs {denominator}: too noisy to bound with {runs} run{}",
+                plural(runs)
+            ),
+        ),
+        (
+            Decision::Insufficient
+            | Decision::NotApplicable
+            | Decision::Less
+            | Decision::More
+            | Decision::Equivalent,
+            _,
+        ) => (
+            UNRESOLVED,
+            format!("{numerator} vs {denominator}: no measurable variation, so no interval"),
+        ),
+    }
+}
+
+/// A time ratio in words: a factor beyond 1.5×, otherwise a percentage of time.
+fn change(ratio: f64) -> String {
+    if ratio >= FACTOR {
+        format!("{}× slower", factor(ratio))
+    } else if ratio <= FACTOR.recip() {
+        format!("{}× faster", factor(ratio.recip()))
+    } else if ratio >= 1.0 {
+        format!("{:.1}% more", 100.0 * (ratio - 1.0))
+    } else {
+        format!("{:.1}% less", 100.0 * (1.0 - ratio))
+    }
+}
+
+/// Three significant digits.
+fn factor(value: f64) -> String {
+    if value < 10.0 {
+        format!("{value:.2}")
+    } else if value < 100.0 {
+        format!("{value:.1}")
+    } else {
+        format!("{value:.0}")
+    }
+}
+
+fn partial_timing(out: &mut impl io::Write, result: &Result, width: usize) -> io::Result<()> {
+    writeln!(out)?;
+    wrapped(
+        out,
+        "No run completed for every command; these are the individual observations:",
         width,
     )?;
     for invocation in result
@@ -209,520 +409,52 @@ fn partial_timing(out: &mut impl io::Write, result: &Result, width: usize) -> io
         if let Some(reading) = &invocation.observation {
             writeln!(
                 out,
-                "{} {:?} {}: {} ({:?})",
+                "{}  run {}: {} ({})",
                 id(invocation.candidate),
-                invocation.phase,
                 invocation.run.wrapping_add(1),
                 duration(reading.elapsed_ns as f64),
-                reading.outcome
-            )?;
-        }
-    }
-    Ok(())
-}
-
-/// Observations of one command from the runs the analysis uses.
-fn measured<'a>(runs: &[Vec<&'a Invocation>], candidate: usize) -> Vec<&'a Observation> {
-    runs.iter()
-        .filter_map(|run| run.get(candidate)?.observation.as_ref())
-        .collect()
-}
-
-fn counter_mean(observations: &[&Observation], name: &str) -> Option<f64> {
-    observations
-        .iter()
-        .try_fold(0.0, |sum, observation| {
-            observation
-                .counters
-                .iter()
-                .find(|c| c.name == name)?
-                .usable()
-                .map(|value| sum + value)
-        })
-        .map(|sum| sum / observations.len() as f64)
-}
-
-fn counter_ratio(observations: &[&Observation], numerator: &str, denominator: &str) -> Option<f64> {
-    let mut totals = [0_u128; 2];
-    for observation in observations {
-        for (name, total) in [numerator, denominator].into_iter().zip(&mut totals) {
-            let counter = observation
-                .counters
-                .iter()
-                .find(|counter| counter.name == name)?;
-            // Separate events must cover the whole execution, not different multiplexed slices.
-            *total = total.wrapping_add(u128::from(counter.fully_scheduled()?));
-        }
-    }
-    let [numerator, denominator] = totals;
-    (denominator > 0).then(|| numerator as f64 / denominator as f64)
-}
-
-fn counter_variation(observations: &[&Observation], name: &str) -> Option<f64> {
-    if observations.len() < 2 {
-        return None;
-    }
-    let mean = counter_mean(observations, name)?;
-    if mean <= 0.0 {
-        return None;
-    }
-    let squares = observations.iter().try_fold(0.0, |sum, observation| {
-        let value = observation
-            .counters
-            .iter()
-            .find(|counter| counter.name == name)?
-            .usable()?;
-        Some(sum + (value - mean).powi(2))
-    })?;
-    Some((squares / observations.len().wrapping_sub(1) as f64).sqrt() / mean)
-}
-
-fn resources(
-    out: &mut impl io::Write,
-    result: &Result,
-    options: &Cli,
-    width: usize,
-) -> io::Result<()> {
-    let heading = "Resources";
-    let runs = result.measured();
-    let readings: Vec<_> = (0..result.candidates.len())
-        .map(|index| measured(&runs, index))
-        .collect();
-    if readings.iter().all(Vec::is_empty) {
-        return Ok(());
-    }
-    let counters_comparable = readings
-        .iter()
-        .all(|rows| !rows.is_empty() && counter_mean(rows, "instructions").is_some());
-    writeln!(out, "\n{HEADING}{heading}{HEADING:#}")?;
-    resource_table(out, &readings, width)?;
-    resource_details(out, &readings, options, width)?;
-    wrapped(
-        out,
-        "Counts/times are per-run means; ratios use pooled counts. Resource changes are descriptive.",
-        width,
-    )?;
-    wrapped(
-        out,
-        "RSS: wait-accounted peak / inherited launch floor; not a simultaneous tree peak.",
-        width,
-    )?;
-    if !counters_comparable {
-        wrapped(
-            out,
-            "Hardware counters were unavailable or insufficiently scheduled for comparison.",
-            width,
-        )?;
-    }
-    Ok(())
-}
-
-fn resource_details(
-    out: &mut impl io::Write,
-    readings: &[Vec<&Observation>],
-    options: &Cli,
-    width: usize,
-) -> io::Result<()> {
-    let branch_misses_comparable = readings
-        .iter()
-        .all(|rows| counter_mean(rows, "branch-misses").is_some());
-    let cache_comparable = readings
-        .iter()
-        .all(|rows| counter_mean(rows, "l2-misses").is_some());
-    for (index, observations) in readings.iter().enumerate() {
-        let Some(selected) = observations.first() else {
-            continue;
-        };
-        let count = observations.len() as f64;
-        if selected.activity.tasks.len() > 1 {
-            writeln!(
-                out,
-                "{}: {} tasks observed in run 1; wait-accounted CPU use {:.2} CPUs",
-                id(index),
-                selected.activity.tasks.len(),
-                (selected.user_ns as f64 + selected.system_ns as f64) / selected.elapsed_ns as f64
-            )?;
-        }
-        if options.details {
-            writeln!(out, "\n{} resource details:", id(index))?;
-            if cache_comparable {
-                wrapped(
-                    out,
-                    &format!(
-                        "      L2 request misses {} (excluding L2 prefetch requests)",
-                        number(
-                            counter_mean(observations, "l2-misses")
-                                .expect("comparable cache misses")
-                        ),
-                    ),
-                    width,
-                )?;
-            }
-            if branch_misses_comparable {
-                wrapped(
-                    out,
-                    &format!(
-                        "      Branch misses {}",
-                        number(
-                            counter_mean(observations, "branch-misses").expect("comparable misses")
-                        ),
-                    ),
-                    width,
-                )?;
-            }
-            writeln!(
-                out,
-                "      Minor/major faults {:.1}/{:.1}; voluntary/involuntary switches {:.1}/{:.1}",
-                observations
-                    .iter()
-                    .map(|o| o.minor_faults as f64)
-                    .sum::<f64>()
-                    / count,
-                observations
-                    .iter()
-                    .map(|o| o.major_faults as f64)
-                    .sum::<f64>()
-                    / count,
-                observations
-                    .iter()
-                    .map(|o| o.voluntary_switches as f64)
-                    .sum::<f64>()
-                    / count,
-                observations
-                    .iter()
-                    .map(|o| o.involuntary_switches as f64)
-                    .sum::<f64>()
-                    / count
-            )?;
-            activity(out, &selected.activity, options.ascii, width)?;
-        }
-    }
-    Ok(())
-}
-
-fn resource_row(
-    label: &'static str,
-    readings: &[Vec<&Observation>],
-    format: impl Fn(usize, &[&Observation]) -> Option<String>,
-) -> Option<ResourceRow> {
-    let cells = readings
-        .iter()
-        .enumerate()
-        .map(|(index, observations)| {
-            if observations.is_empty() {
-                None
-            } else {
-                format(index, observations)
-            }
-        })
-        .collect::<Option<Vec<_>>>()?;
-    Some(ResourceRow { label, cells })
-}
-
-fn resource_rows(readings: &[Vec<&Observation>]) -> Vec<ResourceRow> {
-    let baseline = counter_mean(readings.first().expect("baseline"), "instructions")
-        .filter(|value| *value > 0.0);
-    [
-        resource_row("CPU time", readings, |_, observations| {
-            Some(duration(
-                observations
-                    .iter()
-                    .map(|o| o.user_ns as f64 + o.system_ns as f64)
-                    .sum::<f64>()
-                    / observations.len() as f64,
-            ))
-        }),
-        resource_row("Instructions (vs A)", readings, |index, observations| {
-            let value = counter_mean(observations, "instructions")?;
-            Some(if index == 0 {
-                number(value)
-            } else {
-                baseline.map_or_else(
-                    || number(value),
-                    |base| format!("{} ({:+.1}%)", number(value), 100.0 * (value / base - 1.0)),
-                )
-            })
-        }),
-        resource_row("Instruction SD/mean", readings, |_, observations| {
-            Some(format!(
-                "{:.2}%",
-                100.0 * counter_variation(observations, "instructions")?
-            ))
-        }),
-        resource_row("Cycles", readings, |_, observations| {
-            counter_mean(observations, "cycles").map(number)
-        }),
-        resource_row("Instructions/cycle", readings, |_, observations| {
-            Some(format!(
-                "{:.2}",
-                counter_ratio(observations, "instructions", "cycles")?
-            ))
-        }),
-        resource_row("Branch misses/1k instr", readings, |_, observations| {
-            Some(format!(
-                "{:.2}",
-                1000.0 * counter_ratio(observations, "branch-misses", "instructions")?
-            ))
-        }),
-        resource_row("L2 misses/1k instr", readings, |_, observations| {
-            Some(format!(
-                "{:.2}",
-                1000.0 * counter_ratio(observations, "l2-misses", "instructions")?
-            ))
-        }),
-        resource_row("RSS peak/launch", readings, |_, observations| {
-            let count = observations.len() as f64;
-            let peak = observations
-                .iter()
-                .map(|o| o.max_rss_bytes as f64)
-                .sum::<f64>()
-                / count;
-            let launch = observations.iter().try_fold(0_u128, |sum, o| {
-                o.launch_max_rss_bytes
-                    .map(|value| sum.wrapping_add(u128::from(value)))
-            });
-            Some(launch.map_or_else(
-                || format!("{} / n/a", memory(peak)),
-                |sum| {
-                    format!(
-                        "{:.1}/{:.1} MiB",
-                        peak / 1_048_576.0,
-                        sum as f64 / count / 1_048_576.0
-                    )
-                },
-            ))
-        }),
-    ]
-    .into_iter()
-    .flatten()
-    .collect()
-}
-
-fn resource_table(
-    out: &mut impl io::Write,
-    readings: &[Vec<&Observation>],
-    width: usize,
-) -> io::Result<()> {
-    let rows = resource_rows(readings);
-    let label_width = rows.iter().map(|row| row.label.width()).max().unwrap_or(0);
-    let mut widths: Vec<_> = (0..readings.len()).map(|index| id(index).width()).collect();
-    for row in &rows {
-        for (width, cell) in widths.iter_mut().zip(&row.cells) {
-            *width = (*width).max(cell.width());
-        }
-    }
-    let occupied = widths.iter().fold(label_width, |sum, width| {
-        sum.saturating_add(width.saturating_add(2))
-    });
-    if width >= 80 && occupied <= width {
-        write!(out, "{:label_width$}", "")?;
-        for (index, &width) in widths.iter().enumerate() {
-            write!(out, "  {:>width$}", id(index))?;
-        }
-        writeln!(out)?;
-        for row in &rows {
-            write!(out, "{:<label_width$}", row.label)?;
-            for (cell, &width) in row.cells.iter().zip(&widths) {
-                write!(out, "  {cell:>width$}")?;
-            }
-            writeln!(out)?;
-        }
-    } else {
-        for index in 0..readings.len() {
-            writeln!(out, "{}", id(index))?;
-            for row in &rows {
-                wrapped(
-                    out,
-                    &format!(
-                        "  {}  {}",
-                        row.label,
-                        row.cells.get(index).expect("candidate column")
-                    ),
-                    width,
-                )?;
-            }
-        }
-    }
-    Ok(())
-}
-
-fn activity(
-    out: &mut impl io::Write,
-    activity: &Activity,
-    ascii: bool,
-    width: usize,
-) -> io::Result<()> {
-    if activity.tasks.is_empty() {
-        return Ok(());
-    }
-    writeln!(
-        out,
-        "      Sampled activity from measured run 1 ({} sweeps):",
-        activity.sweeps
-    )?;
-    let mut processes: BTreeMap<(i32, u64), Vec<&Task>> = BTreeMap::new();
-    for task in &activity.tasks {
-        processes
-            .entry((task.pid, task.process_start_ticks))
-            .or_default()
-            .push(task);
-    }
-    for ((pid, _), tasks) in processes {
-        let parent = tasks.first().expect("process has tasks").parent_pid;
-        writeln!(out, "      Process {pid}, observed parent {parent}")?;
-        for task in tasks {
-            let name = safe(&task.name);
-            let cpu = task
-                .cpu_percent(activity.clock_ticks_per_second)
-                .map_or_else(|| "one observation".into(), |v| format!("{v:.1}% CPU"));
-            let padding = " ".repeat(18_usize.saturating_sub(name.width()));
-            let branch = if ascii { "|-" } else { "├─" };
-            writeln!(
-                out,
-                "        {branch} thread {}  {name}{padding}  {cpu}",
-                task.tid
-            )?;
-            if task.samples.len() > 2 {
-                let percentages: Vec<_> = task
-                    .samples
-                    .windows(2)
-                    .map(|pair| {
-                        let [first, last] = pair else {
-                            unreachable!("two samples")
-                        };
-                        100.0 * last.cpu_ticks.saturating_sub(first.cpu_ticks) as f64
-                            / activity.clock_ticks_per_second as f64
-                            / (last.elapsed_ns.saturating_sub(first.elapsed_ns) as f64 / 1e9)
-                    })
-                    .collect();
-                let maximum = percentages.iter().copied().fold(0.0_f64, f64::max);
-                let alphabet = if ascii {
-                    ['.', ':', '-', '=', '+', '*', '#', '@']
+                if reading.outcome.success() {
+                    "succeeded"
                 } else {
-                    ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█']
-                };
-                let strip: String = percentages
-                    .chunks(percentages.len().div_ceil(32))
-                    .map(|chunk| {
-                        let mean = chunk.iter().sum::<f64>() / chunk.len() as f64;
-                        *alphabet
-                            .get(if maximum > 0.0 {
-                                ((mean / maximum) * 7.0).round() as usize
-                            } else {
-                                0
-                            })
-                            .expect("normalized level")
-                    })
-                    .collect();
-                writeln!(
-                    out,
-                    "           {strip}  sampled CPU, own scale 0..{maximum:.1}%"
-                )?;
-            }
+                    "failed"
+                }
+            )?;
         }
-    }
-    writeln!(
-        out,
-        "      100% = one CPU. Short-lived tasks may be missed; no per-thread RSS."
-    )?;
-    if activity.limited {
-        wrapped(
-            out,
-            "      Task detail is incomplete (sampling or retention limit); timing remains complete.",
-            width,
-        )?;
     }
     Ok(())
 }
 
-fn conclusions(
+fn status(
     out: &mut impl io::Write,
     result: &Result,
     options: &Cli,
     width: usize,
 ) -> io::Result<()> {
-    writeln!(out)?;
-    if let Some(note) = &result.analysis.limitation {
+    if result.exit_code >= 128 {
+        let planned = if result.plan.planned_runs > 0 {
+            format!(" of {} planned", result.plan.planned_runs)
+        } else {
+            String::new()
+        };
+        writeln!(out)?;
         write!(out, "{UNRESOLVED}")?;
-        wrapped(out, note, width)?;
+        wrapped(
+            out,
+            &format!(
+                "Interrupted after {} completed run{}{planned}; the report uses only those.",
+                result.analysis.runs,
+                plural(result.analysis.runs)
+            ),
+            width,
+        )?;
         write!(out, "{UNRESOLVED:#}")?;
     }
-    for comparison in &result.analysis.comparisons {
-        if comparison.decision == Decision::Insufficient && result.analysis.limitation.is_some() {
-            continue;
-        }
-        if comparison.denominator != Some(0) && !options.details {
-            continue;
-        }
-        let Some(denominator) = comparison.denominator else {
-            continue;
-        };
-        let (style, verdict) = match comparison.decision {
-            Decision::Less => (LESS, "took less time"),
-            Decision::More => (MORE, "took more time"),
-            Decision::Equivalent => (LESS, "is within the declared equivalence margin"),
-            Decision::Unresolved => (UNRESOLVED, "remains unresolved"),
-            Decision::Insufficient => (UNRESOLVED, "has insufficient evidence"),
-            Decision::NotApplicable => continue,
-        };
-        writeln!(
-            out,
-            "{style}{} {verdict} versus {}.{style:#}{}",
-            id(comparison.numerator),
-            id(denominator),
-            if comparison.correlated {
-                " Runs drifted or were correlated; the interval may be too narrow."
-            } else {
-                ""
-            }
-        )?;
-        if options.details && denominator != 0 {
-            writeln!(
-                out,
-                "  {:+.1}% time change; {}",
-                (comparison.estimate - 1.0) * 100.0,
-                interval_text(comparison)
-            )?;
-        }
-    }
-    if result.analysis.limitation.is_none() && result.candidates.len() > 2 && !options.details {
-        overall_conclusion(out, result)?;
-    }
-    if result.analysis.limitation.is_none() {
-        wrapped(
-            out,
-            "Approximate intervals assume stationary, weakly dependent runs.",
-            width,
-        )?;
-        wrapped(
-            out,
-            "Drift, strong dependence, or unseen rare tails can invalidate them.",
-            width,
-        )?;
-    }
-    if result.protocol.verify.is_none() {
-        wrapped(
-            out,
-            "Correctness: exit status only; output equivalence was not verified.",
-            width,
-        )?;
-    }
-    let measured = result
-        .invocations
-        .iter()
-        .filter(|i| i.phase != Phase::Warmup && i.role == Role::Command)
-        .count();
-    writeln!(
-        out,
-        "{measured} measured invocation{} - {}",
-        if measured == 1 { "" } else { "s" },
-        safe(&result.stop_reason.replace('_', " "))
-    )?;
     if let Some(margin) = options.check {
         let verdict = match result.exit_code {
             0 => "pass",
             4 => "regression",
             5 => "inconclusive",
+            128.. => "interrupted",
             _ => "failed execution",
         };
         writeln!(
@@ -732,6 +464,173 @@ fn conclusions(
         )?;
     }
     Ok(())
+}
+
+fn details(out: &mut impl io::Write, result: &Result, width: usize) -> io::Result<()> {
+    writeln!(out, "\n{HEADING}Details{HEADING:#}")?;
+    let plan = &result.plan;
+    let planning = match plan.planning {
+        Planning::Fixed => "fixed run count".to_owned(),
+        Planning::Automatic {
+            target_seconds,
+            strict,
+        } => format!(
+            "automatic, {} {}",
+            seconds(target_seconds * 1e9),
+            if strict { "budget" } else { "target" }
+        ),
+    };
+    wrapped(
+        out,
+        &format!(
+            "Plan: {planning}; {} warmup, {} pilot ({} discarded as warmup), {} measured runs.",
+            plan.warmup_runs, plan.pilot_runs, plan.discarded_runs, result.analysis.runs
+        ),
+        width,
+    )?;
+    wrapped(
+        out,
+        &format!(
+            "Intervals: 95% simultaneous Fieller intervals for ratios of mean times, from {} \
+             batches of consecutive runs ({}). They treat batch means as independent; drift, \
+             load shifts and rare slow runs absent from the measurements can invalidate them.",
+            result.analysis.batches, result.analysis.method
+        ),
+        width,
+    )?;
+    let legend: Vec<_> = TIMELINE
+        .iter()
+        .map(|(limit, glyph)| format!("{glyph} <{limit}×"))
+        .collect();
+    wrapped(
+        out,
+        &format!(
+            "Timeline: groups of consecutive runs relative to the command's mean: {} █ ≥2×.",
+            legend.join(" ")
+        ),
+        width,
+    )?;
+    wrapped(
+        out,
+        "Resources: per-run means; ratios pool counts across runs. Resource differences are \
+         descriptive. RSS peak/launch is the wait-accounted high-water mark beside the memory \
+         inherited at launch, not a simultaneous process-tree peak.",
+        width,
+    )?;
+    if result.protocol.verify.is_none() {
+        wrapped(
+            out,
+            "Correctness: exit status only; output equivalence was not verified.",
+            width,
+        )?;
+    }
+    writeln!(
+        out,
+        "Context: {} Linux {}; allowed CPUs {}; seed {}",
+        result.context.architecture,
+        result.context.kernel.as_deref().unwrap_or("unknown"),
+        result.context.allowed_cpus.as_deref().unwrap_or("unknown"),
+        result.seed
+    )?;
+    if let Some(cpu) = &result.context.cpu_model {
+        writeln!(
+            out,
+            "CPU: {}; microcode {}",
+            safe(cpu),
+            result.context.microcode.as_deref().unwrap_or("unavailable")
+        )?;
+    }
+    Ok(())
+}
+
+/// An argument as a POSIX shell would read it back: bare when only safe characters
+/// occur, single-quoted when printable, and `$'...'` with escapes for control
+/// characters, invisible formatting characters and bytes that are not UTF-8.
+fn shell_word(argument: &Text, program: bool) -> String {
+    let bare = |c: char| c.is_alphanumeric() || "%+,-./:=@_".contains(c);
+    match argument {
+        Text::Utf8(text)
+            if !text.is_empty()
+                && text.chars().all(bare)
+                && !text.starts_with('=')
+                && (!program || !text.contains('=')) =>
+        {
+            text.clone()
+        },
+        Text::Utf8(text) if text.chars().all(printable) => {
+            format!("'{}'", text.replace('\'', r"'\''"))
+        },
+        Text::Utf8(text) => escaped(text.as_bytes()),
+        Text::Bytes(bytes) => escaped(bytes),
+    }
+}
+
+fn printable(character: char) -> bool {
+    matches!(character, '\'' | '"' | '\\')
+        || character.escape_debug().eq(std::iter::once(character))
+}
+
+fn escaped(bytes: &[u8]) -> String {
+    use std::fmt::Write as _;
+    let mut word = String::from("$'");
+    for chunk in bytes.utf8_chunks() {
+        for character in chunk.valid().chars() {
+            let code = u32::from(character);
+            match character {
+                '\'' | '\\' => {
+                    word.push('\\');
+                    word.push(character);
+                },
+                '\n' => word.push_str(r"\n"),
+                '\t' => word.push_str(r"\t"),
+                '\r' => word.push_str(r"\r"),
+                '\u{1b}' => word.push_str(r"\e"),
+                _ if printable(character) => word.push(character),
+                _ if code < 0x80 => write!(word, r"\x{code:02x}").expect("formatting a String"),
+                _ if code <= 0xFFFF => {
+                    write!(word, r"\u{code:04x}").expect("formatting a String");
+                },
+                _ => write!(word, r"\U{code:08x}").expect("formatting a String"),
+            }
+        }
+        for byte in chunk.invalid() {
+            write!(word, r"\x{byte:02x}").expect("formatting a String");
+        }
+    }
+    word.push('\'');
+    word
+}
+
+pub(crate) const fn plural(count: usize) -> &'static str {
+    if count == 1 { "" } else { "s" }
+}
+
+/// A wall-clock span: minutes and seconds from one minute, otherwise as `duration`.
+pub(crate) fn seconds(ns: f64) -> String {
+    let value = ns / 1e9;
+    if value >= 60.0 {
+        let total = value.round() as u64;
+        format!("{}m {:02}s", total / 60, total % 60)
+    } else {
+        duration(ns)
+    }
+}
+
+fn duration(ns: f64) -> String {
+    let (value, unit) = if ns >= 1e9 {
+        (ns / 1e9, "s")
+    } else if ns >= 1e6 {
+        (ns / 1e6, "ms")
+    } else if ns >= 1e3 {
+        (ns / 1e3, "µs")
+    } else {
+        (ns, "ns")
+    };
+    if value >= 10.0 {
+        format!("{value:.1} {unit}")
+    } else {
+        format!("{value:.2} {unit}")
+    }
 }
 
 fn overall_conclusion(out: &mut impl io::Write, result: &Result) -> io::Result<()> {
@@ -782,8 +681,10 @@ fn overall_conclusion(out: &mut impl io::Write, result: &Result) -> io::Result<(
 fn diagnostics(result: &Result) -> io::Result<()> {
     let mut out = io::stderr().lock();
     for invocation in &result.invocations {
+        // An interrupted run is reported once, in the report's status line.
         if let Some(observation) = &invocation.observation
             && !observation.outcome.success()
+            && !matches!(observation.outcome, Outcome::Interrupted { .. })
         {
             writeln!(
                 out,
@@ -848,6 +749,15 @@ fn terminal_width() -> usize {
 /// Breaks lines at spaces with a three-cell continuation indent; only a word wider
 /// than the remaining line is split.
 fn wrapped(out: &mut impl io::Write, text: &str, width: usize) -> io::Result<()> {
+    // Indented lines continue at their own indent; others hang by three cells.
+    let indent = match text
+        .len()
+        .saturating_sub(text.trim_start_matches(' ').len())
+    {
+        0 => 3,
+        indent => indent,
+    };
+    let continuation = format!("\n{}", " ".repeat(indent));
     let mut used = 0_usize;
     for (index, word) in text.split(' ').enumerate() {
         if index > 0 {
@@ -855,47 +765,21 @@ fn wrapped(out: &mut impl io::Write, text: &str, width: usize) -> io::Result<()>
                 write!(out, " ")?;
                 used = used.saturating_add(1);
             } else {
-                write!(out, "\n   ")?;
-                used = 3;
+                write!(out, "{continuation}")?;
+                used = indent;
             }
         }
         for character in word.chars() {
             let cells = character.width().unwrap_or(0);
-            if used > 3 && used.saturating_add(cells) > width {
-                write!(out, "\n   ")?;
-                used = 3;
+            if used > indent && used.saturating_add(cells) > width {
+                write!(out, "{continuation}")?;
+                used = indent;
             }
             write!(out, "{character}")?;
             used = used.saturating_add(cells);
         }
     }
     writeln!(out)
-}
-
-fn interval_text(comparison: &Comparison) -> String {
-    comparison.interval.map_or_else(
-        || "unavailable".into(),
-        |i| {
-            format!(
-                "{:+.1}% to {:+.1}%",
-                (i.lower - 1.0) * 100.0,
-                (i.upper - 1.0) * 100.0
-            )
-        },
-    )
-}
-
-fn duration(ns: f64) -> String {
-    let (value, unit) = if ns >= 1e9 {
-        (ns / 1e9, "s")
-    } else if ns >= 1e6 {
-        (ns / 1e6, "ms")
-    } else if ns >= 1e3 {
-        (ns / 1e3, "us")
-    } else {
-        (ns, "ns")
-    };
-    format!("{value:.3} {unit}")
 }
 
 fn memory(bytes: f64) -> String {
@@ -910,5 +794,99 @@ fn number(value: f64) -> String {
         format!("{:.2} k", value / 1e3)
     } else {
         format!("{value:.0}")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{change, verdict};
+    use crate::statistics::{Comparison, Decision, Interval};
+
+    fn sentence(estimate: f64, bounds: Option<(f64, f64)>, decision: Decision) -> String {
+        let comparison = Comparison {
+            numerator: 1,
+            denominator: Some(0),
+            estimate,
+            interval: bounds.map(|(lower, upper)| Interval { lower, upper }),
+            decision,
+            correlated: false,
+        };
+        verdict(&comparison, 3, Some(0.01)).1
+    }
+
+    #[test]
+    fn verdicts_state_factors_beyond_one_and_a_half_and_percentages_below() {
+        for (estimate, bounds, decision, expected) in [
+            (
+                3.47,
+                Some((3.33, 3.62)),
+                Decision::More,
+                "B is 3.47× slower than A (95% CI 3.33–3.62×)",
+            ),
+            (
+                0.5,
+                Some((0.4, 0.6)),
+                Decision::Less,
+                "B is 2.00× faster than A (95% CI 1.67–2.50×)",
+            ),
+            (
+                0.3,
+                Some((0.0, 0.5)),
+                Decision::Less,
+                "B is 3.33× faster than A (95% CI at least 2.00×)",
+            ),
+            (
+                1.048,
+                Some((1.021, 1.074)),
+                Decision::More,
+                "B takes 4.8% more time than A (95% CI 2.1–7.4%)",
+            ),
+            (
+                0.952,
+                Some((0.93, 0.98)),
+                Decision::Less,
+                "B takes 4.8% less time than A (95% CI 2.0–7.0%)",
+            ),
+            (
+                1.002,
+                Some((0.995, 1.006)),
+                Decision::Equivalent,
+                "B is within ±1% of A (95% CI 0.5% less to 0.6% more)",
+            ),
+            (
+                1.01,
+                Some((0.98, 1.05)),
+                Decision::Unresolved,
+                "B vs A: no clear difference (95% CI 2.0% less to 5.0% more)",
+            ),
+            (
+                1.1,
+                Some((0.0, 2.26)),
+                Decision::Unresolved,
+                "B vs A: no clear difference (95% CI up to 2.26× slower)",
+            ),
+            (
+                1.1,
+                None,
+                Decision::Unresolved,
+                "B vs A: too noisy to bound with 3 runs",
+            ),
+            (
+                2.0,
+                None,
+                Decision::Insufficient,
+                "B vs A: no measurable variation, so no interval",
+            ),
+        ] {
+            assert_eq!(sentence(estimate, bounds, decision), expected);
+        }
+    }
+
+    #[test]
+    fn changes_switch_to_factors_at_one_and_a_half() {
+        assert_eq!(change(1.49), "49.0% more");
+        assert_eq!(change(1.5), "1.50× slower");
+        assert_eq!(change(0.7), "30.0% less");
+        assert_eq!(change(0.6), "1.67× faster");
     }
 }
