@@ -1,6 +1,6 @@
 # fast
 
-`fast` compares Linux commands in randomized blocks and prints timing, resource
+`fast` compares Linux commands in randomized order and prints timing, resource
 measurements, and the evidence behind the comparison. It is a stateless command
 benchmark: results go to stdout, diagnostics go to stderr, and saving belongs to
 your shell.
@@ -67,16 +67,24 @@ variables:
 fast env MODE=old ./program ::: env MODE=new ./program
 ```
 
-Commands run sequentially, with their internal parallelism intact. Each block
-runs every command once in randomized order. The first command is the displayed
-baseline. `--runs` skips automatic planning; `--once` runs each command exactly
-once and cannot include warmup.
+Commands run sequentially, with their internal parallelism intact. Each run
+executes every command once in randomized order. The first command is the
+displayed baseline. `--runs` measures an exact number of runs; `--once` runs each
+command exactly once and cannot include warmup.
 
-The default plans approximately 30 seconds of total effort, including a separate
-pilot. The measured run count is frozen before production. `--time` changes that
-planning target; it never kills an expensive command. `--timeout` terminates a
-command that exceeds its explicit per-invocation deadline. An expensive pilot can
-consume the entire target, leaving a pilot-only report.
+By default `fast` plans about 30 seconds. Pilot runs measure cost and run-to-run
+variation, then the run count is frozen; the pilot runs count toward the result.
+Cheap commands get 100 runs, or more when the time allows and ±1% precision needs
+them. Slow commands get at least 3 runs, even when that exceeds 30 seconds.
+When one run costs at most 5% of the target, the first run is discarded as a
+warmup, because cold caches and lazy loading make it unrepresentative.
+`--warmup N` replaces that with N explicit warmup runs, and `--warmup 0` keeps
+every run.
+
+`--time` sets a strict budget instead: after the first run, no run starts unless
+the plan expects it to fit. `--timeout` terminates a single run that exceeds its
+deadline. Ctrl-C stops early and still reports the completed runs and their
+comparisons. None of these decisions looks at which command is winning.
 
 ## Input and correctness
 
@@ -103,8 +111,8 @@ fast --runs 40 \
 Both hooks apply to every invocation, including pilots and requested warmups.
 Hooks run outside the command timer, but their cost enters effort planning.
 They receive `FAST_COMMAND_INDEX` (one-based), `FAST_COMMAND_ID` (`A`, `B`, …),
-`FAST_PHASE` (`warmup`, `pilot`, `production`), and `FAST_RUN_INDEX` (one-based
-within the phase). Hook timeout is 30 seconds unless `--timeout` supplies another
+`FAST_PHASE` (`warmup`, `pilot`, `production`), and `FAST_RUN_INDEX` (one-based,
+counting every run in order). Hook timeout is 30 seconds unless `--timeout` supplies another
 value. A command or verifier failure aborts the experiment; no replacement runs
 or discarded slow successes improve the result.
 
@@ -120,23 +128,28 @@ and completion notification. Diagnostic draining after completion is excluded.
 Very short commands can mostly measure process launch.
 
 Timing changes compare **arithmetic means**, not fastest runs, medians, or means
-of per-run ratios. Paired chronological blocks remain together during resampling.
-The approximate simultaneous interval family contains every command pair, even
-when the compact table displays only comparisons with A. A smaller point estimate
-alone does not establish a win. Unresolved does not mean equivalent.
+of per-run ratios. Each comparison is a 95% confidence interval for the ratio of
+mean times, computed from paired runs, and every command pair holds
+simultaneously, even when the compact report shows only comparisons with A.
+A smaller point estimate alone does not establish a win, and unresolved does not
+mean equivalent.
+
+Two runs can already bound an interval when the difference is large compared
+with the run-to-run noise; three is the practical minimum. With more runs the
+interval narrows, and consecutive runs are grouped so that correlated runs widen
+it instead of making it falsely precise. When the runs show drift or correlation,
+the comparison says so. A single run shows its time and resources without an
+interval.
 
 `--margin 1%` asks about practical differences outside a symmetric one-percent
-margin. `--runs 100 --check 1%` asks whether every alternative can be established
-as no more than one percent slower than A. A check can pass, fail, or remain
+margin. `--check 1%` asks whether every alternative can be established as no
+more than one percent slower than A. A check can pass, fail, or remain
 inconclusive.
 
 The statistical method and its calibration evidence are documented in
-[Measurement and inference](docs/measurement.md).
-
-At least 100 complete measured blocks are required for inferential labels.
-Shorter or one-shot experiments still show timing and resources. Strongly
-persistent noise and unseen rare slow events are outside the calibrated model;
-the report's caveat applies even when an interval excludes zero change.
+[Measurement and inference](docs/measurement.md). Strongly persistent noise and
+rare slow events that the runs never encounter are outside what any interval can
+capture.
 
 ### Resources and sampled activity
 
@@ -181,13 +194,15 @@ fast --details ./old ::: ./new > detailed.txt
 and `CLICOLOR_FORCE`. JSON never contains ANSI. `--ascii` selects plain symbols;
 `--quiet` suppresses progress.
 
-JSON schema 1 records each candidate as its exact argument vector and uses tagged
+JSON schema 2 records each candidate as its exact argument vector and uses tagged
 UTF-8 or byte-array strings for Unix arguments. Explicit shell commands include
 the shell executable and `-c` in that vector. Elapsed
 and CPU nanoseconds and PMU counters are decimal strings to avoid JavaScript
 integer rounding. Missing measurements are `null` with availability metadata.
-Readers should ignore unfamiliar fields. Raw invocations preserve phase, order,
-failures, and partial completion; pilots never silently become production data.
+Readers should ignore unfamiliar fields. Raw invocations preserve phase,
+chronological run index, order, failures, and partial completion. `plan` records
+the planning mode, warmup, pilot and discarded runs, and the planned run count;
+the analysis uses the kept pilot runs and the production runs.
 For a single command, the interval describes its mean elapsed nanoseconds;
 the comparison denominator is `null` and its decision is `not_applicable`.
 There is no import or reopen interface.
@@ -200,7 +215,7 @@ There is no import or reopen interface.
 | 3 | Collector or output failure |
 | 4 | Nonregression check failed |
 | 5 | Nonregression check inconclusive |
-| 128 + signal | Interrupted, after owned-process cleanup |
+| 128 + signal | Interrupted, after owned-process cleanup; completed runs are still analyzed |
 | 141 | Output consumer closed its pipe |
 
 `fast --help` is the canonical option reference. Bash, Zsh, and Fish completions

@@ -1,7 +1,7 @@
 # Measurement and inference
 
-This reference describes `fast`'s invocation boundary, resource scopes, and
-approximate timing inference for Linux command comparisons.
+This reference describes `fast`'s invocation boundary, resource scopes, effort
+planning, and timing inference for Linux command comparisons.
 
 ## Invocation boundary
 
@@ -12,8 +12,8 @@ the root command's completion. Timing ends before residual stderr draining.
 
 The child has its own process group. A subreaper retains ownership of orphaned
 descendants without creating cgroups or changing inherited scheduling policy.
-Interruption signals owned work, escalates if necessary, and returns a partial
-report. This is lifecycle tracking, not containment: an uninterruptible kernel
+Interruption signals owned work, escalates if necessary, and reports the
+completed runs. This is lifecycle tracking, not containment: an uninterruptible kernel
 task cannot be made immediately reapable by userspace.
 
 Stderr capture keeps the first and last 32 KiB while continuing to drain the pipe.
@@ -70,112 +70,166 @@ These are sampled accounting changes, not scheduler events or function profiles.
 The [`proc` documentation](https://docs.kernel.org/filesystems/proc.html) describes
 the underlying process/thread records and their limitations.
 
-## Frozen planning
+## Planning
 
-Explicit counts bypass the pilot. Automatic effort first performs up to eight
-complete pilot blocks, continuing only while another block at the mean pilot
-cost fits in 20% of the target. Block cost includes hooks and collection.
+`--runs N` measures exactly N runs, after any `--warmup` runs. Otherwise a pilot
+measures each run's cost, including hooks and collection, and its run-to-run
+variation. The pilot ends after eight runs, or earlier when another run would
+carry the elapsed time past 20% of the target. Later pilot runs predict the cost
+of the rest better than the first, so the cost estimate is their mean; with a
+single pilot run it is that run.
 
-Production count is the number of blocks at the mean pilot block cost that fit in
-the remaining target, bounded by the larger of a pilot influence-function
-precision estimate and the 100 blocks timing conclusions require, and by
-in-memory observation limits. Effort is a sum over many blocks, so the mean is
-its planning cost; a percentile of eight pilot blocks is effectively the slowest
-one, which a single load spike can inflate several-fold. A pilot that
-underestimates a heavy-tailed cost can overrun the target. Pilot observations
-are retained but excluded from production estimates. No interval is inspected to
-decide whether to stop, extend a run, or remove a candidate.
+The first run pays for cold page caches, lazy loading, and frequency ramp-up.
+Without explicit `--warmup`, it is discarded when the median of the later pilot
+runs costs at most 5% of the target, so the discarded run is cheap. A command
+whose first run took five times its usual time would otherwise bias a 100-run
+mean by 4%. Slow commands keep the first run: discarding it would cost a large
+share of the few runs they can afford.
+
+The kept pilot runs count toward the result. Production adds the runs that fit in
+the remaining target, up to the larger of a precision estimate and 100. The
+precision estimate is the run count at which every pair's interval would reach
+about ±1%, assuming independent runs with the pilot's variation. When the budget
+allows, 100 runs give the batch means below enough length to absorb correlation
+between consecutive runs. The default target is a goal: slow commands still get
+at least 3 runs, the fewest that usually bound an interval. An explicit `--time`
+is a strict budget, so the plan may stop after the first run.
+
+Planning uses run costs and the pilot's variation, never a comparison's outcome.
+Choosing the run count from the variance is an internal pilot design, and the
+automatic calibration cell below includes it. Interruption is likewise
+independent of the outcome, since no estimate is shown while runs continue: an
+interrupted experiment analyzes its completed runs. A failed run can depend on
+the measured behavior, so a failure leaves the completed runs descriptive.
 
 ## Arithmetic means and simultaneous intervals
 
 For each command pair, the estimand is the ratio of arithmetic mean elapsed
-times. The inference engine uses chronological complete block vectors and joint
-stationary bootstrap resampling. All commands share every resampled segment.
-Integer prefix sums reconstruct segment totals exactly before conversion to
-floating point.
+times; a single command's estimand is its mean. The method,
+`fieller-batch-means-bonferroni-v4`, splits the chronological runs into
+contiguous batches whose sizes differ by at most one run: one batch per run up to
+ten runs, ten batches up to 100 runs, then the square root of the run count,
+capped at 30. Every command's runs share the same batches, so each batch pairs
+the commands under the same conditions.
 
-The method, `stationary-bootstrap-log-ratio-max-envelope-v3`, uses 20,000
-replicates per segment length and primary expected segment length
-`max(2, floor(sqrt(block_count)))`.
-Bootstrap standard deviations scale log-ratio deviations. The 95th percentile
-of their joint maximum defines approximate simultaneous intervals across all
-command pairs. A single command uses log arithmetic mean instead. Each radius
-is multiplied by
-`sqrt(n / (n - (2L - 1))) * t_quantile / normal_quantile`, with
-`n/L - 1` degrees of freedom and quantile probability `1 - .05/(2m)` for
-family size `m`. This is a calibrated conservative correction, not an exact
-finite-sample theorem.
+The estimated covariance of two commands' overall means is the size-weighted
+spread of their batch means, `sum m_j (x_j - X)(y_j - Y) / ((b - 1) n)`. For
+independent, normally distributed runs this is exact with `b - 1` degrees of
+freedom, also for unequal batch sizes. Batches longer than the correlation
+between consecutive runs restore that independence approximately; with one run
+per batch the method is the classical paired analysis.
 
-Inference requires a completed plan and at least 100 measured blocks.
-Zero means and degenerate scales cannot support a confidence claim.
-Prespecified half-length and double-length calculations use independent random
-streams. The reported interval is the envelope of all three intervals;
-JSON also retains the primary interval. Decisions and nonregression checks use
-the envelope, including when the check threshold differs from the display margin.
+Fieller's theorem turns these estimates into a confidence set for the ratio of
+means: the values `R` with `(Y - R X)^2 <= t^2 Var(Y - R X)`. When the
+denominator's mean is not distinguishable from zero at this confidence, the set is
+unbounded, and the comparison is unresolved without an interval. The t quantile
+has `b - 1` degrees of freedom at level `1 - 0.05 / (2m)` for the `m` command pairs
+(Bonferroni), so all intervals hold together with at least 95% confidence.
+Elapsed times are positive, so a set reaching below zero is cut at zero, which
+cannot exclude the true ratio. A single command uses the t interval for its mean,
+likewise cut at zero.
 
-These intervals assume an adequate stationary, weak-dependence approximation.
-They cannot repair arbitrary drift, carryover, a changing workload, or a rare
-tail absent from the observations. Launch repetitions describe this binary,
-input, and environment; they do not measure variation across builds or machines.
+The interval treats the batch means as independent. A one-way analysis-of-variance
+test checks that on each comparison's per-run residuals `y - R x`: drift, load
+changes, and runs that influence their successors make batch means differ more
+than within-batch variation explains. A comparison whose F statistic exceeds its
+`1 - 0.01 / m` quantile, with at least two runs per batch, is reported as
+correlated; its interval may be too narrow.
+
+Identical runs, or runs whose ratio never varies, have no measurable variation;
+they produce no interval rather than a zero-width certificate. Launch repetitions
+describe this binary, input, and environment; they do not measure variation
+across builds or machines.
 
 ## Calibration evidence and limits
 
-The source-owned `calibration` Cargo benchmark simulates randomized complete
-blocks and runs the production analyzer. It reports joint coverage, false
-directions, detection, interval width, bias, and one-sided 95% Wilson binomial
-bounds. The fixed held-out seed is `d91453c274b8109a`; each cell below contains
-10,000 experiments and uses the full 20,000 resamples at each length.
+The source-owned `calibration` Cargo benchmark simulates chronological runs in
+randomized order and runs the production analyzer, optionally behind the
+production planner. It reports joint coverage, false directions, detection,
+experiments without any claim, correlation flags, interval width and bias, with
+one-sided 95% Wilson binomial bounds. Each cell below contains 10,000 experiments
+on the held-out seed `d91453c274b8109a`, which was not used while choosing the
+method. Simulated runs take about 1 ms each.
 
-| Model | Blocks | Joint coverage | False direction | Detect 10% reduction |
-| --- | ---: | ---: | ---: | ---: |
-| Four independent lognormal commands, log SD 0.1 | 100 | 99.85% | 0.15% | — |
-| Candidate-specific AR(1), correlation 0.5 | 100 | 99.35% | 0.65% | — |
-| Lognormal skew, log SD 0.7 | 100 | 99.80% | 0.20% | — |
-| One command takes 10% less time, log SD 0.1 | 100 | 99.85% | 0.05% | 95.01% |
-| Four independent lognormal commands | 200 | 98.56% | 1.44% | — |
-| Unequal log SDs 0.03, 0.06, 0.09, 0.12 | 200 | 98.59% | 1.41% | — |
-| Shared correlated multiplicative noise | 200 | 98.61% | 1.39% | — |
-| Candidate-specific AR(1), correlation 0.5 | 200 | 97.80% | 2.20% | — |
-| Lognormal skew, log SD 0.7 | 200 | 98.58% | 1.42% | — |
-| One command takes 10% less time | 200 | 98.56% | 0.78% | 100.00% |
-| Single-command arithmetic mean | 200 | 97.38% | Not applicable | — |
-| Eight independent commands | 200 | 99.65% | 0.35% | — |
-| Pilot-selected production count | 191.50 mean | 98.61% | 1.39% | — |
+| Model | Runs | Joint coverage | False direction | No claim | Detects the faster command |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Four independent lognormal commands, log SD 0.1 | 3 | 95.23% | 4.77% | 21.98% | — |
+| Four independent lognormal commands, log SD 0.1 | 10 | 95.43% | 4.57% | 0.00% | — |
+| Four independent lognormal commands, log SD 0.1 | 100 | 95.37% | 4.63% | 0.00% | — |
+| Four independent lognormal commands, log SD 0.1 | 1000 | 95.69% | 4.31% | 0.00% | — |
+| Two quiet commands, log SD 0.02; B takes 5% less time | 2 | 94.58% | 0.00% | 0.00% | 16.52% |
+| Two quiet commands, log SD 0.02; B takes 5% less time | 3 | 94.65% | 0.00% | 0.00% | 41.76% |
+| Two quiet commands, log SD 0.02; B takes 5% less time | 5 | 94.95% | 0.00% | 0.00% | 85.39% |
+| Two quiet commands, log SD 0.02; B takes 5% less time | 10 | 95.18% | 0.00% | 0.00% | 99.92% |
+| Two quiet commands with equal means | 3 | 94.65% | 5.35% | 0.00% | — |
+| Two quiet commands with equal means | 100 | 94.94% | 5.06% | 0.00% | — |
+| B takes 10% less time, log SD 0.1 | 10 | 95.43% | 2.40% | 0.00% | 23.16% |
+| B takes 10% less time, log SD 0.1 | 37 | 95.59% | 2.37% | 0.00% | 83.79% |
+| B takes 10% less time, log SD 0.1 | 100 | 95.37% | 2.54% | 0.00% | 99.95% |
+| Unequal log SDs 0.03, 0.06, 0.09, 0.12 | 100 | 95.95% | 4.05% | 0.00% | — |
+| Shared correlated multiplicative noise | 100 | 95.65% | 4.35% | 0.00% | — |
+| Lognormal skew, log SD 0.7 | 10 | 97.69% | 2.31% | 30.18% | — |
+| Lognormal skew, log SD 0.7 | 100 | 96.13% | 3.87% | 0.00% | — |
+| A run after A takes 5% longer | 100 | 95.77% | 2.33% | 0.00% | — |
+| Eight independent commands | 5 | 95.12% | 4.88% | 0.00% | — |
+| Eight independent commands | 100 | 95.26% | 4.74% | 0.00% | — |
+| Single-command arithmetic mean | 100 | 95.26% | 0.00% | 0.00% | — |
+| Automatic plan, target worth 2 runs | 3.0 mean | 95.23% | 4.77% | 21.98% | — |
+| Automatic plan, target worth 200 runs | 198.5 mean | 95.77% | 4.23% | 0.00% | — |
+| Automatic plan, quiet pair, 5% faster | 100.4 mean | 95.00% | 0.00% | 0.00% | 100.00% |
+| Automatic plan, first run of A five times slower | 197.5 mean | 95.70% | 4.30% | 0.00% | — |
 
-Every supported cell has a one-sided 95% lower coverage bound above 94% and
-upper false-direction bound below 6%. These conservative intervals trade width
-for protection against dependence and selection. The automatic cell includes
-pilot costs and the production count rule; it is not a fixed-count proxy.
+Joint coverage counts an experiment when every bounded interval contains its true
+ratio; an unbounded set makes no claim and so cannot be wrong. The no-claim
+column shows how often that happened, so abstention is not mistaken for evidence.
+False direction counts experiments with at least one directional verdict against
+the truth; with equal means, every directional verdict is false. Across all 118
+supported cells, from two runs to 1,000, the one-sided 95% lower coverage bound
+is at least 94.15% and the upper false-direction bound at most 5.80%. Automatic
+cells include the pilot, the warmup decision, and the variance-dependent run count.
 
 The limitations matter just as much:
 
-- Strong AR(1) dependence (correlation 0.9) at 200 blocks covered only 88.36%.
-  Strongly persistent conditions are outside the validated model.
-- A one-in-1,000, 100-times-slower event affecting only one candidate covered
-  only 17.56% at 200 blocks. No resampling procedure can infer a tail that the
-  observations usually never encounter.
+- Command-specific AR(1) correlation 0.5 between consecutive runs covered 62.59%
+  at 10 runs and 88.41% at 37, then 93.85% at 100 and 95.27% at 1,000. Below
+  20 runs the correlation check cannot run; it flagged 25.16% of experiments at
+  20 runs, 87.17% at 100 and nearly all at 1,000, where batching already
+  restores coverage.
+- Correlation 0.9 covered 67.18% at 100 runs and 89.78% at 1,000, flagged in
+  every experiment. Strongly persistent conditions are outside the validated model.
+- A one-in-1,000, 100-times-slower event affecting only one command covered 9.72%
+  at 100 runs. No interval can infer a tail that the runs usually never encounter.
 - Linear drift, periodic load, and carryover simulations do not establish
-  stationarity. Their coverage concerns their explicit finite-run mean, not a
-  promise about future conditions.
-- All 10,000 cancelled-plan controls withheld intervals and conclusions.
+  stationarity. Their coverage concerns their explicit finite-run mean. Drift was
+  flagged in 75.04% of experiments at 100 runs.
+- With independent runs, the correlation check flagged about 1% of experiments,
+  its designed false-alarm rate.
+- A five-times-slower first run in a fixed 100-run experiment mostly widened the
+  interval (97.43% coverage) rather than biasing it past its width; the automatic
+  warmup discards that run when it is cheap.
 
-The original cube-root, uncorrected proposal failed calibration, including an
-independent row-by-row NumPy reference; it is not the implemented method.
+A stationary bootstrap with conservative corrections, the previous method, needed
+100 runs before any conclusion and covered 98.6–99.9% where Fieller batch means
+cover close to 95%. At 100 runs of four independent commands its intervals were
+about 45% wider (mean log width 0.136 versus 0.093).
 
 Reproduce a cell from the repository root:
 
 ```sh
-cargo bench -p fast --bench calibration -- 10000 200 ar 4 d91453c274b8109a
+cargo bench -p fast --bench calibration -- 10000 100 ar 4 d91453c274b8109a
+cargo bench -p fast --bench calibration -- 10000 200 cold 4 d91453c274b8109a --auto
 ```
 
-Arguments are experiment count, blocks (or automatic effort scale), model,
-worker count, and hexadecimal seed. Run `--help` for model names. Simulations
-are development tools; the installed `fast` binary has no simulation mode.
+Arguments are experiment count, runs (with `--auto`, the planning target in runs'
+worth of time), model, worker count, and hexadecimal seed. Run `--help` for model
+names. Simulations are development tools; the installed `fast` binary has no
+simulation mode.
 
-Aggregate counts and interval widths are retained in
-[`calibration.csv`](../benches/calibration.csv); the deterministic model source
-is [`calibration.rs`](../benches/calibration.rs). Coverage is a result for these
-models, not a distribution-free guarantee.
+All cells are retained in [`calibration.csv`](../benches/calibration.csv); the
+deterministic model source is [`calibration.rs`](../benches/calibration.rs). The
+simulations draw from `fast`'s xoshiro256++ generator, so the seed reproduces
+these cells exactly. Coverage is a result for these models, not a
+distribution-free guarantee.
 
 ## Observer perturbation
 
@@ -188,7 +242,7 @@ The four-event Vermeer policy and paced task sampler were measured on an AMD
 Ryzen 9 5950X, Linux 7.2.8, nightly Rust `0abfedbc7`, release profile,
 with inherited scheduling and background load:
 
-| Workload | Blocks | On/off time ratio | Approximate 95% interval |
+| Workload | Runs | On/off time ratio | 95% interval (v3 bootstrap) |
 | --- | ---: | ---: | --- |
 | Native launch fixture | 1,000 | 1.1265 | 1.0334–1.2279 |
 | 1 ms sleep | 100 | 1.0289 | 0.7866–1.3458 |
@@ -227,7 +281,7 @@ all chronological observations and its analysis as JSON on stdout.
 ## Optimization checks
 
 A public `fast` comparison measured paced and unpaced collectors in 100
-randomized blocks, each running the 1,100-thread, 200 ms fixture once and emitting
+randomized runs, each running the 1,100-thread, 200 ms fixture once and emitting
 JSON. Builds used the same compiler, source path, and target directory. The
 paced/unpaced elapsed ratio was 0.9955, with interval 0.9898–1.0012: an elapsed
 improvement was not established. Mean wait-accounted CPU time fell from
@@ -238,7 +292,7 @@ multiplexed the PMU events, so their instruction and cycle counts were
 ineligible for comparison.
 
 A matched release-build comparison used `fast` itself to measure 100 randomized
-blocks of nested ten-run JSON experiments. Adding a 64 KiB JSON output buffer
+runs of nested ten-run JSON experiments. Adding a 64 KiB JSON output buffer
 gave a buffered/unbuffered elapsed ratio of 1.0031, with interval
 0.9717–1.0355. The standard stdout writer remains: the extra buffer did not
 establish a useful improvement.

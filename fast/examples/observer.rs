@@ -58,7 +58,7 @@ fn main() -> io::Result<()> {
         }
         rows.push(row.to_vec());
     }
-    let analysis = statistics::analyze(&rows, true, 712, None);
+    let analysis = statistics::analyze(&rows, None);
     let recommendation = statistics::precision_count(&rows);
     println!(
         "{}",

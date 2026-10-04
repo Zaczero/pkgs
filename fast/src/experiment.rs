@@ -8,7 +8,7 @@ use serde::Serialize;
 use crate::cli::Cli;
 use crate::random::Random;
 use crate::runner::{self, Command, InvocationKind, Observation, Outcome, Runner};
-use crate::statistics::{self, Analysis};
+use crate::statistics::{self, Analysis, MINIMUM_RUNS, Planner};
 
 #[derive(Debug)]
 pub(crate) enum Failure {
@@ -77,7 +77,8 @@ pub(crate) enum Role {
 pub(crate) struct Invocation {
     pub candidate: usize,
     pub phase: Phase,
-    pub block: usize,
+    /// Chronological index across warmup, pilot and production runs.
+    pub run: usize,
     pub position: usize,
     pub role: Role,
     #[serde(serialize_with = "runner::decimal")]
@@ -95,48 +96,147 @@ pub(crate) struct Result {
     pub candidates: Vec<Candidate>,
     pub protocol: Protocol,
     pub context: Context,
-    pub planned_blocks: usize,
+    pub plan: Plan,
     pub completed: bool,
     pub stop_reason: String,
     pub exit_code: u8,
+    #[serde(serialize_with = "runner::decimal")]
+    pub wall_ns: u64,
     pub invocations: Vec<Invocation>,
     pub analysis: Analysis,
 }
 
+#[derive(Debug, Serialize)]
+#[serde(tag = "mode", rename_all = "snake_case")]
+pub(crate) enum Planning {
+    /// `--runs` or `--once`: exactly the requested runs, without a pilot.
+    Fixed,
+    /// Pilot runs measure cost and variation, then the run count is frozen.
+    /// A strict target never adds runs beyond what fits.
+    Automatic { target_seconds: f64, strict: bool },
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct Plan {
+    #[serde(flatten)]
+    pub planning: Planning,
+    pub warmup_runs: usize,
+    pub pilot_runs: usize,
+    /// Leading pilot runs excluded from analysis as an automatic warmup.
+    pub discarded_runs: usize,
+    /// Runs intended for analysis: kept pilot runs plus production runs.
+    pub planned_runs: usize,
+}
+
 impl Result {
-    pub(crate) fn rows(&self, phase: Phase) -> Vec<Vec<u64>> {
-        let mut rows = Vec::new();
-        let mut current = vec![None; self.candidates.len()];
-        let mut block = 0;
-        for invocation in self
+    /// Runs in which every command succeeded, chronologically, each with one command
+    /// invocation per candidate in candidate order.
+    fn complete_runs(&self) -> Vec<(Phase, Vec<&Invocation>)> {
+        let mut runs = Vec::new();
+        let mut commands = self
             .invocations
             .iter()
-            .filter(|i| i.phase == phase && i.role == Role::Command)
-        {
-            if invocation.block != block {
-                if current.iter().all(Option::is_some) {
-                    rows.push(current.iter().map(|x| x.expect("complete row")).collect());
+            .filter(|i| i.role == Role::Command)
+            .peekable();
+        while let Some(&&Invocation { run, phase, .. }) = commands.peek() {
+            let mut slots: Vec<Option<&Invocation>> = vec![None; self.candidates.len()];
+            while let Some(invocation) = commands.next_if(|i| i.run == run) {
+                if invocation
+                    .observation
+                    .as_ref()
+                    .is_some_and(|o| o.outcome.success())
+                {
+                    *slots
+                        .get_mut(invocation.candidate)
+                        .expect("recorded command") = Some(invocation);
                 }
-                current.fill(None);
-                block = invocation.block;
             }
-            if let Some(observation) = &invocation.observation
-                && observation.outcome.success()
-            {
-                *current
-                    .get_mut(invocation.candidate)
-                    .expect("recorded command") = Some(observation.elapsed_ns);
+            if let Some(complete) = slots.into_iter().collect::<Option<Vec<_>>>() {
+                runs.push((phase, complete));
             }
         }
-        if current.iter().all(Option::is_some) {
-            rows.push(
-                current
-                    .into_iter()
-                    .map(|x| x.expect("complete row"))
-                    .collect(),
+        runs
+    }
+
+    /// Complete runs used by the analysis: pilot runs after any discarded warmup, then
+    /// production runs.
+    pub(crate) fn measured(&self) -> Vec<Vec<&Invocation>> {
+        let mut discard = self.plan.discarded_runs;
+        self.complete_runs()
+            .into_iter()
+            .filter(|(phase, _)| match phase {
+                Phase::Warmup => false,
+                Phase::Pilot if discard > 0 => {
+                    discard = discard.wrapping_sub(1);
+                    false
+                },
+                Phase::Pilot | Phase::Production => true,
+            })
+            .map(|(_, run)| run)
+            .collect()
+    }
+
+    /// Keeps task detail for the first measured run only, analyzes the measured runs,
+    /// and settles a requested nonregression check.
+    fn conclude(&mut self, margin: Option<f64>, check: Option<f64>) {
+        let first = self
+            .measured()
+            .first()
+            .and_then(|run| run.first())
+            .map(|invocation| invocation.run);
+        for invocation in &mut self.invocations {
+            if Some(invocation.run) != first
+                && let Some(observation) = &mut invocation.observation
+            {
+                observation.activity.tasks.clear();
+                observation.activity.tasks.shrink_to_fit();
+            }
+        }
+        self.analysis = statistics::analyze(&Self::rows(&self.measured()), margin);
+        // Stopping on a signal is independent of the measured values; stopping on a failed
+        // run is not, so its completed runs stay descriptive.
+        if matches!(self.exit_code, 1 | 3) {
+            self.analysis.withdraw_inference(
+                "A failed run ended the experiment; comparisons are descriptive.",
             );
         }
-        rows
+        if self.exit_code != 0 {
+            return;
+        }
+        let Some(margin) = check else {
+            return;
+        };
+        let comparisons: Vec<_> = self
+            .analysis
+            .comparisons
+            .iter()
+            .filter(|c| c.denominator == Some(0))
+            .collect();
+        self.exit_code = if comparisons.is_empty() {
+            5
+        } else if comparisons
+            .iter()
+            .any(|c| c.interval.is_some_and(|i| i.lower > 1.0 + margin))
+        {
+            4
+        } else if comparisons
+            .iter()
+            .all(|c| c.interval.is_some_and(|i| i.upper <= 1.0 + margin))
+        {
+            0
+        } else {
+            5
+        };
+    }
+
+    fn rows(runs: &[Vec<&Invocation>]) -> Vec<Vec<u64>> {
+        runs.iter()
+            .map(|run| {
+                run.iter()
+                    .map(|i| i.observation.as_ref().expect("successful run").elapsed_ns)
+                    .collect()
+            })
+            .collect()
     }
 }
 
@@ -212,6 +312,7 @@ struct Experiment<'a> {
     shell: Option<OsString>,
     result: Result,
     rng: Random,
+    next_run: usize,
     start: Instant,
     progress: Instant,
 }
@@ -221,7 +322,7 @@ impl Experiment<'_> {
         &mut self,
         candidate: usize,
         phase: Phase,
-        block: usize,
+        run: usize,
         position: usize,
         role: Role,
     ) -> bool {
@@ -264,7 +365,7 @@ impl Experiment<'_> {
                 ),
                 ("FAST_COMMAND_ID".into(), id(candidate)),
                 ("FAST_PHASE".into(), phase.name().into()),
-                ("FAST_RUN_INDEX".into(), block.wrapping_add(1).to_string()),
+                ("FAST_RUN_INDEX".into(), run.wrapping_add(1).to_string()),
             ]
         };
         let timeout = if role == Role::Command {
@@ -302,7 +403,9 @@ impl Experiment<'_> {
                     self.result.stop_reason =
                         format!("{} {role:?}: {:?}", id(candidate), observation.outcome);
                 }
-                if phase != Phase::Production || block != 0 || role != Role::Command {
+                // The first measured run is one of the first two after any requested
+                // warmup; the automatic warmup decision settles which.
+                if role != Role::Command || run >= self.result.plan.warmup_runs.wrapping_add(2) {
                     observation.activity.tasks.clear();
                     observation.activity.tasks.shrink_to_fit();
                 }
@@ -317,7 +420,7 @@ impl Experiment<'_> {
         self.result.invocations.push(Invocation {
             candidate,
             phase,
-            block,
+            run,
             position,
             role,
             started_ns,
@@ -327,29 +430,31 @@ impl Experiment<'_> {
         success
     }
 
-    fn block(&mut self, phase: Phase, block: usize) -> bool {
+    fn run(&mut self, phase: Phase) -> bool {
+        let run = self.next_run;
+        self.next_run = run.wrapping_add(1);
         let mut order: Vec<_> = (0..self.commands.len()).collect();
         self.rng.shuffle(&mut order);
         for (position, candidate) in order.into_iter().enumerate() {
             if self.options.prepare.is_some()
-                && !self.invoke(candidate, phase, block, position, Role::Prepare)
+                && !self.invoke(candidate, phase, run, position, Role::Prepare)
             {
                 return false;
             }
-            if !self.invoke(candidate, phase, block, position, Role::Command) {
+            if !self.invoke(candidate, phase, run, position, Role::Command) {
                 return false;
             }
             if self.options.verify.is_some()
-                && !self.invoke(candidate, phase, block, position, Role::Verify)
+                && !self.invoke(candidate, phase, run, position, Role::Verify)
             {
                 return false;
             }
         }
         if self.progress.elapsed() >= Duration::from_secs(10) {
             self.message(&format!(
-                "{}: {} complete blocks",
+                "{}: {} runs complete",
                 phase.name(),
-                block.wrapping_add(1)
+                run.wrapping_add(1)
             ));
             self.progress = Instant::now();
         }
@@ -362,54 +467,72 @@ impl Experiment<'_> {
         }
     }
 
-    fn execute(&mut self, max_blocks: usize) {
+    fn execute(&mut self, capacity: usize) {
         self.message(
-            "running sequential randomized blocks; Ctrl-C stops and prints partial results",
+            "running commands in randomized order; Ctrl-C stops and reports completed runs",
         );
-        for block in 0..self.options.warmup {
-            if !self.block(Phase::Warmup, block) {
+        for _ in 0..self.options.warmup.unwrap_or(0) {
+            if !self.run(Phase::Warmup) {
                 return;
             }
+            self.result.plan.warmup_runs = self.next_run;
         }
-        let count = if self.options.once {
-            1
-        } else if let Some(runs) = self.options.runs {
-            runs.get()
-        } else {
-            let target = self
-                .options
-                .time
-                .unwrap_or(Duration::from_secs(30))
-                .as_secs_f64();
-            let mut costs = Vec::new();
-            for block in 0.. {
-                let start = Instant::now();
-                if !self.block(Phase::Pilot, block) {
-                    return;
+        let production = match self.result.plan.planning {
+            Planning::Fixed => self.result.plan.planned_runs,
+            Planning::Automatic {
+                target_seconds,
+                strict,
+            } => {
+                let planner = Planner {
+                    target: target_seconds,
+                    minimum: if strict { 1 } else { MINIMUM_RUNS },
+                    warmup: self.options.warmup.is_none(),
+                };
+                let mut costs = Vec::new();
+                loop {
+                    let start = Instant::now();
+                    if !self.run(Phase::Pilot) {
+                        return;
+                    }
+                    costs.push(start.elapsed().as_secs_f64());
+                    self.result.plan.pilot_runs = costs.len();
+                    self.result.plan.discarded_runs = usize::from(planner.discard_first(&costs));
+                    if planner.pilot_complete(self.start.elapsed().as_secs_f64(), &costs) {
+                        break;
+                    }
                 }
-                costs.push(start.elapsed().as_secs_f64());
-                if statistics::pilot_complete(self.start.elapsed().as_secs_f64(), &costs, target) {
-                    break;
-                }
-            }
-            let remaining = target - self.start.elapsed().as_secs_f64();
-            statistics::production_count(remaining, &costs, &self.result.rows(Phase::Pilot))
-                .min(max_blocks)
+                let pilot: Vec<_> = self
+                    .result
+                    .complete_runs()
+                    .into_iter()
+                    .filter(|(phase, _)| *phase == Phase::Pilot)
+                    .map(|(_, run)| run)
+                    .collect();
+                let additional = planner
+                    .additional(
+                        self.start.elapsed().as_secs_f64(),
+                        &costs,
+                        &Result::rows(&pilot),
+                    )
+                    .min(capacity.saturating_sub(self.next_run));
+                self.result.plan.planned_runs = costs
+                    .len()
+                    .wrapping_sub(self.result.plan.discarded_runs)
+                    .wrapping_add(additional);
+                additional
+            },
         };
-        self.result.planned_blocks = count;
-        self.message(&format!("plan frozen: {count} measured runs per command"));
-        for block in 0..count {
-            if !self.block(Phase::Production, block) {
+        self.message(&format!(
+            "plan frozen: {} measured runs per command",
+            self.result.plan.planned_runs
+        ));
+        for _ in 0..production {
+            if !self.run(Phase::Production) {
                 return;
             }
         }
         self.result.completed = true;
-        self.result.stop_reason = if count == 0 {
-            "pilot_only"
-        } else {
-            "planned_count_completed"
-        }
-        .into();
+        self.result.stop_reason = "planned_runs_completed".into();
     }
 }
 
@@ -427,7 +550,7 @@ pub(crate) fn id(mut index: usize) -> String {
 }
 
 fn commands(options: &Cli) -> io::Result<(Vec<Command>, Option<OsString>)> {
-    if options.once && options.warmup != 0 {
+    if options.once && options.warmup.is_some_and(|runs| runs > 0) {
         return Err(io::Error::other("--once cannot include warmup runs"));
     }
     if options.separator.is_empty() {
@@ -466,37 +589,31 @@ fn commands(options: &Cli) -> io::Result<(Vec<Command>, Option<OsString>)> {
     Ok((commands, shell))
 }
 
+/// Total runs that fit the 128 MiB allowance for retained observations and their
+/// bounded diagnostics.
 fn capacity(options: &Cli, commands: usize) -> io::Result<usize> {
     let hooks = 1_usize
         .wrapping_add(usize::from(options.prepare.is_some()))
         .wrapping_add(usize::from(options.verify.is_some()));
-    let bytes_per_block = commands
+    let bytes_per_run = commands
         .checked_mul(hooks.wrapping_mul(1024))
         .ok_or_else(|| io::Error::other("too many commands"))?;
-    let analysis_bytes = commands
-        .checked_mul(20_000 * 8)
-        .and_then(|bytes| {
-            commands
-                .checked_mul(commands)
-                .and_then(|pairs| pairs.checked_mul(128))
-                .and_then(|extra| bytes.checked_add(extra))
-        })
-        .ok_or_else(|| io::Error::other("too many comparisons"))?;
-    let allowance = (128_usize * 1024 * 1024)
-        .checked_sub(analysis_bytes)
-        .ok_or_else(|| io::Error::other("comparison exceeds the 128 MiB observation allowance"))?;
-    let max_blocks = allowance
-        .checked_div(bytes_per_block)
+    let capacity = (128_usize * 1024 * 1024)
+        .checked_div(bytes_per_run)
         .expect("at least one command");
     let explicit = options
         .runs
         .map_or_else(|| usize::from(options.once), std::num::NonZeroUsize::get);
-    if explicit.saturating_add(options.warmup).saturating_add(8) > max_blocks {
+    if explicit
+        .saturating_add(options.warmup.unwrap_or(0))
+        .saturating_add(8)
+        > capacity
+    {
         return Err(io::Error::other(format!(
-            "requested observations exceed the 128 MiB allowance; at most {max_blocks} total blocks fit"
+            "requested runs exceed the 128 MiB observation allowance; at most {capacity} runs fit"
         )));
     }
-    Ok(max_blocks)
+    Ok(capacity)
 }
 
 fn protocol(options: &Cli, runner: &Runner) -> io::Result<Protocol> {
@@ -525,15 +642,19 @@ fn protocol(options: &Cli, runner: &Runner) -> io::Result<Protocol> {
 
 pub(crate) fn run(options: Cli) -> std::result::Result<(Result, Cli), Failure> {
     let (commands, shell) = commands(&options).map_err(Failure::Usage)?;
-    let max_blocks = capacity(&options, commands.len()).map_err(Failure::Usage)?;
+    let capacity = capacity(&options, commands.len()).map_err(Failure::Usage)?;
     runner::check_jobserver().map_err(Failure::Usage)?;
     let seed = match options.seed {
         Some(seed) => seed,
         None => Random::entropy().map_err(Failure::Collector)?,
     };
     let runner = Runner::new(true).map_err(Failure::Collector)?;
+    let fixed = options
+        .runs
+        .map(std::num::NonZeroUsize::get)
+        .or_else(|| options.once.then_some(1));
     let result = Result {
-        schema: 1,
+        schema: 2,
         version: env!("CARGO_PKG_VERSION"),
         seed: format!("{seed:016x}"),
         execution: "exact_argv",
@@ -547,14 +668,29 @@ pub(crate) fn run(options: Cli) -> std::result::Result<(Result, Cli), Failure> {
             .collect(),
         protocol: protocol(&options, &runner).map_err(Failure::Collector)?,
         context: Context::read(),
-        planned_blocks: options
-            .runs
-            .map_or_else(|| usize::from(options.once), std::num::NonZeroUsize::get),
+        plan: Plan {
+            planning: if fixed.is_some() {
+                Planning::Fixed
+            } else {
+                Planning::Automatic {
+                    target_seconds: options
+                        .time
+                        .unwrap_or(Duration::from_secs(30))
+                        .as_secs_f64(),
+                    strict: options.time.is_some(),
+                }
+            },
+            warmup_runs: 0,
+            pilot_runs: 0,
+            discarded_runs: 0,
+            planned_runs: fixed.unwrap_or(0),
+        },
         completed: false,
         stop_reason: "not_started".into(),
         exit_code: 0,
+        wall_ns: 0,
         invocations: Vec::new(),
-        analysis: statistics::analyze(&[], false, seed, options.margin),
+        analysis: statistics::analyze(&[], options.margin),
     };
     let mut experiment = Experiment {
         options: &options,
@@ -563,17 +699,12 @@ pub(crate) fn run(options: Cli) -> std::result::Result<(Result, Cli), Failure> {
         shell,
         result,
         rng: Random::new(seed),
+        next_run: 0,
         start: Instant::now(),
         progress: Instant::now(),
     };
-    experiment.execute(max_blocks.saturating_sub(options.warmup.saturating_add(8)));
-    let rows = experiment.result.rows(Phase::Production);
-    experiment.result.analysis = statistics::analyze(
-        &rows,
-        experiment.result.completed,
-        seed ^ 0xA076_1D64_78BD_642F,
-        options.margin,
-    );
+    experiment.execute(capacity);
+    experiment.result.wall_ns = experiment.start.elapsed().as_nanos() as u64;
     experiment
         .runner
         .collect_signals()
@@ -582,36 +713,7 @@ pub(crate) fn run(options: Cli) -> std::result::Result<(Result, Cli), Failure> {
         experiment.result.completed = false;
         experiment.result.exit_code = 128_u8.wrapping_add(signal as u8);
         experiment.result.stop_reason = format!("interrupted by signal {signal}");
-        experiment
-            .result
-            .analysis
-            .withdraw_inference("Interrupted experiment; conclusions are unavailable.");
     }
-    if experiment.result.exit_code == 0
-        && let Some(margin) = options.check
-    {
-        let comparisons: Vec<_> = experiment
-            .result
-            .analysis
-            .comparisons
-            .iter()
-            .filter(|c| c.denominator == Some(0))
-            .collect();
-        experiment.result.exit_code = if !experiment.result.completed || comparisons.is_empty() {
-            5
-        } else if comparisons
-            .iter()
-            .any(|c| c.interval.is_some_and(|i| i.lower > 1.0 + margin))
-        {
-            4
-        } else if comparisons
-            .iter()
-            .all(|c| c.interval.is_some_and(|i| i.upper <= 1.0 + margin))
-        {
-            0
-        } else {
-            5
-        };
-    }
+    experiment.result.conclude(options.margin, options.check);
     Ok((experiment.result, options))
 }

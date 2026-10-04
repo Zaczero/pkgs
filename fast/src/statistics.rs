@@ -1,18 +1,28 @@
 use serde::Serialize;
-use statrs::distribution::{ContinuousCDF as _, Normal, StudentsT};
+use statrs::distribution::{ContinuousCDF as _, FisherSnedecor, StudentsT};
 
-use crate::random::Random;
-
-const REPLICATES: usize = 20_000;
-/// Complete measured blocks required before timing comparisons receive inferential labels.
-const MIN_INFERENCE_BLOCKS: usize = 100;
+/// Error rate shared by every interval of one experiment.
+const ALPHA: f64 = 0.05;
+/// Error rate shared by the serial-correlation checks of one experiment.
+const CORRELATION_ALPHA: f64 = 0.01;
+/// Automatic planning measures this many runs when the budget allows: batch means
+/// then absorb moderate correlation between consecutive runs.
+pub const PREFERRED_RUNS: usize = 100;
+/// Under the default target, automatic planning measures at least this many runs;
+/// two runs rarely bound an interval.
+pub const MINIMUM_RUNS: usize = 3;
+const MAXIMUM_RUNS: usize = 10_000;
+/// Interval half-width, as a ratio, that the precision estimate plans for.
+const PRECISION: f64 = 1.01;
+/// Relative standard error below which variation is clock quantization, not evidence.
+const RESOLUTION: f64 = 1e-9;
 
 #[derive(Debug, Serialize)]
 pub struct Analysis {
     pub method: &'static str,
-    pub blocks: usize,
-    pub replicates: usize,
-    pub segment_length: usize,
+    pub confidence: f64,
+    pub runs: usize,
+    pub batches: usize,
     pub summaries: Vec<Summary>,
     pub comparisons: Vec<Comparison>,
     pub limitation: Option<String>,
@@ -49,15 +59,13 @@ pub struct Comparison {
     pub numerator: usize,
     pub denominator: Option<usize>,
     pub estimate: f64,
+    /// `None` when the confidence set is unbounded (decision `unresolved`) or the
+    /// data cannot support one (decision `insufficient`).
     pub interval: Option<Interval>,
-    pub primary_interval: Option<Interval>,
     pub decision: Decision,
-    pub sensitivity_stable: bool,
-}
-
-struct Prefix {
-    columns: Vec<Vec<u128>>,
-    rows: usize,
+    /// Batch means varied more than independent runs explain: drift, load changes,
+    /// or runs that influence their successors. The interval may be too narrow.
+    pub correlated: bool,
 }
 
 impl Analysis {
@@ -65,8 +73,6 @@ impl Analysis {
         self.limitation = Some(reason.into());
         for comparison in &mut self.comparisons {
             comparison.interval = None;
-            comparison.primary_interval = None;
-            comparison.sensitivity_stable = false;
             comparison.decision = if comparison.denominator.is_some() {
                 Decision::Insufficient
             } else {
@@ -91,44 +97,171 @@ impl Interval {
     }
 }
 
-impl Prefix {
+/// Chronological runs split into contiguous batches whose sizes differ by at most one.
+struct Batches {
+    runs: usize,
+    /// Run count and mean of every column, per batch.
+    batches: Vec<(usize, Vec<f64>)>,
+    means: Vec<f64>,
+}
+
+impl Batches {
     #[expect(
         clippy::indexing_slicing,
-        reason = "Complete block columns have the first row's dimension"
+        reason = "Rows are complete runs with the first row's column count"
     )]
-    fn new(rows: &[Vec<u64>]) -> Self {
-        let columns = (0..rows.first().expect("eligible nonempty blocks").len())
-            .map(|column| {
-                let mut prefix = Vec::with_capacity(rows.len().wrapping_add(1));
-                prefix.push(0);
-                let mut sum = 0_u128;
-                for row in rows {
-                    sum = sum.wrapping_add(u128::from(row[column]));
-                    prefix.push(sum);
-                }
-                prefix
+    fn new(rows: &[Vec<u64>], count: usize) -> Self {
+        let runs = rows.len();
+        let columns = rows.first().map_or(0, Vec::len);
+        let total = |slice: &[Vec<u64>], column: usize| {
+            slice
+                .iter()
+                .map(|row| u128::from(row[column]))
+                .sum::<u128>() as f64
+        };
+        let batches = (0..count)
+            .map(|index| {
+                let slice = &rows[partition(runs, count, index)];
+                let means = (0..columns)
+                    .map(|column| total(slice, column) / slice.len() as f64)
+                    .collect();
+                (slice.len(), means)
             })
             .collect();
+        let means = (0..columns)
+            .map(|column| total(rows, column) / runs as f64)
+            .collect();
         Self {
-            columns,
-            rows: rows.len(),
+            runs,
+            batches,
+            means,
         }
     }
 
+    /// Estimated covariance of the two columns' overall means, from the size-weighted
+    /// spread of batch means. For independent normal runs this is exact with
+    /// `batches - 1` degrees of freedom, also for unequal batch sizes.
     #[expect(
         clippy::indexing_slicing,
-        reason = "Start is below rows and length is bounded by rows; prefixes have rows + 1 entries"
+        reason = "Columns index the batch mean vectors built from the same rows"
     )]
-    fn segment(&self, start: usize, length: usize, sums: &mut [u128]) {
-        let first = length.min(self.rows.wrapping_sub(start));
-        let rest = length.wrapping_sub(first);
-        for (prefix, sum) in self.columns.iter().zip(sums) {
-            *sum = sum.wrapping_add(
-                prefix[start.wrapping_add(first)]
-                    .wrapping_sub(prefix[start])
-                    .wrapping_add(prefix[rest]),
-            );
+    fn covariance(&self, left: usize, right: usize) -> f64 {
+        let spread = self
+            .batches
+            .iter()
+            .map(|(size, means)| {
+                *size as f64 * (means[left] - self.means[left]) * (means[right] - self.means[right])
+            })
+            .sum::<f64>();
+        spread / self.batches.len().wrapping_sub(1).wrapping_mul(self.runs) as f64
+    }
+
+    /// Fieller's confidence set for the ratio of two means, or the t interval of
+    /// one mean. Scaling by the denominator's mean keeps the quadratic well conditioned.
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "Pair indices come from the family of this analysis's columns"
+    )]
+    fn interval(&self, numerator: usize, denominator: Option<usize>, critical: f64) -> Bound {
+        let Some(denominator) = denominator else {
+            let mean = self.means[numerator];
+            let error = self.covariance(numerator, numerator).sqrt();
+            if error <= RESOLUTION * mean {
+                return Bound::Degenerate;
+            }
+            return Bound::Interval(Interval {
+                lower: critical.mul_add(-error, mean).max(0.0),
+                upper: critical.mul_add(error, mean),
+            });
+        };
+        let scale = self.means[denominator];
+        let ratio = self.means[numerator] / scale;
+        let [vxx, vyy, vxy] = [
+            (denominator, denominator),
+            (numerator, numerator),
+            (numerator, denominator),
+        ]
+        .map(|(left, right)| self.covariance(left, right) / (scale * scale));
+        // Var(Y - R X) at the estimate: exactly zero for proportional columns.
+        let residual = ratio.mul_add(ratio * vxx, 2.0_f64.mul_add(-ratio * vxy, vyy));
+        if residual <= (RESOLUTION * ratio).powi(2) {
+            return Bound::Degenerate;
         }
+        // Fieller's set: lead R^2 - 2 middle R + constant <= 0.
+        let squared = critical * critical;
+        let lead = squared.mul_add(-vxx, 1.0);
+        if lead <= 0.0 {
+            return Bound::Unbounded;
+        }
+        let middle = squared.mul_add(-vxy, ratio);
+        let constant = ratio.mul_add(ratio, -squared * vyy);
+        let root = middle.mul_add(middle, -lead * constant).max(0.0).sqrt();
+        // Elapsed times are positive, so the set is intersected with positive ratios;
+        // a lower bound of zero means no lower limit.
+        Bound::Interval(Interval {
+            lower: ((middle - root) / lead).max(0.0),
+            upper: (middle + root) / lead,
+        })
+    }
+}
+
+enum Bound {
+    Interval(Interval),
+    /// The denominator's mean is not distinguishable from zero at this confidence.
+    Unbounded,
+    /// No variation between batches: quantized clocks, not certainty.
+    Degenerate,
+}
+
+/// Automatic effort planning. Every decision uses run costs and pilot variation,
+/// never a comparison's outcome, so the stopping point cannot favour a result.
+#[derive(Clone, Copy, Debug)]
+pub struct Planner {
+    /// Seconds of total effort, including the pilot and hooks.
+    pub target: f64,
+    /// Fewest measured runs, even when they exceed the target.
+    pub minimum: usize,
+    /// Whether the first pilot run may be discarded as a warmup.
+    pub warmup: bool,
+}
+
+impl Planner {
+    /// Seconds per run. Later pilot runs predict the rest better than a cold first run.
+    fn cost(costs: &[f64]) -> f64 {
+        let steady = costs
+            .get(1..)
+            .filter(|rest| !rest.is_empty())
+            .unwrap_or(costs);
+        steady.iter().sum::<f64>() / steady.len() as f64
+    }
+
+    /// The pilot ends after eight runs, or when another run would carry the effort
+    /// past 20% of the target.
+    pub fn pilot_complete(&self, elapsed: f64, costs: &[f64]) -> bool {
+        costs.len() >= 8 || elapsed + Self::cost(costs) > 0.2 * self.target
+    }
+
+    /// The first run pays for cold caches and lazy loading. It is discarded when
+    /// later runs show that one run costs at most 5% of the target, so the loss is small.
+    pub fn discard_first(&self, costs: &[f64]) -> bool {
+        self.warmup
+            && costs
+                .get(1..)
+                .is_some_and(|rest| !rest.is_empty() && median(rest) <= 0.05 * self.target)
+    }
+
+    /// Runs to add after the pilot: those that fit in the remaining target, up to the
+    /// larger of the precision estimate and `PREFERRED_RUNS`, and at least enough for
+    /// the minimum.
+    pub fn additional(&self, elapsed: f64, costs: &[f64], pilot: &[Vec<u64>]) -> usize {
+        let kept = pilot
+            .get(usize::from(self.discard_first(costs))..)
+            .unwrap_or_default();
+        let affordable = ((self.target - elapsed).max(0.0) / Self::cost(costs)).floor() as usize;
+        let desired = precision_count(kept).clamp(PREFERRED_RUNS, MAXIMUM_RUNS);
+        affordable
+            .min(desired.saturating_sub(kept.len()))
+            .max(self.minimum.saturating_sub(kept.len()))
     }
 }
 
@@ -145,26 +278,28 @@ pub fn summarize(values: &[u64]) -> Summary {
     };
     let mut sorted = values.to_vec();
     sorted.sort_unstable();
-    let middle = sorted.len() / 2;
-    let (left, right) = sorted.split_at(middle);
-    let upper = *right.first().expect("nonempty upper median half") as f64;
-    let median = if sorted.len().is_multiple_of(2) {
-        f64::midpoint(
-            *left.last().expect("nonempty lower median half") as f64,
-            upper,
-        )
-    } else {
-        upper
-    };
     Summary {
         mean_ns: mean,
         sd_ns: variance.sqrt(),
-        median_ns: median,
+        median_ns: median(&sorted.iter().map(|&x| x as f64).collect::<Vec<_>>()),
         min_ns: *sorted.first().expect("nonempty observations"),
         max_ns: *sorted.last().expect("nonempty observations"),
     }
 }
 
+fn median(values: &[f64]) -> f64 {
+    let mut sorted = values.to_vec();
+    sorted.sort_unstable_by(f64::total_cmp);
+    let (lower, upper) = sorted.split_at(sorted.len() / 2);
+    let upper = *upper.first().expect("nonempty values");
+    if sorted.len().is_multiple_of(2) {
+        f64::midpoint(*lower.last().expect("even count"), upper)
+    } else {
+        upper
+    }
+}
+
+/// Every command pair, so all comparisons hold simultaneously; one command has its mean.
 fn family(columns: usize) -> Vec<(usize, Option<usize>)> {
     if columns == 1 {
         return vec![(0, None)];
@@ -177,224 +312,154 @@ fn family(columns: usize) -> Vec<(usize, Option<usize>)> {
         .collect()
 }
 
+/// One batch per run up to ten runs, then ten until the square root of the run
+/// count grows past ten, capped at thirty. Batches must be long enough to absorb
+/// correlation between consecutive runs; more of them narrow the t quantile.
+pub fn batch_count(runs: usize) -> usize {
+    runs.min(runs.isqrt().clamp(10, 30))
+}
+
+/// The `index`th of `parts` contiguous ranges covering `0..len`, sizes differing by at most one.
+pub fn partition(len: usize, parts: usize, index: usize) -> std::ops::Range<usize> {
+    let bound = |part: usize| part.wrapping_mul(len).div_euclid(parts);
+    bound(index)..bound(index.wrapping_add(1))
+}
+
+/// Two-sided Student t quantile at the Bonferroni level for `family` intervals.
+fn quantile(degrees: usize, family: usize) -> f64 {
+    StudentsT::new(0.0, 1.0, degrees as f64)
+        .expect("positive degrees of freedom")
+        .inverse_cdf(1.0 - ALPHA / (2.0 * family as f64))
+}
+
+/// One-way ANOVA F test of the batch partition on per-run values of the contrast.
+/// Independent runs give F(b - 1, n - b); drift or correlated runs inflate it.
 #[expect(
     clippy::indexing_slicing,
-    reason = "The scheduler supplies complete rectangular blocks; family indices and sensitivity vectors are constructed from those dimensions"
+    reason = "Rows are complete runs; pair indices come from their column family"
 )]
-pub fn analyze(rows: &[Vec<u64>], completed: bool, seed: u64, margin: Option<f64>) -> Analysis {
-    let n = rows.len();
+fn correlated(
+    rows: &[Vec<u64>],
+    count: usize,
+    pair: (usize, Option<usize>),
+    ratio: f64,
+    family: usize,
+) -> bool {
+    let runs = rows.len();
+    if runs < count.wrapping_mul(2) || count < 2 {
+        return false;
+    }
+    let (numerator, denominator) = pair;
+    let values: Vec<_> = rows
+        .iter()
+        .map(|row| row[numerator] as f64 - denominator.map_or(0.0, |d| ratio * row[d] as f64))
+        .collect();
+    let mean = values.iter().sum::<f64>() / runs as f64;
+    let mut between = 0.0;
+    let mut within = 0.0;
+    for index in 0..count {
+        let batch = &values[partition(runs, count, index)];
+        let batch_mean = batch.iter().sum::<f64>() / batch.len() as f64;
+        between += batch.len() as f64 * (batch_mean - mean).powi(2);
+        within += batch.iter().map(|v| (v - batch_mean).powi(2)).sum::<f64>();
+    }
+    let (d1, d2) = (
+        count.wrapping_sub(1) as f64,
+        runs.wrapping_sub(count) as f64,
+    );
+    if within <= 0.0 {
+        return false;
+    }
+    let statistic = (between / d1) / (within / d2);
+    statistic
+        > FisherSnedecor::new(d1, d2)
+            .expect("positive degrees of freedom")
+            .inverse_cdf(1.0 - CORRELATION_ALPHA / family as f64)
+}
+
+/// Simultaneous 95% intervals for every command pair's ratio of arithmetic mean
+/// elapsed times (one command: its mean), from chronological complete runs.
+#[expect(
+    clippy::indexing_slicing,
+    reason = "Rows are complete runs; family indices come from their column count"
+)]
+pub fn analyze(rows: &[Vec<u64>], margin: Option<f64>) -> Analysis {
+    let runs = rows.len();
     let columns = rows.first().map_or(0, Vec::len);
     let summaries: Vec<_> = (0..columns)
         .map(|column| summarize(&rows.iter().map(|row| row[column]).collect::<Vec<_>>()))
         .collect();
-    let segment = n.isqrt().max(2);
-    let limitation = if !completed {
-        Some("The planned experiment did not complete; comparisons are descriptive only.")
-    } else if n < MIN_INFERENCE_BLOCKS {
-        Some("Too few complete measured blocks for timing conclusions (at least 100 required).")
-    } else if summaries.iter().any(|s| s.mean_ns <= 0.0) {
-        Some("Clock resolution is insufficient for inference.")
-    } else {
-        None
-    }
-    .map(str::to_owned);
+    let count = batch_count(runs);
+    let limitation = match runs {
+        0 => Some("No run completed."),
+        1 => Some("One run cannot show run-to-run variation; intervals need at least two."),
+        _ if summaries.iter().any(|s| s.mean_ns <= 0.0) => {
+            Some("Clock resolution is insufficient for inference.")
+        },
+        _ => None,
+    };
     let pairs = family(columns);
-    let estimates: Vec<_> = pairs
-        .iter()
-        .map(|&(num, den)| summaries[num].mean_ns / den.map_or(1.0, |d| summaries[d].mean_ns))
-        .collect();
-    let intervals = if limitation.is_none() {
-        bootstrap(rows, &pairs, segment, REPLICATES, seed)
-    } else {
-        vec![None; pairs.len()]
-    };
-    let sensitivities: Vec<_> = if limitation.is_none() {
-        [segment / 2, segment.wrapping_mul(2).min(n)]
-            .into_iter()
-            .enumerate()
-            .map(|(index, length)| {
-                bootstrap(
-                    rows,
-                    &pairs,
-                    length.max(1),
-                    REPLICATES,
-                    seed.wrapping_add((index as u64).wrapping_add(1)),
-                )
-            })
-            .collect()
-    } else {
-        Vec::new()
-    };
+    let batches = limitation.is_none().then(|| Batches::new(rows, count));
+    let critical = limitation
+        .is_none()
+        .then(|| quantile(count.wrapping_sub(1), pairs.len()));
     let comparisons = pairs
-        .into_iter()
-        .zip(estimates)
-        .zip(intervals)
-        .enumerate()
-        .map(
-            |(index, (((numerator, denominator), estimate), interval))| {
-                let decide = |interval: Option<Interval>| {
-                    if denominator.is_none() {
-                        Decision::NotApplicable
-                    } else {
-                        interval.map_or(Decision::Insufficient, |i| i.decision(margin))
-                    }
-                };
-                let primary = decide(interval);
-                let stable = sensitivities
-                    .iter()
-                    .all(|arm| decide(arm[index]) == primary);
-                let sensitivity_envelope = interval.and_then(|initial| {
-                    sensitivities.iter().try_fold(initial, |outer, arm| {
-                        arm[index].map(|inner| Interval {
-                            lower: outer.lower.min(inner.lower),
-                            upper: outer.upper.max(inner.upper),
-                        })
-                    })
-                });
-                Comparison {
-                    numerator,
-                    denominator,
-                    estimate,
-                    interval: sensitivity_envelope,
-                    primary_interval: interval,
-                    decision: decide(sensitivity_envelope),
-                    sensitivity_stable: stable,
-                }
-            },
-        )
+        .iter()
+        .map(|&(numerator, denominator)| {
+            let estimate =
+                summaries[numerator].mean_ns / denominator.map_or(1.0, |d| summaries[d].mean_ns);
+            let bound = batches
+                .as_ref()
+                .zip(critical)
+                .map(|(batches, critical)| batches.interval(numerator, denominator, critical));
+            let (interval, decision) = match (bound, denominator) {
+                (Some(Bound::Interval(interval)), None) => {
+                    (Some(interval), Decision::NotApplicable)
+                },
+                (Some(Bound::Interval(interval)), Some(_)) => {
+                    (Some(interval), interval.decision(margin))
+                },
+                (Some(Bound::Unbounded | Bound::Degenerate) | None, None) => {
+                    (None, Decision::NotApplicable)
+                },
+                (Some(Bound::Unbounded), Some(_)) => (None, Decision::Unresolved),
+                (Some(Bound::Degenerate) | None, Some(_)) => (None, Decision::Insufficient),
+            };
+            Comparison {
+                numerator,
+                denominator,
+                estimate,
+                interval,
+                decision,
+                correlated: limitation.is_none()
+                    && correlated(rows, count, (numerator, denominator), estimate, pairs.len()),
+            }
+        })
         .collect();
     Analysis {
-        method: "stationary-bootstrap-log-ratio-max-envelope-v3",
-        blocks: n,
-        replicates: REPLICATES,
-        segment_length: segment,
+        method: "fieller-batch-means-bonferroni-v4",
+        confidence: 1.0 - ALPHA,
+        runs,
+        batches: if limitation.is_none() { count } else { 0 },
         summaries,
         comparisons,
-        limitation,
+        limitation: limitation.map(str::to_owned),
     }
 }
 
+/// Runs needed for every pair's interval to reach about ±1%, from the pilot's
+/// run-to-run variation of each relative contrast, assuming independent runs.
 #[expect(
     clippy::indexing_slicing,
-    reason = "Contrast pairs are generated from this mean vector's dimension"
-)]
-fn contrast(means: &[f64], pair: (usize, Option<usize>)) -> f64 {
-    let (numerator, denominator) = pair;
-    (means[numerator] / denominator.map_or(1.0, |d| means[d])).ln()
-}
-
-fn bootstrap(
-    rows: &[Vec<u64>],
-    pairs: &[(usize, Option<usize>)],
-    length: usize,
-    replicates: usize,
-    seed: u64,
-) -> Vec<Option<Interval>> {
-    let prefix = Prefix::new(rows);
-    let n = rows.len();
-    let k = prefix.columns.len();
-    let observed: Vec<_> = prefix
-        .columns
-        .iter()
-        .map(|p| *p.last().expect("nonempty prefix") as f64 / n as f64)
-        .collect();
-    let theta: Vec<_> = pairs
-        .iter()
-        .map(|&pair| contrast(&observed, pair))
-        .collect();
-    let mut rng = Random::new(seed);
-    let mut draws = Vec::with_capacity(replicates.wrapping_mul(k));
-    let mut sums = vec![0_u128; k];
-    let log_continue = (-1.0 / length as f64).ln_1p();
-    for _ in 0..replicates {
-        sums.fill(0);
-        let mut remaining = n;
-        while remaining > 0 {
-            let start = rng.below(n);
-            let size = if length == 1 {
-                1
-            } else {
-                let uniform = 1.0 - rng.unit();
-                ((uniform.ln() / log_continue).floor() as usize)
-                    .saturating_add(1)
-                    .min(remaining)
-            };
-            prefix.segment(start, size, &mut sums);
-            remaining = remaining.wrapping_sub(size);
-        }
-        draws.extend(sums.iter().map(|&sum| sum as f64 / n as f64));
-    }
-    let mut means = vec![0.0; pairs.len()];
-    let mut m2 = vec![0.0; pairs.len()];
-    for (iteration, draw) in draws.chunks_exact(k).enumerate() {
-        for ((&pair, mean), variance) in pairs.iter().zip(&mut means).zip(&mut m2) {
-            let value = contrast(draw, pair);
-            let delta = value - *mean;
-            *mean += delta / iteration.wrapping_add(1) as f64;
-            *variance += delta * (value - *mean);
-        }
-    }
-    let scales: Vec<_> = m2
-        .into_iter()
-        .map(|v| (v / replicates.wrapping_sub(1) as f64).sqrt())
-        .collect();
-    let mut maxima = Vec::with_capacity(replicates);
-    for draw in draws.chunks_exact(k) {
-        let maximum = pairs
-            .iter()
-            .zip(&theta)
-            .zip(&scales)
-            .filter(|(_, scale)| **scale > 0.0 && scale.is_finite())
-            .map(|((&pair, &center), &scale)| ((contrast(draw, pair) - center) / scale).abs())
-            .fold(0.0_f64, f64::max);
-        maxima.push(maximum);
-    }
-    let rank = replicates
-        .wrapping_add(1)
-        .wrapping_mul(95)
-        .div_ceil(100)
-        .min(replicates)
-        .wrapping_sub(1);
-    let (_, q, _) = maxima.select_nth_unstable_by(rank, f64::total_cmp);
-    // Effective-segment t inflation and circular-bootstrap finite-sample correction
-    // are calibrated engineering safeguards, not a finite-sample coverage theorem.
-    let probability = 1.0 - 0.05 / (2.0 * pairs.len() as f64);
-    let normal = Normal::new(0.0, 1.0)
-        .expect("standard normal")
-        .inverse_cdf(probability);
-    let degrees = (n as f64 / length as f64 - 1.0).max(1.0);
-    let student = StudentsT::new(0.0, 1.0, degrees)
-        .expect("positive degrees")
-        .inverse_cdf(probability);
-    let correction = (n as f64 / (n as f64 - length.wrapping_mul(2).wrapping_sub(1) as f64)).sqrt()
-        * student
-        / normal;
-    let q = *q * correction;
-    theta
-        .into_iter()
-        .zip(scales)
-        .map(|(center, scale)| {
-            if scale <= 0.0 || !scale.is_finite() {
-                return None;
-            }
-            let lower = (center - q * scale).exp();
-            let upper = (center + q * scale).exp();
-            (lower.is_finite() && upper.is_finite()).then_some(Interval { lower, upper })
-        })
-        .collect()
-}
-
-#[expect(
-    clippy::indexing_slicing,
-    reason = "Pilot rows are complete blocks and pairs are constructed from their shared dimension"
+    reason = "Pilot rows are complete runs and pairs are constructed from their shared dimension"
 )]
 pub fn precision_count(rows: &[Vec<u64>]) -> usize {
     if rows.len() < 4 {
-        return MIN_INFERENCE_BLOCKS;
+        return PREFERRED_RUNS;
     }
-    let k = rows.first().expect("at least four pilot blocks").len();
-    let pairs = family(k);
-    let means: Vec<_> = (0..k)
+    let columns = rows.first().expect("at least four pilot runs").len();
+    let pairs = family(columns);
+    let means: Vec<_> = (0..columns)
         .map(|column| rows.iter().map(|row| row[column] as f64).sum::<f64>() / rows.len() as f64)
         .collect();
     let variance = pairs
@@ -414,60 +479,40 @@ pub fn precision_count(rows: &[Vec<u64>]) -> usize {
                 / values.len().wrapping_sub(1) as f64
         })
         .fold(0.0_f64, f64::max);
-    let q = Normal::new(0.0, 1.0)
-        .expect("standard normal")
-        .inverse_cdf(1.0 - 0.05 / (2.0 * pairs.len() as f64));
-    (2.0 * q * q * variance / 1.01_f64.ln().powi(2)).ceil() as usize
-}
-
-/// The pilot ends after eight blocks, or when one more block at the mean pilot cost
-/// would carry the elapsed effort past 20% of the target.
-pub fn pilot_complete(elapsed: f64, costs: &[f64], target: f64) -> bool {
-    costs.len() >= 8 || elapsed + costs.iter().sum::<f64>() / costs.len() as f64 > 0.2 * target
-}
-
-/// Production blocks whose total at the mean pilot block cost fits in the remaining
-/// target, up to the larger of the precision estimate and the blocks timing
-/// conclusions require. The mean is the planning cost because effort is a sum over
-/// many blocks; a pilot percentile mostly measures one slow block.
-pub fn production_count(remaining: f64, costs: &[f64], pilot: &[Vec<u64>]) -> usize {
-    let mean = costs.iter().sum::<f64>() / costs.len() as f64;
-    let affordable = (remaining.max(0.0) / mean).floor() as usize;
-    affordable
-        .min(precision_count(pilot).max(MIN_INFERENCE_BLOCKS))
-        .min(10_000)
+    let critical = quantile(batch_count(PREFERRED_RUNS).wrapping_sub(1), pairs.len());
+    (critical * critical * variance / PRECISION.ln().powi(2)).ceil() as usize
 }
 
 #[cfg(test)]
 mod tests {
-    #[test]
-    fn circular_segments_sum_exact_integer_observations() {
-        let prefix = super::Prefix::new(&[vec![2, 11], vec![3, 13], vec![5, 17], vec![7, 19]]);
-        let mut sums = [0, 0];
-        prefix.segment(3, 3, &mut sums);
-        assert_eq!(sums, [12, 43]);
-    }
+    use super::{Decision, Interval, Planner, analyze, batch_count, family, quantile};
 
     #[test]
     fn arithmetic_mean_ratio_is_not_mean_of_ratios() {
-        let result = super::analyze(&[vec![1, 4], vec![9, 6]], true, 7, None);
+        let result = analyze(&[vec![1, 4], vec![9, 6]], None);
         assert_eq!(result.comparisons[0].estimate, 1.0);
-        assert!(result.comparisons[0].interval.is_none());
     }
 
     #[test]
     fn constant_observations_do_not_certify_equivalence() {
-        let result = super::analyze(&vec![vec![100, 100]; 100], true, 7, Some(0.01));
+        let result = analyze(&vec![vec![100, 100]; 100], Some(0.01));
         assert!(result.comparisons[0].interval.is_none());
-        assert_eq!(
-            result.comparisons[0].decision,
-            super::Decision::Insufficient
-        );
+        assert_eq!(result.comparisons[0].decision, Decision::Insufficient);
+    }
+
+    #[test]
+    fn proportional_columns_do_not_get_a_zero_width_certificate() {
+        let row = [vec![11, 22], vec![23, 46], vec![31, 62], vec![47, 94]];
+        let rows: Vec<_> = row.iter().cycle().take(100).cloned().collect();
+        let comparison = analyze(&rows, None).comparisons[0];
+        assert_eq!(comparison.estimate, 2.0);
+        assert!(comparison.interval.is_none());
+        assert_eq!(comparison.decision, Decision::Insufficient);
     }
 
     #[test]
     fn family_includes_nonbaseline_comparisons() {
-        assert_eq!(super::family(4), vec![
+        assert_eq!(family(4), vec![
             (1, Some(0)),
             (2, Some(0)),
             (3, Some(0)),
@@ -479,21 +524,20 @@ mod tests {
 
     #[test]
     fn practical_margin_is_distinct_from_direction() {
-        let interval = super::Interval {
+        let interval = Interval {
             lower: 0.992,
             upper: 0.998,
         };
-        assert_eq!(interval.decision(None), super::Decision::Less);
-        assert_eq!(interval.decision(Some(0.01)), super::Decision::Equivalent);
+        assert_eq!(interval.decision(None), Decision::Less);
+        assert_eq!(interval.decision(Some(0.01)), Decision::Equivalent);
     }
 
     #[test]
     fn single_command_mean_has_no_directional_decision() {
         let rows: Vec<_> = (100..200).map(|value| vec![value]).collect();
-        let result = super::analyze(&rows, true, 7, None);
-        let mean = result.comparisons[0];
+        let mean = analyze(&rows, None).comparisons[0];
         assert_eq!(mean.denominator, None);
-        assert_eq!(mean.decision, super::Decision::NotApplicable);
+        assert_eq!(mean.decision, Decision::NotApplicable);
         assert!(mean.interval.is_some());
         assert_eq!(mean.estimate, 149.5);
     }
@@ -501,76 +545,150 @@ mod tests {
     #[test]
     fn withdrawing_inference_removes_intervals_but_keeps_measurements() {
         let rows: Vec<_> = (100..200).map(|value| vec![value, 400 - value]).collect();
-        let mut result = super::analyze(&rows, true, 7, None);
+        let mut result = analyze(&rows, None);
         assert!(result.comparisons[0].interval.is_some());
-        assert!(result.comparisons[0].primary_interval.is_some());
         let estimate = result.comparisons[0].estimate;
-        result.withdraw_inference("Interrupted");
-        assert_eq!(result.blocks, 100);
+        result.withdraw_inference("Failed");
+        assert_eq!(result.runs, 100);
         assert_eq!(result.summaries[0].mean_ns, 149.5);
         assert_eq!(result.comparisons[0].estimate, estimate);
         assert!(result.comparisons[0].interval.is_none());
-        assert!(result.comparisons[0].primary_interval.is_none());
-        assert_eq!(
-            result.comparisons[0].decision,
-            super::Decision::Insufficient
-        );
-        assert!(!result.comparisons[0].sensitivity_stable);
+        assert_eq!(result.comparisons[0].decision, Decision::Insufficient);
     }
 
     #[test]
-    fn proportional_columns_do_not_get_a_zero_width_certificate() {
-        let row = [vec![11, 22], vec![23, 46], vec![31, 62], vec![47, 94]];
-        let rows: Vec<_> = row.iter().cycle().take(100).cloned().collect();
-        let result = super::analyze(&rows, true, 19, None);
-        let comparison = result.comparisons.first().expect("one contrast");
-        assert_eq!(comparison.estimate, 2.0);
-        assert!(comparison.interval.is_none());
-    }
-
-    #[test]
-    fn incomplete_plan_never_has_inferential_intervals() {
-        let row = [vec![11, 22], vec![23, 41], vec![31, 63], vec![47, 81]];
-        let rows: Vec<_> = row.iter().cycle().take(100).cloned().collect();
-        let result = super::analyze(&rows, false, 19, None);
-        assert!(result.comparisons.iter().all(|c| c.interval.is_none()));
-    }
-
-    #[test]
-    fn prefixes_keep_values_above_float_integer_precision() {
-        let rows = [vec![u64::MAX, 3], vec![u64::MAX, 5], vec![7, 11]];
-        let prefix = super::Prefix::new(&rows);
-        let mut sums = [0, 0];
-        prefix.segment(1, 3, &mut sums);
-        assert_eq!(sums, [0x0002_0000_0000_0000_0005, 19]);
-    }
-
-    #[test]
-    fn segment_accumulation_matches_literal_chronological_rows() {
+    fn intervals_match_an_independent_reference_with_uneven_batches() {
+        // 13 runs form ten batches of one or two runs. Reference values come from a
+        // separate Python implementation of the same weighted batch-means Fieller sets.
         let rows = [
-            vec![5, 101],
-            vec![7, 103],
-            vec![11, 107],
-            vec![13, 109],
-            vec![17, 113],
-        ];
-        let prefix = super::Prefix::new(&rows);
-        for (segments, selected) in [
-            (vec![(4, 3), (2, 2)], vec![4, 0, 1, 2, 3]),
-            (vec![(1, 1), (1, 1), (0, 3)], vec![1, 1, 0, 1, 2]),
-            (vec![(3, 5)], vec![3, 4, 0, 1, 2]),
-        ] {
-            let mut sums = [0_u128; 2];
-            for (start, length) in segments {
-                prefix.segment(start, length, &mut sums);
+            [1000, 1210, 905],
+            [1030, 1190, 930],
+            [990, 1250, 890],
+            [1010, 1170, 940],
+            [1060, 1230, 910],
+            [970, 1205, 925],
+            [1025, 1260, 880],
+            [1005, 1185, 950],
+            [995, 1220, 915],
+            [1040, 1195, 900],
+            [1015, 1240, 935],
+            [985, 1215, 920],
+            [1020, 1200, 905],
+        ]
+        .map(Vec::from);
+        let result = analyze(&rows, None);
+        assert_eq!(result.batches, 10);
+        for (comparison, (estimate, lower, upper)) in result.comparisons.iter().zip([
+            (
+                1.199_695_701_787_751_9,
+                1.166_799_267_159_946_5,
+                1.233_619_844_037_688_7,
+            ),
+            (
+                0.905_667_554_203_119,
+                0.881_522_141_011_495_6,
+                0.930_518_726_210_52,
+            ),
+            (
+                0.754_914_394_419_784_4,
+                0.731_594_526_042_090_9,
+                0.778_951_468_735_880_7,
+            ),
+        ]) {
+            let interval = comparison.interval.expect("bounded interval");
+            for (actual, expected) in [
+                (comparison.estimate, estimate),
+                (interval.lower, lower),
+                (interval.upper, upper),
+            ] {
+                assert!(
+                    (actual / expected - 1.0).abs() < 1e-7,
+                    "{actual} != {expected}"
+                );
             }
-            let mut reference = [0_u128; 2];
-            for index in selected {
-                for (total, &value) in reference.iter_mut().zip(&rows[index]) {
-                    *total = total.wrapping_add(u128::from(value));
-                }
-            }
-            assert_eq!(sums, reference);
         }
+        assert_eq!(result.comparisons[0].decision, Decision::More);
+        assert_eq!(result.comparisons[1].decision, Decision::Less);
+    }
+
+    #[test]
+    fn quantiles_hold_at_the_corrected_levels_used_by_small_experiments() {
+        // Three commands with two runs: two degrees of freedom, three comparisons.
+        assert!((quantile(2, 3) - 7.648_803_937_915).abs() < 1e-6);
+        // Eight commands with two runs: one degree of freedom, 28 comparisons, where
+        // the quantile has the closed form tan(pi (1/2 - alpha / 56)).
+        let exact = (std::f64::consts::PI * (0.5 - 0.05 / 56.0)).tan();
+        assert!((quantile(1, 28) / exact - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn batch_count_never_decreases_with_more_runs() {
+        let counts: Vec<_> = (1..=2000).map(batch_count).collect();
+        assert!(counts.is_sorted());
+        assert_eq!(
+            [1, 2, 10, 11, 99, 100, 400, 900, 10_000].map(batch_count),
+            [1, 2, 10, 10, 10, 10, 20, 30, 30]
+        );
+    }
+
+    #[test]
+    fn two_quiet_runs_can_resolve_a_large_difference() {
+        let result = analyze(
+            &[vec![1_000_000, 1_500_000], vec![1_002_000, 1_501_000]],
+            None,
+        );
+        assert_eq!(result.comparisons[0].decision, Decision::More);
+    }
+
+    #[test]
+    fn noise_larger_than_the_baseline_mean_leaves_the_ratio_unbounded() {
+        let result = analyze(&[vec![1, 1_000], vec![3_000, 1_000], vec![2, 1_000]], None);
+        let comparison = result.comparisons[0];
+        assert!(comparison.interval.is_none());
+        assert_eq!(comparison.decision, Decision::Unresolved);
+    }
+
+    #[test]
+    fn ratio_intervals_stop_at_zero() {
+        let result = analyze(&[vec![1000, 1], vec![1001, 3000], vec![999, 2]], None);
+        let interval = result.comparisons[0].interval.expect("bounded set");
+        assert_eq!(interval.lower, 0.0);
+        assert_eq!(result.comparisons[0].decision, Decision::Unresolved);
+    }
+
+    #[test]
+    fn drift_between_batches_is_flagged() {
+        let steady: Vec<_> = (0..200_u64)
+            .map(|run| {
+                vec![
+                    1000_u64.wrapping_add(run % 7),
+                    1000_u64.wrapping_add(run % 5),
+                ]
+            })
+            .collect();
+        assert!(!analyze(&steady, None).comparisons[0].correlated);
+        let drifting: Vec<_> = (0..200_u64)
+            .map(|run| vec![1000, 1000_u64.wrapping_add(run)])
+            .collect();
+        assert!(analyze(&drifting, None).comparisons[0].correlated);
+    }
+
+    #[test]
+    fn planning_discards_a_cheap_cold_run_and_keeps_the_minimum() {
+        let planner = Planner {
+            target: 30.0,
+            minimum: 3,
+            warmup: true,
+        };
+        assert!(planner.discard_first(&[5.0, 1.0, 1.0]));
+        assert!(!planner.discard_first(&[5.0]));
+        assert!(!planner.discard_first(&[20.0, 20.0]));
+        let slow = vec![vec![20_000_000_000, 21_000_000_000]];
+        assert_eq!(planner.additional(40.0, &[41.0], &slow), 2);
+        let strict = Planner {
+            minimum: 1,
+            ..planner
+        };
+        assert_eq!(strict.additional(40.0, &[41.0], &slow), 0);
     }
 }

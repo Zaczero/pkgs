@@ -300,10 +300,10 @@ fn explicit_count_has_no_pilot_and_balances_candidates() {
     let result = json(&output);
     let invocations = result["invocations"].as_array().expect("array");
     assert_eq!(invocations.len(), 9);
-    for block in 0..3 {
+    for run in 0..3 {
         let mut candidates: Vec<_> = invocations
             .iter()
-            .filter(|i| i["block"] == block)
+            .filter(|i| i["run"] == run)
             .map(|i| i["candidate"].as_u64().expect("index"))
             .collect();
         candidates.sort_unstable();
@@ -344,12 +344,22 @@ fn default_does_not_need_writable_working_or_home_directories() {
 }
 
 #[test]
-fn check_with_insufficient_data_is_inconclusive() {
+fn check_without_an_interval_is_inconclusive() {
     let output = fast(&[
-        "--runs", "2", "--check", "1%", "--json", "true", ":::", "true",
+        "--runs", "1", "--check", "1%", "--json", "true", ":::", "true",
     ]);
     assert_eq!(output.status.code(), Some(5));
     assert_eq!(json(&output)["exit_code"], 5);
+}
+
+#[test]
+fn check_does_not_require_a_fixed_run_count() {
+    let output = fast(&[
+        "--time", "300ms", "--check", "50%", "--json", "true", ":::", "true",
+    ]);
+    let code = output.status.code();
+    assert!(matches!(code, Some(0 | 5)), "{output:?}");
+    assert_eq!(json(&output)["exit_code"].as_i64(), code.map(i64::from));
 }
 
 #[test]
@@ -536,7 +546,7 @@ fn input_file_is_reopened_for_each_invocation() {
         "read -r first rest; test \"$first\" = Linux",
     ]);
     assert!(output.status.success(), "{output:?}");
-    assert_eq!(json(&output)["analysis"]["blocks"], 3);
+    assert_eq!(json(&output)["analysis"]["runs"], 3);
 }
 
 #[test]
@@ -617,7 +627,7 @@ fn details_does_not_change_the_number_of_executions() {
             .as_array()
             .expect("array")
             .iter()
-            .map(|i| (i["block"].clone(), i["candidate"].clone()))
+            .map(|i| (i["run"].clone(), i["candidate"].clone()))
             .collect::<Vec<_>>()
     };
     assert_eq!(order(&plain), order(&detailed));
@@ -805,7 +815,7 @@ fn signal_mask_and_sigpipe_are_restored_for_the_workload() {
 }
 
 #[test]
-fn automatic_planning_reports_pilot_only_without_extra_execution() {
+fn explicit_time_is_a_strict_budget_after_the_first_run() {
     let output = fast(&["--time", "1ns", "--json", "true"]);
     assert!(output.status.success(), "{output:?}");
     let result = json(&output);
@@ -817,16 +827,66 @@ fn automatic_planning_reports_pilot_only_without_extra_execution() {
         1
     );
     assert_eq!(result["invocations"][0]["phase"], "pilot");
-    assert_eq!(result["stop_reason"], "pilot_only");
-    assert_eq!(result["planned_blocks"], 0);
+    assert_eq!(result["plan"]["mode"], "automatic");
+    assert_eq!(result["plan"]["strict"], true);
+    assert_eq!(result["plan"]["planned_runs"], 1);
+    assert_eq!(result["analysis"]["runs"], 1);
 }
 
 #[test]
-fn pilot_only_report_keeps_the_resource_overview() {
+fn cheap_first_run_is_discarded_unless_warmup_is_explicit() {
+    for (warmup, discarded) in [(None, 1), (Some("0"), 0)] {
+        let mut args = vec!["--time", "500ms", "--json"];
+        if let Some(warmup) = warmup {
+            args.extend(["--warmup", warmup]);
+        }
+        args.extend(["true", ":::", "true"]);
+        let output = fast(&args);
+        assert!(output.status.success(), "{output:?}");
+        let result = json(&output);
+        let plan = &result["plan"];
+        assert_eq!(plan["discarded_runs"], discarded, "{plan}");
+        let measured = result["invocations"]
+            .as_array()
+            .expect("observations")
+            .iter()
+            .filter(|i| i["phase"] != "warmup")
+            .count()
+            / 2;
+        let kept = measured.wrapping_sub(discarded);
+        assert_eq!(result["analysis"]["runs"], kept, "{plan}");
+        assert_eq!(plan["planned_runs"], kept, "{plan}");
+    }
+}
+
+#[test]
+fn interruption_keeps_conclusions_from_completed_runs() {
+    let output = fast(&[
+        "--runs",
+        "50",
+        "--json",
+        "--prepare",
+        "test \"$FAST_RUN_INDEX\" -lt 4 || kill -INT \"$PPID\"",
+        "sleep",
+        "0.05",
+        ":::",
+        "sleep",
+        "0.15",
+    ]);
+    assert_eq!(output.status.code(), Some(130), "{output:?}");
+    let result = json(&output);
+    assert_eq!(result["completed"], false);
+    assert_eq!(result["analysis"]["runs"], 3);
+    assert!(result["analysis"]["limitation"].is_null());
+    assert_eq!(result["analysis"]["comparisons"][0]["decision"], "more");
+}
+
+#[test]
+fn single_run_report_keeps_the_resource_overview() {
     let output = fast(&["--time", "1ns", "--", "true"]);
     assert!(output.status.success(), "{output:?}");
     let report = String::from_utf8(output.stdout).expect("report");
-    assert!(report.contains("Pilot resources"), "{report}");
+    assert!(report.contains("Resources"), "{report}");
     assert!(report.contains("CPU time"), "{report}");
     assert!(report.contains("RSS peak/launch"), "{report}");
 }

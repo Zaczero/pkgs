@@ -7,7 +7,7 @@ use fast::runner::{Activity, Observation, Task};
 use unicode_width::{UnicodeWidthChar as _, UnicodeWidthStr as _};
 
 use crate::cli::{Cli, Color};
-use crate::experiment::{Phase, Result, Role, id};
+use crate::experiment::{Invocation, Phase, Result, Role, id};
 use crate::statistics::{Comparison, Decision};
 
 const HEADING: Style = Style::new()
@@ -48,8 +48,8 @@ pub(crate) fn print(result: &Result, options: &Cli) -> io::Result<()> {
         } else {
             "s"
         },
-        result.analysis.blocks,
-        if result.analysis.blocks == 1 { "" } else { "s" }
+        result.analysis.runs,
+        if result.analysis.runs == 1 { "" } else { "s" }
     )?;
     writeln!(out)?;
     for candidate in &result.candidates {
@@ -86,8 +86,8 @@ pub(crate) fn print(result: &Result, options: &Cli) -> io::Result<()> {
         }
         writeln!(
             out,
-            "Method: {}; {} resamples per segment length",
-            result.analysis.method, result.analysis.replicates
+            "Method: {}; {} batches",
+            result.analysis.method, result.analysis.batches
         )?;
     }
     out.flush()
@@ -102,7 +102,7 @@ fn timing(
     if result.analysis.summaries.is_empty() {
         return partial_timing(out, result, width);
     }
-    let single = result.analysis.blocks < 2;
+    let single = result.analysis.runs < 2;
     let dash = if options.ascii { "-" } else { "—" };
     let has_intervals = result
         .analysis
@@ -198,7 +198,7 @@ fn partial_timing(out: &mut impl io::Write, result: &Result, width: usize) -> io
     writeln!(out, "\n{HEADING}Timing{HEADING:#}")?;
     wrapped(
         out,
-        "No complete measured block; these are pilot or partial observations:",
+        "No complete measured run; these are partial observations:",
         width,
     )?;
     for invocation in result
@@ -212,7 +212,7 @@ fn partial_timing(out: &mut impl io::Write, result: &Result, width: usize) -> io
                 "{} {:?} {}: {} ({:?})",
                 id(invocation.candidate),
                 invocation.phase,
-                invocation.block.wrapping_add(1),
+                invocation.run.wrapping_add(1),
                 duration(reading.elapsed_ns as f64),
                 reading.outcome
             )?;
@@ -221,18 +221,10 @@ fn partial_timing(out: &mut impl io::Write, result: &Result, width: usize) -> io
     Ok(())
 }
 
-fn measured(result: &Result, candidate: usize, phase: Phase, blocks: usize) -> Vec<&Observation> {
-    result
-        .invocations
-        .iter()
-        .filter(|i| {
-            i.phase == phase
-                && i.role == Role::Command
-                && i.candidate == candidate
-                && i.block < blocks
-        })
-        .filter_map(|i| i.observation.as_ref())
-        .filter(|o| o.outcome.success())
+/// Observations of one command from the runs the analysis uses.
+fn measured<'a>(runs: &[Vec<&'a Invocation>], candidate: usize) -> Vec<&'a Observation> {
+    runs.iter()
+        .filter_map(|run| run.get(candidate)?.observation.as_ref())
         .collect()
 }
 
@@ -291,17 +283,10 @@ fn resources(
     options: &Cli,
     width: usize,
 ) -> io::Result<()> {
-    let (phase, blocks, heading) = if result.analysis.blocks > 0 {
-        (Phase::Production, result.analysis.blocks, "Resources")
-    } else {
-        (
-            Phase::Pilot,
-            result.rows(Phase::Pilot).len(),
-            "Pilot resources",
-        )
-    };
+    let heading = "Resources";
+    let runs = result.measured();
     let readings: Vec<_> = (0..result.candidates.len())
-        .map(|index| measured(result, index, phase, blocks))
+        .map(|index| measured(&runs, index))
         .collect();
     if readings.iter().all(Vec::is_empty) {
         return Ok(());
@@ -685,10 +670,10 @@ fn conclusions(
             "{style}{} {verdict} versus {}.{style:#}{}",
             id(comparison.numerator),
             id(denominator),
-            if comparison.sensitivity_stable {
-                ""
+            if comparison.correlated {
+                " Runs drifted or were correlated; the interval may be too narrow."
             } else {
-                " Dependence-sensitive."
+                ""
             }
         )?;
         if options.details && denominator != 0 {
@@ -700,11 +685,7 @@ fn conclusions(
             )?;
         }
     }
-    if result.completed
-        && result.analysis.limitation.is_none()
-        && result.candidates.len() > 2
-        && !options.details
-    {
+    if result.analysis.limitation.is_none() && result.candidates.len() > 2 && !options.details {
         overall_conclusion(out, result)?;
     }
     if result.analysis.limitation.is_none() {
@@ -729,7 +710,7 @@ fn conclusions(
     let measured = result
         .invocations
         .iter()
-        .filter(|i| i.phase == Phase::Production && i.role == Role::Command)
+        .filter(|i| i.phase != Phase::Warmup && i.role == Role::Command)
         .count();
     writeln!(
         out,

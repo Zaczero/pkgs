@@ -21,21 +21,21 @@ pub(crate) enum Color {
     version,
     about = "Run the work. Compare fairly. Print the answer.",
     override_usage = "fast [OPTIONS] [--] PROGRAM [ARG ...] [::: PROGRAM [ARG ...]] ...",
-    after_help = "Examples:\n  fast ./old input.dat ::: ./new input.dat\n  fast --input data.json zstd ::: gzip\n  fast --once ./expensive-job\n  fast --runs 100 --check 1% ./old ::: ./new\n  fast --json ./old ::: ./new > result.json\n  fast sh -c 'producer | consumer' ::: sh -c 'producer | improved'\n  fast --separator +++ printf '%s' ::: +++ true\n\nPut fast options before the first program; its arguments are passed unchanged.\nA standalone ::: separates commands, even after an initial --. Use --separator\nwhen a command needs a literal ::: argument; quoting the marker does not escape it.\nCommands run sequentially in randomized complete blocks, without an implicit shell.\nStdin and stdout are null unless --input supplies stdin.\nThe default plans roughly 30 seconds, including a separate pilot.\n--time plans; --timeout terminates. Hooks default to a 30s timeout.\n\nExit: 0 completed (possibly unresolved), 1 workload failure, 2 usage error,\n3 collector failure, 4 regression, 5 inconclusive check, 128+signal interrupted."
+    after_help = "Examples:\n  fast ./old input.dat ::: ./new input.dat\n  fast --input data.json zstd ::: gzip\n  fast --once ./expensive-job\n  fast --runs 100 --check 1% ./old ::: ./new\n  fast --json ./old ::: ./new > result.json\n  fast sh -c 'producer | consumer' ::: sh -c 'producer | improved'\n  fast --separator +++ printf '%s' ::: +++ true\n\nPut fast options before the first program; its arguments are passed unchanged.\nA standalone ::: separates commands, even after an initial --. Use --separator\nwhen a command needs a literal ::: argument; quoting the marker does not escape it.\nCommands run sequentially in randomized complete blocks, without an implicit shell.\nStdin and stdout are null unless --input supplies stdin.\nThe default plans about 30 seconds and at least 3 runs, even for slow commands;\nan explicit --time is a strict budget. --timeout terminates a single run.\nCtrl-C stops early and reports the completed runs. Hooks time out after 30s.\n\nExit: 0 completed (possibly unresolved), 1 workload failure, 2 usage error,\n3 collector failure, 4 regression, 5 inconclusive check, 128+signal interrupted."
 )]
 pub(crate) struct Cli {
     /// Execute each command exactly once, without a pilot or warmup
     #[arg(long, conflicts_with_all = ["runs", "time"])]
     pub once: bool,
-    /// Measure N runs per command, without a pilot
+    /// Measure exactly N runs of each command, without planning
     #[arg(long, value_name = "N", conflicts_with = "time")]
     pub runs: Option<NonZeroUsize>,
-    /// Plan this much total effort, then freeze the measured run count
+    /// Fit the planned runs within this total time [default: about 30s, at least 3 runs]
     #[arg(long, value_parser = duration, value_name = "DURATION")]
     pub time: Option<Duration>,
-    /// Run N additional warmup blocks
-    #[arg(long, default_value_t = 0, value_name = "N")]
-    pub warmup: usize,
+    /// Run every command N times before measuring [default: automatic]
+    #[arg(long, value_name = "N")]
+    pub warmup: Option<usize>,
     /// Terminate an invocation or hook after this duration
     #[arg(long, value_parser = duration, value_name = "DURATION")]
     pub timeout: Option<Duration>,
@@ -51,8 +51,8 @@ pub(crate) struct Cli {
     /// Interpret practical equivalence within this symmetric percentage
     #[arg(long, value_parser = percent, value_name = "PERCENT")]
     pub margin: Option<f64>,
-    /// Establish no more than this regression versus A (requires --runs)
-    #[arg(long, requires = "runs", value_parser = percent, value_name = "PERCENT")]
+    /// Establish no more than this regression versus A
+    #[arg(long, value_parser = percent, value_name = "PERCENT")]
     pub check: Option<f64>,
     /// Print spread, all comparisons, and sampled task activity
     #[arg(long)]
