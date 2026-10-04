@@ -127,19 +127,6 @@ impl SupportIndex {
         Ok(Self::from_items(items))
     }
 
-    pub(super) fn from_boundary_edges(edges: &[BoundaryEdge]) -> Self {
-        Self::from_items(
-            edges
-                .iter()
-                .enumerate()
-                .map(|(index, edge)| IndexItem {
-                    primitive: PrimitiveId::Span(index),
-                    bounds: edge.bounds,
-                })
-                .collect(),
-        )
-    }
-
     fn from_items(items: Vec<IndexItem>) -> Self {
         let mut order = Vec::with_capacity(items.len());
         order.extend(0..items.len());
@@ -157,52 +144,6 @@ impl SupportIndex {
         }
 
         index
-    }
-
-    #[expect(
-        clippy::indexing_slicing,
-        reason = "edge ordinals and node ranges belong to this immutable boundary-edge index"
-    )]
-    pub(super) fn contains_area(&self, edges: &[BoundaryEdge], point: &ExactPoint) -> Result<bool> {
-        let Some(root) = self.root else {
-            return Ok(false);
-        };
-        let bounds = FloatBox::from_point(point)?;
-        let meets_ray = |edge: FloatBox| {
-            edge.min_y <= bounds.max_y && edge.max_y >= bounds.min_y && edge.max_x >= bounds.min_x
-        };
-        let mut inside = false;
-        let mut stack = ScratchPool::checkout(&NEAREST_STACK);
-        stack.push(root);
-        while let Some(node_index) = stack.pop() {
-            let node = self.nodes[node_index];
-            if !meets_ray(node.bounds) {
-                continue;
-            }
-            let (start, end) = match node.children {
-                IndexChildren::Branch { left, right } => {
-                    stack.push(right);
-                    stack.push(left);
-                    continue;
-                },
-                IndexChildren::Leaf { start, end } => (start, end),
-            };
-            for &ordinal in &self.order[start..end] {
-                let item = self.items[ordinal];
-                if !meets_ray(item.bounds) {
-                    continue;
-                }
-                let PrimitiveId::Span(edge) = item.primitive else {
-                    unreachable!("boundary-edge indices contain only edge ordinals");
-                };
-                match super::edge_location(point, &edges[edge])? {
-                    super::CycleLocation::Boundary => return Ok(true),
-                    super::CycleLocation::Crosses => inside = !inside,
-                    super::CycleLocation::Clear => {},
-                }
-            }
-        }
-        Ok(inside)
     }
 
     #[expect(

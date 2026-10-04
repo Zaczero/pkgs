@@ -19,6 +19,7 @@ use std::cmp::Ordering;
 #[cfg(test)]
 use std::ops::ControlFlow;
 use std::ops::Range;
+use std::sync::Arc;
 
 #[cfg(test)]
 use crate::collections::HashMap;
@@ -49,6 +50,7 @@ mod construction;
 mod coverage;
 mod embedding;
 mod emission;
+mod location;
 #[cfg(test)]
 mod metrics;
 mod rays;
@@ -65,6 +67,8 @@ use emission::{
     BoundaryPlan, CellFacts, CoverageFaceState, GlobalFaces, NodeParts, polygonize_faces,
     polygonize_faces_with_embedding, polygonize_full_emission,
 };
+use location::AreaLocationCells;
+pub(in crate::geometry) use location::AreaLocationStrategy;
 #[cfg(test)]
 pub(in crate::geometry) use metrics::{
     partition_builds, partition_metrics, reset_partition_builds,
@@ -471,7 +475,18 @@ pub(in crate::geometry) struct ExactSpan {
 
 #[derive(Debug)]
 pub(in crate::geometry) struct ExactMetricNode {
-    pub homogeneous: [ExactDyadic; 3],
+    points: crate::geometry::ExactLocationPoints,
+    node: u32,
+}
+
+impl ExactMetricNode {
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "the node ordinal is admitted from the same frozen exact point table this metric handle owns"
+    )]
+    pub(in crate::geometry) fn homogeneous(&self) -> &[ExactDyadic; 3] {
+        &self.points[self.node as usize]
+    }
 }
 
 #[derive(Debug)]
@@ -485,9 +500,13 @@ pub(in crate::geometry) struct ExactMetricSpan {
 
 #[derive(Debug)]
 pub(in crate::geometry) struct ExactMetricSupport {
+    /// Exact node coordinates shared with `area_location_cells`.
+    pub exact_points: crate::geometry::ExactLocationPoints,
     pub spans: Vec<ExactMetricSpan>,
     pub points: Vec<ExactMetricNode>,
     pub faces: Vec<Vec<Vec<ExactMetricNode>>>,
+    /// Present only when the selected support has positive area.
+    pub area_location_cells: Option<AreaLocationCells>,
     /// Partition-span incidence selected by occupied/unoccupied global-face
     /// adjacency. The order is the same as `spans`; lower-dimensional support
     /// hidden by a positive-area face is deliberately absent. Ordinary metric
@@ -1232,8 +1251,9 @@ impl ExactSourceInventory {
     pub(in crate::geometry) fn metric_support(
         &self,
         partition: &ExactPartition<'_>,
+        area_location: AreaLocationStrategy,
     ) -> Result<ExactMetricSupport> {
-        self.metric_support_impl(partition, false)
+        self.metric_support_impl(partition, false, area_location)
     }
 
     /// Exact closed support plus the areal boundary incidence needed by
@@ -1242,8 +1262,9 @@ impl ExactSourceInventory {
     pub(in crate::geometry) fn metric_support_with_boundary(
         &self,
         partition: &ExactPartition<'_>,
+        area_location: AreaLocationStrategy,
     ) -> Result<ExactMetricSupport> {
-        self.metric_support_impl(partition, true)
+        self.metric_support_impl(partition, true, area_location)
     }
 
     #[expect(
@@ -1254,6 +1275,7 @@ impl ExactSourceInventory {
         &self,
         partition: &ExactPartition<'_>,
         with_boundary: bool,
+        area_location: AreaLocationStrategy,
     ) -> Result<ExactMetricSupport> {
         let (topology, edges) = partition.local_topology()?;
         let global = partition.global_faces(&topology, &edges)?;
@@ -1265,7 +1287,20 @@ impl ExactSourceInventory {
             crate::geometry::OverlayOp::Union,
             false,
         )?;
-        let has_selected_area = with_boundary && cells.faces.iter().any(|&selected| selected);
+        let exact_points = partition.freeze_location_points()?;
+        let has_selected_area = cells.faces.iter().any(|&selected| selected);
+        let area_location_cells = match (has_selected_area, area_location) {
+            (false, _) | (true, AreaLocationStrategy::BoundedScan) => None,
+            (true, AreaLocationStrategy::PersistentSlabs) => Some(self.area_location_cells(
+                partition,
+                &topology,
+                &edges,
+                &global,
+                &cells.faces,
+                Arc::clone(&exact_points),
+            )?),
+        };
+        let has_selected_area = with_boundary && has_selected_area;
         let selected_boundary_spans = with_boundary.then(|| {
             if has_selected_area {
                 cells.selected_boundary_spans(&topology, &edges, &global)
@@ -1285,16 +1320,20 @@ impl ExactSourceInventory {
             if !selected {
                 continue;
             }
-            let start = partition.exact_owned(span.start)?;
-            let end = partition.exact_owned(span.end)?;
             let source = partition.unique[span.unique as usize];
-            let start_parameter = parameter_along(source, &start)?;
-            let end_parameter = parameter_along(source, &end)?;
+            let start_parameter = parameter_along(source, &exact_points[span.start.0 as usize])?;
+            let end_parameter = parameter_along(source, &exact_points[span.end.0 as usize])?;
             covered[span.start.0 as usize] = true;
             covered[span.end.0 as usize] = true;
             spans.push(ExactMetricSpan {
-                start: ExactMetricNode { homogeneous: start },
-                end: ExactMetricNode { homogeneous: end },
+                start: ExactMetricNode {
+                    points: Arc::clone(&exact_points),
+                    node: span.start.0,
+                },
+                end: ExactMetricNode {
+                    points: Arc::clone(&exact_points),
+                    node: span.end.0,
+                },
                 start_parameter,
                 end_parameter,
                 source: partition.unique[span.unique as usize],
@@ -1313,7 +1352,8 @@ impl ExactSourceInventory {
         for (index, (&selected, &is_covered)) in cells.nodes.iter().zip(&covered).enumerate() {
             if selected && !is_covered {
                 points.push(ExactMetricNode {
-                    homogeneous: partition.exact_owned(NodeId(index as u32))?,
+                    points: Arc::clone(&exact_points),
+                    node: index as u32,
                 });
                 if let Some(boundary_points) = boundary_points.as_mut() {
                     boundary_points.push(!has_selected_area);
@@ -1332,16 +1372,19 @@ impl ExactSourceInventory {
             for &slot in &topology.face_slots[start..end] {
                 let node = NodeId(topology.owners[slot as usize]);
                 cycle.push(ExactMetricNode {
-                    homogeneous: partition.exact_owned(node)?,
+                    points: Arc::clone(&exact_points),
+                    node: node.0,
                 });
             }
             faces[face].push(cycle);
         }
         faces.retain(|cycles| !cycles.is_empty());
         Ok(ExactMetricSupport {
+            exact_points,
             spans,
             points,
             faces,
+            area_location_cells,
             boundary_spans,
             boundary_points,
         })

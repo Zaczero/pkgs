@@ -10,9 +10,20 @@
 //! Interior wins, else Boundary, else Exterior (never global XOR across parts).
 //! Crossing arithmetic reuses [`ray_crossing_is_right`] / [`orientation_xy`].
 
+mod arrangement;
+
 use std::ops::ControlFlow;
 #[cfg(test)]
 use std::sync::Arc;
+
+pub(in crate::geometry) use arrangement::{
+    AreaLocationLabels, ExactLocationCells, ExactLocationDart, ExactLocationEdge,
+    ExactLocationIndex, ExactLocationPoints, SourceLocationLabels,
+};
+#[cfg(all(test, debug_assertions))]
+pub(in crate::geometry) use arrangement::{
+    query_comparisons, query_edge_tests, reset_query_comparisons,
+};
 
 use crate::HeapSize;
 use crate::error::Result;
@@ -814,6 +825,7 @@ impl HeapSize for PointBatchTester {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::geometry::overlay::{AreaLocationStrategy, ExactSourceInventory};
     use crate::geometry::source_support::{
         OccupiedToward, cartesian_exact_offset_location, cartesian_exact_offset_location_and_area,
         cartesian_exact_point_location, cartesian_exact_point_location_and_area,
@@ -855,6 +867,91 @@ mod tests {
             shell: closed_ring(&dense_square_points()),
             holes: SharedSlice::empty(),
         })
+    }
+
+    fn exact_location_indexes(
+        shape: &Shape,
+    ) -> (
+        ExactLocationIndex<SourceLocationLabels>,
+        Option<ExactLocationIndex<AreaLocationLabels>>,
+    ) {
+        let inventory = ExactSourceInventory::from_shapes_with_occurrences(&[shape])
+            .expect("source point-location inventory");
+        let mut budget = crate::geometry::ExpansionBudget::new("test", "point-location cells");
+        let partition = inventory
+            .partition(&mut budget)
+            .expect("source point-location partition");
+        let source = ExactLocationIndex::from_cells(
+            inventory
+                .source_location_cells(&partition)
+                .expect("full-source point-location cells"),
+        );
+        let support = inventory
+            .metric_support(&partition, AreaLocationStrategy::PersistentSlabs)
+            .expect("area point-location cells");
+        let area = support
+            .area_location_cells
+            .map(ExactLocationIndex::from_cells);
+        (source, area)
+    }
+
+    fn assert_exact_location_matches_source(
+        wkt: &str,
+        points: &[[ExactDyadic; 3]],
+        directions: &[[ExactDyadic; 2]],
+    ) {
+        let shape = crate::io::parse_wkt(wkt).expect("point-location counter-case");
+        let (source, area) = exact_location_indexes(&shape);
+        let tester = PointBatchTester::new(&shape).expect("prepared exact location tester");
+        for point in points {
+            let streaming = cartesian_exact_point_location_and_area(&shape, point)
+                .expect("streaming exact point location");
+            let expected = tester
+                .location_and_area_exact(point)
+                .expect("prepared exact point location")
+                .unwrap_or(streaming);
+            assert_eq!(expected, streaming, "{wkt}, point={point:?}");
+            assert_eq!(
+                source.locate_exact(point).unwrap(),
+                expected,
+                "{wkt}, point={point:?}",
+            );
+            assert_eq!(
+                area.as_ref()
+                    .is_some_and(|index| index.locate_exact(point).unwrap()),
+                expected.area,
+                "{wkt}, point={point:?}",
+            );
+            for direction in directions {
+                let streaming_offset =
+                    cartesian_exact_offset_location_and_area(&shape, point, direction)
+                        .expect("streaming exact offset");
+                let expected_offset = tester
+                    .location_and_area_exact_offset(point, direction)
+                    .expect("prepared exact offset")
+                    .unwrap_or(streaming_offset);
+                assert_eq!(expected_offset, streaming_offset);
+                assert_eq!(
+                    source
+                        .locate_exact_offset(point, direction)
+                        .expect("indexed exact offset"),
+                    expected_offset,
+                    "{wkt}, point={point:?}, direction={direction:?}",
+                );
+            }
+        }
+    }
+
+    fn exact_xy(x: f64, y: f64) -> [ExactDyadic; 3] {
+        [
+            ExactDyadic::from_f64(x),
+            ExactDyadic::from_f64(y),
+            ExactDyadic::one(),
+        ]
+    }
+
+    fn exact_direction(x: f64, y: f64) -> [ExactDyadic; 2] {
+        [ExactDyadic::from_f64(x), ExactDyadic::from_f64(y)]
     }
 
     #[test]
@@ -1374,6 +1471,200 @@ mod tests {
                 expected_toward
             );
         }
+    }
+
+    #[test]
+    fn exact_slabs_keep_twice_wound_nonzero_fill() {
+        assert_exact_location_matches_source(
+            "POLYGON ((0 0,4 0,4 4,0 4,0 0,4 0,4 4,0 4,0 0))",
+            &[exact_xy(2.0, 2.0), exact_xy(0.0, 2.0), exact_xy(5.0, 2.0)],
+            &[exact_direction(1.0, 0.0), exact_direction(0.0, 0.0)],
+        );
+    }
+
+    #[test]
+    fn exact_slabs_union_oppositely_oriented_overlapping_members() {
+        assert_exact_location_matches_source(
+            "MULTIPOLYGON (((0 0,4 0,4 4,0 4,0 0)),\
+             ((2 0,2 4,6 4,6 0,2 0)))",
+            &[exact_xy(1.0, 2.0), exact_xy(3.0, 2.0), exact_xy(5.0, 2.0)],
+            &[exact_direction(1.0, 0.0), exact_direction(0.0, 1.0)],
+        );
+    }
+
+    #[test]
+    fn exact_slabs_preserve_cancelled_spur_and_shell_hole_cancellation() {
+        assert_exact_location_matches_source(
+            "POLYGON ((0 0,4 0,4 4,0 4,0 0,-2 0,0 0))",
+            &[exact_xy(2.0, 2.0), exact_xy(-1.0, 0.0), exact_xy(0.0, 0.0)],
+            &[exact_direction(0.0, 1.0), exact_direction(1.0, 0.0)],
+        );
+        for wkt in [
+            "POLYGON ((0 0,4 0,4 4,0 4,0 0,0 4,4 4,4 0,0 0))",
+            "POLYGON ((0 0,4 0,4 4,0 4,0 0),(0 0,4 0,4 4,0 4,0 0))",
+            "POLYGON ((0 0,0 4,4 4,4 0,0 0),(0 0,0 4,4 4,4 0,0 0))",
+        ] {
+            assert_exact_location_matches_source(
+                wkt,
+                &[exact_xy(2.0, 2.0), exact_xy(0.0, 2.0), exact_xy(5.0, 2.0)],
+                &[exact_direction(1.0, 0.0), exact_direction(0.0, 1.0)],
+            );
+        }
+    }
+
+    #[test]
+    fn exact_slabs_preserve_hole_interior_and_boundary_labels() {
+        assert_exact_location_matches_source(
+            "POLYGON ((0 0,10 0,10 10,0 10,0 0),(2 2,2 8,8 8,8 2,2 2))",
+            &[
+                exact_xy(1.0, 1.0),
+                exact_xy(5.0, 5.0),
+                exact_xy(2.0, 5.0),
+                exact_xy(12.0, 5.0),
+            ],
+            &[
+                exact_direction(1.0, 0.0),
+                exact_direction(0.0, 1.0),
+                exact_direction(-1.0, 0.0),
+            ],
+        );
+    }
+
+    #[test]
+    fn exact_slabs_keep_an_adjacent_multipolygon_shared_edge_interior() {
+        let shape = crate::io::parse_wkt(
+            "MULTIPOLYGON (((0 0,2 0,2 2,0 2,0 0)),\
+             ((2 0,4 0,4 2,2 2,2 0)))",
+        )
+        .unwrap();
+        let query = exact_xy(2.0, 1.0);
+        let (source, area) = exact_location_indexes(&shape);
+        let expected = cartesian_exact_point_location_and_area(&shape, &query).unwrap();
+        assert_eq!(expected, SourcePointLocation {
+            location: Loc::Interior,
+            area: true
+        });
+        assert_eq!(source.locate_exact(&query).unwrap(), expected);
+        assert!(area.unwrap().locate_exact(&query).unwrap());
+    }
+
+    #[test]
+    fn exact_slabs_classify_crossing_nodes_horizontal_atoms_and_offsets() {
+        assert_exact_location_matches_source(
+            "POLYGON ((0 0,4 4,0 4,4 0,0 0))",
+            &[
+                exact_xy(2.0, 2.0),
+                exact_xy(1.0, 3.0),
+                exact_xy(3.0, 1.0),
+                exact_xy(2.0, 0.0),
+                exact_xy(2.0, 4.0),
+            ],
+            &[
+                exact_direction(1.0, 0.0),
+                exact_direction(0.0, 1.0),
+                exact_direction(-1.0, 0.0),
+                exact_direction(0.0, 0.0),
+            ],
+        );
+    }
+
+    #[test]
+    fn exact_slabs_locate_a_constructed_nondyadic_crossing_node() {
+        let shape = crate::io::parse_wkt("POLYGON ((0 0,3 1,0 1,2 0,0 0))").unwrap();
+        let query = [
+            ExactDyadic::from_f64(6.0),
+            ExactDyadic::from_f64(2.0),
+            ExactDyadic::from_f64(5.0),
+        ];
+        let (source, _) = exact_location_indexes(&shape);
+        let expected =
+            cartesian_exact_point_location_and_area(&shape, &query).expect("exact crossing node");
+        assert_eq!(expected.location, Loc::Boundary);
+        assert_eq!(source.locate_exact(&query).unwrap(), expected);
+        for direction in [
+            exact_direction(1.0, 0.0),
+            exact_direction(0.0, 1.0),
+            exact_direction(-1.0, 0.0),
+            exact_direction(0.0, -1.0),
+        ] {
+            assert_eq!(
+                source.locate_exact_offset(&query, &direction).unwrap(),
+                cartesian_exact_offset_location_and_area(&shape, &query, &direction).unwrap()
+            );
+        }
+    }
+
+    #[test]
+    fn exact_slabs_keep_collapsed_polygon_support_out_of_area() {
+        assert_exact_location_matches_source(
+            "POLYGON ((0 0,2 0,1 0,0 0))",
+            &[exact_xy(1.0, 0.0), exact_xy(0.0, 0.0), exact_xy(3.0, 0.0)],
+            &[
+                exact_direction(1.0, 0.0),
+                exact_direction(0.0, 1.0),
+                exact_direction(0.0, 0.0),
+            ],
+        );
+    }
+
+    #[test]
+    fn exact_slabs_offset_isolated_nodes_into_their_host_face() {
+        assert_exact_location_matches_source("POINT (1 1)", &[exact_xy(1.0, 1.0)], &[
+            exact_direction(1.0, 0.0),
+            exact_direction(0.0, 0.0),
+        ]);
+        assert_exact_location_matches_source(
+            "GEOMETRYCOLLECTION (POINT (1 1),\
+             POLYGON ((0 0,4 0,4 4,0 4,0 0)))",
+            &[exact_xy(1.0, 1.0)],
+            &[exact_direction(1.0, 0.0), exact_direction(0.0, 0.0)],
+        );
+    }
+
+    #[test]
+    fn exact_homogeneous_boundary_queries_are_not_rounded() {
+        let wkt = "POLYGON ((0 0,3 1,0 2,0 0))";
+        let point = [
+            ExactDyadic::from_f64(3.0),
+            ExactDyadic::from_f64(1.0),
+            ExactDyadic::from_f64(6.0),
+        ];
+        let negative_weight = [
+            ExactDyadic::from_f64(-3.0),
+            ExactDyadic::from_f64(-1.0),
+            ExactDyadic::from_f64(-6.0),
+        ];
+        let shape = crate::io::parse_wkt(wkt).unwrap();
+        let (source, area) = exact_location_indexes(&shape);
+        for query in [&point, &negative_weight] {
+            let expected = cartesian_exact_point_location_and_area(&shape, query).unwrap();
+            assert_eq!(expected.location, Loc::Boundary);
+            assert_eq!(source.locate_exact(query).unwrap(), expected);
+            assert_eq!(
+                area.as_ref().unwrap().locate_exact(query).unwrap(),
+                expected.area
+            );
+            for direction in [
+                exact_direction(0.0, 1.0),
+                exact_direction(0.0, -1.0),
+                exact_direction(1.0, 0.0),
+                exact_direction(-1.0, 0.0),
+            ] {
+                assert_eq!(
+                    source.locate_exact_offset(query, &direction).unwrap(),
+                    cartesian_exact_offset_location_and_area(&shape, query, &direction).unwrap()
+                );
+            }
+        }
+        let rounded = [
+            ExactDyadic::from_f64(0.5),
+            ExactDyadic::from_f64(1.0 / 6.0),
+            ExactDyadic::one(),
+        ];
+        assert_eq!(
+            source.locate_exact(&rounded).unwrap().location,
+            Loc::Exterior
+        );
     }
 
     #[test]

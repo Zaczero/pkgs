@@ -152,8 +152,8 @@ mod relate;
 mod relate_pattern;
 pub(crate) use relate_pattern::CompiledPattern;
 mod segment_index;
-pub(in crate::geometry) use segment_index::OrderTree;
 pub(crate) use segment_index::{EdgeId, EdgeYIndex, uses_linear_plan_for_len};
+pub(in crate::geometry) use segment_index::{OrderTree, PersistentOrder};
 mod segments;
 pub(crate) mod source_support;
 pub(in crate::geometry) use source_support::compare_rays;
@@ -221,6 +221,9 @@ pub(crate) use overlay::cartesian_support_nonempty;
 use overlay::polygon_parts_to_shape;
 pub(crate) use overlay::{OverlayOp, Strictness, exact_intersects_bounds, rect_polygon};
 pub(crate) use packed_line_metrics::{PackedLineColumnView, scale_metric_values};
+pub(in crate::geometry) use point_location::{
+    AreaLocationLabels, ExactLocationIndex, ExactLocationPoints,
+};
 pub(crate) use point_location::{PointBatchTester, PolygonPointIndex};
 pub(in crate::geometry) use predicates::PolygonContact;
 use predicates::{

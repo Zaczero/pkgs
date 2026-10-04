@@ -3,6 +3,11 @@ use std::fmt::Write as _;
 use super::*;
 use crate::geometry::derived;
 use crate::geometry::generated_budget::GENERATED_ITEM_LIMIT;
+#[cfg(debug_assertions)]
+use crate::geometry::point_location::{
+    query_comparisons, query_edge_tests, reset_query_comparisons,
+};
+use crate::geometry::source_support::cartesian_exact_point_location_and_area;
 
 fn line(vertices: &[(f64, f64)]) -> Shape {
     let points: Vec<_> = vertices
@@ -41,37 +46,62 @@ fn adjacent_box_union(count: usize) -> Shape {
     crate::io::parse_wkt(&wkt).expect("valid adjacent-box union")
 }
 
-fn adjacent_box_prepared_support(count: usize) -> (PreparedSupport, PreparedSupport) {
-    let extent = count as f64;
-    let source = PreparedSupport::from_parts(Vec::new(), Vec::new(), vec![vec![vec![
-        ExactPoint::from_xy(XY::new(0.0, 0.0)),
-        ExactPoint::from_xy(XY::new(extent, 0.0)),
-        ExactPoint::from_xy(XY::new(extent, 1.0)),
-        ExactPoint::from_xy(XY::new(0.0, 1.0)),
-    ]]])
-    .unwrap();
-    let mut spans = Vec::with_capacity(count.wrapping_mul(2).wrapping_add(2));
-    for index in 0..count {
-        let start = index as f64;
-        let end = start + 1.0;
-        spans.push(test_span(Segment {
-            start: XY::new(start, 0.0),
-            end: XY::new(end, 0.0),
-        }));
-        spans.push(test_span(Segment {
-            start: XY::new(start, 1.0),
-            end: XY::new(end, 1.0),
-        }));
+#[cfg(debug_assertions)]
+struct Seed42Pcg64 {
+    state: u128,
+    increment: u128,
+}
+
+#[cfg(debug_assertions)]
+impl Seed42Pcg64 {
+    // NumPy default_rng(42)'s PCG64 state and 128/64 multiplier.
+    const MULTIPLIER: u128 = 47_026_247_687_942_121_848_144_207_491_837_523_525;
+
+    const fn new() -> Self {
+        Self {
+            state: 274_674_114_334_540_486_603_088_602_300_644_985_544,
+            increment: 332_724_090_758_049_132_448_979_897_138_935_081_983,
+        }
     }
-    spans.push(test_span(Segment {
-        start: XY::new(0.0, 0.0),
-        end: XY::new(0.0, 1.0),
-    }));
-    spans.push(test_span(Segment {
-        start: XY::new(extent, 1.0),
-        end: XY::new(extent, 0.0),
-    }));
-    let boundary = PreparedSupport::from_parts(spans, Vec::new(), Vec::new()).unwrap();
+
+    fn unit(&mut self) -> f64 {
+        self.state = self
+            .state
+            .wrapping_mul(Self::MULTIPLIER)
+            .wrapping_add(self.increment);
+        let mixed = (self.state >> 64) as u64 ^ self.state as u64;
+        let rotation = (self.state >> 122) as u32;
+        (mixed.rotate_right(rotation) >> 11) as f64 * (1.0 / 9_007_199_254_740_992.0)
+    }
+}
+
+#[cfg(debug_assertions)]
+fn seed42_radial_points(count: usize) -> Vec<(f64, f64)> {
+    // Recreate the seed-42 sorted-angle/radius workload with native scalar trig.
+    let mut generator = Seed42Pcg64::new();
+    let mut angles = Vec::with_capacity(count);
+    for _ in 0..count {
+        angles.push(generator.unit() * std::f64::consts::TAU);
+    }
+    angles.sort_unstable_by(f64::total_cmp);
+    let mut radii = Vec::with_capacity(count);
+    for _ in 0..count {
+        radii.push(0.8 + 0.2 * generator.unit());
+    }
+    angles
+        .into_iter()
+        .zip(radii)
+        .map(|(angle, radius)| (angle.cos() * radius, angle.sin() * radius))
+        .collect()
+}
+
+fn adjacent_box_prepared_support(count: usize) -> (PreparedSupport, PreparedSupport) {
+    let shape = adjacent_box_union(count);
+    let mut budget = ExpansionBudget::new("maximum_inscribed_circle", "adjacent boxes");
+    let source = PreparedSupport::from_shape_with_boundary(&shape, &mut budget)
+        .unwrap()
+        .unwrap();
+    let boundary = source.boundary_clone().unwrap();
     (source, boundary)
 }
 
@@ -433,9 +463,14 @@ fn filled_interior_maximum_inside_a_target_hole_survives_box_discards() {
 fn ordinary_hausdorff_keeps_external_line_support_with_filled_area() {
     let area = polygon(&[(0.0, 0.0), (2.0, 0.0), (2.0, 2.0), (0.0, 2.0), (0.0, 0.0)]);
     let external = line(&[(10.0, 0.0), (12.0, 0.0)]);
-    let mixed = Shape::geometry_collection(vec![area, external]).unwrap();
+    let mixed = Shape::geometry_collection(vec![area, external.clone()]).unwrap();
     let target = Shape::Point(Point::new_raw_xy(0.0, 0.0));
     assert!((distance(&mixed, &target, Some(1e-9), 1.0).unwrap() - 12.0).abs() <= 1e-9);
+
+    let mut line_budget = ExpansionBudget::new("hausdorff", "line support");
+    let line_support = PreparedSupport::from_shape(&external, &mut line_budget).unwrap();
+    assert!(line_support.area_locator.is_none());
+    assert!(line_support.boundary_edges.is_empty());
 
     let mut budget = ExpansionBudget::new("hausdorff", "support");
     let prepared = PreparedSupport::from_shape(&mixed, &mut budget).unwrap();
@@ -450,19 +485,141 @@ fn ordinary_hausdorff_keeps_external_line_support_with_filled_area() {
 }
 
 #[test]
+fn tiny_filled_support_uses_a_bounded_exact_boundary_scan() {
+    let shape = polygon(&[(0.0, 0.0), (4.0, 0.0), (4.0, 4.0), (0.0, 4.0), (0.0, 0.0)]);
+    let mut budget = ExpansionBudget::new("hausdorff", "tiny filled support");
+    let support = PreparedSupport::from_shape(&shape, &mut budget).unwrap();
+    assert!(support.area_locator.is_none());
+    assert_eq!(support.boundary_edges.len(), 4);
+
+    for ((x, y), expected) in [((2.0, 2.0), true), ((0.0, 2.0), true), ((5.0, 2.0), false)] {
+        let point = ExactPoint::from_xy(XY::new(x, y));
+        assert_eq!(support.contains_area(&point).unwrap(), expected);
+    }
+
+    let twice_wound =
+        crate::io::parse_wkt("POLYGON ((0 0,4 0,4 4,0 4,0 0,4 0,4 4,0 4,0 0))").unwrap();
+    let mut budget = ExpansionBudget::new("hausdorff", "twice-wound tiny support");
+    let support = PreparedSupport::from_shape(&twice_wound, &mut budget).unwrap();
+    assert!(support.area_locator.is_none());
+    assert_eq!(support.boundary_edges.len(), 4);
+    let point = ExactPoint::from_xy(XY::new(2.0, 2.0));
+    let source = cartesian_exact_point_location_and_area(&twice_wound, &[
+        ExactDyadic::from_f64(2.0),
+        ExactDyadic::from_f64(2.0),
+        ExactDyadic::one(),
+    ])
+    .unwrap();
+    assert!(source.area);
+    assert!(support.contains_area(&point).unwrap());
+
+    let cancelled = crate::io::parse_wkt(
+        "GEOMETRYCOLLECTION (\
+         POLYGON ((0 0,4 0,4 4,0 4,0 0),(0 0,4 0,4 4,0 4,0 0)),\
+         LINESTRING (10 0,11 0))",
+    )
+    .unwrap();
+    let mut budget = ExpansionBudget::new("hausdorff", "cancelled tiny support");
+    let support = PreparedSupport::from_shape(&cancelled, &mut budget).unwrap();
+    assert!(support.area_locator.is_none());
+    assert!(support.boundary_edges.is_empty());
+    assert!(!support.contains_area(&point).unwrap());
+}
+
+#[cfg(debug_assertions)]
+#[test]
+fn seed42_filled_membership_work_scales_with_slab_searches() {
+    let mut totals = Vec::new();
+    for count in [128, 256, 512, 1024, 2048, 4096, 8192] {
+        let mut source_coordinates = seed42_radial_points(count);
+        source_coordinates.push(source_coordinates[0]);
+        if count == 128 {
+            assert_eq!(
+                source_coordinates[0].0.to_bits(),
+                0.819_802_683_715_413_4_f64.to_bits()
+            );
+        }
+        let target_coordinates: Vec<_> = source_coordinates
+            .iter()
+            .map(|&(x, y)| (x + 0.1, y + 0.1))
+            .collect();
+        let target = polygon(&target_coordinates);
+        let mut budget = ExpansionBudget::new("hausdorff_distance", "test membership");
+        let support = PreparedSupport::from_shape(&target, &mut budget).unwrap();
+        let plan = crate::geometry::PreparedPlan::transient(&target);
+        let tester = plan
+            .point_tester()
+            .unwrap()
+            .expect("random filled target gets a prepared exact point tester");
+
+        // Q ~= n/log(n) keeps total work sublinear in the source size if
+        // per-query candidate enumeration grows with the crossing set.
+        let mut probes = Seed42Pcg64::new();
+        let query_count = count.div_ceil(usize::try_from(count.ilog2()).unwrap());
+        let mut probe_points = Vec::with_capacity(query_count);
+        for _ in 0..query_count {
+            probe_points.push((3.0 * probes.unit() - 1.5, 3.0 * probes.unit() - 1.5));
+        }
+        let streaming_oracle_stride = (query_count / 8).max(1);
+        reset_query_comparisons();
+        for (index, &(x, y)) in probe_points.iter().enumerate() {
+            let point = ExactPoint::from_xy(XY::new(x, y));
+            let actual = support.contains_area(&point).unwrap();
+            let exact = [
+                ExactDyadic::from_f64(x),
+                ExactDyadic::from_f64(y),
+                ExactDyadic::one(),
+            ];
+            let prepared = tester
+                .location_and_area_exact(&exact)
+                .unwrap()
+                .expect("polygon tester handles exact query");
+            assert_eq!(actual, prepared.area, "seed42 n={count}, probe={index}");
+            if index % streaming_oracle_stride == 0 {
+                let streaming = cartesian_exact_point_location_and_area(&target, &exact).unwrap();
+                assert_eq!(prepared, streaming, "seed42 n={count}, probe={index}");
+            }
+        }
+        let comparisons = query_comparisons();
+        let edge_tests = query_edge_tests();
+        assert!(
+            edge_tests > 0,
+            "seed42 n={count} recorded no slab edge comparisons"
+        );
+        assert!(comparisons >= edge_tests);
+        totals.push((count, comparisons, edge_tests));
+        eprintln!(
+            "seed42 n={count} area-locator comparisons={comparisons} edge-tests={edge_tests}"
+        );
+    }
+    let (small_n, _, small_edge_tests) = totals[0];
+    let (large_n, _, large_edge_tests) = *totals.last().unwrap();
+    let exponent = (large_edge_tests as f64 / small_edge_tests as f64).ln()
+        / (large_n as f64 / small_n as f64).ln();
+    assert!(
+        exponent <= 1.15,
+        "seed-42 membership edge-test exponent {exponent:.3} exceeds 1.15: {totals:?}"
+    );
+}
+
+#[test]
 fn misaligned_metric_boundary_incidence_is_rejected_before_consumption() {
     for support in [
         ExactMetricSupport {
+            exact_points: Vec::new().into(),
             spans: Vec::new(),
             points: Vec::new(),
             faces: Vec::new(),
+            area_location_cells: None,
             boundary_spans: Some(vec![true]),
             boundary_points: None,
         },
         ExactMetricSupport {
+            exact_points: Vec::new().into(),
             spans: Vec::new(),
             points: Vec::new(),
             faces: Vec::new(),
+            area_location_cells: None,
             boundary_spans: None,
             boundary_points: Some(vec![true]),
         },
@@ -843,13 +1000,19 @@ fn disjoint_carrier_slopes_skip_only_impossible_parallel_strips() {
 }
 
 #[test]
-fn original_polygon_edges_share_distance_and_membership_indices() {
+fn exact_metric_nodes_share_the_frozen_area_location_point_table() {
     let shape = polygon(&[(0.0, 0.0), (4.0, 0.0), (4.0, 4.0), (0.0, 4.0), (0.0, 0.0)]);
     let mut budget = ExpansionBudget::new("maximum_inscribed_circle", "tolerance");
-    let support = PreparedSupport::from_shape_with_boundary(&shape, &mut budget)
-        .unwrap()
+    let inventory = ExactSourceInventory::from_shapes(&[&shape]).unwrap();
+    let partition = inventory.partition(&mut budget).unwrap();
+    let support = inventory
+        .metric_support_with_boundary(&partition, AreaLocationStrategy::PersistentSlabs)
         .unwrap();
-    assert!(Arc::ptr_eq(&support.index, &support.area_index));
+    let cells = support
+        .area_location_cells
+        .as_ref()
+        .expect("filled metric support has an area locator");
+    assert!(Arc::ptr_eq(&support.exact_points, &cells.geometry.points));
 }
 
 #[test]

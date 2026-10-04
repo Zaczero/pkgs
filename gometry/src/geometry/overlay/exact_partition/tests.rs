@@ -2217,7 +2217,9 @@ fn metric_support_for(wkt: &str) -> ExactMetricSupport {
     let inventory = ExactSourceInventory::from_shapes(&[&shape]).unwrap();
     let mut budget = ExpansionBudget::new("hausdorff", "metric support");
     let partition = inventory.partition(&mut budget).unwrap();
-    inventory.metric_support(&partition).unwrap()
+    inventory
+        .metric_support(&partition, super::AreaLocationStrategy::PersistentSlabs)
+        .unwrap()
 }
 
 fn metric_support_with_boundary_for(wkt: &str) -> ExactMetricSupport {
@@ -2225,7 +2227,9 @@ fn metric_support_with_boundary_for(wkt: &str) -> ExactMetricSupport {
     let inventory = ExactSourceInventory::from_shapes(&[&shape]).unwrap();
     let mut budget = ExpansionBudget::new("maximum_inscribed_circle", "source");
     let partition = inventory.partition(&mut budget).unwrap();
-    inventory.metric_support_with_boundary(&partition).unwrap()
+    inventory
+        .metric_support_with_boundary(&partition, super::AreaLocationStrategy::PersistentSlabs)
+        .unwrap()
 }
 
 fn dyadic(value: f64) -> ExactDyadic {
@@ -2241,7 +2245,7 @@ fn node_at(node: &ExactMetricNode, x: f64, y: f64) -> bool {
 }
 
 fn node_at_ratios(node: &ExactMetricNode, x_num: f64, x_den: f64, y_num: f64, y_den: f64) -> bool {
-    let [actual_x, actual_y, actual_w] = &node.homogeneous;
+    let [actual_x, actual_y, actual_w] = node.homogeneous();
     ratio_matches(actual_x, actual_w, x_num, x_den)
         && ratio_matches(actual_y, actual_w, y_num, y_den)
 }
@@ -2323,7 +2327,7 @@ fn metric_support_keeps_crossing_nodes_and_original_source_parameters_exact() {
             assert_ratio(&span.end_parameter, 1.0, 3.0);
             &span.end
         };
-        crossing_nodes.push(endpoint.homogeneous.clone());
+        crossing_nodes.push(endpoint.homogeneous().clone());
     }
     assert_eq!(crossing_nodes.len(), 2);
     assert_eq!(crossing_nodes[0], crossing_nodes[1]);

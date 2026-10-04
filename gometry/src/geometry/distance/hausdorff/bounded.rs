@@ -9,12 +9,14 @@ use crate::geometry::distance::exact_segment::{
     ExactCarrier, ExactPoint, UnreducedRatio, point_span_distance_squared,
 };
 use crate::geometry::exact_arith::ExactSign;
-use crate::geometry::overlay::{ExactMetricSpan, ExactMetricSupport, ExactSourceInventory};
+use crate::geometry::overlay::{
+    AreaLocationStrategy, ExactMetricSpan, ExactMetricSupport, ExactSourceInventory,
+};
 use crate::geometry::tessellation::exact;
 use crate::geometry::tessellation::exact::{ExactDyadic, ExactRational as Rational};
 use crate::geometry::{
-    CoordSeq, Coordinates as _, DdInterval, ExpansionBudget, LineSeq, PackedLineColumnView, Point,
-    Polygonal, Segment, Shape, XY, storage,
+    CoordSeq, DdInterval, ExpansionBudget, LineSeq, PackedLineColumnView, Point, Segment, Shape,
+    XY, storage,
 };
 
 mod index;
@@ -47,7 +49,8 @@ pub(crate) struct PreparedSupport {
     boundary_edges: Vec<BoundaryEdge>,
     area_bounds: Option<FloatBox>,
     index: Arc<SupportIndex>,
-    area_index: Arc<SupportIndex>,
+    area_locator:
+        Option<Arc<crate::geometry::ExactLocationIndex<crate::geometry::AreaLocationLabels>>>,
     parallel_carriers: bool,
 }
 
@@ -75,7 +78,8 @@ impl PreparedSupport {
         }
         let inventory = ExactSourceInventory::from_rows([shape].into_iter())?;
         let partition = inventory.partition(budget)?;
-        let support = inventory.metric_support(&partition)?;
+        let area_location = AreaLocationStrategy::for_span_count(partition.spans.len());
+        let support = inventory.metric_support(&partition, area_location)?;
         Self::from_metric_support(support)
     }
 
@@ -86,64 +90,14 @@ impl PreparedSupport {
         if !shape.has_area_parts() {
             return Self::from_shape(shape, budget).map(Some);
         }
-        // Valid polygon rings already are their filled support boundary.
-        // Invalid/overlapping inputs still need the union partition to select
-        // that boundary before distance and containment queries can use it.
-        if let Some(polygonal) = shape.polygonal()
-            && shape.validate()?.is_none()
-        {
-            return Self::from_valid_polygonal(&polygonal).map(Some);
-        }
         let inventory = ExactSourceInventory::from_shapes(&[shape])?;
         let partition = inventory.partition(budget)?;
-        let support = inventory.metric_support_with_boundary(&partition)?;
+        let area_location = AreaLocationStrategy::for_span_count(partition.spans.len());
+        let support = inventory.metric_support_with_boundary(&partition, area_location)?;
         if support.faces.is_empty() {
             return Ok(None);
         }
         Self::from_metric_support(support).map(Some)
-    }
-
-    fn from_valid_polygonal(shape: &Polygonal<'_>) -> Result<Self> {
-        let mut spans = Vec::new();
-        let mut points = Vec::new();
-        let mut faces = Vec::new();
-        let mut add_polygon = |polygon: &crate::geometry::Polygon| {
-            if polygon.shell.coords().is_empty() {
-                return;
-            }
-            let mut cycles = Vec::new();
-            for ring in std::iter::once(&polygon.shell).chain(polygon.holes.iter()) {
-                let cycle: Vec<_> = ring
-                    .coords()
-                    .iter_coords()
-                    .map(|point| ExactPoint::from_xy(point.xy()))
-                    .collect();
-                if cycle.len() >= 3 {
-                    cycles.push(cycle);
-                }
-                for [start, end] in ring.coords().segment_pairs() {
-                    push_raw_segment(
-                        Segment {
-                            start: start.xy(),
-                            end: end.xy(),
-                        },
-                        &mut spans,
-                        &mut points,
-                    );
-                }
-            }
-            faces.push(cycles);
-        };
-        match shape {
-            Polygonal::Polygon(polygon) => add_polygon(polygon),
-            Polygonal::MultiPolygon(polygons) => {
-                for polygon in polygons.iter() {
-                    add_polygon(polygon);
-                }
-            },
-            Polygonal::Empty => {},
-        }
-        Self::from_parts(spans, points, faces)
     }
 
     fn from_line_columns(xs: &[f64], ys: &[f64]) -> Result<Self> {
@@ -168,9 +122,11 @@ impl PreparedSupport {
 
     fn from_metric_support(support: ExactMetricSupport) -> Result<Self> {
         let ExactMetricSupport {
+            exact_points,
             spans: metric_spans,
             points: metric_points,
             faces: metric_faces,
+            area_location_cells,
             boundary_spans: metric_boundary_spans,
             boundary_points: metric_boundary_points,
         } = support;
@@ -187,12 +143,12 @@ impl PreparedSupport {
         }
         let mut spans = Vec::with_capacity(metric_spans.len());
         for span in metric_spans {
-            spans.push(support_span(span)?);
+            spans.push(support_span(&span)?);
         }
 
         let mut points = Vec::with_capacity(metric_points.len());
         for point in metric_points {
-            points.push(ExactPoint::from_homogeneous(point.homogeneous)?);
+            points.push(ExactPoint::from_homogeneous(point.homogeneous().clone())?);
         }
 
         let mut faces = Vec::with_capacity(metric_faces.len());
@@ -201,7 +157,7 @@ impl PreparedSupport {
             for cycle in face {
                 let mut points = Vec::with_capacity(cycle.len());
                 for point in cycle {
-                    points.push(ExactPoint::from_homogeneous(point.homogeneous)?);
+                    points.push(ExactPoint::from_homogeneous(point.homogeneous().clone())?);
                 }
                 cycles.push(points);
             }
@@ -209,6 +165,13 @@ impl PreparedSupport {
         }
 
         let mut prepared = Self::from_parts(spans, points, faces)?;
+        prepared.area_locator = area_location_cells.map(|cells| {
+            debug_assert!(Arc::ptr_eq(&exact_points, &cells.geometry.points));
+            Arc::new(crate::geometry::ExactLocationIndex::from_cells(cells))
+        });
+        if !prepared.boundary_edges.is_empty() && prepared.area_locator.is_none() {
+            debug_assert!(prepared.boundary_edges.len() <= 8);
+        }
         prepared.boundary_spans = metric_boundary_spans;
         prepared.boundary_points = metric_boundary_points;
         Ok(prepared)
@@ -259,18 +222,6 @@ impl PreparedSupport {
 
         let parallel_carriers = may_have_parallel_carriers(&spans);
         let index = Arc::new(SupportIndex::build(&spans, &points)?);
-        let same_edges = points.is_empty()
-            && spans.len() == boundary_edges.len()
-            && spans.iter().zip(&boundary_edges).all(|(span, edge)| {
-                span.range.is_none()
-                    && edge.start.stored_xy() == Some(span.source.start)
-                    && edge.end.stored_xy() == Some(span.source.end)
-            });
-        let area_index = if same_edges {
-            Arc::clone(&index)
-        } else {
-            Arc::new(SupportIndex::from_boundary_edges(&boundary_edges))
-        };
         Ok(Self {
             spans: spans.into(),
             points: points.into(),
@@ -280,7 +231,7 @@ impl PreparedSupport {
             boundary_edges,
             area_bounds,
             index,
-            area_index,
+            area_locator: None,
             parallel_carriers,
         })
     }
@@ -304,7 +255,7 @@ impl PreparedSupport {
                 boundary_edges: Vec::new(),
                 area_bounds: None,
                 index: Arc::clone(&self.index),
-                area_index: Arc::default(),
+                area_locator: None,
                 parallel_carriers: self.parallel_carriers,
             });
         }
@@ -386,9 +337,43 @@ impl PreparedSupport {
     }
 
     fn contains_area(&self, point: &ExactPoint) -> Result<bool> {
-        // Partition faces have disjoint interiors. Shared internal edges
-        // cross a ray twice, so parity over all cycles is their filled union.
-        self.area_index.contains_area(&self.boundary_edges, point)
+        if self.boundary_edges.is_empty() {
+            return Ok(false);
+        }
+        let Some(locator) = &self.area_locator else {
+            return self.contains_area_bounded(point);
+        };
+        let exact = if let Some(xy) = point.stored_xy() {
+            [
+                ExactDyadic::from_f64(xy.x),
+                ExactDyadic::from_f64(xy.y),
+                ExactDyadic::one(),
+            ]
+        } else {
+            let (x_numerator, x_denominator) = point.x().parts();
+            let (y_numerator, y_denominator) = point.y().parts();
+            [
+                x_numerator.try_product(y_denominator)?,
+                y_numerator.try_product(x_denominator)?,
+                x_denominator.try_product(y_denominator)?,
+            ]
+        };
+        locator.locate_exact(&exact)
+    }
+
+    fn contains_area_bounded(&self, point: &ExactPoint) -> Result<bool> {
+        // This path is selected only for tiny exact arrangements. Its walks
+        // label the already-selected union faces, so shared internal edges
+        // cancel in the ray fold while exact contacts remain closed support.
+        let mut inside = false;
+        for edge in &self.boundary_edges {
+            match edge_location(point, edge)? {
+                CycleLocation::Boundary => return Ok(true),
+                CycleLocation::Crosses => inside = !inside,
+                CycleLocation::Clear => {},
+            }
+        }
+        Ok(inside)
     }
 
     fn covers_support(&self, point: &ExactPoint) -> Result<bool> {
@@ -705,14 +690,14 @@ const fn raw_support_span(source: Segment) -> SupportSpan {
     }
 }
 
-fn support_span(span: ExactMetricSpan) -> Result<SupportSpan> {
+fn support_span(span: &ExactMetricSpan) -> Result<SupportSpan> {
     if span.start_parameter[0].is_zero()
         && span.end_parameter[0].cmp(&span.end_parameter[1]) == Ordering::Equal
     {
         return Ok(raw_support_span(span.source));
     }
-    let start = ExactPoint::from_homogeneous(span.start.homogeneous)?;
-    let end = ExactPoint::from_homogeneous(span.end.homogeneous)?;
+    let start = ExactPoint::from_homogeneous(span.start.homogeneous().clone())?;
+    let end = ExactPoint::from_homogeneous(span.end.homogeneous().clone())?;
     let mut t_lo = Rational::new(
         span.start_parameter[0].clone(),
         span.start_parameter[1].clone(),
@@ -1057,12 +1042,11 @@ fn box_distance_lower(left: FloatBox, right: FloatBox) -> f64 {
 
 enum CycleLocation {
     Boundary,
-    /// Off the cycle, with an odd number of crossings of the rightward ray.
+    /// This edge contributes one crossing to a rightward-ray fold.
     Crosses,
     Clear,
 }
 
-/// Classify one ray contact without rounding constructed boundary vertices.
 fn edge_location(point: &ExactPoint, edge: &BoundaryEdge) -> Result<CycleLocation> {
     if let (Some(point), Some(left), Some(right)) = (
         point.stored_xy(),
@@ -1071,8 +1055,7 @@ fn edge_location(point: &ExactPoint, edge: &BoundaryEdge) -> Result<CycleLocatio
     ) {
         return ray_edge_location(point, left, right);
     }
-    let (left, right) = (&edge.start, &edge.end);
-    ray_edge_location(point, left, right)
+    ray_edge_location(point, &edge.start, &edge.end)
 }
 
 trait RayPoint: Copy {
