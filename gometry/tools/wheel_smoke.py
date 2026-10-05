@@ -792,6 +792,10 @@ def stage_sdist(out_dir: Path) -> Path:
     out_dir = out_dir.resolve()
     _clear_stage_outputs(out_dir)
     final: Path | None = None
+    # The PyPI rendering of README.md exists only for the staged sdist; the
+    # checkout keeps its relative links.
+    readme = ROOT / 'README.md'
+    checkout_readme = readme.read_bytes()
     try:
         verify_libtiff_checkout()
         prepared_hashes = _prepare_source_outputs()
@@ -880,6 +884,8 @@ def stage_sdist(out_dir: Path) -> Path:
             (out_dir / final.name).unlink(missing_ok=True)
         (out_dir / SOURCE_MANIFEST_NAME).unlink(missing_ok=True)
         raise
+    finally:
+        readme.write_bytes(checkout_readme)
 
 
 def _is_text_member(name: str) -> bool:
