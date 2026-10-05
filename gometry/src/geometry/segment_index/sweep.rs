@@ -750,6 +750,23 @@ impl RunChain<'_> {
         let (c_lo, c_hi) = ordered(cross.0, cross.1);
         (s_lo, s_hi, c_lo, c_hi)
     }
+
+    /// After the parent envelopes overlap, a two-segment range can still
+    /// miss both child boxes. Their remaining bounds are the shared vertex;
+    /// the parent comparison already settled the outer bounds.
+    fn two_segment_gap(&self, lo: u32, (s_lo, s_hi, c_lo, c_hi): (f64, f64, f64, f64)) -> bool {
+        let middle = self.vertex(lo.wrapping_add(1));
+        let (s_middle, c_middle) = if self.swapped {
+            (middle.y, middle.x)
+        } else {
+            (middle.x, middle.y)
+        };
+        if (self.run.sign_x < 0) == (self.run.sign_y < 0) {
+            (s_middle < s_lo || c_middle < c_lo) && (s_hi < s_middle || c_hi < c_middle)
+        } else {
+            (s_middle < s_lo || c_hi < c_middle) && (s_hi < s_middle || c_middle < c_lo)
+        }
+    }
 }
 
 fn ordered(a: f64, b: f64) -> (f64, f64) {
@@ -771,6 +788,16 @@ fn bisect_runs<B>(
         return ControlFlow::Continue(());
     }
     let (a_len, b_len) = (a_hi.wrapping_sub(a_lo), b_hi.wrapping_sub(b_lo));
+    let children_miss = if a_len == 2 {
+        a.two_segment_gap(a_lo, (bs_lo, bs_hi, bc_lo, bc_hi))
+    } else if b_len == 2 {
+        b.two_segment_gap(b_lo, (as_lo, as_hi, ac_lo, ac_hi))
+    } else {
+        false
+    };
+    if children_miss {
+        return ControlFlow::Continue(());
+    }
     if a_len == 1 && b_len == 1 {
         let (x, y) = (a.ordinal(a_lo), b.ordinal(b_lo));
         // One pool: input-ordinal order. Two pools: `a` then `b`, whatever

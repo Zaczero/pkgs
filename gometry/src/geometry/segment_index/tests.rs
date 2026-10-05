@@ -461,6 +461,127 @@ mod run_collapse_dispatch {
         runs.len()
     }
 
+    fn ordered_candidates(pool: &[Segment]) -> Vec<(usize, usize)> {
+        let mut pairs = Vec::new();
+        let ControlFlow::Continue(()): ControlFlow<std::convert::Infallible> =
+            for_each_candidate_pair(pool, single_chain, |left, right| {
+                pairs.push((left, right));
+                ControlFlow::Continue(())
+            })
+            .expect("sweep indexes fit their structural widths");
+        pairs
+    }
+
+    #[test]
+    fn empty_two_edge_chain_envelope_visits_no_pairs() {
+        let _budget = crate::scratch_pool::RetainBudgetGuard::new();
+        let left = [(0.0, 0.0), (2.0, 0.0), (2.0, 2.0)];
+        let right = [
+            (0.25, 0.25),
+            (0.5, 0.5),
+            (0.75, 0.75),
+            (1.0, 1.0),
+            (1.25, 1.25),
+        ];
+        for (scale_x, scale_y) in [(1.0, 2.0), (2.0, 1.0), (-1.0, 2.0), (-2.0, 1.0)] {
+            let transform = |points: &[(f64, f64)]| {
+                points
+                    .iter()
+                    .map(|&(x, y)| (x * scale_x, y * scale_y))
+                    .collect::<Vec<_>>()
+            };
+            let (left, right) = (transform(&left), transform(&right));
+            for pool in [pool_of(&left, &right), pool_of(&right, &left)] {
+                assert!(ordered_candidates(&pool).is_empty());
+            }
+        }
+    }
+
+    #[test]
+    fn two_edge_chain_keeps_closed_boundary_contacts() {
+        let _budget = crate::scratch_pool::RetainBudgetGuard::new();
+        let left = [(0.0, 0.0), (2.0, 0.0), (2.0, 2.0)];
+        for (right, expected) in [
+            (
+                [
+                    (0.25, -0.75),
+                    (0.75, -0.25),
+                    (1.25, 0.25),
+                    (1.75, 0.75),
+                    (2.25, 1.25),
+                ],
+                [(0, 3), (1, 5)],
+            ),
+            (
+                [
+                    (2.0, -2.0),
+                    (2.0, -1.5),
+                    (2.0, -1.0),
+                    (2.0, -0.5),
+                    (2.0, 0.0),
+                ],
+                [(0, 5), (1, 5)],
+            ),
+        ] {
+            for (scale_x, scale_y) in [(1.0, 2.0), (2.0, 1.0), (-1.0, 2.0), (-2.0, 1.0)] {
+                let transform = |points: &[(f64, f64)]| {
+                    points
+                        .iter()
+                        .map(|&(x, y)| (x * scale_x, y * scale_y))
+                        .collect::<Vec<_>>()
+                };
+                let (left, right) = (transform(&left), transform(&right));
+                let mut pairs = ordered_candidates(&pool_of(&left, &right));
+                pairs.sort_unstable();
+                assert_eq!(pairs, expected);
+                let mut pairs = ordered_candidates(&pool_of(&right, &left));
+                pairs.sort_unstable();
+                let mut reversed = expected.map(|(short, long)| (long - 2, short + 4));
+                reversed.sort_unstable();
+                assert_eq!(pairs, reversed);
+            }
+        }
+    }
+
+    #[test]
+    fn collinear_chains_keep_ordered_callbacks_and_early_break() {
+        let _budget = crate::scratch_pool::RetainBudgetGuard::new();
+        let left = [(0.0, 0.0), (4.0, 0.0), (8.0, 0.0)];
+        let right = [(0.0, 0.0), (2.0, 0.0), (4.0, 0.0), (6.0, 0.0), (8.0, 0.0)];
+        for (pool, expected) in [
+            (pool_of(&left, &right), [
+                (0, 2),
+                (0, 3),
+                (1, 3),
+                (0, 4),
+                (1, 4),
+                (1, 5),
+            ]),
+            (pool_of(&right, &left), [
+                (0, 4),
+                (1, 4),
+                (1, 5),
+                (2, 4),
+                (2, 5),
+                (3, 5),
+            ]),
+        ] {
+            assert_eq!(ordered_candidates(&pool), expected);
+            let mut prefix = Vec::new();
+            let flow = for_each_candidate_pair(&pool, single_chain, |left, right| {
+                prefix.push((left, right));
+                if prefix.len() == 3 {
+                    ControlFlow::Break("third contact")
+                } else {
+                    ControlFlow::Continue(())
+                }
+            })
+            .expect("sweep indexes fit their structural widths");
+            assert_eq!(flow, ControlFlow::Break("third contact"));
+            assert_eq!(prefix, expected[..3]);
+        }
+    }
+
     #[test]
     fn smooth_linework_collapses_at_every_size() {
         let _budget = crate::scratch_pool::RetainBudgetGuard::new();
