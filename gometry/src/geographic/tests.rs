@@ -869,6 +869,142 @@ fn longitude_canonicalization_pins_aliases_neighbors_and_nonfinite() {
 }
 
 #[test]
+fn nearest_longitude_alias_rounds_the_selected_source_translation_once() {
+    let axis = degrees().longitude();
+    assert_bits(
+        axis.nearest_longitude_alias(-190.0, 177.813_015_064_085_82)
+            .unwrap(),
+        -182.186_984_935_914_18,
+    );
+}
+
+#[test]
+fn nearest_longitude_alias_fuses_an_integer_shift_rounded_to_the_exactness_boundary() {
+    let axis = frame(std::f64::consts::TAU / 107.0).longitude();
+    // 84_179_432_287_299 * 107 = 2^53 + 1, whose rounded product is 2^53.
+    assert_bits(
+        axis.nearest_longitude_alias(0.0, -(2.0_f64.powi(53)))
+            .unwrap(),
+        1.0,
+    );
+}
+
+#[test]
+fn nearest_longitude_alias_keeps_period_counts_larger_than_a_significand_exact() {
+    let axis = degrees().longitude();
+    // 27_777_777_777_777_778 * 360 - 10_000_000_000_000_000_000 = 80.
+    assert_bits(axis.nearest_longitude_alias(1.0, -1.0e19).unwrap(), 80.0);
+    assert_bits(axis.nearest_longitude_alias(-1.0, 1.0e19).unwrap(), -80.0);
+    assert_bits(
+        axis.nearest_longitude_alias(1.0, -f64::MAX).unwrap(),
+        -128.0,
+    );
+    assert_bits(axis.nearest_longitude_alias(-1.0, f64::MAX).unwrap(), 128.0);
+
+    let radians = frame(1.0).longitude();
+    assert_bits(
+        radians.nearest_longitude_alias(1.0, -1.0e19).unwrap(),
+        exact_native_alias_oracle(-1.0e19, radians.period(), 1_591_549_430_918_953_420),
+    );
+
+    let grads = frame(std::f64::consts::TAU / 400.0).longitude();
+    for (source, reference, periods) in [
+        (-(1.0e19_f64.next_up()), 1.0, 25_000_000_000_000_009),
+        (1.0e19_f64.next_up(), -1.0, -25_000_000_000_000_009),
+    ] {
+        assert_bits(
+            grads.nearest_longitude_alias(reference, source).unwrap(),
+            exact_native_alias_oracle(source, grads.period(), periods),
+        );
+    }
+
+    let nominal_tie = frame(std::f64::consts::TAU / 16.0_f64.next_down()).longitude();
+    assert_bits(
+        nominal_tie
+            .nearest_longitude_alias(0.0, -(2.0_f64.powi(54) + 8.0))
+            .unwrap(),
+        -10.0,
+    );
+}
+
+#[test]
+fn nearest_longitude_alias_recovers_reference_bits_for_rounded_whole_periods() {
+    for axis in [
+        degrees().longitude(),
+        frame(std::f64::consts::TAU / 400.0).longitude(),
+        frame(1.0).longitude(),
+    ] {
+        assert_bits(
+            axis.nearest_longitude_alias(1.0e-16, -axis.period())
+                .unwrap(),
+            1.0e-16,
+        );
+        assert_bits(
+            axis.nearest_longitude_alias(-1.0e-16, axis.period())
+                .unwrap(),
+            -1.0e-16,
+        );
+    }
+}
+
+#[test]
+fn nearest_longitude_alias_matches_exact_native_period_shifts() {
+    for (axis, longitudes) in [
+        (degrees().longitude(), [
+            177.813_015_064_085_82,
+            -122.427_194,
+            0.1,
+            -0.1,
+        ]),
+        (frame(std::f64::consts::TAU / 400.0).longitude(), [
+            177.813_015_064_085_82,
+            -122.427_194,
+            0.1,
+            -0.1,
+        ]),
+        (frame(1.0).longitude(), [
+            1.778_130_150_640_858_2,
+            -1.224_271_94,
+            0.1,
+            -0.1,
+        ]),
+    ] {
+        for longitude in longitudes {
+            for periods in [-5_i32, -2, -1, 1, 2, 5] {
+                let reference =
+                    longitude + f64::from(periods) * axis.period() + axis.period() / 16.0;
+                assert_bits(
+                    axis.nearest_longitude_alias(reference, longitude).unwrap(),
+                    exact_native_alias_oracle(longitude, axis.period(), i128::from(periods)),
+                );
+            }
+        }
+    }
+}
+
+// Align represented dyadics as integers, perform the translation exactly, then
+// round once when converting the integer sum. Power-of-two scaling is exact for
+// the normal-range representative inputs above.
+fn exact_native_alias_oracle(longitude: f64, period: f64, periods: i128) -> f64 {
+    let (longitude_significand, longitude_exponent) = decompose(longitude.abs());
+    let (period_significand, period_exponent) = decompose(period);
+    let exponent = longitude_exponent.min(period_exponent);
+    let aligned = |significand: u64, source_exponent: i32| {
+        i128::from(significand)
+            .checked_shl(u32::try_from(source_exponent.checked_sub(exponent).unwrap()).unwrap())
+            .unwrap()
+    };
+    let longitude = aligned(longitude_significand, longitude_exponent)
+        .checked_mul(if longitude.is_sign_negative() { -1 } else { 1 })
+        .unwrap();
+    let shift = aligned(period_significand, period_exponent)
+        .checked_mul(periods)
+        .unwrap();
+    let sum = longitude.checked_add(shift).unwrap();
+    sum as f64 * 2.0_f64.powi(exponent)
+}
+
+#[test]
 fn nearest_longitude_alias_reduces_before_rounding_and_keeps_tie_direction() {
     let axis = degrees().longitude();
     let source = 122.427_194_f64;

@@ -1,6 +1,7 @@
 use std::cmp::Ordering;
 
 use super::GeographicError;
+use crate::geometry::exact_arith::product_sum::ExactSum;
 use crate::geometry::{Bounds, Point};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -205,9 +206,9 @@ impl PeriodicAxis {
         Some(CanonicalLongitude(if value == 0.0 { 0.0 } else { value }))
     }
 
-    /// Choose the longitude alias nearest a position already lifted in this
-    /// axis. Reduce the displacement before combining it with the reference,
-    /// so adding several periods cannot erase the longitude's low bits.
+    /// Use the source-directed alias selection for a lifted chart position.
+    /// Whole-period differences recover the reference's bits; other finite
+    /// displacements translate the source by the selected periods in one rounding.
     #[expect(
         clippy::float_cmp,
         reason = "exact zero, whole-period aliases, and half-period ties define longitude spelling"
@@ -235,7 +236,7 @@ impl PeriodicAxis {
             return Ok(if longitude == 0.0 { 0.0 } else { longitude });
         }
 
-        let delta = if difference.is_finite()
+        let (delta, selection_period) = if difference.is_finite()
             && difference.fract() == 0.0
             && let Some(period) = self.conventional_integer_period()
         {
@@ -248,15 +249,40 @@ impl PeriodicAxis {
                 });
             }
             if remainder.abs() == period / 2.0 {
-                (period / 2.0).copysign(difference)
+                ((period / 2.0).copysign(difference), period)
             } else {
-                self.wrap_admitted(difference).get()
+                (self.wrap_admitted(difference).get(), self.period)
             }
         } else {
-            self.shortest_alias_step(longitude, lifted_reference)?
-                .delta(self)
+            (
+                self.shortest_alias_step(longitude, lifted_reference)?
+                    .delta(self),
+                self.period,
+            )
         };
-        let alias = lifted_reference - delta;
+        let alias = if delta == 0.0 {
+            lifted_reference
+        } else if difference.is_finite() {
+            let periods = (difference / selection_period - delta / selection_period).round();
+            // Below 2^50, division and subtraction cannot move the selected
+            // integer by half a unit. Larger counts need exact formation.
+            if periods.abs() < 1_125_899_906_842_624.0 {
+                let shift = periods * self.period;
+                // Integer products below 2^53 are exact; the strict bound
+                // excludes inexact products rounded down to 2^53.
+                if self.period.fract() == 0.0 && shift.abs() < 9_007_199_254_740_992.0 {
+                    longitude + shift
+                } else {
+                    periods.mul_add(self.period, longitude)
+                }
+            } else {
+                self.round_wide_alias(longitude, difference, delta, selection_period)
+            }
+        } else {
+            // An overflowing displacement has no finite period count; retain
+            // the endpoint-based reference recovery.
+            lifted_reference - delta
+        };
         if alias.is_finite() {
             Ok(if alias == 0.0 { 0.0 } else { alias })
         } else {
@@ -265,6 +291,38 @@ impl PeriodicAxis {
                 value: alias,
             })
         }
+    }
+
+    #[expect(
+        clippy::float_cmp,
+        reason = "the exact comparison distinguishes the native period from its nominal integer spelling"
+    )]
+    fn round_wide_alias(
+        self,
+        longitude: f64,
+        difference: f64,
+        delta: f64,
+        selection_period: f64,
+    ) -> f64 {
+        if selection_period != self.period {
+            // A representable nominal half-period remainder also makes its
+            // integer count representable; both divisions and subtraction are exact.
+            let periods = difference / selection_period - delta / selection_period;
+            return periods.mul_add(self.period, longitude);
+        }
+        let remainder = difference % selection_period;
+        let delta = if remainder.is_sign_negative() == delta.is_sign_negative() {
+            remainder
+        } else {
+            remainder - selection_period.copysign(difference)
+        };
+        let mut sum = ExactSum::zero();
+        sum.add_product(longitude, 1.0);
+        // The remainder-selected translation is exactly difference-delta;
+        // its integer period count need not fit a binary64 significand.
+        sum.add_product(difference, 1.0);
+        sum.subtract_product(delta, 1.0);
+        sum.round_to_binary64()
     }
 
     /// Wrap a finite longitude with the canonical remainder, integer-period

@@ -492,6 +492,22 @@ def test_geodesic_segmentize_matches_pyproj_npts_for_scalar_array_and_fraction()
     assert list(scalar.coords) == list(fractional.coords)
 
 
+def test_geodesic_segmentize_rounds_a_period_shift_once() -> None:
+    base = gm.LineString([(170, 0), (190, 50)], crs=4326).segmentize(
+        fraction=0.5, path='geodesic'
+    )
+    shifted = gm.LineString([(-190, 0), (-170, 50)], crs=4326).segmentize(
+        fraction=0.5, path='geodesic'
+    )
+    base_midpoint = tuple(base.coords[1])
+    shifted_midpoint = tuple(shifted.coords[1])
+    assert base_midpoint[0] == 177.81301506408582
+    # The represented base longitude minus exactly 360 is representable:
+    # -0x1.6c5fbc7d51313p+7, not its adjacent lower binary64 value.
+    assert shifted_midpoint[0] == -182.18698493591418
+    assert shifted_midpoint[1] == base_midpoint[1]
+
+
 def test_rhumb_segmentize_matches_rhumbsolve_parallel_literal_and_array() -> None:
     # GeographicLib RhumbSolve gives the endpoint for a 1,000 km due-east
     # route from (-10, 45); equal rhumb arclength on this parallel is linear

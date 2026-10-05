@@ -101,11 +101,11 @@ impl ExactSum {
         }
     }
 
-    pub(in crate::geometry) fn add_product(&mut self, lhs: f64, rhs: f64) {
+    pub(crate) fn add_product(&mut self, lhs: f64, rhs: f64) {
         self.accumulate_product(false, lhs, rhs);
     }
 
-    pub(in crate::geometry) fn subtract_product(&mut self, lhs: f64, rhs: f64) {
+    pub(crate) fn subtract_product(&mut self, lhs: f64, rhs: f64) {
         self.accumulate_product(true, lhs, rhs);
     }
 
