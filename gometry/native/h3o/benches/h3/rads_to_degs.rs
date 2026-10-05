@@ -1,5 +1,6 @@
-use criterion::Criterion;
 use std::hint::black_box;
+
+use criterion::Criterion;
 
 const VALUE: f64 = 0.8377580409552;
 

@@ -1,14 +1,14 @@
-use crate::{
-    CellIndex, DirectedEdgeIndex,
-    error::DissolutionError,
-    math::{Coord2d, linear_ring_area},
-};
-use ahash::{HashMap, HashMapExt as _, HashSet};
 use core::f64::consts::{FRAC_PI_2, PI};
+use std::cell::Cell;
+
+use ahash::{HashMap, HashMapExt as _, HashSet};
 use either::Either;
 use geo::{Coord, LineString, MultiPolygon, Polygon, ToDegrees as _, polygon};
 use ordered_float::OrderedFloat;
-use std::cell::Cell;
+
+use crate::error::DissolutionError;
+use crate::math::{Coord2d, linear_ring_area};
+use crate::{CellIndex, DirectedEdgeIndex};
 
 #[derive(Debug)]
 pub struct ArcSet {
@@ -182,9 +182,7 @@ impl ArcSolvent {
         // Create and insert the arcs.
         let polygon_id = self.partitions.add();
         let len = self.slots.len();
-        for ((idx, slot), edge) in
-            self.slots.iter().copied().enumerate().zip(cell.edges())
-        {
+        for ((idx, slot), edge) in self.slots.iter().copied().enumerate().zip(cell.edges()) {
             let prev = if idx == 0 { len - 1 } else { idx - 1 };
             let next = if idx == len - 1 { 0 } else { idx + 1 };
             let prev_idx = self.slots[prev];
@@ -400,9 +398,7 @@ fn build_multipolygon(rings: Vec<LinearRing>) -> MultiPolygon {
     ));
 
     polygons.sort_by_cached_key(|polygon| {
-        core::cmp::Reverse(OrderedFloat(linear_ring_area(
-            &polygon.exterior().0,
-        )))
+        core::cmp::Reverse(OrderedFloat(linear_ring_area(&polygon.exterior().0)))
     });
 
     let mut mpoly = MultiPolygon::new(polygons);
@@ -427,9 +423,7 @@ fn world_polygon() -> MultiPolygon {
     ];
 
     polygons.sort_by_cached_key(|polygon| {
-        core::cmp::Reverse(OrderedFloat(linear_ring_area(
-            &polygon.exterior().0,
-        )))
+        core::cmp::Reverse(OrderedFloat(linear_ring_area(&polygon.exterior().0)))
     });
 
     let mut world = MultiPolygon::new(polygons);

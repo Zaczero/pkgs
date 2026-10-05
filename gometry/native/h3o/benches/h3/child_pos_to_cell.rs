@@ -1,12 +1,12 @@
-use criterion::{
-    BenchmarkGroup, BenchmarkId, Criterion, measurement::Measurement,
-};
-use h3o::{CellIndex, Resolution};
 use std::hint::black_box;
 
+use criterion::measurement::Measurement;
+use criterion::{BenchmarkGroup, BenchmarkId, Criterion};
+use h3o::{CellIndex, Resolution};
+
 pub fn bench(c: &mut Criterion) {
-    const HEXAGON: u64 = 0x8073fffffffffff;
-    const PENTAGON: u64 = 0x8009fffffffffff;
+    const HEXAGON: u64 = 0x8073FFFFFFFFFFF;
+    const PENTAGON: u64 = 0x8009FFFFFFFFFFF;
 
     let mut group = c.benchmark_group("childPosToCell");
 
@@ -84,10 +84,7 @@ fn bench_h3o<T>(
         BenchmarkId::new(name, resolution),
         &resolution,
         |b, &resolution| {
-            b.iter(|| {
-                black_box(index)
-                    .child_at(black_box(position), black_box(resolution))
-            })
+            b.iter(|| black_box(index).child_at(black_box(position), black_box(resolution)))
         },
     );
 }

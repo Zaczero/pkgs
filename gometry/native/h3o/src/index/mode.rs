@@ -27,15 +27,11 @@ impl From<IndexMode> for u8 {
 
 impl fmt::Display for IndexMode {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "{}",
-            match *self {
-                Self::Cell => "Cell",
-                Self::DirectedEdge => "DirectedEdge",
-                Self::UndirectedEdge => "UndirectedEdge",
-                Self::Vertex => "Vertex",
-            }
-        )
+        write!(f, "{}", match *self {
+            Self::Cell => "Cell",
+            Self::DirectedEdge => "DirectedEdge",
+            Self::UndirectedEdge => "UndirectedEdge",
+            Self::Vertex => "Vertex",
+        })
     }
 }

@@ -1,9 +1,7 @@
-use crate::{
-    Direction, Face, NUM_PENT_VERTS, NUM_PENTAGONS,
-    coord::{CoordIJK, FaceIJK},
-    error,
-};
 use core::fmt;
+
+use crate::coord::{CoordIJK, FaceIJK};
+use crate::{Direction, Face, NUM_PENT_VERTS, NUM_PENTAGONS, error};
 
 /// Maximum value for a base cell.
 pub const MAX: u8 = 121;
@@ -77,17 +75,14 @@ impl BaseCell {
     pub(crate) fn is_cw_offset(self, face: Face) -> bool {
         self.metadata()
             .cw_offset_pent
-            .is_some_and(|(offset1, offset2)| {
-                offset1 == face || offset2 == face
-            })
+            .is_some_and(|(offset1, offset2)| offset1 == face || offset2 == face)
     }
 
     /// Returns the number of 60° ccw rotations for that base cell's coordinate
     /// system.
     pub(crate) fn rotation_count(self, face: Face) -> u8 {
         let shift = usize::from(face) * 3;
-        let rotation =
-            (BASE_CELL_ROTATIONS[usize::from(self.0)] >> shift) & 0b111;
+        let rotation = (BASE_CELL_ROTATIONS[usize::from(self.0)] >> shift) & 0b111;
 
         debug_assert_ne!(rotation, 0b111, "no cell {self} on face {face:?}");
 
@@ -103,9 +98,7 @@ impl BaseCell {
     /// Returns the direction-to-face mapping of this pentagonal cell.
     ///
     /// Note that faces are in directional order, starting at J.
-    pub(crate) const fn pentagon_direction_faces(
-        self,
-    ) -> [Face; NUM_PENT_VERTS as usize] {
+    pub(crate) const fn pentagon_direction_faces(self) -> [Face; NUM_PENT_VERTS as usize] {
         debug_assert!(self.is_pentagon(), "not a pentagon");
 
         let mask = (1_u128 << self.0) - 1;
@@ -129,7 +122,7 @@ impl BaseCell {
         let base = usize::from(self);
         let to = usize::from(direction);
 
-        debug_assert_ne!(NEIGHBOR_60CCW_ROTS[base][to], 0xff);
+        debug_assert_ne!(NEIGHBOR_60CCW_ROTS[base][to], 0xFF);
         NEIGHBOR_60CCW_ROTS[base][to]
     }
 
@@ -141,10 +134,7 @@ impl BaseCell {
             .iter()
             .position(|&cell| u8::from(neighbor) == cell)
             .map(|dir| {
-                #[expect(
-                    clippy::cast_possible_truncation,
-                    reason = "Cast safe thx to bounds"
-                )]
+                #[expect(clippy::cast_possible_truncation, reason = "Cast safe thx to bounds")]
                 // SAFETY: `i` is bounded in [0; 6].
                 Direction::new_unchecked(dir as u8)
             })
@@ -358,10 +348,7 @@ macro_rules! metadata {
         Metadata {
             home: Face::new_unchecked($home),
             coord: CoordIJK::new($i, $j, $k),
-            cw_offset_pent: Some((
-                Face::new_unchecked($offset1),
-                Face::new_unchecked($offset2),
-            )),
+            cw_offset_pent: Some((Face::new_unchecked($offset1), Face::new_unchecked($offset2))),
         }
     };
 }

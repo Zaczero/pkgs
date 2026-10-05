@@ -1,9 +1,8 @@
+use std::fs::File;
+use std::io::{BufRead, BufReader};
+use std::path::PathBuf;
+
 use h3o::Resolution;
-use std::{
-    fs::File,
-    io::{BufRead, BufReader},
-    path::PathBuf,
-};
 
 #[test]
 fn golden_file() {

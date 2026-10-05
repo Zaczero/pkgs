@@ -1,6 +1,7 @@
-use super::h3api;
 use float_eq::assert_float_eq;
 use h3o::LatLng;
+
+use super::h3api;
 
 const ICECREAM: (f64, f64) = (48.854501508844095_f64, 2.3729695423293613_f64);
 const BOCAMEXA: (f64, f64) = (48.854091837885264_f64, 2.3708719883564124_f64);

@@ -1,6 +1,7 @@
-use super::h3api;
 use float_eq::assert_float_eq;
 use h3o::CellIndex;
+
+use super::h3api;
 
 macro_rules! test {
     ($name:ident, $index:literal) => {
@@ -22,36 +23,36 @@ macro_rules! test {
     };
 }
 
-test!(hexagon_res0, 0x8019fffffffffff);
-test!(hexagon_res1, 0x811fbffffffffff);
-test!(hexagon_res2, 0x821fb7fffffffff);
-test!(hexagon_res3, 0x831fb4fffffffff);
-test!(hexagon_res4, 0x841fb47ffffffff);
-test!(hexagon_res5, 0x851fb467fffffff);
-test!(hexagon_res6, 0x861fb4667ffffff);
-test!(hexagon_res7, 0x871fb4662ffffff);
-test!(hexagon_res8, 0x881fb46623fffff);
-test!(hexagon_res9, 0x891fb46622fffff);
-test!(hexagon_res10, 0x8a1fb46622dffff);
-test!(hexagon_res11, 0x8b1fb46622dcfff);
-test!(hexagon_res12, 0x8c1fb46622dc9ff);
-test!(hexagon_res13, 0x8d1fb46622dc83f);
-test!(hexagon_res14, 0x8e1fb46622dc81f);
-test!(hexagon_res15, 0x8f1fb46622dc81b);
+test!(hexagon_res0, 0x8019FFFFFFFFFFF);
+test!(hexagon_res1, 0x811FBFFFFFFFFFF);
+test!(hexagon_res2, 0x821FB7FFFFFFFFF);
+test!(hexagon_res3, 0x831FB4FFFFFFFFF);
+test!(hexagon_res4, 0x841FB47FFFFFFFF);
+test!(hexagon_res5, 0x851FB467FFFFFFF);
+test!(hexagon_res6, 0x861FB4667FFFFFF);
+test!(hexagon_res7, 0x871FB4662FFFFFF);
+test!(hexagon_res8, 0x881FB46623FFFFF);
+test!(hexagon_res9, 0x891FB46622FFFFF);
+test!(hexagon_res10, 0x8A1FB46622DFFFF);
+test!(hexagon_res11, 0x8B1FB46622DCFFF);
+test!(hexagon_res12, 0x8C1FB46622DC9FF);
+test!(hexagon_res13, 0x8D1FB46622DC83F);
+test!(hexagon_res14, 0x8E1FB46622DC81F);
+test!(hexagon_res15, 0x8F1FB46622DC81B);
 
-test!(pentagon_res0, 0x8031fffffffffff);
-test!(pentagon_res1, 0x81303ffffffffff);
-test!(pentagon_res2, 0x823007fffffffff);
-test!(pentagon_res3, 0x833000fffffffff);
-test!(pentagon_res4, 0x8430001ffffffff);
-test!(pentagon_res5, 0x85300003fffffff);
-test!(pentagon_res6, 0x863000007ffffff);
-test!(pentagon_res7, 0x873000000ffffff);
-test!(pentagon_res8, 0x8830000001fffff);
-test!(pentagon_res9, 0x89300000003ffff);
-test!(pentagon_res10, 0x8a3000000007fff);
-test!(pentagon_res11, 0x8b3000000000fff);
-test!(pentagon_res12, 0x8c30000000001ff);
-test!(pentagon_res13, 0x8d300000000003f);
-test!(pentagon_res14, 0x8e3000000000007);
-test!(pentagon_res15, 0x8f3000000000000);
+test!(pentagon_res0, 0x8031FFFFFFFFFFF);
+test!(pentagon_res1, 0x81303FFFFFFFFFF);
+test!(pentagon_res2, 0x823007FFFFFFFFF);
+test!(pentagon_res3, 0x833000FFFFFFFFF);
+test!(pentagon_res4, 0x8430001FFFFFFFF);
+test!(pentagon_res5, 0x85300003FFFFFFF);
+test!(pentagon_res6, 0x863000007FFFFFF);
+test!(pentagon_res7, 0x873000000FFFFFF);
+test!(pentagon_res8, 0x8830000001FFFFF);
+test!(pentagon_res9, 0x89300000003FFFF);
+test!(pentagon_res10, 0x8A3000000007FFF);
+test!(pentagon_res11, 0x8B3000000000FFF);
+test!(pentagon_res12, 0x8C30000000001FF);
+test!(pentagon_res13, 0x8D300000000003F);
+test!(pentagon_res14, 0x8E3000000000007);
+test!(pentagon_res15, 0x8F3000000000000);

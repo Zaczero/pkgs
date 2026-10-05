@@ -1,8 +1,11 @@
+use std::ffi::CString;
+use std::fmt::Write;
+use std::hint::black_box;
+
 use criterion::Criterion;
 use h3o::CellIndex;
-use std::{ffi::CString, fmt::Write, hint::black_box};
 
-const INPUT: u64 = 0x8f734e64992d6d8;
+const INPUT: u64 = 0x8F734E64992D6D8;
 const SIZE: usize = 16; // u64 is at most a 16-char hexstring.
 
 pub fn bench(c: &mut Criterion) {

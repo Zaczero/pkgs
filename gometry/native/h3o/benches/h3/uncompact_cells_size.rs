@@ -1,14 +1,15 @@
+use std::hint::black_box;
+
 use criterion::Criterion;
 use h3o::{CellIndex, Resolution};
-use std::hint::black_box;
 
 const RESOLUTION: Resolution = Resolution::Seven;
 
 pub fn bench(c: &mut Criterion) {
     let compacted = [
-        CellIndex::try_from(0x802bfffffffffff).unwrap(), // hexagon  res 0.
-        CellIndex::try_from(0x820807fffffffff).unwrap(), // pentagon res 1.
-        CellIndex::try_from(0x83734efffffffff).unwrap(), // hexagon  res 3.
+        CellIndex::try_from(0x802BFFFFFFFFFFF).unwrap(), // hexagon  res 0.
+        CellIndex::try_from(0x820807FFFFFFFFF).unwrap(), // pentagon res 1.
+        CellIndex::try_from(0x83734EFFFFFFFFF).unwrap(), // hexagon  res 3.
     ];
 
     let mut group = c.benchmark_group("uncompactCellsSize");
@@ -20,8 +21,7 @@ pub fn bench(c: &mut Criterion) {
         })
     });
     group.bench_function("h3", |b| {
-        let cells =
-            compacted.iter().copied().map(u64::from).collect::<Vec<_>>();
+        let cells = compacted.iter().copied().map(u64::from).collect::<Vec<_>>();
         let mut out: i64 = 0;
         b.iter(|| unsafe {
             h3ron_h3_sys::uncompactCellsSize(

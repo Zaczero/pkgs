@@ -1,16 +1,17 @@
+use std::hint::black_box;
+
 use criterion::{Bencher, BenchmarkId, Criterion};
 use h3o::DirectedEdgeIndex;
-use std::hint::black_box;
 
 pub fn bench(c: &mut Criterion) {
     let mut group = c.benchmark_group("getDirectedEdgeDestination");
 
     for (resolution, (hexagon, pentagon)) in [
-        (0x150f_3fff_ffff_ffff, 0x1401_ffff_ffff_ffff),
-        (0x111f_27ff_ffff_ffff, 0x161d_b3ff_ffff_ffff),
-        (0x142f_367f_ffff_ffff, 0x162d_b37f_ffff_ffff),
-        (0x143f_365f_ffff_ffff, 0x1531_f65f_ffff_ffff),
-        (0x114e_c69b_ffff_ffff, 0x1441_f265_ffff_ffff),
+        (0x150F_3FFF_FFFF_FFFF, 0x1401_FFFF_FFFF_FFFF),
+        (0x111F_27FF_FFFF_FFFF, 0x161D_B3FF_FFFF_FFFF),
+        (0x142F_367F_FFFF_FFFF, 0x162D_B37F_FFFF_FFFF),
+        (0x143F_365F_FFFF_FFFF, 0x1531_F65F_FFFF_FFFF),
+        (0x114E_C69B_FFFF_FFFF, 0x1441_F265_FFFF_FFFF),
     ]
     .iter()
     .enumerate()
@@ -50,7 +51,5 @@ fn bench_h3o(b: &mut Bencher<'_>, index: &u64) {
 
 fn bench_h3(b: &mut Bencher<'_>, index: &u64) {
     let mut out: u64 = 0;
-    b.iter(|| unsafe {
-        h3ron_h3_sys::getDirectedEdgeDestination(black_box(*index), &mut out)
-    })
+    b.iter(|| unsafe { h3ron_h3_sys::getDirectedEdgeDestination(black_box(*index), &mut out) })
 }

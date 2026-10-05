@@ -6,15 +6,15 @@ mod tiler;
 
 pub use plotter::{Plotter, PlotterBuilder};
 pub use solvent::{Solvent, SolventBuilder};
-pub use tiler::{AnnotatedCell, ContainmentMode, Tiler, TilerBuilder};
-
 // Required for the From<CellIndex> for MultiPolygon implementation.
 pub(crate) use tiler::cell_boundary;
+pub use tiler::{AnnotatedCell, ContainmentMode, Tiler, TilerBuilder};
 
 // Check that the coordinate are finite and in a legit range.
 fn coord_is_valid(coord: geo::Coord) -> bool {
-    use crate::TWO_PI;
     use std::f64::consts::PI;
+
+    use crate::TWO_PI;
 
     coord.x.is_finite()
         && coord.y.is_finite()

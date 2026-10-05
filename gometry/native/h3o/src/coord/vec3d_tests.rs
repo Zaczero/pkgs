@@ -1,7 +1,9 @@
+use std::f64::consts::{FRAC_PI_2, PI};
+
+use float_eq::assert_float_eq;
+
 use super::*;
 use crate::coord::EPSILON_RAD;
-use float_eq::assert_float_eq;
-use std::f64::consts::{FRAC_PI_2, PI};
 
 #[test]
 fn distance() {
@@ -81,12 +83,7 @@ fn closest_face() {
     let (face, distance) = nvec.closest_face();
 
     assert_eq!(u8::from(face), 3, "face");
-    assert_float_eq!(
-        distance,
-        0.1922249255922707,
-        abs <= EPSILON_RAD,
-        "distance"
-    );
+    assert_float_eq!(distance, 0.1922249255922707, abs <= EPSILON_RAD, "distance");
 }
 
 #[test]
@@ -153,21 +150,11 @@ fn cross_product_orthogonality() {
 #[test]
 fn normalize_and_magnitude() {
     let mut v = Vec3d::new(3., -4., 12.);
-    assert_float_eq!(
-        v.norm_squared(),
-        169.,
-        abs <= f64::EPSILON,
-        "squared norm"
-    );
+    assert_float_eq!(v.norm_squared(), 169., abs <= f64::EPSILON, "squared norm");
     assert_float_eq!(v.norm(), 13., abs <= f64::EPSILON, "norm");
 
     v.normalize();
-    assert_float_eq!(
-        v.norm(),
-        1.,
-        abs <= f64::EPSILON,
-        "normalized norm is unit"
-    );
+    assert_float_eq!(v.norm(), 1., abs <= f64::EPSILON, "normalized norm is unit");
 
     let mut zero = Vec3d::new(0., 0., 0.);
     zero.normalize();

@@ -1,4 +1,5 @@
-use core::{error::Error, fmt};
+use core::error::Error;
+use core::fmt;
 
 /// Resolution mismatch between two cell indexes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

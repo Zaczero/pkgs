@@ -1,14 +1,15 @@
-use super::*;
-use crate::{Resolution, math::FloatAdder};
 use approx::assert_relative_eq;
 use geo::{CoordsIter as _, ToRadians as _};
+
+use super::*;
+use crate::Resolution;
+use crate::math::FloatAdder;
 
 macro_rules! world_test {
     ($name:ident, $resolution: literal) => {
         #[test]
         fn $name() {
-            let resolution =
-                Resolution::try_from($resolution).expect("resolution");
+            let resolution = Resolution::try_from($resolution).expect("resolution");
             for base in CellIndex::base_cells() {
                 for cell in base.children(resolution) {
                     assert_cell(cell);
@@ -24,7 +25,7 @@ world_test!(entire_world_res2, 2);
 
 #[test]
 fn resolution15() {
-    assert_cell(CellIndex::try_from(0x8f754e64992d6d8).unwrap());
+    assert_cell(CellIndex::try_from(0x8F754E64992D6D8).unwrap());
 }
 
 #[test]
@@ -339,9 +340,9 @@ fn world() {
 #[test]
 fn duplicate_cells() {
     let cells = [
-        CellIndex::try_from(0x81efbffffffffff).unwrap(),
-        CellIndex::try_from(0x81efbffffffffff).unwrap(),
-        CellIndex::try_from(0x81efbffffffffff).unwrap(),
+        CellIndex::try_from(0x81EFBFFFFFFFFFF).unwrap(),
+        CellIndex::try_from(0x81EFBFFFFFFFFFF).unwrap(),
+        CellIndex::try_from(0x81EFBFFFFFFFFFF).unwrap(),
     ];
     let result = ArcSet::new(cells, true).unwrap_err();
     assert_eq!(result, DissolutionError::DuplicateInput);
@@ -350,8 +351,8 @@ fn duplicate_cells() {
 #[test]
 fn heterogenous_resolution() {
     let cells = [
-        CellIndex::try_from(0x8027fffffffffff).unwrap(),
-        CellIndex::try_from(0x81efbffffffffff).unwrap(),
+        CellIndex::try_from(0x8027FFFFFFFFFFF).unwrap(),
+        CellIndex::try_from(0x81EFBFFFFFFFFFF).unwrap(),
     ];
     let result = ArcSet::new(cells, true).unwrap_err();
     assert_eq!(result, DissolutionError::UnsupportedResolution);
@@ -407,9 +408,11 @@ fn dissolve(cells: Vec<CellIndex>) -> MultiPolygon {
     let area = multipolygon_area(&mpoly);
 
     assert!(
-        mpoly.iter().is_sorted_by_key(|polygon| core::cmp::Reverse(
-            OrderedFloat(linestring_area(polygon.exterior()))
-        )),
+        mpoly
+            .iter()
+            .is_sorted_by_key(|polygon| core::cmp::Reverse(OrderedFloat(linestring_area(
+                polygon.exterior()
+            )))),
         "polygons should be ordered by area enclosed by outer loop, decreasing"
     );
     for polygon in &mpoly {

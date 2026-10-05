@@ -1,6 +1,7 @@
+use std::hint::black_box;
+
 use criterion::{BenchmarkId, Criterion};
 use h3o::Resolution;
-use std::hint::black_box;
 
 pub fn bench(c: &mut Criterion) {
     let mut group = c.benchmark_group("getPentagons");
@@ -10,8 +11,7 @@ pub fn bench(c: &mut Criterion) {
             BenchmarkId::new("h3o", resolution),
             &resolution,
             |b, &resolution| {
-                let resolution =
-                    Resolution::try_from(resolution).expect("resolution");
+                let resolution = Resolution::try_from(resolution).expect("resolution");
                 b.iter(|| {
                     for pentagon in black_box(resolution).pentagons() {
                         black_box(pentagon);
@@ -25,10 +25,7 @@ pub fn bench(c: &mut Criterion) {
             |b, &resolution| {
                 let mut out = [0; 12];
                 b.iter(|| unsafe {
-                    h3ron_h3_sys::getPentagons(
-                        black_box(resolution),
-                        out.as_mut_ptr(),
-                    );
+                    h3ron_h3_sys::getPentagons(black_box(resolution), out.as_mut_ptr());
                     for pentagon in out {
                         black_box(pentagon);
                     }

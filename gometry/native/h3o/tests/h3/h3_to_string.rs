@@ -1,5 +1,6 @@
-use super::h3api;
 use h3o::{CellIndex, DirectedEdgeIndex, VertexIndex};
+
+use super::h3api;
 
 macro_rules! test {
     ($name:ident, $index:expr) => {
@@ -14,27 +15,27 @@ macro_rules! test {
     };
 }
 
-test!(cell_index_res0, CellIndex::try_from(0x802bfffffffffff));
-test!(cell_index_res12, CellIndex::try_from(0x8c2bae305336bff));
-test!(cell_index_res15, CellIndex::try_from(0x8f2834782b9c2ab));
+test!(cell_index_res0, CellIndex::try_from(0x802BFFFFFFFFFFF));
+test!(cell_index_res12, CellIndex::try_from(0x8C2BAE305336BFF));
+test!(cell_index_res15, CellIndex::try_from(0x8F2834782B9C2AB));
 test!(
     edge_index_res0,
-    DirectedEdgeIndex::try_from(0x1302bfffffffffff)
+    DirectedEdgeIndex::try_from(0x1302BFFFFFFFFFFF)
 );
 test!(
     edge_index_res12,
-    DirectedEdgeIndex::try_from(0x13c2bae305336bff)
+    DirectedEdgeIndex::try_from(0x13C2BAE305336BFF)
 );
 test!(
     edge_index_res15,
-    DirectedEdgeIndex::try_from(0x15f2834782b9c2ab)
+    DirectedEdgeIndex::try_from(0x15F2834782B9C2AB)
 );
-test!(vertex_index_res0, VertexIndex::try_from(0x2302bfffffffffff));
+test!(vertex_index_res0, VertexIndex::try_from(0x2302BFFFFFFFFFFF));
 test!(
     vertex_index_res12,
-    VertexIndex::try_from(0x23f2834782b9c2a8)
+    VertexIndex::try_from(0x23F2834782B9C2A8)
 );
 test!(
     vertex_index_res15,
-    VertexIndex::try_from(0x21c2bae305330dff)
+    VertexIndex::try_from(0x21C2BAE305330DFF)
 );

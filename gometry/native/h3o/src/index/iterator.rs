@@ -1,11 +1,10 @@
-use super::CellIndex;
-use crate::{
-    Direction, Resolution,
-    coord::{CoordCube, CoordIJK, LocalIJK},
-    error::LocalIjError,
-    index::bits,
-};
 use core::cmp::max;
+
+use super::CellIndex;
+use crate::coord::{CoordCube, CoordIJK, LocalIJK};
+use crate::error::LocalIjError;
+use crate::index::bits;
+use crate::{Direction, Resolution};
 
 /// Iterator over a children cell index at a given resolution.
 pub struct Children {
@@ -71,28 +70,22 @@ impl Iterator for Children {
 
         // Prepare the next iteration, if any, by incrementing the scratchpad.
         if self.count != 0 {
-            for resolution in Resolution::range(
-                self.parent_resolution,
-                self.target_resolution,
-            )
-            .rev()
+            for resolution in
+                Resolution::range(self.parent_resolution, self.target_resolution).rev()
             {
                 // Move to the next direction value.
                 let direction = self.next_direction(resolution);
 
                 // First K axe of each resolution is skipped for pentagonal
                 // index.
-                if self.skip_count == i16::from(resolution)
-                    && direction == u8::from(Direction::K)
-                {
+                if self.skip_count == i16::from(resolution) && direction == u8::from(Direction::K) {
                     self.next_direction(resolution);
                     self.skip_count -= 1;
                 }
 
                 // If we have exhausted this resolution, move to the lower one.
                 if Direction::try_from(direction).is_err() {
-                    self.scratchpad =
-                        bits::clr_direction(self.scratchpad, resolution);
+                    self.scratchpad = bits::clr_direction(self.scratchpad, resolution);
                     continue;
                 }
 
@@ -120,8 +113,7 @@ fn get_starting_state(index: CellIndex, resolution: Resolution) -> u64 {
     //
     // e.g. if we list children for cell index at resolution 2 to resolution 6
     // we need to iterate of 4 resolution (resolutions 3, 4, 5 and 6).
-    let range =
-        usize::from(resolution).saturating_sub(parent_resolution.into());
+    let range = usize::from(resolution).saturating_sub(parent_resolution.into());
 
     let mut scratchpad = u64::from(index);
     // If we have resolution between current and targeted one we clear their
@@ -223,8 +215,7 @@ impl Iterator for GridPathCells {
     }
 
     fn size_hint(&self) -> (usize, Option<usize>) {
-        let count = usize::try_from(max(self.distance - self.n, 0))
-            .unwrap_or(usize::MAX);
+        let count = usize::try_from(max(self.distance - self.n, 0)).unwrap_or(usize::MAX);
         (count, Some(count))
     }
 }

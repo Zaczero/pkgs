@@ -1,12 +1,10 @@
 use super::{
-    AP7_ROT_RADS, EPSILON, FaceIJK, INV_SQRT7_POWERS, ONE_THIRD,
-    RES0_U_GNOMONIC, Vec2d, to_positive_angle,
+    AP7_ROT_RADS, EPSILON, FaceIJK, INV_SQRT7_POWERS, ONE_THIRD, RES0_U_GNOMONIC, Vec2d,
+    to_positive_angle,
 };
-use crate::{
-    CellIndex, Face, LatLng, Resolution, face,
-    math::{atan, atan2, cos, mul_add, sin, sqrt},
-    resolution::ExtendedResolution,
-};
+use crate::math::{atan, atan2, cos, mul_add, sin, sqrt};
+use crate::resolution::ExtendedResolution;
+use crate::{CellIndex, Face, LatLng, Resolution, face};
 
 const NORTH_POLE: Vec3d = Vec3d {
     x: 0.,
@@ -179,8 +177,7 @@ impl Vec3d {
     /// Will not work if `self` is at a pole, but icosahedron face centers
     /// are never at the poles.
     fn tangent_basis(&self) -> (Self, Self) {
-        let mut north =
-            linear_combination(1.0, &NORTH_POLE, -NORTH_POLE.dot(self), self);
+        let mut north = linear_combination(1.0, &NORTH_POLE, -NORTH_POLE.dot(self), self);
         north.normalize();
         let east = north.cross(self);
 

@@ -1,10 +1,9 @@
+use std::fs::File;
+use std::io::{BufRead, BufReader};
+use std::path::PathBuf;
+
 use geo::{Geometry, Polygon};
 use h3o::CellIndex;
-use std::{
-    fs::File,
-    io::{BufRead, BufReader},
-    path::PathBuf,
-};
 
 pub fn load_cells(resolution: u32) -> Vec<CellIndex> {
     let mut path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));

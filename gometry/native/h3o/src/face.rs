@@ -1,11 +1,9 @@
 //! Various precomputed data about each of the 20 icosahedron face.
 
-use crate::{
-    NUM_ICOSA_FACES,
-    coord::{CoordIJK, Vec3d},
-    error,
-};
 use core::fmt;
+
+use crate::coord::{CoordIJK, Vec3d};
+use crate::{NUM_ICOSA_FACES, error};
 
 // -----------------------------------------------------------------------------
 
@@ -21,10 +19,7 @@ impl Face {
     /// # Safety
     ///
     /// The value must be a valid face.
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "cannot because assert"
-    )]
+    #[expect(clippy::cast_possible_truncation, reason = "cannot because assert")]
     pub(crate) const fn new_unchecked(value: usize) -> Self {
         debug_assert!(value < NUM_ICOSA_FACES, "face out of range");
         Self(value as u8)

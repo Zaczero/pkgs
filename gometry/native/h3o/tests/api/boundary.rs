@@ -2,11 +2,9 @@ use h3o::DirectedEdgeIndex;
 
 #[test]
 fn display() {
-    let index = DirectedEdgeIndex::try_from(0x13a194e699ab7fff).expect("edge");
+    let index = DirectedEdgeIndex::try_from(0x13A194E699AB7FFF).expect("edge");
     let result = index.boundary().to_string();
-    let expected =
-        "[(51.5333297603, 0.0043462775)-(51.5328604873, 0.0051280949)]"
-            .to_owned();
+    let expected = "[(51.5333297603, 0.0043462775)-(51.5328604873, 0.0051280949)]".to_owned();
 
     assert_eq!(result, expected);
 }
@@ -14,11 +12,9 @@ fn display() {
 #[cfg(feature = "geo")]
 #[test]
 fn edge_boundary_geo_traits_support() {
-    use geo_traits::{
-        GeometryTrait as _, LineStringTrait as _, PolygonTrait as _,
-    };
+    use geo_traits::{GeometryTrait as _, LineStringTrait as _, PolygonTrait as _};
 
-    let edge = DirectedEdgeIndex::try_from(0x13a194e699ab7fff).expect("edge");
+    let edge = DirectedEdgeIndex::try_from(0x13A194E699AB7FFF).expect("edge");
     let boundary = edge.boundary();
 
     // Boundary implements the LineStringTrait.
@@ -39,11 +35,9 @@ fn edge_boundary_geo_traits_support() {
 #[cfg(feature = "geo")]
 #[test]
 fn cell_boundary_geo_traits_support() {
-    use geo_traits::{
-        GeometryTrait as _, LineStringTrait as _, PolygonTrait as _,
-    };
+    use geo_traits::{GeometryTrait as _, LineStringTrait as _, PolygonTrait as _};
 
-    let index = h3o::CellIndex::try_from(0x813b7ffffffffff).unwrap();
+    let index = h3o::CellIndex::try_from(0x813B7FFFFFFFFFF).unwrap();
     let boundary = index.boundary();
 
     // Boundary implements the LineStringTrait, but return a closed ring.
@@ -68,7 +62,7 @@ fn cell_boundary_geo_traits_support() {
 fn geo_traits_support_polygon_no_interior() {
     use geo_traits::PolygonTrait as _;
 
-    let index = h3o::CellIndex::try_from(0x813b7ffffffffff).unwrap();
+    let index = h3o::CellIndex::try_from(0x813B7FFFFFFFFFF).unwrap();
     let boundary = index.boundary();
 
     unsafe {

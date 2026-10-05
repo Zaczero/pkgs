@@ -2,8 +2,8 @@ use h3o::{BaseCell, CellIndex, Direction, Resolution, error};
 
 #[test]
 fn is_neighbor_with() {
-    let src = CellIndex::try_from(0x8a1fb46622dffff).expect("src");
-    let dst = CellIndex::try_from(0x8a1fb46622d7fff).expect("dst");
+    let src = CellIndex::try_from(0x8A1FB46622DFFFF).expect("src");
+    let dst = CellIndex::try_from(0x8A1FB46622D7FFF).expect("dst");
     assert_eq!(src.is_neighbor_with(dst), Ok(true));
 
     assert_eq!(
@@ -11,22 +11,21 @@ fn is_neighbor_with() {
         Err(error::ResolutionMismatch)
     );
 
-    let dst = CellIndex::try_from(0x8a1fb4644937fff).expect("dst2");
+    let dst = CellIndex::try_from(0x8A1FB4644937FFF).expect("dst2");
     assert_eq!(src.is_neighbor_with(dst), Ok(false));
 }
 
 #[test]
 fn to_local_ij() {
-    let anchor = CellIndex::try_from(0x823147fffffffff).expect("anchor");
-    let index = CellIndex::try_from(0x8230e7fffffffff).expect("index");
+    let anchor = CellIndex::try_from(0x823147FFFFFFFFF).expect("anchor");
+    let index = CellIndex::try_from(0x8230E7FFFFFFFFF).expect("index");
     let result = index.to_local_ij(anchor).expect("localij");
 
     assert_eq!(result.anchor, anchor);
     assert_eq!(result.coord.i, -1);
     assert_eq!(result.coord.j, -2);
 
-    let result =
-        index.to_local_ij(anchor.parent(Resolution::One).expect("parent"));
+    let result = index.to_local_ij(anchor.parent(Resolution::One).expect("parent"));
 
     assert!(result.is_err());
 }
@@ -34,7 +33,7 @@ fn to_local_ij() {
 #[test]
 fn try_from_str() {
     let result = "8a1fb46622dffff".parse::<CellIndex>();
-    let expected = CellIndex::try_from(0x8a1fb46622dffff);
+    let expected = CellIndex::try_from(0x8A1FB46622DFFFF);
     assert_eq!(result, expected, "valid string");
 
     let result = "no bueno".parse::<CellIndex>();
@@ -44,7 +43,7 @@ fn try_from_str() {
 // Resolutions are displayed as numerical value.
 #[test]
 fn display() {
-    let index = CellIndex::try_from(0x8a1fb46622dffff).expect("index");
+    let index = CellIndex::try_from(0x8A1FB46622DFFFF).expect("index");
 
     // Default display is the lower hex one.
     let result = index.to_string();
@@ -63,15 +62,13 @@ fn display() {
 
     // Binary.
     let result = format!("{index:b}");
-    let expected =
-        "100010100001111110110100011001100010001011011111111111111111"
-            .to_owned();
+    let expected = "100010100001111110110100011001100010001011011111111111111111".to_owned();
     assert_eq!(result, expected, "binary");
 }
 
 #[test]
 fn child_position() {
-    let index = CellIndex::try_from(0x8a1fb46622dffff).expect("index");
+    let index = CellIndex::try_from(0x8A1FB46622DFFFF).expect("index");
 
     assert_eq!(index.child_position(Resolution::Eight), Some(24));
     assert_eq!(index.child_position(Resolution::Twelve), None);
@@ -79,11 +76,11 @@ fn child_position() {
 
 #[test]
 fn child_at() {
-    let index = CellIndex::try_from(0x881fb46623fffff).expect("index");
+    let index = CellIndex::try_from(0x881FB46623FFFFF).expect("index");
 
     assert_eq!(
         index.child_at(24, Resolution::Ten),
-        CellIndex::try_from(0x8a1fb46622dffff).ok(),
+        CellIndex::try_from(0x8A1FB46622DFFFF).ok(),
     );
     assert_eq!(index.child_at(24, Resolution::Five), None);
 }
@@ -91,7 +88,7 @@ fn child_at() {
 #[test]
 fn child_position_roundtrip() {
     let res = Resolution::Zero;
-    let child = CellIndex::try_from(0x8fc3b0804200001).expect("child");
+    let child = CellIndex::try_from(0x8FC3B0804200001).expect("child");
     let parent = child.parent(res).expect("parent");
 
     let position = child.child_position(res).expect("position");
@@ -112,7 +109,7 @@ fn max_grid_ring_size_identity() {
 
 #[test]
 fn grid_ring_identity() {
-    let index = CellIndex::try_from(0x891fb46741bffff).expect("index");
+    let index = CellIndex::try_from(0x891FB46741BFFFF).expect("index");
 
     let result = index.grid_ring::<Vec<_>>(0);
     assert_eq!(result, vec![index]);
@@ -120,14 +117,14 @@ fn grid_ring_identity() {
 
 #[test]
 fn grid_ring_1() {
-    let index = CellIndex::try_from(0x89283080dcbffff).expect("index");
+    let index = CellIndex::try_from(0x89283080DCBFFFF).expect("index");
     let mut expected = [
-        0x89283080ddbffff,
-        0x89283080c37ffff,
-        0x89283080c27ffff,
-        0x89283080d53ffff,
-        0x89283080dcfffff,
-        0x89283080dc3ffff,
+        0x89283080DDBFFFF,
+        0x89283080C37FFFF,
+        0x89283080C27FFFF,
+        0x89283080D53FFFF,
+        0x89283080DCFFFFF,
+        0x89283080DC3FFFF,
     ]
     .into_iter()
     .map(|value| CellIndex::try_from(value).expect("valid cell index"))
@@ -141,20 +138,20 @@ fn grid_ring_1() {
 
 #[test]
 fn grid_ring_2() {
-    let index = CellIndex::try_from(0x89283080dcbffff).expect("index");
+    let index = CellIndex::try_from(0x89283080DCBFFFF).expect("index");
     let mut expected = [
-        0x89283080ca7ffff,
-        0x89283080cafffff,
-        0x89283080c33ffff,
-        0x89283080c23ffff,
-        0x89283080c2fffff,
-        0x89283080d5bffff,
-        0x89283080d43ffff,
-        0x89283080d57ffff,
-        0x89283080d1bffff,
-        0x89283080dc7ffff,
-        0x89283080dd7ffff,
-        0x89283080dd3ffff,
+        0x89283080CA7FFFF,
+        0x89283080CAFFFFF,
+        0x89283080C33FFFF,
+        0x89283080C23FFFF,
+        0x89283080C2FFFFF,
+        0x89283080D5BFFFF,
+        0x89283080D43FFFF,
+        0x89283080D57FFFF,
+        0x89283080D1BFFFF,
+        0x89283080DC7FFFF,
+        0x89283080DD7FFFF,
+        0x89283080DD3FFFF,
     ]
     .into_iter()
     .map(|value| CellIndex::try_from(value).expect("valid cell index"))
@@ -168,13 +165,13 @@ fn grid_ring_2() {
 
 #[test]
 fn grid_ring_polar_pentagon_res0() {
-    let index = CellIndex::try_from(0x8009fffffffffff).expect("index");
+    let index = CellIndex::try_from(0x8009FFFFFFFFFFF).expect("index");
     let mut expected = [
-        0x8007fffffffffff,
-        0x8001fffffffffff,
-        0x8011fffffffffff,
-        0x801ffffffffffff,
-        0x8019fffffffffff,
+        0x8007FFFFFFFFFFF,
+        0x8001FFFFFFFFFFF,
+        0x8011FFFFFFFFFFF,
+        0x801FFFFFFFFFFFF,
+        0x8019FFFFFFFFFFF,
     ]
     .into_iter()
     .map(|value| CellIndex::try_from(value).expect("valid cell index"))
@@ -188,13 +185,13 @@ fn grid_ring_polar_pentagon_res0() {
 
 #[test]
 fn grid_ring_polar_pentagon_res1() {
-    let index = CellIndex::try_from(0x81083ffffffffff).expect("index");
+    let index = CellIndex::try_from(0x81083FFFFFFFFFF).expect("index");
     let mut expected = [
-        0x81093ffffffffff,
-        0x81097ffffffffff,
-        0x8108fffffffffff,
-        0x8108bffffffffff,
-        0x8109bffffffffff,
+        0x81093FFFFFFFFFF,
+        0x81097FFFFFFFFFF,
+        0x8108FFFFFFFFFFF,
+        0x8108BFFFFFFFFFF,
+        0x8109BFFFFFFFFFF,
     ]
     .into_iter()
     .map(|value| CellIndex::try_from(value).expect("valid cell index"))
@@ -208,23 +205,23 @@ fn grid_ring_polar_pentagon_res1() {
 
 #[test]
 fn grid_ring_3_polar_pentagon_res1() {
-    let index = CellIndex::try_from(0x81083ffffffffff).expect("index");
+    let index = CellIndex::try_from(0x81083FFFFFFFFFF).expect("index");
     let mut expected = [
-        0x811fbffffffffff,
-        0x81003ffffffffff,
-        0x81183ffffffffff,
-        0x8111bffffffffff,
-        0x81067ffffffffff,
-        0x811e7ffffffffff,
-        0x8101bffffffffff,
-        0x81107ffffffffff,
-        0x81063ffffffffff,
-        0x811e3ffffffffff,
-        0x8119bffffffffff,
-        0x81103ffffffffff,
-        0x81007ffffffffff,
-        0x81187ffffffffff,
-        0x8107bffffffffff,
+        0x811FBFFFFFFFFFF,
+        0x81003FFFFFFFFFF,
+        0x81183FFFFFFFFFF,
+        0x8111BFFFFFFFFFF,
+        0x81067FFFFFFFFFF,
+        0x811E7FFFFFFFFFF,
+        0x8101BFFFFFFFFFF,
+        0x81107FFFFFFFFFF,
+        0x81063FFFFFFFFFF,
+        0x811E3FFFFFFFFFF,
+        0x8119BFFFFFFFFFF,
+        0x81103FFFFFFFFFF,
+        0x81007FFFFFFFFFF,
+        0x81187FFFFFFFFFF,
+        0x8107BFFFFFFFFFF,
     ]
     .into_iter()
     .map(|value| CellIndex::try_from(value).expect("valid cell index"))
@@ -238,28 +235,28 @@ fn grid_ring_3_polar_pentagon_res1() {
 
 #[test]
 fn grid_ring_4_polar_pentagon_res1() {
-    let index = CellIndex::try_from(0x811c3ffffffffff).expect("index");
+    let index = CellIndex::try_from(0x811C3FFFFFFFFFF).expect("index");
     let mut expected = [
-        0x81227ffffffffff,
-        0x81293ffffffffff,
-        0x8136bffffffffff,
-        0x81167ffffffffff,
-        0x81477ffffffffff,
-        0x810dbffffffffff,
-        0x81473ffffffffff,
-        0x81237ffffffffff,
-        0x81127ffffffffff,
-        0x8126bffffffffff,
-        0x81177ffffffffff,
-        0x810d3ffffffffff,
-        0x8150fffffffffff,
-        0x8102fffffffffff,
-        0x8129bffffffffff,
-        0x8102bffffffffff,
-        0x81507ffffffffff,
-        0x8136fffffffffff,
-        0x8127bffffffffff,
-        0x81137ffffffffff,
+        0x81227FFFFFFFFFF,
+        0x81293FFFFFFFFFF,
+        0x8136BFFFFFFFFFF,
+        0x81167FFFFFFFFFF,
+        0x81477FFFFFFFFFF,
+        0x810DBFFFFFFFFFF,
+        0x81473FFFFFFFFFF,
+        0x81237FFFFFFFFFF,
+        0x81127FFFFFFFFFF,
+        0x8126BFFFFFFFFFF,
+        0x81177FFFFFFFFFF,
+        0x810D3FFFFFFFFFF,
+        0x8150FFFFFFFFFFF,
+        0x8102FFFFFFFFFFF,
+        0x8129BFFFFFFFFFF,
+        0x8102BFFFFFFFFFF,
+        0x81507FFFFFFFFFF,
+        0x8136FFFFFFFFFFF,
+        0x8127BFFFFFFFFFF,
+        0x81137FFFFFFFFFF,
     ]
     .into_iter()
     .map(|value| CellIndex::try_from(value).expect("valid cell index"))
@@ -296,8 +293,8 @@ fn succ() {
     let expected = CellIndex::try_from(0o42404000000000277777).ok();
     assert_eq!(index.succ(), expected, "deleted subsequence");
 
-    let index = CellIndex::try_from(0x8009fffffffffff).expect("index");
-    let expected = CellIndex::try_from(0x800bfffffffffff).ok();
+    let index = CellIndex::try_from(0x8009FFFFFFFFFFF).expect("index");
+    let expected = CellIndex::try_from(0x800BFFFFFFFFFFF).ok();
     assert_eq!(index.succ(), expected, "base cell");
 }
 
@@ -326,8 +323,8 @@ fn pred() {
     let expected = CellIndex::try_from(0o42404000000000077777).ok();
     assert_eq!(index.pred(), expected, "deleted subsequence");
 
-    let index = CellIndex::try_from(0x800bfffffffffff).expect("index");
-    let expected = CellIndex::try_from(0x8009fffffffffff).ok();
+    let index = CellIndex::try_from(0x800BFFFFFFFFFFF).expect("index");
+    let expected = CellIndex::try_from(0x8009FFFFFFFFFFF).ok();
     assert_eq!(index.pred(), expected, "base cell");
 }
 
@@ -480,10 +477,9 @@ fn from_raw_parts_roundtrip() {
         for base_cell in CellIndex::base_cells() {
             for expected in base_cell.children(resolution) {
                 let base = expected.base_cell();
-                let directions =
-                    Resolution::range(Resolution::One, expected.resolution())
-                        .map(|res| expected.direction_at(res).unwrap())
-                        .collect::<Vec<_>>();
+                let directions = Resolution::range(Resolution::One, expected.resolution())
+                    .map(|res| expected.direction_at(res).unwrap())
+                    .collect::<Vec<_>>();
                 let result = CellIndex::from_raw_parts(base, &directions);
 
                 assert_eq!(
@@ -499,92 +495,82 @@ fn from_raw_parts_roundtrip() {
 #[test]
 fn from_raw_parts_valid() {
     // Resolution 0.
-    let expected = CellIndex::try_from(0x8001fffffffffff).unwrap();
+    let expected = CellIndex::try_from(0x8001FFFFFFFFFFF).unwrap();
     let base_cell = BaseCell::try_from(0).unwrap();
     let result = CellIndex::from_raw_parts(base_cell, &[]);
     assert_eq!(result, Ok(expected), "{expected}");
 
-    let expected = CellIndex::try_from(0x8003fffffffffff).unwrap();
+    let expected = CellIndex::try_from(0x8003FFFFFFFFFFF).unwrap();
     let base_cell = BaseCell::try_from(1).unwrap();
     let result = CellIndex::from_raw_parts(base_cell, &[]);
     assert_eq!(result, Ok(expected), "{expected}");
 
-    let expected = CellIndex::try_from(0x80f3fffffffffff).unwrap();
+    let expected = CellIndex::try_from(0x80F3FFFFFFFFFFF).unwrap();
     let base_cell = BaseCell::try_from(121).unwrap();
     let result = CellIndex::from_raw_parts(base_cell, &[]);
     assert_eq!(result, Ok(expected), "{expected}");
 
     // Resolution 3.
-    let expected = CellIndex::try_from(0x839253fffffffff).unwrap();
+    let expected = CellIndex::try_from(0x839253FFFFFFFFF).unwrap();
     let base_cell = BaseCell::try_from(73).unwrap();
-    let result = CellIndex::from_raw_parts(
-        base_cell,
-        &[Direction::K, Direction::J, Direction::JK],
-    );
+    let result = CellIndex::from_raw_parts(base_cell, &[Direction::K, Direction::J, Direction::JK]);
     assert_eq!(result, Ok(expected), "{expected}");
 
     // Resolution 2.
-    let expected = CellIndex::try_from(0x821f67fffffffff).unwrap();
+    let expected = CellIndex::try_from(0x821F67FFFFFFFFF).unwrap();
     let base_cell = BaseCell::try_from(15).unwrap();
-    let result =
-        CellIndex::from_raw_parts(base_cell, &[Direction::IK, Direction::I]);
+    let result = CellIndex::from_raw_parts(base_cell, &[Direction::IK, Direction::I]);
     assert_eq!(result, Ok(expected), "{expected}");
 
     // Resolution 1.
-    let expected = CellIndex::try_from(0x8155bffffffffff).unwrap();
+    let expected = CellIndex::try_from(0x8155BFFFFFFFFFF).unwrap();
     let base_cell = BaseCell::try_from(42).unwrap();
     let result = CellIndex::from_raw_parts(base_cell, &[Direction::IJ]);
     assert_eq!(result, Ok(expected), "{expected}");
 
     // Resolution 15.
-    let expected = CellIndex::try_from(0x8f754e64992d6d8).unwrap();
+    let expected = CellIndex::try_from(0x8F754E64992D6D8).unwrap();
     let base_cell = BaseCell::try_from(58).unwrap();
-    let result = CellIndex::from_raw_parts(
-        base_cell,
-        &[
-            Direction::IK,
-            Direction::K,
-            Direction::IJ,
-            Direction::JK,
-            Direction::K,
-            Direction::K,
-            Direction::K,
-            Direction::I,
-            Direction::I,
-            Direction::IK,
-            Direction::IK,
-            Direction::JK,
-            Direction::JK,
-            Direction::JK,
-            Direction::Center,
-        ],
-    );
+    let result = CellIndex::from_raw_parts(base_cell, &[
+        Direction::IK,
+        Direction::K,
+        Direction::IJ,
+        Direction::JK,
+        Direction::K,
+        Direction::K,
+        Direction::K,
+        Direction::I,
+        Direction::I,
+        Direction::IK,
+        Direction::IK,
+        Direction::JK,
+        Direction::JK,
+        Direction::JK,
+        Direction::Center,
+    ]);
     assert_eq!(result, Ok(expected), "{expected}");
 }
 
 #[test]
 fn from_raw_parts_invalid_resolution() {
-    let result = CellIndex::from_raw_parts(
-        BaseCell::try_from(58).unwrap(),
-        &[
-            Direction::IK,
-            Direction::K,
-            Direction::IJ,
-            Direction::JK,
-            Direction::K,
-            Direction::K,
-            Direction::K,
-            Direction::I,
-            Direction::I,
-            Direction::IK,
-            Direction::IK,
-            Direction::JK,
-            Direction::JK,
-            Direction::JK,
-            Direction::Center,
-            Direction::JK,
-        ],
-    );
+    let result = CellIndex::from_raw_parts(BaseCell::try_from(58).unwrap(), &[
+        Direction::IK,
+        Direction::K,
+        Direction::IJ,
+        Direction::JK,
+        Direction::K,
+        Direction::K,
+        Direction::K,
+        Direction::I,
+        Direction::I,
+        Direction::IK,
+        Direction::IK,
+        Direction::JK,
+        Direction::JK,
+        Direction::JK,
+        Direction::Center,
+        Direction::JK,
+    ]);
     assert!(result.is_err(), "too many directions");
 }
 
@@ -592,10 +578,9 @@ fn from_raw_parts_invalid_resolution() {
 fn from_raw_parts_deleted_subsequence() {
     // 1. Base cell 4 is a pentagon base cell
     let base_cell = BaseCell::try_from(4).unwrap();
-    let mut directions =
-        vec![Direction::Center, Direction::Center, Direction::Center];
+    let mut directions = vec![Direction::Center, Direction::Center, Direction::Center];
     // 1A. Before the deleted subsequence: valid!
-    let expected = CellIndex::try_from(0x830800fffffffff).unwrap();
+    let expected = CellIndex::try_from(0x830800FFFFFFFFF).unwrap();
     let result = CellIndex::from_raw_parts(base_cell, &directions);
     assert_eq!(result, Ok(expected), "{expected}");
     // 1B. The deleted subsequence should fail.
@@ -604,26 +589,25 @@ fn from_raw_parts_deleted_subsequence() {
     assert!(result.is_err(), "deleted subsequence");
     // 1C. After the deleted subsequence: valid!
     directions[2] = Direction::J;
-    let expected = CellIndex::try_from(0x830802fffffffff).unwrap();
+    let expected = CellIndex::try_from(0x830802FFFFFFFFF).unwrap();
     let result = CellIndex::from_raw_parts(base_cell, &directions);
     assert_eq!(result, Ok(expected), "{expected}");
 
     // 2. Base cell 5 is NOT a pentagon base cell.
     let base_cell = BaseCell::try_from(5).unwrap();
-    let mut directions =
-        vec![Direction::Center, Direction::Center, Direction::Center];
+    let mut directions = vec![Direction::Center, Direction::Center, Direction::Center];
     // 2A. before the deleted subsequence: valid!
-    let expected = CellIndex::try_from(0x830a00fffffffff).unwrap();
+    let expected = CellIndex::try_from(0x830A00FFFFFFFFF).unwrap();
     let result = CellIndex::from_raw_parts(base_cell, &directions);
     assert_eq!(result, Ok(expected), "{expected}");
     // 2B. No deleted subsequence for non-pentagonal cell: valid!
     directions[2] = Direction::K;
-    let expected = CellIndex::try_from(0x830a01fffffffff).unwrap();
+    let expected = CellIndex::try_from(0x830A01FFFFFFFFF).unwrap();
     let result = CellIndex::from_raw_parts(base_cell, &directions);
     assert_eq!(result, Ok(expected), "{expected}");
     // 2C. After the deleted subsequence: valid!
     directions[2] = Direction::J;
-    let expected = CellIndex::try_from(0x830a02fffffffff).unwrap();
+    let expected = CellIndex::try_from(0x830A02FFFFFFFFF).unwrap();
     let result = CellIndex::from_raw_parts(base_cell, &directions);
     assert_eq!(result, Ok(expected), "{expected}");
 }

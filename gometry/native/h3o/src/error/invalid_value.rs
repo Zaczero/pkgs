@@ -1,4 +1,5 @@
-use core::{error::Error, fmt};
+use core::error::Error;
+use core::fmt;
 
 // Macro to declare type-specific InvalidValue error type.
 macro_rules! invalid_value_error {
@@ -18,10 +19,7 @@ macro_rules! invalid_value_error {
         }
 
         impl $error {
-            pub(crate) const fn new(
-                value: $value_type,
-                reason: &'static str,
-            ) -> Self {
+            pub(crate) const fn new(value: $value_type, reason: &'static str) -> Self {
                 Self { value, reason }
             }
         }
@@ -47,11 +45,7 @@ macro_rules! invalid_value_error {
 invalid_value_error!("resolution", InvalidResolution, Option<u8>);
 invalid_value_error!("cell index", InvalidCellIndex, Option<u64>);
 invalid_value_error!("vertex index", InvalidVertexIndex, Option<u64>);
-invalid_value_error!(
-    "directed edge index",
-    InvalidDirectedEdgeIndex,
-    Option<u64>
-);
+invalid_value_error!("directed edge index", InvalidDirectedEdgeIndex, Option<u64>);
 invalid_value_error!("latitude/longitude", InvalidLatLng, f64);
 invalid_value_error!("cell edge", InvalidEdge, u8);
 invalid_value_error!("cell vertex", InvalidVertex, u8);

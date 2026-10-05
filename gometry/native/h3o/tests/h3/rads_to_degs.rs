@@ -1,5 +1,6 @@
-use super::h3api;
 use float_eq::assert_float_eq;
+
+use super::h3api;
 
 macro_rules! test {
     ($name:ident, $angle:literal) => {

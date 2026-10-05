@@ -1,11 +1,12 @@
-use criterion::{
-    BenchmarkGroup, BenchmarkId, Criterion, measurement::Measurement,
-};
-use h3o::CellIndex;
-use std::{hint::black_box, os::raw::c_int};
+use std::hint::black_box;
+use std::os::raw::c_int;
 
-const HEXAGON: u64 = 0x8b1fb46622defff;
-const PENTAGON: u64 = 0x8b0800000000fff;
+use criterion::measurement::Measurement;
+use criterion::{BenchmarkGroup, BenchmarkId, Criterion};
+use h3o::CellIndex;
+
+const HEXAGON: u64 = 0x8B1FB46622DEFFF;
+const PENTAGON: u64 = 0x8B0800000000FFF;
 
 pub fn bench(c: &mut Criterion) {
     let mut group = c.benchmark_group("gridDisk");
@@ -23,42 +24,27 @@ pub fn bench(c: &mut Criterion) {
 
 // -----------------------------------------------------------------------------
 
-fn bench_h3o<T>(
-    group: &mut BenchmarkGroup<T>,
-    name: &'static str,
-    index: u64,
-    k: u32,
-) where
+fn bench_h3o<T>(group: &mut BenchmarkGroup<T>, name: &'static str, index: u64, k: u32)
+where
     T: Measurement,
 {
     let index = CellIndex::try_from(index).expect("hex index");
     group.bench_with_input(BenchmarkId::new(name, k), &index, |b, &index| {
-        b.iter_with_large_drop(|| {
-            black_box(index).grid_disk::<Vec<_>>(black_box(k))
-        })
+        b.iter_with_large_drop(|| black_box(index).grid_disk::<Vec<_>>(black_box(k)))
     });
 }
 
-fn bench_h3<T>(
-    group: &mut BenchmarkGroup<T>,
-    name: &'static str,
-    index: u64,
-    k: u32,
-) where
+fn bench_h3<T>(group: &mut BenchmarkGroup<T>, name: &'static str, index: u64, k: u32)
+where
     T: Measurement,
 {
-    let size =
-        usize::try_from(h3o::max_grid_disk_size(k)).expect("grid too large");
+    let size = usize::try_from(h3o::max_grid_disk_size(k)).expect("grid too large");
 
     group.bench_with_input(BenchmarkId::new(name, k), &index, |b, &index| {
         b.iter_with_large_drop(|| unsafe {
             let mut cells = vec![0u64; size];
 
-            h3ron_h3_sys::gridDisk(
-                black_box(index),
-                black_box(k as c_int),
-                cells.as_mut_ptr(),
-            )
+            h3ron_h3_sys::gridDisk(black_box(index), black_box(k as c_int), cells.as_mut_ptr())
         })
     });
 }

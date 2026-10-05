@@ -1,18 +1,19 @@
 //! Expose some H3 functions to allow testing against the reference
 //! implementation.
 
+use std::ffi::CString;
+use std::fmt::Debug;
+use std::os::raw::c_int;
+
 use h3o::{
-    BaseCell, Boundary, CellIndex, CoordIJ, DirectedEdgeIndex, Face, LatLng,
-    LocalIJ, Resolution, Vertex, VertexIndex,
+    BaseCell, Boundary, CellIndex, CoordIJ, DirectedEdgeIndex, Face, LatLng, LocalIJ, Resolution,
+    Vertex, VertexIndex,
 };
-use std::{ffi::CString, fmt::Debug, os::raw::c_int};
 
 /// Expose `areNeighborCells`.
 pub fn are_neighbor_cells(origin: CellIndex, index: CellIndex) -> Option<bool> {
     let mut out: c_int = 0;
-    let res = unsafe {
-        h3ron_h3_sys::areNeighborCells(origin.into(), index.into(), &mut out)
-    };
+    let res = unsafe { h3ron_h3_sys::areNeighborCells(origin.into(), index.into(), &mut out) };
     (res == 0).then_some(out == 1)
 }
 
@@ -65,19 +66,10 @@ pub fn cell_to_boundary(index: CellIndex) -> Boundary {
 }
 
 /// Expose `cellToCenterChild`.
-pub fn cell_to_center_child(
-    cell: CellIndex,
-    resolution: Resolution,
-) -> Option<CellIndex> {
+pub fn cell_to_center_child(cell: CellIndex, resolution: Resolution) -> Option<CellIndex> {
     let resolution = u8::from(resolution);
     let mut out: u64 = 0;
-    let res = unsafe {
-        h3ron_h3_sys::cellToCenterChild(
-            cell.into(),
-            resolution.into(),
-            &mut out,
-        )
-    };
+    let res = unsafe { h3ron_h3_sys::cellToCenterChild(cell.into(), resolution.into(), &mut out) };
     (res == 0).then(|| CellIndex::try_from(out).expect("cell index"))
 }
 
@@ -86,11 +78,7 @@ pub fn cell_to_children_size(index: CellIndex, resolution: Resolution) -> u64 {
     let resolution = u8::from(resolution);
     let mut out: i64 = 0;
     unsafe {
-        let res = h3ron_h3_sys::cellToChildrenSize(
-            index.into(),
-            resolution.into(),
-            &mut out,
-        );
+        let res = h3ron_h3_sys::cellToChildrenSize(index.into(), resolution.into(), &mut out);
         match res {
             0 => out as u64,
             // E_RES_DOMAIN: when index res == res, H3 error while we return 0.
@@ -101,18 +89,11 @@ pub fn cell_to_children_size(index: CellIndex, resolution: Resolution) -> u64 {
 }
 
 /// Expose `cellToChildPos`.
-pub fn cell_to_child_pos(
-    index: CellIndex,
-    resolution: Resolution,
-) -> Option<u64> {
+pub fn cell_to_child_pos(index: CellIndex, resolution: Resolution) -> Option<u64> {
     let resolution = u8::from(resolution);
     let mut out: i64 = 0;
     unsafe {
-        let res = h3ron_h3_sys::cellToChildPos(
-            index.into(),
-            resolution.into(),
-            &mut out,
-        );
+        let res = h3ron_h3_sys::cellToChildPos(index.into(), resolution.into(), &mut out);
         match res {
             0 => Some(out as u64),
             // E_RES_DOMAIN: when index res == res, H3 error while we return 0.
@@ -123,10 +104,7 @@ pub fn cell_to_child_pos(
 }
 
 /// Expose `cellToChildren`.
-pub fn cell_to_children(
-    cell: CellIndex,
-    resolution: Resolution,
-) -> Vec<CellIndex> {
+pub fn cell_to_children(cell: CellIndex, resolution: Resolution) -> Vec<CellIndex> {
     let size = cell_to_children_size(cell, resolution);
     let mut out = vec![0; usize::try_from(size).expect("too many children")];
     unsafe {
@@ -152,40 +130,24 @@ pub fn cell_to_latlng(index: CellIndex) -> LatLng {
 }
 
 /// Expose `cellToLocalIj`.
-pub fn cell_to_local_ij(
-    origin: CellIndex,
-    index: CellIndex,
-) -> Option<LocalIJ> {
+pub fn cell_to_local_ij(origin: CellIndex, index: CellIndex) -> Option<LocalIJ> {
     let mut out = h3ron_h3_sys::CoordIJ { i: 0, j: 0 };
-    let res = unsafe {
-        h3ron_h3_sys::cellToLocalIj(origin.into(), index.into(), 0, &mut out)
-    };
+    let res = unsafe { h3ron_h3_sys::cellToLocalIj(origin.into(), index.into(), 0, &mut out) };
     (res == 0).then(|| LocalIJ::new(origin, CoordIJ::new(out.i, out.j)))
 }
 
 /// Expose `cellToParent`.
-pub fn cell_to_parent(
-    cell: CellIndex,
-    resolution: Resolution,
-) -> Option<CellIndex> {
+pub fn cell_to_parent(cell: CellIndex, resolution: Resolution) -> Option<CellIndex> {
     let resolution = u8::from(resolution);
     let mut out: u64 = 0;
-    let res = unsafe {
-        h3ron_h3_sys::cellToParent(cell.into(), resolution.into(), &mut out)
-    };
+    let res = unsafe { h3ron_h3_sys::cellToParent(cell.into(), resolution.into(), &mut out) };
     (res == 0).then(|| CellIndex::try_from(out).expect("cell index"))
 }
 
 /// Expose `cellToVertex`.
 pub fn cell_to_vertex(cell: CellIndex, vertex: Vertex) -> Option<VertexIndex> {
     let mut out: u64 = 0;
-    let res = unsafe {
-        h3ron_h3_sys::cellToVertex(
-            cell.into(),
-            u8::from(vertex).into(),
-            &mut out,
-        )
-    };
+    let res = unsafe { h3ron_h3_sys::cellToVertex(cell.into(), u8::from(vertex).into(), &mut out) };
     (res == 0).then(|| VertexIndex::try_from(out).expect("vertex index"))
 }
 
@@ -209,13 +171,8 @@ pub fn cells_to_directed_edge(
     destination: CellIndex,
 ) -> Option<DirectedEdgeIndex> {
     let mut out: u64 = 0;
-    let res = unsafe {
-        h3ron_h3_sys::cellsToDirectedEdge(
-            origin.into(),
-            destination.into(),
-            &mut out,
-        )
-    };
+    let res =
+        unsafe { h3ron_h3_sys::cellsToDirectedEdge(origin.into(), destination.into(), &mut out) };
     (res == 0).then(|| DirectedEdgeIndex::try_from(out).expect("edge index"))
 }
 
@@ -247,11 +204,7 @@ pub fn compact_cells(cells: &[CellIndex]) -> Option<Vec<CellIndex>> {
     let res = unsafe {
         // SAFETY: `CellIndex` is `repr(transparent)`
         let cells = &*(cells as *const [CellIndex] as *const [u64]);
-        h3ron_h3_sys::compactCells(
-            cells.as_ptr(),
-            out.as_mut_ptr(),
-            cells.len() as i64,
-        )
+        h3ron_h3_sys::compactCells(cells.as_ptr(), out.as_mut_ptr(), cells.len() as i64)
     };
     (res == 0).then(|| {
         out.into_iter()
@@ -288,9 +241,7 @@ pub fn directed_edge_to_boundary(index: DirectedEdgeIndex) -> Boundary {
 }
 
 /// Expose `directedEdgeToCells`.
-pub fn directed_edge_to_cells(
-    index: DirectedEdgeIndex,
-) -> (CellIndex, CellIndex) {
+pub fn directed_edge_to_cells(index: DirectedEdgeIndex) -> (CellIndex, CellIndex) {
     let mut out = [0; 2];
     unsafe {
         h3ron_h3_sys::directedEdgeToCells(index.into(), out.as_mut_ptr());
@@ -332,8 +283,7 @@ pub fn edge_length_rads(index: DirectedEdgeIndex) -> f64 {
 /// Expose `getBaseCellNumber`.
 pub fn get_base_cell_number(index: CellIndex) -> BaseCell {
     unsafe {
-        BaseCell::try_from(h3ron_h3_sys::getBaseCellNumber(index.into()) as u8)
-            .expect("base cell")
+        BaseCell::try_from(h3ron_h3_sys::getBaseCellNumber(index.into()) as u8).expect("base cell")
     }
 }
 
@@ -360,8 +310,7 @@ pub fn get_hexagon_area_avg_km2(resolution: Resolution) -> f64 {
     let resolution = u8::from(resolution);
     let mut out: f64 = 0.;
     unsafe {
-        let res =
-            h3ron_h3_sys::getHexagonAreaAvgKm2(resolution.into(), &mut out);
+        let res = h3ron_h3_sys::getHexagonAreaAvgKm2(resolution.into(), &mut out);
         assert_eq!(res, 0, "getHexagonAreaAvgKm2");
     }
     out
@@ -372,8 +321,7 @@ pub fn get_hexagon_area_avg_m2(resolution: Resolution) -> f64 {
     let resolution = u8::from(resolution);
     let mut out: f64 = 0.;
     unsafe {
-        let res =
-            h3ron_h3_sys::getHexagonAreaAvgM2(resolution.into(), &mut out);
+        let res = h3ron_h3_sys::getHexagonAreaAvgM2(resolution.into(), &mut out);
         assert_eq!(res, 0, "getHexagonAreaAvgM2");
     }
     out
@@ -484,11 +432,7 @@ pub fn grid_disk(origin: CellIndex, k: u32) -> Vec<CellIndex> {
     let mut cells = vec![0; size];
 
     unsafe {
-        let res = h3ron_h3_sys::gridDisk(
-            origin.into(),
-            k as c_int,
-            cells.as_mut_ptr(),
-        );
+        let res = h3ron_h3_sys::gridDisk(origin.into(), k as c_int, cells.as_mut_ptr());
         assert_eq!(res, 0, "gridDiskDistances");
     }
 
@@ -529,10 +473,7 @@ pub fn grid_disk_distances(origin: CellIndex, k: u32) -> Vec<(CellIndex, u32)> {
 }
 
 /// Expose `gridDiskDistancesSafe`.
-pub fn grid_disk_distances_safe(
-    origin: CellIndex,
-    k: u32,
-) -> Vec<(CellIndex, u32)> {
+pub fn grid_disk_distances_safe(origin: CellIndex, k: u32) -> Vec<(CellIndex, u32)> {
     let size = usize::try_from(max_grid_disk_size(k)).expect("grid too large");
     let mut cells = vec![0; size];
     let mut distances: Vec<c_int> = vec![0; size];
@@ -561,10 +502,7 @@ pub fn grid_disk_distances_safe(
 }
 
 /// Expose `gridDiskDistancesUnsafe`.
-pub fn grid_disk_distances_unsafe(
-    origin: CellIndex,
-    k: u32,
-) -> Option<Vec<(CellIndex, u32)>> {
+pub fn grid_disk_distances_unsafe(origin: CellIndex, k: u32) -> Option<Vec<(CellIndex, u32)>> {
     let size = usize::try_from(max_grid_disk_size(k)).expect("grid too large");
     let mut cells = vec![0; size];
     let mut distances: Vec<c_int> = vec![0; size];
@@ -598,13 +536,8 @@ pub fn grid_disk_unsafe(origin: CellIndex, k: u32) -> Option<Vec<CellIndex>> {
     let size = usize::try_from(max_grid_disk_size(k)).expect("grid too large");
     let mut cells = vec![0; size];
 
-    let res = unsafe {
-        h3ron_h3_sys::gridDiskUnsafe(
-            origin.into(),
-            k as c_int,
-            cells.as_mut_ptr(),
-        )
-    };
+    let res =
+        unsafe { h3ron_h3_sys::gridDiskUnsafe(origin.into(), k as c_int, cells.as_mut_ptr()) };
 
     (res == 0).then(|| {
         cells
@@ -621,8 +554,7 @@ pub fn grid_disks_unsafe(
     k: u32,
 ) -> Option<Vec<CellIndex>> {
     let mut origins = origins.into_iter().map(u64::from).collect::<Vec<_>>();
-    let size = origins.len()
-        * usize::try_from(max_grid_disk_size(k)).expect("grid too large");
+    let size = origins.len() * usize::try_from(max_grid_disk_size(k)).expect("grid too large");
     let mut cells = vec![0; size];
 
     let res = unsafe {
@@ -646,23 +578,16 @@ pub fn grid_disks_unsafe(
 /// Expose `gridDistance`.
 pub fn grid_distance(src: CellIndex, dst: CellIndex) -> Option<i32> {
     let mut out = 0;
-    let res =
-        unsafe { h3ron_h3_sys::gridDistance(src.into(), dst.into(), &mut out) };
+    let res = unsafe { h3ron_h3_sys::gridDistance(src.into(), dst.into(), &mut out) };
     (res == 0).then(|| i32::try_from(out).expect("distance overflow"))
 }
 
 /// Expose `gridPathCells`.
-pub fn grid_path_cells(
-    src: CellIndex,
-    dst: CellIndex,
-) -> Option<Vec<CellIndex>> {
-    let size = usize::try_from(grid_path_cells_size(src, dst)?)
-        .expect("path too long");
+pub fn grid_path_cells(src: CellIndex, dst: CellIndex) -> Option<Vec<CellIndex>> {
+    let size = usize::try_from(grid_path_cells_size(src, dst)?).expect("path too long");
     let mut out = vec![0; size];
 
-    let res = unsafe {
-        h3ron_h3_sys::gridPathCells(src.into(), dst.into(), out.as_mut_ptr())
-    };
+    let res = unsafe { h3ron_h3_sys::gridPathCells(src.into(), dst.into(), out.as_mut_ptr()) };
 
     (res == 0).then(|| {
         out.into_iter()
@@ -674,25 +599,17 @@ pub fn grid_path_cells(
 /// Expose `gridPathCellsSize`.
 pub fn grid_path_cells_size(src: CellIndex, dst: CellIndex) -> Option<i32> {
     let mut out = 0;
-    let res = unsafe {
-        h3ron_h3_sys::gridPathCellsSize(src.into(), dst.into(), &mut out)
-    };
+    let res = unsafe { h3ron_h3_sys::gridPathCellsSize(src.into(), dst.into(), &mut out) };
     (res == 0).then(|| i32::try_from(out).expect("distance overflow"))
 }
 
 /// Expose `gridRingUnsafe`.
 pub fn grid_ring_unsafe(origin: CellIndex, k: u32) -> Option<Vec<CellIndex>> {
-    let size = usize::try_from(if k == 0 { 1 } else { 6 * k })
-        .expect("grid too large");
+    let size = usize::try_from(if k == 0 { 1 } else { 6 * k }).expect("grid too large");
     let mut cells = vec![0; size];
 
-    let res = unsafe {
-        h3ron_h3_sys::gridRingUnsafe(
-            origin.into(),
-            k as c_int,
-            cells.as_mut_ptr(),
-        )
-    };
+    let res =
+        unsafe { h3ron_h3_sys::gridRingUnsafe(origin.into(), k as c_int, cells.as_mut_ptr()) };
 
     (res == 0).then(|| {
         cells
@@ -724,7 +641,7 @@ pub fn is_pentagon(index: CellIndex) -> bool {
 /// Expose `isResClassIII`.
 pub fn is_res_class3(resolution: Resolution) -> bool {
     // XXX: invalid index but we don't care here, only resolution matter.
-    let index = 0x0802_5fff_ffff_ffff | (u64::from(resolution) << 52);
+    let index = 0x0802_5FFF_FFFF_FFFF | (u64::from(resolution) << 52);
     unsafe { h3ron_h3_sys::isResClassIII(index) == 1 }
 }
 
@@ -763,9 +680,7 @@ pub fn local_ij_to_cell(local_ij: LocalIJ) -> Option<CellIndex> {
         i: local_ij.coord.i,
         j: local_ij.coord.j,
     };
-    let res = unsafe {
-        h3ron_h3_sys::localIjToCell(local_ij.anchor.into(), &ij, 0, &mut out)
-    };
+    let res = unsafe { h3ron_h3_sys::localIjToCell(local_ij.anchor.into(), &ij, 0, &mut out) };
 
     (res == 0).then(|| CellIndex::try_from(out).expect("H3 index"))
 }
@@ -836,10 +751,7 @@ where
 }
 
 /// Expose `uncompactCellsSize`.
-pub fn uncompact_cells_size(
-    cells: &[CellIndex],
-    resolution: Resolution,
-) -> u64 {
+pub fn uncompact_cells_size(cells: &[CellIndex], resolution: Resolution) -> u64 {
     let mut out: i64 = 0;
 
     unsafe {
@@ -858,13 +770,9 @@ pub fn uncompact_cells_size(
 }
 
 /// Expose `uncompactCells`.
-pub fn uncompact_cells(
-    cells: &[CellIndex],
-    resolution: Resolution,
-) -> Vec<CellIndex> {
+pub fn uncompact_cells(cells: &[CellIndex], resolution: Resolution) -> Vec<CellIndex> {
     let size = uncompact_cells_size(cells, resolution);
-    let mut out =
-        vec![0; usize::try_from(size).expect("too many expanded cells")];
+    let mut out = vec![0; usize::try_from(size).expect("too many expanded cells")];
 
     unsafe {
         // SAFETY: `CellIndex` is `repr(transparent)`

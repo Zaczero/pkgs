@@ -1,11 +1,11 @@
-use super::{EPSILON_RAD, Vec3d};
-use crate::{
-    CellIndex, EARTH_RADIUS_KM, Resolution,
-    error::InvalidLatLng,
-    math::{Coord2d, asin, atan2, cos, mul_add, sin, sqrt},
-};
 use core::fmt;
+
 use float_eq::float_eq;
+
+use super::{EPSILON_RAD, Vec3d};
+use crate::error::InvalidLatLng;
+use crate::math::{Coord2d, asin, atan2, cos, mul_add, sin, sqrt};
+use crate::{CellIndex, EARTH_RADIUS_KM, Resolution};
 
 /// Latitude/longitude.
 ///
@@ -54,10 +54,7 @@ impl LatLng {
     /// let ll = h3o::LatLng::from_radians(0.852850182, 0.0409980285)?;
     /// # Ok::<(), h3o::error::InvalidLatLng>(())
     /// ```
-    pub const fn from_radians(
-        lat: f64,
-        lng: f64,
-    ) -> Result<Self, InvalidLatLng> {
+    pub const fn from_radians(lat: f64, lng: f64) -> Result<Self, InvalidLatLng> {
         if !lat.is_finite() {
             return Err(InvalidLatLng::new(lat, "infinite latitude"));
         }
@@ -315,14 +312,11 @@ impl TryFrom<geo::Coord> for LatLng {
 
 #[cfg(feature = "arbitrary")]
 impl<'a> arbitrary::Arbitrary<'a> for LatLng {
-    fn arbitrary(
-        data: &mut arbitrary::Unstructured<'a>,
-    ) -> arbitrary::Result<Self> {
+    fn arbitrary(data: &mut arbitrary::Unstructured<'a>) -> arbitrary::Result<Self> {
         let lat = f64::arbitrary(data)?;
         let lng = f64::arbitrary(data)?;
 
-        Self::from_radians(lat, lng)
-            .map_err(|_| arbitrary::Error::IncorrectFormat)
+        Self::from_radians(lat, lng).map_err(|_| arbitrary::Error::IncorrectFormat)
     }
 }
 

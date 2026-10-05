@@ -1,5 +1,6 @@
 use super::*;
-use crate::{CCW, CW, LatLng, Resolution, coord::Vec3d};
+use crate::coord::Vec3d;
+use crate::{CCW, CW, LatLng, Resolution};
 
 #[test]
 fn from_ij_zero() {
@@ -119,8 +120,7 @@ fn from_vec2d() {
     ];
 
     for (resolution, &expected) in resolutions.zip(cases.iter()) {
-        let result: CoordIJK =
-            Vec2d::from_vec3d(nvec, resolution, face, distance).into();
+        let result: CoordIJK = Vec2d::from_vec3d(nvec, resolution, face, distance).into();
 
         assert_eq!(result, expected, "resolution {resolution}");
     }

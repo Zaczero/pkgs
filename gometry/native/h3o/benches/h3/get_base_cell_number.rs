@@ -1,8 +1,9 @@
-use criterion::Criterion;
-use h3o::CellIndex;
 use std::hint::black_box;
 
-const INPUT: u64 = 0x8f734e64992d6d8;
+use criterion::Criterion;
+use h3o::CellIndex;
+
+const INPUT: u64 = 0x8F734E64992D6D8;
 
 pub fn bench(c: &mut Criterion) {
     let mut group = c.benchmark_group("getBaseCellNumber");

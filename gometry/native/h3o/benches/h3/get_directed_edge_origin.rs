@@ -1,8 +1,9 @@
-use criterion::Criterion;
-use h3o::DirectedEdgeIndex;
 use std::hint::black_box;
 
-const INPUT: u64 = 0x13f2834782b9c2ab;
+use criterion::Criterion;
+use h3o::DirectedEdgeIndex;
+
+const INPUT: u64 = 0x13F2834782B9C2AB;
 
 pub fn bench(c: &mut Criterion) {
     let mut group = c.benchmark_group("getDirectedEdgeOrigin");
@@ -13,9 +14,7 @@ pub fn bench(c: &mut Criterion) {
     });
     group.bench_function("h3", |b| {
         let mut out: u64 = 0;
-        b.iter(|| unsafe {
-            h3ron_h3_sys::getDirectedEdgeOrigin(black_box(INPUT), &mut out)
-        })
+        b.iter(|| unsafe { h3ron_h3_sys::getDirectedEdgeOrigin(black_box(INPUT), &mut out) })
     });
 
     group.finish();

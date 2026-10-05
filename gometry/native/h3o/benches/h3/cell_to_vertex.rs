@@ -1,12 +1,12 @@
-use criterion::{
-    BenchmarkGroup, BenchmarkId, Criterion, measurement::Measurement,
-};
-use h3o::{CellIndex, Vertex};
 use std::hint::black_box;
 
+use criterion::measurement::Measurement;
+use criterion::{BenchmarkGroup, BenchmarkId, Criterion};
+use h3o::{CellIndex, Vertex};
+
 pub fn bench(c: &mut Criterion) {
-    const HEXAGON: u64 = 0x084e_c69b_ffff_ffff;
-    const PENTAGON: u64 = 0x0841_f265_ffff_ffff;
+    const HEXAGON: u64 = 0x084E_C69B_FFFF_FFFF;
+    const PENTAGON: u64 = 0x0841_F265_FFFF_FFFF;
 
     let mut group = c.benchmark_group("cellToVertex");
 
@@ -25,12 +25,8 @@ pub fn bench(c: &mut Criterion) {
 
 // -----------------------------------------------------------------------------
 
-fn bench_h3o<T>(
-    group: &mut BenchmarkGroup<T>,
-    name: &'static str,
-    index: u64,
-    vertex_number: u8,
-) where
+fn bench_h3o<T>(group: &mut BenchmarkGroup<T>, name: &'static str, index: u64, vertex_number: u8)
+where
     T: Measurement,
 {
     group.bench_with_input(
@@ -44,12 +40,8 @@ fn bench_h3o<T>(
     );
 }
 
-fn bench_h3<T>(
-    group: &mut BenchmarkGroup<T>,
-    name: &'static str,
-    index: u64,
-    vertex_number: u8,
-) where
+fn bench_h3<T>(group: &mut BenchmarkGroup<T>, name: &'static str, index: u64, vertex_number: u8)
+where
     T: Measurement,
 {
     group.bench_with_input(

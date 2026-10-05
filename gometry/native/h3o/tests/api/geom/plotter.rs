@@ -1,5 +1,6 @@
 use geo::{Line, coord, line_string};
-use h3o::{Resolution, geom::PlotterBuilder};
+use h3o::Resolution;
+use h3o::geom::PlotterBuilder;
 
 fn line_rads() -> Line {
     Line::new(

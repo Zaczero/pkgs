@@ -1,12 +1,12 @@
-use criterion::{
-    BenchmarkGroup, BenchmarkId, Criterion, measurement::Measurement,
-};
-use h3o::{CellIndex, Resolution};
 use std::hint::black_box;
 
+use criterion::measurement::Measurement;
+use criterion::{BenchmarkGroup, BenchmarkId, Criterion};
+use h3o::{CellIndex, Resolution};
+
 pub fn bench(c: &mut Criterion) {
-    const HEXAGON: u64 = 0x8073fffffffffff;
-    const PENTAGON: u64 = 0x8009fffffffffff;
+    const HEXAGON: u64 = 0x8073FFFFFFFFFFF;
+    const PENTAGON: u64 = 0x8009FFFFFFFFFFF;
 
     let mut group = c.benchmark_group("cellToChildrenSize");
 
@@ -23,12 +23,8 @@ pub fn bench(c: &mut Criterion) {
 
 // -----------------------------------------------------------------------------
 
-fn bench_h3o<T>(
-    group: &mut BenchmarkGroup<T>,
-    name: &'static str,
-    index: u64,
-    resolution: u8,
-) where
+fn bench_h3o<T>(group: &mut BenchmarkGroup<T>, name: &'static str, index: u64, resolution: u8)
+where
     T: Measurement,
 {
     let index = CellIndex::try_from(index).expect("cell index");
@@ -36,18 +32,12 @@ fn bench_h3o<T>(
     group.bench_with_input(
         BenchmarkId::new(name, resolution),
         &resolution,
-        |b, &resolution| {
-            b.iter(|| black_box(index).children_count(black_box(resolution)))
-        },
+        |b, &resolution| b.iter(|| black_box(index).children_count(black_box(resolution))),
     );
 }
 
-fn bench_h3<T>(
-    group: &mut BenchmarkGroup<T>,
-    name: &'static str,
-    index: u64,
-    resolution: u8,
-) where
+fn bench_h3<T>(group: &mut BenchmarkGroup<T>, name: &'static str, index: u64, resolution: u8)
+where
     T: Measurement,
 {
     group.bench_with_input(

@@ -29,8 +29,7 @@ impl CoordCube {
         let k = f64::from(self.k) + offsets.2;
 
         #[expect(clippy::cast_possible_truncation, reason = "on purpose")]
-        let (mut ri, mut rj, mut rk) =
-            { (round(i) as i32, round(j) as i32, round(k) as i32) };
+        let (mut ri, mut rj, mut rk) = { (round(i) as i32, round(j) as i32, round(k) as i32) };
 
         let i_diff = abs(f64::from(ri) - i);
         let j_diff = abs(f64::from(rj) - j);

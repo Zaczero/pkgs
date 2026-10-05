@@ -1,7 +1,11 @@
-use super::utils::load_polygon;
+use std::hint::black_box;
+use std::os::raw::c_int;
+
 use criterion::Criterion;
-use h3o::{Resolution, geom::TilerBuilder};
-use std::{hint::black_box, os::raw::c_int};
+use h3o::Resolution;
+use h3o::geom::TilerBuilder;
+
+use super::utils::load_polygon;
 
 const RESOLUTION: Resolution = Resolution::Nine;
 

@@ -1,5 +1,10 @@
-use crate::{BaseCell, CellIndex, NUM_PENTAGONS, error, index::bits};
-use core::{ffi::c_int, fmt, iter::DoubleEndedIterator, str::FromStr};
+use core::ffi::c_int;
+use core::fmt;
+use core::iter::DoubleEndedIterator;
+use core::str::FromStr;
+
+use crate::index::bits;
+use crate::{BaseCell, CellIndex, NUM_PENTAGONS, error};
 
 /// Cell resolution, from 0 to 15.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, Ord, PartialOrd)]
@@ -126,10 +131,7 @@ impl Resolution {
     /// assert_eq!(res, vec![Resolution::Two, Resolution::One, Resolution::Zero]);
     /// ```
     #[expect(unsafe_code, reason = "safe because of the iterator")]
-    pub fn range(
-        start: Self,
-        end: Self,
-    ) -> impl DoubleEndedIterator<Item = Self> {
+    pub fn range(start: Self, end: Self) -> impl DoubleEndedIterator<Item = Self> {
         (u8::from(start)..=u8::from(end))
             // SAFETY: values between two resolutions are valid resolutions.
             .map(|value| unsafe { core::mem::transmute::<u8, Self>(value) })
@@ -476,12 +478,9 @@ impl fmt::Display for Resolution {
 
 #[cfg(feature = "arbitrary")]
 impl<'a> arbitrary::Arbitrary<'a> for Resolution {
-    fn arbitrary(
-        data: &mut arbitrary::Unstructured<'a>,
-    ) -> arbitrary::Result<Self> {
-        u8::arbitrary(data).and_then(|byte| {
-            Self::try_from(byte).map_err(|_| arbitrary::Error::IncorrectFormat)
-        })
+    fn arbitrary(data: &mut arbitrary::Unstructured<'a>) -> arbitrary::Result<Self> {
+        u8::arbitrary(data)
+            .and_then(|byte| Self::try_from(byte).map_err(|_| arbitrary::Error::IncorrectFormat))
     }
 }
 

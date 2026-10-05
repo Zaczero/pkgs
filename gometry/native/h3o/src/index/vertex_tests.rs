@@ -1,5 +1,6 @@
-use super::*;
 use alloc::{format, vec};
+
+use super::*;
 
 #[test]
 fn zero_is_invalid() {
@@ -21,12 +22,12 @@ fn vertex() {
 #[test]
 fn ordering_by_index() {
     let mut cells = vec![
-        VertexIndex::new_unchecked(0x25a194e699ab7fff),
-        VertexIndex::new_unchecked(0x259194e69d4fffff),
+        VertexIndex::new_unchecked(0x25A194E699AB7FFF),
+        VertexIndex::new_unchecked(0x259194E69D4FFFFF),
     ];
     let expected = vec![
-        VertexIndex::new_unchecked(0x25a194e699ab7fff),
-        VertexIndex::new_unchecked(0x259194e69d4fffff),
+        VertexIndex::new_unchecked(0x25A194E699AB7FFF),
+        VertexIndex::new_unchecked(0x259194E69D4FFFFF),
     ];
 
     cells.sort_unstable();
@@ -40,12 +41,12 @@ fn ordering_by_index() {
 #[test]
 fn ordering() {
     let mut cells = vec![
-        VertexIndex::new_unchecked(0x259194e69d4fffff),
-        VertexIndex::new_unchecked(0x239194e69d4fffff),
+        VertexIndex::new_unchecked(0x259194E69D4FFFFF),
+        VertexIndex::new_unchecked(0x239194E69D4FFFFF),
     ];
     let expected = vec![
-        VertexIndex::new_unchecked(0x239194e69d4fffff),
-        VertexIndex::new_unchecked(0x259194e69d4fffff),
+        VertexIndex::new_unchecked(0x239194E69D4FFFFF),
+        VertexIndex::new_unchecked(0x259194E69D4FFFFF),
     ];
 
     cells.sort_unstable();
@@ -59,15 +60,15 @@ fn ordering() {
 #[test]
 fn debug_impl() {
     assert_eq!(
-        format!("{:?}", VertexIndex::new_unchecked(0x2302bfffffffffff)),
+        format!("{:?}", VertexIndex::new_unchecked(0x2302BFFFFFFFFFFF)),
         "21-777777777777777_3 (2302bfffffffffff)"
     );
     assert_eq!(
-        format!("{:?}", VertexIndex::new_unchecked(0x23c2bae305336bff)),
+        format!("{:?}", VertexIndex::new_unchecked(0x23C2BAE305336BFF)),
         "21-656140514665777_3 (23c2bae305336bff)"
     );
     assert_eq!(
-        format!("{:?}", VertexIndex::new_unchecked(0x25f2834782b9c2ab)),
+        format!("{:?}", VertexIndex::new_unchecked(0x25F2834782B9C2AB)),
         "20-064360256341253_5 (25f2834782b9c2ab)"
     );
 }

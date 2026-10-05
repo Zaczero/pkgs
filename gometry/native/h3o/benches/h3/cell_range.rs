@@ -1,6 +1,7 @@
+use std::hint::black_box;
+
 use criterion::{BenchmarkId, Criterion};
 use h3o::CellIndex;
-use std::hint::black_box;
 
 pub fn bench_succ(c: &mut Criterion) {
     let hexagons: [u64; 16] = [
@@ -24,14 +25,10 @@ pub fn bench_succ(c: &mut Criterion) {
     let mut group = c.benchmark_group("NextCellIndex");
 
     for (resolution, index) in hexagons.iter().enumerate() {
-        group.bench_with_input(
-            BenchmarkId::new("h3o", resolution),
-            index,
-            |b, &index| {
-                let index = CellIndex::try_from(index).expect("valid index");
-                b.iter(|| black_box(index).succ())
-            },
-        );
+        group.bench_with_input(BenchmarkId::new("h3o", resolution), index, |b, &index| {
+            let index = CellIndex::try_from(index).expect("valid index");
+            b.iter(|| black_box(index).succ())
+        });
     }
 
     group.finish();
@@ -59,14 +56,10 @@ pub fn bench_pred(c: &mut Criterion) {
     let mut group = c.benchmark_group("PreviousCellIndex");
 
     for (resolution, index) in hexagons.iter().enumerate() {
-        group.bench_with_input(
-            BenchmarkId::new("h3o", resolution),
-            index,
-            |b, &index| {
-                let index = CellIndex::try_from(index).expect("valid index");
-                b.iter(|| black_box(index).pred())
-            },
-        );
+        group.bench_with_input(BenchmarkId::new("h3o", resolution), index, |b, &index| {
+            let index = CellIndex::try_from(index).expect("valid index");
+            b.iter(|| black_box(index).pred())
+        });
     }
 
     group.finish();

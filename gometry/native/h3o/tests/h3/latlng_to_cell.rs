@@ -1,10 +1,10 @@
-use super::h3api;
+use std::fs::File;
+use std::io::{BufRead, BufReader};
+use std::path::PathBuf;
+
 use h3o::{CellIndex, LatLng, Resolution};
-use std::{
-    fs::File,
-    io::{BufRead, BufReader},
-    path::PathBuf,
-};
+
+use super::h3api;
 
 const LAT_LNG: (f64, f64) = (48.854501508844095_f64, 2.3729695423293613_f64);
 
@@ -12,10 +12,8 @@ macro_rules! test {
     ($name:ident, $ll:expr, $resolution:literal) => {
         #[test]
         fn $name() {
-            let ll = LatLng::new($ll.0.to_radians(), $ll.1.to_radians())
-                .expect("coordinate");
-            let resolution =
-                Resolution::try_from($resolution).expect("index resolution");
+            let ll = LatLng::new($ll.0.to_radians(), $ll.1.to_radians()).expect("coordinate");
+            let resolution = Resolution::try_from($resolution).expect("index resolution");
             let result = ll.to_cell(resolution);
             let reference = h3api::latlng_to_cell(&ll, resolution);
 
@@ -79,8 +77,7 @@ fn h3_testinput() {
         let index = parts[0].parse::<CellIndex>().expect("cell index");
         let lat = parts[1].parse::<f64>().expect("latitude");
         let lng = parts[2].parse::<f64>().expect("longitude");
-        let ll = LatLng::new(lat.to_radians(), lng.to_radians())
-            .expect("coordinate");
+        let ll = LatLng::new(lat.to_radians(), lng.to_radians()).expect("coordinate");
         let result = ll.to_cell(index.resolution());
         let reference = h3api::latlng_to_cell(&ll, index.resolution());
 

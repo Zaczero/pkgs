@@ -1,10 +1,11 @@
-use criterion::{Bencher, Criterion};
-use h3o::CellIndex;
 use std::hint::black_box;
 
+use criterion::{Bencher, Criterion};
+use h3o::CellIndex;
+
 pub fn bench(c: &mut Criterion) {
-    const PENTAGON: u64 = 0x08f0_8000_0000_0000;
-    const HEXAGON: u64 = 0x08f7_34e6_4992_d6d8;
+    const PENTAGON: u64 = 0x08F0_8000_0000_0000;
+    const HEXAGON: u64 = 0x08F7_34E6_4992_D6D8;
 
     let mut group = c.benchmark_group("cellToVertexes");
 
@@ -26,7 +27,5 @@ fn bench_h3o(b: &mut Bencher<'_>, index: u64) {
 
 fn bench_h3(b: &mut Bencher<'_>, index: u64) {
     let mut out = [0; 6];
-    b.iter(|| unsafe {
-        h3ron_h3_sys::cellToVertexes(black_box(index), out.as_mut_ptr())
-    })
+    b.iter(|| unsafe { h3ron_h3_sys::cellToVertexes(black_box(index), out.as_mut_ptr()) })
 }

@@ -1,7 +1,9 @@
-use super::constants::{HEXAGONS, PENTAGONS};
+use std::hint::black_box;
+
 use criterion::{Bencher, BenchmarkId, Criterion};
 use h3o::CellIndex;
-use std::hint::black_box;
+
+use super::constants::{HEXAGONS, PENTAGONS};
 
 pub fn bench(c: &mut Criterion) {
     let mut group = c.benchmark_group("isValidCell");
@@ -12,11 +14,7 @@ pub fn bench(c: &mut Criterion) {
             index,
             bench_h3o,
         );
-        group.bench_with_input(
-            BenchmarkId::new("h3/Hexagon", resolution),
-            index,
-            bench_h3,
-        );
+        group.bench_with_input(BenchmarkId::new("h3/Hexagon", resolution), index, bench_h3);
     }
 
     for (resolution, index) in PENTAGONS.iter().enumerate() {
@@ -25,11 +23,7 @@ pub fn bench(c: &mut Criterion) {
             index,
             bench_h3o,
         );
-        group.bench_with_input(
-            BenchmarkId::new("h3/Pentagon", resolution),
-            index,
-            bench_h3,
-        );
+        group.bench_with_input(BenchmarkId::new("h3/Pentagon", resolution), index, bench_h3);
     }
 
     group.finish();

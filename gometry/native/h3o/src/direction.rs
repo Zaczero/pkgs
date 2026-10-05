@@ -1,8 +1,8 @@
-use crate::{
-    CellIndex, Edge, NUM_HEX_VERTS, NUM_PENT_VERTS, Vertex, coord::CoordIJK,
-    error,
-};
-use core::{fmt, num::NonZeroU8};
+use core::fmt;
+use core::num::NonZeroU8;
+
+use crate::coord::CoordIJK;
+use crate::{CellIndex, Edge, NUM_HEX_VERTS, NUM_PENT_VERTS, Vertex, error};
 
 /// Maximum value for a direction.
 const MAX: u8 = 6;
@@ -179,13 +179,11 @@ impl Direction {
             // -2 because we don't use directions 0 (center) or 1 (deleted K
             // axis).
             let index = usize::from(self) - 2;
-            (u8::from(TO_VERTEX_PENTAGON[index]) + NUM_PENT_VERTS - rotations)
-                % NUM_PENT_VERTS
+            (u8::from(TO_VERTEX_PENTAGON[index]) + NUM_PENT_VERTS - rotations) % NUM_PENT_VERTS
         } else {
             // -1 because we don't use direction 0 (center).
             let index = usize::from(self) - 1;
-            (u8::from(TO_VERTEX_HEXAGON[index]) + NUM_HEX_VERTS - rotations)
-                % NUM_HEX_VERTS
+            (u8::from(TO_VERTEX_HEXAGON[index]) + NUM_HEX_VERTS - rotations) % NUM_HEX_VERTS
         })
     }
 }

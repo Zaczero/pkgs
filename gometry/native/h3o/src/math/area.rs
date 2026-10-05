@@ -1,5 +1,6 @@
-use super::{FloatAdder, atan2, cos, mul_add, sin};
 use core::f64::consts::PI;
+
+use super::{FloatAdder, atan2, cos, mul_add, sin};
 
 // Not using `geo_traits::CoordTrait` because I want to avoid depending on geo
 // ecosystem outside of the geo feature flag.

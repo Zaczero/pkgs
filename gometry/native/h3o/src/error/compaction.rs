@@ -1,4 +1,5 @@
-use core::{error::Error, fmt};
+use core::error::Error;
+use core::fmt;
 
 /// Errors occurring while compacting a set of cell indices.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -15,7 +16,7 @@ impl fmt::Display for CompactionError {
         match *self {
             Self::HeterogeneousResolution => {
                 write!(f, "heterogeneous resolution")
-            }
+            },
             Self::DuplicateInput => write!(f, "duplicate indices"),
         }
     }

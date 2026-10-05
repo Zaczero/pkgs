@@ -1,12 +1,12 @@
-use super::h3api;
 use h3o::Resolution;
+
+use super::h3api;
 
 macro_rules! test {
     ($name:ident, $resolution:literal) => {
         #[test]
         fn $name() {
-            let resolution =
-                Resolution::try_from($resolution).expect("index resolution");
+            let resolution = Resolution::try_from($resolution).expect("index resolution");
             let result = resolution.is_class3();
             let reference = h3api::is_res_class3(resolution);
 

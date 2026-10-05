@@ -1,12 +1,12 @@
-use criterion::{
-    BenchmarkGroup, BenchmarkId, Criterion, measurement::Measurement,
-};
-use h3o::{CellIndex, Resolution};
 use std::hint::black_box;
 
+use criterion::measurement::Measurement;
+use criterion::{BenchmarkGroup, BenchmarkId, Criterion};
+use h3o::{CellIndex, Resolution};
+
 pub fn bench(c: &mut Criterion) {
-    const HEXAGON: u64 = 0x83734efffffffff;
-    const PENTAGON: u64 = 0x830800fffffffff;
+    const HEXAGON: u64 = 0x83734EFFFFFFFFF;
+    const PENTAGON: u64 = 0x830800FFFFFFFFF;
 
     let hexagon = CellIndex::try_from(HEXAGON).expect("hexagon");
     let pentagon = CellIndex::try_from(PENTAGON).expect("pentagon");
@@ -16,14 +16,12 @@ pub fn bench(c: &mut Criterion) {
     // 7 generations of cell is ~1 millions cells.
     for i in 0..=7u8 {
         let child_res =
-            Resolution::try_from(u8::from(hexagon.resolution()) + i)
-                .expect("hex resolution");
+            Resolution::try_from(u8::from(hexagon.resolution()) + i).expect("hex resolution");
         bench_h3o(&mut group, "h3o/Hexagon", i, hexagon, child_res);
         bench_h3(&mut group, "h3/Hexagon", i, hexagon, child_res);
 
         let child_res =
-            Resolution::try_from(u8::from(pentagon.resolution()) + i)
-                .expect("pent resolution");
+            Resolution::try_from(u8::from(pentagon.resolution()) + i).expect("pent resolution");
         bench_h3o(&mut group, "h3o/Pentagon", i, pentagon, child_res);
         bench_h3(&mut group, "h3/Pentagon", i, pentagon, child_res);
     }

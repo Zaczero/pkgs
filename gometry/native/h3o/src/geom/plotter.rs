@@ -1,9 +1,8 @@
-use crate::{
-    CellIndex, LatLng, Resolution,
-    error::{InvalidGeometry, PlotterError},
-    index::GridPathCells,
-};
 use geo::{Line, ToRadians as _};
+
+use crate::error::{InvalidGeometry, PlotterError};
+use crate::index::GridPathCells;
+use crate::{CellIndex, LatLng, Resolution};
 
 /// A plotter that produces H3 cell indexes along given lines.
 ///
@@ -61,10 +60,7 @@ impl Plotter {
     ///
     /// [`PlotterError`] if the line is invalid or cannot be handled (cf.
     /// [`grid_path_cells`](CellIndex::grid_path_cells) limitations).
-    pub fn add_batch(
-        &mut self,
-        lines: impl IntoIterator<Item = Line>,
-    ) -> Result<(), PlotterError> {
+    pub fn add_batch(&mut self, lines: impl IntoIterator<Item = Line>) -> Result<(), PlotterError> {
         for line in lines {
             self.add(line)?;
         }
@@ -85,13 +81,8 @@ impl Plotter {
 
     // Check that the line's coordinates are valid.
     fn check_coords(line: &Line) -> Result<(), PlotterError> {
-        if !super::coord_is_valid(line.start)
-            || !super::coord_is_valid(line.end)
-        {
-            return Err(InvalidGeometry::new(
-                "every coordinate of the line must be valid",
-            )
-            .into());
+        if !super::coord_is_valid(line.start) || !super::coord_is_valid(line.end) {
+            return Err(InvalidGeometry::new("every coordinate of the line must be valid").into());
         }
         Ok(())
     }

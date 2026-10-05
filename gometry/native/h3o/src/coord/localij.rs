@@ -16,13 +16,13 @@
 //!   origin.
 //! - the origin may not be at (0, 0) in the local coordinate space.
 
+use core::fmt;
+use core::num::NonZeroU8;
+
 use super::{CoordIJ, CoordIJK};
-use crate::{
-    BaseCell, CCW, CW, CellIndex, DEFAULT_CELL_INDEX, Direction, Resolution,
-    error::{HexGridError, LocalIjError},
-    index::bits,
-};
-use core::{fmt, num::NonZeroU8};
+use crate::error::{HexGridError, LocalIjError};
+use crate::index::bits;
+use crate::{BaseCell, CCW, CW, CellIndex, DEFAULT_CELL_INDEX, Direction, Resolution};
 
 // -----------------------------------------------------------------------------
 
@@ -69,12 +69,8 @@ impl TryFrom<LocalIJK> for CellIndex {
         // We need to find the correct base cell offset (if any) for this H3
         // index; start with the passed in base cell and resolution res ijk
         // coordinates in that base cell's coordinate system.
-        let ijk = checked_directions_bits_from_ijk(
-            value.coord,
-            &mut bits,
-            resolution,
-        )
-        .ok_or_else(|| HexGridError::new("IJ coordinates overflow"))?;
+        let ijk = checked_directions_bits_from_ijk(value.coord, &mut bits, resolution)
+            .ok_or_else(|| HexGridError::new("IJ coordinates overflow"))?;
 
         // Lookup the correct base cell.
         let mut dir = Direction::try_from(ijk)?;
@@ -90,11 +86,11 @@ impl TryFrom<LocalIJK> for CellIndex {
             // digits.
             let mut pentagon_rotations = 0;
             if origin_on_pent {
-                let leading_direction = bits::first_axe(value.anchor.into())
-                    .map_or_else(|| 0, NonZeroU8::get);
-                pentagon_rotations = PENTAGON_ROTATIONS_REVERSE
-                    [usize::from(leading_direction)][usize::from(dir)];
-                assert_ne!(pentagon_rotations, 0xff);
+                let leading_direction =
+                    bits::first_axe(value.anchor.into()).map_or_else(|| 0, NonZeroU8::get);
+                pentagon_rotations =
+                    PENTAGON_ROTATIONS_REVERSE[usize::from(leading_direction)][usize::from(dir)];
+                assert_ne!(pentagon_rotations, 0xFF);
                 dir = dir.rotate60::<CCW>(pentagon_rotations.into());
 
                 // The pentagon rotations are being chosen so that dir is not
@@ -129,41 +125,33 @@ impl TryFrom<LocalIJK> for CellIndex {
                 // coordinate system.
                 bits = bits::rotate60::<CCW>(bits, base_cell_rotations.into());
 
-                let leading_direction = usize::from(
-                    bits::first_axe(bits).map_or_else(|| 0, NonZeroU8::get),
-                );
-                let pentagon_rotations = if fixed_base_cell.is_polar_pentagon()
-                {
+                let leading_direction =
+                    usize::from(bits::first_axe(bits).map_or_else(|| 0, NonZeroU8::get));
+                let pentagon_rotations = if fixed_base_cell.is_polar_pentagon() {
                     PENTAGON_ROTATIONS_REVERSE_POLAR[rev_dir][leading_direction]
                 } else {
-                    PENTAGON_ROTATIONS_REVERSE_NONPOLAR[rev_dir]
-                        [leading_direction]
+                    PENTAGON_ROTATIONS_REVERSE_NONPOLAR[rev_dir][leading_direction]
                 };
                 // For this to occur, `rev_direction` would need to be 1. Since
                 // `rev_direction` is from the index base cell (which is a
                 // pentagon) towards the origin, this should never be the case.
-                assert_ne!(pentagon_rotations, 0xff);
+                assert_ne!(pentagon_rotations, 0xFF);
 
                 bits = (0..pentagon_rotations)
                     .fold(bits, |acc, _| bits::pentagon_rotate60::<CCW>(acc));
             } else {
-                assert!(pentagon_rotations != 0xff);
-                let count =
-                    usize::from(pentagon_rotations + base_cell_rotations);
+                assert!(pentagon_rotations != 0xFF);
+                let count = usize::from(pentagon_rotations + base_cell_rotations);
                 bits = bits::rotate60::<CCW>(bits, count);
             }
         } else if origin_on_pent && index_on_pent {
-            let origin_leading_dir = usize::from(
-                bits::first_axe(value.anchor.into())
-                    .map_or_else(|| 0, NonZeroU8::get),
-            );
-            let index_leading_dir = usize::from(
-                bits::first_axe(bits).map_or_else(|| 0, NonZeroU8::get),
-            );
+            let origin_leading_dir =
+                usize::from(bits::first_axe(value.anchor.into()).map_or_else(|| 0, NonZeroU8::get));
+            let index_leading_dir =
+                usize::from(bits::first_axe(bits).map_or_else(|| 0, NonZeroU8::get));
 
-            let rotations = PENTAGON_ROTATIONS_REVERSE[origin_leading_dir]
-                [index_leading_dir];
-            assert!(rotations != 0xff, "invalid K axis digit");
+            let rotations = PENTAGON_ROTATIONS_REVERSE[origin_leading_dir][index_leading_dir];
+            assert!(rotations != 0xFF, "invalid K axis digit");
             bits = bits::rotate60::<CCW>(bits, rotations.into());
         }
 
@@ -175,8 +163,7 @@ impl TryFrom<LocalIJK> for CellIndex {
             }
         }
 
-        let base_cell = base_cell
-            .ok_or_else(|| HexGridError::new("cannot resolve base cell"))?;
+        let base_cell = base_cell.ok_or_else(|| HexGridError::new("cannot resolve base cell"))?;
         Ok(Self::new_unchecked(h3o_bit::set_base_cell(
             bits,
             base_cell.into(),

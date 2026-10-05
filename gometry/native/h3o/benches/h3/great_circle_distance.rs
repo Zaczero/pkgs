@@ -1,6 +1,7 @@
+use std::hint::black_box;
+
 use criterion::{Bencher, Criterion};
 use h3o::LatLng;
-use std::hint::black_box;
 
 const SRC: (f64, f64) = (48.854501508844095, 2.3729695423293613);
 const DST: (f64, f64) = (33.988491214456516, -118.47327934764078);
@@ -12,10 +13,7 @@ pub fn bench_rads(c: &mut Criterion) {
         |b, src, dst| b.iter(|| black_box(src).distance_rads(dst)),
         |b, src, dst| {
             b.iter(|| unsafe {
-                h3ron_h3_sys::greatCircleDistanceRads(
-                    &black_box(src),
-                    &black_box(dst),
-                )
+                h3ron_h3_sys::greatCircleDistanceRads(&black_box(src), &black_box(dst))
             })
         },
     );
@@ -28,10 +26,7 @@ pub fn bench_km(c: &mut Criterion) {
         |b, src, dst| b.iter(|| black_box(src).distance_km(dst)),
         |b, src, dst| {
             b.iter(|| unsafe {
-                h3ron_h3_sys::greatCircleDistanceKm(
-                    &black_box(src),
-                    &black_box(dst),
-                )
+                h3ron_h3_sys::greatCircleDistanceKm(&black_box(src), &black_box(dst))
             })
         },
     );
@@ -44,10 +39,7 @@ pub fn bench_m(c: &mut Criterion) {
         |b, src, dst| b.iter(|| black_box(src).distance_m(dst)),
         |b, src, dst| {
             b.iter(|| unsafe {
-                h3ron_h3_sys::greatCircleDistanceM(
-                    &black_box(src),
-                    &black_box(dst),
-                )
+                h3ron_h3_sys::greatCircleDistanceM(&black_box(src), &black_box(dst))
             })
         },
     );
@@ -55,12 +47,8 @@ pub fn bench_m(c: &mut Criterion) {
 
 // -----------------------------------------------------------------------------
 
-fn bench_distance<F, G>(
-    c: &mut Criterion,
-    name: &'static str,
-    mut bench_h3o: F,
-    mut bench_h3: G,
-) where
+fn bench_distance<F, G>(c: &mut Criterion, name: &'static str, mut bench_h3o: F, mut bench_h3: G)
+where
     F: FnMut(&mut Bencher<'_>, LatLng, LatLng),
     G: FnMut(&mut Bencher<'_>, h3ron_h3_sys::LatLng, h3ron_h3_sys::LatLng),
 {

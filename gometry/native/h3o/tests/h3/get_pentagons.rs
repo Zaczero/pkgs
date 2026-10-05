@@ -1,12 +1,12 @@
-use super::h3api;
 use h3o::Resolution;
+
+use super::h3api;
 
 macro_rules! test {
     ($name:ident, $resolution:literal) => {
         #[test]
         fn $name() {
-            let resolution =
-                Resolution::try_from($resolution).expect("index resolution");
+            let resolution = Resolution::try_from($resolution).expect("index resolution");
             let result = resolution.pentagons().collect::<Vec<_>>();
             let reference = h3api::get_pentagons(resolution);
 

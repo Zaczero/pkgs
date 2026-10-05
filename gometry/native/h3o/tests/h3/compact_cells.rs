@@ -1,5 +1,6 @@
-use super::h3api;
 use h3o::{CellIndex, Resolution};
+
+use super::h3api;
 
 fn assert_compact(mut cells: Vec<CellIndex>) {
     let reference = h3api::compact_cells(&cells).map(|mut cells| {
@@ -16,7 +17,7 @@ fn assert_compact(mut cells: Vec<CellIndex>) {
 
 #[test]
 fn grid_disk() {
-    let index = CellIndex::try_from(0x89283470c27ffff).expect("cell index");
+    let index = CellIndex::try_from(0x89283470C27FFFF).expect("cell index");
     let cells = index.grid_disk::<Vec<_>>(9);
 
     assert_compact(cells);
@@ -31,7 +32,7 @@ fn res0() {
 
 #[test]
 fn res0_children() {
-    let index = CellIndex::try_from(0x8001fffffffffff).expect("cell index");
+    let index = CellIndex::try_from(0x8001FFFFFFFFFFF).expect("cell index");
     let cells = index.children(Resolution::One).collect::<Vec<_>>();
 
     assert_compact(cells);
@@ -39,7 +40,7 @@ fn res0_children() {
 
 #[test]
 fn children() {
-    let index = CellIndex::try_from(0x89283470803ffff).expect("cell index");
+    let index = CellIndex::try_from(0x89283470803FFFF).expect("cell index");
     let cells = index.children(Resolution::Twelve).collect::<Vec<_>>();
 
     assert_compact(cells);
@@ -47,7 +48,7 @@ fn children() {
 
 #[test]
 fn uncompactable() {
-    let cells = [0x89283470803ffff, 0x8928347081bffff, 0x8928347080bffff]
+    let cells = [0x89283470803FFFF, 0x8928347081BFFFF, 0x8928347080BFFFF]
         .into_iter()
         .map(|hex| CellIndex::try_from(hex).expect("cell index"))
         .collect();
@@ -57,15 +58,14 @@ fn uncompactable() {
 
 #[test]
 fn duplicate() {
-    let cells =
-        vec![CellIndex::try_from(0x8500924bfffffff).expect("cell index"); 10];
+    let cells = vec![CellIndex::try_from(0x8500924BFFFFFFF).expect("cell index"); 10];
 
     assert_compact(cells);
 }
 
 #[test]
 fn duplicate_minimum() {
-    let index = CellIndex::try_from(0x8a0092492497fff).expect("cell index");
+    let index = CellIndex::try_from(0x8A0092492497FFF).expect("cell index");
     let mut cells = index.children(Resolution::Eleven).collect::<Vec<_>>();
     let cell = cells[0];
     cells.push(cell);
@@ -75,7 +75,7 @@ fn duplicate_minimum() {
 
 #[test]
 fn duplicate_pentagon_limit() {
-    let index = CellIndex::try_from(0x8a0800000007fff).expect("cell index");
+    let index = CellIndex::try_from(0x8A0800000007FFF).expect("cell index");
     let mut cells = index.children(Resolution::Eleven).collect::<Vec<_>>();
     let cell = cells[0];
     cells.push(cell);
@@ -85,7 +85,7 @@ fn duplicate_pentagon_limit() {
 
 #[test]
 fn duplicate_minimum_bis() {
-    let index = CellIndex::try_from(0x8a0092492497fff).expect("cell index");
+    let index = CellIndex::try_from(0x8A0092492497FFF).expect("cell index");
     let mut cells = index.children(Resolution::Eleven).collect::<Vec<_>>();
     let cell = cells[0];
     if let Some(last) = cells.last_mut() {
@@ -107,13 +107,13 @@ fn empty() {
 #[test]
 fn disparate() {
     let cells = [
-        0x81003ffffffffff,
-        0x81023ffffffffff,
-        0x81043ffffffffff,
-        0x81063ffffffffff,
-        0x81083ffffffffff,
-        0x810a3ffffffffff,
-        0x810c3ffffffffff,
+        0x81003FFFFFFFFFF,
+        0x81023FFFFFFFFFF,
+        0x81043FFFFFFFFFF,
+        0x81063FFFFFFFFFF,
+        0x81083FFFFFFFFFF,
+        0x810A3FFFFFFFFFF,
+        0x810C3FFFFFFFFFF,
     ]
     .into_iter()
     .map(|hex| CellIndex::try_from(hex).expect("cell index"))
@@ -124,7 +124,7 @@ fn disparate() {
 
 #[test]
 fn resolution_mismatch() {
-    let mut cells = [0x81003ffffffffff, 0x8500924bfffffff, 0x89283470803ffff]
+    let mut cells = [0x81003FFFFFFFFFF, 0x8500924BFFFFFFF, 0x89283470803FFFF]
         .into_iter()
         .map(|hex| CellIndex::try_from(hex).expect("cell index"))
         .collect::<Vec<_>>();

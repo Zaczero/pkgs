@@ -1,9 +1,11 @@
+use core::cmp::Ordering;
+use core::fmt;
+use core::num::NonZeroU64;
+use core::str::FromStr;
+
 use super::{IndexMode, bits};
-use crate::{
-    CellIndex, Direction, LatLng, NUM_HEX_VERTS, NUM_PENT_VERTS,
-    coord::FaceIJK, error,
-};
-use core::{cmp::Ordering, fmt, num::NonZeroU64, str::FromStr};
+use crate::coord::FaceIJK;
+use crate::{CellIndex, Direction, LatLng, NUM_HEX_VERTS, NUM_PENT_VERTS, error};
 
 /// Maximum value for a cell vertex.
 const MAX: u8 = 5;
@@ -103,12 +105,9 @@ impl fmt::Display for Vertex {
 
 #[cfg(feature = "arbitrary")]
 impl<'a> arbitrary::Arbitrary<'a> for Vertex {
-    fn arbitrary(
-        data: &mut arbitrary::Unstructured<'a>,
-    ) -> arbitrary::Result<Self> {
-        u8::arbitrary(data).and_then(|byte| {
-            Self::try_from(byte).map_err(|_| arbitrary::Error::IncorrectFormat)
-        })
+    fn arbitrary(data: &mut arbitrary::Unstructured<'a>) -> arbitrary::Result<Self> {
+        u8::arbitrary(data)
+            .and_then(|byte| Self::try_from(byte).map_err(|_| arbitrary::Error::IncorrectFormat))
     }
 }
 
@@ -193,11 +192,10 @@ impl VertexIndex {
 impl Ord for VertexIndex {
     fn cmp(&self, other: &Self) -> Ordering {
         // Bitmask to hide the resolution and vertex.
-        const MASK: u64 = 0xf80f_ffff_ffff_ffff;
+        const MASK: u64 = 0xF80F_FFFF_FFFF_FFFF;
 
         // Order by index first, then by vertex.
-        (self.0.get() & MASK, self.vertex())
-            .cmp(&(other.0.get() & MASK, other.vertex()))
+        (self.0.get() & MASK, self.vertex()).cmp(&(other.0.get() & MASK, other.vertex()))
     }
 }
 
@@ -224,15 +222,13 @@ impl TryFrom<u64> for VertexIndex {
         // Clear the highest byte and validate the owner part.
         let bits = bits::set_mode(value, IndexMode::Cell);
         let bits = bits::clr_vertex(bits);
-        let owner = CellIndex::try_from(bits)
-            .map_err(|err| Self::Error::new(Some(value), err.reason))?;
+        let owner =
+            CellIndex::try_from(bits).map_err(|err| Self::Error::new(Some(value), err.reason))?;
 
         // The easiest way to ensure that the owner + vertex number is valid,
         // and that the vertex is canonical, is to recreate and compare.
-        let vertex =
-            Vertex::try_from(bits::get_vertex(value)).map_err(|_| {
-                Self::Error::new(Some(value), "invalid vertex number")
-            })?;
+        let vertex = Vertex::try_from(bits::get_vertex(value))
+            .map_err(|_| Self::Error::new(Some(value), "invalid vertex number"))?;
         let canonical = owner.vertex(vertex).map(u64::from);
 
         if canonical != Some(value) {
@@ -322,12 +318,9 @@ impl fmt::UpperHex for VertexIndex {
 
 #[cfg(feature = "arbitrary")]
 impl<'a> arbitrary::Arbitrary<'a> for VertexIndex {
-    fn arbitrary(
-        data: &mut arbitrary::Unstructured<'a>,
-    ) -> arbitrary::Result<Self> {
-        u64::arbitrary(data).and_then(|byte| {
-            Self::try_from(byte).map_err(|_| arbitrary::Error::IncorrectFormat)
-        })
+    fn arbitrary(data: &mut arbitrary::Unstructured<'a>) -> arbitrary::Result<Self> {
+        u64::arbitrary(data)
+            .and_then(|byte| Self::try_from(byte).map_err(|_| arbitrary::Error::IncorrectFormat))
     }
 }
 

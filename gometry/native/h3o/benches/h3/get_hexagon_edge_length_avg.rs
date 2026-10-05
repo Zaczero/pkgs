@@ -1,6 +1,7 @@
+use std::hint::black_box;
+
 use criterion::Criterion;
 use h3o::Resolution;
-use std::hint::black_box;
 
 pub fn bench_km(c: &mut Criterion) {
     let mut group = c.benchmark_group("getHexagonEdgeLengthAvgKm");
@@ -10,9 +11,7 @@ pub fn bench_km(c: &mut Criterion) {
     });
     group.bench_function("h3", |b| {
         let mut out: f64 = 0.;
-        b.iter(|| unsafe {
-            h3ron_h3_sys::getHexagonEdgeLengthAvgKm(black_box(3), &mut out)
-        })
+        b.iter(|| unsafe { h3ron_h3_sys::getHexagonEdgeLengthAvgKm(black_box(3), &mut out) })
     });
 
     group.finish();
@@ -26,9 +25,7 @@ pub fn bench_m(c: &mut Criterion) {
     });
     group.bench_function("h3", |b| {
         let mut out: f64 = 0.;
-        b.iter(|| unsafe {
-            h3ron_h3_sys::getHexagonEdgeLengthAvgM(black_box(3), &mut out)
-        })
+        b.iter(|| unsafe { h3ron_h3_sys::getHexagonEdgeLengthAvgM(black_box(3), &mut out) })
     });
 
     group.finish();

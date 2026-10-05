@@ -24,18 +24,14 @@ fn main() {
 }
 
 /// Returns every edge at the given resolution.
-fn edges_at_res(
-    resolution: Resolution,
-) -> impl Iterator<Item = DirectedEdgeIndex> {
-    CellIndex::uncompact(CellIndex::base_cells(), resolution)
-        .flat_map(|cell| cell.edges())
+fn edges_at_res(resolution: Resolution) -> impl Iterator<Item = DirectedEdgeIndex> {
+    CellIndex::uncompact(CellIndex::base_cells(), resolution).flat_map(|cell| cell.edges())
 }
 
 /// Compute the average edge length (in radians) at the given resolution.
 fn avg_edge_len_at_res(resolution: Resolution) -> f64 {
-    let (count, sum) = edges_at_res(resolution)
-        .fold((0, 0.), |(count, sum), edge| {
-            (count + 1, sum + edge.length_rads())
-        });
+    let (count, sum) = edges_at_res(resolution).fold((0, 0.), |(count, sum), edge| {
+        (count + 1, sum + edge.length_rads())
+    });
     sum / count as f64
 }

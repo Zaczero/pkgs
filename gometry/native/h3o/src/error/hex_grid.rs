@@ -1,4 +1,5 @@
-use core::{error::Error, fmt};
+use core::error::Error;
+use core::fmt;
 
 /// Errors related to the `IJK` coordinate system and its variants (e.g.
 /// [`LocalIJ`](crate::LocalIJ)).

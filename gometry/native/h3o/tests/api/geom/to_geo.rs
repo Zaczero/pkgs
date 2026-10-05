@@ -4,8 +4,7 @@ use h3o::{CellIndex, DirectedEdgeIndex, VertexIndex};
 
 #[test]
 fn from_directed_edge() {
-    let index =
-        DirectedEdgeIndex::try_from(0x13a1_94e6_99ab_7fff).expect("index");
+    let index = DirectedEdgeIndex::try_from(0x13A1_94E6_99AB_7FFF).expect("index");
     let result = Line::from(index);
     let expected = Line::new(
         coord!(x: 0.004346277485193205, y: 51.5333297602599),
@@ -17,7 +16,7 @@ fn from_directed_edge() {
 
 #[test]
 fn from_vertex() {
-    let index = VertexIndex::try_from(0x2302_bfff_ffff_ffff).expect("index");
+    let index = VertexIndex::try_from(0x2302_BFFF_FFFF_FFFF).expect("index");
     let result = Point::from(index);
     let expected = Point::new(-74.64046816708004, 30.219492199828117);
 
@@ -28,7 +27,7 @@ fn from_vertex() {
 fn from_cell() {
     // Hexagon cell in Le Vigan.
     // https://h3geo.org/#hex=893961acb53ffff
-    let cell = CellIndex::try_from(0x0893_961a_cb53_ffff).expect("index");
+    let cell = CellIndex::try_from(0x0893_961A_CB53_FFFF).expect("index");
     let polygon = MultiPolygon::from(cell);
     assert_eq!(polygon.0.len(), 1);
     // 7 instead of 6 because the last point is duplicated to close the polygon.
@@ -36,7 +35,7 @@ fn from_cell() {
 
     // Pentagon cell in West Australia
     // https://h3geo.org/#hex=80a7fffffffffff
-    let cell = CellIndex::try_from(0x080a_7fff_ffff_ffff).expect("index");
+    let cell = CellIndex::try_from(0x080A_7FFF_FFFF_FFFF).expect("index");
     let polygon = MultiPolygon::from(cell);
     assert_eq!(polygon.0.len(), 1);
     assert_eq!(polygon.0[0].exterior().0.len(), 6);
@@ -46,7 +45,7 @@ fn from_cell() {
 fn from_transmeridian_cell() {
     // Transmeridian hexagon cell in between the US and Russia.
     // https://h3geo.org/#hex=840d9edffffffff
-    let cell = CellIndex::try_from(0x0840_d9ed_ffff_ffff).expect("index");
+    let cell = CellIndex::try_from(0x0840_D9ED_FFFF_FFFF).expect("index");
     let polygon = MultiPolygon::from(cell);
     assert_eq!(polygon.0.len(), 2);
     assert_eq!(polygon.0[0].exterior().0.len(), 6);
@@ -72,7 +71,7 @@ fn from_transmeridian_cell() {
 
     // Transmeridian pentagon cell.
     // https://h3geo.org/#hex=807ffffffffffff
-    let cell = CellIndex::try_from(0x0807_ffff_ffff_ffff).expect("index");
+    let cell = CellIndex::try_from(0x0807_FFFF_FFFF_FFFF).expect("index");
     let polygon = MultiPolygon::from(cell);
     assert_eq!(polygon.0.len(), 2);
     assert_eq!(polygon.0[0].exterior().0.len(), 4);

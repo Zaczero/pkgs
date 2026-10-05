@@ -1,7 +1,9 @@
-use super::constants::{HEXAGONS, PENTAGONS};
+use std::hint::black_box;
+
 use criterion::{Bencher, BenchmarkId, Criterion};
 use h3o::{CellIndex, DirectedEdgeIndex};
-use std::hint::black_box;
+
+use super::constants::{HEXAGONS, PENTAGONS};
 
 pub fn bench_rads(c: &mut Criterion) {
     bench_edge_length(
@@ -11,10 +13,7 @@ pub fn bench_rads(c: &mut Criterion) {
         |b, &edge| {
             let mut result: f64 = 0.;
             b.iter(|| unsafe {
-                h3ron_h3_sys::edgeLengthRads(
-                    black_box(edge.into()),
-                    &mut result,
-                );
+                h3ron_h3_sys::edgeLengthRads(black_box(edge.into()), &mut result);
                 result
             })
         },
@@ -53,12 +52,8 @@ pub fn bench_m(c: &mut Criterion) {
 
 // -----------------------------------------------------------------------------
 
-fn bench_edge_length<F, G>(
-    c: &mut Criterion,
-    name: &'static str,
-    bench_h3o: F,
-    bench_h3: G,
-) where
+fn bench_edge_length<F, G>(c: &mut Criterion, name: &'static str, bench_h3o: F, bench_h3: G)
+where
     F: FnMut(&mut Bencher<'_>, &DirectedEdgeIndex) + Copy,
     G: FnMut(&mut Bencher<'_>, &DirectedEdgeIndex) + Copy,
 {
@@ -73,11 +68,7 @@ fn bench_edge_length<F, G>(
             &edge,
             bench_h3o,
         );
-        group.bench_with_input(
-            BenchmarkId::new("h3/Hexagon", resolution),
-            &edge,
-            bench_h3,
-        );
+        group.bench_with_input(BenchmarkId::new("h3/Hexagon", resolution), &edge, bench_h3);
     }
 
     for (resolution, &index) in PENTAGONS.iter().enumerate() {
@@ -89,11 +80,7 @@ fn bench_edge_length<F, G>(
             &edge,
             bench_h3o,
         );
-        group.bench_with_input(
-            BenchmarkId::new("h3/Pentagon", resolution),
-            &edge,
-            bench_h3,
-        );
+        group.bench_with_input(BenchmarkId::new("h3/Pentagon", resolution), &edge, bench_h3);
     }
 
     group.finish();

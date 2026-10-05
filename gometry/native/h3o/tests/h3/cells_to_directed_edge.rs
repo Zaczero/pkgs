@@ -1,5 +1,6 @@
-use super::h3api;
 use h3o::{CellIndex, Resolution};
+
+use super::h3api;
 
 macro_rules! test {
     ($name:ident, $index:literal) => {
@@ -9,8 +10,7 @@ macro_rules! test {
             for edge in index.edges() {
                 let destination = edge.destination();
                 let result = index.edge(destination);
-                let reference =
-                    h3api::cells_to_directed_edge(index, destination);
+                let reference = h3api::cells_to_directed_edge(index, destination);
 
                 assert_eq!(result, reference, "edge {edge}");
             }
@@ -18,23 +18,19 @@ macro_rules! test {
     };
 }
 
-test!(hexagon, 0x891fb46622fffff);
-test!(pentagon, 0x821c07fffffffff);
+test!(hexagon, 0x891FB46622FFFFF);
+test!(pentagon, 0x821C07FFFFFFFFF);
 
 macro_rules! exhaustive_test {
     ($name:ident, $resolution:literal) => {
         #[test]
         fn $name() {
-            let resolution =
-                Resolution::try_from($resolution).expect("index resolution");
-            for index in CellIndex::base_cells()
-                .flat_map(|index| index.children(resolution))
-            {
+            let resolution = Resolution::try_from($resolution).expect("index resolution");
+            for index in CellIndex::base_cells().flat_map(|index| index.children(resolution)) {
                 for edge in index.edges() {
                     let destination = edge.destination();
                     let result = index.edge(destination);
-                    let reference =
-                        h3api::cells_to_directed_edge(index, destination);
+                    let reference = h3api::cells_to_directed_edge(index, destination);
 
                     assert_eq!(result, reference, "edge {edge}");
                 }

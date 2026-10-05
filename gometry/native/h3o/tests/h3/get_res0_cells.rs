@@ -1,5 +1,6 @@
-use super::h3api;
 use h3o::CellIndex;
+
+use super::h3api;
 
 #[test]
 fn value() {

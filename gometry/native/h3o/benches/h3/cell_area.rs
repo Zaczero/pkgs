@@ -1,7 +1,9 @@
-use super::constants::{HEXAGONS, PENTAGONS};
+use std::hint::black_box;
+
 use criterion::{Bencher, BenchmarkId, Criterion};
 use h3o::CellIndex;
-use std::hint::black_box;
+
+use super::constants::{HEXAGONS, PENTAGONS};
 
 pub fn bench_rads2(c: &mut Criterion) {
     bench_cell_area(
@@ -56,12 +58,8 @@ pub fn bench_m2(c: &mut Criterion) {
 
 // -----------------------------------------------------------------------------
 
-fn bench_cell_area<F, G>(
-    c: &mut Criterion,
-    name: &'static str,
-    bench_h3o: F,
-    bench_h3: G,
-) where
+fn bench_cell_area<F, G>(c: &mut Criterion, name: &'static str, bench_h3o: F, bench_h3: G)
+where
     F: FnMut(&mut Bencher<'_>, &u64) + Copy,
     G: FnMut(&mut Bencher<'_>, &u64) + Copy,
 {
@@ -73,11 +71,7 @@ fn bench_cell_area<F, G>(
             index,
             bench_h3o,
         );
-        group.bench_with_input(
-            BenchmarkId::new("h3/Hexagon", resolution),
-            index,
-            bench_h3,
-        );
+        group.bench_with_input(BenchmarkId::new("h3/Hexagon", resolution), index, bench_h3);
     }
 
     for (resolution, index) in PENTAGONS.iter().enumerate() {
@@ -86,11 +80,7 @@ fn bench_cell_area<F, G>(
             index,
             bench_h3o,
         );
-        group.bench_with_input(
-            BenchmarkId::new("h3/Pentagon", resolution),
-            index,
-            bench_h3,
-        );
+        group.bench_with_input(BenchmarkId::new("h3/Pentagon", resolution), index, bench_h3);
     }
 
     group.finish();

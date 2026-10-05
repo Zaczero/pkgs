@@ -1,5 +1,6 @@
-use super::*;
 use alloc::{format, vec};
+
+use super::*;
 
 #[test]
 fn zero_is_invalid() {
@@ -22,12 +23,12 @@ fn edge() {
 #[test]
 fn ordering_by_index() {
     let mut cells = vec![
-        DirectedEdgeIndex::new_unchecked(0x13a194e699ab7fff),
-        DirectedEdgeIndex::new_unchecked(0x139194e69d4fffff),
+        DirectedEdgeIndex::new_unchecked(0x13A194E699AB7FFF),
+        DirectedEdgeIndex::new_unchecked(0x139194E69D4FFFFF),
     ];
     let expected = vec![
-        DirectedEdgeIndex::new_unchecked(0x13a194e699ab7fff),
-        DirectedEdgeIndex::new_unchecked(0x139194e69d4fffff),
+        DirectedEdgeIndex::new_unchecked(0x13A194E699AB7FFF),
+        DirectedEdgeIndex::new_unchecked(0x139194E69D4FFFFF),
     ];
 
     cells.sort_unstable();
@@ -41,12 +42,12 @@ fn ordering_by_index() {
 #[test]
 fn ordering_by_edge() {
     let mut cells = vec![
-        DirectedEdgeIndex::new_unchecked(0x159194e69d4fffff),
-        DirectedEdgeIndex::new_unchecked(0x139194e69d4fffff),
+        DirectedEdgeIndex::new_unchecked(0x159194E69D4FFFFF),
+        DirectedEdgeIndex::new_unchecked(0x139194E69D4FFFFF),
     ];
     let expected = vec![
-        DirectedEdgeIndex::new_unchecked(0x139194e69d4fffff),
-        DirectedEdgeIndex::new_unchecked(0x159194e69d4fffff),
+        DirectedEdgeIndex::new_unchecked(0x139194E69D4FFFFF),
+        DirectedEdgeIndex::new_unchecked(0x159194E69D4FFFFF),
     ];
 
     cells.sort_unstable();
@@ -60,15 +61,15 @@ fn ordering_by_edge() {
 #[test]
 fn debug_impl() {
     assert_eq!(
-        format!("{:?}", DirectedEdgeIndex::new_unchecked(0x1302bfffffffffff)),
+        format!("{:?}", DirectedEdgeIndex::new_unchecked(0x1302BFFFFFFFFFFF)),
         "21-777777777777777_3 (1302bfffffffffff)"
     );
     assert_eq!(
-        format!("{:?}", DirectedEdgeIndex::new_unchecked(0x13c2bae305336bff)),
+        format!("{:?}", DirectedEdgeIndex::new_unchecked(0x13C2BAE305336BFF)),
         "21-656140514665777_3 (13c2bae305336bff)"
     );
     assert_eq!(
-        format!("{:?}", DirectedEdgeIndex::new_unchecked(0x15f2834782b9c2ab)),
+        format!("{:?}", DirectedEdgeIndex::new_unchecked(0x15F2834782B9C2AB)),
         "20-064360256341253_5 (15f2834782b9c2ab)"
     );
 }

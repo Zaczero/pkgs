@@ -1,6 +1,7 @@
+use std::hint::black_box;
+
 use criterion::{BenchmarkId, Criterion};
 use h3o::Resolution;
-use std::hint::black_box;
 
 pub fn bench(c: &mut Criterion) {
     let mut group = c.benchmark_group("getNumCells");
@@ -10,8 +11,7 @@ pub fn bench(c: &mut Criterion) {
             BenchmarkId::new("h3o", resolution),
             &resolution,
             |b, &resolution| {
-                let resolution =
-                    Resolution::try_from(resolution).expect("resolution");
+                let resolution = Resolution::try_from(resolution).expect("resolution");
                 b.iter(|| black_box(resolution).cell_count())
             },
         );
@@ -20,9 +20,7 @@ pub fn bench(c: &mut Criterion) {
             &resolution,
             |b, &resolution| {
                 let mut out: i64 = 0;
-                b.iter(|| unsafe {
-                    h3ron_h3_sys::getNumCells(black_box(resolution), &mut out)
-                })
+                b.iter(|| unsafe { h3ron_h3_sys::getNumCells(black_box(resolution), &mut out) })
             },
         );
     }

@@ -1,35 +1,30 @@
+use std::hint::black_box;
+
 use criterion::{Bencher, Criterion};
 use h3o::CellIndex;
-use std::hint::black_box;
 
 pub fn bench(c: &mut Criterion) {
     let mut group = c.benchmark_group("areNeighborCells");
 
-    let (origin, index) = (0x0890153a1017ffff, 0x890153a1003ffff);
-    group.bench_function("h3o/SameParentCenter", |b| {
-        bench_h3o(b, index, origin)
-    });
+    let (origin, index) = (0x0890153A1017FFFF, 0x890153A1003FFFF);
+    group.bench_function("h3o/SameParentCenter", |b| bench_h3o(b, index, origin));
     group.bench_function("h3/SameParentCenter", |b| bench_h3(b, index, origin));
 
-    let (origin, index) = (0x0890153a1017ffff, 0x0890153a1013ffff);
-    group
-        .bench_function("h3o/SameParentOther", |b| bench_h3o(b, index, origin));
+    let (origin, index) = (0x0890153A1017FFFF, 0x0890153A1013FFFF);
+    group.bench_function("h3o/SameParentOther", |b| bench_h3o(b, index, origin));
     group.bench_function("h3/SameParentOther", |b| bench_h3(b, index, origin));
 
     // This pair uses the fast unsafe implementation of grid disk.
-    let (origin, index) = (0x0890153a1017ffff, 0x0890153a10bbffff);
-    group
-        .bench_function("h3o/DifferentParent", |b| bench_h3o(b, index, origin));
+    let (origin, index) = (0x0890153A1017FFFF, 0x0890153A10BBFFFF);
+    group.bench_function("h3o/DifferentParent", |b| bench_h3o(b, index, origin));
     group.bench_function("h3/DifferentParent", |b| bench_h3(b, index, origin));
 
     // This pair uses the slow safe implementation of grid disk.
-    let (origin, index) = (0x08908000001bffff, 0x08908000000fffff);
+    let (origin, index) = (0x08908000001BFFFF, 0x08908000000FFFFF);
     group.bench_function("h3o/DifferentParentFallback", |b| {
         bench_h3o(b, index, origin)
     });
-    group.bench_function("h3/DifferentParentFallback", |b| {
-        bench_h3(b, index, origin)
-    });
+    group.bench_function("h3/DifferentParentFallback", |b| bench_h3(b, index, origin));
 
     group.finish();
 }
@@ -45,10 +40,6 @@ fn bench_h3o(b: &mut Bencher<'_>, index: u64, origin: u64) {
 fn bench_h3(b: &mut Bencher<'_>, index: u64, origin: u64) {
     let mut out = 0;
     b.iter(|| unsafe {
-        h3ron_h3_sys::areNeighborCells(
-            black_box(origin),
-            black_box(index),
-            &mut out,
-        )
+        h3ron_h3_sys::areNeighborCells(black_box(origin), black_box(index), &mut out)
     })
 }

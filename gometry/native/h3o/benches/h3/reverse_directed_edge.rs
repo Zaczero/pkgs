@@ -1,9 +1,10 @@
-use super::constants::{HEXAGONS, PENTAGONS};
-use criterion::{
-    BenchmarkGroup, BenchmarkId, Criterion, measurement::Measurement,
-};
-use h3o::CellIndex;
 use std::hint::black_box;
+
+use criterion::measurement::Measurement;
+use criterion::{BenchmarkGroup, BenchmarkId, Criterion};
+use h3o::CellIndex;
+
+use super::constants::{HEXAGONS, PENTAGONS};
 
 pub fn bench(c: &mut Criterion) {
     let mut group = c.benchmark_group("reverseDirectedEdge");
@@ -31,12 +32,8 @@ fn bench_h3o<T>(
 ) where
     T: Measurement,
 {
-    group.bench_with_input(
-        BenchmarkId::new(name, resolution),
-        &index,
-        |b, &index| {
-            let edge = index.edges().next().expect("edge index");
-            b.iter(|| black_box(edge).reverse())
-        },
-    );
+    group.bench_with_input(BenchmarkId::new(name, resolution), &index, |b, &index| {
+        let edge = index.edges().next().expect("edge index");
+        b.iter(|| black_box(edge).reverse())
+    });
 }

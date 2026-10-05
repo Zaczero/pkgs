@@ -1,13 +1,13 @@
-use super::utils::{load_cells, load_polygon};
+use std::hint::black_box;
+use std::os::raw::c_int;
+
 use ahash::HashSet;
-use criterion::{
-    BenchmarkGroup, BenchmarkId, Criterion, measurement::Measurement,
-};
-use h3o::{
-    CellIndex, Resolution,
-    geom::{SolventBuilder, TilerBuilder},
-};
-use std::{hint::black_box, os::raw::c_int};
+use criterion::measurement::Measurement;
+use criterion::{BenchmarkGroup, BenchmarkId, Criterion};
+use h3o::geom::{SolventBuilder, TilerBuilder};
+use h3o::{CellIndex, Resolution};
+
+use super::utils::{load_cells, load_polygon};
 
 pub fn bench_full(c: &mut Criterion) {
     let mut group = c.benchmark_group("h3SetToLinkedGeo");
@@ -45,7 +45,7 @@ pub fn bench_holes(c: &mut Criterion) {
 
 pub fn bench_rings(c: &mut Criterion) {
     let mut group = c.benchmark_group("h3SetToLinkedGeo");
-    let hexagon = 0x08b1_fb46_622d_efff;
+    let hexagon = 0x08B1_FB46_622D_EFFF;
 
     for k in 0..=5 {
         let index = CellIndex::try_from(hexagon).expect("hex index");
@@ -82,8 +82,7 @@ pub fn bench_solvent(c: &mut Criterion) {
         let hetero_checked = SolventBuilder::new()
             .enable_heterogeneous_support(resolution)
             .build();
-        let homo_unchecked =
-            SolventBuilder::new().disable_duplicate_detection().build();
+        let homo_unchecked = SolventBuilder::new().disable_duplicate_detection().build();
         let hetero_unchecked = SolventBuilder::new()
             .disable_duplicate_detection()
             .enable_heterogeneous_support(resolution)
@@ -92,39 +91,23 @@ pub fn bench_solvent(c: &mut Criterion) {
         group.bench_with_input(
             BenchmarkId::new("Homogeneous/Checked", res),
             &cells,
-            |b, cells| {
-                b.iter(|| {
-                    homo_checked.dissolve(black_box(cells.iter().copied()))
-                })
-            },
+            |b, cells| b.iter(|| homo_checked.dissolve(black_box(cells.iter().copied()))),
         );
         group.bench_with_input(
             BenchmarkId::new("Homogeneous/Unchecked", res),
             &cells,
-            |b, cells| {
-                b.iter(|| {
-                    homo_unchecked.dissolve(black_box(cells.iter().copied()))
-                })
-            },
+            |b, cells| b.iter(|| homo_unchecked.dissolve(black_box(cells.iter().copied()))),
         );
         group.bench_with_input(
             BenchmarkId::new("Heterogeneous/Checked", res),
             &compacted,
-            |b, compacted| {
-                b.iter(|| {
-                    hetero_checked
-                        .dissolve(black_box(compacted.iter().copied()))
-                })
-            },
+            |b, compacted| b.iter(|| hetero_checked.dissolve(black_box(compacted.iter().copied()))),
         );
         group.bench_with_input(
             BenchmarkId::new("Heterogeneous/Unchecked", res),
             &compacted,
             |b, compacted| {
-                b.iter(|| {
-                    hetero_unchecked
-                        .dissolve(black_box(compacted.iter().copied()))
-                })
+                b.iter(|| hetero_unchecked.dissolve(black_box(compacted.iter().copied())))
             },
         );
     }
@@ -134,12 +117,8 @@ pub fn bench_solvent(c: &mut Criterion) {
 
 // -----------------------------------------------------------------------------
 
-fn bench_h3o<T>(
-    group: &mut BenchmarkGroup<T>,
-    name: &'static str,
-    indexes: Vec<CellIndex>,
-    k: u32,
-) where
+fn bench_h3o<T>(group: &mut BenchmarkGroup<T>, name: &'static str, indexes: Vec<CellIndex>, k: u32)
+where
     T: Measurement,
 {
     let solvent = SolventBuilder::new().build();
@@ -148,12 +127,8 @@ fn bench_h3o<T>(
     });
 }
 
-fn bench_h3<T>(
-    group: &mut BenchmarkGroup<T>,
-    name: &'static str,
-    indexes: Vec<CellIndex>,
-    k: u32,
-) where
+fn bench_h3<T>(group: &mut BenchmarkGroup<T>, name: &'static str, indexes: Vec<CellIndex>, k: u32)
+where
     T: Measurement,
 {
     let indexes = indexes.into_iter().map(Into::into).collect::<Vec<_>>();

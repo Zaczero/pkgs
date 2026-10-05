@@ -1,19 +1,17 @@
-use super::h3api;
 use h3o::{LatLng, Resolution};
+
+use super::h3api;
 
 macro_rules! test {
     ($name:ident, $resolution:literal) => {
         #[test]
         fn $name() {
-            let ll = LatLng::new(56.66170660104207, 20.46973734604441)
-                .expect("coordinate");
-            let resolution =
-                Resolution::try_from($resolution).expect("index resolution");
+            let ll = LatLng::new(56.66170660104207, 20.46973734604441).expect("coordinate");
+            let resolution = Resolution::try_from($resolution).expect("index resolution");
             let index = ll.to_cell(resolution);
 
             for res in 0..=15 {
-                let child_res =
-                    Resolution::try_from(res).expect("child resolution");
+                let child_res = Resolution::try_from(res).expect("child resolution");
                 let result = index.center_child(child_res);
                 let reference = h3api::cell_to_center_child(index, child_res);
 

@@ -1,5 +1,8 @@
+use std::fs::File;
+use std::io::BufReader;
+use std::path::PathBuf;
+
 use geo::{Geometry, Polygon};
-use std::{fs::File, io::BufReader, path::PathBuf};
 
 pub fn load_polygon(name: &str) -> Polygon {
     let mut path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));

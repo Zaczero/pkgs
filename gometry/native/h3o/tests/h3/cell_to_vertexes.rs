@@ -1,5 +1,6 @@
-use super::h3api;
 use h3o::CellIndex;
+
+use super::h3api;
 
 macro_rules! test {
     ($name:ident, $index:literal) => {
@@ -14,5 +15,5 @@ macro_rules! test {
     };
 }
 
-test!(hexagon, 0x8f0800000000000);
-test!(pentagon, 0x8f734e64992d6d8);
+test!(hexagon, 0x8F0800000000000);
+test!(pentagon, 0x8F734E64992D6D8);

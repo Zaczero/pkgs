@@ -9,16 +9,13 @@
 //! a unique address consisting of the minimal positive `IJK` components; this
 //! always results in at most two non-zero components.
 
+use core::ops::{Add, MulAssign, Sub};
+use core::{cmp, fmt};
+
 use super::{CoordCube, SQRT3_2, Vec2d};
-use crate::{
-    Direction,
-    error::HexGridError,
-    math::{mul_add, round},
-};
-use core::{
-    cmp, fmt,
-    ops::{Add, MulAssign, Sub},
-};
+use crate::Direction;
+use crate::error::HexGridError;
+use crate::math::{mul_add, round};
 
 const ONE_SEVENTH: f64 = 0.14285714285714285714285714285714285;
 

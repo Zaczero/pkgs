@@ -1,5 +1,7 @@
+use core::error::Error;
+use core::fmt;
+
 use super::HexGridError;
-use core::{error::Error, fmt};
 
 /// Errors occurring during [`LocalIJ`](crate::LocalIJ) coordinate system
 /// conversions.
@@ -19,7 +21,7 @@ impl fmt::Display for LocalIjError {
         match *self {
             Self::ResolutionMismatch => {
                 write!(f, "resolution mismatch")
-            }
+            },
             Self::Pentagon => write!(f, "pentagon distortion"),
             Self::HexGrid(err) => write!(f, "hex grid error: {err}"),
         }

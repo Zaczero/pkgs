@@ -1,26 +1,24 @@
-use super::{Children, GridPathCells};
-use crate::{
-    BaseCell, Boundary, CCW, CW, DEFAULT_CELL_INDEX, DirectedEdgeIndex,
-    Direction, EARTH_RADIUS_KM, Edge, ExtendedResolution, FaceSet, LatLng,
-    LocalIJ, NUM_HEX_VERTS, NUM_PENT_VERTS, Resolution, Vertex, VertexIndex,
-    coord::{CoordIJ, CoordIJK, FaceIJK, LocalIJK, Overage, Vec3d},
-    error::{
-        CompactionError, HexGridError, InvalidCellIndex, LocalIjError,
-        ResolutionMismatch,
-    },
-    grid,
-    index::{IndexMode, bits},
-};
 use alloc::vec::Vec;
-use core::{
-    cmp::Ordering,
-    fmt, iter,
-    num::{NonZeroU8, NonZeroU64},
-    str::FromStr,
-};
+use core::cmp::Ordering;
+use core::num::{NonZeroU8, NonZeroU64};
+use core::str::FromStr;
+use core::{fmt, iter};
+
 use either::Either;
 #[cfg(feature = "geo")]
 use geo::ToDegrees as _;
+
+use super::{Children, GridPathCells};
+use crate::coord::{CoordIJ, CoordIJK, FaceIJK, LocalIJK, Overage, Vec3d};
+use crate::error::{
+    CompactionError, HexGridError, InvalidCellIndex, LocalIjError, ResolutionMismatch,
+};
+use crate::index::{IndexMode, bits};
+use crate::{
+    BaseCell, Boundary, CCW, CW, DEFAULT_CELL_INDEX, DirectedEdgeIndex, Direction, EARTH_RADIUS_KM,
+    Edge, ExtendedResolution, FaceSet, LatLng, LocalIJ, NUM_HEX_VERTS, NUM_PENT_VERTS, Resolution,
+    Vertex, VertexIndex, grid,
+};
 
 /// Lookup table for number of children for hexagonal cells.
 // 7.pow(resolution_delta)
@@ -119,10 +117,7 @@ const FAILED_DIRECTIONS: u64 =
     //   6       5       4       3       2       1       0
     0b0101000_1000100_0001100_1010000_0110000_0000000_0000000;
 
-const fn validate_direction(
-    origin_dir: u8,
-    index_dir: u8,
-) -> Result<(), LocalIjError> {
+const fn validate_direction(origin_dir: u8, index_dir: u8) -> Result<(), LocalIjError> {
     let offset = origin_dir * 7 + index_dir;
     if (FAILED_DIRECTIONS & (1 << offset)) != 0 {
         // TODO: We may be unfolding the pentagon incorrectly in
@@ -206,9 +201,8 @@ impl CellIndex {
         let resolution = u8::try_from(directions.len())
             .map_err(|_err| InvalidCellIndex::new(None, "too many directions"))
             .and_then(|value| {
-                Resolution::try_from(value).map_err(|_err| {
-                    InvalidCellIndex::new(None, "invalid resolution")
-                })
+                Resolution::try_from(value)
+                    .map_err(|_err| InvalidCellIndex::new(None, "invalid resolution"))
             })?;
         let mut index = h3o_bit::set_base_cell(
             bits::set_resolution(DEFAULT_CELL_INDEX, resolution),
@@ -331,12 +325,8 @@ impl CellIndex {
             // up to 14), hence we can always get a finer resolution.
             let child_resolution = resolution.succ().expect("child resolution");
             let bits = bits::set_resolution(self.0.get(), child_resolution);
-            return Self::new_unchecked(bits::set_direction(
-                bits,
-                0,
-                child_resolution,
-            ))
-            .icosahedron_faces();
+            return Self::new_unchecked(bits::set_direction(bits, 0, child_resolution))
+                .icosahedron_faces();
         }
 
         // Convert to FaceIJK.
@@ -349,10 +339,7 @@ impl CellIndex {
         let (vertex_count, resolution) = if is_pentagon {
             (
                 usize::from(NUM_PENT_VERTS),
-                fijk.vertices(
-                    resolution,
-                    &mut vertices[..usize::from(NUM_PENT_VERTS)],
-                ),
+                fijk.vertices(resolution, &mut vertices[..usize::from(NUM_PENT_VERTS)]),
             )
         } else {
             (
@@ -437,11 +424,10 @@ impl CellIndex {
     /// ```
     #[must_use]
     pub fn direction_at(self, resolution: Resolution) -> Option<Direction> {
-        (resolution != Resolution::Zero && resolution <= self.resolution())
-            .then(|| {
-                let value = bits::get_direction(self.0.get(), resolution);
-                Direction::new_unchecked(value)
-            })
+        (resolution != Resolution::Zero && resolution <= self.resolution()).then(|| {
+            let value = bits::get_direction(self.0.get(), resolution);
+            Direction::new_unchecked(value)
+        })
     }
 
     /// Returns the parent, at the specified resolution, of the cell.
@@ -558,9 +544,7 @@ impl CellIndex {
     /// # Ok::<(), h3o::error::InvalidCellIndex>(())
     /// ```
     pub fn child_position(self, resolution: Resolution) -> Option<u64> {
-        let Some(parent_is_pentagon) =
-            self.parent(resolution).map(Self::is_pentagon)
-        else {
+        let Some(parent_is_pentagon) = self.parent(resolution).map(Self::is_pentagon) else {
             // cell's resolution is coarser than `resolution`.
             return None;
         };
@@ -633,23 +617,14 @@ impl CellIndex {
     /// # Ok::<(), h3o::error::InvalidCellIndex>(())
     /// ```
     #[must_use]
-    pub fn child_at(
-        self,
-        mut position: u64,
-        resolution: Resolution,
-    ) -> Option<Self> {
-        #[expect(
-            clippy::cast_possible_truncation,
-            reason = "safe thx to assert"
-        )]
+    pub fn child_at(self, mut position: u64, resolution: Resolution) -> Option<Self> {
+        #[expect(clippy::cast_possible_truncation, reason = "safe thx to assert")]
         fn set_direction(bits: u64, digit: u64, resolution: Resolution) -> u64 {
             assert!(digit < 7);
             bits::set_direction(bits, digit as u8, resolution)
         }
 
-        if resolution < self.resolution()
-            || position >= self.children_count(resolution)
-        {
+        if resolution < self.resolution() || position >= self.children_count(resolution) {
             return None;
         }
 
@@ -659,8 +634,7 @@ impl CellIndex {
             // While we are inside a parent pentagon, we need to check
             // if this cell is a pentagon, and if not, we need to offset
             // its digit to account for the skipped direction
-            for res in Resolution::range(self.resolution(), resolution).skip(1)
-            {
+            for res in Resolution::range(self.resolution(), resolution).skip(1) {
                 cur_res = res;
                 let diff = u8::from(resolution) - u8::from(res);
                 let pent_count = PENTAGON_CHILDREN_COUNTS[usize::from(diff)];
@@ -696,10 +670,7 @@ impl CellIndex {
     /// let children = index.children(Resolution::Eleven).collect::<Vec<_>>();
     /// # Ok::<(), h3o::error::InvalidCellIndex>(())
     /// ```
-    pub fn children(
-        self,
-        resolution: Resolution,
-    ) -> impl Iterator<Item = Self> {
+    pub fn children(self, resolution: Resolution) -> impl Iterator<Item = Self> {
         Children::new(self, resolution)
     }
 
@@ -754,14 +725,11 @@ impl CellIndex {
         'next_cell: while let Some(&cell) = cursor.peek() {
             // Resolution zero cell cannot be compacted.
             // First cell may be compacted with the next ones.
-            if resolution != Resolution::Zero
-                && bits::get_direction(cell.into(), resolution) == 0
-            {
+            if resolution != Resolution::Zero && bits::get_direction(cell.into(), resolution) == 0 {
                 for res in Resolution::range(Resolution::Zero, resolution) {
                     let parent = cell.parent(res).expect("parent exists");
                     let count =
-                        usize::try_from(parent.children_count(resolution))
-                            .expect("child overflow");
+                        usize::try_from(parent.children_count(resolution)).expect("child overflow");
                     let expected = compute_last_sibling(cell, res);
 
                     if cursor.peek_at(count - 1) == Some(&expected) {
@@ -848,17 +816,9 @@ impl CellIndex {
         // SAFETY: 0 is always a valid vertex.
         let start = Vertex::new_unchecked(0);
         if self.is_pentagon() {
-            fijk.pentagon_boundary_with_seeds(
-                self.resolution(),
-                start,
-                NUM_PENT_VERTS,
-            )
+            fijk.pentagon_boundary_with_seeds(self.resolution(), start, NUM_PENT_VERTS)
         } else {
-            fijk.hexagon_boundary_with_seeds(
-                self.resolution(),
-                start,
-                NUM_HEX_VERTS,
-            )
+            fijk.hexagon_boundary_with_seeds(self.resolution(), start, NUM_HEX_VERTS)
         }
     }
 
@@ -871,10 +831,7 @@ impl CellIndex {
     /// ```
     pub fn base_cells() -> impl Iterator<Item = Self> {
         (0..BaseCell::count()).map(|base_cell| {
-            Self::new_unchecked(h3o_bit::set_base_cell(
-                DEFAULT_CELL_INDEX,
-                base_cell,
-            ))
+            Self::new_unchecked(h3o_bit::set_base_cell(DEFAULT_CELL_INDEX, base_cell))
         })
     }
 
@@ -921,9 +878,8 @@ impl CellIndex {
     pub fn edges(self) -> impl Iterator<Item = DirectedEdgeIndex> {
         let template = bits::set_mode(self.0.get(), IndexMode::DirectedEdge);
 
-        Edge::iter(self.is_pentagon()).map(move |edge| {
-            DirectedEdgeIndex::new_unchecked(bits::set_edge(template, edge))
-        })
+        Edge::iter(self.is_pentagon())
+            .map(move |edge| DirectedEdgeIndex::new_unchecked(bits::set_edge(template, edge)))
     }
 
     /// Get the specified vertex of this cell.
@@ -962,8 +918,7 @@ impl CellIndex {
         // the lowest index of any neighbor, so we can skip determining the
         // owner.
         if resolution == Resolution::Zero
-            || bits::get_direction(self.into(), resolution)
-                != u8::from(Direction::Center)
+            || bits::get_direction(self.into(), resolution) != u8::from(Direction::Center)
         {
             // Get the left neighbor of the vertex, with its rotations.
             let left = vertex.to_direction(self);
@@ -976,30 +931,25 @@ impl CellIndex {
 
             // As above, skip the right neighbor if the left is known lowest
             if resolution == Resolution::Zero
-                || bits::get_direction(left_cell.into(), resolution)
-                    != u8::from(Direction::Center)
+                || bits::get_direction(left_cell.into(), resolution) != u8::from(Direction::Center)
             {
                 // Get the right neighbor of the vertex, with its rotations.
                 // Note that vertex - 1 is the right side, as vertex numbers are
                 // CCW.
-                let right_vertex = Vertex::new_unchecked(
-                    (u8::from(vertex) + vertex_count - 1) % vertex_count,
-                );
+                let right_vertex =
+                    Vertex::new_unchecked((u8::from(vertex) + vertex_count - 1) % vertex_count);
                 let right = right_vertex.to_direction(self);
                 let (right_cell, right_rotation) =
-                    grid::neighbor_rotations(self, right, 0)
-                        .expect("right neighbor");
+                    grid::neighbor_rotations(self, right, 0).expect("right neighbor");
 
                 // Set to owner if lowest index.
                 if right_cell < owner {
                     owner = right_cell;
                     let direction = if owner.is_pentagon() {
-                        grid::direction_for_neighbor(owner, self)
-                            .expect("direction to the right")
+                        grid::direction_for_neighbor(owner, self).expect("direction to the right")
                     } else {
                         debug_assert_ne!(right, Direction::Center);
-                        let offset = (REV_NEIGHBOR_DIRECTIONS_HEX
-                            [usize::from(right) - 1]
+                        let offset = (REV_NEIGHBOR_DIRECTIONS_HEX[usize::from(right) - 1]
                             + right_rotation)
                             % NUM_HEX_VERTS;
                         DIRECTIONS[usize::from(offset)]
@@ -1012,12 +962,10 @@ impl CellIndex {
             // Determine the vertex number for the left neighbor.
             if owner == left_cell {
                 let direction = if owner.is_pentagon() {
-                    grid::direction_for_neighbor(owner, self)
-                        .expect("direction to the left")
+                    grid::direction_for_neighbor(owner, self).expect("direction to the left")
                 } else {
                     debug_assert_ne!(left, Direction::Center);
-                    let offset = (REV_NEIGHBOR_DIRECTIONS_HEX
-                        [usize::from(left) - 1]
+                    let offset = (REV_NEIGHBOR_DIRECTIONS_HEX[usize::from(left) - 1]
                         + left_rotation)
                         % NUM_HEX_VERTS;
                     DIRECTIONS[usize::from(offset)]
@@ -1026,8 +974,7 @@ impl CellIndex {
                 // For the left neighbor, we need the second vertex of the
                 // edge, which may involve looping around the vertex nums.
                 owner_vertex = Vertex::new_unchecked(
-                    (u8::from(direction.vertex(owner)) + 1)
-                        % owner.vertex_count(),
+                    (u8::from(direction.vertex(owner)) + 1) % owner.vertex_count(),
                 );
             }
         }
@@ -1094,9 +1041,7 @@ impl CellIndex {
         if k == 0 {
             return Either::Right(iter::once(self));
         }
-        Either::Left(
-            grid::DiskDistancesSafe::new(self, k).map(|(cell, _)| cell),
-        )
+        Either::Left(grid::DiskDistancesSafe::new(self, k).map(|(cell, _)| cell))
     }
 
     /// Produces indexes within grid distance `k` of the cell.
@@ -1126,8 +1071,7 @@ impl CellIndex {
             });
         }
         Either::Left(
-            grid::DiskDistancesUnsafe::new(self, k)
-                .map(|value| value.map(|(cell, _)| cell)),
+            grid::DiskDistancesUnsafe::new(self, k).map(|value| value.map(|(cell, _)| cell)),
         )
     }
 
@@ -1166,10 +1110,7 @@ impl CellIndex {
     /// let cells_and_dists = index.grid_disk_distances_safe(2).collect::<Vec<_>>();
     /// # Ok::<(), h3o::error::InvalidCellIndex>(())
     /// ```
-    pub fn grid_disk_distances_safe(
-        self,
-        k: u32,
-    ) -> impl Iterator<Item = (Self, u32)> {
+    pub fn grid_disk_distances_safe(self, k: u32) -> impl Iterator<Item = (Self, u32)> {
         if k == 0 {
             return Either::Right(iter::once((self, 0)));
         }
@@ -1196,10 +1137,7 @@ impl CellIndex {
     ///     .unwrap_or_default();
     /// # Ok::<(), h3o::error::InvalidCellIndex>(())
     /// ```
-    pub fn grid_disk_distances_fast(
-        self,
-        k: u32,
-    ) -> impl Iterator<Item = Option<(Self, u32)>> {
+    pub fn grid_disk_distances_fast(self, k: u32) -> impl Iterator<Item = Option<(Self, u32)>> {
         if k == 0 {
             return Either::Right(if self.is_pentagon() {
                 Either::Right(iter::once(None))
@@ -1389,8 +1327,7 @@ impl CellIndex {
     pub fn grid_path_cells(
         self,
         to: Self,
-    ) -> Result<impl Iterator<Item = Result<Self, LocalIjError>>, LocalIjError>
-    {
+    ) -> Result<impl Iterator<Item = Result<Self, LocalIjError>>, LocalIjError> {
         GridPathCells::new(self, to)
     }
 
@@ -1415,10 +1352,7 @@ impl CellIndex {
     /// assert!(!src.is_neighbor_with(dst)?);
     /// # Ok::<(), Box<dyn std::error::Error>>(())
     /// ```
-    pub fn is_neighbor_with(
-        self,
-        index: Self,
-    ) -> Result<bool, ResolutionMismatch> {
+    pub fn is_neighbor_with(self, index: Self) -> Result<bool, ResolutionMismatch> {
         // A cell cannot be neighbors with itself.
         if self == index {
             return Ok(false);
@@ -1454,10 +1388,8 @@ impl CellIndex {
                     return Ok(true);
                 }
 
-                if u8::from(NEIGHBOR_SET_CW[usize::from(cur_res_digit)])
-                    == idx_res_digit
-                    || u8::from(NEIGHBOR_SET_CCW[usize::from(cur_res_digit)])
-                        == idx_res_digit
+                if u8::from(NEIGHBOR_SET_CW[usize::from(cur_res_digit)]) == idx_res_digit
+                    || u8::from(NEIGHBOR_SET_CCW[usize::from(cur_res_digit)]) == idx_res_digit
                 {
                     return Ok(true);
                 }
@@ -1471,9 +1403,7 @@ impl CellIndex {
             .try_fold(false, |acc, item| {
                 item.map(|neighbor| acc || index == neighbor)
             })
-            .unwrap_or_else(|| {
-                self.grid_disk_safe(1).any(|neighbor| index == neighbor)
-            }))
+            .unwrap_or_else(|| self.grid_disk_safe(1).any(|neighbor| index == neighbor)))
     }
 
     /// Produces `IJ` coordinates for an index anchored by an origin.
@@ -1646,7 +1576,7 @@ impl CellIndex {
     /// ```
     #[must_use]
     pub fn last(resolution: Resolution) -> Self {
-        let bits = bits::set_resolution(0x080f_3b6d_b6db_6db6, resolution);
+        let bits = bits::set_resolution(0x080F_3B6D_B6DB_6DB6, resolution);
         Self::new_unchecked(bits::set_unused(bits, resolution))
     }
 
@@ -1683,14 +1613,10 @@ impl CellIndex {
             }
 
             // Check whether the cell crosses a deleted pentagon subsequence.
-            if leading_dir == Some(jk)
-                && fijk.face == dir_faces[usize::from(ik.get()) - 2]
-            {
+            if leading_dir == Some(jk) && fijk.face == dir_faces[usize::from(ik.get()) - 2] {
                 // Crosses from JK to IK => Rotate CW.
                 ccw_rot60 = (ccw_rot60 + 5) % 6;
-            } else if leading_dir == Some(ik)
-                && fijk.face == dir_faces[usize::from(jk.get()) - 2]
-            {
+            } else if leading_dir == Some(ik) && fijk.face == dir_faces[usize::from(jk.get()) - 2] {
                 // Crosses from IK to JK => Rotate CCW.
                 ccw_rot60 = (ccw_rot60 + 1) % 6;
             }
@@ -1718,10 +1644,7 @@ impl CellIndex {
     /// index is on the other side of a pentagon.
     /// In such case, [`LocalIjError::Pentagon`] or [`LocalIjError::HexGrid`] is
     /// returned.
-    pub(super) fn to_local_ijk(
-        mut self,
-        origin: Self,
-    ) -> Result<LocalIJK, LocalIjError> {
+    pub(super) fn to_local_ijk(mut self, origin: Self) -> Result<LocalIJK, LocalIjError> {
         let origin_res = origin.resolution();
         let index_res = self.resolution();
 
@@ -1736,11 +1659,9 @@ impl CellIndex {
         let mut rev_dir = if origin_base_cell == base_cell {
             Direction::Center
         } else {
-            dir = origin_base_cell.direction(base_cell).ok_or_else(|| {
-                HexGridError::new(
-                    "cannot unfold (base cells are not neighbors)",
-                )
-            })?;
+            dir = origin_base_cell
+                .direction(base_cell)
+                .ok_or_else(|| HexGridError::new("cannot unfold (base cells are not neighbors)"))?;
             base_cell
                 .direction(origin_base_cell)
                 .expect("reverse direction")
@@ -1752,8 +1673,7 @@ impl CellIndex {
         if dir != Direction::Center {
             // Rotate index into the orientation of the origin base cell.
             // CW because we are undoing the rotation into that base cell.
-            let base_cell_rotations =
-                origin_base_cell.neighbor_rotation(dir).into();
+            let base_cell_rotations = origin_base_cell.neighbor_rotation(dir).into();
             self = Self::new_unchecked(if index_on_pent {
                 (0..base_cell_rotations).fold(self.into(), |acc, _| {
                     // If the rotation will fall on the K axe, rotate twice to
@@ -1783,21 +1703,17 @@ impl CellIndex {
             debug_assert!(!(origin_on_pent && index_on_pent));
 
             let (pentagon_rotations, direction_rotations) = if origin_on_pent {
-                let leading_dir = bits::first_axe(origin.into())
-                    .map_or_else(|| 0, NonZeroU8::get);
+                let leading_dir = bits::first_axe(origin.into()).map_or_else(|| 0, NonZeroU8::get);
                 validate_direction(leading_dir, dir.into())?;
 
-                let rotations = PENTAGON_ROTATIONS[usize::from(leading_dir)]
-                    [usize::from(dir)];
+                let rotations = PENTAGON_ROTATIONS[usize::from(leading_dir)][usize::from(dir)];
                 (rotations, rotations)
             } else if index_on_pent {
-                let leading_dir = bits::first_axe(self.into())
-                    .map_or_else(|| 0, NonZeroU8::get);
+                let leading_dir = bits::first_axe(self.into()).map_or_else(|| 0, NonZeroU8::get);
                 validate_direction(leading_dir, rev_dir.into())?;
 
                 (
-                    PENTAGON_ROTATIONS[usize::from(rev_dir)]
-                        [usize::from(leading_dir)],
+                    PENTAGON_ROTATIONS[usize::from(rev_dir)][usize::from(leading_dir)],
                     0,
                 )
             } else {
@@ -1805,10 +1721,9 @@ impl CellIndex {
             };
             // No check on `direction_rotations`, it's either 0 or
             // `pentagon_rotations`.
-            debug_assert!(pentagon_rotations != 0xff);
+            debug_assert!(pentagon_rotations != 0xFF);
 
-            ijk = (0..pentagon_rotations)
-                .fold(ijk, |acc, _| acc.rotate60::<CW>());
+            ijk = (0..pentagon_rotations).fold(ijk, |acc, _| acc.rotate60::<CW>());
 
             let mut offset = CoordIJK::new(0, 0, 0).neighbor(dir);
             // Scale offset based on resolution
@@ -1823,8 +1738,7 @@ impl CellIndex {
                 };
             }
 
-            offset = (0..direction_rotations)
-                .fold(offset, |acc, _| acc.rotate60::<CW>());
+            offset = (0..direction_rotations).fold(offset, |acc, _| acc.rotate60::<CW>());
 
             // Perform necessary translation
             ijk = (ijk + offset).normalize();
@@ -1834,14 +1748,13 @@ impl CellIndex {
             // same base cell.
             debug_assert_eq!(base_cell, origin_base_cell);
 
-            let origin_leading_dir = bits::first_axe(origin.into())
-                .map_or_else(|| 0, NonZeroU8::get);
-            let index_leading_dir =
-                bits::first_axe(self.into()).map_or_else(|| 0, NonZeroU8::get);
+            let origin_leading_dir =
+                bits::first_axe(origin.into()).map_or_else(|| 0, NonZeroU8::get);
+            let index_leading_dir = bits::first_axe(self.into()).map_or_else(|| 0, NonZeroU8::get);
             validate_direction(origin_leading_dir, index_leading_dir)?;
 
-            let rotations = PENTAGON_ROTATIONS[usize::from(origin_leading_dir)]
-                [usize::from(index_leading_dir)];
+            let rotations =
+                PENTAGON_ROTATIONS[usize::from(origin_leading_dir)][usize::from(index_leading_dir)];
 
             ijk = (0..rotations).fold(ijk, |acc, _| acc.rotate60::<CW>());
         }
@@ -1875,8 +1788,7 @@ impl Ord for CellIndex {
         // cells in the bit layout, thus has more weight).
         //
         // By ignoring the resolution bits we get the right ordering.
-        (h3o_bit::clr_resolution(self.0.get()))
-            .cmp(&h3o_bit::clr_resolution(other.0.get()))
+        (h3o_bit::clr_resolution(self.0.get())).cmp(&h3o_bit::clr_resolution(other.0.get()))
     }
 }
 
@@ -1908,9 +1820,7 @@ impl From<CellIndex> for FaceIJK {
 
         // Adjust for the pentagonal missing sequence; all of sub-sequence 5
         // needs to be adjusted (and some of sub-sequence 4 below).
-        if base_cell.is_pentagon()
-            && bits::first_axe(bits) == Direction::IK.axe()
-        {
+        if base_cell.is_pentagon() && bits::first_axe(bits) == Direction::IK.axe() {
             bits = bits::rotate60::<{ CW }>(bits, 1);
         }
 
@@ -1939,18 +1849,13 @@ impl From<CellIndex> for FaceIJK {
         // Adjust for overage if needed.
         // A pentagon base cell with a leading 4 digit requires special
         // handling.
-        let is_pent4 = base_cell.is_pentagon()
-            && bits::first_axe(bits) == Direction::I.axe();
+        let is_pent4 = base_cell.is_pentagon() && bits::first_axe(bits) == Direction::I.axe();
 
-        if fijk.adjust_overage_class2::<{ CW }>(class2_res, is_pent4)
-            != Overage::None
-        {
+        if fijk.adjust_overage_class2::<{ CW }>(class2_res, is_pent4) != Overage::None {
             // If the base cell is a pentagon we have the potential for
             // secondary overages.
             if base_cell.is_pentagon() {
-                while fijk.adjust_overage_class2::<{ CW }>(class2_res, false)
-                    != Overage::None
-                {}
+                while fijk.adjust_overage_class2::<{ CW }>(class2_res, false) != Overage::None {}
             }
 
             if class2_res != resolution.into() {
@@ -2003,10 +1908,7 @@ impl TryFrom<u64> for CellIndex {
         let dirs_mask = (1 << (resolution * h3o_bit::DIRECTION_BITSIZE)) - 1;
         let dirs = (value >> unused_bitsize) & dirs_mask;
         if has_unused_direction(dirs) {
-            return Err(Self::Error::new(
-                Some(value),
-                "unexpected unused direction",
-            ));
+            return Err(Self::Error::new(Some(value), "unexpected unused direction"));
         }
 
         // Check for pentagons with deleted subsequence.
@@ -2109,12 +2011,9 @@ impl fmt::UpperHex for CellIndex {
 
 #[cfg(feature = "arbitrary")]
 impl<'a> arbitrary::Arbitrary<'a> for CellIndex {
-    fn arbitrary(
-        data: &mut arbitrary::Unstructured<'a>,
-    ) -> arbitrary::Result<Self> {
-        u64::arbitrary(data).and_then(|byte| {
-            Self::try_from(byte).map_err(|_| arbitrary::Error::IncorrectFormat)
-        })
+    fn arbitrary(data: &mut arbitrary::Unstructured<'a>) -> arbitrary::Result<Self> {
+        u64::arbitrary(data)
+            .and_then(|byte| Self::try_from(byte).map_err(|_| arbitrary::Error::IncorrectFormat))
     }
 }
 
@@ -2196,7 +2095,7 @@ fn compute_last_sibling(cell: CellIndex, res: Resolution) -> CellIndex {
     let diff = usize::from(u8::from(cell.resolution()) - u8::from(res));
     let mask = (1_u64 << (diff * h3o_bit::DIRECTION_BITSIZE)) - 1;
     let offset = cell.resolution().direction_offset();
-    let new_dirs = (0x0000_1b6d_b6db_6db6 & mask) << offset;
+    let new_dirs = (0x0000_1B6D_B6DB_6DB6 & mask) << offset;
     // SAFETY: this bit twiddling produces a valid cell index.
     CellIndex::new_unchecked((u64::from(cell) & !(mask << offset)) | new_dirs)
 }

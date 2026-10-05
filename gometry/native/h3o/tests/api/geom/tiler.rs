@@ -1,10 +1,11 @@
-use super::utils::load_polygon;
+use std::collections::BTreeSet;
+use std::f64::consts::PI;
+
 use geo::{LineString, MultiPolygon, Polygon, Rect, coord, polygon};
-use h3o::{
-    CellIndex, LatLng, Resolution,
-    geom::{ContainmentMode, TilerBuilder},
-};
-use std::{collections::BTreeSet, f64::consts::PI};
+use h3o::geom::{ContainmentMode, TilerBuilder};
+use h3o::{CellIndex, LatLng, Resolution};
+
+use super::utils::load_polygon;
 
 #[test]
 fn add_rads() {
@@ -217,8 +218,7 @@ fn annotated_coverage() {
     let polygon = load_polygon("Paris");
     tiler.add(polygon).expect("failed to add polygon");
     let result = tiler.into_annotated_coverage().collect::<Vec<_>>();
-    let fully_contained =
-        result.iter().filter(|cell| cell.is_fully_contained).count();
+    let fully_contained = result.iter().filter(|cell| cell.is_fully_contained).count();
 
     assert_eq!(fully_contained, expected_fully_contained);
 }
@@ -254,10 +254,8 @@ macro_rules! world_test {
         #[test]
         #[allow(unused_comparisons, reason = "when `$exact_count` is 0")]
         fn $name() {
-            let resolution =
-                Resolution::try_from($resolution).expect("resolution");
-            let expected_count = usize::try_from(resolution.cell_count())
-                .expect("cell count cast");
+            let resolution = Resolution::try_from($resolution).expect("resolution");
+            let expected_count = usize::try_from(resolution.cell_count()).expect("cell count cast");
 
             let mut tiler = TilerBuilder::new(resolution).build();
             let shape1 = load_polygon("HalfWorld_1");
@@ -277,11 +275,7 @@ macro_rules! world_test {
             assert_eq!(count2, $expected);
             assert!(count2 >= cells2.len());
 
-            assert_eq!(
-                cells1.len() + cells2.len(),
-                expected_count,
-                "cell count"
-            );
+            assert_eq!(cells1.len() + cells2.len(), expected_count, "cell count");
             assert!(cells1.is_disjoint(&cells2), "no overlap");
         }
     };
@@ -298,8 +292,7 @@ macro_rules! test_count {
     ($name:ident, $polygon:expr, $resolution: literal, $expected_max: literal, $expected: literal) => {
         #[test]
         fn $name() {
-            let resolution =
-                Resolution::try_from($resolution).expect("resolution");
+            let resolution = Resolution::try_from($resolution).expect("resolution");
 
             let mut tiler = TilerBuilder::new(resolution).build();
             tiler.add($polygon).expect("failed to add polygon");
@@ -353,11 +346,8 @@ macro_rules! exhaustive_test {
     ($name:ident, $resolution: literal) => {
         #[test]
         fn $name() {
-            let resolution =
-                Resolution::try_from($resolution).expect("index resolution");
-            for index in CellIndex::base_cells()
-                .flat_map(|index| index.children(resolution))
-            {
+            let resolution = Resolution::try_from($resolution).expect("index resolution");
+            for index in CellIndex::base_cells().flat_map(|index| index.children(resolution)) {
                 let ring = index.boundary().into();
                 // Skip index that crosses the meridian.
                 if index_is_transmeridian(&ring) {
@@ -370,23 +360,17 @@ macro_rules! exhaustive_test {
                 tiler.add(shape).expect("failed to add polygon");
 
                 let result = tiler.into_coverage().collect::<BTreeSet<_>>();
-                let expected =
-                    index.children(resolution).collect::<BTreeSet<_>>();
-                assert_eq!(
-                    result, expected,
-                    "cell {index} at given resolution"
-                );
+                let expected = index.children(resolution).collect::<BTreeSet<_>>();
+                assert_eq!(result, expected, "cell {index} at given resolution");
 
-                let next_res = Resolution::try_from($resolution + 1)
-                    .expect("next resolution");
+                let next_res = Resolution::try_from($resolution + 1).expect("next resolution");
                 let mut tiler = TilerBuilder::new(next_res)
                     .disable_radians_conversion()
                     .build();
                 let shape = Polygon::new(ring, Vec::new());
                 tiler.add(shape).expect("failed to add polygon");
                 let result = tiler.into_coverage().collect::<BTreeSet<_>>();
-                let expected =
-                    index.children(next_res).collect::<BTreeSet<_>>();
+                let expected = index.children(next_res).collect::<BTreeSet<_>>();
                 assert_eq!(result, expected, "cell {index} at next resolution");
             }
         }
@@ -395,10 +379,9 @@ macro_rules! exhaustive_test {
 
 // Return true if the cell index crosses the meridian.
 fn index_is_transmeridian(boundary: &LineString<f64>) -> bool {
-    let (min_lng, max_lng) =
-        boundary.coords().fold((PI, -PI), |(min, max), coord| {
-            (coord.x.min(min), coord.x.max(max))
-        });
+    let (min_lng, max_lng) = boundary.coords().fold((PI, -PI), |(min, max), coord| {
+        (coord.x.min(min), coord.x.max(max))
+    });
     max_lng - min_lng > PI - (PI / 4.)
 }
 
@@ -409,7 +392,7 @@ exhaustive_test!(exhaustive_res2, 2);
 // -----------------------------------------------------------------------------
 
 fn h3_595_shape() -> Polygon {
-    let center = CellIndex::try_from(0x85283473fffffff).expect("center");
+    let center = CellIndex::try_from(0x85283473FFFFFFF).expect("center");
     let center_ll = LatLng::from(center);
 
     // This polygon should include the center cell. The issue here arises
@@ -437,7 +420,7 @@ fn hexagon_shape() -> Polygon {
 }
 
 fn pentagon_shape() -> Polygon {
-    let pentagon = CellIndex::try_from(0x89300000003ffff).expect("pentagon");
+    let pentagon = CellIndex::try_from(0x89300000003FFFF).expect("pentagon");
     assert!(pentagon.is_pentagon());
 
     let ll = LatLng::from(pentagon);
@@ -565,9 +548,9 @@ fn bbox_tile_west() {
         coord! { x: -179.99932676553726, y: -16.889961012741797 },
     );
     let mut expected = vec![
-        cell!(0x8a9b4361e757fff),
-        cell!(0x8a9b4361e62ffff),
-        cell!(0x8a9b4361e75ffff),
+        cell!(0x8A9B4361E757FFF),
+        cell!(0x8A9B4361E62FFFF),
+        cell!(0x8A9B4361E75FFFF),
     ];
 
     let mut tiler = TilerBuilder::new(Resolution::Ten)
@@ -602,10 +585,10 @@ fn bbox_tile_east() {
         coord! { x: 179.99932676553726, y: -16.889961012741797 },
     );
     let mut expected = vec![
-        cell!(0x8a9b4361e297fff),
-        cell!(0x8a9b4361e2b7fff),
-        cell!(0x8a9b4361e667fff),
-        cell!(0x8a9b4361e74ffff),
+        cell!(0x8A9B4361E297FFF),
+        cell!(0x8A9B4361E2B7FFF),
+        cell!(0x8A9B4361E667FFF),
+        cell!(0x8A9B4361E74FFFF),
     ];
 
     let mut tiler = TilerBuilder::new(Resolution::Ten)
@@ -640,13 +623,13 @@ fn bbox_transmeridian() {
         coord! { x: 179.9986132979393, y: -16.889961012741797 },
     );
     let mut expected = vec![
-        cell!(0x8a9b4361e757fff),
-        cell!(0x8a9b4361e62ffff),
-        cell!(0x8a9b4361e75ffff),
-        cell!(0x8a9b4361e297fff),
-        cell!(0x8a9b4361e2b7fff),
-        cell!(0x8a9b4361e667fff),
-        cell!(0x8a9b4361e74ffff),
+        cell!(0x8A9B4361E757FFF),
+        cell!(0x8A9B4361E62FFFF),
+        cell!(0x8A9B4361E75FFFF),
+        cell!(0x8A9B4361E297FFF),
+        cell!(0x8A9B4361E2B7FFF),
+        cell!(0x8A9B4361E667FFF),
+        cell!(0x8A9B4361E74FFFF),
     ];
 
     let mut tiler = TilerBuilder::new(Resolution::Ten)

@@ -1,10 +1,11 @@
-use crate::{CellIndex, Direction};
+#[cfg(not(feature = "std"))]
+use alloc::collections::BTreeSet;
 use alloc::collections::VecDeque;
 
 #[cfg(feature = "std")]
 use ahash::{HashSet, HashSetExt};
-#[cfg(not(feature = "std"))]
-use alloc::collections::BTreeSet;
+
+use crate::{CellIndex, Direction};
 
 #[cfg(not(feature = "std"))]
 type Set<K> = BTreeSet<K>;
@@ -57,7 +58,10 @@ impl DiskDistancesSafe {
         let size = if global_size <= MAX_INITIAL_RESERVATION {
             global_size
         } else {
-            origin.resolution().cell_count().min(MAX_INITIAL_RESERVATION)
+            origin
+                .resolution()
+                .cell_count()
+                .min(MAX_INITIAL_RESERVATION)
         };
         let size = usize::try_from(size).expect("initial H3 reservation fits usize");
         let mut candidates = VecDeque::with_capacity(size * 5 / 2);
@@ -160,11 +164,9 @@ impl Iterator for DiskDistancesUnsafe {
             }
 
             // Move to the next ring.
-            let Some((new_origin, new_rotations)) = super::neighbor_rotations(
-                self.origin,
-                NEXT_RING_DIRECTION,
-                self.rotations,
-            ) else {
+            let Some((new_origin, new_rotations)) =
+                super::neighbor_rotations(self.origin, NEXT_RING_DIRECTION, self.rotations)
+            else {
                 self.is_failed = true;
                 return Some(None);
             };
@@ -237,11 +239,8 @@ impl RingUnsafe {
         }
 
         for _ in 0..k {
-            (origin, rotations) = super::neighbor_rotations(
-                origin,
-                NEXT_RING_DIRECTION,
-                rotations,
-            )?;
+            (origin, rotations) =
+                super::neighbor_rotations(origin, NEXT_RING_DIRECTION, rotations)?;
             if origin.is_pentagon() {
                 return None;
             }

@@ -1,7 +1,9 @@
+use std::f64::consts::FRAC_PI_2;
+
+use float_eq::assert_float_eq;
+
 use super::*;
 use crate::{CellIndex, LatLng, Resolution};
-use float_eq::assert_float_eq;
-use std::f64::consts::FRAC_PI_2;
 
 const EPSILON_RADS2: f64 = 1e-14; // Tolerance, in radian².
 const EPSILON_KM2: f64 = 1e-6; // Tolerance, in km².
@@ -212,12 +214,9 @@ macro_rules! area_earth_test {
     ($name:ident, $resolution:literal, $area_fn:ident, $expected:ident, $epsilon: ident) => {
         #[test]
         fn $name() {
-            let resolution =
-                Resolution::try_from($resolution).expect("index resolution");
+            let resolution = Resolution::try_from($resolution).expect("index resolution");
             let area: f64 = CellIndex::base_cells()
-                .flat_map(|index| {
-                    index.children(resolution).map(|child| child.$area_fn())
-                })
+                .flat_map(|index| index.children(resolution).map(|child| child.$area_fn()))
                 .fold(FloatAdder::default(), |mut adder, area| {
                     adder += area;
                     adder

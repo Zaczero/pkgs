@@ -1,9 +1,8 @@
 //! Hexagon grid algorithms.
 
-use crate::{
-    BaseCell, CCW, CW, CellIndex, Direction, Resolution, coord::FaceIJK,
-    index::bits,
-};
+use crate::coord::FaceIJK;
+use crate::index::bits;
+use crate::{BaseCell, CCW, CW, CellIndex, Direction, Resolution};
 
 // -----------------------------------------------------------------------------
 
@@ -42,13 +41,11 @@ pub fn neighbor_rotations(
         let to = usize::from(direction);
         let next_direction = if resolution.is_class3() {
             let direction = NEW_DIRECTION_II[from][to];
-            current =
-                bits::set_direction(current, u8::from(direction), resolution);
+            current = bits::set_direction(current, u8::from(direction), resolution);
             NEW_ADJUSTMENT_II[from][to]
         } else {
             let direction = NEW_DIRECTION_III[from][to];
-            current =
-                bits::set_direction(current, u8::from(direction), resolution);
+            current = bits::set_direction(current, u8::from(direction), resolution);
             NEW_ADJUSTMENT_III[from][to]
         };
 
@@ -88,8 +85,7 @@ pub fn neighbor_rotations(
     };
 
     // SAFETY: cell index always contain a valid base cell.
-    let new_base_cell =
-        BaseCell::new_unchecked(h3o_bit::get_base_cell(current));
+    let new_base_cell = BaseCell::new_unchecked(h3o_bit::get_base_cell(current));
     if new_base_cell.is_pentagon() {
         let mut already_adjusted_k_subsequence = false;
 
@@ -125,16 +121,15 @@ pub fn neighbor_rotations(
                 // here.
                 // Check for a CW/CCW offset face; default is CCW.
 
-                if new_base_cell.is_cw_offset(FaceIJK::from(old_base_cell).face)
-                {
+                if new_base_cell.is_cw_offset(FaceIJK::from(old_base_cell).face) {
                     current = bits::rotate60::<{ CW }>(current, 1);
                 }
                 already_adjusted_k_subsequence = true;
             }
         }
 
-        current = (0..new_rotations)
-            .fold(current, |acc, _| bits::pentagon_rotate60::<{ CCW }>(acc));
+        current =
+            (0..new_rotations).fold(current, |acc, _| bits::pentagon_rotate60::<{ CCW }>(acc));
 
         // Account for differing orientation of the base cells (this edge might
         // not follow properties of some other edges).
@@ -152,10 +147,8 @@ pub fn neighbor_rotations(
             } else {
                 // Account for distortion introduced to the 5 neighbor by the
                 // deleted `K` subsequence.
-                rotations += u8::from(
-                    !already_adjusted_k_subsequence
-                        && direction == Direction::IK.axe(),
-                );
+                rotations +=
+                    u8::from(!already_adjusted_k_subsequence && direction == Direction::IK.axe());
             }
         }
     } else if new_rotations != 0 {
@@ -178,10 +171,7 @@ pub fn neighbor_rotations(
 ///
 /// **TODO**: This is currently a brute-force algorithm, but as it's `O(6)`
 /// that's probably acceptable.
-pub fn direction_for_neighbor(
-    origin: CellIndex,
-    destination: CellIndex,
-) -> Option<Direction> {
+pub fn direction_for_neighbor(origin: CellIndex, destination: CellIndex) -> Option<Direction> {
     // Skips center since that would be the origin.
     // Skips deleted `K` direction for pentagons.
     let start = 1 + u8::from(origin.is_pentagon());
@@ -192,8 +182,7 @@ pub fn direction_for_neighbor(
         // SAFETY: loop upper bound is 6 (a.k.a. `Direction::IJ`), which is a
         // valid direction.
         let direction = Direction::new_unchecked(value);
-        let neighbor =
-            neighbor_rotations(origin, direction, 0).map(|result| result.0);
+        let neighbor = neighbor_rotations(origin, direction, 0).map(|result| result.0);
 
         (neighbor == Some(destination)).then_some(direction)
     })

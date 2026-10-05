@@ -1,18 +1,15 @@
-use super::h3api;
 use h3o::{CellIndex, Resolution};
+
+use super::h3api;
 
 macro_rules! exhaustive_test {
     ($name:ident, $resolution:literal) => {
         #[test]
         fn $name() {
-            let resolution =
-                Resolution::try_from($resolution).expect("index resolution");
-            for index in CellIndex::base_cells()
-                .flat_map(|index| index.children(resolution))
-            {
+            let resolution = Resolution::try_from($resolution).expect("index resolution");
+            for index in CellIndex::base_cells().flat_map(|index| index.children(resolution)) {
                 // Test self.
-                let coord =
-                    index.to_local_ij(index).expect("self local IJ coord");
+                let coord = index.to_local_ij(index).expect("self local IJ coord");
                 let result = CellIndex::try_from(coord).ok();
                 let reference = h3api::local_ij_to_cell(coord);
                 assert_eq!(result, reference, "anchor {index}, index {index}");
@@ -23,10 +20,7 @@ macro_rules! exhaustive_test {
                         let result = CellIndex::try_from(coord).ok();
                         let reference = h3api::local_ij_to_cell(coord);
 
-                        assert_eq!(
-                            result, reference,
-                            "anchor {index}, index {neighbor}"
-                        );
+                        assert_eq!(result, reference, "anchor {index}, index {neighbor}");
                     }
                 }
             }

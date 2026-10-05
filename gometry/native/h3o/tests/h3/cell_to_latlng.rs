@@ -1,10 +1,10 @@
-use super::h3api;
+use std::fs::File;
+use std::io::{BufRead, BufReader};
+use std::path::PathBuf;
+
 use h3o::{CellIndex, LatLng};
-use std::{
-    fs::File,
-    io::{BufRead, BufReader},
-    path::PathBuf,
-};
+
+use super::h3api;
 
 macro_rules! test {
     ($name:ident, $index:literal) => {
@@ -19,29 +19,29 @@ macro_rules! test {
     };
 }
 
-test!(res0, 0x801ffffffffffff);
-test!(res1, 0x811fbffffffffff);
-test!(res2, 0x821fb7fffffffff);
-test!(res3, 0x831fb4fffffffff);
-test!(res4, 0x841fb47ffffffff);
-test!(res5, 0x851fb467fffffff);
-test!(res6, 0x861fb4667ffffff);
-test!(res7, 0x871fb4662ffffff);
-test!(res8, 0x881fb46623fffff);
-test!(res9, 0x891fb46622fffff);
-test!(res10, 0x8a1fb46622dffff);
-test!(res11, 0x8b1fb46622d8fff);
-test!(res12, 0x8c1fb46622d85ff);
-test!(res13, 0x8d1fb46622d85bf);
-test!(res14, 0x8e1fb46622d8597);
-test!(res15, 0x8f1fb46622d8591);
+test!(res0, 0x801FFFFFFFFFFFF);
+test!(res1, 0x811FBFFFFFFFFFF);
+test!(res2, 0x821FB7FFFFFFFFF);
+test!(res3, 0x831FB4FFFFFFFFF);
+test!(res4, 0x841FB47FFFFFFFF);
+test!(res5, 0x851FB467FFFFFFF);
+test!(res6, 0x861FB4667FFFFFF);
+test!(res7, 0x871FB4662FFFFFF);
+test!(res8, 0x881FB46623FFFFF);
+test!(res9, 0x891FB46622FFFFF);
+test!(res10, 0x8A1FB46622DFFFF);
+test!(res11, 0x8B1FB46622D8FFF);
+test!(res12, 0x8C1FB46622D85FF);
+test!(res13, 0x8D1FB46622D85BF);
+test!(res14, 0x8E1FB46622D8597);
+test!(res15, 0x8F1FB46622D8591);
 
 // Those ones triggered a bug where longitude weren't in the right bounds.
-test!(bound_bug1, 0x8400481ffffffff);
-test!(bound_bug2, 0x8471921ffffffff);
+test!(bound_bug1, 0x8400481FFFFFFFF);
+test!(bound_bug2, 0x8471921FFFFFFFF);
 
 // This one triggered a bug where an invalid CellIndex was used.
-test!(index_invariant_bug, 0x840800bffffffff);
+test!(index_invariant_bug, 0x840800BFFFFFFFF);
 
 // # How to generate/update `cellToLatLng.txt`
 //

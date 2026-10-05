@@ -4,7 +4,7 @@ use super::*;
 
 #[test]
 fn stop_after_none() {
-    let origin = CellIndex::try_from(0x8908000001bffff).expect("origin");
+    let origin = CellIndex::try_from(0x8908000001BFFFF).expect("origin");
     let iter = DiskDistancesUnsafe::new(origin, 1);
 
     assert_eq!(iter.count(), 5);
@@ -13,7 +13,7 @@ fn stop_after_none() {
 #[test]
 fn fast_ring_size_hint_obeys_the_iterator_lower_bound() {
     // gometry: A disk bound is not a valid lower bound for fast ring output.
-    let origin = CellIndex::try_from(0x8a1fb46622dffff).expect("origin");
+    let origin = CellIndex::try_from(0x8A1FB46622DFFFF).expect("origin");
     let mut ring = RingUnsafe::new(origin, 2).expect("ring avoids pentagonal distortion");
     let (lower, upper) = ring.size_hint();
     let count = ring.by_ref().take(13).count();

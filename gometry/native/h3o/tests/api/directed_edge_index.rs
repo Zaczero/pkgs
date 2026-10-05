@@ -2,8 +2,8 @@ use h3o::DirectedEdgeIndex;
 
 #[test]
 fn reverse() {
-    let edge = DirectedEdgeIndex::try_from(0x149283080dcbffff).unwrap();
-    let expected = DirectedEdgeIndex::try_from(0x139283080ddbffff).unwrap();
+    let edge = DirectedEdgeIndex::try_from(0x149283080DCBFFFF).unwrap();
+    let expected = DirectedEdgeIndex::try_from(0x139283080DDBFFFF).unwrap();
     let reversed = edge.reverse();
 
     assert_eq!(reversed, expected, "reversed edge");
@@ -17,7 +17,7 @@ fn reverse() {
 #[test]
 fn try_from_str() {
     let result = "13a194e699ab7fff".parse::<DirectedEdgeIndex>();
-    let expected = DirectedEdgeIndex::try_from(0x13a194e699ab7fff);
+    let expected = DirectedEdgeIndex::try_from(0x13A194E699AB7FFF);
     assert_eq!(result, expected, "valid string");
 
     let result = "no bueno".parse::<DirectedEdgeIndex>();
@@ -27,7 +27,7 @@ fn try_from_str() {
 // Resolutions are displayed as numerical value.
 #[test]
 fn display() {
-    let index = DirectedEdgeIndex::try_from(0x13a194e699ab7fff).expect("index");
+    let index = DirectedEdgeIndex::try_from(0x13A194E699AB7FFF).expect("index");
 
     // Default display is the lower hex one.
     let result = index.to_string();
@@ -46,8 +46,6 @@ fn display() {
 
     // Binary.
     let result = format!("{index:b}");
-    let expected =
-        "1001110100001100101001110011010011001101010110111111111111111"
-            .to_owned();
+    let expected = "1001110100001100101001110011010011001101010110111111111111111".to_owned();
     assert_eq!(result, expected, "binary");
 }

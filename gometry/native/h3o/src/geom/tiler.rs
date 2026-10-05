@@ -1,25 +1,20 @@
-use super::neighbors;
-use crate::{
-    CellIndex, LatLng, Resolution, TWO_PI, error::InvalidGeometry,
-    math::mul_add,
-};
+use std::cmp;
+use std::f64::consts::{FRAC_PI_2, PI};
+
 use ahash::{HashSet, HashSetExt};
 use either::Either;
 use float_eq::float_eq;
+use geo::algorithm::coordinate_position::{CoordPos, coord_pos_relative_to_ring};
+use geo::algorithm::relate::PreparedGeometry;
 use geo::{
-    BooleanOps as _, BoundingRect as _, Centroid as _, Coord, CoordsIter as _,
-    Intersects, Line, LineString, MultiPolygon, Polygon, Rect, Relate as _,
-    ToRadians as _,
-    algorithm::{
-        coordinate_position::{CoordPos, coord_pos_relative_to_ring},
-        relate::PreparedGeometry,
-    },
-    coord,
+    BooleanOps as _, BoundingRect as _, Centroid as _, Coord, CoordsIter as _, Intersects, Line,
+    LineString, MultiPolygon, Polygon, Rect, Relate as _, ToRadians as _, coord,
 };
-use std::{
-    cmp,
-    f64::consts::{FRAC_PI_2, PI},
-};
+
+use super::neighbors;
+use crate::error::InvalidGeometry;
+use crate::math::mul_add;
+use crate::{CellIndex, LatLng, Resolution, TWO_PI};
 
 /// A tiler that produces an H3 coverage of the given shapes.
 #[derive(Debug, Clone)]
@@ -137,8 +132,7 @@ impl Tiler {
                 // odd resolution, the line tracing needs an extra buffer than the
                 // estimator function provides (but beefing that up to cover causes most
                 // situations to overallocate memory)
-                cmp::max(estimated_count, vertex_count)
-                    + POLYGON_TO_CELLS_BUFFER
+                cmp::max(estimated_count, vertex_count) + POLYGON_TO_CELLS_BUFFER
             })
             .sum()
     }
@@ -195,9 +189,7 @@ impl Tiler {
     ///
     /// # Ok::<(), h3o::error::InvalidGeometry>(())
     /// ```
-    pub fn into_annotated_coverage(
-        self,
-    ) -> impl Iterator<Item = AnnotatedCell> {
+    pub fn into_annotated_coverage(self) -> impl Iterator<Item = AnnotatedCell> {
         // This implementation traces the outlines of the polygon's rings, fill one
         // layer of internal cells and then propagate inwards until the whole area
         // is covered.
@@ -206,8 +198,7 @@ impl Tiler {
         // Point-in-Polygon checks, inward propagation doesn't (since we're bounded
         // by the outlines) which make this approach relatively efficient.
 
-        let predicate =
-            ContainmentPredicate::new(&self.geom, self.containment_mode);
+        let predicate = ContainmentPredicate::new(&self.geom, self.containment_mode);
         // Set used for dedup.
         let mut seen = HashSet::new();
         // Scratchpad memory to store a cell and its immediate neighbors.
@@ -215,16 +206,10 @@ impl Tiler {
         let mut scratchpad = [0; 7];
 
         // First, compute the outline.
-        let mut outlines = self.hex_outline(
-            self.resolution,
-            &mut seen,
-            &mut scratchpad,
-            &predicate,
-        );
+        let mut outlines =
+            self.hex_outline(self.resolution, &mut seen, &mut scratchpad, &predicate);
 
-        if outlines.is_empty()
-            && self.containment_mode == ContainmentMode::Covers
-        {
+        if outlines.is_empty() && self.containment_mode == ContainmentMode::Covers {
             let centroid = self.geom.centroid().expect("centroid");
             return Either::Left(std::iter::once(AnnotatedCell {
                 cell: LatLng::from_radians(centroid.y(), centroid.x())
@@ -236,12 +221,8 @@ impl Tiler {
 
         // Next, compute the outermost layer of inner cells to seed the
         // propagation step.
-        let mut candidates = outermost_inner_cells(
-            &outlines,
-            &mut seen,
-            &mut scratchpad,
-            &predicate,
-        );
+        let mut candidates =
+            outermost_inner_cells(&outlines, &mut seen, &mut scratchpad, &predicate);
         let mut next_gen = Vec::with_capacity(candidates.len() * 7);
         let mut new_seen = HashSet::with_capacity(seen.len());
 
@@ -263,14 +244,12 @@ impl Tiler {
                 );
 
                 let count = neighbors(cell, &mut scratchpad);
-                next_gen.extend(scratchpad[0..count].iter().filter_map(
-                    |candidate| {
-                        // SAFETY: candidate comes from `ring_disk_*`.
-                        let index = CellIndex::new_unchecked(*candidate);
-                        new_seen.insert(index);
-                        seen.insert(index).then_some((index, true))
-                    },
-                ));
+                next_gen.extend(scratchpad[0..count].iter().filter_map(|candidate| {
+                    // SAFETY: candidate comes from `ring_disk_*`.
+                    let index = CellIndex::new_unchecked(*candidate);
+                    new_seen.insert(index);
+                    seen.insert(index).then_some((index, true))
+                }));
             }
 
             let curr_gen = candidates.clone();
@@ -408,8 +387,7 @@ impl TilerBuilder {
             resolution: self.resolution,
             containment_mode: self.containment_mode,
             convert_to_rads: self.convert_to_rads,
-            transmeridian_heuristic_enabled: self
-                .transmeridian_heuristic_enabled,
+            transmeridian_heuristic_enabled: self.transmeridian_heuristic_enabled,
             geom: MultiPolygon::new(Vec::new()),
         }
     }
@@ -479,10 +457,7 @@ enum ContainmentPredicate<'geom> {
 
 impl<'geom> ContainmentPredicate<'geom> {
     /// Initializes a new containment predicate according to the mode selected.
-    fn new(
-        geom: &'geom MultiPolygon,
-        containment_mode: ContainmentMode,
-    ) -> Self {
+    fn new(geom: &'geom MultiPolygon, containment_mode: ContainmentMode) -> Self {
         match containment_mode {
             // For this one we can use our good ol' PIP-based approach.
             ContainmentMode::ContainsCentroid => {
@@ -490,23 +465,18 @@ impl<'geom> ContainmentPredicate<'geom> {
                 let bboxes = MultiBBoxes(
                     geom.iter()
                         .map(|polygon| BBoxes {
-                            exterior: polygon
-                                .exterior()
-                                .bounding_rect()
-                                .expect("exterior bbox"),
+                            exterior: polygon.exterior().bounding_rect().expect("exterior bbox"),
                             interiors: polygon
                                 .interiors()
                                 .iter()
-                                .map(|ring| {
-                                    ring.bounding_rect().expect("interior bbox")
-                                })
+                                .map(|ring| ring.bounding_rect().expect("interior bbox"))
                                 .collect(),
                         })
                         .collect(),
                 );
 
                 Self::ContainsCentroid(geom, bboxes)
-            }
+            },
             // For the others, using a related-based approach boosted by a
             // PreparedGeometry is the way to go.
             ContainmentMode::ContainsBoundary
@@ -514,7 +484,7 @@ impl<'geom> ContainmentPredicate<'geom> {
             | ContainmentMode::Covers => {
                 let prepared_geom = PreparedGeometry::from(geom);
                 Self::IntersectsBoundary(prepared_geom)
-            }
+            },
         }
     }
 
@@ -525,28 +495,26 @@ impl<'geom> ContainmentPredicate<'geom> {
                 let ll = LatLng::from(cell);
                 let coord = coord! { x: ll.lng_radians(), y: ll.lat_radians() };
 
-                let is_a_match =
-                    geom.iter().enumerate().any(|(poly_idx, polygon)| {
-                        ring_contains_centroid(
-                            polygon.exterior(),
-                            &bboxes.0[poly_idx].exterior,
-                            coord,
-                        ) && !polygon.interiors().iter().enumerate().any(
-                            |(ring_idx, ring)| {
+                let is_a_match = geom.iter().enumerate().any(|(poly_idx, polygon)| {
+                    ring_contains_centroid(polygon.exterior(), &bboxes.0[poly_idx].exterior, coord)
+                        && !polygon
+                            .interiors()
+                            .iter()
+                            .enumerate()
+                            .any(|(ring_idx, ring)| {
                                 ring_contains_centroid(
                                     ring,
                                     &bboxes.0[poly_idx].interiors[ring_idx],
                                     coord,
                                 )
-                            },
-                        )
-                    });
+                            })
+                });
 
                 PredicateResult {
                     is_a_match,
                     is_fully_contained: true,
                 }
-            }
+            },
             Self::IntersectsBoundary(geom) => {
                 let boundary = cell_boundary(cell);
                 let relation = geom.relate(&boundary);
@@ -555,7 +523,7 @@ impl<'geom> ContainmentPredicate<'geom> {
                     is_a_match: relation.is_intersects(),
                     is_fully_contained: relation.is_covers(),
                 }
-            }
+            },
         }
     }
 }
@@ -611,16 +579,8 @@ fn get_edge_cells(
             let count = count as f64;
             let inv_count = 1. / count;
 
-            let lat = mul_add(
-                start.y * (count - i),
-                inv_count,
-                end.y * i * inv_count,
-            );
-            let lng = mul_add(
-                start.x * (count - i),
-                inv_count,
-                end.x * i * inv_count,
-            );
+            let lat = mul_add(start.y * (count - i), inv_count, end.y * i * inv_count);
+            let lng = mul_add(start.x * (count - i), inv_count, end.x * i * inv_count);
 
             LatLng::from_radians(lat, lng)
                 .expect("finite line coordinate")
@@ -653,10 +613,10 @@ fn line_hex_estimate(line: &Line, resolution: Resolution) -> u64 {
     ];
     let pentagon_diameter = PENT_DIAMETER_RADS[usize::from(resolution)];
 
-    let origin = LatLng::from_radians(line.start.y, line.start.x)
-        .expect("finite line-start coordinate");
-    let destination = LatLng::from_radians(line.end.y, line.end.x)
-        .expect("finite line-end coordinate");
+    let origin =
+        LatLng::from_radians(line.start.y, line.start.x).expect("finite line-start coordinate");
+    let destination =
+        LatLng::from_radians(line.end.y, line.end.x).expect("finite line-end coordinate");
     let distance = origin.distance_rads(destination);
 
     let dist_ceil = (distance / pentagon_diameter).ceil();
@@ -703,10 +663,8 @@ pub fn bbox_hex_estimate(bbox: &Rect, resolution: Resolution) -> usize {
 
     let min = bbox.min();
     let max = bbox.max();
-    let p1 =
-        LatLng::from_radians(min.y, min.x).expect("finite bbox-min coordinate");
-    let p2 =
-        LatLng::from_radians(max.y, max.x).expect("finite bbox-max coordinate");
+    let p1 = LatLng::from_radians(min.y, min.x).expect("finite bbox-min coordinate");
+    let p2 = LatLng::from_radians(max.y, max.x).expect("finite bbox-max coordinate");
     let diagonal = p1.distance_rads(p2);
     let d1 = (p1.lng_radians() - p2.lng_radians()).abs();
     let d2 = (p1.lat_radians() - p2.lat_radians()).abs();
@@ -804,9 +762,7 @@ fn fix_clipping_boundary(geom: &mut MultiPolygon, is_west: bool) {
 pub fn ring_is_valid(ring: &LineString) -> Result<(), InvalidGeometry> {
     // Closed ring have at least 4 coordinate (e.g. triangle).
     if ring.0.len() < 4 {
-        return Err(InvalidGeometry::new(
-            "invalid ring (not enough coordinate)",
-        ));
+        return Err(InvalidGeometry::new("invalid ring (not enough coordinate)"));
     }
     if !ring.coords().all(|coord| super::coord_is_valid(*coord)) {
         return Err(InvalidGeometry::new(
@@ -878,11 +834,7 @@ struct BBoxes {
 }
 
 // Simple Point-in-Polygon check for a ring.
-fn ring_contains_centroid(
-    ring: &LineString,
-    bbox: &Rect,
-    mut coord: Coord,
-) -> bool {
+fn ring_contains_centroid(ring: &LineString, bbox: &Rect, mut coord: Coord) -> bool {
     if !bbox.intersects(&coord) {
         return false;
     }
@@ -903,7 +855,7 @@ fn ring_contains_centroid(
             // we might need to handle this edge case.
             coord.y += f64::EPSILON;
             coord_pos_relative_to_ring(coord, ring) == CoordPos::Inside
-        }
+        },
     }
 }
 

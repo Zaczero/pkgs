@@ -10,14 +10,11 @@
 //! - 1.0 unit distance in the `Hex2d` system is the distance between adjacent
 //!   cell centers in the `ijk` coordinate system.
 
-use super::{
-    AP7_ROT_RADS, CoordIJK, EPSILON, INV_RES0_U_GNOMONIC, SQRT7_POWERS, Vec3d,
-};
-use crate::{
-    Face, Resolution, face,
-    math::{abs, acos, cos, hypot, mul_add, sin, tan},
-};
 use float_eq::float_eq;
+
+use super::{AP7_ROT_RADS, CoordIJK, EPSILON, INV_RES0_U_GNOMONIC, SQRT7_POWERS, Vec3d};
+use crate::math::{abs, acos, cos, hypot, mul_add, sin, tan};
+use crate::{Face, Resolution, face};
 
 /// 1/sin(60')
 const RSIN60: f64 = 1.1547005383792515;
@@ -62,12 +59,7 @@ impl Vec2d {
     /// * `resolution` -  The desired H3 resolution for the encoding.
     /// * `face` -  The icosahedral face of the coordinate.
     /// * `distance` - The squared euclidean distance from the face center.
-    pub fn from_vec3d(
-        value: Vec3d,
-        resolution: Resolution,
-        face: Face,
-        distance: f64,
-    ) -> Self {
+    pub fn from_vec3d(value: Vec3d, resolution: Resolution, face: Face, distance: f64) -> Self {
         float_eq::debug_assert_float_eq!(value.norm(), 1., abs <= f64::EPSILON);
 
         let face = usize::from(face);
@@ -82,14 +74,12 @@ impl Vec2d {
 
             // Perform gnomonic scaling of `r` (`tan(r)`) and scale for current
             // resolution length `u`.
-            (tan(r) * INV_RES0_U_GNOMONIC)
-                * SQRT7_POWERS[usize::from(resolution)]
+            (tan(r) * INV_RES0_U_GNOMONIC) * SQRT7_POWERS[usize::from(resolution)]
         };
 
         let theta = {
             // Compute counter-clockwise `theta` from Class II i-axis.
-            let mut theta = face::AXES_AZ_RADS_CII[face]
-                - face::CENTER_POINT[face].azimuth(&value);
+            let mut theta = face::AXES_AZ_RADS_CII[face] - face::CENTER_POINT[face].azimuth(&value);
 
             // Adjust `theta` for Class III.
             if resolution.is_class3() {
@@ -121,11 +111,8 @@ impl Vec2d {
             y: line2.1.y - line2.0.y,
         };
 
-        let t = mul_add(
-            s2.x,
-            line1.0.y - line2.0.y,
-            -s2.y * (line1.0.x - line2.0.x),
-        ) / mul_add(-s2.x, s1.y, s1.x * s2.y);
+        let t = mul_add(s2.x, line1.0.y - line2.0.y, -s2.y * (line1.0.x - line2.0.x))
+            / mul_add(-s2.x, s1.y, s1.x * s2.y);
 
         Self {
             x: mul_add(t, s1.x, line1.0.x),
@@ -171,8 +158,7 @@ impl From<Vec2d> for CoordIJK {
             }
         } else if r1 < 2. / 3. {
             let j = m2 + i32::from(r2 >= (1. - r1));
-            let i =
-                m1 + i32::from(mul_add(2.0, r1, -1.) >= r2 || r2 >= (1. - r1));
+            let i = m1 + i32::from(mul_add(2.0, r1, -1.) >= r2 || r2 >= (1. - r1));
             (i, j)
         } else {
             let i = m1 + 1;

@@ -1,5 +1,6 @@
-use super::*;
 use geo::{line_string, polygon};
+
+use super::*;
 
 #[test]
 fn test_simple() {

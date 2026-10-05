@@ -1,5 +1,7 @@
+use core::error::Error;
+use core::fmt;
+
 use crate::error::LocalIjError;
-use core::{error::Error, fmt};
 
 /// Errors related to the geometries.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -85,7 +87,7 @@ impl fmt::Display for DissolutionError {
         match *self {
             Self::UnsupportedResolution => {
                 write!(f, "unsupported resolution")
-            }
+            },
             Self::DuplicateInput => write!(f, "duplicate indices"),
         }
     }

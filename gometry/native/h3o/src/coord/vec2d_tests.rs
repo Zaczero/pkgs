@@ -1,6 +1,7 @@
+use float_eq::assert_float_eq;
+
 use super::*;
 use crate::LatLng;
-use float_eq::assert_float_eq;
 
 #[test]
 fn magnitude() {
@@ -20,18 +21,8 @@ fn intersection() {
 
     let result = Vec2d::intersection(line1, line2);
 
-    assert_float_eq!(
-        result.x,
-        expected.x,
-        abs <= f64::EPSILON,
-        "x as expected"
-    );
-    assert_float_eq!(
-        result.y,
-        expected.y,
-        abs <= f64::EPSILON,
-        "y as expected"
-    );
+    assert_float_eq!(result.x, expected.x, abs <= f64::EPSILON, "x as expected");
+    assert_float_eq!(result.y, expected.y, abs <= f64::EPSILON, "y as expected");
 }
 
 #[test]

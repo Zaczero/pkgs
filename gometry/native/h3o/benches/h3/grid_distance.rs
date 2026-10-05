@@ -1,6 +1,7 @@
+use std::hint::black_box;
+
 use criterion::{BenchmarkId, Criterion};
 use h3o::{LatLng, Resolution};
-use std::hint::black_box;
 
 pub fn bench(c: &mut Criterion) {
     let src = LatLng::new(30.3157384429565, 104.15339644867949).expect("src");
@@ -15,22 +16,14 @@ pub fn bench(c: &mut Criterion) {
         group.bench_with_input(
             BenchmarkId::new("h3o", res),
             &(src, dst),
-            |b, (src, dst)| {
-                b.iter(|| black_box(src).grid_distance(black_box(*dst)))
-            },
+            |b, (src, dst)| b.iter(|| black_box(src).grid_distance(black_box(*dst))),
         );
-        group.bench_with_input(
-            BenchmarkId::new("h3", res),
-            &(src, dst),
-            |b, (src, dst)| {
-                let mut out: i64 = 0;
-                let src = u64::from(*src);
-                let dst = u64::from(*dst);
-                b.iter(|| unsafe {
-                    h3ron_h3_sys::gridDistance(src, dst, &mut out)
-                })
-            },
-        );
+        group.bench_with_input(BenchmarkId::new("h3", res), &(src, dst), |b, (src, dst)| {
+            let mut out: i64 = 0;
+            let src = u64::from(*src);
+            let dst = u64::from(*dst);
+            b.iter(|| unsafe { h3ron_h3_sys::gridDistance(src, dst, &mut out) })
+        });
     }
 
     group.finish();

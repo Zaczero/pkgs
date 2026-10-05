@@ -10,13 +10,12 @@
 //! Class II.
 
 use super::{CoordIJK, SQRT3_2, Vec2d, Vec3d};
+use crate::face::{self, FaceOrientIJK};
+use crate::index::bits;
 use crate::{
-    BaseCell, Boundary, CCW, CW, CapLatticeProfile, CellIndex,
-    DEFAULT_CELL_INDEX, Direction, ExtendedResolution, Face, Hex2Int,
-    NUM_HEX_VERTS, NUM_ICOSA_FACES, NUM_PENT_VERTS, ProjectedBoundary,
-    ProjectionSeam, ProjectionSeed, Resolution, Vertex,
-    face::{self, FaceOrientIJK},
-    index::bits,
+    BaseCell, Boundary, CCW, CW, CapLatticeProfile, CellIndex, DEFAULT_CELL_INDEX, Direction,
+    ExtendedResolution, Face, Hex2Int, NUM_HEX_VERTS, NUM_ICOSA_FACES, NUM_PENT_VERTS,
+    ProjectedBoundary, ProjectionSeam, ProjectionSeed, Resolution, Vertex,
 };
 
 static ZERO: CoordIJK = CoordIJK::new(0, 0, 0);
@@ -81,8 +80,8 @@ pub fn cap_lattice_profile(target: Resolution) -> CapLatticeProfile {
         for (direction_index, direction) in Direction::iter().enumerate() {
             let mut coordinate = direction.coordinate();
             for finer_value in (digit_value + 1)..=target_value {
-                let finer = Resolution::try_from(finer_value)
-                    .expect("target suffix is an H3 resolution");
+                let finer =
+                    Resolution::try_from(finer_value).expect("target suffix is an H3 resolution");
                 coordinate = if finer.is_class3() {
                     coordinate.down_aperture7::<{ CCW }>()
                 } else {
@@ -91,8 +90,7 @@ pub fn cap_lattice_profile(target: Resolution) -> CapLatticeProfile {
             }
             let coordinate = target_substrate_coordinate(coordinate, target);
             for rotation in 0..6 {
-                suffixes[usize::from(digit_value - 1)]
-                    [direction_index * 6 + rotation] =
+                suffixes[usize::from(digit_value - 1)][direction_index * 6 + rotation] =
                     hex2int(rotate_ccw(coordinate, rotation));
             }
         }
@@ -106,8 +104,7 @@ pub fn cap_lattice_profile(target: Resolution) -> CapLatticeProfile {
     };
     for (vertex_index, vertex) in vertex_table.iter().copied().enumerate() {
         for rotation in 0..6 {
-            vertices[vertex_index * 6 + rotation] =
-                hex2int(rotate_ccw(vertex, rotation));
+            vertices[vertex_index * 6 + rotation] = hex2int(rotate_ccw(vertex, rotation));
         }
     }
 
@@ -128,26 +125,16 @@ pub fn cap_lattice_profile(target: Resolution) -> CapLatticeProfile {
                 _ => unreachable!("only directed face seams are profiled"),
             };
             let orientation = face::NEIGHBORS[face_index][edge];
-            let right_first =
-                transform_to_neighbor(first, orientation, adjusted_index);
-            let right_second =
-                transform_to_neighbor(second, orientation, adjusted_index);
+            let right_first = transform_to_neighbor(first, orientation, adjusted_index);
+            let right_second = transform_to_neighbor(second, orientation, adjusted_index);
             seams[seam_index] = ProjectionSeam::new(
                 [
                     projection_seed(left_face, first, adjusted_resolution),
                     projection_seed(left_face, second, adjusted_resolution),
                 ],
                 [
-                    projection_seed(
-                        orientation.face,
-                        right_first,
-                        adjusted_resolution,
-                    ),
-                    projection_seed(
-                        orientation.face,
-                        right_second,
-                        adjusted_resolution,
-                    ),
+                    projection_seed(orientation.face, right_first, adjusted_resolution),
+                    projection_seed(orientation.face, right_second, adjusted_resolution),
                 ],
             );
             seam_index += 1;
@@ -165,10 +152,7 @@ pub fn cap_lattice_profile(target: Resolution) -> CapLatticeProfile {
     )
 }
 
-fn target_substrate_coordinate(
-    mut coordinate: CoordIJK,
-    target: Resolution,
-) -> CoordIJK {
+fn target_substrate_coordinate(mut coordinate: CoordIJK, target: Resolution) -> CoordIJK {
     coordinate = coordinate.down_aperture3::<{ CCW }>();
     coordinate = coordinate.down_aperture3::<{ CW }>();
     if target.is_class3() {
@@ -197,11 +181,7 @@ fn transform_to_neighbor(
     (coordinate + translation).normalize()
 }
 
-fn projection_seed(
-    face: Face,
-    point: CoordIJK,
-    resolution: u8,
-) -> ProjectionSeed {
+fn projection_seed(face: Face, point: CoordIJK, resolution: u8) -> ProjectionSeed {
     ProjectionSeed::Point {
         face: u8::from(face),
         point: hex2int(point),
@@ -285,8 +265,7 @@ impl FaceIJK {
         // We need to find the correct base cell FaceIJK for this H3 index
 
         // Build the index from finest resolution up.
-        self.coord =
-            directions_bits_from_ijk(self.coord, &mut bits, resolution);
+        self.coord = directions_bits_from_ijk(self.coord, &mut bits, resolution);
 
         // Lookup the correct base cell.
         let rotation = self.base_cell_rotation();
@@ -322,14 +301,10 @@ impl FaceIJK {
     /// * `bits` - Raw bits of the cell index.
     /// * `resolution` - Resolution of the cell index.
     /// * `base_cell` - Base cell of the cell index.
-    pub fn from_bits(
-        bits: u64,
-        resolution: Resolution,
-        base_cell: BaseCell,
-    ) -> (Self, bool) {
+    pub fn from_bits(bits: u64, resolution: Resolution, base_cell: BaseCell) -> (Self, bool) {
         let mut fijk = Self::from(base_cell);
-        let possible_overage = base_cell.is_pentagon()
-            || (resolution != Resolution::Zero || fijk.coord != ZERO);
+        let possible_overage =
+            base_cell.is_pentagon() || (resolution != Resolution::Zero || fijk.coord != ZERO);
 
         for res in Resolution::range(Resolution::One, resolution) {
             if res.is_class3() {
@@ -341,8 +316,7 @@ impl FaceIJK {
             }
 
             // SAFETY: loop upper bound is the index resolution.
-            let direction =
-                Direction::new_unchecked(bits::get_direction(bits, res));
+            let direction = Direction::new_unchecked(bits::get_direction(bits, res));
             fijk.coord = fijk.coord.neighbor(direction);
         }
 
@@ -414,9 +388,7 @@ impl FaceIJK {
             self.coord = (self.coord + trans_vec).normalize();
 
             // Overage points on pentagon boundaries can end up on edges.
-            if IS_SUBSTRATE
-                && self.coord.i() + self.coord.j() + self.coord.k() == max_dim
-            {
+            if IS_SUBSTRATE && self.coord.i() + self.coord.j() + self.coord.k() == max_dim {
                 return Overage::FaceEdge;
             }
             return Overage::NewFace;
@@ -432,13 +404,8 @@ impl FaceIJK {
     /// # Arguments
     ///
     /// * `resolution` - The H3 resolution of the cell.
-    pub fn adjust_pentagon_vertex_overage(
-        &mut self,
-        resolution: ExtendedResolution,
-    ) {
-        while self.adjust_overage_class2::<true>(resolution, false)
-            == Overage::NewFace
-        {}
+    pub fn adjust_pentagon_vertex_overage(&mut self, resolution: ExtendedResolution) {
+        while self.adjust_overage_class2::<true>(resolution, false) == Overage::NewFace {}
     }
 
     /// Generates the cell boundary in spherical coordinates for a pentagonal
@@ -449,12 +416,7 @@ impl FaceIJK {
     /// * `resolution` - The H3 resolution of the cell.
     /// * `start` - The first topological vertex to return.
     /// * `length` - The number of topological vertexes to return.
-    pub fn pentagon_boundary(
-        &self,
-        resolution: Resolution,
-        start: Vertex,
-        length: u8,
-    ) -> Boundary {
+    pub fn pentagon_boundary(&self, resolution: Resolution, start: Vertex, length: u8) -> Boundary {
         self.pentagon_boundary_with_seeds(resolution, start, length)
             .public
     }
@@ -494,12 +456,10 @@ impl FaceIJK {
                 let mut tmp_fijk = fijk;
 
                 let orig2d0 = Vec2d::from(last_fijk.coord);
-                let current_to_last_dir: u8 =
-                    get_adjacent_face_dir(tmp_fijk.face, last_fijk.face);
+                let current_to_last_dir: u8 = get_adjacent_face_dir(tmp_fijk.face, last_fijk.face);
 
-                let fijk_orientation: &FaceOrientIJK = &face::NEIGHBORS
-                    [usize::from(tmp_fijk.face)]
-                    [usize::from(current_to_last_dir)];
+                let fijk_orientation: &FaceOrientIJK =
+                    &face::NEIGHBORS[usize::from(tmp_fijk.face)][usize::from(current_to_last_dir)];
 
                 tmp_fijk.face = fijk_orientation.face;
 
@@ -508,19 +468,14 @@ impl FaceIJK {
                     tmp_fijk.coord = tmp_fijk.coord.rotate60::<{ CCW }>();
                 }
                 let mut trans_vec = fijk_orientation.translate;
-                trans_vec *=
-                    UNIT_SCALE_BY_CII_RES[usize::from(adjusted_resolution)] * 3;
+                trans_vec *= UNIT_SCALE_BY_CII_RES[usize::from(adjusted_resolution)] * 3;
                 tmp_fijk.coord = (tmp_fijk.coord + trans_vec).normalize();
 
                 let orig2d1 = Vec2d::from(tmp_fijk.coord);
 
                 // Find the appropriate icosahedron face edge vertexes.
-                let max_dim = f64::from(
-                    MAX_DIM_BY_CII_RES[usize::from(adjusted_resolution)],
-                );
-                let max_dim_i64 = i64::from(
-                    MAX_DIM_BY_CII_RES[usize::from(adjusted_resolution)],
-                );
+                let max_dim = f64::from(MAX_DIM_BY_CII_RES[usize::from(adjusted_resolution)]);
+                let max_dim_i64 = i64::from(MAX_DIM_BY_CII_RES[usize::from(adjusted_resolution)]);
                 let v0 = Vec2d::new(3.0 * max_dim, 0.0);
                 let v1 = Vec2d::new(-1.5 * max_dim, 3.0 * SQRT3_2 * max_dim);
                 let v2 = Vec2d::new(-1.5 * max_dim, -3.0 * SQRT3_2 * max_dim);
@@ -528,14 +483,13 @@ impl FaceIJK {
                 let h1 = Hex2Int::new(-3 * max_dim_i64, 3 * max_dim_i64);
                 let h2 = Hex2Int::new(-3 * max_dim_i64, -3 * max_dim_i64);
 
-                let (edge0, edge1, edge0_seed, edge1_seed) = match usize::from(
-                    get_adjacent_face_dir(tmp_fijk.face, fijk.face),
-                ) {
-                    face::IJ => (v0, v1, h0, h1),
-                    face::JK => (v1, v2, h1, h2),
-                    face::KI => (v2, v0, h2, h0),
-                    _ => unreachable!("invalid face direction"),
-                };
+                let (edge0, edge1, edge0_seed, edge1_seed) =
+                    match usize::from(get_adjacent_face_dir(tmp_fijk.face, fijk.face)) {
+                        face::IJ => (v0, v1, h0, h1),
+                        face::JK => (v1, v2, h1, h2),
+                        face::KI => (v2, v0, h2, h0),
+                        _ => unreachable!("invalid face direction"),
+                    };
 
                 // Find the intersection and add the lat/lng point to the
                 // result.
@@ -549,10 +503,7 @@ impl FaceIJK {
                     nvec.into(),
                     ProjectionSeed::Intersection {
                         face: u8::from(tmp_fijk.face),
-                        segment: [
-                            hex2int(last_fijk.coord),
-                            hex2int(tmp_fijk.coord),
-                        ],
+                        segment: [hex2int(last_fijk.coord), hex2int(tmp_fijk.coord)],
                         face_edge: [edge0_seed, edge1_seed],
                         resolution: u8::from(adjusted_resolution),
                         substrate: true,
@@ -597,12 +548,7 @@ impl FaceIJK {
     /// * `resolution` - The H3 resolution of the cell.
     /// * `start` - The first topological vertex to return.
     /// * `length` - The number of topological vertexes to return.
-    pub fn hexagon_boundary(
-        &self,
-        resolution: Resolution,
-        start: Vertex,
-        length: u8,
-    ) -> Boundary {
+    pub fn hexagon_boundary(&self, resolution: Resolution, start: Vertex, length: u8) -> Boundary {
         self.hexagon_boundary_with_seeds(resolution, start, length)
             .public
     }
@@ -634,8 +580,7 @@ impl FaceIJK {
         for vert in start..(start + length + additional_iteration) {
             let v = usize::from(vert % NUM_HEX_VERTS);
             let mut fijk = vertices[v];
-            let overage =
-                fijk.adjust_overage_class2::<true>(adjusted_resolution, false);
+            let overage = fijk.adjust_overage_class2::<true>(adjusted_resolution, false);
 
             // Check for edge-crossing.
             //
@@ -658,12 +603,8 @@ impl FaceIJK {
                 let orig2d1 = Vec2d::from(vertices[v].coord);
 
                 // Find the appropriate icosahedron face edge vertexes.
-                let max_dim = f64::from(
-                    MAX_DIM_BY_CII_RES[usize::from(adjusted_resolution)],
-                );
-                let max_dim_i64 = i64::from(
-                    MAX_DIM_BY_CII_RES[usize::from(adjusted_resolution)],
-                );
+                let max_dim = f64::from(MAX_DIM_BY_CII_RES[usize::from(adjusted_resolution)]);
+                let max_dim_i64 = i64::from(MAX_DIM_BY_CII_RES[usize::from(adjusted_resolution)]);
                 let v0 = Vec2d::new(3.0 * max_dim, 0.0);
                 let v1 = Vec2d::new(-1.5 * max_dim, 3.0 * SQRT3_2 * max_dim);
                 let v2 = Vec2d::new(-1.5 * max_dim, -3.0 * SQRT3_2 * max_dim);
@@ -676,36 +617,27 @@ impl FaceIJK {
                 } else {
                     Face::new_unchecked(last_face)
                 };
-                let (edge0, edge1, edge0_seed, edge1_seed) = match usize::from(
-                    get_adjacent_face_dir(center.face, face2),
-                ) {
-                    face::IJ => (v0, v1, h0, h1),
-                    face::JK => (v1, v2, h1, h2),
-                    face::KI => (v2, v0, h2, h0),
-                    _ => unreachable!("invalid adjacent face direction"),
-                };
+                let (edge0, edge1, edge0_seed, edge1_seed) =
+                    match usize::from(get_adjacent_face_dir(center.face, face2)) {
+                        face::IJ => (v0, v1, h0, h1),
+                        face::JK => (v1, v2, h1, h2),
+                        face::KI => (v2, v0, h2, h0),
+                        _ => unreachable!("invalid adjacent face direction"),
+                    };
 
                 // Find the intersection and add the lat/lng point to the result
-                let intersection =
-                    Vec2d::intersection((orig2d0, orig2d1), (edge0, edge1));
+                let intersection = Vec2d::intersection((orig2d0, orig2d1), (edge0, edge1));
                 // If a point of intersection occurs at a hexagon vertex, then
                 // each adjacent hexagon edge will lie completely on a single
                 // icosahedron face, and no additional vertex is required.
                 if !(orig2d0 == intersection || orig2d1 == intersection) {
-                    let nvec = Vec3d::from_vec2d(
-                        intersection,
-                        center.face,
-                        adjusted_resolution,
-                        true,
-                    );
+                    let nvec =
+                        Vec3d::from_vec2d(intersection, center.face, adjusted_resolution, true);
                     boundary.push(
                         nvec.into(),
                         ProjectionSeed::Intersection {
                             face: u8::from(center.face),
-                            segment: [
-                                hex2int(vertices[last_v].coord),
-                                hex2int(vertices[v].coord),
-                            ],
+                            segment: [hex2int(vertices[last_v].coord), hex2int(vertices[v].coord)],
                             face_edge: [edge0_seed, edge1_seed],
                             resolution: u8::from(adjusted_resolution),
                             substrate: true,
@@ -813,10 +745,7 @@ impl FaceIJK {
     /// Returns this cell centre in the target substrate frame used by all of
     /// that target's boundary seeds.
     // gometry: target-frame center shared by every descendant boundary seed.
-    pub(crate) fn target_substrate_center_seed(
-        mut self,
-        resolution: Resolution,
-    ) -> ProjectionSeed {
+    pub(crate) fn target_substrate_center_seed(mut self, resolution: Resolution) -> ProjectionSeed {
         let mut vertices = [Self::default(); NUM_HEX_VERTS as usize];
         let adjusted_resolution = self.vertices(resolution, &mut vertices);
         ProjectionSeed::Point {
@@ -840,11 +769,7 @@ impl FaceIJK {
     reason = "4-5% boost, up to 13% at resolution 1."
 )]
 #[inline(always)]
-fn directions_bits_from_ijk(
-    mut ijk: CoordIJK,
-    bits: &mut u64,
-    resolution: Resolution,
-) -> CoordIJK {
+fn directions_bits_from_ijk(mut ijk: CoordIJK, bits: &mut u64, resolution: Resolution) -> CoordIJK {
     for res in Resolution::range(Resolution::One, resolution).rev() {
         let last_ijk = ijk;
         let last_center = if res.is_class3() {

@@ -246,7 +246,6 @@
     reason = "allow some exceptions"
 )]
 // }}}
-
 #![expect(
     clippy::cargo_common_metadata,
     reason = "gometry packages proj-sys separately and owns its Cargo metadata"
@@ -276,12 +275,9 @@ pub use boundary::{
 pub use coord::{CoordIJ, LatLng, LocalIJ};
 pub use direction::Direction;
 pub use face::{Face, FaceSet};
-pub use index::{
-    CellIndex, DirectedEdgeIndex, Edge, IndexMode, Vertex, VertexIndex,
-};
-pub use resolution::Resolution;
-
+pub use index::{CellIndex, DirectedEdgeIndex, Edge, IndexMode, Vertex, VertexIndex};
 use resolution::ExtendedResolution;
+pub use resolution::Resolution;
 
 // -----------------------------------------------------------------------------
 
@@ -304,7 +300,7 @@ pub const EARTH_RADIUS_KM: f64 = 6371.007180918475_f64;
 const NUM_PENTAGONS: u8 = 12;
 
 /// Default cell index (resolution 0, base cell 0).
-const DEFAULT_CELL_INDEX: u64 = 0x0800_1fff_ffff_ffff;
+const DEFAULT_CELL_INDEX: u64 = 0x0800_1FFF_FFFF_FFFF;
 
 // 2π
 const TWO_PI: f64 = 2. * core::f64::consts::PI;

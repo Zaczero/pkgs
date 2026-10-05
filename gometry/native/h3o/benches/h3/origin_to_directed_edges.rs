@@ -1,9 +1,10 @@
-use criterion::{Bencher, Criterion};
-use h3o::CellIndex;
 use std::hint::black_box;
 
-const PENTAGON: u64 = 0x8f0800000000000;
-const HEXAGON: u64 = 0x8f734e64992d6d8;
+use criterion::{Bencher, Criterion};
+use h3o::CellIndex;
+
+const PENTAGON: u64 = 0x8F0800000000000;
+const HEXAGON: u64 = 0x8F734E64992D6D8;
 
 pub fn bench(c: &mut Criterion) {
     let mut group = c.benchmark_group("originToDirectedEdges");

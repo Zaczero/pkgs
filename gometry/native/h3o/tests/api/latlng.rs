@@ -1,6 +1,7 @@
+use std::f64::consts::{FRAC_PI_2, PI};
+
 use float_eq::assert_float_eq;
 use h3o::{CellIndex, LatLng, Resolution};
-use std::f64::consts::{FRAC_PI_2, PI};
 
 const EPSILON: f64 = 1e-9 * PI / 180.0;
 
@@ -99,7 +100,7 @@ fn distance_wrapped_longitude() {
 fn to_cell_icosahedron_center() {
     let ll = LatLng::new(28.173218757257807, 23.03222744086644).expect("ll");
     let result = ll.to_cell(Resolution::Three);
-    let expected = CellIndex::try_from(0x833e00fffffffff).expect("cell");
+    let expected = CellIndex::try_from(0x833E00FFFFFFFFF).expect("cell");
 
     assert_eq!(result, expected);
 }
@@ -112,8 +113,7 @@ fn latlng_from_geo_coord() {
         y: 28.173218757257807,
     };
     // Geo coord are interpreted as degrees.
-    let expected =
-        LatLng::new(28.173218757257807, 23.03222744086644).expect("ll");
+    let expected = LatLng::new(28.173218757257807, 23.03222744086644).expect("ll");
     let result = LatLng::try_from(coord).expect("ll from coord");
 
     assert_eq!(result, expected);

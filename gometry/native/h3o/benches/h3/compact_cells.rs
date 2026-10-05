@@ -1,6 +1,7 @@
+use std::hint::black_box;
+
 use criterion::{BatchSize, Bencher, Criterion};
 use h3o::{CellIndex, Direction, Resolution};
-use std::hint::black_box;
 
 pub fn bench(c: &mut Criterion) {
     const RESOLUTION: Resolution = Resolution::Three;
@@ -38,9 +39,7 @@ pub fn bench(c: &mut Criterion) {
 fn bench_h3o(b: &mut Bencher<'_>, indexes: &[CellIndex]) {
     b.iter_batched(
         || indexes.to_owned(),
-        |mut indexes| {
-            CellIndex::compact(black_box(&mut indexes)).expect("compacted set")
-        },
+        |mut indexes| CellIndex::compact(black_box(&mut indexes)).expect("compacted set"),
         BatchSize::SmallInput,
     )
 }

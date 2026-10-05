@@ -1,13 +1,13 @@
-use super::h3api;
 use h3o::{CellIndex, DirectedEdgeIndex, VertexIndex};
+
+use super::h3api;
 
 macro_rules! test {
     ($name:ident, $string:literal, $ty:ty) => {
         #[test]
         fn $name() {
             let result = $string.parse::<$ty>().expect("cell index");
-            let reference =
-                h3api::string_to_h3::<$ty>($string).expect("cell index");
+            let reference = h3api::string_to_h3::<$ty>($string).expect("cell index");
 
             assert_eq!(result, reference);
         }

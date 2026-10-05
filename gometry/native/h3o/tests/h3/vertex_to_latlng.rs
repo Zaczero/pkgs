@@ -1,16 +1,14 @@
-use super::h3api;
 use float_eq::assert_float_eq;
 use h3o::{CellIndex, LatLng, Resolution, Vertex};
+
+use super::h3api;
 
 macro_rules! exhaustive_test {
     ($name:ident, $resolution:literal) => {
         #[test]
         fn $name() {
-            let resolution =
-                Resolution::try_from($resolution).expect("index resolution");
-            for index in CellIndex::base_cells()
-                .flat_map(|index| index.children(resolution))
-            {
+            let resolution = Resolution::try_from($resolution).expect("index resolution");
+            for index in CellIndex::base_cells().flat_map(|index| index.children(resolution)) {
                 for vertex in 0..6 {
                     let vertex = Vertex::try_from(vertex).expect("cell vertex");
                     if let Some(index) = index.vertex(vertex) {

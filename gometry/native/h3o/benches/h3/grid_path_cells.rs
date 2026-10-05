@@ -1,6 +1,7 @@
+use std::hint::black_box;
+
 use criterion::{BenchmarkId, Criterion};
 use h3o::{LatLng, Resolution};
-use std::hint::black_box;
 
 pub fn bench(c: &mut Criterion) {
     let src = LatLng::new(30.3157384429565, 104.15339644867949).expect("src");
@@ -25,18 +26,12 @@ pub fn bench(c: &mut Criterion) {
                 })
             },
         );
-        group.bench_with_input(
-            BenchmarkId::new("h3", res),
-            &(src, dst),
-            |b, (src, dst)| {
-                let mut out = vec![0; size as usize];
-                let src = u64::from(*src);
-                let dst = u64::from(*dst);
-                b.iter(|| unsafe {
-                    h3ron_h3_sys::gridPathCells(src, dst, out.as_mut_ptr())
-                })
-            },
-        );
+        group.bench_with_input(BenchmarkId::new("h3", res), &(src, dst), |b, (src, dst)| {
+            let mut out = vec![0; size as usize];
+            let src = u64::from(*src);
+            let dst = u64::from(*dst);
+            b.iter(|| unsafe { h3ron_h3_sys::gridPathCells(src, dst, out.as_mut_ptr()) })
+        });
     }
 
     group.finish();

@@ -23,10 +23,10 @@ fn max_grid_disk_size_overflow() {
 
 #[test]
 fn is_valid_index() {
-    assert!(h3o::is_valid_index(0x85754e67fffffff), "CellIndex");
-    assert!(h3o::is_valid_index(0x145754e67fffffff), "DirectedEdgeIndex");
-    assert!(h3o::is_valid_index(0x225754a93fffffff), "VertexIndex");
+    assert!(h3o::is_valid_index(0x85754E67FFFFFFF), "CellIndex");
+    assert!(h3o::is_valid_index(0x145754E67FFFFFFF), "DirectedEdgeIndex");
+    assert!(h3o::is_valid_index(0x225754A93FFFFFFF), "VertexIndex");
 
     assert!(!h3o::is_valid_index(0), "invalid cell");
-    assert!(!h3o::is_valid_index(0x885754e67fffffff), "corrupted cell");
+    assert!(!h3o::is_valid_index(0x885754E67FFFFFFF), "corrupted cell");
 }

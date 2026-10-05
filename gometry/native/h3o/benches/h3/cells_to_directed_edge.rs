@@ -1,10 +1,11 @@
-use criterion::Criterion;
-use h3o::CellIndex;
 use std::hint::black_box;
 
+use criterion::Criterion;
+use h3o::CellIndex;
+
 pub fn bench(c: &mut Criterion) {
-    const ORIGIN: u64 = 0x0891_fb46_622f_ffff;
-    const DESTINATION: u64 = 0x0891_fb46_622b_ffff;
+    const ORIGIN: u64 = 0x0891_FB46_622F_FFFF;
+    const DESTINATION: u64 = 0x0891_FB46_622B_FFFF;
 
     let mut group = c.benchmark_group("cellsToDirectedEdge");
 
@@ -16,11 +17,7 @@ pub fn bench(c: &mut Criterion) {
     group.bench_function("h3", |b| {
         let mut out: u64 = 0;
         b.iter(|| unsafe {
-            h3ron_h3_sys::cellsToDirectedEdge(
-                black_box(ORIGIN),
-                black_box(DESTINATION),
-                &mut out,
-            )
+            h3ron_h3_sys::cellsToDirectedEdge(black_box(ORIGIN), black_box(DESTINATION), &mut out)
         })
     });
 

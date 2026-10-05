@@ -1,9 +1,10 @@
-use criterion::{BenchmarkId, Criterion};
-use h3o::{CellIndex, Resolution};
 use std::hint::black_box;
 
+use criterion::{BenchmarkId, Criterion};
+use h3o::{CellIndex, Resolution};
+
 pub fn bench(c: &mut Criterion) {
-    const INDEX: u64 = 0x8f734e64992d6d8;
+    const INDEX: u64 = 0x8F734E64992D6D8;
     let mut group = c.benchmark_group("cellToParent");
 
     for resolution in 0..=15 {
@@ -11,8 +12,7 @@ pub fn bench(c: &mut Criterion) {
             BenchmarkId::new("h3o", resolution),
             &resolution,
             |b, &resolution| {
-                let resolution =
-                    Resolution::try_from(resolution).expect("resolution");
+                let resolution = Resolution::try_from(resolution).expect("resolution");
                 let index = CellIndex::try_from(INDEX).expect("cell index");
 
                 b.iter(|| black_box(index).parent(black_box(resolution)))
@@ -25,11 +25,7 @@ pub fn bench(c: &mut Criterion) {
             |b, &resolution| {
                 let mut out: u64 = 0;
                 b.iter(|| unsafe {
-                    h3ron_h3_sys::cellToParent(
-                        black_box(INDEX),
-                        black_box(resolution),
-                        &mut out,
-                    )
+                    h3ron_h3_sys::cellToParent(black_box(INDEX), black_box(resolution), &mut out)
                 })
             },
         );

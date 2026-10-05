@@ -1,43 +1,44 @@
-use criterion::{Bencher, BenchmarkId, Criterion};
-use h3o::DirectedEdgeIndex;
 use std::hint::black_box;
 
+use criterion::{Bencher, BenchmarkId, Criterion};
+use h3o::DirectedEdgeIndex;
+
 const HEXAGONS: [u64; 16] = [
-    0x12073fffffffffff,
-    0x121737ffffffffff,
-    0x122734ffffffffff,
-    0x123734efffffffff,
-    0x124734a9ffffffff,
-    0x125734e67fffffff,
-    0x126734e64fffffff,
-    0x127734e64dffffff,
-    0x128734e6499fffff,
-    0x129734e64993ffff,
-    0x12a734e64992ffff,
-    0x12b734e649929fff,
-    0x12c734e649929dff,
-    0x12d734e64992d6ff,
-    0x12e734e64992d6df,
-    0x12f734e64992d6d8,
+    0x12073FFFFFFFFFFF,
+    0x121737FFFFFFFFFF,
+    0x122734FFFFFFFFFF,
+    0x123734EFFFFFFFFF,
+    0x124734A9FFFFFFFF,
+    0x125734E67FFFFFFF,
+    0x126734E64FFFFFFF,
+    0x127734E64DFFFFFF,
+    0x128734E6499FFFFF,
+    0x129734E64993FFFF,
+    0x12A734E64992FFFF,
+    0x12B734E649929FFF,
+    0x12C734E649929DFF,
+    0x12D734E64992D6FF,
+    0x12E734E64992D6DF,
+    0x12F734E64992D6D8,
 ];
 
 const PENTAGONS: [u64; 16] = [
-    0x12009fffffffffff,
-    0x121083ffffffffff,
-    0x1220807fffffffff,
-    0x1230800fffffffff,
-    0x12408001ffffffff,
-    0x125080003fffffff,
-    0x1260800007ffffff,
-    0x1270800000ffffff,
-    0x12808000001fffff,
-    0x129080000003ffff,
-    0x12a0800000007fff,
-    0x12b0800000000fff,
-    0x12c08000000001ff,
-    0x12d080000000003f,
-    0x12e0800000000007,
-    0x12f0800000000000,
+    0x12009FFFFFFFFFFF,
+    0x121083FFFFFFFFFF,
+    0x1220807FFFFFFFFF,
+    0x1230800FFFFFFFFF,
+    0x12408001FFFFFFFF,
+    0x125080003FFFFFFF,
+    0x1260800007FFFFFF,
+    0x1270800000FFFFFF,
+    0x12808000001FFFFF,
+    0x129080000003FFFF,
+    0x12A0800000007FFF,
+    0x12B0800000000FFF,
+    0x12C08000000001FF,
+    0x12D080000000003F,
+    0x12E0800000000007,
+    0x12F0800000000000,
 ];
 
 pub fn bench(c: &mut Criterion) {
@@ -49,11 +50,7 @@ pub fn bench(c: &mut Criterion) {
             index,
             bench_h3o,
         );
-        group.bench_with_input(
-            BenchmarkId::new("h3/Hexagon", resolution),
-            index,
-            bench_h3,
-        );
+        group.bench_with_input(BenchmarkId::new("h3/Hexagon", resolution), index, bench_h3);
     }
 
     for (resolution, index) in PENTAGONS.iter().enumerate() {
@@ -62,11 +59,7 @@ pub fn bench(c: &mut Criterion) {
             index,
             bench_h3o,
         );
-        group.bench_with_input(
-            BenchmarkId::new("h3/Pentagon", resolution),
-            index,
-            bench_h3,
-        );
+        group.bench_with_input(BenchmarkId::new("h3/Pentagon", resolution), index, bench_h3);
     }
 
     group.finish();

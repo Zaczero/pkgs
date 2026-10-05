@@ -1,6 +1,7 @@
-use super::h3api;
 use float_eq::assert_float_eq;
 use h3o::CellIndex;
+
+use super::h3api;
 
 // EPSILON_RADS from h3o.
 const EPSILON: f64 = 1.7453292519943295e-11;
@@ -18,40 +19,40 @@ macro_rules! test {
     };
 }
 
-test!(hexagon_res0, 0x8009fffffffffff);
-test!(hexagon_res1, 0x81083ffffffffff);
-test!(hexagon_res2, 0x820807fffffffff);
-test!(hexagon_res3, 0x830800fffffffff);
-test!(hexagon_res4, 0x8408001ffffffff);
-test!(hexagon_res5, 0x85080003fffffff);
-test!(hexagon_res6, 0x860800007ffffff);
-test!(hexagon_res7, 0x870800000ffffff);
-test!(hexagon_res8, 0x8808000001fffff);
-test!(hexagon_res9, 0x89080000003ffff);
-test!(hexagon_res10, 0x8a0800000007fff);
-test!(hexagon_res11, 0x8b0800000000fff);
-test!(hexagon_res12, 0x8c08000000001ff);
-test!(hexagon_res13, 0x8d080000000003f);
-test!(hexagon_res14, 0x8e0800000000007);
-test!(hexagon_res15, 0x8f0800000000000);
+test!(hexagon_res0, 0x8009FFFFFFFFFFF);
+test!(hexagon_res1, 0x81083FFFFFFFFFF);
+test!(hexagon_res2, 0x820807FFFFFFFFF);
+test!(hexagon_res3, 0x830800FFFFFFFFF);
+test!(hexagon_res4, 0x8408001FFFFFFFF);
+test!(hexagon_res5, 0x85080003FFFFFFF);
+test!(hexagon_res6, 0x860800007FFFFFF);
+test!(hexagon_res7, 0x870800000FFFFFF);
+test!(hexagon_res8, 0x8808000001FFFFF);
+test!(hexagon_res9, 0x89080000003FFFF);
+test!(hexagon_res10, 0x8A0800000007FFF);
+test!(hexagon_res11, 0x8B0800000000FFF);
+test!(hexagon_res12, 0x8C08000000001FF);
+test!(hexagon_res13, 0x8D080000000003F);
+test!(hexagon_res14, 0x8E0800000000007);
+test!(hexagon_res15, 0x8F0800000000000);
 
-test!(pentagon_res0, 0x8073fffffffffff);
-test!(pentagon_res1, 0x81737ffffffffff);
-test!(pentagon_res2, 0x82734ffffffffff);
-test!(pentagon_res3, 0x83734efffffffff);
-test!(pentagon_res4, 0x84734a9ffffffff);
-test!(pentagon_res5, 0x85734e67fffffff);
-test!(pentagon_res6, 0x86734e64fffffff);
-test!(pentagon_res7, 0x87734e64dffffff);
-test!(pentagon_res8, 0x88734e6499fffff);
-test!(pentagon_res9, 0x89734e64993ffff);
-test!(pentagon_res10, 0x8a734e64992ffff);
-test!(pentagon_res11, 0x8b734e649929fff);
-test!(pentagon_res12, 0x8c734e649929dff);
-test!(pentagon_res13, 0x8d734e64992d6ff);
-test!(pentagon_res14, 0x8e734e64992d6df);
-test!(pentagon_res15, 0x8f734e64992d6d8);
+test!(pentagon_res0, 0x8073FFFFFFFFFFF);
+test!(pentagon_res1, 0x81737FFFFFFFFFF);
+test!(pentagon_res2, 0x82734FFFFFFFFFF);
+test!(pentagon_res3, 0x83734EFFFFFFFFF);
+test!(pentagon_res4, 0x84734A9FFFFFFFF);
+test!(pentagon_res5, 0x85734E67FFFFFFF);
+test!(pentagon_res6, 0x86734E64FFFFFFF);
+test!(pentagon_res7, 0x87734E64DFFFFFF);
+test!(pentagon_res8, 0x88734E6499FFFFF);
+test!(pentagon_res9, 0x89734E64993FFFF);
+test!(pentagon_res10, 0x8A734E64992FFFF);
+test!(pentagon_res11, 0x8B734E649929FFF);
+test!(pentagon_res12, 0x8C734E649929DFF);
+test!(pentagon_res13, 0x8D734E64992D6FF);
+test!(pentagon_res14, 0x8E734E64992D6DF);
+test!(pentagon_res15, 0x8F734E64992D6D8);
 
 // This one triggered a bug related to the use of a wrong epsilon in
 // `Vec2d::partial_eq`.
-test!(bug_vec2d_epsilon, 0x8159bffffffffff);
+test!(bug_vec2d_epsilon, 0x8159BFFFFFFFFFF);

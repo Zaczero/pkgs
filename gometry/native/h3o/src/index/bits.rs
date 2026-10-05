@@ -1,8 +1,10 @@
 //! Bit twiddling.
 
+use core::cmp;
+use core::num::NonZeroU8;
+
 use super::IndexMode;
 use crate::{Direction, Edge, Resolution, Vertex};
-use core::{cmp, num::NonZeroU8};
 
 /// Offset (in bits) of the mode in an H3 index.
 const MODE_OFFSET: usize = 59;
@@ -17,7 +19,7 @@ const VERTEX_OFFSET: usize = 56;
 const VERTEX_MASK: u64 = 0b111 << VERTEX_OFFSET;
 
 // Bitmask to select the directions bits in an H3 index.
-pub const DIRECTIONS_MASK: u64 = 0x0000_1fff_ffff_ffff;
+pub const DIRECTIONS_MASK: u64 = 0x0000_1FFF_FFFF_FFFF;
 
 /// Returns the H3 index mode  bits.
 #[must_use]
@@ -144,30 +146,16 @@ pub fn first_axe(bits: u64) -> Option<NonZeroU8> {
 pub fn rotate60<const CCW: bool>(mut bits: u64, count: usize) -> u64 {
     // Using specialization (through `rotate60_once`) actually pays off.
     if count == 1 {
-        for resolution in
-            Resolution::range(Resolution::One, get_resolution(bits))
-        {
-            let direction =
-                Direction::new_unchecked(get_direction(bits, resolution));
+        for resolution in Resolution::range(Resolution::One, get_resolution(bits)) {
+            let direction = Direction::new_unchecked(get_direction(bits, resolution));
 
-            bits = set_direction(
-                bits,
-                direction.rotate60_once::<CCW>().into(),
-                resolution,
-            );
+            bits = set_direction(bits, direction.rotate60_once::<CCW>().into(), resolution);
         }
     } else {
-        for resolution in
-            Resolution::range(Resolution::One, get_resolution(bits))
-        {
-            let direction =
-                Direction::new_unchecked(get_direction(bits, resolution));
+        for resolution in Resolution::range(Resolution::One, get_resolution(bits)) {
+            let direction = Direction::new_unchecked(get_direction(bits, resolution));
 
-            bits = set_direction(
-                bits,
-                direction.rotate60::<CCW>(count).into(),
-                resolution,
-            );
+            bits = set_direction(bits, direction.rotate60::<CCW>(count).into(), resolution);
         }
     }
 
@@ -188,25 +176,15 @@ pub fn pentagon_rotate60<const CCW: bool>(mut bits: u64) -> u64 {
     // Using specialization (through `rotate60_once`) actually pays off.
     if first_axe(bits) == direction {
         for resolution in Resolution::range(Resolution::One, res) {
-            let direction =
-                Direction::new_unchecked(get_direction(bits, resolution));
+            let direction = Direction::new_unchecked(get_direction(bits, resolution));
 
-            bits = set_direction(
-                bits,
-                direction.rotate60::<CCW>(2).into(),
-                resolution,
-            );
+            bits = set_direction(bits, direction.rotate60::<CCW>(2).into(), resolution);
         }
     } else {
         for resolution in Resolution::range(Resolution::One, res) {
-            let direction =
-                Direction::new_unchecked(get_direction(bits, resolution));
+            let direction = Direction::new_unchecked(get_direction(bits, resolution));
 
-            bits = set_direction(
-                bits,
-                direction.rotate60_once::<CCW>().into(),
-                resolution,
-            );
+            bits = set_direction(bits, direction.rotate60_once::<CCW>().into(), resolution);
         }
     }
 

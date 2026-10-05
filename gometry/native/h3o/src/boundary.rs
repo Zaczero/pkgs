@@ -1,5 +1,7 @@
+use core::fmt;
+use core::ops::Deref;
+
 use crate::{LatLng, Resolution};
-use core::{fmt, ops::Deref};
 
 /// Maximum number of cell boundary vertices.
 ///
@@ -126,10 +128,7 @@ pub struct ProjectionSeam {
 }
 
 impl ProjectionSeam {
-    pub(crate) const fn new(
-        left: [ProjectionSeed; 2],
-        right: [ProjectionSeed; 2],
-    ) -> Self {
+    pub(crate) const fn new(left: [ProjectionSeed; 2], right: [ProjectionSeed; 2]) -> Self {
         Self { left, right }
     }
 
@@ -213,13 +212,9 @@ impl CapLatticeProfile {
     /// Returns all real direction and 60-degree-rotation offsets contributed
     /// by the digit at the given one-based H3 resolution.
     #[must_use]
-    pub fn suffix_offsets(
-        &self,
-        resolution: Resolution,
-    ) -> Option<&[Hex2Int; 42]> {
+    pub fn suffix_offsets(&self, resolution: Resolution) -> Option<&[Hex2Int; 42]> {
         let index = usize::from(resolution);
-        (index != 0 && index <= usize::from(self.target))
-            .then(|| &self.suffixes[index - 1])
+        (index != 0 && index <= usize::from(self.target)).then(|| &self.suffixes[index - 1])
     }
 
     /// Returns every actual target vertex offset under all native rotations.
@@ -250,8 +245,7 @@ impl ProjectionSeed {
         let face = usize::from(self.face());
         let center = crate::face::CENTER_POINT[face];
         let resolution = match self {
-            Self::Point { resolution, .. }
-            | Self::Intersection { resolution, .. } => resolution,
+            Self::Point { resolution, .. } | Self::Intersection { resolution, .. } => resolution,
         };
         ProjectionFrame {
             face: self.face(),
@@ -309,12 +303,7 @@ impl ProjectedBoundary {
         }
     }
 
-    pub(crate) fn push(
-        &mut self,
-        point: LatLng,
-        seed: ProjectionSeed,
-        source_edge: u8,
-    ) {
+    pub(crate) fn push(&mut self, point: LatLng, seed: ProjectionSeed, source_edge: u8) {
         let index = usize::from(self.count);
         self.public.points[index] = point;
         self.public.count += 1;
@@ -324,9 +313,7 @@ impl ProjectedBoundary {
     }
 
     /// Returns the raw seeds in the same order as [`Self::public`].
-    pub fn projection_seeds(
-        &self,
-    ) -> impl ExactSizeIterator<Item = &ProjectionSeed> {
+    pub fn projection_seeds(&self) -> impl ExactSizeIterator<Item = &ProjectionSeed> {
         self.seeds[..usize::from(self.count)]
             .iter()
             .map(|seed| seed.as_ref().expect("paired boundary seed"))
@@ -337,9 +324,7 @@ impl ProjectedBoundary {
     /// A point seed's value is informational.  For an insertion seed it is
     /// the edge identity required to distinguish inserted vertices from a
     /// shifted boundary ordinal.
-    pub fn projection_seed_edges(
-        &self,
-    ) -> impl ExactSizeIterator<Item = u8> + '_ {
+    pub fn projection_seed_edges(&self) -> impl ExactSizeIterator<Item = u8> + '_ {
         self.source_edges[..usize::from(self.count)].iter().copied()
     }
 }

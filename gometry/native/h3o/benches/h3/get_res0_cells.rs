@@ -1,6 +1,7 @@
+use std::hint::black_box;
+
 use criterion::Criterion;
 use h3o::CellIndex;
-use std::hint::black_box;
 
 pub fn bench(c: &mut Criterion) {
     let mut group = c.benchmark_group("getRes0Cells");

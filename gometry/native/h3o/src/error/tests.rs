@@ -1,13 +1,13 @@
+use alloc::string::ToString;
+use core::error::Error as _;
+
 use crate::error::{
-    CompactionError, HexGridError, InvalidBaseCell, InvalidCellIndex,
-    InvalidDirectedEdgeIndex, InvalidDirection, InvalidEdge, InvalidFace,
-    InvalidLatLng, InvalidResolution, InvalidVertex, InvalidVertexIndex,
-    LocalIjError, ResolutionMismatch,
+    CompactionError, HexGridError, InvalidBaseCell, InvalidCellIndex, InvalidDirectedEdgeIndex,
+    InvalidDirection, InvalidEdge, InvalidFace, InvalidLatLng, InvalidResolution, InvalidVertex,
+    InvalidVertexIndex, LocalIjError, ResolutionMismatch,
 };
 #[cfg(feature = "geo")]
 use crate::error::{DissolutionError, InvalidGeometry, PlotterError};
-use alloc::string::ToString;
-use core::error::Error as _;
 
 // All error must have a non-empty display.
 #[test]

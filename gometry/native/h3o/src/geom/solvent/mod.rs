@@ -39,17 +39,10 @@ impl Solvent {
         cells: impl IntoIterator<Item = crate::CellIndex>,
     ) -> Result<geo::MultiPolygon, crate::error::DissolutionError> {
         Ok(match self.input_mode {
-            InputMode::Homogeneous => {
-                ArcSet::new(cells, self.check_duplicate)?.into()
-            }
+            InputMode::Homogeneous => ArcSet::new(cells, self.check_duplicate)?.into(),
             InputMode::Heterogeneous(resolution) => {
-                VertexGraph::from_heterogeneous(
-                    cells,
-                    resolution,
-                    self.check_duplicate,
-                )?
-                .into()
-            }
+                VertexGraph::from_heterogeneous(cells, resolution, self.check_duplicate)?.into()
+            },
         })
     }
 }
@@ -106,10 +99,7 @@ impl SolventBuilder {
     /// to support. Coarser cells will be converted on-the-fly and finer cells
     /// will trigger an error.
     #[must_use]
-    pub const fn enable_heterogeneous_support(
-        mut self,
-        resolution: crate::Resolution,
-    ) -> Self {
+    pub const fn enable_heterogeneous_support(mut self, resolution: crate::Resolution) -> Self {
         self.input_mode = InputMode::Heterogeneous(resolution);
         self
     }

@@ -1,12 +1,13 @@
-use super::RingHierarchy;
-use crate::{
-    CellIndex, LatLng, Resolution, VertexIndex, error::DissolutionError,
-    geom::neighbors,
-};
+use std::collections::hash_map::Entry;
+
 use ahash::{HashMap, HashMapExt, HashSet, HashSetExt};
 use either::Either;
 use geo::{LineString, MultiPolygon, Polygon};
-use std::collections::hash_map::Entry;
+
+use super::RingHierarchy;
+use crate::error::DissolutionError;
+use crate::geom::neighbors;
+use crate::{CellIndex, LatLng, Resolution, VertexIndex};
 
 /// A single node in a vertex graph.
 #[derive(Debug, Eq, PartialEq, Hash)]
@@ -42,9 +43,7 @@ impl VertexGraph {
             if cells.iter().any(|cell| cell.resolution() > resolution) {
                 return Err(DissolutionError::UnsupportedResolution);
             }
-            check_duplicates(
-                cells.iter().flat_map(|cell| cell.children(resolution)),
-            )?;
+            check_duplicates(cells.iter().flat_map(|cell| cell.children(resolution)))?;
             Either::Left(cells.into_iter())
         } else {
             Either::Right(cells.into_iter())
@@ -62,7 +61,7 @@ impl VertexGraph {
             match cell.resolution().cmp(&resolution) {
                 std::cmp::Ordering::Less => {
                     graph.insert_large_cell(cell, resolution, &mut scratchpad);
-                }
+                },
                 std::cmp::Ordering::Equal => {
                     scratchpad.compute_vertexes(cell);
                     for pair in scratchpad.vertexes.windows(2) {
@@ -76,10 +75,10 @@ impl VertexGraph {
                     if graph.is_class3 && cell.icosahedron_faces().len() > 1 {
                         graph.index_distortions(cell, &scratchpad.vertexes);
                     }
-                }
+                },
                 std::cmp::Ordering::Greater => {
                     return Err(DissolutionError::UnsupportedResolution);
-                }
+                },
             }
         }
 
@@ -92,9 +91,7 @@ impl VertexGraph {
         // If we've seen this edge already, it will be reversed.
         if let Entry::Occupied(mut entry) = self.nodes.entry(node.to) {
             // Edge share by two cells: not part of the outline!
-            if let Some(pos) =
-                entry.get().iter().position(|&vertex| vertex == node.from)
-            {
+            if let Some(pos) = entry.get().iter().position(|&vertex| vertex == node.from) {
                 entry.get_mut().swap_remove(pos);
                 if entry.get().is_empty() {
                     entry.remove_entry();
@@ -119,8 +116,7 @@ impl VertexGraph {
     /// Removes a node from the graph.
     pub fn remove(&mut self, node: &Node) {
         if let Entry::Occupied(mut entry) = self.nodes.entry(node.from)
-            && let Some(pos) =
-                entry.get().iter().position(|&vertex| vertex == node.to)
+            && let Some(pos) = entry.get().iter().position(|&vertex| vertex == node.to)
         {
             entry.get_mut().swap_remove(pos);
             if entry.get().is_empty() {
@@ -147,11 +143,7 @@ impl VertexGraph {
         resolution: Resolution,
         scratchpad: &mut Scratchpad,
     ) {
-        let boundary = compute_large_cell_boundary(
-            cell,
-            resolution,
-            &mut scratchpad.neighbors,
-        );
+        let boundary = compute_large_cell_boundary(cell, resolution, &mut scratchpad.neighbors);
 
         for (cell, neighbors) in boundary {
             // Build a blacklist of edge by storing the reverse edge of the
@@ -162,12 +154,12 @@ impl VertexGraph {
                     continue;
                 }
                 scratchpad.compute_vertexes(candidate);
-                scratchpad.blacklist.extend(
-                    scratchpad.vertexes.windows(2).map(|pair| Node {
+                scratchpad
+                    .blacklist
+                    .extend(scratchpad.vertexes.windows(2).map(|pair| Node {
                         to: pair[0],
                         from: pair[1],
-                    }),
-                );
+                    }));
             }
 
             scratchpad.compute_vertexes(cell);
@@ -202,9 +194,7 @@ impl VertexGraph {
             if vertex == LatLng::from(vertexes[topological_idx]) {
                 topological_idx = (topological_idx + 1) % vertexes.len();
             } else {
-                let from = topological_idx
-                    .checked_sub(1)
-                    .unwrap_or(vertexes.len() - 1);
+                let from = topological_idx.checked_sub(1).unwrap_or(vertexes.len() - 1);
                 self.distortions.insert(
                     Node {
                         from: vertexes[from],
@@ -228,8 +218,7 @@ impl From<VertexGraph> for MultiPolygon<f64> {
         let mut coords = Vec::new();
 
         while !value.is_empty() {
-            let (&from, to) =
-                value.nodes.iter().next().expect("non-empty graph");
+            let (&from, to) = value.nodes.iter().next().expect("non-empty graph");
             let mut node = Node { from, to: to[0] };
             loop {
                 coords.push(LatLng::from(node.from).into());
@@ -254,10 +243,7 @@ impl From<VertexGraph> for MultiPolygon<f64> {
 
         // If we have a single ring, the resulting shape is obvious.
         if rings.len() == 1 {
-            return Self::new(vec![Polygon::new(
-                rings.swap_remove(0),
-                Vec::new(),
-            )]);
+            return Self::new(vec![Polygon::new(rings.swap_remove(0), Vec::new())]);
         }
 
         RingHierarchy::new(rings).into()
@@ -305,9 +291,9 @@ fn compute_large_cell_boundary(
         .copied()
         .filter_map(|cell| {
             let count = neighbors(cell, scratchpad);
-            let is_boundary = scratchpad[0..count].iter().any(|neighbor| {
-                !cells.contains(&CellIndex::new_unchecked(*neighbor))
-            });
+            let is_boundary = scratchpad[0..count]
+                .iter()
+                .any(|neighbor| !cells.contains(&CellIndex::new_unchecked(*neighbor)));
 
             is_boundary.then(|| {
                 let neighbors = scratchpad[0..count]

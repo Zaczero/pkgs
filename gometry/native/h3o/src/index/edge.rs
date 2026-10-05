@@ -1,9 +1,11 @@
+use core::cmp::Ordering;
+use core::fmt;
+use core::num::NonZeroU64;
+use core::str::FromStr;
+
 use super::{IndexMode, bits};
-use crate::{
-    Boundary, CellIndex, Direction, EARTH_RADIUS_KM, coord::FaceIJK, error,
-    grid,
-};
-use core::{cmp::Ordering, fmt, num::NonZeroU64, str::FromStr};
+use crate::coord::FaceIJK;
+use crate::{Boundary, CellIndex, Direction, EARTH_RADIUS_KM, error, grid};
 
 /// Minimum value for a cell edge.
 const MIN: u8 = 1;
@@ -289,11 +291,10 @@ impl DirectedEdgeIndex {
 impl Ord for DirectedEdgeIndex {
     fn cmp(&self, other: &Self) -> Ordering {
         /// Bitmask to hide the resolution and edge.
-        const MASK: u64 = 0xf80f_ffff_ffff_ffff;
+        const MASK: u64 = 0xF80F_FFFF_FFFF_FFFF;
 
         // Order by index first, then by edge.
-        (self.0.get() & MASK, self.edge())
-            .cmp(&(other.0.get() & MASK, other.edge()))
+        (self.0.get() & MASK, self.edge()).cmp(&(other.0.get() & MASK, other.edge()))
     }
 }
 
@@ -320,12 +321,10 @@ impl TryFrom<u64> for DirectedEdgeIndex {
         // Clear the highest byte and validate the index part.
         let bits = bits::set_mode(value, IndexMode::Cell);
         let bits = bits::clr_edge(bits);
-        CellIndex::try_from(bits)
-            .map_err(|err| Self::Error::new(Some(value), err.reason))?;
+        CellIndex::try_from(bits).map_err(|err| Self::Error::new(Some(value), err.reason))?;
 
         // An hexagon has 6 edges (1-6), while a pentagon only has 5 (2-6).
-        let min_edge =
-            1 + u8::from(CellIndex::new_unchecked(bits).is_pentagon());
+        let min_edge = 1 + u8::from(CellIndex::new_unchecked(bits).is_pentagon());
         if !(min_edge..=MAX).contains(&bits::get_edge(value)) {
             return Err(Self::Error::new(Some(value), "invalid cell edge"));
         }
@@ -394,8 +393,7 @@ impl fmt::UpperHex for DirectedEdgeIndex {
 #[cfg(feature = "geo")]
 impl From<DirectedEdgeIndex> for geo::Line {
     fn from(value: DirectedEdgeIndex) -> Self {
-        let coords: Vec<geo::Coord> =
-            value.boundary().iter().copied().map(Into::into).collect();
+        let coords: Vec<geo::Coord> = value.boundary().iter().copied().map(Into::into).collect();
 
         // We only have two point (start and end) as boundary for an edge.
         assert_eq!(coords.len(), 2);
@@ -406,12 +404,9 @@ impl From<DirectedEdgeIndex> for geo::Line {
 
 #[cfg(feature = "arbitrary")]
 impl<'a> arbitrary::Arbitrary<'a> for DirectedEdgeIndex {
-    fn arbitrary(
-        data: &mut arbitrary::Unstructured<'a>,
-    ) -> arbitrary::Result<Self> {
-        u64::arbitrary(data).and_then(|byte| {
-            Self::try_from(byte).map_err(|_| arbitrary::Error::IncorrectFormat)
-        })
+    fn arbitrary(data: &mut arbitrary::Unstructured<'a>) -> arbitrary::Result<Self> {
+        u64::arbitrary(data)
+            .and_then(|byte| Self::try_from(byte).map_err(|_| arbitrary::Error::IncorrectFormat))
     }
 }
 

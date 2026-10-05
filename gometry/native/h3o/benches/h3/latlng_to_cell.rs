@@ -1,6 +1,7 @@
+use std::hint::black_box;
+
 use criterion::{Bencher, BenchmarkId, Criterion};
 use h3o::{LatLng, Resolution};
-use std::hint::black_box;
 
 pub fn bench(c: &mut Criterion) {
     let mut group = c.benchmark_group("latLngToCell");
@@ -50,10 +51,6 @@ fn bench_h3(b: &mut Bencher<'_>, ll: LatLng, resolution: u8) {
         lng: ll.lng_radians(),
     };
     b.iter(|| unsafe {
-        h3ron_h3_sys::latLngToCell(
-            black_box(&ll),
-            black_box(resolution.into()),
-            &mut out,
-        )
+        h3ron_h3_sys::latLngToCell(black_box(&ll), black_box(resolution.into()), &mut out)
     })
 }

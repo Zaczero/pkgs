@@ -1,28 +1,25 @@
-use super::utils::load_polygon;
+use std::hint::black_box;
+use std::os::raw::c_int;
+
 use criterion::{BatchSize, Bencher, BenchmarkId, Criterion};
 use geo::Polygon;
-use h3o::{
-    Resolution,
-    geom::{ContainmentMode, TilerBuilder},
-};
-use std::{hint::black_box, os::raw::c_int};
+use h3o::Resolution;
+use h3o::geom::{ContainmentMode, TilerBuilder};
+
+use super::utils::load_polygon;
 
 pub fn bench_full(c: &mut Criterion) {
     let mut group = c.benchmark_group("polygonToCells");
     let polygon = load_polygon("Paris");
 
     for res in 0..=12 {
-        group.bench_with_input(
-            BenchmarkId::new("h3o/Full", res),
-            &res,
-            |b, &res| bench_h3o(b, &polygon, res),
-        );
+        group.bench_with_input(BenchmarkId::new("h3o/Full", res), &res, |b, &res| {
+            bench_h3o(b, &polygon, res)
+        });
 
-        group.bench_with_input(
-            BenchmarkId::new("h3/Full", res),
-            &res,
-            |b, &res| bench_h3(b, &polygon, res),
-        );
+        group.bench_with_input(BenchmarkId::new("h3/Full", res), &res, |b, &res| {
+            bench_h3(b, &polygon, res)
+        });
     }
 
     group.finish();

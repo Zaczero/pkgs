@@ -1,9 +1,10 @@
-use super::constants::{HEXAGONS, PENTAGONS};
-use criterion::{
-    BenchmarkGroup, BenchmarkId, Criterion, measurement::Measurement,
-};
-use h3o::CellIndex;
 use std::hint::black_box;
+
+use criterion::measurement::Measurement;
+use criterion::{BenchmarkGroup, BenchmarkId, Criterion};
+use h3o::CellIndex;
+
+use super::constants::{HEXAGONS, PENTAGONS};
 
 pub fn bench(c: &mut Criterion) {
     let mut group = c.benchmark_group("directedEdgeToBoundary");
@@ -35,14 +36,10 @@ fn bench_h3o<T>(
 ) where
     T: Measurement,
 {
-    group.bench_with_input(
-        BenchmarkId::new(name, resolution),
-        &index,
-        |b, &index| {
-            let edge = index.edges().next().expect("edge index");
-            b.iter(|| black_box(edge).boundary().len())
-        },
-    );
+    group.bench_with_input(BenchmarkId::new(name, resolution), &index, |b, &index| {
+        let edge = index.edges().next().expect("edge index");
+        b.iter(|| black_box(edge).boundary().len())
+    });
 }
 
 fn bench_h3<T>(
@@ -53,21 +50,14 @@ fn bench_h3<T>(
 ) where
     T: Measurement,
 {
-    group.bench_with_input(
-        BenchmarkId::new(name, resolution),
-        &index,
-        |b, &index| {
-            let edge = index.edges().next().expect("edge index");
-            let mut result = h3ron_h3_sys::CellBoundary {
-                numVerts: 0,
-                verts: [h3ron_h3_sys::LatLng { lat: 0., lng: 0. }; 10],
-            };
-            b.iter(|| unsafe {
-                h3ron_h3_sys::directedEdgeToBoundary(
-                    black_box(edge.into()),
-                    &mut result,
-                )
-            })
-        },
-    );
+    group.bench_with_input(BenchmarkId::new(name, resolution), &index, |b, &index| {
+        let edge = index.edges().next().expect("edge index");
+        let mut result = h3ron_h3_sys::CellBoundary {
+            numVerts: 0,
+            verts: [h3ron_h3_sys::LatLng { lat: 0., lng: 0. }; 10],
+        };
+        b.iter(|| unsafe {
+            h3ron_h3_sys::directedEdgeToBoundary(black_box(edge.into()), &mut result)
+        })
+    });
 }

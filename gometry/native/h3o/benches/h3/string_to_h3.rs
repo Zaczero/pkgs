@@ -1,6 +1,8 @@
+use std::ffi::CString;
+use std::hint::black_box;
+
 use criterion::Criterion;
 use h3o::{CellIndex, DirectedEdgeIndex, VertexIndex};
-use std::{ffi::CString, hint::black_box};
 
 const CELL_INDEX: &str = "08f734e64992d6d8";
 const EDGE_INDEX: &str = "15f2834782b9c2ab";

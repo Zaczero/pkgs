@@ -1,5 +1,7 @@
+use std::iter::Peekable;
+use std::vec;
+
 use geo::{Contains, Coord, LineString, MultiPolygon, Polygon};
-use std::{iter::Peekable, vec};
 
 /// A rings hierarchy.
 pub struct RingHierarchy {
@@ -71,9 +73,7 @@ impl RingHierarchy {
 
                 let (r1, r2) = if is_transmeridian[i] {
                     (
-                        LineString::new(
-                            r1.coords().map(adjust_coordinate).collect(),
-                        ),
+                        LineString::new(r1.coords().map(adjust_coordinate).collect()),
                         adjust_coordinate(&r2.0[0]),
                     )
                 } else {
@@ -98,8 +98,7 @@ impl RingHierarchy {
 
     /// Consumes the hierarchy into a stream of Polygon.
     pub fn into_iter(mut self) -> impl Iterator<Item = Polygon<f64>> {
-        type OuterRingIterator =
-            Peekable<vec::IntoIter<(usize, LineString<f64>)>>;
+        type OuterRingIterator = Peekable<vec::IntoIter<(usize, LineString<f64>)>>;
 
         // Outers ring at the current nesting level.
         let mut outers: Option<OuterRingIterator> = None;
@@ -107,9 +106,7 @@ impl RingHierarchy {
         std::iter::from_fn(move || {
             // If the current layer is exhausted, peel the next one.
             if outers.as_mut().is_none_or(|rings| rings.peek().is_none()) {
-                outers = self
-                    .peel_outers()
-                    .map(|rings| rings.into_iter().peekable());
+                outers = self.peel_outers().map(|rings| rings.into_iter().peekable());
             }
 
             outers.as_mut().map(|outers| {
@@ -131,20 +128,14 @@ impl RingHierarchy {
     /// Note that in case of nested polygons, you may need to call this function
     /// several time to extract outer rings at every nesting level.
     fn peel_outers(&mut self) -> Option<Vec<(usize, LineString<f64>)>> {
-        #[expect(
-            clippy::filter_map_bool_then,
-            reason = "borrow issue if filter+map"
-        )]
+        #[expect(clippy::filter_map_bool_then, reason = "borrow issue if filter+map")]
         let outers = (0..self.rings.len())
             .filter_map(|i| {
                 // Skip assigned rings and non-outer ones.
                 (!self.is_assigned[i] && self.is_outer(i)).then(|| {
                     // Extract the ring in place to preserve `rings` size and
                     // ordering.
-                    let ring = std::mem::replace(
-                        &mut self.rings[i],
-                        LineString(vec![]),
-                    );
+                    let ring = std::mem::replace(&mut self.rings[i], LineString(vec![]));
                     (i, ring)
                 })
             })
@@ -160,21 +151,13 @@ impl RingHierarchy {
     fn inners(&mut self, outer_id: usize) -> Vec<LineString<f64>> {
         // Walk by column to find candidate and then check their parents using
         // the row-order
-        #[expect(
-            clippy::filter_map_bool_then,
-            reason = "borrow issue if filter+map"
-        )]
+        #[expect(clippy::filter_map_bool_then, reason = "borrow issue if filter+map")]
         let (ids, rings) = (0..self.rings.len())
             .filter_map(|inner_id| {
-                (!self.is_assigned[inner_id]
-                    && self.belongs_to(inner_id, outer_id))
-                .then(|| {
+                (!self.is_assigned[inner_id] && self.belongs_to(inner_id, outer_id)).then(|| {
                     // Extract the ring in place to preserve `rings` size and
                     // ordering.
-                    let ring = std::mem::replace(
-                        &mut self.rings[inner_id],
-                        LineString(vec![]),
-                    );
+                    let ring = std::mem::replace(&mut self.rings[inner_id], LineString(vec![]));
                     (inner_id, ring)
                 })
             })
