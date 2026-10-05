@@ -4673,6 +4673,60 @@ fn rectangle_intersection_uses_exact_source_contacts() {
     assert!(!exact_intersects_bounds(&disjoint, bounds).unwrap());
 }
 
+#[test]
+fn polygon_occupancy_uses_staged_ids_when_rectangle_is_first() {
+    let Shape::Polygon(subject) =
+        crate::io::parse_wkt("POLYGON ((10 10,14 10,14 14,10 14,10 10),(9 9,15 9,15 15,9 15,9 9))")
+            .unwrap()
+    else {
+        unreachable!()
+    };
+    let bounds = Bounds::new_raw(9.5, 9.5, 13.0, 14.5);
+    let rectangle = rect_polygon(bounds).unwrap();
+    let (inventory, _) =
+        ExactSourceInventory::from_polygon_rect_clip(&[&subject], &rectangle, bounds, true)
+            .unwrap()
+            .expect("the rectangle crosses the subject ring");
+
+    assert_eq!(inventory.polygon_operands, [1, 0]);
+    assert_eq!(inventory.ring_polygons, [0, 1, 1]);
+    assert_eq!(inventory.ring_holes, [false, false, true]);
+
+    let mut occupancy = PolygonOccupancy::new(&inventory, false);
+    let mut winding = vec![0; inventory.ring_count];
+    occupancy.cross(&mut winding, 1, 1);
+    assert!(occupancy.operand_occupied(0));
+    occupancy.cross(&mut winding, 2, 1);
+    assert!(occupancy.polygon_holes_occupied(1));
+    assert!(!occupancy.operand_occupied(0));
+    assert!(!occupancy.operand_occupied(1));
+    occupancy.cross(&mut winding, 2, -1);
+    assert!(!occupancy.polygon_holes_occupied(1));
+    assert!(occupancy.operand_occupied(0));
+}
+
+#[test]
+fn polygon_occupancy_keeps_raw_winding_rings_unowned() {
+    let inventory =
+        ExactSourceInventory::from_raw_loops(&[(vec![0.0, 1.0, 0.0], vec![0.0, 1.0, 0.0])])
+            .unwrap();
+    assert_eq!(inventory.ring_count, 1);
+    assert!(inventory.ring_polygons.is_empty());
+    assert!(inventory.ring_holes.is_empty());
+
+    let mut occupancy = PolygonOccupancy::new(&inventory, false);
+    let error = occupancy.seed(&[]).unwrap_err();
+    assert!(matches!(
+        error.kind(),
+        crate::error::ErrorKind::Geometry(GeometryErrorKind::Invalid(_))
+    ));
+
+    let mut winding = vec![0; inventory.ring_count];
+    occupancy.cross(&mut winding, 0, 1);
+    assert_eq!(winding, [1]);
+    assert!(!occupancy.operand_occupied(0));
+}
+
 fn append_constructed_point(
     partition: &mut ExactPartition<'_>,
     x: ExactDyadic,

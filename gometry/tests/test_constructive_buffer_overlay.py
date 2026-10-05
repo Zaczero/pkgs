@@ -1270,6 +1270,82 @@ def test_clip_by_rect_empty_matches_intersection_type() -> None:
         assert clipped.to_wkb() == intersection.to_wkb()
 
 
+@pytest.mark.parametrize(
+    ('source', 'bounds'),
+    [
+        pytest.param(
+            'POLYGON ((10 10,14 10,14 14,10 14,10 10),(9 9,15 9,15 15,9 15,9 9))',
+            (9.5, 9.5, 13, 14.5),
+            id='winding-shell-covered-by-hole',
+        ),
+        pytest.param(
+            'POLYGON ((10 10,11 10,14 10,12 10,10 10),(9 9,15 9,15 11,9 11,9 9))',
+            (9.5, 9.5, 13, 10.5),
+            id='collapsed-shell-covered-by-hole',
+        ),
+    ],
+)
+def test_rectangle_intersection_excludes_shell_covered_by_hole(
+    source: str, bounds: tuple[float, float, float, float]
+) -> None:
+    subject = gm.from_wkt(source)
+    rectangle = gm.box(*bounds)
+
+    assert gm.relate(subject, rectangle) == 'FFFFFF212'
+    assert gm.intersection(subject, rectangle).is_empty
+    assert gm.intersection(rectangle, subject).is_empty
+    assert subject.clip_by_rect(*bounds).is_empty
+
+
+def test_rectangle_shell_ownership_survives_array_nulls_and_gathers() -> None:
+    winding = gm.from_wkt(
+        'POLYGON ((10 10,14 10,14 14,10 14,10 10),(9 9,15 9,15 15,9 15,9 9))'
+    )
+    collapsed = gm.from_wkt(
+        'POLYGON ((10 10,11 10,14 10,12 10,10 10),(9 9,15 9,15 11,9 11,9 9))'
+    )
+    ordinary = gm.box(10, 10, 12, 12)
+    bounds = (9.5, 9.5, 13, 14.5)
+    rectangle = gm.box(*bounds)
+    subjects = gm.GeometryArray([winding, collapsed, ordinary])
+    rectangles = gm.GeometryArray([rectangle, rectangle, rectangle])
+
+    forward = gm.intersection(subjects, rectangles)
+    reverse = gm.intersection(rectangles, subjects)
+    assert [geometry.is_empty for geometry in forward] == [True, True, False]
+    assert [geometry.is_empty for geometry in reverse] == [True, True, False]
+
+    nullable = subjects._with_missing([False, True, False])
+    nullable_result = gm.intersection(nullable, rectangles)
+    assert nullable_result.is_missing.tolist() == [False, True, False]
+    assert nullable_result[0].is_empty
+    assert not nullable_result[2].is_empty
+
+    gathered = nullable[[2, 0, 1]]
+    gathered_rectangles = rectangles[[2, 0, 1]]
+    gathered_result = gm.intersection(gathered_rectangles, gathered)
+    assert gathered_result.is_missing.tolist() == [False, False, True]
+    assert not gathered_result[0].is_empty
+    assert gathered_result[1].is_empty
+
+    clipped = subjects.clip_by_rect(*bounds)
+    assert [geometry.is_empty for geometry in clipped] == [True, True, False]
+    nullable_clipped = nullable.clip_by_rect(*bounds)
+    assert nullable_clipped.is_missing.tolist() == [False, True, False]
+    assert nullable_clipped[0].is_empty
+    gathered_clipped = gathered.clip_by_rect(*bounds)
+    assert gathered_clipped.is_missing.tolist() == [False, False, True]
+    assert gathered_clipped[1].is_empty
+
+
+def test_rectangle_clips_positive_collapsed_shell_support() -> None:
+    collapsed = gm.from_wkt('POLYGON ((0 0,2 0,4 0,0 0))')
+
+    clipped = collapsed.clip_by_rect(1, -1, 3, 1)
+
+    assert clipped.to_wkt() == 'LINESTRING (1 0, 3 0)'
+
+
 def test_shared_paths_tiny_collinear_segments_stay_same_direction() -> None:
     # Regression: the shared-direction dot product underflowed to 0.0 for
     # ~1e-162 collinear segments (products below f64's subnormal floor),

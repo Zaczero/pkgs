@@ -1770,7 +1770,7 @@ impl ExactSourceInventory {
         let winding_rings = self.winding_source_rings();
         let mut selected = Vec::with_capacity(global.count as usize);
         selected.resize(global.count as usize, false);
-        let mut occupancy = PolygonOccupancy::new(&self.polygon_rings, self.ring_count, false)?;
+        let mut occupancy = PolygonOccupancy::new(self, false);
         if let Some((_, seed)) = &partition.winding_seed {
             occupancy.seed(seed)?;
         }
@@ -3741,68 +3741,55 @@ const fn exact_sign_i8(sign: ExactSign) -> i8 {
 /// is filled and none of its holes is, and every operand counts its occupied
 /// polygons. A face then reads each operand in O(1) instead of rescanning
 /// every polygon.
-struct PolygonOccupancy {
+struct PolygonOccupancy<'source> {
     odd: bool,
-    /// Owning polygon of each ring, and whether the ring is that polygon's shell.
-    ring_polygon: Vec<Option<(u32, bool)>>,
-    polygon_operand: Vec<u32>,
+    /// Admitted source identity remains authoritative even when operand staging
+    /// order differs from operand order.
+    ring_polygons: &'source [u32],
+    ring_holes: &'source [bool],
+    polygon_operands: &'source [u32],
+    ring_count: usize,
     shell_filled: Vec<bool>,
     filled_holes: Vec<u32>,
     occupied: Vec<u32>,
 }
 
-impl PolygonOccupancy {
-    #[expect(
-        clippy::indexing_slicing,
-        reason = "staged ring IDs and polygon rows are assigned from ring/polygon identity ranges"
-    )]
-    fn new(polygon_rings: &[Vec<Range<usize>>], ring_count: usize, odd: bool) -> Result<Self> {
-        let mut ring_polygon = Vec::with_capacity(ring_count);
-        ring_polygon.resize(ring_count, None);
-        let mut polygon_operand = Vec::new();
-        for (operand, polygons) in polygon_rings.iter().enumerate() {
-            for rings in polygons {
-                let polygon = u32::try_from(polygon_operand.len())
-                    .map_err(|_| ResourceError::SizeOverflow)?;
-                for ring in rings.clone() {
-                    ring_polygon[ring] = Some((polygon, ring == rings.start));
-                }
-                polygon_operand.push(operand as u32);
-            }
-        }
-        let polygons = polygon_operand.len();
+impl<'source> PolygonOccupancy<'source> {
+    fn new(source: &'source ExactSourceInventory, odd: bool) -> Self {
+        let polygons = source.polygon_operands.len();
         let mut shell_filled = Vec::with_capacity(polygons);
         shell_filled.resize(polygons, false);
         let filled_holes = vec![0; polygons];
-        let occupied = vec![0; polygon_rings.len()];
-        Ok(Self {
+        let occupied = vec![0; source.operand_count()];
+        Self {
             odd,
-            ring_polygon,
-            polygon_operand,
+            ring_polygons: &source.ring_polygons,
+            ring_holes: &source.ring_holes,
+            polygon_operands: &source.polygon_operands,
+            ring_count: source.ring_count,
             shell_filled,
             filled_holes,
             occupied,
-        })
+        }
     }
 
     #[expect(
         clippy::indexing_slicing,
-        reason = "the seed has the same ring count used to construct ring_polygon and each owner was admitted with its polygon range"
+        reason = "source-staged ring IDs and polygon IDs index the borrowed canonical owner columns"
     )]
     fn seed(&mut self, winding: &[i64]) -> Result<()> {
-        if winding.len() != self.ring_polygon.len() {
+        if winding.len() != self.ring_count {
             return Err(GeometryErrorKind::Invalid(
                 "polygon occupancy seed has the wrong ring count".into(),
             )
             .into());
         }
-        for (ring, owner) in self.ring_polygon.iter().enumerate() {
-            let Some((polygon, shell)) = owner else {
-                continue;
-            };
-            let filled = ring_occupied(winding[ring], self.odd);
-            let polygon = *polygon as usize;
-            if *shell {
+        for ((&polygon, &hole), &winding) in
+            self.ring_polygons.iter().zip(self.ring_holes).zip(winding)
+        {
+            let filled = ring_occupied(winding, self.odd);
+            let polygon = polygon as usize;
+            if !hole {
                 self.shell_filled[polygon] = filled;
             } else if filled {
                 self.filled_holes[polygon] = self.filled_holes[polygon].wrapping_add(1);
@@ -3810,7 +3797,7 @@ impl PolygonOccupancy {
         }
         for (polygon, &filled_shell) in self.shell_filled.iter().enumerate() {
             if filled_shell && self.filled_holes[polygon] == 0 {
-                let operand = self.polygon_operand[polygon] as usize;
+                let operand = self.polygon_operands[polygon] as usize;
                 self.occupied[operand] = self.occupied[operand].wrapping_add(1);
             }
         }
@@ -3819,19 +3806,23 @@ impl PolygonOccupancy {
 
     #[expect(
         clippy::indexing_slicing,
-        reason = "ring and polygon IDs in the walk were admitted by source staging and PolygonOccupancy::new"
+        reason = "ring and polygon IDs were admitted by source staging"
     )]
     fn cross(&mut self, winding: &mut [i64], ring: u32, direction: i64) {
         let ring = ring as usize;
         let before = ring_occupied(winding[ring], self.odd);
         winding[ring] = winding[ring].wrapping_add(direction);
         let after = ring_occupied(winding[ring], self.odd);
-        let Some((polygon, shell)) = self.ring_polygon[ring].filter(|_| before != after) else {
+        if before == after {
+            return;
+        }
+        let Some((&polygon, &hole)) = self.ring_polygons.get(ring).zip(self.ring_holes.get(ring))
+        else {
             return;
         };
         let polygon = polygon as usize;
         let was = self.shell_filled[polygon] && self.filled_holes[polygon] == 0;
-        if shell {
+        if !hole {
             self.shell_filled[polygon] = after;
         } else if after {
             self.filled_holes[polygon] = self.filled_holes[polygon].wrapping_add(1);
@@ -3840,7 +3831,7 @@ impl PolygonOccupancy {
         }
         let now = self.shell_filled[polygon] && self.filled_holes[polygon] == 0;
         if was != now {
-            let count = &mut self.occupied[self.polygon_operand[polygon] as usize];
+            let count = &mut self.occupied[self.polygon_operands[polygon] as usize];
             if now {
                 *count = count.wrapping_add(1);
             } else {
