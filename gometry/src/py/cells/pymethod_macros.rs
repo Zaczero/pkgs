@@ -80,7 +80,10 @@ macro_rules! grid_cell_common_pymethods {
                 cell_boundary(self.cell)
             }
 
-            /// Geodesic area of the cell in square meters.
+            /// Area of the cell in square meters.
+            ///
+            /// H3 and S2 use an authalic-sphere model; geohash and tile use
+            /// the WGS 84 ellipsoidal area of their lon/lat rectangle.
             ///
             /// Returns
             /// -------

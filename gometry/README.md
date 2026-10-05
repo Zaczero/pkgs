@@ -28,8 +28,9 @@
 - **One package for a specialist stack** — geometry, CRS transforms, H3/S2,
   geohash/tile keys, and spatial indexing, with no GEOS, no GDAL, and no system
   PROJ
-- **The CRS decides the measure** — geodesic metres on a geographic CRS, native
-  linear units on a projected one, raw coordinate units without one. See the
+- **The CRS decides the measure** — ellipsoidal chart-edge measures and
+  point-to-point geodesics on a geographic CRS, native linear units on a
+  projected one, raw coordinate units without one. See the
   [CRS, units & measurement guide](https://gometry.monicz.dev/guide/crs/)
 - **Geographic coordinates keep native angular units** — degrees, radians, grads,
   and their CRS-defined periodic seam, pole, and prime meridian are respected;
@@ -43,7 +44,7 @@
 - **Grids and indexes on one geometry type** — H3, S2, geohash, and XYZ tiles
   share a typed `CellArray`; spatial indexes keep bounding-box `candidates`
   separate from exact `query`
-- **Ellipsoidal geodesics** with coordinate-epoch support and
+- **Ellipsoidal measurements and geodesics** with coordinate-epoch support and
   `unit='planar'` / `unit='meters'` overrides
 - **Typed** — stubs, narrowed signatures, public cross-grid protocols, and a
   structured exception hierarchy
@@ -51,8 +52,9 @@
 
 ## gometry in action
 
-One `area` call, two answers: the geometry carries `crs=4326`, so it measures in
-geodesic **square metres**, and `unit='planar'` drops to raw coordinate units.
+One `area` call, two answers: the geometry carries `crs=4326`, so it measures
+ellipsoidal **square metres** along its straight chart edges, and
+`unit='planar'` drops to raw coordinate units.
 Likewise, `buffer(500)` on a geographic CRS treats `500` as metres through a
 bounded local-projection approximation; see the
 [buffer and CRS guide](https://gometry.monicz.dev/guide/crs/).
@@ -63,7 +65,7 @@ import gometry as gm
 city = gm.box(2.0, 48.0, 3.0, 49.0, crs=4326)
 station = gm.Point(2.35, 48.85, crs=4326)
 print(gm.contains(city, station))  # True
-print(f'{city.area / 1_000_000.0:.1f} km²')  # 8217.6 km²
+print(f'{city.area / 1_000_000.0:.1f} km²')  # 8217.7 km²
 print(f'{gm.area(city, unit="planar"):.4f} degree²')  # 1.0000 degree²
 ```
 
@@ -113,7 +115,7 @@ it, geometries still expose Arrow PyCapsules for dependency-free consumers.
 |---|---|
 | Shapely geometry, predicates, overlays, constructive ops | `gm.Point/box/...`, `gm.contains(a, b)`, `geom.buffer(...)` |
 | pyproj transforms and CRS introspection | `geom.to_crs(...)`, `gm.CRS(...)`, `gm.crs_*` |
-| geographiclib / haversine geodesy | CRS-aware `area`/`length`/`distance`, `gm.bearing(..., path='rhumb')` / `point.destination(..., path='rhumb')` |
+| geographiclib / haversine geodesy | CRS-aware ellipsoidal chart-edge `area`/`length`, geodesic point-to-point `distance`, `gm.bearing(..., path='rhumb')` / `point.destination(..., path='rhumb')` |
 | h3-py, s2sphere | `gm.h3_cover(geom, ...)` / `gm.s2_cover(geom, ...)`, typed cell arrays |
 | pygeohash, mercantile | `gm.geohash_cover(geom, ...)` / `gm.tile_cover(geom, ...)` |
 | rtree | `gm.SpatialIndex(values)` with exact-predicate refinement |

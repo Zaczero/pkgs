@@ -339,7 +339,11 @@ class Cell(Protocol):
 
     @property
     def area(self) -> float:
-        """Geodesic area of the cell in square meters."""
+        """Area of the cell in square meters, using its grid's area model.
+
+        H3 and S2 use an authalic sphere; geohash and tile use the WGS 84
+        ellipsoidal area of their lon/lat rectangle.
+        """
         ...
 
     def parent(self, depth: int | None = None, /) -> Self:

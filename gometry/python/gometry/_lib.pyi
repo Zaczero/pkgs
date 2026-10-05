@@ -1238,8 +1238,8 @@ class Geometry:
         longitude/latitude; a projected CRS gives native linear units; a CRS-free
         geometry gives raw coordinate units. Use ``to_crs`` to change frame.
 
-        Geographic polygon perimeter follows the exact-identity, canonical
-        seam-cut convention documented for ``gometry.length``.
+        Geographic polygon perimeter measures straight chart edges and resolves
+        seam aliases in the CRS-native periodic longitude frame.
 
         A ``GeometryCollection`` sums every member's length or perimeter,
         including overlapping members.
@@ -6865,8 +6865,8 @@ class GeometryArray(Sequence[_GeometryT_co]):
         longitude/latitude; a projected CRS gives native linear units; a CRS-free
         array gives raw coordinate units. Use ``to_crs`` to change frame.
 
-        Geographic polygon perimeter follows the exact-identity, canonical
-        seam-cut convention documented for ``gometry.length``.
+        Geographic polygon perimeter measures straight chart edges and resolves
+        seam aliases in the CRS-native periodic longitude frame.
 
         Each ``GeometryCollection`` row sums every member's length or
         perimeter, including overlapping members.
@@ -12794,11 +12794,10 @@ class CellArray(Sequence[_CellT_co]):
         """
     @property
     def area(self) -> npt.NDArray[np.float64]:
-        """Geodesic cell areas in square meters.
+        """Cell areas in square meters, using each grid's area model.
 
-        The bulk twin of each scalar cell's ``area`` property: H3 and S2 use
-        their exact cell geometry; geohash and tile cells use the ellipsoidal
-        area of their lon/lat rectangle.
+        H3 and S2 use an authalic-sphere model. Geohash and tile use the WGS 84
+        ellipsoidal area of their lon/lat rectangle.
 
         Returns
         -------
@@ -13887,7 +13886,10 @@ class _Cell:
         """
     @property
     def area(self) -> float:
-        """Geodesic area of the cell in square meters.
+        """Area of the cell in square meters, using its grid's area model.
+
+        H3 and S2 use an authalic sphere; geohash and tile use the WGS 84
+        ellipsoidal area of their lon/lat rectangle.
 
         Returns
         -------
@@ -17907,17 +17909,27 @@ def shortest_line(
 ) -> LineString | GeometryArray[LineString | None]:
     """Return the shortest connecting line between two geometries (CRS-aware).
 
-    ``nearest_points`` as a ``LineString`` — degenerate when the geometries
-    touch. Planar and projected metrics accept any geometry pair, not only
-    points, and the witness is the true closest approach, so an endpoint may
+    ``nearest_points`` as a connecting ``LineString`` — degenerate when the
+    geometries touch. Planar and projected metrics accept any geometry pair, not
+    only points, and the witness is the closest approach, so an endpoint may
     land on an edge interior rather than a vertex. On a geographic CRS,
-    point-to-point distances use ellipsoidal geodesics, and shape edges are
-    straight in the CRS's longitude/latitude chart with short-way longitude
-    across the antimeridian. Filled polygon interiors participate. An empty operand yields
-    ``LINESTRING EMPTY`` (the output-type sentinel, like ``distance``'s ``inf``).
-    Output ordinates are the operands' common axes (an XYZM line versus an XY
-    point gives an XY line). See `nearest_points` (the endpoints) and `distance`
-    (the length).
+    point-to-point separation uses ellipsoidal geodesics. Shape edges are
+    straight in the CRS-native periodic longitude/latitude chart: admitted
+    ordinary edges use their shortest periodic step, while an explicitly stored
+    full-period circle edge retains its full turn. See the [CRS guide's
+    polar-ring and full-turn-edge rules](../../guide/crs.md#polar-rings-and-full-turn-edges).
+    Filled polygon interiors participate.
+    The returned line follows the chart-edge model. With the CRS-aware
+    geographic metric, its ellipsoidal length is no shorter than the witness
+    separation in exact geometry, subject to binary64 rounding. If
+    ``unit='planar'`` overrides the metric, measure the line with the same
+    ``unit`` when comparing lengths. Publication may add vertices to preserve
+    the computed chart edge; do not assume the line always stores exactly two
+    coordinates. An empty operand yields
+    ``LINESTRING EMPTY`` (the output-type sentinel, like
+    ``distance``'s ``inf``). Output ordinates are the operands' common axes (an
+    XYZM line versus an XY point gives an XY line). See ``nearest_points`` for
+    the witnesses and ``distance`` for their metric separation.
 
     Parameters
     ----------

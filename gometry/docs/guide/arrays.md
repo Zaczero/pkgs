@@ -46,7 +46,7 @@ print("coordinate_axes:", arr.coordinate_axes)
 print("common_coordinate_axes:", arr.common_coordinate_axes)
 print("element types:", arr.geometry_type)
 print("combined bounds:", arr.total_bounds)
-print("areas (geodesic m²):", repr(arr.area))
+print("areas (ellipsoidal m²):", repr(arr.area))
 
 ```
 

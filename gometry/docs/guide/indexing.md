@@ -199,9 +199,10 @@ print("nearest 2 indices (closest first):", ids.tolist())
 
 ```
 
-Geographic nearest queries use a sound lower bound on geodesic distance for
-candidate pruning before refined distance evaluation. The returned ordering
-uses those refined geodesic distances; the number of evaluations depends on
+For geographic point pairs, nearest queries use ellipsoidal geodesic distance.
+For linework and filled geometries, they minimize that distance over straight
+chart-edge support, using a sound geodesic lower bound to prune candidates.
+Ordering follows the refined distances; the number of evaluations depends on
 the data and query.
 
 - `max_distance=` caps the search radius.

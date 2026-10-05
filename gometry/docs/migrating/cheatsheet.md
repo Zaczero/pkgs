@@ -100,7 +100,7 @@ Conventions: `import gometry as gm`; `geom` is a gometry geometry; and
 | `geom.point_on_surface()` | `g.point_on_surface()` | |
 | `polylabel(g)` | `g.polylabel()` | [Pole of inaccessibility](https://en.wikipedia.org/wiki/Pole_of_inaccessibility). |
 | `maximum_inscribed_circle(g)` | `g.maximum_inscribed_circle()` | Shapely returns a two-point `LineString` from center to boundary; gometry returns a filled polygonal approximation (or a `Point` for a degenerate radius). Use `disk.centroid()` for the returned disk's center and `g.maximum_inscribed_radius()` for its numerical radius; pass the same `tolerance` and `unit` to both. |
-| `shortest_line(a, b)` | [`gm.shortest_line(a, b)`][gometry.shortest_line] | |
+| `shortest_line(a, b)` | [`gm.shortest_line(a, b)`][gometry.shortest_line] | Connects the nearest witnesses. On a geographic CRS the default chart-edge length is no shorter than their geodesic separation, subject to binary64 rounding; measure with the same `unit=` choice and expect computed publication to add vertices when needed. |
 | `ops.nearest_points(a, b)` | [`gm.nearest_points(a, b)`][gometry.nearest_points] | The `(pa, pb)` pair behind `shortest_line`. |
 | `delaunay_triangles(g)` | `g.triangulate(method='delaunay')` | Use `method='constrained'` for constrained edges or `method='earcut'` for polygon interiors. |
 | `voronoi_polygons(g)` | `g.voronoi_polygons()` / `g.voronoi_edges()` | |

@@ -185,8 +185,8 @@ impl PyGeometryArray {
     /// longitude/latitude; a projected CRS gives native linear units; a CRS-free
     /// array gives raw coordinate units. Use ``to_crs`` to change frame.
     ///
-    /// Geographic polygon perimeter follows the exact-identity, canonical
-    /// seam-cut convention documented for ``gometry.length``.
+    /// Geographic polygon perimeter measures straight chart edges and resolves
+    /// seam aliases in the CRS-native periodic longitude frame.
     ///
     /// Each ``GeometryCollection`` row sums every member's length or
     /// perimeter, including overlapping members.

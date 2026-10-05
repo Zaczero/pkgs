@@ -94,9 +94,9 @@ units.
 Shapely already refines when you pass `predicate=` to `STRtree.query`.
 [`SpatialIndex`][gometry.SpatialIndex] covers many geometries, with query, join,
 and nearest, explicit `candidates` vs `query(..., predicate=...)`, frame checks,
-missing-row semantics, and geodesic nearest lanes. There is no `prepare`: a
-geometry probed repeatedly indexes itself after its first few probes, so a plain
-loop of predicate calls gets the prepared speed.
+missing-row semantics, and nearest queries. There is no `prepare`: a geometry
+probed repeatedly indexes itself after its first few probes, so a plain loop of
+predicate calls gets the prepared speed.
 
 === "Shapely"
 
@@ -316,8 +316,10 @@ frame and row-identity checks:
   instead of dropping identity in the result.
 - **Prepared caches** on every geometry, built once it is probed repeatedly;
   there is no separate `prepare` step.
-- **Geodesic nearest / dwithin lanes** when the index frame is geographic
-  (`unit=` selects CRS-natural meters vs planar).
+- **CRS-aware nearest / dwithin lanes** when the index frame is geographic:
+  point pairs use ellipsoidal geodesics, while shape queries use straight
+  chart-edge support with ellipsoidal separation (`unit=` selects the CRS
+  metric or planar coordinates).
 
 [`gm.SpatialIndex`][gometry.SpatialIndex] and [`gm.join`][gometry.join] are the
 unified surfaces; see [Spatial indexing & joins](../guide/indexing.md) for the
@@ -353,7 +355,8 @@ gometry all expose nearest-neighbour APIs.
 
 [`idx.nearest(query, k=..., unit=...)`][gometry.SpatialIndex.nearest] returns the `k` closest indices
 (`num_results` → `k`). `unit="planar"` selects projected or CRS-free coordinate
-units; on a geographic CRS, metric units select geodesic point-nearest ordering.
+units; on a geographic CRS, point-pair ordering uses geodesics and shape-pair
+ordering uses ellipsoidal separation over chart-edge support.
 The index is mutable (`insert`/`remove`) while still sharing one frame; Shapely's
 `STRtree` is bulk-built and immutable after construction.
 

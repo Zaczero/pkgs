@@ -12,17 +12,27 @@ use crate::{
 
 /// Return the shortest connecting line between two geometries (CRS-aware).
 ///
-/// ``nearest_points`` as a ``LineString`` — degenerate when the geometries
-/// touch. Planar and projected metrics accept any geometry pair, not only
-/// points, and the witness is the true closest approach, so an endpoint may
+/// ``nearest_points`` as a connecting ``LineString`` — degenerate when the
+/// geometries touch. Planar and projected metrics accept any geometry pair, not
+/// only points, and the witness is the closest approach, so an endpoint may
 /// land on an edge interior rather than a vertex. On a geographic CRS,
-/// point-to-point distances use ellipsoidal geodesics, and shape edges are
-/// straight in the CRS's longitude/latitude chart with short-way longitude
-/// across the antimeridian. Filled polygon interiors participate. An empty operand yields
-/// ``LINESTRING EMPTY`` (the output-type sentinel, like ``distance``'s ``inf``).
-/// Output ordinates are the operands' common axes (an XYZM line versus an XY
-/// point gives an XY line). See `nearest_points` (the endpoints) and `distance`
-/// (the length).
+/// point-to-point separation uses ellipsoidal geodesics. Shape edges are
+/// straight in the CRS-native periodic longitude/latitude chart: admitted
+/// ordinary edges use their shortest periodic step, while an explicitly stored
+/// full-period circle edge retains its full turn. See the [CRS guide's
+/// polar-ring and full-turn-edge rules](../../guide/crs.md#polar-rings-and-full-turn-edges).
+/// Filled polygon interiors participate.
+/// The returned line follows the chart-edge model. With the CRS-aware
+/// geographic metric, its ellipsoidal length is no shorter than the witness
+/// separation in exact geometry, subject to binary64 rounding. If
+/// ``unit='planar'`` overrides the metric, measure the line with the same
+/// ``unit`` when comparing lengths. Publication may add vertices to preserve
+/// the computed chart edge; do not assume the line always stores exactly two
+/// coordinates. An empty operand yields
+/// ``LINESTRING EMPTY`` (the output-type sentinel, like
+/// ``distance``'s ``inf``). Output ordinates are the operands' common axes (an
+/// XYZM line versus an XY point gives an XY line). See ``nearest_points`` for
+/// the witnesses and ``distance`` for their metric separation.
 ///
 /// Parameters
 /// ----------

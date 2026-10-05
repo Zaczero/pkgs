@@ -1260,11 +1260,10 @@ fn to_numpy(slf: Bound<'_, Self>) -> PyResult<Py<PyAny>> {
         })
     }
 
-    /// Geodesic cell areas in square meters.
+    /// Cell areas in square meters, using each grid's area model.
     ///
-    /// The bulk twin of each scalar cell's ``area`` property: H3 and S2 use
-    /// their exact cell geometry; geohash and tile cells use the ellipsoidal
-    /// area of their lon/lat rectangle.
+    /// H3 and S2 use an authalic-sphere model. Geohash and tile use the WGS 84
+    /// ellipsoidal area of their lon/lat rectangle.
     ///
     /// Returns
     /// -------

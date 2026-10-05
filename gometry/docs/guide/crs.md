@@ -40,7 +40,7 @@ edits and planar construction operate on stored coordinates.
 
 | Family | Examples | Frame / unit / seam behavior |
 |---|---|---|
-| **CRS-aware measures** | [`area`][gometry.area], [`length`][gometry.length], [`distance`][gometry.distance], [`dwithin`][gometry.dwithin], [`hausdorff_distance`][gometry.hausdorff_distance], LRS | By default, geographic area, length, LRS, and linework distance use ellipsoidal chart edges; point-to-point distances use geodesics. `dwithin`, `nearest_points`, and `shortest_line` use straight chart edges with short-way longitude across the antimeridian and include filled polygons. Hausdorff ranges continuously over straight chart edges and accepts point and linework operands only. `unit='planar'` instead selects Cartesian measurement in stored coordinates. |
+| **CRS-aware measures** | [`area`][gometry.area], [`length`][gometry.length], [`distance`][gometry.distance], [`dwithin`][gometry.dwithin], [`hausdorff_distance`][gometry.hausdorff_distance], LRS | Geographic area, length, and LRS measure straight chart edges on the ellipsoid. Point-to-point distance uses a geodesic; shape distance, `dwithin`, `nearest_points`, and `shortest_line` minimize ellipsoidal geodesic separation over closed chart-edge supports, including filled polygons. Geographic Hausdorff ranges continuously over points and linework only. `unit='planar'` selects Cartesian measurement in stored coordinates. |
 | **Metric constructive** | [`buffer`][gometry.Geometry.buffer], [`offset_curve`][gometry.Geometry.offset_curve] | Distance *inputs* use CRS-natural units (and may use a local-projection construction on a geographic CRS); shapes are **coordinate-planar** — **not** antimeridian auto-split |
 | **Topology** | predicates, overlay, [`relate`][gometry.relate], [`clip_by_rect`][gometry.Geometry.clip_by_rect] | strict frame match; geographic topology resolves longitude aliases and seam and pole equivalence in the CRS-native frame; seam-crossing inputs are split into straight chart pieces in an unwrapped longitude/latitude plane. `clip_by_rect` admits canonical geographic rectangle endpoints in `[-180, 180]`, with west > east selecting the seam-crossing interval; non-canonical subjects use frame-aware overlay, while canonical seam-free inputs clip directly. Geographic rectangle parallels match [`box`][gometry.box]. |
 | **Coordinate refinement** | [`segmentize(max_length)`][gometry.Geometry.segmentize], [`line_interpolate`][gometry.Geometry.line_interpolate] | `segmentize` follows stored geographic edges by default; `path=` selects geodesic or rhumb routing. With CRS-aware units, geographic LRS inverts ellipsoidal arclength on those chart edges and retains original vertices. |
@@ -317,9 +317,12 @@ paths** that take `unit=`; they are not a second vectorized API. Binary
 
 Attach a geographic CRS and shape [`area`][gometry.Geometry.area] and
 [`length`][gometry.Geometry.length] measure straight longitude/latitude edges
-on that CRS's ellipsoid. Pairwise [`distance()`][gometry.distance] follows the
-shortest ellipsoidal geodesic. These metrics respect whether angular
-coordinates use degrees, radians, or grads; geodesic calculations use
+on that CRS's ellipsoid. Point-to-point [`distance()`][gometry.distance]
+follows the shortest ellipsoidal geodesic. For shape pairs, distance minimizes
+geodesic separation between points in the closed supports: straight chart-edge
+linework and filled polygon interiors. The same support model applies to
+`dwithin`, `nearest_points`, and `shortest_line`. These metrics respect whether
+angular coordinates use degrees, radians, or grads; geodesic calculations use
 [Karney's algorithm](https://geographiclib.sourceforge.io/).
 
 ```python exec="on" source="block" result="text"
@@ -360,17 +363,20 @@ ordinary densify interpolates the stored chart edge and does not synthesize a
 rhumb route. Split or otherwise disambiguate half-period edges that have no
 unique chart direction.
 
-Geographic pairwise metrics — [`distance`][gometry.distance],
+For geographic shape pairs, [`distance`][gometry.distance],
 [`dwithin`][gometry.dwithin],
 [`nearest_points`][gometry.nearest_points], and
-[`shortest_line`][gometry.shortest_line] — measure geographic shape edges as
-straight paths in the longitude/latitude chart. `distance`, `dwithin`,
-`nearest_points`, and `shortest_line` treat `Polygon` and `MultiPolygon` as
-filled areas: an interior point or overlapping pair has zero distance, while
-disjoint shapes are measured boundary-to-boundary. Continuous geographic
-`hausdorff_distance` ranges over straight chart edges and remains a linework
-operation; polygon operands raise
-[`CRSError`][gometry.CRSError]. Use
+[`shortest_line`][gometry.shortest_line] measure support along straight paths in
+the longitude/latitude chart. `Polygon` and `MultiPolygon` operands use their
+filled interiors: an interior point or overlapping pair has zero distance,
+while disjoint shapes are measured boundary-to-boundary. `shortest_line`
+connects the nearest witnesses as a chart-edge line. With the geographic
+ellipsoidal metric, its chart-edge length is no shorter than their geodesic
+separation, subject to binary64 rounding; computed publication may add vertices
+to preserve the chart edge. Use the same `unit=` when comparing its length with
+`distance`. Continuous geographic
+`hausdorff_distance` ranges over point and linework supports only; filled
+polygon operands raise [`CRSError`][gometry.CRSError]. Use
 [`polygon.boundary()`][gometry.Geometry.boundary] when the question is
 about the boundary itself, `unit='planar'` for coordinate-space areal distance,
 or reproject to a suitable projected CRS.
@@ -415,11 +421,13 @@ inverse samples inside its own bounded search. Continuous geographic Hausdorff
 ranges over those same straight chart edges. `unit='planar'` selects
 Cartesian measurement in stored coordinates instead. These composite
 operations are distinct from exact geographic topology. For a CRS that PROJ
-resolves to an ellipsoid, its
-semi-major axis and `b = a (1 - f)` must be positive and finite, and its
-flattening must be within the ordinary supported domain `|f| <= 0.02`. A CRS
-outside that domain raises `CRSError` before the geodesic object is
-constructed. Exact elliptic support is not shipped for wider flattenings.
+resolves to an ellipsoid, its semi-major axis and `b = a (1 - f)` must be
+positive and finite, and its flattening must be within the supported domain
+`|f| <= 0.02`. Geodesic admission also checks that the squared axes, half the
+squared semi-major axis, authalic radius squared, and full ellipsoid area are
+representable as normal binary64 values. A CRS outside that domain raises
+`CRSError` before the geodesic object is constructed. Exact elliptic support is
+not shipped for wider flattenings.
 
 The [GeographicLib geodesic documentation](https://geographiclib.sourceforge.io/html/python/interface.html)
 identifies `f ∈ [-1/50, 1/50]` as the full-accuracy series range and reports an
@@ -462,10 +470,6 @@ budgets are numerical quality targets, not real-arithmetic certificates.
 Geographic Hausdorff supports point and linework operands only; filled polygon
 interiors require `unit='planar'` or a projected CRS. Omit `max_error` on the
 geographic path; its algorithmic gap does not promise a caller-requested bound.
-
-Geodesic calculations use the physical ellipsoid's semi-major axis and
-flattening. Positive finite axes are admitted when the requested binary64 result
-is representable; an unrepresentable final distance is an explicit error.
 
 !!! note "Why geodesic and projected answers differ"
     [Web Mercator](https://epsg.org/crs_3857/WGS-84-Pseudo-Mercator.html) is a
@@ -582,7 +586,7 @@ topology. The orthographic frame places the north pole near `(0, 0)` and its
 equator near radius `6,378,137`; Mollweide keeps local area scale near `1` at
 both 0° and 60° latitude while changing shape. Choose a CRS for the operation:
 use a local projected CRS for local planar work, and use geographic CRS metrics
-when the geodesic result is the intended answer.
+when the ellipsoidal result is intended.
 
 ```python exec="on" source="block" result="text"
 import gometry as gm
@@ -607,7 +611,7 @@ print(f"area: {projected.area/1e6:.0f} km²")
     web = city.to_crs(3857).area / 1e6
     utm = city.to_crs(32631).area / 1e6
 
-    print(f"geodesic: {geo:.0f} km²")
+    print(f"ellipsoidal chart-edge area: {geo:.0f} km²")
     print(f"Web Mercator: {web:.0f} km²")
     print(f"UTM 31N: {utm:.0f} km²")
     ```
@@ -618,7 +622,7 @@ print(f"area: {projected.area/1e6:.0f} km²")
 
 Web Mercator stretches the box away from the equator, more than doubling its
 area at this latitude, while the UTM zone stays within a tenth of a percent of
-the geodesic figure.
+the geographic ellipsoidal chart-edge area.
 
 !!! tip "Choose the projection for the job"
     Local area/length operations use a UTM zone or national grid covering the
@@ -643,7 +647,7 @@ print("distance:", gm.distance(gm.Point(0, 0), gm.Point(3, 4)))
 ```
 
 `unit='planar'` forces this raw coordinate Cartesian math even on a CRS-bearing
-geometry — comparable with a geodesic answer:
+geometry — comparable with an ellipsoidal chart-edge measure:
 
 ```python exec="on" source="block" result="text"
 import gometry as gm
@@ -654,16 +658,15 @@ print("planar deg²:", gm.area(city, unit='planar'))
 
 ```
 
-For a supported metric pair, every distance is *realized* by an actual pair of points —
-[`nearest_points`][gometry.nearest_points] returns it, and
-[`shortest_line`][gometry.shortest_line] returns the same answer as the connecting
-[`LineString`][gometry.LineString] (its [`length`][gometry.length] is exactly [`distance(a, b)`][gometry.distance]). These operations accept areal operands in planar and projected modes and find the closest approach: the witness
-can land on an **edge interior**, not only a vertex.
+For a supported metric pair, [`nearest_points`][gometry.nearest_points] returns
+the closest witnesses and [`shortest_line`][gometry.shortest_line] connects
+them. Compare a line's length with the reported separation using the same
+`unit=` choice. These operations accept filled polygon supports and can place a
+witness on an edge interior, not only at a vertex.
 
-In the geographic geodesic mode, the same operations accept points and
-linework only; filled polygon interiors raise `CRSError`. Use `unit='planar'`,
-the [polygon's topological boundary](#geographic-polygon-boundary), or reproject
-when that is the intended operation.
+Geographic Hausdorff distance is a separate linework operation: it supports
+points and linework, while filled polygon operands raise `CRSError`. Use
+`unit='planar'` or reproject when filled-set Hausdorff distance is intended.
 
 ```python exec="on" html="true"
 from _figures import figure
@@ -686,9 +689,9 @@ An empty operand is total, not an error: `distance`, `hausdorff_distance` and
 `frechet_distance` return `inf`, while `nearest_points` and `shortest_line`
 return the output-type empty (`(POINT EMPTY, POINT EMPTY)` and
 `LINESTRING EMPTY`), so a single empty row never aborts a vectorized call.
-Hausdorff polygon operands are filled closed regions: interiors belong to the
-set and holes do not. A mixed-dimensional collection uses the union of its
-members; a zero-area polygon contributes only its closed ring boundary.
+Planar Hausdorff polygon operands are filled closed regions: interiors belong
+to the set and holes do not. A mixed-dimensional collection uses the union of
+its members; a zero-area polygon contributes only its closed ring boundary.
 When operands differ in dimensionality (an `XYZM` line
 and an `XY` point) the witnesses drop to the ordinates both carry.
 
@@ -761,7 +764,7 @@ import gometry as gm
 warsaw = gm.box(20.0, 51.0, 22.0, 53.0, crs=4326)
 local = warsaw.estimate_local_crs()
 print("local:", local)
-print("geodesic area m²:", round(warsaw.area))
+print("ellipsoidal chart-edge area m²:", round(warsaw.area))
 print("projected area m²:", round(warsaw.to_crs(local).area))
 
 ```
@@ -858,9 +861,10 @@ it reads exact Q incidence without shifting stored longitudes. Operations that
 construct split output insert affine crossing vertices into straight edges in
 the unwrapped longitude/latitude chart. Geographic shape measures
 ([`length`][gometry.length] and [`area`][gometry.area]) integrate those chart
-edges, so splitting preserves ellipsoidal length and area to rounding. Pairwise
-[`distance`][gometry.distance] continues to use the shortest geodesic across the
-seam. Geographic area measures the polygon's lon/lat chart interior, including
+edges, so splitting preserves ellipsoidal length and area to rounding.
+Point-to-point [`distance`][gometry.distance] continues to use the shortest
+geodesic across the seam; shape distance measures chart-edge supports.
+Geographic area measures the polygon's lon/lat chart interior, including
 regions larger than half the ellipsoid, independent of ring order.
 At the seam, a collinear shared span with polygon interiors on opposite sides
 is a chart cut regardless of whether members use east/east, west/west, or
@@ -913,10 +917,10 @@ print("point matches:", matches.values.tolist())
 
 Spatial indexes widen periodic seam-crossing envelopes before candidate search and
 still run exact refinement, so the middle-of-map false positives are removed by the
-predicate step. Topology and indexing normalize for you. Geographic pairwise
-distance operations use the same straight chart edges as topology and include
-filled polygon interiors; continuous geographic Hausdorff distance ranges over
-those chart edges but remains linework-only.
+predicate step. Topology and indexing normalize for you. Geographic point-to-point
+distance uses geodesics; shape distance operations use the same straight chart
+edges as topology and include filled polygon interiors. Geographic Hausdorff
+distance ranges over those chart edges but remains linework-only.
 The planar constructive ops listed in the operation-family table are the places
 manual splitting is still required.
 

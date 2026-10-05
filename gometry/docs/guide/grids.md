@@ -101,6 +101,14 @@ is rejected because it cannot say which frame those numbers occupy.
     maximum-depth cell yields an empty `CellArray` from `children()`; a depth-0 cell
     raises on `parent()`.
 
+Cell `.area` is reported in square meters using each grid's area model. H3 and
+S2 use an authalic sphere; geohash and tile use the WGS 84 ellipsoidal area of
+their longitude/latitude rectangle. H3/S2 `.polygon` values approximate curved
+spherical boundaries with straight longitude/latitude edges, so their
+`polygon.area` need not equal `cell.area`. For geohash and tile, `.polygon` and
+`.area` share the rectangle definition but use separate binary64 area paths, so
+their results are not guaranteed to be bit-identical.
+
 ### The geometry behind a cell ID
 
 A cell ID is shorthand for an area on the ground. Scalar cells expose `.polygon`,
@@ -205,9 +213,13 @@ print("covering cells:", len(covering))
 
 !!! note "S2 covers cells and coverings, not boolean topology"
     gometry's S2 surface provides cells, cell hierarchies, and deterministic
-    coverings — not a spherical intersection/union engine. Metric calculations use
-    the geodesic model; planar topology uses a local projected CRS and the planar
-    model.
+    coverings, and authalic-sphere cell areas — not spherical boolean topology.
+    Geometry topology evaluates stored chart edges after geographic frames
+    resolve seam aliases and pole equivalence in their periodic quotient; it is
+    not raw-longitude plane topology. It does not run spherical S2 boolean
+    operations. See [spatial predicates](predicates.md) for the
+    chart/quotient model. CRS-aware measures use ellipsoidal chart edges for
+    shapes and geodesics for point-to-point distance.
 
 ## Covering an area
 
