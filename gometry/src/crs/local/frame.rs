@@ -17,7 +17,7 @@ use crate::crs::{
     to_projjson_with_options_at, transform_at, utm_crs,
 };
 use crate::error::{Error, Result};
-use crate::geometry::{ShapeCountQuery, admit_shape_vector_capacity};
+use crate::geometry::ShapeCountQuery;
 
 /// Maximum admitted meridional or parallel scale error (0.1%).
 pub(super) const LOCAL_SCALE_ERROR_LIMIT: f64 = 0.001;
@@ -406,7 +406,6 @@ impl LocalExtent {
                 .checked_add(9)
                 .ok_or(crate::error::ResourceError::SizeOverflow)?
         };
-        let capacity = admit_shape_vector_capacity::<(f64, f64)>(capacity)?;
         let mut points = Vec::with_capacity(capacity);
         for shape in &sources {
             let shape = shape.as_ref();

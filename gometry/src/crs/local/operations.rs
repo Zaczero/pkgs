@@ -207,13 +207,8 @@ pub(crate) fn geodesic_by_identity(
         .any(|vertex| matches!(vertex, VertexProvenance::OnSegment { .. }))
     {
         let support_points = prepared.source_working(shape).points_vec()?;
-        let total = original
-            .len()
-            .checked_add(support_points.len())
-            .ok_or(crate::error::ResourceError::SizeOverflow)?;
-        let mut source_points = Vec::with_capacity(crate::geometry::admit_shape_vector_capacity::<
-            Point,
-        >(total)?);
+        let total = original.len().wrapping_add(support_points.len());
+        let mut source_points = Vec::with_capacity(total);
         source_points.extend(original);
         source_points.extend(support_points);
         rebuild(emit_from_original(&source_points, &plan)?)?

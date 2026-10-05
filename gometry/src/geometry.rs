@@ -353,16 +353,6 @@ pub(in crate::geometry) use types::GeographicMetricKey;
 use crate::collections::{HashMap, HashSet};
 use crate::error::Result;
 
-/// Admit a count before a native vector must represent every output item.
-///
-/// This checks only the vector's representable layout. Allocation exhaustion
-/// remains process-fatal under the crate's allocator policy.
-pub(crate) fn admit_shape_vector_capacity<T>(capacity: usize) -> Result<usize> {
-    std::alloc::Layout::array::<T>(capacity)
-        .map(|_| capacity)
-        .map_err(|_| crate::error::ResourceError::SizeOverflow.into())
-}
-
 #[derive(Clone, Debug)]
 pub(crate) struct BulkParams;
 

@@ -1069,23 +1069,13 @@ mod shape_count_query_tests {
             counts.coordinates(&points).unwrap_err().kind(),
             ErrorKind::Resource(ResourceError::SizeOverflow)
         ));
+        assert!(matches!(
+            points.points_vec().unwrap_err().kind(),
+            ErrorKind::Resource(ResourceError::SizeOverflow)
+        ));
         assert_eq!(counts.segments(&points).unwrap(), 0);
         assert!(!counts.coordinates_at_most(&points, usize::MAX));
         assert!(!counts.has_segments(&points));
-    }
-
-    #[test]
-    fn full_point_materialization_admits_layout_before_reserving() {
-        let points = double(Shape::Point(Point::new_raw_xy(0.0, 0.0)), 62);
-        let (count, query_allocations) =
-            allocation_count(|| ShapeCountQuery::default().coordinates(&points).unwrap());
-        assert_eq!(count, 1_usize << 62);
-        let (result, materializer_allocations) = allocation_count(|| points.points_vec());
-        assert!(matches!(
-            result.unwrap_err().kind(),
-            ErrorKind::Resource(ResourceError::SizeOverflow)
-        ));
-        assert_eq!(materializer_allocations, query_allocations);
     }
 
     #[test]

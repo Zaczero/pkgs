@@ -7,10 +7,9 @@ use crate::geometry::predicates::{LineworkChains, indexed_segments_are_simple, v
 use crate::geometry::{
     Component, CoordSeq, Coordinates, FacetBvh, Ordering, Point, PointKey, PointSetIndex, Polygon,
     PreparedLinework, RefinedChainProvenance, SEGMENT_INDEX_MIN_PAIRS, Segment, Shape,
-    ShapeCountQuery, VertexProvenance, XY, admit_shape_vector_capacity, point_distance,
-    point_distance_squared, point_in_ccw_triangle, point_segment_distance, ring_winding,
-    same_point, segment_projection, squared_norm_is_trustworthy, try_point_distance_squared,
-    try_point_segment_distance_squared,
+    ShapeCountQuery, VertexProvenance, XY, point_distance, point_distance_squared,
+    point_in_ccw_triangle, point_segment_distance, ring_winding, same_point, segment_projection,
+    squared_norm_is_trustworthy, try_point_distance_squared, try_point_segment_distance_squared,
 };
 
 /// Iteratively remove segments with a degree-1 endpoint (dangles) from the
@@ -296,10 +295,8 @@ pub(crate) fn minimum_clearance_witness_with_support(
                     .ok_or(crate::error::ResourceError::SizeOverflow)?;
             }
         }
-        let total = offset
-            .checked_add(support_points.len())
-            .ok_or(crate::error::ResourceError::SizeOverflow)?;
-        let mut points = Vec::with_capacity(admit_shape_vector_capacity::<Point>(total)?);
+        let total = offset.wrapping_add(support_points.len());
+        let mut points = Vec::with_capacity(total);
         points.extend(site_points);
         points.extend(support_points);
         points
@@ -590,8 +587,7 @@ fn indexed_segments(shape: &Shape) -> crate::error::Result<Vec<IndexedSegment>> 
     }
 
     let segment_count = ShapeCountQuery::default().segments(shape)?;
-    let capacity = admit_shape_vector_capacity::<IndexedSegment>(segment_count)?;
-    let mut out = Vec::with_capacity(capacity);
+    let mut out = Vec::with_capacity(segment_count);
     let mut cursor = 0_usize;
     shape.for_each_component(&mut |component| match component {
         // A puntal member owns one coordinate index and no segment.

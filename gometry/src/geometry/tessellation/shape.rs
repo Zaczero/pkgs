@@ -12,8 +12,7 @@ use crate::geometry::tessellation::{
 use crate::geometry::{
     AxisFrame, CoordSeq, CoordinateAxes, CsrOffsetColumn, Dimension, ExpansionBudget,
     GeometryErrorKind, Point, PointKey, Polygon, Polygonal, PolygonizeFull, Ring, Segment, Shape,
-    ShapeCountQuery, VoronoiBoundary, admit_shape_vector_capacity, axis_extent, carry_each,
-    line_segments,
+    ShapeCountQuery, VoronoiBoundary, axis_extent, carry_each, line_segments,
 };
 
 /// The ear-cut emitter owns the admission-before-allocation invariant: every
@@ -386,8 +385,7 @@ impl Shape {
         }
         if self.topological_dimension() >= Dimension::Curve {
             let segment_count = ShapeCountQuery::default().segments(self)?;
-            let segment_capacity = admit_shape_vector_capacity::<Segment>(segment_count)?;
-            let mut segments: Vec<Segment> = Vec::with_capacity(segment_capacity);
+            let mut segments: Vec<Segment> = Vec::with_capacity(segment_count);
             self.for_each_segment_chain(|chain| {
                 segments.extend(line_segments(chain));
             });

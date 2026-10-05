@@ -20,9 +20,9 @@ use crate::geometry::{
     Bounds, CoordSeq, CoordWindow, Coordinates as _, ExpansionBudget, GeometryErrorKind,
     GeometryKind, LineSeq, MultiLineString, MultiMember, MultiPolygon, Orientation, Point,
     PointKey, Polygon, Ring, Segment, Shape, ShapeCountQuery, SharedShapeOwners, TopologyGuard, XY,
-    admit_shape_vector_capacity, dedup_consecutive_points, line_segments, open_point_cycle_winding,
-    orientation, point_segment_distance, same_point, simplified_polygon_delta_is_simple,
-    simplify_chain_guarded, triangle_area, vw_area_tolerance,
+    dedup_consecutive_points, line_segments, open_point_cycle_winding, orientation,
+    point_segment_distance, same_point, simplified_polygon_delta_is_simple, simplify_chain_guarded,
+    triangle_area, vw_area_tolerance,
 };
 #[cfg(test)]
 use crate::geometry::{REDUCE_LANES, ReduceSimd, point_on_segment, point_segment_distance_squared};
@@ -514,15 +514,15 @@ fn source_median_cut(
     split_x: bool,
     bounds: Bounds,
     owner_coordinate_count: usize,
-) -> Result<Option<f64>> {
-    let ordinates = source_ordinates(shape, split_x, owner_coordinate_count)?;
+) -> Option<f64> {
+    let ordinates = source_ordinates(shape, split_x, owner_coordinate_count);
     let middle = ordinates.len() / 2;
     let (low, high) = if split_x {
         (bounds.minx(), bounds.maxx())
     } else {
         (bounds.miny(), bounds.maxy())
     };
-    Ok(ordinates
+    ordinates
         .windows(2)
         .enumerate()
         .filter_map(|(lower_index, pair)| {
@@ -536,7 +536,7 @@ fn source_median_cut(
             (low < cut && cut < high).then_some((upper_index.abs_diff(middle), upper_index, cut))
         })
         .min_by_key(|&(distance, index, _)| (distance, index))
-        .map(|(_, _, cut)| cut))
+        .map(|(_, _, cut)| cut)
 }
 
 fn source_vertex_cut(
@@ -544,22 +544,22 @@ fn source_vertex_cut(
     split_x: bool,
     bounds: Bounds,
     owner_coordinate_count: usize,
-) -> Result<Option<f64>> {
-    let ordinates = source_ordinates(shape, split_x, owner_coordinate_count)?;
+) -> Option<f64> {
+    let ordinates = source_ordinates(shape, split_x, owner_coordinate_count);
     let middle = ordinates.len() / 2;
     let (low, high) = if split_x {
         (bounds.minx(), bounds.maxx())
     } else {
         (bounds.miny(), bounds.maxy())
     };
-    Ok(ordinates
+    ordinates
         .iter()
         .enumerate()
         .filter_map(|(index, &ordinate)| {
             (low < ordinate && ordinate < high).then_some((index.abs_diff(middle), index, ordinate))
         })
         .min_by_key(|&(distance, index, _)| (distance, index))
-        .map(|(_, _, cut)| cut))
+        .map(|(_, _, cut)| cut)
 }
 
 fn bounds_midpoint_cut(bounds: Bounds, split_x: bool) -> Option<f64> {
@@ -572,19 +572,14 @@ fn bounds_midpoint_cut(bounds: Bounds, split_x: bool) -> Option<f64> {
     (low < cut && cut < high).then_some(cut)
 }
 
-fn source_ordinates(
-    shape: &Shape,
-    split_x: bool,
-    owner_coordinate_count: usize,
-) -> Result<Vec<f64>> {
-    let capacity = admit_shape_vector_capacity::<f64>(owner_coordinate_count)?;
-    let mut ordinates = Vec::with_capacity(capacity);
+fn source_ordinates(shape: &Shape, split_x: bool, owner_coordinate_count: usize) -> Vec<f64> {
+    let mut ordinates = Vec::with_capacity(owner_coordinate_count);
     shape.for_each_first_point_run(|point| {
         ordinates.push(if split_x { point.x } else { point.y });
     });
     ordinates.sort_unstable_by(f64::total_cmp);
     ordinates.dedup_by(|left, right| *left == *right);
-    Ok(ordinates)
+    ordinates
 }
 
 fn push_subdivision_members(
@@ -717,18 +712,18 @@ pub(crate) fn split(
         let source_cut = |split_x| {
             if item.vertex_cut {
                 if let Some(cut) = bounds_midpoint_cut(bounds, split_x) {
-                    return Ok(Some(cut));
+                    return Some(cut);
                 }
-                match source_vertex_cut(&item.shape, split_x, bounds, owner_coordinate_count)? {
-                    Some(cut) => Ok(Some(cut)),
+                match source_vertex_cut(&item.shape, split_x, bounds, owner_coordinate_count) {
+                    Some(cut) => Some(cut),
                     None => source_median_cut(&item.shape, split_x, bounds, owner_coordinate_count),
                 }
             } else {
                 source_median_cut(&item.shape, split_x, bounds, owner_coordinate_count)
             }
         };
-        let x_cut = source_cut(true)?;
-        let y_cut = source_cut(false)?;
+        let x_cut = source_cut(true);
+        let y_cut = source_cut(false);
         let x_longer = (bounds.maxx() - bounds.minx()) >= (bounds.maxy() - bounds.miny());
         let candidate = if x_longer {
             x_cut
@@ -1338,16 +1333,14 @@ impl Shape {
     ) -> Result<Self> {
         let mut counts = ShapeCountQuery::default();
         let segment_count = counts.segments(self)?;
-        let segment_capacity = admit_shape_vector_capacity::<Segment>(segment_count)?;
         let coordinate_count = counts.coordinates(self)?;
-        let vertex_capacity = admit_shape_vector_capacity::<[f64; 2]>(coordinate_count)?;
         drop(counts);
-        let mut segments = Vec::with_capacity(segment_capacity);
+        let mut segments = Vec::with_capacity(segment_count);
         let Ok(()) = self.try_for_each_segment_chain(|chain| {
             segments.extend(line_segments(chain));
             Ok::<_, std::convert::Infallible>(())
         });
-        let mut vertex_cloud = Vec::with_capacity(vertex_capacity);
+        let mut vertex_cloud = Vec::with_capacity(coordinate_count);
         // Original XY only: the guard indexes the source point set, never
         // simplified output. Isolated points participate in the vertex
         // probe, so the walk is every vertex, not only segment chains.

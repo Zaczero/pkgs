@@ -9,7 +9,7 @@ use crate::geometry::{
     Bounds, CoordSeq, CoordinateAxes, Coordinates as _, Dimension, GeometryErrorKind, GeometryKind,
     HasM, HasZ, LineSeq, MultiLineString, MultiMember, MultiPoint, MultiPolygon, Point, PointKey,
     Polygon, Shape, ShapeCountQuery, ShapeOwnerKey, VisiblePointRunKey, VisibleXYKey,
-    admit_shape_vector_capacity, line_length_3d,
+    line_length_3d,
 };
 
 fn reserve_unique_points_capacity(
@@ -1067,12 +1067,10 @@ impl Shape {
     /// boxed-`dyn` iterator allocation of the historical `points()`. Prefer
     /// it for hot paths (distance worksets, geodesic/Hausdorff distance,
     /// min-clearance) that need an owned vertex buffer. Returns
-    /// `SizeOverflow` if the logical point count or vector layout is not
-    /// representable.
+    /// `SizeOverflow` if the logical point count is not representable.
     pub fn points_vec(&self) -> crate::error::Result<Vec<Point>> {
         let count = ShapeCountQuery::default().coordinates(self)?;
-        let capacity = admit_shape_vector_capacity::<Point>(count)?;
-        let mut points = Vec::with_capacity(capacity);
+        let mut points = Vec::with_capacity(count);
         self.collect_points_into(&mut points);
         Ok(points)
     }
@@ -1104,8 +1102,7 @@ impl Shape {
                 CoordSeq::try_from_points(&unique)?,
             ));
         }
-        let capacity = admit_shape_vector_capacity::<Self>(unique.len())?;
-        let mut members = Vec::with_capacity(capacity);
+        let mut members = Vec::with_capacity(unique.len());
         members.extend(unique.into_iter().map(Self::Point));
         Self::geometry_collection(members)
     }
