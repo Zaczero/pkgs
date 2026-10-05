@@ -1,14 +1,42 @@
 #!/usr/bin/env python3
-"""Run gometry's source, documentation, and Rust lint checks."""
+"""Apply gometry's formatters and mechanical fixes, then run its quality checks.
+
+The fix phase rewrites the checkout: Rust and Python formatting, machine-applicable
+Clippy and Ruff fixes, and stub docstrings regenerated from the runtime. The checks
+then report only what needs judgment. `--no-fix` runs the checks alone, for a
+checkout that should not be rewritten, such as CI.
+"""
 
 from __future__ import annotations
 
+import argparse
 import os
 import subprocess
 import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
+
+# `cargo` and `ruff` are system tools; every other step runs under this interpreter.
+SYSTEM_TOOLS = frozenset({'cargo', 'ruff'})
+
+FIXES: tuple[tuple[str, ...], ...] = (
+    (
+        'cargo',
+        'clippy',
+        '--fix',
+        '--allow-dirty',
+        '--allow-staged',
+        '--all-targets',
+        '--locked',
+        '-p',
+        'gometry',
+    ),
+    ('cargo', 'fmt'),
+    ('ruff', 'check', '--fix', '--quiet', '.'),
+    ('ruff', 'format', '--quiet', '.'),
+    ('-m', 'pyo3stubs', 'gen-docs', '--config', 'tools/stubs/stubconfig.py'),
+)
 
 CHECKS: tuple[tuple[str, ...], ...] = (
     (
@@ -46,27 +74,27 @@ CHECKS: tuple[tuple[str, ...], ...] = (
 )
 
 
-def main() -> int:
-    failed: list[str] = []
-    for arguments in CHECKS:
-        label = ' '.join(arguments)
-        print(f'\n==> {label}', flush=True)
-        command = list(arguments)
-        environment = None
-        if arguments[0] == 'cargo':
-            environment = os.environ.copy()
-            environment.setdefault('PYO3_PYTHON', sys.executable)
-        else:
-            command.insert(0, sys.executable)
-        result = subprocess.run(
-            command,
-            cwd=ROOT,
-            check=False,
-            env=environment,
-        )
-        if result.returncode:
-            failed.append(label)
+def run(arguments: tuple[str, ...]) -> bool:
+    print(f'\n==> {" ".join(arguments)}', flush=True)
+    command = list(arguments)
+    environment = None
+    if arguments[0] == 'cargo':
+        environment = os.environ.copy()
+        environment.setdefault('PYO3_PYTHON', sys.executable)
+    if arguments[0] not in SYSTEM_TOOLS:
+        command.insert(0, sys.executable)
+    return (
+        subprocess.run(command, cwd=ROOT, check=False, env=environment).returncode == 0
+    )
 
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument(
+        '--no-fix', action='store_true', help='run the checks without rewriting files'
+    )
+    steps = CHECKS if parser.parse_args().no_fix else (*FIXES, *CHECKS)
+    failed = [' '.join(step) for step in steps if not run(step)]
     if failed:
         print('\nFailed quality checks:', file=sys.stderr)
         for label in failed:
