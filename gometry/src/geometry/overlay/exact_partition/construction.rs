@@ -566,18 +566,23 @@ fn partition_unique_segments_with_budget<'a, const ORDINATES: bool>(
     endpoint_of.reserve(endpoint_capacity);
     let mut forest = Forest::with_capacity(unique, endpoint_capacity);
 
-    let intern_stored =
-        |point: XY, endpoint_of: &mut HashMap<PointKey, u32>, forest: &mut Forest| -> Result<u32> {
+    /// Expand endpoint interning at each call site so outlining cannot add
+    /// call frames to the endpoint loop. `?` propagates a forest error from
+    /// the enclosing operation.
+    macro_rules! intern_stored {
+        ($point:expr, $endpoint_of:ident, $forest:ident) => {{
+            let point = $point;
             let key = PointKey::new(point);
-            match endpoint_of.entry(key) {
-                Entry::Occupied(entry) => Ok(*entry.get()),
+            match $endpoint_of.entry(key) {
+                Entry::Occupied(entry) => Ok::<_, Error>(*entry.get()),
                 Entry::Vacant(entry) => {
-                    let id = forest.push_stored(point)?;
+                    let id = $forest.push_stored(point)?;
                     entry.insert(id);
                     Ok(id)
                 },
             }
-        };
+        }};
+    }
 
     let mut start_handle = Vec::new();
     let mut end_handle = Vec::new();
@@ -592,7 +597,7 @@ fn partition_unique_segments_with_budget<'a, const ORDINATES: bool>(
                     clip_endpoint_keys.push((PointKey::new(endpoint.point), handle));
                     Ok(handle)
                 } else {
-                    intern_stored(endpoint.point, &mut endpoint_of, &mut forest)
+                    intern_stored!(endpoint.point, endpoint_of, forest)
                 }?;
                 Ok::<_, Error>(handle)
             };
@@ -601,8 +606,8 @@ fn partition_unique_segments_with_budget<'a, const ORDINATES: bool>(
         }
     } else {
         for &segment in unique {
-            start_handle.push(intern_stored(segment.start, &mut endpoint_of, &mut forest)?);
-            end_handle.push(intern_stored(segment.end, &mut endpoint_of, &mut forest)?);
+            start_handle.push(intern_stored!(segment.start, endpoint_of, forest)?);
+            end_handle.push(intern_stored!(segment.end, endpoint_of, forest)?);
         }
     }
     if !clip_endpoint_keys.is_empty() {
@@ -631,7 +636,7 @@ fn partition_unique_segments_with_budget<'a, const ORDINATES: bool>(
     for &point in isolated {
         let key = PointKey::new(point);
         let existed = endpoint_of.contains_key(&key);
-        let handle = intern_stored(point, &mut endpoint_of, &mut forest)?;
+        let handle = intern_stored!(point, endpoint_of, forest)?;
         point_handles.push(handle);
         if existed {
             continue;
