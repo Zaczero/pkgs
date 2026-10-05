@@ -1175,7 +1175,7 @@ fn assembled_contact_validation_precedes_owner_local_containment() {
     };
     assert!(
         !invalid_nesting_called.get(),
-        "Task164 contact validation must finish before owner-local containment runs"
+        "contact validation must finish before owner-local containment runs"
     );
     assert!(
         invalid_facts
@@ -3478,7 +3478,7 @@ fn public_noncollinear_one_owner_keeps_1334_interior_holes_and_clip_support() {
 fn task163_noncollinear_public_path_retains_667_tangent_outputs() {
     let source = site_shape(&[(500.0, 5.0), (1500.0, 5.0), (1000.0, 7.0)]);
     let clip = task163_tangent_clip(667);
-    let mut budget = ExpansionBudget::new("test", "Task 163 667 tangent holes");
+    let mut budget = ExpansionBudget::new("test", "667 tangent holes");
     assembly::reset_owner_local_work();
     let cells = source
         .voronoi_polygons_budgeted(0.0, VoronoiBoundary::Polygon(&clip), &mut budget)
@@ -3493,7 +3493,7 @@ fn task163_noncollinear_public_path_retains_667_tangent_outputs() {
     }
 
     eprintln!(
-        "Task163 667 output: polygons={}, holes={hole_count}, budget={}, \
+        "667 tangent-hole output: polygons={}, holes={hole_count}, budget={}, \
          ring_edges={}, global_slot_visits={}, owner_vertices={}, face_walks={}, \
          components={}, queries={}, hits={}, side_checks={}",
         cells.len(),
@@ -3550,7 +3550,7 @@ fn task163_noncollinear_1334_public_output_preserves_owner_parts_and_rings() {
         .collect();
     expected_parts.sort_unstable();
 
-    let mut budget = ExpansionBudget::new("test", "Task 163 1334 tangent holes");
+    let mut budget = ExpansionBudget::new("test", "1334 tangent holes");
     assembly::reset_owner_local_work();
     let cells = site_shape(&[(500.0, 5.0), (1500.0, 5.0), (1000.0, 7.0)])
         .voronoi_polygons_budgeted(0.0, VoronoiBoundary::Polygon(&clip), &mut budget)
