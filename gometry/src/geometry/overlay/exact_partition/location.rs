@@ -57,13 +57,6 @@ impl ExactPartition<'_> {
 
 impl ExactSourceInventory {
     /// Full source labels retain source occurrence semantics at spans and nodes.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "PreparedPlan owns admission of reusable full-source exact query labels"
-        )
-    )]
     #[expect(
         clippy::indexing_slicing,
         reason = "face and span IDs in the partition facts index label columns built from the same exact partition"

@@ -591,7 +591,7 @@ pub(crate) fn scalar_vs_shapes<'a>(
             };
             // Point rows probe the scalar once each: index it for a batch.
             let element_count = elements.len();
-            let mut point_tester_ready = element_count < 2;
+            let mut point_queries: Option<crate::geometry::PreparedPointQueries<'_>> = None;
             let point_membership = spec
                 .predicate
                 .point_membership(!scalar_is_left)
@@ -609,13 +609,17 @@ pub(crate) fn scalar_vs_shapes<'a>(
                     if let Some(point) = row.point()
                         && let Some(membership) = point_membership
                     {
-                        if !point_tester_ready
-                            && scalar_bounds.is_some_and(|bounds| bounds.contains_xy(point.xy()))
-                        {
-                            scalar.point_tester()?;
-                            point_tester_ready = true;
+                        if scalar_bounds.is_none_or(|bounds| !bounds.contains_xy(point.xy())) {
+                            return Ok(spec.predicate == Predicate::Disjoint);
                         }
-                        let matches = scalar.cartesian_point_membership(point, membership)?;
+                        let queries = if let Some(queries) = point_queries {
+                            queries
+                        } else {
+                            let queries = scalar.prepare_point_queries(element_count)?;
+                            point_queries = Some(queries);
+                            queries
+                        };
+                        let matches = queries.membership(point, membership)?;
                         return Ok(matches != (spec.predicate == Predicate::Disjoint));
                     }
                     if let Some(verdict) = gate(index, row)? {
@@ -2225,6 +2229,28 @@ mod tests {
             let shared = shared_collection(square.clone(), depth);
             assert!(cartesian_predicate(Predicate::Intersects, &shared, &point));
         }
+    }
+
+    #[test]
+    fn shared_collection_point_batches_do_not_require_expanded_coordinate_counts() {
+        let line = crate::io::parse_wkt("LINESTRING (0 0,2 0)").unwrap();
+        let shared = shared_collection(line, 64);
+        let point = Point::new_raw_xy(1.0, 0.0);
+        assert!(crate::geometry::cartesian_point_covers(&shared, point));
+        let array =
+            PyGeometryArray::from_shapes(vec![Shape::Point(point); 8], Frame::None).unwrap();
+        let scalar = PreparedPlan::transient(&shared);
+        let actual = scalar_vs_shapes(
+            &Predicate::Intersects.spec(),
+            &scalar,
+            (0..8).map(|index| (index, Some(ShapeRow::Point(point)))),
+            true,
+            Some(&array),
+            TopologyDomain::Cartesian,
+            &crate::geometry::FrameDependentCaches::default(),
+        )
+        .unwrap();
+        assert_eq!(actual, vec![true; 8]);
     }
 
     #[test]

@@ -289,6 +289,15 @@ pub(crate) enum PointMembership {
     BoundaryInclusive,
 }
 
+impl PointMembership {
+    pub(crate) const fn accepts(self, location: Loc) -> bool {
+        match self {
+            Self::Strict => matches!(location, Loc::Interior),
+            Self::BoundaryInclusive => !matches!(location, Loc::Exterior),
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(in crate::geometry) struct SourcePointLocation {
     pub(in crate::geometry) location: Loc,

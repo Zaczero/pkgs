@@ -298,9 +298,14 @@ impl<T> YStabbingIndex<T> {
 pub(crate) struct EdgeYIndex {
     edge_count: usize,
     plan: YPlan,
+    candidate_bound: usize,
 }
 
 impl EdgeYIndex {
+    pub(crate) const fn candidate_bound(&self) -> usize {
+        self.candidate_bound
+    }
+
     #[cfg(test)]
     pub(crate) const fn uses_indexed_plan(&self) -> bool {
         !matches!(self.plan, YPlan::Linear)
@@ -313,9 +318,12 @@ impl EdgeYIndex {
         let mut spans = Vec::with_capacity(edge_count);
         spans.extend(ys.array_windows::<2>().map(|&[a, b]| (a.min(b), a.max(b))));
         // Dense band_items are item indices; with items[i]=i they are edge ids.
+        let plan = choose_plan(&spans, item_count);
+        let candidate_bound = plan_candidate_bound(&plan, edge_count);
         Ok(Self {
             edge_count,
-            plan: choose_plan(&spans, item_count),
+            plan,
+            candidate_bound,
         })
     }
 
@@ -331,9 +339,12 @@ impl EdgeYIndex {
         if let Some((&first, &last)) = ys.first().zip(ys.last()) {
             spans.push((first.min(last), first.max(last)));
         }
+        let plan = choose_plan(&spans, item_count);
+        let candidate_bound = plan_candidate_bound(&plan, edge_count);
         Ok(Self {
             edge_count,
-            plan: choose_plan(&spans, item_count),
+            plan,
+            candidate_bound,
         })
     }
 
@@ -403,6 +414,21 @@ impl EdgeYIndex {
                 query_itree(nodes, *root, y, &mut |edge| visit(EdgeId(edge)))
             },
         }
+    }
+}
+
+#[expect(
+    clippy::arithmetic_side_effects,
+    reason = "adjacent CSR offsets are nondecreasing and address the same candidate buffer"
+)]
+fn plan_candidate_bound(plan: &YPlan, count: usize) -> usize {
+    match plan {
+        YPlan::DenseBands { band_offsets, .. } => band_offsets
+            .array_windows::<2>()
+            .map(|&[start, end]| (end - start) as usize)
+            .max()
+            .unwrap_or(0),
+        YPlan::Linear | YPlan::IntervalTree { .. } => count,
     }
 }
 

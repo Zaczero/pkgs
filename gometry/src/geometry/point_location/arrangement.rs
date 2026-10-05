@@ -10,7 +10,8 @@ use crate::geometry::GeometryErrorKind;
 use crate::geometry::exact_arith::ExactSign;
 use crate::geometry::segments::try_sort_by;
 use crate::geometry::source_support::SourcePointLocation;
-use crate::geometry::tessellation::exact::{ExactDyadic, compare_ratios};
+use crate::geometry::tessellation::exact::{CompactLimbs, ExactDyadic, compare_ratios};
+use crate::heap_size::ARC_CONTROL_BYTES;
 
 #[cfg(all(test, debug_assertions))]
 thread_local! {
@@ -63,29 +64,8 @@ pub(in crate::geometry) struct ExactLocationEdge {
 
 #[derive(Clone, Copy, Debug)]
 pub(in crate::geometry) struct ExactLocationDart {
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "prepared infinitesimal queries select a node's incident face fan"
-        )
-    )]
     pub(in crate::geometry) target: u32,
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "a tangent infinitesimal query retains its incident span label"
-        )
-    )]
     pub(in crate::geometry) span: u32,
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "prepared infinitesimal queries select the face left of a fan dart"
-        )
-    )]
     pub(in crate::geometry) left_face: u32,
 }
 
@@ -110,21 +90,7 @@ struct Event {
 pub(in crate::geometry) struct ExactLocationGeometry {
     pub(in crate::geometry) points: ExactLocationPoints,
     edges: Arc<[ExactLocationEdge]>,
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "PreparedPlan routes exact offset witnesses through the labelled fan"
-        )
-    )]
     node_fans: Vec<Vec<ExactLocationDart>>,
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "a zero-degree source node offsets into its arrangement host face"
-        )
-    )]
     node_hosts: Arc<[u32]>,
     events: Vec<Event>,
     slabs: crate::geometry::PersistentOrder<u32>,
@@ -136,25 +102,11 @@ enum LocatedCell {
     Node(u32),
 }
 
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "the exact offset classifier returns only an adjacent face or span"
-    )
-)]
 enum OffsetCell {
     Face(u32),
     Span(u32),
 }
 
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "PreparedPlan uses the shared face-fan classifier for exact offset witnesses"
-    )
-)]
 impl ExactLocationGeometry {
     #[expect(
         clippy::indexing_slicing,
@@ -673,6 +625,80 @@ pub(in crate::geometry) struct ExactLocationIndex<L: CellLabels> {
     labels: L,
 }
 
+impl crate::HeapSize for ExactLocationIndex<SourceLocationLabels> {
+    fn heap_bytes(&self) -> usize {
+        let geometry = &self.geometry;
+        let points = std::mem::size_of_val(geometry.points.as_ref()).saturating_add(
+            geometry
+                .points
+                .iter()
+                .flatten()
+                .map(|point| match &point.limbs {
+                    CompactLimbs::Inline { .. } => 0,
+                    CompactLimbs::Heap(limbs) => {
+                        limbs.capacity().saturating_mul(std::mem::size_of::<u64>())
+                    },
+                })
+                .fold(0, usize::saturating_add),
+        );
+        let events = geometry
+            .events
+            .capacity()
+            .saturating_mul(std::mem::size_of::<Event>())
+            .saturating_add(
+                geometry
+                    .events
+                    .iter()
+                    .map(|event| {
+                        event
+                            .vertices
+                            .capacity()
+                            .saturating_add(event.starts.capacity())
+                            .saturating_add(event.ends.capacity())
+                            .saturating_mul(std::mem::size_of::<u32>())
+                            .saturating_add(
+                                event
+                                    .horizontal
+                                    .capacity()
+                                    .saturating_mul(std::mem::size_of::<HorizontalSpan>()),
+                            )
+                    })
+                    .fold(0, usize::saturating_add),
+            );
+        ARC_CONTROL_BYTES
+            .saturating_add(std::mem::size_of::<ExactLocationGeometry>())
+            .saturating_add(ARC_CONTROL_BYTES.saturating_add(points))
+            .saturating_add(events)
+            .saturating_add(ARC_CONTROL_BYTES)
+            .saturating_add(std::mem::size_of_val(geometry.edges.as_ref()))
+            .saturating_add(ARC_CONTROL_BYTES)
+            .saturating_add(std::mem::size_of_val(geometry.node_hosts.as_ref()))
+            .saturating_add(
+                geometry
+                    .node_fans
+                    .capacity()
+                    .saturating_mul(std::mem::size_of::<Vec<ExactLocationDart>>()),
+            )
+            .saturating_add(
+                geometry
+                    .node_fans
+                    .iter()
+                    .map(|fan| {
+                        fan.capacity()
+                            .saturating_mul(std::mem::size_of::<ExactLocationDart>())
+                    })
+                    .fold(0, usize::saturating_add),
+            )
+            .saturating_add(geometry.slabs.heap_bytes())
+            .saturating_add(ARC_CONTROL_BYTES)
+            .saturating_add(std::mem::size_of_val(self.labels.faces.as_ref()))
+            .saturating_add(ARC_CONTROL_BYTES)
+            .saturating_add(std::mem::size_of_val(self.labels.spans.as_ref()))
+            .saturating_add(ARC_CONTROL_BYTES)
+            .saturating_add(std::mem::size_of_val(self.labels.nodes.as_ref()))
+    }
+}
+
 impl<L: CellLabels> ExactLocationIndex<L> {
     pub(in crate::geometry) fn from_cells(cells: ExactLocationCells<L>) -> Self {
         Self {
@@ -685,13 +711,14 @@ impl<L: CellLabels> ExactLocationIndex<L> {
         self.geometry.locate(&self.labels, point)
     }
 
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "PreparedPlan routes exact witness offsets through the shared locator"
-        )
-    )]
+    pub(in crate::geometry) fn locate_xy(&self, x: f64, y: f64) -> Result<L::Value> {
+        self.locate_exact(&[
+            ExactDyadic::from_f64(x),
+            ExactDyadic::from_f64(y),
+            ExactDyadic::one(),
+        ])
+    }
+
     pub(in crate::geometry) fn locate_exact_offset(
         &self,
         point: &[ExactDyadic; 3],
@@ -820,13 +847,6 @@ fn direction(
     ))
 }
 
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "exact offset queries orient incident arrangement darts without rounding"
-    )
-)]
 #[expect(
     clippy::indexing_slicing,
     reason = "offset dart endpoint IDs are created from the same exact point table"
@@ -847,13 +867,6 @@ fn oriented_vector(
     Ok((dx, dy))
 }
 
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "exact offset queries choose the source side of a contacted span"
-    )
-)]
 fn orientation_with_direction(
     points: &[[ExactDyadic; 3]],
     start: u32,
@@ -868,13 +881,6 @@ fn orientation_with_direction(
         .sign())
 }
 
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "exact offset queries binary-search the incident angular fan"
-    )
-)]
 fn compare_dart_direction(
     points: &[[ExactDyadic; 3]],
     origin: u32,
@@ -902,13 +908,6 @@ fn compare_dart_direction(
     }
 }
 
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "the exact fan search partitions direction vectors by polar half-plane"
-    )
-)]
 fn direction_half(dx: &ExactDyadic, dy: &ExactDyadic) -> u8 {
     u8::from(dy.sign() == ExactSign::Negative || (dy.is_zero() && dx.sign() == ExactSign::Negative))
 }

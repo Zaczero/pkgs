@@ -275,6 +275,9 @@ impl<'a> PointArena<'a> {
         point: impl Fn(T) -> u32,
         equal: impl FnMut(T, T) -> Result<()>,
     ) -> Result<()> {
+        if items.len() < 2 {
+            return Ok(());
+        }
         let (axis, increasing) = segment_axis(segment);
         RayPoints::sort_by_axis(self, items, axis, point, equal)?;
         if !increasing {

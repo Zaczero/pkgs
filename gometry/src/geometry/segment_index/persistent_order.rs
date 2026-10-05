@@ -21,6 +21,14 @@ pub(in crate::geometry) struct PersistentOrder<T: Copy> {
     nodes: Vec<PersistentOrderNode<T>>,
 }
 
+impl<T: Copy> crate::HeapSize for PersistentOrder<T> {
+    fn heap_bytes(&self) -> usize {
+        self.nodes
+            .capacity()
+            .saturating_mul(std::mem::size_of::<PersistentOrderNode<T>>())
+    }
+}
+
 impl<T: Copy> Default for PersistentOrder<T> {
     fn default() -> Self {
         Self { nodes: Vec::new() }

@@ -1,4 +1,4 @@
-use std::cell::OnceCell;
+use std::cell::{Cell, OnceCell};
 use std::cmp::Ordering;
 use std::ops::ControlFlow;
 
@@ -20,7 +20,7 @@ use crate::geometry::storage::{PackedRow, ShapeRow};
 use crate::geometry::tessellation::exact::{ExactDyadic, compare_ratios};
 use crate::geometry::{
     Bounds, CompiledPattern, Contact, Coordinates as _, Dimension, GeometryErrorKind, HashMap,
-    Point, PointKey, PreparedPlan, RingKind, Segment, Shape, XY, dimension,
+    Point, PointKey, PreparedPlan, PreparedPointQueries, RingKind, Segment, Shape, XY, dimension,
     for_each_candidate_pair, ring_winding, same_point, segment_contact_exact,
 };
 use crate::predicates::Predicate;
@@ -248,10 +248,10 @@ impl<Q: Query> Query for EndOnly<Q> {
     }
 }
 
-#[derive(Clone, Copy)]
 struct Operand<'a> {
     row: ShapeRow<'a>,
     plan: Option<&'a PreparedPlan>,
+    point_queries: Cell<Option<PreparedPointQueries<'a>>>,
 }
 
 impl<'a> Operand<'a> {
@@ -260,13 +260,18 @@ impl<'a> Operand<'a> {
             ShapeRow::Handle(plan) => Some(plan.as_ref()),
             ShapeRow::Shape(_) | ShapeRow::Point(_) | ShapeRow::Packed(_) => None,
         };
-        Self { row, plan }
+        Self {
+            row,
+            plan,
+            point_queries: Cell::new(None),
+        }
     }
 
     fn from_plan(plan: &'a PreparedPlan) -> Self {
         Self {
             row: ShapeRow::Shape(plan.shape()),
             plan: Some(plan),
+            point_queries: Cell::new(None),
         }
     }
 
@@ -276,16 +281,26 @@ impl<'a> Operand<'a> {
     }
 
     fn locate_stored(&self, point: Point) -> Result<SourcePointLocation> {
-        self.plan.map_or_else(
-            || Ok(cartesian_row_point_location_and_area(self.row, point)),
-            |plan| plan.locate_stored(point),
+        self.point_queries()?.map_or_else(
+            || {
+                self.plan.map_or_else(
+                    || Ok(cartesian_row_point_location_and_area(self.row, point)),
+                    |plan| plan.locate_stored(point),
+                )
+            },
+            |queries| queries.locate_stored(point),
         )
     }
 
     fn locate_exact(&self, point: &[ExactDyadic; 3]) -> Result<SourcePointLocation> {
-        self.plan.map_or_else(
-            || cartesian_row_exact_point_location_and_area(self.row, point),
-            |plan| plan.locate_exact(point),
+        self.point_queries()?.map_or_else(
+            || {
+                self.plan.map_or_else(
+                    || cartesian_row_exact_point_location_and_area(self.row, point),
+                    |plan| plan.locate_exact(point),
+                )
+            },
+            |queries| queries.locate_exact(point),
         )
     }
 
@@ -294,9 +309,14 @@ impl<'a> Operand<'a> {
         point: &[ExactDyadic; 3],
         direction: &[ExactDyadic; 2],
     ) -> Result<SourcePointLocation> {
-        self.plan.map_or_else(
-            || cartesian_row_exact_offset_location_and_area(self.row, point, direction),
-            |plan| plan.locate_exact_offset(point, direction),
+        self.point_queries()?.map_or_else(
+            || {
+                self.plan.map_or_else(
+                    || cartesian_row_exact_offset_location_and_area(self.row, point, direction),
+                    |plan| plan.locate_exact_offset(point, direction),
+                )
+            },
+            |queries| queries.locate_exact_offset(point, direction),
         )
     }
 
@@ -305,13 +325,36 @@ impl<'a> Operand<'a> {
         point: &[ExactDyadic; 3],
         direction: &[ExactDyadic; 2],
     ) -> Result<OccupiedToward> {
-        self.plan.map_or_else(
+        self.point_queries()?.map_or_else(
             || {
-                self.locate_exact_offset(point, direction)
+                self.plan.map_or_else(
+                    || {
+                        self.locate_exact_offset(point, direction)
+                            .map(occupied_toward)
+                    },
+                    |plan| plan.occupied_toward_exact(point, direction),
+                )
+            },
+            |queries| {
+                queries
+                    .locate_exact_offset(point, direction)
                     .map(occupied_toward)
             },
-            |plan| plan.occupied_toward_exact(point, direction),
         )
+    }
+
+    fn point_queries(&self) -> Result<Option<PreparedPointQueries<'a>>> {
+        if let Some(queries) = self.point_queries.get() {
+            return Ok(Some(queries));
+        }
+        let Some(plan) = self.plan else {
+            return Ok(None);
+        };
+        let Some(queries) = plan.prepared_point_queries()? else {
+            return Ok(None);
+        };
+        self.point_queries.set(Some(queries));
+        Ok(Some(queries))
     }
 
     fn point_membership(&self, point: Point, membership: PointMembership) -> Result<bool> {

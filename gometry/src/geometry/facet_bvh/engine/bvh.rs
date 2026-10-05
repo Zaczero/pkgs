@@ -694,8 +694,7 @@ impl FacetBvh {
             match self.decode_node(index) {
                 BvhNode::Leaf(facet_index) => {
                     let facet = facet_for_leaf(linework, facet_index);
-                    for i in 0..facet.segment_count as usize {
-                        let segment = linework.segment(facet, i);
+                    for segment in linework.facet_segments(facet) {
                         if point_on_segment(point, segment.start, segment.end) {
                             return true;
                         }

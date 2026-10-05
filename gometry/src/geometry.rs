@@ -224,7 +224,7 @@ pub(crate) use packed_line_metrics::{PackedLineColumnView, scale_metric_values};
 pub(in crate::geometry) use point_location::{
     AreaLocationLabels, ExactLocationIndex, ExactLocationPoints,
 };
-pub(crate) use point_location::{PointBatchTester, PolygonPointIndex};
+pub(crate) use point_location::{PointBatchTester, PolygonPointIndex, PreparedPointQueries};
 pub(in crate::geometry) use predicates::PolygonContact;
 use predicates::{
     LineworkChains, TouchDirections, classify_ring_pair, classify_ring_pair_with_contacts,

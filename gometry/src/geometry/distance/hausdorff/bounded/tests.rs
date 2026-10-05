@@ -547,10 +547,7 @@ fn seed42_filled_membership_work_scales_with_slab_searches() {
         let mut budget = ExpansionBudget::new("hausdorff_distance", "test membership");
         let support = PreparedSupport::from_shape(&target, &mut budget).unwrap();
         let plan = crate::geometry::PreparedPlan::transient(&target);
-        let tester = plan
-            .point_tester()
-            .unwrap()
-            .expect("random filled target gets a prepared exact point tester");
+        let tester = plan.prepare_point_queries(4).unwrap();
 
         // Q ~= n/log(n) keeps total work sublinear in the source size if
         // per-query candidate enumeration grows with the crossing set.
@@ -570,10 +567,7 @@ fn seed42_filled_membership_work_scales_with_slab_searches() {
                 ExactDyadic::from_f64(y),
                 ExactDyadic::one(),
             ];
-            let prepared = tester
-                .location_and_area_exact(&exact)
-                .unwrap()
-                .expect("polygon tester handles exact query");
+            let prepared = tester.locate_exact(&exact).unwrap();
             assert_eq!(actual, prepared.area, "seed42 n={count}, probe={index}");
             if index % streaming_oracle_stride == 0 {
                 let streaming = cartesian_exact_point_location_and_area(&target, &exact).unwrap();

@@ -15,6 +15,7 @@ use crate::broadcast::{
 };
 use crate::crs::frame::Frame;
 use crate::error::Result;
+use crate::geometry::source_support::PointMembership;
 use crate::geometry::storage::{PackedStorage, ValidityMask, validity as missing};
 use crate::geometry::{PointSet, PreparedPlan, TopologyDomain, storage};
 use crate::predicates::engine;
@@ -576,12 +577,21 @@ fn xy_array_values(
     domain: TopologyDomain,
 ) -> Result<Vec<bool>, (usize, crate::error::Error)> {
     if domain == TopologyDomain::Cartesian {
-        let inclusive = spec.predicate == Predicate::Intersects;
-        original.point_tester().map_err(|error| (0, error))?;
+        let membership = if spec.predicate == Predicate::Intersects {
+            PointMembership::BoundaryInclusive
+        } else {
+            PointMembership::Strict
+        };
+        let queries = original
+            .prepare_point_queries(x.len().min(y.len()))
+            .map_err(|error| (0, error))?;
         return x
             .into_iter()
             .zip(y)
-            .map(|(x, y)| cartesian_xy_matches(original, Point::new_raw_xy(x, y), inclusive))
+            .map(|(x, y)| {
+                let point = Point::new_raw_xy(x, y);
+                queries.membership(point, membership)
+            })
             .collect_rows();
     }
     x.into_iter()
@@ -603,23 +613,13 @@ fn xy_array_values(
         .collect_rows()
 }
 
-/// `intersects_xy` admits the boundary; `contains_xy` requires the interior.
-fn xy_location_matches(location: crate::geometry::Loc, inclusive: bool) -> bool {
-    if inclusive {
-        location != crate::geometry::Loc::Exterior
-    } else {
-        location == crate::geometry::Loc::Interior
-    }
-}
-
 fn cartesian_xy_matches(prepared: &PreparedPlan, point: Point, inclusive: bool) -> Result<bool> {
-    if inclusive {
-        prepared.cartesian_point_covers(point)
+    let membership = if inclusive {
+        PointMembership::BoundaryInclusive
     } else {
-        prepared
-            .cartesian_point_location(point)
-            .map(|location| xy_location_matches(location, false))
-    }
+        PointMembership::Strict
+    };
+    prepared.cartesian_point_membership(point, membership)
 }
 
 pub(crate) fn xy_predicate_values(

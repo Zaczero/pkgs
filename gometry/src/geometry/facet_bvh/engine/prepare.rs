@@ -375,6 +375,26 @@ impl PreparedLinework {
         }
     }
 
+    pub(crate) fn facet_segments(&self, facet: Facet) -> impl Iterator<Item = Segment> + '_ {
+        let (chain, facet) = self.facet_chain(facet);
+        let first = facet.first_vertex as usize;
+        let last = first.wrapping_add(facet.segment_count as usize);
+        let xs = chain
+            .xs()
+            .get(first..=last)
+            .expect("prepared facet x window");
+        let ys = chain
+            .ys()
+            .get(first..=last)
+            .expect("prepared facet y window");
+        xs.array_windows::<2>()
+            .zip(ys.array_windows::<2>())
+            .map(|(&[ax, bx], &[ay, by])| Segment {
+                start: XY::new(ax, ay),
+                end: XY::new(bx, by),
+            })
+    }
+
     /// Flat-scan minimum distance from a probe coordinate stream (below the
     /// BVH crossover): the total-bounds gate skips far probes in O(1), then
     /// the SIMD facet kernel folds the rest. `SQUARED` selects squared space
@@ -412,10 +432,8 @@ impl PreparedLinework {
     /// crossover) — exact `point_on_segment`, box-gated per facet.
     pub(crate) fn covers_point(&self, point: Point) -> bool {
         self.facets.iter().any(|&facet| {
-            (0..facet.segment_count as usize).any(|index| {
-                let segment = self.segment(facet, index);
-                point_on_segment(point, segment.start, segment.end)
-            })
+            self.facet_segments(facet)
+                .any(|segment| point_on_segment(point, segment.start, segment.end))
         })
     }
 
