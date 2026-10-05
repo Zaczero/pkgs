@@ -420,7 +420,11 @@ class InvalidGeometryError(GeometryError):
     detail: str | None
     """Human-readable detail for the validity issue (else ``None``)."""
     location: tuple[float, float] | None
-    """Coordinate witness for the validity issue (else ``None``)."""
+    """Coordinate witness for the validity issue (else ``None``).
+
+    For quotient-topology issues, the location is a canonical coordinate of the
+    issue's contact set, chosen deterministically by minimum latitude then longitude.
+    """
 
 class GeometryTypeError(GeometryError, TypeError):
     """An operation received a geometry of the wrong kind."""
@@ -1124,8 +1128,8 @@ class Geometry:
     @property
     def is_ring(self) -> bool:
         """Whether the geometry is a closed, simple ``LineString`` (a ring).
-        Geographic antimeridian crossings are normalized before the simplicity
-        test; projected and CRS-free geometry remains planar.
+        Geographic closure uses quotient vertex identity and simplicity uses
+        the frame-aware topology; projected and CRS-free geometry remains planar.
 
         Returns
         -------
@@ -1149,8 +1153,10 @@ class Geometry:
         is simple exactly when it is ``is_valid`` — so holes outside the
         shell, nested holes, or a disconnected interior make it not simple
         even with no ring self-crossing. Collections are never simple.
-        Geographic antimeridian crossings are normalized before topology is
-        evaluated; projected and CRS-free geometry remains planar.
+        Geographic simplicity uses the CRS longitude quotient, so periodic
+        aliases and seam cuts do not depend on their stored spelling. Geographic
+        coordinate-admission failures still raise; projected and CRS-free
+        geometry remains planar.
 
         Returns
         -------
@@ -1159,8 +1165,11 @@ class Geometry:
     @property
     def is_valid(self) -> bool:
         """Whether the geometry is topologically valid in its coordinate frame.
-        Geographic antimeridian crossings are normalized first; projected and
-        CRS-free geometry uses ordinary planar OGC validity.
+        Geographic validity uses exact quotient topology, so period aliases and
+        seam cuts do not depend on their stored longitude spelling. An
+        out-of-domain latitude returns ``False`` and is reported by ``validate``;
+        geographic operations that require coordinate admission still raise.
+        Projected and CRS-free geometry uses ordinary planar OGC validity.
         A nonempty LineString needs at least two distinct XY positions;
         consecutive repeats remain valid when another position is present.
         ``True`` exactly when `validate` finds no issue; call
@@ -2437,14 +2446,13 @@ class Geometry:
         method: RepairMethod = 'linework',
     ) -> Geometry:
         """Repair invalid geometry, returning corrected result(s) (OGC). Already-valid
-        input is returned unchanged at validation cost. Geographic antimeridian
-        crossings are normalized before validity is decided, so a valid seam-crossing
-        geometry is never destructively repaired; an invalid crossing repairs from its
-        seam-split form. Projected and CRS-free geometry remains planar. Z/M ordinates
-        are carried through the rebuild. A collapsed LineString becomes a Point at its
-        first coordinate. Collapsed MultiLineString members become a Point or
-        MultiPoint, combined with surviving linework in a GeometryCollection when both
-        dimensions remain.
+        input is returned unchanged at validation cost. Geographic repair checks exact
+        quotient validity before rebuilding; when output construction needs seam
+        vertices it splits the source while preserving traceable Z/M ordinates.
+        Projected and CRS-free geometry remains planar. A collapsed LineString becomes
+        a Point at its first coordinate. Collapsed MultiLineString members become a
+        Point or MultiPoint, combined with surviving linework in a GeometryCollection
+        when both dimensions remain.
 
         Parameters
         ----------
@@ -2632,7 +2640,7 @@ class Geometry:
         repeated consecutive vertices are not nodes. For point/lineal input the
         result is non-empty exactly when is_simple is ``False``; areal input
         diagnoses its rings' linework, and collections are diagnosed recursively.
-        Geographic antimeridian crossings use normalized topology; projected and
+        Geographic diagnostics follow the CRS longitude quotient; projected and
         CRS-free geometry remains planar. Points are XY only.
 
         Returns
@@ -3812,8 +3820,8 @@ class Geometry:
             If ``True``, guarantee a valid result: snap, linework-repair, and re-
             snap to a fixpoint. The geometry kind may change (a ``Polygon`` whose
             snapped shell pinches splits into a ``MultiPolygon``). Geographic
-            antimeridian crossings use normalized validity; projected and CRS-free
-            geometry remains planar.
+            ``repair=True`` validates the exact quotient result; projected and
+            CRS-free geometry remains planar.
 
         Returns
         -------
@@ -3948,10 +3956,14 @@ class Geometry:
 
     def validate(self) -> ValidationReport:
         """Structured validity report in the geometry's coordinate frame.
-        Geographic antimeridian crossings are normalized before validation;
-        projected and CRS-free geometry uses ordinary planar OGC validity. A nonempty
-        LineString with fewer than two distinct XY positions is invalid and reports
-        ``line_collapsed``.
+        Geographic validity reads exact quotient topology, so period aliases and seam
+        cuts do not depend on their stored longitude spelling. An out-of-domain
+        latitude is reported as ``latitude_out_of_range``; geographic operations that
+        require coordinate admission still raise. For quotient-topology issues, the
+        location is a canonical coordinate of the issue's contact set, chosen
+        deterministically by minimum latitude then longitude. Projected and CRS-free geometry uses ordinary
+        planar OGC validity. A nonempty LineString with fewer than two distinct XY
+        positions is invalid and reports ``line_collapsed``.
 
         Returns
         -------
@@ -8647,14 +8659,13 @@ class GeometryArray(Sequence[_GeometryT_co]):
         method: RepairMethod = 'linework',
     ) -> GeometryArray[Geometry | None]:
         """Repair invalid geometry, returning corrected result(s) (OGC). Already-valid
-        input is returned unchanged at validation cost. Geographic antimeridian
-        crossings are normalized before validity is decided, so a valid seam-crossing
-        geometry is never destructively repaired; an invalid crossing repairs from its
-        seam-split form. Projected and CRS-free geometry remains planar. Z/M ordinates
-        are carried through the rebuild. A collapsed LineString becomes a Point at its
-        first coordinate. Collapsed MultiLineString members become a Point or
-        MultiPoint, combined with surviving linework in a GeometryCollection when both
-        dimensions remain.
+        input is returned unchanged at validation cost. Geographic repair checks exact
+        quotient validity before rebuilding; when output construction needs seam
+        vertices it splits the source while preserving traceable Z/M ordinates.
+        Projected and CRS-free geometry remains planar. A collapsed LineString becomes
+        a Point at its first coordinate. Collapsed MultiLineString members become a
+        Point or MultiPoint, combined with surviving linework in a GeometryCollection
+        when both dimensions remain.
 
         Parameters
         ----------
@@ -8815,7 +8826,7 @@ class GeometryArray(Sequence[_GeometryT_co]):
         repeated consecutive vertices are not nodes. For point/lineal input the
         result is non-empty exactly when is_simple is ``False``; areal input
         diagnoses its rings' linework, and collections are diagnosed recursively.
-        Geographic antimeridian crossings use normalized topology; projected and
+        Geographic diagnostics follow the CRS longitude quotient; projected and
         CRS-free geometry remains planar. Points are XY only.
 
         Returns
@@ -10347,8 +10358,8 @@ class GeometryArray(Sequence[_GeometryT_co]):
             If ``True``, guarantee a valid result: snap, linework-repair, and re-
             snap to a fixpoint. The geometry kind may change (a ``Polygon`` whose
             snapped shell pinches splits into a ``MultiPolygon``). Geographic
-            antimeridian crossings use normalized validity; projected and CRS-free
-            geometry remains planar.
+            ``repair=True`` validates the exact quotient result; projected and
+            CRS-free geometry remains planar.
 
         Returns
         -------
@@ -10516,10 +10527,14 @@ class GeometryArray(Sequence[_GeometryT_co]):
 
     def validate(self) -> list[ValidationReport | None]:
         """Structured validity report in the geometry's coordinate frame.
-        Geographic antimeridian crossings are normalized before validation;
-        projected and CRS-free geometry uses ordinary planar OGC validity. A nonempty
-        LineString with fewer than two distinct XY positions is invalid and reports
-        ``line_collapsed``.
+        Geographic validity reads exact quotient topology, so period aliases and seam
+        cuts do not depend on their stored longitude spelling. An out-of-domain
+        latitude is reported as ``latitude_out_of_range``; geographic operations that
+        require coordinate admission still raise. For quotient-topology issues, the
+        location is a canonical coordinate of the issue's contact set, chosen
+        deterministically by minimum latitude then longitude. Projected and CRS-free geometry uses ordinary
+        planar OGC validity. A nonempty LineString with fewer than two distinct XY
+        positions is invalid and reports ``line_collapsed``.
 
         Returns
         -------
@@ -15310,6 +15325,10 @@ class ValidationReport:
     @property
     def location(self) -> tuple[float, float] | None:
         """``(x, y)`` location of the first problem, when known.
+
+        For quotient-topology issues, the location is a canonical coordinate of
+        the issue's contact set, chosen deterministically by minimum latitude
+        then longitude.
 
         Returns
         -------
@@ -20202,8 +20221,12 @@ def require(
         with ``crs``. EWKT/EWKB embedded SRID conflicts use this error too.
     InvalidGeometryError
         If the geometry is invalid, or its axes differ from ``axes``.
-        Geographic antimeridian crossings are validated after topology
-        normalization; projected and CRS-free geometry remains planar.
+        Geographic validity uses exact quotient topology, so longitude aliases
+        and seam cuts do not depend on stored spelling. Out-of-domain latitude
+        is invalid. For quotient-topology issues, the location is a canonical
+        coordinate of the issue's contact set, chosen deterministically by
+        minimum latitude then longitude.
+        Projected and CRS-free geometry remains planar.
 
     See Also
     --------

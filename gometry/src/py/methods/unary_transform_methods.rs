@@ -341,8 +341,8 @@ repair : bool, default False
     If ``True``, guarantee a valid result: snap, linework-repair, and re-
     snap to a fixpoint. The geometry kind may change (a ``Polygon`` whose
     snapped shell pinches splits into a ``MultiPolygon``). Geographic
-    antimeridian crossings use normalized validity; projected and CRS-free
-    geometry remains planar.";
+    ``repair=True`` validates the exact quotient result; projected and
+    CRS-free geometry remains planar.";
     scalar: r"
 
 Returns

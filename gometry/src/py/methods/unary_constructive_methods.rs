@@ -973,7 +973,7 @@ coordinates; legal adjacent shared vertices, ring closures, and removable
 repeated consecutive vertices are not nodes. For point/lineal input the
 result is non-empty exactly when is_simple is ``False``; areal input
 diagnoses its rings' linework, and collections are diagnosed recursively.
-Geographic antimeridian crossings use normalized topology; projected and
+Geographic diagnostics follow the CRS longitude quotient; projected and
 CRS-free geometry remains planar. Points are XY only.";
     scalar: r"
 

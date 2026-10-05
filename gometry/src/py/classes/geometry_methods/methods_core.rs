@@ -258,8 +258,8 @@ impl PyGeometry {
         Python::attach(|py| unary::is_closed_scalar(py, self)).expect("is_closed is infallible")
     }
     /// Whether the geometry is a closed, simple ``LineString`` (a ring).
-    /// Geographic antimeridian crossings are normalized before the simplicity
-    /// test; projected and CRS-free geometry remains planar.
+    /// Geographic closure uses quotient vertex identity and simplicity uses
+    /// the frame-aware topology; projected and CRS-free geometry remains planar.
     ///
     /// Returns
     /// -------
@@ -285,8 +285,10 @@ impl PyGeometry {
     /// is simple exactly when it is ``is_valid`` — so holes outside the
     /// shell, nested holes, or a disconnected interior make it not simple
     /// even with no ring self-crossing. Collections are never simple.
-    /// Geographic antimeridian crossings are normalized before topology is
-    /// evaluated; projected and CRS-free geometry remains planar.
+    /// Geographic simplicity uses the CRS longitude quotient, so periodic
+    /// aliases and seam cuts do not depend on their stored spelling. Geographic
+    /// coordinate-admission failures still raise; projected and CRS-free
+    /// geometry remains planar.
     ///
     /// Returns
     /// -------
@@ -296,8 +298,11 @@ impl PyGeometry {
         Python::attach(|py| unary::is_simple_scalar(py, self))
     }
     /// Whether the geometry is topologically valid in its coordinate frame.
-    /// Geographic antimeridian crossings are normalized first; projected and
-    /// CRS-free geometry uses ordinary planar OGC validity.
+    /// Geographic validity uses exact quotient topology, so period aliases and
+    /// seam cuts do not depend on their stored longitude spelling. An
+    /// out-of-domain latitude returns ``False`` and is reported by ``validate``;
+    /// geographic operations that require coordinate admission still raise.
+    /// Projected and CRS-free geometry uses ordinary planar OGC validity.
     /// A nonempty LineString needs at least two distinct XY positions;
     /// consecutive repeats remain valid when another position is present.
     /// ``True`` exactly when `validate` finds no issue; call

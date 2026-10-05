@@ -1559,6 +1559,85 @@ mod tests {
     }
 
     #[test]
+    fn faithful_geographic_screen_keeps_alias_rows_and_declines_mixed_charts() {
+        let frame = GeographicFrame::crs84();
+        let faithful = |array: &PyGeometryArray| {
+            resolve_packed_columns(array.storage(), array.missing(), array.point_row_layout())
+                .unwrap()
+                .faithful_geographic_predicates(frame)
+        };
+        let aliases = geographic_array(vec![
+            geographic_polygon(200.0, 31.0),
+            geographic_polygon(-210.0, 31.0),
+            geographic_polygon(350.0, 31.0),
+        ]);
+        assert!(faithful(&aliases));
+        assert!(faithful(&aliases.gather_logical_rows(&[2, 0, 2]).unwrap()));
+        let seam = geographic_array(vec![geographic_polygon(179.0, 31.0)]);
+        assert!(!faithful(&seam));
+        let long_edge = geographic_array(vec![Shape::Polygon(Polygon::new(
+            geographic_ring(&[
+                (200.0, 0.0),
+                (500.0, 0.0),
+                (500.0, 5.0),
+                (200.0, 5.0),
+                (200.0, 0.0),
+            ]),
+            Vec::new(),
+        ))]);
+        assert!(!faithful(&long_edge));
+        let alias_hole = geographic_array(vec![Shape::Polygon(Polygon::new(
+            geographic_ring(&[
+                (200.0, 0.0),
+                (210.0, 0.0),
+                (210.0, 10.0),
+                (200.0, 10.0),
+                (200.0, 0.0),
+            ]),
+            vec![geographic_ring(&[
+                (-159.0, 1.0),
+                (-158.0, 1.0),
+                (-158.0, 2.0),
+                (-159.0, 2.0),
+                (-159.0, 1.0),
+            ])],
+        ))]);
+        assert!(!faithful(&alias_hole));
+        let invalid = geographic_array(vec![geographic_polygon(200.0, 91.0)]);
+        assert!(!faithful(&invalid));
+    }
+
+    #[test]
+    fn ordinary_geographic_screen_declines_pole_linework_but_keeps_point_rows() {
+        let frame = GeographicFrame::crs84();
+        for pole in [90.0_f64, -90.0] {
+            let line = |latitude| {
+                geographic_array(vec![Shape::LineString(
+                    LineSeq::try_new(
+                        CoordSeq::try_from_vecs(
+                            vec![0.0, 20.0, 10.0],
+                            vec![latitude; 3],
+                            None,
+                            None,
+                        )
+                        .unwrap(),
+                    )
+                    .unwrap(),
+                )])
+            };
+            assert!(!ordinary_geographic(&line(pole), frame));
+            assert!(ordinary_geographic(
+                &line(90.0_f64.next_down().copysign(pole)),
+                frame
+            ));
+            assert!(ordinary_geographic(
+                &geographic_array(vec![Shape::Point(Point::new_raw_xy(0.0, pole))]),
+                frame
+            ));
+        }
+    }
+
+    #[test]
     fn ordinary_geographic_screen_resets_at_each_row_and_obeys_frame_bounds() {
         let rows = geographic_array(vec![
             geographic_polygon(-160.0, 31.0),

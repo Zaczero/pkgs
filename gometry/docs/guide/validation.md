@@ -86,21 +86,30 @@ and the stable [`.code`][gometry.ValidationReport.code] and human-readable
 an OGC-valid geometry `.reason`, `.location`, `.path`, `.code`, and `.detail`
 are all `None`; they carry detail when topology validation finds a problem.
 
-Geographic validity follows the same frame-aware topology as predicates. When
-a geometry has a geographic CRS and crosses the antimeridian, gometry validates
-its frame-aware seam-normalized shape; this includes pole-enclosing shells and
-polar holes. Geographic coordinate admission also participates in validity:
+Geographic validity follows the same frame-aware topology as predicates. Stored
+coordinates in one certified open longitude chart keep planar OGC validity;
+seam or pole cases and other alias spellings read exact quotient incidence
+rather than a shifted coordinate copy. Pole-enclosing
+shells and polar holes are included. Opposite-interior seam spans are a chart
+cut regardless of whether the geometry uses east or west seam spelling;
+same-side overlaps remain invalid. Geographic coordinate admission also
+participates in validity:
 an out-of-range latitude reports `latitude_out_of_range`, and a once-winding
 unmarked ring whose latitude range does not identify one pole reports
 `ambiguous_full_turn_ring`. `is_valid` returns `False` for either issue without
-raising; geographic operations still raise `InvalidGeometryError` when their
-input cannot be admitted.
+raising, and `GeometryArray.is_valid` writes `False` for the affected row.
+`validate` reports the issue without raising. Geographic operations still raise
+`InvalidGeometryError` when their input cannot be admitted, and `repair` raises
+`RepairFailed` because an out-of-domain coordinate cannot be reconstructed.
+For quotient-topology issues, the witness is a canonical coordinate of the
+issue's contact set, chosen deterministically by minimum latitude then longitude.
 The same coordinates without a CRS, or under a projected CRS, remain ordinary
 planar coordinates. Attaching a geographic frame supplies its periodic longitude
 seam and pole, while a planar frame has no identified seam.
 `is_valid`, [`is_simple`][gometry.Geometry.is_simple], [`is_ring`][gometry.Geometry.is_ring], `validate`, [`require`][gometry.require], and
-[`self_intersections`][gometry.Geometry.self_intersections] all share that rule. `repair` uses the same normalized
-validity verdict before rebuilding, and [`snap_to_grid(..., repair=True)`][gometry.Geometry.snap_to_grid] checks
+[`self_intersections`][gometry.Geometry.self_intersections] all use the same
+geographic frame. `repair` validates the quotient result before returning it,
+and [`snap_to_grid(..., repair=True)`][gometry.Geometry.snap_to_grid] checks
 each snapped result in that same frame.
 
 The latitude domain issue retains its source ring path and coordinate witness:

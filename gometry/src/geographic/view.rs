@@ -682,25 +682,6 @@ fn visit_shape<'owner, const ORDINARY_SCREEN: bool>(
     }
 }
 
-/// Admit a shape without chart normalization when every stored coordinate and
-/// edge is ordinary in this frame.
-fn ordinary_chart_screen(frame: GeographicFrame, shape: &Shape) -> bool {
-    let mut owners = SharedShapeOwners::for_shape(shape);
-    let mut pending_gate = None;
-    let mut visit = |_: GeographicCoordinate| Ok(());
-    let screened = visit_shape::<true>(
-        frame,
-        shape,
-        None,
-        &mut MemberPathBuilder::default(),
-        None,
-        &mut owners,
-        &mut pending_gate,
-        &mut visit,
-    );
-    matches!(screened, Ok(())) && pending_gate.is_none()
-}
-
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct ScalarGeographicView<'a> {
     frame: GeographicFrame,
@@ -729,24 +710,6 @@ impl<'a> ScalarGeographicView<'a> {
             return Err(error);
         }
         Ok(Self { frame, shape })
-    }
-
-    pub(crate) fn try_new_with_seam_facts(
-        frame: GeographicFrame,
-        shape: &'a Shape,
-    ) -> Result<(Self, crate::geometry::GeographicSeamFacts), GeographicViewError> {
-        // A successful screen is complete admission: every coordinate is in
-        // domain and every ring transit is zero. All other spellings use the
-        // full diagnostic path before seam facts are computed.
-        if ordinary_chart_screen(frame, shape) {
-            return Ok((
-                Self { frame, shape },
-                crate::geometry::GeographicSeamFacts::default(),
-            ));
-        }
-        let view = Self::try_new(frame, shape)?;
-        let facts = crate::geometry::geographic_seam_facts_in_frame(shape, frame);
-        Ok((view, facts))
     }
 
     pub(crate) fn try_new_with_collection_owners_and_visit(

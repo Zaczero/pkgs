@@ -54,7 +54,7 @@ fn prepared_geographic_point_membership_reuses_seam_topology() {
             .point_covers(Point::new_raw_xy(180.0, 30.0))
             .unwrap()
     );
-    assert_eq!(cache.geographic_exact_topology_builds(), 0);
+    assert_eq!(plan.geographic_exact_topology_builds(), 0);
     for longitude in [180.0, -180.0, 540.0] {
         assert!(
             prepared
@@ -67,7 +67,7 @@ fn prepared_geographic_point_membership_reuses_seam_topology() {
                 .unwrap()
         );
     }
-    assert_eq!(cache.geographic_exact_topology_builds(), 1);
+    assert_eq!(plan.geographic_exact_topology_builds(), 1);
 }
 
 #[test]
@@ -84,7 +84,7 @@ fn prepared_geographic_point_membership_uses_the_open_chart() {
     ] {
         assert_eq!(prepared.point_covers(point).unwrap(), covered);
     }
-    assert_eq!(cache.geographic_exact_topology_builds(), 0);
+    assert_eq!(plan.geographic_exact_topology_builds(), 0);
 }
 
 fn polygon(points: &[[f64; 2]]) -> Polygon {
@@ -1471,7 +1471,7 @@ fn geographic_pole_line_intersects_cap_in_both_orders() {
 }
 
 #[test]
-fn geographic_exact_query_handle_reuses_the_frame_cached_q() {
+fn geographic_exact_query_handle_reuses_the_prepared_q() {
     let source = Shape::Polygon(rectangle(0.0, 0.0, 4.0, 4.0));
     let plan = PreparedPlan::transient(&source);
     let cache = crate::geometry::FrameDependentCaches::default();
@@ -1519,7 +1519,7 @@ fn geographic_exact_query_handle_reuses_the_frame_cached_q() {
             .geometry,
         Loc::Exterior
     );
-    assert_eq!(cache.geographic_exact_topology_builds(), 1);
+    assert_eq!(plan.geographic_exact_topology_builds(), 1);
 }
 
 #[test]

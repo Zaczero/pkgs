@@ -169,16 +169,18 @@ fn self_intersection_csr(
     domain: TopologyDomain,
 ) -> Result<CsrBuilder<Shape>> {
     let mut builder = CsrBuilder::<Shape>::with_capacity(0, array.len());
-    for row in array.row_operation().rows_with_missing(|| ()) {
+    let mut rows = array.row_operation();
+    for row in rows.rows_with_missing(|| ()) {
         match row {
             crate::array::ArrayRow::Missing { .. } => builder.push_row(std::iter::empty())?,
-            crate::array::ArrayRow::Present(row) => row.row().try_with_shape(|shape| {
+            crate::array::ArrayRow::Present(row) => {
+                let data = rows.prepared(row)?;
                 builder.push_row(
-                    crate::geometry::self_intersections_in_frame(shape, domain)?
+                    crate::geometry::self_intersections_data_in_frame(&data, domain)?
                         .into_iter()
                         .map(Shape::Point),
-                )
-            })?,
+                )?;
+            },
         }
     }
     Ok(builder)

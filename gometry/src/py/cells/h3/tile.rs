@@ -571,14 +571,14 @@ mod edge_trace_tests {
         assert!(first.array_windows::<2>().all(|[a, b]| a < b));
         assert_eq!(first, second);
         assert_eq!(
-            cache.geographic_exact_topology_builds(),
+            authority.geographic_exact_topology_builds(),
             1,
-            "repeated center checks reuse the frame-cached exact Q"
+            "repeated center checks reuse the prepared exact Q"
         );
         assert_eq!(
-            cache.geographic_exact_topology_accesses(),
+            authority.geographic_exact_topology_accesses(),
             2,
-            "each cover acquires the cached exact Q once, not once per candidate"
+            "each cover acquires the prepared exact Q once, not once per candidate"
         );
     }
 }

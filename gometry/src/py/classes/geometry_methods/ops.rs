@@ -105,10 +105,10 @@ impl PyGeometry {
     }
 
     pub(crate) fn self_intersections_impl(&self, py: Python<'_>) -> PyResult<PyGeometryArray> {
-        let shape = Arc::clone(&self.shape);
+        let plan = self.prepared_plan();
         let domain = geometry::topology_domain(&self.frame)?;
         let points =
-            py.detach(move || geometry::self_intersections_in_frame(shape.shape(), domain))?;
+            py.detach(move || geometry::self_intersections_data_in_frame(&plan, domain))?;
         self.parts_to_array(points.into_iter().map(Shape::Point))
     }
 

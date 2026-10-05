@@ -70,8 +70,8 @@ pub(crate) fn is_simple_array(
     is_simple_array_row_fallback(py, values)
 }
 
-/// Dense + nullable packed is_simple only. Geographic admission failures, seam
-/// crossings and candidate seam contacts fall through to the frame-aware lane.
+/// Dense + nullable packed is_simple only. Geographic admission failures and
+/// quotient charts fall through to the frame-aware lane.
 fn try_is_simple_packed(
     py: Python<'_>,
     array: &crate::PyGeometryArray,
@@ -83,18 +83,18 @@ fn try_is_simple_packed(
     if let crate::geometry::TopologyDomain::Geographic(frame) = domain {
         let columns =
             resolve_packed_columns(array.storage(), array.missing(), array.point_row_layout())?;
-        if !columns.ordinary_geographic_predicates(frame) {
+        if !columns.faithful_geographic_predicates(frame) {
             for row in array.row_operation().present_rows() {
-                let seam_facts = match row.row().with_shape(|shape| {
-                    crate::geographic::ScalarGeographicView::try_new_with_seam_facts(frame, shape)
+                let route = match row.row().with_shape(|shape| {
+                    crate::geographic::ScalarGeographicView::try_new(frame, shape)
                         .ok()
-                        .map(|(_, facts)| facts)
+                        .map(crate::geometry::classify_geographic_validity_chart)
                 }) {
-                    Ok(Some(seam_facts)) => seam_facts,
+                    Ok(Some(route)) => route,
                     Ok(None) => return None,
                     Err(error) => return Some(Err(error.into())),
                 };
-                if seam_facts.crosses || seam_facts.possible_contact {
+                if route == crate::geometry::GeographicTopologyRoute::Quotient {
                     return None;
                 }
             }

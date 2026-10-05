@@ -176,10 +176,14 @@ Examples
 method_doc! {
     doc_validate;
     body: r"Structured validity report in the geometry's coordinate frame.
-Geographic antimeridian crossings are normalized before validation;
-projected and CRS-free geometry uses ordinary planar OGC validity. A nonempty
-LineString with fewer than two distinct XY positions is invalid and reports
-``line_collapsed``.";
+Geographic validity reads exact quotient topology, so period aliases and seam
+cuts do not depend on their stored longitude spelling. An out-of-domain
+latitude is reported as ``latitude_out_of_range``; geographic operations that
+require coordinate admission still raise. For quotient-topology issues, the
+location is a canonical coordinate of the issue's contact set, chosen
+deterministically by minimum latitude then longitude. Projected and CRS-free geometry uses ordinary
+planar OGC validity. A nonempty LineString with fewer than two distinct XY
+positions is invalid and reports ``line_collapsed``.";
     scalar: r"
 
 Returns
@@ -213,14 +217,13 @@ Examples
 method_doc! {
     doc_repair;
     body: r"Repair invalid geometry, returning corrected result(s) (OGC). Already-valid
-input is returned unchanged at validation cost. Geographic antimeridian
-crossings are normalized before validity is decided, so a valid seam-crossing
-geometry is never destructively repaired; an invalid crossing repairs from its
-seam-split form. Projected and CRS-free geometry remains planar. Z/M ordinates
-are carried through the rebuild. A collapsed LineString becomes a Point at its
-first coordinate. Collapsed MultiLineString members become a Point or
-MultiPoint, combined with surviving linework in a GeometryCollection when both
-dimensions remain.
+input is returned unchanged at validation cost. Geographic repair checks exact
+quotient validity before rebuilding; when output construction needs seam
+vertices it splits the source while preserving traceable Z/M ordinates.
+Projected and CRS-free geometry remains planar. A collapsed LineString becomes
+a Point at its first coordinate. Collapsed MultiLineString members become a
+Point or MultiPoint, combined with surviving linework in a GeometryCollection
+when both dimensions remain.
 
 Parameters
 ----------

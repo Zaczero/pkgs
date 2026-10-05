@@ -62,8 +62,12 @@ use crate::{
 ///     with ``crs``. EWKT/EWKB embedded SRID conflicts use this error too.
 /// InvalidGeometryError
 ///     If the geometry is invalid, or its axes differ from ``axes``.
-///     Geographic antimeridian crossings are validated after topology
-///     normalization; projected and CRS-free geometry remains planar.
+///     Geographic validity uses exact quotient topology, so longitude aliases
+///     and seam cuts do not depend on stored spelling. Out-of-domain latitude
+///     is invalid. For quotient-topology issues, the location is a canonical
+///     coordinate of the issue's contact set, chosen deterministically by
+///     minimum latitude then longitude.
+///     Projected and CRS-free geometry remains planar.
 ///
 /// See Also
 /// --------
@@ -486,6 +490,10 @@ impl PyValidationReport {
     }
 
     /// ``(x, y)`` location of the first problem, when known.
+    ///
+    /// For quotient-topology issues, the location is a canonical coordinate of
+    /// the issue's contact set, chosen deterministically by minimum latitude
+    /// then longitude.
     ///
     /// Returns
     /// -------

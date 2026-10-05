@@ -14,8 +14,7 @@ mod validate;
 mod validity_helpers;
 
 pub(in crate::geometry) use membership::{
-    PolygonContact, is_seam_cut_pair, multi_polygon_members_issue,
-    multi_polygon_members_issue_with_seam_cuts, polygon_rings_issue_with_contacts,
+    PolygonContact, multi_polygon_members_issue, polygon_rings_issue_with_contacts,
 };
 pub(crate) use membership::{
     RingClass, TouchDirections, ring_classify_point, ring_contains_interior, ring_label,
@@ -29,7 +28,7 @@ pub(in crate::geometry) use relate::LineworkChains;
 pub(crate) use repair::{line_repair, multiline_repair, polygonal_repair};
 pub(in crate::geometry) use shape_data::classify_ring_pair_with_contacts;
 pub(crate) use shape_data::{
-    classify_ring_pair, ring_probe_point, settle_touches, visit_interacting_pairs,
+    classify_ring_pair, fan_alternations, ring_probe_point, settle_touches, visit_interacting_pairs,
 };
 pub(in crate::geometry) use simplicity::simplified_polygon_delta_is_simple;
 pub(crate) use simplicity::{

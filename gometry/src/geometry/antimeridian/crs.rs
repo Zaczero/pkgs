@@ -46,6 +46,103 @@ pub(crate) fn classify_geographic_chart(view: ScalarGeographicView<'_>) -> Geogr
     }
 }
 
+/// Unary predicates can use stored linework in one certified open chart without
+/// moving its coordinates. Binary predicates still require aligned charts.
+pub(crate) fn classify_geographic_validity_chart(
+    view: ScalarGeographicView<'_>,
+) -> GeographicTopologyRoute {
+    let faithful = match view.shape() {
+        Shape::LineString(line) => {
+            faithful_geographic_chain(line.as_coords().xs(), line.as_coords().ys(), view.frame())
+        },
+        Shape::Polygon(polygon) if polygon.holes.is_empty() => faithful_geographic_chain(
+            polygon.shell.coords().xs(),
+            polygon.shell.coords().ys(),
+            view.frame(),
+        ),
+        Shape::MultiPolygon(polygons)
+            if polygons.iter().all(|polygon| polygon.holes.is_empty()) =>
+        {
+            faithful_geographic_chains(
+                polygons.iter().map(|polygon| {
+                    let coords = polygon.shell.coords();
+                    (coords.xs(), coords.ys())
+                }),
+                view.frame(),
+            )
+        },
+        Shape::Point(_)
+        | Shape::MultiPoint(_)
+        | Shape::MultiLineString(_)
+        | Shape::Polygon(_)
+        | Shape::MultiPolygon(_)
+        | Shape::GeometryCollection(_)
+        | Shape::Empty(..) => false,
+    };
+    if faithful {
+        GeographicTopologyRoute::ExactPartition
+    } else {
+        classify_geographic_chart(view)
+    }
+}
+
+/// Certify one unchanged source chain inside a canonical or adjacent open
+/// longitude chart, with no pole, seam vertex, or long stored edge.
+pub(crate) fn faithful_geographic_chain(xs: &[f64], ys: &[f64], frame: GeographicFrame) -> bool {
+    faithful_geographic_chains(std::iter::once((xs, ys)), frame)
+}
+
+fn faithful_geographic_chains<'a>(
+    chains: impl Iterator<Item = (&'a [f64], &'a [f64])>,
+    frame: GeographicFrame,
+) -> bool {
+    let mut chains = chains.filter(|(xs, ys)| !xs.is_empty() || !ys.is_empty());
+    let Some((xs, ys)) = chains.next() else {
+        return true;
+    };
+    let Some(&first) = xs.first() else {
+        return false;
+    };
+    let axis = frame.longitude();
+    let bound = axis.ordinary_longitude_bound();
+    // Rounded native periods can give integer aliases a different translation
+    // from the represented period. Only exact integral periods certify an
+    // adjacent chart without canonicalizing its vertices.
+    if first.abs() >= bound && axis.period().fract() != 0.0 {
+        return false;
+    }
+    let (lower, upper) = if first.abs() < bound {
+        (-bound, bound)
+    } else if first > 0.0 {
+        (
+            (axis.period() - bound).next_up(),
+            (axis.period() + bound).next_down(),
+        )
+    } else {
+        (
+            (-axis.period() - bound).next_up(),
+            (-axis.period() + bound).next_down(),
+        )
+    };
+    if !(lower.is_finite() && upper.is_finite() && first > lower && first < upper) {
+        return false;
+    }
+    std::iter::once((xs, ys)).chain(chains).all(|(xs, ys)| {
+        let Some((&first, rest)) = xs.split_first() else {
+            return ys.is_empty();
+        };
+        if !(first > lower && first < upper) {
+            return false;
+        }
+        let mut previous = first;
+        rest.iter().all(|&x| {
+            let admitted = x > lower && x < upper && (x - previous).abs() <= axis.half_period();
+            previous = x;
+            admitted
+        }) && ys.iter().all(|&y| y.abs() < frame.pole())
+    })
+}
+
 pub(crate) fn geographic_topology_route<'a>(
     views: impl IntoIterator<Item = ScalarGeographicView<'a>>,
 ) -> GeographicTopologyRoute {
@@ -106,79 +203,6 @@ pub(crate) fn crosses_antimeridian_in_frame(shape: &Shape, frame: GeographicFram
             }),
             std::ops::ControlFlow::Break(())
         ),
-    }
-}
-
-/// Seam facts used by frame-aware validity. Latitude-range overlap is only a
-/// broad-phase candidate; exact Q owns the contact verdict.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub(crate) struct GeographicSeamFacts {
-    pub(crate) crosses: bool,
-    pub(crate) possible_contact: bool,
-}
-
-pub(crate) fn geographic_seam_facts_in_frame(
-    shape: &Shape,
-    frame: GeographicFrame,
-) -> GeographicSeamFacts {
-    let axis = frame.longitude();
-    let half = axis.half_period();
-    let mut intervals = Vec::new();
-    let mut crosses = false;
-    match shape.for_each_first_xy_segment_chain(|chain| {
-        if let Some((xs, ys)) = chain.xy_columns()
-            && let Some(chain_crosses) = canonical_chart_crossing(xs, half)
-        {
-            crosses |= chain_crosses;
-            if !chain_crosses {
-                return std::ops::ControlFlow::Continue(());
-            }
-            for (x_pair, y_pair) in xs.windows(2).zip(ys.windows(2)) {
-                let ([x0, x1], [y0, y1]) = (x_pair, y_pair) else {
-                    unreachable!("windows(2) contains exactly two ordinates");
-                };
-                let (x0, x1, y0, y1) = (*x0, *x1, *y0, *y1);
-                if (x1 - x0).abs() > half {
-                    intervals.push((y0.min(y1), y0.max(y1)));
-                }
-            }
-            return std::ops::ControlFlow::Continue(());
-        }
-        for [start, end] in chain.segment_pairs() {
-            let Some(seam) = inspect_seam_segment(start, end, axis, half) else {
-                continue;
-            };
-            crosses |= seam.crosses;
-            if seam.crosses || seam.start_side.is_some() || seam.end_side.is_some() {
-                intervals.push((start.y.min(end.y), start.y.max(end.y)));
-            }
-        }
-        std::ops::ControlFlow::Continue(())
-    }) {
-        std::ops::ControlFlow::Continue(()) => (),
-        std::ops::ControlFlow::Break(()) => {
-            unreachable!("the seam-fact visitor never stops before all chains")
-        },
-    }
-    intervals.sort_unstable_by(|left, right| left.0.total_cmp(&right.0));
-    let Some((_, mut highest_end)) = intervals.first().copied() else {
-        return GeographicSeamFacts {
-            crosses,
-            possible_contact: false,
-        };
-    };
-    for &(low, high) in intervals.iter().skip(1) {
-        if low <= highest_end {
-            return GeographicSeamFacts {
-                crosses,
-                possible_contact: true,
-            };
-        }
-        highest_end = highest_end.max(high);
-    }
-    GeographicSeamFacts {
-        crosses,
-        possible_contact: false,
     }
 }
 
@@ -522,6 +546,147 @@ mod tests {
     }
 
     #[test]
+    fn unary_chart_certifies_aliases_without_aligning_binary_charts() {
+        let frame = GeographicFrame::crs84();
+        for west in [200.0, -210.0, 350.0, -10.0] {
+            let shape = polygon(&[
+                (west, 0.0),
+                (west + 5.0, 0.0),
+                (west + 5.0, 5.0),
+                (west, 5.0),
+                (west, 0.0),
+            ]);
+            let view = ScalarGeographicView::try_new(frame, &shape).unwrap();
+            assert_eq!(
+                classify_geographic_validity_chart(view),
+                GeographicTopologyRoute::ExactPartition
+            );
+            if west.abs() > 180.0 {
+                assert_eq!(
+                    classify_geographic_chart(view),
+                    GeographicTopologyRoute::Quotient
+                );
+            }
+            let exact =
+                crate::geometry::ExactGeographicTopology::from_views(frame, std::iter::once(view))
+                    .unwrap();
+            assert_eq!(
+                shape.validate().unwrap(),
+                exact.validity_issue(&shape).unwrap()
+            );
+        }
+        for shape in [
+            line(&[(170.0, 0.0), (190.0, 0.0)]),
+            line(&[(200.0, 0.0), (560.0, 0.0)]),
+            line(&[(180.0, 0.0), (190.0, 0.0)]),
+            line(&[(200.0, 90.0), (210.0, 80.0)]),
+            line(&[(200.0, 0.0), (500.0, 0.0)]),
+        ] {
+            let view = ScalarGeographicView::try_new(frame, &shape).unwrap();
+            assert_eq!(
+                classify_geographic_validity_chart(view),
+                GeographicTopologyRoute::Quotient,
+                "{shape:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn unary_multipart_certificate_requires_one_common_chart() {
+        let rectangle = |west| {
+            let Shape::Polygon(polygon) = polygon(&[
+                (west, 0.0),
+                (west + 5.0, 0.0),
+                (west + 5.0, 5.0),
+                (west, 5.0),
+                (west, 0.0),
+            ]) else {
+                unreachable!("polygon helper returns a polygon");
+            };
+            polygon
+        };
+        let frame = GeographicFrame::crs84();
+        for (west, east, route, expected_code) in [
+            (200.0, 220.0, GeographicTopologyRoute::ExactPartition, None),
+            (
+                -220.0,
+                -200.0,
+                GeographicTopologyRoute::ExactPartition,
+                None,
+            ),
+            (
+                200.0,
+                202.0,
+                GeographicTopologyRoute::ExactPartition,
+                Some("shared_linework"),
+            ),
+            (
+                200.0,
+                -160.0,
+                GeographicTopologyRoute::Quotient,
+                Some("shared_linework"),
+            ),
+            (200.0, -140.0, GeographicTopologyRoute::Quotient, None),
+            (200.0, 0.0, GeographicTopologyRoute::Quotient, None),
+        ] {
+            let shape = Shape::MultiPolygon(vec![rectangle(west), rectangle(east)].into());
+            let view = ScalarGeographicView::try_new(frame, &shape).unwrap();
+            assert_eq!(classify_geographic_validity_chart(view), route);
+            let exact =
+                crate::geometry::ExactGeographicTopology::from_views(frame, std::iter::once(view))
+                    .unwrap();
+            let quotient = exact.validity_issue(&shape).unwrap();
+            assert_eq!(
+                quotient.as_ref().map(|issue| issue.code),
+                expected_code,
+                "{west}, {east}"
+            );
+            if route == GeographicTopologyRoute::ExactPartition {
+                let planar = shape.validate().unwrap();
+                assert_eq!(planar.as_ref().map(|issue| issue.code), expected_code);
+                assert_eq!(
+                    planar.as_ref().and_then(|issue| issue.path.as_deref()),
+                    quotient.as_ref().and_then(|issue| issue.path.as_deref())
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn unary_alias_certificate_declines_rounded_periods_and_seam_neighbors() {
+        for factor in [
+            (std::f64::consts::PI / 180.0).next_down(),
+            (std::f64::consts::PI / 180.0).next_up(),
+            std::f64::consts::TAU / 400.0,
+        ] {
+            let unit = crate::geographic::AngularFactor::try_new("native", factor).unwrap();
+            let frame = GeographicFrame::try_new(unit, unit, 0.0).unwrap();
+            if frame.longitude().period().fract() != 0.0 {
+                assert!(!faithful_geographic_chain(
+                    &[350.0, 360.0, 370.0],
+                    &[0.0; 3],
+                    frame
+                ));
+                assert!(!faithful_geographic_chain(
+                    &[-350.0, -360.0, -370.0],
+                    &[0.0; 3],
+                    frame
+                ));
+            }
+        }
+        let frame = GeographicFrame::crs84();
+        assert!(faithful_geographic_chain(&[200.0, 380.0], &[0.0; 2], frame));
+        assert!(!faithful_geographic_chain(
+            &[200.0, 380.0_f64.next_up()],
+            &[0.0; 2],
+            frame
+        ));
+        for x in [180.0_f64.next_down(), 180.0, 540.0, 540.0_f64.next_up()] {
+            assert!(!faithful_geographic_chain(&[200.0, x], &[0.0; 2], frame));
+        }
+    }
+
+    #[test]
     fn exact_partition_chart_rejects_each_quotient_boundary() {
         let seam_crossing = line(&[(170.0, 0.0), (-170.0, 0.0)]);
         let seam_touching = line(&[(180.0, 0.0), (179.0, 0.0)]);
@@ -571,11 +736,10 @@ mod tests {
         };
         assert!(chain_crosses_antimeridian(circle_line, frame,));
         assert_eq!(
-            geographic_seam_facts_in_frame(&circle, frame),
-            GeographicSeamFacts {
-                crosses: true,
-                possible_contact: false,
-            }
+            classify_geographic_chart(
+                crate::geographic::ScalarGeographicView::try_new(frame, &circle).unwrap()
+            ),
+            GeographicTopologyRoute::Quotient
         );
 
         let seam_pair = line(&[(-180.0, 0.0), (180.0, 0.0)]);

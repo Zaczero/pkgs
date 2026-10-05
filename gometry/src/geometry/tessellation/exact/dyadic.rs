@@ -307,6 +307,18 @@ impl ExactDyadic {
         }
     }
 
+    pub(in crate::geometry) fn from_i64(value: i64) -> Self {
+        let magnitude = value.unsigned_abs();
+        if magnitude == 0 {
+            return Self::zero();
+        }
+        Self {
+            negative: value.is_negative(),
+            limbs: CompactLimbs::single(magnitude),
+            exponent: 0,
+        }
+    }
+
     /// Construct an adversarial exact value from its canonical limb sequence.
     ///
     /// Internal tests use this for exponent and multi-limb boundaries that

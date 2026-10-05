@@ -215,22 +215,21 @@ fn packed_bool_values(array: &PyGeometryArray, op: Operation) -> Option<PyResult
     {
         let columns =
             resolve_packed_columns(array.storage(), array.missing(), array.point_row_layout())?;
-        if !columns.ordinary_geographic_predicates(frame) {
+        if !columns.faithful_geographic_predicates(frame) {
             for row in array.row_operation().present_rows() {
-                let facts = match row.row().with_shape(|shape| {
-                    crate::geographic::ScalarGeographicView::try_new_with_seam_facts(frame, shape)
+                let route = match row.row().with_shape(|shape| {
+                    crate::geographic::ScalarGeographicView::try_new(frame, shape)
                         .ok()
-                        .map(|(_, facts)| facts)
+                        .map(crate::geometry::classify_geographic_validity_chart)
                 }) {
-                    Ok(Some(facts)) => facts,
+                    Ok(Some(route)) => route,
                     Ok(None) => return None,
                     Err(error) => return Some(Err(error.into())),
                 };
-                if facts.crosses || facts.possible_contact {
+                if route == crate::geometry::GeographicTopologyRoute::Quotient {
                     // Packed validity/simplicity kernels intentionally know nothing
-                    // about frames. Domain failures, seam crossings, and possible
-                    // seam contacts take the shared per-row lane; ordinary
-                    // geographic columns keep the packed fast path.
+                    // about frames. Inputs that need the quotient chart take the
+                    // shared per-row lane; exact-partition charts stay packed.
                     return None;
                 }
             }

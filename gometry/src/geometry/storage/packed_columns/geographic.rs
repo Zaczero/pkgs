@@ -29,17 +29,18 @@ impl OrdinaryBounds {
     }
 
     fn chain(&self, xs: &[f64], ys: &[f64]) -> bool {
+        let ordinary = |x: f64, y: f64| x.abs() < self.longitude && y.abs() < self.pole;
         let (Some((&first_x, remaining_xs)), Some((&first_y, remaining_ys))) =
             (xs.split_first(), ys.split_first())
         else {
             return xs.is_empty() && ys.is_empty();
         };
-        if !self.coordinate(first_x, first_y) {
+        if !ordinary(first_x, first_y) {
             return false;
         }
         let mut previous_x = first_x;
         for (&x, &y) in remaining_xs.iter().zip(remaining_ys) {
-            if !self.coordinate(x, y) || (x - previous_x).abs() > self.half_period {
+            if !ordinary(x, y) || (x - previous_x).abs() > self.half_period {
                 return false;
             }
             previous_x = x;
@@ -164,6 +165,57 @@ impl PackedColumns<'_> {
             Self::Points(columns) => bounds.point_columns(columns),
             Self::Lines(columns) => bounds.line_columns(columns),
             Self::Polygons(columns) => bounds.polygon_columns(columns),
+        }
+    }
+
+    pub(crate) fn faithful_geographic_predicates(&self, frame: GeographicFrame) -> bool {
+        if self.ordinary_geographic_predicates(frame) {
+            return true;
+        }
+        match self {
+            Self::Points(_) => false,
+            Self::Lines(columns) => (0..columns.rows()).all(|row| {
+                if columns.is_missing(row) {
+                    return true;
+                }
+                let vertices = columns.row_window(row);
+                match (
+                    columns.coords().xs().get(vertices.clone()),
+                    columns.coords().ys().get(vertices),
+                ) {
+                    (Some(xs), Some(ys)) => {
+                        crate::geometry::faithful_geographic_chain(xs, ys, frame)
+                    },
+                    _ => false,
+                }
+            }),
+            Self::Polygons(columns) => (0..columns.rows()).all(|row| {
+                if columns.is_missing(row) {
+                    return true;
+                }
+                let rings = columns.polygon_rings(row);
+                if rings.is_empty() {
+                    return true;
+                }
+                if rings.len() != 1 {
+                    return false;
+                }
+                let Some(offsets) = row_offsets(columns.ring_offsets(), rings) else {
+                    return false;
+                };
+                let Some(vertices) = offset_pair(offsets) else {
+                    return false;
+                };
+                match (
+                    columns.coords().xs().get(vertices.clone()),
+                    columns.coords().ys().get(vertices),
+                ) {
+                    (Some(xs), Some(ys)) => {
+                        crate::geometry::faithful_geographic_chain(xs, ys, frame)
+                    },
+                    _ => false,
+                }
+            }),
         }
     }
 }

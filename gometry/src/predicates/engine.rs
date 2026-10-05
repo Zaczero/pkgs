@@ -1560,7 +1560,7 @@ mod tests {
             .expect("fixture admits"),
             [false]
         );
-        assert_eq!(geographic_cache.geographic_exact_topology_accesses(), 0);
+        assert_eq!(geographic.geographic_exact_topology_accesses(), 0);
     }
 
     #[test]
@@ -1975,8 +1975,8 @@ mod tests {
         )
         .expect("rectangle queries admit");
         assert_eq!(actual, [false, true]);
-        assert_eq!(cache.geographic_exact_topology_builds(), 0);
-        assert_eq!(cache.geographic_exact_topology_accesses(), 0);
+        assert_eq!(scalar.geographic_exact_topology_builds(), 0);
+        assert_eq!(scalar.geographic_exact_topology_accesses(), 0);
     }
 
     #[test]

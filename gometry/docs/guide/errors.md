@@ -138,7 +138,7 @@ handlers act on data instead of parsing messages. Class-level defaults are
 | [`operation`][gometry.GeometryError.operation] | [`GeometryError`][gometry.GeometryError] (bounded-output or binary64 embedding); [`InvalidGeometryError`][gometry.InvalidGeometryError] (empty sequence or invalid coverage) | Operation associated with the failure |
 | [`row`][gometry.InvalidGeometryError.row] / [`path`][gometry.InvalidGeometryError.path] | [`InvalidGeometryError`][gometry.InvalidGeometryError] (require) | Failing array row and structural path |
 | [`code`][gometry.InvalidGeometryError.code] / [`detail`][gometry.InvalidGeometryError.detail] | [`InvalidGeometryError`][gometry.InvalidGeometryError] (require) | Stable validity code and human-readable issue detail |
-| [`location`][gometry.InvalidGeometryError.location] | [`InvalidGeometryError`][gometry.InvalidGeometryError] (require) | Coordinate witness for the validity issue |
+| [`location`][gometry.InvalidGeometryError.location] | [`InvalidGeometryError`][gometry.InvalidGeometryError] (require) | Coordinate witness for the validity issue; quotient-topology issues choose a canonical coordinate of their contact set deterministically by minimum latitude then longitude |
 | [`crs`][gometry.CRSError.crs] | [`CRSError`][gometry.CRSError] | CRS involved in a unit/authority mismatch |
 
 ```python exec="on" source="block" result="text"

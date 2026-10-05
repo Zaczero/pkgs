@@ -5,81 +5,16 @@ use ahash::HashSetExt as _;
 use crate::error::Result;
 use crate::geometry::predicates::{
     LineworkChains, MinimumClearanceWitness, collect_duplicate_points, collect_offending_pair,
-    is_seam_cut_pair, line_is_ccw, line_is_closed, line_is_closed_in_domain, line_is_simple,
-    line_repair, minimum_clearance_witness, minimum_clearance_witness_with_support,
-    multi_polygon_members_issue, multi_polygon_members_issue_with_seam_cuts, multiline_is_simple,
-    multiline_repair, polygonal_repair, shell_is_convex, validate_line, validate_point,
-    validate_points,
+    line_is_ccw, line_is_closed, line_is_closed_in_domain, line_is_simple, line_repair,
+    minimum_clearance_witness, minimum_clearance_witness_with_support, multi_polygon_members_issue,
+    multiline_is_simple, multiline_repair, polygonal_repair, shell_is_convex, validate_line,
+    validate_point, validate_points,
 };
 use crate::geometry::{
-    Component, CoordinateAxes, Coordinates as _, GeometryErrorKind, GeometryKind, HashSet, LineSeq,
-    Point, PointKey, RefinedChainProvenance, RepairMethod, SeamCutEdgePairs, Shape,
-    SharedShapeOwners, ValidationIssue, carry_ordinates, emit_from_original, point_distance,
-    unique_xy_points,
+    CoordinateAxes, Coordinates as _, GeometryErrorKind, GeometryKind, HashSet, LineSeq, Point,
+    PointKey, RefinedChainProvenance, RepairMethod, Shape, SharedShapeOwners, ValidationIssue,
+    carry_ordinates, emit_from_original, point_distance, unique_xy_points,
 };
-
-fn advance_source_edge_base(source_edge_base: &mut u32, coordinate_count: usize) -> Result<()> {
-    let edge_count = u32::try_from(coordinate_count.saturating_sub(1))
-        .map_err(|_| crate::error::ResourceError::SizeOverflow)?;
-    *source_edge_base = (*source_edge_base)
-        .checked_add(edge_count)
-        .ok_or(crate::error::ResourceError::SizeOverflow)?;
-    Ok(())
-}
-
-fn advance_polygon_source_edge_base(
-    source_edge_base: &mut u32,
-    polygon: &crate::geometry::Polygon,
-) -> Result<()> {
-    for ring in polygon.rings() {
-        advance_source_edge_base(source_edge_base, ring.coord_count())?;
-    }
-    Ok(())
-}
-
-fn advance_source_polygon_base(source_polygon_base: &mut u32) -> Result<()> {
-    *source_polygon_base = (*source_polygon_base)
-        .checked_add(1)
-        .ok_or(crate::error::ResourceError::SizeOverflow)?;
-    Ok(())
-}
-
-fn advance_source_ids_for_shape(
-    shape: &Shape,
-    source_edge_base: &mut u32,
-    source_polygon_base: &mut u32,
-) -> Result<()> {
-    shape.try_for_each_component(&mut |component| -> Result<()> {
-        match component {
-            Component::Point(_) => (),
-            Component::LineString(line) => {
-                advance_source_edge_base(source_edge_base, line.coord_count())?;
-            },
-            Component::Polygon(polygon) => {
-                advance_polygon_source_edge_base(source_edge_base, polygon)?;
-                advance_source_polygon_base(source_polygon_base)?;
-            },
-        }
-        Ok(())
-    })
-}
-
-fn push_linework_with_source_edges(
-    chains: &mut LineworkChains,
-    coordinates: &crate::geometry::CoordSeq,
-    source_edges: &mut Vec<u32>,
-    source_offsets: &mut Vec<usize>,
-    source_ring_bases: &mut Vec<u32>,
-    source_edge_base: &mut u32,
-) -> Result<()> {
-    if coordinates.coord_count() == 0 {
-        return Ok(());
-    }
-    source_offsets.push(source_edges.len());
-    source_ring_bases.push(*source_edge_base);
-    let _ = chains.push_line_with_source_edges(coordinates, source_edges)?;
-    advance_source_edge_base(source_edge_base, coordinates.coord_count())
-}
 
 impl Shape {
     pub fn is_empty(&self) -> bool {
@@ -103,6 +38,11 @@ impl Shape {
         }
     }
 
+    /// Whether the coordinate-space geometry satisfies OGC simplicity.
+    ///
+    /// `Shape` carries no CRS. Geographic simplicity is supplied by the
+    /// frame-aware geometry entry point, which uses quotient validity where
+    /// the stored coordinates do not describe one faithful planar chart.
     pub fn is_simple(&self) -> crate::error::Result<bool> {
         match self {
             // Collections are never simple by convention, including the typed
@@ -115,24 +55,6 @@ impl Shape {
             Self::LineString(points) => line_is_simple(points),
             Self::MultiLineString(lines) => multiline_is_simple(lines),
             Self::Polygon(_) | Self::MultiPolygon(_) => Ok(self.validate()?.is_none()),
-        }
-    }
-
-    pub(crate) fn is_simple_with_seam_cut_edge_pairs(
-        &self,
-        seam_cut_edge_pairs: &SeamCutEdgePairs,
-    ) -> Result<bool> {
-        match self {
-            Self::Empty(GeometryKind::GeometryCollection, _) | Self::GeometryCollection(_) => {
-                Ok(false)
-            },
-            Self::Point(_) | Self::Empty(..) => Ok(true),
-            Self::MultiPoint(points) => Ok(unique_xy_points(points)?.len() == points.coord_count()),
-            Self::LineString(points) => line_is_simple(points),
-            Self::MultiLineString(lines) => multiline_is_simple(lines),
-            Self::Polygon(_) | Self::MultiPolygon(_) => Ok(self
-                .validate_with_seam_cut_edge_pairs(seam_cut_edge_pairs)?
-                .is_none()),
         }
     }
 
@@ -163,83 +85,6 @@ impl Shape {
         let mut failure = Ok(());
         let _candidate_pairs = chains.for_each_candidate_pair(|left, right| {
             match collect_offending_pair(chains.at(left), chains.at(right), &mut visit) {
-                Ok(()) => ControlFlow::Continue(()),
-                Err(error) => {
-                    failure = Err(error);
-                    ControlFlow::Break(())
-                },
-            }
-        })?;
-        failure?;
-        Ok(nodes)
-    }
-
-    pub(crate) fn self_intersections_with_seam_cut_edge_pairs(
-        &self,
-        seam_cut_edge_pairs: &SeamCutEdgePairs,
-    ) -> Result<Vec<Point>> {
-        let mut nodes = Vec::new();
-        let mut seen = HashSet::new();
-        let mut visit = |point: Point| {
-            if seen.insert(PointKey::new(point)) {
-                nodes.push(point);
-            }
-        };
-        collect_duplicate_points(self, &mut visit);
-
-        let mut chains = LineworkChains::default();
-        let mut source_edges = Vec::new();
-        let mut source_offsets = Vec::new();
-        let mut source_ring_bases = Vec::new();
-        let mut source_edge_base = 0_u32;
-        self.try_for_each_component(&mut |component| -> Result<()> {
-            match component {
-                Component::Point(_) => (),
-                Component::LineString(line) => {
-                    push_linework_with_source_edges(
-                        &mut chains,
-                        line.as_coords(),
-                        &mut source_edges,
-                        &mut source_offsets,
-                        &mut source_ring_bases,
-                        &mut source_edge_base,
-                    )?;
-                },
-                Component::Polygon(polygon) => {
-                    for ring in polygon.rings() {
-                        push_linework_with_source_edges(
-                            &mut chains,
-                            ring.coords(),
-                            &mut source_edges,
-                            &mut source_offsets,
-                            &mut source_ring_bases,
-                            &mut source_edge_base,
-                        )?;
-                    }
-                },
-            }
-            Ok(())
-        })?;
-
-        let mut failure = Ok(());
-        let _candidate_interactions = chains.for_each_candidate_pair(|left, right| {
-            let (left, right) = (chains.at(left), chains.at(right));
-            match is_seam_cut_pair(
-                &left,
-                &right,
-                &source_edges,
-                &source_offsets,
-                &source_ring_bases,
-                seam_cut_edge_pairs,
-            ) {
-                Ok(true) => return ControlFlow::Continue(()),
-                Ok(false) => {},
-                Err(error) => {
-                    failure = Err(error);
-                    return ControlFlow::Break(());
-                },
-            }
-            match collect_offending_pair(left, right, &mut visit) {
                 Ok(()) => ControlFlow::Continue(()),
                 Err(error) => {
                     failure = Err(error);
@@ -348,22 +193,12 @@ impl Shape {
         }
     }
 
+    /// Return the first planar OGC validity issue for this coordinate-space shape.
+    ///
+    /// `Shape` carries no CRS. Geographic validation is frame-aware and reads
+    /// exact quotient incidence when periodic aliases or seam topology matter.
     pub fn validate(&self) -> crate::error::Result<Option<ValidationIssue>> {
         self.validate_with_shared_owners(&mut SharedShapeOwners::for_collections())
-    }
-
-    pub(crate) fn validate_with_seam_cut_edge_pairs(
-        &self,
-        seam_cut_edge_pairs: &SeamCutEdgePairs,
-    ) -> Result<Option<ValidationIssue>> {
-        let mut source_edge_base = 0_u32;
-        let mut source_polygon_base = 0_u32;
-        self.validate_with_seam_cut_edge_pairs_inner(
-            &mut SharedShapeOwners::for_collections(),
-            seam_cut_edge_pairs,
-            &mut source_edge_base,
-            &mut source_polygon_base,
-        )
     }
 
     fn validate_with_shared_owners(
@@ -395,97 +230,6 @@ impl Shape {
                 for (idx, geometry) in geometries.iter().enumerate() {
                     if let Some(issue) = geometry.validate_with_shared_owners(owners)? {
                         return Ok(Some(issue.with_path_prefix(&format!("$[{idx}]"))));
-                    }
-                }
-                Ok(None)
-            },
-            Self::Empty(..) => Ok(None),
-        }
-    }
-
-    fn validate_with_seam_cut_edge_pairs_inner(
-        &self,
-        owners: &mut SharedShapeOwners,
-        seam_cut_edge_pairs: &SeamCutEdgePairs,
-        source_edge_base: &mut u32,
-        source_polygon_base: &mut u32,
-    ) -> Result<Option<ValidationIssue>> {
-        match self {
-            Self::Point(point) => Ok(validate_point(*point, "$")),
-            Self::MultiPoint(points) => Ok(validate_points(points, "$")),
-            Self::LineString(points) => {
-                if let Some(issue) = validate_line(points, "line string") {
-                    return Ok(Some(issue));
-                }
-                advance_source_edge_base(source_edge_base, points.coord_count())?;
-                Ok(None)
-            },
-            Self::MultiLineString(lines) => {
-                for (index, line) in lines.iter().enumerate() {
-                    if let Some(issue) = validate_line(line, "multi line string member") {
-                        return Ok(Some(issue.with_path_prefix(&format!("$[{index}]"))));
-                    }
-                    advance_source_edge_base(source_edge_base, line.coord_count())?;
-                }
-                Ok(None)
-            },
-            Self::Polygon(polygon) => {
-                if let Some(issue) = polygon.validate_with_seam_cut_edge_pairs(
-                    "polygon",
-                    "$",
-                    *source_edge_base,
-                    *source_polygon_base,
-                    seam_cut_edge_pairs,
-                )? {
-                    return Ok(Some(issue));
-                }
-                advance_polygon_source_edge_base(source_edge_base, polygon)?;
-                advance_source_polygon_base(source_polygon_base)?;
-                Ok(None)
-            },
-            Self::MultiPolygon(polygons) => {
-                let source_edge_start = *source_edge_base;
-                let source_polygon_start = *source_polygon_base;
-                let mut next_source_edge = source_edge_start;
-                let mut next_source_polygon = source_polygon_start;
-                for (index, polygon) in polygons.iter().enumerate() {
-                    if let Some(issue) = polygon.validate_with_seam_cut_edge_pairs(
-                        "multi polygon member",
-                        "$",
-                        next_source_edge,
-                        next_source_polygon,
-                        seam_cut_edge_pairs,
-                    )? {
-                        return Ok(Some(issue.with_path_prefix(&format!("$[{index}]"))));
-                    }
-                    advance_polygon_source_edge_base(&mut next_source_edge, polygon)?;
-                    advance_source_polygon_base(&mut next_source_polygon)?;
-                }
-                if let Some(issue) = multi_polygon_members_issue_with_seam_cuts(
-                    polygons.as_slice(),
-                    "$",
-                    Some((seam_cut_edge_pairs, source_edge_start, source_polygon_start)),
-                )? {
-                    return Ok(Some(issue));
-                }
-                *source_edge_base = next_source_edge;
-                *source_polygon_base = next_source_polygon;
-                Ok(None)
-            },
-            Self::GeometryCollection(geometries) => {
-                if !owners.first_collection(geometries.as_slice(), geometries.members_are_shared())
-                {
-                    advance_source_ids_for_shape(self, source_edge_base, source_polygon_base)?;
-                    return Ok(None);
-                }
-                for (index, geometry) in geometries.iter().enumerate() {
-                    if let Some(issue) = geometry.validate_with_seam_cut_edge_pairs_inner(
-                        owners,
-                        seam_cut_edge_pairs,
-                        source_edge_base,
-                        source_polygon_base,
-                    )? {
-                        return Ok(Some(issue.with_path_prefix(&format!("$[{index}]"))));
                     }
                 }
                 Ok(None)

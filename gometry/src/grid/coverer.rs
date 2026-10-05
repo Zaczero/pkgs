@@ -1036,8 +1036,8 @@ mod tests {
             classifier.refine_bounds(bounds).expect("fixture admits"),
             RectClass::Interior
         );
-        assert_eq!(cache.geographic_exact_topology_accesses(), 1);
-        assert_eq!(cache.geographic_exact_topology_builds(), 1);
+        assert_eq!(plan.geographic_exact_topology_accesses(), 1);
+        assert_eq!(plan.geographic_exact_topology_builds(), 1);
     }
 
     #[test]

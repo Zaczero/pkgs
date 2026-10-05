@@ -698,3 +698,40 @@ mod boundary_admission_tests {
         );
     }
 }
+
+#[cfg(test)]
+mod geographic_validity_admission_tests {
+    use pyo3::prelude::*;
+
+    use super::PyGeometryArray;
+    use crate::crs::frame::{Frame, crs_arc_static};
+    use crate::io::parse_wkt;
+    use crate::py::errors::InvalidGeometryError;
+
+    #[test]
+    fn out_of_domain_latitude_is_false_in_array_validity_without_raising() {
+        Python::initialize();
+        let invalid = parse_wkt("POLYGON ((0 0, 10 0, 10 100, 0 0))").unwrap();
+        let valid = parse_wkt("POLYGON ((0 0, 10 0, 10 10, 0 0))").unwrap();
+        let array = PyGeometryArray::from_shapes(
+            vec![invalid, valid],
+            Frame::Crs(crs_arc_static("EPSG:4326")),
+        )
+        .unwrap();
+        Python::attach(|py| {
+            let valid = array
+                .is_valid(py)
+                .unwrap()
+                .bind(py)
+                .call_method0("tolist")
+                .unwrap()
+                .extract::<Vec<bool>>()
+                .unwrap();
+            assert_eq!(valid, [false, true]);
+            let error = array
+                .is_simple(py)
+                .expect_err("is_simple raises on out-of-domain latitude");
+            assert!(error.is_instance_of::<InvalidGeometryError>(py));
+        });
+    }
+}

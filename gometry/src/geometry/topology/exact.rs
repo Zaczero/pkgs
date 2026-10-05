@@ -11,7 +11,7 @@ use crate::error::{ResourceError, Result};
 #[cfg(test)]
 use crate::geographic::GeographicInputs;
 use crate::geographic::{
-    ChartStep, EdgeDirection, GeographicFrame, Latitude, RingDomain, RingSummary,
+    ChartStep, EdgeDirection, GeographicError, GeographicFrame, Latitude, RingDomain, RingSummary,
     ScalarGeographicView, SeamIdentity, TurnDirection,
 };
 use crate::geometry::exact_arith::ExactSign;
@@ -30,6 +30,9 @@ pub(super) struct SourcePolygonId(pub u32);
 
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub(super) struct SourceRingId(pub u32);
+
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub(super) struct SourceLineId(pub u32);
 
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub(super) struct SourceEdgeId(pub u32);
@@ -172,6 +175,7 @@ impl ExactChartPiece {
             start: shift_point(&self.start)?,
             end: shift_point(&self.end)?,
             source_range: self.source_range.clone(),
+            lift: self.lift,
         })
     }
 }
@@ -458,7 +462,9 @@ impl ExactSourceRange {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum SourceEdgeKind {
-    Line,
+    Line {
+        line: SourceLineId,
+    },
     Ring {
         polygon: SourcePolygonId,
         ring: SourceRingId,
@@ -482,6 +488,8 @@ pub(super) struct ExactChartPiece {
     pub start: ExactChartPoint,
     pub end: ExactChartPoint,
     pub source_range: ExactSourceRange,
+    /// Periods from this chart piece to the source ring's continuous lift.
+    pub lift: i64,
 }
 
 #[derive(Clone, Debug)]
@@ -524,6 +532,7 @@ pub(super) struct ExactSpanOwner {
     pub source_edge: SourceEdgeId,
     pub source_range: ExactSourceRange,
     pub reversed: bool,
+    pub lift: i64,
 }
 
 #[derive(Clone, Debug)]
@@ -547,6 +556,7 @@ struct AtomOccurrence {
     end: ExactChartPoint,
     source_edge: SourceEdgeId,
     source_range: ExactSourceRange,
+    lift: i64,
 }
 
 struct AvlNode<T> {
@@ -825,8 +835,16 @@ pub(super) struct ExactSourcePoint {
 #[derive(Clone, Copy, Debug)]
 pub(super) struct ExactLineBoundary {
     pub row: SourceRowId,
+    pub line: SourceLineId,
     pub edge: SourceEdgeId,
     pub at_end: bool,
+}
+
+#[derive(Clone, Debug)]
+pub(super) struct ExactSourceLine {
+    pub id: SourceLineId,
+    pub row: SourceRowId,
+    pub source_edges: Range<usize>,
 }
 
 #[derive(Clone, Debug)]
@@ -864,6 +882,7 @@ pub(super) struct ExactGeographicChartInventory {
     pub row_count: usize,
     pub edges: Vec<ExactSourceEdge>,
     pub pieces: Vec<ExactChartPiece>,
+    pub lines: Vec<ExactSourceLine>,
     pub rings: Vec<ExactSourceRing>,
     pub polygons: Vec<ExactSourcePolygon>,
     pub points: Vec<ExactSourcePoint>,
@@ -887,6 +906,7 @@ impl crate::heap_size::HeapSize for ExactGeographicChartInventory {
                         + piece.source_range.heap_bytes()
                 })
                 .sum::<usize>()
+            + self.lines.capacity() * std::mem::size_of::<ExactSourceLine>()
             + self.rings.capacity() * std::mem::size_of::<ExactSourceRing>()
             + self.polygons.capacity() * std::mem::size_of::<ExactSourcePolygon>()
             + self.points.capacity() * std::mem::size_of::<ExactSourcePoint>()
@@ -990,6 +1010,7 @@ impl ExactGeographicChartInventory {
             row_count,
             edges: Vec::new(),
             pieces: Vec::new(),
+            lines: Vec::new(),
             rings: Vec::new(),
             polygons: Vec::new(),
             points: Vec::new(),
@@ -1022,14 +1043,17 @@ impl ExactGeographicChartInventory {
         row: SourceRowId,
     ) -> Result<()> {
         self.reserve_source_edges(coordinates.coord_count().saturating_sub(1))?;
+        let line =
+            SourceLineId(u32::try_from(self.lines.len()).map_err(|_| ResourceError::SizeOverflow)?);
+        let edge_start = self.edges.len();
         let piece_start = self.pieces.len();
         let mut first_edge = None;
         let mut last_edge = None;
         for pair in coordinates.segment_pairs() {
             let [start, end] = pair;
-            let source = self.push_source_edge(start, end, row, SourceEdgeKind::Line)?;
+            let source = self.push_source_edge(start, end, row, SourceEdgeKind::Line { line })?;
             let before = self.pieces.len();
-            self.push_chart_pieces(source)?;
+            self.push_chart_pieces(source, 0)?;
             if self.pieces.len() != before {
                 first_edge.get_or_insert(source);
                 last_edge = Some(source);
@@ -1044,15 +1068,22 @@ impl ExactGeographicChartInventory {
             self.line_boundaries.reserve(2);
             self.line_boundaries.push(ExactLineBoundary {
                 row,
+                line,
                 edge: first,
                 at_end: false,
             });
             self.line_boundaries.push(ExactLineBoundary {
                 row,
+                line,
                 edge: last,
                 at_end: true,
             });
         }
+        self.lines.push(ExactSourceLine {
+            id: line,
+            row,
+            source_edges: edge_start..self.edges.len(),
+        });
         Ok(())
     }
 
@@ -1090,6 +1121,8 @@ impl ExactGeographicChartInventory {
                 stored_kind
             };
             let first_edge = self.edges.len();
+            let axis = self.frame.longitude();
+            let mut lift = 0_i64;
             for [start, end] in ring.segment_pairs() {
                 let source = self.push_source_edge(start, end, row, SourceEdgeKind::Ring {
                     polygon: polygon_id,
@@ -1097,8 +1130,25 @@ impl ExactGeographicChartInventory {
                     hole: ring_index != 0,
                     kind,
                 })?;
-                self.push_chart_pieces(source)?;
+                self.push_chart_pieces(source, lift)?;
+                lift = axis.add_chart_transit(lift, start.x, end.x).map_err(
+                    |error| -> crate::error::Error {
+                        match error {
+                            GeographicError::ChartTurnOverflow => {
+                                ResourceError::SizeOverflow.into()
+                            },
+                            other @ (GeographicError::NonFinite { .. }
+                            | GeographicError::LatitudeOutOfRange { .. }
+                            | GeographicError::AmbiguousFullTurnRing { .. }
+                            | GeographicError::InvalidAngularFactor { .. }
+                            | GeographicError::InvalidSweep { .. }) => {
+                                GeometryErrorKind::Invalid(other.to_string().into()).into()
+                            },
+                        }
+                    },
+                )?;
             }
+            debug_assert_eq!(lift, summary.chart_turn);
             self.rings.push(ExactSourceRing {
                 id: ring_id,
                 polygon: polygon_id,
@@ -1157,10 +1207,30 @@ impl ExactGeographicChartInventory {
         clippy::indexing_slicing,
         reason = "SourceEdgeId is issued by push_source_edge for this inventory's edge vector"
     )]
-    fn push_chart_pieces(&mut self, source: SourceEdgeId) -> Result<()> {
+    fn push_chart_pieces(&mut self, source: SourceEdgeId, ring_lift: i64) -> Result<()> {
         let edge = self.edges[source.0 as usize];
         let [start, end] = edge.source;
         let (start_x, delta_x) = local_longitude_edge(self.frame, start.x, end.x)?;
+        let canonical_start = self
+            .frame
+            .longitude()
+            .canonicalize(start.x)
+            .expect("source longitude was admitted")
+            .get();
+        let start_alias = if start_x.to_bits() == canonical_start.to_bits() {
+            0_i64
+        } else if start_x.to_bits() == (canonical_start + self.frame.longitude().period()).to_bits()
+        {
+            1
+        } else {
+            return Err(GeometryErrorKind::Invalid(
+                "exact chart edge start has an unknown seam spelling".into(),
+            )
+            .into());
+        };
+        let piece_lift = ring_lift
+            .checked_sub(start_alias)
+            .ok_or(ResourceError::SizeOverflow)?;
         let start_y = ExactDyadic::from_f64(Latitude::from_admitted(self.frame, start.y).get());
         let end_y = ExactDyadic::from_f64(Latitude::from_admitted(self.frame, end.y).get());
         let start_y_rational = ExactRational::from_dyadic(start_y.clone());
@@ -1184,6 +1254,7 @@ impl ExactGeographicChartInventory {
                 seam,
                 zero,
                 parameter.clone(),
+                piece_lift,
             )?;
             let end_x =
                 end_x.try_subtract(ExactDyadic::from_f64(self.frame.longitude().period()))?;
@@ -1193,6 +1264,9 @@ impl ExactGeographicChartInventory {
                 ExactChartPoint::from_dyadics(end_x, end_y),
                 parameter,
                 one,
+                piece_lift
+                    .checked_add(1)
+                    .ok_or(ResourceError::SizeOverflow)?,
             )?;
         } else if end_x.cmp(&negative_half).is_lt() {
             let parameter = ExactRational::new(
@@ -1210,6 +1284,7 @@ impl ExactGeographicChartInventory {
                 seam,
                 zero,
                 parameter.clone(),
+                piece_lift,
             )?;
             let end_x = end_x.try_add(ExactDyadic::from_f64(self.frame.longitude().period()))?;
             self.push_chart_piece(
@@ -1218,6 +1293,9 @@ impl ExactGeographicChartInventory {
                 ExactChartPoint::from_dyadics(end_x, end_y),
                 parameter,
                 one,
+                piece_lift
+                    .checked_sub(1)
+                    .ok_or(ResourceError::SizeOverflow)?,
             )?;
         } else {
             self.push_chart_piece(
@@ -1226,6 +1304,7 @@ impl ExactGeographicChartInventory {
                 ExactChartPoint::from_dyadics(end_x, end_y),
                 zero,
                 one,
+                piece_lift,
             )?;
         }
         Ok(())
@@ -1238,6 +1317,7 @@ impl ExactGeographicChartInventory {
         end: ExactChartPoint,
         source_start: ExactRational,
         source_end: ExactRational,
+        lift: i64,
     ) -> Result<()> {
         if start.same_position(&end)? {
             return Ok(());
@@ -1254,6 +1334,7 @@ impl ExactGeographicChartInventory {
                 start: source_start,
                 end: source_end,
             },
+            lift,
         });
         Ok(())
     }
@@ -1422,6 +1503,7 @@ impl ExactGeographicChartInventory {
                         source_range: piece
                             .source_range
                             .compose(&start.parameter, &cut.parameter)?,
+                        lift: piece.lift,
                     });
                 }
             }
@@ -1524,6 +1606,7 @@ impl ExactGeographicChartInventory {
                 ports,
                 occurrence.source_edge,
                 occurrence.source_range,
+                occurrence.lift,
                 reversed,
             ));
         }
@@ -1537,10 +1620,14 @@ impl ExactGeographicChartInventory {
                 return Ok(source);
             }
             let start = left.2.start.try_cmp(&right.2.start)?;
-            Ok(if start.is_eq() {
-                left.2.end.try_cmp(&right.2.end)?
+            if !start.is_eq() {
+                return Ok(start);
+            }
+            let end = left.2.end.try_cmp(&right.2.end)?;
+            Ok(if end.is_eq() {
+                left.3.cmp(&right.3).then_with(|| left.4.cmp(&right.4))
             } else {
-                start
+                end
             })
         })?;
         let mut atoms = Vec::new();
@@ -1549,11 +1636,12 @@ impl ExactGeographicChartInventory {
             let endpoints = atom_occurrences[cursor].0;
             let mut owners = Vec::new();
             while cursor < atom_occurrences.len() && atom_occurrences[cursor].0 == endpoints {
-                let (_, source_edge, source_range, reversed) = &atom_occurrences[cursor];
+                let (_, source_edge, source_range, lift, reversed) = &atom_occurrences[cursor];
                 owners.push(ExactSpanOwner {
                     source_edge: *source_edge,
                     source_range: source_range.clone(),
                     reversed: *reversed,
+                    lift: *lift,
                 });
                 cursor += 1;
             }

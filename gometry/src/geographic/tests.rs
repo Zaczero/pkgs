@@ -28,16 +28,6 @@ fn rounded_up_integer_period_frame() -> GeographicFrame {
     GeographicFrame::try_new(factor, factor, 0.0).unwrap()
 }
 
-fn full_admission_seam_facts(
-    frame: GeographicFrame,
-    shape: &crate::geometry::Shape,
-) -> Result<crate::geometry::GeographicSeamFacts, GeographicViewError> {
-    ScalarGeographicView::try_new(frame, shape)?;
-    Ok(crate::geometry::geographic_seam_facts_in_frame(
-        shape, frame,
-    ))
-}
-
 #[test]
 fn scalar_view_borrows_literal_payload_and_reduces_only_on_access() {
     let point = crate::geometry::Point::new(540.0, 45.0).unwrap();
@@ -238,110 +228,6 @@ fn raw_bounds_certify_only_strictly_ordinary_nonpolar_chart_support() {
 }
 
 #[test]
-fn seam_admission_matches_the_full_path_for_enumerated_rings_and_edges() {
-    use crate::geometry::{LineSeq, MultiPoint, Polygon, Ring, Shape};
-
-    let ordinary = Shape::Polygon(Polygon::new(
-        ring(vec![-12.0, 12.0, 12.0, -12.0, -12.0], vec![
-            -8.0, -8.0, 8.0, 8.0, -8.0,
-        ]),
-        Vec::new(),
-    ));
-    let half_tie = Shape::Polygon(Polygon::new(
-        ring(vec![-90.0, 90.0, 90.0, -90.0, -90.0], vec![
-            -10.0, -10.0, 10.0, 10.0, -10.0,
-        ]),
-        Vec::new(),
-    ));
-    let seam_crossing =
-        Shape::LineString(LineSeq::try_new(xy_seq(vec![170.0, -170.0], vec![0.0, 0.0])).unwrap());
-    let shared_xy = xy_seq(vec![170.0, -170.0, -170.0, 170.0, 170.0], vec![
-        -10.0, -10.0, 10.0, 10.0, -10.0,
-    ]);
-    let shared_point_set = MultiPoint::from_coordseq(shared_xy.clone()).unwrap();
-    let shared_ring = Ring::closed_coordseq(shared_xy).unwrap();
-    let point_set_and_ring = Shape::geometry_collection(vec![
-        Shape::MultiPoint(shared_point_set),
-        Shape::Polygon(Polygon::new(shared_ring, Vec::new())),
-    ])
-    .unwrap();
-    let seam_touching = Shape::Polygon(Polygon::new(
-        ring(vec![180.0, 175.0, 180.0, 170.0, 180.0], vec![
-            -10.0, 0.0, 10.0, 0.0, -10.0,
-        ]),
-        Vec::new(),
-    ));
-    let explicit_period = Shape::Polygon(Polygon::new(
-        ring(vec![0.0, 360.0, 300.0, 0.0], vec![
-            -10.0, -10.0, 10.0, -10.0,
-        ]),
-        Vec::new(),
-    ));
-    let nominal_half_alias = Shape::Polygon(Polygon::new(
-        ring(vec![0.0, 200.0, 100.0, 0.0], vec![0.0, 0.0, 10.0, 0.0]),
-        Vec::new(),
-    ));
-    let invalid_latitude = Shape::Point(crate::geometry::Point::new_raw_xy(5.0, 91.0));
-    let pole = degrees().pole();
-    let one_ulp_pole = Shape::Point(
-        crate::geometry::Point::new(0.0, pole.next_up()).expect("one exterior ULP is admitted"),
-    );
-    let two_ulp_pole = Shape::Point(crate::geometry::Point::new_raw_xy(
-        0.0,
-        pole.next_up().next_up(),
-    ));
-    let cases = [
-        ("ordinary polygon", degrees(), ordinary),
-        ("interior half-turn tie", degrees(), half_tie),
-        ("seam-crossing line", degrees(), seam_crossing),
-        (
-            "shared point-set and segment chain",
-            degrees(),
-            point_set_and_ring,
-        ),
-        ("seam-touching ring", degrees(), seam_touching),
-        ("explicit-period ring", degrees(), explicit_period),
-        (
-            "rounded-period nominal half alias",
-            rounded_up_integer_period_frame(),
-            nominal_half_alias,
-        ),
-        ("one exterior pole ULP", degrees(), one_ulp_pole),
-        ("two exterior pole ULPs", degrees(), two_ulp_pole),
-        ("invalid latitude", degrees(), invalid_latitude),
-    ];
-
-    for (name, frame, shape) in cases {
-        let expected = full_admission_seam_facts(frame, &shape);
-        let actual =
-            ScalarGeographicView::try_new_with_seam_facts(frame, &shape).map(|(_, facts)| facts);
-        assert_eq!(actual, expected, "{name}");
-    }
-
-    let non_finite = Shape::Point(crate::geometry::Point::new_raw_xy(f64::NAN, 0.0));
-    let expected = full_admission_seam_facts(degrees(), &non_finite).unwrap_err();
-    let actual = ScalarGeographicView::try_new_with_seam_facts(degrees(), &non_finite).unwrap_err();
-    assert_eq!(actual.location, expected.location);
-    assert_eq!(actual.native.x.to_bits(), expected.native.x.to_bits());
-    assert_eq!(actual.native.y.to_bits(), expected.native.y.to_bits());
-    let (
-        GeographicError::NonFinite {
-            name: actual_name,
-            value: actual_value,
-        },
-        GeographicError::NonFinite {
-            name: expected_name,
-            value: expected_value,
-        },
-    ) = (&actual.source, &expected.source)
-    else {
-        panic!("both admission paths report the non-finite longitude");
-    };
-    assert_eq!(actual_name, expected_name);
-    assert_eq!(actual_value.to_bits(), expected_value.to_bits());
-}
-
-#[test]
 fn explicit_period_edge_keeps_the_ambiguous_ring_admission_gate() {
     use crate::geometry::{Polygon, Shape};
 
@@ -352,34 +238,13 @@ fn explicit_period_edge_keeps_the_ambiguous_ring_admission_gate() {
         Vec::new(),
     ));
 
-    let error = ScalarGeographicView::try_new_with_seam_facts(degrees(), &shape).unwrap_err();
+    let error = ScalarGeographicView::try_new(degrees(), &shape).unwrap_err();
     assert_eq!(error.location.ring, Some(0));
     assert_eq!(error.location.coordinate, 0);
     assert!(matches!(
         error.source,
         GeographicError::AmbiguousFullTurnRing { .. }
     ));
-}
-
-#[test]
-fn country_admission_seam_facts_match_the_full_path_for_all_217_features() {
-    let document: serde_json::Value =
-        serde_json::from_str(include_str!("../../fixtures/osm_countries_0_1.geojson"))
-            .expect("the country fixture is valid GeoJSON");
-    let features = document["features"]
-        .as_array()
-        .expect("the country fixture is a FeatureCollection");
-    assert_eq!(features.len(), 217);
-
-    let frame = GeographicFrame::crs84();
-    for (index, feature) in features.iter().enumerate() {
-        let shape = crate::io::parse_geojson(&feature["geometry"])
-            .expect("country feature geometry parses");
-        let expected = full_admission_seam_facts(frame, &shape);
-        let actual =
-            ScalarGeographicView::try_new_with_seam_facts(frame, &shape).map(|(_, facts)| facts);
-        assert_eq!(actual, expected, "country feature {index}");
-    }
 }
 
 #[test]

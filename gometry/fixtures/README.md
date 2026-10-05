@@ -6,3 +6,5 @@ country-boundary GeoJSON fixture downloaded from: https://osm-countries-geojson.
 Data attribution: OpenStreetMap contributors, ODbL 1.0. The upstream
 `osm-countries-geojson` package describes these as country boundaries extracted
 from OpenStreetMap in GeoJSON format.
+
+`tv-ar-uy-symmetric-difference-order-012.wkt` is the TV/AR/UY symmetric-difference output in operand order 0, 1, 2 from the country fixture, kept as a validity regression.

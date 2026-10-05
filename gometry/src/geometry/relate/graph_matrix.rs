@@ -28,7 +28,6 @@ use crate::geometry::{Segment, XY};
 #[derive(Clone, Copy)]
 pub(crate) struct GeographicPrepared<'a> {
     plan: &'a PreparedPlan,
-    frame_cache: &'a crate::geometry::FrameDependentCaches,
     view: ScalarGeographicView<'a>,
     bounds_sound: bool,
     chart_route: GeographicTopologyRoute,
@@ -68,7 +67,6 @@ impl<'a> GeographicPrepared<'a> {
         if let Some((bounds_sound, chart_route)) = frame_cache.geographic_admission(frame) {
             return Ok(Self {
                 plan,
-                frame_cache,
                 view: ScalarGeographicView::previously_admitted(frame, plan.shape()),
                 bounds_sound,
                 chart_route,
@@ -87,7 +85,6 @@ impl<'a> GeographicPrepared<'a> {
         frame_cache.record_admission(frame, bounds_sound, chart_route);
         Ok(Self {
             plan,
-            frame_cache,
             view,
             bounds_sound,
             chart_route,
@@ -102,7 +99,7 @@ impl GeographicPrepared<'_> {
     }
 
     pub(crate) fn exact_topology(self) -> Result<std::sync::Arc<ExactGeographicTopology>> {
-        self.frame_cache.geographic_exact_topology(self.view)
+        self.plan.geographic_exact_topology(self.view)
     }
 
     /// Exact set membership of an admitted point in this prepared frame.

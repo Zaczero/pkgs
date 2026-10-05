@@ -1168,7 +1168,7 @@ fn line_owner_index(topology: &ExactGeographicTopology, span_index: usize) -> Re
     for (owner_index, owner) in span.owners.iter().enumerate() {
         let edge = source_edge_at(topology, owner.source_edge)?;
         let supported = match edge.kind {
-            SourceEdgeKind::Line => line_rows.binary_search(&edge.row).is_ok(),
+            SourceEdgeKind::Line { .. } => line_rows.binary_search(&edge.row).is_ok(),
             SourceEdgeKind::Ring {
                 hole: false,
                 kind: crate::geometry::RingKind::Collapsed,

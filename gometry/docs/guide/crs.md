@@ -857,18 +857,23 @@ predicates, relate, overlay,
 [`clip_by_rect`][gometry.Geometry.clip_by_rect], centroid, [`point_on_surface`][gometry.Geometry.point_on_surface], bounds, distance/[`dwithin`][gometry.dwithin], the
 spatial index, and validation/repair ([`is_valid`][gometry.Geometry.is_valid],
 [`validate`][gometry.Geometry.validate], [`require`][gometry.require], [`self_intersections`][gometry.Geometry.self_intersections], [`repair`][gometry.Geometry.repair], and
-[`snap_to_grid(..., repair=True)`][gometry.Geometry.snap_to_grid]) — **auto-split-normalize**
-seam-crossing input at their chokepoints. A seam split is coordinate-planar:
-it inserts affine crossing vertices into straight edges in the unwrapped
-longitude/latitude chart. Geographic shape measures
+[`snap_to_grid(..., repair=True)`][gometry.Geometry.snap_to_grid]) — interpret
+coordinates in the CRS-native longitude quotient. Validity uses a faithful
+planar partition when the stored chart preserves source coordinates; otherwise
+it reads exact Q incidence without shifting stored longitudes. Operations that
+construct split output insert affine crossing vertices into straight edges in
+the unwrapped longitude/latitude chart. Geographic shape measures
 ([`length`][gometry.length] and [`area`][gometry.area]) integrate those chart
 edges, so splitting preserves ellipsoidal length and area to rounding. Pairwise
 [`distance`][gometry.distance] continues to use the shortest geodesic across the
 seam. Geographic area measures the polygon's lon/lat chart interior, including
 regions larger than half the ellipsoid, independent of ring order.
-At the seam, only a collinear shared span with polygon interiors on opposite
-sides is a chart cut; that span does not count for validity or simplicity, while
-same-side overlaps remain invalid.
+At the seam, a collinear shared span with polygon interiors on opposite sides
+is a chart cut regardless of whether members use east/east, west/west, or
+east/west seam spellings; it does not count for validity or simplicity, while
+same-side overlaps remain invalid. A full-longitude band may also use zigzag
+sides when the two boundary copies are antiparallel and exactly one period
+apart.
 The **stay-planar**
 constructive ops ([`convex_hull`][gometry.Geometry.convex_hull], [`concave_hull`][gometry.Geometry.concave_hull], [`buffer`][gometry.Geometry.buffer], [`offset_curve`][gometry.Geometry.offset_curve],
 [`simplify`][gometry.Geometry.simplify], Voronoi, Delaunay) do **not** auto-split; call

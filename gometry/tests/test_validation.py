@@ -348,9 +348,10 @@ def test_geographic_seam_bowtie_is_invalid_with_exact_q_witness(crs: int | str) 
         'self_intersection',
         'exterior ring has a self-intersection',
     )
-    assert report.location is not None
-    assert abs(report.location[0]) == 180.0
-    assert report.location[1] == 0.0
+    # The lifted diagonals meet at (180, 0), canonically spelled (-180, 0).
+    assert report.location == (-180.0, 0.0)
+    respelled = gm.Polygon([(x + 360, y) for x, y in points], crs=crs)
+    assert respelled.validate().location == (-180.0, 0.0)
 
     planar_unwrap = gm.Polygon([
         (170, -10),
@@ -361,10 +362,8 @@ def test_geographic_seam_bowtie_is_invalid_with_exact_q_witness(crs: int | str) 
     ])
     planar_report = planar_unwrap.validate()
     assert not planar_unwrap.is_valid and not planar_unwrap.is_simple
-    assert (planar_report.code, planar_report.location) == (
-        report.code,
-        report.location,
-    )
+    assert planar_report.code == report.code
+    assert planar_report.location == (180.0, 0.0)
 
     rows = gm.GeometryArray(
         [
@@ -448,6 +447,22 @@ def test_ambiguous_full_turn_ring_is_reported_and_rejected_at_admission() -> Non
 
 
 @pytest.mark.parametrize('crs', [4326, 'OGC:CRS84'], ids=['epsg4326', 'crs84'])
+@pytest.mark.parametrize('latitude', [90, -90], ids=['north', 'south'])
+def test_geographic_pole_backtrack_is_simple_in_scalar_and_array_lanes(
+    crs: int | str,
+    latitude: int,
+) -> None:
+    # Every vertex names one pole, so the apparent planar backtrack is null.
+    line = gm.LineString([(0, latitude), (20, latitude), (10, latitude)], crs=crs)
+    assert line.is_simple
+    rows = gm.GeometryArray([line, None], crs=crs)
+    np.testing.assert_array_equal(rows.is_simple, [True, False])
+    gathered = rows[[0, 1, 0]]
+    np.testing.assert_array_equal(gathered.is_simple, [True, False, True])
+    assert len(line.self_intersections()) == 0
+
+
+@pytest.mark.parametrize('crs', [4326, 'OGC:CRS84'], ids=['epsg4326', 'crs84'])
 def test_geographic_seam_hole_touches_keep_planar_ogc_validity(crs: int | str) -> None:
     shell = [(170, -10), (-170, -10), (-170, 10), (170, 10), (170, -10)]
     point_touch = [(180, -10), (175, -5), (180, 0), (-175, -5), (180, -10)]
@@ -461,7 +476,16 @@ def test_geographic_seam_hole_touches_keep_planar_ogc_validity(crs: int | str) -
     assert not shared_segment_polygon.is_simple
     report = shared_segment_polygon.validate()
     assert report.code == 'shared_linework'
-    assert report.location == (178.0, -10.0)
+    # At y=-10 the overlap lifts to [178, 182]; its canonical minimum is -180.
+    assert report.location == (-180.0, -10.0)
+    overlap = gm.LineString([(178, -10), (-178, -10)], crs=crs)
+    assert gm.covers(overlap, gm.Point(*report.location, crs=crs))
+    respelled = gm.Polygon(
+        [(x + 360, y) for x, y in shell],
+        [[(x + 360, y) for x, y in shared_segment]],
+        crs=crs,
+    )
+    assert respelled.validate().location == (-180.0, -10.0)
 
     planar_point_touch = gm.Polygon(
         [(170, -10), (190, -10), (190, 10), (170, 10), (170, -10)],
@@ -493,10 +517,8 @@ def test_geographic_ring_self_touch_and_line_crossing_are_not_simple_at_seam() -
         ],
         crs=4326,
     )
-    crossing = gm.LineString(
-        [(170, -10), (-170, 10), (170, 10), (-170, -10)],
-        crs=4326,
-    )
+    crossing_points = [(170, -10), (-170, 10), (170, 10), (-170, -10)]
+    crossing = gm.LineString(crossing_points, crs=4326)
     seam_crossing = gm.LineString([(170, 0), (-170, 1)], crs=4326)
 
     report = ring_touch.validate()
@@ -504,8 +526,13 @@ def test_geographic_ring_self_touch_and_line_crossing_are_not_simple_at_seam() -
     assert report.code == 'self_intersection'
     assert not crossing.is_simple
     assert seam_crossing.is_simple
+    # The two non-adjacent diagonals meet only at the canonical seam point.
     assert [(point.x, point.y) for point in crossing.self_intersections()] == [
-        (180.0, 0.0)
+        (-180.0, 0.0)
+    ]
+    respelled = gm.LineString([(x + 360, y) for x, y in crossing_points], crs=4326)
+    assert [(point.x, point.y) for point in respelled.self_intersections()] == [
+        (-180.0, 0.0)
     ]
 
     rows = gm.GeometryArray([crossing, seam_crossing], crs=4326)

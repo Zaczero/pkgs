@@ -289,11 +289,26 @@ pub(crate) fn wedges_interleave(first: &[XY], second: &[XY], point: XY) -> bool 
                 .then_with(|| left.1.cmp(&right.1))
         })
     });
-    let changes = slots
-        .iter()
-        .zip(slots.iter().cycle().skip(1))
-        .filter(|(left, right)| (left.1 >= first_count) != (right.1 >= first_count))
-        .count();
+    fan_alternations(slots.iter().map(|(_, index)| *index >= first_count))
+}
+
+pub(crate) fn fan_alternations(labels: impl IntoIterator<Item = bool>) -> bool {
+    let mut labels = labels.into_iter();
+    let Some(first) = labels.next() else {
+        return false;
+    };
+    let mut previous = first;
+    let mut len = 1_usize;
+    let mut changes = 0_usize;
+    for current in labels {
+        len = len.saturating_add(1);
+        changes = changes.saturating_add(usize::from(current != previous));
+        previous = current;
+    }
+    if len < 4 {
+        return false;
+    }
+    changes = changes.saturating_add(usize::from(previous != first));
     changes >= 4
 }
 
