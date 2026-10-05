@@ -170,6 +170,22 @@ split-debuginfo = "unpacked"
 opt-level = 2
 debug = false
 
+# gometry's CMake-built native dependencies are workspace members, so the wildcard
+# above does not reach them: give them the same optimized, debug-free settings,
+# which also makes their CMake builds Release-type. `trim-paths` hands Cargo's path
+# remap to their build scripts, and `gometry/native/cmake_flags.rs` forwards it to
+# the C and C++ objects, so every checkout compiles identical objects and the
+# compiler cache shares them. gometry's own Rust keeps checkout paths.
+[profile.dev.package.proj-sys]
+opt-level = 2
+debug = false
+trim-paths = "all"
+
+[profile.dev.package.gometry-libtiff-sys]
+opt-level = 2
+debug = false
+trim-paths = "all"
+
 # Local optimized builds use thin LTO and default codegen-units. Ordinary
 # development builds use the dev profile, including its assertions and checks.
 # `strip` is deliberately absent — with `debug` set, Cargo already defaults to
