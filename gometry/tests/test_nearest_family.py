@@ -424,6 +424,101 @@ class TestGeodesic:
     """Geographic CRS produces geodesic witnesses; planar override escapes."""
 
     @pytest.mark.parametrize(
+        'source_wkt,expected_z,expected_m',
+        [
+            (
+                'MULTILINESTRING ZM ((0 1 10 100,1 2 20 200),(-1 1 30 300,1 1 50 500))',
+                40.0,
+                400.0,
+            ),
+            (
+                'GEOMETRYCOLLECTION ZM (POINT ZM (0 1 10 100),LINESTRING ZM (-1 1 30 300,1 1 50 500))',
+                40.0,
+                400.0,
+            ),
+            (
+                'MULTILINESTRING ZM ((0 1 10 100,0 1 10 100),(-1 1 30 300,1 1 50 500))',
+                40.0,
+                400.0,
+            ),
+            (
+                'MULTILINESTRING ZM ((0 1 10 100,1 2 20 200),(-1 1.0000000000000002 30 300,1 1.0000000000000002 50 500))',
+                10.0,
+                100.0,
+            ),
+            (
+                'MULTILINESTRING ZM ((0 1 10 100,2 1 20 200),(-2 1 30 300,0 1 50 500))',
+                10.0,
+                100.0,
+            ),
+            (
+                'MULTILINESTRING ZM ((-1 1 10 100,1 1 20 200),(-1 1 30 300,1 1 50 500))',
+                15.0,
+                150.0,
+            ),
+        ],
+        ids=[
+            'mirror',
+            'isolated-point',
+            'degenerate',
+            'two-ulp-farther',
+            'same-endpoint-role',
+            'same-interior-role',
+        ],
+    )
+    @pytest.mark.parametrize('reverse', [False, True])
+    def test_geographic_witness_role_preserves_primitive_ordinates(
+        self, source_wkt, expected_z, expected_m, reverse
+    ) -> None:
+        point = gm.from_wkt('POINT ZM (0 0 7 70)', crs=4326, epoch=2020.0)
+        source = gm.from_wkt(source_wkt, crs=4326, epoch=2020.0)
+        left, right = (source, point) if reverse else (point, source)
+        pair = gm.nearest_points(left, right)
+        witness = pair[0 if reverse else 1]
+        assert witness.z == pytest.approx(expected_z, rel=0.0, abs=4e-14)
+        assert witness.m == expected_m
+        assert witness.crs == source.crs
+        assert witness.epoch == 2020.0
+        assert gm.distance(left, right).hex() == '0x1.afee6378861e6p+16'
+        shortest = gm.shortest_line(left, right)
+        index = 0 if reverse else -1
+        assert shortest.coords.z[index] == pytest.approx(expected_z, rel=0.0, abs=4e-14)
+        assert shortest.coords.m[index] == expected_m
+        assert shortest.crs == source.crs
+        assert shortest.epoch == 2020.0
+
+    @pytest.mark.parametrize('reverse', [False, True])
+    @pytest.mark.parametrize('array_pair', [False, True])
+    def test_geographic_witness_role_nullable_gathered_broadcast(
+        self, reverse, array_pair
+    ) -> None:
+        point = gm.from_wkt('POINT ZM (0 0 7 70)', crs=4326, epoch=2020.0)
+        source = gm.from_wkt(
+            'MULTILINESTRING ZM ((0 1 10 100,1 2 20 200),(-1 1 30 300,1 1 50 500))',
+            crs=4326,
+            epoch=2020.0,
+        )
+        sources = gm.GeometryArray([source, None, source])[[2, 0, 1, 2]]
+        queries = gm.GeometryArray([point] * 4) if array_pair else point
+        left, right = (sources, queries) if reverse else (queries, sources)
+        pair = gm.nearest_points(left, right)
+        witnesses = pair[0 if reverse else 1]
+        for row, witness in enumerate(witnesses):
+            if row == 2:
+                assert witness is None
+            else:
+                assert witness.z == 40.0
+                assert witness.m == 400.0
+                assert witness.crs == source.crs
+                assert witness.epoch == 2020.0
+        for row, shortest in enumerate(gm.shortest_line(left, right)):
+            if row == 2:
+                assert shortest is None
+            else:
+                assert shortest.coords.z[0 if reverse else -1] == 40.0
+                assert shortest.coords.m[0 if reverse else -1] == 400.0
+
+    @pytest.mark.parametrize(
         'longitude',
         [0.0, 5.0, 2.5, 1.0, 3.7],
         ids=[

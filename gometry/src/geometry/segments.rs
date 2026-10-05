@@ -180,6 +180,23 @@ impl ExactSegmentProjection {
     }
 }
 
+/// The source primitive governing a witness, independent of rounded emission.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub(crate) enum WitnessRole {
+    Interior,
+    Point,
+}
+
+impl WitnessRole {
+    pub(crate) fn cmp_tie(
+        self,
+        incumbent: Self,
+        source_order: impl FnOnce() -> Ordering,
+    ) -> Ordering {
+        self.cmp(&incumbent).then_with(source_order)
+    }
+}
+
 /// One certified clamped projection. The provenance-carrying variants retain
 /// their source ratio until coordinate, distance, and along-distance
 /// reconstruction; a rounded `t == 0` or `t == 1` therefore cannot turn a
@@ -1765,13 +1782,18 @@ std::thread_local! {
 }
 
 impl ExactDistanceWitness {
-    const fn tie_rank(self) -> u8 {
-        match self {
-            // On an exact source-distance tie, retain an interior projection's
-            // ordinate provenance rather than collapsing it to an endpoint.
-            Self::ProjectedPointPair(..) | Self::ClampedPointPair(..) => 0,
-            Self::PointPair(..) => 1,
-        }
+    fn witness_role(self) -> Result<WitnessRole> {
+        Ok(match self {
+            Self::ProjectedPointPair(..) => WitnessRole::Interior,
+            Self::PointPair(..) => WitnessRole::Point,
+            Self::ClampedPointPair(point, segment) => {
+                match classify_segment_projection_exact(point, segment)? {
+                    ExactClassifiedSegmentProjection::Interior(_) => WitnessRole::Interior,
+                    ExactClassifiedSegmentProjection::Start
+                    | ExactClassifiedSegmentProjection::End => WitnessRole::Point,
+                }
+            },
+        })
     }
 
     #[expect(
@@ -1840,11 +1862,56 @@ fn exact_witness_cmp_with_identity(
     right: ExactDistanceWitness,
 ) -> Result<Ordering> {
     if left.same_distance_as(right) {
-        return Ok(left.tie_rank().cmp(&right.tie_rank()));
+        return Ok(left
+            .witness_role()?
+            .cmp_tie(right.witness_role()?, || Ordering::Equal));
     }
     #[cfg(test)]
     EXACT_SELECTION_FALLBACKS.with(|count| count.set(count.get() + 1));
-    Ok(exact_distance_witness_cmp(left, right)?.then(left.tie_rank().cmp(&right.tie_rank())))
+    let distance = exact_distance_witness_cmp(left, right)?;
+    if distance.is_eq() {
+        Ok(left
+            .witness_role()?
+            .cmp_tie(right.witness_role()?, || Ordering::Equal))
+    } else {
+        Ok(distance)
+    }
+}
+
+#[cfg(test)]
+mod witness_role_tests {
+    use super::*;
+
+    #[test]
+    fn chart_witness_role_clamped_recipe_classifies_only_equal_source_distances() {
+        let point = XY::new(0.0, 0.0);
+        let endpoint = ExactDistanceWitness::ClampedPointPair(point, Segment {
+            start: XY::new(0.0, 1.0),
+            end: XY::new(1.0, 2.0),
+        });
+        let interior = ExactDistanceWitness::ClampedPointPair(point, Segment {
+            start: XY::new(-1.0, 1.0),
+            end: XY::new(1.0, 1.0),
+        });
+        let point_pair = ExactDistanceWitness::PointPair(point, XY::new(0.0, 1.0));
+        assert_eq!(
+            exact_witness_cmp_with_identity(endpoint, point_pair).unwrap(),
+            Ordering::Equal
+        );
+        assert_eq!(
+            exact_witness_cmp_with_identity(interior, point_pair).unwrap(),
+            Ordering::Less
+        );
+        assert_eq!(
+            exact_distance_witness_cmp(interior, point_pair).unwrap(),
+            Ordering::Equal
+        );
+        let closer = ExactDistanceWitness::PointPair(point, XY::new(0.0, 0.5));
+        assert_eq!(
+            exact_witness_cmp_with_identity(interior, closer).unwrap(),
+            Ordering::Greater
+        );
+    }
 }
 
 /// Affinely interpolate between two finite points. A convex `fraction` in

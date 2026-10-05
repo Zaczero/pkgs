@@ -2548,10 +2548,11 @@ class Geometry:
         Projection is in X/Y. Zero-length X/Y segments add no distance-basis projection.
         Planar distance-basis locate selects the exactly nearest segment; exact ties
         prefer an interior projection over an endpoint, then the first segment in route
-        order, matching planar proximity. Geographic distance-basis ties keep the first
-        route position. With
-        ``basis='m'``, the returned M is likewise taken from the first nearest
-        projection.
+        order, matching planar proximity. Geographic locate applies the same role and
+        source order when evaluated backend distances compare equal. It ranks available
+        measurements, including the chart projection trial, rather than asserting an
+        exact geodesic minimum. With ``basis='m'``, the returned M is taken from the
+        selected projection.
 
         With CRS-aware units on a geographic CRS, locate minimizes geodesic distance to
         the straight chart edges and returns cumulative ellipsoidal arclength to the
@@ -8740,10 +8741,11 @@ class GeometryArray(Sequence[_GeometryT_co]):
         Projection is in X/Y. Zero-length X/Y segments add no distance-basis projection.
         Planar distance-basis locate selects the exactly nearest segment; exact ties
         prefer an interior projection over an endpoint, then the first segment in route
-        order, matching planar proximity. Geographic distance-basis ties keep the first
-        route position. With
-        ``basis='m'``, the returned M is likewise taken from the first nearest
-        projection.
+        order, matching planar proximity. Geographic locate applies the same role and
+        source order when evaluated backend distances compare equal. It ranks available
+        measurements, including the chart projection trial, rather than asserting an
+        exact geodesic minimum. With ``basis='m'``, the returned M is taken from the
+        selected projection.
 
         With CRS-aware units on a geographic CRS, locate minimizes geodesic distance to
         the straight chart edges and returns cumulative ellipsoidal arclength to the
@@ -17808,6 +17810,10 @@ def nearest_points(
     edge-interior point). The connecting line is ``shortest_line``. An empty operand yields
     ``(POINT EMPTY, POINT EMPTY)``, and the pair is dropped to the operands'
     common axes so it matches ``shortest_line``'s endpoints exactly.
+    Equal-distance witnesses prefer an interior projection over a point or
+    endpoint, then source order. Geographic metrics apply this order only to
+    equal evaluated backend distances; analytic branches retain their available
+    candidate. This does not assert an exact geodesic minimum.
 
     Parameters
     ----------

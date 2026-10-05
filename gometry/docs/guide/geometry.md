@@ -466,7 +466,9 @@ With CRS-aware units (the default on a geographic CRS), linework edges are
 straight in the CRS's longitude/latitude chart and LRS measures their
 ellipsoidal arclength, rather than the shortest geodesic between each pair of
 vertices. `line_locate` minimizes against those same chart edges and returns the
-first route station on an exact distance tie. Repeated support and self-crossings
+interior projection before a point or endpoint when evaluated backend distances
+compare equal, then uses route order. This ranks available measurements, not an
+exact geodesic continuum minimum. Repeated support and self-crossings
 can have several stations at one location, so locate/interpolate is not a unique
 inverse there.
 An independently interpolated point has canonical longitude, while a

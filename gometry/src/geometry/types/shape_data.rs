@@ -1426,6 +1426,7 @@ crate::heapless!(ChartBox);
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum PointEdgeQuery {
     Minimum { cutoff: f64 },
+    Nearest { cutoff: f64 },
     Locate { cutoff: f64 },
     Dwithin { limit: f64 },
 }

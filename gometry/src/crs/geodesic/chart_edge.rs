@@ -158,6 +158,14 @@ impl ChartEdge {
             && (self.longitude_delta_native == 0.0 || self.start_latitude.abs() == self.pole)
     }
 
+    pub(crate) fn witness_role(&self, parameter: f64) -> crate::geometry::WitnessRole {
+        if !self.is_degenerate() && parameter > 0.0 && parameter < 1.0 {
+            crate::geometry::WitnessRole::Interior
+        } else {
+            crate::geometry::WitnessRole::Point
+        }
+    }
+
     pub(crate) fn new(start: Point, end: Point, frame: GeographicFrame) -> Result<Self> {
         let axis = frame.longitude();
         let step = axis

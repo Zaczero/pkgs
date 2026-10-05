@@ -99,7 +99,9 @@ pub(crate) fn point_edge_query(
         .expect("geographic point was admitted before chart-edge distance");
 
     let (cutoff, threshold, locate) = match query {
-        PointEdgeQuery::Minimum { cutoff } => (cutoff, None, false),
+        PointEdgeQuery::Minimum { cutoff } | PointEdgeQuery::Nearest { cutoff } => {
+            (cutoff, None, false)
+        },
         PointEdgeQuery::Locate { cutoff } => (cutoff, None, true),
         PointEdgeQuery::Dwithin { limit } => {
             if limit.is_nan() {
@@ -120,6 +122,10 @@ pub(crate) fn point_edge_query(
             (f64::INFINITY, Some(limit), false)
         },
     };
+    let ranks_witness = matches!(
+        query,
+        PointEdgeQuery::Nearest { .. } | PointEdgeQuery::Locate { .. }
+    );
 
     if envelope_lower >= cutoff {
         return Ok(PointEdgeQueryResult::Excluded);
@@ -182,11 +188,13 @@ pub(crate) fn point_edge_query(
             budget_exhausted: false,
         }
     };
+    // Witness ties must not change the numerical anchor used by correction.
+    let mut witness_parameter = best.parameter;
     if best.distance == 0.0 {
         best.lower_bound = 0.0;
         return Ok(direct_result(
             best.distance,
-            best.parameter,
+            witness_parameter,
             2,
             cutoff,
             threshold,
@@ -210,12 +218,15 @@ pub(crate) fn point_edge_query(
         if parameter > 0.0 && parameter < 1.0 {
             let (distance, azimuth) = sample(geodesic, point, edge, parameter);
             best.evaluations = best.evaluations.wrapping_add(1);
+            if ranks_witness {
+                update_witness_parameter(&best, &mut witness_parameter, distance, parameter, edge);
+            }
             update_minimum(&mut best, distance, parameter);
             if best.distance == 0.0 {
                 best.lower_bound = 0.0;
                 return Ok(direct_result(
                     best.distance,
-                    best.parameter,
+                    witness_parameter,
                     best.evaluations,
                     cutoff,
                     threshold,
@@ -304,6 +315,9 @@ pub(crate) fn point_edge_query(
                 evaluations: best.evaluations,
             });
         }
+        if ranks_witness {
+            update_witness_parameter(&best, &mut witness_parameter, distance, parameter, edge);
+        }
         let improved = update_minimum(&mut best, distance, parameter);
         if best.distance == 0.0 {
             best.lower_bound = 0.0;
@@ -359,11 +373,41 @@ pub(crate) fn point_edge_query(
         if parameter > 0.0 && parameter < 1.0 && parameter != best.parameter {
             let (distance, _) = sample(geodesic, point, edge, parameter);
             best.evaluations = best.evaluations.wrapping_add(1);
+            if ranks_witness {
+                update_witness_parameter(&best, &mut witness_parameter, distance, parameter, edge);
+            }
             update_minimum(&mut best, distance, parameter);
             best.lower_bound = best.lower_bound.min(best.distance);
         }
     }
+    if ranks_witness {
+        best.parameter = witness_parameter;
+    }
     Ok(finalize_query(best, cutoff, threshold))
+}
+
+#[expect(
+    clippy::float_cmp,
+    reason = "witness roles apply only to equal backend measurements"
+)]
+fn update_witness_parameter(
+    best: &PointEdgeMinimum,
+    witness_parameter: &mut f64,
+    distance: f64,
+    parameter: f64,
+    edge: &ChartEdge,
+) {
+    if distance < best.distance
+        || distance == best.distance
+            && edge
+                .witness_role(parameter)
+                .cmp_tie(edge.witness_role(*witness_parameter), || {
+                    parameter.total_cmp(witness_parameter)
+                })
+                .is_lt()
+    {
+        *witness_parameter = parameter;
+    }
 }
 
 #[expect(
@@ -919,6 +963,78 @@ mod tests {
         assert!(minimum.distance < 2.0e-9);
         assert!(minimum.evaluations <= 3);
         assert!(!minimum.budget_exhausted);
+    }
+
+    #[test]
+    fn chart_witness_role_nearest_preserves_minimum_measurements() {
+        let metric = metric(&Geodesic::wgs84(), GeographicFrame::crs84());
+        for (name, start, end, point) in [
+            ("interior", [-1.0, 1.0], [1.0, 1.0], [0.0, 0.0]),
+            ("endpoint", [0.0, 1.0], [1.0, 2.0], [0.0, 0.0]),
+            ("flat", [-1e-10, 1.0], [1e-10, 1.0], [0.0, 0.0]),
+            ("seam", [175.0, 10.0], [-175.0, 10.0], [180.0, 20.0]),
+            ("polar", [-45.0, 80.0], [45.0, 80.0], [0.0, 89.999_999_999]),
+            ("pole", [-45.0, 60.0], [45.0, 60.0], [0.0, 90.0]),
+            ("degenerate", [0.0, 1.0], [0.0, 1.0], [0.0, 0.0]),
+            ("contact", [-1.0, 0.0], [1.0, 0.0], [0.0, 0.0]),
+        ] {
+            let point = Point::new_raw_xy(point[0], point[1]);
+            let edge = metric
+                .chart_edge(
+                    Point::new_raw_xy(start[0], start[1]),
+                    Point::new_raw_xy(end[0], end[1]),
+                )
+                .unwrap();
+            let query = |query| {
+                metric
+                    .point_edge_query(point, &edge, 0.0, query, &mut PointEdgeScratch::default())
+                    .unwrap()
+            };
+            let PointEdgeQueryResult::Minimum(reference) = query(PointEdgeQuery::Minimum {
+                cutoff: f64::INFINITY,
+            }) else {
+                panic!("{name}: unbounded minimum");
+            };
+            for cutoff in [f64::INFINITY, reference.distance.next_up()] {
+                let PointEdgeQueryResult::Minimum(minimum) =
+                    query(PointEdgeQuery::Minimum { cutoff })
+                else {
+                    panic!("{name}: admitted minimum");
+                };
+                let PointEdgeQueryResult::Minimum(nearest) =
+                    query(PointEdgeQuery::Nearest { cutoff })
+                else {
+                    panic!("{name}: admitted nearest");
+                };
+                assert_eq!(
+                    minimum.distance.to_bits(),
+                    nearest.distance.to_bits(),
+                    "{name}"
+                );
+                assert_eq!(
+                    minimum.lower_bound.to_bits(),
+                    nearest.lower_bound.to_bits(),
+                    "{name}"
+                );
+                assert_eq!(minimum.evaluations, nearest.evaluations, "{name}");
+                assert_eq!(minimum.budget_exhausted, nearest.budget_exhausted, "{name}");
+                if name == "flat" {
+                    assert_eq!(minimum.parameter, 0.0);
+                    assert_eq!(
+                        edge.witness_role(nearest.parameter),
+                        crate::geometry::WitnessRole::Point
+                    );
+                    let PointEdgeQueryResult::Minimum(locate) =
+                        query(PointEdgeQuery::Locate { cutoff })
+                    else {
+                        panic!("flat: admitted locate");
+                    };
+                    assert_eq!(locate.distance.to_bits(), minimum.distance.to_bits());
+                    assert_eq!(locate.parameter, 0.5);
+                    assert_eq!(locate.evaluations, 3);
+                }
+            }
+        }
     }
 
     #[test]

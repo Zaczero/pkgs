@@ -188,6 +188,7 @@ pub(crate) struct ChartPairMinimum {
     pub(crate) distance: f64,
     pub(crate) lower_bound: f64,
     pub(crate) intent: ChartStep,
+    role: crate::geometry::WitnessRole,
     order: u128,
 }
 
@@ -205,11 +206,32 @@ struct ChartPairCandidate {
     target: ChartTarget,
 }
 
-fn candidate_is_better(distance: f64, order: u128, best: Option<&ChartPairCandidate>) -> bool {
-    best.is_none_or(|best| {
-        distance < best.distance
-            || (distance.total_cmp(&best.distance).is_eq() && order < best.order)
-    })
+impl ChartPairCandidate {
+    fn role(&self, parts: &ChartParts) -> crate::geometry::WitnessRole {
+        match self.target {
+            ChartTarget::Point(_) => crate::geometry::WitnessRole::Point,
+            ChartTarget::Edge { parameter } => parts.edges[self.order as usize]
+                .edge
+                .witness_role(parameter),
+        }
+    }
+
+    fn precedes(&self, best: Option<&Self>, parts: &ChartParts, query: PointEdgeQuery) -> bool {
+        best.is_none_or(|best| {
+            self.distance < best.distance
+                || self.distance.total_cmp(&best.distance).is_eq()
+                    && match query {
+                        PointEdgeQuery::Minimum { .. } => self.order < best.order,
+                        PointEdgeQuery::Nearest { .. } | PointEdgeQuery::Locate { .. } => self
+                            .role(parts)
+                            .cmp_tie(best.role(parts), || self.order.cmp(&best.order))
+                            .is_lt(),
+                        PointEdgeQuery::Dwithin { .. } => {
+                            unreachable!("threshold queries do not select witnesses")
+                        },
+                    }
+        })
+    }
 }
 
 fn point_chart_candidate<M>(
@@ -226,7 +248,9 @@ where
 {
     let mut best = None;
     let mut best_distance = match query {
-        PointEdgeQuery::Minimum { cutoff } | PointEdgeQuery::Locate { cutoff } => cutoff,
+        PointEdgeQuery::Minimum { cutoff }
+        | PointEdgeQuery::Nearest { cutoff }
+        | PointEdgeQuery::Locate { cutoff } => cutoff,
         PointEdgeQuery::Dwithin { .. } => {
             unreachable!("minimum search requires an objective query")
         },
@@ -240,7 +264,10 @@ where
         if !admit_edge(part) {
             return Ok(None);
         }
-        let cutoff = if best
+        let cutoff = if matches!(
+            query,
+            PointEdgeQuery::Nearest { .. } | PointEdgeQuery::Locate { .. }
+        ) || best
             .as_ref()
             .is_none_or(|best: &ChartPairCandidate| (edge_index as u128) < best.order)
         {
@@ -250,6 +277,7 @@ where
         };
         let query = match query {
             PointEdgeQuery::Minimum { .. } => PointEdgeQuery::Minimum { cutoff },
+            PointEdgeQuery::Nearest { .. } => PointEdgeQuery::Nearest { cutoff },
             PointEdgeQuery::Locate { .. } => PointEdgeQuery::Locate { cutoff },
             PointEdgeQuery::Dwithin { .. } => {
                 unreachable!("minimum search requires an objective query")
@@ -258,16 +286,17 @@ where
         match metric.point_edge_query(point, &part.edge, envelope_lower, query, scratch)? {
             PointEdgeQueryResult::Minimum(minimum) => {
                 lower_bound = lower_bound.min(minimum.lower_bound);
-                if candidate_is_better(minimum.distance, edge_index as u128, best.as_ref()) {
+                let candidate = ChartPairCandidate {
+                    distance: minimum.distance,
+                    lower_bound: minimum.lower_bound,
+                    order: edge_index as u128,
+                    target: ChartTarget::Edge {
+                        parameter: minimum.parameter,
+                    },
+                };
+                if candidate.precedes(best.as_ref(), target, query) {
                     *best_distance = minimum.distance;
-                    best = Some(ChartPairCandidate {
-                        distance: minimum.distance,
-                        lower_bound: minimum.lower_bound,
-                        order: edge_index as u128,
-                        target: ChartTarget::Edge {
-                            parameter: minimum.parameter,
-                        },
-                    });
+                    best = Some(candidate);
                 }
             },
             PointEdgeQueryResult::Excluded => {},
@@ -293,12 +322,12 @@ where
             visit_edge(edge_index, bound(part.bounds), &mut best_distance)?;
         }
     }
-    for (index, &target_point) in target
-        .point_only
-        .iter()
-        .enumerate()
-        .filter(|_| matches!(query, PointEdgeQuery::Minimum { .. }))
-    {
+    for (index, &target_point) in target.point_only.iter().enumerate().filter(|_| {
+        matches!(
+            query,
+            PointEdgeQuery::Minimum { .. } | PointEdgeQuery::Nearest { .. }
+        )
+    }) {
         let point_lower_bound = metric.point_distance_lower_bound(point, target_point)?;
         lower_bound = lower_bound.min(point_lower_bound);
         if best_distance.is_finite() && point_lower_bound > best_distance.next_up() {
@@ -306,14 +335,15 @@ where
         }
         let distance = metric.segment_length(point, target_point);
         let order = (target.edges.len() as u128).wrapping_add(index as u128);
-        if candidate_is_better(distance, order, best.as_ref()) {
+        let candidate = ChartPairCandidate {
+            distance,
+            lower_bound: point_lower_bound,
+            order,
+            target: ChartTarget::Point(target_point),
+        };
+        if candidate.precedes(best.as_ref(), target, query) {
             best_distance = best_distance.min(distance);
-            best = Some(ChartPairCandidate {
-                distance,
-                lower_bound: point_lower_bound,
-                order,
-                target: ChartTarget::Point(target_point),
-            });
+            best = Some(candidate);
         }
     }
     Ok(best.map(|mut candidate| {
@@ -334,6 +364,7 @@ fn materialize_point_chart_candidate<M>(
 where
     M: ChartMetric,
 {
+    let role = candidate.role(target);
     let target_point = match candidate.target {
         ChartTarget::Point(point) => point,
         ChartTarget::Edge { parameter } => {
@@ -355,6 +386,7 @@ where
         distance: candidate.distance,
         lower_bound: candidate.lower_bound,
         intent: ChartStep::Shortest(step),
+        role,
         order: candidate.order,
     })
 }
@@ -515,15 +547,6 @@ where
     Ok(false)
 }
 
-#[derive(Clone, Copy)]
-struct ChartShapePairCandidate {
-    first: Point,
-    second: Point,
-    distance: f64,
-    intent: ChartStep,
-    order: u128,
-}
-
 fn reverse_chart_step(step: ChartStep) -> ChartStep {
     match step {
         ChartStep::Circle(TurnDirection::Positive) => ChartStep::Circle(TurnDirection::Negative),
@@ -540,15 +563,17 @@ fn reverse_chart_step(step: ChartStep) -> ChartStep {
     }
 }
 
-fn shape_pair_candidate_is_better(
-    distance: f64,
-    order: u128,
-    best: Option<&ChartShapePairCandidate>,
-) -> bool {
-    best.is_none_or(|best| {
-        distance < best.distance
-            || (distance.total_cmp(&best.distance).is_eq() && order < best.order)
-    })
+impl ChartPairMinimum {
+    fn precedes(&self, best: Option<&Self>) -> bool {
+        best.is_none_or(|best| {
+            self.distance < best.distance
+                || self.distance.total_cmp(&best.distance).is_eq()
+                    && self
+                        .role
+                        .cmp_tie(best.role, || self.order.cmp(&best.order))
+                        .is_lt()
+        })
+    }
 }
 
 const fn feature_width(parts: &ChartParts) -> u128 {
@@ -634,46 +659,56 @@ where
     let reverse_order_base = (left.vertices.len() as u128).wrapping_mul(right_width);
     let mut best = None;
     for (row, &point) in left.vertices.iter().enumerate() {
-        let Some(candidate) = point_chart_minimum(point, right, metric, scratch, stack)? else {
+        let Some(raw) = point_chart_candidate(
+            point,
+            right,
+            metric,
+            scratch,
+            stack,
+            PointEdgeQuery::Nearest {
+                cutoff: f64::INFINITY,
+            },
+            |_| true,
+        )?
+        else {
             continue;
         };
-        let order = (row as u128)
+        let mut candidate = materialize_point_chart_candidate(point, &raw, right, metric)?;
+        candidate.order = (row as u128)
             .wrapping_mul(right_width)
             .wrapping_add(candidate.order);
-        if shape_pair_candidate_is_better(candidate.distance, order, best.as_ref()) {
-            best = Some(ChartShapePairCandidate {
-                first: candidate.first,
-                second: candidate.second,
-                distance: candidate.distance,
-                intent: candidate.intent,
-                order,
-            });
+        if candidate.precedes(best.as_ref()) {
+            best = Some(candidate);
         }
     }
     for (row, &point) in right.vertices.iter().enumerate() {
-        let Some(candidate) = point_chart_minimum(point, left, metric, scratch, stack)? else {
+        let Some(raw) = point_chart_candidate(
+            point,
+            left,
+            metric,
+            scratch,
+            stack,
+            PointEdgeQuery::Nearest {
+                cutoff: f64::INFINITY,
+            },
+            |_| true,
+        )?
+        else {
             continue;
         };
-        let order = reverse_order_base
+        let mut candidate = materialize_point_chart_candidate(point, &raw, left, metric)?;
+        candidate.order = reverse_order_base
             .wrapping_add((row as u128).wrapping_mul(left_width))
             .wrapping_add(candidate.order);
-        if shape_pair_candidate_is_better(candidate.distance, order, best.as_ref()) {
-            best = Some(ChartShapePairCandidate {
-                first: candidate.second,
-                second: candidate.first,
-                distance: candidate.distance,
-                intent: reverse_chart_step(candidate.intent),
-                order,
-            });
+        if candidate.precedes(best.as_ref()) {
+            std::mem::swap(&mut candidate.first, &mut candidate.second);
+            candidate.intent = reverse_chart_step(candidate.intent);
+            best = Some(candidate);
         }
     }
-    Ok(best.map(|candidate| ChartPairMinimum {
-        first: candidate.first,
-        second: candidate.second,
-        distance: candidate.distance,
-        lower_bound: 0.0,
-        intent: candidate.intent,
-        order: candidate.order,
+    Ok(best.map(|mut candidate| {
+        candidate.lower_bound = 0.0;
+        candidate
     }))
 }
 
@@ -801,6 +836,7 @@ where
             distance: 0.0,
             lower_bound: 0.0,
             intent: ChartStep::Shortest(EdgeDirection::Minor(0.0)),
+            role: crate::geometry::WitnessRole::Point,
             order: 0,
         }));
     }
@@ -847,6 +883,250 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn chart_metric(geodesic: &geographiclib_rs::Geodesic) -> crate::crs::EllipsoidMetric<'_> {
+        crate::crs::EllipsoidMetric::for_crs84_geometry_test(geodesic)
+    }
+
+    fn selected(
+        point: Point,
+        parts: &ChartParts,
+        metric: &crate::crs::EllipsoidMetric<'_>,
+        query: PointEdgeQuery,
+    ) -> ChartPairCandidate {
+        point_chart_candidate(
+            point,
+            parts,
+            metric,
+            &mut PointEdgeScratch::default(),
+            &mut Vec::new(),
+            query,
+            |_| true,
+        )
+        .unwrap()
+        .unwrap()
+    }
+
+    #[test]
+    fn chart_witness_role_later_interior_wins_only_equal_backend_distances() {
+        let geodesic = geographiclib_rs::Geodesic::wgs84();
+        let metric = chart_metric(&geodesic);
+        let point = Point::new_raw_xy(0.0, 0.0);
+        let endpoint = ChartParts::build(
+            &crate::io::parse_wkt("LINESTRING (0 1,1 2)").unwrap(),
+            &metric,
+        )
+        .unwrap();
+        let interior = ChartParts::build(
+            &crate::io::parse_wkt("LINESTRING (-1 1,1 1)").unwrap(),
+            &metric,
+        )
+        .unwrap();
+        for query in [
+            PointEdgeQuery::Minimum {
+                cutoff: f64::INFINITY,
+            },
+            PointEdgeQuery::Nearest {
+                cutoff: f64::INFINITY,
+            },
+            PointEdgeQuery::Locate {
+                cutoff: f64::INFINITY,
+            },
+        ] {
+            assert_eq!(
+                selected(point, &endpoint, &metric, query)
+                    .distance
+                    .to_bits(),
+                110_574.388_557_798_78_f64.to_bits()
+            );
+            assert_eq!(
+                selected(point, &interior, &metric, query)
+                    .distance
+                    .to_bits(),
+                110_574.388_557_798_78_f64.to_bits()
+            );
+        }
+        let parts = ChartParts::build(
+            &crate::io::parse_wkt(
+                "MULTILINESTRING ZM ((0 1 10 100,1 2 20 200),(-1 1 30 300,1 1 50 500))",
+            )
+            .unwrap(),
+            &metric,
+        )
+        .unwrap();
+        let minimum = selected(point, &parts, &metric, PointEdgeQuery::Minimum {
+            cutoff: f64::INFINITY,
+        });
+        assert_eq!(minimum.order, 0);
+        for query in [
+            PointEdgeQuery::Nearest {
+                cutoff: f64::INFINITY,
+            },
+            PointEdgeQuery::Locate {
+                cutoff: f64::INFINITY,
+            },
+        ] {
+            let candidate = selected(point, &parts, &metric, query);
+            assert_eq!(candidate.order, 1);
+            assert_eq!(
+                candidate.role(&parts),
+                crate::geometry::WitnessRole::Interior
+            );
+            assert_eq!(candidate.distance.to_bits(), minimum.distance.to_bits());
+            let witness =
+                materialize_point_chart_candidate(point, &candidate, &parts, &metric).unwrap();
+            assert_eq!(witness.second.z(), Some(40.0));
+            assert_eq!(witness.second.m(), Some(400.0));
+        }
+        let farther = ChartParts::build(
+            &crate::io::parse_wkt(
+                "MULTILINESTRING ((0 1,1 2),(-1 1.0000000000000002,1 1.0000000000000002))",
+            )
+            .unwrap(),
+            &metric,
+        )
+        .unwrap();
+        let farther_interior = ChartParts::build(
+            &crate::io::parse_wkt("LINESTRING (-1 1.0000000000000002,1 1.0000000000000002)")
+                .unwrap(),
+            &metric,
+        )
+        .unwrap();
+        assert_eq!(
+            selected(point, &farther_interior, &metric, PointEdgeQuery::Nearest {
+                cutoff: f64::INFINITY
+            })
+            .distance
+            .to_bits(),
+            110_574.388_557_798_78_f64.to_bits() + 2,
+        );
+        for query in [
+            PointEdgeQuery::Nearest {
+                cutoff: f64::INFINITY,
+            },
+            PointEdgeQuery::Locate {
+                cutoff: f64::INFINITY,
+            },
+        ] {
+            assert_eq!(selected(point, &farther, &metric, query).order, 0);
+        }
+    }
+
+    #[test]
+    fn chart_witness_role_pair_fold_preserves_reverse_interior_provenance() {
+        let geodesic = geographiclib_rs::Geodesic::wgs84();
+        let metric = chart_metric(&geodesic);
+        let point = ChartParts::build(
+            &crate::io::parse_wkt("POINT ZM (0 0 7 70)").unwrap(),
+            &metric,
+        )
+        .unwrap();
+        let collection = ChartParts::build(&crate::io::parse_wkt("GEOMETRYCOLLECTION ZM (POINT ZM (0 1 10 100),LINESTRING ZM (-1 1 30 300,1 1 50 500))").unwrap(), &metric).unwrap();
+        for reverse in [false, true] {
+            let (left, right) = if reverse {
+                (&collection, &point)
+            } else {
+                (&point, &collection)
+            };
+            let result = chart_nearest_points_with_parts(
+                left,
+                right,
+                &metric,
+                &mut PointEdgeScratch::default(),
+                &mut Vec::new(),
+            )
+            .unwrap()
+            .unwrap();
+            assert_eq!(result.role, crate::geometry::WitnessRole::Interior);
+            assert_eq!(result.lower_bound, 0.0);
+            let witness = if reverse { result.first } else { result.second };
+            assert_eq!(witness.z(), Some(40.0));
+            assert_eq!(witness.m(), Some(400.0));
+        }
+    }
+
+    #[test]
+    fn chart_witness_role_bvh_admits_later_equal_interior_after_endpoint() {
+        let geodesic = geographiclib_rs::Geodesic::wgs84();
+        let metric = chart_metric(&geodesic);
+        let point = Point::new_raw_xy(0.0, 0.0);
+        let shape = crate::io::parse_wkt("MULTILINESTRING ((0 1,-1 2),(-120 10,-119 10),(-100 10,-99 10),(-80 10,-79 10),(80 10,81 10),(100 10,101 10),(120 10,121 10),(140 10,141 10),(-1 1,1 1))").unwrap();
+        let parts = ChartParts::build(&shape, &metric).unwrap();
+        let mut visited = Vec::new();
+        let mut best_distance = f64::INFINITY;
+        parts
+            .bvh()
+            .unwrap()
+            .visit_point_candidates(
+                &parts.edges,
+                point,
+                &metric,
+                &mut best_distance,
+                None,
+                &mut Vec::new(),
+                |ordinal, _, _| {
+                    visited.push(ordinal);
+                    Ok::<Option<()>, crate::error::Error>(None)
+                },
+            )
+            .unwrap();
+        assert!(
+            visited.iter().position(|&id| id == 0).unwrap()
+                < visited.iter().position(|&id| id == 8).unwrap(),
+            "{visited:?}"
+        );
+        let streaming = ChartParts::build(&shape, &metric).unwrap();
+        assert!(streaming.bvh.set(None).is_ok());
+        for source in [&parts, &streaming] {
+            for query in [
+                PointEdgeQuery::Nearest {
+                    cutoff: f64::INFINITY,
+                },
+                PointEdgeQuery::Locate {
+                    cutoff: f64::INFINITY,
+                },
+            ] {
+                let result = selected(point, source, &metric, query);
+                assert_eq!(result.order, 8);
+                assert_eq!(result.role(source), crate::geometry::WitnessRole::Interior);
+            }
+        }
+    }
+
+    #[test]
+    fn chart_witness_role_rounding_does_not_turn_interior_into_endpoint() {
+        let geodesic = geographiclib_rs::Geodesic::wgs84();
+        let metric = chart_metric(&geodesic);
+        let start = Point::new_raw_xy(0.0, 1.0);
+        let end = Point::new_raw_xy(f64::from_bits(1), 1.0_f64.next_up());
+        let edge = metric.chart_edge(start, end).unwrap();
+        let witness = metric
+            .chart_edge_witness(start, end, &edge, 0.5, None)
+            .unwrap();
+        assert_eq!(witness.x.to_bits(), start.x.to_bits());
+        assert_eq!(witness.y.to_bits(), start.y.to_bits());
+        assert_eq!(
+            edge.witness_role(0.5),
+            crate::geometry::WitnessRole::Interior
+        );
+        assert_eq!(edge.witness_role(0.0), crate::geometry::WitnessRole::Point);
+        let degenerate = metric.chart_edge(start, start).unwrap();
+        assert_eq!(
+            degenerate.witness_role(0.5),
+            crate::geometry::WitnessRole::Point
+        );
+        let pole = metric
+            .chart_edge(Point::new_raw_xy(-1.0, 90.0), Point::new_raw_xy(1.0, 90.0))
+            .unwrap();
+        assert_eq!(pole.witness_role(0.5), crate::geometry::WitnessRole::Point);
+        let circle = metric
+            .chart_edge(Point::new_raw_xy(0.0, 1.0), Point::new_raw_xy(360.0, 1.0))
+            .unwrap();
+        assert_eq!(
+            circle.witness_role(0.5),
+            crate::geometry::WitnessRole::Interior
+        );
+    }
 
     #[test]
     fn chart_control_distance_and_witness_separations_match_the_independent_minimum() {

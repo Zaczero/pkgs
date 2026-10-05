@@ -236,6 +236,84 @@ def test_multi_line_string_chart_interpolate_locate_round_trip() -> None:
     )
 
 
+@pytest.mark.parametrize(
+    'normalized,expected', [(False, 268178.80229270144), (True, 0.706698050287263)]
+)
+def test_geographic_witness_role_locate_uses_selected_interior_station(
+    normalized, expected
+) -> None:
+    route = gm.from_wkt(
+        'MULTILINESTRING ZM ((0 1 10 100,1 2 20 200),(-1 1 30 300,1 1 50 500))',
+        crs=4326,
+    )
+    point = gm.from_wkt('POINT ZM (0 0 7 70)', crs=4326)
+    assert route.line_locate(point, normalized=normalized) == expected
+    assert route.line_locate(point, basis='m') == 400.0
+    rows = gm.GeometryArray([route, None, route])[[2, 0, 1, 2]]
+    values = list(rows.line_locate(point, normalized=normalized))
+    assert values[:2] == [expected, expected]
+    assert math.isnan(values[2])
+    assert values[3] == expected
+    measured = list(rows.line_locate(gm.GeometryArray([point] * 4), basis='m'))
+    assert measured[:2] == [400.0, 400.0]
+    assert math.isnan(measured[2])
+    assert measured[3] == 400.0
+
+
+@pytest.mark.parametrize(
+    'wkt,station,measure',
+    [
+        (
+            'MULTILINESTRING ZM ((0 1 10 100,0 1 10 100),(-1 1 30 300,1 1 50 500))',
+            111302.6497697324,
+            400.0,
+        ),
+        (
+            'MULTILINESTRING ZM ((0 1 10 100,1 2 20 200),(-1 1.0000000000000002 30 300,1 1.0000000000000002 50 500))',
+            0.0,
+            100.0,
+        ),
+        (
+            'MULTILINESTRING ZM ((0 1 10 100,2 1 20 200),(-2 1 30 300,0 1 50 500))',
+            0.0,
+            250.0,
+        ),
+        (
+            'MULTILINESTRING ZM ((-1 1 10 100,1 1 20 200),(-1 1 30 300,1 1 50 500))',
+            111302.6497697324,
+            150.0,
+        ),
+    ],
+    ids=['degenerate', 'two-ulp-farther', 'same-endpoint-role', 'same-interior-role'],
+)
+def test_geographic_witness_role_locate_preserves_eligibility_and_source_order(
+    wkt, station, measure
+) -> None:
+    route = gm.from_wkt(wkt, crs=4326)
+    point = gm.Point(0.0, 0.0, crs=4326)
+    assert route.line_locate(point) == station
+    # M's flattened route also admits the interpart connector; its interior
+    # can win where distance-basis support contains only tied endpoints.
+    assert route.line_locate(point, basis='m') == measure
+
+
+def test_geographic_witness_role_locate_packed_connected_line() -> None:
+    route = gm.from_wkt(
+        'LINESTRING ZM (0 1 10 100,1 2 20 200,-1 1 30 300,1 1 50 500)', crs=4326
+    )
+    point = gm.from_wkt('POINT ZM (0 0 7 70)', crs=4326)
+    rows = gm.GeometryArray([route, route, None])[[1, 0, 2]]
+    assert route.line_locate(point, basis='m') == 400.0
+    measured = list(rows.line_locate(point, basis='m'))
+    assert measured[:2] == [400.0, 400.0]
+    assert math.isnan(measured[2])
+    station = route.line_locate(point)
+    assert station > 111302.6497697324
+    located = list(rows.line_locate(gm.GeometryArray([point] * 3)))
+    assert located[:2] == [station, station]
+    assert math.isnan(located[2])
+
+
 def test_crs84_full_turn_parallel_locate_interpolate_round_trip() -> None:
     crs = 'OGC:CRS84'
     route = gm.LineString([(10.0, 60.0), (370.0, 60.0)], crs=crs)

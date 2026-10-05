@@ -254,10 +254,11 @@ an empty query point, locates to ``nan``.
 Projection is in X/Y. Zero-length X/Y segments add no distance-basis projection.
 Planar distance-basis locate selects the exactly nearest segment; exact ties
 prefer an interior projection over an endpoint, then the first segment in route
-order, matching planar proximity. Geographic distance-basis ties keep the first
-route position. With
-``basis='m'``, the returned M is likewise taken from the first nearest
-projection.
+order, matching planar proximity. Geographic locate applies the same role and
+source order when evaluated backend distances compare equal. It ranks available
+measurements, including the chart projection trial, rather than asserting an
+exact geodesic minimum. With ``basis='m'``, the returned M is taken from the
+selected projection.
 
 With CRS-aware units on a geographic CRS, locate minimizes geodesic distance to
 the straight chart edges and returns cumulative ellipsoidal arclength to the

@@ -404,6 +404,10 @@ pub(crate) fn frechet_distance(
 /// edge-interior point). The connecting line is ``shortest_line``. An empty operand yields
 /// ``(POINT EMPTY, POINT EMPTY)``, and the pair is dropped to the operands'
 /// common axes so it matches ``shortest_line``'s endpoints exactly.
+/// Equal-distance witnesses prefer an interior projection over a point or
+/// endpoint, then source order. Geographic metrics apply this order only to
+/// equal evaluated backend distances; analytic branches retain their available
+/// candidate. This does not assert an exact geodesic minimum.
 ///
 /// Parameters
 /// ----------

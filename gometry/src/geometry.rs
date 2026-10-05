@@ -334,7 +334,7 @@ use segments::{
 /// The guarded-sqrt distance is the one segment-kernel helper the broadcast
 /// lanes call directly (packed point columns).
 pub(crate) use segments::{
-    RectContact, finish_planar_squared_min, lerp_point, line_segments, point_distance,
+    RectContact, WitnessRole, finish_planar_squared_min, lerp_point, line_segments, point_distance,
     point_distance_squared, point_on_segment, points_dwithin, segment_vs_rect,
     squared_norm_is_trustworthy,
 };
