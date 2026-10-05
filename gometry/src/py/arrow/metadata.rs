@@ -2,7 +2,6 @@ use pyo3::types::{PyBytes, PyTuple, PyTupleMethods as _};
 use pyo3::{IntoPyObject as _, pyclass, pyfunction, pymethods};
 use serde_json::Value;
 
-use crate::boundary::reserve::try_reserve_total;
 use crate::crs::frame::{optional_crs_labels_operationally_equal, optional_epochs_equal};
 use crate::py::arrow::{
     Bound, GeometryEncoding, Py, PyAny, PyAnyMethods as _, PyErr, PyModule, PyResult, PyTypeError,
@@ -1219,7 +1218,7 @@ fn geoarrow_native_layout(
             // Fall back to field-index name access (matches Python helper).
             let num_fields = current.getattr("num_fields")?.extract::<usize>()?;
             let mut names = Vec::new();
-            try_reserve_total(&mut names, num_fields)?;
+            names.reserve(num_fields);
             for index in 0..num_fields {
                 names.push(current.get_item(index)?.getattr("name")?.extract()?);
             }

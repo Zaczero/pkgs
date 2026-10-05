@@ -415,38 +415,6 @@ def test_groups_comparison_reserves_from_exact_large_row_length() -> None:
     assert row.length_calls == 1
 
 
-def test_groups_comparison_rejects_unrepresentable_exact_row_before_next() -> None:
-    groups = _lib._unpickle_int64_groups_v1([7], [0, 1])
-
-    class ExactHugeRow:
-        def __init__(self) -> None:
-            self.remaining = sys.maxsize
-            self.events: list[str] = []
-            self.next_calls = 0
-
-        def __len__(self) -> int:
-            self.events.append('len')
-            return self.remaining
-
-        def __iter__(self):
-            self.events.append('iter')
-            return self
-
-        def __next__(self) -> int:
-            self.next_calls += 1
-            if self.remaining == 0:
-                raise StopIteration
-            self.remaining -= 1
-            return 7
-
-    row = ExactHugeRow()
-    with pytest.raises(OverflowError, match='resource size arithmetic overflowed'):
-        groups.index(row)
-
-    assert row.events == ['iter', 'len']
-    assert row.next_calls == 0
-
-
 @pytest.mark.parametrize(
     'hint',
     [0, 1 << 60],

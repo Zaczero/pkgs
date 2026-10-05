@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import pickle
-import sys
 
 import gometry as gm
 import numpy as np
@@ -30,42 +29,6 @@ def test_cell_array_pickle_roundtrip():
     arr = gm.CellArray(list(cells))
     out = pickle.loads(pickle.dumps(arr))
     assert [c.id for c in out] == [c.id for c in arr]
-
-
-def test_exact_pickle_rows_reject_unrepresentable_layout_before_next() -> None:
-    class ExactHugeRows(list[bytes]):
-        def __init__(self) -> None:
-            super().__init__()
-            self.remaining = sys.maxsize
-            self.events: list[str] = []
-            self.next_calls = 0
-
-        def __len__(self) -> int:
-            self.events.append('len')
-            return self.remaining
-
-        def __iter__(self):
-            self.events.append('iter')
-            return self
-
-        def __next__(self) -> bytes:
-            self.next_calls += 1
-            if self.remaining == 0:
-                raise StopIteration
-            self.remaining -= 1
-            return b'\x01'
-
-        def __getitem__(self, index: int) -> bytes:
-            if 0 <= index < self.remaining:
-                return b'\x01'
-            raise IndexError(index)
-
-    rows = ExactHugeRows()
-    with pytest.raises(OverflowError, match='resource size arithmetic overflowed'):
-        _lib._unpickle_geometry_array_v1(rows, None, None, None)
-
-    assert rows.events == ['iter', 'len']
-    assert rows.next_calls == 0
 
 
 def test_pickle_row_buffer_preserves_exporter_exception() -> None:

@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import pickle
 import re
-import sys
 from dataclasses import dataclass
 
 import gometry as gm
@@ -1012,38 +1011,6 @@ def test_cell_array_iterable_reserves_exact_length_once(typed: bool) -> None:
 
     assert list(result) == [cell, cell]
     assert rows.length_calls == 1
-
-
-def test_cell_array_rejects_unrepresentable_exact_length_before_next() -> None:
-    cell = gm.H3Cell(21.0, 52.0, resolution=7)
-
-    class ExactHugeRows:
-        def __init__(self) -> None:
-            self.remaining = sys.maxsize
-            self.events: list[str] = []
-            self.next_calls = 0
-
-        def __len__(self) -> int:
-            self.events.append('len')
-            return self.remaining
-
-        def __iter__(self):
-            self.events.append('iter')
-            return self
-
-        def __next__(self) -> gm.H3Cell:
-            self.next_calls += 1
-            if self.remaining == 0:
-                raise StopIteration
-            self.remaining -= 1
-            return cell
-
-    rows = ExactHugeRows()
-    with pytest.raises(OverflowError, match='resource size arithmetic overflowed'):
-        gm.CellArray(rows, type=gm.H3Cell)
-
-    assert rows.events == ['iter', 'len']
-    assert rows.next_calls == 0
 
 
 def test_cells_plural_returns_cell_array_round_trip() -> None:

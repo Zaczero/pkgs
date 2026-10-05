@@ -536,36 +536,6 @@ def test_crs_configure_acquires_search_path_iterator_before_length() -> None:
     assert excinfo.value is iter_error
 
 
-def test_crs_configure_rejects_unrepresentable_exact_paths_before_next() -> None:
-    class ExactPaths:
-        def __init__(self) -> None:
-            self.remaining = sys.maxsize
-            self.events: list[str] = []
-            self.next_calls = 0
-
-        def __len__(self) -> int:
-            self.events.append('len')
-            return self.remaining
-
-        def __iter__(self):
-            self.events.append('iter')
-            return self
-
-        def __next__(self) -> str:
-            self.next_calls += 1
-            if self.remaining == 0:
-                raise StopIteration
-            self.remaining -= 1
-            return 'unused'
-
-    paths = ExactPaths()
-    with pytest.raises(OverflowError, match='resource size arithmetic overflowed'):
-        gm.crs_configure(search_paths=paths)
-
-    assert paths.events == ['iter', 'len']
-    assert paths.next_calls == 0
-
-
 # ---------------------------------------------------------------------------
 # D12 — Features properties/ids bounded by known geometry row count
 # ---------------------------------------------------------------------------

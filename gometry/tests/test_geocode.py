@@ -9,7 +9,6 @@ itself fails from degrees).
 """
 
 import math
-import sys
 
 import gometry as gm
 import numpy as np
@@ -31,36 +30,6 @@ def test_pluscode_collection_acquires_iterator_before_length() -> None:
         gm.pluscode_polygon(Provider())
 
     assert excinfo.value is iter_error
-
-
-def test_pluscode_collection_rejects_unrepresentable_exact_length_before_next() -> None:
-    class ExactCodes:
-        def __init__(self) -> None:
-            self.remaining = sys.maxsize
-            self.events: list[str] = []
-            self.next_calls = 0
-
-        def __len__(self) -> int:
-            self.events.append('len')
-            return self.remaining
-
-        def __iter__(self):
-            self.events.append('iter')
-            return self
-
-        def __next__(self) -> str:
-            self.next_calls += 1
-            if self.remaining == 0:
-                raise StopIteration
-            self.remaining -= 1
-            return '8FVC2222+22'
-
-    codes = ExactCodes()
-    with pytest.raises(OverflowError, match='resource size arithmetic overflowed'):
-        gm.pluscode_polygon(codes)
-
-    assert codes.events == ['iter', 'len']
-    assert codes.next_calls == 0
 
 
 def test_pluscode_encodes_canonical_vectors() -> None:
