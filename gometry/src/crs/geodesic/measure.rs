@@ -463,7 +463,7 @@ mod chart_measure_tests {
     }
 
     #[test]
-    fn chart_area_matches_high_precision_zone_and_triangle_literals() {
+    fn chart_and_rectangular_cell_areas_match_high_precision_literals() {
         let metric = metric();
         let frame = metric.frame;
         let zone = polygon(
@@ -476,6 +476,13 @@ mod chart_measure_tests {
         assert!(
             (zone_area - zone_expected).abs() <= 1.0e-14 * zone_expected,
             "zone area={zone_area:.17}, expected={zone_expected:.17}"
+        );
+        let rectangular_cell_area = crate::geographic::lonlat::lonlat_rect_area_m2(
+            crate::geometry::Bounds::new_raw(-45.0, 70.0, 45.0, 80.0),
+        );
+        assert!(
+            (rectangular_cell_area - zone_expected).abs() <= 1.0e-14 * zone_expected,
+            "rectangular cell area={rectangular_cell_area:.17}, expected={zone_expected:.17}"
         );
 
         let triangle = polygon(&[(0.0, 10.0), (30.0, 10.0), (15.0, 50.0)], &[]);

@@ -1169,6 +1169,58 @@ def test_s2_to_polygon_pole_cap_matches_chart_edge_area_reference() -> None:
             assert outline.area == pytest.approx(reference, rel=2e-12, abs=1e-3)
 
 
+@pytest.mark.parametrize(
+    ('cell_type', 'cells'),
+    [
+        pytest.param(
+            gm.GeohashCell,
+            [
+                gm.GeohashCell(2.5, 0.5, precision=1),
+                gm.GeohashCell(13.4, 52.5, precision=5),
+                gm.GeohashCell(180.0, 0.0, precision=5),
+                gm.GeohashCell(179.99999, 80.0, precision=5),
+            ],
+            id='geohash',
+        ),
+        pytest.param(
+            gm.Tile,
+            [
+                gm.Tile(x=0, y=0, zoom=0),
+                gm.Tile(lon=13.4, lat=52.5, zoom=8),
+                gm.Tile(lon=180.0, lat=0.0, zoom=8),
+                gm.Tile(lon=179.99999, lat=80.0, zoom=8),
+            ],
+            id='tile',
+        ),
+    ],
+)
+def test_rectangular_cell_areas_match_wgs84_polygon_areas(cell_type, cells) -> None:
+    for cell in cells:
+        assert cell.area > 0.0
+        assert cell.area == pytest.approx(cell.polygon.area, rel=1e-12, abs=0.0)
+
+    dense = gm.CellArray(cells, type=cell_type)
+    np.testing.assert_array_equal(dense.area, [cell.area for cell in cells])
+
+    nullable = gm.CellArray([cells[0], None, cells[-1]], type=cell_type)
+    np.testing.assert_array_equal(
+        nullable.area[[0, 2]], [cells[0].area, cells[-1].area]
+    )
+    assert np.isnan(nullable.area[1])
+
+    gathered = nullable[[2, 0]]
+    np.testing.assert_array_equal(gathered.area, [cells[-1].area, cells[0].area])
+
+
+def test_max_resolution_polar_cell_areas_remain_positive() -> None:
+    geohash = gm.GeohashCell(179.99999, 89.9999999, precision=12)
+    tile = gm.Tile(lon=179.99999, lat=85.0511287, zoom=29)
+
+    for cell in (geohash, tile):
+        assert math.isfinite(cell.area)
+        assert cell.area > 0.0
+
+
 def test_rect_to_polygon_topology_dissolve_conserves_area() -> None:
     city = gm.box(13.35, 52.475, 13.45, 52.525, crs=4326)
     cases = [
@@ -1196,7 +1248,7 @@ def test_rect_to_polygon_topology_dissolve_conserves_area() -> None:
         outline = coverage.to_polygon()
         assert outline.is_valid
         cell_area = sum(cell.area for cell in coverage)
-        assert abs(outline.area - cell_area) / cell_area < 0.02
+        assert cell_area == pytest.approx(outline.area, rel=1e-12, abs=0.0)
         assert (coverage.compact().to_polygon() ^ outline).area <= 1e-06
 
 
