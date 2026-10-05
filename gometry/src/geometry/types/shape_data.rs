@@ -1483,7 +1483,6 @@ pub(crate) trait ChartMetric {
     fn chart_edge_locate_t(&self, edge: &ChartEdge, distance: f64, length: f64) -> Result<f64>;
     /// Measure a source edge interval without rounding exact chart-cut points.
     fn chart_edge_interval_length(&self, edge: &ChartEdge, start: f64, end: f64) -> Result<f64>;
-    fn chart_edge_position(&self, edge: &ChartEdge, parameter: f64) -> Point;
     fn chart_edge_witness(
         &self,
         start: Point,

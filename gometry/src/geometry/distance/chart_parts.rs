@@ -334,30 +334,24 @@ fn materialize_point_chart_candidate<M>(
 where
     M: ChartMetric,
 {
-    let target = match candidate.target {
-        ChartTarget::Point(point) => (point, point.x),
+    let target_point = match candidate.target {
+        ChartTarget::Point(point) => point,
         ChartTarget::Edge { parameter } => {
             let part = target
                 .edges
                 .get(candidate.order as usize)
                 .expect("candidate ordinal belongs to chart parts");
-            (
-                metric.chart_edge_witness(part.start, part.end, &part.edge, parameter, None)?,
-                metric.chart_edge_position(&part.edge, parameter).x,
-            )
+            metric.chart_edge_witness(part.start, part.end, &part.edge, parameter, None)?
         },
     };
     let frame = metric.chart_frame();
-    let axis = frame.longitude();
-    let first_chart_x = axis
-        .nearest_longitude_alias(target.1, point.x)
-        .map_err(|error| crate::crs::CrsError::invalid(error.to_string()))?;
-    let step = axis
-        .shortest_alias_step(first_chart_x, target.1)
+    let step = frame
+        .longitude()
+        .shortest_alias_step(point.x, target_point.x)
         .map_err(|error| crate::crs::CrsError::invalid(error.to_string()))?;
     Ok(ChartPairMinimum {
         first: point,
-        second: target.0,
+        second: target_point,
         distance: candidate.distance,
         lower_bound: candidate.lower_bound,
         intent: ChartStep::Shortest(step),
@@ -918,5 +912,119 @@ mod tests {
             shortest_separation.to_bits(),
             "nearest separation={nearest_separation:.17}, shortest-line separation={shortest_separation:.17}"
         );
+    }
+
+    #[test]
+    fn point_chart_minimum_uses_selected_endpoints_for_collection_intent_in_native_units() {
+        let geodesic = geographiclib_rs::Geodesic::wgs84();
+        for (unit_name, radians_per_unit) in [
+            ("degree", std::f64::consts::PI / 180.0),
+            ("grad", std::f64::consts::PI / 200.0),
+            ("radian", 1.0),
+        ] {
+            let unit =
+                crate::geographic::AngularFactor::try_new(unit_name, radians_per_unit).unwrap();
+            let frame = GeographicFrame::try_new(unit, unit, 0.0).unwrap();
+            let metric = crate::crs::EllipsoidMetric::for_geodesic_at_frame(&geodesic, 0, frame);
+            let native_per_degree = (std::f64::consts::PI / 180.0) / radians_per_unit;
+
+            for (case, source_degrees, target_degrees) in [
+                (
+                    "rounded endpoints",
+                    (-123.456789, -55.678912),
+                    (168.4349693, 54.4497109),
+                ),
+                ("seam aliases", (179.8, 0.0), (-179.8, 1.0)),
+                ("positive half turn", (0.0, 0.0), (180.0, 0.0)),
+                ("negative half turn", (180.0, 0.0), (0.0, 0.0)),
+                ("zero-longitude connection", (12.5, -40.0), (12.5, 40.0)),
+                (
+                    "equivalent full-period positions",
+                    (0.0, 15.0),
+                    (360.0, 15.0),
+                ),
+            ] {
+                let source = Point::new_raw_xy(
+                    source_degrees.0 * native_per_degree,
+                    source_degrees.1 * native_per_degree,
+                );
+                let target_point = Point::new_raw_xy(
+                    target_degrees.0 * native_per_degree,
+                    target_degrees.1 * native_per_degree,
+                );
+                let target_collection =
+                    Shape::geometry_collection(vec![Shape::Point(target_point)]).unwrap();
+                let point_parts = ChartParts::build(&Shape::Point(target_point), &metric).unwrap();
+                let collection_parts = ChartParts::build(&target_collection, &metric).unwrap();
+
+                let mut point_scratch = PointEdgeScratch::new();
+                let mut point_stack = Vec::new();
+                let point_minimum = point_chart_minimum(
+                    source,
+                    &point_parts,
+                    &metric,
+                    &mut point_scratch,
+                    &mut point_stack,
+                )
+                .unwrap()
+                .unwrap();
+
+                let mut collection_scratch = PointEdgeScratch::new();
+                let mut collection_stack = Vec::new();
+                let collection_minimum = point_chart_minimum(
+                    source,
+                    &collection_parts,
+                    &metric,
+                    &mut collection_scratch,
+                    &mut collection_stack,
+                )
+                .unwrap()
+                .unwrap();
+
+                let expected_step = frame
+                    .longitude()
+                    .shortest_alias_step(source.x, target_point.x)
+                    .unwrap();
+                assert_eq!(
+                    collection_minimum.intent,
+                    ChartStep::Shortest(expected_step),
+                    "{unit_name}: {case}",
+                );
+                assert_eq!(
+                    collection_minimum.first.x.to_bits(),
+                    source.x.to_bits(),
+                    "{unit_name}: {case} source longitude",
+                );
+                assert_eq!(
+                    collection_minimum.first.y.to_bits(),
+                    source.y.to_bits(),
+                    "{unit_name}: {case} source latitude",
+                );
+                assert_eq!(
+                    collection_minimum.second.x.to_bits(),
+                    target_point.x.to_bits(),
+                    "{unit_name}: {case} target longitude",
+                );
+                assert_eq!(
+                    collection_minimum.second.y.to_bits(),
+                    target_point.y.to_bits(),
+                    "{unit_name}: {case} target latitude",
+                );
+                assert_eq!(
+                    collection_minimum.distance.to_bits(),
+                    point_minimum.distance.to_bits(),
+                    "{unit_name}: {case} point/collection distance",
+                );
+                assert_eq!(
+                    collection_minimum.lower_bound.to_bits(),
+                    point_minimum.lower_bound.to_bits(),
+                    "{unit_name}: {case} point/collection lower bound",
+                );
+                assert_eq!(
+                    collection_minimum.order, point_minimum.order,
+                    "{unit_name}: {case} point/collection order",
+                );
+            }
+        }
     }
 }

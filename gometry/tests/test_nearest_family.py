@@ -576,6 +576,132 @@ class TestGeodesic:
         distance_floor = 32.0 * math.ulp(max(reference, distance, 1.0))
         assert abs(distance - reference) <= minimum_gap + distance_floor
 
+    @pytest.mark.parametrize(
+        'target_is_collection',
+        [
+            pytest.param(False, id='bare-point'),
+            pytest.param(True, id='collection-point'),
+        ],
+    )
+    @pytest.mark.parametrize(
+        'query_is_left',
+        [
+            pytest.param(True, id='query-left'),
+            pytest.param(False, id='query-right'),
+        ],
+    )
+    def test_geodesic_point_shortest_line_preserves_selected_source_positions(
+        self, target_is_collection: bool, query_is_left: bool
+    ) -> None:
+        query = gm.Point(-123.456789, -55.678912, crs=4326)
+        target_point = gm.Point(168.4349693, 54.4497109, crs=4326)
+        target_collection = gm.from_wkt(
+            'GEOMETRYCOLLECTION (POINT (168.4349693 54.4497109))',
+            crs=4326,
+        )
+        bare_operands = (
+            (query, target_point) if query_is_left else (target_point, query)
+        )
+        selected_target = target_collection if target_is_collection else target_point
+        operands = (
+            (query, selected_target) if query_is_left else (selected_target, query)
+        )
+        expected_endpoints = (
+            [(-123.456789, -55.678912), (168.4349693, 54.4497109)]
+            if query_is_left
+            else [(168.4349693, 54.4497109), (-123.456789, -55.678912)]
+        )
+
+        bare_nearest = gm.nearest_points(*bare_operands)
+        nearest = gm.nearest_points(*operands)
+        assert tuple(_xy(point) for point in nearest) == tuple(expected_endpoints)
+        assert tuple(_xy(point) for point in bare_nearest) == tuple(expected_endpoints)
+
+        bare_distance = gm.distance(*bare_operands)
+        distance = gm.distance(*operands)
+        assert distance.hex() == bare_distance.hex()
+
+        bare_line = gm.shortest_line(*bare_operands)
+        line = gm.shortest_line(*operands)
+        assert _endpoints(bare_line) == expected_endpoints
+        assert _endpoints(line) == expected_endpoints
+
+    def test_geodesic_shortest_line_connects_collection_interior_witness_with_zm(
+        self,
+    ) -> None:
+        query = gm.Point(5.0, 1.0, z=30.0, m=300.0, crs=4326)
+        target = gm.from_wkt(
+            'GEOMETRYCOLLECTION (LINESTRING ZM (0 0 10 100, 10 0 20 200))',
+            crs=4326,
+        )
+
+        first, second = gm.nearest_points(query, target)
+        assert first.to_wkt() == query.to_wkt()
+        assert 0.0 < second.x < 10.0
+        assert second.y == 0.0
+        assert second.z == pytest.approx(10.0 + second.x)
+        assert second.m == pytest.approx(100.0 + 10.0 * second.x)
+
+        line = gm.shortest_line(query, target)
+        assert line.coordinate_axes == 'XYZM'
+        assert list(line.coords) == [
+            next(iter(first.coords)),
+            next(iter(second.coords)),
+        ]
+
+    @pytest.mark.parametrize('layout', ['dense', 'nullable', 'gathered'])
+    @pytest.mark.parametrize(
+        'query_is_left',
+        [
+            pytest.param(True, id='query-left'),
+            pytest.param(False, id='query-right'),
+        ],
+    )
+    def test_geodesic_fixed_array_shortest_line_reads_wrapped_point_witnesses(
+        self, layout: str, query_is_left: bool
+    ) -> None:
+        query = gm.Point(-123.456789, -55.678912, crs=4326)
+        target_point = gm.Point(168.4349693, 54.4497109, crs=4326)
+        target_collection = gm.from_wkt(
+            'GEOMETRYCOLLECTION (POINT (168.4349693 54.4497109))',
+            crs=4326,
+        )
+        if layout == 'dense':
+            array = gm.GeometryArray([target_point, target_collection])
+            expected_targets = [target_point, target_collection]
+        elif layout == 'nullable':
+            array = gm.GeometryArray([None, target_collection, target_point])
+            expected_targets = [None, target_collection, target_point]
+        else:
+            source = gm.GeometryArray([
+                gm.Point(-1.0, -1.0, crs=4326),
+                target_collection,
+                None,
+                target_point,
+            ])
+            array = source[[3, 1]]
+            expected_targets = [target_point, target_collection]
+
+        result = (
+            gm.shortest_line(query, array)
+            if query_is_left
+            else gm.shortest_line(array, query)
+        )
+        assert result.is_missing.tolist() == [
+            target is None for target in expected_targets
+        ]
+        expected_endpoints = (
+            [(-123.456789, -55.678912), (168.4349693, 54.4497109)]
+            if query_is_left
+            else [(168.4349693, 54.4497109), (-123.456789, -55.678912)]
+        )
+        for index, target in enumerate(expected_targets):
+            line = result[index]
+            if target is None:
+                assert line is None
+                continue
+            assert _endpoints(line) == expected_endpoints
+
     def test_planar_override(self) -> None:
         point = gm.Point(0.5, 0.5, crs=4326)
         line = gm.LineString([(0, 0), (10, 0)], crs=4326)

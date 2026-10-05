@@ -863,10 +863,6 @@ impl ChartMetric for super::GeodesicMetric {
         edge.integrate(start, end, &self.geodesic)
     }
 
-    fn chart_edge_position(&self, edge: &ChartEdge, parameter: f64) -> Point {
-        edge.chart_position(parameter)
-    }
-
     fn chart_edge_witness(
         &self,
         start: Point,
