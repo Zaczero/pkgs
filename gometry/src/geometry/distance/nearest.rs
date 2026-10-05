@@ -15,12 +15,17 @@ pub(crate) fn nearest_probe_to_parts<const SQUARED: bool>(
     let incoming_swapped = best.as_ref().map_or(swapped, |best| best.swapped);
     let mut best = best.map(|oriented| oriented.candidate);
     let mut changed = match target.bvh() {
-        Some(bvh) => {
-            bvh.nearest_to_points::<SQUARED>(&target.linework, probe.probe_points(), &mut best)?
-        },
-        None => target
-            .linework
-            .nearest_to_points::<SQUARED>(probe.probe_points(), &mut best)?,
+        Some(bvh) => bvh.nearest_to_points::<SQUARED>(
+            &target.linework,
+            probe.probe_points(),
+            &|_, _| true,
+            &mut best,
+        )?,
+        None => target.linework.nearest_to_points::<SQUARED>(
+            probe.probe_points(),
+            &|_, _| true,
+            &mut best,
+        )?,
     };
     if !target.point_only.is_empty() {
         if SQUARED && let Some(index) = target.point_index() {

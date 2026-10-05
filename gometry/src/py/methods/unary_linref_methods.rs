@@ -95,7 +95,7 @@ GeometryError
 
 See Also
 --------
-line_locate : Locate the first nearest route position; repeated support makes the inverse non-unique.
+line_locate : Locate the nearest route position; repeated support makes the inverse non-unique.
 line_substring : Extract a contiguous portion of the line.
 interpolate_m : Assign M ordinates along arc length.
 
@@ -251,8 +251,11 @@ method_doc! {
     body: concat!(r"Locate the position on linework nearest ``geom``. Empty linework, or
 an empty query point, locates to ``nan``.
 
-Projection is in X/Y. Zero-length X/Y segments add no distance-basis projection,
-and equal-distance projections keep the first route position. With
+Projection is in X/Y. Zero-length X/Y segments add no distance-basis projection.
+Planar distance-basis locate selects the exactly nearest segment; exact ties
+prefer an interior projection over an endpoint, then the first segment in route
+order, matching planar proximity. Geographic distance-basis ties keep the first
+route position. With
 ``basis='m'``, the returned M is likewise taken from the first nearest
 projection.
 

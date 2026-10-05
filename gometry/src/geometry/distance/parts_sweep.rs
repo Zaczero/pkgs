@@ -87,12 +87,15 @@ pub(crate) fn min_parts_to_parts<const SQUARED: bool>(
 }
 
 fn min_point_pairs<const SQUARED: bool>(
-    probes: impl Iterator<Item = (f64, f64)>,
+    probes: impl ExactSizeIterator<Item = (f64, f64)> + Clone,
     targets: &[Point],
     mut best: f64,
 ) -> f64 {
-    for (x, y) in probes {
-        for other in targets {
+    if probes.len() == 0 {
+        return best;
+    }
+    for other in targets {
+        for (x, y) in probes.clone() {
             let candidate = if SQUARED {
                 // Squared-space callers bound the coordinates against overflow
                 // and rescue a subnormal/false-zero minimum in distance space.

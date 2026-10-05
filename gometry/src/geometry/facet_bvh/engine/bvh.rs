@@ -31,6 +31,39 @@ pub(crate) enum NearestTarget {
     Point(Point),
 }
 
+/// Expand the shared exact candidate rule in facet and streaming loops, avoiding
+/// a call per segment. Ordinal mapping is deferred until a tie or a win; `?`
+/// propagates exact-selection errors in the caller.
+macro_rules! update_nearest_candidate {
+    ($selection:expr, $probe:expr, $segment:expr, $ordinal:expr, $best:expr $(,)?) => {{
+        let selection = $selection;
+        let probe = $probe;
+        let segment = $segment;
+        let segment_ordinal = $ordinal;
+        let best = &mut *($best);
+        let closer = match best.as_ref() {
+            None => true,
+            Some(candidate) => {
+                selection.precedes(probe.xy(), segment, &candidate.distance_key, || {
+                    candidate
+                        .segment_ordinal()
+                        .is_some_and(|best| segment_ordinal() < best)
+                })?
+            },
+        };
+        if closer {
+            *best = Some($crate::geometry::NearestCandidate {
+                probe,
+                target: $crate::geometry::NearestTarget::Segment(segment_ordinal()),
+                distance_squared: selection.distance_squared,
+                distance_key: selection.distance_key(probe.xy(), segment),
+            });
+        }
+        $crate::error::Result::<bool>::Ok(closer)
+    }};
+}
+pub(crate) use update_nearest_candidate;
+
 impl NearestCandidate {
     pub(crate) const fn segment_ordinal(&self) -> Option<usize> {
         match self.target {
@@ -107,25 +140,7 @@ pub(super) fn refine_facet_nearest_with_ordinal<const BOUNDED: bool>(
         {
             continue;
         }
-        let closer = match best.as_ref() {
-            None => true,
-            Some(candidate) => {
-                selection.precedes(probe.xy(), segment, &candidate.distance_key, || {
-                    candidate
-                        .segment_ordinal()
-                        .is_some_and(|best| ordinal < best)
-                })?
-            },
-        };
-        if closer {
-            changed = true;
-            *best = Some(NearestCandidate {
-                probe,
-                target: NearestTarget::Segment(ordinal),
-                distance_squared: selection.distance_squared,
-                distance_key: selection.distance_key(probe.xy(), segment),
-            });
-        }
+        changed |= update_nearest_candidate!(&selection, probe, segment, || ordinal, best,)?;
     }
     Ok(changed)
 }
@@ -770,6 +785,7 @@ impl FacetBvh {
         &self,
         linework: &PreparedLinework,
         probes: impl Iterator<Item = Point>,
+        keep: &impl Fn(Point, Segment) -> bool,
         best: &mut Option<NearestCandidate>,
     ) -> crate::error::Result<bool> {
         let mut stack: Vec<u32> = Vec::new();
@@ -780,7 +796,7 @@ impl FacetBvh {
                 probe,
                 f64::INFINITY,
                 f64::INFINITY,
-                &|_, _| true,
+                keep,
                 &mut stack,
                 best,
             )?;

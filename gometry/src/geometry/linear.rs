@@ -9,8 +9,6 @@
 use super::line_index::InterpolationProvenance;
 use super::linear_3d;
 use crate::error::Result;
-#[cfg(test)]
-use crate::geometry::LineIndex;
 use crate::geometry::distance::{ChartParts, point_chart_locate};
 use crate::geometry::{
     ChartMetric, CoordSeq, CoordinateAxes, Coordinates, Distance3dParts, FacetBvh,
@@ -25,7 +23,7 @@ use crate::{Finite, HeapSize};
 ///
 /// Distance substringing validates finiteness here; the ordered-pair guard for
 /// `line_substring` runs after [`normalize_line_distance`] in
-/// [`LineIndex::substring`] because negative offsets can reorder the effective
+/// [`crate::geometry::LineIndex::substring`] because negative offsets can reorder the effective
 /// span. Measure-based surfaces validate the full finite + `start <= end`
 /// invariant at construction.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -36,7 +34,7 @@ pub(crate) struct MeasureRange {
 
 impl MeasureRange {
     /// Raw distance bounds for `line_substring` (finiteness only — order is
-    /// checked post-normalization in [`LineIndex::substring`]).
+    /// checked post-normalization in [`crate::geometry::LineIndex::substring`]).
     pub(crate) fn substring_distance(start: f64, end: f64) -> Result<Self> {
         let start = Finite::try_new("start", start)?.get();
         let end = Finite::try_new("end", end)?.get();
@@ -79,8 +77,7 @@ impl MeasureRange {
 impl Shape {
     #[cfg(test)]
     pub fn line_locate_point(&self, point: Point, normalized: bool) -> Result<f64> {
-        let index = LineIndex::build(self, &PlanarMetric)?;
-        index.locate_point(point, normalized, &PlanarMetric)
+        crate::geometry::locate_planar_route(self.linework()?.into_iter(), point, normalized)
     }
 
     /// Split this lineal geometry at each splitter point that lies on it.
@@ -131,8 +128,8 @@ impl PreparedPlan {
     }
 
     pub(crate) fn line_locate_point(&self, point: Point, normalized: bool) -> Result<f64> {
-        self.line_index()?
-            .locate_point(point, normalized, &PlanarMetric)
+        let index = self.line_index()?;
+        index.locate_point_prepared(point, normalized, || self.distance_parts())
     }
 }
 

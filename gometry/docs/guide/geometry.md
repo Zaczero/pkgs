@@ -472,6 +472,9 @@ inverse there.
 An independently interpolated point has canonical longitude, while a
 `line_substring` cut stays in the retained source edge's lifted chart.
 `unit='planar'` instead uses Cartesian distance in the stored coordinate space.
+Planar distance-basis locate uses the exactly nearest segment; exact ties prefer
+an interior projection over an endpoint, then the first segment in route order,
+matching planar proximity.
 
 Zero-length X/Y segments consume no distance, but their stored vertices remain
 on the route. Interpolation at an interior prefix shared by a zero-length run
@@ -479,6 +482,9 @@ selects its first stored vertex; normalized `0.0` and `1.0` select the first
 and last stored vertices, including when the whole route has zero length.
 `line_substring` includes active-distinct stored vertices in its inclusive
 range, even when consecutive vertices share X/Y and differ only in Z/M.
+At a multipart prefix boundary, interpolation selects the preceding part's
+endpoint, so interpolating a locate station at that boundary need not recover
+the next part's nearest point.
 
 | Task | Distance basis (default) | M basis |
 | --- | --- | --- |

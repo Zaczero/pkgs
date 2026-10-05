@@ -30,7 +30,7 @@ pub(crate) use aabb::{
 pub(crate) use engine::NEAREST_WORK;
 pub(crate) use engine::{
     Facet, FacetBvh, NearestCandidate, NearestTarget, PreparedLinework,
-    facet_point_distance_columns,
+    facet_point_distance_columns, update_nearest_candidate,
 };
 pub(crate) use simd::simd_point_facet_distance_squared;
 

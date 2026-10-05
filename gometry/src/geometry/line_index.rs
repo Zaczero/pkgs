@@ -14,12 +14,16 @@
 use crate::HeapSize;
 use crate::crs::{ChartEdge, PointEdgeScratch};
 use crate::error::Result;
-use crate::geometry::distance::{ChartEdgePart, ChartParts, point_chart_locate};
+use crate::geometry::distance::{
+    ChartEdgePart, ChartParts, coordinate_squared_safe, point_chart_locate, squared_space_safe,
+};
+use crate::geometry::facet_bvh::update_nearest_candidate;
 use crate::geometry::{
-    ChartMetric, CoordSeq, Coordinates as _, GeodesicMetric, GeometryErrorKind, LineSeq,
-    MeasureRange, Ordering, Point, Segment, Shape, ShapeCountQuery, lerp_point,
-    linework_first_point, normalize_line_distance, point_distance,
-    point_segment_distance_and_projection, push_distinct_active_position, same_point,
+    ChartMetric, CoordSeq, Coordinates as _, DistanceParts, GeodesicMetric, GeometryErrorKind,
+    LineSeq, MeasureRange, NearestCandidate, Ordering, Point, Segment, Shape, ShapeCountQuery, XY,
+    lerp_point, linework_first_point, normalize_line_distance, point_distance,
+    point_segment_distance_and_projection, point_segment_selection, push_distinct_active_position,
+    segment_projection,
 };
 
 #[derive(Clone, Copy, Eq, PartialEq)]
@@ -97,6 +101,98 @@ impl PlanarMetric {
             projection.interpolate_point(start, end)?.m().unwrap_or(0.0),
         )))
     }
+}
+
+/// Locate one query while measuring its route, without a reusable prefix index.
+pub(crate) fn locate_planar_route<'a>(
+    lines: impl Iterator<Item = &'a CoordSeq>,
+    probe: Point,
+    normalized: bool,
+) -> Result<f64> {
+    let mut has_vertex = false;
+    let mut total = 0.0;
+    let mut best_distance = f64::INFINITY;
+    let mut search: Result<Option<NearestCandidate>> = Ok(None);
+    let mut stationing = None;
+    let mut base = 0_usize;
+    for line in lines {
+        has_vertex |= !line.is_empty();
+        for (local, (xs, ys)) in line
+            .xs()
+            .array_windows::<2>()
+            .zip(line.ys().array_windows::<2>())
+            .enumerate()
+        {
+            let ordinal = base.wrapping_add(local);
+            let [ax, bx] = *xs;
+            let [ay, by] = *ys;
+            let segment = Segment {
+                start: XY::new(ax, ay),
+                end: XY::new(bx, by),
+            };
+            let measured = point_distance(segment.start, segment.end);
+            if !measured.is_finite() {
+                return Err(GeometryErrorKind::message(
+                    "line index cannot include a non-finite segment length",
+                ));
+            }
+            let offset = total;
+            if measured != 0.0 {
+                total += measured;
+            }
+            if !total.is_finite() {
+                return Err(GeometryErrorKind::message(
+                    "line index total length must be finite",
+                ));
+            }
+            if measured == 0.0 || probe.x.is_nan() {
+                continue;
+            }
+            let gap = (probe.x - segment.start.x.max(segment.end.x))
+                .max(segment.start.x.min(segment.end.x) - probe.x)
+                .max(probe.y - segment.start.y.max(segment.end.y))
+                .max(segment.start.y.min(segment.end.y) - probe.y);
+            if gap.is_normal() && gap > best_distance * 2.0 {
+                continue;
+            }
+            if let Ok(best) = &mut search {
+                let candidate =
+                    point_segment_selection(probe.xy(), segment).and_then(|selection| {
+                        let distance = selection.distance();
+                        update_nearest_candidate!(&selection, probe, segment, || ordinal, best)
+                            .map(|changed| (changed, distance))
+                    });
+                match candidate {
+                    Ok((true, distance)) => {
+                        best_distance = distance;
+                        // Subtract accumulated prefixes, as on the prepared path:
+                        // at a large station the stored segment length can round.
+                        stationing = Some((offset, total - offset, segment));
+                    },
+                    Ok((false, _)) => {},
+                    // Finish source admission before reporting a projection error.
+                    Err(error) => search = Err(error),
+                }
+            }
+        }
+        base = base.wrapping_add(line.len().saturating_sub(1));
+    }
+    if !has_vertex {
+        return Err(GeometryErrorKind::EmptyLinework.into());
+    }
+    if probe.x.is_nan() {
+        return Ok(f64::NAN);
+    }
+    if total == 0.0 {
+        return Ok(0.0);
+    }
+    search?;
+    let Some((offset, length, segment)) = stationing else {
+        return Ok(0.0);
+    };
+    let projection = segment_projection(probe, segment)?;
+    let station = offset + projection.scale(length)?;
+    Ok(if normalized { station / total } else { station })
 }
 
 /// Geographic linear referencing uses the same chart-edge owner as proximity.
@@ -282,60 +378,6 @@ impl LineSegments for std::sync::Arc<ChartParts> {
 }
 
 pub(crate) type ChartLineIndex = LineIndex<std::sync::Arc<ChartParts>>;
-
-macro_rules! locate_point_body {
-    (
-        $this:expr,
-        $probe:expr,
-        $normalized:expr,
-        $metric:expr,
-        $metric_type:ty,
-        $index:ident,
-        $segment:ident,
-        $offset:ident,
-        $length:ident,
-        $skip_zero_segments:block
-    ) => {{
-        let mut best_distance = f64::INFINITY;
-        let mut best_offset = 0.0;
-        {
-            let mut best_projection = None;
-            for ($index, ($segment, &$offset)) in
-                std::iter::zip(&($this).segments, &($this).prefix).enumerate()
-            {
-                let $length = ($this).prefix[$index + 1] - $offset;
-                $skip_zero_segments;
-                let gap = (($probe).x - ($segment).start.x.max(($segment).end.x))
-                    .max(($segment).start.x.min(($segment).end.x) - ($probe).x)
-                    .max(($probe).y - ($segment).start.y.max(($segment).end.y))
-                    .max(($segment).start.y.min(($segment).end.y) - ($probe).y);
-                // Axis separation bounds Euclidean distance from below. Leave
-                // a factor-two margin against the measurement's rounding;
-                // overflow and underflow stay on the existing metric path.
-                if gap.is_normal() && gap > best_distance * 2.0 {
-                    continue;
-                }
-                let (distance, projection) =
-                    point_segment_distance_and_projection(($probe).xy(), Segment {
-                        start: ($segment).start.into(),
-                        end: ($segment).end.into(),
-                    })?;
-                if distance < best_distance {
-                    best_distance = distance;
-                    best_projection = Some((projection, $offset, $length));
-                }
-            }
-            if let Some((projection, offset, length)) = best_projection {
-                best_offset = offset + projection.scale(length)?;
-            }
-        }
-        if $normalized {
-            Ok(best_offset / ($this).total)
-        } else {
-            Ok(best_offset)
-        }
-    }};
-}
 
 pub(crate) struct LineIndex<S = Box<[OrdinateSegment]>> {
     /// All stored segments, in linework order. Zero-length segments share a
@@ -800,16 +842,24 @@ impl<S: LineSegments> LineIndex<S> {
 
 impl LineIndex {
     /// The along-line offset of `probe`'s nearest projection (the engine
-    /// behind `line_locate_point`). First-wins tie ordering, like the scan.
-    #[expect(
-        clippy::indexing_slicing,
-        reason = "locate indices stay paired with their segment and trailing prefix entry"
-    )]
-    pub(crate) fn locate_point<M: SegmentMetric>(
+    /// behind `line_locate_point`). Selection shares proximity's exact key:
+    /// source distance, projection provenance, then segment ordinal.
+    pub(crate) fn locate_point_prepared<'a>(
         &self,
         probe: Point,
         normalized: bool,
-        metric: &M,
+        distance_parts: impl FnOnce() -> Result<&'a DistanceParts>,
+    ) -> Result<f64> {
+        self.locate_point_with_search(probe, normalized, || {
+            self.nearest_planar_prepared(probe, distance_parts()?)
+        })
+    }
+
+    fn locate_point_with_search(
+        &self,
+        probe: Point,
+        normalized: bool,
+        search: impl FnOnce() -> Result<Option<NearestCandidate>>,
     ) -> Result<f64> {
         // POINT EMPTY reaches a locate as the NaN point of a point column.
         if probe.x.is_nan() {
@@ -818,53 +868,79 @@ impl LineIndex {
         if self.total == 0.0 {
             return Ok(0.0);
         }
-        if self.has_zero_segments {
-            self.locate_point_with_zero_segments(probe, normalized, metric)
+        let Some(candidate) = search()? else {
+            return Ok(0.0);
+        };
+        let ordinal = candidate
+            .segment_ordinal()
+            .expect("locate selects a linework segment");
+        let segment = self.segments.segment(ordinal);
+        let offset = *self
+            .prefix
+            .get(ordinal)
+            .expect("nearest ordinal has a station prefix");
+        let next = *self
+            .prefix
+            .get(ordinal.wrapping_add(1))
+            .expect("nearest ordinal has a trailing station prefix");
+        let length = next - offset;
+        let source_segment = Segment {
+            start: segment.start.xy(),
+            end: segment.end.xy(),
+        };
+        let projection = segment_projection(probe, source_segment)?;
+        let station = offset + projection.scale(length)?;
+        let result = if normalized {
+            station / self.total
         } else {
-            locate_point_body!(
-                self,
-                probe,
-                normalized,
-                metric,
-                M,
-                index,
-                segment,
-                offset,
-                length,
-                {}
-            )
-        }
+            station
+        };
+        Ok(result)
     }
 
-    #[expect(
-        clippy::indexing_slicing,
-        reason = "locate indices stay paired with their segment and trailing prefix entry"
-    )]
-    fn locate_point_with_zero_segments<M: SegmentMetric>(
+    fn nearest_planar_prepared(
         &self,
         probe: Point,
-        normalized: bool,
-        metric: &M,
-    ) -> Result<f64> {
-        locate_point_body!(
-            self,
-            probe,
-            normalized,
-            metric,
-            M,
-            index,
-            segment,
-            offset,
-            length,
-            {
-                if length == 0.0
-                    && (same_point(segment.start, segment.end)
-                        || metric.admitted_length(segment.start, segment.end)? == 0.0)
-                {
-                    continue;
-                }
-            }
-        )
+        parts: &DistanceParts,
+    ) -> Result<Option<NearestCandidate>> {
+        let squared = squared_space_safe(parts) && coordinate_squared_safe(probe);
+        let keep = |_: Point, segment: Segment| {
+            !self.has_zero_segments || point_distance(segment.start, segment.end) != 0.0
+        };
+        let mut best = None;
+        match (squared, parts.bvh()) {
+            (true, Some(bvh)) => {
+                bvh.nearest_to_points::<true>(
+                    &parts.linework,
+                    std::iter::once(probe),
+                    &keep,
+                    &mut best,
+                )?;
+            },
+            (false, Some(bvh)) => {
+                bvh.nearest_to_points::<false>(
+                    &parts.linework,
+                    std::iter::once(probe),
+                    &keep,
+                    &mut best,
+                )?;
+            },
+            (true, None) => {
+                parts.linework.nearest_to_points::<true>(
+                    std::iter::once(probe),
+                    &keep,
+                    &mut best,
+                )?;
+            },
+            (false, None) => {
+                parts.linework.nearest_to_points::<false>(
+                    std::iter::once(probe),
+                    &keep,
+                    &mut best,
+                )?;
+            },
+        }
+        Ok(best)
     }
 }
 
@@ -900,12 +976,343 @@ mod tests {
         let line = Shape::LineString(
             LineSeq::try_new(CoordSeq::try_from_points(&points).unwrap()).unwrap(),
         );
-        let index = LineIndex::build(&line, &PlanarMetric).unwrap();
+        assert_eq!(line.line_locate_point(points[2], true).unwrap(), 1.0);
+    }
 
+    #[test]
+    fn planar_locate_selects_exact_nearest_when_distances_round_to_a_tie() {
+        let shape = crate::io::parse_wkt(
+            "MULTILINESTRING ((0.000000007450580596923828125 1, 1 1), (0 1, -1 1))",
+        )
+        .expect("valid multipart line");
+        let probe = Point::new_raw_xy(0.0, 0.0);
+        let prepared = crate::geometry::PreparedPlan::new(shape);
+        let station = prepared
+            .line_locate_point(probe, false)
+            .expect("prepared nearest search");
+        // The nearest endpoint is the start of segment 1. Segment 0 has
+        // horizontal length 1 - 2^-27, which is exactly representable.
         assert_eq!(
-            index.locate_point(points[2], true, &PlanarMetric).unwrap(),
-            1.0
+            station.to_bits(),
+            0x3FEF_FFFF_FC00_0000,
+            "exact locate selects the second segment despite rounded-distance equality"
         );
+        let query = crate::geometry::PreparedPlan::new(Shape::Point(probe));
+        let (_, nearest) = query
+            .nearest_points(&prepared)
+            .expect("proximity query")
+            .expect("nonempty nearest pair");
+        assert_eq!(nearest.x.to_bits(), 0.0_f64.to_bits());
+        assert_eq!(nearest.y.to_bits(), 1.0_f64.to_bits());
+    }
+
+    #[test]
+    fn planar_locate_retains_a_finite_station_when_query_distance_overflows() {
+        use crate::geometry::point_pair_distance_key;
+        let coordinates = CoordSeq::try_from_points(&[
+            Point::new_raw_xy(1e308, 0.0),
+            Point::new_raw_xy(1e308, 1.0),
+        ])
+        .unwrap();
+        let shape = Shape::LineString(LineSeq::try_new(coordinates.clone()).unwrap());
+        let probe = Point::new_raw_xy(-1e308, 0.5);
+        let prepared = crate::geometry::PreparedPlan::new(shape);
+        assert_eq!(
+            prepared.line_locate_point(probe, false).unwrap().to_bits(),
+            0.5_f64.to_bits(),
+        );
+        assert_eq!(
+            locate_planar_route(std::iter::once(&coordinates), probe, false)
+                .unwrap()
+                .to_bits(),
+            0.5_f64.to_bits(),
+        );
+        let old_point = Point::new_raw_xy(1e308, 0.0);
+        let new_point = Point::new_raw_xy(1e308, 0.5);
+        assert_eq!(
+            point_distance(probe, old_point).to_bits(),
+            f64::INFINITY.to_bits()
+        );
+        assert_eq!(
+            point_distance(probe, new_point).to_bits(),
+            f64::INFINITY.to_bits()
+        );
+        assert!(
+            point_pair_distance_key(probe.xy(), new_point.xy())
+                .cmp_distance(&point_pair_distance_key(probe.xy(), old_point.xy()))
+                .unwrap()
+                .is_lt()
+        );
+        assert_locate_interpolate_matches_proximity(&prepared, probe);
+    }
+
+    #[test]
+    fn planar_locate_prefers_interior_on_endpoint_interior_exact_tie() {
+        let shape = crate::io::parse_wkt("MULTILINESTRING ((0 1, 1 2), (-1 1, 1 1))")
+            .expect("valid multipart line");
+        let probe = Point::new_raw_xy(0.0, 0.0);
+        let prepared = crate::geometry::PreparedPlan::new(shape);
+        assert_eq!(
+            prepared
+                .line_locate_point(probe, false)
+                .expect("exact nearest tie")
+                .to_bits(),
+            2.414_213_562_373_095_f64.to_bits(),
+            "segment 1's interior station is the diagonal length sqrt(2) plus one"
+        );
+    }
+
+    fn assert_locate_interpolate_matches_proximity(
+        prepared: &crate::geometry::PreparedPlan,
+        probe: Point,
+    ) {
+        let station = prepared.line_locate_point(probe, false).unwrap();
+        let Shape::Point(interpolated) = prepared.line_interpolate_point(station, false).unwrap()
+        else {
+            unreachable!("line interpolation returns a point")
+        };
+        let query = crate::geometry::PreparedPlan::new(Shape::Point(probe));
+        let (_, nearest) = query.nearest_points(prepared).unwrap().unwrap();
+        assert_eq!(interpolated.x.to_bits(), nearest.x.to_bits());
+        assert_eq!(interpolated.y.to_bits(), nearest.y.to_bits());
+    }
+
+    #[test]
+    fn planar_locate_interpolate_matches_proximity_away_from_part_boundaries() {
+        for (wkt, probe) in [
+            ("LINESTRING (0 0, 8 0)", Point::new_raw_xy(2.0, 1.0)),
+            ("LINESTRING (0 0, 0 4, 4 4)", Point::new_raw_xy(2.0, 5.0)),
+            (
+                "MULTILINESTRING ((0 0, 2 0), (10 0, 14 0))",
+                Point::new_raw_xy(12.0, 1.0),
+            ),
+        ] {
+            let prepared = crate::geometry::PreparedPlan::new(crate::io::parse_wkt(wkt).unwrap());
+            assert_locate_interpolate_matches_proximity(&prepared, probe);
+        }
+    }
+
+    #[test]
+    fn planar_one_shot_locate_streams_without_route_allocations() {
+        let coordinates =
+            CoordSeq::try_from_points(&[Point::new_raw_xy(0.0, 0.0), Point::new_raw_xy(8.0, 0.0)])
+                .unwrap();
+        let (station, allocations) = crate::test_support::allocation_count(|| {
+            locate_planar_route(
+                std::iter::once(&coordinates),
+                Point::new_raw_xy(2.0, 1.0),
+                true,
+            )
+            .unwrap()
+        });
+        assert_eq!(station.to_bits(), 0.25_f64.to_bits());
+        assert_eq!(allocations, 0);
+    }
+
+    #[test]
+    fn planar_one_shot_locate_admits_source_lengths_before_empty_query() {
+        let coordinates = CoordSeq::try_from_points(&[
+            Point::new_raw_xy(-1e308, 0.0),
+            Point::new_raw_xy(1e308, 0.0),
+        ])
+        .unwrap();
+        let old_error = LineIndex::build_coordseq(&coordinates, &PlanarMetric)
+            .err()
+            .expect("source segment length overflows")
+            .to_string();
+        let new_error = locate_planar_route(
+            std::iter::once(&coordinates),
+            Point::new_raw_xy(f64::NAN, f64::NAN),
+            false,
+        )
+        .unwrap_err()
+        .to_string();
+        assert_eq!(new_error, old_error);
+    }
+
+    #[test]
+    fn planar_locate_ordinals_preserve_shared_multipart_occurrences() {
+        use crate::geometry::{CoordinateAxes, MultiLineString, MultiMember};
+        let repeated = LineSeq::try_new(
+            CoordSeq::try_from_points(&[Point::new_raw_xy(0.0, 0.0), Point::new_raw_xy(2.0, 0.0)])
+                .unwrap(),
+        )
+        .unwrap();
+        let final_line = LineSeq::try_new(
+            CoordSeq::try_from_points(&[
+                Point::new_raw_xy(10.0, 0.0),
+                Point::new_raw_xy(14.0, 0.0),
+            ])
+            .unwrap(),
+        )
+        .unwrap();
+        let shape = Shape::MultiLineString(
+            MultiLineString::try_new(CoordinateAxes::XY, vec![
+                MultiMember::Empty,
+                MultiMember::Value(repeated.clone()),
+                MultiMember::Value(repeated),
+                MultiMember::Empty,
+                MultiMember::Value(final_line),
+            ])
+            .unwrap(),
+        );
+        let prepared = crate::geometry::PreparedPlan::new(shape);
+        assert_eq!(
+            prepared
+                .line_locate_point(Point::new_raw_xy(12.0, 1.0), false)
+                .unwrap()
+                .to_bits(),
+            6.0_f64.to_bits(),
+        );
+        assert_eq!(
+            prepared.distance_parts().unwrap().linework.segment_count(),
+            3
+        );
+    }
+
+    #[test]
+    fn prepared_planar_locate_matches_streaming_across_seeded_ties_zero_edges_and_empty_parts() {
+        use crate::geometry::{CoordinateAxes, MultiLineString, MultiMember};
+
+        let line = |points: &[Point]| {
+            LineSeq::try_new(CoordSeq::try_from_points(points).expect("valid test coordinates"))
+                .expect("valid test line")
+        };
+        let tie_above = line(&[Point::new_raw_xy(-1.0, 1.0), Point::new_raw_xy(1.0, 1.0)]);
+        let zero_at_probe = line(&[
+            Point::new_raw_xy(100.0, 100.0),
+            Point::new_raw_xy(100.0, 100.0),
+        ]);
+        let tie_below = line(&[Point::new_raw_xy(-1.0, -1.0), Point::new_raw_xy(1.0, -1.0)]);
+        let near_zero_probe = line(&[
+            Point::new_raw_xy(99.0, 99.0),
+            Point::new_raw_xy(101.0, 99.0),
+        ]);
+
+        let mut state = 0x317_u64;
+        let seeded_points: Vec<_> = (0_usize..=128)
+            .map(|index| {
+                state = state
+                    .wrapping_mul(6_364_136_223_846_793_005)
+                    .wrapping_add(1_442_695_040_888_963_407);
+                let y = 1_000.0 + ((state >> 32) % 101) as f64 / 1_000.0;
+                Point::new_raw_xy(1_000.0 + index as f64 * 4.0, y)
+            })
+            .collect();
+        let repeated_vertex = *seeded_points
+            .get(64)
+            .expect("seeded line contains the repeated-vertex site");
+        let mut seeded_points = seeded_points;
+        seeded_points.insert(64, repeated_vertex);
+        let seeded_coordinates =
+            CoordSeq::try_from_points(&seeded_points).expect("valid seeded coordinates");
+        let seeded_line = LineSeq::try_new(seeded_coordinates.clone()).expect("valid seeded line");
+        let shape = Shape::MultiLineString(
+            MultiLineString::try_new(CoordinateAxes::XY, vec![
+                MultiMember::Value(tie_above),
+                MultiMember::Empty,
+                MultiMember::Value(zero_at_probe),
+                MultiMember::Value(tie_below),
+                MultiMember::Value(near_zero_probe),
+                MultiMember::Empty,
+                MultiMember::Value(line(&[
+                    Point::new_raw_xy(2.0_f64.powi(-27), -9.0),
+                    Point::new_raw_xy(1.0, -9.0),
+                ])),
+                MultiMember::Value(line(&[
+                    Point::new_raw_xy(0.0, -9.0),
+                    Point::new_raw_xy(-1.0, -9.0),
+                ])),
+                MultiMember::Value(line(&[
+                    Point::new_raw_xy(0.0, -19.0),
+                    Point::new_raw_xy(1.0, -18.0),
+                ])),
+                MultiMember::Value(line(&[
+                    Point::new_raw_xy(-1.0, -19.0),
+                    Point::new_raw_xy(1.0, -19.0),
+                ])),
+                MultiMember::Value(seeded_line.clone()),
+            ])
+            .expect("valid multipart line"),
+        );
+        let prepared = crate::geometry::PreparedPlan::new(shape.clone());
+        assert!(prepared.distance_parts().unwrap().bvh().is_some());
+        let mut probes = vec![
+            Point::new_raw_xy(0.0, 0.0),
+            Point::new_raw_xy(100.0, 100.0),
+            Point::new_raw_xy(0.0, -10.0),
+            Point::new_raw_xy(0.0, -20.0),
+        ];
+        for ordinal in [0, 7, 31, 63, 64, 127, 128] {
+            let start = *seeded_points
+                .get(ordinal)
+                .expect("seeded segment starts in the line");
+            let end = *seeded_points
+                .get(ordinal.wrapping_add(1))
+                .expect("seeded segment has a following vertex");
+            probes.push(Point::new_raw_xy(
+                start.x.midpoint(end.x),
+                start.y.midpoint(end.y) + 0.25,
+            ));
+        }
+
+        for probe in probes {
+            for normalized in [false, true] {
+                let expected =
+                    locate_planar_route(shape.linework().unwrap().into_iter(), probe, normalized)
+                        .expect("one-shot streaming reference");
+                assert_eq!(
+                    prepared
+                        .line_locate_point(probe, normalized)
+                        .expect("prepared nearest search")
+                        .to_bits(),
+                    expected.to_bits(),
+                    "prepared locate differs from streaming at {probe:?}, normalized={normalized}"
+                );
+            }
+        }
+        assert_eq!(
+            prepared
+                .line_locate_point(Point::new_raw_xy(0.0, 0.0), false)
+                .expect("exact nearest tie")
+                .to_bits(),
+            1.0_f64.to_bits(),
+            "the first source segment wins an exact distance tie across multipart EMPTY members"
+        );
+        assert_eq!(
+            prepared
+                .line_locate_point(Point::new_raw_xy(100.0, 100.0), false)
+                .expect("zero-length segment is not a locate candidate")
+                .to_bits(),
+            5.0_f64.to_bits(),
+            "locate skips the coincident zero-length member and stationing crosses its prefix"
+        );
+        let seeded_shape = Shape::LineString(seeded_line);
+        let seeded_prepared = crate::geometry::PreparedPlan::new(seeded_shape);
+        for ordinal in [0, 7, 31, 63, 64, 127, 128] {
+            let start = *seeded_points
+                .get(ordinal)
+                .expect("seeded segment starts in the line");
+            let end = *seeded_points
+                .get(ordinal.wrapping_add(1))
+                .expect("seeded segment has a following vertex");
+            let probe = Point::new_raw_xy(start.x.midpoint(end.x), start.y.midpoint(end.y) + 0.25);
+            let expected = crate::line_locate_coordseq(
+                &crate::crs::MetricModel::COORDINATE,
+                &seeded_coordinates,
+                probe,
+                false,
+            )
+            .expect("packed one-shot reference");
+            assert_eq!(
+                seeded_prepared
+                    .line_locate_point(probe, false)
+                    .expect("prepared nearest search")
+                    .to_bits(),
+                expected.to_bits(),
+                "prepared locate differs from packed streaming at {probe:?}"
+            );
+        }
     }
 
     #[test]

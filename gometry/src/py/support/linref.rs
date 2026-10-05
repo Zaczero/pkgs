@@ -364,8 +364,7 @@ pub(crate) fn line_substring_coordseq(
     }
 }
 
-/// Packed-line column kernel for `line_locate_point`: one
-/// [`LineIndex::build_coordseq`] per row — no `ShapeData` wrapper.
+/// Packed-line column kernel for `line_locate_point`, streaming planar stationing.
 pub(crate) fn line_locate_coordseq(
     model: &crate::crs::MetricModel,
     line: &CoordSeq,
@@ -375,9 +374,11 @@ pub(crate) fn line_locate_coordseq(
     let distance_mode = crate::crs::DistanceMode::of(normalized);
     match model {
         crate::crs::MetricModel::Planar { to_metre } => {
-            let index = LineIndex::build_coordseq(line, &PlanarMetric)?;
-            let located =
-                index.locate_point(query, distance_mode.is_normalized(), &PlanarMetric)?;
+            let located = crate::geometry::locate_planar_route(
+                std::iter::once(line),
+                query,
+                distance_mode.is_normalized(),
+            )?;
             Ok(if distance_mode.is_normalized() {
                 located
             } else {

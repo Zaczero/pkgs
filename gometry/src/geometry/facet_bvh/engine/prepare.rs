@@ -144,6 +144,11 @@ impl PreparedLinework {
     }
 
     pub(crate) fn build(shape: &Shape) -> Result<Self> {
+        if let Shape::MultiLineString(lines) = shape {
+            // Route stationing indexes occurrences, including repeated shared
+            // chains. Proximity and locate must retain the same source ordinals.
+            return Self::from_chains(lines.iter().map(|line| line.as_coords().clone()).collect());
+        }
         let mut chains = Vec::new();
         shape.try_for_each_first_segment_chain(RunIdentity::Full, |chain| {
             chains.push(chain.clone());
@@ -456,6 +461,7 @@ impl PreparedLinework {
     pub(crate) fn nearest_to_points<const SQUARED: bool>(
         &self,
         probes: impl Iterator<Item = Point>,
+        keep: &impl Fn(Point, Segment) -> bool,
         best: &mut Option<NearestCandidate>,
     ) -> crate::error::Result<bool> {
         let mut changed = false;
@@ -506,7 +512,7 @@ impl PreparedLinework {
                         probe,
                         f64::INFINITY,
                         f64::INFINITY,
-                        &|_, _| true,
+                        keep,
                         best,
                     )?;
                 }

@@ -210,7 +210,7 @@ pub(crate) use facet_bvh::{
 };
 pub(crate) use generated_budget::{ExpansionBudget, GENERATED_ITEM_LIMIT};
 pub(crate) use line_index::{
-    ChartLineIndex, LineIndex, LineIndexSlot, PlanarMetric, SegmentMetric,
+    ChartLineIndex, LineIndex, LineIndexSlot, PlanarMetric, SegmentMetric, locate_planar_route,
 };
 use linear::normalize_line_distance;
 pub(crate) use linear::{MeasureRange, MeasuredLineIndex, MeasuredLineIndexSlot};

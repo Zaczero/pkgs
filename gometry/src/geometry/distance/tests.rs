@@ -6,6 +6,49 @@ pub(super) fn p(x: f64, y: f64) -> Point {
 }
 
 #[test]
+fn vertex_point_sweep_restarts_probes_for_each_target_and_keeps_its_seed() {
+    let target = PreparedPlan::new(crate::io::parse_wkt("MULTIPOINT ((100 0), (6 1))").unwrap());
+    let targets = target.distance_parts().unwrap();
+    for wkt in [
+        "LINESTRING (0 0, 8 0, 6 2)",
+        "MULTILINESTRING ((0 0, 8 0), (6 2, 6 2))",
+        "MULTIPOINT ((0 0), (8 0), (6 2))",
+    ] {
+        let source = PreparedPlan::new(crate::io::parse_wkt(wkt).unwrap());
+        let probes = source.distance_parts().unwrap();
+        for (seed, expected) in [(f64::INFINITY, 1.0_f64), (0.25, 0.25)] {
+            assert_eq!(
+                min_parts_to_parts::<true>(probes, targets, seed)
+                    .unwrap()
+                    .to_bits(),
+                expected.to_bits(),
+                "squared vertex sweep for {wkt}, seed={seed}"
+            );
+            assert_eq!(
+                min_parts_to_parts::<false>(probes, targets, seed)
+                    .unwrap()
+                    .to_bits(),
+                expected.to_bits(),
+                "distance vertex sweep for {wkt}, seed={seed}"
+            );
+        }
+    }
+    let empty = PreparedPlan::new(crate::io::parse_wkt("LINESTRING EMPTY").unwrap());
+    assert_eq!(
+        min_parts_to_parts::<true>(empty.distance_parts().unwrap(), targets, 17.0)
+            .unwrap()
+            .to_bits(),
+        17.0_f64.to_bits(),
+    );
+    assert_eq!(
+        min_parts_to_parts::<false>(empty.distance_parts().unwrap(), targets, 17.0)
+            .unwrap()
+            .to_bits(),
+        17.0_f64.to_bits(),
+    );
+}
+
+#[test]
 fn continuous_hausdorff_keeps_tiny_parallel_separation() {
     let separation = 1e-300;
     let left = line(vec![p(0.0, 0.0), p(2.0 * separation, 0.0)]);
