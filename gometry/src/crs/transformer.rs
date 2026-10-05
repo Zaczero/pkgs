@@ -15,11 +15,13 @@ use crate::crs::transform::{
 use crate::crs::{
     InCoreTransform, ProjDirection, ProjPipeline, RuntimeState, Shape, TransformExecution,
     TransformFailure, TransformOptions, begin_transform_observation, coordinate_identity_crs,
-    ensure_geographic_domain_in_frame, record_transform_engine, runtime_state_snapshot, transform,
+    ensure_geographic_domain_in_frame, ensure_geographic_lonlat_in_frame,
+    ensure_geographic_row_in_frame, record_transform_engine, runtime_state_snapshot, transform,
     transform_in_core_xy_batch, try_in_core_transform_with_state, validate_coordinate_lanes,
     with_proj_pipeline_at, with_proj_pipeline_indexed_at,
 };
 use crate::error::{ErrorKind, Result};
+use crate::geometry::storage::ShapeRow;
 use crate::geometry::{GeometryErrorKind, TopologyDomain};
 
 impl TransformPlan {
@@ -118,6 +120,50 @@ impl TransformPlan {
         }
     }
 
+    fn identity_geographic_frame(&self) -> Option<crate::geographic::GeographicFrame> {
+        match &self.operation {
+            TransformOperation::Identity {
+                source_domain: TopologyDomain::Geographic(frame),
+            } => Some(*frame),
+            TransformOperation::Identity {
+                source_domain: TopologyDomain::Cartesian,
+            }
+            | TransformOperation::InCore(_)
+            | TransformOperation::Proj { .. } => None,
+        }
+    }
+
+    /// Admit a source geometry for an identity `to_crs` result without
+    /// materializing or executing another transform.
+    pub(crate) fn admit_identity_shape(&self, shape: &Shape) -> Result<()> {
+        self.admit_identity_shape_at(0, shape)
+            .map_err(|failure| failure.error)
+    }
+
+    pub(crate) fn admit_identity_shape_at(
+        &self,
+        row: usize,
+        shape: &Shape,
+    ) -> std::result::Result<(), TransformFailure> {
+        if let Some(frame) = self.identity_geographic_frame() {
+            ensure_geographic_domain_in_frame(frame, shape)
+                .map_err(|error| TransformFailure::at(error, row))?;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn admit_identity_row_at(
+        &self,
+        row: usize,
+        shape: ShapeRow<'_>,
+    ) -> std::result::Result<(), TransformFailure> {
+        if let Some(frame) = self.identity_geographic_frame() {
+            ensure_geographic_row_in_frame(frame, shape)
+                .map_err(|error| TransformFailure::at(error, row))?;
+        }
+        Ok(())
+    }
+
     pub(crate) fn transform_shape_with_computed_edges(&self, shape: &Shape) -> Result<Shape> {
         self.transform_shapes_with_computed_edges_indexed(&[shape])
             .map_err(|failure| failure.error)?
@@ -191,12 +237,9 @@ impl TransformPlan {
     ) -> std::result::Result<Vec<Shape>, TransformFailure> {
         self.begin_execution();
         let result: std::result::Result<Vec<Shape>, TransformFailure> = match &self.operation {
-            TransformOperation::Identity { source_domain } => {
-                if let TopologyDomain::Geographic(frame) = source_domain {
-                    for (index, shape) in shapes.iter().enumerate() {
-                        ensure_geographic_domain_in_frame(*frame, shape)
-                            .map_err(|error| TransformFailure::at(error, index))?;
-                    }
+            TransformOperation::Identity { .. } => {
+                for (index, shape) in shapes.iter().enumerate() {
+                    self.admit_identity_shape_at(index, shape)?;
                 }
                 Ok(shapes.iter().map(|shape| (**shape).clone()).collect())
             },
@@ -280,10 +323,10 @@ impl TransformPlan {
             },
         }
         let result = match &self.operation {
-            TransformOperation::Identity { source_domain } => {
-                if let TopologyDomain::Geographic(frame) = source_domain {
+            TransformOperation::Identity { .. } => {
+                if let Some(frame) = self.identity_geographic_frame() {
                     for (index, (&lon, &lat)) in x.iter().zip(y.iter()).enumerate() {
-                        crate::crs::ensure_geographic_lonlat_in_frame(*frame, lon, lat)
+                        ensure_geographic_lonlat_in_frame(frame, lon, lat)
                             .map_err(|error| TransformFailure::at(error, index))?;
                     }
                 }
@@ -305,83 +348,96 @@ impl TransformPlan {
                 source,
                 target,
                 options,
-            } => with_proj_pipeline_indexed_at(
-                source,
-                target,
-                options,
-                &self.state,
-                &self.execution,
-                |transformer| match zt {
-                    crate::Zt::None => {
-                        if let Some(epoch) = options.source_epoch {
-                            // PROJ broadcasts a length-1 time lane as a constant
-                            // across every coordinate — no per-vertex epoch buffer.
-                            let mut t = [epoch];
-                            transformer.transform_lanes_indexed(
-                                x,
-                                y,
-                                None,
-                                Some(t.as_mut_slice()),
-                                ProjDirection::Forward,
-                                &self.execution,
-                            )
-                        } else {
-                            transformer
-                                .require_epoch_lane()
-                                .map_err(TransformFailure::from)?;
-                            transformer.transform_lanes_indexed(
-                                x,
-                                y,
-                                None,
-                                None,
-                                ProjDirection::Forward,
-                                &self.execution,
-                            )
-                        }
+            } => {
+                with_proj_pipeline_indexed_at(
+                    source,
+                    target,
+                    options,
+                    &self.state,
+                    &self.execution,
+                    |transformer| match zt {
+                        crate::Zt::None => {
+                            if let Some(epoch) = options.source_epoch {
+                                // PROJ broadcasts a length-1 time lane as a constant
+                                // across every coordinate — no per-vertex epoch buffer.
+                                let mut t = [epoch];
+                                transformer.transform_lanes_indexed(
+                                    x,
+                                    y,
+                                    None,
+                                    Some(t.as_mut_slice()),
+                                    ProjDirection::Forward,
+                                    &self.execution,
+                                )
+                            } else {
+                                transformer
+                                    .require_epoch_lane()
+                                    .map_err(TransformFailure::from)?;
+                                transformer.transform_lanes_indexed(
+                                    x,
+                                    y,
+                                    None,
+                                    None,
+                                    ProjDirection::Forward,
+                                    &self.execution,
+                                )
+                            }
+                        },
+                        crate::Zt::Z(z) => {
+                            if let Some(epoch) = options.source_epoch {
+                                let mut t = [epoch];
+                                transformer.transform_lanes_indexed(
+                                    x,
+                                    y,
+                                    Some(z),
+                                    Some(t.as_mut_slice()),
+                                    ProjDirection::Forward,
+                                    &self.execution,
+                                )
+                            } else {
+                                transformer
+                                    .require_epoch_lane()
+                                    .map_err(TransformFailure::from)?;
+                                transformer.transform_lanes_indexed(
+                                    x,
+                                    y,
+                                    Some(z),
+                                    None,
+                                    ProjDirection::Forward,
+                                    &self.execution,
+                                )
+                            }
+                        },
+                        crate::Zt::T(t) => transformer.transform_lanes_indexed(
+                            x,
+                            y,
+                            None,
+                            Some(t),
+                            ProjDirection::Forward,
+                            &self.execution,
+                        ),
+                        crate::Zt::Zt { z, t } => transformer.transform_lanes_indexed(
+                            x,
+                            y,
+                            Some(z),
+                            Some(t),
+                            ProjDirection::Forward,
+                            &self.execution,
+                        ),
                     },
-                    crate::Zt::Z(z) => {
-                        if let Some(epoch) = options.source_epoch {
-                            let mut t = [epoch];
-                            transformer.transform_lanes_indexed(
-                                x,
-                                y,
-                                Some(z),
-                                Some(t.as_mut_slice()),
-                                ProjDirection::Forward,
-                                &self.execution,
+                )?;
+                if !keep_target_chart && let Some(frame) = self.computed_geographic_frame() {
+                    frame
+                        .canonicalize_computed_longitude_lanes_indexed(x, y)
+                        .map_err(|(index, error)| {
+                            TransformFailure::at(
+                                crate::crs::CrsError::invalid(error.to_string()),
+                                index,
                             )
-                        } else {
-                            transformer
-                                .require_epoch_lane()
-                                .map_err(TransformFailure::from)?;
-                            transformer.transform_lanes_indexed(
-                                x,
-                                y,
-                                Some(z),
-                                None,
-                                ProjDirection::Forward,
-                                &self.execution,
-                            )
-                        }
-                    },
-                    crate::Zt::T(t) => transformer.transform_lanes_indexed(
-                        x,
-                        y,
-                        None,
-                        Some(t),
-                        ProjDirection::Forward,
-                        &self.execution,
-                    ),
-                    crate::Zt::Zt { z, t } => transformer.transform_lanes_indexed(
-                        x,
-                        y,
-                        Some(z),
-                        Some(t),
-                        ProjDirection::Forward,
-                        &self.execution,
-                    ),
-                },
-            ),
+                        })?;
+                }
+                Ok(())
+            },
         };
         self.finish_execution(result, !x.is_empty())
     }
@@ -683,6 +739,74 @@ pub(super) enum TransformOperation {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn proj_numeric_target_geographic_output_canonicalizes_only_longitude() {
+        let plan = TransformPlan::new_with_options("EPSG:3857", "EPSG:4326", TransformOptions {
+            authority: Some("EPSG".into()),
+            ..TransformOptions::default()
+        })
+        .unwrap();
+        let radius = crate::crs::WEB_MERCATOR_RADIUS;
+        let mut x = [
+            radius * std::f64::consts::PI,
+            radius * std::f64::consts::TAU,
+        ];
+        let mut y = [-0.0, -0.0];
+        let mut z = [3.0, 5.0];
+        let mut t = [2020.0, 2021.0];
+        plan.transform_coordinates(&mut x, &mut y, crate::Zt::Zt {
+            z: &mut z,
+            t: &mut t,
+        })
+        .unwrap();
+        assert_eq!(x, [-180.0, 0.0]);
+        assert_eq!(y.map(f64::to_bits), [(-0.0_f64).to_bits(); 2]);
+        assert_eq!(z, [3.0, 5.0]);
+        assert_eq!(t, [2020.0, 2021.0]);
+
+        let forced = TransformPlan::new_with_options("EPSG:3857", "EPSG:4326", TransformOptions {
+            force_over: true,
+            authority: Some("EPSG".into()),
+            ..TransformOptions::default()
+        })
+        .unwrap();
+        let mut x = [
+            radius * std::f64::consts::PI,
+            radius * std::f64::consts::TAU,
+        ];
+        let mut y = [0.0, 0.0];
+        forced
+            .transform_coordinates(&mut x, &mut y, crate::Zt::None)
+            .unwrap();
+        assert_eq!(x, [180.0, 360.0]);
+    }
+
+    #[test]
+    fn identity_geometry_admission_is_pure_and_uses_the_source_frame() {
+        let _guard = crate::crs::RUNTIME_STATE_TEST_LOCK.lock().unwrap();
+        crate::crs::clear_cache();
+        let plan = TransformPlan::new("EPSG:4326", "OGC:CRS84").unwrap();
+        assert!(plan.is_identity());
+        let before = crate::crs::cache_info();
+        let valid = crate::geometry::Shape::LineString(
+            crate::geometry::LineSeq::try_new(
+                crate::geometry::CoordSeq::try_from_points(&[
+                    crate::geometry::Point::new_raw_xy(180.0, -0.0),
+                    crate::geometry::Point::new_raw_xy(540.0, 0.0),
+                ])
+                .unwrap(),
+            )
+            .unwrap(),
+        );
+        plan.admit_identity_shape(&valid)
+            .expect("valid aliases remain byte-preserved");
+        let invalid = crate::geometry::Shape::Point(crate::geometry::Point::new_raw_xy(0.0, 91.0));
+        assert!(plan.admit_identity_shape(&invalid).is_err());
+        let after = crate::crs::cache_info();
+        assert_eq!(after.last_transform_engine, before.last_transform_engine);
+        assert_eq!(after.transform_invocations, before.transform_invocations);
+    }
 
     #[test]
     fn empty_bulk_bounds_do_not_acquire_proj_pipeline() {

@@ -282,7 +282,8 @@ impl PyGeometry {
             frame.state,
         )?;
         if transformer.is_identity() {
-            return Ok(Typed(self.clone()));
+            py.detach(|| transformer.admit_identity_shape(self.shape.shape()))?;
+            return Ok(Typed(self.retag_frame(output)));
         }
         let shape =
             py.detach(|| transformer.transform_shape_with_computed_edges(self.shape.shape()))?;

@@ -1,9 +1,10 @@
 use crate::array::{
-    Arc, Bound, CRSError, CoordinateAxes, FrameEdit, GeometryTransformFrame, Point, Py, PyAny,
-    PyErr, PyGeometryArray, PyResult, Python, Result, Shape, TransformOptionArgs,
+    Arc, Bound, CRSError, CoordinateAxes, FrameEdit, GeometryTransformFrame, Point, PointRowLayout,
+    Py, PyAny, PyErr, PyGeometryArray, PyResult, Python, Result, Shape, TransformOptionArgs,
     coordinate_epoch_option, crs, note_array_row, parse_crs, pymethods,
 };
-use crate::geometry::storage::{GeometryArrayStorage, ValidityMask};
+use crate::geometry::storage::packed_columns::resolve_packed_columns;
+use crate::geometry::storage::{GeometryArrayStorage, ShapeRow, ValidityMask};
 use crate::geometry::{OrdinateAxis, set_point_ordinate};
 use crate::predicates::unary;
 use crate::py::crs::drain_accuracy_warning;
@@ -22,6 +23,31 @@ fn present_rank_to_logical(mask: &ValidityMask, rank: usize) -> Option<usize> {
         .enumerate()
         .filter_map(|(logical, missing)| (!missing).then_some(logical))
         .nth(rank)
+}
+
+fn admit_identity_array_rows(
+    transformer: &crs::TransformPlan,
+    storage: &GeometryArrayStorage,
+    missing: Option<&ValidityMask>,
+    point_layout: PointRowLayout,
+) -> std::result::Result<(), crate::crs::TransformFailure> {
+    match storage {
+        GeometryArrayStorage::Mixed(shapes) => {
+            for (logical, shape) in shapes.iter().enumerate() {
+                if missing.is_none_or(|mask| !mask.is_missing(logical)) {
+                    transformer.admit_identity_shape_at(logical, shape)?;
+                }
+            }
+            Ok(())
+        },
+        GeometryArrayStorage::Packed(_) => {
+            let columns = resolve_packed_columns(storage, missing, point_layout)
+                .expect("packed storage resolves to packed columns");
+            columns.try_for_each_present_row(|logical, row| {
+                transformer.admit_identity_row_at(logical, ShapeRow::from_packed(row))
+            })
+        },
+    }
 }
 
 #[pymethods]
@@ -211,7 +237,13 @@ impl PyGeometryArray {
                 frame.state,
             )?;
             if transformer.is_identity() {
-                return Ok(self.clone());
+                let storage = Arc::clone(self.storage_arc());
+                let point_layout = self.point_row_layout();
+                py.detach(move || {
+                    admit_identity_array_rows(&transformer, &storage, Some(&mask), point_layout)
+                })
+                .map_err(transform_failure_pyerr)?;
+                return Ok(self.retag_frame(output));
             }
             let execution = transformer.execution();
             let storage = Arc::clone(self.storage_arc());
@@ -279,7 +311,14 @@ impl PyGeometryArray {
             frame.state,
         )?;
         if transformer.is_identity() {
-            return Ok(self.clone());
+            let storage = Arc::clone(self.storage_arc());
+            let missing = self.missing().cloned();
+            let point_layout = self.point_row_layout();
+            py.detach(move || {
+                admit_identity_array_rows(&transformer, &storage, missing.as_ref(), point_layout)
+            })
+            .map_err(transform_failure_pyerr)?;
+            return Ok(self.retag_frame(output));
         }
         let execution = transformer.execution();
         if let GeometryArrayStorage::Mixed(_) = self.storage() {

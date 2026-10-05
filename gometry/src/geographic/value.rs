@@ -598,6 +598,22 @@ impl GeographicFrame {
         Ok(point.with_xy_raw(longitude, latitude))
     }
 
+    /// Canonicalize native target-geographic output lanes while retaining
+    /// latitude bits and reporting the first invalid coordinate.
+    pub(crate) fn canonicalize_computed_longitude_lanes_indexed(
+        self,
+        xs: &mut [f64],
+        ys: &[f64],
+    ) -> Result<(), (usize, GeographicError)> {
+        for (index, (longitude, &latitude)) in xs.iter_mut().zip(ys).enumerate() {
+            let (canonical_longitude, _) = self
+                .canonical_computed_xy(*longitude, latitude)
+                .map_err(|error| (index, error))?;
+            *longitude = canonical_longitude;
+        }
+        Ok(())
+    }
+
     /// Convert a route point without wrapping its longitude, then choose the
     /// alias nearest a caller-supplied lifted chart position.
     pub(crate) fn point_from_geodesic_in_lifted_chart(
