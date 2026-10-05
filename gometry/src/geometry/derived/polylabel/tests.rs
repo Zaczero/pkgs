@@ -129,7 +129,8 @@ fn zero_radius_outside_point_is_rejected_at_emission_boundary() {
                 error.kind(),
                 ErrorKind::Geometry(
                     crate::geometry::GeometryErrorKind::UnrepresentableOutput {
-                        operation: "maximum_inscribed_circle"
+                        operation: "maximum_inscribed_circle",
+                        ..
                     }
                 )
             )
@@ -632,7 +633,8 @@ fn minimum_circle_polygon_maps_nonfinite_source_to_unrepresentable_output() {
     assert!(matches!(
         error.kind(),
         ErrorKind::Geometry(crate::geometry::GeometryErrorKind::UnrepresentableOutput {
-            operation: "minimum_bounding_circle"
+            operation: "minimum_bounding_circle",
+            ..
         })
     ));
 }

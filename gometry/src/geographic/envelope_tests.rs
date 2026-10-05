@@ -369,6 +369,95 @@ fn ordinary_linear_fast_path_does_not_allocate() {
 }
 
 #[test]
+fn scalar_support_bounds_do_not_allocate_adapter_storage() {
+    let frame = native_frames()[0];
+    let shape = line(&[1.0, 2.0, 3.0], &[4.0, 5.0, 6.0]);
+    let (bounds, allocations) = crate::test_support::allocation_count(|| {
+        crate::geometry::geographic_crossing_bounds_in_frame(&shape, frame)
+    });
+    assert_eq!(
+        bounds,
+        Some(crate::geometry::Bounds::new_raw(1.0, 4.0, 3.0, 6.0))
+    );
+    assert_eq!(allocations, 0);
+}
+
+#[test]
+fn aggregate_support_bounds_use_at_most_one_handle_allocation() {
+    let frame = native_frames()[0];
+    let shapes = [
+        line(&[1.0, 2.0], &[4.0, 5.0]),
+        line(&[3.0, 4.0], &[6.0, 7.0]),
+    ];
+    let (bounds, allocations) = crate::test_support::allocation_count(|| {
+        crate::geometry::geographic_crossing_bounds_for_shapes_in_frame(shapes.iter(), frame)
+    });
+    assert_eq!(
+        bounds,
+        Some(crate::geometry::Bounds::new_raw(1.0, 4.0, 4.0, 7.0))
+    );
+    assert!(
+        allocations <= 1,
+        "{allocations} allocations for aggregate bounds"
+    );
+}
+
+#[test]
+fn scalar_and_owned_aggregate_bounds_keep_seam_band_pole_and_shared_support() {
+    let frame = native_frames()[0];
+    let seam = line(&[170.0, -170.0], &[0.0, 10.0]);
+    let shared = Shape::geometry_collection(vec![seam.clone(), seam.clone()]).unwrap();
+    let band = polygon(
+        &[
+            (-180.0, -45.0),
+            (-90.0, -45.0),
+            (0.0, -45.0),
+            (90.0, -45.0),
+            (180.0, -45.0),
+            (180.0, 45.0),
+            (90.0, 45.0),
+            (0.0, 45.0),
+            (-90.0, 45.0),
+            (-180.0, 45.0),
+        ],
+        Vec::new(),
+    );
+    for (name, shape, expected) in [
+        (
+            "seam",
+            seam,
+            crate::geometry::Bounds::new_raw(170.0, 0.0, -170.0, 10.0),
+        ),
+        (
+            "band",
+            band,
+            crate::geometry::Bounds::new_raw(-180.0, -45.0, 180.0, 45.0),
+        ),
+        (
+            "pole",
+            cap_polygon(frame, 45.0),
+            crate::geometry::Bounds::new_raw(-180.0, 45.0, 180.0, 90.0),
+        ),
+        (
+            "shared",
+            shared,
+            crate::geometry::Bounds::new_raw(170.0, 0.0, -170.0, 10.0),
+        ),
+    ] {
+        assert_eq!(
+            crate::geometry::geographic_crossing_bounds_in_frame(&shape, frame),
+            Some(expected),
+            "{name} scalar bounds"
+        );
+        assert_eq!(
+            crate::geometry::geographic_crossing_bounds_for_shapes_in_frame([shape], frame),
+            Some(expected),
+            "{name} owned aggregate bounds"
+        );
+    }
+}
+
+#[test]
 fn geographic_support_admission_preserves_invalid_coordinate_diagnostics() {
     let frame = native_frames()[0];
     let shape = Shape::Point(Point::new_raw_xy(f64::INFINITY, 100.0));
@@ -470,7 +559,7 @@ fn repeated_coordinate_runs_across_shapes_contribute_support_once() {
     let second_row = base.clone();
     let expected = GeographicSupportEnvelope::try_from_shape(frame, &base).unwrap();
     let actual =
-        GeographicSupportEnvelope::try_from_shapes(frame, &[&first_row, &second_row]).unwrap();
+        GeographicSupportEnvelope::try_from_shapes(frame, &[first_row, second_row]).unwrap();
 
     assert_eq!(actual, expected);
     let work = geographic_support_work().expect("support work was recorded");

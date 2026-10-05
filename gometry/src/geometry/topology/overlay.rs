@@ -1,8 +1,8 @@
 //! Exact n-ary geographic set selection and output emission over global Q.
 
 use super::exact::{
-    ExactSourceEdge, ExactSourceRange, ExactSourceRing, SourceEdgeId, SourceEdgeKind, SourceRingId,
-    SourceRowId,
+    ExactChartPoint, ExactSourceEdge, ExactSourceRange, ExactSourceRing, SourceEdgeId,
+    SourceEdgeKind, SourceRingId, SourceRowId,
 };
 use super::q::{ExactGeographicTopology, GlobalFaceId, QDartId, QNodeId, QPortId, row_locations};
 use crate::error::{ResourceError, Result};
@@ -12,9 +12,10 @@ use crate::geometry::overlay::{OverlayOp, build_certified_overlay_shape_with_axe
 use crate::geometry::segments::try_sort_by;
 use crate::geometry::tessellation::exact::ExactRational;
 use crate::geometry::{
-    CoordSeq, CoordSeqBuilder, CoordinateAxes, Coordinates as _, GeometryErrorKind, GeometryKind,
-    HasM, HasZ, LineSeq, Loc, MOrdinate, Point, Polygon, Ring, RingWinding, Shape, XY, ZOrdinate,
-    interpolate_optional_ordinate, open_point_cycle_winding, ring_winding,
+    CoordSeq, CoordSeqBuilder, CoordinateAxes, Coordinates as _, ExpansionBudget,
+    GeometryErrorKind, GeometryKind, HasM, HasZ, LineSeq, Loc, MOrdinate, Point, Polygon, Ring,
+    RingWinding, Shape, XY, ZOrdinate, interpolate_optional_ordinate, open_point_cycle_winding,
+    ring_winding,
 };
 
 #[derive(Clone, Copy)]
@@ -83,18 +84,120 @@ struct QCoordinates {
     pole_port_longitude: Vec<Option<f64>>,
 }
 
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 enum EmittedNodeKey {
     Coordinate(u64, u64),
     NorthPole,
     SouthPole,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct EmittedVertex {
     node: QNodeId,
     port: QPortId,
     point: Point,
+    chart: ExactChartPoint,
+}
+
+struct QPublicationCertificate<'a> {
+    topology: &'a ExactGeographicTopology,
+    live: &'a [(EmittedNodeKey, QNodeId)],
+    inserted: Option<crate::collections::HashMap<EmittedNodeKey, (ExactChartPoint, QNodeId)>>,
+}
+
+impl QPublicationCertificate<'_> {
+    fn record(&mut self, exact: ExactChartPoint, point: Point) -> Result<()> {
+        let frame = self.topology.sources.frame;
+        let key = emitted_node_key(frame, point.xy())?;
+        let next = QNodeId(
+            u32::try_from(
+                self.topology.q.nodes.len().saturating_add(
+                    self.inserted
+                        .as_ref()
+                        .map_or(0, std::collections::HashMap::len),
+                ),
+            )
+            .map_err(|_| ResourceError::SizeOverflow)?,
+        );
+        if let Ok(index) = self.live.binary_search_by_key(&key, |&(key, _)| key) {
+            let &(_, node) = self
+                .live
+                .get(index)
+                .expect("binary search returns a live node");
+            let source = self
+                .topology
+                .q
+                .nodes
+                .get(node.0 as usize)
+                .expect("live node belongs to the certified Q")
+                .ports
+                .start;
+            let port = self
+                .topology
+                .q
+                .node_ports
+                .get(source)
+                .expect("every Q node has a representative port");
+            let previous = &self
+                .topology
+                .q
+                .ports
+                .get(port.0 as usize)
+                .expect("representative port belongs to the Q")
+                .point;
+            return certify_publication_identity(frame, previous, &exact, node, next);
+        }
+        let inserted = match &mut self.inserted {
+            Some(inserted) => inserted,
+            slot @ None => slot.insert(crate::collections::try_hash_map_with_capacity(0)?),
+        };
+        match inserted.entry(key) {
+            std::collections::hash_map::Entry::Occupied(previous) => {
+                let (previous, node) = previous.get();
+                certify_publication_identity(frame, previous, &exact, *node, next)
+            },
+            std::collections::hash_map::Entry::Vacant(slot) => {
+                slot.insert((exact, next));
+                Ok(())
+            },
+        }
+    }
+}
+
+fn certify_publication_identity(
+    frame: crate::geographic::GeographicFrame,
+    previous: &ExactChartPoint,
+    point: &ExactChartPoint,
+    first: QNodeId,
+    second: QNodeId,
+) -> Result<()> {
+    let same_latitude = previous.y.try_cmp(&point.y)?.is_eq();
+    let same_position = if same_latitude {
+        let north = ExactRational::from_f64(frame.pole());
+        let south = ExactRational::from_f64(-frame.pole());
+        if point.y.try_cmp(&north)?.is_eq() || point.y.try_cmp(&south)?.is_eq() {
+            true
+        } else {
+            let period = ExactRational::from_f64(frame.longitude().period());
+            let delta = point.x.try_subtract(&previous.x)?;
+            let turns = delta.try_quotient(&period)?.round()?;
+            turns.fract() == 0.0
+                && delta
+                    .try_cmp(&period.try_product(&ExactRational::from_f64(turns))?)?
+                    .is_eq()
+        }
+    } else {
+        false
+    };
+    if same_position {
+        Ok(())
+    } else {
+        Err(GeometryErrorKind::ExactNodeCollision {
+            first: first.0,
+            second: second.0,
+        }
+        .into())
+    }
 }
 
 #[derive(Clone, Copy, Default)]
@@ -117,7 +220,26 @@ pub(in crate::geometry) fn exact_geographic_overlay(
     let ordinates = node_ordinates(topology)?;
     let mut live_node_keys = plan.live_node_keys(topology, &coordinates, &source_points)?;
     certify_node_injectivity(&mut live_node_keys)?;
-    let mut polygons = emit_polygons(topology, &plan, &ordinates, &coordinates)?;
+    let axes = emitted_axes(declared_axes, &live_node_keys, &ordinates)?;
+    if strict && axes != declared_axes {
+        return Err(GeometryErrorKind::ordinate_dropped(operation.name()));
+    }
+    let mut edge_budget = ExpansionBudget::new(operation.name(), "computed edges");
+    let mut certificate = QPublicationCertificate {
+        topology,
+        live: &live_node_keys,
+        inserted: None,
+    };
+    let mut polygons = emit_polygons(
+        topology,
+        &plan,
+        &ordinates,
+        &coordinates,
+        &live_node_keys,
+        axes,
+        &mut edge_budget,
+        &mut certificate,
+    )?;
     let lines = emit_lines(topology, &plan.line_paths, &ordinates, &coordinates)?;
     let points = emit_points(topology, &plan.point_nodes, &source_points, &coordinates)?;
 
@@ -125,10 +247,6 @@ pub(in crate::geometry) fn exact_geographic_overlay(
         return build_certified_overlay_shape_with_axes(points, lines, polygons, declared_axes);
     }
 
-    let axes = emitted_axes(declared_axes, &live_node_keys, &ordinates)?;
-    if strict && axes != declared_axes {
-        return Err(GeometryErrorKind::ordinate_dropped(operation.name()));
-    }
     let mut points = points;
     let mut lines = lines;
     apply_axes(
@@ -138,7 +256,7 @@ pub(in crate::geometry) fn exact_geographic_overlay(
         axes,
         &mut points,
         &mut lines,
-        &mut polygons,
+        &mut [],
     )?;
     if plan.whole_sphere {
         return match polygons.len() {
@@ -1548,6 +1666,12 @@ fn emitted_point(
         node,
         port,
         point: coordinates.point(topology, port)?,
+        chart: q
+            .ports
+            .get(port.0 as usize)
+            .ok_or_else(|| GeometryErrorKind::Invalid("Q emitted port is unknown".into()))?
+            .point
+            .clone(),
     })
 }
 
@@ -1586,6 +1710,10 @@ fn emit_polygons(
     plan: &QOverlayPlan,
     ordinates: &[NodeOrdinates],
     coordinates: &QCoordinates,
+    live: &[(EmittedNodeKey, QNodeId)],
+    axes: CoordinateAxes,
+    edge_budget: &mut ExpansionBudget,
+    certificate: &mut QPublicationCertificate<'_>,
 ) -> Result<Vec<Polygon>> {
     match &plan.polygons {
         PolygonPlan::WholeSphere(source_polygons) => {
@@ -1603,7 +1731,14 @@ fn emit_polygons(
                                 "Q whole-sphere plan references an unknown polygon".into(),
                             )
                         })?;
-                output.push(emit_source_polygon(topology, source_polygon)?);
+                let polygon = emit_source_polygon(topology, source_polygon)?;
+                output.push(carry_polygon_axes(
+                    topology.sources.frame,
+                    &polygon,
+                    ordinates,
+                    live,
+                    axes,
+                )?);
             }
             if output.is_empty() {
                 return Err(GeometryErrorKind::Invalid(
@@ -1642,6 +1777,8 @@ fn emit_polygons(
                             ring = ring.reversed()?;
                         }
                         let is_hole = chart_ring_is_hole(topology.sources.frame, &ring)?;
+                        let ring =
+                            carry_ring_axes(topology.sources.frame, &ring, ordinates, live, axes)?;
                         (region, ring, is_hole)
                     },
                     PlannedAreaRing::Cycle { cycle, region } => {
@@ -1650,7 +1787,15 @@ fn emit_polygons(
                                 "Q area plan references an unknown cycle".into(),
                             )
                         })?;
-                        let (ring, is_hole) = emit_ring(topology, coordinates, ordinates, cycle)?;
+                        let (ring, is_hole) = emit_ring(
+                            topology,
+                            coordinates,
+                            ordinates,
+                            cycle,
+                            axes,
+                            edge_budget,
+                            certificate,
+                        )?;
                         (region, ring, is_hole)
                     },
                 };
@@ -1964,11 +2109,63 @@ fn emit_source_polygon(
     ))
 }
 
+fn append_q_source_range(
+    pending: &mut Option<(SourceEdgeId, ExactRational)>,
+    contiguous: &mut bool,
+    edge: SourceEdgeId,
+    start: &ExactRational,
+    end: &ExactRational,
+) -> Result<()> {
+    match pending {
+        Some((previous_edge, previous_end))
+            if *previous_edge == edge && previous_end.try_cmp(start)?.is_eq() =>
+        {
+            *previous_end = end.clone();
+        },
+        Some(_) => *contiguous = false,
+        None => *pending = Some((edge, end.clone())),
+    }
+    Ok(())
+}
+
+fn finish_q_output_edge(
+    edge_deltas: &mut Vec<ExactRational>,
+    computed_edges: &mut Vec<bool>,
+    pending_delta: &mut ExactRational,
+    pending_source: &mut Option<(SourceEdgeId, ExactRational)>,
+    source_contiguous: &mut bool,
+) {
+    edge_deltas.push(pending_delta.clone());
+    computed_edges.push(pending_source.is_none() || !*source_contiguous);
+    *pending_delta = ExactRational::zero();
+    *pending_source = None;
+    *source_contiguous = true;
+}
+
+fn q_vertex_touches_preserved_edge(computed_edges: &[bool], index: usize) -> bool {
+    let edge_count = computed_edges.len();
+    let incoming = if index == 0 {
+        edge_count.saturating_sub(1)
+    } else {
+        index.wrapping_sub(1)
+    };
+    let outgoing = if index == edge_count { 0 } else { index };
+    computed_edges
+        .get(incoming)
+        .is_none_or(|&computed| !computed)
+        || computed_edges
+            .get(outgoing)
+            .is_none_or(|&computed| !computed)
+}
+
 fn emit_ring(
     topology: &ExactGeographicTopology,
     coordinates: &QCoordinates,
     ordinates: &[NodeOrdinates],
     cycle: &BoundaryCycle,
+    axes: CoordinateAxes,
+    edge_budget: &mut ExpansionBudget,
+    certificate: &mut QPublicationCertificate<'_>,
 ) -> Result<(Ring, bool)> {
     let q = &topology.q;
     let mut pivot = 0;
@@ -1988,34 +2185,97 @@ fn emit_ring(
     }
     let (before_pivot, from_pivot) = cycle.darts.split_at(pivot);
     let mut vertices = Vec::new();
+    let mut edge_deltas = Vec::new();
+    let mut computed_edges = Vec::new();
+    let mut pending_delta = ExactRational::zero();
+    let mut pending_source = None;
+    let mut source_contiguous = true;
     for &dart_id in from_pivot.iter().chain(before_pivot) {
         let dart = *q
             .darts
             .get(dart_id.0 as usize)
             .ok_or_else(|| GeometryErrorKind::Invalid("Q boundary dart is unknown".into()))?;
         let owner_index = area_owner_index(topology, dart.span.0 as usize)?;
-        for port in [dart.from_port, dart.to_port] {
-            let emitted = emitted_point(
-                topology,
-                coordinates,
-                ordinates,
-                dart.span.0 as usize,
-                owner_index,
-                port,
-            )?;
-            if q.ports
-                .get(port.0 as usize)
-                .ok_or_else(|| GeometryErrorKind::Invalid("Q boundary port is unknown".into()))?
-                .cut
-            {
-                continue;
-            }
-            if vertices
+        let span = q
+            .spans
+            .get(dart.span.0 as usize)
+            .ok_or_else(|| GeometryErrorKind::Invalid("Q boundary span is unknown".into()))?;
+        let owner = span
+            .owners
+            .get(owner_index)
+            .ok_or_else(|| GeometryErrorKind::Invalid("Q boundary owner is unknown".into()))?;
+        let from = emitted_point(
+            topology,
+            coordinates,
+            ordinates,
+            dart.span.0 as usize,
+            owner_index,
+            dart.from_port,
+        )?;
+        let to = emitted_point(
+            topology,
+            coordinates,
+            ordinates,
+            dart.span.0 as usize,
+            owner_index,
+            dart.to_port,
+        )?;
+        let span_delta = to.chart.x.try_subtract(&from.chart.x)?;
+        let source_forward = (dart.from_port == span.ports[0]) != owner.reversed;
+        let (source_start, source_end) = if source_forward {
+            (&owner.source_range.start, &owner.source_range.end)
+        } else {
+            (&owner.source_range.end, &owner.source_range.start)
+        };
+        let from_cut = q
+            .ports
+            .get(dart.from_port.0 as usize)
+            .ok_or_else(|| GeometryErrorKind::Invalid("Q boundary port is unknown".into()))?
+            .cut;
+        let to_cut = q
+            .ports
+            .get(dart.to_port.0 as usize)
+            .ok_or_else(|| GeometryErrorKind::Invalid("Q boundary port is unknown".into()))?
+            .cut;
+        if !from_cut
+            && vertices
                 .last()
-                .is_none_or(|previous: &EmittedVertex| previous.port != emitted.port)
-            {
-                vertices.push(emitted);
+                .is_none_or(|previous: &EmittedVertex| previous.port != from.port)
+        {
+            if !vertices.is_empty() {
+                finish_q_output_edge(
+                    &mut edge_deltas,
+                    &mut computed_edges,
+                    &mut pending_delta,
+                    &mut pending_source,
+                    &mut source_contiguous,
+                );
             }
+            vertices.push(from);
+        }
+        pending_delta = pending_delta.try_add(&span_delta)?;
+        append_q_source_range(
+            &mut pending_source,
+            &mut source_contiguous,
+            owner.source_edge,
+            source_start,
+            source_end,
+        )?;
+        if !to_cut
+            && vertices
+                .last()
+                .is_none_or(|previous: &EmittedVertex| previous.port != to.port)
+        {
+            if !vertices.is_empty() {
+                finish_q_output_edge(
+                    &mut edge_deltas,
+                    &mut computed_edges,
+                    &mut pending_delta,
+                    &mut pending_source,
+                    &mut source_contiguous,
+                );
+            }
+            vertices.push(to);
         }
     }
     if vertices.len() < 3 {
@@ -2028,15 +2288,43 @@ fn emit_ring(
         .first()
         .is_some_and(|first| vertices.last().is_some_and(|last| last.port != first.port))
     {
-        let first = *vertices.first().expect("the boundary has vertices");
+        let first = vertices.first().expect("the boundary has vertices").clone();
+        finish_q_output_edge(
+            &mut edge_deltas,
+            &mut computed_edges,
+            &mut pending_delta,
+            &mut pending_source,
+            &mut source_contiguous,
+        );
         vertices.push(first);
+    }
+    if edge_deltas.len() != vertices.len().saturating_sub(1) {
+        return Err(GeometryErrorKind::Invalid(
+            "Q computed-edge intents do not match the emitted ring".into(),
+        )
+        .into());
+    }
+    if computed_edges.len() != edge_deltas.len() {
+        return Err(GeometryErrorKind::Invalid(
+            "Q computed-edge roles do not match the emitted ring".into(),
+        )
+        .into());
     }
     let mut points = vertices
         .iter()
         .map(|vertex| vertex.point)
         .collect::<Vec<_>>();
     canonicalize_ring_vertices(topology.sources.frame, &vertices, &mut points)?;
-    let is_hole = {
+    let is_hole = if points.array_windows::<2>().any(|[start, end]| {
+        !topology
+            .sources
+            .frame
+            .longitude()
+            .ordinary_chart_edge(start.x, end.x)
+    }) {
+        let chart_ring = Ring::try_from_closed(CoordSeq::try_from_points(&points)?)?;
+        chart_ring_is_hole(topology.sources.frame, &chart_ring)?
+    } else {
         match open_point_cycle_winding(&points) {
             RingWinding::CounterClockwise => false,
             RingWinding::Clockwise => true,
@@ -2047,7 +2335,10 @@ fn emit_ring(
         }
     };
     for (vertex, point) in vertices.iter().zip(&mut points) {
-        *point = vertex.point;
+        let ordinates = ordinates
+            .get(vertex.node.0 as usize)
+            .ok_or_else(|| GeometryErrorKind::Invalid("Q output ring has no ordinates".into()))?;
+        *point = with_axes(vertex.point, *ordinates, axes)?;
     }
     let first = *points
         .first()
@@ -2055,15 +2346,107 @@ fn emit_ring(
     *points
         .last_mut()
         .expect("selected Q area boundary has at least three vertices") = first;
+    let frame = topology.sources.frame;
+    let published = crate::geographic::publish_computed_chain_with_vertex_intents_and_intervals(
+        frame,
+        points.as_slice(),
+        true,
+        edge_budget,
+        |index, _, _| {
+            let computed = *computed_edges
+                .get(index)
+                .ok_or_else(|| GeometryErrorKind::Invalid("Q ring edge role is unknown".into()))?;
+            let delta = edge_deltas.get(index).ok_or_else(|| {
+                GeometryErrorKind::Invalid("Q ring edge intent is unknown".into())
+            })?;
+            if !computed {
+                return Ok(crate::geographic::ComputedEdgeIntent::preserved(
+                    delta.is_zero(),
+                ));
+            }
+            Ok(
+                crate::geographic::ComputedEdgeIntent::displacement_from_exact(
+                    delta.round()?,
+                    delta.is_zero(),
+                ),
+            )
+        },
+        |index, _| {
+            if q_vertex_touches_preserved_edge(&computed_edges, index) {
+                crate::geographic::ComputedVertexIntent::Preserved
+            } else {
+                crate::geographic::ComputedVertexIntent::Canonical
+            }
+        },
+        |index, start, end, _, start_t, end_t| {
+            let from = vertices.get(index).ok_or_else(|| {
+                GeometryErrorKind::Invalid("Q ring midpoint start is unknown".into())
+            })?;
+            let to = vertices.get(index.wrapping_add(1)).ok_or_else(|| {
+                GeometryErrorKind::Invalid("Q ring midpoint end is unknown".into())
+            })?;
+            let delta = edge_deltas.get(index).ok_or_else(|| {
+                GeometryErrorKind::Invalid("Q ring midpoint intent is unknown".into())
+            })?;
+            let latitude_delta = to.chart.y.try_subtract(&from.chart.y)?;
+            let mut point_at = |parameter: f64| -> Result<Point> {
+                if parameter == 0.0 {
+                    return Ok(start);
+                }
+                if parameter.to_bits() == 1.0_f64.to_bits() {
+                    return Ok(end);
+                }
+                let exact_parameter = ExactRational::from_f64(parameter);
+                let longitude = from
+                    .chart
+                    .x
+                    .try_add(&delta.try_product(&exact_parameter)?)?;
+                let latitude = from
+                    .chart
+                    .y
+                    .try_add(&latitude_delta.try_product(&exact_parameter)?)?;
+                let exact = ExactChartPoint::from_rationals(longitude, latitude);
+                let longitude = round_canonical_longitude(frame, &exact.x)?;
+                let latitude = Latitude::try_new(frame, exact.y.round()?)
+                    .map_err(|error| GeometryErrorKind::Invalid(error.to_string().into()))?
+                    .get();
+                let point = Point::new_axes(
+                    longitude,
+                    latitude,
+                    ZOrdinate(interpolate_optional_ordinate(start.z(), end.z(), parameter)),
+                    MOrdinate(interpolate_optional_ordinate(start.m(), end.m(), parameter)),
+                )?;
+                certificate.record(exact, point)?;
+                Ok(point)
+            };
+            let interval =
+                ExactRational::from_f64(end_t).try_subtract(&ExactRational::from_f64(start_t))?;
+            Ok(crate::geographic::ComputedEdgeInterval {
+                start: point_at(start_t)?,
+                end: point_at(end_t)?,
+                delta: delta.try_product(&interval)?.round()?,
+            })
+        },
+    )?;
+    let published = published.unwrap_or(points);
     Ok((
-        Ring::try_from_closed(CoordSeq::try_from_points(&points)?)?,
+        Ring::try_from_closed(CoordSeq::try_from_points(&published)?)?,
         is_hole,
     ))
 }
 
 fn chart_ring_is_hole(frame: crate::geographic::GeographicFrame, ring: &Ring) -> Result<bool> {
     // Overlay can create cycles with no single source-ring role; classify the emitted chart.
-    match ring_winding(ring) {
+    let winding = if crate::geometry::chain_crosses_antimeridian(ring.coords(), frame) {
+        match crate::geometry::unwrap_coordinates(ring.coords(), frame) {
+            Ok(coordinates) => ring_winding(&Ring::try_from_closed(coordinates)?),
+            Err(crate::geometry::UnwrapChartError::Winding) => RingWinding::Degenerate,
+            Err(crate::geometry::UnwrapChartError::Geometry(error)) => return Err(error),
+        }
+    } else {
+        ring_winding(ring)
+    };
+    match winding {
         RingWinding::CounterClockwise => Ok(false),
         RingWinding::Clockwise => Ok(true),
         RingWinding::Degenerate => {
@@ -2503,14 +2886,24 @@ fn apply_axes(
         })?;
     }
     for polygon in polygons {
-        let shell = carry_ring_axes(frame, &polygon.shell, ordinates, live, axes)?;
-        let mut holes = Vec::with_capacity(polygon.holes.len());
-        for hole in polygon.holes.iter() {
-            holes.push(carry_ring_axes(frame, hole, ordinates, live, axes)?);
-        }
-        *polygon = Polygon::new(shell, holes);
+        *polygon = carry_polygon_axes(frame, polygon, ordinates, live, axes)?;
     }
     Ok(())
+}
+
+fn carry_polygon_axes(
+    frame: crate::geographic::GeographicFrame,
+    polygon: &Polygon,
+    ordinates: &[NodeOrdinates],
+    live: &[(EmittedNodeKey, QNodeId)],
+    axes: CoordinateAxes,
+) -> Result<Polygon> {
+    let shell = carry_ring_axes(frame, &polygon.shell, ordinates, live, axes)?;
+    let mut holes = Vec::with_capacity(polygon.holes.len());
+    for hole in polygon.holes.iter() {
+        holes.push(carry_ring_axes(frame, hole, ordinates, live, axes)?);
+    }
+    Ok(Polygon::new(shell, holes))
 }
 
 fn carry_ring_axes(
@@ -2587,6 +2980,20 @@ mod tests {
     use super::*;
     use crate::geographic::{AngularFactor, GeographicFrame, GeographicInputs};
 
+    #[test]
+    fn canonical_full_band_ring_uses_its_chart_orientation() {
+        let Shape::Polygon(polygon) = crate::io::parse_wkt(
+            "POLYGON ((-180 -80, -60 -80, 60 -80, -180 -80, \
+             -180 80, 60 80, -60 80, -180 80, -180 -80))",
+        )
+        .unwrap() else {
+            unreachable!()
+        };
+        let frame = GeographicFrame::crs84();
+        assert!(!chart_ring_is_hole(frame, &polygon.shell).unwrap());
+        assert!(chart_ring_is_hole(frame, &polygon.shell.reversed().unwrap()).unwrap());
+    }
+
     fn exact_boundary(shape: &Shape) -> Shape {
         let frame = GeographicFrame::crs84();
         let inputs = GeographicInputs::try_from_shapes(frame, std::iter::once(shape))
@@ -2653,6 +3060,10 @@ mod tests {
                     node,
                     port: QPortId(u32::try_from(index).expect("fixed Q cycle fits its port IDs")),
                     point: Point::new_raw_xy(longitude, latitude),
+                    chart: ExactChartPoint::from_rationals(
+                        ExactRational::from_f64(longitude),
+                        ExactRational::from_f64(latitude),
+                    ),
                 }
             })
             .collect::<Vec<_>>();
@@ -2687,6 +3098,42 @@ mod tests {
                 .to_bits(),
             source.to_bits()
         );
+    }
+
+    #[test]
+    fn subdivision_publication_rejects_distinct_exact_points_with_one_rounded_key() {
+        let frame = GeographicFrame::crs84();
+        let third = ExactRational::from_f64(1.0)
+            .try_quotient(&ExactRational::from_f64(3.0))
+            .unwrap();
+        let original = ExactChartPoint::from_rationals(
+            ExactRational::from_f64(1.0 / 3.0),
+            ExactRational::zero(),
+        );
+        let inserted = ExactChartPoint::from_rationals(third, ExactRational::zero());
+        assert_eq!(
+            round_canonical_longitude(frame, &original.x).unwrap(),
+            round_canonical_longitude(frame, &inserted.x).unwrap()
+        );
+        let error =
+            certify_publication_identity(frame, &original, &inserted, QNodeId(7), QNodeId(8))
+                .unwrap_err();
+        assert!(matches!(
+            error.kind(),
+            crate::error::ErrorKind::Geometry(GeometryErrorKind::ExactNodeCollision {
+                first: 7,
+                second: 8,
+            })
+        ));
+
+        let shifted = ExactChartPoint::from_rationals(
+            original
+                .x
+                .try_add(&ExactRational::from_f64(frame.longitude().period()))
+                .unwrap(),
+            original.y.clone(),
+        );
+        certify_publication_identity(frame, &original, &shifted, QNodeId(7), QNodeId(8)).unwrap();
     }
 
     #[test]

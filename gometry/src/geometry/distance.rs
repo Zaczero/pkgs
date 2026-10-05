@@ -26,7 +26,8 @@ pub(crate) use chart_hausdorff::{
 };
 pub(crate) use chart_parts::{
     ChartEdgePart, ChartParts, cached_chart_distance, cached_chart_dwithin,
-    cached_chart_nearest_points, point_chart_distance, point_chart_dwithin, point_chart_locate,
+    cached_chart_nearest_points, cached_chart_nearest_points_with_intent, point_chart_distance,
+    point_chart_dwithin, point_chart_locate,
 };
 pub(crate) use chart_scratch::chart_scratch;
 #[cfg(test)]

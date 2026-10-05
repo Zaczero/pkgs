@@ -13,7 +13,7 @@ mod rdp;
 
 use crate::NonNegative;
 use crate::error::Result;
-use crate::geographic::PeriodicAxis;
+use crate::geographic::{ChartSpanGuard, PeriodicAxis};
 use crate::geometry::constructive::{WalkJoinRule, WalkPlan, materialize_walk, vw_keep};
 use crate::geometry::overlay::{ExactSourceInventory, rect_polygon};
 use crate::geometry::{
@@ -249,19 +249,15 @@ macro_rules! rounded_rdp_split {
 }
 
 pub(crate) trait RdpEdgeSpanGuard: Copy {
-    const GEOGRAPHIC: bool;
-
-    fn edge_exceeds_half_period(&self, from: f64, to: f64) -> bool;
+    fn span_guard<'a>(&self, xs: &'a [f64]) -> Option<ChartSpanGuard<'a>>;
 }
 
 #[derive(Clone, Copy)]
 pub(crate) struct PlanarRdpGuard;
 
 impl RdpEdgeSpanGuard for PlanarRdpGuard {
-    const GEOGRAPHIC: bool = false;
-
-    fn edge_exceeds_half_period(&self, _from: f64, _to: f64) -> bool {
-        false
+    fn span_guard<'a>(&self, _xs: &'a [f64]) -> Option<ChartSpanGuard<'a>> {
+        None
     }
 }
 
@@ -269,10 +265,8 @@ impl RdpEdgeSpanGuard for PlanarRdpGuard {
 pub(crate) struct GeographicRdpGuard<'a>(pub(crate) &'a PeriodicAxis);
 
 impl RdpEdgeSpanGuard for GeographicRdpGuard<'_> {
-    const GEOGRAPHIC: bool = true;
-
-    fn edge_exceeds_half_period(&self, from: f64, to: f64) -> bool {
-        self.0.edge_exceeds_half_period(from, to)
+    fn span_guard<'a>(&self, xs: &'a [f64]) -> Option<ChartSpanGuard<'a>> {
+        Some(ChartSpanGuard::new(xs, *self.0))
     }
 }
 
@@ -356,14 +350,12 @@ fn rdp_keep_with_query<G: RdpEdgeSpanGuard>(
     let mut kept = 2_usize;
     stack.clear();
     let (mut start, mut end) = (0_usize, count.wrapping_sub(1));
+    let span_guard = edge_guard.span_guard(xs);
     loop {
-        let split = if G::GEOGRAPHIC
-            && edge_guard.edge_exceeds_half_period(
-                *xs.get(start)
-                    .expect("Douglas-Peucker start belongs to its source range"),
-                *xs.get(end)
-                    .expect("Douglas-Peucker end belongs to its source range"),
-            ) {
+        let split = if span_guard
+            .as_ref()
+            .is_some_and(|guard| guard.rejects_span(start, end))
+        {
             Some(start.wrapping_add(end.wrapping_sub(start) / 2))
         } else {
             query(start, end)?
@@ -686,6 +678,7 @@ pub(crate) fn split(
     shape: Shape,
     max_vertices: usize,
     drop: bool,
+    geographic_frame: Option<crate::geographic::GeographicFrame>,
     out: &mut Vec<Shape>,
     budget: &mut ExpansionBudget,
 ) -> Result<()> {
@@ -767,10 +760,19 @@ pub(crate) fn split(
         let right_rect = Shape::Polygon(rect_polygon(halves[1])?);
         let sources = [&item.shape, &left_rect, &right_rect];
         let inventory = ExactSourceInventory::from_shapes(&sources)?;
-        let partition = inventory.partition(budget)?;
-        let children =
-            inventory
-                .subdivision_parts(&partition, &item.shape, item.shape.axes(), drop, [1, 2])?;
+        let mut partition = inventory.partition(budget)?;
+        if let Some(frame) = geographic_frame {
+            partition.set_geographic_frame(frame);
+        }
+        let children = inventory.subdivision_parts(
+            &partition,
+            &item.shape,
+            item.shape.axes(),
+            drop,
+            [1, 2],
+            geographic_frame,
+            budget,
+        )?;
         if children.iter().all(Shape::is_empty) {
             // A cut that cannot be represented by the exact arrangement must
             // not silently lose the source support or violate the size bound.
@@ -1354,17 +1356,11 @@ impl Shape {
             Ok::<_, std::convert::Infallible>(())
         });
         let guard = TopologyGuard::new(&segments, vertex_cloud);
-        let guarded_candidate = |prev: XY, vertex: XY, next: XY| {
-            if CHECK_EDGE_SPAN && axis.edge_exceeds_half_period(prev.x, next.x) {
-                Ok(None)
-            } else {
-                candidate(prev, vertex, next)
-            }
-        };
         self.map_chains(&mut |points: &CoordSeq| {
             let xs = points.xs();
             let ys = points.ys();
             let count = xs.len();
+            let span_guard = CHECK_EDGE_SPAN.then(|| ChartSpanGuard::new(xs, axis));
             let closed = count >= 2
                 && xs
                     .first()
@@ -1373,18 +1369,28 @@ impl Shape {
                     .is_some_and(|((first_x, first_y), (last_x, last_y))| {
                         same_point(XY::new(*first_x, *first_y), XY::new(*last_x, *last_y))
                     });
+            let xy = |index| {
+                XY::new(
+                    *xs.get(index)
+                        .expect("guarded simplification vertex belongs to its source"),
+                    *ys.get(index)
+                        .expect("guarded simplification vertex belongs to its source"),
+                )
+            };
             let kept = simplify_chain_guarded(
                 count,
-                |index| {
-                    XY::new(
-                        *xs.get(index)
-                            .expect("guarded simplification vertex belongs to its source"),
-                        *ys.get(index)
-                            .expect("guarded simplification vertex belongs to its source"),
-                    )
-                },
+                xy,
                 closed,
-                &guarded_candidate,
+                &|prev, vertex, next| {
+                    if span_guard
+                        .as_ref()
+                        .is_some_and(|guard| guard.rejects_span(prev, next))
+                    {
+                        Ok(None)
+                    } else {
+                        candidate(xy(prev), xy(vertex), xy(next))
+                    }
+                },
                 &guard,
             )?;
             if kept.len() == count {
@@ -2301,6 +2307,56 @@ mod subdivision_tests {
                 .iter()
                 .all(|part| { counts.coordinates(part).is_ok_and(|count| count <= 8) })
         );
+    }
+
+    #[test]
+    fn geographic_subdivide_splits_a_wide_computed_cut_edge() {
+        let shape = ring_shape(&[
+            Point::new_raw_xy(-150.0, -500.0),
+            Point::new_raw_xy(-50.0, -500.0),
+            Point::new_raw_xy(50.0, -500.0),
+            Point::new_raw_xy(150.0, -500.0),
+            Point::new_raw_xy(150.0, 0.0),
+            Point::new_raw_xy(150.0, 500.0),
+            Point::new_raw_xy(50.0, 500.0),
+            Point::new_raw_xy(-50.0, 500.0),
+            Point::new_raw_xy(-150.0, 500.0),
+            Point::new_raw_xy(-150.0, 0.0),
+            Point::new_raw_xy(-150.0, -500.0),
+        ]);
+        let longitude =
+            crate::geographic::AngularFactor::try_new("longitude", std::f64::consts::PI / 180.0)
+                .unwrap();
+        let latitude =
+            crate::geographic::AngularFactor::try_new("latitude", std::f64::consts::PI / 2000.0)
+                .unwrap();
+        let frame = crate::geographic::GeographicFrame::try_new(longitude, latitude, 0.0).unwrap();
+        let parts = shape
+            .subdivide_in_geographic_frame(8, false, frame)
+            .unwrap();
+        assert!(parts.len() >= 2);
+        let mut counts = ShapeCountQuery::default();
+        assert!(
+            parts
+                .iter()
+                .all(|part| counts.coordinates(part).is_ok_and(|count| count <= 8))
+        );
+        assert!(
+            parts
+                .iter()
+                .flat_map(all_points)
+                .any(|point| point == Point::new_raw_xy(0.0, -250.0)),
+            "the 300-degree generated cut edge needs its canonical midpoint: {parts:?}"
+        );
+        for point in all_points(&shape) {
+            assert!(
+                parts
+                    .iter()
+                    .flat_map(all_points)
+                    .any(|output| output == point),
+                "subdivision lost source vertex {point:?}: {parts:?}"
+            );
+        }
     }
 
     #[test]

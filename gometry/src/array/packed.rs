@@ -1007,6 +1007,22 @@ impl PyGeometryArray {
         storage::admit_packed_coord_count(len)?;
         let count = len / 4;
         storage::admit_packed_coord_count(count)?;
+        if let crate::geometry::TopologyDomain::Geographic(geographic) =
+            crate::geometry::topology_domain(&frame)?
+        {
+            let mut budget = crate::geometry::ExpansionBudget::new("triangulate", "method");
+            budget.add(len)?;
+            let published = crate::geometry::publish_triangle_vertex_stream_budgeted(
+                vertices,
+                geographic,
+                &mut budget,
+            )?;
+            return Self::packed_triangles_with_ring_ends(
+                &published.points,
+                &published.ring_ends,
+                frame,
+            );
+        }
         let capacity = count
             .checked_add(1)
             .expect("an admitted triangle count is below the coordinate width");
@@ -1025,6 +1041,48 @@ impl PyGeometryArray {
                 coords: Arc::new(CoordSeq::try_from_points(vertices)?),
                 ring_offsets,
                 polygon_offsets,
+                row_map: RowSelection::Identity,
+            }),
+            frame,
+        )?)
+    }
+
+    pub(crate) fn packed_triangles_with_ring_ends(
+        vertices: &[Point],
+        ring_ends: &[usize],
+        frame: Frame,
+    ) -> PyResult<Self> {
+        storage::admit_packed_coord_count(vertices.len())?;
+        storage::admit_packed_coord_count(ring_ends.len())?;
+        let count = ring_ends.len();
+        let mut rings = CsrOffsetBuilder::with_capacity(count);
+        let mut polygons = CsrOffsetBuilder::with_capacity(count);
+        let mut previous = 0;
+        for (index, &end) in ring_ends.iter().enumerate() {
+            let ring_len = end.checked_sub(previous).ok_or_else(|| {
+                crate::error::Error::from(crate::geometry::GeometryErrorKind::MalformedCsrOffsets)
+            })?;
+            if ring_len < 4 || end > vertices.len() {
+                return Err(crate::error::Error::from(
+                    crate::geometry::GeometryErrorKind::MalformedCsrOffsets,
+                )
+                .into());
+            }
+            rings.push_end(end, vertices.len())?;
+            polygons.push_end(index.wrapping_add(1), count)?;
+            previous = end;
+        }
+        if previous != vertices.len() {
+            return Err(crate::error::Error::from(
+                crate::geometry::GeometryErrorKind::MalformedCsrOffsets,
+            )
+            .into());
+        }
+        Ok(Self::from_storage(
+            GeometryArrayStorage::Packed(PackedStorage::Polygons {
+                coords: Arc::new(CoordSeq::try_from_points(vertices)?),
+                ring_offsets: rings.finish(vertices.len())?.cast_level::<RingLevel>(),
+                polygon_offsets: polygons.finish(count)?.cast_level::<PolygonLevel>(),
                 row_map: RowSelection::Identity,
             }),
             frame,
@@ -2187,5 +2245,43 @@ mod packed_simplify_keep_tests {
         assert_eq!(out_offsets.as_slice(), &[0, 3, 5]);
         assert_eq!(out_coords.xs(), &[0.0, 1.0, 2.0, 0.0, 2.0]);
         assert_eq!(out_coords.ys(), &[0.0, 1.0, 0.0, 0.0, 0.0]);
+    }
+}
+
+#[cfg(test)]
+mod computed_triangle_publication_tests {
+    use super::*;
+    use crate::crs::frame::crs_arc_static;
+
+    #[test]
+    fn geographic_packed_triangles_publish_variable_ring_offsets() {
+        let vertices = [
+            Point::new_raw_xy(10.0, 20.0),
+            Point::new_raw_xy(260.0, 40.0),
+            Point::new_raw_xy(260.0, 60.0),
+            Point::new_raw_xy(10.0, 20.0),
+        ];
+        let array =
+            PyGeometryArray::packed_triangles(&vertices, Frame::Crs(crs_arc_static("EPSG:4326")))
+                .unwrap();
+        let GeometryArrayStorage::Packed(PackedStorage::Polygons {
+            coords,
+            ring_offsets,
+            polygon_offsets,
+            ..
+        }) = array.storage()
+        else {
+            panic!("triangle output remains packed polygons");
+        };
+        assert_eq!(ring_offsets.as_slice(), &[0, 6]);
+        assert_eq!(polygon_offsets.as_slice(), &[0, 1]);
+        assert_eq!(coords.iter().collect::<Vec<_>>(), [
+            Point::new_raw_xy(10.0, 20.0),
+            Point::new_raw_xy(135.0, 30.0),
+            Point::new_raw_xy(-100.0, 40.0),
+            Point::new_raw_xy(-100.0, 60.0),
+            Point::new_raw_xy(135.0, 40.0),
+            Point::new_raw_xy(10.0, 20.0),
+        ]);
     }
 }

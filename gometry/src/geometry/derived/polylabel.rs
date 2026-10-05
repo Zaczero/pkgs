@@ -1645,7 +1645,8 @@ pub(crate) fn build_inscribed_circle_budgeted(
                         error.kind(),
                         crate::error::ErrorKind::Geometry(
                             crate::geometry::GeometryErrorKind::UnrepresentableOutput {
-                                operation: "maximum_inscribed_circle"
+                                operation: "maximum_inscribed_circle",
+                                ..
                             }
                         )
                     ) =>

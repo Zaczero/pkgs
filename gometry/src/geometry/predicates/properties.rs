@@ -266,6 +266,23 @@ impl Shape {
     /// so no validation is re-run here; valid input would simply be
     /// rebuilt.
     pub fn repair(&self, method: RepairMethod, drop: bool) -> Result<Self> {
+        self.repair_with_source_vertices(method, drop, false)
+    }
+
+    pub(crate) fn repair_preserving_source_vertices(
+        &self,
+        method: RepairMethod,
+        drop: bool,
+    ) -> Result<Self> {
+        self.repair_with_source_vertices(method, drop, true)
+    }
+
+    fn repair_with_source_vertices(
+        &self,
+        method: RepairMethod,
+        drop: bool,
+        preserve_source_vertices: bool,
+    ) -> Result<Self> {
         match self {
             // Empty shapes are always valid; an invalid (multi)point means
             // non-finite coordinates, which nothing can reconstruct.
@@ -275,11 +292,15 @@ impl Shape {
             Self::LineString(line) => line_repair(line),
             Self::MultiLineString(lines) => multiline_repair(lines),
             Self::Polygon(polygon) => {
-                let rebuilt = polygonal_repair(std::slice::from_ref(polygon), method)?;
+                let rebuilt = polygonal_repair(
+                    std::slice::from_ref(polygon),
+                    method,
+                    preserve_source_vertices,
+                )?;
                 carry_ordinates(rebuilt, &[self], "repair", drop)
             },
             Self::MultiPolygon(polygons) => {
-                let rebuilt = polygonal_repair(polygons, method)?;
+                let rebuilt = polygonal_repair(polygons, method, preserve_source_vertices)?;
                 carry_ordinates(rebuilt, &[self], "repair", drop)
             },
             Self::GeometryCollection(geometries) => Ok(Self::GeometryCollection(
@@ -288,7 +309,7 @@ impl Shape {
                     if geometry.validate()?.is_none() {
                         Ok(geometry.clone())
                     } else {
-                        geometry.repair(method, drop)
+                        geometry.repair_with_source_vertices(method, drop, preserve_source_vertices)
                     }
                 })?,
             )),

@@ -2269,7 +2269,8 @@ mod tests {
         assert!(matches!(
             error.kind(),
             ErrorKind::Geometry(GeometryErrorKind::UnrepresentableOutput {
-                operation: "triangulate"
+                operation: "triangulate",
+                ..
             })
         ));
         assert_eq!(pts, before, "rejected source split does not append a site");

@@ -45,6 +45,14 @@ pub(crate) fn geographic_bounds_to_shape(
     bounds: Bounds,
     frame: crate::geographic::GeographicFrame,
 ) -> crate::error::Result<Shape> {
+    let shape = geographic_bounds_chart(bounds, frame)?;
+    crate::geometry::publish_stored_computed_shape(&shape, frame, "geographic bounds")
+}
+
+pub(crate) fn geographic_bounds_chart(
+    bounds: Bounds,
+    frame: crate::geographic::GeographicFrame,
+) -> crate::error::Result<Shape> {
     if same_topological_coordinate(bounds.minx(), bounds.maxx()) {
         return bounds_to_shape(bounds);
     }

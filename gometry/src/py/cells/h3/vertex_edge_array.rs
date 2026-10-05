@@ -897,9 +897,13 @@ impl PyH3EdgeArray {
                     .iter()
                     .map(|latlng| Point::new_raw_xy(latlng.lng(), latlng.lat()))
                     .collect();
-                shapes.push(Shape::LineString(LineSeq::from_proven(
-                    CoordSeq::try_from_points(&points)?,
-                )));
+                let shape =
+                    Shape::LineString(LineSeq::from_proven(CoordSeq::try_from_points(&points)?));
+                shapes.push(crate::geometry::publish_stored_computed_shape(
+                    &shape,
+                    crate::geographic::GeographicFrame::crs84(),
+                    "H3 edge",
+                )?);
             }
             Ok::<_, PyErr>(shapes)
         })?;

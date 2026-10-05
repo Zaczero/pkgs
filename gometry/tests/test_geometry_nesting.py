@@ -544,9 +544,7 @@ def test_shared_packed_array_windows_remain_distinct_in_point_sets() -> None:
     assert shape.max_m == 202
 
 
-def test_geodesic_concave_hull_keeps_first_projected_source_witness_in_depth_128() -> (
-    None
-):
+def test_geodesic_concave_hull_keeps_first_source_ordinates_in_depth_128() -> None:
     script = r"""
 import math
 import gometry as gm
@@ -565,7 +563,7 @@ assert hull.coordinate_axes == 'XYZM'
 assert hull.crs == 'EPSG:4326'
 edge = next(coord for coord in hull.exterior.coords if coord[1] == 1.0)
 assert (edge[2], edge[3]) == (50.0, 5.0)
-assert math.copysign(1.0, edge[0]) == -1.0
+assert math.copysign(1.0, edge[0]) == 1.0
 """
     result = subprocess.run(
         [sys.executable, '-c', script],

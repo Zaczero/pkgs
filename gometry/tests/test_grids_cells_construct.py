@@ -266,8 +266,8 @@ def test_world_tile_polygon_uses_geographic_rectangle_for_scalar_and_array() -> 
     assert gm.get_coordinates(hemisphere).tolist() == [
         [minx, miny],
         [midpoint, miny],
-        [maxx, miny],
-        [maxx, maxy],
+        [-180.0, miny],
+        [-180.0, maxy],
         [midpoint, maxy],
         [minx, maxy],
         [minx, miny],
@@ -280,6 +280,17 @@ def test_world_tile_polygon_uses_geographic_rectangle_for_scalar_and_array() -> 
         crs=4326,
     )
     assert ordinary.to_wkt() == four_corner_polygon.to_wkt()
+
+
+def test_world_tile_dissolve_keeps_the_complete_band() -> None:
+    world = gm.Tile(x=0, y=0, zoom=0)
+    for cells in ([world], list(world.children(1))):
+        outline = gm.CellArray(cells, type=gm.Tile).to_polygon()
+        assert outline.geometry_type == 'Polygon'
+        assert outline.is_valid
+        assert outline.bounds == (-180.0, -85.0511287798066, 180.0, 85.0511287798066)
+        for longitude in (-179.0, 0.0, 179.0):
+            assert gm.contains(outline, gm.Point(longitude, 0.0, crs=4326))
 
 
 @pytest.mark.parametrize('zoom', [0, 4, 29])

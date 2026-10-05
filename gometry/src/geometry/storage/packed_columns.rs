@@ -20,6 +20,7 @@ use super::kernels as packed_column_kernels;
 use super::kernels::map_masked_point_columns_to_crs;
 use super::replacement::{CoordinateReplacement, ReplacementAxis};
 use crate::crs::TransformFailure;
+use crate::geographic::GeographicFrame;
 use crate::geometry::storage::validity::MissingIter;
 use crate::geometry::storage::{
     GeometryArrayStorage, PackedRow, PackedStorage, RowSelectionRef, ValidityMask,
@@ -45,6 +46,7 @@ impl PointRowLayout {
     }
 }
 
+#[derive(Debug)]
 pub(crate) enum PackedColumnError {
     Batch(crate::error::Error),
     Row {
@@ -1152,11 +1154,23 @@ pub(crate) fn map_selected_points(
     }
 }
 
+fn canonicalize_transformed_points(
+    coordinates: &CoordSeq,
+    frame: GeographicFrame,
+) -> crate::error::Result<CoordSeq> {
+    coordinates.try_map_points(|point| {
+        frame
+            .canonical_computed_point(point)
+            .map_err(|error| crate::crs::CrsError::invalid(error.to_string()))
+    })
+}
+
 fn transform_selected_coords(
     transformer: &crate::crs::TransformPlan,
     coords: &CoordSeq,
     indices: impl IntoIterator<Item = usize>,
     capacity: usize,
+    target_output: TargetLongitudeOutput,
 ) -> std::result::Result<CoordSeq, TransformFailure> {
     let mut xs = Vec::with_capacity(capacity);
     let mut ys = Vec::with_capacity(capacity);
@@ -1176,8 +1190,21 @@ fn transform_selected_coords(
     let zt = zs.as_mut().map_or(crate::Zt::None, |values| {
         crate::Zt::Z(values.as_mut_slice())
     });
-    transformer.transform_coordinates_indexed(&mut xs, &mut ys, zt)?;
+    match target_output {
+        TargetLongitudeOutput::Canonical => {
+            transformer.transform_coordinates_indexed(&mut xs, &mut ys, zt)?;
+        },
+        TargetLongitudeOutput::ContinuousChart => {
+            transformer.transform_coordinates_indexed_for_shape(&mut xs, &mut ys, zt)?;
+        },
+    }
     Ok(CoordSeq::try_from_vecs(xs, ys, zs, ms)?)
+}
+
+#[derive(Clone, Copy)]
+enum TargetLongitudeOutput {
+    Canonical,
+    ContinuousChart,
 }
 
 fn packed_transform_failure(failure: TransformFailure, row: Option<usize>) -> PackedColumnError {
@@ -1217,7 +1244,7 @@ pub(crate) fn map_selected_to_crs(
         PackedColumns::Points(points) => {
             let rows = points.rows();
             if let Some(missing) = points.missing {
-                let coords = map_masked_point_columns_to_crs(
+                let mut coords = map_masked_point_columns_to_crs(
                     transformer,
                     points.coords(),
                     points.selection(),
@@ -1230,6 +1257,9 @@ pub(crate) fn map_selected_to_crs(
                         .and_then(|coordinate| point_row_for_coordinate(rows, coordinate));
                     packed_transform_failure(failure, row)
                 })?;
+                if let Some(frame) = transformer.computed_geographic_frame() {
+                    coords = canonicalize_transformed_points(&coords, frame).map_err(batch_err)?;
+                }
                 return Ok(PackedColumnOutput::Points(coords));
             }
             storage::admit_packed_coord_count(points.len()).map_err(batch_err)?;
@@ -1241,6 +1271,7 @@ pub(crate) fn map_selected_to_crs(
                     .cursor()
                     .map(|(_, physical)| physical.expect("dense point rows are present")),
                 points.len(),
+                TargetLongitudeOutput::Canonical,
             )
             .map_err(|failure| {
                 let row = failure
@@ -1248,6 +1279,11 @@ pub(crate) fn map_selected_to_crs(
                     .and_then(|coordinate| point_row_for_coordinate(rows, coordinate));
                 packed_transform_failure(failure, row)
             })?;
+            let coords = if let Some(frame) = transformer.computed_geographic_frame() {
+                canonicalize_transformed_points(&coords, frame).map_err(batch_err)?
+            } else {
+                coords
+            };
             Ok(PackedColumnOutput::Points(coords))
         },
         PackedColumns::Lines(lines) => {
@@ -1274,14 +1310,32 @@ pub(crate) fn map_selected_to_crs(
                     lines.row_window(logical)
                 }
             });
-            let coords =
-                transform_selected_coords(transformer, lines.coords(), indices, coordinate_count)
-                    .map_err(|failure| {
-                    let row = failure.coordinate.and_then(|coordinate| {
-                        offset_row_for_coordinate(offsets.as_slice(), coordinate)
-                    });
-                    packed_transform_failure(failure, row)
-                })?;
+            let coords = transform_selected_coords(
+                transformer,
+                lines.coords(),
+                indices,
+                coordinate_count,
+                TargetLongitudeOutput::ContinuousChart,
+            )
+            .map_err(|failure| {
+                let row = failure.coordinate.and_then(|coordinate| {
+                    offset_row_for_coordinate(offsets.as_slice(), coordinate)
+                });
+                packed_transform_failure(failure, row)
+            })?;
+            let (coords, offsets) = if let Some(frame) = transformer.computed_geographic_frame() {
+                let mut budget = crate::geometry::ExpansionBudget::new("to_crs", "computed edges");
+                budget.add(coords.len()).map_err(batch_err)?;
+                crate::geometry::publish_computed_line_column_with_budget(
+                    &coords,
+                    &offsets,
+                    frame,
+                    &mut budget,
+                )
+                .map_err(batch_err)?
+            } else {
+                (coords, offsets)
+            };
             Ok(PackedColumnOutput::Lines { coords, offsets })
         },
         PackedColumns::Polygons(polygons) => {
@@ -1335,6 +1389,7 @@ pub(crate) fn map_selected_to_crs(
                 polygons.coords(),
                 indices,
                 coordinate_count,
+                TargetLongitudeOutput::ContinuousChart,
             )
             .map_err(|failure| {
                 let row = failure.coordinate.and_then(|coordinate| {
@@ -1346,6 +1401,21 @@ pub(crate) fn map_selected_to_crs(
                 });
                 packed_transform_failure(failure, row)
             })?;
+            let (coords, ring_offsets) = if let Some(frame) =
+                transformer.computed_geographic_frame()
+            {
+                let mut budget = crate::geometry::ExpansionBudget::new("to_crs", "computed edges");
+                budget.add(coords.len()).map_err(batch_err)?;
+                crate::geometry::publish_computed_polygon_rings_with_budget(
+                    &coords,
+                    &ring_offsets,
+                    frame,
+                    &mut budget,
+                )
+                .map_err(batch_err)?
+            } else {
+                (coords, ring_offsets)
+            };
             Ok(PackedColumnOutput::Polygons {
                 coords,
                 ring_offsets: ring_offsets.cast_level(),
@@ -1360,7 +1430,7 @@ mod tests {
     use super::*;
     use crate::PyGeometryArray;
     use crate::crs::frame::{Frame, crs_arc_static};
-    use crate::geographic::{AngularFactor, GeographicFrame};
+    use crate::geographic::AngularFactor;
     use crate::geometry::storage::RowSelection;
     use crate::geometry::{LineSeq, Polygon, Ring, Shape};
     use crate::test_support::allocation_count;
@@ -1384,6 +1454,43 @@ mod tests {
             "homogeneous rows use packed storage",
         );
         array
+    }
+
+    #[test]
+    fn packed_to_crs_lines_rebuild_offsets_after_edge_subdivision() {
+        let source = PyGeometryArray::packed_lines(
+            CoordSeq::try_from_vecs(
+                vec![20_000_000.0, -20_000_000.0],
+                vec![0.0, 0.0],
+                None,
+                None,
+            )
+            .unwrap(),
+            CsrOffsetColumn::try_new(vec![0, 2], 2).unwrap(),
+            Frame::Crs(crs_arc_static("EPSG:3857")),
+        )
+        .unwrap();
+        let columns = resolve_packed_columns(
+            source.storage(),
+            source.missing(),
+            source.point_row_layout(),
+        )
+        .expect("packed line source resolves");
+        let transformer = crate::crs::TransformPlan::new("EPSG:3857", "EPSG:4326").unwrap();
+        let PackedColumnOutput::Lines { coords, offsets } =
+            map_selected_to_crs(columns, &transformer).unwrap()
+        else {
+            panic!("line transforms remain packed lines");
+        };
+        assert_eq!(offsets.as_slice(), &[0, 3]);
+        assert!(coords.xs()[0] > 170.0);
+        assert_eq!(coords.xs()[1], 0.0);
+        assert!(coords.xs()[2] < -170.0);
+        let axis = crate::geographic::GeographicFrame::crs84().longitude();
+        for pair in coords.xs().array_windows::<2>() {
+            let step = axis.chart_step(pair[0], pair[1]).unwrap().delta(axis);
+            assert!(step.abs() <= axis.half_period());
+        }
     }
 
     fn ordinary_geographic(array: &PyGeometryArray, frame: GeographicFrame) -> bool {

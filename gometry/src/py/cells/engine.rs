@@ -305,6 +305,7 @@ pub(super) fn coverage_to_polygon(shapes: &[Shape]) -> PyResult<Typed> {
         | Shape::GeometryCollection(_)
         | Shape::Empty(..)) => shape,
     };
+    let shape = super::coverage_ops::publish_grid_outline(&shape, "grid coverage")?;
     Ok(PyGeometry::typed_wgs84(shape))
 }
 
@@ -378,7 +379,11 @@ pub(super) fn rect_cells_to_polygon<C: RectCell>(cells: Vec<C>) -> PyResult<Type
         .as_slice()
         .iter()
         .map(|cell| {
-            let shape = crate::geometry::bounds_to_shape(cell.bounds()).map_err(PyErr::from)?;
+            let shape = crate::geometry::geographic_bounds_to_shape(
+                cell.bounds(),
+                crate::geographic::GeographicFrame::crs84(),
+            )
+            .map_err(PyErr::from)?;
             shape.split_antimeridian().map_err(PyErr::from)
         })
         .collect::<PyResult<Vec<_>>>()?;

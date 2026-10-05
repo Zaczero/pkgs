@@ -169,9 +169,9 @@ pub(crate) fn fixed_geometry_array_shortest_line_geodesic(
                         let logical = row.logical();
                         let element = array_rows.prepared(row).map_err(|error| (logical, error))?;
                         let element_cache = array_rows.frame_cache(logical);
-                        let pair = if fixed_is_left {
+                        let witness = if fixed_is_left {
                             fixed_plan
-                                .geodesic_nearest_points_cached(
+                                .geodesic_nearest_line_cached(
                                     &fixed_cache,
                                     &element,
                                     &element_cache,
@@ -183,7 +183,7 @@ pub(crate) fn fixed_geometry_array_shortest_line_geodesic(
                                 .map_err(|error| (logical, error))?
                         } else {
                             element
-                                .geodesic_nearest_points_cached(
+                                .geodesic_nearest_line_cached(
                                     &element_cache,
                                     &fixed_plan,
                                     &fixed_cache,
@@ -194,10 +194,17 @@ pub(crate) fn fixed_geometry_array_shortest_line_geodesic(
                                 )
                                 .map_err(|error| (logical, error))?
                         };
-                        let line = crate::geometry::nearest_line(
-                            pair.as_ref(),
-                            crate::geometry::common_axes(fixed_plan.shape(), element.shape()),
-                        )
+                        let common =
+                            crate::geometry::common_axes(fixed_plan.shape(), element.shape());
+                        let line = match witness {
+                            Some((start, end, step)) => crate::geometry::nearest_line_with_intent(
+                                Some(&(start, end)),
+                                common,
+                                crate::geometry::ChartMetric::chart_frame(metric),
+                                crate::geographic::ComputedEdgeIntent::Stored(step),
+                            ),
+                            None => crate::geometry::nearest_line(None, common),
+                        }
                         .map_err(|error| (logical, error))?;
                         shapes.push(line);
                     }

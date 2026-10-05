@@ -1243,6 +1243,7 @@ mod certificate_math {
             let local = crate::crs::local::frame::LocalCrsDefinition {
                 definition: "EPSG:32631".to_owned(),
                 display_name: None,
+                projected_pole: None,
             };
             let certificate =
                 LocalProjectionCertificate::from_selected_frame(&local, &geodesic, frame, &state)

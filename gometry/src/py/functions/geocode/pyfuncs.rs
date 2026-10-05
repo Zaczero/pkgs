@@ -238,12 +238,17 @@ pub(crate) fn pluscode_polygon(py: Python<'_>, code: &Bound<'_, PyAny>) -> PyRes
     fn polygon_shape(code: &str) -> PyResult<Shape> {
         olc_require_full(code)?;
         let area = olc_decode(&code.to_ascii_uppercase());
-        Ok(Shape::Polygon(crate::box_polygon(
+        let shape = Shape::Polygon(crate::box_polygon(
             area.lng_lo,
             area.lat_lo,
             area.lng_hi,
             area.lat_hi,
-        )?))
+        )?);
+        Ok(crate::geometry::publish_stored_computed_shape(
+            &shape,
+            crate::geographic::GeographicFrame::crs84(),
+            "pluscode_polygon",
+        )?)
     }
     let frame = Frame::new(Some(WGS84_LONLAT.into()), None)?;
     match CodeInput::parse(code, "code")? {

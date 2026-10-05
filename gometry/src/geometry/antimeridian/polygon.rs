@@ -227,7 +227,10 @@ pub(crate) fn split_geographic_view(view: ScalarGeographicView<'_>) -> Result<Sh
         latitude_scale,
         &mut ShapeTransformMemo::default(),
     )?;
-    if canonical && !chart.crosses_antimeridian() {
+    if canonical
+        && !crate::geometry::crosses_antimeridian_in_frame(view.shape(), frame)
+        && !chart.crosses_antimeridian()
+    {
         return Ok(view.shape().clone());
     }
     let split = chart.split_antimeridian_chart(&mut ShapeTransformMemo::default())?;
@@ -330,7 +333,18 @@ fn chart_ring(
         .ok_or(crate::error::ResourceError::SizeOverflow)?;
     points.reserve_exact(output_count);
     if matches!(summary.domain, RingDomain::FullLongitude(_)) && summary.chart_turn == 0 {
-        let xs = geographic.native_xs();
+        let unwrapped = super::normalize::unwrap_coordinates(ring.coords(), frame).map_err(
+            |error| match error {
+                super::normalize::UnwrapChartError::Geometry(error) => error,
+                super::normalize::UnwrapChartError::Winding => {
+                    GeometryErrorKind::antimeridian_split_failed(
+                        "axis band has no finite continuous longitude chart",
+                    )
+                },
+            },
+        )?;
+        let unwrapped = Ring::try_from_closed(unwrapped)?;
+        let xs = unwrapped.xs();
         let west = xs.iter().copied().fold(f64::INFINITY, f64::min);
         let east = xs.iter().copied().fold(f64::NEG_INFINITY, f64::max);
         let band_point = |point: Point| -> Result<Point> {
@@ -343,7 +357,7 @@ fn chart_ring(
             };
             point.with_xy(x, chart_latitude(point.y, frame, latitude_scale)?)
         };
-        for [start, end] in ring.segment_pairs() {
+        for [start, end] in unwrapped.segment_pairs() {
             if points.is_empty() {
                 points.push(band_point(start)?);
             }

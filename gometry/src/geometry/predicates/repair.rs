@@ -68,11 +68,18 @@ pub(crate) fn multiline_repair(lines: &MultiLineString) -> Result<Shape> {
 /// nonzero-signed-winding enclosed area. Both methods recombine selected
 /// regions as union(shells) − union(holes); collapsed rings contribute their
 /// closed line support to the exact source fold before polygon repair.
-pub(crate) fn polygonal_repair(polygons: &[Polygon], method: RepairMethod) -> Result<Shape> {
+pub(crate) fn polygonal_repair(
+    polygons: &[Polygon],
+    method: RepairMethod,
+    preserve_source_vertices: bool,
+) -> Result<Shape> {
     let empty: &[Polygon] = &[];
     let inventory = ExactSourceInventory::from_polygon_operands(polygons, empty)?;
     let mut budget = crate::geometry::ExpansionBudget::new("repair", "exact partition");
-    let partition = inventory.partition(&mut budget)?;
+    let mut partition = inventory.partition(&mut budget)?;
+    if preserve_source_vertices {
+        partition.preserve_source_vertices();
+    }
     let (_, _, parts) = match method {
         RepairMethod::Linework => inventory.repair_parts(&partition)?,
         RepairMethod::Structure => inventory.structure_parts(&partition)?,

@@ -35,6 +35,10 @@ impl ExpansionBudget {
         }
     }
 
+    pub(crate) const fn operation(&self) -> &'static str {
+        self.operation
+    }
+
     /// The quadratic sibling of [`Self::product`]: `left * right` against
     /// [`PAIRWISE_WORK_LIMIT`], for an operation whose cost is the product of
     /// two generated counts rather than their sum.

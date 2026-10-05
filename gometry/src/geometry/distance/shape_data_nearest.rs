@@ -1,7 +1,8 @@
 use crate::crs::PointEdgeScratch;
+use crate::geographic::ChartStep;
 use crate::geometry::distance::{
-    Result, cached_chart_nearest_points, nearest_probe_to_parts, parts_boundary_witness,
-    quick_area_overlap, squared_space_safe,
+    Result, cached_chart_nearest_points, cached_chart_nearest_points_with_intent,
+    nearest_probe_to_parts, parts_boundary_witness, quick_area_overlap, squared_space_safe,
 };
 use crate::geometry::{
     ChartMetric, FrameDependentCaches, GeodesicMetric, Point, PreparedPlan, Shape,
@@ -84,5 +85,43 @@ impl PreparedPlan {
             flattening,
             metric,
         )
+    }
+
+    /// Geodesic shortest-line witness together with the longitude step
+    /// selected while the source/chart witness is still available.
+    pub(crate) fn geodesic_nearest_line_cached<M>(
+        &self,
+        self_cache: &FrameDependentCaches,
+        other: &Self,
+        other_cache: &FrameDependentCaches,
+        crs: &str,
+        semi_major: f64,
+        flattening: f64,
+        metric: &M,
+    ) -> Result<Option<(Point, Point, ChartStep)>>
+    where
+        M: GeodesicMetric + ChartMetric<PointEdgeScratch = PointEdgeScratch>,
+    {
+        if let (Shape::Point(left), Shape::Point(right)) = (self.shape(), other.shape()) {
+            metric.ensure_shape(self.shape())?;
+            metric.ensure_shape(other.shape())?;
+            let direction = metric
+                .chart_frame()
+                .longitude()
+                .shortest_alias_step(left.x, right.x)
+                .map_err(|error| crate::crs::CrsError::invalid(error.to_string()))?;
+            return Ok(Some((*left, *right, ChartStep::Shortest(direction))));
+        }
+        Ok(cached_chart_nearest_points_with_intent(
+            self,
+            self_cache,
+            other,
+            other_cache,
+            crs,
+            semi_major,
+            flattening,
+            metric,
+        )?
+        .map(|minimum| (minimum.first, minimum.second, minimum.intent)))
     }
 }

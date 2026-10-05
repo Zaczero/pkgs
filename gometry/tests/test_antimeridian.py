@@ -1151,7 +1151,10 @@ def test_crossing_line_and_multiline_predicates_and_planar_ops() -> None:
     assert gm.intersects(multi, meridian)
     assert multi.length > 0.0
     assert line.simplify(1.0).to_wkt() == 'LINESTRING (170 10, -170 10)'
-    assert line.convex_hull().to_wkt() == 'LINESTRING (-170 10, 170 10)'
+    hull = line.convex_hull()
+    assert list(hull.coords) == [(-170.0, 10.0), (0.0, 10.0), (170.0, 10.0)]
+    assert gm.covers(hull, gm.Point(0, 10, crs=4326))
+    assert not gm.covers(hull, gm.Point(180, 10, crs=4326))
 
 
 def test_crossing_line_geographic_distance_to_seam_is_zero() -> None:

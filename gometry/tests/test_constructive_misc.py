@@ -187,6 +187,20 @@ def test_topology_preserving_simplify_does_not_collapse_retraced_line(
     assert len({coordinate[:2] for coordinate in coordinates}) == 2
 
 
+def test_computed_full_turn_hull_keeps_its_measurable_chart_path() -> None:
+    hull = gm.MultiPoint([(0.0, 10.0), (360.0, 30.0)], crs=4326).convex_hull()
+    assert list(hull.coords) == [
+        (0.0, 10.0),
+        (90.0, 15.0),
+        (-180.0, 20.0),
+        (-90.0, 25.0),
+        (0.0, 30.0),
+    ]
+    assert math.isfinite(hull.length)
+    source_path = gm.LineString([(0.0, 10.0), (360.0, 30.0)], crs=4326)
+    assert hull.length == pytest.approx(source_path.length, rel=2e-12)
+
+
 @pytest.mark.parametrize(
     ('method', 'preserve_topology'),
     list(itertools.product(('dp', 'vw'), (False, True))),

@@ -1,11 +1,19 @@
 //! Semantic values for periodic geographic coordinates.
 
+mod chain;
+mod computed_edge;
 mod envelope;
 mod interval;
 pub(crate) mod lonlat;
 mod value;
 mod view;
 
+pub(crate) use chain::ChartSpanGuard;
+pub(crate) use computed_edge::{
+    ComputedEdgeIntent, ComputedEdgeInterval, ComputedVertexIntent, publish_certified_minor_chain,
+    publish_computed_chain, publish_computed_chain_with_vertex_intents,
+    publish_computed_chain_with_vertex_intents_and_intervals,
+};
 pub(crate) use envelope::GeographicSupportEnvelope;
 pub(crate) use interval::{CircularInterval, LongitudeWindows, union_circular_intervals};
 use thiserror::Error;

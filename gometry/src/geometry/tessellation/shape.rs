@@ -439,19 +439,43 @@ impl Shape {
         self.voronoi_polygons_budgeted(tolerance, boundary, &mut budget)
     }
 
+    #[cfg(test)]
     pub(crate) fn voronoi_polygons_budgeted(
         &self,
         tolerance: f64,
         boundary: VoronoiBoundary<'_>,
         budget: &mut ExpansionBudget,
     ) -> Result<Vec<Self>> {
+        self.voronoi_polygon_outputs_budgeted(tolerance, boundary, budget)
+            .map(|outputs| {
+                outputs
+                    .into_iter()
+                    .map(|output| Self::Polygon(output.polygon))
+                    .collect()
+            })
+    }
+
+    pub(crate) fn voronoi_polygon_outputs_budgeted(
+        &self,
+        tolerance: f64,
+        boundary: VoronoiBoundary<'_>,
+        budget: &mut ExpansionBudget,
+    ) -> Result<Vec<crate::geometry::VoronoiPolygonOutput>> {
         let tolerance = NonNegative::try_new("tolerance", tolerance)?.get();
         let (canonical, mesh) = self.prepare_voronoi(tolerance)?;
         let Some(mesh) = mesh else {
             // A lone site's cell is the whole clip region; the envelope and
             // padded frames of one point have no area.
             return Ok(match (canonical.len(), boundary) {
-                (1, VoronoiBoundary::Polygon(polygon)) => vec![Self::Polygon(polygon.clone())],
+                (1, VoronoiBoundary::Polygon(polygon)) => {
+                    vec![crate::geometry::VoronoiPolygonOutput {
+                        polygon: polygon.clone(),
+                        computed_edges: polygon
+                            .rings()
+                            .map(|ring| vec![false; ring.len().saturating_sub(1)])
+                            .collect(),
+                    }]
+                },
                 _ => Vec::new(),
             });
         };
@@ -466,9 +490,15 @@ impl Shape {
                 &mesh,
                 voronoi_dcel::VoronoiProduct::Polygons,
             )?
-            .into_polygons()
+            .into_polygon_outputs()
         };
-        Ok(cells.into_iter().map(Self::Polygon).collect())
+        Ok(cells
+            .into_iter()
+            .map(|output| crate::geometry::VoronoiPolygonOutput {
+                polygon: output.polygon,
+                computed_edges: output.computed_edges,
+            })
+            .collect())
     }
 
     /// The edges as one packed line column: what an array result stores, so

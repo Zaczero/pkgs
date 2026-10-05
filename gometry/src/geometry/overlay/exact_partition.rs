@@ -191,7 +191,7 @@ impl ArealCells {
         edges: &[u32],
         global: &GlobalFaces,
     ) -> Result<BoundaryPlan> {
-        self.emission_plan_with_protected(partition, topology, edges, global, None)
+        self.emission_plan_with_protected(partition, topology, edges, global, None, None)
     }
 
     #[expect(
@@ -228,6 +228,7 @@ impl ArealCells {
         edges: &[u32],
         global: &GlobalFaces,
         extra_protected: Option<&[bool]>,
+        preserved_spans: Option<&[bool]>,
     ) -> Result<BoundaryPlan> {
         let (lines, points) = self.lower_dimensions(partition, topology, edges, global);
         let mut plan = global.boundary_plan_with_protected(
@@ -237,6 +238,7 @@ impl ArealCells {
             partition,
             &self.faces,
             extra_protected,
+            preserved_spans,
         )?;
         plan.points.reserve(points.len());
         for node in points {
@@ -1805,6 +1807,7 @@ impl ExactSourceInventory {
             partition,
             &selection.cells.faces,
             ordinate_protected.as_deref(),
+            None,
         )?;
 
         let mut covered_by_area_walk = vec![false; partition.node_count()];
@@ -1886,6 +1889,43 @@ impl ExactSourceInventory {
         )
     }
 
+    pub(in crate::geometry) fn overlay_polygon_parts_with_preserved_operand(
+        &self,
+        operation: crate::geometry::OverlayOp,
+        preserved_operand: u32,
+    ) -> Result<Vec<(Polygon, Vec<Vec<bool>>)>> {
+        let partition = self.partition_without_budget()?;
+        let (topology, edges) = partition.local_topology()?;
+        let global = partition.global_faces(&topology, &edges)?;
+        let cells = self.select_cells(&partition, &topology, &edges, &global, operation, false)?;
+        let mut preserved_spans = Vec::with_capacity(partition.spans.len());
+        for span in 0..partition.spans.len() {
+            let preserved = partition
+                .provenance
+                .owners(span)
+                .iter()
+                .any(|&(source, _)| {
+                    self.source_operands.get(source as usize).copied() == Some(preserved_operand)
+                });
+            preserved_spans.push(preserved);
+        }
+        let plan = cells.emission_plan_with_protected(
+            &partition,
+            &topology,
+            &edges,
+            &global,
+            None,
+            Some(&preserved_spans),
+        )?;
+        plan.emit_xy_polygon_parts_with_source_roles(
+            &partition,
+            &topology,
+            &edges,
+            operation.name(),
+            &preserved_spans,
+        )
+    }
+
     fn overlay_shape_with_faces(
         &self,
         partition: &ExactPartition<'_>,
@@ -1904,6 +1944,7 @@ impl ExactSourceInventory {
             edges,
             global,
             ordinate_protected.as_deref(),
+            None,
         )?;
         if declared_axes == CoordinateAxes::XY && plan.points.is_empty() && plan.lines.is_empty() {
             let (_, _, polygons) =
@@ -1961,6 +2002,7 @@ impl ExactSourceInventory {
             declared_axes,
             strict,
             operation.name(),
+            None,
         )
     }
 
@@ -1982,6 +2024,8 @@ impl ExactSourceInventory {
         declared_axes: crate::geometry::CoordinateAxes,
         strict: bool,
         clip_operands: [usize; 2],
+        geographic_frame: Option<crate::geographic::GeographicFrame>,
+        budget: &mut ExpansionBudget,
     ) -> Result<[Shape; 2]> {
         let source_operand = 0;
         let operands = self.operand_count();
@@ -2013,6 +2057,22 @@ impl ExactSourceInventory {
             );
         }
         let ordinate_protected = self.ordinate_protected_nodes(partition, declared_axes)?;
+        let preserved_spans = geographic_frame.is_some().then(|| {
+            let mut roles = Vec::with_capacity(partition.spans.len());
+            for span in 0..partition.spans.len() {
+                roles.push(
+                    partition
+                        .provenance
+                        .owners(span)
+                        .iter()
+                        .any(|&(source, _)| {
+                            self.source_operands.get(source as usize).copied()
+                                == Some(source_operand as u32)
+                        }),
+                );
+            }
+            roles
+        });
 
         let mut plans = Vec::with_capacity(clip_operands.len());
         for &clip_operand in &clip_operands {
@@ -2030,8 +2090,20 @@ impl ExactSourceInventory {
                 &edges,
                 &global,
                 ordinate_protected.as_deref(),
+                preserved_spans.as_deref(),
             )?);
         }
+        let polygon_edge_roles = preserved_spans
+            .as_ref()
+            .map(|preserved_spans| {
+                plans
+                    .iter()
+                    .map(|plan| {
+                        plan.polygon_edge_roles(partition, &topology, &edges, preserved_spans)
+                    })
+                    .collect::<Result<Vec<_>>>()
+            })
+            .transpose()?;
 
         let emissions: Vec<_> = plans
             .iter()
@@ -2060,6 +2132,12 @@ impl ExactSourceInventory {
 
         let by_node = self.resolve_node_points(partition, &embedding, &nodes, declared_axes)?;
         let mut parts = node_parts.into_iter();
+        let mut polygon_edge_roles = polygon_edge_roles.unwrap_or_default().into_iter();
+        let first_roles = polygon_edge_roles.next();
+        let first_publication = match (first_roles, geographic_frame) {
+            (Some(roles), Some(frame)) => Some((roles, frame, &mut *budget)),
+            _ => None,
+        };
         let first = self.node_parts_to_shape_resolved(
             parts
                 .next()
@@ -2069,7 +2147,13 @@ impl ExactSourceInventory {
             declared_axes,
             strict,
             "subdivide",
+            first_publication,
         )?;
+        let second_roles = polygon_edge_roles.next();
+        let second_publication = match (second_roles, geographic_frame) {
+            (Some(roles), Some(frame)) => Some((roles, frame, &mut *budget)),
+            _ => None,
+        };
         let second = self.node_parts_to_shape_resolved(
             parts
                 .next()
@@ -2079,6 +2163,7 @@ impl ExactSourceInventory {
             declared_axes,
             strict,
             "subdivide",
+            second_publication,
         )?;
         Ok([first, second])
     }
@@ -2344,7 +2429,13 @@ impl ExactSourceInventory {
         declared_axes: crate::geometry::CoordinateAxes,
         strict: bool,
         operation: &str,
+        polygon_publication: Option<(
+            crate::geometry::PolygonPartEdgeRoles,
+            crate::geographic::GeographicFrame,
+            &mut ExpansionBudget,
+        )>,
     ) -> Result<Shape> {
+        let mut polygon_publication = polygon_publication;
         if !declared_axes.has_z() && !declared_axes.has_m() {
             let xy = embedding.coordinates();
             let mut points = Vec::with_capacity(parts.points.len());
@@ -2356,7 +2447,12 @@ impl ExactSourceInventory {
             for line in parts.lines {
                 lines.push(xy_sequence_for_nodes(&line, xy)?);
             }
-            let polygons = polygons_from_xy_nodes(parts.polygons, xy)?;
+            let mut polygons = polygons_from_xy_nodes(parts.polygons, xy)?;
+            if let Some((roles, frame, budget)) = polygon_publication.take() {
+                polygons = crate::geometry::publish_polygon_parts_with_edge_roles(
+                    polygons, &roles, frame, budget,
+                )?;
+            }
             return assemble_node_parts(
                 points,
                 lines,
@@ -2420,6 +2516,11 @@ impl ExactSourceInventory {
             let mut holes = Vec::with_capacity(ring_iter.size_hint().0);
             holes.extend(ring_iter);
             polygons.push(Polygon::new(shell, holes));
+        }
+        if let Some((roles, frame, budget)) = polygon_publication.take() {
+            polygons = crate::geometry::publish_polygon_parts_with_edge_roles(
+                polygons, &roles, frame, budget,
+            )?;
         }
         assemble_node_parts(points, lines, polygons, point_axes, line_axes, polygon_axes)
     }
@@ -4078,6 +4179,10 @@ fn walk_exact_chain(
 impl ExactPartition<'_> {
     pub(in crate::geometry) const fn node_count(&self) -> usize {
         self.points.len()
+    }
+
+    pub(in crate::geometry) fn preserve_source_vertices(&mut self) {
+        self.kept_nodes = KeptNodes::All;
     }
 
     pub(in crate::geometry) fn set_geographic_frame(

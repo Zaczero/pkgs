@@ -165,8 +165,11 @@ pub enum GeometryErrorKind {
     RepairFailed(Box<str>),
     #[error("packed geometry exceeds the i32 offset capacity for GeoArrow list arrays")]
     OffsetCapacityExceeded,
-    #[error("{operation} output could not be represented as a contained geometry")]
-    UnrepresentableOutput { operation: &'static str },
+    #[error("{operation} output could not be represented as a contained geometry{detail}")]
+    UnrepresentableOutput {
+        operation: &'static str,
+        detail: Box<str>,
+    },
     #[error("offset buffer is malformed: CSR offsets must start at 0 and be non-decreasing")]
     MalformedCsrOffsets,
     /// A serialized pickle payload violated the private packed-storage
@@ -281,7 +284,26 @@ impl GeometryErrorKind {
     }
 
     pub fn unrepresentable_output(operation: &'static str) -> CrateError {
-        Self::UnrepresentableOutput { operation }.into()
+        Self::UnrepresentableOutput {
+            operation,
+            detail: String::new().into_boxed_str(),
+        }
+        .into()
+    }
+
+    pub fn conflicting_preserved_longitudes(
+        operation: &'static str,
+        first: f64,
+        second: f64,
+    ) -> CrateError {
+        Self::UnrepresentableOutput {
+            operation,
+            detail: format!(
+                ": zero-longitude class has conflicting preserved spellings {first:?} and {second:?}"
+            )
+            .into(),
+        }
+        .into()
     }
 
     #[expect(

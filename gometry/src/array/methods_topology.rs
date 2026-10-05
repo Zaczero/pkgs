@@ -292,7 +292,7 @@ impl PyGeometryArray {
                         unreachable!("matched Mixed");
                     };
                     let borrowed: Vec<_> = shapes.iter().collect();
-                    transformer.transform_shapes_indexed(&borrowed)
+                    transformer.transform_shapes_with_computed_edges_indexed(&borrowed)
                 })
                 .map_err(transform_failure_pyerr)?;
             drain_accuracy_warning(py, &execution)?;

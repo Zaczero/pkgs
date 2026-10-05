@@ -55,8 +55,7 @@ fn direct_dual_subnormal_admission_matches_legacy_builder() {
                     let cells: Vec<_> = diagram
                         .polygons
                         .iter()
-                        .cloned()
-                        .map(Shape::Polygon)
+                        .map(|output| Shape::Polygon(output.polygon.clone()))
                         .collect();
                     assert!(cells.iter().all(|cell| matches!(cell, Shape::Polygon(polygon) if polygon_is_valid(polygon).unwrap())));
                     assert!(coverage_is_valid(&cells, 0.0).unwrap(), "units={units}");
@@ -1491,6 +1490,28 @@ fn nonrectangular_shell_contacts_keep_scaffold_events_in_source_order() {
             crate::io::to_wkb(&expected, None, false).unwrap()
         );
     }
+    let mut role_budget = ExpansionBudget::new("voronoi_polygons", "sites/clip topology");
+    let outputs = source
+        .voronoi_polygon_outputs_budgeted(0.0, VoronoiBoundary::Polygon(&polygon), &mut role_budget)
+        .unwrap();
+    assert_eq!(outputs.len(), 2);
+    for output in &outputs {
+        assert_eq!(output.computed_edges.len(), output.polygon.rings().count());
+        assert!(
+            output
+                .computed_edges
+                .iter()
+                .flatten()
+                .any(|&computed| computed)
+        );
+        assert!(
+            output
+                .computed_edges
+                .iter()
+                .flatten()
+                .any(|&computed| !computed)
+        );
+    }
 
     let mut edge_budget = ExpansionBudget::new("voronoi_edges", "sites/clip topology");
     let (coordinates, offsets) = source
@@ -1566,7 +1587,7 @@ fn ordinary_five_site_diagram_is_owned_and_admitted() {
         diagram
             .polygons
             .iter()
-            .all(|polygon| polygon_is_valid(polygon).unwrap())
+            .all(|output| polygon_is_valid(&output.polygon).unwrap())
     );
 }
 
@@ -1594,7 +1615,7 @@ fn cosine_circle_fails_open_to_generic_coverage() {
         diagram
             .polygons
             .iter()
-            .all(|polygon| polygon_is_valid(polygon).unwrap())
+            .all(|output| polygon_is_valid(&output.polygon).unwrap())
     );
 }
 
@@ -3692,6 +3713,62 @@ fn subnormal_clip_aabb_exact_lane_admits_sites_on_corners() {
 }
 
 #[test]
+fn geographic_voronoi_zero_meridian_class_preserves_clip_spelling() {
+    let sites = Shape::MultiPoint(
+        vec![
+            Point::new_raw_xy(240.0, 5.0),
+            Point::new_raw_xy(260.0, 5.0),
+            Point::new_raw_xy(250.0, 15.0),
+        ]
+        .into(),
+    );
+    let clip = Polygon::new(
+        closed_ring(&[(250.0, 0.0), (240.0, 10.0), (260.0, 10.0)]),
+        Vec::new(),
+    );
+    let mut budget = ExpansionBudget::new("voronoi_polygons", "sites/clip topology");
+    let outputs = sites
+        .voronoi_polygon_outputs_budgeted(0.0, VoronoiBoundary::Polygon(&clip), &mut budget)
+        .unwrap();
+    let frame = crate::geographic::GeographicFrame::crs84();
+    let axis = frame.longitude();
+    let mut edge_budget = ExpansionBudget::new("voronoi_polygons", "computed edges");
+    let published =
+        crate::geometry::publish_voronoi_polygon_outputs(outputs, Some(frame), &mut edge_budget)
+            .unwrap();
+    let mut keeps_clip_spelling = false;
+    let mut meridian_reads_zero = false;
+    for shape in &published {
+        let Shape::Polygon(polygon) = shape else {
+            panic!("Voronoi polygon publication changed the output kind");
+        };
+        for ring in polygon.rings() {
+            let points = ring.coords().iter().collect::<Vec<_>>();
+            keeps_clip_spelling |= points
+                .iter()
+                .any(|point| point.x.to_bits() == 250.0_f64.to_bits());
+            for pair in points.array_windows::<2>() {
+                if pair[0].x.to_bits() == 250.0_f64.to_bits()
+                    && pair[1].x.to_bits() == 250.0_f64.to_bits()
+                    && pair[0].y.to_bits() != pair[1].y.to_bits()
+                {
+                    meridian_reads_zero |=
+                        axis.chart_step(pair[0].x, pair[1].x).unwrap().delta(axis) == 0.0;
+                }
+            }
+        }
+    }
+    assert!(
+        keeps_clip_spelling,
+        "the clip longitude 250 must survive publication"
+    );
+    assert!(
+        meridian_reads_zero,
+        "the preserved meridian edge must read as zero longitude displacement"
+    );
+}
+
+#[test]
 fn canonical_separator_atoms_keep_one_identity_and_do_not_branch() {
     let (sites, polygon) = separator_fixture();
     let atoms = node_polygon(&sites, &polygon);
@@ -4096,6 +4173,33 @@ fn collinear_holed_clip_splits_each_separator_into_two_pieces() {
         (1.0, -3.0, 1.0, -1.0),
         (1.0, 1.0, 1.0, 3.0),
     ]);
+
+    let source = Shape::MultiPoint(
+        sites
+            .iter()
+            .map(|site| site.point)
+            .collect::<Vec<_>>()
+            .into(),
+    );
+    let mut polygon_budget = ExpansionBudget::new("voronoi_polygons", "sites/clip topology");
+    let outputs = source
+        .voronoi_polygon_outputs_budgeted(0.0, VoronoiBoundary::Polygon(&clip), &mut polygon_budget)
+        .unwrap();
+    assert_eq!(outputs.len(), 4);
+    assert!(outputs.iter().all(|output| {
+        output.computed_edges.len() == output.polygon.rings().count()
+            && output
+                .computed_edges
+                .iter()
+                .all(|edges| !edges.is_empty() && edges.iter().any(|&computed| computed))
+    }));
+    assert!(outputs.iter().any(|output| {
+        output
+            .computed_edges
+            .iter()
+            .flatten()
+            .any(|&computed| !computed)
+    }));
 }
 
 #[test]
@@ -4391,8 +4495,7 @@ fn dual_completeness_rejects_a_missing_cell_mutant() {
     let mut missing_rows: Vec<_> = restored_diagram
         .polygons
         .iter()
-        .cloned()
-        .map(Shape::Polygon)
+        .map(|output| Shape::Polygon(output.polygon.clone()))
         .collect();
     missing_rows.pop();
     assert!(

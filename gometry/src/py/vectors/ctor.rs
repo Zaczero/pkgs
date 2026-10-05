@@ -122,18 +122,18 @@ impl Groups {
         ))
     }
 
-    /// Adopt a point CSR builder whose logical rows contain groups of four
-    /// vertices per triangle, materializing the packed triangle geometry
-    /// column only after CSR construction completes.
+    /// Adopt a point CSR builder and one ring-end stream, materializing the
+    /// packed triangle geometry column only after all row output completes.
     pub(crate) fn from_point_builder(
         frame: crate::Frame,
         builder: CsrBuilder<crate::Point>,
+        ring_ends: Vec<usize>,
     ) -> PyResult<Self> {
         let (vertices, offsets) = builder.finish();
         let values = if vertices.is_empty() {
             PyGeometryArray::from_shapes(Vec::new(), frame)?
         } else {
-            PyGeometryArray::packed_triangles(&vertices, frame)?
+            PyGeometryArray::packed_triangles_with_ring_ends(&vertices, &ring_ends, frame)?
         };
         Self::from_geometry_csr(values, offsets)
     }

@@ -14,7 +14,7 @@ use crate::error::Result;
 use crate::geometry::{
     Bounds, BufferCapStyle, BufferJoinStyle, BufferSide, DerivedPointStrategy, Dimension,
     GeometryKind, MeasureRange, OriginSpec, PreparedPlan, Shape, SimplifyMethod, SmoothMethod,
-    Strictness, same_topological_coordinate,
+    Strictness, TopologyDomain, same_topological_coordinate,
 };
 use crate::numeric::Positive;
 use crate::{
@@ -31,25 +31,77 @@ fn scale_area(value: f64, to_metre: f64) -> f64 {
     value * to_metre * to_metre
 }
 
+fn publish_planar_geographic_edges(
+    output: Shape,
+    model: &crate::crs::MetricModel,
+    domain: TopologyDomain,
+    operation: &'static str,
+) -> Result<Shape> {
+    match (model, domain) {
+        (crate::crs::MetricModel::Planar { .. }, TopologyDomain::Geographic(frame)) => {
+            crate::geometry::publish_raw_computed_shape(&output, frame, operation)
+        },
+        _ => Ok(output),
+    }
+}
+
+fn publish_planar_geographic_edges_budgeted(
+    output: Shape,
+    model: &crate::crs::MetricModel,
+    domain: TopologyDomain,
+    budget: &mut crate::geometry::ExpansionBudget,
+) -> Result<Shape> {
+    match (model, domain) {
+        (crate::crs::MetricModel::Planar { .. }, TopologyDomain::Geographic(frame)) => {
+            crate::geometry::publish_raw_computed_shape_with_budget(&output, frame, budget)
+        },
+        _ => Ok(output),
+    }
+}
+
+fn publish_planar_geographic_constructive(
+    output: Shape,
+    model: &crate::crs::MetricModel,
+    domain: TopologyDomain,
+    operation: &'static str,
+) -> Result<Shape> {
+    match (model, domain, output) {
+        (
+            crate::crs::MetricModel::Planar { .. },
+            TopologyDomain::Geographic(frame),
+            Shape::Point(point),
+        ) => Ok(Shape::Point(
+            frame
+                .canonical_computed_point(point)
+                .map_err(|error| crate::crs::CrsError::invalid(error.to_string()))?,
+        )),
+        (crate::crs::MetricModel::Planar { .. }, TopologyDomain::Geographic(frame), output) => {
+            crate::geometry::publish_raw_computed_shape(&output, frame, operation)
+        },
+        (_, _, output) => Ok(output),
+    }
+}
+
 /// Centroid kernel shared by the spine-routed free function.
 pub(crate) fn unary_centroid(data: &PreparedPlan, ctx: &CachelessRowContext<'_>) -> Result<Shape> {
     crate::geometry::unary_antimeridian_centroid(data.shape(), ctx.domain)
 }
 
 /// Envelope kernel shared by the spine-routed free function.
-pub(crate) fn unary_envelope(data: &PreparedPlan, _ctx: &CachelessRowContext<'_>) -> Result<Shape> {
-    data.bounds().map_or_else(
+pub(crate) fn unary_envelope(data: &PreparedPlan, ctx: &CachelessRowContext<'_>) -> Result<Shape> {
+    let output = data.bounds().map_or_else(
         || Ok(Shape::empty_polygon()),
         crate::geometry::bounds_to_shape,
-    )
+    )?;
+    publish_computed_point_or_raw_if_geographic(output, ctx.domain, "envelope")
 }
 
 /// Convex-hull kernel shared by the spine-routed free function.
 pub(crate) fn unary_convex_hull(
     data: &PreparedPlan,
-    _ctx: &CachelessRowContext<'_>,
+    ctx: &CachelessRowContext<'_>,
 ) -> Result<Shape> {
-    data.shape().convex_hull()
+    publish_raw_computed_if_geographic(data.shape().convex_hull()?, ctx.domain, "convex_hull")
 }
 
 /// Simplify kernel shared by the spine-routed free function.
@@ -135,7 +187,7 @@ pub(crate) fn unary_buffer_budgeted(
         };
     }
     let model = ctx.metric.require_model(MetricOp::Buffer)?;
-    metric_constructive_shape_budgeted(
+    let output = metric_constructive_shape_budgeted(
         model,
         ctx.frame.crs_str(),
         data.shape(),
@@ -159,7 +211,8 @@ pub(crate) fn unary_buffer_budgeted(
                 budget,
             ),
         },
-    )
+    )?;
+    publish_planar_geographic_edges_budgeted(output, model, ctx.domain, budget)
 }
 
 /// Offset-curve kernel shared by the spine-routed free function.
@@ -203,7 +256,7 @@ pub(crate) fn unary_offset_curve_budgeted(
         );
     }
     let model = ctx.metric.require_model(MetricOp::OffsetCurve)?;
-    metric_constructive_shape_budgeted(
+    let output = metric_constructive_shape_budgeted(
         model,
         ctx.frame.crs_str(),
         data.shape(),
@@ -212,7 +265,8 @@ pub(crate) fn unary_offset_curve_budgeted(
         |shape, d, budget| {
             shape.offset_curve_budgeted(d, join_style, quadrant_segments, miter_limit, budget)
         },
-    )
+    )?;
+    publish_planar_geographic_edges_budgeted(output, model, ctx.domain, budget)
 }
 
 /// Point-on-surface kernel shared by the spine-routed free function.
@@ -237,13 +291,14 @@ pub(crate) fn unary_concave_hull(
 ) -> Result<Shape> {
     let model = ctx.metric.require_model(MetricOp::ConcaveHull)?;
     let concavity = concavity.get(ctx.lane.row());
-    metric_concave_hull(
+    let output = metric_concave_hull(
         model,
         ctx.frame.crs_str(),
         data.shape(),
         concavity,
         length_threshold.get(ctx.lane.row()),
-    )
+    )?;
+    publish_planar_geographic_edges(output, model, ctx.domain, "concave_hull")
 }
 
 /// Polylabel kernel shared by the spine-routed free function.
@@ -253,13 +308,14 @@ pub(crate) fn unary_polylabel(
     tolerance: Option<&F64Param>,
 ) -> Result<Shape> {
     let model = ctx.metric.require_model(MetricOp::Polylabel)?;
-    metric_optional_constructive_shape(
+    let output = metric_optional_constructive_shape(
         model,
         ctx.frame.crs_str(),
         data.shape(),
         tolerance.map(|value| value.get(ctx.lane.row())),
         Shape::polylabel,
-    )
+    )?;
+    publish_planar_geographic_constructive(output, model, ctx.domain, "polylabel")
 }
 
 /// Maximum-inscribed-circle kernel shared by the spine-routed free function.
@@ -269,12 +325,13 @@ pub(crate) fn unary_maximum_inscribed_circle(
     tolerance: Option<&F64Param>,
 ) -> Result<Shape> {
     let model = ctx.metric.require_model(MetricOp::MaximumInscribedCircle)?;
-    metric_maximum_inscribed_circle(
+    let output = metric_maximum_inscribed_circle(
         model,
         ctx.frame.crs_str(),
         data.shape(),
         tolerance.map(|value| value.get(ctx.lane.row())),
-    )
+    )?;
+    publish_planar_geographic_constructive(output, model, ctx.domain, "maximum_inscribed_circle")
 }
 
 /// Maximum-inscribed-radius kernel — CRS-aware, the metric twin of the
@@ -301,7 +358,8 @@ pub(crate) fn unary_minimum_bounding_circle(
     ctx: &CachelessRowContext<'_>,
 ) -> Result<Shape> {
     let model = ctx.metric.require_model(MetricOp::MinimumBoundingCircle)?;
-    metric_minimum_bounding_circle(model, ctx.frame.crs_str(), data.shape())
+    let output = metric_minimum_bounding_circle(model, ctx.frame.crs_str(), data.shape())?;
+    publish_planar_geographic_edges(output, model, ctx.domain, "minimum_bounding_circle")
 }
 
 /// Minimum-bounding-circle radius kernel shared by scalar and array methods.
@@ -316,9 +374,39 @@ pub(crate) fn unary_minimum_bounding_radius(
 /// Minimum-rotated-rectangle kernel shared by the spine-routed free function.
 pub(crate) fn unary_minimum_rotated_rectangle(
     data: &PreparedPlan,
-    _ctx: &CachelessRowContext<'_>,
+    ctx: &CachelessRowContext<'_>,
 ) -> Result<Shape> {
-    data.shape().minimum_rotated_rectangle()
+    publish_raw_computed_if_geographic(
+        data.shape().minimum_rotated_rectangle()?,
+        ctx.domain,
+        "minimum_rotated_rectangle",
+    )
+}
+
+fn publish_raw_computed_if_geographic(
+    shape: Shape,
+    domain: TopologyDomain,
+    operation: &'static str,
+) -> Result<Shape> {
+    match domain {
+        TopologyDomain::Cartesian => Ok(shape),
+        TopologyDomain::Geographic(frame) => {
+            crate::geometry::publish_raw_computed_shape(&shape, frame, operation)
+        },
+    }
+}
+
+fn publish_computed_point_or_raw_if_geographic(
+    shape: Shape,
+    domain: TopologyDomain,
+    operation: &'static str,
+) -> Result<Shape> {
+    match domain {
+        TopologyDomain::Cartesian => Ok(shape),
+        TopologyDomain::Geographic(frame) => {
+            crate::geometry::publish_computed_point_or_raw_shape(&shape, frame, operation)
+        },
+    }
 }
 
 /// Boundary kernel shared by the spine-routed free function.
@@ -427,10 +515,14 @@ pub(crate) fn unary_smooth(
     method: SmoothMethod,
     keep_endpoints: bool,
 ) -> Result<Shape> {
-    data.shape().smooth(
+    let mut budget = crate::geometry::ExpansionBudget::new("smooth", "iterations");
+    smooth_for_domain(
+        data,
+        ctx,
         iterations.get(ctx.lane.row()) as i32,
         method,
         keep_endpoints,
+        &mut budget,
     )
 }
 
@@ -442,12 +534,45 @@ pub(crate) fn unary_smooth_budgeted(
     keep_endpoints: bool,
     budget: &mut crate::geometry::ExpansionBudget,
 ) -> Result<Shape> {
-    data.shape().smooth_budgeted(
+    smooth_for_domain(
+        data,
+        ctx,
         iterations.get(ctx.lane.row()) as i32,
         method,
         keep_endpoints,
         budget,
     )
+}
+
+fn smooth_for_domain(
+    data: &PreparedPlan,
+    ctx: &CachelessRowContext<'_>,
+    iterations: i32,
+    method: SmoothMethod,
+    keep_endpoints: bool,
+    budget: &mut crate::geometry::ExpansionBudget,
+) -> Result<Shape> {
+    match ctx.domain {
+        TopologyDomain::Cartesian => {
+            data.shape()
+                .smooth_budgeted(iterations, method, keep_endpoints, budget)
+        },
+        TopologyDomain::Geographic(frame) => {
+            let (output, preserved_vertices) = data.shape().smooth_budgeted_with_vertex_intents(
+                iterations,
+                method,
+                keep_endpoints,
+                budget,
+            )?;
+            crate::geometry::publish_changed_raw_computed_shape(
+                data.shape(),
+                &output,
+                frame,
+                &preserved_vertices,
+                budget,
+            )
+        },
+    }
 }
 
 /// Resolve segmentize's route option against its CRS-aware metric.

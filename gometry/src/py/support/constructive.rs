@@ -120,7 +120,7 @@ pub(crate) fn owned_voronoi_boundary(
 /// Run one Voronoi kernel over every input shape outside the interpreter
 /// lock, one budget for the whole call. The boundary and shapes are fully
 /// admitted Rust values by then; Python objects exist only after reattachment.
-fn voronoi_outputs<T: Send>(
+fn voronoi_outputs<T: Send, U: Send>(
     py: Python<'_>,
     shapes: impl Iterator<Item = Arc<crate::geometry::ShapeData>>,
     frame: &Frame,
@@ -133,7 +133,13 @@ fn voronoi_outputs<T: Send>(
         VoronoiBoundary<'_>,
         &mut crate::geometry::ExpansionBudget,
     ) -> Result<T>,
-) -> PyResult<Vec<T>> {
+    mut publish: impl FnMut(
+        T,
+        &OwnedVoronoiBoundary,
+        &mut crate::geometry::ExpansionBudget,
+    ) -> Result<U>
+    + Send,
+) -> PyResult<Vec<U>> {
     let boundary = owned_voronoi_boundary(py, clip, frame, operation)?;
     let shapes = shapes.collect::<Vec<_>>();
     Ok(py.detach(move || {
@@ -142,9 +148,10 @@ fn voronoi_outputs<T: Send>(
             .map(|shape| {
                 let mut budget =
                     crate::geometry::ExpansionBudget::new(operation, "sites/clip topology");
-                kernel(shape, tolerance, boundary.as_borrowed(), &mut budget)
+                let output = kernel(shape, tolerance, boundary.as_borrowed(), &mut budget)?;
+                publish(output, &boundary, &mut budget)
             })
-            .collect::<Result<Vec<T>>>()
+            .collect::<Result<Vec<U>>>()
     })?)
 }
 
@@ -160,9 +167,26 @@ pub(crate) fn voronoi_flatten(
         f64,
         VoronoiBoundary<'_>,
         &mut crate::geometry::ExpansionBudget,
-    ) -> Result<Vec<Shape>>,
+    ) -> Result<Vec<crate::geometry::VoronoiPolygonOutput>>,
 ) -> PyResult<PyGeometryArray> {
-    let cells = voronoi_outputs(py, shapes, &frame, tolerance, clip, operation, kernel)?;
+    let geographic_frame = crate::geometry::topology_domain(&frame)
+        .ok()
+        .and_then(|domain| match domain {
+            crate::geometry::TopologyDomain::Geographic(frame) => Some(frame),
+            crate::geometry::TopologyDomain::Cartesian => None,
+        });
+    let cells = voronoi_outputs(
+        py,
+        shapes,
+        &frame,
+        tolerance,
+        clip,
+        operation,
+        kernel,
+        move |outputs, _, budget| {
+            crate::geometry::publish_voronoi_polygon_outputs(outputs, geographic_frame, budget)
+        },
+    )?;
     Ok(PyGeometryArray::from_shapes(
         cells.into_iter().flatten().collect(),
         frame,
@@ -178,6 +202,12 @@ pub(crate) fn voronoi_edges_flatten(
     tolerance: f64,
     clip: &VoronoiClipInput,
 ) -> PyResult<PyGeometryArray> {
+    let geographic_frame = crate::geometry::topology_domain(&frame)
+        .ok()
+        .and_then(|domain| match domain {
+            crate::geometry::TopologyDomain::Geographic(frame) => Some(frame),
+            crate::geometry::TopologyDomain::Cartesian => None,
+        });
     let columns = voronoi_outputs(
         py,
         shapes,
@@ -186,6 +216,14 @@ pub(crate) fn voronoi_edges_flatten(
         clip,
         "voronoi_edges",
         Shape::voronoi_edge_column_budgeted,
+        move |(coords, offsets), _, budget| {
+            let Some(frame) = geographic_frame else {
+                return Ok((coords, offsets));
+            };
+            crate::geometry::publish_computed_line_column_with_budget(
+                &coords, &offsets, frame, budget,
+            )
+        },
     )?;
     let (coords, offsets) = concat_packed_line_columns(columns)?;
     Ok(if coords.is_empty() {

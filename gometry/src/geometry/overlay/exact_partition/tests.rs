@@ -185,7 +185,15 @@ fn subdivision_children(source: &Shape, split_x: bool, cut: f64) -> [Shape; 2] {
         );
     }
     let children = inventory
-        .subdivision_parts(&partition, source, source.axes(), false, [1, 2])
+        .subdivision_parts(
+            &partition,
+            source,
+            source.axes(),
+            false,
+            [1, 2],
+            None,
+            &mut budget,
+        )
         .unwrap();
     let [first, second] = &children;
     assert!(first.relate(second).unwrap().starts_with('F'));
@@ -748,6 +756,7 @@ fn xy_node_parts_serialize_the_certified_embedding() {
             crate::geometry::CoordinateAxes::XY,
             false,
             "test",
+            None,
         )
         .unwrap();
 

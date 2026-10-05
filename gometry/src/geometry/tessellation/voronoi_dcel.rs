@@ -28,8 +28,8 @@ use crate::geometry::embedding_search::{
 };
 use crate::geometry::exact_arith::ExactSign;
 use crate::geometry::overlay::{
-    NodeId, RayAxis, RayPoints, VoronoiIntermediateOverlay,
-    binary_cartesian_overlay_without_partition_budget, emitted_pair_preserves_incidence,
+    NodeId, RayAxis, RayPoints, binary_cartesian_difference_without_partition_budget,
+    binary_cartesian_intersection_with_edge_roles, emitted_pair_preserves_incidence,
     segments_within_chebyshev, visit_component_faces,
 };
 use crate::geometry::segment_index::YStabbingIndex;
@@ -2170,8 +2170,15 @@ fn nearest_site(point: &exact::ExactPoint, sites: &[Site]) -> Result<SiteId> {
 }
 
 pub(super) struct EmbeddedVoronoi {
-    polygons: Vec<Polygon>,
+    polygons: Vec<EmbeddedPolygon>,
     edges: EmbeddedEdges,
+}
+
+#[derive(Clone)]
+pub(super) struct EmbeddedPolygon {
+    pub(super) polygon: Polygon,
+    /// `true` marks a generated Voronoi/frame edge; `false` marks a source clip fragment.
+    pub(super) computed_edges: Vec<Vec<bool>>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -2340,7 +2347,15 @@ impl EmbeddedEdges {
 }
 
 impl EmbeddedVoronoi {
+    #[cfg(test)]
     pub(super) fn into_polygons(self) -> Vec<Polygon> {
+        self.polygons
+            .into_iter()
+            .map(|output| output.polygon)
+            .collect()
+    }
+
+    pub(super) fn into_polygon_outputs(self) -> Vec<EmbeddedPolygon> {
         self.polygons
     }
 
@@ -4283,6 +4298,17 @@ fn polygon_output_baseline(polygon: &Polygon) -> Result<usize> {
     )
 }
 
+fn computed_ring_edges(
+    subdivision: &ExactSubdivision,
+    ring: &ExactSimpleRing,
+    preserve_clip_fragments: bool,
+) -> Vec<bool> {
+    ring.edges
+        .iter()
+        .map(|edge| !preserve_clip_fragments || subdivision.edge(*edge).clip_sources.is_empty())
+        .collect()
+}
+
 fn embed(
     subdivision: &ExactSubdivision,
     parts: &[ExactCellPart],
@@ -4474,6 +4500,7 @@ fn embed(
     } else {
         0
     });
+    let preserve_clip_fragments = clip.source.is_some();
     for part in parts {
         if walk_label(subdivision, part.face).owner != Some(part.owner) {
             return Err(voronoi_error("embedded cell lost its exact face owner"));
@@ -4491,7 +4518,21 @@ fn embed(
         if !polygon_is_valid(&polygon)? {
             return Err(exact_embedding_unrepresentable(operation, constructed));
         }
-        labelled.push((part.owner, polygon));
+        let mut computed_edges = Vec::with_capacity(part.holes.len().wrapping_add(1));
+        computed_edges.push(computed_ring_edges(
+            subdivision,
+            &part.shell,
+            preserve_clip_fragments,
+        ));
+        computed_edges.extend(
+            part.holes
+                .iter()
+                .map(|hole| computed_ring_edges(subdivision, hole, preserve_clip_fragments)),
+        );
+        labelled.push((part.owner, EmbeddedPolygon {
+            polygon,
+            computed_edges,
+        }));
     }
     if product.includes_polygons() {
         let embedded_ring = |ring: &[exact::ExactPoint]| -> Result<Ring> {
@@ -4528,16 +4569,14 @@ fn embed(
         let comparison_clip = Shape::Polygon(comparison_polygon);
         if let Some(source) = clip.source {
             let source = Shape::Polygon(source.clone());
-            let source_gap = binary_cartesian_overlay_without_partition_budget(
+            let source_gap = binary_cartesian_difference_without_partition_budget(
                 &source,
                 &comparison_clip,
-                VoronoiIntermediateOverlay::Difference,
                 Strictness::Lenient,
             )?;
-            let source_spill = binary_cartesian_overlay_without_partition_budget(
+            let source_spill = binary_cartesian_difference_without_partition_budget(
                 &comparison_clip,
                 &source,
-                VoronoiIntermediateOverlay::Difference,
                 Strictness::Lenient,
             )?;
             if !source_gap.is_empty() || !source_spill.is_empty() {
@@ -4555,7 +4594,7 @@ fn embed(
         shape_rows.extend(
             labelled
                 .iter()
-                .map(|(_, polygon)| Shape::Polygon(polygon.clone())),
+                .map(|(_, output)| Shape::Polygon(output.polygon.clone())),
         );
         if !coverage_is_valid(&shape_rows, 0.0)? {
             return Err(exact_embedding_unrepresentable(operation, constructed));
@@ -4574,8 +4613,8 @@ fn embed(
                 reason = "row_index is built from shape_rows cloned in the same order as labelled, so every hit is an ordinal into this parallel cell table"
             )]
             let verify_row = |row: usize| {
-                let (owner, polygon) = &labelled[row];
-                if Shape::Polygon(polygon.clone()).covers(&point)? {
+                let (owner, output) = &labelled[row];
+                if Shape::Polygon(output.polygon.clone()).covers(&point)? {
                     if owner.0 as usize != site_index {
                         return Err(exact_embedding_unrepresentable(operation, constructed));
                     }
@@ -4601,7 +4640,7 @@ fn embed(
     } else {
         EmbeddedEdges::Segments(Vec::new())
     };
-    let polygons = labelled.into_iter().map(|(_, polygon)| polygon).collect();
+    let polygons = labelled.into_iter().map(|(_, output)| output).collect();
     Ok(EmbeddedVoronoi { polygons, edges })
 }
 
@@ -4972,7 +5011,7 @@ pub(super) fn build_collinear_polygons(
     boundary: VoronoiBoundary<'_>,
     budget: &mut ExpansionBudget,
     mesh: &CertifiedDelaunay,
-) -> Result<Vec<Polygon>> {
+) -> Result<Vec<EmbeddedPolygon>> {
     let order = mesh
         .collinear_order()
         .ok_or_else(|| voronoi_error("non-collinear sites entered the collinear Voronoi lane"))?;
@@ -5071,29 +5110,32 @@ pub(super) fn build_collinear_polygons(
             Vec::new(),
         );
         match clip.source {
-            None => cells.push(strip),
+            None => {
+                let computed_edges = vec![vec![true; strip.shell.len().saturating_sub(1)]];
+                cells.push(EmbeddedPolygon {
+                    polygon: strip,
+                    computed_edges,
+                });
+            },
             Some(polygon) => {
                 let strip = Shape::Polygon(strip);
                 let clip = Shape::Polygon(polygon.clone());
-                let clipped = binary_cartesian_overlay_without_partition_budget(
-                    &strip,
-                    &clip,
-                    VoronoiIntermediateOverlay::Intersection,
-                    Strictness::Strict,
-                )?;
-                for part in clipped.parts() {
-                    if let Shape::Polygon(part) = part {
-                        let count = polygon_output_count(
-                            part.shell.len(),
-                            part.holes.iter().map(|hole| hole.len()),
-                        )?;
-                        let next_published = published
-                            .checked_add(count)
-                            .ok_or(crate::error::ResourceError::SizeOverflow)?;
-                        budget.check_additional(next_published.saturating_sub(baseline))?;
-                        published = next_published;
-                        cells.push(part);
-                    }
+                for (part, computed_edges) in
+                    binary_cartesian_intersection_with_edge_roles(&strip, &clip)?
+                {
+                    let count = polygon_output_count(
+                        part.shell.len(),
+                        part.holes.iter().map(|hole| hole.len()),
+                    )?;
+                    let next_published = published
+                        .checked_add(count)
+                        .ok_or(crate::error::ResourceError::SizeOverflow)?;
+                    budget.check_additional(next_published.saturating_sub(baseline))?;
+                    published = next_published;
+                    cells.push(EmbeddedPolygon {
+                        polygon: part,
+                        computed_edges,
+                    });
                 }
             },
         }
@@ -6790,7 +6832,11 @@ fn dual_embed(
             xs.push(first.x);
             ys.push(first.y);
             let ring = Ring::closed_coordseq(CoordSeq::try_from_vecs(xs, ys, None, None)?)?;
-            polygons.push(Polygon::new(ring, Vec::new()));
+            let computed_edges = vec![vec![true; ring.len().saturating_sub(1)]];
+            polygons.push(EmbeddedPolygon {
+                polygon: Polygon::new(ring, Vec::new()),
+                computed_edges,
+            });
         }
     }
     Ok(EmbeddedVoronoi { polygons, edges })

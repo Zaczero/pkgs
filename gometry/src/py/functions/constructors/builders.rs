@@ -624,13 +624,14 @@ pub(super) fn build_box_shape(
     maxy: f64,
     wrap: Option<&str>,
     crs: Option<&Crs>,
+    ccw: bool,
 ) -> PyResult<Shape> {
     if miny > maxy {
         return Err(InvalidGeometryError::new_err(format!(
             "box miny ({miny}) must not exceed maxy ({maxy})"
         )));
     }
-    match wrap {
+    let shape = match wrap {
         None => {
             if minx > maxx {
                 return Err(InvalidGeometryError::new_err(format!(
@@ -648,10 +649,11 @@ pub(super) fn build_box_shape(
                 && minx < maxx
                 && miny < maxy
             {
-                return geographic_bounds_to_shape(Bounds::new(minx, miny, maxx, maxy)?, frame)
-                    .map_err(PyErr::from);
+                geographic_bounds_to_shape(Bounds::new(minx, miny, maxx, maxy)?, frame)
+                    .map_err(PyErr::from)
+            } else {
+                Ok(Shape::Polygon(box_polygon(minx, miny, maxx, maxy)?))
             }
-            Ok(Shape::Polygon(box_polygon(minx, miny, maxx, maxy)?))
         },
         Some("split") => {
             match crs {
@@ -662,27 +664,26 @@ pub(super) fn build_box_shape(
                     ));
                 },
             }
-            if maxx - minx >= 360.0 {
+            if maxx - minx >= 360.0 && miny < maxy {
                 // Every full turn denotes the complete longitude band.
-                if miny < maxy {
-                    let frame = crs::info("EPSG:4326")
-                        .map_err(PyErr::from)?
-                        .geographic_frame()
-                        .expect("EPSG:4326 has a geographic frame");
-                    return geographic_bounds_to_shape(
-                        Bounds::new(-180.0, miny, 180.0, maxy)?,
-                        frame,
-                    )
-                    .map_err(PyErr::from);
-                }
+                let frame = crs::info("EPSG:4326")
+                    .map_err(PyErr::from)?
+                    .geographic_frame()
+                    .expect("EPSG:4326 has a geographic frame");
+                geographic_bounds_to_shape(Bounds::new(-180.0, miny, 180.0, maxy)?, frame)
+                    .map_err(PyErr::from)
+            } else {
+                Ok(wrapped_box(minx, miny, maxx, maxy)?)
             }
-            Ok(wrapped_box(minx, miny, maxx, maxy)?)
         },
         Some(value) => Err(parameter_error(
             crate::tokens::unknown_token_message("box wrap", value, &["split"]),
             "wrap",
         )),
-    }
+    }?;
+    // Box construction already orders its chart sides counterclockwise.
+    // Planar orientation after canonical seam publication can reverse a band.
+    Ok(if ccw { shape } else { shape.reverse()? })
 }
 
 /// A `LineString` array member from raw coordinates.

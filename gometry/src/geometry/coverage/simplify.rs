@@ -82,10 +82,10 @@ fn simplify_chain_kept(
             let area_tolerance = vw_area_tolerance(tolerance);
             simplify_chain_guarded_with_segments(
                 count,
-                xy,
+                &xy,
                 cyclic,
                 &|prev, vertex, next| {
-                    let area = triangle_area(prev, vertex, next);
+                    let area = triangle_area(xy(prev), xy(vertex), xy(next));
                     Ok((area < area_tolerance).then_some(area))
                 },
                 guard,
@@ -95,7 +95,7 @@ fn simplify_chain_kept(
         SimplifyMethod::Dp => {
             simplify_chain_guarded_with_segments(
                 count,
-                xy,
+                &xy,
                 cyclic,
                 &|prev, vertex, next| {
                     // Point-to-segment deviation of `vertex` from the finite
@@ -104,9 +104,9 @@ fn simplify_chain_kept(
                     // line, so a projection past either endpoint must be
                     // measured to that endpoint. Distance space also keeps
                     // tiny tolerances from collapsing when squared.
-                    let deviation = point_segment_distance(vertex, Segment {
-                        start: prev,
-                        end: next,
+                    let deviation = point_segment_distance(xy(vertex), Segment {
+                        start: xy(prev),
+                        end: xy(next),
                     })?;
                     Ok((deviation < tolerance).then_some(deviation))
                 },
@@ -133,7 +133,7 @@ pub(in crate::geometry) fn simplify_chain_guarded(
     count: usize,
     xy: impl Fn(usize) -> XY,
     cyclic: bool,
-    candidate: &impl Fn(XY, XY, XY) -> Result<Option<f64>>,
+    candidate: &impl Fn(usize, usize, usize) -> Result<Option<f64>>,
     guard: &TopologyGuard<'_>,
 ) -> Result<Vec<usize>> {
     simplify_chain_guarded_with_segments(count, xy, cyclic, candidate, guard, &[])
@@ -143,7 +143,7 @@ pub(in crate::geometry) fn simplify_chain_guarded_with_segments(
     count: usize,
     xy: impl Fn(usize) -> XY,
     cyclic: bool,
-    candidate: &impl Fn(XY, XY, XY) -> Result<Option<f64>>,
+    candidate: &impl Fn(usize, usize, usize) -> Result<Option<f64>>,
     guard: &TopologyGuard<'_>,
     chain_segments: &[Segment],
 ) -> Result<Vec<usize>> {
@@ -172,11 +172,7 @@ pub(in crate::geometry) fn simplify_chain_guarded_with_segments(
     let mut removed = vec![false; count];
     let mut heap = BinaryHeap::with_capacity(count);
     for index in 1..count.wrapping_sub(1) {
-        if let Some(importance) = candidate(
-            xy(index.wrapping_sub(1)),
-            xy(index),
-            xy(index.wrapping_add(1)),
-        )? {
+        if let Some(importance) = candidate(index.wrapping_sub(1), index, index.wrapping_add(1))? {
             heap.push(Reverse((total_order_key(importance), index, 0)));
         }
     }
@@ -226,13 +222,13 @@ pub(in crate::geometry) fn simplify_chain_guarded_with_segments(
                 .expect("neighbor vertex index is within the chain");
             *stamp = stamp.wrapping_add(1);
             if let Some(importance) = candidate(
-                xy(*prev
+                *prev
                     .get(neighbor)
-                    .expect("neighbor index is within the chain")),
-                xy(neighbor),
-                xy(*next
+                    .expect("neighbor index is within the chain"),
+                neighbor,
+                *next
                     .get(neighbor)
-                    .expect("neighbor index is within the chain")),
+                    .expect("neighbor index is within the chain"),
             )? {
                 heap.push(Reverse((
                     total_order_key(importance),
@@ -597,12 +593,14 @@ fn replacement_for_chain_run(
     chain: &Chain,
     simplified: &SimplifiedChain,
     run: &[SourceAtom],
-) -> Result<Vec<XY>> {
+    capture_edge_roles: bool,
+) -> Result<(Vec<XY>, Option<Vec<bool>>)> {
     let run_nodes = source_run_nodes(partition, run)?;
     let indices = chain_run_indices(chain, run, &run_nodes).ok_or_else(|| {
         GeometryErrorKind::Invalid("coverage source run is absent from its exact chain".into())
     })?;
     let mut replacement = Vec::with_capacity(indices.len());
+    let mut retained_indices = capture_edge_roles.then(|| Vec::with_capacity(indices.len()));
     for (position, &index) in indices.iter().enumerate() {
         if position == indices.len().wrapping_sub(1) || simplified.kept.contains(&index) {
             replacement.push(
@@ -611,9 +609,34 @@ fn replacement_for_chain_run(
                     .get(index)
                     .expect("simplified chain index is within its point sequence"),
             );
+            if let Some(retained_indices) = &mut retained_indices {
+                retained_indices.push(index);
+            }
         }
     }
-    Ok(replacement)
+    let edge_roles = retained_indices
+        .map(|indices| {
+            let span_count = NonZeroUsize::new(chain.spans.len()).ok_or_else(|| {
+                GeometryErrorKind::Invalid("coverage chain has no source spans".into())
+            })?;
+            let cyclic = chain.nodes.first() == chain.nodes.last();
+            Ok::<_, crate::error::Error>(
+                indices
+                    .array_windows::<2>()
+                    .map(|[left, right]| {
+                        let adjacent = if cyclic {
+                            cyclic_index(left.wrapping_add(1), span_count) == *right
+                                || cyclic_index(right.wrapping_add(1), span_count) == *left
+                        } else {
+                            left.abs_diff(*right) == 1
+                        };
+                        !adjacent
+                    })
+                    .collect(),
+            )
+        })
+        .transpose()?;
+    Ok((replacement, edge_roles))
 }
 
 /// Simplify a valid polygonal coverage's boundaries, preserving topology.
@@ -621,11 +644,12 @@ fn replacement_for_chain_run(
 /// Shared interfaces are derived from exact partition incidence, simplified
 /// once, and replayed to every source owner. `simplify_boundary` controls
 /// whether exterior (unshared) chains simplify too.
-pub(crate) fn coverage_simplify<S: std::borrow::Borrow<Shape>>(
+pub(crate) fn coverage_simplify_with_frame<S: std::borrow::Borrow<Shape>>(
     rows: &[S],
     tolerance: f64,
     method: SimplifyMethod,
     simplify_boundary: bool,
+    geographic_frame: Option<crate::geographic::GeographicFrame>,
 ) -> Result<Vec<Shape>> {
     if !(tolerance.is_finite() && tolerance >= 0.0) {
         return Err(GeometryErrorKind::NonNegativeFinite("tolerance", tolerance).into());
@@ -717,10 +741,13 @@ pub(crate) fn coverage_simplify<S: std::borrow::Borrow<Shape>>(
     drop(all_segments);
 
     let mut source_cursor = 0;
+    let capture_edge_roles = geographic_frame.is_some();
+    let mut computed_edge_budget =
+        crate::geometry::ExpansionBudget::new("coverage_simplify", "computed edges");
     prepared
         .iter()
         .map(|row| {
-            rebuild_row(
+            let (shape, edge_roles) = rebuild_row(
                 row.shape,
                 &mut source_cursor,
                 inventory.source_segments(),
@@ -729,9 +756,80 @@ pub(crate) fn coverage_simplify<S: std::borrow::Borrow<Shape>>(
                 &chains,
                 &simplified,
                 &partition,
-            )
+                capture_edge_roles,
+            )?;
+            match (geographic_frame, edge_roles) {
+                (Some(frame), Some(edge_roles)) => {
+                    publish_coverage_edge_roles(shape, edge_roles, frame, &mut computed_edge_budget)
+                },
+                (None, None) => Ok(shape),
+                _ => Err(GeometryErrorKind::Invalid(
+                    "coverage edge roles do not match the publication frame".into(),
+                )
+                .into()),
+            }
         })
         .collect()
+}
+
+fn publish_coverage_edge_roles(
+    shape: Shape,
+    edge_roles: Vec<Vec<Vec<bool>>>,
+    frame: crate::geographic::GeographicFrame,
+    budget: &mut crate::geometry::ExpansionBudget,
+) -> Result<Shape> {
+    match shape {
+        Shape::Polygon(polygon) => {
+            let [roles] = edge_roles.as_slice() else {
+                return Err(GeometryErrorKind::Invalid(
+                    "coverage polygon roles do not match the rebuilt polygon".into(),
+                )
+                .into());
+            };
+            Ok(Shape::Polygon(
+                crate::geometry::publish_polygon_with_edge_roles(&polygon, roles, frame, budget)?,
+            ))
+        },
+        Shape::MultiPolygon(polygons) => {
+            if polygons.len() != edge_roles.len() {
+                return Err(GeometryErrorKind::Invalid(
+                    "coverage multipolygon roles do not match its polygon parts".into(),
+                )
+                .into());
+            }
+            let mut edge_roles = edge_roles.into_iter();
+            let output = polygons.try_map_values(polygons.axes(), |polygon| {
+                let roles = edge_roles.next().ok_or_else(|| {
+                    GeometryErrorKind::Invalid(
+                        "coverage multipolygon is missing a polygon role row".into(),
+                    )
+                })?;
+                crate::geometry::publish_polygon_with_edge_roles(polygon, &roles, frame, budget)
+            })?;
+            if edge_roles.next().is_some() {
+                return Err(GeometryErrorKind::Invalid(
+                    "coverage multipolygon has unused polygon role rows".into(),
+                )
+                .into());
+            }
+            Ok(Shape::MultiPolygon(output))
+        },
+        Shape::Point(_)
+        | Shape::MultiPoint(_)
+        | Shape::LineString(_)
+        | Shape::MultiLineString(_)
+        | Shape::GeometryCollection(_)
+        | Shape::Empty(..) => {
+            if edge_roles.is_empty() {
+                Ok(shape)
+            } else {
+                Err(GeometryErrorKind::Invalid(
+                    "coverage edge roles do not match the rebuilt geometry".into(),
+                )
+                .into())
+            }
+        },
+    }
 }
 
 /// Rebuild one row's polygons by splicing simplified chains into each ring.
@@ -744,12 +842,14 @@ fn rebuild_row(
     chains: &[Chain],
     simplified: &[SimplifiedChain],
     partition: &ExactPartition<'_>,
-) -> Result<Shape> {
-    let mut rebuild_ring = |ring: &CoordSeq| -> Result<Vec<Point>> {
+    capture_edge_roles: bool,
+) -> Result<(Shape, Option<crate::geometry::PolygonPartEdgeRoles>)> {
+    let mut rebuild_ring = |ring: &CoordSeq| -> Result<(Vec<Point>, Option<Vec<bool>>)> {
         let original: Vec<Point> = ring.iter_coords().collect();
         let source_ordinals = source_ordinals_for_ring(ring, source_segments, source_cursor)?;
         if original.len() < 4 {
-            return Ok(original);
+            let roles = capture_edge_roles.then(|| vec![false; original.len().saturating_sub(1)]);
+            return Ok((original, roles));
         }
         // Match collect_polygon_segments: elide stutter vertices so chain
         // lookups never probe zero-length edges absent from the exact partition.
@@ -759,7 +859,8 @@ fn rebuild_row(
         let mut open = open_ring.to_vec();
         dedup_consecutive_points(&mut open);
         if open.len() < 3 {
-            return Ok(original);
+            let roles = capture_edge_roles.then(|| vec![false; original.len().saturating_sub(1)]);
+            return Ok((original, roles));
         }
         let source_point_by_key: HashMap<PointKey, Point> = open
             .iter()
@@ -799,8 +900,9 @@ fn rebuild_row(
         };
         let count = atoms.len();
         let mut out: Vec<Point> = Vec::with_capacity(count.wrapping_add(1));
+        let mut edge_roles = capture_edge_roles.then(|| Vec::with_capacity(count));
         let Some(atom_count) = NonZeroUsize::new(count) else {
-            return Ok(out);
+            return Ok((out, edge_roles));
         };
         let start = (0..count)
             .find(|&index| {
@@ -834,7 +936,7 @@ fn rebuild_row(
                         .expect("coverage atom index is within the ring"),
                 );
             }
-            let replacement = replacement_for_chain_run(
+            let (replacement, run_edge_roles) = replacement_for_chain_run(
                 partition,
                 chains
                     .get(id)
@@ -843,51 +945,101 @@ fn rebuild_row(
                     .get(id)
                     .expect("coverage span chain has a simplification result"),
                 &run,
+                capture_edge_roles,
             )?;
             for &point in replacement.iter().take(replacement.len().saturating_sub(1)) {
                 out.push(source_point(point));
+            }
+            match (&mut edge_roles, run_edge_roles) {
+                (Some(edge_roles), Some(run_edge_roles)) => edge_roles.extend(run_edge_roles),
+                (None, None) => {},
+                _ => {
+                    return Err(GeometryErrorKind::Invalid(
+                        "coverage edge roles do not match the rebuild mode".into(),
+                    )
+                    .into());
+                },
             }
             consumed = consumed.wrapping_add(len);
         }
         if let Some(&first) = out.first() {
             out.push(first);
         }
-        Ok(out)
+        if edge_roles
+            .as_ref()
+            .is_some_and(|roles| roles.len() != out.len().saturating_sub(1))
+        {
+            return Err(GeometryErrorKind::Invalid(
+                "coverage edge roles do not match a rebuilt ring".into(),
+            )
+            .into());
+        }
+        Ok((out, edge_roles))
     };
     match shape {
-        Shape::Polygon(polygon) => Ok(Shape::Polygon(rebuild_polygon(polygon, &mut rebuild_ring)?)),
-        Shape::MultiPolygon(polygons) => Ok(Shape::multi_polygon(
-            polygons.axes(),
-            polygons
-                .iter()
-                .map(|polygon| rebuild_polygon(polygon, &mut rebuild_ring))
-                .collect::<Result<Vec<_>>>()?,
-        )),
+        Shape::Polygon(polygon) => {
+            let (polygon, roles) = rebuild_polygon(polygon, &mut rebuild_ring)?;
+            Ok((Shape::Polygon(polygon), roles.map(|roles| vec![roles])))
+        },
+        Shape::MultiPolygon(polygons) => {
+            let mut rebuilt = Vec::with_capacity(polygons.len());
+            let mut polygon_roles = capture_edge_roles.then(|| Vec::with_capacity(polygons.len()));
+            for polygon in polygons {
+                let (polygon, roles) = rebuild_polygon(polygon, &mut rebuild_ring)?;
+                rebuilt.push(polygon);
+                match (&mut polygon_roles, roles) {
+                    (Some(polygon_roles), Some(roles)) => polygon_roles.push(roles),
+                    (None, None) => {},
+                    _ => {
+                        return Err(GeometryErrorKind::Invalid(
+                            "coverage edge roles do not match the rebuild mode".into(),
+                        )
+                        .into());
+                    },
+                }
+            }
+            Ok((
+                Shape::multi_polygon(polygons.axes(), rebuilt),
+                polygon_roles,
+            ))
+        },
         Shape::Empty(..)
         | Shape::Point(_)
         | Shape::MultiPoint(_)
         | Shape::LineString(_)
         | Shape::MultiLineString(_)
-        | Shape::GeometryCollection(_) => Ok(shape.clone()),
+        | Shape::GeometryCollection(_) => Ok((shape.clone(), capture_edge_roles.then(Vec::new))),
     }
 }
 
 fn rebuild_polygon(
     polygon: &Polygon,
-    rebuild_ring: &mut impl FnMut(&CoordSeq) -> Result<Vec<Point>>,
-) -> Result<Polygon> {
-    Ok(Polygon::new(
-        Ring::try_from_closed(CoordSeq::try_from_points(&rebuild_ring(
-            polygon.shell.coords(),
-        )?)?)?,
-        polygon
-            .holes
-            .iter()
-            .map(|hole| {
-                Ring::try_from_closed(CoordSeq::try_from_points(&rebuild_ring(hole.coords())?)?)
-            })
-            .collect::<Result<Vec<_>>>()?,
-    ))
+    rebuild_ring: &mut impl FnMut(&CoordSeq) -> Result<(Vec<Point>, Option<Vec<bool>>)>,
+) -> Result<(Polygon, Option<Vec<Vec<bool>>>)> {
+    let (shell, shell_roles) = rebuild_ring(polygon.shell.coords())?;
+    let capture_edge_roles = shell_roles.is_some();
+    let shell = Ring::try_from_closed(CoordSeq::try_from_points(&shell)?)?;
+    let mut holes = Vec::with_capacity(polygon.holes.len());
+    let mut roles = Vec::with_capacity(polygon.holes.len().wrapping_add(1));
+    if let Some(shell_roles) = shell_roles {
+        roles.push(shell_roles);
+    }
+    for hole in polygon.holes.iter() {
+        let (points, hole_roles) = rebuild_ring(hole.coords())?;
+        holes.push(Ring::try_from_closed(CoordSeq::try_from_points(&points)?)?);
+        match (capture_edge_roles, hole_roles) {
+            (true, Some(hole_roles)) => roles.push(hole_roles),
+            (false, None) => {},
+            _ => {
+                return Err(GeometryErrorKind::Invalid(
+                    "coverage ring roles do not match the polygon rebuild mode".into(),
+                )
+                .into());
+            },
+        }
+    }
+    let edge_roles = capture_edge_roles.then_some(roles);
+    Ok((Polygon::new(shell, holes), edge_roles))
 }
 
 #[cfg(test)]
@@ -937,7 +1089,7 @@ mod guarded_scratch_tests {
     #[test]
     fn declined_candidates_keep_every_vertex() {
         let guard = dummy_guard();
-        let never = |_: XY, _: XY, _: XY| Ok(None);
+        let never = |_: usize, _: usize, _: usize| Ok(None);
         let kept = simplify_chain_guarded(6, collinear_x, false, &never, &guard).unwrap();
         assert_eq!(kept, vec![0, 1, 2, 3, 4, 5]);
     }
@@ -945,7 +1097,7 @@ mod guarded_scratch_tests {
     #[test]
     fn collinear_removal_keeps_only_endpoints() {
         let guard = dummy_guard();
-        let drop_all = |_: XY, _: XY, _: XY| Ok(Some(0.0));
+        let drop_all = |_: usize, _: usize, _: usize| Ok(Some(0.0));
         let kept = simplify_chain_guarded(8, collinear_x, false, &drop_all, &guard).unwrap();
         assert_eq!(kept, vec![0, 7]);
     }
@@ -953,7 +1105,7 @@ mod guarded_scratch_tests {
     #[test]
     fn collinear_removal_keeps_endpoints_in_order() {
         let guard = dummy_guard();
-        let drop_all = |_: XY, _: XY, _: XY| Ok(Some(0.0));
+        let drop_all = |_: usize, _: usize, _: usize| Ok(Some(0.0));
         let kept = simplify_chain_guarded(5, collinear_x, false, &drop_all, &guard).unwrap();
         assert_eq!(kept, vec![0, 4]);
         let cyclic = simplify_chain_guarded(6, collinear_x, true, &drop_all, &guard).unwrap();
@@ -983,5 +1135,52 @@ mod guarded_scratch_tests {
         }];
         let guard = TopologyGuard::new(&segments, Vec::new());
         assert!(!guard.removal_is_safe(previous, vertex, next, &chain_segments));
+    }
+}
+
+#[cfg(test)]
+mod computed_edge_publication_tests {
+    use super::coverage_simplify_with_frame;
+    use crate::geographic::GeographicFrame;
+    use crate::geometry::{CoordSeq, Point, Polygon, Ring, Shape, SimplifyMethod};
+
+    #[test]
+    fn coverage_simplification_subdivides_a_wide_generated_chord() {
+        let source = Shape::Polygon(Polygon::new(
+            Ring::try_from_closed(
+                CoordSeq::try_from_points(&[
+                    Point::new_raw_xy(0.0, 0.0),
+                    Point::new_raw_xy(90.0, 0.0),
+                    Point::new_raw_xy(180.0, 0.0),
+                    Point::new_raw_xy(270.0, 0.0),
+                    Point::new_raw_xy(270.0, 10.0),
+                    Point::new_raw_xy(180.0, 10.0),
+                    Point::new_raw_xy(90.0, 10.0),
+                    Point::new_raw_xy(0.0, 10.0),
+                    Point::new_raw_xy(0.0, 0.0),
+                ])
+                .unwrap(),
+            )
+            .unwrap(),
+            Vec::new(),
+        ));
+        let output = coverage_simplify_with_frame(
+            std::slice::from_ref(&source),
+            0.1,
+            SimplifyMethod::Vw,
+            true,
+            Some(GeographicFrame::crs84()),
+        )
+        .unwrap();
+        let Shape::Polygon(polygon) = output.first().unwrap() else {
+            panic!("coverage simplification preserves the polygon row");
+        };
+        let points = polygon.shell.coords().iter().collect::<Vec<_>>();
+        assert!(points.contains(&Point::new_raw_xy(135.0, 0.0)));
+        assert!(points.contains(&Point::new_raw_xy(135.0, 10.0)));
+        assert!(
+            points.iter().all(|point| (-180.0..180.0).contains(&point.x)
+                || point.x.to_bits() == 270.0_f64.to_bits())
+        );
     }
 }

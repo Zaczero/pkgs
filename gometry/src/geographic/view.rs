@@ -4,8 +4,8 @@ use std::marker::PhantomData;
 use std::ops::ControlFlow;
 
 use super::{
-    CanonicalLongitude, ChartStep, FullTurnPole, GeographicError, GeographicFrame, Latitude, Pole,
-    RingTurn, SeamIdentity,
+    CanonicalLongitude, FullTurnPole, GeographicError, GeographicFrame, Latitude, Pole, RingTurn,
+    SeamIdentity,
 };
 use crate::collections::HashSet;
 use crate::geometry::storage::admission::CheckedRingWindow;
@@ -1043,84 +1043,52 @@ fn is_exact_axis_band(
     south: Latitude,
     north: Latitude,
 ) -> bool {
-    if !exact_difference_equals(east, west, frame.longitude().period())
-        || south.get().to_bits() == north.get().to_bits()
-    {
+    let axis = frame.longitude();
+    if east - west <= axis.half_period() || south.get().to_bits() == north.get().to_bits() {
         return false;
     }
-    let mut corners = 0_u8;
-    let mut parallel_interiors = 0_u8;
-    let mut parallel_full_turns = 0_u8;
-    let axis_vertices = (0..ring.len()).all(|index| {
-        let x = ring.x(index);
-        let y = ring.y(index);
-        let x_side = if x.to_bits() == west.to_bits() {
-            0
-        } else if x.to_bits() == east.to_bits() {
-            1
-        } else if x > west && x < east {
-            2
-        } else {
-            return false;
-        };
-        let y_side = if y.to_bits() == south.get().to_bits() {
-            0
-        } else if y.to_bits() == north.get().to_bits() {
-            1
-        } else if y > south.get() && y < north.get() {
-            2
-        } else {
-            return false;
-        };
-        match (x_side, y_side) {
-            (0, 0) => corners |= 1 << 0,
-            (1, 0) => corners |= 1 << 1,
-            (1, 1) => corners |= 1 << 2,
-            (0, 1) => corners |= 1 << 3,
-            (2, 0) => parallel_interiors |= 1,
-            (2, 1) => parallel_interiors |= 2,
-            (0 | 1, 2) => {},
-            _ => return false,
-        }
-        true
-    });
-    let axis = frame.longitude();
-    let axis_edges = (0..ring.len() - 1).all(|index| {
+    let (mut south_turns, mut north_turns) = (0_i64, 0_i64);
+    let mut meridian = None;
+    for index in 0..ring.len().saturating_sub(1) {
         let start_x = ring.x(index);
         let end_x = ring.x(index + 1);
         let start_y = ring.y(index);
         let end_y = ring.y(index + 1);
-        if start_y.to_bits() == end_y.to_bits()
-            && axis
-                .chart_step(start_x, end_x)
-                .is_ok_and(ChartStep::is_circle)
-        {
-            if start_y.to_bits() == south.get().to_bits() {
-                parallel_full_turns |= 1;
+        let Ok(step) = axis.chart_step(start_x, end_x) else {
+            return false;
+        };
+        if start_y.to_bits() == end_y.to_bits() {
+            let parallel = if start_y.to_bits() == south.get().to_bits() {
+                &mut south_turns
             } else if start_y.to_bits() == north.get().to_bits() {
-                parallel_full_turns |= 2;
+                &mut north_turns
+            } else if step.delta(axis) == 0.0 {
+                continue;
+            } else {
+                return false;
+            };
+            let Ok(transit) = step.transit(axis, start_x, end_x) else {
+                return false;
+            };
+            let Some(turns) = parallel.checked_add(i64::from(transit)) else {
+                return false;
+            };
+            *parallel = turns;
+        } else {
+            if step.delta(axis) != 0.0 {
+                return false;
             }
+            let Ok(longitude) = axis.canonicalize(start_x) else {
+                return false;
+            };
+            let longitude = longitude.get().to_bits();
+            if meridian.is_some_and(|previous| previous != longitude) {
+                return false;
+            }
+            meridian = Some(longitude);
         }
-        start_x.to_bits() == end_x.to_bits() || start_y.to_bits() == end_y.to_bits()
-    });
-    axis_vertices
-        && axis_edges
-        && corners == 0b1111
-        && (parallel_interiors | parallel_full_turns) == 0b11
-}
-
-fn exact_difference_equals(left: f64, right: f64, target: f64) -> bool {
-    let difference = left - right;
-    if !difference.is_finite() {
-        return false;
     }
-    let right_virtual = left - difference;
-    let error = (left - (difference + right_virtual)) + (right_virtual - right);
-    #[expect(
-        clippy::float_cmp,
-        reason = "axis-band recognition is exact represented arithmetic with no tolerance"
-    )]
-    {
-        difference == target && error == 0.0
-    }
+    // Each parallel closes one directed circle on the same quotient meridian.
+    // Canonical seam spelling need not retain a raw one-period bounding span.
+    matches!((south_turns, north_turns), (1, -1) | (-1, 1))
 }

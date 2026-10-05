@@ -4,6 +4,7 @@ mod certificate;
 mod frame;
 mod input;
 mod operations;
+mod output;
 
 pub(crate) use frame::{UtmZone, bearing_from_azimuth, estimate_local_crs, normalize_longitude};
 pub(crate) use input::{LocalInputPurpose, PreparedLocalInput};

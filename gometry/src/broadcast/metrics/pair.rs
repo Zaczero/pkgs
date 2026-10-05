@@ -7,9 +7,12 @@ use crate::broadcast::metrics::{
 };
 use crate::crs::local::{LocalInputPurpose, PreparedLocalInput, geodesic_by_identity};
 use crate::dispatch::MetricOp;
-use crate::geographic::{GeographicFrame, lonlat as geographic};
+use crate::geographic::{ComputedEdgeIntent, GeographicFrame, lonlat as geographic};
 use crate::geometry::storage::{PackedStorage, PointRows};
-use crate::geometry::{FrameDependentCaches, LineSeq, PreparedPlan, ShapeCountQuery, storage};
+use crate::geometry::{
+    FrameDependentCaches, LineSeq, PreparedPlan, ShapeCountQuery, TopologyDomain,
+    emit_from_original, storage,
+};
 #[cfg(test)]
 use crate::test_support::binary_dispatch_counters;
 use crate::{NonNegative, validate_lonlat_shape};
@@ -718,18 +721,64 @@ pub(crate) fn metric_shortest_line_resolved(
     metric: &crs::ResolvedMetric,
     a: &PreparedPlan,
     b: &PreparedPlan,
+    domain: TopologyDomain,
 ) -> crate::error::Result<Shape> {
-    crate::geometry::nearest_line(
-        metric_nearest_points_resolved(
-            metric,
-            a,
-            &FrameDependentCaches::default(),
-            b,
-            &FrameDependentCaches::default(),
-        )?
-        .as_ref(),
-        crate::geometry::common_axes(a.shape(), b.shape()),
-    )
+    let common = crate::geometry::common_axes(a.shape(), b.shape());
+    match metric {
+        crs::ResolvedMetric::Planar { .. } => {
+            let pair = metric_nearest_points_resolved(
+                metric,
+                a,
+                &FrameDependentCaches::default(),
+                b,
+                &FrameDependentCaches::default(),
+            )?;
+            match (pair.as_ref(), domain) {
+                (Some((start, end)), TopologyDomain::Geographic(frame)) => {
+                    crate::geometry::nearest_line_with_intent(
+                        pair.as_ref(),
+                        common,
+                        frame,
+                        ComputedEdgeIntent::displacement(end.x - start.x),
+                    )
+                },
+                (_, TopologyDomain::Cartesian) => {
+                    crate::geometry::nearest_line(pair.as_ref(), common)
+                },
+                (None, TopologyDomain::Geographic(_)) => {
+                    crate::geometry::nearest_line(None, common)
+                },
+            }
+        },
+        crs::ResolvedMetric::Geodesic(metric) => {
+            let (ellipsoid, semi_major, flattening) = prepare_geodesic_pair(
+                &metric.geodesic,
+                a,
+                b,
+                metric.frame,
+                metric.state.generation,
+            )?;
+            let a_cache = FrameDependentCaches::default();
+            let b_cache = FrameDependentCaches::default();
+            match a.geodesic_nearest_line_cached(
+                &a_cache,
+                b,
+                &b_cache,
+                &metric.crs,
+                semi_major,
+                flattening,
+                &ellipsoid,
+            )? {
+                Some((start, end, intent)) => crate::geometry::nearest_line_with_intent(
+                    Some(&(start, end)),
+                    common,
+                    metric.frame,
+                    ComputedEdgeIntent::Stored(intent),
+                ),
+                None => crate::geometry::nearest_line(None, common),
+            }
+        },
+    }
 }
 
 /// CRS-aware minimum-clearance witness line: the realizing two-point
@@ -756,9 +805,20 @@ pub(crate) fn metric_minimum_clearance_line(
                 &mut budget,
                 LocalInputPurpose::BoundarySupport,
                 |sites, support, refined_chains| {
-                    Ok(sites
-                        .minimum_clearance_plan_with_support(support, refined_chains)?
-                        .map_or_else(Vec::new, |witness| witness.plan.to_vec()))
+                    let Some(witness) =
+                        sites.minimum_clearance_plan_with_support(support, refined_chains)?
+                    else {
+                        return Ok((
+                            Vec::new(),
+                            Shape::typed_empty(GeometryKind::LineString, CoordinateAxes::XY),
+                        ));
+                    };
+                    let plan = witness.plan.to_vec();
+                    let projected_points = emit_from_original(&witness.points, &plan)?;
+                    let [a, b] = projected_points.as_slice() else {
+                        unreachable!("minimum-clearance witness plan has two vertices");
+                    };
+                    Ok((plan, Shape::LineString(LineSeq::segment(*a, *b)?)))
                 },
                 |points| {
                     if points.is_empty() {
@@ -1053,5 +1113,117 @@ mod lonlat_shape_under_tests {
         let expected = format!("invalid longitude/latitude ({}, {})", point.x, point.y);
         let message = error.to_string();
         assert!(message.contains(&expected), "{message}");
+    }
+}
+
+#[cfg(test)]
+mod minimum_clearance_computed_edge_tests {
+    use super::{metric_minimum_clearance_line, metric_shortest_line_resolved};
+    use crate::geographic::GeographicFrame;
+    use crate::geometry::{
+        CoordSeq, LineSeq, MultiPoint, Point, PreparedPlan, Shape, TopologyDomain,
+    };
+
+    #[test]
+    fn minimum_clearance_line_across_the_seam_uses_a_short_connector() {
+        let points = [
+            Point::new_raw_xy(179.8, 0.0),
+            Point::new_raw_xy(-179.8, 0.0),
+        ];
+        let shape = Shape::MultiPoint(
+            MultiPoint::from_coordseq(CoordSeq::try_from_points(&points).unwrap()).unwrap(),
+        );
+        let model = crate::crs::metric_model(Some("EPSG:4326")).unwrap();
+        let output = metric_minimum_clearance_line(&model, Some("EPSG:4326"), &shape).unwrap();
+        let Shape::LineString(line) = output else {
+            panic!("minimum clearance publishes a line");
+        };
+        let coordinates = line.as_coords().iter().collect::<Vec<_>>();
+        assert_eq!(coordinates.len(), 2);
+        assert!(
+            coordinates
+                .iter()
+                .any(|point| point.x.to_bits() == 179.8_f64.to_bits())
+        );
+        assert!(
+            coordinates
+                .iter()
+                .any(|point| point.x.to_bits() == (-179.8_f64).to_bits())
+        );
+        let axis = GeographicFrame::crs84().longitude();
+        let step = axis
+            .chart_step(coordinates[0].x, coordinates[1].x)
+            .unwrap()
+            .delta(axis);
+        assert!(step.abs() < 1.0, "seam connector step is {step}");
+    }
+
+    #[test]
+    fn shortest_line_from_geodesic_point_witnesses_uses_its_stored_short_step() {
+        let frame = GeographicFrame::crs84();
+        let model = crate::crs::metric_model(Some("EPSG:4326")).unwrap();
+        let metric = crate::crs::ResolvedMetric::from_model(&model).unwrap();
+        let left = PreparedPlan::new(Shape::Point(Point::new_raw_xy(179.8, 0.0)));
+        let right = PreparedPlan::new(Shape::Point(Point::new_raw_xy(-179.8, 1.0)));
+        let output = metric_shortest_line_resolved(
+            &metric,
+            &left,
+            &right,
+            TopologyDomain::Geographic(frame),
+        )
+        .unwrap();
+        let Shape::LineString(line) = output else {
+            panic!("shortest_line publishes a line");
+        };
+        let coordinates = line.as_coords().iter().collect::<Vec<_>>();
+        assert_eq!(coordinates.len(), 2);
+        assert_eq!(coordinates[0].x, 179.8);
+        assert_eq!(coordinates[1].x, -179.8);
+        let axis = frame.longitude();
+        let step = axis
+            .chart_step(coordinates[0].x, coordinates[1].x)
+            .unwrap()
+            .delta(axis);
+        assert!(step.abs() < 1.0, "seam connector step is {step}");
+    }
+
+    #[test]
+    fn shortest_line_from_chart_edge_witness_retains_its_chart_step() {
+        let frame = GeographicFrame::crs84();
+        let model = crate::crs::metric_model(Some("EPSG:4326")).unwrap();
+        let metric = crate::crs::ResolvedMetric::from_model(&model).unwrap();
+        let left = PreparedPlan::new(Shape::Point(Point::new_raw_xy(179.8, 0.0)));
+        let line = Shape::LineString(
+            LineSeq::try_new(
+                CoordSeq::try_from_points(&[
+                    Point::new_raw_xy(-179.8, -1.0),
+                    Point::new_raw_xy(-179.8, 1.0),
+                ])
+                .unwrap(),
+            )
+            .unwrap(),
+        );
+        let right = PreparedPlan::new(line);
+        let output = metric_shortest_line_resolved(
+            &metric,
+            &left,
+            &right,
+            TopologyDomain::Geographic(frame),
+        )
+        .unwrap();
+        let Shape::LineString(line) = output else {
+            panic!("shortest_line publishes a line");
+        };
+        let coordinates = line.as_coords().iter().collect::<Vec<_>>();
+        assert_eq!(coordinates.len(), 2);
+        assert_eq!(coordinates[0].x, 179.8);
+        assert_eq!(coordinates[1].x, -179.8);
+        assert!(coordinates[1].y.abs() < 1e-12);
+        let axis = frame.longitude();
+        let step = axis
+            .chart_step(coordinates[0].x, coordinates[1].x)
+            .unwrap()
+            .delta(axis);
+        assert!(step.abs() < 1.0, "seam connector step is {step}");
     }
 }

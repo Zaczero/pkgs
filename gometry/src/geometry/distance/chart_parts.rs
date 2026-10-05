@@ -5,7 +5,9 @@ use crate::HeapSize;
 use crate::crs::{ChartEdge, PointEdgeScratch};
 use crate::error::Result;
 use crate::geographic::lonlat::invalid_lonlat_error;
-use crate::geographic::{GeographicFrame, GeographicInputs};
+use crate::geographic::{
+    ChartStep, EdgeDirection, GeographicFrame, GeographicInputs, TurnDirection,
+};
 use crate::geometry::overlay::overlay_all_geographic_from;
 use crate::geometry::{
     ChartBox, ChartEdgeBvh, ChartMetric, Coordinates as _, FrameDependentCaches, GeodesicMetric,
@@ -185,6 +187,7 @@ pub(crate) struct ChartPairMinimum {
     pub(crate) second: Point,
     pub(crate) distance: f64,
     pub(crate) lower_bound: f64,
+    pub(crate) intent: ChartStep,
     order: u128,
 }
 
@@ -332,20 +335,32 @@ where
     M: ChartMetric,
 {
     let target = match candidate.target {
-        ChartTarget::Point(point) => point,
+        ChartTarget::Point(point) => (point, point.x),
         ChartTarget::Edge { parameter } => {
             let part = target
                 .edges
                 .get(candidate.order as usize)
                 .expect("candidate ordinal belongs to chart parts");
-            metric.chart_edge_witness(part.start, part.end, &part.edge, parameter, None)?
+            (
+                metric.chart_edge_witness(part.start, part.end, &part.edge, parameter, None)?,
+                metric.chart_edge_position(&part.edge, parameter).x,
+            )
         },
     };
+    let frame = metric.chart_frame();
+    let axis = frame.longitude();
+    let first_chart_x = axis
+        .nearest_longitude_alias(target.1, point.x)
+        .map_err(|error| crate::crs::CrsError::invalid(error.to_string()))?;
+    let step = axis
+        .shortest_alias_step(first_chart_x, target.1)
+        .map_err(|error| crate::crs::CrsError::invalid(error.to_string()))?;
     Ok(ChartPairMinimum {
         first: point,
-        second: target,
+        second: target.0,
         distance: candidate.distance,
         lower_bound: candidate.lower_bound,
+        intent: ChartStep::Shortest(step),
         order: candidate.order,
     })
 }
@@ -511,7 +526,24 @@ struct ChartShapePairCandidate {
     first: Point,
     second: Point,
     distance: f64,
+    intent: ChartStep,
     order: u128,
+}
+
+fn reverse_chart_step(step: ChartStep) -> ChartStep {
+    match step {
+        ChartStep::Circle(TurnDirection::Positive) => ChartStep::Circle(TurnDirection::Negative),
+        ChartStep::Circle(TurnDirection::Negative) => ChartStep::Circle(TurnDirection::Positive),
+        ChartStep::Shortest(EdgeDirection::Minor(delta)) => {
+            ChartStep::Shortest(EdgeDirection::Minor(-delta))
+        },
+        ChartStep::Shortest(EdgeDirection::HalfTurn(TurnDirection::Positive)) => {
+            ChartStep::Shortest(EdgeDirection::HalfTurn(TurnDirection::Negative))
+        },
+        ChartStep::Shortest(EdgeDirection::HalfTurn(TurnDirection::Negative)) => {
+            ChartStep::Shortest(EdgeDirection::HalfTurn(TurnDirection::Positive))
+        },
+    }
 }
 
 fn shape_pair_candidate_is_better(
@@ -599,7 +631,7 @@ pub(crate) fn chart_nearest_points_with_parts<M>(
     metric: &M,
     scratch: &mut PointEdgeScratch,
     stack: &mut Vec<(u32, f64)>,
-) -> Result<Option<(Point, Point)>>
+) -> Result<Option<ChartPairMinimum>>
 where
     M: GeodesicMetric + ChartMetric<PointEdgeScratch = PointEdgeScratch>,
 {
@@ -619,6 +651,7 @@ where
                 first: candidate.first,
                 second: candidate.second,
                 distance: candidate.distance,
+                intent: candidate.intent,
                 order,
             });
         }
@@ -635,11 +668,19 @@ where
                 first: candidate.second,
                 second: candidate.first,
                 distance: candidate.distance,
+                intent: reverse_chart_step(candidate.intent),
                 order,
             });
         }
     }
-    Ok(best.map(|candidate| (candidate.first, candidate.second)))
+    Ok(best.map(|candidate| ChartPairMinimum {
+        first: candidate.first,
+        second: candidate.second,
+        distance: candidate.distance,
+        lower_bound: 0.0,
+        intent: candidate.intent,
+        order: candidate.order,
+    }))
 }
 
 pub(crate) fn cached_chart_distance<M>(
@@ -731,7 +772,7 @@ where
     )
 }
 
-pub(crate) fn cached_chart_nearest_points<M>(
+pub(crate) fn cached_chart_nearest_points_with_intent<M>(
     left: &PreparedPlan,
     left_cache: &FrameDependentCaches,
     right: &PreparedPlan,
@@ -740,7 +781,7 @@ pub(crate) fn cached_chart_nearest_points<M>(
     semi_major: f64,
     flattening: f64,
     metric: &M,
-) -> Result<Option<(Point, Point)>>
+) -> Result<Option<ChartPairMinimum>>
 where
     M: GeodesicMetric + ChartMetric<PointEdgeScratch = PointEdgeScratch>,
 {
@@ -760,7 +801,14 @@ where
                 "exact geographic intersection did not provide a nearest-point witness",
             )
         })?;
-        return Ok(Some((witness, witness)));
+        return Ok(Some(ChartPairMinimum {
+            first: witness,
+            second: witness,
+            distance: 0.0,
+            lower_bound: 0.0,
+            intent: ChartStep::Shortest(EdgeDirection::Minor(0.0)),
+            order: 0,
+        }));
     }
     let key = GeographicMetricKey::new_at_generation(
         crs,
@@ -774,6 +822,32 @@ where
     let scratch = &mut *scratch;
     let (point_edge, chart_stack) = (&mut scratch.point_edge, &mut scratch.stack);
     chart_nearest_points_with_parts(&left_parts, &right_parts, metric, point_edge, chart_stack)
+}
+
+pub(crate) fn cached_chart_nearest_points<M>(
+    left: &PreparedPlan,
+    left_cache: &FrameDependentCaches,
+    right: &PreparedPlan,
+    right_cache: &FrameDependentCaches,
+    crs: &str,
+    semi_major: f64,
+    flattening: f64,
+    metric: &M,
+) -> Result<Option<(Point, Point)>>
+where
+    M: GeodesicMetric + ChartMetric<PointEdgeScratch = PointEdgeScratch>,
+{
+    Ok(cached_chart_nearest_points_with_intent(
+        left,
+        left_cache,
+        right,
+        right_cache,
+        crs,
+        semi_major,
+        flattening,
+        metric,
+    )?
+    .map(|candidate| (candidate.first, candidate.second)))
 }
 
 #[cfg(test)]
@@ -816,7 +890,13 @@ mod tests {
             .unwrap()
         };
         let nearest_separation = separation(first, second);
-        let shortest = crate::metric_shortest_line_resolved(&resolved, &left, &right).unwrap();
+        let shortest = crate::metric_shortest_line_resolved(
+            &resolved,
+            &left,
+            &right,
+            crate::geometry::TopologyDomain::Geographic(GeographicFrame::crs84()),
+        )
+        .unwrap();
         let Shape::LineString(line) = shortest else {
             panic!("disjoint control must produce a shortest line");
         };

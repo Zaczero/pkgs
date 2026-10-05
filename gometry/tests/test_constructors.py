@@ -37,7 +37,7 @@ def test_box_can_explicitly_split_antimeridian_crossing_bounds() -> None:
     assert gm.LineString([(170, 0), (-170, 0)], crs=4326).crosses_antimeridian
     assert np.array_equal(
         gm.GeometryArray([wrapped, whole_world], crs=4326).crosses_antimeridian,
-        [False, False],
+        [False, True],
     )
     assert [part.to_wkt() for part in wrapped.parts] == [
         'POLYGON ((170 -10, 180 -10, 180 10, 170 10, 170 -10))',
@@ -81,7 +81,8 @@ def test_geographic_box_preserves_wide_directed_longitude_interval() -> None:
         assert actual.length == legacy.length
 
     # Split a side only when its longitude span would otherwise reach half a
-    # period. Every edge stays strictly below 180 degrees.
+    # period. Every directed chart step stays strictly below 180 degrees,
+    # including steps to the canonical negative seam spelling.
     for span, expected_positions in [
         (0.01, 5),
         (179.9, 5),
@@ -94,7 +95,10 @@ def test_geographic_box_preserves_wide_directed_longitude_interval() -> None:
         band = gm.box(-span / 2.0, -10.0, span / 2.0, 10.0, crs=4326)
         coordinates = gm.get_coordinates(band)
         assert len(band.exterior.coords) == expected_positions
-        assert np.all(np.abs(np.diff(coordinates[:, 0])) < 180.0)
+        steps = np.diff(coordinates[:, 0])
+        steps = np.where(steps > 180.0, steps - 360.0, steps)
+        steps = np.where(steps < -180.0, steps + 360.0, steps)
+        assert np.all(np.abs(steps) < 180.0)
         assert band.bounds == (-span / 2.0, -10.0, span / 2.0, 10.0)
 
     # `box(-100, ..., 100, ...)` is the 200-degree band, not the 160-degree

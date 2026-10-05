@@ -742,8 +742,18 @@ pub(crate) fn coverage_simplify(
     simplify_boundary: bool,
 ) -> PyResult<PyGeometryArray> {
     let (shapes, metadata, source) = coverage_values(values)?;
+    let geographic_frame = match geometry::topology_domain(&metadata)? {
+        geometry::TopologyDomain::Geographic(frame) => Some(frame),
+        geometry::TopologyDomain::Cartesian => None,
+    };
     let rows = py.detach(move || {
-        geometry::coverage_simplify(&shapes, tolerance, method, simplify_boundary)
+        geometry::coverage_simplify_with_frame(
+            &shapes,
+            tolerance,
+            method,
+            simplify_boundary,
+            geographic_frame,
+        )
     })?;
     let result = PyGeometryArray::from_shapes(rows, metadata)?;
     Ok(match source {

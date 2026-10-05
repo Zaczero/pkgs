@@ -405,21 +405,6 @@ enum ExactPartitionBudget {
     Ignore,
 }
 
-#[derive(Clone, Copy)]
-pub(in crate::geometry) enum VoronoiIntermediateOverlay {
-    Intersection,
-    Difference,
-}
-
-impl VoronoiIntermediateOverlay {
-    const fn operation(self) -> OverlayOp {
-        match self {
-            Self::Intersection => OverlayOp::Intersection,
-            Self::Difference => OverlayOp::Difference,
-        }
-    }
-}
-
 /// The Cartesian overlay route. Source inventory, exact incidence, cell
 /// selection, dimensional absorption, and checked emission belong to
 /// `ExactPartition`; disjoint bounds only partition independent inputs.
@@ -1873,13 +1858,12 @@ pub(super) fn full_partition_cartesian_overlay(
 }
 
 /// Voronoi owns the published-output budget for these intermediate clips.
-pub(in crate::geometry) fn binary_cartesian_overlay_without_partition_budget(
+pub(in crate::geometry) fn binary_cartesian_difference_without_partition_budget(
     left: &Shape,
     right: &Shape,
-    operation: VoronoiIntermediateOverlay,
     strictness: Strictness,
 ) -> Result<Shape> {
-    let operation = operation.operation();
+    let operation = OverlayOp::Difference;
     let mut inputs = vec![left, right];
     if let Some(lane) = cartesian_binary_lane!(left, right, operation) {
         return exact_cartesian_binary_overlay(
@@ -1898,6 +1882,15 @@ pub(in crate::geometry) fn binary_cartesian_overlay_without_partition_budget(
         true,
         ExactPartitionBudget::Ignore,
     )
+}
+
+pub(in crate::geometry) fn binary_cartesian_intersection_with_edge_roles(
+    generated: &Shape,
+    preserved: &Shape,
+) -> Result<Vec<(crate::geometry::Polygon, Vec<Vec<bool>>)>> {
+    let inputs = [generated, preserved];
+    ExactSourceInventory::from_shapes(&inputs)?
+        .overlay_polygon_parts_with_preserved_operand(OverlayOp::Intersection, 1)
 }
 
 /// Geographic overlays share one chart classifier. Ordinary charts use the

@@ -14,6 +14,11 @@ mod shape;
 mod voronoi;
 mod voronoi_dcel;
 
+pub(crate) struct VoronoiPolygonOutput {
+    pub(crate) polygon: crate::geometry::Polygon,
+    pub(crate) computed_edges: Vec<Vec<bool>>,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) struct RingOwner {
     polygon: usize,

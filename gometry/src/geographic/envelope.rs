@@ -1,3 +1,4 @@
+use std::borrow::Borrow;
 use std::marker::PhantomData;
 
 use super::{
@@ -20,21 +21,21 @@ impl GeographicSupportEnvelope {
         frame: GeographicFrame,
         shape: &Shape,
     ) -> Result<Self, GeographicAdmissionError> {
-        Self::try_from_shapes(frame, &[shape])
+        Self::try_from_shapes(frame, std::slice::from_ref(shape))
     }
 
     /// Aggregate primitive support across all shapes before choosing a
     /// circular hull. Row hulls cannot be unioned without losing their gaps.
     pub(crate) fn try_from_shapes(
         frame: GeographicFrame,
-        shapes: &[&Shape],
+        shapes: &[impl Borrow<Shape>],
     ) -> Result<Self, GeographicAdmissionError> {
         let mut extrema = CoordinateExtrema::empty();
         let mut collection_owners = GeographicCollectionOwners::default();
-        for &shape in shapes {
+        for shape in shapes {
             ScalarGeographicView::try_new_with_collection_owners_and_visit(
                 frame,
-                shape,
+                shape.borrow(),
                 &mut collection_owners,
                 |coordinate| extrema.include(coordinate),
             )?;
@@ -53,7 +54,8 @@ impl GeographicSupportEnvelope {
             .map_err(GeographicAdmissionError::Resource)?;
         let mut intervals = Vec::new();
         let mut effects = RingEnvelopeEffects::default();
-        for &shape in shapes {
+        for shape in shapes {
+            let shape = shape.borrow();
             append_geographic_coordinate_intervals(shape, frame, &mut intervals, &mut owners);
             append_geographic_segment_intervals(shape, frame, &mut intervals, &mut owners);
             effects.replay(ring_effects(shape, frame, &mut owners)?);
@@ -281,7 +283,7 @@ impl<'owner> GeographicSupportOwnerMemo<'owner> {
     #[cfg(test)]
     fn new(shape: &'owner Shape) -> crate::error::Result<Self> {
         let mut collection_owners = GeographicCollectionOwners::default();
-        Self::new_for_shapes(&[shape], &mut collection_owners)
+        Self::new_for_shapes(std::slice::from_ref(shape), &mut collection_owners)
     }
 
     #[cfg(test)]
@@ -295,17 +297,21 @@ impl<'owner> GeographicSupportOwnerMemo<'owner> {
     }
 
     fn new_for_shapes(
-        shapes: &[&'owner Shape],
+        shapes: &'owner [impl Borrow<Shape>],
         collection_owners: &mut GeographicCollectionOwners<'owner>,
     ) -> crate::error::Result<Self> {
-        if shapes.len() < 2 && !shapes.iter().any(|shape| shape_has_multiple_xy_runs(shape)) {
+        if shapes.len() < 2
+            && !shapes
+                .iter()
+                .any(|shape| shape_has_multiple_xy_runs(shape.borrow()))
+        {
             collection_owners.discard();
             return Ok(Self::default());
         }
         collection_owners.reset_for_census();
         let mut memo = Self::default();
-        for &shape in shapes {
-            collect_geographic_owner_keys(shape, &mut memo, collection_owners)?;
+        for shape in shapes {
+            collect_geographic_owner_keys(shape.borrow(), &mut memo, collection_owners)?;
         }
         if let Some(error) = collection_owners.take_entropy_error() {
             return Err(error);

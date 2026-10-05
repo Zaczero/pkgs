@@ -17,6 +17,18 @@ use crate::{
     require_geojson_crs, validate_subdivide_max_vertices, voronoi_edges_flatten, voronoi_flatten,
 };
 
+fn publish_triangle_shapes_for_frame(
+    shapes: Vec<Shape>,
+    frame: &Frame,
+) -> crate::error::Result<Vec<Shape>> {
+    match geometry::topology_domain(frame)? {
+        geometry::TopologyDomain::Cartesian => Ok(shapes),
+        geometry::TopologyDomain::Geographic(frame) => {
+            geometry::publish_raw_computed_shapes(&shapes, frame, "triangulate")
+        },
+    }
+}
+
 impl PyGeometry {
     pub(crate) fn parts_to_array(
         &self,
@@ -127,7 +139,13 @@ impl PyGeometry {
         }
         let axes = vertices.first().map(|point| point.axes);
         if vertices.iter().any(|point| Some(point.axes) != axes) {
-            let triangles = py.detach(move || Shape::triangle_shapes_from_vertices(&vertices))?;
+            let frame = self.frame.clone();
+            let triangles = py.detach(move || {
+                publish_triangle_shapes_for_frame(
+                    Shape::triangle_shapes_from_vertices(&vertices)?,
+                    &frame,
+                )
+            })?;
             return self.parts_to_array(triangles);
         }
         PyGeometryArray::packed_triangles(&vertices, self.frame.clone())
@@ -157,7 +175,7 @@ impl PyGeometry {
         }
         let shape = Arc::clone(&self.shape);
         let triangles = py.detach(move || shape.constrained_delaunay_triangles(refinement))?;
-        self.parts_to_array(triangles)
+        self.parts_to_array(publish_triangle_shapes_for_frame(triangles, &self.frame)?)
     }
 
     pub(crate) fn polygon_triangles_impl(&self, py: Python<'_>) -> PyResult<PyGeometryArray> {
@@ -173,7 +191,8 @@ impl PyGeometry {
                 PyGeometryArray::packed_triangles(&vertices, self.frame.clone())
             };
         }
-        self.parts_to_array(py.detach(move || shape.polygon_triangles())?)
+        let triangles = py.detach(move || shape.polygon_triangles())?;
+        self.parts_to_array(publish_triangle_shapes_for_frame(triangles, &self.frame)?)
     }
 
     pub(crate) fn sample_points_impl(
@@ -208,7 +227,7 @@ impl PyGeometry {
             tolerance,
             clip,
             "voronoi_polygons",
-            Shape::voronoi_polygons_budgeted,
+            Shape::voronoi_polygon_outputs_budgeted,
         )
     }
 
@@ -296,6 +315,16 @@ impl PyGeometry {
     ) -> PyResult<PyGeometryArray> {
         let max_vertices = validate_subdivide_max_vertices(max_vertices)?;
         let shape = Arc::clone(&self.shape);
-        self.parts_to_array(py.detach(move || shape.subdivide(max_vertices, false))?)
+        let geographic_frame = match crate::geometry::topology_domain(&self.frame)? {
+            crate::geometry::TopologyDomain::Geographic(frame) => Some(frame),
+            crate::geometry::TopologyDomain::Cartesian => None,
+        };
+        let parts = py.detach(move || {
+            geographic_frame.map_or_else(
+                || shape.subdivide(max_vertices, false),
+                |frame| shape.subdivide_in_geographic_frame(max_vertices, false, frame),
+            )
+        })?;
+        self.parts_to_array(parts)
     }
 }

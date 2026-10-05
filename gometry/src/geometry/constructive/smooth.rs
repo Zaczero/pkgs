@@ -29,6 +29,48 @@ fn smooth_budget_error(produced: usize) -> crate::error::Error {
     .into()
 }
 
+struct SmoothOutputBuilder {
+    coordinates: CoordSeqBuilder,
+    preserved_vertices: Option<Vec<usize>>,
+    length: usize,
+}
+
+impl SmoothOutputBuilder {
+    fn with_capacity(
+        axes: crate::geometry::CoordinateAxes,
+        capacity: usize,
+        capture: bool,
+    ) -> Self {
+        Self {
+            coordinates: CoordSeqBuilder::with_capacity(axes, capacity),
+            preserved_vertices: capture.then(Vec::new),
+            length: 0,
+        }
+    }
+
+    fn push_computed(&mut self, point: Point) {
+        self.coordinates.push(point);
+        self.length = self.length.wrapping_add(1);
+    }
+
+    fn push_preserved(&mut self, point: Point) {
+        if let Some(preserved_vertices) = &mut self.preserved_vertices {
+            preserved_vertices.push(self.length);
+        }
+        self.coordinates.push(point);
+        self.length = self.length.wrapping_add(1);
+    }
+
+    fn push_preserved_at(&mut self, points: &CoordSeq, index: usize) {
+        self.push_preserved(points.point_at(index));
+    }
+
+    fn finish(self) -> Result<(CoordSeq, Vec<usize>)> {
+        let coordinates = self.coordinates.finish()?;
+        Ok((coordinates, self.preserved_vertices.unwrap_or_default()))
+    }
+}
+
 /// Output coordinate count for one Chaikin iteration of a chain of `count`
 /// vertices: both open forms produce `2*(count-1)`, the closed form
 /// `2*(count-1)+1`; below the minimum vertex count the pass is identity.
@@ -108,8 +150,44 @@ pub(crate) fn smooth_coord_seq<const CLOSED: bool>(
     keep_endpoints: bool,
     budget: &mut ExpansionBudget,
 ) -> Result<CoordSeq> {
+    smooth_coord_seq_with_provenance::<CLOSED>(
+        points,
+        iterations,
+        method,
+        keep_endpoints,
+        budget,
+        false,
+    )
+    .map(|(coordinates, _)| coordinates)
+}
+
+pub(crate) fn smooth_coord_seq_with_preserved_vertices<const CLOSED: bool>(
+    points: &CoordSeq,
+    iterations: i32,
+    method: SmoothMethod,
+    keep_endpoints: bool,
+    budget: &mut ExpansionBudget,
+) -> Result<(CoordSeq, Vec<usize>)> {
+    smooth_coord_seq_with_provenance::<CLOSED>(
+        points,
+        iterations,
+        method,
+        keep_endpoints,
+        budget,
+        true,
+    )
+}
+
+fn smooth_coord_seq_with_provenance<const CLOSED: bool>(
+    points: &CoordSeq,
+    iterations: i32,
+    method: SmoothMethod,
+    keep_endpoints: bool,
+    budget: &mut ExpansionBudget,
+    capture_provenance: bool,
+) -> Result<(CoordSeq, Vec<usize>)> {
     if iterations <= 0 || points.len() < 2 || (!CLOSED && points.len() < 3) {
-        return Ok(points.clone());
+        return Ok((points.clone(), Vec::new()));
     }
     let output_len = part_output_len::<CLOSED>(points.len(), iterations, method)?;
     let generated = output_len.wrapping_sub(points.len());
@@ -119,39 +197,64 @@ pub(crate) fn smooth_coord_seq<const CLOSED: bool>(
             let mut current = points.clone();
             for _ in 0..iterations {
                 current = if CLOSED {
-                    chaikin_closed(&current)?
+                    chaikin_closed(&current)?.0
                 } else {
-                    chaikin_open(&current, keep_endpoints)?
+                    chaikin_open(&current, keep_endpoints, false)?.0
                 };
             }
-            Ok(current)
+            let (current, preserved) =
+                if !CLOSED && keep_endpoints && current.len() >= 2 && capture_provenance {
+                    let mut preserved = vec![0];
+                    preserved.push(current.len().wrapping_sub(1));
+                    (current, preserved)
+                } else {
+                    (current, Vec::new())
+                };
+            Ok((
+                current,
+                if capture_provenance {
+                    preserved
+                } else {
+                    Vec::new()
+                },
+            ))
         },
         SmoothMethod::CatmullRom => {
             let samples = catmull_rom_samples_per_segment(iterations);
-            catmull_rom_subdivide::<CLOSED>(points, samples)
+            catmull_rom_subdivide_with_provenance::<CLOSED>(points, samples, capture_provenance)
         },
     }?;
     budget.add(generated)?;
     Ok(output)
 }
 
-fn chaikin_open(points: &CoordSeq, keep_endpoints: bool) -> Result<CoordSeq> {
+fn chaikin_open(
+    points: &CoordSeq,
+    keep_endpoints: bool,
+    capture_provenance: bool,
+) -> Result<(CoordSeq, Vec<usize>)> {
     let count = points.len();
     if count < 2 {
-        return Ok(points.clone());
+        return Ok((points.clone(), Vec::new()));
     }
     if !keep_endpoints {
-        let mut out =
-            CoordSeqBuilder::with_capacity(points.axes(), count.wrapping_sub(1).wrapping_mul(2));
+        let mut out = SmoothOutputBuilder::with_capacity(
+            points.axes(),
+            count.wrapping_sub(1).wrapping_mul(2),
+            capture_provenance,
+        );
         for (start, end) in points.iter_coords().zip(points.iter_coords().skip(1)) {
-            out.push(lerp_point(start, end, 0.25));
-            out.push(lerp_point(start, end, 0.75));
+            out.push_computed(lerp_point(start, end, 0.25));
+            out.push_computed(lerp_point(start, end, 0.75));
         }
         return out.finish();
     }
-    let mut out =
-        CoordSeqBuilder::with_capacity(points.axes(), count.wrapping_sub(1).wrapping_mul(2));
-    out.push_at(points, 0);
+    let mut out = SmoothOutputBuilder::with_capacity(
+        points.axes(),
+        count.wrapping_sub(1).wrapping_mul(2),
+        capture_provenance,
+    );
+    out.push_preserved_at(points, 0);
     let last_edge = count.wrapping_sub(2);
     for (index, (start, end)) in points
         .iter_coords()
@@ -159,26 +262,29 @@ fn chaikin_open(points: &CoordSeq, keep_endpoints: bool) -> Result<CoordSeq> {
         .enumerate()
     {
         if index == 0 {
-            out.push(lerp_point(start, end, 0.75));
+            out.push_computed(lerp_point(start, end, 0.75));
         } else if index == last_edge {
-            out.push(lerp_point(start, end, 0.25));
+            out.push_computed(lerp_point(start, end, 0.25));
         } else {
-            out.push(lerp_point(start, end, 0.25));
-            out.push(lerp_point(start, end, 0.75));
+            out.push_computed(lerp_point(start, end, 0.25));
+            out.push_computed(lerp_point(start, end, 0.75));
         }
     }
-    out.push_at(points, count.wrapping_sub(1));
+    out.push_preserved_at(points, count.wrapping_sub(1));
     out.finish()
 }
 
-fn chaikin_closed(points: &CoordSeq) -> Result<CoordSeq> {
+fn chaikin_closed(points: &CoordSeq) -> Result<(CoordSeq, Vec<usize>)> {
     let count = points.len();
     if count < 4 {
-        return Ok(points.clone());
+        return Ok((points.clone(), Vec::new()));
     }
     let edge_count = count.wrapping_sub(1);
-    let mut out =
-        CoordSeqBuilder::with_capacity(points.axes(), edge_count.wrapping_mul(2).wrapping_add(1));
+    let mut out = SmoothOutputBuilder::with_capacity(
+        points.axes(),
+        edge_count.wrapping_mul(2).wrapping_add(1),
+        false,
+    );
     // Capture the first emitted corner so the ring can close bit-identically
     // without reading back from the SoA builder.
     let mut first_corner = None;
@@ -192,28 +298,27 @@ fn chaikin_closed(points: &CoordSeq) -> Result<CoordSeq> {
         if index == 0 {
             first_corner = Some(q);
         }
-        out.push(q);
-        out.push(r);
+        out.push_computed(q);
+        out.push_computed(r);
     }
-    out.push(first_corner.expect("closed Chaikin has at least one edge"));
+    out.push_computed(first_corner.expect("closed Chaikin has at least one edge"));
     out.finish()
 }
 
-/// Subdivide every segment into ``samples`` equal parametric pieces (keeping
-/// every original vertex). ``samples=1`` is identity.
-pub(crate) fn catmull_rom_subdivide<const CLOSED: bool>(
+fn catmull_rom_subdivide_with_provenance<const CLOSED: bool>(
     points: &CoordSeq,
     samples: usize,
-) -> Result<CoordSeq> {
+    capture_provenance: bool,
+) -> Result<(CoordSeq, Vec<usize>)> {
     let count = points.len();
     if count < 2 || samples <= 1 {
-        return Ok(points.clone());
+        return Ok((points.clone(), Vec::new()));
     }
     let edge_count = count.wrapping_sub(1);
     let total =
         catmull_rom_output_len(count, samples).ok_or(crate::error::ResourceError::SizeOverflow)?;
-    let mut out = CoordSeqBuilder::with_capacity(points.axes(), total);
-    out.push_at(points, 0);
+    let mut out = SmoothOutputBuilder::with_capacity(points.axes(), total, capture_provenance);
+    out.push_preserved_at(points, 0);
     let first = points.point_at(0);
     for (edge_index, (p1, p2)) in points
         .iter_coords()
@@ -246,14 +351,14 @@ pub(crate) fn catmull_rom_subdivide<const CLOSED: bool>(
                     _ => None,
                 }),
             );
-            out.push(point);
+            out.push_computed(point);
         }
         if !CLOSED || edge_index < edge_count.wrapping_sub(1) {
-            out.push(p2);
+            out.push_preserved(p2);
         }
     }
     if CLOSED {
-        out.push(first);
+        out.push_preserved(first);
     }
     out.finish()
 }
@@ -406,29 +511,74 @@ impl Shape {
         keep_endpoints: bool,
         budget: &mut ExpansionBudget,
     ) -> Result<Self> {
+        self.smooth_budgeted_inner(iterations, method, keep_endpoints, budget, None)
+    }
+
+    pub(crate) fn smooth_budgeted_with_vertex_intents(
+        &self,
+        iterations: i32,
+        method: SmoothMethod,
+        keep_endpoints: bool,
+        budget: &mut ExpansionBudget,
+    ) -> Result<(Self, Vec<Vec<usize>>)> {
+        let mut preserved_vertices = Vec::new();
+        let shape = self.smooth_budgeted_inner(
+            iterations,
+            method,
+            keep_endpoints,
+            budget,
+            Some(&mut preserved_vertices),
+        )?;
+        Ok((shape, preserved_vertices))
+    }
+
+    fn smooth_budgeted_inner(
+        &self,
+        iterations: i32,
+        method: SmoothMethod,
+        keep_endpoints: bool,
+        budget: &mut ExpansionBudget,
+        preserved_vertices: Option<&mut Vec<Vec<usize>>>,
+    ) -> Result<Self> {
+        let mut preserved_vertices = preserved_vertices;
         Ok(match self {
             Self::Point(point) => Self::Point(*point),
             Self::MultiPoint(points) => Self::MultiPoint(points.clone()),
-            Self::LineString(points) => Self::LineString(
+            Self::LineString(points) => {
                 // Smoothing repositions and inserts vertices; it never drops
                 // one, and returns the input unchanged when too short to act.
-                LineSeq::from_proven(smooth_coord_seq::<false>(
-                    points,
-                    iterations,
-                    method,
-                    keep_endpoints,
-                    budget,
-                )?),
-            ),
-            Self::MultiLineString(lines) => {
-                Self::MultiLineString(lines.try_map_values(lines.axes(), |line| {
-                    Ok::<_, crate::error::Error>(LineSeq::from_proven(smooth_coord_seq::<false>(
-                        line,
+                let coordinates = if let Some(preserved) = preserved_vertices.as_deref_mut() {
+                    let (coordinates, vertices) = smooth_coord_seq_with_preserved_vertices::<false>(
+                        points,
                         iterations,
                         method,
                         keep_endpoints,
                         budget,
-                    )?))
+                    )?;
+                    preserved.push(vertices);
+                    coordinates
+                } else {
+                    smooth_coord_seq::<false>(points, iterations, method, keep_endpoints, budget)?
+                };
+                Self::LineString(LineSeq::from_proven(coordinates))
+            },
+            Self::MultiLineString(lines) => {
+                Self::MultiLineString(lines.try_map_values(lines.axes(), |line| {
+                    let coordinates = if let Some(preserved) = preserved_vertices.as_deref_mut() {
+                        let (coordinates, vertices) =
+                            smooth_coord_seq_with_preserved_vertices::<false>(
+                                line,
+                                iterations,
+                                method,
+                                keep_endpoints,
+                                budget,
+                            )?;
+                        preserved.push(vertices);
+                        coordinates
+                    } else {
+                        smooth_coord_seq::<false>(line, iterations, method, keep_endpoints, budget)?
+                    };
+                    Ok::<_, crate::error::Error>(LineSeq::from_proven(coordinates))
                 })?)
             },
             Self::Polygon(polygon) => Self::Polygon(smooth_polygon_rings(
@@ -437,15 +587,29 @@ impl Shape {
                 method,
                 keep_endpoints,
                 budget,
+                preserved_vertices.as_deref_mut(),
             )?),
             Self::MultiPolygon(polygons) => {
                 Self::MultiPolygon(polygons.try_map_values(polygons.axes(), |polygon| {
-                    smooth_polygon_rings(polygon, iterations, method, keep_endpoints, budget)
+                    smooth_polygon_rings(
+                        polygon,
+                        iterations,
+                        method,
+                        keep_endpoints,
+                        budget,
+                        preserved_vertices.as_deref_mut(),
+                    )
                 })?)
             },
             Self::GeometryCollection(geometries) => {
                 Self::GeometryCollection(geometries.try_map_members(|geometry| {
-                    geometry.smooth_budgeted(iterations, method, keep_endpoints, budget)
+                    geometry.smooth_budgeted_inner(
+                        iterations,
+                        method,
+                        keep_endpoints,
+                        budget,
+                        preserved_vertices.as_deref_mut(),
+                    )
                 })?)
             },
             Self::Empty(..) => self.clone(),
@@ -462,9 +626,23 @@ fn smooth_polygon_rings(
     method: SmoothMethod,
     keep_endpoints: bool,
     budget: &mut ExpansionBudget,
+    preserved_vertices: Option<&mut Vec<Vec<usize>>>,
 ) -> Result<Polygon> {
+    let mut preserved_vertices = preserved_vertices;
     polygon.try_map_ring_seqs(|ring| {
-        smooth_coord_seq::<true>(ring, iterations, method, keep_endpoints, budget)
+        if let Some(preserved) = preserved_vertices.as_deref_mut() {
+            let (coordinates, vertices) = smooth_coord_seq_with_preserved_vertices::<true>(
+                ring,
+                iterations,
+                method,
+                keep_endpoints,
+                budget,
+            )?;
+            preserved.push(vertices);
+            Ok(coordinates)
+        } else {
+            smooth_coord_seq::<true>(ring, iterations, method, keep_endpoints, budget)
+        }
     })
 }
 
@@ -504,6 +682,67 @@ mod tests {
         part_output_len::<false>(5, 40, SmoothMethod::Chaikin).unwrap_err();
         part_output_len::<false>(5, 40, SmoothMethod::CatmullRom).unwrap_err();
         part_output_len::<false>(5, i32::MAX, SmoothMethod::Chaikin).unwrap_err();
+    }
+
+    #[test]
+    fn smooth_records_exactly_which_vertices_were_preserved() {
+        let points = CoordSeq::try_from_points(&[
+            Point::new_raw_xy(370.0, 0.0),
+            Point::new_raw_xy(500.0, 1.0),
+            Point::new_raw_xy(620.0, 0.0),
+        ])
+        .unwrap();
+        let mut budget = ExpansionBudget::new("smooth", "iterations");
+        let (chaikin, preserved) = smooth_coord_seq_with_preserved_vertices::<false>(
+            &points,
+            1,
+            SmoothMethod::Chaikin,
+            true,
+            &mut budget,
+        )
+        .unwrap();
+        assert_eq!(preserved, [0, chaikin.len() - 1]);
+        assert_eq!(chaikin.point_at(0), points.point_at(0));
+        assert_eq!(chaikin.point_at(chaikin.len() - 1), points.point_at(2));
+
+        let mut budget = ExpansionBudget::new("smooth", "iterations");
+        let (catmull, preserved) = smooth_coord_seq_with_preserved_vertices::<false>(
+            &points,
+            2,
+            SmoothMethod::CatmullRom,
+            true,
+            &mut budget,
+        )
+        .unwrap();
+        assert_eq!(preserved, [0, 4, 8]);
+        for (output_index, source_index) in [(0, 0), (4, 1), (8, 2)] {
+            assert_eq!(
+                catmull.point_at(output_index),
+                points.point_at(source_index)
+            );
+        }
+
+        let ring = CoordSeq::try_from_points(&[
+            Point::new_raw_xy(0.0, 0.0),
+            Point::new_raw_xy(2.0, 0.0),
+            Point::new_raw_xy(1.0, 2.0),
+            Point::new_raw_xy(0.0, 0.0),
+        ])
+        .unwrap();
+        let mut budget = ExpansionBudget::new("smooth", "iterations");
+        let (catmull_ring, preserved) = smooth_coord_seq_with_preserved_vertices::<true>(
+            &ring,
+            2,
+            SmoothMethod::CatmullRom,
+            true,
+            &mut budget,
+        )
+        .unwrap();
+        assert_eq!(preserved, [0, 4, 8, 12]);
+        assert_eq!(
+            catmull_ring.point_at(0),
+            catmull_ring.point_at(catmull_ring.len() - 1)
+        );
     }
 
     #[test]

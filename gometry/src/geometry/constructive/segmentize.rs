@@ -596,7 +596,8 @@ fn subdivide<R: Route>(
                             error.kind(),
                             crate::error::ErrorKind::Geometry(
                                 GeometryErrorKind::UnrepresentableOutput {
-                                    operation: "segmentize"
+                                    operation: "segmentize",
+                                    ..
                                 }
                             )
                         ) && retry < MAX_REPRESENTABILITY_RETRIES =>
@@ -1183,7 +1184,8 @@ mod tests {
         assert!(matches!(
             first_error.kind(),
             crate::error::ErrorKind::Geometry(GeometryErrorKind::UnrepresentableOutput {
-                operation: "segmentize"
+                operation: "segmentize",
+                ..
             })
         ));
 
@@ -1241,7 +1243,8 @@ mod tests {
         assert!(matches!(
             error.kind(),
             crate::error::ErrorKind::Geometry(GeometryErrorKind::UnrepresentableOutput {
-                operation: "segmentize"
+                operation: "segmentize",
+                ..
             })
         ));
     }

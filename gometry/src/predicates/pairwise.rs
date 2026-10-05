@@ -85,7 +85,9 @@ pub(crate) fn shortest_line(
                     &admission,
                     operation.name(),
                     &crate::dispatch::OverlayFastPath,
-                    move |left, right, _ctx| metric_shortest_line_resolved(&resolved, left, right),
+                    move |left, right, ctx| {
+                        metric_shortest_line_resolved(&resolved, left, right, ctx.domain)
+                    },
                 )
             },
             (GeometryInput::Many(array), GeometryInput::One(geometry)) => {
@@ -101,28 +103,19 @@ pub(crate) fn shortest_line(
                     &admission,
                     operation.name(),
                     &crate::dispatch::OverlayFastPath,
-                    move |left, right, _ctx| metric_shortest_line_resolved(&resolved, left, right),
+                    move |left, right, ctx| {
+                        metric_shortest_line_resolved(&resolved, left, right, ctx.domain)
+                    },
                 )
             },
             (GeometryInput::One(left), GeometryInput::One(right)) => {
                 let resolved = crate::crs::ResolvedMetric::from_model(&model)?;
                 let left_plan = left.prepared_plan();
                 let right_plan = right.prepared_plan();
-                let left_cache = left.frame_cache();
-                let right_cache = right.frame_cache();
-                let pair = py.detach(move || {
-                    metric_nearest_points_resolved(
-                        &resolved,
-                        &left_plan,
-                        &left_cache,
-                        &right_plan,
-                        &right_cache,
-                    )
+                let domain = admission.domain;
+                let shape = py.detach(move || {
+                    metric_shortest_line_resolved(&resolved, &left_plan, &right_plan, domain)
                 })?;
-                let shape = crate::geometry::nearest_line(
-                    pair.as_ref(),
-                    crate::geometry::common_axes(left.shape.shape(), right.shape.shape()),
-                )?;
                 crate::Typed(PyGeometry::with_frame(shape, admission.frame)).into_py_any(py)
             },
             (GeometryInput::Many(_), GeometryInput::Many(_)) => {
@@ -132,7 +125,9 @@ pub(crate) fn shortest_line(
                     &admission,
                     operation.name(),
                     &crate::dispatch::OverlayFastPath,
-                    move |left, right, _ctx| metric_shortest_line_resolved(&resolved, left, right),
+                    move |left, right, ctx| {
+                        metric_shortest_line_resolved(&resolved, left, right, ctx.domain)
+                    },
                 )
             },
         }

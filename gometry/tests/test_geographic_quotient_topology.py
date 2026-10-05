@@ -767,6 +767,18 @@ def test_geographic_overlay_keeps_seam_and_polar_area_membership() -> None:
     assert gm.equals(gm.intersection(full_band, band_window), band_window)
 
 
+@pytest.mark.parametrize('ccw', [True, False])
+def test_canonical_full_band_union_keeps_its_chart_region(ccw: bool) -> None:
+    band = gm.box(-180.0, -80.0, 180.0, 80.0, ccw=ccw, crs=4326)
+    result = gm.union_all([band])
+    assert result.geometry_type == 'Polygon'
+    assert result.is_valid
+    assert result.area == pytest.approx(band.area, rel=2e-12)
+    for longitude in (-179.0, 0.0, 179.0):
+        assert gm.covers(result, gm.Point(longitude, 0.0, crs=4326))
+        assert not gm.covers(result, gm.Point(longitude, 85.0, crs=4326))
+
+
 def test_south_full_turn_ring_emits_its_polar_shell() -> None:
     cap = gm.Polygon([(0, -80), (90, -80), (180, -80), (-90, -80), (0, -80)], crs=4326)
 

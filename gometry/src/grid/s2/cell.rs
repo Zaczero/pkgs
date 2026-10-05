@@ -201,10 +201,15 @@ impl Cell {
         let vertices = self.vertices_lonlat();
         let mut shell = vertices.to_vec();
         shell.push(vertices[0]);
-        Ok(Shape::Polygon(Polygon::new(
+        let shape = Shape::Polygon(Polygon::new(
             Ring::try_from_closed(CoordSeq::try_from_points(&shell)?)?,
             Vec::new(),
-        )))
+        ));
+        crate::geometry::publish_stored_computed_shape(
+            &shape,
+            crate::geographic::GeographicFrame::crs84(),
+            "S2 cell boundary",
+        )
     }
 
     /// The cell's exact latitude/longitude bound (canonical S2

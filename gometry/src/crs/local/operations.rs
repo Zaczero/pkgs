@@ -91,7 +91,8 @@ pub(crate) fn metric_maximum_inscribed_circle(
 /// CRS-aware concave hull. Projected/CRS-free inputs run the native kernel in
 /// the receiver coordinate frame (scaling `length_threshold` for projected SI
 /// metrics). Geographic inputs use a local projection only to decide which
-/// input vertices survive, then emit the original vertices bit-for-bit.
+/// input vertices survive. Selected witnesses supply their original ordinates;
+/// the new boundary edges receive canonical computed longitude spelling.
 pub(crate) fn metric_concave_hull(
     model: &crate::crs::MetricModel,
     crs: Option<&str>,
@@ -133,7 +134,7 @@ pub(crate) fn metric_concave_hull(
                         }
                     });
                     if pairs.is_empty() {
-                        return Ok(Vec::new());
+                        return Ok((Vec::new(), Shape::empty_polygon()));
                     }
                     pairs.sort_unstable_by(|(left, _), (right, _)| geometric_xy_cmp(*left, *right));
                     let mut projected_points = Vec::with_capacity(pairs.len());
@@ -141,6 +142,7 @@ pub(crate) fn metric_concave_hull(
                         projected_points.push(point.to_xy());
                     }
                     let mut provenance = Vec::with_capacity(projected_points.len());
+                    let mut selected = Vec::with_capacity(projected_points.len());
                     for index in crate::geometry::native_concave_hull(
                         &projected_points,
                         concavity,
@@ -150,8 +152,17 @@ pub(crate) fn metric_concave_hull(
                             .get(index)
                             .expect("hull vertex index is in the projected input");
                         provenance.push(VertexProvenance::Input(*original_index));
+                        selected.push(
+                            pairs
+                                .get(index)
+                                .expect("selected hull index belongs to sites")
+                                .0,
+                        );
                     }
-                    Ok(provenance)
+                    Ok((
+                        provenance,
+                        shape_from_selected_hull(&selected, Shape::empty_polygon)?,
+                    ))
                 },
                 |points| shape_from_selected_hull(&points, Shape::empty_polygon),
             )
@@ -169,7 +180,7 @@ pub(crate) fn geodesic_by_identity(
         &Shape,
         &Shape,
         &[crate::geometry::RefinedChainProvenance],
-    ) -> Result<Vec<VertexProvenance>>,
+    ) -> Result<(Vec<VertexProvenance>, Shape)>,
     rebuild: impl FnOnce(Vec<Point>) -> Result<Shape>,
 ) -> Result<Shape> {
     if shape.is_empty() {
@@ -186,12 +197,12 @@ pub(crate) fn geodesic_by_identity(
             "internal identity projection changed point count",
         ));
     }
-    let plan = plan_fn(
+    let (plan, projected_output) = plan_fn(
         projected_original,
         prepared.projected_working(),
         prepared.refined_chains(),
     )?;
-    if plan
+    let restored = if plan
         .iter()
         .any(|vertex| matches!(vertex, VertexProvenance::OnSegment { .. }))
     {
@@ -205,10 +216,21 @@ pub(crate) fn geodesic_by_identity(
         >(total)?);
         source_points.extend(original);
         source_points.extend(support_points);
-        rebuild(emit_from_original(&source_points, &plan)?)
+        rebuild(emit_from_original(&source_points, &plan)?)?
     } else {
-        rebuild(emit_from_original(&original, &plan)?)
+        rebuild(emit_from_original(&original, &plan)?)?
+    };
+    if matches!(restored, Shape::Point(_)) {
+        return Ok(restored);
     }
+    super::output::publish(
+        &projected_output,
+        &restored,
+        prepared.local_crs(),
+        prepared.geographic_frame(),
+        budget.operation(),
+        budget,
+    )
 }
 
 /// CRS-aware minimum enclosing circle. Planar/projected frames build the circle
@@ -227,6 +249,14 @@ pub(crate) fn metric_minimum_bounding_circle(
         // the scale-error fit check (`checked = false`) and stays usable at
         // city-to-continental extent — unlike buffer/offset above.
         crate::crs::MetricModel::Geodesic { state, .. } => {
+            if matches!(shape, Shape::Point(_)) {
+                return crate::crs::with_ellipsoid_metric_at(
+                    crs.unwrap_or("EPSG:4326"),
+                    &[shape],
+                    state,
+                    |_| Ok(shape.clone()),
+                );
+            }
             let mut budget =
                 crate::geometry::ExpansionBudget::new("minimum_bounding_circle", "realization");
             geodesic_local_shape(
@@ -422,8 +452,16 @@ fn run_local_projected_operation(
 ) -> Result<Shape> {
     let local = prepared.local_crs();
     let result = op(prepared.projected_working(), budget)?;
-    crate::crs::transform_at(&result, &local.definition, source, state)
-        .map_err(|error| local.annotate_error(error))
+    let restored = crate::crs::transform_at(&result, &local.definition, source, state)
+        .map_err(|error| local.annotate_error(error))?;
+    super::output::publish(
+        &result,
+        &restored,
+        local,
+        prepared.geographic_frame(),
+        budget.operation(),
+        budget,
+    )
 }
 
 #[cfg(test)]
@@ -431,6 +469,138 @@ mod tests {
     use super::*;
     use crate::crs::runtime_state_snapshot;
     use crate::geometry::{BufferCapStyle, BufferJoinStyle, CoordSeq, LineSeq, XY};
+
+    #[test]
+    fn minimum_bounding_circle_of_one_point_keeps_the_source_record() {
+        let source = Shape::Point(Point::new_raw_xy(370.125, -0.0));
+        let model = crate::crs::metric_model(Some("EPSG:4326")).unwrap();
+        assert_eq!(
+            metric_minimum_bounding_circle(&model, Some("EPSG:4326"), &source).unwrap(),
+            source
+        );
+    }
+
+    #[test]
+    fn minimum_bounding_circle_across_the_seam_publishes_minor_edges() {
+        let source = crate::io::parse_wkt("MULTIPOINT ((179.8 0), (-179.8 0))").unwrap();
+        let model = crate::crs::metric_model(Some("EPSG:4326")).unwrap();
+        let output = metric_minimum_bounding_circle(&model, Some("EPSG:4326"), &source).unwrap();
+        let Shape::Polygon(output) = output else {
+            unreachable!()
+        };
+        assert!(
+            output
+                .shell
+                .iter()
+                .all(|point| (-180.0..180.0).contains(&point.x))
+        );
+        let axis = crate::geographic::GeographicFrame::crs84().longitude();
+        for [start, end] in crate::geometry::Coordinates::segment_pairs(output.shell.coords()) {
+            assert!(
+                axis.chart_step(start.x, end.x).unwrap().delta(axis).abs() < axis.half_period()
+            );
+        }
+    }
+
+    #[test]
+    fn buffer_near_the_seam_keeps_canonical_vertices_without_densifying() {
+        let state = runtime_state_snapshot().unwrap();
+        let input = Shape::Point(Point::new_raw_xy(179.9, 0.0));
+        let local = PreparedLocalInput::select_local_frame(&[&input], "EPSG:4326", &state).unwrap();
+        let projected =
+            crate::crs::transform_at(&input, "EPSG:4326", &local.definition, &state).unwrap();
+        let projected_output = projected.buffer(20_000.0).unwrap();
+        let before =
+            crate::crs::transform_at(&projected_output, &local.definition, "EPSG:4326", &state)
+                .unwrap();
+        let mut budget = crate::geometry::ExpansionBudget::new("buffer", "quadrant_segments");
+        let after = geodesic_local_shape(
+            &input,
+            Some("EPSG:4326"),
+            true,
+            Some(20_000.0),
+            &state,
+            &mut budget,
+            |working, _| working.buffer(20_000.0),
+        )
+        .unwrap();
+        let (Shape::Polygon(before), Shape::Polygon(after)) = (before, after) else {
+            unreachable!()
+        };
+        assert_eq!(after.shell.len(), before.shell.len());
+        let axis = crate::geographic::GeographicFrame::crs84().longitude();
+        for [start, end] in crate::geometry::Coordinates::segment_pairs(after.shell.coords()) {
+            assert!(
+                axis.chart_step(start.x, end.x).unwrap().delta(axis).abs() < axis.half_period()
+            );
+        }
+        assert!(
+            after
+                .shell
+                .iter()
+                .all(|point| (-180.0..180.0).contains(&point.x))
+        );
+    }
+
+    #[test]
+    fn polar_buffer_keeps_its_certified_minor_edges_and_complete_turn() {
+        let state = runtime_state_snapshot().unwrap();
+        let input = Shape::Point(Point::new_raw_xy(0.0, 89.9));
+        let local = PreparedLocalInput::select_local_frame(&[&input], "EPSG:4326", &state).unwrap();
+        let projected_input =
+            crate::crs::transform_at(&input, "EPSG:4326", &local.definition, &state).unwrap();
+        let projected_output = projected_input.buffer(20_000.0).unwrap();
+        let before =
+            crate::crs::transform_at(&projected_output, &local.definition, "EPSG:4326", &state)
+                .unwrap();
+        let pole = local
+            .projected_pole()
+            .expect("a polar frame retains its projected pole");
+        let pole = Point::new_raw_xy(pole.0, pole.1);
+        let Shape::Polygon(projected) = &projected_output else {
+            unreachable!()
+        };
+        for ring in projected.rings() {
+            for [start, end] in crate::geometry::Coordinates::segment_pairs(ring.coords()) {
+                assert!(!crate::geometry::point_on_segment(
+                    pole.xy(),
+                    start.xy(),
+                    end.xy()
+                ));
+            }
+        }
+        let mut budget = crate::geometry::ExpansionBudget::new("buffer", "quadrant_segments");
+        let after = geodesic_local_shape(
+            &input,
+            Some("EPSG:4326"),
+            true,
+            Some(20_000.0),
+            &state,
+            &mut budget,
+            |working, _| working.buffer(20_000.0),
+        )
+        .unwrap();
+        let (Shape::Polygon(before), Shape::Polygon(after)) = (&before, &after) else {
+            unreachable!()
+        };
+        assert_eq!(before.shell.len(), 33);
+        assert_eq!(after.shell.len(), 33);
+        for (before, after) in before.shell.iter().zip(after.shell.iter()) {
+            if before.x.to_bits() == 180.0_f64.to_bits() {
+                assert_eq!(after.x.to_bits(), (-180.0_f64).to_bits());
+                assert_eq!(after.y.to_bits(), before.y.to_bits());
+            } else {
+                assert_eq!(after, before);
+            }
+        }
+        let axis = crate::geographic::GeographicFrame::crs84().longitude();
+        let mut turn = 0;
+        for [start, end] in crate::geometry::Coordinates::segment_pairs(after.shell.coords()) {
+            turn = axis.add_chart_transit(turn, start.x, end.x).unwrap();
+        }
+        assert_eq!(turn, 1);
+        assert_eq!(after.shell.first(), after.shell.last());
+    }
 
     #[test]
     fn minimum_bounding_radius_keeps_point_sets_geodesic_and_lines_local() {

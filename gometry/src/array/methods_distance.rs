@@ -419,6 +419,16 @@ impl PyGeometryArray {
         if let Some(points) = self.packed_points_xy()? {
             return Ok(points);
         }
+        if let crate::geometry::TopologyDomain::Geographic(frame) =
+            crate::geometry::topology_domain(&self.frame)?
+        {
+            return self.map_shapes(|shape| {
+                let envelope = shape.envelope()?;
+                Ok(crate::geometry::publish_computed_point_or_raw_shape(
+                    &envelope, frame, "envelope",
+                )?)
+            });
+        }
         // All-rectangular fast path: when every row's box is NON-degenerate
         // (`bounds_to_shape` would make a `Polygon`, not a `Point`/`LineString`),
         // write the 5 box vertices per row straight into packed `Polygon`
@@ -487,6 +497,15 @@ impl PyGeometryArray {
         if let Some(identity) = self.packed_points_identity() {
             return Ok(identity);
         }
-        self.map_shapes_detached(py, Shape::convex_hull)
+        let domain = crate::geometry::topology_domain(&self.frame)?;
+        self.map_shapes_detached(py, |shape| {
+            let hull = shape.convex_hull()?;
+            match domain {
+                crate::geometry::TopologyDomain::Cartesian => Ok(hull),
+                crate::geometry::TopologyDomain::Geographic(frame) => {
+                    crate::geometry::publish_raw_computed_shape(&hull, frame, "convex_hull")
+                },
+            }
+        })
     }
 }

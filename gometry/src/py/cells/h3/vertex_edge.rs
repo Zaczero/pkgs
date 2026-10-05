@@ -263,9 +263,13 @@ fn reverse(&self) -> Self {
             .iter()
             .map(|latlng| Point::new_raw_xy(latlng.lng(), latlng.lat()))
             .collect();
-        Ok(PyGeometry::typed_wgs84(Shape::LineString(
-            LineSeq::from_proven(CoordSeq::try_from_points(&points)?),
-        )))
+        let shape = Shape::LineString(LineSeq::from_proven(CoordSeq::try_from_points(&points)?));
+        let shape = crate::geometry::publish_stored_computed_shape(
+            &shape,
+            crate::geographic::GeographicFrame::crs84(),
+            "H3 edge",
+        )?;
+        Ok(PyGeometry::typed_wgs84(shape))
     }
 
     /// Length of the edge in meters (spherical, like `H3Cell.area`).

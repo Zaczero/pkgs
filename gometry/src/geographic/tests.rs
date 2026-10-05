@@ -348,6 +348,38 @@ fn exact_axis_boxes_are_world_bands_without_fabricating_turns() {
 }
 
 #[test]
+fn canonical_axis_band_spelling_retains_both_complete_parallel_turns() {
+    let source = ring(
+        vec![
+            -180.0, -60.0, 60.0, -180.0, -180.0, 60.0, -60.0, -180.0, -180.0,
+        ],
+        vec![70.0, 70.0, 70.0, 70.0, 80.0, 80.0, 80.0, 80.0, 70.0],
+    );
+    for source in [source.clone(), source.reversed().unwrap()] {
+        let summary = RingSummary::try_new(degrees(), &GeographicRing::from_ring(&source)).unwrap();
+        assert_eq!(summary.chart_turn, 0);
+        assert!(summary.exact_axis_band);
+        assert_eq!(
+            summary.domain,
+            RingDomain::FullLongitude(RingLatitudeSpan::Ordinary)
+        );
+    }
+}
+
+#[test]
+fn seam_zigzag_parallels_do_not_fabricate_an_axis_band() {
+    let source = ring(
+        vec![
+            -180.0, 170.0, -170.0, 180.0, 180.0, -170.0, 170.0, -180.0, -180.0,
+        ],
+        vec![70.0, 70.0, 70.0, 70.0, 80.0, 80.0, 80.0, 80.0, 70.0],
+    );
+    let summary = RingSummary::try_new(degrees(), &GeographicRing::from_ring(&source)).unwrap();
+    assert!(!summary.exact_axis_band);
+    assert_eq!(summary.domain, RingDomain::Ordinary);
+}
+
+#[test]
 fn unwrapped_axis_boxes_are_exact_and_wide_diagonals_are_not_bands() {
     let summary = axis_box(degrees(), 720.0, 1080.0, -10.0, 10.0);
     assert_eq!(

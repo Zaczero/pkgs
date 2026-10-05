@@ -91,8 +91,7 @@ pub(super) fn box_(
     let maxy = finite_coordinate_required("maxy", maxy)?;
     let crs = parse_crs(crs)?;
     let epoch = coordinate_epoch_option("epoch", epoch)?;
-    let shape =
-        build_box_shape(minx, miny, maxx, maxy, wrap, crs.as_ref())?.orient_polygons(!ccw)?;
+    let shape = build_box_shape(minx, miny, maxx, maxy, wrap, crs.as_ref(), ccw)?;
     Ok(Typed(PyGeometry::with_frame(
         shape,
         Frame::new(crs, epoch)?,
@@ -382,8 +381,7 @@ pub(super) fn boxes(
         .zip(maxx.values.iter())
         .zip(maxy.values.iter())
     {
-        let shape = build_box_shape(*minx, *miny, *maxx, *maxy, wrap, frame.crs_ref())?
-            .orient_polygons(!ccw)?;
+        let shape = build_box_shape(*minx, *miny, *maxx, *maxy, wrap, frame.crs_ref(), ccw)?;
         rows.try_push(shape)?;
     }
     Ok(rows.finish(frame)?)

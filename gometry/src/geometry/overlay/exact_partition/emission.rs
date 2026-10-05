@@ -140,6 +140,39 @@ impl BoundaryPlan {
         self.walks.iter().map(Vec::len).fold(0, usize::wrapping_add)
     }
 
+    fn chord_is_preserved(
+        &self,
+        chord: &PlannedChord,
+        edges: &[u32],
+        preserved_spans: &[bool],
+    ) -> Result<bool> {
+        let mut role = None;
+        for source_slot in chord.sources.clone() {
+            let slot =
+                self.source_darts.get(source_slot).copied().ok_or_else(|| {
+                    GeometryErrorKind::Invalid("source role dart is unknown".into())
+                })? as usize;
+            let span =
+                edges.get(slot).copied().ok_or_else(|| {
+                    GeometryErrorKind::Invalid("source role slot is unknown".into())
+                })? as usize;
+            let preserved = preserved_spans
+                .get(span)
+                .copied()
+                .ok_or_else(|| GeometryErrorKind::Invalid("source role span is unknown".into()))?;
+            if role.is_some_and(|previous| previous != preserved) {
+                return Err(GeometryErrorKind::Invalid(
+                    "an emitted chord crosses a source-role boundary".into(),
+                )
+                .into());
+            }
+            role = Some(preserved);
+        }
+        role.ok_or_else(|| {
+            GeometryErrorKind::Invalid("an emitted chord has no source spans".into()).into()
+        })
+    }
+
     pub(super) fn polygonize_emission(
         &self,
         topology: &IndexedTopology,
@@ -371,6 +404,145 @@ impl BoundaryPlan {
             points.push(Point::new_raw_xy(point.x, point.y));
         }
         Ok((points, lines, polygons))
+    }
+
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "slot and span IDs are produced by this exact partition and its topology"
+    )]
+    pub(super) fn emit_xy_polygon_parts_with_source_roles(
+        &self,
+        partition: &ExactPartition<'_>,
+        topology: &IndexedTopology,
+        edge_of_slot: &[u32],
+        operation: &'static str,
+        preserved_spans: &[bool],
+    ) -> Result<Vec<(Polygon, Vec<Vec<bool>>)>> {
+        if preserved_spans.len() != partition.spans.len() {
+            return Err(GeometryErrorKind::Invalid(
+                "source edge roles do not match the exact partition".into(),
+            )
+            .into());
+        }
+        let groups = self.polygon_walks(partition, topology)?;
+        let emission = self.emission(topology, edge_of_slot);
+        let embedding = partition.embed(&[&emission], operation)?;
+        let coordinates = embedding.coordinates();
+        let mut remaining = emission.items.as_slice();
+        let mut rings: Vec<Option<(Ring, Vec<bool>)>> = Vec::with_capacity(self.walks.len());
+        rings.resize_with(self.walks.len(), || None);
+        for (ring_index, walk) in self.walks.iter().enumerate() {
+            let (chords, rest) = remaining.split_at(walk.len());
+            remaining = rest;
+            let ring = closed_ring(
+                chords
+                    .iter()
+                    .map(|chord| Embedding::xy_at(coordinates, chord[0])),
+            )?;
+            let mut computed_edges = Vec::with_capacity(walk.len());
+            for chord in walk {
+                let preserved = self.chord_is_preserved(chord, edge_of_slot, preserved_spans)?;
+                computed_edges.push(!preserved);
+            }
+            rings[ring_index] = Some((ring, computed_edges));
+        }
+        let mut polygons = Vec::with_capacity(groups.len());
+        for group in groups {
+            let mut indices = group.into_iter();
+            let (shell, shell_edges) = rings[indices.next().expect("polygon has a shell")]
+                .take()
+                .expect("each ring has one polygon owner");
+            let mut holes_with_roles = Vec::with_capacity(indices.len());
+            let mut edge_roles = Vec::with_capacity(indices.len().wrapping_add(1));
+            edge_roles.push(shell_edges);
+            for index in indices {
+                let (hole, computed_edges) = rings[index]
+                    .take()
+                    .expect("each ring has one polygon owner");
+                holes_with_roles.push((hole, computed_edges));
+            }
+            holes_with_roles.sort_unstable_by(|(left, _), (right, _)| {
+                crate::geometry::compare_point_slices(left.coords(), right.coords())
+            });
+            let mut holes = Vec::with_capacity(holes_with_roles.len());
+            for (hole, computed_edges) in holes_with_roles {
+                holes.push(hole);
+                edge_roles.push(computed_edges);
+            }
+            polygons.push((Polygon::new(shell, holes), edge_roles));
+        }
+        Ok(polygons)
+    }
+
+    pub(super) fn polygon_edge_roles(
+        &self,
+        partition: &ExactPartition<'_>,
+        topology: &IndexedTopology,
+        edges: &[u32],
+        preserved_spans: &[bool],
+    ) -> Result<Vec<Vec<Vec<bool>>>> {
+        if preserved_spans.len() != partition.spans.len() {
+            return Err(GeometryErrorKind::Invalid(
+                "source edge roles do not match partition spans".into(),
+            )
+            .into());
+        }
+        let groups = self.polygon_walks(partition, topology)?;
+        let mut ring_roles = Vec::with_capacity(self.walks.len());
+        for walk in &self.walks {
+            let mut roles = Vec::with_capacity(walk.len());
+            let mut start_nodes = Vec::with_capacity(walk.len());
+            for chord in walk {
+                let preserved = self.chord_is_preserved(chord, edges, preserved_spans)?;
+                roles.push(!preserved);
+                let first_slot = self
+                    .source_darts
+                    .get(chord.sources.start)
+                    .copied()
+                    .ok_or_else(|| {
+                        GeometryErrorKind::Invalid("source role ring has no first dart".into())
+                    })? as usize;
+                let first_node = topology.owners.get(first_slot).copied().ok_or_else(|| {
+                    GeometryErrorKind::Invalid("source role ring node is unknown".into())
+                })?;
+                start_nodes.push(NodeId(first_node));
+            }
+            if start_nodes.is_empty() {
+                return Err(GeometryErrorKind::Invalid(
+                    "source role ring has no boundary chords".into(),
+                )
+                .into());
+            }
+            let mut rotation = 0;
+            for (index, &node) in start_nodes.iter().enumerate().skip(1) {
+                let current = *start_nodes.get(rotation).ok_or_else(|| {
+                    GeometryErrorKind::Invalid("source role ring rotation is unknown".into())
+                })?;
+                if partition.compare_nodes(node, current)? == Ordering::Less {
+                    rotation = index;
+                }
+            }
+            roles.rotate_left(rotation);
+            ring_roles.push(roles);
+        }
+        let mut polygon_roles = Vec::with_capacity(groups.len());
+        for group in groups {
+            let mut rings = Vec::with_capacity(group.len());
+            for ring in group {
+                rings.push(
+                    ring_roles
+                        .get(ring)
+                        .ok_or_else(|| {
+                            GeometryErrorKind::Invalid(
+                                "source role plan references an unknown boundary ring".into(),
+                            )
+                        })?
+                        .clone(),
+                );
+            }
+            polygon_roles.push(rings);
+        }
+        Ok(polygon_roles)
     }
 
     #[expect(
@@ -879,7 +1051,7 @@ impl GlobalFaces {
         partition: &ExactPartition<'_>,
         occupied: &[bool],
     ) -> Result<BoundaryPlan> {
-        self.boundary_plan_with_protected(lines, topology, edges, partition, occupied, None)
+        self.boundary_plan_with_protected(lines, topology, edges, partition, occupied, None, None)
     }
 
     #[expect(
@@ -894,12 +1066,21 @@ impl GlobalFaces {
         partition: &ExactPartition<'_>,
         occupied: &[bool],
         extra_protected: Option<&[bool]>,
+        preserved_spans: Option<&[bool]>,
     ) -> Result<BoundaryPlan> {
         if let Some(extra_protected) = extra_protected
             && extra_protected.len() != partition.node_count()
         {
             return Err(GeometryErrorKind::Invalid(
                 "exact overlay protection does not match node count".into(),
+            )
+            .into());
+        }
+        if let Some(preserved_spans) = preserved_spans
+            && preserved_spans.len() != partition.spans.len()
+        {
+            return Err(GeometryErrorKind::Invalid(
+                "source edge roles do not match partition spans".into(),
             )
             .into());
         }
@@ -930,6 +1111,22 @@ impl GlobalFaces {
         if let Some(extra_protected) = extra_protected {
             for (protected, &extra) in protected.iter_mut().zip(extra_protected) {
                 *protected |= extra;
+            }
+        }
+        if let Some(preserved_spans) = preserved_spans {
+            for walk in &walks {
+                let Some((&first, remaining)) = walk.split_first() else {
+                    continue;
+                };
+                let mut previous = first;
+                for &current in remaining.iter().chain(std::iter::once(&first)) {
+                    let previous_span = edges[previous as usize] as usize;
+                    let current_span = edges[current as usize] as usize;
+                    if preserved_spans[previous_span] != preserved_spans[current_span] {
+                        protected[topology.targets[previous as usize] as usize] = true;
+                    }
+                    previous = current;
+                }
             }
         }
         for &node in &partition.point_nodes {

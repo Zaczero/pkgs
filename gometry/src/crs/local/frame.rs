@@ -27,6 +27,7 @@ const LOCAL_CRS_DISPLAY_NAME: &str = "Local conformal CRS";
 pub(super) struct LocalCrsDefinition {
     pub(super) definition: String,
     pub(super) display_name: Option<&'static str>,
+    pub(super) projected_pole: Option<(f64, f64)>,
 }
 
 impl LocalCrsDefinition {
@@ -34,6 +35,7 @@ impl LocalCrsDefinition {
         Self {
             definition,
             display_name: None,
+            projected_pole: None,
         }
     }
 
@@ -41,12 +43,41 @@ impl LocalCrsDefinition {
         Self {
             definition,
             display_name: Some(LOCAL_CRS_DISPLAY_NAME),
+            projected_pole: None,
         }
     }
 
     pub(crate) fn annotate_error(&self, mut error: Error) -> Error {
         error.annotate_crs_display(&self.definition, self.display_name);
         error
+    }
+
+    pub(super) const fn projected_pole(&self) -> Option<(f64, f64)> {
+        self.projected_pole
+    }
+
+    fn with_projected_pole_at(
+        mut self,
+        source: &str,
+        north: bool,
+        state: &RuntimeState,
+    ) -> Result<Self> {
+        let frame = info_with_state(source, state)?
+            .geographic_frame()
+            .ok_or_else(|| {
+                CrsError::invalid("polar local frame requires geographic source coordinates")
+            })?;
+        let pole = crate::geometry::Point::new_raw_xy(
+            0.0,
+            if north { frame.pole() } else { -frame.pole() },
+        );
+        let Shape::Point(pole) =
+            transform_at(&Shape::Point(pole), source, &self.definition, state)?
+        else {
+            unreachable!("a projected pole remains a point")
+        };
+        self.projected_pole = Some((pole.x, pole.y));
+        Ok(self)
     }
 }
 
@@ -84,11 +115,16 @@ pub(super) fn estimate_local_crs_at(
                     LocalCrsDefinition::authority(ups.to_owned()),
                     source_crs,
                     state,
-                );
+                )?
+                .with_projected_pole_at(source_crs, extent.latitude >= 0.0, state);
             }
         }
         let local = best_custom_candidate(source_crs, &extent, state)?;
-        return validated_local_crs(local, source_crs, state);
+        return validated_local_crs(local, source_crs, state)?.with_projected_pole_at(
+            source_crs,
+            extent.latitude >= 0.0,
+            state,
+        );
     }
 
     let utm = best_utm_from_anchor(

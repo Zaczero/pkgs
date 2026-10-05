@@ -15,9 +15,7 @@ use crate::py::cells::cell_ops::cell_array_from_keys;
 use crate::py::cells::{CellRule, GridKind, PyCellArray, coverage_to_polygon};
 use crate::py::errors;
 use crate::py::errors::{GeometryError, InvalidGeometryError, integer_parameter_error};
-use crate::{
-    Frame, GeometryTransformFrame, Point, PyGeometry, PyGeometryArray, Typed, crs, crs_arc,
-};
+use crate::{Frame, GeometryTransformFrame, PyGeometry, PyGeometryArray, Typed, crs, crs_arc};
 
 /// Cell ids in the order required by dissolve membership searches.
 ///
@@ -190,7 +188,26 @@ pub(super) fn polygonize_outline(outline: Vec<CoordSeq>) -> PyResult<Option<Type
         return Ok(None);
     }
     let shape = Shape::narrow_polygons(crate::geometry::CoordinateAxes::XY, polygons);
+    let shape = publish_grid_outline(&shape, "grid dissolve")?;
     Ok(Some(PyGeometry::typed_wgs84(shape)))
+}
+
+pub(super) fn publish_grid_outline(
+    shape: &Shape,
+    operation: &'static str,
+) -> crate::error::Result<Shape> {
+    let frame = GeographicFrame::crs84();
+    let shape = crate::geometry::publish_raw_computed_shape(shape, frame, operation)?;
+    if matches!(shape, Shape::MultiPolygon(_))
+        && crate::geometry::crosses_antimeridian_in_frame(&shape, frame)
+        && let Some(chart) = crate::geometry::unwrap_contact_chart(&shape, frame)?
+    {
+        // Canonical spelling identifies both cut meridians. Remove their shared
+        // boundary in a faithful chart before publishing the dissolved region.
+        let dissolved = Shape::union_all(&[chart], crate::geometry::Strictness::Lenient)?;
+        return crate::geometry::publish_raw_computed_shape(&dissolved, frame, operation);
+    }
+    Ok(shape)
 }
 
 pub(crate) fn coordseq_crosses_lon_seam(segment: &CoordSeq) -> bool {
@@ -714,27 +731,7 @@ pub(crate) fn envelope_window_shapes(cover_shape: &Shape) -> Result<Vec<Shape>, 
 }
 
 fn bounds_query_shape(bounds: crate::geometry::Bounds) -> crate::error::Result<Shape> {
-    // Exact identity on purpose: only literally-degenerate bounds collapse
-    // to lower-dimensional query shapes; near-degenerate boxes stay boxes.
-    #[expect(clippy::float_cmp, reason = "exact degenerate-bounds dispatch")]
-    if bounds.minx() == bounds.maxx() && bounds.miny() == bounds.maxy() {
-        Ok(Shape::Point(Point::new_raw_xy(
-            bounds.minx(),
-            bounds.miny(),
-        )))
-    } else if bounds.minx() == bounds.maxx() || bounds.miny() == bounds.maxy() {
-        Ok(Shape::LineString(LineSeq::segment(
-            Point::new_raw_xy(bounds.minx(), bounds.miny()),
-            Point::new_raw_xy(bounds.maxx(), bounds.maxy()),
-        )?))
-    } else {
-        Ok(Shape::Polygon(crate::box_polygon(
-            bounds.minx(),
-            bounds.miny(),
-            bounds.maxx(),
-            bounds.maxy(),
-        )?))
-    }
+    crate::geometry::geographic_bounds_chart(bounds, crate::geographic::GeographicFrame::crs84())
 }
 
 /// Build a `CellArray` from source cell ids through the public factory path.
@@ -770,6 +767,28 @@ mod tests {
     fn from_sorted_canonicalizes_an_invalid_producer() {
         let cells = SortedCells::from_sorted(vec![3, 1, 3, 2]);
         assert_eq!(cells.as_slice(), &[1, 2, 3]);
+    }
+
+    #[test]
+    fn computed_grid_outline_removes_a_shared_cut_meridian() {
+        let source = crate::io::parse_wkt(
+            "MULTIPOLYGON (((-180 -2, -177 -2, -177 2, -180 2, -180 -2)), \
+             ((177 -2, 180 -2, 180 2, 177 2, 177 -2)))",
+        )
+        .unwrap();
+        let output = super::publish_grid_outline(&source, "grid dissolve").unwrap();
+        assert!(matches!(output, Shape::Polygon(_)));
+        let issue = crate::geometry::validate_shape_in_frame(
+            &output,
+            crate::geometry::TopologyDomain::Geographic(GeographicFrame::crs84()),
+        )
+        .unwrap();
+        assert!(issue.is_none(), "{issue:?}");
+        let Shape::Polygon(polygon) = output else {
+            unreachable!()
+        };
+        assert!(polygon.shell.iter().all(|point| point.x < 180.0));
+        assert!(polygon.holes.is_empty());
     }
 
     #[test]

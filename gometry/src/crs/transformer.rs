@@ -10,7 +10,7 @@ use smol_str::SmolStr;
 use crate::crs::transform::{
     BoundsSamplePlan, TransformOutputPlan, TransformedBounds3d, canonical_identity_longitudes,
     transform_in_core_xy_with_domains, transform_in_core_xy_with_domains_indexed,
-    transform_proj_shapes_indexed,
+    transform_in_core_xy_with_domains_indexed_for_shape, transform_proj_shapes_indexed,
 };
 use crate::crs::{
     InCoreTransform, ProjDirection, ProjPipeline, RuntimeState, Shape, TransformExecution,
@@ -97,6 +97,58 @@ impl TransformPlan {
         )
     }
 
+    pub(crate) const fn source_geographic_frame(
+        &self,
+    ) -> Option<crate::geographic::GeographicFrame> {
+        match self.source_domain {
+            TopologyDomain::Geographic(frame) => Some(frame),
+            TopologyDomain::Cartesian => None,
+        }
+    }
+
+    pub(crate) const fn computed_geographic_frame(
+        &self,
+    ) -> Option<crate::geographic::GeographicFrame> {
+        if self.is_identity() || self.options.force_over {
+            return None;
+        }
+        match self.target_domain {
+            crate::geometry::TopologyDomain::Geographic(frame) => Some(frame),
+            crate::geometry::TopologyDomain::Cartesian => None,
+        }
+    }
+
+    pub(crate) fn transform_shape_with_computed_edges(&self, shape: &Shape) -> Result<Shape> {
+        self.transform_shapes_with_computed_edges_indexed(&[shape])
+            .map_err(|failure| failure.error)?
+            .into_iter()
+            .next()
+            .ok_or_else(|| {
+                crate::geometry::GeometryErrorKind::Projection(
+                    "single-shape transform returned no geometry".into(),
+                )
+                .into()
+            })
+    }
+
+    pub(crate) fn transform_shapes_with_computed_edges_indexed(
+        &self,
+        shapes: &[&Shape],
+    ) -> std::result::Result<Vec<Shape>, TransformFailure> {
+        let mut output = self.transform_shapes_indexed_mode(shapes, true)?;
+        if self.is_identity() {
+            return Ok(output);
+        }
+        let Some(frame) = self.computed_geographic_frame() else {
+            return Ok(output);
+        };
+        for (index, shape) in output.iter_mut().enumerate() {
+            *shape = crate::geometry::publish_transformed_shape(shape, frame, "to_crs")
+                .map_err(|error| TransformFailure::at(error, index))?;
+        }
+        Ok(output)
+    }
+
     fn begin_execution(&self) {
         begin_transform_observation();
     }
@@ -129,6 +181,14 @@ impl TransformPlan {
         &self,
         shapes: &[&Shape],
     ) -> std::result::Result<Vec<Shape>, TransformFailure> {
+        self.transform_shapes_indexed_mode(shapes, false)
+    }
+
+    fn transform_shapes_indexed_mode(
+        &self,
+        shapes: &[&Shape],
+        keep_target_chart: bool,
+    ) -> std::result::Result<Vec<Shape>, TransformFailure> {
         self.begin_execution();
         let result: std::result::Result<Vec<Shape>, TransformFailure> = match &self.operation {
             TransformOperation::Identity { source_domain } => {
@@ -143,13 +203,12 @@ impl TransformPlan {
             TransformOperation::InCore(operation) => {
                 let mut output = TransformOutputPlan::try_new(shapes)?;
                 output.execute_indexed(|x, y, _| {
-                    transform_in_core_xy_with_domains_indexed(
-                        operation,
-                        self.source_domain,
-                        self.target_domain,
-                        x,
-                        y,
-                    )
+                    let transform = if keep_target_chart {
+                        transform_in_core_xy_with_domains_indexed_for_shape
+                    } else {
+                        transform_in_core_xy_with_domains_indexed
+                    };
+                    transform(operation, self.source_domain, self.target_domain, x, y)
                 })?;
                 Ok(output.finish(shapes)?)
             },
@@ -192,6 +251,25 @@ impl TransformPlan {
         y: &mut [f64],
         zt: crate::ZtLanes<'_>,
     ) -> std::result::Result<(), TransformFailure> {
+        self.transform_coordinates_indexed_mode(x, y, zt, false)
+    }
+
+    pub(crate) fn transform_coordinates_indexed_for_shape(
+        &self,
+        x: &mut [f64],
+        y: &mut [f64],
+        zt: crate::ZtLanes<'_>,
+    ) -> std::result::Result<(), TransformFailure> {
+        self.transform_coordinates_indexed_mode(x, y, zt, true)
+    }
+
+    fn transform_coordinates_indexed_mode(
+        &self,
+        x: &mut [f64],
+        y: &mut [f64],
+        zt: crate::ZtLanes<'_>,
+        keep_target_chart: bool,
+    ) -> std::result::Result<(), TransformFailure> {
         self.begin_execution();
         match &zt {
             crate::Zt::None => validate_coordinate_lanes(x, y, crate::Zt::None)?,
@@ -216,13 +294,12 @@ impl TransformPlan {
                 // slices were already boundary-validated finite — transform
                 // XY in place, leave the other lanes untouched. The operation
                 // variant is resolved once per batch via `transform_in_core_xy_batch`.
-                transform_in_core_xy_with_domains_indexed(
-                    operation,
-                    self.source_domain,
-                    self.target_domain,
-                    x,
-                    y,
-                )
+                let transform = if keep_target_chart {
+                    transform_in_core_xy_with_domains_indexed_for_shape
+                } else {
+                    transform_in_core_xy_with_domains_indexed
+                };
+                transform(operation, self.source_domain, self.target_domain, x, y)
             },
             TransformOperation::Proj {
                 source,
@@ -639,5 +716,66 @@ mod tests {
         assert_eq!(domain.to_string(), format!("projection failed: {message}"));
         assert!(in_core_pole_domain_miss(&domain));
         assert!(!in_core_pole_domain_miss(&generic));
+    }
+
+    #[test]
+    fn target_geographic_transform_subdivides_its_produced_major_chart_edge() {
+        let source = crate::geometry::Shape::LineString(
+            crate::geometry::LineSeq::try_new(
+                crate::geometry::CoordSeq::try_from_points(&[
+                    crate::geometry::Point::new_raw_xy(20_000_000.0, 0.0),
+                    crate::geometry::Point::new_raw_xy(-20_000_000.0, 0.0),
+                ])
+                .unwrap(),
+            )
+            .unwrap(),
+        );
+        let plan = TransformPlan::new("EPSG:3857", "EPSG:4326").unwrap();
+        let output = plan.transform_shape_with_computed_edges(&source).unwrap();
+        let crate::geometry::Shape::LineString(output) = output else {
+            panic!("to_crs retains a linestring result");
+        };
+        let points = output.iter().collect::<Vec<_>>();
+        assert_eq!(points.len(), 3);
+        assert!(points[0].x > 170.0);
+        assert_eq!(points[1].x, 0.0);
+        assert!(points[2].x < -170.0);
+        let axis = crate::geographic::GeographicFrame::crs84().longitude();
+        for pair in points.array_windows::<2>() {
+            assert!(
+                axis.chart_step(pair[0].x, pair[1].x)
+                    .unwrap()
+                    .delta(axis)
+                    .abs()
+                    <= axis.half_period()
+            );
+        }
+    }
+
+    #[test]
+    fn force_over_shape_transform_keeps_unrolled_longitudes_and_edge_count() {
+        let source = crate::geometry::Shape::LineString(
+            crate::geometry::LineSeq::try_new(
+                crate::geometry::CoordSeq::try_from_points(&[
+                    crate::geometry::Point::new_raw_xy(0.0, 0.0),
+                    crate::geometry::Point::new_raw_xy(41_000_000.0, 0.0),
+                ])
+                .unwrap(),
+            )
+            .unwrap(),
+        );
+        let plan = TransformPlan::new_with_options("EPSG:3857", "EPSG:4326", TransformOptions {
+            force_over: true,
+            ..TransformOptions::default()
+        })
+        .unwrap();
+        let raw = plan.transform_shape(&source).unwrap();
+        let output = plan.transform_shape_with_computed_edges(&source).unwrap();
+        assert_eq!(output, raw);
+        let crate::geometry::Shape::LineString(line) = output else {
+            panic!("a raw transform retains its line");
+        };
+        assert_eq!(line.len(), 2);
+        assert!(line.last().unwrap().x > 360.0);
     }
 }

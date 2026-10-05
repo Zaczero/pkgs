@@ -89,16 +89,28 @@ mod boundary;
 #[cfg(test)]
 pub(crate) use antimeridian::self_intersections_in_frame;
 pub(crate) use antimeridian::{
-    DerivedPointStrategy, GeographicDerivedPointScan, GeographicTopologyRoute, antimeridian_frame,
-    chain_crosses_antimeridian, classify_geographic_chart, classify_geographic_validity_chart,
-    crosses_antimeridian_in_frame, faithful_geographic_chain, geographic_crossing,
-    geographic_crossing_bounds, geographic_crossing_bounds_for_shapes_in_frame,
-    geographic_crossing_bounds_in_frame, geographic_topology_route, is_ring_data_in_frame,
-    is_simple_data_in_frame, repair_data_in_frame, repair_shape_in_frame,
-    self_intersections_data_in_frame, topology_domain, unary_antimeridian_centroid,
-    unary_antimeridian_derived, validate_data_in_frame, validate_shape_in_frame,
+    DerivedPointStrategy, GeographicDerivedPointScan, GeographicTopologyRoute, UnwrapChartError,
+    antimeridian_frame, chain_crosses_antimeridian, classify_geographic_chart,
+    classify_geographic_validity_chart, crosses_antimeridian_in_frame, faithful_geographic_chain,
+    geographic_crossing, geographic_crossing_bounds,
+    geographic_crossing_bounds_for_shapes_in_frame, geographic_crossing_bounds_in_frame,
+    geographic_topology_route, is_ring_data_in_frame, is_simple_data_in_frame,
+    repair_data_in_frame, repair_shape_in_frame, self_intersections_data_in_frame, topology_domain,
+    unary_antimeridian_centroid, unary_antimeridian_derived, unwrap_contact_chart,
+    unwrap_coordinates, validate_data_in_frame, validate_shape_in_frame,
 };
 pub(crate) use boundary::boundary;
+mod computed_shape;
+pub(crate) use computed_shape::{
+    PolygonPartEdgeRoles, PublishedTriangleVertices, map_computed_shape_chains,
+    publish_changed_raw_computed_shape, publish_computed_line_column_with_budget,
+    publish_computed_point_or_raw_shape, publish_computed_polygon_rings_with_budget,
+    publish_polygon_parts_with_edge_roles, publish_polygon_with_edge_roles,
+    publish_raw_computed_shape, publish_raw_computed_shape_with_budget,
+    publish_raw_computed_shapes, publish_raw_computed_shapes_with_budget,
+    publish_stored_computed_shape, publish_transformed_shape,
+    publish_triangle_vertex_stream_budgeted, publish_voronoi_polygon_outputs,
+};
 mod arrangement;
 mod bvh_code;
 mod chart_bvh;
@@ -180,7 +192,7 @@ use constructive::{
 };
 pub(crate) use coverage::{
     CoverageOverlapRule, HashMapExt, coverage_clean, coverage_invalid_edges, coverage_is_valid,
-    coverage_simplify, coverage_union_topo,
+    coverage_simplify_with_frame, coverage_union_topo,
 };
 pub(in crate::geometry) use coverage::{TopologyGuard, simplify_chain_guarded, triangle_area};
 use distance::line_length_3d;
@@ -230,7 +242,7 @@ pub(in crate::geometry) use segments::{
 pub(crate) use util::dedup_consecutive_xy;
 pub(crate) use util::{
     bounds_to_shape, columns_within, dedup_consecutive_points, empty_geometry,
-    geographic_bounds_to_shape, point_equals_exact, points_equal_exact,
+    geographic_bounds_chart, geographic_bounds_to_shape, point_equals_exact, points_equal_exact,
     push_distinct_active_position, push_distinct_xy_position, same_active_position, same_point,
     same_topological_coordinate, topology_coordinate_bits_simd, unique_xy_points, wrap_index,
 };
@@ -329,7 +341,7 @@ pub(crate) use segments::{
 };
 pub(crate) use segments::{point_segment_distance, point_segment_selection, segment_projection};
 pub(in crate::geometry) use segments::{try_dedup_by, try_sort_by};
-pub(crate) use tessellation::{CdtRefinement, row_sample_seed};
+pub(crate) use tessellation::{CdtRefinement, VoronoiPolygonOutput, row_sample_seed};
 use tessellation::{delaunay_triangulation, point_in_ccw_triangle};
 pub(in crate::geometry) use types::GeographicMetricKey;
 
@@ -374,6 +386,36 @@ pub(crate) fn nearest_line(pair: Option<&(Point, Point)>, common: CoordinateAxes
     match pair {
         Some((start, end)) => Ok(Shape::LineString(LineSeq::segment(*start, *end)?)),
         None => Ok(Shape::typed_empty(GeometryKind::LineString, common)),
+    }
+}
+
+/// Publish a computed nearest-pair line with the displacement retained by its
+/// metric producer.
+pub(crate) fn nearest_line_with_intent(
+    pair: Option<&(Point, Point)>,
+    common: CoordinateAxes,
+    frame: crate::geographic::GeographicFrame,
+    intent: crate::geographic::ComputedEdgeIntent,
+) -> Result<Shape> {
+    let Some(pair) = pair else {
+        return nearest_line(None, common);
+    };
+    let points: [Point; 2] = coerce_to_common_axes(pair.0, pair.1).into();
+    let mut budget = ExpansionBudget::new("shortest_line", "computed edges");
+    let published = crate::geographic::publish_computed_chain(
+        frame,
+        points.as_slice(),
+        false,
+        &mut budget,
+        |_, _, _| Ok(intent),
+    )?;
+    match published {
+        Some(points) => Ok(Shape::LineString(LineSeq::from_proven(
+            CoordSeq::try_from_points(&points)?,
+        ))),
+        None => Ok(Shape::LineString(LineSeq::from_proven(
+            CoordSeq::try_from_points(&points)?,
+        ))),
     }
 }
 

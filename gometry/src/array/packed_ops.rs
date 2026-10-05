@@ -441,7 +441,7 @@ impl PyGeometryArray {
             usize,
             &Shape,
             &mut crate::geometry::ExpansionBudget,
-        ) -> Result<Vec<Point>>
+        ) -> Result<crate::geometry::PublishedTriangleVertices>
         + Send,
     ) -> PyResult<Groups> {
         let array = self.clone();
@@ -449,9 +449,16 @@ impl PyGeometryArray {
         let builder = py
             .detach(move || {
                 let mut builder = crate::CsrBuilder::<Point>::with_capacity(0, array.len());
-                for logical_row in array.row_operation().rows_with_missing(Vec::new) {
+                let mut ring_ends = Vec::new();
+                let mut polygon_count = 0_usize;
+                for logical_row in array.row_operation().rows_with_missing(Vec::<Point>::new) {
                     let (row, values) = match logical_row {
-                        ArrayRow::Missing { logical, value } => (logical, value),
+                        ArrayRow::Missing { logical, .. } => {
+                            (logical, crate::geometry::PublishedTriangleVertices {
+                                points: Vec::new(),
+                                ring_ends: Vec::new(),
+                            })
+                        },
                         ArrayRow::Present(row) => {
                             let logical = row.logical();
                             let mut budget =
@@ -463,25 +470,42 @@ impl PyGeometryArray {
                             (logical, values)
                         },
                     };
-                    if values.len() % 4 != 0 {
+                    let mut previous_end = 0;
+                    if values.ring_ends.iter().any(|&end| {
+                        let invalid = end <= previous_end || end > values.points.len();
+                        previous_end = end;
+                        invalid
+                    }) || previous_end != values.points.len()
+                    {
                         return Err((
                             row,
                             crate::geometry::GeometryErrorKind::Invalid(
-                                "triangle output is not a multiple of four vertices".into(),
+                                "triangle ring offsets do not match the vertex stream".into(),
                             )
                             .into(),
                         ));
                     }
-                    for value in values {
+                    let base = builder.len();
+                    let row_polygon_count = values.ring_ends.len();
+                    for value in values.points {
                         builder.values_mut().push(value);
                     }
-                    let end = builder.len() / 4;
-                    builder.push_end(end).map_err(|error| (row, error))?;
+                    for end in values.ring_ends {
+                        ring_ends.push(base.checked_add(end).ok_or_else(|| {
+                            (row, crate::error::ResourceError::SizeOverflow.into())
+                        })?);
+                    }
+                    polygon_count = polygon_count
+                        .checked_add(row_polygon_count)
+                        .ok_or_else(|| (row, crate::error::ResourceError::SizeOverflow.into()))?;
+                    builder
+                        .push_end(polygon_count)
+                        .map_err(|error| (row, error))?;
                 }
-                Ok::<_, (usize, crate::error::Error)>(builder)
+                Ok::<_, (usize, crate::error::Error)>((builder, ring_ends))
             })
             .map_err(rows_err)?;
-        Groups::from_point_builder(frame, builder)
+        Groups::from_point_builder(frame, builder.0, builder.1)
     }
 
     pub(crate) fn boundary_unary_packed(&self) -> Option<PyResult<Self>> {

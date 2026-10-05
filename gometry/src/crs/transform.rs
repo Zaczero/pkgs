@@ -275,6 +275,47 @@ pub(super) fn transform_in_core_xy_with_domains_indexed(
     x: &mut [f64],
     y: &mut [f64],
 ) -> std::result::Result<(), TransformFailure> {
+    transform_in_core_xy_with_domains_indexed_mode(
+        operation,
+        source_domain,
+        target_domain,
+        x,
+        y,
+        TargetLongitudeOutput::Canonical,
+    )
+}
+
+pub(super) fn transform_in_core_xy_with_domains_indexed_for_shape(
+    operation: &crate::crs::InCoreTransform,
+    source_domain: TopologyDomain,
+    target_domain: TopologyDomain,
+    x: &mut [f64],
+    y: &mut [f64],
+) -> std::result::Result<(), TransformFailure> {
+    transform_in_core_xy_with_domains_indexed_mode(
+        operation,
+        source_domain,
+        target_domain,
+        x,
+        y,
+        TargetLongitudeOutput::Continuous,
+    )
+}
+
+#[derive(Clone, Copy)]
+enum TargetLongitudeOutput {
+    Canonical,
+    Continuous,
+}
+
+fn transform_in_core_xy_with_domains_indexed_mode(
+    operation: &crate::crs::InCoreTransform,
+    source_domain: TopologyDomain,
+    target_domain: TopologyDomain,
+    x: &mut [f64],
+    y: &mut [f64],
+    target_longitude_output: TargetLongitudeOutput,
+) -> std::result::Result<(), TransformFailure> {
     if let TopologyDomain::Geographic(frame) = source_domain
         && frame != GeographicFrame::crs84()
     {
@@ -286,11 +327,13 @@ pub(super) fn transform_in_core_xy_with_domains_indexed(
     }
     transform_in_core_xy_batch_indexed(operation, x, y)?;
     if let TopologyDomain::Geographic(frame) = target_domain {
-        frame
-            .lanes_indexed_from_geodesic(x, y)
-            .map_err(|(coordinate, error)| {
-                TransformFailure::at(map_geographic_conversion_error(error), coordinate)
-            })?;
+        let result = match target_longitude_output {
+            TargetLongitudeOutput::Canonical => frame.lanes_indexed_from_geodesic(x, y),
+            TargetLongitudeOutput::Continuous => frame.lanes_unwrapped_from_geodesic_indexed(x, y),
+        };
+        result.map_err(|(coordinate, error)| {
+            TransformFailure::at(map_geographic_conversion_error(error), coordinate)
+        })?;
     }
     Ok(())
 }

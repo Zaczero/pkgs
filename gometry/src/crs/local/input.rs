@@ -3,7 +3,7 @@ use std::ops::ControlFlow;
 
 use super::certificate::LocalProjectionCertificate;
 use super::frame::{LocalCrsDefinition, estimate_local_crs_at, local_crs_fits_at};
-use crate::crs::{RuntimeState, geodesic_for_crs_at, info_with_state, transform_at};
+use crate::crs::{RuntimeState, geodesic_for_crs_at, transform_at};
 use crate::error::Result;
 use crate::geometry::{
     ExpansionBudget, RefinedChainProvenance, RunIdentity, SegmentPlacement, Shape, line_segments,
@@ -35,6 +35,7 @@ pub(crate) enum LocalInputPurpose {
 /// arclength samples for boundary and edge-support operations.
 pub(crate) struct PreparedLocalInput {
     local: LocalCrsDefinition,
+    frame: crate::geographic::GeographicFrame,
     /// First-occurrence members when the source contains repeated shared subtrees.
     source_members: Option<Shape>,
     projected_original: Shape,
@@ -114,11 +115,26 @@ impl PreparedLocalInput {
                 None
             };
         let shape = source_members.as_ref().unwrap_or(shape);
-        let projected_original = transform_at(shape, source_crs, &local.definition, state)
+        let transform = crate::crs::TransformPlan::new_with_options_at(
+            source_crs,
+            &local.definition,
+            crate::crs::TransformOptions::default(),
+            std::sync::Arc::new(state.clone()),
+        )
+        .map_err(|error| local.annotate_error(error))?;
+        let projected_original = transform
+            .transform_shape(shape)
             .map_err(|error| local.annotate_error(error))?;
+        let frame = transform.source_geographic_frame().ok_or_else(|| {
+            crate::crs::CrsError::invalid(
+                "local projection input has no geographic coordinate frame",
+            )
+        })?;
+        drop(transform);
         if purpose == LocalInputPurpose::OriginalSites {
             return Ok(Some(Self {
                 local,
+                frame,
                 source_members,
                 projected_original,
                 source_refined: None,
@@ -127,13 +143,6 @@ impl PreparedLocalInput {
             }));
         }
 
-        let frame = info_with_state(source_crs, state)?
-            .geographic_frame()
-            .ok_or_else(|| {
-                crate::crs::CrsError::invalid(
-                    "local projection input has no geographic coordinate frame",
-                )
-            })?;
         let geodesic = geodesic_for_crs_at(source_crs, state)?;
         let certificate =
             LocalProjectionCertificate::from_selected_frame(&local, &geodesic, frame, state)?;
@@ -158,6 +167,7 @@ impl PreparedLocalInput {
         if !needs_refinement {
             return Ok(Some(Self {
                 local,
+                frame,
                 source_members,
                 projected_original,
                 source_refined: None,
@@ -223,6 +233,7 @@ impl PreparedLocalInput {
 
         Ok(Some(Self {
             local,
+            frame,
             source_members,
             projected_original,
             source_refined,
@@ -233,6 +244,10 @@ impl PreparedLocalInput {
 
     pub(super) const fn local_crs(&self) -> &LocalCrsDefinition {
         &self.local
+    }
+
+    pub(super) const fn geographic_frame(&self) -> crate::geographic::GeographicFrame {
+        self.frame
     }
 
     /// Original projected vertices for site and provenance semantics.
@@ -599,7 +614,7 @@ mod tests {
             PreparedLocalInput::select_local_frame(&[&source], "EPSG:4326", &state).unwrap();
         assert_eq!(selected.definition, "EPSG:32632");
 
-        let frame = info_with_state("EPSG:4326", &state)
+        let frame = crate::crs::info_with_state("EPSG:4326", &state)
             .unwrap()
             .geographic_frame()
             .unwrap();
@@ -607,6 +622,7 @@ mod tests {
         let unselected = LocalCrsDefinition {
             definition: "EPSG:32631".to_owned(),
             display_name: None,
+            projected_pole: None,
         };
         let wrong_certificate =
             LocalProjectionCertificate::from_selected_frame(&unselected, &geodesic, frame, &state)
@@ -689,9 +705,23 @@ mod tests {
             &mut budget,
             LocalInputPurpose::BoundarySupport,
             |sites: &Shape, support: &Shape, refined_chains: &[RefinedChainProvenance]| {
-                Ok(sites
-                    .minimum_clearance_plan_with_support(support, refined_chains)?
-                    .map_or_else(Vec::new, |witness| witness.plan.to_vec()))
+                let Some(witness) =
+                    sites.minimum_clearance_plan_with_support(support, refined_chains)?
+                else {
+                    return Ok((
+                        Vec::new(),
+                        Shape::typed_empty(
+                            crate::geometry::GeometryKind::LineString,
+                            crate::geometry::CoordinateAxes::XY,
+                        ),
+                    ));
+                };
+                let plan = witness.plan.to_vec();
+                let points = crate::geometry::emit_from_original(&witness.points, &plan)?;
+                let [start, end] = points.as_slice() else {
+                    unreachable!()
+                };
+                Ok((plan, Shape::LineString(LineSeq::segment(*start, *end)?)))
             },
             |points: Vec<crate::geometry::Point>| {
                 if points.is_empty() {

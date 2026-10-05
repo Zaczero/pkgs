@@ -652,6 +652,22 @@ impl GeographicFrame {
         Ok(())
     }
 
+    /// Convert a transform's target-geographic lanes into the native angular
+    /// units without reducing longitude. Shape publication retains these chart
+    /// positions until computed edges have captured their intended steps.
+    pub(crate) fn lanes_unwrapped_from_geodesic_indexed(
+        self,
+        xs: &mut [f64],
+        ys: &mut [f64],
+    ) -> Result<(), (usize, GeographicError)> {
+        for (index, (longitude, latitude)) in std::iter::zip(xs, ys).enumerate() {
+            (*longitude, *latitude) = self
+                .xy_from_geodesic_unwrapped(*longitude, *latitude)
+                .map_err(|error| (index, error))?;
+        }
+        Ok(())
+    }
+
     pub(crate) fn to_geodesic_xy(
         self,
         longitude: f64,

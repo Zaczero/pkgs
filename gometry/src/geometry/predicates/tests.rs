@@ -510,4 +510,22 @@ mod convex_tests {
             64.0
         );
     }
+
+    #[test]
+    fn geographic_repair_keeps_collinear_source_vertices_on_selected_edges() {
+        let bowtie = crate::io::parse_wkt("POLYGON ((0 0,0.5 0.5,2 2,0 2,2 0,0 0))").unwrap();
+        let repaired = crate::geometry::repair_shape_in_frame(
+            &bowtie,
+            TopologyDomain::Geographic(crate::geographic::GeographicFrame::crs84()),
+            RepairMethod::Linework,
+        )
+        .unwrap()
+        .unwrap();
+        assert!(
+            repaired
+                .points_vec()
+                .unwrap()
+                .contains(&Point::new_raw_xy(0.5, 0.5))
+        );
+    }
 }

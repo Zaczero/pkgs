@@ -472,10 +472,15 @@ pub(super) fn h3_cell_shape(cell: CellIndex) -> crate::error::Result<Shape> {
     if let Some(first) = shell.first().copied() {
         shell.push(first);
     }
-    Ok(Shape::Polygon(Polygon::new(
+    let shape = Shape::Polygon(Polygon::new(
         Ring::try_from_closed(CoordSeq::try_from_points(&shell)?)?,
         Vec::new(),
-    )))
+    ));
+    crate::geometry::publish_stored_computed_shape(
+        &shape,
+        crate::geographic::GeographicFrame::crs84(),
+        "H3 cell boundary",
+    )
 }
 
 #[cfg(test)]

@@ -152,8 +152,8 @@ pub(in crate::geometry) use exact_partition::{
 #[cfg(test)]
 pub(crate) use exact_partition::{partition_calls, reset_partition_calls};
 pub(in crate::geometry) use nary::{
-    VoronoiIntermediateOverlay, binary_cartesian_overlay_without_partition_budget,
-    overlay_all_geographic_from, overlay_view_error,
+    binary_cartesian_difference_without_partition_budget,
+    binary_cartesian_intersection_with_edge_roles, overlay_all_geographic_from, overlay_view_error,
 };
 pub(crate) use nary::{
     overlay_all, overlay_all_geographic_chart, overlay_intersection_with_rectangle,

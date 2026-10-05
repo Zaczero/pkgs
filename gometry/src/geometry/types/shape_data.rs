@@ -1465,6 +1465,7 @@ pub(crate) trait ChartMetric {
     fn chart_edge_length(&self, edge: &ChartEdge) -> Result<f64>;
     fn chart_edge_length_to(&self, edge: &ChartEdge, parameter: f64) -> Result<f64>;
     fn chart_edge_locate_t(&self, edge: &ChartEdge, distance: f64, length: f64) -> Result<f64>;
+    fn chart_edge_position(&self, edge: &ChartEdge, parameter: f64) -> Point;
     fn chart_edge_witness(
         &self,
         start: Point,

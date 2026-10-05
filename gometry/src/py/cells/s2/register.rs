@@ -166,6 +166,17 @@ fn bounds_contain(outer: crate::geometry::Bounds, inner: crate::geometry::Bounds
         && outer.maxy() >= inner.maxy()
 }
 
+fn component_covers(left: &Shape, right: &Shape) -> crate::error::Result<bool> {
+    let frame = crate::geographic::GeographicFrame::crs84();
+    let left_plan = crate::geometry::PreparedPlan::transient(left);
+    let right_plan = crate::geometry::PreparedPlan::transient(right);
+    let left_cache = crate::geometry::FrameDependentCaches::default();
+    let right_cache = crate::geometry::FrameDependentCaches::default();
+    let left = crate::geometry::GeographicPrepared::try_new(&left_plan, &left_cache, frame)?;
+    let right = crate::geometry::GeographicPrepared::try_new(&right_plan, &right_cache, frame)?;
+    crate::geometry::graph_relate_data_geographic(left, right).map(|relation| relation.is_covers())
+}
+
 /// Canonical components of one grid source.
 ///
 /// A component that is already covered by another component adds no source
@@ -206,7 +217,7 @@ fn canonical_s2_components(source: &Shape) -> Result<Vec<Shape>, S2ComponentCove
 
     // Deterministic raw ordering makes equal supports choose one stable
     // representative. Keep only maximal source supports. The R-tree is a
-    // broad phase only: `Shape::covers` is still the exact source predicate,
+    // broad phase only: geographic covers is still the exact source predicate,
     // never a cell or chord proxy. A component can be discarded only when an
     // exact larger/equal support covers it; the lower key wins an equal pair.
     let mut canonical = Vec::with_capacity(components.len());
@@ -232,9 +243,7 @@ fn canonical_s2_components(source: &Shape) -> Result<Vec<Shape>, S2ComponentCove
                 continue;
             };
             if !bounds_contain(support_bounds, candidate_bounds)
-                || !support_component
-                    .shape
-                    .covers(&candidate.shape)
+                || !component_covers(&support_component.shape, &candidate.shape)
                     .map_err(S2ComponentCoverError::Preparation)?
             {
                 continue;
@@ -243,9 +252,7 @@ fn canonical_s2_components(source: &Shape) -> Result<Vec<Shape>, S2ComponentCove
             // the deterministically earlier raw key. A strict superset
             // always wins regardless of its raw ordering.
             if support.index < candidate_index
-                || !candidate
-                    .shape
-                    .covers(&support_component.shape)
+                || !component_covers(&candidate.shape, &support_component.shape)
                     .map_err(S2ComponentCoverError::Preparation)?
             {
                 subsumed = true;

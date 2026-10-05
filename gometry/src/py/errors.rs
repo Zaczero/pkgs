@@ -417,7 +417,7 @@ impl From<Error> for PyErr {
                 | G::ExactCyclicOrder { .. }
                 | G::ExactGlobalFace { .. }
                 | G::PicklePayload(_) => GeometryError::new_err(message),
-                G::UnrepresentableOutput { operation }
+                G::UnrepresentableOutput { operation, .. }
                 | G::ExactEmbeddingUnrepresentable { operation, .. }
                 | G::ExactEmbeddingSearchLimit { operation, .. } => with_attrs(
                     GeometryError::new_err(message),

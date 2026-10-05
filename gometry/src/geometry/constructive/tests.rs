@@ -2019,7 +2019,8 @@ mod subdivide_columns_tests {
         assert!(matches!(
             error.kind(),
             crate::error::ErrorKind::Geometry(GeometryErrorKind::UnrepresentableOutput {
-                operation: "segmentize"
+                operation: "segmentize",
+                ..
             })
         ));
     }

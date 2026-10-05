@@ -752,18 +752,11 @@ fn vw_frame_columns_geographic(xs: &[f64], ys: &[f64], distance_tolerance: f64) 
 /// Keep the planar kernel's heap-pop path direct; the geographic variant must
 /// inspect the proposed chord before mutating the keep mask.
 macro_rules! vw_keep_span_exceeds {
-    (planar, $axis:expr, $source_xs:ident, $before:ident, $after:ident) => {
+    (planar, $guard:expr, $before:ident, $after:ident) => {
         false
     };
-    (geographic, $axis:expr, $source_xs:ident, $before:ident, $after:ident) => {
-        $axis.edge_exceeds_half_period(
-            *$source_xs
-                .get($before)
-                .expect("VW previous vertex belongs to the source X column"),
-            *$source_xs
-                .get($after)
-                .expect("VW next vertex belongs to the source X column"),
-        )
+    (geographic, $guard:expr, $before:ident, $after:ident) => {
+        $guard.rejects_span($before, $after)
     };
 }
 
@@ -775,7 +768,6 @@ macro_rules! vw_keep_body {
         if count < 3 {
             return None;
         }
-        let _source_xs = xs;
         let framed = $frame_fn(xs, ys, distance_tolerance);
         let xs = framed.xs.as_deref().unwrap_or(xs);
         let ys = framed.ys.as_deref().unwrap_or(ys);
@@ -903,7 +895,7 @@ macro_rules! vw_keep_body {
                     .get(index)
                     .expect("VW heap vertex belongs to next links") as usize,
             );
-            if vw_keep_span_exceeds!($policy, $axis, _source_xs, before, after) {
+            if vw_keep_span_exceeds!($policy, $axis, before, after) {
                 continue;
             }
             *keep
@@ -971,6 +963,7 @@ pub(crate) fn vw_keep_geographic(
     axis: PeriodicAxis,
     keep: &mut Vec<bool>,
 ) -> Option<usize> {
+    let span_guard = crate::geographic::ChartSpanGuard::new(xs, axis);
     vw_keep_body!(
         xs,
         ys,
@@ -978,7 +971,7 @@ pub(crate) fn vw_keep_geographic(
         keep,
         vw_frame_columns_geographic,
         geographic,
-        axis
+        span_guard
     )
 }
 

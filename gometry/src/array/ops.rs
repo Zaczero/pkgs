@@ -20,6 +20,34 @@ use crate::geometry::storage::{GeometryArrayStorage, PackedStorage};
 use crate::py::support;
 use crate::py::vectors::Groups;
 
+fn publish_triangle_shapes_for_domain(
+    shapes: Vec<Shape>,
+    domain: crate::geometry::TopologyDomain,
+    budget: &mut crate::geometry::ExpansionBudget,
+) -> Result<Vec<Shape>> {
+    match domain {
+        crate::geometry::TopologyDomain::Cartesian => Ok(shapes),
+        crate::geometry::TopologyDomain::Geographic(frame) => {
+            geometry::publish_raw_computed_shapes_with_budget(&shapes, frame, budget)
+        },
+    }
+}
+
+fn publish_triangle_vertices_for_domain(
+    vertices: Vec<crate::geometry::Point>,
+    domain: crate::geometry::TopologyDomain,
+    budget: &mut crate::geometry::ExpansionBudget,
+) -> Result<crate::geometry::PublishedTriangleVertices> {
+    match domain {
+        crate::geometry::TopologyDomain::Cartesian => {
+            crate::geometry::PublishedTriangleVertices::uniform(vertices)
+        },
+        crate::geometry::TopologyDomain::Geographic(frame) => {
+            geometry::publish_triangle_vertex_stream_budgeted(&vertices, frame, budget)
+        },
+    }
+}
+
 impl PyGeometryArray {
     pub(crate) fn to_wkt_impl(
         &self,
@@ -311,6 +339,7 @@ impl PyGeometryArray {
     }
 
     pub(crate) fn delaunay_triangles_impl(&self, py: Python<'_>) -> PyResult<Groups> {
+        let domain = geometry::topology_domain(&self.frame)?;
         // Mixed-axis rows cannot land in one packed coords column (`from_points`
         // assumes axis-homogeneity); per-shape `delaunay_triangles` preserves
         // each row's ordinate layout via `carry_each`.
@@ -319,7 +348,10 @@ impl PyGeometryArray {
                 py,
                 "triangulate",
                 "method",
-                |_, shape, budget| shape.delaunay_triangles_budgeted(budget),
+                move |_, shape, budget| {
+                    let triangles = shape.delaunay_triangles_budgeted(budget)?;
+                    publish_triangle_shapes_for_domain(triangles, domain, budget)
+                },
             );
         }
         // Mirror the scalar `Geometry::delaunay_triangles` packed builder: each
@@ -331,7 +363,10 @@ impl PyGeometryArray {
             py,
             "triangulate",
             "method",
-            |_, shape, budget| shape.delaunay_triangle_vertices_budgeted(budget),
+            move |_, shape, budget| {
+                let vertices = shape.delaunay_triangle_vertices_budgeted(budget)?;
+                publish_triangle_vertices_for_domain(vertices, domain, budget)
+            },
         )
     }
 
@@ -356,6 +391,7 @@ impl PyGeometryArray {
                 )
             })
             .collect::<PyResult<Vec<_>>>()?;
+        let domain = geometry::topology_domain(&self.frame)?;
         // Unrefined rows preserve the selected source-site axes while refined
         // rows are XY, so a batch carrying Z/M uses the shape collector.
         // Pure-XY batches retain the packed triangle builder; both consume the
@@ -366,12 +402,13 @@ impl PyGeometryArray {
                 "triangulate",
                 "min_angle/max_area",
                 move |row, shape, budget| {
-                    shape.constrained_delaunay_triangles_budgeted(
+                    let triangles = shape.constrained_delaunay_triangles_budgeted(
                         *refinements
                             .get(row)
                             .expect("refinement values match the admitted array rows"),
                         budget,
-                    )
+                    )?;
+                    publish_triangle_shapes_for_domain(triangles, domain, budget)
                 },
             );
         }
@@ -380,28 +417,39 @@ impl PyGeometryArray {
             "triangulate",
             "min_angle/max_area",
             move |row, shape, budget| {
-                shape.constrained_delaunay_vertices_budgeted(
+                let vertices = shape.constrained_delaunay_vertices_budgeted(
                     *refinements
                         .get(row)
                         .expect("refinement values match the admitted array rows"),
                     budget,
-                )
+                )?;
+                publish_triangle_vertices_for_domain(vertices, domain, budget)
             },
         )
     }
 
     pub(crate) fn polygon_triangles_impl(&self, py: Python<'_>) -> PyResult<Groups> {
+        let domain = geometry::topology_domain(&self.frame)?;
         if self.earcut_rows_pack()? {
             return self.flat_map_packed_triangles_groups_budgeted(
                 py,
                 "triangulate",
                 "method",
-                |_, shape, budget| shape.polygon_triangle_vertices_budgeted(budget),
+                move |_, shape, budget| {
+                    let vertices = shape.polygon_triangle_vertices_budgeted(budget)?;
+                    publish_triangle_vertices_for_domain(vertices, domain, budget)
+                },
             );
         }
-        self.flat_map_shapes_groups_budgeted(py, "triangulate", "method", |_, shape, budget| {
-            shape.polygon_triangles_budgeted(budget)
-        })
+        self.flat_map_shapes_groups_budgeted(
+            py,
+            "triangulate",
+            "method",
+            move |_, shape, budget| {
+                let triangles = shape.polygon_triangles_budgeted(budget)?;
+                publish_triangle_shapes_for_domain(triangles, domain, budget)
+            },
+        )
     }
 
     fn earcut_rows_pack(&self) -> crate::error::Result<bool> {
@@ -491,12 +539,21 @@ impl PyGeometryArray {
         clip: &VoronoiClipInput,
     ) -> PyResult<Groups> {
         let boundary = owned_voronoi_boundary(py, clip, &self.frame, "voronoi_polygons")?;
+        let geographic_frame = match crate::geometry::topology_domain(&self.frame)? {
+            crate::geometry::TopologyDomain::Geographic(frame) => Some(frame),
+            crate::geometry::TopologyDomain::Cartesian => None,
+        };
         self.flat_map_shapes_groups_budgeted(
             py,
             "voronoi_polygons",
             "sites/clip topology",
             move |_, shape, budget| {
-                shape.voronoi_polygons_budgeted(tolerance, boundary.as_borrowed(), budget)
+                let outputs = shape.voronoi_polygon_outputs_budgeted(
+                    tolerance,
+                    boundary.as_borrowed(),
+                    budget,
+                )?;
+                crate::geometry::publish_voronoi_polygon_outputs(outputs, geographic_frame, budget)
             },
         )
     }
@@ -508,6 +565,10 @@ impl PyGeometryArray {
         clip: &VoronoiClipInput,
     ) -> PyResult<Groups> {
         let boundary = owned_voronoi_boundary(py, clip, &self.frame, "voronoi_edges")?;
+        let geographic_frame = match geometry::topology_domain(&self.frame)? {
+            geometry::TopologyDomain::Geographic(frame) => Some(frame),
+            geometry::TopologyDomain::Cartesian => None,
+        };
         let array = self.clone();
         let frame = self.frame.clone();
         let packed = py
@@ -523,14 +584,26 @@ impl PyGeometryArray {
                             let (coords, offsets) = row
                                 .row()
                                 .try_with_shape(|shape| {
-                                    shape.voronoi_edge_column_budgeted(
+                                    let mut budget = crate::geometry::ExpansionBudget::new(
+                                        "voronoi_edges",
+                                        "sites/clip topology",
+                                    );
+                                    let (coords, offsets) = shape.voronoi_edge_column_budgeted(
                                         tolerance,
                                         boundary.as_borrowed(),
-                                        &mut crate::geometry::ExpansionBudget::new(
-                                            "voronoi_edges",
-                                            "sites/clip topology",
-                                        ),
-                                    )
+                                        &mut budget,
+                                    )?;
+                                    match geographic_frame {
+                                        Some(frame) => {
+                                            geometry::publish_computed_line_column_with_budget(
+                                                &coords,
+                                                &offsets,
+                                                frame,
+                                                &mut budget,
+                                            )
+                                        },
+                                        None => Ok((coords, offsets)),
+                                    }
                                 })
                                 .map_err(|error| (logical, error))?;
                             let n_lines = offsets.len().saturating_sub(1);
@@ -678,10 +751,19 @@ impl PyGeometryArray {
 
     pub(crate) fn subdivide_rows(&self, py: Python<'_>, max_vertices: i64) -> PyResult<Groups> {
         let max_vertices = validate_subdivide_max_vertices(max_vertices)?;
+        let geographic_frame = match crate::geometry::topology_domain(&self.frame)? {
+            crate::geometry::TopologyDomain::Geographic(frame) => Some(frame),
+            crate::geometry::TopologyDomain::Cartesian => None,
+        };
         // Per-row groups: each input geometry's subdivided parts stay grouped
         // under their source row. `iter_shapes` gives packed rows CSR views with
         // no Mixed boxing, so the group build is as cheap as the flat path was.
-        self.flat_map_shapes_groups(py, move |shape| shape.subdivide(max_vertices, false))
+        self.flat_map_shapes_groups(py, move |shape| {
+            geographic_frame.map_or_else(
+                || shape.subdivide(max_vertices, false),
+                |frame| shape.subdivide_in_geographic_frame(max_vertices, false, frame),
+            )
+        })
     }
 }
 

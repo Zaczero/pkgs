@@ -63,13 +63,13 @@ def _assert_shortest_line_row(
 ) -> None:
     ends = _endpoints(line)
     _assert_lonlat(ends[0], want[0])
-    _assert_lonlat(ends[1], want[1])
+    _assert_lonlat(ends[-1], want[1])
     scalar_ends = _endpoints(gm.shortest_line(left, right))
     first, second = gm.nearest_points(left, right)
     _assert_lonlat(ends[0], scalar_ends[0])
-    _assert_lonlat(ends[1], scalar_ends[1])
+    _assert_lonlat(ends[-1], scalar_ends[-1])
     _assert_lonlat(ends[0], _xy(first))
-    _assert_lonlat(ends[1], _xy(second))
+    _assert_lonlat(ends[-1], _xy(second))
     assert line.crs == left.crs
     assert line.epoch == left.epoch
     assert line.coordinate_axes == 'XY'
@@ -582,6 +582,13 @@ class TestGeodesic:
         assert (
             gm.shortest_line(point, line, unit='planar')
         ).to_wkt() == 'LINESTRING (0.5 0.5, 0.5 0)'
+
+    def test_subdivided_half_turn_shortest_line_uses_common_axes(self) -> None:
+        left = gm.from_wkt('POINT Z (180 89 12)', crs=4326)
+        right = gm.Point(0.0, 89.0, crs=4326)
+        line = gm.shortest_line(left, right)
+        assert line.coordinate_axes == 'XY'
+        assert list(line.coords) == [(-180.0, 89.0), (90.0, 89.0), (0.0, 89.0)]
 
     @pytest.mark.parametrize(
         ('layout', 'fixed_is_left', 'expected'),
