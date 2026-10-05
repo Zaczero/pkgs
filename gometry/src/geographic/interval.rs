@@ -71,12 +71,13 @@ pub(crate) enum LongitudeWindows {
     Full,
 }
 
-pub(crate) fn union_circular_intervals<I>(axis: PeriodicAxis, intervals: I) -> CircularInterval
-where
-    I: IntoIterator<Item = CircularInterval>,
-{
+pub(crate) fn union_circular_intervals(
+    axis: PeriodicAxis,
+    intervals: &[CircularInterval],
+) -> CircularInterval {
     let mut iter = intervals
-        .into_iter()
+        .iter()
+        .copied()
         .filter(|value| !matches!(value, CircularInterval::Empty));
     let Some(first) = iter.next() else {
         return CircularInterval::Empty;
@@ -90,13 +91,19 @@ where
     if matches!(second, CircularInterval::Full) {
         return CircularInterval::Full;
     }
-    let mut segments = Vec::with_capacity(4);
-    add_segments(axis, first, &mut segments);
-    add_segments(axis, second, &mut segments);
-    for interval in iter {
+    let mut segment_capacity =
+        interval_segment_count(axis, first).checked_add(interval_segment_count(axis, second));
+    for interval in iter.clone() {
         if matches!(interval, CircularInterval::Full) {
             return CircularInterval::Full;
         }
+        segment_capacity = segment_capacity
+            .and_then(|capacity| capacity.checked_add(interval_segment_count(axis, interval)));
+    }
+    let mut segments = Vec::with_capacity(segment_capacity.unwrap_or(intervals.len()));
+    add_segments(axis, first, &mut segments);
+    add_segments(axis, second, &mut segments);
+    for interval in iter {
         add_segments(axis, interval, &mut segments);
     }
     segments.sort_unstable_by(|a, b| a[0].total_cmp(&b[0]).then_with(|| a[1].total_cmp(&b[1])));
@@ -151,6 +158,19 @@ fn add_segments(axis: PeriodicAxis, interval: CircularInterval, out: &mut Vec<[f
     } else {
         out.push([zero_start, axis.period()]);
         out.push([0.0, sweep - remaining]);
+    }
+}
+
+fn interval_segment_count(axis: PeriodicAxis, interval: CircularInterval) -> usize {
+    match interval {
+        CircularInterval::Arc { start, sweep } => {
+            if sweep <= axis.half_period() - start.get() {
+                1
+            } else {
+                2
+            }
+        },
+        CircularInterval::Empty | CircularInterval::Full => 0,
     }
 }
 

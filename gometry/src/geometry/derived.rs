@@ -11,8 +11,9 @@ mod shape;
 mod surface;
 
 pub(crate) use centroid::{
-    areal_centroid, centroid_is_empty, centroid_line_row_columns, centroid_polygon_row_columns,
-    lineal_centroid, point_centroid,
+    areal_centroid, areal_centroid_with_bounds, centroid_is_empty, centroid_line_row_columns,
+    centroid_polygon_row_columns, centroid_polygon_row_columns_with_bounds, lineal_centroid,
+    point_centroid,
 };
 pub(crate) use concave::{canonicalize_concave_hull_points, native_concave_hull};
 pub(crate) use hull::{

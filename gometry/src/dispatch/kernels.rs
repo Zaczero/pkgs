@@ -33,12 +33,7 @@ fn scale_area(value: f64, to_metre: f64) -> f64 {
 
 /// Centroid kernel shared by the spine-routed free function.
 pub(crate) fn unary_centroid(data: &PreparedPlan, ctx: &CachelessRowContext<'_>) -> Result<Shape> {
-    crate::geometry::unary_antimeridian_derived(
-        data.shape(),
-        ctx.domain,
-        DerivedPointStrategy::Centroid,
-        Shape::centroid,
-    )
+    crate::geometry::unary_antimeridian_centroid(data.shape(), ctx.domain)
 }
 
 /// Envelope kernel shared by the spine-routed free function.
@@ -791,13 +786,17 @@ pub(crate) fn unary_bounds(
     match ctx.domain {
         crate::geometry::TopologyDomain::Cartesian => Ok(data.bounds()),
         crate::geometry::TopologyDomain::Geographic(frame) => {
+            let bounds = data.bounds();
+            if bounds.is_some_and(|bounds| frame.bounds_certify_ordinary_support(bounds)) {
+                return Ok(bounds);
+            }
             if crate::geometry::geographic_crossing(ctx.domain, data) {
                 Ok(crate::geometry::geographic_crossing_bounds_in_frame(
                     data.shape(),
                     frame,
                 ))
             } else {
-                Ok(data.bounds())
+                Ok(bounds)
             }
         },
     }

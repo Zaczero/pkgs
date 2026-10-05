@@ -749,16 +749,18 @@ impl<'a> ScalarGeographicView<'a> {
         Ok((view, facts))
     }
 
-    pub(crate) fn try_new_with_collection_owners(
+    pub(crate) fn try_new_with_collection_owners_and_visit(
         frame: GeographicFrame,
         shape: &'a Shape,
         owners: &mut GeographicCollectionOwners<'a>,
+        mut coordinate_visit: impl FnMut(GeographicCoordinate),
     ) -> Result<Self, GeographicAdmissionError> {
         #[cfg(test)]
         let coordinate_visits = std::cell::Cell::new(0_usize);
-        let mut visit = |_: GeographicCoordinate| {
+        let mut visit = |coordinate: GeographicCoordinate| {
             #[cfg(test)]
             coordinate_visits.set(coordinate_visits.get().wrapping_add(1));
+            coordinate_visit(coordinate);
             Ok(())
         };
         let mut run_owners = SharedShapeOwners::for_shape(shape);

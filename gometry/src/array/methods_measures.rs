@@ -741,6 +741,62 @@ mod geographic_masked_bounds_tests {
     }
 
     #[test]
+    fn packed_bounds_keep_narrow_noncanonical_aliases_on_the_crossing_path() {
+        crate::test_support::initialize_python();
+        let shape = polygon(&[
+            (179.0, -10.0),
+            (181.0, -10.0),
+            (181.0, 10.0),
+            (179.0, 10.0),
+            (179.0, -10.0),
+        ]);
+        let frame = Frame::new(Some(crs_arc_static("OGC:CRS84")), None).expect("valid test frame");
+        let array = PyGeometryArray::from_shapes(vec![shape.clone()], frame).unwrap();
+        let values = Python::attach(|py| array.bounds_unary_packed(py))
+            .expect("packed bounds succeeds")
+            .expect("polygon array stays packed");
+        let expected = crate::geometry::geographic_crossing_bounds(&shape)
+            .expect("crossing polygon has bounds")
+            .into_array();
+        assert_eq!(values, expected);
+    }
+
+    #[test]
+    fn packed_centroid_keeps_narrow_noncanonical_aliases_on_the_crossing_path() {
+        crate::test_support::initialize_python();
+        let shape = polygon(&[
+            (179.0, -10.0),
+            (181.0, -10.0),
+            (181.0, 10.0),
+            (179.0, 10.0),
+            (179.0, -10.0),
+        ]);
+        let frame = Frame::new(Some(crs_arc_static("OGC:CRS84")), None).expect("valid test frame");
+        let array = PyGeometryArray::from_shapes(vec![shape.clone()], frame).unwrap();
+        let expected =
+            crate::geometry::unary_antimeridian_derived(
+                &shape,
+                crate::geometry::TopologyDomain::Geographic(
+                    crate::geographic::GeographicFrame::crs84(),
+                ),
+                crate::geometry::DerivedPointStrategy::Centroid,
+                Shape::centroid,
+            )
+            .unwrap();
+
+        let result = array
+            .centroid_unary_packed()
+            .expect("packed centroid succeeds");
+        let actual = result
+            .storage()
+            .iter_shapes()
+            .next()
+            .expect("one centroid row")
+            .expect("centroid row shape");
+        assert_eq!(actual.as_ref(), &expected);
+    }
+
+    #[test]
     fn geographic_nary_overlays_ignore_missing_rows_before_graph_assembly() {
         crate::test_support::initialize_python();
         let frame = Frame::new(Some(crs_arc_static("OGC:CRS84")), None).expect("valid test frame");

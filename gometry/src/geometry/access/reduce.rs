@@ -66,28 +66,6 @@ pub(crate) fn column_all_finite(column: &[f64]) -> bool {
     !non_finite.any() && tail.iter().all(|value| value.is_finite())
 }
 
-/// Bit-exact boolean reduction: `true` iff ANY index satisfies `scalar` /
-/// `vector`. Full `REDUCE_LANES` chunks run `vector` (chunk-start index);
-/// inputs below [`REDUCE_SIMD_MIN`] and the tail use `scalar` exclusively.
-/// Vertical-OR accumulates chunk masks, then `.any()` — plain ops only
-/// (decision/validation paths).
-pub(crate) fn simd_mask_any(
-    len: usize,
-    scalar: impl FnMut(usize) -> bool,
-    vector: impl FnMut(usize) -> std::simd::Mask<i64, REDUCE_LANES>,
-) -> bool {
-    simd_mask_reduce(
-        len,
-        scalar,
-        vector,
-        false,
-        |acc, mask| acc | mask,
-        |acc| acc.any().then_some(true),
-        |acc, value| acc || value,
-        |acc| acc.then_some(true),
-    )
-}
-
 /// First-minimum index under `f64::total_cmp` (NaN ordering preserved).
 /// Full `REDUCE_LANES` chunks evaluate `vector_score` when every lane is
 /// finite; otherwise the chunk falls back to `scalar_score` lane-by-lane.
@@ -175,53 +153,6 @@ pub(crate) fn simd_indexed_map_f64(
     for (offset, value) in out.split_at_mut(lanes).1.iter_mut().enumerate() {
         *value = scalar(lanes.wrapping_add(offset));
     }
-}
-
-fn simd_mask_reduce(
-    len: usize,
-    scalar: impl FnMut(usize) -> bool,
-    mut vector: impl FnMut(usize) -> std::simd::Mask<i64, REDUCE_LANES>,
-    identity: bool,
-    combine_mask: impl Fn(
-        std::simd::Mask<i64, REDUCE_LANES>,
-        std::simd::Mask<i64, REDUCE_LANES>,
-    ) -> std::simd::Mask<i64, REDUCE_LANES>,
-    done_mask: impl Fn(std::simd::Mask<i64, REDUCE_LANES>) -> Option<bool>,
-    combine_scalar: impl Fn(bool, bool) -> bool,
-    done_scalar: impl Fn(bool) -> Option<bool>,
-) -> bool {
-    if len == 0 {
-        return identity;
-    }
-    if len < REDUCE_SIMD_MIN {
-        return scalar_mask_reduce(0..len, identity, scalar, combine_scalar, done_scalar);
-    }
-    let chunks = len / REDUCE_LANES;
-    let mut acc = std::simd::Mask::<i64, REDUCE_LANES>::splat(identity);
-    for chunk in 0..chunks {
-        acc = combine_mask(acc, vector(chunk.wrapping_mul(REDUCE_LANES)));
-    }
-    if let Some(done) = done_mask(acc) {
-        return done;
-    }
-    let lanes = chunks.wrapping_mul(REDUCE_LANES);
-    scalar_mask_reduce(lanes..len, identity, scalar, combine_scalar, done_scalar)
-}
-
-fn scalar_mask_reduce(
-    indices: std::ops::Range<usize>,
-    mut acc: bool,
-    mut scalar: impl FnMut(usize) -> bool,
-    combine: impl Fn(bool, bool) -> bool,
-    done: impl Fn(bool) -> Option<bool>,
-) -> bool {
-    for index in indices {
-        acc = combine(acc, scalar(index));
-        if let Some(done) = done(acc) {
-            return done;
-        }
-    }
-    acc
 }
 
 /// Shared wide-lane reduction driver over a logical `f64` column/window.

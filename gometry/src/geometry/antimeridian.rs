@@ -35,6 +35,6 @@ pub(crate) use normalize::{
     DerivedPointStrategy, geographic_crossing_bounds,
     geographic_crossing_bounds_for_shapes_in_frame, geographic_crossing_bounds_in_frame,
     is_ring_data_in_frame, is_simple_data_in_frame, repair_data_in_frame, repair_shape_in_frame,
-    self_intersections_in_frame, unary_antimeridian_derived, validate_data_in_frame,
-    validate_shape_in_frame,
+    self_intersections_in_frame, unary_antimeridian_centroid, unary_antimeridian_derived,
+    validate_data_in_frame, validate_shape_in_frame,
 };

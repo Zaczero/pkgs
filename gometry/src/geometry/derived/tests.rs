@@ -81,6 +81,59 @@ fn centroid_test_polygon(points: &[(f64, f64)]) -> Polygon {
 }
 
 #[test]
+fn polygon_centroid_returns_extrema_from_its_areal_pass() {
+    let first =
+        centroid_test_polygon(&[(0.0, 0.0), (4.0, 0.0), (4.0, 4.0), (0.0, 4.0), (0.0, 0.0)]);
+    let second = centroid_test_polygon(&[
+        (10.0, -3.0),
+        (14.0, -3.0),
+        (14.0, 1.0),
+        (10.0, 1.0),
+        (10.0, -3.0),
+    ]);
+    let shape = Shape::MultiPolygon(MultiPolygon::from_dense(vec![first, second]).unwrap());
+
+    let (centroid, bounds) = shape.centroid_with_bounds().expect("polygon centroid");
+    assert_eq!(centroid, shape.centroid().expect("ordinary centroid"));
+    assert_eq!(bounds, shape.bounds());
+}
+
+#[test]
+fn packed_polygon_centroid_returns_extrema_from_its_areal_pass() {
+    let xs = [0.0, 4.0, 4.0, 0.0, 0.0];
+    let ys = [0.0, 0.0, 4.0, 4.0, 0.0];
+    let polygon = Shape::Polygon(centroid_test_polygon(&[
+        (0.0, 0.0),
+        (4.0, 0.0),
+        (4.0, 4.0),
+        (0.0, 4.0),
+        (0.0, 0.0),
+    ]));
+    let Shape::Point(expected) = polygon.centroid().expect("ordinary centroid") else {
+        unreachable!("polygon centroid is a point");
+    };
+    let (centroid, bounds) =
+        super::centroid_polygon_row_columns_with_bounds(&xs, &ys, &[0, 5], 0..1);
+
+    assert_eq!(centroid, Some((expected.x, expected.y)));
+    assert_eq!(bounds, polygon.bounds());
+}
+
+#[test]
+fn degenerate_polygon_centroid_keeps_its_extrema_for_the_general_dimension_fallback() {
+    let shape = Shape::Polygon(centroid_test_polygon(&[
+        (-8.0, 3.0),
+        (4.0, 3.0),
+        (0.0, 3.0),
+        (-8.0, 3.0),
+    ]));
+
+    let (centroid, bounds) = shape.centroid_with_bounds().expect("lineal fallback");
+    assert_eq!(centroid, shape.centroid().expect("ordinary centroid"));
+    assert_eq!(bounds, shape.bounds());
+}
+
+#[test]
 fn areal_centroid_replays_multipolygon_when_positive_child_weight_rounds_to_zero() {
     let tiny = f64::from_bits(1);
     let x = 2.0_f64.powi(51);

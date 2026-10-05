@@ -306,6 +306,14 @@ impl PolygonPointIndex {
             return None;
         }
         let shell = self.shell.winding_off_boundary(x, y)?;
+        if self.holes.items().is_empty() {
+            return Some(shell != 0);
+        }
+        self.holes_occupied_off_boundary(x, y)
+            .map(|hole_occupied| shell != 0 && !hole_occupied)
+    }
+
+    fn holes_occupied_off_boundary(&self, x: f64, y: f64) -> Option<bool> {
         let mut hole_occupied = false;
         let touched = self.holes.for_each_at_point(x, y, |hole| {
             hole.winding_off_boundary(x, y)
@@ -314,7 +322,7 @@ impl PolygonPointIndex {
                     ControlFlow::Continue(())
                 })
         });
-        touched.is_none().then_some(shell != 0 && !hole_occupied)
+        touched.is_none().then_some(hole_occupied)
     }
 
     fn occupied_off_boundary_exact(&self, point: &[ExactDyadic; 3]) -> Result<Option<bool>> {

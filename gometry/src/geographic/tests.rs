@@ -71,7 +71,12 @@ fn pole_identity_supersedes_longitude() {
 
 #[test]
 fn native_periodic_seam_detection_uses_the_frame_half_period() {
-    let grads = frame(std::f64::consts::TAU / 400.0);
+    let grads = GeographicFrame::try_new(
+        factor(std::f64::consts::TAU / 400.0),
+        factor(std::f64::consts::TAU / 400.0),
+        0.0,
+    )
+    .unwrap();
     let crossing = crate::geometry::Shape::LineString(
         crate::geometry::LineSeq::try_new(xy_seq(vec![150.0, 250.0], vec![0.0, 0.0])).unwrap(),
     );
@@ -202,6 +207,34 @@ fn ring_summary_uses_chart_turn_and_keeps_axis_bands() {
     assert_eq!(period_closed.chart_turn, 0);
     assert_eq!(period_closed.turn(), RingTurn::None);
     assert_eq!(period_closed.full_turn_pole(), None);
+}
+
+#[test]
+fn raw_bounds_certify_only_strictly_ordinary_nonpolar_chart_support() {
+    let frame = degrees();
+    let bounds = |minx, miny, maxx, maxy| crate::geometry::Bounds::new_raw(minx, miny, maxx, maxy);
+
+    assert!(frame.bounds_certify_ordinary_support(bounds(-10.0, -20.0, 10.0, 20.0)));
+    assert!(frame.longitude_bounds_certify_no_seam(-10.0, 10.0));
+    assert!(
+        !frame.longitude_bounds_certify_no_seam(179.0, 181.0),
+        "a narrow alias interval can still cross the canonical seam"
+    );
+    assert!(!frame.bounds_certify_ordinary_support(bounds(179.0, -1.0, 181.0, 1.0)));
+    assert!(!frame.bounds_certify_ordinary_support(bounds(-180.0, -1.0, -170.0, 1.0)));
+    assert!(!frame.bounds_certify_ordinary_support(bounds(0.0, -1.0, 180.0, 1.0)));
+    assert!(!frame.bounds_certify_ordinary_support(bounds(-90.0, -1.0, 90.0, 1.0)));
+    assert!(!frame.bounds_certify_ordinary_support(bounds(-1.0, -90.0, 1.0, 10.0)));
+    assert!(!frame.bounds_certify_ordinary_support(bounds(-1.0, -10.0, 1.0, 90.0)));
+
+    let grads = GeographicFrame::try_new(
+        factor(std::f64::consts::TAU / 400.0),
+        factor(std::f64::consts::TAU / 400.0),
+        0.0,
+    )
+    .unwrap();
+    assert!(grads.longitude_bounds_certify_no_seam(-20.0, 20.0));
+    assert!(!grads.longitude_bounds_certify_no_seam(199.0, 201.0));
 }
 
 #[test]
@@ -1078,8 +1111,8 @@ fn extreme_axis_interval_arithmetic_remains_finite() {
         assert!(window[0].is_finite() && window[1].is_finite());
     }
     let point = CircularInterval::try_arc(axis, -axis.half_period(), 0.0).unwrap();
-    let first = union_circular_intervals(axis, [arc, point]);
-    let second = union_circular_intervals(axis, [arc, point]);
+    let first = union_circular_intervals(axis, &[arc, point]);
+    let second = union_circular_intervals(axis, &[arc, point]);
     assert_eq!(first, second);
     assert!(first.windows(axis).is_some_and(|windows| match windows {
         LongitudeWindows::One(window) => window.into_iter().all(f64::is_finite),
@@ -1092,9 +1125,9 @@ fn extreme_axis_interval_arithmetic_remains_finite() {
 fn largest_gap_union_handles_disconnected_ties_and_full() {
     let axis = degrees().longitude();
     let arc = |start, sweep| CircularInterval::try_arc(axis, start, sweep).unwrap();
-    let disconnected = union_circular_intervals(axis, [arc(170.0, 5.0), arc(-5.0, 10.0)]);
+    let disconnected = union_circular_intervals(axis, &[arc(170.0, 5.0), arc(-5.0, 10.0)]);
     assert_eq!(disconnected, arc(-5.0, 180.0));
-    let tie = union_circular_intervals(axis, [
+    let tie = union_circular_intervals(axis, &[
         arc(-135.0, 0.0),
         arc(-45.0, 0.0),
         arc(45.0, 0.0),
@@ -1102,16 +1135,16 @@ fn largest_gap_union_handles_disconnected_ties_and_full() {
     ]);
     assert_eq!(tie, arc(-135.0, 270.0));
     assert_eq!(
-        union_circular_intervals(axis, [arc(-180.0, 180.0), arc(0.0, 180.0)]),
+        union_circular_intervals(axis, &[arc(-180.0, 180.0), arc(0.0, 180.0)]),
         CircularInterval::Full
     );
-    assert_eq!(union_circular_intervals(axis, []), CircularInterval::Empty);
+    assert_eq!(union_circular_intervals(axis, &[]), CircularInterval::Empty);
     assert_eq!(
-        union_circular_intervals(axis, [arc(1.0, 2.0)]),
+        union_circular_intervals(axis, &[arc(1.0, 2.0)]),
         arc(1.0, 2.0)
     );
     assert_eq!(
-        union_circular_intervals(axis, [CircularInterval::Full]),
+        union_circular_intervals(axis, &[CircularInterval::Full]),
         CircularInterval::Full
     );
 }

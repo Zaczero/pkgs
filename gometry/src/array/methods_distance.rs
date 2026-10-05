@@ -4,8 +4,8 @@
 )]
 
 use crate::array::{
-    Arc, ComputedCaches, CoordSeq, CoordinateAxes, Frame, GeometryKind, Point, PolygonLevel,
-    PyGeometryArray, PyResult, Python, Result, RingLevel, Shape, StorageLayout,
+    Arc, BoundsSeed, ComputedCaches, CoordSeq, CoordinateAxes, Frame, GeometryKind, Point,
+    PolygonLevel, PyGeometryArray, PyResult, Python, Result, RingLevel, Shape, StorageLayout,
 };
 use crate::geometry::storage::builder::PointColumnBuilder;
 use crate::geometry::storage::packed_columns::{
@@ -51,6 +51,64 @@ fn packed_point_row(
     }
 }
 
+fn packed_polygon_crossing_point(
+    row: PackedRow<'_>,
+    domain: crate::geometry::TopologyDomain,
+    strategy: DerivedPointStrategy,
+    op: fn(&Shape) -> Result<Shape>,
+) -> Result<Point> {
+    let shape = row.to_shape()?;
+    Ok(point_from_unary_shape(
+        crate::geometry::unary_antimeridian_derived(&shape, domain, strategy, op)?,
+    ))
+}
+
+fn packed_bounds_certify_ordinary(
+    bounds: crate::geometry::Bounds,
+    domain: crate::geometry::TopologyDomain,
+) -> bool {
+    match domain {
+        crate::geometry::TopologyDomain::Cartesian => true,
+        crate::geometry::TopologyDomain::Geographic(frame) => {
+            frame.bounds_certify_ordinary_support(bounds)
+        },
+    }
+}
+
+fn packed_polygon_row_point(
+    row: PackedRow<'_>,
+    cached_bounds: BoundsSeed,
+    may_cross_antimeridian: bool,
+    domain: crate::geometry::TopologyDomain,
+    strategy: DerivedPointStrategy,
+    op: fn(&Shape) -> Result<Shape>,
+    polygon_point: impl FnOnce() -> Result<(Point, Option<crate::geometry::Bounds>)>,
+) -> Result<Point> {
+    if let BoundsSeed::Value(cached_bounds) = cached_bounds {
+        if cached_bounds.is_none_or(|bounds| packed_bounds_certify_ordinary(bounds, domain))
+            || !may_cross_antimeridian
+        {
+            return polygon_point().map(|(point, _)| point);
+        }
+        if polygon_row_crosses_antimeridian(row, domain) {
+            return packed_polygon_crossing_point(row, domain, strategy, op);
+        }
+        return polygon_point().map(|(point, _)| point);
+    }
+
+    let (point, bounds) = polygon_point()?;
+    if bounds.is_some_and(|bounds| packed_bounds_certify_ordinary(bounds, domain))
+        || !may_cross_antimeridian
+    {
+        return Ok(point);
+    }
+    if polygon_row_crosses_antimeridian(row, domain) {
+        packed_polygon_crossing_point(row, domain, strategy, op)
+    } else {
+        Ok(point)
+    }
+}
+
 fn line_window_crosses_antimeridian(
     coords: &CoordSeq,
     window: std::ops::Range<usize>,
@@ -84,8 +142,31 @@ fn polygon_row_crosses_antimeridian(
         })
 }
 
-fn longitude_span_cannot_cross_antimeridian(xs: &[f64]) -> bool {
-    crate::geometry::column_minmax(xs).is_none_or(|(minx, maxx)| maxx - minx <= 180.0)
+fn longitude_span_cannot_cross_antimeridian(
+    xs: &[f64],
+    frame: crate::geographic::GeographicFrame,
+) -> bool {
+    crate::geometry::column_minmax(xs)
+        .is_none_or(|(minx, maxx)| frame.longitude_bounds_certify_no_seam(minx, maxx))
+}
+
+fn packed_rows_may_cross_antimeridian(
+    xs: &[f64],
+    domain: crate::geometry::TopologyDomain,
+    element_bounds: Option<&[Option<crate::geometry::Bounds>]>,
+) -> bool {
+    let crate::geometry::TopologyDomain::Geographic(frame) = domain else {
+        return false;
+    };
+    element_bounds.map_or_else(
+        || !longitude_span_cannot_cross_antimeridian(xs, frame),
+        |bounds| {
+            bounds
+                .iter()
+                .flatten()
+                .any(|bounds| !frame.longitude_bounds_certify_no_seam(bounds.minx(), bounds.maxx()))
+        },
+    )
 }
 
 fn packed_point_unary<L, P>(
@@ -100,15 +181,24 @@ fn packed_point_unary<L, P>(
 ) -> PyResult<Option<PyGeometryArray>>
 where
     L: Fn(&CoordSeq, &[f64], &[f64], std::ops::Range<usize>) -> Result<Point> + Send + Sync,
-    P: FnMut(&[f64], &[f64], PackedRow<'_>, &mut Vec<f64>) -> Result<Point> + Send + Sync,
+    P: FnMut(
+            &[f64],
+            &[f64],
+            PackedRow<'_>,
+            &mut Vec<f64>,
+        ) -> Result<(Point, Option<crate::geometry::Bounds>)>
+        + Send
+        + Sync,
 {
     let has_missing = array.has_missing();
+    let element_bounds = array.existing_element_bounds();
+    let element_bounds = element_bounds.as_deref().map(Vec::as_slice);
     array.map_packed_columns_detached(py, frame, |columns| match &columns {
         PackedColumns::Lines(line_columns) => {
             let coords = line_columns.coords();
             let XyColumns { xs, ys } = line_columns.physical_xy();
             let may_cross_antimeridian =
-                domain.is_geographic() && !longitude_span_cannot_cross_antimeridian(xs);
+                packed_rows_may_cross_antimeridian(xs, domain, element_bounds);
             storage::admit_packed_coord_count(columns.row_count())
                 .map_err(PackedColumnError::Batch)?;
             let mut builder =
@@ -120,7 +210,20 @@ where
                 };
                 let row_index = row.index();
                 let window = row.vertex_window().expect("line rows have a vertex window");
+                let cached_bounds = element_bounds.map_or(BoundsSeed::Unset, |bounds| {
+                    BoundsSeed::Value(bounds.get(row_index).copied().flatten())
+                });
+                let row_certified = match (domain, cached_bounds) {
+                    (
+                        crate::geometry::TopologyDomain::Geographic(frame),
+                        BoundsSeed::Value(Some(bounds)),
+                    ) => frame.longitude_bounds_certify_no_seam(bounds.minx(), bounds.maxx()),
+                    (_, BoundsSeed::Value(None))
+                    | (crate::geometry::TopologyDomain::Cartesian, _) => true,
+                    (_, BoundsSeed::Unset) => false,
+                };
                 let crosses = may_cross_antimeridian
+                    && !row_certified
                     && line_window_crosses_antimeridian(coords, window.clone(), domain);
                 let shape_window = window.clone();
                 let point = packed_point_row(
@@ -153,8 +256,16 @@ where
         },
         PackedColumns::Polygons(polygon_columns) => {
             let XyColumns { xs, ys } = polygon_columns.physical_xy();
-            let may_cross_antimeridian =
-                domain.is_geographic() && !longitude_span_cannot_cross_antimeridian(xs);
+            let may_cross_antimeridian = match domain {
+                crate::geometry::TopologyDomain::Cartesian => false,
+                crate::geometry::TopologyDomain::Geographic(frame) => {
+                    element_bounds.is_none_or(|bounds| {
+                        bounds.iter().flatten().any(|bounds| {
+                            !frame.longitude_bounds_certify_no_seam(bounds.minx(), bounds.maxx())
+                        })
+                    })
+                },
+            };
             storage::admit_packed_coord_count(columns.row_count())
                 .map_err(PackedColumnError::Batch)?;
             let mut builder =
@@ -166,11 +277,13 @@ where
                     return Ok(());
                 };
                 let row_index = row.index();
-                let crosses =
-                    may_cross_antimeridian && polygon_row_crosses_antimeridian(row, domain);
-                let point = packed_point_row(
-                    crosses,
-                    move || row.to_shape(),
+                let cached_bounds = element_bounds.map_or(BoundsSeed::Unset, |bounds| {
+                    BoundsSeed::Value(bounds.get(row_index).copied().flatten())
+                });
+                let point = packed_polygon_row_point(
+                    row,
+                    cached_bounds,
+                    may_cross_antimeridian,
                     domain,
                     strategy,
                     op,
@@ -222,26 +335,21 @@ impl PyGeometryArray {
                     else {
                         unreachable!("packed polygon centroid requires polygon storage")
                     };
-                    packed_centroid_xy(crate::geometry::centroid_polygon_row_columns(
-                        xs,
-                        ys,
-                        ring_offsets.as_slice(),
-                        row.polygon_rings()
-                            .expect("packed polygon row has a ring range"),
-                    ))
+                    let (centroid, bounds) =
+                        crate::geometry::centroid_polygon_row_columns_with_bounds(
+                            xs,
+                            ys,
+                            ring_offsets.as_slice(),
+                            row.polygon_rings()
+                                .expect("packed polygon row has a ring range"),
+                        );
+                    Ok((packed_centroid_xy(centroid)?, bounds))
                 },
             )
         })? {
             return Ok(points);
         }
-        self.map_shapes(|shape| {
-            Ok(crate::geometry::unary_antimeridian_derived(
-                shape,
-                domain,
-                DerivedPointStrategy::Centroid,
-                Shape::centroid,
-            )?)
-        })
+        self.map_shapes(|shape| Ok(crate::geometry::unary_antimeridian_centroid(shape, domain)?))
     }
 
     pub(crate) fn point_on_surface_unary_packed(&self) -> PyResult<Self> {
@@ -275,19 +383,23 @@ impl PyGeometryArray {
                     else {
                         unreachable!("packed polygon point-on-surface requires polygon storage")
                     };
-                    packed_surface_point(crate::geometry::point_on_surface_polygon_row_columns(
-                        xs,
-                        ys,
+                    let bounds = packed_polygon_bounds!(
+                        coords,
                         ring_offsets.as_slice(),
-                        rings_start..rings_end,
-                        packed_polygon_bounds!(
-                            coords,
+                        rings_start,
+                        rings_end,
+                    );
+                    let point = packed_surface_point(
+                        crate::geometry::point_on_surface_polygon_row_columns(
+                            xs,
+                            ys,
                             ring_offsets.as_slice(),
-                            rings_start,
-                            rings_end,
+                            rings_start..rings_end,
+                            bounds,
+                            crossings,
                         ),
-                        crossings,
-                    ))
+                    )?;
+                    Ok((point, bounds))
                 },
             )
         })? {

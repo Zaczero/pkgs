@@ -2,17 +2,17 @@ use std::num::NonZeroU32;
 
 use crate::error::Result;
 use crate::geometry::derived::{
-    areal_centroid, build_inscribed_circle_budgeted, canonicalize_concave_hull_points,
-    centroid_is_empty, collection_surface_point, degenerate_polygon_center,
-    emit_minimum_bounding_circle, emit_zero_radius_point, lineal_centroid, lineal_surface_point,
-    minimum_area_rectangle, monotone_chain_hull, multipoint_surface_point, native_concave_hull,
-    point_centroid, point_on_surface_line_columns, polygonal_surface_point, polylabel_point,
-    scale_aware_default_tolerance, shape_from_open_hull, shape_from_selected_hull,
-    smallest_enclosing_circle,
+    areal_centroid, areal_centroid_with_bounds, build_inscribed_circle_budgeted,
+    canonicalize_concave_hull_points, centroid_is_empty, collection_surface_point,
+    degenerate_polygon_center, emit_minimum_bounding_circle, emit_zero_radius_point,
+    lineal_centroid, lineal_surface_point, minimum_area_rectangle, monotone_chain_hull,
+    multipoint_surface_point, native_concave_hull, point_centroid, point_on_surface_line_columns,
+    polygonal_surface_point, polylabel_point, scale_aware_default_tolerance, shape_from_open_hull,
+    shape_from_selected_hull, smallest_enclosing_circle,
 };
 use crate::geometry::{
-    DirectedOptimizationResult, ExpansionBudget, GeometryErrorKind, LineSeq, Point, Polygon, Ring,
-    Shape, bounds_to_shape, carry_ordinates, directed_inradius_scaled,
+    Bounds, DirectedOptimizationResult, ExpansionBudget, GeometryErrorKind, LineSeq, Point,
+    Polygon, Ring, Shape, bounds_to_shape, carry_ordinates, directed_inradius_scaled,
 };
 use crate::{NonNegative, Positive};
 
@@ -77,6 +77,29 @@ impl Shape {
             return Ok(Self::Point(Point::new(x, y)?));
         }
         Ok(Self::empty_point())
+    }
+
+    /// Polygon centroids return the raw extrema accumulated by the areal
+    /// centroid pass. Geographic dispatch can use them to skip a second seam
+    /// traversal when the entire row lies in one open chart.
+    pub(crate) fn centroid_with_bounds(&self) -> Result<(Self, Option<Bounds>)> {
+        if !matches!(self, Self::Polygon(_) | Self::MultiPolygon(_)) {
+            return self.centroid().map(|centroid| (centroid, None));
+        }
+        if self.is_empty() {
+            return Ok((Self::empty_point(), None));
+        }
+        let (areal, bounds) = areal_centroid_with_bounds(self);
+        if let Some((x, y)) = areal {
+            return Ok((Self::Point(Point::new(x, y)?), bounds));
+        }
+        if let Some((x, y)) = lineal_centroid(self)? {
+            return Ok((Self::Point(Point::new(x, y)?), bounds));
+        }
+        if let Some((x, y)) = point_centroid(self)? {
+            return Ok((Self::Point(Point::new(x, y)?), bounds));
+        }
+        Ok((Self::empty_point(), bounds))
     }
 
     /// A representative point guaranteed to lie *on* the geometry — for a

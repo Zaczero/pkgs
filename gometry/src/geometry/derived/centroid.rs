@@ -10,7 +10,7 @@ use crate::geometry::exact_arith::ExactSign;
 use crate::geometry::exact_arith::product_sum::ExactCentroidSums as FixedExactCentroidSums;
 use crate::geometry::tessellation::exact::{ExactDyadic, round_ratio, round_sqrt_ratio};
 use crate::geometry::{
-    Component, CoordSeq, Coordinates as _, Dimension, GeometryErrorKind, Point, Polygon,
+    Bounds, Component, CoordSeq, Coordinates as _, Dimension, GeometryErrorKind, Point, Polygon,
     REDUCE_LANES, REDUCE_SIMD_MIN, ReduceSimd, Ring, Shape, ShapeOwnerKey, axis_pow2_scale,
     canonicalize_zero, centroid_ring_sums, closed_columns_winding, column_mean2, point_distance,
     simd_reduce_f64,
@@ -422,7 +422,7 @@ fn centroid_polygon_columns(
     ys: &[f64],
     ring_offsets: &[i32],
     rings: std::ops::Range<usize>,
-) -> Option<(f64, f64, f64)> {
+) -> ArealCentroidSummary {
     let exact = || {
         exact_areal_centroid(|visit| {
             for (hole, ring_xs, ring_ys) in
@@ -460,11 +460,21 @@ fn centroid_polygon_columns(
     } else {
         false
     };
-    if extreme {
-        return exact();
-    }
-    // Ordinary coordinates retain the single-pass triangle fan.
-    finish_areal_centroid(area_sum2, cg3).or_else(exact)
+    let centroid = if extreme {
+        exact()
+    } else {
+        // Ordinary coordinates retain the single-pass triangle fan.
+        finish_areal_centroid(area_sum2, cg3).or_else(exact)
+    };
+    let bounds = (min_x.is_finite()
+        && max_x.is_finite()
+        && min_y.is_finite()
+        && max_y.is_finite()
+        && area_sum2.is_finite()
+        && cg3.0.is_finite()
+        && cg3.1.is_finite())
+    .then_some(Bounds::new_raw(min_x, min_y, max_x, max_y));
+    ArealCentroidSummary { centroid, bounds }
 }
 
 #[expect(
@@ -819,26 +829,43 @@ pub(crate) fn centroid_polygon_row_columns(
     ring_offsets: &[i32],
     rings: std::ops::Range<usize>,
 ) -> Option<(f64, f64)> {
-    centroid_polygon_columns(xs, ys, ring_offsets, rings.clone())
+    centroid_polygon_row_columns_with_bounds(xs, ys, ring_offsets, rings).0
+}
+
+pub(crate) fn centroid_polygon_row_columns_with_bounds(
+    xs: &[f64],
+    ys: &[f64],
+    ring_offsets: &[i32],
+    rings: std::ops::Range<usize>,
+) -> (Option<(f64, f64)>, Option<Bounds>) {
+    let summary = centroid_polygon_columns(xs, ys, ring_offsets, rings.clone());
+    let centroid = summary
+        .centroid
         .map(|(_, x, y)| (x, y))
+        .or_else(|| centroid_polygon_lineal_columns(xs, ys, ring_offsets, rings.clone()))
         .or_else(|| {
-            centroid_polygon_lineal_columns(xs, ys, ring_offsets, rings.clone()).or_else(|| {
-                let start = usize::try_from(
-                    *ring_offsets
-                        .get(rings.start)
-                        .expect("polygon row has an admitted ring start"),
-                )
-                .expect("ring offsets are nonnegative");
-                xs.get(start).zip(ys.get(start)).map(|(&x, &y)| (x, y))
-            })
-        })
+            let start = usize::try_from(
+                *ring_offsets
+                    .get(rings.start)
+                    .expect("polygon row has an admitted ring start"),
+            )
+            .expect("ring offsets are nonnegative");
+            xs.get(start).zip(ys.get(start)).map(|(&x, &y)| (x, y))
+        });
+    (centroid, summary.bounds)
 }
 
 /// Single-polygon areal centroid (shell + holes). One triangle fan also tracks
 /// extent; exact accumulation runs only when the fan rejects or the extent is
 /// extreme. Ordinary mid-range polygons pay a single vertex pass (no separate
 /// pre-scan).
-fn areal_centroid_polygon(polygon: &Polygon) -> Option<(f64, f64, f64)> {
+#[derive(Clone, Copy, Default)]
+struct ArealCentroidSummary {
+    centroid: Option<(f64, f64, f64)>,
+    bounds: Option<Bounds>,
+}
+
+fn areal_centroid_polygon(polygon: &Polygon) -> ArealCentroidSummary {
     let exact = || {
         exact_areal_centroid(|visit| {
             for (ring, hole) in polygon_rings(polygon) {
@@ -880,10 +907,20 @@ fn areal_centroid_polygon(polygon: &Polygon) -> Option<(f64, f64, f64)> {
         false
     };
     // Extreme extents: prefer exact accumulation (classical moments overflow / lose digits).
-    if extreme {
-        return exact();
-    }
-    finish_areal_centroid(area_sum2, cg3).or_else(exact)
+    let centroid = if extreme {
+        exact()
+    } else {
+        finish_areal_centroid(area_sum2, cg3).or_else(exact)
+    };
+    let bounds = (min_x.is_finite()
+        && max_x.is_finite()
+        && min_y.is_finite()
+        && max_y.is_finite()
+        && area_sum2.is_finite()
+        && cg3.0.is_finite()
+        && cg3.1.is_finite())
+    .then_some(Bounds::new_raw(min_x, min_y, max_x, max_y));
+    ArealCentroidSummary { centroid, bounds }
 }
 
 /// Streaming Neumaier accumulator for scalar cancellation and component merges,
@@ -1505,20 +1542,35 @@ fn areal_child_weight_requires_exact_replay(area: f64) -> bool {
     clippy::wildcard_enum_match_arm,
     reason = "Only polygon variants contribute; keep the measured non-areal fast path"
 )]
-fn areal_centroid_summary_direct(shape: &Shape) -> Option<(f64, f64, f64)> {
+fn areal_centroid_summary_direct_with_bounds(shape: &Shape) -> ArealCentroidSummary {
     match shape {
         Shape::Polygon(polygon) => areal_centroid_polygon(polygon),
         Shape::MultiPolygon(polygons) => {
             if polygons.len() == 1 {
-                return polygons.first().and_then(areal_centroid_polygon);
+                return polygons
+                    .first()
+                    .map_or_else(ArealCentroidSummary::default, areal_centroid_polygon);
             }
             let mut parts = Vec::with_capacity(polygons.len());
             let mut area = 0.0_f64;
+            let mut bounds: Option<Bounds> = None;
+            let mut complete_bounds = true;
             for polygon in polygons {
-                if let Some(part) = areal_centroid_polygon(polygon) {
+                let summary = areal_centroid_polygon(polygon);
+                if let Some(part_bounds) = summary.bounds {
+                    match &mut bounds {
+                        Some(current) => current.include_bounds(part_bounds),
+                        None => bounds = Some(part_bounds),
+                    }
+                } else {
+                    complete_bounds = false;
+                }
+                if let Some(part) = summary.centroid {
                     if areal_child_weight_requires_exact_replay(part.0) {
-                        drop(parts);
-                        return exact_areal_centroid_shape(shape);
+                        return ArealCentroidSummary {
+                            centroid: exact_areal_centroid_shape(shape),
+                            bounds: None,
+                        };
                     }
                     if part.0 > 0.0 && part.0.is_finite() {
                         area += part.0;
@@ -1530,13 +1582,30 @@ fn areal_centroid_summary_direct(shape: &Shape) -> Option<(f64, f64, f64)> {
             if merged.fallback
                 == WeightedCentroidMergeFallback::PositiveWeightNormalizationUnderflow
             {
-                drop(parts);
-                return exact_areal_centroid_shape(shape);
+                return ArealCentroidSummary {
+                    centroid: exact_areal_centroid_shape(shape),
+                    bounds: bounds.filter(|_| complete_bounds),
+                };
             }
-            merged.centroid.map(|(x, y)| (area, x, y))
+            ArealCentroidSummary {
+                centroid: merged.centroid.map(|(x, y)| (area, x, y)),
+                bounds: bounds.filter(|_| complete_bounds),
+            }
         },
-        _ => None,
+        _ => ArealCentroidSummary::default(),
     }
+}
+
+fn areal_centroid_summary_direct(shape: &Shape) -> Option<(f64, f64, f64)> {
+    areal_centroid_summary_direct_with_bounds(shape).centroid
+}
+
+pub(crate) fn areal_centroid_with_bounds(shape: &Shape) -> (Option<(f64, f64)>, Option<Bounds>) {
+    if !matches!(shape, Shape::Polygon(_) | Shape::MultiPolygon(_)) {
+        return (None, None);
+    }
+    let summary = areal_centroid_summary_direct_with_bounds(shape);
+    (summary.centroid.map(|(_, x, y)| (x, y)), summary.bounds)
 }
 
 /// Aggregate areal members only at GeometryCollection boundaries. Other shape

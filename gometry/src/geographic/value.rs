@@ -1,7 +1,7 @@
 use std::cmp::Ordering;
 
 use super::GeographicError;
-use crate::geometry::Point;
+use crate::geometry::{Bounds, Point};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct AngularFactor(f64);
@@ -467,6 +467,20 @@ impl GeographicFrame {
     }
     pub(crate) const fn pole(self) -> f64 {
         self.pole
+    }
+
+    pub(crate) fn longitude_bounds_certify_no_seam(self, minx: f64, maxx: f64) -> bool {
+        let half = self.longitude.half_period();
+        minx > -half && maxx < half && maxx - minx < half
+    }
+
+    /// Whether raw extrema prove a geometry stays in one open, non-polar
+    /// chart. Every edge is then an ordinary chart edge, so no seam scan or
+    /// pole-winding check is needed.
+    pub(crate) fn bounds_certify_ordinary_support(self, bounds: Bounds) -> bool {
+        self.longitude_bounds_certify_no_seam(bounds.minx(), bounds.maxx())
+            && bounds.miny() > -self.pole
+            && bounds.maxy() < self.pole
     }
 
     /// Identity of one stored vertex in this frame's geographic quotient.

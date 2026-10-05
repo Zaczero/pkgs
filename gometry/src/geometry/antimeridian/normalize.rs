@@ -827,6 +827,43 @@ pub(crate) fn unary_antimeridian_derived(
     }
 }
 
+pub(crate) fn unary_antimeridian_centroid(shape: &Shape, domain: TopologyDomain) -> Result<Shape> {
+    let TopologyDomain::Geographic(frame) = domain else {
+        return shape.centroid();
+    };
+    if !matches!(shape, Shape::Polygon(_) | Shape::MultiPolygon(_)) {
+        return unary_antimeridian_derived(
+            shape,
+            domain,
+            DerivedPointStrategy::Centroid,
+            Shape::centroid,
+        );
+    }
+    // Preserve the established crossing-first error order if the direct
+    // centroid cannot produce a result.
+    let Ok((centroid, bounds)) = shape.centroid_with_bounds() else {
+        return unary_antimeridian_derived(
+            shape,
+            domain,
+            DerivedPointStrategy::Centroid,
+            Shape::centroid,
+        );
+    };
+    if bounds.is_some_and(|bounds| frame.bounds_certify_ordinary_support(bounds)) {
+        return Ok(centroid);
+    }
+    if derived_point_needs_unwrap(shape, frame) {
+        derived_point_unwrapped(
+            shape,
+            frame,
+            DerivedPointStrategy::Centroid,
+            Shape::centroid,
+        )
+    } else {
+        Ok(centroid)
+    }
+}
+
 /// Geographic-crossing bounds in the west>east convention: ``minx`` is the
 /// minimum eastern (``lon >= 0``) longitude and ``maxx`` the maximum western
 /// (``lon < 0``) longitude; latitude extrema are ordinary planar min/max.

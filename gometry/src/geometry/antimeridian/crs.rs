@@ -6,7 +6,7 @@ use crate::crs::frame::Frame;
 use crate::geographic::{GeographicFrame, ScalarGeographicView, SeamIdentity};
 use crate::geometry::{
     Coordinates, Point, REDUCE_LANES, ReduceSimd, Shape, ShapeData, TopologyDomain,
-    canonical_f64_bits, shape_has_polar_ring_in_frame, simd_mask_any,
+    canonical_f64_bits, shape_has_polar_ring_in_frame,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -127,9 +127,8 @@ pub(crate) fn geographic_seam_facts_in_frame(
     let mut crosses = false;
     match shape.for_each_first_xy_segment_chain(|chain| {
         if let Some((xs, ys)) = chain.xy_columns()
-            && xs.iter().all(|x| x.abs() < half)
+            && let Some(chain_crosses) = canonical_chart_crossing(xs, half)
         {
-            let chain_crosses = steps_exceed(xs, half);
             crosses |= chain_crosses;
             if !chain_crosses {
                 return std::ops::ControlFlow::Continue(());
@@ -239,11 +238,23 @@ pub(crate) fn chain_crosses_antimeridian<C: Coordinates + ?Sized>(
 ) -> bool {
     let axis = frame.longitude();
     let half = axis.half_period();
-    if let Some((xs, _)) = chain.xy_columns()
-        && xs.iter().all(|x| x.abs() < half)
-    {
-        // Canonical longitudes off the seam: only a long step crosses.
-        return steps_exceed(xs, half);
+    if let Some((xs, ys)) = chain.xy_columns() {
+        if let Some(crosses) = canonical_chart_crossing(xs, half) {
+            return crosses;
+        }
+        for (&[x0, x1], &[y0, y1]) in xs.array_windows::<2>().zip(ys.array_windows::<2>()) {
+            if inspect_seam_segment(
+                Point::new_raw_xy(x0, y0),
+                Point::new_raw_xy(x1, y1),
+                axis,
+                half,
+            )
+            .is_some_and(|segment| segment.crosses)
+            {
+                return true;
+            }
+        }
+        return false;
     }
     chain.segment_pairs().any(|[start, end]| {
         inspect_seam_segment(start, end, axis, half).is_some_and(|segment| segment.crosses)
@@ -370,10 +381,9 @@ where
     let axis = frame.longitude();
     let half = axis.half_period();
     if let Some((xs, _)) = chain.xy_columns()
-        && xs.iter().all(|x| x.abs() < half)
+        && let Some(crosses) = canonical_chart_crossing(xs, half)
     {
-        // Canonical longitudes off the seam: only a long step crosses.
-        return steps_exceed(xs, half);
+        return crosses;
     }
     let mut has_segment = false;
     for [start, end] in chain.segment_pairs() {
@@ -398,24 +408,39 @@ where
     false
 }
 
-/// Whether any consecutive pair of `xs` differs by more than `limit`.
-fn steps_exceed(xs: &[f64], limit: f64) -> bool {
+/// Classify crossings only when every longitude is in the open canonical chart.
+#[expect(
+    clippy::arithmetic_side_effects,
+    reason = "floating longitude differences classify chart steps without integer overflow"
+)]
+fn canonical_chart_crossing(xs: &[f64], limit: f64) -> Option<bool> {
     let segments = xs.len().saturating_sub(1);
     if segments == 0 {
-        return false;
+        return xs.iter().all(|x| x.abs() < limit).then_some(false);
     }
-    let (x0, _) = xs[..segments].as_chunks::<REDUCE_LANES>();
-    let (x1, _) = xs[1..=segments].as_chunks::<REDUCE_LANES>();
-    simd_mask_any(
-        segments,
-        |index| (xs[index + 1] - xs[index]).abs() > limit,
-        |start| {
-            let chunk = start / REDUCE_LANES;
-            (ReduceSimd::from_array(x1[chunk]) - ReduceSimd::from_array(x0[chunk]))
-                .abs()
-                .simd_gt(ReduceSimd::splat(limit))
-        },
-    )
+    let (lefts, _) = xs.split_at(segments);
+    let (_, rights) = xs.split_at(1);
+    let (left_chunks, left_tail) = lefts.as_chunks::<REDUCE_LANES>();
+    let (right_chunks, right_tail) = rights.as_chunks::<REDUCE_LANES>();
+    let limit_value = limit;
+    let limit_lanes = ReduceSimd::splat(limit_value);
+    let mut crosses = false;
+    for (&left, &right) in left_chunks.iter().zip(right_chunks) {
+        let left = ReduceSimd::from_array(left);
+        let right = ReduceSimd::from_array(right);
+        let ordinary = left.abs().simd_lt(limit_lanes) & right.abs().simd_lt(limit_lanes);
+        if !ordinary.all() {
+            return None;
+        }
+        crosses |= (right - left).abs().simd_gt(limit_lanes).any();
+    }
+    for (&left, &right) in left_tail.iter().zip(right_tail) {
+        if !(left.abs() < limit_value && right.abs() < limit_value) {
+            return None;
+        }
+        crosses |= (right - left).abs() > limit_value;
+    }
+    Some(crosses)
 }
 
 /// Whether a planar topology op must split-normalize ``shape`` at ±180 before
@@ -431,6 +456,23 @@ pub(crate) fn geographic_crossing(domain: TopologyDomain, shape: &ShapeData) -> 
 mod tests {
     use super::*;
     use crate::geometry::{CoordSeq, LineSeq, Polygon, Ring};
+
+    #[test]
+    fn canonical_crossing_scan_checks_every_shifted_pair_and_the_entire_chart() {
+        for len in 2..=3 * REDUCE_LANES + 2 {
+            for crossing in 0..len - 1 {
+                let mut xs = vec![170.0; len];
+                xs[crossing + 1] = -170.0;
+                assert_eq!(canonical_chart_crossing(&xs, 180.0), Some(true));
+            }
+        }
+        for alias in [180.0, 360.0, f64::NAN] {
+            let mut xs = vec![170.0; 3 * REDUCE_LANES + 2];
+            xs[1] = -170.0;
+            *xs.last_mut().unwrap() = alias;
+            assert_eq!(canonical_chart_crossing(&xs, 180.0), None);
+        }
+    }
 
     fn polygon(points: &[(f64, f64)]) -> Shape {
         let points = points
@@ -547,6 +589,52 @@ mod tests {
         assert_eq!(
             frame.longitude().chart_step(-180.0, 180.0).unwrap(),
             crate::geographic::ChartStep::Shortest(crate::geographic::EdgeDirection::Minor(0.0))
+        );
+    }
+
+    #[test]
+    fn seam_crossing_from_xy_columns_is_independent_of_ordinate_layout() {
+        let frame = GeographicFrame::crs84();
+        let ordinate_columns = [
+            (None, None),
+            (Some(vec![3.0, 7.0]), None),
+            (None, Some(vec![11.0, 19.0])),
+            (Some(vec![3.0, 7.0]), Some(vec![11.0, 19.0])),
+        ];
+        for (zs, ms) in ordinate_columns {
+            let coords =
+                CoordSeq::try_from_vecs(vec![170.0, -170.0], vec![2.0, 5.0], zs, ms).unwrap();
+            let line = LineSeq::try_new(coords).unwrap();
+            assert!(chain_crosses_antimeridian(&line, frame));
+        }
+    }
+
+    #[test]
+    fn ordinary_width_does_not_certify_a_noncanonical_seam_alias() {
+        let frame = GeographicFrame::crs84();
+        let shape = polygon(&[
+            (179.0, -10.0),
+            (181.0, -10.0),
+            (181.0, 10.0),
+            (179.0, 10.0),
+            (179.0, -10.0),
+        ]);
+        assert!(
+            !frame.bounds_certify_ordinary_support(shape.bounds().unwrap()),
+            "a two-degree raw span may still cross the canonical seam"
+        );
+
+        let domain = TopologyDomain::Geographic(frame);
+        let expected = crate::geometry::unary_antimeridian_derived(
+            &shape,
+            domain,
+            crate::geometry::DerivedPointStrategy::Centroid,
+            Shape::centroid,
+        )
+        .unwrap();
+        assert_eq!(
+            crate::geometry::unary_antimeridian_centroid(&shape, domain).unwrap(),
+            expected
         );
     }
 }

@@ -59,7 +59,7 @@ pub(crate) use access::{
     REDUCE_SIMD_MIN, ReduceSimd, RunIdentity, SharedShapeOwners, SupportRunKind, canonicalize_zero,
     centroid_ring_sums, column_all_finite, column_mean2, column_minmax, line_length_3d_columns,
     line_length_columns, pair_map4_guarded_f64, pair_select_mask, shape_axes_all_z,
-    simd_argmin_f64, simd_indexed_map_f64, simd_map_f64, simd_mask_any, simd_xy_map_f64,
+    simd_argmin_f64, simd_indexed_map_f64, simd_map_f64, simd_xy_map_f64,
     squared_norm_untrusted_mask, try_simd_map_f64, xy_bounds_columns,
 };
 #[cfg(test)]
@@ -96,8 +96,8 @@ pub(crate) use antimeridian::{
     geographic_crossing_bounds_for_shapes_in_frame, geographic_crossing_bounds_in_frame,
     geographic_seam_facts_in_frame, geographic_topology_route, is_ring_data_in_frame,
     is_simple_data_in_frame, repair_data_in_frame, repair_shape_in_frame,
-    self_intersections_in_frame, topology_domain, unary_antimeridian_derived,
-    validate_data_in_frame, validate_shape_in_frame,
+    self_intersections_in_frame, topology_domain, unary_antimeridian_centroid,
+    unary_antimeridian_derived, validate_data_in_frame, validate_shape_in_frame,
 };
 pub(crate) use boundary::boundary;
 mod arrangement;
@@ -109,7 +109,8 @@ mod dimension;
 pub(crate) use dimension::{Dimension, dimension, ring_is_collinear};
 mod derived;
 pub(crate) use derived::{
-    centroid_line_row_columns, centroid_polygon_row_columns, geometric_xy_cmp, native_concave_hull,
+    centroid_line_row_columns, centroid_polygon_row_columns,
+    centroid_polygon_row_columns_with_bounds, geometric_xy_cmp, native_concave_hull,
     point_on_surface_line_columns, point_on_surface_polygon_row_columns, shape_from_selected_hull,
     smallest_enclosing_circle,
 };

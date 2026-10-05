@@ -127,27 +127,26 @@ pub(crate) fn dispatch_predicate(
         // Only geographic topology reads frame products; resolving them for a
         // planar pair allocates a row-product chunk per operand that the
         // Cartesian arm never looks at.
-        let geographic = match admission.domain {
-            TopologyDomain::Cartesian => None,
+        let value = match admission.domain {
+            TopologyDomain::Cartesian => py.detach(move || {
+                let operands = engine::PreparedTopologyPair::cartesian(&left_plan, &right_plan);
+                engine::topology_scalar_pair(&spec, &operands)
+            }),
             TopologyDomain::Geographic(frame) => {
-                Some((frame, left.frame_cache(), right.frame_cache()))
-            },
-        };
-        let value = py.detach(move || {
-            let operands = match &geographic {
-                None => engine::PreparedTopologyPair::cartesian(&left_plan, &right_plan),
-                Some((frame, left_cache, right_cache)) => {
-                    engine::PreparedTopologyPair::try_geographic(
+                let left_cache = left.frame_cache();
+                let right_cache = right.frame_cache();
+                py.detach(move || {
+                    let operands = engine::PreparedTopologyPair::try_geographic(
                         &left_plan,
-                        left_cache,
+                        &left_cache,
                         &right_plan,
-                        right_cache,
-                        *frame,
-                    )?
-                },
-            };
-            engine::topology_scalar_pair(&spec, &operands)
-        })?;
+                        &right_cache,
+                        frame,
+                    )?;
+                    engine::topology_scalar_pair(&spec, &operands)
+                })
+            },
+        }?;
         return Ok(crate::broadcast::py_bool(py, value));
     }
     let scalar_is_left = matches!(admission.left, GeometryInput::One(_));

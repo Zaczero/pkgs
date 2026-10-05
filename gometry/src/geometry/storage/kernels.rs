@@ -900,6 +900,14 @@ pub(crate) fn geographic_bounds_values_from_columns_masked(
     )
 }
 
+fn raw_bounds_certify_ordinary_support(
+    bounds: [f64; 4],
+    frame: crate::geographic::GeographicFrame,
+) -> bool {
+    let [minx, miny, maxx, maxy] = bounds;
+    frame.bounds_certify_ordinary_support(Bounds::new_raw(minx, miny, maxx, maxy))
+}
+
 fn geographic_bounds_values_from_columns_impl<const MASKED: bool>(
     columns: &PackedColumns<'_>,
     frame: crate::geographic::GeographicFrame,
@@ -924,18 +932,25 @@ fn geographic_bounds_values_from_columns_impl<const MASKED: bool>(
                     continue;
                 }
                 let window = line_columns.row_window(row);
-                let bounds = if window.is_empty() {
+                let raw_bounds = if window.is_empty() {
                     [f64::NAN; 4]
+                } else {
+                    row_bounds_values(xs, ys, window.clone())
+                };
+                let bounds = if window.is_empty()
+                    || raw_bounds_certify_ordinary_support(raw_bounds, frame)
+                {
+                    raw_bounds
                 } else {
                     let shape = Shape::LineString(LineSeq::row_view(
                         coords,
-                        CoordWindow::from_range(window.clone(), coords.len()),
+                        CoordWindow::from_range(window, coords.len()),
                     ));
                     if crate::geometry::crosses_antimeridian_in_frame(&shape, frame) {
                         crate::geometry::geographic_crossing_bounds_in_frame(&shape, frame)
                             .map_or([f64::NAN; 4], Bounds::into_array)
                     } else {
-                        row_bounds_values(xs, ys, window)
+                        raw_bounds
                     }
                 };
                 values.push(bounds);
@@ -950,12 +965,17 @@ fn geographic_bounds_values_from_columns_impl<const MASKED: bool>(
                 }
                 let packed_row = polygon_columns.packed_row(row);
                 let bounds = if let Some(vertices) = packed_row.vertex_window() {
-                    let shape = packed_row.to_shape()?;
-                    if crate::geometry::crosses_antimeridian_in_frame(&shape, frame) {
-                        crate::geometry::geographic_crossing_bounds_in_frame(&shape, frame)
-                            .map_or([f64::NAN; 4], Bounds::into_array)
+                    let raw_bounds = row_bounds_values(xs, ys, vertices);
+                    if raw_bounds_certify_ordinary_support(raw_bounds, frame) {
+                        raw_bounds
                     } else {
-                        row_bounds_values(xs, ys, vertices)
+                        let shape = packed_row.to_shape()?;
+                        if crate::geometry::crosses_antimeridian_in_frame(&shape, frame) {
+                            crate::geometry::geographic_crossing_bounds_in_frame(&shape, frame)
+                                .map_or([f64::NAN; 4], Bounds::into_array)
+                        } else {
+                            raw_bounds
+                        }
                     }
                 } else {
                     [f64::NAN; 4]

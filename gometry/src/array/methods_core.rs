@@ -966,9 +966,61 @@ impl PyGeometryArray {
         &self,
     ) -> crate::error::Result<Option<(f64, f64, f64, f64)>> {
         let domain = crate::geometry::topology_domain(&self.frame).ok();
-        if let Some(crate::geometry::TopologyDomain::Geographic(frame)) = domain {
+        let element_bounds = self.existing_element_bounds();
+        if let Some(crate::geometry::TopologyDomain::Geographic(frame)) = domain
+            && !matches!(
+                self.storage(),
+                GeometryArrayStorage::Packed(PackedStorage::Points { .. })
+            )
+        {
+            let mixed = matches!(self.storage(), GeometryArrayStorage::Mixed(_));
+            if mixed || element_bounds.is_some() {
+                // Mixed storage has no published element-bounds cache; this
+                // is its required raw-extrema fold, fused with seam admission.
+                let mut total: Option<Bounds> = None;
+                let mut crossing = false;
+                let row_operation = self.row_operation();
+                for row in row_operation.present_rows() {
+                    let logical = row.logical();
+                    let shape_row = row.row();
+                    let bounds = element_bounds.as_ref().map_or_else(
+                        || shape_row.quick_bounds(),
+                        |bounds| bounds.get(logical).copied().flatten(),
+                    );
+                    let Some(bounds) = bounds else {
+                        continue;
+                    };
+                    match &mut total {
+                        Some(current) => current.include_bounds(bounds),
+                        None => total = Some(bounds),
+                    }
+                    if frame.bounds_certify_ordinary_support(bounds) {
+                        continue;
+                    }
+                    if shape_row.with_shape(|shape| {
+                        crate::geometry::crosses_antimeridian_in_frame(shape, frame)
+                    })? {
+                        crossing = true;
+                        break;
+                    }
+                }
+                if crossing {
+                    let shapes = self
+                        .present_shape_rows()
+                        .map(|row| row.map(|(_, shape)| shape))
+                        .collect::<crate::error::Result<Vec<_>>>()?;
+                    return Ok(
+                        crate::geometry::geographic_crossing_bounds_for_shapes_in_frame(
+                            shapes, frame,
+                        )
+                        .map(Bounds::into_tuple),
+                    );
+                }
+                return Ok(total.map(Bounds::into_tuple));
+            }
+
             // Only a crossing row needs the shapes; scan for one first so the
-            // ordinary case leaves the columnar fold below its inputs.
+            // uncached packed case leaves the columnar fold below its inputs.
             let mut crossing = false;
             let row_operation = self.row_operation();
             for row in row_operation.present_rows() {
@@ -990,7 +1042,7 @@ impl PyGeometryArray {
                 );
             }
         }
-        if let Some(bounds) = self.existing_element_bounds() {
+        if let Some(bounds) = element_bounds {
             return Ok(bounds
                 .iter()
                 .flatten()
@@ -1222,5 +1274,68 @@ impl PyGeometryArray {
             return Some(Ok(vec![false; self.len()]));
         }
         None
+    }
+}
+
+#[cfg(test)]
+mod geographic_total_bounds_tests {
+    use super::*;
+    use crate::crs::frame::{Frame, crs_arc_static};
+    use crate::geometry::{Point, Polygon, Ring};
+
+    fn polygon(points: &[(f64, f64)]) -> Shape {
+        let coordinates = CoordSeq::try_from_points(
+            &points
+                .iter()
+                .map(|&(x, y)| Point::new_raw_xy(x, y))
+                .collect::<Vec<_>>(),
+        )
+        .expect("polygon coordinates");
+        Shape::Polygon(Polygon::new(
+            Ring::try_from_closed(coordinates).expect("closed ring"),
+            Vec::new(),
+        ))
+    }
+
+    #[test]
+    fn mixed_total_bounds_folds_certified_rows_and_retains_alias_crossing() {
+        let frame = Frame::new(Some(crs_arc_static("OGC:CRS84")), None).expect("CRS84");
+        let ordinary = polygon(&[
+            (-10.0, -5.0),
+            (10.0, -5.0),
+            (10.0, 5.0),
+            (-10.0, 5.0),
+            (-10.0, -5.0),
+        ]);
+        let point = Shape::Point(Point::new_raw_xy(30.0, 2.0));
+        let ordinary_array =
+            PyGeometryArray::from_shapes(vec![ordinary, point.clone()], frame.clone())
+                .expect("mixed geometry array");
+        assert!(matches!(
+            ordinary_array.storage(),
+            GeometryArrayStorage::Mixed(_)
+        ));
+        assert_eq!(
+            ordinary_array.compute_total_bounds().expect("total bounds"),
+            Some((-10.0, -5.0, 30.0, 5.0))
+        );
+
+        let alias = polygon(&[
+            (179.0, -10.0),
+            (181.0, -10.0),
+            (181.0, 10.0),
+            (179.0, 10.0),
+            (179.0, -10.0),
+        ]);
+        let alias_array = PyGeometryArray::from_shapes(vec![alias.clone(), point.clone()], frame)
+            .expect("mixed alias array");
+        assert_eq!(
+            alias_array.compute_total_bounds().expect("total bounds"),
+            crate::geometry::geographic_crossing_bounds_for_shapes_in_frame(
+                [&alias, &point],
+                crate::geographic::GeographicFrame::crs84(),
+            )
+            .map(Bounds::into_tuple)
+        );
     }
 }

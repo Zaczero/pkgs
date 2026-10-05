@@ -1,10 +1,12 @@
 //! Semantic values for periodic geographic coordinates.
 
+mod envelope;
 mod interval;
 pub(crate) mod lonlat;
 mod value;
 mod view;
 
+pub(crate) use envelope::GeographicSupportEnvelope;
 pub(crate) use interval::{CircularInterval, LongitudeWindows, union_circular_intervals};
 use thiserror::Error;
 pub(crate) use value::{
