@@ -3,7 +3,8 @@ use crate::crs::geodesic::geographic_metric_frame_at;
 use crate::error::Result;
 use crate::geographic::lonlat::invalid_lonlat_error;
 use crate::geographic::{GeographicFrame, ScalarGeographicView, lonlat as geographic};
-use crate::geometry::{CoordSeq, Shape};
+use crate::geometry::storage::{PackedRow, ShapeRow};
+use crate::geometry::{CoordSeq, Coordinates, Shape};
 
 /// Expand one longitude/latitude domain check inside a coordinate loop. The
 /// caller can reuse its frame's longitude axis; the returned error is
@@ -31,6 +32,46 @@ pub(crate) fn ensure_geographic_domain_in_frame(
     ScalarGeographicView::try_new(frame, shape)
         .map(|_| ())
         .map_err(|diagnostic| geographic::geographic_admission_error(&diagnostic))
+}
+
+/// Validate one admitted array row without materializing a packed point, line,
+/// or polygon row. Mixed geometry keeps the shape-level admission owner.
+pub(crate) fn ensure_geographic_row_in_frame(
+    frame: GeographicFrame,
+    row: ShapeRow<'_>,
+) -> Result<()> {
+    match row {
+        ShapeRow::Handle(handle) => ensure_geographic_domain_in_frame(frame, handle.shape()),
+        ShapeRow::Shape(shape) => ensure_geographic_domain_in_frame(frame, shape),
+        ShapeRow::Point(point) => ensure_geographic_lonlat_in_frame(frame, point.x, point.y),
+        ShapeRow::Packed(PackedRow::Points {
+            coords, physical, ..
+        }) => {
+            let point = coords.point_at(physical);
+            ensure_geographic_lonlat_in_frame(frame, point.x, point.y)
+        },
+        ShapeRow::Packed(line @ PackedRow::Lines { .. }) => {
+            let line = ShapeRow::Packed(line)
+                .line_coords()
+                .expect("packed line rows expose their coordinate window");
+            let (xs, ys) = line
+                .xy_columns()
+                .expect("packed line rows expose their XY columns");
+            ensure_geographic_columns_in_frame(frame, xs, ys)
+        },
+        ShapeRow::Packed(polygon @ PackedRow::Polygons { .. }) => {
+            let mut rings = ShapeRow::Packed(polygon)
+                .polygon_rings()
+                .expect("packed polygon rows expose their rings");
+            for ring in &mut rings {
+                let (xs, ys) = ring
+                    .xy_columns()
+                    .expect("packed polygon rings expose their XY columns");
+                ensure_geographic_columns_in_frame(frame, xs, ys)?;
+            }
+            Ok(())
+        },
+    }
 }
 
 pub(crate) fn ensure_geographic_lonlat_in_frame(

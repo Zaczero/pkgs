@@ -619,6 +619,42 @@ impl PackedColumns<'_> {
                 .collect(),
         }
     }
+
+    /// Visit present logical rows in display order without materializing their
+    /// geometry shapes. The row index remains the logical row even when point
+    /// storage is compact or selected through a gather.
+    pub(crate) fn try_for_each_present_row<E>(
+        &self,
+        mut visit: impl FnMut(usize, PackedRow<'_>) -> std::result::Result<(), E>,
+    ) -> std::result::Result<(), E> {
+        match self {
+            Self::Points(columns) => {
+                for (logical, physical) in columns.rows().cursor() {
+                    if let Some(physical) = physical {
+                        visit(
+                            logical,
+                            PackedRow::point_at(logical, columns.coords, physical),
+                        )?;
+                    }
+                }
+            },
+            Self::Lines(columns) => {
+                for logical in 0..columns.rows() {
+                    if !columns.is_missing(logical) {
+                        visit(logical, columns.packed_row(logical))?;
+                    }
+                }
+            },
+            Self::Polygons(columns) => {
+                for logical in 0..columns.rows() {
+                    if !columns.is_missing(logical) {
+                        visit(logical, columns.packed_row(logical))?;
+                    }
+                }
+            },
+        }
+        Ok(())
+    }
 }
 
 pub(crate) enum PackedColumnOutput {
