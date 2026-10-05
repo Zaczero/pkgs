@@ -27,8 +27,7 @@ _GRS80_TMERC_EVENDEN = (
     '+algo=evenden_snyder +type=crs'
 )
 _SPHERICAL_TMERC = (
-    '+proj=tmerc +R=6371007 +lat_0=0.05 +lon_0=0 +k=1 '
-    '+x_0=0 +y_0=0 +units=m +type=crs'
+    '+proj=tmerc +R=6371007 +lat_0=0.05 +lon_0=0 +k=1 +x_0=0 +y_0=0 +units=m +type=crs'
 )
 _TMERC_AOI = (-10.0, 40.0, 30.0, 60.0)
 _HOSTILE_INI = '[general]\nnetwork = on\ntmerc_default_algo = evenden_snyder\n'
@@ -332,10 +331,7 @@ def test_crs_runtime_spherical_tmerc_witness_edge_scales_smoothly() -> None:
     for half_width in (1e-5, 1e-9):
         t0 = center - half_width
         t1 = center + half_width
-        edge = [
-            (start[0] + t * delta_lon, start[1] + t * delta_lat)
-            for t in (t0, t1)
-        ]
+        edge = [(start[0] + t * delta_lon, start[1] + t * delta_lat) for t in (t0, t1)]
         middle = (start[0] + center * delta_lon, start[1] + center * delta_lat)
         transformed = gm.crs_transform(
             source,
@@ -353,10 +349,7 @@ def test_crs_runtime_spherical_tmerc_witness_edge_scales_smoothly() -> None:
             math.cos(middle_lat) * source_dlon,
             source_dlat,
         )
-        local_scales = [
-            target.factors(*point)
-            for point in (edge[0], middle, edge[1])
-        ]
+        local_scales = [target.factors(*point) for point in (edge[0], middle, edge[1])]
         local_scale = max(
             max(
                 float(factors['meridional_scale']),

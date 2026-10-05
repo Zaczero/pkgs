@@ -16,7 +16,9 @@ from typing import Any
 import gometry as gm
 import shapely
 
-_COUNTRIES = Path(__file__).resolve().parents[1] / 'fixtures' / 'osm_countries_0_1.geojson'
+_COUNTRIES = (
+    Path(__file__).resolve().parents[1] / 'fixtures' / 'osm_countries_0_1.geojson'
+)
 _COUNTRY_CODES = ('AR', 'UY')
 
 
@@ -76,7 +78,9 @@ def test_ar_uy_overlay_results_are_valid_in_planar_and_geographic_domains() -> N
                 )
 
 
-def test_ar_uy_symmetric_difference_wkb_is_invariant_to_operand_and_ring_order() -> None:
+def test_ar_uy_symmetric_difference_wkb_is_invariant_to_operand_and_ring_order() -> (
+    None
+):
     features = _country_features()
     for crs in (None, 4326):
         argentina, uruguay = _countries(crs)
@@ -101,14 +105,16 @@ def test_ar_uy_symmetric_difference_wkb_is_invariant_to_operand_and_ring_order()
 
 def _ar_uy_symmetric_difference_digest() -> str:
     argentina, uruguay = _countries(None)
-    return hashlib.sha256(gm.symmetric_difference(argentina, uruguay).to_wkb()).hexdigest()
+    return hashlib.sha256(
+        gm.symmetric_difference(argentina, uruguay).to_wkb()
+    ).hexdigest()
 
 
 def test_ar_uy_symmetric_difference_wkb_is_stable_across_hash_seed_processes() -> None:
     module_path = str(Path(__file__).resolve())
     code = (
         'import runpy; '
-        f"module = runpy.run_path({module_path!r}); "
+        f'module = runpy.run_path({module_path!r}); '
         "print(module['_ar_uy_symmetric_difference_digest']())"
     )
     digests = []
@@ -170,9 +176,8 @@ def test_moved_crossing_node_interpolates_exact_zm_ordinates() -> None:
         (coordinate[2], coordinate[3])
         for line in noded.parts
         for coordinate in line.coords
-        if (coordinate[0], coordinate[1]) in {
-            (x, y) for x in neighboring_floats for y in neighboring_floats
-        }
+        if (coordinate[0], coordinate[1])
+        in {(x, y) for x in neighboring_floats for y in neighboring_floats}
         and (coordinate[0], coordinate[1]) not in source_vertices
         and (coordinate[0], coordinate[1]) != (1.0, 1.0)
     }
@@ -213,9 +218,8 @@ def test_moved_xym_crossings_preserve_exact_m_ordinates() -> None:
         coordinate[2]
         for line in noded.parts
         for coordinate in line.coords
-        if (coordinate[0], coordinate[1]) in {
-            (x, y) for x in neighboring_floats for y in neighboring_floats
-        }
+        if (coordinate[0], coordinate[1])
+        in {(x, y) for x in neighboring_floats for y in neighboring_floats}
         and (coordinate[0], coordinate[1]) not in source_vertices
         and (coordinate[0], coordinate[1]) != (1.0, 1.0)
     }

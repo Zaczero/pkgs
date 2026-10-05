@@ -45,8 +45,12 @@ def test_geographic_filled_metric_results_are_order_independent() -> None:
     polygon = gm.box(0.0, 0.0, 1.0, 1.0, crs=4326)
     point = gm.Point(0.5, 0.5, crs=4326)
 
-    distances = [gm.distance(*operands) for operands in ((polygon, point), (point, polygon))]
-    within = [gm.dwithin(*operands, 0.0) for operands in ((polygon, point), (point, polygon))]
+    distances = [
+        gm.distance(*operands) for operands in ((polygon, point), (point, polygon))
+    ]
+    within = [
+        gm.dwithin(*operands, 0.0) for operands in ((polygon, point), (point, polygon))
+    ]
 
     assert distances == [0.0, 0.0]
     assert within == [True, True]

@@ -90,7 +90,9 @@ def test_boundary_of_ordinary_geographic_area_preserves_crs_and_ring() -> None:
     assert boundary.to_wkt() == 'LINESTRING (-2 -1, 2 -1, 2 1, -2 1, -2 -1)'
 
 
-def test_packed_geographic_array_boundary_preserves_open_chart_rings_and_gathers() -> None:
+def test_packed_geographic_array_boundary_preserves_open_chart_rings_and_gathers() -> (
+    None
+):
     polygons = [
         gm.box(-2, -1, 2, 1, crs=4326),
         gm.box(10, 20, 12, 22, crs=4326),
@@ -182,7 +184,10 @@ def test_packed_geographic_gather_uses_cached_products_for_physical_row_64() -> 
 
     gathered = rows[[64, 0, 64, 1]]
     boundary = gathered.boundary()
-    assert [gm.relate(source, result) for source, result in zip(gathered, boundary, strict=True)] == [
+    assert [
+        gm.relate(source, result)
+        for source, result in zip(gathered, boundary, strict=True)
+    ] == [
         'FF21FFFF2',
         'FF21FFFF2',
         'FF21FFFF2',

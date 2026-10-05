@@ -321,9 +321,7 @@ def test_structural_predicates_and_minimum_clearance_are_rust_backed() -> None:
 
 
 def test_geographic_closed_and_ring_use_quotient_endpoint_identity() -> None:
-    ring = gm.LineString(
-        [(180, 10), (170, 20), (175, 30), (-180, 10)], crs=4326
-    )
+    ring = gm.LineString([(180, 10), (170, 20), (175, 30), (-180, 10)], crs=4326)
     open_line = gm.LineString([(180, 10), (170, 20), (-180, 11)], crs=4326)
 
     assert ring.is_closed

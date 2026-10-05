@@ -493,8 +493,7 @@ def test_triangulation_names_hole_shell_edge_overlap(
     message: str,
 ) -> None:
     polygon = gm.from_wkt(
-        'POLYGON ((0 0, 10 0, 10 10, 0 10, 0 0), '
-        '(0 2, 4 2, 4 6, 0 6, 0 2))'
+        'POLYGON ((0 0, 10 0, 10 10, 0 10, 0 0), (0 2, 4 2, 4 6, 0 6, 0 2))'
     )
 
     with pytest.raises(gm.InvalidGeometryError) as raised:
