@@ -224,6 +224,15 @@ impl ChartMetric for EllipsoidMetric<'_> {
         edge.locate_t(distance, length, self.geodesic, self.frame)
     }
 
+    fn chart_edge_interval_length(
+        &self,
+        edge: &ChartEdge,
+        start: f64,
+        end: f64,
+    ) -> crate::error::Result<f64> {
+        edge.integrate(start, end, self.geodesic)
+    }
+
     fn chart_edge_position(&self, edge: &ChartEdge, parameter: f64) -> Point {
         edge.chart_position(parameter)
     }
@@ -300,20 +309,6 @@ impl ChartMetric for EllipsoidMetric<'_> {
         let bound =
             super::envelope::GeodesicEnvelopeBound::new(self.geodesic.a, self.geodesic.f, point);
         move |bounds| bound.lower_bound(bounds)
-    }
-
-    fn chart_edge_seam_span(&self, edge: &ChartEdge) -> Option<[f64; 2]> {
-        edge.seam_span()
-    }
-
-    fn chart_seam_span_length(&self, south: f64, north: f64) -> crate::error::Result<f64> {
-        let half_period = self.frame.longitude().half_period();
-        ChartEdge::new(
-            Point::new_raw_xy(half_period, south),
-            Point::new_raw_xy(-half_period, north),
-            self.frame,
-        )?
-        .length(self.geodesic)
     }
 
     fn chart_area_edge_term(&self, edge: &ChartEdge, north: bool) -> f64 {

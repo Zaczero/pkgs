@@ -42,20 +42,6 @@ macro_rules! validate_geographic_columns {
     }};
 }
 
-/// Expand an admitted ring lookup inside the perimeter reduction. The caller
-/// iterates the row's admitted ring range, so the hot loop needs no per-ring
-/// range check or `Option` callback.
-macro_rules! measure_admitted_polygon_ring {
-    ($ring_offsets:expr, $ring:expr, $xs:expr, $ys:expr, $measure:expr $(,)?) => {{
-        let __window = $crate::geometry::storage::admitted_csr_window!($ring_offsets, $ring);
-        ($measure)(
-            column_window($xs, &__window),
-            column_window($ys, &__window),
-            __window,
-        )
-    }};
-}
-
 /// Emit one round buffer polygon per packed point without per-row shapes.
 ///
 /// The scalar point kernel builds the same inscribed circle, but repeats its
@@ -611,14 +597,12 @@ where
     Ok(output)
 }
 
-pub(crate) fn geodesic_polygon_measure<F>(
+pub(crate) fn geodesic_polygon_measure(
     columns: &PolygonColumns<'_>,
     frame: crate::geographic::GeographicFrame,
-    ring_measure: F,
-) -> PackedColumnResult<Vec<f64>>
-where
-    F: Fn(&[f64], &[f64], std::ops::Range<usize>) -> crate::error::Result<f64>,
-{
+    metric: &impl crate::geometry::ChartMetric,
+    cached_bounds: Option<&[Option<Bounds>]>,
+) -> PackedColumnResult<Vec<f64>> {
     let coords = columns.coords();
     let xs = coords.xs();
     let ys = coords.ys();
@@ -649,26 +633,16 @@ where
         let row_xs = column_window(xs, &vertices);
         let row_ys = column_window(ys, &vertices);
         validate_geographic_columns!(frame, longitude, row_xs, row_ys)?;
-        let shell = measure_admitted_polygon_ring!(
-            ring_offsets.as_slice(),
-            rings_start,
-            xs,
-            ys,
-            ring_measure,
-        )
-        .map_err(|error| row_err(logical, error))?;
-        let mut total = shell;
-        for ring in rings_start.wrapping_add(1)..rings_end {
-            total += measure_admitted_polygon_ring!(
-                ring_offsets.as_slice(),
-                ring,
-                xs,
-                ys,
-                ring_measure,
+        let bounds = cached_bounds
+            .and_then(|bounds| bounds.get(logical))
+            .copied()
+            .flatten();
+        output.push(
+            crate::geometry::geographic_packed_polygonal_perimeter(
+                metric, columns, logical, frame, bounds,
             )
-            .map_err(|error| row_err(logical, error))?;
-        }
-        output.push(total);
+            .map_err(|error| row_err(logical, error))?,
+        );
     }
     Ok(output)
 }

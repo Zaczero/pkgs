@@ -388,7 +388,7 @@ fn visit_coordseq<const ORDINARY_SCREEN: bool>(
     Ok(())
 }
 
-fn ring_gate(
+pub(crate) fn ring_gate(
     chart_turn: i64,
     south: Latitude,
     north: Latitude,

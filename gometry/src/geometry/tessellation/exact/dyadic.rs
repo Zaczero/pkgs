@@ -312,10 +312,11 @@ impl ExactDyadic {
         if magnitude == 0 {
             return Self::zero();
         }
+        let trailing = magnitude.trailing_zeros();
         Self {
             negative: value.is_negative(),
-            limbs: CompactLimbs::single(magnitude),
-            exponent: 0,
+            limbs: CompactLimbs::single(magnitude >> trailing),
+            exponent: i64::from(trailing),
         }
     }
 

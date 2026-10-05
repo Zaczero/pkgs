@@ -137,6 +137,8 @@ mod line_index;
 mod linear;
 mod linear_3d;
 mod ordinates;
+mod perimeter;
+pub(crate) use perimeter::{geographic_packed_polygonal_perimeter, geographic_polygonal_perimeter};
 mod overlay;
 pub(crate) use overlay::{
     occupied_cartesian_area, occupied_support_shape, overlay_all, overlay_all_geographic_chart,

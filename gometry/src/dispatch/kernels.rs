@@ -706,7 +706,11 @@ pub(crate) fn unary_length(data: &PreparedPlan, ctx: &CachelessRowContext<'_>) -
         },
         ResolvedMetric::Geodesic(metric) => {
             crate::crs::ensure_geographic_domain_in_frame(metric.frame, data.shape())?;
-            crate::crs::chart_shape_length(metric, data.shape())
+            crate::crs::chart_shape_length(
+                metric,
+                data.shape(),
+                data.shape_data().existing_bounds(),
+            )
         },
     }
 }

@@ -9,7 +9,6 @@ use geographiclib_rs::Geodesic;
 use crate::error::Result;
 use crate::geographic::{
     ChartStep, CircularInterval, EdgeDirection, GeographicFrame, Latitude, LongitudeWindows,
-    SeamIdentity,
 };
 use crate::geometry::types::ChartMetric;
 use crate::geometry::{
@@ -131,7 +130,6 @@ fn one_minus_sinc_small(value: f64) -> f64 {
 pub(crate) struct ChartEdge {
     frame: GeographicFrame,
     meridian: Option<MeridianCoordinates>,
-    seam_meridian: bool,
     start_longitude: f64,
     end_longitude: f64,
     start_latitude: f64,
@@ -179,7 +177,6 @@ impl ChartEdge {
         let start_latitude = Latitude::from_admitted(frame, start.y).get();
         let end_latitude = Latitude::from_admitted(frame, end.y).get();
         let latitude_delta = end_latitude - start_latitude;
-        let seam_meridian = is_seam_longitude(axis, start.x) && is_seam_longitude(axis, end.x);
         let meridian = if longitude_delta_native == 0.0 && latitude_delta != 0.0 {
             let (longitude, start_latitude) = frame
                 .to_geodesic_xy(start.x, start_latitude)
@@ -199,7 +196,6 @@ impl ChartEdge {
         Ok(Self {
             frame,
             meridian,
-            seam_meridian,
             start_longitude: start.x,
             end_longitude: end.x,
             start_latitude,
@@ -417,11 +413,6 @@ impl ChartEdge {
             .expect("an admitted chart-edge witness is finite"))
     }
 
-    pub(super) fn seam_span(&self) -> Option<[f64; 2]> {
-        self.seam_meridian
-            .then_some([self.start_latitude, self.end_latitude])
-    }
-
     pub(crate) fn length(&self, geodesic: &Geodesic) -> Result<f64> {
         if self.latitude_delta == 0.0 {
             return self.finite_length(self.parallel_length(geodesic));
@@ -575,7 +566,7 @@ impl ChartEdge {
         Ok(segment_projection(query, Segment { start, end })?.fraction())
     }
 
-    fn integrate(&self, start: f64, end: f64, geodesic: &Geodesic) -> Result<f64> {
+    pub(super) fn integrate(&self, start: f64, end: f64, geodesic: &Geodesic) -> Result<f64> {
         self.integrate_interval::<false>(start, end, geodesic)
     }
 
@@ -798,24 +789,6 @@ impl ChartEdge {
     }
 }
 
-#[expect(
-    clippy::float_cmp,
-    reason = "only an exact seam spelling is the topology-owned seam identity"
-)]
-fn is_seam_longitude(axis: crate::geographic::PeriodicAxis, value: f64) -> bool {
-    let magnitude = value.abs();
-    if magnitude < axis.half_period() {
-        false
-    } else if magnitude == axis.half_period() {
-        true
-    } else {
-        axis.canonicalize(value)
-            .expect("chart-edge longitude was admitted")
-            .identity(axis)
-            == SeamIdentity::Seam
-    }
-}
-
 pub(super) fn chart_edge_differential(
     edge: &ChartEdge,
     geodesic: &Geodesic,
@@ -884,6 +857,10 @@ impl ChartMetric for super::GeodesicMetric {
 
     fn chart_edge_locate_t(&self, edge: &ChartEdge, distance: f64, length: f64) -> Result<f64> {
         edge.locate_t(distance, length, &self.geodesic, self.frame)
+    }
+
+    fn chart_edge_interval_length(&self, edge: &ChartEdge, start: f64, end: f64) -> Result<f64> {
+        edge.integrate(start, end, &self.geodesic)
     }
 
     fn chart_edge_position(&self, edge: &ChartEdge, parameter: f64) -> Point {
@@ -966,20 +943,6 @@ impl ChartMetric for super::GeodesicMetric {
 
     fn chart_area_edge_term(&self, edge: &ChartEdge, north: bool) -> f64 {
         edge.authalic_area_term(&self.authalic_series, north)
-    }
-
-    fn chart_edge_seam_span(&self, edge: &ChartEdge) -> Option<[f64; 2]> {
-        edge.seam_span()
-    }
-
-    fn chart_seam_span_length(&self, south: f64, north: f64) -> Result<f64> {
-        let half_period = self.frame.longitude().half_period();
-        let edge = ChartEdge::new(
-            Point::new_raw_xy(half_period, south),
-            Point::new_raw_xy(-half_period, north),
-            self.frame,
-        )?;
-        edge.length(&self.geodesic)
     }
 
     fn chart_area_factor(&self) -> f64 {
@@ -1234,25 +1197,6 @@ mod tests {
                 "{error}"
             );
         }
-    }
-
-    #[test]
-    fn chart_edge_reports_only_meridians_on_the_periodic_seam() {
-        let seam = ChartEdge::new(
-            Point::new_raw_xy(180.0, 70.0),
-            Point::new_raw_xy(-180.0, 80.0),
-            degrees(),
-        )
-        .unwrap();
-        assert_eq!(seam.seam_span(), Some([70.0, 80.0]));
-
-        let ordinary = ChartEdge::new(
-            Point::new_raw_xy(0.0, 70.0),
-            Point::new_raw_xy(0.0, 80.0),
-            degrees(),
-        )
-        .unwrap();
-        assert_eq!(ordinary.seam_span(), None);
     }
 
     #[test]

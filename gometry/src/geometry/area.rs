@@ -4,6 +4,7 @@
 use std::simd::num::SimdFloat as _;
 
 use crate::error::Result;
+use crate::geographic::{FullTurnPole, GeographicFrame, Latitude, Pole};
 use crate::geometry::access::{REDUCE_LANES, ReduceSimd, crossover, simd_reduce_f64};
 use crate::geometry::exact_arith::ExactSign;
 use crate::geometry::exact_arith::product_sum::ExactSum;
@@ -191,6 +192,258 @@ pub(crate) fn exact_ring_area_sign_columns(xs: &[f64], ys: &[f64], pairs: usize)
     area_sign_from_ordering(sum.ordering())
 }
 
+pub(in crate::geometry) struct LiftedRingArea {
+    pub chart_turn: i64,
+    pub full_extent: bool,
+    pub orientation: Option<i8>,
+    pub south: Latitude,
+    pub north: Latitude,
+}
+
+struct RawRingCertificate {
+    full_extent: bool,
+    south: f64,
+    north: f64,
+}
+
+fn raw_ring_certificate(
+    frame: GeographicFrame,
+    xs: &[f64],
+    ys: &[f64],
+) -> Option<RawRingCertificate> {
+    let axis = frame.longitude();
+    let half = axis.half_period();
+    let bound = axis.ordinary_longitude_bound();
+    let &first_x = xs.first()?;
+    let &first_y = ys.first()?;
+    let positive_seam_bits = half.to_bits();
+    let negative_seam_bits = (-half).to_bits();
+    let mut has_positive_seam = first_x.to_bits() == positive_seam_bits;
+    let mut has_negative_seam = first_x.to_bits() == negative_seam_bits;
+    let mut south = first_y;
+    let mut north = first_y;
+    let mut maximum_step = 0.0_f64;
+    let mut maximum_ordinary = if has_positive_seam || has_negative_seam {
+        0.0
+    } else {
+        first_x.abs()
+    };
+    for (&[start, end], &y) in xs.array_windows::<2>().zip(ys.iter().skip(1)) {
+        south = south.min(y);
+        north = north.max(y);
+        maximum_step = maximum_step.max((end - start).abs());
+        let positive_seam = end.to_bits() == positive_seam_bits;
+        let negative_seam = end.to_bits() == negative_seam_bits;
+        has_positive_seam |= positive_seam;
+        has_negative_seam |= negative_seam;
+        let ordinary = if positive_seam || negative_seam {
+            0.0
+        } else {
+            end.abs()
+        };
+        maximum_ordinary = maximum_ordinary.max(ordinary);
+    }
+    // Strict steps keep +H respelling a constant whole-period translation.
+    // Half-turn ties can reverse direction; nominal seam aliases are not exact lifts.
+    (maximum_ordinary < bound
+        && if has_positive_seam {
+            maximum_step < half
+        } else {
+            maximum_step <= half
+        }
+        && south >= -frame.pole()
+        && north <= frame.pole())
+    .then_some(RawRingCertificate {
+        full_extent: has_positive_seam && has_negative_seam,
+        south,
+        north,
+    })
+}
+
+pub(in crate::geometry) fn lifted_ring_area_sign(
+    frame: GeographicFrame,
+    xs: &[f64],
+    ys: &[f64],
+    needs_orientation: bool,
+) -> Result<LiftedRingArea> {
+    let axis = frame.longitude();
+    if let Some(raw) = raw_ring_certificate(frame, xs, ys) {
+        let orientation = needs_orientation.then(|| {
+            match exact_ring_area_sign_columns(xs, ys, xs.len().saturating_sub(1)) {
+                AreaSign::Positive => 1,
+                AreaSign::Negative => -1,
+                AreaSign::Zero => 0,
+            }
+        });
+        return Ok(LiftedRingArea {
+            chart_turn: 0,
+            full_extent: raw.full_extent,
+            orientation,
+            south: Latitude::from_admitted(frame, raw.south),
+            north: Latitude::from_admitted(frame, raw.north),
+        });
+    }
+    let mut previous_canonical = axis
+        .canonicalize(*xs.first().expect("admitted ring has a first longitude"))
+        .expect("ring longitude is admitted");
+    let first_x = previous_canonical.get();
+    let first_y = Latitude::from_admitted(
+        frame,
+        *ys.first().expect("admitted ring has a first latitude"),
+    );
+    let mut filter = needs_orientation
+        .then(|| CycleSignFilter::new(XY::new(first_x, first_y.get()), xs.len().saturating_sub(1)))
+        .flatten();
+    let mut turn = 0_i64;
+    let mut minimum = (0_i64, first_x);
+    let mut maximum = minimum;
+    let mut south = first_y;
+    let mut north = first_y;
+    for (&[start, end], &y) in xs.array_windows::<2>().zip(ys.iter().skip(1)) {
+        let canonical = axis.canonicalize(end).expect("ring longitude is admitted");
+        if !axis.ordinary_chart_edge(start, end) {
+            let transit = axis
+                .chart_step(start, end)
+                .expect("ring chart step is admitted")
+                .transit_from_canonical(previous_canonical, canonical);
+            turn = turn
+                .checked_add(i64::from(transit))
+                .ok_or(crate::error::ResourceError::SizeOverflow)?;
+        }
+        previous_canonical = canonical;
+        let x = canonical.get();
+        let y = Latitude::from_admitted(frame, y);
+        if y.get() < south.get() {
+            south = y;
+        }
+        if y.get() > north.get() {
+            north = y;
+        }
+        let position = (turn, x);
+        if lifted_position_cmp(position, minimum).is_lt() {
+            minimum = position;
+        }
+        if lifted_position_cmp(position, maximum).is_gt() {
+            maximum = position;
+        }
+        if let Some(active) = &mut filter {
+            if let Some(lifted) = exactly_represented_lift(x, turn, axis.period()) {
+                active.push(XY::new(lifted, y.get()));
+            } else {
+                filter = None;
+            }
+        }
+    }
+    let span = maximum.0.abs_diff(minimum.0);
+    let full_extent = span > 1 || (span == 1 && maximum.1 >= minimum.1);
+    let orientation = if needs_orientation {
+        Some(match turn {
+            0 => match filter.and_then(CycleSignFilter::finish) {
+                Some(AreaSign::Positive) => 1,
+                Some(AreaSign::Negative) => -1,
+                Some(AreaSign::Zero) => 0,
+                None => lifted_exact_ring_area_sign(frame, xs, ys)?,
+            },
+            -1 | 1 => match FullTurnPole::of_latitude_span(south.get(), north.get()) {
+                FullTurnPole::Bounded(Pole::North) => {
+                    if turn > 0 {
+                        1
+                    } else {
+                        -1
+                    }
+                },
+                FullTurnPole::Bounded(Pole::South) => {
+                    if turn > 0 {
+                        -1
+                    } else {
+                        1
+                    }
+                },
+                FullTurnPole::Ambiguous => 0,
+            },
+            _ => 0,
+        })
+    } else {
+        None
+    };
+    Ok(LiftedRingArea {
+        chart_turn: turn,
+        full_extent,
+        orientation,
+        south,
+        north,
+    })
+}
+
+fn lifted_position_cmp(left: (i64, f64), right: (i64, f64)) -> std::cmp::Ordering {
+    left.0
+        .cmp(&right.0)
+        .then_with(|| left.1.total_cmp(&right.1))
+}
+
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "only exactly represented turn integers enter the float filter"
+)]
+fn exactly_represented_lift(x: f64, turn: i64, period: f64) -> Option<f64> {
+    if turn == 0 {
+        return Some(x);
+    }
+    if turn.unsigned_abs() > (1_u64 << 53) || period.fract() != 0.0 {
+        return None;
+    }
+    let offset = (turn as f64) * period;
+    if offset.abs() > (1_u64 << 53) as f64 {
+        return None;
+    }
+    let sum = x + offset;
+    let offset_part = sum - x;
+    let residual = (x - (sum - offset_part)) + (offset - offset_part);
+    (sum.is_finite() && residual == 0.0).then_some(sum)
+}
+
+fn lifted_exact_ring_area_sign(frame: GeographicFrame, xs: &[f64], ys: &[f64]) -> Result<i8> {
+    let axis = frame.longitude();
+    let mut sum = ExactSum::zero();
+    let mut turn = 0_i64;
+    let mut canonical0 = axis
+        .canonicalize(*xs.first().expect("admitted ring has a first longitude"))
+        .expect("ring longitude is admitted");
+    let mut x0 = canonical0.get();
+    let mut y0 = Latitude::from_admitted(
+        frame,
+        *ys.first().expect("admitted ring has a first latitude"),
+    )
+    .get();
+    for (&[start, end], &end_y) in xs.array_windows::<2>().zip(ys.iter().skip(1)) {
+        let canonical1 = axis.canonicalize(end).expect("ring longitude is admitted");
+        let transit = if axis.ordinary_chart_edge(start, end) {
+            0
+        } else {
+            axis.chart_step(start, end)
+                .expect("ring chart step is admitted")
+                .transit_from_canonical(canonical0, canonical1)
+        };
+        let next_turn = turn
+            .checked_add(i64::from(transit))
+            .ok_or(crate::error::ResourceError::SizeOverflow)?;
+        let x1 = canonical1.get();
+        let y1 = Latitude::from_admitted(frame, end_y).get();
+        sum.add_cross(x0, y0, x1, y1);
+        sum.add_scaled_product(axis.period(), y1, turn, false);
+        sum.add_scaled_product(axis.period(), y0, next_turn, true);
+        turn = next_turn;
+        canonical0 = canonical1;
+        x0 = x1;
+        y0 = y1;
+    }
+    Ok(match sum.ordering() {
+        std::cmp::Ordering::Greater => 1,
+        std::cmp::Ordering::Less => -1,
+        std::cmp::Ordering::Equal => 0,
+    })
+}
+
 fn cycle_sign(edge_count: usize, edges: impl Iterator<Item = (XY, XY)> + Clone) -> AreaSign {
     if edge_count == 0 {
         return AreaSign::Zero;
@@ -264,7 +517,7 @@ struct CycleSignFilter {
 
 impl CycleSignFilter {
     fn new(origin: XY, edge_count: usize) -> Option<Self> {
-        (origin.x.is_finite() && origin.y.is_finite()).then_some(Self {
+        (edge_count <= 1 << 26 && origin.x.is_finite() && origin.y.is_finite()).then_some(Self {
             origin,
             previous: XY::new(0.0, 0.0),
             edge_count,
@@ -1174,6 +1427,183 @@ pub(crate) fn open_xy_cycle_magnitude(points: &[XY]) -> AreaMeasure {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn raw_ring_certificate_declines_rounded_nominal_seam_spellings() {
+        let factor = crate::geographic::AngularFactor::try_new(
+            "unit",
+            std::f64::consts::TAU / 400.0_f64.next_up(),
+        )
+        .unwrap();
+        let frame = GeographicFrame::try_new(factor, factor, 0.0).unwrap();
+        let xs = [200.0, 200.0, 100.0, 100.0, 200.0, 0.0, 0.0, 200.0];
+        let ys = [0.0, 1.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0];
+        assert!(raw_ring_certificate(frame, &xs, &ys).is_none());
+        assert_eq!(
+            exact_ring_area_sign_columns(&xs, &ys, xs.len().saturating_sub(1)),
+            AreaSign::Zero,
+        );
+        let area = lifted_ring_area_sign(frame, &xs, &ys, true).unwrap();
+        assert_eq!(area.chart_turn, 0);
+        assert_eq!(area.orientation, Some(-1));
+        assert_eq!(lifted_exact_ring_area_sign(frame, &xs, &ys).unwrap(), -1);
+    }
+
+    #[test]
+    fn raw_ring_certificate_keeps_exact_negative_seam_endpoints() {
+        let frame = GeographicFrame::crs84();
+        let xs = [-180.0, -170.0, -170.0, -180.0, -180.0];
+        let ys = [-10.0, -10.0, 10.0, 10.0, -10.0];
+        assert!(raw_ring_certificate(frame, &xs, &ys).is_some());
+        let area = lifted_ring_area_sign(frame, &xs, &ys, true).unwrap();
+        assert_eq!(area.chart_turn, 0);
+        assert_eq!(area.orientation, Some(1));
+        assert!(!area.full_extent);
+    }
+
+    #[test]
+    fn raw_ring_certificate_keeps_positive_seam_orientation_on_thin_cycles() {
+        let radians = crate::geographic::AngularFactor::try_new("unit", 1.0).unwrap();
+        for frame in [
+            GeographicFrame::crs84(),
+            GeographicFrame::try_new(radians, radians, 0.0).unwrap(),
+        ] {
+            let half = frame.longitude().half_period();
+            let interior = half * 0.123_456_789;
+            for height in [
+                f64::from_bits(1),
+                f64::MIN_POSITIVE,
+                1.0_f64.next_up() - 1.0,
+            ] {
+                for (height, expected) in [(height, -1), (-height, 1), (0.0, 0)] {
+                    for (xs, ys) in [
+                        ([half, interior, interior, half, half], [
+                            0.0, 0.0, height, height, 0.0,
+                        ]),
+                        ([interior, interior, half, half, interior], [
+                            0.0, height, height, 0.0, 0.0,
+                        ]),
+                    ] {
+                        assert!(raw_ring_certificate(frame, &xs, &ys).is_some());
+                        let raw = exact_ring_area_sign_columns(&xs, &ys, 4);
+                        assert_eq!(raw, match expected {
+                            -1 => AreaSign::Negative,
+                            1 => AreaSign::Positive,
+                            _ => AreaSign::Zero,
+                        },);
+                        assert_eq!(
+                            lifted_exact_ring_area_sign(frame, &xs, &ys).unwrap(),
+                            expected,
+                        );
+                        let area = lifted_ring_area_sign(frame, &xs, &ys, true).unwrap();
+                        assert_eq!(area.orientation, Some(expected));
+                        assert_eq!(area.chart_turn, 0);
+                        assert!(!area.full_extent);
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn raw_ring_certificate_declines_positive_seam_half_turn_ties() {
+        for xs in [[180.0, 0.0, 90.0, 180.0], [90.0, 180.0, 0.0, 90.0]] {
+            assert!(
+                raw_ring_certificate(GeographicFrame::crs84(), &xs, &[0.0, 1.0, 1.0, 0.0],)
+                    .is_none()
+            );
+        }
+        assert!(
+            raw_ring_certificate(
+                GeographicFrame::crs84(),
+                &[180.0, 170.0, -10.0, 170.0, 180.0],
+                &[0.0, 1.0, 1.0, 0.0, 0.0],
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn raw_ring_certificate_preserves_full_extent_between_both_seam_spellings() {
+        let frame = GeographicFrame::crs84();
+        let xs = [-180.0, -90.0, 0.0, 90.0, 180.0, 90.0, 0.0, -90.0, -180.0];
+        let ys = [-1.0, -1.0, -1.0, -1.0, -1.0, 1.0, 1.0, 1.0, -1.0];
+        assert!(raw_ring_certificate(frame, &xs, &ys).is_some());
+        let area = lifted_ring_area_sign(frame, &xs, &ys, true).unwrap();
+        assert!(area.full_extent);
+        assert_eq!(area.chart_turn, 0);
+        assert_eq!(area.orientation, Some(1));
+        assert_eq!(lifted_exact_ring_area_sign(frame, &xs, &ys).unwrap(), 1);
+    }
+
+    #[test]
+    fn opposite_seam_spellings_are_zero_steps_but_decline_the_raw_certificate() {
+        let frame = GeographicFrame::crs84();
+        let axis = frame.longitude();
+        let xs = [180.0, -180.0, -180.0, 180.0, 180.0];
+        let ys = [-10.0, -10.0, 10.0, 10.0, -10.0];
+        assert!(raw_ring_certificate(frame, &xs, &ys).is_none());
+        assert_eq!(
+            axis.chart_step(180.0, -180.0)
+                .unwrap()
+                .delta(axis)
+                .to_bits(),
+            0.0_f64.to_bits()
+        );
+        let area = lifted_ring_area_sign(frame, &xs, &ys, true).unwrap();
+        assert_eq!(area.chart_turn, 0);
+        assert_eq!(area.orientation, Some(0));
+        assert!(!area.full_extent);
+    }
+
+    #[test]
+    fn lifted_ring_orientation_distinguishes_equal_directed_seam_edges() {
+        let frame = GeographicFrame::crs84();
+        let ys = [-10.0, 10.0, 10.0, -10.0, -10.0];
+        for (xs, expected) in [
+            ([-180.0, -180.0, -190.0, -190.0, -180.0], 1),
+            ([-180.0, -180.0, -170.0, -170.0, -180.0], -1),
+        ] {
+            let area = lifted_ring_area_sign(frame, &xs, &ys, true).unwrap();
+            assert_eq!(area.orientation, Some(expected));
+            assert!(!area.full_extent);
+            assert_eq!(area.chart_turn, 0);
+            assert_eq!(
+                lifted_exact_ring_area_sign(frame, &xs, &ys).unwrap(),
+                expected
+            );
+            assert_eq!(
+                lifted_ring_area_sign(frame, &xs, &ys, false)
+                    .unwrap()
+                    .orientation,
+                None,
+            );
+        }
+    }
+
+    #[test]
+    fn unrepresentable_lift_uses_the_exact_streaming_area_sign() {
+        let frame = GeographicFrame::crs84();
+        let xs = [170.0, -100.1, -100.1, 170.0, 170.0];
+        let ys = [-10.0, -10.0, 10.0, 10.0, -10.0];
+        assert_eq!(exactly_represented_lift(-100.1, 1, 360.0), None);
+        let area = lifted_ring_area_sign(frame, &xs, &ys, true).unwrap();
+        assert_eq!(area.orientation, Some(1));
+        assert!(!area.full_extent);
+        assert_eq!(lifted_exact_ring_area_sign(frame, &xs, &ys).unwrap(), 1);
+    }
+
+    #[test]
+    fn streaming_lifted_area_keeps_zero_orientation_undetermined() {
+        let area = lifted_ring_area_sign(
+            GeographicFrame::crs84(),
+            &[-180.0, -180.0, -180.0],
+            &[-10.0, 10.0, -10.0],
+            true,
+        )
+        .unwrap();
+        assert_eq!(area.orientation, Some(0));
+    }
 
     /// Independent binary64 shoelace reference after translating to one vertex.
     fn shifted_scalar_area_reference(xs: &[f64], ys: &[f64]) -> f64 {

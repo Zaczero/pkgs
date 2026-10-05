@@ -67,7 +67,7 @@ const fn required_limbs(
 const _: () = assert!(ADDRESS_BITS == 32 || ADDRESS_BITS == 64);
 
 pub(crate) const LIMBS: usize =
-    required_limbs(PAIR_PRODUCT_BITS, ADDRESS_BITS, PAIR_PRODUCTS_PER_EDGE, 0);
+    required_limbs(PAIR_PRODUCT_BITS, ADDRESS_BITS, PAIR_PRODUCTS_PER_EDGE, 64);
 const CUBIC_LIMBS: usize = required_limbs(
     CUBIC_PRODUCT_BITS,
     ADDRESS_BITS,
@@ -78,7 +78,8 @@ const CUBIC_LIMBS: usize = required_limbs(
 /// Finite binary64 pair products share quantum 2^-2148 and have integer
 /// magnitude below 2^4196. A `usize`-addressable edge population has fewer
 /// than 2^ADDRESS_BITS edges; two products per edge therefore need
-/// `4196 + ADDRESS_BITS + 1` bits.
+/// `4196 + ADDRESS_BITS + 1` bits. The additional 64 bits cover signed-i64
+/// chart-lift multipliers and four products per edge in lifted ring area signs.
 #[derive(Clone)]
 pub(crate) struct ExactSum {
     positive: [u64; LIMBS],
@@ -140,6 +141,44 @@ impl ExactSum {
     pub(crate) fn add_cross(&mut self, x0: f64, y0: f64, x1: f64, y1: f64) {
         self.add_product(x0, y1);
         self.subtract_product(x1, y0);
+    }
+
+    pub(in crate::geometry) fn add_scaled_product(
+        &mut self,
+        lhs: f64,
+        rhs: f64,
+        scale: i64,
+        subtract: bool,
+    ) {
+        let (lhs_negative, lhs_mantissa, lhs_exponent) = decompose(lhs);
+        let (rhs_negative, rhs_mantissa, rhs_exponent) = decompose(rhs);
+        let magnitude = u128::from(scale.unsigned_abs());
+        if lhs_mantissa == 0 || rhs_mantissa == 0 || magnitude == 0 {
+            return;
+        }
+        let negative = subtract ^ lhs_negative ^ rhs_negative ^ (scale < 0);
+        let product = u128::from(lhs_mantissa).wrapping_mul(u128::from(rhs_mantissa));
+        let shift = usize::try_from(
+            lhs_exponent
+                .wrapping_add(rhs_exponent)
+                .wrapping_sub(PRODUCT_MIN_EXP),
+        )
+        .expect("finite scaled product fits the exact accumulator");
+        let target = if negative {
+            &mut self.negative
+        } else {
+            &mut self.positive
+        };
+        add_shifted_product(
+            target,
+            (product & u128::from(u64::MAX)).wrapping_mul(magnitude),
+            shift,
+        );
+        add_shifted_product(
+            target,
+            (product >> 64).wrapping_mul(magnitude),
+            shift.wrapping_add(64),
+        );
     }
 
     /// Round doubled area `/ 2` to binary64, ties-to-even. Exact zero and
@@ -774,7 +813,7 @@ mod tests {
         assert!(centroid_carry_bit_32 < 99 * LIMB_BITS);
         assert_eq!(
             LIMBS,
-            required_limbs(PAIR_PRODUCT_BITS, ADDRESS_BITS, PAIR_PRODUCTS_PER_EDGE, 0,)
+            required_limbs(PAIR_PRODUCT_BITS, ADDRESS_BITS, PAIR_PRODUCTS_PER_EDGE, 64,)
         );
         assert_eq!(
             CUBIC_LIMBS,
@@ -1090,10 +1129,24 @@ mod tests {
         // Mechanism test only: the prefilled penultimate limb models carry
         // propagation without claiming a reachable allocation of this state.
         let mut sum = ExactSum::zero();
-        sum.positive[LIMBS - 2] = u64::MAX;
+        let product_limb = 4195 / LIMB_BITS;
+        sum.positive[product_limb] = u64::MAX;
         sum.add_product(f64::MAX, f64::MAX);
-        assert_eq!(sum.positive[LIMBS - 1], 1);
-        assert!(sum.positive[LIMBS - 2] < u64::MAX);
+        assert_eq!(sum.positive[product_limb + 1], 1);
+        assert!(sum.positive[product_limb] < u64::MAX);
+    }
+
+    #[test]
+    fn scaled_pair_product_preserves_signed_i64_low_bits() {
+        let mut sum = ExactSum::zero();
+        sum.add_scaled_product(1.0, 1.0, i64::MAX, false);
+        sum.subtract_product(f64::from_bits(0x43E0_0000_0000_0000), 1.0);
+        assert_eq!(sum.round_to_binary64(), -1.0);
+
+        let mut sum = ExactSum::zero();
+        sum.add_scaled_product(1.0, 1.0, i64::MIN, false);
+        sum.add_product(f64::from_bits(0x43E0_0000_0000_0000), 1.0);
+        assert_eq!(sum.ordering(), Ordering::Equal);
     }
 
     #[test]

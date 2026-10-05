@@ -12,6 +12,7 @@
 
 use std::cell::OnceCell;
 use std::cmp::Ordering;
+use std::hash::{Hash, Hasher};
 use std::rc::Rc;
 
 use crate::error::{Error, ErrorKind, ResourceError};
@@ -78,11 +79,40 @@ impl ExactSign {
 /// Keeping the numerator and denominator as exact integers avoids making that
 /// vertex a rounded source authority. Every constructor reduces the ratio, so
 /// repeated midpoint splits stay linear in their binary parameter depth rather
-/// than multiplying equivalent denominators.
-#[derive(Clone, Debug, Eq, PartialEq)]
+/// than multiplying equivalent denominators. Equality and hashing use the ratio
+/// value because constructors may distribute binary exponents differently.
+#[derive(Clone, Debug)]
 pub(in crate::geometry) struct ExactRational {
     numerator: ExactDyadic,
     denominator: ExactDyadic,
+}
+
+impl PartialEq for ExactRational {
+    fn eq(&self, other: &Self) -> bool {
+        let sign = self.numerator.negative ^ self.denominator.negative;
+        sign == (other.numerator.negative ^ other.denominator.negative)
+            && self.numerator.limbs.as_slice() == other.numerator.limbs.as_slice()
+            && self.denominator.limbs.as_slice() == other.denominator.limbs.as_slice()
+            && rational_exponent(self) == rational_exponent(other)
+    }
+}
+
+impl Eq for ExactRational {}
+
+impl Hash for ExactRational {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        (self.numerator.negative ^ self.denominator.negative).hash(state);
+        self.numerator.limbs.as_slice().hash(state);
+        self.denominator.limbs.as_slice().hash(state);
+        rational_exponent(self).hash(state);
+    }
+}
+
+fn rational_exponent(value: &ExactRational) -> i128 {
+    // Equivalent ratios may distribute a power of two across both operands.
+    i128::from(value.numerator.exponent)
+        .checked_sub(i128::from(value.denominator.exponent))
+        .expect("i64 dyadic exponents differ within i128")
 }
 
 impl ExactRational {

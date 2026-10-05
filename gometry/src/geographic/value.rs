@@ -445,19 +445,33 @@ impl PeriodicAxis {
         to: f64,
         edge: EdgeDirection,
     ) -> Result<i8, GeographicError> {
-        let canonical_from = self.canonicalize(from)?.get();
-        let canonical_to = self.canonicalize(to)?.get();
+        Ok(ChartStep::Shortest(edge)
+            .transit_from_canonical(self.canonicalize(from)?, self.canonicalize(to)?))
+    }
+}
+
+impl ChartStep {
+    pub(crate) fn transit_from_canonical(
+        self,
+        from: CanonicalLongitude,
+        to: CanonicalLongitude,
+    ) -> i8 {
+        let edge = match self {
+            Self::Circle(TurnDirection::Positive) => return 1,
+            Self::Circle(TurnDirection::Negative) => return -1,
+            Self::Shortest(edge) => edge,
+        };
         let direction = match edge {
             EdgeDirection::Minor(delta) if delta > 0.0 => Some(TurnDirection::Positive),
             EdgeDirection::Minor(delta) if delta < 0.0 => Some(TurnDirection::Negative),
             EdgeDirection::HalfTurn(direction) => Some(direction),
             EdgeDirection::Minor(_) => None,
         };
-        Ok(match direction {
-            Some(TurnDirection::Positive) if canonical_to < canonical_from => 1,
-            Some(TurnDirection::Negative) if canonical_to > canonical_from => -1,
+        match direction {
+            Some(TurnDirection::Positive) if to.get() < from.get() => 1,
+            Some(TurnDirection::Negative) if to.get() > from.get() => -1,
             _ => 0,
-        })
+        }
     }
 }
 

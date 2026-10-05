@@ -1238,6 +1238,9 @@ class Geometry:
         longitude/latitude; a projected CRS gives native linear units; a CRS-free
         geometry gives raw coordinate units. Use ``to_crs`` to change frame.
 
+        Geographic polygon perimeter follows the exact-identity, canonical
+        seam-cut convention documented for ``gometry.length``.
+
         A ``GeometryCollection`` sums every member's length or perimeter,
         including overlapping members.
 
@@ -6858,6 +6861,9 @@ class GeometryArray(Sequence[_GeometryT_co]):
         A geographic CRS gives ellipsoidal meters along edges straight in
         longitude/latitude; a projected CRS gives native linear units; a CRS-free
         array gives raw coordinate units. Use ``to_crs`` to change frame.
+
+        Geographic polygon perimeter follows the exact-identity, canonical
+        seam-cut convention documented for ``gometry.length``.
 
         Each ``GeometryCollection`` row sums every member's length or
         perimeter, including overlapping members.
@@ -15859,6 +15865,20 @@ def length(
 
     For geographic geometries, length and perimeter are measured along edges
     straight in longitude/latitude on the CRS ellipsoid.
+
+    Geographic polygon perimeter removes chart-cut copies only: within one
+    ring, antiparallel coincident arcs at different longitude lifts cancel;
+    on the canonical seam meridian, opposite-interior copies cancel across all
+    rings, including a ring with itself. Same-side seam duplicates, off-seam
+    same-lift retraces, and every other stored overlap remain in the perimeter.
+    This seam convention is tied to the canonical seam: rotating the longitude
+    origin can change which arcs are seam cuts.
+
+    Arc identity uses exact canonical longitudes and admitted latitudes; no
+    tolerance is applied. Between the two seam spellings, the longitude step is
+    degenerate; differing latitudes still trace a meridian arc. An explicit
+    one-period edge between non-seam longitudes follows the full circle. Planar
+    and projected perimeter rules are unchanged.
 
     Parameters
     ----------

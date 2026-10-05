@@ -185,6 +185,9 @@ impl PyGeometryArray {
     /// longitude/latitude; a projected CRS gives native linear units; a CRS-free
     /// array gives raw coordinate units. Use ``to_crs`` to change frame.
     ///
+    /// Geographic polygon perimeter follows the exact-identity, canonical
+    /// seam-cut convention documented for ``gometry.length``.
+    ///
     /// Each ``GeometryCollection`` row sums every member's length or
     /// perimeter, including overlapping members.
     ///
@@ -502,6 +505,7 @@ impl PyGeometryArray {
                     unreachable!("geodesic model resolves to a geodesic metric");
                 };
                 let frame = metric.frame;
+                let cached_bounds = self.existing_element_bounds();
                 self.reduce_packed_columns_detached(py, move |columns| {
                     let values = match columns {
                         PackedColumns::Lines(line_columns) => {
@@ -509,13 +513,12 @@ impl PyGeometryArray {
                                 crate::crs::chart_line_length_columns(&metric, xs, ys)
                             })?
                         },
-                        PackedColumns::Polygons(polygon_columns) => {
-                            let ring_measure =
-                                |xs: &[f64], ys: &[f64], _window: std::ops::Range<usize>| {
-                                    crate::crs::chart_line_length_columns(&metric, xs, ys)
-                                };
-                            geodesic_polygon_measure(&polygon_columns, frame, ring_measure)?
-                        },
+                        PackedColumns::Polygons(polygon_columns) => geodesic_polygon_measure(
+                            &polygon_columns,
+                            frame,
+                            &metric,
+                            cached_bounds.as_deref().map(Vec::as_slice),
+                        )?,
                         PackedColumns::Points(_) => {
                             unreachable!("length packed lane requires line or polygon storage")
                         },
@@ -703,18 +706,80 @@ mod geographic_masked_bounds_tests {
 
     fn polygon(points: &[(f64, f64)]) -> Shape {
         Shape::Polygon(Polygon::new(
-            Ring::from_closed(
-                CoordSeq::try_from_points(
-                    &points
-                        .iter()
-                        .map(|&(x, y)| Point::new_raw_xy(x, y))
-                        .collect::<Vec<_>>(),
-                )
-                .unwrap(),
+            Ring::closed(
+                points
+                    .iter()
+                    .map(|&(x, y)| Point::new_raw_xy(x, y))
+                    .collect(),
             )
             .unwrap(),
             Vec::new(),
         ))
+    }
+
+    #[test]
+    fn packed_geodesic_length_applies_rule_t_and_uses_published_bounds() {
+        crate::test_support::initialize_python();
+        let ordinary = polygon(&[(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)]);
+        let cap = polygon(&[
+            (-180.0, 80.0),
+            (-90.0, 80.0),
+            (0.0, 80.0),
+            (90.0, 80.0),
+            (180.0, 80.0),
+            (180.0, 90.0),
+            (-180.0, 90.0),
+        ]);
+        let array = PyGeometryArray::from_shapes(
+            vec![ordinary, cap],
+            Frame::new(Some(crs_arc_static("EPSG:4326")), None).expect("valid test frame"),
+        )
+        .unwrap();
+        assert!(matches!(
+            array.storage(),
+            GeometryArrayStorage::Packed(PackedStorage::Polygons { .. })
+        ));
+
+        let cold = Python::attach(|py| {
+            crate::length_natural_array(py, &array)
+                .and_then(|result| result.bind(py).extract::<Vec<f64>>())
+                .expect("packed geographic length succeeds")
+        });
+        assert_eq!(cold.len(), 2);
+        assert!((cold[1] - 6_981_655.0).abs() < 1.0);
+
+        assert!(array.element_bounds().is_some());
+        let warm = Python::attach(|py| {
+            crate::length_natural_array(py, &array)
+                .and_then(|result| result.bind(py).extract::<Vec<f64>>())
+                .expect("cached-bound geographic length succeeds")
+        });
+        assert_eq!(
+            warm.iter().map(|value| value.to_bits()).collect::<Vec<_>>(),
+            cold.iter().map(|value| value.to_bits()).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn packed_geodesic_length_uses_the_shared_ambiguous_pole_gate() {
+        crate::test_support::initialize_python();
+        let ambiguous = polygon(&[
+            (-180.0, 20.0),
+            (-90.0, -20.0),
+            (0.0, 20.0),
+            (90.0, -20.0),
+            (180.0, 20.0),
+        ]);
+        let array = PyGeometryArray::from_shapes(
+            vec![ambiguous],
+            Frame::new(Some(crs_arc_static("EPSG:4326")), None).expect("valid test frame"),
+        )
+        .unwrap();
+        let error = Python::attach(|py| crate::length_natural_array(py, &array)).unwrap_err();
+        assert!(
+            error.to_string().to_lowercase().contains("ambiguous"),
+            "unexpected packed full-turn error: {error}"
+        );
     }
 
     #[test]

@@ -25,7 +25,8 @@ pub(crate) use value::{
 pub(crate) use view::GeographicAdmissionWork;
 pub(crate) use view::{
     GeographicAdmissionError, GeographicCollectionOwners, GeographicDiagnostic, GeographicInputs,
-    GeographicRing, GeographicViewError, RingDomain, RingSummary, ScalarGeographicView,
+    GeographicLocation, GeographicRing, GeographicViewError, RingDomain, RingSummary,
+    ScalarGeographicView, ring_gate,
 };
 
 #[derive(Clone, Copy, Debug, Error, PartialEq)]

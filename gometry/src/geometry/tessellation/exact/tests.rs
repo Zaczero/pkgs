@@ -95,6 +95,21 @@ fn power_of_two_denominators_reduce_as_the_gcd_would() {
 }
 
 #[test]
+fn rational_equality_and_hash_use_ratio_value() {
+    let from_dyadic = ExactRational::from_f64(307.5);
+    let from_quotient =
+        ExactRational::new(ExactDyadic::from_f64(615.0), ExactDyadic::from_f64(2.0)).unwrap();
+    assert_eq!(
+        from_dyadic.try_cmp(&from_quotient).unwrap(),
+        Ordering::Equal
+    );
+    assert_eq!(from_dyadic, from_quotient);
+    let mut values = std::collections::HashSet::new();
+    assert!(values.insert(from_dyadic));
+    assert!(!values.insert(from_quotient));
+}
+
+#[test]
 fn gcd_and_exact_quotient_agree_across_the_inline_and_heap_paths() {
     // The largest prime below 2^64, so every product crosses into a second
     // or third limb.
