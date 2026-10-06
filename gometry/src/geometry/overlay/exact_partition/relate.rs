@@ -177,7 +177,18 @@ impl ExactSourceInventory {
         let operands = self.operand_count();
         let face_cells = (global.count as usize).wrapping_mul(operands);
         let span_cells = partition.spans.len().wrapping_mul(operands);
-        let face_slots = self.global_face_slots(topology, global);
+        // Winding-shell support is represented by occupied incident faces;
+        // collapsed shells are the case that can contribute support without one.
+        let needs_raw = self
+            .ring_kinds
+            .iter()
+            .zip(&self.ring_holes)
+            .any(|(&kind, &hole)| kind == RingKind::Collapsed && !hole);
+        let face_slots = if needs_raw {
+            self.global_face_slots(topology, global)
+        } else {
+            (Vec::new(), Vec::new())
+        };
         let span_faces = Self::span_faces(partition, topology, edges, global);
         let mut facts = CellFacts {
             face_membership: Vec::new(),
@@ -200,11 +211,17 @@ impl ExactSourceInventory {
         facts.point_membership.resize(node_cells, false);
         let mut shell_support = Vec::new();
         let mut hole_support = Vec::new();
-        shell_support.reserve(self.polygon_count);
-        hole_support.reserve(self.polygon_count);
-        shell_support.resize(self.polygon_count, false);
-        hole_support.resize(self.polygon_count, false);
-        let mut touched_polygons = Vec::with_capacity(partition.spans.len());
+        if needs_raw {
+            shell_support.reserve(self.polygon_count);
+            hole_support.reserve(self.polygon_count);
+            shell_support.resize(self.polygon_count, false);
+            hole_support.resize(self.polygon_count, false);
+        }
+        let mut touched_polygons = if needs_raw {
+            Vec::with_capacity(partition.spans.len())
+        } else {
+            Vec::new()
+        };
         let mut point_sources_by_node = Vec::with_capacity(partition.point_sources.len());
         point_sources_by_node.extend_from_slice(&partition.point_sources);
         point_sources_by_node.sort_unstable_by_key(|(node, _)| node.0);
@@ -301,6 +318,9 @@ impl ExactSourceInventory {
                         });
                     state.2 |= hole;
                     point_shell_cursor += 1;
+                }
+                if !needs_raw {
+                    return Ok(());
                 }
                 let start = face_slots.0[face] as usize;
                 let end = face_slots.0[face + 1] as usize;
