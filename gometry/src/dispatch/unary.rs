@@ -7,7 +7,7 @@ use crate::broadcast::{
 };
 use crate::crs::frame::Frame;
 use crate::dispatch::metric::{
-    CachelessRowContext, Lane, LinearReferenceRow, MetricCtx, MetricScratch,
+    CachelessRowContext, Lane, LinearReferenceRow, MetricCtx, MetricResolver, MetricScratch,
 };
 use crate::dispatch::operation::{MetricOp, Operation};
 use crate::dispatch::packed::{
@@ -45,9 +45,14 @@ pub(crate) fn unary_scalar<R: BulkElement>(
 ) -> PyResult<R> {
     let resolver = op.resolver_with_unit(unit);
     let domain = crate::geometry::topology_domain(&geometry.frame)?;
-    let mut metric_scratch = MetricScratch::default();
+    let mut metric_scratch =
+        (!matches!(resolver, MetricResolver::None)).then(MetricScratch::default);
     let result = {
-        let metric = match resolver.resolve_ctx(&geometry.frame, &mut metric_scratch) {
+        let metric_result = match metric_scratch.as_mut() {
+            Some(scratch) => resolver.resolve_ctx(&geometry.frame, scratch),
+            None => Ok(MetricCtx::None),
+        };
+        let metric = match metric_result {
             Ok(metric) => metric,
             Err(error) => {
                 drop(metric_scratch);
@@ -182,20 +187,27 @@ fn run_unary_rows<T: BulkElement>(
     + Sync,
 ) -> PyResult<(Vec<T>, Frame)> {
     let domain = crate::geometry::topology_domain(&array.frame)?;
-    let mut metric_scratch = MetricScratch::default();
-    let result = {
-        let metric = match resolver.resolve_ctx(&array.frame, &mut metric_scratch) {
-            Ok(metric) => metric,
-            Err(error) => {
-                drop(metric_scratch);
-                return Err(error);
-            },
-        };
-        execute_unary_rows(py, array.clone(), domain, metric, mode, kernel)
-    };
-    drop(metric_scratch);
-    let values = result.map_err(rows_err)?;
-    Ok((values, array.frame.clone()))
+    match resolver {
+        MetricResolver::None => {
+            let values =
+                execute_unary_rows(py, array.clone(), domain, MetricCtx::None, mode, kernel)
+                    .map_err(rows_err)?;
+            Ok((values, array.frame.clone()))
+        },
+        resolver => {
+            let mut metric_scratch = MetricScratch::default();
+            let result = match resolver.resolve_ctx(&array.frame, &mut metric_scratch) {
+                Ok(metric) => execute_unary_rows(py, array.clone(), domain, metric, mode, kernel),
+                Err(error) => {
+                    drop(metric_scratch);
+                    return Err(error);
+                },
+            };
+            drop(metric_scratch);
+            let values = result.map_err(rows_err)?;
+            Ok((values, array.frame.clone()))
+        },
+    }
 }
 
 /// Scalar geometry method returning a typed leaf geometry.
@@ -394,11 +406,16 @@ pub(crate) fn unary_array_shapes_budgeted(
     let frame = array.frame.clone();
     let output_frame = frame.clone();
     let domain = crate::geometry::topology_domain(&frame)?;
-    let mut metric_scratch = MetricScratch::default();
+    let mut metric_scratch =
+        (!matches!(resolver, MetricResolver::None)).then(MetricScratch::default);
     let missing = array.missing().cloned();
     let array = array.clone();
     let result = {
-        let metric = match resolver.resolve_ctx(&frame, &mut metric_scratch) {
+        let metric_result = match metric_scratch.as_mut() {
+            Some(scratch) => resolver.resolve_ctx(&frame, scratch),
+            None => Ok(MetricCtx::None),
+        };
+        let metric = match metric_result {
             Ok(metric) => metric,
             Err(error) => {
                 drop(metric_scratch);
