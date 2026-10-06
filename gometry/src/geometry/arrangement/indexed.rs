@@ -17,7 +17,7 @@ pub(crate) struct IndexedTopology {
 pub(crate) struct IndexedTopologyScratch {
     pub(crate) component_stack: Vec<u32>,
     pub(crate) successor: Vec<u32>,
-    pub(crate) edge_slots: Vec<[u32; 2]>,
+    pub(crate) first_slot: Vec<u32>,
 }
 
 impl IndexedTopology {
@@ -100,7 +100,7 @@ impl IndexedTopology {
         debug_assert!(self.face_slots.capacity() >= slots);
         debug_assert!(scratch.component_stack.capacity() >= vertices);
         debug_assert!(scratch.successor.capacity() >= slots);
-        debug_assert!(scratch.edge_slots.capacity() >= slots / 2);
+        debug_assert!(scratch.first_slot.capacity() >= slots / 2);
         self.owners.clear();
         for vertex in 0..vertices {
             let row = self.starts[vertex] as usize..self.starts[vertex.wrapping_add(1)] as usize;
@@ -109,26 +109,27 @@ impl IndexedTopology {
                 .extend(std::iter::repeat_n(vertex as u32, row.len()));
         }
 
-        scratch.edge_slots.clear();
-        scratch.edge_slots.resize(slots / 2, [u32::MAX; 2]);
-        for (slot, &edge) in edge_of_slot.iter().enumerate() {
-            let pair = &mut scratch.edge_slots[edge as usize];
-            if pair[0] == u32::MAX {
-                pair[0] = slot as u32;
-            } else {
-                pair[1] = slot as u32;
-            }
-        }
+        scratch.first_slot.clear();
+        scratch.first_slot.resize(slots / 2, u32::MAX);
         self.twins.clear();
         self.twins.resize(slots, u32::MAX);
-        for &[left, right] in &scratch.edge_slots {
-            debug_assert_ne!(left, u32::MAX);
-            debug_assert_ne!(right, u32::MAX);
-            debug_assert_eq!(self.owners[left as usize], self.targets[right as usize]);
-            debug_assert_eq!(self.targets[left as usize], self.owners[right as usize]);
-            self.twins[left as usize] = right;
-            self.twins[right as usize] = left;
+        let mut paired_edges = 0_usize;
+        for (slot, &edge) in edge_of_slot.iter().enumerate() {
+            let first_slot = &mut scratch.first_slot[edge as usize];
+            if *first_slot == u32::MAX {
+                *first_slot = slot as u32;
+            } else {
+                let first = *first_slot as usize;
+                debug_assert_ne!(first, slot);
+                debug_assert_eq!(self.twins[first], u32::MAX);
+                debug_assert_eq!(self.owners[first], self.targets[slot]);
+                debug_assert_eq!(self.targets[first], self.owners[slot]);
+                self.twins[first] = slot as u32;
+                self.twins[slot] = first as u32;
+                paired_edges = paired_edges.wrapping_add(1);
+            }
         }
+        debug_assert_eq!(paired_edges, slots / 2);
 
         self.component_of.clear();
         self.component_of.resize(vertices, u32::MAX);
@@ -196,7 +197,7 @@ impl IndexedTopologyScratch {
     pub(crate) fn clear(&mut self) {
         self.component_stack.clear();
         self.successor.clear();
-        self.edge_slots.clear();
+        self.first_slot.clear();
     }
 }
 
@@ -228,7 +229,7 @@ mod tests {
         let mut scratch = IndexedTopologyScratch::default();
         scratch.component_stack.reserve(vertices);
         scratch.successor.reserve(slots);
-        scratch.edge_slots.reserve(slots / 2);
+        scratch.first_slot.reserve(slots / 2);
         topology.finish(edges, &mut scratch);
         topology
     }

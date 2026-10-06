@@ -132,7 +132,7 @@ impl RetainScratch for ArrangementSpares {
                 &self.topology_scratch.component_stack,
             ))
             .saturating_add(flat_vec_retained_bytes(&self.topology_scratch.successor))
-            .saturating_add(flat_vec_retained_bytes(&self.topology_scratch.edge_slots))
+            .saturating_add(flat_vec_retained_bytes(&self.topology_scratch.first_slot))
             .saturating_add(flat_vec_retained_bytes(&self.outer))
             .saturating_add(
                 self.winding_queue
@@ -383,12 +383,12 @@ mod tests {
             |scratch| scratch.topology_scratch.successor.capacity(),
         );
         assert_lane_evicted(
-            "topology_scratch.edge_slots",
-            size_of::<[u32; 2]>(),
+            "topology_scratch.first_slot",
+            u32_size,
             clear_core_pool,
             arrangement_spares,
-            |scratch, capacity| scratch.topology_scratch.edge_slots.reserve_exact(capacity),
-            |scratch| scratch.topology_scratch.edge_slots.capacity(),
+            |scratch, capacity| scratch.topology_scratch.first_slot.reserve_exact(capacity),
+            |scratch| scratch.topology_scratch.first_slot.capacity(),
         );
         assert_lane_evicted(
             "edge_of_slot",

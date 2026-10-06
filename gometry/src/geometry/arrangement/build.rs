@@ -191,7 +191,7 @@ impl<W: WindingWeight> Arrangement<W> {
             topology.face_slots.reserve(slots);
             topology_scratch.component_stack.reserve(vertices);
             topology_scratch.successor.reserve(slots);
-            topology_scratch.edge_slots.reserve(slots / 2);
+            topology_scratch.first_slot.reserve(slots / 2);
             topology.finish(edge_of_slot, topology_scratch)
         };
         core.edge_of_slot.clear();

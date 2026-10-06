@@ -462,7 +462,7 @@ impl OwnerLocalFaces {
         let mut scratch = IndexedTopologyScratch::default();
         scratch.component_stack.reserve(vertex_count);
         scratch.successor.reserve(slot_count);
-        scratch.edge_slots.reserve(edges.len());
+        scratch.first_slot.reserve(edges.len());
         topology.finish(&edge_of_slot, &mut scratch);
         drop(scratch);
 

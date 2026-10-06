@@ -4689,7 +4689,7 @@ impl ExactPartition<'_> {
         let mut scratch = IndexedTopologyScratch::default();
         scratch.component_stack.reserve(vertices);
         scratch.successor.reserve(slots);
-        scratch.edge_slots.reserve(self.spans.len());
+        scratch.first_slot.reserve(self.spans.len());
         topology.finish(&edge_of_slot, &mut scratch);
         Ok((topology, edge_of_slot))
     }
