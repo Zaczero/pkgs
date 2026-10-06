@@ -4653,9 +4653,18 @@ impl ExactPartition<'_> {
             let range = start as usize..end as usize;
             // Degree-two nodes are ordered too: visibility wedges read the
             // angular origin.
-            edge_of_slot[range].sort_unstable_by(|&left, &right| {
-                self.compare_departures(NodeId(node as u32), left as usize, right as usize)
-            });
+            let row = &mut edge_of_slot[range];
+            if let [left, right] = row {
+                if self.compare_departures(NodeId(node as u32), *left as usize, *right as usize)
+                    == Ordering::Greater
+                {
+                    std::mem::swap(left, right);
+                }
+            } else {
+                row.sort_unstable_by(|&left, &right| {
+                    self.compare_departures(NodeId(node as u32), left as usize, right as usize)
+                });
+            }
         }
         topology.targets.reserve(slots);
         for (node, &[start, end]) in topology.starts.array_windows::<2>().enumerate() {
