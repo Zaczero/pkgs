@@ -1157,12 +1157,6 @@ impl GlobalFaces {
             let b = source(right);
             stored_cross_sign(a.start, a.end, b.start, b.end) == ExactSign::Zero
         };
-        let mut span_slots = vec![0; partition.spans.len()];
-        for (slot, &span) in edges.iter().enumerate() {
-            if topology.owners[slot] == partition.spans[span as usize].start.0 {
-                span_slots[span as usize] = slot;
-            }
-        }
         // Every selected boundary dart and retained line source is appended
         // once; chord joins only change grouping. Production line spans are
         // unique, while duplicate test inputs merely over-reserve this hint.
@@ -1208,41 +1202,51 @@ impl GlobalFaces {
         }
         drop(walks);
         let mut planned_lines = Vec::with_capacity(lines.len());
-        let mut line_remaining = Vec::with_capacity(partition.spans.len());
-        line_remaining.resize(partition.spans.len(), false);
-        for &span in lines {
-            line_remaining[span as usize] = true;
-        }
-        let continuation = |slot: u32, remaining: &[bool]| -> Result<Option<u32>> {
-            let node = topology.targets[slot as usize] as usize;
-            let twin = topology.twins[slot as usize];
-            for next in topology.starts[node]..topology.starts[node.wrapping_add(1)] {
-                if next != twin && remaining[edges[next as usize] as usize] && can_join(slot, next)
-                {
-                    return Ok(Some(next));
+        if !lines.is_empty() {
+            let mut span_slots = vec![0; partition.spans.len()];
+            for (slot, &span) in edges.iter().enumerate() {
+                if topology.owners[slot] == partition.spans[span as usize].start.0 {
+                    span_slots[span as usize] = slot;
                 }
             }
-            Ok(None)
-        };
-        for &span in lines {
-            if !line_remaining[span as usize] {
-                continue;
+            let mut line_remaining = Vec::with_capacity(partition.spans.len());
+            line_remaining.resize(partition.spans.len(), false);
+            for &span in lines {
+                line_remaining[span as usize] = true;
             }
-            let mut backwards = topology.twins[span_slots[span as usize]];
-            while let Some(next) = continuation(backwards, &line_remaining)? {
-                backwards = next;
+            let continuation = |slot: u32, remaining: &[bool]| -> Result<Option<u32>> {
+                let node = topology.targets[slot as usize] as usize;
+                let twin = topology.twins[slot as usize];
+                for next in topology.starts[node]..topology.starts[node.wrapping_add(1)] {
+                    if next != twin
+                        && remaining[edges[next as usize] as usize]
+                        && can_join(slot, next)
+                    {
+                        return Ok(Some(next));
+                    }
+                }
+                Ok(None)
+            };
+            for &span in lines {
+                if !line_remaining[span as usize] {
+                    continue;
+                }
+                let mut backwards = topology.twins[span_slots[span as usize]];
+                while let Some(next) = continuation(backwards, &line_remaining)? {
+                    backwards = next;
+                }
+                let mut slot = topology.twins[backwards as usize];
+                let mut chord = make_chord(slot)?;
+                loop {
+                    line_remaining[edges[slot as usize] as usize] = false;
+                    let Some(next) = continuation(slot, &line_remaining)? else {
+                        break;
+                    };
+                    chord.sources.end = make_chord(next)?.sources.end;
+                    slot = next;
+                }
+                planned_lines.push(chord);
             }
-            let mut slot = topology.twins[backwards as usize];
-            let mut chord = make_chord(slot)?;
-            loop {
-                line_remaining[edges[slot as usize] as usize] = false;
-                let Some(next) = continuation(slot, &line_remaining)? else {
-                    break;
-                };
-                chord.sources.end = make_chord(next)?.sources.end;
-                slot = next;
-            }
-            planned_lines.push(chord);
         }
         Ok(BoundaryPlan {
             source_darts,
