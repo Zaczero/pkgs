@@ -810,27 +810,19 @@ fn partition_unique_segments_with_budget<'a, const ORDINATES: bool>(
     )]
     for handle in 0..forest.parent.len() as u32 {
         let root = forest.find(handle);
-        if compact_of[root as usize].is_some() {
-            continue;
+        if compact_of[root as usize].is_none() {
+            let (recipe, rounded) = forest.points.take(root);
+            if !matches!(recipe, NodeRecipe::Stored)
+                && let Some(budget) = budget.as_deref_mut()
+            {
+                budget.add(1)?;
+            }
+            compact_of[root as usize] = Some(compact_count as u32);
+            forest.points.recipes[compact_count] = recipe;
+            forest.points.rounded[compact_count] = rounded;
+            compact_count = compact_count.wrapping_add(1);
         }
-        let (recipe, rounded) = forest.points.take(root);
-        if !matches!(recipe, NodeRecipe::Stored)
-            && let Some(budget) = budget.as_deref_mut()
-        {
-            budget.add(1)?;
-        }
-        compact_of[root as usize] = Some(compact_count as u32);
-        forest.points.recipes[compact_count] = recipe;
-        forest.points.rounded[compact_count] = rounded;
-        compact_count = compact_count.wrapping_add(1);
-    }
-    #[expect(
-        clippy::indexing_slicing,
-        reason = "each forest handle and its root have entries in the compact map sized from that forest"
-    )]
-    for handle in 0..forest.parent.len() {
-        let root = forest.find(handle as u32);
-        compact_of[handle] = compact_of[root as usize];
+        compact_of[handle as usize] = compact_of[root as usize];
     }
     let Forest { mut points, parent } = forest;
     drop(parent);
