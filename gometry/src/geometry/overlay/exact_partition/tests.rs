@@ -1077,6 +1077,36 @@ fn rounded_chord_contact_with_an_isolated_node_is_repaired() {
 }
 
 #[test]
+fn certificate_ignores_unemitted_segment_suffix() {
+    let case = run(&[seg(0.0, 0.0, 1.0, 0.0), seg(10.0, 0.0, 11.0, 0.0)]);
+    let partition = case.partition();
+    let emission = partition.span_emission(0..u32::try_from(partition.spans.len()).unwrap());
+    assert_eq!(emission.items.len(), 2);
+
+    let embedding = embedding::Embedding::nearest(&partition);
+    let mut segments: Vec<_> = emission
+        .items
+        .iter()
+        .map(|&item| embedding::Embedding::segment_at(embedding.coordinates(), item))
+        .collect();
+    segments.push(*segments.first().expect("emission has a segment"));
+
+    let mut witnesses = WitnessLog::default();
+    assert!(
+        embedding::certify(
+            &partition,
+            &embedding,
+            &[&emission],
+            &[&segments],
+            &mut witnesses,
+        )
+        .unwrap()
+        .is_continue()
+    );
+    assert!(witnesses.0.is_empty());
+}
+
+#[test]
 fn emitted_chords_allow_only_prescribed_endpoint_contacts() {
     let a = (NodeId(0), XY::new(0.0, 0.0));
     let b = (NodeId(1), XY::new(2.0, 0.0));

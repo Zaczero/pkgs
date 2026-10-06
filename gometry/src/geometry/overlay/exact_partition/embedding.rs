@@ -970,10 +970,15 @@ pub(super) fn certify<S: Sink>(
     }
 
     let contact_items = unique_emission_items(emissions)?;
-    let mut contact_segments = Vec::with_capacity(contact_items.len());
-    for &(emission_index, item_index) in &contact_items {
-        contact_segments.push(segments[emission_index][item_index]);
-    }
+    let contact_segments = if let [emission_segments] = segments {
+        Cow::Borrowed(&emission_segments[..contact_items.len()])
+    } else {
+        let mut contact_segments = Vec::with_capacity(contact_items.len());
+        for &(emission_index, item_index) in &contact_items {
+            contact_segments.push(segments[emission_index][item_index]);
+        }
+        Cow::Owned(contact_segments)
+    };
     if for_each_candidate_pair(&contact_segments, single_chain, |left, right| {
         let (left_emission, left_item) = contact_items[left];
         let (right_emission, right_item) = contact_items[right];
