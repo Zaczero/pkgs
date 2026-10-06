@@ -856,6 +856,7 @@ fn partition_unique_segments_with_budget<'a, const ORDINATES: bool>(
     };
     let mut intervals: Vec<(u32, u32, u32)> =
         Vec::with_capacity(unique.len().saturating_add(along.len()));
+    let mut baseline = 0_usize;
     for (index, (((segment, &start_handle), &end_handle), &[start_contact, end_contact])) in unique
         .iter()
         .zip(&start_handle)
@@ -867,6 +868,7 @@ fn partition_unique_segments_with_budget<'a, const ORDINATES: bool>(
         if same_point(segment.start, segment.end) {
             continue;
         }
+        baseline = baseline.wrapping_add(1);
         let source = index as u32;
         #[expect(
             clippy::indexing_slicing,
@@ -931,10 +933,6 @@ fn partition_unique_segments_with_budget<'a, const ORDINATES: bool>(
 
     // The budget counts operation-wide net growth: overlap coalescing can
     // offset span growth elsewhere, while stored nodes and source atoms are free.
-    let baseline = unique
-        .iter()
-        .filter(|segment| !same_point(segment.start, segment.end))
-        .count();
     let (spans, atom_provenance) =
         aggregate_atoms(intervals, provenance, baseline, has_overlaps, budget)?;
 

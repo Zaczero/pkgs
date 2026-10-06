@@ -2993,6 +2993,32 @@ fn generated_budget_charges_only_net_canonical_growth() {
 }
 
 #[test]
+fn zero_length_unique_sources_do_not_credit_atom_growth() {
+    use crate::geometry::generated_budget::GENERATED_ITEM_LIMIT;
+
+    let (unique, provenance) = dedup_undirected_segments_sourced(vec![
+        seg(0.0, 0.0, 2.0, 2.0),
+        seg(0.0, 2.0, 2.0, 0.0),
+        seg(10.0, 10.0, 10.0, 10.0),
+    ])
+    .unwrap();
+    for ordinates in [false, true] {
+        let mut budget = ExpansionBudget::new("exact_partition", "items");
+        budget.add(GENERATED_ITEM_LIMIT - 3).unwrap();
+        let partition = if ordinates {
+            partition_unique_segments::<true>(&unique, &provenance, &[], &mut budget)
+        } else {
+            partition_unique_segments::<false>(&unique, &provenance, &[], &mut budget)
+        }
+        .unwrap();
+        assert_eq!(partition.node_count(), 6);
+        assert_eq!(partition.spans.len(), 4);
+        assert_eq!(partition.isolated.len(), 1);
+        assert_eq!(budget.used(), GENERATED_ITEM_LIMIT);
+    }
+}
+
+#[test]
 fn intermediate_partition_can_run_after_the_output_budget_is_exhausted() {
     use crate::geometry::generated_budget::GENERATED_ITEM_LIMIT;
 
