@@ -372,22 +372,11 @@ impl BoundedSum {
 }
 
 #[derive(Default)]
-struct MomentSum {
-    fold: BoundedSum,
-}
-
-impl MomentSum {
-    fn push(&mut self, value: Bounded) {
-        self.fold.push(value);
-    }
-}
-
-#[derive(Default)]
 struct GeographicAreaScratch {
     coefficients: Vec<AreaCoefficient>,
     exact_coefficients: Vec<ExactDyadic>,
-    ring_moments: Vec<MomentSum>,
-    polygon_moments: Vec<MomentSum>,
+    ring_moments: Vec<BoundedSum>,
+    polygon_moments: Vec<BoundedSum>,
     exact_ring_moments: Vec<ExactDyadic>,
     exact_polygon_moments: Vec<ExactDyadic>,
 }
@@ -757,11 +746,11 @@ fn accumulate_fast(
     longitude_coordinate_scale: Bounded,
     latitude_coordinate_scale: Bounded,
     coefficients: &[AreaCoefficient],
-    ring_moments: &mut [MomentSum],
-    polygon_moments: &mut [MomentSum],
+    ring_moments: &mut [BoundedSum],
+    polygon_moments: &mut [BoundedSum],
 ) -> Result<FastArea> {
     for moment in ring_moments.iter_mut().chain(polygon_moments.iter_mut()) {
-        *moment = MomentSum::default();
+        *moment = BoundedSum::default();
     }
     let mut variation = 0.0;
     let mut maximum_latitude = 0.0_f64;
@@ -905,20 +894,20 @@ fn accumulate_fast(
         });
         if sign == 0.0 {
             for moment in ring_moments.iter_mut() {
-                *moment = MomentSum::default();
+                *moment = BoundedSum::default();
             }
             continue;
         }
         let polarity = if ring_index == 0 { 1.0 } else { -1.0 };
         for (polygon_moment, ring_moment) in polygon_moments.iter_mut().zip(ring_moments.iter()) {
             let value = Bounded {
-                value: ring_moment.fold.value() * (sign * polarity),
-                error: ring_moment.fold.error(),
+                value: ring_moment.value() * (sign * polarity),
+                error: ring_moment.error(),
             };
             polygon_moment.push(value);
         }
         for moment in ring_moments.iter_mut() {
-            *moment = MomentSum::default();
+            *moment = BoundedSum::default();
         }
     }
     let (integral, source_error, dot_error) = contract_fast(polygon_moments, coefficients);
@@ -942,7 +931,7 @@ fn rectangle_moments(
     y_origin: f64,
     longitude_scale: Bounded,
     latitude_scale: Bounded,
-    moments: &mut [MomentSum],
+    moments: &mut [BoundedSum],
     variation: &mut f64,
     maximum_latitude: &mut f64,
 ) -> Result<bool> {
@@ -1072,7 +1061,7 @@ fn add_fast_edge(
     z0: Bounded,
     x1: Bounded,
     z1: Bounded,
-    moments: &mut [MomentSum],
+    moments: &mut [BoundedSum],
     variation: &mut f64,
     maximum_latitude: &mut f64,
     row_certificate: &mut RowCertificate,
@@ -1099,7 +1088,7 @@ struct RowCertificate {
 }
 
 impl RowCertificate {
-    fn charge(&self, moments: &mut [MomentSum]) {
+    fn charge(&self, moments: &mut [BoundedSum]) {
         if self.rows == 0 {
             return;
         }
@@ -1134,7 +1123,7 @@ impl RowCertificate {
                     ),
                 ),
             );
-            moment.fold.input_error = upper_add(moment.fold.input_error, error);
+            moment.input_error = upper_add(moment.input_error, error);
             previous_radius_power = radius_power;
             radius_power = upper_mul(radius_power, self.radius);
         }
@@ -1145,7 +1134,7 @@ fn add_fast_determinant(
     determinant: Bounded,
     z0: Bounded,
     z1: Bounded,
-    moments: &mut [MomentSum],
+    moments: &mut [BoundedSum],
     variation: &mut f64,
     maximum_latitude: &mut f64,
     row_certificate: &mut RowCertificate,
@@ -1198,7 +1187,7 @@ fn cross(x0: Bounded, z0: Bounded, x1: Bounded, z1: Bounded) -> Bounded {
     x0.mul(z1).sub(x1.mul(z0))
 }
 
-fn ring_sign_fast(moments: &[MomentSum], coefficients: &[AreaCoefficient]) -> Option<f64> {
+fn ring_sign_fast(moments: &[BoundedSum], coefficients: &[AreaCoefficient]) -> Option<f64> {
     let (area, source_error, dot_error) = contract_fast(moments, coefficients);
     let error = upper_add(
         upper_add(source_error, dot_error),
@@ -1211,7 +1200,7 @@ fn ring_sign_fast(moments: &[MomentSum], coefficients: &[AreaCoefficient]) -> Op
     }
 }
 
-fn coefficient_dot_error(moments: &[MomentSum], coefficients: &[AreaCoefficient]) -> f64 {
+fn coefficient_dot_error(moments: &[BoundedSum], coefficients: &[AreaCoefficient]) -> f64 {
     let mut error = 0.0;
     for (degree, (moment, coefficient)) in moments.iter().zip(coefficients).enumerate() {
         let denominator = ((degree + 1) as u64).saturating_mul((degree + 2) as u64);
@@ -1220,7 +1209,7 @@ fn coefficient_dot_error(moments: &[MomentSum], coefficients: &[AreaCoefficient]
             upper_div_u64(
                 upper_mul(
                     coefficient.error,
-                    upper_add(moment.fold.value().abs(), moment.fold.error()),
+                    upper_add(moment.value().abs(), moment.error()),
                 ),
                 denominator,
             ),
@@ -1229,13 +1218,13 @@ fn coefficient_dot_error(moments: &[MomentSum], coefficients: &[AreaCoefficient]
     error
 }
 
-fn contract_fast(moments: &[MomentSum], coefficients: &[AreaCoefficient]) -> (Bounded, f64, f64) {
+fn contract_fast(moments: &[BoundedSum], coefficients: &[AreaCoefficient]) -> (Bounded, f64, f64) {
     let mut sum = BoundedSum::default();
     let mut source_error = 0.0;
     for (degree, (moment, coefficient)) in moments.iter().zip(coefficients).enumerate() {
         let denominator = ((degree + 1) as u64).saturating_mul((degree + 2) as u64);
-        let moment_value = moment.fold.value();
-        let moment_error = moment.fold.error();
+        let moment_value = moment.value();
+        let moment_error = moment.error();
         let term = Bounded::exact(coefficient.value)
             .mul(Bounded::exact(moment_value))
             .div_u64(denominator);
@@ -1251,7 +1240,7 @@ fn contract_fast(moments: &[MomentSum], coefficients: &[AreaCoefficient]) -> (Bo
     (sum.bounded(), source_error, sum.error())
 }
 
-fn contraction_work_budget(moments: &[MomentSum], coefficients: &[AreaCoefficient]) -> f64 {
+fn contraction_work_budget(moments: &[BoundedSum], coefficients: &[AreaCoefficient]) -> f64 {
     let mut norm = 0.0;
     for (degree, (moment, coefficient)) in moments.iter().zip(coefficients).enumerate() {
         let denominator = ((degree + 1) as u64).saturating_mul((degree + 2) as u64);
@@ -1260,7 +1249,7 @@ fn contraction_work_budget(moments: &[MomentSum], coefficients: &[AreaCoefficien
             upper_div_u64(
                 upper_mul(
                     upper_add(coefficient.value.abs(), coefficient.error),
-                    upper_add(moment.fold.value().abs(), moment.fold.error()),
+                    upper_add(moment.value().abs(), moment.error()),
                 ),
                 denominator,
             ),
@@ -1537,9 +1526,9 @@ fn selected_pole(summary: RingSummary) -> ChartPole {
         .expect("geographic area admission rejects ambiguous full-turn pole selection")
 }
 
-fn resize_moments(values: &mut Vec<MomentSum>, count: usize) {
+fn resize_moments(values: &mut Vec<BoundedSum>, count: usize) {
     values.clear();
-    values.resize_with(count, MomentSum::default);
+    values.resize_with(count, BoundedSum::default);
 }
 
 fn resize_exact(values: &mut Vec<ExactDyadic>, count: usize) {

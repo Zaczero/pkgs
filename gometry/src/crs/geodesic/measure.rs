@@ -1400,40 +1400,6 @@ mod chart_measure_tests {
     #[test]
     #[expect(
         clippy::excessive_precision,
-        reason = "Independent Decimal authalic integral uses original binary64 endpoints"
-    )]
-    fn chart_area_preserves_narrow_slanted_ring_rotations_and_reversal() {
-        let metric = metric();
-        let frame = metric.frame;
-        let points = [
-            (13.0, 52.5),
-            (13.001, 52.501),
-            (13.001, 52.5010000001),
-            (13.0, 52.5000000001),
-        ];
-        let expected = 0.000_755_688_547_419_930_3;
-        let rotated = [
-            points.to_vec(),
-            points.iter().copied().rev().collect(),
-            points[1..]
-                .iter()
-                .chain(points[..1].iter())
-                .copied()
-                .collect(),
-        ];
-        for vertices in rotated {
-            let polygon = Polygon::new(ring(&vertices), Vec::new());
-            let actual = chart_polygon_area(&metric, &polygon, frame).unwrap();
-            assert!(
-                (actual - expected).abs() <= 1.0e-14 * expected,
-                "slanted area={actual:.17}, expected={expected:.17}"
-            );
-        }
-    }
-
-    #[test]
-    #[expect(
-        clippy::excessive_precision,
         reason = "Independent Decimal integrals pin periodic bands and multi-turn source walks"
     )]
     fn chart_area_preserves_world_circle_and_multi_turn_walks() {

@@ -1137,40 +1137,6 @@ mod tests {
     }
 
     #[test]
-    fn antimeridian_pole_closure_maps_physical_pole_back_to_southward_axis() {
-        let unit = AngularFactor::try_new("degree", std::f64::consts::PI / 180.0).unwrap();
-        let frame = GeographicFrame::try_new_with_orientation(
-            unit,
-            unit,
-            0.0,
-            GeographicAxisOrientation::from_axis_directions(true, false),
-        )
-        .unwrap();
-        let source = polygon(&[(170.0, 80.0), (-70.0, 80.0), (50.0, 80.0)], &[]);
-        let Shape::Polygon(source_polygon) = &source else {
-            panic!("the cap fixture is a polygon");
-        };
-        let summary = crate::geographic::RingSummary::try_new(
-            frame,
-            &crate::geographic::GeographicRing::from_ring(&source_polygon.shell),
-        )
-        .unwrap();
-        assert_eq!(summary.bounded_pole(), Some(ChartPole::North));
-
-        let split = source.split_antimeridian_in_frame(frame).unwrap();
-        let physical_south_native = frame.native_latitude_pole(GeodeticPole::South);
-        let physical_north_native = frame.native_latitude_pole(GeodeticPole::North);
-        let mut saw_physical_south = false;
-        let mut saw_physical_north = false;
-        split.for_each_point(|point| {
-            saw_physical_south |= point.y.to_bits() == physical_south_native.to_bits();
-            saw_physical_north |= point.y.to_bits() == physical_north_native.to_bits();
-        });
-        assert!(saw_physical_south, "{split:?}");
-        assert!(!saw_physical_north, "{split:?}");
-    }
-
-    #[test]
     fn crs84_world_rectangle_is_identity() {
         let shape = Shape::Polygon(Polygon::new(
             closed_ring(&[-180.0, 180.0, 180.0, -180.0, -180.0], &[

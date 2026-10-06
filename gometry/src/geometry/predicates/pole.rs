@@ -151,8 +151,7 @@ impl PoleMemo {
     }
 }
 
-/// Whether a ring encircles the north (``north == true``) or south pole via
-/// full-longitude winding at high latitude.
+/// Whether a ring encloses the selected native-chart pole through full-longitude winding.
 pub(crate) fn ring_encloses_pole(ring: &Ring, pole: ChartPole) -> bool {
     ring_encloses_pole_in_frame(ring, GeographicFrame::crs84(), pole)
 }

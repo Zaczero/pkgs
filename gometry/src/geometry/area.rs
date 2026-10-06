@@ -143,33 +143,29 @@ impl ExactFactorialArea {
         derivatives: &[ExactDyadic],
         moments: &[ExactDyadic],
     ) -> Result<Self> {
-        let mut numerator = ExactDyadic::zero();
-        let mut denominator = ExactDyadic::one();
-        for (degree, (derivative, moment)) in derivatives.iter().zip(moments).enumerate() {
-            if degree == 0 {
-                denominator = ExactDyadic::from_i64(2);
-            } else {
-                let factor = i64::try_from(degree + 2)
-                    .map_err(|_| crate::error::ResourceError::SizeOverflow)?;
-                let factor = ExactDyadic::from_i64(factor);
-                numerator = numerator.try_product(&factor)?;
-                denominator = denominator.try_product(&factor)?;
-            }
-            numerator = numerator.try_add(derivative.try_product(moment)?)?;
-        }
-        Ok(Self {
-            numerator,
-            denominator,
-        })
+        Self::from_products(
+            derivatives
+                .iter()
+                .zip(moments)
+                .map(|(derivative, moment)| move || derivative.try_product(moment)),
+        )
     }
 
     pub(in crate::geometry) fn absolute_contraction(
         derivatives: &[ExactDyadic],
         moments: &[ExactDyadic],
     ) -> Result<Self> {
+        Self::from_products(derivatives.iter().zip(moments).map(|(derivative, moment)| {
+            move || derivative.try_product(moment).map(ExactDyadic::abs)
+        }))
+    }
+
+    fn from_products(
+        products: impl Iterator<Item = impl FnOnce() -> Result<ExactDyadic>>,
+    ) -> Result<Self> {
         let mut numerator = ExactDyadic::zero();
         let mut denominator = ExactDyadic::one();
-        for (degree, (derivative, moment)) in derivatives.iter().zip(moments).enumerate() {
+        for (degree, product) in products.enumerate() {
             if degree == 0 {
                 denominator = ExactDyadic::from_i64(2);
             } else {
@@ -179,7 +175,7 @@ impl ExactFactorialArea {
                 numerator = numerator.try_product(&factor)?;
                 denominator = denominator.try_product(&factor)?;
             }
-            numerator = numerator.try_add(derivative.try_product(moment)?.abs())?;
+            numerator = numerator.try_add(product()?)?;
         }
         Ok(Self {
             numerator,

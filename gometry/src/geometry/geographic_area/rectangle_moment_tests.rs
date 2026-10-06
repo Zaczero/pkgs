@@ -53,8 +53,8 @@ fn authenticated_rectangle_moments_match_exact_source_fans() {
                 frame.latitude_radians_per_unit() * frame.latitude_orientation_sign(),
             )
             .mul(Bounded::exact(LATITUDE_SCALE));
-            let mut moments: Vec<MomentSum> =
-                std::iter::repeat_with(MomentSum::default).take(13).collect();
+            let mut moments: Vec<BoundedSum> =
+                std::iter::repeat_with(BoundedSum::default).take(13).collect();
             let mut variation = 0.0;
             let mut maximum_latitude = 0.0;
             assert!(rectangle_moments(
@@ -106,12 +106,12 @@ fn authenticated_rectangle_moments_match_exact_source_fans() {
             for (degree, (moment, exact)) in moments.iter().zip(&exact).enumerate() {
                 let residual = exact
                     .clone()
-                    .try_subtract(ExactDyadic::from_f64(moment.fold.value()))
+                    .try_subtract(ExactDyadic::from_f64(moment.value()))
                     .unwrap()
                     .abs();
                 assert!(
                     residual
-                        .cmp(&ExactDyadic::from_f64(moment.fold.error()))
+                        .cmp(&ExactDyadic::from_f64(moment.error()))
                         .is_le(),
                     "degree={degree}, axes=({longitude_east}, {latitude_north}), points={points:?}"
                 );
@@ -133,8 +133,8 @@ fn authenticated_rectangle_declines_a_half_period_edge() {
             .collect(),
     )
     .unwrap();
-    let mut moments: Vec<MomentSum> =
-        std::iter::repeat_with(MomentSum::default).take(5).collect();
+    let mut moments: Vec<BoundedSum> =
+        std::iter::repeat_with(BoundedSum::default).take(5).collect();
     let mut variation = 0.0;
     let mut maximum_latitude = 0.0;
     let longitude_scale = Bounded::exact(1.0 / 64.0);
@@ -153,7 +153,7 @@ fn authenticated_rectangle_declines_a_half_period_edge() {
         )
         .unwrap()
     );
-    assert!(moments.iter().all(|moment| moment.fold.value() == 0.0));
+    assert!(moments.iter().all(|moment| moment.value() == 0.0));
     assert_eq!(variation, 0.0);
     assert_eq!(maximum_latitude, 0.0);
 }
