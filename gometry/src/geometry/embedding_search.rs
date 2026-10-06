@@ -1284,7 +1284,7 @@ mod tests {
     #[test]
     fn fixed_nearest_cells_are_removed_before_search() {
         let mut problem = FixtureProblem::new(vec![vec![0]], vec![vec![0, 1]]);
-        problem.fixed_keys_by_class.get_mut(0).unwrap().push(0);
+        problem.fixed_keys_by_class[0].push(0);
         let assignment = search_fixture(problem, 1).unwrap();
         assert_eq!(assignment.classes.first().unwrap().values, [1]);
     }
@@ -1292,12 +1292,12 @@ mod tests {
     #[test]
     fn each_class_reserves_nearest_cells_of_other_classes() {
         let mut problem = FixtureProblem::new(vec![vec![0], vec![1]], vec![vec![0, 1], vec![0, 1]]);
-        problem.fixed_keys_by_class.get_mut(0).unwrap().push(0);
-        problem.fixed_keys_by_class.get_mut(1).unwrap().push(1);
+        problem.fixed_keys_by_class[0].push(0);
+        problem.fixed_keys_by_class[1].push(1);
         let assignment = search_fixture(problem, 2).unwrap();
 
         let first = assignment.classes.first().unwrap();
-        let second = assignment.classes.get(1).unwrap();
+        let second = &assignment.classes[1];
         assert_eq!(
             (
                 *first.variables.first().unwrap(),
@@ -1364,8 +1364,8 @@ mod tests {
             vec![vec![10], vec![0]],
             (0..=10).map(|_| Vec::new()).collect(),
         );
-        *problem.candidates.get_mut(0).unwrap() = vec![1, 0];
-        *problem.candidates.get_mut(10).unwrap() = vec![3, 2];
+        problem.candidates[0] = vec![1, 0];
+        problem.candidates[10] = vec![3, 2];
         problem.global_target = Some(vec![(0, 1), (10, 3)]);
         problem.blamed_classes = vec![0, 1];
         let global_calls = Rc::clone(&problem.global_calls);
@@ -1375,7 +1375,7 @@ mod tests {
         let first = assignment.classes.first().unwrap();
         assert_eq!(first.variables, [0]);
         assert_eq!(first.values, [1]);
-        let second = assignment.classes.get(1).unwrap();
+        let second = &assignment.classes[1];
         assert_eq!(second.variables, [10]);
         assert_eq!(second.values, [3]);
     }

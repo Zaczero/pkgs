@@ -93,18 +93,19 @@ impl PointRanges {
         if node.range.end <= range.start || range.end <= node.range.start {
             return Ok(());
         }
-        if range.start <= node.range.start && node.range.end <= range.end {
-            if let Some(diagram) = &node.diagram {
-                let winner = diagram.query(
-                    query,
-                    vertices
-                        .get(node.range.clone())
-                        .expect("hull interval sites"),
-                    source.xs,
-                    source.ys,
-                )?;
-                return choose_pair(best, winner, query, source);
-            }
+        if range.start <= node.range.start
+            && node.range.end <= range.end
+            && let Some(diagram) = &node.diagram
+        {
+            let winner = diagram.query(
+                query,
+                vertices
+                    .get(node.range.clone())
+                    .expect("hull interval sites"),
+                source.xs,
+                source.ys,
+            )?;
+            return choose_pair(best, winner, query, source);
         }
         if let Some([left, right]) = node.children {
             self.query(left, range, vertices, query, source, best)?;
@@ -164,7 +165,7 @@ fn rotated(point: XY) -> XY {
     XY::new(-point.y, point.x)
 }
 
-fn negated(sign: ExactSign, negate: bool) -> ExactSign {
+const fn negated(sign: ExactSign, negate: bool) -> ExactSign {
     if !negate {
         return sign;
     }
@@ -311,13 +312,12 @@ impl Hull {
             best = opposite;
         }
         for (endpoint, negate) in [(chord.start, false), (chord.end, true)] {
-            if let Some(candidate) = self.cap(chord, endpoint, negate, source)? {
-                if point_segment_exact_distance_key(source.at(candidate), chord)
+            if let Some(candidate) = self.cap(chord, endpoint, negate, source)?
+                && point_segment_exact_distance_key(source.at(candidate), chord)
                     .cmp_distance(&point_segment_exact_distance_key(source.at(best), chord))?
                     .is_gt()
-                {
-                    best = candidate;
-                }
+            {
+                best = candidate;
             }
         }
         Ok(best)

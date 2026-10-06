@@ -738,7 +738,7 @@ fn xy_node_parts_serialize_the_certified_embedding() {
     let partition = inventory.partition(&mut budget).unwrap();
     let crossing = *partition.crossings().first().unwrap();
     let endpoint = partition.stored_node(XY::new(0.0, 0.0)).unwrap();
-    let mut coordinates = partition.points.rounded.clone();
+    let mut coordinates = partition.points.rounded;
     *coordinates
         .get_mut(crossing.0 as usize)
         .expect("crossing belongs to the partition coordinate table") = XY::new(12.0, 13.0);

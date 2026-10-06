@@ -1009,15 +1009,16 @@ fn polylabel_search(
             }
         }
     }
-    if field.bvh.is_none() && frame.is_none() && upper - best.distance > tolerance {
-        if let Some((upper, center)) =
+    if field.bvh.is_none()
+        && frame.is_none()
+        && upper - best.distance > tolerance
+        && let Some((upper, center)) =
             label_carrier_enclosure(&field.linework, best.center, tolerance)
-        {
-            field.upper = field.upper.min(upper);
-            let seed = field.cell(center, 0.0, 0.0, None)?;
-            if seed.distance > best.distance {
-                best = seed;
-            }
+    {
+        field.upper = field.upper.min(upper);
+        let seed = field.cell(center, 0.0, 0.0, None)?;
+        if seed.distance > best.distance {
+            best = seed;
         }
     }
     if field.upper - best.distance <= tolerance {

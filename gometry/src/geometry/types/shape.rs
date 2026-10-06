@@ -1154,9 +1154,9 @@ macro_rules! impl_multipart {
 
             /// Borrow members in logical order, resolving admitted value
             /// indices at the multipart layout owner.
-            pub(crate) fn members_with_values<'a>(
-                &'a self,
-            ) -> impl Iterator<Item = MultiMember<&'a $member>> + 'a {
+            pub(crate) fn members_with_values(
+                &self,
+            ) -> impl Iterator<Item = MultiMember<&$member>> + '_ {
                 self.members
                     .iter(self.values.len())
                     .map(|member| match member {

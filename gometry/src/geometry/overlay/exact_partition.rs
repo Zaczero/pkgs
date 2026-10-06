@@ -552,7 +552,7 @@ pub(in crate::geometry) struct ExactLineEmission<'p> {
 }
 
 impl ExactLineEmission<'_> {
-    pub(in crate::geometry) fn len(&self) -> usize {
+    pub(in crate::geometry) const fn len(&self) -> usize {
         self.items.len()
     }
 
@@ -1996,7 +1996,7 @@ impl ExactSourceInventory {
         }
         if !declared_axes.has_z() && !declared_axes.has_m() {
             let (points, lines, polygons) =
-                plan.emit_xy_parts(partition, &topology, &edges, operation.name())?;
+                plan.emit_xy_parts(partition, topology, edges, operation.name())?;
             return assemble_node_parts(
                 points,
                 lines,
@@ -2006,7 +2006,7 @@ impl ExactSourceInventory {
                 crate::geometry::CoordinateAxes::XY,
             );
         }
-        let emission = plan.emission(&topology, &edges);
+        let emission = plan.emission(topology, edges);
         let embedding = partition.embed(&[&emission], operation.name())?;
         let parts = plan.build_node_parts(partition, topology, &emission)?;
         let line_node_count = parts.lines.iter().try_fold(0_usize, |count, line| {

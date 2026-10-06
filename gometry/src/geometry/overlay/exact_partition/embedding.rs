@@ -178,206 +178,6 @@ pub(in crate::geometry) fn segments_within_chebyshev(
         || point_within_chebyshev_segment(right.end, left, limit)
 }
 
-#[cfg(test)]
-mod proximity_tests {
-    use super::*;
-    use crate::geometry::tessellation::exact::ExactRational;
-
-    fn segment(start: XY, end: XY) -> Segment {
-        Segment { start, end }
-    }
-
-    fn exact_axis_interval(
-        point: f64,
-        start: f64,
-        end: f64,
-        limit: f64,
-    ) -> Result<Option<(ExactRational, ExactRational)>> {
-        let point = ExactRational::from_f64(point);
-        let start = ExactRational::from_f64(start);
-        let end = ExactRational::from_f64(end);
-        let negative_limit = ExactRational::from_f64(-limit);
-        let limit = ExactRational::from_f64(limit);
-        let difference = point.try_subtract(&start)?;
-        let direction = end.try_subtract(&start)?;
-        if direction.is_zero() {
-            let upper = limit;
-            return Ok((difference.try_cmp(&negative_limit)? != Ordering::Less
-                && difference.try_cmp(&upper)? != Ordering::Greater)
-                .then_some((ExactRational::zero(), ExactRational::one())));
-        }
-        let mut lower = difference.try_subtract(&limit)?.try_quotient(&direction)?;
-        let mut upper = difference.try_add(&limit)?.try_quotient(&direction)?;
-        if lower.try_cmp(&upper)? == Ordering::Greater {
-            mem::swap(&mut lower, &mut upper);
-        }
-        let zero = ExactRational::zero();
-        let one = ExactRational::one();
-        if upper.try_cmp(&zero)? == Ordering::Less || lower.try_cmp(&one)? == Ordering::Greater {
-            return Ok(None);
-        }
-        if lower.try_cmp(&zero)? == Ordering::Less {
-            lower = zero;
-        }
-        if upper.try_cmp(&one)? == Ordering::Greater {
-            upper = one;
-        }
-        Ok(Some((lower, upper)))
-    }
-
-    fn exact_point_within_segment(point: XY, segment: Segment, limit: f64) -> Result<bool> {
-        let Some((x_low, x_high)) =
-            exact_axis_interval(point.x, segment.start.x, segment.end.x, limit)?
-        else {
-            return Ok(false);
-        };
-        let Some((y_low, y_high)) =
-            exact_axis_interval(point.y, segment.start.y, segment.end.y, limit)?
-        else {
-            return Ok(false);
-        };
-        let low = if x_low.try_cmp(&y_low)? == Ordering::Less {
-            y_low
-        } else {
-            x_low
-        };
-        let high = if x_high.try_cmp(&y_high)? == Ordering::Greater {
-            y_high
-        } else {
-            x_high
-        };
-        Ok(low.try_cmp(&high)? != Ordering::Greater)
-    }
-
-    fn exact_segments_within(left: Segment, right: Segment, limit: f64) -> Result<bool> {
-        if !matches!(segment_contact_exact(left, right), Contact::Disjoint) {
-            return Ok(true);
-        }
-        Ok(exact_point_within_segment(left.start, right, limit)?
-            || exact_point_within_segment(left.end, right, limit)?
-            || exact_point_within_segment(right.start, left, limit)?
-            || exact_point_within_segment(right.end, left, limit)?)
-    }
-
-    #[test]
-    fn chebyshev_proximity_checks_the_segment_distance_and_exact_contact() {
-        let horizontal = segment(XY::new(0.0, 0.0), XY::new(4.0, 0.0));
-        assert!(segments_within_chebyshev(
-            horizontal,
-            segment(XY::new(0.0, 1.0), XY::new(4.0, 1.0)),
-            1.0
-        ));
-        assert!(!segments_within_chebyshev(
-            horizontal,
-            segment(XY::new(0.0, 1.25), XY::new(4.0, 1.25)),
-            1.0
-        ));
-        assert!(segments_within_chebyshev(
-            segment(XY::new(0.0, 0.0), XY::new(2.0, 2.0)),
-            segment(XY::new(0.0, 2.0), XY::new(2.0, 0.0)),
-            0.0
-        ));
-    }
-
-    #[test]
-    fn chebyshev_proximity_does_not_confuse_overlapping_boxes_with_near_segments() {
-        let diagonal = segment(XY::new(0.0, 0.0), XY::new(2.0, 2.0));
-        let separated = segment(XY::new(0.0, 2.0), XY::new(1.0, 1.5));
-        assert!(
-            Bounds::from_xy_iter([diagonal.start, diagonal.end])
-                .intersects(Bounds::from_xy_iter([separated.start, separated.end]))
-        );
-        assert!(!segments_within_chebyshev(diagonal, separated, 0.24));
-        assert!(segments_within_chebyshev(diagonal, separated, 0.25));
-    }
-
-    #[test]
-    fn chebyshev_proximity_includes_isolated_points_and_uses_relative_slack() {
-        let point = segment(XY::new(1.0, 0.0), XY::new(1.0, 0.0));
-        let line = segment(XY::new(0.0, 0.0), XY::new(2.0, 0.0));
-        assert!(segments_within_chebyshev(point, line, 0.0));
-
-        let limit = proximity_limit(1.0, 0.0);
-        assert!(segments_within_chebyshev(
-            segment(
-                XY::new(0.0, 1.0 + 2.0_f64.powi(-41)),
-                XY::new(2.0, 1.0 + 2.0_f64.powi(-41))
-            ),
-            segment(XY::new(0.0, 0.0), XY::new(2.0, 0.0)),
-            limit
-        ));
-        assert!(!segments_within_chebyshev(
-            segment(
-                XY::new(0.0, 1.0 + 2.0_f64.powi(-38)),
-                XY::new(2.0, 1.0 + 2.0_f64.powi(-38))
-            ),
-            segment(XY::new(0.0, 0.0), XY::new(2.0, 0.0)),
-            limit
-        ));
-    }
-
-    #[test]
-    fn chebyshev_distance_intervals_never_reject_an_exactly_near_pair() {
-        let minimum = f64::from_bits(1);
-        let values = [
-            -f64::MAX,
-            -2.0,
-            -1.0,
-            -minimum,
-            -0.0,
-            0.0,
-            minimum,
-            0.5,
-            1.0_f64.next_down(),
-            1.0,
-            1.0_f64.next_up(),
-            2.0,
-            f64::MAX,
-        ];
-        let limits = [0.0, minimum, 2.0_f64.powi(-52), 0.125, 0.5, 1.0, 1.0e100];
-        let mut state = 0x6A09_E667_F3BC_C909_u64;
-        let mut sample = || {
-            state ^= state << 13;
-            state ^= state >> 7;
-            state ^= state << 17;
-            state as usize
-        };
-        for _ in 0..384 {
-            let point = XY::new(
-                values[sample() % values.len()],
-                values[sample() % values.len()],
-            );
-            let left = segment(
-                XY::new(
-                    values[sample() % values.len()],
-                    values[sample() % values.len()],
-                ),
-                XY::new(
-                    values[sample() % values.len()],
-                    values[sample() % values.len()],
-                ),
-            );
-            let right = segment(
-                XY::new(
-                    values[sample() % values.len()],
-                    values[sample() % values.len()],
-                ),
-                XY::new(
-                    values[sample() % values.len()],
-                    values[sample() % values.len()],
-                ),
-            );
-            let limit = limits[sample() % limits.len()];
-            if exact_point_within_segment(point, left, limit).unwrap() {
-                assert!(point_within_chebyshev_segment(point, left, limit));
-            }
-            if exact_segments_within(left, right, limit).unwrap() {
-                assert!(segments_within_chebyshev(left, right, limit));
-            }
-        }
-    }
-}
-
 /// The coordinates used to check an emission. Nearest borrows the immutable
 /// arena table; an accepted search assignment owns a patched copy.
 #[derive(Debug)]
@@ -412,11 +212,11 @@ impl<'p> Embedding<'p> {
         clippy::indexing_slicing,
         reason = "the node ID and coordinate slice are paired from the same certified embedding"
     )]
-    pub(super) fn xy_at(coordinates: &[XY], node: NodeId) -> XY {
+    pub(super) const fn xy_at(coordinates: &[XY], node: NodeId) -> XY {
         coordinates[node.0 as usize]
     }
 
-    pub(super) fn segment_at(coordinates: &[XY], [start, end]: [NodeId; 2]) -> Segment {
+    pub(super) const fn segment_at(coordinates: &[XY], [start, end]: [NodeId; 2]) -> Segment {
         Segment {
             start: Self::xy_at(coordinates, start),
             end: Self::xy_at(coordinates, end),
@@ -481,7 +281,7 @@ pub(super) struct FirstFailure {
 }
 
 impl FirstFailure {
-    fn witness(&self) -> Witness {
+    const fn witness(&self) -> Witness {
         self.witness
             .expect("a broken certificate reports its witness")
     }
@@ -2077,4 +1877,204 @@ fn visit_faces_legacy<S: Sink>(
         }
     }
     Ok(ControlFlow::Continue(()))
+}
+
+#[cfg(test)]
+mod proximity_tests {
+    use super::*;
+    use crate::geometry::tessellation::exact::ExactRational;
+
+    fn segment(start: XY, end: XY) -> Segment {
+        Segment { start, end }
+    }
+
+    fn exact_axis_interval(
+        point: f64,
+        start: f64,
+        end: f64,
+        limit: f64,
+    ) -> Result<Option<(ExactRational, ExactRational)>> {
+        let point = ExactRational::from_f64(point);
+        let start = ExactRational::from_f64(start);
+        let end = ExactRational::from_f64(end);
+        let negative_limit = ExactRational::from_f64(-limit);
+        let limit = ExactRational::from_f64(limit);
+        let difference = point.try_subtract(&start)?;
+        let direction = end.try_subtract(&start)?;
+        if direction.is_zero() {
+            let upper = limit;
+            return Ok((difference.try_cmp(&negative_limit)? != Ordering::Less
+                && difference.try_cmp(&upper)? != Ordering::Greater)
+                .then_some((ExactRational::zero(), ExactRational::one())));
+        }
+        let mut lower = difference.try_subtract(&limit)?.try_quotient(&direction)?;
+        let mut upper = difference.try_add(&limit)?.try_quotient(&direction)?;
+        if lower.try_cmp(&upper)? == Ordering::Greater {
+            mem::swap(&mut lower, &mut upper);
+        }
+        let zero = ExactRational::zero();
+        let one = ExactRational::one();
+        if upper.try_cmp(&zero)? == Ordering::Less || lower.try_cmp(&one)? == Ordering::Greater {
+            return Ok(None);
+        }
+        if lower.try_cmp(&zero)? == Ordering::Less {
+            lower = zero;
+        }
+        if upper.try_cmp(&one)? == Ordering::Greater {
+            upper = one;
+        }
+        Ok(Some((lower, upper)))
+    }
+
+    fn exact_point_within_segment(point: XY, segment: Segment, limit: f64) -> Result<bool> {
+        let Some((x_low, x_high)) =
+            exact_axis_interval(point.x, segment.start.x, segment.end.x, limit)?
+        else {
+            return Ok(false);
+        };
+        let Some((y_low, y_high)) =
+            exact_axis_interval(point.y, segment.start.y, segment.end.y, limit)?
+        else {
+            return Ok(false);
+        };
+        let low = if x_low.try_cmp(&y_low)? == Ordering::Less {
+            y_low
+        } else {
+            x_low
+        };
+        let high = if x_high.try_cmp(&y_high)? == Ordering::Greater {
+            y_high
+        } else {
+            x_high
+        };
+        Ok(low.try_cmp(&high)? != Ordering::Greater)
+    }
+
+    fn exact_segments_within(left: Segment, right: Segment, limit: f64) -> Result<bool> {
+        if !matches!(segment_contact_exact(left, right), Contact::Disjoint) {
+            return Ok(true);
+        }
+        Ok(exact_point_within_segment(left.start, right, limit)?
+            || exact_point_within_segment(left.end, right, limit)?
+            || exact_point_within_segment(right.start, left, limit)?
+            || exact_point_within_segment(right.end, left, limit)?)
+    }
+
+    #[test]
+    fn chebyshev_proximity_checks_the_segment_distance_and_exact_contact() {
+        let horizontal = segment(XY::new(0.0, 0.0), XY::new(4.0, 0.0));
+        assert!(segments_within_chebyshev(
+            horizontal,
+            segment(XY::new(0.0, 1.0), XY::new(4.0, 1.0)),
+            1.0
+        ));
+        assert!(!segments_within_chebyshev(
+            horizontal,
+            segment(XY::new(0.0, 1.25), XY::new(4.0, 1.25)),
+            1.0
+        ));
+        assert!(segments_within_chebyshev(
+            segment(XY::new(0.0, 0.0), XY::new(2.0, 2.0)),
+            segment(XY::new(0.0, 2.0), XY::new(2.0, 0.0)),
+            0.0
+        ));
+    }
+
+    #[test]
+    fn chebyshev_proximity_does_not_confuse_overlapping_boxes_with_near_segments() {
+        let diagonal = segment(XY::new(0.0, 0.0), XY::new(2.0, 2.0));
+        let separated = segment(XY::new(0.0, 2.0), XY::new(1.0, 1.5));
+        assert!(
+            Bounds::from_xy_iter([diagonal.start, diagonal.end])
+                .intersects(Bounds::from_xy_iter([separated.start, separated.end]))
+        );
+        assert!(!segments_within_chebyshev(diagonal, separated, 0.24));
+        assert!(segments_within_chebyshev(diagonal, separated, 0.25));
+    }
+
+    #[test]
+    fn chebyshev_proximity_includes_isolated_points_and_uses_relative_slack() {
+        let point = segment(XY::new(1.0, 0.0), XY::new(1.0, 0.0));
+        let line = segment(XY::new(0.0, 0.0), XY::new(2.0, 0.0));
+        assert!(segments_within_chebyshev(point, line, 0.0));
+
+        let limit = proximity_limit(1.0, 0.0);
+        assert!(segments_within_chebyshev(
+            segment(
+                XY::new(0.0, 1.0 + 2.0_f64.powi(-41)),
+                XY::new(2.0, 1.0 + 2.0_f64.powi(-41))
+            ),
+            segment(XY::new(0.0, 0.0), XY::new(2.0, 0.0)),
+            limit
+        ));
+        assert!(!segments_within_chebyshev(
+            segment(
+                XY::new(0.0, 1.0 + 2.0_f64.powi(-38)),
+                XY::new(2.0, 1.0 + 2.0_f64.powi(-38))
+            ),
+            segment(XY::new(0.0, 0.0), XY::new(2.0, 0.0)),
+            limit
+        ));
+    }
+
+    #[test]
+    fn chebyshev_distance_intervals_never_reject_an_exactly_near_pair() {
+        let minimum = f64::from_bits(1);
+        let values = [
+            -f64::MAX,
+            -2.0,
+            -1.0,
+            -minimum,
+            -0.0,
+            0.0,
+            minimum,
+            0.5,
+            1.0_f64.next_down(),
+            1.0,
+            1.0_f64.next_up(),
+            2.0,
+            f64::MAX,
+        ];
+        let limits = [0.0, minimum, 2.0_f64.powi(-52), 0.125, 0.5, 1.0, 1.0e100];
+        let mut state = 0x6A09_E667_F3BC_C909_u64;
+        let mut sample = || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state as usize
+        };
+        for _ in 0..384 {
+            let point = XY::new(
+                values[sample() % values.len()],
+                values[sample() % values.len()],
+            );
+            let left = segment(
+                XY::new(
+                    values[sample() % values.len()],
+                    values[sample() % values.len()],
+                ),
+                XY::new(
+                    values[sample() % values.len()],
+                    values[sample() % values.len()],
+                ),
+            );
+            let right = segment(
+                XY::new(
+                    values[sample() % values.len()],
+                    values[sample() % values.len()],
+                ),
+                XY::new(
+                    values[sample() % values.len()],
+                    values[sample() % values.len()],
+                ),
+            );
+            let limit = limits[sample() % limits.len()];
+            if exact_point_within_segment(point, left, limit).unwrap() {
+                assert!(point_within_chebyshev_segment(point, left, limit));
+            }
+            if exact_segments_within(left, right, limit).unwrap() {
+                assert!(segments_within_chebyshev(left, right, limit));
+            }
+        }
+    }
 }

@@ -725,7 +725,7 @@ fn shape_has_longitude_turn_in_frame(shape: &Shape, frame: GeographicFrame) -> R
             Ok(false)
         },
         Shape::GeometryCollection(geometries) => {
-            for geometry in geometries.iter() {
+            for geometry in geometries {
                 if shape_has_longitude_turn_in_frame(geometry, frame)? {
                     return Ok(true);
                 }

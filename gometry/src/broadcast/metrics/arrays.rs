@@ -610,9 +610,9 @@ pub(crate) fn array_crs_distances<'a>(
                                 pair_distance_geodesic(
                                     metric,
                                     left,
-                                    &*left_products.frame_cache(row),
+                                    &left_products.frame_cache(row),
                                     right_data,
-                                    &*right_products.frame_cache(row),
+                                    &right_products.frame_cache(row),
                                 )
                             },
                         )?,
@@ -782,9 +782,9 @@ pub(crate) fn array_crs_dwithin<'a>(
                                 pair_dwithin_geodesic(
                                     metric,
                                     left,
-                                    &*left_products.frame_cache(row),
+                                    &left_products.frame_cache(row),
                                     right_data,
-                                    &*right_products.frame_cache(row),
+                                    &right_products.frame_cache(row),
                                     distance,
                                 )
                             },

@@ -142,7 +142,7 @@ fn with_geodesic_object_cache_at<T, E>(
     if hit {
         return CRS_GEODESIC_CACHE.with(|cache| {
             let cache = cache.borrow();
-            f(&cache
+            f(cache
                 .last()
                 .expect("a promoted geodesic object is the MRU tail"))
         });
@@ -155,7 +155,7 @@ fn with_geodesic_object_cache_at<T, E>(
     CRS_GEODESIC_CACHE.with(|cache| {
         let mut cache = cache.borrow_mut();
         let entry = lru_insert(&mut cache, CRS_GEODESIC_CACHE_CAPACITY, entry);
-        f(&entry)
+        f(entry)
     })
 }
 

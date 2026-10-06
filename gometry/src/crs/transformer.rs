@@ -120,7 +120,7 @@ impl TransformPlan {
         }
     }
 
-    fn identity_geographic_frame(&self) -> Option<crate::geographic::GeographicFrame> {
+    const fn identity_geographic_frame(&self) -> Option<crate::geographic::GeographicFrame> {
         match &self.operation {
             TransformOperation::Identity {
                 source_domain: TopologyDomain::Geographic(frame),

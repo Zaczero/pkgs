@@ -471,8 +471,7 @@ mod chart_measure_tests {
             &[],
         );
         let zone_area = chart_polygon_area(&metric, &zone, frame).unwrap();
-        let zone_expected =
-            2_899_441_975_904.581_036_205_810_669_933_563_650_514_840_876_784_698_225;
+        let zone_expected = 2_899_441_975_904.581;
         assert!(
             (zone_area - zone_expected).abs() <= 1.0e-14 * zone_expected,
             "zone area={zone_area:.17}, expected={zone_expected:.17}"
@@ -487,8 +486,7 @@ mod chart_measure_tests {
 
         let triangle = polygon(&[(0.0, 10.0), (30.0, 10.0), (15.0, 50.0)], &[]);
         let triangle_area = chart_polygon_area(&metric, &triangle, frame).unwrap();
-        let triangle_expected =
-            6_706_052_330_164.589_974_816_023_206_088_526_299_535_059_741_903_974_644;
+        let triangle_expected = 6_706_052_330_164.59;
         assert!(
             (triangle_area - triangle_expected).abs() <= 1.0e-14 * triangle_expected,
             "triangle area={triangle_area:.17}, expected={triangle_expected:.17}"

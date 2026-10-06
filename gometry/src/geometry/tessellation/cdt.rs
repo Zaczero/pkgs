@@ -853,7 +853,6 @@ impl ConstraintIndex {
                     })
             })
             .transpose()
-            .map_err(Into::into)
     }
 
     fn remove(&mut self, points: &[Point], piece: &SourcePiece) {
@@ -1206,7 +1205,7 @@ impl ConstrainedMesh {
 
     fn source(&self, id: usize) -> Result<&SourceConstraint> {
         self.source_constraints.get(id).ok_or_else(|| {
-            GeometryErrorKind::triangulation("constraint references a missing source").into()
+            GeometryErrorKind::triangulation("constraint references a missing source")
         })
     }
 

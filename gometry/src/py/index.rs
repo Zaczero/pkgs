@@ -666,7 +666,7 @@ impl IndexRows {
         self.live.len()
     }
 
-    fn packed_len(&self) -> usize {
+    const fn packed_len(&self) -> usize {
         self.live.len().wrapping_sub(self.boxed.len())
     }
 

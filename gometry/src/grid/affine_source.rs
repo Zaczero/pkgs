@@ -800,7 +800,6 @@ impl LiftedChain {
             edges.push(step.kind);
             while vertices.len() > minimum {
                 let [previous, current, next] = *vertices
-                    .as_slice()
                     .last_chunk::<3>()
                     .expect("a chain longer than its minimum has three trailing vertices");
                 if !can_coalesce(previous, current, next)? {
@@ -3225,7 +3224,7 @@ fn append_lifted_chain(
         },
     };
     let chain_index = lifted.len();
-    let vertex_pairs = chain.vertices.as_slice().array_windows::<2>();
+    let vertex_pairs = chain.vertices.array_windows::<2>();
     debug_assert_eq!(
         chain.edges.len(),
         vertex_pairs.len(),

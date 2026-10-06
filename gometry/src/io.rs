@@ -72,7 +72,7 @@ impl IoError {
         }
     }
 
-    pub(crate) fn offset_position(&mut self, offset: usize) {
+    pub(crate) const fn offset_position(&mut self, offset: usize) {
         if let Some(position) = self.position.as_mut() {
             *position = position.wrapping_add(offset);
         }

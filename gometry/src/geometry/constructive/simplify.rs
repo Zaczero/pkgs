@@ -598,9 +598,9 @@ fn push_subdivision_members(
     }
     if matches!(shape, Shape::MultiPolygon(_))
         && shape.parts().any(|member| {
-            !ShapeCountQuery::default()
+            ShapeCountQuery::default()
                 .coordinate_count(&member)
-                .is_some_and(|count| count <= max_vertices)
+                .is_none_or(|count| count > max_vertices)
         })
     {
         return false;
@@ -1696,8 +1696,8 @@ mod keep_identity_tests {
     fn dp_sawtooth_source_work_grows_below_quadratic() {
         let mut counts = Vec::new();
         for count in [2048, 4096] {
-            let xs: Vec<_> = (0..count).map(|index| index as f64).collect();
-            let ys: Vec<_> = (0..count).map(|index| (index % 2) as f64).collect();
+            let xs: Vec<_> = (0..count).map(f64::from).collect();
+            let ys: Vec<_> = (0..count).map(|index| f64::from(index % 2)).collect();
             let line = Shape::LineString(line_xy(&xs, &ys));
             super::rdp::take_source_visits();
             let simplified = line.simplify_dp(0.1, false).unwrap();
@@ -1717,8 +1717,8 @@ mod keep_identity_tests {
             let mut xs = Vec::new();
             let mut ys = Vec::new();
             for index in 0..count {
-                let angle = index as f64 * std::f64::consts::TAU / count as f64;
-                let radius = 0.8 + 0.2 * ((index * 37 % 101) as f64 / 100.0);
+                let angle = f64::from(index) * std::f64::consts::TAU / f64::from(count);
+                let radius = 0.8 + 0.2 * (f64::from(index * 37 % 101) / 100.0);
                 xs.push(radius * angle.cos());
                 ys.push(radius * angle.sin());
             }
@@ -1727,7 +1727,7 @@ mod keep_identity_tests {
             let polygon = Shape::Polygon(Polygon::new(closed_ring(&xs, &ys), Vec::new()));
             crate::geometry::segment_index::take_contact_visits();
             let simplified = polygon
-                .simplify_vw((1.0 / count as f64).sqrt(), true)
+                .simplify_vw((1.0 / f64::from(count)).sqrt(), true)
                 .unwrap();
             counts.push(crate::geometry::segment_index::take_contact_visits());
             assert!(!simplified.is_empty());

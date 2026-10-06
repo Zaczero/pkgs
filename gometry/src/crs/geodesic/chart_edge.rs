@@ -185,21 +185,19 @@ impl ChartEdge {
         let start_latitude = Latitude::from_admitted(frame, start.y).get();
         let end_latitude = Latitude::from_admitted(frame, end.y).get();
         let latitude_delta = end_latitude - start_latitude;
-        let meridian = if longitude_delta_native == 0.0 && latitude_delta != 0.0 {
+        let meridian = (longitude_delta_native == 0.0 && latitude_delta != 0.0).then(|| {
             let (longitude, start_latitude) = frame
                 .to_geodesic_xy(start.x, start_latitude)
                 .expect("chart-edge coordinates were admitted before measurement");
             let (_, end_latitude) = frame
                 .to_geodesic_xy(end.x, end_latitude)
                 .expect("chart-edge coordinates were admitted before measurement");
-            Some(MeridianCoordinates {
+            MeridianCoordinates {
                 longitude,
                 start_latitude,
                 end_latitude,
-            })
-        } else {
-            None
-        };
+            }
+        });
 
         Ok(Self {
             frame,
@@ -988,7 +986,7 @@ mod tests {
     use crate::geographic::{
         AngularFactor, ChartStep, EdgeDirection, GeographicFrame, PeriodicAxis,
     };
-    use crate::geometry::types::ChartMetric;
+    use crate::geometry::types::ChartMetric as _;
     use crate::geometry::{GeometryErrorKind, MOrdinate, Point, ZOrdinate};
 
     fn degrees() -> GeographicFrame {
@@ -1028,22 +1026,22 @@ mod tests {
             (
                 "general ellipsoidal edge",
                 edge_length(degrees(), (-10.0, 35.0), (10.0, 48.0)).unwrap(),
-                2_205_762.711_444_021_484_697_706_486_400_154_249_267_664_244_430_293_772,
+                2_205_762.711_444_021_7,
             ),
             (
                 "near-pole chart edge",
                 edge_length(degrees(), (0.0, 89.9999), (100.0, 89.99995)).unwrap(),
-                15.684_865_577_474_261_319_323_114_261_000_244_174_390_118_724_580_350_24,
+                15.684_865_577_474_26,
             ),
             (
                 "parallel closed form",
                 edge_length(degrees(), (0.0, 60.0), (90.0, 60.0)).unwrap(),
-                5_022_000.141_519_251_583_393_985_617_689_302_237_201_497_525_118_898_693,
+                5_022_000.141_519_251,
             ),
             (
                 "meridian closed form",
                 edge_length(degrees(), (15.0, -20.0), (15.0, 70.0)).unwrap(),
-                9_981_346.981_941_827_186_123_967_737_420_675_801_600_371_943_871_469_972,
+                9_981_346.981_941_827,
             ),
         ];
         for (label, actual, expected) in cases {
@@ -1064,8 +1062,8 @@ mod tests {
             degrees(),
         )
         .unwrap();
-        let expected_partial = 6_723_143.426_641_406_156_391_42;
-        let expected_half_length = 6_004_860.750_429_569_135_504_388;
+        let expected_partial = 6_723_143.426_641_406_5;
+        let expected_half_length = 6_004_860.750_429_569;
         let partial = edge.arclength(0.5, &geodesic, degrees()).unwrap();
         assert!(
             (partial - expected_partial).abs() <= 1.0e-8,
@@ -1245,7 +1243,7 @@ mod tests {
             .chart_edge(Point::new_raw_xy(0.0, 60.0), Point::new_raw_xy(90.0, 60.0))
             .unwrap();
         let measured = metric.chart_edge_length(&edge).unwrap();
-        let expected = 5_022_000.141_519_251_583_393_985_617_689_302_237_201_497_525_118_898_693;
+        let expected = 5_022_000.141_519_251;
         assert!((measured - expected).abs() <= 2.0e-9);
     }
 

@@ -127,11 +127,11 @@ impl SchemaChildCount {
     /// tree. For a nonempty table, the Arrow producer must keep `self.0`
     /// initialized, aligned pointer entries in one allocation, unchanged until
     /// `owner` drops.
-    unsafe fn borrowed_table<'owner>(
+    unsafe fn borrowed_table(
         self,
-        _owner: &'owner MovedArrowShell<ArrowSchema>,
+        _owner: &MovedArrowShell<ArrowSchema>,
         children: *mut *mut ArrowSchema,
-    ) -> PyResult<&'owner [*mut ArrowSchema]> {
+    ) -> PyResult<&[*mut ArrowSchema]> {
         if self.is_empty() {
             return Ok(&[]);
         }
