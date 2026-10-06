@@ -1793,7 +1793,9 @@ fn north_pole_ring_windings(
                 {
                     continue;
                 }
-                let (start_x, delta) = super::exact::local_longitude_edge(frame, start.x, end.x)?;
+                let local_edge = super::exact::local_longitude_edge(frame, start.x, end.x)?;
+                let start_x = local_edge.start_x;
+                let delta = local_edge.delta_x;
                 if delta.is_zero() {
                     continue;
                 }
@@ -6624,17 +6626,17 @@ mod tests {
             .get(ring.source_edges.clone())
             .expect("ring source edges belong to the chart inventory");
         let latitude = |y: f64| ExactRational::from_f64(Latitude::from_admitted(frame, y).get());
-        let step = |edge: &super::super::exact::ExactSourceEdge| {
+        let edge = |edge: &super::super::exact::ExactSourceEdge| {
             super::super::exact::local_longitude_edge(frame, edge.source[0].x, edge.source[1].x)
                 .unwrap()
         };
-        let mut x = ExactRational::from_f64(step(&edges[0]).0);
+        let mut x = ExactRational::from_f64(edge(&edges[0]).start_x);
         let mut lifted = vec![(x.clone(), latitude(edges[0].source[0].y))];
-        for edge in edges {
+        for source_edge in edges {
             x = x
-                .try_add(&ExactRational::from_dyadic(step(edge).1))
+                .try_add(&ExactRational::from_dyadic(edge(source_edge).delta_x))
                 .unwrap();
-            lifted.push((x.clone(), latitude(edge.source[1].y)));
+            lifted.push((x.clone(), latitude(source_edge.source[1].y)));
         }
         let net = lifted.last().unwrap().0.try_subtract(&lifted[0].0).unwrap();
         let turns = (-3_i64..=3).find(|&turn| {

@@ -428,6 +428,7 @@ def test_geodesic_distance_and_chart_area_use_wgs84_ellipsoid() -> None:
 
 def test_geodesic_buffer_uses_local_projection_and_preserves_crs() -> None:
     point = gm.Point(21.0, 52.0, crs=4326)
+    assert point.estimate_local_crs() == 'EPSG:32634'
     buffered = point.buffer(100)
     array = cast('gm.GeometryArray', gm.GeometryArray([point]).buffer(100))
     polar = gm.Point(0.0, 89.0, crs=4326)
@@ -448,6 +449,24 @@ def test_geodesic_buffer_uses_local_projection_and_preserves_crs() -> None:
     assert eroded_point.area == pytest.approx(0.0)
     with pytest.raises(ValueError, match='distance must be finite'):
         point.buffer(math.inf)
+
+
+def test_geographic_local_certificate_supports_offset_and_minimum_clearance() -> None:
+    line = gm.LineString([(21.0, 52.0), (21.01, 52.0)], crs=4326)
+    assert line.estimate_local_crs() == 'EPSG:32634'
+
+    offset = line.offset_curve(50.0, unit='meters')
+    assert offset.geometry_type == 'LineString'
+    assert offset.crs == 'EPSG:4326'
+
+    polygon = gm.box(21.0, 52.0, 21.001, 52.001, crs=4326)
+    clearance = polygon.minimum_clearance(unit='meters')
+    witness = polygon.minimum_clearance_line(unit='meters')
+    assert math.isfinite(clearance)
+    assert clearance > 0.0
+    assert witness.geometry_type == 'LineString'
+    assert witness.crs == 'EPSG:4326'
+    assert witness.length == pytest.approx(clearance, rel=1.0e-6)
 
 
 @pytest.mark.parametrize('longitude', [3.0, 0.1, 5.9, 179.99, 180.0, -179.99])

@@ -15,6 +15,65 @@
 pub(crate) mod bounded;
 pub(crate) mod product_sum;
 
+/// Compare exact products of three finite binary64 factors.
+///
+/// The fixed factor count is enough for cross-multiplied unit ratios without
+/// rounding an intermediate PM value.
+pub(crate) fn compare_three_f64_products(left: [f64; 3], right: [f64; 3]) -> std::cmp::Ordering {
+    use crate::geometry::tessellation::exact::ExactDyadic;
+
+    let product = |factors: [f64; 3]| {
+        factors
+            .into_iter()
+            .fold(ExactDyadic::one(), |current, factor| {
+                current
+                    .try_product(&ExactDyadic::from_f64(factor))
+                    .expect("three finite binary64 factors have representable exponents")
+            })
+    };
+    product(left).cmp(&product(right))
+}
+
+/// Form the nearest original-source lift by an integer period count and round once.
+pub(crate) fn nearest_periodic_alias(source: f64, reference: f64, period: f64) -> f64 {
+    use crate::geometry::tessellation::exact::{ExactDyadic, round_ratio};
+
+    debug_assert!(source.is_finite() && reference.is_finite());
+    debug_assert!(period.is_finite() && period > 0.0);
+    let source = ExactDyadic::from_f64(source);
+    let difference = ExactDyadic::from_f64(reference)
+        .try_subtract_ref(&source)
+        .expect("finite binary64 longitude differences fit the exact exponent range");
+    let period = ExactDyadic::from_f64(period);
+    let periods = difference
+        .nearest_integer_quotient_ties_to_zero(&period)
+        .expect("finite binary64 period quotients fit the exact exponent range");
+    let translation = periods
+        .try_product(&period)
+        .expect("finite binary64 period lifts fit the exact exponent range");
+    let lifted = source
+        .try_add(translation)
+        .expect("finite binary64 period lifts fit the exact exponent range");
+    match round_ratio(&lifted, &ExactDyadic::one()) {
+        Ok(value) => value,
+        Err(error)
+            if matches!(
+                error.kind(),
+                crate::error::ErrorKind::Geometry(
+                    crate::geometry::GeometryErrorKind::ExactCoordinateOutOfRange
+                )
+            ) =>
+        {
+            if lifted.negative {
+                f64::NEG_INFINITY
+            } else {
+                f64::INFINITY
+            }
+        },
+        Err(error) => panic!("finite binary64 period lift could not be rounded: {error}"),
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(in crate::geometry) enum ExactSign {
     Negative,

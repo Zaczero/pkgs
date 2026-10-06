@@ -321,6 +321,141 @@ def test_numeric_geographic_transform_publishes_but_raw_paths_do_not() -> None:
     assert gm.crs_apply(pipeline, radius * 2.0 * math.pi, 0.0) == (360.0, 0.0)
 
 
+@pytest.mark.parametrize(
+    ('longitude_factor', 'latitude_factor', 'longitude_half'),
+    [
+        pytest.param(
+            math.tau / 400.0,
+            math.tau / 400.0,
+            200.0,
+            id='uniform-grad',
+        ),
+        pytest.param(
+            math.nextafter(math.tau / 400.0, math.inf),
+            math.nextafter(math.tau / 400.0, math.inf),
+            200.0,
+            id='recognized-factor-above',
+        ),
+        pytest.param(
+            math.tau / math.nextafter(400.0, math.inf),
+            math.tau / math.nextafter(400.0, math.inf),
+            200.0,
+            id='recognized-period-below',
+        ),
+        pytest.param(
+            1.0,
+            math.nextafter(math.tau / 400.0, math.inf),
+            math.pi,
+            id='mixed-radian-grad',
+        ),
+    ],
+)
+def test_proj_default_units_preserve_grad_poles_with_mixed_axis_factors(
+    longitude_factor: float,
+    latitude_factor: float,
+    longitude_half: float,
+) -> None:
+    gm.crs_clear_cache()
+    source = (
+        'GEOGCRS["conventional angular units",'
+        'DATUM["World Geodetic System 1984",'
+        'ELLIPSOID["WGS 84",6378137,298.257223563]],'
+        'PRIMEM["Greenwich",0,ANGLEUNIT["degree",0.017453292519943295]],'
+        'CS[ellipsoidal,2],'
+        'AXIS["Latitude",north,ORDER[1],ANGLEUNIT["probe grad",'
+        f'{latitude_factor!r}]],'
+        'AXIS["Longitude",east,ORDER[2],ANGLEUNIT["probe longitude",'
+        f'{longitude_factor!r}]]]'
+    )
+    info = gm.CRS(source)
+    assert info.axes[0]['unit_conversion_factor'] == latitude_factor
+    assert info.axes[1]['unit_conversion_factor'] == longitude_factor
+    assert gm.crs_cache_info()['last_transform_engine'] is None
+    operation = info.operation(4326, only_best=True)
+    assert operation['definition'] is None
+    assert operation['source'] == source
+    assert operation['target']
+    assert any(
+        step['definition'] is None
+        and step['method'] is not None
+        and step['method']['code'] == '9619'
+        and len(step['parameters']) == 2
+        for step in operation['steps']
+    )
+    listed = next(
+        candidate
+        for candidate in info.operations(4326)
+        if any(
+            step['method'] is not None and step['method']['code'] == '9619'
+            for step in candidate['steps']
+        )
+    )
+    assert listed['definition'] is None
+
+    north = gm.crs_transform(source, 4326, 0.0, 100.0, only_best=True)
+    south = gm.crs_transform(source, 4326, 0.0, -100.0, only_best=True)
+    east_seam = gm.crs_transform(source, 4326, longitude_half, 0.0, only_best=True)
+    neighbor = gm.crs_transform(
+        source, 4326, 0.0, math.nextafter(100.0, 0.0), only_best=True
+    )
+    assert north == (0.0, 90.0)
+    assert south == (0.0, -90.0)
+    assert east_seam == (-180.0, 0.0)
+    assert neighbor[1] == 89.99999999999999
+    assert gm.crs_cache_info()['last_transform_engine'] == 'proj'
+
+    native_north = gm.crs_transform(4326, source, 0.0, 90.0, only_best=True)
+    native_south = gm.crs_transform(4326, source, 0.0, -90.0, only_best=True)
+    native_seam = gm.crs_transform(4326, source, 180.0, 0.0, only_best=True)
+    assert native_north == (0.0, 100.0)
+    assert native_south == (0.0, -100.0)
+    assert native_seam == (-longitude_half, 0.0)
+    assert gm.crs_cache_info()['last_transform_engine'] == 'proj'
+
+
+def test_proj_noop_phase_uses_coalesced_original_prime_meridians() -> None:
+    gm.crs_clear_cache()
+    standard_grad = math.tau / 400.0
+    next_pm = math.nextafter(2.0, 0.0)
+    next_factor = math.nextafter(standard_grad, math.inf)
+
+    def geographic(name: str, pm: float, factor: float) -> str:
+        return (
+            f'GEOGCRS["{name}",DATUM["World Geodetic System 1984",'
+            'ELLIPSOID["WGS 84",6378137,298.257223563]],'
+            f'PRIMEM["Probe PM",{pm!r},ANGLEUNIT["probe grad",{factor!r}]],'
+            'CS[ellipsoidal,2],AXIS["Longitude",east,ORDER[1]],'
+            'AXIS["Latitude",north,ORDER[2]],'
+            'ANGLEUNIT["degree",0.017453292519943295]]'
+        )
+
+    source = geographic('Selected PM source', 2.0, standard_grad)
+    target = geographic('Selected PM target', next_pm, next_factor)
+    source_pm = 2.0 * standard_grad
+    target_pm = next_pm * next_factor
+    assert source_pm == target_pm
+
+    operation = gm.CRS(source).operation(target, at=(0.0, 0.0), only_best=True)
+    assert operation['definition'] is None
+    assert operation['source'] == source
+    assert operation['target'] == target
+    listed = gm.CRS(source).operations(target)
+    assert listed
+    assert all(item['definition'] is None for item in listed)
+    assert all(item['source'] == source and item['target'] == target for item in listed)
+    eastward = gm.crs_transform(source, target, 0.0, 0.0, only_best=True)
+    westward = gm.crs_transform(target, source, 0.0, 0.0, only_best=True)
+    expected_shift = float.fromhex('0x1.ccccccccccccdp-53')
+    assert eastward == (expected_shift, 0.0)
+    assert westward == (-expected_shift, 0.0)
+
+    # Explicit definitions and force-over use their original literal operation.
+    literal_noop = 'proj=noop ellps=GRS80'
+    assert gm.crs_apply(literal_noop, 0.0, 0.0) == (0.0, 0.0)
+    assert gm.crs_transform(source, target, 0.0, 0.0, force_over=True) == (0.0, 0.0)
+    assert gm.crs_transform(source, target, 0.0, 0.0, only_best=True) == eastward
+
+
 def test_successful_homogeneous_packed_transform_stays_one_batch_invocation() -> None:
     gm.crs_clear_cache()
     values = gm.points([0.0, 1.0], [0.0, 1.0], crs=4326)

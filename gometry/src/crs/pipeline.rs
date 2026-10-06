@@ -39,6 +39,13 @@ impl ProjPipeline {
                 CrsError::transform_create(source, target, error.to_string())
             })
         })?;
+        if !options.force_over {
+            super::proj_env::enable_default_angular_units(&context).map_err(|error| {
+                preserve_resource_error(error, |error| {
+                    CrsError::transform_create(source, target, error.to_string())
+                })
+            })?;
+        }
         let source_transform_object =
             create_crs_transform_object(&context, &source_crs, source, options.source_epoch)?;
         let target_transform_object =
@@ -71,6 +78,19 @@ impl ProjPipeline {
                 "PROJ could not normalize the CRS operation for X/Y order",
             ));
         };
+        if !options.force_over {
+            // SAFETY: the normalized operation and original endpoint CRS
+            // objects are live, uniquely owned by this constructor, and share
+            // the creating context until it is moved into `Self`.
+            unsafe {
+                proj_sys::gometry_proj_configure_default_noop_phase(
+                    context.as_ptr(),
+                    transform.as_ptr(),
+                    source_transform_object.as_ptr(),
+                    target_transform_object.as_ptr(),
+                );
+            }
+        }
         Ok(Self { transform, context })
     }
 

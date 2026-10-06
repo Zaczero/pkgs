@@ -107,15 +107,10 @@ direct predicate. EPSG:4807 is a public grad-unit example: one turn is 400 grads
 and its north pole is 100 grads.
 
 ```python exec="on" source="block" result="text"
-import math
-
 import gometry as gm
 
+# EPSG:4807 uses grads, so the north pole is 100.
 pole = 100.0
-# Exercise the tiny admitted floating-point sliver at the north pole.
-for _ in range(7):
-    pole = math.nextafter(pole, math.inf)
-
 source = gm.Point(0.0, pole, crs=4807)
 alias = gm.Point(200.0, pole, crs=4807)
 index = gm.SpatialIndex([source])

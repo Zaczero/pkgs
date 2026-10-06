@@ -1,8 +1,8 @@
 //! Exact dyadic rationals: a sign, an exponent and a compact limb buffer.
 //!
 //! Every value is a finite binary fraction held exactly, so addition,
-//! subtraction and multiplication never round. Division does not appear here:
-//! a quotient is carried as a ratio and compared rather than evaluated.
+//! subtraction and multiplication never round. General non-dyadic quotients
+//! remain explicit as ratios; exact integer quotients serve discrete decisions.
 
 use std::cmp::Ordering;
 use std::fmt;
@@ -264,9 +264,8 @@ impl ExactLine {
     }
 }
 
-/// A virtual left-shifted view of a limb slice. `word(i)` reads the aligned
-/// word directly, so every operation uses the same words in the same order
-/// with no temporary.
+/// A virtual left-shifted view of a limb slice. Arithmetic consumers read
+/// aligned words directly; integer division materializes a trimmed magnitude.
 #[derive(Clone, Copy)]
 struct Aligned<'a> {
     limbs: &'a [u64],
@@ -287,6 +286,15 @@ impl<'a> Aligned<'a> {
 
     fn word(&self, index: usize) -> u64 {
         ExactDyadic::shifted_word(self.limbs, self.word_shift, self.bit_shift, index)
+    }
+
+    fn trimmed_words(self) -> Vec<u64> {
+        let mut words = Vec::with_capacity(self.len);
+        for index in 0..self.len {
+            words.push(self.word(index));
+        }
+        while words.pop_if(|word| *word == 0).is_some() {}
+        words
     }
 }
 
@@ -1005,6 +1013,57 @@ impl ExactDyadic {
         }
         trim(&mut u);
         (quotient, u)
+    }
+
+    /// Nearest integer quotient of two exact dyadics, with halfway cases toward zero.
+    pub(in crate::geometry) fn nearest_integer_quotient_ties_to_zero(
+        &self,
+        divisor: &Self,
+    ) -> Result<Self> {
+        if divisor.is_zero() {
+            return Err(GeometryErrorKind::ExactRatioZeroDenominator.into());
+        }
+        if self.is_zero() {
+            return Ok(Self::zero());
+        }
+        let exponent = self.exponent.min(divisor.exponent);
+        let numerator_shift = usize::try_from(self.exponent.abs_diff(exponent))
+            .map_err(|_| ResourceError::SizeOverflow)?;
+        let divisor_shift = usize::try_from(divisor.exponent.abs_diff(exponent))
+            .map_err(|_| ResourceError::SizeOverflow)?;
+        let numerator = Aligned::new(self.limbs.as_slice(), numerator_shift);
+        let denominator = Aligned::new(divisor.limbs.as_slice(), divisor_shift);
+        let numerator_words = numerator.trimmed_words();
+        let denominator_words = denominator.trimmed_words();
+        let (mut quotient, remainder) =
+            Self::div_rem_unsigned(&numerator_words, &denominator_words);
+        let remainder = Self {
+            negative: false,
+            limbs: CompactLimbs::from_vec(remainder),
+            exponent,
+        };
+        if remainder.cmp_magnitude_scaled(divisor, -1) == Ordering::Greater {
+            let mut carry = true;
+            for limb in &mut quotient {
+                let (incremented, overflowed) = limb.overflowing_add(1);
+                *limb = incremented;
+                if !overflowed {
+                    carry = false;
+                    break;
+                }
+            }
+            if carry {
+                quotient.reserve(1);
+                quotient.push(1);
+            }
+        }
+        let mut quotient = Self {
+            negative: self.negative != divisor.negative,
+            limbs: CompactLimbs::from_vec(quotient),
+            exponent: 0,
+        };
+        quotient.try_trim()?;
+        Ok(quotient)
     }
 
     /// Greatest common divisor in the exact dyadic domain.

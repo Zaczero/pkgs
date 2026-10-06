@@ -11,8 +11,8 @@ use crate::error::{ResourceError, Result};
 #[cfg(test)]
 use crate::geographic::GeographicInputs;
 use crate::geographic::{
-    ChartStep, EdgeDirection, GeographicError, GeographicFrame, Latitude, RingDomain, RingSummary,
-    ScalarGeographicView, SeamIdentity, TurnDirection,
+    ChartConnection, GeographicError, GeographicFrame, Latitude, RingDomain, RingSummary,
+    ScalarGeographicView, SeamIdentity,
 };
 use crate::geometry::exact_arith::ExactSign;
 use crate::geometry::segments::try_sort_by;
@@ -250,8 +250,7 @@ pub(super) fn source_chart_point(frame: GeographicFrame, point: Point) -> ExactC
     let canonical = frame
         .longitude()
         .canonicalize(point.x)
-        .expect("source longitude was admitted")
-        .get();
+        .expect("source longitude was admitted");
     ExactChartPoint::from_dyadics(
         ExactDyadic::from_f64(seam_start_spelling(frame.longitude(), point.x, canonical)),
         ExactDyadic::from_f64(Latitude::from_admitted(frame, point.y).get()),
@@ -1210,24 +1209,11 @@ impl ExactGeographicChartInventory {
     fn push_chart_pieces(&mut self, source: SourceEdgeId, ring_lift: i64) -> Result<()> {
         let edge = self.edges[source.0 as usize];
         let [start, end] = edge.source;
-        let (start_x, delta_x) = local_longitude_edge(self.frame, start.x, end.x)?;
-        let canonical_start = self
-            .frame
-            .longitude()
-            .canonicalize(start.x)
-            .expect("source longitude was admitted")
-            .get();
-        let start_alias = if start_x.to_bits() == canonical_start.to_bits() {
-            0_i64
-        } else if start_x.to_bits() == (canonical_start + self.frame.longitude().period()).to_bits()
-        {
-            1
-        } else {
-            return Err(GeometryErrorKind::Invalid(
-                "exact chart edge start has an unknown seam spelling".into(),
-            )
-            .into());
-        };
+        let local_edge = local_longitude_edge(self.frame, start.x, end.x)?;
+        let start_x = local_edge.start_x;
+        let delta_x = local_edge.delta_x;
+        let start_alias =
+            i64::from(start_x.to_bits() != local_edge.connection.start.get().to_bits());
         let piece_lift = ring_lift
             .checked_sub(start_alias)
             .ok_or(ResourceError::SizeOverflow)?;
@@ -2048,61 +2034,45 @@ fn interpolate_rational(
     start.try_add(&delta.try_product(parameter)?)
 }
 
+pub(super) struct LocalLongitudeEdge {
+    pub(super) connection: ChartConnection,
+    pub(super) start_x: f64,
+    pub(super) delta_x: ExactDyadic,
+}
+
 pub(super) fn local_longitude_edge(
     frame: GeographicFrame,
     from: f64,
     to: f64,
-) -> Result<(f64, ExactDyadic)> {
+) -> Result<LocalLongitudeEdge> {
     let axis = frame.longitude();
-    let from_canonical = axis
-        .canonicalize(from)
-        .expect("source longitude was admitted")
-        .get();
-    let to_canonical = axis
-        .canonicalize(to)
-        .expect("source longitude was admitted")
-        .get();
-    let direction = axis
-        .chart_step(from, to)
+    let connection = axis
+        .chart_connection(from, to)
         .expect("source longitude was admitted");
-    if let ChartStep::Circle(direction) = direction {
-        return Ok((
-            seam_start_spelling(axis, from, from_canonical),
-            ExactDyadic::from_f64(ChartStep::Circle(direction).delta(axis)),
-        ));
-    }
-    let ChartStep::Shortest(direction) = direction else {
-        unreachable!("circle chart steps returned above");
-    };
-    let from_exact = ExactDyadic::from_f64(from_canonical);
-    let to_exact = ExactDyadic::from_f64(to_canonical);
+    let from_exact = ExactDyadic::from_f64(connection.start.get());
+    let to_exact = ExactDyadic::from_f64(connection.end.get());
     let period = ExactDyadic::from_f64(axis.period());
-    let half = ExactDyadic::from_f64(axis.half_period());
-    let raw_delta = to_exact.try_subtract_ref(&from_exact)?;
-    let negative_half = half.clone().neg();
-    let delta = match direction {
-        EdgeDirection::HalfTurn(TurnDirection::Negative) => negative_half,
-        EdgeDirection::HalfTurn(TurnDirection::Positive) => half,
-        EdgeDirection::Minor(_) if raw_delta.cmp(&half).is_gt() => {
-            raw_delta.try_subtract(period)?
-        },
-        EdgeDirection::Minor(_) if raw_delta.cmp(&negative_half).is_lt() => {
-            raw_delta.try_add(period)?
-        },
-        EdgeDirection::Minor(_) => raw_delta,
-    };
-    Ok((seam_start_spelling(axis, from, from_canonical), delta))
+    let source_lift = ExactDyadic::from_i64(i64::from(connection.source_lift));
+    let delta = to_exact
+        .try_subtract_ref(&from_exact)?
+        .try_add(period.try_product(&source_lift)?)?;
+    Ok(LocalLongitudeEdge {
+        connection,
+        start_x: seam_start_spelling(axis, from, connection.start),
+        delta_x: delta,
+    })
 }
 
-fn seam_start_spelling(axis: crate::geographic::PeriodicAxis, source: f64, canonical: f64) -> f64 {
-    let identity = axis
-        .canonicalize(source)
-        .expect("source longitude was admitted")
-        .identity(axis);
+fn seam_start_spelling(
+    axis: crate::geographic::PeriodicAxis,
+    source: f64,
+    canonical: crate::geographic::CanonicalLongitude,
+) -> f64 {
+    let identity = canonical.identity(axis);
     if identity == SeamIdentity::Seam && source.is_sign_positive() {
         axis.half_period()
     } else {
-        canonical
+        canonical.get()
     }
 }
 
@@ -2145,7 +2115,7 @@ mod tests {
     fn chart_step_identity_holds(frame: GeographicFrame, from: f64, to: f64) -> bool {
         let axis = frame.longitude();
         let transit = axis.chart_transit(from, to).unwrap();
-        let (_, delta) = local_longitude_edge(frame, from, to).unwrap();
+        let delta = local_longitude_edge(frame, from, to).unwrap().delta_x;
         let canonical = |value: f64| ExactDyadic::from_f64(axis.canonicalize(value).unwrap().get());
         let period = ExactDyadic::from_f64(axis.period());
         let turn = match transit {
@@ -2208,31 +2178,20 @@ mod tests {
             }
         }
         assert!(checked > 400);
-        // Grads uses a rounded factor: its nominal 200-grad tie differs from
-        // the frame's derived half-period, which Q uses for its exact lift.
-        let grads_ties = [
-            "grads: -200 -> 400",
-            "grads: -100 -> 100",
-            "grads: -100 -> 300",
-            "grads: 100 -> -100",
-            "grads: 100 -> 300",
-            "grads: 300 -> -100",
-            "grads: 300 -> 100",
-            "grads: 400 -> -200",
-        ];
-        assert_eq!(failures, grads_ties, "{failures:?}");
+        // Grads uses a rounded factor, so its nominal 200-grad tie differs
+        // from the frame's exact derived half-period.
+        assert!(failures.is_empty(), "{failures:?}");
     }
 
-    /// `full_turn_delta` subtracts in floating point, so a rounded difference
-    /// of exactly one period can join endpoints that do not alias; Q's exact
-    /// chart then does not close by the rounding residue.
+    /// A rounded raw difference of one period is not a circle unless the
+    /// represented source endpoints differ by exactly that period.
     #[test]
-    fn rounded_period_differences_break_the_chart_step_identity() {
+    fn rounded_period_differences_do_not_create_false_circles() {
         let grad_unit = AngularFactor::try_new("grads", std::f64::consts::TAU / 400.0).unwrap();
         let grads = GeographicFrame::try_new(grad_unit, grad_unit, 0.0).unwrap();
-        assert!(!chart_step_identity_holds(degrees(), 1.0e-20, 360.0));
-        assert!(!chart_step_identity_holds(degrees(), 360.0, 1.0e-20));
-        assert!(!chart_step_identity_holds(grads, 40.5, 440.5));
+        assert!(chart_step_identity_holds(degrees(), 1.0e-20, 360.0));
+        assert!(chart_step_identity_holds(degrees(), 360.0, 1.0e-20));
+        assert!(chart_step_identity_holds(grads, 40.5, 440.5));
     }
 
     fn inventory(frame: GeographicFrame, shapes: &[Shape]) -> ExactGeographicChartInventory {

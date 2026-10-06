@@ -245,8 +245,9 @@ pub(crate) fn crossing_latitude_in_frame(
     if start_longitude == end_longitude {
         return start.y;
     }
-    let longitude_scale = axis.unit().radians_per_unit().to_degrees();
-    let latitude_scale = frame.latitude_unit().radians_per_unit().to_degrees();
+    let longitude_scale = axis.to_degrees(1.0) * frame.longitude_orientation_sign();
+    let latitude_scale = frame.latitude_unit().native_to_degrees(1.0, frame.pole())
+        * frame.latitude_orientation_sign();
     let (west, east) = if start_longitude < end_longitude {
         (
             Point::new_raw_xy(start_longitude * longitude_scale, start.y * latitude_scale),

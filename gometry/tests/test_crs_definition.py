@@ -147,8 +147,18 @@ def test_near_utm_parameters_do_not_use_approximate_compact_recognition(
 
     gm.crs_clear_cache()
     operation = crs.operation(4326, at=(9.0, 50.0))
-    assert 'proj=tmerc ' in operation['definition']
-    assert 'proj=utm ' not in operation['definition']
+    assert operation['definition'] is None
+    projection = next(
+        step
+        for step in operation['steps']
+        if step['method'] is not None and step['method']['code'] == '9807'
+    )
+    changed_parameter = next(
+        parameter
+        for parameter in projection['parameters']
+        if parameter['code'] == str(parameter_code)
+    )
+    assert changed_parameter['value'] == value
     gm.crs_transform(4326, crs, 9.0, 50.0)
     assert gm.crs_cache_info()['last_transform_engine'] == 'proj'
 

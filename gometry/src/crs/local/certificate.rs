@@ -212,23 +212,26 @@ impl LocalProjectionCertificate {
         };
         let latitude0_native = Latitude::from_admitted(self.frame, start.y).get();
         let latitude1_native = Latitude::from_admitted(self.frame, end.y).get();
-        let latitude_unit = self.frame.latitude_unit().radians_per_unit();
+        let latitude_unit =
+            self.frame.latitude_radians_per_unit() * self.frame.latitude_orientation_sign();
         let longitude_from_central_meridian = axis
             .shortest_alias_step(self.central_meridian, start.x)
             .expect("screen coordinates were admitted before local projection")
             .delta(axis)
-            * axis.unit().radians_per_unit();
+            * axis.radians_per_unit()
+            * self.frame.longitude_orientation_sign();
         let selected_pole = match self.projection {
             ProjectionCertificate::Tmerc(_) => None,
             ProjectionCertificate::Ups(certificate) => Some(match certificate.pole {
-                Pole::North => self.frame.pole(),
-                Pole::South => -self.frame.pole(),
+                pole => self.frame.native_latitude_pole(pole),
             }),
         };
         Ok(CertificateEdge {
             longitude_delta_native,
             longitude_from_central_meridian,
-            longitude_delta: longitude_delta_native * axis.unit().radians_per_unit(),
+            longitude_delta: longitude_delta_native
+                * axis.radians_per_unit()
+                * self.frame.longitude_orientation_sign(),
             latitude0: latitude0_native * latitude_unit,
             latitude1: latitude1_native * latitude_unit,
             is_selected_pole_parallel: selected_pole.is_some_and(|pole| {

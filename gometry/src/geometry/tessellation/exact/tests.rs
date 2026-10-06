@@ -59,6 +59,24 @@ fn long_division_reconstructs_the_dividend() {
 }
 
 #[test]
+fn nearest_integer_dyadic_quotient_trims_aligned_words_and_rounds_ties_to_zero() {
+    let divisor = ExactDyadic::from_f64(1.0);
+    for (value, expected) in [
+        (0.5, ExactDyadic::zero()),
+        (-0.5, ExactDyadic::zero()),
+        (0.75, ExactDyadic::one()),
+        (-0.75, ExactDyadic::one().neg()),
+    ] {
+        assert_eq!(
+            ExactDyadic::from_f64(value)
+                .nearest_integer_quotient_ties_to_zero(&divisor)
+                .unwrap(),
+            expected
+        );
+    }
+}
+
+#[test]
 fn power_of_two_denominators_reduce_as_the_gcd_would() {
     let small =
         |value: u128, exponent: i64| ExactDyadic::try_from_u128(false, value, exponent).unwrap();

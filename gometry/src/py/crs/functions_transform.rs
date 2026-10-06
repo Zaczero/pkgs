@@ -309,13 +309,18 @@ pub(crate) fn crs_transform(
 /// GeometryError
 ///     If ``direction`` is invalid.
 ///
+/// Notes
+/// -----
+/// Supply a literal operation definition. A definition returned by
+/// ``CRS.operation`` may be ``None`` when selected angular semantics cannot be
+/// represented faithfully as an executable PROJ string.
+///
 /// Examples
 /// --------
 /// >>> import gometry as gm
-/// >>> import numpy as np
-/// >>> op = gm.CRS(4326).operation(3857).get('definition') or ''
-/// >>> np.round(np.asarray(gm.crs_apply(op, -122.4, 37.8)), 1).tolist()
-/// [-13625505.7, 4551210.9]
+/// >>> op = '+proj=affine +xoff=1 +yoff=2'
+/// >>> gm.crs_apply(op, -122.4, 37.8)
+/// (-121.4, 39.8)
 #[pyfunction(
     signature = (operation, x, y, z = None, *, t = None, direction = crs::ProjDirection::Forward),
     text_signature = "(operation, x, y, z=None, *, t=None, direction='forward')"

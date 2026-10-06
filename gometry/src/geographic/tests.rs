@@ -23,7 +23,7 @@ fn ring(xs: Vec<f64>, ys: Vec<f64>) -> crate::geometry::Ring {
     crate::geometry::Ring::closed_coordseq(xy_seq(xs, ys)).unwrap()
 }
 
-fn rounded_up_integer_period_frame() -> GeographicFrame {
+fn nearby_grad_factor_frame() -> GeographicFrame {
     let factor = factor(std::f64::consts::TAU / 400.0_f64.next_up());
     GeographicFrame::try_new(factor, factor, 0.0).unwrap()
 }
@@ -91,18 +91,18 @@ fn native_periodic_seam_detection_uses_the_frame_half_period() {
 }
 
 #[test]
-fn ordinary_chart_certificate_matches_edge_and_period_rounding_contracts() {
-    let rounded_up = rounded_up_integer_period_frame();
+fn ordinary_chart_certificate_matches_selected_period_and_edge_contracts() {
+    let nearby_grads = nearby_grad_factor_frame();
     let frames = [
         degrees(),
         frame(1.0),
         frame(std::f64::consts::TAU / 400.0),
-        rounded_up,
+        nearby_grads,
     ];
     for frame in frames {
         let axis = frame.longitude();
         let half = axis.half_period();
-        assert!(axis.ordinary_chart_edge(-half / 2.0, half / 2.0));
+        assert!(!axis.ordinary_chart_edge(-half / 2.0, half / 2.0));
         assert!(axis.ordinary_chart_edge(-half.next_down(), 0.0));
         assert!(!axis.ordinary_chart_edge(-half, half));
         assert!(!axis.ordinary_chart_edge(0.0, axis.period()));
@@ -110,28 +110,26 @@ fn ordinary_chart_certificate_matches_edge_and_period_rounding_contracts() {
         assert_eq!(axis.chart_transit(-half / 2.0, half / 2.0).unwrap(), 0);
     }
 
-    let axis = rounded_up.longitude();
-    assert!(200.0 < axis.half_period());
-    assert_eq!(axis.ordinary_longitude_bound(), 200.0);
-    let nominal_half = axis.canonicalize(200.0).unwrap();
-    assert_eq!(
-        nominal_half.get().to_bits(),
-        (-axis.half_period()).to_bits()
-    );
-    assert_eq!(nominal_half.identity(axis), SeamIdentity::Seam);
-    let rounded_down_axis = frame(std::f64::consts::TAU / 400.0).longitude();
-    assert!(200.0 > rounded_down_axis.half_period());
-    assert_eq!(
-        rounded_down_axis.ordinary_longitude_bound().to_bits(),
-        rounded_down_axis.half_period().to_bits()
-    );
-    assert_eq!(
-        rounded_down_axis
-            .canonicalize(200.0)
-            .unwrap()
-            .identity(rounded_down_axis),
-        SeamIdentity::Seam
-    );
+    let axis = degrees().longitude();
+    let from = -90.0;
+    let to = 90.0_f64.next_up();
+    assert_eq!(to - from, 180.0);
+    assert!(!axis.ordinary_chart_edge(from, to));
+    let connection = axis.chart_connection(from, to).unwrap();
+    assert_eq!(connection.source_lift, -1);
+    assert_eq!(connection.seam_transit(), -1);
+
+    for axis in [
+        nearby_grads.longitude(),
+        frame(std::f64::consts::TAU / 400.0).longitude(),
+    ] {
+        assert_bits(axis.period(), 400.0);
+        assert_bits(axis.half_period(), 200.0);
+        assert_eq!(axis.ordinary_longitude_bound(), 200.0);
+        let nominal_half = axis.canonicalize(200.0).unwrap();
+        assert_bits(nominal_half.get(), -200.0);
+        assert_eq!(nominal_half.identity(axis), SeamIdentity::Seam);
+    }
     assert_eq!(
         axis.canonicalize(-0.0).unwrap().get().to_bits(),
         0.0_f64.to_bits()
@@ -600,8 +598,8 @@ fn frames_derive_degree_grad_and_radian_axes() {
     assert_eq!(degree.longitude().period(), 360.0);
     assert_eq!(degree.pole(), 90.0);
     let grad = frame(std::f64::consts::TAU / 400.0);
-    assert_eq!(grad.longitude().period(), 399.999_999_999_999_94);
-    assert_eq!(grad.pole(), 99.999_999_999_999_99);
+    assert_eq!(grad.longitude().period(), 400.0);
+    assert_eq!(grad.pole(), 100.0);
     let radian = frame(1.0);
     assert_eq!(radian.longitude().period(), std::f64::consts::TAU);
     assert_eq!(radian.pole(), std::f64::consts::FRAC_PI_2);
@@ -609,6 +607,18 @@ fn frames_derive_degree_grad_and_radian_axes() {
         degree.longitude().unit().radians_per_unit(),
         std::f64::consts::PI / 180.0
     );
+    assert_eq!(
+        grad.longitude().radians_per_unit(),
+        std::f64::consts::TAU / 400.0
+    );
+    assert_eq!(
+        grad.latitude_radians_per_unit(),
+        std::f64::consts::TAU / 400.0
+    );
+    let adjacent_grad = frame((std::f64::consts::TAU / 400.0).next_up());
+    assert_eq!(adjacent_grad.longitude().period(), 400.0);
+    assert_eq!(adjacent_grad.pole(), 100.0);
+    assert_eq!(grad, adjacent_grad);
     assert_eq!(
         degree.latitude_unit().radians_per_unit(),
         std::f64::consts::PI / 180.0
@@ -806,8 +816,8 @@ fn nearest_longitude_alias_keeps_period_counts_larger_than_a_significand_exact()
 
     let grads = frame(std::f64::consts::TAU / 400.0).longitude();
     for (source, reference, periods) in [
-        (-(1.0e19_f64.next_up()), 1.0, 25_000_000_000_000_009),
-        (1.0e19_f64.next_up(), -1.0, -25_000_000_000_000_009),
+        (-(1.0e19_f64.next_up()), 1.0, 25_000_000_000_000_005),
+        (1.0e19_f64.next_up(), -1.0, -25_000_000_000_000_005),
     ] {
         assert_bits(
             grads.nearest_longitude_alias(reference, source).unwrap(),
@@ -815,31 +825,33 @@ fn nearest_longitude_alias_keeps_period_counts_larger_than_a_significand_exact()
         );
     }
 
-    let nominal_tie = frame(std::f64::consts::TAU / 16.0_f64.next_down()).longitude();
+    let selected_period_tie = frame(std::f64::consts::TAU / 16.0_f64.next_down()).longitude();
     assert_bits(
-        nominal_tie
+        selected_period_tie
             .nearest_longitude_alias(0.0, -(2.0_f64.powi(54) + 8.0))
             .unwrap(),
-        -10.0,
+        -8.0,
     );
 }
 
 #[test]
-fn nearest_longitude_alias_recovers_reference_bits_for_rounded_whole_periods() {
+fn nearest_longitude_alias_forms_whole_period_shifts_from_the_source() {
     for axis in [
         degrees().longitude(),
         frame(std::f64::consts::TAU / 400.0).longitude(),
         frame(1.0).longitude(),
     ] {
+        // A nearby reference is not an alias of the source. Select k from
+        // the exact operands, then round source+kP instead of copying reference.
         assert_bits(
             axis.nearest_longitude_alias(1.0e-16, -axis.period())
                 .unwrap(),
-            1.0e-16,
+            0.0,
         );
         assert_bits(
             axis.nearest_longitude_alias(-1.0e-16, axis.period())
                 .unwrap(),
-            -1.0e-16,
+            0.0,
         );
     }
 }
@@ -925,20 +937,33 @@ fn nearest_longitude_alias_reduces_before_rounding_and_keeps_tie_direction() {
 }
 
 #[test]
+fn nearest_longitude_alias_preserves_source_bits_for_no_shift() {
+    let axis = degrees().longitude();
+    let source = 0.2_f64;
+    assert_eq!(
+        axis.nearest_longitude_alias(78.0, source)
+            .unwrap()
+            .to_bits(),
+        source.to_bits()
+    );
+    let negative_zero = -0.0;
+    assert_eq!(
+        axis.nearest_longitude_alias(negative_zero, negative_zero)
+            .unwrap()
+            .to_bits(),
+        negative_zero.to_bits()
+    );
+}
+
+#[test]
 fn nearest_longitude_alias_pins_native_ties_and_finite_subtraction_overflow() {
-    for (axis, half, period) in [
-        (degrees().longitude(), 180.0, 360.0),
-        (
-            frame(std::f64::consts::TAU / 400.0).longitude(),
-            199.999_999_999_999_97,
-            399.999_999_999_999_94,
-        ),
-        (
-            frame(1.0).longitude(),
-            std::f64::consts::PI,
-            std::f64::consts::TAU,
-        ),
+    for axis in [
+        degrees().longitude(),
+        frame(std::f64::consts::TAU / 400.0).longitude(),
+        frame(1.0).longitude(),
     ] {
+        let half = axis.half_period();
+        let period = axis.period();
         assert_bits(axis.nearest_longitude_alias(half, 0.0).unwrap(), 0.0);
         assert_bits(axis.nearest_longitude_alias(0.0, half).unwrap(), half);
         assert_bits(axis.nearest_longitude_alias(period, 0.0).unwrap(), period);
@@ -1211,6 +1236,15 @@ fn seam_transits_preserve_direction_aliases_and_multiple_windings() {
     let negative_circle = axis.chart_step(360.0, 0.0).unwrap();
     assert_eq!(negative_circle, ChartStep::Circle(TurnDirection::Negative));
     assert_eq!(negative_circle.transit(axis, 360.0, 0.0).unwrap(), -1);
+    assert_eq!(axis.full_turn_delta(1.0e-20, 360.0), None);
+    assert_eq!(
+        axis.chart_step(1.0e-20, 360.0).unwrap(),
+        ChartStep::Shortest(EdgeDirection::Minor(-1.0e-20))
+    );
+    assert_eq!(
+        axis.chart_step(180.0_f64.next_down(), -180.0).unwrap(),
+        ChartStep::Shortest(EdgeDirection::Minor(2.0_f64.powi(-45)))
+    );
     assert_eq!(
         axis.chart_step(-180.0, 180.0).unwrap(),
         ChartStep::Shortest(EdgeDirection::Minor(0.0))
@@ -1235,6 +1269,95 @@ fn seam_transits_preserve_direction_aliases_and_multiple_windings() {
         RingSummary::try_new(degrees(), &GeographicRing::from_ring(&negative)).unwrap();
     assert_eq!(negative_summary.turn(), RingTurn::Other);
     assert_eq!(negative_summary.chart_turn, -2);
+}
+
+#[test]
+fn chart_connections_keep_canonical_endpoints_and_integer_lifts() {
+    let axis = degrees().longitude();
+    let eastward = axis.chart_connection(170.0, -170.0).unwrap();
+    assert_bits(eastward.start.get(), 170.0);
+    assert_bits(eastward.end.get(), -170.0);
+    assert_eq!(eastward.source_lift, 1);
+    assert_eq!(eastward.source_lift, eastward.seam_transit());
+    assert_eq!(
+        eastward.step,
+        ChartStep::Shortest(EdgeDirection::Minor(20.0))
+    );
+
+    let westward = axis.chart_connection(-170.0, 170.0).unwrap();
+    assert_bits(westward.start.get(), -170.0);
+    assert_bits(westward.end.get(), 170.0);
+    assert_eq!(westward.source_lift, -1);
+    assert_eq!(westward.source_lift, westward.seam_transit());
+    assert_eq!(
+        westward.step,
+        ChartStep::Shortest(EdgeDirection::Minor(-20.0))
+    );
+
+    let circle = axis.chart_connection(0.0, 360.0).unwrap();
+    assert_eq!(circle.step, ChartStep::Circle(TurnDirection::Positive));
+    assert_eq!(circle.source_lift, 1);
+    assert_eq!(circle.source_lift, circle.seam_transit());
+    assert_bits(circle.start.get(), 0.0);
+    assert_bits(circle.end.get(), 0.0);
+
+    let proper_minor = axis.chart_connection(1.0e-20, 360.0).unwrap();
+    assert_eq!(
+        proper_minor.step,
+        ChartStep::Shortest(EdgeDirection::Minor(-1.0e-20))
+    );
+    assert_eq!(proper_minor.source_lift, 0);
+    assert_eq!(proper_minor.source_lift, proper_minor.seam_transit());
+    assert_bits(proper_minor.start.get(), 1.0e-20);
+    assert_bits(proper_minor.end.get(), 0.0);
+
+    let positive_half = axis.chart_connection(0.0, 180.0).unwrap();
+    assert_eq!(
+        positive_half.step,
+        ChartStep::Shortest(EdgeDirection::HalfTurn(TurnDirection::Positive))
+    );
+    assert_eq!(positive_half.source_lift, 1);
+    assert_eq!(positive_half.source_lift, positive_half.seam_transit());
+    let negative_half = axis.chart_connection(0.0, -180.0).unwrap();
+    assert_eq!(
+        negative_half.step,
+        ChartStep::Shortest(EdgeDirection::HalfTurn(TurnDirection::Negative))
+    );
+    assert_eq!(negative_half.source_lift, 0);
+    assert_eq!(negative_half.source_lift, negative_half.seam_transit());
+
+    let seam_aliases = axis.chart_connection(-180.0, 180.0).unwrap();
+    assert_bits(seam_aliases.start.get(), -180.0);
+    assert_bits(seam_aliases.end.get(), -180.0);
+    assert_eq!(seam_aliases.source_lift, 0);
+    assert_eq!(seam_aliases.source_lift, seam_aliases.seam_transit());
+
+    let positive_seam_start = axis.chart_connection(180.0, 0.0).unwrap();
+    assert_bits(positive_seam_start.start.get(), -180.0);
+    assert_bits(positive_seam_start.end.get(), 0.0);
+    assert_eq!(positive_seam_start.source_lift, -1);
+    assert_eq!(
+        positive_seam_start.source_lift,
+        positive_seam_start.seam_transit()
+    );
+}
+
+#[test]
+fn rounded_half_period_span_uses_exact_chart_transit() {
+    let axis = degrees().longitude();
+    let from = -90.0;
+    let to = 90.0_f64.next_up();
+    assert_bits(to - from, 180.0);
+    assert!(!axis.ordinary_chart_edge(from, to));
+
+    let connection = axis.chart_connection(from, to).unwrap();
+    assert_eq!(connection.source_lift, -1);
+    assert!(matches!(
+        connection.step,
+        ChartStep::Shortest(EdgeDirection::Minor(delta)) if delta.is_sign_negative()
+    ));
+    assert_eq!(connection.seam_transit(), -1);
+    assert_eq!(axis.chart_transit(from, to).unwrap(), -1);
 }
 
 #[test]

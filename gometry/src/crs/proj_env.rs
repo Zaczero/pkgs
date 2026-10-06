@@ -24,6 +24,19 @@ pub(super) unsafe fn context_create() -> *mut ContextRaw {
     unsafe { proj_sys::gometry_proj_context_create() }
 }
 
+pub(super) fn enable_default_angular_units(context: &ProjContext) -> Result<()> {
+    // SAFETY: context is a fresh live owner on its creating thread. This is
+    // called once before CRS operation resolution and never for literal work.
+    // SAFETY: `context` is the fresh live owner on this thread described above.
+    if unsafe { proj_sys::gometry_enable_default_angular_units(context.as_ptr()) } {
+        Ok(())
+    } else {
+        Err(CrsError::invalid(
+            "bundled PROJ could not enable default angular-unit semantics".to_owned(),
+        ))
+    }
+}
+
 /// # Safety
 ///
 /// `ptr` is the uniquely owned live context transferred into this destroy, on

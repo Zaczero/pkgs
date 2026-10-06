@@ -303,9 +303,8 @@ impl Diagram {
         let mesh = Mesh::build(sites, xs, ys, seed)?;
         let mut centres = Vec::with_capacity(sites.len().wrapping_sub(2));
         let xy = |local: usize| point(xs, ys, *sites.get(local).expect("diagram site"));
-        for face in mesh.vertices.as_chunks::<3>().0 {
-            let [a, b, c] = face;
-            centres.push(exact::circumcenter(xy(*a), xy(*b), xy(*c))?);
+        for &[a, b, c] in mesh.vertices.as_chunks::<3>().0 {
+            centres.push(exact::circumcenter(xy(a), xy(b), xy(c))?);
         }
         let [minimum_y, maximum_y] = y_extent;
         let low = ExactPoint::from_xy(XY::new(0.0, minimum_y));

@@ -218,8 +218,9 @@ pub(crate) fn split_geographic_view(view: ScalarGeographicView<'_>) -> Result<Sh
     if frame == GeographicFrame::crs84() && canonical && !view.shape().crosses_antimeridian() {
         return Ok(view.shape().clone());
     }
-    let longitude_scale = frame.longitude().unit().radians_per_unit().to_degrees();
-    let latitude_scale = frame.latitude_unit().radians_per_unit().to_degrees();
+    let longitude_scale = frame.longitude().to_degrees(1.0) * frame.longitude_orientation_sign();
+    let latitude_scale = frame.latitude_unit().native_to_degrees(1.0, frame.pole())
+        * frame.latitude_orientation_sign();
     let chart = chart_shape(
         view.shape(),
         frame,

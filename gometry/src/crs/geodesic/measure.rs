@@ -348,7 +348,7 @@ mod chart_measure_tests {
 
     fn analytic_parallel_circumference(metric: &GeodesicMetric, latitude: f64) -> f64 {
         let geodesic = metric.geodesic.as_ref();
-        let latitude = latitude * metric.frame.latitude_unit().radians_per_unit();
+        let latitude = latitude.to_radians();
         let eccentricity_squared = geodesic.f * (2.0 - geodesic.f);
         std::f64::consts::TAU * geodesic.a * latitude.cos()
             / (1.0 - eccentricity_squared * latitude.sin().powi(2)).sqrt()

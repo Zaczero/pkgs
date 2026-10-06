@@ -67,4 +67,74 @@ unsafe extern "C" {
     /// The returned pointer is uniquely owned when non-null and must be
     /// released with `proj_context_destroy` exactly once.
     pub fn gometry_proj_context_create() -> *mut PJ_CONTEXT;
+    /// Enable the immutable default angular-unit policy for this fresh context.
+    ///
+    /// This must be called before resolving a CRS-to-CRS operation. Contexts
+    /// used for metadata and literal operation definitions leave it disabled.
+    ///
+    /// # Safety
+    ///
+    /// `context` is a live context created by this crate and is used only on
+    /// its creating thread.
+    pub fn gometry_proj_context_enable_default_angular_units(
+        context: *mut PJ_CONTEXT,
+    ) -> std::ffi::c_int;
+    /// Resolve a recognized conventional angular period, or return zero.
+    pub fn gometry_proj_conventional_period(radians_per_unit: f64) -> f64;
+    /// Bind the original endpoint prime-meridian phase to a normalized no-op PJ.
+    ///
+    /// # Safety
+    ///
+    /// All PJ arguments are live on `context`'s creating thread. `operation`
+    /// is uniquely owned and remains so after the metadata bind.
+    pub fn gometry_proj_configure_default_noop_phase(
+        context: *mut PJ_CONTEXT,
+        operation: *mut PJ,
+        source_crs: *const PJ,
+        target_crs: *const PJ,
+    );
+}
+
+/// The pinned PROJ and Rust CRS admission share this recognition rule.
+pub fn gometry_conventional_period(radians_per_unit: f64) -> Option<f64> {
+    #[cfg(bundled_build)]
+    // SAFETY: the helper is pure and accepts a binary64 value by value.
+    let period = unsafe { gometry_proj_conventional_period(radians_per_unit) };
+
+    #[cfg(not(bundled_build))]
+    let period = {
+        let turns = std::f64::consts::TAU / radians_per_unit;
+        let nearest = turns.round();
+        if radians_per_unit.is_finite()
+            && radians_per_unit > 0.0
+            && nearest > 0.0
+            && (turns - nearest).abs() <= 8.0 * f64::EPSILON * nearest.abs()
+        {
+            nearest
+        } else {
+            0.0
+        }
+    };
+
+    (period > 0.0).then_some(period)
+}
+
+/// Set default angular semantics on a fresh, uniquely owned bundled context.
+///
+/// # Safety
+///
+/// `context` must be a live context created by this crate and used on its
+/// creating thread.
+pub unsafe fn gometry_enable_default_angular_units(context: *mut PJ_CONTEXT) -> bool {
+    #[cfg(bundled_build)]
+    {
+        // SAFETY: caller owns this live context on the creating thread.
+        unsafe { gometry_proj_context_enable_default_angular_units(context) != 0 }
+    }
+
+    #[cfg(not(bundled_build))]
+    {
+        let _ = context;
+        false
+    }
 }

@@ -345,17 +345,174 @@ fn apply_pinned_semantic_patches(source_dir: &Path) -> Result<(), Box<dyn std::e
         "    double xy_factor; /* unit conversion factor for horizontal components */",
         "    double x_factor;\n    double y_factor; /* unit conversion factor for horizontal components */",
     )?;
+
+    replace_pinned_source(
+        source_dir,
+        "src/proj_internal.h",
+        "    bool forceOver = false;\n    int epsg_file_exists = -1;",
+        "    bool forceOver = false;\n    bool gometryDefaultAngularUnits = false;\n    int epsg_file_exists = -1;",
+    )?;
+    replace_pinned_source(
+        source_dir,
+        "src/proj_internal.h",
+        "    int iCurCoordOp = -1;",
+        "    int iCurCoordOp = -1;\n    bool gometryIdentityPhase = false;\n    double gometryIdentityPhaseHigh = 0.0;\n    double gometryIdentityPhaseLow = 0.0;",
+    )?;
+    replace_pinned_source(
+        source_dir,
+        "src/ctx.cpp",
+        "      forceOver(other.forceOver), epsg_file_exists(other.epsg_file_exists),",
+        "      forceOver(other.forceOver),\n      gometryDefaultAngularUnits(other.gometryDefaultAngularUnits),\n      epsg_file_exists(other.epsg_file_exists),",
+    )?;
+    replace_pinned_source(
+        source_dir,
+        "src/proj_internal.h",
+        "#ifndef DO_NOT_DEFINE_PROJ_HEAD",
+        "extern \"C\" double gometry_proj_conventional_period(double) noexcept;\nextern \"C\" double gometry_adjust_longitude_rotation_degrees(double, double, double, double, double, int) noexcept;\nextern \"C\" void gometry_proj_configure_default_noop_phase(PJ_CONTEXT *, PJ *, const PJ *, const PJ *) noexcept;\n\n#ifndef DO_NOT_DEFINE_PROJ_HEAD",
+    )?;
+    replace_pinned_source(
+        source_dir,
+        "src/iso19111/crs.cpp",
+        "using namespace NS_PROJ::internal;",
+        "extern \"C\" double gometry_proj_conventional_period(double) noexcept;\n\nusing namespace NS_PROJ::internal;",
+    )?;
+    replace_pinned_source(
+        source_dir,
+        "src/malloc.cpp",
+        "    skipNonInstantiable = other.skipNonInstantiable;",
+        "    skipNonInstantiable = other.skipNonInstantiable;\n    gometryIdentityPhase = other.gometryIdentityPhase;\n    gometryIdentityPhaseHigh = other.gometryIdentityPhaseHigh;\n    gometryIdentityPhaseLow = other.gometryIdentityPhaseLow;",
+    )?;
+    replace_pinned_source(
+        source_dir,
+        "src/trans.cpp",
+        "PJ_COORD proj_trans(PJ *P, PJ_DIRECTION direction, PJ_COORD coord) {",
+        r#"static double gometry_add_phase(double value, double phaseHigh,
+                                 double phaseLow) {
+    if (!std::isfinite(value))
+        return value;
+    const auto twoSum = [](double a, double b) {
+        const double sum = a + b;
+        const double bVirtual = sum - a;
+        const double error = (a - (sum - bVirtual)) + (b - bVirtual);
+        return std::pair<double, double>(sum, error);
+    };
+    const auto first = twoSum(value, phaseHigh);
+    const auto second = twoSum(first.second, phaseLow);
+    const auto third = twoSum(first.first, second.first);
+    return third.first + (third.second + second.second);
+}
+
+PJ_COORD proj_trans(PJ *P, PJ_DIRECTION direction, PJ_COORD coord) {"#,
+    )?;
+    replace_pinned_source(
+        source_dir,
+        "src/trans.cpp",
+        "#include <limits>",
+        "#include <limits>\n#include <utility>",
+    )?;
+    replace_pinned_source(
+        source_dir,
+        "src/trans.cpp",
+        "    if (P->inverted)\n        direction = pj_opposite_direction(direction);\n\n    if (P->iso_obj != nullptr && !P->iso_obj_is_coordinate_operation) {",
+        "    if (P->inverted)\n        direction = pj_opposite_direction(direction);\n    if (P->gometryIdentityPhase) {\n        const double sign = direction == PJ_FWD ? 1.0 : -1.0;\n        coord.xyzt.x = gometry_add_phase(\n            coord.xyzt.x, sign * P->gometryIdentityPhaseHigh,\n            sign * P->gometryIdentityPhaseLow);\n    }\n\n    if (P->iso_obj != nullptr && !P->iso_obj_is_coordinate_operation) {",
+    )?;
+    replace_pinned_source(
+        source_dir,
+        "src/info.cpp",
+        "#include \"filemanager.hpp\"",
+        "#include \"filemanager.hpp\"\n#include <cstring>",
+    )?;
+    replace_pinned_source(
+        source_dir,
+        "src/info.cpp",
+        "    /* coordinate operation description */",
+        "    /* coordinate operation description */\n    bool gometryDefinitionUnavailable = P->gometryIdentityPhase;",
+    )?;
+    replace_pinned_source(
+        source_dir,
+        "src/info.cpp",
+        "    /* projection id */",
+        "    gometryDefinitionUnavailable =\n        gometryDefinitionUnavailable || P->gometryIdentityPhase;\n\n    /* projection id */",
+    )?;
+    replace_pinned_source(
+        source_dir,
+        "src/info.cpp",
+        "    /* projection definition */\n    if (P->def_full)\n        def = P->def_full;\n    else\n        def = pj_get_def(P, 0); /* pj_get_def takes a non-const PJ pointer */\n    if (nullptr == def)\n        pjinfo.definition = empty;\n    else\n        pjinfo.definition = pj_shrink(def);\n    /* Make proj_destroy clean this up eventually */\n    P->def_full = def;",
+        "    /* projection definition */\n    if (gometryDefinitionUnavailable) {\n        pjinfo.definition = nullptr;\n    } else {\n        if (P->def_full)\n            def = P->def_full;\n        else\n            def = pj_get_def(P, 0); /* pj_get_def takes a non-const PJ pointer */\n        if (nullptr == def)\n            pjinfo.definition = empty;\n        else if (std::strstr(def, \"gometry_ang_\") != nullptr)\n            pjinfo.definition = nullptr;\n        else\n            pjinfo.definition = pj_shrink(def);\n        /* Make proj_destroy clean this up eventually */\n        P->def_full = def;\n    }",
+    )?;
+    replace_pinned_source(
+        source_dir,
+        "include/proj/io.hpp",
+        "    PROJ_INTERNAL Convention convention() const;",
+        "    PROJ_INTERNAL Convention convention() const;\n    PROJ_INTERNAL PROJStringFormatter &setGometryDefaultAngularUnits(bool enabled);\n    PROJ_INTERNAL bool gometryDefaultAngularUnits() const;",
+    )?;
+    replace_pinned_source(
+        source_dir,
+        "src/iso19111/io.cpp",
+        "    bool legacyCRSToCRSContext_ = false;",
+        "    bool legacyCRSToCRSContext_ = false;\n    bool gometryDefaultAngularUnits_ = false;",
+    )?;
+    replace_pinned_source(
+        source_dir,
+        "src/iso19111/io.cpp",
+        "bool PROJStringFormatter::getCRSExport() const { return d->crsExport_; }",
+        "bool PROJStringFormatter::getCRSExport() const { return d->crsExport_; }\n\nPROJStringFormatter &PROJStringFormatter::setGometryDefaultAngularUnits(bool enabled) {\n    d->gometryDefaultAngularUnits_ = enabled;\n    return *this;\n}\n\nbool PROJStringFormatter::gometryDefaultAngularUnits() const {\n    return d->gometryDefaultAngularUnits_;\n}",
+    )?;
+    replace_pinned_source(
+        source_dir,
+        "src/iso19111/c_api.cpp",
+        "                auto projString = coordop->exportToPROJString(formatter.get());",
+        "                formatter->setGometryDefaultAngularUnits(ctx->gometryDefaultAngularUnits);\n                auto projString = coordop->exportToPROJString(formatter.get());",
+    )?;
+    replace_pinned_source(
+        source_dir,
+        "src/iso19111/operation/singleoperation.cpp",
+        "        bool done = false;\n        if (offsetDeg != 0.0) {",
+        r#"        if (formatter->gometryDefaultAngularUnits()) {
+            const auto &sourcePM = sourceCRSGeog->primeMeridian()->longitude();
+            const auto &targetPM = targetCRSGeog->primeMeridian()->longitude();
+            offsetDeg = gometry_adjust_longitude_rotation_degrees(
+                offsetDeg, sourcePM.value(),
+                sourcePM.unit().conversionToSI(), targetPM.value(),
+                targetPM.unit().conversionToSI(),
+                sourcePM.unit() == targetPM.unit());
+        }
+        bool done = false;
+        if (offsetDeg != 0.0) {"#,
+    )?;
     replace_pinned_source(
         source_dir,
         "src/conversions/unitconvert.cpp",
         "    point.xy.x *= Q->xy_factor;\n    point.xy.y *= Q->xy_factor;",
-        "    point.xy.x *= Q->x_factor;\n    point.xy.y *= Q->y_factor;",
+        r#"    point.xy.x = Q->x_gometry_mode == 0
+                      ? point.xy.x * Q->x_factor
+                      : gometry_forward_angular_value(
+                            point.xy.x, Q->x_quantum_in,
+                            Q->x_quantum_out, Q->x_factor,
+                            Q->x_gometry_mode);
+    point.xy.y = Q->y_gometry_mode == 0
+                     ? point.xy.y * Q->y_factor
+                     : gometry_forward_angular_value(
+                           point.xy.y, Q->y_quantum_in,
+                           Q->y_quantum_out, Q->y_factor,
+                           Q->y_gometry_mode);"#,
     )?;
     replace_pinned_source(
         source_dir,
         "src/conversions/unitconvert.cpp",
         "    point.xy.x /= Q->xy_factor;\n    point.xy.y /= Q->xy_factor;",
-        "    point.xy.x /= Q->x_factor;\n    point.xy.y /= Q->y_factor;",
+        r#"    point.xy.x = Q->x_gometry_mode == 0
+                      ? point.xy.x / Q->x_factor
+                      : gometry_reverse_angular_value(
+                            point.xy.x, Q->x_quantum_in,
+                            Q->x_quantum_out, Q->x_factor,
+                            Q->x_gometry_mode);
+    point.xy.y = Q->y_gometry_mode == 0
+                     ? point.xy.y / Q->y_factor
+                     : gometry_reverse_angular_value(
+                           point.xy.y, Q->y_quantum_in,
+                           Q->y_quantum_out, Q->y_factor,
+                           Q->y_gometry_mode);"#,
     )?;
     replace_pinned_source(
         source_dir,
@@ -380,13 +537,13 @@ fn apply_pinned_semantic_patches(source_dir: &Path) -> Result<(), Box<dyn std::e
         "src/conversions/unitconvert.cpp",
         "    if ((name = pj_param(P->ctx, P->params, \"sz_in\").s) != nullptr) {",
         r#"    Q->y_factor = Q->x_factor;
-    auto axisFactor = [P](const char *key, const char *numericKey, double &factor, bool inverse) {
-        const char *name = pj_param(P->ctx, P->params, key).s;
-        if (!name) return;
-        double value = get_unit_conversion_factor(name, nullptr, nullptr);
-        if (value == 0) value = pj_param(P->ctx, P->params, numericKey).f;
-        factor = inverse ? factor / value : factor * value;
-    };
+     auto axisFactor = [P](const char *key, const char *numericKey, double &factor, bool inverse) {
+         const char *name = pj_param(P->ctx, P->params, key).s;
+         if (!name) return;
+         double value = get_unit_conversion_factor(P, name, nullptr, nullptr);
+         if (value == 0) value = pj_param(P->ctx, P->params, numericKey).f;
+         factor = inverse ? factor / value : factor * value;
+     };
     axisFactor("sx_in", "dx_in", Q->x_factor, false);
     axisFactor("sy_in", "dy_in", Q->y_factor, false);
     axisFactor("sx_out", "dx_out", Q->x_factor, true);
@@ -394,6 +551,249 @@ fn apply_pinned_semantic_patches(source_dir: &Path) -> Result<(), Box<dyn std::e
     if ((name = pj_param(P->ctx, P->params, "sz_in").s) != nullptr) {"#,
     )?;
 
+    replace_pinned_source(
+        source_dir,
+        "src/conversions/unitconvert.cpp",
+        "    double y_factor; /* unit conversion factor for horizontal components */\n    double z_factor;",
+        r#"    double y_factor; /* unit conversion factor for horizontal components */
+    double x_quantum_in = 0;
+    double x_quantum_out = 0;
+    double y_quantum_in = 0;
+    double y_quantum_out = 0;
+    int x_gometry_mode = 0;
+    int y_gometry_mode = 0;
+    double z_factor;"#,
+    )?;
+
+    replace_pinned_source(
+        source_dir,
+        "src/conversions/unitconvert.cpp",
+        "#include <errno.h>",
+        "#include <errno.h>\n#include <cstring>\n#include <cstdlib>",
+    )?;
+    replace_pinned_source(
+        source_dir,
+        "src/conversions/unitconvert.cpp",
+        "};\n} // anonymous namespace\n\n/***********************************************************************/\nstatic int is_leap_year(long year) {",
+        r#"};
+
+static double gometry_scaled_angular_value(double value, double inputQuantum,
+                                           double outputQuantum) {
+    if (value == 0.0)
+        return value;
+    if (value == inputQuantum)
+        return outputQuantum;
+    if (value == -inputQuantum)
+        return -outputQuantum;
+    int valueExponent = 0;
+    int inputExponent = 0;
+    int outputExponent = 0;
+    const double valueMantissa = std::frexp(value, &valueExponent);
+    const double inputMantissa = std::frexp(inputQuantum, &inputExponent);
+    const double outputMantissa = std::frexp(outputQuantum, &outputExponent);
+    const double mantissa = (valueMantissa / inputMantissa) * outputMantissa;
+    return std::scalbn(mantissa,
+                       valueExponent - inputExponent + outputExponent);
+}
+
+static double gometry_forward_angular_value(double value, double inputQuantum,
+                                            double outputQuantum, double factor,
+                                            int mode) {
+    if (mode == 1) {
+        if (value == inputQuantum)
+            return outputQuantum;
+        if (value == -inputQuantum)
+            return -outputQuantum;
+        return value * factor;
+    }
+    if (mode == 2) {
+        if (value == inputQuantum)
+            return outputQuantum;
+        if (value == -inputQuantum)
+            return -outputQuantum;
+        return value / factor;
+    }
+    return gometry_scaled_angular_value(value, inputQuantum, outputQuantum);
+}
+
+static double gometry_reverse_angular_value(double value, double inputQuantum,
+                                            double outputQuantum, double factor,
+                                            int mode) {
+    if (mode == 1) {
+        if (value == outputQuantum)
+            return inputQuantum;
+        if (value == -outputQuantum)
+            return -inputQuantum;
+        return value / factor;
+    }
+    if (mode == 2) {
+        if (value == outputQuantum)
+            return inputQuantum;
+        if (value == -outputQuantum)
+            return -inputQuantum;
+        return value * factor;
+    }
+    return gometry_scaled_angular_value(value, outputQuantum, inputQuantum);
+}
+
+} // anonymous namespace
+
+/***********************************************************************/
+static int is_leap_year(long year) {"#,
+    )?;
+    replace_pinned_source(
+        source_dir,
+        "src/conversions/unitconvert.cpp",
+        "    return 0.0;\n}\n\n/***********************************************************************/\nPJ *PJ_CONVERSION(unitconvert, 0) {",
+        r#"    /***********************************************************************/
+    return 0.0;
+}
+
+static bool gometry_private_angular_unit(PJ *P, const char *name,
+                                         double &factor, double &period) {
+    if (!P->ctx->gometryDefaultAngularUnits || name == nullptr)
+        return false;
+    constexpr const char *periodPrefix = "gometry_ang_p_";
+    constexpr const char *factorPrefix = "gometry_ang_f_";
+    const char *number = nullptr;
+    bool hasPeriod = false;
+    if (std::strncmp(name, periodPrefix, std::strlen(periodPrefix)) == 0) {
+        number = name + std::strlen(periodPrefix);
+        hasPeriod = true;
+    } else if (std::strncmp(name, factorPrefix, std::strlen(factorPrefix)) == 0) {
+        number = name + std::strlen(factorPrefix);
+    } else {
+        return false;
+    }
+    char *end = nullptr;
+    const double value = std::strtod(number, &end);
+    if (end == number || *end != '\0' || !std::isfinite(value) || value <= 0.0)
+        return false;
+    period = hasPeriod ? value : 0.0;
+    factor = hasPeriod ? (2.0 * M_PI) / value : value;
+    return std::isfinite(factor) && factor > 0.0;
+}
+
+static double get_unit_conversion_factor(PJ *P, const char *name,
+                                         int *p_is_linear,
+                                         const char **p_normalized_name) {
+    double factor = 0.0;
+    double period = 0.0;
+    int local_is_linear = -1;
+    int *is_linear = p_is_linear ? p_is_linear : &local_is_linear;
+    if (gometry_private_angular_unit(P, name, factor, period)) {
+        if (p_normalized_name)
+            *p_normalized_name = "GometryAngular";
+        *is_linear = 0;
+        return factor;
+    }
+    factor = get_unit_conversion_factor(name, is_linear, p_normalized_name);
+    if (factor != 0.0 && P->ctx->gometryDefaultAngularUnits &&
+        *is_linear == 0) {
+        period = gometry_proj_conventional_period(factor);
+        if (period > 0.0)
+            factor = (2.0 * M_PI) / period;
+    }
+    return factor;
+}
+
+static bool gometry_angular_quantum(PJ *P, const char *name, bool longitude,
+                                    double &quantum) {
+    if (!P->ctx->gometryDefaultAngularUnits || name == nullptr)
+        return false;
+    double factor = 0.0;
+    double period = 0.0;
+    int isLinear = -1;
+    if (!gometry_private_angular_unit(P, name, factor, period)) {
+        factor = get_unit_conversion_factor(name, &isLinear, nullptr);
+        if (factor == 0.0 || isLinear != 0)
+            return false;
+        period = gometry_proj_conventional_period(factor);
+    }
+    if (period > 0.0) {
+        quantum = longitude ? period / 2.0 : period / 4.0;
+    } else {
+        quantum = (longitude ? M_PI : M_HALFPI) / factor;
+    }
+    return std::isfinite(quantum) && quantum > 0.0;
+}
+
+static int gometry_angular_mode(double inputQuantum, double outputQuantum,
+                                double &factor) {
+    const double multiply = outputQuantum / inputQuantum;
+    if (std::isfinite(multiply) && multiply > 0.0 &&
+        inputQuantum * multiply == outputQuantum &&
+        outputQuantum / multiply == inputQuantum) {
+        factor = multiply;
+        return 1;
+    }
+    const double divide = inputQuantum / outputQuantum;
+    if (std::isfinite(divide) && divide > 0.0 &&
+        inputQuantum / divide == outputQuantum &&
+        outputQuantum * divide == inputQuantum) {
+        factor = divide;
+        return 2;
+    }
+    return 3;
+}
+
+static const char *gometry_axis_unit(PJ *P, const char *axisKey,
+                                    const char *xyKey) {
+    const char *axis = pj_param(P->ctx, P->params, axisKey).s;
+    return axis ? axis : pj_param(P->ctx, P->params, xyKey).s;
+}
+
+static void gometry_prepare_unitconvert(PJ *P,
+                                        struct pj_opaque_unitconvert *Q) {
+    const char *xIn = gometry_axis_unit(P, "sx_in", "sxy_in");
+    const char *yIn = gometry_axis_unit(P, "sy_in", "sxy_in");
+    const char *xOut = gometry_axis_unit(P, "sx_out", "sxy_out");
+    const char *yOut = gometry_axis_unit(P, "sy_out", "sxy_out");
+    if (gometry_angular_quantum(P, xIn, true, Q->x_quantum_in) &&
+        gometry_angular_quantum(P, xOut, true, Q->x_quantum_out)) {
+        Q->x_gometry_mode =
+            gometry_angular_mode(Q->x_quantum_in, Q->x_quantum_out, Q->x_factor);
+    }
+     if (gometry_angular_quantum(P, yIn, false, Q->y_quantum_in) &&
+         gometry_angular_quantum(P, yOut, false, Q->y_quantum_out)) {
+         Q->y_gometry_mode =
+             gometry_angular_mode(Q->y_quantum_in, Q->y_quantum_out, Q->y_factor);
+     }
+ }
+
+/***********************************************************************/
+PJ *PJ_CONVERSION(unitconvert, 0) {"#,
+    )?;
+    replace_pinned_source(
+        source_dir,
+        "src/conversions/unitconvert.cpp",
+        "f = get_unit_conversion_factor(name, &xy_in_is_linear,",
+        "f = get_unit_conversion_factor(P, name, &xy_in_is_linear,",
+    )?;
+    replace_pinned_source(
+        source_dir,
+        "src/conversions/unitconvert.cpp",
+        "f = get_unit_conversion_factor(name, &xy_out_is_linear,",
+        "f = get_unit_conversion_factor(P, name, &xy_out_is_linear,",
+    )?;
+    replace_pinned_source(
+        source_dir,
+        "src/conversions/unitconvert.cpp",
+        "f = get_unit_conversion_factor(name, &z_in_is_linear,",
+        "f = get_unit_conversion_factor(P, name, &z_in_is_linear,",
+    )?;
+    replace_pinned_source(
+        source_dir,
+        "src/conversions/unitconvert.cpp",
+        "f = get_unit_conversion_factor(name, &z_out_is_linear,",
+        "f = get_unit_conversion_factor(P, name, &z_out_is_linear,",
+    )?;
+    replace_pinned_source(
+        source_dir,
+        "src/conversions/unitconvert.cpp",
+        "    return P;\n}",
+        "    gometry_prepare_unitconvert(P, Q);\n    return P;\n}",
+    )?;
     replace_pinned_source(
         source_dir,
         "src/iso19111/common.cpp",
@@ -465,16 +865,33 @@ fn apply_pinned_semantic_patches(source_dir: &Path) -> Result<(), Box<dyn std::e
         "    if (axisList.size() == 3 && !formatter->omitZUnitConversion())",
         r#"        const auto &unit0 = axisList[0]->unit();
         const auto &unit1 = axisList[1]->unit();
-        if (unit0.conversionToSI() == unit1.conversionToSI()) {
-            const auto token = unit0.exportToPROJString();
-            if (token.empty()) formatter->addParam("xy_out", unit0.conversionToSI());
-            else formatter->addParam("xy_out", token);
+        const auto outputToken = [formatter](const common::UnitOfMeasure &unit) {
+            if (formatter->gometryDefaultAngularUnits() &&
+                !formatter->getCRSExport()) {
+                const double period =
+                    gometry_proj_conventional_period(unit.conversionToSI());
+                if (period > 0.0)
+                    return std::string("gometry_ang_p_") +
+                           internal::toString(period);
+                return std::string("gometry_ang_f_") +
+                       internal::toString(unit.conversionToSI());
+            }
+            const auto token = unit.exportToPROJString();
+            return token.empty() ? internal::toString(unit.conversionToSI())
+                                 : token;
+        };
+        const auto &direction0 = axisList[0]->direction();
+        const bool latitudeFirst = &direction0 == &cs::AxisDirection::NORTH ||
+                                   &direction0 == &cs::AxisDirection::SOUTH;
+        const auto &longitudeUnit = latitudeFirst ? unit1 : unit0;
+        const auto &latitudeUnit = latitudeFirst ? unit0 : unit1;
+        const auto longitudeToken = outputToken(longitudeUnit);
+        const auto latitudeToken = outputToken(latitudeUnit);
+        if (longitudeToken == latitudeToken) {
+            formatter->addParam("xy_out", longitudeToken);
         } else {
-            const auto &direction0 = axisList[0]->direction();
-            const bool latitudeFirst = &direction0 == &cs::AxisDirection::NORTH ||
-                                       &direction0 == &cs::AxisDirection::SOUTH;
-            formatter->addParam("x_out", (latitudeFirst ? unit1 : unit0).conversionToSI());
-            formatter->addParam("y_out", (latitudeFirst ? unit0 : unit1).conversionToSI());
+            formatter->addParam("x_out", longitudeToken);
+            formatter->addParam("y_out", latitudeToken);
         }
     }
 "#,

@@ -4,7 +4,7 @@ use crate::crs::{
     AreaOfUse, AxisInfo, CrsError, DomainInfo, OwnedPj, ProjContext, copy_proj_c_string,
     crs_type_name, prime_meridian_info,
 };
-use crate::geographic::{AngularFactor, GeographicFrame};
+use crate::geographic::{AngularFactor, GeographicAxisOrientation, GeographicFrame};
 
 pub(crate) fn area_of_use(context: &ProjContext, object: &OwnedPj) -> Option<AreaOfUse> {
     let mut west = 0.0;
@@ -233,10 +233,18 @@ pub(crate) fn geographic_frame(
             let coordinate_system = coordinate_system_type(context, object);
             let mut longitude = None;
             let mut latitude = None;
+            let mut longitude_east = None;
+            let mut latitude_north = None;
             for axis in &object_axes {
                 match axis_role(coordinate_system, axis) {
-                    "lon" if longitude.is_none() => longitude = Some(axis.unit_conversion_factor),
-                    "lat" if latitude.is_none() => latitude = Some(axis.unit_conversion_factor),
+                    "lon" if longitude.is_none() => {
+                        longitude = Some(axis.unit_conversion_factor);
+                        longitude_east = Some(axis.direction.as_deref() == Some("east"));
+                    },
+                    "lat" if latitude.is_none() => {
+                        latitude = Some(axis.unit_conversion_factor);
+                        latitude_north = Some(axis.direction.as_deref() == Some("north"));
+                    },
                     "lon" | "lat" => {
                         return Err(CrsError::crs_create(
                             normalized,
@@ -252,20 +260,29 @@ pub(crate) fn geographic_frame(
                     "geographic CRS does not expose longitude and latitude angular axes",
                 ));
             };
+            let orientation = GeographicAxisOrientation::from_axis_directions(
+                longitude_east.expect("the longitude role records its direction"),
+                latitude_north.expect("the latitude role records its direction"),
+            );
             let prime_meridian = prime_meridian_info(context, object).ok_or_else(|| {
                 CrsError::crs_create(
                     normalized,
                     "geographic CRS does not expose a prime meridian",
                 )
             })?;
-            let prime_meridian_radians =
-                prime_meridian.longitude * prime_meridian.unit_conversion_factor;
-            let frame = GeographicFrame::try_new(
+            let prime_meridian_unit = AngularFactor::try_new(
+                "prime meridian unit",
+                prime_meridian.unit_conversion_factor,
+            )
+            .map_err(|error| CrsError::crs_create(normalized, error.to_string()))?;
+            let prime_meridian_radians = prime_meridian_unit.to_radians(prime_meridian.longitude);
+            let frame = GeographicFrame::try_new_with_orientation(
                 AngularFactor::try_new("longitude unit", longitude)
                     .map_err(|error| CrsError::crs_create(normalized, error.to_string()))?,
                 AngularFactor::try_new("latitude unit", latitude)
                     .map_err(|error| CrsError::crs_create(normalized, error.to_string()))?,
                 prime_meridian_radians,
+                orientation,
             )
             .map_err(|error| CrsError::crs_create(normalized, error.to_string()))?;
             if found.replace(frame).is_some() {

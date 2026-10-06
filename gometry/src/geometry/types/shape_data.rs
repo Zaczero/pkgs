@@ -65,18 +65,22 @@ impl HeapSize for FrameDependentCaches {
 struct GeographicTopologyKey {
     longitude_unit: u64,
     longitude_period: u64,
+    longitude_east: bool,
     latitude_unit: u64,
     latitude_pole: u64,
+    latitude_north: bool,
     prime_meridian: u64,
 }
 
 impl GeographicTopologyKey {
     fn new(frame: crate::geographic::GeographicFrame) -> Self {
         Self {
-            longitude_unit: canonical_bits(frame.longitude().unit().radians_per_unit()),
+            longitude_unit: canonical_bits(frame.longitude().radians_per_unit()),
             longitude_period: canonical_bits(frame.longitude().period()),
-            latitude_unit: canonical_bits(frame.latitude_unit().radians_per_unit()),
+            longitude_east: frame.orientation().longitude_east(),
+            latitude_unit: canonical_bits(frame.latitude_radians_per_unit()),
             latitude_pole: canonical_bits(frame.pole()),
+            latitude_north: frame.orientation().latitude_north(),
             prime_meridian: canonical_bits(frame.prime_meridian_radians()),
         }
     }

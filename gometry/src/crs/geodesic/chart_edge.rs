@@ -155,7 +155,7 @@ impl ChartEdge {
     )]
     pub(crate) fn is_degenerate(&self) -> bool {
         self.latitude_delta == 0.0
-            && (self.longitude_delta_native == 0.0 || self.start_latitude.abs() == self.pole)
+            && (self.longitude_delta_native == 0.0 || self.start_latitude.abs() == self.pole.abs())
     }
 
     pub(crate) fn witness_role(&self, parameter: f64) -> crate::geometry::WitnessRole {
@@ -208,9 +208,11 @@ impl ChartEdge {
             end_latitude,
             latitude_delta,
             longitude_delta_native,
-            longitude_delta: longitude_delta_native * axis.unit().radians_per_unit(),
-            latitude_unit: frame.latitude_unit().radians_per_unit(),
-            pole: frame.pole(),
+            longitude_delta: longitude_delta_native
+                * axis.radians_per_unit()
+                * frame.longitude_orientation_sign(),
+            latitude_unit: frame.latitude_radians_per_unit() * frame.latitude_orientation_sign(),
+            pole: frame.pole() * frame.latitude_orientation_sign(),
         })
     }
 
@@ -442,10 +444,11 @@ impl ChartEdge {
     }
 
     fn parallel_length(&self, geodesic: &Geodesic) -> f64 {
-        let colatitude = self.pole - self.start_latitude.abs();
-        let theta = colatitude * self.latitude_unit;
+        let colatitude = self.pole.abs() - self.start_latitude.abs();
+        let theta = colatitude * self.latitude_unit.abs();
         let cos_latitude = theta.sin();
-        let sin_latitude = theta.cos().copysign(self.start_latitude);
+        let physical_latitude = self.start_latitude * self.frame.latitude_orientation_sign();
+        let sin_latitude = theta.cos().copysign(physical_latitude);
         let w = (1.0 - geodesic.f * (2.0 - geodesic.f) * sin_latitude * sin_latitude).sqrt();
         geodesic.a / w * cos_latitude * self.longitude_delta.abs()
     }
@@ -660,8 +663,12 @@ impl ChartEdge {
     /// Mean pole-referenced authalic integral multiplied by the chart longitude step.
     pub(crate) fn authalic_area_term(&self, series: &AuthalicSeries, north: bool) -> f64 {
         let direction = if north { 1.0 } else { -1.0 };
-        let theta0 = (self.pole - direction * self.start_latitude) * self.latitude_unit;
-        let half_delta = -direction * self.latitude_delta * self.latitude_unit / 2.0;
+        let orientation = self.frame.latitude_orientation_sign();
+        let angular_scale = self.latitude_unit * orientation;
+        let physical_start = self.start_latitude * orientation;
+        let physical_delta = self.latitude_delta * orientation;
+        let theta0 = (self.pole * orientation - direction * physical_start) * angular_scale;
+        let half_delta = -direction * physical_delta * angular_scale / 2.0;
         let midpoint = theta0 + half_delta;
         let (sin_mid, cos_mid) = (midpoint / 2.0).sin_cos();
         let (sin_delta, cos_delta) = half_delta.sin_cos();
@@ -725,8 +732,8 @@ impl ChartEdge {
     fn admits_gl4(&self, dphi: f64) -> bool {
         let latitude0 = self.start_latitude;
         let latitude1 = self.end_latitude;
-        let colatitude0 = (self.pole - latitude0.abs()) * self.latitude_unit;
-        let colatitude1 = (self.pole - latitude1.abs()) * self.latitude_unit;
+        let colatitude0 = (self.pole.abs() - latitude0.abs()) * self.latitude_unit.abs();
+        let colatitude1 = (self.pole.abs() - latitude1.abs()) * self.latitude_unit.abs();
         let crosses_equator =
             (latitude0 <= 0.0 && latitude1 >= 0.0) || (latitude1 <= 0.0 && latitude0 >= 0.0);
         let max_cos_latitude = if crosses_equator {
@@ -751,9 +758,12 @@ impl ChartEdge {
     }
 
     fn latitude_sincos(&self, t: f64) -> (f64, f64) {
-        let latitude0 = self.start_latitude;
-        let latitude1 = self.end_latitude;
-        let latitude_delta = self.latitude_delta;
+        let orientation = self.frame.latitude_orientation_sign();
+        let latitude0 = self.start_latitude * orientation;
+        let latitude1 = self.end_latitude * orientation;
+        let latitude_delta = self.latitude_delta * orientation;
+        let pole = self.pole * orientation;
+        let latitude_unit = self.latitude_unit * orientation;
         let sign0 = latitude0.signum().copysign(1.0);
         let sign1 = latitude1.signum().copysign(1.0);
         let crosses_equator =
@@ -768,9 +778,8 @@ impl ChartEdge {
         } else {
             (latitude0, t, sign0)
         };
-        let anchor_colatitude = self.pole - sign * anchor;
-        let colatitude =
-            (anchor_colatitude - sign * parameter * latitude_delta) * self.latitude_unit;
+        let anchor_colatitude = pole - sign * anchor;
+        let colatitude = (anchor_colatitude - sign * parameter * latitude_delta) * latitude_unit;
         let (sin_colatitude, cos_colatitude) = colatitude.sin_cos();
         (sign * cos_colatitude, sin_colatitude)
     }
@@ -1173,8 +1182,7 @@ mod tests {
                 frame,
             )
             .unwrap();
-            let expected =
-                (frame.pole() - latitude.abs()) * frame.latitude_unit().radians_per_unit();
+            let expected = (frame.pole() - latitude.abs()) * frame.latitude_radians_per_unit();
             let actual = (edge.pole - edge.start_latitude.abs()) * edge.latitude_unit;
             assert_eq!(actual.to_bits(), expected.to_bits());
         }
@@ -1309,7 +1317,7 @@ mod tests {
         .unwrap();
         assert_eq!(
             edge.longitude_delta.to_bits(),
-            (delta * axis.unit().radians_per_unit()).to_bits(),
+            (delta * axis.radians_per_unit() * frame.longitude_orientation_sign()).to_bits(),
             "frame={frame:?}, from={from:?}, to={to:?}"
         );
 

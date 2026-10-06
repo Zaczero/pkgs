@@ -778,7 +778,11 @@ def _assert_crs_namespace_input_objects_and_serialization() -> None:
     )
     assert operation['method'] is None
     assert operation['parameters'] == []
-    assert 'proj=webmerc' in cast('str', operation['definition'])
+    assert operation['definition'] is None
+    assert any(
+        step['method'] is not None and step['method']['code'] == '1024'
+        for step in operation['steps']
+    )
     operation_area = cast('dict[str, object]', operation['area_of_use'])
     # The area name is EPSG database prose and changes between releases (EPSG
     # v12.029 renamed this one 'World' -> 'World.'). Pin our own contract --

@@ -1037,7 +1037,7 @@ pub(crate) fn geographic_total_bounds_from_columns(
     frame: crate::geographic::GeographicFrame,
 ) -> Result<Option<Bounds>> {
     let raw = total_bounds_from_columns(columns);
-    if raw.is_none() || raw.is_some_and(|bounds| frame.bounds_certify_ordinary_support(bounds)) {
+    if raw.is_none_or(|bounds| frame.bounds_certify_ordinary_support(bounds)) {
         return Ok(raw);
     }
     let support = match columns {

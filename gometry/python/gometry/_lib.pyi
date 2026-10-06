@@ -12409,6 +12409,10 @@ class CRS:
         Returns
         -------
         CrsOperationInfo
+            The operation or a nested step's ``definition`` may be ``None`` when
+            the selected default angular semantics cannot be represented
+            faithfully by an executable PROJ string. Method, parameters, steps,
+            grids, source, target, and epoch metadata remain available.
 
         Raises
         ------
@@ -12471,6 +12475,10 @@ class CRS:
         Returns
         -------
         list of CrsOperationInfo
+            A candidate's or nested step's ``definition`` may be ``None`` when
+            the selected default angular semantics cannot be represented
+            faithfully by an executable PROJ string. Method, parameters, steps,
+            grids, source, target, and epoch metadata remain available.
 
         Examples
         --------
@@ -21014,13 +21022,18 @@ def crs_apply(
     GeometryError
         If ``direction`` is invalid.
 
+    Notes
+    -----
+    Supply a literal operation definition. A definition returned by
+    ``CRS.operation`` may be ``None`` when selected angular semantics cannot be
+    represented faithfully as an executable PROJ string.
+
     Examples
     --------
     >>> import gometry as gm
-    >>> import numpy as np
-    >>> op = gm.CRS(4326).operation(3857).get('definition') or ''
-    >>> np.round(np.asarray(gm.crs_apply(op, -122.4, 37.8)), 1).tolist()
-    [-13625505.7, 4551210.9]
+    >>> op = '+proj=affine +xoff=1 +yoff=2'
+    >>> gm.crs_apply(op, -122.4, 37.8)
+    (-121.4, 39.8)
     """
 
 @overload

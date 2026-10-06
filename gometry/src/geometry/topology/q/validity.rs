@@ -444,7 +444,7 @@ fn line_vertex_classes(
                     edge.source[0].x,
                     edge.source[1].x,
                 )?
-                .1
+                .delta_x
                 .is_zero();
                 let collapsed_pole = topology
                     .q
@@ -564,7 +564,7 @@ fn ring_rules(topology: &ExactGeographicTopology) -> Result<Vec<RingRules>> {
                 edge.source[0].x,
                 edge.source[1].x,
             )?
-            .1;
+            .delta_x;
             let collapsed = start_node == end_node
                 && (delta.is_zero()
                     || topology
