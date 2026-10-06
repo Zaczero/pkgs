@@ -941,6 +941,38 @@ fn line_contraction_preserves_bends_and_protected_points() {
 }
 
 #[test]
+fn line_contraction_ignores_omitted_branch_at_the_join() {
+    let case = run(&[
+        seg(0.0, 0.0, 1.0, 0.0),
+        seg(1.0, 0.0, 2.0, 0.0),
+        seg(1.0, 0.0, 1.0, 1.0),
+    ]);
+    let partition = case.partition();
+    let (topology, edges) = partition.local_topology().unwrap();
+    let faces = partition.global_faces(&topology, &edges).unwrap();
+    let lines: Vec<_> = partition
+        .spans
+        .iter()
+        .enumerate()
+        .filter_map(|(index, span)| {
+            (partition.nearest_xy(span.start).y == 0.0 && partition.nearest_xy(span.end).y == 0.0)
+                .then_some(index as u32)
+        })
+        .collect();
+    let plan = faces
+        .boundary_plan(&lines, &topology, &edges, &partition, &[false])
+        .unwrap();
+    let (_, emitted) = certify_plan(&plan, &partition, &topology, &edges).unwrap();
+    assert_eq!(plan.source_darts.len(), 2);
+    assert_eq!(emitted.len(), 1);
+    let endpoints = [emitted[0].start, emitted[0].end];
+    assert!(
+        endpoints == [XY::new(0.0, 0.0), XY::new(2.0, 0.0)]
+            || endpoints == [XY::new(2.0, 0.0), XY::new(0.0, 0.0)]
+    );
+}
+
+#[test]
 fn boundary_contraction_preserves_explicit_points_and_source_paths() {
     for (name, protect, attach_line) in [
         ("unprotected", false, false),

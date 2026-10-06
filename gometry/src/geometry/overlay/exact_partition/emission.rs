@@ -1147,7 +1147,9 @@ impl GlobalFaces {
             }
             let row =
                 topology.starts[node] as usize..topology.starts[node.wrapping_add(1)] as usize;
-            if row.filter(|&slot| retained[edges[slot] as usize]).count() != 2 {
+            // A two-slot row contains only the incoming twin and its distinct
+            // retained departure; there is no omitted branch in this row.
+            if row.len() != 2 && row.filter(|&slot| retained[edges[slot] as usize]).count() != 2 {
                 return false;
             }
             let source = |slot: u32| {
