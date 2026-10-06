@@ -732,12 +732,21 @@ impl GeographicFrame {
             -1.0
         }
     }
-    pub(crate) fn native_latitude_pole(self, pole: Pole) -> f64 {
+    /// Native latitude coordinate of a physical geodetic pole.
+    pub(crate) fn native_latitude_pole(self, pole: GeodeticPole) -> f64 {
         let direction = match pole {
-            Pole::North => 1.0,
-            Pole::South => -1.0,
+            GeodeticPole::North => 1.0,
+            GeodeticPole::South => -1.0,
         };
         direction * self.pole * self.latitude_orientation_sign()
+    }
+
+    /// Native latitude coordinate at the selected side of this chart.
+    pub(crate) const fn chart_pole_latitude(self, pole: ChartPole) -> f64 {
+        match pole {
+            ChartPole::North => self.pole,
+            ChartPole::South => -self.pole,
+        }
     }
     pub(crate) fn latitude_radians_per_unit(self) -> f64 {
         self.latitude_unit.effective_radians_per_unit()
@@ -766,12 +775,8 @@ impl GeographicFrame {
     pub(crate) fn quotient_vertex(self, x: f64, y: f64) -> QuotientVertex {
         let longitude = self.longitude.wrap_admitted(x);
         let latitude = Latitude::from_admitted(self, y);
-        if latitude.identity(self) == SeamIdentity::Pole {
-            return if latitude.get().is_sign_negative() {
-                QuotientVertex::SouthPole
-            } else {
-                QuotientVertex::NorthPole
-            };
+        if let Some(pole) = latitude.chart_pole(self) {
+            return QuotientVertex::ChartPole(pole);
         }
         if longitude.identity(self.longitude) == SeamIdentity::Seam {
             return QuotientVertex::Seam(latitude.get().to_bits());
@@ -1094,6 +1099,16 @@ impl Latitude {
             SeamIdentity::Ordinary
         }
     }
+
+    pub(crate) fn chart_pole(self, frame: GeographicFrame) -> Option<ChartPole> {
+        (self.identity(frame) == SeamIdentity::Pole).then(|| {
+            if self.0.is_sign_negative() {
+                ChartPole::South
+            } else {
+                ChartPole::North
+            }
+        })
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1107,8 +1122,7 @@ pub(crate) enum SeamIdentity {
 pub(crate) enum QuotientVertex {
     Ordinary(u64, u64),
     Seam(u64),
-    NorthPole,
-    SouthPole,
+    ChartPole(ChartPole),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1117,26 +1131,34 @@ pub(crate) enum TurnDirection {
     Positive,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Pole {
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+/// North or south by the sign of the native chart latitude, independent of axis orientation.
+pub(crate) enum ChartPole {
     North,
     South,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// Physical north or south on the geodetic ellipsoid.
+pub(crate) enum GeodeticPole {
+    North,
+    South,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// A nonzero chart turn's bounded side in the sign of native latitude.
 pub(crate) enum FullTurnPole {
-    Bounded(Pole),
+    Bounded(ChartPole),
     Ambiguous,
 }
 
 impl FullTurnPole {
-    /// Classify a nonzero chart-turn by the closed hemisphere containing its
-    /// admitted latitude span.
+    /// Classify a nonzero chart turn by its native-latitude hemisphere.
     pub(crate) fn of_latitude_span(south: f64, north: f64) -> Self {
         if north > 0.0 && south >= 0.0 {
-            Self::Bounded(Pole::North)
+            Self::Bounded(ChartPole::North)
         } else if south < 0.0 && north <= 0.0 {
-            Self::Bounded(Pole::South)
+            Self::Bounded(ChartPole::South)
         } else {
             Self::Ambiguous
         }

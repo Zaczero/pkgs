@@ -13,8 +13,9 @@ use crate::geographic::{
 use crate::geometry::types::ChartMetric;
 use crate::geometry::{
     ChartBox, ChartEdgeDifferential, ChartEdgeDifferentialBounds, ChartPointDistanceSample,
-    GeometryErrorKind, MOrdinate, Point, PointEdgeQuery, PointEdgeQueryResult, Segment, XY,
-    ZOrdinate, interpolate_optional_ordinate, segment_projection,
+    GeographicAreaDensity, GeometryErrorKind, MAX_AUTHALIC_HARMONICS, MOrdinate, Point,
+    PointEdgeQuery, PointEdgeQueryResult, Segment, XY, ZOrdinate, interpolate_optional_ordinate,
+    segment_projection,
 };
 
 const GL4_NODES: [f64; 4] = [
@@ -60,7 +61,6 @@ const G7_WEIGHTS: [f64; 4] = [
 const MAX_GK15_EVALUATIONS: usize = 5_000;
 const RELATIVE_LENGTH_ERROR: f64 = 4.0 * f64::EPSILON;
 const ONE_DEGREE: f64 = std::f64::consts::PI / 180.0;
-const MAX_AUTHALIC_HARMONICS: usize = 9;
 const AUTHALIC_TAIL_RELATIVE: f64 = 1.0e-17;
 
 #[derive(Clone, Copy, Debug)]
@@ -101,8 +101,19 @@ impl AuthalicSeries {
         }
     }
 
-    pub(crate) fn area_factor(self, semi_major: f64) -> f64 {
-        semi_major * semi_major / 2.0
+    pub(crate) fn area_density(
+        self,
+        geodesic: &Geodesic,
+        reference_colatitude: f64,
+        reference_pole: crate::geographic::GeodeticPole,
+    ) -> GeographicAreaDensity {
+        GeographicAreaDensity::new(
+            self.coefficients,
+            self.harmonics,
+            geodesic.a,
+            reference_colatitude,
+            reference_pole,
+        )
     }
 }
 
@@ -113,17 +124,6 @@ fn binomial(n: usize, k: usize) -> f64 {
         coefficient *= (n + 1 - index) as f64 / index as f64;
     }
     coefficient
-}
-
-fn one_minus_sinc_small(value: f64) -> f64 {
-    let squared = value * value;
-    squared / 6.0
-        * (1.0
-            - squared / 20.0
-                * (1.0
-                    - squared / 42.0
-                        * (1.0
-                            - squared / 72.0 * (1.0 - squared / 110.0 * (1.0 - squared / 156.0)))))
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -660,65 +660,6 @@ impl ChartEdge {
         self.finite_length(total)
     }
 
-    /// Mean pole-referenced authalic integral multiplied by the chart longitude step.
-    pub(crate) fn authalic_area_term(&self, series: &AuthalicSeries, north: bool) -> f64 {
-        let direction = if north { 1.0 } else { -1.0 };
-        let orientation = self.frame.latitude_orientation_sign();
-        let angular_scale = self.latitude_unit * orientation;
-        let physical_start = self.start_latitude * orientation;
-        let physical_delta = self.latitude_delta * orientation;
-        let theta0 = (self.pole * orientation - direction * physical_start) * angular_scale;
-        let half_delta = -direction * physical_delta * angular_scale / 2.0;
-        let midpoint = theta0 + half_delta;
-        let (sin_mid, cos_mid) = (midpoint / 2.0).sin_cos();
-        let (sin_delta, cos_delta) = half_delta.sin_cos();
-        let sin_mid_step = 2.0 * sin_mid * cos_mid;
-        let cos_mid_step = cos_mid * cos_mid - sin_mid * sin_mid;
-        let sin_delta_step = 2.0 * sin_delta * cos_delta;
-        let cos_delta_step = cos_delta * cos_delta - sin_delta * sin_delta;
-        let mut sin_mid_harmonic = sin_mid;
-        let mut cos_mid_harmonic = cos_mid;
-        let mut sin_delta_harmonic = sin_delta;
-        let mut cos_delta_harmonic = cos_delta;
-        let mut mean = 0.0;
-        for (k, &coefficient) in series
-            .coefficients
-            .iter()
-            .take(series.harmonics)
-            .enumerate()
-        {
-            let y = (2 * k + 1) as f64 * half_delta;
-            let (sinc_y, one_minus_sinc_y) = if y.abs() < 0.5 {
-                let one_minus_sinc_y = one_minus_sinc_small(y);
-                (1.0 - one_minus_sinc_y, one_minus_sinc_y)
-            } else {
-                let sinc_y = sin_delta_harmonic / y;
-                (sinc_y, 1.0 - sinc_y)
-            };
-            let mean_deficit =
-                one_minus_sinc_y + sinc_y * 2.0 * sin_mid_harmonic * sin_mid_harmonic;
-            let signed_coefficient = if k % 2 == 0 {
-                coefficient
-            } else {
-                -coefficient
-            };
-            mean += signed_coefficient * mean_deficit;
-
-            let next_sin_mid = sin_mid_harmonic * cos_mid_step + cos_mid_harmonic * sin_mid_step;
-            let next_cos_mid = cos_mid_harmonic * cos_mid_step - sin_mid_harmonic * sin_mid_step;
-            sin_mid_harmonic = next_sin_mid;
-            cos_mid_harmonic = next_cos_mid;
-
-            let next_sin_delta =
-                sin_delta_harmonic * cos_delta_step + cos_delta_harmonic * sin_delta_step;
-            let next_cos_delta =
-                cos_delta_harmonic * cos_delta_step - sin_delta_harmonic * sin_delta_step;
-            sin_delta_harmonic = next_sin_delta;
-            cos_delta_harmonic = next_cos_delta;
-        }
-        self.longitude_delta * mean
-    }
-
     fn finite_length(&self, length: f64) -> Result<f64> {
         if length.is_finite() && length >= 0.0 {
             Ok(length)
@@ -952,12 +893,13 @@ impl ChartMetric for super::GeodesicMetric {
         move |bounds| bound.lower_bound(bounds)
     }
 
-    fn chart_area_edge_term(&self, edge: &ChartEdge, north: bool) -> f64 {
-        edge.authalic_area_term(&self.authalic_series, north)
-    }
-
-    fn chart_area_factor(&self) -> f64 {
-        self.authalic_series.area_factor(self.geodesic.a)
+    fn chart_area_density(
+        &self,
+        reference_colatitude: f64,
+        reference_pole: crate::geographic::GeodeticPole,
+    ) -> GeographicAreaDensity {
+        self.authalic_series
+            .area_density(&self.geodesic, reference_colatitude, reference_pole)
     }
 }
 

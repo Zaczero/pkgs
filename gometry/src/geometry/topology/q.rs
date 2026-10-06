@@ -10,7 +10,7 @@ use super::exact::{
     SourceRingId, SourceRowId, point_on_exact_segment, vector_cross, vector_difference,
 };
 use crate::error::{ResourceError, Result};
-use crate::geographic::{GeographicFrame, Pole};
+use crate::geographic::{ChartPole, GeographicFrame};
 use crate::geometry::exact_arith::ExactSign;
 use crate::geometry::segments::try_sort_by;
 use crate::geometry::source_support::RingKind;
@@ -65,7 +65,7 @@ pub(super) struct QPort {
 pub(super) struct QNode {
     pub id: QNodeId,
     key: QNodeKey,
-    pole: Option<Pole>,
+    pole: Option<ChartPole>,
     pub ports: Range<usize>,
 }
 
@@ -566,8 +566,8 @@ impl QCutIndex {
                 )?;
                 let value = (node_components[node.id.0 as usize], face);
                 let slot = match pole {
-                    Pole::South => &mut south_pole_face,
-                    Pole::North => &mut north_pole_face,
+                    ChartPole::South => &mut south_pole_face,
+                    ChartPole::North => &mut north_pole_face,
                 };
                 if slot.replace(value).is_some() {
                     return Err(GeometryErrorKind::Invalid(
@@ -726,7 +726,7 @@ impl QCutIndex {
                         .nodes
                         .iter()
                         .find(|node| {
-                            node.pole == Some(Pole::South)
+                            node.pole == Some(ChartPole::South)
                                 && node_components.get(node.id.0 as usize) == Some(&component_id)
                         })
                         .map(|node| node.id);
@@ -767,8 +767,8 @@ impl QCutIndex {
             });
         }
 
-        let south_y = ExactRational::from_f64(-frame.pole());
-        let north_y = ExactRational::from_f64(frame.pole());
+        let south_y = ExactRational::from_f64(frame.chart_pole_latitude(ChartPole::South));
+        let north_y = ExactRational::from_f64(frame.chart_pole_latitude(ChartPole::North));
         let interval_count = events
             .len()
             .checked_add(1)
@@ -890,10 +890,10 @@ impl QCutIndex {
         })
     }
 
-    fn pole_interval_id(&self, pole: Pole) -> Result<CutIntervalId> {
+    fn pole_interval_id(&self, pole: ChartPole) -> Result<CutIntervalId> {
         let interval = match pole {
-            Pole::South => self.intervals.first(),
-            Pole::North => self.intervals.last(),
+            ChartPole::South => self.intervals.first(),
+            ChartPole::North => self.intervals.last(),
         }
         .ok_or_else(|| GeometryErrorKind::Invalid("Q has no pole cut interval".into()))?;
         Ok(interval.id)
@@ -1760,7 +1760,7 @@ fn north_pole_ring_windings(
 ) -> Result<Vec<i64>> {
     let frame = sources.frame;
     let axis = frame.longitude();
-    let pole = frame.pole();
+    let north_pole = frame.chart_pole_latitude(ChartPole::North);
     let period = ExactRational::from_f64(axis.period());
     let mut windings = Vec::with_capacity(sources.rings.len());
     for ring in &sources.rings {
@@ -1768,12 +1768,12 @@ fn north_pole_ring_windings(
             windings.push(0);
             continue;
         }
-        let mut winding = if ring.summary.bounded_pole() == Some(Pole::North) {
+        let mut winding = if ring.summary.bounded_pole() == Some(ChartPole::North) {
             ring.summary.chart_turn
         } else {
             0
         };
-        if ring.summary.north.get().to_bits() == pole.to_bits() {
+        if ring.summary.north.get().to_bits() == north_pole.to_bits() {
             let edges = sources
                 .edges
                 .get(ring.source_edges.clone())
@@ -1785,11 +1785,11 @@ fn north_pole_ring_windings(
                 if crate::geographic::Latitude::from_admitted(frame, start.y)
                     .get()
                     .to_bits()
-                    != pole.to_bits()
+                    != north_pole.to_bits()
                     || crate::geographic::Latitude::from_admitted(frame, end.y)
                         .get()
                         .to_bits()
-                        != pole.to_bits()
+                        != north_pole.to_bits()
                 {
                     continue;
                 }
@@ -1898,7 +1898,7 @@ pub(super) fn global_face_structure(
                 point: port_data.point.clone(),
             }
         } else {
-            let latitude = ExactRational::from_f64(-frame.pole());
+            let latitude = ExactRational::from_f64(frame.chart_pole_latitude(ChartPole::South));
             HostRoot {
                 component: component_id,
                 face: topology
@@ -2610,10 +2610,7 @@ fn is_collapsed_pole_span(
     let Some(pole) = node.pole else {
         return Ok(false);
     };
-    let latitude = ExactRational::from_f64(match pole {
-        Pole::North => frame.pole(),
-        Pole::South => -frame.pole(),
-    });
+    let latitude = ExactRational::from_f64(frame.chart_pole_latitude(pole));
     let start = chart
         .ports
         .get(span.ports[0].0 as usize)
@@ -2895,12 +2892,12 @@ fn compare_pole_dart_to_longitude(
 }
 
 fn compare_pole_meridians(
-    pole: Pole,
+    pole: ChartPole,
     left: &ExactRational,
     right: &ExactRational,
 ) -> Result<Ordering> {
     let order = left.try_cmp(right)?;
-    Ok(if pole == Pole::South {
+    Ok(if pole == ChartPole::South {
         order.reverse()
     } else {
         order
@@ -2910,12 +2907,12 @@ fn compare_pole_meridians(
 /// The south-pole quotient reverses the complete circular order, including
 /// the tangent tie within one meridian.
 fn compare_pole_tangent_rays(
-    pole: Pole,
+    pole: ChartPole,
     left: &(ExactRational, ExactRational),
     right: &(ExactRational, ExactRational),
 ) -> Result<Ordering> {
     let order = compare_exact_rays_allow_equal(left, right)?;
-    Ok(if pole == Pole::South {
+    Ok(if pole == ChartPole::South {
         order.reverse()
     } else {
         order
@@ -3187,17 +3184,19 @@ impl ExactGeographicQ {
         let frame = topology.sources.frame;
         if point
             .y
-            .try_cmp(&ExactRational::from_f64(frame.pole()))?
+            .try_cmp(&ExactRational::from_f64(
+                frame.chart_pole_latitude(ChartPole::North),
+            ))?
             .is_eq()
         {
             if let Some(node) = self
                 .nodes
                 .iter()
-                .find(|node| node.pole == Some(Pole::North))
+                .find(|node| node.pole == Some(ChartPole::North))
             {
                 return locate_q_node(self, node.id, row);
             }
-            let interval = self.cut_index.pole_interval_id(Pole::North)?;
+            let interval = self.cut_index.pole_interval_id(ChartPole::North)?;
             let face = *self
                 .cut_interval_faces
                 .get(interval.0 as usize)
@@ -3208,17 +3207,19 @@ impl ExactGeographicQ {
         }
         if point
             .y
-            .try_cmp(&ExactRational::from_f64(-frame.pole()))?
+            .try_cmp(&ExactRational::from_f64(
+                frame.chart_pole_latitude(ChartPole::South),
+            ))?
             .is_eq()
         {
             if let Some(node) = self
                 .nodes
                 .iter()
-                .find(|node| node.pole == Some(Pole::South))
+                .find(|node| node.pole == Some(ChartPole::South))
             {
                 return locate_q_node(self, node.id, row);
             }
-            let interval = self.cut_index.pole_interval_id(Pole::South)?;
+            let interval = self.cut_index.pole_interval_id(ChartPole::South)?;
             let face = *self
                 .cut_interval_faces
                 .get(interval.0 as usize)
@@ -5638,8 +5639,8 @@ fn chart_edge_longitude_intervals(
     frame: GeographicFrame,
     chart: &NodedExactChart,
 ) -> Result<Vec<LongitudeInterval>> {
-    let north = ExactRational::from_f64(frame.pole());
-    let south = ExactRational::from_f64(-frame.pole());
+    let north = ExactRational::from_f64(frame.chart_pole_latitude(ChartPole::North));
+    let south = ExactRational::from_f64(frame.chart_pole_latitude(ChartPole::South));
     let half = ExactRational::from_f64(frame.longitude().half_period());
     let negative_half = ExactRational::from_f64(-frame.longitude().half_period());
     let mut intervals = Vec::with_capacity(chart.atoms.len());
@@ -5988,8 +5989,8 @@ fn cut_node_key(
     chart: &NodedExactChart,
     latitude: &ExactRational,
 ) -> Result<QNodeKey> {
-    let north = ExactRational::from_f64(frame.pole());
-    let south = ExactRational::from_f64(-frame.pole());
+    let north = ExactRational::from_f64(frame.chart_pole_latitude(ChartPole::North));
+    let south = ExactRational::from_f64(frame.chart_pole_latitude(ChartPole::South));
     if latitude.try_cmp(&north)?.is_eq() {
         return chart
             .nodes
@@ -6019,7 +6020,7 @@ fn cut_node_key(
     Ok(QNodeKey::Cut(latitude.clone()))
 }
 
-fn qnode_pole(chart: &NodedExactChart, key: &QNodeKey) -> Result<Option<Pole>> {
+fn qnode_pole(chart: &NodedExactChart, key: &QNodeKey) -> Result<Option<ChartPole>> {
     let QNodeKey::Source(id) = key else {
         return Ok(None);
     };
@@ -6027,8 +6028,8 @@ fn qnode_pole(chart: &NodedExactChart, key: &QNodeKey) -> Result<Option<Pole>> {
         GeometryErrorKind::Invalid("a Q node references an unknown chart node".into())
     })?;
     Ok(match &node.key {
-        ExactQuotientKey::NorthPole => Some(Pole::North),
-        ExactQuotientKey::SouthPole => Some(Pole::South),
+        ExactQuotientKey::NorthPole => Some(ChartPole::North),
+        ExactQuotientKey::SouthPole => Some(ChartPole::South),
         ExactQuotientKey::Coordinate(_) | ExactQuotientKey::Seam(_) => None,
     })
 }
@@ -6580,7 +6581,7 @@ mod tests {
             }
         }
         let period = frame.longitude().period();
-        let pole = frame.pole();
+        let pole = frame.chart_pole_latitude(ChartPole::North);
         ring(
             &points
                 .iter()
@@ -6650,8 +6651,7 @@ mod tests {
         }
         if turns != 0 {
             let closure_latitude = match ring.summary.full_turn_pole()? {
-                FullTurnPole::Bounded(Pole::North) => frame.pole(),
-                FullTurnPole::Bounded(Pole::South) => -frame.pole(),
+                FullTurnPole::Bounded(pole) => frame.chart_pole_latitude(pole),
                 FullTurnPole::Ambiguous => return None,
             };
             let end = lifted.last().unwrap().0.clone();
@@ -6659,7 +6659,7 @@ mod tests {
             lifted.push((end, ExactRational::from_f64(closure_latitude)));
             lifted.push((start, ExactRational::from_f64(closure_latitude)));
         }
-        let germ_y = ExactRational::from_f64(frame.pole())
+        let germ_y = ExactRational::from_f64(frame.chart_pole_latitude(ChartPole::North))
             .try_subtract(&ExactRational::from_f64(2.0_f64.powi(-60)))
             .unwrap();
         let image_radius = i64::try_from(edges.len()).unwrap().checked_add(1).unwrap();
@@ -7010,7 +7010,7 @@ mod tests {
         }
     }
 
-    fn pole_fan_degree(q: &ExactGeographicQ, pole: Pole) -> usize {
+    fn pole_fan_degree(q: &ExactGeographicQ, pole: ChartPole) -> usize {
         let node = q
             .nodes
             .iter()
@@ -7062,7 +7062,7 @@ mod tests {
         ];
         let (frame, chart) = noded_chart_for_shapes(&shapes);
         let pole_port_longitude = ExactRational::from_f64(-120.0);
-        let north_pole = ExactRational::from_f64(frame.pole());
+        let north_pole = ExactRational::from_f64(frame.chart_pole_latitude(ChartPole::North));
         assert!(
             chart.ports.iter().any(|port| {
                 port.point.x.try_cmp(&pole_port_longitude).unwrap().is_eq()
@@ -7379,7 +7379,7 @@ mod tests {
         let shape = Shape::Polygon(Polygon::new(shell, vec![]));
         let (sources, q) = q_graph(&shape);
         let (inside, outside) = source_shell_faces(&q, &sources, 0);
-        assert!(pole_fan_degree(&q, Pole::North) >= 2);
+        assert!(pole_fan_degree(&q, ChartPole::North) >= 2);
         assert_eq!(q.global_face_count, 2);
         assert_eq!(q.face_rows.rows_for(inside), &[SourceRowId(0)]);
         assert!(q.face_rows.rows_for(outside).is_empty());
@@ -7444,7 +7444,7 @@ mod tests {
         let shape = Shape::Polygon(Polygon::new(shell, vec![]));
         let (sources, q) = q_graph(&shape);
         let (left, right) = source_shell_faces(&q, &sources, 0);
-        assert!(pole_fan_degree(&q, Pole::South) >= 2);
+        assert!(pole_fan_degree(&q, ChartPole::South) >= 2);
         assert!(q.face_rows.rows_for(left).is_empty());
         assert_eq!(q.face_rows.rows_for(right), &[SourceRowId(0)]);
         assert!(

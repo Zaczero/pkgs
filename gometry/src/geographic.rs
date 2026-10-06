@@ -18,9 +18,9 @@ pub(crate) use envelope::GeographicSupportEnvelope;
 pub(crate) use interval::{CircularInterval, LongitudeWindows, union_circular_intervals};
 use thiserror::Error;
 pub(crate) use value::{
-    AngularFactor, CanonicalLongitude, ChartConnection, ChartStep, EdgeDirection, FullTurnPole,
-    GeographicAxisOrientation, GeographicFrame, Latitude, PeriodicAxis, Pole, QuotientVertex,
-    RingTurn, SeamIdentity, TurnDirection,
+    AngularFactor, CanonicalLongitude, ChartConnection, ChartPole, ChartStep, EdgeDirection,
+    FullTurnPole, GeodeticPole, GeographicAxisOrientation, GeographicFrame, Latitude, PeriodicAxis,
+    QuotientVertex, RingTurn, SeamIdentity, TurnDirection,
 };
 #[cfg(test)]
 pub(crate) use view::GeographicAdmissionWork;

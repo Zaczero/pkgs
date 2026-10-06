@@ -19,9 +19,11 @@ pub(in crate::geometry) use membership::{
 pub(crate) use membership::{
     RingClass, TouchDirections, ring_classify_point, ring_contains_interior, ring_label,
 };
+#[cfg(test)]
+pub(crate) use pole::ring_bounded_pole;
 pub(crate) use pole::{
-    ring_bounded_pole, ring_encloses_pole, shape_encloses_pole_in_frame,
-    shape_has_polar_ring_in_frame, shape_reaches_geographic_pole_in_frame,
+    ring_encloses_pole, shape_encloses_pole_in_frame, shape_has_polar_ring_in_frame,
+    shape_reaches_geographic_pole_in_frame,
 };
 pub(crate) use properties::shape_is_closed_in_domain;
 pub(in crate::geometry) use relate::LineworkChains;

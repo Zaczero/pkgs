@@ -307,12 +307,13 @@ impl ChartMetric for EllipsoidMetric<'_> {
         move |bounds| bound.lower_bound(bounds)
     }
 
-    fn chart_area_edge_term(&self, edge: &ChartEdge, north: bool) -> f64 {
-        edge.authalic_area_term(&self.authalic_series(), north)
-    }
-
-    fn chart_area_factor(&self) -> f64 {
-        self.authalic_series().area_factor(self.geodesic.a)
+    fn chart_area_density(
+        &self,
+        reference_colatitude: f64,
+        reference_pole: crate::geographic::GeodeticPole,
+    ) -> crate::geometry::GeographicAreaDensity {
+        self.authalic_series()
+            .area_density(self.geodesic, reference_colatitude, reference_pole)
     }
 }
 

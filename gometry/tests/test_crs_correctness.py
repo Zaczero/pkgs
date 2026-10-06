@@ -354,6 +354,44 @@ def test_chart_polar_cap_area_is_orientation_independent() -> None:
         assert polygon.area == pytest.approx(expected, rel=3e-15)
 
 
+@pytest.mark.parametrize(
+    ('physical_latitude', 'native_latitude', 'native_pole', 'south', 'north'),
+    [
+        pytest.param(80.0, -80.0, -90.0, 80.0, 90.0, id='north-pole'),
+        pytest.param(-80.0, 80.0, 90.0, -90.0, -80.0, id='south-pole'),
+    ],
+)
+def test_chart_polar_cap_area_respects_south_directed_latitude_axis(
+    physical_latitude: float,
+    native_latitude: float,
+    native_pole: float,
+    south: float,
+    north: float,
+) -> None:
+    south_axis_crs = """GEOGCRS["WGS 84 south latitude",
+        DATUM["World Geodetic System 1984",ELLIPSOID["WGS 84",6378137,298.257223563]],
+        PRIMEM["Greenwich",0,ANGLEUNIT["degree",0.017453292519943295]],
+        CS[ellipsoidal,2],
+        AXIS["Longitude",east,ORDER[1],ANGLEUNIT["degree",0.017453292519943295]],
+        AXIS["Latitude",south,ORDER[2],ANGLEUNIT["degree",0.017453292519943295]]]"""
+    longitudes = (0.0, 60.0, 120.0, 180.0, -120.0, -60.0)
+    standard = gm.Polygon(
+        [(longitude, physical_latitude) for longitude in longitudes], crs=4326
+    )
+    south_axis = gm.Polygon(
+        [(longitude, native_latitude) for longitude in longitudes],
+        crs=south_axis_crs,
+    )
+    expected = chart_zone_area(
+        -180.0, 180.0, south, north, semi_major=GEOD.a, flattening=GEOD.f
+    )
+
+    assert standard.area == pytest.approx(expected, rel=3e-15)
+    assert south_axis.area == pytest.approx(expected, rel=3e-15)
+    assert gm.contains(south_axis, gm.Point(0.0, native_pole, crs=south_axis_crs))
+    assert not gm.contains(south_axis, gm.Point(0.0, -native_pole, crs=south_axis_crs))
+
+
 def test_chart_area_subtracts_holes_from_a_large_chart_interior() -> None:
     shell = gm.box(-170.0, -60.0, 170.0, 60.0, crs=4326)
     shell_coordinates = gm.get_coordinates(shell).tolist()

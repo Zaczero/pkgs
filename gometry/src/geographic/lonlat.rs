@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 use std::ops::ControlFlow;
 
-use super::{GeographicDiagnostic, GeographicError};
+use super::{GeodeticPole, GeographicDiagnostic, GeographicError};
 use crate::geometry::ShapeOwnerKey;
 use crate::{GeometryErrorKind, Shape};
 
@@ -64,10 +64,10 @@ pub(crate) fn normalize_accepted_latitude(latitude: f64) -> f64 {
 /// Physical-pole identity after the geographic admission normalization.
 /// Longitude is intentionally absent: every longitude spelling at either
 /// normalized pole is the same spherical point.
-pub(crate) fn normalized_geographic_pole(latitude: f64) -> Option<bool> {
+pub(crate) fn normalized_geographic_pole(latitude: f64) -> Option<GeodeticPole> {
     match normalize_accepted_latitude(latitude) {
-        MAX_LATITUDE => Some(true),
-        MIN_LATITUDE => Some(false),
+        MAX_LATITUDE => Some(GeodeticPole::North),
+        MIN_LATITUDE => Some(GeodeticPole::South),
         _ => None,
     }
 }

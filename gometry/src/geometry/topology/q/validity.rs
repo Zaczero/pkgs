@@ -856,11 +856,21 @@ fn node_witness(topology: &ExactGeographicTopology, node: QNodeId) -> Result<Exa
                 )),
                 ExactQuotientKey::NorthPole => Ok(ExactChartPoint::from_rationals(
                     ExactRational::zero(),
-                    ExactRational::from_f64(topology.sources.frame.pole()),
+                    ExactRational::from_f64(
+                        topology
+                            .sources
+                            .frame
+                            .chart_pole_latitude(crate::geographic::ChartPole::North),
+                    ),
                 )),
                 ExactQuotientKey::SouthPole => Ok(ExactChartPoint::from_rationals(
                     ExactRational::zero(),
-                    ExactRational::from_f64(-topology.sources.frame.pole()),
+                    ExactRational::from_f64(
+                        topology
+                            .sources
+                            .frame
+                            .chart_pole_latitude(crate::geographic::ChartPole::South),
+                    ),
                 )),
             }
         },

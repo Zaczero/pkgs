@@ -4,10 +4,10 @@ use super::frame::{
     LocalCrsDefinition, is_east_north_metre_axes, is_projected_metre_cartesian_axes,
     local_projection_parameter,
 };
-use crate::crs::in_core::{ParamUnit, Pole, polar_certificate_terms, tmerc_certificate_terms};
+use crate::crs::in_core::{ParamUnit, polar_certificate_terms, tmerc_certificate_terms};
 use crate::crs::{ChartEdge, CrsError, RuntimeState, info_with_state};
 use crate::error::Result;
-use crate::geographic::{ChartStep, EdgeDirection, GeographicFrame, Latitude};
+use crate::geographic::{ChartStep, EdgeDirection, GeodeticPole, GeographicFrame, Latitude};
 use crate::geometry::{CoordSeq, Point, line_segments};
 
 // These simple decimal upper bounds follow by squaring against the exact
@@ -50,7 +50,7 @@ struct TmercCertificate {
 struct UpsCertificate {
     radius_lower: f64,
     radius_upper: f64,
-    pole: Pole,
+    pole: GeodeticPole,
     p_min: f64,
     p_max: f64,
     p2_max: f64,
@@ -222,9 +222,9 @@ impl LocalProjectionCertificate {
             * self.frame.longitude_orientation_sign();
         let selected_pole = match self.projection {
             ProjectionCertificate::Tmerc(_) => None,
-            ProjectionCertificate::Ups(certificate) => Some(match certificate.pole {
-                pole => self.frame.native_latitude_pole(pole),
-            }),
+            ProjectionCertificate::Ups(certificate) => {
+                Some(self.frame.native_latitude_pole(certificate.pole))
+            },
         };
         Ok(CertificateEdge {
             longitude_delta_native,
@@ -416,7 +416,7 @@ impl LocalProjectionCertificate {
 mod certificate_math {
     use super::{
         CrsError, EllipsoidRadii, FAST_TMER_BETA, GAUSSIAN_LATITUDE_ACCELERATION,
-        GAUSSIAN_TANGENTIAL_CURVATURE, NonZeroUsize, Pole, Result, TmercCertificate,
+        GAUSSIAN_TANGENTIAL_CURVATURE, GeodeticPole, NonZeroUsize, Result, TmercCertificate,
         UpsCertificate,
     };
 
@@ -1190,10 +1190,10 @@ mod certificate_math {
         )
     }
 
-    fn toward_pole(pole: Pole, latitude0: f64, latitude1: f64) -> (f64, f64) {
+    fn toward_pole(pole: GeodeticPole, latitude0: f64, latitude1: f64) -> (f64, f64) {
         match pole {
-            Pole::North => (latitude0, latitude1),
-            Pole::South => (-latitude0, -latitude1),
+            GeodeticPole::North => (latitude0, latitude1),
+            GeodeticPole::South => (-latitude0, -latitude1),
         }
     }
 

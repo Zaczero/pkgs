@@ -4,7 +4,7 @@
 use std::simd::num::SimdFloat as _;
 
 use crate::error::Result;
-use crate::geographic::{FullTurnPole, GeographicFrame, Latitude, Pole};
+use crate::geographic::{ChartPole, FullTurnPole, GeographicFrame, Latitude};
 use crate::geometry::access::{REDUCE_LANES, ReduceSimd, crossover, simd_reduce_f64};
 use crate::geometry::exact_arith::ExactSign;
 use crate::geometry::exact_arith::product_sum::ExactSum;
@@ -108,6 +108,128 @@ impl ExactRationalArea {
                 // unrepresentable coordinate, so translate only that
                 // magnitude-specific result to positive infinity.
                 Ok(f64::INFINITY)
+            },
+            Err(error) => Err(error),
+        }
+    }
+}
+
+/// One polynomial integral with a shared factorial denominator.
+///
+/// Geographic density moments use `1 / (degree + 2)!` after Green integration.
+/// Keeping one numerator avoids reducing a generic rational after every degree.
+pub(crate) struct ExactFactorialArea {
+    numerator: ExactDyadic,
+    denominator: ExactDyadic,
+}
+
+impl ExactFactorialArea {
+    pub(in crate::geometry) fn dyadic_within_gamma(
+        error: &ExactDyadic,
+        norm: &ExactDyadic,
+        operation_count: u64,
+    ) -> Result<bool> {
+        let operation_count_i64 = i64::try_from(operation_count)
+            .map_err(|_| crate::error::ResourceError::SizeOverflow)?;
+        let denominator = (1_i64 << 53)
+            .checked_sub(operation_count_i64)
+            .ok_or(crate::error::ResourceError::SizeOverflow)?;
+        let left = error.try_product(&ExactDyadic::from_i64(denominator))?;
+        let right = norm.try_product(&ExactDyadic::from_i64(operation_count_i64))?;
+        Ok(left.cmp(&right).is_le())
+    }
+
+    pub(in crate::geometry) fn from_derivatives(
+        derivatives: &[ExactDyadic],
+        moments: &[ExactDyadic],
+    ) -> Result<Self> {
+        let mut numerator = ExactDyadic::zero();
+        let mut denominator = ExactDyadic::one();
+        for (degree, (derivative, moment)) in derivatives.iter().zip(moments).enumerate() {
+            if degree == 0 {
+                denominator = ExactDyadic::from_i64(2);
+            } else {
+                let factor = i64::try_from(degree + 2)
+                    .map_err(|_| crate::error::ResourceError::SizeOverflow)?;
+                let factor = ExactDyadic::from_i64(factor);
+                numerator = numerator.try_product(&factor)?;
+                denominator = denominator.try_product(&factor)?;
+            }
+            numerator = numerator.try_add(derivative.try_product(moment)?)?;
+        }
+        Ok(Self {
+            numerator,
+            denominator,
+        })
+    }
+
+    pub(in crate::geometry) fn absolute_contraction(
+        derivatives: &[ExactDyadic],
+        moments: &[ExactDyadic],
+    ) -> Result<Self> {
+        let mut numerator = ExactDyadic::zero();
+        let mut denominator = ExactDyadic::one();
+        for (degree, (derivative, moment)) in derivatives.iter().zip(moments).enumerate() {
+            if degree == 0 {
+                denominator = ExactDyadic::from_i64(2);
+            } else {
+                let factor = i64::try_from(degree + 2)
+                    .map_err(|_| crate::error::ResourceError::SizeOverflow)?;
+                let factor = ExactDyadic::from_i64(factor);
+                numerator = numerator.try_product(&factor)?;
+                denominator = denominator.try_product(&factor)?;
+            }
+            numerator = numerator.try_add(derivative.try_product(moment)?.abs())?;
+        }
+        Ok(Self {
+            numerator,
+            denominator,
+        })
+    }
+
+    pub(in crate::geometry) fn sign(&self) -> ExactSign {
+        self.numerator.sign()
+    }
+
+    pub(in crate::geometry) fn compare_dyadic_gamma(
+        &self,
+        error: &ExactDyadic,
+        operation_count: u64,
+    ) -> Result<std::cmp::Ordering> {
+        let significand = 1_i64 << 53;
+        let denominator = significand
+            .checked_sub(
+                i64::try_from(operation_count)
+                    .map_err(|_| crate::error::ResourceError::SizeOverflow)?,
+            )
+            .ok_or(crate::error::ResourceError::SizeOverflow)?;
+        let left = error
+            .try_product(&ExactDyadic::from_i64(denominator))?
+            .try_product(&self.denominator)?;
+        let right = self.numerator.try_product(&ExactDyadic::from_i64(
+            i64::try_from(operation_count)
+                .map_err(|_| crate::error::ResourceError::SizeOverflow)?,
+        ))?;
+        Ok(left.cmp(&right))
+    }
+
+    pub(in crate::geometry) fn scaled_round(&self, scale: &ExactDyadic) -> Result<f64> {
+        let numerator = self.numerator.try_product(scale)?;
+        match round_ratio(&numerator, &self.denominator) {
+            Ok(value) => Ok(value),
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    crate::error::ErrorKind::Geometry(
+                        crate::geometry::GeometryErrorKind::ExactCoordinateOutOfRange
+                    )
+                ) =>
+            {
+                Ok(if self.sign() == ExactSign::Negative {
+                    f64::NEG_INFINITY
+                } else {
+                    f64::INFINITY
+                })
             },
             Err(error) => Err(error),
         }
@@ -345,14 +467,14 @@ pub(in crate::geometry) fn lifted_ring_area_sign(
                 None => lifted_exact_ring_area_sign(frame, xs, ys)?,
             },
             -1 | 1 => match FullTurnPole::of_latitude_span(south.get(), north.get()) {
-                FullTurnPole::Bounded(Pole::North) => {
+                FullTurnPole::Bounded(ChartPole::North) => {
                     if turn > 0 {
                         1
                     } else {
                         -1
                     }
                 },
-                FullTurnPole::Bounded(Pole::South) => {
+                FullTurnPole::Bounded(ChartPole::South) => {
                     if turn > 0 {
                         -1
                     } else {

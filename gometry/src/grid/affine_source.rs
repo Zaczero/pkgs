@@ -44,7 +44,7 @@ use crate::geographic::lonlat::{
     normalize_accepted_geographic_latitudes, normalized_geographic_pole,
 };
 use crate::geographic::{
-    FullTurnPole, GeographicFrame, GeographicRing, Pole, RingDomain, RingSummary,
+    ChartPole, FullTurnPole, GeodeticPole, GeographicFrame, GeographicRing, RingDomain, RingSummary,
 };
 use crate::geometry::{
     Bounds, CoordSeq, Coordinates as _, EdgeId, EdgeYIndex, Shape, uses_linear_plan_for_len,
@@ -415,8 +415,8 @@ fn physical_pole_for_chain(chain: &LiftedChain) -> Option<PhysicalEndpointKey> {
         |(minimum, maximum), latitude| (minimum.min(latitude), maximum.max(latitude)),
     );
     match FullTurnPole::of_latitude_span(minimum, maximum) {
-        FullTurnPole::Bounded(Pole::North) => Some(PhysicalEndpointKey::NorthPole),
-        FullTurnPole::Bounded(Pole::South) => Some(PhysicalEndpointKey::SouthPole),
+        FullTurnPole::Bounded(ChartPole::North) => Some(PhysicalEndpointKey::NorthPole),
+        FullTurnPole::Bounded(ChartPole::South) => Some(PhysicalEndpointKey::SouthPole),
         FullTurnPole::Ambiguous => None,
     }
 }
@@ -3429,12 +3429,17 @@ fn collect_shape_chains(
 /// canonicalized to the public pole.
 fn physical_pole_chain(coords: &CoordSeq) -> Option<crate::geometry::Point> {
     let latitude = *coords.ys().first()?;
-    let north = normalized_geographic_pole(latitude)?;
+    let pole = normalized_geographic_pole(latitude)?;
     coords
         .ys()
         .iter()
-        .all(|&candidate| normalized_geographic_pole(candidate) == Some(north))
-        .then(|| crate::geometry::Point::new_raw_xy(0.0, if north { 90.0 } else { -90.0 }))
+        .all(|&candidate| normalized_geographic_pole(candidate) == Some(pole))
+        .then(|| {
+            crate::geometry::Point::new_raw_xy(0.0, match pole {
+                GeodeticPole::North => 90.0,
+                GeodeticPole::South => -90.0,
+            })
+        })
 }
 
 fn push_point(

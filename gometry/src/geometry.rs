@@ -54,6 +54,7 @@ pub(crate) use frame::{
 mod area;
 pub(crate) mod exact_arith;
 pub(crate) mod expansion;
+mod geographic_area;
 pub(crate) use access::{
     Component, CoordRun, Lineal, MetricSupportRun, PointSet, Polygonal, REDUCE_LANES,
     REDUCE_SIMD_MIN, ReduceSimd, RunIdentity, SharedShapeOwners, SupportRunKind, canonicalize_zero,
@@ -65,9 +66,12 @@ pub(crate) use access::{
 #[cfg(test)]
 pub(crate) use area::{AreaSign, open_point_cycle_magnitude, open_xy_cycle_sign};
 pub(crate) use area::{
-    ExactRationalArea, RingWinding, closed_columns_winding, open_point_cycle_winding,
-    open_xy_cycle_magnitude, open_xy_cycle_winding, polygon_area_measure_columns,
-    polygon_area_measure_with, ring_winding,
+    ExactFactorialArea, ExactRationalArea, RingWinding, closed_columns_winding,
+    open_point_cycle_winding, open_xy_cycle_magnitude, open_xy_cycle_winding,
+    polygon_area_measure_columns, polygon_area_measure_with, ring_winding,
+};
+pub(crate) use geographic_area::{
+    GeographicAreaDensity, MAX_AUTHALIC_HARMONICS, polygon_area as geographic_polygon_area,
 };
 pub(crate) use segments::{Orientation, held_axis_interpolate, orientation};
 pub(crate) mod storage;
@@ -225,6 +229,8 @@ pub(in crate::geometry) use point_location::{
 };
 pub(crate) use point_location::{PointBatchTester, PolygonPointIndex, PreparedPointQueries};
 pub(in crate::geometry) use predicates::PolygonContact;
+#[cfg(test)]
+pub(crate) use predicates::ring_bounded_pole;
 use predicates::{
     LineworkChains, TouchDirections, classify_ring_pair, classify_ring_pair_with_contacts,
     face_interior_point, polygon_rings_issue_with_contacts, ring_classify_point,
@@ -234,10 +240,9 @@ use predicates::{
 };
 pub(crate) use predicates::{
     RingClass, fan_alternations, line_is_ccw, line_is_closed_in_domain, line_is_simple,
-    line_is_valid, polygon_is_valid, ring_bounded_pole, shape_encloses_pole_in_frame,
-    shape_has_polar_ring_in_frame, shape_is_closed_in_domain,
-    shape_reaches_geographic_pole_in_frame, validate_line, validate_point, validate_points,
-    validate_ring,
+    line_is_valid, polygon_is_valid, shape_encloses_pole_in_frame, shape_has_polar_ring_in_frame,
+    shape_is_closed_in_domain, shape_reaches_geographic_pole_in_frame, validate_line,
+    validate_point, validate_points, validate_ring,
 };
 pub(in crate::geometry) use segments::{
     DdInterval, SegmentParameter, clip_segment_parameter, dd_strict_cmp, exact_crossing_parameter,

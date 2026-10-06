@@ -18,7 +18,9 @@ use crate::crs::{
     transform_in_core_xy_batch, transform_in_core_xy_batch_indexed, with_proj_operation_at,
 };
 use crate::error::Result;
-use crate::geographic::{CircularInterval, GeographicError, GeographicFrame, Latitude};
+use crate::geographic::{
+    CircularInterval, GeodeticPole, GeographicError, GeographicFrame, Latitude,
+};
 use crate::geometry::{
     CoordRun, CoordWindow, LineSeq, MColumn, MOrdinate, SharedSlice, TopologyDomain, ZOrdinate,
     types,
@@ -41,6 +43,7 @@ pub(super) struct BoundsSamplePlan {
     source_domain: TopologyDomain,
     target_domain: TopologyDomain,
     source_full_longitude: bool,
+    /// Containment of geodetic north and south poles, in that order.
     target_poles: [bool; 2],
 }
 
@@ -147,11 +150,11 @@ impl BoundsSamplePlan {
             return Ok(());
         };
         let mut target_poles = self.target_poles;
-        for (pole_contained, latitude) in target_poles
+        for (pole_contained, pole) in target_poles
             .iter_mut()
-            .rev()
-            .zip([frame.pole(), -frame.pole()])
+            .zip([GeodeticPole::North, GeodeticPole::South])
         {
+            let latitude = frame.native_latitude_pole(pole);
             let Some((longitude, latitude)) = inverse(0.0, latitude)? else {
                 continue;
             };
@@ -492,11 +495,15 @@ fn accumulate_horizontal(
             .map_err(|error| CrsError::invalid(error.to_string()))?
             .get();
     }
-    if target_poles[0] {
-        south = -frame.pole();
-    }
-    if target_poles[1] {
-        north = frame.pole();
+    for (contained, pole) in target_poles
+        .into_iter()
+        .zip([GeodeticPole::North, GeodeticPole::South])
+    {
+        if contained {
+            let latitude = frame.native_latitude_pole(pole);
+            south = south.min(latitude);
+            north = north.max(latitude);
+        }
     }
     let interval = if source_full_longitude || target_poles.into_iter().any(|pole| pole) {
         CircularInterval::Full
@@ -675,6 +682,36 @@ mod bounds_plan_tests {
             .include_target_poles(|_, _| Ok(Some((5.0, degrees.pole()))))
             .unwrap();
         assert_eq!(admitted_boundary.target_poles, [false, false]);
+    }
+
+    #[test]
+    fn target_geodetic_poles_are_probed_in_native_southward_axis_coordinates() {
+        let unit = AngularFactor::try_new("degree", std::f64::consts::PI / 180.0).unwrap();
+        let frame = GeographicFrame::try_new_with_orientation(
+            unit,
+            unit,
+            0.0,
+            crate::geographic::GeographicAxisOrientation::from_axis_directions(true, false),
+        )
+        .unwrap();
+        let mut samples = BoundsSamplePlan::new_2d(
+            (0.0, -1.0, 10.0, 1.0),
+            2,
+            TopologyDomain::Cartesian,
+            TopologyDomain::Geographic(frame),
+            None,
+        )
+        .unwrap();
+        let mut probed = Vec::new();
+        samples
+            .include_target_poles(|_, latitude| {
+                probed.push(latitude);
+                Ok(Some((5.0, 0.0)))
+            })
+            .unwrap();
+        assert_eq!(probed, [-90.0, 90.0]);
+        assert_eq!(samples.target_poles, [true, true]);
+        assert_eq!(samples.finish_2d().unwrap(), (-180.0, -90.0, 180.0, 90.0));
     }
 
     #[test]

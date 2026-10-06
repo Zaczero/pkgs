@@ -4,8 +4,8 @@ use std::marker::PhantomData;
 use std::ops::ControlFlow;
 
 use super::{
-    CanonicalLongitude, FullTurnPole, GeographicError, GeographicFrame, Latitude, Pole, RingTurn,
-    SeamIdentity,
+    CanonicalLongitude, ChartPole, FullTurnPole, GeographicError, GeographicFrame, Latitude,
+    RingTurn, SeamIdentity,
 };
 use crate::collections::HashSet;
 use crate::geometry::storage::admission::CheckedRingWindow;
@@ -1033,12 +1033,14 @@ impl RingSummary {
         RingTurn::from_chart_turn(self.chart_turn)
     }
 
+    /// Selected native-chart hemisphere for a nonzero source turn.
     pub(crate) fn full_turn_pole(&self) -> Option<FullTurnPole> {
         (self.chart_turn != 0)
             .then(|| FullTurnPole::of_latitude_span(self.south.get(), self.north.get()))
     }
 
-    pub(crate) fn bounded_pole(&self) -> Option<Pole> {
+    /// Native-chart pole bounded by a nonzero source turn, if unambiguous.
+    pub(crate) fn bounded_pole(&self) -> Option<ChartPole> {
         match self.full_turn_pole() {
             Some(FullTurnPole::Bounded(pole)) => Some(pole),
             Some(FullTurnPole::Ambiguous) | None => None,

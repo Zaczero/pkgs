@@ -1221,6 +1221,49 @@ def test_max_resolution_polar_cell_areas_remain_positive() -> None:
         assert cell.area > 0.0
 
 
+def test_max_resolution_cell_polygons_match_original_endpoint_area_integrals() -> None:
+    geohash = gm.GeohashCell(13.4, 52.5, precision=12).polygon
+    tile = gm.Tile(lon=179.99999, lat=85.0511287, zoom=29).polygon
+    cases = [
+        (
+            geohash,
+            (
+                13.399999737739563,
+                52.49999988824129,
+                13.40000007301569,
+                52.500000055879354,
+            ),
+            0.0004247322577754908254,
+        ),
+        (
+            tile,
+            (
+                179.9999899417162,
+                85.05112866411389,
+                179.99999061226845,
+                85.05112872196024,
+            ),
+            0.00004174148919257805111,
+        ),
+    ]
+
+    for polygon, bounds, expected in cases:
+        assert tuple(polygon.bounds) == bounds
+        assert polygon.area == pytest.approx(expected, rel=1e-14, abs=0.0)
+
+    expected = [case[2] for case in cases]
+    values = gm.GeometryArray([geohash, tile], crs=4326)
+    np.testing.assert_allclose(values.area, expected, rtol=1e-14, atol=0.0)
+
+    nullable = gm.GeometryArray([geohash, None, tile], crs=4326)
+    gathered = nullable[[2, 0]]
+    np.testing.assert_allclose(gathered.area, expected[::-1], rtol=1e-14, atol=0.0)
+    assert np.isnan(nullable.area[1])
+
+    collection_area = gm.GeometryCollection([geohash, tile], crs=4326).area
+    assert collection_area == pytest.approx(sum(expected), rel=1e-14, abs=0.0)
+
+
 def test_rect_to_polygon_topology_dissolve_conserves_area() -> None:
     city = gm.box(13.35, 52.475, 13.45, 52.525, crs=4326)
     cases = [

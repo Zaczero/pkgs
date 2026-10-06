@@ -13,7 +13,7 @@ use crate::crs::in_core::params::{
     param_field, set_positive_finite,
 };
 use crate::error::Result;
-use crate::geographic::Pole;
+use crate::geographic::GeodeticPole;
 use crate::geometry::GeometryErrorKind;
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -31,7 +31,7 @@ pub(in crate::crs) struct Setup {
     pub(super) e: f64,
     pub(super) akm1: f64,
     pub(super) a: f64,
-    pub(super) pole: Pole,
+    pub(super) pole: GeodeticPole,
 }
 
 pub(super) fn polar_stereo_setup(ellipsoid: Ellipsoid, params: PolarStereoParams) -> Option<Setup> {
@@ -42,9 +42,9 @@ pub(super) fn polar_stereo_setup(ellipsoid: Ellipsoid, params: PolarStereoParams
     let es = eccentricity_squared(ellipsoid);
     let e = eccentricity(ellipsoid);
     let pole = if params.lat_0_deg < 0.0 {
-        Pole::South
+        GeodeticPole::South
     } else {
-        Pole::North
+        GeodeticPole::North
     };
 
     let phits = params.lat_ts_deg.abs().to_radians();
@@ -99,8 +99,8 @@ pub(super) fn geographic_to_polar_stereo_unframed(
 ) -> Result<(f64, f64)> {
     let lam = adjlon(lam_rad);
     let phi = match setup.pole {
-        Pole::North => lat_rad,
-        Pole::South => -lat_rad,
+        GeodeticPole::North => lat_rad,
+        GeodeticPole::South => -lat_rad,
     };
 
     if phi <= -std::f64::consts::FRAC_PI_2 {
@@ -120,8 +120,8 @@ pub(super) fn geographic_to_polar_stereo_unframed(
     let easting = ellipsoid_a * rho * sin_lam;
     let northing = ellipsoid_a
         * match setup.pole {
-            Pole::North => -rho * cos_lam,
-            Pole::South => rho * cos_lam,
+            GeodeticPole::North => -rho * cos_lam,
+            GeodeticPole::South => rho * cos_lam,
         };
 
     if !easting.is_finite() || !northing.is_finite() {
@@ -139,8 +139,8 @@ pub(super) fn polar_stereo_to_geographic_unframed(
     let x = easting / ellipsoid_a;
     let y = northing / ellipsoid_a;
     let yy = match setup.pole {
-        Pole::North => -y,
-        Pole::South => y,
+        GeodeticPole::North => -y,
+        GeodeticPole::South => y,
     };
     let squared = x * x + yy * yy;
     let rho = if squared.is_finite() && (squared != 0.0 || (x == 0.0 && yy == 0.0)) {
@@ -160,8 +160,8 @@ pub(super) fn polar_stereo_to_geographic_unframed(
     };
 
     let lat = match setup.pole {
-        Pole::North => phi_abs,
-        Pole::South => -phi_abs,
+        GeodeticPole::North => phi_abs,
+        GeodeticPole::South => -phi_abs,
     };
     let lam = if x == 0.0 && yy == 0.0 {
         0.0

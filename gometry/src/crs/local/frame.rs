@@ -8,7 +8,7 @@
 use std::borrow::Cow;
 
 use crate::crs::catalog::catalog_with_state;
-use crate::crs::in_core::{DatumKey, ParamUnit, Pole, datum_key, parse_param_value};
+use crate::crs::in_core::{DatumKey, ParamUnit, datum_key, parse_param_value};
 use crate::crs::{
     AreaOfInterest, CrsCatalogOptions, CrsCoordinateOperationInfo, CrsError, CrsInfo,
     CrsObjectKind, DEGREE_TO_RADIAN, MethodInfo, OperationInfo, OperationParameterInfo,
@@ -17,7 +17,7 @@ use crate::crs::{
     to_projjson_with_options_at, transform_at, utm_crs,
 };
 use crate::error::{Error, Result};
-use crate::geographic::AngularFactor;
+use crate::geographic::{AngularFactor, GeodeticPole};
 use crate::geometry::ShapeCountQuery;
 
 /// Maximum admitted meridional or parallel scale error (0.1%).
@@ -60,7 +60,7 @@ impl LocalCrsDefinition {
     fn with_projected_pole_at(
         mut self,
         source: &str,
-        north: bool,
+        pole: GeodeticPole,
         state: &RuntimeState,
     ) -> Result<Self> {
         let frame = info_with_state(source, state)?
@@ -68,10 +68,7 @@ impl LocalCrsDefinition {
             .ok_or_else(|| {
                 CrsError::invalid("polar local frame requires geographic source coordinates")
             })?;
-        let pole = crate::geometry::Point::new_raw_xy(
-            0.0,
-            if north { frame.pole() } else { -frame.pole() },
-        );
+        let pole = crate::geometry::Point::new_raw_xy(0.0, frame.native_latitude_pole(pole));
         let Shape::Point(pole) =
             transform_at(&Shape::Point(pole), source, &self.definition, state)?
         else {
@@ -100,16 +97,16 @@ pub(super) fn estimate_local_crs_at(
     let extent =
         LocalExtent::from_shapes(shapes, source_crs, state)?.ok_or(CrsError::EmptyGeometry)?;
 
-    let pole = if extent.latitude >= 0.0 {
-        Pole::North
+    let geodetic_pole = if extent.latitude >= 0.0 {
+        GeodeticPole::North
     } else {
-        Pole::South
+        GeodeticPole::South
     };
     if extent.latitude > 84.0 || extent.latitude < -80.0 {
         if has_wgs84_datum_fast_path(source_crs) {
-            let ups = match pole {
-                Pole::North => "EPSG:5041",
-                Pole::South => "EPSG:5042",
+            let ups = match geodetic_pole {
+                GeodeticPole::North => "EPSG:5041",
+                GeodeticPole::South => "EPSG:5042",
             };
             if candidate_fits(ups, &extent.samples, state)? {
                 return validated_local_crs(
@@ -117,13 +114,13 @@ pub(super) fn estimate_local_crs_at(
                     source_crs,
                     state,
                 )?
-                .with_projected_pole_at(source_crs, extent.latitude >= 0.0, state);
+                .with_projected_pole_at(source_crs, geodetic_pole, state);
             }
         }
         let local = best_custom_candidate(source_crs, &extent, state)?;
         return validated_local_crs(local, source_crs, state)?.with_projected_pole_at(
             source_crs,
-            extent.latitude >= 0.0,
+            geodetic_pole,
             state,
         );
     }
@@ -640,13 +637,13 @@ fn best_utm_from_anchor(
     state: &RuntimeState,
 ) -> Result<Option<String>> {
     let zone = utm_zone(local.longitude, local.latitude);
-    let pole = if local.latitude >= 0.0 {
-        Pole::North
+    let geodetic_pole = if local.latitude >= 0.0 {
+        GeodeticPole::North
     } else {
-        Pole::South
+        GeodeticPole::South
     };
     if has_wgs84_datum_fast_path(crs) {
-        return Ok(Some(wgs84_utm_crs(zone, pole)));
+        return Ok(Some(wgs84_utm_crs(zone, geodetic_pole)));
     }
     let info = info_with_state(crs, state)?;
     let Some(source_datum) = datum_key(&info) else {
@@ -657,7 +654,7 @@ fn best_utm_from_anchor(
         local.longitude,
         local.latitude,
         zone,
-        pole,
+        geodetic_pole,
         state,
     )
 }
@@ -671,7 +668,7 @@ fn best_utm_from_catalog(
     lon: f64,
     lat: f64,
     zone: UtmZone,
-    pole: Pole,
+    pole: GeodeticPole,
     state: &RuntimeState,
 ) -> Result<Option<String>> {
     let items = catalog_with_state(
@@ -747,7 +744,7 @@ pub(super) fn is_projected_metre_cartesian_axes(info: &CrsInfo) -> bool {
     first.unit_conversion_factor == 1.0 && second.unit_conversion_factor == 1.0
 }
 
-fn is_utm_operation(info: &CrsInfo, zone: UtmZone, pole: Pole) -> bool {
+fn is_utm_operation(info: &CrsInfo, zone: UtmZone, pole: GeodeticPole) -> bool {
     let Some(operation) = info.coordinate_operation.as_ref() else {
         return false;
     };
@@ -759,8 +756,8 @@ fn is_utm_operation(info: &CrsInfo, zone: UtmZone, pole: Pole) -> bool {
     }
     let expected_lon0 = f64::from(zone.get()) * 6.0 - 183.0;
     let expected_northing = match pole {
-        Pole::North => 0.0,
-        Pole::South => 10_000_000.0,
+        GeodeticPole::North => 0.0,
+        GeodeticPole::South => 10_000_000.0,
     };
     angular_param_matches_degrees(operation, "8801", 0.0)
         && angular_param_matches_degrees(operation, "8802", expected_lon0)
@@ -827,10 +824,10 @@ pub(super) fn local_projection_parameter(
     parse_param_value(unique_epsg_param(operation, code)?, unit)
 }
 
-fn wgs84_utm_crs(zone: UtmZone, pole: Pole) -> String {
+fn wgs84_utm_crs(zone: UtmZone, pole: GeodeticPole) -> String {
     let base: u32 = match pole {
-        Pole::North => 32600,
-        Pole::South => 32700,
+        GeodeticPole::North => 32600,
+        GeodeticPole::South => 32700,
     };
     format!("EPSG:{}", base.wrapping_add(u32::from(zone.get())))
 }

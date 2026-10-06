@@ -1,8 +1,8 @@
 use crate::error::Result;
 use crate::geographic::lonlat::geographic_admission_error;
 use crate::geographic::{
-    GeographicError, GeographicFrame, GeographicSupportEnvelope, Latitude, ScalarGeographicView,
-    SeamIdentity,
+    ChartPole, GeographicError, GeographicFrame, GeographicSupportEnvelope, Latitude,
+    ScalarGeographicView, SeamIdentity,
 };
 use crate::geometry::{
     Bounds, CoordSeq, Coordinates as _, ExactGeographicTopology, GeographicDerivedPointScan,
@@ -819,8 +819,8 @@ fn derived_point_unwrapped(
     strategy: DerivedPointStrategy,
     kernel: impl FnOnce(&Shape) -> Result<Shape>,
 ) -> Result<Shape> {
-    let encloses_pole = shape_encloses_pole_in_frame(shape, frame, true)
-        || shape_encloses_pole_in_frame(shape, frame, false);
+    let encloses_pole = shape_encloses_pole_in_frame(shape, frame, ChartPole::North)
+        || shape_encloses_pole_in_frame(shape, frame, ChartPole::South);
     if matches!(strategy, DerivedPointStrategy::Interior) || encloses_pole {
         return kernel(&try_topology_split(
             shape,

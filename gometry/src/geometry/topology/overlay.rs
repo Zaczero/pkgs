@@ -6,7 +6,7 @@ use super::exact::{
 };
 use super::q::{ExactGeographicTopology, GlobalFaceId, QDartId, QNodeId, QPortId, row_locations};
 use crate::error::{ResourceError, Result};
-use crate::geographic::{GeographicRing, Latitude, Pole, RingSummary, SeamIdentity};
+use crate::geographic::{ChartPole, GeographicRing, Latitude, RingSummary, SeamIdentity};
 use crate::geometry::ordinates::AxisValue;
 use crate::geometry::overlay::{OverlayOp, build_certified_overlay_shape_with_axes};
 use crate::geometry::segments::try_sort_by;
@@ -173,8 +173,10 @@ fn certify_publication_identity(
 ) -> Result<()> {
     let same_latitude = previous.y.try_cmp(&point.y)?.is_eq();
     let same_position = if same_latitude {
-        let north = ExactRational::from_f64(frame.pole());
-        let south = ExactRational::from_f64(-frame.pole());
+        let north =
+            ExactRational::from_f64(frame.chart_pole_latitude(crate::geographic::ChartPole::North));
+        let south =
+            ExactRational::from_f64(frame.chart_pole_latitude(crate::geographic::ChartPole::South));
         if point.y.try_cmp(&north)?.is_eq() || point.y.try_cmp(&south)?.is_eq() {
             true
         } else {
@@ -2461,8 +2463,8 @@ fn chart_ring_is_hole(frame: crate::geographic::GeographicFrame, ring: &Ring) ->
             // A polar ring can have zero planar shoelace area; its signed
             // longitude winding places the selected chart side at a pole.
             match summary.bounded_pole() {
-                Some(Pole::North) => Ok(summary.chart_turn < 0),
-                Some(Pole::South) => Ok(summary.chart_turn > 0),
+                Some(ChartPole::North) => Ok(summary.chart_turn < 0),
+                Some(ChartPole::South) => Ok(summary.chart_turn > 0),
                 None => Err(GeometryErrorKind::Invalid(
                     "selected Q area boundary has no bounded pole".into(),
                 )
@@ -2768,10 +2770,10 @@ fn emitted_node_key(
         .map_err(|error| GeometryErrorKind::Invalid(error.to_string().into()))?;
     let latitude = Latitude::try_new(frame, point.y)
         .map_err(|error| GeometryErrorKind::Invalid(error.to_string().into()))?;
-    match latitude.identity(frame) {
-        SeamIdentity::Pole if latitude.get().is_sign_positive() => Ok(EmittedNodeKey::NorthPole),
-        SeamIdentity::Pole => Ok(EmittedNodeKey::SouthPole),
-        SeamIdentity::Ordinary | SeamIdentity::Seam => Ok(EmittedNodeKey::Coordinate(
+    match latitude.chart_pole(frame) {
+        Some(ChartPole::North) => Ok(EmittedNodeKey::NorthPole),
+        Some(ChartPole::South) => Ok(EmittedNodeKey::SouthPole),
+        None => Ok(EmittedNodeKey::Coordinate(
             canonical_bits(longitude.get()),
             canonical_bits(latitude.get()),
         )),

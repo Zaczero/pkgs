@@ -7,10 +7,9 @@ use crate::crs::geodesic::{
     with_geodesic_at, with_geographic_metric_erased_at,
 };
 use crate::error::Result;
-use crate::geographic::{GeographicFrame, Pole};
+use crate::geographic::GeographicFrame;
 use crate::geometry::{
-    ChartMetric, Coordinates, Point, Polygon, Ring, Shape, canonicalize_zero, ring_bounded_pole,
-    same_topological_coordinate,
+    ChartMetric, Coordinates, Point, Shape, canonicalize_zero, same_topological_coordinate,
 };
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -92,11 +91,13 @@ pub(crate) fn chart_shape_area(
     frame: GeographicFrame,
 ) -> Result<f64> {
     let area = match shape {
-        Shape::Polygon(polygon) => chart_polygon_area(metric, polygon, frame)?,
+        Shape::Polygon(polygon) => {
+            crate::geometry::geographic_polygon_area(metric, polygon, frame)?
+        },
         Shape::MultiPolygon(polygons) => compensated_sum(
             polygons
                 .iter()
-                .map(|polygon| chart_polygon_area(metric, polygon, frame)),
+                .map(|polygon| crate::geometry::geographic_polygon_area(metric, polygon, frame)),
         )?,
         Shape::GeometryCollection(geometries) => compensated_sum(
             geometries
@@ -110,48 +111,6 @@ pub(crate) fn chart_shape_area(
         | Shape::Empty(..) => 0.0,
     };
     Ok(canonicalize_zero(area))
-}
-
-fn chart_polygon_area(
-    metric: &impl ChartMetric,
-    polygon: &Polygon,
-    frame: GeographicFrame,
-) -> Result<f64> {
-    let mut sum = 0.0;
-    let mut correction = 0.0;
-    add_compensated(
-        &mut sum,
-        &mut correction,
-        chart_ring_area(metric, &polygon.shell, frame)?,
-    );
-    for hole in polygon.holes.iter() {
-        add_compensated(
-            &mut sum,
-            &mut correction,
-            -chart_ring_area(metric, hole, frame)?,
-        );
-    }
-    Ok(sum)
-}
-
-fn chart_ring_area(metric: &impl ChartMetric, ring: &Ring, frame: GeographicFrame) -> Result<f64> {
-    let north = match ring_bounded_pole(ring, frame) {
-        Some(Pole::North) => true,
-        Some(Pole::South) => false,
-        None => ring.nth_coord(0).y >= 0.0,
-    };
-
-    let mut integral = 0.0;
-    let mut correction = 0.0;
-    for [start, end] in ring.segment_pairs() {
-        let edge = metric.chart_edge(start, end)?;
-        add_compensated(
-            &mut integral,
-            &mut correction,
-            metric.chart_area_edge_term(&edge, north),
-        );
-    }
-    Ok(metric.chart_area_factor() * integral.abs())
 }
 
 pub(crate) fn chart_shape_length(
@@ -300,16 +259,25 @@ mod chart_measure_tests {
 
     use geographiclib_rs::Geodesic;
 
-    use super::chart_polygon_area;
     use crate::crs::geodesic::{AuthalicSeries, GeodesicMetric};
-    use crate::geographic::{AngularFactor, GeographicFrame};
+    use crate::geographic::{
+        AngularFactor, GeodeticPole, GeographicAxisOrientation, GeographicFrame,
+    };
     use crate::geometry::types::ChartMetric;
     use crate::geometry::{
         Bounds, Coordinates as _, MultiPolygon, Point, Polygon, Ring, Shape, ring_bounded_pole,
     };
 
     fn metric_with_flattening_and_frame(flattening: f64, frame: GeographicFrame) -> GeodesicMetric {
-        let geodesic = Geodesic::new(6_378_137.0, flattening);
+        metric_with_semimajor_and_frame(6_378_137.0, flattening, frame)
+    }
+
+    fn metric_with_semimajor_and_frame(
+        semi_major: f64,
+        flattening: f64,
+        frame: GeographicFrame,
+    ) -> GeodesicMetric {
+        let geodesic = Geodesic::new(semi_major, flattening);
         let authalic_series = AuthalicSeries::new(&geodesic);
         GeodesicMetric {
             crs: Arc::new("EPSG:4326".to_owned()),
@@ -322,6 +290,17 @@ mod chart_measure_tests {
 
     fn metric_with_flattening(flattening: f64) -> GeodesicMetric {
         metric_with_flattening_and_frame(flattening, GeographicFrame::crs84())
+    }
+
+    fn oriented_degree_frame(longitude_east: bool, latitude_north: bool) -> GeographicFrame {
+        let unit = AngularFactor::try_new("degree", std::f64::consts::PI / 180.0).unwrap();
+        GeographicFrame::try_new_with_orientation(
+            unit,
+            unit,
+            0.0,
+            GeographicAxisOrientation::from_axis_directions(longitude_east, latitude_north),
+        )
+        .unwrap()
     }
 
     fn metric() -> GeodesicMetric {
@@ -340,6 +319,14 @@ mod chart_measure_tests {
 
     fn polygon(shell: &[(f64, f64)], holes: &[&[(f64, f64)]]) -> Polygon {
         Polygon::new(ring(shell), holes.iter().map(|hole| ring(hole)).collect())
+    }
+
+    fn chart_polygon_area(
+        metric: &impl ChartMetric,
+        polygon: &Polygon,
+        frame: GeographicFrame,
+    ) -> crate::error::Result<f64> {
+        crate::geometry::geographic_polygon_area(metric, polygon, frame)
     }
 
     fn perimeter(metric: &impl ChartMetric, shape: &Shape, frame: GeographicFrame) -> f64 {
@@ -516,6 +503,10 @@ mod chart_measure_tests {
             (
                 -0.01,
                 2_834_347_845_268.142_710_504_611_349_147_843_595_380_138_617_606_293_374_597_410_335_3,
+            ),
+            (
+                -0.02,
+                2_786_935_860_224.112_177_661_439_970_501_767_621_835_507_624_194_058_932_566_591_678_653_706_110_492_542_005_216_399_049_841_502_098_670_087_493_2,
             ),
         ];
         for (flattening, expected) in cases {
@@ -1198,6 +1189,166 @@ mod chart_measure_tests {
     #[test]
     #[expect(
         clippy::excessive_precision,
+        reason = "Independent Decimal integral of the exact stored binary64 endpoints"
+    )]
+    fn chart_area_integrates_slanted_thin_rings_from_original_endpoints() {
+        let metric = metric();
+        let frame = metric.frame;
+        let points = [
+            (13.0, 52.5),
+            (13.001, 52.501),
+            (13.001, 52.5010000001),
+            (13.0, 52.5000000001),
+        ];
+        let expected =
+            0.000_755_688_547_419_930_258_991_880_480_619_221_115_460_111_464_140_957_137_933_622_464_683_107_255_206_770_415_967_871_802_785_631_464_917_801_071_65;
+        let cases = [
+            points.to_vec(),
+            points.iter().copied().rev().collect(),
+            points[1..]
+                .iter()
+                .chain(points[..1].iter())
+                .copied()
+                .collect(),
+        ];
+        for vertices in cases {
+            let polygon = Polygon::new(ring(&vertices), Vec::new());
+            let actual = chart_polygon_area(&metric, &polygon, frame).unwrap();
+            assert!(
+                (actual - expected).abs() <= 1.0e-14 * expected,
+                "slanted thin-ring area={actual:.17}, expected={expected:.17}"
+            );
+        }
+    }
+
+    #[test]
+    #[expect(
+        clippy::excessive_precision,
+        reason = "Independent Decimal integral uses exact original endpoint differences"
+    )]
+    fn chart_area_combines_shell_and_hole_moments_before_rounding() {
+        let metric = metric();
+        let frame = metric.frame;
+        let shell = [(0.0, 0.0), (4.0, 0.0), (4.0, 4.0), (0.0, 4.0)];
+        let hole = [
+            (1.0e-12, 1.0e-12),
+            (4.0 - 1.0e-12, 1.0e-12),
+            (4.0 - 1.0e-12, 4.0 - 1.0e-12),
+            (1.0e-12, 4.0 - 1.0e-12),
+        ];
+        let expected =
+            0.196_759_322_348_571_707_015_499_580_822_847_489_025_311_059_800_594_392_006_782_042_778_536_997_321_310_519_898_656_288_031_956_50;
+        for vertices in [hole.to_vec(), hole.iter().copied().rev().collect()] {
+            let polygon = Polygon::new(ring(&shell), vec![ring(&vertices)]);
+            let actual = chart_polygon_area(&metric, &polygon, frame).unwrap();
+            assert!(
+                (actual - expected).abs() <= 1.0e-14 * expected,
+                "thin donut area={actual:.17}, expected={expected:.17}"
+            );
+        }
+    }
+
+    #[test]
+    #[expect(
+        clippy::excessive_precision,
+        reason = "Independent 150-digit spherical integral for the original binary64 lobe endpoints"
+    )]
+    fn chart_area_does_not_infer_zero_from_an_initial_zero_moment_prefix() {
+        let metric = metric_with_flattening(0.0);
+        let frame = metric.frame;
+        let mut points = vec![(0.0, 0.0)];
+        for (index, weight) in [1.0, 4.0, 6.0, 4.0, 1.0].into_iter().enumerate() {
+            let low = index as f64 / 8.0;
+            let high = low + 1.0 / 256.0;
+            let width = weight / 256.0;
+            let mut rectangle = vec![
+                (0.0, low),
+                (width, low),
+                (width, high),
+                (0.0, high),
+                (0.0, low),
+            ];
+            if index % 2 != 0 {
+                rectangle.reverse();
+            }
+            points.extend(rectangle);
+            points.push((0.0, 0.0));
+        }
+        let lobe_walk = Polygon::new(ring(&points), Vec::new());
+        let expected = 4.283_585_800_751_005_345_637_248_483_996_184_8e-6;
+        let actual = chart_polygon_area(&metric, &lobe_walk, frame).unwrap();
+        assert!(
+            actual > 0.0 && (actual - expected).abs() <= 1.0e-12 * expected,
+            "lobe-walk area={actual:.17e}, expected={expected:.17e}"
+        );
+    }
+
+    #[test]
+    #[expect(
+        clippy::excessive_precision,
+        reason = "Independent Decimal integral preserves stored invalid-ring winding"
+    )]
+    fn chart_area_uses_weighted_metric_sign_for_invalid_stored_walks() {
+        let metric = metric();
+        let frame = metric.frame;
+        let planar_zero = polygon(&[(0.0, 0.0), (4.0, 4.0), (0.0, 4.0), (4.0, 0.0)], &[]);
+        let planar_zero_expected =
+            77_829_497.353_282_223_887_503_117_299_501_910_907_592_474_278_130_301_146_780_577_797_862_575_809_591_551_530_425_262_458_539_208_912_271_014_29;
+        let area = chart_polygon_area(&metric, &planar_zero, frame).unwrap();
+        assert!(
+            (area - planar_zero_expected).abs() <= 1.0e-14 * planar_zero_expected,
+            "planar-zero bowtie area={area:.17}, expected={planar_zero_expected:.17}"
+        );
+
+        let opposite_sign = polygon(&[(0.0, 0.0), (4.0, 4.0), (0.0, 4.0), (3.9999, 0.0)], &[]);
+        let opposite_sign_expected = 75_368_655.925_641_673;
+        let area = chart_polygon_area(&metric, &opposite_sign, frame).unwrap();
+        assert!(
+            (area - opposite_sign_expected).abs() <= 1.0e-14 * opposite_sign_expected,
+            "opposite-sign bowtie area={area:.17}, expected={opposite_sign_expected:.17}"
+        );
+
+        let cancelled = polygon(
+            &[
+                (0.0, 0.0),
+                (4.0, 0.0),
+                (4.0, 4.0),
+                (0.0, 4.0),
+                (0.0, 0.0),
+                (0.0, 4.0),
+                (4.0, 4.0),
+                (4.0, 0.0),
+            ],
+            &[],
+        );
+        assert_eq!(chart_polygon_area(&metric, &cancelled, frame).unwrap(), 0.0);
+    }
+
+    #[test]
+    #[expect(
+        clippy::excessive_precision,
+        reason = "Independent Decimal integral retains an outlying invalid hole"
+    )]
+    fn chart_area_subtracts_outlying_holes_as_stored() {
+        let metric = metric();
+        let frame = metric.frame;
+        let invalid = polygon(&[(0.0, 0.0), (4.0, 0.0), (4.0, 4.0), (0.0, 4.0)], &[&[
+            (20.0, -20.0),
+            (30.0, -20.0),
+            (30.0, -10.0),
+            (20.0, -10.0),
+        ]]);
+        let expected = -991_762_400_434.761_110_524_391_469_4;
+        let actual = chart_polygon_area(&metric, &invalid, frame).unwrap();
+        assert!(
+            (actual - expected).abs() <= 1.0e-14 * expected.abs(),
+            "outlying-hole area={actual:.17}, expected={expected:.17}"
+        );
+    }
+
+    #[test]
+    #[expect(
+        clippy::excessive_precision,
         reason = "40-digit mpmath oracle literal preserves the independent reference value"
     )]
     fn chart_area_uses_typed_topology_poles_and_rejects_ambiguous_turns() {
@@ -1215,7 +1366,7 @@ mod chart_measure_tests {
         );
         assert_eq!(
             ring_bounded_pole(&north_cap.shell, frame),
-            Some(crate::geographic::Pole::North)
+            Some(crate::geographic::ChartPole::North)
         );
         let north_cap_area = chart_polygon_area(&metric, &north_cap, frame).unwrap();
         let north_cap_expected =
@@ -1244,5 +1395,313 @@ mod chart_measure_tests {
                     crate::geographic::GeographicError::AmbiguousFullTurnRing { .. }
                 )
         ));
+    }
+
+    #[test]
+    #[expect(
+        clippy::excessive_precision,
+        reason = "Independent Decimal authalic integral uses original binary64 endpoints"
+    )]
+    fn chart_area_preserves_narrow_slanted_ring_rotations_and_reversal() {
+        let metric = metric();
+        let frame = metric.frame;
+        let points = [
+            (13.0, 52.5),
+            (13.001, 52.501),
+            (13.001, 52.5010000001),
+            (13.0, 52.5000000001),
+        ];
+        let expected = 0.000_755_688_547_419_930_3;
+        let rotated = [
+            points.to_vec(),
+            points.iter().copied().rev().collect(),
+            points[1..]
+                .iter()
+                .chain(points[..1].iter())
+                .copied()
+                .collect(),
+        ];
+        for vertices in rotated {
+            let polygon = Polygon::new(ring(&vertices), Vec::new());
+            let actual = chart_polygon_area(&metric, &polygon, frame).unwrap();
+            assert!(
+                (actual - expected).abs() <= 1.0e-14 * expected,
+                "slanted area={actual:.17}, expected={expected:.17}"
+            );
+        }
+    }
+
+    #[test]
+    #[expect(
+        clippy::excessive_precision,
+        reason = "Independent Decimal integrals pin periodic bands and multi-turn source walks"
+    )]
+    fn chart_area_preserves_world_circle_and_multi_turn_walks() {
+        let metric = metric();
+        let frame = metric.frame;
+        let world_band = polygon(&full_longitude_band(40.0, -60.0, 60.0), &[]);
+        let expected_world_band =
+            441_233_920_694_280.737_992_025_912_931_493_155_169_195_458_212_945_862_801_508_295_145_604_032_216_568_603_916_565_391_645_360_359_680_669_911_06;
+        let actual = chart_polygon_area(&metric, &world_band, frame).unwrap();
+        assert!(
+            (actual - expected_world_band).abs() <= 1.0e-14 * expected_world_band,
+            "world-band area={actual:.17}, expected={expected_world_band:.17}"
+        );
+
+        let circle_cap = polygon(
+            &[(40.0, 60.0), (400.0, 60.0), (400.0, 90.0), (40.0, 90.0)],
+            &[],
+        );
+        let expected_circle_cap = 34_415_850_514_903.877_978_912_786_498_372;
+        let actual = chart_polygon_area(&metric, &circle_cap, frame).unwrap();
+        assert!(
+            (actual - expected_circle_cap).abs() <= 1.0e-14 * expected_circle_cap,
+            "Circle cap area={actual:.17}, expected={expected_circle_cap:.17}"
+        );
+
+        let south_cap = polygon(
+            &[(0.0, -80.0), (90.0, -80.0), (180.0, -80.0), (270.0, -80.0)],
+            &[],
+        );
+        let expected_south_cap = 3_908_572_761_836.572;
+        let actual = chart_polygon_area(&metric, &south_cap, frame).unwrap();
+        assert!(
+            (actual - expected_south_cap).abs() <= 1.0e-14 * expected_south_cap,
+            "south cap area={actual:.17}, expected={expected_south_cap:.17}"
+        );
+
+        let multi_turn = polygon(
+            &[
+                (0.0, 1.0),
+                (120.0, 1.0),
+                (240.0, 1.0),
+                (360.0, 1.0),
+                (480.0, 1.0),
+                (600.0, 1.0),
+                (0.0, 1.0),
+            ],
+            &[],
+        );
+        let expected_multi_turn = 501_203_527_720_426.234_056_243_624_791_2;
+        let actual = chart_polygon_area(&metric, &multi_turn, frame).unwrap();
+        assert!(
+            (actual - expected_multi_turn).abs() <= 1.0e-14 * expected_multi_turn,
+            "multi-turn area={actual:.17}, expected={expected_multi_turn:.17}"
+        );
+    }
+
+    #[test]
+    fn chart_area_uses_the_summary_pole_when_first_vertex_is_on_the_equator() {
+        let metric = metric();
+        let frame = metric.frame;
+        let ring = ring(&[(0.0, 0.0), (90.0, -80.0), (180.0, -80.0), (270.0, -80.0)]);
+        let summary = crate::geographic::RingSummary::try_new(
+            frame,
+            &crate::geographic::GeographicRing::from_ring(&ring),
+        )
+        .unwrap();
+        assert_eq!(
+            summary.bounded_pole(),
+            Some(crate::geographic::ChartPole::South)
+        );
+
+        let polygon = Polygon::new(ring, Vec::new());
+        let actual = chart_polygon_area(&metric, &polygon, frame).unwrap();
+        let expected = 54_138_230_010_739.305;
+        assert!(
+            (actual - expected).abs() <= 1.0e-14 * expected,
+            "south-bounded turn area={actual:.17}, expected={expected:.17}"
+        );
+    }
+
+    #[test]
+    fn chart_cap_closure_uses_the_native_summary_pole_under_axis_reversal() {
+        for (longitude_east, latitude_north) in
+            [(true, true), (false, true), (true, false), (false, false)]
+        {
+            let frame = oriented_degree_frame(longitude_east, latitude_north);
+            let metric = metric_with_flattening_and_frame(1.0 / 298.257_223_563, frame);
+            for latitude in [80.0, -80.0] {
+                let cap = polygon(
+                    &[(0.0, latitude), (120.0, latitude), (-120.0, latitude)],
+                    &[],
+                );
+                let summary = crate::geographic::RingSummary::try_new(
+                    frame,
+                    &crate::geographic::GeographicRing::from_ring(&cap.shell),
+                )
+                .unwrap();
+                assert_eq!(
+                    summary.bounded_pole(),
+                    Some(if latitude > 0.0 {
+                        crate::geographic::ChartPole::North
+                    } else {
+                        crate::geographic::ChartPole::South
+                    })
+                );
+                let actual = chart_polygon_area(&metric, &cap, frame).unwrap();
+                let expected = 3_908_572_761_836.572;
+                assert!(
+                    (actual - expected).abs() <= 1.0e-14 * expected,
+                    "cap area={actual:.17}, expected={expected:.17}, axes=({longitude_east}, {latitude_north}), chart latitude={latitude}"
+                );
+            }
+        }
+
+        let frame = oriented_degree_frame(true, false);
+        let metric = metric_with_flattening_and_frame(1.0 / 298.257_223_563, frame);
+        let equatorial_start = polygon(
+            &[(0.0, 0.0), (90.0, 80.0), (180.0, 80.0), (270.0, 80.0)],
+            &[],
+        );
+        let actual = chart_polygon_area(&metric, &equatorial_start, frame).unwrap();
+        let expected = 54_138_230_010_739.305;
+        assert!(
+            (actual - expected).abs() <= 1.0e-14 * expected,
+            "southward-axis cap area={actual:.17}, expected={expected:.17}"
+        );
+    }
+
+    #[test]
+    #[expect(
+        clippy::excessive_precision,
+        reason = "Independent ellipsoidal area of the physical 80-degree polar caps"
+    )]
+    fn chart_polar_area_maps_native_poles_to_physical_hemispheres() {
+        let expected = 3_908_572_761_836.564_5;
+        let frame = GeographicFrame::try_new_with_orientation(
+            AngularFactor::try_new("west longitude grad", std::f64::consts::TAU / 400.0).unwrap(),
+            AngularFactor::try_new("south latitude radian", 1.0).unwrap(),
+            0.0,
+            GeographicAxisOrientation::from_axis_directions(false, false),
+        )
+        .unwrap();
+        let metric = metric_with_flattening_and_frame(1.0 / 298.257_223_563, frame);
+        let longitudes = [0.0, 60.0, 120.0, 180.0, -120.0, -60.0];
+
+        for physical_latitude in [80.0_f64, -80.0] {
+            let native_latitude = -physical_latitude.to_radians();
+            let points = longitudes.map(|longitude| (-longitude * 10.0 / 9.0, native_latitude));
+            let actual = chart_polygon_area(&metric, &polygon(&points, &[]), frame).unwrap();
+            assert!(
+                (actual - expected).abs() <= 3.0e-15 * expected,
+                "physical latitude={physical_latitude}, area={actual:.17}"
+            );
+        }
+    }
+
+    #[test]
+    fn chart_area_reference_phase_uses_physical_poles_for_axis_orientations() {
+        #[expect(
+            clippy::excessive_precision,
+            reason = "Independent Decimal integral of the original one-ULP pole-neighbor endpoints"
+        )]
+        const EXPECTED: f64 = 2.198_605_450_772_230_784_075_320_676_741_271_294_1e-22;
+
+        for (longitude_east, latitude_north) in
+            [(true, true), (false, true), (true, false), (false, false)]
+        {
+            let frame = oriented_degree_frame(longitude_east, latitude_north);
+            let metric = metric_with_flattening_and_frame(1.0 / 298.257_223_563, frame);
+            for pole in [GeodeticPole::North, GeodeticPole::South] {
+                let native_pole = frame.native_latitude_pole(pole);
+                let equatorward = if native_pole.is_sign_positive() {
+                    native_pole.next_down()
+                } else {
+                    native_pole.next_up()
+                };
+                let rectangle = polygon(
+                    &[
+                        (13.0, native_pole),
+                        (13.01, native_pole),
+                        (13.01, equatorward),
+                        (13.0, equatorward),
+                    ],
+                    &[],
+                );
+                let actual = chart_polygon_area(&metric, &rectangle, frame).unwrap();
+                assert!(
+                    actual.is_finite()
+                        && actual > 0.0
+                        && (actual - EXPECTED).abs() <= 1.0e-14 * EXPECTED,
+                    "one-ULP {pole:?} area={actual:.17e}, expected={EXPECTED:.17e}, axes=({longitude_east}, {latitude_north})"
+                );
+            }
+        }
+    }
+
+    #[test]
+    #[expect(
+        clippy::excessive_precision,
+        reason = "Independent Decimal area uses custom native angular units"
+    )]
+    fn chart_area_preserves_custom_angular_units() {
+        let unit = AngularFactor::try_new("custom angular unit", 0.003).unwrap();
+        let frame = GeographicFrame::try_new(unit, unit, 0.0).unwrap();
+        let metric = metric_with_flattening_and_frame(1.0 / 298.257_223_563, frame);
+        let scale = (std::f64::consts::PI / 180.0) / 0.003;
+        let shell =
+            [(0.0, 0.0), (4.0, 0.0), (4.0, 4.0), (0.0, 4.0)].map(|(x, y)| (x * scale, y * scale));
+        let hole = [
+            (1.0e-12, 1.0e-12),
+            (4.0 - 1.0e-12, 1.0e-12),
+            (4.0 - 1.0e-12, 4.0 - 1.0e-12),
+            (1.0e-12, 4.0 - 1.0e-12),
+        ]
+        .map(|(x, y)| (x * scale, y * scale));
+        let donut = Polygon::new(ring(&shell), vec![ring(&hole)]);
+        let expected = 0.196_777_297_092_643_510_663_874_846_791_097_26;
+        let actual = chart_polygon_area(&metric, &donut, frame).unwrap();
+        assert!(
+            (actual - expected).abs() <= 1.0e-14 * expected,
+            "custom-unit donut area={actual:.17}, expected={expected:.17}"
+        );
+    }
+
+    #[test]
+    fn chart_area_scales_underflowing_source_products_before_final_rounding() {
+        let large_metric = metric_with_semimajor_and_frame(
+            1.0e154,
+            1.0 / 298.257_223_563,
+            GeographicFrame::crs84(),
+        );
+        let width = 1.0e-160;
+        let tiny = box_polygon(0.0, 0.0, width, width);
+        let actual = chart_polygon_area(&large_metric, &tiny, large_metric.frame).unwrap();
+        let expected = 3.025_781_950_270_4e-16;
+        assert!(actual.is_finite() && actual > 0.0);
+        assert!(
+            (actual - expected).abs() <= 1.0e-14 * expected,
+            "scaled tiny area={actual:.17e}, expected={expected:.17e}"
+        );
+
+        let subnormal_metric = metric();
+        let subnormal = box_polygon(0.0, 0.0, width, width);
+        let actual =
+            chart_polygon_area(&subnormal_metric, &subnormal, subnormal_metric.frame).unwrap();
+        let expected = 1.230_907_207_929_5e-310;
+        assert!(actual.is_finite() && actual > 0.0);
+        assert!(
+            (actual - expected).abs() <= 8.0 * f64::from_bits(1),
+            "subnormal area={actual:.17e}, expected={expected:.17e}"
+        );
+    }
+
+    #[test]
+    fn chart_area_preserves_a_finite_result_after_the_axis_square_overflows() {
+        let metric = metric_with_semimajor_and_frame(1.0e155, 0.0, GeographicFrame::crs84());
+        let square = box_polygon(
+            0.0,
+            0.0,
+            1.296_455_495_266_232_8e-151,
+            1.296_455_495_266_232_8e-151,
+        );
+        assert!(!(metric.geodesic.a * metric.geodesic.a).is_finite());
+        let actual = chart_polygon_area(&metric, &square, metric.frame).unwrap();
+        let expected = 51_200.000_000_000_01;
+        assert!(
+            actual.is_finite() && (actual / expected - 1.0).abs() <= 1.0e-14,
+            "finite area after overflowing a²={actual:.17}, expected={expected:.17}"
+        );
     }
 }

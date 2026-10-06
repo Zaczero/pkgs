@@ -437,7 +437,7 @@ pub(crate) enum TopologyLocation {
 pub(crate) enum TopologyKey {
     Coordinate(PointKey),
     Seam(u64),
-    Pole(bool),
+    ChartPole(crate::geographic::ChartPole),
 }
 
 #[expect(
@@ -445,11 +445,11 @@ pub(crate) enum TopologyKey {
     reason = "a pole or antimeridian is one specific representable coordinate, and the question is whether a vertex IS that coordinate; a tolerance would admit vertices merely near it"
 )]
 fn quotient_key(frame: crate::geographic::GeographicFrame, point: XY) -> TopologyKey {
-    if point.y == frame.pole() {
-        return TopologyKey::Pole(true);
+    if point.y == frame.chart_pole_latitude(crate::geographic::ChartPole::North) {
+        return TopologyKey::ChartPole(crate::geographic::ChartPole::North);
     }
-    if point.y == -frame.pole() {
-        return TopologyKey::Pole(false);
+    if point.y == frame.chart_pole_latitude(crate::geographic::ChartPole::South) {
+        return TopologyKey::ChartPole(crate::geographic::ChartPole::South);
     }
     let longitude = frame
         .longitude()
@@ -1143,8 +1143,8 @@ impl GraphBuilder {
             )?),
         )
         .expect("validated geographic ring has an exact summary");
-        let north_pole = summary.bounded_pole() == Some(crate::geographic::Pole::North);
-        let south_pole = summary.bounded_pole() == Some(crate::geographic::Pole::South);
+        let north_pole = summary.bounded_pole() == Some(crate::geographic::ChartPole::North);
+        let south_pole = summary.bounded_pole() == Some(crate::geographic::ChartPole::South);
         Ok(StagedChartRing {
             ring: ChartRing {
                 points: points.into_boxed_slice(),

@@ -2,8 +2,8 @@ use std::collections::HashMap;
 
 use crate::error::Result;
 use crate::geographic::{
-    GeographicFrame, GeographicRing, GeographicViewError, Latitude, RingDomain, RingSummary,
-    ScalarGeographicView,
+    ChartPole, GeodeticPole, GeographicFrame, GeographicRing, GeographicViewError, Latitude,
+    RingDomain, RingSummary, ScalarGeographicView,
 };
 use crate::geometry::antimeridian::{
     SeamRing, collect_points, ring_follows_seam, segment_coords, split_ring_at_seam,
@@ -157,9 +157,9 @@ impl Shape {
     /// is caller error and yields garbage.
     pub fn split_antimeridian_over_pole(&self, north: bool) -> Result<Self> {
         let closure = if north {
-            PoleClosure::North
+            PoleClosure::Chart(ChartPole::North)
         } else {
-            PoleClosure::South
+            PoleClosure::Chart(ChartPole::South)
         };
         match self {
             Self::Polygon(polygon) => {
@@ -239,9 +239,9 @@ pub(crate) fn split_geographic_view(view: ScalarGeographicView<'_>) -> Result<Sh
         &split,
         &|x, y| {
             let latitude = if y == 90.0 {
-                frame.pole()
+                frame.native_latitude_pole(GeodeticPole::North)
             } else if y == -90.0 {
-                -frame.pole()
+                frame.native_latitude_pole(GeodeticPole::South)
             } else {
                 y / latitude_scale
             };
@@ -673,7 +673,10 @@ fn split_polygon_inner_in_mode(
     // ambiguous, and when nothing is valid the input itself was broken. Never
     // return the known-invalid automatic candidate as a plausible geometry.
     let mut valid = Vec::new();
-    for closure in [PoleClosure::North, PoleClosure::South] {
+    for closure in [
+        PoleClosure::Chart(ChartPole::North),
+        PoleClosure::Chart(ChartPole::South),
+    ] {
         let (forced, _) = extend_over_poles(segments.clone(), closure)?;
         if let Ok(candidate) = assemble_polygons(forced, &kept_holes)
             && candidate.iter().try_fold(true, |ok, polygon| {
@@ -744,11 +747,11 @@ fn shape_has_longitude_turn_in_frame(shape: &Shape, frame: GeographicFrame) -> R
 /// Resolve pole ownership from the admitted source ring before chart stitching.
 fn pole_closure_for_ring(ring: &Ring) -> PoleClosure {
     match (
-        ring_encloses_pole(ring, true),
-        ring_encloses_pole(ring, false),
+        ring_encloses_pole(ring, ChartPole::North),
+        ring_encloses_pole(ring, ChartPole::South),
     ) {
-        (true, false) => PoleClosure::North,
-        (false, true) => PoleClosure::South,
+        (true, false) => PoleClosure::Chart(ChartPole::North),
+        (false, true) => PoleClosure::Chart(ChartPole::South),
         _ => PoleClosure::Auto,
     }
 }
@@ -854,13 +857,11 @@ fn close_ring(mut coords: Vec<Point>) -> Vec<Point> {
     coords
 }
 
-/// Which pole a stitched ring may close over: inferred from the seam
-/// latitudes, or forced when the inference is ambiguous.
+/// Which native-chart pole a stitched ring may close over.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum PoleClosure {
     Auto,
-    North,
-    South,
+    Chart(ChartPole),
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -878,6 +879,9 @@ fn extend_over_poles(
     mut segments: Vec<Vec<Point>>,
     closure: PoleClosure,
 ) -> Result<(Vec<Vec<Point>>, bool)> {
+    let chart_frame = GeographicFrame::crs84();
+    let north_pole = chart_frame.chart_pole_latitude(ChartPole::North);
+    let south_pole = chart_frame.chart_pole_latitude(ChartPole::South);
     // A fabricated pole-cap vertex must carry the SAME axes as the chain it
     // extends, or the assembled ring would mix Z/M presence — violating the
     // CoordSeq axis-homogeneity invariant (a `from_points` debug-assert, and a
@@ -910,37 +914,42 @@ fn extend_over_poles(
     let mut over_north = false;
     let mut over_south = false;
     if let Some((index, latitude)) = left_end {
-        if closure == PoleClosure::North
+        if closure == PoleClosure::Chart(ChartPole::North)
             && right_end.is_none()
             && left_start.is_none_or(|start| latitude > start)
         {
             // Forced north from the west side: cap and reverse.
             over_north = true;
             let like = *segments[index].last().expect("segments are non-empty");
-            segments[index].push(pole_vertex(like, -180.0, 90.0)?);
-            segments[index].push(pole_vertex(like, 180.0, 90.0)?);
+            segments[index].push(pole_vertex(like, -180.0, north_pole)?);
+            segments[index].push(pole_vertex(like, 180.0, north_pole)?);
             segments[index].reverse();
-        } else if closure == PoleClosure::South || left_start.is_none_or(|start| latitude < start) {
+        } else if closure == PoleClosure::Chart(ChartPole::South)
+            || left_start.is_none_or(|start| latitude < start)
+        {
             over_south = true;
             let like = *segments[index].last().expect("segments are non-empty");
-            segments[index].push(pole_vertex(like, -180.0, -90.0)?);
-            segments[index].push(pole_vertex(like, 180.0, -90.0)?);
+            segments[index].push(pole_vertex(like, -180.0, south_pole)?);
+            segments[index].push(pole_vertex(like, 180.0, south_pole)?);
         }
     }
     if let Some((index, latitude)) = right_end {
-        if closure == PoleClosure::South && right_start.is_none_or(|start| latitude < start) {
+        if closure == PoleClosure::Chart(ChartPole::South)
+            && right_start.is_none_or(|start| latitude < start)
+        {
             // Forced south from the east side: cap and reverse.
             over_south = true;
             let like = *segments[index].last().expect("segments are non-empty");
-            segments[index].push(pole_vertex(like, 180.0, -90.0)?);
-            segments[index].push(pole_vertex(like, -180.0, -90.0)?);
+            segments[index].push(pole_vertex(like, 180.0, south_pole)?);
+            segments[index].push(pole_vertex(like, -180.0, south_pole)?);
             segments[index].reverse();
-        } else if closure == PoleClosure::North || right_start.is_none_or(|start| latitude > start)
+        } else if closure == PoleClosure::Chart(ChartPole::North)
+            || right_start.is_none_or(|start| latitude > start)
         {
             over_north = true;
             let like = *segments[index].last().expect("segments are non-empty");
-            segments[index].push(pole_vertex(like, 180.0, 90.0)?);
-            segments[index].push(pole_vertex(like, -180.0, 90.0)?);
+            segments[index].push(pole_vertex(like, 180.0, north_pole)?);
+            segments[index].push(pole_vertex(like, -180.0, north_pole)?);
         }
     }
     let capped = over_north || over_south;
@@ -1032,7 +1041,9 @@ fn build_rings(mut segments: Vec<Vec<Point>>) -> Vec<Vec<Point>> {
 
 #[cfg(test)]
 mod tests {
-    use crate::geographic::{AngularFactor, GeographicFrame};
+    use crate::geographic::{
+        AngularFactor, ChartPole, GeodeticPole, GeographicAxisOrientation, GeographicFrame,
+    };
     use crate::geometry::{
         CoordSeq, Coordinates as _, LineSeq, MOrdinate, Point, Polygon, Ring, Shape, ZOrdinate,
     };
@@ -1068,6 +1079,40 @@ mod tests {
     }
 
     #[test]
+    fn antimeridian_pole_closure_maps_physical_pole_to_native_axis() {
+        let unit = AngularFactor::try_new("degree", std::f64::consts::PI / 180.0).unwrap();
+        let frame = GeographicFrame::try_new_with_orientation(
+            unit,
+            unit,
+            0.0,
+            GeographicAxisOrientation::from_axis_directions(true, false),
+        )
+        .unwrap();
+        let source = polygon(&[(170.0, 80.0), (-70.0, 80.0), (50.0, 80.0)], &[]);
+        let Shape::Polygon(source_polygon) = &source else {
+            panic!("the pole-cap fixture is a polygon");
+        };
+        let summary = crate::geographic::RingSummary::try_new(
+            frame,
+            &crate::geographic::GeographicRing::from_ring(&source_polygon.shell),
+        )
+        .unwrap();
+        assert_eq!(summary.bounded_pole(), Some(ChartPole::North));
+
+        let split = source.split_antimeridian_in_frame(frame).unwrap();
+        let physical_south = frame.native_latitude_pole(GeodeticPole::South);
+        let physical_north = frame.native_latitude_pole(GeodeticPole::North);
+        let mut saw_south_cap = false;
+        let mut saw_north_cap = false;
+        split.for_each_point(|point| {
+            saw_south_cap |= point.y.to_bits() == physical_south.to_bits();
+            saw_north_cap |= point.y.to_bits() == physical_north.to_bits();
+        });
+        assert!(saw_south_cap, "{split:?}");
+        assert!(!saw_north_cap, "{split:?}");
+    }
+
+    #[test]
     fn crs84_canonical_noncrossing_line_matches_source_and_skips_chart_alloc() {
         let shape = line(&[10.0, 20.0], &[1.0, 2.0]);
         let (cloned, clone_n) = allocation_count(|| shape.clone());
@@ -1089,6 +1134,40 @@ mod tests {
     fn crs84_full_period_pair_is_identity() {
         let shape = line(&[-180.0, 180.0], &[0.0, 0.0]);
         assert_eq!(split_crs84(&shape), shape);
+    }
+
+    #[test]
+    fn antimeridian_pole_closure_maps_physical_pole_back_to_southward_axis() {
+        let unit = AngularFactor::try_new("degree", std::f64::consts::PI / 180.0).unwrap();
+        let frame = GeographicFrame::try_new_with_orientation(
+            unit,
+            unit,
+            0.0,
+            GeographicAxisOrientation::from_axis_directions(true, false),
+        )
+        .unwrap();
+        let source = polygon(&[(170.0, 80.0), (-70.0, 80.0), (50.0, 80.0)], &[]);
+        let Shape::Polygon(source_polygon) = &source else {
+            panic!("the cap fixture is a polygon");
+        };
+        let summary = crate::geographic::RingSummary::try_new(
+            frame,
+            &crate::geographic::GeographicRing::from_ring(&source_polygon.shell),
+        )
+        .unwrap();
+        assert_eq!(summary.bounded_pole(), Some(ChartPole::North));
+
+        let split = source.split_antimeridian_in_frame(frame).unwrap();
+        let physical_south_native = frame.native_latitude_pole(GeodeticPole::South);
+        let physical_north_native = frame.native_latitude_pole(GeodeticPole::North);
+        let mut saw_physical_south = false;
+        let mut saw_physical_north = false;
+        split.for_each_point(|point| {
+            saw_physical_south |= point.y.to_bits() == physical_south_native.to_bits();
+            saw_physical_north |= point.y.to_bits() == physical_north_native.to_bits();
+        });
+        assert!(saw_physical_south, "{split:?}");
+        assert!(!saw_physical_north, "{split:?}");
     }
 
     #[test]

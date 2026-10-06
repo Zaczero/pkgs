@@ -11,6 +11,22 @@ fn degrees() -> GeographicFrame {
     frame(std::f64::consts::PI / 180.0)
 }
 
+#[test]
+fn chart_and_geodetic_poles_remain_distinct_for_southward_latitude_axes() {
+    let unit = factor(std::f64::consts::PI / 180.0);
+    let frame = GeographicFrame::try_new_with_orientation(
+        unit,
+        unit,
+        0.0,
+        GeographicAxisOrientation::from_axis_directions(true, false),
+    )
+    .unwrap();
+    assert_eq!(frame.chart_pole_latitude(ChartPole::North), 90.0);
+    assert_eq!(frame.chart_pole_latitude(ChartPole::South), -90.0);
+    assert_eq!(frame.native_latitude_pole(GeodeticPole::North), -90.0);
+    assert_eq!(frame.native_latitude_pole(GeodeticPole::South), 90.0);
+}
+
 fn assert_bits(value: f64, expected: f64) {
     assert_eq!(value.to_bits(), expected.to_bits());
 }
@@ -167,7 +183,7 @@ fn ring_summary_uses_chart_turn_and_keeps_axis_bands() {
     assert_eq!(summary.chart_turn, 1);
     assert_eq!(summary.turn(), RingTurn::Full(TurnDirection::Positive));
     assert!(!summary.exact_axis_band);
-    assert_eq!(summary.bounded_pole(), Some(Pole::North));
+    assert_eq!(summary.bounded_pole(), Some(ChartPole::North));
     assert_eq!(
         summary.domain,
         RingDomain::FullLongitude(RingLatitudeSpan::Ordinary)
@@ -177,7 +193,7 @@ fn ring_summary_uses_chart_turn_and_keeps_axis_bands() {
     let negative = RingSummary::try_new(degrees(), &GeographicRing::from_ring(&negative)).unwrap();
     assert_eq!(negative.chart_turn, -1);
     assert_eq!(negative.turn(), RingTurn::Full(TurnDirection::Negative));
-    assert_eq!(negative.bounded_pole(), Some(Pole::South));
+    assert_eq!(negative.bounded_pole(), Some(ChartPole::South));
 
     let retraced = ring(vec![0.0, 120.0, 0.0, 0.0], vec![0.0; 4]);
     assert_eq!(
@@ -253,7 +269,7 @@ fn full_turn_pole_uses_the_closed_hemisphere_rule_for_every_nonzero_turn() {
     assert_eq!(north.chart_turn, 1);
     assert_eq!(
         north.full_turn_pole(),
-        Some(FullTurnPole::Bounded(Pole::North))
+        Some(FullTurnPole::Bounded(ChartPole::North))
     );
 
     let south = ring(xs.clone(), vec![0.0, -5.0, -5.0, -5.0, 0.0]);
@@ -261,7 +277,7 @@ fn full_turn_pole_uses_the_closed_hemisphere_rule_for_every_nonzero_turn() {
     assert_eq!(south.chart_turn, 1);
     assert_eq!(
         south.full_turn_pole(),
-        Some(FullTurnPole::Bounded(Pole::South))
+        Some(FullTurnPole::Bounded(ChartPole::South))
     );
 
     let all_equator = ring(xs.clone(), vec![0.0; 5]);
@@ -285,7 +301,7 @@ fn full_turn_pole_uses_the_closed_hemisphere_rule_for_every_nonzero_turn() {
     assert_eq!(multiple_turns.chart_turn, 2);
     assert_eq!(
         multiple_turns.full_turn_pole(),
-        Some(FullTurnPole::Bounded(Pole::North))
+        Some(FullTurnPole::Bounded(ChartPole::North))
     );
 }
 

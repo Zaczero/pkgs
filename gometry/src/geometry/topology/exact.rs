@@ -184,8 +184,10 @@ pub(super) fn quotient_key(
     frame: GeographicFrame,
     point: &ExactChartPoint,
 ) -> Result<ExactQuotientKey> {
-    let north = ExactRational::from_f64(frame.pole());
-    let south = ExactRational::from_f64(-frame.pole());
+    let north =
+        ExactRational::from_f64(frame.chart_pole_latitude(crate::geographic::ChartPole::North));
+    let south =
+        ExactRational::from_f64(frame.chart_pole_latitude(crate::geographic::ChartPole::South));
     if point.y.try_cmp(&north)?.is_eq() {
         return Ok(ExactQuotientKey::NorthPole);
     }

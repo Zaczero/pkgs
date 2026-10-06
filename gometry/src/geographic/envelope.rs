@@ -2,9 +2,9 @@ use std::borrow::Borrow;
 use std::marker::PhantomData;
 
 use super::{
-    CircularInterval, GeographicAdmissionError, GeographicCollectionOwners, GeographicFrame,
-    GeographicRing, Latitude, Pole, RingDomain, RingSummary, ScalarGeographicView, SeamIdentity,
-    union_circular_intervals,
+    ChartPole, CircularInterval, GeographicAdmissionError, GeographicCollectionOwners,
+    GeographicFrame, GeographicRing, Latitude, RingDomain, RingSummary, ScalarGeographicView,
+    SeamIdentity, union_circular_intervals,
 };
 use crate::collections::HashMap;
 use crate::geometry::{Bounds, CoordSeq, Point, Polygon, Shape, ShapeOwnerKey};
@@ -936,13 +936,13 @@ fn polygon_ring_effects<'owner>(
         let summary = ring_summary(hole, frame, owners)?;
         effects.include_ring(summary);
         match summary.bounded_pole() {
-            Some(Pole::North) => hole_north = true,
-            Some(Pole::South) => hole_south = true,
+            Some(ChartPole::North) => hole_north = true,
+            Some(ChartPole::South) => hole_south = true,
             None => {},
         }
     }
-    effects.north_pole = shell_pole == Some(Pole::North) && !hole_north;
-    effects.south_pole = shell_pole == Some(Pole::South) && !hole_south;
+    effects.north_pole = shell_pole == Some(ChartPole::North) && !hole_north;
+    effects.south_pole = shell_pole == Some(ChartPole::South) && !hole_south;
     Ok(effects)
 }
 

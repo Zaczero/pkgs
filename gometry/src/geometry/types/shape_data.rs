@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use crate::HeapSize;
 use crate::crs::ChartEdge;
 use crate::error::Result;
-use crate::geographic::{GeographicFrame, ScalarGeographicView};
+use crate::geographic::{GeodeticPole, GeographicFrame, ScalarGeographicView};
 use crate::geometry::antimeridian::validate_structure;
 use crate::geometry::distance::ChartParts;
 use crate::geometry::point_location::{PointQueryPlan, PreparedPointQueries};
@@ -18,7 +18,7 @@ use crate::geometry::tessellation::exact::ExactDyadic;
 use crate::geometry::topology::ExactGeographicTopology;
 use crate::geometry::types::{Bounds, Point, Segment, Shape, XY};
 use crate::geometry::{
-    ChartLineIndex, DistanceParts, GeographicMetricKey, GeographicPrepared,
+    ChartLineIndex, DistanceParts, GeographicAreaDensity, GeographicMetricKey, GeographicPrepared,
     GeographicTopologyRoute, LineIndex, LineIndexSlot, MeasuredLineIndex, MeasuredLineIndexSlot,
     PlanarMetric,
 };
@@ -1516,8 +1516,11 @@ pub(crate) trait ChartMetric {
     ) -> Result<ChartPointDistanceSample>;
     fn geodesic_distance_hessian_upper_bound(&self, lower_distance: f64) -> f64;
     fn point_envelope_bound(&self, point: Point) -> impl Fn(ChartBox) -> f64;
-    fn chart_area_edge_term(&self, edge: &ChartEdge, north: bool) -> f64;
-    fn chart_area_factor(&self) -> f64;
+    fn chart_area_density(
+        &self,
+        reference_colatitude: f64,
+        reference_pole: GeodeticPole,
+    ) -> GeographicAreaDensity;
 }
 
 #[derive(Clone, Copy, Debug)]
