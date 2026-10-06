@@ -1136,46 +1136,76 @@ fn shortest_alias_steps_preserve_half_turn_direction() {
 }
 
 #[test]
-fn intervals_distinguish_empty_arc_full_and_windows() {
+fn endpoint_intervals_preserve_authentic_endpoints_and_closed_windows() {
     let axis = degrees().longitude();
-    let ordered = CircularInterval::try_arc(axis, -20.0, 30.0).unwrap();
-    assert_eq!(ordered.west_east(axis), Some((-20.0, 10.0)));
+    let canonical = |longitude| axis.canonicalize(longitude).unwrap();
+    let arc = |start, end| CircularInterval::from_endpoints(canonical(start), canonical(end));
+
+    let ordered = arc(-20.0, 10.0);
+    assert_eq!(ordered.west_east(), Some((-20.0, 10.0)));
     assert_eq!(
         ordered.windows(axis),
         Some(LongitudeWindows::One([-20.0, 10.0]))
     );
-    let wrapped = CircularInterval::try_arc(axis, 170.0, 30.0).unwrap();
-    assert_eq!(wrapped.west_east(axis), Some((170.0, -160.0)));
+    let wrapped = arc(170.0, -160.0);
+    assert_eq!(wrapped.west_east(), Some((170.0, -160.0)));
     assert_eq!(
         wrapped.windows(axis),
         Some(LongitudeWindows::Two([170.0, 180.0], [-180.0, -160.0]))
+    );
+    assert_eq!(
+        arc(170.0, -180.0).windows(axis),
+        Some(LongitudeWindows::Two([170.0, 180.0], [-180.0, -180.0]))
+    );
+    assert_eq!(
+        CircularInterval::point(canonical(-180.0)).windows(axis),
+        Some(LongitudeWindows::One([-180.0, -180.0]))
     );
     assert_eq!(CircularInterval::Empty.windows(axis), None);
     assert_eq!(
         CircularInterval::Full.windows(axis),
         Some(LongitudeWindows::Full)
     );
-    CircularInterval::try_arc(axis, 0.0, 360.0).unwrap_err();
+    assert_eq!(
+        CircularInterval::from_chart_connection(axis.chart_connection(170.0, -170.0).unwrap()),
+        arc(170.0, -170.0)
+    );
+    assert_eq!(
+        CircularInterval::from_chart_connection(axis.chart_connection(-170.0, 170.0).unwrap()),
+        arc(170.0, -170.0)
+    );
+    assert_eq!(
+        CircularInterval::from_chart_connection(axis.chart_connection(0.0, 360.0).unwrap()),
+        CircularInterval::Full
+    );
+
+    let start = 0.1_f64;
+    let end = 0.2_f64;
+    let next_end = end.next_up();
+    for endpoint in [end, next_end] {
+        let interval = arc(start, endpoint);
+        let (actual_start, actual_end) = interval.west_east().unwrap();
+        assert_eq!(actual_start.to_bits(), start.to_bits());
+        assert_eq!(actual_end.to_bits(), endpoint.to_bits());
+    }
 }
 
 #[test]
-fn extreme_axis_interval_arithmetic_remains_finite() {
+fn extreme_period_windows_and_unions_keep_endpoint_bits_finite() {
     let unit = factor(std::f64::consts::TAU / f64::MAX);
     let axis = PeriodicAxis::try_new("extreme unit", unit).unwrap();
     assert_eq!(axis.period(), f64::MAX);
     let start = axis.half_period().next_down();
-    let sweep = axis.period().next_down();
-    assert!((start + sweep).is_infinite());
-    let arc = CircularInterval::try_arc(axis, start, sweep).unwrap();
-    let expected_east = -axis.half_period() + (sweep - (axis.half_period() - start));
-    assert_eq!(arc.west_east(axis), Some((start, expected_east)));
+    let end = -axis.half_period().next_down();
+    let arc = CircularInterval::from_endpoints(
+        axis.canonicalize(start).unwrap(),
+        axis.canonicalize(end).unwrap(),
+    );
+    assert_eq!(arc.west_east(), Some((start, end)));
     let windows = arc.windows(axis).unwrap();
     assert_eq!(
         windows,
-        LongitudeWindows::Two([start, axis.half_period()], [
-            -axis.half_period(),
-            expected_east
-        ],)
+        LongitudeWindows::Two([start, axis.half_period()], [-axis.half_period(), end],)
     );
     for window in match windows {
         LongitudeWindows::Two(left, right) => [left, right],
@@ -1184,10 +1214,11 @@ fn extreme_axis_interval_arithmetic_remains_finite() {
     } {
         assert!(window[0].is_finite() && window[1].is_finite());
     }
-    let point = CircularInterval::try_arc(axis, -axis.half_period(), 0.0).unwrap();
+    let point = CircularInterval::point(axis.canonicalize(-axis.half_period()).unwrap());
     let first = union_circular_intervals(axis, &[arc, point]);
     let second = union_circular_intervals(axis, &[arc, point]);
-    assert_eq!(first, second);
+    assert_eq!(first, arc);
+    assert_eq!(second, arc);
     assert!(first.windows(axis).is_some_and(|windows| match windows {
         LongitudeWindows::One(window) => window.into_iter().all(f64::is_finite),
         LongitudeWindows::Two(left, right) => left.into_iter().chain(right).all(f64::is_finite),
@@ -1198,28 +1229,51 @@ fn extreme_axis_interval_arithmetic_remains_finite() {
 #[test]
 fn largest_gap_union_handles_disconnected_ties_and_full() {
     let axis = degrees().longitude();
-    let arc = |start, sweep| CircularInterval::try_arc(axis, start, sweep).unwrap();
-    let disconnected = union_circular_intervals(axis, &[arc(170.0, 5.0), arc(-5.0, 10.0)]);
-    assert_eq!(disconnected, arc(-5.0, 180.0));
+    let canonical = |longitude| axis.canonicalize(longitude).unwrap();
+    let arc = |start, end| CircularInterval::from_endpoints(canonical(start), canonical(end));
+    let point = |longitude| CircularInterval::point(canonical(longitude));
+    let disconnected = union_circular_intervals(axis, &[arc(170.0, 175.0), arc(-5.0, 5.0)]);
+    assert_eq!(disconnected, arc(-5.0, 175.0));
     let tie = union_circular_intervals(axis, &[
-        arc(-135.0, 0.0),
-        arc(-45.0, 0.0),
-        arc(45.0, 0.0),
-        arc(135.0, 0.0),
+        point(-135.0),
+        point(-45.0),
+        point(45.0),
+        point(135.0),
     ]);
-    assert_eq!(tie, arc(-135.0, 270.0));
+    assert_eq!(tie, arc(-135.0, 135.0));
     assert_eq!(
-        union_circular_intervals(axis, &[arc(-180.0, 180.0), arc(0.0, 180.0)]),
+        union_circular_intervals(axis, &[arc(-180.0, 0.0), arc(0.0, -180.0)]),
         CircularInterval::Full
     );
     assert_eq!(union_circular_intervals(axis, &[]), CircularInterval::Empty);
     assert_eq!(
-        union_circular_intervals(axis, &[arc(1.0, 2.0)]),
-        arc(1.0, 2.0)
+        union_circular_intervals(axis, &[arc(1.0, 3.0)]),
+        arc(1.0, 3.0)
     );
     assert_eq!(
         union_circular_intervals(axis, &[CircularInterval::Full]),
         CircularInterval::Full
+    );
+}
+
+#[test]
+fn largest_gap_union_distinguishes_exact_gaps_that_round_equal() {
+    let axis = degrees().longitude();
+    let outside = 120.0_f64.next_up();
+    let tiny = f64::from_bits(1);
+    let lower_gap = (-tiny) - (-outside);
+    let upper_gap = outside - (-tiny);
+    assert_eq!(lower_gap.to_bits(), upper_gap.to_bits());
+
+    let canonical = |longitude| axis.canonicalize(longitude).unwrap();
+    let intervals = [
+        CircularInterval::point(canonical(-outside)),
+        CircularInterval::point(canonical(-tiny)),
+        CircularInterval::point(canonical(outside)),
+    ];
+    assert_eq!(
+        union_circular_intervals(axis, &intervals),
+        CircularInterval::from_endpoints(canonical(outside), canonical(-tiny))
     );
 }
 

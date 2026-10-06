@@ -43,8 +43,6 @@ pub(crate) enum GeographicError {
     NonFinite { name: &'static str, value: f64 },
     #[error("latitude {value} is outside the physical axis limits")]
     LatitudeOutOfRange { value: f64 },
-    #[error("circular interval sweep {sweep} is outside [0, {period})")]
-    InvalidSweep { sweep: f64, period: f64 },
     #[error("ring chart-turn count overflowed")]
     ChartTurnOverflow,
     #[error(

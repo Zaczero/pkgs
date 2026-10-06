@@ -29,7 +29,6 @@ pub(crate) fn geographic_admission_error(diagnostic: &GeographicDiagnostic) -> c
             }
         },
         GeographicError::InvalidAngularFactor { .. }
-        | GeographicError::InvalidSweep { .. }
         | GeographicError::ChartTurnOverflow
         | GeographicError::AmbiguousFullTurnRing { .. } => {
             GeometryErrorKind::message(diagnostic.to_string())

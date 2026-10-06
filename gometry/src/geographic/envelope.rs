@@ -2,12 +2,14 @@ use std::borrow::Borrow;
 use std::marker::PhantomData;
 
 use super::{
-    ChartPole, CircularInterval, GeographicAdmissionError, GeographicCollectionOwners,
-    GeographicFrame, GeographicRing, Latitude, RingDomain, RingSummary, ScalarGeographicView,
-    SeamIdentity, union_circular_intervals,
+    CanonicalLongitude, ChartPole, CircularInterval, GeographicAdmissionError,
+    GeographicCollectionOwners, GeographicFrame, GeographicRing, Latitude, RingDomain, RingSummary,
+    ScalarGeographicView, SeamIdentity, publish_certified_minor_chain, union_circular_intervals,
 };
 use crate::collections::HashMap;
-use crate::geometry::{Bounds, CoordSeq, Point, Polygon, Shape, ShapeOwnerKey};
+use crate::geometry::{
+    Bounds, CoordSeq, ExpansionBudget, LineSeq, Point, Polygon, Ring, Shape, ShapeOwnerKey,
+};
 
 /// Periodic longitude coverage and occupied latitude extrema in one native frame.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -27,10 +29,7 @@ impl GeographicSupportEnvelope {
         let mut envelope = None;
         view.for_each_coordinate(|coordinate| {
             envelope = Some(Self {
-                longitude: CircularInterval::Arc {
-                    start: coordinate.longitude(),
-                    sweep: 0.0,
-                },
+                longitude: CircularInterval::point(coordinate.longitude()),
                 latitude: Some(LatitudeBounds {
                     south: coordinate.latitude(),
                     north: coordinate.latitude(),
@@ -82,12 +81,16 @@ impl GeographicSupportEnvelope {
             return None;
         }
         Some(Self {
-            longitude: CircularInterval::try_arc(
-                frame.longitude(),
-                bounds.minx(),
-                bounds.maxx() - bounds.minx(),
-            )
-            .expect("the ordinary support certificate proves a canonical subhalf arc"),
+            longitude: CircularInterval::from_endpoints(
+                frame
+                    .longitude()
+                    .canonicalize(bounds.minx())
+                    .expect("the ordinary support certificate proves finite longitude"),
+                frame
+                    .longitude()
+                    .canonicalize(bounds.maxx())
+                    .expect("the ordinary support certificate proves finite longitude"),
+            ),
             latitude: Some(LatitudeBounds {
                 south: Latitude::from_admitted(frame, bounds.miny()),
                 north: Latitude::from_admitted(frame, bounds.maxy()),
@@ -101,7 +104,7 @@ impl GeographicSupportEnvelope {
         let (west, east) = match self.longitude {
             CircularInterval::Empty => return None,
             CircularInterval::Full => (-axis.half_period(), axis.half_period()),
-            arc @ CircularInterval::Arc { .. } => arc.west_east(axis)?,
+            arc @ CircularInterval::Arc { .. } => arc.west_east()?,
         };
         Some(Bounds::new_raw(west, south, east, north))
     }
@@ -111,15 +114,65 @@ impl GeographicSupportEnvelope {
             return Ok(Shape::empty_polygon());
         };
         let axis = frame.longitude();
-        let (west, east) = match self.longitude {
-            CircularInterval::Empty => return Ok(Shape::empty_polygon()),
-            CircularInterval::Full => (-axis.half_period(), axis.half_period()),
-            CircularInterval::Arc { start, sweep } => (start.get(), start.get() + sweep),
-        };
-        crate::geometry::geographic_bounds_to_shape(
-            Bounds::new_raw(west, south, east, north),
-            frame,
-        )
+        let longitudes = realization_longitudes(self.longitude, axis);
+        if longitudes.is_empty() {
+            return Ok(Shape::empty_polygon());
+        }
+        if longitudes.len() == 1 {
+            let longitude = longitudes
+                .first()
+                .expect("one-element longitude realization has an endpoint")
+                .get();
+            if south == north {
+                return Ok(Shape::Point(Point::new_raw_xy(longitude, south)));
+            }
+            let coordinates = certified_bound_coordinates(
+                frame,
+                &[
+                    Point::new_raw_xy(longitude, south),
+                    Point::new_raw_xy(longitude, north),
+                ],
+                false,
+            )?;
+            return Ok(Shape::LineString(LineSeq::from_proven(coordinates)));
+        }
+        if south == north {
+            let points = longitudes
+                .iter()
+                .map(|longitude| Point::new_raw_xy(longitude.get(), south))
+                .collect::<Vec<_>>();
+            let coordinates = certified_bound_coordinates(frame, &points, false)?;
+            return Ok(Shape::LineString(LineSeq::from_proven(coordinates)));
+        }
+
+        let mut points = Vec::with_capacity(longitudes.len().saturating_mul(2).saturating_add(1));
+        points.extend(
+            longitudes
+                .iter()
+                .map(|longitude| Point::new_raw_xy(longitude.get(), south)),
+        );
+        let end = longitudes
+            .last()
+            .expect("nonempty longitude realization has an endpoint")
+            .get();
+        points.push(Point::new_raw_xy(end, north));
+        points.extend(
+            longitudes
+                .iter()
+                .rev()
+                .skip(1)
+                .map(|longitude| Point::new_raw_xy(longitude.get(), north)),
+        );
+        let start = longitudes
+            .first()
+            .expect("nonempty longitude realization has a start")
+            .get();
+        points.push(Point::new_raw_xy(start, south));
+        let coordinates = certified_bound_coordinates(frame, &points, true)?;
+        Ok(Shape::Polygon(Polygon::new(
+            Ring::try_from_closed(coordinates)?,
+            Vec::new(),
+        )))
     }
 
     pub(crate) fn try_from_shape(
@@ -210,6 +263,71 @@ impl GeographicSupportEnvelope {
     }
 }
 
+fn realization_longitudes(
+    interval: CircularInterval,
+    axis: super::PeriodicAxis,
+) -> Vec<CanonicalLongitude> {
+    let seam = axis
+        .canonicalize(-axis.half_period())
+        .expect("the frame has a finite longitude seam");
+    let witnesses = [
+        axis.canonicalize(-axis.half_period() / 2.0)
+            .expect("quarter-turn witness is finite"),
+        axis.canonicalize(0.0).expect("zero longitude is finite"),
+        axis.canonicalize(axis.half_period() / 2.0)
+            .expect("quarter-turn witness is finite"),
+    ];
+    let [west_quarter, zero, east_quarter] = witnesses;
+    match interval {
+        CircularInterval::Empty => Vec::new(),
+        CircularInterval::Full => vec![seam, west_quarter, zero, east_quarter, seam],
+        CircularInterval::Arc { start, end } => {
+            let mut longitudes = Vec::with_capacity(6);
+            longitudes.push(start);
+            if start.get() < end.get() {
+                longitudes.extend(
+                    [west_quarter, zero, east_quarter]
+                        .into_iter()
+                        .filter(|witness| start.get() < witness.get() && witness.get() < end.get()),
+                );
+            } else if start.get() > end.get() {
+                longitudes.extend(
+                    [west_quarter, zero, east_quarter]
+                        .into_iter()
+                        .filter(|witness| start.get() < witness.get()),
+                );
+                if end != seam {
+                    longitudes.push(seam);
+                }
+                longitudes.extend(
+                    [west_quarter, zero, east_quarter]
+                        .into_iter()
+                        .filter(|witness| witness.get() < end.get()),
+                );
+            }
+            if start != end {
+                longitudes.push(end);
+            }
+            longitudes
+        },
+    }
+}
+
+fn certified_bound_coordinates(
+    frame: GeographicFrame,
+    points: &[Point],
+    closed_ring: bool,
+) -> crate::error::Result<CoordSeq> {
+    let coordinates = CoordSeq::try_from_points(points)?;
+    let mut budget = ExpansionBudget::new("envelope", "computed edges");
+    let Some(points) =
+        publish_certified_minor_chain(frame, &coordinates, closed_ring, &mut budget)?
+    else {
+        return Ok(coordinates);
+    };
+    CoordSeq::try_from_points(&points)
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct LatitudeBounds {
     south: Latitude,
@@ -274,8 +392,12 @@ impl CoordinateExtrema {
         let south = self.south?;
         let north = self.north?;
         Some(GeographicSupportEnvelope {
-            longitude: CircularInterval::try_arc(axis, self.west, sweep)
-                .expect("admitted canonical extrema form an arc"),
+            longitude: CircularInterval::from_endpoints(
+                axis.canonicalize(self.west)
+                    .expect("admitted extrema are finite longitudes"),
+                axis.canonicalize(self.east)
+                    .expect("admitted extrema are finite longitudes"),
+            ),
             latitude: Some(LatitudeBounds { south, north }),
         })
     }
@@ -766,12 +888,8 @@ fn append_coordinate_leaf_intervals(
     if matches!(shape, Shape::Point(_)) {
         intervals.reserve(1);
     }
-    let axis = frame.longitude();
     ScalarGeographicView::previously_admitted(frame, shape).for_each_coordinate(|coordinate| {
-        intervals.push(
-            CircularInterval::try_arc(axis, coordinate.longitude().get(), 0.0)
-                .expect("admitted longitude gives a canonical point interval"),
-        );
+        intervals.push(CircularInterval::point(coordinate.longitude()));
     });
 }
 
@@ -839,23 +957,10 @@ fn append_segment_chain_intervals(
     let axis = frame.longitude();
     intervals.reserve(chain.len().saturating_sub(1));
     for &[left, right] in chain.xs().array_windows::<2>() {
-        let step = axis
-            .chart_step(left, right)
+        let connection = axis
+            .chart_connection(left, right)
             .expect("the geographic view admitted every chain coordinate");
-        if step.is_circle() {
-            intervals.push(CircularInterval::Full);
-            continue;
-        }
-        let delta = step.delta(axis);
-        let (start, sweep) = if delta.is_sign_negative() {
-            (right, -delta)
-        } else {
-            (left, delta)
-        };
-        intervals.push(
-            CircularInterval::try_arc(axis, start, sweep)
-                .expect("a shortest edge is a valid circular arc"),
-        );
+        intervals.push(CircularInterval::from_chart_connection(connection));
     }
 }
 

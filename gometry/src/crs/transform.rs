@@ -348,7 +348,6 @@ fn map_geographic_conversion_error(error: GeographicError) -> crate::error::Erro
         )),
         GeographicError::NonFinite { .. } => GeometryErrorKind::NonFiniteCoordinate.into(),
         other @ (GeographicError::InvalidAngularFactor { .. }
-        | GeographicError::InvalidSweep { .. }
         | GeographicError::ChartTurnOverflow
         | GeographicError::AmbiguousFullTurnRing { .. }) => CrsError::invalid(other.to_string()),
     }
@@ -509,31 +508,12 @@ fn accumulate_horizontal(
         CircularInterval::Full
     } else {
         x.sort_unstable_by(f64::total_cmp);
-        let first = *x.first().expect("bounds sample plan is non-empty");
-        let last = *x.last().expect("bounds sample plan is non-empty");
-        let mut best_gap = -1.0;
-        let mut best_start = 0.0;
-        for &[left, right] in x.array_windows::<2>() {
-            let gap = right - left;
-            let start = right;
-            if gap > best_gap || (gap.total_cmp(&best_gap).is_eq() && start < best_start) {
-                best_gap = gap;
-                best_start = start;
-            }
-        }
-        let seam_next = axis.period() - last;
-        let seam_gap = seam_next + first;
-        if seam_gap > best_gap || (seam_gap.total_cmp(&best_gap).is_eq() && first < best_start) {
-            best_gap = seam_gap;
-            best_start = first;
-        }
-        CircularInterval::try_arc(axis, best_start, axis.period() - best_gap)
-            .map_err(|error| CrsError::invalid(error.to_string()))?
+        CircularInterval::cover_sorted_canonical_points(axis, x)
     };
     let (west, east) = match interval {
         CircularInterval::Full => (-axis.half_period(), axis.half_period()),
         CircularInterval::Arc { .. } => interval
-            .west_east(axis)
+            .west_east()
             .expect("non-empty arc has public endpoints"),
         CircularInterval::Empty => unreachable!("bounds sample plan is non-empty"),
     };

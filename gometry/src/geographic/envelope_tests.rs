@@ -1,6 +1,6 @@
 use super::*;
 use crate::geographic::{AngularFactor, GeographicError, LongitudeWindows};
-use crate::geometry::{CoordinateAxes, LineSeq, MultiMember, MultiPoint, Ring, SharedSlice};
+use crate::geometry::{CoordinateAxes, MultiMember, MultiPoint, SharedSlice};
 
 fn frame(radians_per_unit: f64) -> GeographicFrame {
     let unit = AngularFactor::try_new("test unit", radians_per_unit).unwrap();
@@ -77,6 +77,14 @@ fn assert_close(actual: f64, expected: f64, period: f64) {
     );
 }
 
+fn arc_width(period: f64, start: f64, end: f64) -> f64 {
+    if start <= end {
+        end - start
+    } else {
+        period - start + end
+    }
+}
+
 #[test]
 fn p20_support_is_the_same_crossing_interval_for_admitted_alias_rows() {
     for frame in native_frames() {
@@ -92,7 +100,7 @@ fn p20_support_is_the_same_crossing_interval_for_admitted_alias_rows() {
             ]);
             let envelope =
                 GeographicSupportEnvelope::try_from_shapes(frame, &[&left, &right]).unwrap();
-            let (west, east) = envelope.longitude.west_east(axis).unwrap();
+            let (west, east) = envelope.longitude.west_east().unwrap();
             assert_close(west, 170.0 * unit, period);
             assert_close(east, -170.0 * unit, period);
             let (south, north) = envelope.latitude_bounds().unwrap();
@@ -125,20 +133,24 @@ fn aggregate_uses_primitive_support_instead_of_expanded_row_hulls() {
         let second_row = multipoint(&[(half * 0.75, 0.0)]);
         let envelope =
             GeographicSupportEnvelope::try_from_shapes(frame, &[&first_row, &second_row]).unwrap();
-        let CircularInterval::Arc { sweep, .. } = envelope.longitude else {
+        let CircularInterval::Arc { start, end } = envelope.longitude else {
             panic!("quarter-turn point support has a bounded circular hull");
         };
+        assert_close(start.get(), -half / 2.0, axis.period());
+        assert_close(end.get(), -half, axis.period());
+        let sweep = arc_width(axis.period(), start.get(), end.get());
         assert_close(sweep, axis.period() * 0.75, axis.period());
 
         let first = GeographicSupportEnvelope::try_from_shape(frame, &first_row).unwrap();
         let second = GeographicSupportEnvelope::try_from_shape(frame, &second_row).unwrap();
         let CircularInterval::Arc {
-            sweep: expanded_sweep,
-            ..
+            start: expanded_start,
+            end: expanded_end,
         } = union_circular_intervals(axis, &[first.longitude, second.longitude])
         else {
             panic!("expanding the row hull remains less than full longitude");
         };
+        let expanded_sweep = arc_width(axis.period(), expanded_start.get(), expanded_end.get());
         assert!(
             expanded_sweep > sweep + axis.period() / 16.0,
             "row hulls widened {sweep} to {expanded_sweep}"
@@ -150,20 +162,23 @@ fn aggregate_uses_primitive_support_instead_of_expanded_row_hulls() {
     let second_row = multipoint(&[(180.0, 0.0)]);
     let envelope =
         GeographicSupportEnvelope::try_from_shapes(frame, &[&first_row, &second_row]).unwrap();
-    assert_eq!(envelope.longitude, CircularInterval::Arc {
-        start: frame.longitude().canonicalize(0.0).unwrap(),
-        sweep: 240.0,
-    });
+    assert_eq!(
+        envelope.longitude,
+        CircularInterval::from_endpoints(
+            frame.longitude().canonicalize(0.0).unwrap(),
+            frame.longitude().canonicalize(-120.0).unwrap(),
+        )
+    );
     let first = GeographicSupportEnvelope::try_from_shape(frame, &first_row).unwrap();
     let second = GeographicSupportEnvelope::try_from_shape(frame, &second_row).unwrap();
     // The row-hull union leaves two 60-degree gaps. Its canonical-start tie
     // selects the seam at -180 degrees, producing the deliberately wider 300.
     assert_eq!(
         union_circular_intervals(frame.longitude(), &[first.longitude, second.longitude]),
-        CircularInterval::Arc {
-            start: frame.longitude().canonicalize(-180.0).unwrap(),
-            sweep: 300.0,
-        }
+        CircularInterval::from_endpoints(
+            frame.longitude().canonicalize(-180.0).unwrap(),
+            frame.longitude().canonicalize(120.0).unwrap(),
+        )
     );
 }
 
@@ -194,11 +209,17 @@ fn half_turn_edges_retain_their_selected_closed_arc() {
             GeographicSupportEnvelope::try_from_shape(frame, &reversed_eastward).unwrap();
         assert_eq!(
             eastward_envelope.longitude,
-            CircularInterval::try_arc(axis, 0.0, half).unwrap()
+            CircularInterval::from_endpoints(
+                axis.canonicalize(0.0).unwrap(),
+                axis.canonicalize(half).unwrap()
+            )
         );
         assert_eq!(
             westward_envelope.longitude,
-            CircularInterval::try_arc(axis, -half, half).unwrap()
+            CircularInterval::from_endpoints(
+                axis.canonicalize(-half).unwrap(),
+                axis.canonicalize(0.0).unwrap()
+            )
         );
         assert_eq!(reversed_envelope.longitude, eastward_envelope.longitude);
     }
@@ -289,19 +310,19 @@ fn pole_points_and_wedges_do_not_imply_full_longitude() {
             let longitude = axis.half_period() / 3.0;
             let point = Shape::Point(Point::new(longitude, pole).unwrap());
             let point_envelope = GeographicSupportEnvelope::try_from_shape(frame, &point).unwrap();
-            assert_eq!(point_envelope.longitude, CircularInterval::Arc {
-                start: axis.canonicalize(longitude).unwrap(),
-                sweep: 0.0,
-            });
+            assert_eq!(
+                point_envelope.longitude,
+                CircularInterval::point(axis.canonicalize(longitude).unwrap())
+            );
             assert_eq!(point_envelope.latitude_bounds(), Some((pole, pole)));
 
             let meridian = line(&[longitude, longitude], &[sign * frame.pole() * 0.8, pole]);
             let meridian_envelope =
                 GeographicSupportEnvelope::try_from_shape(frame, &meridian).unwrap();
-            assert_eq!(meridian_envelope.longitude, CircularInterval::Arc {
-                start: axis.canonicalize(longitude).unwrap(),
-                sweep: 0.0,
-            });
+            assert_eq!(
+                meridian_envelope.longitude,
+                CircularInterval::point(axis.canonicalize(longitude).unwrap())
+            );
             assert_eq!(
                 meridian_envelope.latitude_bounds(),
                 Some((pole.min(pole * 0.8), pole.max(pole * 0.8)))
@@ -318,7 +339,7 @@ fn pole_points_and_wedges_do_not_imply_full_longitude() {
             let wedge_envelope = GeographicSupportEnvelope::try_from_shape(frame, &wedge).unwrap();
             assert_ne!(wedge_envelope.longitude, CircularInterval::Full);
             assert_eq!(
-                wedge_envelope.longitude.west_east(axis),
+                wedge_envelope.longitude.west_east(),
                 Some((0.0, axis.half_period() * 2.0 / 3.0))
             );
         }
@@ -333,7 +354,7 @@ fn mixed_orientation_seam_edges_merge_to_the_smallest_cover() {
         let westward = line(&[-175.0 * unit, 175.0 * unit], &[2.0 * unit, 3.0 * unit]);
         let envelope =
             GeographicSupportEnvelope::try_from_shapes(frame, &[&eastward, &westward]).unwrap();
-        let (west, east) = envelope.longitude.west_east(frame.longitude()).unwrap();
+        let (west, east) = envelope.longitude.west_east().unwrap();
         assert_close(west, 170.0 * unit, frame.longitude().period());
         assert_close(east, -170.0 * unit, frame.longitude().period());
         assert!(matches!(
@@ -349,11 +370,11 @@ fn ordinary_linear_fast_path_keeps_its_admitted_extrema() {
     let shape = line(&[1.0, 2.0, 3.0], &[4.0, 5.0, 6.0]);
     let envelope = GeographicSupportEnvelope::try_from_shape(frame, &shape).unwrap();
 
-    let CircularInterval::Arc { start, sweep } = envelope.longitude else {
+    let CircularInterval::Arc { start, end } = envelope.longitude else {
         panic!("a strict subhalf line has a bounded longitude arc");
     };
     assert_eq!(start.get(), 1.0);
-    assert_eq!(sweep, 2.0);
+    assert_eq!(end.get(), 3.0);
     assert_eq!(envelope.latitude_bounds(), Some((4.0, 6.0)));
 }
 
@@ -375,6 +396,61 @@ fn ordinary_support_realization_preserves_the_represented_extrema() {
     let support = GeographicSupportEnvelope::from_ordinary_bounds(frame, raw).unwrap();
     let realized = support.into_shape(frame).unwrap();
     assert_eq!(realized.bounds(), Some(raw));
+}
+
+#[test]
+fn wrapped_support_realization_copies_endpoints_and_uses_only_canonical_seam_vertices() {
+    let frame = native_frames()[0];
+    let shape = line(&[170.0, -170.0], &[-10.0, 10.0]);
+    let support = GeographicSupportEnvelope::try_from_shape(frame, &shape).unwrap();
+    let Shape::Polygon(polygon) = support.into_shape(frame).unwrap() else {
+        panic!("a wrapped two-dimensional support realizes as a polygon");
+    };
+    let ring = polygon
+        .rings()
+        .next()
+        .expect("polygon has an exterior ring");
+    assert_eq!(ring.coords().xs(), &[
+        170.0, -180.0, -170.0, -170.0, -180.0, 170.0, 170.0
+    ]);
+    assert!(
+        ring.coords()
+            .xs()
+            .iter()
+            .all(|&longitude| longitude != 180.0),
+        "the positive seam sentinel is not a computed vertex"
+    );
+}
+
+#[test]
+fn full_support_realization_uses_quarter_turns_and_repeats_the_first_record() {
+    let frame = native_frames()[0];
+    let period = frame.longitude().period();
+    let shape = line(&[0.0, period], &[-10.0, 10.0]);
+    let support = GeographicSupportEnvelope::try_from_shape(frame, &shape).unwrap();
+    assert_eq!(support.longitude, CircularInterval::Full);
+    let Shape::Polygon(polygon) = support.into_shape(frame).unwrap() else {
+        panic!("a full-longitude band realizes as a polygon");
+    };
+    let ring = polygon
+        .rings()
+        .next()
+        .expect("polygon has an exterior ring");
+    assert_eq!(ring.coords().xs(), &[
+        -180.0, -90.0, 0.0, 90.0, -180.0, -180.0, 90.0, 0.0, -90.0, -180.0, -180.0,
+    ]);
+    assert_eq!(
+        ring.coords().ys().first(),
+        ring.coords().ys().last(),
+        "ring closure repeats its first latitude"
+    );
+    assert!(
+        ring.coords()
+            .xs()
+            .iter()
+            .all(|&longitude| longitude != 180.0),
+        "the positive seam sentinel is not a computed vertex"
+    );
 }
 
 #[test]

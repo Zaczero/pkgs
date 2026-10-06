@@ -679,6 +679,54 @@ def test_geographic_point_envelope_canonicalizes_packed_and_mixed_rows() -> None
     ]
 
 
+def test_geographic_envelope_preserves_its_authentic_longitude_endpoints() -> None:
+    source = gm.LineString([(0.1, 1.0), (0.2, 2.0)], crs=4326)
+    expected = [
+        [0.1, 1.0],
+        [0.2, 1.0],
+        [0.2, 2.0],
+        [0.1, 2.0],
+        [0.1, 1.0],
+    ]
+    for envelope in (source.envelope(), gm.GeometryArray([source]).envelope()[0]):
+        np.testing.assert_array_equal(gm.get_coordinates(envelope), expected)
+
+
+def test_wrapped_geographic_envelope_uses_the_canonical_seam_vertex() -> None:
+    source = gm.LineString([(170.0, -10.0), (-170.0, 10.0)], crs=4326)
+    np.testing.assert_array_equal(
+        gm.get_coordinates(source.envelope()),
+        [
+            [170.0, -10.0],
+            [-180.0, -10.0],
+            [-170.0, -10.0],
+            [-170.0, 10.0],
+            [-180.0, 10.0],
+            [170.0, 10.0],
+            [170.0, -10.0],
+        ],
+    )
+
+
+def test_full_longitude_envelope_uses_canonical_quarter_turn_vertices() -> None:
+    source = gm.LineString([(0.0, -10.0), (360.0, 10.0)], crs=4326)
+    expected = [
+        [-180.0, -10.0],
+        [-90.0, -10.0],
+        [0.0, -10.0],
+        [90.0, -10.0],
+        [-180.0, -10.0],
+        [-180.0, 10.0],
+        [90.0, 10.0],
+        [0.0, 10.0],
+        [-90.0, 10.0],
+        [-180.0, 10.0],
+        [-180.0, -10.0],
+    ]
+    for envelope in (source.envelope(), gm.GeometryArray([source]).envelope()[0]):
+        np.testing.assert_array_equal(gm.get_coordinates(envelope), expected)
+
+
 def test_simplify_collapse_drops_degenerate_rings_not_invalid() -> None:
     sliver = 'POLYGON ((0 0, 4 0, 4 0.01, 0 0))'
     for method in ('dp', 'vw'):

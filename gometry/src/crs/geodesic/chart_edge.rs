@@ -303,14 +303,17 @@ impl ChartEdge {
         let interval = if start_latitude.abs() == 90.0 || end_latitude.abs() == 90.0 || circle {
             CircularInterval::Full
         } else {
-            let west = if longitude_delta < 0.0 {
-                end_longitude
+            let (west, east) = if longitude_delta < 0.0 {
+                (end_longitude, start_longitude)
             } else {
-                start_longitude
+                (start_longitude, end_longitude)
             };
-            let sweep = longitude_delta.abs() + 64.0 * f64::EPSILON * 360.0;
-            CircularInterval::try_arc(axis, west, sweep)
-                .expect("a chart edge spans less than half a longitude period")
+            CircularInterval::from_endpoints(
+                axis.canonicalize(west)
+                    .expect("chart-edge endpoint is an admitted longitude"),
+                axis.canonicalize(east)
+                    .expect("chart-edge endpoint is an admitted longitude"),
+            )
         };
         let (west, east) = match interval.windows(axis) {
             Some(
@@ -1513,6 +1516,21 @@ mod tests {
         let bounds = circle.bounds();
         assert_eq!(bounds.west.to_bits(), (-180.0_f64).to_bits());
         assert_eq!(bounds.east.to_bits(), 180.0_f64.to_bits());
+    }
+
+    #[test]
+    fn chart_edge_bounds_keep_authentic_longitude_endpoints() {
+        let start = 0.1;
+        let end = 0.2;
+        let edge = ChartEdge::new(
+            Point::new_raw_xy(start, 10.0),
+            Point::new_raw_xy(end, 10.0),
+            degrees(),
+        )
+        .unwrap();
+        let bounds = edge.bounds();
+        assert_eq!(bounds.west.to_bits(), start.to_bits());
+        assert_eq!(bounds.east.to_bits(), end.to_bits());
     }
 
     #[test]

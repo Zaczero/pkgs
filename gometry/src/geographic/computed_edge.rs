@@ -809,7 +809,6 @@ fn map_geographic_error(error: GeographicError) -> crate::error::Error {
             "latitude {value:e} is outside the geographic coordinate domain"
         )),
         other @ (GeographicError::InvalidAngularFactor { .. }
-        | GeographicError::InvalidSweep { .. }
         | GeographicError::ChartTurnOverflow
         | GeographicError::AmbiguousFullTurnRing { .. }) => {
             crate::crs::CrsError::invalid(other.to_string())

@@ -455,7 +455,7 @@ fn geographic_admission_validation_issue(
         GeographicError::ChartTurnOverflow => {
             return Err(crate::error::ResourceError::SizeOverflow.into());
         },
-        GeographicError::InvalidAngularFactor { .. } | GeographicError::InvalidSweep { .. } => {
+        GeographicError::InvalidAngularFactor { .. } => {
             return Err(geographic_admission_error(diagnostic));
         },
     };
