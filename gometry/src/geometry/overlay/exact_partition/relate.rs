@@ -839,3 +839,100 @@ impl ExactSourceInventory {
             .collect()
     }
 }
+
+#[cfg(test)]
+mod semantic_witness_tests {
+    use super::*;
+    use crate::geometry::{ExpansionBudget, OverlayOp};
+
+    #[test]
+    fn collapsed_shell_coowned_curve_keeps_point_interior() {
+        let mixed = crate::io::parse_wkt(
+            "GEOMETRYCOLLECTION (POLYGON ((0 0,2 0,4 0,0 0)), LINESTRING (0 0,1 0))",
+        )
+        .unwrap();
+        let point = crate::io::parse_wkt("POINT (1 0)").unwrap();
+        let inventory =
+            ExactSourceInventory::from_shapes_with_occurrences(&[&mixed, &point]).unwrap();
+        let mut budget = ExpansionBudget::new("relate", "co-owned collapsed curve parity");
+        let partition = inventory.partition(&mut budget).unwrap();
+
+        assert_eq!(inventory.relate(&partition).unwrap().text(), "0F1FF0FF2");
+    }
+
+    #[test]
+    fn difference_keeps_selected_span_endpoint_when_shared_node_is_excluded() {
+        let left = crate::io::parse_wkt("POLYGON ((0 0,2 0,2 2,0 2,0 0))").unwrap();
+        let right = crate::io::parse_wkt("POLYGON ((2 0.5,4 0.5,4 1.5,2 1.5,2 0.5))").unwrap();
+        let inventory = ExactSourceInventory::from_shapes(&[&left, &right]).unwrap();
+        let mut budget = ExpansionBudget::new("difference", "shared endpoint closure");
+        let partition = inventory.partition(&mut budget).unwrap();
+        let (topology, edges) = partition.local_topology().unwrap();
+        let global = partition.global_faces(&topology, &edges).unwrap();
+        let winding_rings = inventory.winding_source_rings();
+        let facts = inventory
+            .build_cell_facts(
+                &partition,
+                &topology,
+                &edges,
+                &global,
+                &winding_rings,
+                false,
+            )
+            .unwrap();
+        let cells = inventory.select_cells_from_facts(
+            &partition,
+            &topology,
+            &global,
+            OverlayOp::Difference,
+            &facts,
+        );
+        let node = (0..partition.node_count())
+            .map(|index| NodeId(u32::try_from(index).unwrap()))
+            .find(|&node| partition.nearest_xy(node) == crate::geometry::XY::new(2.0, 0.5))
+            .expect("the shared-edge endpoint is a stored source vertex");
+        assert!(partition.is_stored(node));
+
+        let line_boundaries = inventory
+            .node_source_flags(&partition, facts.point_membership.len())
+            .unwrap();
+        let left_location = inventory.node_location_and_area_from_facts(
+            0,
+            node,
+            &topology,
+            &edges,
+            &global,
+            &facts,
+            &line_boundaries,
+            &facts.point_membership,
+        );
+        let right_location = inventory.node_location_and_area_from_facts(
+            1,
+            node,
+            &topology,
+            &edges,
+            &global,
+            &facts,
+            &line_boundaries,
+            &facts.point_membership,
+        );
+        assert_eq!(left_location.location, Loc::Boundary);
+        assert_eq!(right_location.location, Loc::Boundary);
+        assert!(left_location.area && right_location.area);
+        assert!(
+            !(left_location.location != Loc::Exterior && right_location.location == Loc::Exterior),
+            "the shared node is excluded by A minus B"
+        );
+
+        let incident_span_is_selected = partition
+            .spans
+            .iter()
+            .enumerate()
+            .any(|(span, item)| (item.start == node || item.end == node) && cells.spans[span]);
+        assert!(incident_span_is_selected);
+        assert!(
+            cells.nodes[node.0 as usize],
+            "a selected incident span retains its endpoint cell"
+        );
+    }
+}

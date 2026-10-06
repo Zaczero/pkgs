@@ -584,6 +584,29 @@ def test_de9im_reviewer_correctness_cases_match_shapely() -> None:
     )
 
 
+def test_zero_length_line_relates_as_its_point_support() -> None:
+    shapely = pytest.importorskip('shapely')
+    line = gm.from_wkt('LINESTRING (2 2, 2 2)')
+    point = gm.Point(2, 2)
+    expected = '0FFFFFFF2'
+    oracle_line = shapely.from_wkt(line.to_wkt())
+    oracle_point = shapely.from_wkt(point.to_wkt())
+
+    assert shapely.relate(oracle_line, oracle_point) == expected
+    assert gm.relate(line, point) == expected
+    assert gm.relate(point, line) == expected
+
+
+def test_collapsed_shell_coowned_curve_keeps_point_interior() -> None:
+    mixed = gm.from_wkt(
+        'GEOMETRYCOLLECTION(POLYGON((0 0,2 0,4 0,0 0)),LINESTRING(0 0,1 0))'
+    )
+    point = gm.Point(1, 0)
+
+    assert gm.contains(mixed, point)
+    assert gm.relate(mixed, point) == '0F1FF0FF2'
+
+
 def test_oblique_polygon_line_contacts_match_shapely() -> None:
     shapely = pytest.importorskip('shapely')
     points = []
