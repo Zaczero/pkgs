@@ -94,6 +94,9 @@ impl SweepStatus for Vec<SweepEdge> {
 /// Points a leftward ray sweep reads: rounded coordinates, an order on each
 /// axis, and orientation.
 pub(in crate::geometry) trait RayPoints {
+    /// For either axis, strict order between rounded hints implies the same
+    /// order from `compare_axis`. Equal hints can cover distinct exact points;
+    /// constant hints are valid and disable hint-based rejection.
     fn rounded(&self, index: u32) -> XY;
     fn compare_axis(&self, left: u32, right: u32, axis: Axis) -> Result<Ordering>;
     fn orientation(&self, a: u32, b: u32, c: u32) -> Result<ExactSign>;
@@ -459,11 +462,21 @@ fn shoot_left_with_status<S: SweepStatus, R: RayPoints, E: Fn(usize) -> [u32; 2]
     let mut order = Vec::with_capacity(queries.len());
     order.extend(0..queries.len());
     points.sort_by_axis(&mut order, Axis::Y, |index| queries[index], |_, _| Ok(()))?;
+    let Some((&first_query, &last_query)) = order.first().zip(order.last()) else {
+        return Ok(Vec::new());
+    };
+    let min_query_y = points.rounded(queries[first_query]).y;
+    let max_query_y = points.rounded(queries[last_query]).y;
     // A horizontal or zero-length edge never crosses the sweep, nor does one
     // whose vertical extent contains no query height.
     let mut starts: Vec<SweepEdge> = Vec::new();
     for index in 0..edge_count {
         let [a, b] = edge(index);
+        let a_y = points.rounded(a).y;
+        let b_y = points.rounded(b).y;
+        if (a_y < min_query_y && b_y < min_query_y) || (a_y > max_query_y && b_y > max_query_y) {
+            continue;
+        }
         let (lower, upper) = match points.compare_axis(a, b, Axis::Y)? {
             Ordering::Less => (a, b),
             Ordering::Greater => (b, a),

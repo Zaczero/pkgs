@@ -681,7 +681,7 @@ fn arbitrary_exact_cycle_oracle_keeps_crossing_t_and_overlap_rejections() {
 }
 
 #[test]
-fn owner_ray_sort_uses_exact_order_when_a_finite_hint_is_unavailable() {
+fn owner_ray_sort_and_sweep_use_exact_order_when_a_hint_is_unavailable() {
     let zero = exact::ExactPoint::from_xy(XY::new(0.0, 0.0));
     let shallow = exact::ExactPoint::from_xy(XY::new(1.0, f64::from_bits(1)));
     let one = exact::ExactPoint::from_xy(XY::new(0.0, 1.0));
@@ -713,9 +713,9 @@ fn owner_ray_sort_uses_exact_order_when_a_finite_hint_is_unavailable() {
     let global_vertices = [VertexId(0), VertexId(1), VertexId(2)];
     let points = assembly::OwnerRayPoints::new(&exact_vertices, &global_vertices);
     assert_eq!(
-        RayPoints::rounded(&points, 0),
-        RayPoints::rounded(&points, 1),
-        "one unavailable hint makes the whole sort key constant"
+        [0_u32, 1, 2].map(|vertex| RayPoints::rounded(&points, vertex)),
+        [XY::new(0.0, 0.0); 3],
+        "one unavailable hint makes the whole key table constant"
     );
 
     let mut order = [0_u32, 1, 2];
@@ -728,6 +728,11 @@ fn owner_ray_sort_uses_exact_order_when_a_finite_hint_is_unavailable() {
     )
     .unwrap();
     assert_eq!(order, [2, 1, 0]);
+    assert_eq!(
+        crate::geometry::overlay::shoot_left(&points, 1, |_| [0, 2], &[1]).unwrap(),
+        [Some(0)],
+        "constant hints must leave exact leftward-ray admission active"
+    );
 }
 
 #[test]

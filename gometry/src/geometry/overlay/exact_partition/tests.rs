@@ -3408,27 +3408,35 @@ fn hole_hosts_scale_with_the_hole_count() {
     assert!(large < 6 * small, "{small} -> {large}");
 }
 
-/// A ray just above a horizontal span or a vertex touching the query's
-/// height passes over them: a point beside a horizontal span meets
-/// nothing, and one beside a V meets the V's rising right side, whose
-/// east face is the unbounded one either way.
+/// A leftward ray includes a lower endpoint, excludes an upper endpoint, and
+/// never crosses a horizontal span. The empty-query check uses nonempty edges.
 #[test]
-fn rays_pass_over_horizontal_spans_and_tangent_vertices() {
-    for (segments, contact) in [
-        (vec![seg(0.0, 0.0, 2.0, 0.0), seg(4.0, 0.0, 4.0, 0.0)], None),
+fn rays_handle_empty_queries_and_query_height_boundaries() {
+    for (segments, query_point, contact) in [
+        (
+            vec![seg(0.0, 0.0, 2.0, 0.0), seg(4.0, 0.0, 4.0, 0.0)],
+            XY::new(4.0, 0.0),
+            None,
+        ),
         (
             vec![
                 seg(0.0, 2.0, 2.0, 0.0),
                 seg(2.0, 0.0, 3.0, 2.0),
                 seg(4.0, 0.0, 4.0, 0.0),
             ],
+            XY::new(4.0, 0.0),
             Some((XY::new(2.0, 0.0), XY::new(3.0, 2.0))),
+        ),
+        (
+            vec![seg(0.0, 0.0, 2.0, 2.0), seg(4.0, 2.0, 4.0, 2.0)],
+            XY::new(4.0, 2.0),
+            None,
         ),
     ] {
         let case = run(&segments);
         let partition = case.partition();
         let (topology, edges) = partition.local_topology().unwrap();
-        let query = partition.stored_node(XY::new(4.0, 0.0)).unwrap();
+        let query = partition.stored_node(query_point).unwrap();
         let expected = contact.map(|(start, end)| {
             let (start, end) = (
                 partition.stored_node(start).unwrap(),
@@ -3440,7 +3448,25 @@ fn rays_pass_over_horizontal_spans_and_tangent_vertices() {
                 .position(|span| span.start == start && span.end == end)
                 .unwrap()
         });
-        assert_eq!(partition.left_contact(query), expected);
+        let ray_edge = |index: usize| {
+            let span = partition
+                .spans
+                .get(index)
+                .expect("ray edge index comes from the partition spans");
+            [span.start.0, span.end.0]
+        };
+        assert!(
+            shoot_left(&partition.points, partition.spans.len(), &ray_edge, &[])
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(
+            shoot_left(&partition.points, partition.spans.len(), &ray_edge, &[
+                query.0
+            ],)
+            .unwrap(),
+            [expected]
+        );
         let faces = partition.global_faces(&topology, &edges).unwrap();
         assert_eq!(
             faces.component_hosts[topology.component_of[query.0 as usize] as usize],
@@ -3508,6 +3534,45 @@ fn ray_status_matches_vector_at_crossing_height_and_preserves_query_order() {
     .unwrap();
     assert_eq!(tree, vector);
     assert_eq!(tree, [Some(expected), None]);
+}
+
+#[test]
+fn ray_sweep_keeps_crossings_with_equal_rounded_heights() {
+    let one = 1.0_f64;
+    let segments = [
+        seg(0.0, 0.0, 0.0, 2.0),
+        seg(-1.0, one.next_down(), 1.0, one),
+        seg(-1.0, one, 1.0, one.next_up()),
+    ];
+    let mut points = construction::PointArena::with_capacity(&segments, 3);
+    let below = points.push_crossing([0, 1]).unwrap();
+    let above = points.push_crossing([0, 2]).unwrap();
+    let query = points.push_stored(XY::new(2.0, 1.0)).unwrap();
+
+    assert_eq!(RayPoints::rounded(&points, below).y, 1.0);
+    assert_eq!(RayPoints::rounded(&points, above).y, 1.0);
+    assert_eq!(RayPoints::rounded(&points, query).y, 1.0);
+    let (lower, upper) = if RayPoints::compare_axis(&points, below, above, Axis::Y)
+        .unwrap()
+        .is_lt()
+    {
+        (below, above)
+    } else {
+        (above, below)
+    };
+    assert_eq!(
+        RayPoints::compare_axis(&points, lower, query, Axis::Y).unwrap(),
+        Ordering::Less
+    );
+    assert_eq!(
+        RayPoints::compare_axis(&points, query, upper, Axis::Y).unwrap(),
+        Ordering::Less
+    );
+
+    assert_eq!(
+        shoot_left(&points, 1, |_| [lower, upper], &[query]).unwrap(),
+        [Some(0)]
+    );
 }
 
 #[test]
