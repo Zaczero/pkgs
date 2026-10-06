@@ -89,6 +89,15 @@ pub(crate) fn unary_centroid(data: &PreparedPlan, ctx: &CachelessRowContext<'_>)
 
 /// Envelope kernel shared by the spine-routed free function.
 pub(crate) fn unary_envelope(data: &PreparedPlan, ctx: &CachelessRowContext<'_>) -> Result<Shape> {
+    if let TopologyDomain::Geographic(frame) = ctx.domain {
+        return crate::geographic::GeographicSupportEnvelope::try_from_shape_with_bounds(
+            frame,
+            data.shape(),
+            data.bounds(),
+        )
+        .map_err(crate::error::Error::from)?
+        .into_shape(frame);
+    }
     let output = data.bounds().map_or_else(
         || Ok(Shape::empty_polygon()),
         crate::geometry::bounds_to_shape,
@@ -919,14 +928,11 @@ pub(crate) fn unary_bounds(
             if bounds.is_some_and(|bounds| frame.bounds_certify_ordinary_support(bounds)) {
                 return Ok(bounds);
             }
-            if crate::geometry::geographic_crossing(ctx.domain, data) {
-                Ok(crate::geometry::geographic_crossing_bounds_in_frame(
-                    data.shape(),
-                    frame,
-                ))
-            } else {
-                Ok(bounds)
-            }
+            Ok(
+                crate::geographic::GeographicSupportEnvelope::try_from_shape(frame, data.shape())
+                    .ok()
+                    .and_then(|support| support.bounds(frame)),
+            )
         },
     }
 }

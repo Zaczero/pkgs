@@ -542,8 +542,9 @@ impl GeographicFrame {
     }
 
     pub(crate) fn longitude_bounds_certify_no_seam(self, minx: f64, maxx: f64) -> bool {
-        let half = self.longitude.half_period();
-        minx > -half && maxx < half && maxx - minx < half
+        let axis = self.longitude;
+        let bound = axis.ordinary_longitude_bound();
+        minx > -bound && maxx < bound && maxx - minx < axis.half_period()
     }
 
     /// Whether raw extrema prove a geometry stays in one open, non-polar

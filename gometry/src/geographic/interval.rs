@@ -175,6 +175,9 @@ fn interval_segment_count(axis: PeriodicAxis, interval: CircularInterval) -> usi
 }
 
 fn arc_endpoint(axis: PeriodicAxis, start: CanonicalLongitude, sweep: f64) -> CanonicalLongitude {
+    if sweep == 0.0 {
+        return start;
+    }
     let distance_to_seam = axis.half_period() - start.get();
     let endpoint = if sweep < distance_to_seam {
         axis.half_period() - (distance_to_seam - sweep)

@@ -20,7 +20,9 @@ use crate::boundary::metadata;
 use crate::crs::frame;
 use crate::crs::frame::FrameError;
 use crate::geometry::storage::admission::{CheckedRingWindow, RingWindowError};
-use crate::geometry::storage::kernels::total_bounds_from_columns;
+use crate::geometry::storage::kernels::{
+    geographic_total_bounds_from_columns, total_bounds_from_columns,
+};
 use crate::geometry::storage::replacement::CoordinateReplacement;
 use crate::geometry::storage::{GeometryArrayStorage, PackedStorage, physical_row};
 use crate::geometry::{
@@ -967,80 +969,57 @@ impl PyGeometryArray {
     ) -> crate::error::Result<Option<(f64, f64, f64, f64)>> {
         let domain = crate::geometry::topology_domain(&self.frame).ok();
         let element_bounds = self.existing_element_bounds();
-        if let Some(crate::geometry::TopologyDomain::Geographic(frame)) = domain
-            && !matches!(
-                self.storage(),
-                GeometryArrayStorage::Packed(PackedStorage::Points { .. })
-            )
-        {
-            let mixed = matches!(self.storage(), GeometryArrayStorage::Mixed(_));
-            if mixed || element_bounds.is_some() {
-                // Mixed storage has no published element-bounds cache; this
-                // is its required raw-extrema fold, fused with seam admission.
-                let mut total: Option<Bounds> = None;
-                let mut crossing = false;
-                let row_operation = self.row_operation();
-                for row in row_operation.present_rows() {
-                    let logical = row.logical();
-                    let shape_row = row.row();
-                    let bounds = element_bounds.as_ref().map_or_else(
-                        || shape_row.quick_bounds(),
-                        |bounds| bounds.get(logical).copied().flatten(),
-                    );
-                    let Some(bounds) = bounds else {
-                        continue;
-                    };
-                    match &mut total {
-                        Some(current) => current.include_bounds(bounds),
-                        None => total = Some(bounds),
-                    }
-                    if frame.bounds_certify_ordinary_support(bounds) {
-                        continue;
-                    }
-                    if shape_row.with_shape(|shape| {
-                        crate::geometry::crosses_antimeridian_in_frame(shape, frame)
-                    })? {
-                        crossing = true;
-                        break;
-                    }
-                }
-                if crossing {
-                    let shapes = self
-                        .present_shape_rows()
-                        .map(|row| row.map(|(_, shape)| shape))
-                        .collect::<crate::error::Result<Vec<_>>>()?;
-                    return Ok(
-                        crate::geometry::geographic_crossing_bounds_for_shapes_in_frame(
-                            shapes, frame,
-                        )
-                        .map(Bounds::into_tuple),
-                    );
-                }
-                return Ok(total.map(Bounds::into_tuple));
+        if let Some(crate::geometry::TopologyDomain::Geographic(frame)) = domain {
+            if element_bounds.is_none()
+                && let Ok(Some(bounds)) = Python::attach(|py| {
+                    self.reduce_packed_columns_detached(py, |columns| {
+                        Ok(geographic_total_bounds_from_columns(&columns, frame)?)
+                    })
+                })
+            {
+                return Ok(bounds.map(Bounds::into_tuple));
             }
-
-            // Only a crossing row needs the shapes; scan for one first so the
-            // uncached packed case leaves the columnar fold below its inputs.
-            let mut crossing = false;
             let row_operation = self.row_operation();
+            let mut raw: Option<Bounds> = None;
+            let mut ordinary = true;
             for row in row_operation.present_rows() {
-                if row.row().with_shape(|shape| {
-                    crate::geometry::crosses_antimeridian_in_frame(shape, frame)
-                })? {
-                    crossing = true;
+                let bounds = element_bounds.as_ref().map_or_else(
+                    || row.row().quick_bounds(),
+                    |bounds| bounds.get(row.logical()).copied().flatten(),
+                );
+                let Some(bounds) = bounds else {
+                    continue;
+                };
+                match &mut raw {
+                    Some(total) => total.include_bounds(bounds),
+                    None => raw = Some(bounds),
+                }
+                if !raw.is_some_and(|bounds| frame.bounds_certify_ordinary_support(bounds)) {
+                    ordinary = false;
                     break;
                 }
             }
-            if crossing {
-                let shapes = self
-                    .present_shape_rows()
-                    .map(|row| row.map(|(_, shape)| shape))
-                    .collect::<crate::error::Result<Vec<_>>>()?;
-                return Ok(
-                    crate::geometry::geographic_crossing_bounds_for_shapes_in_frame(shapes, frame)
-                        .map(Bounds::into_tuple),
-                );
+            if ordinary {
+                return Ok(raw.map(Bounds::into_tuple));
             }
+            let shapes = row_operation
+                .present_rows()
+                .map(|row| {
+                    use crate::geometry::storage::ShapeRow;
+                    Ok(match row.row() {
+                        ShapeRow::Handle(plan) => std::borrow::Cow::Borrowed(plan.shape()),
+                        ShapeRow::Shape(shape) => std::borrow::Cow::Borrowed(shape),
+                        ShapeRow::Point(point) => std::borrow::Cow::Owned(Shape::Point(point)),
+                        ShapeRow::Packed(row) => std::borrow::Cow::Owned(row.to_shape()?),
+                    })
+                })
+                .collect::<crate::error::Result<Vec<_>>>()?;
+            return Ok(
+                crate::geographic::GeographicSupportEnvelope::try_from_shapes(frame, &shapes)
+                    .ok()
+                    .and_then(|support| support.bounds(frame))
+                    .map(Bounds::into_tuple),
+            );
         }
         if let Some(bounds) = element_bounds {
             return Ok(bounds
@@ -1331,10 +1310,12 @@ mod geographic_total_bounds_tests {
             .expect("mixed alias array");
         assert_eq!(
             alias_array.compute_total_bounds().expect("total bounds"),
-            crate::geometry::geographic_crossing_bounds_for_shapes_in_frame(
-                [&alias, &point],
+            crate::geographic::GeographicSupportEnvelope::try_from_shapes(
                 crate::geographic::GeographicFrame::crs84(),
+                &[&alias, &point],
             )
+            .ok()
+            .and_then(|support| support.bounds(crate::geographic::GeographicFrame::crs84()))
             .map(Bounds::into_tuple)
         );
     }

@@ -946,41 +946,10 @@ pub(crate) fn unary_antimeridian_centroid(shape: &Shape, domain: TopologyDomain)
 
 /// Geographic support bounds from the shared periodic envelope owner.
 pub(crate) fn geographic_crossing_bounds(shape: &Shape) -> Option<Bounds> {
-    geographic_crossing_bounds_in_frame(shape, GeographicFrame::crs84())
-}
-
-pub(crate) fn geographic_crossing_bounds_in_frame(
-    shape: &Shape,
-    frame: GeographicFrame,
-) -> Option<Bounds> {
-    let envelope =
-        GeographicSupportEnvelope::try_from_shapes(frame, std::slice::from_ref(shape)).ok()?;
-    geographic_support_bounds(envelope, frame)
-}
-
-pub(crate) fn geographic_crossing_bounds_for_shapes_in_frame(
-    shapes: impl IntoIterator<Item = impl std::borrow::Borrow<Shape>>,
-    frame: GeographicFrame,
-) -> Option<Bounds> {
-    let shapes = shapes.into_iter().collect::<Vec<_>>();
-    let envelope = GeographicSupportEnvelope::try_from_shapes(frame, &shapes).ok()?;
-    geographic_support_bounds(envelope, frame)
-}
-
-fn geographic_support_bounds(
-    envelope: GeographicSupportEnvelope,
-    frame: GeographicFrame,
-) -> Option<Bounds> {
-    let (south, north) = envelope.latitude_bounds()?;
-    let (west, east) = match envelope.longitude.windows(frame.longitude())? {
-        crate::geographic::LongitudeWindows::Full => (
-            -frame.longitude().half_period(),
-            frame.longitude().half_period(),
-        ),
-        crate::geographic::LongitudeWindows::One([west, east])
-        | crate::geographic::LongitudeWindows::Two([west, _], [_, east]) => (west, east),
-    };
-    Some(Bounds::new_raw(west, south, east, north))
+    let frame = GeographicFrame::crs84();
+    GeographicSupportEnvelope::try_from_shape(frame, shape)
+        .ok()
+        .and_then(|support| support.bounds(frame))
 }
 
 #[cfg(test)]

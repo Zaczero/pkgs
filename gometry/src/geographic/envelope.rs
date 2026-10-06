@@ -7,7 +7,7 @@ use super::{
     union_circular_intervals,
 };
 use crate::collections::HashMap;
-use crate::geometry::{CoordSeq, Polygon, Shape, ShapeOwnerKey};
+use crate::geometry::{Bounds, CoordSeq, Point, Polygon, Shape, ShapeOwnerKey};
 
 /// Periodic longitude coverage and occupied latitude extrema in one native frame.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -17,11 +17,119 @@ pub(crate) struct GeographicSupportEnvelope {
 }
 
 impl GeographicSupportEnvelope {
+    pub(crate) fn try_from_point(
+        frame: GeographicFrame,
+        point: Point,
+    ) -> Result<Self, GeographicAdmissionError> {
+        let shape = Shape::Point(point);
+        let view = ScalarGeographicView::try_new(frame, &shape)
+            .map_err(GeographicAdmissionError::Geographic)?;
+        let mut envelope = None;
+        view.for_each_coordinate(|coordinate| {
+            envelope = Some(Self {
+                longitude: CircularInterval::Arc {
+                    start: coordinate.longitude(),
+                    sweep: 0.0,
+                },
+                latitude: Some(LatitudeBounds {
+                    south: coordinate.latitude(),
+                    north: coordinate.latitude(),
+                }),
+            });
+        });
+        Ok(envelope.expect("an admitted point supplies one coordinate"))
+    }
+
+    pub(crate) fn try_from_points(
+        frame: GeographicFrame,
+        points: impl Iterator<Item = Point> + Clone,
+    ) -> Result<Self, GeographicAdmissionError> {
+        let mut extrema = CoordinateExtrema::empty();
+        for point in points.clone() {
+            let shape = Shape::Point(point);
+            let view = ScalarGeographicView::try_new(frame, &shape)
+                .map_err(GeographicAdmissionError::Geographic)?;
+            view.for_each_coordinate(|coordinate| extrema.include(coordinate));
+        }
+        if let Some(envelope) = extrema.linear_envelope(frame) {
+            return Ok(envelope);
+        }
+        let mut intervals = Vec::with_capacity(points.size_hint().0);
+        for point in points {
+            append_coordinate_leaf_intervals(&Shape::Point(point), frame, &mut intervals);
+        }
+        Ok(Self {
+            longitude: union_circular_intervals(frame.longitude(), &intervals),
+            latitude: extrema.latitude_bounds(),
+        })
+    }
+
+    pub(crate) fn try_from_shape_with_bounds(
+        frame: GeographicFrame,
+        shape: &Shape,
+        raw_bounds: Option<Bounds>,
+    ) -> Result<Self, GeographicAdmissionError> {
+        if let Some(envelope) =
+            raw_bounds.and_then(|bounds| Self::from_ordinary_bounds(frame, bounds))
+        {
+            return Ok(envelope);
+        }
+        Self::try_from_shape(frame, shape)
+    }
+
+    pub(crate) fn from_ordinary_bounds(frame: GeographicFrame, bounds: Bounds) -> Option<Self> {
+        if !frame.bounds_certify_ordinary_support(bounds) {
+            return None;
+        }
+        Some(Self {
+            longitude: CircularInterval::try_arc(
+                frame.longitude(),
+                bounds.minx(),
+                bounds.maxx() - bounds.minx(),
+            )
+            .expect("the ordinary support certificate proves a canonical subhalf arc"),
+            latitude: Some(LatitudeBounds {
+                south: Latitude::from_admitted(frame, bounds.miny()),
+                north: Latitude::from_admitted(frame, bounds.maxy()),
+            }),
+        })
+    }
+
+    pub(crate) fn bounds(self, frame: GeographicFrame) -> Option<Bounds> {
+        let (south, north) = self.latitude_bounds()?;
+        let axis = frame.longitude();
+        let (west, east) = match self.longitude {
+            CircularInterval::Empty => return None,
+            CircularInterval::Full => (-axis.half_period(), axis.half_period()),
+            arc @ CircularInterval::Arc { .. } => arc.west_east(axis)?,
+        };
+        Some(Bounds::new_raw(west, south, east, north))
+    }
+
+    pub(crate) fn into_shape(self, frame: GeographicFrame) -> crate::error::Result<Shape> {
+        let Some((south, north)) = self.latitude_bounds() else {
+            return Ok(Shape::empty_polygon());
+        };
+        let axis = frame.longitude();
+        let (west, east) = match self.longitude {
+            CircularInterval::Empty => return Ok(Shape::empty_polygon()),
+            CircularInterval::Full => (-axis.half_period(), axis.half_period()),
+            CircularInterval::Arc { start, sweep } => (start.get(), start.get() + sweep),
+        };
+        crate::geometry::geographic_bounds_to_shape(
+            Bounds::new_raw(west, south, east, north),
+            frame,
+        )
+    }
+
     pub(crate) fn try_from_shape(
         frame: GeographicFrame,
         shape: &Shape,
     ) -> Result<Self, GeographicAdmissionError> {
-        Self::try_from_shapes(frame, std::slice::from_ref(shape))
+        match shape {
+            Shape::Point(point) => Self::try_from_point(frame, *point),
+            _ => Self::try_from_shapes(frame, std::slice::from_ref(shape)),
+        }
     }
 
     /// Aggregate primitive support across all shapes before choosing a

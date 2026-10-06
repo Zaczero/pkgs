@@ -256,6 +256,17 @@ pub(crate) enum GeographicAdmissionError {
     Resource(crate::error::Error),
 }
 
+impl From<GeographicAdmissionError> for crate::error::Error {
+    fn from(error: GeographicAdmissionError) -> Self {
+        match error {
+            GeographicAdmissionError::Geographic(diagnostic) => {
+                super::lonlat::geographic_admission_error(&diagnostic)
+            },
+            GeographicAdmissionError::Resource(error) => error,
+        }
+    }
+}
+
 impl GeographicDiagnostic {
     fn boxed(location: GeographicLocation, native: XY, source: GeographicError) -> Box<Self> {
         Box::new(Self {

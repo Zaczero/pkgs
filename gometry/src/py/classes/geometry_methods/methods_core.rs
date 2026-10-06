@@ -119,16 +119,22 @@ impl PyGeometry {
     /// tuple or None
     #[getter]
     pub fn bounds(&self) -> Option<(f64, f64, f64, f64)> {
-        if let Ok(domain) = crate::geometry::topology_domain(&self.frame)
-            && crate::geometry::geographic_crossing(domain, &self.shape)
+        let raw = self.shape.bounds();
+        if let Ok(crate::geometry::TopologyDomain::Geographic(frame)) =
+            crate::geometry::topology_domain(&self.frame)
         {
-            let crate::geometry::TopologyDomain::Geographic(frame) = domain else {
-                unreachable!("geographic crossing requires a geographic domain")
-            };
-            return crate::geometry::geographic_crossing_bounds_in_frame(self.shape.shape(), frame)
-                .map(Bounds::into_tuple);
+            if raw.is_some_and(|bounds| frame.bounds_certify_ordinary_support(bounds)) {
+                return raw.map(Bounds::into_tuple);
+            }
+            return crate::geographic::GeographicSupportEnvelope::try_from_shape(
+                frame,
+                self.shape.shape(),
+            )
+            .ok()
+            .and_then(|support| support.bounds(frame))
+            .map(Bounds::into_tuple);
         }
-        self.shape.bounds().map(Bounds::into_tuple)
+        raw.map(Bounds::into_tuple)
     }
     /// Coordinate view over this geometry's vertices (storage-shaped index /
     /// cursor iteration — not an eagerly materialized vertex list).

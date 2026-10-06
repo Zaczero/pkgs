@@ -416,18 +416,22 @@ impl PyGeometryArray {
     }
 
     pub(crate) fn envelope_unary_packed(&self) -> PyResult<Self> {
-        if let Some(points) = self.packed_points_xy()? {
-            return Ok(points);
-        }
         if let crate::geometry::TopologyDomain::Geographic(frame) =
             crate::geometry::topology_domain(&self.frame)?
         {
             return self.map_shapes(|shape| {
-                let envelope = shape.envelope()?;
-                Ok(crate::geometry::publish_computed_point_or_raw_shape(
-                    &envelope, frame, "envelope",
-                )?)
+                crate::geographic::GeographicSupportEnvelope::try_from_shape_with_bounds(
+                    frame,
+                    shape,
+                    shape.bounds(),
+                )
+                .map_err(crate::error::Error::from)?
+                .into_shape(frame)
+                .map_err(Into::into)
             });
+        }
+        if let Some(points) = self.packed_points_xy()? {
+            return Ok(points);
         }
         // All-rectangular fast path: when every row's box is NON-degenerate
         // (`bounds_to_shape` would make a `Polygon`, not a `Point`/`LineString`),

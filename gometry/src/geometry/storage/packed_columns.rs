@@ -126,6 +126,7 @@ impl<'a> PointRows<'a> {
     }
 }
 
+#[derive(Clone)]
 pub(crate) struct PointRowCursor<'a> {
     logical: usize,
     remaining: usize,

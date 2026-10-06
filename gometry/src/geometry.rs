@@ -92,12 +92,11 @@ pub(crate) use antimeridian::{
     DerivedPointStrategy, GeographicDerivedPointScan, GeographicTopologyRoute, UnwrapChartError,
     antimeridian_frame, chain_crosses_antimeridian, classify_geographic_chart,
     classify_geographic_validity_chart, crosses_antimeridian_in_frame, faithful_geographic_chain,
-    geographic_crossing, geographic_crossing_bounds,
-    geographic_crossing_bounds_for_shapes_in_frame, geographic_crossing_bounds_in_frame,
-    geographic_topology_route, is_ring_data_in_frame, is_simple_data_in_frame,
-    repair_data_in_frame, repair_shape_in_frame, self_intersections_data_in_frame, topology_domain,
-    unary_antimeridian_centroid, unary_antimeridian_derived, unwrap_contact_chart,
-    unwrap_coordinates, validate_data_in_frame, validate_shape_in_frame,
+    geographic_crossing_bounds, geographic_topology_route, is_ring_data_in_frame,
+    is_simple_data_in_frame, repair_data_in_frame, repair_shape_in_frame,
+    self_intersections_data_in_frame, topology_domain, unary_antimeridian_centroid,
+    unary_antimeridian_derived, unwrap_contact_chart, unwrap_coordinates, validate_data_in_frame,
+    validate_shape_in_frame,
 };
 pub(crate) use boundary::boundary;
 mod computed_shape;

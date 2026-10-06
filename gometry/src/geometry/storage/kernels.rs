@@ -887,12 +887,47 @@ fn geographic_bounds_values_from_columns_impl<const MASKED: bool>(
     frame: crate::geographic::GeographicFrame,
     missing: Option<&ValidityMask>,
 ) -> Result<Vec<f64>> {
-    if let PackedColumns::Points(_) = columns {
-        return Ok(if MASKED {
-            bounds_values_from_columns_masked(columns, missing)
+    if let PackedColumns::Points(points) = columns {
+        let point_bounds = |x, y| {
+            crate::geographic::GeographicSupportEnvelope::try_from_point(
+                frame,
+                Point::new_raw_xy(x, y),
+            )
+            .ok()
+            .and_then(|support| support.bounds(frame))
+            .map_or([x, y, x, y], Bounds::into_array)
+        };
+        let mut values = Vec::with_capacity(points.len());
+        if let Some(XyColumns { xs, ys }) = points.contiguous_xy() {
+            let bound = frame.longitude().ordinary_longitude_bound();
+            let pole = frame.pole();
+            let (xs, tail_x) = xs.as_chunks::<4>();
+            let (ys, tail_y) = ys.as_chunks::<4>();
+            for (xs, ys) in xs.iter().zip(ys) {
+                let ordinary =
+                    xs.iter().all(|x| x.abs() < bound) && ys.iter().all(|y| y.abs() < pole);
+                let rows = std::array::from_fn::<_, 4, _>(|index| {
+                    let (x, y) = (xs[index], ys[index]);
+                    if ordinary {
+                        [x, y, x, y]
+                    } else {
+                        point_bounds(x, y)
+                    }
+                });
+                values.extend_from_slice(&rows);
+            }
+            for (&x, &y) in tail_x.iter().zip(tail_y) {
+                values.push(point_bounds(x, y));
+            }
         } else {
-            bounds_values_from_columns(columns)
-        });
+            for (_, physical) in points.rows().cursor() {
+                values.push(physical.map_or([f64::NAN; 4], |physical| {
+                    let (x, y) = points.physical_xy_at(physical);
+                    point_bounds(x, y)
+                }));
+            }
+        }
+        return Ok(values.into_flattened());
     }
     let mut values = Vec::with_capacity(columns.row_count());
     match columns {
@@ -920,12 +955,10 @@ fn geographic_bounds_values_from_columns_impl<const MASKED: bool>(
                         coords,
                         CoordWindow::from_range(window, coords.len()),
                     ));
-                    if crate::geometry::crosses_antimeridian_in_frame(&shape, frame) {
-                        crate::geometry::geographic_crossing_bounds_in_frame(&shape, frame)
-                            .map_or([f64::NAN; 4], Bounds::into_array)
-                    } else {
-                        raw_bounds
-                    }
+                    crate::geographic::GeographicSupportEnvelope::try_from_shape(frame, &shape)
+                        .ok()
+                        .and_then(|support| support.bounds(frame))
+                        .map_or([f64::NAN; 4], Bounds::into_array)
                 };
                 values.push(bounds);
             }
@@ -944,12 +977,10 @@ fn geographic_bounds_values_from_columns_impl<const MASKED: bool>(
                         raw_bounds
                     } else {
                         let shape = packed_row.to_shape()?;
-                        if crate::geometry::crosses_antimeridian_in_frame(&shape, frame) {
-                            crate::geometry::geographic_crossing_bounds_in_frame(&shape, frame)
-                                .map_or([f64::NAN; 4], Bounds::into_array)
-                        } else {
-                            raw_bounds
-                        }
+                        crate::geographic::GeographicSupportEnvelope::try_from_shape(frame, &shape)
+                            .ok()
+                            .and_then(|support| support.bounds(frame))
+                            .map_or([f64::NAN; 4], Bounds::into_array)
                     }
                 } else {
                     [f64::NAN; 4]
@@ -999,6 +1030,36 @@ pub(crate) fn total_bounds_from_columns(columns: &PackedColumns<'_>) -> Option<B
         }
     });
     total
+}
+
+pub(crate) fn geographic_total_bounds_from_columns(
+    columns: &PackedColumns<'_>,
+    frame: crate::geographic::GeographicFrame,
+) -> Result<Option<Bounds>> {
+    let raw = total_bounds_from_columns(columns);
+    if raw.is_none() || raw.is_some_and(|bounds| frame.bounds_certify_ordinary_support(bounds)) {
+        return Ok(raw);
+    }
+    let support = match columns {
+        PackedColumns::Points(points) => {
+            let source = points.rows().cursor().filter_map(|(_, physical)| {
+                physical.map(|physical| {
+                    let (x, y) = points.physical_xy_at(physical);
+                    Point::new_raw_xy(x, y)
+                })
+            });
+            crate::geographic::GeographicSupportEnvelope::try_from_points(frame, source)
+        },
+        PackedColumns::Lines(_) | PackedColumns::Polygons(_) => {
+            let shapes = columns
+                .collect_rows::<_, Vec<_>>(|row| row.map(PackedRow::to_shape))
+                .into_iter()
+                .flatten()
+                .collect::<Result<Vec<_>>>()?;
+            crate::geographic::GeographicSupportEnvelope::try_from_shapes(frame, &shapes)
+        },
+    };
+    Ok(support.ok().and_then(|support| support.bounds(frame)))
 }
 
 pub(crate) fn subdivide_line_columns(

@@ -657,6 +657,28 @@ def test_envelope_and_mrr_empty_are_typed() -> None:
     assert arr.minimum_rotated_rectangle()[0].to_wkt() == 'POLYGON EMPTY'
 
 
+def test_geographic_point_envelope_canonicalizes_packed_and_mixed_rows() -> None:
+    point = gm.Point(450.0, 3.0, crs=4326)
+    assert point.envelope().to_wkt() == 'POINT (90 3)'
+    dense = gm.points([450.0, -270.0], [3.0, 3.0], crs=4326)
+    assert [shape.to_wkt() for shape in dense.envelope()] == [
+        'POINT (90 3)',
+        'POINT (90 3)',
+    ]
+    packed = gm.GeometryArray([point, None, point], crs=4326)
+    for selected in (packed, packed[[2, 1, 0]], packed[:2]):
+        result = selected.envelope()
+        assert result[0].to_wkt() == 'POINT (90 3)'
+        assert result[1] is None
+    mixed = gm.GeometryArray(
+        [point, gm.LineString([(450.0, 3.0), (450.0, 4.0)])], crs=4326
+    )
+    assert [shape.to_wkt() for shape in mixed.envelope()] == [
+        'POINT (90 3)',
+        'LINESTRING (90 3, 90 4)',
+    ]
+
+
 def test_simplify_collapse_drops_degenerate_rings_not_invalid() -> None:
     sliver = 'POLYGON ((0 0, 4 0, 4 0.01, 0 0))'
     for method in ('dp', 'vw'):

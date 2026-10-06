@@ -1,6 +1,6 @@
 use super::*;
 use crate::geographic::{AngularFactor, GeographicError, LongitudeWindows};
-use crate::geometry::{CoordinateAxes, LineSeq, MultiMember, MultiPoint, Point, Ring, SharedSlice};
+use crate::geometry::{CoordinateAxes, LineSeq, MultiMember, MultiPoint, Ring, SharedSlice};
 
 fn frame(radians_per_unit: f64) -> GeographicFrame {
     let unit = AngularFactor::try_new("test unit", radians_per_unit).unwrap();
@@ -369,11 +369,22 @@ fn ordinary_linear_fast_path_does_not_allocate() {
 }
 
 #[test]
+fn ordinary_support_realization_preserves_the_represented_extrema() {
+    let frame = native_frames()[0];
+    let raw = crate::geometry::Bounds::new_raw(-0.1, 1.0, 0.2, 2.0);
+    let support = GeographicSupportEnvelope::from_ordinary_bounds(frame, raw).unwrap();
+    let realized = support.into_shape(frame).unwrap();
+    assert_eq!(realized.bounds(), Some(raw));
+}
+
+#[test]
 fn scalar_support_bounds_do_not_allocate_adapter_storage() {
     let frame = native_frames()[0];
     let shape = line(&[1.0, 2.0, 3.0], &[4.0, 5.0, 6.0]);
     let (bounds, allocations) = crate::test_support::allocation_count(|| {
-        crate::geometry::geographic_crossing_bounds_in_frame(&shape, frame)
+        GeographicSupportEnvelope::try_from_shape(frame, &shape)
+            .ok()
+            .and_then(|support| support.bounds(frame))
     });
     assert_eq!(
         bounds,
@@ -390,7 +401,9 @@ fn aggregate_support_bounds_use_at_most_one_handle_allocation() {
         line(&[3.0, 4.0], &[6.0, 7.0]),
     ];
     let (bounds, allocations) = crate::test_support::allocation_count(|| {
-        crate::geometry::geographic_crossing_bounds_for_shapes_in_frame(shapes.iter(), frame)
+        GeographicSupportEnvelope::try_from_shapes(frame, &shapes)
+            .ok()
+            .and_then(|support| support.bounds(frame))
     });
     assert_eq!(
         bounds,
@@ -445,12 +458,16 @@ fn scalar_and_owned_aggregate_bounds_keep_seam_band_pole_and_shared_support() {
         ),
     ] {
         assert_eq!(
-            crate::geometry::geographic_crossing_bounds_in_frame(&shape, frame),
+            GeographicSupportEnvelope::try_from_shape(frame, &shape)
+                .ok()
+                .and_then(|support| support.bounds(frame)),
             Some(expected),
             "{name} scalar bounds"
         );
         assert_eq!(
-            crate::geometry::geographic_crossing_bounds_for_shapes_in_frame([shape], frame),
+            GeographicSupportEnvelope::try_from_shapes(frame, &[shape])
+                .ok()
+                .and_then(|support| support.bounds(frame)),
             Some(expected),
             "{name} owned aggregate bounds"
         );

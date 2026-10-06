@@ -5,8 +5,8 @@ use crate::crs::CrsError;
 use crate::crs::frame::Frame;
 use crate::geographic::{GeographicFrame, ScalarGeographicView, SeamIdentity};
 use crate::geometry::{
-    Coordinates, Point, REDUCE_LANES, ReduceSimd, Shape, ShapeData, TopologyDomain,
-    canonical_f64_bits, shape_has_polar_ring_in_frame,
+    Coordinates, Point, REDUCE_LANES, ReduceSimd, Shape, TopologyDomain, canonical_f64_bits,
+    shape_has_polar_ring_in_frame,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -465,15 +465,6 @@ fn canonical_chart_crossing(xs: &[f64], limit: f64) -> Option<bool> {
         crosses |= (right - left).abs() > limit_value;
     }
     Some(crosses)
-}
-
-/// Whether a planar topology op must split-normalize ``shape`` at ±180 before
-/// evaluating. Cartesian domains skip the coordinate scan entirely.
-pub(crate) fn geographic_crossing(domain: TopologyDomain, shape: &ShapeData) -> bool {
-    match domain {
-        TopologyDomain::Cartesian => false,
-        TopologyDomain::Geographic(frame) => crosses_antimeridian_in_frame(shape.shape(), frame),
-    }
 }
 
 #[cfg(test)]
