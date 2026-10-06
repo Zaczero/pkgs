@@ -1926,8 +1926,15 @@ def test_arrow_c_selected_struct_child_count_matches_schema(protocol: str) -> No
     }
 
 
-def _oversized_schema_child_count_provider(protocol: str):
-    """Expose a huge foreign schema count with one inert child-table slot."""
+def _schema_child_table_provider(
+    protocol: str,
+    *,
+    n_children: int,
+    children_present: bool,
+    extension: bool,
+    child_entry_present: bool = True,
+):
+    """Retain a foreign schema shell around a configurable child-table boundary."""
     ctypes, ArrowSchema, ArrowArray, ArrowArrayStream = _f5_arrow_c_structs()
     releases = {'schema': 0, 'array': 0, 'stream': 0, 'get_next': 0}
 
@@ -1944,27 +1951,35 @@ def _oversized_schema_child_count_provider(protocol: str):
         releases['array'] += 1
         array.release = None
 
-    key = b'ARROW:extension:name'
-    value = b'geoarrow.point'
-    metadata_blob = (
-        struct.pack('=i', 1)
-        + struct.pack('=i', len(key))
-        + key
-        + struct.pack('=i', len(value))
-        + value
-    )
-    metadata = (ctypes.c_uint8 * len(metadata_blob))(*metadata_blob)
+    metadata = None
+    if extension:
+        key = b'ARROW:extension:name'
+        value = b'geoarrow.point'
+        metadata_blob = (
+            struct.pack('=i', 1)
+            + struct.pack('=i', len(key))
+            + key
+            + struct.pack('=i', len(value))
+            + value
+        )
+        metadata = (ctypes.c_uint8 * len(metadata_blob))(*metadata_blob)
     placeholder = ArrowSchema(b'g', b'placeholder', None, 0, 0, None, None, None, None)
     placeholder_children = (ctypes.POINTER(ArrowSchema) * 1)(
-        ctypes.pointer(placeholder)
+        ctypes.pointer(placeholder) if child_entry_present else None
     )
     root_schema = ArrowSchema(
         b'+s',
-        b'geometry',
-        ctypes.cast(metadata, ctypes.c_void_p),
+        b'geometry' if extension else b'',
+        ctypes.cast(metadata, ctypes.c_void_p) if metadata is not None else None,
         0,
-        2**63 - 1,
-        ctypes.cast(placeholder_children, ctypes.POINTER(ctypes.POINTER(ArrowSchema))),
+        n_children,
+        (
+            ctypes.cast(
+                placeholder_children, ctypes.POINTER(ctypes.POINTER(ArrowSchema))
+            )
+            if children_present
+            else None
+        ),
         None,
         ctypes.cast(release_schema, ctypes.c_void_p),
         None,
@@ -2101,16 +2116,89 @@ def _oversized_schema_child_count_provider(protocol: str):
     ['array', 'stream'],
     ids=['arrow-c-array', 'arrow-c-stream'],
 )
-def test_arrow_c_unrepresentable_schema_child_count_is_type_error(
+def test_arrow_c_foreign_schema_child_table_span_overflow_is_type_error(
     protocol: str,
 ) -> None:
-    """A huge positive schema child count is rejected before table traversal."""
+    """A pointer table beyond Rust's byte-span bound is rejected before traversal."""
     import gc
 
-    provider, releases, _keepalive = _oversized_schema_child_count_provider(protocol)
+    child_count = sys.maxsize // ctypes.sizeof(ctypes.c_void_p) + 1
+    provider, releases, _keepalive = _schema_child_table_provider(
+        protocol,
+        n_children=child_count,
+        children_present=True,
+        extension=True,
+    )
     with pytest.raises(
         TypeError, match='Arrow schema n_children is negative or too large'
     ):
+        gm.from_arrow(provider)
+
+    del provider
+    gc.collect()
+    assert releases == {
+        'schema': 1,
+        'array': int(protocol == 'array'),
+        'stream': int(protocol == 'stream'),
+        'get_next': 0,
+    }
+
+
+@pytest.mark.parametrize(
+    'protocol',
+    ['array', 'stream'],
+    ids=['arrow-c-array', 'arrow-c-stream'],
+)
+@pytest.mark.parametrize(
+    ('n_children', 'children_present', 'child_entry_present', 'message'),
+    [
+        pytest.param(
+            -1,
+            False,
+            True,
+            'Arrow schema n_children is negative or too large',
+            id='negative-count',
+        ),
+        pytest.param(
+            1,
+            False,
+            True,
+            'Arrow schema children pointer is null while n_children > 0',
+            id='nonzero-count-null-table',
+        ),
+        pytest.param(
+            0,
+            False,
+            True,
+            'Arrow table or record batch has no columns',
+            id='zero-count-null-table',
+        ),
+        pytest.param(
+            1,
+            True,
+            False,
+            'Arrow child schema is null',
+            id='null-child-entry',
+        ),
+    ],
+)
+def test_arrow_c_schema_child_table_admission_preserves_count_and_null_rules(
+    protocol: str,
+    n_children: int,
+    children_present: bool,
+    child_entry_present: bool,
+    message: str,
+) -> None:
+    import gc
+
+    provider, releases, _keepalive = _schema_child_table_provider(
+        protocol,
+        n_children=n_children,
+        children_present=children_present,
+        extension=False,
+        child_entry_present=child_entry_present,
+    )
+    with pytest.raises(TypeError, match=message):
         gm.from_arrow(provider)
 
     del provider

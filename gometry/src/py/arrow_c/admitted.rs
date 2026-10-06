@@ -14,7 +14,7 @@ use pyo3::prelude::*;
 
 use crate::py::arrow::WkbOffsetWidth;
 use crate::py::arrow_c::import::schema_metadata_pairs_owned;
-use crate::py::arrow_c::native::{drop_moved_arrow, move_arrow_shell};
+use crate::py::arrow_c::native::{checked_byte_span, drop_moved_arrow, move_arrow_shell};
 use crate::py::arrow_c::{
     ArrowReleaseSlot, ArrowSchema, arc_from_str, arc_from_string, arc_from_vec,
 };
@@ -102,6 +102,53 @@ impl<T: ArrowReleaseSlot> Drop for MovedArrowShell<T> {
     fn drop(&mut self) {
         // SAFETY: unique ownership of the moved shell.
         unsafe { drop_moved_arrow(self.ptr.as_ptr()) }
+    }
+}
+
+#[derive(Clone, Copy)]
+struct SchemaChildCount(usize);
+
+impl SchemaChildCount {
+    fn parse(count: i64) -> PyResult<Self> {
+        usize::try_from(count)
+            .map(Self)
+            .map_err(|_| PyTypeError::new_err("Arrow schema n_children is negative or too large"))
+    }
+
+    const fn is_empty(self) -> bool {
+        self.0 == 0
+    }
+
+    /// Borrow a producer-owned child-pointer table under the moved schema shell.
+    ///
+    /// # Safety
+    ///
+    /// `children` must be the child-table field of a schema in `owner`'s live
+    /// tree. For a nonempty table, the Arrow producer must keep `self.0`
+    /// initialized, aligned pointer entries in one allocation, unchanged until
+    /// `owner` drops.
+    unsafe fn borrowed_table<'owner>(
+        self,
+        _owner: &'owner MovedArrowShell<ArrowSchema>,
+        children: *mut *mut ArrowSchema,
+    ) -> PyResult<&'owner [*mut ArrowSchema]> {
+        if self.is_empty() {
+            return Ok(&[]);
+        }
+        if children.is_null() {
+            return Err(PyTypeError::new_err(
+                "Arrow schema children pointer is null while n_children > 0",
+            ));
+        }
+        checked_byte_span(
+            self.0,
+            std::mem::size_of::<*mut ArrowSchema>(),
+            "Arrow schema child table byte span overflows",
+        )
+        .map_err(|_| PyTypeError::new_err("Arrow schema n_children is negative or too large"))?;
+        // SAFETY: owner pins the producer's table; the byte-span check ensures
+        // the requested slice size is representable before pointer traversal.
+        Ok(unsafe { std::slice::from_raw_parts(children.cast_const(), self.0) })
     }
 }
 
@@ -234,28 +281,17 @@ impl AdmittedArrowSchema {
         }
         // Table/struct root without extension: shallow-capture every top-level
         // child for selection, then deep-capture only the selected geometry.
-        if raw.n_children < 0 {
-            return Err(PyTypeError::new_err(
-                "Arrow schema n_children is negative or too large",
-            ));
-        }
-        let n = usize::try_from(raw.n_children).map_err(|_| {
-            PyTypeError::new_err("Arrow schema n_children is negative or too large")
-        })?;
-        if n == 0 {
+        let child_count = SchemaChildCount::parse(raw.n_children)?;
+        if child_count.is_empty() {
             return Err(PyTypeError::new_err(
                 "Arrow table or record batch has no columns",
             ));
         }
-        if raw.children.is_null() {
-            return Err(PyTypeError::new_err(
-                "Arrow schema children pointer is null while n_children > 0",
-            ));
-        }
-        let mut shallow_children = schema_children(n)?;
-        for i in 0..n {
-            // SAFETY: index in range; shell pins child table.
-            let child_ptr = unsafe { *raw.children.add(i) };
+        // SAFETY: owner pins the root schema and producer-owned child table for
+        // the full owned-capture operation.
+        let child_ptrs = unsafe { child_count.borrowed_table(owner, raw.children)? };
+        let mut shallow_children = Vec::with_capacity(child_ptrs.len());
+        for &child_ptr in child_ptrs {
             if child_ptr.is_null() {
                 return Err(PyTypeError::new_err("Arrow child schema is null"));
             }
@@ -264,12 +300,12 @@ impl AdmittedArrowSchema {
                 .push(unsafe { Self::capture_node(owner, child_ptr, CaptureDepth::Shallow, 0) }?);
         }
         let selected = select_geometry_child_index_from_shallow(&shallow_children)?;
-        let mut children = schema_children(n)?;
-        for (i, shallow) in shallow_children.into_iter().enumerate() {
+        let mut children = Vec::with_capacity(child_ptrs.len());
+        for (i, (child_ptr, shallow)) in
+            child_ptrs.iter().copied().zip(shallow_children).enumerate()
+        {
             if i == selected {
-                // SAFETY: same child table as above; deep-capture geometry only.
-                let child_ptr = unsafe { *raw.children.add(i) };
-                // SAFETY: child_ptr live under shell; deep geometry subtree.
+                // SAFETY: this pointer came from the shell-pinned table above.
                 children
                     .push(unsafe { Self::capture_node(owner, child_ptr, CaptureDepth::Deep, 0) }?);
             } else {
@@ -331,49 +367,31 @@ impl AdmittedArrowSchema {
         // SAFETY: metadata blob is live under the owner shell for this copy only.
         let metadata = unsafe { owned_schema_metadata(schema) }?;
         let dictionary_present = !schema.dictionary.is_null();
-        if schema.n_children < 0 {
-            return Err(PyTypeError::new_err(
-                "Arrow schema n_children is negative or too large",
-            ));
-        }
-        let n = usize::try_from(schema.n_children).map_err(|_| {
-            PyTypeError::new_err("Arrow schema n_children is negative or too large")
-        })?;
-        let mut children = match depth {
+        let child_count = SchemaChildCount::parse(schema.n_children)?;
+        let children = match depth {
             CaptureDepth::Shallow => Vec::new(),
-            CaptureDepth::Deep => schema_children(n)?,
-        };
-        match depth {
-            CaptureDepth::Shallow => {
-                // No grandchildren — enough for name/extension/format selection.
-            },
             CaptureDepth::Deep => {
-                if n > 0 {
-                    if schema.children.is_null() {
-                        return Err(PyTypeError::new_err(
-                            "Arrow schema children pointer is null while n_children > 0",
-                        ));
+                // SAFETY: owner pins this schema's producer-owned child table.
+                let child_ptrs = unsafe { child_count.borrowed_table(owner, schema.children)? };
+                let mut children = Vec::with_capacity(child_ptrs.len());
+                for &child in child_ptrs {
+                    if child.is_null() {
+                        return Err(PyTypeError::new_err("Arrow child schema is null"));
                     }
-                    // SAFETY: children table live under shell for capture.
-                    unsafe {
-                        for i in 0..n {
-                            let child = *schema.children.add(i);
-                            if child.is_null() {
-                                return Err(PyTypeError::new_err("Arrow child schema is null"));
-                            }
-                            children.push(Self::capture_node(
-                                owner,
-                                child,
-                                CaptureDepth::Deep,
-                                nesting.wrapping_add(1),
-                            )?);
-                        }
-                    }
+                    // SAFETY: this child pointer came from the checked table
+                    // kept alive by `owner`.
+                    children.push(unsafe {
+                        Self::capture_node(
+                            owner,
+                            child,
+                            CaptureDepth::Deep,
+                            nesting.wrapping_add(1),
+                        )
+                    }?);
                 }
+                children
             },
-        }
-        // Silence unused `n` on the shallow path (count was validated above).
-        let _ = n;
+        };
         Ok(Self {
             format,
             name,
@@ -420,14 +438,6 @@ enum CaptureDepth {
     Shallow,
     /// Full recursive capture of the geometry subtree.
     Deep,
-}
-
-fn schema_children(count: usize) -> PyResult<Vec<AdmittedArrowSchema>> {
-    // The count comes from ArrowSchema and must fit a Rust slice before its
-    // producer-owned child table can be reserved or traversed.
-    let _layout = std::alloc::Layout::array::<AdmittedArrowSchema>(count)
-        .map_err(|_| PyTypeError::new_err("Arrow schema n_children is negative or too large"))?;
-    Ok(Vec::with_capacity(count))
 }
 
 /// Select a geometry column index from shallow-captured top-level children.
