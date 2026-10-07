@@ -4,8 +4,8 @@ use std::marker::PhantomData;
 use std::ops::ControlFlow;
 
 use super::{
-    CanonicalLongitude, ChartPole, FullTurnPole, GeographicError, GeographicFrame, Latitude,
-    RingTurn, SeamIdentity,
+    CanonicalLongitude, ChartConnection, ChartPole, FullTurnPole, GeographicError, GeographicFrame,
+    Latitude, RingTurn, SeamIdentity,
 };
 use crate::collections::HashSet;
 use crate::geometry::storage::admission::CheckedRingWindow;
@@ -16,18 +16,7 @@ use crate::geometry::{
 
 const INLINE_MEMBER_DEPTH: usize = 4;
 
-#[cfg(test)]
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub(crate) struct GeographicAdmissionWork {
-    pub(crate) collection_occurrences: usize,
-    pub(crate) collection_descents: usize,
-    pub(crate) collection_member_slots: usize,
-    pub(crate) coordinate_visits: usize,
-    pub(crate) repeated_owner_occurrences: usize,
-    pub(crate) owner_set_initializations: usize,
-}
-
-/// Tracks immutable collection payload identities across admission and census.
+/// Tracks immutable collection payload identities across admission visits.
 ///
 /// The first shared payload is stored inline; ordinary unshared collections
 /// leave all owner storage empty.
@@ -38,8 +27,6 @@ pub(crate) struct GeographicCollectionOwners<'owner> {
     entropy_fallback: Option<BTreeSet<ShapeOwnerKey>>,
     entropy_error: Option<crate::error::Error>,
     _owner: PhantomData<&'owner Shape>,
-    #[cfg(test)]
-    work: GeographicAdmissionWork,
 }
 
 impl GeographicCollectionOwners<'_> {
@@ -64,11 +51,6 @@ impl GeographicCollectionOwners<'_> {
                 let first = owners.insert(key);
                 self.inline = None;
                 self.hashed = Some(owners);
-                #[cfg(test)]
-                {
-                    self.work.owner_set_initializations =
-                        self.work.owner_set_initializations.wrapping_add(1);
-                }
                 first
             },
             Err(error) => {
@@ -83,54 +65,8 @@ impl GeographicCollectionOwners<'_> {
         }
     }
 
-    pub(crate) fn reset_for_census(&mut self) {
-        self.inline = None;
-        if let Some(owners) = self.hashed.as_mut() {
-            owners.clear();
-        }
-        if let Some(owners) = self.entropy_fallback.as_mut() {
-            owners.clear();
-        }
-    }
-
-    pub(crate) fn discard(&mut self) {
-        self.inline = None;
-        self.hashed = None;
-        self.entropy_fallback = None;
-    }
-
     pub(crate) const fn take_entropy_error(&mut self) -> Option<crate::error::Error> {
         self.entropy_error.take()
-    }
-
-    #[cfg(test)]
-    pub(crate) const fn work(&self) -> GeographicAdmissionWork {
-        self.work
-    }
-
-    #[cfg(test)]
-    const fn record_collection_occurrence(&mut self) {
-        self.work.collection_occurrences = self.work.collection_occurrences.wrapping_add(1);
-    }
-
-    #[cfg(test)]
-    const fn record_collection_descent(&mut self) {
-        self.work.collection_descents = self.work.collection_descents.wrapping_add(1);
-    }
-
-    #[cfg(test)]
-    const fn record_collection_member_slot(&mut self) {
-        self.work.collection_member_slots = self.work.collection_member_slots.wrapping_add(1);
-    }
-
-    #[cfg(test)]
-    const fn record_coordinate_visits(&mut self, count: usize) {
-        self.work.coordinate_visits = self.work.coordinate_visits.wrapping_add(count);
-    }
-
-    #[cfg(test)]
-    const fn record_repeated_owner_occurrence(&mut self) {
-        self.work.repeated_owner_occurrences = self.work.repeated_owner_occurrences.wrapping_add(1);
     }
 }
 
@@ -290,6 +226,47 @@ pub(crate) struct GeographicCoordinate {
     latitude: Latitude,
 }
 
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub(crate) struct SharedCoordinateRunKey {
+    xs: usize,
+    ys: usize,
+    len: usize,
+    kind: SupportRunKind,
+}
+
+impl SharedCoordinateRunKey {
+    fn new(coordinates: &CoordSeq, kind: SupportRunKind) -> Option<Self> {
+        let owner_count = coordinates.xy_shared_owner_count();
+        if owner_count < 2 || (coordinates.len() <= 2 && owner_count <= 2) {
+            return None;
+        }
+        let xs = coordinates.xs();
+        let ys = coordinates.ys();
+        (!xs.is_empty()).then(|| Self {
+            xs: xs.as_ptr().addr(),
+            ys: ys.as_ptr().addr(),
+            len: xs.len(),
+            kind,
+        })
+    }
+}
+
+#[derive(Clone, Copy)]
+pub(crate) enum GeographicAdmissionEvent {
+    BeginSupportRun {
+        kind: SupportRunKind,
+        key: Option<SharedCoordinateRunKey>,
+    },
+    EndSupportRun,
+    Point(CanonicalLongitude),
+    Segment(ChartConnection),
+    Ring {
+        summary: RingSummary,
+        hole: bool,
+    },
+    EndPolygon,
+}
+
 impl GeographicCoordinate {
     pub(crate) const fn native_xy(self) -> XY {
         self.native_xy
@@ -355,7 +332,7 @@ fn coordinate_for_visit<const ORDINARY_SCREEN: bool>(
     coordinate(frame, native_xy, location).map_err(GeographicVisitError::Diagnostic)
 }
 
-fn visit_coordseq<const ORDINARY_SCREEN: bool>(
+fn visit_coordseq<const ORDINARY_SCREEN: bool, const SUPPORT_EVENTS: bool>(
     frame: GeographicFrame,
     coords: &CoordSeq,
     row: Option<usize>,
@@ -363,10 +340,16 @@ fn visit_coordseq<const ORDINARY_SCREEN: bool>(
     ring: Option<usize>,
     run_owners: &mut Option<SharedShapeOwners>,
     visit: &mut impl FnMut(GeographicCoordinate) -> Result<(), GeographicVisitError>,
+    support_visit: &mut impl FnMut(GeographicAdmissionEvent),
 ) -> Result<(), GeographicVisitError> {
+    let kind = if coords.len() == 1 {
+        SupportRunKind::PointSet
+    } else {
+        SupportRunKind::SegmentChain
+    };
     let first = run_owners.as_mut().is_none_or(|owners| {
-        if ORDINARY_SCREEN {
-            owners.first_support_run(coords, RunIdentity::XY, SupportRunKind::SegmentChain)
+        if ORDINARY_SCREEN || SUPPORT_EVENTS {
+            owners.first_support_run(coords, RunIdentity::XY, kind)
         } else {
             owners.first_coord_seq(coords, RunIdentity::XY)
         }
@@ -375,6 +358,12 @@ fn visit_coordseq<const ORDINARY_SCREEN: bool>(
         return Ok(());
     }
     let axis = frame.longitude();
+    if SUPPORT_EVENTS {
+        support_visit(GeographicAdmissionEvent::BeginSupportRun {
+            kind,
+            key: SharedCoordinateRunKey::new(coords, kind),
+        });
+    }
     let mut previous_x = None;
     for (coordinate_index, (&x, &y)) in coords.xs().iter().zip(coords.ys()).enumerate() {
         let native_xy = XY::new(x, y);
@@ -384,17 +373,37 @@ fn visit_coordseq<const ORDINARY_SCREEN: bool>(
         {
             return Err(GeographicVisitError::OrdinaryScreenMismatch);
         }
-        visit(coordinate_for_visit::<ORDINARY_SCREEN>(
-            frame,
-            native_xy,
-            || GeographicLocation {
+        let admitted =
+            coordinate_for_visit::<ORDINARY_SCREEN>(frame, native_xy, || GeographicLocation {
                 row,
                 members: members.location(),
                 ring,
                 coordinate: coordinate_index,
-            },
-        )?)?;
+            })?;
+        visit(admitted)?;
+        if SUPPORT_EVENTS {
+            if coords.len() == 1 {
+                support_visit(GeographicAdmissionEvent::Point(admitted.longitude()));
+            } else if let Some(previous_x) = previous_x {
+                let connection = axis.chart_connection(previous_x, x).map_err(|source| {
+                    GeographicVisitError::Diagnostic(GeographicDiagnostic::boxed(
+                        GeographicLocation {
+                            row,
+                            members: members.location(),
+                            ring,
+                            coordinate: coordinate_index,
+                        },
+                        native_xy,
+                        source,
+                    ))
+                })?;
+                support_visit(GeographicAdmissionEvent::Segment(connection));
+            }
+        }
         previous_x = Some(x);
+    }
+    if SUPPORT_EVENTS {
+        support_visit(GeographicAdmissionEvent::EndSupportRun);
     }
     Ok(())
 }
@@ -421,7 +430,7 @@ pub(crate) fn ring_gate(
     Ok(())
 }
 
-fn visit_ring_coordseq<const ORDINARY_SCREEN: bool>(
+fn visit_ring_coordseq<const ORDINARY_SCREEN: bool, const SUPPORT_EVENTS: bool>(
     frame: GeographicFrame,
     coords: &CoordSeq,
     row: Option<usize>,
@@ -430,9 +439,10 @@ fn visit_ring_coordseq<const ORDINARY_SCREEN: bool>(
     run_owners: &mut Option<SharedShapeOwners>,
     pending_gate: &mut Option<GeographicViewError>,
     visit: &mut impl FnMut(GeographicCoordinate) -> Result<(), GeographicVisitError>,
+    support_visit: &mut impl FnMut(GeographicAdmissionEvent),
 ) -> Result<(), GeographicVisitError> {
     let repeated = run_owners.as_mut().is_some_and(|owners| {
-        if ORDINARY_SCREEN {
+        if ORDINARY_SCREEN || SUPPORT_EVENTS {
             !owners.first_support_run(coords, RunIdentity::XY, SupportRunKind::SegmentChain)
         } else {
             !owners.first_coord_seq(coords, RunIdentity::XY)
@@ -441,10 +451,23 @@ fn visit_ring_coordseq<const ORDINARY_SCREEN: bool>(
     if ORDINARY_SCREEN && repeated {
         return Ok(());
     }
+    if SUPPORT_EVENTS {
+        let kind = SupportRunKind::SegmentChain;
+        support_visit(GeographicAdmissionEvent::BeginSupportRun {
+            kind,
+            key: SharedCoordinateRunKey::new(coords, kind),
+        });
+    }
     let mut chart_turn = 0_i64;
     let mut previous: Option<XY> = None;
     let mut first = None;
     let axis = frame.longitude();
+    let mut latitude_span = None;
+    let mut seam_only_vertices = true;
+    let mut has_seam_vertex = false;
+    let mut west = f64::INFINITY;
+    let mut east = f64::NEG_INFINITY;
+    let mut exact_axis_band = ExactAxisBand::default();
     for (index, (&x, &y)) in coords.xs().iter().zip(coords.ys()).enumerate() {
         let native_xy = XY::new(x, y);
         let admitted = if repeated && !ORDINARY_SCREEN {
@@ -463,24 +486,54 @@ fn visit_ring_coordseq<const ORDINARY_SCREEN: bool>(
         if !ORDINARY_SCREEN {
             first.get_or_insert_with(|| admitted.native_xy());
         }
-        if !ORDINARY_SCREEN
-            && let Some(previous) = previous
-            && !axis.ordinary_chart_edge(previous.x, native_xy.x)
-        {
-            chart_turn = axis
-                .add_chart_transit(chart_turn, previous.x, native_xy.x)
-                .map_err(|source| {
-                    GeographicDiagnostic::boxed(
-                        GeographicLocation {
-                            row,
-                            members: members.location(),
-                            ring: Some(ring),
-                            coordinate: index,
-                        },
-                        native_xy,
-                        source,
-                    )
-                })?;
+        if !ORDINARY_SCREEN {
+            let span = latitude_span.get_or_insert_with(|| LatitudeSpan::new(admitted.latitude()));
+            span.include(admitted.latitude());
+            match admitted.identity(frame) {
+                SeamIdentity::Seam => has_seam_vertex = true,
+                SeamIdentity::Pole => {},
+                SeamIdentity::Ordinary => seam_only_vertices = false,
+            }
+            west = west.min(x);
+            east = east.max(x);
+            if let Some(previous) = previous {
+                if SUPPORT_EVENTS {
+                    let location = || GeographicLocation {
+                        row,
+                        members: members.location(),
+                        ring: Some(ring),
+                        coordinate: index,
+                    };
+                    let connection =
+                        axis.chart_connection(previous.x, native_xy.x)
+                            .map_err(|source| {
+                                GeographicDiagnostic::boxed(location(), native_xy, source)
+                            })?;
+                    exact_axis_band.include_edge(frame, connection, previous, native_xy);
+                    support_visit(GeographicAdmissionEvent::Segment(connection));
+                    chart_turn = chart_turn
+                        .checked_add(i64::from(connection.source_lift))
+                        .ok_or_else(|| {
+                            GeographicDiagnostic::boxed(
+                                location(),
+                                native_xy,
+                                GeographicError::ChartTurnOverflow,
+                            )
+                        })?;
+                } else if !axis.ordinary_chart_edge(previous.x, native_xy.x) {
+                    let location = || GeographicLocation {
+                        row,
+                        members: members.location(),
+                        ring: Some(ring),
+                        coordinate: index,
+                    };
+                    chart_turn = axis
+                        .add_chart_transit(chart_turn, previous.x, native_xy.x)
+                        .map_err(|source| {
+                            GeographicDiagnostic::boxed(location(), native_xy, source)
+                        })?;
+                }
+            }
         }
         if ORDINARY_SCREEN
             && let Some(previous) = previous
@@ -492,9 +545,10 @@ fn visit_ring_coordseq<const ORDINARY_SCREEN: bool>(
     }
     if !ORDINARY_SCREEN {
         let first = first.expect("polygon rings have at least four admitted coordinates");
-        if pending_gate.is_none() && matches!(chart_turn, -1 | 1) {
-            let span = admitted_latitude_span(frame, coords);
-            if let Err(error) = ring_gate(
+        let span = latitude_span.expect("polygon rings have at least four admitted coordinates");
+        if pending_gate.is_none()
+            && matches!(chart_turn, -1 | 1)
+            && let Err(error) = ring_gate(
                 chart_turn,
                 span.south,
                 span.north,
@@ -505,15 +559,32 @@ fn visit_ring_coordseq<const ORDINARY_SCREEN: bool>(
                     coordinate: 0,
                 },
                 first,
-            ) {
-                *pending_gate = Some(error);
-            }
+            )
+        {
+            *pending_gate = Some(error);
+        }
+        if SUPPORT_EVENTS {
+            support_visit(GeographicAdmissionEvent::EndSupportRun);
+            let exact_axis_band =
+                exact_axis_band.is_exact(frame, west, east, span.south, span.north);
+            support_visit(GeographicAdmissionEvent::Ring {
+                summary: RingSummary::from_admitted_facts(
+                    frame,
+                    chart_turn,
+                    seam_only_vertices,
+                    has_seam_vertex,
+                    exact_axis_band,
+                    span.south,
+                    span.north,
+                ),
+                hole: ring != 0,
+            });
         }
     }
     Ok(())
 }
 
-fn visit_shape<'owner, const ORDINARY_SCREEN: bool>(
+fn visit_shape<'owner, const ORDINARY_SCREEN: bool, const SUPPORT_EVENTS: bool>(
     frame: GeographicFrame,
     shape: &'owner Shape,
     row: Option<usize>,
@@ -522,24 +593,41 @@ fn visit_shape<'owner, const ORDINARY_SCREEN: bool>(
     run_owners: &mut Option<SharedShapeOwners>,
     pending_gate: &mut Option<GeographicViewError>,
     visit: &mut impl FnMut(GeographicCoordinate) -> Result<(), GeographicVisitError>,
+    support_visit: &mut impl FnMut(GeographicAdmissionEvent),
 ) -> Result<(), GeographicVisitError> {
     match shape {
-        Shape::Point(point) => visit(coordinate_for_visit::<ORDINARY_SCREEN>(
-            frame,
-            XY::from(*point),
-            || GeographicLocation {
-                row,
-                members: members.location(),
-                ring: None,
-                coordinate: 0,
-            },
-        )?),
+        Shape::Point(point) => {
+            let admitted =
+                coordinate_for_visit::<ORDINARY_SCREEN>(frame, XY::from(*point), || {
+                    GeographicLocation {
+                        row,
+                        members: members.location(),
+                        ring: None,
+                        coordinate: 0,
+                    }
+                })?;
+            visit(admitted)?;
+            if SUPPORT_EVENTS {
+                support_visit(GeographicAdmissionEvent::Point(admitted.longitude()));
+            }
+            Ok(())
+        },
         Shape::MultiPoint(points) => {
-            if run_owners
-                .as_mut()
-                .is_some_and(|owners| !owners.first_coord_seq(points, RunIdentity::XY))
-            {
+            if run_owners.as_mut().is_some_and(|owners| {
+                if SUPPORT_EVENTS {
+                    !owners.first_support_run(points, RunIdentity::XY, SupportRunKind::PointSet)
+                } else {
+                    !owners.first_coord_seq(points, RunIdentity::XY)
+                }
+            }) {
                 return Ok(());
+            }
+            if SUPPORT_EVENTS {
+                let kind = SupportRunKind::PointSet;
+                support_visit(GeographicAdmissionEvent::BeginSupportRun {
+                    kind,
+                    key: SharedCoordinateRunKey::new(points, kind),
+                });
             }
             for (logical, member) in points.members().enumerate() {
                 if let MultiMember::Value(physical) = member {
@@ -552,33 +640,46 @@ fn visit_shape<'owner, const ORDINARY_SCREEN: bool>(
                         .zip(points.ys().get(physical))
                         .map(|(&x, &y)| XY::new(x, y))
                         .expect("MultiPoint member refers to stored XY columns");
-                    visit(coordinate_for_visit::<ORDINARY_SCREEN>(
-                        frame,
-                        native_xy,
-                        || GeographicLocation {
-                            row,
-                            members: members.location(),
-                            ring: None,
-                            coordinate: 0,
-                        },
-                    )?)?;
+                    let admitted =
+                        coordinate_for_visit::<ORDINARY_SCREEN>(frame, native_xy, || {
+                            GeographicLocation {
+                                row,
+                                members: members.location(),
+                                ring: None,
+                                coordinate: 0,
+                            }
+                        })?;
+                    visit(admitted)?;
+                    if SUPPORT_EVENTS {
+                        support_visit(GeographicAdmissionEvent::Point(admitted.longitude()));
+                    }
                     if !ORDINARY_SCREEN {
                         members.pop();
                     }
                 }
             }
+            if SUPPORT_EVENTS {
+                support_visit(GeographicAdmissionEvent::EndSupportRun);
+            }
             Ok(())
         },
-        Shape::LineString(line) => {
-            visit_coordseq::<ORDINARY_SCREEN>(frame, line, row, members, None, run_owners, visit)
-        },
+        Shape::LineString(line) => visit_coordseq::<ORDINARY_SCREEN, SUPPORT_EVENTS>(
+            frame,
+            line,
+            row,
+            members,
+            None,
+            run_owners,
+            visit,
+            support_visit,
+        ),
         Shape::MultiLineString(lines) => {
             for (logical, member) in lines.members().enumerate() {
                 if let MultiMember::Value(physical) = member {
                     if !ORDINARY_SCREEN {
                         members.push(logical);
                     }
-                    visit_coordseq::<ORDINARY_SCREEN>(
+                    visit_coordseq::<ORDINARY_SCREEN, SUPPORT_EVENTS>(
                         frame,
                         &lines.as_slice()[physical],
                         row,
@@ -586,6 +687,7 @@ fn visit_shape<'owner, const ORDINARY_SCREEN: bool>(
                         None,
                         run_owners,
                         visit,
+                        support_visit,
                     )?;
                     if !ORDINARY_SCREEN {
                         members.pop();
@@ -596,7 +698,7 @@ fn visit_shape<'owner, const ORDINARY_SCREEN: bool>(
         },
         Shape::Polygon(polygon) => {
             for (ring, coords) in polygon.rings().enumerate() {
-                visit_ring_coordseq::<ORDINARY_SCREEN>(
+                visit_ring_coordseq::<ORDINARY_SCREEN, SUPPORT_EVENTS>(
                     frame,
                     coords,
                     row,
@@ -605,7 +707,11 @@ fn visit_shape<'owner, const ORDINARY_SCREEN: bool>(
                     run_owners,
                     pending_gate,
                     visit,
+                    support_visit,
                 )?;
+            }
+            if SUPPORT_EVENTS {
+                support_visit(GeographicAdmissionEvent::EndPolygon);
             }
             Ok(())
         },
@@ -616,7 +722,7 @@ fn visit_shape<'owner, const ORDINARY_SCREEN: bool>(
                         members.push(logical);
                     }
                     for (ring, coords) in polygons.as_slice()[physical].rings().enumerate() {
-                        visit_ring_coordseq::<ORDINARY_SCREEN>(
+                        visit_ring_coordseq::<ORDINARY_SCREEN, SUPPORT_EVENTS>(
                             frame,
                             coords,
                             row,
@@ -625,7 +731,11 @@ fn visit_shape<'owner, const ORDINARY_SCREEN: bool>(
                             run_owners,
                             pending_gate,
                             visit,
+                            support_visit,
                         )?;
+                    }
+                    if SUPPORT_EVENTS {
+                        support_visit(GeographicAdmissionEvent::EndPolygon);
                     }
                     if !ORDINARY_SCREEN {
                         members.pop();
@@ -645,8 +755,6 @@ fn visit_shape<'owner, const ORDINARY_SCREEN: bool>(
                     })
                 },
                 |owners| {
-                    #[cfg(test)]
-                    owners.record_collection_occurrence();
                     collection.members_are_shared()
                         && !owners.observe(ShapeOwnerKey::new(collection.as_slice()))
                 },
@@ -655,25 +763,13 @@ fn visit_shape<'owner, const ORDINARY_SCREEN: bool>(
                 // This immutable payload was fully admitted at its first
                 // source occurrence; an invalid coordinate there already
                 // returned its original member path.
-                #[cfg(test)]
-                if let Some(owners) = collection_owners.as_deref_mut() {
-                    owners.record_repeated_owner_occurrence();
-                }
                 return Ok(());
             }
-            #[cfg(test)]
-            if let Some(owners) = collection_owners.as_deref_mut() {
-                owners.record_collection_descent();
-            }
             for (member, shape) in collection.iter().enumerate() {
-                #[cfg(test)]
-                if let Some(owners) = collection_owners.as_deref_mut() {
-                    owners.record_collection_member_slot();
-                }
                 if !ORDINARY_SCREEN {
                     members.push(member);
                 }
-                visit_shape::<ORDINARY_SCREEN>(
+                visit_shape::<ORDINARY_SCREEN, SUPPORT_EVENTS>(
                     frame,
                     shape,
                     row,
@@ -682,6 +778,7 @@ fn visit_shape<'owner, const ORDINARY_SCREEN: bool>(
                     run_owners,
                     pending_gate,
                     visit,
+                    support_visit,
                 )?;
                 if !ORDINARY_SCREEN {
                     members.pop();
@@ -706,7 +803,7 @@ impl<'a> ScalarGeographicView<'a> {
     ) -> Result<Self, GeographicViewError> {
         let mut owners = SharedShapeOwners::for_shape(shape);
         let mut pending_gate = None;
-        let admitted = visit_shape::<false>(
+        let admitted = visit_shape::<false, false>(
             frame,
             shape,
             None,
@@ -715,6 +812,7 @@ impl<'a> ScalarGeographicView<'a> {
             &mut owners,
             &mut pending_gate,
             &mut |_| Ok(()),
+            &mut |_| {},
         );
         admitted.map_err(GeographicVisitError::into_diagnostic)?;
         if let Some(error) = pending_gate {
@@ -728,18 +826,15 @@ impl<'a> ScalarGeographicView<'a> {
         shape: &'a Shape,
         owners: &mut GeographicCollectionOwners<'a>,
         mut coordinate_visit: impl FnMut(GeographicCoordinate),
+        mut support_visit: impl FnMut(GeographicAdmissionEvent),
     ) -> Result<Self, GeographicAdmissionError> {
-        #[cfg(test)]
-        let coordinate_visits = std::cell::Cell::new(0_usize);
         let mut visit = |coordinate: GeographicCoordinate| {
-            #[cfg(test)]
-            coordinate_visits.set(coordinate_visits.get().wrapping_add(1));
             coordinate_visit(coordinate);
             Ok(())
         };
         let mut run_owners = SharedShapeOwners::for_shape(shape);
         let mut pending_gate = None;
-        let admitted = visit_shape::<false>(
+        let admitted = visit_shape::<false, true>(
             frame,
             shape,
             None,
@@ -748,9 +843,8 @@ impl<'a> ScalarGeographicView<'a> {
             &mut run_owners,
             &mut pending_gate,
             &mut visit,
+            &mut support_visit,
         );
-        #[cfg(test)]
-        owners.record_coordinate_visits(coordinate_visits.get());
         admitted.map_err(|error| GeographicAdmissionError::Geographic(error.into_diagnostic()))?;
         if let Some(error) = owners.take_entropy_error() {
             return Err(GeographicAdmissionError::Resource(error));
@@ -775,6 +869,7 @@ impl<'a> ScalarGeographicView<'a> {
         self.frame
     }
 
+    #[cfg(test)]
     pub(crate) fn for_each_coordinate(self, mut visit: impl FnMut(GeographicCoordinate)) {
         self.shape.for_each_point(|point| {
             visit(admitted_coordinate(self.frame, XY::from(point)));
@@ -887,16 +982,151 @@ impl LatitudeSpan {
     }
 }
 
-fn admitted_latitude_span(frame: GeographicFrame, coords: &CoordSeq) -> LatitudeSpan {
-    let mut latitudes = coords.ys().iter();
-    let first = latitudes
-        .next()
-        .expect("admitted polygon ring has at least four coordinates");
-    let mut span = LatitudeSpan::new(Latitude::from_admitted(frame, *first));
-    for &latitude in latitudes {
-        span.include(Latitude::from_admitted(frame, latitude));
+#[derive(Clone, Copy)]
+struct ParallelTurn {
+    latitude: Latitude,
+    bits: u64,
+    turns: i64,
+}
+
+impl ParallelTurn {
+    const fn matches(self, latitude: Latitude) -> bool {
+        let bits = latitude.get().to_bits();
+        self.bits == bits && self.latitude.get().to_bits() == bits
     }
-    span
+}
+
+#[derive(Clone, Copy, Default)]
+enum ParallelTurns {
+    #[default]
+    Empty,
+    One(ParallelTurn),
+    Two(ParallelTurn, ParallelTurn),
+    Invalid,
+}
+
+#[derive(Clone, Copy)]
+struct ExactAxisBand {
+    parallels: ParallelTurns,
+    meridian: Option<u64>,
+    verticals_valid: bool,
+}
+
+impl Default for ExactAxisBand {
+    fn default() -> Self {
+        Self {
+            parallels: ParallelTurns::Empty,
+            meridian: None,
+            verticals_valid: true,
+        }
+    }
+}
+
+impl ExactAxisBand {
+    fn include_edge(
+        &mut self,
+        frame: GeographicFrame,
+        connection: ChartConnection,
+        start: XY,
+        end: XY,
+    ) {
+        let axis = frame.longitude();
+        if start.y.to_bits() == end.y.to_bits() {
+            if connection.step.delta(axis) == 0.0 {
+                return;
+            }
+            self.include_parallel(
+                Latitude::from_admitted(frame, start.y),
+                start.y.to_bits(),
+                i64::from(connection.source_lift),
+            );
+        } else {
+            if connection.step.delta(axis) != 0.0 || connection.source_lift != 0 {
+                self.verticals_valid = false;
+                return;
+            }
+            let longitude = connection.start.get().to_bits();
+            if self.meridian.is_some_and(|previous| previous != longitude) {
+                self.verticals_valid = false;
+                return;
+            }
+            self.meridian = Some(longitude);
+        }
+    }
+
+    fn include_parallel(&mut self, latitude: Latitude, bits: u64, transit: i64) {
+        let add = |level: &mut ParallelTurn| {
+            if let Some(turns) = level.turns.checked_add(transit) {
+                level.turns = turns;
+                true
+            } else {
+                false
+            }
+        };
+        self.parallels = match self.parallels {
+            ParallelTurns::Empty => ParallelTurns::One(ParallelTurn {
+                latitude,
+                bits,
+                turns: transit,
+            }),
+            ParallelTurns::One(mut first) if first.bits == bits => {
+                if add(&mut first) {
+                    ParallelTurns::One(first)
+                } else {
+                    ParallelTurns::Invalid
+                }
+            },
+            ParallelTurns::One(first) => ParallelTurns::Two(first, ParallelTurn {
+                latitude,
+                bits,
+                turns: transit,
+            }),
+            ParallelTurns::Two(mut first, second) if first.bits == bits => {
+                if add(&mut first) {
+                    ParallelTurns::Two(first, second)
+                } else {
+                    ParallelTurns::Invalid
+                }
+            },
+            ParallelTurns::Two(first, mut second) if second.bits == bits => {
+                if add(&mut second) {
+                    ParallelTurns::Two(first, second)
+                } else {
+                    ParallelTurns::Invalid
+                }
+            },
+            ParallelTurns::Two(..) | ParallelTurns::Invalid => ParallelTurns::Invalid,
+        };
+    }
+
+    fn is_exact(
+        self,
+        frame: GeographicFrame,
+        west: f64,
+        east: f64,
+        south: Latitude,
+        north: Latitude,
+    ) -> bool {
+        let axis = frame.longitude();
+        let (south_turns, north_turns) = match self.parallels {
+            ParallelTurns::Two(first, second) if first.matches(south) && second.matches(north) => {
+                (first.turns, second.turns)
+            },
+            ParallelTurns::Two(first, second) if second.matches(south) && first.matches(north) => {
+                (second.turns, first.turns)
+            },
+            ParallelTurns::Empty
+            | ParallelTurns::One(_)
+            | ParallelTurns::Two(..)
+            | ParallelTurns::Invalid => return false,
+        };
+        // Each parallel must close one directed circle on the same quotient
+        // meridian; alternate seam spellings of one meridian remain identical.
+        east - west > axis.half_period()
+            && south.get().to_bits() != north.get().to_bits()
+            && self.verticals_valid
+            && matches!((south_turns, north_turns), (1, -1) | (-1, 1))
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -967,7 +1197,8 @@ impl RingSummary {
         );
         let mut west = ring.x(0);
         let mut east = west;
-        let mut previous_x = None;
+        let mut previous: Option<XY> = None;
+        let mut exact_axis_band = ExactAxisBand::default();
         for index in 0..ring.len() {
             let x = ring.x(index);
             let longitude = frame
@@ -989,18 +1220,41 @@ impl RingSummary {
             }
             west = west.min(x);
             east = east.max(x);
-            if let Some(previous_x) = previous_x
-                && !axis.ordinary_chart_edge(previous_x, x)
-            {
-                chart_turn = axis
-                    .add_chart_transit(chart_turn, previous_x, x)
+            if let Some(previous) = previous {
+                let current = XY::new(x, ring.y(index));
+                let connection = axis
+                    .chart_connection(previous.x, current.x)
                     .map_err(|source| fail(index, source))?;
+                exact_axis_band.include_edge(frame, connection, previous, current);
+                chart_turn = chart_turn
+                    .checked_add(i64::from(connection.source_lift))
+                    .ok_or_else(|| fail(index, GeographicError::ChartTurnOverflow))?;
             }
-            previous_x = Some(x);
+            previous = Some(XY::new(x, ring.y(index)));
         }
         let south = latitude_span.south;
         let north = latitude_span.north;
-        let exact_axis_band = is_exact_axis_band(frame, ring, west, east, south, north);
+        let exact_axis_band = exact_axis_band.is_exact(frame, west, east, south, north);
+        Ok(Self::from_admitted_facts(
+            frame,
+            chart_turn,
+            seam_only_vertices,
+            has_seam_vertex,
+            exact_axis_band,
+            south,
+            north,
+        ))
+    }
+
+    pub(crate) fn from_admitted_facts(
+        frame: GeographicFrame,
+        chart_turn: i64,
+        seam_only_vertices: bool,
+        has_seam_vertex: bool,
+        exact_axis_band: bool,
+        south: Latitude,
+        north: Latitude,
+    ) -> Self {
         let full_longitude = chart_turn != 0 || exact_axis_band;
         let seam_only = seam_only_vertices && has_seam_vertex && !full_longitude;
         let domain = if full_longitude {
@@ -1020,13 +1274,13 @@ impl RingSummary {
         } else {
             RingDomain::Ordinary
         };
-        Ok(Self {
+        Self {
             chart_turn,
             domain,
             exact_axis_band,
             south,
             north,
-        })
+        }
     }
 
     pub(crate) const fn turn(&self) -> RingTurn {
@@ -1046,62 +1300,4 @@ impl RingSummary {
             Some(FullTurnPole::Ambiguous) | None => None,
         }
     }
-}
-
-fn is_exact_axis_band(
-    frame: GeographicFrame,
-    ring: &GeographicRing<'_>,
-    west: f64,
-    east: f64,
-    south: Latitude,
-    north: Latitude,
-) -> bool {
-    let axis = frame.longitude();
-    if east - west <= axis.half_period() || south.get().to_bits() == north.get().to_bits() {
-        return false;
-    }
-    let (mut south_turns, mut north_turns) = (0_i64, 0_i64);
-    let mut meridian = None;
-    for index in 0..ring.len().saturating_sub(1) {
-        let start_x = ring.x(index);
-        let end_x = ring.x(index + 1);
-        let start_y = ring.y(index);
-        let end_y = ring.y(index + 1);
-        let Ok(step) = axis.chart_step(start_x, end_x) else {
-            return false;
-        };
-        if start_y.to_bits() == end_y.to_bits() {
-            let parallel = if start_y.to_bits() == south.get().to_bits() {
-                &mut south_turns
-            } else if start_y.to_bits() == north.get().to_bits() {
-                &mut north_turns
-            } else if step.delta(axis) == 0.0 {
-                continue;
-            } else {
-                return false;
-            };
-            let Ok(transit) = step.transit(axis, start_x, end_x) else {
-                return false;
-            };
-            let Some(turns) = parallel.checked_add(i64::from(transit)) else {
-                return false;
-            };
-            *parallel = turns;
-        } else {
-            if step.delta(axis) != 0.0 {
-                return false;
-            }
-            let Ok(longitude) = axis.canonicalize(start_x) else {
-                return false;
-            };
-            let longitude = longitude.get().to_bits();
-            if meridian.is_some_and(|previous| previous != longitude) {
-                return false;
-            }
-            meridian = Some(longitude);
-        }
-    }
-    // Each parallel closes one directed circle on the same quotient meridian.
-    // Canonical seam spelling need not retain a raw one-period bounding span.
-    matches!((south_turns, north_turns), (1, -1) | (-1, 1))
 }

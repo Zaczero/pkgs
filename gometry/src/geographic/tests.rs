@@ -39,6 +39,51 @@ fn ring(xs: Vec<f64>, ys: Vec<f64>) -> crate::geometry::Ring {
     crate::geometry::Ring::closed_coordseq(xy_seq(xs, ys)).unwrap()
 }
 
+fn ring_from_points(points: &[(f64, f64)]) -> crate::geometry::Ring {
+    ring(
+        points.iter().map(|&(x, _)| x).collect(),
+        points.iter().map(|&(_, y)| y).collect(),
+    )
+}
+
+fn rotated_ring(points: &[(f64, f64)], offset: usize, reverse: bool) -> crate::geometry::Ring {
+    let mut vertices = points
+        .iter()
+        .take(points.len().saturating_sub(1))
+        .copied()
+        .collect::<Vec<_>>();
+    vertices.rotate_left(offset);
+    if reverse {
+        vertices.reverse();
+    }
+    let first = vertices.first().copied().expect("ring has a vertex");
+    vertices.push(first);
+    ring_from_points(&vertices)
+}
+
+fn admitted_ring_summary(frame: GeographicFrame, ring: &crate::geometry::Ring) -> RingSummary {
+    let shape =
+        crate::geometry::Shape::Polygon(crate::geometry::Polygon::new(ring.clone(), Vec::new()));
+    let mut owners = GeographicCollectionOwners::default();
+    let mut summary = None;
+    ScalarGeographicView::try_new_with_collection_owners_and_visit(
+        frame,
+        &shape,
+        &mut owners,
+        |_| {},
+        |event| {
+            if let super::view::GeographicAdmissionEvent::Ring {
+                summary: admitted, ..
+            } = event
+            {
+                summary = Some(admitted);
+            }
+        },
+    )
+    .unwrap();
+    summary.expect("an admitted polygon publishes its shell summary")
+}
+
 fn nearby_grad_factor_frame() -> GeographicFrame {
     let factor = factor(std::f64::consts::TAU / 400.0_f64.next_up());
     GeographicFrame::try_new(factor, factor, 0.0).unwrap()
@@ -220,6 +265,9 @@ fn raw_bounds_certify_only_strictly_ordinary_nonpolar_chart_support() {
 
     assert!(frame.bounds_certify_ordinary_support(bounds(-10.0, -20.0, 10.0, 20.0)));
     assert!(frame.longitude_bounds_certify_no_seam(-10.0, 10.0));
+    assert!(!frame.longitude_bounds_certify_no_seam(10.0, -10.0));
+    assert!(!frame.bounds_certify_ordinary_support(bounds(10.0, -1.0, -10.0, 1.0)));
+    assert!(!frame.bounds_certify_ordinary_support(bounds(-10.0, 10.0, 10.0, -10.0)));
     assert!(
         !frame.longitude_bounds_certify_no_seam(179.0, 181.0),
         "a narrow alias interval can still cross the canonical seam"
@@ -378,6 +426,95 @@ fn canonical_axis_band_spelling_retains_both_complete_parallel_turns() {
             RingDomain::FullLongitude(RingLatitudeSpan::Ordinary)
         );
     }
+}
+
+#[test]
+fn historical_parallel_levels_reject_interior_cancellation_independent_of_start() {
+    let frame = degrees();
+    let counterring = [
+        (0.0, 10.0),
+        (360.0, 10.0),
+        (360.0, 15.0),
+        (0.0, 15.0),
+        (0.0, 20.0),
+        (360.0, 20.0),
+        (360.0, 0.0),
+        (0.0, 0.0),
+        (0.0, 10.0),
+    ];
+
+    for reverse in [false, true] {
+        for offset in 0..counterring.len() - 1 {
+            let source = rotated_ring(&counterring, offset, reverse);
+            let summary = RingSummary::try_new(frame, &GeographicRing::from_ring(&source)).unwrap();
+            let fused = admitted_ring_summary(frame, &source);
+
+            assert_eq!(summary, fused);
+            assert_eq!(summary.chart_turn, 0);
+            assert!(!summary.exact_axis_band);
+            assert_eq!(summary.domain, RingDomain::Ordinary);
+        }
+    }
+}
+
+#[test]
+fn historical_parallel_levels_accept_north_first_bands_and_ignore_zero_edges() {
+    let frame = degrees();
+    let north_first = [
+        (0.0, 20.0),
+        (120.0, 20.0),
+        (240.0, 20.0),
+        (360.0, 20.0),
+        (360.0, 10.0),
+        (240.0, 10.0),
+        (120.0, 10.0),
+        (0.0, 10.0),
+        (0.0, 20.0),
+    ];
+    for reverse in [false, true] {
+        for offset in 0..north_first.len() - 1 {
+            let source = rotated_ring(&north_first, offset, reverse);
+            let summary = RingSummary::try_new(frame, &GeographicRing::from_ring(&source)).unwrap();
+            assert_eq!(summary, admitted_ring_summary(frame, &source));
+            assert_eq!(summary.chart_turn, 0);
+            assert!(summary.exact_axis_band);
+            assert!(matches!(summary.domain, RingDomain::FullLongitude(_)));
+        }
+    }
+
+    let zero_edge = ring_from_points(&[
+        (-180.0, 20.0),
+        (-60.0, 20.0),
+        (60.0, 20.0),
+        (180.0, 20.0),
+        (-180.0, 20.0),
+        (-180.0, 10.0),
+        (60.0, 10.0),
+        (-60.0, 10.0),
+        (-180.0, 10.0),
+        (-180.0, 20.0),
+    ]);
+    let summary = RingSummary::try_new(frame, &GeographicRing::from_ring(&zero_edge)).unwrap();
+    assert_eq!(summary, admitted_ring_summary(frame, &zero_edge));
+    assert!(summary.exact_axis_band);
+}
+
+#[test]
+fn retraced_single_parallel_does_not_form_an_axis_band() {
+    let frame = degrees();
+    let retraced = ring_from_points(&[
+        (0.0, 20.0),
+        (360.0, 20.0),
+        (0.0, 20.0),
+        (0.0, 10.0),
+        (0.0, 20.0),
+    ]);
+    let summary = RingSummary::try_new(frame, &GeographicRing::from_ring(&retraced)).unwrap();
+
+    assert_eq!(summary, admitted_ring_summary(frame, &retraced));
+    assert_eq!(summary.chart_turn, 0);
+    assert!(!summary.exact_axis_band);
+    assert_eq!(summary.domain, RingDomain::Ordinary);
 }
 
 #[test]
@@ -696,11 +833,7 @@ fn frame_conversion_uses_one_greenwich_seam_for_points_and_lanes() {
 fn computed_native_points_canonicalize_longitude_and_preserve_other_axes() {
     for (frame, longitude, expected) in [
         (degrees(), 180.0, -180.0),
-        (
-            frame(std::f64::consts::TAU / 400.0),
-            200.0,
-            -199.999_999_999_999_97,
-        ),
+        (frame(std::f64::consts::TAU / 400.0), 200.0, -200.0),
         (frame(1.0), std::f64::consts::PI, -std::f64::consts::PI),
     ] {
         let point = crate::geometry::Point::new_axes(

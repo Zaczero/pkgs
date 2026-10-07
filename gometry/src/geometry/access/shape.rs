@@ -79,7 +79,7 @@ pub(crate) enum RunIdentity {
 }
 
 /// The same CoordSeq owner can represent point support and linework support.
-#[derive(Clone, Copy, Eq, Hash, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub(crate) enum SupportRunKind {
     PointSet,
     SegmentChain,

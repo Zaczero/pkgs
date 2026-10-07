@@ -13,6 +13,19 @@ import gometry as gm
 import numpy as np
 import numpy.typing as npt
 
+WEST_RADIAN_SOUTH_GRAD_CRS = """GEOGCRS["West-radian south-grad WGS84",
+ DATUM["World Geodetic System 1984",ELLIPSOID["WGS 84",6378137,298.257223563]],
+ PRIMEM["Greenwich",0,ANGLEUNIT["degree",0.017453292519943295]],
+ CS[ellipsoidal,2],
+ AXIS["Longitude",west,ORDER[1],ANGLEUNIT["radian",1]],
+ AXIS["Latitude",south,ORDER[2],ANGLEUNIT["grad",0.015707963267948967]]]"""
+EAST_DEGREE_SOUTH_LATITUDE_CRS = """GEOGCRS["WGS 84 south latitude",
+ DATUM["World Geodetic System 1984",ELLIPSOID["WGS 84",6378137,298.257223563]],
+ PRIMEM["Greenwich",0,ANGLEUNIT["degree",0.017453292519943295]],
+ CS[ellipsoidal,2],
+ AXIS["Longitude",east,ORDER[1],ANGLEUNIT["degree",0.017453292519943295]],
+ AXIS["Latitude",south,ORDER[2],ANGLEUNIT["degree",0.017453292519943295]]]"""
+
 if TYPE_CHECKING:
     from types import ModuleType
 GOMETRY_ROOT = Path(__file__).resolve().parents[1]

@@ -242,27 +242,15 @@ fn inspect_seam_segment(
     start: Point,
     end: Point,
     axis: crate::geographic::PeriodicAxis,
-    half: f64,
 ) -> Option<SeamSegment> {
-    let raw_delta = (end.x - start.x).abs();
-    let (start_longitude, end_longitude) = (
-        axis.canonicalize(start.x).ok()?,
-        axis.canonicalize(end.x).ok()?,
-    );
+    let connection = axis.chart_connection(start.x, end.x).ok()?;
+    let (start_longitude, end_longitude) = (connection.start, connection.end);
     let start_side = seam_side(start, start_longitude, axis);
     let end_side = seam_side(end, end_longitude, axis);
-    let step = axis.chart_step(start.x, end.x).ok()?;
-    let crosses = if step.is_circle() {
-        true
-    } else if start_side.is_some() || end_side.is_some() {
-        raw_delta > half && raw_delta < axis.period().next_up()
-    } else {
-        (end_longitude.get() - start_longitude.get()).abs() > half
-    };
     Some(SeamSegment {
         start_side,
         end_side,
-        crosses,
+        crosses: connection.crosses_antimeridian(axis, start.x, end.x),
     })
 }
 
@@ -286,13 +274,8 @@ pub(crate) fn chain_crosses_antimeridian<C: Coordinates + ?Sized>(
             return crosses;
         }
         for (&[x0, x1], &[y0, y1]) in xs.array_windows::<2>().zip(ys.array_windows::<2>()) {
-            if inspect_seam_segment(
-                Point::new_raw_xy(x0, y0),
-                Point::new_raw_xy(x1, y1),
-                axis,
-                half,
-            )
-            .is_some_and(|segment| segment.crosses)
+            if inspect_seam_segment(Point::new_raw_xy(x0, y0), Point::new_raw_xy(x1, y1), axis)
+                .is_some_and(|segment| segment.crosses)
             {
                 return true;
             }
@@ -300,7 +283,7 @@ pub(crate) fn chain_crosses_antimeridian<C: Coordinates + ?Sized>(
         return false;
     }
     chain.segment_pairs().any(|[start, end]| {
-        inspect_seam_segment(start, end, axis, half).is_some_and(|segment| segment.crosses)
+        inspect_seam_segment(start, end, axis).is_some_and(|segment| segment.crosses)
     })
 }
 
@@ -431,7 +414,7 @@ where
     let mut has_segment = false;
     for [start, end] in chain.segment_pairs() {
         has_segment = true;
-        let Some(segment) = inspect_seam_segment(start, end, axis, half) else {
+        let Some(segment) = inspect_seam_segment(start, end, axis) else {
             continue;
         };
         if segment.crosses {

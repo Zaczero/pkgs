@@ -70,6 +70,51 @@ def test_geographic_total_bounds_aggregate_points_before_choosing_a_hull() -> No
     assert rows[[1, 0, 1]].total_bounds == (0.0, 0.0, -120.0, 0.0)
 
 
+def test_invalid_noncrossing_geographic_total_bounds_preserves_raw_bounds() -> None:
+    invalid = gm.LineString([(0.0, 100.0), (1.0, 100.0)], crs=4326)
+    expected = (0.0, 100.0, 1.0, 100.0)
+    packed = gm.GeometryArray([invalid], crs=4326)
+
+    invalid_point = gm.Point(10.0, 100.0, crs=4326)
+    assert gm.GeometryArray([invalid_point], crs=4326).total_bounds == (
+        10.0,
+        100.0,
+        10.0,
+        100.0,
+    )
+    assert packed.total_bounds == expected
+    assert packed.total_bounds == expected
+    assert packed[:1].total_bounds == expected
+    assert packed[[0, 0]].total_bounds == expected
+
+    cached = gm.GeometryArray([invalid], crs=4326)
+    np.testing.assert_array_equal(cached.bounds, [expected])
+    assert cached.total_bounds == expected
+
+    nullable = gm.GeometryArray([invalid, None], crs=4326)
+    assert nullable.total_bounds == expected
+
+    invalid_alias = gm.LineString([(450.0, 100.0), (451.0, 100.0)], crs=4326)
+    assert gm.GeometryArray([invalid_alias], crs=4326).total_bounds == (
+        450.0,
+        100.0,
+        451.0,
+        100.0,
+    )
+
+    mixed = gm.GeometryArray([invalid, gm.Point(2.0, 3.0, crs=4326)], crs=4326)
+    assert mixed.total_bounds == (0.0, 3.0, 2.0, 100.0)
+
+    selected_crossing = gm.LineString([(170.0, 100.0), (-170.0, 100.0)], crs=4326)
+    assert gm.GeometryArray([selected_crossing], crs=4326).total_bounds is None
+    assert (
+        gm.GeometryArray(
+            [selected_crossing, gm.Point(2.0, 3.0, crs=4326)], crs=4326
+        ).total_bounds
+        is None
+    )
+
+
 def test_buffer_vectors_array_protocol_dtype_and_copy() -> None:
     points = gm.points([0.0, 1.0, 2.0], [0.0, 0.0, 0.0])
     floats = gm.distance(points, gm.Point(0, 0))

@@ -729,6 +729,39 @@ fn geographic_seam_bundles_keep_endpoint_provenance() {
 }
 
 #[test]
+fn chart_segments_split_west_positive_axes_at_the_native_affine_crossing() {
+    let frame = crate::geographic::GeographicFrame::try_new_with_orientation(
+        crate::geographic::AngularFactor::try_new("longitude unit", std::f64::consts::TAU / 8.0)
+            .unwrap(),
+        crate::geographic::AngularFactor::try_new("latitude radian", 1.0).unwrap(),
+        0.0,
+        crate::geographic::GeographicAxisOrientation::from_axis_directions(false, false),
+    )
+    .unwrap();
+    let start = XY::new(-3.75, 0.0);
+    let end = XY::new(3.25, -1.0);
+    let expected_latitude = -0.25;
+
+    for segment in [Segment { start, end }, Segment {
+        start: end,
+        end: start,
+    }] {
+        let [Some(first), Some(second)] = chart_segments(frame, segment) else {
+            panic!("the west-positive segment crosses one selected-period seam");
+        };
+        assert_eq!(first.end.y, expected_latitude);
+        assert_eq!(second.start.y.to_bits(), first.end.y.to_bits());
+        let half = frame.longitude().half_period();
+        let seam = first.end.x.to_bits();
+        assert!(seam == (-half).to_bits() || seam == half.to_bits());
+        assert!(
+            second.start.x.to_bits() == (-first.end.x).to_bits(),
+            "seam chart spellings are opposite"
+        );
+    }
+}
+
+#[test]
 fn geographic_chart_keeps_exact_one_ulp_source_endpoint() {
     let one_ulp_shape = geographic_one_ulp_endpoint_fixture();
     let one_ulp_graph = geographic_graph(&one_ulp_shape);

@@ -221,48 +221,6 @@ fn crossing_points(west: Point, east: Point) -> (Point, Point) {
     (make(-180.0), make(180.0))
 }
 
-#[cfg(test)]
-pub(crate) fn crossing_latitude_in_frame(
-    start: Point,
-    end: Point,
-    frame: crate::geographic::GeographicFrame,
-) -> f64 {
-    let axis = frame.longitude();
-    if (end.x - start.x).abs() >= axis.period() {
-        return start.y;
-    }
-    let start_longitude = axis
-        .canonicalize(start.x)
-        .expect("validated longitude")
-        .get();
-    let end_longitude = axis.canonicalize(end.x).expect("validated longitude").get();
-    if start_longitude.abs() == axis.half_period() {
-        return start.y;
-    }
-    if end_longitude.abs() == axis.half_period() {
-        return end.y;
-    }
-    if start_longitude == end_longitude {
-        return start.y;
-    }
-    let longitude_scale = axis.to_degrees(1.0) * frame.longitude_orientation_sign();
-    let latitude_scale = frame.latitude_unit().native_to_degrees(1.0, frame.pole())
-        * frame.latitude_orientation_sign();
-    let (west, east) = if start_longitude < end_longitude {
-        (
-            Point::new_raw_xy(start_longitude * longitude_scale, start.y * latitude_scale),
-            Point::new_raw_xy(end_longitude * longitude_scale, end.y * latitude_scale),
-        )
-    } else {
-        (
-            Point::new_raw_xy(end_longitude * longitude_scale, end.y * latitude_scale),
-            Point::new_raw_xy(start_longitude * longitude_scale, start.y * latitude_scale),
-        )
-    };
-    let (latitude, _) = crossing_latitude_and_fraction(west, east);
-    latitude / latitude_scale
-}
-
 /// Return the seam latitude and affine fraction for an ordered chart segment.
 ///
 /// The endpoints are canonical chart longitudes, with `west` below `east`.

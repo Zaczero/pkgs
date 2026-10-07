@@ -3372,9 +3372,14 @@ mod tests {
         let cases = [
             ("degree", GeographicFrame::crs84(), -180.0),
             (
-                "grad",
+                "grad positive seam",
                 GeographicFrame::try_new(grads_unit, grads_unit, 0.0).unwrap(),
-                -199.999_999_999_999_97,
+                200.0,
+            ),
+            (
+                "grad negative seam",
+                GeographicFrame::try_new(grads_unit, grads_unit, 0.0).unwrap(),
+                -200.0,
             ),
             (
                 "radian",

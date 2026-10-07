@@ -111,8 +111,9 @@ impl PyGeometry {
         self.shape.has_m()
     }
     /// Axis-aligned bounds ``(minx, miny, maxx, maxy)``, or ``None`` if empty.
-    /// Empty rows in a `GeometryArray` are all-``nan`` instead — see
-    /// `GeometryArray.bounds`.
+    /// Geographic bounds use periodic longitude; ``minx > maxx`` denotes an
+    /// interval crossing that frame's seam. Empty rows in a `GeometryArray`
+    /// are all-``nan`` instead — see `GeometryArray.bounds`.
     ///
     /// Returns
     /// -------
@@ -123,15 +124,11 @@ impl PyGeometry {
         if let Ok(crate::geometry::TopologyDomain::Geographic(frame)) =
             crate::geometry::topology_domain(&self.frame)
         {
-            if raw.is_some_and(|bounds| frame.bounds_certify_ordinary_support(bounds)) {
-                return raw.map(Bounds::into_tuple);
-            }
-            return crate::geographic::GeographicSupportEnvelope::try_from_shape(
+            return crate::geographic::GeographicSupportProducts::public_bounds_for_shape(
                 frame,
                 self.shape.shape(),
+                raw,
             )
-            .ok()
-            .and_then(|support| support.bounds(frame))
             .map(Bounds::into_tuple);
         }
         raw.map(Bounds::into_tuple)

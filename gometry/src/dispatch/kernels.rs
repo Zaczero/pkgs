@@ -938,17 +938,13 @@ pub(crate) fn unary_bounds(
 ) -> Result<Option<Bounds>> {
     match ctx.domain {
         crate::geometry::TopologyDomain::Cartesian => Ok(data.bounds()),
-        crate::geometry::TopologyDomain::Geographic(frame) => {
-            let bounds = data.bounds();
-            if bounds.is_some_and(|bounds| frame.bounds_certify_ordinary_support(bounds)) {
-                return Ok(bounds);
-            }
-            Ok(
-                crate::geographic::GeographicSupportEnvelope::try_from_shape(frame, data.shape())
-                    .ok()
-                    .and_then(|support| support.bounds(frame)),
-            )
-        },
+        crate::geometry::TopologyDomain::Geographic(frame) => Ok(
+            crate::geographic::GeographicSupportProducts::public_bounds_for_shape(
+                frame,
+                data.shape(),
+                data.bounds(),
+            ),
+        ),
     }
 }
 

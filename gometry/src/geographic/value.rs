@@ -430,11 +430,6 @@ impl PeriodicAxis {
     }
 
     /// Preserve a source longitude while selecting its nearest periodic lift.
-    #[expect(
-        clippy::float_cmp,
-        clippy::arithmetic_side_effects,
-        reason = "finite subtraction may overflow into the exact lane; the strict half-period proof preserves source bits for k=0"
-    )]
     pub(crate) fn nearest_longitude_alias(
         self,
         lifted_reference: f64,
@@ -481,11 +476,6 @@ impl PeriodicAxis {
         }
     }
 
-    #[expect(
-        clippy::float_cmp,
-        clippy::arithmetic_side_effects,
-        reason = "the small quotient is only a candidate until exact residual checks certify it; the one integer increment stays below 2^52"
-    )]
     fn nearest_longitude_alias_with_certified_quotient(
         self,
         lifted_reference: f64,
@@ -599,10 +589,6 @@ impl PeriodicAxis {
         self.shortest_edge_after_circle_check(from, to)
     }
 
-    #[expect(
-        clippy::float_cmp,
-        reason = "only the exact represented half-period is a directional tie"
-    )]
     fn shortest_edge_after_circle_check(
         self,
         from: f64,
@@ -693,6 +679,7 @@ impl PeriodicAxis {
         self.seam_transit_with_direction(from, to, self.shortest_alias_step(from, to)?)
     }
 
+    #[cfg(test)]
     fn seam_transit_with_direction(
         self,
         from: f64,
@@ -898,7 +885,7 @@ impl GeographicFrame {
     pub(crate) fn longitude_bounds_certify_no_seam(self, minx: f64, maxx: f64) -> bool {
         let axis = self.longitude;
         let bound = axis.ordinary_longitude_bound();
-        minx > -bound && maxx < bound && maxx - minx < axis.half_period()
+        minx <= maxx && minx > -bound && maxx < bound && maxx - minx < axis.half_period()
     }
 
     /// Whether raw extrema prove a geometry stays in one open, non-polar
@@ -906,6 +893,7 @@ impl GeographicFrame {
     /// pole-winding check is needed.
     pub(crate) fn bounds_certify_ordinary_support(self, bounds: Bounds) -> bool {
         self.longitude_bounds_certify_no_seam(bounds.minx(), bounds.maxx())
+            && bounds.miny() <= bounds.maxy()
             && bounds.miny() > -self.pole
             && bounds.maxy() < self.pole
     }
@@ -1327,6 +1315,7 @@ impl ChartStep {
         matches!(self, Self::Circle(_))
     }
 
+    #[cfg(test)]
     pub(crate) fn transit(
         self,
         axis: PeriodicAxis,
@@ -1399,6 +1388,20 @@ impl ChartConnection {
 
     pub(crate) fn seam_transit(self) -> i8 {
         self.step.transit_from_canonical(self.start, self.end)
+    }
+
+    pub(crate) fn crosses_antimeridian(self, axis: PeriodicAxis, from: f64, to: f64) -> bool {
+        if self.step.is_circle() {
+            return true;
+        }
+        let touches_seam = self.start.identity(axis) == SeamIdentity::Seam
+            || self.end.identity(axis) == SeamIdentity::Seam;
+        if touches_seam {
+            let raw_delta = (to - from).abs();
+            raw_delta > axis.half_period() && raw_delta < axis.period().next_up()
+        } else {
+            (self.end.get() - self.start.get()).abs() > axis.half_period()
+        }
     }
 }
 

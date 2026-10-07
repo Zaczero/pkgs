@@ -319,7 +319,7 @@ mod multipart_storage_tests {
         let source = PyGeometryArray::from_shapes(vec![shape], Frame::None).unwrap();
         let selected = source.gather_logical_rows(&[0, 0]).unwrap();
         let bounds =
-            crate::test_support::assert_no_allocations(|| selected.storage().total_bounds());
+            crate::test_support::assert_no_allocations(|| selected.storage().raw_total_bounds());
         assert_eq!(bounds.unwrap().into_tuple(), (0.0, 0.0, 4.0, 4.0));
     }
 

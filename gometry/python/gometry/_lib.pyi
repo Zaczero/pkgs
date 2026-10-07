@@ -1053,8 +1053,9 @@ class Geometry:
     @property
     def bounds(self) -> tuple[float, float, float, float] | None:
         """Axis-aligned bounds ``(minx, miny, maxx, maxy)``, or ``None`` if empty.
-        Empty rows in a `GeometryArray` are all-``nan`` instead — see
-        `GeometryArray.bounds`.
+        Geographic bounds use periodic longitude; ``minx > maxx`` denotes an
+        interval crossing that frame's seam. Empty rows in a `GeometryArray`
+        are all-``nan`` instead — see `GeometryArray.bounds`.
 
         Returns
         -------
@@ -6612,6 +6613,7 @@ class GeometryArray(Sequence[_GeometryT_co]):
         Empty rows are all-``nan`` (intentional: a fixed-width ndarray cannot
         hold ``None`` like a scalar geometry); missing rows are also all-``nan``
         and are identified by `.is_missing`.
+        Geographic longitude intervals may cross the seam, with ``minx > maxx``.
 
         Returns
         -------
@@ -6621,7 +6623,8 @@ class GeometryArray(Sequence[_GeometryT_co]):
     @property
     def total_bounds(self) -> tuple[float, float, float, float] | None:
         """Combined bounds ``(minx, miny, maxx, maxy)`` over all geometries, or
-        ``None`` if every geometry is empty.
+        ``None`` if every geometry is empty. Geographic longitude bounds use
+        the CRS's periodic interval, so ``minx > maxx`` denotes a seam crossing.
 
         Returns
         -------
@@ -7327,7 +7330,10 @@ class GeometryArray(Sequence[_GeometryT_co]):
             Curve depth (``1``-``32``).
 
         bounds : iterable[float], optional
-            ``(minx, miny, maxx, maxy)`` extent for keying; defaults to ``total_bounds``.
+            Ordered ``(minx, miny, maxx, maxy)`` rectangle for keying. When
+            omitted, uses the present rows' minimum and maximum stored
+            coordinates without periodic wrapping. Geographic ``total_bounds``
+            may wrap, so it is not necessarily a curve frame.
 
         Returns
         -------
@@ -10045,9 +10051,12 @@ class GeometryArray(Sequence[_GeometryT_co]):
             Grid order (``1`` to ``32``); 16 matches GeoPandas/DuckDB.
 
         bounds : tuple of float, optional
-            The frame ``(minx, miny, maxx, maxy)``; the array's total bounds
-            when omitted. Keys compare across geometries only against a *shared*
-            frame — pass the same ``bounds`` when keying separate geometries.
+            Ordered ``(minx, miny, maxx, maxy)`` rectangle for keying. When
+            omitted, uses the present rows' minimum and maximum stored
+            coordinates without periodic wrapping. Geographic ``total_bounds``
+            may wrap, so it is not necessarily a curve frame. Keys compare
+            across geometries only against a *shared* frame — pass the same
+            ``bounds`` when keying separate geometries.
 
         Returns
         -------

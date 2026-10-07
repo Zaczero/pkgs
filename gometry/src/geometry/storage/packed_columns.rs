@@ -2145,7 +2145,7 @@ mod tests {
             });
             admission.unwrap();
             let (bounds, bounds_allocations) =
-                allocation_count(|| packed_column_kernels::total_bounds_from_columns(&columns));
+                allocation_count(|| packed_column_kernels::raw_total_bounds_from_columns(&columns));
             assert_eq!((admission_allocations, bounds_allocations), (0, 0));
             assert_eq!(
                 bounds.unwrap().into_array(),

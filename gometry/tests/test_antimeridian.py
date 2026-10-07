@@ -8,6 +8,11 @@ import numpy as np
 import pytest
 from pyproj import Geod
 
+from tests._support import (
+    EAST_DEGREE_SOUTH_LATITUDE_CRS,
+    WEST_RADIAN_SOUTH_GRAD_CRS,
+)
+
 
 def test_split_antimeridian_lines_and_seam_latitudes() -> None:
     line = gm.LineString([(170, -10), (-170, 10)], crs=4326)
@@ -164,6 +169,25 @@ def test_multipolygon_perimeter_cancels_partial_periodic_seam_overlap() -> None:
         gm.Point(180, 0, crs=4326),
         gm.Point(-180, 10, crs=4326),
     )
+    expected = west.length + east.length - 2.0 * shared
+    assert geometry.length == pytest.approx(expected, abs=1.0e-8)
+
+
+def test_multipolygon_perimeter_cancels_seam_overlap_with_south_axis() -> None:
+    def polygon(points: list[tuple[float, float]]) -> gm.Polygon:
+        return gm.Polygon(
+            [(x, -y) for x, y in points],
+            crs=EAST_DEGREE_SOUTH_LATITUDE_CRS,
+        )
+
+    west = polygon([(170, -10), (180, -10), (180, 10), (170, 10), (170, -10)])
+    east = polygon([(-180, 0), (-170, 0), (-170, 20), (-180, 20), (-180, 0)])
+    geometry = gm.MultiPolygon([west, east])
+    shared = gm.distance(
+        gm.Point(180, 0, crs=EAST_DEGREE_SOUTH_LATITUDE_CRS),
+        gm.Point(180, -10, crs=EAST_DEGREE_SOUTH_LATITUDE_CRS),
+    )
+
     expected = west.length + east.length - 2.0 * shared
     assert geometry.length == pytest.approx(expected, abs=1.0e-8)
 
@@ -408,12 +432,11 @@ def test_seam_only_bounds_use_the_canonical_seam() -> None:
     np.testing.assert_array_equal(array.bounds, [expected])
     assert array.total_bounds == expected
 
-    # A same-spelling seam line bypasses crossing reduction and keeps its raw
-    # longitude; opposite seam aliases reduce to the frame's canonical spelling.
+    # Both seam spellings denote the same periodic longitude in public bounds.
     assert gm.LineString([(180, 0), (180, 10)], crs=4326).bounds == (
-        180.0,
+        -180.0,
         0.0,
-        180.0,
+        -180.0,
         10.0,
     )
     assert gm.LineString([(-180, 0), (180, 10)], crs=4326).bounds == (
@@ -435,6 +458,47 @@ def test_seam_only_bounds_use_the_canonical_seam() -> None:
     )
     assert crossing.bounds == (170.0, 40.0, -170.0, 50.0)
     assert _pole_ring().bounds == (-180.0, 80.0, 180.0, 90.0)
+
+
+def test_ordinary_geographic_bounds_preserve_endpoint_bits_through_retagging() -> None:
+    endpoint = math.nextafter(1.0, 2.0)
+    line = gm.LineString([(-0.0, -0.0), (endpoint, endpoint)], crs=4326)
+    expected = line.bounds
+    assert [value.hex() for value in expected] == [
+        (-0.0).hex(),
+        (-0.0).hex(),
+        endpoint.hex(),
+        endpoint.hex(),
+    ]
+
+    array = gm.GeometryArray([line], crs=4326)
+    assert [float(value).hex() for value in array.bounds[0]] == [
+        value.hex() for value in expected
+    ]
+
+    untagged = gm.GeometryArray([gm.LineString([(170.0, 0.0), (-170.0, 10.0)])])
+    assert untagged.total_bounds == (-170.0, 0.0, 170.0, 10.0)
+    retagged = untagged.set_crs(4326)
+    assert tuple(retagged.bounds[0]) == (170.0, 0.0, -170.0, 10.0)
+    assert retagged.total_bounds == (170.0, 0.0, -170.0, 10.0)
+
+
+def test_geographic_bounds_keep_invalid_getter_and_empty_full_results() -> None:
+    raw = gm.LineString([(0.0, 100.0), (1.0, 100.0)], crs=4326)
+    crossing = gm.LineString([(170.0, 100.0), (-170.0, 100.0)], crs=4326)
+    assert raw.bounds == (0.0, 100.0, 1.0, 100.0)
+    assert crossing.bounds is None
+    rows = gm.GeometryArray([raw, crossing], crs=4326)
+    assert tuple(rows.bounds[0]) == raw.bounds
+    assert np.isnan(rows.bounds[1]).all()
+
+    assert gm.GeometryArray([None], crs=4326).total_bounds is None
+    assert gm.box(-180.0, -10.0, 180.0, 10.0, crs=4326).bounds == (
+        -180.0,
+        -10.0,
+        180.0,
+        10.0,
+    )
 
 
 def test_crosses_antimeridian_matches_split_frame() -> None:
@@ -551,40 +615,42 @@ _RADIAN_CRS = (
 
 
 @pytest.mark.parametrize(
-    'crs',
-    [4326, _RADIAN_CRS, 4807],
+    ('crs', 'period'),
+    [(4326, 360.0), (_RADIAN_CRS, math.tau), (4807, 400.0)],
     ids=['degree', 'radian', 'grad'],
 )
-def test_split_antimeridian_affine_fraction_uses_native_units(
-    crs: int | str,
+def test_split_antimeridian_uses_selected_native_period_for_seam_coordinates(
+    crs: int | str, period: float
 ) -> None:
-    scale = math.degrees(cast('float', gm.CRS(crs).axes[0]['unit_conversion_factor']))
-    for coordinates, z, m in (
-        ([(170.0, 10.0), (-150.0, 30.0)], [10.0, 50.0], [1.0, 5.0]),
-        ([(-150.0, 30.0), (170.0, 10.0)], [50.0, 10.0], [5.0, 1.0]),
+    native_per_degree = period / 360.0
+    for coordinates in (
+        [(170.0, 10.0), (-150.0, 30.0)],
+        [(-150.0, 30.0), (170.0, 10.0)],
     ):
         line = gm.LineString(
             [
-                (longitude / scale, latitude / scale)
+                (longitude * native_per_degree, latitude * native_per_degree)
                 for longitude, latitude in coordinates
             ],
-            z=z,
-            m=m,
             crs=crs,
         )
         seam = [
             coordinate
             for part in line.split_antimeridian().parts
             for coordinate in part.coords
-            if abs(coordinate[0] * scale) == 180.0
+            if abs(coordinate[0]) == period / 2.0
         ]
-        assert len(seam) == 2
-        assert all(coordinate[1] * scale == pytest.approx(15.0) for coordinate in seam)
-        assert all(coordinate[2:] == (20.0, 2.0) for coordinate in seam)
-    rotation = 360.0 / scale
+        assert sorted(coordinate[0] for coordinate in seam) == [
+            -period / 2.0,
+            period / 2.0,
+        ]
+    rotation = period
     polygon = gm.Polygon(
         [
-            (longitude / scale + rotation, latitude / scale)
+            (
+                longitude * native_per_degree + rotation,
+                latitude * native_per_degree,
+            )
             for longitude, latitude in (
                 (170.0, 0.0),
                 (-170.0, 0.0),
@@ -594,23 +660,46 @@ def test_split_antimeridian_affine_fraction_uses_native_units(
         ],
         crs=crs,
     )
-    point = gm.Point(175.0 / scale + rotation, 6.0 / scale, crs=crs)
+    point = gm.Point(
+        175.0 * native_per_degree + rotation,
+        6.0 * native_per_degree,
+        crs=crs,
+    )
     assert gm.contains(polygon, point)
     assert gm.contains(polygon.split_antimeridian(), point)
 
 
+def test_split_antimeridian_reexpresses_west_south_mixed_axes() -> None:
+    for physical in (
+        [(179.0, 0.0), (-175.0, 6.0)],
+        [(-175.0, 6.0), (179.0, 0.0)],
+    ):
+        native = [
+            (-math.radians(longitude), -latitude * 10.0 / 9.0)
+            for longitude, latitude in physical
+        ]
+        split = gm.LineString(
+            native, crs=WEST_RADIAN_SOUTH_GRAD_CRS
+        ).split_antimeridian()
+        coordinates = gm.get_coordinates(split.to_crs(4326)).tolist()
+        seam = [point for point in coordinates if abs(point[0]) == 180.0]
+
+        assert len(seam) == 2
+        assert all(
+            point[1] == pytest.approx(1.0, abs=8.0 * math.ulp(1.0)) for point in seam
+        )
+
+
 @pytest.mark.parametrize(
-    'crs',
-    [4326, _RADIAN_CRS, 4807],
+    ('crs', 'period', 'pole'),
+    [(4326, 360.0, 90.0), (_RADIAN_CRS, math.tau, math.pi / 2), (4807, 400.0, 100.0)],
     ids=['degree', 'radian', 'grad'],
 )
 @pytest.mark.parametrize('north', [False, True], ids=['south', 'north'])
 def test_split_antimeridian_normalizes_only_admitted_pole_ulp_in_chart(
-    crs: int | str, *, north: bool
+    crs: int | str, period: float, pole: float, *, north: bool
 ) -> None:
-    factor = cast('float', gm.CRS(crs).axes[0]['unit_conversion_factor'])
-    half_turn = math.pi / factor
-    pole = math.pi / 2.0 / factor
+    half_turn = period / 2.0
     sign = 1.0 if north else -1.0
     exterior = math.nextafter(sign * pole, math.copysign(math.inf, sign))
     interior = sign * (pole - half_turn / 18.0)
@@ -1231,9 +1320,9 @@ def test_thin_crossing_band_split_preserves_chart_area_and_support(
     assert gm.area(split, unit='planar') == unwrapped_width * represented_height
     assert polygon.bounds == (170.0, base_latitude, -170.0, base_latitude + height)
     assert split.bounds == (
-        -180.0,
+        170.0,
         base_latitude,
-        180.0,
+        -170.0,
         base_latitude + height,
     )
     for longitude in (175.0, -175.0, 180.0, -180.0):

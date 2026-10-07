@@ -10,6 +10,8 @@ import pytest
 from pyproj import Geod
 
 from tests._support import (
+    EAST_DEGREE_SOUTH_LATITUDE_CRS,
+    WEST_RADIAN_SOUTH_GRAD_CRS,
     bools,
     chart_parallel_length,
     chart_rectangle_perimeter,
@@ -361,26 +363,32 @@ def test_chart_polar_cap_area_is_orientation_independent() -> None:
         pytest.param(-80.0, 80.0, 90.0, -90.0, -80.0, id='south-pole'),
     ],
 )
+@pytest.mark.parametrize(
+    'crs',
+    [EAST_DEGREE_SOUTH_LATITUDE_CRS, WEST_RADIAN_SOUTH_GRAD_CRS],
+    ids=['east-degree-south-degree', 'west-radian-south-grad'],
+)
 def test_chart_polar_cap_area_respects_south_directed_latitude_axis(
     physical_latitude: float,
     native_latitude: float,
     native_pole: float,
     south: float,
     north: float,
+    crs: str,
 ) -> None:
-    south_axis_crs = """GEOGCRS["WGS 84 south latitude",
-        DATUM["World Geodetic System 1984",ELLIPSOID["WGS 84",6378137,298.257223563]],
-        PRIMEM["Greenwich",0,ANGLEUNIT["degree",0.017453292519943295]],
-        CS[ellipsoidal,2],
-        AXIS["Longitude",east,ORDER[1],ANGLEUNIT["degree",0.017453292519943295]],
-        AXIS["Latitude",south,ORDER[2],ANGLEUNIT["degree",0.017453292519943295]]]"""
     longitudes = (0.0, 60.0, 120.0, 180.0, -120.0, -60.0)
     standard = gm.Polygon(
         [(longitude, physical_latitude) for longitude in longitudes], crs=4326
     )
+    if crs == WEST_RADIAN_SOUTH_GRAD_CRS:
+        native_latitude *= 10.0 / 9.0
+        native_pole = math.copysign(100.0, native_pole)
+        native_longitudes = [-math.radians(longitude) for longitude in longitudes]
+    else:
+        native_longitudes = longitudes
     south_axis = gm.Polygon(
-        [(longitude, native_latitude) for longitude in longitudes],
-        crs=south_axis_crs,
+        [(longitude, native_latitude) for longitude in native_longitudes],
+        crs=crs,
     )
     expected = chart_zone_area(
         -180.0, 180.0, south, north, semi_major=GEOD.a, flattening=GEOD.f
@@ -388,8 +396,8 @@ def test_chart_polar_cap_area_respects_south_directed_latitude_axis(
 
     assert standard.area == pytest.approx(expected, rel=3e-15)
     assert south_axis.area == pytest.approx(expected, rel=3e-15)
-    assert gm.contains(south_axis, gm.Point(0.0, native_pole, crs=south_axis_crs))
-    assert not gm.contains(south_axis, gm.Point(0.0, -native_pole, crs=south_axis_crs))
+    assert gm.contains(south_axis, gm.Point(0.0, native_pole, crs=crs))
+    assert not gm.contains(south_axis, gm.Point(0.0, -native_pole, crs=crs))
 
 
 def test_chart_area_subtracts_holes_from_a_large_chart_interior() -> None:
@@ -877,6 +885,83 @@ def test_non_degree_geographic_crs_uses_native_units_for_geodesic_metrics() -> N
     assert gm.distance(
         gm.Point(0, 0, crs=4807), gm.Point(1, 0, crs=4807)
     ) == pytest.approx(100189.3, rel=1e-6)
+
+
+def test_oriented_mixed_unit_chart_consumers_use_the_selected_frame() -> None:
+    longitudes = [170.0 + 2.5 * index for index in range(9)]
+    latitude = 60.0
+    native_line = [
+        (-math.radians(longitude), -latitude * 10.0 / 9.0) for longitude in longitudes
+    ]
+    line = gm.LineString(native_line, crs=WEST_RADIAN_SOUTH_GRAD_CRS)
+    expected_length = chart_parallel_length(
+        latitude, 20.0, semi_major=GEOD.a, flattening=GEOD.f
+    )
+    assert line.length == pytest.approx(expected_length, rel=1e-14)
+
+    midpoint = line.line_interpolate(expected_length / 2.0)
+    assert line.line_locate(midpoint) == pytest.approx(expected_length / 2.0, rel=1e-12)
+    physical_midpoint = midpoint.to_crs(4326)
+    assert abs(abs(physical_midpoint.x) - 180.0) <= 1.0e-12
+    assert physical_midpoint.y == pytest.approx(latitude, abs=2.0e-13)
+
+    query = gm.Point(-math.pi, -60.1 * 10.0 / 9.0, crs=WEST_RADIAN_SOUTH_GRAD_CRS)
+    expected_clearance = GEOD.inv(180.0, latitude, 180.0, 60.1)[2]
+    assert gm.distance(query, line) == pytest.approx(expected_clearance, rel=1e-12)
+    assert gm.dwithin(query, line, expected_clearance + 0.01)
+    assert not gm.dwithin(query, line, expected_clearance - 0.01)
+    nearest = gm.nearest_points(query, line)
+    assert gm.distance(*nearest) == pytest.approx(expected_clearance, rel=1e-12)
+
+    alias = gm.LineString(
+        [(longitude + math.tau, y) for longitude, y in native_line],
+        crs=WEST_RADIAN_SOUTH_GRAD_CRS,
+    )
+    assert gm.hausdorff_distance(line, alias) == 0.0
+    offset_parallel = gm.LineString(
+        [(-math.radians(longitude), -60.01 * 10.0 / 9.0) for longitude in longitudes],
+        crs=WEST_RADIAN_SOUTH_GRAD_CRS,
+    )
+    expected_hausdorff = GEOD.inv(180.0, latitude, 180.0, 60.01)[2]
+    assert gm.hausdorff_distance(line, offset_parallel) == pytest.approx(
+        expected_hausdorff, rel=1e-12
+    )
+
+
+def test_oriented_mixed_unit_polygon_perimeter_matches_chart_rectangle() -> None:
+    physical_ring = [
+        (10.0, 30.0),
+        (20.0, 30.0),
+        (20.0, 40.0),
+        (10.0, 40.0),
+        (10.0, 30.0),
+    ]
+    native_ring = [
+        (-math.radians(longitude), -latitude * 10.0 / 9.0)
+        for longitude, latitude in physical_ring
+    ]
+    polygon = gm.Polygon(native_ring, crs=WEST_RADIAN_SOUTH_GRAD_CRS)
+    expected = chart_rectangle_perimeter(GEOD, 10.0, 20.0, 30.0, 40.0)
+
+    assert polygon.length == pytest.approx(expected, rel=1e-12)
+
+
+def test_local_offset_certificate_uses_oriented_mixed_unit_frame() -> None:
+    crs = WEST_RADIAN_SOUTH_GRAD_CRS
+    line = gm.LineString(
+        [
+            (-math.radians(10.0), -50.0 * 10.0 / 9.0),
+            (-math.radians(10.01), -50.0 * 10.0 / 9.0),
+        ],
+        crs=crs,
+    )
+    assert line.estimate_local_crs().is_projected
+
+    midpoint = line.line_interpolate(0.5, normalized=True)
+    offset = line.offset_curve(50.0, unit='meters')
+
+    assert offset.crs == line.crs
+    assert gm.distance(midpoint, offset) == pytest.approx(50.0, rel=1.0e-3)
 
 
 @pytest.mark.parametrize(

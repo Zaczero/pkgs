@@ -13,9 +13,8 @@ use crate::collections::{HashMap, HashMapExt as _, HashSet, HashSetExt as _};
 use crate::geometry::segment_index::{EdgeYIndex, YStabbingIndex};
 use crate::geometry::{
     CoordSeq, Coordinates as _, Dimension, Point, PointKey, Polygon, RectContact,
-    SEGMENT_INDEX_MIN_PAIRS, Segment, SegmentIndex, Shape, XY, antimeridian, arrangement,
-    canonical_f64_bits, dimension, overlay, point_on_segment, relate, same_point, segment_vs_rect,
-    shared_segment_part,
+    SEGMENT_INDEX_MIN_PAIRS, Segment, SegmentIndex, Shape, XY, arrangement, canonical_f64_bits,
+    dimension, overlay, point_on_segment, relate, same_point, segment_vs_rect, shared_segment_part,
 };
 use crate::heap_size::HeapSize;
 
@@ -1401,11 +1400,7 @@ fn chart_segments(
     );
     let half = axis.half_period();
     if end.x > half {
-        let y = antimeridian::crossing_latitude_in_frame(
-            segment.end.point(),
-            segment.start.point(),
-            frame,
-        );
+        let y = chart_seam_latitude(start, end, half);
         return [
             Some(Segment {
                 start,
@@ -1418,11 +1413,7 @@ fn chart_segments(
         ];
     }
     if end.x < -half {
-        let y = antimeridian::crossing_latitude_in_frame(
-            segment.start.point(),
-            segment.end.point(),
-            frame,
-        );
+        let y = chart_seam_latitude(start, end, -half);
         return [
             Some(Segment {
                 start,
@@ -1435,6 +1426,13 @@ fn chart_segments(
         ];
     }
     [Some(Segment { start, end }), None]
+}
+
+/// Keep latitude interpolation on the lifted chart edge so both axes share
+/// the same parameter even when their native scales or directions differ.
+fn chart_seam_latitude(start: XY, end: XY, seam_longitude: f64) -> f64 {
+    let fraction = (seam_longitude - start.x) / (end.x - start.x);
+    crate::geometry::interpolate_subdivision_ordinate(start.y, end.y, fraction)
 }
 
 struct EdgeBundle {

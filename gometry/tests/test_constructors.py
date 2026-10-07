@@ -32,7 +32,7 @@ def test_box_can_explicitly_split_antimeridian_crossing_bounds() -> None:
     whole_world = gm.box(-200, -10, 200, 10, crs=4326, wrap='split')
     assert wrapped.geometry_type == 'MultiPolygon'
     assert wrapped.crs == 'EPSG:4326'
-    assert wrapped.bounds == (-180.0, -10.0, 180.0, 10.0)
+    assert wrapped.bounds == (170.0, -10.0, -170.0, 10.0)
     assert gm.LineString([(170, 0), (-170, 0)], crs=4326).crosses_antimeridian
     assert gm.LineString([(170, 0), (-170, 0)], crs=4326).crosses_antimeridian
     assert np.array_equal(

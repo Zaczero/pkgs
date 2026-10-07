@@ -371,6 +371,16 @@ def test_proj_default_units_preserve_grad_poles_with_mixed_axis_factors(
     assert info.axes[0]['unit_conversion_factor'] == latitude_factor
     assert info.axes[1]['unit_conversion_factor'] == longitude_factor
     assert gm.crs_cache_info()['last_transform_engine'] is None
+    listed = next(
+        candidate
+        for candidate in info.operations(4326)
+        if any(
+            step['method'] is not None and step['method']['code'] == '9619'
+            for step in candidate['steps']
+        )
+    )
+    assert listed['definition'] is None
+
     operation = info.operation(4326, only_best=True)
     assert operation['definition'] is None
     assert operation['source'] == source
@@ -382,15 +392,6 @@ def test_proj_default_units_preserve_grad_poles_with_mixed_axis_factors(
         and len(step['parameters']) == 2
         for step in operation['steps']
     )
-    listed = next(
-        candidate
-        for candidate in info.operations(4326)
-        if any(
-            step['method'] is not None and step['method']['code'] == '9619'
-            for step in candidate['steps']
-        )
-    )
-    assert listed['definition'] is None
 
     north = gm.crs_transform(source, 4326, 0.0, 100.0, only_best=True)
     south = gm.crs_transform(source, 4326, 0.0, -100.0, only_best=True)
@@ -435,14 +436,15 @@ def test_proj_noop_phase_uses_coalesced_original_prime_meridians() -> None:
     target_pm = next_pm * next_factor
     assert source_pm == target_pm
 
-    operation = gm.CRS(source).operation(target, at=(0.0, 0.0), only_best=True)
-    assert operation['definition'] is None
-    assert operation['source'] == source
-    assert operation['target'] == target
     listed = gm.CRS(source).operations(target)
     assert listed
     assert all(item['definition'] is None for item in listed)
     assert all(item['source'] == source and item['target'] == target for item in listed)
+
+    operation = gm.CRS(source).operation(target, at=(0.0, 0.0), only_best=True)
+    assert operation['definition'] is None
+    assert operation['source'] == source
+    assert operation['target'] == target
     eastward = gm.crs_transform(source, target, 0.0, 0.0, only_best=True)
     westward = gm.crs_transform(target, source, 0.0, 0.0, only_best=True)
     expected_shift = float.fromhex('0x1.ccccccccccccdp-53')

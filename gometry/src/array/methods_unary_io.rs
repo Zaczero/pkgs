@@ -16,9 +16,12 @@ impl PyGeometryArray {
     ///     Grid order (``1`` to ``32``); 16 matches GeoPandas/DuckDB.
     ///
     /// bounds : tuple of float, optional
-    ///     The frame ``(minx, miny, maxx, maxy)``; the array's total bounds
-    ///     when omitted. Keys compare across geometries only against a *shared*
-    ///     frame — pass the same ``bounds`` when keying separate geometries.
+    ///     Ordered ``(minx, miny, maxx, maxy)`` rectangle for keying. When
+    ///     omitted, uses the present rows' minimum and maximum stored
+    ///     coordinates without periodic wrapping. Geographic ``total_bounds``
+    ///     may wrap, so it is not necessarily a curve frame. Keys compare
+    ///     across geometries only against a *shared* frame — pass the same
+    ///     ``bounds`` when keying separate geometries.
     ///
     /// Returns
     /// -------

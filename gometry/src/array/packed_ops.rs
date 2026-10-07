@@ -298,9 +298,9 @@ impl PyGeometryArray {
             None if self.has_missing()
                 && matches!(self.storage(), GeometryArrayStorage::Mixed(_)) =>
             {
-                self.try_drop_missing()?.storage().total_bounds()
+                self.try_drop_missing()?.storage().raw_total_bounds()
             },
-            None => self.storage().total_bounds(),
+            None => self.storage().raw_total_bounds(),
         };
         if self.len() == 0 {
             return Ok(Vec::new());

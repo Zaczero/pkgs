@@ -1705,23 +1705,32 @@ fn geographic_grad_pole_aliases_match_after_native_latitude_admission() {
         .unwrap()
         .geographic_frame()
         .unwrap();
-    let mut raw_pole: f64 = 100.0;
-    for _ in 0..7 {
-        raw_pole = raw_pole.next_up();
+    let pole = 100.0;
+    assert_eq!(frame.pole(), pole);
+    for (latitude, exterior, rejected) in [
+        (pole, pole.next_up(), pole.next_up().next_up()),
+        (-pole, (-pole).next_down(), (-pole).next_down().next_down()),
+    ] {
+        let left = PreparedPlan::new(Shape::Point(Point::new_raw_xy(0.0, exterior)));
+        let right = PreparedPlan::new(Shape::Point(Point::new_raw_xy(200.0, latitude)));
+        let left_cache = crate::geometry::FrameDependentCaches::default();
+        let right_cache = crate::geometry::FrameDependentCaches::default();
+        assert!(
+            graph_relate_data_geographic(
+                GeographicPrepared::try_new(&left, &left_cache, frame)
+                    .expect("one exterior native ULP admits"),
+                GeographicPrepared::try_new(&right, &right_cache, frame)
+                    .expect("native pole admits"),
+            )
+            .unwrap()
+            .is_intersects()
+        );
+        let Err(crate::geographic::GeographicError::LatitudeOutOfRange { .. }) =
+            crate::geographic::Latitude::try_new(frame, rejected)
+        else {
+            panic!("the second exterior native ULP must be rejected");
+        };
     }
-    assert_eq!(raw_pole.to_bits(), frame.pole().to_bits());
-    let left = PreparedPlan::new(Shape::Point(Point::new_raw_xy(0.0, frame.pole())));
-    let right = PreparedPlan::new(Shape::Point(Point::new_raw_xy(200.0, frame.pole())));
-    let left_cache = crate::geometry::FrameDependentCaches::default();
-    let right_cache = crate::geometry::FrameDependentCaches::default();
-    assert!(
-        graph_relate_data_geographic(
-            GeographicPrepared::try_new(&left, &left_cache, frame).expect("fixture admits"),
-            GeographicPrepared::try_new(&right, &right_cache, frame).expect("fixture admits"),
-        )
-        .unwrap()
-        .is_intersects()
-    );
 }
 
 #[test]

@@ -54,6 +54,8 @@ Read its state as a property (`arr.area`), call a method (`arr.buffer(d)`), or p
 a binary free function (`gm.contains(arr, pts)`) — each runs over the whole batch in one
 pass. [`GeometryArray.total_bounds`][gometry.GeometryArray.total_bounds] is the combined `(minx, miny, maxx, maxy)` tuple, or
 `None` for an empty/fully-empty array.
+For geographic arrays, longitude bounds are periodic in the CRS's native frame,
+so `minx > maxx` denotes an interval crossing the longitude seam.
 
 ### Packed constructors
 

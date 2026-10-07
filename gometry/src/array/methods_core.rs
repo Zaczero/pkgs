@@ -21,7 +21,7 @@ use crate::crs::frame;
 use crate::crs::frame::FrameError;
 use crate::geometry::storage::admission::{CheckedRingWindow, RingWindowError};
 use crate::geometry::storage::kernels::{
-    geographic_total_bounds_from_columns, total_bounds_from_columns,
+    geographic_total_bounds_from_columns, raw_total_bounds_from_columns,
 };
 use crate::geometry::storage::replacement::CoordinateReplacement;
 use crate::geometry::storage::{GeometryArrayStorage, PackedStorage, physical_row};
@@ -558,6 +558,7 @@ impl PyGeometryArray {
     /// Empty rows are all-``nan`` (intentional: a fixed-width ndarray cannot
     /// hold ``None`` like a scalar geometry); missing rows are also all-``nan``
     /// and are identified by `.is_missing`.
+    /// Geographic longitude intervals may cross the seam, with ``minx > maxx``.
     ///
     /// Returns
     /// -------
@@ -568,7 +569,8 @@ impl PyGeometryArray {
         crate::bounds_array(py, self)
     }
     /// Combined bounds ``(minx, miny, maxx, maxy)`` over all geometries, or
-    /// ``None`` if every geometry is empty.
+    /// ``None`` if every geometry is empty. Geographic longitude bounds use
+    /// the CRS's periodic interval, so ``minx > maxx`` denotes a seam crossing.
     ///
     /// Returns
     /// -------
@@ -1015,10 +1017,10 @@ impl PyGeometryArray {
                 })
                 .collect::<crate::error::Result<Vec<_>>>()?;
             return Ok(
-                crate::geographic::GeographicSupportEnvelope::try_from_shapes(frame, &shapes)
-                    .ok()
-                    .and_then(|support| support.bounds(frame))
-                    .map(Bounds::into_tuple),
+                crate::geographic::GeographicSupportProducts::public_bounds_for_shapes(
+                    frame, &shapes, None,
+                )
+                .map(Bounds::into_tuple),
             );
         }
         if let Some(bounds) = element_bounds {
@@ -1034,7 +1036,7 @@ impl PyGeometryArray {
         }
         if let Ok(Some(Some(bounds))) = Python::attach(|py| {
             self.reduce_packed_columns_detached(py, |columns| {
-                Ok(total_bounds_from_columns(&columns))
+                Ok(raw_total_bounds_from_columns(&columns))
             })
         }) {
             return Ok(Some(bounds.into_tuple()));
@@ -1050,7 +1052,7 @@ impl PyGeometryArray {
                     total
                 })
         } else {
-            self.storage().total_bounds()
+            self.storage().raw_total_bounds()
         };
         Ok(bounds.map(Bounds::into_tuple))
     }
@@ -1278,6 +1280,7 @@ mod geographic_total_bounds_tests {
 
     #[test]
     fn mixed_total_bounds_folds_certified_rows_and_retains_alias_crossing() {
+        crate::test_support::initialize_python();
         let frame = Frame::new(Some(crs_arc_static("OGC:CRS84")), None).expect("CRS84");
         let ordinary = polygon(&[
             (-10.0, -5.0),

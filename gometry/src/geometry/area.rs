@@ -1547,15 +1547,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn raw_ring_certificate_declines_rounded_nominal_seam_spellings() {
-        let factor = crate::geographic::AngularFactor::try_new(
-            "unit",
-            std::f64::consts::TAU / 400.0_f64.next_up(),
-        )
-        .unwrap();
+    fn raw_ring_certificate_declines_unrecognized_noninteger_period() {
+        let factor =
+            crate::geographic::AngularFactor::try_new("unit", std::f64::consts::TAU / 399.5)
+                .unwrap();
         let frame = GeographicFrame::try_new(factor, factor, 0.0).unwrap();
         let xs = [200.0, 200.0, 100.0, 100.0, 200.0, 0.0, 0.0, 200.0];
         let ys = [0.0, 1.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0];
+        assert_eq!(frame.longitude().period(), 399.5);
         assert!(raw_ring_certificate(frame, &xs, &ys).is_none());
         assert_eq!(
             exact_ring_area_sign_columns(&xs, &ys, xs.len().saturating_sub(1)),
@@ -1563,8 +1562,8 @@ mod tests {
         );
         let area = lifted_ring_area_sign(frame, &xs, &ys, true).unwrap();
         assert_eq!(area.chart_turn, 0);
-        assert_eq!(area.orientation, Some(-1));
-        assert_eq!(lifted_exact_ring_area_sign(frame, &xs, &ys).unwrap(), -1);
+        assert_eq!(area.orientation, Some(1));
+        assert_eq!(lifted_exact_ring_area_sign(frame, &xs, &ys).unwrap(), 1);
     }
 
     #[test]

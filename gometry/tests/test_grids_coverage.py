@@ -298,9 +298,20 @@ def _tile_tokens(cells) -> set[str]:
     return {cell.token for cell in cells}
 
 
+def _tile_rectangle(tile: gm.Tile, *, crs: int | None) -> gm.Polygon:
+    polygon = tile.polygon
+    if crs == 4326:
+        return polygon
+
+    _, miny, _, maxy = polygon.bounds
+    cells = 2**tile.zoom
+    minx = tile.x / cells * 360.0 - 180.0
+    maxx = (tile.x + 1) / cells * 360.0 - 180.0
+    return gm.box(minx, miny, maxx, maxy)
+
+
 def _tile_rectangles(tiles, *, crs: int | None):
-    kwargs = {} if crs is None else {'crs': crs}
-    return [gm.box(*tile.polygon.bounds, **kwargs) for tile in tiles]
+    return [_tile_rectangle(tile, crs=crs) for tile in tiles]
 
 
 @pytest.mark.parametrize('crs', [None, 4326], ids=['crs-free', 'epsg4326'])
@@ -383,8 +394,7 @@ def test_tile_cover_pole_line_reaches_top_row(crs: int | None) -> None:
     assert _tile_tokens(overlap) == {'0103', '0110', '0112'}
     assert not within
     assert all(
-        gm.intersects(source, gm.box(*tile.polygon.bounds, **kwargs))
-        for tile in overlap
+        gm.intersects(source, _tile_rectangle(tile, crs=crs)) for tile in overlap
     )
 
 
@@ -404,8 +414,7 @@ def test_tile_cover_seam_polar_cap_keeps_both_antimeridian_sides(
     assert _tile_tokens(bbox) == _tile_tokens(overlap)
     assert not within
     assert all(
-        gm.intersects(source, gm.box(*tile.polygon.bounds, **kwargs))
-        for tile in overlap
+        gm.intersects(source, _tile_rectangle(tile, crs=crs)) for tile in overlap
     )
 
 
@@ -421,9 +430,7 @@ def test_tile_cover_pole_touching_hole_removes_middle_within_tiles(
     )
     within = gm.tile_cover(source, zoom=4, cell_rule='within', max_cells=None)
     assert _tile_tokens(within) == {'0110', '1001'}
-    assert all(
-        gm.covers(source, gm.box(*tile.polygon.bounds, **kwargs)) for tile in within
-    )
+    assert all(gm.covers(source, _tile_rectangle(tile, crs=crs)) for tile in within)
 
 
 @pytest.mark.parametrize(

@@ -256,7 +256,10 @@ impl PyGeometryArray {
     ///     Curve depth (``1``-``32``).
     ///
     /// bounds : iterable[float], optional
-    ///     ``(minx, miny, maxx, maxy)`` extent for keying; defaults to ``total_bounds``.
+    ///     Ordered ``(minx, miny, maxx, maxy)`` rectangle for keying. When
+    ///     omitted, uses the present rows' minimum and maximum stored
+    ///     coordinates without periodic wrapping. Geographic ``total_bounds``
+    ///     may wrap, so it is not necessarily a curve frame.
     ///
     /// Returns
     /// -------

@@ -321,13 +321,14 @@ impl GeometryArrayStorage {
         )
     }
 
-    /// Combined bounds ``(minx, miny, maxx, maxy)`` over all geometries, or
-    /// ``None`` if every geometry is empty.
+    /// Raw axis-aligned coordinate bounds over all geometries, or ``None`` if
+    /// every geometry is empty. Geographic public bounds are resolved by the
+    /// array owner, which can interpret periodic support.
     ///
     /// Returns
     /// -------
     /// tuple or None
-    pub(crate) fn total_bounds(&self) -> Option<Bounds> {
+    pub(crate) fn raw_total_bounds(&self) -> Option<Bounds> {
         if let Self::Packed(PackedStorage::Polygons { row_map, .. }) = self
             && row_map.is_identity()
         {

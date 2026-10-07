@@ -261,7 +261,8 @@ def test_world_tile_polygon_uses_geographic_rectangle_for_scalar_and_array() -> 
 
     hemisphere = gm.Tile(x=1, y=1, zoom=1).polygon
     minx, miny, maxx, maxy = hemisphere.bounds
-    midpoint = minx + (maxx - minx) / 2.0
+    assert (minx, maxx) == (0.0, -180.0)
+    midpoint = 90.0
     assert gm.get_coordinates(hemisphere).tolist() == [
         [minx, miny],
         [midpoint, miny],

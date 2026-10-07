@@ -365,6 +365,67 @@ fn mixed_orientation_seam_edges_merge_to_the_smallest_cover() {
 }
 
 #[test]
+fn support_products_keep_periodic_support_separate_from_raw_extrema() {
+    let frame = native_frames()[0];
+    let crossing = line(&[170.0, -170.0], &[0.0, 10.0]);
+    let products = GeographicSupportProducts::try_from_shape(frame, &crossing).unwrap();
+
+    assert_eq!(
+        products.raw_extrema,
+        Some(crate::geometry::Bounds::new_raw(-170.0, 0.0, 170.0, 10.0))
+    );
+    assert_eq!(
+        products.support.bounds(frame),
+        Some(crate::geometry::Bounds::new_raw(170.0, 0.0, -170.0, 10.0))
+    );
+    assert_eq!(
+        products.public_bounds(frame),
+        Some(crate::geometry::Bounds::new_raw(170.0, 0.0, -170.0, 10.0))
+    );
+    assert_eq!(products.work, GeographicSupportWork {
+        coordinate_visits: 2,
+        point_events: 0,
+        point_intervals: 0,
+        segment_connections: 1,
+        segment_intervals: 1,
+        ring_summaries: 0,
+    });
+
+    let point_cloud = multipoint(&[(0.0, 0.0), (120.0, 0.0), (-120.0, 0.0), (180.0, 0.0)]);
+    let products = GeographicSupportProducts::try_from_shape(frame, &point_cloud).unwrap();
+    assert_eq!(
+        products.raw_extrema,
+        Some(crate::geometry::Bounds::new_raw(-120.0, 0.0, 180.0, 0.0))
+    );
+    let support_bounds = products.support.bounds(frame).unwrap();
+    assert_eq!(products.public_bounds(frame), Some(support_bounds));
+    assert_ne!(products.public_bounds(frame), products.raw_extrema);
+    let (west, east) = products.support.longitude.west_east().unwrap();
+    let width = if west <= east {
+        east - west
+    } else {
+        frame.longitude().period() - (west - east)
+    };
+    assert_close(width, 240.0, frame.longitude().period());
+
+    let same_seam = line(&[180.0, 180.0], &[0.0, 10.0]);
+    assert_eq!(
+        GeographicSupportProducts::try_from_shape(frame, &same_seam)
+            .unwrap()
+            .public_bounds(frame),
+        Some(crate::geometry::Bounds::new_raw(-180.0, 0.0, -180.0, 10.0))
+    );
+
+    let opposite_seam = line(&[-180.0, 180.0], &[0.0, 10.0]);
+    assert_eq!(
+        GeographicSupportProducts::try_from_shape(frame, &opposite_seam)
+            .unwrap()
+            .public_bounds(frame),
+        Some(crate::geometry::Bounds::new_raw(-180.0, 0.0, -180.0, 10.0))
+    );
+}
+
+#[test]
 fn ordinary_linear_fast_path_keeps_its_admitted_extrema() {
     let frame = native_frames()[0];
     let shape = line(&[1.0, 2.0, 3.0], &[4.0, 5.0, 6.0]);
@@ -386,6 +447,18 @@ fn ordinary_linear_fast_path_does_not_allocate() {
         GeographicSupportEnvelope::try_from_shape(frame, &shape)
     });
     envelope.expect("ordinary geographic support succeeds");
+    assert_eq!(allocations, 0);
+}
+
+#[test]
+fn public_ordinary_bounds_keep_the_raw_extrema_fast_path_allocation_free() {
+    let frame = native_frames()[0];
+    let shape = line(&[1.0, 2.0, 3.0], &[4.0, 5.0, 6.0]);
+    let raw = shape.bounds();
+    let (bounds, allocations) = crate::test_support::allocation_count(|| {
+        GeographicSupportProducts::public_bounds_for_shape(frame, &shape, raw)
+    });
+    assert_eq!(bounds, raw);
     assert_eq!(allocations, 0);
 }
 
@@ -417,7 +490,7 @@ fn wrapped_support_realization_copies_endpoints_and_uses_only_canonical_seam_ver
         ring.coords()
             .xs()
             .iter()
-            .all(|&longitude| longitude != 180.0),
+            .all(|&longitude| longitude.to_bits() != 180.0_f64.to_bits()),
         "the positive seam sentinel is not a computed vertex"
     );
 }
@@ -448,7 +521,7 @@ fn full_support_realization_uses_quarter_turns_and_repeats_the_first_record() {
         ring.coords()
             .xs()
             .iter()
-            .all(|&longitude| longitude != 180.0),
+            .all(|&longitude| longitude.to_bits() != 180.0_f64.to_bits()),
         "the positive seam sentinel is not a computed vertex"
     );
 }
@@ -569,7 +642,7 @@ fn geographic_support_admission_preserves_invalid_coordinate_diagnostics() {
 }
 
 #[test]
-fn shared_collection_support_and_census_remain_linear() {
+fn shared_collection_support_preserves_its_periodic_hull() {
     let frame = native_frames()[0];
     let base = line(&[170.0, -170.0], &[0.0, 1.0]);
     let expected = GeographicSupportEnvelope::try_from_shape(frame, &base).unwrap();
@@ -580,85 +653,229 @@ fn shared_collection_support_and_census_remain_linear() {
                 .expect("nested shared collection stays within the depth limit");
         }
 
-        let memo = GeographicSupportOwnerMemo::new(&shape).unwrap();
-        assert_eq!(memo.census_work.collection_descents, depth);
-        assert_eq!(
-            memo.census_work.collection_occurrences,
-            depth.wrapping_mul(2).wrapping_sub(1)
-        );
-        assert_eq!(memo.census_work.repeated_owner_occurrences, depth);
-        assert_eq!(memo.census_work.collection_member_slots, depth * 2);
-        assert_eq!(memo.census_work.coordinate_run_visits, 2);
-        assert_eq!(memo.census_work.owner_map_initializations, 1);
-
-        let actual = GeographicSupportEnvelope::try_from_shape(frame, &shape).unwrap();
-        assert_eq!(actual, expected);
-        let work = geographic_support_work().expect("support work was recorded");
-        assert_eq!(
-            work.admission.collection_occurrences,
-            depth.wrapping_mul(2).wrapping_sub(1)
-        );
-        assert_eq!(work.admission.collection_descents, depth);
-        assert_eq!(work.admission.collection_member_slots, depth * 2);
-        assert_eq!(work.admission.coordinate_visits, 2);
-        assert_eq!(
-            work.admission.repeated_owner_occurrences,
-            depth.wrapping_sub(1)
-        );
-        assert_eq!(work.census.collection_descents, depth);
-        assert_eq!(work.census.collection_member_slots, depth * 2);
-        assert_eq!(work.census.coordinate_run_visits, 2);
-        assert_eq!(work.census.repeated_owner_occurrences, depth);
+        let products = GeographicSupportProducts::try_from_shape(frame, &shape).unwrap();
+        assert_eq!(products.support, expected);
+        assert_eq!(products.work, GeographicSupportWork {
+            coordinate_visits: 2,
+            point_events: 0,
+            point_intervals: 0,
+            segment_connections: 1,
+            segment_intervals: 1,
+            ring_summaries: 0,
+        });
     }
 }
 
 #[test]
-fn distinct_support_owners_do_not_allocate_a_census_map() {
-    let lines = (0..256)
-        .map(|index| {
-            let x = f64::from(index);
-            line(&[x, x + 0.25], &[0.0, 0.5])
-        })
-        .collect();
-    let shape = Shape::geometry_collection(lines).unwrap();
-    let memo = GeographicSupportOwnerMemo::new(&shape).unwrap();
-    assert!(memo.owners.is_none());
-    assert_eq!(memo.census_work.collection_occurrences, 1);
-    assert_eq!(memo.census_work.collection_descents, 1);
-    assert_eq!(memo.census_work.collection_member_slots, 256);
-    assert_eq!(memo.census_work.coordinate_run_visits, 256);
-    assert_eq!(memo.census_work.repeated_owner_occurrences, 0);
-    assert_eq!(memo.census_work.owner_map_initializations, 0);
+fn ring_support_reuses_admitted_edge_connections() {
+    let frame = native_frames()[0];
+    let shell = cap_ring(frame, frame.pole() / 2.0);
+    let coordinate_count = shell.coords().len();
+    let points = shell
+        .coords()
+        .xs()
+        .iter()
+        .copied()
+        .zip(shell.coords().ys().iter().copied())
+        .collect::<Vec<_>>();
+    let shape = polygon(&points, Vec::new());
+    let products = GeographicSupportProducts::try_from_shape(frame, &shape).unwrap();
+
+    assert_eq!(products.work.coordinate_visits, coordinate_count);
+    assert_eq!(
+        products.work.segment_connections,
+        coordinate_count.saturating_sub(1)
+    );
+    assert_eq!(products.work.segment_intervals, 1);
+    assert_eq!(products.work.ring_summaries, 1);
 }
 
 #[test]
-fn repeated_multipoint_coordinate_owners_contribute_support_once() {
+fn repeated_multipoint_coordinate_owners_preserve_support() {
     let frame = native_frames()[0];
     let base = multipoint(&[(170.0, 0.0), (-170.0, 10.0)]);
     let expected = GeographicSupportEnvelope::try_from_shape(frame, &base).unwrap();
     let repeated = Shape::geometry_collection(vec![base; 256]).unwrap();
-    let actual = GeographicSupportEnvelope::try_from_shape(frame, &repeated).unwrap();
-    assert_eq!(actual, expected);
-    let work = geographic_support_work().expect("support work was recorded");
-    assert_eq!(work.census.repeated_owner_occurrences, 255);
-    assert_eq!(work.census.owner_map_initializations, 1);
+    let products = GeographicSupportProducts::try_from_shape(frame, &repeated).unwrap();
+    assert_eq!(products.support, expected);
+    assert_eq!(products.work.coordinate_visits, 2);
+    assert_eq!(products.work.point_events, 2);
+    assert_eq!(products.work.point_intervals, 2);
 }
 
 #[test]
-fn repeated_coordinate_runs_across_shapes_contribute_support_once() {
+fn repeated_coordinate_runs_across_shapes_preserve_support() {
     let frame = native_frames()[0];
     let base = multipoint(&[(170.0, 0.0), (-170.0, 10.0)]);
     let first_row = base.clone();
     let second_row = base.clone();
     let expected = GeographicSupportEnvelope::try_from_shape(frame, &base).unwrap();
-    let actual =
-        GeographicSupportEnvelope::try_from_shapes(frame, &[first_row, second_row]).unwrap();
+    let products =
+        GeographicSupportProducts::try_from_shapes(frame, &[first_row, second_row]).unwrap();
 
-    assert_eq!(actual, expected);
-    let work = geographic_support_work().expect("support work was recorded");
-    assert_eq!(work.census.coordinate_run_visits, 2);
-    assert_eq!(work.census.repeated_owner_occurrences, 1);
-    assert_eq!(work.census.owner_map_initializations, 1);
+    assert_eq!(products.support, expected);
+    assert_eq!(products.work.coordinate_visits, 4);
+    assert_eq!(products.work.point_events, 4);
+    assert_eq!(products.work.point_intervals, 2);
+}
+
+#[test]
+fn connected_run_components_preserve_native_endpoints_and_frame_variants() {
+    for (factor, east, north, prime) in [
+        (std::f64::consts::PI / 180.0, true, true, 0.0),
+        (std::f64::consts::TAU / 400.0, true, true, 0.0),
+        (1.0, true, true, 0.0),
+        (std::f64::consts::PI / 180.0, false, false, 0.25),
+        (std::f64::consts::TAU / 400.0, false, true, 0.31),
+        (1.0, true, false, -0.2),
+    ] {
+        let unit = AngularFactor::try_new("native component test", factor).unwrap();
+        let frame = GeographicFrame::try_new_with_orientation(
+            unit,
+            unit,
+            prime,
+            super::super::GeographicAxisOrientation::from_axis_directions(east, north),
+        )
+        .unwrap();
+        let period = frame.longitude().period();
+        let half = period / 2.0;
+        let tiny = -f64::from_bits(1);
+        for (xs, expected) in [
+            (vec![0.0, period], Bounds::new_raw(-half, 0.0, half, 0.0)),
+            (vec![0.0, -period], Bounds::new_raw(-half, 0.0, half, 0.0)),
+            (vec![0.0, half], Bounds::new_raw(0.0, 0.0, -half, 0.0)),
+            (vec![0.0, -half], Bounds::new_raw(-half, 0.0, 0.0, 0.0)),
+            (vec![half, 0.0], Bounds::new_raw(0.0, 0.0, -half, 0.0)),
+            (
+                vec![0.0, period / 3.0, 2.0 * period / 3.0, tiny],
+                Bounds::new_raw(0.0, 0.0, tiny, 0.0),
+            ),
+            (
+                vec![half.next_down(), -half],
+                Bounds::new_raw(half.next_down(), 0.0, -half, 0.0),
+            ),
+        ] {
+            let ys = vec![0.0; xs.len()];
+            let products =
+                GeographicSupportProducts::try_from_shape(frame, &line(&xs, &ys)).unwrap();
+            assert_eq!(products.support.bounds(frame), Some(expected));
+            assert_eq!(products.work.coordinate_visits, xs.len());
+            assert_eq!(products.work.segment_connections, xs.len() - 1);
+            assert_eq!(products.work.segment_intervals, 1);
+        }
+        let xs = [0.0, period / 3.0, -period / 3.0, 0.0];
+        let coords = CoordSeq::try_from_vecs(xs.to_vec(), vec![0.0; 4], None, None).unwrap();
+        let points = Shape::MultiPoint(MultiPoint::from_coordseq(coords.clone()).unwrap());
+        let chain = Shape::LineString(LineSeq::try_new(coords).unwrap());
+        let disconnected = GeographicSupportProducts::try_from_shape(frame, &points).unwrap();
+        assert_ne!(disconnected.support.longitude, CircularInterval::Full);
+        assert_eq!(disconnected.work.point_intervals, 4);
+        let connected = GeographicSupportProducts::try_from_shape(frame, &chain).unwrap();
+        assert_eq!(connected.support.longitude, CircularInterval::Full);
+        assert_eq!(connected.work.segment_connections, 3);
+        assert_eq!(connected.work.segment_intervals, 1);
+    }
+}
+
+#[test]
+fn full_connected_support_still_admits_later_latitude_and_errors() {
+    let frame = GeographicFrame::crs84();
+    let circle = line(&[0.0, 360.0], &[0.0, 0.0]);
+    let tail = Shape::Point(Point::new(10.0, 70.0).unwrap());
+    let products =
+        GeographicSupportProducts::try_from_shapes(frame, &[circle.clone(), tail]).unwrap();
+    assert_eq!(
+        products.support.bounds(frame),
+        Some(Bounds::new_raw(-180.0, 0.0, 180.0, 70.0))
+    );
+    assert_eq!(products.work.coordinate_visits, 3);
+    assert_eq!(products.work.segment_connections, 1);
+    let invalid = Shape::Point(Point::new_raw_xy(10.0, 100.0));
+    let collection = Shape::geometry_collection(vec![circle, invalid]).unwrap();
+    let Err(GeographicAdmissionError::Geographic(error)) =
+        GeographicSupportProducts::try_from_shape(frame, &collection)
+    else {
+        panic!("Full longitude support must still admit the invalid tail");
+    };
+    assert!(matches!(
+        error.source,
+        GeographicError::LatitudeOutOfRange { .. }
+    ));
+    assert_eq!(error.location.members.as_slice(), &[1]);
+    assert_eq!(error.location.coordinate, 0);
+}
+
+#[test]
+fn shared_point_and_polygon_columns_keep_ring_gate_both_orders() {
+    let frame = GeographicFrame::crs84();
+    let coords =
+        CoordSeq::try_from_vecs(vec![0.0, 120.0, -120.0, 0.0], vec![0.0; 4], None, None).unwrap();
+    let points = Shape::MultiPoint(MultiPoint::from_coordseq(coords.clone()).unwrap());
+    let polygon = Shape::Polygon(Polygon::new(
+        Ring::try_from_closed(coords).unwrap(),
+        Vec::new(),
+    ));
+    for (members, position) in [
+        (vec![points.clone(), polygon.clone()], 1),
+        (vec![polygon, points], 0),
+    ] {
+        let collection = Shape::geometry_collection(members).unwrap();
+        let Err(GeographicAdmissionError::Geographic(error)) =
+            GeographicSupportProducts::try_from_shape(frame, &collection)
+        else {
+            panic!("coordinate admission does not replace the ring-domain gate");
+        };
+        assert!(matches!(
+            error.source,
+            GeographicError::AmbiguousFullTurnRing { .. }
+        ));
+        assert_eq!(error.location.members.as_slice(), &[position]);
+    }
+}
+
+#[test]
+fn shared_point_and_line_columns_in_one_collection_keep_connected_support_both_orders() {
+    let frame = GeographicFrame::crs84();
+    let coords =
+        CoordSeq::try_from_vecs(vec![0.0, 120.0, -120.0, 0.0], vec![5.0; 4], None, None).unwrap();
+    let points = Shape::MultiPoint(MultiPoint::from_coordseq(coords.clone()).unwrap());
+    let chain = Shape::LineString(LineSeq::try_new(coords).unwrap());
+    let point_support = GeographicSupportEnvelope::try_from_shape(frame, &points).unwrap();
+    assert_ne!(point_support.longitude, CircularInterval::Full);
+    assert_eq!(
+        point_support.bounds(frame),
+        Some(Bounds::new_raw(-120.0, 5.0, 120.0, 5.0))
+    );
+    let actual = [vec![points.clone(), chain.clone()], vec![chain, points]].map(|members| {
+        let collection = Shape::geometry_collection(members).unwrap();
+        let support = GeographicSupportEnvelope::try_from_shape(frame, &collection).unwrap();
+        (support.longitude, support.bounds(frame))
+    });
+    assert_eq!(actual, [
+        (
+            CircularInterval::Full,
+            Some(Bounds::new_raw(-180.0, 5.0, 180.0, 5.0)),
+        ),
+        (
+            CircularInterval::Full,
+            Some(Bounds::new_raw(-180.0, 5.0, 180.0, 5.0)),
+        ),
+    ]);
+}
+
+#[test]
+fn shared_point_and_segment_runs_keep_distinct_support_owners() {
+    let frame = native_frames()[0];
+    let coords =
+        CoordSeq::try_from_vecs(vec![0.0, 120.0, 240.0, 360.0], vec![0.0; 4], None, None).unwrap();
+    let points = Shape::MultiPoint(MultiPoint::from_coordseq(coords.clone()).unwrap());
+    let line = Shape::LineString(LineSeq::try_new(coords).unwrap());
+    let products = GeographicSupportProducts::try_from_shapes(frame, &[points, line]).unwrap();
+
+    assert_eq!(products.support.longitude, CircularInterval::Full);
+    assert_eq!(products.work.point_intervals, 4);
+    assert_eq!(products.work.segment_connections, 3);
+    assert_eq!(products.work.segment_intervals, 1);
 }
 
 #[test]

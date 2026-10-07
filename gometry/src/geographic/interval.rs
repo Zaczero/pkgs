@@ -1,8 +1,8 @@
 use std::cmp::Ordering;
 
-use super::{
-    CanonicalLongitude, ChartConnection, ChartStep, EdgeDirection, PeriodicAxis, TurnDirection,
-};
+use super::{CanonicalLongitude, PeriodicAxis};
+#[cfg(test)]
+use super::{ChartConnection, ChartStep, EdgeDirection, TurnDirection};
 use crate::geometry::exact_arith::product_sum::ExactSum;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -27,7 +27,8 @@ impl CircularInterval {
         Self::Arc { start, end }
     }
 
-    pub(crate) fn from_chart_connection(connection: ChartConnection) -> Self {
+    #[cfg(test)]
+    pub(crate) const fn from_chart_connection(connection: ChartConnection) -> Self {
         let reverse = match connection.step {
             ChartStep::Circle(_) => return Self::Full,
             ChartStep::Shortest(EdgeDirection::Minor(delta)) => delta.is_sign_negative(),
@@ -41,7 +42,7 @@ impl CircularInterval {
         }
     }
 
-    pub(crate) fn west_east(self) -> Option<(f64, f64)> {
+    pub(crate) const fn west_east(self) -> Option<(f64, f64)> {
         match self {
             Self::Arc { start, end } => Some((start.get(), end.get())),
             Self::Empty | Self::Full => None,
@@ -54,10 +55,9 @@ impl CircularInterval {
             Self::Full => Some(LongitudeWindows::Full),
             Self::Arc { start, end } => {
                 let (first, second) = native_windows_for_arc(axis, start, end);
-                Some(match second {
-                    None => LongitudeWindows::One(first),
-                    Some(second) => LongitudeWindows::Two(first, second),
-                })
+                Some(second.map_or(LongitudeWindows::One(first), |second| {
+                    LongitudeWindows::Two(first, second)
+                }))
             },
         }
     }

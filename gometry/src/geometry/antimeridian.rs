@@ -27,8 +27,6 @@ pub(crate) use crs::{
     crosses_antimeridian_in_frame, faithful_geographic_chain, geographic_topology_route,
     topology_domain, topology_domain_at,
 };
-#[cfg(test)]
-pub(crate) use linestring::crossing_latitude_in_frame;
 pub(crate) use linestring::segment_coords;
 use linestring::{SeamRing, collect_points, ring_follows_seam, split_ring_at_seam};
 #[cfg(test)]

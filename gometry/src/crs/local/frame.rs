@@ -19,6 +19,7 @@ use crate::crs::{
 use crate::error::{Error, Result};
 use crate::geographic::{AngularFactor, GeodeticPole};
 use crate::geometry::ShapeCountQuery;
+use crate::geometry::exact_arith::compare_three_f64_products;
 
 /// Maximum admitted meridional or parallel scale error (0.1%).
 pub(super) const LOCAL_SCALE_ERROR_LIMIT: f64 = 0.001;
@@ -291,8 +292,7 @@ fn same_prime_meridian_values(
         ]),
     };
     // Compare original ordinate/unit expressions before PM phase rounding.
-    crate::geometry::exact_arith::compare_three_f64_products(left_product, right_product)
-        == std::cmp::Ordering::Equal
+    compare_three_f64_products(left_product, right_product) == std::cmp::Ordering::Equal
 }
 
 fn selected_prime_meridian_factors(
@@ -1044,6 +1044,30 @@ mod metadata_tests {
         assert!(same_prime_meridian_values(
             Some(&prime_meridian(2.0, 0.01)),
             Some(&prime_meridian(1.0, 0.02))
+        ));
+        assert!(same_prime_meridian_values(
+            Some(&prime_meridian(-100.0, standard_grad)),
+            Some(&prime_meridian(-90.0, crate::crs::DEGREE_TO_RADIAN))
+        ));
+        let arbitrary_unit = prime_meridian(-16.0 * std::f64::consts::TAU, 1.0 / 256.0);
+        let selected_grad = prime_meridian(-25.0, standard_grad);
+        assert!(same_prime_meridian_values(
+            Some(&selected_grad),
+            Some(&arbitrary_unit)
+        ));
+        assert!(same_prime_meridian_values(
+            Some(&arbitrary_unit),
+            Some(&selected_grad)
+        ));
+        let negative_source = prime_meridian(-2.0, 0.01);
+        let negative_equivalent = prime_meridian(-1.0, 0.02);
+        assert!(same_prime_meridian_values(
+            Some(&negative_source),
+            Some(&negative_equivalent)
+        ));
+        assert!(!same_prime_meridian_values(
+            Some(&prime_meridian(2.0, 0.01)),
+            Some(&negative_source)
         ));
         assert!(same_prime_meridian_values(
             Some(&prime_meridian(100.0, standard_grad)),

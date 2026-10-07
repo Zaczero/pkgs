@@ -260,6 +260,7 @@ mod chart_measure_tests {
     use geographiclib_rs::Geodesic;
 
     use crate::crs::geodesic::{AuthalicSeries, GeodesicMetric};
+    use crate::geographic::lonlat::lonlat_rect_area_m2;
     use crate::geographic::{
         AngularFactor, GeodeticPole, GeographicAxisOrientation, GeographicFrame,
     };
@@ -463,9 +464,7 @@ mod chart_measure_tests {
             (zone_area - zone_expected).abs() <= 1.0e-14 * zone_expected,
             "zone area={zone_area:.17}, expected={zone_expected:.17}"
         );
-        let rectangular_cell_area = crate::geographic::lonlat::lonlat_rect_area_m2(
-            crate::geometry::Bounds::new_raw(-45.0, 70.0, 45.0, 80.0),
-        );
+        let rectangular_cell_area = lonlat_rect_area_m2(Bounds::new_raw(-45.0, 70.0, 45.0, 80.0));
         assert!(
             (rectangular_cell_area - zone_expected).abs() <= 1.0e-14 * zone_expected,
             "rectangular cell area={rectangular_cell_area:.17}, expected={zone_expected:.17}"
@@ -559,6 +558,31 @@ mod chart_measure_tests {
     }
 
     #[test]
+    fn chart_polar_area_maps_native_poles_to_physical_hemispheres() {
+        let expected = 3_908_572_761_836.564_5;
+        let frame = GeographicFrame::try_new_with_orientation(
+            AngularFactor::try_new("west longitude grad", std::f64::consts::TAU / 400.0).unwrap(),
+            AngularFactor::try_new("south latitude radian", 1.0).unwrap(),
+            0.0,
+            GeographicAxisOrientation::from_axis_directions(false, false),
+        )
+        .unwrap();
+        let metric = metric_with_flattening_and_frame(1.0 / 298.257_223_563, frame);
+        let longitudes = [0.0, 60.0, 120.0, 180.0, -120.0, -60.0];
+
+        for (name, physical_latitude) in [("north", 80.0_f64), ("south", -80.0)] {
+            let native_latitude = -physical_latitude.to_radians();
+            let points = longitudes.map(|longitude| (-longitude * 10.0 / 9.0, native_latitude));
+            let polygon = polygon(&points, &[]);
+            let area = chart_polygon_area(&metric, &polygon, frame).unwrap();
+            assert!(
+                (area - expected).abs() <= 3.0e-15 * expected,
+                "{name} cap area={area:.17}, expected={expected:.17}"
+            );
+        }
+    }
+
+    #[test]
     fn closures_measure_the_same_parallel_in_supported_angular_frames() {
         let degree = GeographicFrame::crs84();
         let grad_unit = AngularFactor::try_new("grad", std::f64::consts::PI / 200.0).unwrap();
@@ -604,7 +628,7 @@ mod chart_measure_tests {
                 .collect::<Vec<_>>();
             let shape = Shape::Polygon(Polygon::new(ring(&points), Vec::new()));
             let actual = perimeter(&metric, &shape, frame);
-            let expected = analytic_parallel_circumference(&metric, 60.0 * scale);
+            let expected = analytic_parallel_circumference(&metric, 60.0);
             assert!(
                 (actual - expected).abs() <= 1.0e-8 * expected,
                 "{name}: {actual:.12} != {expected:.12}"
@@ -1060,7 +1084,7 @@ mod chart_measure_tests {
     }
 
     #[test]
-    fn near_equal_grads_longitudes_are_not_coalesced_by_a_tolerance() {
+    fn selected_grad_period_cancels_retraced_edges_within_a_ring() {
         let factor = AngularFactor::try_new("grad", std::f64::consts::PI / 200.0).unwrap();
         let frame = GeographicFrame::try_new(factor, factor, 0.0).unwrap();
         let metric = metric_with_flattening_and_frame(1.0 / 298.257_223_563, frame);
@@ -1068,9 +1092,13 @@ mod chart_measure_tests {
             ring(&[(40.0, 10.0), (50.0, 20.0), (450.0, 20.0), (440.0, 10.0)]),
             Vec::new(),
         ));
-        let stored = raw_stored_perimeter(&metric, &shape);
         let actual = perimeter(&metric, &shape, frame);
-        assert_eq!(actual.to_bits(), stored.to_bits());
+        let expected = analytic_parallel_circumference(&metric, 9.0)
+            + analytic_parallel_circumference(&metric, 18.0);
+        assert!(
+            (actual - expected).abs() <= 1.0e-14 * expected,
+            "actual={actual:.17}, expected={expected:.17}"
+        );
     }
 
     #[test]

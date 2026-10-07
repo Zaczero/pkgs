@@ -14,21 +14,19 @@ pub(crate) use computed_edge::{
     publish_computed_chain, publish_computed_chain_with_vertex_intents,
     publish_computed_chain_with_vertex_intents_and_intervals,
 };
-pub(crate) use envelope::GeographicSupportEnvelope;
+pub(crate) use envelope::{GeographicSupportEnvelope, GeographicSupportProducts};
 pub(crate) use interval::{CircularInterval, LongitudeWindows, union_circular_intervals};
 use thiserror::Error;
 #[cfg(test)]
 pub(crate) use value::source_admission_counts;
 pub(crate) use value::{
-    AngularFactor, CanonicalLongitude, ChartPole, ChartStep, EdgeDirection, FullTurnPole,
-    GeodeticPole, GeographicAxisOrientation, GeographicFrame, Latitude, PeriodicAxis,
+    AngularFactor, CanonicalLongitude, ChartConnection, ChartPole, ChartStep, EdgeDirection,
+    FullTurnPole, GeodeticPole, GeographicAxisOrientation, GeographicFrame, Latitude, PeriodicAxis,
     QuotientVertex, RetainedChartDisplacement, RetainedLongitudeSite, RingTurn, SeamIdentity,
     TurnDirection,
 };
 #[cfg(test)]
 pub(crate) use value::{RetainedNativeLongitude, retained_native_private};
-#[cfg(test)]
-pub(crate) use view::GeographicAdmissionWork;
 pub(crate) use view::{
     GeographicAdmissionError, GeographicCollectionOwners, GeographicDiagnostic, GeographicInputs,
     GeographicLocation, GeographicRing, GeographicViewError, RingDomain, RingSummary,
