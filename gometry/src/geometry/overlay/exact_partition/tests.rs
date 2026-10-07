@@ -5291,6 +5291,7 @@ struct TestVerifier<'a, P: Problem> {
     local_calls: &'a std::cell::Cell<usize>,
     global_calls: &'a std::cell::Cell<usize>,
     node_order: Option<&'a dyn Fn(P::Node, P::Node) -> Ordering>,
+    candidate_filter: Option<&'a dyn Fn(P::Node, P::Candidate) -> bool>,
     bypass_local: bool,
     bypass_global: bool,
 }
@@ -5321,7 +5322,11 @@ impl<P: Problem> Problem for TestVerifier<'_, P> {
         node: Self::Node,
         candidates: &mut Vec<Self::Candidate>,
     ) -> Result<()> {
-        self.inner.fill_candidates(node, candidates)
+        self.inner.fill_candidates(node, candidates)?;
+        if let Some(allowed) = self.candidate_filter {
+            candidates.retain(|&candidate| allowed(node, candidate));
+        }
+        Ok(())
     }
 
     fn compare_candidates(
@@ -6045,6 +6050,7 @@ fn exhaustive_contact_failure_rejects_an_injective_certificate_bypass() {
             local_calls: &local_calls,
             global_calls: &normal_global_calls,
             node_order: None,
+            candidate_filter: None,
             bypass_local: false,
             bypass_global: false,
         },
@@ -6071,6 +6077,7 @@ fn exhaustive_contact_failure_rejects_an_injective_certificate_bypass() {
             local_calls: &bypass_calls,
             global_calls: &bypass_global_calls,
             node_order: None,
+            candidate_filter: None,
             bypass_local: true,
             bypass_global: false,
         },
@@ -6261,6 +6268,39 @@ fn zero_subnormal_and_finite_extreme_candidates_keep_their_real_keys() {
 }
 
 #[test]
+fn exactly_represented_candidate_axes_keep_nearest_values() {
+    let exact_x = dyadic(0.5);
+    let y_step = 0.75_f64.next_up() - 0.75;
+    let inexact_y = dyadic(0.75).try_add(dyadic(y_step / 8.0)).unwrap();
+    let (nearest, candidates, _) =
+        planar_candidate_values(exact_x, inexact_y, embedding::EmbeddingDomain::Plane);
+
+    assert_eq!(nearest.x, 0.5);
+    assert!(!candidates.is_empty());
+    assert!(
+        candidates
+            .iter()
+            .all(|candidate| candidate.x.to_bits() == nearest.x.to_bits()),
+        "an exactly represented axis must retain its nearest coordinate: {candidates:?}"
+    );
+
+    let x_step = 0.5_f64.next_up() - 0.5;
+    let inexact_x = dyadic(0.5).try_add(dyadic(x_step / 8.0)).unwrap();
+    let exact_y = dyadic(0.75);
+    let (nearest, candidates, _) =
+        planar_candidate_values(inexact_x, exact_y, embedding::EmbeddingDomain::Plane);
+
+    assert_eq!(nearest.y, 0.75);
+    assert!(!candidates.is_empty());
+    assert!(
+        candidates
+            .iter()
+            .all(|candidate| candidate.y.to_bits() == nearest.y.to_bits()),
+        "an exactly represented axis must retain its nearest coordinate: {candidates:?}"
+    );
+}
+
+#[test]
 fn rectangle_and_geographic_domains_filter_boundary_neighbors() {
     let half = 0.5_f64;
     let half_step = half.next_up() - half;
@@ -6364,6 +6404,245 @@ fn distant_collision_classes_are_searched_independently() {
         pair.evaluations,
         first.evaluations,
         second.evaluations
+    );
+}
+
+#[test]
+fn same_chord_endpoint_domains_retain_the_legal_diagonal_assignment() {
+    let line = crate::io::parse_wkt("LINESTRING (0 0, 2 2)").unwrap();
+    let triangle =
+        crate::io::parse_wkt("POLYGON ((1 0, 1.0000000000000002 4, 1.0000000000000002 8, 1 0))")
+            .unwrap();
+    let inventory = ExactSourceInventory::from_shapes(&[&line, &triangle]).unwrap();
+    let mut budget = ExpansionBudget::new("intersection", "same-chord embedding test");
+    let partition = inventory.partition(&mut budget).unwrap();
+    let (topology, edges) = partition.local_topology().unwrap();
+    let global = partition.global_faces(&topology, &edges).unwrap();
+    let cells = inventory
+        .select_cells(
+            &partition,
+            &topology,
+            &edges,
+            &global,
+            crate::geometry::OverlayOp::Intersection,
+            false,
+        )
+        .unwrap();
+    let plan = cells
+        .emission_plan(&partition, &topology, &edges, &global)
+        .unwrap();
+    let emission = plan.emission(&topology, &edges);
+    assert_eq!(emission.items.len(), 1);
+    assert_eq!(emission.chords, 1);
+    assert!(emission.faces.is_none());
+
+    let nearest = XY::new(1.0, 1.0);
+    let [source_start, source_end] = *emission
+        .items
+        .first()
+        .expect("the selected line/area intersection has one chord");
+    let mut endpoints = [source_start, source_end];
+    crate::geometry::try_sort_by(&mut endpoints, |left, right| {
+        partition.compare_nodes(*left, *right)
+    })
+    .unwrap();
+    let [first, second] = endpoints;
+    assert_eq!(partition.nearest_xy(first), nearest);
+    assert_eq!(partition.nearest_xy(second), nearest);
+    for node in [first, second] {
+        let exact = partition.exact(node).unwrap();
+        let [x, y, _] = exact.as_ref();
+        assert_eq!(x, y, "both exact intersections lie on the source diagonal");
+    }
+    assert_eq!(
+        partition.compare_axis(first, second, Axis::X).unwrap(),
+        Ordering::Less
+    );
+    assert_eq!(
+        partition.compare_axis(first, second, Axis::Y).unwrap(),
+        Ordering::Less
+    );
+    let upper = XY::new(nearest.x.next_up(), nearest.y.next_up());
+    assert_ne!(PointKey::new(nearest), PointKey::new(upper));
+
+    let problem = embedding::PlanarProblem::new(&partition, &[&emission], &[first], vec![
+        None;
+        partition
+            .node_count(
+            )
+    ])
+    .unwrap();
+    let allowed_assignment = |node: NodeId, candidate: XY| {
+        (node == first && candidate == nearest) || (node == second && candidate == upper)
+    };
+    let local_calls = std::cell::Cell::new(0);
+    let global_calls = std::cell::Cell::new(0);
+    let assignment = Search::new(
+        TestVerifier {
+            inner: &problem,
+            local_calls: &local_calls,
+            global_calls: &global_calls,
+            node_order: None,
+            candidate_filter: Some(&allowed_assignment),
+            bypass_local: false,
+            bypass_global: false,
+        },
+        "intersection",
+        2,
+    )
+    .unwrap()
+    .run()
+    .expect("the legal nearest/upper joint assignment survives embedding search");
+    let solution = assignment
+        .classes
+        .first()
+        .expect("the selected chord's movable endpoints share one prepared class");
+    assert_eq!(solution.variables.as_slice(), &[first, second]);
+    assert_eq!(solution.values.as_slice(), &[nearest, upper]);
+
+    let mut coordinates = embedding::Embedding::nearest(&partition)
+        .coordinates()
+        .to_vec();
+    for (&node, &candidate) in solution.variables.iter().zip(&solution.values) {
+        *coordinates
+            .get_mut(node.0 as usize)
+            .expect("the selected chord endpoint belongs to the partition") = candidate;
+    }
+    let embedding = embedding::Embedding::from_owned(coordinates);
+    let segments: Vec<_> = emission
+        .items
+        .iter()
+        .map(|&item| embedding::Embedding::segment_at(embedding.coordinates(), item))
+        .collect();
+    assert_eq!(embedding.xy(first), nearest);
+    assert_eq!(embedding.xy(second), upper);
+    let mut sink = embedding::FirstFailure::default();
+    assert!(
+        embedding::certify(
+            &partition,
+            &embedding,
+            &[&emission],
+            &[segments.as_slice()],
+            &mut sink,
+        )
+        .unwrap()
+        .is_continue()
+    );
+}
+
+#[test]
+fn long_chord_with_disjoint_axiswise_candidate_domains_keeps_independent_classes() {
+    let source = run(&[seg(0.0, 0.0, 0.0, 0.0)]);
+    let minimum_subnormal = dyadic(f64::from_bits(1));
+    let cases = [
+        (
+            "horizontal",
+            dyadic(-1.0e100),
+            minimum_subnormal.try_product(&dyadic(0.5)).unwrap(),
+            dyadic(1.0e100),
+            minimum_subnormal.try_product(&dyadic(0.5)).unwrap(),
+        ),
+        (
+            "vertical",
+            dyadic(1.0e100),
+            dyadic(-1.0).try_add(dyadic(2.0_f64.powi(-55))).unwrap(),
+            dyadic(1.0e100),
+            dyadic(1.0).try_add(dyadic(2.0_f64.powi(-54))).unwrap(),
+        ),
+    ];
+
+    for (name, start_x, start_y, end_x, end_y) in cases {
+        let mut partition = source.partition();
+        let start = append_constructed_point(&mut partition, start_x, start_y);
+        let end = append_constructed_point(&mut partition, end_x, end_y);
+        let emission = embedding::Emission {
+            items: vec![[start, end]],
+            chords: 1,
+            areal_chords: 0,
+            fan_spans: Vec::new(),
+            faces: None,
+        };
+        let problem = embedding::PlanarProblem::new(&partition, &[&emission], &[start], vec![
+            None;
+            partition
+                .node_count(
+                )
+        ])
+        .unwrap();
+
+        let mut start_candidates = Vec::new();
+        problem
+            .fill_candidates(start, &mut start_candidates)
+            .unwrap();
+        let mut end_candidates = Vec::new();
+        problem.fill_candidates(end, &mut end_candidates).unwrap();
+        assert!(
+            start_candidates.iter().all(|left| end_candidates
+                .iter()
+                .all(|right| PointKey::new(*left) != PointKey::new(*right))),
+            "{name} endpoint candidate-key domains must be disjoint"
+        );
+        assert_eq!(
+            Problem::classes(&problem),
+            &[vec![start]],
+            "{name} endpoint domains must remain independently repairable"
+        );
+    }
+}
+
+#[test]
+fn local_pair_with_two_movable_left_endpoints_owns_both_in_one_class() {
+    let case = run(&[seg(1.0, 0.0, 1.0, 0.0)]);
+    let mut partition = case.partition();
+    let minimum_subnormal = dyadic(f64::from_bits(1));
+    let start = append_constructed_point(
+        &mut partition,
+        dyadic(0.0),
+        minimum_subnormal.try_product(&dyadic(0.125)).unwrap(),
+    );
+    let end = append_constructed_point(
+        &mut partition,
+        dyadic(2.0),
+        minimum_subnormal.try_product(&dyadic(0.375)).unwrap(),
+    );
+    let fixed = partition.stored_node(XY::new(1.0, 0.0)).unwrap();
+    let emission = embedding::Emission {
+        items: vec![[start, end], [fixed, fixed]],
+        chords: 1,
+        areal_chords: 0,
+        fan_spans: Vec::new(),
+        faces: None,
+    };
+    let problem = embedding::PlanarProblem::new(&partition, &[&emission], &[start], vec![
+        None;
+        partition
+            .node_count(
+            )
+    ])
+    .unwrap();
+    let assignment = Search::new(problem, "difference", 2)
+        .unwrap()
+        .run()
+        .unwrap();
+
+    assert_eq!(assignment.classes.len(), 1);
+    let solution = assignment.classes.first().unwrap();
+    assert_eq!(solution.variables.as_slice(), &[start, end]);
+    let [line_start, line_end] = solution.values.as_slice() else {
+        panic!("the local pair assigns both movable line endpoints");
+    };
+    let line = Segment {
+        start: *line_start,
+        end: *line_end,
+    };
+    let fixed_point = Segment {
+        start: XY::new(1.0, 0.0),
+        end: XY::new(1.0, 0.0),
+    };
+    assert_eq!(
+        segment_contact_exact(line, fixed_point),
+        Contact::Disjoint,
+        "the complete local pair must evaluate both movable line endpoints"
     );
 }
 
@@ -6571,6 +6850,7 @@ fn degree_two_triangle_reversal_is_rejected_by_g_and_published_when_g_is_bypasse
             local_calls: &local_calls,
             global_calls: &global_calls,
             node_order: None,
+            candidate_filter: None,
             bypass_local: false,
             bypass_global: true,
         },
@@ -6864,6 +7144,7 @@ fn neighbor_float_fan_flip_is_classified_against_p_and_g() {
             local_calls: &normal_local_calls,
             global_calls: &normal_global_calls,
             node_order: None,
+            candidate_filter: None,
             bypass_local: false,
             bypass_global: false,
         },
@@ -6952,6 +7233,7 @@ fn node_id_candidate_ordering_breaks_permutation_wkb_determinism() {
                 local_calls: &local_calls,
                 global_calls: &global_calls,
                 node_order,
+                candidate_filter: None,
                 bypass_local: true,
                 bypass_global: true,
             },

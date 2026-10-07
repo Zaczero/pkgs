@@ -1471,20 +1471,36 @@ impl Problem for PlanarProblem<'_, '_, '_> {
         candidates: &mut Vec<Self::Candidate>,
     ) -> Result<()> {
         let nearest = self.partition.nearest_xy(node);
-        let x_values = [nearest.x.next_down(), nearest.x, nearest.x.next_up()];
-        let y_values = [nearest.y.next_down(), nearest.y, nearest.y.next_up()];
-        let x_count =
-            if self.partition.compare_axis_to(node, Axis::X, nearest.x)? == Ordering::Equal {
-                1
+        let x_exact = self.partition.compare_axis_to(node, Axis::X, nearest.x)? == Ordering::Equal;
+        let y_exact = self.partition.compare_axis_to(node, Axis::Y, nearest.y)? == Ordering::Equal;
+        let x_values = [
+            if x_exact {
+                nearest.x
             } else {
-                3
-            };
-        let y_count =
-            if self.partition.compare_axis_to(node, Axis::Y, nearest.y)? == Ordering::Equal {
-                1
+                nearest.x.next_down()
+            },
+            nearest.x,
+            if x_exact {
+                nearest.x
             } else {
-                3
-            };
+                nearest.x.next_up()
+            },
+        ];
+        let y_values = [
+            if y_exact {
+                nearest.y
+            } else {
+                nearest.y.next_down()
+            },
+            nearest.y,
+            if y_exact {
+                nearest.y
+            } else {
+                nearest.y.next_up()
+            },
+        ];
+        let x_count = if x_exact { 1 } else { 3 };
+        let y_count = if y_exact { 1 } else { 3 };
         for &x in x_values
             .get(..x_count)
             .expect("candidate axis count is one or three")

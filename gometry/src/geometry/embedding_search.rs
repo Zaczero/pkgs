@@ -7,7 +7,9 @@ use crate::collections::{
     HashMap, HashSet, UnionFind, try_hash_map_with_capacity, try_hash_set_with_capacity,
 };
 use crate::error::{ResourceError, Result};
-use crate::geometry::{Bounds, GeometryErrorKind, Segment, for_each_overlapping_bounds_cross_pair};
+use crate::geometry::{
+    Bounds, GeometryErrorKind, Segment, XY, for_each_overlapping_bounds_cross_pair,
+};
 
 const BASE_EVALUATION_LIMIT: u64 = 1 << 16;
 const EVALUATIONS_PER_CONSTRUCTED_NODE: u64 = 1 << 12;
@@ -144,6 +146,15 @@ fn chord_movable_endpoints(
     Ok([first, second])
 }
 
+fn one_step_endpoint_bounds(point: XY) -> Bounds {
+    Bounds::new_raw(
+        point.x.next_down().max(-f64::MAX),
+        point.y.next_down().max(-f64::MAX),
+        point.x.next_up().min(f64::MAX),
+        point.y.next_up().min(f64::MAX),
+    )
+}
+
 /// Expand witness nodes to independent classes whose candidate drawings can
 /// change a shared chord predicate.
 #[expect(
@@ -225,6 +236,34 @@ pub(in crate::geometry) fn build_proximity_classes(
             .checked_add(sweep_cost)
             .ok_or(ResourceError::SizeOverflow)?;
         let mut newly_reached = Vec::new();
+        for &chord_index in &frontier_chords {
+            let chord = *chords
+                .get(chord_index)
+                .expect("frontier chord belongs to the emitted chord table");
+            let [Some(first), Some(second)] =
+                chord_movable_endpoints(chord, movable_cache, &mut is_movable)?
+            else {
+                continue;
+            };
+            let start = chord.nearest.start;
+            let end = chord.nearest.end;
+            initial_evaluations = initial_evaluations
+                .checked_add(1)
+                .ok_or(ResourceError::SizeOverflow)?;
+            if !one_step_endpoint_bounds(start).intersects(one_step_endpoint_bounds(end)) {
+                continue;
+            }
+            union.union(first as usize, second as usize);
+            for node in [first, second] {
+                let reached = closure
+                    .get_mut(node as usize)
+                    .expect("chord endpoint belongs to the node domain");
+                if !std::mem::replace(reached, true) {
+                    closure_nodes.push(node);
+                    newly_reached.push(node);
+                }
+            }
+        }
         let mut callback_error = None;
         let flow =
             for_each_overlapping_bounds_cross_pair(&left_bounds, &all_bounds, |left, right| {
@@ -286,17 +325,29 @@ pub(in crate::geometry) fn build_proximity_classes(
                         return std::ops::ControlFlow::Break(());
                     },
                 };
-                for node in left_movable
-                    .into_iter()
-                    .flatten()
-                    .chain(right_movable.into_iter().flatten())
-                {
+                let movable_nodes = [
+                    left_movable[0],
+                    left_movable[1],
+                    right_movable[0],
+                    right_movable[1],
+                ];
+                for node in movable_nodes.into_iter().flatten() {
                     let reached = closure
                         .get_mut(node as usize)
                         .expect("chord endpoint belongs to the node domain");
                     if !std::mem::replace(reached, true) {
                         closure_nodes.push(node);
                         newly_reached.push(node);
+                    }
+                }
+                for endpoints in [left_movable, right_movable] {
+                    if let [Some(first), Some(second)] = endpoints {
+                        let Some(evaluations) = initial_evaluations.checked_add(1) else {
+                            callback_error = Some(ResourceError::SizeOverflow.into());
+                            return std::ops::ControlFlow::Break(());
+                        };
+                        initial_evaluations = evaluations;
+                        union.union(first as usize, second as usize);
                     }
                 }
                 for left_node in left_movable.into_iter().flatten() {
