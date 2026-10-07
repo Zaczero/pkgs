@@ -364,7 +364,13 @@ pub(in crate::geometry) struct SearchAssignment<N, C> {
     pub evaluations: u64,
 }
 
-/// A global G result; rejection names indices from `Problem::classes()` to advance.
+/// A global G result; rejection names implicated indices from `Problem::classes()`.
+///
+/// An empty rejection asserts that no prepared variable assignment can repair
+/// this rejection.
+/// The first nonempty rejection uses its blame to choose a fixed traversal
+/// order, but that order must not prune the Cartesian product of prepared local
+/// solution streams.
 pub(in crate::geometry) enum GlobalCheck {
     Pass,
     Reject(Vec<usize>),
@@ -377,7 +383,12 @@ pub(in crate::geometry) enum GlobalCheck {
 /// `fixed_keys` contains the nearest cells occupied by nodes outside the
 /// current class, including members of other classes. `check_local` evaluates
 /// ready pair and fan predicates for the assigned prefix; each predicate
-/// charges the shared budget before running.
+/// charges the shared budget before running. Each local solution stream is
+/// finite, deterministic, and independent of other classes' current assignments.
+/// The search enumerates their complete Cartesian product. Nonempty
+/// `check_global` blame chooses the product's digit order once; later blame
+/// never changes or prunes that order. Empty blame asserts that no prepared
+/// assignment can repair the rejection.
 pub(in crate::geometry) trait Problem {
     type Node: Copy;
     type Candidate: Copy;
@@ -430,8 +441,12 @@ pub(in crate::geometry) trait Problem {
         budget: &mut EvaluationBudget,
     ) -> Result<bool>;
 
-    /// Run G on the composed assignment and name classes that may repair a failing face.
+    /// Run G on the composed assignment and name classes implicated by a rejection.
     ///
+    /// The first nonempty blame prioritizes digit order, not products to skip.
+    /// Later blame is validated but cannot change product order. Return empty
+    /// blame only when no prepared variable assignment can repair the rejection;
+    /// otherwise name at least one influential prepared class.
     /// Charge `items.len().div_ceil(16)` for each G sweep before running it.
     fn check_global(
         &self,
@@ -744,7 +759,7 @@ impl<P: Problem> Search<P> {
             states.push(state);
             current_solutions.push(solution);
         }
-
+        let mut product_order = None;
         loop {
             let global = {
                 let mut assignments = Vec::with_capacity(prepared.len());
@@ -775,38 +790,48 @@ impl<P: Problem> Search<P> {
                     if blamed_classes.is_empty() {
                         return Err(self.budget.unrepresentable());
                     }
-                    let mut blamed_positions = Vec::with_capacity(blamed_classes.len());
-                    for class in blamed_classes {
-                        let position = class_positions.get(class).copied().ok_or_else(|| {
-                            GeometryErrorKind::Invalid(
-                                "embedding search blamed an unknown variable class".into(),
-                            )
-                        })?;
-                        if position == usize::MAX {
-                            return Err(GeometryErrorKind::Invalid(
-                                "embedding search blamed an empty variable class".into(),
-                            )
-                            .into());
+                    if product_order.is_none() {
+                        let mut order = Vec::with_capacity(prepared.len());
+                        for class in blamed_classes {
+                            order.push(prepared_position_for_blame(&class_positions, class)?);
                         }
-                        blamed_positions.push(position);
+                        order.sort_unstable();
+                        order.dedup();
+                        let blamed_count = order.len();
+                        for position in 0..prepared.len() {
+                            if order
+                                .get(..blamed_count)
+                                .expect("blamed prefix belongs to the product order")
+                                .binary_search(&position)
+                                .is_err()
+                            {
+                                order.push(position);
+                            }
+                        }
+                        product_order = Some(order);
+                    } else {
+                        for class in blamed_classes {
+                            prepared_position_for_blame(&class_positions, class)?;
+                        }
                     }
-                    blamed_positions.sort_unstable();
-                    blamed_positions.dedup();
 
+                    let order = product_order
+                        .as_ref()
+                        .expect("a nonempty rejection establishes the product order");
                     let mut advanced = false;
-                    for position in blamed_positions {
+                    for &position in order {
                         let class = prepared
                             .get(position)
-                            .expect("blamed class rank is within prepared classes");
+                            .expect("class rank is within prepared classes");
                         let state = states
                             .get_mut(position)
-                            .expect("blamed class rank is within class search states");
+                            .expect("class rank is within class search states");
                         if let Some(solution) =
                             state.next_solution(class, &self.problem, &mut self.budget)?
                         {
                             *current_solutions
                                 .get_mut(position)
-                                .expect("blamed class rank is within current solutions") = solution;
+                                .expect("class rank is within current solutions") = solution;
                             advanced = true;
                             break;
                         }
@@ -815,11 +840,15 @@ impl<P: Problem> Search<P> {
                         let Some(solution) =
                             state.next_solution(class, &self.problem, &mut self.budget)?
                         else {
-                            return Err(self.budget.unrepresentable());
+                            return Err(GeometryErrorKind::Invalid(
+                                "embedding search could not restart a prepared local solution stream"
+                                    .into(),
+                            )
+                            .into());
                         };
                         *current_solutions
                             .get_mut(position)
-                            .expect("blamed class rank is within current solutions") = solution;
+                            .expect("class rank is within current solutions") = solution;
                     }
                     if !advanced {
                         return Err(self.budget.unrepresentable());
@@ -828,6 +857,13 @@ impl<P: Problem> Search<P> {
             }
         }
     }
+}
+
+fn prepared_position_for_blame(class_positions: &[usize], class: usize) -> Result<usize> {
+    class_positions.get(class).copied().ok_or_else(|| {
+        GeometryErrorKind::Invalid("embedding search blamed an unknown variable class".into())
+            .into()
+    })
 }
 
 fn prepare_classes<P: Problem>(
@@ -915,7 +951,7 @@ fn prepare_classes<P: Problem>(
 
     let mut prepared = Vec::with_capacity(admitted.len());
     let mut class_positions = Vec::with_capacity(classes.len());
-    class_positions.resize(classes.len(), usize::MAX);
+    class_positions.resize(classes.len(), 0);
     // Hall failures should reject the whole problem before domain-specific
     // preparation materializes potentially dense proximity partners.
     for class in admitted {
@@ -1090,7 +1126,7 @@ struct MatchFrame {
 
 #[cfg(test)]
 mod tests {
-    use std::cell::Cell;
+    use std::cell::{Cell, RefCell};
     use std::rc::Rc;
 
     use super::*;
@@ -1101,12 +1137,14 @@ mod tests {
         candidates: Vec<Vec<u8>>,
         fixed_keys_by_class: Vec<Vec<u8>>,
         rejected: Vec<(usize, usize, u8)>,
-        global_target: Option<Vec<(usize, u8)>>,
+        global_requirements: Option<Vec<Vec<(usize, u8)>>>,
         blamed_classes: Vec<usize>,
+        blame_by_assignment: Vec<(Vec<(usize, u8)>, Vec<usize>)>,
         initial_evaluations: u64,
         prepare_calls: Rc<Cell<usize>>,
         local_calls: Rc<Cell<usize>>,
         global_calls: Rc<Cell<usize>>,
+        global_visits: Option<Rc<RefCell<Vec<Vec<(usize, u8)>>>>>,
     }
 
     impl FixtureProblem {
@@ -1117,12 +1155,14 @@ mod tests {
                 candidates,
                 fixed_keys_by_class,
                 rejected: Vec::new(),
-                global_target: None,
+                global_requirements: None,
                 blamed_classes: Vec::new(),
+                blame_by_assignment: Vec::new(),
                 initial_evaluations: 0,
                 prepare_calls: Rc::new(Cell::new(0)),
                 local_calls: Rc::new(Cell::new(0)),
                 global_calls: Rc::new(Cell::new(0)),
+                global_visits: None,
             }
         }
     }
@@ -1218,32 +1258,44 @@ mod tests {
                             .all(|variable| variables.contains(variable))
                 })
             }));
+            budget.charge(1)?;
             self.global_calls
                 .set(self.global_calls.get().wrapping_add(1));
-            budget.charge(1)?;
-            let Some(target) = &self.global_target else {
+            let mut actual = assignments
+                .iter()
+                .flat_map(|class| {
+                    class
+                        .variables
+                        .iter()
+                        .copied()
+                        .zip(class.values.iter().copied())
+                })
+                .collect::<Vec<_>>();
+            actual.sort_unstable_by_key(|&(node, _)| node);
+            if let Some(visits) = &self.global_visits {
+                visits.borrow_mut().push(actual.clone());
+            }
+            let Some(requirements) = &self.global_requirements else {
                 return Ok(GlobalCheck::Pass);
             };
-            let actual_count = assignments
-                .iter()
-                .map(|class| class.values.len())
-                .sum::<usize>();
-            let matches = actual_count == target.len()
-                && target.iter().all(|&(node, value)| {
-                    assignments.iter().any(|class| {
-                        class
-                            .variables
-                            .iter()
-                            .copied()
-                            .zip(class.values.iter().copied())
-                            .any(|actual| actual == (node, value))
-                    })
-                });
-            Ok(if matches {
-                GlobalCheck::Pass
-            } else {
-                GlobalCheck::Reject(self.blamed_classes.clone())
-            })
+            Ok(
+                if requirements.iter().any(|required| {
+                    required
+                        .iter()
+                        .all(|assignment| actual.contains(assignment))
+                }) {
+                    GlobalCheck::Pass
+                } else {
+                    let blamed = self
+                        .blame_by_assignment
+                        .iter()
+                        .find_map(|(assignment, classes)| {
+                            (assignment == &actual).then_some(classes)
+                        })
+                        .unwrap_or(&self.blamed_classes);
+                    GlobalCheck::Reject(blamed.clone())
+                },
+            )
         }
 
         fn initial_evaluations(&self) -> u64 {
@@ -1359,14 +1411,14 @@ mod tests {
     }
 
     #[test]
-    fn global_failure_advances_blamed_classes_in_variable_order() {
+    fn global_rejections_visit_products_in_deterministic_variable_order() {
         let mut problem = FixtureProblem::new(
             vec![vec![10], vec![0]],
             (0..=10).map(|_| Vec::new()).collect(),
         );
         problem.candidates[0] = vec![1, 0];
         problem.candidates[10] = vec![3, 2];
-        problem.global_target = Some(vec![(0, 1), (10, 3)]);
+        problem.global_requirements = Some(vec![vec![(0, 1), (10, 3)]]);
         problem.blamed_classes = vec![0, 1];
         let global_calls = Rc::clone(&problem.global_calls);
         let assignment = search_fixture(problem, 2).unwrap();
@@ -1381,9 +1433,9 @@ mod tests {
     }
 
     #[test]
-    fn global_failure_without_a_blame_class_is_unrepresentable() {
+    fn empty_blame_is_unrepresentable_when_no_prepared_assignment_can_repair() {
         let mut problem = FixtureProblem::new(vec![vec![0]], vec![vec![0]]);
-        problem.global_target = Some(vec![(0, 1)]);
+        problem.global_requirements = Some(vec![vec![(0, 1)]]);
         let error = search_fixture(problem, 1).unwrap_err();
 
         assert!(matches!(
@@ -1398,7 +1450,7 @@ mod tests {
     #[test]
     fn exhausting_every_blamed_class_is_unrepresentable() {
         let mut problem = FixtureProblem::new(vec![vec![0]], vec![vec![0]]);
-        problem.global_target = Some(vec![(0, 1)]);
+        problem.global_requirements = Some(vec![vec![(0, 1)]]);
         problem.blamed_classes = vec![0];
         let error = search_fixture(problem, 1).unwrap_err();
 
@@ -1408,6 +1460,422 @@ mod tests {
                 operation: "search_test",
                 constructed: 1
             })
+        ));
+    }
+
+    #[test]
+    fn global_rejection_blame_cannot_skip_a_prepared_product() {
+        let mut problem = FixtureProblem::new(vec![vec![0], vec![1]], vec![vec![0, 1], vec![2, 3]]);
+        problem.global_requirements = Some(vec![vec![(0, 0), (1, 3)]]);
+        problem.blame_by_assignment = vec![
+            (vec![(0, 0), (1, 2)], vec![0, 1]),
+            (vec![(0, 1), (1, 2)], vec![1]),
+            (vec![(0, 1), (1, 3)], vec![0]),
+        ];
+        let visits = Rc::new(RefCell::new(Vec::new()));
+        problem.global_visits = Some(Rc::clone(&visits));
+        let assignment = search_fixture(problem, 2);
+
+        assert!(
+            assignment.is_ok(),
+            "search skipped the passing prepared product (class 0 -> 0, class 1 -> 3): {assignment:?}"
+        );
+        let assignment = assignment.unwrap();
+        assert_eq!(assignment.classes[0].values, [0]);
+        assert_eq!(assignment.classes[1].values, [3]);
+        assert_eq!(*visits.borrow(), [
+            vec![(0, 0), (1, 2)],
+            vec![(0, 1), (1, 2)],
+            vec![(0, 0), (1, 3)],
+        ]);
+    }
+
+    fn cartesian_products_with_first_stream_fastest(streams: &[Vec<u8>]) -> Vec<Vec<u8>> {
+        fn visit(
+            streams: &[Vec<u8>],
+            stream: usize,
+            reversed: &mut Vec<u8>,
+            products: &mut Vec<Vec<u8>>,
+        ) {
+            let options = streams
+                .get(stream)
+                .expect("the product enumerator visits an existing stream");
+            for &value in options {
+                reversed.push(value);
+                if stream == 0 {
+                    products.push(reversed.iter().rev().copied().collect());
+                } else {
+                    visit(streams, stream.wrapping_sub(1), reversed, products);
+                }
+                reversed
+                    .pop()
+                    .expect("the recursive product walk just pushed one value");
+            }
+        }
+
+        assert!(!streams.is_empty());
+        let mut products = Vec::new();
+        visit(
+            streams,
+            streams.len().wrapping_sub(1),
+            &mut Vec::with_capacity(streams.len()),
+            &mut products,
+        );
+        products
+    }
+
+    fn cartesian_products_with_ordered_fastest_stream(
+        streams: &[Vec<u8>],
+        order: &[usize],
+    ) -> Vec<Vec<u8>> {
+        let ordered_streams = order
+            .iter()
+            .map(|&node| {
+                streams
+                    .get(node)
+                    .expect("the product order names a prepared stream")
+                    .clone()
+            })
+            .collect::<Vec<_>>();
+        cartesian_products_with_first_stream_fastest(&ordered_streams)
+            .into_iter()
+            .map(|ordered| {
+                let mut product = Vec::with_capacity(streams.len());
+                product.resize(streams.len(), None::<u8>);
+                for (position, &node) in order.iter().enumerate() {
+                    *product
+                        .get_mut(node)
+                        .expect("the product order names an output position") = Some(
+                        *ordered
+                            .get(position)
+                            .expect("the product contains every prepared stream"),
+                    );
+                }
+                product
+                    .into_iter()
+                    .map(|value| value.expect("the product order visits every stream"))
+                    .collect()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn every_two_and_three_class_acceptance_table_follows_first_blame_order() {
+        for (streams, class_orders) in [
+            (vec![vec![0, 1], vec![2, 3]], vec![vec![0, 1], vec![1, 0]]),
+            (vec![vec![0, 1], vec![2, 3], vec![4, 5]], vec![
+                vec![0, 1, 2],
+                vec![0, 2, 1],
+                vec![1, 0, 2],
+                vec![1, 2, 0],
+                vec![2, 0, 1],
+                vec![2, 1, 0],
+            ]),
+        ] {
+            let first_blame = 1;
+            let mut digit_order = Vec::with_capacity(streams.len());
+            digit_order.push(first_blame);
+            digit_order.extend((0..streams.len()).filter(|&node| node != first_blame));
+            let products = cartesian_products_with_ordered_fastest_stream(&streams, &digit_order);
+            let acceptance_count = 1_usize
+                .checked_shl(u32::try_from(products.len()).unwrap())
+                .unwrap();
+            let candidates = (0..streams.len())
+                .map(|node| {
+                    let first = u8::try_from(node).unwrap().wrapping_mul(2);
+                    vec![first, first.wrapping_add(1)]
+                })
+                .collect::<Vec<_>>();
+
+            for class_order in class_orders {
+                for accepted in 0..acceptance_count {
+                    let global_requirements = products
+                        .iter()
+                        .enumerate()
+                        .filter_map(|(index, product)| {
+                            let bit = 1_usize.checked_shl(u32::try_from(index).unwrap()).unwrap();
+                            (accepted & bit != 0).then(|| {
+                                product
+                                    .iter()
+                                    .copied()
+                                    .enumerate()
+                                    .map(|(node, value)| (node, value))
+                                    .collect::<Vec<_>>()
+                            })
+                        })
+                        .collect();
+                    let class_for_node = |node| {
+                        class_order
+                            .iter()
+                            .position(|&class_node| class_node == node)
+                            .expect("each singleton node has one original class ID")
+                    };
+                    let blame_by_assignment = products
+                        .iter()
+                        .enumerate()
+                        .map(|(index, product)| {
+                            let assignment = product
+                                .iter()
+                                .copied()
+                                .enumerate()
+                                .map(|(node, value)| (node, value))
+                                .collect();
+                            let blamed_node = match index {
+                                0 => first_blame,
+                                1 => 0,
+                                2 => streams.len().wrapping_sub(1),
+                                _ => first_blame,
+                            };
+                            (assignment, vec![class_for_node(blamed_node)])
+                        })
+                        .collect();
+                    let classes = class_order.iter().copied().map(|node| vec![node]).collect();
+                    let mut problem = FixtureProblem::new(classes, candidates.clone());
+                    problem.global_requirements = Some(global_requirements);
+                    problem.blamed_classes = vec![class_for_node(first_blame)];
+                    problem.blame_by_assignment = blame_by_assignment;
+                    let visits = Rc::new(RefCell::new(Vec::new()));
+                    problem.global_visits = Some(Rc::clone(&visits));
+                    let result = search_fixture(problem, streams.len());
+
+                    let first = products.iter().enumerate().find(|(index, _)| {
+                        let bit = 1_usize.checked_shl(u32::try_from(*index).unwrap()).unwrap();
+                        accepted & bit != 0
+                    });
+                    let expected_visit_count =
+                        first.map_or(products.len(), |(index, _)| index.wrapping_add(1));
+                    let expected_visits = products
+                        .iter()
+                        .take(expected_visit_count)
+                        .map(|product| {
+                            product
+                                .iter()
+                                .copied()
+                                .enumerate()
+                                .map(|(node, value)| (node, value))
+                                .collect::<Vec<_>>()
+                        })
+                        .collect::<Vec<_>>();
+                    assert_eq!(
+                        *visits.borrow(),
+                        expected_visits,
+                        "acceptance mask {accepted:#x}, class order {class_order:?}"
+                    );
+
+                    if let Some((_, expected)) = first {
+                        assert!(
+                            result.is_ok(),
+                            "acceptance mask {accepted:#x}, class order {class_order:?} must return the first passing product: {result:?}"
+                        );
+                        let assignment = result.unwrap();
+                        let actual = assignment
+                            .classes
+                            .iter()
+                            .flat_map(|class| {
+                                class
+                                    .variables
+                                    .iter()
+                                    .copied()
+                                    .zip(class.values.iter().copied())
+                            })
+                            .collect::<Vec<_>>();
+                        assert_eq!(
+                            actual,
+                            expected
+                                .iter()
+                                .copied()
+                                .enumerate()
+                                .map(|(node, value)| (node, value))
+                                .collect::<Vec<_>>()
+                        );
+                    } else {
+                        let error = result.unwrap_err();
+                        assert!(matches!(
+                            error.kind(),
+                            ErrorKind::Geometry(
+                                GeometryErrorKind::ExactEmbeddingUnrepresentable { .. }
+                            )
+                        ));
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn product_carry_restarts_unequal_local_streams_and_keeps_fixed_classes() {
+        let mut problem = FixtureProblem::new(vec![vec![0, 1], vec![2], vec![3]], vec![
+            vec![0, 1, 2],
+            vec![0, 1, 2],
+            vec![3, 4],
+            vec![5],
+        ]);
+        problem.rejected.push((0, 0, 0));
+        problem.global_requirements = Some(vec![vec![(0, 2), (1, 1), (2, 4), (3, 5)]]);
+        problem.blamed_classes = vec![0, 1, 2];
+        let visits = Rc::new(RefCell::new(Vec::new()));
+        problem.global_visits = Some(Rc::clone(&visits));
+        let assignment = search_fixture(problem, 3).unwrap();
+
+        let visits_expected = [
+            [1, 0, 3, 5],
+            [1, 2, 3, 5],
+            [2, 0, 3, 5],
+            [2, 1, 3, 5],
+            [1, 0, 4, 5],
+            [1, 2, 4, 5],
+            [2, 0, 4, 5],
+            [2, 1, 4, 5],
+        ]
+        .map(|values| {
+            values
+                .into_iter()
+                .enumerate()
+                .map(|(node, value)| (node, value))
+                .collect::<Vec<_>>()
+        });
+        assert_eq!(*visits.borrow(), visits_expected);
+        assert_eq!(
+            assignment
+                .classes
+                .iter()
+                .flat_map(|class| {
+                    class
+                        .variables
+                        .iter()
+                        .copied()
+                        .zip(class.values.iter().copied())
+                })
+                .collect::<Vec<_>>(),
+            [(0, 2), (1, 1), (2, 4), (3, 5)]
+        );
+    }
+
+    #[test]
+    fn finite_product_exhaustion_and_search_budget_remain_distinct() {
+        let mut no_passing_product =
+            FixtureProblem::new(vec![vec![0], vec![1]], vec![vec![0, 1], vec![2, 3]]);
+        no_passing_product.global_requirements = Some(Vec::new());
+        no_passing_product.blamed_classes = vec![0, 1];
+        let error = search_fixture(no_passing_product, 2).unwrap_err();
+        assert!(matches!(
+            error.kind(),
+            ErrorKind::Geometry(GeometryErrorKind::ExactEmbeddingUnrepresentable {
+                operation: "search_test",
+                constructed: 2
+            })
+        ));
+
+        let mut budgeted = FixtureProblem::new(vec![vec![0], vec![1]], vec![vec![0, 1], vec![2]]);
+        budgeted.global_requirements = Some(vec![vec![(0, 1), (1, 2)]]);
+        budgeted.blamed_classes = vec![0, 1];
+        let error = Search::with_evaluation_limit(budgeted, "search_test", 2, 9)
+            .unwrap()
+            .run()
+            .unwrap_err();
+        assert!(matches!(
+            error.kind(),
+            ErrorKind::Geometry(GeometryErrorKind::ExactEmbeddingSearchLimit {
+                operation: "search_test",
+                constructed: 2,
+                evaluations: 9
+            })
+        ));
+    }
+
+    #[test]
+    fn a_single_last_class_repair_fits_the_default_budget() {
+        const CLASS_COUNT: usize = 20;
+
+        let classes = (0..CLASS_COUNT).map(|node| vec![node]).collect();
+        let candidates = (0..CLASS_COUNT)
+            .map(|node| {
+                let first = u8::try_from(node).unwrap().wrapping_mul(2);
+                vec![first, first.wrapping_add(1)]
+            })
+            .collect();
+        let target = (0..CLASS_COUNT)
+            .map(|node| {
+                let first = u8::try_from(node).unwrap().wrapping_mul(2);
+                (
+                    node,
+                    if node == CLASS_COUNT.wrapping_sub(1) {
+                        first.wrapping_add(1)
+                    } else {
+                        first
+                    },
+                )
+            })
+            .collect::<Vec<_>>();
+        let mut problem = FixtureProblem::new(classes, candidates);
+        problem.global_requirements = Some(vec![vec![(19, 39)]]);
+        problem.blamed_classes = vec![CLASS_COUNT.wrapping_sub(1)];
+        let global_calls = Rc::clone(&problem.global_calls);
+        let assignment = search_fixture(problem, CLASS_COUNT);
+
+        assert!(
+            assignment.is_ok(),
+            "the single candidate in the only blamed class must be tried within the default budget; completed global checks: {}; result: {assignment:?}",
+            global_calls.get()
+        );
+        let assignment = assignment.unwrap();
+        let actual = assignment
+            .classes
+            .iter()
+            .flat_map(|class| {
+                class
+                    .variables
+                    .iter()
+                    .copied()
+                    .zip(class.values.iter().copied())
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(actual, target);
+        assert_eq!(
+            global_calls.get(),
+            2,
+            "the nearest product and its one-class repair each receive one global check"
+        );
+    }
+
+    #[test]
+    fn unknown_blame_is_invalid_before_or_after_product_order_initialization() {
+        let mut problem = FixtureProblem::new(vec![vec![0]], vec![vec![0, 1]]);
+        problem.global_requirements = Some(Vec::new());
+        problem.blamed_classes = vec![1];
+        let error = search_fixture(problem, 1).unwrap_err();
+        assert!(matches!(
+            error.kind(),
+            ErrorKind::Geometry(GeometryErrorKind::Invalid(_))
+        ));
+
+        let mut problem = FixtureProblem::new(vec![vec![0], vec![1]], vec![vec![0, 1], vec![2, 3]]);
+        problem.global_requirements = Some(vec![vec![(0, 1), (1, 3)]]);
+        problem.blamed_classes = vec![0];
+        problem.blame_by_assignment = vec![(vec![(0, 1), (1, 2)], vec![2])];
+        let visits = Rc::new(RefCell::new(Vec::new()));
+        problem.global_visits = Some(Rc::clone(&visits));
+        let error = search_fixture(problem, 2).unwrap_err();
+
+        assert!(matches!(
+            error.kind(),
+            ErrorKind::Geometry(GeometryErrorKind::Invalid(_))
+        ));
+        assert_eq!(
+            *visits.borrow(),
+            [vec![(0, 0), (1, 2)], vec![(0, 1), (1, 2)]],
+            "the second rejection's unknown class is checked after traversal order is fixed"
+        );
+    }
+
+    #[test]
+    fn empty_variable_class_is_rejected_during_preparation() {
+        let problem = FixtureProblem::new(vec![vec![0], Vec::new()], vec![vec![0]]);
+        let error = search_fixture(problem, 1).unwrap_err();
+
+        assert!(matches!(
+            error.kind(),
+            ErrorKind::Geometry(GeometryErrorKind::Invalid(_))
         ));
     }
 
