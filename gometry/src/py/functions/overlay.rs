@@ -49,22 +49,28 @@ fn pooled_shapes_with_rows(values: &Bound<'_, PyAny>) -> PyResult<(Frame, Vec<Sh
 
 /// The shared tail of the all-input overlays (`union_all`, `intersection_all`,
 /// `symmetric_difference_all`): collect the input shapes under one shared frame
-/// and assemble them with `kernel` (GIL released). Aggregates are always lenient
+/// and assemble them with the selected operation (GIL released). Aggregates are always lenient
 /// (missing rows skipped; SQL/pandas semantics). Geographic frames pass their
 /// native topology frame so seam crossing and pole equivalence match binary
 /// overlay.
 fn apply_overlay_all(
     py: Python<'_>,
     values: &Bound<'_, PyAny>,
-    kernel: impl FnOnce(
-        &[Shape],
-        crate::geometry::TopologyDomain,
-        crate::geometry::Strictness,
-        &crate::geometry::SourceArcMetricAccess<'_, crate::crs::GeodesicMetric>,
-    ) -> crate::error::Result<Shape>
-    + Send,
+    operation: OverlayOp,
 ) -> PyResult<Typed> {
     let (metadata, shapes) = pooled_shapes(values)?;
+    if shapes.is_empty() {
+        let name = match operation {
+            OverlayOp::Union => "union_all",
+            OverlayOp::Intersection => "intersection_all",
+            OverlayOp::SymmetricDifference => "symmetric_difference_all",
+            OverlayOp::Difference => "difference",
+        };
+        return Err(
+            crate::error::Error::from(GeometryErrorKind::EmptyGeometrySequence { operation: name })
+                .into(),
+        );
+    }
     let mut metric_scratch = crate::dispatch::MetricScratch::default();
     let (domain, metric) = crate::dispatch::MetricResolver::GeographicCarry
         .resolve_topology_ctx(&metadata, &mut metric_scratch)?;
@@ -77,9 +83,10 @@ fn apply_overlay_all(
                 .into()
             })
         };
-        kernel(
+        crate::geometry::overlay_all_with_metric(
             &shapes,
             domain,
+            operation,
             crate::geometry::Strictness::Lenient,
             &metric_access,
         )
@@ -328,15 +335,7 @@ pub(crate) fn union_all(py: Python<'_>, values: &Bound<'_, PyAny>) -> PyResult<T
         })?;
         return Ok(Typed(PyGeometry::with_frame(shape, array.frame.clone())));
     }
-    apply_overlay_all(py, values, |shapes, domain, strictness, metric_access| {
-        crate::geometry::overlay_all_with_metric(
-            shapes,
-            domain,
-            OverlayOp::Union,
-            strictness,
-            metric_access,
-        )
-    })
+    apply_overlay_all(py, values, OverlayOp::Union)
 }
 
 /// Union a polygonal *coverage* into one geometry by dissolving shared edges.
@@ -535,15 +534,7 @@ pub(crate) fn polygonize_full(py: Python<'_>, values: &Bound<'_, PyAny>) -> PyRe
 /// 'POLYGON ((2 2, 3 2, 3 3, 2 3, 2 2))'
 #[pyfunction]
 pub(crate) fn intersection_all(py: Python<'_>, values: &Bound<'_, PyAny>) -> PyResult<Typed> {
-    apply_overlay_all(py, values, |shapes, domain, strictness, metric_access| {
-        crate::geometry::overlay_all_with_metric(
-            shapes,
-            domain,
-            OverlayOp::Intersection,
-            strictness,
-            metric_access,
-        )
-    })
+    apply_overlay_all(py, values, OverlayOp::Intersection)
 }
 
 /// Symmetric difference of many geometries.
@@ -586,15 +577,7 @@ pub(crate) fn symmetric_difference_all(
     py: Python<'_>,
     values: &Bound<'_, PyAny>,
 ) -> PyResult<Typed> {
-    apply_overlay_all(py, values, |shapes, domain, strictness, metric_access| {
-        crate::geometry::overlay_all_with_metric(
-            shapes,
-            domain,
-            OverlayOp::SymmetricDifference,
-            strictness,
-            metric_access,
-        )
-    })
+    apply_overlay_all(py, values, OverlayOp::SymmetricDifference)
 }
 
 /// Test whether geometries form a valid polygonal coverage.
