@@ -33,6 +33,6 @@ Measurements were collected on 2026-10-07. Each A/A and A/B run used 15 measured
 | --- | ---: | ---: | ---: | ---: |
 | XY Q intersection | 2,656,782 → 2,618,020 | 0.985408 [0.985404, 0.985425] | [0.999986, 1.000009] | 239.345 → 235.938 µs |
 | Authentic source-t=1 endpoint | 369,126 → 370,387 | 1.003423 [1.003406, 1.003448] | [0.999992, 1.000007] | 40.568 → 40.617 µs |
-| Fresh geographic nearest | 828,527 → 840,703 | 1.014696 [1.014695, 1.014708] | [1.000000, 1.000028] | 80.078 → 79.969 µs |
+| Fresh geographic nearest | 828,527 → 840,703 | 1.014696 [1.014695, 1.014708] | [1.000000, 1.000028] | 80.648 → 80.431 µs |
 
 The instruction-count changes are distinct from the same-artifact A/A variation: XY uses fewer instructions, while source-t=1 and nearest use more. Cycle, per-thread CPU, and wall-time confidence intervals include parity for all three workloads. The process retained inherited affinity to CPUs 0–31 on a loaded host, whose recorded load averages ranged roughly from 10 to 17; these timing observations are therefore inconclusive. The measurements are workload-specific context, not a percentage gate or a universal performance claim.
