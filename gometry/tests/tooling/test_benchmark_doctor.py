@@ -69,6 +69,23 @@ def test_source_identity_mutation_rejects_without_rebuild() -> None:
     assert any('stale' in failure for failure in failures)
 
 
+def test_parent_benchmark_identity_override_must_match_embedded_build() -> None:
+    checkout = 'a' * 64
+    parent = 'b' * 64
+    build_info = {'source_inputs_sha256': parent}
+
+    with pytest.raises(ValueError, match='does not match'):
+        doctor.benchmark_source_inputs_identity(build_info, checkout)
+    assert (
+        doctor.benchmark_source_inputs_identity(build_info, checkout, parent) == parent
+    )
+
+    with pytest.raises(ValueError, match='does not match'):
+        doctor.benchmark_source_inputs_identity(build_info, checkout, 'c' * 64)
+    with pytest.raises(ValueError, match='lowercase SHA-256'):
+        doctor.benchmark_source_inputs_identity(build_info, checkout, 'B' * 64)
+
+
 @pytest.mark.parametrize(
     ('field', 'value', 'message'),
     [

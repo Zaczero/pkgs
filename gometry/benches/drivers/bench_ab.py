@@ -33,7 +33,12 @@ _SUPPORT = GOMETRY_ROOT / 'benches' / 'support'
 if str(_SUPPORT) not in sys.path:
     sys.path.insert(0, str(_SUPPORT))
 
-from bench_doctor import collect, collect_contention, select_benchmark_cpu
+from bench_doctor import (
+    benchmark_source_inputs_identity,
+    collect,
+    collect_contention,
+    select_benchmark_cpu,
+)
 from benchmark_statistics import (
     bootstrap_interval,
     bootstrap_median_interval,
@@ -77,14 +82,20 @@ def expand_perf_events(events: Sequence[str] | None = None) -> tuple[str, ...]:
 
 
 def identify_build(python: str) -> dict[str, Any]:
+    """Identify the loaded runtime and verify its embedded source digest.
+
+    An executable wrapper may set ``GOMETRY_BENCH_SOURCE_INPUTS_SHA256`` when
+    comparing a parent artifact with the live checkout. The override is only
+    accepted when it equals the extension's embedded source digest.
+    """
     code = """
-import json, platform, sys, sysconfig
+import json, os, platform, sys, sysconfig
 from pathlib import Path
 sys.path.insert(0, 'benches/drivers')
 import gometry._lib as lib
 from bench_doctor import (_extension_identity, _loaded_native_libraries,
-                          _package_identity, _run, _source_inputs_digest,
-                          _uv_lock_identity)
+                          _package_identity, _run,
+                          _source_inputs_digest, _uv_lock_identity)
 packages = {}
 for name in ('gometry', 'numpy', 'shapely', 'pyproj', 'h3', 'geopandas', 'pyarrow', 'mercantile', 'pygeohash'):
     identity = _package_identity(name)
@@ -95,6 +106,7 @@ print(json.dumps({
     'identity_schema_version': 1,
     'git_commit': _run(['git', 'rev-parse', 'HEAD']),
     'source_inputs_sha256': _source_inputs_digest(),
+    'requested_source_inputs_sha256': os.environ.get('GOMETRY_BENCH_SOURCE_INPUTS_SHA256'),
     'extension': extension,
     'uv_lock': _uv_lock_identity(),
     'packages': packages,
@@ -121,7 +133,15 @@ print(json.dumps({
         check=True,
         timeout=IDENTIFY_TIMEOUT_SECONDS,
     )
-    return json.loads(result.stdout)
+    identity = json.loads(result.stdout)
+    extension = identity.get('extension')
+    build_info = extension.get('build_info') if isinstance(extension, dict) else None
+    identity['source_inputs_sha256'] = benchmark_source_inputs_identity(
+        build_info,
+        identity.get('source_inputs_sha256'),
+        identity.pop('requested_source_inputs_sha256', None),
+    )
+    return identity
 
 
 def _attribute_build(
@@ -1354,8 +1374,16 @@ def pin_cpu(requested: int | None) -> dict[str, Any]:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--a', required=True, help='Python of side A (baseline build)')
-    parser.add_argument('--b', required=True, help='Python of side B (candidate build)')
+    parser.add_argument(
+        '--a',
+        required=True,
+        help='Python or wrapper for side A (baseline build)',
+    )
+    parser.add_argument(
+        '--b',
+        required=True,
+        help='Python or wrapper for side B (candidate build)',
+    )
     parser.add_argument(
         '--case',
         required=True,

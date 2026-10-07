@@ -137,6 +137,39 @@ def _source_inputs_digest() -> str | None:
     return _digest_source_input_files(_source_input_files())
 
 
+def benchmark_source_inputs_identity(
+    build_info: Any,
+    checkout_source_inputs_sha256: str | None,
+    expected_source_inputs_sha256: str | None = None,
+) -> str:
+    """Bind one benchmark arm to its embedded build inputs.
+
+    Parent-versus-candidate runs may intentionally load artifacts from different
+    source revisions. An explicit expected digest is accepted only when the
+    loaded extension embeds the same digest; without one, the live checkout
+    remains the expected source.
+    """
+    expected = (
+        checkout_source_inputs_sha256
+        if expected_source_inputs_sha256 is None
+        else expected_source_inputs_sha256
+    )
+    if (
+        not isinstance(expected, str)
+        or len(expected) != 64
+        or any(character not in '0123456789abcdef' for character in expected)
+    ):
+        raise ValueError('expected source inputs must be a lowercase SHA-256 digest')
+    if not isinstance(build_info, dict):
+        raise TypeError('loaded extension has no embedded build information')
+    if build_info.get('source_inputs_sha256') != expected:
+        raise ValueError(
+            'loaded extension source identity does not match the expected '
+            f'build inputs: {build_info.get("source_inputs_sha256")!r} != {expected!r}'
+        )
+    return expected
+
+
 def _native_source_inputs_digest() -> str | None:
     """Digest native source inputs preserved byte-for-byte in the sdist."""
     return _digest_source_input_files(_source_input_files(native_only=True))
