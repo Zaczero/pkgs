@@ -20,8 +20,8 @@ use thiserror::Error;
 #[cfg(test)]
 pub(crate) use value::source_admission_counts;
 pub(crate) use value::{
-    AngularFactor, CanonicalLongitude, ChartConnection, ChartPole, ChartStep, EdgeDirection,
-    FullTurnPole, GeodeticPole, GeographicAxisOrientation, GeographicFrame, Latitude, PeriodicAxis,
+    AngularFactor, CanonicalLongitude, ChartPole, ChartStep, EdgeDirection, FullTurnPole,
+    GeodeticPole, GeographicAxisOrientation, GeographicFrame, Latitude, PeriodicAxis,
     QuotientVertex, RetainedChartDisplacement, RetainedLongitudeSite, RingTurn, SeamIdentity,
     TurnDirection,
 };
