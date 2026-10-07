@@ -362,6 +362,32 @@ def test_line_substring_keeps_retained_circle_intervals_representable() -> None:
     assert route.to_wkb() == source
 
 
+def test_generated_geographic_half_turns_are_refined_for_public_consumers() -> None:
+    route = gm.LineString([(10.0, 0.0), (370.0, 0.0)], crs=4326)
+
+    half = route.line_substring(0.0, 0.5, normalized=True)
+    assert list(half.coords) == [
+        (10.0, 0.0),
+        (100.0, 0.0),
+        (190.0, 0.0),
+    ]
+    assert half.length > 0.0
+
+    segmented = route.segmentize(30_000_000.0)
+    assert list(segmented.coords) == [
+        (10.0, 0.0),
+        (100.0, 0.0),
+        (190.0, 0.0),
+        (280.0, 0.0),
+        (370.0, 0.0),
+    ]
+    assert segmented.length == pytest.approx(route.length, rel=0.0, abs=2.0e-8)
+
+    literal_half_turn = gm.LineString([(10.0, 0.0), (190.0, 0.0)], crs=4326)
+    with pytest.raises(gm.GeometryError, match='exactly half the longitude period'):
+        _ = literal_half_turn.length
+
+
 def test_array_chart_lrs_fraction_round_trip() -> None:
     rows = gm.GeometryArray([_geo_meridian(), _geo_parallel()])
     fractions = [0.25, 0.75]

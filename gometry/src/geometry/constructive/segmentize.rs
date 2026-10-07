@@ -620,7 +620,7 @@ fn subdivide<R: Route>(
                 let plan = plan(route, points, target, retry)?;
                 budget.check_additional(plan.generated)?;
                 let (output, generated) = materialize(route, points, &plan, budget)?;
-                match verify_segmentize_output(route, &output, &plan, max_length) {
+                match verify_segmentize_output(route, &output, &plan, generated, max_length) {
                     Ok(()) => {
                         budget.add(generated)?;
                         return Ok(output);
@@ -653,15 +653,16 @@ fn verify_segmentize_output<R: Route>(
     route: &R,
     points: &CoordSeq,
     plan: &Plan<R::Solution>,
+    generated: usize,
     max_segment_length: f64,
 ) -> Result<()> {
     if !max_segment_length.is_finite() || max_segment_length <= 0.0 {
         return Ok(());
     }
 
-    // If an unsplit source edge was already outside the limit, retain the
-    // ordered full scan so the same output chord determines the error.
-    if plan.source_exceeds_max_length {
+    // Refined publication can add chords outside the planned piece counts.
+    // Recheck the full chain in either case instead of trusting plan.steps.
+    if plan.source_exceeds_max_length || generated > plan.generated {
         return verify_all_segmentize_output(route, points, max_segment_length);
     }
 
@@ -1342,9 +1343,11 @@ mod tests {
         let first = plan(&Planar, &points, Target::MaxLength(max_length), 0).unwrap();
         assert_eq!(first.steps, [3]);
         let budget = ExpansionBudget::new("segmentize", "max_length");
-        let (first_output, _) = materialize(&Planar, &points, &first, &budget).unwrap();
+        let (first_output, first_generated) =
+            materialize(&Planar, &points, &first, &budget).unwrap();
         let first_error =
-            verify_segmentize_output(&Planar, &first_output, &first, max_length).unwrap_err();
+            verify_segmentize_output(&Planar, &first_output, &first, first_generated, max_length)
+                .unwrap_err();
         assert!(matches!(
             first_error.kind(),
             crate::error::ErrorKind::Geometry(GeometryErrorKind::UnrepresentableOutput {
@@ -1361,7 +1364,8 @@ mod tests {
         assert_eq!(output.xs(), &[0.0, 0.25, 0.5, 0.75, 1.0]);
         assert_eq!(budget.used(), output.len() - points.len());
         let accepted = plan(&Planar, &points, Target::MaxLength(max_length), 1).unwrap();
-        verify_segmentize_output(&Planar, &output, &accepted, max_length).unwrap();
+        verify_segmentize_output(&Planar, &output, &accepted, accepted.generated, max_length)
+            .unwrap();
     }
 
     #[test]
@@ -1407,8 +1411,9 @@ mod tests {
         let plan = plan(&Underplanned, &points, Target::MaxLength(1.0), 0).unwrap();
         assert!(plan.source_exceeds_max_length);
         let budget = ExpansionBudget::new("segmentize", "max_length");
-        let (output, _) = materialize(&Underplanned, &points, &plan, &budget).unwrap();
-        let error = verify_segmentize_output(&Underplanned, &output, &plan, 1.0).unwrap_err();
+        let (output, generated) = materialize(&Underplanned, &points, &plan, &budget).unwrap();
+        let error =
+            verify_segmentize_output(&Underplanned, &output, &plan, generated, 1.0).unwrap_err();
         assert!(matches!(
             error.kind(),
             crate::error::ErrorKind::Geometry(GeometryErrorKind::UnrepresentableOutput {

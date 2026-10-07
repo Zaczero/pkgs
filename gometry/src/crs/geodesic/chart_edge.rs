@@ -668,10 +668,13 @@ impl ChartEdge {
             .map_err(|error| GeometryErrorKind::Invalid(error.to_string().into()))?;
         crate::geometry::exact_arith::retained_source_interval_reads_as(
             self.retained_longitude(),
-            self.frame.longitude(),
+            self.frame,
+            [self.start_latitude, self.end_latitude],
             from_parameter,
             to_parameter,
             readback,
+            start,
+            end,
         )
     }
 
@@ -1539,11 +1542,15 @@ mod tests {
             .unwrap();
             let expected_chain: &[f64] = match name {
                 "positive major" => &[0.0, 125.0, 250.0],
-                "positive half" => &[0.0, 180.0],
+                "positive half" => &[0.0, 90.0, 180.0],
                 "positive half opposite spelling" => &[0.0, 90.0, -180.0],
-                "negative half" => &[0.0, -180.0],
-                "positive two turns" => &[0.0, 180.0, 360.0, 540.0, 720.0],
-                "negative two turns" => &[0.0, -180.0, -360.0, -540.0, -720.0],
+                "negative half" => &[0.0, -90.0, -180.0],
+                "positive two turns" => {
+                    &[0.0, 90.0, 180.0, 270.0, 360.0, 450.0, 540.0, 630.0, 720.0]
+                },
+                "negative two turns" => &[
+                    0.0, -90.0, -180.0, -270.0, -360.0, -450.0, -540.0, -630.0, -720.0,
+                ],
                 _ => unreachable!("the branch table names every retained edge"),
             };
             assert_eq!(chain, expected_chain, "{name}: published branch chain");
@@ -1687,6 +1694,109 @@ mod tests {
     }
 
     #[test]
+    fn source_interval_readback_rejects_a_nonzero_full_xy_collapse() {
+        let start = Point::new_raw_xy(0.0, 10.0);
+        let end = Point::new_raw_xy(0.0, 12.0);
+        let edge = ChartEdge::new(start, end, degrees()).unwrap();
+        let from = 0.5_f64;
+        let to = from.next_up();
+        let from_point = edge
+            .source_sheet_point(start, end, from, edge.chart_position(from).unwrap())
+            .unwrap();
+        let to_point = edge
+            .source_sheet_point(start, end, to, edge.chart_position(to).unwrap())
+            .unwrap();
+
+        // The exact sites are 11 and 11 + 2^-52. The latter is below half an
+        // ULP at 11 and rounds to 11, so both emitted XY endpoints are (0, 11)
+        // despite the nonzero source interval.
+        assert_eq!((from_point.x, from_point.y), (0.0, 11.0));
+        assert_eq!((to_point.x, to_point.y), (0.0, 11.0));
+        assert!(
+            edge.source_interval_reads_correctly(from, from, from_point, from_point)
+                .unwrap(),
+            "an exact zero-width interval remains a readable point"
+        );
+        assert!(
+            !edge
+                .source_interval_reads_correctly(from, to, from_point, to_point)
+                .unwrap(),
+            "a nonzero native-latitude interval cannot read back as one point"
+        );
+
+        let error = edge
+            .publish_source_interval(
+                start,
+                end,
+                from,
+                to,
+                |parameter| edge.chart_position(parameter),
+                |_, _, _| Ok(()),
+                "line_substring",
+            )
+            .unwrap_err();
+        assert!(matches!(
+            error.kind(),
+            crate::error::ErrorKind::Geometry(GeometryErrorKind::UnrepresentableOutput {
+                operation: "line_substring",
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn source_interval_readback_keeps_pole_degeneracy_distinct_from_rounded_motion() {
+        let from = 0.5_f64;
+        let to = from.next_up();
+        let pole_start = Point::new_raw_xy(10.0, 90.0);
+        let pole_end = Point::new_raw_xy(11.0, 90.0);
+        let pole = ChartEdge::new(pole_start, pole_end, degrees()).unwrap();
+        let pole_from = pole
+            .source_sheet_point(
+                pole_start,
+                pole_end,
+                from,
+                pole.chart_position(from).unwrap(),
+            )
+            .unwrap();
+        let pole_to = pole
+            .source_sheet_point(pole_start, pole_end, to, pole.chart_position(to).unwrap())
+            .unwrap();
+        assert_eq!((pole_from.x, pole_from.y), (pole_to.x, pole_to.y));
+        assert!(
+            pole.source_interval_reads_correctly(from, to, pole_from, pole_to)
+                .unwrap(),
+            "a retained interval at one typed pole is physically constant"
+        );
+
+        let near_pole_end = Point::new_raw_xy(11.0, 89.5);
+        let near_pole = ChartEdge::new(pole_start, near_pole_end, degrees()).unwrap();
+        let near_from = near_pole
+            .source_sheet_point(
+                pole_start,
+                near_pole_end,
+                from,
+                near_pole.chart_position(from).unwrap(),
+            )
+            .unwrap();
+        let near_to = near_pole
+            .source_sheet_point(
+                pole_start,
+                near_pole_end,
+                to,
+                near_pole.chart_position(to).unwrap(),
+            )
+            .unwrap();
+        assert_eq!((near_from.x, near_from.y), (near_to.x, near_to.y));
+        assert!(
+            !near_pole
+                .source_interval_reads_correctly(from, to, near_from, near_to)
+                .unwrap(),
+            "near-pole metric smallness does not make a nonzero interval constant"
+        );
+    }
+
+    #[test]
     fn source_sheet_publication_keeps_readable_circles_and_rejects_collapsed_intervals() {
         let meridian_start = Point::new_raw_xy(370.0, -30.0);
         let meridian_end = Point::new_raw_xy(370.0, 70.0);
@@ -1811,9 +1921,10 @@ mod tests {
             "equal raw endpoints do not read an explicit retained full turn"
         );
         assert!(
-            retained_circle
+            !retained_circle
                 .source_interval_reads_correctly(0.0, 0.5, circle_start, retained_midpoint)
-                .unwrap()
+                .unwrap(),
+            "a generated exact half-turn must be refined before publication"
         );
         assert!(
             !retained_circle
@@ -1838,6 +1949,7 @@ mod tests {
             .unwrap();
         assert_eq!(expanded_circle, [
             (0.0, 10.0, false),
+            (0.25, 100.0, true),
             (0.5, 190.0, true),
             (0.75, 280.0, true),
             (1.0, 10.0, false),
@@ -1869,6 +1981,7 @@ mod tests {
             .unwrap();
         assert_eq!(expanded_negative_circle, [
             (0.0, 10.0, false),
+            (0.25, -80.0, true),
             (0.5, -170.0, true),
             (0.75, -260.0, true),
             (1.0, 10.0, false),

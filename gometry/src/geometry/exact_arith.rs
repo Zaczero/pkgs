@@ -296,28 +296,34 @@ pub(crate) fn retained_source_sheet_site(
     round_retained_source_sheet_value(&absolute_site)
 }
 
-/// Check that the written chart step preserves the exact source interval's
+/// Check that the written XY step preserves the exact source interval's
 /// direction and branch class.
 ///
-/// The displacement remains exact through classification. Comparing it to the
-/// subtraction of rounded output coordinates would reject correctly rounded
-/// source sites whenever those two rounding operations do not commute.
+/// Generated half-turns and nonzero latitude intervals lost through rounding
+/// require refinement. The displacement remains exact through classification;
+/// comparing rounded coordinate differences to exact source differences would
+/// reject correctly rounded sites whenever the two rounding operations do not
+/// commute.
 #[expect(
     clippy::float_cmp,
-    reason = "zero and nonzero retained branch classes are discrete"
+    reason = "zero, direction, pole identity, and branch classes are discrete"
 )]
 pub(crate) fn retained_source_interval_reads_as(
     edge: crate::geographic::RetainedChartDisplacement,
-    axis: crate::geographic::PeriodicAxis,
+    frame: crate::geographic::GeographicFrame,
+    source_latitudes: [f64; 2],
     from: f64,
     to: f64,
     readback: crate::geographic::ChartStep,
+    start: crate::geometry::Point,
+    end: crate::geometry::Point,
 ) -> crate::error::Result<bool> {
     use std::cmp::Ordering;
 
-    use crate::geographic::{ChartStep, EdgeDirection, TurnDirection};
+    use crate::geographic::{ChartStep, EdgeDirection, Latitude, SeamIdentity, TurnDirection};
     use crate::geometry::tessellation::exact::ExactDyadic;
 
+    let axis = frame.longitude();
     if !(from.is_finite()
         && to.is_finite()
         && (0.0..=1.0).contains(&from)
@@ -329,14 +335,29 @@ pub(crate) fn retained_source_interval_reads_as(
         ));
     }
     let parameter_delta = ExactDyadic::from_f64(to).try_subtract(ExactDyadic::from_f64(from))?;
-    let delta = retained_edge_displacement(edge, axis)?.try_product(&parameter_delta)?;
-    if delta.is_zero() {
-        return Ok(matches!(
-            readback,
-            ChartStep::Shortest(EdgeDirection::Minor(value)) if value == 0.0
-        ));
+    let source_longitude_delta = retained_edge_displacement(edge, axis)?;
+    let delta = source_longitude_delta.try_product(&parameter_delta)?;
+    let source_latitude_delta = ExactDyadic::from_f64(source_latitudes[1])
+        .try_subtract(ExactDyadic::from_f64(source_latitudes[0]))?;
+    let latitude_delta = source_latitude_delta.try_product(&parameter_delta)?;
+    let start_latitude = Latitude::from_admitted(frame, start.y).get();
+    let end_latitude = Latitude::from_admitted(frame, end.y).get();
+
+    let source_start_latitude = Latitude::from_admitted(frame, source_latitudes[0]);
+    let source_end_latitude = Latitude::from_admitted(frame, source_latitudes[1]);
+    let same_source_pole = source_start_latitude == source_end_latitude
+        && source_start_latitude.identity(frame) == SeamIdentity::Pole;
+    let root_is_constant =
+        source_latitude_delta.is_zero() && (source_longitude_delta.is_zero() || same_source_pole);
+    if root_is_constant
+        && start.x == end.x
+        && start_latitude == end_latitude
+        && !matches!(readback, ChartStep::Shortest(EdgeDirection::HalfTurn(_)))
+    {
+        return Ok(true);
     }
 
+    let longitude_delta_is_zero = delta.is_zero();
     let negative = delta.negative;
     let direction_matches = |direction| {
         matches!(
@@ -347,19 +368,26 @@ pub(crate) fn retained_source_interval_reads_as(
     let magnitude = delta.abs();
     let half_period = ExactDyadic::from_f64(axis.half_period());
     let period = ExactDyadic::from_f64(axis.period());
-    Ok(match readback {
+    let longitude_matches = match readback {
+        ChartStep::Shortest(EdgeDirection::Minor(value)) if longitude_delta_is_zero => value == 0.0,
         ChartStep::Shortest(EdgeDirection::Minor(value)) => {
-            magnitude.cmp(&half_period) != Ordering::Greater
+            magnitude.cmp(&half_period) == Ordering::Less
                 && value != 0.0
                 && value.is_sign_negative() == negative
         },
-        ChartStep::Shortest(EdgeDirection::HalfTurn(direction)) => {
-            magnitude.cmp(&half_period) == Ordering::Equal && direction_matches(direction)
-        },
+        ChartStep::Shortest(EdgeDirection::HalfTurn(_)) => false,
         ChartStep::Circle(direction) => {
             magnitude.cmp(&period) == Ordering::Equal && direction_matches(direction)
         },
-    })
+    };
+    let latitude_matches = if latitude_delta.is_zero() {
+        start_latitude == end_latitude
+    } else if latitude_delta.negative {
+        end_latitude < start_latitude
+    } else {
+        end_latitude > start_latitude
+    };
+    Ok(longitude_matches && latitude_matches)
 }
 
 fn exact_nonnegative_usize(
