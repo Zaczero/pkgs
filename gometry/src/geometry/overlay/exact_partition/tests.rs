@@ -3243,6 +3243,53 @@ fn explicit_point_occurrences_retain_incident_and_isolated_ownership() {
 }
 
 #[test]
+fn isolated_nodes_preserve_point_sources_and_occurrence_order_in_both_lanes() {
+    let (unique, provenance) = dedup_undirected_segments_sourced([
+        seg(0.0, 0.0, 4.0, 0.0),
+        seg(8.0, 1.0, 10.0, 1.0),
+        seg(20.0, 2.0, 20.0, 2.0),
+    ])
+    .unwrap();
+    let isolated = [
+        XY::new(4.0, 0.0),
+        XY::new(30.0, 3.0),
+        XY::new(40.0, 4.0),
+        XY::new(30.0, 3.0),
+    ];
+    for ordinates in [false, true] {
+        for budgeted in [false, true] {
+            let mut budget = ExpansionBudget::new("exact_partition", "items");
+            let partition = match (ordinates, budgeted) {
+                (false, false) => {
+                    partition_unique_segments_unbudgeted::<false>(&unique, &provenance, &isolated)
+                },
+                (true, false) => {
+                    partition_unique_segments_unbudgeted::<true>(&unique, &provenance, &isolated)
+                },
+                (false, true) => {
+                    partition_unique_segments::<false>(&unique, &provenance, &isolated, &mut budget)
+                },
+                (true, true) => {
+                    partition_unique_segments::<true>(&unique, &provenance, &isolated, &mut budget)
+                },
+            }
+            .unwrap();
+            assert_eq!(partition.node_count(), 7);
+            assert_eq!(partition.spans.len(), 2);
+            assert_eq!(partition.isolated, [NodeId(4), NodeId(5), NodeId(6)]);
+            assert_eq!(partition.point_nodes, [
+                NodeId(1),
+                NodeId(5),
+                NodeId(6),
+                NodeId(5)
+            ]);
+            assert_eq!(partition.point_sources, [(NodeId(4), 2)]);
+            assert_eq!(budget.used(), 0);
+        }
+    }
+}
+
+#[test]
 fn constructed_crossing_splits_every_overlapping_source_in_both_orders() {
     let mut sources = [
         seg(0.0, 0.0, 4.0, 0.0),

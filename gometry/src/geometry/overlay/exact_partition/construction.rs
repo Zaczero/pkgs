@@ -936,22 +936,22 @@ fn partition_unique_segments_with_budget<'a, const ORDINATES: bool>(
     let (spans, atom_provenance) =
         aggregate_atoms(intervals, provenance, baseline, has_overlaps, budget)?;
 
-    let mut degree = vec![0_u32; node_count];
+    let mut incident = vec![false; node_count];
     #[expect(
         clippy::indexing_slicing,
-        reason = "each span endpoint is a NodeId admitted by the PointArena that sized degree"
+        reason = "each span endpoint is a NodeId admitted by the PointArena that sized incident"
     )]
     for span in &spans {
-        degree[span.start.0 as usize] = degree[span.start.0 as usize].saturating_add(1);
-        degree[span.end.0 as usize] = degree[span.end.0 as usize].saturating_add(1);
+        incident[span.start.0 as usize] = true;
+        incident[span.end.0 as usize] = true;
     }
     let mut isolated_nodes = Vec::new();
-    for (index, &count) in degree.iter().enumerate() {
-        if count == 0 {
+    for (index, &has_span) in incident.iter().enumerate() {
+        if !has_span {
             isolated_nodes.push(NodeId(index as u32));
         }
     }
-    drop(degree);
+    drop(incident);
 
     let mut point_nodes = Vec::with_capacity(point_handles.len());
     for handle in point_handles {
