@@ -1286,28 +1286,40 @@ impl GlobalFaces {
         topology: &IndexedTopology,
         bounds: impl Fn(usize, usize) -> bool,
     ) -> Vec<Vec<u32>> {
-        let mut selected = Vec::with_capacity(topology.targets.len());
+        #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+        #[repr(u8)]
+        enum DartState {
+            Omitted,
+            Pending,
+            Walked,
+        }
+
+        let mut state = Vec::with_capacity(topology.targets.len());
         for (slot, &walk) in topology.face_of.iter().enumerate() {
             let other = topology.face_of[topology.twins[slot] as usize];
-            selected.push(bounds(
-                self.walk_faces[walk as usize] as usize,
-                self.walk_faces[other as usize] as usize,
-            ));
+            state.push(
+                if bounds(
+                    self.walk_faces[walk as usize] as usize,
+                    self.walk_faces[other as usize] as usize,
+                ) {
+                    DartState::Pending
+                } else {
+                    DartState::Omitted
+                },
+            );
         }
-        let mut visited = Vec::with_capacity(selected.len());
-        visited.resize(selected.len(), false);
         let mut positions = Vec::with_capacity(topology.component_of.len());
         positions.resize(topology.component_of.len(), None);
         let mut walks = Vec::new();
-        for start in 0..selected.len() {
-            if !selected[start] || visited[start] {
+        for start in 0..state.len() {
+            if state[start] != DartState::Pending {
                 continue;
             }
             let mut walk = Vec::new();
             let mut slot = start;
             loop {
-                debug_assert!(!visited[slot]);
-                visited[slot] = true;
+                debug_assert_eq!(state[slot], DartState::Pending);
+                state[slot] = DartState::Walked;
                 positions[topology.owners[slot] as usize] = Some(walk.len());
                 walk.push(slot as u32);
                 let target = topology.targets[slot] as usize;
@@ -1332,7 +1344,7 @@ impl GlobalFaces {
                     } else {
                         slot.wrapping_sub(1)
                     };
-                    if selected[slot] {
+                    if state[slot] != DartState::Omitted {
                         break;
                     }
                     debug_assert_ne!(slot, twin, "selected boundary has no successor");
