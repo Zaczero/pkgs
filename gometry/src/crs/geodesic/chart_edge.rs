@@ -1694,6 +1694,37 @@ mod tests {
     }
 
     #[test]
+    fn source_interval_readback_accepts_monotone_latitude_quantization_with_longitude_motion() {
+        for (direction, end_latitude) in [
+            ("increasing latitude", 10.0_f64.next_up()),
+            ("decreasing latitude", 10.0_f64.next_down()),
+        ] {
+            let start = Point::new_raw_xy(0.0, 10.0);
+            let end = Point::new_raw_xy(10.0, end_latitude);
+            let edge = ChartEdge::new(start, end, degrees()).unwrap();
+            let from = 0.125;
+            let to = 0.25;
+            let from_point = edge
+                .source_sheet_point(start, end, from, edge.chart_position(from).unwrap())
+                .unwrap();
+            let to_point = edge
+                .source_sheet_point(start, end, to, edge.chart_position(to).unwrap())
+                .unwrap();
+
+            assert_eq!(
+                (from_point.x, from_point.y, to_point.x, to_point.y),
+                (1.25, 10.0, 2.5, 10.0),
+                "{direction}"
+            );
+            assert!(
+                edge.source_interval_reads_correctly(from, to, from_point, to_point)
+                    .unwrap(),
+                "{direction}: exact latitude movement may round monotonically to equality"
+            );
+        }
+    }
+
+    #[test]
     fn source_interval_readback_rejects_a_nonzero_full_xy_collapse() {
         let start = Point::new_raw_xy(0.0, 10.0);
         let end = Point::new_raw_xy(0.0, 12.0);

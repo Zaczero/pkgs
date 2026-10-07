@@ -299,11 +299,9 @@ pub(crate) fn retained_source_sheet_site(
 /// Check that the written XY step preserves the exact source interval's
 /// direction and branch class.
 ///
-/// Generated half-turns and nonzero latitude intervals lost through rounding
-/// require refinement. The displacement remains exact through classification;
-/// comparing rounded coordinate differences to exact source differences would
-/// reject correctly rounded sites whenever the two rounding operations do not
-/// commute.
+/// Generated half-turns require refinement. A nonzero nonconstant interval
+/// may still be readable when one ordinate rounds to equality, provided the
+/// other coordinate carries the interval.
 #[expect(
     clippy::float_cmp,
     reason = "zero, direction, pole identity, and branch classes are discrete"
@@ -349,9 +347,14 @@ pub(crate) fn retained_source_interval_reads_as(
         && source_start_latitude.identity(frame) == SeamIdentity::Pole;
     let root_is_constant =
         source_latitude_delta.is_zero() && (source_longitude_delta.is_zero() || same_source_pole);
+    let output_xy_collapsed = start.x == end.x && start_latitude == end_latitude;
+    // Quantization may hide movement in either axis alone; only joint XY
+    // collapse hides a nonconstant source interval completely.
+    if !parameter_delta.is_zero() && output_xy_collapsed && !root_is_constant {
+        return Ok(false);
+    }
     if root_is_constant
-        && start.x == end.x
-        && start_latitude == end_latitude
+        && output_xy_collapsed
         && !matches!(readback, ChartStep::Shortest(EdgeDirection::HalfTurn(_)))
     {
         return Ok(true);
@@ -383,9 +386,9 @@ pub(crate) fn retained_source_interval_reads_as(
     let latitude_matches = if latitude_delta.is_zero() {
         start_latitude == end_latitude
     } else if latitude_delta.negative {
-        end_latitude < start_latitude
+        end_latitude <= start_latitude
     } else {
-        end_latitude > start_latitude
+        end_latitude >= start_latitude
     };
     Ok(longitude_matches && latitude_matches)
 }

@@ -388,6 +388,25 @@ def test_generated_geographic_half_turns_are_refined_for_public_consumers() -> N
         _ = literal_half_turn.length
 
 
+@pytest.mark.parametrize(
+    'end_latitude',
+    [
+        pytest.param(math.nextafter(10.0, math.inf), id='increasing-latitude'),
+        pytest.param(math.nextafter(10.0, -math.inf), id='decreasing-latitude'),
+    ],
+)
+def test_geographic_substring_accepts_quantized_latitude_when_longitude_advances(
+    end_latitude: float,
+) -> None:
+    route = gm.LineString([(0.0, 10.0), (10.0, end_latitude)], crs=4326)
+
+    assert route.length > 1_000_000.0
+    substring = route.line_substring(0.125, 0.25, normalized=True)
+
+    assert list(substring.coords) == [(1.25, 10.0), (2.5, 10.0)]
+    assert substring.length > 0.0
+
+
 def test_array_chart_lrs_fraction_round_trip() -> None:
     rows = gm.GeometryArray([_geo_meridian(), _geo_parallel()])
     fractions = [0.25, 0.75]
