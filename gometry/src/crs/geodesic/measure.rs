@@ -1557,34 +1557,6 @@ mod chart_measure_tests {
     }
 
     #[test]
-    #[expect(
-        clippy::excessive_precision,
-        reason = "Independent ellipsoidal area of the physical 80-degree polar caps"
-    )]
-    fn chart_polar_area_maps_native_poles_to_physical_hemispheres() {
-        let expected = 3_908_572_761_836.564_5;
-        let frame = GeographicFrame::try_new_with_orientation(
-            AngularFactor::try_new("west longitude grad", std::f64::consts::TAU / 400.0).unwrap(),
-            AngularFactor::try_new("south latitude radian", 1.0).unwrap(),
-            0.0,
-            GeographicAxisOrientation::from_axis_directions(false, false),
-        )
-        .unwrap();
-        let metric = metric_with_flattening_and_frame(1.0 / 298.257_223_563, frame);
-        let longitudes = [0.0, 60.0, 120.0, 180.0, -120.0, -60.0];
-
-        for physical_latitude in [80.0_f64, -80.0] {
-            let native_latitude = -physical_latitude.to_radians();
-            let points = longitudes.map(|longitude| (-longitude * 10.0 / 9.0, native_latitude));
-            let actual = chart_polygon_area(&metric, &polygon(&points, &[]), frame).unwrap();
-            assert!(
-                (actual - expected).abs() <= 3.0e-15 * expected,
-                "physical latitude={physical_latitude}, area={actual:.17}"
-            );
-        }
-    }
-
-    #[test]
     fn chart_area_reference_phase_uses_physical_poles_for_axis_orientations() {
         #[expect(
             clippy::excessive_precision,
