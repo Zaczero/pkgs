@@ -407,6 +407,21 @@ fn area_shape(polygons: Vec<Polygon>) -> Option<Shape> {
 }
 
 fn dissolved_area_shape(polygons: Vec<Polygon>) -> Result<Option<Shape>, crate::error::Error> {
+    // Cell membership uses XY only. Strip extra ordinates from this temporary
+    // area model before either the singleton or union path; the source shapes
+    // remain owned by the caller.
+    let polygons = polygons
+        .into_iter()
+        .map(|polygon| {
+            if polygon.axes() == crate::geometry::CoordinateAxes::XY {
+                return Ok(polygon);
+            }
+            let Shape::Polygon(polygon) = Shape::Polygon(polygon).force_2d()? else {
+                unreachable!("force_2d preserves polygon kind")
+            };
+            Ok(polygon)
+        })
+        .collect::<Result<Vec<_>, crate::error::Error>>()?;
     if polygons.len() <= 1 {
         return Ok(area_shape(polygons));
     }
@@ -737,8 +752,6 @@ pub(crate) enum CellClass {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::error::ErrorKind;
-    use crate::geometry::GeometryErrorKind;
     use crate::grid::geohash;
 
     fn contact(start: (f64, f64), end: (f64, f64)) -> RectContact {
@@ -782,7 +795,7 @@ mod tests {
     }
 
     #[test]
-    fn classifier_propagates_invalid_dissolved_area() {
+    fn classifier_uses_xy_membership_for_mixed_ordinate_sources() {
         use crate::geometry::Ring;
 
         let z_square = Polygon::new(
@@ -841,28 +854,45 @@ mod tests {
         let source =
             Shape::geometry_collection(vec![Shape::Polygon(z_square), Shape::Polygon(square)])
                 .expect("test collection is valid");
-        let authority_plan = PreparedPlan::new(source.clone());
-        let authority_cache = crate::geometry::FrameDependentCaches::default();
+        let original = source.clone();
+        let xy_reference = source.force_2d().expect("XY membership image");
+        assert_eq!(source.axes(), crate::geometry::CoordinateAxes::XYZ);
 
-        let error = match cover(
-            &source,
-            &source,
-            &authority_plan,
-            &authority_cache,
-            crate::geographic::GeographicFrame::crs84(),
-            RectCoverRule::Overlap,
-            geohash::roots(),
-            1,
-            None,
-        ) {
-            Ok(_) => panic!("cover preparation must reject dropped ordinates"),
-            Err(CoverError::Preparation(error)) => error,
-            Err(CoverError::Budget(error)) => panic!("unexpected budget error: {error}"),
-        };
-        assert!(matches!(
-            error.kind(),
-            ErrorKind::Geometry(GeometryErrorKind::OrdinateDropped(_))
-        ));
+        let mixed_classifier = NativeRectClassifier::new_with_area_tester(&source, None)
+            .expect("S2 grid area uses XY only");
+        let xy_classifier = NativeRectClassifier::new(&xy_reference).expect("XY reference area");
+        let rectangles = [
+            (Bounds::new_raw(0.25, 0.25, 0.75, 0.75), RectClass::Interior),
+            (Bounds::new_raw(1.25, 1.25, 1.75, 1.75), RectClass::Interior),
+            (Bounds::new_raw(3.0, 3.0, 3.5, 3.5), RectClass::Boundary),
+            (Bounds::new_raw(4.0, 4.0, 5.0, 5.0), RectClass::Outside),
+        ];
+        for (bounds, expected) in rectangles {
+            assert_eq!(
+                mixed_classifier
+                    .classify_bounds(bounds)
+                    .expect("mixed-source classification"),
+                expected
+            );
+            assert_eq!(
+                mixed_classifier
+                    .classify_bounds(bounds)
+                    .expect("mixed-source classification"),
+                xy_classifier
+                    .classify_bounds(bounds)
+                    .expect("XY reference classification")
+            );
+        }
+
+        let mixed_area = dissolved_polygonal_area(&source)
+            .expect("mixed-source H3 area preparation")
+            .expect("polygonal source");
+        let xy_area = dissolved_polygonal_area(&xy_reference)
+            .expect("XY reference H3 area preparation")
+            .expect("polygonal source");
+        assert_eq!(mixed_area, xy_area);
+        assert_eq!(source, original);
+        assert_eq!(source.axes(), crate::geometry::CoordinateAxes::XYZ);
     }
 
     /// A near-world polygon covered at a fine depth expands past the shared

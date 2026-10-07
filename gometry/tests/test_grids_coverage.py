@@ -1,6 +1,8 @@
 """Grid cover functions return CellArray or Groups."""
 
 import pickle
+from collections.abc import Iterable
+from typing import Any
 
 import gometry as gm
 import numpy as np
@@ -12,6 +14,10 @@ COVER_CASES = [
     (gm.geohash_cover, {'precision': 3}, 'geohash'),
     (gm.tile_cover, {'zoom': 3}, 'Tile'),
 ]
+
+
+def _cell_keys(cells: Iterable[Any]) -> list[Any]:
+    return [cell.token if hasattr(cell, 'token') else cell.id for cell in cells]
 
 
 def test_empty_source_cover_requires_non_empty_geometry() -> None:
@@ -163,26 +169,72 @@ def test_public_grid_order_budget_and_array_parity(cover, depth, bounds) -> None
 
 
 @pytest.mark.parametrize(
+    'cover, depth, cell_rule',
+    [
+        (gm.geohash_cover, {'precision': 1}, 'overlap'),
+        (gm.geohash_cover, {'precision': 1}, 'bbox'),
+        (gm.geohash_cover, {'precision': 1}, 'center'),
+        (gm.geohash_cover, {'precision': 1}, 'within'),
+        (gm.s2_cover, {'level': 1}, 'overlap'),
+        (gm.s2_cover, {'level': 1}, 'bbox'),
+        (gm.s2_cover, {'level': 1}, 'center'),
+        (gm.s2_cover, {'level': 1}, 'within'),
+    ],
+    ids=[
+        'geohash-overlap',
+        'geohash-bbox',
+        'geohash-center',
+        'geohash-within',
+        's2-overlap',
+        's2-bbox',
+        's2-center',
+        's2-within',
+    ],
+)
+def test_rectangular_covers_use_xy_membership_for_mixed_ordinate_sources(
+    cover, depth, cell_rule
+) -> None:
+    xyz = gm.box(-80, -60, 80, 60, crs=4326).set_z(1.0)
+    xy = gm.box(-40, -30, 60, 50, crs=4326)
+    source = gm.GeometryCollection([xyz, xy], crs=4326)
+    original_wkb = source.to_wkb()
+    original_axes = source.coordinate_axes
+    xy_reference = source.force_2d()
+
+    mixed_cells = cover(source, cell_rule=cell_rule, max_cells=None, **depth)
+    reference_cells = cover(xy_reference, cell_rule=cell_rule, max_cells=None, **depth)
+
+    assert _cell_keys(mixed_cells) == _cell_keys(reference_cells)
+    assert _cell_keys(mixed_cells)
+    assert source.coordinate_axes == original_axes == 'XYZ'
+    assert source.to_wkb() == original_wkb
+
+
+@pytest.mark.parametrize(
     'cover, depth',
     [
-        (gm.geohash_cover, {'precision': 1}),
-        (gm.s2_cover, {'level': 1}),
+        (gm.h3_cover, {'resolution': 1}),
+        (gm.tile_cover, {'zoom': 1}),
     ],
-    ids=['geohash', 's2'],
+    ids=['h3', 'tile'],
 )
-def test_cover_propagates_dissolved_area_error(cover, depth) -> None:
-    xyz = gm.Polygon(
-        [(0, 0, 1), (2, 0, 1), (2, 2, 1), (0, 2, 1), (0, 0, 1)],
-        crs=4326,
-    )
+def test_h3_and_tile_covers_use_xy_membership_for_mixed_ordinate_sources(
+    cover, depth
+) -> None:
+    xyz = gm.box(0, 0, 2, 2, crs=4326).set_z(1.0)
     xy = gm.box(1, 1, 3, 3, crs=4326)
     source = gm.GeometryCollection([xyz, xy], crs=4326)
+    original_wkb = source.to_wkb()
+    original_axes = source.coordinate_axes
+    xy_reference = source.force_2d()
 
-    with pytest.raises(gm.InvalidGeometryError) as raised:
-        cover(source, **depth)
+    mixed_cells = cover(source, cell_rule='overlap', max_cells=None, **depth)
+    reference_cells = cover(xy_reference, cell_rule='overlap', max_cells=None, **depth)
 
-    assert type(raised.value) is gm.InvalidGeometryError
-    assert type(raised.value).__name__ != 'PanicException'
+    assert _cell_keys(mixed_cells) == _cell_keys(reference_cells)
+    assert _cell_keys(mixed_cells)
+    assert source.coordinate_axes == original_axes == 'XYZ'
+    assert source.to_wkb() == original_wkb
 
 
 @pytest.mark.parametrize('crs', [None, 4326], ids=['crs-free', 'epsg4326'])
