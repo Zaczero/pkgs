@@ -440,6 +440,8 @@ def test_chart_area_matches_the_authalic_zone_formula_for_a_small_polygon() -> N
         2.0, 3.0, 48.0, 49.0, semi_major=GEOD.a, flattening=GEOD.f
     )
 
+    # 100-digit Decimal integral from exact binary64 ellipsoid values and true π.
+    assert expected == pytest.approx(8_217_732_076.120_943, rel=2e-16)
     assert polygon.area == pytest.approx(expected, rel=1e-14)
 
 
