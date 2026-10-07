@@ -155,6 +155,38 @@ def test_geodesic_parallel_proximity_is_not_segment_contact() -> None:
     assert first.to_wkt() != second.to_wkt()
 
 
+def test_huge_longitude_chart_position_matches_distance_and_dwithin() -> None:
+    line = gm.LineString([(1e18, 0.0), (0.0, 0.0)], crs=4326)
+    point = gm.Point(48.0, 0.0, crs=4326)
+    expected_endpoint_distance = 6_378_137.0 * math.radians(48.0)
+
+    assert gm.distance(line, point) == pytest.approx(
+        expected_endpoint_distance, abs=1e-8
+    )
+    assert not gm.dwithin(line, point, 1.0)
+    assert not gm.dwithin(line, point, expected_endpoint_distance - 1.0)
+    assert gm.dwithin(line, point, expected_endpoint_distance + 1.0)
+
+
+def test_huge_longitude_conditioned_curve_keeps_distance_and_nearest_on_section() -> (
+    None
+):
+    curve = gm.LineString([(1e18, -80.0), (0.0, 0.0)], crs=4326)
+    query = gm.Point(48.0, 0.0, crs=4326)
+    expected_endpoint_distance = 6_378_137.0 * math.radians(48.0)
+
+    assert gm.distance(curve, query) == pytest.approx(
+        expected_endpoint_distance, abs=1e-8
+    )
+    assert not gm.dwithin(curve, query, 1.0)
+    line_witness, query_witness = gm.nearest_points(curve, query)
+    assert line_witness.to_wkt() == 'POINT (0 0)'
+    assert query_witness.to_wkt() == 'POINT (48 0)'
+    assert gm.distance(line_witness, query_witness) == pytest.approx(
+        expected_endpoint_distance, abs=1e-8
+    )
+
+
 def test_geodesic_zero_length_line_retains_point_support() -> None:
     line = gm.LineString([(0.0, 0.0), (0.0, 0.0)], crs=4326)
     point = gm.Point(0.0, 0.0, crs=4326)

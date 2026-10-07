@@ -447,12 +447,7 @@ impl MeasuredLineIndex {
             .get(ordinal)
             .expect("measured ordinal belongs to the flattened route");
         let length = metric.chart_edge_length(&part.edge)?;
-        let along = metric.chart_edge_length_to(&part.edge, parameter)?;
-        let fraction = if length == 0.0 {
-            0.0
-        } else {
-            (along / length).clamp(0.0, 1.0)
-        };
+        let fraction = metric.chart_edge_arclength_fraction(&part.edge, parameter, Some(length))?;
         Ok(crate::geometry::interpolate_f64(
             part.start.m().unwrap_or(0.0),
             part.end.m().unwrap_or(0.0),

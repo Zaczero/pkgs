@@ -3,6 +3,7 @@ use std::collections::hash_map::Entry;
 use crate::collections::HashMap;
 use crate::error::Result;
 use crate::geographic::GeographicInputs;
+use crate::geometry::ordinates::SourceArcMetricAccess;
 use crate::geometry::overlay::{ExactSourceInventory, overlay_view_error};
 use crate::geometry::topology::overlay::exact_geographic_boundary;
 use crate::geometry::{
@@ -11,8 +12,11 @@ use crate::geometry::{
     Ring, Shape, TopologyDomain, VertexKey, empty_geometry, geographic_topology_route,
 };
 
-/// Return the Boundary-location cells of one prepared geometry in its resolved domain.
-pub(crate) fn boundary(data: &PreparedPlan, domain: TopologyDomain) -> Result<Shape> {
+pub(crate) fn boundary_with_metric<M: crate::geometry::ChartMetric>(
+    data: &PreparedPlan,
+    domain: TopologyDomain,
+    metric_access: Option<&SourceArcMetricAccess<'_, M>>,
+) -> Result<Shape> {
     match data.shape() {
         Shape::Point(_) | Shape::MultiPoint(_) => Ok(empty_geometry()),
         Shape::Empty(
@@ -27,12 +31,14 @@ pub(crate) fn boundary(data: &PreparedPlan, domain: TopologyDomain) -> Result<Sh
         },
         Shape::LineString(points) => line_boundary(points, points.axes(), domain),
         Shape::MultiLineString(lines) => multiline_boundary(lines, lines.axes(), domain),
-        Shape::Polygon(_) | Shape::MultiPolygon(_) => polygonal_boundary(data, domain),
+        Shape::Polygon(_) | Shape::MultiPolygon(_) => {
+            polygonal_boundary(data, domain, metric_access)
+        },
         Shape::GeometryCollection(geometries) => {
             let mut boundaries = Vec::new();
             for geometry in geometries {
                 let plan = PreparedPlan::transient(geometry);
-                let boundary = self::boundary(&plan, domain)?;
+                let boundary = boundary_with_metric(&plan, domain, metric_access)?;
                 if !boundary.is_empty() {
                     boundaries.push(boundary);
                 }
@@ -51,7 +57,11 @@ pub(crate) fn boundary(data: &PreparedPlan, domain: TopologyDomain) -> Result<Sh
     }
 }
 
-fn polygonal_boundary(data: &PreparedPlan, domain: TopologyDomain) -> Result<Shape> {
+fn polygonal_boundary<M: crate::geometry::ChartMetric>(
+    data: &PreparedPlan,
+    domain: TopologyDomain,
+    metric_access: Option<&SourceArcMetricAccess<'_, M>>,
+) -> Result<Shape> {
     let shape = data.shape();
     match domain {
         TopologyDomain::Cartesian => {
@@ -70,7 +80,7 @@ fn polygonal_boundary(data: &PreparedPlan, domain: TopologyDomain) -> Result<Sha
                     frame,
                     inputs.views().iter().copied(),
                 )?;
-                return exact_geographic_boundary(&topology, shape.axes());
+                return exact_geographic_boundary(&topology, shape.axes(), metric_access);
             }
             if data.validate_cached()?.is_none() {
                 return Ok(literal_polygon_boundary(shape));

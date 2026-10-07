@@ -6,11 +6,13 @@ use std::borrow::Borrow;
 
 use crate::collections::HashMap;
 use crate::error::Result;
+use crate::geographic::RetainedChartDisplacement;
+use crate::geometry::tessellation::exact::ExactRational;
 use crate::geometry::{
-    CoordinateAxes, GeometryErrorKind, HasM, HasZ, MOrdinate, ON_SEGMENT_EPSILON, OverlayOp, Point,
-    PointKey, RunIdentity, Segment, Shape, XY, ZOrdinate, axis_pow2_scale, overlay, point_distance,
-    point_on_segment, point_segment_distance_and_projection, same_point, scaled_residual,
-    segment_projection,
+    ChartMetric, CoordinateAxes, GeometryErrorKind, HasM, HasZ, MOrdinate, ON_SEGMENT_EPSILON,
+    OverlayOp, Point, PointKey, RunIdentity, Segment, Shape, XY, ZOrdinate, axis_pow2_scale,
+    interpolate_optional_ordinate, overlay, point_distance, point_on_segment,
+    point_segment_distance_and_projection, same_point, scaled_residual, segment_projection,
 };
 /// Z/M lookup table built from an operation's input vertices and segments,
 /// used to restore ordinates on XY-only geometry-engine output. Exact vertex
@@ -156,13 +158,13 @@ impl OrdinateSource {
 }
 
 #[derive(Clone, Copy, Debug, Default)]
-pub(super) struct AxisValue {
+pub(in crate::geometry) struct AxisValue {
     value: Option<f64>,
     conflict: bool,
 }
 
 impl AxisValue {
-    pub(super) const fn observe(&mut self, candidate: Option<f64>) {
+    pub(in crate::geometry) const fn observe(&mut self, candidate: Option<f64>) {
         let Some(candidate) = candidate else {
             return;
         };
@@ -173,9 +175,142 @@ impl AxisValue {
         }
     }
 
-    pub(super) fn value(self) -> Option<f64> {
+    pub(in crate::geometry) fn value(self) -> Option<f64> {
         (!self.conflict).then_some(self.value).flatten()
     }
+}
+
+#[derive(Clone, Copy, Default)]
+pub(in crate::geometry) struct NodeOrdinates {
+    pub(in crate::geometry) z: AxisValue,
+    pub(in crate::geometry) m: AxisValue,
+}
+
+/// The source-side information needed to emit one Q node's ordinates.
+pub(in crate::geometry) enum SourceArcRequest<'a> {
+    NoOrdinates,
+    Endpoint {
+        point: Point,
+        axes: CoordinateAxes,
+    },
+    Interior {
+        source: &'a [Point; 2],
+        longitude: RetainedChartDisplacement,
+        chart_parameter: &'a ExactRational,
+        axes: CoordinateAxes,
+    },
+}
+
+pub(crate) type SourceArcMetricAccess<'a, M = crate::crs::GeodesicMetric> =
+    dyn Fn() -> crate::error::Result<&'a M> + 'a;
+
+pub(crate) type ParallelSourceArcMetricAccess<'a> =
+    dyn Fn() -> crate::error::Result<&'a crate::crs::GeodesicMetric> + Sync + 'a;
+
+impl<'a> SourceArcRequest<'a> {
+    pub(in crate::geometry) fn new(
+        source: &'a [Point; 2],
+        axes: CoordinateAxes,
+        chart_parameter: &'a ExactRational,
+        longitude: impl FnOnce() -> crate::error::Result<RetainedChartDisplacement>,
+    ) -> crate::error::Result<Self> {
+        if !axes.has_z() && !axes.has_m() {
+            return Ok(Self::NoOrdinates);
+        }
+        let zero = ExactRational::zero();
+        let one = ExactRational::one();
+        if chart_parameter.try_cmp(&zero)?.is_lt() || chart_parameter.try_cmp(&one)?.is_gt() {
+            return Err(GeometryErrorKind::Invalid(
+                "source chart parameter is outside the retained edge".into(),
+            )
+            .into());
+        }
+        if chart_parameter.is_zero() {
+            return Ok(Self::Endpoint {
+                point: source[0],
+                axes,
+            });
+        }
+        if chart_parameter.is_one() {
+            return Ok(Self::Endpoint {
+                point: source[1],
+                axes,
+            });
+        }
+        let eligible_axes = CoordinateAxes::new(
+            HasZ(axes.has_z() && source[0].z().is_some() && source[1].z().is_some()),
+            HasM(axes.has_m() && source[0].m().is_some() && source[1].m().is_some()),
+        );
+        if !eligible_axes.has_z() && !eligible_axes.has_m() {
+            return Ok(Self::NoOrdinates);
+        }
+        Ok(Self::Interior {
+            source,
+            longitude: longitude()?,
+            chart_parameter,
+            axes: eligible_axes,
+        })
+    }
+}
+
+/// Resolve one source vertex's available axes from partial/total chart-edge
+/// arclength. The metric accessor runs only for an interior request with at
+/// least one eligible source axis.
+pub(in crate::geometry) fn source_arc_ordinates<'m, M: ChartMetric + 'm>(
+    request: &SourceArcRequest<'_>,
+    metric: impl FnOnce() -> crate::error::Result<&'m M>,
+) -> crate::error::Result<NodeOrdinates> {
+    match request {
+        SourceArcRequest::NoOrdinates => Ok(NodeOrdinates::default()),
+        SourceArcRequest::Endpoint { point, axes } => Ok(node_ordinates_at(*point, *axes)),
+        SourceArcRequest::Interior {
+            source,
+            longitude,
+            chart_parameter,
+            axes,
+        } => {
+            let metric = metric()?;
+            let parameter = chart_parameter.round()?;
+            let [start, end] = **source;
+            let edge = metric.chart_edge_from_retained(start, end, *longitude)?;
+            let fraction = metric.chart_edge_arclength_fraction(&edge, parameter, None)?;
+            let (z, m) = source_ordinate_values_at_fraction(start, end, *axes, fraction);
+            let mut ordinates = NodeOrdinates::default();
+            ordinates.z.observe(z.0);
+            ordinates.m.observe(m.0);
+            Ok(ordinates)
+        },
+    }
+}
+
+fn node_ordinates_at(point: Point, axes: CoordinateAxes) -> NodeOrdinates {
+    let mut ordinates = NodeOrdinates::default();
+    if axes.has_z() {
+        ordinates.z.observe(point.z());
+    }
+    if axes.has_m() {
+        ordinates.m.observe(point.m());
+    }
+    ordinates
+}
+
+pub(crate) fn source_ordinate_values_at_fraction(
+    start: Point,
+    end: Point,
+    axes: CoordinateAxes,
+    fraction: f64,
+) -> (ZOrdinate, MOrdinate) {
+    let z = if axes.has_z() {
+        interpolate_optional_ordinate(start.z(), end.z(), fraction)
+    } else {
+        None
+    };
+    let m = if axes.has_m() {
+        interpolate_optional_ordinate(start.m(), end.m(), fraction)
+    } else {
+        None
+    };
+    (ZOrdinate(z), MOrdinate(m))
 }
 
 fn add_vertex(vertices: &mut HashMap<PointKey, Vec<Point>>, point: Point) {
@@ -434,6 +569,17 @@ fn output_axes(
 mod tests {
     use super::*;
 
+    fn retained_source_longitude(
+        frame: crate::geographic::GeographicFrame,
+        source: &[Point; 2],
+    ) -> RetainedChartDisplacement {
+        frame
+            .longitude()
+            .chart_connection(source[0].x, source[1].x)
+            .expect("source test endpoints are admitted")
+            .retained()
+    }
+
     #[test]
     fn reciprocal_axis_segment_interpolates_live_ordinate() {
         let large = 1e162;
@@ -446,5 +592,179 @@ mod tests {
             segment_ordinate_at(start, end, midpoint, 0.0).unwrap(),
             Some((Some(4.0), Some(6.0)))
         );
+    }
+
+    #[test]
+    fn assigned_xy_uses_the_original_arc_request_on_an_actual_non_wgs84_ellipsoid() {
+        const CRS: &str = "+proj=longlat +a=7000000 +rf=150 +type=crs";
+        let state = crate::crs::runtime_state_snapshot().unwrap();
+        crate::crs::with_ellipsoid_metric_at(CRS, &[], &state, |metric| {
+            assert_eq!(metric.ellipsoid_parameters(), (7_000_000.0, 1.0 / 150.0));
+            let frame = metric.chart_frame();
+            let source = [
+                Point::new_axes(0.0, -30.0, ZOrdinate(Some(7.0)), MOrdinate(Some(101.0)))?,
+                Point::new_axes(0.0, 70.0, ZOrdinate(Some(47.0)), MOrdinate(Some(701.0)))?,
+            ];
+            let range_start = ExactRational::from_f64(0.125);
+            let range_end = ExactRational::from_f64(0.375);
+            let local_parameter = ExactRational::from_f64(0.5);
+            let range_delta = range_end.try_subtract(&range_start)?;
+            let parameter = range_start.try_add(&range_delta.try_product(&local_parameter)?)?;
+            assert_eq!(parameter, ExactRational::from_f64(0.25));
+            let mut longitude_accesses = 0;
+            let request = SourceArcRequest::new(&source, CoordinateAxes::XYZM, &parameter, || {
+                longitude_accesses += 1;
+                Ok(retained_source_longitude(frame, &source))
+            })?;
+            let mut metric_accesses = 0;
+            let ordinates = source_arc_ordinates(&request, || {
+                metric_accesses += 1;
+                Ok(metric)
+            })?;
+
+            assert_eq!(longitude_accesses, 1);
+            assert_eq!(metric_accesses, 1);
+            assert!((ordinates.z.value().unwrap() - 16.963_739_317_749_453).abs() <= 2.0e-13);
+            assert!((ordinates.m.value().unwrap() - 250.456_089_766_241_8).abs() <= 2.0e-12);
+            let assigned = Point::new_axes(
+                12.25,
+                -4.75,
+                ZOrdinate(ordinates.z.value()),
+                MOrdinate(ordinates.m.value()),
+            )?;
+            assert_eq!((assigned.x, assigned.y), (12.25, -4.75));
+            assert!((assigned.m().unwrap() - 250.456_089_766_241_8).abs() <= 2.0e-12);
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn source_endpoint_records_do_not_acquire_an_interior_metric() {
+        const CRS: &str = "+proj=longlat +a=7000000 +rf=150 +type=crs";
+        let state = crate::crs::runtime_state_snapshot().unwrap();
+        crate::crs::with_ellipsoid_metric_at(CRS, &[], &state, |metric| {
+            let frame = metric.chart_frame();
+            let source = [
+                Point::new_axes(0.0, -30.0, ZOrdinate(Some(-0.0)), MOrdinate(Some(101.0)))?,
+                Point::new_axes(0.0, 70.0, ZOrdinate(None), MOrdinate(Some(701.0)))?,
+            ];
+            let parameter = ExactRational::zero();
+            let mut longitude_accesses = 0;
+            let request = SourceArcRequest::new(&source, CoordinateAxes::XYZM, &parameter, || {
+                longitude_accesses += 1;
+                Ok(retained_source_longitude(frame, &source))
+            })?;
+            let mut metric_accesses = 0;
+            let ordinates = source_arc_ordinates(&request, || {
+                metric_accesses += 1;
+                Ok(metric)
+            })?;
+
+            assert_eq!(longitude_accesses, 0);
+            assert_eq!(metric_accesses, 0);
+            assert_eq!(ordinates.z.value().unwrap().to_bits(), (-0.0_f64).to_bits());
+            assert_eq!(ordinates.m.value().unwrap().to_bits(), 101.0_f64.to_bits());
+
+            let end_parameter = ExactRational::one();
+            let end_request =
+                SourceArcRequest::new(&source, CoordinateAxes::XYZM, &end_parameter, || {
+                    longitude_accesses += 1;
+                    Ok(retained_source_longitude(frame, &source))
+                })?;
+            let end_ordinates = source_arc_ordinates(&end_request, || {
+                metric_accesses += 1;
+                Ok(metric)
+            })?;
+            assert_eq!(metric_accesses, 0);
+            assert_eq!(longitude_accesses, 0);
+            assert_eq!(end_ordinates.z.value(), None);
+            assert_eq!(end_ordinates.m.value().unwrap(), 701.0);
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn presentation_and_axis_ineligible_source_requests_do_not_acquire_a_metric() {
+        const CRS: &str = "+proj=longlat +a=7000000 +rf=150 +type=crs";
+        let state = crate::crs::runtime_state_snapshot().unwrap();
+        crate::crs::with_ellipsoid_metric_at(CRS, &[], &state, |metric| {
+            let frame = metric.chart_frame();
+            let source = [
+                Point::new_axes(0.0, -30.0, ZOrdinate(Some(7.0)), MOrdinate(None))?,
+                Point::new_axes(0.0, 70.0, ZOrdinate(None), MOrdinate(None))?,
+            ];
+            let parameter = ExactRational::from_f64(0.25);
+            let mut longitude_accesses = 0;
+            let unavailable_request =
+                SourceArcRequest::new(&source, CoordinateAxes::XYZM, &parameter, || {
+                    longitude_accesses += 1;
+                    Ok(retained_source_longitude(frame, &source))
+                })?;
+            let mut metric_accesses = 0;
+            let ordinate_less = source_arc_ordinates(&SourceArcRequest::NoOrdinates, || {
+                metric_accesses += 1;
+                Ok(metric)
+            })?;
+            let unavailable = source_arc_ordinates(&unavailable_request, || {
+                metric_accesses += 1;
+                Ok(metric)
+            })?;
+            let xy_request =
+                SourceArcRequest::new(&source, CoordinateAxes::XY, &parameter, || {
+                    longitude_accesses += 1;
+                    Ok(retained_source_longitude(frame, &source))
+                })?;
+            let xy = source_arc_ordinates(&xy_request, || {
+                metric_accesses += 1;
+                Ok(metric)
+            })?;
+
+            assert_eq!(longitude_accesses, 0);
+            assert_eq!(metric_accesses, 0);
+            assert_eq!(ordinate_less.z.value(), None);
+            assert_eq!(ordinate_less.m.value(), None);
+            assert_eq!(unavailable.z.value(), None);
+            assert_eq!(unavailable.m.value(), None);
+            assert_eq!(xy.z.value(), None);
+            assert_eq!(xy.m.value(), None);
+
+            let subnormal = ExactRational::from_f64(f64::from_bits(1));
+            let quarter = ExactRational::from_f64(0.25);
+            let near_zero = subnormal.try_product(&quarter)?;
+            let near_one = ExactRational::one().try_subtract(&near_zero)?;
+            assert_eq!(near_zero.round()?, 0.0);
+            assert_eq!(near_one.round()?, 1.0);
+            let interior_start_missing = [
+                Point::new_axes(0.0, -30.0, ZOrdinate(Some(7.0)), MOrdinate(None))?,
+                Point::new_axes(0.0, 70.0, ZOrdinate(None), MOrdinate(None))?,
+            ];
+            let near_start_request = SourceArcRequest::new(
+                &interior_start_missing,
+                CoordinateAxes::XYZM,
+                &near_zero,
+                || Ok(retained_source_longitude(frame, &interior_start_missing)),
+            )?;
+            let near_end_request = SourceArcRequest::new(
+                &interior_start_missing,
+                CoordinateAxes::XYZM,
+                &near_one,
+                || Ok(retained_source_longitude(frame, &interior_start_missing)),
+            )?;
+            let near_start = source_arc_ordinates(&near_start_request, || {
+                metric_accesses += 1;
+                Ok(metric)
+            })?;
+            let near_end = source_arc_ordinates(&near_end_request, || {
+                metric_accesses += 1;
+                Ok(metric)
+            })?;
+            assert_eq!(metric_accesses, 0);
+            assert_eq!(near_start.z.value(), None);
+            assert_eq!(near_end.z.value(), None);
+            Ok(())
+        })
+        .unwrap();
     }
 }

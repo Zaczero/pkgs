@@ -142,13 +142,13 @@ pub(crate) fn point_edge_query(
 
     let midpoint_derivative = edge.derivatives(0.5, geodesic);
     if midpoint_derivative.speed == 0.0 {
-        let distance = inverse_distance(point, edge.geodetic_position(0.0), geodesic);
+        let distance = inverse_distance(point, edge.geodetic_position(0.0)?, geodesic);
         return Ok(direct_result(distance, 0.0, 1, cutoff, threshold));
     }
 
     if point.y.abs() == 90.0 {
-        let start = edge.geodetic_position(0.0);
-        let end = edge.geodetic_position(1.0);
+        let start = edge.geodetic_position(0.0)?;
+        let end = edge.geodetic_position(1.0)?;
         let parameter = if point.y > 0.0 {
             if end.y > start.y { 1.0 } else { 0.0 }
         } else {
@@ -159,13 +159,13 @@ pub(crate) fn point_edge_query(
         return Ok(direct_result(distance, parameter, 1, cutoff, threshold));
     }
 
-    let (d0, azimuth0) = sample(geodesic, point, edge, 0.0);
+    let (d0, azimuth0) = sample(geodesic, point, edge, 0.0)?;
     if let Some(limit) = threshold
         && d0 <= limit
     {
         return Ok(PointEdgeQueryResult::Within { evaluations: 1 });
     }
-    let (d1, azimuth1) = sample(geodesic, point, edge, 1.0);
+    let (d1, azimuth1) = sample(geodesic, point, edge, 1.0)?;
     if let Some(limit) = threshold
         && d1 <= limit
     {
@@ -216,7 +216,7 @@ pub(crate) fn point_edge_query(
     let proposal = if locate {
         let parameter = edge.projection_parameter(source_point)?;
         if parameter > 0.0 && parameter < 1.0 {
-            let (distance, azimuth) = sample(geodesic, point, edge, parameter);
+            let (distance, azimuth) = sample(geodesic, point, edge, parameter)?;
             best.evaluations = best.evaluations.wrapping_add(1);
             if ranks_witness {
                 update_witness_parameter(&best, &mut witness_parameter, distance, parameter, edge);
@@ -306,7 +306,7 @@ pub(crate) fn point_edge_query(
         } else {
             f64::midpoint(interval.t0, interval.t1)
         };
-        let (distance, azimuth) = sample(geodesic, point, edge, parameter);
+        let (distance, azimuth) = sample(geodesic, point, edge, parameter)?;
         best.evaluations = best.evaluations.wrapping_add(1);
         if let Some(limit) = threshold
             && distance <= limit
@@ -371,7 +371,7 @@ pub(crate) fn point_edge_query(
     {
         let parameter = best.parameter - best_correction;
         if parameter > 0.0 && parameter < 1.0 && parameter != best.parameter {
-            let (distance, _) = sample(geodesic, point, edge, parameter);
+            let (distance, _) = sample(geodesic, point, edge, parameter)?;
             best.evaluations = best.evaluations.wrapping_add(1);
             if ranks_witness {
                 update_witness_parameter(&best, &mut witness_parameter, distance, parameter, edge);
@@ -487,11 +487,16 @@ fn direct_result(
     })
 }
 
-fn sample(geodesic: &Geodesic, point: Point, edge: &ChartEdge, parameter: f64) -> (f64, f64) {
-    let target = edge.geodetic_position(parameter);
+fn sample(
+    geodesic: &Geodesic,
+    point: Point,
+    edge: &ChartEdge,
+    parameter: f64,
+) -> crate::error::Result<(f64, f64)> {
+    let target = edge.geodetic_position(parameter)?;
     let (distance, _azimuth1, azimuth2) =
         inverse_distance_azimuths(geodesic, point.x, point.y, target.x, target.y);
-    (distance, azimuth2)
+    Ok((distance, azimuth2))
 }
 
 fn distance_derivative(
@@ -661,7 +666,7 @@ mod tests {
             .frame
             .to_geodesic_point(point)
             .expect("oracle point is admitted");
-        let target = edge.geodetic_position(parameter);
+        let target = edge.geodetic_position(parameter).unwrap();
         let distance: f64 = metric
             .geodesic
             .inverse(point.y, point.x, target.y, target.x);

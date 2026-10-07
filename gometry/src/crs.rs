@@ -95,8 +95,8 @@ pub(crate) use geodesic::{
     geodesic_hausdorff_at, geodesic_interpolate_on_line, geodesic_point_between,
     geodesic_point_distances, geodesic_point_pair_distance, geodesic_point_pair_distances,
     geodesic_point_pair_dwithin, geodesic_point_pair_dwithin_one, geodesic_witness_distance_at,
-    geographic_lonlat_result, metric_interpolate_m, metric_model, metric_model_meters,
-    sincos_degrees, with_ellipsoid_metric_at, with_geodesic_cache_at,
+    geographic_lonlat_result, metric_interpolate_m, metric_model, metric_model_at,
+    metric_model_meters, sincos_degrees, with_ellipsoid_metric_at, with_geodesic_cache_at,
     with_geographic_coordseq_collect_rows_at, with_geographic_coordseq_metric_at,
     with_resolved_ellipsoid_metric_at,
 };

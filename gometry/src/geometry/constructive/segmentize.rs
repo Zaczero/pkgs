@@ -879,7 +879,7 @@ fn emit_chart_plan(
         } else {
             edge.locate_t(length * fraction, length, geodesic, frame)?
         };
-        let point = edge.chart_position(parameter);
+        let point = edge.chart_position(parameter)?;
         if !(point.x.is_finite() && point.y.is_finite()) {
             return Err(GeometryErrorKind::message(
                 "chart-edge subdivision calculation produced a non-finite coordinate",

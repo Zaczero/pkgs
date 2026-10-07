@@ -157,13 +157,32 @@ pub(crate) fn geographic_topology_route<'a>(
 /// Resolve the complete topology domain from CRS metadata. WGS84 uses the
 /// constant native frame; other geographic CRSs use their cached native frame.
 pub(crate) fn topology_domain(frame: &Frame) -> crate::error::Result<TopologyDomain> {
+    let state = frame
+        .crs_str()
+        .filter(|crs| !crate::crs::is_wgs84_lonlat(crs))
+        .map(|_| crate::crs::runtime_state_snapshot())
+        .transpose()?;
+    topology_domain_at(frame, state.as_deref())
+}
+
+pub(crate) fn topology_domain_at(
+    frame: &Frame,
+    state: Option<&crate::crs::RuntimeState>,
+) -> crate::error::Result<TopologyDomain> {
     Ok(match frame.crs_str() {
         Some(crs) if crate::crs::is_wgs84_lonlat(crs) => {
             TopologyDomain::Geographic(GeographicFrame::crs84())
         },
-        Some(crs) => crate::crs::info(crs)?
-            .geographic_frame()
-            .map_or(TopologyDomain::Cartesian, TopologyDomain::Geographic),
+        Some(crs) => {
+            let state = state.ok_or_else(|| {
+                crate::crs::CrsError::invalid(
+                    "a non-WGS84 topology frame requires its CRS runtime snapshot",
+                )
+            })?;
+            crate::crs::info_with_state(crs, state)?
+                .geographic_frame()
+                .map_or(TopologyDomain::Cartesian, TopologyDomain::Geographic)
+        },
         None => TopologyDomain::Cartesian,
     })
 }

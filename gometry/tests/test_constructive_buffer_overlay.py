@@ -1242,6 +1242,66 @@ def test_clip_by_rect_line_array_preserves_axes_masks_selection_and_frame() -> N
     assert framed.epoch == 2020.0
 
 
+def test_clip_by_rect_packed_missing_and_gathered_rows_preserve_mask_and_frame() -> (
+    None
+):
+    all_missing = gm.GeometryArray([None, None], crs=4326, epoch=2020.0)
+    clipped_missing = all_missing.clip_by_rect(-1, -1, 1, 1)
+    assert clipped_missing.is_missing.tolist() == [True, True]
+    assert clipped_missing.crs == 'EPSG:4326'
+    assert clipped_missing.epoch == 2020.0
+
+    # A geographic rectangle may cross the longitude seam.
+    crossing = all_missing.clip_by_rect(170, -10, -170, 10)
+    assert crossing.is_missing.tolist() == [True, True]
+
+    mixed = gm.GeometryArray(
+        [
+            None,
+            gm.Point(0.5, 0.5, crs=4326),
+            None,
+        ],
+        crs=4326,
+        epoch=2020.0,
+    )
+    clipped_mixed = mixed.clip_by_rect(-1, -1, 1, 1)
+    assert clipped_mixed.is_missing.tolist() == [True, False, True]
+    assert clipped_mixed[1].to_wkt(drop_epoch=True) == 'POINT (0.5 0.5)'
+    assert clipped_mixed.crs == 'EPSG:4326'
+    assert clipped_mixed.epoch == 2020.0
+
+    mixed_storage = gm.GeometryArray(
+        [
+            gm.Point(0.5, 0.5, crs=4326),
+            gm.LineString([(0.0, 0.0), (1.0, 1.0)], crs=4326),
+            None,
+        ],
+        crs=4326,
+        epoch=2020.0,
+    )
+    gathered_missing = mixed_storage[[2, 2]].clip_by_rect(-1, -1, 1, 1)
+    assert gathered_missing.is_missing.tolist() == [True, True]
+    assert gathered_missing.crs == 'EPSG:4326'
+    assert gathered_missing.epoch == 2020.0
+
+    empty = gm.GeometryArray([], crs=4326, epoch=2020.0).clip_by_rect(-1, -1, 1, 1)
+    assert len(empty) == 0
+    assert empty.crs == 'EPSG:4326'
+    assert empty.epoch == 2020.0
+
+
+def test_clip_by_rect_validates_bounds_when_arrays_have_no_present_rows() -> None:
+    missing = gm.GeometryArray([None, None])
+    empty = gm.GeometryArray([])
+    for rows in (missing, empty):
+        with pytest.raises(gm.GeometryError, match='clip rectangle bounds'):
+            rows.clip_by_rect(2, 0, 1, 1)
+
+    geographic_missing = gm.GeometryArray([None], crs=4326)
+    with pytest.raises(gm.GeometryError, match='clip rectangle bounds'):
+        geographic_missing.clip_by_rect(-1, 1, 1, -1)
+
+
 def test_clip_by_rect_line_array_reentry_at_same_boundary_matches_scalar() -> None:
     coords = [(0.5, 0.5), (0.0, 0.5), (-1.0, 1.5), (0.0, 0.5), (0.75, 0.5)]
     for line in (gm.LineString(coords), gm.LineString(list(reversed(coords)))):

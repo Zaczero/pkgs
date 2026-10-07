@@ -8,7 +8,7 @@ use crate::geographic::lonlat::invalid_lonlat_error;
 use crate::geographic::{
     ChartStep, EdgeDirection, GeographicFrame, GeographicInputs, TurnDirection,
 };
-use crate::geometry::overlay::overlay_all_geographic_from;
+use crate::geometry::overlay::overlay_all_geographic_from_with_metric;
 use crate::geometry::{
     ChartBox, ChartEdgeBvh, ChartMetric, Coordinates as _, FrameDependentCaches, GeodesicMetric,
     GeographicMetricKey, GeographicPrepared, OverlayOp, Point, PointEdgeQuery,
@@ -158,12 +158,13 @@ pub(crate) fn geographic_intersects_cached(
     graph_intersects_data_geographic(&left, &right)
 }
 
-pub(crate) fn geographic_intersection_witness_cached(
+pub(crate) fn geographic_intersection_witness_cached<M: ChartMetric>(
     left: &PreparedPlan,
     left_cache: &FrameDependentCaches,
     right: &PreparedPlan,
     right_cache: &FrameDependentCaches,
     frame: GeographicFrame,
+    metric: &M,
 ) -> Result<Option<Point>> {
     let left = GeographicPrepared::try_new(left, left_cache, frame)?;
     let right = GeographicPrepared::try_new(right, right_cache, frame)?;
@@ -172,8 +173,14 @@ pub(crate) fn geographic_intersection_witness_cached(
         std::iter::once(right.plan().shape()),
     )
     .map_err(|error| invalid_lonlat_error(error.native.x, error.native.y))?;
-    let intersection =
-        overlay_all_geographic_from(&inputs, OverlayOp::Intersection, Strictness::Lenient, false)?;
+    let metric_access = || Ok(metric);
+    let intersection = overlay_all_geographic_from_with_metric(
+        &inputs,
+        OverlayOp::Intersection,
+        Strictness::Lenient,
+        false,
+        Some(&metric_access),
+    )?;
     Ok(
         match intersection.try_for_each_first_point_run(ControlFlow::Break) {
             ControlFlow::Break(point) => Some(point),
@@ -824,6 +831,7 @@ where
             right,
             right_cache,
             metric.chart_frame(),
+            metric,
         )?
         .ok_or_else(|| {
             crate::crs::CrsError::message(

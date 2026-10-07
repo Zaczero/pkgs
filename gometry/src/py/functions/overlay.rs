@@ -60,12 +60,31 @@ fn apply_overlay_all(
         &[Shape],
         crate::geometry::TopologyDomain,
         crate::geometry::Strictness,
+        &crate::geometry::SourceArcMetricAccess<'_, crate::crs::GeodesicMetric>,
     ) -> crate::error::Result<Shape>
     + Send,
 ) -> PyResult<Typed> {
     let (metadata, shapes) = pooled_shapes(values)?;
-    let domain = crate::geometry::topology_domain(&metadata)?;
-    let shape = py.detach(move || kernel(&shapes, domain, crate::geometry::Strictness::Lenient))?;
+    let mut metric_scratch = crate::dispatch::MetricScratch::default();
+    let (domain, metric) = crate::dispatch::MetricResolver::GeographicCarry
+        .resolve_topology_ctx(&metadata, &mut metric_scratch)?;
+    let shape = py.detach(move || {
+        let metric_access = || {
+            metric.geographic_chart_metric()?.ok_or_else(|| {
+                crate::crs::CrsError::invalid(
+                    "geographic overlay source ordinates require the operation's CRS metric",
+                )
+                .into()
+            })
+        };
+        kernel(
+            &shapes,
+            domain,
+            crate::geometry::Strictness::Lenient,
+            &metric_access,
+        )
+    })?;
+    drop(metric_scratch);
     Ok(Typed(PyGeometry::with_frame(shape, metadata)))
 }
 
@@ -309,7 +328,15 @@ pub(crate) fn union_all(py: Python<'_>, values: &Bound<'_, PyAny>) -> PyResult<T
         })?;
         return Ok(Typed(PyGeometry::with_frame(shape, array.frame.clone())));
     }
-    apply_overlay_all(py, values, Shape::union_all_topo)
+    apply_overlay_all(py, values, |shapes, domain, strictness, metric_access| {
+        crate::geometry::overlay_all_with_metric(
+            shapes,
+            domain,
+            OverlayOp::Union,
+            strictness,
+            metric_access,
+        )
+    })
 }
 
 /// Union a polygonal *coverage* into one geometry by dissolving shared edges.
@@ -508,7 +535,15 @@ pub(crate) fn polygonize_full(py: Python<'_>, values: &Bound<'_, PyAny>) -> PyRe
 /// 'POLYGON ((2 2, 3 2, 3 3, 2 3, 2 2))'
 #[pyfunction]
 pub(crate) fn intersection_all(py: Python<'_>, values: &Bound<'_, PyAny>) -> PyResult<Typed> {
-    apply_overlay_all(py, values, Shape::intersection_all_topo)
+    apply_overlay_all(py, values, |shapes, domain, strictness, metric_access| {
+        crate::geometry::overlay_all_with_metric(
+            shapes,
+            domain,
+            OverlayOp::Intersection,
+            strictness,
+            metric_access,
+        )
+    })
 }
 
 /// Symmetric difference of many geometries.
@@ -551,7 +586,15 @@ pub(crate) fn symmetric_difference_all(
     py: Python<'_>,
     values: &Bound<'_, PyAny>,
 ) -> PyResult<Typed> {
-    apply_overlay_all(py, values, Shape::symmetric_difference_all_topo)
+    apply_overlay_all(py, values, |shapes, domain, strictness, metric_access| {
+        crate::geometry::overlay_all_with_metric(
+            shapes,
+            domain,
+            OverlayOp::SymmetricDifference,
+            strictness,
+            metric_access,
+        )
+    })
 }
 
 /// Test whether geometries form a valid polygonal coverage.

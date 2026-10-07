@@ -241,7 +241,7 @@ fn interpolate_chart_edge(
     if provenance == InterpolationProvenance::Independent {
         return Ok(point);
     }
-    let lifted_position = edge.chart_position(parameter);
+    let lifted_position = edge.chart_position(parameter)?;
     let longitude = metric
         .chart_frame()
         .longitude()

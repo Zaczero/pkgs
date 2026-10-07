@@ -16,7 +16,8 @@ use crate::geometry::exact_arith::{
     two_product_dekker_admitted, two_product_dekker_checked_parts, two_sum,
 };
 use crate::geometry::overlay::{
-    OverlayOp, overlay_all_geographic_from, overlay_intersection_with_rectangle, overlay_view_error,
+    OverlayOp, overlay_all_geographic_from_with_metric, overlay_intersection_with_rectangle,
+    overlay_view_error,
 };
 use crate::geometry::{
     Bounds, CoordSeq, CoordinateAxes, ExpansionBudget, GeometryErrorKind, GeometryKind, HasM, HasZ,
@@ -2082,11 +2083,12 @@ impl Shape {
     /// Clip a canonical geographic rectangle in a frame, where subject
     /// longitude aliases and pole vertices require the frame-aware topology
     /// graph rather than Cartesian windows.
-    pub(crate) fn clip_by_rect_in_geographic_frame(
+    pub(crate) fn clip_by_rect_in_geographic_frame<M: crate::geometry::ChartMetric>(
         &self,
         rect: Bounds,
         drop: bool,
         frame: crate::geographic::GeographicFrame,
+        metric_access: &crate::geometry::SourceArcMetricAccess<'_, M>,
     ) -> Result<Self> {
         let subject_plan = crate::geometry::PreparedPlan::transient(self);
         let subject_cache = crate::geometry::FrameDependentCaches::default();
@@ -2118,11 +2120,12 @@ impl Shape {
             std::iter::once(&rectangle),
         )
         .map_err(|error| overlay_view_error(&error))?;
-        let clipped = overlay_all_geographic_from(
+        let clipped = overlay_all_geographic_from_with_metric(
             &originals,
             OverlayOp::Intersection,
             Strictness::from(drop),
             true,
+            Some(metric_access),
         )?;
         Ok(clipped)
     }

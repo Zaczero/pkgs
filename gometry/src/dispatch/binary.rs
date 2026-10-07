@@ -15,7 +15,7 @@ use crate::crs::frame::Frame;
 use crate::crs::{MetricModel, ResolvedMetric};
 use crate::dispatch::MetricOp;
 use crate::dispatch::metric::{
-    CachelessRowContext, GeodesicBinaryRow, Lane, MetricCtx, MetricScratch,
+    CachelessRowContext, GeodesicBinaryRow, Lane, MetricCtx, MetricResolver, MetricScratch,
 };
 use crate::error::Result;
 use crate::geometry::storage::{ShapeRow, ValidityMask, validity as missing};
@@ -846,6 +846,7 @@ pub(crate) fn dispatch_binary_geometry<F>(
     left: &Bound<'_, PyAny>,
     right: &Bound<'_, PyAny>,
     op_name: &str,
+    resolver: MetricResolver,
     fast_path: &F,
     kernel: impl Fn(&PreparedPlan, &PreparedPlan, &CachelessRowContext<'_>) -> Result<Shape>
     + Send
@@ -855,7 +856,9 @@ where
     F: BinaryArrayFastPath<Shape>,
 {
     let admission = admit_binary(left, right, op_name)?;
-    dispatch_binary_geometry_admitted(py, &admission, op_name, fast_path, kernel)
+    dispatch_binary_geometry_admitted_with_resolver(
+        py, &admission, op_name, resolver, fast_path, kernel,
+    )
 }
 
 pub(crate) fn dispatch_binary_geometry_admitted<F>(
@@ -870,22 +873,44 @@ pub(crate) fn dispatch_binary_geometry_admitted<F>(
 where
     F: BinaryArrayFastPath<Shape>,
 {
+    dispatch_binary_geometry_admitted_with_resolver(
+        py,
+        admission,
+        op_name,
+        MetricResolver::None,
+        fast_path,
+        kernel,
+    )
+}
+
+fn dispatch_binary_geometry_admitted_with_resolver<F>(
+    py: Python<'_>,
+    admission: &BinaryAdmission<'_>,
+    op_name: &str,
+    resolver: MetricResolver,
+    fast_path: &F,
+    kernel: impl Fn(&PreparedPlan, &PreparedPlan, &CachelessRowContext<'_>) -> Result<Shape>
+    + Send
+    + Sync,
+) -> PyResult<Py<PyAny>>
+where
+    F: BinaryArrayFastPath<Shape>,
+{
     use GeometryInput::{Many, One};
-    let resolver = super::metric::MetricResolver::None;
 
     match (admission.left, admission.right) {
         (One(left), One(right)) => {
             let frame = admission.frame.clone();
-            let domain = admission.domain;
             let mut metric_scratch = MetricScratch::default();
             let result = {
-                let metric = match resolver.resolve_ctx(&frame, &mut metric_scratch) {
-                    Ok(metric) => metric,
-                    Err(error) => {
-                        drop(metric_scratch);
-                        return Err(error);
-                    },
-                };
+                let (domain, metric) =
+                    match resolver.resolve_topology_ctx(&frame, &mut metric_scratch) {
+                        Ok(context) => context,
+                        Err(error) => {
+                            drop(metric_scratch);
+                            return Err(error);
+                        },
+                    };
                 let ctx = CachelessRowContext {
                     frame: &frame,
                     domain,
@@ -906,7 +931,7 @@ where
         },
         (One(left), Many(right)) => {
             let frame = admission.frame.clone();
-            let domain = admission.domain;
+            let admission_domain = admission.domain;
             if fast_path.is_eligible(right, GeometryInput::One(left), op_name, &frame)
                 && let Some(result) = fast_path.try_dispatch(
                     py,
@@ -914,7 +939,7 @@ where
                     GeometryInput::One(left),
                     op_name,
                     &frame,
-                    domain,
+                    admission_domain,
                     None,
                     None,
                     None,
@@ -925,13 +950,14 @@ where
             let output_frame = frame.clone();
             let mut metric_scratch = MetricScratch::default();
             let result = {
-                let metric = match resolver.resolve_ctx(&frame, &mut metric_scratch) {
-                    Ok(metric) => metric,
-                    Err(error) => {
-                        drop(metric_scratch);
-                        return Err(error);
-                    },
-                };
+                let (domain, metric) =
+                    match resolver.resolve_topology_ctx(&frame, &mut metric_scratch) {
+                        Ok(context) => context,
+                        Err(error) => {
+                            drop(metric_scratch);
+                            return Err(error);
+                        },
+                    };
                 let left_fixed = match split_operand_arc_for_topology(domain, left) {
                     Ok(left_fixed) => left_fixed,
                     Err(error) => {
@@ -939,8 +965,8 @@ where
                         return Err(PyErr::from(error));
                     },
                 };
-                // Overlay rows use transient plans only; MetricCtx is None so
-                // no frame-dependent cache is retained.
+                // Overlay rows use transient plans and retain no frame cache;
+                // geographic carry keeps its lazy metric scratch call-local.
                 run_array_rows(
                     py,
                     right,
@@ -965,17 +991,25 @@ where
         },
         (Many(left), right_in) => {
             let frame = admission.frame.clone();
-            let domain = admission.domain;
+            let admission_domain = admission.domain;
             if fast_path.is_eligible(left, right_in, op_name, &frame)
                 && let Some(result) = fast_path.try_dispatch(
-                    py, left, right_in, op_name, &frame, domain, None, None, None,
+                    py,
+                    left,
+                    right_in,
+                    op_name,
+                    &frame,
+                    admission_domain,
+                    None,
+                    None,
+                    None,
                 )
             {
                 return result;
             }
             let mut scratch = MetricScratch::default();
             let result = {
-                let metric = resolver.resolve_ctx(&frame, &mut scratch)?;
+                let (domain, metric) = resolver.resolve_topology_ctx(&frame, &mut scratch)?;
                 geometry_kernel_over_array_admitted(
                     py, left, right_in, &frame, domain, metric, kernel,
                 )
@@ -1015,7 +1049,8 @@ where
                 Ok(right_shape) => right_shape,
                 Err(error) => return Err(PyErr::from(error)),
             };
-            // Pure topology overlay: MetricCtx is None → no frame caches.
+            // Transient row plans retain no frame caches; any geographic carry
+            // metric scratch belongs only to this operation.
             run_array_rows(
                 py,
                 left,
@@ -1094,7 +1129,7 @@ where
 mod tests {
     use super::*;
     use crate::crs::RUNTIME_STATE_TEST_LOCK;
-    use crate::dispatch::{MetricResolver, kernels};
+    use crate::dispatch::kernels;
     use crate::geometry::Point;
     use crate::py::errors::CRSError;
     use crate::py::numpy::bool_array;

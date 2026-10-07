@@ -93,6 +93,7 @@ impl Shape {
     /// overlay route; Cartesian inputs use the exact partition except for
     /// binary puntal and line/polygon combinations, which can be resolved
     /// directly.
+    #[cfg(test)]
     pub(crate) fn intersection_all_topo<S: std::borrow::Borrow<Self>>(
         geometries: &[S],
         domain: TopologyDomain,
@@ -110,6 +111,7 @@ impl Shape {
     /// Frame-aware n-ary symmetric difference. Geographic inputs use their
     /// frame-aware overlay route; binary Cartesian puntal combinations can be
     /// resolved directly.
+    #[cfg(test)]
     pub(crate) fn symmetric_difference_all_topo<S: std::borrow::Borrow<Self>>(
         geometries: &[S],
         domain: TopologyDomain,

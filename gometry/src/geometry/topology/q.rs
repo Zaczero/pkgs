@@ -1793,9 +1793,10 @@ fn north_pole_ring_windings(
                 {
                     continue;
                 }
-                let local_edge = super::exact::local_longitude_edge(frame, start.x, end.x)?;
+                let local_edge =
+                    super::exact::local_longitude_edge(frame, start.x, edge.retained_longitude());
                 let start_x = local_edge.start_x;
-                let delta = local_edge.delta_x;
+                let delta = local_edge.delta_x(frame.longitude().period())?;
                 if delta.is_zero() {
                     continue;
                 }
@@ -6628,14 +6629,21 @@ mod tests {
             .expect("ring source edges belong to the chart inventory");
         let latitude = |y: f64| ExactRational::from_f64(Latitude::from_admitted(frame, y).get());
         let edge = |edge: &super::super::exact::ExactSourceEdge| {
-            super::super::exact::local_longitude_edge(frame, edge.source[0].x, edge.source[1].x)
-                .unwrap()
+            super::super::exact::local_longitude_edge(
+                frame,
+                edge.source[0].x,
+                edge.retained_longitude(),
+            )
         };
         let mut x = ExactRational::from_f64(edge(&edges[0]).start_x);
         let mut lifted = vec![(x.clone(), latitude(edges[0].source[0].y))];
         for source_edge in edges {
             x = x
-                .try_add(&ExactRational::from_dyadic(edge(source_edge).delta_x))
+                .try_add(&ExactRational::from_dyadic(
+                    edge(source_edge)
+                        .delta_x(frame.longitude().period())
+                        .unwrap(),
+                ))
                 .unwrap();
             lifted.push((x.clone(), latitude(source_edge.source[1].y)));
         }
@@ -8223,8 +8231,14 @@ mod tests {
 
     fn quotient_union_polygons(topology: &ExactGeographicTopology) -> usize {
         polygon_count(
-            &exact_geographic_overlay(topology, OverlayOp::Union, CoordinateAxes::XY, false)
-                .unwrap(),
+            &exact_geographic_overlay::<crate::crs::GeodesicMetric>(
+                topology,
+                OverlayOp::Union,
+                CoordinateAxes::XY,
+                false,
+                None,
+            )
+            .unwrap(),
         )
     }
 

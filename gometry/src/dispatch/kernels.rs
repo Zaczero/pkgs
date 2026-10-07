@@ -420,7 +420,15 @@ fn publish_computed_point_or_raw_if_geographic(
 
 /// Boundary kernel shared by the spine-routed free function.
 pub(crate) fn unary_boundary(data: &PreparedPlan, ctx: &CachelessRowContext<'_>) -> Result<Shape> {
-    crate::geometry::boundary(data, ctx.domain)
+    let metric_access = || {
+        ctx.metric.geographic_chart_metric()?.ok_or_else(|| {
+            crate::crs::CrsError::invalid(
+                "geographic boundary source ordinates require the operation's CRS metric",
+            )
+            .into()
+        })
+    };
+    crate::geometry::boundary_with_metric(data, ctx.domain, Some(&metric_access))
 }
 
 /// ``is_empty`` kernel shared by the spine-routed free function.
@@ -905,9 +913,16 @@ pub(crate) fn unary_clip_by_rect(
     drop: bool,
 ) -> Result<Shape> {
     if let crate::geometry::TopologyDomain::Geographic(frame) = ctx.domain {
+        let metric_access = || {
+            ctx.metric
+                .geographic_chart_metric()?
+                .ok_or_else(|| crate::crs::CrsError::invalid(
+                    "geographic rectangle clipping requires the operation's CRS metric for source ordinates",
+                ).into())
+        };
         return data
             .shape()
-            .clip_by_rect_in_geographic_frame(rect, drop, frame);
+            .clip_by_rect_in_geographic_frame(rect, drop, frame, &metric_access);
     }
     data.clip_by_rect_with_bounds(rect, drop, data.bounds())
 }
@@ -1020,7 +1035,26 @@ pub(crate) fn binary_overlay(
     op: crate::OverlayOp,
     strictness: crate::geometry::Strictness,
 ) -> Result<Shape> {
-    op.apply_in_frame(left.shape(), right.shape(), ctx.domain, strictness)
+    match ctx.domain {
+        TopologyDomain::Cartesian => op.apply(left.shape(), right.shape(), strictness),
+        TopologyDomain::Geographic(_) => {
+            let metric_access = || {
+                ctx.metric.geographic_chart_metric()?.ok_or_else(|| {
+                    crate::crs::CrsError::invalid(
+                        "geographic overlay source ordinates require the operation's CRS metric",
+                    )
+                    .into()
+                })
+            };
+            crate::geometry::overlay_all_with_metric(
+                &[left.shape(), right.shape()],
+                ctx.domain,
+                op,
+                strictness,
+                &metric_access,
+            )
+        },
+    }
 }
 
 /// ``line_interpolate_point`` kernel shared by the spine-routed free function.

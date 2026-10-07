@@ -32,5 +32,5 @@ pub(crate) use packed::{PackedLinearReference, PackedUnary};
 pub(crate) use unary::{
     dispatch_unary, unary_array, unary_array_linref_shapes, unary_array_linref_with_model,
     unary_array_shapes, unary_array_shapes_budgeted, unary_scalar, unary_scalar_linref_shape,
-    unary_scalar_shape, unary_scalar_shape_admitted,
+    unary_scalar_shape,
 };

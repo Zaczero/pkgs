@@ -59,21 +59,6 @@ impl OverlayOp {
             Self::SymmetricDifference => left.symmetric_difference(right, strictness),
         }
     }
-
-    pub(crate) fn apply_in_frame(
-        self,
-        left: &super::Shape,
-        right: &super::Shape,
-        domain: TopologyDomain,
-        strictness: Strictness,
-    ) -> crate::error::Result<super::Shape> {
-        match domain {
-            TopologyDomain::Cartesian => self.apply(left, right, strictness),
-            TopologyDomain::Geographic(_) => {
-                super::overlay_all(&[left, right], domain, self, strictness)
-            },
-        }
-    }
 }
 
 /// Build one occupied-support shape for a metric or moment consumer.
@@ -88,16 +73,17 @@ pub(crate) fn occupied_support_shape(
     match domain {
         TopologyDomain::Cartesian => occupied_cartesian_support(shape),
         TopologyDomain::Geographic(frame) => {
-            if matches!(shape, Shape::Polygon(_) | Shape::MultiPolygon(_))
-                && crate::geometry::validate_shape_in_frame(shape, domain)?.is_none()
+            let support = shape.force_2d()?;
+            if matches!(&support, Shape::Polygon(_) | Shape::MultiPolygon(_))
+                && crate::geometry::validate_shape_in_frame(&support, domain)?.is_none()
             {
                 // A frame-valid polygon already carries exactly one
                 // shell/hole support per part. In particular, polar caps
                 // cannot be reconstructed by a chart arrangement without
                 // losing the quotient's implicit pole closure.
-                return Ok(shape.clone());
+                return Ok(support);
             }
-            nary::occupied_geographic_support(shape, frame)
+            nary::occupied_geographic_support(&support, frame)
         },
     }
 }
@@ -153,10 +139,12 @@ pub(in crate::geometry) use exact_partition::{
 pub(crate) use exact_partition::{partition_calls, reset_partition_calls};
 pub(in crate::geometry) use nary::{
     binary_cartesian_difference_without_partition_budget,
-    binary_cartesian_intersection_with_edge_roles, overlay_all_geographic_from, overlay_view_error,
+    binary_cartesian_intersection_with_edge_roles, overlay_all_geographic_from_with_metric,
+    overlay_view_error,
 };
 pub(crate) use nary::{
-    overlay_all, overlay_all_geographic_chart, overlay_intersection_with_rectangle,
+    overlay_all, overlay_all_geographic_chart, overlay_all_with_metric,
+    overlay_intersection_with_rectangle,
 };
 #[cfg(test)]
 pub(crate) use noding::self_node_segments_sourced;

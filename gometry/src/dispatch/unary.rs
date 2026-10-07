@@ -44,16 +44,17 @@ pub(crate) fn unary_scalar<R: BulkElement>(
     kernel: impl FnOnce(&PreparedPlan, &CachelessRowContext<'_>) -> Result<R> + Send,
 ) -> PyResult<R> {
     let resolver = op.resolver_with_unit(unit);
-    let domain = crate::geometry::topology_domain(&geometry.frame)?;
     let mut metric_scratch =
         (!matches!(resolver, MetricResolver::None)).then(MetricScratch::default);
     let result = {
-        let metric_result = match metric_scratch.as_mut() {
-            Some(scratch) => resolver.resolve_ctx(&geometry.frame, scratch),
-            None => Ok(MetricCtx::None),
+        let context_result = match metric_scratch.as_mut() {
+            Some(scratch) => resolver.resolve_topology_ctx(&geometry.frame, scratch),
+            None => crate::geometry::topology_domain(&geometry.frame)
+                .map(|domain| (domain, MetricCtx::None))
+                .map_err(PyErr::from),
         };
-        let metric = match metric_result {
-            Ok(metric) => metric,
+        let (domain, metric) = match context_result {
+            Ok(context) => context,
             Err(error) => {
                 drop(metric_scratch);
                 return Err(error);
@@ -186,9 +187,9 @@ fn run_unary_rows<T: BulkElement>(
     + Send
     + Sync,
 ) -> PyResult<(Vec<T>, Frame)> {
-    let domain = crate::geometry::topology_domain(&array.frame)?;
     match resolver {
         MetricResolver::None => {
+            let domain = crate::geometry::topology_domain(&array.frame)?;
             let values =
                 execute_unary_rows(py, array.clone(), domain, MetricCtx::None, mode, kernel)
                     .map_err(rows_err)?;
@@ -196,8 +197,10 @@ fn run_unary_rows<T: BulkElement>(
         },
         resolver => {
             let mut metric_scratch = MetricScratch::default();
-            let result = match resolver.resolve_ctx(&array.frame, &mut metric_scratch) {
-                Ok(metric) => execute_unary_rows(py, array.clone(), domain, metric, mode, kernel),
+            let result = match resolver.resolve_topology_ctx(&array.frame, &mut metric_scratch) {
+                Ok((domain, metric)) => {
+                    execute_unary_rows(py, array.clone(), domain, metric, mode, kernel)
+                },
                 Err(error) => {
                     drop(metric_scratch);
                     return Err(error);
@@ -223,17 +226,6 @@ pub(crate) fn unary_scalar_shape(
     Ok(Typed(PyGeometry::with_frame(shape, frame)))
 }
 
-pub(crate) fn unary_scalar_shape_admitted(
-    py: Python<'_>,
-    geometry: &PyGeometry,
-    domain: TopologyDomain,
-    kernel: impl FnOnce(&PreparedPlan, &CachelessRowContext<'_>) -> Result<Shape> + Send,
-) -> PyResult<Typed> {
-    let shape =
-        execute_unary_scalar(py, geometry, domain, MetricCtx::None, kernel).map_err(PyErr::from)?;
-    Ok(Typed(PyGeometry::with_frame(shape, geometry.frame.clone())))
-}
-
 /// Array geometry method returning a `GeometryArray` — natively, without the
 /// Python-object round-trip (`Py<PyAny>` -> downcast -> borrow -> clone) the
 /// generic lane would pay.
@@ -252,19 +244,6 @@ pub(crate) fn unary_array_shapes(
     let resolver = op.resolver_with_unit(unit);
     if let Some(result) = try_unary_packed_array(py, array, op, resolver, packed) {
         return result;
-    }
-    if let Some(PackedUnary::ClipByRect { domain, .. }) = packed {
-        let shapes = execute_unary_rows(
-            py,
-            array.clone(),
-            *domain,
-            MetricCtx::None,
-            unary_row_mode(op),
-            move |data, ctx, _rows| kernel(data, ctx),
-        )
-        .map_err(rows_err)?;
-        return Ok(PyGeometryArray::from_shapes(shapes, array.frame.clone())?
-            .with_missing_mask(array.missing().cloned())?);
     }
     let (shapes, frame) = run_unary_rows(
         py,

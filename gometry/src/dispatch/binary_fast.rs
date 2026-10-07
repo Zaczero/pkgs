@@ -174,6 +174,7 @@ pub(crate) fn dispatch_overlay(
         left,
         right,
         operation.name(),
+        operation.resolver(),
         &OverlayFastPath,
         move |left, right, ctx| kernels::binary_overlay(left, right, ctx, op, strictness),
     )

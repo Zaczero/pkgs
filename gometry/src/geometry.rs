@@ -98,11 +98,11 @@ pub(crate) use antimeridian::{
     classify_geographic_validity_chart, crosses_antimeridian_in_frame, faithful_geographic_chain,
     geographic_crossing_bounds, geographic_topology_route, is_ring_data_in_frame,
     is_simple_data_in_frame, repair_data_in_frame, repair_shape_in_frame,
-    self_intersections_data_in_frame, topology_domain, unary_antimeridian_centroid,
-    unary_antimeridian_derived, unwrap_contact_chart, unwrap_coordinates, validate_data_in_frame,
-    validate_shape_in_frame,
+    self_intersections_data_in_frame, topology_domain, topology_domain_at,
+    unary_antimeridian_centroid, unary_antimeridian_derived, unwrap_contact_chart,
+    unwrap_coordinates, validate_data_in_frame, validate_shape_in_frame,
 };
-pub(crate) use boundary::boundary;
+pub(crate) use boundary::boundary_with_metric;
 mod computed_shape;
 pub(crate) use computed_shape::{
     PolygonPartEdgeRoles, PublishedTriangleVertices, map_computed_shape_chains,
@@ -140,11 +140,15 @@ mod line_index;
 mod linear;
 mod linear_3d;
 mod ordinates;
+pub(crate) use ordinates::{
+    ParallelSourceArcMetricAccess, SourceArcMetricAccess, source_ordinate_values_at_fraction,
+};
 mod perimeter;
 pub(crate) use perimeter::{geographic_packed_polygonal_perimeter, geographic_polygonal_perimeter};
 mod overlay;
 pub(crate) use overlay::{
     occupied_cartesian_area, occupied_support_shape, overlay_all, overlay_all_geographic_chart,
+    overlay_all_with_metric,
 };
 pub(crate) mod packed_line_metrics;
 mod point_location;

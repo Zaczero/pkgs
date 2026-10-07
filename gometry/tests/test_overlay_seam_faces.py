@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 from pathlib import Path
 
 import gometry as gm
@@ -20,6 +21,75 @@ def _thin_seam_polygon(west: float, east: float, height: float) -> gm.Polygon:
         ],
         crs=4326,
     )
+
+
+def _meridian_arc_length(start_latitude: float, end_latitude: float) -> float:
+    """Independent composite-Simpson integral of the authored ellipsoid."""
+    semi_major = 7_000_000.0
+    flattening = 1.0 / 150.0
+    eccentricity_squared = flattening * (2.0 - flattening)
+    start = math.radians(start_latitude)
+    end = math.radians(end_latitude)
+    intervals = 4096
+    step = (end - start) / intervals
+
+    def meridian_radius(latitude: float) -> float:
+        denominator = 1.0 - eccentricity_squared * math.sin(latitude) ** 2
+        return semi_major * (1.0 - eccentricity_squared) / denominator**1.5
+
+    weighted = [
+        (1 if index in (0, intervals) else 4 if index % 2 else 2)
+        * meridian_radius(start + index * step)
+        for index in range(intervals + 1)
+    ]
+    return abs(step * math.fsum(weighted) / 3.0)
+
+
+def test_q_intersection_carries_zm_by_actual_non_wgs_meridian_arclength() -> None:
+    crs = '+proj=longlat +a=7000000 +rf=150 +type=crs'
+    source = gm.from_wkt(
+        'LINESTRING ZM (179 -10 10 100, 179 20 70 700)',
+        crs=crs,
+    )
+    seam_crossing = gm.from_wkt('LINESTRING (170 0, -170 0)', crs=crs)
+
+    result = gm.intersection(source, seam_crossing)
+
+    fraction = _meridian_arc_length(-10.0, 0.0) / _meridian_arc_length(-10.0, 20.0)
+    assert abs(fraction - 1.0 / 3.0) > 1.0e-5
+    assert result.coordinate_axes == 'XYZM'
+    assert (result.x, result.y) == pytest.approx((179.0, 0.0), rel=0.0, abs=1.0e-12)
+    assert result.z == pytest.approx(10.0 + 60.0 * fraction, rel=0.0, abs=2.0e-9)
+    assert result.m == pytest.approx(100.0 + 600.0 * fraction, rel=0.0, abs=2.0e-8)
+    assert abs(result.z - 30.0) > 1.0e-4
+    assert abs(result.m - 300.0) > 1.0e-3
+
+
+@pytest.mark.parametrize(
+    ('seam_latitude', 'expected'),
+    [
+        pytest.param(-10.0, (179.0, -10.0, 10.0, 100.0), id='source-t0'),
+        pytest.param(20.0, (179.0, 20.0, 70.0, 700.0), id='source-t1'),
+    ],
+)
+def test_q_intersection_keeps_the_authentic_source_endpoint_record(
+    seam_latitude: float,
+    expected: tuple[float, float, float, float],
+) -> None:
+    crs = '+proj=longlat +a=7000000 +rf=150 +type=crs'
+    source = gm.from_wkt(
+        'LINESTRING ZM (179 -10 10 100, 179 20 70 700)',
+        crs=crs,
+    )
+    seam_crossing = gm.from_wkt(
+        f'LINESTRING (170 {seam_latitude}, -170 {seam_latitude})',
+        crs=crs,
+    )
+
+    result = gm.intersection(source, seam_crossing)
+
+    assert result.coordinate_axes == 'XYZM'
+    assert (result.x, result.y, result.z, result.m) == expected
 
 
 @pytest.mark.parametrize(

@@ -25,7 +25,7 @@ pub(crate) use crs::{
     GeographicDerivedPointScan, GeographicTopologyRoute, antimeridian_frame,
     chain_crosses_antimeridian, classify_geographic_chart, classify_geographic_validity_chart,
     crosses_antimeridian_in_frame, faithful_geographic_chain, geographic_topology_route,
-    topology_domain,
+    topology_domain, topology_domain_at,
 };
 #[cfg(test)]
 pub(crate) use linestring::crossing_latitude_in_frame;

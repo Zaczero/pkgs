@@ -6,6 +6,7 @@ use crate::broadcast::{
     CollectRows as _, degrade_linref_linestring, degrade_linref_point, rows_err,
 };
 use crate::crs::MetricModel;
+use crate::dispatch::metric::MetricScratch;
 use crate::dispatch::operation::{MetricOp, Operation};
 use crate::dispatch::{Lane, kernels};
 use crate::geometry::storage::packed_columns::resolve_packed_columns;
@@ -86,8 +87,10 @@ pub(crate) enum PackedUnary {
         precision: i32,
     },
     ClipByRect {
-        rect: Bounds,
-        domain: TopologyDomain,
+        minx: f64,
+        miny: f64,
+        maxx: f64,
+        maxy: f64,
     },
 }
 
@@ -285,19 +288,18 @@ pub(crate) fn try_unary_packed_array(
     resolver: super::MetricResolver,
     packed: Option<&PackedUnary>,
 ) -> Option<PyResult<PyGeometryArray>> {
-    // Most constructive packed kernels consume every physical coordinate.
-    // Missing rows deliberately carry NaN placeholders; ops that would feed
-    // those NaNs into geometry construction stay on the present-row/scatter
-    // lane. `Boundary` preserves packed structure without inspecting missing
-    // coordinates; `Segmentize` owns its own mask-aware fallback so one
-    // generated-work budget spans every present row. Other
-    // constructive ops (affine, simplify, centroid, …) would need per-op
-    // skip-or-scatter logic — not the same shape as bool mask overlay — and
+    // Missing rows carry coordinate placeholders, so kernels that inspect
+    // packed storage directly stay on the present-row/scatter lane. `Boundary`
+    // preserves packed structure without inspecting missing coordinates;
+    // `Segmentize` owns a mask-aware fallback so one generated-work budget
+    // spans every present row. `ClipByRect` validates its bounds before its
+    // mask-aware detached map, so missing rows do not suppress argument checks.
+    // Other constructive ops would need different skip-or-scatter logic and
     // stay bailed here.
     if array.has_missing()
         && !matches!(
             op,
-            Operation::Boundary | Operation::Metric(MetricOp::Segmentize)
+            Operation::Boundary | Operation::ClipByRect | Operation::Metric(MetricOp::Segmentize)
         )
     {
         return None;
@@ -401,8 +403,43 @@ pub(crate) fn try_unary_packed_array(
         (Operation::Quantize, PackedUnary::Quantize { precision }) => {
             Some(array.quantize_unary_packed(py, *precision))
         },
-        (Operation::ClipByRect, PackedUnary::ClipByRect { rect, domain }) => {
-            Some(array.clip_by_rect_unary_packed(py, *rect, *domain))
+        (
+            Operation::ClipByRect,
+            PackedUnary::ClipByRect {
+                minx,
+                miny,
+                maxx,
+                maxy,
+            },
+        ) => {
+            let mut scratch = MetricScratch::default();
+            let result = match resolver.resolve_topology_ctx(&array.frame, &mut scratch) {
+                Ok((domain, metric)) => {
+                    let rect = match domain {
+                        TopologyDomain::Geographic(_) => {
+                            Bounds::new_geographic(*minx, *miny, *maxx, *maxy)
+                        },
+                        TopologyDomain::Cartesian => Bounds::new(*minx, *miny, *maxx, *maxy),
+                    };
+                    match rect {
+                        Ok(rect) => {
+                            let metric_access = || {
+                                metric.geographic_chart_metric()?.ok_or_else(|| {
+                                    crate::crs::CrsError::invalid(
+                                        "geographic rectangle clipping requires the operation's CRS metric",
+                                    )
+                                    .into()
+                                })
+                            };
+                            array.clip_by_rect_unary_packed(py, rect, domain, &metric_access)
+                        },
+                        Err(error) => Err(error.into()),
+                    }
+                },
+                Err(error) => Err(error),
+            };
+            drop(scratch);
+            Some(result)
         },
         _ => None,
     }

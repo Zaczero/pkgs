@@ -285,15 +285,25 @@ impl PyGeometry {
         let miny = finite_f64_required("miny", miny)?;
         let maxx = finite_f64_required("maxx", maxx)?;
         let maxy = finite_f64_required("maxy", maxy)?;
-        let domain = crate::geometry::topology_domain(&self.frame)?;
-        let rect = if domain.is_geographic() {
-            Bounds::new_geographic(minx, miny, maxx, maxy)?
-        } else {
-            Bounds::new(minx, miny, maxx, maxy)?
-        };
-        crate::dispatch::unary_scalar_shape_admitted(py, self, domain, move |data, ctx| {
-            kernels::unary_clip_by_rect(data, ctx, rect, false)
-        })
+        unary_spine_shapes!(
+            scalar,
+            py,
+            self,
+            crate::dispatch::Operation::ClipByRect,
+            None,
+            default,
+            move |data, ctx| {
+                let rect = match ctx.domain {
+                    crate::geometry::TopologyDomain::Geographic(_) => {
+                        Bounds::new_geographic(minx, miny, maxx, maxy)?
+                    },
+                    crate::geometry::TopologyDomain::Cartesian => {
+                        Bounds::new(minx, miny, maxx, maxy)?
+                    },
+                };
+                kernels::unary_clip_by_rect(data, ctx, rect, false)
+            }
+        )
     }
 
     #[doc = doc_subdivide!(scalar)]
@@ -592,20 +602,29 @@ impl PyGeometryArray {
         let miny = finite_f64_required("miny", miny)?;
         let maxx = finite_f64_required("maxx", maxx)?;
         let maxy = finite_f64_required("maxy", maxy)?;
-        let domain = crate::geometry::topology_domain(&self.frame)?;
-        let rect = if domain.is_geographic() {
-            Bounds::new_geographic(minx, miny, maxx, maxy)?
-        } else {
-            Bounds::new(minx, miny, maxx, maxy)?
-        };
         unary_spine_shapes_extras!(
             array,
             py,
             self,
             crate::dispatch::Operation::ClipByRect,
             None,
-            crate::dispatch::PackedUnary::ClipByRect { rect, domain },
-            move |data, ctx| kernels::unary_clip_by_rect(data, ctx, rect, false)
+            crate::dispatch::PackedUnary::ClipByRect {
+                minx,
+                miny,
+                maxx,
+                maxy,
+            },
+            move |data, ctx| {
+                let rect = match ctx.domain {
+                    crate::geometry::TopologyDomain::Geographic(_) => {
+                        Bounds::new_geographic(minx, miny, maxx, maxy)?
+                    },
+                    crate::geometry::TopologyDomain::Cartesian => {
+                        Bounds::new(minx, miny, maxx, maxy)?
+                    },
+                };
+                kernels::unary_clip_by_rect(data, ctx, rect, false)
+            }
         )
     }
 

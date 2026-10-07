@@ -17,11 +17,16 @@ pub(crate) use computed_edge::{
 pub(crate) use envelope::GeographicSupportEnvelope;
 pub(crate) use interval::{CircularInterval, LongitudeWindows, union_circular_intervals};
 use thiserror::Error;
+#[cfg(test)]
+pub(crate) use value::source_admission_counts;
 pub(crate) use value::{
     AngularFactor, CanonicalLongitude, ChartConnection, ChartPole, ChartStep, EdgeDirection,
     FullTurnPole, GeodeticPole, GeographicAxisOrientation, GeographicFrame, Latitude, PeriodicAxis,
-    QuotientVertex, RingTurn, SeamIdentity, TurnDirection,
+    QuotientVertex, RetainedChartDisplacement, RetainedLongitudeSite, RingTurn, SeamIdentity,
+    TurnDirection,
 };
+#[cfg(test)]
+pub(crate) use value::{RetainedNativeLongitude, retained_native_private};
 #[cfg(test)]
 pub(crate) use view::GeographicAdmissionWork;
 pub(crate) use view::{

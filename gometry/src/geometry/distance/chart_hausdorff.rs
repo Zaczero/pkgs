@@ -162,7 +162,7 @@ where
                 // No interior binary64 parameter remains; the evaluated endpoints resolve this interval at source precision.
                 continue;
             }
-            let source = edge.chart_position(middle);
+            let source = edge.chart_position(middle)?;
             let value = source_target_evaluation(
                 source,
                 Some(if edge.is_parallel() {

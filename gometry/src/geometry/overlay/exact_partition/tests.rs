@@ -280,9 +280,10 @@ fn subdivision_keeps_a_hole_vertex_on_the_other_childs_dissolved_seam() {
     assert!(left_keeps);
     assert!(!right_keeps);
     assert!(
-        crate::geometry::boundary(
+        crate::geometry::boundary_with_metric::<crate::crs::GeodesicMetric>(
             &crate::geometry::PreparedPlan::transient(&right),
             crate::geometry::TopologyDomain::Cartesian,
+            None,
         )
         .unwrap()
         .intersects(&Shape::Point(Point::new_raw_xy(0.0, 0.0)))

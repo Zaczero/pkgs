@@ -7,7 +7,9 @@ use crate::geometry::storage::packed_columns::{LineColumns, PackedColumns, Polyg
 use crate::geometry::storage::{
     GeometryArrayStorage, PackedStorage, RowSelection, reverse_coord_windows,
 };
-use crate::geometry::{ExpansionBudget, ShapeCountQuery, TopologyDomain};
+use crate::geometry::{
+    ExpansionBudget, ParallelSourceArcMetricAccess, ShapeCountQuery, TopologyDomain,
+};
 
 #[derive(Clone, Copy)]
 pub(crate) struct GridSize {
@@ -452,10 +454,11 @@ impl PyGeometryArray {
         py: Python<'_>,
         rect: Bounds,
         domain: TopologyDomain,
+        metric_access: &ParallelSourceArcMetricAccess<'_>,
     ) -> PyResult<Self> {
         self.map_shapes_detached(py, move |shape| {
             if let TopologyDomain::Geographic(frame) = domain {
-                shape.clip_by_rect_in_geographic_frame(rect, false, frame)
+                shape.clip_by_rect_in_geographic_frame(rect, false, frame, metric_access)
             } else {
                 shape.clip_by_rect(rect, false)
             }

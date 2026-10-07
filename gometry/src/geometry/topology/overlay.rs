@@ -6,8 +6,12 @@ use super::exact::{
 };
 use super::q::{ExactGeographicTopology, GlobalFaceId, QDartId, QNodeId, QPortId, row_locations};
 use crate::error::{ResourceError, Result};
-use crate::geographic::{ChartPole, GeographicRing, Latitude, RingSummary, SeamIdentity};
-use crate::geometry::ordinates::AxisValue;
+use crate::geographic::{
+    ChartPole, GeographicRing, Latitude, RetainedChartDisplacement, RingSummary, SeamIdentity,
+};
+use crate::geometry::ordinates::{
+    NodeOrdinates, SourceArcMetricAccess, SourceArcRequest, source_arc_ordinates,
+};
 use crate::geometry::overlay::{OverlayOp, build_certified_overlay_shape_with_axes};
 use crate::geometry::segments::try_sort_by;
 use crate::geometry::tessellation::exact::ExactRational;
@@ -202,24 +206,19 @@ fn certify_publication_identity(
     }
 }
 
-#[derive(Clone, Copy, Default)]
-struct NodeOrdinates {
-    z: AxisValue,
-    m: AxisValue,
-}
-
 /// Select all dimensions from the one exact source chart and its global Q.
 /// Rounding happens only after face, span, and node selection is complete.
-pub(in crate::geometry) fn exact_geographic_overlay(
+pub(in crate::geometry) fn exact_geographic_overlay<M: crate::geometry::ChartMetric>(
     topology: &ExactGeographicTopology,
     operation: OverlayOp,
     declared_axes: CoordinateAxes,
     strict: bool,
+    metric_access: Option<&SourceArcMetricAccess<'_, M>>,
 ) -> Result<Shape> {
     let plan = QOverlayPlan::build(topology, operation)?;
     let coordinates = QCoordinates::build(topology)?;
     let source_points = source_point_coordinates(topology)?;
-    let ordinates = node_ordinates(topology)?;
+    let ordinates = node_ordinates(topology, declared_axes, metric_access)?;
     let mut live_node_keys = plan.live_node_keys(topology, &coordinates, &source_points)?;
     certify_node_injectivity(&mut live_node_keys)?;
     let axes = emitted_axes(declared_axes, &live_node_keys, &ordinates)?;
@@ -277,9 +276,10 @@ pub(in crate::geometry) fn exact_geographic_overlay(
     build_certified_overlay_shape_with_axes(points, lines, polygons, axes)
 }
 
-pub(in crate::geometry) fn exact_geographic_boundary(
+pub(in crate::geometry) fn exact_geographic_boundary<M: crate::geometry::ChartMetric>(
     topology: &ExactGeographicTopology,
     declared_axes: CoordinateAxes,
+    metric_access: Option<&SourceArcMetricAccess<'_, M>>,
 ) -> Result<Shape> {
     if topology.sources.row_count != 1 {
         return Err(GeometryErrorKind::Invalid(
@@ -327,7 +327,7 @@ pub(in crate::geometry) fn exact_geographic_boundary(
     };
     let coordinates = QCoordinates::build(topology)?;
     let source_points = boundary_source_points(topology, row)?;
-    let ordinates = node_ordinates(topology)?;
+    let ordinates = node_ordinates(topology, declared_axes, metric_access)?;
     let mut live_node_keys = plan.live_node_keys(topology, &coordinates, &source_points)?;
     certify_node_injectivity(&mut live_node_keys)?;
     let mut lines = emit_lines(topology, &plan.line_paths, &ordinates, &coordinates)?;
@@ -1530,25 +1530,28 @@ fn walk_line_steps(
     Ok(steps)
 }
 
-fn source_ordinate_at(
-    start: Option<f64>,
-    end: Option<f64>,
+fn source_arc_node_ordinates<M: crate::geometry::ChartMetric>(
+    source: &[Point; 2],
     parameter: &ExactRational,
-) -> Result<Option<f64>> {
-    if parameter.is_zero() {
-        return Ok(start);
-    }
-    if parameter.is_one() {
-        return Ok(end);
-    }
-    Ok(interpolate_optional_ordinate(
-        start,
-        end,
-        parameter.round()?,
-    ))
+    axes: CoordinateAxes,
+    longitude: impl FnOnce() -> Result<RetainedChartDisplacement>,
+    metric_access: Option<&SourceArcMetricAccess<'_, M>>,
+) -> Result<NodeOrdinates> {
+    let request = SourceArcRequest::new(source, axes, parameter, longitude)?;
+    source_arc_ordinates(&request, || match metric_access {
+        Some(access) => access(),
+        None => Err(crate::crs::CrsError::invalid(
+            "geographic source-ordinate carry requires the operation's CRS metric authority",
+        )
+        .into()),
+    })
 }
 
-fn node_ordinates(topology: &ExactGeographicTopology) -> Result<Vec<NodeOrdinates>> {
+fn node_ordinates<M: crate::geometry::ChartMetric>(
+    topology: &ExactGeographicTopology,
+    declared_axes: CoordinateAxes,
+    metric_access: Option<&SourceArcMetricAccess<'_, M>>,
+) -> Result<Vec<NodeOrdinates>> {
     let q = &topology.q;
     if q.source_edge_ports.len() != topology.sources.edges.len() {
         return Err(GeometryErrorKind::Invalid(
@@ -1556,7 +1559,16 @@ fn node_ordinates(topology: &ExactGeographicTopology) -> Result<Vec<NodeOrdinate
         )
         .into());
     }
+    if q.source_point_ports.len() != topology.sources.points.len() {
+        return Err(GeometryErrorKind::Invalid(
+            "Q source-point ports do not match their source points".into(),
+        )
+        .into());
+    }
     let mut output = vec![NodeOrdinates::default(); q.nodes.len()];
+    if !declared_axes.has_z() && !declared_axes.has_m() {
+        return Ok(output);
+    }
     for (edge, ports) in topology
         .sources
         .edges
@@ -1591,31 +1603,31 @@ fn node_ordinates(topology: &ExactGeographicTopology) -> Result<Vec<NodeOrdinate
             } else {
                 &owner.source_range.end
             };
-            let start_values = (
-                source_ordinate_at(edge.source[0].z(), edge.source[1].z(), start_parameter)?,
-                source_ordinate_at(edge.source[0].m(), edge.source[1].m(), start_parameter)?,
-            );
-            let end_values = (
-                source_ordinate_at(edge.source[0].z(), edge.source[1].z(), end_parameter)?,
-                source_ordinate_at(edge.source[0].m(), edge.source[1].m(), end_parameter)?,
-            );
+            let start_values = source_arc_node_ordinates(
+                &edge.source,
+                start_parameter,
+                declared_axes,
+                || Ok(edge.retained_longitude()),
+                metric_access,
+            )?;
+            let end_values = source_arc_node_ordinates(
+                &edge.source,
+                end_parameter,
+                declared_axes,
+                || Ok(edge.retained_longitude()),
+                metric_access,
+            )?;
             let start = output
                 .get_mut(span.nodes[0].0 as usize)
                 .ok_or_else(|| GeometryErrorKind::Invalid("Q span start node is unknown".into()))?;
-            start.z.observe(start_values.0);
-            start.m.observe(start_values.1);
+            start.z.observe(start_values.z.value());
+            start.m.observe(start_values.m.value());
             let end = output
                 .get_mut(span.nodes[1].0 as usize)
                 .ok_or_else(|| GeometryErrorKind::Invalid("Q span end node is unknown".into()))?;
-            end.z.observe(end_values.0);
-            end.m.observe(end_values.1);
+            end.z.observe(end_values.z.value());
+            end.m.observe(end_values.m.value());
         }
-    }
-    if q.source_point_ports.len() != topology.sources.points.len() {
-        return Err(GeometryErrorKind::Invalid(
-            "Q source-point ports do not match their source points".into(),
-        )
-        .into());
     }
     for (source, &port) in topology
         .sources
@@ -1682,21 +1694,7 @@ fn round_canonical_longitude(
     longitude: &ExactRational,
 ) -> Result<f64> {
     let axis = frame.longitude();
-    let half = ExactRational::from_f64(axis.half_period());
-    let period = ExactRational::from_f64(axis.period());
-    let negative_half = ExactRational::zero().try_subtract(&half)?;
-    let canonical = if longitude.try_cmp(&half)?.is_ge() {
-        longitude.try_subtract(&period)?
-    } else if longitude.try_cmp(&negative_half)?.is_lt() {
-        longitude.try_add(&period)?
-    } else {
-        longitude.clone()
-    };
-    // A rounded chart alias such as `122.427194 + 360` loses source low bits
-    // before floating remainder can canonicalize it.
-    axis.canonicalize(canonical.round()?)
-        .map(|longitude| longitude.get())
-        .map_err(|error| GeometryErrorKind::Invalid(error.to_string().into()).into())
+    crate::geometry::exact_arith::round_native_longitude(axis, longitude)
 }
 
 fn push_line_part(output: &mut Vec<CoordSeq>, points: &mut Vec<Point>) -> Result<()> {
@@ -3002,7 +3000,52 @@ mod tests {
             .expect("source admits");
         let topology =
             ExactGeographicTopology::from_views(frame, inputs.views().iter().copied()).unwrap();
-        exact_geographic_boundary(&topology, shape.axes()).unwrap()
+        exact_geographic_boundary::<crate::crs::GeodesicMetric>(&topology, shape.axes(), None)
+            .unwrap()
+    }
+
+    #[test]
+    fn q_node_ordinates_return_xy_defaults_before_source_metric_access() {
+        let frame = GeographicFrame::crs84();
+        let seam_crossing = Shape::LineString(
+            LineSeq::try_new(
+                CoordSeq::try_from_points(&[
+                    Point::new_axes(
+                        170.0,
+                        -10.0,
+                        ZOrdinate(Some(-30.0)),
+                        MOrdinate(Some(-300.0)),
+                    )
+                    .unwrap(),
+                    Point::new_axes(-170.0, -10.0, ZOrdinate(Some(30.0)), MOrdinate(Some(300.0)))
+                        .unwrap(),
+                ])
+                .unwrap(),
+            )
+            .unwrap(),
+        );
+        let inputs =
+            GeographicInputs::try_from_shapes(frame, std::iter::once(&seam_crossing)).unwrap();
+        assert_eq!(
+            crate::geometry::geographic_topology_route(inputs.views().iter().copied()),
+            crate::geometry::GeographicTopologyRoute::Quotient
+        );
+        let topology =
+            ExactGeographicTopology::from_views_as_set(frame, inputs.views().iter().copied())
+                .unwrap();
+        let metric_accesses = std::cell::Cell::new(0_usize);
+        let no_metric = || -> Result<&crate::crs::GeodesicMetric> {
+            metric_accesses.set(metric_accesses.get().wrapping_add(1));
+            Err(crate::crs::CrsError::invalid("unexpected source-arc metric request").into())
+        };
+
+        let xy = node_ordinates(&topology, CoordinateAxes::XY, Some(&no_metric)).unwrap();
+        assert!(
+            xy.iter()
+                .all(|ordinates| ordinates.z.value().is_none() && ordinates.m.value().is_none())
+        );
+        assert_eq!(xy.len(), topology.q.nodes.len());
+        assert_eq!(metric_accesses.get(), 0);
     }
 
     type TestPoint = (u64, u64);
@@ -3263,8 +3306,8 @@ mod tests {
                     -24.999_999_999_999_993,
                 ]
                 .as_slice(),
-                824.999_999_999_999_9,
-                -774.999_999_999_999_9,
+                825.0,
+                -775.0,
             ),
             (
                 "radian",

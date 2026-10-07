@@ -69,6 +69,88 @@ pub(crate) struct PeriodicAxis {
     half_period: f64,
 }
 
+pub(crate) mod retained_native_private {
+    pub(crate) trait Sealed {}
+}
+
+pub(crate) trait RetainedNativeLongitude:
+    retained_native_private::Sealed + Clone + std::fmt::Debug + PartialEq + Sized
+{
+}
+
+impl retained_native_private::Sealed for CanonicalLongitude {}
+impl RetainedNativeLongitude for CanonicalLongitude {}
+
+/// One native longitude together with its integral lift from the native window.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct RetainedLongitudeSite<L: RetainedNativeLongitude = CanonicalLongitude> {
+    native: L,
+    periods: i64,
+}
+
+impl<L: RetainedNativeLongitude> RetainedLongitudeSite<L> {
+    pub(crate) fn new(native: L, periods: i64) -> Self {
+        Self { native, periods }
+    }
+
+    pub(crate) fn native(&self) -> &L {
+        &self.native
+    }
+
+    #[cfg(test)]
+    pub(crate) const fn periods(&self) -> i64 {
+        self.periods
+    }
+}
+
+/// One directed chart edge whose endpoints and integral branch survive
+/// canonical publication.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct RetainedChartDisplacement<L: RetainedNativeLongitude = CanonicalLongitude> {
+    endpoints: [L; 2],
+    periods: i64,
+}
+
+impl<L: RetainedNativeLongitude> RetainedChartDisplacement<L> {
+    pub(crate) fn from_native_endpoints(endpoints: [L; 2], periods: i64) -> Self {
+        Self { endpoints, periods }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn between_sites(
+        sites: [RetainedLongitudeSite<L>; 2],
+    ) -> crate::error::Result<Self> {
+        let [start, end] = sites;
+        let periods = end
+            .periods()
+            .checked_sub(start.periods())
+            .ok_or(crate::error::ResourceError::SizeOverflow)?;
+        Ok(Self {
+            endpoints: [start.native, end.native],
+            periods,
+        })
+    }
+
+    pub(crate) fn endpoints(&self) -> &[L; 2] {
+        &self.endpoints
+    }
+
+    pub(crate) const fn periods(&self) -> i64 {
+        self.periods
+    }
+}
+
+impl RetainedChartDisplacement<CanonicalLongitude> {
+    pub(crate) fn delta_native(&self, axis: PeriodicAxis) -> f64 {
+        crate::geometry::exact_arith::retained_delta_native(
+            self.endpoints[0].get(),
+            self.endpoints[1].get(),
+            axis.period(),
+            self.periods,
+        )
+    }
+}
+
 impl PeriodicAxis {
     pub(crate) fn try_new(
         name: &'static str,
@@ -196,6 +278,8 @@ impl PeriodicAxis {
         from: f64,
         to: f64,
     ) -> Result<ChartConnection, GeographicError> {
+        #[cfg(test)]
+        source_admission_counts::connection();
         if let Some((delta, start, end)) = self.full_turn_connection(from, to) {
             let direction = if delta.is_sign_negative() {
                 TurnDirection::Negative
@@ -220,6 +304,54 @@ impl PeriodicAxis {
             end: connection.end,
             source_lift: connection.source_lift,
         })
+    }
+
+    /// Admit explicit producer endpoint spellings and their directed lift.
+    /// The integer is branch authority; it is never inferred from a rounded
+    /// displacement.
+    #[cfg(test)]
+    pub(crate) fn retained_native_endpoints(
+        self,
+        from: f64,
+        to: f64,
+        periods: i64,
+    ) -> Result<RetainedChartDisplacement, GeographicError> {
+        let start = self.canonicalize(from)?;
+        let end = self.canonicalize(to)?;
+        Ok(RetainedChartDisplacement::from_native_endpoints(
+            [start, end],
+            periods,
+        ))
+    }
+
+    pub(crate) fn native_site_at(
+        self,
+        edge: &RetainedChartDisplacement,
+        parameter: &f64,
+    ) -> crate::error::Result<RetainedLongitudeSite> {
+        let (native, periods) = crate::geometry::exact_arith::retained_native_site(
+            edge.endpoints[0].get(),
+            edge.endpoints[1].get(),
+            self.period(),
+            self.half_period(),
+            edge.periods,
+            *parameter,
+        )?;
+        Ok(RetainedLongitudeSite::new(
+            CanonicalLongitude(native),
+            periods,
+        ))
+    }
+
+    pub(crate) fn lifted_site_longitude(
+        self,
+        site: &RetainedLongitudeSite,
+    ) -> crate::error::Result<f64> {
+        crate::geometry::exact_arith::retained_lifted_native(
+            site.native.get(),
+            self.period,
+            site.periods,
+        )
     }
 
     /// The strict-interior certificate for an edge with zero quotient-seam
@@ -263,6 +395,8 @@ impl PeriodicAxis {
     }
 
     pub(crate) fn canonicalize(self, value: f64) -> Result<CanonicalLongitude, GeographicError> {
+        #[cfg(test)]
+        source_admission_counts::canonicalization();
         if !value.is_finite() {
             return Err(GeographicError::NonFinite {
                 name: "longitude",
@@ -450,10 +584,19 @@ impl PeriodicAxis {
         from: f64,
         to: f64,
     ) -> Result<EdgeDirection, GeographicError> {
+        Ok(self.shortest_alias(from, to)?.direction)
+    }
+
+    fn shortest_alias(self, from: f64, to: f64) -> Result<ShortestConnection, GeographicError> {
         if self.full_turn_delta(from, to).is_some() {
-            return Ok(EdgeDirection::Minor(0.0));
+            return Ok(ShortestConnection {
+                direction: EdgeDirection::Minor(0.0),
+                start: self.canonicalize(from)?,
+                end: self.canonicalize(to)?,
+                source_lift: 0,
+            });
         }
-        Ok(self.shortest_edge_after_circle_check(from, to)?.direction)
+        self.shortest_edge_after_circle_check(from, to)
     }
 
     #[expect(
@@ -1213,6 +1356,29 @@ impl EdgeDirection {
     }
 }
 
+#[cfg(test)]
+pub(crate) mod source_admission_counts {
+    use std::cell::Cell;
+
+    thread_local! {
+        static COUNTS: Cell<(usize, usize)> = const { Cell::new((0, 0)) };
+    }
+
+    pub(crate) fn snapshot() -> (usize, usize) {
+        COUNTS.get()
+    }
+
+    pub(super) fn connection() {
+        let (connections, canonicalizations) = COUNTS.get();
+        COUNTS.set((connections + 1, canonicalizations));
+    }
+
+    pub(super) fn canonicalization() {
+        let (connections, canonicalizations) = COUNTS.get();
+        COUNTS.set((connections, canonicalizations + 1));
+    }
+}
+
 /// One admitted edge decision with authentic canonical endpoints and the
 /// integral lift that selects its directed source branch.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -1224,6 +1390,13 @@ pub(crate) struct ChartConnection {
 }
 
 impl ChartConnection {
+    pub(crate) fn retained(self) -> RetainedChartDisplacement {
+        RetainedChartDisplacement::from_native_endpoints(
+            [self.start, self.end],
+            i64::from(self.source_lift),
+        )
+    }
+
     pub(crate) fn seam_transit(self) -> i8 {
         self.step.transit_from_canonical(self.start, self.end)
     }

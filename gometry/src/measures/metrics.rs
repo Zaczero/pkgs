@@ -356,6 +356,7 @@ pub(crate) fn snap(
                 geom,
                 reference,
                 "snap",
+                crate::dispatch::MetricResolver::GeographicCarry,
                 &crate::dispatch::NoBinaryFastPath,
                 move |left, right, ctx| {
                     left.shape()

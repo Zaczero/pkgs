@@ -16,8 +16,8 @@ use crate::geometry::topology::overlay::exact_geographic_overlay;
 use crate::geometry::{
     Bounds, Contact, CoordSeq, CoordinateAxes, Coordinates as _, Dimension,
     GeographicTopologyRoute, GeometryErrorKind, GeometryKind, HashSet, Loc, Point, PointKey,
-    PreparedPlan, Segment, SegmentParameter, Shape, SharedShapeOwners, TopologyDomain, XY,
-    carry_overlay_ordinates, cartesian_point_location, clip_segment_parameter,
+    PreparedPlan, Segment, SegmentParameter, Shape, SharedShapeOwners, SourceArcMetricAccess,
+    TopologyDomain, XY, carry_overlay_ordinates, cartesian_point_location, clip_segment_parameter,
     exact_crossing_parameter, for_each_candidate_pair, point_on_segment, segment_contact_exact,
     undirected_segment_edge_key, unique_xy_points,
 };
@@ -108,7 +108,26 @@ pub(crate) fn overlay_all<S: Borrow<Shape>>(
     op: OverlayOp,
     strictness: Strictness,
 ) -> Result<Shape> {
-    overlay_all_inner(geometries, domain, op, strictness, None)
+    overlay_all_inner::<_, crate::crs::GeodesicMetric>(
+        geometries, domain, op, strictness, None, None,
+    )
+}
+
+pub(crate) fn overlay_all_with_metric<S: Borrow<Shape>, M: crate::geometry::ChartMetric>(
+    geometries: &[S],
+    domain: TopologyDomain,
+    op: OverlayOp,
+    strictness: Strictness,
+    metric_access: &SourceArcMetricAccess<'_, M>,
+) -> Result<Shape> {
+    overlay_all_inner::<S, M>(
+        geometries,
+        domain,
+        op,
+        strictness,
+        None,
+        Some(metric_access),
+    )
 }
 
 /// Overlay with bounds already owned by the caller's immutable geometry plan.
@@ -119,15 +138,23 @@ fn overlay_all_with_bounds<S: Borrow<Shape>>(
     strictness: Strictness,
     bounds: &[Option<Bounds>],
 ) -> Result<Shape> {
-    overlay_all_inner(geometries, domain, op, strictness, Some(bounds))
+    overlay_all_inner::<_, crate::crs::GeodesicMetric>(
+        geometries,
+        domain,
+        op,
+        strictness,
+        Some(bounds),
+        None,
+    )
 }
 
-fn overlay_all_inner<S: Borrow<Shape>>(
+fn overlay_all_inner<S: Borrow<Shape>, M: crate::geometry::ChartMetric>(
     geometries: &[S],
     domain: TopologyDomain,
     op: OverlayOp,
     strictness: Strictness,
     known_bounds: Option<&[Option<Bounds>]>,
+    metric_access: Option<&SourceArcMetricAccess<'_, M>>,
 ) -> Result<Shape> {
     if matches!(&domain, TopologyDomain::Cartesian)
         && let [left, right] = geometries
@@ -187,7 +214,14 @@ fn overlay_all_inner<S: Borrow<Shape>>(
             );
         }
     }
-    overlay_all_with_bounds_certificates(geometries, domain, op, strictness, true)
+    overlay_all_with_bounds_certificates_and_metric(
+        geometries,
+        domain,
+        op,
+        strictness,
+        true,
+        metric_access,
+    )
 }
 
 pub(crate) fn overlay_intersection_with_rectangle(
@@ -362,12 +396,34 @@ pub(super) fn overlay_all_without_bounds_certificates<S: Borrow<Shape>>(
     overlay_all_with_bounds_certificates(geometries, domain, op, strictness, false)
 }
 
+#[cfg(test)]
 pub(super) fn overlay_all_with_bounds_certificates<S: Borrow<Shape>>(
     geometries: &[S],
     domain: TopologyDomain,
     op: OverlayOp,
     strictness: Strictness,
     bounds_certificates: bool,
+) -> Result<Shape> {
+    overlay_all_with_bounds_certificates_and_metric::<S, crate::crs::GeodesicMetric>(
+        geometries,
+        domain,
+        op,
+        strictness,
+        bounds_certificates,
+        None,
+    )
+}
+
+fn overlay_all_with_bounds_certificates_and_metric<
+    S: Borrow<Shape>,
+    M: crate::geometry::ChartMetric,
+>(
+    geometries: &[S],
+    domain: TopologyDomain,
+    op: OverlayOp,
+    strictness: Strictness,
+    bounds_certificates: bool,
+    metric_access: Option<&SourceArcMetricAccess<'_, M>>,
 ) -> Result<Shape> {
     if geometries.is_empty() {
         return Err(GeometryErrorKind::EmptyGeometrySequence {
@@ -394,7 +450,13 @@ pub(super) fn overlay_all_with_bounds_certificates<S: Borrow<Shape>>(
                 geometries.iter().map(std::borrow::Borrow::borrow),
             )
             .map_err(|error| overlay_view_error(&error))?;
-            overlay_all_geographic_from(&originals, op, strictness, bounds_certificates)
+            overlay_all_geographic_from_with_metric(
+                &originals,
+                op,
+                strictness,
+                bounds_certificates,
+                metric_access,
+            )
         },
     }
 }
@@ -1902,6 +1964,24 @@ pub(in crate::geometry) fn overlay_all_geographic_from(
     strictness: Strictness,
     bounds_certificates: bool,
 ) -> Result<Shape> {
+    overlay_all_geographic_from_with_metric::<crate::crs::GeodesicMetric>(
+        originals,
+        op,
+        strictness,
+        bounds_certificates,
+        None,
+    )
+}
+
+pub(in crate::geometry) fn overlay_all_geographic_from_with_metric<
+    M: crate::geometry::ChartMetric,
+>(
+    originals: &GeographicInputs<'_>,
+    op: OverlayOp,
+    strictness: Strictness,
+    bounds_certificates: bool,
+    metric_access: Option<&SourceArcMetricAccess<'_, M>>,
+) -> Result<Shape> {
     let mut original_refs = Vec::with_capacity(originals.views().len());
     original_refs.extend(originals.views().iter().map(|view| view.shape()));
     if let Some(shape) = geographic_rectangle_operation_result(originals, &original_refs, op) {
@@ -1919,12 +1999,13 @@ pub(in crate::geometry) fn overlay_all_geographic_from(
             ExactPartitionBudget::Charge,
         );
     }
-    exact_geographic_q_overlay(
+    exact_geographic_q_overlay::<M>(
         originals,
         &original_refs,
         op,
         strictness,
         bounds_certificates,
+        metric_access,
     )
 }
 
@@ -2034,21 +2115,23 @@ pub(crate) fn overlay_all_geographic_q_from(
 ) -> Result<Shape> {
     let mut original_refs = Vec::with_capacity(originals.views().len());
     original_refs.extend(originals.views().iter().map(|view| view.shape()));
-    exact_geographic_q_overlay(
+    exact_geographic_q_overlay::<crate::crs::GeodesicMetric>(
         originals,
         &original_refs,
         op,
         strictness,
         bounds_certificates,
+        None,
     )
 }
 
-fn exact_geographic_q_overlay(
+fn exact_geographic_q_overlay<M: crate::geometry::ChartMetric>(
     originals: &GeographicInputs<'_>,
     original_refs: &[&Shape],
     op: OverlayOp,
     strictness: Strictness,
     bounds_certificates: bool,
+    metric_access: Option<&SourceArcMetricAccess<'_, M>>,
 ) -> Result<Shape> {
     let frame = originals.frame();
     let declared_axes = overlay_declared_axes(original_refs, op);
@@ -2078,7 +2161,13 @@ fn exact_geographic_q_overlay(
     }
     let topology =
         crate::geometry::ExactGeographicTopology::from_views_as_set(frame, views.into_iter())?;
-    let output = exact_geographic_overlay(&topology, op, declared_axes, strictness.is_strict())?;
+    let output = exact_geographic_overlay::<M>(
+        &topology,
+        op,
+        declared_axes,
+        strictness.is_strict(),
+        metric_access,
+    )?;
     Ok(if output.is_empty() {
         empty_nary_overlay_shape(original_refs, op)
     } else {

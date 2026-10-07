@@ -378,15 +378,34 @@ impl PyGeometryArray {
             }
         }
         let frame = self.frame.clone();
-        let domain = crate::geometry::topology_domain(&frame)?;
+        let mut metric_scratch = crate::dispatch::MetricScratch::default();
+        let (domain, metric) = crate::dispatch::MetricResolver::GeographicCarry
+            .resolve_topology_ctx(&frame, &mut metric_scratch)?;
         // One detach around the whole loop: the union of every group needs no
         // Python, and a GIL round-trip per group was the loop's fixed cost.
         let shapes: Vec<Shape> = py.detach(move || {
+            let metric_access = || {
+                metric.geographic_chart_metric()?.ok_or_else(|| {
+                    crate::crs::CrsError::invalid(
+                        "geographic dissolve source ordinates require the operation's CRS metric",
+                    )
+                    .into()
+                })
+            };
             group_shapes
                 .into_iter()
-                .map(|group| Shape::union_all_topo(&group, domain, strictness))
+                .map(|group| {
+                    crate::geometry::overlay_all_with_metric(
+                        &group,
+                        domain,
+                        crate::geometry::OverlayOp::Union,
+                        strictness,
+                        &metric_access,
+                    )
+                })
                 .collect::<Result<_, _>>()
         })?;
+        drop(metric_scratch);
         Ok((Self::from_shapes(shapes, frame)?, groups)
             .into_pyobject(py)?
             .into_any()
