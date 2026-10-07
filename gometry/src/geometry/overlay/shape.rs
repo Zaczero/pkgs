@@ -135,11 +135,24 @@ impl Shape {
     /// (crossings and shared points) and return the noded edges as a
     /// `MultiLineString` (GEOS/PostGIS `ST_Node`). Polygon boundaries are
     /// included; point-only input yields `MULTILINESTRING EMPTY`. Z/M is
-    pub(crate) fn node(&self, strictness: Strictness) -> Result<Self> {
+    pub(crate) fn node_with_metric<M: crate::geometry::ChartMetric>(
+        &self,
+        domain: TopologyDomain,
+        strictness: Strictness,
+        metric_access: Option<&crate::geometry::SourceArcMetricAccess<'_, M>>,
+    ) -> Result<Self> {
         let inventory = ExactSourceInventory::from_shapes(&[self])?;
         let mut budget = crate::geometry::ExpansionBudget::new("node", "exact partition");
-        let partition = inventory.partition(&mut budget)?;
-        inventory.node_shape(&partition, self.axes(), strictness.is_strict())
+        let mut partition = inventory.partition(&mut budget)?;
+        if let TopologyDomain::Geographic(frame) = domain {
+            partition.set_geographic_frame(frame);
+        }
+        inventory.node_shape(
+            &partition,
+            self.axes(),
+            strictness.is_strict(),
+            metric_access,
+        )
     }
 
     pub fn line_merge(&self) -> Result<Self> {

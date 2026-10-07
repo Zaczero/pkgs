@@ -185,7 +185,7 @@ fn subdivision_children(source: &Shape, split_x: bool, cut: f64) -> [Shape; 2] {
         );
     }
     let children = inventory
-        .subdivision_parts(
+        .subdivision_parts::<crate::crs::GeodesicMetric>(
             &partition,
             source,
             source.axes(),
@@ -193,6 +193,7 @@ fn subdivision_children(source: &Shape, split_x: bool, cut: f64) -> [Shape; 2] {
             [1, 2],
             None,
             &mut budget,
+            None::<&crate::geometry::SourceArcMetricAccess<'_>>,
         )
         .unwrap();
     let [first, second] = &children;
@@ -390,7 +391,7 @@ fn boundary_of_polygonal_support(wkt: &str) -> String {
         .partition(&mut budget)
         .expect("exact partition builds");
     let boundary = inventory
-        .occupied_boundary_shape(&partition, shape.axes())
+        .occupied_boundary_shape::<crate::crs::GeodesicMetric>(&partition, shape.axes(), None)
         .expect("boundary cells emit");
     crate::io::to_wkt(&boundary).expect("boundary WKT writes")
 }
@@ -537,7 +538,9 @@ fn boundary_node_serializer_uses_accepted_embedding_for_line_and_residual_zm_poi
     let nodes = [residual_node, line_start, line_end];
     let axes = CoordinateAxes::XYZM;
     let accepted_nodes = inventory
-        .resolve_node_points(&partition, &accepted, &nodes, axes)
+        .resolve_node_points::<crate::crs::GeodesicMetric>(
+            &partition, &accepted, &nodes, axes, None,
+        )
         .unwrap();
     let accepted_shape = inventory
         .boundary_node_parts_to_shape_resolved(
@@ -620,7 +623,13 @@ fn boundary_node_serializer_uses_accepted_embedding_for_line_and_residual_zm_poi
 
     let nearest_embedding = embedding::Embedding::nearest(&partition);
     let nearest_nodes = inventory
-        .resolve_node_points(&partition, &nearest_embedding, &nodes, axes)
+        .resolve_node_points::<crate::crs::GeodesicMetric>(
+            &partition,
+            &nearest_embedding,
+            &nodes,
+            axes,
+            None,
+        )
         .unwrap();
     let nearest_shape = inventory
         .boundary_node_parts_to_shape_resolved(
@@ -688,12 +697,22 @@ fn mixed_source_order_keeps_absent_and_interpolated_ordinates_distinct() {
         let partition = inventory.partition(&mut budget).unwrap();
         let crossing = *partition.crossings().first().unwrap();
         let (z, m) = inventory
-            .resolve_node_ordinates(&partition, crossing, crate::geometry::CoordinateAxes::XYZM)
+            .resolve_node_ordinates::<crate::crs::GeodesicMetric>(
+                &partition,
+                crossing,
+                crate::geometry::CoordinateAxes::XYZM,
+                None,
+            )
             .unwrap();
         assert_eq!((z.0, m.0), (Some(20.0), Some(200.0)));
         let endpoint = partition.stored_node(XY::new(0.0, 0.0)).unwrap();
         let (z, m) = inventory
-            .resolve_node_ordinates(&partition, endpoint, crate::geometry::CoordinateAxes::XYZM)
+            .resolve_node_ordinates::<crate::crs::GeodesicMetric>(
+                &partition,
+                endpoint,
+                crate::geometry::CoordinateAxes::XYZM,
+                None,
+            )
             .unwrap();
         assert_eq!((z.0, m.0), (None, None));
     }
@@ -714,11 +733,12 @@ fn resolved_node_points_use_embedding_xy_and_exact_ordinates() {
         .expect("crossing belongs to the partition coordinate table") = XY::new(12.0, 13.0);
     let embedding = embedding::Embedding::from_owned(coordinates);
     let points = inventory
-        .resolve_node_points(
+        .resolve_node_points::<crate::crs::GeodesicMetric>(
             &partition,
             &embedding,
             &[crossing, endpoint],
             crate::geometry::CoordinateAxes::XYZM,
+            None,
         )
         .unwrap();
 
@@ -2333,7 +2353,13 @@ fn polygonal_union_as_one_operand_matches_separate_operands() {
         let partition = inventory.partition(&mut budget).unwrap();
         let axes = super::super::overlay_declared_axes(inputs, crate::geometry::OverlayOp::Union);
         inventory
-            .overlay_shape(&partition, crate::geometry::OverlayOp::Union, axes, true)
+            .overlay_shape::<crate::crs::GeodesicMetric>(
+                &partition,
+                crate::geometry::OverlayOp::Union,
+                axes,
+                true,
+                None,
+            )
             .unwrap()
     };
     for count in 2..=shapes.len() {
@@ -6382,8 +6408,6 @@ fn exact_orientation_order(
     partition: &ExactPartition<'_>,
     [a, b, c]: [NodeId; 3],
 ) -> crate::error::Result<Ordering> {
-    use crate::geometry::tessellation::exact::ExactRational;
-
     let rational_xy = |node| -> crate::error::Result<(ExactRational, ExactRational)> {
         let exact = partition.exact(node)?;
         let [x, y, weight] = &*exact;

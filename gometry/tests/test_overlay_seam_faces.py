@@ -66,6 +66,172 @@ def test_q_intersection_carries_zm_by_actual_non_wgs_meridian_arclength() -> Non
 
 
 @pytest.mark.parametrize(
+    (
+        'source_wkt',
+        'source_first',
+        'start_z',
+        'end_z',
+        'start_m',
+        'end_m',
+        'chart_parameter',
+        'fraction',
+    ),
+    [
+        pytest.param(
+            'LINESTRING ZM (0 -30 7 101, 0 70 47 701)',
+            True,
+            7.0,
+            47.0,
+            101.0,
+            701.0,
+            0.25,
+            _meridian_arc_length(-30.0, -5.0) / _meridian_arc_length(-30.0, 70.0),
+            id='forward-source-first',
+        ),
+        pytest.param(
+            'LINESTRING ZM (0 70 47 701, 0 -30 7 101)',
+            True,
+            47.0,
+            7.0,
+            701.0,
+            101.0,
+            0.75,
+            _meridian_arc_length(-5.0, 70.0) / _meridian_arc_length(-30.0, 70.0),
+            id='reverse-source-first',
+        ),
+        pytest.param(
+            'LINESTRING ZM (0 -30 7 101, 0 70 47 701)',
+            False,
+            7.0,
+            47.0,
+            101.0,
+            701.0,
+            0.25,
+            _meridian_arc_length(-30.0, -5.0) / _meridian_arc_length(-30.0, 70.0),
+            id='forward-source-second',
+        ),
+        pytest.param(
+            'LINESTRING ZM (0 70 47 701, 0 -30 7 101)',
+            False,
+            47.0,
+            7.0,
+            701.0,
+            101.0,
+            0.75,
+            _meridian_arc_length(-5.0, 70.0) / _meridian_arc_length(-30.0, 70.0),
+            id='reverse-source-second',
+        ),
+    ],
+)
+def test_ordinary_geographic_intersection_carries_zm_by_source_arclength(
+    source_wkt: str,
+    source_first: bool,
+    start_z: float,
+    end_z: float,
+    start_m: float,
+    end_m: float,
+    chart_parameter: float,
+    fraction: float,
+) -> None:
+    crs = '+proj=longlat +a=7000000 +rf=150 +type=crs'
+    source = gm.from_wkt(source_wkt, crs=crs)
+    crossing = gm.from_wkt('LINESTRING (-1 -5, 1 -5)', crs=crs)
+    operands = (source, crossing) if source_first else (crossing, source)
+
+    result = gm.intersection(*operands)
+
+    assert abs(fraction - chart_parameter) > 1.0e-5
+    assert result.geometry_type == 'Point'
+    assert result.coordinate_axes == 'XYZM'
+    assert (result.x, result.y) == pytest.approx((0.0, -5.0), rel=0.0, abs=1.0e-12)
+    assert result.z == pytest.approx(
+        start_z + (end_z - start_z) * fraction,
+        rel=0.0,
+        abs=2.0e-12,
+    )
+    assert result.m == pytest.approx(
+        start_m + (end_m - start_m) * fraction,
+        rel=0.0,
+        abs=2.0e-11,
+    )
+
+
+def test_ordinary_geographic_node_uses_the_operation_metric_for_interior_sources() -> (
+    None
+):
+    crs = '+proj=longlat +a=7000000 +rf=150 +type=crs'
+    fraction = _meridian_arc_length(-30.0, -5.0) / _meridian_arc_length(-30.0, 70.0)
+    # A point adds the intended XY cut without contributing unsourced line
+    # endpoints that would reduce the noded output axes to XY.
+    sources = gm.GeometryCollection(
+        [
+            gm.LineString([(0, -30, 7, 101), (0, 70, 47, 701)], crs=crs),
+            gm.Point(0, -5, crs=crs),
+        ],
+        crs=crs,
+    )
+
+    result = sources.node()
+
+    assert result.geometry_type == 'MultiLineString'
+    assert result.coordinate_axes == 'XYZM'
+    crossing = [
+        row for row in gm.get_coordinates(result).tolist() if row[:2] == [0.0, -5.0]
+    ]
+    carried = [
+        row for row in crossing if math.isfinite(row[2]) and math.isfinite(row[3])
+    ]
+    assert len(carried) == 2
+    expected_z = 7.0 + (47.0 - 7.0) * fraction
+    expected_m = 101.0 + (701.0 - 101.0) * fraction
+    for _, _, z, m in carried:
+        assert z == pytest.approx(expected_z, rel=0.0, abs=2.0e-9)
+        assert m == pytest.approx(expected_m, rel=0.0, abs=2.0e-8)
+
+
+def test_ordinary_geographic_single_cut_subdivide_carries_source_arclength_zm() -> None:
+    crs = '+proj=longlat +a=7000000 +rf=150 +type=crs'
+    polygon = gm.Polygon(
+        [
+            (0, -30, 7, 101),
+            (0.25, -30, 8, 151),
+            (0.5, -30, 9, 201),
+            (0.75, -30, 10, 251),
+            (1, -30, 11, 301),
+            (1, 70, 31, 501),
+            (0.75, 70, 35, 551),
+            (0.5, 70, 39, 601),
+            (0.25, 70, 43, 651),
+            (0, 70, 47, 701),
+            (0, -30, 7, 101),
+        ],
+        crs=crs,
+    )
+
+    parts = polygon.subdivide(max_vertices=8)
+
+    fraction = _meridian_arc_length(-30.0, 20.0) / _meridian_arc_length(-30.0, 70.0)
+    assert abs(fraction - 0.5) > 1.0e-5
+    assert polygon.num_coordinates == 11
+    assert len(parts) == 2
+    assert [part.num_coordinates for part in parts] == [8, 8]
+    assert all(part.coordinate_axes == 'XYZM' for part in parts)
+    cut_nodes = [
+        row for row in gm.get_coordinates(parts).tolist() if row[:2] == [0.0, 20.0]
+    ]
+    right_cut_nodes = [
+        row for row in gm.get_coordinates(parts).tolist() if row[:2] == [1.0, 20.0]
+    ]
+    assert cut_nodes and right_cut_nodes
+    for _, _, z, m in cut_nodes:
+        assert z == pytest.approx(7.0 + 40.0 * fraction, rel=0.0, abs=2.0e-9)
+        assert m == pytest.approx(101.0 + 600.0 * fraction, rel=0.0, abs=2.0e-8)
+    for _, _, z, m in right_cut_nodes:
+        assert z == pytest.approx(11.0 + 20.0 * fraction, rel=0.0, abs=2.0e-9)
+        assert m == pytest.approx(301.0 + 200.0 * fraction, rel=0.0, abs=2.0e-8)
+
+
+@pytest.mark.parametrize(
     ('seam_latitude', 'expected'),
     [
         pytest.param(-10.0, (179.0, -10.0, 10.0, 100.0), id='source-t0'),

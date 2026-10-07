@@ -28,6 +28,7 @@ use crate::error::ResourceError;
 use crate::geometry::Coordinates as _;
 use crate::geometry::arrangement::{IndexedTopology, IndexedTopologyScratch};
 use crate::geometry::exact_arith::ExactSign;
+use crate::geometry::ordinates::{SourceArcRequest, source_arc_ordinates};
 use crate::geometry::overlay::noding::{
     SegmentProvenance, SegmentSource, dedup_undirected_segments_sourced, placement_offsets,
 };
@@ -36,12 +37,12 @@ use crate::geometry::segments::{
     RectContact, SegmentClipInterval, clip_segment_rect_interval, segment_vs_rect,
     stored_cross_sign, stored_orientation_sign,
 };
-use crate::geometry::tessellation::exact::ExactDyadic;
+use crate::geometry::tessellation::exact::{ExactDyadic, ExactRational};
 use crate::geometry::{
-    Bounds, Contact, CoordSeq, CoordinateAxes, ExpansionBudget, GeometryErrorKind, GeometryKind,
-    LineSeq, Loc, MOrdinate, MultiLineString, Point, PointKey, Polygon, PolygonizeFull, Result,
-    Ring, RingKind, Segment, Shape, SharedShapeOwners, XY, ZOrdinate, same_point,
-    segment_contact_exact, storage,
+    Bounds, ChartMetric, Contact, CoordSeq, CoordinateAxes, ExpansionBudget, GeometryErrorKind,
+    GeometryKind, LineSeq, Loc, MOrdinate, MultiLineString, Point, PointKey, Polygon,
+    PolygonizeFull, Result, Ring, RingKind, Segment, Shape, SharedShapeOwners,
+    SourceArcMetricAccess, XY, ZOrdinate, same_point, segment_contact_exact, storage,
 };
 #[cfg(test)]
 use crate::geometry::{for_each_candidate_pair, single_chain};
@@ -103,7 +104,7 @@ pub(in crate::geometry) fn clip_polygonal_rectangle<P: AsRef<Polygon>>(
     let global = partition.global_faces(&topology, &edges)?;
     partition.winding_seed =
         inventory.rectangle_winding_seed(&partition, &topology, &edges, &global, bounds)?;
-    let result = inventory.overlay_shape_with_faces(
+    let result = inventory.overlay_shape_with_faces::<crate::crs::GeodesicMetric>(
         &partition,
         &topology,
         &edges,
@@ -111,6 +112,7 @@ pub(in crate::geometry) fn clip_polygonal_rectangle<P: AsRef<Polygon>>(
         crate::geometry::OverlayOp::Intersection,
         axes,
         strict,
+        None,
     )?;
     Ok(Some(if result.is_empty() {
         Shape::typed_empty(GeometryKind::Polygon, axes)
@@ -1422,17 +1424,22 @@ impl ExactSourceInventory {
         clippy::indexing_slicing,
         reason = "unique, source, and point IDs come from this inventory's checked provenance and partition"
     )]
-    fn resolve_node_ordinates(
+    fn resolve_node_ordinates<M: ChartMetric>(
         &self,
         partition: &ExactPartition<'_>,
         node: NodeId,
         axes: crate::geometry::CoordinateAxes,
+        metric_access: Option<&SourceArcMetricAccess<'_, M>>,
     ) -> Result<(ZOrdinate, MOrdinate)> {
         if !axes.has_z() && !axes.has_m() {
             return Ok((ZOrdinate(None), MOrdinate(None)));
         }
         let mut z = AxisValue::default();
         let mut m = AxisValue::default();
+        let geographic_frame = match partition.embedding_domain {
+            embedding::EmbeddingDomain::Geographic(frame) => Some(frame),
+            embedding::EmbeddingDomain::Plane | embedding::EmbeddingDomain::Rectangle(_) => None,
+        };
         let bindings = self.node_bindings(node, partition);
         if !bindings.is_empty() {
             let point = partition.exact(node)?;
@@ -1447,11 +1454,39 @@ impl ExactSourceInventory {
                     };
                     let along = if reversed { &from_end } else { &num };
                     let [start, end] = *points;
-                    if axes.has_z() {
-                        z.observe(interpolate_ordinate(start.z(), end.z(), along, &den)?);
-                    }
-                    if axes.has_m() {
-                        m.observe(interpolate_ordinate(start.m(), end.m(), along, &den)?);
+                    if let Some(frame) = geographic_frame {
+                        let parameter = ExactRational::new(along.clone(), den.clone())?;
+                        let request =
+                            SourceArcRequest::new(frame, points, axes, &parameter, || {
+                                frame
+                                    .longitude()
+                                    .chart_connection(start.x, end.x)
+                                    .map(|connection| connection.retained())
+                                    .map_err(|error| {
+                                        GeometryErrorKind::Invalid(error.to_string().into()).into()
+                                    })
+                            })?;
+                        let ordinates = source_arc_ordinates(&request, || {
+                            let access = metric_access.ok_or_else(|| {
+                                crate::crs::CrsError::invalid(
+                                    "geographic source-ordinate carry requires the operation's CRS metric",
+                                )
+                            })?;
+                            access()
+                        })?;
+                        if axes.has_z() {
+                            z.observe(ordinates.z.value());
+                        }
+                        if axes.has_m() {
+                            m.observe(ordinates.m.value());
+                        }
+                    } else {
+                        if axes.has_z() {
+                            z.observe(interpolate_ordinate(start.z(), end.z(), along, &den)?);
+                        }
+                        if axes.has_m() {
+                            m.observe(interpolate_ordinate(start.m(), end.m(), along, &den)?);
+                        }
                     }
                 }
             }
@@ -1523,12 +1558,13 @@ impl ExactSourceInventory {
         Ok(Some(protected))
     }
 
-    fn resolve_node_points<'e, 'p>(
+    fn resolve_node_points<'e, 'p, M: ChartMetric>(
         &self,
         partition: &ExactPartition<'_>,
         embedding: &'e embedding::Embedding<'p>,
         nodes: &[NodeId],
         declared_axes: crate::geometry::CoordinateAxes,
+        metric_access: Option<&SourceArcMetricAccess<'_, M>>,
     ) -> Result<ResolvedNodePoints<'e, 'p>> {
         if nodes.is_empty() || (!declared_axes.has_z() && !declared_axes.has_m()) {
             return Ok(ResolvedNodePoints::XY(embedding));
@@ -1539,7 +1575,12 @@ impl ExactSourceInventory {
                 GeometryErrorKind::Invalid("exact overlay output references an unknown node".into())
             })?;
             if ordinates.is_none() {
-                *ordinates = Some(self.resolve_node_ordinates(partition, node, declared_axes)?);
+                *ordinates = Some(self.resolve_node_ordinates(
+                    partition,
+                    node,
+                    declared_axes,
+                    metric_access,
+                )?);
             }
         }
         Ok(ResolvedNodePoints::Ordinates { embedding, by_node })
@@ -1564,11 +1605,12 @@ impl ExactSourceInventory {
         partition.emit_lines(&self.source_operands, operation)
     }
 
-    pub(in crate::geometry) fn node_shape(
+    pub(in crate::geometry) fn node_shape<M: ChartMetric>(
         &self,
         partition: &ExactPartition<'_>,
         declared_axes: crate::geometry::CoordinateAxes,
         strict: bool,
+        metric_access: Option<&SourceArcMetricAccess<'_, M>>,
     ) -> Result<Shape> {
         if partition.spans.is_empty() {
             return Ok(Shape::multi_line_string(declared_axes, Vec::new()));
@@ -1601,7 +1643,8 @@ impl ExactSourceInventory {
             .ok_or(ResourceError::SizeOverflow)?;
         nodes.reserve(node_capacity);
         nodes.extend(items.iter().flatten().copied());
-        let by_node = self.resolve_node_points(partition, &embedding, &nodes, declared_axes)?;
+        let by_node =
+            self.resolve_node_points(partition, &embedding, &nodes, declared_axes, metric_access)?;
         let axes = bucket_axes(&nodes, &by_node, declared_axes, strict, "node")?;
         let coordinates = by_node.coordinates();
         let mut lines = Vec::with_capacity(items.len());
@@ -1832,10 +1875,11 @@ impl ExactSourceInventory {
         clippy::indexing_slicing,
         reason = "source darts and node IDs are admitted by this partition's plan and topology"
     )]
-    pub(in crate::geometry) fn occupied_boundary_shape(
+    pub(in crate::geometry) fn occupied_boundary_shape<M: ChartMetric>(
         &self,
         partition: &ExactPartition<'_>,
         declared_axes: CoordinateAxes,
+        metric_access: Option<&SourceArcMetricAccess<'_, M>>,
     ) -> Result<Shape> {
         debug_assert_eq!(self.operand_count(), 1);
         let (topology, edges) = partition.local_topology()?;
@@ -1885,7 +1929,8 @@ impl ExactSourceInventory {
         for line in &parts.lines {
             nodes.extend(line.iter().copied());
         }
-        let by_node = self.resolve_node_points(partition, &embedding, &nodes, declared_axes)?;
+        let by_node =
+            self.resolve_node_points(partition, &embedding, &nodes, declared_axes, metric_access)?;
         self.boundary_node_parts_to_shape_resolved(
             parts,
             &by_node,
@@ -1912,12 +1957,13 @@ impl ExactSourceInventory {
         self.overlay_parts_with_fill(partition, operation, operation.name())
     }
 
-    pub(in crate::geometry) fn overlay_shape(
+    pub(in crate::geometry) fn overlay_shape<M: ChartMetric>(
         &self,
         partition: &ExactPartition<'_>,
         operation: crate::geometry::OverlayOp,
         declared_axes: crate::geometry::CoordinateAxes,
         strict: bool,
+        metric_access: Option<&SourceArcMetricAccess<'_, M>>,
     ) -> Result<Shape> {
         let (topology, edges) = partition.local_topology()?;
         let global = partition.global_faces(&topology, &edges)?;
@@ -1929,6 +1975,7 @@ impl ExactSourceInventory {
             operation,
             declared_axes,
             strict,
+            metric_access,
         )
     }
 
@@ -1969,7 +2016,7 @@ impl ExactSourceInventory {
         )
     }
 
-    fn overlay_shape_with_faces(
+    fn overlay_shape_with_faces<M: ChartMetric>(
         &self,
         partition: &ExactPartition<'_>,
         topology: &IndexedTopology,
@@ -1978,6 +2025,7 @@ impl ExactSourceInventory {
         operation: crate::geometry::OverlayOp,
         declared_axes: crate::geometry::CoordinateAxes,
         strict: bool,
+        metric_access: Option<&SourceArcMetricAccess<'_, M>>,
     ) -> Result<Shape> {
         let cells = self.select_cells(partition, topology, edges, global, operation, false)?;
         let ordinate_protected = self.ordinate_protected_nodes(partition, declared_axes)?;
@@ -2037,7 +2085,8 @@ impl ExactSourceInventory {
                 nodes.extend(ring.iter().copied());
             }
         }
-        let by_node = self.resolve_node_points(partition, &embedding, &nodes, declared_axes)?;
+        let by_node =
+            self.resolve_node_points(partition, &embedding, &nodes, declared_axes, metric_access)?;
         self.node_parts_to_shape_resolved(
             parts,
             &embedding,
@@ -2060,7 +2109,7 @@ impl ExactSourceInventory {
         clippy::indexing_slicing,
         reason = "plan node IDs are admitted by this partition and index its node-aligned seen flags"
     )]
-    pub(in crate::geometry) fn subdivision_parts(
+    pub(in crate::geometry) fn subdivision_parts<M: ChartMetric>(
         &self,
         partition: &ExactPartition<'_>,
         source_shape: &Shape,
@@ -2069,6 +2118,7 @@ impl ExactSourceInventory {
         clip_operands: [usize; 2],
         geographic_frame: Option<crate::geographic::GeographicFrame>,
         budget: &mut ExpansionBudget,
+        metric_access: Option<&SourceArcMetricAccess<'_, M>>,
     ) -> Result<[Shape; 2]> {
         let source_operand = 0;
         let operands = self.operand_count();
@@ -2097,6 +2147,7 @@ impl ExactSourceInventory {
                 declared_axes,
                 strict,
                 clip_operands,
+                metric_access,
             );
         }
         let ordinate_protected = self.ordinate_protected_nodes(partition, declared_axes)?;
@@ -2173,7 +2224,8 @@ impl ExactSourceInventory {
             node_parts.push(plan.build_node_parts(partition, &topology, emission)?);
         }
 
-        let by_node = self.resolve_node_points(partition, &embedding, &nodes, declared_axes)?;
+        let by_node =
+            self.resolve_node_points(partition, &embedding, &nodes, declared_axes, metric_access)?;
         let mut parts = node_parts.into_iter();
         let mut polygon_edge_roles = polygon_edge_roles.unwrap_or_default().into_iter();
         let first_roles = polygon_edge_roles.next();
@@ -2215,7 +2267,7 @@ impl ExactSourceInventory {
         clippy::indexing_slicing,
         reason = "selected spans and node masks are sized from the same partition whose span and node IDs the routine visits"
     )]
-    fn subdivision_line_parts(
+    fn subdivision_line_parts<M: ChartMetric>(
         &self,
         partition: &ExactPartition<'_>,
         source: LineSource<'_>,
@@ -2225,6 +2277,7 @@ impl ExactSourceInventory {
         declared_axes: crate::geometry::CoordinateAxes,
         strict: bool,
         clip_operands: [usize; 2],
+        metric_access: Option<&SourceArcMetricAccess<'_, M>>,
     ) -> Result<[Shape; 2]> {
         let mut selected = Vec::with_capacity(clip_operands.len());
         for &clip_operand in &clip_operands {
@@ -2259,7 +2312,8 @@ impl ExactSourceInventory {
             }
         }
         let embedding = partition.embed(&emission_refs, "subdivide")?;
-        let by_node = self.resolve_node_points(partition, &embedding, &nodes, declared_axes)?;
+        let by_node =
+            self.resolve_node_points(partition, &embedding, &nodes, declared_axes, metric_access)?;
         let views = partition.source_span_views(&self.source_segments)?;
         let ranges = source_line_ranges(source)?;
         let mut outputs = Vec::with_capacity(selected.len());

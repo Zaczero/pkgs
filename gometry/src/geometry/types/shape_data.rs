@@ -6,9 +6,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use crate::HeapSize;
 use crate::crs::ChartEdge;
 use crate::error::Result;
-use crate::geographic::{
-    GeodeticPole, GeographicFrame, RetainedChartDisplacement, ScalarGeographicView,
-};
+use crate::geographic::{GeodeticPole, GeographicFrame, ScalarGeographicView};
 use crate::geometry::antimeridian::validate_structure;
 use crate::geometry::distance::ChartParts;
 use crate::geometry::point_location::{PointQueryPlan, PreparedPointQueries};
@@ -1485,12 +1483,6 @@ pub(crate) trait ChartMetric {
 
     fn chart_frame(&self) -> GeographicFrame;
     fn chart_edge(&self, start: Point, end: Point) -> Result<ChartEdge>;
-    fn chart_edge_from_retained(
-        &self,
-        start: Point,
-        end: Point,
-        longitude: RetainedChartDisplacement,
-    ) -> Result<ChartEdge>;
     fn chart_edge_length(&self, edge: &ChartEdge) -> Result<f64>;
     fn chart_edge_length_to(&self, edge: &ChartEdge, parameter: f64) -> Result<f64>;
     fn chart_edge_arclength_fraction(

@@ -13,6 +13,23 @@ use crate::{
 
 pub(crate) const QUADRANT_SEGMENTS_DEFAULT_I64: i64 = 8;
 
+/// Resolve the chart metric used by a GeoJSON writer's temporary antimeridian
+/// split. CRS-free coordinates use the CRS84 frame explicitly assigned by
+/// RFC 7946; a named source frame retains its ellipsoid and angular units.
+pub(crate) fn geojson_domain_metric<'a>(
+    crs: Option<&str>,
+    scratch: &'a mut crate::dispatch::MetricScratch,
+) -> PyResult<(
+    crate::geometry::TopologyDomain,
+    crate::dispatch::MetricCtx<'a>,
+)> {
+    let source_crs = crs
+        .map(crate::crs::frame::crs_arc)
+        .unwrap_or_else(wgs84_crs);
+    let frame = Frame::new(Some(source_crs), None)?;
+    crate::dispatch::MetricResolver::GeographicCarry.resolve_topology_ctx(&frame, scratch)
+}
+
 /// Cached `gometry._types.Extremes` constructor — `extremes()` runs in
 /// user loops, so the per-call module import + attribute lookup is hoisted
 /// into a process-wide cell.

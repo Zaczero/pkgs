@@ -508,12 +508,30 @@ pub(crate) fn unary_split_antimeridian(
     ctx: &CachelessRowContext<'_>,
 ) -> Result<Shape> {
     let frame = crate::geometry::antimeridian_frame(ctx.frame, ctx.domain, "split_antimeridian")?;
-    data.shape().split_antimeridian_in_frame(frame)
+    let metric_access = || {
+        ctx.metric.geographic_chart_metric()?.ok_or_else(|| {
+            crate::crs::CrsError::invalid(
+                "geographic antimeridian source ordinates require the operation's CRS metric",
+            )
+            .into()
+        })
+    };
+    data.shape()
+        .split_antimeridian_in_frame_with_metric(frame, Some(&metric_access))
 }
 
 /// ``node`` kernel shared by the spine-routed free function.
-pub(crate) fn unary_node(data: &PreparedPlan, _ctx: &CachelessRowContext<'_>) -> Result<Shape> {
-    data.shape().node(Strictness::Lenient)
+pub(crate) fn unary_node(data: &PreparedPlan, ctx: &CachelessRowContext<'_>) -> Result<Shape> {
+    let metric_access = || {
+        ctx.metric.geographic_chart_metric()?.ok_or_else(|| {
+            crate::crs::CrsError::invalid(
+                "geographic node source ordinates require the operation's CRS metric",
+            )
+            .into()
+        })
+    };
+    data.shape()
+        .node_with_metric(ctx.domain, Strictness::Lenient, Some(&metric_access))
 }
 
 /// Build-area kernel shared by the scalar and array unary method spine.
@@ -856,7 +874,16 @@ pub(crate) fn unary_snap_to_grid(
     repair: bool,
 ) -> Result<Shape> {
     if repair {
-        data.shape().snap_to_grid_repaired(size, origin, ctx.domain)
+        let metric_access = || {
+            ctx.metric.geographic_chart_metric()?.ok_or_else(|| {
+                crate::crs::CrsError::invalid(
+                    "geographic snap_to_grid repair requires the operation's CRS metric",
+                )
+                .into()
+            })
+        };
+        data.shape()
+            .snap_to_grid_repaired(size, origin, ctx.domain, Some(&metric_access))
     } else {
         data.shape().snap_to_grid(size, origin)
     }

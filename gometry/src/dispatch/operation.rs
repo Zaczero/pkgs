@@ -186,7 +186,7 @@ define_operation! {
     PointOnSurface => { name: "point_on_surface", resolver: MetricResolver::None },
     Quantize => { name: "quantize", resolver: MetricResolver::None },
     RemoveRepeatedPoints => { name: "remove_repeated_points", resolver: MetricResolver::None },
-    Repair => { name: "repair", resolver: MetricResolver::None },
+    Repair => { name: "repair", resolver: MetricResolver::GeographicCarry },
     Reverse => { name: "reverse", resolver: MetricResolver::None },
     Rotate => { name: "rotate", resolver: MetricResolver::None },
     Scale => { name: "scale", resolver: MetricResolver::None },

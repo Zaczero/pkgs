@@ -335,6 +335,33 @@ def test_crs84_full_turn_parallel_locate_interpolate_round_trip() -> None:
     assert all(left < right for left, right in pairwise(stations))
 
 
+def test_line_substring_keeps_retained_circle_intervals_representable() -> None:
+    route = gm.LineString(
+        [(10.0, 60.0, 7.0, 101.0), (370.0, 60.0, 47.0, 701.0)],
+        crs='OGC:CRS84',
+    )
+    source = route.to_wkb()
+
+    east = route.line_substring(0.25, 1.0, normalized=True)
+    west = route.line_substring(0.0, 0.75, normalized=True)
+    whole = route.line_substring(0.0, 1.0, normalized=True)
+
+    assert list(east.coords) == [
+        (100.0, 60.0, 17.0, 251.0),
+        (235.0, 60.0, 32.0, 476.0),
+        (370.0, 60.0, 47.0, 701.0),
+    ]
+    assert list(west.coords) == [
+        (10.0, 60.0, 7.0, 101.0),
+        (145.0, 60.0, 22.0, 326.0),
+        (280.0, 60.0, 37.0, 551.0),
+    ]
+    assert whole.to_wkb() == source
+    assert east.length == pytest.approx(route.length * 0.75, rel=0.0, abs=2.0e-8)
+    assert west.length == pytest.approx(route.length * 0.75, rel=0.0, abs=2.0e-8)
+    assert route.to_wkb() == source
+
+
 def test_array_chart_lrs_fraction_round_trip() -> None:
     rows = gm.GeometryArray([_geo_meridian(), _geo_parallel()])
     fractions = [0.25, 0.75]

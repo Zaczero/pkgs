@@ -1531,13 +1531,14 @@ fn walk_line_steps(
 }
 
 fn source_arc_node_ordinates<M: crate::geometry::ChartMetric>(
+    frame: crate::geographic::GeographicFrame,
     source: &[Point; 2],
     parameter: &ExactRational,
     axes: CoordinateAxes,
     longitude: impl FnOnce() -> Result<RetainedChartDisplacement>,
     metric_access: Option<&SourceArcMetricAccess<'_, M>>,
 ) -> Result<NodeOrdinates> {
-    let request = SourceArcRequest::new(source, axes, parameter, longitude)?;
+    let request = SourceArcRequest::new(frame, source, axes, parameter, longitude)?;
     source_arc_ordinates(&request, || match metric_access {
         Some(access) => access(),
         None => Err(crate::crs::CrsError::invalid(
@@ -1604,6 +1605,7 @@ fn node_ordinates<M: crate::geometry::ChartMetric>(
                 &owner.source_range.end
             };
             let start_values = source_arc_node_ordinates(
+                topology.sources.frame,
                 &edge.source,
                 start_parameter,
                 declared_axes,
@@ -1611,6 +1613,7 @@ fn node_ordinates<M: crate::geometry::ChartMetric>(
                 metric_access,
             )?;
             let end_values = source_arc_node_ordinates(
+                topology.sources.frame,
                 &edge.source,
                 end_parameter,
                 declared_axes,

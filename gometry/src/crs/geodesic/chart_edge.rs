@@ -513,7 +513,7 @@ impl ChartEdge {
         if total == 0.0 {
             return Ok(0.0);
         }
-        Ok((self.arclength(parameter, geodesic, self.frame)? / total).clamp(0.0, 1.0))
+        Ok((self.arclength(parameter, geodesic)? / total).clamp(0.0, 1.0))
     }
 
     pub(crate) fn is_parallel(&self) -> bool {
@@ -531,12 +531,7 @@ impl ChartEdge {
     }
 
     /// Ellipsoidal arclength from the stored start to parameter `t`.
-    pub(crate) fn arclength(
-        &self,
-        t: f64,
-        geodesic: &Geodesic,
-        _frame: GeographicFrame,
-    ) -> Result<f64> {
+    pub(crate) fn arclength(&self, t: f64, geodesic: &Geodesic) -> Result<f64> {
         debug_assert!((0.0..=1.0).contains(&t));
         if t <= 0.0 {
             return Ok(0.0);
@@ -561,13 +556,7 @@ impl ChartEdge {
     }
 
     /// Parameter whose accumulated ellipsoidal arclength is `distance`.
-    pub(crate) fn locate_t(
-        &self,
-        distance: f64,
-        length: f64,
-        geodesic: &Geodesic,
-        frame: GeographicFrame,
-    ) -> Result<f64> {
+    pub(crate) fn locate_t(&self, distance: f64, length: f64, geodesic: &Geodesic) -> Result<f64> {
         if distance <= 0.0 || length == 0.0 {
             return Ok(0.0);
         }
@@ -587,7 +576,7 @@ impl ChartEdge {
         let tolerance = RELATIVE_LENGTH_ERROR * length;
 
         for _ in 0..64 {
-            let arclength = self.arclength(parameter, geodesic, frame)?;
+            let arclength = self.arclength(parameter, geodesic)?;
             let residual = arclength - distance;
             let error = residual.abs();
             if error < best.1 {
@@ -630,6 +619,215 @@ impl ChartEdge {
             t,
         );
         Ok(crate::geometry::Point::new_raw_xy(longitude, latitude))
+    }
+
+    /// Publish one point in the original source sheet while keeping the
+    /// relative retained branch authoritative for the metric curve.
+    #[expect(
+        clippy::float_cmp,
+        reason = "exact endpoints and constant longitude preserve authentic source spellings"
+    )]
+    pub(crate) fn source_sheet_point(
+        &self,
+        source_start: Point,
+        source_end: Point,
+        parameter: f64,
+        canonical_point: Point,
+    ) -> Result<Point> {
+        if parameter == 0.0 {
+            return Ok(source_start);
+        }
+        if parameter == 1.0 {
+            return Ok(source_end);
+        }
+        let retained = self.retained_longitude();
+        let longitude = if source_start.x == source_end.x && retained.periods() == 0 {
+            source_start.x
+        } else {
+            crate::geometry::exact_arith::retained_source_sheet_site(
+                source_start.x,
+                retained,
+                self.frame.longitude(),
+                parameter,
+            )?
+        };
+        Ok(canonical_point.with_xy_raw(longitude, canonical_point.y))
+    }
+
+    pub(crate) fn source_interval_reads_correctly(
+        &self,
+        from_parameter: f64,
+        to_parameter: f64,
+        start: Point,
+        end: Point,
+    ) -> Result<bool> {
+        let readback = self
+            .frame
+            .longitude()
+            .chart_step(start.x, end.x)
+            .map_err(|error| GeometryErrorKind::Invalid(error.to_string().into()))?;
+        crate::geometry::exact_arith::retained_source_interval_reads_as(
+            self.retained_longitude(),
+            self.frame.longitude(),
+            from_parameter,
+            to_parameter,
+            readback,
+        )
+    }
+
+    pub(crate) fn source_interval_initial_piece_count(&self, from: f64, to: f64) -> Result<usize> {
+        crate::geometry::exact_arith::retained_source_interval_initial_piece_count(
+            self.retained_longitude(),
+            self.frame.longitude(),
+            from,
+            to,
+        )
+    }
+
+    /// Publish and verify the source-sheet chain over one retained parameter
+    /// interval. The exact edge branch and parameter endpoints remain the
+    /// certificate while output is subdivided until each stored edge reads
+    /// along that branch.
+    #[expect(
+        clippy::float_cmp,
+        reason = "source parameters identify exact binary64 endpoints and splits"
+    )]
+    pub(crate) fn publish_source_interval(
+        &self,
+        source_start: Point,
+        source_end: Point,
+        from: f64,
+        to: f64,
+        mut canonical_at: impl FnMut(f64) -> Result<Point>,
+        mut emit: impl FnMut(f64, Point, bool) -> Result<()>,
+        operation: &'static str,
+    ) -> Result<()> {
+        if !(from.is_finite()
+            && to.is_finite()
+            && (0.0..=1.0).contains(&from)
+            && (0.0..=1.0).contains(&to)
+            && from <= to)
+        {
+            return Err(GeometryErrorKind::unrepresentable_output(operation));
+        }
+
+        let mut point_at = |parameter: f64| {
+            if parameter == 0.0 {
+                Ok(source_start)
+            } else if parameter == 1.0 {
+                Ok(source_end)
+            } else {
+                self.source_sheet_point(
+                    source_start,
+                    source_end,
+                    parameter,
+                    canonical_at(parameter)?,
+                )
+            }
+        };
+
+        let mut previous_parameter = from;
+        let mut previous = point_at(from)?;
+        emit(from, previous, false)?;
+        let end = point_at(to)?;
+        if self.source_interval_reads_correctly(from, to, previous, end)? {
+            return emit(to, end, false);
+        }
+        if previous.x == end.x {
+            let axis = self.frame.longitude();
+            let retained = self.retained_longitude();
+            let start_site = crate::geometry::exact_arith::retained_source_sheet_site(
+                source_start.x,
+                retained,
+                axis,
+                from,
+            )?;
+            let end_site = crate::geometry::exact_arith::retained_source_sheet_site(
+                source_start.x,
+                retained,
+                axis,
+                to,
+            )?;
+            // RN is monotone over the exact affine source longitude. When both
+            // written endpoints are those rounded sites and are identical, no
+            // interior parameter can produce a readable nonzero longitude.
+            if start_site.to_bits() == previous.x.to_bits() && end_site.to_bits() == end.x.to_bits()
+            {
+                return Err(GeometryErrorKind::unrepresentable_output(operation));
+            }
+        }
+
+        let pieces = self.source_interval_initial_piece_count(from, to)?;
+        for step in 1..=pieces {
+            let parameter = if step == pieces {
+                to
+            } else {
+                crate::geometry::interpolate_subdivision_ordinate(
+                    from,
+                    to,
+                    step as f64 / pieces as f64,
+                )
+            };
+            if parameter <= previous_parameter || (step < pieces && parameter >= to) {
+                return Err(GeometryErrorKind::unrepresentable_output(operation));
+            }
+            let point = if parameter == to {
+                end
+            } else {
+                point_at(parameter)?
+            };
+            self.publish_source_piece(
+                previous_parameter,
+                parameter,
+                previous,
+                point,
+                to,
+                &mut point_at,
+                &mut emit,
+                operation,
+            )?;
+            previous_parameter = parameter;
+            previous = point;
+        }
+        Ok(())
+    }
+
+    #[expect(
+        clippy::float_cmp,
+        reason = "source parameters identify exact binary64 progress and longitude collapse"
+    )]
+    fn publish_source_piece(
+        &self,
+        from: f64,
+        to: f64,
+        start: Point,
+        end: Point,
+        planned_end: f64,
+        point_at: &mut impl FnMut(f64) -> Result<Point>,
+        emit: &mut impl FnMut(f64, Point, bool) -> Result<()>,
+        operation: &'static str,
+    ) -> Result<()> {
+        if self.source_interval_reads_correctly(from, to, start, end)? {
+            return emit(to, end, to != planned_end);
+        }
+        if from > 0.0 && to < 1.0 && start.x == end.x {
+            return Err(GeometryErrorKind::unrepresentable_output(operation));
+        }
+        let mut pending = vec![(from, to, start, end)];
+        while let Some((from, to, start, end)) = pending.pop() {
+            if self.source_interval_reads_correctly(from, to, start, end)? {
+                emit(to, end, to != planned_end)?;
+                continue;
+            }
+            let middle = f64::midpoint(from, to);
+            if middle == from || middle == to {
+                return Err(GeometryErrorKind::unrepresentable_output(operation));
+            }
+            let middle_point = point_at(middle)?;
+            pending.push((middle, to, middle_point, end));
+            pending.push((from, middle, start, middle_point));
+        }
+        Ok(())
     }
 
     /// Coordinate-plane projection proposal expressed in this edge's lifted
@@ -907,21 +1105,12 @@ impl ChartMetric for super::GeodesicMetric {
         ChartEdge::new(start, end, self.frame)
     }
 
-    fn chart_edge_from_retained(
-        &self,
-        start: Point,
-        end: Point,
-        longitude: RetainedChartDisplacement,
-    ) -> Result<ChartEdge> {
-        ChartEdge::from_retained(start, end, self.frame, longitude)
-    }
-
     fn chart_edge_length(&self, edge: &ChartEdge) -> Result<f64> {
         edge.length(&self.geodesic)
     }
 
     fn chart_edge_length_to(&self, edge: &ChartEdge, parameter: f64) -> Result<f64> {
-        edge.arclength(parameter, &self.geodesic, self.frame)
+        edge.arclength(parameter, &self.geodesic)
     }
 
     fn chart_edge_arclength_fraction(
@@ -934,7 +1123,7 @@ impl ChartMetric for super::GeodesicMetric {
     }
 
     fn chart_edge_locate_t(&self, edge: &ChartEdge, distance: f64, length: f64) -> Result<f64> {
-        edge.locate_t(distance, length, &self.geodesic, self.frame)
+        edge.locate_t(distance, length, &self.geodesic)
     }
 
     fn chart_edge_interval_length(&self, edge: &ChartEdge, start: f64, end: f64) -> Result<f64> {
@@ -1149,7 +1338,7 @@ mod tests {
         .unwrap();
         let expected_partial = 6_723_143.426_641_406_5;
         let expected_half_length = 6_004_860.750_429_569;
-        let partial = edge.arclength(0.5, &geodesic, degrees()).unwrap();
+        let partial = edge.arclength(0.5, &geodesic).unwrap();
         assert!(
             (partial - expected_partial).abs() <= 1.0e-8,
             "partial={partial:.17}, expected={expected_partial:.17}"
@@ -1157,15 +1346,14 @@ mod tests {
 
         let length = edge.length(&geodesic).unwrap();
         let parameter = edge
-            .locate_t(expected_half_length, length, &geodesic, degrees())
+            .locate_t(expected_half_length, length, &geodesic)
             .unwrap();
         assert!(
             (parameter - 0.442_288_586_250_222_77).abs() <= 2.0e-15,
             "parameter={parameter:.17}"
         );
         assert!(
-            (edge.arclength(parameter, &geodesic, degrees()).unwrap() - expected_half_length).abs()
-                <= 1.0e-8
+            (edge.arclength(parameter, &geodesic).unwrap() - expected_half_length).abs() <= 1.0e-8
         );
         let point = edge.chart_position(parameter).unwrap();
         assert!((point.x - 53.074_630_350_026_73).abs() <= 3.0e-14);
@@ -1184,9 +1372,7 @@ mod tests {
         assert!(parallel.is_parallel());
         let length = parallel.length(&geodesic).unwrap();
         assert_eq!(
-            parallel
-                .locate_t(length / 2.0, length, &geodesic, degrees())
-                .unwrap(),
+            parallel.locate_t(length / 2.0, length, &geodesic).unwrap(),
             0.5
         );
         assert_eq!(parallel.chart_position(0.5).unwrap().x, 45.0);
@@ -1295,6 +1481,14 @@ mod tests {
         let cases = [
             ("positive major", 0.0, 250.0, 1, 0.5, 125.0),
             ("positive half", 0.0, 180.0, 1, 0.25, 45.0),
+            (
+                "positive half opposite spelling",
+                0.0,
+                -180.0,
+                1,
+                0.25,
+                45.0,
+            ),
             ("negative half", 0.0, -180.0, 0, 0.25, -45.0),
             ("positive two turns", 0.0, 720.0, 2, 0.25, 180.0),
             ("negative two turns", 0.0, -720.0, -2, 0.25, -180.0),
@@ -1311,11 +1505,48 @@ mod tests {
             )
             .unwrap();
             let point = edge.chart_position(parameter).unwrap();
+            let source_point = edge
+                .source_sheet_point(
+                    Point::new_raw_xy(start_x, 0.0),
+                    Point::new_raw_xy(end_x, 40.0),
+                    parameter,
+                    point,
+                )
+                .unwrap();
             assert!(
                 (point.x - expected_x).abs() <= 2.0e-14,
                 "{name}: actual={}, expected={expected_x}",
                 point.x
             );
+            assert!(
+                (source_point.x - expected_x).abs() <= 2.0e-14,
+                "{name}: source sheet={}, expected={expected_x}",
+                source_point.x
+            );
+            let mut chain = Vec::new();
+            edge.publish_source_interval(
+                Point::new_raw_xy(start_x, 0.0),
+                Point::new_raw_xy(end_x, 40.0),
+                0.0,
+                1.0,
+                |parameter| edge.chart_position(parameter),
+                |_, point, _| {
+                    chain.push(point.x);
+                    Ok(())
+                },
+                "line_substring",
+            )
+            .unwrap();
+            let expected_chain: &[f64] = match name {
+                "positive major" => &[0.0, 125.0, 250.0],
+                "positive half" => &[0.0, 180.0],
+                "positive half opposite spelling" => &[0.0, 90.0, -180.0],
+                "negative half" => &[0.0, -180.0],
+                "positive two turns" => &[0.0, 180.0, 360.0, 540.0, 720.0],
+                "negative two turns" => &[0.0, -180.0, -360.0, -540.0, -720.0],
+                _ => unreachable!("the branch table names every retained edge"),
+            };
+            assert_eq!(chain, expected_chain, "{name}: published branch chain");
         }
 
         let positive_half = axis.retained_native_endpoints(0.0, -180.0, 1).unwrap();
@@ -1348,6 +1579,385 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn source_sheet_publication_uses_rust_admitted_frame_periods_and_branches() {
+        let grad_unit = AngularFactor::try_new("grad", std::f64::consts::TAU / 400.0).unwrap();
+        let radian_unit = AngularFactor::try_new("radian", 1.0).unwrap();
+        let west_radian = GeographicFrame::try_new_with_orientation(
+            radian_unit,
+            radian_unit,
+            0.0,
+            GeographicAxisOrientation::from_axis_directions(false, true),
+        )
+        .unwrap();
+        let south_grad = GeographicFrame::try_new_with_orientation(
+            grad_unit,
+            grad_unit,
+            0.0,
+            GeographicAxisOrientation::from_axis_directions(true, false),
+        )
+        .unwrap();
+        let state = crate::crs::runtime_state_snapshot().unwrap();
+        let proj_radian = crate::crs::geodesic::geographic_metric_frame_at(
+            "GEOGCS[\"WGS 84 rad\",DATUM[\"WGS_1984\",SPHEROID[\"WGS 84\",6378137,298.257223563]],PRIMEM[\"Greenwich\",0],UNIT[\"radian\",1],AXIS[\"Longitude\",EAST],AXIS[\"Latitude\",NORTH]]",
+            &state,
+        )
+        .unwrap();
+        let proj_grad =
+            crate::crs::geodesic::geographic_metric_frame_at("EPSG:4807", &state).unwrap();
+        let cases = [
+            ("degrees", degrees(), 360.0, 10.0, 2.0),
+            ("radians", radians(), std::f64::consts::TAU, 0.0, 0.5),
+            (
+                "PROJ radian CRS",
+                proj_radian,
+                std::f64::consts::TAU,
+                0.0,
+                0.5,
+            ),
+            ("EPSG:4807 grad CRS", proj_grad, 400.0, 5.0, 2.0),
+            ("west radians", west_radian, std::f64::consts::TAU, 0.0, 0.5),
+            ("south grads", south_grad, 400.0, 5.0, 2.0),
+        ];
+        for (name, frame, expected_period, base, step) in cases {
+            let axis = frame.longitude();
+            assert_eq!(
+                axis.period().to_bits(),
+                expected_period.to_bits(),
+                "{name} frame period"
+            );
+            for turns in [-2.0, -1.0, 1.0, 2.0] {
+                let source_start = base + turns * axis.period();
+                let source_end = source_start + step;
+                let start = Point::new_raw_xy(source_start, 0.0);
+                let end = Point::new_raw_xy(source_end, 0.0);
+                let admitted = axis.chart_connection(source_start, source_end).unwrap();
+                let edge = ChartEdge::new(start, end, frame).unwrap();
+                assert_eq!(
+                    edge.retained_longitude().endpoints(),
+                    &[admitted.start, admitted.end],
+                    "{name}, turns={turns}: admitted canonical endpoints"
+                );
+                assert_eq!(
+                    edge.retained_longitude().periods(),
+                    i64::from(admitted.source_lift),
+                    "{name}, turns={turns}: admitted relative lift"
+                );
+                let canonical = edge.chart_position(0.5).unwrap();
+                let published = edge.source_sheet_point(start, end, 0.5, canonical).unwrap();
+                let expected = source_start + step / 2.0;
+                assert_eq!(
+                    published.x.to_bits(),
+                    expected.to_bits(),
+                    "{name}, turns={turns}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn source_interval_readback_accepts_correctly_rounded_endpoint_differences() {
+        let start = Point::new_raw_xy(10.0, 60.0);
+        let end = Point::new_raw_xy(12.0, 60.0);
+        let edge = ChartEdge::new(start, end, degrees()).unwrap();
+        let from = 0.25;
+        let to = 0.75_f64.next_down();
+        let from_point = edge
+            .source_sheet_point(start, end, from, edge.chart_position(from).unwrap())
+            .unwrap();
+        let to_point = edge
+            .source_sheet_point(start, end, to, edge.chart_position(to).unwrap())
+            .unwrap();
+
+        assert_eq!(from_point.x, 10.5);
+        assert_eq!(to_point.x, 11.5);
+        assert_eq!((to_point.x - from_point.x).to_bits(), 1.0_f64.to_bits());
+        let exact_interval_delta = 2.0 * (to - from);
+        assert_eq!(exact_interval_delta.to_bits(), 0x3FEFFFFFFFFFFFFE);
+        assert_ne!(
+            (to_point.x - from_point.x).to_bits(),
+            exact_interval_delta.to_bits()
+        );
+        assert!(
+            edge.source_interval_reads_correctly(from, to, from_point, to_point)
+                .unwrap()
+        );
+    }
+
+    #[test]
+    fn source_sheet_publication_keeps_readable_circles_and_rejects_collapsed_intervals() {
+        let meridian_start = Point::new_raw_xy(370.0, -30.0);
+        let meridian_end = Point::new_raw_xy(370.0, 70.0);
+        let meridian = ChartEdge::new(meridian_start, meridian_end, degrees()).unwrap();
+        assert_eq!(
+            meridian
+                .source_interval_initial_piece_count(0.25, 0.75)
+                .unwrap(),
+            1
+        );
+        let meridian_from = meridian
+            .source_sheet_point(
+                meridian_start,
+                meridian_end,
+                0.25,
+                meridian.chart_position(0.25).unwrap(),
+            )
+            .unwrap();
+        let meridian_to = meridian
+            .source_sheet_point(
+                meridian_start,
+                meridian_end,
+                0.75,
+                meridian.chart_position(0.75).unwrap(),
+            )
+            .unwrap();
+        assert_eq!(meridian_from.x.to_bits(), 370.0_f64.to_bits());
+        assert_eq!(meridian_to.x.to_bits(), 370.0_f64.to_bits());
+        assert!(
+            meridian
+                .source_interval_reads_correctly(0.25, 0.75, meridian_from, meridian_to)
+                .unwrap()
+        );
+
+        let circle_start = Point::new_raw_xy(10.0, 0.0);
+        let circle_end = Point::new_raw_xy(370.0, 0.0);
+        let circle = ChartEdge::new(circle_start, circle_end, degrees()).unwrap();
+        assert_eq!(circle.retained_longitude().periods(), 1);
+        assert_eq!(
+            circle
+                .source_interval_initial_piece_count(0.0, 1.0)
+                .unwrap(),
+            2
+        );
+        assert!(
+            circle
+                .source_interval_reads_correctly(0.0, 1.0, circle_start, circle_end)
+                .unwrap()
+        );
+        let mut authentic_circle = Vec::new();
+        circle
+            .publish_source_interval(
+                circle_start,
+                circle_end,
+                0.0,
+                1.0,
+                |parameter| circle.chart_position(parameter),
+                |parameter, point, refined| {
+                    authentic_circle.push((parameter, point.x, refined));
+                    Ok(())
+                },
+                "line_substring",
+            )
+            .unwrap();
+        assert_eq!(authentic_circle, [(0.0, 10.0, false), (1.0, 370.0, false)]);
+        let negative_circle_end = Point::new_raw_xy(-350.0, 0.0);
+        let negative_circle = ChartEdge::new(circle_start, negative_circle_end, degrees()).unwrap();
+        assert_eq!(negative_circle.retained_longitude().periods(), -1);
+        let mut authentic_negative_circle = Vec::new();
+        negative_circle
+            .publish_source_interval(
+                circle_start,
+                negative_circle_end,
+                0.0,
+                1.0,
+                |parameter| negative_circle.chart_position(parameter),
+                |parameter, point, refined| {
+                    authentic_negative_circle.push((parameter, point.x, refined));
+                    Ok(())
+                },
+                "line_substring",
+            )
+            .unwrap();
+        assert_eq!(authentic_negative_circle, [
+            (0.0, 10.0, false),
+            (1.0, -350.0, false)
+        ]);
+        assert_eq!(
+            circle
+                .source_interval_initial_piece_count(0.25, 1.0)
+                .unwrap(),
+            2
+        );
+        let canonical = circle.chart_position(0.25).unwrap();
+        let published = circle
+            .source_sheet_point(circle_start, circle_end, 0.25, canonical)
+            .unwrap();
+        assert_eq!(published.x, 100.0);
+        let retained_circle = ChartEdge::from_retained(
+            circle_start,
+            circle_start,
+            degrees(),
+            degrees()
+                .longitude()
+                .retained_native_endpoints(10.0, 10.0, 1)
+                .unwrap(),
+        )
+        .unwrap();
+        let retained_midpoint = retained_circle
+            .source_sheet_point(
+                circle_start,
+                circle_start,
+                0.5,
+                retained_circle.chart_position(0.5).unwrap(),
+            )
+            .unwrap();
+        assert_eq!(retained_midpoint.x, 190.0);
+        assert!(
+            !retained_circle
+                .source_interval_reads_correctly(0.0, 1.0, circle_start, circle_start)
+                .unwrap(),
+            "equal raw endpoints do not read an explicit retained full turn"
+        );
+        assert!(
+            retained_circle
+                .source_interval_reads_correctly(0.0, 0.5, circle_start, retained_midpoint)
+                .unwrap()
+        );
+        assert!(
+            !retained_circle
+                .source_interval_reads_correctly(0.5, 1.0, retained_midpoint, circle_start)
+                .unwrap(),
+            "the authentic final spelling selects the opposite half-turn"
+        );
+        let mut expanded_circle = Vec::new();
+        retained_circle
+            .publish_source_interval(
+                circle_start,
+                circle_start,
+                0.0,
+                1.0,
+                |parameter| retained_circle.chart_position(parameter),
+                |parameter, point, refined| {
+                    expanded_circle.push((parameter, point.x, refined));
+                    Ok(())
+                },
+                "line_substring",
+            )
+            .unwrap();
+        assert_eq!(expanded_circle, [
+            (0.0, 10.0, false),
+            (0.5, 190.0, true),
+            (0.75, 280.0, true),
+            (1.0, 10.0, false),
+        ]);
+        let retained_negative_circle = ChartEdge::from_retained(
+            circle_start,
+            circle_start,
+            degrees(),
+            degrees()
+                .longitude()
+                .retained_native_endpoints(10.0, 10.0, -1)
+                .unwrap(),
+        )
+        .unwrap();
+        let mut expanded_negative_circle = Vec::new();
+        retained_negative_circle
+            .publish_source_interval(
+                circle_start,
+                circle_start,
+                0.0,
+                1.0,
+                |parameter| retained_negative_circle.chart_position(parameter),
+                |parameter, point, refined| {
+                    expanded_negative_circle.push((parameter, point.x, refined));
+                    Ok(())
+                },
+                "line_substring",
+            )
+            .unwrap();
+        assert_eq!(expanded_negative_circle, [
+            (0.0, 10.0, false),
+            (0.5, -170.0, true),
+            (0.75, -260.0, true),
+            (1.0, 10.0, false),
+        ]);
+
+        let large_start = Point::new_raw_xy(360.0 * 2.0_f64.powi(44), 0.0);
+        let large_end = Point::new_raw_xy(large_start.x + 5.0, 0.0);
+        let large_edge = ChartEdge::new(large_start, large_end, degrees()).unwrap();
+        let large_site = crate::geometry::exact_arith::retained_source_sheet_site(
+            large_start.x,
+            large_edge.retained_longitude(),
+            degrees().longitude(),
+            0.1,
+        )
+        .unwrap();
+        assert_eq!(
+            large_site.to_bits(),
+            (large_start.x + 1.0).to_bits(),
+            "one rounding follows the exact value just above the half-ULP tie"
+        );
+        let canonical = large_edge.chart_position(0.1).unwrap();
+        assert_eq!(canonical.x, 0.5);
+        let published = large_edge
+            .source_sheet_point(large_start, large_end, 0.1, canonical)
+            .unwrap();
+        assert_eq!(published.x.to_bits(), large_site.to_bits());
+        assert_ne!(
+            published.x.to_bits(),
+            (large_start.x + canonical.x).to_bits(),
+            "single rounding differs from translating a rounded canonical site"
+        );
+
+        let huge_start = Point::new_raw_xy(1.0e22, 0.0);
+        let huge_end = Point::new_raw_xy(1.0e22_f64.next_up(), 0.0);
+        let huge = ChartEdge::new(huge_start, huge_end, degrees()).unwrap();
+        let source_sheet = crate::geometry::exact_arith::retained_source_sheet_site(
+            huge_start.x,
+            huge.retained_longitude(),
+            degrees().longitude(),
+            0.5,
+        )
+        .unwrap();
+        assert_eq!(source_sheet.to_bits(), huge_start.x.to_bits());
+        assert!(
+            crate::geometry::exact_arith::retained_source_interval_initial_piece_count(
+                huge.retained_longitude(),
+                degrees().longitude(),
+                0.0,
+                0.5,
+            )
+            .is_ok()
+        );
+        let canonical = huge.chart_position(0.5).unwrap();
+        let collapsed = huge
+            .source_sheet_point(huge_start, huge_end, 0.5, canonical)
+            .unwrap();
+        assert_eq!(collapsed.x.to_bits(), huge_start.x.to_bits());
+        assert_eq!(
+            degrees()
+                .longitude()
+                .canonicalize(canonical.x)
+                .unwrap()
+                .get(),
+            -4.0
+        );
+        assert!(
+            !huge
+                .source_interval_reads_correctly(0.0, 0.5, huge_start, collapsed)
+                .unwrap(),
+            "the nonzero first-half source interval collapsed to one longitude"
+        );
+        let error = huge
+            .publish_source_interval(
+                huge_start,
+                huge_end,
+                0.0,
+                0.5,
+                |parameter| huge.chart_position(parameter),
+                |_, _, _| Ok(()),
+                "line_substring",
+            )
+            .unwrap_err();
+        assert!(matches!(
+            error.kind(),
+            crate::error::ErrorKind::Geometry(GeometryErrorKind::UnrepresentableOutput {
+                operation: "line_substring",
+                ..
+            })
+        ));
     }
 
     #[test]
@@ -1388,7 +1998,7 @@ mod tests {
                 .chart_connection(start.x, end.x)
                 .map_err(|error| crate::crs::CrsError::invalid(error.to_string()))?
                 .retained();
-            let edge = metric.chart_edge_from_retained(start, end, longitude)?;
+            let edge = ChartEdge::from_retained(start, end, frame, longitude)?;
             let total = metric.chart_edge_length(&edge)?;
             let fraction = metric.chart_edge_arclength_fraction(&edge, 0.25, Some(total))?;
             assert!((fraction - 0.249_093_482_943_736_33).abs() <= 2.0e-15);

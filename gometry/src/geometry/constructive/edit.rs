@@ -2045,7 +2045,7 @@ impl Shape {
     /// bounded parts, subdivision returns an unrepresentable-output error
     /// instead of emitting an oversized part.
     pub fn subdivide(&self, max_vertices: usize, drop: bool) -> Result<Vec<Self>> {
-        self.subdivide_with_frame(max_vertices, drop, None)
+        self.subdivide_with_frame(max_vertices, drop, None, None)
     }
 
     pub(crate) fn subdivide_in_geographic_frame(
@@ -2053,8 +2053,9 @@ impl Shape {
         max_vertices: usize,
         drop: bool,
         frame: crate::geographic::GeographicFrame,
+        metric_access: &crate::geometry::SourceArcMetricAccess<'_>,
     ) -> Result<Vec<Self>> {
-        self.subdivide_with_frame(max_vertices, drop, Some(frame))
+        self.subdivide_with_frame(max_vertices, drop, Some(frame), Some(metric_access))
     }
 
     fn subdivide_with_frame(
@@ -2062,6 +2063,7 @@ impl Shape {
         max_vertices: usize,
         drop: bool,
         frame: Option<crate::geographic::GeographicFrame>,
+        metric_access: Option<&crate::geometry::SourceArcMetricAccess<'_>>,
     ) -> Result<Vec<Self>> {
         let mut parts = Vec::new();
         let mut budget = ExpansionBudget::new("subdivide", "max_vertices");
@@ -2070,6 +2072,7 @@ impl Shape {
             max_vertices,
             drop,
             frame,
+            metric_access,
             &mut parts,
             &mut budget,
         )?;

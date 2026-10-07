@@ -90,10 +90,11 @@ pub(crate) fn shortest_line(
                     return Ok(result.into_pyobject(py)?.unbind().into());
                 }
                 let resolved = crate::crs::ResolvedMetric::from_model(&model)?;
-                crate::dispatch::dispatch_binary_geometry_admitted(
+                crate::dispatch::dispatch_binary_geometry_admitted_with_resolver(
                     py,
                     &admission,
                     operation.name(),
+                    crate::dispatch::MetricResolver::GeographicCarry,
                     &crate::dispatch::OverlayFastPath,
                     move |left, right, ctx| {
                         metric_shortest_line_resolved(&resolved, left, right, ctx.domain)
@@ -108,10 +109,11 @@ pub(crate) fn shortest_line(
                     return Ok(result.into_pyobject(py)?.unbind().into());
                 }
                 let resolved = crate::crs::ResolvedMetric::from_model(&model)?;
-                crate::dispatch::dispatch_binary_geometry_admitted(
+                crate::dispatch::dispatch_binary_geometry_admitted_with_resolver(
                     py,
                     &admission,
                     operation.name(),
+                    crate::dispatch::MetricResolver::GeographicCarry,
                     &crate::dispatch::OverlayFastPath,
                     move |left, right, ctx| {
                         metric_shortest_line_resolved(&resolved, left, right, ctx.domain)
@@ -130,10 +132,11 @@ pub(crate) fn shortest_line(
             },
             (GeometryInput::Many(_), GeometryInput::Many(_)) => {
                 let resolved = crate::crs::ResolvedMetric::from_model(&model)?;
-                crate::dispatch::dispatch_binary_geometry_admitted(
+                crate::dispatch::dispatch_binary_geometry_admitted_with_resolver(
                     py,
                     &admission,
                     operation.name(),
+                    crate::dispatch::MetricResolver::GeographicCarry,
                     &crate::dispatch::OverlayFastPath,
                     move |left, right, ctx| {
                         metric_shortest_line_resolved(&resolved, left, right, ctx.domain)

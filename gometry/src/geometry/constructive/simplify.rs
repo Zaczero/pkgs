@@ -674,6 +674,7 @@ pub(crate) fn split(
     max_vertices: usize,
     drop: bool,
     geographic_frame: Option<crate::geographic::GeographicFrame>,
+    metric_access: Option<&crate::geometry::SourceArcMetricAccess<'_>>,
     out: &mut Vec<Shape>,
     budget: &mut ExpansionBudget,
 ) -> Result<()> {
@@ -767,6 +768,7 @@ pub(crate) fn split(
             [1, 2],
             geographic_frame,
             budget,
+            metric_access,
         )?;
         if children.iter().all(Shape::is_empty) {
             // A cut that cannot be represented by the exact arrangement must
@@ -2324,8 +2326,11 @@ mod subdivision_tests {
             crate::geographic::AngularFactor::try_new("latitude", std::f64::consts::PI / 2000.0)
                 .unwrap();
         let frame = crate::geographic::GeographicFrame::try_new(longitude, latitude, 0.0).unwrap();
+        let no_metric = || -> Result<&crate::crs::GeodesicMetric> {
+            Err(crate::crs::CrsError::invalid("unexpected source-arc metric access").into())
+        };
         let parts = shape
-            .subdivide_in_geographic_frame(8, false, frame)
+            .subdivide_in_geographic_frame(8, false, frame, &no_metric)
             .unwrap();
         assert!(parts.len() >= 2);
         let mut counts = ShapeCountQuery::default();

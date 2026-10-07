@@ -165,17 +165,29 @@ impl PyGeometryArray {
         if self.has_m() {
             return Err(InvalidGeometryError::new_err(crate::io::GEOJSON_M_ERROR));
         }
-        let crs = self.crs_ref().cloned();
-        let domain = py.detach(move || io::geojson_domain(crs.as_deref()))?;
+        let mut metric_scratch = crate::dispatch::MetricScratch::default();
+        let (domain, metric) =
+            crate::py::support::geojson_domain_metric(self.crs_str(), &mut metric_scratch)?;
+        let metric_access = move || {
+            metric.geographic_chart_metric()?.ok_or_else(|| {
+                crate::crs::CrsError::invalid(
+                    "geographic GeoJSON source ordinates require the array CRS metric",
+                )
+                .into()
+            })
+        };
+        let array = self.clone();
         // GeoJSON treats CRS-free coordinates as WGS84 lon/lat too. A
         // domain-invalid row is a spec violation, not a degradable data
         // condition, so it fails the batch (like the M-ordinate refusal above).
-        py.detach(|| self.geojson_rows(domain)).map_err(rows_err)
+        py.detach(move || array.geojson_rows(domain, &metric_access))
+            .map_err(rows_err)
     }
 
     fn geojson_rows(
         &self,
         domain: geometry::TopologyDomain,
+        metric_access: &crate::geometry::SourceArcMetricAccess<'_>,
     ) -> std::result::Result<Vec<String>, (usize, crate::error::Error)> {
         let mut output = Vec::with_capacity(self.len());
         for row in self.row_operation().rows_with_missing(String::new) {
@@ -184,7 +196,9 @@ impl PyGeometryArray {
                 ArrayRow::Present(row) => {
                     let logical = row.logical();
                     row.row()
-                        .try_with_shape(|shape| io::to_geojson_string(shape, domain))
+                        .try_with_shape(|shape| {
+                            io::to_geojson_string_with_metric(shape, domain, metric_access)
+                        })
                         .map_err(|error| (logical, error))?
                 },
             };
@@ -219,7 +233,17 @@ impl PyGeometryArray {
     }
 
     pub(crate) fn repair_impl(&self, py: Python<'_>, method: RepairMethod) -> PyResult<Self> {
-        let domain = geometry::topology_domain(&self.frame)?;
+        let mut metric_scratch = crate::dispatch::MetricScratch::default();
+        let (domain, metric) = crate::dispatch::MetricResolver::GeographicCarry
+            .resolve_topology_ctx(&self.frame, &mut metric_scratch)?;
+        let metric_access = || {
+            metric.geographic_chart_metric()?.ok_or_else(|| {
+                crate::crs::CrsError::invalid(
+                    "geographic repair source ordinates require the operation's CRS metric",
+                )
+                .into()
+            })
+        };
         let repaired = py
             .detach(|| {
                 let mut all_present_valid = true;
@@ -236,11 +260,16 @@ impl PyGeometryArray {
                         .row()
                         .try_with_shape(|shape| {
                             Ok::<_, crate::error::Error>(
-                                geometry::repair_shape_in_frame(shape, domain, method)?
-                                    .map_or_else(
-                                        || (shape.clone(), false),
-                                        |repaired| (repaired, true),
-                                    ),
+                                geometry::repair_shape_in_frame(
+                                    shape,
+                                    domain,
+                                    method,
+                                    Some(&metric_access),
+                                )?
+                                .map_or_else(
+                                    || (shape.clone(), false),
+                                    |repaired| (repaired, true),
+                                ),
                             )
                         })
                         .map_err(|error| (logical, error))?;
@@ -751,18 +780,25 @@ impl PyGeometryArray {
 
     pub(crate) fn subdivide_rows(&self, py: Python<'_>, max_vertices: i64) -> PyResult<Groups> {
         let max_vertices = validate_subdivide_max_vertices(max_vertices)?;
-        let geographic_frame = match crate::geometry::topology_domain(&self.frame)? {
-            crate::geometry::TopologyDomain::Geographic(frame) => Some(frame),
-            crate::geometry::TopologyDomain::Cartesian => None,
+        let mut metric_scratch = crate::dispatch::MetricScratch::default();
+        let (domain, metric) = crate::dispatch::MetricResolver::GeographicCarry
+            .resolve_topology_ctx(&self.frame, &mut metric_scratch)?;
+        let metric_access = move || {
+            metric.geographic_chart_metric()?.ok_or_else(|| {
+                crate::crs::CrsError::invalid(
+                    "geographic subdivision source ordinates require the operation's CRS metric",
+                )
+                .into()
+            })
         };
         // Per-row groups: each input geometry's subdivided parts stay grouped
         // under their source row. `iter_shapes` gives packed rows CSR views with
         // no Mixed boxing, so the group build is as cheap as the flat path was.
-        self.flat_map_shapes_groups(py, move |shape| {
-            geographic_frame.map_or_else(
-                || shape.subdivide(max_vertices, false),
-                |frame| shape.subdivide_in_geographic_frame(max_vertices, false, frame),
-            )
+        self.flat_map_shapes_groups(py, move |shape| match domain {
+            crate::geometry::TopologyDomain::Cartesian => shape.subdivide(max_vertices, false),
+            crate::geometry::TopologyDomain::Geographic(frame) => {
+                shape.subdivide_in_geographic_frame(max_vertices, false, frame, &metric_access)
+            },
         })
     }
 }

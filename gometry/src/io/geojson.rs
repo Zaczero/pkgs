@@ -6,8 +6,8 @@ use serde_json::Value;
 
 use crate::crs::frame;
 use crate::geometry::{
-    CoordSeqBuilder, MOrdinate, MultiLineString, MultiMember, MultiPoint, MultiPolygon,
-    SharedShapeOwners, TopologyDomain, ZOrdinate,
+    ChartMetric, CoordSeqBuilder, MOrdinate, MultiLineString, MultiMember, MultiPoint,
+    MultiPolygon, SharedShapeOwners, SourceArcMetricAccess, TopologyDomain, ZOrdinate,
 };
 use crate::io::{
     CheckedText, CoordSeq, CoordinateAxes, Coordinates, GEOJSON_POSITION_UPPER_BYTES,
@@ -36,19 +36,45 @@ pub(crate) fn geojson_interface_error() -> String {
 /// (§3.1.6). Public CRS-free geometries explicitly assume WGS84 coordinates
 /// and select this geographic domain; callers with projected or other planar
 /// semantics must transform or choose another format.
+#[cfg(test)]
 pub(crate) fn to_geojson_string(shape: &Shape, domain: TopologyDomain) -> Result<String> {
     to_geojson_string_with_limit(shape, domain, isize::MAX.unsigned_abs())
 }
 
+pub(crate) fn to_geojson_string_with_metric<M: ChartMetric>(
+    shape: &Shape,
+    domain: TopologyDomain,
+    metric_access: &SourceArcMetricAccess<'_, M>,
+) -> Result<String> {
+    to_geojson_string_with_limit_and_metric(
+        shape,
+        domain,
+        isize::MAX.unsigned_abs(),
+        Some(metric_access),
+    )
+}
+
+#[cfg(test)]
 fn to_geojson_string_with_limit(
     shape: &Shape,
     domain: TopologyDomain,
     limit: usize,
 ) -> Result<String> {
+    to_geojson_string_with_limit_and_metric::<crate::crs::GeodesicMetric>(
+        shape, domain, limit, None,
+    )
+}
+
+fn to_geojson_string_with_limit_and_metric<M: ChartMetric>(
+    shape: &Shape,
+    domain: TopologyDomain,
+    limit: usize,
+    metric_access: Option<&SourceArcMetricAccess<'_, M>>,
+) -> Result<String> {
     let limit = limit.min(isize::MAX.unsigned_abs());
     validate_geojson_value(shape)?;
     crate::io::require_serializable_axes(shape)?;
-    let prepared = geojson_output_shape(shape, domain)?;
+    let prepared = geojson_output_shape(shape, domain, metric_access)?;
     let summary = geojson_text_summary(&prepared);
     summary.geojson_lower_bound(limit).require_within()?;
     // Three zmij-formatted ordinates and their delimiters fit within 80 bytes.
@@ -79,25 +105,6 @@ fn to_geojson_string_with_limit(
         write_geojson_to_checked_impl(&mut out, &prepared, &mut position_scratch)?;
         Ok(out.into_string())
     }
-}
-
-/// Select the RFC 7946 domain for a public GeoJSON writer.
-///
-/// GeoJSON has no CRS member in its current specification. An absent CRS is
-/// therefore an explicit WGS84-coordinate assumption, not permission to emit
-/// arbitrary Cartesian coordinates. Tagged non-WGS84 values retain their
-/// existing low-level domain selection; the Python boundary rejects them
-/// before serialization.
-pub(crate) fn geojson_domain(crs: Option<&str>) -> Result<TopologyDomain> {
-    Ok(match crs {
-        None => TopologyDomain::Geographic(crate::geographic::GeographicFrame::crs84()),
-        Some(crs) if crate::crs::is_wgs84_lonlat(crs) => {
-            TopologyDomain::Geographic(crate::geographic::GeographicFrame::crs84())
-        },
-        Some(crs) => crate::crs::info(crs)?
-            .geographic_frame()
-            .map_or(TopologyDomain::Cartesian, TopologyDomain::Geographic),
-    })
 }
 
 pub(crate) fn validate_geojson_value(shape: &Shape) -> Result<()> {
@@ -168,15 +175,16 @@ fn validate_geojson_structure(shape: &Shape, owners: &mut SharedShapeOwners) -> 
 /// antimeridian (a no-op that returns an owned clone for non-crossing input),
 /// and any polygonal geometry is oriented to right-hand winding. Non-polygonal
 /// planar geometry borrows through unchanged.
-pub(crate) fn geojson_output_shape(
-    shape: &Shape,
+pub(crate) fn geojson_output_shape<'s, M: ChartMetric>(
+    shape: &'s Shape,
     domain: TopologyDomain,
-) -> Result<Cow<'_, Shape>> {
+    metric_access: Option<&SourceArcMetricAccess<'_, M>>,
+) -> Result<Cow<'s, Shape>> {
     let prepared: Cow<'_, Shape> = match domain {
         TopologyDomain::Cartesian => Cow::Borrowed(shape),
         TopologyDomain::Geographic(frame) => {
             validate_geojson_domain(shape)?;
-            Cow::Owned(shape.split_antimeridian_in_frame(frame)?)
+            Cow::Owned(shape.split_antimeridian_in_frame_with_metric(frame, metric_access)?)
         },
     };
     // RFC 7946 §3.1.6 mandates right-hand ring winding on output; only

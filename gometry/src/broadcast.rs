@@ -86,7 +86,7 @@ where
         left,
         right,
         op_name,
-        crate::dispatch::MetricResolver::None,
+        crate::dispatch::MetricResolver::GeographicCarry,
         &crate::dispatch::OverlayFastPath,
         move |left, right, _ctx| kernel(left, right),
     )

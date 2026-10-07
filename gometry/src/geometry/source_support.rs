@@ -2603,7 +2603,13 @@ mod tests {
     #[test]
     fn exact_node_keeps_node_identity_and_late_ordinate_failures() {
         let crossing = shape("MULTILINESTRING ((0 0,2 2),(0 2,2 0))");
-        let noded = crossing.node(crate::geometry::Strictness::Strict).unwrap();
+        let noded = crossing
+            .node_with_metric::<crate::crs::GeodesicMetric>(
+                crate::geometry::TopologyDomain::Cartesian,
+                crate::geometry::Strictness::Strict,
+                None,
+            )
+            .unwrap();
         let expected = shape("MULTILINESTRING ((0 0,1 1),(1 1,2 2),(0 2,1 1),(1 1,2 0))");
         assert!(noded.equals(&expected).unwrap(), "{noded:?}");
 
@@ -2611,7 +2617,11 @@ mod tests {
         let right = shape("LINESTRING Z (0 2 1,2 0 1)");
         let error = crate::geometry::Shape::geometry_collection(vec![left, right])
             .unwrap()
-            .node(crate::geometry::Strictness::Strict)
+            .node_with_metric::<crate::crs::GeodesicMetric>(
+                crate::geometry::TopologyDomain::Cartesian,
+                crate::geometry::Strictness::Strict,
+                None,
+            )
             .unwrap_err();
         assert!(
             error.to_string().contains("node cannot represent Z/M"),
@@ -2631,7 +2641,13 @@ mod tests {
             .into(),
         );
         assert!(matches!(
-            point.node(crate::geometry::Strictness::Strict).unwrap(),
+            point
+                .node_with_metric::<crate::crs::GeodesicMetric>(
+                    crate::geometry::TopologyDomain::Cartesian,
+                    crate::geometry::Strictness::Strict,
+                    None,
+                )
+                .unwrap(),
             Shape::Empty(
                 crate::geometry::GeometryKind::MultiLineString,
                 crate::geometry::CoordinateAxes::XYZ

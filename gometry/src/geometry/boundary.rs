@@ -68,7 +68,7 @@ fn polygonal_boundary<M: crate::geometry::ChartMetric>(
             if data.validate_cached()?.is_none() {
                 return Ok(literal_polygon_boundary(shape));
             }
-            exact_partition_boundary(shape, domain)
+            exact_partition_boundary(shape, domain, metric_access)
         },
         TopologyDomain::Geographic(frame) => {
             let inputs = GeographicInputs::try_from_shapes(frame, std::iter::once(shape))
@@ -85,12 +85,16 @@ fn polygonal_boundary<M: crate::geometry::ChartMetric>(
             if data.validate_cached()?.is_none() {
                 return Ok(literal_polygon_boundary(shape));
             }
-            exact_partition_boundary(shape, domain)
+            exact_partition_boundary(shape, domain, metric_access)
         },
     }
 }
 
-fn exact_partition_boundary(shape: &Shape, domain: TopologyDomain) -> Result<Shape> {
+fn exact_partition_boundary<M: crate::geometry::ChartMetric>(
+    shape: &Shape,
+    domain: TopologyDomain,
+    metric_access: Option<&SourceArcMetricAccess<'_, M>>,
+) -> Result<Shape> {
     let inventory = ExactSourceInventory::from_polygonal_union(&[shape])?
         .expect("the boundary owner receives polygonal input");
     let mut budget = ExpansionBudget::new("boundary", "exact partition");
@@ -98,7 +102,7 @@ fn exact_partition_boundary(shape: &Shape, domain: TopologyDomain) -> Result<Sha
     if let TopologyDomain::Geographic(frame) = domain {
         partition.set_geographic_frame(frame);
     }
-    inventory.occupied_boundary_shape(&partition, shape.axes())
+    inventory.occupied_boundary_shape(&partition, shape.axes(), metric_access)
 }
 
 fn literal_polygon_boundary(shape: &Shape) -> Shape {

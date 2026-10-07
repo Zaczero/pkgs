@@ -689,7 +689,7 @@ fn preflight_edge_expansion(
     clippy::float_cmp,
     reason = "the stored chart step must equal the retained producer displacement, including signed zero equivalence"
 )]
-fn edge_reads_correctly(
+pub(crate) fn edge_reads_correctly(
     frame: GeographicFrame,
     start: Point,
     end: Point,

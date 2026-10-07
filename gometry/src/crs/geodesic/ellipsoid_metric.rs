@@ -2,7 +2,7 @@ use geographiclib_rs::Geodesic;
 
 use super::chart_edge::{AuthalicSeries, ChartEdge};
 use crate::crs::geodesic::InverseGeodesic as _;
-use crate::geographic::{GeographicFrame, RetainedChartDisplacement};
+use crate::geographic::GeographicFrame;
 use crate::geometry::{
     ChartBox, ChartEdgeDifferential, ChartEdgeDifferentialBounds, ChartMetric,
     ChartPointDistanceSample, GeodesicMetric, GeodesicNumericalPolicy, Point, PointEdgeQuery,
@@ -207,21 +207,12 @@ impl ChartMetric for EllipsoidMetric<'_> {
         ChartEdge::new(start, end, self.frame)
     }
 
-    fn chart_edge_from_retained(
-        &self,
-        start: Point,
-        end: Point,
-        longitude: RetainedChartDisplacement,
-    ) -> crate::error::Result<ChartEdge> {
-        ChartEdge::from_retained(start, end, self.frame, longitude)
-    }
-
     fn chart_edge_length(&self, edge: &ChartEdge) -> crate::error::Result<f64> {
         edge.length(self.geodesic)
     }
 
     fn chart_edge_length_to(&self, edge: &ChartEdge, parameter: f64) -> crate::error::Result<f64> {
-        edge.arclength(parameter, self.geodesic, self.frame)
+        edge.arclength(parameter, self.geodesic)
     }
 
     fn chart_edge_arclength_fraction(
@@ -239,7 +230,7 @@ impl ChartMetric for EllipsoidMetric<'_> {
         distance: f64,
         length: f64,
     ) -> crate::error::Result<f64> {
-        edge.locate_t(distance, length, self.geodesic, self.frame)
+        edge.locate_t(distance, length, self.geodesic)
     }
 
     fn chart_edge_interval_length(

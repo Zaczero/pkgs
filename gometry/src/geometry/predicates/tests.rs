@@ -518,6 +518,7 @@ mod convex_tests {
             &bowtie,
             TopologyDomain::Geographic(crate::geographic::GeographicFrame::crs84()),
             RepairMethod::Linework,
+            None,
         )
         .unwrap()
         .unwrap();

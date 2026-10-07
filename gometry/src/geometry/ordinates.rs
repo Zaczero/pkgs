@@ -186,7 +186,8 @@ pub(in crate::geometry) struct NodeOrdinates {
     pub(in crate::geometry) m: AxisValue,
 }
 
-/// The source-side information needed to emit one Q node's ordinates.
+/// The source coordinates' frame and retained branch stay separate from the
+/// lazily accessed ellipsoid metric used to measure their chart edge.
 pub(in crate::geometry) enum SourceArcRequest<'a> {
     NoOrdinates,
     Endpoint {
@@ -195,6 +196,7 @@ pub(in crate::geometry) enum SourceArcRequest<'a> {
     },
     Interior {
         source: &'a [Point; 2],
+        frame: crate::geographic::GeographicFrame,
         longitude: RetainedChartDisplacement,
         chart_parameter: &'a ExactRational,
         axes: CoordinateAxes,
@@ -209,6 +211,7 @@ pub(crate) type ParallelSourceArcMetricAccess<'a> =
 
 impl<'a> SourceArcRequest<'a> {
     pub(in crate::geometry) fn new(
+        frame: crate::geographic::GeographicFrame,
         source: &'a [Point; 2],
         axes: CoordinateAxes,
         chart_parameter: &'a ExactRational,
@@ -246,6 +249,7 @@ impl<'a> SourceArcRequest<'a> {
         }
         Ok(Self::Interior {
             source,
+            frame,
             longitude: longitude()?,
             chart_parameter,
             axes: eligible_axes,
@@ -265,6 +269,7 @@ pub(in crate::geometry) fn source_arc_ordinates<'m, M: ChartMetric + 'm>(
         SourceArcRequest::Endpoint { point, axes } => Ok(node_ordinates_at(*point, *axes)),
         SourceArcRequest::Interior {
             source,
+            frame,
             longitude,
             chart_parameter,
             axes,
@@ -272,7 +277,7 @@ pub(in crate::geometry) fn source_arc_ordinates<'m, M: ChartMetric + 'm>(
             let metric = metric()?;
             let parameter = chart_parameter.round()?;
             let [start, end] = **source;
-            let edge = metric.chart_edge_from_retained(start, end, *longitude)?;
+            let edge = crate::crs::ChartEdge::from_retained(start, end, *frame, *longitude)?;
             let fraction = metric.chart_edge_arclength_fraction(&edge, parameter, None)?;
             let (z, m) = source_ordinate_values_at_fraction(start, end, *axes, fraction);
             let mut ordinates = NodeOrdinates::default();
@@ -612,10 +617,11 @@ mod tests {
             let parameter = range_start.try_add(&range_delta.try_product(&local_parameter)?)?;
             assert_eq!(parameter, ExactRational::from_f64(0.25));
             let mut longitude_accesses = 0;
-            let request = SourceArcRequest::new(&source, CoordinateAxes::XYZM, &parameter, || {
-                longitude_accesses += 1;
-                Ok(retained_source_longitude(frame, &source))
-            })?;
+            let request =
+                SourceArcRequest::new(frame, &source, CoordinateAxes::XYZM, &parameter, || {
+                    longitude_accesses += 1;
+                    Ok(retained_source_longitude(frame, &source))
+                })?;
             let mut metric_accesses = 0;
             let ordinates = source_arc_ordinates(&request, || {
                 metric_accesses += 1;
@@ -651,10 +657,11 @@ mod tests {
             ];
             let parameter = ExactRational::zero();
             let mut longitude_accesses = 0;
-            let request = SourceArcRequest::new(&source, CoordinateAxes::XYZM, &parameter, || {
-                longitude_accesses += 1;
-                Ok(retained_source_longitude(frame, &source))
-            })?;
+            let request =
+                SourceArcRequest::new(frame, &source, CoordinateAxes::XYZM, &parameter, || {
+                    longitude_accesses += 1;
+                    Ok(retained_source_longitude(frame, &source))
+                })?;
             let mut metric_accesses = 0;
             let ordinates = source_arc_ordinates(&request, || {
                 metric_accesses += 1;
@@ -667,11 +674,16 @@ mod tests {
             assert_eq!(ordinates.m.value().unwrap().to_bits(), 101.0_f64.to_bits());
 
             let end_parameter = ExactRational::one();
-            let end_request =
-                SourceArcRequest::new(&source, CoordinateAxes::XYZM, &end_parameter, || {
+            let end_request = SourceArcRequest::new(
+                frame,
+                &source,
+                CoordinateAxes::XYZM,
+                &end_parameter,
+                || {
                     longitude_accesses += 1;
                     Ok(retained_source_longitude(frame, &source))
-                })?;
+                },
+            )?;
             let end_ordinates = source_arc_ordinates(&end_request, || {
                 metric_accesses += 1;
                 Ok(metric)
@@ -698,7 +710,7 @@ mod tests {
             let parameter = ExactRational::from_f64(0.25);
             let mut longitude_accesses = 0;
             let unavailable_request =
-                SourceArcRequest::new(&source, CoordinateAxes::XYZM, &parameter, || {
+                SourceArcRequest::new(frame, &source, CoordinateAxes::XYZM, &parameter, || {
                     longitude_accesses += 1;
                     Ok(retained_source_longitude(frame, &source))
                 })?;
@@ -712,7 +724,7 @@ mod tests {
                 Ok(metric)
             })?;
             let xy_request =
-                SourceArcRequest::new(&source, CoordinateAxes::XY, &parameter, || {
+                SourceArcRequest::new(frame, &source, CoordinateAxes::XY, &parameter, || {
                     longitude_accesses += 1;
                     Ok(retained_source_longitude(frame, &source))
                 })?;
@@ -741,12 +753,14 @@ mod tests {
                 Point::new_axes(0.0, 70.0, ZOrdinate(None), MOrdinate(None))?,
             ];
             let near_start_request = SourceArcRequest::new(
+                frame,
                 &interior_start_missing,
                 CoordinateAxes::XYZM,
                 &near_zero,
                 || Ok(retained_source_longitude(frame, &interior_start_missing)),
             )?;
             let near_end_request = SourceArcRequest::new(
+                frame,
                 &interior_start_missing,
                 CoordinateAxes::XYZM,
                 &near_one,
