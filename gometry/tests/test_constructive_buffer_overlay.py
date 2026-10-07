@@ -1398,6 +1398,69 @@ def test_rectangle_shell_ownership_survives_array_nulls_and_gathers() -> None:
     assert gathered_clipped[1].is_empty
 
 
+def test_union_all_removes_collapsed_shell_points_covered_by_their_own_holes() -> None:
+    inner = gm.from_wkt('POLYGON ((1 1,1 1,1 1,1 1),(0 0,2 0,2 2,0 2,0 0))')
+    outer = gm.from_wkt('POLYGON ((3 3,3 3,3 3,3 3),(-2 -2,4 -2,4 4,-2 4,-2 -2))')
+    cases = [
+        (
+            'collection-inner-first',
+            gm.GeometryCollection([inner, outer]),
+        ),
+        (
+            'collection-outer-first',
+            gm.GeometryCollection([outer, inner]),
+        ),
+        (
+            'multipolygon-inner-first',
+            gm.MultiPolygon([inner, outer]),
+        ),
+        (
+            'multipolygon-outer-first',
+            gm.MultiPolygon([outer, inner]),
+        ),
+    ]
+
+    assert gm.union_all([inner]).to_wkt() == 'POLYGON EMPTY'
+    assert gm.union_all([outer]).to_wkt() == 'POLYGON EMPTY'
+    for name, geometry in cases:
+        result = gm.union_all([geometry])
+        assert result.to_wkt() == 'POLYGON EMPTY', name
+        assert gm.relate(result, gm.Point(3, 3)) == 'FFFFFF0F2', name
+
+
+def test_union_all_preserves_incident_curve_and_unrelated_explicit_point() -> None:
+    inner = 'POLYGON ((3 3,3 3,3 3,3 3),(2 2,4 2,4 4,2 4,2 2))'
+    outer = 'POLYGON ((3 3,3 3,3 3,3 3),(-2 -2,8 -2,8 8,-2 8,-2 -2))'
+    cases = [
+        (
+            'inner-first',
+            gm.GeometryCollection([
+                gm.from_wkt(inner),
+                gm.from_wkt(outer),
+                gm.LineString([(2, 3), (4, 3)]),
+                gm.Point(10, 10),
+            ]),
+        ),
+        (
+            'outer-first',
+            gm.GeometryCollection([
+                gm.from_wkt(outer),
+                gm.from_wkt(inner),
+                gm.LineString([(2, 3), (4, 3)]),
+                gm.Point(10, 10),
+            ]),
+        ),
+    ]
+
+    for name, geometry in cases:
+        result = gm.union_all([geometry])
+        assert result.to_wkt() == (
+            'GEOMETRYCOLLECTION (POINT (10 10), LINESTRING (2 3, 3 3, 4 3))'
+        ), name
+        assert gm.relate(result, gm.Point(10, 10)) == '0F1FF0FF2', name
+        assert gm.relate(result, gm.Point(3, 3)) == '0F1FF0FF2', name
+
+
 def test_rectangle_clips_positive_collapsed_shell_support() -> None:
     collapsed = gm.from_wkt('POLYGON ((0 0,2 0,4 0,0 0))')
 

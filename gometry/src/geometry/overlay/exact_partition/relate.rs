@@ -263,7 +263,6 @@ impl ExactSourceInventory {
             }
         }
         point_shell_faces.sort_unstable_by_key(|(face, _)| *face);
-        let mut point_shell_cursor = 0;
         let mut occupancy = PolygonOccupancy::new(self, odd);
         if let Some((_, seed)) = &partition.winding_seed {
             occupancy.seed(seed)?;
@@ -292,10 +291,14 @@ impl ExactSourceInventory {
                     );
                     facts.face_membership[face * operands + operand] = occupied;
                 }
-                while point_shell_cursor < point_shell_faces.len()
-                    && point_shell_faces[point_shell_cursor].0 == face as u32
-                {
-                    let (_, state_index) = point_shell_faces[point_shell_cursor];
+                let requested_face = face as u32;
+                let first =
+                    point_shell_faces.partition_point(|&(requested, _)| requested < requested_face);
+                let end = first.wrapping_add(
+                    point_shell_faces[first..]
+                        .partition_point(|&(requested, _)| requested == requested_face),
+                );
+                for &(_, state_index) in &point_shell_faces[first..end] {
                     let state = &mut point_polygon_states[state_index as usize];
                     let node = state.0;
                     let polygon = state.1 as usize;
@@ -317,7 +320,6 @@ impl ExactSourceInventory {
                             }
                         });
                     state.2 |= hole;
-                    point_shell_cursor += 1;
                 }
                 if !needs_raw {
                     return Ok(());
