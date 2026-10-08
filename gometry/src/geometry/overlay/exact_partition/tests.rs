@@ -1074,6 +1074,132 @@ fn boundary_contraction_preserves_explicit_points_and_source_paths() {
 }
 
 #[test]
+fn square_boundary_contraction_preserves_ordered_chain_and_point() {
+    for (name, explicit_point, expected_sources, expected_groups, expected_xs, expected_ys) in [
+        (
+            "four-dart square bottom contracts once",
+            None,
+            vec![
+                ((0.0, 0.0), (1.0, 0.0)),
+                ((1.0, 0.0), (2.0, 0.0)),
+                ((2.0, 0.0), (3.0, 0.0)),
+                ((3.0, 0.0), (4.0, 0.0)),
+                ((4.0, 0.0), (4.0, 2.0)),
+                ((4.0, 2.0), (0.0, 2.0)),
+                ((0.0, 2.0), (0.0, 0.0)),
+            ],
+            vec![
+                (0..4, [1, 0]),
+                (4..5, [1, 0]),
+                (5..6, [1, 0]),
+                (6..7, [1, 0]),
+            ],
+            vec![0.0, 4.0, 4.0, 0.0, 0.0],
+            vec![0.0, 0.0, 2.0, 2.0, 0.0],
+        ),
+        (
+            "explicit point at the square bottom midpoint splits the chord",
+            Some(XY::new(2.0, 0.0)),
+            vec![
+                ((0.0, 0.0), (1.0, 0.0)),
+                ((1.0, 0.0), (2.0, 0.0)),
+                ((2.0, 0.0), (3.0, 0.0)),
+                ((3.0, 0.0), (4.0, 0.0)),
+                ((4.0, 0.0), (4.0, 2.0)),
+                ((4.0, 2.0), (0.0, 2.0)),
+                ((0.0, 2.0), (0.0, 0.0)),
+            ],
+            vec![
+                (0..2, [1, 0]),
+                (2..4, [1, 0]),
+                (4..5, [1, 0]),
+                (5..6, [1, 0]),
+                (6..7, [1, 0]),
+            ],
+            vec![0.0, 2.0, 4.0, 4.0, 0.0, 0.0],
+            vec![0.0, 0.0, 0.0, 2.0, 2.0, 0.0],
+        ),
+    ] {
+        let case = square_boundary_case(explicit_point);
+        let mut budget = ExpansionBudget::new("union", "square boundary regression");
+        let partition = partition_unique_segments::<true>(
+            &case.unique,
+            &case.provenance,
+            &case.isolated,
+            &mut budget,
+        )
+        .unwrap();
+        assert_eq!(budget.used(), 0, "{name}");
+        assert!(
+            matches!(&partition.kept_nodes, KeptNodes::Selected),
+            "{name}"
+        );
+        if let Some(point) = explicit_point {
+            let point = partition
+                .stored_node(point)
+                .expect("explicit point is stored");
+            assert!(partition.point_nodes.contains(&point), "{name}");
+        }
+        let (topology, edges) = partition.local_topology().unwrap();
+        let global = partition.global_faces(&topology, &edges).unwrap();
+        assert_eq!(global.count, 2, "{name}");
+        let inner_face = edges
+            .iter()
+            .enumerate()
+            .find_map(|(slot, _)| {
+                let origin = partition.nearest_xy(NodeId(topology.owners[slot]));
+                let target = partition.nearest_xy(NodeId(topology.targets[slot]));
+                (origin == XY::new(0.0, 0.0) && target == XY::new(1.0, 0.0))
+                    .then_some(global.walk_faces[topology.face_of[slot] as usize] as usize)
+            })
+            .expect("square bottom has a directed source dart");
+        assert_ne!(inner_face, 0, "{name}");
+        let mut occupied = vec![false; global.count as usize];
+        occupied[inner_face] = true;
+        let plan = global
+            .boundary_plan(&[], &topology, &edges, &partition, &occupied)
+            .unwrap();
+
+        assert_eq!(plan.face_quotient, [0, 1], "{name}");
+        assert_eq!(plan.walks.len(), 1, "{name}");
+        assert!(plan.lines.is_empty(), "{name}");
+        assert!(plan.points.is_empty(), "{name}");
+        assert_eq!(plan.source_darts.len(), 7, "{name}");
+        assert_eq!(
+            forward_source_darts(&plan, &partition, &topology),
+            expected_sources,
+            "{name}: ordered source darts"
+        );
+        assert_eq!(
+            plan.walks[0]
+                .iter()
+                .map(|chord| (chord.sources.clone(), chord.sides))
+                .collect::<Vec<_>>(),
+            expected_groups,
+            "{name}: chord source ranges and side labels"
+        );
+
+        let (points, lines, polygons) = plan
+            .emit_xy_parts(&partition, &topology, &edges, "union")
+            .unwrap();
+        assert!(points.is_empty(), "{name}");
+        assert!(lines.is_empty(), "{name}");
+        assert_eq!(polygons.len(), 1, "{name}");
+        assert!(polygons[0].holes.is_empty(), "{name}");
+        assert_eq!(
+            polygons[0].shell.coords().xs(),
+            expected_xs,
+            "{name}: emitted x-coordinate buffer"
+        );
+        assert_eq!(
+            polygons[0].shell.coords().ys(),
+            expected_ys,
+            "{name}: emitted y-coordinate buffer"
+        );
+    }
+}
+
+#[test]
 fn areal_boundary_contraction_merges_radial_multi_joins() {
     let radial =
         crate::io::parse_wkt("POLYGON ((-4 0,-3 -1,-2 -2,-1 -3,0 -4,3 -3,4 0,3 3,0 4,-3 3,-4 0))")
@@ -2583,7 +2709,7 @@ fn run(segments: &[Segment]) -> Case {
     Case::from_segments(segments)
 }
 
-struct UnionBoundaryContext<'a> {
+struct BoundaryContext<'a> {
     partition: ExactPartition<'a>,
     topology: IndexedTopology,
     edges: Vec<u32>,
@@ -2592,7 +2718,7 @@ struct UnionBoundaryContext<'a> {
     budget_used: usize,
 }
 
-fn union_boundary_context(inventory: &ExactSourceInventory) -> UnionBoundaryContext<'_> {
+fn union_boundary_context(inventory: &ExactSourceInventory) -> BoundaryContext<'_> {
     let mut budget = ExpansionBudget::new("union", "boundary regression");
     let partition = inventory.partition(&mut budget).unwrap();
     let budget_used = budget.used();
@@ -2608,7 +2734,7 @@ fn union_boundary_context(inventory: &ExactSourceInventory) -> UnionBoundaryCont
             false,
         )
         .unwrap();
-    UnionBoundaryContext {
+    BoundaryContext {
         partition,
         topology,
         edges,
@@ -2616,15 +2742,6 @@ fn union_boundary_context(inventory: &ExactSourceInventory) -> UnionBoundaryCont
         cells,
         budget_used,
     }
-}
-
-struct RawBoundaryContext<'a> {
-    partition: ExactPartition<'a>,
-    topology: IndexedTopology,
-    edges: Vec<u32>,
-    global: GlobalFaces,
-    cells: ArealCells,
-    budget_used: usize,
 }
 
 fn protected_mixed_boundary_case() -> Case {
@@ -2645,7 +2762,23 @@ fn protected_mixed_boundary_case() -> Case {
     Case::from_segments(&segments)
 }
 
-fn raw_protected_mixed_boundary_context(case: &Case) -> RawBoundaryContext<'_> {
+fn square_boundary_case(explicit_point: Option<XY>) -> Case {
+    let mut segments = vec![
+        seg(0.0, 0.0, 1.0, 0.0),
+        seg(1.0, 0.0, 2.0, 0.0),
+        seg(2.0, 0.0, 3.0, 0.0),
+        seg(3.0, 0.0, 4.0, 0.0),
+        seg(4.0, 0.0, 4.0, 2.0),
+        seg(4.0, 2.0, 0.0, 2.0),
+        seg(0.0, 2.0, 0.0, 0.0),
+    ];
+    if let Some(point) = explicit_point {
+        segments.push(seg(point.x, point.y, point.x, point.y));
+    }
+    Case::from_segments(&segments)
+}
+
+fn raw_protected_mixed_boundary_context(case: &Case) -> BoundaryContext<'_> {
     let mut budget = ExpansionBudget::new("union", "protected mixed boundary regression");
     let partition = partition_unique_segments::<true>(
         &case.unique,
@@ -2691,7 +2824,7 @@ fn raw_protected_mixed_boundary_context(case: &Case) -> RawBoundaryContext<'_> {
         spans,
         nodes,
     };
-    RawBoundaryContext {
+    BoundaryContext {
         partition,
         topology,
         edges,
