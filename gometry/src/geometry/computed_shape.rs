@@ -196,6 +196,17 @@ pub(crate) fn publish_raw_computed_shape_with_budget_and_context(
     })
 }
 
+pub(crate) fn publish_raw_computed_shape_with_context(
+    shape: &Shape,
+    frame: GeographicFrame,
+    operation: &'static str,
+    source_context: &SourceArcContext<'_, '_, crate::crs::GeodesicMetric>,
+) -> Result<Shape> {
+    let mut budget = ExpansionBudget::new(operation, "computed edges");
+    budget.add(ShapeCountQuery::default().coordinates(shape)?)?;
+    publish_raw_computed_shape_with_budget_and_context(shape, frame, *source_context, &mut budget)
+}
+
 pub(crate) fn publish_transformed_shape(
     shape: &Shape,
     frame: GeographicFrame,

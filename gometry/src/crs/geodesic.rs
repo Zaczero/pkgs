@@ -65,6 +65,7 @@ pub(crate) use measure::{
 };
 pub(crate) use metric_model::{
     GeodesicMetric, MetricModel, ResolvedMetric, ensure_3d_metric, geographic_metric_frame_at,
-    metric_model, metric_model_at, metric_model_meters, with_geographic_metric_erased_at,
+    metric_model, metric_model_at, metric_model_meters, metric_model_meters_at,
+    with_geographic_metric_erased_at,
 };
 pub(crate) use route::{checked_geodesic_route, sincos_degrees};

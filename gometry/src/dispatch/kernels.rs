@@ -59,6 +59,64 @@ fn publish_planar_geographic_edges_budgeted(
     }
 }
 
+fn publish_planar_geographic_edges_with_context(
+    output: Shape,
+    model: &crate::crs::MetricModel,
+    ctx: &CachelessRowContext<'_>,
+    operation: &'static str,
+) -> Result<Shape> {
+    match (model, ctx.domain) {
+        (crate::crs::MetricModel::Planar { .. }, TopologyDomain::Geographic(frame)) => {
+            let metric_access = || {
+                ctx.metric
+                    .source_chart_metric(ctx.frame.crs_str())?
+                    .ok_or_else(|| {
+                        crate::crs::CrsError::invalid(
+                            "geographic computed-edge source ordinates require the operation's CRS metric",
+                        )
+                    })
+            };
+            let source_context =
+                crate::geometry::SourceArcContext::new(ctx.domain, Some(&metric_access));
+            crate::geometry::publish_raw_computed_shape_with_context(
+                &output,
+                frame,
+                operation,
+                &source_context,
+            )
+        },
+        _ => Ok(output),
+    }
+}
+
+fn publish_planar_geographic_edges_budgeted_with_context(
+    output: Shape,
+    model: &crate::crs::MetricModel,
+    ctx: &CachelessRowContext<'_>,
+    budget: &mut crate::geometry::ExpansionBudget,
+) -> Result<Shape> {
+    match (model, ctx.domain) {
+        (crate::crs::MetricModel::Planar { .. }, TopologyDomain::Geographic(frame)) => {
+            let metric_access = || {
+                ctx.metric
+                    .source_chart_metric(ctx.frame.crs_str())?
+                    .ok_or_else(|| {
+                        crate::crs::CrsError::invalid(
+                            "geographic computed-edge source ordinates require the operation's CRS metric",
+                        )
+                    })
+            };
+            crate::geometry::publish_raw_computed_shape_with_budget_and_context(
+                &output,
+                frame,
+                crate::geometry::SourceArcContext::new(ctx.domain, Some(&metric_access)),
+                budget,
+            )
+        },
+        _ => Ok(output),
+    }
+}
+
 fn publish_planar_geographic_constructive(
     output: Shape,
     model: &crate::crs::MetricModel,
@@ -284,7 +342,7 @@ pub(crate) fn unary_offset_curve_budgeted(
             shape.offset_curve_budgeted(d, join_style, quadrant_segments, miter_limit, budget)
         },
     )?;
-    publish_planar_geographic_edges_budgeted(output, model, ctx.domain, budget)
+    publish_planar_geographic_edges_budgeted_with_context(output, model, ctx, budget)
 }
 
 /// Point-on-surface kernel shared by the spine-routed free function.
@@ -316,7 +374,7 @@ pub(crate) fn unary_concave_hull(
         concavity,
         length_threshold.get(ctx.lane.row()),
     )?;
-    publish_planar_geographic_edges(output, model, ctx.domain, "concave_hull")
+    publish_planar_geographic_edges_with_context(output, model, ctx, "concave_hull")
 }
 
 /// Polylabel kernel shared by the spine-routed free function.

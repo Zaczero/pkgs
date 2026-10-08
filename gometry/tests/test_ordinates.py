@@ -351,6 +351,81 @@ def _origin_coord(geom: gm.Geometry) -> tuple[float, ...]:
     raise AssertionError(f'no origin vertex on {geom.to_wkt()}')
 
 
+def test_planar_geographic_offset_uses_source_arclength_for_zm() -> None:
+    crs = '+proj=longlat +a=7000000 +rf=150 +type=crs'
+    coordinates = [(760.0, 45.0), (1035.0, 72.5)]
+    line = gm.LineString(
+        coordinates,
+        z=[35.25, 49.5],
+        m=[551.0, 726.0],
+        crs=crs,
+    )
+    xy_line = gm.LineString(coordinates, crs=crs)
+    result = line.offset_curve(1.0, unit='planar')
+    xy_result = xy_line.offset_curve(1.0, unit='planar')
+    array_result = gm.GeometryArray([line]).offset_curve(1.0, unit='planar')[0]
+
+    assert result.coordinate_axes == 'XYZM'
+    result_coordinates = list(result.coords)
+    assert [(point[0], point[1]) for point in result_coordinates] == list(
+        xy_result.coords
+    )
+    assert list(array_result.coords) == result_coordinates
+    assert (result_coordinates[0][2], result_coordinates[0][3]) == (35.25, 551.0)
+    assert (result_coordinates[-1][2], result_coordinates[-1][3]) == (49.5, 726.0)
+    inserted = next(
+        point
+        for point in result_coordinates
+        if (point[0], point[1])
+        == pytest.approx((177.40049628097904, 59.745037190209985), rel=0.0, abs=1.0e-12)
+    )
+    assert inserted[2] == pytest.approx(43.78167861104509, rel=0.0, abs=2.0e-8)
+    assert inserted[3] == pytest.approx(655.7750004865186, rel=0.0, abs=2.0e-7)
+
+
+def test_planar_geographic_concave_hull_uses_source_arclength_for_zm() -> None:
+    crs = '+proj=longlat +a=7000000 +rf=150 +type=crs'
+    coordinates = [(760.0, 45.0), (1035.0, 72.5), (900.0, 85.0)]
+    sites = gm.MultiPoint(
+        coordinates,
+        z=[35.25, 49.5, 80.0],
+        m=[551.0, 726.0, 901.0],
+        crs=crs,
+    )
+    xy_sites = gm.MultiPoint(coordinates, crs=crs)
+    result = sites.concave_hull(concavity=2.0, unit='planar')
+    xy_result = xy_sites.concave_hull(concavity=2.0, unit='planar')
+    array_result = gm.GeometryArray([sites]).concave_hull(concavity=2.0, unit='planar')[
+        0
+    ]
+
+    assert result.coordinate_axes == 'XYZM'
+    result_coordinates = list(result.exterior.coords)
+    assert [(point[0], point[1]) for point in result_coordinates] == list(
+        xy_result.exterior.coords
+    )
+    assert list(array_result.exterior.coords) == result_coordinates
+    start_xy = next(
+        (point[0], point[1]) for point in xy_result.exterior.coords if point[1] == 45.0
+    )
+    end_xy = next(
+        (point[0], point[1]) for point in xy_result.exterior.coords if point[1] == 72.5
+    )
+    assert next(point[2:] for point in result_coordinates if point[:2] == start_xy) == (
+        35.25,
+        551.0,
+    )
+    assert next(point[2:] for point in result_coordinates if point[:2] == end_xy) == (
+        49.5,
+        726.0,
+    )
+    inserted = next(
+        point for point in result_coordinates if (point[0], point[1]) == (177.5, 58.75)
+    )
+    assert inserted[2] == pytest.approx(43.730417185196416, rel=0.0, abs=2.0e-8)
+    assert inserted[3] == pytest.approx(655.1454742041665, rel=0.0, abs=2.0e-7)
+
+
 @pytest.mark.parametrize('op', ['convex_hull', 'concave_hull'])
 def test_hull_copies_first_seen_z_at_duplicate_xy(op: str) -> None:
     points = gm.MultiPoint(
