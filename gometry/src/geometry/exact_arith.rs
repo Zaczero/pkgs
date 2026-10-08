@@ -12,8 +12,6 @@
 //! [`DekkerParts`] stores one checked coefficient split for hot kernels
 //! compiled to baselines where scalar `mul_add` is not a hardware instruction.
 
-use crate::geometry::tessellation::exact::ExactDyadic as ConnectorDyadic;
-
 pub(crate) mod bounded;
 pub(crate) mod product_sum;
 
@@ -747,6 +745,10 @@ pub(crate) fn select_transformed_chart_displacement(
     target_frame: crate::geographic::GeographicFrame,
     target_endpoints: [f64; 2],
 ) -> crate::error::Result<crate::geographic::RetainedChartDisplacement> {
+    use std::cmp::Ordering;
+
+    use crate::geometry::tessellation::exact::ExactDyadic;
+
     let source_axis = source_frame.longitude();
     let target_axis = target_frame.longitude();
     let source_connection = source_axis
@@ -763,8 +765,8 @@ pub(crate) fn select_transformed_chart_displacement(
 
     let source_displacement =
         retained_edge_displacement(source_connection.retained(), source_axis)?;
-    let target_period = ConnectorDyadic::from_f64(target_axis.period());
-    let source_period = ConnectorDyadic::from_f64(source_axis.period());
+    let target_period = ExactDyadic::from_f64(target_axis.period());
+    let source_period = ExactDyadic::from_f64(source_axis.period());
     let source_in_target_orientation = source_displacement.try_product(&target_period)?;
     let source_in_target_orientation = if source_frame.orientation().longitude_east()
         == target_frame.orientation().longitude_east()
@@ -773,138 +775,79 @@ pub(crate) fn select_transformed_chart_displacement(
     } else {
         source_in_target_orientation.neg()
     };
-    let target_difference = ConnectorDyadic::from_f64(target_endpoints[1].get())
-        .try_subtract(ConnectorDyadic::from_f64(target_endpoints[0].get()))?;
+    let target_difference = ExactDyadic::from_f64(target_endpoints[1].get())
+        .try_subtract(ExactDyadic::from_f64(target_endpoints[0].get()))?;
     let target_difference_scaled = target_difference.try_product(&source_period)?;
     let numerator = source_in_target_orientation.try_subtract(target_difference_scaled)?;
     let denominator = source_period.try_product(&target_period)?;
+    // A source chart branch spans at most one source period, while the
+    // canonical target difference is strictly less than one target period.
+    // Thus the selected K is relative and bounded by two, never an absolute
+    // longitude sheet.
     let center = numerator.nearest_integer_quotient_ties_to_zero(&denominator)?;
-    // The nearest integer and its neighbors contain every minimum; residuals
-    // are then compared exactly, without a search cap or rounded ratio.
-    let lower = center.clone().try_subtract(ConnectorDyadic::one())?;
-    let upper = center.clone().try_add(ConnectorDyadic::one())?;
-    let candidates = [
-        transformed_lift_candidate(
-            lower,
-            &numerator,
-            &denominator,
-            &target_difference,
-            &target_period,
-        )?,
-        transformed_lift_candidate(
-            center,
-            &numerator,
-            &denominator,
-            &target_difference,
-            &target_period,
-        )?,
-        transformed_lift_candidate(
-            upper,
-            &numerator,
-            &denominator,
-            &target_difference,
-            &target_period,
-        )?,
-    ];
+    // The quotient is already the exact nearest lift; only an exact half
+    // residual has a second minimizer.
+    let residual = numerator.try_subtract(denominator.try_product(&center)?)?;
+    if residual.cmp_magnitude_scaled(&denominator, -1) != Ordering::Equal {
+        return Ok(
+            crate::geographic::RetainedChartDisplacement::from_native_endpoints(
+                target_endpoints,
+                exact_integer_i64(&center)?,
+            ),
+        );
+    }
+
+    let zero = ExactDyadic::zero();
+    let residual_direction = residual.cmp(&zero);
+    debug_assert_ne!(
+        residual_direction,
+        Ordering::Equal,
+        "an exact half residual is nonzero"
+    );
+    let competitor = if residual_direction == Ordering::Greater {
+        ExactDyadic::try_add_refs(&center, &ExactDyadic::one())?
+    } else {
+        ExactDyadic::try_subtract_refs(&center, &ExactDyadic::one())?
+    };
+    let center_period = target_period.try_product(&center)?;
+    let center_displacement = ExactDyadic::try_add_refs(&target_difference, &center_period)?;
+    let competitor_displacement = if residual_direction == Ordering::Greater {
+        ExactDyadic::try_add_refs(&center_displacement, &target_period)?
+    } else {
+        ExactDyadic::try_subtract_refs(&center_displacement, &target_period)?
+    };
     let source_is_circle = matches!(
         source_connection.step,
         crate::geographic::ChartStep::Circle(_)
     );
-    let target_direction = target_difference.cmp(&ConnectorDyadic::zero());
-    let mut selected = &candidates[0];
-    for candidate in &candidates[1..] {
-        if transformed_lift_candidate_precedes(
-            candidate,
-            selected,
-            source_is_circle,
-            target_direction,
-        ) {
-            selected = candidate;
-        }
-    }
+    let lift = match center_displacement.cmp_magnitude_scaled(&competitor_displacement, 0) {
+        Ordering::Greater if source_is_circle => center,
+        Ordering::Greater => competitor,
+        Ordering::Less if source_is_circle => competitor,
+        Ordering::Less => center,
+        Ordering::Equal => {
+            let target_direction = target_difference.cmp(&zero);
+            let center_direction = center_displacement.cmp(&zero);
+            let competitor_direction = competitor_displacement.cmp(&zero);
+            let center_follows = center_direction == target_direction;
+            let competitor_follows = competitor_direction == target_direction;
+            debug_assert!(
+                target_direction != Ordering::Equal
+                    && center_direction != Ordering::Equal
+                    && competitor_direction != Ordering::Equal
+                    && center_follows != competitor_follows,
+                "equal-magnitude target lifts are antipodal with a directed endpoint pair"
+            );
+            if center_follows { center } else { competitor }
+        },
+    };
 
     Ok(
         crate::geographic::RetainedChartDisplacement::from_native_endpoints(
             target_endpoints,
-            exact_integer_i64(&selected.lift)?,
+            exact_integer_i64(&lift)?,
         ),
     )
-}
-
-struct TransformedLiftCandidate {
-    lift: ConnectorDyadic,
-    target_displacement: ConnectorDyadic,
-    residual: ConnectorDyadic,
-}
-
-fn transformed_lift_candidate(
-    lift: ConnectorDyadic,
-    numerator: &ConnectorDyadic,
-    denominator: &ConnectorDyadic,
-    target_difference: &ConnectorDyadic,
-    target_period: &ConnectorDyadic,
-) -> crate::error::Result<TransformedLiftCandidate> {
-    let target_displacement = target_difference
-        .clone()
-        .try_add(target_period.try_product(&lift)?)?;
-    let residual = numerator
-        .clone()
-        .try_subtract(denominator.try_product(&lift)?)?;
-    Ok(TransformedLiftCandidate {
-        lift,
-        target_displacement,
-        residual,
-    })
-}
-
-fn transformed_lift_candidate_precedes(
-    candidate: &TransformedLiftCandidate,
-    selected: &TransformedLiftCandidate,
-    source_is_circle: bool,
-    target_direction: std::cmp::Ordering,
-) -> bool {
-    use std::cmp::Ordering;
-
-    let distance_order = candidate
-        .residual
-        .clone()
-        .abs()
-        .cmp(&selected.residual.clone().abs());
-    if distance_order != Ordering::Equal {
-        return distance_order == Ordering::Less;
-    }
-
-    let displacement_order = candidate
-        .target_displacement
-        .clone()
-        .abs()
-        .cmp(&selected.target_displacement.clone().abs());
-    if displacement_order != Ordering::Equal {
-        return if source_is_circle {
-            displacement_order == Ordering::Greater
-        } else {
-            displacement_order == Ordering::Less
-        };
-    }
-
-    let zero = ConnectorDyadic::zero();
-    let candidate_direction = candidate.target_displacement.cmp(&zero);
-    let selected_direction = selected.target_displacement.cmp(&zero);
-    match target_direction {
-        Ordering::Greater => {
-            candidate_direction == Ordering::Greater && selected_direction != Ordering::Greater
-        },
-        Ordering::Less => {
-            candidate_direction == Ordering::Less && selected_direction != Ordering::Less
-        },
-        Ordering::Equal => {
-            debug_assert!(
-                false,
-                "equal-magnitude antipodal candidates require a directed target difference"
-            );
-            false
-        },
-    }
 }
 
 fn round_retained_source_sheet_value(
@@ -1659,14 +1602,33 @@ mod tests {
     }
 
     #[test]
-    fn transformed_connector_reverses_opposed_axis_orientation() {
+    fn transformed_west_east_period_lift_preserves_forward_endpoint_bits() {
         let west = connector_frame(360.0, false);
         let east = connector_frame(360.0, true);
-        let edge =
-            select_transformed_chart_displacement(west, [0.0, 49.0], east, [0.0, -49.0]).unwrap();
+        let source = [0.0, 176.4];
+        let target = [0.0, -176.4];
+        let edge = select_transformed_chart_displacement(west, source, east, target).unwrap();
 
         assert_eq!(edge.periods(), 0);
-        assert_eq!(edge.delta_native(east.longitude()), -49.0);
+        assert_eq!(
+            edge.endpoints().map(|longitude| longitude.get().to_bits()),
+            target.map(f64::to_bits)
+        );
+    }
+
+    #[test]
+    fn transformed_west_east_period_lift_preserves_reversed_endpoint_bits() {
+        let west = connector_frame(360.0, false);
+        let east = connector_frame(360.0, true);
+        let source = [176.4, 0.0];
+        let target = [-176.4, 0.0];
+        let edge = select_transformed_chart_displacement(west, source, east, target).unwrap();
+
+        assert_eq!(edge.periods(), 0);
+        assert_eq!(
+            edge.endpoints().map(|longitude| longitude.get().to_bits()),
+            target.map(f64::to_bits)
+        );
     }
 
     #[test]
