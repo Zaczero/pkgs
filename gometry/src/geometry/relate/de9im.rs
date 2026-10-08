@@ -86,26 +86,73 @@ impl De9im {
 mod tests {
     use super::*;
 
+    fn one_cell_matrix(row: Loc, col: Loc, dimension: Dimension) -> [u8; 9] {
+        let mut matrix = De9im([b'F'; 9]);
+        matrix.set_at_least(row, col, dimension);
+        matrix.0
+    }
+
     #[test]
     fn set_at_least_maps_all_location_pairs_to_their_de9im_cells() {
-        let mut matrix = De9im([b'F'; 9]);
-        for (row, col, dimension) in [
-            (Loc::Interior, Loc::Interior, Dimension::Point),
-            (Loc::Interior, Loc::Boundary, Dimension::Curve),
-            (Loc::Interior, Loc::Exterior, Dimension::Surface),
-            (Loc::Boundary, Loc::Interior, Dimension::Point),
-            (Loc::Boundary, Loc::Boundary, Dimension::Curve),
-            (Loc::Boundary, Loc::Exterior, Dimension::Surface),
-            (Loc::Exterior, Loc::Interior, Dimension::Point),
-            (Loc::Exterior, Loc::Boundary, Dimension::Curve),
-            (Loc::Exterior, Loc::Exterior, Dimension::Surface),
-        ] {
-            matrix.set_at_least(row, col, dimension);
-        }
-        assert_eq!(matrix.0, *b"012012012");
+        let cases = [
+            (
+                "II",
+                one_cell_matrix(Loc::Interior, Loc::Interior, Dimension::Point),
+                *b"0FFFFFFFF",
+            ),
+            (
+                "IB",
+                one_cell_matrix(Loc::Interior, Loc::Boundary, Dimension::Curve),
+                *b"F1FFFFFFF",
+            ),
+            (
+                "IE",
+                one_cell_matrix(Loc::Interior, Loc::Exterior, Dimension::Surface),
+                *b"FF2FFFFFF",
+            ),
+            (
+                "BI",
+                one_cell_matrix(Loc::Boundary, Loc::Interior, Dimension::Point),
+                *b"FFF0FFFFF",
+            ),
+            (
+                "BB",
+                one_cell_matrix(Loc::Boundary, Loc::Boundary, Dimension::Curve),
+                *b"FFFF1FFFF",
+            ),
+            (
+                "BE",
+                one_cell_matrix(Loc::Boundary, Loc::Exterior, Dimension::Surface),
+                *b"FFFFF2FFF",
+            ),
+            (
+                "EI",
+                one_cell_matrix(Loc::Exterior, Loc::Interior, Dimension::Point),
+                *b"FFFFFF0FF",
+            ),
+            (
+                "EB",
+                one_cell_matrix(Loc::Exterior, Loc::Boundary, Dimension::Curve),
+                *b"FFFFFFF1F",
+            ),
+            (
+                "EE",
+                one_cell_matrix(Loc::Exterior, Loc::Exterior, Dimension::Surface),
+                *b"FFFFFFFF2",
+            ),
+        ];
+        assert!(
+            cases.iter().all(|(_, actual, expected)| actual == expected),
+            "incorrect DE-9IM cell addresses: {cases:?}",
+        );
+    }
 
+    #[test]
+    fn set_at_least_keeps_the_largest_witnessed_dimension() {
+        let mut matrix = De9im([b'F'; 9]);
+        matrix.set_at_least(Loc::Interior, Loc::Interior, Dimension::Point);
         matrix.set_at_least(Loc::Interior, Loc::Interior, Dimension::Surface);
         matrix.set_at_least(Loc::Interior, Loc::Interior, Dimension::Point);
-        assert_eq!(matrix.0, *b"212012012");
+        assert_eq!(matrix.0, *b"2FFFFFFFF");
     }
 }
