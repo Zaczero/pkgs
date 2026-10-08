@@ -720,6 +720,55 @@ def test_line_merge_dissolves_only_degree_two_nodes() -> None:
     assert gm.equals(signed, gm.LineString([(-1, 0), (1, 0)]))
 
 
+def test_line_merge_scalar_preserves_reversed_chain_coordinate_order() -> None:
+    merged = gm.from_wkt('MULTILINESTRING ((2 0, 1 0), (0 0, 1 0))').line_merge()
+
+    assert merged.to_wkt() == 'LINESTRING (2 0, 1 0, 0 0)'
+
+
+def test_line_merge_array_multiline_rows_preserve_nullable_gather_order() -> None:
+    reversed_parts = gm.MultiLineString([[(2, 0), (1, 0)], [(0, 0), (1, 0)]])
+    forward_parts = gm.MultiLineString([[(10, 0), (11, 0)], [(11, 0), (12, 0)]])
+    dense = gm.GeometryArray([reversed_parts, forward_parts])
+    assert dense.line_merge().to_wkt() == [
+        'LINESTRING (2 0, 1 0, 0 0)',
+        'LINESTRING (10 0, 11 0, 12 0)',
+    ]
+
+    nullable = gm.GeometryArray([None, reversed_parts, forward_parts])
+    merged = nullable.line_merge()
+    assert merged.to_wkt() == [
+        None,
+        'LINESTRING (2 0, 1 0, 0 0)',
+        'LINESTRING (10 0, 11 0, 12 0)',
+    ]
+    assert merged.is_missing.tolist() == [True, False, False]
+
+    gathered = nullable[[2, 0, 1, 2]]
+    gathered_merged = gathered.line_merge()
+    assert gathered_merged.to_wkt() == [
+        'LINESTRING (10 0, 11 0, 12 0)',
+        None,
+        'LINESTRING (2 0, 1 0, 0 0)',
+        'LINESTRING (10 0, 11 0, 12 0)',
+    ]
+    assert gathered_merged.is_missing.tolist() == [False, True, False, False]
+
+
+def test_line_merge_all_coincident_multipart_keeps_typed_empty() -> None:
+    merged = gm.MultiLineString([[(3, 4), (3, 4)], [(5, 6), (5, 6)]]).line_merge()
+
+    assert merged.geometry_type == 'MultiLineString'
+    assert merged.is_empty
+
+
+def test_line_merge_rejects_geometry_collections() -> None:
+    collection = gm.GeometryCollection([gm.LineString([(0, 0), (1, 0)])])
+
+    with pytest.raises(TypeError, match='LineString or MultiLineString'):
+        collection.line_merge()
+
+
 def test_overlay_detects_collinear_overlap_with_self_intersecting_operand() -> None:
     """Collinear overlap is found even when the carrying operand self-intersects.
 
