@@ -125,8 +125,7 @@ struct CertifiedBoundarySplit {
 
 #[derive(Debug)]
 pub(super) enum NodeProvenance {
-    /// A selected source vertex; its input occurrence remains in the ingress
-    /// product rather than being copied into the finished mesh certificate.
+    /// A vertex in the source point slice supplied to the mesh builder.
     SourceSite,
     ConstraintSplit {
         certificate: usize,
@@ -918,19 +917,16 @@ impl ConstrainedMesh {
                 end_site,
             })
             .collect();
-        Self::build_with_sources(
-            points,
-            &(0..points.len()).collect::<Vec<_>>(),
-            &sources,
-            vec![SourceRingStart::new(0, RingOwner::new(0, 0))],
-        )
+        Self::build_with_sources(points, &sources, vec![SourceRingStart::new(
+            0,
+            RingOwner::new(0, 0),
+        )])
         .ok()
         .flatten()
     }
 
     pub(super) fn build_with_sources(
         points: &[Point],
-        occurrences: &[usize],
         sources: &[SourceConstraint],
         source_rings: Vec<SourceRingStart>,
     ) -> Result<Option<Self>> {
@@ -940,10 +936,9 @@ impl ConstrainedMesh {
         let constrained = vec![false; mesh.edge_count()];
         let source_constraints = sources.to_vec();
         let source_pieces = SourcePieces::new(sources.len())?;
-        let provenance = occurrences
-            .iter()
-            .map(|_| NodeProvenance::SourceSite)
-            .collect();
+        // Initial mesh vertices and the source marker column share this domain;
+        // refinement appends its own provenance after this admission.
+        let provenance = points.iter().map(|_| NodeProvenance::SourceSite).collect();
         let mut this = Self {
             mesh,
             constrained,
@@ -2143,7 +2138,6 @@ mod tests {
         ]);
         let result = ConstrainedMesh::build_with_sources(
             &pts,
-            &(0..pts.len()).collect::<Vec<_>>(),
             &[[0, 1], [2, 3]]
                 .iter()
                 .enumerate()

@@ -504,12 +504,11 @@ fn constrained_triangle_plan<'a>(
     validate_refinement_request(area, refinement)?;
     let ConstrainedSourcePlan {
         mut vertices,
-        occurrences,
         sources,
         source_rings,
     } = constrained_source_plan(&rings)?;
     let Some(mut cdt) =
-        cdt::ConstrainedMesh::build_with_sources(&vertices, &occurrences, &sources, source_rings)?
+        cdt::ConstrainedMesh::build_with_sources(&vertices, &sources, source_rings)?
     else {
         return Err(GeometryErrorKind::triangulation(
             "constrained triangulation needs three non-collinear vertices",
@@ -630,38 +629,24 @@ pub(super) fn selected_triangle_points(
     ]
 }
 
-/// Select the first full source point at each XY key, then order sites by XY
-/// for the exact mesh. Keep its original occurrence aligned through source-plan
-/// admission; endpoint publication uses the retained point itself.
-pub(super) fn selected_source_sites(points: Vec<Point>) -> Result<(Vec<Point>, Vec<usize>)> {
+/// Select the first full source point at each XY key, then order those points
+/// by XY for the exact mesh.
+fn selected_source_sites(points: Vec<Point>) -> Result<Vec<Point>> {
     let mut selected = crate::collections::try_hash_map_with_capacity(points.len())?;
-    for (occurrence, point) in points.into_iter().enumerate() {
-        selected
-            .entry(PointKey::new(point))
-            .or_insert((point, occurrence));
+    for point in points {
+        selected.entry(PointKey::new(point)).or_insert(point);
     }
-    let mut selected_values = Vec::with_capacity(selected.len());
-    selected_values.extend(selected.into_values());
-    let mut selected = selected_values;
-    selected.sort_unstable_by(|(left, _), (right, _)| {
+    let mut selected: Vec<_> = selected.into_values().collect();
+    selected.sort_unstable_by(|left, right| {
         left.x
             .total_cmp(&right.x)
             .then_with(|| left.y.total_cmp(&right.y))
     });
-    let mut sites = Vec::new();
-    let mut occurrences = Vec::new();
-    sites.reserve(selected.len());
-    occurrences.reserve(selected.len());
-    for (point, occurrence) in selected {
-        sites.push(point);
-        occurrences.push(occurrence);
-    }
-    Ok((sites, occurrences))
+    Ok(selected)
 }
 
 struct ConstrainedSourcePlan {
     vertices: Vec<Point>,
-    occurrences: Vec<usize>,
     sources: Vec<cdt::SourceConstraint>,
     source_rings: Vec<cdt::SourceRingStart>,
 }
@@ -682,7 +667,7 @@ fn constrained_source_plan(rings: &[(RingOwner, &CoordSeq)]) -> Result<Constrain
             source_points.push(ring.nth_coord(index));
         }
     }
-    let (vertices, occurrences) = selected_source_sites(source_points)?;
+    let vertices = selected_source_sites(source_points)?;
     let mut indices = crate::collections::try_hash_map_with_capacity(vertices.len())?;
     for (site, point) in vertices.iter().enumerate() {
         indices.insert(PointKey::new(*point), site);
@@ -724,7 +709,6 @@ fn constrained_source_plan(rings: &[(RingOwner, &CoordSeq)]) -> Result<Constrain
     }
     Ok(ConstrainedSourcePlan {
         vertices,
-        occurrences,
         sources,
         source_rings,
     })
@@ -819,7 +803,7 @@ mod tests {
     }
 
     #[test]
-    fn constrained_source_plan_keeps_first_full_signed_zero_occurrence_and_ordinals() {
+    fn constrained_source_plan_keeps_first_full_signed_zero_point_and_source_ordinals() {
         let point = |x: f64, y: f64, z: f64, m: f64| {
             Point::new_raw_axes(x, y, ZOrdinate(Some(z)), MOrdinate(Some(m)))
         };
@@ -872,7 +856,6 @@ mod tests {
                 (2.0_f64.to_bits(), 2.0_f64.to_bits(), Some(9.0), Some(90.0)),
             ]
         );
-        assert_eq!(plan.occurrences, [9, 8, 0, 6, 7]);
         assert_eq!(
             plan.sources
                 .iter()
