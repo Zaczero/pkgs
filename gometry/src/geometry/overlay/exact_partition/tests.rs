@@ -545,10 +545,10 @@ fn boundary_node_serializer_uses_accepted_embedding_for_line_and_residual_zm_poi
     let nodes = [residual_node, line_start, line_end];
     let axes = CoordinateAxes::XYZM;
     let accepted_nodes = inventory
-        .resolve_node_points::<crate::crs::GeodesicMetric>(
+        .resolve_node_points::<crate::crs::GeodesicMetric, _>(
             &partition,
             &accepted,
-            &nodes,
+            nodes.iter().copied(),
             axes,
             crate::geometry::SourceArcContext::cartesian(),
             None,
@@ -635,10 +635,10 @@ fn boundary_node_serializer_uses_accepted_embedding_for_line_and_residual_zm_poi
 
     let nearest_embedding = embedding::Embedding::nearest(&partition);
     let nearest_nodes = inventory
-        .resolve_node_points::<crate::crs::GeodesicMetric>(
+        .resolve_node_points::<crate::crs::GeodesicMetric, _>(
             &partition,
             &nearest_embedding,
-            &nodes,
+            nodes.iter().copied(),
             axes,
             crate::geometry::SourceArcContext::cartesian(),
             None,
@@ -748,10 +748,10 @@ fn resolved_node_points_use_embedding_xy_and_exact_ordinates() {
         .expect("crossing belongs to the partition coordinate table") = XY::new(12.0, 13.0);
     let embedding = embedding::Embedding::from_owned(coordinates);
     let points = inventory
-        .resolve_node_points::<crate::crs::GeodesicMetric>(
+        .resolve_node_points::<crate::crs::GeodesicMetric, _>(
             &partition,
             &embedding,
-            &[crossing, endpoint],
+            [crossing, endpoint].into_iter(),
             crate::geometry::CoordinateAxes::XYZM,
             crate::geometry::SourceArcContext::cartesian(),
             None,

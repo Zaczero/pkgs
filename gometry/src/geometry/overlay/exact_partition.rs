@@ -1625,11 +1625,16 @@ impl ExactSourceInventory {
         Ok(Some(protected))
     }
 
-    pub(super) fn resolve_line_emission_points<'e, 'p, M: ChartMetric>(
+    pub(super) fn resolve_line_emission_points<
+        'e,
+        'p,
+        M: ChartMetric,
+        I: IntoIterator<Item = NodeId>,
+    >(
         &self,
         partition: &ExactPartition<'_>,
         emission: &'e ExactLineEmission<'p>,
-        nodes: &[NodeId],
+        nodes: I,
         declared_axes: crate::geometry::CoordinateAxes,
         context: SourceArcContext<'_, '_, M>,
         source_scope: Option<u32>,
@@ -1644,16 +1649,20 @@ impl ExactSourceInventory {
         )
     }
 
-    fn resolve_node_points<'e, 'p, M: ChartMetric>(
+    fn resolve_node_points<'e, 'p, M: ChartMetric, I: IntoIterator<Item = NodeId>>(
         &self,
         partition: &ExactPartition<'_>,
         embedding: &'e embedding::Embedding<'p>,
-        nodes: &[NodeId],
+        nodes: I,
         declared_axes: crate::geometry::CoordinateAxes,
         context: SourceArcContext<'_, '_, M>,
         source_scope: Option<u32>,
     ) -> Result<ResolvedNodePoints<'e, 'p>> {
-        if nodes.is_empty() || (!declared_axes.has_z() && !declared_axes.has_m()) {
+        if !declared_axes.has_z() && !declared_axes.has_m() {
+            return Ok(ResolvedNodePoints::from_embedding(embedding, None));
+        }
+        let mut nodes = nodes.into_iter().peekable();
+        if nodes.peek().is_none() {
             return Ok(ResolvedNodePoints::from_embedding(embedding, None));
         }
         let mut by_node = vec![None; partition.node_count()];
@@ -1668,20 +1677,20 @@ impl ExactSourceInventory {
         Ok(ResolvedNodePoints::from_embedding(embedding, Some(by_node)))
     }
 
-    fn resolve_node_points_into<M: ChartMetric>(
+    fn resolve_node_points_into<M: ChartMetric, I: IntoIterator<Item = NodeId>>(
         &self,
         partition: &ExactPartition<'_>,
-        nodes: &[NodeId],
+        nodes: I,
         declared_axes: CoordinateAxes,
         context: SourceArcContext<'_, '_, M>,
         source_scope: Option<u32>,
         by_node: &mut [Option<(ZOrdinate, MOrdinate)>],
     ) -> Result<()> {
-        if nodes.is_empty() || (!declared_axes.has_z() && !declared_axes.has_m()) {
+        if !declared_axes.has_z() && !declared_axes.has_m() {
             return Ok(());
         }
         debug_assert_eq!(by_node.len(), partition.node_count());
-        for &node in nodes {
+        for node in nodes {
             let ordinates = by_node.get_mut(node.0 as usize).ok_or_else(|| {
                 GeometryErrorKind::Invalid("exact overlay output references an unknown node".into())
             })?;
@@ -1748,16 +1757,21 @@ impl ExactSourceInventory {
                 lines,
             ));
         }
-        let mut nodes = Vec::new();
-        let node_capacity = items
-            .len()
-            .checked_mul(2)
-            .ok_or(ResourceError::SizeOverflow)?;
-        nodes.reserve(node_capacity);
-        nodes.extend(items.iter().flatten().copied());
-        let by_node =
-            self.resolve_node_points(partition, &embedding, &nodes, declared_axes, context, None)?;
-        let axes = bucket_axes(&nodes, &by_node, declared_axes, strict, "node")?;
+        let by_node = self.resolve_node_points(
+            partition,
+            &embedding,
+            items.iter().flatten().copied(),
+            declared_axes,
+            context,
+            None,
+        )?;
+        let axes = bucket_axes(
+            items.iter().flatten().copied(),
+            &by_node,
+            declared_axes,
+            strict,
+            "node",
+        )?;
         let coordinates = by_node.coordinates();
         let mut lines = Vec::with_capacity(items.len());
         for item in items {
@@ -2040,21 +2054,18 @@ impl ExactSourceInventory {
         let emission = plan.emission(&topology, &edges);
         let embedding = partition.embed(&[&emission], "boundary")?;
         let parts = plan.emit_boundary_node_parts(partition, &emission)?;
-        let node_capacity = parts
-            .lines
-            .iter()
-            .try_fold(parts.points.len(), |count, line| {
-                count
-                    .checked_add(line.len())
-                    .ok_or(ResourceError::SizeOverflow)
-            })?;
-        let mut nodes = Vec::with_capacity(node_capacity);
-        nodes.extend(parts.points.iter().copied());
-        for line in &parts.lines {
-            nodes.extend(line.iter().copied());
-        }
-        let by_node =
-            self.resolve_node_points(partition, &embedding, &nodes, declared_axes, context, None)?;
+        let by_node = self.resolve_node_points(
+            partition,
+            &embedding,
+            parts
+                .points
+                .iter()
+                .copied()
+                .chain(parts.lines.iter().flatten().copied()),
+            declared_axes,
+            context,
+            None,
+        )?;
         self.boundary_node_parts_to_shape_resolved(
             parts,
             &by_node,
@@ -2181,36 +2192,24 @@ impl ExactSourceInventory {
         let emission = plan.emission(topology, edges);
         let embedding = partition.embed(&[&emission], operation.name())?;
         let parts = plan.build_node_parts(partition, topology, &emission)?;
-        let line_node_count = parts.lines.iter().try_fold(0_usize, |count, line| {
-            count
-                .checked_add(line.len())
-                .ok_or(ResourceError::SizeOverflow)
-        })?;
-        let polygon_node_count = parts.polygons.iter().try_fold(0_usize, |count, polygon| {
-            polygon.iter().try_fold(count, |count, ring| {
-                count
-                    .checked_add(ring.len())
-                    .ok_or(ResourceError::SizeOverflow)
-            })
-        })?;
-        let node_capacity = parts
-            .points
-            .len()
-            .checked_add(line_node_count)
-            .and_then(|count| count.checked_add(polygon_node_count))
-            .ok_or(ResourceError::SizeOverflow)?;
-        let mut nodes = Vec::with_capacity(node_capacity);
-        nodes.extend(parts.points.iter().copied());
-        for line in &parts.lines {
-            nodes.extend(line.iter().copied());
-        }
-        for polygon in &parts.polygons {
-            for ring in polygon {
-                nodes.extend(ring.iter().copied());
-            }
-        }
-        let by_node =
-            self.resolve_node_points(partition, &embedding, &nodes, declared_axes, context, None)?;
+        let by_node = self.resolve_node_points(
+            partition,
+            &embedding,
+            parts
+                .points
+                .iter()
+                .copied()
+                .chain(parts.lines.iter().flatten().copied())
+                .chain(
+                    parts
+                        .polygons
+                        .iter()
+                        .flat_map(|polygon| polygon.iter().flatten().copied()),
+                ),
+            declared_axes,
+            context,
+            None,
+        )?;
         self.node_parts_to_shape_resolved(
             parts,
             &embedding,
@@ -2331,19 +2330,6 @@ impl ExactSourceInventory {
             .map(|plan| plan.emission(&topology, &edges))
             .collect();
         let emission_refs: Vec<_> = emissions.iter().collect();
-        let mut seen = Vec::with_capacity(partition.node_count());
-        seen.resize(partition.node_count(), false);
-        let mut nodes = Vec::new();
-        for emission in &emissions {
-            for &[start, end] in &emission.items {
-                for node in [start, end] {
-                    if !seen[node.0 as usize] {
-                        seen[node.0 as usize] = true;
-                        nodes.push(node);
-                    }
-                }
-            }
-        }
         let embedding = partition.embed(&emission_refs, "subdivide")?;
 
         let mut node_parts = Vec::with_capacity(plans.len());
@@ -2351,8 +2337,16 @@ impl ExactSourceInventory {
             node_parts.push(plan.build_node_parts(partition, &topology, emission)?);
         }
 
-        let by_node =
-            self.resolve_node_points(partition, &embedding, &nodes, declared_axes, context, None)?;
+        let by_node = self.resolve_node_points(
+            partition,
+            &embedding,
+            emissions
+                .iter()
+                .flat_map(|emission| emission.items.iter().flatten().copied()),
+            declared_axes,
+            context,
+            None,
+        )?;
         let mut parts = node_parts.into_iter();
         let mut polygon_edge_roles = polygon_edge_roles.unwrap_or_default().into_iter();
         let first_roles = polygon_edge_roles.next();
@@ -2425,22 +2419,17 @@ impl ExactSourceInventory {
             })
             .collect();
         let emission_refs: Vec<_> = emissions.iter().collect();
-        let mut seen = Vec::with_capacity(partition.node_count());
-        seen.resize(partition.node_count(), false);
-        let mut nodes = Vec::new();
-        for emission in &emissions {
-            for &[start, end] in &emission.items {
-                for node in [start, end] {
-                    if !seen[node.0 as usize] {
-                        seen[node.0 as usize] = true;
-                        nodes.push(node);
-                    }
-                }
-            }
-        }
         let embedding = partition.embed(&emission_refs, "subdivide")?;
-        let by_node =
-            self.resolve_node_points(partition, &embedding, &nodes, declared_axes, context, None)?;
+        let by_node = self.resolve_node_points(
+            partition,
+            &embedding,
+            emissions
+                .iter()
+                .flat_map(|emission| emission.items.iter().flatten().copied()),
+            declared_axes,
+            context,
+            None,
+        )?;
         let views = partition.source_span_views(&self.source_segments)?;
         let ranges = source_line_ranges(source)?;
         let mut outputs = Vec::with_capacity(selected.len());
@@ -2521,12 +2510,13 @@ impl ExactSourceInventory {
             }
         }
 
-        let mut line_nodes = Vec::new();
-        for run in &node_runs {
-            line_nodes.reserve(run.len());
-            line_nodes.extend(run.iter().copied());
-        }
-        let line_axes = bucket_axes(&line_nodes, by_node, declared_axes, strict, "subdivide")?;
+        let line_axes = bucket_axes(
+            node_runs.iter().flatten().copied(),
+            by_node,
+            declared_axes,
+            strict,
+            "subdivide",
+        )?;
         let coordinates = by_node.coordinates();
         let mut lines = Vec::with_capacity(node_runs.len());
         for run in node_runs {
@@ -2599,17 +2589,20 @@ impl ExactSourceInventory {
         has_curve_support: bool,
         has_point_support: bool,
     ) -> Result<Shape> {
-        let point_axes = bucket_axes(&parts.points, by_node, declared_axes, false, "boundary")?;
-        let line_node_count = parts.lines.iter().try_fold(0_usize, |count, line| {
-            count
-                .checked_add(line.len())
-                .ok_or(ResourceError::SizeOverflow)
-        })?;
-        let mut line_nodes = Vec::with_capacity(line_node_count);
-        for line in &parts.lines {
-            line_nodes.extend(line.iter().copied());
-        }
-        let line_axes = bucket_axes(&line_nodes, by_node, declared_axes, false, "boundary")?;
+        let point_axes = bucket_axes(
+            parts.points.iter().copied(),
+            by_node,
+            declared_axes,
+            false,
+            "boundary",
+        )?;
+        let line_axes = bucket_axes(
+            parts.lines.iter().flatten().copied(),
+            by_node,
+            declared_axes,
+            false,
+            "boundary",
+        )?;
         let points = if parts.points.is_empty() {
             None
         } else {
@@ -2687,31 +2680,30 @@ impl ExactSourceInventory {
             );
         }
 
-        let line_node_count = parts.lines.iter().try_fold(0_usize, |count, line| {
-            count
-                .checked_add(line.len())
-                .ok_or(ResourceError::SizeOverflow)
-        })?;
-        let polygon_node_count = parts.polygons.iter().try_fold(0_usize, |count, polygon| {
-            polygon.iter().try_fold(count, |count, ring| {
-                count
-                    .checked_add(ring.len())
-                    .ok_or(ResourceError::SizeOverflow)
-            })
-        })?;
-        let point_axes = bucket_axes(&parts.points, by_node, declared_axes, strict, operation)?;
-        let mut line_nodes = Vec::with_capacity(line_node_count);
-        for line in &parts.lines {
-            line_nodes.extend(line.iter().copied());
-        }
-        let line_axes = bucket_axes(&line_nodes, by_node, declared_axes, strict, operation)?;
-        let mut polygon_nodes = Vec::with_capacity(polygon_node_count);
-        for polygon in &parts.polygons {
-            for ring in polygon {
-                polygon_nodes.extend(ring.iter().copied());
-            }
-        }
-        let polygon_axes = bucket_axes(&polygon_nodes, by_node, declared_axes, strict, operation)?;
+        let point_axes = bucket_axes(
+            parts.points.iter().copied(),
+            by_node,
+            declared_axes,
+            strict,
+            operation,
+        )?;
+        let line_axes = bucket_axes(
+            parts.lines.iter().flatten().copied(),
+            by_node,
+            declared_axes,
+            strict,
+            operation,
+        )?;
+        let polygon_axes = bucket_axes(
+            parts
+                .polygons
+                .iter()
+                .flat_map(|polygon| polygon.iter().flatten().copied()),
+            by_node,
+            declared_axes,
+            strict,
+            operation,
+        )?;
 
         let xy = by_node.coordinates();
         let mut points = Vec::with_capacity(parts.points.len());
@@ -3080,27 +3072,25 @@ impl ExactSourceInventory {
         context: SourceArcContext<'_, '_, M>,
         source_scope: Option<u32>,
     ) -> Result<Vec<Shape>> {
-        let mut nodes = Vec::new();
-        for polygon in &groups {
-            for ring in polygon {
-                nodes.extend(ring.iter().copied());
-            }
-        }
         let by_node = self.resolve_node_points(
             partition,
             embedding,
-            &nodes,
+            groups
+                .iter()
+                .flat_map(|polygon| polygon.iter().flatten().copied()),
             declared_axes,
             context,
             source_scope,
         )?;
         let mut output = Vec::with_capacity(groups.len());
         for polygon in groups {
-            let mut polygon_nodes = Vec::new();
-            for ring in &polygon {
-                polygon_nodes.extend(ring.iter().copied());
-            }
-            let axes = bucket_axes(&polygon_nodes, &by_node, declared_axes, strict, operation)?;
+            let axes = bucket_axes(
+                polygon.iter().flatten().copied(),
+                &by_node,
+                declared_axes,
+                strict,
+                operation,
+            )?;
             let mut rings = Vec::with_capacity(polygon.len());
             for mut nodes in polygon {
                 if let Some(&first) = nodes.first()
@@ -3136,7 +3126,6 @@ impl ExactSourceInventory {
                 GeometryErrorKind::Invalid("polygonize diagnostic row has no source axes".into())
             })?;
             let mut lines = Vec::with_capacity(spans.len());
-            let mut nodes = Vec::new();
             for (span, closed) in spans {
                 let span = partition.spans.get(span).ok_or_else(|| {
                     GeometryErrorKind::Invalid(
@@ -3148,14 +3137,13 @@ impl ExactSourceInventory {
                 if closed {
                     line_nodes.push(span.start);
                 }
-                nodes.extend(line_nodes.iter().copied());
                 lines.push(line_nodes);
             }
             let source_scope = Some(u32::try_from(row).map_err(|_| ResourceError::SizeOverflow)?);
             let by_node = self.resolve_node_points(
                 partition,
                 embedding,
-                &nodes,
+                lines.iter().flatten().copied(),
                 declared_axes,
                 context,
                 source_scope,
@@ -3163,7 +3151,7 @@ impl ExactSourceInventory {
             let mut diagnostics = Vec::with_capacity(lines.len());
             for line_nodes in lines {
                 let axes = bucket_axes(
-                    &line_nodes,
+                    line_nodes.iter().copied(),
                     &by_node,
                     declared_axes,
                     strict,
@@ -4205,20 +4193,24 @@ fn rings_occupied(winding: &[i64], mut rings: Range<usize>, odd: bool) -> bool {
         && rings.all(|ring| !ring_occupied(winding[ring], odd))
 }
 
-fn bucket_axes(
-    nodes: &[NodeId],
+fn bucket_axes<I: IntoIterator<Item = NodeId>>(
+    nodes: I,
     points: &ResolvedNodePoints,
     declared: crate::geometry::CoordinateAxes,
     strict: bool,
     operation: &str,
 ) -> Result<crate::geometry::CoordinateAxes> {
-    if nodes.is_empty() || (!declared.has_z() && !declared.has_m()) {
+    if !declared.has_z() && !declared.has_m() {
         return Ok(crate::geometry::CoordinateAxes::XY);
     }
+    let mut nodes = nodes.into_iter();
+    let Some(first) = nodes.next() else {
+        return Ok(crate::geometry::CoordinateAxes::XY);
+    };
     let mut has_z = declared.has_z();
     let mut has_m = declared.has_m();
-    for node in nodes {
-        let (z, m) = points.ordinates(*node).ok_or_else(|| {
+    for node in std::iter::once(first).chain(nodes) {
+        let (z, m) = points.ordinates(node).ok_or_else(|| {
             GeometryErrorKind::Invalid("exact overlay output lost a live node".into())
         })?;
         has_z &= z.0.is_some();

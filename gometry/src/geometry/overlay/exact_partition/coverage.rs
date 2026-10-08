@@ -602,7 +602,7 @@ impl ExactSourceInventory {
         let by_node = self.resolve_node_points(
             partition,
             &embedding,
-            &output_nodes,
+            output_nodes.iter().copied(),
             declared_axes,
             context,
             None,
@@ -788,21 +788,16 @@ impl ExactSourceInventory {
                 super::polygons_from_xy_nodes(parts.polygons, xy)?,
             ));
         }
-        let node_count = parts
-            .polygons
-            .iter()
-            .flat_map(|polygon| polygon.iter())
-            .map(Vec::len)
-            .try_fold(0_usize, |count, ring| {
-                count.checked_add(ring).ok_or(ResourceError::SizeOverflow)
-            })?;
-        let mut nodes = Vec::with_capacity(node_count);
-        for polygon in &parts.polygons {
-            for ring in polygon {
-                nodes.extend_from_slice(ring);
-            }
-        }
-        let axes = bucket_axes(&nodes, by_node, declared_axes, false, "coverage_clean")?;
+        let axes = bucket_axes(
+            parts
+                .polygons
+                .iter()
+                .flat_map(|polygon| polygon.iter().flatten().copied()),
+            by_node,
+            declared_axes,
+            false,
+            "coverage_clean",
+        )?;
         let xy = by_node.coordinates();
         let mut polygons = Vec::with_capacity(parts.polygons.len());
         for polygon in parts.polygons {
