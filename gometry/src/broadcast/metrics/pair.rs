@@ -1074,45 +1074,50 @@ mod lonlat_points_tests {
 #[cfg(test)]
 mod lonlat_shape_under_tests {
     use super::lonlat_shape_under;
+    use crate::crs::CrsError;
+    use crate::error::ErrorKind;
     use crate::geometry::{GeometryErrorKind, Point, Shape};
 
     #[test]
     fn domain_error_is_native_result() {
         let shape = Shape::Point(Point::new_raw_xy(0.0, 95.0));
-        let error = lonlat_shape_under(&shape, None).expect_err("out of domain");
-        assert!(matches!(
-            error.kind(),
-            crate::error::ErrorKind::Geometry(GeometryErrorKind::Invalid(_))
-        ));
-        let message = error.to_string();
-        assert!(
-            message.contains("invalid longitude/latitude (0, 95)"),
-            "{message}"
-        );
+        for crs in [None, Some("EPSG:4326")] {
+            let error = lonlat_shape_under(&shape, crs).expect_err("out of domain");
+            assert!(matches!(
+                error.kind(),
+                ErrorKind::Geometry(GeometryErrorKind::Invalid(_))
+            ));
+            let message = error.to_string();
+            assert!(
+                message.contains("invalid longitude/latitude (0, 95)"),
+                "{message}"
+            );
+        }
     }
 
     #[test]
-    fn nad83_transform_then_domain_is_native_geometry_error() {
+    fn nad83_transform_error_precedes_lonlat_domain_validation() {
         let shape = Shape::Point(Point::new_raw_xy(0.0, 95.0));
-        let transformed = crate::crs::transform(&shape, "EPSG:4269", "EPSG:4326")
-            .expect("NAD83 to WGS84 must execute for (0, 95)");
-        let Shape::Point(point) = &transformed else {
-            panic!("NAD83 point transform must yield a point, got {transformed:?}");
-        };
-        crate::validate_lonlat_shape(&transformed)
-            .expect_err("transformed (0, 95) must fail native domain");
-        let error = lonlat_shape_under(&shape, Some("EPSG:4269"))
-            .expect_err("owned-Cow path must fail domain after transform");
-        assert!(
-            matches!(
+        let direct_error = crate::crs::transform(&shape, "EPSG:4269", "EPSG:4326")
+            .expect_err("transformation rejects the source latitude");
+        let adapter_error = lonlat_shape_under(&shape, Some("EPSG:4269"))
+            .expect_err("the adapter preserves the transformation failure");
+        for error in [direct_error, adapter_error] {
+            assert!(
+                matches!(
                 error.kind(),
-                crate::error::ErrorKind::Geometry(GeometryErrorKind::Invalid(_))
-            ),
-            "expected domain Invalid after a successful transform, got {error}"
-        );
-        let expected = format!("invalid longitude/latitude ({}, {})", point.x, point.y);
-        let message = error.to_string();
-        assert!(message.contains(&expected), "{message}");
+                ErrorKind::Crs(CrsError::Transform {
+                    from,
+                    to,
+                    message,
+                    ..
+                }) if from.as_ref() == "EPSG:4269"
+                    && to.as_ref() == "EPSG:4326"
+                    && message.as_ref() == "projection failed: latitude 9.5e1 is outside the geographic coordinate domain"
+                ),
+                "expected the original transform context and latitude cause, got {error}"
+            );
+        }
     }
 }
 
