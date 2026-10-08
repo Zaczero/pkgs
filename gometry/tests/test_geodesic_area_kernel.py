@@ -204,9 +204,96 @@ def test_ambiguous_full_turn_is_rejected_before_area_measurement() -> None:
 
     with pytest.raises(
         gm.InvalidGeometryError,
-        match='ring winds once around the globe and spans the equator',
+        match='ring winds around the globe and spans the equator',
     ):
         _ = polygon.area
+
+
+@pytest.mark.parametrize(
+    'reverse', [False, True], ids=['positive-turn', 'negative-turn']
+)
+def test_ambiguous_multiturn_area_is_rejected_on_scalar_and_array_paths(
+    reverse: bool,
+) -> None:
+    points = [
+        (0.0, 20.0),
+        (120.0, -20.0),
+        (240.0, 20.0),
+        (360.0, -20.0),
+        (480.0, 20.0),
+        (600.0, -20.0),
+        (0.0, 20.0),
+    ]
+    if reverse:
+        points.reverse()
+    polygon = gm.Polygon(points, crs='OGC:CRS84')
+    valid = gm.box(0.0, 0.0, 1.0, 1.0, crs='OGC:CRS84')
+
+    with pytest.raises(
+        gm.InvalidGeometryError, match='ring winds around the globe'
+    ) as scalar:
+        _ = polygon.area
+    assert 'geographic shape, ring 0, coordinate 0' in str(scalar.value)
+    assert 'latitudes -20 to 20' in str(scalar.value)
+    with pytest.raises(
+        gm.InvalidGeometryError, match='ring winds around the globe'
+    ) as scalar:
+        _ = polygon.length
+    assert 'geographic shape, ring 0, coordinate 0' in str(scalar.value)
+
+    rows = gm.GeometryArray([valid, polygon], crs='OGC:CRS84')
+    with pytest.raises(
+        gm.InvalidGeometryError, match='ring winds around the globe'
+    ) as array:
+        _ = rows.area
+    assert 'geographic row 1, ring 0, coordinate 0' in str(array.value)
+    assert 'latitudes -20 to 20' in str(array.value)
+    with pytest.raises(
+        gm.InvalidGeometryError, match='ring winds around the globe'
+    ) as array:
+        _ = rows.length
+    assert 'geographic row 1, ring 0, coordinate 0' in str(array.value)
+
+
+@pytest.mark.parametrize(
+    ('invalid_coordinate', 'expected_detail'),
+    [
+        ((10.0, 91.0), r'invalid longitude/latitude \(10, 91\)'),
+        ((float('nan'), 10.0), 'invalid longitude/latitude'),
+    ],
+    ids=['later-out-of-range-latitude', 'later-nonfinite-longitude'],
+)
+def test_later_coordinate_error_precedes_pending_ambiguous_turn_gate(
+    invalid_coordinate: tuple[float, float],
+    expected_detail: str,
+) -> None:
+    shell = [
+        (0.0, 20.0),
+        (120.0, -20.0),
+        (240.0, 20.0),
+        (360.0, -20.0),
+        (480.0, 20.0),
+        (600.0, -20.0),
+        (0.0, 20.0),
+    ]
+    hole = [
+        (1.0, 1.0),
+        (2.0, 1.0),
+        invalid_coordinate,
+        (1.0, 2.0),
+        (1.0, 1.0),
+    ]
+    polygon = gm.Polygon(shell, holes=[hole], crs='OGC:CRS84')
+    valid = gm.box(0.0, 0.0, 1.0, 1.0, crs='OGC:CRS84')
+
+    with pytest.raises(gm.InvalidGeometryError, match=expected_detail) as scalar:
+        _ = polygon.area
+    assert 'geographic shape, ring 1, coordinate 2' in str(scalar.value)
+
+    rows = gm.GeometryArray([valid, polygon], crs='OGC:CRS84')
+    with pytest.raises(gm.InvalidGeometryError, match=expected_detail) as array:
+        _ = rows.area
+    assert 'geographic row 1, ring 1, coordinate 2' in str(array.value)
 
 
 def test_full_turn_area_uses_the_summary_pole_when_the_first_vertex_is_equatorial() -> (

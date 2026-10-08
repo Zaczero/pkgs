@@ -44,7 +44,7 @@ pub(crate) enum GeographicError {
     #[error("ring chart-turn count overflowed")]
     ChartTurnOverflow,
     #[error(
-        "ring winds once around the globe and spans the equator (latitudes {south} to {north}); the pole it bounds is ambiguous. Close it explicitly through the pole line or split it"
+        "ring winds around the globe and spans the equator (latitudes {south} to {north}); the pole it bounds is ambiguous. Close it explicitly through the pole line or split it"
     )]
     AmbiguousFullTurnRing { south: f64, north: f64 },
 }

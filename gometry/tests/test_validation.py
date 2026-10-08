@@ -429,13 +429,13 @@ def test_ambiguous_full_turn_ring_is_reported_and_rejected_at_admission() -> Non
         '$.shell',
         (0.0, -10.0),
     )
-    assert 'ring winds once around the globe and spans the equator' in report.detail
+    assert 'ring winds around the globe and spans the equator' in report.detail
     assert not polygon.is_valid
     rows = gm.GeometryArray([polygon], crs=4326)
     np.testing.assert_array_equal(rows.is_valid, [False])
     assert rows.validate()[0].code == 'ambiguous_full_turn_ring'
 
-    message = 'ring winds once around the globe and spans the equator'
+    message = 'ring winds around the globe and spans the equator'
     with pytest.raises(gm.InvalidGeometryError, match=message):
         _ = polygon.area
     with pytest.raises(gm.InvalidGeometryError, match=message):

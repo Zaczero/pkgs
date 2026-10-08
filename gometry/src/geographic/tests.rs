@@ -310,6 +310,50 @@ fn explicit_period_edge_keeps_the_ambiguous_ring_admission_gate() {
 }
 
 #[test]
+fn every_ambiguous_nonzero_turn_is_rejected_in_both_directions() {
+    use crate::geometry::{Polygon, Shape};
+
+    let forward = [
+        (0.0, 20.0),
+        (120.0, -20.0),
+        (240.0, 20.0),
+        (360.0, -20.0),
+        (480.0, 20.0),
+        (600.0, -20.0),
+        (0.0, 20.0),
+    ];
+    let reverse = [
+        (0.0, 20.0),
+        (600.0, -20.0),
+        (480.0, 20.0),
+        (360.0, -20.0),
+        (240.0, 20.0),
+        (120.0, -20.0),
+        (0.0, 20.0),
+    ];
+
+    for (points, expected_turn) in [(&forward, 2), (&reverse, -2)] {
+        let ring = ring_from_points(points);
+        let summary = RingSummary::try_new(degrees(), &GeographicRing::from_ring(&ring)).unwrap();
+        assert_eq!(summary.chart_turn, expected_turn);
+        assert_eq!(summary.full_turn_pole(), Some(FullTurnPole::Ambiguous));
+
+        let shape = Shape::Polygon(Polygon::new(ring, Vec::new()));
+        let error = ScalarGeographicView::try_new(degrees(), &shape).unwrap_err();
+        assert_eq!(error.location.ring, Some(0));
+        assert_eq!(error.location.coordinate, 0);
+        assert_bits(error.native.x, 0.0);
+        assert_bits(error.native.y, 20.0);
+        assert!(matches!(
+            error.source,
+            GeographicError::AmbiguousFullTurnRing { south, north }
+                if south.to_bits() == (-20.0_f64).to_bits()
+                    && north.to_bits() == 20.0_f64.to_bits()
+        ));
+    }
+}
+
+#[test]
 fn full_turn_pole_uses_the_closed_hemisphere_rule_for_every_nonzero_turn() {
     let xs = vec![-180.0, -90.0, 0.0, 90.0, 180.0];
     let north = ring(xs.clone(), vec![0.0, 5.0, 5.0, 5.0, 0.0]);
@@ -355,20 +399,34 @@ fn full_turn_pole_uses_the_closed_hemisphere_rule_for_every_nonzero_turn() {
 
 #[test]
 fn coordinate_domain_errors_precede_pending_ambiguous_ring_gates() {
-    let shell = ring(vec![-180.0, -90.0, 0.0, 90.0, 180.0], vec![
-        -5.0, 5.0, 5.0, 5.0, -5.0,
-    ]);
-    let hole = ring(vec![10.0, 20.0, 20.0, 10.0], vec![
-        100.0, 100.0, 101.0, 100.0,
-    ]);
-    let shape = crate::geometry::Shape::Polygon(crate::geometry::Polygon::new(shell, vec![hole]));
+    for shell in [
+        ring(vec![-180.0, -90.0, 0.0, 90.0, 180.0], vec![
+            -5.0, 5.0, 5.0, 5.0, -5.0,
+        ]),
+        ring_from_points(&[
+            (0.0, 20.0),
+            (120.0, -20.0),
+            (240.0, 20.0),
+            (360.0, -20.0),
+            (480.0, 20.0),
+            (600.0, -20.0),
+            (0.0, 20.0),
+        ]),
+    ] {
+        let hole = ring(vec![10.0, 20.0, 20.0, 10.0], vec![
+            100.0, 100.0, 101.0, 100.0,
+        ]);
+        let shape =
+            crate::geometry::Shape::Polygon(crate::geometry::Polygon::new(shell, vec![hole]));
 
-    let error = ScalarGeographicView::try_new(degrees(), &shape).unwrap_err();
-    assert_eq!(error.location.ring, Some(1));
-    assert!(matches!(
-        error.source,
-        GeographicError::LatitudeOutOfRange { .. }
-    ));
+        let error = ScalarGeographicView::try_new(degrees(), &shape).unwrap_err();
+        assert_eq!(error.location.ring, Some(1));
+        assert_eq!(error.location.coordinate, 0);
+        assert!(matches!(
+            error.source,
+            GeographicError::LatitudeOutOfRange { .. }
+        ));
+    }
 }
 
 fn axis_box(frame: GeographicFrame, west: f64, east: f64, south: f64, north: f64) -> RingSummary {

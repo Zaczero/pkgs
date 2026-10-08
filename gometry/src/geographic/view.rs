@@ -415,7 +415,7 @@ pub(crate) fn ring_gate(
     location: GeographicLocation,
     native: XY,
 ) -> Result<(), GeographicViewError> {
-    if matches!(chart_turn, -1 | 1)
+    if chart_turn != 0
         && FullTurnPole::of_latitude_span(south.get(), north.get()) == FullTurnPole::Ambiguous
     {
         return Err(GeographicDiagnostic::boxed(
@@ -547,7 +547,7 @@ fn visit_ring_coordseq<const ORDINARY_SCREEN: bool, const SUPPORT_EVENTS: bool>(
         let first = first.expect("polygon rings have at least four admitted coordinates");
         let span = latitude_span.expect("polygon rings have at least four admitted coordinates");
         if pending_gate.is_none()
-            && matches!(chart_turn, -1 | 1)
+            && chart_turn != 0
             && let Err(error) = ring_gate(
                 chart_turn,
                 span.south,
