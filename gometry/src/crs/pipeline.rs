@@ -4,6 +4,7 @@
 //! (XY/XYZ/XYZT lanes). Reaches the FFI primitives, thread-local caches, and
 //! error helpers in the parent `crs` module via `use super::*`.
 
+use super::transform::map_geographic_conversion_error;
 use crate::crs::{
     CrsError, GeometryErrorKind, OperationInfo, OwnedPj, ProjArea, ProjContext, ProjDirection,
     ProjPipeline, ProjTransformOptions, RuntimeState, TransformExecution, TransformFailure,
@@ -12,6 +13,7 @@ use crate::crs::{
     proj_transform_error, ptr,
 };
 use crate::error::{ErrorKind, Result};
+use crate::geographic::{GeographicFrame, Latitude};
 
 /// Preserve PROJ's structured coordinate-domain errno while retaining its
 /// existing rendered error message for every other transform failure.
@@ -198,6 +200,73 @@ impl ProjPipeline {
         &self,
         x: &mut [f64],
         y: &mut [f64],
+        z: Option<&mut [f64]>,
+        t: Option<&mut [f64]>,
+        direction: ProjDirection,
+        execution: &TransformExecution,
+    ) -> std::result::Result<(), TransformFailure> {
+        validate_lane_lengths(x, y, z.as_deref(), t.as_deref())?;
+        self.transform_lanes_validated_indexed(x, y, z, t, direction, execution)
+    }
+
+    /// Validate default CRS-plan source latitudes before PROJ overwrites their
+    /// lanes. If a later latitude is invalid, run only its already-admitted
+    /// prefix so an earlier PROJ failure keeps precedence.
+    pub(crate) fn transform_default_source_lanes_indexed(
+        &self,
+        source_frame: Option<GeographicFrame>,
+        x: &mut [f64],
+        y: &mut [f64],
+        mut z: Option<&mut [f64]>,
+        mut t: Option<&mut [f64]>,
+        execution: &TransformExecution,
+    ) -> std::result::Result<(), TransformFailure> {
+        validate_lane_lengths(x, y, z.as_deref(), t.as_deref())?;
+
+        if let Some(frame) = source_frame
+            && let Some((coordinate, error)) =
+                y.iter().enumerate().find_map(|(index, &latitude)| {
+                    Latitude::try_new(frame, latitude)
+                        .err()
+                        .map(|error| (index, error))
+                })
+        {
+            if coordinate != 0 {
+                let prefix_t = t.as_deref_mut().map(|lane| {
+                    if lane.len() == 1 {
+                        lane
+                    } else {
+                        lane.get_mut(..coordinate)
+                            .expect("the validated T lane contains the source prefix")
+                    }
+                });
+                self.transform_lanes_validated_indexed(
+                    x.get_mut(..coordinate)
+                        .expect("the validated X lane contains the source prefix"),
+                    y.get_mut(..coordinate)
+                        .expect("the validated Y lane contains the source prefix"),
+                    z.as_deref_mut().map(|lane| {
+                        lane.get_mut(..coordinate)
+                            .expect("the validated Z lane contains the source prefix")
+                    }),
+                    prefix_t,
+                    ProjDirection::Forward,
+                    execution,
+                )?;
+            }
+            return Err(TransformFailure::at(
+                map_geographic_conversion_error(error),
+                coordinate,
+            ));
+        }
+
+        self.transform_lanes_validated_indexed(x, y, z, t, ProjDirection::Forward, execution)
+    }
+
+    fn transform_lanes_validated_indexed(
+        &self,
+        x: &mut [f64],
+        y: &mut [f64],
         mut z: Option<&mut [f64]>,
         mut t: Option<&mut [f64]>,
         direction: ProjDirection,
@@ -205,30 +274,8 @@ impl ProjPipeline {
     ) -> std::result::Result<(), TransformFailure> {
         // The `unsafe` `proj_trans_generic` call below reads/writes each lane
         // up to `x.len()` elements, so a length mismatch would be an
-        // out-of-bounds FFI access (UB). Keep those safety preconditions
-        // fallible across the public path; callers pass equal-length CoordSeq
-        // columns by construction, so these do not fire in normal use.
-        if x.len() != y.len() {
-            return Err(TransformFailure::from(GeometryErrorKind::projection(
-                "transform lane length mismatch",
-            )));
-        }
-        if z.as_deref().is_some_and(|z| z.len() != x.len()) {
-            return Err(TransformFailure::from(GeometryErrorKind::projection(
-                "transform z lane length mismatch",
-            )));
-        }
-        // A length-1 time lane is a valid PROJ broadcast constant: PROJ reads
-        // (and writes) only its single element, never advancing the pointer,
-        // so it stays in bounds regardless of `x.len()`. Any other length must
-        // match `x.len()` for the same OOB reason as x/y/z.
-        if t.as_deref()
-            .is_some_and(|t| t.len() != x.len() && t.len() != 1)
-        {
-            return Err(TransformFailure::from(GeometryErrorKind::projection(
-                "transform t lane length mismatch",
-            )));
-        }
+        // out-of-bounds FFI access (UB). The caller validated these
+        // preconditions before entering this helper.
         if x.is_empty() {
             return Ok(());
         }
@@ -401,6 +448,32 @@ impl ProjPipeline {
             roundtrip_t.as_deref(),
         ))
     }
+}
+
+fn validate_lane_lengths(
+    x: &[f64],
+    y: &[f64],
+    z: Option<&[f64]>,
+    t: Option<&[f64]>,
+) -> std::result::Result<(), TransformFailure> {
+    if x.len() != y.len() {
+        return Err(TransformFailure::from(GeometryErrorKind::projection(
+            "transform lane length mismatch",
+        )));
+    }
+    if z.is_some_and(|z| z.len() != x.len()) {
+        return Err(TransformFailure::from(GeometryErrorKind::projection(
+            "transform z lane length mismatch",
+        )));
+    }
+    // A length-1 time lane is a valid PROJ broadcast constant: PROJ reads
+    // (and writes) only its single element, never advancing the pointer.
+    if t.is_some_and(|t| t.len() != x.len() && t.len() != 1) {
+        return Err(TransformFailure::from(GeometryErrorKind::projection(
+            "transform t lane length mismatch",
+        )));
+    }
+    Ok(())
 }
 
 #[expect(

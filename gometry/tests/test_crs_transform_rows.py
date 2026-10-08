@@ -8,6 +8,24 @@ from typing import TYPE_CHECKING
 import gometry as gm
 import pytest
 
+WGS84_RADIANS = (
+    'GEOGCRS["WGS 84 radians",DATUM["World Geodetic System 1984",'
+    'ELLIPSOID["WGS 84",6378137,298.257223563]],'
+    'PRIMEM["Greenwich",0,ANGLEUNIT["degree",0.017453292519943295]],'
+    'CS[ellipsoidal,2],AXIS["Longitude",east,ORDER[1]],'
+    'AXIS["Latitude",north,ORDER[2]],ANGLEUNIT["radian",1]]'
+)
+WGS84_SOUTH_WEST_GRADS = (
+    'GEOGCRS["WGS 84 south-west grads",'
+    'DATUM["World Geodetic System 1984",'
+    'ELLIPSOID["WGS 84",6378137,298.257223563]],'
+    'PRIMEM["Greenwich",0,ANGLEUNIT["degree",0.017453292519943295]],'
+    'CS[ellipsoidal,2],'
+    'AXIS["Longitude",west,ORDER[1]],'
+    'AXIS["Latitude",south,ORDER[2]],'
+    'ANGLEUNIT["grad",0.015707963267948967]]'
+)
+
 if TYPE_CHECKING:
     from collections.abc import Callable
 
@@ -165,6 +183,174 @@ def test_array_setup_error_and_scalar_transform_error_have_no_row_note() -> None
     assert not hasattr(scalar.value, '__notes__')
 
 
+@pytest.mark.parametrize(
+    ('source', 'target', 'outside_latitude', 'pole_neighbor'),
+    [
+        pytest.param(
+            4326,
+            WGS84_RADIANS,
+            91.0,
+            math.nextafter(90.0, math.inf),
+            id='degree-to-radian',
+        ),
+        pytest.param(
+            WGS84_RADIANS,
+            4326,
+            math.radians(91.0),
+            math.nextafter(math.pi / 2.0, math.inf),
+            id='radian-to-degree',
+        ),
+        pytest.param(
+            WGS84_SOUTH_WEST_GRADS,
+            4326,
+            101.0,
+            math.nextafter(100.0, math.inf),
+            id='south-west-grad-to-degree',
+        ),
+    ],
+)
+@pytest.mark.parametrize('sign', [-1.0, 1.0], ids=['south', 'north'])
+def test_default_proj_transform_admits_latitude_in_the_selected_source_frame(
+    source: int | str,
+    target: int | str,
+    outside_latitude: float,
+    pole_neighbor: float,
+    sign: float,
+) -> None:
+    latitude = sign * outside_latitude
+    with pytest.raises(
+        gm.TransformError,
+        match=r'latitude .* outside the geographic coordinate domain',
+    ):
+        gm.crs_transform(source, target, 0.0, latitude, authority='EPSG')
+    with pytest.raises(
+        gm.TransformError,
+        match=r'latitude .* outside the geographic coordinate domain',
+    ):
+        gm.Point(0.0, latitude, crs=source).to_crs(target, authority='EPSG')
+
+    numeric = gm.crs_transform(
+        source,
+        target,
+        0.0,
+        sign * pole_neighbor,
+        authority='EPSG',
+    )
+    geometry = gm.Point(0.0, sign * pole_neighbor, crs=source).to_crs(
+        target,
+        authority='EPSG',
+    )
+    assert all(math.isfinite(value) for value in numeric)
+    assert (geometry.x, geometry.y) == numeric
+
+
+def test_default_proj_source_failure_preserves_earlier_prefix_backend_error() -> None:
+    gm.crs_clear_cache()
+    with pytest.raises(gm.TransformError, match='Point outside of projection domain'):
+        gm.crs_transform(
+            4326,
+            32660,
+            [-90.0, 0.0],
+            [0.0, 91.0],
+            authority='EPSG',
+        )
+    assert gm.crs_cache_info()['transform_invocations'] == 1
+
+
+def test_default_proj_source_latitude_precedes_a_later_backend_failure() -> None:
+    gm.crs_clear_cache()
+    with pytest.raises(
+        gm.TransformError,
+        match=r'latitude 9\.1e1 is outside the geographic coordinate domain',
+    ):
+        gm.crs_transform(
+            4326,
+            32660,
+            [0.0, -90.0],
+            [91.0, 0.0],
+            authority='EPSG',
+        )
+    assert gm.crs_cache_info()['transform_invocations'] == 0
+
+
+def test_force_over_source_latitude_keeps_backend_domain_error() -> None:
+    gm.crs_clear_cache()
+    with pytest.raises(gm.TransformError, match='Invalid coordinate'):
+        gm.crs_transform(4326, 3857, 0.0, 91.0, force_over=True)
+
+
+def test_proj_source_failure_keeps_xy_xyz_first_logical_row() -> None:
+    values = gm.GeometryArray([
+        gm.Point(0.0, 91.0, z=3.0, crs=4326),
+        gm.Point(0.0, 91.0, crs=4326),
+    ])
+
+    error = _assert_row_error(
+        lambda: values.to_crs(WGS84_RADIANS, authority='EPSG'),
+        0,
+    )
+    assert 'latitude 9.1e1 is outside the geographic coordinate domain' in str(error)
+
+
+@pytest.mark.parametrize('kind', ['lines', 'polygons'])
+def test_packed_proj_source_failure_reports_selected_logical_row(kind: str) -> None:
+    if kind == 'lines':
+        source = gm.GeometryArray([
+            gm.LineString([(0.0, 0.0), (1.0, 1.0)], crs=4326),
+            gm.LineString([(0.0, 0.0), (1.0, 91.0)], crs=4326),
+            gm.LineString([(2.0, 2.0), (3.0, 3.0)], crs=4326),
+        ])
+        assert source.to_arrow().type.extension_name == 'geoarrow.linestring'
+    else:
+        source = gm.GeometryArray([
+            gm.box(0.0, 0.0, 1.0, 1.0, crs=4326),
+            gm.Polygon(
+                [(0.0, 0.0), (1.0, 0.0), (1.0, 91.0), (0.0, 0.0)],
+                crs=4326,
+            ),
+            gm.box(2.0, 2.0, 3.0, 3.0, crs=4326),
+        ])
+        assert source.to_arrow().type.extension_name == 'geoarrow.polygon'
+
+    selected = source[[2, 1, 1, 0]]
+    _assert_row_error(
+        lambda: selected.to_crs(WGS84_RADIANS, authority='EPSG'),
+        1,
+    )
+    assert source[[2, 0]].to_crs(WGS84_RADIANS, authority='EPSG').geometry_type == [
+        'LineString' if kind == 'lines' else 'Polygon',
+        'LineString' if kind == 'lines' else 'Polygon',
+    ]
+
+
+def test_nullable_mixed_proj_source_failure_uses_gathered_logical_row() -> None:
+    source = gm.GeometryArray([
+        None,
+        gm.Point(0.0, 0.0, crs=4326),
+        gm.LineString([(0.0, 0.0), (1.0, 91.0)], crs=4326),
+        gm.Point(1.0, 1.0, crs=4326),
+    ])
+    selected = source[[3, 0, 2, 2, 1]]
+    assert selected.to_arrow().type.extension_name == 'geoarrow.wkb'
+
+    _assert_row_error(
+        lambda: selected.to_crs(WGS84_RADIANS, authority='EPSG'),
+        2,
+    )
+    assert selected[[0, 1, 4]].to_crs(
+        WGS84_RADIANS,
+        authority='EPSG',
+    ).geometry_type == ['Point', None, 'Point']
+
+    all_missing = gm.GeometryArray([None, None], crs=4326).to_crs(
+        WGS84_RADIANS,
+        authority='EPSG',
+    )
+    assert list(all_missing) == [None, None]
+    empty = gm.LineString([], crs=4326).to_crs(WGS84_RADIANS, authority='EPSG')
+    assert empty.is_empty
+
+
 def test_scalar_identity_to_crs_admits_source_and_retags_target_frame() -> None:
     with pytest.raises(
         gm.InvalidGeometryError, match=r'invalid longitude/latitude \(0, 91\)'
@@ -286,22 +472,15 @@ def test_numeric_geographic_transform_publishes_but_raw_paths_do_not() -> None:
     assert (geometry.x, geometry.y) == transformed
     assert math.copysign(1.0, geometry.y) < 0.0
 
-    radians = (
-        'GEOGCRS["WGS 84 radians",DATUM["World Geodetic System 1984",'
-        'ELLIPSOID["WGS 84",6378137,298.257223563]],'
-        'PRIMEM["Greenwich",0,ANGLEUNIT["degree",0.017453292519943295]],'
-        'CS[ellipsoidal,2],AXIS["Longitude",east,ORDER[1]],'
-        'AXIS["Latitude",north,ORDER[2]],ANGLEUNIT["radian",1]]'
-    )
-    native = gm.crs_transform(4326, radians, 180.0, -0.0, authority='EPSG')
+    native = gm.crs_transform(4326, WGS84_RADIANS, 180.0, -0.0, authority='EPSG')
     assert native == (-math.pi, 0.0)
     assert math.copysign(1.0, native[1]) < 0.0
     native_geometry = gm.Point(180.0, -0.0, crs=4326).to_crs(
-        radians,
+        WGS84_RADIANS,
         authority='EPSG',
     )
     assert (native_geometry.x, native_geometry.y) == native
-    zero = gm.crs_transform(4326, radians, -0.0, -0.0, authority='EPSG')
+    zero = gm.crs_transform(4326, WGS84_RADIANS, -0.0, -0.0, authority='EPSG')
     assert zero[0] == 0.0
     assert math.copysign(1.0, zero[0]) > 0.0
     assert math.copysign(1.0, zero[1]) < 0.0

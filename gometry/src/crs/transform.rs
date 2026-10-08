@@ -341,7 +341,7 @@ fn transform_in_core_xy_with_domains_indexed_mode(
     Ok(())
 }
 
-fn map_geographic_conversion_error(error: GeographicError) -> crate::error::Error {
+pub(super) fn map_geographic_conversion_error(error: GeographicError) -> crate::error::Error {
     match error {
         GeographicError::LatitudeOutOfRange { value } => GeometryErrorKind::projection(format!(
             "latitude {value:e} is outside the geographic coordinate domain"
@@ -1129,6 +1129,7 @@ pub(crate) fn transform_proj_shapes_indexed(
     transformer: &ProjPipeline,
     shapes: &[&Shape],
     source_epoch: Option<f64>,
+    source_frame: Option<GeographicFrame>,
     execution: &crate::crs::TransformExecution,
 ) -> std::result::Result<Vec<Shape>, TransformFailure> {
     let mut output = TransformOutputPlan::try_new(shapes)?;
@@ -1139,12 +1140,12 @@ pub(crate) fn transform_proj_shapes_indexed(
     }
     output.execute_indexed(|x, y, z| {
         let mut epoch = source_epoch.map(|epoch| [epoch]);
-        transformer.transform_lanes_indexed(
+        transformer.transform_default_source_lanes_indexed(
+            source_frame,
             x,
             y,
             z,
             epoch.as_mut().map(<[f64; 1]>::as_mut_slice),
-            ProjDirection::Forward,
             execution,
         )
     })?;
@@ -1323,23 +1324,25 @@ impl TransformOutputPlan {
             Option<&mut [f64]>,
         ) -> std::result::Result<(), TransformFailure>,
     ) -> std::result::Result<(), TransformFailure> {
-        // Reconstruction runs XY before XYZ. If XY identifies a coordinate
-        // failure, one XYZ pass is still needed so the earliest input shape,
-        // rather than lane order, owns the displayed error.
-        match self.execute_axes_indexed(false, xy_capacity, transform) {
-            Ok(()) => self.execute_axes_indexed(true, xyz_capacity, transform),
-            Err(xy_failure) if xy_failure.coordinate.is_some() => {
-                match self.execute_axes_indexed(true, xyz_capacity, transform) {
+        match self.execute_axes_indexed(false, xy_capacity, None, transform) {
+            Ok(()) => self.execute_axes_indexed(true, xyz_capacity, None, transform),
+            Err(xy_failure) => {
+                let Some(xy_shape) = xy_failure.coordinate else {
+                    return Err(xy_failure);
+                };
+                // Only an XYZ failure on an earlier input shape can replace
+                // the XY failure. Do not execute same- or later-shape input.
+                match self.execute_axes_indexed(true, xyz_capacity, Some(xy_shape), transform) {
                     Err(xyz_failure)
-                        if xyz_failure.coordinate.is_some()
-                            && xyz_failure.coordinate < xy_failure.coordinate =>
+                        if xyz_failure
+                            .coordinate
+                            .is_some_and(|xyz_shape| xyz_shape < xy_shape) =>
                     {
                         Err(xyz_failure)
                     },
                     _ => Err(xy_failure),
                 }
             },
-            Err(failure) => Err(failure),
         }
     }
 
@@ -1347,31 +1350,43 @@ impl TransformOutputPlan {
         &mut self,
         has_z: bool,
         capacity: usize,
+        before_shape: Option<usize>,
         transform: &mut impl FnMut(
             &mut [f64],
             &mut [f64],
             Option<&mut [f64]>,
         ) -> std::result::Result<(), TransformFailure>,
     ) -> std::result::Result<(), TransformFailure> {
+        let batch = if has_z {
+            OutputBatch::Xyz
+        } else {
+            OutputBatch::Xy
+        };
+        let columns = if has_z { &self.xyz } else { &self.xy };
+        let coordinate_count = before_shape.map_or(columns.xs.len(), |shape| {
+            self.sequences
+                .iter()
+                .filter(|sequence| sequence.batch == batch && sequence.shape < shape)
+                .map(|sequence| sequence.range.end)
+                .max()
+                .unwrap_or(0)
+        });
+        debug_assert!(coordinate_count <= columns.xs.len());
         let columns = if has_z { &mut self.xyz } else { &mut self.xy };
-        execute_batch_indexed(columns, capacity, transform).map_err(|failure| {
-            let shape = failure.coordinate.and_then(|coordinate| {
-                self.sequences
-                    .iter()
-                    .find(|sequence| {
-                        sequence.batch
-                            == if has_z {
-                                OutputBatch::Xyz
-                            } else {
-                                OutputBatch::Xy
-                            }
-                            && sequence.range.contains(&coordinate)
-                    })
-                    .map(|sequence| sequence.shape)
-            });
-            debug_assert!(failure.coordinate.is_none_or(|_| shape.is_some()));
-            failure.with_coordinate(shape)
-        })
+        execute_batch_prefix_indexed(columns, coordinate_count, capacity, transform).map_err(
+            |failure| {
+                let shape = failure.coordinate.and_then(|coordinate| {
+                    self.sequences
+                        .iter()
+                        .find(|sequence| {
+                            sequence.batch == batch && sequence.range.contains(&coordinate)
+                        })
+                        .map(|sequence| sequence.shape)
+                });
+                debug_assert!(failure.coordinate.is_none_or(|_| shape.is_some()));
+                failure.with_coordinate(shape)
+            },
+        )
     }
 
     pub(crate) fn finish(self, shapes: &[&Shape]) -> Result<Vec<Shape>> {
@@ -1412,8 +1427,9 @@ impl TransformOutputPlan {
     }
 }
 
-fn execute_batch_indexed(
+fn execute_batch_prefix_indexed(
     columns: &mut OutputColumns,
+    coordinate_count: usize,
     capacity: usize,
     transform: &mut impl FnMut(
         &mut [f64],
@@ -1428,9 +1444,19 @@ fn execute_batch_indexed(
         zs.as_ref().is_none_or(|zs| zs.len() == xs.len()),
         "XYZ output columns stay aligned",
     );
+    debug_assert!(coordinate_count <= xs.len());
+    let xs = xs
+        .get_mut(..coordinate_count)
+        .expect("the selected shape prefix fits its X column");
+    let ys = ys
+        .get_mut(..coordinate_count)
+        .expect("the selected shape prefix fits its Y column");
     let mut offset = 0_usize;
     match zs.as_mut() {
         Some(zs) => {
+            let zs = zs
+                .get_mut(..coordinate_count)
+                .expect("the selected shape prefix fits its Z column");
             for ((xs, ys), zs) in xs
                 .chunks_mut(capacity)
                 .zip(ys.chunks_mut(capacity))
@@ -1648,6 +1674,46 @@ mod lane_tests {
             (107.0, 108.0, Some(109.0)),
             (110.0, 111.0, Some(112.0)),
         ]);
+    }
+
+    #[test]
+    fn xy_failure_only_executes_xyz_shapes_before_its_shape() {
+        let shapes = [
+            Shape::Point(Point::new_raw_xy(1.0, 2.0)),
+            Shape::Point(Point::new_raw_axes(
+                3.0,
+                4.0,
+                ZOrdinate(Some(5.0)),
+                MOrdinate(None),
+            )),
+            Shape::Point(Point::new_raw_xy(6.0, 7.0)),
+            Shape::Point(Point::new_raw_axes(
+                8.0,
+                9.0,
+                ZOrdinate(Some(10.0)),
+                MOrdinate(None),
+            )),
+        ];
+        let refs: Vec<_> = shapes.iter().collect();
+        let mut plan = TransformOutputPlan::try_new(&refs).unwrap();
+        let mut calls = Vec::new();
+
+        let failure = plan
+            .execute_with_capacities_indexed(8, 8, &mut |x, _, z| {
+                calls.push((z.is_some(), x.len()));
+                if z.is_none() {
+                    Err(TransformFailure::at(
+                        GeometryErrorKind::projection("XY source admission failed"),
+                        1,
+                    ))
+                } else {
+                    Ok(())
+                }
+            })
+            .unwrap_err();
+
+        assert_eq!(failure.coordinate, Some(2));
+        assert_eq!(calls, [(false, 2), (true, 1)]);
     }
 
     #[test]

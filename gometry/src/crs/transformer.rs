@@ -108,6 +108,14 @@ impl TransformPlan {
         }
     }
 
+    const fn default_proj_source_frame(&self) -> Option<crate::geographic::GeographicFrame> {
+        if self.options.force_over {
+            None
+        } else {
+            self.source_geographic_frame()
+        }
+    }
+
     pub(crate) const fn computed_geographic_frame(
         &self,
     ) -> Option<crate::geographic::GeographicFrame> {
@@ -270,6 +278,7 @@ impl TransformPlan {
                         transformer,
                         shapes,
                         options.source_epoch,
+                        self.default_proj_source_frame(),
                         &self.execution,
                     )
                 },
@@ -349,6 +358,7 @@ impl TransformPlan {
                 target,
                 options,
             } => {
+                let source_frame = self.default_proj_source_frame();
                 with_proj_pipeline_indexed_at(
                     source,
                     target,
@@ -361,24 +371,24 @@ impl TransformPlan {
                                 // PROJ broadcasts a length-1 time lane as a constant
                                 // across every coordinate — no per-vertex epoch buffer.
                                 let mut t = [epoch];
-                                transformer.transform_lanes_indexed(
+                                transformer.transform_default_source_lanes_indexed(
+                                    source_frame,
                                     x,
                                     y,
                                     None,
                                     Some(t.as_mut_slice()),
-                                    ProjDirection::Forward,
                                     &self.execution,
                                 )
                             } else {
                                 transformer
                                     .require_epoch_lane()
                                     .map_err(TransformFailure::from)?;
-                                transformer.transform_lanes_indexed(
+                                transformer.transform_default_source_lanes_indexed(
+                                    source_frame,
                                     x,
                                     y,
                                     None,
                                     None,
-                                    ProjDirection::Forward,
                                     &self.execution,
                                 )
                             }
@@ -386,44 +396,45 @@ impl TransformPlan {
                         crate::Zt::Z(z) => {
                             if let Some(epoch) = options.source_epoch {
                                 let mut t = [epoch];
-                                transformer.transform_lanes_indexed(
+                                transformer.transform_default_source_lanes_indexed(
+                                    source_frame,
                                     x,
                                     y,
                                     Some(z),
                                     Some(t.as_mut_slice()),
-                                    ProjDirection::Forward,
                                     &self.execution,
                                 )
                             } else {
                                 transformer
                                     .require_epoch_lane()
                                     .map_err(TransformFailure::from)?;
-                                transformer.transform_lanes_indexed(
+                                transformer.transform_default_source_lanes_indexed(
+                                    source_frame,
                                     x,
                                     y,
                                     Some(z),
                                     None,
-                                    ProjDirection::Forward,
                                     &self.execution,
                                 )
                             }
                         },
-                        crate::Zt::T(t) => transformer.transform_lanes_indexed(
+                        crate::Zt::T(t) => transformer.transform_default_source_lanes_indexed(
+                            source_frame,
                             x,
                             y,
                             None,
                             Some(t),
-                            ProjDirection::Forward,
                             &self.execution,
                         ),
-                        crate::Zt::Zt { z, t } => transformer.transform_lanes_indexed(
-                            x,
-                            y,
-                            Some(z),
-                            Some(t),
-                            ProjDirection::Forward,
-                            &self.execution,
-                        ),
+                        crate::Zt::Zt { z, t } => transformer
+                            .transform_default_source_lanes_indexed(
+                                source_frame,
+                                x,
+                                y,
+                                Some(z),
+                                Some(t),
+                                &self.execution,
+                            ),
                     },
                 )?;
                 if !keep_target_chart && let Some(frame) = self.computed_geographic_frame() {
@@ -766,8 +777,8 @@ mod tests {
         assert_eq!(t, [2020.0, 2021.0]);
 
         let forced = TransformPlan::new_with_options("EPSG:3857", "EPSG:4326", TransformOptions {
-            force_over: true,
             authority: Some("EPSG".into()),
+            force_over: true,
             ..TransformOptions::default()
         })
         .unwrap();
@@ -780,6 +791,103 @@ mod tests {
             .transform_coordinates(&mut x, &mut y, crate::Zt::None)
             .unwrap();
         assert_eq!(x, [180.0, 360.0]);
+    }
+
+    #[test]
+    fn default_proj_source_latitude_failure_transforms_only_its_valid_prefix() {
+        let _guard = crate::crs::RUNTIME_STATE_TEST_LOCK.lock().unwrap();
+        crate::crs::clear_cache();
+        let radians = concat!(
+            "GEOGCRS[\"WGS 84 radians\",DATUM[\"World Geodetic System 1984\",",
+            "ELLIPSOID[\"WGS 84\",6378137,298.257223563]],",
+            "PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.017453292519943295]],",
+            "CS[ellipsoidal,2],AXIS[\"Longitude\",east,ORDER[1]],",
+            "AXIS[\"Latitude\",north,ORDER[2]],ANGLEUNIT[\"radian\",1]]",
+        );
+        let plan = TransformPlan::new_with_options("EPSG:4326", radians, TransformOptions {
+            source_epoch: Some(2020.0),
+            authority: Some("EPSG".into()),
+            ..TransformOptions::default()
+        })
+        .unwrap();
+        let mut x = [10.0, 20.0, 30.0];
+        let mut y = [1.0, 91.0, 2.0];
+        let mut z = [3.0, 4.0, 5.0];
+
+        let failure = plan
+            .transform_coordinates_indexed(&mut x, &mut y, crate::Zt::Z(&mut z))
+            .unwrap_err();
+
+        assert_eq!(failure.coordinate, Some(1));
+        assert!(
+            failure
+                .error
+                .to_string()
+                .contains("latitude 9.1e1 is outside the geographic coordinate domain")
+        );
+        assert_eq!(x[0], 10.0_f64.to_radians());
+        assert_eq!(y[0], 1.0_f64.to_radians());
+        assert_eq!(&x[1..], &[20.0, 30.0]);
+        assert_eq!(&y[1..], &[91.0, 2.0]);
+        assert_eq!(z, [3.0, 4.0, 5.0]);
+
+        let observation = crate::crs::cache_info();
+        assert_eq!(observation.last_transform_engine, Some("proj"));
+        assert_eq!(observation.transform_invocations, 1);
+    }
+
+    #[test]
+    fn default_proj_source_latitude_precedes_later_backend_failure() {
+        let _guard = crate::crs::RUNTIME_STATE_TEST_LOCK.lock().unwrap();
+        crate::crs::clear_cache();
+        let plan = TransformPlan::new_with_options("EPSG:4326", "EPSG:3857", TransformOptions {
+            authority: Some("EPSG".into()),
+            ..TransformOptions::default()
+        })
+        .unwrap();
+        let mut x = [0.0, 0.0];
+        let mut y = [91.0, 90.0];
+
+        let failure = plan
+            .transform_coordinates_indexed(&mut x, &mut y, crate::Zt::None)
+            .unwrap_err();
+
+        assert_eq!(failure.coordinate, Some(0));
+        assert!(
+            failure
+                .error
+                .to_string()
+                .contains("latitude 9.1e1 is outside the geographic coordinate domain")
+        );
+        assert_eq!(x, [0.0, 0.0]);
+        assert_eq!(y, [91.0, 90.0]);
+        assert_eq!(crate::crs::cache_info().transform_invocations, 0);
+    }
+
+    #[test]
+    fn earlier_proj_domain_failure_precedes_later_invalid_source_latitude() {
+        let _guard = crate::crs::RUNTIME_STATE_TEST_LOCK.lock().unwrap();
+        crate::crs::clear_cache();
+        let plan = TransformPlan::new_with_options("EPSG:4326", "EPSG:32660", TransformOptions {
+            authority: Some("EPSG".into()),
+            ..TransformOptions::default()
+        })
+        .unwrap();
+        let mut x = [-90.0, 0.0];
+        let mut y = [0.0, 91.0];
+
+        let failure = plan
+            .transform_coordinates_indexed(&mut x, &mut y, crate::Zt::None)
+            .unwrap_err();
+
+        assert_eq!(failure.coordinate, Some(0));
+        assert!(
+            failure
+                .error
+                .to_string()
+                .contains("Point outside of projection domain")
+        );
+        assert_eq!(crate::crs::cache_info().transform_invocations, 1);
     }
 
     #[test]
