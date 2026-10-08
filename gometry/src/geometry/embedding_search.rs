@@ -800,11 +800,7 @@ impl Work for EvaluationBudget {
     }
 
     fn charge_product(&mut self, count: usize, ticks_per_item: usize) -> Result<()> {
-        let count = u128::try_from(count).expect("usize product count fits u128");
-        let ticks_per_item = u128::try_from(ticks_per_item).expect("usize product cost fits u128");
-        let ticks = count
-            .checked_mul(ticks_per_item)
-            .ok_or_else(|| self.limit_error())?;
+        let ticks = (count as u128).wrapping_mul(ticks_per_item as u128);
         self.debit_ticks(ticks)
     }
 }
