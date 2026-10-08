@@ -868,6 +868,31 @@ fn csr_prefix_offsets_use_the_native_index_domain_past_u32_max() {
 }
 
 #[test]
+fn source_provenance_placement_offsets_keep_checked_u32_totals() {
+    let mut counts = [2, 0, 3];
+    assert_eq!(placement_offsets(&mut counts).unwrap(), [0, 2, 2, 5]);
+    assert_eq!(counts, [0, 2, 2]);
+
+    let mut at_limit = [u32::MAX, 0];
+    assert_eq!(placement_offsets(&mut at_limit).unwrap(), [
+        0,
+        u32::MAX,
+        u32::MAX
+    ]);
+    assert_eq!(at_limit, [0, u32::MAX]);
+
+    let mut over_limit = [u32::MAX, 1];
+    assert!(matches!(
+        placement_offsets(&mut over_limit),
+        Err(error)
+            if matches!(
+                error.kind(),
+                crate::error::ErrorKind::Resource(crate::error::ResourceError::SizeOverflow)
+            )
+    ));
+}
+
+#[test]
 fn point_append_admission_rejects_when_count_is_u32_max() {
     let u32_max = usize::try_from(u32::MAX).expect("u32 count fits this supported target");
     let last_id = u32::MAX.wrapping_sub(1);
@@ -3780,6 +3805,114 @@ fn overlap_aggregate_owners_are_one_atom() {
         .collect();
     assert_eq!(shared.len(), 1);
     assert_eq!(partition.owners(shared[0].0).len(), 2);
+}
+
+#[test]
+fn sourced_dedup_unique_segments_keep_identity_owner_rows() {
+    let (unique, provenance) = dedup_undirected_segments_sourced([
+        seg(0.0, 0.0, 1.0, 0.0),
+        seg(0.0, 1.0, 1.0, 1.0),
+        seg(0.0, 2.0, 1.0, 2.0),
+    ])
+    .unwrap();
+
+    assert_eq!(
+        unique
+            .iter()
+            .map(|segment| (segment.start, segment.end))
+            .collect::<Vec<_>>(),
+        vec![
+            (XY::new(0.0, 0.0), XY::new(1.0, 0.0)),
+            (XY::new(0.0, 1.0), XY::new(1.0, 1.0)),
+            (XY::new(0.0, 2.0), XY::new(1.0, 2.0)),
+        ]
+    );
+    assert_eq!(provenance.owners(0), &[(0, false)]);
+    assert_eq!(provenance.owners(1), &[(1, false)]);
+    assert_eq!(provenance.owners(2), &[(2, false)]);
+}
+
+#[test]
+fn sourced_dedup_first_late_duplicate_keeps_every_ordered_owner() {
+    let (unique, provenance) = dedup_undirected_segments_sourced([
+        seg(0.0, 0.0, 4.0, 0.0),
+        seg(0.0, 2.0, 4.0, 2.0),
+        seg(0.0, 4.0, 4.0, 4.0),
+        seg(4.0, 2.0, 0.0, 2.0),
+        seg(0.0, 0.0, 4.0, 0.0),
+        seg(0.0, 6.0, 4.0, 6.0),
+        seg(0.0, 2.0, 4.0, 2.0),
+        seg(4.0, 0.0, 0.0, 0.0),
+    ])
+    .unwrap();
+
+    assert_eq!(
+        unique
+            .iter()
+            .map(|segment| (segment.start, segment.end))
+            .collect::<Vec<_>>(),
+        vec![
+            (XY::new(0.0, 0.0), XY::new(4.0, 0.0)),
+            (XY::new(0.0, 2.0), XY::new(4.0, 2.0)),
+            (XY::new(0.0, 4.0), XY::new(4.0, 4.0)),
+            (XY::new(0.0, 6.0), XY::new(4.0, 6.0)),
+        ]
+    );
+    assert_eq!(provenance.owners(0), &[(0, false), (4, false), (7, true)]);
+    assert_eq!(provenance.owners(1), &[(1, false), (3, true), (6, false)]);
+    assert_eq!(provenance.owners(2), &[(2, false)]);
+    assert_eq!(provenance.owners(3), &[(5, false)]);
+}
+
+#[test]
+fn sourced_dedup_preserves_signed_zero_and_degenerate_owner_direction() {
+    let (unique, provenance) = dedup_undirected_segments_sourced([
+        seg(-0.0, 0.0, 2.0, 0.0),
+        seg(2.0, 0.0, 0.0, 0.0),
+        seg(0.0, 1.0, -0.0, 1.0),
+        seg(-0.0, 1.0, 0.0, 1.0),
+    ])
+    .unwrap();
+
+    assert_eq!(unique.len(), 2);
+    assert_eq!(unique[0].start.x.to_bits(), (-0.0_f64).to_bits());
+    assert_eq!(unique[0].end.x.to_bits(), 2.0_f64.to_bits());
+    assert_eq!(unique[1].start.x.to_bits(), 0.0_f64.to_bits());
+    assert_eq!(unique[1].end.x.to_bits(), (-0.0_f64).to_bits());
+    assert_eq!(provenance.owners(0), &[(0, false), (1, true)]);
+    assert_eq!(provenance.owners(1), &[(2, false), (3, false)]);
+}
+
+#[test]
+fn segment_provenance_preserves_empty_direct_csr_rows_and_iteration() {
+    let default = SegmentProvenance::default();
+    let (empty_unique, empty) = dedup_undirected_segments_sourced(Vec::<Segment>::new()).unwrap();
+    assert!(empty_unique.is_empty());
+    for provenance in [&default, &empty] {
+        assert_eq!(provenance.len(), 0);
+        assert_eq!(provenance.iter().count(), 0);
+    }
+
+    let provenance =
+        SegmentProvenance::from_csr(vec![0, 2, 2, 3], vec![(7, false), (2, true), (9, false)]);
+    assert_eq!(provenance.len(), 3);
+    assert_eq!(provenance.owners(0), &[(7, false), (2, true)]);
+    assert_eq!(&provenance[0], &[(7, false), (2, true)]);
+    assert!(provenance[1].is_empty());
+    assert_eq!(provenance.owners(2), &[(9, false)]);
+
+    let rows = provenance.iter().collect::<Vec<_>>();
+    assert_eq!(rows.len(), 3);
+    assert_eq!(rows[0], &[(7, false), (2, true)]);
+    assert!(rows[1].is_empty());
+    assert_eq!(rows[2], &[(9, false)]);
+}
+
+#[test]
+#[should_panic(expected = "index out of bounds")]
+fn segment_provenance_index_out_of_range_keeps_slice_panic() {
+    let provenance = SegmentProvenance::from_csr(vec![0, 0], Vec::new());
+    let _ = provenance[1];
 }
 
 #[test]

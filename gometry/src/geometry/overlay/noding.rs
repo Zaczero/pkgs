@@ -29,14 +29,17 @@ pub(crate) struct SegmentProvenance {
 }
 
 impl SegmentProvenance {
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "a valid piece has adjacent offsets and every internal CSR builder keeps the terminal owner range in bounds"
+    )]
     pub(crate) fn owners(&self, piece: usize) -> &[SegmentSource] {
         let start = self.offsets[piece] as usize;
-        let end = self.offsets[piece + 1] as usize;
+        let end = self.offsets[piece.wrapping_add(1)] as usize;
         &self.entries[start..end]
     }
 
-    /// Adopt a caller-built CSR. Allocation of `offsets`/`entries` is the
-    /// caller's fallible work; this only binds the two columns.
+    /// Adopt caller-built CSR columns without copying them.
     pub(crate) fn from_csr(offsets: Vec<u32>, entries: Vec<SegmentSource>) -> Self {
         debug_assert!(!offsets.is_empty());
         Self { offsets, entries }
@@ -46,10 +49,14 @@ impl SegmentProvenance {
         self.offsets.len().saturating_sub(1)
     }
 
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "internal CSR builders publish monotone offsets whose terminal value equals the owner-entry length"
+    )]
     pub(crate) fn iter(&self) -> impl Iterator<Item = &[SegmentSource]> + '_ {
-        self.offsets.array_windows::<2>().map(|window| {
-            let start = window[0] as usize;
-            let end = window[1] as usize;
+        self.offsets.array_windows::<2>().map(|&[start, end]| {
+            let start = start as usize;
+            let end = end as usize;
             &self.entries[start..end]
         })
     }
@@ -72,6 +79,10 @@ impl std::ops::Index<usize> for SegmentProvenance {
 /// Unique input publishes identity provenance directly. The first repeated edge
 /// stages assignments for the unique prefix, then counting placement groups
 /// `(ordinal, reversed)` owners into one flat `entries` vector.
+#[expect(
+    clippy::indexing_slicing,
+    reason = "map-issued unique IDs address parallel count cursors, and checked CSR row/total counts bound owner-entry scatter slots"
+)]
 pub(crate) fn dedup_undirected_segments_sourced(
     segments: impl IntoIterator<Item = Segment>,
 ) -> Result<(Vec<Segment>, SegmentProvenance)> {
@@ -88,8 +99,10 @@ pub(crate) fn dedup_undirected_segments_sourced(
         match index_of.entry(key) {
             Entry::Occupied(entry) => {
                 if assignment.is_empty() {
+                    let prefix_count =
+                        u32::try_from(unique.len()).map_err(|_| ResourceError::SizeOverflow)?;
                     assignment.reserve(capacity);
-                    assignment.extend((0..unique.len() as u32).map(|index| (index, false)));
+                    assignment.extend((0..prefix_count).map(|index| (index, false)));
                 }
                 let unique_index = *entry.get();
                 let rep = unique[unique_index as usize];
@@ -129,28 +142,22 @@ pub(crate) fn dedup_undirected_segments_sourced(
             .ok_or(ResourceError::SizeOverflow)?;
     }
     let offsets = placement_offsets(&mut counts)?;
-    let mut cursor = counts;
-    let mut entries = Vec::with_capacity(assignment.len());
-    entries.resize(assignment.len(), (0_u32, false));
+    let mut entries = vec![(0_u32, false); assignment.len()];
     for (ordinal, &(unique_index, reversed)) in assignment.iter().enumerate() {
-        let slot = cursor[unique_index as usize] as usize;
+        let cursor = &mut counts[unique_index as usize];
+        let slot = *cursor as usize;
         entries[slot] = (
             u32::try_from(ordinal).map_err(|_| ResourceError::SizeOverflow)?,
             reversed,
         );
-        cursor[unique_index as usize] += 1;
+        *cursor = (*cursor).wrapping_add(1);
     }
     Ok((unique, SegmentProvenance { offsets, entries }))
 }
 
 /// Build CSR offsets, replacing row counts with starting write cursors.
 pub(super) fn placement_offsets(counts: &mut [u32]) -> Result<Vec<u32>> {
-    let mut offsets = Vec::with_capacity(
-        counts
-            .len()
-            .checked_add(1)
-            .ok_or(ResourceError::SizeOverflow)?,
-    );
+    let mut offsets = Vec::with_capacity(counts.len().wrapping_add(1));
     let mut start = 0_u32;
     for count in counts {
         offsets.push(start);
