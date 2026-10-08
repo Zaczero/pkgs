@@ -1,8 +1,9 @@
 use crate::error::Result;
 use crate::geographic::{
-    ComputedEdgeIntent, ComputedVertexIntent, GeographicFrame, publish_computed_chain,
-    publish_computed_chain_with_vertex_intents,
+    ComputedEdgeIntent, ComputedVertexIntent, GeographicFrame, RetainedChartDisplacement,
+    publish_computed_chain, publish_computed_chain_with_vertex_intents,
 };
+use crate::geometry::exact_arith::select_transformed_chart_displacement;
 use crate::geometry::{
     CoordSeq, CoordSeqBuilder, CoordWindow, Coordinates as _, CsrOffsetBuilder, CsrOffsetColumn,
     ExpansionBudget, GeometryErrorKind, LineSeq, Polygon, Ring, Shape, ShapeCountQuery,
@@ -21,6 +22,112 @@ pub(crate) fn map_computed_shape_chains(
     mut map: impl FnMut(&CoordSeq, &CoordSeq, bool) -> Result<Option<Vec<crate::geometry::Point>>>,
 ) -> Result<Shape> {
     map_shape_chains(source, output, &mut map)
+}
+
+/// Pair each original and transformed coordinate chain without staging edge
+/// relations; callers request each retained target connection from its
+/// original endpoint pair while publishing that chain. Use this route only
+/// when the source frame is geographic; projected sources retain their
+/// producer-chord interpretation.
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "the retained-edge publisher integration consumes this paired provider"
+    )
+)]
+pub(crate) fn map_transformed_shape_chains(
+    source: &Shape,
+    output: &Shape,
+    source_frame: GeographicFrame,
+    target_frame: GeographicFrame,
+    mut map: impl FnMut(
+        &TransformedChartEdgeProvider<'_>,
+        bool,
+    ) -> Result<Option<Vec<crate::geometry::Point>>>,
+) -> Result<Shape> {
+    map_computed_shape_chains(source, output, |source, output, closed| {
+        let edges =
+            TransformedChartEdgeProvider::try_new(source, output, source_frame, target_frame)?;
+        map(&edges, closed)
+    })
+}
+
+/// Borrow one original chain and its one-for-one transformed output.
+///
+/// Each edge connection is derived on request, so scalar chains and selected
+/// packed windows retain their caller-owned endpoint pairs without staging a
+/// parallel displacement column.
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "the retained-edge publisher integration consumes this provider"
+    )
+)]
+pub(crate) struct TransformedChartEdgeProvider<'a> {
+    source: &'a CoordSeq,
+    output: &'a CoordSeq,
+    source_frame: GeographicFrame,
+    target_frame: GeographicFrame,
+}
+
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "the retained-edge publisher integration consumes this provider"
+    )
+)]
+impl<'a> TransformedChartEdgeProvider<'a> {
+    pub(crate) fn try_new(
+        source: &'a CoordSeq,
+        output: &'a CoordSeq,
+        source_frame: GeographicFrame,
+        target_frame: GeographicFrame,
+    ) -> Result<Self> {
+        if source.coord_count() != output.coord_count() {
+            return Err(GeometryErrorKind::message(
+                "transformed coordinate chain changed endpoint correspondence",
+            ));
+        }
+        Ok(Self {
+            source,
+            output,
+            source_frame,
+            target_frame,
+        })
+    }
+
+    pub(crate) const fn source(&self) -> &'a CoordSeq {
+        self.source
+    }
+
+    pub(crate) const fn output(&self) -> &'a CoordSeq {
+        self.output
+    }
+
+    pub(crate) fn edge_count(&self) -> usize {
+        self.source.coord_count().saturating_sub(1)
+    }
+
+    pub(crate) fn retained_connection(&self, edge: usize) -> Result<RetainedChartDisplacement> {
+        if edge >= self.edge_count() {
+            return Err(GeometryErrorKind::message(
+                "transformed edge index is outside its paired coordinate chain",
+            ));
+        }
+        let source_start = self.source.nth_coord(edge);
+        let source_end = self.source.nth_coord(edge.wrapping_add(1));
+        let output_start = self.output.nth_coord(edge);
+        let output_end = self.output.nth_coord(edge.wrapping_add(1));
+        select_transformed_chart_displacement(
+            self.source_frame,
+            [source_start.x, source_end.x],
+            self.target_frame,
+            [output_start.x, output_end.x],
+        )
+    }
 }
 
 pub(crate) fn publish_raw_computed_shape(
@@ -549,11 +656,157 @@ fn map_ring(
 
 #[cfg(test)]
 mod tests {
-    use super::{publish_polygon_with_edge_roles, publish_raw_computed_shape};
+    use super::{
+        TransformedChartEdgeProvider, map_transformed_shape_chains,
+        publish_polygon_with_edge_roles, publish_raw_computed_shape,
+    };
     use crate::geographic::GeographicFrame;
     use crate::geometry::{
-        CoordSeq, ExpansionBudget, LineSeq, Point, Polygon, Ring, Shape, SmoothMethod,
+        CoordSeq, CoordWindow, Coordinates as _, ExpansionBudget, LineSeq, Point, Polygon, Ring,
+        Shape, SmoothMethod,
     };
+
+    #[test]
+    fn transformed_shape_chain_provider_uses_each_original_endpoint_pair() {
+        let frame = GeographicFrame::crs84();
+        let source = Shape::LineString(
+            LineSeq::try_new(
+                CoordSeq::try_from_points(&[
+                    Point::new_raw_xy(10.0, 0.0),
+                    Point::new_raw_xy(370.0, 0.0),
+                    Point::new_raw_xy(370.0, 1.0),
+                ])
+                .unwrap(),
+            )
+            .unwrap(),
+        );
+        let output = Shape::LineString(
+            LineSeq::try_new(
+                CoordSeq::try_from_points(&[
+                    Point::new_raw_xy(0.0, 0.0),
+                    Point::new_raw_xy(-180.0, 0.0),
+                    Point::new_raw_xy(-180.0, 1.0),
+                ])
+                .unwrap(),
+            )
+            .unwrap(),
+        );
+
+        let published =
+            map_transformed_shape_chains(&source, &output, frame, frame, |edges, closed| {
+                assert!(!closed);
+                assert_eq!(edges.edge_count(), 2);
+                assert_eq!(edges.source().nth_coord(0).x, 10.0);
+                assert_eq!(edges.output().nth_coord(0).x, 0.0);
+                assert_eq!(edges.retained_connection(0)?.periods(), 2);
+                assert_eq!(edges.retained_connection(1)?.periods(), 0);
+                Ok(None)
+            })
+            .unwrap();
+
+        assert_eq!(published, output);
+    }
+
+    #[test]
+    fn transformed_shape_chain_provider_keeps_collection_member_correspondence() {
+        let frame = GeographicFrame::crs84();
+        let source = Shape::geometry_collection(vec![
+            Shape::LineString(
+                LineSeq::try_new(
+                    CoordSeq::try_from_points(&[
+                        Point::new_raw_xy(10.0, 0.0),
+                        Point::new_raw_xy(370.0, 0.0),
+                    ])
+                    .unwrap(),
+                )
+                .unwrap(),
+            ),
+            Shape::LineString(
+                LineSeq::try_new(
+                    CoordSeq::try_from_points(&[
+                        Point::new_raw_xy(20.0, 0.0),
+                        Point::new_raw_xy(20.0, 1.0),
+                    ])
+                    .unwrap(),
+                )
+                .unwrap(),
+            ),
+        ])
+        .unwrap();
+        let output = Shape::geometry_collection(vec![
+            Shape::LineString(
+                LineSeq::try_new(
+                    CoordSeq::try_from_points(&[
+                        Point::new_raw_xy(0.0, 0.0),
+                        Point::new_raw_xy(0.0, 0.0),
+                    ])
+                    .unwrap(),
+                )
+                .unwrap(),
+            ),
+            Shape::LineString(
+                LineSeq::try_new(
+                    CoordSeq::try_from_points(&[
+                        Point::new_raw_xy(0.0, 0.0),
+                        Point::new_raw_xy(-180.0, 1.0),
+                    ])
+                    .unwrap(),
+                )
+                .unwrap(),
+            ),
+        ])
+        .unwrap();
+        let mut lifts = Vec::new();
+
+        let published =
+            map_transformed_shape_chains(&source, &output, frame, frame, |edges, closed| {
+                assert!(!closed);
+                lifts.push(edges.retained_connection(0)?.periods());
+                Ok(None)
+            })
+            .unwrap();
+
+        assert_eq!(lifts, [1, 0]);
+        assert_eq!(published, output);
+    }
+
+    #[test]
+    fn transformed_packed_windows_keep_gathered_and_duplicate_source_pairing() {
+        let frame = GeographicFrame::crs84();
+        let source = CoordSeq::try_from_points(&[
+            Point::new_raw_xy(0.0, 0.0),
+            Point::new_raw_xy(360.0, 0.0),
+            Point::new_raw_xy(10.0, 0.0),
+            Point::new_raw_xy(10.0, 0.0),
+        ])
+        .unwrap();
+        let output = CoordSeq::try_from_points(&[
+            Point::new_raw_xy(0.0, 0.0),
+            Point::new_raw_xy(-180.0, 0.0),
+            Point::new_raw_xy(0.0, 0.0),
+            Point::new_raw_xy(-180.0, 0.0),
+            Point::new_raw_xy(0.0, 0.0),
+            Point::new_raw_xy(-180.0, 0.0),
+        ])
+        .unwrap();
+        let source_windows = [2..4, 0..2, 0..2];
+        let output_windows = [0..2, 2..4, 4..6];
+
+        let periods = source_windows
+            .into_iter()
+            .zip(output_windows)
+            .map(|(source_window, output_window)| {
+                let source = source.view(CoordWindow::from_range(source_window, source.len()));
+                let output = output.view(CoordWindow::from_range(output_window, output.len()));
+                TransformedChartEdgeProvider::try_new(&source, &output, frame, frame)?
+                    .retained_connection(0)
+                    .map(|edge| edge.periods())
+            })
+            .collect::<crate::error::Result<Vec<_>>>()
+            .unwrap();
+
+        assert_eq!(periods, [0, 2, 2]);
+    }
 
     #[test]
     fn raw_computed_shape_publication_subdivides_the_generated_line() {

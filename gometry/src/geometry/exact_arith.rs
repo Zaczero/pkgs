@@ -12,6 +12,8 @@
 //! [`DekkerParts`] stores one checked coefficient split for hot kernels
 //! compiled to baselines where scalar `mul_add` is not a hardware instruction.
 
+use crate::geometry::tessellation::exact::ExactDyadic as ConnectorDyadic;
+
 pub(crate) mod bounded;
 pub(crate) mod product_sum;
 
@@ -723,6 +725,188 @@ pub(crate) fn retained_computed_samples_connection(
     )
 }
 
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "the retained-edge publisher integration consumes this prepared selector"
+    )
+)]
+/// Select the target lift that exactly minimizes the difference between the
+/// source connection and the transformed endpoint connection.
+///
+/// The source branch comes from its admitted endpoint pair. Source and target
+/// longitude-axis orientations are applied before comparing displacements;
+/// ties retain a source Circle's longer branch, otherwise prefer the shorter
+/// target displacement, then follow the authentic canonical target difference.
+/// This selects an endpoint-defined target chart chord, not an interior source
+/// edge transport.
+pub(crate) fn select_transformed_chart_displacement(
+    source_frame: crate::geographic::GeographicFrame,
+    source_endpoints: [f64; 2],
+    target_frame: crate::geographic::GeographicFrame,
+    target_endpoints: [f64; 2],
+) -> crate::error::Result<crate::geographic::RetainedChartDisplacement> {
+    let source_axis = source_frame.longitude();
+    let target_axis = target_frame.longitude();
+    let source_connection = source_axis
+        .chart_connection(source_endpoints[0], source_endpoints[1])
+        .map_err(|error| crate::crs::CrsError::invalid(error.to_string()))?;
+    let target_endpoints = [
+        target_axis
+            .canonicalize(target_endpoints[0])
+            .map_err(|error| crate::crs::CrsError::invalid(error.to_string()))?,
+        target_axis
+            .canonicalize(target_endpoints[1])
+            .map_err(|error| crate::crs::CrsError::invalid(error.to_string()))?,
+    ];
+
+    let source_displacement =
+        retained_edge_displacement(source_connection.retained(), source_axis)?;
+    let target_period = ConnectorDyadic::from_f64(target_axis.period());
+    let source_period = ConnectorDyadic::from_f64(source_axis.period());
+    let source_in_target_orientation = source_displacement.try_product(&target_period)?;
+    let source_in_target_orientation = if source_frame.orientation().longitude_east()
+        == target_frame.orientation().longitude_east()
+    {
+        source_in_target_orientation
+    } else {
+        source_in_target_orientation.neg()
+    };
+    let target_difference = ConnectorDyadic::from_f64(target_endpoints[1].get())
+        .try_subtract(ConnectorDyadic::from_f64(target_endpoints[0].get()))?;
+    let target_difference_scaled = target_difference.try_product(&source_period)?;
+    let numerator = source_in_target_orientation.try_subtract(target_difference_scaled)?;
+    let denominator = source_period.try_product(&target_period)?;
+    let center = numerator.nearest_integer_quotient_ties_to_zero(&denominator)?;
+    // The nearest integer and its neighbors contain every minimum; residuals
+    // are then compared exactly, without a search cap or rounded ratio.
+    let lower = center.clone().try_subtract(ConnectorDyadic::one())?;
+    let upper = center.clone().try_add(ConnectorDyadic::one())?;
+    let candidates = [
+        transformed_lift_candidate(
+            lower,
+            &numerator,
+            &denominator,
+            &target_difference,
+            &target_period,
+        )?,
+        transformed_lift_candidate(
+            center,
+            &numerator,
+            &denominator,
+            &target_difference,
+            &target_period,
+        )?,
+        transformed_lift_candidate(
+            upper,
+            &numerator,
+            &denominator,
+            &target_difference,
+            &target_period,
+        )?,
+    ];
+    let source_is_circle = matches!(
+        source_connection.step,
+        crate::geographic::ChartStep::Circle(_)
+    );
+    let target_direction = target_difference.cmp(&ConnectorDyadic::zero());
+    let mut selected = &candidates[0];
+    for candidate in &candidates[1..] {
+        if transformed_lift_candidate_precedes(
+            candidate,
+            selected,
+            source_is_circle,
+            target_direction,
+        ) {
+            selected = candidate;
+        }
+    }
+
+    Ok(
+        crate::geographic::RetainedChartDisplacement::from_native_endpoints(
+            target_endpoints,
+            exact_integer_i64(&selected.lift)?,
+        ),
+    )
+}
+
+struct TransformedLiftCandidate {
+    lift: ConnectorDyadic,
+    target_displacement: ConnectorDyadic,
+    residual: ConnectorDyadic,
+}
+
+fn transformed_lift_candidate(
+    lift: ConnectorDyadic,
+    numerator: &ConnectorDyadic,
+    denominator: &ConnectorDyadic,
+    target_difference: &ConnectorDyadic,
+    target_period: &ConnectorDyadic,
+) -> crate::error::Result<TransformedLiftCandidate> {
+    let target_displacement = target_difference
+        .clone()
+        .try_add(target_period.try_product(&lift)?)?;
+    let residual = numerator
+        .clone()
+        .try_subtract(denominator.try_product(&lift)?)?;
+    Ok(TransformedLiftCandidate {
+        lift,
+        target_displacement,
+        residual,
+    })
+}
+
+fn transformed_lift_candidate_precedes(
+    candidate: &TransformedLiftCandidate,
+    selected: &TransformedLiftCandidate,
+    source_is_circle: bool,
+    target_direction: std::cmp::Ordering,
+) -> bool {
+    use std::cmp::Ordering;
+
+    let distance_order = candidate
+        .residual
+        .clone()
+        .abs()
+        .cmp(&selected.residual.clone().abs());
+    if distance_order != Ordering::Equal {
+        return distance_order == Ordering::Less;
+    }
+
+    let displacement_order = candidate
+        .target_displacement
+        .clone()
+        .abs()
+        .cmp(&selected.target_displacement.clone().abs());
+    if displacement_order != Ordering::Equal {
+        return if source_is_circle {
+            displacement_order == Ordering::Greater
+        } else {
+            displacement_order == Ordering::Less
+        };
+    }
+
+    let zero = ConnectorDyadic::zero();
+    let candidate_direction = candidate.target_displacement.cmp(&zero);
+    let selected_direction = selected.target_displacement.cmp(&zero);
+    match target_direction {
+        Ordering::Greater => {
+            candidate_direction == Ordering::Greater && selected_direction != Ordering::Greater
+        },
+        Ordering::Less => {
+            candidate_direction == Ordering::Less && selected_direction != Ordering::Less
+        },
+        Ordering::Equal => {
+            debug_assert!(
+                false,
+                "equal-magnitude antipodal candidates require a directed target difference"
+            );
+            false
+        },
+    }
+}
+
 fn round_retained_source_sheet_value(
     value: &crate::geometry::tessellation::exact::ExactDyadic,
 ) -> crate::error::Result<f64> {
@@ -1377,8 +1561,127 @@ pub(crate) fn checked_dd_mul(left: (f64, f64), right: (f64, f64)) -> Option<(f64
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::geographic::{GeographicFrame, RetainedChartDisplacement, RetainedLongitudeSite};
+    use crate::geographic::{
+        AngularFactor, GeographicAxisOrientation, GeographicFrame, RetainedChartDisplacement,
+        RetainedLongitudeSite,
+    };
     use crate::geometry::tessellation::exact::{ExactDyadic, ExactRational};
+
+    fn connector_frame(period: f64, longitude_east: bool) -> GeographicFrame {
+        let unit = AngularFactor::try_new("longitude", std::f64::consts::TAU / period).unwrap();
+        GeographicFrame::try_new_with_orientation(
+            unit,
+            unit,
+            0.0,
+            GeographicAxisOrientation::from_axis_directions(longitude_east, true),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn transformed_circle_ties_keep_the_long_branch_and_reverse_with_traversal() {
+        let degrees = connector_frame(360.0, true);
+        let forward =
+            select_transformed_chart_displacement(degrees, [10.0, 370.0], degrees, [0.0, -180.0])
+                .unwrap();
+        let reverse =
+            select_transformed_chart_displacement(degrees, [370.0, 10.0], degrees, [-180.0, 0.0])
+                .unwrap();
+
+        assert_eq!(forward.periods(), 2);
+        assert_eq!(forward.delta_native(degrees.longitude()), 540.0);
+        assert_eq!(reverse.periods(), -2);
+        assert_eq!(reverse.delta_native(degrees.longitude()), -540.0);
+        assert_eq!(forward.endpoints().map(|longitude| longitude.get()), [
+            0.0, -180.0
+        ]);
+        assert_eq!(reverse.endpoints().map(|longitude| longitude.get()), [
+            -180.0, 0.0
+        ]);
+    }
+
+    #[test]
+    fn transformed_shortest_ties_do_not_add_a_turn_to_a_half_edge() {
+        let degrees = connector_frame(360.0, true);
+        let edge =
+            select_transformed_chart_displacement(degrees, [0.0, 180.0], degrees, [12.0, 12.0])
+                .unwrap();
+
+        assert_eq!(edge.periods(), 0);
+        assert_eq!(edge.delta_native(degrees.longitude()), 0.0);
+        assert_eq!(edge.endpoints().map(|longitude| longitude.get()), [
+            12.0, 12.0
+        ]);
+    }
+
+    #[test]
+    fn transformed_connector_compares_different_native_periods_exactly() {
+        let grads = connector_frame(400.0, true);
+        let degrees = connector_frame(360.0, true);
+        let edge =
+            select_transformed_chart_displacement(grads, [10.0, 410.0], degrees, [0.0, -180.0])
+                .unwrap();
+
+        assert_eq!(edge.periods(), 2);
+        assert_eq!(edge.delta_native(degrees.longitude()), 540.0);
+    }
+
+    #[test]
+    fn transformed_connector_uses_the_exact_side_of_a_rounded_half_period() {
+        let degrees = connector_frame(360.0, true);
+        let target: [f64; 2] = [-0.1, 179.9];
+        assert_eq!((target[1] - target[0]).to_bits(), 180.0_f64.to_bits());
+
+        let edge =
+            select_transformed_chart_displacement(degrees, [0.0, 0.0], degrees, target).unwrap();
+
+        assert_eq!(edge.periods(), -1);
+        assert_eq!(
+            edge.endpoints().map(|longitude| longitude.get().to_bits()),
+            target.map(f64::to_bits)
+        );
+    }
+
+    #[test]
+    fn transformed_zero_ties_follow_the_canonical_target_difference() {
+        let degrees = connector_frame(360.0, true);
+        let negative =
+            select_transformed_chart_displacement(degrees, [0.0, 0.0], degrees, [0.0, -180.0])
+                .unwrap();
+        let positive =
+            select_transformed_chart_displacement(degrees, [0.0, 0.0], degrees, [-180.0, 0.0])
+                .unwrap();
+
+        assert_eq!(negative.periods(), 0);
+        assert_eq!(negative.delta_native(degrees.longitude()), -180.0);
+        assert_eq!(positive.periods(), 0);
+        assert_eq!(positive.delta_native(degrees.longitude()), 180.0);
+    }
+
+    #[test]
+    fn transformed_connector_reverses_opposed_axis_orientation() {
+        let west = connector_frame(360.0, false);
+        let east = connector_frame(360.0, true);
+        let edge =
+            select_transformed_chart_displacement(west, [0.0, 49.0], east, [0.0, -49.0]).unwrap();
+
+        assert_eq!(edge.periods(), 0);
+        assert_eq!(edge.delta_native(east.longitude()), -49.0);
+    }
+
+    #[test]
+    fn transformed_connector_retains_authentic_target_endpoints() {
+        let degrees = connector_frame(360.0, true);
+        let target = [-0.1, 0.2];
+        let edge =
+            select_transformed_chart_displacement(degrees, [0.0, 0.3], degrees, target).unwrap();
+
+        assert_eq!(edge.periods(), 0);
+        assert_eq!(
+            edge.endpoints().map(|longitude| longitude.get().to_bits()),
+            target.map(f64::to_bits)
+        );
+    }
 
     #[test]
     fn exact_nonnegative_usize_admits_zero_and_rejects_fractional_negative_and_overflow() {
