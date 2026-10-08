@@ -7,7 +7,8 @@ use super::{
 };
 use crate::error::Result;
 use crate::geometry::{
-    Bounds, CoordSeq, ExpansionBudget, LineSeq, Point, PointKey, Polygon, Ring, Shape, exact_arith,
+    Bounds, CoordSeq, ExpansionBudget, LineSeq, Point, PointKey, PointSetCenter, Polygon, Ring,
+    Shape, exact_arith,
 };
 
 /// A point-site identity retained separately from its rounded working X.
@@ -174,16 +175,18 @@ pub(crate) fn point_set_centroid(shape: &Shape, frame: GeographicFrame) -> Resul
     {
         return Ok(None);
     }
-    let (source_mean, raw_extrema) = crate::geometry::point_set_centroid_with_bounds(shape)?;
-    let Some(source_mean) = source_mean else {
+    let Some(center) = crate::geometry::point_set_center_summary(shape, frame)? else {
         return Ok(None);
     };
-    if raw_extrema.is_some_and(|bounds| frame.bounds_certify_ordinary_support(bounds)) {
-        let point = frame
-            .canonical_computed_point(Point::new_raw_xy(source_mean.0, source_mean.1))
-            .map_err(|error| crate::crs::CrsError::invalid(error.to_string()))?;
-        return Ok(Some(Shape::Point(point)));
-    }
+    let raw_extrema = match center {
+        PointSetCenter::Ordinary(source_mean) => {
+            let point = frame
+                .canonical_computed_point(Point::new_raw_xy(source_mean.0, source_mean.1))
+                .map_err(|error| crate::crs::CrsError::invalid(error.to_string()))?;
+            return Ok(Some(Shape::Point(point)));
+        },
+        PointSetCenter::Chart(raw_extrema) => raw_extrema,
+    };
     let Some(chart) = PointSelectionChart::try_from_shape(frame, shape, raw_extrema)? else {
         return Ok(None);
     };
@@ -202,14 +205,16 @@ pub(crate) fn point_set_surface(shape: &Shape, frame: GeographicFrame) -> Result
     {
         return Ok(None);
     }
-    let (source_mean, raw_extrema) = crate::geometry::point_set_centroid_with_bounds(shape)?;
-    let Some(source_mean) = source_mean else {
+    let Some(center) = crate::geometry::point_set_center_summary(shape, frame)? else {
         return Ok(None);
     };
-    if raw_extrema.is_some_and(|bounds| frame.bounds_certify_ordinary_support(bounds)) {
-        let center = Point::new_raw_xy(source_mean.0, source_mean.1);
-        return Ok(crate::geometry::point_set_surface_point_at(shape, center).map(Shape::Point));
-    }
+    let raw_extrema = match center {
+        PointSetCenter::Ordinary(source_mean) => {
+            let center = Point::new_raw_xy(source_mean.0, source_mean.1);
+            return Ok(crate::geometry::point_set_surface_point_at(shape, center).map(Shape::Point));
+        },
+        PointSetCenter::Chart(raw_extrema) => raw_extrema,
+    };
     let Some(chart) = PointSelectionChart::try_from_shape(frame, shape, raw_extrema)? else {
         return Ok(None);
     };
@@ -470,10 +475,10 @@ mod tests {
         ChartedPointChain, ChartedPointRectangle, PointSelectionChart, point_set_centroid,
         point_set_convex_hull, point_set_minimum_rotated_rectangle, point_set_surface,
     };
-    use crate::geographic::GeographicFrame;
+    use crate::geographic::{AngularFactor, ChartPole, GeographicFrame};
     use crate::geometry::{
-        CoordSeq, CoordinateAxes, Coordinates as _, MOrdinate, Point, Polygon, Ring, Shape,
-        ZOrdinate,
+        Bounds, CoordSeq, CoordinateAxes, Coordinates as _, MOrdinate, Point, PointSetCenter,
+        Polygon, Ring, Shape, ZOrdinate,
     };
 
     fn point(x: f64, y: f64) -> Point {
@@ -485,6 +490,41 @@ mod tests {
             axes,
             CoordSeq::try_from_points(points).expect("point sequence"),
         )
+    }
+
+    fn multipoint_columns(xs: Vec<f64>, ys: Vec<f64>) -> Shape {
+        Shape::multi_point(
+            CoordinateAxes::XY,
+            CoordSeq::try_from_vecs(xs, ys, None, None).expect("coordinate columns"),
+        )
+    }
+
+    fn assert_nonfinite_point_summary_keeps_geographic_error(
+        shape: &Shape,
+        expected_coordinate: &str,
+    ) {
+        assert!(matches!(
+            crate::geometry::point_set_center_summary(shape, GeographicFrame::crs84())
+                .expect("center summary"),
+            Some(PointSetCenter::Chart(None))
+        ));
+        let Err(centroid_error) = point_set_centroid(shape, GeographicFrame::crs84()) else {
+            panic!("centroid must reject the non-finite source coordinate");
+        };
+        let Err(surface_error) = point_set_surface(shape, GeographicFrame::crs84()) else {
+            panic!("surface point must reject the non-finite source coordinate");
+        };
+        let centroid_message = centroid_error.to_string();
+        let surface_message = surface_error.to_string();
+        assert_eq!(centroid_message, surface_message);
+        assert!(
+            centroid_message.contains("member 1, coordinate 0"),
+            "{centroid_message}"
+        );
+        assert!(
+            centroid_message.contains(expected_coordinate),
+            "{centroid_message}"
+        );
     }
 
     fn chart_sites(
@@ -520,6 +560,135 @@ mod tests {
             panic!("point-set representative is a point");
         };
         assert_eq!((representative.x, representative.y), (10.0, 0.0));
+    }
+
+    #[test]
+    fn point_summary_retains_the_stable_mean_for_ordinary_cancellation() {
+        let tiny = 2.0_f64.powi(-54);
+        let expected = tiny / 3.0;
+        let shape = multipoint(
+            &[point(-1.0, 0.0), point(tiny, 0.0), point(1.0, 0.0)],
+            CoordinateAxes::XY,
+        );
+        let frame = GeographicFrame::crs84();
+
+        let Some(PointSetCenter::Ordinary((x, y))) =
+            crate::geometry::point_set_center_summary(&shape, frame)
+                .expect("ordinary point-set center")
+        else {
+            panic!("small symmetric support has an ordinary center");
+        };
+        assert_eq!(x.to_bits(), expected.to_bits());
+        assert_eq!(y.to_bits(), 0.0_f64.to_bits());
+
+        let Some(Shape::Point(centroid)) =
+            point_set_centroid(&shape, frame).expect("point-set centroid")
+        else {
+            panic!("ordinary point-set centroid is a point");
+        };
+        assert_eq!(centroid.x.to_bits(), expected.to_bits());
+        assert_eq!(centroid.y.to_bits(), 0.0_f64.to_bits());
+    }
+
+    #[test]
+    fn point_summary_uses_actual_bounds_after_symmetric_proof_misses() {
+        let shape = multipoint(&[point(100.0, 0.0), point(110.0, 10.0)], CoordinateAxes::XY);
+        let frame = GeographicFrame::crs84();
+
+        let Some(PointSetCenter::Ordinary((x, y))) =
+            crate::geometry::point_set_center_summary(&shape, frame)
+                .expect("actual bounds certify ordinary support")
+        else {
+            panic!("actual narrow bounds recover the ordinary route");
+        };
+        assert_eq!((x, y), (105.0, 5.0));
+
+        let Some(Shape::Point(centroid)) =
+            point_set_centroid(&shape, frame).expect("point-set centroid")
+        else {
+            panic!("ordinary point-set centroid is a point");
+        };
+        assert_eq!((centroid.x, centroid.y), (105.0, 5.0));
+
+        let Some(Shape::Point(representative)) =
+            point_set_surface(&shape, frame).expect("point-set representative")
+        else {
+            panic!("ordinary point-set representative is a point");
+        };
+        assert_eq!((representative.x, representative.y), (100.0, 0.0));
+    }
+
+    #[test]
+    fn point_summary_keeps_loose_proof_bounds_out_of_chart_support() {
+        let shape = multipoint(&[point(1.0, 2.0), point(3.0, 4.0)], CoordinateAxes::XY);
+        let frame = GeographicFrame::crs84();
+
+        let Some(PointSetCenter::Ordinary((x, y))) =
+            crate::geometry::point_set_center_summary(&shape, frame)
+                .expect("symmetric enclosure certifies ordinary support")
+        else {
+            panic!("an ordinary proof returns its mean, not support bounds");
+        };
+        assert_eq!((x, y), (2.0, 3.0));
+
+        let Some(Shape::Point(centroid)) =
+            point_set_centroid(&shape, frame).expect("point-set centroid")
+        else {
+            panic!("ordinary proof publishes a centroid");
+        };
+        assert_eq!((centroid.x, centroid.y), (2.0, 3.0));
+    }
+
+    #[test]
+    fn point_summary_uses_native_grad_and_strict_chart_edges() {
+        let grad = std::f64::consts::TAU / 400.0;
+        let unit = AngularFactor::try_new("grad", grad).expect("grad angular factor");
+        let frame = GeographicFrame::try_new(unit, unit, 0.0).expect("grad frame");
+        let ordinary = multipoint_columns(vec![-20.0, 20.0], vec![-30.0, 30.0]);
+        assert!(matches!(
+            crate::geometry::point_set_center_summary(&ordinary, frame)
+                .expect("ordinary grad support"),
+            Some(PointSetCenter::Ordinary((0.0, 0.0)))
+        ));
+
+        let half_period = frame.longitude().half_period();
+        let half_turn =
+            multipoint_columns(vec![-half_period / 2.0, half_period / 2.0], vec![0.0; 2]);
+        assert!(matches!(
+            crate::geometry::point_set_center_summary(&half_turn, frame)
+                .expect("half-turn chart support"),
+            Some(PointSetCenter::Chart(Some(bounds)))
+                if bounds == Bounds::new_raw(-half_period / 2.0, 0.0, half_period / 2.0, 0.0)
+        ));
+
+        let pole = frame.chart_pole_latitude(ChartPole::North);
+        let polar = multipoint_columns(vec![0.0, 1.0], vec![0.0, pole]);
+        assert!(matches!(
+            crate::geometry::point_set_center_summary(&polar, frame)
+                .expect("polar chart support"),
+            Some(PointSetCenter::Chart(Some(bounds)))
+                if bounds == Bounds::new_raw(0.0, 0.0, 1.0, pole)
+        ));
+
+        let seam = multipoint_columns(vec![199.0, -199.0], vec![0.0; 2]);
+        assert!(matches!(
+            crate::geometry::point_set_center_summary(&seam, frame)
+                .expect("seam chart support"),
+            Some(PointSetCenter::Chart(Some(bounds)))
+                if bounds == Bounds::new_raw(-199.0, 0.0, 199.0, 0.0)
+        ));
+    }
+
+    #[test]
+    fn point_summary_defers_nan_means_and_preserves_source_error_location() {
+        let shape = multipoint_columns(vec![0.0, f64::NAN], vec![0.0, 1.0]);
+        assert_nonfinite_point_summary_keeps_geographic_error(&shape, "longitude");
+    }
+
+    #[test]
+    fn point_summary_defers_infinite_means_and_preserves_source_error_location() {
+        let shape = multipoint_columns(vec![0.0, 1.0], vec![0.0, f64::INFINITY]);
+        assert_nonfinite_point_summary_keeps_geographic_error(&shape, "latitude");
     }
 
     #[test]

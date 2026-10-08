@@ -124,12 +124,11 @@ mod dimension;
 pub(crate) use dimension::{Dimension, dimension, ring_is_collinear};
 mod derived;
 pub(crate) use derived::{
-    centroid_line_row_columns, centroid_polygon_row_columns,
+    PointSetCenter, centroid_line_row_columns, centroid_polygon_row_columns,
     centroid_polygon_row_columns_with_bounds, exact_point_chart_centroid, geometric_xy_cmp,
     minimum_area_rectangle_chart, monotone_chain_chart_hull, native_concave_hull,
-    point_on_surface_line_columns, point_on_surface_polygon_row_columns,
-    point_set_centroid_with_bounds, point_set_surface_point_at, shape_from_selected_hull,
-    smallest_enclosing_circle,
+    point_on_surface_line_columns, point_on_surface_polygon_row_columns, point_set_center_summary,
+    point_set_surface_point_at, shape_from_selected_hull, smallest_enclosing_circle,
 };
 mod distance;
 pub(in crate::geometry) use distance::{ExactPoint, point_segment_distance_squared_exact};
