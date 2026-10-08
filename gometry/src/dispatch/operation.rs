@@ -195,7 +195,7 @@ define_operation! {
     SetM => { name: "set_m", resolver: MetricResolver::None },
     SetZ => { name: "set_z", resolver: MetricResolver::None },
     Simplify => { name: "simplify", resolver: MetricResolver::None },
-    Smooth => { name: "smooth", resolver: MetricResolver::None },
+    Smooth => { name: "smooth", resolver: MetricResolver::GeographicCarry },
     SnapToGrid => { name: "snap_to_grid", resolver: MetricResolver::None },
     SplitAntimeridian => { name: "split_antimeridian", resolver: MetricResolver::GeographicCarry },
     SwapXy => { name: "swap_xy", resolver: MetricResolver::None },
