@@ -724,6 +724,63 @@ fn polygonize_full_strict_scopes_diagnostic_axes_to_source_rows() {
 }
 
 #[test]
+fn polygonize_keeps_collinear_source_nodes_and_zero_ordinates() {
+    let point = |x, y, m| {
+        Point::new_axes(x, y, ZOrdinate(Some(0.0)), MOrdinate(Some(m)))
+            .expect("finite XYZM source coordinate")
+    };
+    let lower_left = point(0.0, 0.0, 10.0);
+    let forward_points = [
+        lower_left,
+        point(1.0, 0.0, 15.0),
+        point(2.0, 0.0, 20.0),
+        point(2.0, 2.0, 30.0),
+        point(0.0, 2.0, 40.0),
+        lower_left,
+    ];
+    let reverse_points = [
+        lower_left,
+        point(0.0, 2.0, 40.0),
+        point(2.0, 2.0, 30.0),
+        point(2.0, 0.0, 20.0),
+        point(1.0, 0.0, 15.0),
+        lower_left,
+    ];
+    let forward = Shape::LineString(LineSeq::from_proven(
+        CoordSeq::try_from_points(&forward_points).unwrap(),
+    ));
+    let reverse = Shape::LineString(LineSeq::from_proven(
+        CoordSeq::try_from_points(&reverse_points).unwrap(),
+    ));
+    for source in [&forward, &reverse] {
+        let polygons = Shape::polygonize_all(&[source], true)
+            .expect("a closed XYZM source ring polygonizes strictly");
+        assert_eq!(polygons.len(), 1);
+        let polygon = polygons
+            .first()
+            .and_then(|shape| match shape {
+                Shape::Polygon(polygon) => Some(polygon),
+                Shape::Point(_)
+                | Shape::MultiPoint(_)
+                | Shape::LineString(_)
+                | Shape::MultiLineString(_)
+                | Shape::MultiPolygon(_)
+                | Shape::GeometryCollection(_)
+                | Shape::Empty(..) => None,
+            })
+            .expect("one source ring produces one polygon");
+        assert_eq!(polygon.shell.coords().xs(), &[0.0, 1.0, 2.0, 2.0, 0.0, 0.0]);
+        assert_eq!(polygon.shell.coords().ys(), &[0.0, 0.0, 0.0, 2.0, 2.0, 0.0]);
+        assert_eq!(polygon.shell.coords().zs(), Some(&[0.0; 6][..]));
+        assert_eq!(
+            polygon.shell.coords().ms(),
+            Some(&[10.0, 15.0, 20.0, 30.0, 40.0, 10.0][..])
+        );
+        assert!(polygon.holes.is_empty());
+    }
+}
+
+#[test]
 fn constrained_pentagon_retains_reciprocal_axes() {
     // 1e77 × 1e-77: squared circumcircle products of these vertices underflow
     // in floating point, which once lost an axis. This is a topology test:

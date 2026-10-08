@@ -833,6 +833,10 @@ pub(super) fn polygonize_faces(
     polygonize_faces_with_embedding(partition, topology, global, &embedding)
 }
 
+#[expect(
+    clippy::indexing_slicing,
+    reason = "walk darts and face labels are paired from this topology; shell indices address pre-sort polygons"
+)]
 pub(super) fn polygonize_faces_with_embedding(
     partition: &ExactPartition<'_>,
     topology: &IndexedTopology,
@@ -847,7 +851,10 @@ pub(super) fn polygonize_faces_with_embedding(
     let mut polygons: Vec<(usize, Ring, Vec<Ring>)> = Vec::new();
     let mut holes = Vec::new();
     for walk in &walks {
-        let face = face_of(walk[0] as usize) as usize;
+        let first = *walk
+            .first()
+            .expect("a polygon boundary walk is a nonempty closed cycle");
+        let face = face_of(first as usize) as usize;
         let ring =
             closed_ring(walk.iter().map(|&slot| {
                 Embedding::xy_at(coordinates, NodeId(topology.owners[slot as usize]))
