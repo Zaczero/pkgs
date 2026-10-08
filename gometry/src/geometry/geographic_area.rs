@@ -472,7 +472,7 @@ pub(crate) fn polygon_area(
     )?;
     let density = metric.chart_area_density(reference_colatitude.value, reference_pole);
     let exact_scale = density.area_scale(x_exponent)?;
-    let scale_bound = area_scale_bound(density, x_exponent)?;
+    let scale_bound = area_scale_bound(&density, x_exponent)?;
     let mut scratch = ScratchPool::checkout(&GEOGRAPHIC_AREA_SCRATCH);
     let mut order = INITIAL_TAYLOR_ORDER;
     let mut exact_mode = false;
@@ -528,7 +528,7 @@ pub(crate) fn polygon_area(
                         .ok_or(crate::error::ResourceError::SizeOverflow)?;
                     let maximum_latitude = PositiveBound::from_f64(fast.maximum_latitude)
                         .ok_or(crate::error::ResourceError::SizeOverflow)?;
-                    let state = TaylorTail::new(density, variation, maximum_latitude)?;
+                    let state = TaylorTail::new(&density, variation, maximum_latitude)?;
                     ceiling = Some(state.sufficient_order(scale_bound, INITIAL_TAYLOR_ORDER)?);
                     tail = Some(state);
                 }
@@ -539,7 +539,7 @@ pub(crate) fn polygon_area(
                 let norm = PositiveBound::from_f64(fast.contraction_budget)
                     .ok_or(crate::error::ResourceError::SizeOverflow)?;
                 if let Some((area, scale_error)) =
-                    scale_area_fast(fast.integral.value, density, x_exponent)
+                    scale_area_fast(fast.integral.value, &density, x_exponent)
                     && !fast.sign_uncertain
                 {
                     let arithmetic_error =
@@ -617,7 +617,7 @@ pub(crate) fn polygon_area(
             if tail.is_none() {
                 let variation = positive_exact_bound(&source_bounds.variation)?;
                 let maximum_latitude = positive_exact_bound(&source_bounds.maximum_latitude)?;
-                let state = TaylorTail::new(density, variation, maximum_latitude)?;
+                let state = TaylorTail::new(&density, variation, maximum_latitude)?;
                 ceiling = Some(state.sufficient_order(scale_bound, INITIAL_TAYLOR_ORDER)?);
                 tail = Some(state);
             }
@@ -786,8 +786,8 @@ fn accumulate_fast(
                 chart_turn,
                 x_origin,
                 longitude_coordinate_scale,
-            )?;
-            let mut previous_z = scaled_y(previous.y, y_origin, latitude_coordinate_scale)?;
+            );
+            let mut previous_z = scaled_y(previous.y, y_origin, latitude_coordinate_scale);
             for index in 1..ring.coord_count() {
                 let next = ring.nth_coord(index);
                 let connection = frame
@@ -814,16 +814,16 @@ fn accumulate_fast(
                     chart_turn,
                     x_origin,
                     longitude_coordinate_scale,
-                )?;
-                let next_z = scaled_y(next.y, y_origin, latitude_coordinate_scale)?;
+                );
+                let next_z = scaled_y(next.y, y_origin, latitude_coordinate_scale);
                 let delta_x = scaled_x(
                     frame,
                     connection.end.get(),
                     i64::from(connection.source_lift),
                     connection.start.get(),
                     longitude_coordinate_scale,
-                )?;
-                let delta_z = scaled_y(next.y, previous.y, latitude_coordinate_scale)?;
+                );
+                let delta_z = scaled_y(next.y, previous.y, latitude_coordinate_scale);
                 add_fast_determinant(
                     previous_x.mul(delta_z).sub(previous_z.mul(delta_x)),
                     previous_z,
@@ -843,7 +843,7 @@ fn accumulate_fast(
                 // Close the integration chain at the selected pole; these edges are
                 // not emitted or added to the stored ring.
                 let pole = frame.chart_pole_latitude(selected_pole(summary));
-                let pole_z = scaled_y(pole, y_origin, latitude_coordinate_scale)?;
+                let pole_z = scaled_y(pole, y_origin, latitude_coordinate_scale);
                 let start_canonical = first_connection.start;
                 let start_x = scaled_x(
                     frame,
@@ -851,7 +851,7 @@ fn accumulate_fast(
                     0,
                     x_origin,
                     longitude_coordinate_scale,
-                )?;
+                );
                 add_fast_edge(
                     previous_x,
                     previous_z,
@@ -1011,11 +1011,11 @@ fn rectangle_moments(
         i64::from(forward.source_lift),
         forward.start.get(),
         longitude_scale,
-    )?;
-    let height = scaled_y(top, first.y, latitude_scale)?;
+    );
+    let height = scaled_y(top, first.y, latitude_scale);
     let determinant = width.mul(height).mul(Bounded::exact(polarity));
-    let z0 = scaled_y(first.y, y_origin, latitude_scale)?;
-    let z1 = scaled_y(top, y_origin, latitude_scale)?;
+    let z0 = scaled_y(first.y, y_origin, latitude_scale);
+    let z1 = scaled_y(top, y_origin, latitude_scale);
     let radius = upper_add(z0.value.abs(), z0.error).max(upper_add(z1.value.abs(), z1.error));
     if !radius.is_finite() || radius > 0.5 {
         return Ok(false);
@@ -1512,7 +1512,7 @@ fn scaled_x(
     turn: i64,
     origin: f64,
     coordinate_scale: Bounded,
-) -> Result<Bounded> {
+) -> Bounded {
     let turn_error = if turn.unsigned_abs() <= (1_u64 << 53) {
         0.0
     } else {
@@ -1525,13 +1525,13 @@ fn scaled_x(
             error: turn_error,
         }));
     }
-    Ok(lifted.sub(Bounded::exact(origin)).mul(coordinate_scale))
+    lifted.sub(Bounded::exact(origin)).mul(coordinate_scale)
 }
 
-fn scaled_y(latitude: f64, origin: f64, coordinate_scale: Bounded) -> Result<Bounded> {
-    Ok(Bounded::exact(latitude)
+fn scaled_y(latitude: f64, origin: f64, coordinate_scale: Bounded) -> Bounded {
+    Bounded::exact(latitude)
         .sub(Bounded::exact(origin))
-        .mul(coordinate_scale))
+        .mul(coordinate_scale)
 }
 
 fn exact_to_bounded(value: &ExactDyadic) -> Result<Bounded> {
@@ -1567,17 +1567,12 @@ fn resize_exact(values: &mut Vec<ExactDyadic>, count: usize) {
 
 fn ceil_log2(value: usize) -> u32 {
     debug_assert!(value > 0);
-    let floor = usize::BITS - value.leading_zeros() - 1;
-    if value.is_power_of_two() {
-        floor
-    } else {
-        floor + 1
-    }
+    value.wrapping_sub(1).bit_width()
 }
 
 fn scale_area_fast(
     integral: f64,
-    density: GeographicAreaDensity,
+    density: &GeographicAreaDensity,
     x_exponent: i32,
 ) -> Option<(f64, PositiveBound)> {
     if !integral.is_normal() {
@@ -1591,7 +1586,10 @@ fn scale_area_fast(
     let scale = Bounded::exact(density.semi_major)
         .mul(Bounded::exact(density.semi_major))
         .mul(Bounded::exact(power));
-    if !scale.value.is_normal() || !scale.error.is_finite() || scale.error >= scale.value {
+    if !scale.value.is_normal() {
+        return None;
+    }
+    if !scale.error.is_finite() || scale.error >= scale.value {
         return None;
     }
     let lower_scale = (scale.value - scale.error).next_down();
@@ -1609,7 +1607,7 @@ fn scale_area_fast(
     Some((canonicalize_zero(area), normalized_scale_error))
 }
 
-fn area_scale_bound(density: GeographicAreaDensity, x_exponent: i32) -> Result<PositiveBound> {
+fn area_scale_bound(density: &GeographicAreaDensity, x_exponent: i32) -> Result<PositiveBound> {
     let scale_exponent = x_exponent
         .checked_neg()
         .and_then(|exponent| exponent.checked_add(3))
@@ -1724,14 +1722,14 @@ impl PositiveBound {
         if encoded_exponent != 0 {
             return Some(Self {
                 mantissa: f64::from_bits((1023_u64 << 52) | fraction),
-                exponent: encoded_exponent - 1023,
+                exponent: encoded_exponent.wrapping_sub(1023),
             });
         }
-        let leading = 63 - fraction.leading_zeros();
-        let significand = fraction << (52 - leading);
+        let leading = fraction.ilog2();
+        let significand = fraction << 52_u32.wrapping_sub(leading);
         Some(Self {
             mantissa: f64::from_bits((1023_u64 << 52) | (significand & ((1_u64 << 52) - 1))),
-            exponent: leading as i32 - 1074,
+            exponent: (leading as i32).wrapping_sub(1074),
         })
     }
 
@@ -1739,20 +1737,14 @@ impl PositiveBound {
         if mantissa == 0.0 {
             return Some(Self::ZERO);
         }
-        if !mantissa.is_finite() || mantissa < 0.0 {
-            return None;
+        let normalized = Self::from_f64(mantissa)?;
+        if normalized.is_zero() {
+            return Some(Self::ZERO);
         }
-        let mut mantissa = mantissa;
-        let mut exponent = exponent;
-        while mantissa >= 2.0 {
-            mantissa *= 0.5;
-            exponent = exponent.checked_add(1)?;
-        }
-        while mantissa < 1.0 {
-            mantissa *= 2.0;
-            exponent = exponent.checked_sub(1)?;
-        }
-        Some(Self { mantissa, exponent })
+        Some(Self {
+            exponent: normalized.exponent.checked_add(exponent)?,
+            ..normalized
+        })
     }
 
     fn is_zero(self) -> bool {
@@ -1910,7 +1902,7 @@ struct TaylorTail {
 
 impl TaylorTail {
     fn new(
-        density: GeographicAreaDensity,
+        density: &GeographicAreaDensity,
         variation: PositiveBound,
         maximum_latitude: PositiveBound,
     ) -> Result<Self> {
@@ -1922,8 +1914,14 @@ impl TaylorTail {
             degree: 1,
             variation,
         };
-        for index in 0..density.count {
-            let harmonic = density.harmonics[index];
+        for (((harmonic, argument_slot), amplitude_slot), term_slot) in density
+            .harmonics
+            .iter()
+            .zip(&mut state.argument)
+            .zip(&mut state.amplitude)
+            .zip(&mut state.term)
+            .take(density.count)
+        {
             let sine_cosine =
                 PositiveBound::from_f64(upper_add(harmonic.sine.abs(), harmonic.cosine.abs()))
                     .ok_or(crate::error::ResourceError::SizeOverflow)?;
@@ -1938,9 +1936,9 @@ impl TaylorTail {
                         .ok_or(crate::error::ResourceError::SizeOverflow)?,
                 )
                 .ok_or(crate::error::ResourceError::SizeOverflow)?;
-            state.argument[index] = argument;
-            state.amplitude[index] = amplitude;
-            state.term[index] = amplitude
+            *argument_slot = argument;
+            *amplitude_slot = amplitude;
+            *term_slot = amplitude
                 .multiply_upper(variation)
                 .and_then(|term| term.multiply_upper(argument))
                 .ok_or(crate::error::ResourceError::SizeOverflow)?;
@@ -1954,9 +1952,9 @@ impl TaylorTail {
                 .degree
                 .checked_add(1)
                 .ok_or(crate::error::ResourceError::SizeOverflow)?;
-            for index in 0..self.count {
-                self.term[index] = self.term[index]
-                    .multiply_upper(self.argument[index])
+            for (term, argument) in self.term.iter_mut().zip(&self.argument).take(self.count) {
+                *term = (*term)
+                    .multiply_upper(*argument)
                     .and_then(|term| term.divide_upper(next_degree as u64))
                     .ok_or(crate::error::ResourceError::SizeOverflow)?;
             }
@@ -2029,8 +2027,7 @@ impl TaylorTail {
         if geometric_tail.cmp(&lattice).is_gt() {
             return Err(GeometryErrorKind::message(format!(
                 "geographic area Taylor ceiling failed: m={omitted_degree}, B={bound:?}, r={maximum_argument:?}, ratio={ratio:?}, tail={geometric_tail:?}"
-            ))
-            .into());
+            )));
         }
         Ok(omitted_degree.saturating_sub(1).max(initial_order))
     }
@@ -2039,6 +2036,7 @@ impl TaylorTail {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::geometry::exact_arith::ExactSign;
     include!("geographic_area/row_certificate_tests.rs");
     include!("geographic_area/coefficient_certificate_tests.rs");
     include!("geographic_area/rectangle_moment_tests.rs");
@@ -2046,28 +2044,157 @@ mod tests {
 
     fn assert_receipt_bound_covers(terms: &[(f64, f64)]) {
         let mut sum = BoundedSum::default();
-        let mut exact = ExactDyadic::zero();
+        let mut exact_center = ExactDyadic::zero();
+        let mut exact_error = ExactDyadic::zero();
         for &(value, input_error) in terms {
             sum.push(Bounded {
                 value,
                 error: input_error,
             });
-            exact = exact
-                .try_add(ExactDyadic::from_f64(value))
-                .unwrap()
+            exact_center = exact_center.try_add(ExactDyadic::from_f64(value)).unwrap();
+            exact_error = exact_error
                 .try_add(ExactDyadic::from_f64(input_error))
                 .unwrap();
         }
-        let difference = exact
-            .try_subtract(ExactDyadic::from_f64(sum.value()))
+        let rounded = ExactDyadic::from_f64(sum.value());
+        for endpoint in [
+            exact_center
+                .clone()
+                .try_subtract(exact_error.clone())
+                .unwrap(),
+            exact_center.try_add(exact_error).unwrap(),
+        ] {
+            let difference = endpoint.try_subtract(rounded.clone()).unwrap();
+            let (lower, upper) = outward_ratio_bounds(&difference, &ExactDyadic::one()).unwrap();
+            let deviation = lower.abs().max(upper.abs());
+            assert!(
+                deviation <= sum.error(),
+                "sum-receipt deviation={deviation:.17e}, bound={:.17e}, terms={terms:?}",
+                sum.error()
+            );
+        }
+    }
+
+    #[test]
+    fn positive_bound_decomposes_binary64_extrema_exactly() {
+        let cases = [
+            (1_u64, 0x3FF0_0000_0000_0000_u64, -1074),
+            (0x000F_FFFF_FFFF_FFFF, 0x3FFF_FFFF_FFFF_FFFE, -1023),
+            (0x0010_0000_0000_0000, 0x3FF0_0000_0000_0000, -1022),
+            (0x7FEF_FFFF_FFFF_FFFF, 0x3FFF_FFFF_FFFF_FFFF, 1023),
+        ];
+        for (input_bits, mantissa_bits, exponent) in cases {
+            let bound = PositiveBound::from_f64(f64::from_bits(input_bits)).unwrap();
+            assert_eq!(bound.mantissa.to_bits(), mantissa_bits);
+            assert_eq!(bound.exponent, exponent);
+        }
+
+        assert!(PositiveBound::from_f64(-1.0).is_none());
+        assert!(PositiveBound::from_f64(f64::INFINITY).is_none());
+        assert!(PositiveBound::from_f64(f64::NAN).is_none());
+        assert!(PositiveBound::from_f64(-0.0).unwrap().is_zero());
+    }
+
+    #[test]
+    fn positive_bound_parts_keep_exact_normalization_and_exponent_failures() {
+        for (mantissa, exponent, expected_mantissa, expected_exponent) in [
+            (8.0, -3, 1.0_f64.to_bits(), 0),
+            (0.25, 2, 1.0_f64.to_bits(), 0),
+            (MIN_SUBNORMAL, 1074, 1.0_f64.to_bits(), 0),
+            (f64::MAX, -1023, 0x3FFF_FFFF_FFFF_FFFF, 0),
+        ] {
+            let bound = PositiveBound::from_parts(mantissa, exponent).unwrap();
+            assert_eq!(bound.mantissa.to_bits(), expected_mantissa);
+            assert_eq!(bound.exponent, expected_exponent);
+        }
+
+        assert!(PositiveBound::from_parts(-0.0, i32::MAX).unwrap().is_zero());
+        assert!(PositiveBound::from_parts(2.0, i32::MAX).is_none());
+        assert!(PositiveBound::from_parts(0.5, i32::MIN).is_none());
+        assert!(PositiveBound::from_parts(-1.0, 0).is_none());
+        assert!(PositiveBound::from_parts(f64::INFINITY, 0).is_none());
+    }
+
+    #[test]
+    fn positive_bound_upward_arithmetic_covers_exact_subnormal_targets() {
+        let one = PositiveBound::from_f64(1.0).unwrap();
+        let one_product = one.multiply_upper(one).unwrap().to_exact().unwrap();
+        assert!(one_product.cmp(&ExactDyadic::one()).is_gt());
+
+        let smallest = PositiveBound::from_f64(MIN_SUBNORMAL).unwrap();
+        let tiny_product = smallest
+            .multiply_upper(smallest)
+            .unwrap()
+            .to_exact()
             .unwrap();
-        let (lower, upper) = outward_ratio_bounds(&difference, &ExactDyadic::one()).unwrap();
-        let deviation = lower.abs().max(upper.abs());
+        let exact_tiny_product = ExactDyadic::try_from_u128(false, 1, -2148).unwrap();
+        assert!(tiny_product.cmp(&exact_tiny_product).is_gt());
+
+        let one_plus_smallest = one.add_upper(smallest).unwrap().to_exact().unwrap();
+        let exact_sum = ExactDyadic::one()
+            .try_add(ExactDyadic::from_f64(MIN_SUBNORMAL))
+            .unwrap();
+        assert!(one_plus_smallest.cmp(&exact_sum).is_gt());
+    }
+
+    #[test]
+    fn area_scaling_preserves_exact_values_and_nonfinite_receipts() {
+        let frame = GeographicFrame::crs84();
+        let x = scaled_x(frame, 20.0, 1, 10.0, Bounded::exact(0.125));
+        assert_eq!(x.value.to_bits(), 46.25_f64.to_bits());
+        assert!(x.error.is_finite() && x.error >= 0.0);
+
+        let y = scaled_y(17.0, 5.0, Bounded::exact(0.125));
+        assert_eq!(y.value.to_bits(), 1.5_f64.to_bits());
+        let reversed_y = scaled_y(17.0, 5.0, Bounded::exact(-0.125));
+        assert_eq!(reversed_y.value.to_bits(), (-1.5_f64).to_bits());
+
+        let inexact_turn = scaled_x(frame, 20.0, (1_i64 << 53) + 1, 0.0, Bounded::exact(1.0));
+        assert!(inexact_turn.error.is_infinite());
+
+        let underflowed_y = scaled_y(MIN_SUBNORMAL, 0.0, Bounded::exact(0.5));
+        assert_eq!(underflowed_y.value.to_bits(), 0);
+        let exact_half_subnormal = ExactDyadic::try_from_u128(false, 1, -1075).unwrap();
+        let half_subnormal_residual = exact_half_subnormal
+            .try_subtract(ExactDyadic::from_f64(underflowed_y.value))
+            .unwrap()
+            .abs();
         assert!(
-            deviation <= sum.error(),
-            "sum-receipt deviation={deviation:.17e}, bound={:.17e}, terms={terms:?}",
-            sum.error()
+            half_subnormal_residual
+                .cmp(&ExactDyadic::from_f64(underflowed_y.error))
+                .is_le()
         );
+
+        let overflowing_y = scaled_y(f64::MAX, -f64::MAX, Bounded::exact(2.0));
+        assert!(!overflowing_y.value.is_finite());
+        assert!(overflowing_y.error.is_infinite());
+
+        let mut coefficients = [0.0; MAX_AUTHALIC_HARMONICS];
+        coefficients[0] = 1.0;
+        let density = GeographicAreaDensity::new(coefficients, 1, 1.0, 0.0, GeodeticPole::North);
+        let (positive_area, scale_error) = scale_area_fast(1.0, &density, -3).unwrap();
+        assert_eq!(positive_area.to_bits(), 64.0_f64.to_bits());
+        assert!(!scale_error.is_zero());
+        let exact_scale_bound = area_scale_bound(&density, -3).unwrap().to_exact().unwrap();
+        assert!(exact_scale_bound.cmp(&ExactDyadic::from_i64(64)).is_ge());
+
+        let (negative_area, _) = scale_area_fast(-1.0, &density, -3).unwrap();
+        assert_eq!(negative_area.to_bits(), (-64.0_f64).to_bits());
+    }
+
+    #[test]
+    fn ceil_log2_matches_positive_integer_width_boundaries() {
+        for (value, expected) in [
+            (1, 0),
+            (2, 1),
+            (3, 2),
+            (4, 2),
+            (5, 3),
+            (1_usize << (usize::BITS - 1), usize::BITS - 1),
+            (usize::MAX, usize::BITS),
+        ] {
+            assert_eq!(ceil_log2(value), expected);
+        }
     }
 
     #[test]
@@ -2080,7 +2207,7 @@ mod tests {
             mixed_scale.push((value, value * f64::EPSILON));
             mixed_scale.push((-value, 0.0));
         }
-        mixed_scale.extend((0..32).map(|_| (MIN_SUBNORMAL, MIN_SUBNORMAL)));
+        mixed_scale.extend(std::iter::repeat_n((MIN_SUBNORMAL, MIN_SUBNORMAL), 32));
         assert_receipt_bound_covers(&mixed_scale);
 
         let mut overflowing = BoundedSum::default();
@@ -2121,10 +2248,7 @@ mod tests {
             .unwrap();
         }
         assert!(moments.iter().all(ExactDyadic::is_zero));
-        assert_eq!(
-            source_bounds.variation.sign(),
-            crate::geometry::exact_arith::ExactSign::Positive
-        );
+        assert_eq!(source_bounds.variation.sign(), ExactSign::Positive);
 
         let mut coefficients = [0.0; MAX_AUTHALIC_HARMONICS];
         coefficients[0] = 1.0;
@@ -2136,9 +2260,9 @@ mod tests {
             GeodeticPole::North,
         );
         let scale = density.area_scale(0).unwrap();
-        let scale_bound = area_scale_bound(density, 0).unwrap();
+        let scale_bound = area_scale_bound(&density, 0).unwrap();
         let mut tail = TaylorTail::new(
-            density,
+            &density,
             positive_exact_bound(&source_bounds.variation).unwrap(),
             positive_exact_bound(&source_bounds.maximum_latitude).unwrap(),
         )
@@ -2179,7 +2303,7 @@ mod tests {
         let exact_field = -0.5 * (8.0 * latitude).sin();
         let independently_evaluated_remainder = (exact_field - approximation).abs();
         let mut tail = TaylorTail::new(
-            density,
+            &density,
             PositiveBound::from_f64(1.0).unwrap(),
             PositiveBound::from_f64(latitude).unwrap(),
         )
@@ -2233,10 +2357,7 @@ mod tests {
             round_ratio(&moments[4], &ExactDyadic::one()).unwrap(),
             45.0 / 16_777_216.0
         );
-        assert_eq!(
-            source_bounds.variation.sign(),
-            crate::geometry::exact_arith::ExactSign::Positive
-        );
+        assert_eq!(source_bounds.variation.sign(), ExactSign::Positive);
     }
 
     #[test]
@@ -2388,7 +2509,7 @@ mod tests {
             GeodeticPole::North,
         );
         assert!(!(large_axis * large_axis).is_finite());
-        assert!(scale_area_fast(1.0e-308, large_density, -6).is_none());
+        assert!(scale_area_fast(1.0e-308, &large_density, -6).is_none());
         let two = ExactDyadic::from_i64(2);
         let large_derivatives = [ExactDyadic::from_f64(1.0e-308).try_product(&two).unwrap()];
         let unit_moment = [ExactDyadic::one()];
@@ -2410,7 +2531,7 @@ mod tests {
             GeodeticPole::North,
         );
         assert_eq!(small_axis * small_axis, 0.0);
-        assert!(scale_area_fast(f64::MAX, small_density, -6).is_none());
+        assert!(scale_area_fast(f64::MAX, &small_density, -6).is_none());
         let large_integral_derivatives = [ExactDyadic::try_from_u128(false, 1, 1074).unwrap()];
         let normalized_area =
             ExactFactorialArea::from_derivatives(&large_integral_derivatives, &unit_moment)
@@ -2427,7 +2548,7 @@ mod tests {
         let subnormal =
             ExactFactorialArea::from_derivatives(&subnormal_derivatives, &unit_moment).unwrap();
         let rounded = subnormal.scaled_round(&ExactDyadic::one()).unwrap();
-        assert_eq!(rounded, MIN_SUBNORMAL);
+        assert_eq!(rounded.to_bits(), 1);
         let quantization = ExactDyadic::from_f64(rounded)
             .try_subtract(subnormal_integral)
             .unwrap()
