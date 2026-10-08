@@ -507,7 +507,13 @@ impl Shape {
     pub(crate) const fn nesting_depth(&self) -> usize {
         match self {
             Self::GeometryCollection(collection) => collection.depth(),
-            _ => 0,
+            Self::Point(_)
+            | Self::MultiPoint(_)
+            | Self::LineString(_)
+            | Self::MultiLineString(_)
+            | Self::Polygon(_)
+            | Self::MultiPolygon(_)
+            | Self::Empty(..) => 0,
         }
     }
 }
@@ -1039,7 +1045,7 @@ impl Iterator for MultiPointIter<'_> {
         self.members.find_map(|member| match member {
             MultiMember::Empty => None,
             MultiMember::Value(index) => {
-                self.remaining -= 1;
+                self.remaining = self.remaining.wrapping_sub(1);
                 Some(self.coords.point_at(index))
             },
         })
@@ -1054,7 +1060,7 @@ impl DoubleEndedIterator for MultiPointIter<'_> {
     fn next_back(&mut self) -> Option<Self::Item> {
         while let Some(member) = self.members.next_back() {
             if let MultiMember::Value(index) = member {
-                self.remaining -= 1;
+                self.remaining = self.remaining.wrapping_sub(1);
                 return Some(self.coords.point_at(index));
             }
         }

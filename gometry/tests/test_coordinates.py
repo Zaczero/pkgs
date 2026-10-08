@@ -1325,3 +1325,64 @@ def test_coordinates_random_access_and_lazy_iter() -> None:
     assert next(iterator) == (13.0, 17.0)
     assert next(iterator) == (19.0, 23.0)
     assert next(iter(coords)) == (13.0, 17.0)
+
+
+@pytest.mark.parametrize(
+    ('wkt', 'expected'),
+    [
+        pytest.param(
+            'LINESTRING (1 11, 2 12)',
+            [(1.0, 11.0), (2.0, 12.0)],
+            id='XY',
+        ),
+        pytest.param(
+            'LINESTRING Z (1 11 21, 2 12 22)',
+            [(1.0, 11.0, 21.0), (2.0, 12.0, 22.0)],
+            id='XYZ',
+        ),
+        pytest.param(
+            'LINESTRING M (1 11 31, 2 12 32)',
+            [(1.0, 11.0, 31.0), (2.0, 12.0, 32.0)],
+            id='XYM',
+        ),
+        pytest.param(
+            'LINESTRING ZM (1 11 21 31, 2 12 22 32)',
+            [(1.0, 11.0, 21.0, 31.0), (2.0, 12.0, 22.0, 32.0)],
+            id='XYZM',
+        ),
+    ],
+)
+def test_to_nested_preserves_scalar_and_dense_line_axes(
+    wkt: str, expected: list[tuple[float, ...]]
+) -> None:
+    line = gm.from_wkt(wkt)
+    assert line.coords.to_nested() == expected
+
+    dense = gm.GeometryArray([line, line])
+    assert dense.coords.to_nested() == [expected, expected]
+
+
+def test_to_nested_preserves_gather_order_and_skips_nullable_line_rows() -> None:
+    lines = [
+        gm.from_wkt('LINESTRING ZM (1 11 21 31, 2 12 22 32)'),
+        gm.from_wkt('LINESTRING ZM (3 13 23 33, 4 14 24 34)'),
+        gm.from_wkt('LINESTRING ZM (5 15 25 35, 6 16 26 36)'),
+        gm.from_wkt('LINESTRING ZM (7 17 27 37, 8 18 28 38)'),
+    ]
+    expected = [
+        [(1.0, 11.0, 21.0, 31.0), (2.0, 12.0, 22.0, 32.0)],
+        [(3.0, 13.0, 23.0, 33.0), (4.0, 14.0, 24.0, 34.0)],
+        [(5.0, 15.0, 25.0, 35.0), (6.0, 16.0, 26.0, 36.0)],
+        [(7.0, 17.0, 27.0, 37.0), (8.0, 18.0, 28.0, 38.0)],
+    ]
+    source = gm.GeometryArray(lines)
+    assert source.coords.to_nested() == expected
+    assert source[[3, 0, 3, 1]].coords.to_nested() == [
+        expected[3],
+        expected[0],
+        expected[3],
+        expected[1],
+    ]
+
+    nullable = gm.GeometryArray([None, lines[1], None, lines[0], lines[3], None])
+    assert nullable.coords.to_nested() == [expected[1], expected[0], expected[3]]
