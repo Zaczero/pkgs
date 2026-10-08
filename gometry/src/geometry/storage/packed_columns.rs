@@ -29,7 +29,7 @@ use crate::geometry::storage::{
 };
 use crate::geometry::{
     CoordSeq, CoordSeqBuilder, CoordWindow, CoordinateAxes, CsrOffsetBuilder, CsrOffsetColumn,
-    MOrdinate, Point, PolygonLevel, RingLevel, ZOrdinate, storage,
+    GeometryErrorKind, MOrdinate, Point, PolygonLevel, RingLevel, ZOrdinate, storage,
 };
 
 /// Physical layout of packed point rows relative to a validity mask.
@@ -1276,6 +1276,7 @@ fn polygon_row_for_coordinate(
 pub(crate) fn map_selected_to_crs(
     columns: PackedColumns<'_>,
     transformer: &crate::crs::TransformPlan,
+    target_crs: &str,
 ) -> PackedColumnResult<PackedColumnOutput> {
     match columns {
         PackedColumns::Points(points) => {
@@ -1339,7 +1340,6 @@ pub(crate) fn map_selected_to_crs(
                     .map_err(batch_err)?;
             }
             debug_assert_eq!(output_coordinate_count, coordinate_count);
-            let offsets = offsets.finish(coordinate_count).map_err(batch_err)?;
             let indices = (0..lines.rows()).flat_map(|logical| {
                 if lines.is_missing(logical) || lines.row_window(logical).len() < 2 {
                     0..0
@@ -1347,6 +1347,7 @@ pub(crate) fn map_selected_to_crs(
                     lines.row_window(logical)
                 }
             });
+            let selected_offsets = offsets.finish(coordinate_count).map_err(batch_err)?;
             let coords = transform_selected_coords(
                 transformer,
                 lines.coords(),
@@ -1356,22 +1357,75 @@ pub(crate) fn map_selected_to_crs(
             )
             .map_err(|failure| {
                 let row = failure.coordinate.and_then(|coordinate| {
-                    offset_row_for_coordinate(offsets.as_slice(), coordinate)
+                    offset_row_for_coordinate(selected_offsets.as_slice(), coordinate)
                 });
                 packed_transform_failure(failure, row)
             })?;
             let (coords, offsets) = if let Some(frame) = transformer.computed_geographic_frame() {
-                let mut budget = crate::geometry::ExpansionBudget::new("to_crs", "computed edges");
-                budget.add(coords.len()).map_err(batch_err)?;
-                crate::geometry::publish_computed_line_column_with_budget(
-                    &coords,
-                    &offsets,
-                    frame,
-                    &mut budget,
-                )
-                .map_err(batch_err)?
-            } else {
+                let source_frame = transformer.source_geographic_frame();
+                let mut metric = transformer.target_metric_scratch(target_crs);
+                let mut output = CoordSeqBuilder::with_capacity(coords.axes(), coordinate_count);
+                let mut output_offsets = CsrOffsetBuilder::with_capacity(lines.rows());
+                for logical in 0..lines.rows() {
+                    let row_start = usize::try_from(
+                        *selected_offsets
+                            .as_slice()
+                            .get(logical)
+                            .expect("selected line row has a start offset"),
+                    )
+                    .map_err(|_| row_err(logical, GeometryErrorKind::MalformedCsrOffsets.into()))?;
+                    let row_end = usize::try_from(
+                        *selected_offsets
+                            .as_slice()
+                            .get(logical.wrapping_add(1))
+                            .expect("selected line row has an end offset"),
+                    )
+                    .map_err(|_| row_err(logical, GeometryErrorKind::MalformedCsrOffsets.into()))?;
+                    let output_window =
+                        coords.view(CoordWindow::from_range(row_start..row_end, coords.len()));
+                    let source_range = lines.row_window(logical);
+                    let published = if !lines.is_missing(logical) && source_range.len() >= 2 {
+                        let source_window = lines.coords().view(CoordWindow::from_range(
+                            source_range.clone(),
+                            lines.coords().len(),
+                        ));
+                        let mut budget =
+                            crate::geometry::ExpansionBudget::new("to_crs", "computed edges");
+                        budget
+                            .add(output_window.len())
+                            .map_err(|error| row_err(logical, error))?;
+                        let closed = source_range.len() > 2
+                            && source_window.point_at(0)
+                                == source_window.point_at(source_range.len().wrapping_sub(1));
+                        crate::geometry::publish_transformed_chain(
+                            &source_window,
+                            &output_window,
+                            closed,
+                            source_frame,
+                            frame,
+                            &mut budget,
+                            &mut metric,
+                        )
+                        .map_err(|error| row_err(logical, error))?
+                    } else {
+                        None
+                    };
+                    if let Some(points) = published {
+                        for point in points {
+                            output.push(point);
+                        }
+                    } else {
+                        output.extend_window(&coords, row_start..row_end);
+                    }
+                    output_offsets
+                        .push_end(output.len(), i32::MAX as usize)
+                        .map_err(|error| row_err(logical, error))?;
+                }
+                let coords = output.finish().map_err(batch_err)?;
+                let offsets = output_offsets.finish(coords.len()).map_err(batch_err)?;
                 (coords, offsets)
+            } else {
+                (coords, selected_offsets)
             };
             Ok(PackedColumnOutput::Lines { coords, offsets })
         },
@@ -1412,8 +1466,8 @@ pub(crate) fn map_selected_to_crs(
             }
             debug_assert_eq!(output_coordinate_count, coordinate_count);
             debug_assert_eq!(output_ring_count, ring_count);
-            let ring_offsets = rings.finish(coordinate_count).map_err(batch_err)?;
-            let polygon_offsets = polygon_offsets.finish(ring_count).map_err(batch_err)?;
+            let selected_ring_offsets = rings.finish(coordinate_count).map_err(batch_err)?;
+            let selected_polygon_offsets = polygon_offsets.finish(ring_count).map_err(batch_err)?;
             let indices = (0..polygons.rows())
                 .filter(|&logical| !polygons.is_missing(logical))
                 .flat_map(|logical| polygons.polygon_rings(logical))
@@ -1431,32 +1485,140 @@ pub(crate) fn map_selected_to_crs(
             .map_err(|failure| {
                 let row = failure.coordinate.and_then(|coordinate| {
                     polygon_row_for_coordinate(
-                        ring_offsets.as_slice(),
-                        polygon_offsets.as_slice(),
+                        selected_ring_offsets.as_slice(),
+                        selected_polygon_offsets.as_slice(),
                         coordinate,
                     )
                 });
                 packed_transform_failure(failure, row)
             })?;
-            let (coords, ring_offsets) = if let Some(frame) =
-                transformer.computed_geographic_frame()
-            {
-                let mut budget = crate::geometry::ExpansionBudget::new("to_crs", "computed edges");
-                budget.add(coords.len()).map_err(batch_err)?;
-                crate::geometry::publish_computed_polygon_rings_with_budget(
-                    &coords,
-                    &ring_offsets,
-                    frame,
-                    &mut budget,
-                )
-                .map_err(batch_err)?
-            } else {
-                (coords, ring_offsets)
-            };
+            if let Some(frame) = transformer.computed_geographic_frame() {
+                let source_frame = transformer.source_geographic_frame();
+                let mut metric = transformer.target_metric_scratch(target_crs);
+                let mut output = CoordSeqBuilder::with_capacity(coords.axes(), coordinate_count);
+                let mut output_rings = CsrOffsetBuilder::with_capacity(ring_count);
+                let mut output_polygons = CsrOffsetBuilder::with_capacity(polygons.rows());
+                let source_ring_offsets = polygons.ring_offsets();
+                for logical in 0..polygons.rows() {
+                    let row_ring_start = usize::try_from(
+                        *selected_polygon_offsets
+                            .as_slice()
+                            .get(logical)
+                            .expect("selected polygon row has a start ring"),
+                    )
+                    .map_err(|_| row_err(logical, GeometryErrorKind::MalformedCsrOffsets.into()))?;
+                    let row_ring_end = usize::try_from(
+                        *selected_polygon_offsets
+                            .as_slice()
+                            .get(logical.wrapping_add(1))
+                            .expect("selected polygon row has an end ring"),
+                    )
+                    .map_err(|_| row_err(logical, GeometryErrorKind::MalformedCsrOffsets.into()))?;
+                    let row_coordinate_start = usize::try_from(
+                        *selected_ring_offsets
+                            .as_slice()
+                            .get(row_ring_start)
+                            .expect("selected polygon row has a start coordinate"),
+                    )
+                    .map_err(|_| row_err(logical, GeometryErrorKind::MalformedCsrOffsets.into()))?;
+                    let row_coordinate_end = usize::try_from(
+                        *selected_ring_offsets
+                            .as_slice()
+                            .get(row_ring_end)
+                            .expect("selected polygon row has an end coordinate"),
+                    )
+                    .map_err(|_| row_err(logical, GeometryErrorKind::MalformedCsrOffsets.into()))?;
+                    let mut budget =
+                        crate::geometry::ExpansionBudget::new("to_crs", "computed edges");
+                    budget
+                        .add(row_coordinate_end.wrapping_sub(row_coordinate_start))
+                        .map_err(|error| row_err(logical, error))?;
+
+                    let source_rings = if polygons.is_missing(logical) {
+                        0..0
+                    } else {
+                        polygons.polygon_rings(logical)
+                    };
+                    debug_assert_eq!(
+                        source_rings.len(),
+                        row_ring_end.wrapping_sub(row_ring_start),
+                        "selected source and provisional output polygon rows retain the same rings"
+                    );
+                    for (output_ring, source_ring) in
+                        (row_ring_start..row_ring_end).zip(source_rings)
+                    {
+                        let output_start = usize::try_from(
+                            *selected_ring_offsets
+                                .as_slice()
+                                .get(output_ring)
+                                .expect("selected ring has a start coordinate"),
+                        )
+                        .map_err(|_| {
+                            row_err(logical, GeometryErrorKind::MalformedCsrOffsets.into())
+                        })?;
+                        let output_end = usize::try_from(
+                            *selected_ring_offsets
+                                .as_slice()
+                                .get(output_ring.wrapping_add(1))
+                                .expect("selected ring has an end coordinate"),
+                        )
+                        .map_err(|_| {
+                            row_err(logical, GeometryErrorKind::MalformedCsrOffsets.into())
+                        })?;
+                        let output_window = coords.view(CoordWindow::from_range(
+                            output_start..output_end,
+                            coords.len(),
+                        ));
+                        let source_window = csr_value_window(
+                            source_ring_offsets,
+                            source_ring..source_ring.wrapping_add(1),
+                        );
+                        let source_window = polygons.coords().view(CoordWindow::from_range(
+                            source_window,
+                            polygons.coords().len(),
+                        ));
+                        let published = crate::geometry::publish_transformed_chain(
+                            &source_window,
+                            &output_window,
+                            true,
+                            source_frame,
+                            frame,
+                            &mut budget,
+                            &mut metric,
+                        )
+                        .map_err(|error| row_err(logical, error))?;
+                        if let Some(points) = published {
+                            for point in points {
+                                output.push(point);
+                            }
+                        } else {
+                            output.extend_window(&coords, output_start..output_end);
+                        }
+                        output_rings
+                            .push_end(output.len(), i32::MAX as usize)
+                            .map_err(|error| row_err(logical, error))?;
+                    }
+                    output_polygons
+                        .push_end(output_rings.row_count(), i32::MAX as usize)
+                        .map_err(|error| row_err(logical, error))?;
+                }
+                let coords = output.finish().map_err(batch_err)?;
+                let output_ring_count = output_rings.row_count();
+                let ring_offsets = output_rings.finish(coords.len()).map_err(batch_err)?;
+                let polygon_offsets = output_polygons
+                    .finish(output_ring_count)
+                    .map_err(batch_err)?;
+                let polygon_offsets = polygon_offsets.cast_level();
+                return Ok(PackedColumnOutput::Polygons {
+                    coords,
+                    ring_offsets: ring_offsets.cast_level(),
+                    polygon_offsets,
+                });
+            }
             Ok(PackedColumnOutput::Polygons {
                 coords,
-                ring_offsets: ring_offsets.cast_level(),
-                polygon_offsets: polygon_offsets.cast_level(),
+                ring_offsets: selected_ring_offsets.cast_level(),
+                polygon_offsets: selected_polygon_offsets.cast_level(),
             })
         },
     }
@@ -1515,7 +1677,7 @@ mod tests {
         .expect("packed line source resolves");
         let transformer = crate::crs::TransformPlan::new("EPSG:3857", "EPSG:4326").unwrap();
         let PackedColumnOutput::Lines { coords, offsets } =
-            map_selected_to_crs(columns, &transformer).unwrap()
+            map_selected_to_crs(columns, &transformer, "EPSG:4326").unwrap()
         else {
             panic!("line transforms remain packed lines");
         };

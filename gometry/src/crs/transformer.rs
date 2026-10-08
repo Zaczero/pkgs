@@ -129,6 +129,18 @@ impl TransformPlan {
         }
     }
 
+    /// Lazily resolve the output CRS ellipsoid against this plan's runtime snapshot.
+    pub(crate) fn target_metric_scratch<'a>(
+        &'a self,
+        target_crs: &'a str,
+    ) -> TransformMetricScratch<'a> {
+        TransformMetricScratch {
+            target_crs,
+            state: &self.state,
+            metric: None,
+        }
+    }
+
     const fn identity_geographic_frame(&self) -> Option<crate::geographic::GeographicFrame> {
         match &self.operation {
             TransformOperation::Identity {
@@ -173,8 +185,12 @@ impl TransformPlan {
         Ok(())
     }
 
-    pub(crate) fn transform_shape_with_computed_edges(&self, shape: &Shape) -> Result<Shape> {
-        self.transform_shapes_with_computed_edges_indexed(&[shape])
+    pub(crate) fn transform_shape_with_computed_edges(
+        &self,
+        shape: &Shape,
+        target_crs: &str,
+    ) -> Result<Shape> {
+        self.transform_shapes_with_computed_edges_indexed(&[shape], target_crs)
             .map_err(|failure| failure.error)?
             .into_iter()
             .next()
@@ -189,6 +205,7 @@ impl TransformPlan {
     pub(crate) fn transform_shapes_with_computed_edges_indexed(
         &self,
         shapes: &[&Shape],
+        target_crs: &str,
     ) -> std::result::Result<Vec<Shape>, TransformFailure> {
         let mut output = self.transform_shapes_indexed_mode(shapes, true)?;
         if self.is_identity() {
@@ -197,9 +214,17 @@ impl TransformPlan {
         let Some(frame) = self.computed_geographic_frame() else {
             return Ok(output);
         };
-        for (index, shape) in output.iter_mut().enumerate() {
-            *shape = crate::geometry::publish_transformed_shape(shape, frame, "to_crs")
-                .map_err(|error| TransformFailure::at(error, index))?;
+        let mut metric = self.target_metric_scratch(target_crs);
+        for (index, (source, transformed)) in shapes.iter().zip(&mut output).enumerate() {
+            *transformed = crate::geometry::publish_transformed_shape(
+                source,
+                transformed,
+                self.source_geographic_frame(),
+                frame,
+                "to_crs",
+                &mut metric,
+            )
+            .map_err(|error| TransformFailure::at(error, index))?;
         }
         Ok(output)
     }
@@ -720,6 +745,35 @@ pub(crate) struct TransformPlan {
     target_domain: TopologyDomain,
 }
 
+/// One transform's target metric, materialized only when a generated sample
+/// carries an ordinate.
+pub(crate) struct TransformMetricScratch<'a> {
+    target_crs: &'a str,
+    state: &'a RuntimeState,
+    metric: Option<crate::crs::GeodesicMetric>,
+}
+
+impl TransformMetricScratch<'_> {
+    pub(crate) fn geodesic_metric(&mut self) -> Result<&crate::crs::GeodesicMetric> {
+        if self.metric.is_none() {
+            let model = crate::crs::metric_model_at(Some(self.target_crs), self.state)?;
+            let metric = match crate::crs::ResolvedMetric::from_model(&model)? {
+                crate::crs::ResolvedMetric::Geodesic(metric) => metric,
+                crate::crs::ResolvedMetric::Planar { .. } => {
+                    return Err(crate::crs::CrsError::invalid(
+                        "geographic transform target has no ellipsoid metric",
+                    ));
+                },
+            };
+            self.metric = Some(metric);
+        }
+        Ok(self
+            .metric
+            .as_ref()
+            .expect("resolved target ellipsoid is retained in its operation scratch"))
+    }
+}
+
 #[expect(
     clippy::large_enum_variant,
     reason = "the operation is an owned, immutable transform plan; boxing its hot in-core variant would add an allocation and indirection"
@@ -1010,7 +1064,9 @@ mod tests {
             .unwrap(),
         );
         let plan = TransformPlan::new("EPSG:3857", "EPSG:4326").unwrap();
-        let output = plan.transform_shape_with_computed_edges(&source).unwrap();
+        let output = plan
+            .transform_shape_with_computed_edges(&source, "EPSG:4326")
+            .unwrap();
         let crate::geometry::Shape::LineString(output) = output else {
             panic!("to_crs retains a linestring result");
         };
@@ -1049,7 +1105,9 @@ mod tests {
         })
         .unwrap();
         let raw = plan.transform_shape(&source).unwrap();
-        let output = plan.transform_shape_with_computed_edges(&source).unwrap();
+        let output = plan
+            .transform_shape_with_computed_edges(&source, "EPSG:4326")
+            .unwrap();
         assert_eq!(output, raw);
         let crate::geometry::Shape::LineString(line) = output else {
             panic!("a raw transform retains its line");

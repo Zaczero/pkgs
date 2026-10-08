@@ -111,7 +111,7 @@ pub(crate) use computed_shape::{
     publish_polygon_parts_with_edge_roles, publish_polygon_with_edge_roles,
     publish_raw_computed_shape, publish_raw_computed_shape_with_budget,
     publish_raw_computed_shapes, publish_raw_computed_shapes_with_budget,
-    publish_stored_computed_shape, publish_transformed_shape,
+    publish_stored_computed_shape, publish_transformed_chain, publish_transformed_shape,
     publish_triangle_vertex_stream_budgeted, publish_voronoi_polygon_outputs,
 };
 mod arrangement;
@@ -144,7 +144,7 @@ mod linear;
 mod linear_3d;
 mod ordinates;
 pub(crate) use ordinates::{
-    ParallelSourceArcMetricAccess, SourceArcContext, SourceArcMetricAccess,
+    ParallelSourceArcMetricAccess, RootMetricState, SourceArcContext, SourceArcMetricAccess,
     source_ordinate_values_at_fraction,
 };
 mod perimeter;

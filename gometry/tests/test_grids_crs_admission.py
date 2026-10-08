@@ -8,6 +8,17 @@ import math
 import gometry as gm
 import pytest
 
+WGS84_SOUTH_WEST_GRADS = (
+    'GEOGCRS["WGS 84 south-west grads",'
+    'DATUM["World Geodetic System 1984",'
+    'ELLIPSOID["WGS 84",6378137,298.257223563]],'
+    'PRIMEM["Greenwich",0,ANGLEUNIT["degree",0.017453292519943295]],'
+    'CS[ellipsoidal,2],'
+    'AXIS["Longitude",west,ORDER[1]],'
+    'AXIS["Latitude",south,ORDER[2]],'
+    'ANGLEUNIT["grad",0.015707963267948967]]'
+)
+
 # ---------------------------------------------------------------------------
 # A1 - S2 within/overlap refine true cells (rectangles prune only)
 # ---------------------------------------------------------------------------
@@ -290,6 +301,74 @@ def test_grid_cover_admits_dynamic_source_frame_once(cover, kwargs) -> None:
     assert _cell_keys(cover(source, max_cells=None, **kwargs)) == _cell_keys(
         cover(explicit, max_cells=None, **kwargs)
     )
+
+
+def test_grid_cover_uses_the_paired_geographic_source_circle_for_scalar_and_array() -> (
+    None
+):
+    circle = gm.LineString(
+        [(0.0, 0.0), (400.0, 0.0)],
+        crs=WGS84_SOUTH_WEST_GRADS,
+    )
+    explicit_circle = circle.to_crs(4326, authority='EPSG')
+    assert _cell_keys(
+        gm.h3_cover(
+            circle,
+            resolution=0,
+            cell_rule='overlap',
+            max_cells=None,
+        )
+    ) == _cell_keys(
+        gm.h3_cover(
+            explicit_circle,
+            resolution=0,
+            cell_rule='overlap',
+            max_cells=None,
+        )
+    )
+
+    source = gm.GeometryArray([circle, None, circle])
+    explicit = source.to_crs(4326, authority='EPSG')
+    actual = gm.h3_cover(
+        source,
+        resolution=0,
+        cell_rule='overlap',
+        max_cells=None,
+    )
+    expected = gm.h3_cover(
+        explicit,
+        resolution=0,
+        cell_rule='overlap',
+        max_cells=None,
+    )
+
+    assert [len(row) for row in actual] == [len(actual[0]), 0, len(actual[0])]
+    assert len(actual[0]) > 1
+    assert _cell_keys(actual[0]) == _cell_keys(expected[0])
+    assert len(expected[1]) == 0
+    assert _cell_keys(actual[2]) == _cell_keys(expected[2])
+
+
+def test_grid_cover_budget_precedes_later_source_error_after_prefix_publication() -> (
+    None
+):
+    circle = gm.LineString(
+        [(0.0, 0.0), (400.0, 0.0)],
+        crs=WGS84_SOUTH_WEST_GRADS,
+    )
+    invalid = gm.LineString(
+        [(0.0, 101.0), (10.0, 101.0)],
+        crs=WGS84_SOUTH_WEST_GRADS,
+    )
+    source = gm.GeometryArray([circle, invalid])
+
+    with pytest.raises(gm.GeometryError, match='max_cells'):
+        gm.h3_cover(
+            source,
+            resolution=0,
+            cell_rule='overlap',
+            max_cells=1,
+        )
 
 
 @pytest.mark.parametrize(
