@@ -605,6 +605,55 @@ def test_geographic_source_connector_is_shared_by_shape_and_array_routes() -> No
     assert collection_output.to_wkb() == expected_collection.to_wkb()
 
 
+def test_selected_packed_lines_publish_the_paired_source_circle() -> None:
+    circle = gm.LineString(
+        [(0.0, 0.0), (400.0, 0.0)],
+        crs=WGS84_SOUTH_WEST_GRADS,
+    )
+    other = gm.LineString(
+        [(10.0, 1.0), (11.0, 2.0)],
+        crs=WGS84_SOUTH_WEST_GRADS,
+    )
+    source = gm.GeometryArray([circle, other])
+    assert source.to_arrow().type.extension_name == 'geoarrow.linestring'
+
+    transformed = source[[1, 0, 0]].to_crs(4326, authority='EPSG')
+
+    expected_longitudes = [0.0, -90.0, -180.0, 90.0, 0.0]
+    for row in (1, 2):
+        coordinates = gm.get_coordinates(transformed[row])
+        assert coordinates.shape == (5, 2)
+        assert coordinates[:, 0].tolist() == pytest.approx(
+            expected_longitudes,
+            abs=1e-12,
+        )
+        assert coordinates[:, 1].tolist() == pytest.approx([0.0] * 5, abs=1e-12)
+
+
+def test_selected_nullable_mixed_lines_publish_the_paired_source_circle() -> None:
+    circle = gm.LineString(
+        [(0.0, 0.0), (400.0, 0.0)],
+        crs=WGS84_SOUTH_WEST_GRADS,
+    )
+    point = gm.Point(25.0, 4.0, crs=WGS84_SOUTH_WEST_GRADS)
+    source = gm.GeometryArray([circle, None, point])
+    assert source.to_arrow().type.extension_name == 'geoarrow.wkb'
+
+    transformed = source[[2, 1, 0, 0]].to_crs(4326, authority='EPSG')
+
+    assert transformed.is_missing.tolist() == [False, True, False, False]
+    assert transformed[1] is None
+    expected_longitudes = [0.0, -90.0, -180.0, 90.0, 0.0]
+    for row in (2, 3):
+        coordinates = gm.get_coordinates(transformed[row])
+        assert coordinates.shape == (5, 2)
+        assert coordinates[:, 0].tolist() == pytest.approx(
+            expected_longitudes,
+            abs=1e-12,
+        )
+        assert coordinates[:, 1].tolist() == pytest.approx([0.0] * 5, abs=1e-12)
+
+
 def test_generated_zm_uses_the_actual_target_ellipsoid_chart_arclength() -> None:
     source = gm.from_wkt(
         'LINESTRING ZM (0 0 10 100, 400 40 110 300)',
@@ -643,6 +692,9 @@ def test_selected_packed_polygon_transform_pairs_each_source_ring() -> None:
     assert transformed[0].to_wkb() == expected_other.to_wkb()
     assert transformed[1].to_wkb() == expected_circle.to_wkb()
     assert transformed[2].to_wkb() == expected_circle.to_wkb()
+    # Each full-turn shell edge is four published edges; the hole remains five coordinates.
+    assert gm.get_coordinates(transformed[1]).shape == (16, 2)
+    assert gm.get_coordinates(transformed[2]).shape == (16, 2)
 
 
 @pytest.mark.parametrize(

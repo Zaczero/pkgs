@@ -395,37 +395,6 @@ pub(crate) fn publish_computed_line_column_with_budget(
     Ok((coordinates, offsets))
 }
 
-pub(crate) fn publish_computed_polygon_rings_with_budget(
-    coordinates: &CoordSeq,
-    source_ring_offsets: &CsrOffsetColumn,
-    frame: GeographicFrame,
-    budget: &mut ExpansionBudget,
-) -> Result<(CoordSeq, CsrOffsetColumn)> {
-    let mut output = CoordSeqBuilder::with_capacity(coordinates.axes(), coordinates.len());
-    let mut ring_offsets =
-        CsrOffsetBuilder::with_capacity(source_ring_offsets.len().saturating_sub(1));
-    for pair in source_ring_offsets.as_slice().array_windows::<2>() {
-        let start = usize::try_from(pair[0]).map_err(|_| GeometryErrorKind::MalformedCsrOffsets)?;
-        let end = usize::try_from(pair[1]).map_err(|_| GeometryErrorKind::MalformedCsrOffsets)?;
-        let window = coordinates.view(CoordWindow::from_range(start..end, coordinates.len()));
-        let published = publish_computed_chain(frame, &window, true, budget, |_, left, right| {
-            ComputedEdgeIntent::retained_binary64_pair(frame.longitude(), [left.x, right.x])
-        })?;
-        match published {
-            Some(points) => {
-                for point in points {
-                    output.push(point);
-                }
-            },
-            None => output.extend_window(coordinates, start..end),
-        }
-        ring_offsets.push_end(output.len(), i32::MAX as usize)?;
-    }
-    let coordinates = output.finish()?;
-    let ring_offsets = ring_offsets.finish(coordinates.len())?;
-    Ok((coordinates, ring_offsets))
-}
-
 pub(crate) struct PublishedTriangleVertices {
     pub(crate) points: Vec<crate::geometry::Point>,
     pub(crate) ring_ends: Vec<usize>,

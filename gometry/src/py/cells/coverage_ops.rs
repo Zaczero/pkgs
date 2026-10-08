@@ -850,7 +850,7 @@ mod tests {
                     Point::new_raw_xy(10.0, 101.0),
                 ]),
             ],
-            Frame::Crs(frame::crs_arc_static(WGS84_SOUTH_WEST_GRADS)),
+            Frame::Crs(frame::crs_arc(WGS84_SOUTH_WEST_GRADS)),
         )
         .unwrap();
         let admission = GridSourceAdmission::new_for_array(&array).unwrap();
