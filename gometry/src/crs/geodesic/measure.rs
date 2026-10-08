@@ -1353,6 +1353,32 @@ mod chart_measure_tests {
     }
 
     #[test]
+    fn chart_area_retraced_signed_zero_publishes_positive_zero() {
+        let metric = metric();
+        let retraced = polygon(
+            &[
+                (-0.0, 0.0),
+                (4.0, 0.0),
+                (4.0, 4.0),
+                (0.0, 4.0),
+                (0.0, 0.0),
+                (0.0, 4.0),
+                (4.0, 4.0),
+                (4.0, 0.0),
+                (0.0, 0.0),
+            ],
+            &[],
+        );
+
+        assert_eq!(
+            chart_polygon_area(&metric, &retraced, metric.frame)
+                .unwrap()
+                .to_bits(),
+            0.0_f64.to_bits()
+        );
+    }
+
+    #[test]
     #[expect(
         clippy::excessive_precision,
         reason = "Independent Decimal integral retains an outlying invalid hole"

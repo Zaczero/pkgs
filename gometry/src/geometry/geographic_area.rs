@@ -346,10 +346,10 @@ impl BoundedSum {
     }
 
     fn value(&self) -> f64 {
-        if !self.failed {
-            self.head + self.low
-        } else {
+        if self.failed {
             f64::NAN
+        } else {
+            self.head + self.low
         }
     }
 
@@ -442,12 +442,13 @@ pub(crate) fn polygon_area(
             .checked_add(2)
             .ok_or(crate::error::ResourceError::SizeOverflow)?,
     );
-    let x_exponent = -i32::try_from(
+    let x_exponent = i32::try_from(
         exponent_bits
             .checked_add(3)
             .ok_or(crate::error::ResourceError::SizeOverflow)?,
     )
-    .map_err(|_| crate::error::ResourceError::SizeOverflow)?;
+    .map_err(|_| crate::error::ResourceError::SizeOverflow)?
+    .wrapping_neg();
     let longitude_scale = 2.0_f64.powi(x_exponent);
     let longitude_coordinate_scale =
         Bounded::exact(axis.radians_per_unit() * frame.longitude_orientation_sign())
@@ -481,8 +482,6 @@ pub(crate) fn polygon_area(
         let mut predicted_order = None;
         if !exact_mode {
             density.fill_coefficients(order, &mut scratch.coefficients)?;
-            resize_moments(&mut scratch.ring_moments, order + 1);
-            resize_moments(&mut scratch.polygon_moments, order + 1);
             let fast = {
                 let GeographicAreaScratch {
                     coefficients,
@@ -490,6 +489,8 @@ pub(crate) fn polygon_area(
                     polygon_moments,
                     ..
                 } = &mut *scratch;
+                resize_moments(ring_moments, coefficients.len());
+                resize_moments(polygon_moments, coefficients.len());
                 accumulate_fast(
                     polygon,
                     frame,
@@ -534,7 +535,7 @@ pub(crate) fn polygon_area(
                 let taylor_error = tail
                     .as_mut()
                     .expect("the finite fast source established its tail state")
-                    .bound_at(order + 1)?;
+                    .bound_at(scratch.coefficients.len())?;
                 let norm = PositiveBound::from_f64(fast.contraction_budget)
                     .ok_or(crate::error::ResourceError::SizeOverflow)?;
                 if let Some((area, scale_error)) =
@@ -593,8 +594,6 @@ pub(crate) fn polygon_area(
                 return Ok(0.0);
             }
             density.fill_exact_derivatives(order, &mut scratch.exact_coefficients)?;
-            resize_exact(&mut scratch.exact_ring_moments, order + 1);
-            resize_exact(&mut scratch.exact_polygon_moments, order + 1);
             let (area, source_bounds) = {
                 let GeographicAreaScratch {
                     exact_coefficients,
@@ -602,6 +601,8 @@ pub(crate) fn polygon_area(
                     exact_polygon_moments,
                     ..
                 } = &mut *scratch;
+                resize_exact(exact_ring_moments, exact_coefficients.len());
+                resize_exact(exact_polygon_moments, exact_coefficients.len());
                 accumulate_exact(
                     polygon,
                     frame,
@@ -623,7 +624,7 @@ pub(crate) fn polygon_area(
             let taylor_error = tail
                 .as_mut()
                 .expect("the exact source established its tail state")
-                .bound_at(order + 1)?;
+                .bound_at(scratch.exact_coefficients.len())?;
             let norm = ExactFactorialArea::absolute_contraction(
                 &scratch.exact_coefficients,
                 &scratch.exact_polygon_moments,
@@ -640,8 +641,7 @@ pub(crate) fn polygon_area(
             if order >= ceiling.expect("the exact source established its ceiling") {
                 return Err(GeometryErrorKind::message(
                     "geographic area exact Taylor refinement exceeded its derived ceiling",
-                )
-                .into());
+                ));
             }
         }
 
@@ -673,17 +673,22 @@ fn reversed_source_zero(polygon: &Polygon, frame: GeographicFrame) -> bool {
         }
         for index in 0..count / 2 {
             let left = ring.nth_coord(index);
-            let right = ring.nth_coord(count - 1 - index);
-            if left.x != right.x || left.y != right.y {
+            let right = ring.nth_coord(count.wrapping_sub(1).wrapping_sub(index));
+            #[expect(
+                clippy::float_cmp,
+                reason = "reversal authentication compares stored coordinates exactly; signed zero remains equal"
+            )]
+            let source_vertices_differ = left.x != right.x || left.y != right.y;
+            if source_vertices_differ {
                 return false;
             }
         }
         let axis = frame.longitude();
-        for index in 0..(count - 1).div_ceil(2) {
+        for index in 0..count.wrapping_sub(1).div_ceil(2) {
             let a = ring.nth_coord(index);
-            let b = ring.nth_coord(index + 1);
-            let c = ring.nth_coord(count - 2 - index);
-            let d = ring.nth_coord(count - 1 - index);
+            let b = ring.nth_coord(index.wrapping_add(1));
+            let c = ring.nth_coord(count.wrapping_sub(2).wrapping_sub(index));
+            let d = ring.nth_coord(count.wrapping_sub(1).wrapping_sub(index));
             let Ok(forward) = axis.chart_connection(a.x, b.x) else {
                 return false;
             };
@@ -692,7 +697,8 @@ fn reversed_source_zero(polygon: &Polygon, frame: GeographicFrame) -> bool {
             };
             if forward.start != reverse.end
                 || forward.end != reverse.start
-                || i64::from(forward.source_lift) != -i64::from(reverse.source_lift)
+                || i64::from(forward.source_lift)
+                    != i64::from(reverse.source_lift).wrapping_neg()
                 || matches!(
                     forward.step,
                     ChartStep::Shortest(crate::geographic::EdgeDirection::HalfTurn(_))
@@ -723,7 +729,7 @@ fn positive_exact_bound(value: &ExactDyadic) -> Result<PositiveBound> {
     }
     let (_, upper) = outward_ratio_bounds(value, &ExactDyadic::one())?;
     PositiveBound::from_f64(upper).ok_or_else(|| {
-        GeometryErrorKind::message("geographic source bound is outside the proven range").into()
+        GeometryErrorKind::message("geographic source bound is outside the proven range")
     })
 }
 
@@ -796,8 +802,7 @@ fn accumulate_fast(
                         crate::geographic::EdgeDirection::HalfTurn(direction)
                             .delta(frame.longitude()),
                         "edge spans exactly half the longitude period; add a vertex",
-                    )
-                    .into());
+                    ));
                 }
                 chart_turn = chart_turn
                     .checked_add(i64::from(connection.source_lift))
@@ -938,19 +943,39 @@ fn rectangle_moments(
     if ring.coord_count() != 5 {
         return Ok(false);
     }
-    let a = ring.nth_coord(0);
-    let b = ring.nth_coord(1);
-    let c = ring.nth_coord(2);
-    let d = ring.nth_coord(3);
-    let e = ring.nth_coord(4);
-    if a.x != e.x || a.y != e.y {
+    let first = ring.nth_coord(0);
+    let second = ring.nth_coord(1);
+    let third = ring.nth_coord(2);
+    let fourth = ring.nth_coord(3);
+    let closing = ring.nth_coord(4);
+    #[expect(
+        clippy::float_cmp,
+        reason = "rectangle closure compares stored coordinates exactly; signed zero remains equal"
+    )]
+    let closure_differs = first.x != closing.x || first.y != closing.y;
+    if closure_differs {
         return Ok(false);
     }
-    let (left, right, reverse_left, reverse_right, top, polarity) =
-        if a.y == b.y && b.x == c.x && c.y == d.y && d.x == a.x {
-            (a.x, b.x, c.x, d.x, c.y, 1.0)
-        } else if a.x == b.x && b.y == c.y && c.x == d.x && d.y == a.y {
-            (b.x, c.x, d.x, a.x, b.y, -1.0)
+    #[expect(
+        clippy::float_cmp,
+        reason = "axis-aligned rectangle recognition requires exact native-coordinate equality"
+    )]
+    let (left, right, reverse_left, reverse_right, top, polarity, verticals) =
+        if first.y == second.y && second.x == third.x && third.y == fourth.y && fourth.x == first.x
+        {
+            (first.x, second.x, third.x, fourth.x, third.y, 1.0, [
+                (second.x, third.x),
+                (fourth.x, closing.x),
+            ])
+        } else if first.x == second.x
+            && second.y == third.y
+            && third.x == fourth.x
+            && fourth.y == first.y
+        {
+            (second.x, third.x, fourth.x, first.x, second.y, -1.0, [
+                (first.x, second.x),
+                (third.x, fourth.x),
+            ])
         } else {
             return Ok(false);
         };
@@ -961,11 +986,6 @@ fn rectangle_moments(
     let reverse = axis
         .chart_connection(reverse_left, reverse_right)
         .expect("rectangle longitude source was admitted");
-    let verticals = if polarity == 1.0 {
-        [(b.x, c.x), (d.x, e.x)]
-    } else {
-        [(a.x, b.x), (c.x, d.x)]
-    };
     for (from, to) in verticals {
         let connection = axis
             .chart_connection(from, to)
@@ -976,7 +996,7 @@ fn rectangle_moments(
     }
     if forward.start != reverse.end
         || forward.end != reverse.start
-        || i64::from(forward.source_lift) != -i64::from(reverse.source_lift)
+        || i64::from(forward.source_lift) != i64::from(reverse.source_lift).wrapping_neg()
         || matches!(
             forward.step,
             ChartStep::Shortest(crate::geographic::EdgeDirection::HalfTurn(_))
@@ -992,9 +1012,9 @@ fn rectangle_moments(
         forward.start.get(),
         longitude_scale,
     )?;
-    let height = scaled_y(top, a.y, latitude_scale)?;
+    let height = scaled_y(top, first.y, latitude_scale)?;
     let determinant = width.mul(height).mul(Bounded::exact(polarity));
-    let z0 = scaled_y(a.y, y_origin, latitude_scale)?;
+    let z0 = scaled_y(first.y, y_origin, latitude_scale)?;
     let z1 = scaled_y(top, y_origin, latitude_scale)?;
     let radius = upper_add(z0.value.abs(), z0.error).max(upper_add(z1.value.abs(), z1.error));
     if !radius.is_finite() || radius > 0.5 {
@@ -1007,21 +1027,24 @@ fn rectangle_moments(
     );
     *maximum_latitude = (*maximum_latitude).max(radius);
     let input_error = upper_add(z0.error, z1.error);
-    let mut h = 1.0;
+    let mut symmetric_power = 1.0;
     let mut z1_power = z1.value;
     let mut radius_power = 1.0;
     let mut previous_radius_power = 1.0;
     let count = moments.len();
     for (degree, moment) in moments.iter_mut().enumerate() {
-        let k = degree as f64;
-        let factor = k + 2.0;
-        let operation_count = 2.0 * k + 2.0;
+        let degree_value = degree as f64;
+        let factor = degree_value + 2.0;
+        let operation_count = 2.0 * degree_value + 2.0;
         let gamma = (operation_count / (9_007_199_254_740_992.0 - operation_count)).next_up();
-        let absolute_h = upper_mul(k + 1.0, radius_power);
+        let absolute_h = upper_mul(degree_value + 1.0, radius_power);
         let sensitivity = if degree == 0 {
             0.0
         } else {
-            upper_mul(k * (k + 1.0) * 0.5, previous_radius_power)
+            upper_mul(
+                degree_value * (degree_value + 1.0) * 0.5,
+                previous_radius_power,
+            )
         };
         let error = upper_add(
             upper_mul(
@@ -1035,7 +1058,7 @@ fn rectangle_moments(
                         upper_mul(determinant.value.abs(), upper_mul(sensitivity, input_error)),
                         upper_mul(
                             MIN_SUBNORMAL,
-                            upper_add(1.0, upper_mul(4.0 * k, determinant.value.abs())),
+                            upper_add(1.0, upper_mul(4.0 * degree_value, determinant.value.abs())),
                         ),
                     ),
                 ),
@@ -1043,11 +1066,11 @@ fn rectangle_moments(
             MIN_SUBNORMAL,
         );
         moment.push(Bounded {
-            value: determinant.value * h * factor,
+            value: determinant.value * symmetric_power * factor,
             error,
         });
-        if degree + 1 < count {
-            h = z0.value * h + z1_power;
+        if degree.wrapping_add(1) < count {
+            symmetric_power = z0.value * symmetric_power + z1_power;
             z1_power *= z1.value;
             previous_radius_power = radius_power;
             radius_power = upper_mul(radius_power, radius);
@@ -1175,7 +1198,7 @@ fn add_fast_determinant(
     let mut z1_power = z1.value;
     for (degree, moment) in moments.iter_mut().enumerate() {
         moment.push(Bounded::exact(determinant.value * h));
-        if degree + 1 < moment_count {
+        if degree.wrapping_add(1) < moment_count {
             h = z0.value * h + z1_power;
             z1_power *= z1.value;
         }
@@ -1203,7 +1226,8 @@ fn ring_sign_fast(moments: &[BoundedSum], coefficients: &[AreaCoefficient]) -> O
 fn coefficient_dot_error(moments: &[BoundedSum], coefficients: &[AreaCoefficient]) -> f64 {
     let mut error = 0.0;
     for (degree, (moment, coefficient)) in moments.iter().zip(coefficients).enumerate() {
-        let denominator = ((degree + 1) as u64).saturating_mul((degree + 2) as u64);
+        let denominator =
+            (degree.wrapping_add(1) as u64).saturating_mul(degree.wrapping_add(2) as u64);
         error = upper_add(
             error,
             upper_div_u64(
@@ -1222,7 +1246,8 @@ fn contract_fast(moments: &[BoundedSum], coefficients: &[AreaCoefficient]) -> (B
     let mut sum = BoundedSum::default();
     let mut source_error = 0.0;
     for (degree, (moment, coefficient)) in moments.iter().zip(coefficients).enumerate() {
-        let denominator = ((degree + 1) as u64).saturating_mul((degree + 2) as u64);
+        let denominator =
+            (degree.wrapping_add(1) as u64).saturating_mul(degree.wrapping_add(2) as u64);
         let moment_value = moment.value();
         let moment_error = moment.error();
         let term = Bounded::exact(coefficient.value)
@@ -1243,7 +1268,8 @@ fn contract_fast(moments: &[BoundedSum], coefficients: &[AreaCoefficient]) -> (B
 fn contraction_work_budget(moments: &[BoundedSum], coefficients: &[AreaCoefficient]) -> f64 {
     let mut norm = 0.0;
     for (degree, (moment, coefficient)) in moments.iter().zip(coefficients).enumerate() {
-        let denominator = ((degree + 1) as u64).saturating_mul((degree + 2) as u64);
+        let denominator =
+            (degree.wrapping_add(1) as u64).saturating_mul(degree.wrapping_add(2) as u64);
         norm = upper_add(
             norm,
             upper_div_u64(
@@ -1265,9 +1291,11 @@ fn accumulate_exact(
     y_origin: f64,
     longitude_scale: f64,
     coefficients: &[ExactDyadic],
-    ring_moments: &mut Vec<ExactDyadic>,
-    polygon_moments: &mut Vec<ExactDyadic>,
+    ring_moments: &mut [ExactDyadic],
+    polygon_moments: &mut [ExactDyadic],
 ) -> Result<(ExactFactorialArea, ExactSourceBounds)> {
+    use crate::geometry::exact_arith::ExactSign;
+
     for moment in ring_moments.iter_mut().chain(polygon_moments.iter_mut()) {
         *moment = ExactDyadic::zero();
     }
@@ -1301,8 +1329,7 @@ fn accumulate_exact(
                     "longitude",
                     crate::geographic::EdgeDirection::HalfTurn(direction).delta(frame.longitude()),
                     "edge spans exactly half the longitude period; add a vertex",
-                )
-                .into());
+                ));
             }
             chart_turn = chart_turn
                 .checked_add(i64::from(connection.source_lift))
@@ -1363,11 +1390,15 @@ fn accumulate_exact(
         }
         let ring_area = ExactFactorialArea::from_derivatives(coefficients, ring_moments)?;
         let sign = match ring_area.sign() {
-            crate::geometry::exact_arith::ExactSign::Negative => -1_i64,
-            crate::geometry::exact_arith::ExactSign::Zero => 0,
-            crate::geometry::exact_arith::ExactSign::Positive => 1,
+            ExactSign::Negative => -1_i64,
+            ExactSign::Zero => 0,
+            ExactSign::Positive => 1,
         };
-        let polygon_sign = if ring_index == 0 { sign } else { -sign };
+        let polygon_sign = if ring_index == 0 {
+            sign
+        } else {
+            sign.wrapping_neg()
+        };
         if polygon_sign != 0 {
             for (destination, source) in polygon_moments.iter_mut().zip(ring_moments.iter()) {
                 let term = if polygon_sign < 0 {
@@ -1457,7 +1488,6 @@ fn exact_scaled_x(
             frame.longitude().radians_per_unit() * frame.longitude_orientation_sign(),
         ))?
         .try_product(&ExactDyadic::from_f64(scale))
-        .map_err(Into::into)
 }
 
 fn exact_scaled_y(frame: GeographicFrame, latitude: f64, origin: f64) -> Result<ExactDyadic> {
@@ -1467,7 +1497,6 @@ fn exact_scaled_y(frame: GeographicFrame, latitude: f64, origin: f64) -> Result<
             frame.latitude_radians_per_unit() * frame.latitude_orientation_sign(),
         ))?
         .try_product(&ExactDyadic::from_f64(LATITUDE_SCALE))
-        .map_err(Into::into)
 }
 
 fn exact_difference_product(left: f64, right: f64, scale: f64) -> Result<Bounded> {
@@ -2208,6 +2237,85 @@ mod tests {
             source_bounds.variation.sign(),
             crate::geometry::exact_arith::ExactSign::Positive
         );
+    }
+
+    #[test]
+    fn fast_and_exact_contractions_include_the_last_active_degree() {
+        let mut moments = Vec::with_capacity(3);
+        for value in [3.0, 4.0, 5.0] {
+            let mut moment = BoundedSum::default();
+            moment.push(Bounded::exact(value));
+            moments.push(moment);
+        }
+        let coefficients = [2.0, 6.0, 12.0].map(|value| AreaCoefficient { value, error: 0.0 });
+        let (integral, ..) = contract_fast(&moments, &coefficients);
+        assert_eq!(integral.value, 12.0);
+
+        let mut last_only_fast_moments = Vec::with_capacity(3);
+        for value in [0.0, 0.0, 5.0] {
+            let mut moment = BoundedSum::default();
+            moment.push(Bounded::exact(value));
+            last_only_fast_moments.push(moment);
+        }
+        let last_only_fast_coefficients =
+            [0.0, 0.0, 12.0].map(|value| AreaCoefficient { value, error: 0.0 });
+        let (last_only_fast, ..) =
+            contract_fast(&last_only_fast_moments, &last_only_fast_coefficients);
+        assert_eq!(last_only_fast.value, 5.0);
+
+        let exact_moments = [3.0, 4.0, 5.0].map(ExactDyadic::from_f64);
+        let exact_derivatives = [2.0, 6.0, 24.0].map(ExactDyadic::from_f64);
+        let exact = ExactFactorialArea::from_derivatives(&exact_derivatives, &exact_moments)
+            .unwrap()
+            .scaled_round(&ExactDyadic::one())
+            .unwrap();
+        assert_eq!(exact, 12.0);
+
+        let last_only_moments = [
+            ExactDyadic::zero(),
+            ExactDyadic::zero(),
+            ExactDyadic::from_f64(5.0),
+        ];
+        let last_only_derivatives = [
+            ExactDyadic::zero(),
+            ExactDyadic::zero(),
+            ExactDyadic::from_f64(24.0),
+        ];
+        let last_only =
+            ExactFactorialArea::from_derivatives(&last_only_derivatives, &last_only_moments)
+                .unwrap()
+                .scaled_round(&ExactDyadic::one())
+                .unwrap();
+        assert_eq!(last_only, 5.0);
+    }
+
+    #[test]
+    fn bounded_edge_moments_match_literal_low_degree_divided_differences() {
+        let mut moments = std::iter::repeat_with(BoundedSum::default)
+            .take(3)
+            .collect::<Vec<_>>();
+        let mut variation = 0.0;
+        let mut maximum_latitude = 0.0;
+        let mut row_certificate = RowCertificate::default();
+        add_fast_determinant(
+            Bounded::exact(3.0 / 32.0),
+            Bounded::exact(1.0 / 4.0),
+            Bounded::exact(1.0 / 8.0),
+            &mut moments,
+            &mut variation,
+            &mut maximum_latitude,
+            &mut row_certificate,
+        )
+        .unwrap();
+
+        for (moment, expected) in moments.iter().zip([3.0 / 32.0, 9.0 / 256.0, 21.0 / 2048.0]) {
+            assert_eq!(moment.value(), expected);
+            let residual = ExactDyadic::from_f64(expected)
+                .try_subtract(ExactDyadic::from_f64(moment.value()))
+                .unwrap()
+                .abs();
+            assert!(residual.cmp(&ExactDyadic::from_f64(moment.error())).is_le());
+        }
     }
 
     #[test]
