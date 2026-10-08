@@ -6007,6 +6007,105 @@ fn rectangle_intersection_uses_exact_source_contacts() {
 }
 
 #[test]
+fn rectangle_source_zip_preserves_full_ordinals_and_zm_in_both_orders() {
+    let Shape::Polygon(subject) = crate::io::parse_wkt(
+        "POLYGON ZM ((-2 -1 10 100,2 -1 20 200,2 1 30 300,-2 1 50 500,-2 -1 10 100))",
+    )
+    .unwrap() else {
+        panic!("expected polygon");
+    };
+    let bounds = Bounds::new_raw(-1.0, -0.5, 1.0, 1.5);
+    let rectangle = rect_polygon(bounds).unwrap();
+
+    for rectangle_first in [false, true] {
+        let (inventory, intervals) = ExactSourceInventory::from_polygon_rect_clip(
+            &[&subject],
+            &rectangle,
+            bounds,
+            rectangle_first,
+        )
+        .unwrap()
+        .expect("the subject's top edge enters the rectangle interior");
+
+        let expected_operands = if rectangle_first {
+            [1, 1, 1, 1, 0, 0, 0, 0]
+        } else {
+            [0, 0, 0, 0, 1, 1, 1, 1]
+        };
+        assert_eq!(inventory.source_operands.as_slice(), expected_operands);
+
+        let expected_unique_segments = if rectangle_first {
+            [
+                [XY::new(-1.0, -0.5), XY::new(1.0, -0.5)],
+                [XY::new(1.0, -0.5), XY::new(1.0, 1.5)],
+                [XY::new(1.0, 1.5), XY::new(-1.0, 1.5)],
+                [XY::new(-1.0, 1.5), XY::new(-1.0, -0.5)],
+                [XY::new(2.0, 1.0), XY::new(-2.0, 1.0)],
+            ]
+        } else {
+            [
+                [XY::new(2.0, 1.0), XY::new(-2.0, 1.0)],
+                [XY::new(-1.0, -0.5), XY::new(1.0, -0.5)],
+                [XY::new(1.0, -0.5), XY::new(1.0, 1.5)],
+                [XY::new(1.0, 1.5), XY::new(-1.0, 1.5)],
+                [XY::new(-1.0, 1.5), XY::new(-1.0, -0.5)],
+            ]
+        };
+        let expected_source_ordinals = if rectangle_first {
+            [0, 1, 2, 3, 6]
+        } else {
+            [2, 4, 5, 6, 7]
+        };
+        let actual_unique_segments: Vec<_> = inventory
+            .unique
+            .iter()
+            .map(|segment| [segment.start, segment.end])
+            .collect();
+        assert_eq!(actual_unique_segments, expected_unique_segments);
+        for (owners, source) in inventory.provenance.iter().zip(expected_source_ordinals) {
+            assert_eq!(owners, &[(source, false)]);
+        }
+
+        let mut budget = ExpansionBudget::new("clip_by_rect", "rectangle source ordinals");
+        let partition = inventory
+            .partition_in_window(&intervals, bounds, &mut budget)
+            .unwrap();
+        let mut crossing_ordinates = Vec::new();
+        for node in partition.crossings() {
+            let (z, m) = inventory
+                .resolve_node_ordinates::<crate::crs::GeodesicMetric>(
+                    &partition,
+                    node,
+                    crate::geometry::CoordinateAxes::XYZM,
+                    None,
+                )
+                .unwrap();
+            crossing_ordinates.push((partition.nearest_xy(node), z.0, m.0));
+        }
+        let expected_crossing_ordinates = [
+            (XY::new(-1.0, 1.0), Some(45.0), Some(450.0)),
+            (XY::new(1.0, 1.0), Some(35.0), Some(350.0)),
+        ];
+        assert!(
+            crossing_ordinates
+                .iter()
+                .all(
+                    |&(actual_xy, actual_z, actual_m)| expected_crossing_ordinates.iter().any(
+                        |&(expected_xy, expected_z, expected_m)| {
+                            same_point(actual_xy, expected_xy)
+                                && actual_z == expected_z
+                                && actual_m == expected_m
+                        }
+                    )
+                )
+        );
+        for expected in expected_crossing_ordinates {
+            assert!(crossing_ordinates.contains(&expected));
+        }
+    }
+}
+
+#[test]
 fn polygon_occupancy_uses_staged_ids_when_rectangle_is_first() {
     let Shape::Polygon(subject) =
         crate::io::parse_wkt("POLYGON ((10 10,14 10,14 14,10 14,10 10),(9 9,15 9,15 15,9 15,9 9))")

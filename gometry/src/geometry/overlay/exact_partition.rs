@@ -797,8 +797,13 @@ impl ExactSourceInventory {
 
         let mut active_segments = Vec::new();
         let mut active_sources = Vec::new();
-        for (source, &segment) in staged.segments.iter().enumerate() {
-            if staged.source_operands[source] == 0 {
+        for (source, (&segment, &operand)) in staged
+            .segments
+            .iter()
+            .zip(&staged.source_operands)
+            .enumerate()
+        {
+            if operand == 0 {
                 let interior = |point: XY| {
                     point.x > bounds.minx()
                         && point.x < bounds.maxx()
