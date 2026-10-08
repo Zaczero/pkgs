@@ -108,9 +108,9 @@ impl HeapSize for LiveHandles {
         match self {
             Self::Contiguous(_) => 0,
             // B-tree node capacity is private; estimate the entries and links.
-            Self::Sparse(ranges) => ranges
-                .len()
-                .saturating_mul(size_of::<(usize, usize)>().saturating_add(size_of::<usize>() * 2)),
+            Self::Sparse(ranges) => ranges.len().saturating_mul(
+                size_of::<(usize, usize)>().saturating_add(size_of::<[usize; 2]>()),
+            ),
         }
     }
 }
@@ -124,7 +124,7 @@ mod tests {
         let mut found = Vec::new();
         while let Some(handle) = handles.next_at_or_after(cursor) {
             found.push(handle);
-            cursor = handle + 1;
+            cursor = handle.wrapping_add(1);
         }
         found
     }

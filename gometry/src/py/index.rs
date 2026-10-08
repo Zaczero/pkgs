@@ -24,7 +24,7 @@ use str_tree::{StaticStrForest, StaticStrTree};
 
 use crate::array::{ArrayRowOperation, BoundsSeed};
 use crate::collections::sort_unique_row_ids;
-use crate::geometry::{Bounds, Point, Shape, ShapeData, TopologyDomain};
+use crate::geometry::{Bounds, Point, Shape, ShapeData, SharedSlice, TopologyDomain};
 use crate::py::errors::{GeometryError, parameter_error};
 use crate::py::numpy::{float64_array, int64_array, usize_array};
 use crate::py::vectors::Groups;
@@ -487,7 +487,7 @@ pub(crate) struct PySpatialIndex {
     bulk_dead_entries: usize,
     /// Periodic covers may contribute several entries for one handle.
     /// Single-entry covers need no count column.
-    bulk_entry_counts: Option<Arc<Vec<usize>>>,
+    bulk_entry_counts: Option<SharedSlice<usize>>,
     /// Post-build inserts — immutable STR runs maintained by binary carries.
     overflow: StaticStrForest,
     /// Insert/remove generation used by live index iterators.

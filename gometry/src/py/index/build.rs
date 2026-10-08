@@ -96,13 +96,14 @@ fn finish_spatial_index(
     let total_rows = rows.len();
     let live_count = scan.live.iter().filter(|&&live| live != 0).count();
     let bulk_entry_counts = bulk_entry_counts(&scan.entries, live_count, total_rows);
+    let live_handles = super::live_handles::LiveHandles::from_live(&scan.live, live_count);
     Ok(PySpatialIndex {
         rows: IndexRows {
-            live_handles: super::live_handles::LiveHandles::from_live(&scan.live, live_count),
             packed: None,
             boxed: rows,
             live: scan.live,
             live_count,
+            live_handles,
         },
         bulk: StaticStrTree::build(scan.entries, total_rows).map_err(pyo3::PyErr::from)?,
         bulk_dead_entries: 0,
@@ -191,15 +192,16 @@ pub(crate) fn packed_spatial_index(array: &PyGeometryArray) -> PyResult<Option<P
     };
     let total_rows = array.len();
     let bulk_entry_counts = bulk_entry_counts(&entries, live_count, total_rows);
+    let live_handles = super::live_handles::LiveHandles::from_live(&live, live_count);
     Ok(Some(PySpatialIndex {
         rows: IndexRows {
-            live_handles: super::live_handles::LiveHandles::from_live(&live, live_count),
             packed: Some(PackedStore {
                 source: array.clone(),
             }),
             boxed: Vec::new(),
             live,
             live_count,
+            live_handles,
         },
         bulk: StaticStrTree::build(entries, total_rows).map_err(pyo3::PyErr::from)?,
         bulk_dead_entries: 0,
@@ -341,16 +343,17 @@ pub(crate) fn restore_spatial_index(
     let total_rows = rows.len();
     let live_count = live.iter().filter(|&&live| live != 0).count();
     let bulk_entry_counts = bulk_entry_counts(&entries, live_count, total_rows);
+    let live_handles = super::live_handles::LiveHandles::from_live(&live, live_count);
     // Re-derive metadata from the row storage, while retaining an explicitly
     // framed index after its last live row is removed.
     let metadata = (has_metadata || present).then(|| values.frame.clone());
     Ok(PySpatialIndex {
         rows: IndexRows {
-            live_handles: super::live_handles::LiveHandles::from_live(&live, live_count),
             packed: None,
             boxed: rows,
             live,
             live_count,
+            live_handles,
         },
         bulk: StaticStrTree::build(entries, total_rows).map_err(pyo3::PyErr::from)?,
         bulk_dead_entries: 0,
@@ -366,7 +369,7 @@ fn bulk_entry_counts(
     entries: &[IndexEntry],
     live_count: usize,
     total_rows: usize,
-) -> Option<std::sync::Arc<Vec<usize>>> {
+) -> Option<crate::geometry::SharedSlice<usize>> {
     if entries.len() == live_count {
         return None;
     }
@@ -377,7 +380,7 @@ fn bulk_entry_counts(
             .expect("bulk entry belongs to the admitted row table");
         *count = count.wrapping_add(1);
     }
-    Some(std::sync::Arc::new(counts))
+    Some(crate::geometry::SharedSlice::from_vec(counts))
 }
 
 /// The CRS + coordinate epoch shared by every item, or `None` for an empty
@@ -398,7 +401,11 @@ mod ownership_tests {
 
     use super::*;
     use crate::HeapSize;
-    use crate::geometry::{Bounds, CoordSeq, CsrOffsetColumn, Point, PolygonLevel, RingLevel};
+    use crate::crs::frame;
+    use crate::geometry::{
+        Bounds, CoordSeq, CsrOffsetColumn, LineSeq, Point, PolygonLevel, RingLevel, Shape,
+        SharedSlice,
+    };
 
     fn points() -> PyGeometryArray {
         PyGeometryArray::packed_points(
@@ -678,5 +685,87 @@ mod ownership_tests {
             restored.rows.heap_bytes(),
             HeapSize::heap_bytes(&restored.rows)
         );
+    }
+
+    #[test]
+    fn geographic_bulk_counts_keep_empty_and_multi_entry_handle_positions() {
+        let frame =
+            Frame::new(Some(frame::crs_arc_static("EPSG:4326")), None).expect("geographic frame");
+        let point = PyGeometry::with_frame(
+            ShapeData::new(Shape::Point(Point::new_raw_xy(10.0, 0.0))),
+            frame.clone(),
+        );
+        let empty = PyGeometry::with_frame(ShapeData::new(Shape::empty_point()), frame.clone());
+        let coordinates = CoordSeq::try_from_vecs(vec![170.0, -170.0], vec![0.0, 0.0], None, None)
+            .expect("crossing coordinates");
+        let crossing = PyGeometry::with_frame(
+            ShapeData::new(Shape::LineString(
+                LineSeq::try_new(coordinates).expect("crossing line"),
+            )),
+            frame.clone(),
+        );
+        let mut index = spatial_index(vec![point, empty, crossing]).expect("spatial index");
+        assert_eq!(
+            index
+                .bulk_entry_counts
+                .as_ref()
+                .expect("periodic bulk counts")
+                .as_slice(),
+            [1, 0, 2]
+        );
+        assert_eq!(index.live_handles_sorted(), [0, 2]);
+
+        let mut copied = index.clone();
+        assert!(index.remove_handle(2).expect("remove periodic row"));
+        assert_eq!(index.live_handles_sorted(), [0]);
+        assert_eq!(index.bulk.entry_count(), 1);
+        assert_eq!(index.bulk_dead_entries, 0);
+        assert_eq!(
+            index
+                .bulk_entry_counts
+                .as_ref()
+                .expect("retained original counts")
+                .as_slice(),
+            [1, 0, 2]
+        );
+        assert_eq!(copied.live_handles_sorted(), [0, 2]);
+        assert!(copied.remove_handle(2).expect("remove copied periodic row"));
+        assert_eq!(copied.live_handles_sorted(), [0]);
+        assert_eq!(
+            copied
+                .bulk_entry_counts
+                .as_ref()
+                .expect("copied original counts")
+                .as_slice(),
+            [1, 0, 2]
+        );
+
+        assert!(index.remove_handle(0).expect("remove remaining row"));
+        assert_eq!(index.bulk.entry_count(), 0);
+        let appended = PyGeometry::with_frame(
+            ShapeData::new(Shape::Point(Point::new_raw_xy(30.0, 0.0))),
+            frame,
+        );
+        assert_eq!(
+            index
+                .insert_one(&appended)
+                .expect("append after compaction"),
+            3
+        );
+        assert_eq!(index.live_handles_sorted(), [3]);
+    }
+
+    #[test]
+    fn shared_bulk_counts_account_for_an_over_reserved_vector() {
+        let mut values = Vec::with_capacity(17);
+        values.extend([1_usize, 0, 2]);
+        let capacity = values.capacity();
+        let counts = SharedSlice::from_vec(values);
+        assert!(capacity > counts.len());
+
+        let expected_bytes = std::mem::size_of::<[usize; 2]>()
+            .saturating_add(std::mem::size_of::<Vec<usize>>())
+            .saturating_add(capacity.saturating_mul(std::mem::size_of::<usize>()));
+        assert_eq!(counts.heap_bytes(), expected_bytes);
     }
 }
