@@ -723,34 +723,37 @@ def test_line_merge_dissolves_only_degree_two_nodes() -> None:
 def test_line_merge_scalar_preserves_reversed_chain_coordinate_order() -> None:
     merged = gm.from_wkt('MULTILINESTRING ((2 0, 1 0), (0 0, 1 0))').line_merge()
 
-    assert merged.to_wkt() == 'LINESTRING (2 0, 1 0, 0 0)'
+    assert merged.coords.to_nested() == [
+        (2.0, 0.0),
+        (1.0, 0.0),
+        (0.0, 0.0),
+    ]
 
 
 def test_line_merge_array_multiline_rows_preserve_nullable_gather_order() -> None:
     reversed_parts = gm.MultiLineString([[(2, 0), (1, 0)], [(0, 0), (1, 0)]])
     forward_parts = gm.MultiLineString([[(10, 0), (11, 0)], [(11, 0), (12, 0)]])
     dense = gm.GeometryArray([reversed_parts, forward_parts])
-    assert dense.line_merge().to_wkt() == [
-        'LINESTRING (2 0, 1 0, 0 0)',
-        'LINESTRING (10 0, 11 0, 12 0)',
+    dense_merged = dense.line_merge()
+    assert dense_merged.coords.to_nested() == [
+        [(2.0, 0.0), (1.0, 0.0), (0.0, 0.0)],
+        [(10.0, 0.0), (11.0, 0.0), (12.0, 0.0)],
     ]
 
     nullable = gm.GeometryArray([None, reversed_parts, forward_parts])
     merged = nullable.line_merge()
-    assert merged.to_wkt() == [
-        None,
-        'LINESTRING (2 0, 1 0, 0 0)',
-        'LINESTRING (10 0, 11 0, 12 0)',
+    assert merged.coords.to_nested() == [
+        [(2.0, 0.0), (1.0, 0.0), (0.0, 0.0)],
+        [(10.0, 0.0), (11.0, 0.0), (12.0, 0.0)],
     ]
     assert merged.is_missing.tolist() == [True, False, False]
 
     gathered = nullable[[2, 0, 1, 2]]
     gathered_merged = gathered.line_merge()
-    assert gathered_merged.to_wkt() == [
-        'LINESTRING (10 0, 11 0, 12 0)',
-        None,
-        'LINESTRING (2 0, 1 0, 0 0)',
-        'LINESTRING (10 0, 11 0, 12 0)',
+    assert gathered_merged.coords.to_nested() == [
+        [(10.0, 0.0), (11.0, 0.0), (12.0, 0.0)],
+        [(2.0, 0.0), (1.0, 0.0), (0.0, 0.0)],
+        [(10.0, 0.0), (11.0, 0.0), (12.0, 0.0)],
     ]
     assert gathered_merged.is_missing.tolist() == [False, True, False, False]
 
