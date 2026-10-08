@@ -353,12 +353,12 @@ def test_grid_cover_budget_precedes_later_source_error_after_prefix_publication(
     None
 ):
     circle = gm.LineString(
-        [(0.0, 0.0), (400.0, 0.0)],
-        crs=WGS84_SOUTH_WEST_GRADS,
+        [(0.0, 0.0), (360.0, 0.0)],
+        crs=4267,
     )
     invalid = gm.LineString(
-        [(0.0, 101.0), (10.0, 101.0)],
-        crs=WGS84_SOUTH_WEST_GRADS,
+        [(0.0, 91.0), (10.0, 91.0)],
+        crs=4267,
     )
     source = gm.GeometryArray([circle, invalid])
 

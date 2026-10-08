@@ -831,26 +831,15 @@ mod tests {
 
     #[test]
     fn source_error_prefix_uses_the_paired_transform_publisher() {
-        const WGS84_SOUTH_WEST_GRADS: &str = "GEOGCRS[\"WGS 84 south-west grads\",\
-             DATUM[\"World Geodetic System 1984\",\
-             ELLIPSOID[\"WGS 84\",6378137,298.257223563]],\
-             PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.017453292519943295]],\
-             CS[ellipsoidal,2],\
-             AXIS[\"Longitude\",west,ORDER[1]],\
-             AXIS[\"Latitude\",south,ORDER[2]],\
-             ANGLEUNIT[\"grad\",0.015707963267948967]]";
         let line = |points: &[Point]| {
             Shape::LineString(LineSeq::try_new(CoordSeq::try_from_points(points).unwrap()).unwrap())
         };
         let array = crate::PyGeometryArray::from_shapes(
             vec![
-                line(&[Point::new_raw_xy(0.0, 0.0), Point::new_raw_xy(400.0, 0.0)]),
-                line(&[
-                    Point::new_raw_xy(0.0, 101.0),
-                    Point::new_raw_xy(10.0, 101.0),
-                ]),
+                line(&[Point::new_raw_xy(0.0, 0.0), Point::new_raw_xy(360.0, 0.0)]),
+                line(&[Point::new_raw_xy(0.0, 91.0), Point::new_raw_xy(10.0, 91.0)]),
             ],
-            Frame::Crs(frame::crs_arc(WGS84_SOUTH_WEST_GRADS)),
+            Frame::Crs(frame::crs_arc_static("EPSG:4267")),
         )
         .unwrap();
         let admission = GridSourceAdmission::new_for_array(&array).unwrap();
@@ -863,6 +852,14 @@ mod tests {
             panic!("the valid prefix retains its line type");
         };
         assert_eq!(prefix.len(), 5);
+        // PROJ maps both endpoints to 0°; the source pair retains the turn.
+        assert_eq!(prefix.iter().collect::<Vec<_>>(), [
+            Point::new_raw_xy(0.0, 0.0),
+            Point::new_raw_xy(90.0, 0.0),
+            Point::new_raw_xy(-180.0, 0.0),
+            Point::new_raw_xy(-90.0, 0.0),
+            Point::new_raw_xy(0.0, 0.0),
+        ]);
         assert!(matches!(
             rows[1].as_ref(),
             Err(GridCoverError::NativeRow { row: 1, .. })
