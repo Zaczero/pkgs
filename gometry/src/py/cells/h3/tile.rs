@@ -294,11 +294,6 @@ fn h3_tile_polygon_seeds_center(
     Ok(())
 }
 
-#[expect(
-    clippy::indexing_slicing,
-    clippy::arithmetic_side_effects,
-    reason = "H3 radius-one disks contain at most seven entries, and count tracks the initialized prefix"
-)]
 fn h3_one_ring(cell: CellIndex, scratch: &mut [u64; 7]) -> &[u64] {
     let mut count = 0_usize;
     for candidate in cell.grid_disk_fast(1) {
