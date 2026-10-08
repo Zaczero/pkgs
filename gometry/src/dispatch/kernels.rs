@@ -449,7 +449,10 @@ pub(crate) fn unary_boundary(data: &PreparedPlan, ctx: &CachelessRowContext<'_>)
             )
         })
     };
-    crate::geometry::boundary_with_metric(data, ctx.domain, Some(&metric_access))
+    crate::geometry::boundary_with_metric(
+        data,
+        crate::geometry::SourceArcContext::new(ctx.domain, Some(&metric_access)),
+    )
 }
 
 /// ``is_empty`` kernel shared by the spine-routed free function.
@@ -549,16 +552,26 @@ pub(crate) fn unary_node(data: &PreparedPlan, ctx: &CachelessRowContext<'_>) -> 
             )
         })
     };
+    let source_context = crate::geometry::SourceArcContext::new(ctx.domain, Some(&metric_access));
     data.shape()
-        .node_with_metric(ctx.domain, Strictness::Lenient, Some(&metric_access))
+        .node_with_context(Strictness::Lenient, source_context)
 }
 
 /// Build-area kernel shared by the scalar and array unary method spine.
 pub(crate) fn unary_build_area(
     data: &PreparedPlan,
-    _ctx: &CachelessRowContext<'_>,
+    ctx: &CachelessRowContext<'_>,
 ) -> Result<Shape> {
-    data.shape().build_area(false)
+    let metric_access = || {
+        ctx.metric.geographic_chart_metric()?.ok_or_else(|| {
+            crate::crs::CrsError::invalid(
+                "geographic build_area source ordinates require the operation's CRS metric",
+            )
+            .into()
+        })
+    };
+    let source_context = crate::geometry::SourceArcContext::new(ctx.domain, Some(&metric_access));
+    data.shape().build_area_with_context(false, source_context)
 }
 
 /// Smooth kernel shared by the spine-routed free function.
@@ -900,8 +913,10 @@ pub(crate) fn unary_snap_to_grid(
                 )
             })
         };
+        let source_context =
+            crate::geometry::SourceArcContext::new(ctx.domain, Some(&metric_access));
         data.shape()
-            .snap_to_grid_repaired(size, origin, ctx.domain, Some(&metric_access))
+            .snap_to_grid_repaired(size, origin, ctx.domain, source_context)
     } else {
         data.shape().snap_to_grid(size, origin)
     }

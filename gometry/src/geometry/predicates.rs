@@ -27,6 +27,7 @@ pub(crate) use pole::{
 };
 pub(crate) use properties::shape_is_closed_in_domain;
 pub(in crate::geometry) use relate::LineworkChains;
+pub(in crate::geometry) use repair::remove_antenna_vertices;
 pub(crate) use repair::{line_repair, multiline_repair, polygonal_repair};
 pub(in crate::geometry) use shape_data::classify_ring_pair_with_contacts;
 pub(crate) use shape_data::{

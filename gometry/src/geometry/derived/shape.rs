@@ -43,6 +43,7 @@ impl Shape {
                 &[self],
                 "minimum_rotated_rectangle",
                 false,
+                crate::geometry::SourceArcContext::cartesian(),
             );
         }
         Ok(Self::Polygon(Polygon::new(

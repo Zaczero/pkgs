@@ -79,7 +79,9 @@ pub(crate) fn broadcast2_geometry<K>(
     kernel: K,
 ) -> PyResult<Py<PyAny>>
 where
-    K: Fn(&PreparedPlan, &PreparedPlan) -> Result<Shape> + Send + Sync,
+    K: Fn(&PreparedPlan, &PreparedPlan, &crate::dispatch::CachelessRowContext<'_>) -> Result<Shape>
+        + Send
+        + Sync,
 {
     crate::dispatch::dispatch_binary_geometry(
         py,
@@ -88,7 +90,7 @@ where
         op_name,
         crate::dispatch::MetricResolver::GeographicCarry,
         &crate::dispatch::OverlayFastPath,
-        move |left, right, _ctx| kernel(left, right),
+        move |left, right, context| kernel(left, right, context),
     )
 }
 

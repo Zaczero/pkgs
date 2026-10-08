@@ -185,7 +185,7 @@ impl PyGeometryArray {
     fn geojson_rows(
         &self,
         domain: geometry::TopologyDomain,
-        metric_access: &crate::geometry::SourceArcMetricAccess<'_>,
+        metric_access: &crate::geometry::SourceArcMetricAccess<'_, '_>,
     ) -> std::result::Result<Vec<String>, (usize, crate::error::Error)> {
         let mut output = Vec::with_capacity(self.len());
         for row in self.row_operation().rows_with_missing(String::new) {
@@ -243,6 +243,8 @@ impl PyGeometryArray {
         };
         let repaired = py
             .detach(|| {
+                let source_context =
+                    crate::geometry::SourceArcContext::new(domain, Some(&metric_access));
                 let mut all_present_valid = true;
                 let mut shapes = Vec::with_capacity(
                     self.missing()
@@ -261,7 +263,7 @@ impl PyGeometryArray {
                                     shape,
                                     domain,
                                     method,
-                                    Some(&metric_access),
+                                    source_context,
                                 )?
                                 .map_or_else(
                                     || (shape.clone(), false),
@@ -674,14 +676,46 @@ impl PyGeometryArray {
     /// with the free function ``polygonize``; passing a GeometryArray there
     /// pools its present rows.
     pub(crate) fn polygonize_impl(&self, py: Python<'_>) -> PyResult<Groups> {
-        self.flat_map_shapes_groups(py, move |shape| shape.polygonize(false))
+        let mut metric_scratch = crate::dispatch::MetricScratch::default();
+        let (domain, metric) = crate::dispatch::MetricResolver::GeographicCarry
+            .resolve_topology_ctx(&self.frame, &mut metric_scratch)?;
+        self.flat_map_shapes_groups(py, move |shape| {
+            let metric_access = || {
+                metric.geographic_chart_metric()?.ok_or_else(|| {
+                    crate::crs::CrsError::invalid(
+                        "geographic polygonize source ordinates require the operation's CRS metric",
+                    )
+                    .into()
+                })
+            };
+            shape.polygonize_with_context(
+                false,
+                crate::geometry::SourceArcContext::new(domain, Some(&metric_access)),
+            )
+        })
     }
 
     pub(crate) fn line_merge_impl(&self, py: Python<'_>) -> PyResult<Self> {
         if let Some(identity) = self.packed_lines_identity() {
             return Ok(identity);
         }
-        self.map_shapes_detached(py, Shape::line_merge)
+        let mut metric_scratch = crate::dispatch::MetricScratch::default();
+        let (domain, metric) = crate::dispatch::MetricResolver::GeographicCarry
+            .resolve_topology_ctx(&self.frame, &mut metric_scratch)?;
+        self.map_shapes_detached(py, move |shape| {
+            let metric_access = || {
+                metric.geographic_chart_metric()?.ok_or_else(|| {
+                    crate::crs::CrsError::invalid(
+                        "geographic line_merge source ordinates require the operation's CRS metric",
+                    )
+                    .into()
+                })
+            };
+            shape.line_merge_with_context(crate::geometry::SourceArcContext::new(
+                domain,
+                Some(&metric_access),
+            ))
+        })
     }
 
     /// `tolerance` is already validated non-negative at the free-function boundary.
@@ -790,11 +824,12 @@ impl PyGeometryArray {
         // Per-row groups: each input geometry's subdivided parts stay grouped
         // under their source row. `iter_shapes` gives packed rows CSR views with
         // no Mixed boxing, so the group build is as cheap as the flat path was.
-        self.flat_map_shapes_groups(py, move |shape| match domain {
-            crate::geometry::TopologyDomain::Cartesian => shape.subdivide(max_vertices, false),
-            crate::geometry::TopologyDomain::Geographic(frame) => {
-                shape.subdivide_in_geographic_frame(max_vertices, false, frame, &metric_access)
-            },
+        self.flat_map_shapes_groups(py, move |shape| {
+            shape.subdivide_with_context(
+                max_vertices,
+                false,
+                crate::geometry::SourceArcContext::new(domain, Some(&metric_access)),
+            )
         })
     }
 }

@@ -2045,25 +2045,18 @@ impl Shape {
     /// bounded parts, subdivision returns an unrepresentable-output error
     /// instead of emitting an oversized part.
     pub fn subdivide(&self, max_vertices: usize, drop: bool) -> Result<Vec<Self>> {
-        self.subdivide_with_frame(max_vertices, drop, None, None)
+        self.subdivide_with_context(
+            max_vertices,
+            drop,
+            crate::geometry::SourceArcContext::cartesian(),
+        )
     }
 
-    pub(crate) fn subdivide_in_geographic_frame(
+    pub(crate) fn subdivide_with_context(
         &self,
         max_vertices: usize,
         drop: bool,
-        frame: crate::geographic::GeographicFrame,
-        metric_access: &crate::geometry::SourceArcMetricAccess<'_>,
-    ) -> Result<Vec<Self>> {
-        self.subdivide_with_frame(max_vertices, drop, Some(frame), Some(metric_access))
-    }
-
-    fn subdivide_with_frame(
-        &self,
-        max_vertices: usize,
-        drop: bool,
-        frame: Option<crate::geographic::GeographicFrame>,
-        metric_access: Option<&crate::geometry::SourceArcMetricAccess<'_>>,
+        context: crate::geometry::SourceArcContext<'_, '_>,
     ) -> Result<Vec<Self>> {
         let mut parts = Vec::new();
         let mut budget = ExpansionBudget::new("subdivide", "max_vertices");
@@ -2071,8 +2064,7 @@ impl Shape {
             self.clone(),
             max_vertices,
             drop,
-            frame,
-            metric_access,
+            context,
             &mut parts,
             &mut budget,
         )?;
@@ -2091,7 +2083,7 @@ impl Shape {
         rect: Bounds,
         drop: bool,
         frame: crate::geographic::GeographicFrame,
-        metric_access: &crate::geometry::SourceArcMetricAccess<'_, M>,
+        metric_access: &crate::geometry::SourceArcMetricAccess<'_, '_, M>,
     ) -> Result<Self> {
         let subject_plan = crate::geometry::PreparedPlan::transient(self);
         let subject_cache = crate::geometry::FrameDependentCaches::default();
@@ -2128,7 +2120,10 @@ impl Shape {
             OverlayOp::Intersection,
             Strictness::from(drop),
             true,
-            Some(metric_access),
+            crate::geometry::SourceArcContext::new(
+                crate::geometry::TopologyDomain::Geographic(frame),
+                Some(metric_access),
+            ),
         )?;
         Ok(clipped)
     }

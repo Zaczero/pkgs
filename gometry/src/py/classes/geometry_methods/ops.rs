@@ -132,7 +132,9 @@ impl PyGeometry {
         };
         let plan = self.prepared_plan();
         let repaired = py.detach(move || {
-            geometry::repair_data_in_frame(&plan, domain, method, Some(&metric_access))
+            let source_context =
+                crate::geometry::SourceArcContext::new(domain, Some(&metric_access));
+            geometry::repair_data_in_frame(&plan, domain, method, source_context)
         })?;
         Ok(Typed(repaired.map_or_else(
             || self.clone(),
@@ -283,12 +285,42 @@ impl PyGeometry {
 
     pub(crate) fn polygonize_impl(&self, py: Python<'_>) -> PyResult<PyGeometryArray> {
         let shape = Arc::clone(&self.shape);
-        self.parts_to_array(py.detach(move || shape.polygonize(false))?)
+        let mut metric_scratch = crate::dispatch::MetricScratch::default();
+        let (domain, metric) = crate::dispatch::MetricResolver::GeographicCarry
+            .resolve_topology_ctx(&self.frame, &mut metric_scratch)?;
+        let polygons = py.detach(move || {
+            let metric_access = || {
+                metric.geographic_chart_metric()?.ok_or_else(|| {
+                    crate::crs::CrsError::invalid(
+                        "geographic polygonize source ordinates require the operation's CRS metric",
+                    )
+                    .into()
+                })
+            };
+            let context = crate::geometry::SourceArcContext::new(domain, Some(&metric_access));
+            shape.polygonize_with_context(false, context)
+        })?;
+        self.parts_to_array(polygons)
     }
 
     pub(crate) fn line_merge_impl(&self, py: Python<'_>) -> PyResult<Typed> {
         let shape = Arc::clone(&self.shape);
-        Ok(self.typed_shape(py.detach(move || shape.line_merge())?))
+        let mut metric_scratch = crate::dispatch::MetricScratch::default();
+        let (domain, metric) = crate::dispatch::MetricResolver::GeographicCarry
+            .resolve_topology_ctx(&self.frame, &mut metric_scratch)?;
+        let merged = py.detach(move || {
+            let metric_access = || {
+                metric.geographic_chart_metric()?.ok_or_else(|| {
+                    crate::crs::CrsError::invalid(
+                        "geographic line_merge source ordinates require the operation's CRS metric",
+                    )
+                    .into()
+                })
+            };
+            let context = crate::geometry::SourceArcContext::new(domain, Some(&metric_access));
+            shape.line_merge_with_context(context)
+        })?;
+        Ok(self.typed_shape(merged))
     }
 
     /// `tolerance` is already validated non-negative at the free-function boundary.
@@ -350,11 +382,11 @@ impl PyGeometry {
                     )
                 })
             };
-            match domain {
-                crate::geometry::TopologyDomain::Cartesian => shape.subdivide(max_vertices, false),
-                crate::geometry::TopologyDomain::Geographic(frame) => shape
-                    .subdivide_in_geographic_frame(max_vertices, false, frame, &metric_access),
-            }
+            shape.subdivide_with_context(
+                max_vertices,
+                false,
+                crate::geometry::SourceArcContext::new(domain, Some(&metric_access)),
+            )
         })?;
         self.parts_to_array(parts)
     }

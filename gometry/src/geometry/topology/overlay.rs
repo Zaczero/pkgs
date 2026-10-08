@@ -10,7 +10,7 @@ use crate::geographic::{
     ChartPole, GeographicRing, Latitude, RetainedChartDisplacement, RingSummary, SeamIdentity,
 };
 use crate::geometry::ordinates::{
-    NodeOrdinates, SourceArcMetricAccess, SourceArcRequest, source_arc_ordinates,
+    NodeOrdinates, SourceArcMetricAccess, SourceArcRequest, source_arc_ordinates_unmetered,
 };
 use crate::geometry::overlay::{OverlayOp, build_certified_overlay_shape_with_axes};
 use crate::geometry::segments::try_sort_by;
@@ -213,7 +213,7 @@ pub(in crate::geometry) fn exact_geographic_overlay<M: crate::geometry::ChartMet
     operation: OverlayOp,
     declared_axes: CoordinateAxes,
     strict: bool,
-    metric_access: Option<&SourceArcMetricAccess<'_, M>>,
+    metric_access: Option<&SourceArcMetricAccess<'_, '_, M>>,
 ) -> Result<Shape> {
     let plan = QOverlayPlan::build(topology, operation)?;
     let coordinates = QCoordinates::build(topology)?;
@@ -279,7 +279,7 @@ pub(in crate::geometry) fn exact_geographic_overlay<M: crate::geometry::ChartMet
 pub(in crate::geometry) fn exact_geographic_boundary<M: crate::geometry::ChartMetric>(
     topology: &ExactGeographicTopology,
     declared_axes: CoordinateAxes,
-    metric_access: Option<&SourceArcMetricAccess<'_, M>>,
+    metric_access: Option<&SourceArcMetricAccess<'_, '_, M>>,
 ) -> Result<Shape> {
     if topology.sources.row_count != 1 {
         return Err(GeometryErrorKind::Invalid(
@@ -1536,10 +1536,10 @@ fn source_arc_node_ordinates<M: crate::geometry::ChartMetric>(
     parameter: &ExactRational,
     axes: CoordinateAxes,
     longitude: impl FnOnce() -> Result<RetainedChartDisplacement>,
-    metric_access: Option<&SourceArcMetricAccess<'_, M>>,
+    metric_access: Option<&SourceArcMetricAccess<'_, '_, M>>,
 ) -> Result<NodeOrdinates> {
     let request = SourceArcRequest::new(frame, source, axes, parameter, longitude)?;
-    source_arc_ordinates(&request, || match metric_access {
+    source_arc_ordinates_unmetered(&request, || match metric_access {
         Some(access) => access(),
         None => Err(crate::crs::CrsError::invalid(
             "geographic source-ordinate carry requires the operation's CRS metric authority",
@@ -1551,7 +1551,7 @@ fn source_arc_node_ordinates<M: crate::geometry::ChartMetric>(
 fn node_ordinates<M: crate::geometry::ChartMetric>(
     topology: &ExactGeographicTopology,
     declared_axes: CoordinateAxes,
-    metric_access: Option<&SourceArcMetricAccess<'_, M>>,
+    metric_access: Option<&SourceArcMetricAccess<'_, '_, M>>,
 ) -> Result<Vec<NodeOrdinates>> {
     let q = &topology.q;
     if q.source_edge_ports.len() != topology.sources.edges.len() {

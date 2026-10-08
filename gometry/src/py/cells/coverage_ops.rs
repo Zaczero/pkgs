@@ -171,19 +171,23 @@ pub(super) fn polygonize_outline(outline: Vec<CoordSeq>) -> PyResult<Option<Type
         crate::geometry::CoordinateAxes::XY,
         outline.into_iter().map(LineSeq::from_proven).collect(),
     );
-    let polygons: Vec<_> = Shape::build_area_all(&[&outline], true)?
-        .into_iter()
-        .filter_map(|shape| match shape {
-            Shape::Polygon(polygon) => Some(polygon),
-            Shape::Point(_)
-            | Shape::MultiPoint(_)
-            | Shape::LineString(_)
-            | Shape::MultiLineString(_)
-            | Shape::MultiPolygon(_)
-            | Shape::GeometryCollection(_)
-            | Shape::Empty(..) => None,
-        })
-        .collect();
+    let polygons: Vec<_> = Shape::build_area_all_with_context(
+        &[&outline],
+        true,
+        crate::geometry::SourceArcContext::cartesian(),
+    )?
+    .into_iter()
+    .filter_map(|shape| match shape {
+        Shape::Polygon(polygon) => Some(polygon),
+        Shape::Point(_)
+        | Shape::MultiPoint(_)
+        | Shape::LineString(_)
+        | Shape::MultiLineString(_)
+        | Shape::MultiPolygon(_)
+        | Shape::GeometryCollection(_)
+        | Shape::Empty(..) => None,
+    })
+    .collect();
     if polygons.is_empty() {
         return Ok(None);
     }

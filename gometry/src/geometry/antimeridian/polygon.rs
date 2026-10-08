@@ -45,7 +45,7 @@ impl Shape {
     pub(crate) fn split_antimeridian_in_frame_with_metric<M: ChartMetric>(
         &self,
         frame: GeographicFrame,
-        metric_access: Option<&SourceArcMetricAccess<'_, M>>,
+        metric_access: Option<&SourceArcMetricAccess<'_, '_, M>>,
     ) -> Result<Self> {
         let view =
             ScalarGeographicView::try_new(frame, self).map_err(|error| split_view_error(&error))?;
@@ -64,7 +64,7 @@ impl Shape {
     fn split_antimeridian_chart<M: ChartMetric>(
         &self,
         memo: &mut ShapeTransformMemo,
-        metric_access: Option<&SourceArcMetricAccess<'_, M>>,
+        metric_access: Option<&SourceArcMetricAccess<'_, '_, M>>,
     ) -> Result<Self> {
         match self {
             Self::Point(_) | Self::MultiPoint(_) | Self::Empty(..) => Ok(self.clone()),
@@ -180,7 +180,7 @@ impl Shape {
                     self,
                     polygon,
                     closure,
-                    None::<&SourceArcMetricAccess<'_, crate::crs::GeodesicMetric>>,
+                    None::<&SourceArcMetricAccess<'_, '_, crate::crs::GeodesicMetric>>,
                 )?;
                 Ok(Self::narrow_polygons(polygon.axes(), polygons))
             },
@@ -195,7 +195,9 @@ impl Shape {
                                     self,
                                     &polygons.as_slice()[index],
                                     closure,
-                                    None::<&SourceArcMetricAccess<'_, crate::crs::GeodesicMetric>>,
+                                    None::<
+                                        &SourceArcMetricAccess<'_, '_, crate::crs::GeodesicMetric>,
+                                    >,
                                 )?
                                 .into_iter()
                                 .map(MultiMember::Value),
@@ -237,7 +239,7 @@ fn source_longitudes_are_canonical(view: ScalarGeographicView<'_>) -> bool {
 
 pub(crate) fn split_geographic_view<M: ChartMetric>(
     view: ScalarGeographicView<'_>,
-    metric_access: Option<&SourceArcMetricAccess<'_, M>>,
+    metric_access: Option<&SourceArcMetricAccess<'_, '_, M>>,
 ) -> Result<Shape> {
     let frame = view.frame();
     let canonical = source_longitudes_are_canonical(view);
@@ -573,7 +575,7 @@ fn split_polygon<M: ChartMetric>(
     source: &Shape,
     polygon: &Polygon,
     preferred: PoleClosure,
-    metric_access: Option<&SourceArcMetricAccess<'_, M>>,
+    metric_access: Option<&SourceArcMetricAccess<'_, '_, M>>,
 ) -> Result<Vec<Polygon>> {
     let preferred = match preferred {
         PoleClosure::Auto => pole_closure_for_ring(&polygon.shell),
@@ -587,7 +589,7 @@ fn split_polygon<M: ChartMetric>(
 fn split_polygon_inner<M: ChartMetric>(
     polygon: &Polygon,
     preferred: PoleClosure,
-    metric_access: Option<&SourceArcMetricAccess<'_, M>>,
+    metric_access: Option<&SourceArcMetricAccess<'_, '_, M>>,
 ) -> Result<Vec<Polygon>> {
     split_polygon_inner_in_mode(polygon, preferred, HoleOverlayMode::Select, metric_access)
 }
@@ -596,7 +598,7 @@ fn split_polygon_inner_in_mode<M: ChartMetric>(
     polygon: &Polygon,
     preferred: PoleClosure,
     mut overlay_mode: HoleOverlayMode,
-    metric_access: Option<&SourceArcMetricAccess<'_, M>>,
+    metric_access: Option<&SourceArcMetricAccess<'_, '_, M>>,
 ) -> Result<Vec<Polygon>> {
     // Split crossing holes as independent areal operands, then subtract them
     // from the split shell.  Treating shell and hole seam fragments as one

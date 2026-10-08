@@ -176,7 +176,10 @@ pub(crate) fn geographic_intersection_witness_cached<M: ChartMetric>(
         OverlayOp::Intersection,
         Strictness::Lenient,
         false,
-        Some(&metric_access),
+        crate::geometry::SourceArcContext::new(
+            crate::geometry::TopologyDomain::Geographic(frame),
+            Some(&metric_access),
+        ),
     )?;
     Ok(
         match intersection.try_for_each_first_point_run(ControlFlow::Break) {

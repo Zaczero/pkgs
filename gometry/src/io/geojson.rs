@@ -44,7 +44,7 @@ pub(crate) fn to_geojson_string(shape: &Shape, domain: TopologyDomain) -> Result
 pub(crate) fn to_geojson_string_with_metric<M: ChartMetric>(
     shape: &Shape,
     domain: TopologyDomain,
-    metric_access: &SourceArcMetricAccess<'_, M>,
+    metric_access: &SourceArcMetricAccess<'_, '_, M>,
 ) -> Result<String> {
     to_geojson_string_with_limit_and_metric(
         shape,
@@ -69,7 +69,7 @@ fn to_geojson_string_with_limit_and_metric<M: ChartMetric>(
     shape: &Shape,
     domain: TopologyDomain,
     limit: usize,
-    metric_access: Option<&SourceArcMetricAccess<'_, M>>,
+    metric_access: Option<&SourceArcMetricAccess<'_, '_, M>>,
 ) -> Result<String> {
     let limit = limit.min(isize::MAX.unsigned_abs());
     validate_geojson_value(shape)?;
@@ -178,7 +178,7 @@ fn validate_geojson_structure(shape: &Shape, owners: &mut SharedShapeOwners) -> 
 pub(crate) fn geojson_output_shape<'s, M: ChartMetric>(
     shape: &'s Shape,
     domain: TopologyDomain,
-    metric_access: Option<&SourceArcMetricAccess<'_, M>>,
+    metric_access: Option<&SourceArcMetricAccess<'_, '_, M>>,
 ) -> Result<Cow<'s, Shape>> {
     let prepared: Cow<'_, Shape> = match domain {
         TopologyDomain::Cartesian => Cow::Borrowed(shape),

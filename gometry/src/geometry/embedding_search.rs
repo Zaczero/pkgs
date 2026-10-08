@@ -15,6 +15,19 @@ const BASE_EVALUATION_LIMIT: u64 = 1 << 16;
 const EVALUATIONS_PER_CONSTRUCTED_NODE: u64 = 1 << 12;
 const PROXIMITY_RELATIVE_SLACK: f64 = 9.094_947_017_729_282e-13;
 
+pub(crate) trait Work {
+    fn charge(&mut self, units: u64) -> Result<()>;
+}
+
+#[derive(Clone, Copy, Default)]
+pub(crate) struct Unmetered;
+
+impl Work for Unmetered {
+    fn charge(&mut self, _units: u64) -> Result<()> {
+        Ok(())
+    }
+}
+
 /// An emitted segment and the conservative mobility of each endpoint.
 #[derive(Clone, Copy)]
 pub(in crate::geometry) struct ProximityChord {
@@ -584,6 +597,12 @@ impl EvaluationBudget {
             constructed: self.constructed,
         }
         .into()
+    }
+}
+
+impl Work for EvaluationBudget {
+    fn charge(&mut self, units: u64) -> Result<()> {
+        EvaluationBudget::charge(self, units)
     }
 }
 

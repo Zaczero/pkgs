@@ -15,7 +15,8 @@ use crate::geometry::types::ChartMetric;
 use crate::geometry::{
     ChartBox, ChartEdgeDifferential, ChartEdgeDifferentialBounds, ChartPointDistanceSample,
     CoordinateAxes, GeographicAreaDensity, GeometryErrorKind, HasM, HasZ, MAX_AUTHALIC_HARMONICS,
-    Point, PointEdgeQuery, PointEdgeQueryResult, Segment, XY, segment_projection,
+    Point, PointEdgeQuery, PointEdgeQueryResult, Segment, SegmentProjection, Unmetered, Work, XY,
+    segment_projection,
 };
 
 const GL4_NODES: [f64; 4] = [
@@ -476,11 +477,21 @@ impl ChartEdge {
     }
 
     pub(crate) fn length(&self, geodesic: &Geodesic) -> Result<f64> {
+        self.length_with_work(geodesic, &mut Unmetered)
+    }
+
+    pub(crate) fn length_with_work(
+        &self,
+        geodesic: &Geodesic,
+        work: &mut impl Work,
+    ) -> Result<f64> {
         if self.latitude_delta == 0.0 {
+            work.charge(1)?;
             return self.finite_length(self.parallel_length(geodesic));
         }
 
         if let Some(meridian) = self.meridian {
+            work.charge(1)?;
             return self.finite_length(super::inverse_distance(
                 geodesic,
                 meridian.longitude,
@@ -490,7 +501,7 @@ impl ChartEdge {
             ));
         }
 
-        self.integrate_full(geodesic)
+        self.integrate_full_with_work(geodesic, work)
     }
 
     /// Shared source-edge arclength fraction for both carried ordinates.
@@ -500,6 +511,16 @@ impl ChartEdge {
         total_length: Option<f64>,
         geodesic: &Geodesic,
     ) -> Result<f64> {
+        self.arclength_fraction_with_work(parameter, total_length, geodesic, &mut Unmetered)
+    }
+
+    pub(crate) fn arclength_fraction_with_work(
+        &self,
+        parameter: f64,
+        total_length: Option<f64>,
+        geodesic: &Geodesic,
+        work: &mut impl Work,
+    ) -> Result<f64> {
         if parameter <= 0.0 {
             return Ok(0.0);
         }
@@ -508,12 +529,15 @@ impl ChartEdge {
         }
         let total = match total_length {
             Some(length) => length,
-            None => self.length(geodesic)?,
+            None => self.length_with_work(geodesic, work)?,
         };
         if total == 0.0 {
             return Ok(0.0);
         }
-        Ok((self.arclength(parameter, geodesic)? / total).clamp(0.0, 1.0))
+        Ok(
+            (self.arclength_with_work(parameter, Some(total), geodesic, work)? / total)
+                .clamp(0.0, 1.0),
+        )
     }
 
     pub(crate) fn is_parallel(&self) -> bool {
@@ -532,18 +556,36 @@ impl ChartEdge {
 
     /// Ellipsoidal arclength from the stored start to parameter `t`.
     pub(crate) fn arclength(&self, t: f64, geodesic: &Geodesic) -> Result<f64> {
+        self.arclength_with_work(t, None, geodesic, &mut Unmetered)
+    }
+
+    pub(crate) fn arclength_with_work(
+        &self,
+        t: f64,
+        total_length: Option<f64>,
+        geodesic: &Geodesic,
+        work: &mut impl Work,
+    ) -> Result<f64> {
         debug_assert!((0.0..=1.0).contains(&t));
         if t <= 0.0 {
             return Ok(0.0);
         }
         if t >= 1.0 {
-            return self.length(geodesic);
+            return match total_length {
+                Some(length) => Ok(length),
+                None => self.length_with_work(geodesic, work),
+            };
         }
         if self.latitude_delta == 0.0 {
-            return self.finite_length(self.length(geodesic)? * t);
+            let total = match total_length {
+                Some(length) => length,
+                None => self.length_with_work(geodesic, work)?,
+            };
+            return self.finite_length(total * t);
         }
         if let Some(meridian) = self.meridian {
             let position = self.geodetic_position(t)?;
+            work.charge(1)?;
             return self.finite_length(super::inverse_distance(
                 geodesic,
                 meridian.longitude,
@@ -552,7 +594,7 @@ impl ChartEdge {
                 position.y,
             ));
         }
-        self.integrate(0.0, t, geodesic)
+        self.integrate_with_work(0.0, t, geodesic, work)
     }
 
     /// Parameter whose accumulated ellipsoidal arclength is `distance`.
@@ -837,6 +879,18 @@ impl ChartEdge {
     /// chart. The minimizer still evaluates its geodesic objective before the
     /// parameter can affect the attained result.
     pub(super) fn projection_parameter(self, point: Point) -> Result<f64> {
+        Ok(self.project_source_chart(point)?.0.fraction())
+    }
+
+    /// Project through the retained source branch, returning the local query
+    /// and segment for callers that must test source membership as well.
+    /// Coordinates in that local chart are rounded `f64`s, so an exact contact
+    /// predicate certifies only this represented segment, not exact membership
+    /// in the original source geometry.
+    pub(crate) fn project_source_chart(
+        self,
+        point: Point,
+    ) -> Result<(SegmentProjection, XY, Segment)> {
         let axis = self.frame.longitude();
         // The start alias folds a full-turn edge onto one endpoint. The stored
         // chart-step delta makes the midpoint the reference for its full lifted span.
@@ -850,22 +904,34 @@ impl ChartEdge {
         let lifted_longitude = axis
             .nearest_longitude_alias(midpoint_longitude, point.x)
             .map_err(|error| crate::crs::CrsError::message(error.to_string()))?;
-        let start = XY::new(0.0, 0.0);
-        let end = XY::new(self.longitude_delta_native, self.latitude_delta);
+        let segment = Segment {
+            start: XY::new(0.0, 0.0),
+            end: XY::new(self.longitude_delta_native, self.latitude_delta),
+        };
         let start_longitude = self.longitude.endpoints()[0].get();
         let query = XY::new(
             lifted_longitude - start_longitude,
             point.y - self.start_latitude,
         );
-        Ok(segment_projection(query, Segment { start, end })?.fraction())
+        Ok((segment_projection(query, segment)?, query, segment))
     }
 
     pub(super) fn integrate(&self, start: f64, end: f64, geodesic: &Geodesic) -> Result<f64> {
-        self.integrate_interval::<false>(start, end, geodesic)
+        self.integrate_with_work(start, end, geodesic, &mut Unmetered)
     }
 
-    fn integrate_full(&self, geodesic: &Geodesic) -> Result<f64> {
-        self.integrate_interval::<true>(0.0, 1.0, geodesic)
+    pub(crate) fn integrate_with_work(
+        &self,
+        start: f64,
+        end: f64,
+        geodesic: &Geodesic,
+        work: &mut impl Work,
+    ) -> Result<f64> {
+        self.integrate_interval::<false>(start, end, geodesic, work)
+    }
+
+    fn integrate_full_with_work(&self, geodesic: &Geodesic, work: &mut impl Work) -> Result<f64> {
+        self.integrate_interval::<true>(0.0, 1.0, geodesic, work)
     }
 
     #[expect(
@@ -877,6 +943,7 @@ impl ChartEdge {
         start: f64,
         end: f64,
         geodesic: &Geodesic,
+        work: &mut impl Work,
     ) -> Result<f64> {
         if !FULL && start == end {
             return Ok(0.0);
@@ -884,6 +951,7 @@ impl ChartEdge {
         let e2 = geodesic.f * (2.0 - geodesic.f);
         let dphi = self.latitude_delta * self.latitude_unit;
         if self.admits_gl4(dphi) {
+            work.charge(GL4_NODES.len() as u64)?;
             let width = if FULL { 1.0 } else { end - start };
             let value = std::iter::zip(GL4_NODES, GL4_WEIGHTS)
                 .map(|(node, weight)| {
@@ -895,7 +963,8 @@ impl ChartEdge {
             return self.finite_length(value);
         }
 
-        let mut evaluations = 15;
+        let mut evaluations = 15_usize;
+        work.charge(15)?;
         let (initial, initial_error) = self.gk15(start, end, geodesic.a, e2, dphi);
         let tolerance = RELATIVE_LENGTH_ERROR * initial.abs();
         if initial_error <= tolerance {
@@ -923,6 +992,7 @@ impl ChartEdge {
                     "chart-edge length quadrature did not converge within 5,000 evaluations",
                 ));
             }
+            work.charge(30)?;
             let middle = f64::midpoint(parent.start, parent.end);
             let (left, left_error) = self.gk15(parent.start, middle, geodesic.a, e2, dphi);
             let (right, right_error) = self.gk15(middle, parent.end, geodesic.a, e2, dphi);
@@ -1112,6 +1182,10 @@ impl ChartMetric for super::GeodesicMetric {
         edge.length(&self.geodesic)
     }
 
+    fn chart_edge_length_with_work(&self, edge: &ChartEdge, work: &mut impl Work) -> Result<f64> {
+        edge.length_with_work(&self.geodesic, work)
+    }
+
     fn chart_edge_length_to(&self, edge: &ChartEdge, parameter: f64) -> Result<f64> {
         edge.arclength(parameter, &self.geodesic)
     }
@@ -1123,6 +1197,16 @@ impl ChartMetric for super::GeodesicMetric {
         total_length: Option<f64>,
     ) -> Result<f64> {
         edge.arclength_fraction(parameter, total_length, &self.geodesic)
+    }
+
+    fn chart_edge_arclength_fraction_with_work(
+        &self,
+        edge: &ChartEdge,
+        parameter: f64,
+        total_length: Option<f64>,
+        work: &mut impl Work,
+    ) -> Result<f64> {
+        edge.arclength_fraction_with_work(parameter, total_length, &self.geodesic, work)
     }
 
     fn chart_edge_locate_t(&self, edge: &ChartEdge, distance: f64, length: f64) -> Result<f64> {
