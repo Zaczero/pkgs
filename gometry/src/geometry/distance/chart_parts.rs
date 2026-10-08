@@ -1219,8 +1219,8 @@ mod tests {
             for (case, source_degrees, target_degrees) in [
                 (
                     "rounded endpoints",
-                    (-123.456789, -55.678912),
-                    (168.4349693, 54.4497109),
+                    (-123.456_789, -55.678_912),
+                    (168.434_969_3, 54.449_710_9),
                 ),
                 ("seam aliases", (179.8, 0.0), (-179.8, 1.0)),
                 ("positive half turn", (0.0, 0.0), (180.0, 0.0)),
