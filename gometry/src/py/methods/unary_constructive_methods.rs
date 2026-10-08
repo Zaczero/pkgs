@@ -752,7 +752,8 @@ method_doc! {
 input crossing the antimeridian is auto-split-normalized; no manual
 ``split_antimeridian`` is required. Always inside (or on) the geometry,
 unlike centroid. The representative point is computed in XY and does not
-imply a source Z/M.
+imply a source Z/M. On planar polygonal input, the first polygon component
+wins when representative chords have equal width.
 
 See Also
 --------

@@ -50,6 +50,65 @@ def test_point_on_surface_satisfies_covers_invariant(case: SurfaceCase) -> None:
     _assert_covers_invariant(case.geom, point)
 
 
+def test_equal_width_polygon_components_keep_first_input_order() -> None:
+    first = gm.box(170, 0, 180, 10)
+    adjacent = gm.box(180, 0, 190, 10)
+    disjoint = gm.box(190, 0, 200, 10)
+    forward_nested = gm.GeometryCollection([first, adjacent])
+    reverse_nested = gm.GeometryCollection([adjacent, first])
+    forward_shared = gm.GeometryCollection([forward_nested, forward_nested])
+    reverse_shared = gm.GeometryCollection([reverse_nested, reverse_nested])
+    cases = [
+        (gm.GeometryCollection([first, adjacent]), (175.0, 5.0)),
+        (gm.GeometryCollection([adjacent, first]), (185.0, 5.0)),
+        (gm.MultiPolygon([first, disjoint]), (175.0, 5.0)),
+        (gm.MultiPolygon([disjoint, first]), (195.0, 5.0)),
+        (forward_shared, (175.0, 5.0)),
+        (reverse_shared, (185.0, 5.0)),
+    ]
+
+    for geometry, expected in cases:
+        point = geometry.point_on_surface()
+        assert (point.x, point.y) == expected
+        assert gm.covered_by(point, geometry)
+
+    geometries = [geometry for geometry, _ in cases]
+    result = gm.GeometryArray([*geometries, None]).point_on_surface()
+    assert result.is_missing.tolist() == [
+        False,
+        False,
+        False,
+        False,
+        False,
+        False,
+        True,
+    ]
+    assert [(result[index].x, result[index].y) for index in range(len(cases))] == [
+        expected for _, expected in cases
+    ]
+
+
+def test_equal_width_polygon_component_tie_keeps_each_holes_parity() -> None:
+    donut = _holed_donut()
+    equal_width = gm.box(20, 0, 23, 10)
+    collection = gm.GeometryCollection([donut, equal_width])
+
+    point = collection.point_on_surface()
+
+    assert (point.x, point.y) == (8.5, 5.0)
+    assert gm.covered_by(point, collection)
+    assert not gm.covers(gm.box(3, 3, 7, 7), point)
+
+
+def test_vertical_gap_uses_global_bisector_boundary_fallback() -> None:
+    collection = gm.GeometryCollection([gm.box(0, 0, 4, 2), gm.box(10, 8, 14, 10)])
+
+    point = collection.point_on_surface()
+
+    assert type(point) is gm.Point
+    assert gm.covered_by(point, collection.boundary())
+
+
 @pytest.mark.parametrize(
     'wkt',
     [

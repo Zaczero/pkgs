@@ -25,13 +25,16 @@ fn push_chord_crossings(xs: &[f64], ys: &[f64], mid: f64, crossings: &mut Vec<f6
     true
 }
 
-/// Finish the scanline interior point from sorted even-odd chord crossings.
-fn point_from_chord_crossings(crossings: &mut [f64], mid: f64) -> Option<Point> {
+/// Map the widest even-odd chord, retaining the existing later-chord tie rule.
+fn widest_even_odd_chord<R, F>(crossings: &mut [f64], map: F) -> Option<R>
+where
+    F: FnOnce(f64, f64) -> R,
+{
     if crossings.len() < 2 || !crossings.len().is_multiple_of(2) {
         return None;
     }
     crossings.sort_unstable_by(f64::total_cmp);
-    let [left, right] = crossings
+    let [start, end] = crossings
         .as_chunks::<2>()
         .0
         .iter()
@@ -41,7 +44,7 @@ fn point_from_chord_crossings(crossings: &mut [f64], mid: f64) -> Option<Point> 
             let [right_start, right_end] = *right;
             (left_end - left_start).total_cmp(&(right_end - right_start))
         })?;
-    Some(Point::new_raw_xy(f64::midpoint(left, right), mid))
+    Some(map(start, end))
 }
 
 /// Binary64 squared distance used only to rank on-geometry representative candidates.
@@ -74,7 +77,9 @@ fn point_on_surface_polygon_columns(
             return None;
         }
     }
-    point_from_chord_crossings(crossings, mid)
+    widest_even_odd_chord(crossings, |start, end| {
+        Point::new_raw_xy(f64::midpoint(start, end), mid)
+    })
 }
 
 /// Degenerate polygon fallback: arc-length midpoint of the longest boundary
@@ -122,14 +127,13 @@ pub(crate) fn point_on_surface_polygon_row_columns(
     point_on_surface_polygon_boundary_columns(xs, ys, ring_offsets, rings)
 }
 
-/// Interior representative of borrowed polygon components: the midpoint of
-/// the widest even-odd chord where the horizontal bisector of their combined
-/// bounding box crosses the boundary linework. The half-open crossing rule
-/// (`start_below != end_below`) keeps the parity consistent through
-/// vertices, exactly like the ring raycasts. Holes and all parts
-/// participate as plain edges, so the widest interval always lies inside
-/// some part and outside every hole. `None` falls back to the generic
-/// engine (degenerate zero-area input where the bisector finds no chord).
+/// Interior representative of borrowed polygon components. Scan each
+/// component's own rings at the horizontal bisector of their combined bounds,
+/// then keep the widest component chord, retaining the first component on a
+/// tie. The half-open crossing rule (`start_below != end_below`) keeps each
+/// component's even-odd parity consistent through vertices, including its
+/// holes. `None` falls back to the generic engine when the global bisector
+/// finds no chord or an interpolated crossing is unrepresentable.
 pub(crate) fn polygonal_surface_point<'a>(
     polygons: impl Iterator<Item = &'a Polygon> + Clone,
 ) -> Option<Point> {
@@ -142,14 +146,27 @@ pub(crate) fn polygonal_surface_point<'a>(
     let mut crossings: Vec<f64> = Vec::new();
     // Columnar chord scan: read each ring's coordinate windows directly —
     // no per-segment struct or visitor indirection on the 2n-compare loop.
+    let mut best: Option<(f64, f64, f64)> = None;
     for polygon in polygons {
+        crossings.clear();
         for ring in polygon.rings() {
             if !push_chord_crossings(ring.xs(), ring.ys(), mid, &mut crossings) {
                 return None;
             }
         }
+        let Some([start, end]) = widest_even_odd_chord(&mut crossings, |start, end| [start, end])
+        else {
+            continue;
+        };
+        let width = end - start;
+        if best
+            .as_ref()
+            .is_none_or(|(best_width, ..)| width.total_cmp(best_width).is_gt())
+        {
+            best = Some((width, start, end));
+        }
     }
-    point_from_chord_crossings(&mut crossings, mid)
+    best.map(|(_, start, end)| Point::new_raw_xy(f64::midpoint(start, end), mid))
 }
 
 /// Lineal representative from one coordinate run, preferring the interior
@@ -437,6 +454,72 @@ mod tests {
         ])
         .expect("test collection");
         assert_eq!(surface_xy(&collection), (12.0, 2.0));
+    }
+
+    #[test]
+    fn equal_width_polygon_components_keep_first_nested_shared_input_order() {
+        let first = box_polygon(170.0, 0.0, 180.0, 10.0);
+        let second = box_polygon(180.0, 0.0, 190.0, 10.0);
+
+        let forward_parts =
+            Shape::geometry_collection(vec![first.clone(), second.clone()]).expect("parts");
+        let forward = Shape::geometry_collection(vec![forward_parts.clone(), forward_parts])
+            .expect("forward");
+        assert_eq!(surface_xy(&forward), (175.0, 5.0));
+
+        let reverse_parts =
+            Shape::geometry_collection(vec![second, first]).expect("reversed parts");
+        let reverse = Shape::geometry_collection(vec![reverse_parts.clone(), reverse_parts])
+            .expect("reverse");
+        assert_eq!(surface_xy(&reverse), (185.0, 5.0));
+    }
+
+    #[test]
+    fn equal_width_component_tie_keeps_each_polygons_hole_parity() {
+        let donut = polygon(
+            &[
+                (0.0, 0.0),
+                (10.0, 0.0),
+                (10.0, 10.0),
+                (0.0, 10.0),
+                (0.0, 0.0),
+            ],
+            &[&[(3.0, 3.0), (7.0, 3.0), (7.0, 7.0), (3.0, 7.0), (3.0, 3.0)]],
+        );
+        let other = box_polygon(20.0, 0.0, 23.0, 10.0);
+        let collection = Shape::geometry_collection(vec![donut, other]).expect("collection");
+
+        assert_eq!(surface_xy(&collection), (8.5, 5.0));
+    }
+
+    #[test]
+    fn vertically_disjoint_polygons_keep_global_bisector_boundary_fallback() {
+        let first = box_polygon(0.0, 0.0, 4.0, 2.0);
+        let second = box_polygon(10.0, 8.0, 14.0, 10.0);
+        let (Shape::Polygon(first_polygon), Shape::Polygon(second_polygon)) = (&first, &second)
+        else {
+            unreachable!("test boxes are polygons");
+        };
+        assert!(polygonal_surface_point([first_polygon, second_polygon].into_iter()).is_none());
+
+        let collection = Shape::geometry_collection(vec![first, second]).expect("collection");
+        let (x, y) = surface_xy(&collection);
+        let point = xy(x, y);
+        let boundary = [
+            (xy(0.0, 0.0), xy(4.0, 0.0)),
+            (xy(4.0, 0.0), xy(4.0, 2.0)),
+            (xy(4.0, 2.0), xy(0.0, 2.0)),
+            (xy(0.0, 2.0), xy(0.0, 0.0)),
+            (xy(10.0, 8.0), xy(14.0, 8.0)),
+            (xy(14.0, 8.0), xy(14.0, 10.0)),
+            (xy(14.0, 10.0), xy(10.0, 10.0)),
+            (xy(10.0, 10.0), xy(10.0, 8.0)),
+        ];
+        assert!(
+            boundary
+                .into_iter()
+                .any(|(start, end)| point_on_segment(point, start, end))
+        );
     }
 
     #[test]
