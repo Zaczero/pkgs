@@ -948,18 +948,32 @@ impl Shape {
             });
     }
 
-    pub(crate) fn append_first_point_only(&self, identity: RunIdentity, out: &mut Vec<Point>) {
-        let ControlFlow::Continue(()): ControlFlow<Infallible> = self
-            .for_each_first_point_only_run(identity, |run| {
-                match run {
-                    PointOnlyRun::Point(point) => out.push(point),
-                    PointOnlyRun::MultiPoint(points) => {
-                        out.reserve(points.coord_count());
-                        out.extend(points);
-                    },
-                }
-                ControlFlow::Continue(())
-            });
+    /// Append selected point-only runs, checking count overflow before reserving.
+    ///
+    /// Allocation failure retains Vec's fatal behavior.
+    pub(crate) fn try_append_first_point_only(
+        &self,
+        identity: RunIdentity,
+        out: &mut Vec<Point>,
+    ) -> Result<()> {
+        match self.for_each_first_point_only_run(identity, |run| {
+            let additional = match run {
+                PointOnlyRun::Point(_) => 1,
+                PointOnlyRun::MultiPoint(points) => points.coord_count(),
+            };
+            if out.len().checked_add(additional).is_none() {
+                return ControlFlow::Break(crate::error::ResourceError::SizeOverflow);
+            }
+            out.reserve(additional);
+            match run {
+                PointOnlyRun::Point(point) => out.push(point),
+                PointOnlyRun::MultiPoint(points) => out.extend(points),
+            }
+            ControlFlow::Continue(())
+        }) {
+            ControlFlow::Continue(()) => Ok(()),
+            ControlFlow::Break(error) => Err(error.into()),
+        }
     }
 
     pub(crate) fn try_for_each_first_point_only<B>(

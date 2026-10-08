@@ -15,7 +15,7 @@ impl Shape {
     /// sweep.
     pub(crate) fn distance_parts(&self) -> Result<DistanceParts> {
         Ok(DistanceParts {
-            point_only: self.point_only_points(),
+            point_only: self.point_only_points()?,
             linework: PreparedLinework::build(self)?,
             // Deferred: the two column scans are paid on first DISTANCE use, not
             // at build — the CONTACT path (overlaps/touches/…) never reads it.

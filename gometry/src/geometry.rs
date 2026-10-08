@@ -578,10 +578,10 @@ impl Shape {
         }
     }
 
-    fn point_only_points(&self) -> Vec<Point> {
+    fn point_only_points(&self) -> Result<Vec<Point>> {
         let mut points = Vec::new();
-        self.append_first_point_only(RunIdentity::Full, &mut points);
-        points
+        self.try_append_first_point_only(RunIdentity::Full, &mut points)?;
+        Ok(points)
     }
 
     #[cfg(test)]
