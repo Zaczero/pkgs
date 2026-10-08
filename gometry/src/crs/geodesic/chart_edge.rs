@@ -584,8 +584,8 @@ impl ChartEdge {
             return self.finite_length(total * t);
         }
         if let Some(meridian) = self.meridian {
-            let position = self.geodetic_position(t)?;
             work.charge(1)?;
+            let position = self.geodetic_position(t)?;
             return self.finite_length(super::inverse_distance(
                 geodesic,
                 meridian.longitude,
