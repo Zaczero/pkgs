@@ -5,12 +5,13 @@
 
 use smol_str::SmolStr;
 
+use crate::crs::geodesic::AuthalicSeries;
 use crate::crs::{
-    AuthorityObjectInfo, CacheBucketInfo, CacheInfo, CelestialBodyInfo, Confidence, CrsCatalogInfo,
-    CrsCatalogOptions, CrsComparison, CrsError, CrsInfo, CrsProjJsonOptions, CrsProjOptions,
-    CrsSearchOptions, CrsWktOptions, Geodesic, IdentifyCandidate, OperationInfo, ProjObject,
-    ProjPipeline, ProjStringVersion, RefCell, RuntimeState, TransformExecution, TransformFailure,
-    TransformOptions, UnitInfo, WktVersion, preserve_resource_error, runtime,
+    AuthorityObjectInfo, CacheBucketInfo, CacheInfo, CelestialBodyInfo, Confidence,
+    CrsCatalogInfo, CrsCatalogOptions, CrsComparison, CrsError, CrsInfo, CrsProjJsonOptions,
+    CrsProjOptions, CrsSearchOptions, CrsWktOptions, Geodesic, IdentifyCandidate, OperationInfo,
+    ProjObject, ProjPipeline, ProjStringVersion, RefCell, RuntimeState, TransformExecution,
+    TransformFailure, TransformOptions, UnitInfo, WktVersion, preserve_resource_error, runtime,
     runtime_state_snapshot,
 };
 use crate::error::Result;
@@ -127,7 +128,7 @@ pub(super) struct CachedProjectionFactorsObject {
 pub(super) struct CachedGeodesicObject {
     pub definition: String,
     pub object: Geodesic,
-    pub authalic_series: crate::crs::geodesic::AuthalicSeries,
+    pub authalic_series: AuthalicSeries,
 }
 
 pub(in crate::crs) struct CachedRhumbEllipsoid {

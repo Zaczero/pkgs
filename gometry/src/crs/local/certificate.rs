@@ -1232,7 +1232,7 @@ mod certificate_math {
 
     #[cfg(test)]
     mod tests {
-        use super::super::{LocalProjectionCertificate, ProjectionCertificate};
+        use super::super::{LocalCrsDefinition, LocalProjectionCertificate, ProjectionCertificate};
         use super::*;
 
         #[test]
@@ -1243,7 +1243,7 @@ mod certificate_math {
                 .geographic_frame()
                 .unwrap();
             let geodesic = crate::crs::geodesic_for_crs_at("EPSG:4326", &state).unwrap();
-            let local = crate::crs::local::frame::LocalCrsDefinition {
+            let local = LocalCrsDefinition {
                 definition: "EPSG:32631".to_owned(),
                 display_name: None,
                 projected_pole: None,
