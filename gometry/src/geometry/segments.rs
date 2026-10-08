@@ -369,9 +369,18 @@ pub(in crate::geometry) fn try_sort_by<T>(
     for run in items.chunks_mut(RUN) {
         for index in 1..run.len() {
             let mut cursor = index;
-            while cursor > 0 && compare(&run[cursor - 1], &run[cursor])? == Ordering::Greater {
-                run.swap(cursor - 1, cursor);
-                cursor -= 1;
+            while cursor > 0 {
+                let previous = cursor.wrapping_sub(1);
+                #[expect(
+                    clippy::indexing_slicing,
+                    reason = "previous and cursor are adjacent indices within this admitted RUN16 slice"
+                )]
+                let ordering = compare(&run[previous], &run[cursor])?;
+                if ordering != Ordering::Greater {
+                    break;
+                }
+                run.swap(previous, cursor);
+                cursor = previous;
             }
         }
     }
@@ -385,35 +394,60 @@ pub(in crate::geometry) fn try_sort_by<T>(
     merged.resize(len, 0);
     let mut width = RUN;
     while width < len {
-        for start in (0..len).step_by(2 * width) {
-            let middle = (start + width).min(len);
-            let end = (start + 2 * width).min(len);
-            let (mut left, mut right) = (start, middle);
-            for slot in &mut merged[start..end] {
+        // Successful allocation of both usize buffers bounds each doubling,
+        // including the final width update, below usize::MAX.
+        let stride = width.wrapping_mul(2);
+        for (source_run, output_run) in order.chunks(stride).zip(merged.chunks_mut(stride)) {
+            let left_len = width.min(source_run.len());
+            let (mut left, mut right) = source_run.split_at(left_len);
+            for slot in output_run {
                 // Only a strictly smaller right item overtakes: ties keep
-                // their input order.
-                let take_right = left == middle
-                    || (right < end
-                        && compare(&items[order[left]], &items[order[right]])?
-                            == Ordering::Greater);
-                *slot = if take_right {
-                    right += 1;
-                    order[right - 1]
+                // their input order. Suffixes also handle the final short run
+                // without offset arithmetic.
+                if let Some((left_id, left_rest)) = left.split_first() {
+                    if let Some((right_id, right_rest)) = right.split_first() {
+                        #[expect(
+                            clippy::indexing_slicing,
+                            reason = "merge ordinals are the admitted permutation initialized from this exact item slice"
+                        )]
+                        let ordering = compare(&items[*left_id], &items[*right_id])?;
+                        if ordering == Ordering::Greater {
+                            right = right_rest;
+                            *slot = *right_id;
+                        } else {
+                            left = left_rest;
+                            *slot = *left_id;
+                        }
+                    } else {
+                        left = left_rest;
+                        *slot = *left_id;
+                    }
                 } else {
-                    left += 1;
-                    order[left - 1]
-                };
+                    let (right_id, right_rest) = right
+                        .split_first()
+                        .expect("each merge output slot has a remaining run head");
+                    right = right_rest;
+                    *slot = *right_id;
+                }
             }
         }
         std::mem::swap(&mut order, &mut merged);
-        width *= 2;
+        width = width.wrapping_mul(2);
     }
     // Position `k` takes the item at `order[k]`; each cycle is walked once.
     for start in 0..len {
         let mut current = start;
-        while order[current] != current {
-            let source = order[current];
-            order[current] = current;
+        loop {
+            #[expect(
+                clippy::indexing_slicing,
+                reason = "current is admitted by the cycle walk over the same initialized order permutation"
+            )]
+            let entry = &mut order[current];
+            let source = *entry;
+            if source == current {
+                break;
+            }
+            *entry = current;
             if source == start {
                 break;
             }

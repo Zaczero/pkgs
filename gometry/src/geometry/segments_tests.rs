@@ -1,3 +1,4 @@
+use crate::error::ErrorKind;
 use crate::geometry::segments::{
     EXACT_SELECTION_FALLBACKS, clip_segment_rect_interval, compare_along_segment,
     segment_nearest_points,
@@ -1192,6 +1193,48 @@ fn fallible_sort_is_stable_and_matches_the_standard_sort() {
         try_sort_by(&mut sorted, |left, right| Ok(left.0.cmp(&right.0))).unwrap();
         assert_eq!(sorted, expected, "length {len}");
     }
+
+    let mut tied = [
+        (1, 'A'),
+        (1, 'B'),
+        (1, 'C'),
+        (1, 'D'),
+        (1, 'E'),
+        (1, 'F'),
+        (1, 'G'),
+        (1, 'H'),
+        (2, 'I'),
+        (2, 'J'),
+        (2, 'K'),
+        (2, 'L'),
+        (2, 'M'),
+        (2, 'N'),
+        (2, 'O'),
+        (2, 'P'),
+        (1, 'Q'),
+        (2, 'R'),
+    ];
+    try_sort_by(&mut tied, |left, right| Ok(left.0.cmp(&right.0))).unwrap();
+    assert_eq!(tied, [
+        (1, 'A'),
+        (1, 'B'),
+        (1, 'C'),
+        (1, 'D'),
+        (1, 'E'),
+        (1, 'F'),
+        (1, 'G'),
+        (1, 'H'),
+        (1, 'Q'),
+        (2, 'I'),
+        (2, 'J'),
+        (2, 'K'),
+        (2, 'L'),
+        (2, 'M'),
+        (2, 'N'),
+        (2, 'O'),
+        (2, 'P'),
+        (2, 'R'),
+    ]);
 }
 
 #[test]
@@ -1207,4 +1250,124 @@ fn fallible_sort_stops_at_the_first_comparison_error() {
     });
     assert!(result.is_err());
     assert_eq!(comparisons, 40);
+}
+
+#[test]
+fn fallible_sort_stops_at_a_merge_error_with_a_valid_item_permutation() {
+    let mut items = [
+        (1_u8, 101_u16),
+        (3, 102),
+        (5, 103),
+        (7, 104),
+        (9, 105),
+        (11, 106),
+        (13, 107),
+        (15, 108),
+        (17, 109),
+        (19, 110),
+        (21, 111),
+        (23, 112),
+        (25, 113),
+        (27, 114),
+        (29, 115),
+        (31, 116),
+        (0, 201),
+        (2, 202),
+        (4, 203),
+        (6, 204),
+        (8, 205),
+        (10, 206),
+        (12, 207),
+        (14, 208),
+        (16, 209),
+        (18, 210),
+        (20, 211),
+        (22, 212),
+        (24, 213),
+        (26, 214),
+        (28, 215),
+        (30, 216),
+    ];
+    let expected_records = [
+        (1, 101),
+        (3, 102),
+        (5, 103),
+        (7, 104),
+        (9, 105),
+        (11, 106),
+        (13, 107),
+        (15, 108),
+        (17, 109),
+        (19, 110),
+        (21, 111),
+        (23, 112),
+        (25, 113),
+        (27, 114),
+        (29, 115),
+        (31, 116),
+        (0, 201),
+        (2, 202),
+        (4, 203),
+        (6, 204),
+        (8, 205),
+        (10, 206),
+        (12, 207),
+        (14, 208),
+        (16, 209),
+        (18, 210),
+        (20, 211),
+        (22, 212),
+        (24, 213),
+        (26, 214),
+        (28, 215),
+        (30, 216),
+    ];
+    let mut observed_merge_pairs = Vec::new();
+    let mut error_observed = false;
+    let mut post_error_comparisons = 0;
+
+    let result = try_sort_by(&mut items, |left, right| {
+        if error_observed {
+            post_error_comparisons += 1;
+            return Err(GeometryErrorKind::voronoi("comparison after merge error"));
+        }
+        let cross_run = (101..=116).contains(&left.1) && (201..=216).contains(&right.1);
+        if cross_run {
+            let pair = (left.1, right.1);
+            observed_merge_pairs.push(pair);
+            if (left.0, left.1, right.0, right.1) == (3, 102, 2, 202) {
+                error_observed = true;
+                return Err(GeometryErrorKind::voronoi("merge comparator stop"));
+            }
+        }
+        Ok(left.0.cmp(&right.0))
+    });
+
+    let error = result.expect_err("the selected cross-run comparison must fail");
+    assert!(matches!(
+        error.kind(),
+        ErrorKind::Geometry(GeometryErrorKind::Voronoi(message))
+            if message.as_ref() == "merge comparator stop"
+    ));
+    assert!(
+        error_observed,
+        "the comparator must reach the merge error pair"
+    );
+    assert_eq!(observed_merge_pairs, [(101, 201), (101, 202), (102, 202)]);
+    assert_eq!(
+        post_error_comparisons, 0,
+        "the first comparator error must stop further callback calls"
+    );
+
+    assert_eq!(items.len(), expected_records.len());
+    for (key, source_tag) in expected_records {
+        assert_eq!(
+            items
+                .iter()
+                .filter(|record| **record == (key, source_tag))
+                .count(),
+            1,
+            "record ({key}, {source_tag})"
+        );
+    }
 }
