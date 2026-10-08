@@ -226,6 +226,9 @@ def test_internal_transform_error_preserves_error_and_consumes_diagnostic() -> N
     assert error.value.source == 'EPSG:4267'
     assert error.value.target == 'EPSG:4326'
     assert 'while processing array element 1' in error.value.__notes__
+    assert 'latitude 9.1e1 is outside the geographic coordinate domain' in str(
+        error.value
+    )
     assert not [item for item in seen if item.category is gm.AccuracyWarning]
 
 
