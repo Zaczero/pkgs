@@ -175,6 +175,27 @@ pub(crate) fn publish_raw_computed_shape_with_budget(
     })
 }
 
+pub(crate) fn publish_raw_computed_shape_with_budget_and_context(
+    shape: &Shape,
+    frame: GeographicFrame,
+    source_context: SourceArcContext<'_, '_, crate::crs::GeodesicMetric>,
+    budget: &mut ExpansionBudget,
+) -> Result<Shape> {
+    map_computed_shape_chains(shape, shape, |_, coords, closed| {
+        publish_native_computed_chain(
+            frame,
+            coords,
+            closed,
+            budget,
+            source_context,
+            |_, start, end| {
+                ComputedEdgeIntent::retained_binary64_pair(frame.longitude(), [start.x, end.x])
+            },
+            |_, _| ComputedVertexIntent::Canonical,
+        )
+    })
+}
+
 pub(crate) fn publish_transformed_shape(
     shape: &Shape,
     frame: GeographicFrame,
@@ -203,27 +224,31 @@ pub(crate) fn publish_transformed_shape(
     }
 }
 
-pub(crate) fn publish_raw_computed_shapes(
+pub(crate) fn publish_raw_computed_shapes_with_context(
     shapes: &[Shape],
     frame: GeographicFrame,
     operation: &'static str,
+    source_context: SourceArcContext<'_, '_, crate::crs::GeodesicMetric>,
 ) -> Result<Vec<Shape>> {
     let mut budget = ExpansionBudget::new(operation, "computed edges");
     let mut counts = ShapeCountQuery::default();
     for shape in shapes {
         budget.add(counts.coordinates(shape)?)?;
     }
-    publish_raw_computed_shapes_with_budget(shapes, frame, &mut budget)
+    publish_raw_computed_shapes_with_budget_and_context(shapes, frame, source_context, &mut budget)
 }
 
-pub(crate) fn publish_raw_computed_shapes_with_budget(
+pub(crate) fn publish_raw_computed_shapes_with_budget_and_context(
     shapes: &[Shape],
     frame: GeographicFrame,
+    source_context: SourceArcContext<'_, '_, crate::crs::GeodesicMetric>,
     budget: &mut ExpansionBudget,
 ) -> Result<Vec<Shape>> {
     shapes
         .iter()
-        .map(|shape| publish_raw_computed_shape_with_budget(shape, frame, budget))
+        .map(|shape| {
+            publish_raw_computed_shape_with_budget_and_context(shape, frame, source_context, budget)
+        })
         .collect()
 }
 
@@ -333,6 +358,7 @@ impl PublishedTriangleVertices {
 pub(crate) fn publish_triangle_vertex_stream_budgeted(
     vertices: &[crate::geometry::Point],
     frame: GeographicFrame,
+    source_context: SourceArcContext<'_, '_, crate::crs::GeodesicMetric>,
     budget: &mut ExpansionBudget,
 ) -> Result<PublishedTriangleVertices> {
     if !vertices.len().is_multiple_of(4) {
@@ -345,9 +371,17 @@ pub(crate) fn publish_triangle_vertex_stream_budgeted(
     let mut points = Vec::with_capacity(vertices.len());
     let mut ring_ends = Vec::with_capacity(count);
     for ring in vertices.as_chunks::<4>().0 {
-        match publish_computed_chain(frame, ring.as_slice(), true, budget, |_, start, end| {
-            ComputedEdgeIntent::retained_binary64_pair(frame.longitude(), [start.x, end.x])
-        })? {
+        match publish_native_computed_chain(
+            frame,
+            ring.as_slice(),
+            true,
+            budget,
+            source_context,
+            |_, start, end| {
+                ComputedEdgeIntent::retained_binary64_pair(frame.longitude(), [start.x, end.x])
+            },
+            |_, _| ComputedVertexIntent::Canonical,
+        )? {
             Some(published) => points.extend(published),
             None => points.extend_from_slice(ring),
         }
@@ -377,11 +411,37 @@ pub(crate) fn publish_stored_computed_shape(
     })
 }
 
-pub(crate) fn publish_polygon_with_edge_roles(
+fn publish_polygon_with_edge_roles(
     polygon: &Polygon,
     computed_edges: &[Vec<bool>],
     frame: GeographicFrame,
     budget: &mut ExpansionBudget,
+) -> Result<Polygon> {
+    publish_polygon_with_edge_roles_inner(polygon, computed_edges, frame, budget, None)
+}
+
+pub(crate) fn publish_polygon_with_edge_roles_and_context(
+    polygon: &Polygon,
+    computed_edges: &[Vec<bool>],
+    frame: GeographicFrame,
+    source_context: SourceArcContext<'_, '_, crate::crs::GeodesicMetric>,
+    budget: &mut ExpansionBudget,
+) -> Result<Polygon> {
+    publish_polygon_with_edge_roles_inner(
+        polygon,
+        computed_edges,
+        frame,
+        budget,
+        Some(source_context),
+    )
+}
+
+fn publish_polygon_with_edge_roles_inner(
+    polygon: &Polygon,
+    computed_edges: &[Vec<bool>],
+    frame: GeographicFrame,
+    budget: &mut ExpansionBudget,
+    source_context: Option<SourceArcContext<'_, '_, crate::crs::GeodesicMetric>>,
 ) -> Result<Polygon> {
     if polygon.rings().count() != computed_edges.len() {
         return Err(GeometryErrorKind::message(
@@ -401,45 +461,58 @@ pub(crate) fn publish_polygon_with_edge_roles(
             continue;
         }
         let edge_count = computed_edges.len();
-        let published = publish_computed_chain_with_vertex_intents(
-            frame,
-            points,
-            true,
-            budget,
-            |index, start, end| {
-                if *computed_edges
-                    .get(index)
-                    .expect("publication edge belongs to its polygon role inventory")
-                {
-                    ComputedEdgeIntent::retained_binary64_pair(frame.longitude(), [start.x, end.x])
-                } else {
-                    let delta = frame
-                        .longitude()
-                        .chart_step(start.x, end.x)
-                        .map_err(|error| GeometryErrorKind::Invalid(error.to_string().into()))?
-                        .delta(frame.longitude());
-                    Ok(ComputedEdgeIntent::preserved(delta == 0.0))
-                }
-            },
-            |index, _| {
-                let touches_preserved_edge = if index == 0 || index == edge_count {
-                    !*computed_edges.first().expect("nonempty role inventory")
-                        || !*computed_edges.last().expect("nonempty role inventory")
-                } else {
-                    !*computed_edges
-                        .get(index.wrapping_sub(1))
-                        .expect("incoming vertex edge belongs to its polygon role inventory")
-                        || !*computed_edges
-                            .get(index)
-                            .expect("outgoing vertex edge belongs to its polygon role inventory")
-                };
-                if touches_preserved_edge {
-                    ComputedVertexIntent::Preserved
-                } else {
-                    ComputedVertexIntent::Canonical
-                }
-            },
-        )?;
+        let intent = |index, start: crate::geometry::Point, end: crate::geometry::Point| {
+            if *computed_edges
+                .get(index)
+                .expect("publication edge belongs to its polygon role inventory")
+            {
+                ComputedEdgeIntent::retained_binary64_pair(frame.longitude(), [start.x, end.x])
+            } else {
+                let delta = frame
+                    .longitude()
+                    .chart_step(start.x, end.x)
+                    .map_err(|error| GeometryErrorKind::Invalid(error.to_string().into()))?
+                    .delta(frame.longitude());
+                Ok(ComputedEdgeIntent::preserved(delta == 0.0))
+            }
+        };
+        let vertex_intent = |index: usize, _: crate::geometry::Point| {
+            let touches_preserved_edge = if index == 0 || index == edge_count {
+                !*computed_edges.first().expect("nonempty role inventory")
+                    || !*computed_edges.last().expect("nonempty role inventory")
+            } else {
+                !*computed_edges
+                    .get(index.wrapping_sub(1))
+                    .expect("incoming vertex edge belongs to its polygon role inventory")
+                    || !*computed_edges
+                        .get(index)
+                        .expect("outgoing vertex edge belongs to its polygon role inventory")
+            };
+            if touches_preserved_edge {
+                ComputedVertexIntent::Preserved
+            } else {
+                ComputedVertexIntent::Canonical
+            }
+        };
+        let published = match source_context {
+            Some(source_context) => publish_native_computed_chain(
+                frame,
+                points,
+                true,
+                budget,
+                source_context,
+                intent,
+                vertex_intent,
+            )?,
+            None => publish_computed_chain_with_vertex_intents(
+                frame,
+                points,
+                true,
+                budget,
+                intent,
+                vertex_intent,
+            )?,
+        };
         published_rings.push(match published {
             Some(points) => Ring::try_from_closed(CoordSeq::try_from_points(&points)?)?,
             None => ring.clone(),
@@ -478,7 +551,6 @@ pub(crate) fn publish_changed_raw_computed_shape<'metric, M: ChartMetric + 'metr
     source_context: SourceArcContext<'_, 'metric, M>,
     budget: &mut ExpansionBudget,
 ) -> Result<Shape> {
-    let metric_access = source_context.metric_access();
     let mut chain_index = 0_usize;
     let published = map_computed_shape_chains(source, output, |source, output, closed| {
         let preserved = preserved_vertices.get(chain_index).ok_or_else(|| {
@@ -497,14 +569,12 @@ pub(crate) fn publish_changed_raw_computed_shape<'metric, M: ChartMetric + 'metr
                 "computed vertex provenance is not an ordered coordinate subset",
             ));
         }
-        let mut active_root = None;
-        let mut root_metric_state = RootMetricState::default();
-        let mut work = Unmetered;
-        publish_computed_chain_with_vertex_intents_and_samples(
+        publish_native_computed_chain(
             frame,
             output,
             closed,
             budget,
+            source_context,
             |_, start, end| {
                 ComputedEdgeIntent::retained_binary64_pair(frame.longitude(), [start.x, end.x])
             },
@@ -515,36 +585,6 @@ pub(crate) fn publish_changed_raw_computed_shape<'metric, M: ChartMetric + 'metr
                     ComputedVertexIntent::Canonical
                 }
             },
-            |root, endpoints, relation, parameter, _retained| {
-                if active_root != Some(root) {
-                    active_root = Some(root);
-                    root_metric_state = RootMetricState::default();
-                }
-                let ComputedLongitudeRelation::Native(longitude) = *relation else {
-                    return Err(GeometryErrorKind::message(
-                        "changed raw output requires a retained Native chart edge",
-                    )
-                    .into());
-                };
-                computed_native_sample_ordinates(
-                    frame,
-                    &endpoints,
-                    longitude,
-                    parameter,
-                    output.axes(),
-                    || {
-                        let metric_access = metric_access.ok_or_else(|| {
-                            crate::crs::CrsError::invalid(
-                                "geographic computed-edge source ordinates require the operation's CRS metric",
-                            )
-                        })?;
-                        metric_access()
-                    },
-                    &mut root_metric_state,
-                    &mut work,
-                )
-            },
-            |_, _, _, _, _, _| Ok(()),
         )
     })?;
     if chain_index != preserved_vertices.len() {
@@ -553,6 +593,70 @@ pub(crate) fn publish_changed_raw_computed_shape<'metric, M: ChartMetric + 'metr
         ));
     }
     Ok(published)
+}
+
+fn publish_native_computed_chain<'intent, 'metric, P, M>(
+    frame: GeographicFrame,
+    points: &P,
+    closed_ring: bool,
+    budget: &mut ExpansionBudget,
+    source_context: SourceArcContext<'_, 'metric, M>,
+    intent: impl Fn(
+        usize,
+        crate::geometry::Point,
+        crate::geometry::Point,
+    ) -> Result<ComputedEdgeIntent<'intent>>,
+    vertex_intent: impl Fn(usize, crate::geometry::Point) -> ComputedVertexIntent,
+) -> Result<Option<Vec<crate::geometry::Point>>>
+where
+    P: crate::geometry::Coordinates + ?Sized,
+    M: ChartMetric + 'metric,
+{
+    let metric_access = source_context.metric_access();
+    let axes = points
+        .first_coord()
+        .map_or(crate::geometry::CoordinateAxes::XY, |point| point.axes);
+    let mut active_root = None;
+    let mut root_metric_state = RootMetricState::default();
+    let mut work = Unmetered;
+    publish_computed_chain_with_vertex_intents_and_samples(
+        frame,
+        points,
+        closed_ring,
+        budget,
+        intent,
+        vertex_intent,
+        |root, endpoints, relation, parameter, _retained| {
+            if active_root != Some(root) {
+                active_root = Some(root);
+                root_metric_state = RootMetricState::default();
+            }
+            let ComputedLongitudeRelation::Native(longitude) = *relation else {
+                return Err(GeometryErrorKind::message(
+                    "computed Native output requires a retained Native chart edge",
+                )
+                .into());
+            };
+            computed_native_sample_ordinates(
+                frame,
+                &endpoints,
+                longitude,
+                parameter,
+                axes,
+                || {
+                    let metric_access = metric_access.ok_or_else(|| {
+                        crate::crs::CrsError::invalid(
+                            "geographic computed-edge source ordinates require the operation's CRS metric",
+                        )
+                    })?;
+                    metric_access()
+                },
+                &mut root_metric_state,
+                &mut work,
+            )
+        },
+        |_, _, _, _, _, _| Ok(()),
+    )
 }
 
 fn same_coordinates(left: &CoordSeq, right: &CoordSeq) -> bool {
@@ -696,7 +800,7 @@ mod tests {
     use super::{
         TransformedChartEdgeProvider, map_transformed_shape_chains,
         publish_changed_raw_computed_shape, publish_polygon_with_edge_roles,
-        publish_raw_computed_shape,
+        publish_raw_computed_shape, publish_triangle_vertex_stream_budgeted,
     };
     use crate::geographic::GeographicFrame;
     use crate::geometry::{
@@ -870,6 +974,99 @@ mod tests {
             Point::new_raw_xy(135.0, 30.0),
             Point::new_raw_xy(-100.0, 40.0),
         ]);
+    }
+
+    #[test]
+    fn triangle_stream_publisher_carries_inserted_native_samples_by_ellipsoidal_arclength() {
+        const CRS: &str = "+proj=longlat +a=7000000 +rf=150 +type=crs";
+        let state = crate::crs::runtime_state_snapshot().unwrap();
+        let model = crate::crs::metric_model_at(Some(CRS), &state).unwrap();
+        let crate::crs::ResolvedMetric::Geodesic(metric) =
+            crate::crs::ResolvedMetric::from_model(&model).unwrap()
+        else {
+            panic!("the custom longlat CRS has a geodesic metric");
+        };
+        let frame = metric.frame;
+        let first =
+            Point::new_axes(760.0, 45.0, ZOrdinate(Some(35.25)), MOrdinate(Some(551.0))).unwrap();
+        let second =
+            Point::new_axes(1035.0, 72.5, ZOrdinate(Some(49.5)), MOrdinate(Some(726.0))).unwrap();
+        let third =
+            Point::new_axes(900.0, 90.0, ZOrdinate(Some(61.0)), MOrdinate(Some(901.0))).unwrap();
+        let vertices = [first, second, third, first];
+
+        let metric_accesses = std::sync::atomic::AtomicUsize::new(0);
+        let metric_access = || {
+            metric_accesses.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            Ok(&metric)
+        };
+        let context =
+            SourceArcContext::new(TopologyDomain::Geographic(frame), Some(&metric_access));
+        let mut budget = ExpansionBudget::new("triangulate", "method");
+        budget.add(vertices.len()).unwrap();
+        let published =
+            publish_triangle_vertex_stream_budgeted(&vertices, frame, context, &mut budget)
+                .unwrap();
+
+        assert_eq!(published.ring_ends, [5]);
+        assert_eq!(
+            metric_accesses.load(std::sync::atomic::Ordering::Relaxed),
+            1
+        );
+        assert_eq!(
+            published.points.first().copied(),
+            Some(
+                Point::new_axes(40.0, 45.0, ZOrdinate(Some(35.25)), MOrdinate(Some(551.0)))
+                    .unwrap()
+            )
+        );
+        assert_eq!(published.points.last(), published.points.first());
+        let sample = published
+            .points
+            .iter()
+            .find(|point| point.x == 177.5 && point.y == 58.75)
+            .expect("the 275-degree triangle edge is subdivided at its midpoint");
+        assert!((sample.z().unwrap() - 43.730_417_185_196_416).abs() <= 2.0e-8);
+        assert!((sample.m().unwrap() - 655.145_474_204_166_5).abs() <= 2.0e-7);
+
+        let xy_vertices = [
+            Point::new_raw_xy(760.0, 45.0),
+            Point::new_raw_xy(1035.0, 72.5),
+            Point::new_raw_xy(900.0, 90.0),
+            Point::new_raw_xy(760.0, 45.0),
+        ];
+        let xy_metric_accesses = std::sync::atomic::AtomicUsize::new(0);
+        let xy_metric_access = || {
+            xy_metric_accesses.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            Ok(&metric)
+        };
+        let xy_context =
+            SourceArcContext::new(TopologyDomain::Geographic(frame), Some(&xy_metric_access));
+        let mut xy_budget = ExpansionBudget::new("triangulate", "method");
+        xy_budget.add(xy_vertices.len()).unwrap();
+        let xy_published = publish_triangle_vertex_stream_budgeted(
+            &xy_vertices,
+            frame,
+            xy_context,
+            &mut xy_budget,
+        )
+        .unwrap();
+        assert_eq!(
+            xy_metric_accesses.load(std::sync::atomic::Ordering::Relaxed),
+            0
+        );
+        assert_eq!(
+            published
+                .points
+                .iter()
+                .map(|point| (point.x, point.y))
+                .collect::<Vec<_>>(),
+            xy_published
+                .points
+                .iter()
+                .map(|point| (point.x, point.y))
+                .collect::<Vec<_>>()
+        );
     }
 
     #[test]

@@ -108,9 +108,9 @@ pub(crate) use computed_shape::{
     PolygonPartEdgeRoles, PublishedTriangleVertices, map_computed_shape_chains,
     publish_changed_raw_computed_shape, publish_computed_line_column_with_budget,
     publish_computed_point_or_raw_shape, publish_computed_polygon_rings_with_budget,
-    publish_polygon_parts_with_edge_roles, publish_polygon_with_edge_roles,
+    publish_polygon_parts_with_edge_roles, publish_polygon_with_edge_roles_and_context,
     publish_raw_computed_shape, publish_raw_computed_shape_with_budget,
-    publish_raw_computed_shapes, publish_raw_computed_shapes_with_budget,
+    publish_raw_computed_shapes_with_budget_and_context, publish_raw_computed_shapes_with_context,
     publish_stored_computed_shape, publish_transformed_shape,
     publish_triangle_vertex_stream_budgeted, publish_voronoi_polygon_outputs,
 };
@@ -201,7 +201,7 @@ use constructive::{
 };
 pub(crate) use coverage::{
     CoverageOverlapRule, HashMapExt, coverage_clean, coverage_invalid_edges, coverage_is_valid,
-    coverage_simplify_with_frame, coverage_union_topo,
+    coverage_simplify_with_context, coverage_union_topo,
 };
 pub(in crate::geometry) use coverage::{TopologyGuard, simplify_chain_guarded, triangle_area};
 use distance::line_length_3d;

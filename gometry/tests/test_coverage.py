@@ -459,6 +459,42 @@ def test_coverage_simplify_walks_open_exterior_chains(
     ]
 
 
+def test_geographic_coverage_simplifier_carries_inserted_zm_by_ellipsoidal_arclength() -> (
+    None
+):
+    crs = '+proj=longlat +a=7000000 +rf=150 +type=crs'
+    ring = [
+        (0.0, 45.0, 35.25, 551.0),
+        (90.0, 54.0, 40.0, 600.0),
+        (180.0, 63.0, 45.0, 675.0),
+        (275.0, 72.5, 49.5, 726.0),
+        (275.0, 82.5, 60.0, 800.0),
+        (180.0, 73.0, 55.0, 775.0),
+        (90.0, 64.0, 50.0, 650.0),
+        (0.0, 55.0, 45.0, 600.0),
+        (0.0, 45.0, 35.25, 551.0),
+    ]
+    source = gm.Polygon(ring, crs=crs)
+
+    simplified = gm.coverage_simplify(source, 0.1, method='vw')
+    coordinates = list(simplified[0].exterior.coords)
+    sample = next(
+        coordinate for coordinate in coordinates if coordinate[:2] == (137.5, 58.75)
+    )
+    assert math.isclose(sample[2], 43.730_417_185_196_416, abs_tol=2.0e-8)
+    assert math.isclose(sample[3], 655.145_474_204_166_5, abs_tol=2.0e-7)
+    assert not math.isclose(sample[2], 42.375, abs_tol=1.0e-6)
+    assert not math.isclose(sample[3], 638.5, abs_tol=1.0e-6)
+    assert coordinates[0] == (0.0, 45.0, 35.25, 551.0)
+    assert coordinates[-1] == coordinates[0]
+
+    xy_source = gm.Polygon([(x, y) for x, y, *_ in ring], crs=crs)
+    xy_simplified = gm.coverage_simplify(xy_source, 0.1, method='vw')
+    assert [(x, y) for x, y, *_ in coordinates] == list(
+        xy_simplified[0].exterior.coords
+    )
+
+
 def test_coverage_simplify_preserves_topology() -> None:
     left = gm.from_wkt(
         'POLYGON ((0 0, 1 0, 1.05 0.25, 0.95 0.5, 1.05 0.75, 1 1, 0 1, 0 0))'

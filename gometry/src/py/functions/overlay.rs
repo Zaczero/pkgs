@@ -814,17 +814,24 @@ pub(crate) fn coverage_simplify(
     simplify_boundary: bool,
 ) -> PyResult<PyGeometryArray> {
     let (shapes, metadata, source) = coverage_values(values)?;
-    let geographic_frame = match geometry::topology_domain(&metadata)? {
-        geometry::TopologyDomain::Geographic(frame) => Some(frame),
-        geometry::TopologyDomain::Cartesian => None,
-    };
+    let mut metric_scratch = crate::dispatch::MetricScratch::default();
+    let (domain, metric) = crate::dispatch::MetricResolver::GeographicCarry
+        .resolve_topology_ctx(&metadata, &mut metric_scratch)?;
     let rows = py.detach(move || {
-        geometry::coverage_simplify_with_frame(
+        let metric_access = || {
+            metric.geographic_chart_metric()?.ok_or_else(|| {
+                crate::crs::CrsError::invalid(
+                    "geographic coverage simplification requires the operation's CRS metric",
+                )
+                .into()
+            })
+        };
+        geometry::coverage_simplify_with_context(
             &shapes,
             tolerance,
             method,
             simplify_boundary,
-            geographic_frame,
+            geometry::SourceArcContext::new(domain, Some(&metric_access)),
         )
     })?;
     let result = PyGeometryArray::from_shapes(rows, metadata)?;

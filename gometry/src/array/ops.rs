@@ -23,12 +23,27 @@ use crate::py::vectors::Groups;
 fn publish_triangle_shapes_for_domain(
     shapes: Vec<Shape>,
     domain: crate::geometry::TopologyDomain,
+    metric: crate::dispatch::MetricCtx<'_>,
     budget: &mut crate::geometry::ExpansionBudget,
 ) -> Result<Vec<Shape>> {
     match domain {
         crate::geometry::TopologyDomain::Cartesian => Ok(shapes),
         crate::geometry::TopologyDomain::Geographic(frame) => {
-            geometry::publish_raw_computed_shapes_with_budget(&shapes, frame, budget)
+            let metric_access = || {
+                metric.geographic_chart_metric()?.ok_or_else(|| {
+                    crate::crs::CrsError::invalid(
+                        "geographic triangulation requires the operation's CRS metric",
+                    )
+                    .into()
+                })
+            };
+            let source_context = geometry::SourceArcContext::new(domain, Some(&metric_access));
+            geometry::publish_raw_computed_shapes_with_budget_and_context(
+                &shapes,
+                frame,
+                source_context,
+                budget,
+            )
         },
     }
 }
@@ -36,6 +51,7 @@ fn publish_triangle_shapes_for_domain(
 fn publish_triangle_vertices_for_domain(
     vertices: Vec<crate::geometry::Point>,
     domain: crate::geometry::TopologyDomain,
+    metric: crate::dispatch::MetricCtx<'_>,
     budget: &mut crate::geometry::ExpansionBudget,
 ) -> Result<crate::geometry::PublishedTriangleVertices> {
     match domain {
@@ -43,7 +59,21 @@ fn publish_triangle_vertices_for_domain(
             crate::geometry::PublishedTriangleVertices::uniform(vertices)
         },
         crate::geometry::TopologyDomain::Geographic(frame) => {
-            geometry::publish_triangle_vertex_stream_budgeted(&vertices, frame, budget)
+            let metric_access = || {
+                metric.geographic_chart_metric()?.ok_or_else(|| {
+                    crate::crs::CrsError::invalid(
+                        "geographic triangulation requires the operation's CRS metric",
+                    )
+                    .into()
+                })
+            };
+            let source_context = geometry::SourceArcContext::new(domain, Some(&metric_access));
+            geometry::publish_triangle_vertex_stream_budgeted(
+                &vertices,
+                frame,
+                source_context,
+                budget,
+            )
         },
     }
 }
@@ -367,7 +397,9 @@ impl PyGeometryArray {
     }
 
     pub(crate) fn delaunay_triangles_impl(&self, py: Python<'_>) -> PyResult<Groups> {
-        let domain = geometry::topology_domain(&self.frame)?;
+        let mut metric_scratch = crate::dispatch::MetricScratch::default();
+        let (domain, metric) = crate::dispatch::MetricResolver::GeographicCarry
+            .resolve_topology_ctx(&self.frame, &mut metric_scratch)?;
         // Mixed-axis rows cannot land in one packed coords column (`from_points`
         // assumes axis-homogeneity); per-shape `delaunay_triangles` preserves
         // each row's ordinate layout via `carry_each`.
@@ -378,7 +410,7 @@ impl PyGeometryArray {
                 "method",
                 move |_, shape, budget| {
                     let triangles = shape.delaunay_triangles_budgeted(budget)?;
-                    publish_triangle_shapes_for_domain(triangles, domain, budget)
+                    publish_triangle_shapes_for_domain(triangles, domain, metric, budget)
                 },
             );
         }
@@ -393,7 +425,7 @@ impl PyGeometryArray {
             "method",
             move |_, shape, budget| {
                 let vertices = shape.delaunay_triangle_vertices_budgeted(budget)?;
-                publish_triangle_vertices_for_domain(vertices, domain, budget)
+                publish_triangle_vertices_for_domain(vertices, domain, metric, budget)
             },
         )
     }
@@ -419,7 +451,9 @@ impl PyGeometryArray {
                 )
             })
             .collect::<PyResult<Vec<_>>>()?;
-        let domain = geometry::topology_domain(&self.frame)?;
+        let mut metric_scratch = crate::dispatch::MetricScratch::default();
+        let (domain, metric) = crate::dispatch::MetricResolver::GeographicCarry
+            .resolve_topology_ctx(&self.frame, &mut metric_scratch)?;
         // Unrefined rows preserve the selected source-site axes while refined
         // rows are XY, so a batch carrying Z/M uses the shape collector.
         // Pure-XY batches retain the packed triangle builder; both consume the
@@ -436,7 +470,7 @@ impl PyGeometryArray {
                             .expect("refinement values match the admitted array rows"),
                         budget,
                     )?;
-                    publish_triangle_shapes_for_domain(triangles, domain, budget)
+                    publish_triangle_shapes_for_domain(triangles, domain, metric, budget)
                 },
             );
         }
@@ -451,13 +485,15 @@ impl PyGeometryArray {
                         .expect("refinement values match the admitted array rows"),
                     budget,
                 )?;
-                publish_triangle_vertices_for_domain(vertices, domain, budget)
+                publish_triangle_vertices_for_domain(vertices, domain, metric, budget)
             },
         )
     }
 
     pub(crate) fn polygon_triangles_impl(&self, py: Python<'_>) -> PyResult<Groups> {
-        let domain = geometry::topology_domain(&self.frame)?;
+        let mut metric_scratch = crate::dispatch::MetricScratch::default();
+        let (domain, metric) = crate::dispatch::MetricResolver::GeographicCarry
+            .resolve_topology_ctx(&self.frame, &mut metric_scratch)?;
         if self.earcut_rows_pack()? {
             return self.flat_map_packed_triangles_groups_budgeted(
                 py,
@@ -465,7 +501,7 @@ impl PyGeometryArray {
                 "method",
                 move |_, shape, budget| {
                     let vertices = shape.polygon_triangle_vertices_budgeted(budget)?;
-                    publish_triangle_vertices_for_domain(vertices, domain, budget)
+                    publish_triangle_vertices_for_domain(vertices, domain, metric, budget)
                 },
             );
         }
@@ -475,7 +511,7 @@ impl PyGeometryArray {
             "method",
             move |_, shape, budget| {
                 let triangles = shape.polygon_triangles_budgeted(budget)?;
-                publish_triangle_shapes_for_domain(triangles, domain, budget)
+                publish_triangle_shapes_for_domain(triangles, domain, metric, budget)
             },
         )
     }

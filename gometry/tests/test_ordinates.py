@@ -70,14 +70,59 @@ def test_voronoi_results_are_2d(op: str) -> None:
 
 @pytest.mark.parametrize('method', ['delaunay', 'constrained', 'earcut'])
 def test_triangulation_preserves_ordinates(method: str) -> None:
-    """Triangle corners coincide with input vertices, so Z/M is always
-    preserved — there is no ordinate policy to configure.
+    """Triangle corners coincide with input vertices, so their Z/M is copied.
+
+    The publisher's inserted Native-edge samples have a separate source-
+    arclength contract covered by the geographic Delaunay regression below.
     """
     zsquare = _z_polygon()
     carried = zsquare.triangulate(method=method)
     assert carried
     assert all(part.coordinate_axes == 'XYZ' for part in carried)
     assert _xy_polygon().triangulate(method=method) is not None
+
+
+def test_geographic_delaunay_publisher_carries_inserted_zm_by_ellipsoidal_arclength() -> (
+    None
+):
+    crs = '+proj=longlat +a=7000000 +rf=150 +type=crs'
+    sites = [
+        (760.0, 45.0, 35.25, 551.0),
+        (1035.0, 72.5, 49.5, 726.0),
+        (900.0, 90.0, 61.0, 901.0),
+    ]
+    source = gm.MultiPoint(sites, crs=crs)
+    triangles = source.triangulate(method='delaunay')
+    assert len(triangles) == 1
+    coordinates = list(triangles[0].exterior.coords)
+    sample = next(
+        coordinate for coordinate in coordinates if coordinate[:2] == (177.5, 58.75)
+    )
+    assert math.isclose(sample[2], 43.730_417_185_196_416, abs_tol=2.0e-8)
+    assert math.isclose(sample[3], 655.145_474_204_166_5, abs_tol=2.0e-7)
+    assert not math.isclose(sample[2], 42.375, abs_tol=1.0e-6)
+    assert not math.isclose(sample[3], 638.5, abs_tol=1.0e-6)
+    assert (40.0, 45.0, 35.25, 551.0) in coordinates
+    assert (-45.0, 72.5, 49.5, 726.0) in coordinates
+    assert (-180.0, 90.0, 61.0, 901.0) in coordinates
+
+    xy_source = gm.MultiPoint([(x, y) for x, y, *_ in sites], crs=crs)
+    xy_triangles = xy_source.triangulate(method='delaunay')
+    assert [
+        [(x, y) for x, y, *_ in triangle.exterior.coords] for triangle in triangles
+    ] == [
+        [(x, y) for x, y, *_ in triangle.exterior.coords] for triangle in xy_triangles
+    ]
+
+    uniform_rows = gm.GeometryArray([source, source]).triangulate(method='delaunay')
+    assert [triangle.to_wkt() for triangle in uniform_rows[0]] == [
+        triangle.to_wkt() for triangle in triangles
+    ]
+    mixed_rows = gm.GeometryArray([source, xy_source]).triangulate(method='delaunay')
+    assert [triangle.to_wkt() for triangle in mixed_rows[0]] == [
+        triangle.to_wkt() for triangle in triangles
+    ]
+    assert all(triangle.coordinate_axes == 'XY' for triangle in mixed_rows[1])
 
 
 def test_point_on_surface_is_interior_xy_point() -> None:

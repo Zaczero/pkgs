@@ -17,14 +17,29 @@ use crate::{
     require_geojson_crs, validate_subdivide_max_vertices, voronoi_edges_flatten, voronoi_flatten,
 };
 
-fn publish_triangle_shapes_for_frame(
+fn publish_triangle_shapes_for_domain(
     shapes: Vec<Shape>,
-    frame: &Frame,
+    domain: geometry::TopologyDomain,
+    metric: crate::dispatch::MetricCtx<'_>,
 ) -> crate::error::Result<Vec<Shape>> {
-    match geometry::topology_domain(frame)? {
+    match domain {
         geometry::TopologyDomain::Cartesian => Ok(shapes),
         geometry::TopologyDomain::Geographic(frame) => {
-            geometry::publish_raw_computed_shapes(&shapes, frame, "triangulate")
+            let metric_access = || {
+                metric.geographic_chart_metric()?.ok_or_else(|| {
+                    crate::crs::CrsError::invalid(
+                        "geographic triangulation requires the operation's CRS metric",
+                    )
+                    .into()
+                })
+            };
+            let source_context = geometry::SourceArcContext::new(domain, Some(&metric_access));
+            geometry::publish_raw_computed_shapes_with_context(
+                &shapes,
+                frame,
+                "triangulate",
+                source_context,
+            )
         },
     }
 }
@@ -165,11 +180,14 @@ impl PyGeometry {
         }
         let axes = vertices.first().map(|point| point.axes);
         if vertices.iter().any(|point| Some(point.axes) != axes) {
-            let frame = self.frame.clone();
+            let mut metric_scratch = crate::dispatch::MetricScratch::default();
+            let (domain, metric) = crate::dispatch::MetricResolver::GeographicCarry
+                .resolve_topology_ctx(&self.frame, &mut metric_scratch)?;
             let triangles = py.detach(move || {
-                publish_triangle_shapes_for_frame(
+                publish_triangle_shapes_for_domain(
                     Shape::triangle_shapes_from_vertices(&vertices)?,
-                    &frame,
+                    domain,
+                    metric,
                 )
             })?;
             return self.parts_to_array(triangles);
@@ -201,7 +219,12 @@ impl PyGeometry {
         }
         let shape = Arc::clone(&self.shape);
         let triangles = py.detach(move || shape.constrained_delaunay_triangles(refinement))?;
-        self.parts_to_array(publish_triangle_shapes_for_frame(triangles, &self.frame)?)
+        let mut metric_scratch = crate::dispatch::MetricScratch::default();
+        let (domain, metric) = crate::dispatch::MetricResolver::GeographicCarry
+            .resolve_topology_ctx(&self.frame, &mut metric_scratch)?;
+        self.parts_to_array(publish_triangle_shapes_for_domain(
+            triangles, domain, metric,
+        )?)
     }
 
     pub(crate) fn polygon_triangles_impl(&self, py: Python<'_>) -> PyResult<PyGeometryArray> {
@@ -218,7 +241,12 @@ impl PyGeometry {
             };
         }
         let triangles = py.detach(move || shape.polygon_triangles())?;
-        self.parts_to_array(publish_triangle_shapes_for_frame(triangles, &self.frame)?)
+        let mut metric_scratch = crate::dispatch::MetricScratch::default();
+        let (domain, metric) = crate::dispatch::MetricResolver::GeographicCarry
+            .resolve_topology_ctx(&self.frame, &mut metric_scratch)?;
+        self.parts_to_array(publish_triangle_shapes_for_domain(
+            triangles, domain, metric,
+        )?)
     }
 
     pub(crate) fn sample_points_impl(
