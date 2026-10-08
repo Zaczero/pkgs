@@ -80,7 +80,7 @@ impl ExactSign {
 /// than multiplying equivalent denominators. Equality and hashing use the ratio
 /// value because constructors may distribute binary exponents differently.
 #[derive(Clone, Debug)]
-pub(in crate::geometry) struct ExactRational {
+pub(crate) struct ExactRational {
     numerator: ExactDyadic,
     denominator: ExactDyadic,
 }

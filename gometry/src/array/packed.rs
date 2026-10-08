@@ -1139,7 +1139,7 @@ impl PyGeometryArray {
     }
 
     /// Identity lane: every packed point row is its own result for this
-    /// op (a point is its own centroid/hull/simplification/reverse...), so
+    /// op (a point is its own centroid/hull/MRR/simplification/reverse...), so
     /// the whole array is — share the storage Arc.
     pub(crate) fn packed_points_identity(&self) -> Option<Self> {
         match self.storage() {

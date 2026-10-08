@@ -219,6 +219,192 @@ def test_seam_vertex_spelling_does_not_change_validity(
     assert gm.union_all([polygon]).is_valid
 
 
+def test_point_set_centroid_uses_the_common_chart_for_shifted_sites() -> None:
+    points = gm.MultiPoint([(370.0, 0.0), (380.0, 10.0)], crs=4326)
+
+    centroid = points.centroid()
+
+    assert (centroid.x, centroid.y) == (15.0, 5.0)
+
+
+def test_point_set_hull_and_rectangle_use_the_common_chart() -> None:
+    points = gm.MultiPoint([(170.0, 0.0), (-170.0, 0.0), (180.0, 10.0)], crs=4326)
+
+    hull = points.convex_hull()
+    rectangle = points.minimum_rotated_rectangle()
+    rows = gm.GeometryArray([points, points])
+
+    assert list(hull.exterior.coords) == [
+        (170.0, 0.0),
+        (-170.0, 0.0),
+        (-180.0, 10.0),
+        (170.0, 0.0),
+    ]
+    assert list(rectangle.exterior.coords) == [
+        (170.0, 0.0),
+        (-170.0, 0.0),
+        (-170.0, 10.0),
+        (170.0, 10.0),
+        (170.0, 0.0),
+    ]
+    assert [list(value.exterior.coords) for value in rows.convex_hull()] == [
+        list(hull.exterior.coords),
+        list(hull.exterior.coords),
+    ]
+    assert [
+        list(value.exterior.coords) for value in rows.minimum_rotated_rectangle()
+    ] == [
+        list(rectangle.exterior.coords),
+        list(rectangle.exterior.coords),
+    ]
+
+
+def test_point_alias_hull_and_rectangle_keep_the_first_source_record() -> None:
+    points = gm.from_wkt('MULTIPOINT Z ((10 0 7), (370 0 11))', crs=4326)
+
+    hull = points.convex_hull()
+    rectangle = points.minimum_rotated_rectangle()
+    rows = gm.GeometryArray([points])
+
+    for result in (
+        hull,
+        rectangle,
+        rows.convex_hull()[0],
+        rows.minimum_rotated_rectangle()[0],
+    ):
+        assert result.geometry_type == 'Point'
+        assert (result.x, result.y, result.z) == (10.0, 0.0, 7.0)
+
+
+def test_point_hull_keeps_adjacent_native_sites_through_the_published_edge() -> None:
+    points = gm.from_wkt(
+        'MULTIPOINT Z ((-170 1 1), (-100 1 2), (0.2 1 3), '
+        '(0.20000000000000004 1 4), (170 1 5))',
+        crs=4326,
+    )
+    rows = gm.GeometryArray([points])
+
+    for result in (
+        points.convex_hull(),
+        points.minimum_rotated_rectangle(),
+        rows.convex_hull()[0],
+        rows.minimum_rotated_rectangle()[0],
+    ):
+        coordinates = list(result.coords)
+        assert result.geometry_type == 'LineString'
+        assert coordinates[0] == (170.0, 1.0, 5.0)
+        assert coordinates[-1] == (0.20000000000000004, 1.0, 4.0)
+        assert len(coordinates) == 3
+        assert coordinates[1][2] == 4.5
+
+
+def test_point_hull_and_rectangle_preserve_scalar_and_packed_point_records() -> None:
+    points = [
+        gm.Point(370.0, -0.0, z=7.0, m=11.0, crs=4326),
+        gm.Point(-170.0, 5.0, z=13.0, m=17.0, crs=4326),
+    ]
+    rows = gm.GeometryArray(points)
+
+    assert points[0].coordinate_axes == 'XYZM'
+    assert points[0].convex_hull().to_wkb() == points[0].to_wkb()
+    assert points[0].minimum_rotated_rectangle().to_wkb() == points[0].to_wkb()
+    assert [value.to_wkb() for value in rows.convex_hull()] == [
+        point.to_wkb() for point in points
+    ]
+    assert [value.to_wkb() for value in rows.minimum_rotated_rectangle()] == [
+        point.to_wkb() for point in points
+    ]
+    gathered = gm.GeometryArray([points[0], None, points[1], points[0]], crs=4326)[
+        [2, 1, 0]
+    ]
+    for result in (gathered.convex_hull(), gathered.minimum_rotated_rectangle()):
+        assert result[0].to_wkb() == points[1].to_wkb()
+        assert result[1] is None
+        assert result[2].to_wkb() == points[0].to_wkb()
+
+
+def test_point_set_surface_keeps_first_source_on_a_chart_distance_tie() -> None:
+    points = gm.MultiPoint([(370.0, 0.0), (380.0, 10.0)], crs=4326)
+
+    representative = points.point_on_surface()
+
+    assert (representative.x, representative.y) == (370.0, 0.0)
+    assert representative.coordinate_axes == 'XY'
+
+
+def test_point_only_collection_chart_is_shared_by_scalar_and_array_selection() -> None:
+    collection = gm.GeometryCollection(
+        [
+            gm.MultiPoint([(170.0, 0.0)], crs=4326),
+            gm.GeometryCollection([gm.Point(-170.0, 10.0, crs=4326)]),
+        ],
+        crs=4326,
+    )
+
+    centroid = collection.centroid()
+    representative = collection.point_on_surface()
+    rows = gm.GeometryArray([collection])
+
+    assert (centroid.x, centroid.y) == (-180.0, 5.0)
+    assert (representative.x, representative.y) == (170.0, 0.0)
+    assert gm.equals(rows.centroid()[0], centroid)
+    assert gm.equals(rows.point_on_surface()[0], representative)
+
+
+def test_gathered_point_sets_keep_chart_results_and_missing_alignment() -> None:
+    source = gm.GeometryArray([
+        gm.MultiPoint([(170.0, 0.0), (-170.0, 10.0)], crs=4326),
+        gm.MultiPoint([(370.0, 0.0), (380.0, 10.0)], crs=4326),
+        None,
+    ])
+    gathered = source[[1, 0, 2]]
+
+    centroids = gathered.centroid()
+    representatives = gathered.point_on_surface()
+
+    assert (centroids[0].x, centroids[0].y) == (15.0, 5.0)
+    assert (centroids[1].x, centroids[1].y) == (-180.0, 5.0)
+    assert centroids[2] is None
+    assert (representatives[0].x, representatives[0].y) == (370.0, 0.0)
+    assert (representatives[1].x, representatives[1].y) == (170.0, 0.0)
+    assert representatives[2] is None
+
+
+def test_point_only_collection_hulls_and_rectangles_keep_gathered_missing_alignment() -> (
+    None
+):
+    collection = gm.GeometryCollection(
+        [
+            gm.MultiPoint([(170.0, 0.0)], crs=4326),
+            gm.GeometryCollection([gm.Point(-170.0, 10.0, crs=4326)]),
+        ],
+        crs=4326,
+    )
+    scalar_hull = collection.convex_hull()
+    scalar_rectangle = collection.minimum_rotated_rectangle()
+    source = gm.GeometryArray([
+        gm.MultiPoint([(170.0, 0.0), (-170.0, 0.0), (180.0, 10.0)], crs=4326),
+        gm.MultiPoint([(370.0, 0.0), (380.0, 10.0), (375.0, 20.0)], crs=4326),
+        collection,
+        None,
+    ])
+    gathered = source[[1, 0, 2, 3]]
+
+    hulls = gathered.convex_hull()
+    rectangles = gathered.minimum_rotated_rectangle()
+
+    assert gm.equals(hulls[0], source[1].convex_hull())
+    assert gm.equals(hulls[1], source[0].convex_hull())
+    assert list(hulls[2].coords) == [(170.0, 0.0), (-170.0, 10.0)]
+    assert gm.equals(hulls[2], scalar_hull)
+    assert hulls[3] is None
+    assert gm.equals(rectangles[0], source[1].minimum_rotated_rectangle())
+    assert gm.equals(rectangles[1], source[0].minimum_rotated_rectangle())
+    assert list(rectangles[2].coords) == [(170.0, 0.0), (-170.0, 10.0)]
+    assert gm.equals(rectangles[2], scalar_rectangle)
+    assert rectangles[3] is None
+
+
 def test_centroid_and_point_on_surface_array_match_scalar_antimeridian() -> None:
     poly = gm.Polygon(
         [(170, -5), (-170, -5), (-170, 5), (170, 5)],

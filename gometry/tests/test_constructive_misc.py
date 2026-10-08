@@ -187,18 +187,31 @@ def test_topology_preserving_simplify_does_not_collapse_retraced_line(
     assert len({coordinate[:2] for coordinate in coordinates}) == 2
 
 
-def test_computed_full_turn_hull_keeps_its_measurable_chart_path() -> None:
+def test_point_alias_hull_uses_the_common_chart_without_changing_line_circles() -> None:
     hull = gm.MultiPoint([(0.0, 10.0), (360.0, 30.0)], crs=4326).convex_hull()
-    assert list(hull.coords) == [
+    assert list(hull.coords) == [(0.0, 10.0), (0.0, 30.0)]
+
+    source_path = gm.LineString([(0.0, 10.0), (360.0, 30.0)], crs=4326)
+    line_hull = source_path.convex_hull()
+    assert list(line_hull.coords) == [
         (0.0, 10.0),
         (90.0, 15.0),
         (-180.0, 20.0),
         (-90.0, 25.0),
         (0.0, 30.0),
     ]
-    assert math.isfinite(hull.length)
-    source_path = gm.LineString([(0.0, 10.0), (360.0, 30.0)], crs=4326)
-    assert hull.length == pytest.approx(source_path.length, rel=2e-12)
+    assert math.isfinite(line_hull.length)
+    assert line_hull.length == pytest.approx(source_path.length, rel=2e-12)
+
+    line_rectangle = source_path.minimum_rotated_rectangle()
+    assert list(line_rectangle.coords) == [
+        (0.0, 10.0),
+        (90.0, 15.0),
+        (-180.0, 20.0),
+        (-90.0, 25.0),
+        (0.0, 30.0),
+    ]
+    assert line_rectangle.length == pytest.approx(source_path.length, rel=2e-12)
 
 
 @pytest.mark.parametrize(
@@ -655,6 +668,22 @@ def test_envelope_and_mrr_empty_are_typed() -> None:
     assert arr.envelope()[0].to_wkt() == 'POLYGON EMPTY'
     assert arr.envelope()[1].geometry_type == 'Polygon'
     assert arr.minimum_rotated_rectangle()[0].to_wkt() == 'POLYGON EMPTY'
+    empty_point_rows = gm.GeometryArray(
+        [gm.from_wkt('POINT EMPTY', crs=4326)], crs=4326
+    )
+    assert empty_point_rows.minimum_rotated_rectangle()[0].to_wkt() == 'POLYGON EMPTY'
+    empty_rows = gm.GeometryArray(
+        [
+            gm.from_wkt('POINT EMPTY', crs=4326),
+            None,
+            gm.from_wkt('LINESTRING EMPTY', crs=4326),
+        ],
+        crs=4326,
+    )
+    gathered = empty_rows[[2, 1, 0]].minimum_rotated_rectangle()
+    assert gathered[0].to_wkt() == 'POLYGON EMPTY'
+    assert gathered[1] is None
+    assert gathered[2].to_wkt() == 'POLYGON EMPTY'
 
 
 def test_geographic_point_envelope_canonicalizes_packed_and_mixed_rows() -> None:

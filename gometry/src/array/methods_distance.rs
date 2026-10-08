@@ -503,6 +503,17 @@ impl PyGeometryArray {
         }
         let domain = crate::geometry::topology_domain(&self.frame)?;
         self.map_shapes_detached(py, |shape| {
+            if let crate::geometry::TopologyDomain::Geographic(frame) = domain
+                && !matches!(shape, Shape::Point(_) | Shape::Empty(..))
+                && crate::geographic::chart::PointSelectionChart::accepts_point_set(shape)
+                && let Some(hull) = crate::geographic::chart::point_set_convex_hull_shape(
+                    shape,
+                    frame,
+                    shape.bounds(),
+                )?
+            {
+                return Ok(hull);
+            }
             let hull = shape.convex_hull()?;
             match domain {
                 crate::geometry::TopologyDomain::Cartesian => Ok(hull),

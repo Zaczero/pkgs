@@ -1,78 +1,178 @@
-use super::{ChartStep, EdgeDirection, GeographicError, GeographicFrame};
+use super::{
+    ChartStep, EdgeDirection, GeographicError, GeographicFrame, RetainedChartDisplacement,
+    RetainedLongitudeClass,
+};
 use crate::error::Result;
+use crate::geometry::exact_arith::RetainedComputedSample;
 use crate::geometry::{
     CoordSeq, Coordinates, ExpansionBudget, GeometryErrorKind, MOrdinate, Point, ZOrdinate,
     interpolate_optional_ordinate, interpolate_subdivision_ordinate,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub(crate) enum ComputedLongitudeIntent {
-    Zero,
-    NonZero(f64),
+pub(crate) enum ComputedLongitudeRelation<'a> {
+    Native(RetainedChartDisplacement),
+    ExactLifted {
+        endpoints: [&'a crate::geometry::ExactRational; 2],
+    },
 }
 
-impl ComputedLongitudeIntent {
-    pub(crate) fn from_f64(delta: f64) -> Self {
-        if delta == 0.0 {
-            Self::Zero
-        } else {
-            Self::NonZero(delta)
-        }
+impl ComputedLongitudeRelation<'_> {
+    pub(crate) fn from_chart_connection(
+        frame: GeographicFrame,
+        endpoints: [f64; 2],
+    ) -> Result<Self> {
+        let connection = frame
+            .longitude()
+            .chart_connection(endpoints[0], endpoints[1])
+            .map_err(map_geographic_error)?;
+        Ok(Self::Native(connection.retained()))
     }
 
-    pub(crate) const fn from_rounded_exact(delta: f64, is_zero: bool) -> Self {
-        if is_zero {
-            Self::Zero
-        } else {
-            Self::NonZero(delta)
-        }
+    pub(crate) fn from_chart_witness(
+        frame: GeographicFrame,
+        endpoints: [f64; 2],
+        witness: ChartStep,
+    ) -> Result<Self> {
+        Ok(Self::Native(
+            crate::geometry::exact_arith::retained_edge_from_chart_witness(
+                frame.longitude(),
+                endpoints,
+                witness,
+            )?,
+        ))
     }
 
-    const fn delta(self) -> f64 {
+    fn class(
+        self,
+        axis: super::PeriodicAxis,
+        from: f64,
+        to: f64,
+    ) -> Result<RetainedLongitudeClass> {
         match self {
-            Self::Zero => 0.0,
-            Self::NonZero(delta) => delta,
+            Self::Native(edge) => {
+                crate::geometry::exact_arith::retained_native_interval_class(edge, axis, from, to)
+            },
+            Self::ExactLifted { endpoints } => {
+                crate::geometry::exact_arith::retained_exact_interval_class(
+                    endpoints, axis, from, to,
+                )
+            },
         }
     }
 
-    const fn is_zero(self) -> bool {
-        matches!(self, Self::Zero)
+    fn sample(self, axis: super::PeriodicAxis, parameter: f64) -> Result<RetainedComputedSample> {
+        match self {
+            Self::Native(edge) => crate::geometry::exact_arith::retained_native_publisher_sample(
+                axis, edge, parameter,
+            ),
+            Self::ExactLifted { endpoints } => {
+                crate::geometry::exact_arith::retained_exact_publisher_sample(
+                    axis, endpoints, parameter,
+                )
+            },
+        }
+    }
+
+    fn split_piece_count(self, axis: super::PeriodicAxis) -> Result<usize> {
+        match self {
+            Self::Native(edge) => {
+                crate::geometry::exact_arith::retained_native_split_piece_count(edge, axis)
+            },
+            Self::ExactLifted { endpoints } => {
+                crate::geometry::exact_arith::retained_exact_split_piece_count(endpoints, axis)
+            },
+        }
+    }
+
+    fn reads_as(
+        self,
+        frame: GeographicFrame,
+        start: f64,
+        end: f64,
+        from: f64,
+        to: f64,
+    ) -> Result<bool> {
+        let actual = frame
+            .longitude()
+            .chart_connection(start, end)
+            .map_err(map_geographic_error)?
+            .retained();
+        if from == 0.0 && to == 1.0 {
+            if let Self::Native(expected) = self {
+                return Ok(expected == actual);
+            }
+        }
+        let start_sample = self.sample(frame.longitude(), from)?;
+        let end_sample = self.sample(frame.longitude(), to)?;
+        let intended = crate::geometry::exact_arith::retained_computed_samples_connection(
+            frame.longitude(),
+            [&start_sample, &end_sample],
+        )?;
+        Ok(intended == actual)
     }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub(crate) enum ComputedEdgeIntent {
+pub(crate) enum ComputedEdgeIntent<'a> {
     /// A source-provenance edge whose written coordinates must be replayed.
     Preserved { zero_longitude: bool },
-    /// A producer-retained displacement in its continuous longitude chart.
-    Displacement(ComputedLongitudeIntent),
-    /// A stored chart interpretation, including an explicit full-period turn.
-    Stored(ChartStep),
+    /// An exact producer relation retained through canonical publication.
+    Retained(ComputedLongitudeRelation<'a>),
     /// A local projected segment certified to sweep less than half a period.
     CertifiedMinor,
 }
 
-impl ComputedEdgeIntent {
+impl<'a> ComputedEdgeIntent<'a> {
     pub(crate) const fn preserved(zero_longitude: bool) -> Self {
         Self::Preserved { zero_longitude }
     }
 
-    pub(crate) fn displacement(delta: f64) -> Self {
-        Self::Displacement(ComputedLongitudeIntent::from_f64(delta))
+    pub(crate) fn retained_native(edge: RetainedChartDisplacement) -> Self {
+        Self::Retained(ComputedLongitudeRelation::Native(edge))
     }
 
-    pub(crate) const fn displacement_from_exact(delta: f64, is_zero: bool) -> Self {
-        Self::Displacement(ComputedLongitudeIntent::from_rounded_exact(delta, is_zero))
+    pub(crate) const fn exact_lifted(endpoints: [&'a crate::geometry::ExactRational; 2]) -> Self {
+        Self::Retained(ComputedLongitudeRelation::ExactLifted { endpoints })
     }
 
-    fn certifies_zero_longitude_change(self, axis: super::PeriodicAxis) -> bool {
+    pub(crate) fn retained_binary64_pair(
+        axis: super::PeriodicAxis,
+        endpoints: [f64; 2],
+    ) -> Result<Self> {
+        Ok(Self::retained_native(
+            crate::geometry::exact_arith::retained_edge_from_lifted_binary64_pair(axis, endpoints)?,
+        ))
+    }
+
+    pub(crate) fn retained_chart_connection(
+        frame: GeographicFrame,
+        endpoints: [f64; 2],
+    ) -> Result<Self> {
+        Ok(Self::Retained(
+            ComputedLongitudeRelation::from_chart_connection(frame, endpoints)?,
+        ))
+    }
+
+    pub(crate) fn retained_chart_witness(
+        frame: GeographicFrame,
+        endpoints: [f64; 2],
+        witness: ChartStep,
+    ) -> Result<Self> {
+        Ok(Self::Retained(
+            ComputedLongitudeRelation::from_chart_witness(frame, endpoints, witness)?,
+        ))
+    }
+
+    fn certifies_zero_longitude_change(self, axis: super::PeriodicAxis) -> Result<bool> {
         match self {
-            Self::Preserved { zero_longitude } => zero_longitude,
-            Self::Displacement(delta) => delta.is_zero(),
-            Self::Stored(step) => step.delta(axis) == 0.0,
+            Self::Preserved { zero_longitude } => Ok(zero_longitude),
+            Self::Retained(relation) => {
+                Ok(relation.class(axis, 0.0, 1.0)? == RetainedLongitudeClass::Zero)
+            },
             // A minor certificate supplies no exact displacement. Mixed-source
             // chains retain explicit or stored displacement for their zero classes.
-            Self::CertifiedMinor => false,
+            Self::CertifiedMinor => Ok(false),
         }
     }
 
@@ -85,12 +185,46 @@ impl ComputedEdgeIntent {
 pub(crate) enum ComputedVertexIntent {
     Canonical,
     Preserved,
+    /// This vertex's XY and ordinates are sampled from an adjacent retained
+    /// relation, rather than read from the layout Point.
+    Sampled,
 }
 
-pub(crate) struct ComputedEdgeInterval {
-    pub(crate) start: Point,
-    pub(crate) end: Point,
-    pub(crate) delta: f64,
+pub(crate) struct ComputedSampleOrdinates {
+    pub(crate) y: f64,
+    pub(crate) z: ZOrdinate,
+    pub(crate) m: MOrdinate,
+}
+
+fn collect_edge_intents<'intent, P: Coordinates + ?Sized>(
+    points: &P,
+    intent: impl Fn(usize, Point, Point) -> Result<ComputedEdgeIntent<'intent>>,
+) -> Result<Vec<ComputedEdgeIntent<'intent>>> {
+    let edge_count = points.coord_count().saturating_sub(1);
+    let mut intents = Vec::with_capacity(edge_count);
+    for index in 0..edge_count {
+        intents.push(intent(
+            index,
+            points.nth_coord(index),
+            points.nth_coord(index.wrapping_add(1)),
+        )?);
+    }
+    Ok(intents)
+}
+
+fn interpolate_sample_ordinates(
+    _edge_index: usize,
+    endpoints: [Point; 2],
+    _relation: &ComputedLongitudeRelation<'_>,
+    parameter: f64,
+    _retained: &RetainedComputedSample,
+) -> Result<ComputedSampleOrdinates> {
+    let [start, end] = endpoints;
+    Ok(ComputedSampleOrdinates {
+        y: interpolate_subdivision_ordinate(start.y, end.y, parameter),
+        z: ZOrdinate(interpolate_optional_ordinate(start.z(), end.z(), parameter)),
+        m: MOrdinate(interpolate_optional_ordinate(start.m(), end.m(), parameter)),
+    })
 }
 
 #[derive(Clone, Copy)]
@@ -122,7 +256,7 @@ fn vertex_has_preserved_record(
     point_count: usize,
     closed_ring: bool,
     point: Point,
-    edge_intents: &[ComputedEdgeIntent],
+    edge_intents: &[ComputedEdgeIntent<'_>],
     vertex_intent: &impl Fn(usize, Point) -> ComputedVertexIntent,
 ) -> bool {
     if vertex_intent(index, point) == ComputedVertexIntent::Preserved {
@@ -152,7 +286,7 @@ fn preserved_longitude_in_range<P: Coordinates + ?Sized>(
     start: usize,
     end: usize,
     closed_ring: bool,
-    edge_intents: &[ComputedEdgeIntent],
+    edge_intents: &[ComputedEdgeIntent<'_>],
     vertex_intent: &impl Fn(usize, Point) -> ComputedVertexIntent,
     operation: &'static str,
     preserved_longitude: &mut Option<f64>,
@@ -215,15 +349,17 @@ fn zero_longitude_aliases<P: Coordinates + ?Sized>(
         if !edge_intents
             .get(edge)
             .expect("zero-class cursor belongs to the edge inventory")
-            .certifies_zero_longitude_change(frame.longitude())
+            .certifies_zero_longitude_change(frame.longitude())?
         {
             edge = edge.wrapping_add(1);
             continue;
         }
         let start = edge;
-        while edge_intents
-            .get(edge)
-            .is_some_and(|intent| intent.certifies_zero_longitude_change(frame.longitude()))
+        while edge < edge_count
+            && edge_intents
+                .get(edge)
+                .expect("zero-class cursor belongs to the edge inventory")
+                .certifies_zero_longitude_change(frame.longitude())?
         {
             edge = edge.wrapping_add(1);
         }
@@ -296,16 +432,137 @@ fn zero_longitude_alias_at(aliases: &[ZeroLongitudeAlias], index: usize) -> Opti
         .map(|alias| alias.longitude)
 }
 
-fn publish_vertex_at(
+struct SampledVertex<'intent> {
+    edge_index: usize,
+    endpoints: [Point; 2],
+    relation: ComputedLongitudeRelation<'intent>,
+    parameter: f64,
+    retained: RetainedComputedSample,
+}
+
+fn retained_relation_at_vertex<'intent>(
+    edge_intents: &[ComputedEdgeIntent<'intent>],
+    point_count: usize,
+    closed_ring: bool,
+    index: usize,
+    preferred: Option<(usize, f64)>,
+) -> Result<(usize, ComputedLongitudeRelation<'intent>, f64)> {
+    let edge_count = point_count.saturating_sub(1);
+    let closure = (closed_ring && index == 0).then_some((edge_count.saturating_sub(1), 1.0));
+    let candidates = [
+        preferred,
+        (index < edge_count).then_some((index, 0.0)),
+        (index > 0).then_some((index.wrapping_sub(1), 1.0)),
+        closure,
+    ];
+    for (edge, parameter) in candidates.into_iter().flatten() {
+        if edge >= edge_count {
+            continue;
+        }
+        if let Some(ComputedEdgeIntent::Retained(relation)) = edge_intents.get(edge) {
+            return Ok((edge, *relation, parameter));
+        }
+    }
+    Err(
+        GeometryErrorKind::Invalid("sampled computed vertex has no retained edge endpoint".into())
+            .into(),
+    )
+}
+
+fn publish_vertex_at<'intent, P: Coordinates + ?Sized>(
     frame: GeographicFrame,
+    points: &P,
     point: Point,
     index: usize,
     intent: ComputedVertexIntent,
+    edge_intents: &[ComputedEdgeIntent<'intent>],
+    point_count: usize,
+    closed_ring: bool,
+    preferred: Option<(usize, f64)>,
+    samples: &mut impl FnMut(
+        usize,
+        [Point; 2],
+        &ComputedLongitudeRelation<'intent>,
+        f64,
+        &RetainedComputedSample,
+    ) -> Result<ComputedSampleOrdinates>,
     aliases: &[ZeroLongitudeAlias],
-) -> Result<Point> {
-    let point = publish_vertex(frame, point, intent)?;
-    Ok(zero_longitude_alias_at(aliases, index)
-        .map_or(point, |longitude| point.with_xy_raw(longitude, point.y)))
+) -> Result<(Point, Option<SampledVertex<'intent>>)> {
+    let (point, sampled) = match intent {
+        ComputedVertexIntent::Canonical => (
+            frame
+                .canonical_computed_point(point)
+                .map_err(map_geographic_error)?,
+            None,
+        ),
+        ComputedVertexIntent::Preserved => (point, None),
+        ComputedVertexIntent::Sampled => {
+            let (edge_index, relation, parameter) = retained_relation_at_vertex(
+                edge_intents,
+                point_count,
+                closed_ring,
+                index,
+                preferred,
+            )?;
+            let endpoints = [
+                points.nth_coord(edge_index),
+                points.nth_coord(edge_index.wrapping_add(1)),
+            ];
+            let retained = relation.sample(frame.longitude(), parameter)?;
+            let ordinates = if parameter == 0.0 || parameter == 1.0 {
+                ComputedSampleOrdinates {
+                    y: point.y,
+                    z: ZOrdinate(point.z()),
+                    m: MOrdinate(point.m()),
+                }
+            } else {
+                samples(edge_index, endpoints, &relation, parameter, &retained)?
+            };
+            (
+                Point::new_axes(
+                    retained.longitude.get(),
+                    ordinates.y,
+                    ordinates.z,
+                    ordinates.m,
+                )?,
+                Some(SampledVertex {
+                    edge_index,
+                    endpoints,
+                    relation,
+                    parameter,
+                    retained,
+                }),
+            )
+        },
+    };
+    let point = zero_longitude_alias_at(aliases, index)
+        .map_or(point, |longitude| point.with_xy_raw(longitude, point.y));
+    Ok((point, sampled))
+}
+
+fn observe_sampled_vertex<'intent>(
+    sampled: Option<&SampledVertex<'intent>>,
+    point: Point,
+    on_published: &mut impl FnMut(
+        usize,
+        [Point; 2],
+        &ComputedLongitudeRelation<'intent>,
+        f64,
+        &RetainedComputedSample,
+        Point,
+    ) -> Result<()>,
+) -> Result<()> {
+    if let Some(sampled) = sampled {
+        on_published(
+            sampled.edge_index,
+            sampled.endpoints,
+            &sampled.relation,
+            sampled.parameter,
+            &sampled.retained,
+            point,
+        )?;
+    }
+    Ok(())
 }
 
 /// Canonicalize a computed chain and split only edges whose canonical writing
@@ -314,23 +571,26 @@ fn publish_vertex_at(
 /// `None` means every record was already canonical and every edge was
 /// representable without inserting a vertex. A closed ring retains its first
 /// vertex and uses that complete canonical record at closure.
-pub(crate) fn publish_computed_chain<P: Coordinates + ?Sized>(
+pub(crate) fn publish_computed_chain<'intent, P: Coordinates + ?Sized>(
     frame: GeographicFrame,
     points: &P,
     closed_ring: bool,
     budget: &mut ExpansionBudget,
-    intent: impl Fn(usize, Point, Point) -> Result<ComputedEdgeIntent>,
+    intent: impl Fn(usize, Point, Point) -> Result<ComputedEdgeIntent<'intent>>,
 ) -> Result<Option<Vec<Point>>> {
+    if points.coord_count() == 0 {
+        return Ok(None);
+    }
+    let edge_intents = collect_edge_intents(points, intent)?;
     publish_chain_with_aliases(
         frame,
         points,
         closed_ring,
         budget,
-        intent,
+        &edge_intents,
         |_, _| ComputedVertexIntent::Canonical,
-        |_, start, end, intended_delta, start_t, end_t| {
-            interpolate_chart_interval(start, end, intended_delta, start_t, end_t)
-        },
+        interpolate_sample_ordinates,
+        |_, _, _, _, _, _| Ok(()),
         &[],
     )
 }
@@ -360,49 +620,57 @@ pub(crate) fn publish_certified_minor_chain(
     })
 }
 
-pub(crate) fn publish_computed_chain_with_vertex_intents<P: Coordinates + ?Sized>(
+pub(crate) fn publish_computed_chain_with_vertex_intents<'intent, P: Coordinates + ?Sized>(
     frame: GeographicFrame,
     points: &P,
     closed_ring: bool,
     budget: &mut ExpansionBudget,
-    intent: impl Fn(usize, Point, Point) -> Result<ComputedEdgeIntent>,
+    intent: impl Fn(usize, Point, Point) -> Result<ComputedEdgeIntent<'intent>>,
     vertex_intent: impl Fn(usize, Point) -> ComputedVertexIntent,
 ) -> Result<Option<Vec<Point>>> {
-    publish_computed_chain_with_vertex_intents_and_intervals(
+    publish_computed_chain_with_vertex_intents_and_samples(
         frame,
         points,
         closed_ring,
         budget,
         intent,
         vertex_intent,
-        |_, start, end, intended_delta, start_t, end_t| {
-            interpolate_chart_interval(start, end, intended_delta, start_t, end_t)
-        },
+        interpolate_sample_ordinates,
+        |_, _, _, _, _, _| Ok(()),
     )
 }
 
-pub(crate) fn publish_computed_chain_with_vertex_intents_and_intervals<P: Coordinates + ?Sized>(
+pub(crate) fn publish_computed_chain_with_vertex_intents_and_samples<
+    'intent,
+    P: Coordinates + ?Sized,
+>(
     frame: GeographicFrame,
     points: &P,
     closed_ring: bool,
     budget: &mut ExpansionBudget,
-    intent: impl Fn(usize, Point, Point) -> Result<ComputedEdgeIntent>,
+    intent: impl Fn(usize, Point, Point) -> Result<ComputedEdgeIntent<'intent>>,
     vertex_intent: impl Fn(usize, Point) -> ComputedVertexIntent,
-    interval: impl FnMut(usize, Point, Point, f64, f64, f64) -> Result<ComputedEdgeInterval>,
+    samples: impl FnMut(
+        usize,
+        [Point; 2],
+        &ComputedLongitudeRelation<'intent>,
+        f64,
+        &RetainedComputedSample,
+    ) -> Result<ComputedSampleOrdinates>,
+    on_published: impl FnMut(
+        usize,
+        [Point; 2],
+        &ComputedLongitudeRelation<'intent>,
+        f64,
+        &RetainedComputedSample,
+        Point,
+    ) -> Result<()>,
 ) -> Result<Option<Vec<Point>>> {
     let point_count = points.coord_count();
     if point_count == 0 {
         return Ok(None);
     }
-    let edge_count = point_count.saturating_sub(1);
-    let mut edge_intents = Vec::with_capacity(edge_count);
-    for index in 0..edge_count {
-        edge_intents.push(intent(
-            index,
-            points.nth_coord(index),
-            points.nth_coord(index.wrapping_add(1)),
-        )?);
-    }
+    let edge_intents = collect_edge_intents(points, intent)?;
     let zero_aliases = zero_longitude_aliases(
         frame,
         points,
@@ -416,25 +684,36 @@ pub(crate) fn publish_computed_chain_with_vertex_intents_and_intervals<P: Coordi
         points,
         closed_ring,
         budget,
-        |index, _, _| {
-            Ok(*edge_intents
-                .get(index)
-                .expect("publication edge belongs to the retained intent inventory"))
-        },
+        &edge_intents,
         vertex_intent,
-        interval,
+        samples,
+        on_published,
         &zero_aliases,
     )
 }
 
-fn publish_chain_with_aliases<P: Coordinates + ?Sized>(
+fn publish_chain_with_aliases<'intent, P: Coordinates + ?Sized>(
     frame: GeographicFrame,
     points: &P,
     closed_ring: bool,
     budget: &mut ExpansionBudget,
-    intent: impl Fn(usize, Point, Point) -> Result<ComputedEdgeIntent>,
+    edge_intents: &[ComputedEdgeIntent<'intent>],
     vertex_intent: impl Fn(usize, Point) -> ComputedVertexIntent,
-    mut interval: impl FnMut(usize, Point, Point, f64, f64, f64) -> Result<ComputedEdgeInterval>,
+    mut samples: impl FnMut(
+        usize,
+        [Point; 2],
+        &ComputedLongitudeRelation<'intent>,
+        f64,
+        &RetainedComputedSample,
+    ) -> Result<ComputedSampleOrdinates>,
+    mut on_published: impl FnMut(
+        usize,
+        [Point; 2],
+        &ComputedLongitudeRelation<'intent>,
+        f64,
+        &RetainedComputedSample,
+        Point,
+    ) -> Result<()>,
     zero_aliases: &[ZeroLongitudeAlias],
 ) -> Result<Option<Vec<Point>>> {
     let point_count = points.coord_count();
@@ -443,31 +722,52 @@ fn publish_chain_with_aliases<P: Coordinates + ?Sized>(
     }
     let edge_count = point_count.saturating_sub(1);
     let first_source = points.nth_coord(0);
-    let first = publish_vertex_at(
+    let (first, first_sample) = publish_vertex_at(
         frame,
+        points,
         first_source,
         0,
         vertex_intent(0, first_source),
+        edge_intents,
+        point_count,
+        closed_ring,
+        Some((0, 0.0)),
+        &mut samples,
         zero_aliases,
     )?;
-    let mut output = if first == first_source {
-        None
-    } else {
+    let mut output = if first != first_source || first_sample.is_some() {
         Some(vec![first])
+    } else {
+        None
     };
+    observe_sampled_vertex(first_sample.as_ref(), first, &mut on_published)?;
     let mut canonical_start = first;
 
     for index in 0..edge_count {
         let source_start = points.nth_coord(index);
         let source_end = points.nth_coord(index.wrapping_add(1));
-        let canonical_end = publish_vertex_at(
+        let edge_intent = *edge_intents
+            .get(index)
+            .expect("publication edge belongs to the retained intent inventory");
+        let (published_end, end_sample) = publish_vertex_at(
             frame,
+            points,
             source_end,
             index.wrapping_add(1),
             vertex_intent(index.wrapping_add(1), source_end),
+            edge_intents,
+            point_count,
+            closed_ring,
+            Some((index, 1.0)),
+            &mut samples,
             zero_aliases,
         )?;
-        match intent(index, source_start, source_end)? {
+        let canonical_end = if closed_ring && index.wrapping_add(1) == edge_count {
+            first
+        } else {
+            published_end
+        };
+        match edge_intent {
             ComputedEdgeIntent::Preserved { .. } => {
                 if let Some(emitted) = output.as_mut() {
                     emitted.push(canonical_end);
@@ -476,7 +776,10 @@ fn publish_chain_with_aliases<P: Coordinates + ?Sized>(
                         frame,
                         points,
                         index.wrapping_add(1),
+                        closed_ring,
+                        edge_intents,
                         &vertex_intent,
+                        &mut samples,
                         zero_aliases,
                     )?);
                     output
@@ -484,6 +787,7 @@ fn publish_chain_with_aliases<P: Coordinates + ?Sized>(
                         .expect("canonicalizing an endpoint allocates the output chain")
                         .push(canonical_end);
                 }
+                observe_sampled_vertex(end_sample.as_ref(), canonical_end, &mut on_published)?;
                 canonical_start = canonical_end;
             },
             ComputedEdgeIntent::CertifiedMinor => {
@@ -498,7 +802,10 @@ fn publish_chain_with_aliases<P: Coordinates + ?Sized>(
                         frame,
                         points,
                         index.wrapping_add(1),
+                        closed_ring,
+                        edge_intents,
                         &vertex_intent,
+                        &mut samples,
                         zero_aliases,
                     )?);
                     output
@@ -506,39 +813,25 @@ fn publish_chain_with_aliases<P: Coordinates + ?Sized>(
                         .expect("canonicalizing an endpoint allocates the output chain")
                         .push(canonical_end);
                 }
+                observe_sampled_vertex(end_sample.as_ref(), canonical_end, &mut on_published)?;
                 canonical_start = canonical_end;
             },
-            ComputedEdgeIntent::Displacement(change) => {
-                publish_stored_edge(
+            ComputedEdgeIntent::Retained(relation) => {
+                publish_retained_edge(
                     frame,
-                    source_start,
-                    source_end,
+                    [source_start, source_end],
                     canonical_start,
                     canonical_end,
-                    change.delta(),
+                    relation,
+                    end_sample,
                     points,
                     index,
                     budget,
-                    &mut interval,
+                    closed_ring,
+                    edge_intents,
                     &vertex_intent,
-                    zero_aliases,
-                    &mut output,
-                )?;
-                canonical_start = canonical_end;
-            },
-            ComputedEdgeIntent::Stored(step) => {
-                publish_stored_edge(
-                    frame,
-                    source_start,
-                    source_end,
-                    canonical_start,
-                    canonical_end,
-                    step.delta(frame.longitude()),
-                    points,
-                    index,
-                    budget,
-                    &mut interval,
-                    &vertex_intent,
+                    &mut samples,
+                    &mut on_published,
                     zero_aliases,
                     &mut output,
                 )?;
@@ -552,22 +845,6 @@ fn publish_chain_with_aliases<P: Coordinates + ?Sized>(
             point_count >= 2,
             "a closed computed chain repeats its endpoint record"
         );
-        if let Some(emitted) = output.as_mut() {
-            if let Some(last) = emitted.last_mut() {
-                *last = first;
-            }
-        } else if points.nth_coord(point_count.wrapping_sub(1)) != first_source {
-            output = Some(canonical_prefix(
-                frame,
-                points,
-                point_count,
-                &vertex_intent,
-                zero_aliases,
-            )?);
-            if let Some(last) = output.as_mut().and_then(|emitted| emitted.last_mut()) {
-                *last = first;
-            }
-        }
     }
 
     Ok(output)
@@ -575,90 +852,134 @@ fn publish_chain_with_aliases<P: Coordinates + ?Sized>(
 
 #[expect(
     clippy::too_many_arguments,
-    clippy::float_cmp,
-    reason = "subdivision combines retained source and published endpoints with caller-owned provenance, interpolation and budget; dyadic endpoint identity is exact"
+    reason = "one publisher owns exact relation, original ordinal/parameters, carry callback and expansion budget"
 )]
-fn publish_stored_edge<P: Coordinates + ?Sized>(
+fn publish_retained_edge<'intent, P: Coordinates + ?Sized>(
     frame: GeographicFrame,
-    source_start: Point,
-    source_end: Point,
+    source_endpoints: [Point; 2],
     canonical_start: Point,
     canonical_end: Point,
-    intended_delta: f64,
+    relation: ComputedLongitudeRelation<'intent>,
+    mut end_sample: Option<SampledVertex<'intent>>,
     source_points: &P,
     edge_index: usize,
     budget: &mut ExpansionBudget,
-    interval: &mut impl FnMut(usize, Point, Point, f64, f64, f64) -> Result<ComputedEdgeInterval>,
+    closed_ring: bool,
+    edge_intents: &[ComputedEdgeIntent<'intent>],
     vertex_intent: &impl Fn(usize, Point) -> ComputedVertexIntent,
+    samples: &mut impl FnMut(
+        usize,
+        [Point; 2],
+        &ComputedLongitudeRelation<'intent>,
+        f64,
+        &RetainedComputedSample,
+    ) -> Result<ComputedSampleOrdinates>,
+    on_published: &mut impl FnMut(
+        usize,
+        [Point; 2],
+        &ComputedLongitudeRelation<'intent>,
+        f64,
+        &RetainedComputedSample,
+        Point,
+    ) -> Result<()>,
     zero_aliases: &[ZeroLongitudeAlias],
     output: &mut Option<Vec<Point>>,
 ) -> Result<()> {
-    if !intended_delta.is_finite() {
-        return Err(GeometryErrorKind::unrepresentable_output("computed edge"));
-    }
-    let intended_delta = if intended_delta == 0.0 {
-        0.0
-    } else {
-        intended_delta
-    };
-    if edge_reads_correctly(frame, canonical_start, canonical_end, intended_delta)? {
-        match output {
-            Some(emitted) => emitted.push(canonical_end),
-            None if canonical_end != source_end => {
-                *output = Some(canonical_prefix(
-                    frame,
-                    source_points,
-                    edge_index.wrapping_add(1),
-                    vertex_intent,
-                    zero_aliases,
-                )?);
-                output
-                    .as_mut()
-                    .expect("canonicalizing an endpoint allocates the output chain")
-                    .push(canonical_end);
-            },
-            None => {},
+    if relation.reads_as(frame, canonical_start.x, canonical_end.x, 0.0, 1.0)? {
+        if let Some(emitted) = output.as_mut() {
+            emitted.push(canonical_end);
+        } else if canonical_end != source_endpoints[1] || end_sample.is_some() {
+            *output = Some(canonical_prefix(
+                frame,
+                source_points,
+                edge_index.wrapping_add(1),
+                closed_ring,
+                edge_intents,
+                vertex_intent,
+                samples,
+                zero_aliases,
+            )?);
+            output
+                .as_mut()
+                .expect("canonicalizing an endpoint allocates the output chain")
+                .push(canonical_end);
         }
+        observe_sampled_vertex(end_sample.as_ref(), canonical_end, on_published)?;
         return Ok(());
     }
 
-    preflight_edge_expansion(intended_delta, frame, budget)?;
+    let piece_count = relation.split_piece_count(frame.longitude())?;
+    // `strict_subhalf_piece_count` returns at least two pieces.
+    budget.check_additional(piece_count.wrapping_sub(1))?;
     if output.is_none() {
         *output = Some(canonical_prefix(
             frame,
             source_points,
             edge_index.wrapping_add(1),
+            closed_ring,
+            edge_intents,
             vertex_intent,
+            samples,
             zero_aliases,
         )?);
     }
 
     let mut pending = vec![(0.0, 1.0)];
     while let Some((start_t, end_t)) = pending.pop() {
-        let piece = interval(
-            edge_index,
-            source_start,
-            source_end,
-            intended_delta,
-            start_t,
-            end_t,
-        )?;
-        let start = interval_endpoint(
-            frame,
-            piece.start,
-            (start_t == 0.0).then_some(canonical_start),
-        )?;
-        let end = interval_endpoint(frame, piece.end, (end_t == 1.0).then_some(canonical_end))?;
-        let piece_delta = piece.delta;
-        // The original edge already failed its reading probe. Its replacement
-        // pieces must not introduce half-turn records rejected by chart measures.
-        if piece_delta.abs() < frame.longitude().half_period()
-            && edge_reads_correctly(frame, start, end, piece_delta)?
-        {
+        let start_x = if start_t == 0.0 {
+            canonical_start.x
+        } else {
+            output
+                .as_ref()
+                .and_then(|points| points.last())
+                .expect("a left subdivision piece emits its shared endpoint")
+                .x
+        };
+        let mut generated_retained = None;
+        let end_x = if end_t == 1.0 {
+            canonical_end.x
+        } else {
+            let retained = relation.sample(frame.longitude(), end_t)?;
+            let longitude = retained.longitude.get();
+            generated_retained = Some(retained);
+            longitude
+        };
+        let class = relation.class(frame.longitude(), start_t, end_t)?;
+        let subhalf = matches!(
+            class,
+            RetainedLongitudeClass::Zero | RetainedLongitudeClass::Minor(_)
+        );
+        if subhalf && relation.reads_as(frame, start_x, end_x, start_t, end_t)? {
+            let (end, sampled_end) = if end_t == 1.0 {
+                (canonical_end, end_sample.take())
+            } else {
+                let retained = generated_retained
+                    .take()
+                    .expect("an interior subdivision endpoint has a retained sample");
+                let point = publish_sampled_point(
+                    edge_index,
+                    source_endpoints,
+                    relation,
+                    end_t,
+                    &retained,
+                    samples,
+                )?;
+                (
+                    point,
+                    Some(SampledVertex {
+                        edge_index,
+                        endpoints: source_endpoints,
+                        relation,
+                        parameter: end_t,
+                        retained,
+                    }),
+                )
+            };
             output
                 .as_mut()
                 .expect("subdivision allocates the output chain before visiting pieces")
                 .push(end);
+            observe_sampled_vertex(sampled_end.as_ref(), end, on_published)?;
             continue;
         }
 
@@ -673,42 +994,28 @@ fn publish_stored_edge<P: Coordinates + ?Sized>(
     Ok(())
 }
 
-fn preflight_edge_expansion(
-    intended_delta: f64,
-    frame: GeographicFrame,
-    budget: &ExpansionBudget,
-) -> Result<()> {
-    let minimum_pieces = (intended_delta.abs() / frame.longitude().half_period()).ceil();
-    if minimum_pieces > 1.0 {
-        budget.check_additional((minimum_pieces - 1.0) as usize)?;
-    }
-    Ok(())
-}
-
-#[expect(
-    clippy::float_cmp,
-    reason = "the stored chart step must equal the retained producer displacement, including signed zero equivalence"
-)]
-pub(crate) fn edge_reads_correctly(
-    frame: GeographicFrame,
-    start: Point,
-    end: Point,
-    intended_delta: f64,
-) -> Result<bool> {
-    let axis = frame.longitude();
-    if axis.ordinary_chart_edge(start.x, end.x) && end.x - start.x == intended_delta {
-        debug_assert_eq!(
-            axis.chart_step(start.x, end.x)
-                .expect("canonical ordinary endpoints are valid")
-                .delta(axis),
-            intended_delta
-        );
-        return Ok(true);
-    }
-    let reading = axis
-        .chart_step(start.x, end.x)
-        .map_err(map_geographic_error)?;
-    Ok(reading.delta(axis) == intended_delta)
+fn publish_sampled_point<'intent>(
+    edge_index: usize,
+    endpoints: [Point; 2],
+    relation: ComputedLongitudeRelation<'intent>,
+    parameter: f64,
+    retained: &RetainedComputedSample,
+    samples: &mut impl FnMut(
+        usize,
+        [Point; 2],
+        &ComputedLongitudeRelation<'intent>,
+        f64,
+        &RetainedComputedSample,
+    ) -> Result<ComputedSampleOrdinates>,
+) -> Result<Point> {
+    let ordinates = samples(edge_index, endpoints, &relation, parameter, retained)?;
+    let point = Point::new_axes(
+        retained.longitude.get(),
+        ordinates.y,
+        ordinates.z,
+        ordinates.m,
+    )?;
+    Ok(point)
 }
 
 fn certified_minor_reads(frame: GeographicFrame, start: Point, end: Point) -> bool {
@@ -719,87 +1026,48 @@ fn certified_minor_reads(frame: GeographicFrame, start: Point, end: Point) -> bo
     )
 }
 
-fn interpolate_chart_position(
-    start: Point,
-    end: Point,
-    intended_delta: f64,
-    parameter: f64,
-) -> Result<Point> {
-    let chart_end = start.x + intended_delta;
-    Point::new_axes(
-        interpolate_subdivision_ordinate(start.x, chart_end, parameter),
-        interpolate_subdivision_ordinate(start.y, end.y, parameter),
-        ZOrdinate(interpolate_optional_ordinate(start.z(), end.z(), parameter)),
-        MOrdinate(interpolate_optional_ordinate(start.m(), end.m(), parameter)),
-    )
-}
-
-fn interpolate_chart_interval(
-    start: Point,
-    end: Point,
-    intended_delta: f64,
-    start_t: f64,
-    end_t: f64,
-) -> Result<ComputedEdgeInterval> {
-    let interval_start = interpolate_chart_position(start, end, intended_delta, start_t)?;
-    let interval_end = interpolate_chart_position(start, end, intended_delta, end_t)?;
-    Ok(ComputedEdgeInterval {
-        start: interval_start,
-        end: interval_end,
-        delta: interval_end.x - interval_start.x,
-    })
-}
-
-fn interval_endpoint(
-    frame: GeographicFrame,
-    point: Point,
-    endpoint: Option<Point>,
-) -> Result<Point> {
-    endpoint.map_or_else(
-        || {
-            frame
-                .canonical_computed_point(point)
-                .map_err(map_geographic_error)
-        },
-        Ok,
-    )
-}
-
-fn canonical_prefix<P: Coordinates + ?Sized>(
+fn canonical_prefix<'intent, P: Coordinates + ?Sized>(
     frame: GeographicFrame,
     points: &P,
     end: usize,
+    closed_ring: bool,
+    edge_intents: &[ComputedEdgeIntent<'intent>],
     vertex_intent: &impl Fn(usize, Point) -> ComputedVertexIntent,
+    samples: &mut impl FnMut(
+        usize,
+        [Point; 2],
+        &ComputedLongitudeRelation<'intent>,
+        f64,
+        &RetainedComputedSample,
+    ) -> Result<ComputedSampleOrdinates>,
     zero_aliases: &[ZeroLongitudeAlias],
 ) -> Result<Vec<Point>> {
-    if end > points.coord_count() {
-        return Err(GeometryErrorKind::unrepresentable_output("computed chain"));
-    }
+    // Every caller passes edge_index+1 inside the immutable edge loop:
+    // edge_count is coord_count-1, so this prefix end is always in range.
     let mut output = Vec::with_capacity(points.coord_count());
     for index in 0..end {
         let point = points.nth_coord(index);
-        output.push(publish_vertex_at(
+        let preferred = if index == 0 {
+            Some((0, 0.0))
+        } else {
+            Some((index.wrapping_sub(1), 1.0))
+        };
+        let (point, _) = publish_vertex_at(
             frame,
+            points,
             point,
             index,
             vertex_intent(index, point),
+            edge_intents,
+            points.coord_count(),
+            closed_ring,
+            preferred,
+            samples,
             zero_aliases,
-        )?);
+        )?;
+        output.push(point);
     }
     Ok(output)
-}
-
-fn publish_vertex(
-    frame: GeographicFrame,
-    point: Point,
-    intent: ComputedVertexIntent,
-) -> Result<Point> {
-    match intent {
-        ComputedVertexIntent::Canonical => frame
-            .canonical_computed_point(point)
-            .map_err(map_geographic_error),
-        ComputedVertexIntent::Preserved => Ok(point),
-    }
 }
 
 fn map_geographic_error(error: GeographicError) -> crate::error::Error {
@@ -819,12 +1087,15 @@ fn map_geographic_error(error: GeographicError) -> crate::error::Error {
 #[cfg(test)]
 mod tests {
     use crate::geographic::{
-        AngularFactor, ChartStep, ComputedEdgeIntent, ComputedEdgeInterval, ComputedVertexIntent,
-        EdgeDirection, GeographicFrame, TurnDirection, publish_computed_chain,
-        publish_computed_chain_with_vertex_intents,
-        publish_computed_chain_with_vertex_intents_and_intervals,
+        AngularFactor, ChartStep, ComputedEdgeIntent, ComputedSampleOrdinates,
+        ComputedVertexIntent, EdgeDirection, GeographicFrame, RetainedChartDisplacement,
+        TurnDirection, publish_computed_chain, publish_computed_chain_with_vertex_intents,
+        publish_computed_chain_with_vertex_intents_and_samples,
     };
-    use crate::geometry::{ExpansionBudget, GeometryErrorKind, MOrdinate, Point, ZOrdinate};
+    use crate::geometry::{
+        ExpansionBudget, GeometryErrorKind, MOrdinate, Point, ZOrdinate,
+        interpolate_optional_ordinate, interpolate_subdivision_ordinate,
+    };
 
     fn degrees() -> GeographicFrame {
         GeographicFrame::crs84()
@@ -846,9 +1117,19 @@ mod tests {
         steps: &[f64],
     ) -> Vec<Point> {
         let mut budget = ExpansionBudget::new("test", "computed edges");
-        publish_computed_chain(frame, points, closed_ring, &mut budget, |index, _, _| {
-            Ok(ComputedEdgeIntent::displacement(steps[index]))
-        })
+        publish_computed_chain(
+            frame,
+            points,
+            closed_ring,
+            &mut budget,
+            |index, start, end| {
+                let step = *steps
+                    .get(index)
+                    .expect("each source edge has one retained test relation");
+                assert_eq!(step.to_bits(), (end.x - start.x).to_bits());
+                ComputedEdgeIntent::retained_binary64_pair(frame.longitude(), [start.x, end.x])
+            },
+        )
         .unwrap()
         .unwrap_or_else(|| points.to_vec())
     }
@@ -1033,9 +1314,11 @@ mod tests {
             false,
             &mut budget,
             |_, _, _| {
-                Ok(ComputedEdgeIntent::Stored(ChartStep::Circle(
-                    TurnDirection::Positive,
-                )))
+                ComputedEdgeIntent::retained_chart_witness(
+                    degrees(),
+                    [points[0].x, points[1].x],
+                    ChartStep::Circle(TurnDirection::Positive),
+                )
             },
         )
         .unwrap()
@@ -1100,6 +1383,63 @@ mod tests {
     }
 
     #[test]
+    fn sampled_closed_chain_observes_the_preserved_first_full_record() {
+        let first = Point::new_raw_axes(-0.0, 0.0, ZOrdinate(Some(3.0)), MOrdinate(Some(11.0)));
+        let middle = Point::new_raw_axes(10.0, 0.0, ZOrdinate(Some(7.0)), MOrdinate(Some(19.0)));
+        let top = Point::new_raw_axes(10.0, 10.0, ZOrdinate(Some(13.0)), MOrdinate(Some(23.0)));
+        let ring = [first, middle, top, first];
+        let mut budget = ExpansionBudget::new("sampled closure", "computed edges");
+        let mut interior_samples = 0_usize;
+        let mut observed = Vec::new();
+        let output = publish_computed_chain_with_vertex_intents_and_samples(
+            degrees(),
+            ring.as_slice(),
+            true,
+            &mut budget,
+            |_, start, end| {
+                ComputedEdgeIntent::retained_binary64_pair(degrees().longitude(), [start.x, end.x])
+            },
+            |index, _| {
+                if index == ring.len().wrapping_sub(1) {
+                    ComputedVertexIntent::Sampled
+                } else if index == 0 {
+                    ComputedVertexIntent::Preserved
+                } else {
+                    ComputedVertexIntent::Sampled
+                }
+            },
+            |_, [start, end], _, parameter, _| {
+                interior_samples = interior_samples.wrapping_add(1);
+                Ok(ComputedSampleOrdinates {
+                    y: interpolate_subdivision_ordinate(start.y, end.y, parameter),
+                    z: ZOrdinate(interpolate_optional_ordinate(start.z(), end.z(), parameter)),
+                    m: MOrdinate(interpolate_optional_ordinate(start.m(), end.m(), parameter)),
+                })
+            },
+            |edge, _, _, parameter, _, point| {
+                observed.push((edge, parameter, point));
+                Ok(())
+            },
+        )
+        .unwrap()
+        .unwrap();
+
+        assert_eq!(interior_samples, 0);
+        assert_eq!(output.first(), output.last());
+        assert_eq!(output[0].x.to_bits(), (-0.0_f64).to_bits());
+        assert_eq!(output[3].x.to_bits(), output[0].x.to_bits());
+        assert_eq!(output[3].z(), output[0].z());
+        assert_eq!(output[3].m(), output[0].m());
+        let (edge, parameter, observed_closure) = observed
+            .last()
+            .expect("publisher observes the closing sample");
+        assert_eq!((*edge, *parameter), (2, 1.0));
+        assert_eq!(observed_closure.x.to_bits(), output[0].x.to_bits());
+        assert_eq!(observed_closure.z(), output[0].z());
+        assert_eq!(observed_closure.m(), output[0].m());
+    }
+
+    #[test]
     fn split_computed_edges_keep_preserved_endpoint_records() {
         let points = [
             Point::new_raw_xy(370.0, 20.0),
@@ -1111,7 +1451,17 @@ mod tests {
             points.as_slice(),
             false,
             &mut budget,
-            |_, _, _| Ok(ComputedEdgeIntent::displacement(250.0)),
+            |_, _, _| {
+                let axis = degrees().longitude();
+                let edge = RetainedChartDisplacement::from_native_endpoints(
+                    [
+                        axis.canonicalize(points[0].x).unwrap(),
+                        axis.canonicalize(points[1].x).unwrap(),
+                    ],
+                    1,
+                );
+                Ok(ComputedEdgeIntent::retained_native(edge))
+            },
             |_, _| ComputedVertexIntent::Preserved,
         )
         .unwrap()
@@ -1156,7 +1506,9 @@ mod tests {
                 Ok(if index == 0 {
                     ComputedEdgeIntent::preserved(end.x - start.x == 0.0)
                 } else {
-                    ComputedEdgeIntent::displacement(end.x - start.x)
+                    ComputedEdgeIntent::retained_binary64_pair(degrees().longitude(), [
+                        start.x, end.x,
+                    ])?
                 })
             },
             |index, _| {
@@ -1186,7 +1538,9 @@ mod tests {
             points.as_slice(),
             false,
             &mut budget,
-            |_, _, _| Ok(ComputedEdgeIntent::displacement(0.0)),
+            |_, start, end| {
+                ComputedEdgeIntent::retained_binary64_pair(degrees().longitude(), [start.x, end.x])
+            },
         )
         .unwrap()
         .unwrap();
@@ -1211,9 +1565,11 @@ mod tests {
             false,
             &mut stored_budget,
             |_, _, _| {
-                Ok(ComputedEdgeIntent::Stored(ChartStep::Shortest(
-                    EdgeDirection::Minor(0.0),
-                )))
+                ComputedEdgeIntent::retained_chart_witness(
+                    degrees(),
+                    [points[0].x, points[1].x],
+                    ChartStep::Shortest(EdgeDirection::Minor(0.0)),
+                )
             },
         )
         .unwrap()
@@ -1222,34 +1578,33 @@ mod tests {
     }
 
     #[test]
-    fn canonical_interval_positions_do_not_replace_retained_chart_displacement() {
+    fn published_samples_keep_the_original_root_parameter_and_lift() {
         let points = [
             Point::new_raw_xy(10.0, 20.0),
             Point::new_raw_xy(260.0, 40.0),
         ];
         let frame = degrees();
         let mut budget = ExpansionBudget::new("exact interval", "computed edges");
-        let output = publish_computed_chain_with_vertex_intents_and_intervals(
+        let mut observed = Vec::new();
+        let output = publish_computed_chain_with_vertex_intents_and_samples(
             frame,
             points.as_slice(),
             false,
             &mut budget,
-            |_, _, _| Ok(ComputedEdgeIntent::displacement(250.0)),
-            |_, _| ComputedVertexIntent::Canonical,
-            |_, _, _, delta, start_t, end_t| {
-                let point_at = |parameter| {
-                    frame
-                        .canonical_computed_point(Point::new_raw_xy(
-                            10.0 + 250.0 * parameter,
-                            20.0 + 20.0 * parameter,
-                        ))
-                        .unwrap()
-                };
-                Ok(ComputedEdgeInterval {
-                    start: point_at(start_t),
-                    end: point_at(end_t),
-                    delta: delta * (end_t - start_t),
+            |_, start, end| {
+                ComputedEdgeIntent::retained_binary64_pair(frame.longitude(), [start.x, end.x])
+            },
+            |_, _| ComputedVertexIntent::Sampled,
+            |_, [start, end], _, parameter, _| {
+                Ok(ComputedSampleOrdinates {
+                    y: interpolate_subdivision_ordinate(start.y, end.y, parameter),
+                    z: ZOrdinate(None),
+                    m: MOrdinate(None),
                 })
+            },
+            |edge, _, _, parameter, retained, point| {
+                observed.push((edge, parameter, retained.longitude.get(), point));
+                Ok(())
             },
         )
         .unwrap()
@@ -1258,6 +1613,11 @@ mod tests {
             Point::new_raw_xy(10.0, 20.0),
             Point::new_raw_xy(135.0, 30.0),
             Point::new_raw_xy(-100.0, 40.0),
+        ]);
+        assert_eq!(observed, [
+            (0, 0.0, 10.0, Point::new_raw_xy(10.0, 20.0)),
+            (0, 0.5, 135.0, Point::new_raw_xy(135.0, 30.0)),
+            (0, 1.0, -100.0, Point::new_raw_xy(-100.0, 40.0)),
         ]);
     }
 
@@ -1276,7 +1636,9 @@ mod tests {
             points.as_slice(),
             true,
             &mut budget,
-            |_, start, end| Ok(ComputedEdgeIntent::displacement(end.x - start.x)),
+            |_, start, end| {
+                ComputedEdgeIntent::retained_binary64_pair(degrees().longitude(), [start.x, end.x])
+            },
             |index, _| {
                 if index == 1 {
                     ComputedVertexIntent::Preserved
@@ -1314,7 +1676,9 @@ mod tests {
                 Ok(if index == 0 {
                     ComputedEdgeIntent::preserved(true)
                 } else {
-                    ComputedEdgeIntent::displacement(end.x - start.x)
+                    ComputedEdgeIntent::retained_binary64_pair(degrees().longitude(), [
+                        start.x, end.x,
+                    ])?
                 })
             },
             |index, _| {
@@ -1362,7 +1726,18 @@ mod tests {
             points.as_slice(),
             false,
             &mut budget,
-            |_, _, _| Ok(ComputedEdgeIntent::displacement(0.0)),
+            |_, _, _| {
+                let axis = degrees().longitude();
+                Ok(ComputedEdgeIntent::retained_native(
+                    RetainedChartDisplacement::from_native_endpoints(
+                        [
+                            axis.canonicalize(points[0].x).unwrap(),
+                            axis.canonicalize(points[1].x).unwrap(),
+                        ],
+                        0,
+                    ),
+                ))
+            },
             |_, _| ComputedVertexIntent::Preserved,
         )
         .unwrap_err();
@@ -1400,7 +1775,27 @@ mod tests {
             Point::new_raw_xy(180.0, 70.0),
             Point::new_raw_xy(0.0, 70.0),
         ];
-        let output = publish(&ring, true, &[90.0, 90.0, 180.0]);
+        let frame = degrees();
+        let mut budget = ExpansionBudget::new("positive half cap", "computed edges");
+        let output = publish_computed_chain(
+            frame,
+            ring.as_slice(),
+            true,
+            &mut budget,
+            |index, start, end| {
+                if index == 2 {
+                    ComputedEdgeIntent::retained_chart_witness(
+                        frame,
+                        [start.x, end.x],
+                        ChartStep::Shortest(EdgeDirection::HalfTurn(TurnDirection::Positive)),
+                    )
+                } else {
+                    ComputedEdgeIntent::retained_binary64_pair(frame.longitude(), [start.x, end.x])
+                }
+            },
+        )
+        .unwrap()
+        .unwrap();
         assert_eq!(output, [
             ring[0],
             ring[1],

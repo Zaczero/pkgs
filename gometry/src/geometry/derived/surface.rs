@@ -1,3 +1,5 @@
+use std::ops::ControlFlow;
+
 use super::centroid::{centroid_line_columns, lineal_centroid};
 use crate::error::Result;
 use crate::geometry::{
@@ -278,19 +280,62 @@ pub(crate) fn multipoint_surface_point(xs: &[f64], ys: &[f64]) -> Option<Point> 
         return None;
     }
     let (centroid_x, centroid_y) = column_mean2(xs, ys)?;
-    let centroid = Point::new_raw_xy(centroid_x, centroid_y);
+    multipoint_surface_point_at(
+        xs,
+        ys,
+        Point::new_raw_xy(centroid_x, centroid_y),
+    )
+}
+
+pub(crate) fn multipoint_surface_point_at(
+    xs: &[f64],
+    ys: &[f64],
+    centroid: Point,
+) -> Option<Point> {
+    let count = xs.len();
+    if count == 0 {
+        return None;
+    }
+    debug_assert_eq!(xs.len(), ys.len());
     let score =
         |index: usize| squared_xy_distance(Point::new_raw_xy(xs[index], ys[index]), centroid);
     let nearest = simd_argmin_f64(count, score, |start| {
         let chunk = start / REDUCE_LANES;
         let (x_chunks, _) = xs.as_chunks::<REDUCE_LANES>();
         let (y_chunks, _) = ys.as_chunks::<REDUCE_LANES>();
-        let dx = ReduceSimd::from_array(x_chunks[chunk]) - ReduceSimd::splat(centroid_x);
-        let dy = ReduceSimd::from_array(y_chunks[chunk]) - ReduceSimd::splat(centroid_y);
+        let dx = ReduceSimd::from_array(x_chunks[chunk]) - ReduceSimd::splat(centroid.x);
+        let dy = ReduceSimd::from_array(y_chunks[chunk]) - ReduceSimd::splat(centroid.y);
         dx * dx + dy * dy
     })
     .expect("non-empty multipoint");
     Some(Point::new_raw_xy(xs[nearest], ys[nearest]))
+}
+
+/// Point-set representative using a center already computed by the shared
+/// centroid owner. Candidate order follows first source occurrence; repeated
+/// shared collection owners are visited once because they add no new site.
+pub(crate) fn point_set_surface_point_at(shape: &Shape, center: Point) -> Option<Point> {
+    match shape {
+        Shape::Point(point) => Some(Point::new_raw_xy(point.x, point.y)),
+        Shape::MultiPoint(points) => multipoint_surface_point_at(points.xs(), points.ys(), center),
+        Shape::GeometryCollection(_) => {
+            let mut best: Option<(f64, Point)> = None;
+            let _ = shape.try_for_each_first_point_run::<()>(|point| {
+                let candidate = Point::new_raw_xy(point.x, point.y);
+                let distance = squared_xy_distance(candidate, center);
+                if best.is_none_or(|(current, _)| distance.total_cmp(&current).is_lt()) {
+                    best = Some((distance, candidate));
+                }
+                ControlFlow::<()>::Continue(())
+            });
+            best.map(|(_, point)| point)
+        },
+        Shape::LineString(_)
+        | Shape::MultiLineString(_)
+        | Shape::Polygon(_)
+        | Shape::MultiPolygon(_)
+        | Shape::Empty(..) => None,
+    }
 }
 
 /// Flatten a (possibly nested) collection into its areal, lineal, and puntal

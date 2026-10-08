@@ -887,6 +887,12 @@ pub(crate) fn unary_antimeridian_derived(
     kernel: impl FnOnce(&Shape) -> Result<Shape>,
 ) -> Result<Shape> {
     if let TopologyDomain::Geographic(frame) = domain
+        && matches!(strategy, DerivedPointStrategy::Interior)
+        && let Some(point) = crate::geographic::chart::point_set_surface(shape, frame)?
+    {
+        return Ok(point);
+    }
+    if let TopologyDomain::Geographic(frame) = domain
         && matches!(strategy, DerivedPointStrategy::Centroid)
         && matches!(
             shape,
@@ -913,6 +919,9 @@ pub(crate) fn unary_antimeridian_centroid(shape: &Shape, domain: TopologyDomain)
     let TopologyDomain::Geographic(frame) = domain else {
         return shape.centroid();
     };
+    if let Some(point) = crate::geographic::chart::point_set_centroid(shape, frame)? {
+        return Ok(point);
+    }
     if !matches!(shape, Shape::Polygon(_) | Shape::MultiPolygon(_)) {
         return unary_antimeridian_derived(
             shape,

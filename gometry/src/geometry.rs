@@ -125,8 +125,10 @@ pub(crate) use dimension::{Dimension, dimension, ring_is_collinear};
 mod derived;
 pub(crate) use derived::{
     centroid_line_row_columns, centroid_polygon_row_columns,
-    centroid_polygon_row_columns_with_bounds, geometric_xy_cmp, native_concave_hull,
-    point_on_surface_line_columns, point_on_surface_polygon_row_columns, shape_from_selected_hull,
+    centroid_polygon_row_columns_with_bounds, exact_point_chart_centroid, geometric_xy_cmp,
+    minimum_area_rectangle_chart, monotone_chain_chart_hull, native_concave_hull,
+    point_on_surface_line_columns, point_on_surface_polygon_row_columns,
+    point_set_centroid_with_bounds, point_set_surface_point_at, shape_from_selected_hull,
     smallest_enclosing_circle,
 };
 mod distance;
@@ -350,6 +352,7 @@ pub(crate) use segments::{
 };
 pub(crate) use segments::{point_segment_distance, point_segment_selection, segment_projection};
 pub(in crate::geometry) use segments::{try_dedup_by, try_sort_by};
+pub(crate) use tessellation::exact::ExactRational;
 pub(crate) use tessellation::{CdtRefinement, VoronoiPolygonOutput, row_sample_seed};
 use tessellation::{delaunay_triangulation, point_in_ccw_triangle};
 pub(in crate::geometry) use types::GeographicMetricKey;
@@ -394,7 +397,7 @@ pub(crate) fn nearest_line_with_intent(
     pair: Option<&(Point, Point)>,
     common: CoordinateAxes,
     frame: crate::geographic::GeographicFrame,
-    intent: crate::geographic::ComputedEdgeIntent,
+    intent: crate::geographic::ComputedEdgeIntent<'_>,
 ) -> Result<Shape> {
     let Some(pair) = pair else {
         return nearest_line(None, common);

@@ -63,6 +63,25 @@ fn minimum_rotated_rectangle_multipoint_matches_hull_rectangle() {
     assert!(expected_area > 0.0);
 }
 
+#[test]
+fn minimum_rotated_rectangle_preserves_point_identity_and_ordinates() {
+    let point = Point::new_axes(
+        -42.25,
+        11.125,
+        ZOrdinate(Some(99.5)),
+        MOrdinate(Some(-88.75)),
+    )
+    .unwrap();
+    let source = Shape::Point(point);
+
+    assert_eq!(
+        source
+            .minimum_rotated_rectangle()
+            .expect("point rectangle identity"),
+        source
+    );
+}
+
 fn point(x: f64, y: f64) -> Point {
     Point::new_raw_xy(x, y)
 }

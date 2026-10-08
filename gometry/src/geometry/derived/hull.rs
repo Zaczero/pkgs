@@ -110,6 +110,65 @@ pub(crate) fn monotone_chain_hull(points: &[Point]) -> Vec<usize> {
     hull
 }
 
+/// Monotone chain over point sites in one retained periodic chart.
+///
+/// Lexicographic X comparison uses the exact native window/lift pair and
+/// turn decisions evaluate those same retained expressions. Rounded chart X
+/// is never used to order or merge sites.
+#[expect(
+    clippy::indexing_slicing,
+    reason = "monotone-chain indices are constructed from this admitted site slice"
+)]
+pub(crate) fn monotone_chain_chart_hull(
+    sites: &[crate::geographic::ChartPointSite],
+    frame: crate::geographic::GeographicFrame,
+) -> Result<Vec<usize>> {
+    let mut indices = (0..sites.len()).collect::<Vec<_>>();
+    indices.sort_unstable_by(|&left, &right| sites[left].compare_chart_xy(sites[right]));
+    if indices.len() <= 2 {
+        return Ok(indices);
+    }
+
+    let mut hull: Vec<usize> = Vec::with_capacity(indices.len());
+    for &site in &indices {
+        while hull.len() >= 2 {
+            let previous = *hull.get(hull.len() - 2).expect("two-site suffix");
+            let current = *hull.last().expect("nonempty hull");
+            let turn =
+                crate::geometry::exact_arith::retained_site_orientation(frame.longitude(), [
+                    (sites[previous].longitude(), sites[previous].source_y()),
+                    (sites[current].longitude(), sites[current].source_y()),
+                    (sites[site].longitude(), sites[site].source_y()),
+                ])?;
+            if turn == crate::geometry::exact_arith::ExactSign::Positive {
+                break;
+            }
+            hull.pop();
+        }
+        hull.push(site);
+    }
+    let lower_len = hull.len();
+    for &site in indices.iter().rev().skip(1) {
+        while hull.len() > lower_len {
+            let previous = *hull.get(hull.len() - 2).expect("two-site suffix");
+            let current = *hull.last().expect("nonempty hull");
+            let turn =
+                crate::geometry::exact_arith::retained_site_orientation(frame.longitude(), [
+                    (sites[previous].longitude(), sites[previous].source_y()),
+                    (sites[current].longitude(), sites[current].source_y()),
+                    (sites[site].longitude(), sites[site].source_y()),
+                ])?;
+            if turn == crate::geometry::exact_arith::ExactSign::Positive {
+                break;
+            }
+            hull.pop();
+        }
+        hull.push(site);
+    }
+    hull.pop();
+    Ok(hull)
+}
+
 /// Akl–Toussaint pre-filter: points strictly inside the convex quad of the
 /// four axis extremes can never be hull vertices — discard them before the
 /// sort (the hull cost at scale). The inside test is plain-float crosses
