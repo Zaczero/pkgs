@@ -169,7 +169,9 @@ impl ExactFactorialArea {
             if degree == 0 {
                 denominator = ExactDyadic::from_i64(2);
             } else {
-                let factor = i64::try_from(degree + 2)
+                // Both callers zip non-ZST ExactDyadic slices, so their
+                // representable lengths bound degree and prevent wrapping.
+                let factor = i64::try_from(degree.wrapping_add(2))
                     .map_err(|_| crate::error::ResourceError::SizeOverflow)?;
                 let factor = ExactDyadic::from_i64(factor);
                 numerator = numerator.try_product(&factor)?;
@@ -183,7 +185,7 @@ impl ExactFactorialArea {
         })
     }
 
-    pub(in crate::geometry) fn sign(&self) -> ExactSign {
+    pub(in crate::geometry) const fn sign(&self) -> ExactSign {
         self.numerator.sign()
     }
 
