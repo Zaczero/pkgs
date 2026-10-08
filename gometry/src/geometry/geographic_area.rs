@@ -1738,9 +1738,6 @@ impl PositiveBound {
             return Some(Self::ZERO);
         }
         let normalized = Self::from_f64(mantissa)?;
-        if normalized.is_zero() {
-            return Some(Self::ZERO);
-        }
         Some(Self {
             exponent: normalized.exponent.checked_add(exponent)?,
             ..normalized
