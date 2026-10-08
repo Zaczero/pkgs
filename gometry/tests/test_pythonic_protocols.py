@@ -246,6 +246,82 @@ def test_overlay_operators_equal_named_methods() -> None:
         _ = a & gm.box(0, 0, 1, 1, crs=4326)
 
 
+@pytest.mark.parametrize(
+    ('method', 'expected_area'),
+    [
+        pytest.param('__rand__', 2.0, id='intersection'),
+        pytest.param('__ror__', 6.0, id='union'),
+        pytest.param('__rxor__', 4.0, id='symmetric-difference'),
+        pytest.param('__rsub__', 2.0, id='difference'),
+    ],
+)
+def test_reflected_overlay_same_family_known_answers(
+    method: str, expected_area: float
+) -> None:
+    left = gm.box(0, 0, 2, 2)
+    right = gm.box(1, 0, 3, 2)
+
+    scalar_result = getattr(left, method)(right)
+    assert isinstance(scalar_result, gm.Geometry)
+    assert scalar_result.area == expected_area
+
+    left_array = gm.GeometryArray([left, None])
+    right_array = gm.GeometryArray([right, right])
+    array_result = getattr(left_array, method)(right_array)
+    assert isinstance(array_result, gm.GeometryArray)
+    assert array_result[0].area == expected_area
+    assert array_result[1] is None
+
+
+def test_reflected_difference_uses_other_operand() -> None:
+    left = gm.box(0, 0, 2, 2)
+    right = gm.box(1, 0, 3, 2)
+    result = left.__rsub__(right)
+    assert result.bounds == (2.0, 0.0, 3.0, 2.0)
+
+    left_array = gm.GeometryArray([left, None])
+    right_array = gm.GeometryArray([right, right])
+    array_result = left_array.__rsub__(right_array)
+    assert array_result[0].bounds == (2.0, 0.0, 3.0, 2.0)
+    assert array_result[1] is None
+
+    point = gm.Point(1, 1)
+    polygon = gm.box(0, 0, 2, 2)
+    assert type(point.__rsub__(polygon)) is gm.Polygon
+    assert type(polygon.__rsub__(point)) is gm.Point
+
+
+@pytest.mark.parametrize(
+    'method',
+    [
+        pytest.param('__rand__', id='intersection'),
+        pytest.param('__ror__', id='union'),
+        pytest.param('__rsub__', id='difference'),
+        pytest.param('__rxor__', id='symmetric-difference'),
+    ],
+)
+def test_reflected_overlay_cross_family_declines(method: str) -> None:
+    geometry = gm.box(0, 0, 2, 2)
+    other_geometry = gm.box(1, 0, 3, 2)
+    geometry_array = gm.GeometryArray([other_geometry, None])
+
+    assert getattr(geometry, method)(geometry_array) is NotImplemented
+    assert getattr(geometry_array, method)(geometry) is NotImplemented
+    assert getattr(geometry, method)(7) is NotImplemented
+    assert getattr(geometry_array, method)(7) is NotImplemented
+
+
+def test_mixed_scalar_array_infix_overlay_still_broadcasts() -> None:
+    geometry = gm.box(0, 0, 2, 2)
+    other_geometry = gm.box(1, 0, 3, 2)
+    geometry_array = gm.GeometryArray([other_geometry, None])
+
+    mixed_infix = geometry & geometry_array
+    assert isinstance(mixed_infix, gm.GeometryArray)
+    assert mixed_infix[0].area == 2.0
+    assert mixed_infix[1] is None
+
+
 def test_str_is_wkt_and_repr_keeps_the_frame() -> None:
     point = gm.Point(1.205, 5.0, crs=4326)
     assert str(point) == point.to_wkt() == 'POINT (1.205 5)'

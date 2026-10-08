@@ -130,6 +130,10 @@ if TYPE_CHECKING:
     # Geometry operators take geometries, not numbers.
     POINT & 1.0  # type: ignore[operator]
 
+    # Reflected difference narrows from the other (left) operand, not self.
+    _bad_reflected_scalar: gm.Point = POINT.__rsub__(POLY)  # type: ignore[assignment]
+    _bad_reflected_array: gm.GeometryArray[gm.Point] = POINTS.__rsub__(GEOMS)  # type: ignore[assignment]
+
     # Covariance points one way: a Geometry array is not a Point array.
     _pts: gm.GeometryArray[gm.Point] = GEOMS  # type: ignore[assignment]
 

@@ -19,6 +19,7 @@ static type.
 
 from __future__ import annotations
 
+import types
 from typing import TYPE_CHECKING, Any, TypeVar, assert_type, cast
 
 import gometry as gm
@@ -285,6 +286,13 @@ def _check_overlay_narrowing(
     polygons: gm.GeometryArray[gm.Polygon],
     nullable_points: gm.GeometryArray[gm.Point | None],
     nullable_polygons: gm.GeometryArray[gm.Polygon | None],
+    nullable_multipoints: gm.GeometryArray[gm.MultiPoint | None],
+    geometry: gm.Geometry,
+    line: gm.LineString,
+    multilinestring: gm.MultiLineString,
+    multipolygon: gm.MultiPolygon,
+    collection: gm.GeometryCollection,
+    other: object,
 ) -> None:
     assert_type(gm.intersection(point, polygon), gm.Point)
     assert_type(gm.intersection(polygon, point), gm.Point)
@@ -345,6 +353,123 @@ def _check_overlay_narrowing(
     assert_type(points - polygons, gm.GeometryArray[gm.Point])
     assert_type(points | multipoints, gm.GeometryArray[gm.Point | gm.MultiPoint])
     assert_type(polygons & polygons, gm.GeometryArray[gm.Geometry])
+
+    # Direct reflected calls are narrower by the left (other) operand.
+    assert_type(point.__rand__(polygon), gm.Point)
+    assert_type(polygon.__rand__(point), gm.Point)
+    assert_type(multipoint.__rand__(polygon), gm.MultiPoint | gm.Point)
+    assert_type(multipoint.__rand__(point), gm.Point)
+    assert_type(point.__ror__(multipoint), gm.Point | gm.MultiPoint)
+    assert_type(point.__rxor__(polygon), gm.Geometry)
+    assert_type(multipoint.__ror__(point), gm.Point | gm.MultiPoint)
+    assert_type(point.__rsub__(polygon), gm.Geometry)
+    assert_type(polygon.__rsub__(point), gm.Point)
+    assert_type(multipoint.__rsub__(point), gm.Point)
+    assert_type(polygon.__rsub__(multipoint), gm.MultiPoint | gm.Point)
+    assert_type(geometry.__rsub__(point), gm.Point)
+    assert_type(line.__rsub__(point), gm.Point)
+    assert_type(multilinestring.__rsub__(point), gm.Point)
+    assert_type(multipolygon.__rsub__(point), gm.Point)
+    assert_type(collection.__rsub__(point), gm.Point)
+
+    # Array reflection accepts another array and preserves either side's
+    # nullability; subtraction's kind narrowing follows the other array.
+    assert_type(points.__rand__(polygons), gm.GeometryArray[gm.Point])
+    assert_type(polygons.__rand__(points), gm.GeometryArray[gm.Point])
+    assert_type(
+        multipoints.__rand__(polygons),
+        gm.GeometryArray[gm.MultiPoint | gm.Point],
+    )
+    assert_type(
+        polygons.__rand__(multipoints),
+        gm.GeometryArray[gm.MultiPoint | gm.Point],
+    )
+    assert_type(
+        nullable_points.__rand__(polygons),
+        gm.GeometryArray[gm.Point | None],
+    )
+    assert_type(
+        points.__rand__(nullable_polygons),
+        gm.GeometryArray[gm.Point | None],
+    )
+    assert_type(
+        nullable_multipoints.__rand__(polygons),
+        gm.GeometryArray[gm.MultiPoint | gm.Point | None],
+    )
+    assert_type(
+        multipoints.__rand__(nullable_polygons),
+        gm.GeometryArray[gm.MultiPoint | gm.Point | None],
+    )
+    assert_type(
+        points.__ror__(multipoints),
+        gm.GeometryArray[gm.Point | gm.MultiPoint],
+    )
+    assert_type(
+        multipoints.__rxor__(points),
+        gm.GeometryArray[gm.Point | gm.MultiPoint],
+    )
+    assert_type(
+        nullable_points.__ror__(multipoints),
+        gm.GeometryArray[gm.Point | gm.MultiPoint | None],
+    )
+    assert_type(
+        points.__rxor__(nullable_multipoints),
+        gm.GeometryArray[gm.Point | gm.MultiPoint | None],
+    )
+    assert_type(
+        points.__rsub__(polygons),
+        gm.GeometryArray[gm.Geometry],
+    )
+    assert_type(
+        polygons.__rsub__(points),
+        gm.GeometryArray[gm.Point],
+    )
+    assert_type(
+        points.__rsub__(multipoints),
+        gm.GeometryArray[gm.MultiPoint | gm.Point],
+    )
+    assert_type(
+        multipoints.__rsub__(points),
+        gm.GeometryArray[gm.Point],
+    )
+    assert_type(
+        nullable_points.__rsub__(polygons),
+        gm.GeometryArray[gm.Geometry | None],
+    )
+    assert_type(
+        points.__rsub__(nullable_polygons),
+        gm.GeometryArray[gm.Geometry | None],
+    )
+    assert_type(
+        nullable_points.__rsub__(multipoints),
+        gm.GeometryArray[gm.MultiPoint | gm.Point | None],
+    )
+    assert_type(
+        points.__rsub__(nullable_multipoints),
+        gm.GeometryArray[gm.MultiPoint | gm.Point | None],
+    )
+
+    # These descriptors decline cross-family calls directly, despite mixed
+    # scalar/array infix operations being supported by the forward slots.
+    assert_type(polygon.__rand__(points), types.NotImplementedType)
+    assert_type(polygon.__ror__(points), types.NotImplementedType)
+    assert_type(polygon.__rsub__(points), types.NotImplementedType)
+    assert_type(polygon.__rxor__(points), types.NotImplementedType)
+    assert_type(points.__rand__(polygon), types.NotImplementedType)
+    assert_type(points.__ror__(polygon), types.NotImplementedType)
+    assert_type(points.__rsub__(polygon), types.NotImplementedType)
+    assert_type(points.__rxor__(polygon), types.NotImplementedType)
+    assert_type(point.__rand__(polygons), types.NotImplementedType)
+
+    # An object-typed operand may be a supported Geometry or GeometryArray.
+    assert_type(
+        point.__rand__(other),
+        gm.Point | types.NotImplementedType,
+    )
+    assert_type(
+        points.__rsub__(other),
+        gm.GeometryArray[gm.Geometry | None] | types.NotImplementedType,
+    )
 
 
 class _ArrowStream:

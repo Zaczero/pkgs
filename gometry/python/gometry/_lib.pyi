@@ -12,6 +12,12 @@
 # Native sequence methods keep their runtime-accurate signatures rather than
 # widening them to match collections.abc.Sequence's protocol declarations.
 # pyright: reportIncompatibleMethodOverride=false
+# Mypy models each reflected dunder as a competing infix overload. PyO3 instead
+# generates both directions from one type slot, so the direct reflected
+# descriptor can return NotImplemented where the corresponding infix operation
+# succeeds through the other class's forward slot. The local `misc` ignores on
+# reflected overloads preserve that distinction; assert_type and runtime tests
+# cover both call paths.
 import sys
 import types
 from collections.abc import (
@@ -843,6 +849,19 @@ class Geometry:
     ) -> Geometry | GeometryArray[Geometry | None]:
         """Return self&value."""
     @overload
+    def __rand__(self, other: Point, /) -> Point: ...  # type: ignore[misc]
+    @overload
+    def __rand__(self, other: MultiPoint, /) -> MultiPoint | Point: ...  # type: ignore[misc]
+    @overload
+    def __rand__(self, other: Geometry, /) -> Geometry: ...
+    @overload
+    def __rand__(  # type: ignore[misc]
+        self, other: GeometryArray[Geometry | None], /
+    ) -> types.NotImplementedType: ...
+    @overload
+    def __rand__(self, other: object, /) -> Geometry | types.NotImplementedType:
+        """Return value&self."""
+    @overload
     def __or__(self, other: Point | MultiPoint, /) -> Geometry: ...
     @overload
     def __or__(
@@ -868,6 +887,17 @@ class Geometry:
     ) -> Geometry | GeometryArray[Geometry | None]:
         """Return self|value."""
     @overload
+    def __ror__(self, other: Point | MultiPoint, /) -> Geometry: ...  # type: ignore[misc]
+    @overload
+    def __ror__(self, other: Geometry, /) -> Geometry: ...
+    @overload
+    def __ror__(  # type: ignore[misc]
+        self, other: GeometryArray[Geometry | None], /
+    ) -> types.NotImplementedType: ...
+    @overload
+    def __ror__(self, other: object, /) -> Geometry | types.NotImplementedType:
+        """Return value|self."""
+    @overload
     def __sub__(self, other: Geometry, /) -> Geometry: ...
     @overload
     def __sub__(
@@ -882,6 +912,19 @@ class Geometry:
         self, other: Geometry | GeometryArray[Geometry | None], /
     ) -> Geometry | GeometryArray[Geometry | None]:
         """Return self-value."""
+    @overload
+    def __rsub__(self, other: Point, /) -> Point: ...  # type: ignore[misc]
+    @overload
+    def __rsub__(self, other: MultiPoint, /) -> MultiPoint | Point: ...  # type: ignore[misc]
+    @overload
+    def __rsub__(self, other: Geometry, /) -> Geometry: ...
+    @overload
+    def __rsub__(  # type: ignore[misc]
+        self, other: GeometryArray[Geometry | None], /
+    ) -> types.NotImplementedType: ...
+    @overload
+    def __rsub__(self, other: object, /) -> Geometry | types.NotImplementedType:
+        """Return value-self."""
     @overload
     def __xor__(self, other: Point | MultiPoint, /) -> Geometry: ...
     @overload
@@ -907,6 +950,17 @@ class Geometry:
         self, other: Geometry | GeometryArray[Geometry | None], /
     ) -> Geometry | GeometryArray[Geometry | None]:
         """Return self^value."""
+    @overload
+    def __rxor__(self, other: Point | MultiPoint, /) -> Geometry: ...  # type: ignore[misc]
+    @overload
+    def __rxor__(self, other: Geometry, /) -> Geometry: ...
+    @overload
+    def __rxor__(  # type: ignore[misc]
+        self, other: GeometryArray[Geometry | None], /
+    ) -> types.NotImplementedType: ...
+    @overload
+    def __rxor__(self, other: object, /) -> Geometry | types.NotImplementedType:
+        """Return value^self."""
     def __bool__(self) -> bool:
         """``False`` when the geometry is empty; ``True`` otherwise.
 
@@ -4693,6 +4747,19 @@ class Point(Geometry):
     ) -> Point | GeometryArray[Point | None]:
         """Return self&value."""
     @overload
+    def __rand__(self, other: Point, /) -> Point: ...
+    @overload
+    def __rand__(self, other: MultiPoint, /) -> Point: ...  # type: ignore[misc]
+    @overload
+    def __rand__(self, other: Geometry, /) -> Point: ...
+    @overload
+    def __rand__(  # type: ignore[misc]
+        self, other: GeometryArray[Geometry | None], /
+    ) -> types.NotImplementedType: ...
+    @overload
+    def __rand__(self, other: object, /) -> Point | types.NotImplementedType:
+        """Return value&self."""
+    @overload
     def __sub__(self, other: Geometry, /) -> Point: ...
     @overload
     def __sub__(self, other: GeometryArray[_GeometryT], /) -> GeometryArray[Point]: ...
@@ -4731,6 +4798,17 @@ class Point(Geometry):
     ) -> Geometry | GeometryArray[Geometry | None]:
         """Return self|value."""
     @overload
+    def __ror__(self, other: Point | MultiPoint, /) -> Point | MultiPoint: ...
+    @overload
+    def __ror__(self, other: Geometry, /) -> Geometry: ...
+    @overload
+    def __ror__(  # type: ignore[misc]
+        self, other: GeometryArray[Geometry | None], /
+    ) -> types.NotImplementedType: ...
+    @overload
+    def __ror__(self, other: object, /) -> Geometry | types.NotImplementedType:
+        """Return value|self."""
+    @overload
     def __xor__(self, other: Point | MultiPoint, /) -> Point | MultiPoint: ...
     @overload
     def __xor__(
@@ -4755,6 +4833,17 @@ class Point(Geometry):
         self, other: Geometry | GeometryArray[Geometry | None], /
     ) -> Geometry | GeometryArray[Geometry | None]:
         """Return self^value."""
+    @overload
+    def __rxor__(self, other: Point | MultiPoint, /) -> Point | MultiPoint: ...
+    @overload
+    def __rxor__(self, other: Geometry, /) -> Geometry: ...
+    @overload
+    def __rxor__(  # type: ignore[misc]
+        self, other: GeometryArray[Geometry | None], /
+    ) -> types.NotImplementedType: ...
+    @overload
+    def __rxor__(self, other: object, /) -> Geometry | types.NotImplementedType:
+        """Return value^self."""
 
 @final
 class MultiPoint(Geometry):
@@ -5014,6 +5103,21 @@ class MultiPoint(Geometry):
     ) -> MultiPoint | Point | GeometryArray[MultiPoint | Point | None]:
         """Return self&value."""
     @overload
+    def __rand__(self, other: Point, /) -> Point: ...  # type: ignore[misc]
+    @overload
+    def __rand__(self, other: MultiPoint, /) -> MultiPoint | Point: ...
+    @overload
+    def __rand__(self, other: Geometry, /) -> MultiPoint | Point: ...
+    @overload
+    def __rand__(  # type: ignore[misc]
+        self, other: GeometryArray[Geometry | None], /
+    ) -> types.NotImplementedType: ...
+    @overload
+    def __rand__(
+        self, other: object, /
+    ) -> MultiPoint | Point | types.NotImplementedType:
+        """Return value&self."""
+    @overload
     def __sub__(self, other: Geometry, /) -> MultiPoint | Point: ...
     @overload
     def __sub__(
@@ -5054,6 +5158,17 @@ class MultiPoint(Geometry):
     ) -> Geometry | GeometryArray[Geometry | None]:
         """Return self|value."""
     @overload
+    def __ror__(self, other: Point | MultiPoint, /) -> Point | MultiPoint: ...
+    @overload
+    def __ror__(self, other: Geometry, /) -> Geometry: ...
+    @overload
+    def __ror__(  # type: ignore[misc]
+        self, other: GeometryArray[Geometry | None], /
+    ) -> types.NotImplementedType: ...
+    @overload
+    def __ror__(self, other: object, /) -> Geometry | types.NotImplementedType:
+        """Return value|self."""
+    @overload
     def __xor__(self, other: Point | MultiPoint, /) -> Point | MultiPoint: ...
     @overload
     def __xor__(
@@ -5078,6 +5193,17 @@ class MultiPoint(Geometry):
         self, other: Geometry | GeometryArray[Geometry | None], /
     ) -> Geometry | GeometryArray[Geometry | None]:
         """Return self^value."""
+    @overload
+    def __rxor__(self, other: Point | MultiPoint, /) -> Point | MultiPoint: ...
+    @overload
+    def __rxor__(self, other: Geometry, /) -> Geometry: ...
+    @overload
+    def __rxor__(  # type: ignore[misc]
+        self, other: GeometryArray[Geometry | None], /
+    ) -> types.NotImplementedType: ...
+    @overload
+    def __rxor__(self, other: object, /) -> Geometry | types.NotImplementedType:
+        """Return value^self."""
 
 @final
 class LineString(Geometry):
@@ -6266,6 +6392,79 @@ class GeometryArray(Sequence[_GeometryT_co]):
     ) -> GeometryArray[Geometry | None]:
         """Return self&value."""
     @overload
+    def __rand__(  # type: ignore[misc]
+        self: GeometryArray[Point],
+        other: GeometryArray[_GeometryOtherT],
+        /,
+    ) -> GeometryArray[Point]: ...
+    @overload
+    def __rand__(  # type: ignore[misc]
+        self: GeometryArray[_GeometryT],
+        other: GeometryArray[Point],
+        /,
+    ) -> GeometryArray[Point]: ...
+    @overload
+    def __rand__(  # type: ignore[misc]
+        self: GeometryArray[MultiPoint],
+        other: GeometryArray[_GeometryOtherT],
+        /,
+    ) -> GeometryArray[MultiPoint | Point]: ...
+    @overload
+    def __rand__(  # type: ignore[misc]
+        self: GeometryArray[_GeometryT],
+        other: GeometryArray[MultiPoint],
+        /,
+    ) -> GeometryArray[MultiPoint | Point]: ...
+    @overload
+    def __rand__(  # type: ignore[misc]
+        self: GeometryArray[Point | None],
+        other: GeometryArray[_GeometryOtherT | None],
+        /,
+    ) -> GeometryArray[Point | None]: ...
+    @overload
+    def __rand__(  # type: ignore[misc]
+        self: GeometryArray[_GeometryT | None],
+        other: GeometryArray[Point | None],
+        /,
+    ) -> GeometryArray[Point | None]: ...
+    @overload
+    def __rand__(  # type: ignore[misc]
+        self: GeometryArray[MultiPoint | None],
+        other: GeometryArray[_GeometryOtherT | None],
+        /,
+    ) -> GeometryArray[MultiPoint | Point | None]: ...
+    @overload
+    def __rand__(  # type: ignore[misc]
+        self: GeometryArray[_GeometryT | None],
+        other: GeometryArray[MultiPoint | None],
+        /,
+    ) -> GeometryArray[MultiPoint | Point | None]: ...
+    @overload
+    def __rand__(  # type: ignore[misc]
+        self: GeometryArray[_GeometryT],
+        other: GeometryArray[_GeometryOtherT],
+        /,
+    ) -> GeometryArray[Geometry]: ...
+    @overload
+    def __rand__(  # type: ignore[misc]
+        self: GeometryArray[_GeometryT_co],
+        other: GeometryArray[Geometry | None],
+        /,
+    ) -> GeometryArray[Geometry | None]: ...
+    @overload
+    def __rand__(  # type: ignore[misc]
+        self: GeometryArray[_GeometryT_co],
+        other: Geometry,
+        /,
+    ) -> types.NotImplementedType: ...
+    @overload
+    def __rand__(
+        self: GeometryArray[_GeometryT_co],
+        other: object,
+        /,
+    ) -> GeometryArray[Geometry | None] | types.NotImplementedType:
+        """Return value&self."""
+    @overload
     def __or__(
         self: GeometryArray[Point | MultiPoint],
         other: Point | MultiPoint | GeometryArray[Point | MultiPoint],
@@ -6290,6 +6489,43 @@ class GeometryArray(Sequence[_GeometryT_co]):
         /,
     ) -> GeometryArray[Geometry | None]:
         """Return self|value."""
+    @overload
+    def __ror__(
+        self: GeometryArray[Point | MultiPoint],
+        other: GeometryArray[Point | MultiPoint],
+        /,
+    ) -> GeometryArray[Point | MultiPoint]: ...
+    @overload
+    def __ror__(
+        self: GeometryArray[Point | MultiPoint | None],
+        other: GeometryArray[Point | MultiPoint | None],
+        /,
+    ) -> GeometryArray[Point | MultiPoint | None]: ...
+    @overload
+    def __ror__(  # type: ignore[misc]
+        self: GeometryArray[_GeometryT],
+        other: GeometryArray[_GeometryOtherT],
+        /,
+    ) -> GeometryArray[Geometry]: ...
+    @overload
+    def __ror__(  # type: ignore[misc]
+        self: GeometryArray[_GeometryT_co],
+        other: GeometryArray[Geometry | None],
+        /,
+    ) -> GeometryArray[Geometry | None]: ...
+    @overload
+    def __ror__(  # type: ignore[misc]
+        self: GeometryArray[_GeometryT_co],
+        other: Geometry,
+        /,
+    ) -> types.NotImplementedType: ...
+    @overload
+    def __ror__(
+        self: GeometryArray[_GeometryT_co],
+        other: object,
+        /,
+    ) -> GeometryArray[Geometry | None] | types.NotImplementedType:
+        """Return value|self."""
     @overload
     def __sub__(
         self: GeometryArray[Point],
@@ -6328,6 +6564,67 @@ class GeometryArray(Sequence[_GeometryT_co]):
     ) -> GeometryArray[Geometry | None]:
         """Return self-value."""
     @overload
+    def __rsub__(  # type: ignore[misc]
+        self: GeometryArray[Geometry],
+        other: GeometryArray[Point],
+        /,
+    ) -> GeometryArray[Point]: ...
+    @overload
+    def __rsub__(  # type: ignore[misc]
+        self: GeometryArray[Geometry],
+        other: GeometryArray[MultiPoint],
+        /,
+    ) -> GeometryArray[MultiPoint | Point]: ...
+    @overload
+    def __rsub__(  # type: ignore[misc]
+        self: GeometryArray[Geometry | None],
+        other: GeometryArray[Point],
+        /,
+    ) -> GeometryArray[Point | None]: ...
+    @overload
+    def __rsub__(  # type: ignore[misc]
+        self: GeometryArray[Geometry | None],
+        other: GeometryArray[MultiPoint],
+        /,
+    ) -> GeometryArray[MultiPoint | Point | None]: ...
+    @overload
+    def __rsub__(  # type: ignore[misc]
+        self: GeometryArray[Geometry],
+        other: GeometryArray[Point | None],
+        /,
+    ) -> GeometryArray[Point | None]: ...
+    @overload
+    def __rsub__(  # type: ignore[misc]
+        self: GeometryArray[Geometry],
+        other: GeometryArray[MultiPoint | None],
+        /,
+    ) -> GeometryArray[MultiPoint | Point | None]: ...
+    @overload
+    def __rsub__(  # type: ignore[misc]
+        self: GeometryArray[Geometry],
+        other: GeometryArray[_GeometryOtherT],
+        /,
+    ) -> GeometryArray[Geometry]: ...
+    @overload
+    def __rsub__(
+        self: GeometryArray[Geometry | None],
+        other: GeometryArray[Geometry | None],
+        /,
+    ) -> GeometryArray[Geometry | None]: ...
+    @overload
+    def __rsub__(  # type: ignore[misc]
+        self: GeometryArray[Geometry | None],
+        other: Geometry,
+        /,
+    ) -> types.NotImplementedType: ...
+    @overload
+    def __rsub__(
+        self: GeometryArray[Geometry | None],
+        other: object,
+        /,
+    ) -> GeometryArray[Geometry | None] | types.NotImplementedType:
+        """Return value-self."""
+    @overload
     def __xor__(
         self: GeometryArray[Point | MultiPoint],
         other: Point | MultiPoint | GeometryArray[Point | MultiPoint],
@@ -6352,6 +6649,43 @@ class GeometryArray(Sequence[_GeometryT_co]):
         /,
     ) -> GeometryArray[Geometry | None]:
         """Return self^value."""
+    @overload
+    def __rxor__(
+        self: GeometryArray[Point | MultiPoint],
+        other: GeometryArray[Point | MultiPoint],
+        /,
+    ) -> GeometryArray[Point | MultiPoint]: ...
+    @overload
+    def __rxor__(
+        self: GeometryArray[Point | MultiPoint | None],
+        other: GeometryArray[Point | MultiPoint | None],
+        /,
+    ) -> GeometryArray[Point | MultiPoint | None]: ...
+    @overload
+    def __rxor__(  # type: ignore[misc]
+        self: GeometryArray[_GeometryT],
+        other: GeometryArray[_GeometryOtherT],
+        /,
+    ) -> GeometryArray[Geometry]: ...
+    @overload
+    def __rxor__(  # type: ignore[misc]
+        self: GeometryArray[_GeometryT_co],
+        other: GeometryArray[Geometry | None],
+        /,
+    ) -> GeometryArray[Geometry | None]: ...
+    @overload
+    def __rxor__(  # type: ignore[misc]
+        self: GeometryArray[_GeometryT_co],
+        other: Geometry,
+        /,
+    ) -> types.NotImplementedType: ...
+    @overload
+    def __rxor__(
+        self: GeometryArray[_GeometryT_co],
+        other: object,
+        /,
+    ) -> GeometryArray[Geometry | None] | types.NotImplementedType:
+        """Return value^self."""
     def __eq__(self, other: object, /) -> bool:
         """Return self==value."""
     def __hash__(self) -> int:
