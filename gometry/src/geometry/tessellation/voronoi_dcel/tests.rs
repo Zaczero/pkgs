@@ -1,3 +1,5 @@
+use crate::geometry::overlay::shoot_left;
+
 #[test]
 fn direct_dual_subnormal_admission_matches_legacy_builder() {
     for (units, admitted) in [(1_u64, false), (4, true)] {
@@ -729,7 +731,7 @@ fn owner_ray_sort_and_sweep_use_exact_order_when_a_hint_is_unavailable() {
     .unwrap();
     assert_eq!(order, [2, 1, 0]);
     assert_eq!(
-        crate::geometry::overlay::shoot_left(&points, 1, |_| [0, 2], &[1]).unwrap(),
+        shoot_left(&points, 1, |_| [0, 2], &[1]).unwrap(),
         [Some(0)],
         "constant hints must leave exact leftward-ray admission active"
     );

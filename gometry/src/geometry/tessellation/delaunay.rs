@@ -11,7 +11,7 @@ use std::cmp::Ordering;
 
 use crate::geometry::exact_arith::ExactSign;
 use crate::geometry::tessellation::{
-    EMPTY, RingOwner, Triangulation, exact, next_halfedge, prev_halfedge,
+    EMPTY, RingOwner, Triangulation, exact, next_halfedge, overlapping_rings_error, prev_halfedge,
 };
 use crate::geometry::{
     CoordSeq, CoordinateAxes, Coordinates as _, ExpansionBudget, GENERATED_ITEM_LIMIT,
@@ -486,9 +486,9 @@ fn delaunay_euler_complete(n: usize, triangulation: &Triangulation) -> bool {
 /// Build the constrained mesh plan shared by scalar and packed publication.
 ///
 /// `rings` contains every shell and hole as a closed coordinate sequence.
-/// Source sites retain the first full `Point` occurrence for each XY key, while
-/// every nonzero constraint keeps its original endpoint points and stable
-/// source identity for exact refinement certificates.
+/// Source sites retain the first full `Point` for each XY key, while each
+/// nonzero constraint keeps those selected endpoint sites and its stable source
+/// identity for exact refinement certificates.
 fn constrained_triangle_plan<'a>(
     rings: impl Iterator<Item = (RingOwner, &'a CoordSeq)>,
     area: f64,
@@ -502,7 +502,12 @@ fn constrained_triangle_plan<'a>(
     let force_xy = refinement.active();
     let refinement = effective_refinement(area, refinement);
     validate_refinement_request(area, refinement)?;
-    let (mut vertices, occurrences, sources, source_rings) = constrained_source_plan(&rings)?;
+    let ConstrainedSourcePlan {
+        mut vertices,
+        occurrences,
+        sources,
+        source_rings,
+    } = constrained_source_plan(&rings)?;
     let Some(mut cdt) =
         cdt::ConstrainedMesh::build_with_sources(&vertices, &occurrences, &sources, source_rings)?
     else {
@@ -626,8 +631,8 @@ pub(super) fn selected_triangle_points(
 }
 
 /// Select the first full source point at each XY key, then order sites by XY
-/// for the exact mesh. The occurrence index remains attached to the selected
-/// point so publication never has to resolve ordinates from a second source.
+/// for the exact mesh. Keep its original occurrence aligned through source-plan
+/// admission; endpoint publication uses the retained point itself.
 pub(super) fn selected_source_sites(points: Vec<Point>) -> Result<(Vec<Point>, Vec<usize>)> {
     let mut selected = crate::collections::try_hash_map_with_capacity(points.len())?;
     for (occurrence, point) in points.into_iter().enumerate() {
@@ -654,18 +659,18 @@ pub(super) fn selected_source_sites(points: Vec<Point>) -> Result<(Vec<Point>, V
     Ok((sites, occurrences))
 }
 
+struct ConstrainedSourcePlan {
+    vertices: Vec<Point>,
+    occurrences: Vec<usize>,
+    sources: Vec<cdt::SourceConstraint>,
+    source_rings: Vec<cdt::SourceRingStart>,
+}
+
 #[expect(
     clippy::indexing_slicing,
     reason = "source endpoint keys come from the ring points collected above, and their site IDs index the selected vertex column used to build the map"
 )]
-fn constrained_source_plan(
-    rings: &[(RingOwner, &CoordSeq)],
-) -> Result<(
-    Vec<Point>,
-    Vec<usize>,
-    Vec<cdt::SourceConstraint>,
-    Vec<cdt::SourceRingStart>,
-)> {
+fn constrained_source_plan(rings: &[(RingOwner, &CoordSeq)]) -> Result<ConstrainedSourcePlan> {
     let capacity = rings.iter().try_fold(0_usize, |total, ring| {
         total
             .checked_add(ring.1.coord_count())
@@ -703,10 +708,7 @@ fn constrained_source_plan(
                     .expect("a seen source edge has an admitted source constraint");
                 let previous_owner = cdt::source_ring_owner(previous.id, &source_rings)
                     .expect("an admitted source constraint belongs to a source ring");
-                return Err(crate::geometry::tessellation::overlapping_rings_error(
-                    previous_owner,
-                    owner,
-                ));
+                return Err(overlapping_rings_error(previous_owner, owner));
             }
             let start_site = indices[&PointKey::new(start)];
             let end_site = indices[&PointKey::new(end)];
@@ -720,7 +722,12 @@ fn constrained_source_plan(
             });
         }
     }
-    Ok((vertices, occurrences, sources, source_rings))
+    Ok(ConstrainedSourcePlan {
+        vertices,
+        occurrences,
+        sources,
+        source_rings,
+    })
 }
 
 fn ordered_constraint_key(a: XY, b: XY) -> (PointKey, PointKey) {
@@ -809,6 +816,93 @@ mod tests {
             cocircular_pairs += usize::from(mesh.edge_is_cocircular(slot));
         }
         assert_eq!(cocircular_pairs, 2);
+    }
+
+    #[test]
+    fn constrained_source_plan_keeps_first_full_signed_zero_occurrence_and_ordinals() {
+        let point = |x: f64, y: f64, z: f64, m: f64| {
+            Point::new_raw_axes(x, y, ZOrdinate(Some(z)), MOrdinate(Some(m)))
+        };
+        let first = point(-0.0, 0.0, 7.0, 70.0);
+        let duplicate = point(0.0, -0.0, 99.0, 990.0);
+        let zero_edge_ring =
+            crate::geometry::Ring::closed(vec![first, duplicate, first, first]).unwrap();
+        let source_ring = crate::geometry::Ring::closed(vec![
+            first,
+            duplicate,
+            point(2.0, 0.0, 8.0, 80.0),
+            point(2.0, 2.0, 9.0, 90.0),
+            point(-2.0, 2.0, 10.0, 100.0),
+            point(-2.0, 0.0, 11.0, 110.0),
+            first,
+        ])
+        .unwrap();
+        let rings = [
+            (RingOwner::new(7, 0), zero_edge_ring.coords()),
+            (RingOwner::new(7, 1), source_ring.coords()),
+        ];
+
+        let plan = constrained_source_plan(&rings).unwrap();
+
+        assert_eq!(
+            plan.vertices
+                .iter()
+                .map(|point| (point.x.to_bits(), point.y.to_bits(), point.z(), point.m(),))
+                .collect::<Vec<_>>(),
+            [
+                (
+                    (-2.0_f64).to_bits(),
+                    0.0_f64.to_bits(),
+                    Some(11.0),
+                    Some(110.0)
+                ),
+                (
+                    (-2.0_f64).to_bits(),
+                    2.0_f64.to_bits(),
+                    Some(10.0),
+                    Some(100.0)
+                ),
+                (
+                    (-0.0_f64).to_bits(),
+                    0.0_f64.to_bits(),
+                    Some(7.0),
+                    Some(70.0)
+                ),
+                (2.0_f64.to_bits(), 0.0_f64.to_bits(), Some(8.0), Some(80.0)),
+                (2.0_f64.to_bits(), 2.0_f64.to_bits(), Some(9.0), Some(90.0)),
+            ]
+        );
+        assert_eq!(plan.occurrences, [9, 8, 0, 6, 7]);
+        assert_eq!(
+            plan.sources
+                .iter()
+                .map(|source| (source.id, source.start_site, source.end_site))
+                .collect::<Vec<_>>(),
+            [(0, 2, 3), (1, 3, 4), (2, 4, 1), (3, 1, 0), (4, 0, 2)]
+        );
+        assert_eq!(
+            plan.sources
+                .iter()
+                .map(|source| (
+                    source.start.z(),
+                    source.start.m(),
+                    source.end.z(),
+                    source.end.m()
+                ))
+                .collect::<Vec<_>>(),
+            [
+                (Some(7.0), Some(70.0), Some(8.0), Some(80.0)),
+                (Some(8.0), Some(80.0), Some(9.0), Some(90.0)),
+                (Some(9.0), Some(90.0), Some(10.0), Some(100.0)),
+                (Some(10.0), Some(100.0), Some(11.0), Some(110.0)),
+                (Some(11.0), Some(110.0), Some(7.0), Some(70.0)),
+            ]
+        );
+        assert_eq!(
+            cdt::source_ring_owner(0, &plan.source_rings),
+            Some(RingOwner::new(7, 1)),
+            "the source row follows a ring with no nonzero XY edges"
+        );
     }
 
     #[test]
