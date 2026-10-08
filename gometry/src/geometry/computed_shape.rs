@@ -61,7 +61,7 @@ pub(crate) fn publish_raw_computed_shape_with_budget(
 ) -> Result<Shape> {
     map_computed_shape_chains(shape, shape, |_, coords, closed| {
         publish_computed_chain(frame, coords, closed, budget, |_, start, end| {
-            Ok(ComputedEdgeIntent::displacement(end.x - start.x))
+            ComputedEdgeIntent::retained_binary64_pair(frame.longitude(), [start.x, end.x])
         })
     })
 }
@@ -153,7 +153,7 @@ pub(crate) fn publish_computed_line_column_with_budget(
         let end = usize::try_from(pair[1]).map_err(|_| GeometryErrorKind::MalformedCsrOffsets)?;
         let window = coordinates.view(CoordWindow::from_range(start..end, coordinates.len()));
         let published = publish_computed_chain(frame, &window, false, budget, |_, left, right| {
-            Ok(ComputedEdgeIntent::displacement(right.x - left.x))
+            ComputedEdgeIntent::retained_binary64_pair(frame.longitude(), [left.x, right.x])
         })?;
         match published {
             Some(points) => {
@@ -184,7 +184,7 @@ pub(crate) fn publish_computed_polygon_rings_with_budget(
         let end = usize::try_from(pair[1]).map_err(|_| GeometryErrorKind::MalformedCsrOffsets)?;
         let window = coordinates.view(CoordWindow::from_range(start..end, coordinates.len()));
         let published = publish_computed_chain(frame, &window, true, budget, |_, left, right| {
-            Ok(ComputedEdgeIntent::displacement(right.x - left.x))
+            ComputedEdgeIntent::retained_binary64_pair(frame.longitude(), [left.x, right.x])
         })?;
         match published {
             Some(points) => {
@@ -237,7 +237,7 @@ pub(crate) fn publish_triangle_vertex_stream_budgeted(
     let mut ring_ends = Vec::with_capacity(count);
     for ring in vertices.as_chunks::<4>().0 {
         match publish_computed_chain(frame, ring.as_slice(), true, budget, |_, start, end| {
-            Ok(ComputedEdgeIntent::displacement(end.x - start.x))
+            ComputedEdgeIntent::retained_binary64_pair(frame.longitude(), [start.x, end.x])
         })? {
             Some(published) => points.extend(published),
             None => points.extend_from_slice(ring),
@@ -263,11 +263,7 @@ pub(crate) fn publish_stored_computed_shape(
     budget.add(ShapeCountQuery::default().coordinates(shape)?)?;
     map_computed_shape_chains(shape, shape, |_, coords, closed| {
         publish_computed_chain(frame, coords, closed, &mut budget, |_, start, end| {
-            let step = frame
-                .longitude()
-                .chart_step(start.x, end.x)
-                .map_err(|error| GeometryErrorKind::Invalid(error.to_string().into()))?;
-            Ok(ComputedEdgeIntent::Stored(step))
+            ComputedEdgeIntent::retained_chart_connection(frame, [start.x, end.x])
         })
     })
 }
@@ -306,7 +302,7 @@ pub(crate) fn publish_polygon_with_edge_roles(
                     .get(index)
                     .expect("publication edge belongs to its polygon role inventory")
                 {
-                    Ok(ComputedEdgeIntent::displacement(end.x - start.x))
+                    ComputedEdgeIntent::retained_binary64_pair(frame.longitude(), [start.x, end.x])
                 } else {
                     let delta = frame
                         .longitude()
@@ -395,7 +391,9 @@ pub(crate) fn publish_changed_raw_computed_shape(
             output,
             closed,
             budget,
-            |_, start, end| Ok(ComputedEdgeIntent::displacement(end.x - start.x)),
+            |_, start, end| {
+                ComputedEdgeIntent::retained_binary64_pair(frame.longitude(), [start.x, end.x])
+            },
             |index, _| {
                 if preserved.binary_search(&index).is_ok() {
                     ComputedVertexIntent::Preserved

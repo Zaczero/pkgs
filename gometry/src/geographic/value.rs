@@ -97,7 +97,6 @@ impl<L: RetainedNativeLongitude> RetainedLongitudeSite<L> {
         &self.native
     }
 
-    #[cfg(test)]
     pub(crate) const fn periods(&self) -> i64 {
         self.periods
     }
@@ -1260,6 +1259,15 @@ pub(crate) enum QuotientVertex {
 pub(crate) enum TurnDirection {
     Negative,
     Positive,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum RetainedLongitudeClass {
+    Zero,
+    Minor(TurnDirection),
+    HalfTurn(TurnDirection),
+    Circle(TurnDirection),
+    Major(TurnDirection),
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]

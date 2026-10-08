@@ -110,7 +110,16 @@ pub(crate) fn unary_convex_hull(
     data: &PreparedPlan,
     ctx: &CachelessRowContext<'_>,
 ) -> Result<Shape> {
-    publish_raw_computed_if_geographic(data.shape().convex_hull()?, ctx.domain, "convex_hull")
+    let shape = data.shape();
+    if !matches!(shape, Shape::Point(_) | Shape::Empty(..))
+        && let TopologyDomain::Geographic(frame) = ctx.domain
+        && crate::geographic::chart::PointSelectionChart::accepts_point_set(shape)
+        && let Some(hull) =
+            crate::geographic::chart::point_set_convex_hull_shape(shape, frame, data.bounds())?
+    {
+        return Ok(hull);
+    }
+    publish_raw_computed_if_geographic(shape.convex_hull()?, ctx.domain, "convex_hull")
 }
 
 /// Simplify kernel shared by the spine-routed free function.
@@ -385,8 +394,21 @@ pub(crate) fn unary_minimum_rotated_rectangle(
     data: &PreparedPlan,
     ctx: &CachelessRowContext<'_>,
 ) -> Result<Shape> {
+    let shape = data.shape();
+    if !matches!(shape, Shape::Point(_) | Shape::Empty(..))
+        && let TopologyDomain::Geographic(frame) = ctx.domain
+        && crate::geographic::chart::PointSelectionChart::accepts_point_set(shape)
+        && let Some(rectangle) =
+            crate::geographic::chart::point_set_minimum_rotated_rectangle_shape(
+                shape,
+                frame,
+                data.bounds(),
+            )?
+    {
+        return Ok(rectangle);
+    }
     publish_raw_computed_if_geographic(
-        data.shape().minimum_rotated_rectangle()?,
+        shape.minimum_rotated_rectangle()?,
         ctx.domain,
         "minimum_rotated_rectangle",
     )

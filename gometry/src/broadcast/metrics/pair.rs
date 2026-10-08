@@ -739,7 +739,9 @@ pub(crate) fn metric_shortest_line_resolved(
                         pair.as_ref(),
                         common,
                         frame,
-                        ComputedEdgeIntent::displacement(end.x - start.x),
+                        ComputedEdgeIntent::retained_binary64_pair(frame.longitude(), [
+                            start.x, end.x,
+                        ])?,
                     )
                 },
                 (_, TopologyDomain::Cartesian) => {
@@ -773,7 +775,11 @@ pub(crate) fn metric_shortest_line_resolved(
                     Some(&(start, end)),
                     common,
                     metric.frame,
-                    ComputedEdgeIntent::Stored(intent),
+                    ComputedEdgeIntent::retained_chart_witness(
+                        metric.frame,
+                        [start.x, end.x],
+                        intent,
+                    )?,
                 ),
                 None => crate::geometry::nearest_line(None, common),
             }

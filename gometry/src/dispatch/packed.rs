@@ -304,6 +304,17 @@ pub(crate) fn try_unary_packed_array(
     {
         return None;
     }
+    if op == Operation::MinimumRotatedRectangle
+        && let Some(identity) = array.packed_points_identity()
+    {
+        // Keep frame errors in their existing position, then share the
+        // immutable point column rather than rebuilding each point row.
+        return Some(
+            crate::geometry::topology_domain(&array.frame)
+                .map(|_| identity)
+                .map_err(PyErr::from),
+        );
+    }
     // param-less lanes: the operation alone says everything
     match op {
         Operation::ConvexHull => return Some(array.convex_hull_unary_packed(py)),
