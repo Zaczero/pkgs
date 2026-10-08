@@ -2101,22 +2101,19 @@ fn staged_source_occurrences_are_readable_and_can_omit_zm_carriers() {
     assert!(staged.relation_components().is_none());
     assert_eq!(staged.segments().len(), 10);
     assert_eq!(staged.source_operands(), &[0; 10]);
-    assert_eq!(
-        staged
-            .source_rings()
-            .iter()
-            .filter(|ring| ring.is_none())
-            .count(),
-        2
-    );
-    assert_eq!(
-        staged
-            .source_ring_kinds()
-            .iter()
-            .filter(|kind| kind.is_some())
-            .count(),
-        8
-    );
+    assert_eq!(staged.source_rings(), &[
+        None,
+        Some(0),
+        Some(0),
+        Some(0),
+        Some(0),
+        None,
+        Some(1),
+        Some(1),
+        Some(1),
+        Some(1),
+    ]);
+    assert_eq!(staged.ring_count, 2);
     assert_eq!(staged.ring_kinds(), &[RingKind::Winding, RingKind::Winding]);
     assert_eq!(staged.ring_polygons(), &[0, 1]);
     assert_eq!(staged.ring_holes(), &[false, false]);
@@ -2147,6 +2144,83 @@ fn staged_source_occurrences_are_readable_and_can_omit_zm_carriers() {
     assert_eq!(staged_xy.source_operands(), staged.source_operands());
     assert_eq!(staged_xy.source_rings(), staged.source_rings());
     assert!(staged_xy.source_points.is_none());
+}
+
+#[test]
+fn source_ring_kind_projection_uses_each_full_ring_id() {
+    let source = crate::io::parse_wkt(
+        "GEOMETRYCOLLECTION (\
+            LINESTRING (30 0,31 0),\
+            LINESTRING (40 0,41 0,41 1,40 0),\
+            LINESTRING (50 0,50 0),\
+            POLYGON ((20 20,22 20,22 22,20 22,20 20)),\
+            POLYGON ((60 0,61 0,62 0,60 0)),\
+            POLYGON ((70 0,70 0,70 0,70 0)),\
+            POINT (80 0)\
+        )",
+    )
+    .unwrap();
+    let staged = StagedExactSources::from_rows_with_occurrences(
+        [storage::ShapeRow::Shape(&source)].into_iter(),
+        true,
+    )
+    .unwrap();
+
+    assert_eq!(staged.segments().len(), 15);
+    assert_eq!(staged.ring_count, 3);
+    assert_eq!(staged.isolated().len(), 3);
+    assert_eq!(staged.source_rings(), &[
+        None,
+        None,
+        None,
+        None,
+        None,
+        Some(0),
+        Some(0),
+        Some(0),
+        Some(0),
+        Some(1),
+        Some(1),
+        Some(1),
+        Some(2),
+        Some(2),
+        Some(2),
+    ]);
+    assert_eq!(staged.ring_kinds(), &[
+        RingKind::Winding,
+        RingKind::Collapsed,
+        RingKind::Collapsed
+    ]);
+
+    let inventory = ExactSourceInventory::from_staged(staged).unwrap();
+    assert_eq!(inventory.winding_source_rings(), vec![
+        None,
+        None,
+        None,
+        None,
+        None,
+        Some(0),
+        Some(0),
+        Some(0),
+        Some(0),
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+    ]);
+    assert_eq!(
+        inventory.source_winding_at_stored(XY::new(21.0, 21.0)),
+        (vec![1, 0, 0], false)
+    );
+    let interior = [dyadic(21.0), dyadic(21.0), dyadic(1.0)];
+    assert_eq!(
+        inventory
+            .source_winding_at_symbolic(&interior, [1, 0])
+            .unwrap(),
+        vec![1, 0, 0]
+    );
 }
 
 #[test]
@@ -6039,13 +6113,89 @@ fn polygon_occupancy_uses_staged_ids_when_rectangle_is_first() {
 }
 
 #[test]
+fn rectangle_clip_provenance_keeps_full_source_ring_ordinals() {
+    let Shape::Polygon(subject) =
+        crate::io::parse_wkt("POLYGON ((-10 0,10 0,10 2,-10 2,-10 0))").unwrap()
+    else {
+        panic!("expected polygon");
+    };
+    let bounds = Bounds::new_raw(-1.0, -1.0, 1.0, 3.0);
+    let rectangle = rect_polygon(bounds).unwrap();
+    let (inventory, intervals) =
+        ExactSourceInventory::from_polygon_rect_clip(&[&subject], &rectangle, bounds, true)
+            .unwrap()
+            .expect("the subject crosses the clip window");
+
+    assert_eq!(intervals.len(), 6);
+    assert_eq!(inventory.source_segments.len(), 8);
+    assert_eq!(inventory.ring_count, 2);
+    assert_eq!(inventory.source_rings, [
+        Some(0),
+        Some(0),
+        Some(0),
+        Some(0),
+        Some(1),
+        Some(1),
+        Some(1),
+        Some(1),
+    ]);
+    assert_eq!(inventory.winding_source_rings(), vec![
+        Some(0),
+        Some(0),
+        Some(0),
+        Some(0),
+        Some(1),
+        Some(1),
+        Some(1),
+        Some(1),
+    ]);
+    assert_eq!(
+        inventory
+            .provenance
+            .iter()
+            .map(<[_]>::to_vec)
+            .collect::<Vec<_>>(),
+        vec![
+            vec![(0, false)],
+            vec![(1, false)],
+            vec![(2, false)],
+            vec![(3, false)],
+            vec![(4, false)],
+            vec![(6, false)],
+        ]
+    );
+}
+
+#[test]
 fn polygon_occupancy_keeps_raw_winding_rings_unowned() {
-    let inventory =
-        ExactSourceInventory::from_raw_loops(&[(vec![0.0, 1.0, 0.0], vec![0.0, 1.0, 0.0])])
-            .unwrap();
-    assert_eq!(inventory.ring_count, 1);
+    let inventory = ExactSourceInventory::from_raw_loops(&[
+        (vec![0.0, 1.0, 2.0], vec![0.0, 0.0, 0.0]),
+        (vec![7.0, 8.0], vec![0.0, 0.0]),
+        (Vec::new(), Vec::new()),
+    ])
+    .unwrap();
+    assert_eq!(inventory.ring_count, 3);
     assert!(inventory.ring_polygons.is_empty());
     assert!(inventory.ring_holes.is_empty());
+    assert_eq!(inventory.ring_kinds, [
+        RingKind::Winding,
+        RingKind::Winding,
+        RingKind::Winding
+    ]);
+    assert_eq!(inventory.source_rings, [
+        Some(0),
+        Some(0),
+        Some(0),
+        None,
+        None
+    ]);
+    assert_eq!(inventory.winding_source_rings(), vec![
+        Some(0),
+        Some(0),
+        Some(0),
+        None,
+        None
+    ]);
 
     let mut occupancy = PolygonOccupancy::new(&inventory, false);
     let error = occupancy.seed(&[]).unwrap_err();
@@ -6056,7 +6206,7 @@ fn polygon_occupancy_keeps_raw_winding_rings_unowned() {
 
     let mut winding = vec![0; inventory.ring_count];
     occupancy.cross(&mut winding, 0, 1);
-    assert_eq!(winding, [1]);
+    assert_eq!(winding, [1, 0, 0]);
     assert!(!occupancy.operand_occupied(0));
 }
 

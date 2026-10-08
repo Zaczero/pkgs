@@ -236,7 +236,7 @@ impl ExactSourceInventory {
                 continue;
             };
             if self.ring_holes[ring as usize]
-                || self.source_ring_kinds[source_index] != Some(RingKind::Collapsed)
+                || self.ring_kinds[ring as usize] != RingKind::Collapsed
             {
                 continue;
             }
@@ -335,10 +335,9 @@ impl ExactSourceInventory {
                         let Some(ring) = self.source_rings[source] else {
                             continue;
                         };
-                        let occupied = match self.source_ring_kinds[source] {
-                            Some(RingKind::Winding) => ring_occupied(winding[ring as usize], odd),
-                            Some(RingKind::Collapsed) => true,
-                            None => false,
+                        let occupied = match self.ring_kinds[ring as usize] {
+                            RingKind::Winding => ring_occupied(winding[ring as usize], odd),
+                            RingKind::Collapsed => true,
                         };
                         if !occupied {
                             continue;
@@ -502,24 +501,24 @@ impl ExactSourceInventory {
         node: NodeId,
         ring: usize,
     ) -> bool {
+        if self.ring_kinds[ring] != RingKind::Collapsed {
+            return false;
+        }
+        let ring = ring as u32;
         let mut range = topology.starts[node.0 as usize] as usize
             ..topology.starts[node.0 as usize + 1] as usize;
         if range.any(|slot| {
             partition
                 .owners(edges[slot] as usize)
                 .iter()
-                .any(|&(source, _)| {
-                    self.source_rings[source as usize] == Some(ring as u32)
-                        && self.source_ring_kinds[source as usize] == Some(RingKind::Collapsed)
-                })
+                .any(|&(source, _)| self.source_rings[source as usize] == Some(ring))
         }) {
             return true;
         }
         let mut range = node_source_range(point_sources_by_node, node);
         range.any(|index| {
             let source = point_sources_by_node[index].1 as usize;
-            self.source_rings[source] == Some(ring as u32)
-                && self.source_ring_kinds[source] == Some(RingKind::Collapsed)
+            self.source_rings[source] == Some(ring)
         })
     }
 
@@ -828,17 +827,6 @@ impl ExactSourceInventory {
             *cell_node |= select_operation(operation, membership);
         }
         cells
-    }
-
-    pub(super) fn linework_source_rings(&self) -> Vec<Option<u32>> {
-        self.source_rings
-            .iter()
-            .zip(&self.source_ring_kinds)
-            .map(|(&ring, &kind)| {
-                matches!(kind, Some(RingKind::Winding))
-                    .then(|| ring.expect("a ring source always carries its ring identity"))
-            })
-            .collect()
     }
 }
 
