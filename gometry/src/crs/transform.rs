@@ -623,12 +623,9 @@ fn accumulate_literal_horizontal(
         let (miny, maxy) = ordered_extrema(y);
         return Ok([minx, miny, maxx, maxy]);
     };
-    let axis = frame.longitude();
     let mut south = f64::INFINITY;
     let mut north = f64::NEG_INFINITY;
-    for (&longitude, &latitude) in x.iter().zip(y) {
-        axis.canonicalize(longitude)
-            .map_err(|error| CrsError::invalid(error.to_string()))?;
+    for &latitude in y {
         let latitude = Latitude::try_new(frame, latitude)
             .map_err(|error| CrsError::invalid(error.to_string()))?;
         south = south.min(latitude.get());
