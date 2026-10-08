@@ -225,17 +225,29 @@ impl Hull {
             return Ok(best);
         }
         let span = |forward: bool| {
-            if forward {
-                maximum.wrapping_add(count).wrapping_sub(minimum) % count
+            let (from, to) = if forward {
+                (minimum, maximum)
             } else {
-                minimum.wrapping_add(count).wrapping_sub(maximum) % count
+                (maximum, minimum)
+            };
+            if to >= from {
+                to.wrapping_sub(from)
+            } else {
+                count.wrapping_sub(from).wrapping_add(to)
             }
         };
         let position = |step: usize, forward: bool| {
             if forward {
-                minimum.wrapping_add(step) % count
+                let remaining = count.wrapping_sub(minimum);
+                if step < remaining {
+                    minimum.wrapping_add(step)
+                } else {
+                    step.wrapping_sub(remaining)
+                }
+            } else if step <= minimum {
+                minimum.wrapping_sub(step)
             } else {
-                minimum.wrapping_add(count).wrapping_sub(step) % count
+                count.wrapping_sub(step.wrapping_sub(minimum))
             }
         };
         let last_inside = |forward: bool| {
@@ -592,5 +604,39 @@ mod tests {
                 reference(&xs, &ys, start, end, 0.1),
             );
         }
+    }
+
+    #[test]
+    fn source_descent_keeps_the_first_equal_maximum_after_reversal() {
+        let xs: [f64; 32] = std::array::from_fn(|index| index as f64);
+        let ys: [f64; 32] =
+            std::array::from_fn(|index| if index == 2 || index == 9 { 1.0 } else { 0.0 });
+        let index = Index::new(&xs, &ys).unwrap();
+        assert_eq!(index.split(0, 31, 0.5).unwrap(), Some(2));
+
+        let mut reversed_xs = xs;
+        reversed_xs.reverse();
+        let mut reversed_ys = ys;
+        reversed_ys.reverse();
+        let reversed = Index::new(&reversed_xs, &reversed_ys).unwrap();
+        assert_eq!(reversed.split(0, 31, 0.5).unwrap(), Some(22));
+    }
+
+    #[test]
+    fn endpoint_caps_keep_the_farthest_source_in_wrapped_and_linear_windows() {
+        let xs = [0.0, 0.0, 2.0];
+        let ys = [0.0, 2.0, 1.0];
+        let source = Source { xs: &xs, ys: &ys };
+        let hull = Hull::build(&[0, 1, 2], &source, [0.0, 2.0], 0).unwrap();
+        let chord = Segment {
+            start: XY::new(0.5, 0.0),
+            end: XY::new(1.5, 0.0),
+        };
+
+        assert_eq!(
+            hull.cap(chord, chord.start, false, &source).unwrap(),
+            Some(1)
+        );
+        assert_eq!(hull.cap(chord, chord.end, true, &source).unwrap(), Some(2));
     }
 }

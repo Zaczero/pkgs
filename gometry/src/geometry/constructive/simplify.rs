@@ -390,9 +390,21 @@ fn rdp_keep_with_query<G: RdpEdgeSpanGuard>(
 #[cfg(test)]
 #[test]
 fn rounded_selector_witnesses_the_exact_tolerance_correction() {
-    let xs = [0.0, 134217728.0, 134217732.0, 134217736.0, 268435457.0];
-    let ys = [0.0, 134217729.0, 134217733.0, 134217737.0, 268435457.0];
-    let tolerance = 0.70710679;
+    let xs = [
+        0.0,
+        134_217_728.0,
+        134_217_732.0,
+        134_217_736.0,
+        268_435_457.0,
+    ];
+    let ys = [
+        0.0,
+        134_217_729.0,
+        134_217_733.0,
+        134_217_737.0,
+        268_435_457.0,
+    ];
+    let tolerance = 0.707_106_79;
     assert_eq!(
         rounded_rdp_split!(&xs, &ys, 0, 4, tolerance, tolerance * tolerance).unwrap(),
         Some(2)
@@ -1634,6 +1646,7 @@ mod collapsed_ring_distinct_tests {
 mod keep_identity_tests {
 
     use super::RawSimplify;
+    use crate::geometry::segment_index::take_contact_visits;
     use crate::geometry::{
         CoordSeq, CoordinateAxes, GeometryKind, LineSeq, MultiLineString, MultiPolygon, Polygon,
         Ring, Shape,
@@ -1727,11 +1740,11 @@ mod keep_identity_tests {
             xs.push(xs[0]);
             ys.push(ys[0]);
             let polygon = Shape::Polygon(Polygon::new(closed_ring(&xs, &ys), Vec::new()));
-            crate::geometry::segment_index::take_contact_visits();
+            take_contact_visits();
             let simplified = polygon
                 .simplify_vw((1.0 / f64::from(count)).sqrt(), true)
                 .unwrap();
-            counts.push(crate::geometry::segment_index::take_contact_visits());
+            counts.push(take_contact_visits());
             assert!(!simplified.is_empty());
             assert!(simplified.is_simple().unwrap());
         }
