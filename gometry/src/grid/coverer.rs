@@ -968,8 +968,8 @@ mod tests {
     #[test]
     fn center_rule_emits_only_center_covered_cells() {
         use crate::geometry::Ring;
-        // Unit square: center-rule at coarse precision should match
-        // overlap-then-filter on the same classifier.
+        // Unit square: a cell center is covered exactly when both coordinates
+        // lie in the closed source square.
         let shell = vec![
             Point::new_raw_xy(0.0, 0.0),
             Point::new_raw_xy(1.0, 0.0),
@@ -984,7 +984,7 @@ mod tests {
         let authority_plan = PreparedPlan::new(poly.clone());
         let authority_cache = crate::geometry::FrameDependentCaches::default();
         let depth = 3_u8;
-        let center = cover(
+        let center_cover = cover(
             &poly,
             &poly,
             &authority_plan,
@@ -1008,25 +1008,28 @@ mod tests {
             None,
         )
         .expect("cover");
-        let prepared = crate::geometry::GeographicPrepared::try_new(
-            &authority_plan,
-            &authority_cache,
-            crate::geographic::GeographicFrame::crs84(),
-        )
-        .expect("fixture admits");
-        let graph = crate::geometry::TopologyGraph::geographic(prepared.view()).unwrap();
+        let mut covered_centers = 0;
+        let mut uncovered_centers = 0;
         let filtered: Vec<_> = overlap
             .into_iter()
             .filter(|cell| {
                 let bounds = cell.bounds();
-                let c = Point::new_raw_xy(
+                let center = Point::new_raw_xy(
                     f64::midpoint(bounds.minx(), bounds.maxx()),
                     f64::midpoint(bounds.miny(), bounds.maxy()),
                 );
-                graph.covers_point(c.xy())
+                let covered = (0.0..=1.0).contains(&center.x) && (0.0..=1.0).contains(&center.y);
+                if covered {
+                    covered_centers += 1;
+                } else {
+                    uncovered_centers += 1;
+                }
+                covered
             })
             .collect();
-        assert_eq!(center, filtered);
+        assert!(covered_centers > 0, "fixture needs a covered center");
+        assert!(uncovered_centers > 0, "fixture needs an uncovered center");
+        assert_eq!(center_cover, filtered);
     }
 
     #[test]

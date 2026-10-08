@@ -261,20 +261,6 @@ impl RingWinding {
     }
 }
 
-impl AreaSign {
-    #[cfg(test)]
-    /// True when a face walk with this sign is a better outer-face candidate
-    /// for its component than one with `other`. A nondegenerate component's
-    /// outer face is its negative walk; when every walk is nonnegative the
-    /// component encloses no area and a zero walk seeds it.
-    pub(crate) const fn prefers_as_outer_face_than(self, other: Self) -> bool {
-        matches!(
-            (self, other),
-            (Self::Negative, Self::Zero | Self::Positive) | (Self::Zero, Self::Positive)
-        )
-    }
-}
-
 const fn area_sign_to_winding(sign: AreaSign) -> RingWinding {
     match sign {
         AreaSign::Negative => RingWinding::Clockwise,

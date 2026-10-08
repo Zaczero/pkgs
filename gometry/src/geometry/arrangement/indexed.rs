@@ -64,18 +64,6 @@ impl IndexedTopology {
         self.twins[next]
     }
 
-    #[cfg(test)]
-    pub(crate) fn clear(&mut self) {
-        self.starts.clear();
-        self.targets.clear();
-        self.owners.clear();
-        self.twins.clear();
-        self.component_of.clear();
-        self.face_of.clear();
-        self.face_starts.clear();
-        self.face_slots.clear();
-    }
-
     #[expect(
         clippy::indexing_slicing,
         reason = "edge, vertex, twin, successor, and face slots are derived from the admitted CSR columns built here"
@@ -189,15 +177,6 @@ impl IndexedTopology {
             self.face_starts.push(self.face_slots.len() as u32);
         }
         component_count
-    }
-}
-
-#[cfg(test)]
-impl IndexedTopologyScratch {
-    pub(crate) fn clear(&mut self) {
-        self.component_stack.clear();
-        self.successor.clear();
-        self.first_slot.clear();
     }
 }
 

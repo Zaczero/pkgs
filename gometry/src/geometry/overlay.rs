@@ -111,9 +111,9 @@ mod noding;
 mod rect;
 mod shape;
 
-pub(in crate::geometry) use areal::ray_crossing;
 #[cfg(test)]
-pub(in crate::geometry) use areal::{binary_areal_overlay, build_areal_arrangement};
+pub(in crate::geometry) use areal::binary_areal_overlay;
+pub(in crate::geometry) use areal::ray_crossing;
 pub(crate) use assembly::{
     build_certified_overlay_shape, build_certified_overlay_shape_with_axes, merge_chains,
 };
@@ -148,8 +148,6 @@ pub(crate) use nary::{
 };
 #[cfg(test)]
 pub(crate) use noding::self_node_segments_sourced;
-#[cfg(test)]
-pub(in crate::geometry) use noding::{NodingScan, full_noding_events};
 pub(crate) use rect::{rect_polygon, rectangle_bounds};
 #[cfg(test)]
 mod tests;

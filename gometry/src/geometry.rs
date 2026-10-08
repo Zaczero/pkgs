@@ -64,7 +64,7 @@ pub(crate) use access::{
     squared_norm_untrusted_mask, try_simd_map_f64, xy_bounds_columns,
 };
 #[cfg(test)]
-pub(crate) use area::{AreaSign, open_point_cycle_magnitude, open_xy_cycle_sign};
+pub(crate) use area::open_point_cycle_magnitude;
 pub(crate) use area::{
     ExactFactorialArea, ExactRationalArea, RingWinding, closed_columns_winding,
     open_point_cycle_winding, open_xy_cycle_magnitude, open_xy_cycle_winding,
@@ -170,8 +170,6 @@ pub(crate) use source_support::{
 };
 mod tessellation;
 mod topology;
-#[cfg(test)]
-pub(crate) use topology::TopologyGraph;
 pub(crate) use topology::{
     ExactGeographicRectangleLocation, ExactGeographicTopology, TopologyDomain, VertexKey,
 };
@@ -185,8 +183,6 @@ use access::{
     compare_f64, compare_point_slices, compare_points, compare_polygons, compare_shapes,
     line_length, linework_first_point, simd_reduce_f64, simd_xy_map_one_f64,
 };
-#[cfg(test)]
-pub(crate) use arrangement::Arrangement;
 pub(crate) use bvh_code::{BvhCode, BvhNode};
 pub(crate) use chart_bvh::ChartEdgeBvh;
 pub(crate) use constructive::{

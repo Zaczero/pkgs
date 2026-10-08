@@ -42,16 +42,8 @@ impl VertexKey {
 }
 
 mod exact;
-#[cfg(test)]
-mod graph;
 pub(in crate::geometry) mod overlay;
 mod q;
-#[cfg(test)]
-mod staging;
-#[cfg(test)]
-pub(crate) use graph::TopologyGraph;
-#[cfg(test)]
-pub(super) use graph::{AreaSupport, TopologyEdge, TopologyKey, TopologyLocation, TopologyNodeId};
 pub(crate) use q::{ExactGeographicRectangleLocation, ExactGeographicTopology};
 
 /// SIMD ray-crossing decision for one chunk of ring edges, or `None` when any

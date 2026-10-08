@@ -194,16 +194,16 @@ fn expand_provenance_to_atoms(
     Ok(SegmentProvenance { offsets, entries })
 }
 
-/// Noding for the geographic graph test oracle, with multi-source provenance
-/// retained per atomic piece.
+/// Test-only sourced noding, with multi-source provenance retained per atomic
+/// piece.
 ///
 /// Exact undirected duplicates always collapse before noding so the pair scan
 /// is O(U²) in unique edges, not O(E²) in duplicate multiplicity. Each atomic
 /// piece carries the **full** set of original ordinals that owned that
 /// undirected edge, including each source direction.
 ///
-/// Atoms stay in the representative direction; the geographic graph test
-/// oracle folds reverse flags into its source transitions.
+/// Atoms stay in the representative direction; each owner retains its source
+/// direction in the provenance row.
 #[cfg(test)]
 pub(crate) fn self_node_segments_sourced(
     segments: impl IntoIterator<Item = Segment>,
@@ -236,7 +236,7 @@ fn self_node_segments_sourced_unique(segments: &[Segment]) -> Result<(Vec<Segmen
     Ok((atomic, sources))
 }
 
-/// Endpoint cuts for collinear overlaps in the geographic graph test oracle.
+/// Endpoint cuts for collinear overlaps in sourced noding.
 #[cfg(test)]
 pub(crate) fn collinear_overlap_events(segments: &[Segment]) -> Result<Vec<(u32, XY)>> {
     let mut events: Vec<(u32, XY)> = Vec::new();
@@ -314,8 +314,7 @@ pub(in crate::geometry) struct NodingScan {
     pub(in crate::geometry) overlaps_found: bool,
 }
 
-/// Pairwise cut events and collinear-overlap observations for the geographic
-/// graph test oracle.
+/// Pairwise cut events and collinear-overlap observations for sourced noding.
 #[cfg(test)]
 pub(in crate::geometry) fn full_noding_events(segments: &[Segment]) -> Result<NodingScan> {
     let mut events: Vec<(u32, XY)> = Vec::new();

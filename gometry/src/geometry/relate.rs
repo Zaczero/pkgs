@@ -32,8 +32,6 @@ pub(crate) use graph_matrix::{
     is_axis_aligned_rectangle_row,
 };
 pub(crate) use interval::{De9imInterval, OperandShape};
-#[cfg(test)]
-pub(crate) use operands::polygon_has_nondegenerate_area;
 pub(crate) use operands::{line_has_nonzero_segment, multiline_has_nonzero_segment};
 
 pub(crate) const fn dimension_entry(dimension: Dimension) -> u8 {

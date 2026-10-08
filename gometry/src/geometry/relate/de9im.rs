@@ -28,11 +28,6 @@ impl De9im {
         }
     }
 
-    #[cfg(test)]
-    pub(crate) const fn clear(&mut self, row: Loc, col: Loc) {
-        self.0[row as usize * 3 + col as usize] = b'F';
-    }
-
     pub(crate) fn text(self) -> String {
         String::from_utf8_lossy(&self.0).into_owned()
     }
