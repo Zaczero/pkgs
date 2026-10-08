@@ -4,6 +4,7 @@ use std::num::NonZeroUsize;
 use crate::error::Result;
 use crate::geometry::coverage::{AABB, HashMap, Reverse, valid_coverage_rows};
 use crate::geometry::overlay::{ExactChainView, ExactPartition, ExactSourceInventory, NodeId};
+use crate::geometry::segment_index::ChordIndex;
 use crate::geometry::{
     BulkRTree, CoordSeq, Coordinates as _, GeometryErrorKind, Orientation, Point, PointKey,
     Polygon, Ring, Segment, Shape, SimplifyMethod, XY, dedup_consecutive_points, line_segments,
@@ -279,7 +280,7 @@ pub(in crate::geometry) struct TopologyGuard<'a> {
     // Both trees build LAZILY on the first probe: exact-collinear removals
     // (the dominant case on digitized/gridded inputs) are accepted without
     // probing, so an all-collinear pass never pays either bulk load.
-    segment_index: std::cell::OnceCell<crate::geometry::segment_index::ChordIndex>,
+    segment_index: std::cell::OnceCell<ChordIndex>,
     vertex_cloud: std::cell::Cell<Vec<[f64; 2]>>,
     vertex_tree: std::cell::OnceCell<BulkRTree<[f64; 2]>>,
 }
@@ -301,9 +302,9 @@ impl<'a> TopologyGuard<'a> {
         }
     }
 
-    fn segment_index(&self) -> &crate::geometry::segment_index::ChordIndex {
+    fn segment_index(&self) -> &ChordIndex {
         self.segment_index
-            .get_or_init(|| crate::geometry::segment_index::ChordIndex::build(self.segments))
+            .get_or_init(|| ChordIndex::build(self.segments))
     }
 
     fn vertex_tree(&self) -> &BulkRTree<[f64; 2]> {
@@ -379,7 +380,7 @@ impl<'a> TopologyGuard<'a> {
         if !no_contact {
             return false;
         }
-        // No foreign vertex strictly inside the swept triangle. On the
+        // No foreign vertex inside or on the swept triangle. On the
         // original valid linework, a segment entering this region would have
         // to cross one of its two original sides (already an invalid source
         // contact) or have an endpoint in the region. Thus these two guards

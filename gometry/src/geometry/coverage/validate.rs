@@ -24,9 +24,11 @@ pub(crate) struct CoverageRow<'a> {
     pub(crate) bounds: Option<Bounds>,
 }
 
+type CoverageRowIndex = BulkRTree<GeomWithData<Rectangle<[f64; 2]>, usize>>;
+
 pub(crate) struct PreparedCoverage<'a> {
     rows: Vec<CoverageRow<'a>>,
-    index: Option<Box<BulkRTree<GeomWithData<Rectangle<[f64; 2]>, usize>>>>,
+    index: Option<Box<CoverageRowIndex>>,
 }
 
 // Bulk loading costs more instructions than scanning through 64 rows. Keep
