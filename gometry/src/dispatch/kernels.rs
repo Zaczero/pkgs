@@ -645,7 +645,7 @@ fn smooth_for_domain(
                 &output,
                 frame,
                 &preserved_vertices,
-                source_context,
+                &source_context,
                 budget,
             )
         },

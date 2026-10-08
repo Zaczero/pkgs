@@ -882,7 +882,9 @@ mod tests {
         let endpoint_metric_accesses = Cell::new(0_usize);
         let endpoint_metric = || -> crate::error::Result<&crate::crs::GeodesicMetric> {
             endpoint_metric_accesses.set(endpoint_metric_accesses.get().wrapping_add(1));
-            Err(crate::crs::CrsError::invalid("unexpected computed-edge metric access").into())
+            Err(crate::crs::CrsError::invalid(
+                "unexpected computed-edge metric access",
+            ))
         };
         let mut state = RootMetricState::default();
         let mut work = Unmetered;
@@ -907,7 +909,9 @@ mod tests {
         let xy_metric_accesses = Cell::new(0_usize);
         let xy_metric = || -> crate::error::Result<&crate::crs::GeodesicMetric> {
             xy_metric_accesses.set(xy_metric_accesses.get().wrapping_add(1));
-            Err(crate::crs::CrsError::invalid("unexpected computed-edge metric access").into())
+            Err(crate::crs::CrsError::invalid(
+                "unexpected computed-edge metric access",
+            ))
         };
         let xy = computed_native_sample_ordinates(
             frame,

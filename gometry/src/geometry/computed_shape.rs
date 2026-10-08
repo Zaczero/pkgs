@@ -124,8 +124,7 @@ fn publish_transformed_chain_with_edges(
     if edges.is_none() && source.coord_count() != output.coord_count() {
         return Err(GeometryErrorKind::message(
             "transformed coordinate chain changed endpoint correspondence",
-        )
-        .into());
+        ));
     }
 
     let mut current_root = None;
@@ -272,8 +271,7 @@ pub(crate) fn publish_transformed_shape(
             if source_members.next().is_some() {
                 return Err(GeometryErrorKind::message(
                     "computed output changed a geometry-collection structure",
-                )
-                .into());
+                ));
             }
             Ok(Shape::GeometryCollection(mapped))
         },
@@ -315,7 +313,9 @@ pub(crate) fn publish_transformed_shape(
             }
         },
         (Shape::Empty(..), Shape::Empty(..)) => Ok(output.clone()),
-        _ => Err(GeometryErrorKind::message("computed output changed geometry structure").into()),
+        _ => Err(GeometryErrorKind::message(
+            "computed output changed geometry structure",
+        )),
     }
 }
 
@@ -560,7 +560,7 @@ pub(crate) fn publish_changed_raw_computed_shape<'metric, M: ChartMetric + 'metr
     output: &Shape,
     frame: GeographicFrame,
     preserved_vertices: &[Vec<usize>],
-    source_context: SourceArcContext<'_, 'metric, M>,
+    source_context: &SourceArcContext<'_, 'metric, M>,
     budget: &mut ExpansionBudget,
 ) -> Result<Shape> {
     let metric_access = source_context.metric_access();
@@ -608,8 +608,7 @@ pub(crate) fn publish_changed_raw_computed_shape<'metric, M: ChartMetric + 'metr
                 let ComputedLongitudeRelation::Native(longitude) = *relation else {
                     return Err(GeometryErrorKind::message(
                         "changed raw output requires a retained Native chart edge",
-                    )
-                    .into());
+                    ));
                 };
                 computed_native_sample_ordinates(
                     frame,
@@ -1036,7 +1035,7 @@ mod tests {
             &smoothed,
             GeographicFrame::crs84(),
             &preserved_vertices,
-            SourceArcContext::cartesian(),
+            &SourceArcContext::cartesian(),
             &mut budget,
         )
         .unwrap();
@@ -1108,7 +1107,7 @@ mod tests {
             &smoothed,
             frame,
             &preserved_vertices,
-            context,
+            &context,
             &mut budget,
         )
         .unwrap();
@@ -1152,7 +1151,7 @@ mod tests {
             &xy_smoothed,
             frame,
             &xy_preserved,
-            xy_context,
+            &xy_context,
             &mut xy_budget,
         )
         .unwrap();
@@ -1178,7 +1177,7 @@ mod tests {
 
         let sample = points
             .iter()
-            .find(|point| point.x == 177.5 && point.y == 58.75)
+            .find(|point| (point.x - 177.5).abs() <= 1e-12 && (point.y - 58.75).abs() <= 1e-12)
             .expect("the 275-degree generated edge is subdivided at its midpoint");
         assert!(
             (sample.z().unwrap() - 43.730_417_185_196_416).abs() <= 2.0e-8,
