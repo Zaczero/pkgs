@@ -24,11 +24,8 @@ fn split_in_domain(
 ) -> Result<Shape> {
     match domain {
         TopologyDomain::Cartesian => Ok(shape.clone()),
-        TopologyDomain::Geographic(frame) => match metric_access {
-            Some(metric_access) => {
-                shape.split_antimeridian_in_frame_with_metric(frame, Some(metric_access))
-            },
-            None => shape.split_antimeridian_in_frame(frame),
+        TopologyDomain::Geographic(frame) => {
+            shape.split_antimeridian_in_frame_with_metric(frame, metric_access)
         },
     }
 }
