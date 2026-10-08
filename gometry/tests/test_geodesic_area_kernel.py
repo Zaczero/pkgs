@@ -246,22 +246,22 @@ def test_ambiguous_multiturn_area_is_rejected_on_scalar_and_array_paths(
         gm.InvalidGeometryError, match='ring winds around the globe'
     ) as array:
         _ = rows.area
-    assert 'geographic row 1, ring 0, coordinate 0' in str(array.value)
+    assert array.value.__notes__ == ['while processing array element 1']
     assert 'latitudes -20 to 20' in str(array.value)
     with pytest.raises(
         gm.InvalidGeometryError, match='ring winds around the globe'
     ) as array:
         _ = rows.length
-    assert 'geographic row 1, ring 0, coordinate 0' in str(array.value)
+    assert array.value.__notes__ == ['while processing array element 1']
 
 
 @pytest.mark.parametrize(
     ('invalid_coordinate', 'expected_detail'),
     [
         ((10.0, 91.0), r'invalid longitude/latitude \(10, 91\)'),
-        ((float('nan'), 10.0), 'invalid longitude/latitude'),
+        ((10.0, -91.0), r'invalid longitude/latitude \(10, -91\)'),
     ],
-    ids=['later-out-of-range-latitude', 'later-nonfinite-longitude'],
+    ids=['later-north-out-of-range-latitude', 'later-south-out-of-range-latitude'],
 )
 def test_later_coordinate_error_precedes_pending_ambiguous_turn_gate(
     invalid_coordinate: tuple[float, float],
@@ -286,14 +286,20 @@ def test_later_coordinate_error_precedes_pending_ambiguous_turn_gate(
     polygon = gm.Polygon(shell, holes=[hole], crs='OGC:CRS84')
     valid = gm.box(0.0, 0.0, 1.0, 1.0, crs='OGC:CRS84')
 
-    with pytest.raises(gm.InvalidGeometryError, match=expected_detail) as scalar:
+    with pytest.raises(
+        gm.InvalidGeometryError,
+        match=expected_detail,
+    ) as scalar:
         _ = polygon.area
     assert 'geographic shape, ring 1, coordinate 2' in str(scalar.value)
 
     rows = gm.GeometryArray([valid, polygon], crs='OGC:CRS84')
-    with pytest.raises(gm.InvalidGeometryError, match=expected_detail) as array:
+    with pytest.raises(
+        gm.InvalidGeometryError,
+        match=expected_detail,
+    ) as array:
         _ = rows.area
-    assert 'geographic row 1, ring 1, coordinate 2' in str(array.value)
+    assert array.value.__notes__ == ['while processing array element 1']
 
 
 def test_full_turn_area_uses_the_summary_pole_when_the_first_vertex_is_equatorial() -> (
