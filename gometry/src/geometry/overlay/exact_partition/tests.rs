@@ -1271,13 +1271,7 @@ fn explicit_point_and_residual_line_preserve_forward_join_paths() {
         .partition
         .stored_node(XY::new(-2.0, -2.0))
         .expect("the explicit point is a stored radial boundary node");
-    assert!(
-        context
-            .partition
-            .point_nodes
-            .iter()
-            .any(|&node| node == protected_node)
-    );
+    assert!(context.partition.point_nodes.contains(&protected_node));
     let plan = context
         .cells
         .emission_plan(
