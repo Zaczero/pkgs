@@ -1001,8 +1001,7 @@ fn prepare_classes<P: Problem>(
     }
 
     let mut prepared = Vec::with_capacity(admitted.len());
-    let mut class_positions = Vec::with_capacity(classes.len());
-    class_positions.resize(classes.len(), 0);
+    let mut class_positions = vec![0; classes.len()];
     // Hall failures should reject the whole problem before domain-specific
     // preparation materializes potentially dense proximity partners.
     for class in admitted {
@@ -1183,19 +1182,23 @@ mod tests {
     use super::*;
     use crate::error::ErrorKind;
 
+    type Assignment = Vec<(usize, u8)>;
+    type AssignmentBlame = Vec<(Assignment, Vec<usize>)>;
+    type AssignmentVisitLog = Rc<RefCell<Vec<Assignment>>>;
+
     struct FixtureProblem {
         classes: Vec<Vec<usize>>,
         candidates: Vec<Vec<u8>>,
         fixed_keys_by_class: Vec<Vec<u8>>,
         rejected: Vec<(usize, usize, u8)>,
-        global_requirements: Option<Vec<Vec<(usize, u8)>>>,
+        global_requirements: Option<Vec<Assignment>>,
         blamed_classes: Vec<usize>,
-        blame_by_assignment: Vec<(Vec<(usize, u8)>, Vec<usize>)>,
+        blame_by_assignment: AssignmentBlame,
         initial_evaluations: u64,
         prepare_calls: Rc<Cell<usize>>,
         local_calls: Rc<Cell<usize>>,
         global_calls: Rc<Cell<usize>>,
-        global_visits: Option<Rc<RefCell<Vec<Vec<(usize, u8)>>>>>,
+        global_visits: Option<AssignmentVisitLog>,
     }
 
     impl FixtureProblem {
@@ -1438,7 +1441,7 @@ mod tests {
     #[test]
     fn hall_failure_skips_class_preparation() {
         let problem = FixtureProblem::new(vec![vec![0, 1]], vec![vec![7], vec![7]]);
-        let prepare_calls = problem.prepare_calls.clone();
+        let prepare_calls = Rc::clone(&problem.prepare_calls);
         let error = search_fixture(problem, 2).unwrap_err();
 
         assert!(matches!(
@@ -1465,7 +1468,7 @@ mod tests {
     fn global_rejections_visit_products_in_deterministic_variable_order() {
         let mut problem = FixtureProblem::new(
             vec![vec![10], vec![0]],
-            (0..=10).map(|_| Vec::new()).collect(),
+            std::iter::repeat_n(Vec::new(), 11).collect(),
         );
         problem.candidates[0] = vec![1, 0];
         problem.candidates[10] = vec![3, 2];
@@ -1645,14 +1648,8 @@ mod tests {
                         .enumerate()
                         .filter_map(|(index, product)| {
                             let bit = 1_usize.checked_shl(u32::try_from(index).unwrap()).unwrap();
-                            (accepted & bit != 0).then(|| {
-                                product
-                                    .iter()
-                                    .copied()
-                                    .enumerate()
-                                    .map(|(node, value)| (node, value))
-                                    .collect::<Vec<_>>()
-                            })
+                            (accepted & bit != 0)
+                                .then(|| product.iter().copied().enumerate().collect::<Vec<_>>())
                         })
                         .collect();
                     let class_for_node = |node| {
@@ -1665,14 +1662,8 @@ mod tests {
                         .iter()
                         .enumerate()
                         .map(|(index, product)| {
-                            let assignment = product
-                                .iter()
-                                .copied()
-                                .enumerate()
-                                .map(|(node, value)| (node, value))
-                                .collect();
+                            let assignment = product.iter().copied().enumerate().collect();
                             let blamed_node = match index {
-                                0 => first_blame,
                                 1 => 0,
                                 2 => streams.len().wrapping_sub(1),
                                 _ => first_blame,
@@ -1698,14 +1689,7 @@ mod tests {
                     let expected_visits = products
                         .iter()
                         .take(expected_visit_count)
-                        .map(|product| {
-                            product
-                                .iter()
-                                .copied()
-                                .enumerate()
-                                .map(|(node, value)| (node, value))
-                                .collect::<Vec<_>>()
-                        })
+                        .map(|product| product.iter().copied().enumerate().collect::<Vec<_>>())
                         .collect::<Vec<_>>();
                     assert_eq!(
                         *visits.borrow(),
@@ -1732,12 +1716,7 @@ mod tests {
                             .collect::<Vec<_>>();
                         assert_eq!(
                             actual,
-                            expected
-                                .iter()
-                                .copied()
-                                .enumerate()
-                                .map(|(node, value)| (node, value))
-                                .collect::<Vec<_>>()
+                            expected.iter().copied().enumerate().collect::<Vec<_>>()
                         );
                     } else {
                         let error = result.unwrap_err();
@@ -1778,13 +1757,7 @@ mod tests {
             [2, 0, 4, 5],
             [2, 1, 4, 5],
         ]
-        .map(|values| {
-            values
-                .into_iter()
-                .enumerate()
-                .map(|(node, value)| (node, value))
-                .collect::<Vec<_>>()
-        });
+        .map(|values| values.into_iter().enumerate().collect::<Vec<_>>());
         assert_eq!(*visits.borrow(), visits_expected);
         assert_eq!(
             assignment
