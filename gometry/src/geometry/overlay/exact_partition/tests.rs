@@ -1074,6 +1074,145 @@ fn boundary_contraction_preserves_explicit_points_and_source_paths() {
 }
 
 #[test]
+fn areal_boundary_contraction_merges_radial_multi_joins() {
+    let radial =
+        crate::io::parse_wkt("POLYGON ((-4 0,-3 -1,-2 -2,-1 -3,0 -4,3 -3,4 0,3 3,0 4,-3 3,-4 0))")
+            .unwrap();
+    let inventory = ExactSourceInventory::from_shapes(&[&radial]).unwrap();
+    let context = union_boundary_context(&inventory);
+    let plan = context
+        .cells
+        .emission_plan(
+            &context.partition,
+            &context.topology,
+            &context.edges,
+            &context.global,
+        )
+        .unwrap();
+
+    assert_eq!(context.budget_used, 0);
+    assert_eq!(context.global.count, 2);
+    assert_eq!(plan.face_quotient, [0, 1]);
+    assert_eq!(plan.walks.len(), 1);
+    assert_eq!(plan.lines.len(), 0);
+    assert!(plan.points.is_empty());
+    assert_eq!(plan.source_darts.len(), 10);
+    assert_eq!(
+        forward_source_darts(&plan, &context.partition, &context.topology),
+        [
+            ((-4.0, 0.0), (-3.0, -1.0)),
+            ((-3.0, -1.0), (-2.0, -2.0)),
+            ((-2.0, -2.0), (-1.0, -3.0)),
+            ((-1.0, -3.0), (0.0, -4.0)),
+            ((0.0, -4.0), (3.0, -3.0)),
+            ((3.0, -3.0), (4.0, 0.0)),
+            ((4.0, 0.0), (3.0, 3.0)),
+            ((3.0, 3.0), (0.0, 4.0)),
+            ((0.0, 4.0), (-3.0, 3.0)),
+            ((-3.0, 3.0), (-4.0, 0.0)),
+        ]
+    );
+    assert_eq!(plan.walks[0].len(), 7);
+    let mut source_counts: Vec<_> = plan.walks[0]
+        .iter()
+        .map(|chord| chord.sources.len())
+        .collect();
+    source_counts.sort_unstable();
+    assert_eq!(source_counts, [1, 1, 1, 1, 1, 1, 4]);
+    assert!(plan.walks[0].iter().all(|chord| chord.sides == [1, 0]));
+    let (points, lines, polygons) = plan
+        .emit_xy_parts(
+            &context.partition,
+            &context.topology,
+            &context.edges,
+            "union",
+        )
+        .unwrap();
+    assert!(points.is_empty());
+    assert!(lines.is_empty());
+    assert_eq!(polygons.len(), 1);
+    assert_eq!(
+        crate::io::to_wkt(&Shape::Polygon(polygons.into_iter().next().unwrap())).unwrap(),
+        "POLYGON ((-4 0, 0 -4, 3 -3, 4 0, 3 3, 0 4, -3 3, -4 0))"
+    );
+}
+
+#[test]
+fn explicit_point_and_residual_line_preserve_forward_join_paths() {
+    let case = protected_mixed_boundary_case();
+    let context = raw_protected_mixed_boundary_context(&case);
+    let protected_node = context
+        .partition
+        .stored_node(XY::new(-2.0, -2.0))
+        .expect("the explicit point is a stored radial boundary node");
+    assert!(
+        context
+            .partition
+            .point_nodes
+            .iter()
+            .any(|&node| node == protected_node)
+    );
+    let plan = context
+        .cells
+        .emission_plan(
+            &context.partition,
+            &context.topology,
+            &context.edges,
+            &context.global,
+        )
+        .unwrap();
+
+    assert_eq!(context.budget_used, 0);
+    assert_eq!(plan.face_quotient, [0, 1]);
+    assert_eq!(plan.walks.len(), 1);
+    assert_eq!(plan.walks[0].len(), 8);
+    assert_eq!(plan.source_darts.len(), 12);
+    let mut source_counts: Vec<_> = plan.walks[0]
+        .iter()
+        .map(|chord| chord.sources.len())
+        .collect();
+    source_counts.sort_unstable();
+    assert_eq!(source_counts, [1, 1, 1, 1, 1, 1, 2, 2]);
+    assert_eq!(plan.lines.len(), 1);
+    assert_eq!(plan.lines[0].sources.len(), 2);
+    assert!(plan.points.is_empty());
+    assert_eq!(
+        forward_source_darts(&plan, &context.partition, &context.topology),
+        [
+            ((-4.0, 0.0), (-3.0, -1.0)),
+            ((-3.0, -1.0), (-2.0, -2.0)),
+            ((-2.0, -2.0), (-1.0, -3.0)),
+            ((-1.0, -3.0), (0.0, -4.0)),
+            ((0.0, -4.0), (3.0, -3.0)),
+            ((3.0, -3.0), (4.0, 0.0)),
+            ((4.0, 0.0), (3.0, 3.0)),
+            ((3.0, 3.0), (0.0, 4.0)),
+            ((0.0, 4.0), (-3.0, 3.0)),
+            ((-3.0, 3.0), (-4.0, 0.0)),
+            ((8.0, 0.0), (9.0, 0.0)),
+            ((9.0, 0.0), (10.0, 0.0)),
+        ]
+    );
+    let (points, lines, polygons) = plan
+        .emit_xy_parts(
+            &context.partition,
+            &context.topology,
+            &context.edges,
+            "union",
+        )
+        .unwrap();
+    assert!(points.is_empty());
+    assert_eq!(lines.len(), 1);
+    assert_eq!(lines[0].xs(), [8.0, 10.0]);
+    assert_eq!(lines[0].ys(), [0.0, 0.0]);
+    assert_eq!(polygons.len(), 1);
+    assert_eq!(
+        crate::io::to_wkt(&Shape::Polygon(polygons.into_iter().next().unwrap())).unwrap(),
+        "POLYGON ((-4 0, -2 -2, 0 -4, 3 -3, 4 0, 3 3, 0 4, -3 3, -4 0))"
+    );
+}
+
+#[test]
 fn rounded_chord_contact_with_an_isolated_node_is_repaired() {
     let point = XY::new(0.5, 1.0 / 6.0);
     let case = run(&[
@@ -2442,6 +2581,139 @@ impl Case {
 
 fn run(segments: &[Segment]) -> Case {
     Case::from_segments(segments)
+}
+
+struct UnionBoundaryContext<'a> {
+    partition: ExactPartition<'a>,
+    topology: IndexedTopology,
+    edges: Vec<u32>,
+    global: GlobalFaces,
+    cells: ArealCells,
+    budget_used: usize,
+}
+
+fn union_boundary_context(inventory: &ExactSourceInventory) -> UnionBoundaryContext<'_> {
+    let mut budget = ExpansionBudget::new("union", "boundary regression");
+    let partition = inventory.partition(&mut budget).unwrap();
+    let budget_used = budget.used();
+    let (topology, edges) = partition.local_topology().unwrap();
+    let global = partition.global_faces(&topology, &edges).unwrap();
+    let cells = inventory
+        .select_cells(
+            &partition,
+            &topology,
+            &edges,
+            &global,
+            crate::geometry::OverlayOp::Union,
+            false,
+        )
+        .unwrap();
+    UnionBoundaryContext {
+        partition,
+        topology,
+        edges,
+        global,
+        cells,
+        budget_used,
+    }
+}
+
+struct RawBoundaryContext<'a> {
+    partition: ExactPartition<'a>,
+    topology: IndexedTopology,
+    edges: Vec<u32>,
+    global: GlobalFaces,
+    cells: ArealCells,
+    budget_used: usize,
+}
+
+fn protected_mixed_boundary_case() -> Case {
+    let mut segments = vec![
+        seg(-4.0, 0.0, -3.0, -1.0),
+        seg(-3.0, -1.0, -2.0, -2.0),
+        seg(-2.0, -2.0, -1.0, -3.0),
+        seg(-1.0, -3.0, 0.0, -4.0),
+        seg(0.0, -4.0, 3.0, -3.0),
+        seg(3.0, -3.0, 4.0, 0.0),
+        seg(4.0, 0.0, 3.0, 3.0),
+        seg(3.0, 3.0, 0.0, 4.0),
+        seg(0.0, 4.0, -3.0, 3.0),
+        seg(-3.0, 3.0, -4.0, 0.0),
+    ];
+    segments.push(seg(-2.0, -2.0, -2.0, -2.0));
+    segments.extend([seg(8.0, 0.0, 9.0, 0.0), seg(9.0, 0.0, 10.0, 0.0)]);
+    Case::from_segments(&segments)
+}
+
+fn raw_protected_mixed_boundary_context(case: &Case) -> RawBoundaryContext<'_> {
+    let mut budget = ExpansionBudget::new("union", "protected mixed boundary regression");
+    let partition = partition_unique_segments::<true>(
+        &case.unique,
+        &case.provenance,
+        &case.isolated,
+        &mut budget,
+    )
+    .unwrap();
+    assert!(matches!(&partition.kept_nodes, KeptNodes::Selected));
+    let budget_used = budget.used();
+    let (topology, edges) = partition.local_topology().unwrap();
+    let global = partition.global_faces(&topology, &edges).unwrap();
+    assert_eq!(global.count, 2);
+    let inner_face = edges
+        .iter()
+        .enumerate()
+        .find_map(|(slot, _)| {
+            let origin = partition.nearest_xy(NodeId(topology.owners[slot]));
+            let target = partition.nearest_xy(NodeId(topology.targets[slot]));
+            ((origin.x, origin.y) == (-4.0, 0.0) && (target.x, target.y) == (-3.0, -1.0))
+                .then_some(global.walk_faces[topology.face_of[slot] as usize] as usize)
+        })
+        .expect("the radial boundary has its first directed source dart");
+    assert_ne!(inner_face, 0);
+    let mut faces = vec![false; global.count as usize];
+    faces[inner_face] = true;
+    let mut spans = vec![false; partition.spans.len()];
+    assert_eq!(partition.point_nodes.len(), 1);
+    for (index, span) in partition.spans.iter().enumerate() {
+        let start = partition.nearest_xy(span.start);
+        let end = partition.nearest_xy(span.end);
+        if start.y == 0.0 && end.y == 0.0 && start.x.min(end.x) >= 8.0 {
+            spans[index] = true;
+        }
+    }
+    assert_eq!(spans.iter().filter(|&&selected| selected).count(), 2);
+    let mut nodes = vec![false; partition.node_count()];
+    let point = partition.point_nodes[0];
+    assert_eq!(partition.nearest_xy(point), XY::new(-2.0, -2.0));
+    nodes[point.0 as usize] = true;
+    let cells = ArealCells {
+        faces,
+        spans,
+        nodes,
+    };
+    RawBoundaryContext {
+        partition,
+        topology,
+        edges,
+        global,
+        cells,
+        budget_used,
+    }
+}
+
+fn forward_source_darts(
+    plan: &BoundaryPlan,
+    partition: &ExactPartition<'_>,
+    topology: &IndexedTopology,
+) -> Vec<((f64, f64), (f64, f64))> {
+    plan.source_darts
+        .iter()
+        .map(|&slot| {
+            let origin = partition.nearest_xy(NodeId(topology.owners[slot as usize]));
+            let target = partition.nearest_xy(NodeId(topology.targets[slot as usize]));
+            ((origin.x, origin.y), (target.x, target.y))
+        })
+        .collect()
 }
 
 fn metric_support_for(wkt: &str) -> ExactMetricSupport {

@@ -1140,11 +1140,7 @@ impl GlobalFaces {
                 face_quotient[self.walk_faces[topology.face_of[dart as usize] as usize] as usize]
             })
         };
-        let can_join = |left: u32, right: u32| -> bool {
-            let node = topology.owners[right as usize] as usize;
-            if protected[node] || sides(left) != sides(right) {
-                return false;
-            }
+        let can_join_after_side_match = |node: usize, left: u32, right: u32| -> bool {
             let row =
                 topology.starts[node] as usize..topology.starts[node.wrapping_add(1)] as usize;
             // A two-slot row contains only the incoming twin and its distinct
@@ -1158,6 +1154,13 @@ impl GlobalFaces {
             let a = source(left);
             let b = source(right);
             stored_cross_sign(a.start, a.end, b.start, b.end) == ExactSign::Zero
+        };
+        let can_join = |left: u32, right: u32| -> bool {
+            let node = topology.owners[right as usize] as usize;
+            if protected[node] || sides(left) != sides(right) {
+                return false;
+            }
+            can_join_after_side_match(node, left, right)
         };
         // Every selected boundary dart and retained line source is appended
         // once; chord joins only change grouping. Production line spans are
@@ -1191,10 +1194,21 @@ impl GlobalFaces {
             let mut chords = Vec::with_capacity(walk.len());
             for (index, &slot) in walk.iter().enumerate() {
                 let chord = make_chord(slot)?;
-                if index > 0 && can_join(walk[index.wrapping_sub(1)], slot) {
-                    let previous: &mut PlannedChord = chords
-                        .last_mut()
-                        .expect("a joined chord has a preceding planned chord");
+                if index == 0 {
+                    chords.push(chord);
+                    continue;
+                }
+                let previous: &mut PlannedChord = chords
+                    .last_mut()
+                    .expect("every later dart follows a planned chord");
+                let node = topology.owners[slot as usize] as usize;
+                // Earlier joins extended this chord only after its labels matched.
+                let joins = if protected[node] || previous.sides != chord.sides {
+                    false
+                } else {
+                    can_join_after_side_match(node, walk[index.wrapping_sub(1)], slot)
+                };
+                if joins {
                     previous.sources.end = chord.sources.end;
                 } else {
                     chords.push(chord);
