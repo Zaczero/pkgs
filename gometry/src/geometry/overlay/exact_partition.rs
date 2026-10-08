@@ -631,7 +631,6 @@ pub(in crate::geometry) struct ExactSourceInventory {
     provenance: SegmentProvenance,
     source_operands: Vec<u32>,
     source_rings: Vec<Option<u32>>,
-    source_ring_kinds: Vec<Option<RingKind>>,
     ring_kinds: Vec<RingKind>,
     ring_polygons: Vec<u32>,
     ring_holes: Vec<bool>,
@@ -731,7 +730,6 @@ impl ExactSourceInventory {
             provenance,
             source_operands: staged.source_operands,
             source_rings: staged.source_rings,
-            source_ring_kinds: staged.source_ring_kinds,
             ring_kinds: staged.ring_kinds,
             ring_polygons: staged.ring_polygons,
             ring_holes: staged.ring_holes,
@@ -869,7 +867,6 @@ impl ExactSourceInventory {
                 provenance,
                 source_operands: staged.source_operands,
                 source_rings: staged.source_rings,
-                source_ring_kinds: staged.source_ring_kinds,
                 ring_kinds: staged.ring_kinds,
                 ring_polygons: staged.ring_polygons,
                 ring_holes: staged.ring_holes,
@@ -896,7 +893,6 @@ impl ExactSourceInventory {
                 segment,
                 &[segment.start.point(), segment.end.point()],
                 0,
-                None,
                 None,
             );
         }
@@ -945,7 +941,6 @@ impl ExactSourceInventory {
                         &[start, end],
                         0,
                         closed.then_some(ring_id),
-                        closed.then_some(RingKind::Winding),
                     );
                 }
             }
@@ -1145,9 +1140,13 @@ impl ExactSourceInventory {
         let mut winding = vec![0_i64; self.ring_count];
         let mut boundary = false;
         for (source, &segment) in self.source_segments.iter().enumerate() {
-            if self.source_operands[source] != 0
-                || self.source_ring_kinds[source] != Some(RingKind::Winding)
-            {
+            if self.source_operands[source] != 0 {
+                continue;
+            }
+            let Some(ring) = self.source_rings[source] else {
+                continue;
+            };
+            if self.ring_kinds[ring as usize] != RingKind::Winding {
                 continue;
             }
             boundary |= point.x >= segment.start.x.min(segment.end.x)
@@ -1162,10 +1161,8 @@ impl ExactSourceInventory {
                     point.x,
                     point.y,
                 ) == ExactSign::Zero;
-            if let Some(ring) = self.source_rings[source] {
-                winding[ring as usize] =
-                    winding[ring as usize].wrapping_add(i64::from(ray_crossing(segment, point)));
-            }
+            winding[ring as usize] =
+                winding[ring as usize].wrapping_add(i64::from(ray_crossing(segment, point)));
         }
         (winding, boundary)
     }
@@ -1181,15 +1178,17 @@ impl ExactSourceInventory {
     ) -> Result<Vec<i64>> {
         let mut winding = vec![0_i64; self.ring_count];
         for (source, &segment) in self.source_segments.iter().enumerate() {
-            if self.source_operands[source] != 0
-                || self.source_ring_kinds[source] != Some(RingKind::Winding)
-            {
+            if self.source_operands[source] != 0 {
                 continue;
             }
-            if let Some(ring) = self.source_rings[source] {
-                winding[ring as usize] = winding[ring as usize]
-                    .wrapping_add(i64::from(symbolic_ray_crossing(segment, point, direction)?));
+            let Some(ring) = self.source_rings[source] else {
+                continue;
+            };
+            if self.ring_kinds[ring as usize] != RingKind::Winding {
+                continue;
             }
+            winding[ring as usize] = winding[ring as usize]
+                .wrapping_add(i64::from(symbolic_ray_crossing(segment, point, direction)?));
         }
         Ok(winding)
     }
@@ -1591,14 +1590,14 @@ impl ExactSourceInventory {
         Ok(ResolvedNodePoints::Ordinates { embedding, by_node })
     }
 
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "each staged source ring ID indexes the admitted ring-kind table"
+    )]
     fn winding_source_rings(&self) -> Vec<Option<u32>> {
         self.source_rings
             .iter()
-            .zip(&self.source_ring_kinds)
-            .map(|(&ring, &kind)| {
-                matches!(kind, Some(RingKind::Winding))
-                    .then(|| ring.expect("a ring source always carries its ring identity"))
-            })
+            .map(|&ring| ring.filter(|&ring| self.ring_kinds[ring as usize] == RingKind::Winding))
             .collect()
     }
 
@@ -2754,7 +2753,7 @@ impl ExactSourceInventory {
     ) -> Result<(Vec<Point>, Vec<CoordSeq>, Vec<Polygon>)> {
         let (topology, edges) = partition.local_topology()?;
         let global = partition.global_faces(&topology, &edges)?;
-        let winding_rings = self.linework_source_rings();
+        let winding_rings = self.winding_source_rings();
         let cells = self.select_cells_with_winding_rings(
             partition,
             &topology,
@@ -3140,7 +3139,6 @@ pub(in crate::geometry) struct StagedExactSources {
     xy_only: bool,
     source_operands: Vec<u32>,
     source_rings: Vec<Option<u32>>,
-    source_ring_kinds: Vec<Option<RingKind>>,
     ring_kinds: Vec<RingKind>,
     ring_polygons: Vec<u32>,
     ring_holes: Vec<bool>,
@@ -3192,7 +3190,6 @@ impl StagedExactSources {
             xy_only,
             source_operands: Vec::new(),
             source_rings: Vec::new(),
-            source_ring_kinds: Vec::new(),
             ring_kinds: Vec::new(),
             ring_polygons: Vec::new(),
             ring_holes: Vec::new(),
@@ -3286,11 +3283,6 @@ impl StagedExactSources {
     #[cfg(test)]
     pub(in crate::geometry) fn source_rings(&self) -> &[Option<u32>] {
         &self.source_rings
-    }
-
-    #[cfg(test)]
-    pub(in crate::geometry) fn source_ring_kinds(&self) -> &[Option<RingKind>] {
-        &self.source_ring_kinds
     }
 
     pub(in crate::geometry) fn ring_kinds(&self) -> &[RingKind] {
@@ -3513,7 +3505,6 @@ impl StagedExactSources {
                 &[start, end],
                 operand,
                 None,
-                None,
             );
         }
         if let Some(components) = self.relation_components.as_deref_mut() {
@@ -3601,7 +3592,7 @@ impl StagedExactSources {
                     start: start.xy(),
                     end: end.xy(),
                 };
-                self.push_segment(segment, &[start, end], operand, Some(ring_id), Some(kind));
+                self.push_segment(segment, &[start, end], operand, Some(ring_id));
             }
             if let Some(components) = self.relation_components.as_deref_mut() {
                 let component = components.components.len();
@@ -3633,7 +3624,6 @@ impl StagedExactSources {
         }
         self.source_operands.reserve(count);
         self.source_rings.reserve(count);
-        self.source_ring_kinds.reserve(count);
     }
 
     fn retain_source_ordinates(
@@ -3662,7 +3652,6 @@ impl StagedExactSources {
         source_points: &[Point; 2],
         operand: u32,
         ring: Option<u32>,
-        ring_kind: Option<RingKind>,
     ) {
         if let Some(points) = &mut self.source_points {
             points.push(*source_points);
@@ -3670,7 +3659,6 @@ impl StagedExactSources {
         self.segments.push(segment);
         self.source_operands.push(operand);
         self.source_rings.push(ring);
-        self.source_ring_kinds.push(ring_kind);
     }
 }
 
