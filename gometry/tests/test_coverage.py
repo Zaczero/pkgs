@@ -68,11 +68,6 @@ def test_coverage_free_functions_accept_geometry_array() -> None:
     assert gm.coverage_is_valid(gm.coverage_simplify(grid, 0.0))
     assert gm.coverage_is_valid(gm.coverage_clean(grid, grid_size=0.0))
     assert gm.coverage_union(grid).geometry_type == 'Polygon'
-    assert gm.coverage_is_valid(grid)
-    assert gm.coverage_invalid_edges(grid)[0].is_empty
-    assert gm.coverage_is_valid(gm.coverage_simplify(grid, 0.0))
-    assert gm.coverage_is_valid(gm.coverage_clean(grid, grid_size=0.0))
-    assert gm.coverage_union(grid).geometry_type == 'Polygon'
 
 
 def test_coverage_union_normalize_is_stable() -> None:

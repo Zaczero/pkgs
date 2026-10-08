@@ -1235,7 +1235,7 @@ def test_masked_vs_dense_parity_sweep() -> None:
         _assert_masked_matches_dense_scatter(masked_result, dense_result)
 
 
-def test_masked_coverage_methods_skip_and_scatter_missing() -> None:
+def test_coverage_functions_skip_and_scatter_missing_array_rows() -> None:
     coverage = gm.GeometryArray([gm.box(0, 0, 1, 1), None, gm.box(1, 0, 2, 1)])
     assert gm.coverage_is_valid(coverage)
     invalid_edges = gm.coverage_invalid_edges(coverage)
@@ -1245,8 +1245,6 @@ def test_masked_coverage_methods_skip_and_scatter_missing() -> None:
     assert simplified.is_missing.tolist() == [False, True, False]
     cleaned = gm.coverage_clean(coverage, grid_size=0.0)
     assert cleaned.is_missing.tolist() == [False, True, False]
-    method_cleaned = gm.coverage_clean(coverage, grid_size=0.0)
-    assert method_cleaned.is_missing.tolist() == [False, True, False]
     assert gm.coverage_union(coverage).geometry_type == 'Polygon'
     with pytest.raises(gm.InvalidGeometryError):
         gm.coverage_union(gm.GeometryArray([None, None]))
@@ -1258,13 +1256,13 @@ def test_free_coverage_functions_preserve_missing_iterable_rows() -> None:
 
     assert gm.coverage_is_valid(values) == gm.coverage_is_valid(array)
     assert gm.coverage_union(values) == gm.coverage_union(array)
-    for free, method in (
+    for iterable_result, array_result in (
         (gm.coverage_invalid_edges(values), gm.coverage_invalid_edges(array)),
         (gm.coverage_simplify(values, 0.0), gm.coverage_simplify(array, 0.0)),
         (gm.coverage_clean(values), gm.coverage_clean(array)),
     ):
-        assert free.is_missing.tolist() == [False, True, False]
-        assert free.to_wkt() == method.to_wkt()
+        assert iterable_result.is_missing.tolist() == [False, True, False]
+        assert iterable_result.to_wkt() == array_result.to_wkt()
 
 
 def test_pooled_reductions_skip_missing_iterable_rows() -> None:
