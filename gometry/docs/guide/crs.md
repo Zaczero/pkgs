@@ -1106,6 +1106,14 @@ returned. [`gm.crs_apply`][gometry.crs_apply] runs an explicit PROJ
 operation/pipeline string. [`geom.to_crs`][gometry.Geometry.to_crs] transforms
 geometry values; the raw functions transform bare coordinate numbers.
 
+Bounds use periodic longitude by default in geographic CRSs, so west greater
+than east describes an antimeridian-crossing interval. With
+`force_over=True`, bounds instead use literal longitude numbers: geographic
+source bounds sample the closed segment from `min(west, east)` to
+`max(west, east)`, and geographic target bounds return numeric extrema rather
+than a periodic cover. Identity bounds retain out-of-period longitudes in
+literal mode.
+
 Transforms sometimes need regional grid files. If the highest-ranked operation's grid is
 unavailable, every Python-visible transform surface — `geom.to_crs(...)`,
 [`GeometryArray.to_crs(...)`][gometry.GeometryArray.to_crs], `gm.crs_transform(...)`, and

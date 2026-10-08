@@ -8,15 +8,16 @@ use std::sync::Arc;
 use smol_str::SmolStr;
 
 use crate::crs::transform::{
-    BoundsSamplePlan, TransformOutputPlan, TransformedBounds3d, canonical_identity_longitudes,
-    transform_in_core_xy_with_domains, transform_in_core_xy_with_domains_indexed,
-    transform_in_core_xy_with_domains_indexed_for_shape, transform_proj_shapes_indexed,
+    BoundsInterpretation, BoundsSamplePlan, TransformOutputPlan, TransformedBounds3d,
+    identity_bounds_2d, identity_bounds_3d, transform_in_core_xy_with_domains,
+    transform_in_core_xy_with_domains_indexed, transform_in_core_xy_with_domains_indexed_for_shape,
+    transform_proj_shapes_indexed,
 };
 use crate::crs::{
     InCoreTransform, ProjDirection, ProjPipeline, RuntimeState, Shape, TransformExecution,
     TransformFailure, TransformOptions, begin_transform_observation, coordinate_identity_crs,
     ensure_geographic_domain_in_frame, ensure_geographic_lonlat_in_frame,
-    ensure_geographic_row_in_frame, record_transform_engine, runtime_state_snapshot, transform,
+    ensure_geographic_row_in_frame, record_transform_engine, runtime_state_snapshot,
     transform_in_core_xy_batch, try_in_core_transform_with_state, validate_coordinate_lanes,
     with_proj_pipeline_at, with_proj_pipeline_indexed_at,
 };
@@ -459,19 +460,14 @@ impl TransformPlan {
         densify: u32,
     ) -> Result<(f64, f64, f64, f64)> {
         self.begin_execution();
+        let interpretation = BoundsInterpretation::from_force_over(self.options.force_over);
         let result = if self.is_identity() {
-            if let TopologyDomain::Geographic(frame) = self.target_domain {
-                let (west, east) = canonical_identity_longitudes(bounds.0, bounds.2, frame)?;
-                let [south, north] =
-                    transform::canonical_identity_latitudes(bounds.1, bounds.3, frame)?;
-                Ok((west, south, east, north))
-            } else {
-                Ok(bounds)
-            }
+            identity_bounds_2d(bounds, self.target_domain, interpretation)
         } else {
             let mut samples = BoundsSamplePlan::new_2d(
                 bounds,
                 densify,
+                interpretation,
                 self.source_domain,
                 self.target_domain,
                 self.options.source_epoch,
@@ -488,15 +484,15 @@ impl TransformPlan {
         densify: u32,
     ) -> Result<Vec<(f64, f64, f64, f64)>> {
         self.begin_execution();
+        let interpretation = BoundsInterpretation::from_force_over(self.options.force_over);
         let result = self.execute_bounds_many(rows, |bounds, executor| {
-            let densify = if matches!(executor, BoundsExecutor::Identity) {
-                0
-            } else {
-                densify
-            };
+            if matches!(executor, BoundsExecutor::Identity) {
+                return identity_bounds_2d(bounds, self.target_domain, interpretation);
+            }
             let mut samples = BoundsSamplePlan::new_2d(
                 bounds,
                 densify,
+                interpretation,
                 self.source_domain,
                 self.target_domain,
                 self.options.source_epoch,
@@ -513,19 +509,14 @@ impl TransformPlan {
         densify: u32,
     ) -> Result<(f64, f64, f64, f64, f64, f64)> {
         self.begin_execution();
+        let interpretation = BoundsInterpretation::from_force_over(self.options.force_over);
         let result = if self.is_identity() {
-            if let TopologyDomain::Geographic(frame) = self.target_domain {
-                let (west, east) = canonical_identity_longitudes(bounds.0, bounds.3, frame)?;
-                let [south, north] =
-                    transform::canonical_identity_latitudes(bounds.1, bounds.4, frame)?;
-                Ok((west, south, bounds.2, east, north, bounds.5))
-            } else {
-                Ok(bounds)
-            }
+            identity_bounds_3d(bounds, self.target_domain, interpretation)
         } else {
             let mut samples = BoundsSamplePlan::new_3d(
                 bounds,
                 densify,
+                interpretation,
                 self.source_domain,
                 self.target_domain,
                 self.options.source_epoch,
@@ -542,15 +533,15 @@ impl TransformPlan {
         densify: u32,
     ) -> Result<Vec<TransformedBounds3d>> {
         self.begin_execution();
+        let interpretation = BoundsInterpretation::from_force_over(self.options.force_over);
         let result = self.execute_bounds_many(rows, |bounds, executor| {
-            let densify = if matches!(executor, BoundsExecutor::Identity) {
-                0
-            } else {
-                densify
-            };
+            if matches!(executor, BoundsExecutor::Identity) {
+                return identity_bounds_3d(bounds, self.target_domain, interpretation);
+            }
             let mut samples = BoundsSamplePlan::new_3d(
                 bounds,
                 densify,
+                interpretation,
                 self.source_domain,
                 self.target_domain,
                 self.options.source_epoch,
@@ -936,6 +927,62 @@ mod tests {
                 .unwrap()
                 .entries,
             0
+        );
+    }
+
+    #[test]
+    fn identity_bounds_share_native_endpoint_intervals_for_scalar_and_bulk() {
+        let plan = TransformPlan::new("EPSG:4326", "EPSG:4326").unwrap();
+        let wide_2d = (-170.0, -1.0, 170.0, 1.0);
+        assert_eq!(plan.transform_bounds(wide_2d, 21).unwrap(), wide_2d);
+        assert_eq!(plan.transform_bounds_many(&[wide_2d], 21).unwrap(), [
+            wide_2d
+        ]);
+
+        let wide_3d = (-170.0, -1.0, 3.0, 170.0, 1.0, 4.0);
+        assert_eq!(plan.transform_bounds_3d(wide_3d, 21).unwrap(), wide_3d);
+        assert_eq!(plan.transform_bounds_3d_many(&[wide_3d], 21).unwrap(), [
+            wide_3d
+        ]);
+
+        let near_period = (-0.1, 0.0, 359.9, 1.0);
+        let scalar = plan.transform_bounds(near_period, 21).unwrap();
+        assert_ne!(scalar, (-180.0, 0.0, 180.0, 1.0));
+        assert_eq!(plan.transform_bounds_many(&[near_period], 21).unwrap(), [
+            scalar
+        ]);
+        assert_eq!(scalar.0, -0.1);
+        assert_eq!(
+            scalar.2,
+            crate::geographic::GeographicFrame::crs84()
+                .longitude()
+                .canonicalize(359.9)
+                .unwrap()
+                .get()
+        );
+    }
+
+    #[test]
+    fn force_over_identity_bounds_keep_literal_numeric_longitude_extrema() {
+        let plan = TransformPlan::new_with_options("EPSG:4326", "EPSG:4326", TransformOptions {
+            force_over: true,
+            ..TransformOptions::default()
+        })
+        .unwrap();
+        assert_eq!(
+            plan.transform_bounds((540.0, -1.0, 550.0, 1.0), 21)
+                .unwrap(),
+            (540.0, -1.0, 550.0, 1.0)
+        );
+        let descending = (170.0, -1.0, -170.0, 1.0);
+        assert_eq!(
+            plan.transform_bounds(descending, 21).unwrap(),
+            (-170.0, -1.0, 170.0, 1.0)
+        );
+        let descending_3d = (170.0, -1.0, 3.0, -170.0, 1.0, 4.0);
+        assert_eq!(
+            plan.transform_bounds_3d_many(&[descending_3d], 21).unwrap(),
+            [(-170.0, -1.0, 3.0, 170.0, 1.0, 4.0)]
         );
     }
 

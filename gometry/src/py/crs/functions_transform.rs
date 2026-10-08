@@ -514,6 +514,12 @@ pub(crate) fn coordinates_to_py(
 ///     wrapping into ``[-180, 180]`` (PROJ ``FORCE_OVER=YES``). Like
 ///     ``only_best``, this also collapses operation selection to a single
 ///     candidate, so enumerating surfaces return exactly one operation.
+///     Bounds use literal longitude values in this mode: geographic source
+///     bounds sample the closed numeric segment between west and east, and
+///     geographic target bounds return numeric longitude extrema rather than
+///     a periodic cover. Literal identity bounds retain out-of-period values;
+///     descending source longitudes use the segment between their sorted
+///     endpoints.
 ///
 /// Returns
 /// -------
