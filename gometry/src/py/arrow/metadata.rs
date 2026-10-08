@@ -1217,8 +1217,7 @@ fn geoarrow_native_layout(
         } else {
             // Fall back to field-index name access (matches Python helper).
             let num_fields = current.getattr("num_fields")?.extract::<usize>()?;
-            let mut names = Vec::new();
-            names.reserve(num_fields);
+            let mut names = Vec::with_capacity(num_fields);
             for index in 0..num_fields {
                 names.push(current.get_item(index)?.getattr("name")?.extract()?);
             }
