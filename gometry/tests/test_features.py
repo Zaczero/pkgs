@@ -237,6 +237,66 @@ def test_from_features_rejects_non_json_python_property_values() -> None:
     assert exc_info.value.format == 'geojson'
 
 
+def test_from_features_validates_the_copied_properties_snapshot_once() -> None:
+    numbers = [17, 23]
+
+    class OneShotProperties:
+        def __init__(self) -> None:
+            self.keys_calls = 0
+
+        def keys(self) -> tuple[str, str]:
+            self.keys_calls += 1
+            if self.keys_calls > 1:
+                raise RuntimeError('Feature properties were enumerated twice')
+            return ('name', 'numbers')
+
+        def __getitem__(self, key: str) -> object:
+            return {'name': 'example', 'numbers': numbers}[key]
+
+    properties = OneShotProperties()
+    result = gm.from_features({
+        'type': 'Feature',
+        'geometry': {'type': 'Point', 'coordinates': [1, 2]},
+        'properties': properties,
+    })
+
+    assert properties.keys_calls == 1
+    assert result.properties[0] == {'name': 'example', 'numbers': numbers}
+    assert result.properties[0]['numbers'] is numbers
+
+
+def test_from_features_rejects_invalid_values_from_the_copied_snapshot() -> None:
+    invalid_value = object()
+
+    class ChangingProperties:
+        def __init__(self) -> None:
+            self.keys_calls = 0
+
+        def keys(self) -> tuple[str]:
+            self.keys_calls += 1
+            return ('value',)
+
+        def __getitem__(self, key: str) -> object:
+            assert key == 'value'
+            return invalid_value if self.keys_calls == 1 else 17
+
+    properties = ChangingProperties()
+    feature = {
+        'type': 'Feature',
+        'geometry': {'type': 'Point', 'coordinates': [1, 2]},
+        'properties': properties,
+    }
+
+    with pytest.raises(
+        gm.ParseError,
+        match='unsupported JSON value type object',
+    ) as exc_info:
+        gm.from_features(feature)
+
+    assert exc_info.value.format == 'geojson'
+    assert properties.keys_calls == 1
+
+
 def test_from_features_mapping_side_data_is_snapshotted() -> None:
     nested: list[str] = []
     properties = {'nested': nested}

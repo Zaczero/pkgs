@@ -918,7 +918,7 @@ fn python_feature_properties(
         );
     };
     io::validate_geojson_feature_properties(io::GeoJsonMemberKind::Object)?;
-    support::validate_geojson_feature_side_data(&value)?;
+    support::validate_geojson_feature_side_data(output.as_any())?;
     Ok(output.unbind().into())
 }
 
