@@ -1178,6 +1178,50 @@ def test_equals_exact_tolerance_boundary_includes_z_and_m() -> None:
     assert gm.equals_exact(a, c, 0.0, include_z=False, include_m=False)
 
 
+def test_equals_exact_line_chunk_tail_and_active_ordinates() -> None:
+    xy = [(float(index), 0.0) for index in range(9)]
+    z = [10.0, 11.0, 12.0, 13.0, 14.0, 15.0, 16.0, 17.0, 18.0]
+    m = [20.0, 21.0, 22.0, 23.0, 24.0, 25.0, 26.0, 27.0, 28.0]
+    left = gm.LineString(xy, z=z, m=m)
+    xy_at_tolerance = [*xy[:-1], (9.0, 0.0)]
+    right_xy = gm.LineString(xy_at_tolerance, z=z, m=m)
+    below_tolerance = math.nextafter(1.0, 0.0)
+
+    assert gm.equals_exact(left, right_xy, 1.0, include_z=True, include_m=True)
+    assert not gm.equals_exact(
+        left, right_xy, below_tolerance, include_z=True, include_m=True
+    )
+
+    z_at_tolerance = [*z[:-1], 19.0]
+    right_z = gm.LineString(xy, z=z_at_tolerance, m=m)
+    assert gm.equals_exact(left, right_z, 1.0, include_z=True, include_m=False)
+    assert not gm.equals_exact(
+        left, right_z, below_tolerance, include_z=True, include_m=False
+    )
+    assert gm.equals_exact(left, right_z, 0.0, include_z=False, include_m=False)
+
+    m_at_tolerance = [*m[:-1], 29.0]
+    right_m = gm.LineString(xy, z=z, m=m_at_tolerance)
+    assert gm.equals_exact(left, right_m, 1.0, include_z=False, include_m=True)
+    assert not gm.equals_exact(
+        left, right_m, below_tolerance, include_z=False, include_m=True
+    )
+    assert gm.equals_exact(left, right_m, 0.0, include_z=False, include_m=False)
+
+    left_rows = gm.GeometryArray([left])
+    right_rows = gm.GeometryArray([right_xy])
+    np.testing.assert_array_equal(
+        gm.equals_exact(left_rows, right_rows, 1.0, include_z=True, include_m=True),
+        [True],
+    )
+    np.testing.assert_array_equal(
+        gm.equals_exact(
+            left_rows, right_rows, below_tolerance, include_z=True, include_m=True
+        ),
+        [False],
+    )
+
+
 def test_xy_predicates_accept_empty_iterables() -> None:
     poly = gm.box(0, 0, 1, 1)
     np.testing.assert_array_equal(gm.contains_xy(poly, [], []), [])
