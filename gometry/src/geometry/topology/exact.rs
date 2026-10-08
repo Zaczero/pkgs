@@ -2090,7 +2090,7 @@ fn seam_start_spelling(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::geographic::{AngularFactor, GeographicAxisOrientation};
+    use crate::geographic::{AngularFactor, GeographicAxisOrientation, source_admission_counts};
     use crate::geometry::{CoordSeq, LineSeq, MOrdinate, Ring, ZOrdinate};
 
     fn degrees() -> GeographicFrame {
@@ -2147,6 +2147,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::float_cmp,
+        reason = "exact half-period equality selects the source seam spelling without rounding"
+    )]
     fn admitted_source_producer_preserves_raw_branch_and_piece_correspondence() {
         let degree = degrees();
         let grad_unit = AngularFactor::try_new("grads", std::f64::consts::TAU / 400.0).unwrap();
@@ -2179,7 +2183,7 @@ mod tests {
         for (frame, from, to, native_from, native_to, periods) in cases {
             let source = [Point::new_raw_xy(from, 1.0), Point::new_raw_xy(to, 2.0)];
             let mut inventory = ExactGeographicChartInventory::new(frame, 1);
-            let before = crate::geographic::source_admission_counts::snapshot();
+            let before = source_admission_counts::snapshot();
             let _ = inventory
                 .append_source_edge(
                     source[0],
@@ -2191,7 +2195,7 @@ mod tests {
                     0,
                 )
                 .unwrap();
-            let after = crate::geographic::source_admission_counts::snapshot();
+            let after = source_admission_counts::snapshot();
             assert_eq!(after.0 - before.0, 1, "{from} -> {to}");
             let edge = &inventory.edges[0];
             for (actual, original) in edge.source.iter().zip(source) {
@@ -2256,10 +2260,7 @@ mod tests {
                 .delta_x(frame.longitude().period())
                 .unwrap();
             assert_eq!(actual_delta, delta);
-            assert_eq!(
-                crate::geographic::source_admission_counts::snapshot(),
-                after
-            );
+            assert_eq!(source_admission_counts::snapshot(), after);
         }
     }
 
@@ -2273,14 +2274,14 @@ mod tests {
             (175.0, 20.0),
             (175.0, 10.0),
         ]);
-        let before = crate::geographic::source_admission_counts::snapshot().0;
+        let before = source_admission_counts::snapshot().0;
         RingSummary::try_new(frame, &crate::geographic::GeographicRing::from_ring(&ring)).unwrap();
-        let summary_calls = crate::geographic::source_admission_counts::snapshot().0 - before;
+        let summary_calls = source_admission_counts::snapshot().0 - before;
         let polygon = Polygon::new(ring, Vec::new());
         let mut inventory = ExactGeographicChartInventory::new(frame, 1);
-        let before = crate::geographic::source_admission_counts::snapshot().0;
+        let before = source_admission_counts::snapshot().0;
         inventory.push_polygon(&polygon, SourceRowId(0)).unwrap();
-        let actual = crate::geographic::source_admission_counts::snapshot().0 - before;
+        let actual = source_admission_counts::snapshot().0 - before;
         assert_eq!(actual, summary_calls + inventory.edges.len());
     }
 

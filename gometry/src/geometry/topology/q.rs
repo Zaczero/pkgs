@@ -8844,8 +8844,7 @@ mod tests {
         );
 
         let line_in_hole =
-            Shape::geometry_collection(vec![donut.clone(), line(&[(4.0, 5.0), (6.0, 5.0)])])
-                .unwrap();
+            Shape::geometry_collection(vec![donut, line(&[(4.0, 5.0), (6.0, 5.0)])]).unwrap();
         assert_eq!(
             exact_topology(&line_in_hole)
                 .classify_rectangle(Bounds::new_raw(3.0, 3.0, 7.0, 7.0))

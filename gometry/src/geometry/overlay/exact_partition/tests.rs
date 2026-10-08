@@ -54,6 +54,10 @@ fn geographic_embedding_domain_uses_frame_limits_and_existing_singular_lines() {
 }
 
 #[test]
+#[expect(
+    clippy::float_cmp,
+    reason = "the certified rectangle must retain its exact supplied bounds"
+)]
 fn rectangle_partition_uses_its_clip_window_as_embedding_domain() {
     let Shape::Polygon(polygon) =
         crate::io::parse_wkt("POLYGON ((-1 -1,1 -1,1 1,-1 1,-1 -1))").unwrap()
@@ -791,7 +795,12 @@ fn xy_node_parts_serialize_the_certified_embedding() {
             assert_eq!(lines[0].xs(), [0.0, 12.0]);
             assert_eq!(lines[0].ys(), [0.0, 13.0]);
         },
-        other => panic!("expected one line, got {other:?}"),
+        other @ (Shape::Point(_)
+        | Shape::MultiPoint(_)
+        | Shape::Polygon(_)
+        | Shape::MultiPolygon(_)
+        | Shape::GeometryCollection(_)
+        | Shape::Empty(..)) => panic!("expected one line, got {other:?}"),
     }
 }
 
@@ -837,7 +846,12 @@ fn coverage_xy_parts_serialize_the_certified_embedding() {
             assert_eq!(polygons[0].shell.coords().xs(), [0.0, 4.0, 5.0, 0.0, 0.0]);
             assert_eq!(polygons[0].shell.coords().ys(), [0.0, 0.0, 5.0, 4.0, 0.0]);
         },
-        other => panic!("expected one polygon, got {other:?}"),
+        other @ (Shape::Point(_)
+        | Shape::MultiPoint(_)
+        | Shape::LineString(_)
+        | Shape::MultiLineString(_)
+        | Shape::GeometryCollection(_)
+        | Shape::Empty(..)) => panic!("expected one polygon, got {other:?}"),
     }
 }
 
@@ -3747,12 +3761,12 @@ fn rays_handle_empty_queries_and_query_height_boundaries() {
             [span.start.0, span.end.0]
         };
         assert!(
-            shoot_left(&partition.points, partition.spans.len(), &ray_edge, &[])
+            shoot_left(&partition.points, partition.spans.len(), ray_edge, &[])
                 .unwrap()
                 .is_empty()
         );
         assert_eq!(
-            shoot_left(&partition.points, partition.spans.len(), &ray_edge, &[
+            shoot_left(&partition.points, partition.spans.len(), ray_edge, &[
                 query.0
             ],)
             .unwrap(),
@@ -5181,40 +5195,40 @@ fn lattice_crossing_group(origin: f64, ulp: f64) -> [Segment; 3] {
 fn argentina_uruguay_minimal_segments() -> [Segment; 6] {
     [
         seg(
-            -58.4040016,
-            -33.178818,
-            -58.12298950960621,
-            -33.02249063956715,
+            -58.404_001_6,
+            -33.178_818,
+            -58.122_989_509_606_21,
+            -33.022_490_639_567_15,
         ),
         seg(
-            -58.12298950960621,
-            -33.02249063956715,
-            -58.1275839,
-            -33.022275,
+            -58.122_989_509_606_21,
+            -33.022_490_639_567_15,
+            -58.127_583_9,
+            -33.022_275,
         ),
         seg(
-            -58.114883013439915,
-            -33.017980986099005,
-            -58.113024156144505,
-            -33.01694690157259,
+            -58.114_883_013_439_915,
+            -33.017_980_986_099_005,
+            -58.113_024_156_144_505,
+            -33.016_946_901_572_59,
         ),
         seg(
-            -58.113024156144505,
-            -33.01694690157259,
-            -58.1001006,
-            -32.9516227,
+            -58.113_024_156_144_505,
+            -33.016_946_901_572_59,
+            -58.100_100_6,
+            -32.951_622_7,
         ),
         seg(
-            -58.11180215965657,
-            -33.01105783153063,
-            -58.11295390239603,
-            -33.01690781932867,
+            -58.111_802_159_656_57,
+            -33.011_057_831_530_63,
+            -58.112_953_902_396_03,
+            -33.016_907_819_328_67,
         ),
         seg(
-            -58.11295390239603,
-            -33.01690781932867,
-            -58.4040016,
-            -33.178818,
+            -58.112_953_902_396_03,
+            -33.016_907_819_328_67,
+            -58.404_001_6,
+            -33.178_818,
         ),
     ]
 }
@@ -5758,10 +5772,10 @@ fn argentina_uruguay_minimal_crossings_match_the_exhaustive_oracle() {
     let case = run(&argentina_uruguay_minimal_segments());
     let partition = case.partition();
     let at_58 = partition
-        .stored_node(XY::new(-58.12298950960621, -33.02249063956715))
+        .stored_node(XY::new(-58.122_989_509_606_21, -33.022_490_639_567_15))
         .unwrap();
     let at_62 = partition
-        .stored_node(XY::new(-58.113024156144505, -33.01694690157259))
+        .stored_node(XY::new(-58.113_024_156_144_505, -33.016_946_901_572_59))
         .unwrap();
     let first = partition
         .crossings()
@@ -6649,22 +6663,22 @@ fn local_pair_with_two_movable_left_endpoints_owns_both_in_one_class() {
 fn degree_two_reversal_segments() -> [Segment; 3] {
     [
         seg(
-            0.9999999999996705,
-            1.0000000000001992,
-            1.0000000000002955,
-            0.9999999999998217,
+            0.999_999_999_999_670_5,
+            1.000_000_000_000_199_2,
+            1.000_000_000_000_295_5,
+            0.999_999_999_999_821_7,
         ),
         seg(
-            0.9999999999997864,
-            1.0000000000005944,
-            1.000000000000156,
-            0.9999999999995663,
+            0.999_999_999_999_786_4,
+            1.000_000_000_000_594_4,
+            1.000_000_000_000_156,
+            0.999_999_999_999_566_3,
         ),
         seg(
-            1.0000000000005669,
-            0.9999999999996323,
-            0.9999999999995421,
-            1.0000000000002973,
+            1.000_000_000_000_566_9,
+            0.999_999_999_999_632_3,
+            0.999_999_999_999_542_1,
+            1.000_000_000_000_297_3,
         ),
     ]
 }
@@ -6685,25 +6699,26 @@ fn fan_reversal_quad_segments() -> [Segment; 6] {
 
 fn exact_orientation_order(
     partition: &ExactPartition<'_>,
-    [a, b, c]: [NodeId; 3],
+    [first_node, second_node, third_node]: [NodeId; 3],
 ) -> crate::error::Result<Ordering> {
-    let rational_xy = |node| -> crate::error::Result<(ExactRational, ExactRational)> {
+    let rational_coordinates = |node| -> crate::error::Result<(ExactRational, ExactRational)> {
         let exact = partition.exact(node)?;
-        let [x, y, weight] = &*exact;
+        let [x_numerator, y_numerator, homogeneous_weight] = &*exact;
         Ok((
-            ExactRational::new(x.clone(), weight.clone())?,
-            ExactRational::new(y.clone(), weight.clone())?,
+            ExactRational::new(x_numerator.clone(), homogeneous_weight.clone())?,
+            ExactRational::new(y_numerator.clone(), homogeneous_weight.clone())?,
         ))
     };
-    let (ax, ay) = rational_xy(a)?;
-    let (bx, by) = rational_xy(b)?;
-    let (cx, cy) = rational_xy(c)?;
-    let abx = bx.try_subtract(&ax)?;
-    let aby = by.try_subtract(&ay)?;
-    let acx = cx.try_subtract(&ax)?;
-    let acy = cy.try_subtract(&ay)?;
-    abx.try_product(&acy)?
-        .try_subtract(&aby.try_product(&acx)?)?
+    let (first_x, first_y) = rational_coordinates(first_node)?;
+    let (second_x, second_y) = rational_coordinates(second_node)?;
+    let (third_x, third_y) = rational_coordinates(third_node)?;
+    let first_to_second_x = second_x.try_subtract(&first_x)?;
+    let first_to_second_y = second_y.try_subtract(&first_y)?;
+    let first_to_third_x = third_x.try_subtract(&first_x)?;
+    let first_to_third_y = third_y.try_subtract(&first_y)?;
+    first_to_second_x
+        .try_product(&first_to_third_y)?
+        .try_subtract(&first_to_second_y.try_product(&first_to_third_x)?)?
         .try_cmp(&ExactRational::zero())
 }
 

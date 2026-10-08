@@ -752,7 +752,7 @@ pub(crate) enum CellClass {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::grid::geohash;
+    use crate::grid::{geohash, tile};
 
     fn contact(start: (f64, f64), end: (f64, f64)) -> RectContact {
         let unit = Bounds::new_raw(0.0, 0.0, 1.0, 1.0);
@@ -1079,7 +1079,7 @@ mod tests {
         let plan = PreparedPlan::new(source.clone());
         let cache = crate::geometry::FrameDependentCaches::default();
         let frame = crate::geographic::GeographicFrame::crs84();
-        let root = crate::grid::tile::root();
+        let root = tile::root();
         let classifier = GeographicCandidateClassifier::new(&source, &source, &plan, &cache, frame)
             .expect("fixture admits");
         let bounds = root.bounds();
