@@ -11,13 +11,8 @@ mod view;
 
 pub(crate) use chain::ChartSpanGuard;
 pub(crate) use chart::{ChartPointSite, PointSelectionChart};
-#[expect(
-    unused_imports,
-    reason = "sample providers may name this callback argument even though current closures infer it"
-)]
-pub(crate) use computed_edge::ComputedLongitudeRelation;
 pub(crate) use computed_edge::{
-    ComputedEdgeIntent, ComputedSampleOrdinates, ComputedVertexIntent,
+    ComputedEdgeIntent, ComputedLongitudeRelation, ComputedSampleOrdinates, ComputedVertexIntent,
     publish_certified_minor_chain, publish_computed_chain,
     publish_computed_chain_with_vertex_intents,
     publish_computed_chain_with_vertex_intents_and_samples,

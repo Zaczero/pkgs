@@ -625,6 +625,15 @@ fn smooth_for_domain(
                 .smooth_budgeted(iterations, method, keep_endpoints, budget)
         },
         TopologyDomain::Geographic(frame) => {
+            let metric_access = || {
+                ctx.metric.geographic_chart_metric()?.ok_or_else(|| {
+                    crate::crs::CrsError::invalid(
+                        "geographic computed-edge source ordinates require the operation's CRS metric",
+                    )
+                })
+            };
+            let source_context =
+                crate::geometry::SourceArcContext::new(ctx.domain, Some(&metric_access));
             let (output, preserved_vertices) = data.shape().smooth_budgeted_with_vertex_intents(
                 iterations,
                 method,
@@ -636,6 +645,7 @@ fn smooth_for_domain(
                 &output,
                 frame,
                 &preserved_vertices,
+                source_context,
                 budget,
             )
         },

@@ -6,14 +6,14 @@ use std::cell::Cell;
 
 use crate::collections::HashMap;
 use crate::error::Result;
-use crate::geographic::RetainedChartDisplacement;
+use crate::geographic::{ComputedSampleOrdinates, RetainedChartDisplacement};
 use crate::geometry::tessellation::exact::ExactRational;
 use crate::geometry::{
     ChartMetric, CoordinateAxes, GeometryErrorKind, HasM, HasZ, MOrdinate, ON_SEGMENT_EPSILON,
     OverlayOp, Point, PointKey, RunIdentity, Segment, Shape, Unmetered, VertexKey, Work, XY,
-    ZOrdinate, axis_pow2_scale, interpolate_optional_ordinate, overlay, point_distance,
-    point_on_segment, point_segment_distance_and_projection, same_point, scaled_residual,
-    segment_projection,
+    ZOrdinate, axis_pow2_scale, interpolate_optional_ordinate, interpolate_subdivision_ordinate,
+    overlay, point_distance, point_on_segment, point_segment_distance_and_projection, same_point,
+    scaled_residual, segment_projection,
 };
 
 pub(crate) type SourceArcMetricAccess<'access, 'metric, M = crate::crs::GeodesicMetric> =
@@ -446,6 +446,33 @@ pub(crate) fn source_arc_ordinates<'m, M: ChartMetric + 'm>(
     }
 }
 
+/// Carry ordinates at a publisher sample on one retained Native chart edge.
+///
+/// The publisher owns X and supplies the original edge parameter. Y stays
+/// linear in that chart parameter; eligible Z/M follow the edge's ellipsoidal
+/// arclength. `RootMetricState` is scoped by the caller to this edge root.
+pub(crate) fn computed_native_sample_ordinates<'m, M: ChartMetric + 'm>(
+    frame: crate::geographic::GeographicFrame,
+    source: &[Point; 2],
+    longitude: RetainedChartDisplacement,
+    parameter: f64,
+    axes: CoordinateAxes,
+    metric: impl FnOnce() -> crate::error::Result<&'m M>,
+    state: &mut RootMetricState,
+    work: &mut impl Work,
+) -> crate::error::Result<ComputedSampleOrdinates> {
+    let chart_parameter = ExactRational::from_f64(parameter);
+    let request = SourceArcRequest::new(frame, source, axes, &chart_parameter, || Ok(longitude))?;
+    let mut fraction = None;
+    let ordinates = source_arc_ordinates(&request, metric, state, &mut fraction, work)?;
+    let [start, end] = *source;
+    Ok(ComputedSampleOrdinates {
+        y: interpolate_subdivision_ordinate(start.y, end.y, parameter),
+        z: ZOrdinate(ordinates.z.value()),
+        m: MOrdinate(ordinates.m.value()),
+    })
+}
+
 pub(in crate::geometry) fn source_arc_ordinates_unmetered<'m, M: ChartMetric + 'm>(
     request: &SourceArcRequest<'_>,
     metric: impl FnOnce() -> crate::error::Result<&'m M>,
@@ -842,6 +869,62 @@ mod tests {
             Ok(())
         })
         .unwrap();
+    }
+
+    #[test]
+    fn computed_native_sample_endpoint_and_xy_requests_skip_the_metric() {
+        let frame = crate::geographic::GeographicFrame::crs84();
+        let source = [
+            Point::new_axes(0.0, -30.0, ZOrdinate(Some(-0.0)), MOrdinate(Some(101.0))).unwrap(),
+            Point::new_axes(0.0, 70.0, ZOrdinate(Some(47.0)), MOrdinate(Some(701.0))).unwrap(),
+        ];
+        let longitude = retained_source_longitude(frame, &source);
+        let endpoint_metric_accesses = Cell::new(0_usize);
+        let endpoint_metric = || -> crate::error::Result<&crate::crs::GeodesicMetric> {
+            endpoint_metric_accesses.set(endpoint_metric_accesses.get().wrapping_add(1));
+            Err(crate::crs::CrsError::invalid("unexpected computed-edge metric access").into())
+        };
+        let mut state = RootMetricState::default();
+        let mut work = Unmetered;
+
+        let endpoint = computed_native_sample_ordinates(
+            frame,
+            &source,
+            longitude,
+            0.0,
+            CoordinateAxes::XYZM,
+            endpoint_metric,
+            &mut state,
+            &mut work,
+        )
+        .unwrap();
+        assert_eq!(endpoint.y, -30.0);
+        assert_eq!(endpoint.z.0.unwrap().to_bits(), (-0.0_f64).to_bits());
+        assert_eq!(endpoint.m.0, Some(101.0));
+        assert_eq!(endpoint_metric_accesses.get(), 0);
+        assert!(state.edge.is_none());
+
+        let xy_metric_accesses = Cell::new(0_usize);
+        let xy_metric = || -> crate::error::Result<&crate::crs::GeodesicMetric> {
+            xy_metric_accesses.set(xy_metric_accesses.get().wrapping_add(1));
+            Err(crate::crs::CrsError::invalid("unexpected computed-edge metric access").into())
+        };
+        let xy = computed_native_sample_ordinates(
+            frame,
+            &source,
+            longitude,
+            0.25,
+            CoordinateAxes::XY,
+            xy_metric,
+            &mut state,
+            &mut work,
+        )
+        .unwrap();
+        assert_eq!(xy.y, -5.0);
+        assert_eq!(xy.z.0, None);
+        assert_eq!(xy.m.0, None);
+        assert_eq!(xy_metric_accesses.get(), 0);
+        assert!(state.edge.is_none());
     }
 
     #[test]

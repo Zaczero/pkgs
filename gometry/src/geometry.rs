@@ -144,8 +144,8 @@ mod linear;
 mod linear_3d;
 mod ordinates;
 pub(crate) use ordinates::{
-    ParallelSourceArcMetricAccess, SourceArcContext, SourceArcMetricAccess,
-    source_ordinate_values_at_fraction,
+    ParallelSourceArcMetricAccess, RootMetricState, SourceArcContext, SourceArcMetricAccess,
+    computed_native_sample_ordinates, source_ordinate_values_at_fraction,
 };
 mod perimeter;
 pub(crate) use perimeter::{geographic_packed_polygonal_perimeter, geographic_polygonal_perimeter};
