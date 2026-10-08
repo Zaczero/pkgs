@@ -66,6 +66,10 @@ impl<'a> PreparedTopologyPair<'a> {
         ))
     }
 
+    #[expect(
+        clippy::large_types_passed_by_value,
+        reason = "the geographic variant stores both prepared views by value"
+    )]
     pub(crate) const fn from_geographic(
         left: GeographicPrepared<'a>,
         right: GeographicPrepared<'a>,

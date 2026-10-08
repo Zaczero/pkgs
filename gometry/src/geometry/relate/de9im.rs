@@ -1,4 +1,4 @@
-use crate::geometry::relate::matrix_predicates::{self, Decided, Tri};
+use crate::geometry::relate::matrix_predicates::{self, Cell as MatrixCell, Decided, Tri};
 use crate::geometry::{CompiledPattern, Dimension};
 use crate::predicates::Predicate;
 
@@ -21,10 +21,11 @@ impl De9im {
     }
 
     pub(crate) const fn set_at_least(&mut self, row: Loc, col: Loc, dim: Dimension) {
-        let index = row as usize * 3 + col as usize;
         let value = super::dimension_entry(dim);
-        if self.0[index] == b'F' || self.0[index] < value {
-            self.0[index] = value;
+        let entry =
+            matrix_predicates::matrix_cell_mut(&mut self.0, MatrixCell::from_locations(row, col));
+        if *entry == b'F' || *entry < value {
+            *entry = value;
         }
     }
 
@@ -78,5 +79,33 @@ impl De9im {
 
     pub(crate) fn is_equal_topo(self) -> bool {
         matrix_predicates::decided(Predicate::Equals, self)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn set_at_least_maps_all_location_pairs_to_their_de9im_cells() {
+        let mut matrix = De9im([b'F'; 9]);
+        for (row, col, dimension) in [
+            (Loc::Interior, Loc::Interior, Dimension::Point),
+            (Loc::Interior, Loc::Boundary, Dimension::Curve),
+            (Loc::Interior, Loc::Exterior, Dimension::Surface),
+            (Loc::Boundary, Loc::Interior, Dimension::Point),
+            (Loc::Boundary, Loc::Boundary, Dimension::Curve),
+            (Loc::Boundary, Loc::Exterior, Dimension::Surface),
+            (Loc::Exterior, Loc::Interior, Dimension::Point),
+            (Loc::Exterior, Loc::Boundary, Dimension::Curve),
+            (Loc::Exterior, Loc::Exterior, Dimension::Surface),
+        ] {
+            matrix.set_at_least(row, col, dimension);
+        }
+        assert_eq!(matrix.0, *b"012012012");
+
+        matrix.set_at_least(Loc::Interior, Loc::Interior, Dimension::Surface);
+        matrix.set_at_least(Loc::Interior, Loc::Interior, Dimension::Point);
+        assert_eq!(matrix.0, *b"212012012");
     }
 }

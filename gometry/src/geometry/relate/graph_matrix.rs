@@ -134,11 +134,11 @@ fn graph_relate_shapes_geographic(left: &Shape, right: &Shape) -> De9im {
     let right = PreparedPlan::transient(right);
     let left_cache = crate::geometry::FrameDependentCaches::default();
     let right_cache = crate::geometry::FrameDependentCaches::default();
-    graph_relate_data_geographic_q(
-        GeographicPrepared::try_new(&left, &left_cache, frame).expect("fixture admits"),
-        GeographicPrepared::try_new(&right, &right_cache, frame).expect("fixture admits"),
-    )
-    .unwrap()
+    let left_prepared =
+        GeographicPrepared::try_new(&left, &left_cache, frame).expect("fixture admits");
+    let right_prepared =
+        GeographicPrepared::try_new(&right, &right_cache, frame).expect("fixture admits");
+    graph_relate_data_geographic_q(&left_prepared, &right_prepared).unwrap()
 }
 
 pub(crate) fn graph_relate_data(left: &PreparedPlan, right: &PreparedPlan) -> Result<De9im> {
@@ -175,7 +175,7 @@ pub(crate) fn graph_relate_data_geographic(
     if left.chart_route().combine(right.chart_route()) == GeographicTopologyRoute::ExactPartition {
         return exact_partition_relate(left.plan().shape(), right.plan().shape());
     }
-    graph_relate_data_geographic_q(left, right)
+    graph_relate_data_geographic_q(&left, &right)
 }
 
 /// Set intersection is insensitive to repeated shared collection owners.
@@ -208,8 +208,8 @@ pub(crate) fn graph_intersects_data_geographic(
 }
 
 fn graph_relate_data_geographic_q(
-    left: GeographicPrepared<'_>,
-    right: GeographicPrepared<'_>,
+    left: &GeographicPrepared<'_>,
+    right: &GeographicPrepared<'_>,
 ) -> Result<De9im> {
     debug_assert_eq!(left.frame(), right.frame());
     ExactGeographicTopology::from_views(left.frame(), [left.view(), right.view()].into_iter())?

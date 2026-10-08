@@ -1093,7 +1093,7 @@ fn ordinary_geographic_relation_matches_known_matrices() {
             GeographicTopologyRoute::ExactPartition,
             "{name}: right chart route"
         );
-        let q = graph_relate_data_geographic_q(left_prepared, right_prepared).unwrap();
+        let q = graph_relate_data_geographic_q(&left_prepared, &right_prepared).unwrap();
         let routed = graph_relate_data_geographic(left_prepared, right_prepared).unwrap();
         assert_eq!(q.text(), expected, "{name}: exact Q matrix");
         assert_eq!(routed.text(), expected, "{name}: routed matrix");
@@ -1150,7 +1150,7 @@ fn ordinary_country_charts_match_q_relation() {
             "{country}: source vertex chart route"
         );
 
-        let q = graph_relate_data_geographic_q(prepared, prepared_probe).unwrap();
+        let q = graph_relate_data_geographic_q(&prepared, &prepared_probe).unwrap();
         let routed = graph_relate_data_geographic(prepared, prepared_probe).unwrap();
         assert_eq!(routed, q, "{country}: ExactPartition route versus Q");
         compared += 1;
@@ -1886,7 +1886,7 @@ fn mixed_geographic_relation_keeps_known_area_and_curve_cells() {
         let right_prepared =
             GeographicPrepared::try_new(&right_plan, &right_cache, frame).expect("fixture admits");
         assert_eq!(
-            graph_relate_data_geographic_q(left_prepared, right_prepared)
+            graph_relate_data_geographic_q(&left_prepared, &right_prepared)
                 .unwrap()
                 .text(),
             expected,

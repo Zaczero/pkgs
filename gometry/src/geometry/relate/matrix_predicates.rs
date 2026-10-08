@@ -1,3 +1,4 @@
+use super::de9im::Loc;
 use crate::geometry::relate::De9im;
 use crate::geometry::{CompiledPattern, Dimension};
 use crate::predicates::Predicate;
@@ -152,6 +153,20 @@ pub(crate) enum Cell {
 }
 
 impl Cell {
+    pub(crate) const fn from_locations(row: Loc, col: Loc) -> Self {
+        match (row, col) {
+            (Loc::Interior, Loc::Interior) => Self::Ii,
+            (Loc::Interior, Loc::Boundary) => Self::Ib,
+            (Loc::Interior, Loc::Exterior) => Self::Ie,
+            (Loc::Boundary, Loc::Interior) => Self::Bi,
+            (Loc::Boundary, Loc::Boundary) => Self::Bb,
+            (Loc::Boundary, Loc::Exterior) => Self::Be,
+            (Loc::Exterior, Loc::Interior) => Self::Ei,
+            (Loc::Exterior, Loc::Boundary) => Self::Eb,
+            (Loc::Exterior, Loc::Exterior) => Self::Ee,
+        }
+    }
+
     pub(crate) const ALL: [Self; 9] = [
         Self::Ii,
         Self::Ib,
@@ -193,20 +208,12 @@ impl CellMask {
         Self([false; 9])
     }
 
-    #[expect(
-        clippy::indexing_slicing,
-        reason = "the closed Cell enum maps only to one of the nine mask entries"
-    )]
     pub(crate) const fn contains(self, cell: Cell) -> bool {
-        self.0[cell.index()]
+        *matrix_cell(&self.0, cell)
     }
 
-    #[expect(
-        clippy::indexing_slicing,
-        reason = "the closed Cell enum maps only to one of the nine mask entries"
-    )]
     const fn with(mut self, cell: Cell) -> Self {
-        self.0[cell.index()] = true;
+        *matrix_cell_mut(&mut self.0, cell) = true;
         self
     }
 
@@ -266,10 +273,18 @@ impl CellMask {
 
 #[expect(
     clippy::indexing_slicing,
-    reason = "the closed Cell enum maps only to indexes in the fixed nine-entry DE-9IM matrix"
+    reason = "the closed Cell enum maps only to one of the nine fixed matrix entries"
 )]
-const fn matrix_entry(matrix: &[u8], cell: Cell) -> u8 {
-    matrix[cell.index()]
+pub(crate) const fn matrix_cell<T>(cells: &[T; 9], cell: Cell) -> &T {
+    &cells[cell.index()]
+}
+
+#[expect(
+    clippy::indexing_slicing,
+    reason = "the closed Cell enum maps only to one of the nine fixed matrix entries"
+)]
+pub(crate) const fn matrix_cell_mut<T>(cells: &mut [T; 9], cell: Cell) -> &mut T {
+    &mut cells[cell.index()]
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -289,7 +304,7 @@ pub(crate) struct Decided(pub(crate) De9im);
 
 impl Cells for Decided {
     fn at_least(&self, cell: Cell, dimension: Dimension) -> Tri {
-        if Dim4::from_entry(matrix_entry(&self.0.0, cell)) >= Dim4::from_dimension(dimension) {
+        if Dim4::from_entry(*matrix_cell(&self.0.0, cell)) >= Dim4::from_dimension(dimension) {
             Tri::True
         } else {
             Tri::False
@@ -297,7 +312,7 @@ impl Cells for Decided {
     }
 
     fn is_empty(&self, cell: Cell) -> Tri {
-        if matrix_entry(&self.0.0, cell) == b'F' {
+        if *matrix_cell(&self.0.0, cell) == b'F' {
             Tri::True
         } else {
             Tri::False
@@ -305,7 +320,7 @@ impl Cells for Decided {
     }
 
     fn exactly(&self, cell: Cell, dimension: Dimension) -> Tri {
-        if matrix_entry(&self.0.0, cell) == super::dimension_entry(dimension) {
+        if *matrix_cell(&self.0.0, cell) == super::dimension_entry(dimension) {
             Tri::True
         } else {
             Tri::False
@@ -319,7 +334,7 @@ impl Cells for Decided {
         };
         let dimension = cells
             .into_iter()
-            .map(|cell| Dim4::from_entry(matrix_entry(&self.0.0, cell)))
+            .map(|cell| Dim4::from_entry(*matrix_cell(&self.0.0, cell)))
             .fold(Dim4::Empty, Ord::max);
         DimRange::exact(dimension)
     }

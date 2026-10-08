@@ -80,24 +80,12 @@ pub(crate) struct De9imInterval {
     interior_floor: [Option<Dimension>; 2],
 }
 
-const fn index(row: Loc, col: Loc) -> usize {
-    (row as usize).wrapping_mul(3).wrapping_add(col as usize)
-}
-
-#[expect(
-    clippy::indexing_slicing,
-    reason = "the three Loc variants map only to cells in the fixed nine-entry DE-9IM array"
-)]
 const fn interval_cell(cells: &[Cell; 9], row: Loc, col: Loc) -> &Cell {
-    &cells[index(row, col)]
+    matrix_predicates::matrix_cell(cells, MatrixCell::from_locations(row, col))
 }
 
-#[expect(
-    clippy::indexing_slicing,
-    reason = "the three Loc variants map only to cells in the fixed nine-entry DE-9IM array"
-)]
 const fn interval_cell_mut(cells: &mut [Cell; 9], row: Loc, col: Loc) -> &mut Cell {
-    &mut cells[index(row, col)]
+    matrix_predicates::matrix_cell_mut(cells, MatrixCell::from_locations(row, col))
 }
 
 const LOCS: [Loc; 3] = [Loc::Interior, Loc::Boundary, Loc::Exterior];
@@ -144,11 +132,11 @@ impl De9imInterval {
         let cap = match operand {
             MatrixOperand::Left => max_dimension(
                 [MatrixCell::Ii, MatrixCell::Ib, MatrixCell::Ie]
-                    .map(|cell| interval_matrix_cell(&self.hi, cell)),
+                    .map(|cell| *matrix_predicates::matrix_cell(&self.hi, cell)),
             ),
             MatrixOperand::Right => max_dimension(
                 [MatrixCell::Ii, MatrixCell::Bi, MatrixCell::Ei]
-                    .map(|cell| interval_matrix_cell(&self.hi, cell)),
+                    .map(|cell| *matrix_predicates::matrix_cell(&self.hi, cell)),
             ),
         };
         debug_assert!(
@@ -176,7 +164,8 @@ impl De9imInterval {
             .into_iter()
             .filter(|&cell| cells.contains(cell))
             .all(|cell| {
-                interval_matrix_cell(&self.lo, cell) == interval_matrix_cell(&self.hi, cell)
+                matrix_predicates::matrix_cell(&self.lo, cell)
+                    == matrix_predicates::matrix_cell(&self.hi, cell)
             })
     }
 
@@ -197,14 +186,6 @@ impl De9imInterval {
     }
 }
 
-#[expect(
-    clippy::indexing_slicing,
-    reason = "the closed MatrixCell enum maps only to indexes in the fixed nine-entry interval"
-)]
-const fn interval_matrix_cell(cells: &[Cell], cell: MatrixCell) -> Cell {
-    cells[cell.index()]
-}
-
 fn max_dimension(cells: [Cell; 3]) -> Option<Dimension> {
     cells
         .into_iter()
@@ -217,8 +198,8 @@ fn max_dimension(cells: [Cell; 3]) -> Option<Dimension> {
 
 impl MatrixCells for De9imInterval {
     fn at_least(&self, cell: MatrixCell, dimension: Dimension) -> Tri {
-        let lower = interval_matrix_cell(&self.lo, cell);
-        let upper = interval_matrix_cell(&self.hi, cell);
+        let lower = *matrix_predicates::matrix_cell(&self.lo, cell);
+        let upper = *matrix_predicates::matrix_cell(&self.hi, cell);
         let wanted = Cell::Dim(dimension);
         if lower >= wanted {
             Tri::True
@@ -231,8 +212,8 @@ impl MatrixCells for De9imInterval {
 
     fn is_empty(&self, cell: MatrixCell) -> Tri {
         match (
-            interval_matrix_cell(&self.lo, cell),
-            interval_matrix_cell(&self.hi, cell),
+            *matrix_predicates::matrix_cell(&self.lo, cell),
+            *matrix_predicates::matrix_cell(&self.hi, cell),
         ) {
             (Cell::Dim(_), _) => Tri::False,
             (Cell::Empty, Cell::Empty) => Tri::True,
@@ -241,8 +222,8 @@ impl MatrixCells for De9imInterval {
     }
 
     fn exactly(&self, cell: MatrixCell, dimension: Dimension) -> Tri {
-        let lower = interval_matrix_cell(&self.lo, cell);
-        let upper = interval_matrix_cell(&self.hi, cell);
+        let lower = *matrix_predicates::matrix_cell(&self.lo, cell);
+        let upper = *matrix_predicates::matrix_cell(&self.hi, cell);
         let wanted = Cell::Dim(dimension);
         if lower == wanted && upper == wanted {
             Tri::True
@@ -263,11 +244,13 @@ impl MatrixCells for De9imInterval {
                 MatrixCell::Ei,
             ]),
         };
-        let lower = max_dimension(cells.map(|cell| interval_matrix_cell(&self.lo, cell)))
-            .into_iter()
-            .chain(floor)
-            .max();
-        let upper = max_dimension(cells.map(|cell| interval_matrix_cell(&self.hi, cell)));
+        let lower =
+            max_dimension(cells.map(|cell| *matrix_predicates::matrix_cell(&self.lo, cell)))
+                .into_iter()
+                .chain(floor)
+                .max();
+        let upper =
+            max_dimension(cells.map(|cell| *matrix_predicates::matrix_cell(&self.hi, cell)));
         DimRange::from_bounds(lower, upper)
     }
 }
@@ -294,6 +277,17 @@ mod tests {
         interior: Dimension::Surface,
         boundary: Some(Dimension::Curve),
     };
+    const LOCATION_PAIRS: [(Loc, Loc); 9] = [
+        (Loc::Interior, Loc::Interior),
+        (Loc::Interior, Loc::Boundary),
+        (Loc::Interior, Loc::Exterior),
+        (Loc::Boundary, Loc::Interior),
+        (Loc::Boundary, Loc::Boundary),
+        (Loc::Boundary, Loc::Exterior),
+        (Loc::Exterior, Loc::Interior),
+        (Loc::Exterior, Loc::Boundary),
+        (Loc::Exterior, Loc::Exterior),
+    ];
 
     /// Settle every cell at its current lower bound.
     fn settle_all(interval: &mut De9imInterval) {
@@ -309,25 +303,25 @@ mod tests {
         let open = De9imInterval::open(LINE, POINT);
         // A point has no boundary: the whole B column is impossible.
         for row in LOCS {
-            assert_eq!(open.hi[index(row, Loc::Boundary)], Cell::Empty);
+            assert_eq!(*interval_cell(&open.hi, row, Loc::Boundary), Cell::Empty);
         }
         // Interior meets interior at most at a point.
         assert_eq!(
-            open.hi[index(Loc::Interior, Loc::Interior)],
+            *interval_cell(&open.hi, Loc::Interior, Loc::Interior),
             Cell::Dim(Dimension::Point)
         );
         // The line's interior in the point's exterior keeps the line's dimension.
         assert_eq!(
-            open.hi[index(Loc::Interior, Loc::Exterior)],
+            *interval_cell(&open.hi, Loc::Interior, Loc::Exterior),
             Cell::Dim(Dimension::Curve)
         );
         assert_eq!(
-            open.lo[index(Loc::Exterior, Loc::Exterior)],
+            *interval_cell(&open.lo, Loc::Exterior, Loc::Exterior),
             Cell::Dim(Dimension::Surface)
         );
         let ring = De9imInterval::open(RING, LINE);
         for col in LOCS {
-            assert_eq!(ring.hi[index(Loc::Boundary, col)], Cell::Empty);
+            assert_eq!(*interval_cell(&ring.hi, Loc::Boundary, col), Cell::Empty);
         }
     }
 
@@ -343,11 +337,12 @@ mod tests {
                 let open = De9imInterval::open(left, right);
                 // Enumerate every lower-bound assignment consistent with the
                 // upper bounds: each cell ranges over F..=hi.
-                let choices: Vec<Vec<Cell>> = (0..9)
-                    .map(|cell| {
+                let choices: Vec<Vec<Cell>> = LOCATION_PAIRS
+                    .into_iter()
+                    .map(|(row, col)| {
                         let mut options = vec![Cell::Empty];
                         for dim in dims {
-                            if Cell::Dim(dim) <= open.hi[cell] {
+                            if Cell::Dim(dim) <= *interval_cell(&open.hi, row, col) {
                                 options.push(Cell::Dim(dim));
                             }
                         }
@@ -357,9 +352,8 @@ mod tests {
                 let mut counters = [0_usize; 9];
                 loop {
                     let mut interval = open;
-                    for cell in 0..9 {
+                    for (cell, (row, col)) in LOCATION_PAIRS.into_iter().enumerate() {
                         if let Cell::Dim(dim) = choices[cell][counters[cell]] {
-                            let (row, col) = (LOCS[cell / 3], LOCS[cell % 3]);
                             interval.witness(row, col, dim);
                         }
                     }
