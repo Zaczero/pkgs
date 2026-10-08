@@ -501,6 +501,7 @@ mod tests {
 
     fn assert_nonfinite_point_summary_keeps_geographic_error(
         shape: &Shape,
+        expected_location: &str,
         expected_coordinate: &str,
     ) {
         assert!(matches!(
@@ -518,7 +519,7 @@ mod tests {
         let surface_message = surface_error.to_string();
         assert_eq!(centroid_message, surface_message);
         assert!(
-            centroid_message.contains("member 1, coordinate 0"),
+            centroid_message.contains(expected_location),
             "{centroid_message}"
         );
         assert!(
@@ -591,7 +592,7 @@ mod tests {
     }
 
     #[test]
-    fn point_summary_uses_actual_bounds_after_symmetric_proof_misses() {
+    fn point_summary_uses_actual_bounds_for_offcenter_ordinary_support() {
         let shape = multipoint(&[point(100.0, 0.0), point(110.0, 10.0)], CoordinateAxes::XY);
         let frame = GeographicFrame::crs84();
 
@@ -619,13 +620,13 @@ mod tests {
     }
 
     #[test]
-    fn point_summary_keeps_loose_proof_bounds_out_of_chart_support() {
+    fn point_summary_returns_the_ordinary_mean_for_finite_support() {
         let shape = multipoint(&[point(1.0, 2.0), point(3.0, 4.0)], CoordinateAxes::XY);
         let frame = GeographicFrame::crs84();
 
         let Some(PointSetCenter::Ordinary((x, y))) =
             crate::geometry::point_set_center_summary(&shape, frame)
-                .expect("symmetric enclosure certifies ordinary support")
+                .expect("finite actual bounds certify ordinary support")
         else {
             panic!("an ordinary proof returns its mean, not support bounds");
         };
@@ -682,13 +683,90 @@ mod tests {
     #[test]
     fn point_summary_defers_nan_means_and_preserves_source_error_location() {
         let shape = multipoint_columns(vec![0.0, f64::NAN], vec![0.0, 1.0]);
-        assert_nonfinite_point_summary_keeps_geographic_error(&shape, "longitude");
+        assert_nonfinite_point_summary_keeps_geographic_error(
+            &shape,
+            "member 1, coordinate 0",
+            "longitude",
+        );
     }
 
     #[test]
     fn point_summary_defers_infinite_means_and_preserves_source_error_location() {
         let shape = multipoint_columns(vec![0.0, 1.0], vec![0.0, f64::INFINITY]);
-        assert_nonfinite_point_summary_keeps_geographic_error(&shape, "latitude");
+        assert_nonfinite_point_summary_keeps_geographic_error(
+            &shape,
+            "member 1, coordinate 0",
+            "latitude",
+        );
+    }
+
+    #[test]
+    fn point_summary_defers_a_middle_nan_and_preserves_its_source_index() {
+        let shape = multipoint_columns(vec![10.0, 20.0, f64::NAN, 40.0, 50.0], vec![
+            1.0, 2.0, 3.0, 4.0, 5.0,
+        ]);
+        assert_nonfinite_point_summary_keeps_geographic_error(
+            &shape,
+            "member 2, coordinate 0",
+            "longitude",
+        );
+    }
+
+    #[test]
+    fn point_summary_defers_a_late_nan_and_preserves_its_source_index() {
+        let shape = multipoint_columns(vec![10.0, 20.0, 30.0, 40.0, f64::NAN], vec![
+            1.0, 2.0, 3.0, 4.0, 5.0,
+        ]);
+        assert_nonfinite_point_summary_keeps_geographic_error(
+            &shape,
+            "member 4, coordinate 0",
+            "longitude",
+        );
+    }
+
+    #[test]
+    fn point_summary_defers_a_late_positive_infinity_and_preserves_its_source_index() {
+        let shape = multipoint_columns(vec![10.0, 20.0, 30.0, 40.0, f64::INFINITY], vec![
+            1.0, 2.0, 3.0, 4.0, 5.0,
+        ]);
+        assert_nonfinite_point_summary_keeps_geographic_error(
+            &shape,
+            "member 4, coordinate 0",
+            "longitude",
+        );
+    }
+
+    #[test]
+    fn point_summary_defers_a_late_negative_infinity_and_preserves_its_source_index() {
+        let shape = multipoint_columns(vec![10.0, 20.0, 30.0, 40.0, 50.0], vec![
+            1.0,
+            2.0,
+            3.0,
+            4.0,
+            f64::NEG_INFINITY,
+        ]);
+        assert_nonfinite_point_summary_keeps_geographic_error(
+            &shape,
+            "member 4, coordinate 0",
+            "latitude",
+        );
+    }
+
+    #[test]
+    fn point_summary_keeps_first_source_error_for_late_nonfinite_data() {
+        let len = 4_105;
+        let mut xs = vec![10.0; len];
+        let ys = vec![1.0; len];
+        *xs.get_mut(len.wrapping_sub(2))
+            .expect("first invalid source member") = f64::NAN;
+        *xs.last_mut().expect("later invalid source member") = f64::INFINITY;
+        let shape = multipoint_columns(xs, ys);
+
+        assert_nonfinite_point_summary_keeps_geographic_error(
+            &shape,
+            &format!("member {}, coordinate 0", len.wrapping_sub(2)),
+            "longitude",
+        );
     }
 
     #[test]

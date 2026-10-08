@@ -227,6 +227,49 @@ def test_point_set_centroid_uses_the_common_chart_for_shifted_sites() -> None:
     assert (centroid.x, centroid.y) == (15.0, 5.0)
 
 
+def test_offcenter_ordinary_multipoint_centroid_matches_analytic_mean() -> None:
+    points = gm.MultiPoint([(100.0, 0.0), (110.0, 10.0)], crs=4326)
+
+    centroid = points.centroid()
+
+    assert (centroid.x, centroid.y) == (105.0, 5.0)
+
+
+def test_offcenter_ordinary_multipoint_surface_returns_a_source_point() -> None:
+    points = gm.MultiPoint([(100.0, 0.0), (110.0, 10.0)], crs=4326)
+
+    surface_point = points.point_on_surface()
+
+    assert (surface_point.x, surface_point.y) in {(100.0, 0.0), (110.0, 10.0)}
+
+
+@pytest.mark.parametrize(
+    'operation_name',
+    ['centroid', 'point_on_surface'],
+    ids=['centroid', 'point-on-surface'],
+)
+def test_late_nan_point_set_error_keeps_source_coordinate_index(
+    operation_name: str,
+) -> None:
+    points = gm.MultiPoint(
+        np.array(
+            [
+                [10.0, 1.0],
+                [20.0, 2.0],
+                [30.0, 3.0],
+                [40.0, 4.0],
+                [np.nan, 5.0],
+            ],
+            dtype=np.float64,
+        ),
+        crs=4326,
+    )
+
+    with pytest.raises(gm.GeometryError, match='member 4, coordinate 0') as error:
+        getattr(points, operation_name)()
+    assert 'longitude' in str(error.value)
+
+
 def test_point_set_hull_and_rectangle_use_the_common_chart() -> None:
     points = gm.MultiPoint([(170.0, 0.0), (-170.0, 0.0), (180.0, 10.0)], crs=4326)
 
@@ -330,6 +373,26 @@ def test_point_set_surface_keeps_first_source_on_a_chart_distance_tie() -> None:
 
     assert (representative.x, representative.y) == (370.0, 0.0)
     assert representative.coordinate_axes == 'XY'
+
+
+def test_late_nan_point_set_surface_error_keeps_source_coordinate_index() -> None:
+    points = gm.MultiPoint(
+        np.array(
+            [
+                [10.0, 1.0],
+                [20.0, 2.0],
+                [30.0, 3.0],
+                [40.0, 4.0],
+                [50.0, np.nan],
+            ],
+            dtype=np.float64,
+        ),
+        crs=4326,
+    )
+
+    with pytest.raises(gm.GeometryError, match='member 4, coordinate 0') as error:
+        points.point_on_surface()
+    assert 'latitude' in str(error.value)
 
 
 def test_point_only_collection_chart_is_shared_by_scalar_and_array_selection() -> None:

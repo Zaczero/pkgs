@@ -13,7 +13,7 @@ use crate::geometry::{
     Bounds, Component, CoordSeq, Coordinates as _, Dimension, GeometryErrorKind, Point, Polygon,
     REDUCE_LANES, REDUCE_SIMD_MIN, ReduceSimd, Ring, Shape, ShapeOwnerKey, axis_pow2_scale,
     canonicalize_zero, centroid_ring_sums, closed_columns_winding, column_mean2, point_distance,
-    simd_reduce_f64,
+    simd_reduce_f64, xy_finite_bounds_columns,
 };
 
 /// Arc sharing can come from an external alias; keep admitted candidates inline
@@ -2039,26 +2039,13 @@ fn point_set_center_columns(
         return None;
     }
     debug_assert_eq!(xs.len(), ys.len());
-    let mut max_abs_x = 0.0_f64;
-    let mut max_abs_y = 0.0_f64;
-    let mut all_finite = true;
-    for (&x, &y) in xs.iter().zip(ys.iter()) {
-        max_abs_x = max_abs_x.max(x.abs());
-        max_abs_y = max_abs_y.max(y.abs());
-        all_finite &= x.is_finite() && y.is_finite();
-    }
-    if !all_finite {
+    let Some([minx, miny, maxx, maxy]) = xy_finite_bounds_columns(xs, ys) else {
         return Some(PointSetCenter::Chart(None));
-    }
-    let symmetric_bounds = Bounds::new_raw(-max_abs_x, -max_abs_y, max_abs_x, max_abs_y);
-    if frame.bounds_certify_ordinary_support(symmetric_bounds) {
-        return Some(PointSetCenter::Ordinary(stable_point_mean_from_magnitudes(
-            xs, ys, max_abs_x, max_abs_y,
-        )));
-    }
-    let [minx, miny, maxx, maxy] = crate::geometry::xy_bounds_columns(xs, ys);
+    };
     let raw_extrema = Bounds::new_raw(minx, miny, maxx, maxy);
     if frame.bounds_certify_ordinary_support(raw_extrema) {
+        let max_abs_x = minx.abs().max(maxx.abs());
+        let max_abs_y = miny.abs().max(maxy.abs());
         return Some(PointSetCenter::Ordinary(stable_point_mean_from_magnitudes(
             xs, ys, max_abs_x, max_abs_y,
         )));
@@ -2066,7 +2053,7 @@ fn point_set_center_columns(
     Some(PointSetCenter::Chart(Some(raw_extrema)))
 }
 
-/// Classify a point-set center without giving conservative proof bounds support authority.
+/// Route point-set centers; column means follow finite actual-bounds admission.
 pub(crate) fn point_set_center_summary(
     shape: &Shape,
     frame: crate::geographic::GeographicFrame,
