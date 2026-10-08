@@ -907,8 +907,9 @@ fn geographic_bounds_values_from_columns_impl<const MASKED: bool>(
             for (xs, ys) in xs.iter().zip(ys) {
                 let ordinary =
                     xs.iter().all(|x| x.abs() < bound) && ys.iter().all(|y| y.abs() < pole);
-                let rows = std::array::from_fn::<_, 4, _>(|index| {
-                    let (x, y) = (xs[index], ys[index]);
+                let [x0, x1, x2, x3] = *xs;
+                let [y0, y1, y2, y3] = *ys;
+                let rows = [(x0, y0), (x1, y1), (x2, y2), (x3, y3)].map(|(x, y)| {
                     if ordinary {
                         [x, y, x, y]
                     } else {

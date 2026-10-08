@@ -1681,6 +1681,106 @@ mod tests {
                 }
             }
         }
+
+        let block_coords = CoordSeq::try_from_vecs(
+            vec![-0.0, 1.0, 2.0, 3.0, 450.0, -270.0, 180.0, 540.0, 40.0],
+            vec![-0.0, 11.0, 12.0, 13.0, 3.0, 4.0, 5.0, 6.0, 90.0],
+            None,
+            None,
+        )
+        .expect("nine CRS84 point rows have parallel XY columns");
+        let dense_columns = PackedColumns::Points(resolve_point_columns(
+            &block_coords,
+            RowSelectionRef::Identity,
+            None,
+            PointRowLayout::Dense,
+        ));
+        let dense_bounds = packed_column_kernels::geographic_bounds_values_from_columns(
+            &dense_columns,
+            GeographicFrame::crs84(),
+        )
+        .expect("dense geographic point bounds");
+        let expected_dense = [
+            [-0.0, -0.0, -0.0, -0.0],
+            [1.0, 11.0, 1.0, 11.0],
+            [2.0, 12.0, 2.0, 12.0],
+            [3.0, 13.0, 3.0, 13.0],
+            [90.0, 3.0, 90.0, 3.0],
+            [90.0, 4.0, 90.0, 4.0],
+            [-180.0, 5.0, -180.0, 5.0],
+            [-180.0, 6.0, -180.0, 6.0],
+            [40.0, 90.0, 40.0, 90.0],
+        ]
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>();
+        assert_eq!(dense_bounds, expected_dense);
+        let (dense_rows, _) = dense_bounds.as_chunks::<4>();
+        assert!(
+            dense_rows
+                .first()
+                .expect("the first point has one bounds row")
+                .iter()
+                .all(|ordinate| ordinate.to_bits() == (-0.0_f64).to_bits())
+        );
+
+        let window_columns = PackedColumns::Points(resolve_point_columns(
+            &block_coords,
+            RowSelectionRef::Window { start: 1, len: 8 },
+            None,
+            PointRowLayout::Dense,
+        ));
+        let window_bounds = packed_column_kernels::geographic_bounds_values_from_columns(
+            &window_columns,
+            GeographicFrame::crs84(),
+        )
+        .expect("offset contiguous geographic point bounds");
+        let expected_window = [
+            [1.0, 11.0, 1.0, 11.0],
+            [2.0, 12.0, 2.0, 12.0],
+            [3.0, 13.0, 3.0, 13.0],
+            [90.0, 3.0, 90.0, 3.0],
+            [90.0, 4.0, 90.0, 4.0],
+            [-180.0, 5.0, -180.0, 5.0],
+            [-180.0, 6.0, -180.0, 6.0],
+            [40.0, 90.0, 40.0, 90.0],
+        ]
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>();
+        assert_eq!(window_bounds, expected_window);
+
+        let selected = RowSelection::gather_checked_native(vec![3, 1, 3, 4], block_coords.len())
+            .expect("selected point rows are in range");
+        let selected_missing = ValidityMask::from_vec(4, vec![false, true, false, false]).unwrap();
+        let selected_columns = PackedColumns::Points(resolve_point_columns(
+            &block_coords,
+            selected.as_deref(),
+            Some(&selected_missing),
+            PointRowLayout::RowAligned,
+        ));
+        let selected_bounds = packed_column_kernels::geographic_bounds_values_from_columns_masked(
+            &selected_columns,
+            GeographicFrame::crs84(),
+            Some(&selected_missing),
+        )
+        .expect("gathered nullable geographic point bounds");
+        let expected_selected = [
+            [3.0, 13.0, 3.0, 13.0],
+            [f64::NAN; 4],
+            [3.0, 13.0, 3.0, 13.0],
+            [90.0, 3.0, 90.0, 3.0],
+        ]
+        .into_iter()
+        .flatten();
+        assert_eq!(selected_bounds.len(), 16);
+        for (actual, expected) in selected_bounds.iter().zip(expected_selected) {
+            if expected.is_nan() {
+                assert!(actual.is_nan());
+            } else {
+                assert_eq!(actual.to_bits(), expected.to_bits());
+            }
+        }
     }
 
     #[test]
