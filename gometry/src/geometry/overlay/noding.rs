@@ -1,4 +1,6 @@
 use std::collections::hash_map::Entry;
+#[cfg(test)]
+use std::ops::ControlFlow;
 
 use crate::error::{ResourceError, Result};
 #[cfg(test)]
@@ -247,8 +249,7 @@ fn self_node_segments_sourced_unique(segments: &[Segment]) -> Result<(Vec<Segmen
 #[cfg(test)]
 pub(crate) fn collinear_overlap_events(segments: &[Segment]) -> Result<Vec<(u32, XY)>> {
     let mut events: Vec<(u32, XY)> = Vec::new();
-    let mut failure = Ok(());
-    let _ = for_each_candidate_pair(segments, single_chain, |left, right| {
+    let candidate_flow = for_each_candidate_pair(segments, single_chain, |left, right| {
         let (a, b) = (segments[left], segments[right]);
         let orientations = PairOrientations::new(a, b);
         if orientations.right_start == Orientation::Collinear
@@ -256,12 +257,13 @@ pub(crate) fn collinear_overlap_events(segments: &[Segment]) -> Result<Vec<(u32,
             && let Err(error) =
                 push_collinear_overlap_cuts(segments, left, right, orientations, &mut events)
         {
-            failure = Err(error);
-            return std::ops::ControlFlow::Break(());
+            return ControlFlow::Break(error);
         }
-        std::ops::ControlFlow::Continue(())
+        ControlFlow::Continue(())
     })?;
-    failure?;
+    if let ControlFlow::Break(error) = candidate_flow {
+        return Err(error);
+    }
     Ok(events)
 }
 
@@ -326,9 +328,8 @@ pub(in crate::geometry) struct NodingScan {
 pub(in crate::geometry) fn full_noding_events(segments: &[Segment]) -> Result<NodingScan> {
     let mut events: Vec<(u32, XY)> = Vec::new();
     let mut overlaps_found = false;
-    let mut failure = Ok(());
     // Large pools take the monotone-run path and avoid a flat sweep-entry sort.
-    let _ = for_each_candidate_pair(segments, single_chain, |left, right| {
+    let candidate_flow = for_each_candidate_pair(segments, single_chain, |left, right| {
         // Endpoint-sharing pairs (every ADJACENT pair of a chain) cannot
         // cross at an interior point — the only interior cuts they can
         // produce are collinear-overlap endpoints, decided by the robust
@@ -340,7 +341,7 @@ pub(in crate::geometry) fn full_noding_events(segments: &[Segment]) -> Result<No
         // robust orientation work they'd otherwise pay (a
         // disjoint-envelope pair shares no point: no cuts of any kind).
         if segment_envelopes_disjoint(a, b) {
-            return std::ops::ControlFlow::Continue(());
+            return ControlFlow::Continue(());
         }
         let orientations = PairOrientations::new(a, b);
         let shares_endpoint = same_point(a.start, b.start)
@@ -365,15 +366,14 @@ pub(in crate::geometry) fn full_noding_events(segments: &[Segment]) -> Result<No
                 {
                     Ok(cut) => overlaps_found |= cut,
                     Err(error) => {
-                        failure = Err(error);
-                        return std::ops::ControlFlow::Break(());
+                        return ControlFlow::Break(error);
                     },
                 }
             }
-            return std::ops::ControlFlow::Continue(());
+            return ControlFlow::Continue(());
         }
         if shares_endpoint {
-            return std::ops::ControlFlow::Continue(());
+            return ControlFlow::Continue(());
         }
         match segment_cross_point_with_orientations(a, b, orientations) {
             Ok(Some(point)) => {
@@ -383,21 +383,21 @@ pub(in crate::geometry) fn full_noding_events(segments: &[Segment]) -> Result<No
                             .map_err(|_| ResourceError::SizeOverflow.into())
                             .map(|target| events.push((target, point)));
                         if let Err(error) = result {
-                            failure = Err(error);
-                            return std::ops::ControlFlow::Break(());
+                            return ControlFlow::Break(error);
                         }
                     }
                 }
             },
             Ok(None) => {},
             Err(error) => {
-                failure = Err(error);
-                return std::ops::ControlFlow::Break(());
+                return ControlFlow::Break(error);
             },
         }
-        std::ops::ControlFlow::Continue(())
+        ControlFlow::Continue(())
     })?;
-    failure?;
+    if let ControlFlow::Break(error) = candidate_flow {
+        return Err(error);
+    }
     Ok(NodingScan {
         events,
         overlaps_found,

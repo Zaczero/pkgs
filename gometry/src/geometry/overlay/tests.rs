@@ -1191,6 +1191,71 @@ fn sourced_noder_orders_extreme_horizontal_cuts_and_keeps_owner() {
     }
 }
 
+#[test]
+fn sourced_noder_preserves_reversed_partial_overlap_atom_owners() {
+    let (atoms, provenance) = self_node_segments_sourced([
+        Segment {
+            start: XY::new(0.0, 0.0),
+            end: XY::new(4.0, 0.0),
+        },
+        Segment {
+            start: XY::new(3.0, 0.0),
+            end: XY::new(1.0, 0.0),
+        },
+        Segment {
+            start: XY::new(1.0, 0.0),
+            end: XY::new(3.0, 0.0),
+        },
+    ])
+    .unwrap();
+    assert_eq!(
+        atoms
+            .iter()
+            .map(|segment| [
+                segment.start.x.to_bits(),
+                segment.start.y.to_bits(),
+                segment.end.x.to_bits(),
+                segment.end.y.to_bits(),
+            ])
+            .collect::<Vec<_>>(),
+        vec![
+            [
+                0.0_f64.to_bits(),
+                0.0_f64.to_bits(),
+                1.0_f64.to_bits(),
+                0.0_f64.to_bits(),
+            ],
+            [
+                1.0_f64.to_bits(),
+                0.0_f64.to_bits(),
+                3.0_f64.to_bits(),
+                0.0_f64.to_bits(),
+            ],
+            [
+                3.0_f64.to_bits(),
+                0.0_f64.to_bits(),
+                4.0_f64.to_bits(),
+                0.0_f64.to_bits(),
+            ],
+            [
+                3.0_f64.to_bits(),
+                0.0_f64.to_bits(),
+                1.0_f64.to_bits(),
+                0.0_f64.to_bits(),
+            ],
+        ]
+    );
+    assert_eq!(
+        provenance.iter().map(<[_]>::to_vec).collect::<Vec<_>>(),
+        vec![
+            vec![(0_u32, false)],
+            vec![(0_u32, false)],
+            vec![(0_u32, false)],
+            vec![(1_u32, false), (2_u32, true)],
+        ]
+    );
+}
+
 mod binary_areal_overlay_tests {
     use super::*;
 
