@@ -354,10 +354,10 @@ mod tests {
         let (first_offset, (&first_x, &first_y)) =
             interior.next().expect("exact RDP source has an interior");
         let mut farthest = 1_usize.wrapping_add(first_offset);
-        let mut best = ExactDistanceWitness::ClampedPointPair(XY::new(first_x, first_y), chord);
+        let mut best = ExactDistanceWitness::Clamped(XY::new(first_x, first_y), chord);
         for (offset, (&x, &y)) in interior {
             let index = 1_usize.wrapping_add(offset);
-            let candidate = ExactDistanceWitness::ClampedPointPair(XY::new(x, y), chord);
+            let candidate = ExactDistanceWitness::Clamped(XY::new(x, y), chord);
             if exact_distance_witness_cmp(candidate, best).unwrap().is_gt() {
                 best = candidate;
                 farthest = index;
@@ -365,7 +365,7 @@ mod tests {
         }
         exact_distance_witness_cmp(
             best,
-            ExactDistanceWitness::PointPair(XY::new(0.0, 0.0), XY::new(tolerance, 0.0)),
+            ExactDistanceWitness::Points(XY::new(0.0, 0.0), XY::new(tolerance, 0.0)),
         )
         .unwrap()
         .is_gt()

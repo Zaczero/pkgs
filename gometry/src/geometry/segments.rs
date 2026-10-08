@@ -697,29 +697,13 @@ impl SegmentParameter {
 )]
 fn push_clip_hit(hit: ClipHit, output: &mut [Option<ClipHit>; 6], count: &mut usize) -> Result<()> {
     let (zero, one) = (ExactDyadic::zero(), ExactDyadic::one());
-    let mut duplicate = None;
-    for (index, existing) in output[..*count].iter().enumerate() {
-        if let Some(existing) = existing
-            && existing.parameter.cmp(&hit.parameter, &zero, &one)? == Ordering::Equal
-        {
-            duplicate = Some(index);
-            break;
+    for existing in output[..*count].iter().flatten() {
+        if existing.parameter.cmp(&hit.parameter, &zero, &one)? == Ordering::Equal {
+            return Ok(());
         }
-    }
-    if let Some(index) = duplicate {
-        // An original endpoint owns its spelling (including signed zero) when
-        // a rectangle corner produces the same exact parameter.
-        if matches!(
-            &hit.parameter,
-            SegmentParameter::Start | SegmentParameter::End
-        ) && let Some(slot) = output.get_mut(index)
-        {
-            *slot = Some(hit);
-        }
-        return Ok(());
     }
     output[*count] = Some(hit);
-    *count += 1;
+    *count = (*count).wrapping_add(1);
     Ok(())
 }
 
@@ -887,18 +871,11 @@ fn segment_pair_nearest(left: Segment, right: Segment) -> Result<SegmentPairNear
     Ok(best)
 }
 
-/// A point lying on BOTH segments, or `None` when they do not meet.
-///
-/// The one witness primitive. Existence and placement both come from
-/// [`segment_contact_exact`], so every returned point is a real shared point:
-/// a transversal crossing placed in double-double arithmetic, a touching
-/// endpoint returned bit-exactly, or the near end of a collinear overlap run.
-///
-/// It returns `None` rather than fabricating. The predecessor
-/// (`segment_intersection_point`) answered `left.start` for a zero
-/// denominator and had no finiteness guard, so a caller could receive a point
-/// on neither segment — or a non-finite one — with no way to tell. It backed
-/// the public `nearest_points`/`shortest_line` witness.
+/// Return a binary64 witness when the stored segments contact, or `None` when
+/// they are disjoint. Contact classification is exact; touches return stored
+/// endpoints and collinear overlaps return a stored endpoint of the shared
+/// interval. Proper crossings are rounded to nearest-even, so the emitted
+/// coordinates need not lie exactly on either carrier.
 pub(super) fn segment_contact_point(left: Segment, right: Segment) -> Result<Option<XY>> {
     let contact = segment_contact_exact(left, right);
     Ok(match contact {
@@ -1325,18 +1302,19 @@ impl PointSegmentSelection {
                         emitted_foot: inner.emitted_foot,
                     }),
                 )),
-                other => Ok(other.clone()),
+                other @ (SegmentProjection::Start
+                | SegmentProjection::Interior(_)
+                | SegmentProjection::CertifiedInterior(_)
+                | SegmentProjection::End) => Ok(other.clone()),
             },
         }
     }
 
     const fn witness(&self, point: XY, segment: Segment) -> ExactDistanceWitness {
         match self.witness_kind {
-            PointSegmentWitnessKind::Start => ExactDistanceWitness::PointPair(point, segment.start),
-            PointSegmentWitnessKind::Interior => {
-                ExactDistanceWitness::ProjectedPointPair(point, segment)
-            },
-            PointSegmentWitnessKind::End => ExactDistanceWitness::PointPair(point, segment.end),
+            PointSegmentWitnessKind::Start => ExactDistanceWitness::Points(point, segment.start),
+            PointSegmentWitnessKind::Interior => ExactDistanceWitness::Projected(point, segment),
+            PointSegmentWitnessKind::End => ExactDistanceWitness::Points(point, segment.end),
         }
     }
 
@@ -1500,9 +1478,9 @@ fn point_segment_metric_exact(point: XY, segment: Segment) -> Result<PointSegmen
 
 #[derive(Clone, Copy)]
 pub(super) enum ExactDistanceWitness {
-    PointPair(XY, XY),
-    ProjectedPointPair(XY, Segment),
-    ClampedPointPair(XY, Segment),
+    Points(XY, XY),
+    Projected(XY, Segment),
+    Clamped(XY, Segment),
 }
 
 /// Order-faithful key for one nearest-witness candidate.
@@ -1641,7 +1619,7 @@ impl SquaredDistanceKey {
 }
 
 pub(super) fn point_pair_distance_key(left: XY, right: XY) -> SquaredDistanceKey {
-    let witness = ExactDistanceWitness::PointPair(left, right);
+    let witness = ExactDistanceWitness::Points(left, right);
     let dx = left.x - right.x;
     let dy = left.y - right.y;
     let squared = dx * dx + dy * dy;
@@ -1702,13 +1680,13 @@ pub(super) fn point_segment_exact_distance_key(point: XY, segment: Segment) -> S
                 lo: lower,
                 hi: upper,
             }
-            .bind(ExactDistanceWitness::ProjectedPointPair(point, segment))
+            .bind(ExactDistanceWitness::Projected(point, segment))
         })
     })();
     if let Some(key) = filtered {
         return key;
     }
-    SquaredDistanceFilter::unbounded().bind(ExactDistanceWitness::ClampedPointPair(point, segment))
+    SquaredDistanceFilter::unbounded().bind(ExactDistanceWitness::Clamped(point, segment))
 }
 
 #[cfg(test)]
@@ -1784,9 +1762,9 @@ std::thread_local! {
 impl ExactDistanceWitness {
     fn witness_role(self) -> Result<WitnessRole> {
         Ok(match self {
-            Self::ProjectedPointPair(..) => WitnessRole::Interior,
-            Self::PointPair(..) => WitnessRole::Point,
-            Self::ClampedPointPair(point, segment) => {
+            Self::Projected(..) => WitnessRole::Interior,
+            Self::Points(..) => WitnessRole::Point,
+            Self::Clamped(point, segment) => {
                 match classify_segment_projection_exact(point, segment)? {
                     ExactClassifiedSegmentProjection::Interior(_) => WitnessRole::Interior,
                     ExactClassifiedSegmentProjection::Start
@@ -1802,12 +1780,12 @@ impl ExactDistanceWitness {
     )]
     fn same_distance_as(self, other: Self) -> bool {
         let equal_sum = |a, b, c, d| {
-            let (left, left_tail) = crate::geometry::exact_arith::two_sum(a, b);
-            let (right, right_tail) = crate::geometry::exact_arith::two_sum(c, d);
+            let (left, left_tail) = two_sum(a, b);
+            let (right, right_tail) = two_sum(c, d);
             left.is_finite() && right.is_finite() && left == right && left_tail == right_tail
         };
         match (self, other) {
-            (Self::PointPair(left_a, left_b), Self::PointPair(right_a, right_b)) => {
+            (Self::Points(left_a, left_b), Self::Points(right_a, right_b)) => {
                 (same_point(left_a, right_a) && same_point(left_b, right_b))
                     || (same_point(left_a, right_b) && same_point(left_b, right_a))
                     || (left_a.x == left_b.x
@@ -1819,7 +1797,7 @@ impl ExactDistanceWitness {
                         && ((left_a.x == right_a.x && left_b.x == right_b.x)
                             || (left_a.x == right_b.x && left_b.x == right_a.x)))
             },
-            (Self::ProjectedPointPair(left, a), Self::ProjectedPointPair(right, b)) => {
+            (Self::Projected(left, a), Self::Projected(right, b)) => {
                 ((same_point(a.start, b.start) && same_point(a.end, b.end))
                     || (same_point(a.start, b.end) && same_point(a.end, b.start)))
                     && equal_sum(left.x, right.x, a.start.x, a.end.x)
@@ -1831,9 +1809,9 @@ impl ExactDistanceWitness {
 
     fn squared(self) -> Result<ExactSquaredDistance> {
         match self {
-            Self::PointPair(left, right) => ExactSquaredDistance::point_pair(left, right),
-            Self::ProjectedPointPair(point, segment) => exact_source_squared(point, segment),
-            Self::ClampedPointPair(point, segment) => {
+            Self::Points(left, right) => ExactSquaredDistance::point_pair(left, right),
+            Self::Projected(point, segment) => exact_source_squared(point, segment),
+            Self::Clamped(point, segment) => {
                 match classify_segment_projection_exact(point, segment)? {
                     ExactClassifiedSegmentProjection::Start => {
                         ExactSquaredDistance::point_pair(point, segment.start)
@@ -1867,7 +1845,7 @@ fn exact_witness_cmp_with_identity(
             .cmp_tie(right.witness_role()?, || Ordering::Equal));
     }
     #[cfg(test)]
-    EXACT_SELECTION_FALLBACKS.with(|count| count.set(count.get() + 1));
+    EXACT_SELECTION_FALLBACKS.with(|count| count.set(count.get().saturating_add(1)));
     let distance = exact_distance_witness_cmp(left, right)?;
     if distance.is_eq() {
         Ok(left
@@ -1885,15 +1863,15 @@ mod witness_role_tests {
     #[test]
     fn chart_witness_role_clamped_recipe_classifies_only_equal_source_distances() {
         let point = XY::new(0.0, 0.0);
-        let endpoint = ExactDistanceWitness::ClampedPointPair(point, Segment {
+        let endpoint = ExactDistanceWitness::Clamped(point, Segment {
             start: XY::new(0.0, 1.0),
             end: XY::new(1.0, 2.0),
         });
-        let interior = ExactDistanceWitness::ClampedPointPair(point, Segment {
+        let interior = ExactDistanceWitness::Clamped(point, Segment {
             start: XY::new(-1.0, 1.0),
             end: XY::new(1.0, 1.0),
         });
-        let point_pair = ExactDistanceWitness::PointPair(point, XY::new(0.0, 1.0));
+        let point_pair = ExactDistanceWitness::Points(point, XY::new(0.0, 1.0));
         assert_eq!(
             exact_witness_cmp_with_identity(endpoint, point_pair).unwrap(),
             Ordering::Equal
@@ -1906,7 +1884,7 @@ mod witness_role_tests {
             exact_distance_witness_cmp(interior, point_pair).unwrap(),
             Ordering::Equal
         );
-        let closer = ExactDistanceWitness::PointPair(point, XY::new(0.0, 0.5));
+        let closer = ExactDistanceWitness::Points(point, XY::new(0.0, 0.5));
         assert_eq!(
             exact_witness_cmp_with_identity(interior, closer).unwrap(),
             Ordering::Greater
