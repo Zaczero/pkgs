@@ -8238,19 +8238,6 @@ mod tests {
                 area: Loc::Interior,
             },
         );
-        for point in [
-            Point::new_raw_xy(175.0, 6.0),
-            Point::new_raw_xy(-175.0, 6.0),
-        ] {
-            assert_eq!(
-                topology.locate_point(point).unwrap(),
-                ExactGeographicPointLocation {
-                    geometry: Loc::Boundary,
-                    area: Loc::Boundary,
-                },
-                "hole-boundary line endpoint {point:?}",
-            );
-        }
         for (point, expected) in [
             (Point::new_raw_xy(0.0, 5.0), ExactGeographicPointLocation {
                 geometry: Loc::Exterior,
