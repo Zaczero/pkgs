@@ -555,6 +555,33 @@ def test_geographic_source_circle_is_published_from_paired_target_endpoints(
     )
 
 
+@pytest.mark.parametrize(
+    'array_route',
+    [
+        pytest.param(False, id='scalar'),
+        pytest.param(True, id='array'),
+    ],
+)
+def test_west_axis_300_grad_transform_uses_paired_source_connection(
+    array_route: bool,
+) -> None:
+    source = gm.LineString(
+        [(0.0, 0.0), (300.0, 0.0)],
+        crs=WGS84_SOUTH_WEST_GRADS,
+    )
+    if array_route:
+        transformed = gm.GeometryArray([source]).to_crs(4326, authority='EPSG')[0]
+    else:
+        transformed = source.to_crs(4326, authority='EPSG')
+
+    coordinates = gm.get_coordinates(transformed)
+
+    # 300 west-axis grads are -270°; the canonical target endpoint is +90°.
+    assert coordinates.shape == (2, 2)
+    assert coordinates[:, 0].tolist() == pytest.approx([0.0, 90.0], abs=1e-12)
+    assert coordinates[:, 1].tolist() == pytest.approx([0.0, 0.0], abs=1e-12)
+
+
 def test_geographic_source_connector_is_shared_by_shape_and_array_routes() -> None:
     circle = gm.LineString(
         [(0.0, 0.0), (400.0, 0.0)],
