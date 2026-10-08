@@ -1,3 +1,4 @@
+use crate::crs::frame::crs_arc;
 use crate::{
     AABB, Bound, Bounds, BufferCapStyle, BufferJoinStyle, BufferSide, CRSError, CollectRows,
     CoordSeq, CoordinateAxes, Crs, DistanceUnit, DwithinDistance, Frame, FromPyObject,
@@ -23,9 +24,7 @@ pub(crate) fn geojson_domain_metric<'a>(
     crate::geometry::TopologyDomain,
     crate::dispatch::MetricCtx<'a>,
 )> {
-    let source_crs = crs
-        .map(crate::crs::frame::crs_arc)
-        .unwrap_or_else(wgs84_crs);
+    let source_crs = crs.map_or_else(wgs84_crs, crs_arc);
     let frame = Frame::new(Some(source_crs), None)?;
     crate::dispatch::MetricResolver::GeographicCarry.resolve_topology_ctx(&frame, scratch)
 }

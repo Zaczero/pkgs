@@ -4,6 +4,7 @@ use crate::predicates::unary;
 use crate::py::classes::geometry_methods::{
     Bound, Py, PyAny, PyDict, PyGeometry, PyResult, PyTuple, Python, Typed, pymethods,
 };
+use crate::py::support::geojson_domain_metric;
 use crate::{
     Arc, Bounds, PyCoordinates, PyCrs, PyTypeError, coordinates, map_coordinates_callback,
     parse_coordinate_replacement, render_shape_html, render_shape_svg, replace_shape_coordinates,
@@ -356,14 +357,12 @@ impl PyGeometry {
         }
         let shape = std::sync::Arc::clone(&self.shape);
         let mut metric_scratch = crate::dispatch::MetricScratch::default();
-        let (domain, metric) =
-            crate::py::support::geojson_domain_metric(self.crs_str(), &mut metric_scratch)?;
+        let (domain, metric) = geojson_domain_metric(self.crs_str(), &mut metric_scratch)?;
         let metric_access = move || {
             metric.geographic_chart_metric()?.ok_or_else(|| {
                 crate::crs::CrsError::invalid(
                     "geographic GeoJSON source ordinates require the geometry CRS metric",
                 )
-                .into()
             })
         };
         let text = py.detach(move || {

@@ -166,14 +166,12 @@ impl PyGeometryArray {
             return Err(InvalidGeometryError::new_err(crate::io::GEOJSON_M_ERROR));
         }
         let mut metric_scratch = crate::dispatch::MetricScratch::default();
-        let (domain, metric) =
-            crate::py::support::geojson_domain_metric(self.crs_str(), &mut metric_scratch)?;
+        let (domain, metric) = support::geojson_domain_metric(self.crs_str(), &mut metric_scratch)?;
         let metric_access = move || {
             metric.geographic_chart_metric()?.ok_or_else(|| {
                 crate::crs::CrsError::invalid(
                     "geographic GeoJSON source ordinates require the array CRS metric",
                 )
-                .into()
             })
         };
         let array = self.clone();
@@ -241,7 +239,6 @@ impl PyGeometryArray {
                 crate::crs::CrsError::invalid(
                     "geographic repair source ordinates require the operation's CRS metric",
                 )
-                .into()
             })
         };
         let repaired = py
@@ -788,7 +785,6 @@ impl PyGeometryArray {
                 crate::crs::CrsError::invalid(
                     "geographic subdivision source ordinates require the operation's CRS metric",
                 )
-                .into()
             })
         };
         // Per-row groups: each input geometry's subdivided parts stay grouped

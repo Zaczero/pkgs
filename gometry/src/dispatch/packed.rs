@@ -428,7 +428,6 @@ pub(crate) fn try_unary_packed_array(
                                     crate::crs::CrsError::invalid(
                                         "geographic rectangle clipping requires the operation's CRS metric",
                                     )
-                                    .into()
                                 })
                             };
                             array.clip_by_rect_unary_packed(py, rect, domain, &metric_access)

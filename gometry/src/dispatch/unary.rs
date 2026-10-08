@@ -47,12 +47,14 @@ pub(crate) fn unary_scalar<R: BulkElement>(
     let mut metric_scratch =
         (!matches!(resolver, MetricResolver::None)).then(MetricScratch::default);
     let result = {
-        let context_result = match metric_scratch.as_mut() {
-            Some(scratch) => resolver.resolve_topology_ctx(&geometry.frame, scratch),
-            None => crate::geometry::topology_domain(&geometry.frame)
-                .map(|domain| (domain, MetricCtx::None))
-                .map_err(PyErr::from),
-        };
+        let context_result = metric_scratch.as_mut().map_or_else(
+            || {
+                crate::geometry::topology_domain(&geometry.frame)
+                    .map(|domain| (domain, MetricCtx::None))
+                    .map_err(PyErr::from)
+            },
+            |scratch| resolver.resolve_topology_ctx(&geometry.frame, scratch),
+        );
         let (domain, metric) = match context_result {
             Ok(context) => context,
             Err(error) => {
@@ -117,10 +119,6 @@ pub(crate) fn unary_array<R: BulkElement>(
     R::bulk_into_py_masked(values, py, &output_frame, array.missing())
 }
 
-#[expect(
-    clippy::wildcard_enum_match_arm,
-    reason = "prepared state is reserved for the operations listed here; all others use the transient shape-only lane"
-)]
 const fn unary_row_mode(op: Operation) -> UnaryRowMode {
     match op {
         Operation::IsValid
@@ -130,8 +128,81 @@ const fn unary_row_mode(op: Operation) -> UnaryRowMode {
         | Operation::Metric(MetricOp::Area | MetricOp::LineInterpolate | MetricOp::LineSubstring) => {
             UnaryRowMode::Prepared
         },
-        Operation::ClipByRect => UnaryRowMode::ShapeOnly,
-        _ => UnaryRowMode::ShapeOnly,
+        Operation::AffineTransform
+        | Operation::Boundary
+        | Operation::BuildArea
+        | Operation::Centroid
+        | Operation::ClipByRect
+        | Operation::ConvexHull
+        | Operation::CrossesAntimeridian
+        | Operation::Difference
+        | Operation::Envelope
+        | Operation::Force2d
+        | Operation::Force3d
+        | Operation::Intersection
+        | Operation::IsCcw
+        | Operation::IsClosed
+        | Operation::IsConvex
+        | Operation::IsEmpty
+        | Operation::MinimumRotatedRectangle
+        | Operation::Node
+        | Operation::Normalize
+        | Operation::OrientPolygons
+        | Operation::PointOnSurface
+        | Operation::Quantize
+        | Operation::RemoveRepeatedPoints
+        | Operation::Repair
+        | Operation::Reverse
+        | Operation::Rotate
+        | Operation::Scale
+        | Operation::Skew
+        | Operation::Snap
+        | Operation::SetM
+        | Operation::SetZ
+        | Operation::Simplify
+        | Operation::Smooth
+        | Operation::SnapToGrid
+        | Operation::SplitAntimeridian
+        | Operation::SwapXy
+        | Operation::SymmetricDifference
+        | Operation::Translate
+        | Operation::Union
+        | Operation::UniquePoints
+        | Operation::Metric(
+            MetricOp::Bearing
+            | MetricOp::Buffer
+            | MetricOp::ConcaveHull
+            | MetricOp::CrossTrackDistance
+            | MetricOp::Destination
+            | MetricOp::Distance
+            | MetricOp::Distance3d
+            | MetricOp::Dwithin
+            | MetricOp::FrechetDistance
+            | MetricOp::HausdorffDistance
+            | MetricOp::InterpolateM
+            | MetricOp::Length
+            | MetricOp::Length3d
+            | MetricOp::LineLocate
+            | MetricOp::MaximumInscribedCircle
+            | MetricOp::MaximumInscribedRadius
+            | MetricOp::MinimumBoundingCircle
+            | MetricOp::MinimumBoundingRadius
+            | MetricOp::MinimumClearance
+            | MetricOp::MinimumClearanceLine
+            | MetricOp::Nearest
+            | MetricOp::NearestPoints
+            | MetricOp::OffsetCurve
+            | MetricOp::PointBetween
+            | MetricOp::PointBetweenRhumb
+            | MetricOp::Polylabel
+            | MetricOp::RhumbBearing
+            | MetricOp::RhumbDestination
+            | MetricOp::RhumbDistance
+            | MetricOp::Segmentize
+            | MetricOp::ShortestLine
+            | MetricOp::SpatialIndexDistanceQuery,
+        )
+        | Operation::Predicate(_) => UnaryRowMode::ShapeOnly,
     }
 }
 
@@ -195,7 +266,11 @@ fn run_unary_rows<T: BulkElement>(
                     .map_err(rows_err)?;
             Ok((values, array.frame.clone()))
         },
-        resolver => {
+        resolver @ (MetricResolver::Antimeridian
+        | MetricResolver::Metric { .. }
+        | MetricResolver::Metric3d { .. }
+        | MetricResolver::LineMetric { .. }
+        | MetricResolver::GeographicCarry) => {
             let mut metric_scratch = MetricScratch::default();
             let result = match resolver.resolve_topology_ctx(&array.frame, &mut metric_scratch) {
                 Ok((domain, metric)) => {
@@ -390,10 +465,10 @@ pub(crate) fn unary_array_shapes_budgeted(
     let missing = array.missing().cloned();
     let array = array.clone();
     let result = {
-        let metric_result = match metric_scratch.as_mut() {
-            Some(scratch) => resolver.resolve_ctx(&frame, scratch),
-            None => Ok(MetricCtx::None),
-        };
+        let metric_result = metric_scratch.as_mut().map_or_else(
+            || Ok(MetricCtx::None),
+            |scratch| resolver.resolve_ctx(&frame, scratch),
+        );
         let metric = match metric_result {
             Ok(metric) => metric,
             Err(error) => {

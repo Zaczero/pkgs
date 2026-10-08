@@ -362,7 +362,6 @@ impl PyGeometryArray {
                     crate::crs::CrsError::invalid(
                         "geographic snap_to_grid repair requires the operation's CRS metric",
                     )
-                    .into()
                 })
             };
             return Some(Python::attach(|py| {

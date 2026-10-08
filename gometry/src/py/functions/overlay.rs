@@ -80,7 +80,6 @@ fn apply_overlay_all(
                 crate::crs::CrsError::invalid(
                     "geographic overlay source ordinates require the operation's CRS metric",
                 )
-                .into()
             })
         };
         crate::geometry::overlay_all_with_metric(
@@ -404,7 +403,6 @@ pub(crate) fn coverage_union(py: Python<'_>, values: &Bound<'_, PyAny>) -> PyRes
             crate::crs::CrsError::invalid(
                 "geographic coverage_union source ordinates require the operation's CRS metric",
             )
-            .into()
         })
     };
     let shape = py.detach(move || {

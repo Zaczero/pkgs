@@ -3,7 +3,7 @@ use std::sync::OnceLock;
 use super::operation::MetricOp;
 use crate::DistanceUnit;
 use crate::broadcast::resolve_metric;
-use crate::crs::frame::Frame;
+use crate::crs::frame::{Crs, Frame};
 use crate::crs::{self, MetricModel, ResolvedMetric};
 use crate::geometry::TopologyDomain;
 #[cfg(test)]
@@ -128,7 +128,7 @@ impl MetricResolver {
         frame: &Frame,
         scratch: &'a mut MetricScratch,
     ) -> pyo3::PyResult<(TopologyDomain, MetricCtx<'a>)> {
-        if let Self::GeographicCarry = self {
+        if matches!(self, Self::GeographicCarry) {
             scratch.clear();
             return match frame.crs_str() {
                 None => Ok((TopologyDomain::Cartesian, MetricCtx::None)),
@@ -160,7 +160,7 @@ impl MetricResolver {
 pub(crate) struct MetricScratch {
     model: OnceLock<MetricModel>,
     metric: OnceLock<ResolvedMetric>,
-    crs: Option<crate::crs::frame::Crs>,
+    crs: Option<Crs>,
     state: Option<std::sync::Arc<crate::crs::RuntimeState>>,
 }
 

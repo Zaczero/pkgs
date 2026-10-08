@@ -392,7 +392,6 @@ impl PyGeometryArray {
                     crate::crs::CrsError::invalid(
                         "geographic dissolve source ordinates require the operation's CRS metric",
                     )
-                    .into()
                 })
             };
             group_shapes

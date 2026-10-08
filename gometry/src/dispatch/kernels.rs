@@ -425,7 +425,6 @@ pub(crate) fn unary_boundary(data: &PreparedPlan, ctx: &CachelessRowContext<'_>)
             crate::crs::CrsError::invalid(
                 "geographic boundary source ordinates require the operation's CRS metric",
             )
-            .into()
         })
     };
     crate::geometry::boundary_with_metric(data, ctx.domain, Some(&metric_access))
@@ -513,7 +512,6 @@ pub(crate) fn unary_split_antimeridian(
             crate::crs::CrsError::invalid(
                 "geographic antimeridian source ordinates require the operation's CRS metric",
             )
-            .into()
         })
     };
     data.shape()
@@ -527,7 +525,6 @@ pub(crate) fn unary_node(data: &PreparedPlan, ctx: &CachelessRowContext<'_>) -> 
             crate::crs::CrsError::invalid(
                 "geographic node source ordinates require the operation's CRS metric",
             )
-            .into()
         })
     };
     data.shape()
@@ -879,7 +876,6 @@ pub(crate) fn unary_snap_to_grid(
                 crate::crs::CrsError::invalid(
                     "geographic snap_to_grid repair requires the operation's CRS metric",
                 )
-                .into()
             })
         };
         data.shape()
@@ -945,7 +941,7 @@ pub(crate) fn unary_clip_by_rect(
                 .geographic_chart_metric()?
                 .ok_or_else(|| crate::crs::CrsError::invalid(
                     "geographic rectangle clipping requires the operation's CRS metric for source ordinates",
-                ).into())
+                ))
         };
         return data
             .shape()
@@ -1066,7 +1062,6 @@ pub(crate) fn binary_overlay(
                     crate::crs::CrsError::invalid(
                         "geographic overlay source ordinates require the operation's CRS metric",
                     )
-                    .into()
                 })
             };
             crate::geometry::overlay_all_with_metric(

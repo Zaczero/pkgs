@@ -92,13 +92,12 @@ impl PyGeometry {
         let frame = self.frame.clone();
         let mut metric_scratch = crate::dispatch::MetricScratch::default();
         let (domain, metric) =
-            crate::py::support::geojson_domain_metric(frame.crs_str(), &mut metric_scratch)?;
+            support::geojson_domain_metric(frame.crs_str(), &mut metric_scratch)?;
         let metric_access = move || {
             metric.geographic_chart_metric()?.ok_or_else(|| {
                 crate::crs::CrsError::invalid(
                     "geographic GeoJSON source ordinates require the geometry CRS metric",
                 )
-                .into()
             })
         };
         py.detach(move || {
@@ -129,7 +128,6 @@ impl PyGeometry {
                 crate::crs::CrsError::invalid(
                     "geographic repair source ordinates require the operation's CRS metric",
                 )
-                .into()
             })
         };
         let plan = self.prepared_plan();
@@ -350,7 +348,6 @@ impl PyGeometry {
                     crate::crs::CrsError::invalid(
                         "geographic subdivision source ordinates require the operation's CRS metric",
                     )
-                    .into()
                 })
             };
             match domain {

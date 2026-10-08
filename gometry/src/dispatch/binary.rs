@@ -794,7 +794,6 @@ fn split_operand_arc_for_topology(
                 crate::crs::CrsError::invalid(
                     "geographic topology split source ordinates require the operation's CRS metric",
                 )
-                .into()
             })
         };
         Ok(Arc::new(PreparedPlan::new(ShapeData::from(
@@ -834,7 +833,6 @@ where
                     crate::crs::CrsError::invalid(
                         "geographic topology split source ordinates require the operation's CRS metric",
                     )
-                    .into()
                 })
             };
             Some(PreparedPlan::new(ShapeData::from(
@@ -850,7 +848,6 @@ where
                     crate::crs::CrsError::invalid(
                         "geographic topology split source ordinates require the operation's CRS metric",
                     )
-                    .into()
                 })
             };
             Some(PreparedPlan::new(ShapeData::from(

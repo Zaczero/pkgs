@@ -32,7 +32,7 @@ use crate::predicates::unary;
 use crate::py::functions::bulk_rows::{StreamedShape, stream_bulk_owned};
 use crate::py::functions::geometry_io;
 use crate::py::numpy::int64_array;
-use crate::py::support::{own_geometry_item, parse_owned_geometry_item};
+use crate::py::support::{geojson_domain_metric, own_geometry_item, parse_owned_geometry_item};
 use crate::py::vectors::Groups;
 use crate::py::viz;
 
@@ -455,14 +455,12 @@ impl PyGeometryArray {
         }
         let array = self.clone();
         let mut metric_scratch = crate::dispatch::MetricScratch::default();
-        let (domain, metric) =
-            crate::py::support::geojson_domain_metric(self.crs_str(), &mut metric_scratch)?;
+        let (domain, metric) = geojson_domain_metric(self.crs_str(), &mut metric_scratch)?;
         let metric_access = move || {
             metric.geographic_chart_metric()?.ok_or_else(|| {
                 crate::crs::CrsError::invalid(
                     "geographic GeoJSON source ordinates require the array CRS metric",
                 )
-                .into()
             })
         };
         let geometry_texts = py
