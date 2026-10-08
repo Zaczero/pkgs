@@ -12,12 +12,10 @@
 # Native sequence methods keep their runtime-accurate signatures rather than
 # widening them to match collections.abc.Sequence's protocol declarations.
 # pyright: reportIncompatibleMethodOverride=false
-# Mypy models each reflected dunder as a competing infix overload. PyO3 instead
-# generates both directions from one type slot, so the direct reflected
-# descriptor can return NotImplemented where the corresponding infix operation
-# succeeds through the other class's forward slot. The local `misc` ignores on
-# reflected overloads preserve that distinction; assert_type and runtime tests
-# cover both call paths.
+# Mypy compares reflected signatures as infix fallback variants. PyO3 exposes
+# each slot's reflected wrapper directly as well; a direct cross-family call can
+# return NotImplemented while mixed infix dispatch succeeds through the other
+# class's forward slot. The local `misc` ignores are scoped to that model mismatch.
 import sys
 import types
 from collections.abc import (
