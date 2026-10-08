@@ -2379,6 +2379,7 @@ mod tests {
             Shape::Point(Point::new_raw_xy(120.0, 90.0)),
             Shape::Point(Point::new_raw_xy(-180.0, -90.0)),
             Shape::Point(Point::new_raw_xy(47.0, -90.0)),
+            Shape::Point(Point::new_raw_xy(-180.0, 6.0)),
         ])
         .unwrap();
         let sources = inventory(degrees(), &[source]);
@@ -2396,12 +2397,13 @@ mod tests {
                 .node
         };
 
-        assert_eq!(chart.source_point_ports.len(), 6);
+        assert_eq!(chart.source_point_ports.len(), 7);
         assert_eq!(point_node(0), point_node(1));
         assert_eq!(point_node(2), point_node(3));
         assert_eq!(point_node(4), point_node(5));
         assert_ne!(point_node(2), point_node(4));
         assert_ne!(point_node(0), point_node(2));
+        assert_ne!(point_node(0), point_node(6));
     }
 
     #[test]

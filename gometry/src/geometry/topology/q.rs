@@ -7860,6 +7860,17 @@ mod tests {
                 "source point alias {point:?}",
             );
         }
+        for longitude in [-180.0, 180.0] {
+            let point = Point::new_raw_xy(longitude, 6.0);
+            assert_eq!(
+                topology.locate_point(point).unwrap(),
+                ExactGeographicPointLocation {
+                    geometry: Loc::Exterior,
+                    area: Loc::Exterior,
+                },
+                "seam latitude without source point support {point:?}",
+            );
+        }
         assert_eq!(
             topology
                 .locate_point(Point::new_raw_xy(0.0, 5.0))
@@ -7999,6 +8010,17 @@ mod tests {
                 .geometry,
             Loc::Exterior
         );
+        for longitude in [-181.0, 179.0, 539.0] {
+            let point = Point::new_raw_xy(longitude, 5.0);
+            assert_eq!(
+                topology.locate_point(point).unwrap(),
+                ExactGeographicPointLocation {
+                    geometry: Loc::Interior,
+                    area: Loc::Interior,
+                },
+                "wrapped seam rectangle alias {point:?}",
+            );
+        }
     }
 
     #[test]
@@ -8127,6 +8149,16 @@ mod tests {
         ));
         let topology = exact_topology(&source);
         for longitude in [-180.0, 180.0] {
+            assert_eq!(
+                topology
+                    .locate_point(Point::new_raw_xy(longitude, -10.0))
+                    .unwrap(),
+                ExactGeographicPointLocation {
+                    geometry: Loc::Boundary,
+                    area: Loc::Boundary,
+                },
+                "lower seam shell boundary at longitude {longitude}",
+            );
             assert_eq!(
                 topology
                     .locate_point(Point::new_raw_xy(longitude, 0.0))
