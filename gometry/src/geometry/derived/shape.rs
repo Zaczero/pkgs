@@ -434,10 +434,7 @@ impl Shape {
         if !finite {
             return Err(GeometryErrorKind::unrepresentable_output(operation));
         }
-        let tolerance = match tolerance {
-            Some(tolerance) => tolerance,
-            None => scale_aware_default_tolerance(self) * scale,
-        };
+        let tolerance = tolerance.unwrap_or_else(|| scale_aware_default_tolerance(self) * scale);
         directed_inradius_scaled(self, tolerance, scale)
     }
 }
