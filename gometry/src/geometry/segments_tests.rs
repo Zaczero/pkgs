@@ -6,6 +6,18 @@ use crate::geometry::segments::{
 use crate::geometry::tessellation::exact::{ExactDyadic, compare_ratios};
 use crate::geometry::*;
 
+struct RemainingWork(u64);
+
+impl Work for RemainingWork {
+    fn charge(&mut self, ticks: u64) -> crate::error::Result<()> {
+        let Some(remaining) = self.0.checked_sub(ticks) else {
+            return Err(crate::error::ResourceError::SizeOverflow.into());
+        };
+        self.0 = remaining;
+        Ok(())
+    }
+}
+
 #[test]
 fn cuts_sort_by_directed_coordinate_at_float_extremes() {
     let cases = [
@@ -1235,6 +1247,48 @@ fn fallible_sort_is_stable_and_matches_the_standard_sort() {
         (2, 'P'),
         (2, 'R'),
     ]);
+}
+
+#[test]
+fn synthetic_work_error_precedes_a_sort_comparison() {
+    let mut items = [(2_u8, 'A'), (1, 'B')];
+    let original = items;
+    let mut comparisons = 0;
+    let mut work = RemainingWork(0);
+
+    let result = try_sort_by_with_work(&mut items, &mut work, |left, right, _work| {
+        comparisons += 1;
+        Ok(left.0.cmp(&right.0))
+    });
+
+    let error = result.unwrap_err();
+    assert!(matches!(
+        error.kind(),
+        ErrorKind::Resource(crate::error::ResourceError::SizeOverflow)
+    ));
+    assert_eq!(comparisons, 0);
+    assert_eq!(items, original);
+}
+
+#[test]
+fn synthetic_work_error_precedes_a_sort_swap() {
+    let mut items = [(2_u8, 'A'), (1, 'B')];
+    let original = items;
+    let mut comparisons = 0;
+    let mut work = RemainingWork(1);
+
+    let result = try_sort_by_with_work(&mut items, &mut work, |left, right, _work| {
+        comparisons += 1;
+        Ok(left.0.cmp(&right.0))
+    });
+
+    let error = result.unwrap_err();
+    assert!(matches!(
+        error.kind(),
+        ErrorKind::Resource(crate::error::ResourceError::SizeOverflow)
+    ));
+    assert_eq!(comparisons, 1);
+    assert_eq!(items, original);
 }
 
 #[test]

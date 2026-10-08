@@ -1,6 +1,7 @@
 use super::*;
+use crate::geometry::Unmetered;
 use crate::geometry::embedding_search::{
-    ClassAssignment, EvaluationBudget, GlobalCheck, Problem, Search,
+    ClassAssignment, GlobalCheck, Problem, Search, SearchAccount, Work,
 };
 use crate::geometry::overlay::Strictness;
 use crate::geometry::overlay::rect::rect_polygon;
@@ -6334,7 +6335,9 @@ fn planar_candidate_values(
         embedding::PlanarProblem::new(&partition, &[&emission], &[node], movable_cache).unwrap();
     let nearest = partition.nearest_xy(node);
     let mut candidates = Vec::new();
-    problem.fill_candidates(node, &mut candidates).unwrap();
+    problem
+        .fill_candidates(node, &mut candidates, &mut Unmetered)
+        .unwrap();
     let mut ordered = candidates.clone();
     crate::geometry::try_sort_by(&mut ordered, |left, right| {
         problem.compare_candidates(node, *left, *right)
@@ -6362,8 +6365,8 @@ fn assert_exact_axis_displacement_bound(
     );
 }
 
-struct TestVerifier<'a, P: Problem> {
-    inner: &'a P,
+struct TestVerifier<'a, P: Problem<Output = ()>> {
+    inner: &'a mut P,
     local_calls: &'a std::cell::Cell<usize>,
     global_calls: &'a std::cell::Cell<usize>,
     node_order: Option<&'a dyn Fn(P::Node, P::Node) -> Ordering>,
@@ -6372,18 +6375,24 @@ struct TestVerifier<'a, P: Problem> {
     bypass_global: bool,
 }
 
-impl<P: Problem> Problem for TestVerifier<'_, P> {
+impl<P: Problem<Output = ()>> Problem for TestVerifier<'_, P> {
     type Node = P::Node;
     type Candidate = P::Candidate;
     type Key = P::Key;
     type ClassState = P::ClassState;
+    type Output = ();
 
     fn classes(&self) -> &[Vec<Self::Node>] {
         self.inner.classes()
     }
 
-    fn fixed_keys(&self, class: usize, variables: &[Self::Node]) -> Result<Vec<Self::Key>> {
-        self.inner.fixed_keys(class, variables)
+    fn fixed_keys<W: Work>(
+        &self,
+        class: usize,
+        variables: &[Self::Node],
+        work: &mut W,
+    ) -> Result<Vec<Self::Key>> {
+        self.inner.fixed_keys(class, variables, work)
     }
 
     fn compare_nodes(&self, left: Self::Node, right: Self::Node) -> Result<Ordering> {
@@ -6393,13 +6402,15 @@ impl<P: Problem> Problem for TestVerifier<'_, P> {
         )
     }
 
-    fn fill_candidates(
+    fn fill_candidates<W: Work>(
         &self,
         node: Self::Node,
         candidates: &mut Vec<Self::Candidate>,
+        work: &mut W,
     ) -> Result<()> {
-        self.inner.fill_candidates(node, candidates)?;
+        self.inner.fill_candidates(node, candidates, work)?;
         if let Some(allowed) = self.candidate_filter {
+            work.charge_product(candidates.len(), 1)?;
             candidates.retain(|&candidate| allowed(node, candidate));
         }
         Ok(())
@@ -6418,44 +6429,44 @@ impl<P: Problem> Problem for TestVerifier<'_, P> {
         self.inner.candidate_key(candidate)
     }
 
-    fn prepare_class(
+    fn prepare_class<A: SearchAccount>(
         &self,
         class: usize,
         variables: &[Self::Node],
-        budget: &mut EvaluationBudget,
+        account: &mut A,
     ) -> Result<Self::ClassState> {
-        self.inner.prepare_class(class, variables, budget)
+        self.inner.prepare_class(class, variables, account)
     }
 
-    fn check_local(
+    fn check_local<A: SearchAccount>(
         &self,
         class_state: &Self::ClassState,
         class: usize,
         variables: &[Self::Node],
         rank: usize,
         assigned: &[Option<Self::Candidate>],
-        budget: &mut EvaluationBudget,
+        account: &mut A,
     ) -> Result<bool> {
         self.local_calls.set(self.local_calls.get().wrapping_add(1));
         if self.bypass_local {
             Ok(true)
         } else {
             self.inner
-                .check_local(class_state, class, variables, rank, assigned, budget)
+                .check_local(class_state, class, variables, rank, assigned, account)
         }
     }
 
-    fn check_global(
-        &self,
+    fn check_global<A: SearchAccount>(
+        &mut self,
         assignments: &[ClassAssignment<'_, Self::Node, Self::Candidate>],
-        budget: &mut EvaluationBudget,
-    ) -> Result<GlobalCheck> {
+        account: &mut A,
+    ) -> Result<GlobalCheck<Self::Output>> {
         self.global_calls
             .set(self.global_calls.get().wrapping_add(1));
         if self.bypass_global {
-            Ok(GlobalCheck::Pass)
+            Ok(GlobalCheck::Pass(()))
         } else {
-            self.inner.check_global(assignments, budget)
+            Problem::check_global(&mut *self.inner, assignments, account)
         }
     }
 
@@ -6465,7 +6476,7 @@ impl<P: Problem> Problem for TestVerifier<'_, P> {
 }
 
 struct FanBypassVerifier<'a, 'p, 's, 'e> {
-    inner: &'a embedding::PlanarProblem<'p, 's, 'e>,
+    inner: &'a mut embedding::PlanarProblem<'p, 's, 'e>,
     global_calls: &'a std::cell::Cell<usize>,
 }
 
@@ -6474,25 +6485,32 @@ impl Problem for FanBypassVerifier<'_, '_, '_, '_> {
     type Candidate = XY;
     type Key = PointKey;
     type ClassState = embedding::PlanarClassState;
+    type Output = ();
 
     fn classes(&self) -> &[Vec<Self::Node>] {
         Problem::classes(self.inner)
     }
 
-    fn fixed_keys(&self, class: usize, variables: &[Self::Node]) -> Result<Vec<Self::Key>> {
-        Problem::fixed_keys(self.inner, class, variables)
+    fn fixed_keys<W: Work>(
+        &self,
+        class: usize,
+        variables: &[Self::Node],
+        work: &mut W,
+    ) -> Result<Vec<Self::Key>> {
+        Problem::fixed_keys(self.inner, class, variables, work)
     }
 
     fn compare_nodes(&self, left: Self::Node, right: Self::Node) -> Result<Ordering> {
         Problem::compare_nodes(self.inner, left, right)
     }
 
-    fn fill_candidates(
+    fn fill_candidates<W: Work>(
         &self,
         node: Self::Node,
         candidates: &mut Vec<Self::Candidate>,
+        work: &mut W,
     ) -> Result<()> {
-        Problem::fill_candidates(self.inner, node, candidates)
+        Problem::fill_candidates(self.inner, node, candidates, work)
     }
 
     fn compare_candidates(
@@ -6508,36 +6526,36 @@ impl Problem for FanBypassVerifier<'_, '_, '_, '_> {
         Problem::candidate_key(self.inner, candidate)
     }
 
-    fn prepare_class(
+    fn prepare_class<A: SearchAccount>(
         &self,
         class: usize,
         variables: &[Self::Node],
-        budget: &mut EvaluationBudget,
+        account: &mut A,
     ) -> Result<Self::ClassState> {
-        Problem::prepare_class(self.inner, class, variables, budget)
+        Problem::prepare_class(self.inner, class, variables, account)
     }
 
-    fn check_local(
+    fn check_local<A: SearchAccount>(
         &self,
         class_state: &Self::ClassState,
         class: usize,
         variables: &[Self::Node],
         rank: usize,
         assigned: &[Option<Self::Candidate>],
-        budget: &mut EvaluationBudget,
+        account: &mut A,
     ) -> Result<bool> {
         self.inner
-            .check_local_without_fans(class_state, class, variables, rank, assigned, budget)
+            .check_local_without_fans(class_state, class, variables, rank, assigned, account)
     }
 
-    fn check_global(
-        &self,
+    fn check_global<A: SearchAccount>(
+        &mut self,
         assignments: &[ClassAssignment<'_, Self::Node, Self::Candidate>],
-        budget: &mut EvaluationBudget,
-    ) -> Result<GlobalCheck> {
+        account: &mut A,
+    ) -> Result<GlobalCheck<Self::Output>> {
         self.global_calls
             .set(self.global_calls.get().wrapping_add(1));
-        Problem::check_global(self.inner, assignments, budget)
+        Problem::check_global(&mut *self.inner, assignments, account)
     }
 
     fn initial_evaluations(&self) -> u64 {
@@ -6658,11 +6676,13 @@ fn assert_collision_class_matches_search(count: usize, compare_oracle: bool) {
     .unwrap();
 
     let oracle = compare_oracle.then(|| {
-        let fixed = problem.fixed_keys(0, &variables).unwrap();
+        let fixed = problem.fixed_keys(0, &variables, &mut Unmetered).unwrap();
         let mut candidates = Vec::with_capacity(count);
         for &node in &variables {
             let mut values = Vec::new();
-            problem.fill_candidates(node, &mut values).unwrap();
+            problem
+                .fill_candidates(node, &mut values, &mut Unmetered)
+                .unwrap();
             crate::geometry::try_sort_by(&mut values, |left, right| {
                 problem.compare_candidates(node, *left, *right)
             })
@@ -6867,11 +6887,13 @@ fn argentina_uruguay_minimal_crossings_match_the_exhaustive_oracle() {
         problem.compare_nodes(*left, *right)
     })
     .unwrap();
-    let fixed = problem.fixed_keys(0, &variables).unwrap();
+    let fixed = problem.fixed_keys(0, &variables, &mut Unmetered).unwrap();
     let mut candidates = Vec::with_capacity(variables.len());
     for &node in &variables {
         let mut values = Vec::new();
-        problem.fill_candidates(node, &mut values).unwrap();
+        problem
+            .fill_candidates(node, &mut values, &mut Unmetered)
+            .unwrap();
         crate::geometry::try_sort_by(&mut values, |left, right| {
             problem.compare_candidates(node, *left, *right)
         })
@@ -7082,7 +7104,7 @@ fn exhaustive_contact_failure_rejects_an_injective_certificate_bypass() {
     let point = append_constructed_point(&mut partition, exact.clone(), exact);
     let mut emission = partition.span_emission(0..u32::try_from(partition.spans.len()).unwrap());
     emission.items.push([point, point]);
-    let problem = embedding::PlanarProblem::new(&partition, &[&emission], &[point], vec![
+    let mut problem = embedding::PlanarProblem::new(&partition, &[&emission], &[point], vec![
         None;
         partition
             .node_count(
@@ -7092,9 +7114,11 @@ fn exhaustive_contact_failure_rejects_an_injective_certificate_bypass() {
     let classes = Problem::classes(&problem);
     assert_eq!(classes.len(), 1);
     assert_eq!(classes.first().unwrap(), &vec![point]);
-    let fixed = problem.fixed_keys(0, &[point]).unwrap();
+    let fixed = problem.fixed_keys(0, &[point], &mut Unmetered).unwrap();
     let mut raw_candidates = Vec::new();
-    problem.fill_candidates(point, &mut raw_candidates).unwrap();
+    problem
+        .fill_candidates(point, &mut raw_candidates, &mut Unmetered)
+        .unwrap();
     assert_eq!(raw_candidates.len(), 9);
     crate::geometry::try_sort_by(&mut raw_candidates, |left, right| {
         problem.compare_candidates(point, *left, *right)
@@ -7122,7 +7146,7 @@ fn exhaustive_contact_failure_rejects_an_injective_certificate_bypass() {
     let normal_global_calls = std::cell::Cell::new(0);
     let error = Search::new(
         TestVerifier {
-            inner: &problem,
+            inner: &mut problem,
             local_calls: &local_calls,
             global_calls: &normal_global_calls,
             node_order: None,
@@ -7149,7 +7173,7 @@ fn exhaustive_contact_failure_rejects_an_injective_certificate_bypass() {
     let bypass_global_calls = std::cell::Cell::new(0);
     let bypass = Search::new(
         TestVerifier {
-            inner: &problem,
+            inner: &mut problem,
             local_calls: &bypass_calls,
             global_calls: &bypass_global_calls,
             node_order: None,
@@ -7541,7 +7565,7 @@ fn same_chord_endpoint_domains_retain_the_legal_diagonal_assignment() {
     let upper = XY::new(nearest.x.next_up(), nearest.y.next_up());
     assert_ne!(PointKey::new(nearest), PointKey::new(upper));
 
-    let problem = embedding::PlanarProblem::new(&partition, &[&emission], &[first], vec![
+    let mut problem = embedding::PlanarProblem::new(&partition, &[&emission], &[first], vec![
         None;
         partition
             .node_count(
@@ -7555,7 +7579,7 @@ fn same_chord_endpoint_domains_retain_the_legal_diagonal_assignment() {
     let global_calls = std::cell::Cell::new(0);
     let assignment = Search::new(
         TestVerifier {
-            inner: &problem,
+            inner: &mut problem,
             local_calls: &local_calls,
             global_calls: &global_calls,
             node_order: None,
@@ -7648,10 +7672,12 @@ fn long_chord_with_disjoint_axiswise_candidate_domains_keeps_independent_classes
 
         let mut start_candidates = Vec::new();
         problem
-            .fill_candidates(start, &mut start_candidates)
+            .fill_candidates(start, &mut start_candidates, &mut Unmetered)
             .unwrap();
         let mut end_candidates = Vec::new();
-        problem.fill_candidates(end, &mut end_candidates).unwrap();
+        problem
+            .fill_candidates(end, &mut end_candidates, &mut Unmetered)
+            .unwrap();
         assert!(
             start_candidates.iter().all(|left| end_candidates
                 .iter()
@@ -7907,7 +7933,7 @@ fn degree_two_triangle_reversal_is_rejected_by_g_and_published_when_g_is_bypasse
     ]));
 
     let mut movable_cache = vec![None; partition.node_count()];
-    let problem = embedding::PlanarProblem::new(
+    let mut problem = embedding::PlanarProblem::new(
         &partition,
         &[&emission],
         &triangle,
@@ -7923,7 +7949,7 @@ fn degree_two_triangle_reversal_is_rejected_by_g_and_published_when_g_is_bypasse
     let global_calls = std::cell::Cell::new(0);
     let bypass = Search::new(
         TestVerifier {
-            inner: &problem,
+            inner: &mut problem,
             local_calls: &local_calls,
             global_calls: &global_calls,
             node_order: None,
@@ -8025,9 +8051,9 @@ fn classify_fan_candidates(
         .iter()
         .position(|members| members.contains(&center))
         .expect("fan origin belongs to one movable class");
-    let fixed = problem.fixed_keys(class, &[center])?;
+    let fixed = problem.fixed_keys(class, &[center], &mut Unmetered)?;
     let mut candidates = Vec::new();
-    problem.fill_candidates(center, &mut candidates)?;
+    problem.fill_candidates(center, &mut candidates, &mut Unmetered)?;
     crate::geometry::try_sort_by(&mut candidates, |left, right| {
         problem.compare_candidates(center, *left, *right)
     })?;
@@ -8204,7 +8230,7 @@ fn neighbor_float_fan_flip_is_classified_against_p_and_g() {
         .filter(|item| item.contains(&center))
         .count();
     assert_eq!(center_degree, 4);
-    let problem = embedding::PlanarProblem::new(&partition, &[&emission], &[center], vec![
+    let mut problem = embedding::PlanarProblem::new(&partition, &[&emission], &[center], vec![
         None;
         partition
             .node_count(
@@ -8214,9 +8240,11 @@ fn neighbor_float_fan_flip_is_classified_against_p_and_g() {
     let classes = Problem::classes(&problem);
     assert_eq!(classes.len(), 1);
     assert_eq!(classes.first().unwrap(), &vec![center]);
-    let fixed = problem.fixed_keys(0, &[center]).unwrap();
+    let fixed = problem.fixed_keys(0, &[center], &mut Unmetered).unwrap();
     let mut candidates = Vec::new();
-    problem.fill_candidates(center, &mut candidates).unwrap();
+    problem
+        .fill_candidates(center, &mut candidates, &mut Unmetered)
+        .unwrap();
     crate::geometry::try_sort_by(&mut candidates, |left, right| {
         problem.compare_candidates(center, *left, *right)
     })
@@ -8228,7 +8256,7 @@ fn neighbor_float_fan_flip_is_classified_against_p_and_g() {
     let normal_global_calls = std::cell::Cell::new(0);
     let normal = Search::new(
         TestVerifier {
-            inner: &problem,
+            inner: &mut problem,
             local_calls: &normal_local_calls,
             global_calls: &normal_global_calls,
             node_order: None,
@@ -8245,7 +8273,7 @@ fn neighbor_float_fan_flip_is_classified_against_p_and_g() {
     let bypass_global_calls = std::cell::Cell::new(0);
     let without_fan_pruning = Search::new(
         FanBypassVerifier {
-            inner: &problem,
+            inner: &mut problem,
             global_calls: &bypass_global_calls,
         },
         "polygonize",
@@ -8304,7 +8332,7 @@ fn node_id_candidate_ordering_breaks_permutation_wkb_determinism() {
             fan_spans: Vec::new(),
             faces: None,
         };
-        let problem = embedding::PlanarProblem::new(&partition, &[&emission], &nodes, vec![
+        let mut problem = embedding::PlanarProblem::new(&partition, &[&emission], &nodes, vec![
                 None;
                 partition
                     .node_count()
@@ -8317,7 +8345,7 @@ fn node_id_candidate_ordering_breaks_permutation_wkb_determinism() {
             node_id_order.then_some(&by_node_id as &dyn Fn(NodeId, NodeId) -> Ordering);
         let assignment = Search::new(
             TestVerifier {
-                inner: &problem,
+                inner: &mut problem,
                 local_calls: &local_calls,
                 global_calls: &global_calls,
                 node_order,

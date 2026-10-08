@@ -2309,7 +2309,7 @@ fn assigned_clip_host_conflicts_seed_and_blame_separator_only_class() {
     };
 
     let seeds = [separator_only];
-    let problem = VoronoiProblem::new(&embedding, &seeds).unwrap();
+    let mut problem = VoronoiProblem::new(&embedding, &seeds).unwrap();
     assert_eq!(problem.classes, [vec![separator_only]]);
     let variables = [separator_only];
     let accepted_values = [separator_nearest];
@@ -2329,7 +2329,7 @@ fn assigned_clip_host_conflicts_seed_and_blame_separator_only_class() {
         problem
             .check_global(&accepted_assignment, &mut budget)
             .unwrap(),
-        GlobalCheck::Pass
+        GlobalCheck::Pass(())
     ));
 
     for (candidate, ring) in [(XY::new(12.0, 5.0), 0), (XY::new(5.0, 5.0), 1)] {

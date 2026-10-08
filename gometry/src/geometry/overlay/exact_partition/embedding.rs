@@ -32,7 +32,7 @@ use crate::error::ResourceError;
 use crate::geographic::{GeographicFrame, Latitude, SeamIdentity};
 use crate::geometry::arrangement::compare_departures;
 use crate::geometry::embedding_search::{
-    ClassAssignment, EvaluationBudget, GlobalCheck, Problem, ProximityChord, Search,
+    ClassAssignment, GlobalCheck, Problem, ProximityChord, Search, SearchAccount, Work,
     build_proximity_classes as build_search_proximity_classes, exact_chord_radius,
     possible_swept_bounds, proximity_limit,
 };
@@ -706,7 +706,7 @@ impl<'p, 's, 'e> PlanarProblem<'p, 's, 'e> {
         class: usize,
         rank: usize,
         assigned: &[Option<XY>],
-        budget: &mut EvaluationBudget,
+        account: &mut impl SearchAccount,
     ) -> Result<bool> {
         let proximity = self.proximity.borrow();
         let proximity_pairs = &proximity
@@ -718,7 +718,7 @@ impl<'p, 's, 'e> PlanarProblem<'p, 's, 'e> {
             .get(rank)
             .expect("rank belongs to its class")
         {
-            budget.charge(1)?;
+            account.charge_evaluations(1)?;
             let &(left, right) = proximity_pairs
                 .get(pair_index)
                 .expect("class pair index belongs to the problem");
@@ -754,7 +754,7 @@ impl<'p, 's, 'e> PlanarProblem<'p, 's, 'e> {
         class: usize,
         rank: usize,
         assigned: &[Option<XY>],
-        budget: &mut EvaluationBudget,
+        account: &mut impl SearchAccount,
     ) -> Result<bool> {
         // Prune local fan inversions before G composes the candidate face table.
         for &row_index in class_state
@@ -762,7 +762,7 @@ impl<'p, 's, 'e> PlanarProblem<'p, 's, 'e> {
             .get(rank)
             .expect("rank belongs to its class")
         {
-            budget.charge(1)?;
+            account.charge_evaluations(1)?;
             let row = self
                 .fan_rows
                 .get(row_index)
@@ -785,16 +785,16 @@ impl<'p, 's, 'e> PlanarProblem<'p, 's, 'e> {
     }
 
     #[cfg(test)]
-    pub(super) fn check_local_without_fans(
+    pub(super) fn check_local_without_fans<A: SearchAccount>(
         &self,
         class_state: &PlanarClassState,
         class: usize,
         _variables: &[NodeId],
         rank: usize,
         assigned: &[Option<XY>],
-        budget: &mut EvaluationBudget,
+        account: &mut A,
     ) -> Result<bool> {
-        self.check_local_pairs(class_state, class, rank, assigned, budget)
+        self.check_local_pairs(class_state, class, rank, assigned, account)
     }
 
     fn chord_has_member(&self, chord: &PlanarChord) -> bool {
@@ -807,11 +807,11 @@ impl<'p, 's, 'e> PlanarProblem<'p, 's, 'e> {
         })
     }
 
-    fn prepare_proximity(&self, budget: &mut EvaluationBudget) -> Result<()> {
+    fn prepare_proximity<A: SearchAccount>(&self, account: &mut A) -> Result<()> {
         if self.proximity.borrow().is_some() {
             return Ok(());
         }
-        budget.charge(
+        account.charge_evaluations(
             u64::try_from(self.chords.len().div_ceil(16))
                 .map_err(|_| ResourceError::SizeOverflow)?,
         )?;
@@ -1502,14 +1502,22 @@ impl Problem for PlanarProblem<'_, '_, '_> {
     type Candidate = XY;
     type Key = PointKey;
     type ClassState = PlanarClassState;
+    type Output = ();
 
     fn classes(&self) -> &[Vec<Self::Node>] {
         &self.classes
     }
 
-    fn fixed_keys(&self, class: usize, _variables: &[Self::Node]) -> Result<Vec<Self::Key>> {
+    fn fixed_keys<W: Work>(
+        &self,
+        class: usize,
+        _variables: &[Self::Node],
+        work: &mut W,
+    ) -> Result<Vec<Self::Key>> {
+        work.charge_product(self.live_nodes.len(), 1)?;
         let mut keys = Vec::with_capacity(self.live_nodes.len());
         for &node in &self.live_nodes {
+            work.charge(1)?;
             if self
                 .node_location
                 .get(node.0 as usize)
@@ -1517,6 +1525,7 @@ impl Problem for PlanarProblem<'_, '_, '_> {
                 .flatten()
                 .is_none_or(|(owner, _)| owner != class)
             {
+                work.charge(1)?;
                 keys.push(PointKey::new(self.partition.nearest_xy(node)));
             }
         }
@@ -1527,12 +1536,14 @@ impl Problem for PlanarProblem<'_, '_, '_> {
         self.partition.compare_nodes(left, right)
     }
 
-    fn fill_candidates(
+    fn fill_candidates<W: Work>(
         &self,
         node: Self::Node,
         candidates: &mut Vec<Self::Candidate>,
+        work: &mut W,
     ) -> Result<()> {
         let nearest = self.partition.nearest_xy(node);
+        work.charge(2)?;
         let x_exact = self.partition.compare_axis_to(node, Axis::X, nearest.x)? == Ordering::Equal;
         let y_exact = self.partition.compare_axis_to(node, Axis::Y, nearest.y)? == Ordering::Equal;
         let x_values = [
@@ -1561,8 +1572,13 @@ impl Problem for PlanarProblem<'_, '_, '_> {
                 nearest.y.next_up()
             },
         ];
-        let x_count = if x_exact { 1 } else { 3 };
-        let y_count = if y_exact { 1 } else { 3 };
+        let x_count: usize = if x_exact { 1 } else { 3 };
+        let y_count: usize = if y_exact { 1 } else { 3 };
+        let candidate_count = x_count
+            .checked_mul(y_count)
+            .expect("candidate axis counts are each one or three");
+        work.charge_product(candidate_count, 1)?;
+        candidates.reserve(candidate_count);
         for &x in x_values
             .get(..x_count)
             .expect("candidate axis count is one or three")
@@ -1600,13 +1616,13 @@ impl Problem for PlanarProblem<'_, '_, '_> {
         PointKey::new(candidate)
     }
 
-    fn prepare_class(
+    fn prepare_class<A: SearchAccount>(
         &self,
         class: usize,
         _variables: &[Self::Node],
-        budget: &mut EvaluationBudget,
+        account: &mut A,
     ) -> Result<Self::ClassState> {
-        self.prepare_proximity(budget)?;
+        self.prepare_proximity(account)?;
         let prepared = self.proximity.borrow();
         Ok(prepared
             .as_ref()
@@ -1617,32 +1633,32 @@ impl Problem for PlanarProblem<'_, '_, '_> {
             .clone())
     }
 
-    fn check_local(
+    fn check_local<A: SearchAccount>(
         &self,
         class_state: &Self::ClassState,
         class: usize,
         _variables: &[Self::Node],
         rank: usize,
         assigned: &[Option<Self::Candidate>],
-        budget: &mut EvaluationBudget,
+        account: &mut A,
     ) -> Result<bool> {
-        if !self.check_local_pairs(class_state, class, rank, assigned, budget)? {
+        if !self.check_local_pairs(class_state, class, rank, assigned, account)? {
             return Ok(false);
         }
-        self.check_local_fans(class_state, class, rank, assigned, budget)
+        self.check_local_fans(class_state, class, rank, assigned, account)
     }
 
-    fn check_global(
-        &self,
+    fn check_global<A: SearchAccount>(
+        &mut self,
         assignments: &[ClassAssignment<'_, Self::Node, Self::Candidate>],
-        budget: &mut EvaluationBudget,
-    ) -> Result<GlobalCheck> {
+        account: &mut A,
+    ) -> Result<GlobalCheck<Self::Output>> {
         if self
             .emissions
             .iter()
             .all(|emission| emission.faces.is_none())
         {
-            return Ok(GlobalCheck::Pass);
+            return Ok(GlobalCheck::Pass(()));
         }
         let mut coordinates = Embedding::nearest(self.partition).coordinates().to_vec();
         for assignment in assignments {
@@ -1657,7 +1673,7 @@ impl Problem for PlanarProblem<'_, '_, '_> {
             let Some(faces) = &emission.faces else {
                 continue;
             };
-            budget.charge(
+            account.charge_evaluations(
                 u64::try_from(emission.items.len().div_ceil(16))
                     .map_err(|_| ResourceError::SizeOverflow)?,
             )?;
@@ -1734,7 +1750,7 @@ impl Problem for PlanarProblem<'_, '_, '_> {
                 return Ok(GlobalCheck::Reject(classes));
             }
         }
-        Ok(GlobalCheck::Pass)
+        Ok(GlobalCheck::Pass(()))
     }
 
     fn initial_evaluations(&self) -> u64 {

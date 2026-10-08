@@ -16,8 +16,8 @@ use crate::geometry::tessellation::exact::{
     ExactDyadic, compare_ratios, round_ratio, round_sqrt_ratio,
 };
 use crate::geometry::{
-    Bounds, Coordinates, MOrdinate, Ordering, Point, PointKey, Segment, XY, ZOrdinate,
-    axis_pow2_scale, same_point, same_topological_coordinate, scaled_residual,
+    Bounds, Coordinates, MOrdinate, Ordering, Point, PointKey, Segment, Unmetered, Work, XY,
+    ZOrdinate, axis_pow2_scale, same_point, same_topological_coordinate, scaled_residual,
 };
 
 mod exact;
@@ -365,20 +365,33 @@ pub(in crate::geometry) fn try_sort_by<T>(
     items: &mut [T],
     mut compare: impl FnMut(&T, &T) -> Result<Ordering>,
 ) -> Result<()> {
+    try_sort_by_with_work(items, &mut Unmetered, |left, right, _work| {
+        compare(left, right)
+    })
+}
+
+/// Stable fallible sort that shares one raw-work account with its comparator.
+pub(in crate::geometry) fn try_sort_by_with_work<T, W: Work>(
+    items: &mut [T],
+    work: &mut W,
+    mut compare: impl FnMut(&T, &T, &mut W) -> Result<Ordering>,
+) -> Result<()> {
     const RUN: usize = 16;
     for run in items.chunks_mut(RUN) {
         for index in 1..run.len() {
             let mut cursor = index;
             while cursor > 0 {
                 let previous = cursor.wrapping_sub(1);
+                work.charge(1)?;
                 #[expect(
                     clippy::indexing_slicing,
                     reason = "previous and cursor are adjacent indices within this admitted RUN16 slice"
                 )]
-                let ordering = compare(&run[previous], &run[cursor])?;
+                let ordering = compare(&run[previous], &run[cursor], work)?;
                 if ordering != Ordering::Greater {
                     break;
                 }
+                work.charge(2)?;
                 run.swap(previous, cursor);
                 cursor = previous;
             }
@@ -388,6 +401,7 @@ pub(in crate::geometry) fn try_sort_by<T>(
     if len <= RUN {
         return Ok(());
     }
+    work.charge_product(len, 2)?;
     let mut order = Vec::with_capacity(len);
     let mut merged = Vec::with_capacity(len);
     order.extend(0..len);
@@ -406,19 +420,25 @@ pub(in crate::geometry) fn try_sort_by<T>(
                 // without offset arithmetic.
                 if let Some((left_id, left_rest)) = left.split_first() {
                     if let Some((right_id, right_rest)) = right.split_first() {
-                        #[expect(
-                            clippy::indexing_slicing,
-                            reason = "merge ordinals are the admitted permutation initialized from this exact item slice"
-                        )]
-                        let ordering = compare(&items[*left_id], &items[*right_id])?;
+                        work.charge(1)?;
+                        let left_item = items
+                            .get(*left_id)
+                            .expect("merge ordinal belongs to the admitted item slice");
+                        let right_item = items
+                            .get(*right_id)
+                            .expect("merge ordinal belongs to the admitted item slice");
+                        let ordering = compare(left_item, right_item, work)?;
                         if ordering == Ordering::Greater {
+                            work.charge(1)?;
                             right = right_rest;
                             *slot = *right_id;
                         } else {
+                            work.charge(1)?;
                             left = left_rest;
                             *slot = *left_id;
                         }
                     } else {
+                        work.charge(1)?;
                         left = left_rest;
                         *slot = *left_id;
                     }
@@ -426,6 +446,7 @@ pub(in crate::geometry) fn try_sort_by<T>(
                     let (right_id, right_rest) = right
                         .split_first()
                         .expect("each merge output slot has a remaining run head");
+                    work.charge(1)?;
                     right = right_rest;
                     *slot = *right_id;
                 }
@@ -447,10 +468,12 @@ pub(in crate::geometry) fn try_sort_by<T>(
             if source == current {
                 break;
             }
+            work.charge(1)?;
             *entry = current;
             if source == start {
                 break;
             }
+            work.charge(2)?;
             items.swap(current, source);
             current = source;
         }

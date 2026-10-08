@@ -134,6 +134,7 @@ pub(in crate::geometry) use distance::{ExactPoint, point_segment_distance_square
 pub(crate) use distance::{RowMetricPair, discrete_frechet_distance_with_scratch};
 pub(crate) use types::coordinate_columns_eq;
 mod embedding_search;
+pub(crate) use embedding_search::{Unmetered, Work};
 mod facet_bvh;
 mod generated_budget;
 mod line_index;
@@ -349,7 +350,7 @@ pub(crate) use segments::{
     interpolate_subdivision_ordinate,
 };
 pub(crate) use segments::{point_segment_distance, point_segment_selection, segment_projection};
-pub(in crate::geometry) use segments::{try_dedup_by, try_sort_by};
+pub(in crate::geometry) use segments::{try_dedup_by, try_sort_by, try_sort_by_with_work};
 pub(crate) use tessellation::{CdtRefinement, VoronoiPolygonOutput, row_sample_seed};
 use tessellation::{delaunay_triangulation, point_in_ccw_triangle};
 pub(in crate::geometry) use types::GeographicMetricKey;
