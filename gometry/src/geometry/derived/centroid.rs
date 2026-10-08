@@ -1378,7 +1378,10 @@ impl<'owner> ExactOwnerFold<'owner> {
                         .entry(key)
                     {
                         std::collections::hash_map::Entry::Occupied(entry) => {
-                            &mut shared[*entry.get()].1
+                            &mut shared
+                                .get_mut(*entry.get())
+                                .expect("shared-owner entry ordinal was inserted for this vector")
+                                .1
                         },
                         std::collections::hash_map::Entry::Vacant(entry) => {
                             entry.insert(shared.len());
@@ -2449,6 +2452,63 @@ mod owner_fold_tests {
             exact_owner_centroid_with_work(&siblings, CentroidDimension::Areal).unwrap();
         assert_eq!(centroid, Some((15.5, 0.5)));
         assert!(work.cache_hits > 0);
+    }
+
+    #[test]
+    fn exact_fold_counts_late_repeated_shared_owners_in_every_tier() {
+        let area_a = Shape::geometry_collection(vec![polygon(0.5, -0.5, 1.0)]).unwrap();
+        let area_b = Shape::geometry_collection(vec![polygon(20.5, -0.5, 1.0)]).unwrap();
+        let area_c = Shape::geometry_collection(vec![polygon(40.5, -0.5, 1.0)]).unwrap();
+        let area = Shape::geometry_collection(vec![
+            area_a.clone(),
+            area_b.clone(),
+            area_c.clone(),
+            area_b.clone(),
+            area_a,
+            area_b,
+        ])
+        .unwrap();
+
+        let line_a = Shape::geometry_collection(vec![line(&[(0.0, 0.0), (2.0, 0.0)])]).unwrap();
+        let line_b = Shape::geometry_collection(vec![line(&[(20.0, 0.0), (22.0, 0.0)])]).unwrap();
+        let line_c = Shape::geometry_collection(vec![line(&[(40.0, 0.0), (42.0, 0.0)])]).unwrap();
+        let lineal = Shape::geometry_collection(vec![
+            line_a.clone(),
+            line_b.clone(),
+            line_c.clone(),
+            line_b.clone(),
+            line_a,
+            line_b,
+        ])
+        .unwrap();
+
+        let point_a =
+            Shape::geometry_collection(vec![Shape::Point(Point::new_raw_xy(1.0, 0.0))]).unwrap();
+        let point_b =
+            Shape::geometry_collection(vec![Shape::Point(Point::new_raw_xy(21.0, 0.0))]).unwrap();
+        let point_c =
+            Shape::geometry_collection(vec![Shape::Point(Point::new_raw_xy(41.0, 0.0))]).unwrap();
+        let puntal = Shape::geometry_collection(vec![
+            point_a.clone(),
+            point_b.clone(),
+            point_c.clone(),
+            point_b.clone(),
+            point_a,
+            point_b,
+        ])
+        .unwrap();
+
+        for (shape, tier) in [
+            (&area, CentroidDimension::Areal),
+            (&lineal, CentroidDimension::Lineal),
+            (&puntal, CentroidDimension::Puntal),
+        ] {
+            let (centroid, _) = exact_owner_centroid_with_work(shape, tier).unwrap();
+            assert_eq!(centroid, Some((53.0 / 3.0, 0.0)));
+        }
+
+        // Keep the single-occurrence owners shared until every tier has folded.
+        drop((area_c, line_c, point_c));
     }
 
     #[test]
