@@ -16,16 +16,9 @@ use crate::test_support::exact_operation_counts;
 pub(in crate::geometry) struct ExactDyadic {
     pub(in crate::geometry) negative: bool,
     pub(in crate::geometry) limbs: CompactLimbs,
-    // Every operation in this fixed construction DAG remains far inside i64.
-    // A stored binary64 contributes at most 1,074 exponent bits and the source
-    // audit has fewer than twenty arithmetic levels, covered conservatively by
-    // 1,127 * 2^20.  The only data-length recurrence is cycle_orientation's
-    // denominator product.  Source clip and rounded-shell cycles have w=1, so
-    // that recurrence is inert there; generated subdivision visits are charged
-    // to the operation-wide 16M budget.  Thus
-    // 1,127 * 2^20 * (16,000,000 + 1) < 1.90e16, over 480 times inside i64.
-    // The same derivation keeps nonnegative alignment deltas inside usize on
-    // the supported 64-bit targets, so exact ordering needs no error channel.
+    // Retained exponent range and aligned limb spans are separate bounds.
+    // Constructors check exponent arithmetic and alignment sizes; comparison
+    // uses i128 top-bit positions and virtual words without materializing gaps.
     pub(in crate::geometry) exponent: i64,
 }
 

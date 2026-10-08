@@ -16,8 +16,6 @@ use std::hash::{Hash, Hasher};
 use std::rc::Rc;
 
 use crate::error::{Error, ErrorKind, ResourceError};
-#[cfg(test)]
-use crate::geometry::GENERATED_ITEM_LIMIT;
 use crate::geometry::exact_arith::ExactSign;
 use crate::geometry::segments::stored_orientation_sign;
 use crate::geometry::{GeometryErrorKind, Point, Result, XY};

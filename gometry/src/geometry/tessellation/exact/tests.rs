@@ -520,8 +520,6 @@ fn dyadics_are_odd_low_canonical_and_exponent_capacity_is_live() {
 
     let beyond_i32 = ExactDyadic::from_parts(false, vec![1], i64::from(i32::MAX) + 1);
     assert_eq!(beyond_i32.square().exponent, 2 * (i64::from(i32::MAX) + 1));
-    let bound = 1_127_u128 * (1_u128 << 20) * (GENERATED_ITEM_LIMIT as u128 + 1);
-    assert!(bound < i64::MAX as u128);
 }
 
 #[test]
@@ -1148,6 +1146,122 @@ fn ratio_rounding_preserves_signs_subnormals_and_power_boundaries() {
                 .to_bits()
         );
     }
+}
+
+#[test]
+fn ratio_rounding_matches_literal_integer_boundary_answers() {
+    // Integer significands encode the exact boundaries without using the
+    // arithmetic or midpoint construction whose rounding this test checks.
+    let cases = [
+        ("below half-minsubnormal", 3, -1077, Some(0)),
+        ("half-minsubnormal", 1, -1075, Some(0)),
+        ("above half-minsubnormal", 5, -1077, Some(1)),
+        (
+            "below normal-transition midpoint",
+            18_014_398_509_481_981,
+            -1076,
+            Some(0x000F_FFFF_FFFF_FFFF),
+        ),
+        (
+            "normal-transition midpoint",
+            9_007_199_254_740_991,
+            -1075,
+            Some(0x0010_0000_0000_0000),
+        ),
+        (
+            "above normal-transition midpoint",
+            18_014_398_509_481_983,
+            -1076,
+            Some(0x0010_0000_0000_0000),
+        ),
+        (
+            "below even-lower midpoint",
+            18_014_398_509_481_985,
+            -54,
+            Some(0x3FF0_0000_0000_0000),
+        ),
+        (
+            "even-lower midpoint",
+            9_007_199_254_740_993,
+            -53,
+            Some(0x3FF0_0000_0000_0000),
+        ),
+        (
+            "above even-lower midpoint",
+            18_014_398_509_481_987,
+            -54,
+            Some(0x3FF0_0000_0000_0001),
+        ),
+        (
+            "below odd-lower midpoint",
+            18_014_398_509_481_989,
+            -54,
+            Some(0x3FF0_0000_0000_0001),
+        ),
+        (
+            "odd-lower midpoint",
+            9_007_199_254_740_995,
+            -53,
+            Some(0x3FF0_0000_0000_0002),
+        ),
+        (
+            "above odd-lower midpoint",
+            18_014_398_509_481_991,
+            -54,
+            Some(0x3FF0_0000_0000_0002),
+        ),
+        (
+            "below overflow midpoint",
+            36_028_797_018_963_965,
+            969,
+            Some(0x7FEF_FFFF_FFFF_FFFF),
+        ),
+        ("overflow midpoint", 18_014_398_509_481_983, 970, None),
+        ("above overflow midpoint", 36_028_797_018_963_967, 969, None),
+    ];
+    for (name, significand, exponent, expected_bits) in cases {
+        for shift in [-65_i64, 0, 65] {
+            for negative in [false, true] {
+                let numerator = ExactDyadic::from_parts(
+                    negative,
+                    vec![significand],
+                    i64::from(exponent).checked_add(shift).unwrap(),
+                );
+                let denominator = ExactDyadic::from_parts(false, vec![1], shift);
+                let actual = round_ratio(&numerator, &denominator);
+                match expected_bits {
+                    Some(bits) => {
+                        let sign = if negative { 0x8000_0000_0000_0000 } else { 0 };
+                        assert_eq!(
+                            actual.unwrap().to_bits(),
+                            bits | sign,
+                            "{name}, negative={negative}, exponent shift={shift}"
+                        );
+                    },
+                    None => {
+                        assert!(
+                            matches!(
+                                actual.unwrap_err().kind(),
+                                crate::error::ErrorKind::Geometry(
+                                    GeometryErrorKind::ExactCoordinateOutOfRange
+                                )
+                            ),
+                            "{name}, negative={negative}, exponent shift={shift}"
+                        );
+                    },
+                }
+            }
+        }
+    }
+    assert_eq!(
+        round_ratio(
+            &ExactDyadic::zero(),
+            &ExactDyadic::from_parts(true, vec![3], -65)
+        )
+        .unwrap()
+        .to_bits(),
+        0
+    );
 }
 
 #[test]
