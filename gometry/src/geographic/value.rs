@@ -1173,21 +1173,41 @@ impl CanonicalLongitude {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct Latitude(f64);
 impl Latitude {
-    pub(crate) fn try_new(frame: GeographicFrame, value: f64) -> Result<Self, GeographicError> {
+    fn admission_bounds(frame: GeographicFrame) -> (f64, f64) {
+        let pole = frame.pole();
+        ((-pole).next_down(), pole.next_up())
+    }
+
+    fn admission_error(value: f64, (south, north): (f64, f64)) -> Option<GeographicError> {
         if !value.is_finite() {
-            return Err(GeographicError::NonFinite {
+            return Some(GeographicError::NonFinite {
                 name: "latitude",
                 value,
             });
         }
-        let admitted = Self::from_admitted(frame, value);
-        let pole = frame.pole();
-        if admitted.get() < -pole || admitted.get() > pole {
-            return Err(GeographicError::LatitudeOutOfRange {
-                value: admitted.get(),
-            });
+        if value < south || value > north {
+            Some(GeographicError::LatitudeOutOfRange { value })
+        } else {
+            None
         }
-        Ok(admitted)
+    }
+
+    pub(crate) fn first_invalid(
+        frame: GeographicFrame,
+        values: &[f64],
+    ) -> Option<(usize, GeographicError)> {
+        let bounds = Self::admission_bounds(frame);
+        values
+            .iter()
+            .enumerate()
+            .find_map(|(index, &value)| Self::admission_error(value, bounds).map(|e| (index, e)))
+    }
+
+    pub(crate) fn try_new(frame: GeographicFrame, value: f64) -> Result<Self, GeographicError> {
+        if let Some(error) = Self::admission_error(value, Self::admission_bounds(frame)) {
+            return Err(error);
+        }
+        Ok(Self::from_admitted(frame, value))
     }
 
     /// Fold the one-exterior-ULP pole neighbor and signed zero after ingress

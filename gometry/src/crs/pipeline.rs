@@ -224,12 +224,7 @@ impl ProjPipeline {
         validate_lane_lengths(x, y, z.as_deref(), t.as_deref())?;
 
         if let Some(frame) = source_frame
-            && let Some((coordinate, error)) =
-                y.iter().enumerate().find_map(|(index, &latitude)| {
-                    Latitude::try_new(frame, latitude)
-                        .err()
-                        .map(|error| (index, error))
-                })
+            && let Some((coordinate, error)) = Latitude::first_invalid(frame, y)
         {
             if coordinate != 0 {
                 let prefix_t = t.as_deref_mut().map(|lane| {
