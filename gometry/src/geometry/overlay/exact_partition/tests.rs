@@ -7559,10 +7559,21 @@ fn classify_fan_candidates(
 
 #[test]
 fn neighbor_float_fan_flip_is_classified_against_p_and_g() {
-    let case = run(&fan_reversal_quad_segments());
+    let mut case = run(&fan_reversal_quad_segments());
+    case.isolated.push(XY::new(7.0, 7.0));
     let partition = case.partition();
     assert_eq!(constructed_count(&partition), 1);
     let center = *partition.crossings().first().unwrap();
+    let isolated = *partition
+        .isolated
+        .first()
+        .expect("the unselected point supplies an empty fan row");
+    assert_eq!(isolated.0.wrapping_add(1), center.0);
+    assert_eq!(
+        usize::try_from(center.0).unwrap().wrapping_add(1),
+        partition.node_count(),
+        "the four-departure fan is the final CSR row"
+    );
     let step = 2.0_f64.powi(-52);
     let lattice =
         |(x, y): (i32, i32)| XY::new(1.0 + f64::from(x) * step, 1.0 + f64::from(y) * step);

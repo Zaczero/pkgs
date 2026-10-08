@@ -93,6 +93,10 @@ impl EmbeddingDomain {
     }
 }
 
+#[expect(
+    clippy::float_cmp,
+    reason = "exact axis equality distinguishes zero offsets and degenerate intervals"
+)]
 fn axis_parameter_interval(point: f64, start: f64, end: f64, limit: f64) -> Option<(f64, f64)> {
     // Keep arithmetic uncertainty outward; overflow or an indeterminate quotient
     // retains the whole segment rather than excluding a possible close point.
@@ -332,10 +336,7 @@ impl<'p, 'source, 'e, 'emission> Collect<'p, 'source, 'e, 'emission> {
             error,
             ..
         } = self;
-        match error {
-            Some(error) => Err(error),
-            None => Ok((seeds, movable_cache, has_unmovable_witness)),
-        }
+        error.map_or_else(|| Ok((seeds, movable_cache, has_unmovable_witness)), Err)
     }
 }
 
@@ -528,6 +529,11 @@ pub(super) struct PlanarClassState {
     fans_by_rank: Vec<Vec<usize>>,
 }
 
+struct PlanarProximity {
+    pairs: Vec<(usize, usize)>,
+    class_states: Vec<PlanarClassState>,
+}
+
 pub(super) struct PlanarProblem<'p, 's, 'e> {
     partition: &'p ExactPartition<'s>,
     emissions: Vec<&'e Emission>,
@@ -537,7 +543,7 @@ pub(super) struct PlanarProblem<'p, 's, 'e> {
     classes: Vec<Vec<NodeId>>,
     node_location: Vec<Option<(usize, usize)>>,
     fan_rows: Vec<FanRow>,
-    proximity: RefCell<Option<(Vec<(usize, usize)>, Vec<PlanarClassState>)>>,
+    proximity: RefCell<Option<PlanarProximity>>,
     radius_cache: RefCell<Vec<Option<f64>>>,
     movable_cache: RefCell<Vec<Option<bool>>>,
     initial_evaluations: u64,
@@ -588,11 +594,11 @@ impl<'p, 's, 'e> PlanarProblem<'p, 's, 'e> {
             let emission = emissions
                 .get(emission_index)
                 .expect("emission item reference belongs to its slice");
-            let nodes = *emission
+            let [start, end] = *emission
                 .items
                 .get(item_index)
                 .expect("emission item reference belongs to its plan");
-            for node in nodes {
+            for node in [start, end] {
                 let was_live = live
                     .get_mut(node.0 as usize)
                     .expect("emitted node belongs to the partition");
@@ -600,6 +606,7 @@ impl<'p, 's, 'e> PlanarProblem<'p, 's, 'e> {
                     live_nodes.push(node);
                 }
             }
+            let nodes = [start, end];
             let nearest = Embedding::segment_at(Embedding::nearest(partition).coordinates(), nodes);
             let can_move = nodes.map(|node| !partition.is_stored(node));
             let sweep_bounds = possible_swept_bounds(ProximityChord {
@@ -618,7 +625,7 @@ impl<'p, 's, 'e> PlanarProblem<'p, 's, 'e> {
                 .and_then(|items| items.get_mut(item_index))
                 .expect("item-to-chord table aligns with emitted items") = chord_index;
             chord_by_nodes
-                .entry([nodes[0].0.min(nodes[1].0), nodes[0].0.max(nodes[1].0)])
+                .entry([start.0.min(end.0), start.0.max(end.0)])
                 .or_insert(chord_index);
         }
         for (emission_index, emission) in emissions.iter().enumerate() {
@@ -628,8 +635,9 @@ impl<'p, 's, 'e> PlanarProblem<'p, 's, 'e> {
                     .and_then(|items| items.get_mut(item_index))
                     .expect("item-to-chord table aligns with emitted items");
                 if *mapping == usize::MAX {
+                    let [start, end] = *nodes;
                     *mapping = *chord_by_nodes
-                        .get(&[nodes[0].0.min(nodes[1].0), nodes[0].0.max(nodes[1].0)])
+                        .get(&[start.0.min(end.0), start.0.max(end.0)])
                         .expect("deduplicated item has a canonical emitted chord");
                 }
             }
@@ -641,9 +649,16 @@ impl<'p, 's, 'e> PlanarProblem<'p, 's, 'e> {
         let mut incident_chords = Vec::new();
         incident_chords.resize_with(partition.node_count(), Vec::new);
         for (chord_index, chord) in chords.iter().enumerate() {
-            incident_chords[chord.nodes[0].0 as usize].push(chord_index);
-            if chord.nodes[1] != chord.nodes[0] {
-                incident_chords[chord.nodes[1].0 as usize].push(chord_index);
+            let [start, end] = chord.nodes;
+            incident_chords
+                .get_mut(start.0 as usize)
+                .expect("emitted node belongs to the partition")
+                .push(chord_index);
+            if end != start {
+                incident_chords
+                    .get_mut(end.0 as usize)
+                    .expect("emitted node belongs to the partition")
+                    .push(chord_index);
             }
         }
         let search_chords: Vec<_> = chords
@@ -697,7 +712,7 @@ impl<'p, 's, 'e> PlanarProblem<'p, 's, 'e> {
         let proximity_pairs = &proximity
             .as_ref()
             .expect("proximity state was prepared before class search")
-            .0;
+            .pairs;
         for &pair_index in class_state
             .pairs_by_rank
             .get(rank)
@@ -707,28 +722,24 @@ impl<'p, 's, 'e> PlanarProblem<'p, 's, 'e> {
             let &(left, right) = proximity_pairs
                 .get(pair_index)
                 .expect("class pair index belongs to the problem");
-            let left_chord = self.chords[left];
-            let right_chord = self.chords[right];
+            let left_chord = *self
+                .chords
+                .get(left)
+                .expect("proximity pair names a chord in this problem");
+            let right_chord = *self
+                .chords
+                .get(right)
+                .expect("proximity pair names a chord in this problem");
+            let [left_start, left_end] = left_chord.nodes;
+            let [right_start, right_end] = right_chord.nodes;
             if !emitted_pair_preserves_incidence(
                 [
-                    (
-                        left_chord.nodes[0],
-                        self.local_xy(left_chord.nodes[0], class, assigned),
-                    ),
-                    (
-                        left_chord.nodes[1],
-                        self.local_xy(left_chord.nodes[1], class, assigned),
-                    ),
+                    (left_start, self.local_xy(left_start, class, assigned)),
+                    (left_end, self.local_xy(left_end, class, assigned)),
                 ],
                 [
-                    (
-                        right_chord.nodes[0],
-                        self.local_xy(right_chord.nodes[0], class, assigned),
-                    ),
-                    (
-                        right_chord.nodes[1],
-                        self.local_xy(right_chord.nodes[1], class, assigned),
-                    ),
+                    (right_start, self.local_xy(right_start, class, assigned)),
+                    (right_end, self.local_xy(right_end, class, assigned)),
                 ],
             ) {
                 return Ok(false);
@@ -786,7 +797,7 @@ impl<'p, 's, 'e> PlanarProblem<'p, 's, 'e> {
         self.check_local_pairs(class_state, class, rank, assigned, budget)
     }
 
-    fn chord_has_member(&self, chord: PlanarChord) -> bool {
+    fn chord_has_member(&self, chord: &PlanarChord) -> bool {
         chord.nodes.into_iter().any(|node| {
             self.node_location
                 .get(node.0 as usize)
@@ -807,7 +818,7 @@ impl<'p, 's, 'e> PlanarProblem<'p, 's, 'e> {
         let mut left_indices = Vec::new();
         let mut left_bounds = Vec::new();
         let all_bounds: Vec<_> = self.chords.iter().map(|chord| chord.sweep_bounds).collect();
-        for (index, &chord) in self.chords.iter().enumerate() {
+        for (index, chord) in self.chords.iter().enumerate() {
             if self.chord_has_member(chord) {
                 left_indices.push(index);
                 left_bounds.push(chord.sweep_bounds);
@@ -819,7 +830,9 @@ impl<'p, 's, 'e> PlanarProblem<'p, 's, 'e> {
         let mut callback_error = None;
         let flow =
             for_each_overlapping_bounds_cross_pair(&left_bounds, &all_bounds, |left, right| {
-                let left_index = left_indices[left];
+                let left_index = *left_indices
+                    .get(left)
+                    .expect("cross-pair left index belongs to the retained chord rows");
                 if left_index == right {
                     return ControlFlow::Continue(());
                 }
@@ -880,7 +893,10 @@ impl<'p, 's, 'e> PlanarProblem<'p, 's, 'e> {
             &self.emissions,
             &self.fan_rows,
         );
-        *self.proximity.borrow_mut() = Some((proximity_pairs, class_states));
+        *self.proximity.borrow_mut() = Some(PlanarProximity {
+            pairs: proximity_pairs,
+            class_states,
+        });
         Ok(())
     }
 
@@ -1112,7 +1128,8 @@ impl ExactPartition<'_> {
             {
                 let first_witness = first_failure.witness();
                 let mut collect = Collect::new(self, emissions);
-                let _ = certify(self, &embedding, emissions, &segment_views, &mut collect)?;
+                let _collection_flow =
+                    certify(self, &embedding, emissions, &segment_views, &mut collect)?;
                 let (mut seeds, movable_cache, has_unmovable_witness) =
                     collect.into_seed_state()?;
                 if has_unmovable_witness {
@@ -1228,16 +1245,31 @@ fn for_each_fan_row(
     debug_assert_eq!(items.len(), fan_spans.len());
     debug_assert!(areal_chords <= items.len());
     let mut areal_nodes = vec![false; node_count];
-    for &[start, end] in &items[..areal_chords] {
-        areal_nodes[start.0 as usize] = true;
-        areal_nodes[end.0 as usize] = true;
+    let areal_items = items
+        .get(..areal_chords)
+        .expect("areal chord prefix is within its emission");
+    for item in areal_items {
+        let [start, end] = *item;
+        *areal_nodes
+            .get_mut(start.0 as usize)
+            .expect("emitted node belongs to the partition") = true;
+        *areal_nodes
+            .get_mut(end.0 as usize)
+            .expect("emitted node belongs to the partition") = true;
     }
     let mut starts = vec![0_usize; node_count.wrapping_add(1)];
-    for &[start, end] in items {
+    for item in items {
+        let [start, end] = *item;
         let start = start.0 as usize;
         let end = end.0 as usize;
-        starts[start.wrapping_add(1)] = starts[start.wrapping_add(1)].wrapping_add(1);
-        starts[end.wrapping_add(1)] = starts[end.wrapping_add(1)].wrapping_add(1);
+        let start_count = starts
+            .get_mut(start.wrapping_add(1))
+            .expect("emitted node offset belongs to the fan-row table");
+        *start_count = start_count.wrapping_add(1);
+        let end_count = starts
+            .get_mut(end.wrapping_add(1))
+            .expect("emitted node offset belongs to the fan-row table");
+        *end_count = end_count.wrapping_add(1);
     }
     if !starts
         .iter()
@@ -1252,33 +1284,49 @@ fn for_each_fan_row(
         total = total.wrapping_add(*offset);
         *offset = total;
     }
-    let mut cursor = starts[..node_count].to_vec();
+    let mut cursor = starts
+        .get(..node_count)
+        .expect("fan offsets contain one entry per node and a terminal")
+        .to_vec();
     let mut departures = Vec::new();
     departures.resize(total, FanDeparture::default());
-    for (item, &[start, end]) in items.iter().enumerate() {
-        let [start_span, end_span] = fan_spans[item];
-        let start_position = cursor[start.0 as usize];
-        departures[start_position] = FanDeparture {
+    for (item, (endpoints, spans)) in items.iter().zip(fan_spans).enumerate() {
+        let [start, end] = *endpoints;
+        let [start_span, end_span] = *spans;
+        let start_cursor = cursor
+            .get_mut(start.0 as usize)
+            .expect("emitted node belongs to the fan cursor table");
+        let start_position = *start_cursor;
+        *departures
+            .get_mut(start_position)
+            .expect("fan cursor belongs to the counted departure table") = FanDeparture {
             span: start_span,
             item,
             at_start: true,
         };
-        cursor[start.0 as usize] = start_position.wrapping_add(1);
-        let end_position = cursor[end.0 as usize];
-        departures[end_position] = FanDeparture {
+        *start_cursor = start_position.wrapping_add(1);
+        let end_cursor = cursor
+            .get_mut(end.0 as usize)
+            .expect("emitted node belongs to the fan cursor table");
+        let end_position = *end_cursor;
+        *departures
+            .get_mut(end_position)
+            .expect("fan cursor belongs to the counted departure table") = FanDeparture {
             span: end_span,
             item,
             at_start: false,
         };
-        cursor[end.0 as usize] = end_position.wrapping_add(1);
+        *end_cursor = end_position.wrapping_add(1);
     }
-    for node in 0..node_count {
-        let range = starts[node]..starts[node.wrapping_add(1)];
-        if !areal_nodes[node] || range.len() <= 2 {
+    for (node, (offsets, &areal)) in starts.array_windows::<2>().zip(&areal_nodes).enumerate() {
+        let [row_start, row_end] = *offsets;
+        if !areal || row_end.wrapping_sub(row_start) <= 2 {
             continue;
         }
         let origin = NodeId(node as u32);
-        let row = &mut departures[range];
+        let row = departures
+            .get_mut(row_start..row_end)
+            .expect("fan offsets partition the counted departure table");
         row.sort_unstable_by(|left, right| {
             partition.compare_departures(origin, left.span as usize, right.span as usize)
         });
@@ -1375,10 +1423,6 @@ fn include_class_rank(
     }
 }
 
-#[expect(
-    clippy::indexing_slicing,
-    reason = "class IDs and readiness ranks are derived from the same location table used to size these rows"
-)]
 fn build_class_states(
     classes: &[Vec<NodeId>],
     node_location: &[Option<(usize, usize)>],
@@ -1389,9 +1433,15 @@ fn build_class_states(
 ) -> Vec<PlanarClassState> {
     let mut states: Vec<_> = classes
         .iter()
-        .map(|members| PlanarClassState {
-            pairs_by_rank: (0..members.len()).map(|_| Vec::new()).collect(),
-            fans_by_rank: (0..members.len()).map(|_| Vec::new()).collect(),
+        .map(|members| {
+            let mut pairs_by_rank = Vec::new();
+            pairs_by_rank.resize_with(members.len(), Vec::new);
+            let mut fans_by_rank = Vec::new();
+            fans_by_rank.resize_with(members.len(), Vec::new);
+            PlanarClassState {
+                pairs_by_rank,
+                fans_by_rank,
+            }
         })
         .collect();
     for (pair_index, &(left_index, right_index)) in proximity_pairs.iter().enumerate() {
@@ -1407,7 +1457,13 @@ fn build_class_states(
             include_class_rank(node, node_location, &mut owner, &mut ready_rank);
         }
         if let Some(class) = owner {
-            states[class].pairs_by_rank[ready_rank].push(pair_index);
+            states
+                .get_mut(class)
+                .expect("pair owner belongs to the class table")
+                .pairs_by_rank
+                .get_mut(ready_rank)
+                .expect("pair readiness rank belongs to its class")
+                .push(pair_index);
         }
     }
     for (row_index, row) in fan_rows.iter().enumerate() {
@@ -1429,7 +1485,13 @@ fn build_class_states(
             include_class_rank(end, node_location, &mut owner, &mut ready_rank);
         }
         if let Some(class) = owner {
-            states[class].fans_by_rank[ready_rank].push(row_index);
+            states
+                .get_mut(class)
+                .expect("fan owner belongs to the class table")
+                .fans_by_rank
+                .get_mut(ready_rank)
+                .expect("fan readiness rank belongs to its class")
+                .push(row_index);
         }
     }
     states
@@ -1549,7 +1611,7 @@ impl Problem for PlanarProblem<'_, '_, '_> {
         Ok(prepared
             .as_ref()
             .expect("proximity state was prepared before class search")
-            .1
+            .class_states
             .get(class)
             .expect("class state belongs to the problem")
             .clone())
@@ -1617,15 +1679,27 @@ impl Problem for PlanarProblem<'_, '_, '_> {
                     unreachable!("global face checking emits only face witnesses");
                 };
                 let mut anchors = vec![false; self.chords.len()];
+                let item_chords = self
+                    .item_chords
+                    .get(emission_index)
+                    .expect("emission item map belongs to the planar problem");
                 for (item_index, nodes) in emission.items.iter().enumerate() {
                     if nodes.contains(&root) {
-                        let chord = self.item_chords[emission_index][item_index];
-                        anchors[chord] = true;
+                        let chord = *item_chords
+                            .get(item_index)
+                            .expect("emission item belongs to its canonical chord row");
+                        *anchors
+                            .get_mut(chord)
+                            .expect("canonical chord belongs to the anchor table") = true;
                     }
                 }
                 if let Some(hit) = hit {
-                    let chord = self.item_chords[emission_index][hit];
-                    anchors[chord] = true;
+                    let chord = *item_chords
+                        .get(hit)
+                        .expect("face hit belongs to its emission item row");
+                    *anchors
+                        .get_mut(chord)
+                        .expect("canonical chord belongs to the anchor table") = true;
                 }
                 let mut blamed = vec![false; self.classes.len()];
                 for (chord, &is_anchor) in anchors.iter().enumerate() {
@@ -1637,12 +1711,18 @@ impl Problem for PlanarProblem<'_, '_, '_> {
                 let proximity_pairs = &proximity
                     .as_ref()
                     .expect("proximity state was prepared before global search")
-                    .0;
+                    .pairs;
                 for &(left, right) in proximity_pairs {
-                    if anchors[left] {
+                    if *anchors
+                        .get(left)
+                        .expect("proximity pair names a chord in this problem")
+                    {
                         self.mark_blame_for_chord(right, &mut blamed);
                     }
-                    if anchors[right] {
+                    if *anchors
+                        .get(right)
+                        .expect("proximity pair names a chord in this problem")
+                    {
                         self.mark_blame_for_chord(left, &mut blamed);
                     }
                 }
@@ -1705,8 +1785,18 @@ fn visit_faces<S: Sink>(
         &EmittedPoints(embedding.coordinates()),
         partition.node_count(),
         items.len(),
-        |index| items[index].map(|node| node.0),
-        |index| sides[index],
+        |index| {
+            items
+                .get(index)
+                .copied()
+                .expect("face item ordinal belongs to its emission")
+                .map(|node| node.0)
+        },
+        |index| {
+            *sides
+                .get(index)
+                .expect("face labels align with their emission items")
+        },
         |root, hit| {
             sink.report(Witness::Face {
                 emission,
@@ -1979,6 +2069,20 @@ mod proximity_tests {
             || exact_point_within_segment(left.end, right, limit)?
             || exact_point_within_segment(right.start, left, limit)?
             || exact_point_within_segment(right.end, left, limit)?)
+    }
+
+    #[test]
+    fn chebyshev_axis_interval_keeps_zero_and_degenerate_boundaries() {
+        let degenerate_zero = axis_parameter_interval(-0.0, 0.0, 0.0, 0.0)
+            .expect("zero offset lies on a degenerate axis");
+        assert_eq!(degenerate_zero.0.to_bits(), 0.0_f64.to_bits());
+        assert_eq!(degenerate_zero.1.to_bits(), 1.0_f64.to_bits());
+        assert_eq!(axis_parameter_interval(2.0, 0.0, 0.0, 1.0), None);
+
+        let midpoint = axis_parameter_interval(1.0, 0.0, 2.0, 0.0)
+            .expect("the point lies in the nondegenerate axis interval");
+        assert!(midpoint.0 <= 0.5);
+        assert!(midpoint.1 >= 0.5);
     }
 
     #[test]
