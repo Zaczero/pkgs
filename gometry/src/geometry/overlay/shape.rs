@@ -209,17 +209,13 @@ impl Shape {
         let declared_axes = self.axes().union(other.axes());
         let (same_segments, same_directions, opposite_segments, opposite_directions) =
             shared_path_segments_from_exact(&emission)?;
-        let mut nodes = Vec::new();
-        nodes.extend(
+        let resolved = inventory.resolve_line_emission_points(
+            &partition,
+            &emission,
             same_segments
                 .iter()
                 .chain(&opposite_segments)
                 .flat_map(|edge| edge.nodes),
-        );
-        let resolved = inventory.resolve_line_emission_points(
-            &partition,
-            &emission,
-            &nodes,
             declared_axes,
             context,
             None,
