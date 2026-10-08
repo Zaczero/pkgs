@@ -107,12 +107,12 @@ mod computed_shape;
 pub(crate) use computed_shape::{
     PolygonPartEdgeRoles, PublishedTriangleVertices, map_computed_shape_chains,
     publish_changed_raw_computed_shape, publish_computed_line_column_with_budget,
-    publish_computed_point_or_raw_shape, publish_computed_polygon_rings_with_budget,
-    publish_polygon_parts_with_edge_roles, publish_polygon_with_edge_roles_and_context,
+    publish_computed_point_or_raw_shape, publish_polygon_parts_with_edge_roles,
+    publish_polygon_with_edge_roles_and_context,
     publish_raw_computed_shape, publish_raw_computed_shape_with_budget,
     publish_raw_computed_shape_with_budget_and_context, publish_raw_computed_shape_with_context,
     publish_raw_computed_shapes_with_budget_and_context, publish_raw_computed_shapes_with_context,
-    publish_stored_computed_shape, publish_transformed_shape,
+    publish_stored_computed_shape, publish_transformed_chain, publish_transformed_shape,
     publish_triangle_vertex_stream_budgeted, publish_voronoi_polygon_outputs,
 };
 mod arrangement;

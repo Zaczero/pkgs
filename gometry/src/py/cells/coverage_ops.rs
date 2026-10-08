@@ -370,7 +370,7 @@ impl GridSourceAdmission {
         let mut shapes = Vec::with_capacity(source_rows.len());
         shapes.extend(source_rows.iter().map(|(_, shape)| shape));
         transformer
-            .transform_shapes_indexed(&shapes)
+            .transform_shapes_with_computed_edges_indexed(&shapes, "EPSG:4326")
             .map_err(|failure| {
                 let row = failure
                     .coordinate
@@ -395,7 +395,7 @@ impl GridSourceAdmission {
         geometry: &PyGeometry,
     ) -> Result<PyGeometry, GridCoverError> {
         let shape = if let Some(transformer) = &self.transformer {
-            transformer.transform_shape(geometry.shape.shape())?
+            transformer.transform_shape_with_computed_edges(geometry.shape.shape(), "EPSG:4326")?
         } else {
             geometry.shape.shape().clone()
         };
@@ -755,7 +755,7 @@ mod tests {
     use crate::crs::frame;
     use crate::error::ErrorKind;
     use crate::geographic::{GeographicFrame, ScalarGeographicView};
-    use crate::geometry::{GeometryErrorKind, Point, Shape};
+    use crate::geometry::{CoordSeq, GeometryErrorKind, LineSeq, Point, Shape};
     use crate::grid::CoverError;
 
     #[test]
@@ -827,6 +827,43 @@ mod tests {
                 .contains("invalid longitude/latitude (0, 95)"),
             "{error}"
         );
+    }
+
+    #[test]
+    fn source_error_prefix_uses_the_paired_transform_publisher() {
+        let line = |points: &[Point]| {
+            Shape::LineString(LineSeq::try_new(CoordSeq::try_from_points(points).unwrap()).unwrap())
+        };
+        let array = crate::PyGeometryArray::from_shapes(
+            vec![
+                line(&[Point::new_raw_xy(0.0, 0.0), Point::new_raw_xy(360.0, 0.0)]),
+                line(&[Point::new_raw_xy(0.0, 91.0), Point::new_raw_xy(10.0, 91.0)]),
+            ],
+            Frame::Crs(frame::crs_arc_static("EPSG:4267")),
+        )
+        .unwrap();
+        let admission = GridSourceAdmission::new_for_array(&array).unwrap();
+        let rows = admission.admit_array_shapes(&array).unwrap();
+
+        let Some(prefix) = rows[0].as_ref().unwrap() else {
+            panic!("the valid prefix row is present");
+        };
+        let Shape::LineString(prefix) = prefix else {
+            panic!("the valid prefix retains its line type");
+        };
+        assert_eq!(prefix.len(), 5);
+        // PROJ maps both endpoints to 0°; the source pair retains the turn.
+        assert_eq!(prefix.iter().collect::<Vec<_>>(), [
+            Point::new_raw_xy(0.0, 0.0),
+            Point::new_raw_xy(90.0, 0.0),
+            Point::new_raw_xy(-180.0, 0.0),
+            Point::new_raw_xy(-90.0, 0.0),
+            Point::new_raw_xy(0.0, 0.0),
+        ]);
+        assert!(matches!(
+            rows[1].as_ref(),
+            Err(GridCoverError::NativeRow { row: 1, .. })
+        ));
     }
 
     #[test]

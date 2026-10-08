@@ -25,6 +25,15 @@ WGS84_SOUTH_WEST_GRADS = (
     'AXIS["Latitude",south,ORDER[2]],'
     'ANGLEUNIT["grad",0.015707963267948967]]'
 )
+TARGET_SPHERE_DEGREES = (
+    'GEOGCRS["Sphere degrees",'
+    'DATUM["Sphere",ELLIPSOID["Sphere",6371000,0]],'
+    'PRIMEM["Greenwich",0,ANGLEUNIT["degree",0.017453292519943295]],'
+    'CS[ellipsoidal,2],'
+    'AXIS["Longitude",east,ORDER[1]],'
+    'AXIS["Latitude",north,ORDER[2]],'
+    'ANGLEUNIT["degree",0.017453292519943295]]'
+)
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -498,6 +507,221 @@ def test_numeric_geographic_transform_publishes_but_raw_paths_do_not() -> None:
         '+step +proj=unitconvert +xy_in=rad +xy_out=deg'
     )
     assert gm.crs_apply(pipeline, radius * 2.0 * math.pi, 0.0) == (360.0, 0.0)
+
+
+@pytest.mark.parametrize(
+    ('source_x', 'step'),
+    [
+        pytest.param(0.0, -90.0, id='west-axis-forward-circle'),
+        pytest.param(400.0, 90.0, id='west-axis-reversed-circle'),
+    ],
+)
+def test_geographic_source_circle_is_published_from_paired_target_endpoints(
+    source_x: float,
+    step: float,
+) -> None:
+    other_x = 400.0 - source_x
+    source = gm.LineString(
+        [(source_x, 0.0), (other_x, 0.0)],
+        crs=WGS84_SOUTH_WEST_GRADS,
+    )
+    transformed = source.to_crs(4326, authority='EPSG')
+    coordinates = gm.get_coordinates(transformed)
+
+    start = gm.Point(
+        source_x,
+        0.0,
+        crs=WGS84_SOUTH_WEST_GRADS,
+    ).to_crs(4326, authority='EPSG')
+    end = gm.Point(
+        other_x,
+        0.0,
+        crs=WGS84_SOUTH_WEST_GRADS,
+    ).to_crs(4326, authority='EPSG')
+
+    def canonical(longitude: float) -> float:
+        return (longitude + 180.0) % 360.0 - 180.0
+
+    expected_longitudes = [canonical(start.x + step * index) for index in range(5)]
+
+    assert coordinates.shape == (5, 2)
+    assert coordinates[:, 0].tolist() == pytest.approx(expected_longitudes, abs=1e-12)
+    assert coordinates[0].tolist() == pytest.approx(
+        [canonical(start.x), start.y], abs=1e-12
+    )
+    assert coordinates[-1].tolist() == pytest.approx(
+        [canonical(end.x), end.y],
+        abs=1e-12,
+    )
+
+
+@pytest.mark.parametrize(
+    'array_route',
+    [
+        pytest.param(False, id='scalar'),
+        pytest.param(True, id='array'),
+    ],
+)
+def test_west_axis_300_grad_transform_uses_paired_source_connection(
+    array_route: bool,
+) -> None:
+    source = gm.LineString(
+        [(0.0, 0.0), (300.0, 0.0)],
+        crs=WGS84_SOUTH_WEST_GRADS,
+    )
+    if array_route:
+        transformed = gm.GeometryArray([source]).to_crs(4326, authority='EPSG')[0]
+    else:
+        transformed = source.to_crs(4326, authority='EPSG')
+
+    coordinates = gm.get_coordinates(transformed)
+
+    # 300 west-axis grads are -270°; the canonical target endpoint is +90°.
+    assert coordinates.shape == (2, 2)
+    assert coordinates[:, 0].tolist() == pytest.approx([0.0, 90.0], abs=1e-12)
+    assert coordinates[:, 1].tolist() == pytest.approx([0.0, 0.0], abs=1e-12)
+
+
+def test_geographic_source_connector_is_shared_by_shape_and_array_routes() -> None:
+    circle = gm.LineString(
+        [(0.0, 0.0), (400.0, 0.0)],
+        crs=WGS84_SOUTH_WEST_GRADS,
+    )
+    line = circle.to_crs(4326, authority='EPSG')
+    assert gm.get_coordinates(line).shape == (5, 2)
+
+    other = gm.LineString(
+        [(10.0, 1.0), (11.0, 2.0)],
+        crs=WGS84_SOUTH_WEST_GRADS,
+    )
+    dense = gm.GeometryArray([circle, other])
+    assert dense.to_arrow().type.extension_name == 'geoarrow.linestring'
+    dense_output = dense.to_crs(4326, authority='EPSG')
+    assert dense_output[0].to_wkb() == line.to_wkb()
+    assert dense_output[1].to_wkb() == other.to_crs(4326, authority='EPSG').to_wkb()
+    selected_dense = dense[[1, 0, 0]].to_crs(4326, authority='EPSG')
+    assert selected_dense[0].to_wkb() == dense_output[1].to_wkb()
+    assert selected_dense[1].to_wkb() == line.to_wkb()
+    assert selected_dense[2].to_wkb() == line.to_wkb()
+
+    nullable_lines = gm.GeometryArray([circle, None, other])
+    assert nullable_lines.to_arrow().type.extension_name == 'geoarrow.linestring'
+    nullable_lines_output = nullable_lines.to_crs(4326, authority='EPSG')
+    assert nullable_lines_output[0].to_wkb() == line.to_wkb()
+    assert nullable_lines_output[1] is None
+    assert nullable_lines_output[2].to_wkb() == dense_output[1].to_wkb()
+
+    point = gm.Point(25.0, 4.0, crs=WGS84_SOUTH_WEST_GRADS)
+    nullable = gm.GeometryArray([circle, None, point])
+    assert nullable.to_arrow().type.extension_name == 'geoarrow.wkb'
+    nullable_output = nullable.to_crs(4326, authority='EPSG')
+    point_output = point.to_crs(4326, authority='EPSG')
+    assert nullable_output[0].to_wkb() == line.to_wkb()
+    assert nullable_output[1] is None
+    assert nullable_output[2].to_wkb() == point_output.to_wkb()
+
+    selected = nullable[[2, 1, 0, 0]].to_crs(4326, authority='EPSG')
+    assert selected[0].to_wkb() == point_output.to_wkb()
+    assert selected[1] is None
+    assert selected[2].to_wkb() == line.to_wkb()
+    assert selected[3].to_wkb() == line.to_wkb()
+
+    collection = gm.GeometryCollection([circle, point])
+    collection_output = collection.to_crs(4326, authority='EPSG')
+    expected_collection = gm.GeometryCollection([line, point_output])
+    assert collection_output.to_wkb() == expected_collection.to_wkb()
+
+
+def test_selected_packed_lines_publish_the_paired_source_circle() -> None:
+    circle = gm.LineString(
+        [(0.0, 0.0), (400.0, 0.0)],
+        crs=WGS84_SOUTH_WEST_GRADS,
+    )
+    other = gm.LineString(
+        [(10.0, 1.0), (11.0, 2.0)],
+        crs=WGS84_SOUTH_WEST_GRADS,
+    )
+    source = gm.GeometryArray([circle, other])
+    assert source.to_arrow().type.extension_name == 'geoarrow.linestring'
+
+    transformed = source[[1, 0, 0]].to_crs(4326, authority='EPSG')
+
+    expected_longitudes = [0.0, -90.0, -180.0, 90.0, 0.0]
+    for row in (1, 2):
+        coordinates = gm.get_coordinates(transformed[row])
+        assert coordinates.shape == (5, 2)
+        assert coordinates[:, 0].tolist() == pytest.approx(
+            expected_longitudes,
+            abs=1e-12,
+        )
+        assert coordinates[:, 1].tolist() == pytest.approx([0.0] * 5, abs=1e-12)
+
+
+def test_selected_nullable_mixed_lines_publish_the_paired_source_circle() -> None:
+    circle = gm.LineString(
+        [(0.0, 0.0), (400.0, 0.0)],
+        crs=WGS84_SOUTH_WEST_GRADS,
+    )
+    point = gm.Point(25.0, 4.0, crs=WGS84_SOUTH_WEST_GRADS)
+    source = gm.GeometryArray([circle, None, point])
+    assert source.to_arrow().type.extension_name == 'geoarrow.wkb'
+
+    transformed = source[[2, 1, 0, 0]].to_crs(4326, authority='EPSG')
+
+    assert transformed.is_missing.tolist() == [False, True, False, False]
+    assert transformed[1] is None
+    expected_longitudes = [0.0, -90.0, -180.0, 90.0, 0.0]
+    for row in (2, 3):
+        coordinates = gm.get_coordinates(transformed[row])
+        assert coordinates.shape == (5, 2)
+        assert coordinates[:, 0].tolist() == pytest.approx(
+            expected_longitudes,
+            abs=1e-12,
+        )
+        assert coordinates[:, 1].tolist() == pytest.approx([0.0] * 5, abs=1e-12)
+
+
+def test_generated_zm_uses_the_actual_target_ellipsoid_chart_arclength() -> None:
+    source = gm.from_wkt(
+        'LINESTRING ZM (0 0 10 100, 400 40 110 300)',
+        crs=WGS84_SOUTH_WEST_GRADS,
+    )
+    coordinates = gm.get_coordinates(
+        source.to_crs(TARGET_SPHERE_DEGREES, allow_ballpark=True)
+    )
+
+    assert coordinates.shape == (5, 4)
+    assert coordinates[:, 1].tolist() == pytest.approx([0.0, -9.0, -18.0, -27.0, -36.0])
+    assert coordinates[0, 2:].tolist() == [10.0, 100.0]
+    assert coordinates[-1, 2:].tolist() == [110.0, 300.0]
+    # Independent 32,768-panel Simpson integration of the target sphere's chart
+    # speed for longitude 0 -> -360 degrees and latitude 0 -> -36 degrees gives
+    # t=1/4 an arclength fraction of 0.26595951956295166.
+    assert coordinates[1, 2] == pytest.approx(36.59595195629517, abs=1e-8)
+    assert coordinates[1, 3] == pytest.approx(153.19190391259033, abs=1e-8)
+    assert abs(coordinates[1, 2] - 36.58641197356604) > 0.005
+
+
+def test_selected_packed_polygon_transform_pairs_each_source_ring() -> None:
+    circle = gm.Polygon(
+        [(0.0, 0.0), (400.0, 0.0), (400.0, 10.0), (0.0, 10.0), (0.0, 0.0)],
+        holes=[[(10.0, 2.0), (20.0, 2.0), (20.0, 5.0), (10.0, 5.0), (10.0, 2.0)]],
+        crs=WGS84_SOUTH_WEST_GRADS,
+    )
+    other = gm.box(10.0, 10.0, 20.0, 20.0, crs=WGS84_SOUTH_WEST_GRADS)
+    source = gm.GeometryArray([circle, other])
+    assert source.to_arrow().type.extension_name == 'geoarrow.polygon'
+    expected_circle = circle.to_crs(4326, authority='EPSG')
+    expected_other = other.to_crs(4326, authority='EPSG')
+
+    transformed = source[[1, 0, 0]].to_crs(4326, authority='EPSG')
+
+    assert transformed[0].to_wkb() == expected_other.to_wkb()
+    assert transformed[1].to_wkb() == expected_circle.to_wkb()
+    assert transformed[2].to_wkb() == expected_circle.to_wkb()
+    # Each full-turn shell edge is four published edges; the hole remains five coordinates.
+    assert gm.get_coordinates(transformed[1]).shape == (16, 2)
+    assert gm.get_coordinates(transformed[2]).shape == (16, 2)
 
 
 @pytest.mark.parametrize(

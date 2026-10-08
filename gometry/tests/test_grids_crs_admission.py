@@ -8,6 +8,17 @@ import math
 import gometry as gm
 import pytest
 
+WGS84_SOUTH_WEST_GRADS = (
+    'GEOGCRS["WGS 84 south-west grads",'
+    'DATUM["World Geodetic System 1984",'
+    'ELLIPSOID["WGS 84",6378137,298.257223563]],'
+    'PRIMEM["Greenwich",0,ANGLEUNIT["degree",0.017453292519943295]],'
+    'CS[ellipsoidal,2],'
+    'AXIS["Longitude",west,ORDER[1]],'
+    'AXIS["Latitude",south,ORDER[2]],'
+    'ANGLEUNIT["grad",0.015707963267948967]]'
+)
+
 # ---------------------------------------------------------------------------
 # A1 - S2 within/overlap refine true cells (rectangles prune only)
 # ---------------------------------------------------------------------------
@@ -290,6 +301,74 @@ def test_grid_cover_admits_dynamic_source_frame_once(cover, kwargs) -> None:
     assert _cell_keys(cover(source, max_cells=None, **kwargs)) == _cell_keys(
         cover(explicit, max_cells=None, **kwargs)
     )
+
+
+def test_grid_cover_uses_the_paired_geographic_source_circle_for_scalar_and_array() -> (
+    None
+):
+    circle = gm.LineString(
+        [(0.0, 0.0), (400.0, 0.0)],
+        crs=WGS84_SOUTH_WEST_GRADS,
+    )
+    explicit_circle = circle.to_crs(4326, authority='EPSG')
+    assert _cell_keys(
+        gm.h3_cover(
+            circle,
+            resolution=0,
+            cell_rule='overlap',
+            max_cells=None,
+        )
+    ) == _cell_keys(
+        gm.h3_cover(
+            explicit_circle,
+            resolution=0,
+            cell_rule='overlap',
+            max_cells=None,
+        )
+    )
+
+    source = gm.GeometryArray([circle, None, circle])
+    explicit = source.to_crs(4326, authority='EPSG')
+    actual = gm.h3_cover(
+        source,
+        resolution=0,
+        cell_rule='overlap',
+        max_cells=None,
+    )
+    expected = gm.h3_cover(
+        explicit,
+        resolution=0,
+        cell_rule='overlap',
+        max_cells=None,
+    )
+
+    assert [len(row) for row in actual] == [len(actual[0]), 0, len(actual[0])]
+    assert len(actual[0]) > 1
+    assert _cell_keys(actual[0]) == _cell_keys(expected[0])
+    assert len(expected[1]) == 0
+    assert _cell_keys(actual[2]) == _cell_keys(expected[2])
+
+
+def test_grid_cover_budget_precedes_later_source_error_after_prefix_publication() -> (
+    None
+):
+    circle = gm.LineString(
+        [(0.0, 0.0), (360.0, 0.0)],
+        crs=4267,
+    )
+    invalid = gm.LineString(
+        [(0.0, 91.0), (10.0, 91.0)],
+        crs=4267,
+    )
+    source = gm.GeometryArray([circle, invalid])
+
+    with pytest.raises(gm.GeometryError, match='max_cells'):
+        gm.h3_cover(
+            source,
+            resolution=0,
+            cell_rule='overlap',
+            max_cells=1,
+        )
 
 
 @pytest.mark.parametrize(
@@ -782,29 +861,65 @@ def test_h3_cells_geometry_array_missing_rows():
         ('tile', {'zoom': 3}),
     ],
 )
-def test_grid_cover_normalizes_projected_and_geographic_seam_sources(name, kwargs):
-    """Every coverer sees the same normalized WGS84 seam source."""
+def test_grid_cover_normalizes_geographic_aliases_and_keeps_projected_chord(
+    name, kwargs
+):
+    """Geographic labels agree; a projected source keeps its executor-produced chord."""
     source = gm.LineString([(179.0, -10.0), (-179.0, 10.0)], crs=4326)
-    variants = [
+    geographic_variants = [
         source.set_crs(None),
         source,
         source.set_crs('OGC:CRS84', overwrite=True),
-        source.to_crs(3857),
     ]
     cover = getattr(gm, f'{name}_cover')
-    results = [
+    geographic_results = [
         {
             str(cell)
             for cell in cover(
-                variant,
+                geometry,
                 cell_rule='overlap',
                 max_cells=None,
                 **kwargs,
             )
         }
-        for variant in variants
+        for geometry in geographic_variants
     ]
-    assert results[1:] == [results[0]] * (len(results) - 1)
+    assert geographic_results[1:] == [geographic_results[0]] * (
+        len(geographic_results) - 1
+    )
+
+    projected = source.to_crs(3857)
+    projected_roundtrip = projected.to_crs(4326)
+    coordinates = gm.get_coordinates(projected_roundtrip)
+    assert coordinates.shape == (3, 2)
+    assert coordinates[:, 0].tolist() == pytest.approx(
+        [179.0, 0.0, -179.0],
+        abs=1e-12,
+    )
+    assert coordinates[:, 1].tolist() == pytest.approx(
+        [-10.0, 0.0, 10.0],
+        abs=1e-12,
+    )
+
+    projected_keys = {
+        str(cell)
+        for cell in cover(
+            projected,
+            cell_rule='overlap',
+            max_cells=None,
+            **kwargs,
+        )
+    }
+    explicit_roundtrip_keys = {
+        str(cell)
+        for cell in cover(
+            projected_roundtrip,
+            cell_rule='overlap',
+            max_cells=None,
+            **kwargs,
+        )
+    }
+    assert projected_keys == explicit_roundtrip_keys
 
 
 @pytest.mark.parametrize(

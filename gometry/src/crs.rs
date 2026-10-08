@@ -140,7 +140,7 @@ pub(crate) use transform::{
     transform, transform_at, transform_bounds, transform_bounds_3d, transform_bounds_3d_many,
     transform_bounds_many, transform_coordinates, validate_coordinate_lanes,
 };
-pub(crate) use transformer::TransformPlan;
+pub(crate) use transformer::{TransformMetricScratch, TransformPlan};
 pub(crate) use types::{
     AreaOfInterest, AreaOfUse, AuthorityObjectInfo, AxisInfo, CacheBucketInfo, CacheInfo,
     CelestialBodyInfo, CfValue, CrsCatalogInfo, CrsCatalogOptions, CrsComparison,

@@ -723,13 +723,6 @@ pub(crate) fn retained_computed_samples_connection(
     )
 }
 
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "the retained-edge publisher integration consumes this prepared selector"
-    )
-)]
 /// Select the target lift that exactly minimizes the difference between the
 /// source connection and the transformed endpoint connection.
 ///

@@ -229,10 +229,11 @@ impl PyGeometryArray {
                 coordinate_epoch_option("epoch", epoch)?,
                 options,
             )?;
+            let target_crs = frame.target;
             let output = frame.output;
             let transformer = crs::TransformPlan::new_with_options_at(
                 &frame.source,
-                &frame.target,
+                target_crs.as_str(),
                 frame.options,
                 frame.state,
             )?;
@@ -257,15 +258,17 @@ impl PyGeometryArray {
                         })
                         .collect::<crate::error::Result<Vec<_>>>()?;
                     let borrowed: Vec<_> = present.iter().collect();
-                    let converted =
-                        transformer
-                            .transform_shapes_indexed(&borrowed)
-                            .map_err(|failure| {
-                                let coordinate = failure
-                                    .coordinate
-                                    .and_then(|rank| present_rank_to_logical(&mask, rank));
-                                failure.with_coordinate(coordinate)
-                            })?;
+                    let converted = transformer
+                        .transform_shapes_with_computed_edges_indexed(
+                            &borrowed,
+                            target_crs.as_str(),
+                        )
+                        .map_err(|failure| {
+                            let coordinate = failure
+                                .coordinate
+                                .and_then(|rank| present_rank_to_logical(&mask, rank));
+                            failure.with_coordinate(coordinate)
+                        })?;
                     let mut converted = converted.into_iter();
                     let rows = mask
                         .iter()
@@ -303,10 +306,11 @@ impl PyGeometryArray {
             coordinate_epoch_option("epoch", epoch)?,
             options,
         )?;
+        let target_crs = frame.target;
         let output = frame.output;
         let transformer = crs::TransformPlan::new_with_options_at(
             &frame.source,
-            &frame.target,
+            target_crs.as_str(),
             frame.options,
             frame.state,
         )?;
@@ -331,7 +335,10 @@ impl PyGeometryArray {
                         unreachable!("matched Mixed");
                     };
                     let borrowed: Vec<_> = shapes.iter().collect();
-                    transformer.transform_shapes_with_computed_edges_indexed(&borrowed)
+                    transformer.transform_shapes_with_computed_edges_indexed(
+                        &borrowed,
+                        target_crs.as_str(),
+                    )
                 })
                 .map_err(transform_failure_pyerr)?;
             drain_accuracy_warning(py, &execution)?;
@@ -341,7 +348,7 @@ impl PyGeometryArray {
             )?)
         } else {
             let result = self
-                .map_packed_to_crs_detached(py, output, transformer)?
+                .map_packed_to_crs_detached(py, output, transformer, target_crs.as_str())?
                 .ok_or_else(|| {
                     PyErr::from(crate::error::Error::from(
                         crate::geometry::GeometryErrorKind::Projection(
