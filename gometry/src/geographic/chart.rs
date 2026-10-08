@@ -31,6 +31,16 @@ impl ChartPointSite {
         self.source_y
     }
 
+    /// The west cut assigns only zero or one period; the canonical seam assigns zero.
+    pub(crate) fn displacement_to(self, end: Self) -> RetainedChartDisplacement {
+        RetainedChartDisplacement::from_native_endpoints(
+            [*self.longitude.native(), *end.longitude.native()],
+            end.longitude
+                .periods()
+                .wrapping_sub(self.longitude.periods()),
+        )
+    }
+
     pub(crate) fn compare_chart_xy(self, other: Self) -> Ordering {
         self.longitude
             .periods()
@@ -156,22 +166,6 @@ impl PointSelectionChart {
         }
         Ok(sites)
     }
-
-    pub(crate) fn displacement(
-        self,
-        start: ChartPointSite,
-        end: ChartPointSite,
-    ) -> Result<RetainedChartDisplacement> {
-        let periods = end
-            .longitude
-            .periods()
-            .checked_sub(start.longitude.periods())
-            .ok_or(crate::error::ResourceError::SizeOverflow)?;
-        Ok(RetainedChartDisplacement::from_native_endpoints(
-            [*start.longitude.native(), *end.longitude.native()],
-            periods,
-        ))
-    }
 }
 
 pub(crate) fn point_set_centroid(shape: &Shape, frame: GeographicFrame) -> Result<Option<Shape>> {
@@ -279,7 +273,7 @@ fn point_set_convex_hull(
     };
     let sites = chart.sites_from_points(&points)?;
     let hull = crate::geometry::monotone_chain_chart_hull(&sites, frame)?;
-    charted_point_chain(chart, &points, &sites, &hull).map(Some)
+    charted_point_chain(&points, &sites, &hull).map(Some)
 }
 
 fn point_set_minimum_rotated_rectangle(
@@ -306,7 +300,7 @@ fn point_set_minimum_rotated_rectangle(
     let hull = crate::geometry::monotone_chain_chart_hull(&sites, frame)?;
     if hull.len() < 3 {
         return Ok(Some(ChartedPointRectangle::Source(charted_point_chain(
-            chart, &points, &sites, &hull,
+            &points, &sites, &hull,
         )?)));
     }
     let hull_sites = hull
@@ -403,7 +397,6 @@ fn publish_charted_point_chain(
 }
 
 fn charted_point_chain(
-    chart: PointSelectionChart,
     source_points: &[Point],
     sites: &[ChartPointSite],
     indices: &[usize],
@@ -447,28 +440,20 @@ fn charted_point_chain(
                 let [start, end] = pair else {
                     unreachable!("windows(2) yields two hull ordinals");
                 };
-                edges.push(
-                    chart.displacement(
-                        *sites
-                            .get(*start)
-                            .expect("hull start belongs to chart sites"),
-                        *sites.get(*end).expect("hull end belongs to chart sites"),
-                    )?,
-                );
+                let start = *sites
+                    .get(*start)
+                    .expect("hull start belongs to chart sites");
+                let end = *sites.get(*end).expect("hull end belongs to chart sites");
+                edges.push(start.displacement_to(end));
             }
             if closed_ring {
-                let start = *indices.last().expect("closed hull has a last site");
-                let end = *indices.first().expect("closed hull has a first site");
-                edges.push(
-                    chart.displacement(
-                        *sites
-                            .get(start)
-                            .expect("hull closure start belongs to chart sites"),
-                        *sites
-                            .get(end)
-                            .expect("hull closure end belongs to chart sites"),
-                    )?,
-                );
+                let start = *sites
+                    .get(*indices.last().expect("closed hull has a last site"))
+                    .expect("hull closure start belongs to chart sites");
+                let end = *sites
+                    .get(*indices.first().expect("closed hull has a first site"))
+                    .expect("hull closure end belongs to chart sites");
+                edges.push(start.displacement_to(end));
             }
             Ok(ChartedPointChain::Chain {
                 coordinates,
