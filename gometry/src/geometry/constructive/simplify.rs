@@ -19,10 +19,10 @@ use crate::geometry::overlay::{ExactSourceInventory, rect_polygon};
 use crate::geometry::{
     Bounds, CoordSeq, CoordWindow, Coordinates as _, ExpansionBudget, GeometryErrorKind,
     GeometryKind, LineSeq, MultiLineString, MultiMember, MultiPolygon, Orientation, Point,
-    PointKey, Polygon, Ring, Segment, Shape, ShapeCountQuery, SharedShapeOwners, TopologyGuard, XY,
-    dedup_consecutive_points, line_segments, open_point_cycle_winding, orientation,
-    point_segment_distance, same_point, simplified_polygon_delta_is_simple, simplify_chain_guarded,
-    triangle_area, vw_area_tolerance,
+    PointKey, Polygon, Ring, Segment, Shape, ShapeCountQuery, SharedShapeOwners, SourceArcContext,
+    TopologyGuard, XY, dedup_consecutive_points, line_segments, open_point_cycle_winding,
+    orientation, point_segment_distance, same_point, simplified_polygon_delta_is_simple,
+    simplify_chain_guarded, triangle_area, vw_area_tolerance,
 };
 #[cfg(test)]
 use crate::geometry::{REDUCE_LANES, ReduceSimd, point_on_segment, point_segment_distance_squared};
@@ -685,11 +685,14 @@ pub(crate) fn split(
     shape: Shape,
     max_vertices: usize,
     drop: bool,
-    geographic_frame: Option<crate::geographic::GeographicFrame>,
-    metric_access: Option<&crate::geometry::SourceArcMetricAccess<'_>>,
+    context: SourceArcContext<'_, '_>,
     out: &mut Vec<Shape>,
     budget: &mut ExpansionBudget,
 ) -> Result<()> {
+    let geographic_frame = match context.domain() {
+        crate::geometry::TopologyDomain::Cartesian => None,
+        crate::geometry::TopologyDomain::Geographic(frame) => Some(frame),
+    };
     let mut work = Vec::with_capacity(1);
     let mut staged = Vec::new();
     work.push(SubdivisionWorkItem::new(shape, false));
@@ -778,9 +781,8 @@ pub(crate) fn split(
             item.shape.axes(),
             drop,
             [1, 2],
-            geographic_frame,
             budget,
-            metric_access,
+            context,
         )?;
         if children.iter().all(Shape::is_empty) {
             // A cut that cannot be represented by the exact arrangement must
@@ -2305,7 +2307,9 @@ mod subdivision_tests {
         ]);
         reset_partition_calls();
         reset_subdivision_work();
-        let parts = shape.subdivide(8, false).unwrap();
+        let parts = shape
+            .subdivide_with_context(8, false, crate::geometry::SourceArcContext::cartesian())
+            .unwrap();
         assert_eq!(parts.len(), 2);
         assert_eq!(partition_calls(), 1);
         assert_eq!(subdivision_work(), (3, 1));
@@ -2343,7 +2347,14 @@ mod subdivision_tests {
             Err(crate::crs::CrsError::invalid("unexpected source-arc metric access").into())
         };
         let parts = shape
-            .subdivide_in_geographic_frame(8, false, frame, &no_metric)
+            .subdivide_with_context(
+                8,
+                false,
+                crate::geometry::SourceArcContext::new(
+                    crate::geometry::TopologyDomain::Geographic(frame),
+                    Some(&no_metric),
+                ),
+            )
             .unwrap();
         assert!(parts.len() >= 2);
         let mut counts = ShapeCountQuery::default();
@@ -2382,7 +2393,9 @@ mod subdivision_tests {
         let shape = ring_shape(&points);
 
         reset_subdivision_work();
-        let parts = shape.subdivide(8, false).unwrap();
+        let parts = shape
+            .subdivide_with_context(8, false, crate::geometry::SourceArcContext::cartesian())
+            .unwrap();
 
         let (work_items, splits) = subdivision_work();
         assert!(work_items > 3);
@@ -2410,7 +2423,9 @@ mod subdivision_tests {
             CoordSeq::try_from_points(&points).unwrap(),
         );
         reset_partition_calls();
-        let parts = shape.subdivide(8, false).unwrap();
+        let parts = shape
+            .subdivide_with_context(8, false, crate::geometry::SourceArcContext::cartesian())
+            .unwrap();
         assert_eq!(parts.len(), 2);
         assert_eq!(partition_calls(), 1);
         assert!(parts.iter().all(|part| !part.is_empty()));
@@ -2424,7 +2439,9 @@ mod subdivision_tests {
             .collect::<Vec<_>>();
         let shape = line_shape(&points);
         reset_partition_calls();
-        let parts = shape.subdivide(8, false).unwrap();
+        let parts = shape
+            .subdivide_with_context(8, false, crate::geometry::SourceArcContext::cartesian())
+            .unwrap();
         assert_eq!(parts.len(), 2);
         let mut counts = ShapeCountQuery::default();
         assert!(parts.iter().all(|part| {
@@ -2439,7 +2456,9 @@ mod subdivision_tests {
     fn over_budget_clipped_multipart_children_are_revisited_by_member() {
         let shape =
             crate::io::parse_wkt("POLYGON((0 0,20 0,20 20,0 20,0 0),(0 0,5 2,2 5,0 0))").unwrap();
-        let parts = shape.subdivide(8, false).unwrap();
+        let parts = shape
+            .subdivide_with_context(8, false, crate::geometry::SourceArcContext::cartesian())
+            .unwrap();
         let mut counts = ShapeCountQuery::default();
         assert!(parts.iter().all(|part| {
             counts
@@ -2455,7 +2474,9 @@ mod subdivision_tests {
         )
         .unwrap();
         reset_partition_calls();
-        let parts = shape.subdivide(8, false).unwrap();
+        let parts = shape
+            .subdivide_with_context(8, false, crate::geometry::SourceArcContext::cartesian())
+            .unwrap();
         assert_eq!(parts.len(), 2);
         assert!(parts.iter().all(|part| matches!(part, Shape::Polygon(_))));
         assert_eq!(partition_calls(), 0);
@@ -2477,7 +2498,9 @@ mod subdivision_tests {
             polygon,
         ])
         .unwrap();
-        let parts = shape.subdivide(7, false).unwrap();
+        let parts = shape
+            .subdivide_with_context(7, false, crate::geometry::SourceArcContext::cartesian())
+            .unwrap();
         assert!(parts.len() >= 2);
         assert!(parts.iter().all(|part| !part.is_empty()));
         assert!(parts.iter().any(|part| {
@@ -2502,7 +2525,9 @@ mod subdivision_tests {
             Ring::from_closed(coordinates).unwrap(),
             Vec::new(),
         ));
-        let parts = shape.subdivide(8, false).unwrap();
+        let parts = shape
+            .subdivide_with_context(8, false, crate::geometry::SourceArcContext::cartesian())
+            .unwrap();
         assert_eq!(parts.len(), 2);
         let source = all_points(&shape);
         let mut new_shared = 0;
@@ -2530,7 +2555,9 @@ mod subdivision_tests {
             "POLYGON ((0 0,4 0,2 0,0 0),(1 1,3 1,3 3,1 3,1 1))",
         ] {
             let shape = crate::io::parse_wkt(wkt).unwrap();
-            let parts = shape.subdivide(8, false).unwrap();
+            let parts = shape
+                .subdivide_with_context(8, false, crate::geometry::SourceArcContext::cartesian())
+                .unwrap();
             assert!(!parts.is_empty(), "{wkt}");
             assert!(parts.iter().all(|part| !part.is_empty()), "{wkt}");
         }
@@ -2557,8 +2584,12 @@ mod subdivision_tests {
         .expect("unshared expansion parses")
         .shape;
 
-        let shared_parts = shared.subdivide(8, false).unwrap();
-        let expanded_parts = expanded.subdivide(8, false).unwrap();
+        let shared_parts = shared
+            .subdivide_with_context(8, false, crate::geometry::SourceArcContext::cartesian())
+            .unwrap();
+        let expanded_parts = expanded
+            .subdivide_with_context(8, false, crate::geometry::SourceArcContext::cartesian())
+            .unwrap();
         let wkb = |parts: &[Shape]| {
             parts
                 .iter()
@@ -2567,7 +2598,12 @@ mod subdivision_tests {
         };
         let shared_parts_wkb = wkb(&shared_parts);
         assert_eq!(shared_parts_wkb, wkb(&expanded_parts));
-        assert_eq!(shared_parts_wkb, wkb(&shared.subdivide(8, false).unwrap()));
+        assert_eq!(
+            shared_parts_wkb,
+            wkb(&shared
+                .subdivide_with_context(8, false, crate::geometry::SourceArcContext::cartesian())
+                .unwrap())
+        );
 
         let mut counts = ShapeCountQuery::default();
         assert!(shared_parts.iter().all(|part| {

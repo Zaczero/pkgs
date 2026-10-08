@@ -13,7 +13,7 @@
 use crate::error::{ErrorKind, Result};
 use crate::geometry::exact_arith::{ExactSign, two_sum};
 use crate::geometry::tessellation::exact::{
-    ExactDyadic, compare_ratios, round_ratio, round_sqrt_ratio,
+    ExactDyadic, ExactRational, compare_ratios, round_ratio, round_sqrt_ratio,
 };
 use crate::geometry::{
     Bounds, Coordinates, MOrdinate, Ordering, Point, PointKey, Segment, Unmetered, Work, XY,
@@ -231,6 +231,17 @@ impl SegmentProjection {
             Self::CertifiedInterior(projection) => projection.fraction,
             Self::ExactInterior(projection) => projection.fraction,
             Self::End => 1.0,
+        }
+    }
+
+    pub(in crate::geometry) fn exact_fraction(&self) -> Result<ExactRational> {
+        match self {
+            Self::Start => Ok(ExactRational::zero()),
+            Self::End => Ok(ExactRational::one()),
+            Self::Interior(_) | Self::CertifiedInterior(_) | Self::ExactInterior(_) => {
+                let (numerator, denominator) = self.exact_ratio()?;
+                ExactRational::new(numerator, denominator)
+            },
         }
     }
 

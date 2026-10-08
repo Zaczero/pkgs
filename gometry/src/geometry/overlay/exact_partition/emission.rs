@@ -821,70 +821,75 @@ pub(super) fn polygonize_full_emission(
     Ok(emission)
 }
 
-pub(super) fn polygonize_faces(
-    partition: &ExactPartition<'_>,
-    topology: &IndexedTopology,
-    edges: &[u32],
-    global: &GlobalFaces,
-    operation: &'static str,
-) -> Result<Vec<Polygon>> {
-    let emission = polygonize_emission(partition, topology, edges, global)?;
-    let embedding = partition.embed(&[&emission], operation)?;
-    polygonize_faces_with_embedding(partition, topology, global, &embedding)
-}
-
 #[expect(
     clippy::indexing_slicing,
-    reason = "walk darts and face labels are paired from this topology; shell indices address pre-sort polygons"
+    reason = "boundary darts and node IDs come from the same checked topology and embedding"
 )]
-pub(super) fn polygonize_faces_with_embedding(
+pub(super) fn polygonize_node_groups(
     partition: &ExactPartition<'_>,
     topology: &IndexedTopology,
     global: &GlobalFaces,
     embedding: &Embedding<'_>,
-) -> Result<Vec<Polygon>> {
+) -> Result<Vec<Vec<Vec<NodeId>>>> {
     let face_of = |slot: usize| global.walk_faces[topology.face_of[slot] as usize];
-    let coordinates = embedding.coordinates();
     let walks = global.boundary_walks(topology, |face, other| face != 0 && face != other);
     let mut shells = Vec::with_capacity(global.count as usize);
     shells.resize(global.count as usize, None);
-    let mut polygons: Vec<(usize, Ring, Vec<Ring>)> = Vec::new();
+    let mut polygons: Vec<(usize, Vec<Vec<NodeId>>)> = Vec::new();
     let mut holes = Vec::new();
     for walk in &walks {
         let first = *walk
             .first()
             .expect("a polygon boundary walk is a nonempty closed cycle");
         let face = face_of(first as usize) as usize;
-        let ring =
-            closed_ring(walk.iter().map(|&slot| {
-                Embedding::xy_at(coordinates, NodeId(topology.owners[slot as usize]))
-            }))?;
-        if walk_is_shell(
+        let is_shell = walk_is_shell(
             partition,
             topology,
             walk.len(),
             |step| walk[step],
             |step| walk[step],
-        )? {
+        )?;
+        let mut ring = walk
+            .iter()
+            .map(|&slot| NodeId(topology.owners[slot as usize]))
+            .collect::<Vec<_>>();
+        canonicalize_open_nodes_by_xy(embedding.coordinates(), &mut ring);
+        if is_shell {
             debug_assert!(shells[face].is_none());
             shells[face] = Some(polygons.len());
-            polygons.push((face, ring, Vec::new()));
+            polygons.push((face, vec![ring]));
         } else {
             holes.push((face, ring));
         }
     }
-    drop(walks);
     for (face, hole) in holes {
-        let polygon = shells[face].expect("bounded face has a shell");
-        polygons[polygon].2.push(hole);
+        polygons[shells[face].expect("bounded face has a shell")]
+            .1
+            .push(hole);
     }
-    drop(shells);
-    polygons.sort_unstable_by_key(|&(face, ..)| face);
-    let mut output = Vec::with_capacity(polygons.len());
-    for (_, shell, holes) in polygons {
-        output.push(Polygon::new(shell, holes));
+    polygons.sort_unstable_by_key(|(face, _)| *face);
+    Ok(polygons.into_iter().map(|(_, rings)| rings).collect())
+}
+
+fn canonicalize_open_nodes_by_xy(coordinates: &[XY], nodes: &mut [NodeId]) {
+    let Some((&first, remaining)) = nodes.split_first() else {
+        return;
+    };
+    let mut minimum = Embedding::xy_at(coordinates, first);
+    let mut rotation = 0;
+    for (index, &node) in remaining.iter().enumerate() {
+        let point = Embedding::xy_at(coordinates, node);
+        if point
+            .x
+            .total_cmp(&minimum.x)
+            .then_with(|| point.y.total_cmp(&minimum.y))
+            == Ordering::Less
+        {
+            minimum = point;
+            rotation = index + 1;
+        }
     }
-    Ok(output)
+    nodes.rotate_left(rotation);
 }
 
 /// Whether a closed boundary walk is the outer cycle of the face on its left,

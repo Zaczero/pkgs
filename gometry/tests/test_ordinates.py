@@ -70,14 +70,59 @@ def test_voronoi_results_are_2d(op: str) -> None:
 
 @pytest.mark.parametrize('method', ['delaunay', 'constrained', 'earcut'])
 def test_triangulation_preserves_ordinates(method: str) -> None:
-    """Triangle corners coincide with input vertices, so Z/M is always
-    preserved — there is no ordinate policy to configure.
+    """Triangle corners coincide with input vertices, so their Z/M is copied.
+
+    The publisher's inserted Native-edge samples have a separate source-
+    arclength contract covered by the geographic Delaunay regression below.
     """
     zsquare = _z_polygon()
     carried = zsquare.triangulate(method=method)
     assert carried
     assert all(part.coordinate_axes == 'XYZ' for part in carried)
     assert _xy_polygon().triangulate(method=method) is not None
+
+
+def test_geographic_delaunay_publisher_carries_inserted_zm_by_ellipsoidal_arclength() -> (
+    None
+):
+    crs = '+proj=longlat +a=7000000 +rf=150 +type=crs'
+    sites = [
+        (760.0, 45.0, 35.25, 551.0),
+        (1035.0, 72.5, 49.5, 726.0),
+        (900.0, 90.0, 61.0, 901.0),
+    ]
+    source = gm.MultiPoint(sites, crs=crs)
+    triangles = source.triangulate(method='delaunay')
+    assert len(triangles) == 1
+    coordinates = list(triangles[0].exterior.coords)
+    sample = next(
+        coordinate for coordinate in coordinates if coordinate[:2] == (177.5, 58.75)
+    )
+    assert math.isclose(sample[2], 43.730_417_185_196_416, abs_tol=2.0e-8)
+    assert math.isclose(sample[3], 655.145_474_204_166_5, abs_tol=2.0e-7)
+    assert not math.isclose(sample[2], 42.375, abs_tol=1.0e-6)
+    assert not math.isclose(sample[3], 638.5, abs_tol=1.0e-6)
+    assert (40.0, 45.0, 35.25, 551.0) in coordinates
+    assert (-45.0, 72.5, 49.5, 726.0) in coordinates
+    assert (-180.0, 90.0, 61.0, 901.0) in coordinates
+
+    xy_source = gm.MultiPoint([(x, y) for x, y, *_ in sites], crs=crs)
+    xy_triangles = xy_source.triangulate(method='delaunay')
+    assert [
+        [(x, y) for x, y, *_ in triangle.exterior.coords] for triangle in triangles
+    ] == [
+        [(x, y) for x, y, *_ in triangle.exterior.coords] for triangle in xy_triangles
+    ]
+
+    uniform_rows = gm.GeometryArray([source, source]).triangulate(method='delaunay')
+    assert [triangle.to_wkt() for triangle in uniform_rows[0]] == [
+        triangle.to_wkt() for triangle in triangles
+    ]
+    mixed_rows = gm.GeometryArray([source, xy_source]).triangulate(method='delaunay')
+    assert [triangle.to_wkt() for triangle in mixed_rows[0]] == [
+        triangle.to_wkt() for triangle in triangles
+    ]
+    assert all(triangle.coordinate_axes == 'XY' for triangle in mixed_rows[1])
 
 
 def test_point_on_surface_is_interior_xy_point() -> None:
@@ -304,6 +349,81 @@ def _origin_coord(geom: gm.Geometry) -> tuple[float, ...]:
         if coord[0] == 0.0 and coord[1] == 0.0:
             return coord
     raise AssertionError(f'no origin vertex on {geom.to_wkt()}')
+
+
+def test_planar_geographic_offset_uses_source_arclength_for_zm() -> None:
+    crs = '+proj=longlat +a=7000000 +rf=150 +type=crs'
+    coordinates = [(760.0, 45.0), (1035.0, 72.5)]
+    line = gm.LineString(
+        coordinates,
+        z=[35.25, 49.5],
+        m=[551.0, 726.0],
+        crs=crs,
+    )
+    xy_line = gm.LineString(coordinates, crs=crs)
+    result = line.offset_curve(1.0, unit='planar')
+    xy_result = xy_line.offset_curve(1.0, unit='planar')
+    array_result = gm.GeometryArray([line]).offset_curve(1.0, unit='planar')[0]
+
+    assert result.coordinate_axes == 'XYZM'
+    result_coordinates = list(result.coords)
+    assert [(point[0], point[1]) for point in result_coordinates] == list(
+        xy_result.coords
+    )
+    assert list(array_result.coords) == result_coordinates
+    assert (result_coordinates[0][2], result_coordinates[0][3]) == (35.25, 551.0)
+    assert (result_coordinates[-1][2], result_coordinates[-1][3]) == (49.5, 726.0)
+    inserted = next(
+        point
+        for point in result_coordinates
+        if (point[0], point[1])
+        == pytest.approx((177.40049628097904, 59.745037190209985), rel=0.0, abs=1.0e-12)
+    )
+    assert inserted[2] == pytest.approx(43.78167861104509, rel=0.0, abs=2.0e-8)
+    assert inserted[3] == pytest.approx(655.7750004865186, rel=0.0, abs=2.0e-7)
+
+
+def test_planar_geographic_concave_hull_uses_source_arclength_for_zm() -> None:
+    crs = '+proj=longlat +a=7000000 +rf=150 +type=crs'
+    coordinates = [(760.0, 45.0), (1035.0, 72.5), (900.0, 85.0)]
+    sites = gm.MultiPoint(
+        coordinates,
+        z=[35.25, 49.5, 80.0],
+        m=[551.0, 726.0, 901.0],
+        crs=crs,
+    )
+    xy_sites = gm.MultiPoint(coordinates, crs=crs)
+    result = sites.concave_hull(concavity=2.0, unit='planar')
+    xy_result = xy_sites.concave_hull(concavity=2.0, unit='planar')
+    array_result = gm.GeometryArray([sites]).concave_hull(concavity=2.0, unit='planar')[
+        0
+    ]
+
+    assert result.coordinate_axes == 'XYZM'
+    result_coordinates = list(result.exterior.coords)
+    assert [(point[0], point[1]) for point in result_coordinates] == list(
+        xy_result.exterior.coords
+    )
+    assert list(array_result.exterior.coords) == result_coordinates
+    start_xy = next(
+        (point[0], point[1]) for point in xy_result.exterior.coords if point[1] == 45.0
+    )
+    end_xy = next(
+        (point[0], point[1]) for point in xy_result.exterior.coords if point[1] == 72.5
+    )
+    assert next(point[2:] for point in result_coordinates if point[:2] == start_xy) == (
+        35.25,
+        551.0,
+    )
+    assert next(point[2:] for point in result_coordinates if point[:2] == end_xy) == (
+        49.5,
+        726.0,
+    )
+    inserted = next(
+        point for point in result_coordinates if (point[0], point[1]) == (177.5, 58.75)
+    )
+    assert inserted[2] == pytest.approx(43.730417185196416, rel=0.0, abs=2.0e-8)
+    assert inserted[3] == pytest.approx(655.1454742041665, rel=0.0, abs=2.0e-7)
 
 
 @pytest.mark.parametrize('op', ['convex_hull', 'concave_hull'])

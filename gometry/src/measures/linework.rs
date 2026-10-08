@@ -35,8 +35,18 @@ pub(crate) fn shared_paths(
     right: &Bound<'_, PyAny>,
 ) -> PyResult<Py<PyAny>> {
     Python::attach(|py| {
-        broadcast2_geometry(py, left, right, "shared_paths", |left, right| {
-            left.shape().shared_paths(right.shape())
+        broadcast2_geometry(py, left, right, "shared_paths", |left, right, ctx| {
+            let metric_access = || {
+                ctx.metric.geographic_chart_metric()?.ok_or_else(|| {
+                    crate::crs::CrsError::invalid(
+                        "geographic shared_paths source ordinates require the operation's CRS metric",
+                    )
+                    .into()
+                })
+            };
+            let context = crate::geometry::SourceArcContext::new(ctx.domain, Some(&metric_access));
+            left.shape()
+                .shared_paths_with_context(right.shape(), context)
         })
     })
 }

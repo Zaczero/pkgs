@@ -406,7 +406,8 @@ pub(crate) fn coverage_union(py: Python<'_>, values: &Bound<'_, PyAny>) -> PyRes
         })
     };
     let shape = py.detach(move || {
-        crate::geometry::coverage_union_topo(&shapes, domain, Some(&metric_access))
+        let context = crate::geometry::SourceArcContext::new(domain, Some(&metric_access));
+        crate::geometry::coverage_union_topo(&shapes, context)
     })?;
     drop(metric_scratch);
     Ok(Typed(PyGeometry::with_frame(shape, metadata)))
@@ -458,7 +459,24 @@ pub(crate) fn coverage_union(py: Python<'_>, values: &Bound<'_, PyAny>) -> PyRes
 #[pyfunction]
 pub(crate) fn polygonize(py: Python<'_>, values: &Bound<'_, PyAny>) -> PyResult<PyGeometryArray> {
     let (metadata, shapes) = pooled_shapes(values)?;
-    let polygons = py.detach(move || Shape::polygonize_all(&shapes, false))?;
+    let mut metric_scratch = crate::dispatch::MetricScratch::default();
+    let (domain, metric) = crate::dispatch::MetricResolver::GeographicCarry
+        .resolve_topology_ctx(&metadata, &mut metric_scratch)?;
+    let polygons = py.detach(move || {
+        let metric_access = || {
+            metric.geographic_chart_metric()?.ok_or_else(|| {
+                crate::crs::CrsError::invalid(
+                    "geographic polygonize source ordinates require the operation's CRS metric",
+                )
+                .into()
+            })
+        };
+        Shape::polygonize_all_with_context(
+            &shapes,
+            false,
+            crate::geometry::SourceArcContext::new(domain, Some(&metric_access)),
+        )
+    })?;
     Ok(PyGeometryArray::from_shapes(polygons, metadata)?)
 }
 
@@ -503,7 +521,24 @@ pub(crate) fn polygonize(py: Python<'_>, values: &Bound<'_, PyAny>) -> PyResult<
 #[pyfunction]
 pub(crate) fn polygonize_full(py: Python<'_>, values: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
     let (metadata, shapes) = pooled_shapes_with_rows(values)?;
-    let full = py.detach(move || Shape::polygonize_full_all(&shapes, false))?;
+    let mut metric_scratch = crate::dispatch::MetricScratch::default();
+    let (domain, metric) = crate::dispatch::MetricResolver::GeographicCarry
+        .resolve_topology_ctx(&metadata, &mut metric_scratch)?;
+    let full = py.detach(move || {
+        let metric_access = || {
+            metric.geographic_chart_metric()?.ok_or_else(|| {
+                crate::crs::CrsError::invalid(
+                    "geographic polygonize_full source ordinates require the operation's CRS metric",
+                )
+                .into()
+            })
+        };
+        Shape::polygonize_full_all_with_context(
+            &shapes,
+            false,
+            crate::geometry::SourceArcContext::new(domain, Some(&metric_access)),
+        )
+    })?;
     crate::py_polygonize_full(py, full, metadata.crs_ref(), metadata.epoch())
 }
 
@@ -779,17 +814,24 @@ pub(crate) fn coverage_simplify(
     simplify_boundary: bool,
 ) -> PyResult<PyGeometryArray> {
     let (shapes, metadata, source) = coverage_values(values)?;
-    let geographic_frame = match geometry::topology_domain(&metadata)? {
-        geometry::TopologyDomain::Geographic(frame) => Some(frame),
-        geometry::TopologyDomain::Cartesian => None,
-    };
+    let mut metric_scratch = crate::dispatch::MetricScratch::default();
+    let (domain, metric) = crate::dispatch::MetricResolver::GeographicCarry
+        .resolve_topology_ctx(&metadata, &mut metric_scratch)?;
     let rows = py.detach(move || {
-        geometry::coverage_simplify_with_frame(
+        let metric_access = || {
+            metric.geographic_chart_metric()?.ok_or_else(|| {
+                crate::crs::CrsError::invalid(
+                    "geographic coverage simplification requires the operation's CRS metric",
+                )
+                .into()
+            })
+        };
+        geometry::coverage_simplify_with_context(
             &shapes,
             tolerance,
             method,
             simplify_boundary,
-            geographic_frame,
+            geometry::SourceArcContext::new(domain, Some(&metric_access)),
         )
     })?;
     let result = PyGeometryArray::from_shapes(rows, metadata)?;
@@ -875,8 +917,26 @@ pub(crate) fn coverage_clean(
     overlap_rule: geometry::CoverageOverlapRule,
 ) -> PyResult<PyGeometryArray> {
     let (shapes, metadata, source) = coverage_values(values)?;
-    let rows =
-        py.detach(move || geometry::coverage_clean(&shapes, grid_size, gap_width, overlap_rule))?;
+    let mut metric_scratch = crate::dispatch::MetricScratch::default();
+    let (domain, metric) = crate::dispatch::MetricResolver::GeographicCarry
+        .resolve_topology_ctx(&metadata, &mut metric_scratch)?;
+    let rows = py.detach(move || {
+        let metric_access = || {
+            metric.geographic_chart_metric()?.ok_or_else(|| {
+                crate::crs::CrsError::invalid(
+                    "geographic coverage_clean source ordinates require the operation's CRS metric",
+                )
+                .into()
+            })
+        };
+        geometry::coverage_clean(
+            &shapes,
+            grid_size,
+            gap_width,
+            overlap_rule,
+            crate::geometry::SourceArcContext::new(domain, Some(&metric_access)),
+        )
+    })?;
     let result = PyGeometryArray::from_shapes(rows, metadata)?;
     Ok(match source {
         None => result,

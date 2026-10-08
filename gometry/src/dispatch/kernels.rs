@@ -59,6 +59,64 @@ fn publish_planar_geographic_edges_budgeted(
     }
 }
 
+fn publish_planar_geographic_edges_with_context(
+    output: Shape,
+    model: &crate::crs::MetricModel,
+    ctx: &CachelessRowContext<'_>,
+    operation: &'static str,
+) -> Result<Shape> {
+    match (model, ctx.domain) {
+        (crate::crs::MetricModel::Planar { .. }, TopologyDomain::Geographic(frame)) => {
+            let metric_access = || {
+                ctx.metric
+                    .source_chart_metric(ctx.frame.crs_str())?
+                    .ok_or_else(|| {
+                        crate::crs::CrsError::invalid(
+                            "geographic computed-edge source ordinates require the operation's CRS metric",
+                        )
+                    })
+            };
+            let source_context =
+                crate::geometry::SourceArcContext::new(ctx.domain, Some(&metric_access));
+            crate::geometry::publish_raw_computed_shape_with_context(
+                &output,
+                frame,
+                operation,
+                &source_context,
+            )
+        },
+        _ => Ok(output),
+    }
+}
+
+fn publish_planar_geographic_edges_budgeted_with_context(
+    output: Shape,
+    model: &crate::crs::MetricModel,
+    ctx: &CachelessRowContext<'_>,
+    budget: &mut crate::geometry::ExpansionBudget,
+) -> Result<Shape> {
+    match (model, ctx.domain) {
+        (crate::crs::MetricModel::Planar { .. }, TopologyDomain::Geographic(frame)) => {
+            let metric_access = || {
+                ctx.metric
+                    .source_chart_metric(ctx.frame.crs_str())?
+                    .ok_or_else(|| {
+                        crate::crs::CrsError::invalid(
+                            "geographic computed-edge source ordinates require the operation's CRS metric",
+                        )
+                    })
+            };
+            crate::geometry::publish_raw_computed_shape_with_budget_and_context(
+                &output,
+                frame,
+                crate::geometry::SourceArcContext::new(ctx.domain, Some(&metric_access)),
+                budget,
+            )
+        },
+        _ => Ok(output),
+    }
+}
+
 fn publish_planar_geographic_constructive(
     output: Shape,
     model: &crate::crs::MetricModel,
@@ -110,7 +168,16 @@ pub(crate) fn unary_convex_hull(
     data: &PreparedPlan,
     ctx: &CachelessRowContext<'_>,
 ) -> Result<Shape> {
-    publish_raw_computed_if_geographic(data.shape().convex_hull()?, ctx.domain, "convex_hull")
+    let shape = data.shape();
+    if !matches!(shape, Shape::Point(_) | Shape::Empty(..))
+        && let TopologyDomain::Geographic(frame) = ctx.domain
+        && crate::geographic::chart::PointSelectionChart::accepts_point_set(shape)
+        && let Some(hull) =
+            crate::geographic::chart::point_set_convex_hull_shape(shape, frame, data.bounds())?
+    {
+        return Ok(hull);
+    }
+    publish_raw_computed_if_geographic(shape.convex_hull()?, ctx.domain, "convex_hull")
 }
 
 /// Simplify kernel shared by the spine-routed free function.
@@ -275,7 +342,7 @@ pub(crate) fn unary_offset_curve_budgeted(
             shape.offset_curve_budgeted(d, join_style, quadrant_segments, miter_limit, budget)
         },
     )?;
-    publish_planar_geographic_edges_budgeted(output, model, ctx.domain, budget)
+    publish_planar_geographic_edges_budgeted_with_context(output, model, ctx, budget)
 }
 
 /// Point-on-surface kernel shared by the spine-routed free function.
@@ -307,7 +374,7 @@ pub(crate) fn unary_concave_hull(
         concavity,
         length_threshold.get(ctx.lane.row()),
     )?;
-    publish_planar_geographic_edges(output, model, ctx.domain, "concave_hull")
+    publish_planar_geographic_edges_with_context(output, model, ctx, "concave_hull")
 }
 
 /// Polylabel kernel shared by the spine-routed free function.
@@ -385,8 +452,21 @@ pub(crate) fn unary_minimum_rotated_rectangle(
     data: &PreparedPlan,
     ctx: &CachelessRowContext<'_>,
 ) -> Result<Shape> {
+    let shape = data.shape();
+    if !matches!(shape, Shape::Point(_) | Shape::Empty(..))
+        && let TopologyDomain::Geographic(frame) = ctx.domain
+        && crate::geographic::chart::PointSelectionChart::accepts_point_set(shape)
+        && let Some(rectangle) =
+            crate::geographic::chart::point_set_minimum_rotated_rectangle_shape(
+                shape,
+                frame,
+                data.bounds(),
+            )?
+    {
+        return Ok(rectangle);
+    }
     publish_raw_computed_if_geographic(
-        data.shape().minimum_rotated_rectangle()?,
+        shape.minimum_rotated_rectangle()?,
         ctx.domain,
         "minimum_rotated_rectangle",
     )
@@ -427,7 +507,10 @@ pub(crate) fn unary_boundary(data: &PreparedPlan, ctx: &CachelessRowContext<'_>)
             )
         })
     };
-    crate::geometry::boundary_with_metric(data, ctx.domain, Some(&metric_access))
+    crate::geometry::boundary_with_metric(
+        data,
+        crate::geometry::SourceArcContext::new(ctx.domain, Some(&metric_access)),
+    )
 }
 
 /// ``is_empty`` kernel shared by the spine-routed free function.
@@ -527,16 +610,26 @@ pub(crate) fn unary_node(data: &PreparedPlan, ctx: &CachelessRowContext<'_>) -> 
             )
         })
     };
+    let source_context = crate::geometry::SourceArcContext::new(ctx.domain, Some(&metric_access));
     data.shape()
-        .node_with_metric(ctx.domain, Strictness::Lenient, Some(&metric_access))
+        .node_with_context(Strictness::Lenient, source_context)
 }
 
 /// Build-area kernel shared by the scalar and array unary method spine.
 pub(crate) fn unary_build_area(
     data: &PreparedPlan,
-    _ctx: &CachelessRowContext<'_>,
+    ctx: &CachelessRowContext<'_>,
 ) -> Result<Shape> {
-    data.shape().build_area(false)
+    let metric_access = || {
+        ctx.metric.geographic_chart_metric()?.ok_or_else(|| {
+            crate::crs::CrsError::invalid(
+                "geographic build_area source ordinates require the operation's CRS metric",
+            )
+            .into()
+        })
+    };
+    let source_context = crate::geometry::SourceArcContext::new(ctx.domain, Some(&metric_access));
+    data.shape().build_area_with_context(false, source_context)
 }
 
 /// Smooth kernel shared by the spine-routed free function.
@@ -590,6 +683,15 @@ fn smooth_for_domain(
                 .smooth_budgeted(iterations, method, keep_endpoints, budget)
         },
         TopologyDomain::Geographic(frame) => {
+            let metric_access = || {
+                ctx.metric.geographic_chart_metric()?.ok_or_else(|| {
+                    crate::crs::CrsError::invalid(
+                        "geographic computed-edge source ordinates require the operation's CRS metric",
+                    )
+                })
+            };
+            let source_context =
+                crate::geometry::SourceArcContext::new(ctx.domain, Some(&metric_access));
             let (output, preserved_vertices) = data.shape().smooth_budgeted_with_vertex_intents(
                 iterations,
                 method,
@@ -601,6 +703,7 @@ fn smooth_for_domain(
                 &output,
                 frame,
                 &preserved_vertices,
+                source_context,
                 budget,
             )
         },
@@ -878,8 +981,10 @@ pub(crate) fn unary_snap_to_grid(
                 )
             })
         };
+        let source_context =
+            crate::geometry::SourceArcContext::new(ctx.domain, Some(&metric_access));
         data.shape()
-            .snap_to_grid_repaired(size, origin, ctx.domain, Some(&metric_access))
+            .snap_to_grid_repaired(size, origin, ctx.domain, source_context)
     } else {
         data.shape().snap_to_grid(size, origin)
     }

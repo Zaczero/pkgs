@@ -108,9 +108,10 @@ pub(crate) use computed_shape::{
     PolygonPartEdgeRoles, PublishedTriangleVertices, map_computed_shape_chains,
     publish_changed_raw_computed_shape, publish_computed_line_column_with_budget,
     publish_computed_point_or_raw_shape, publish_computed_polygon_rings_with_budget,
-    publish_polygon_parts_with_edge_roles, publish_polygon_with_edge_roles,
+    publish_polygon_parts_with_edge_roles, publish_polygon_with_edge_roles_and_context,
     publish_raw_computed_shape, publish_raw_computed_shape_with_budget,
-    publish_raw_computed_shapes, publish_raw_computed_shapes_with_budget,
+    publish_raw_computed_shape_with_budget_and_context, publish_raw_computed_shape_with_context,
+    publish_raw_computed_shapes_with_budget_and_context, publish_raw_computed_shapes_with_context,
     publish_stored_computed_shape, publish_transformed_shape,
     publish_triangle_vertex_stream_budgeted, publish_voronoi_polygon_outputs,
 };
@@ -125,8 +126,10 @@ pub(crate) use dimension::{Dimension, dimension, ring_is_collinear};
 mod derived;
 pub(crate) use derived::{
     centroid_line_row_columns, centroid_polygon_row_columns,
-    centroid_polygon_row_columns_with_bounds, geometric_xy_cmp, native_concave_hull,
-    point_on_surface_line_columns, point_on_surface_polygon_row_columns, shape_from_selected_hull,
+    centroid_polygon_row_columns_with_bounds, exact_point_chart_centroid, geometric_xy_cmp,
+    minimum_area_rectangle_chart, monotone_chain_chart_hull, native_concave_hull,
+    point_on_surface_line_columns, point_on_surface_polygon_row_columns,
+    point_set_centroid_with_bounds, point_set_surface_point_at, shape_from_selected_hull,
     smallest_enclosing_circle,
 };
 mod distance;
@@ -142,7 +145,8 @@ mod linear;
 mod linear_3d;
 mod ordinates;
 pub(crate) use ordinates::{
-    ParallelSourceArcMetricAccess, SourceArcMetricAccess, source_ordinate_values_at_fraction,
+    ParallelSourceArcMetricAccess, RootMetricState, SourceArcContext, SourceArcMetricAccess,
+    computed_native_sample_ordinates, source_ordinate_values_at_fraction,
 };
 mod perimeter;
 pub(crate) use perimeter::{geographic_packed_polygonal_perimeter, geographic_polygonal_perimeter};
@@ -198,7 +202,7 @@ use constructive::{
 };
 pub(crate) use coverage::{
     CoverageOverlapRule, HashMapExt, coverage_clean, coverage_invalid_edges, coverage_is_valid,
-    coverage_simplify_with_frame, coverage_union_topo,
+    coverage_simplify_with_context, coverage_union_topo,
 };
 pub(in crate::geometry) use coverage::{TopologyGuard, simplify_chain_guarded, triangle_area};
 use distance::line_length_3d;
@@ -218,8 +222,8 @@ pub(crate) use line_index::{
 };
 use linear::normalize_line_distance;
 pub(crate) use linear::{MeasureRange, MeasuredLineIndex, MeasuredLineIndexSlot};
+use ordinates::carry_ordinates;
 pub(crate) use ordinates::carry_overlay_ordinates;
-use ordinates::{carry_each, carry_ordinates};
 #[cfg(test)]
 pub(crate) use overlay::cartesian_support_nonempty;
 use overlay::polygon_parts_to_shape;
@@ -229,7 +233,6 @@ pub(in crate::geometry) use point_location::{
     AreaLocationLabels, ExactLocationIndex, ExactLocationPoints,
 };
 pub(crate) use point_location::{PointBatchTester, PolygonPointIndex, PreparedPointQueries};
-pub(in crate::geometry) use predicates::PolygonContact;
 #[cfg(test)]
 pub(crate) use predicates::ring_bounded_pole;
 use predicates::{
@@ -239,6 +242,7 @@ use predicates::{
     segment_intersection_is_simple, segments_are_adjacent, settle_touches, shell_is_convex,
     simplified_polygon_delta_is_simple, visit_interacting_pairs,
 };
+pub(in crate::geometry) use predicates::{PolygonContact, remove_antenna_vertices};
 pub(crate) use predicates::{
     RingClass, fan_alternations, line_is_ccw, line_is_closed_in_domain, line_is_simple,
     line_is_valid, polygon_is_valid, shape_encloses_pole_in_frame, shape_has_polar_ring_in_frame,
@@ -329,12 +333,12 @@ pub(crate) use segment_index::{PointEntry, PointSetIndex, SEGMENT_INDEX_MIN_PAIR
 #[cfg(test)]
 use segments::point_segment_distance_key;
 use segments::{
-    CCW_ERRBOUND_A, Contact, ON_SEGMENT_EPSILON, SegmentProjection, SquaredDistanceKey,
-    orientation_xy, point_pair_distance_key, point_segment_distance_and_projection,
-    point_segment_distance_squared, point_segment_exact_distance_key, ray_crossing_is_right,
-    segment_contact_exact, segment_contact_point, segment_cross_point, segment_envelopes_disjoint,
-    segments_intersect, shared_segment_part, try_point_distance_squared,
-    try_point_segment_distance_squared, undirected_segment_edge_key,
+    CCW_ERRBOUND_A, Contact, ON_SEGMENT_EPSILON, SquaredDistanceKey, orientation_xy,
+    point_pair_distance_key, point_segment_distance_and_projection, point_segment_distance_squared,
+    point_segment_exact_distance_key, ray_crossing_is_right, segment_contact_exact,
+    segment_contact_point, segment_cross_point, segment_envelopes_disjoint, segments_intersect,
+    shared_segment_part, try_point_distance_squared, try_point_segment_distance_squared,
+    undirected_segment_edge_key,
 };
 /// The guarded-sqrt distance is the one segment-kernel helper the broadcast
 /// lanes call directly (packed point columns).
@@ -343,14 +347,17 @@ pub(crate) use segments::{
     point_distance_squared, point_on_segment, points_dwithin, segment_vs_rect,
     squared_norm_is_trustworthy,
 };
+pub(crate) use segments::{
+    SegmentProjection, point_segment_distance, point_segment_selection, segment_projection,
+};
 /// Convex lerp shared with the broadcast fallback lanes (see
 /// `broadcast::metrics::points`), so packed and fallback agree at the extremes.
 pub(crate) use segments::{
     interpolate_f64, interpolate_fraction, interpolate_optional_ordinate,
     interpolate_subdivision_ordinate,
 };
-pub(crate) use segments::{point_segment_distance, point_segment_selection, segment_projection};
 pub(in crate::geometry) use segments::{try_dedup_by, try_sort_by, try_sort_by_with_work};
+pub(crate) use tessellation::exact::ExactRational;
 pub(crate) use tessellation::{CdtRefinement, VoronoiPolygonOutput, row_sample_seed};
 use tessellation::{delaunay_triangulation, point_in_ccw_triangle};
 pub(in crate::geometry) use types::GeographicMetricKey;
@@ -395,7 +402,7 @@ pub(crate) fn nearest_line_with_intent(
     pair: Option<&(Point, Point)>,
     common: CoordinateAxes,
     frame: crate::geographic::GeographicFrame,
-    intent: crate::geographic::ComputedEdgeIntent,
+    intent: crate::geographic::ComputedEdgeIntent<'_>,
 ) -> Result<Shape> {
     let Some(pair) = pair else {
         return nearest_line(None, common);

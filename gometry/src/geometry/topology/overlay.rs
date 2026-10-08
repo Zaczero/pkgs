@@ -10,7 +10,7 @@ use crate::geographic::{
     ChartPole, GeographicRing, Latitude, RetainedChartDisplacement, RingSummary, SeamIdentity,
 };
 use crate::geometry::ordinates::{
-    NodeOrdinates, SourceArcMetricAccess, SourceArcRequest, source_arc_ordinates,
+    NodeOrdinates, SourceArcMetricAccess, SourceArcRequest, source_arc_ordinates_unmetered,
 };
 use crate::geometry::overlay::{OverlayOp, build_certified_overlay_shape_with_axes};
 use crate::geometry::segments::try_sort_by;
@@ -213,7 +213,7 @@ pub(in crate::geometry) fn exact_geographic_overlay<M: crate::geometry::ChartMet
     operation: OverlayOp,
     declared_axes: CoordinateAxes,
     strict: bool,
-    metric_access: Option<&SourceArcMetricAccess<'_, M>>,
+    metric_access: Option<&SourceArcMetricAccess<'_, '_, M>>,
 ) -> Result<Shape> {
     let plan = QOverlayPlan::build(topology, operation)?;
     let coordinates = QCoordinates::build(topology)?;
@@ -279,7 +279,7 @@ pub(in crate::geometry) fn exact_geographic_overlay<M: crate::geometry::ChartMet
 pub(in crate::geometry) fn exact_geographic_boundary<M: crate::geometry::ChartMetric>(
     topology: &ExactGeographicTopology,
     declared_axes: CoordinateAxes,
-    metric_access: Option<&SourceArcMetricAccess<'_, M>>,
+    metric_access: Option<&SourceArcMetricAccess<'_, '_, M>>,
 ) -> Result<Shape> {
     if topology.sources.row_count != 1 {
         return Err(GeometryErrorKind::Invalid(
@@ -1536,10 +1536,10 @@ fn source_arc_node_ordinates<M: crate::geometry::ChartMetric>(
     parameter: &ExactRational,
     axes: CoordinateAxes,
     longitude: impl FnOnce() -> Result<RetainedChartDisplacement>,
-    metric_access: Option<&SourceArcMetricAccess<'_, M>>,
+    metric_access: Option<&SourceArcMetricAccess<'_, '_, M>>,
 ) -> Result<NodeOrdinates> {
     let request = SourceArcRequest::new(frame, source, axes, parameter, longitude)?;
-    source_arc_ordinates(&request, || match metric_access {
+    source_arc_ordinates_unmetered(&request, || match metric_access {
         Some(access) => access(),
         None => Err(crate::crs::CrsError::invalid(
             "geographic source-ordinate carry requires the operation's CRS metric authority",
@@ -1551,7 +1551,7 @@ fn source_arc_node_ordinates<M: crate::geometry::ChartMetric>(
 fn node_ordinates<M: crate::geometry::ChartMetric>(
     topology: &ExactGeographicTopology,
     declared_axes: CoordinateAxes,
-    metric_access: Option<&SourceArcMetricAccess<'_, M>>,
+    metric_access: Option<&SourceArcMetricAccess<'_, '_, M>>,
 ) -> Result<Vec<NodeOrdinates>> {
     let q = &topology.q;
     if q.source_edge_ports.len() != topology.sources.edges.len() {
@@ -2350,7 +2350,20 @@ fn emit_ring(
         .last_mut()
         .expect("selected Q area boundary has at least three vertices") = first;
     let frame = topology.sources.frame;
-    let published = crate::geographic::publish_computed_chain_with_vertex_intents_and_intervals(
+    let exact_latitude_at = |index: usize, parameter: f64| -> Result<ExactRational> {
+        let from = vertices
+            .get(index)
+            .ok_or_else(|| GeometryErrorKind::Invalid("Q ring sample start is unknown".into()))?;
+        let to = vertices
+            .get(index.wrapping_add(1))
+            .ok_or_else(|| GeometryErrorKind::Invalid("Q ring sample end is unknown".into()))?;
+        let latitude_delta = to.chart.y.try_subtract(&from.chart.y)?;
+        let exact_parameter = ExactRational::from_f64(parameter);
+        from.chart
+            .y
+            .try_add(&latitude_delta.try_product(&exact_parameter)?)
+    };
+    let published = crate::geographic::publish_computed_chain_with_vertex_intents_and_samples(
         frame,
         points.as_slice(),
         true,
@@ -2367,68 +2380,41 @@ fn emit_ring(
                     delta.is_zero(),
                 ));
             }
-            Ok(
-                crate::geographic::ComputedEdgeIntent::displacement_from_exact(
-                    delta.round()?,
-                    delta.is_zero(),
-                ),
-            )
+            let from = vertices
+                .get(index)
+                .ok_or_else(|| GeometryErrorKind::Invalid("Q ring edge start is unknown".into()))?;
+            let to = vertices
+                .get(index.wrapping_add(1))
+                .ok_or_else(|| GeometryErrorKind::Invalid("Q ring edge end is unknown".into()))?;
+            Ok(crate::geographic::ComputedEdgeIntent::exact_lifted([
+                &from.chart.x,
+                &to.chart.x,
+            ]))
         },
         |index, _| {
             if q_vertex_touches_preserved_edge(&computed_edges, index) {
                 crate::geographic::ComputedVertexIntent::Preserved
             } else {
-                crate::geographic::ComputedVertexIntent::Canonical
+                crate::geographic::ComputedVertexIntent::Sampled
             }
         },
-        |index, start, end, _, start_t, end_t| {
-            let from = vertices.get(index).ok_or_else(|| {
-                GeometryErrorKind::Invalid("Q ring midpoint start is unknown".into())
-            })?;
-            let to = vertices.get(index.wrapping_add(1)).ok_or_else(|| {
-                GeometryErrorKind::Invalid("Q ring midpoint end is unknown".into())
-            })?;
-            let delta = edge_deltas.get(index).ok_or_else(|| {
-                GeometryErrorKind::Invalid("Q ring midpoint intent is unknown".into())
-            })?;
-            let latitude_delta = to.chart.y.try_subtract(&from.chart.y)?;
-            let mut point_at = |parameter: f64| -> Result<Point> {
-                if parameter == 0.0 {
-                    return Ok(start);
-                }
-                if parameter.to_bits() == 1.0_f64.to_bits() {
-                    return Ok(end);
-                }
-                let exact_parameter = ExactRational::from_f64(parameter);
-                let longitude = from
-                    .chart
-                    .x
-                    .try_add(&delta.try_product(&exact_parameter)?)?;
-                let latitude = from
-                    .chart
-                    .y
-                    .try_add(&latitude_delta.try_product(&exact_parameter)?)?;
-                let exact = ExactChartPoint::from_rationals(longitude, latitude);
-                let longitude = round_canonical_longitude(frame, &exact.x)?;
-                let latitude = Latitude::try_new(frame, exact.y.round()?)
-                    .map_err(|error| GeometryErrorKind::Invalid(error.to_string().into()))?
-                    .get();
-                let point = Point::new_axes(
-                    longitude,
-                    latitude,
-                    ZOrdinate(interpolate_optional_ordinate(start.z(), end.z(), parameter)),
-                    MOrdinate(interpolate_optional_ordinate(start.m(), end.m(), parameter)),
-                )?;
-                certificate.record(exact, point)?;
-                Ok(point)
-            };
-            let interval =
-                ExactRational::from_f64(end_t).try_subtract(&ExactRational::from_f64(start_t))?;
-            Ok(crate::geographic::ComputedEdgeInterval {
-                start: point_at(start_t)?,
-                end: point_at(end_t)?,
-                delta: delta.try_product(&interval)?.round()?,
+        |index, endpoints, _, parameter, _| {
+            let latitude = Latitude::try_new(frame, exact_latitude_at(index, parameter)?.round()?)
+                .map_err(|error| GeometryErrorKind::Invalid(error.to_string().into()))?
+                .get();
+            let [start, end] = endpoints;
+            Ok(crate::geographic::ComputedSampleOrdinates {
+                y: latitude,
+                z: ZOrdinate(interpolate_optional_ordinate(start.z(), end.z(), parameter)),
+                m: MOrdinate(interpolate_optional_ordinate(start.m(), end.m(), parameter)),
             })
+        },
+        |index, _, _, parameter, retained, point| {
+            let exact = ExactChartPoint::from_rationals(
+                retained.exact_chart_longitude.clone(),
+                exact_latitude_at(index, parameter)?,
+            );
+            certificate.record(exact, point)
         },
     )?;
     let published = published.unwrap_or(points);

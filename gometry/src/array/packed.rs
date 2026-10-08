@@ -1007,14 +1007,26 @@ impl PyGeometryArray {
         storage::admit_packed_coord_count(len)?;
         let count = len / 4;
         storage::admit_packed_coord_count(count)?;
-        if let crate::geometry::TopologyDomain::Geographic(geographic) =
-            crate::geometry::topology_domain(&frame)?
-        {
+        let mut metric_scratch = crate::dispatch::MetricScratch::default();
+        let (domain, metric) = crate::dispatch::MetricResolver::GeographicCarry
+            .resolve_topology_ctx(&frame, &mut metric_scratch)?;
+        if let crate::geometry::TopologyDomain::Geographic(geographic) = domain {
             let mut budget = crate::geometry::ExpansionBudget::new("triangulate", "method");
             budget.add(len)?;
+            let metric_access = || {
+                metric.geographic_chart_metric()?.ok_or_else(|| {
+                    crate::crs::CrsError::invalid(
+                        "geographic triangulation requires the operation's CRS metric",
+                    )
+                    .into()
+                })
+            };
+            let source_context =
+                crate::geometry::SourceArcContext::new(domain, Some(&metric_access));
             let published = crate::geometry::publish_triangle_vertex_stream_budgeted(
                 vertices,
                 geographic,
+                source_context,
                 &mut budget,
             )?;
             return Self::packed_triangles_with_ring_ends(
@@ -1139,7 +1151,7 @@ impl PyGeometryArray {
     }
 
     /// Identity lane: every packed point row is its own result for this
-    /// op (a point is its own centroid/hull/simplification/reverse...), so
+    /// op (a point is its own centroid/hull/MRR/simplification/reverse...), so
     /// the whole array is — share the storage Arc.
     pub(crate) fn packed_points_identity(&self) -> Option<Self> {
         match self.storage() {

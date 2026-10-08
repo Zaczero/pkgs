@@ -3,7 +3,7 @@ use std::collections::hash_map::Entry;
 use crate::collections::HashMap;
 use crate::error::Result;
 use crate::geographic::GeographicInputs;
-use crate::geometry::ordinates::SourceArcMetricAccess;
+use crate::geometry::ordinates::SourceArcContext;
 use crate::geometry::overlay::{ExactSourceInventory, overlay_view_error};
 use crate::geometry::topology::overlay::exact_geographic_boundary;
 use crate::geometry::{
@@ -14,9 +14,9 @@ use crate::geometry::{
 
 pub(crate) fn boundary_with_metric<M: crate::geometry::ChartMetric>(
     data: &PreparedPlan,
-    domain: TopologyDomain,
-    metric_access: Option<&SourceArcMetricAccess<'_, M>>,
+    context: SourceArcContext<'_, '_, M>,
 ) -> Result<Shape> {
+    let domain = context.domain();
     match data.shape() {
         Shape::Point(_) | Shape::MultiPoint(_) => Ok(empty_geometry()),
         Shape::Empty(
@@ -31,14 +31,12 @@ pub(crate) fn boundary_with_metric<M: crate::geometry::ChartMetric>(
         },
         Shape::LineString(points) => line_boundary(points, points.axes(), domain),
         Shape::MultiLineString(lines) => multiline_boundary(lines, lines.axes(), domain),
-        Shape::Polygon(_) | Shape::MultiPolygon(_) => {
-            polygonal_boundary(data, domain, metric_access)
-        },
+        Shape::Polygon(_) | Shape::MultiPolygon(_) => polygonal_boundary(data, context),
         Shape::GeometryCollection(geometries) => {
             let mut boundaries = Vec::new();
             for geometry in geometries {
                 let plan = PreparedPlan::transient(geometry);
-                let boundary = boundary_with_metric(&plan, domain, metric_access)?;
+                let boundary = boundary_with_metric(&plan, context)?;
                 if !boundary.is_empty() {
                     boundaries.push(boundary);
                 }
@@ -59,16 +57,15 @@ pub(crate) fn boundary_with_metric<M: crate::geometry::ChartMetric>(
 
 fn polygonal_boundary<M: crate::geometry::ChartMetric>(
     data: &PreparedPlan,
-    domain: TopologyDomain,
-    metric_access: Option<&SourceArcMetricAccess<'_, M>>,
+    context: SourceArcContext<'_, '_, M>,
 ) -> Result<Shape> {
     let shape = data.shape();
-    match domain {
+    match context.domain() {
         TopologyDomain::Cartesian => {
             if data.validate_cached()?.is_none() {
                 return Ok(literal_polygon_boundary(shape));
             }
-            exact_partition_boundary(shape, domain, metric_access)
+            exact_partition_boundary(shape, context)
         },
         TopologyDomain::Geographic(frame) => {
             let inputs = GeographicInputs::try_from_shapes(frame, std::iter::once(shape))
@@ -80,29 +77,28 @@ fn polygonal_boundary<M: crate::geometry::ChartMetric>(
                     frame,
                     inputs.views().iter().copied(),
                 )?;
-                return exact_geographic_boundary(&topology, shape.axes(), metric_access);
+                return exact_geographic_boundary(&topology, shape.axes(), context.metric_access());
             }
             if data.validate_cached()?.is_none() {
                 return Ok(literal_polygon_boundary(shape));
             }
-            exact_partition_boundary(shape, domain, metric_access)
+            exact_partition_boundary(shape, context)
         },
     }
 }
 
 fn exact_partition_boundary<M: crate::geometry::ChartMetric>(
     shape: &Shape,
-    domain: TopologyDomain,
-    metric_access: Option<&SourceArcMetricAccess<'_, M>>,
+    context: SourceArcContext<'_, '_, M>,
 ) -> Result<Shape> {
     let inventory = ExactSourceInventory::from_polygonal_union(&[shape])?
         .expect("the boundary owner receives polygonal input");
     let mut budget = ExpansionBudget::new("boundary", "exact partition");
     let mut partition = inventory.partition(&mut budget)?;
-    if let TopologyDomain::Geographic(frame) = domain {
+    if let TopologyDomain::Geographic(frame) = context.domain() {
         partition.set_geographic_frame(frame);
     }
-    inventory.occupied_boundary_shape(&partition, shape.axes(), metric_access)
+    inventory.occupied_boundary_shape(&partition, shape.axes(), context)
 }
 
 fn literal_polygon_boundary(shape: &Shape) -> Shape {

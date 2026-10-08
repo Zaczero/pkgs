@@ -66,22 +66,19 @@ impl ChartParts {
         shape.for_each_first_point_run(|point| vertices.push(point));
 
         let mut point_only = Vec::new();
-        if let Some(capacity) = shape.point_set_capacity_hint(RunIdentity::Full) {
-            let _reservation = point_only.try_reserve(capacity);
-        }
-        shape.for_each_first_point_only(RunIdentity::Full, |point| point_only.push(point));
+        shape.append_first_point_only(RunIdentity::Full, &mut point_only);
 
         let mut edges = Vec::new();
-        if let Some(capacity) = shape.segment_count_capacity_hint(RunIdentity::Full) {
-            let _reservation = edges.try_reserve(capacity);
-        }
         let mut visit = |chain: &crate::geometry::CoordSeq| {
             if chain.len() == 1 {
                 if let Some(point) = chain.first() {
+                    point_only.reserve(1);
                     point_only.push(point);
                 }
                 return Ok::<_, crate::error::Error>(());
             }
+            let segment_count = chain.len().saturating_sub(1);
+            edges.reserve(segment_count);
             for [start, end] in chain.segment_pairs() {
                 let edge = metric.chart_edge(start, end)?;
                 edges.push(ChartEdgePart {
@@ -179,7 +176,10 @@ pub(crate) fn geographic_intersection_witness_cached<M: ChartMetric>(
         OverlayOp::Intersection,
         Strictness::Lenient,
         false,
-        Some(&metric_access),
+        crate::geometry::SourceArcContext::new(
+            crate::geometry::TopologyDomain::Geographic(frame),
+            Some(&metric_access),
+        ),
     )?;
     Ok(
         match intersection.try_for_each_first_point_run(ControlFlow::Break) {
@@ -894,6 +894,51 @@ mod tests {
 
     fn chart_metric(geodesic: &geographiclib_rs::Geodesic) -> crate::crs::EllipsoidMetric<'_> {
         crate::crs::EllipsoidMetric::for_crs84_geometry_test(geodesic)
+    }
+
+    #[test]
+    fn chart_parts_point_only_storage_tracks_emitted_support_not_line_vertices() {
+        let geodesic = geographiclib_rs::Geodesic::wgs84();
+        let metric = chart_metric(&geodesic);
+        let coordinates: Vec<_> = (0..1024)
+            .map(|index| Point::new_raw_xy(f64::from(index) * 0.1, 0.0))
+            .collect();
+        let shape = Shape::LineString(crate::geometry::LineSeq::from_proven(
+            crate::geometry::CoordSeq::try_from_points(&coordinates).unwrap(),
+        ));
+        let parts = ChartParts::build(&shape, &metric).unwrap();
+
+        assert_eq!(parts.edges.len(), coordinates.len() - 1);
+        assert!(parts.point_only.is_empty());
+        assert_eq!(parts.point_only.capacity(), 0);
+    }
+
+    #[test]
+    fn chart_parts_lineal_occurrences_keep_shared_edges_with_bounded_allocations() {
+        let geodesic = geographiclib_rs::Geodesic::wgs84();
+        let metric = chart_metric(&geodesic);
+        let line = crate::geometry::LineSeq::from_proven(
+            crate::geometry::CoordSeq::try_from_xy(&[
+                crate::geometry::XY::new(0.0, 0.0),
+                crate::geometry::XY::new(1.0, 1.0),
+            ])
+            .unwrap(),
+        );
+        let line_count = 1024;
+        let shape = Shape::MultiLineString(
+            crate::geometry::MultiLineString::from_dense(vec![line; line_count])
+                .expect("the fixture contains line members"),
+        );
+        let (parts, allocations) =
+            crate::test_support::allocation_count(|| ChartParts::build(&shape, &metric).unwrap());
+
+        assert_eq!(parts.edges.len(), line_count);
+        assert_eq!(parts.vertices.len(), 2);
+        assert!(parts.point_only.is_empty());
+        assert!(
+            allocations <= 32,
+            "building {line_count} shared line occurrences used {allocations} allocations"
+        );
     }
 
     fn selected(

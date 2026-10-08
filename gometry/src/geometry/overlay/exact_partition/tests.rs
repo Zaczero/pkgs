@@ -196,9 +196,8 @@ fn subdivision_children(source: &Shape, split_x: bool, cut: f64) -> [Shape; 2] {
             source.axes(),
             false,
             [1, 2],
-            None,
             &mut budget,
-            None::<&crate::geometry::SourceArcMetricAccess<'_>>,
+            crate::geometry::SourceArcContext::cartesian(),
         )
         .unwrap();
     let [first, second] = &children;
@@ -288,8 +287,7 @@ fn subdivision_keeps_a_hole_vertex_on_the_other_childs_dissolved_seam() {
     assert!(
         crate::geometry::boundary_with_metric::<crate::crs::GeodesicMetric>(
             &crate::geometry::PreparedPlan::transient(&right),
-            crate::geometry::TopologyDomain::Cartesian,
-            None,
+            crate::geometry::SourceArcContext::cartesian(),
         )
         .unwrap()
         .intersects(&Shape::Point(Point::new_raw_xy(0.0, 0.0)))
@@ -396,7 +394,11 @@ fn boundary_of_polygonal_support(wkt: &str) -> String {
         .partition(&mut budget)
         .expect("exact partition builds");
     let boundary = inventory
-        .occupied_boundary_shape::<crate::crs::GeodesicMetric>(&partition, shape.axes(), None)
+        .occupied_boundary_shape::<crate::crs::GeodesicMetric>(
+            &partition,
+            shape.axes(),
+            crate::geometry::SourceArcContext::cartesian(),
+        )
         .expect("boundary cells emit");
     crate::io::to_wkt(&boundary).expect("boundary WKT writes")
 }
@@ -544,7 +546,12 @@ fn boundary_node_serializer_uses_accepted_embedding_for_line_and_residual_zm_poi
     let axes = CoordinateAxes::XYZM;
     let accepted_nodes = inventory
         .resolve_node_points::<crate::crs::GeodesicMetric>(
-            &partition, &accepted, &nodes, axes, None,
+            &partition,
+            &accepted,
+            &nodes,
+            axes,
+            crate::geometry::SourceArcContext::cartesian(),
+            None,
         )
         .unwrap();
     let accepted_shape = inventory
@@ -633,6 +640,7 @@ fn boundary_node_serializer_uses_accepted_embedding_for_line_and_residual_zm_poi
             &nearest_embedding,
             &nodes,
             axes,
+            crate::geometry::SourceArcContext::cartesian(),
             None,
         )
         .unwrap();
@@ -706,6 +714,7 @@ fn mixed_source_order_keeps_absent_and_interpolated_ordinates_distinct() {
                 &partition,
                 crossing,
                 crate::geometry::CoordinateAxes::XYZM,
+                crate::geometry::SourceArcContext::cartesian(),
                 None,
             )
             .unwrap();
@@ -716,6 +725,7 @@ fn mixed_source_order_keeps_absent_and_interpolated_ordinates_distinct() {
                 &partition,
                 endpoint,
                 crate::geometry::CoordinateAxes::XYZM,
+                crate::geometry::SourceArcContext::cartesian(),
                 None,
             )
             .unwrap();
@@ -743,6 +753,7 @@ fn resolved_node_points_use_embedding_xy_and_exact_ordinates() {
             &embedding,
             &[crossing, endpoint],
             crate::geometry::CoordinateAxes::XYZM,
+            crate::geometry::SourceArcContext::cartesian(),
             None,
         )
         .unwrap();
@@ -769,7 +780,7 @@ fn xy_node_parts_serialize_the_certified_embedding() {
         .get_mut(crossing.0 as usize)
         .expect("crossing belongs to the partition coordinate table") = XY::new(12.0, 13.0);
     let embedding = embedding::Embedding::from_owned(coordinates);
-    let points = ResolvedNodePoints::XY(&embedding);
+    let points = ResolvedNodePoints::from_embedding(&embedding, None);
     let result = inventory
         .node_parts_to_shape_resolved(
             NodeParts {
@@ -825,7 +836,7 @@ fn coverage_xy_parts_serialize_the_certified_embedding() {
         .get_mut(moved.0 as usize)
         .expect("stored vertex belongs to the partition coordinate table") = XY::new(5.0, 5.0);
     let embedding = embedding::Embedding::from_owned(coordinates);
-    let points = ResolvedNodePoints::XY(&embedding);
+    let points = ResolvedNodePoints::from_embedding(&embedding, None);
     let result = ExactSourceInventory::coverage_shape_from_node_parts(
         NodeParts {
             points: Vec::new(),
@@ -2657,7 +2668,7 @@ fn polygonal_union_as_one_operand_matches_separate_operands() {
                 crate::geometry::OverlayOp::Union,
                 axes,
                 true,
-                None,
+                crate::geometry::SourceArcContext::cartesian(),
             )
             .unwrap()
     };
@@ -3339,9 +3350,10 @@ fn assert_ring_xy(ring: &Ring, xs: &[f64], ys: &[f64]) {
     assert_eq!(ring.coords().ys(), ys);
 }
 
-fn polygon_with_shell_xy<'a>(polygons: &'a [Polygon], xs: &[f64], ys: &[f64]) -> &'a Polygon {
+fn polygon_with_shell_xy<'a>(polygons: &'a [Shape], xs: &[f64], ys: &[f64]) -> &'a Polygon {
     polygons
         .iter()
+        .filter_map(polygon_output)
         .find(|polygon| polygon.shell.coords().xs() == xs && polygon.shell.coords().ys() == ys)
         .expect("polygon with the literal shell is emitted")
 }
@@ -3386,7 +3398,14 @@ fn linework_selection_keeps_minimal_faces_and_disconnected_support() {
     let mut budget = ExpansionBudget::new("polygonize", "partition");
     let mut partition = inventory.partition(&mut budget).unwrap();
     let faces = inventory
-        .linework_polygons(&mut partition, false, "test")
+        .linework_polygons(
+            &mut partition,
+            false,
+            "test",
+            CoordinateAxes::XY,
+            false,
+            crate::geometry::SourceArcContext::cartesian(),
+        )
         .unwrap();
     assert_eq!(faces.len(), 4);
     for (xs, ys) in [
@@ -3416,10 +3435,17 @@ fn linework_selection_keeps_minimal_faces_and_disconnected_support() {
     let mut budget = ExpansionBudget::new("build_area", "partition");
     let mut partition = inventory.partition(&mut budget).unwrap();
     let parts = inventory
-        .linework_polygons(&mut partition, true, "test")
+        .linework_polygons(
+            &mut partition,
+            true,
+            "test",
+            CoordinateAxes::XY,
+            false,
+            crate::geometry::SourceArcContext::cartesian(),
+        )
         .unwrap();
     assert_eq!(parts.len(), 3);
-    assert_eq!(parts.iter().map(Polygon::area).sum::<f64>(), 3.0);
+    assert_eq!(parts.iter().map(Shape::area).sum::<f64>(), 3.0);
 }
 
 #[test]
@@ -3438,11 +3464,24 @@ fn polygonize_emission_preserves_hosts_across_disconnected_cycles() {
     let mut budget = ExpansionBudget::new("polygonize", "partition");
     let mut partition = inventory.partition(&mut budget).unwrap();
     let polygons = inventory
-        .linework_polygons(&mut partition, false, "polygonize")
+        .linework_polygons(
+            &mut partition,
+            false,
+            "polygonize",
+            CoordinateAxes::XY,
+            false,
+            crate::geometry::SourceArcContext::cartesian(),
+        )
         .unwrap();
     assert_eq!(polygons.len(), 2);
-    let annulus = polygons.first().expect("the annulus face is emitted");
-    let inner_face = polygons.get(1).expect("the inner face is emitted");
+    let annulus = polygons
+        .first()
+        .and_then(polygon_output)
+        .expect("the annulus face is emitted");
+    let inner_face = polygons
+        .get(1)
+        .and_then(polygon_output)
+        .expect("the inner face is emitted");
     assert_ring_xy(&annulus.shell, &[0.0, 8.0, 8.0, 0.0, 0.0], &[
         0.0, 0.0, 8.0, 8.0, 0.0,
     ]);
@@ -3584,7 +3623,15 @@ fn polygonize_full_certifies_diagnostic_lines_with_polygon_faces() {
     );
     assert!(witnesses.0.is_empty());
 
-    let full = inventory.polygonize_full(&mut partition).unwrap();
+    let full = inventory
+        .polygonize_full(
+            &mut partition,
+            CoordinateAxes::XY,
+            &[CoordinateAxes::XY],
+            false,
+            crate::geometry::SourceArcContext::cartesian(),
+        )
+        .unwrap();
     assert_eq!(full.polygons.len(), 2);
     let lower = polygon_output(full.polygons.first().expect("the lower face is emitted"))
         .expect("polygonize_full emits polygon faces");
@@ -3636,7 +3683,14 @@ fn polygonize_faces_attach_closed_holes_to_their_literal_hosts() {
     let mut budget = ExpansionBudget::new("polygonize", "two closed hole hosts");
     let mut partition = inventory.partition(&mut budget).unwrap();
     let polygons = inventory
-        .linework_polygons(&mut partition, false, "polygonize")
+        .linework_polygons(
+            &mut partition,
+            false,
+            "polygonize",
+            CoordinateAxes::XY,
+            false,
+            crate::geometry::SourceArcContext::cartesian(),
+        )
         .unwrap();
     assert_eq!(polygons.len(), 4);
 
@@ -3690,11 +3744,19 @@ fn polygonize_faces_keep_point_touching_and_tangent_hole_cycles_separate() {
     let mut budget = ExpansionBudget::new("polygonize", "tangent hole cycles");
     let mut partition = inventory.partition(&mut budget).unwrap();
     let polygons = inventory
-        .linework_polygons(&mut partition, false, "polygonize")
+        .linework_polygons(
+            &mut partition,
+            false,
+            "polygonize",
+            CoordinateAxes::XY,
+            false,
+            crate::geometry::SourceArcContext::cartesian(),
+        )
         .unwrap();
     assert_eq!(polygons.len(), 2);
     let outer = polygons
         .iter()
+        .filter_map(polygon_output)
         .find(|polygon| polygon.shell.coords().xs().contains(&6.0))
         .expect("the outer bounded face is emitted");
     assert_ring_xy(&outer.shell, &[0.0, 6.0, 6.0, 0.0, 0.0, 0.0], &[
@@ -3708,6 +3770,7 @@ fn polygonize_faces_keep_point_touching_and_tangent_hole_cycles_separate() {
     assert_ring_xy(hole, &[0.0, 2.0, 2.0, 0.0], &[3.0, 4.0, 2.0, 3.0]);
     let triangle = polygons
         .iter()
+        .filter_map(polygon_output)
         .find(|polygon| polygon.shell.coords().xs().iter().all(|&x| x <= 2.0))
         .expect("the bounded tangent triangle is emitted independently");
     assert_ring_xy(&triangle.shell, &[0.0, 2.0, 2.0, 0.0], &[
@@ -3729,11 +3792,19 @@ fn polygonize_faces_keep_point_touching_and_tangent_hole_cycles_separate() {
     let mut budget = ExpansionBudget::new("polygonize", "point-touching faces");
     let mut partition = inventory.partition(&mut budget).unwrap();
     let polygons = inventory
-        .linework_polygons(&mut partition, false, "polygonize")
+        .linework_polygons(
+            &mut partition,
+            false,
+            "polygonize",
+            CoordinateAxes::XY,
+            false,
+            crate::geometry::SourceArcContext::cartesian(),
+        )
         .unwrap();
     assert_eq!(polygons.len(), 2);
     let first = polygons
         .iter()
+        .filter_map(polygon_output)
         .find(|polygon| polygon.shell.coords().xs().contains(&0.0))
         .expect("the left point-touching face is emitted");
     assert_ring_xy(&first.shell, &[0.0, 2.0, 2.0, 0.0, 0.0], &[
@@ -3742,6 +3813,7 @@ fn polygonize_faces_keep_point_touching_and_tangent_hole_cycles_separate() {
     assert!(first.holes.is_empty());
     let second = polygons
         .iter()
+        .filter_map(polygon_output)
         .find(|polygon| polygon.shell.coords().xs().contains(&4.0))
         .expect("the right point-touching face is emitted separately");
     assert_ring_xy(&second.shell, &[2.0, 4.0, 4.0, 2.0, 2.0], &[
@@ -3763,10 +3835,20 @@ fn polygonize_keeps_collinear_partition_nodes_in_serialized_and_certified_bounda
     let mut budget = ExpansionBudget::new("polygonize", "collinear partition node");
     let mut partition = inventory.partition(&mut budget).unwrap();
     let polygons = inventory
-        .linework_polygons(&mut partition, false, "polygonize")
+        .linework_polygons(
+            &mut partition,
+            false,
+            "polygonize",
+            CoordinateAxes::XY,
+            false,
+            crate::geometry::SourceArcContext::cartesian(),
+        )
         .unwrap();
     assert_eq!(polygons.len(), 1);
-    let polygon = polygons.first().expect("the closed linework emits a face");
+    let polygon = polygons
+        .first()
+        .and_then(polygon_output)
+        .expect("the closed linework emits a face");
     assert_ring_xy(&polygon.shell, &[0.0, 1.0, 2.0, 2.0, 0.0, 0.0], &[
         0.0, 0.0, 0.0, 2.0, 2.0, 0.0,
     ]);
@@ -3836,11 +3918,24 @@ fn polygonize_faces_sort_global_faces_after_dangling_walks() {
     assert_eq!(shell_faces, [2, 1], "walk discovery precedes face sorting");
 
     let polygons = inventory
-        .linework_polygons(&mut partition, false, "polygonize")
+        .linework_polygons(
+            &mut partition,
+            false,
+            "polygonize",
+            CoordinateAxes::XY,
+            false,
+            crate::geometry::SourceArcContext::cartesian(),
+        )
         .unwrap();
     assert_eq!(polygons.len(), 2);
-    let a = polygons.first().expect("the first square face is emitted");
-    let b = polygons.get(1).expect("the second square face is emitted");
+    let a = polygons
+        .first()
+        .and_then(polygon_output)
+        .expect("the first square face is emitted");
+    let b = polygons
+        .get(1)
+        .and_then(polygon_output)
+        .expect("the second square face is emitted");
     assert_ring_xy(&a.shell, &[0.0, 2.0, 4.0, 4.0, 0.0, 0.0], &[
         0.0, 0.0, 0.0, 4.0, 4.0, 0.0,
     ]);
@@ -3916,11 +4011,25 @@ fn polygonize_faces_serialize_the_supplied_certified_node_table() {
     );
     assert!(witnesses.0.is_empty());
 
-    let polygons =
-        emission::polygonize_faces_with_embedding(&partition, &topology, &global, &supplied)
-            .unwrap();
+    let groups =
+        emission::polygonize_node_groups(&partition, &topology, &global, &supplied).unwrap();
+    let polygons = inventory
+        .polygon_shapes_from_node_groups(
+            &partition,
+            &supplied,
+            groups,
+            CoordinateAxes::XY,
+            false,
+            "polygonize",
+            crate::geometry::SourceArcContext::cartesian(),
+            None,
+        )
+        .unwrap();
     assert_eq!(polygons.len(), 1);
-    let polygon = polygons.first().expect("the bounded triangle is emitted");
+    let polygon = polygons
+        .first()
+        .and_then(polygon_output)
+        .expect("the bounded triangle is emitted");
     assert_eq!(
         polygon
             .shell
@@ -3952,7 +4061,14 @@ fn polygonize_returns_no_polygons_without_a_bounded_face() {
         let mut partition = inventory.partition(&mut budget).unwrap();
         assert!(
             inventory
-                .linework_polygons(&mut partition, false, "polygonize")
+                .linework_polygons(
+                    &mut partition,
+                    false,
+                    "polygonize",
+                    CoordinateAxes::XY,
+                    false,
+                    crate::geometry::SourceArcContext::cartesian(),
+                )
                 .unwrap()
                 .is_empty()
         );

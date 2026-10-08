@@ -459,23 +459,26 @@ pub(crate) fn unary_array_shapes_budgeted(
     let resolver = op.resolver_with_unit(unit);
     let frame = array.frame.clone();
     let output_frame = frame.clone();
-    let domain = crate::geometry::topology_domain(&frame)?;
     let mut metric_scratch =
         (!matches!(resolver, MetricResolver::None)).then(MetricScratch::default);
+    let context = metric_scratch.as_mut().map_or_else(
+        || {
+            crate::geometry::topology_domain(&frame)
+                .map(|domain| (domain, MetricCtx::None))
+                .map_err(PyErr::from)
+        },
+        |scratch| resolver.resolve_topology_ctx(&frame, scratch),
+    );
+    let (domain, metric) = match context {
+        Ok(context) => context,
+        Err(error) => {
+            drop(metric_scratch);
+            return Err(error);
+        },
+    };
     let missing = array.missing().cloned();
     let array = array.clone();
     let result = {
-        let metric_result = metric_scratch.as_mut().map_or_else(
-            || Ok(MetricCtx::None),
-            |scratch| resolver.resolve_ctx(&frame, scratch),
-        );
-        let metric = match metric_result {
-            Ok(metric) => metric,
-            Err(error) => {
-                drop(metric_scratch);
-                return Err(error);
-            },
-        };
         py.detach(move || {
             let mut rows = array.row_operation();
             rows.rows_with_missing(Shape::empty_point)

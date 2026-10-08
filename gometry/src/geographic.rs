@@ -1,6 +1,7 @@
 //! Semantic values for periodic geographic coordinates.
 
 mod chain;
+pub(crate) mod chart;
 mod computed_edge;
 mod envelope;
 mod interval;
@@ -9,10 +10,12 @@ mod value;
 mod view;
 
 pub(crate) use chain::ChartSpanGuard;
+pub(crate) use chart::{ChartPointSite, PointSelectionChart};
 pub(crate) use computed_edge::{
-    ComputedEdgeIntent, ComputedEdgeInterval, ComputedVertexIntent, publish_certified_minor_chain,
-    publish_computed_chain, publish_computed_chain_with_vertex_intents,
-    publish_computed_chain_with_vertex_intents_and_intervals,
+    ComputedEdgeIntent, ComputedLongitudeRelation, ComputedSampleOrdinates, ComputedVertexIntent,
+    publish_certified_minor_chain, publish_computed_chain,
+    publish_computed_chain_with_vertex_intents,
+    publish_computed_chain_with_vertex_intents_and_samples,
 };
 pub(crate) use envelope::{GeographicSupportEnvelope, GeographicSupportProducts};
 pub(crate) use interval::{CircularInterval, LongitudeWindows, union_circular_intervals};
@@ -22,11 +25,9 @@ pub(crate) use value::source_admission_counts;
 pub(crate) use value::{
     AngularFactor, CanonicalLongitude, ChartConnection, ChartPole, ChartStep, EdgeDirection,
     FullTurnPole, GeodeticPole, GeographicAxisOrientation, GeographicFrame, Latitude, PeriodicAxis,
-    QuotientVertex, RetainedChartDisplacement, RetainedLongitudeSite, RingTurn, SeamIdentity,
-    TurnDirection,
+    QuotientVertex, RetainedChartDisplacement, RetainedLongitudeClass, RetainedLongitudeSite,
+    RetainedNativeLongitude, RingTurn, SeamIdentity, TurnDirection, retained_native_private,
 };
-#[cfg(test)]
-pub(crate) use value::{RetainedNativeLongitude, retained_native_private};
 pub(crate) use view::{
     GeographicAdmissionError, GeographicCollectionOwners, GeographicDiagnostic, GeographicInputs,
     GeographicLocation, GeographicRing, GeographicViewError, RingDomain, RingSummary,

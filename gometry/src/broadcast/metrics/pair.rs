@@ -135,6 +135,26 @@ pub(crate) fn resolve_metric(
     unit: Option<DistanceUnit>,
     operation: MetricOp,
 ) -> PyResult<crs::MetricModel> {
+    resolve_metric_with_state(crs, unit, operation, None)
+}
+
+/// Resolve a metric against a snapshot already captured by the operation's
+/// topology admission.
+pub(crate) fn resolve_metric_at(
+    crs: Option<&str>,
+    unit: Option<DistanceUnit>,
+    operation: MetricOp,
+    state: &crs::RuntimeState,
+) -> PyResult<crs::MetricModel> {
+    resolve_metric_with_state(crs, unit, operation, Some(state))
+}
+
+fn resolve_metric_with_state(
+    crs: Option<&str>,
+    unit: Option<DistanceUnit>,
+    operation: MetricOp,
+    state: Option<&crs::RuntimeState>,
+) -> PyResult<crs::MetricModel> {
     #[cfg(test)]
     binary_dispatch_counters::metric_context_acquisition();
     let operation = operation.name();
@@ -144,8 +164,17 @@ pub(crate) fn resolve_metric(
             "{operation} unit='meters' requires a CRS; CRS-free geometries have no meter scale — \
              use unit='planar' for raw coordinate units, or set a CRS"
         ))),
-        Some(DistanceUnit::Meters) => Ok(crs::metric_model_meters(crs.expect("checked above"))?),
-        None => Ok(crs::metric_model(crs)?),
+        Some(DistanceUnit::Meters) => {
+            let crs = crs.expect("checked above");
+            Ok(match state {
+                Some(state) => crs::metric_model_meters_at(crs, state)?,
+                None => crs::metric_model_meters(crs)?,
+            })
+        },
+        None => Ok(match state {
+            Some(state) => crs::metric_model_at(crs, state)?,
+            None => crs::metric_model(crs)?,
+        }),
     }
 }
 
@@ -739,7 +768,9 @@ pub(crate) fn metric_shortest_line_resolved(
                         pair.as_ref(),
                         common,
                         frame,
-                        ComputedEdgeIntent::displacement(end.x - start.x),
+                        ComputedEdgeIntent::retained_binary64_pair(frame.longitude(), [
+                            start.x, end.x,
+                        ])?,
                     )
                 },
                 (_, TopologyDomain::Cartesian) => {
@@ -773,7 +804,11 @@ pub(crate) fn metric_shortest_line_resolved(
                     Some(&(start, end)),
                     common,
                     metric.frame,
-                    ComputedEdgeIntent::Stored(intent),
+                    ComputedEdgeIntent::retained_chart_witness(
+                        metric.frame,
+                        [start.x, end.x],
+                        intent,
+                    )?,
                 ),
                 None => crate::geometry::nearest_line(None, common),
             }

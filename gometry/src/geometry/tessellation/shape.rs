@@ -12,7 +12,7 @@ use crate::geometry::tessellation::{
 use crate::geometry::{
     AxisFrame, CoordSeq, CoordinateAxes, CsrOffsetColumn, Dimension, ExpansionBudget,
     GeometryErrorKind, Point, PointKey, Polygon, Polygonal, PolygonizeFull, Ring, Segment, Shape,
-    ShapeCountQuery, VoronoiBoundary, axis_extent, carry_each, line_segments,
+    ShapeCountQuery, SourceArcContext, VoronoiBoundary, axis_extent, line_segments,
 };
 
 /// The ear-cut emitter owns the admission-before-allocation invariant: every
@@ -531,6 +531,14 @@ impl Shape {
         Self::polygonize_all(&[self], strict)
     }
 
+    pub(crate) fn polygonize_with_context(
+        &self,
+        strict: bool,
+        context: SourceArcContext<'_, '_>,
+    ) -> Result<Vec<Self>> {
+        Self::polygonize_all_with_context(&[self], strict, context)
+    }
+
     /// Polygonize many shapes as one noding universe: every line part from
     /// every input participates in a single assembly (the array form — rings
     /// that close across elements still close). Output rings reuse input
@@ -538,15 +546,32 @@ impl Shape {
     /// carried by provenance; `strict` selects strict ordinate verification
     /// while the default uses the lenient degradation policy.
     pub fn polygonize_all<S: Borrow<Self>>(shapes: &[S], strict: bool) -> Result<Vec<Self>> {
+        Self::polygonize_all_with_context(
+            shapes,
+            strict,
+            crate::geometry::SourceArcContext::cartesian(),
+        )
+    }
+
+    pub(crate) fn polygonize_all_with_context<S: Borrow<Self>>(
+        shapes: &[S],
+        strict: bool,
+        context: SourceArcContext<'_, '_>,
+    ) -> Result<Vec<Self>> {
+        let declared_axes = shapes.iter().fold(CoordinateAxes::XY, |axes, shape| {
+            axes.union(Borrow::<Self>::borrow(shape).axes())
+        });
         let inventory = ExactSourceInventory::from_shapes(shapes)?;
         let mut budget = ExpansionBudget::new("polygonize", "exact partition");
         let mut partition = inventory.partition(&mut budget)?;
-        let polygons = inventory
-            .linework_polygons(&mut partition, false, "polygonize")?
-            .into_iter()
-            .map(Self::Polygon)
-            .collect();
-        carry_each(polygons, shapes, "polygonize", strict)
+        inventory.linework_polygons(
+            &mut partition,
+            false,
+            "polygonize",
+            declared_axes,
+            strict,
+            context,
+        )
     }
 
     /// Assemble noded linework into areal geometry with GEOS `BuildArea`
@@ -558,15 +583,32 @@ impl Shape {
     ///
     /// [`polygonize_all`]: Self::polygonize_all
     pub fn build_area_all(shapes: &[&Self], strict: bool) -> Result<Vec<Self>> {
+        Self::build_area_all_with_context(
+            shapes,
+            strict,
+            crate::geometry::SourceArcContext::cartesian(),
+        )
+    }
+
+    pub(crate) fn build_area_all_with_context(
+        shapes: &[&Self],
+        strict: bool,
+        context: SourceArcContext<'_, '_>,
+    ) -> Result<Vec<Self>> {
+        let declared_axes = shapes
+            .iter()
+            .fold(CoordinateAxes::XY, |axes, shape| axes.union(shape.axes()));
         let inventory = ExactSourceInventory::from_shapes(shapes)?;
         let mut budget = ExpansionBudget::new("build_area", "exact partition");
         let mut partition = inventory.partition(&mut budget)?;
-        let polygons = inventory
-            .linework_polygons(&mut partition, true, "build_area")?
-            .into_iter()
-            .map(Self::Polygon)
-            .collect();
-        carry_each(polygons, shapes, "build_area", strict)
+        inventory.linework_polygons(
+            &mut partition,
+            true,
+            "build_area",
+            declared_axes,
+            strict,
+            context,
+        )
     }
 
     /// Assemble this geometry's linework into one areal geometry (GEOS
@@ -576,7 +618,15 @@ impl Shape {
     /// returned polygons share axes, or a `GeometryCollection` when their axes
     /// differ.
     pub fn build_area(&self, strict: bool) -> Result<Self> {
-        let polygons: Vec<Polygon> = Self::build_area_all(&[self], strict)?
+        self.build_area_with_context(strict, crate::geometry::SourceArcContext::cartesian())
+    }
+
+    pub(crate) fn build_area_with_context(
+        &self,
+        strict: bool,
+        context: SourceArcContext<'_, '_>,
+    ) -> Result<Self> {
+        let polygons: Vec<Polygon> = Self::build_area_all_with_context(&[self], strict, context)?
             .into_iter()
             .map(|shape| {
                 let Self::Polygon(polygon) = shape else {
@@ -617,26 +667,29 @@ impl Shape {
         shapes: &[S],
         strict: bool,
     ) -> Result<PolygonizeFull> {
+        Self::polygonize_full_all_with_context(
+            shapes,
+            strict,
+            crate::geometry::SourceArcContext::cartesian(),
+        )
+    }
+
+    pub(crate) fn polygonize_full_all_with_context<S: Borrow<Self>>(
+        shapes: &[S],
+        strict: bool,
+        context: SourceArcContext<'_, '_>,
+    ) -> Result<PolygonizeFull> {
+        let declared_axes = shapes.iter().fold(CoordinateAxes::XY, |axes, shape| {
+            axes.union(Borrow::<Self>::borrow(shape).axes())
+        });
+        let row_axes = shapes
+            .iter()
+            .map(|shape| Borrow::<Self>::borrow(shape).axes())
+            .collect::<Vec<_>>();
         let inventory = ExactSourceInventory::from_shapes_with_occurrences(shapes)?;
         let mut budget = ExpansionBudget::new("polygonize_full", "exact partition");
         let mut partition = inventory.partition(&mut budget)?;
-        let full = inventory.polygonize_full(&mut partition)?;
-        let carry_diagnostic_rows = |rows: Vec<Vec<Self>>| {
-            debug_assert_eq!(rows.len(), shapes.len());
-            rows.into_iter()
-                .zip(shapes)
-                .map(|(outputs, shape)| {
-                    let source = <S as Borrow<Self>>::borrow(shape);
-                    carry_each(outputs, &[source], "polygonize_full", strict)
-                })
-                .collect::<Result<Vec<_>>>()
-        };
-        Ok(PolygonizeFull {
-            polygons: carry_each(full.polygons, shapes, "polygonize_full", strict)?,
-            cuts: carry_diagnostic_rows(full.cuts)?,
-            dangles: carry_diagnostic_rows(full.dangles)?,
-            invalid_rings: carry_diagnostic_rows(full.invalid_rings)?,
-        })
+        inventory.polygonize_full(&mut partition, declared_axes, &row_axes, strict, context)
     }
 }
 

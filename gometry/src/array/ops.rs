@@ -23,12 +23,27 @@ use crate::py::vectors::Groups;
 fn publish_triangle_shapes_for_domain(
     shapes: Vec<Shape>,
     domain: crate::geometry::TopologyDomain,
+    metric: crate::dispatch::MetricCtx<'_>,
     budget: &mut crate::geometry::ExpansionBudget,
 ) -> Result<Vec<Shape>> {
     match domain {
         crate::geometry::TopologyDomain::Cartesian => Ok(shapes),
         crate::geometry::TopologyDomain::Geographic(frame) => {
-            geometry::publish_raw_computed_shapes_with_budget(&shapes, frame, budget)
+            let metric_access = || {
+                metric.geographic_chart_metric()?.ok_or_else(|| {
+                    crate::crs::CrsError::invalid(
+                        "geographic triangulation requires the operation's CRS metric",
+                    )
+                    .into()
+                })
+            };
+            let source_context = geometry::SourceArcContext::new(domain, Some(&metric_access));
+            geometry::publish_raw_computed_shapes_with_budget_and_context(
+                &shapes,
+                frame,
+                source_context,
+                budget,
+            )
         },
     }
 }
@@ -36,6 +51,7 @@ fn publish_triangle_shapes_for_domain(
 fn publish_triangle_vertices_for_domain(
     vertices: Vec<crate::geometry::Point>,
     domain: crate::geometry::TopologyDomain,
+    metric: crate::dispatch::MetricCtx<'_>,
     budget: &mut crate::geometry::ExpansionBudget,
 ) -> Result<crate::geometry::PublishedTriangleVertices> {
     match domain {
@@ -43,7 +59,21 @@ fn publish_triangle_vertices_for_domain(
             crate::geometry::PublishedTriangleVertices::uniform(vertices)
         },
         crate::geometry::TopologyDomain::Geographic(frame) => {
-            geometry::publish_triangle_vertex_stream_budgeted(&vertices, frame, budget)
+            let metric_access = || {
+                metric.geographic_chart_metric()?.ok_or_else(|| {
+                    crate::crs::CrsError::invalid(
+                        "geographic triangulation requires the operation's CRS metric",
+                    )
+                    .into()
+                })
+            };
+            let source_context = geometry::SourceArcContext::new(domain, Some(&metric_access));
+            geometry::publish_triangle_vertex_stream_budgeted(
+                &vertices,
+                frame,
+                source_context,
+                budget,
+            )
         },
     }
 }
@@ -185,7 +215,7 @@ impl PyGeometryArray {
     fn geojson_rows(
         &self,
         domain: geometry::TopologyDomain,
-        metric_access: &crate::geometry::SourceArcMetricAccess<'_>,
+        metric_access: &crate::geometry::SourceArcMetricAccess<'_, '_>,
     ) -> std::result::Result<Vec<String>, (usize, crate::error::Error)> {
         let mut output = Vec::with_capacity(self.len());
         for row in self.row_operation().rows_with_missing(String::new) {
@@ -243,6 +273,8 @@ impl PyGeometryArray {
         };
         let repaired = py
             .detach(|| {
+                let source_context =
+                    crate::geometry::SourceArcContext::new(domain, Some(&metric_access));
                 let mut all_present_valid = true;
                 let mut shapes = Vec::with_capacity(
                     self.missing()
@@ -261,7 +293,7 @@ impl PyGeometryArray {
                                     shape,
                                     domain,
                                     method,
-                                    Some(&metric_access),
+                                    source_context,
                                 )?
                                 .map_or_else(
                                     || (shape.clone(), false),
@@ -365,7 +397,9 @@ impl PyGeometryArray {
     }
 
     pub(crate) fn delaunay_triangles_impl(&self, py: Python<'_>) -> PyResult<Groups> {
-        let domain = geometry::topology_domain(&self.frame)?;
+        let mut metric_scratch = crate::dispatch::MetricScratch::default();
+        let (domain, metric) = crate::dispatch::MetricResolver::GeographicCarry
+            .resolve_topology_ctx(&self.frame, &mut metric_scratch)?;
         // Mixed-axis rows cannot land in one packed coords column (`from_points`
         // assumes axis-homogeneity); per-shape `delaunay_triangles` preserves
         // each row's ordinate layout via `carry_each`.
@@ -376,7 +410,7 @@ impl PyGeometryArray {
                 "method",
                 move |_, shape, budget| {
                     let triangles = shape.delaunay_triangles_budgeted(budget)?;
-                    publish_triangle_shapes_for_domain(triangles, domain, budget)
+                    publish_triangle_shapes_for_domain(triangles, domain, metric, budget)
                 },
             );
         }
@@ -391,7 +425,7 @@ impl PyGeometryArray {
             "method",
             move |_, shape, budget| {
                 let vertices = shape.delaunay_triangle_vertices_budgeted(budget)?;
-                publish_triangle_vertices_for_domain(vertices, domain, budget)
+                publish_triangle_vertices_for_domain(vertices, domain, metric, budget)
             },
         )
     }
@@ -417,7 +451,9 @@ impl PyGeometryArray {
                 )
             })
             .collect::<PyResult<Vec<_>>>()?;
-        let domain = geometry::topology_domain(&self.frame)?;
+        let mut metric_scratch = crate::dispatch::MetricScratch::default();
+        let (domain, metric) = crate::dispatch::MetricResolver::GeographicCarry
+            .resolve_topology_ctx(&self.frame, &mut metric_scratch)?;
         // Unrefined rows preserve the selected source-site axes while refined
         // rows are XY, so a batch carrying Z/M uses the shape collector.
         // Pure-XY batches retain the packed triangle builder; both consume the
@@ -434,7 +470,7 @@ impl PyGeometryArray {
                             .expect("refinement values match the admitted array rows"),
                         budget,
                     )?;
-                    publish_triangle_shapes_for_domain(triangles, domain, budget)
+                    publish_triangle_shapes_for_domain(triangles, domain, metric, budget)
                 },
             );
         }
@@ -449,13 +485,15 @@ impl PyGeometryArray {
                         .expect("refinement values match the admitted array rows"),
                     budget,
                 )?;
-                publish_triangle_vertices_for_domain(vertices, domain, budget)
+                publish_triangle_vertices_for_domain(vertices, domain, metric, budget)
             },
         )
     }
 
     pub(crate) fn polygon_triangles_impl(&self, py: Python<'_>) -> PyResult<Groups> {
-        let domain = geometry::topology_domain(&self.frame)?;
+        let mut metric_scratch = crate::dispatch::MetricScratch::default();
+        let (domain, metric) = crate::dispatch::MetricResolver::GeographicCarry
+            .resolve_topology_ctx(&self.frame, &mut metric_scratch)?;
         if self.earcut_rows_pack()? {
             return self.flat_map_packed_triangles_groups_budgeted(
                 py,
@@ -463,7 +501,7 @@ impl PyGeometryArray {
                 "method",
                 move |_, shape, budget| {
                     let vertices = shape.polygon_triangle_vertices_budgeted(budget)?;
-                    publish_triangle_vertices_for_domain(vertices, domain, budget)
+                    publish_triangle_vertices_for_domain(vertices, domain, metric, budget)
                 },
             );
         }
@@ -473,7 +511,7 @@ impl PyGeometryArray {
             "method",
             move |_, shape, budget| {
                 let triangles = shape.polygon_triangles_budgeted(budget)?;
-                publish_triangle_shapes_for_domain(triangles, domain, budget)
+                publish_triangle_shapes_for_domain(triangles, domain, metric, budget)
             },
         )
     }
@@ -674,14 +712,46 @@ impl PyGeometryArray {
     /// with the free function ``polygonize``; passing a GeometryArray there
     /// pools its present rows.
     pub(crate) fn polygonize_impl(&self, py: Python<'_>) -> PyResult<Groups> {
-        self.flat_map_shapes_groups(py, move |shape| shape.polygonize(false))
+        let mut metric_scratch = crate::dispatch::MetricScratch::default();
+        let (domain, metric) = crate::dispatch::MetricResolver::GeographicCarry
+            .resolve_topology_ctx(&self.frame, &mut metric_scratch)?;
+        self.flat_map_shapes_groups(py, move |shape| {
+            let metric_access = || {
+                metric.geographic_chart_metric()?.ok_or_else(|| {
+                    crate::crs::CrsError::invalid(
+                        "geographic polygonize source ordinates require the operation's CRS metric",
+                    )
+                    .into()
+                })
+            };
+            shape.polygonize_with_context(
+                false,
+                crate::geometry::SourceArcContext::new(domain, Some(&metric_access)),
+            )
+        })
     }
 
     pub(crate) fn line_merge_impl(&self, py: Python<'_>) -> PyResult<Self> {
         if let Some(identity) = self.packed_lines_identity() {
             return Ok(identity);
         }
-        self.map_shapes_detached(py, Shape::line_merge)
+        let mut metric_scratch = crate::dispatch::MetricScratch::default();
+        let (domain, metric) = crate::dispatch::MetricResolver::GeographicCarry
+            .resolve_topology_ctx(&self.frame, &mut metric_scratch)?;
+        self.map_shapes_detached(py, move |shape| {
+            let metric_access = || {
+                metric.geographic_chart_metric()?.ok_or_else(|| {
+                    crate::crs::CrsError::invalid(
+                        "geographic line_merge source ordinates require the operation's CRS metric",
+                    )
+                    .into()
+                })
+            };
+            shape.line_merge_with_context(crate::geometry::SourceArcContext::new(
+                domain,
+                Some(&metric_access),
+            ))
+        })
     }
 
     /// `tolerance` is already validated non-negative at the free-function boundary.
@@ -790,11 +860,12 @@ impl PyGeometryArray {
         // Per-row groups: each input geometry's subdivided parts stay grouped
         // under their source row. `iter_shapes` gives packed rows CSR views with
         // no Mixed boxing, so the group build is as cheap as the flat path was.
-        self.flat_map_shapes_groups(py, move |shape| match domain {
-            crate::geometry::TopologyDomain::Cartesian => shape.subdivide(max_vertices, false),
-            crate::geometry::TopologyDomain::Geographic(frame) => {
-                shape.subdivide_in_geographic_frame(max_vertices, false, frame, &metric_access)
-            },
+        self.flat_map_shapes_groups(py, move |shape| {
+            shape.subdivide_with_context(
+                max_vertices,
+                false,
+                crate::geometry::SourceArcContext::new(domain, Some(&metric_access)),
+            )
         })
     }
 }

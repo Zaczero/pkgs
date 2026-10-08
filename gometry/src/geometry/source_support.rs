@@ -2604,10 +2604,9 @@ mod tests {
     fn exact_node_keeps_node_identity_and_late_ordinate_failures() {
         let crossing = shape("MULTILINESTRING ((0 0,2 2),(0 2,2 0))");
         let noded = crossing
-            .node_with_metric::<crate::crs::GeodesicMetric>(
-                crate::geometry::TopologyDomain::Cartesian,
+            .node_with_context(
                 crate::geometry::Strictness::Strict,
-                None,
+                crate::geometry::SourceArcContext::cartesian(),
             )
             .unwrap();
         let expected = shape("MULTILINESTRING ((0 0,1 1),(1 1,2 2),(0 2,1 1),(1 1,2 0))");
@@ -2617,10 +2616,9 @@ mod tests {
         let right = shape("LINESTRING Z (0 2 1,2 0 1)");
         let error = crate::geometry::Shape::geometry_collection(vec![left, right])
             .unwrap()
-            .node_with_metric::<crate::crs::GeodesicMetric>(
-                crate::geometry::TopologyDomain::Cartesian,
+            .node_with_context(
                 crate::geometry::Strictness::Strict,
-                None,
+                crate::geometry::SourceArcContext::cartesian(),
             )
             .unwrap_err();
         assert!(
@@ -2642,10 +2640,9 @@ mod tests {
         );
         assert!(matches!(
             point
-                .node_with_metric::<crate::crs::GeodesicMetric>(
-                    crate::geometry::TopologyDomain::Cartesian,
+                .node_with_context(
                     crate::geometry::Strictness::Strict,
-                    None,
+                    crate::geometry::SourceArcContext::cartesian(),
                 )
                 .unwrap(),
             Shape::Empty(

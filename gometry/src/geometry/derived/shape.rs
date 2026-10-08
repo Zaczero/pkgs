@@ -24,6 +24,9 @@ impl Shape {
         reason = "monotone_chain_hull returns source ordinals into this points vector"
     )]
     pub fn minimum_rotated_rectangle(&self) -> Result<Self> {
+        if let Self::Point(point) = self {
+            return Ok(Self::Point(*point));
+        }
         let points = self.first_seen_xy_vertices()?;
         // Empty input has no rectangle: `POLYGON EMPTY` (the operation's areal
         // output type), not the untyped collection the hull yields.
@@ -40,6 +43,7 @@ impl Shape {
                 &[self],
                 "minimum_rotated_rectangle",
                 false,
+                crate::geometry::SourceArcContext::cartesian(),
             );
         }
         Ok(Self::Polygon(Polygon::new(

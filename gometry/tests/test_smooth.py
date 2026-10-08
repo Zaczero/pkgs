@@ -109,6 +109,35 @@ def test_zm_interpolated_and_endpoints_preserved() -> None:
     assert all(10.0 <= m <= 20.0 for m in ms)
 
 
+def test_geographic_smooth_publisher_carries_inserted_zm_by_ellipsoidal_arclength() -> (
+    None
+):
+    crs = '+proj=longlat +a=7000000 +rf=150 +type=crs'
+    line = gm.LineString(
+        [
+            (10.0, -30.0, -0.0, 101.0),
+            (1010.0, 70.0, 47.0, 701.0),
+            (1110.0, 80.0, 57.0, 801.0),
+        ],
+        crs=crs,
+    )
+
+    smoothed = line.smooth(iterations=1, method='chaikin', keep_endpoints=True)
+
+    assert math.copysign(1.0, smoothed.coords[0][2]) == -1.0
+    assert smoothed.coords[0] == (10.0, -30.0, -0.0, 101.0)
+    assert smoothed.coords[-1] == (1110.0, 80.0, 57.0, 801.0)
+    xy_line = gm.LineString([(10.0, -30.0), (1010.0, 70.0), (1110.0, 80.0)], crs=crs)
+    xy_smoothed = xy_line.smooth(iterations=1, method='chaikin', keep_endpoints=True)
+    assert [(x, y) for x, y, *_ in smoothed.coords] == list(xy_smoothed.coords)
+    sample = next(
+        coord for coord in smoothed.coords if coord[0] == 177.5 and coord[1] == 58.75
+    )
+    assert sample[2] == pytest.approx(43.730_417_185_196_416, abs=2.0e-8)
+    assert sample[3] == pytest.approx(655.145_474_204_166_5, abs=2.0e-7)
+    assert abs(sample[2] - 42.375) > 1.0  # chart-linear interpolation is wrong
+
+
 def test_crs_epoch_carried() -> None:
     line = gm.LineString([(0, 0), (1, 1), (2, 0)], crs='EPSG:4326', epoch=2020.0)
     smoothed = line.smooth(iterations=1)

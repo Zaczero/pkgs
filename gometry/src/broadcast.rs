@@ -38,7 +38,7 @@ pub(crate) use metrics::{
     lonlat_points, lonlat_shape, metric_maximum_inscribed_radius, metric_minimum_clearance,
     metric_minimum_clearance_line, metric_nearest_points_resolved, metric_shortest_line_resolved,
     pair_distance_geodesic, pair_distance_planar, pair_dwithin_geodesic, pair_dwithin_planar,
-    resolve_metric, resolve_metric_3d,
+    resolve_metric, resolve_metric_3d, resolve_metric_at,
 };
 mod predicates;
 pub(crate) use predicates::{
@@ -79,7 +79,9 @@ pub(crate) fn broadcast2_geometry<K>(
     kernel: K,
 ) -> PyResult<Py<PyAny>>
 where
-    K: Fn(&PreparedPlan, &PreparedPlan) -> Result<Shape> + Send + Sync,
+    K: Fn(&PreparedPlan, &PreparedPlan, &crate::dispatch::CachelessRowContext<'_>) -> Result<Shape>
+        + Send
+        + Sync,
 {
     crate::dispatch::dispatch_binary_geometry(
         py,
@@ -88,7 +90,7 @@ where
         op_name,
         crate::dispatch::MetricResolver::GeographicCarry,
         &crate::dispatch::OverlayFastPath,
-        move |left, right, _ctx| kernel(left, right),
+        move |left, right, context| kernel(left, right, context),
     )
 }
 
