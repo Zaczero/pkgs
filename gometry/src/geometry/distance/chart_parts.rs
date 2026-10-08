@@ -66,24 +66,18 @@ impl ChartParts {
         shape.for_each_first_point_run(|point| vertices.push(point));
 
         let mut point_only = Vec::new();
-        shape.try_append_first_point_only(RunIdentity::Full, &mut point_only)?;
+        shape.append_first_point_only(RunIdentity::Full, &mut point_only);
 
         let mut edges = Vec::new();
         let mut visit = |chain: &crate::geometry::CoordSeq| {
             if chain.len() == 1 {
                 if let Some(point) = chain.first() {
-                    if point_only.len().checked_add(1).is_none() {
-                        return Err(crate::error::ResourceError::SizeOverflow.into());
-                    }
                     point_only.reserve(1);
                     point_only.push(point);
                 }
                 return Ok::<_, crate::error::Error>(());
             }
             let segment_count = chain.len().saturating_sub(1);
-            if edges.len().checked_add(segment_count).is_none() {
-                return Err(crate::error::ResourceError::SizeOverflow.into());
-            }
             edges.reserve(segment_count);
             for [start, end] in chain.segment_pairs() {
                 let edge = metric.chart_edge(start, end)?;
