@@ -13,7 +13,7 @@ use crate::geometry::{
     Bounds, Component, CoordSeq, Coordinates as _, Dimension, GeometryErrorKind, Point, Polygon,
     REDUCE_LANES, REDUCE_SIMD_MIN, ReduceSimd, Ring, Shape, ShapeOwnerKey, axis_pow2_scale,
     canonicalize_zero, centroid_ring_sums, closed_columns_winding, column_mean2, point_distance,
-    simd_reduce_f64,
+    simd_reduce_f64, xy_finite_bounds_columns,
 };
 
 /// Arc sharing can come from an external alias; keep admitted candidates inline
@@ -1984,94 +1984,97 @@ pub(crate) fn lineal_centroid(shape: &Shape) -> CoreResult<Option<(f64, f64)>> {
 /// cancellation scale first then Neumaier-sum so every permutation of
 /// `[1e16, 1, -1e16]` yields exact `1/3`.
 fn stable_point_mean(xs: &[f64], ys: &[f64]) -> Option<(f64, f64)> {
-    stable_point_mean_inner::<false>(xs, ys).map(|(mean, _)| mean)
-}
-
-fn stable_point_mean_with_bounds(xs: &[f64], ys: &[f64]) -> Option<((f64, f64), Option<Bounds>)> {
-    stable_point_mean_inner::<true>(xs, ys)
-}
-
-fn stable_point_mean_inner<const TRACK_BOUNDS: bool>(
-    xs: &[f64],
-    ys: &[f64],
-) -> Option<((f64, f64), Option<Bounds>)> {
-    let n = xs.len();
-    if n == 0 {
+    if xs.is_empty() {
         return None;
     }
     debug_assert_eq!(xs.len(), ys.len());
     let mut max_abs_x = 0.0_f64;
     let mut max_abs_y = 0.0_f64;
-    let mut min_x = f64::INFINITY;
-    let mut min_y = f64::INFINITY;
-    let mut max_x = f64::NEG_INFINITY;
-    let mut max_y = f64::NEG_INFINITY;
-    let mut all_finite = true;
     for (&x, &y) in xs.iter().zip(ys.iter()) {
-        if TRACK_BOUNDS {
-            if x.is_finite() && y.is_finite() {
-                min_x = min_x.min(x);
-                min_y = min_y.min(y);
-                max_x = max_x.max(x);
-                max_y = max_y.max(y);
-            } else {
-                all_finite = false;
-            }
-        } else {
-            max_abs_x = max_abs_x.max(x.abs());
-            max_abs_y = max_abs_y.max(y.abs());
-        }
+        max_abs_x = max_abs_x.max(x.abs());
+        max_abs_y = max_abs_y.max(y.abs());
     }
-    if TRACK_BOUNDS {
-        if all_finite {
-            max_abs_x = min_x.abs().max(max_x.abs());
-            max_abs_y = min_y.abs().max(max_y.abs());
-        } else {
-            for (&x, &y) in xs.iter().zip(ys.iter()) {
-                max_abs_x = max_abs_x.max(x.abs());
-                max_abs_y = max_abs_y.max(y.abs());
-            }
-        }
-    }
+    Some(stable_point_mean_from_magnitudes(
+        xs, ys, max_abs_x, max_abs_y,
+    ))
+}
+
+fn stable_point_mean_from_magnitudes(
+    xs: &[f64],
+    ys: &[f64],
+    max_abs_x: f64,
+    max_abs_y: f64,
+) -> (f64, f64) {
+    debug_assert!(!xs.is_empty());
+    debug_assert_eq!(xs.len(), ys.len());
+    let n = xs.len();
     let max_abs = max_abs_x.max(max_abs_y);
-    let bounds = (TRACK_BOUNDS && all_finite).then(|| Bounds::new_raw(min_x, min_y, max_x, max_y));
     if max_abs <= AREAL_EXACT_MAX_COORD
         && let Some((mx, my)) = column_mean2(xs, ys)
         && mx.is_finite()
         && my.is_finite()
         && (max_abs == 0.0 || mx.abs().max(my.abs()) >= max_abs * f64::EPSILON * 32.0)
     {
-        return Some(((mx, my), bounds));
+        return (mx, my);
     }
     let scale_x = axis_pow2_scale(max_abs_x.max(1.0));
     let scale_y = axis_pow2_scale(max_abs_y.max(1.0));
     let n_f = n as f64;
     let sx = neumaier_sum(xs.iter().map(|&x| x * scale_x));
     let sy = neumaier_sum(ys.iter().map(|&y| y * scale_y));
-    Some((
-        (
-            canonicalize_zero((sx / n_f) / scale_x),
-            canonicalize_zero((sy / n_f) / scale_y),
-        ),
-        bounds,
-    ))
+    (
+        canonicalize_zero((sx / n_f) / scale_x),
+        canonicalize_zero((sy / n_f) / scale_y),
+    )
 }
 
-/// Puntal centroid and raw extrema over point-set occurrences. Shared
-/// collection overflow falls back to the existing exact owner fold; bounds
-/// are then the set-valued shape bounds, not an occurrence expansion.
-pub(crate) fn point_set_centroid_with_bounds(
+pub(crate) enum PointSetCenter {
+    Ordinary((f64, f64)),
+    Chart(Option<Bounds>),
+}
+
+fn point_set_center_columns(
+    xs: &[f64],
+    ys: &[f64],
+    frame: crate::geographic::GeographicFrame,
+) -> Option<PointSetCenter> {
+    if xs.is_empty() {
+        return None;
+    }
+    debug_assert_eq!(xs.len(), ys.len());
+    let Some([minx, miny, maxx, maxy]) = xy_finite_bounds_columns(xs, ys) else {
+        return Some(PointSetCenter::Chart(None));
+    };
+    let raw_extrema = Bounds::new_raw(minx, miny, maxx, maxy);
+    if frame.bounds_certify_ordinary_support(raw_extrema) {
+        let max_abs_x = minx.abs().max(maxx.abs());
+        let max_abs_y = miny.abs().max(maxy.abs());
+        return Some(PointSetCenter::Ordinary(stable_point_mean_from_magnitudes(
+            xs, ys, max_abs_x, max_abs_y,
+        )));
+    }
+    Some(PointSetCenter::Chart(Some(raw_extrema)))
+}
+
+/// Route point-set centers; column means follow finite actual-bounds admission.
+pub(crate) fn point_set_center_summary(
     shape: &Shape,
-) -> CoreResult<(Option<(f64, f64)>, Option<Bounds>)> {
+    frame: crate::geographic::GeographicFrame,
+) -> CoreResult<Option<PointSetCenter>> {
     debug_assert!(shape.point_set_only());
+    if matches!(shape, Shape::Empty(..)) {
+        return Ok(None);
+    }
     if let Shape::Point(point) = shape {
         let bounds = (point.x.is_finite() && point.y.is_finite())
             .then(|| Bounds::new_raw(point.x, point.y, point.x, point.y));
-        return Ok((Some((point.x, point.y)), bounds));
+        if bounds.is_some_and(|bounds| frame.bounds_certify_ordinary_support(bounds)) {
+            return Ok(Some(PointSetCenter::Ordinary((point.x, point.y))));
+        }
+        return Ok(Some(PointSetCenter::Chart(bounds)));
     }
     if let Shape::MultiPoint(seq) = shape {
-        return Ok(stable_point_mean_with_bounds(seq.xs(), seq.ys())
-            .map_or((None, None), |(mean, bounds)| (Some(mean), bounds)));
+        return Ok(point_set_center_columns(seq.xs(), seq.ys(), frame));
     }
 
     let mut xs = Vec::new();
@@ -2084,13 +2087,10 @@ pub(crate) fn point_set_centroid_with_bounds(
         CentroidAttempt::ExactAtRoot(_) => {
             drop(xs);
             drop(ys);
-            Ok((
-                exact_owner_centroid(shape, CentroidDimension::Puntal)?,
-                None,
-            ))
+            Ok(exact_owner_centroid(shape, CentroidDimension::Puntal)?
+                .map(|_| PointSetCenter::Chart(None)))
         },
-        CentroidAttempt::Ready(()) => Ok(stable_point_mean_with_bounds(&xs, &ys)
-            .map_or((None, None), |(mean, bounds)| (Some(mean), bounds))),
+        CentroidAttempt::Ready(()) => Ok(point_set_center_columns(&xs, &ys, frame)),
     }
 }
 

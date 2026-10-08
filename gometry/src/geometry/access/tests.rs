@@ -593,6 +593,127 @@ fn column_minmax_scans_a_full_chunk_and_scalar_tail_while_skipping_nan() {
 }
 
 #[test]
+fn xy_finite_bounds_empty_columns_return_none() {
+    assert_eq!(xy_finite_bounds_columns(&[], &[]), None);
+}
+
+#[test]
+fn xy_finite_bounds_returns_literal_extrema() {
+    assert_eq!(
+        xy_finite_bounds_columns(&[3.0, -1.0, 7.0, 2.0], &[5.0, 3.0, -4.0, 9.0]),
+        Some([-1.0, -4.0, 7.0, 9.0]),
+    );
+}
+
+#[test]
+fn xy_finite_bounds_matches_existing_signed_zero_ties() {
+    let xs = [-0.0, 0.0];
+    let ys = [0.0, -0.0];
+    let expected = [0.0_f64, -0.0, 0.0, -0.0].map(f64::to_bits);
+
+    assert_eq!(xy_bounds_columns(&xs, &ys).map(f64::to_bits), expected);
+    assert_eq!(
+        xy_finite_bounds_columns(&xs, &ys).map(|bounds| bounds.map(f64::to_bits)),
+        Some(expected),
+    );
+}
+
+#[test]
+fn xy_finite_bounds_matches_existing_signed_zero_ties_across_simd_chunks() {
+    let len = crossover::FUSED_XY_BOUNDS;
+    let mut xs = vec![0.0; len];
+    let mut ys = vec![0.0; len];
+    *xs.first_mut().expect("non-empty x column") = -0.0;
+    *ys.first_mut().expect("non-empty y column") = -0.0;
+
+    let expected = [0.0_f64; 4].map(f64::to_bits);
+    assert_eq!(xy_bounds_columns(&xs, &ys).map(f64::to_bits), expected,);
+    assert_eq!(
+        xy_finite_bounds_columns(&xs, &ys).map(|bounds| bounds.map(f64::to_bits)),
+        Some(expected),
+    );
+}
+
+#[test]
+fn xy_finite_bounds_preserves_finite_extreme_coordinates() {
+    assert_eq!(
+        xy_finite_bounds_columns(&[f64::MAX, -f64::MAX], &[-f64::MAX, f64::MAX],),
+        Some([-f64::MAX, -f64::MAX, f64::MAX, f64::MAX]),
+    );
+}
+
+#[test]
+fn xy_finite_bounds_keeps_extrema_across_lane_and_xy_crossover_lengths() {
+    let xy_crossover = crossover::FUSED_XY_BOUNDS;
+    let lengths = [
+        REDUCE_SIMD_MIN.wrapping_sub(1),
+        REDUCE_SIMD_MIN,
+        REDUCE_SIMD_MIN.wrapping_add(1),
+        xy_crossover.wrapping_sub(1),
+        xy_crossover,
+        xy_crossover.wrapping_add(1),
+    ];
+    for len in lengths {
+        let mut xs = vec![2.0; len];
+        let mut ys = vec![-3.0; len];
+        *xs.first_mut().expect("non-empty x column") = -11.0;
+        *xs.last_mut().expect("non-empty x column") = 13.0;
+        *ys.first_mut().expect("non-empty y column") = 17.0;
+        *ys.last_mut().expect("non-empty y column") = -19.0;
+
+        assert_eq!(
+            xy_finite_bounds_columns(&xs, &ys),
+            Some([-11.0, -19.0, 13.0, 17.0]),
+            "length {len}",
+        );
+    }
+}
+
+#[test]
+fn xy_finite_bounds_rejects_a_nan_in_a_middle_simd_lane() {
+    let len = crossover::FUSED_XY_BOUNDS.wrapping_add(REDUCE_LANES);
+    let mut xs = vec![2.0; len];
+    let ys = vec![-3.0; len];
+    *xs.get_mut(len / 2).expect("middle x lane") = f64::NAN;
+
+    assert_eq!(xy_finite_bounds_columns(&xs, &ys), None);
+}
+
+#[test]
+fn xy_finite_bounds_rejects_a_nan_in_the_last_simd_chunk() {
+    let len = crossover::FUSED_XY_BOUNDS.wrapping_add(REDUCE_LANES);
+    let mut xs = vec![2.0; len];
+    let ys = vec![-3.0; len];
+    *xs.last_mut().expect("last x lane") = f64::NAN;
+
+    assert_eq!(xy_finite_bounds_columns(&xs, &ys), None);
+}
+
+#[test]
+fn xy_finite_bounds_rejects_a_nan_in_the_scalar_tail() {
+    let len = crossover::FUSED_XY_BOUNDS.wrapping_add(1);
+    let xs = vec![2.0; len];
+    let mut ys = vec![-3.0; len];
+    *ys.last_mut().expect("non-empty y column") = f64::NAN;
+
+    assert_eq!(xy_finite_bounds_columns(&xs, &ys), None);
+}
+
+#[test]
+fn xy_finite_bounds_rejects_both_infinity_signs() {
+    let len = crossover::FUSED_XY_BOUNDS.wrapping_add(1);
+    let mut positive_x = vec![2.0; len];
+    let finite_y = vec![-3.0; len];
+    *positive_x.get_mut(len / 2).expect("middle x lane") = f64::INFINITY;
+    assert_eq!(xy_finite_bounds_columns(&positive_x, &finite_y), None);
+
+    let finite_x = vec![2.0; len];
+    let mut negative_y = vec![-3.0; len];
+    *negative_y.last_mut().expect("non-empty y column") = f64::NEG_INFINITY;
+    assert_eq!(xy_finite_bounds_columns(&finite_x, &negative_y), None);
+}
+
+#[test]
 fn simd_reduce_f64_keeps_chunk_order_and_the_scalar_tail_range() {
     let chunks = REDUCE_LANES.wrapping_mul(2);
     let len = chunks.wrapping_add(3);
