@@ -1524,6 +1524,7 @@ mod tests {
 
     use super::*;
     use crate::error::ErrorKind;
+    use crate::geometry::tessellation::exact::{ExactDyadic, ExactRational, round_ratio_with_work};
 
     type Assignment = Vec<(usize, u8)>;
     type AssignmentBlame = Vec<(Assignment, Vec<usize>)>;
@@ -2929,6 +2930,160 @@ mod tests {
             })
         ));
         assert_eq!(budget.spent_ticks, 0);
+    }
+
+    #[test]
+    fn exact_product_refuses_before_multilimb_cells_after_reservation() {
+        let left = ExactDyadic::from_parts(false, vec![u64::MAX; 9], 0);
+        let right = ExactDyadic::from_parts(false, vec![u64::MAX; 10], 0);
+        let mut budget = EvaluationBudget::new("exact_product", 1).unwrap();
+        budget.limit = 6;
+
+        let error = left.try_product_with_work(&right, &mut budget).unwrap_err();
+
+        assert!(matches!(
+            error.kind(),
+            ErrorKind::Geometry(GeometryErrorKind::ExactEmbeddingSearchLimit {
+                operation: "exact_product",
+                constructed: 1,
+                evaluations: 2
+            })
+        ));
+        assert_eq!(budget.spent_ticks, 19);
+    }
+
+    #[test]
+    fn exact_division_refuses_before_the_first_algorithm_d_digit_cells() {
+        const TOP: u64 = 1 << 63;
+        let dividend = [0, 0, TOP, TOP - 1];
+        let divisor = [1, 0, TOP];
+        let mut budget = EvaluationBudget::new("exact_division", 1).unwrap();
+        budget.limit = 2;
+        budget.spent_ticks = 8;
+
+        let error =
+            ExactDyadic::div_rem_unsigned_with_work(&dividend, &divisor, &mut budget).unwrap_err();
+
+        assert!(matches!(
+            error.kind(),
+            ErrorKind::Geometry(GeometryErrorKind::ExactEmbeddingSearchLimit {
+                operation: "exact_division",
+                constructed: 1,
+                evaluations: 2
+            })
+        ));
+        assert_eq!(budget.spent_ticks, 30);
+    }
+
+    #[test]
+    fn exact_inline_gcd_funds_each_binary_iteration() {
+        const PRIME: u64 = 0xFFFF_FFFF_FFFF_FFC5;
+        let left = ExactDyadic::try_from_u128(false, u128::from(PRIME).wrapping_mul(3), 5).unwrap();
+        let right =
+            ExactDyadic::try_from_u128(false, u128::from(PRIME).wrapping_mul(5), -3).unwrap();
+        let mut budget = EvaluationBudget::new("exact_gcd", 1).unwrap();
+        budget.limit = 1;
+        budget.spent_ticks = 15;
+
+        let error = left.gcd_with_work(&right, &mut budget).unwrap_err();
+
+        assert!(matches!(
+            error.kind(),
+            ErrorKind::Geometry(GeometryErrorKind::ExactEmbeddingSearchLimit {
+                operation: "exact_gcd",
+                constructed: 1,
+                evaluations: 1
+            })
+        ));
+        assert_eq!(budget.spent_ticks, 16);
+    }
+
+    #[test]
+    fn exact_ratio_rounding_refuses_before_multilimb_product_cells() {
+        let numerator = ExactDyadic::one();
+        let denominator = ExactDyadic::from_parts(false, vec![1, 0, 1], 0);
+        let mut budget = EvaluationBudget::new("exact_round", 1).unwrap();
+        budget.limit = 1;
+        budget.spent_ticks = 6;
+
+        let error = round_ratio_with_work(&numerator, &denominator, &mut budget).unwrap_err();
+
+        assert!(matches!(
+            error.kind(),
+            ErrorKind::Geometry(GeometryErrorKind::ExactEmbeddingSearchLimit {
+                operation: "exact_round",
+                constructed: 1,
+                evaluations: 1
+            })
+        ));
+        assert_eq!(budget.spent_ticks, 14);
+    }
+
+    #[test]
+    fn exact_primitives_share_native_fuel_and_evaluation_only_erases_work() {
+        let left = ExactDyadic::from_parts(false, vec![u64::MAX; 9], 0);
+        let right = ExactDyadic::from_parts(false, vec![u64::MAX; 10], 0);
+        let expected_product = [
+            1,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            u64::MAX,
+            u64::MAX - 1,
+            u64::MAX,
+            u64::MAX,
+            u64::MAX,
+            u64::MAX,
+            u64::MAX,
+            u64::MAX,
+            u64::MAX,
+            u64::MAX,
+        ];
+        let numerator = ExactDyadic::from_f64(615.0);
+        let denominator = ExactDyadic::from_f64(9.0);
+        let one = ExactDyadic::one();
+        let three = ExactDyadic::from_f64(3.0);
+
+        let mut native = EvaluationBudget::new("exact_primitives", 1).unwrap();
+        let native_product = left.try_product_with_work(&right, &mut native).unwrap();
+        let native_ratio =
+            ExactRational::new_with_work(numerator.clone(), denominator.clone(), &mut native)
+                .unwrap();
+        let native_round = round_ratio_with_work(&one, &three, &mut native).unwrap();
+
+        assert_eq!(native_product.limbs.as_slice(), expected_product);
+        let (normalized_numerator, normalized_denominator) = native_ratio.parts();
+        assert_eq!(normalized_numerator.limbs.as_slice(), [205]);
+        assert_eq!(normalized_denominator.limbs.as_slice(), [3]);
+        assert_eq!(normalized_numerator.exponent, 0);
+        assert_eq!(normalized_denominator.exponent, 0);
+        assert_eq!(native_round.to_bits(), 0x3FD5_5555_5555_5555);
+        assert!(native.spent_ticks > 0);
+        assert!(native.spent_ticks <= native.limit_ticks());
+
+        let mut depleted = EvaluationBudget::new("exact_erasure", 1).unwrap();
+        depleted.limit = 1;
+        depleted.spent_ticks = depleted.limit_ticks();
+        let spent_before_erasure = depleted.spent_ticks;
+        let (erased_product, erased_ratio, erased_round) = {
+            let mut erased = EvaluationOnly::new(&mut depleted);
+            let product = left.try_product_with_work(&right, &mut erased).unwrap();
+            let ratio = ExactRational::new_with_work(numerator, denominator, &mut erased).unwrap();
+            let rounded = round_ratio_with_work(&one, &three, &mut erased).unwrap();
+            (product, ratio, rounded)
+        };
+
+        assert_eq!(erased_product.limbs.as_slice(), expected_product);
+        let (normalized_numerator, normalized_denominator) = erased_ratio.parts();
+        assert_eq!(normalized_numerator.limbs.as_slice(), [205]);
+        assert_eq!(normalized_denominator.limbs.as_slice(), [3]);
+        assert_eq!(erased_round.to_bits(), 0x3FD5_5555_5555_5555);
+        assert_eq!(depleted.spent_ticks, spent_before_erasure);
     }
 
     #[test]

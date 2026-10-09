@@ -1,5 +1,116 @@
 use super::*;
 
+#[test]
+fn work_product_matches_the_exact_nineteen_limb_result() {
+    let left = ExactDyadic::from_parts(false, vec![u64::MAX; 9], 0);
+    let right = ExactDyadic::from_parts(false, vec![u64::MAX; 10], 0);
+    let expected = [
+        1,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        u64::MAX,
+        u64::MAX - 1,
+        u64::MAX,
+        u64::MAX,
+        u64::MAX,
+        u64::MAX,
+        u64::MAX,
+        u64::MAX,
+        u64::MAX,
+        u64::MAX,
+    ];
+
+    let ordinary = left.try_product(&right).unwrap();
+    let paid = left.try_product_with_work(&right, &mut Unmetered).unwrap();
+
+    assert_eq!(paid, ordinary);
+    assert_eq!(paid.limbs.as_slice(), expected);
+}
+
+#[test]
+fn work_division_matches_the_known_algorithm_d_addback_result() {
+    const TOP: u64 = 1 << 63;
+    let dividend = [0, 0, TOP, TOP - 1];
+    let divisor = [1, 0, TOP];
+    let expected_quotient = [u64::MAX - 1];
+    let expected_remainder = [2, u64::MAX, TOP - 1];
+
+    let ordinary = ExactDyadic::div_rem_unsigned(&dividend, &divisor);
+    let paid =
+        ExactDyadic::div_rem_unsigned_with_work(&dividend, &divisor, &mut Unmetered).unwrap();
+
+    assert_eq!(paid, ordinary);
+    assert_eq!(paid.0, expected_quotient);
+    assert_eq!(paid.1, expected_remainder);
+}
+
+#[test]
+fn work_gcd_matches_the_inline_and_heap_euclid_results() {
+    const PRIME: u64 = 0xFFFF_FFFF_FFFF_FFC5;
+    let prime = u128::from(PRIME);
+    let small = |value, exponent| ExactDyadic::try_from_u128(false, value, exponent).unwrap();
+    let left = small(prime.wrapping_mul(3), 5);
+    let right = small(prime.wrapping_mul(5), -3);
+    let expected = ExactDyadic::from_parts(false, vec![PRIME], -3);
+
+    let ordinary_inline = left.gcd(&right);
+    let paid_inline = left.gcd_with_work(&right, &mut Unmetered).unwrap();
+    assert_eq!(paid_inline, ordinary_inline);
+    assert_eq!(paid_inline, expected);
+
+    let wide = left
+        .try_product(&ExactDyadic::try_from_u128(false, prime, 0).unwrap())
+        .unwrap();
+    let ordinary_heap = wide.gcd(&right);
+    let paid_heap = wide.gcd_with_work(&right, &mut Unmetered).unwrap();
+    assert_eq!(paid_heap, ordinary_heap);
+    assert_eq!(paid_heap, expected);
+}
+
+#[test]
+fn work_rational_normalization_and_identity_match_canonical_parts() {
+    let numerator = ExactDyadic::from_f64(615.0);
+    let denominator = ExactDyadic::from_f64(9.0);
+    let expected_numerator = ExactDyadic::from_f64(205.0);
+    let expected_denominator = ExactDyadic::from_f64(3.0);
+
+    let ordinary = ExactRational::new(numerator.clone(), denominator.clone()).unwrap();
+    let paid = ExactRational::new_with_work(numerator, denominator, &mut Unmetered).unwrap();
+    let cloned = paid.try_clone_with_work(&mut Unmetered).unwrap();
+
+    assert_eq!(paid.numerator, expected_numerator);
+    assert_eq!(paid.denominator, expected_denominator);
+    assert!(cloned.try_eq_with_work(&ordinary, &mut Unmetered).unwrap());
+    assert_eq!(
+        paid.try_cmp_with_work(&ordinary, &mut Unmetered).unwrap(),
+        Ordering::Equal
+    );
+}
+
+#[test]
+fn work_ratio_rounding_matches_one_third_and_an_even_midpoint() {
+    let numerator = ExactDyadic::one();
+    let denominator = ExactDyadic::from_f64(3.0);
+    let ordinary = round_ratio(&numerator, &denominator).unwrap();
+    let paid = round_ratio_with_work(&numerator, &denominator, &mut Unmetered).unwrap();
+    assert_eq!(paid.to_bits(), 0x3FD5_5555_5555_5555);
+    assert_eq!(paid.to_bits(), ordinary.to_bits());
+
+    let midpoint_numerator = ExactDyadic::try_from_u128(false, (1_u128 << 53) + 1, 0).unwrap();
+    let midpoint_denominator = ExactDyadic::from_parts(false, vec![1], 53);
+    let ordinary = round_ratio(&midpoint_numerator, &midpoint_denominator).unwrap();
+    let paid =
+        round_ratio_with_work(&midpoint_numerator, &midpoint_denominator, &mut Unmetered).unwrap();
+    assert_eq!(paid, 1.0);
+    assert_eq!(paid.to_bits(), ordinary.to_bits());
+}
+
 fn dyadic_orientation_sign(a: XY, b: XY, c: XY) -> ExactSign {
     let difference =
         |left: f64, right: f64| ExactDyadic::from_f64(left).subtract(ExactDyadic::from_f64(right));
