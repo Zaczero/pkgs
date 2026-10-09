@@ -13,7 +13,7 @@ import re
 from pathlib import Path
 from typing import Any
 
-IDENTITY_SCHEMA_VERSION = 2
+IDENTITY_SCHEMA_VERSION = 3
 _SHA256 = re.compile(r'^[0-9a-f]{64}$')
 
 
@@ -76,6 +76,53 @@ def _package_identity(value: Any, *, label: str) -> None:
         _file_identity(item, label=f'{label}.native_libraries[{index}]')
 
 
+def _runtime_binding_identity(value: Any) -> None:
+    if not isinstance(value, dict):
+        raise _fail('runtime_binding must be an object')
+    for field in ('kind', 'path', 'profile', 'package_root'):
+        if not isinstance(value.get(field), str) or not value[field]:
+            raise _fail(f'runtime_binding.{field} must be a non-empty string')
+    if value['kind'] not in {'quality', 'release', 'runner'}:
+        raise _fail('runtime_binding.kind is unsupported')
+    if value['profile'] not in {'dev', 'release'}:
+        raise _fail('runtime_binding.profile is unsupported')
+    _sha256(value.get('sha256'), label='runtime_binding.sha256')
+    _file_identity(value.get('facade'), label='runtime_binding.facade')
+    extension = value.get('extension')
+    _file_identity(extension, label='runtime_binding.extension')
+    wheel = value.get('wheel')
+    if not isinstance(wheel, dict):
+        raise _fail('runtime_binding.wheel must be an object')
+    for field in ('filename', 'extension_member'):
+        if not isinstance(wheel.get(field), str) or not wheel[field]:
+            raise _fail(f'runtime_binding.wheel.{field} must be a non-empty string')
+    _file_identity(wheel.get('archive'), label='runtime_binding.wheel.archive')
+    _sha256(
+        wheel.get('extension_sha256'),
+        label='runtime_binding.wheel.extension_sha256',
+    )
+    if wheel['extension_sha256'] != extension['sha256']:
+        raise _fail('runtime binding wheel extension differs from loaded extension')
+    if Path(wheel['extension_member']).name != Path(extension['path']).name:
+        raise _fail('runtime binding wheel member differs from loaded extension path')
+    if not isinstance(value.get('python_members'), dict) or not value['python_members']:
+        raise _fail('runtime_binding.python_members must be a non-empty object')
+    for member, digest in value['python_members'].items():
+        if (
+            not isinstance(member, str)
+            or not member.startswith('gometry/')
+            or not isinstance(digest, str)
+            or _SHA256.fullmatch(digest) is None
+        ):
+            raise _fail('runtime_binding.python_members contains an invalid member')
+    if value['python_members'].get('gometry/__init__.py') != value['facade']['sha256']:
+        raise _fail('runtime binding facade differs from its Python member digest')
+    _distribution_identity(
+        value.get('distribution'),
+        label='runtime_binding.distribution',
+    )
+
+
 def validate_producer_identity(value: Any) -> dict[str, Any]:
     """Validate one complete identity record and return it unchanged."""
     if not isinstance(value, dict):
@@ -98,9 +145,20 @@ def validate_producer_identity(value: Any) -> dict[str, Any]:
     python = value.get('python')
     if not isinstance(python, dict):
         raise _fail('python must be an object')
-    for field in ('executable', 'version', 'implementation', 'cache_tag'):
+    for field in (
+        'executable',
+        'resolved_executable',
+        'prefix',
+        'version',
+        'implementation',
+        'cache_tag',
+        'ext_suffix',
+    ):
         if not isinstance(python.get(field), str) or not python[field]:
             raise _fail(f'python.{field} must be a non-empty string')
+    for field in ('gil_disabled', 'gil_enabled'):
+        if not isinstance(python.get(field), bool):
+            raise _fail(f'python.{field} must be boolean')
     build = python.get('build')
     if not isinstance(build, dict):
         raise _fail('python.build must be an object')
@@ -120,6 +178,17 @@ def validate_producer_identity(value: Any) -> dict[str, Any]:
         raise _fail('loaded_native_libraries must be a list')
     for index, item in enumerate(libraries):
         _file_identity(item, label=f'loaded_native_libraries[{index}]')
+    runtime_binding = value.get('runtime_binding')
+    _runtime_binding_identity(runtime_binding)
+    gometry_package = packages.get('gometry')
+    if not isinstance(gometry_package, dict):
+        raise _fail('packages must identify the admitted gometry package')
+    if gometry_package.get('module') != runtime_binding['facade']:
+        raise _fail('gometry package module differs from admitted facade')
+    if gometry_package.get('distribution') != runtime_binding['distribution']:
+        raise _fail('gometry distribution differs from runtime binding')
+    if extension != runtime_binding['extension']:
+        raise _fail('loaded extension differs from runtime binding')
     implementation = value.get('implementation')
     if not isinstance(implementation, dict):
         raise _fail('implementation attribution is missing')
@@ -186,6 +255,18 @@ def validate_producer_identity(value: Any) -> dict[str, Any]:
         )
         if implementation['runtime'] != 'gometry':
             raise _fail('source receipt attribution is only valid for gometry')
+        if source_receipt != {
+            'path': runtime_binding['path'],
+            'sha256': runtime_binding['sha256'],
+        }:
+            raise _fail('source receipt differs from runtime binding')
+        if source_wheel != {
+            'filename': runtime_binding['wheel']['filename'],
+            'sha256': runtime_binding['wheel']['archive']['sha256'],
+            'extension_member': runtime_binding['wheel']['extension_member'],
+            'extension_sha256': runtime_binding['wheel']['extension_sha256'],
+        }:
+            raise _fail('source wheel differs from runtime binding')
         if not any(
             item.get('sha256') == source_wheel['extension_sha256'] for item in native
         ):
