@@ -45,7 +45,7 @@ _NEGATIVES = _ROOT / 'tests/typing/negatives.py'
 _PYRIGHT_PRECISION = _ROOT / 'tests/typing/pyright_precision.py'
 
 _TOP_LEVEL_HINT_TARGETS = (
-    'from_features',
+    'from_geojson',
     'to_feature',
     'to_feature_collection',
 )

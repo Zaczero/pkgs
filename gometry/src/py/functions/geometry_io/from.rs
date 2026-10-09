@@ -18,9 +18,10 @@ use crate::{
 ///
 /// Parameters
 /// ----------
-/// data : str or iterable of str
-///     A single WKT/EWKT string, or any iterable of them for a
-///     ``GeometryArray``.
+/// data : str, iterable of str, or dataframe/Arrow column
+///     A single WKT/EWKT string, an iterable of rows, or a pandas/Polars
+///     Series or PyArrow Array/ChunkedArray. Missing column values become
+///     missing rows.
 ///
 /// crs : str or int, optional
 ///     CRS for SRID-less input. An embedded SRID that *contradicts* an
@@ -67,6 +68,8 @@ pub(crate) fn from_wkt(
 ) -> PyResult<Py<PyAny>> {
     let fallback = parse_crs(crs)?;
     let parsed_epoch = coordinate_epoch_option("epoch", epoch)?;
+    let column = crate::py::support::normalize_format_column(data)?;
+    let data = column.as_ref().map_or(data, |column| column.as_any());
     let parse = |text: &str| -> PyResult<PyGeometry> {
         let (body, srid) = split_ewkt_srid(text)?;
         let embedded = io::crs_from_optional_srid(srid)?;
@@ -133,8 +136,11 @@ pub(crate) fn from_wkt(
 ///
 /// Parameters
 /// ----------
-/// data : bytes or sequence of bytes
-///     A WKB/EWKB buffer, or an iterable of them for a ``GeometryArray``.
+/// data : bytes, byte buffer, iterable of buffers, or dataframe/Arrow column
+///     A WKB/EWKB byte buffer, an iterable of byte buffers, or a pandas/Polars
+///     Series or PyArrow Array/ChunkedArray of WKB values. A one-byte integer
+///     ndarray is one scalar byte buffer; other ndarrays are row columns.
+///     Missing column values become missing rows.
 ///
 /// crs : str or int, optional
 ///     CRS for SRID-less input. An embedded SRID that *contradicts* an
@@ -186,6 +192,8 @@ pub(crate) fn from_wkb(
 ) -> PyResult<Py<PyAny>> {
     let fallback = parse_crs(crs)?;
     let parsed_epoch = coordinate_epoch_option("epoch", epoch)?;
+    let column = crate::py::support::normalize_format_column(data)?;
+    let data = column.as_ref().map_or(data, |column| column.as_any());
     let attach = |mut geometry: PyGeometry| -> PyResult<PyGeometry> {
         let resolved =
             resolve_wire_crs(geometry.crs_ref().cloned(), fallback.as_ref(), "EWKB SRID")?;

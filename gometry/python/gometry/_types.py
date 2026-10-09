@@ -511,7 +511,7 @@ FeatureId: TypeAlias = str | int | float | None
 class Features:
     """Parsed GeoJSON features: geometries plus parallel properties and ids.
 
-    Returned by `from_features`. Destructures as
+    Returned by `from_geojson(..., features=True)`. Destructures as
     ``geometries, properties, ids = features`` and supports ``match``
     patterns via ``__match_args__``. Deliberately not a tuple and has no
     ``len()`` because a field count of three reads like a feature count; use
@@ -966,9 +966,10 @@ keys are rejected at parse time.
 class GeoJsonFeature(TypedDict):
     """A gometry-parseable GeoJSON Feature object (RFC 7946 §3.2).
 
-    ``geometry`` may be ``None`` for missing rows in bulk FeatureCollection /
-    ``from_features`` ingestion. Scalar ``from_geojson`` of a Feature rejects
-    null geometry — use :class:`GeoJsonFeatureNonNull` for that overload.
+    ``geometry`` may be ``None`` in a FeatureCollection, in a GeoJSON row
+    column, or with ``from_geojson(..., features=True)``. Geometry-only
+    decoding rejects a scalar null-geometry Feature; use
+    :class:`GeoJsonFeatureNonNull` for that overload.
     """
 
     type: Literal['Feature']

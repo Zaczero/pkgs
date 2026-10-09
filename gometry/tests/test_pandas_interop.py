@@ -123,6 +123,60 @@ def test_geometry_array_roundtrip(points: gm.GeometryArray) -> None:
     assert restored.crs == points.crs
 
 
+def test_from_pandas_imports_object_geometry_rows_and_missing_values() -> None:
+    class GeoInterfacePoint:
+        @property
+        def __geo_interface__(self) -> dict[str, object]:
+            return {'type': 'Point', 'coordinates': [7, 8]}
+
+    series = pd.Series(
+        [
+            gm.Point(1, 2),
+            pd.NA,
+            gm.Point(3, 4).to_wkb(),
+            {'type': 'Point', 'coordinates': [5, 6]},
+            GeoInterfacePoint(),
+            np.nan,
+        ],
+        dtype=object,
+    )
+
+    restored = from_pandas(series)
+
+    assert restored.to_wkt() == [
+        'POINT (1 2)',
+        None,
+        'POINT (3 4)',
+        'POINT (5 6)',
+        'POINT (7 8)',
+        None,
+    ]
+
+
+def test_from_pandas_keeps_geopandas_crs_on_the_metadata_aware_path() -> None:
+    geopandas = pytest.importorskip('geopandas')
+    series = geopandas.GeoSeries([gm.Point(1, 2)], crs=4326)
+
+    with pytest.raises(TypeError, match='use from_geopandas'):
+        from_pandas(series)
+
+
+def test_format_readers_normalize_nullable_pandas_columns() -> None:
+    point = gm.Point(1, 2, crs=4326)
+    wkts = pd.Series(['POINT (1 2)', pd.NA], dtype='string')
+    wkbs = pd.Series([point.to_wkb(), pd.NA], dtype=object)
+    geojson = pd.Series(
+        [{'type': 'Point', 'coordinates': [1, 2]}, pd.NA],
+        dtype=object,
+    )
+    polylines = pd.Series([point.to_polyline(), pd.NA], dtype='string')
+
+    assert gm.from_wkt(wkts).to_wkt() == ['POINT (1 2)', None]
+    assert gm.from_wkb(wkbs).to_wkt() == ['POINT (1 2)', None]
+    assert gm.from_geojson(geojson).to_wkt() == ['POINT (1 2)', None]
+    assert gm.from_polyline(polylines).to_wkt() == ['POINT (1 2)', None]
+
+
 def test_extension_array_getitem_slice_take(points: gm.GeometryArray) -> None:
     data = GeometryExtensionArray(points)
     sliced = data[1:]

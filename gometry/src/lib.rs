@@ -123,11 +123,10 @@ use py::functions::{
     _unpickle_geometry_array_v1, _unpickle_geometry_v1, _unpickle_packed_array_v1,
     _unpickle_validation_report_v1, OverlayOp, PyValidationReport, coverage_clean,
     coverage_invalid_edges, coverage_is_valid, coverage_simplify, coverage_union, difference,
-    from_features, from_geojson, from_wkb, from_wkt, intersection, intersection_all,
-    osm_shortlink_encode, osm_shortlink_location, overlay_operator, pluscode_encode,
-    pluscode_polygon, pluscode_recover, pluscode_shorten, polygonize, polygonize_full, require,
-    symmetric_difference, symmetric_difference_all, to_feature, to_feature_collection, union,
-    union_all,
+    from_geojson, from_wkb, from_wkt, intersection, intersection_all, osm_shortlink_encode,
+    osm_shortlink_location, overlay_operator, pluscode_encode, pluscode_polygon, pluscode_recover,
+    pluscode_shorten, polygonize, polygonize_full, require, symmetric_difference,
+    symmetric_difference_all, to_feature, to_feature_collection, union, union_all,
 };
 mod grid;
 mod predicates;
@@ -161,7 +160,7 @@ use py::support::{
     box_polygon, check_i32_min, classify_scalar_or_iterator, coerce_geojson_geometry_value,
     coerce_geojson_geometry_value_at, coerce_present_geometry_items, copy_wkb_payload,
     deserialized_epoch, ensure_homogeneous_axes, exact_backed_bytes, extract_coordinate,
-    extract_coordinate_or_empty, extract_lines, extract_points, extract_polygons, features_type,
+    extract_coordinate_or_empty, extract_points, features_type,
     fixed_geometry_array_nearest_points_admitted, fixed_geometry_array_shortest_line_geodesic,
     geometry_items, global_geographic_candidate_envelope, gometry_lib_module, guard_epoch_frame,
     index_envelopes, is_concrete_batch, is_mapping_like, is_py_bytes_or_bytearray,
@@ -265,7 +264,7 @@ fn lib(m: &Bound<'_, PyModule>) -> PyResult<()> {
         coverage_is_valid, coverage_invalid_edges, coverage_simplify, coverage_clean,
         coverage_union, polygonize, polygonize_full,
         // IO, validation, and coordinate access.
-        from_wkt, from_wkb, from_geojson, from_features, to_feature, to_feature_collection,
+        from_wkt, from_wkb, from_geojson, to_feature, to_feature_collection,
         from_polyline, require,
         // Pickle payload rebuilders (private; see the `__reduce__` impls).
         _unpickle_geometry_v1, _unpickle_geometry_array_v1, _unpickle_packed_array_v1,

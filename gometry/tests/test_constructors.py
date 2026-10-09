@@ -19,6 +19,38 @@ def test_point_and_crs_metadata() -> None:
     assert point.__geo_interface__ == {'type': 'Point', 'coordinates': [21.0, 52.0]}
 
 
+def test_point_accepts_one_coordinate_sequence() -> None:
+    assert gm.Point((1, 2)).to_wkt() == 'POINT (1 2)'
+    assert gm.Point(np.array([1.0, 2.0, 3.0, 4.0])).to_wkt() == 'POINT ZM (1 2 3 4)'
+    assert gm.Point((1, 2, 3), m=4).to_wkt() == 'POINT ZM (1 2 3 4)'
+
+
+def test_point_copy_preserves_axes_and_frame() -> None:
+    original = gm.Point(5, 6, z=7, crs=4326, epoch=2020.0)
+    copied = gm.Point(original)
+    assert copied == original
+    assert copied.coordinate_axes == 'XYZ'
+    assert copied.crs == 'EPSG:4326'
+    assert copied.epoch == 2020.0
+    assert gm.Point(original, crs=4326, epoch=2020.0) == original
+
+
+def test_point_coordinate_rejects_conflicting_embedded_ordinates() -> None:
+    with pytest.raises(gm.InvalidGeometryError, match=r'conflicts with.*embedded'):
+        gm.Point((1, 2, 3), z=4)
+
+
+def test_point_coordinate_rejects_malformed_dimensions() -> None:
+    with pytest.raises(gm.InvalidGeometryError, match='coordinate requires x and y'):
+        gm.Point((1,))
+
+
+def test_point_copy_reconciles_explicit_crs() -> None:
+    original = gm.Point(5, 6, crs=4326)
+    with pytest.raises(gm.CRSMismatchError, match='shared CRS'):
+        gm.Point(original, crs=3857)
+
+
 def test_box_ccw_controls_ring_orientation() -> None:
     assert gm.box(0, 0, 2, 1).to_wkt() == 'POLYGON ((0 0, 2 0, 2 1, 0 1, 0 0))'
     assert (
