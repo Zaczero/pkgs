@@ -1620,6 +1620,11 @@ impl SquaredDistanceKey {
     }
 
     pub(super) fn is_exact_zero(&self) -> Result<bool> {
+        // The source-distance filter's positive lower endpoint certifies
+        // nonzero without materializing its exact dyadic witness.
+        if self.filter.lo > 0.0 {
+            return Ok(false);
+        }
         Ok(self.witness.squared()?.numerator.is_zero())
     }
 
@@ -2878,29 +2883,10 @@ pub(crate) fn finish_planar_squared_min(
     }
 }
 
-/// Honest squared distance point→segment. `None` on overflow or false-zero
-/// underflow (representable positive separation whose `ex²+ey²` collapses to
-/// 0). Magnitude / zero-tests must not treat a bare `0.0` from
-/// [`point_segment_distance_squared`] as contact — use this, or finish via
-/// [`finish_planar_squared_min`].
-pub(super) fn try_point_segment_distance_squared(
-    point: impl Into<XY>,
-    segment: Segment,
-) -> Result<Option<f64>> {
-    let point = point.into();
-    Ok(match point_segment_metric(point, segment)? {
-        PointSegmentMetric::Squared {
-            measurement_squared,
-            ..
-        } => Some(measurement_squared),
-        PointSegmentMetric::Projection(_) => None,
-    })
-}
-
 /// Squared distance from `point` to `segment` — self-contained MEASUREMENT.
 /// Ordering / compare-min callers may use this; a returned `0.0` is **not**
-/// a contact certificate under underflow (use [`try_point_segment_distance_squared`]
-/// or [`finish_planar_squared_min`] for magnitude answers).
+/// a contact certificate under underflow (use [`point_segment_distance`] or
+/// [`finish_planar_squared_min`] for magnitude answers).
 pub(super) fn point_segment_distance_squared(
     point: impl Into<XY>,
     segment: Segment,

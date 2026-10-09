@@ -1,9 +1,14 @@
+use ahash::HashSetExt as _;
 use rstar::{AABB, PointDistance, RTreeObject};
 
 use crate::HeapSize;
+use crate::collections::HashSet;
 #[cfg(test)]
 use crate::geometry::point_on_segment;
-use crate::geometry::{BulkRTree, Point, Segment, point_pair_distance_key, same_point};
+use crate::geometry::{
+    BulkRTree, Point, PointKey, Segment, SquaredDistanceKey, XY, point_pair_distance_key,
+    same_point,
+};
 
 /// One segment as an R-tree leaf, carrying its position in the build slice
 /// (so pair-once sweeps can keep `ordinal > i` candidates).
@@ -98,34 +103,9 @@ impl SegmentIndex {
     }
 }
 
-/// An R-tree over a point set (Hausdorff refinement, clearance candidates).
-pub(crate) struct PointSetIndex<T: RTreeObject = [f64; 2]> {
-    tree: BulkRTree<T>,
-}
-
-impl PointSetIndex<[f64; 2]> {
-    pub(crate) fn build(points: impl IntoIterator<Item = Point>) -> Self {
-        let coords = points.into_iter().map(|point| [point.x, point.y]).collect();
-        Self {
-            tree: BulkRTree::bulk_load_with_params(coords),
-        }
-    }
-
-    /// The nearest indexed point that is not bit-identical to `point`, with
-    /// its squared distance (`None` when none exists) — the
-    /// minimum-clearance "nearest other vertex" query.
-    ///
-    /// Skips only **true** coordinate identity. A squared residual of 0 from
-    /// underflow (distinct points whose `dx²+dy²` collapses) is still a
-    /// clearance candidate — the finisher recomputes in distance space.
-    pub(crate) fn nearest_other(&self, point: Point) -> Option<(Point, f64)> {
-        self.tree
-            .nearest_neighbor_iter_with_distance_2([point.x, point.y])
-            .find(|&(coords, _distance)| {
-                !same_point(point, Point::new_raw_xy(coords[0], coords[1]))
-            })
-            .map(|(coords, distance)| (Point::new_raw_xy(coords[0], coords[1]), distance))
-    }
+/// An R-tree over source point entries used by nearest-point and clearance queries.
+pub(crate) struct PointSetIndex {
+    tree: BulkRTree<PointEntry>,
 }
 
 /// A point-index leaf retains its position in the full-ordinate source.
@@ -148,7 +128,46 @@ impl PointDistance for PointEntry {
     }
 }
 
-impl PointSetIndex<PointEntry> {
+fn consider_clearance_neighbor(
+    best: &mut (usize, SquaredDistanceKey),
+    point: Point,
+    entry: &PointEntry,
+) -> crate::error::Result<()> {
+    let target = Point::new_raw_xy(entry.coords[0], entry.coords[1]);
+    if same_point(point, target) {
+        return Ok(());
+    }
+    let key = point_pair_distance_key(point.xy(), target.xy());
+    let order = key.cmp_distance(&best.1)?;
+    if order.is_lt() || order.is_eq() && entry.ordinal < best.0 {
+        *best = (entry.ordinal, key);
+    }
+    Ok(())
+}
+
+impl PointSetIndex {
+    /// Build the clearance tree with the first source ordinal for each XY.
+    pub(crate) fn build_clearance_with_ordinals(points: &[Point]) -> Self {
+        let mut seen = HashSet::with_capacity(points.len());
+        let entries: Vec<_> = points
+            .iter()
+            .copied()
+            .enumerate()
+            .filter_map(|(ordinal, point)| {
+                let unique =
+                    point.x.is_nan() || point.y.is_nan() || seen.insert(PointKey::new(point));
+                unique.then_some(PointEntry {
+                    coords: [point.x, point.y],
+                    ordinal,
+                })
+            })
+            .collect();
+        drop(seen);
+        Self {
+            tree: BulkRTree::bulk_load_with_params(entries),
+        }
+    }
+
     pub(crate) fn build_with_ordinals(points: impl IntoIterator<Item = Point>) -> Self {
         let entries = points
             .into_iter()
@@ -163,10 +182,7 @@ impl PointSetIndex<PointEntry> {
         }
     }
 
-    pub(crate) fn nearest_ordinal(
-        &self,
-        point: Point,
-    ) -> crate::error::Result<Option<(usize, f64)>> {
+    pub(crate) fn nearest_ordinal(&self, point: Point) -> crate::error::Result<Option<usize>> {
         let mut best = None;
         let mut limit = f64::INFINITY;
         for (entry, distance) in self
@@ -180,21 +196,99 @@ impl PointSetIndex<PointEntry> {
             let key = point_pair_distance_key(point.xy(), target);
             let replace = match best.as_ref() {
                 None => true,
-                Some((ordinal, _, incumbent)) => {
+                Some((ordinal, incumbent)) => {
                     let order = key.cmp(incumbent)?;
                     order.is_lt() || order.is_eq() && entry.ordinal < *ordinal
                 },
             };
             if replace {
                 limit = key.upper_bound() * (1.0 + 4.0 * f64::EPSILON);
-                best = Some((entry.ordinal, distance, key));
+                best = Some((entry.ordinal, key));
             }
         }
-        Ok(best.map(|(ordinal, distance, _)| (ordinal, distance)))
+        Ok(best.map(|(ordinal, _)| ordinal))
+    }
+
+    /// Nearest distinct XY source that can improve `incumbent`, ordered by
+    /// exact source distance and then by source ordinal. With no incumbent,
+    /// returns the nearest distinct source. The clearance tree stores only
+    /// the first source ordinal for each XY alias. Its first neighbor and the
+    /// incumbent supply conservative coordinate-envelope bounds; uncertain
+    /// bounds use a full leaf scan if the radius cannot be certified or the
+    /// coordinate envelope is unbounded.
+    pub(crate) fn nearest_clearance_neighbor(
+        &self,
+        point: Point,
+        incumbent: Option<&SquaredDistanceKey>,
+    ) -> crate::error::Result<Option<(usize, SquaredDistanceKey)>> {
+        let Some((seed, _)) = self
+            .tree
+            .nearest_neighbor_iter_with_distance_2([point.x, point.y])
+            .find(|&(entry, _)| {
+                !same_point(point, Point::new_raw_xy(entry.coords[0], entry.coords[1]))
+            })
+        else {
+            return Ok(None);
+        };
+        let mut best = (
+            seed.ordinal,
+            point_pair_distance_key(point.xy(), XY::new(seed.coords[0], seed.coords[1])),
+        );
+        let seed_upper = best.1.upper_bound();
+        let upper = incumbent.map_or_else(|| seed_upper, |key| seed_upper.min(key.upper_bound()));
+
+        if upper.is_finite() {
+            let search_key = if let Some(incumbent) = incumbent {
+                if best.1.cmp_distance(incumbent)?.is_gt() {
+                    incumbent
+                } else {
+                    &best.1
+                }
+            } else {
+                &best.1
+            };
+            let radius = upper.sqrt().next_up();
+            let radius_covers_search = if radius.is_finite() {
+                let radius_key = point_pair_distance_key(XY::new(0.0, 0.0), XY::new(radius, 0.0));
+                !radius_key.cmp_distance(search_key)?.is_lt()
+            } else {
+                false
+            };
+            let lower = [
+                (point.x - radius).next_down(),
+                (point.y - radius).next_down(),
+            ];
+            let upper = [(point.x + radius).next_up(), (point.y + radius).next_up()];
+            if radius_covers_search
+                && lower
+                    .iter()
+                    .chain(&upper)
+                    .all(|coordinate| coordinate.is_finite())
+            {
+                let envelope = AABB::from_corners(lower, upper);
+                for entry in self.tree.locate_in_envelope_intersecting(envelope) {
+                    consider_clearance_neighbor(&mut best, point, entry)?;
+                }
+            } else {
+                for entry in &self.tree {
+                    consider_clearance_neighbor(&mut best, point, entry)?;
+                }
+            }
+        } else {
+            for entry in &self.tree {
+                consider_clearance_neighbor(&mut best, point, entry)?;
+            }
+        }
+        if let Some(incumbent) = incumbent
+            && !best.1.cmp_distance(incumbent)?.is_lt()
+        {
+            return Ok(None);
+        }
+        Ok(Some(best))
     }
 }
 
-impl<T: RTreeObject> HeapSize for PointSetIndex<T> {
+impl HeapSize for PointSetIndex {
     fn heap_bytes(&self) -> usize {
         super::bulk_rtree_heap_bytes(&self.tree)
     }
@@ -336,15 +430,64 @@ mod query_tests {
     }
 
     #[test]
-    fn point_set_index_nearest_other_excludes_the_query_point() {
-        let points = [
-            Point::new_raw_xy(0.0, 0.0),
-            Point::new_raw_xy(1.0, 0.0),
-            Point::new_raw_xy(0.0, 1.0),
+    fn clearance_point_query_matches_exact_exhaustive_source_order() {
+        let cases = [
+            vec![
+                Point::new_raw_xy(0.0, 0.0),
+                Point::new_raw_xy(1.0, 2.0_f64.powi(-28)),
+                Point::new_raw_xy(1.0, 0.0),
+                Point::new_raw_xy(-0.0, 0.0),
+                Point::new_raw_xy(20.0, 20.0),
+            ],
+            vec![
+                Point::new_raw_xy(0.0, 0.0),
+                Point::new_raw_xy(2.0_f64.powi(-700), 0.0),
+                Point::new_raw_xy(3.0 * 2.0_f64.powi(-700), 0.0),
+                Point::new_raw_xy(100.0, 100.0),
+            ],
+            vec![
+                Point::new_raw_xy(0.0, 0.0),
+                Point::new_raw_xy(2.0_f64.powi(600), 0.0),
+                Point::new_raw_xy(3.0 * 2.0_f64.powi(600), 0.0),
+                Point::new_raw_xy(-(2.0_f64.powi(600)), 2.0_f64.powi(600)),
+            ],
         ];
-        let index = PointSetIndex::build(points.iter().copied());
-        let (other, _) = index.nearest_other(points[0]).unwrap();
-        assert!(!same_point(other, points[0]));
+        for points in cases {
+            let index = PointSetIndex::build_clearance_with_ordinals(&points);
+            for (probe_ordinal, probe) in points.iter().copied().enumerate() {
+                let mut expected: Option<(usize, SquaredDistanceKey)> = None;
+                for (ordinal, target) in points.iter().copied().enumerate() {
+                    if same_point(probe, target) {
+                        continue;
+                    }
+                    let key = point_pair_distance_key(probe.xy(), target.xy());
+                    let replace = match expected.as_ref() {
+                        None => true,
+                        Some((best_ordinal, best)) => {
+                            let order = key
+                                .cmp_distance(best)
+                                .expect("finite test coordinates have comparable exact keys");
+                            order.is_lt() || order.is_eq() && ordinal < *best_ordinal
+                        },
+                    };
+                    if replace {
+                        expected = Some((ordinal, key));
+                    }
+                }
+                let actual = index.nearest_clearance_neighbor(probe, None).unwrap();
+                assert_eq!(
+                    actual.as_ref().map(|(ordinal, _)| *ordinal),
+                    expected.as_ref().map(|(ordinal, _)| *ordinal),
+                    "probe source ordinal {probe_ordinal}",
+                );
+                if let (Some((_, actual)), Some((_, expected))) = (actual, expected) {
+                    assert!(
+                        actual.cmp_distance(&expected).unwrap().is_eq(),
+                        "probe source ordinal {probe_ordinal}",
+                    );
+                }
+            }
+        }
     }
 }
 

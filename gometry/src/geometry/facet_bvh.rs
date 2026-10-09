@@ -12,19 +12,20 @@
 //! every segment pair. See `distance_disjoint_with_parts` for the convexity
 //! argument.
 //!
-//! Exactness: traversal bounds only *prune* (envelope distance is a true
-//! lower bound), so results equal the brute-force folds; `min` over segment
-//! distances is evaluation-order independent. The SIMD kernel computes the
-//! same clamped-projection distance as the scalar kernel (lane math may
-//! reassociate — measurement arithmetic per the project float policy).
+//! Minimum-clearance traversal uses a separately directed AABB lower
+//! enclosure and exact source-distance keys; approximate facet residuals do
+//! not reject clearance candidates. The other distance paths retain their
+//! squared/hypot kernels and established pruning bounds. The SIMD kernel
+//! computes the same clamped-projection distance as the scalar kernel (lane
+//! math may reassociate — measurement arithmetic per the project float policy).
 
 mod aabb;
 mod engine;
 mod simd;
 
 pub(crate) use aabb::{
-    aabb_distance, aabb_distance_squared, aabb_max_distance_squared, aabbs_overlap, point_aabb,
-    segment_aabb, union_aabb,
+    aabb_distance, aabb_distance_squared, aabb_distance_squared_lower, aabb_max_distance_squared,
+    aabbs_overlap, point_aabb, segment_aabb, union_aabb,
 };
 #[cfg(test)]
 pub(crate) use engine::NEAREST_WORK;

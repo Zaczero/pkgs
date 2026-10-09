@@ -325,7 +325,7 @@ pub(in crate::geometry) use segment_index::{
     for_each_indexed_overlapping_bounds_pair, for_each_overlapping_bounds_cross_pair,
     for_each_overlapping_bounds_pair, sign_of, single_chain,
 };
-pub(crate) use segment_index::{PointEntry, PointSetIndex, SEGMENT_INDEX_MIN_PAIRS, SegmentIndex};
+pub(crate) use segment_index::{PointSetIndex, SEGMENT_INDEX_MIN_PAIRS, SegmentIndex};
 #[cfg(test)]
 use segments::point_segment_distance_key;
 use segments::{
@@ -333,8 +333,7 @@ use segments::{
     orientation_xy, point_pair_distance_key, point_segment_distance_and_projection,
     point_segment_distance_squared, point_segment_exact_distance_key, ray_crossing_is_right,
     segment_contact_exact, segment_contact_point, segment_cross_point, segment_envelopes_disjoint,
-    segments_intersect, shared_segment_part, try_point_distance_squared,
-    try_point_segment_distance_squared, undirected_segment_edge_key,
+    segments_intersect, shared_segment_part, undirected_segment_edge_key,
 };
 /// The guarded-sqrt distance is the one segment-kernel helper the broadcast
 /// lanes call directly (packed point columns).
