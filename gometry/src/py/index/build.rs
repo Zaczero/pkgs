@@ -854,6 +854,81 @@ mod ownership_tests {
     }
 
     #[test]
+    fn sparse_owner_costs_follow_live_rows_not_next_handle() {
+        let values = PyGeometryArray::from_shapes(
+            vec![
+                Shape::Point(Point::new_raw_xy(7.0, 1.0)),
+                Shape::Point(Point::new_raw_xy(63.0, 2.0)),
+                Shape::Point(Point::new_raw_xy(65_537.0, 3.0)),
+            ],
+            Frame::None,
+        )
+        .unwrap();
+        let handles = [7, 63, 65_537];
+        let small = restore_spatial_index_v2(&values, handles.to_vec(), 70_000, false).unwrap();
+        let large = restore_spatial_index_v2(&values, handles.to_vec(), 1 << 40, false).unwrap();
+
+        assert_eq!(HeapSize::heap_bytes(&small), HeapSize::heap_bytes(&large));
+        let (small_size, small_size_allocations) =
+            crate::test_support::allocation_count(|| HeapSize::heap_bytes(&small));
+        let (large_size, large_size_allocations) =
+            crate::test_support::allocation_count(|| HeapSize::heap_bytes(&large));
+        assert_eq!(small_size, large_size);
+        assert_eq!(small_size_allocations, 0);
+        assert_eq!(large_size_allocations, 0);
+
+        let (small_copy, small_copy_allocations) =
+            crate::test_support::allocation_count(|| small.clone());
+        let (large_copy, large_copy_allocations) =
+            crate::test_support::allocation_count(|| large.clone());
+        assert_eq!(small_copy_allocations, large_copy_allocations);
+        assert_eq!(
+            small_copy.live_handles_sorted(),
+            large_copy.live_handles_sorted()
+        );
+
+        let mut small_rows = small.rows.operation();
+        let (small_bounds, small_resolve_allocations) =
+            crate::test_support::allocation_count(|| {
+                small_rows.row(65_537).unwrap().quick_bounds()
+            });
+        let mut large_rows = large.rows.operation();
+        let (large_bounds, large_resolve_allocations) =
+            crate::test_support::allocation_count(|| {
+                large_rows.row(65_537).unwrap().quick_bounds()
+            });
+        assert_eq!(small_bounds, large_bounds);
+        assert!(small_bounds.is_some());
+        assert_eq!(small_resolve_allocations, 0);
+        assert_eq!(large_resolve_allocations, 0);
+
+        LiveHandles::reset_visit_counts();
+        let small_ids: Vec<_> = small.rows.live_handles.iter().collect();
+        assert_eq!(LiveHandles::iterated_handle_count(), handles.len());
+        let small_pickle = small
+            .rows
+            .pickle_live_rows(Frame::None)
+            .expect("compact small pickle rows");
+        assert_eq!(
+            LiveHandles::membership_check_count(),
+            handles.len(),
+            "pickle resolves each live row without probing the historical handle span"
+        );
+        LiveHandles::reset_visit_counts();
+        let large_ids: Vec<_> = large.rows.live_handles.iter().collect();
+        assert_eq!(LiveHandles::iterated_handle_count(), handles.len());
+        let large_pickle = large
+            .rows
+            .pickle_live_rows(Frame::None)
+            .expect("compact large pickle rows");
+        assert_eq!(LiveHandles::membership_check_count(), handles.len());
+        assert_eq!(small_ids, handles);
+        assert_eq!(large_ids, handles);
+        assert_eq!(small_pickle.1, large_pickle.1);
+        assert_eq!(small_pickle.0.len(), large_pickle.0.len());
+    }
+
+    #[test]
     fn cover_count_exceptions_follow_live_periodic_handles() {
         let frame =
             Frame::new(Some(frame::crs_arc_static("EPSG:4326")), None).expect("geographic frame");

@@ -1,10 +1,18 @@
 //! Ordered live-handle ranges. Dense indexes need no directory allocation;
 //! deletion splits only the range containing the removed stable handle.
 
+#[cfg(test)]
+use std::cell::Cell;
 use std::collections::BTreeMap;
 use std::ops::Range;
 
 use crate::HeapSize;
+
+#[cfg(test)]
+std::thread_local! {
+    static MEMBERSHIP_CHECKS: Cell<usize> = const { Cell::new(0) };
+    static ITERATED_HANDLES: Cell<usize> = const { Cell::new(0) };
+}
 
 #[derive(Clone, Debug)]
 pub(super) struct LiveHandles {
@@ -47,6 +55,8 @@ impl Iterator for Iter<'_> {
             if let Some(current) = &mut self.current
                 && let Some(handle) = current.next()
             {
+                #[cfg(test)]
+                ITERATED_HANDLES.with(|count| count.set(count.get().saturating_add(1)));
                 return Some(handle);
             }
             self.current = self.ranges.next();
@@ -76,6 +86,8 @@ impl LiveHandles {
     }
 
     pub(super) fn contains(&self, handle: usize) -> bool {
+        #[cfg(test)]
+        MEMBERSHIP_CHECKS.with(|count| count.set(count.get().saturating_add(1)));
         match &self.ranges {
             LiveRanges::Contiguous(range) => range.contains(&handle),
             LiveRanges::Sparse(ranges) => ranges
@@ -83,6 +95,22 @@ impl LiveHandles {
                 .next_back()
                 .is_some_and(|(_, &end)| handle < end),
         }
+    }
+
+    #[cfg(test)]
+    pub(super) fn reset_visit_counts() {
+        MEMBERSHIP_CHECKS.with(|count| count.set(0));
+        ITERATED_HANDLES.with(|count| count.set(0));
+    }
+
+    #[cfg(test)]
+    pub(super) fn membership_check_count() -> usize {
+        MEMBERSHIP_CHECKS.with(Cell::get)
+    }
+
+    #[cfg(test)]
+    pub(super) fn iterated_handle_count() -> usize {
+        ITERATED_HANDLES.with(Cell::get)
     }
 
     pub(super) fn iter(&self) -> Iter<'_> {
