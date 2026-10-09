@@ -27,6 +27,8 @@ from pyo3stubs.context import CheckContext
 from pyo3stubs.doc_contract import collect_errors as doc_contract
 from pyo3stubs.doc_structure import (
     collect_errors as doc_structure,
+)
+from pyo3stubs.doc_structure import (
     iter_doc_subjects,
 )
 from pyo3stubs.gates import GATES, Status, gate, gate_names, run_all
@@ -211,7 +213,7 @@ CASES: dict[str, Case] = {
     'doc-contract': Case(
         clean=_default,
         seeded=_stub(_SEALED, f'{_SEALED}\n    def narrowed(self) -> int: ...'),
-        expect='stub override needs its own docstring',
+        expect='runtime docstring missing or empty',
     ),
     'doc-structure': Case(
         clean=_default,
@@ -250,6 +252,8 @@ def test_parser_gates_skip_on_pypy_before_importing_their_parser(tmp_path, monke
         'token-vocabulary',
         'leaked-types',
         'rust-nullability',
+        'doc-contract',
+        'doc-structure',
     ):
         result = gate(name).run(cfg)
         assert result.status is Status.SKIPPED
@@ -393,7 +397,7 @@ def _class_signature_fixture(tmp_path, pristine_stub, monkeypatch, allowlist):
     class NeverConstructor(metaclass=UninspectableClassSignature):
         """A class whose stub explicitly prohibits construction."""
 
-        def __new__(cls, value: object):
+        def __new__(cls, _value: object):
             raise TypeError('not constructible')
 
     class NoReturnConstructor(metaclass=UninspectableClassSignature):
@@ -484,8 +488,7 @@ def test_signature_coverage_allows_a_reasoned_class_binding_blind_spot(
     )
 
     assert not any(
-        'SignatureBlind: inspect.signature fails' in error
-        for error in structural(cfg)
+        'SignatureBlind: inspect.signature fails' in error for error in structural(cfg)
     )
 
 
@@ -522,8 +525,7 @@ def test_signature_coverage_rejects_empty_and_stale_class_allowlist_entries(
         },
     )
     assert any(
-        "uninspectable allowlist entry 'SignatureBlind' is inspectable again"
-        in error
+        "uninspectable allowlist entry 'SignatureBlind' is inspectable again" in error
         for error in structural(stale)
     )
 
@@ -620,8 +622,7 @@ class Shape:
 
     assert doc_contract(cfg) == []
     assert any(
-        'Shape.area: no Returns section' in error
-        for error in doc_structure(cfg)
+        'Shape.area: no Returns section' in error for error in doc_structure(cfg)
     )
 
 
@@ -778,19 +779,18 @@ def test_validity_rejects_a_shadowed_overload_whatever_the_config(
 
 
 def test_doc_contract_rejects_an_ellipsis_body_as_prose(tmp_path, pristine_stub):
-    """`...` is not a docstring.
+    """A stub body containing `...` does not provide author prose.
 
-    Every `.pyi` body is `...`, which parses to `Expr(Constant(Ellipsis))`.
-    Treating any leading constant as prose made `_has_docstring` return True
-    for every stub def, so this branch -- a stub-only override must carry its
-    own hand-written prose -- could never fire for anyone.
+    The runtime fixture has no corresponding ``narrowed`` member, so the shared
+    subject inventory must report the missing documentation until the stub
+    override carries a non-empty docstring.
     """
     # `narrowed` exists only in the stub, so it takes the stub-override branch.
     mutated = seeded(
         pristine_stub, _SEALED, f'{_SEALED}\n    def narrowed(self) -> int: ...'
     )
     assert any(
-        'Sealed.narrowed: stub override needs its own docstring' in e
+        'Sealed.narrowed: runtime docstring missing or empty' in e
         for e in doc_contract(make_config(tmp_path, stub_text=mutated))
     )
 
@@ -860,7 +860,11 @@ def test_doc_contract_accepts_an_override_documented_by_inheritance(
     assert parameters[1].default is True
     assert doc_structure(cfg) == []
 
-    changed_default = seeded(mutated, 'flag: bool = True', 'flag: bool = False')
+    changed_default = seeded(
+        mutated,
+        'def narrowed(self, value: int, flag: bool = True) -> int: ...',
+        'def narrowed(self, value: int, flag: bool = False) -> int: ...',
+    )
     changed_cfg = make_config(tmp_path, stub_text=changed_default)
     errors = doc_structure(changed_cfg)
     assert any(

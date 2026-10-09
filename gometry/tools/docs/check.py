@@ -49,6 +49,8 @@ _UNRESOLVED_GOMETRY_TYPE = re.compile(
     r'<span\b[^>]*title="gometry\.(?:(?:_lib|_types)\.)?'
     r'(?P<name>[A-Za-z_]\w*)"[^>]*>'
 )
+
+
 class _Ids(HTMLParser):
     def __init__(self) -> None:
         super().__init__()

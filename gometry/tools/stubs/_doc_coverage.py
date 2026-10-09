@@ -9,8 +9,8 @@ from __future__ import annotations
 
 import sys
 from collections import Counter
-from collections.abc import Iterable
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import gometry as gm
 
@@ -23,14 +23,15 @@ prepend_rust_source_import_paths()
 from pyo3stubs.cli import load_config
 from pyo3stubs.context import CheckContext
 from pyo3stubs.doc_structure import (
-    ConstructorSource,
-    DocLocation,
     DocSubject,
     iter_doc_subjects,
     parse_doc,
     raises_entries,
 )
-from pyo3stubs.rust_scan import constructor_docs, iter_sources, rust_class_map
+
+if TYPE_CHECKING:
+    from collections.abc import Iterable
+
 ERROR_EXPORTS = frozenset({
     'CRSError',
     'CRSMismatchError',
@@ -42,6 +43,7 @@ ERROR_EXPORTS = frozenset({
 })
 ALLOWED_BUILTIN_RAISES = frozenset({
     'TypeError',
+    'AttributeError',
     'IndexError',
     'KeyError',
     'BufferError',
@@ -56,10 +58,14 @@ ALLOWED_BUILTIN_RAISES = frozenset({
 RAISES_VALUEERROR_EXEMPT: dict[str, str] = {
     'GeometryArray.index': 'list.index convention: a missing element is a plain ValueError',
     'GeometryArray.fill_missing': 'pandas fillna row-alignment convention: length mismatch is a plain ValueError',
+    'GeometryCollection.index': 'Sequence index lookup uses the list.index missing-value convention.',
     'CellArray.index': 'list.index convention: a missing element is a plain ValueError',
     'Groups.index': 'list.index convention: a missing element is a plain ValueError',
     'Coordinates.index': 'list.index convention: a missing element is a plain ValueError',
     'GeometryParts.index': 'list.index convention: a missing element is a plain ValueError',
+    'MultiLineString.index': 'Sequence index lookup uses the list.index missing-value convention.',
+    'MultiPoint.index': 'Sequence index lookup uses the list.index missing-value convention.',
+    'MultiPolygon.index': 'Sequence index lookup uses the list.index missing-value convention.',
     'H3VertexArray.index': 'list.index convention: a missing element is a plain ValueError',
     'H3EdgeArray.index': 'list.index convention: a missing element is a plain ValueError',
 }
@@ -340,39 +346,16 @@ def _check_raises(
     )
 
 
-def _constructor_sources(cfg) -> dict[str, ConstructorSource]:
-    """Map exported `#[new]` declarations through the shared Rust syntax tree."""
-    classes = rust_class_map(cfg)
-    docs = constructor_docs(cfg)
-    sources: dict[str, ConstructorSource] = {}
-    for source in iter_sources(cfg, scope='export'):
-        for item in source.walk():
-            class_name = classes.get(item.name) if item.kind == 'impl_item' else None
-            if class_name is None:
-                continue
-            for method in item.children:
-                if method.attr('new') is not None:
-                    sources.setdefault(
-                        class_name,
-                        ConstructorSource(
-                            docs.get(class_name),
-                            DocLocation(source.label, method.line),
-                        ),
-                    )
-    return sources
-
-
 def check_subject_raises(subject: DocSubject) -> list[str]:
     errors: list[str] = []
     doc = parse_doc(subject.prose)
     entries = raises_entries(doc)
-    for entry in entries:
-        for exception in entry.names:
-            if not entry.description.strip():
-                errors.append(
-                    f'{subject.qualname}: Raises {exception!r} requires a '
-                    'non-empty description'
-                )
+    errors.extend(
+        f'{subject.qualname}: Raises {exception!r} requires a non-empty description'
+        for entry in entries
+        for exception in entry.names
+        if not entry.description.strip()
+    )
     parameters = (
         {parameter.name for parameter in subject.parameters}
         if subject.parameters is not None
@@ -427,13 +410,7 @@ def check_mirrored_raises(subjects: Iterable[DocSubject]) -> list[str]:
 def main() -> int:
     cfg = load_config(_TOOLS_ROOT / 'stubs' / 'stubconfig.py')
     ctx = CheckContext(cfg)
-    subjects = tuple(
-        iter_doc_subjects(
-            ctx,
-            runtime_module=gm,
-            constructor_sources=_constructor_sources(cfg),
-        )
-    )
+    subjects = tuple(iter_doc_subjects(ctx, runtime_module=gm))
     errors: list[str] = []
     checked: Counter[str] = Counter()
     errors.extend(check_mirrored_raises(subjects))

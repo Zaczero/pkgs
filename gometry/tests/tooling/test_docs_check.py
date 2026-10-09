@@ -88,13 +88,16 @@ def test_rendered_see_also_links_target_public_symbols(tmp_path: Path) -> None:
     )
     invalid = _write_site(tmp_path / 'invalid', {'api/shape/index.html': private_page})
     invalid_errors = check.collect_errors(invalid)
-    assert any(
-        'does not target a public API symbol' in e for e in invalid_errors
-    ), invalid_errors
+    assert any('does not target a public API symbol' in e for e in invalid_errors), (
+        invalid_errors
+    )
 
 
-def test_shared_doc_parser_checks_stub_and_raw_rust_duplicates(tmp_path: Path) -> None:
-    from types import ModuleType
+def test_shared_doc_parser_checks_stub_and_raw_rust_duplicates(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    import importlib
 
     integrity = load_tool(
         'doc_integrity', GOMETRY_ROOT / 'tools/gates/_check_doc_integrity.py'
@@ -119,7 +122,7 @@ class Widget:
     src_root = tmp_path / 'src'
     src_root.mkdir()
     (src_root / 'lib.rs').write_text(
-        '''\
+        """\
 docs! {
     #[cfg(test)]
     /// Build a widget.
@@ -135,11 +138,21 @@ docs! {
     ///     The repeated size.
     pub fn build(size: usize) {}
 }
+"""
+    )
+    runtime_package = tmp_path / 'runtime' / 'fakepkg'
+    runtime_package.mkdir(parents=True)
+    (runtime_package / '__init__.py').write_text('')
+    (runtime_package / '_lib.py').write_text(
+        '''\
+__all__ = ['Widget']
+
+class Widget:
+    """A widget."""
 '''
     )
-    runtime = ModuleType('fakepkg._lib')
-    runtime.__all__ = ['Widget']
-    setattr(runtime, 'Widget', type('Widget', (), {'__doc__': 'A widget.'}))
+    monkeypatch.syspath_prepend(str(runtime_package.parent))
+    runtime = importlib.import_module('fakepkg._lib')
     cfg = StubConfig(
         module='fakepkg._lib',
         stub_path=stub_path,
@@ -164,20 +177,29 @@ def test_scalar_geometry_array_returns_cover_overloads_and_properties(
 class Geometry:
     @overload
     def buffer(self, distance: float) -> Point:
+        ...
+
+    @overload
+    def buffer(self, distance: float, *, array: bool) -> GeometryArray[Point]:
         """Buffer geometry.
 
         Returns
         -------
-        GeometryArray[Point]
+        Point or GeometryArray[Point]
         """
+
     @overload
-    def buffer(self, distance: float, *, array: bool) -> GeometryArray[Point]:
-        """Buffer geometry as an array.
+    def centroid(self, *, array: bool = False) -> Point: ...
+
+    @overload
+    def centroid(self, *, array: bool) -> Point:
+        """Compute a representative point.
 
         Returns
         -------
         GeometryArray[Point]
         """
+
     @property
     def bounds(self) -> tuple[float, float, float, float]:
         """The scalar bounds.
@@ -201,11 +223,13 @@ class GeometryArray:
     errors = model._scalar_array_return_errors(stub, object())
 
     assert len(errors) == 2, errors
-    assert any('Geometry.buffer' in error for error in errors)
+    assert any('Geometry.centroid' in error for error in errors)
     assert any('Geometry.bounds' in error for error in errors)
 
 
 def test_doc_model_keeps_row_units_planarity_and_literal_value_claims() -> None:
+    from pyo3stubs.doc_structure import DocLocation
+
     model = load_tool(
         'check_doc_model', GOMETRY_ROOT / 'tools/gates/_check_doc_model.py'
     )
@@ -216,14 +240,14 @@ def test_doc_model_keeps_row_units_planarity_and_literal_value_claims() -> None:
             'callable',
             prose,
             (),
-            model.DocLocation('gometry/_lib.pyi', 1),
+            DocLocation('gometry/_lib.pyi', 1),
         )
 
     subjects = (
         subject(
             'GeometryArray.buffer',
             """\
-            Buffer each element.
+            Return one result per element.
 
             Returns
             -------

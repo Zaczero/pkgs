@@ -13,6 +13,8 @@ if TYPE_CHECKING:
 
 def doc_of(obj: object) -> str | None:
     """Non-empty ``__doc__`` stripped of leading/trailing newlines, or ``None``."""
+    if obj is None:
+        return None
     doc = getattr(obj, '__doc__', None)
     if not isinstance(doc, str) or not doc.strip():
         return None
@@ -30,17 +32,25 @@ _BUILTIN_DOCS = frozenset(
 )
 
 
+def _is_synthetic_doc(name: str, doc: str | None) -> bool:
+    return doc is not None and name.startswith('__') and doc in _BUILTIN_DOCS
+
+
 def _runtime_doc_for_stub(name: str, obj: object) -> str | None:
     """Runtime prose suitable for a stub carrier, or None when it is synthetic.
 
     PyO3 installs wrapper descriptors for protocol slots, and CPython supplies
     boilerplate text for ``__new__`` and generic ``__class_getitem__``. When
     runtime docs are synthetic, keep the authored stub carrier instead.
+    Static-method descriptors are unwrapped so their own builtin docs are not
+    mistaken for the wrapped callable's prose.
     """
+    if isinstance(obj, staticmethod):
+        obj = obj.__func__
     if isinstance(obj, types.WrapperDescriptorType):
         return None
     doc = doc_of(obj)
-    if doc is not None and name.startswith('__') and doc in _BUILTIN_DOCS:
+    if _is_synthetic_doc(name, doc):
         return None
     return doc
 
@@ -79,8 +89,7 @@ def class_prohibits_construction(cls: ast.ClassDef) -> bool:
 
     def never_type(annotation: ast.expr | None) -> bool:
         return (
-            isinstance(annotation, ast.Name)
-            and annotation.id in {'Never', 'NoReturn'}
+            isinstance(annotation, ast.Name) and annotation.id in {'Never', 'NoReturn'}
         ) or (
             isinstance(annotation, ast.Attribute)
             and annotation.attr in {'Never', 'NoReturn'}

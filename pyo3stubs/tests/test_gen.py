@@ -314,9 +314,7 @@ Widget"""
         iter_doc_subjects(CheckContext(mutated_cfg), runtime_module=module)
     )
     mutated_constructor = next(
-        subject
-        for subject in mutated_subjects
-        if subject.kind == 'constructor'
+        subject for subject in mutated_subjects if subject.kind == 'constructor'
     )
     assert any(
         'documented default 4 != runtime 3' in error

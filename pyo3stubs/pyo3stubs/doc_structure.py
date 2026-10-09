@@ -21,11 +21,13 @@ from __future__ import annotations
 import ast
 import inspect
 import re
+import sys
 from dataclasses import dataclass
 from types import ModuleType
 from typing import TYPE_CHECKING, Literal
 
 from pyo3stubs.ast_util import (
+    _is_synthetic_doc,
     _runtime_doc_for_stub,
     annotated_data_descriptors,
     class_prohibits_construction,
@@ -114,12 +116,34 @@ class ConstructorSource:
     source: DocLocation
 
 
+def _rust_constructor_sources(cfg: StubConfig) -> dict[str, ConstructorSource]:
+    """Map exported PyO3 ``#[new]`` items to their authored doc carriers."""
+    from pyo3stubs.rust_scan import constructor_docs, iter_sources, rust_class_map
+
+    classes = rust_class_map(cfg)
+    docs = constructor_docs(cfg)
+    sources: dict[str, ConstructorSource] = {}
+    for source in iter_sources(cfg, scope='export'):
+        for item in source.walk():
+            class_name = classes.get(item.name) if item.kind == 'impl_item' else None
+            if class_name is None:
+                continue
+            for method in item.children:
+                if method.attr('new') is not None:
+                    sources.setdefault(
+                        class_name,
+                        ConstructorSource(
+                            docs.get(class_name),
+                            DocLocation(source.label, method.line),
+                        ),
+                    )
+    return sources
+
+
 def parse_doc(doc: str | None) -> ParsedDoc:
     """Parse ordered NumPy- or Google-style sections from cleaned prose."""
     cleaned = inspect.cleandoc(doc or '')
-    patterns: tuple[
-        tuple[re.Pattern[str], Literal['numpy', 'google']], ...
-    ] = (
+    patterns: tuple[tuple[re.Pattern[str], Literal['numpy', 'google']], ...] = (
         (_NUMPYDOC_SECTION, 'numpy'),
         (_GOOGLE_SECTION, 'google'),
     )
@@ -130,9 +154,7 @@ def parse_doc(doc: str | None) -> ParsedDoc:
         sections: list[DocSection] = []
         for index, match in enumerate(matches):
             end = (
-                matches[index + 1].start()
-                if index + 1 < len(matches)
-                else len(cleaned)
+                matches[index + 1].start() if index + 1 < len(matches) else len(cleaned)
             )
             raw_name = match.group(1).strip()
             name = _SECTION_ALIASES.get(raw_name, raw_name)
@@ -147,13 +169,66 @@ def parse_doc(doc: str | None) -> ParsedDoc:
     return ParsedDoc((), 'numpy')
 
 
+def _default_markers(
+    text: str,
+    *,
+    allow_parenthesized: bool,
+) -> Iterator[re.Match[str]]:
+    """Yield default markers outside quoted and nested type values."""
+    square_depth = 0
+    brace_depth = 0
+    paren_depth = 0
+    quote: str | None = None
+    escaped = False
+    index = 0
+    while index < len(text):
+        char = text[index]
+        if quote is not None:
+            if escaped:
+                escaped = False
+            elif char == '\\':
+                escaped = True
+            elif char == quote:
+                quote = None
+            index += 1
+            continue
+        if char in {'"', "'"}:
+            quote = char
+        elif char == '[':
+            square_depth += 1
+        elif char == ']':
+            square_depth = max(0, square_depth - 1)
+        elif char == '{':
+            brace_depth += 1
+        elif char == '}':
+            brace_depth = max(0, brace_depth - 1)
+        elif char == '(':
+            paren_depth += 1
+        elif char == ')':
+            paren_depth = max(0, paren_depth - 1)
+        elif square_depth == brace_depth == 0:
+            match = _DEFAULT_MARKER.match(text, index)
+            top_level = paren_depth == 0
+            parenthesized = (
+                allow_parenthesized
+                and paren_depth == 1
+                and text[:index].rstrip().endswith('(')
+            )
+            if match is not None and (top_level or parenthesized):
+                yield match
+                index = match.end()
+                continue
+        index += 1
+
+
 def _default_clause(
     text: str,
     *,
     description: bool,
 ) -> tuple[str, str] | None:
     """Split a supported trailing default claim without reading surrounding prose."""
-    for match in reversed(tuple(_DEFAULT_MARKER.finditer(text))):
+    matches = tuple(_default_markers(text, allow_parenthesized=not description))
+    for match in reversed(matches):
         prefix = text[: match.start()].rstrip()
         marker = match.group().lower()
         if description:
@@ -181,11 +256,7 @@ def _entry_names(text: str) -> tuple[str, ...]:
     normalized = ', '.join(names)
     if _ENTRY_NAMES.fullmatch(normalized) is None:
         return ()
-    return tuple(
-        name.lstrip('*')
-        for name in names
-        if name
-    )
+    return tuple(name.lstrip('*') for name in names if name)
 
 
 def _entry_indent(line: str) -> int:
@@ -276,15 +347,20 @@ def _parse_entry(
         names = _entry_names(left) if separator else _entry_names(line)
         inline_description = right.strip() if separator else ''
 
-    default = _default_clause(type_text, description=False)
-    if default is not None:
-        type_text, default_text = default
+    if section.name in _NAMED_TYPE_SECTIONS:
+        default = _default_clause(type_text, description=False)
+        if default is not None:
+            type_text, default_text = default
     description_parts = (
         inline_description,
         *(line.strip() for line in description_lines),
     )
     description = '\n'.join(part for part in description_parts if part)
-    if default_text is None and style == 'google':
+    if (
+        default_text is None
+        and style == 'google'
+        and section.name in _NAMED_TYPE_SECTIONS
+    ):
         default = _default_clause(description, description=True)
         if default is not None:
             _, default_text = default
@@ -303,8 +379,7 @@ def _entries(
     starts = [
         index
         for index, line in enumerate(lines)
-        if _entry_indent(line) == base_indent
-        and _is_entry_header(line, section, style)
+        if _entry_indent(line) == base_indent and _is_entry_header(line, section, style)
     ]
     entries: list[DocEntry] = []
     body_offset = 1 if style == 'google' else 2
@@ -445,14 +520,14 @@ def _stub_parameters(node: ast.FunctionDef) -> list[inspect.Parameter]:
 
 def _doc_location(path: str, node: ast.AST) -> DocLocation:
     line = node.lineno
-    if isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
-        if (
-            node.body
-            and isinstance(node.body[0], ast.Expr)
-            and isinstance(node.body[0].value, ast.Constant)
-            and isinstance(node.body[0].value.value, str)
-        ):
-            line = node.body[0].lineno
+    if (
+        isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef))
+        and node.body
+        and isinstance(node.body[0], ast.Expr)
+        and isinstance(node.body[0].value, ast.Constant)
+        and isinstance(node.body[0].value.value, str)
+    ):
+        line = node.body[0].lineno
     return DocLocation(path, line)
 
 
@@ -475,9 +550,11 @@ def _is_public(name: str) -> bool:
 
 def _public_names(ctx: CheckContext, runtime: ModuleType) -> tuple[str, ...]:
     exported = getattr(runtime, '__all__', None)
-    names = [name for name in exported if isinstance(name, str)] if isinstance(
-        exported, (list, tuple)
-    ) else []
+    names = (
+        [name for name in exported if isinstance(name, str)]
+        if isinstance(exported, (list, tuple))
+        else []
+    )
     names.extend(function_groups(ctx.stub_ast.body))
     names.extend(ctx.stub_classes)
     return tuple(dict.fromkeys(name for name in names if _is_public(name)))
@@ -529,9 +606,12 @@ def _class_subjects(
     source_constructor = constructor_sources.get(name)
     descriptor_carriers: dict[str, tuple[object, DocLocation]] = {}
     if class_node is not None:
-        for member_name, statement, _docstring, descriptor in (
-            annotated_data_descriptors(cls, class_node.body)
-        ):
+        for (
+            member_name,
+            statement,
+            _docstring,
+            descriptor,
+        ) in annotated_data_descriptors(cls, class_node.body):
             index = class_node.body.index(statement)
             source_line = statement.lineno
             if index + 1 < len(class_node.body):
@@ -541,36 +621,32 @@ def _class_subjects(
                 DocLocation(class_path, source_line),
             )
 
-    if source_constructor is not None:
-        yield _subject(
-            f'{name}.__new__',
-            'constructor',
-            source_constructor.prose,
-            _parameters(cls),
-            source_constructor.source,
-        )
-    elif constructible_stub:
-        carrier = new_defs[-1]
+    if not prohibited_stub_constructor and (
+        source_constructor is not None or constructible_stub
+    ):
+        carrier = new_defs[-1] if new_defs else None
         runtime_new = inspect.getattr_static(cls, '__new__', None)
         prose = _runtime_doc_for_stub('__new__', runtime_new)
-        if prose is None:
+        source = _runtime_location(runtime_new, class_source)
+        if prose is None and carrier is not None:
             prose = ast.get_docstring(carrier)
+            if _is_synthetic_doc('__new__', prose):
+                prose = None
+            source = _doc_location(class_path, carrier)
+        if prose is None and source_constructor is not None:
+            prose = source_constructor.prose
+            source = source_constructor.source
         yield _subject(
             f'{name}.__new__',
             'constructor',
             prose,
             _parameters(cls),
-            _doc_location(class_path, carrier),
+            source,
         )
 
-    class_parameters = (
-        None
-        if source_constructor is not None
-        or constructible_stub
-        or prohibited_stub_constructor
-        else _parameters(cls)
-    )
-    yield _subject(name, 'class', class_doc, class_parameters, class_source)
+    yield _subject(name, 'class', class_doc, None, class_source)
+    if class_node is None:
+        return
 
     stub_groups = groups
     runtime_names = tuple(
@@ -587,10 +663,14 @@ def _class_subjects(
             decorator_names(carrier) & {'property', 'getter'}
         )
         static = inspect.getattr_static(cls, member_name, None)
-        property_like = stub_property or isinstance(static, property) or (
-            static is not None
-            and inspect.isdatadescriptor(static)
-            and not callable(static)
+        property_like = (
+            stub_property
+            or isinstance(static, property)
+            or (
+                static is not None
+                and inspect.isdatadescriptor(static)
+                and not callable(static)
+            )
         )
         if member_name in descriptor_carriers:
             source = descriptor_carriers[member_name][1]
@@ -660,11 +740,16 @@ def iter_doc_subjects(
     """Enumerate documented public subjects from the stub and runtime surface.
 
     Runtime ``__all__`` adds facade names; stub declarations supply carrier
-    locations and overload ownership. Configured surfaces expose Python
-    re-exports, and static class lookup classifies properties without invoking
-    their getters.
+    locations and overload ownership. Configured surfaces expose Python class
+    re-exports; only stub-declared classes add member subjects. Static class
+    lookup classifies their properties without invoking getters.
     """
-    constructor_sources = constructor_sources or {}
+    if constructor_sources is None:
+        constructor_sources = (
+            _rust_constructor_sources(ctx.cfg)
+            if sys.implementation.name == 'cpython'
+            else {}
+        )
     modules = [runtime_module] if runtime_module is not None else []
     classes: list[tuple[str, type]] = []
     if ctx.cfg.surface is not None:
@@ -733,6 +818,7 @@ def iter_doc_subjects(
                 seen_subjects.add(key)
                 yield subject
 
+
 def check_doc_subject(subject: DocSubject) -> list[str]:
     """Check one carrier's selected signature against the shared parsed prose."""
     parsed = parse_doc(subject.prose)
@@ -763,8 +849,7 @@ def check_doc_subject(subject: DocSubject) -> list[str]:
                     )
         documented_names = {name for entry in documented for name in entry.names}
         errors.extend(
-            f'{subject.qualname}: documented parameter {name!r} is not in the '
-            'signature'
+            f'{subject.qualname}: documented parameter {name!r} is not in the signature'
             for name in sorted(documented_names - parameter_names)
         )
     if subject.kind != 'class' and not return_entries(parsed):

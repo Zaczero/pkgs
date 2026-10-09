@@ -281,6 +281,8 @@ GATES: tuple[Gate, ...] = (
         success='doc contract OK',
         remedy='document it in the Rust `///` comment, or in the stub override',
         subject='public symbol',
+        requires_cpython=True,
+        cpython_reason='the Rust source parser has no PyPy wheel',
     ),
     Gate(
         name='doc-structure',
@@ -289,6 +291,8 @@ GATES: tuple[Gate, ...] = (
         success='doc structure OK',
         remedy='document the parameter, or the return, in the Rust `///`',
         subject='documented member',
+        requires_cpython=True,
+        cpython_reason='the Rust source parser has no PyPy wheel',
     ),
     Gate(
         name='gen-docs-sync',

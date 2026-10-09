@@ -23,7 +23,6 @@ from __future__ import annotations
 
 import ast
 import inspect
-import types
 from collections import Counter
 from typing import TYPE_CHECKING, TypeVar
 
@@ -33,12 +32,12 @@ from pyo3stubs.ast_util import (
     _runtime_doc_for_stub,
     annotated_data_descriptors,
     decorator_names,
-    doc_of,
 )
 from pyo3stubs.context import CheckContext
 from pyo3stubs.rust_scan import constructor_docs
 
 if TYPE_CHECKING:
+    import types
     from collections.abc import Iterator
 
     from pyo3stubs.config import StubConfig

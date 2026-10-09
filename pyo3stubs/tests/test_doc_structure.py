@@ -92,9 +92,7 @@ def test_an_undocumented_parameter_is_flagged():
         doc,
         tuple(inspect.signature(sample).parameters.values()),
     )
-    assert check_doc_subject(subject) == [
-        "sample: parameter 'scale' is not documented"
-    ]
+    assert check_doc_subject(subject) == ["sample: parameter 'scale' is not documented"]
 
 
 def test_a_documented_parameter_that_left_the_signature_is_flagged():
@@ -117,9 +115,7 @@ def test_a_missing_returns_section_is_flagged():
         doc,
         tuple(inspect.signature(sample).parameters.values()),
     )
-    assert any(
-        'no Returns section' in error for error in check_doc_subject(subject)
-    )
+    assert any('no Returns section' in error for error in check_doc_subject(subject))
 
 
 def test_a_documented_default_must_match_the_runtime():
@@ -250,6 +246,97 @@ def test_parsed_entries_preserve_numpy_and_google_default_forms():
     )
 
 
+@pytest.mark.parametrize(
+    ('style', 'section', 'header', 'expected_type', 'expected_default'),
+    [
+        pytest.param(
+            'numpy',
+            'Parameters',
+            "literal : Literal['x, default 3']",
+            "Literal['x, default 3']",
+            None,
+            id='numpy-literal-without-default',
+        ),
+        pytest.param(
+            'numpy',
+            'Parameters',
+            "literal : Literal['x, default 3'], default None",
+            "Literal['x, default 3']",
+            'None',
+            id='numpy-literal-with-outer-default',
+        ),
+        pytest.param(
+            'google',
+            'Args',
+            "literal (Literal['x, default 3']): A literal value.",
+            "Literal['x, default 3']",
+            None,
+            id='google-literal-without-default',
+        ),
+        pytest.param(
+            'google',
+            'Args',
+            "literal (Literal['x, default 3'], default=None): A literal value.",
+            "Literal['x, default 3']",
+            'None',
+            id='google-literal-with-outer-default',
+        ),
+        pytest.param(
+            'numpy',
+            'Returns',
+            "Literal['x, default 3']",
+            "Literal['x, default 3']",
+            None,
+            id='numpy-literal-return',
+        ),
+        pytest.param(
+            'google',
+            'Returns',
+            "Literal['x, default 3']: A literal result.",
+            "Literal['x, default 3']",
+            None,
+            id='google-literal-return',
+        ),
+    ],
+)
+def test_default_markers_inside_literal_values_remain_type_text(
+    style,
+    section,
+    header,
+    expected_type,
+    expected_default,
+):
+    if style == 'numpy':
+        underline = '-' * len(section)
+        doc = f"""\
+        Use a literal value.
+
+        {section}
+        {underline}
+        {header}
+            Literal field.
+        """
+    else:
+        doc = f"""\
+        Use a literal value.
+
+        {section}:
+            {header}
+        """
+    parsed = parse_doc(doc)
+    entries = (
+        parameter_entries(parsed)
+        if section in {'Parameters', 'Args'}
+        else return_entries(parsed)
+    )
+
+    assert len(entries) == 1
+    assert (entries[0].type_text, entries[0].default_text) == (
+        expected_type,
+        expected_default,
+    )
+
+
 def test_google_returns_parse_full_types_and_keep_their_descriptions():
     doc = """\
     Compute several public result forms.
@@ -260,6 +347,7 @@ def test_google_returns_parse_full_types_and_keep_their_descriptions():
         Geometry | None: A geometry when one was found.
         numpy.ndarray: A dense coordinate array.
         Literal['EPSG:4326']: The selected coordinate reference.
+        Literal['x, default 3']: A literal value that contains default-like text.
         float
             One numeric measurement.
 
@@ -272,15 +360,16 @@ def test_google_returns_parse_full_types_and_keep_their_descriptions():
     parsed = parse_doc(doc)
     entries = return_entries(parsed)
 
-    assert [
-        (entry.type_text, entry.description)
-        for entry in entries
-    ] == [
+    assert [(entry.type_text, entry.description) for entry in entries] == [
         ('list[str]', 'A sequence of names.'),
         ('dict[str, int]', 'A map of identifiers to indexes.'),
         ('Geometry | None', 'A geometry when one was found.'),
         ('numpy.ndarray', 'A dense coordinate array.'),
         ("Literal['EPSG:4326']", 'The selected coordinate reference.'),
+        (
+            "Literal['x, default 3']",
+            'A literal value that contains default-like text.',
+        ),
         ('float', 'One numeric measurement.'),
         ('Iterator[Geometry]', 'The generated geometries.'),
         ('Geometry | None', 'The optional next geometry.'),
@@ -314,13 +403,8 @@ def test_class_overview_does_not_require_callable_returns():
         'Widget',
         """\
         A widget.
-
-        Parameters
-        ----------
-        size : int
-            Widget size.
         """,
-        (inspect.Parameter('size', inspect.Parameter.POSITIONAL_OR_KEYWORD),),
+        (),
         kind='class',
     )
     assert check_doc_subject(subject) == []

@@ -5,6 +5,9 @@ from __future__ import annotations
 import inspect
 from typing import Literal
 
+import pytest
+from pyo3stubs.doc_structure import DocLocation
+
 from tests._support import GOMETRY_ROOT, load_tool
 
 coverage = load_tool('doc_coverage', GOMETRY_ROOT / 'tools/stubs/_doc_coverage.py')
@@ -22,7 +25,7 @@ def _subject(
         kind,
         prose,
         parameters,
-        coverage.DocLocation('src/test.rs', 1),
+        DocLocation('src/test.rs', 1),
     )
 
 
@@ -37,6 +40,10 @@ def test_empty_raises_description_is_reported_from_parsed_entries() -> None:
         GeometryError
         InvalidGeometryError
             If the coverage contents are invalid.
+        GeometryTypeError
+            If an input has the wrong geometry type.
+        CRSMismatchError
+            If the input coordinate systems differ.
         """,
     )
 
@@ -155,11 +162,44 @@ def test_unknown_exception_and_bare_valueerror_are_rejected() -> None:
     ]
 
 
+@pytest.mark.parametrize(
+    ('qualname', 'exception'),
+    [
+        pytest.param('Point.x', 'AttributeError', id='empty-point-property'),
+        pytest.param(
+            'GeometryCollection.index', 'ValueError', id='collection-sequence-index'
+        ),
+        pytest.param(
+            'MultiLineString.index', 'ValueError', id='multiline-sequence-index'
+        ),
+        pytest.param('MultiPoint.index', 'ValueError', id='multipoint-sequence-index'),
+        pytest.param(
+            'MultiPolygon.index', 'ValueError', id='multipolygon-sequence-index'
+        ),
+    ],
+)
+def test_existing_python_protocol_exceptions_remain_allowed(
+    qualname: str,
+    exception: str,
+) -> None:
+    subject = _subject(
+        qualname,
+        f"""\
+        Inspect {qualname}.
+
+        Raises
+        ------
+        {exception}
+            If the requested value cannot be returned.
+        """,
+    )
+
+    assert coverage.check_subject_raises(subject) == []
+
+
 def test_free_aggregate_keeps_its_frame_error_without_assigning_it_to_array() -> None:
     free = coverage.required_raises('union_all', {'geometries'})
-    array_method = coverage.required_raises(
-        'GeometryArray.union_all', {'geometries'}
-    )
+    array_method = coverage.required_raises('GeometryArray.union_all', {'geometries'})
 
     assert 'CRSMismatchError' in free
     assert 'CRSMismatchError' not in array_method

@@ -10,7 +10,8 @@ module validates presence — no duplicated logic):
   carry its own hand-written docstring — on its docstring-carrier def (the last
   variant of an overload set, or the def itself when not overloaded).
 
-Stdlib-only (``ast``); pairs with the libcst-based writer in ``gen.py``.
+Pairs with the libcst-based writer in ``gen.py`` and reads ``#[new]`` prose
+through the retained Rust syntax tree when Python exposes only boilerplate.
 """
 
 from __future__ import annotations

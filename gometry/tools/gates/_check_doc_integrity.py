@@ -7,7 +7,7 @@ import ast
 import importlib
 import sys
 from pathlib import Path
-from types import ModuleType
+from typing import TYPE_CHECKING
 
 _TOOLS_ROOT = Path(__file__).resolve().parents[1]
 if str(_TOOLS_ROOT) not in sys.path:
@@ -18,10 +18,14 @@ from _gatelib import prepend_rust_source_import_paths, rust_source_config
 prepend_rust_source_import_paths()
 
 from pyo3stubs.ast_util import annotated_data_descriptors
-from pyo3stubs.config import StubConfig
 from pyo3stubs.context import CheckContext
 from pyo3stubs.doc_structure import duplicate_section_errors, iter_doc_subjects
 from pyo3stubs.rust_scan import _doc_line, iter_sources
+
+if TYPE_CHECKING:
+    from types import ModuleType
+
+    from pyo3stubs.config import StubConfig
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -63,9 +67,12 @@ def _rust_doc_blocks(source) -> list[tuple[int, str]]:
             node = pending.pop()
             if node.type == 'line_comment':
                 raw = node.text
-                if raw is not None and raw.lstrip().startswith(b'///'):
-                    if (doc := _doc_line(node)) is not None:
-                        comments.add((node.start_point[0] + 1, doc))
+                if (
+                    raw is not None
+                    and raw.lstrip().startswith(b'///')
+                    and (doc := _doc_line(node)) is not None
+                ):
+                    comments.add((node.start_point[0] + 1, doc))
             pending.extend(reversed(node.children))
 
     blocks: list[tuple[int, str]] = []
@@ -89,9 +96,7 @@ def _rust_doc_errors(cfg: StubConfig) -> list[str]:
     errors: list[str] = []
     for source in iter_sources(cfg, scope='all'):
         for start_line, doc in _rust_doc_blocks(source):
-            errors.extend(
-                duplicate_section_errors(doc, f'{source.label}:{start_line}')
-            )
+            errors.extend(duplicate_section_errors(doc, f'{source.label}:{start_line}'))
     return errors
 
 
