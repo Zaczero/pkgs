@@ -818,6 +818,12 @@ mod tests {
             geojson_text_summary(&shape).geojson_lower_bound(limit),
             TextWidthBound::Exceeds { limit: got } if got == limit
         ));
+        let error = to_wkt_with_srid(&shape, Some("not a CRS"), true)
+            .expect_err("WKT body width fails before SRID prefix validation");
+        assert!(matches!(
+            error.kind(),
+            crate::error::ErrorKind::Resource(crate::error::ResourceError::SizeOverflow)
+        ));
     }
 
     #[test]
