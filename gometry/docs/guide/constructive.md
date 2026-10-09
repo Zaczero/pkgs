@@ -201,27 +201,25 @@ print(panels(
 
 ### Output coordinates
 
-Overlay decides which pieces exist and how they touch from the exact stored
-coordinates of the operands. Vertices that come from an operand keep their
-stored coordinates. A constructed vertex, such as an edge crossing or a
-clip-rectangle endpoint, is published at the nearest representable binary64
-coordinate to its exact position whenever that assignment preserves the exact
-structure.
+For overlays, which pieces exist and how they touch are decided from the exact
+stored coordinates of the operands. Vertices that come from an operand keep
+their stored coordinates. A constructed vertex, such as an edge crossing, is
+published at the nearest representable binary64 coordinate to its exact
+position whenever that assignment preserves the exact structure.
 
-Occasionally two constructed vertices would round to the same coordinate, or
-rounding would make an edge touch a vertex it must miss. In that case, gometry
-searches the nearest coordinate and its adjacent binary64 values for the
-constructed vertices in conflict. It publishes only an assignment that
-preserves incidence, cyclic order, and faces, and verifies that assignment
-before returning it. Each moved coordinate stays within 1.5 times the larger
-spacing to its neighboring binary64 values on that axis. A stored vertex, or
-an exactly representable constructed coordinate, never moves. Clip-rectangle
-vertices stay on or inside the rectangle; geographic outputs never move a
-vertex onto a seam or pole. Z/M values are evaluated at the exact constructed
-vertex.
+Occasionally two constructed overlay vertices would round to the same
+coordinate, or rounding would make an edge touch a vertex it must miss. The
+overlay publisher searches the nearest coordinate and its adjacent binary64
+values for the constructed vertices in conflict. It publishes only an
+assignment that preserves incidence, cyclic order, and faces, and verifies
+that assignment before returning it. Each moved coordinate stays within 1.5
+times the larger spacing to its neighboring binary64 values on that axis. A
+stored vertex, or an exactly representable constructed coordinate, never
+moves. Geographic overlay output does not move a vertex onto a seam or pole.
+Z/M values are evaluated at the exact constructed vertex.
 
-If no assignment in the operation's admitted finite coordinate domain passes
-the certificate, it raises [`GeometryError`][gometry.GeometryError] with
+If no assignment in the overlay operation's admitted finite coordinate domain
+passes the certificate, it raises [`GeometryError`][gometry.GeometryError] with
 `code == 'output_unrepresentable'` instead of returning geometry with changed
 topology. This is a refusal under that operation's drawing domain and
 preservation contract, not a claim that every possible binary64 drawing of the
@@ -231,8 +229,6 @@ that no assignment exists. The `operation` attribute names the operation.
 Simplify the operands or [`snap`][gometry.snap] near-coincident borders to a
 common tolerance first. Overlaying a published result again is a new operation
 on its rounded coordinates and is not promised to reproduce the first result.
-The same certificate protects constructed vertices emitted by noding,
-polygonizing, clipping, subdividing, repair, and coverage cleaning.
 
 ### Dissolving many geometries: `union_all`
 
@@ -300,9 +296,13 @@ print(panels(panes, labels={'source': 'original track', 'result': 'retained vert
 drops the *least visually significant* vertices first (the ones spanning the
 smallest effective triangle), while `'dp'`
 ([Douglas–Peucker](https://en.wikipedia.org/wiki/Ramer%E2%80%93Douglas%E2%80%93Peucker_algorithm))
-drops vertices within a perpendicular-distance band of the retained chord. Both
-use the distance-scale `tolerance` (for `'vw'` the effective-area threshold is
-`tolerance**2 / 2`) and share the `preserve_topology=True` default.
+drops vertices within a perpendicular-distance band of the retained chord.
+Both use the distance-scale `tolerance` (for `'vw'` the effective-area
+threshold is `tolerance**2 / 2`) and share the `preserve_topology=True` default.
+With that default, valid polygonal components remain valid and non-collapsed,
+and simple lineal components remain simple. A
+[`GeometryCollection`][gometry.GeometryCollection] is checked child by child;
+relationships between separate children can change.
 
 [`offset_curve`][gometry.Geometry.offset_curve] produces a line parallel to a
 [`LineString`][gometry.LineString] at a signed distance (positive = left of the direction of

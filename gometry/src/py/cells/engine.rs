@@ -38,10 +38,8 @@ pub(super) fn cell_items<'py>(cells: &Bound<'py, PyAny>) -> PyResult<Vec<Bound<'
     if cells.cast::<pyo3::types::PyString>().is_ok() {
         return Ok(vec![cells.clone()]);
     }
-    // Fallible growth (D10): `h3_union(itertools.repeat(cell))` etc. must
-    // MemoryError rather than hang / capacity-overflow abort. A scalar is
-    // recognized from the absence of both iterable protocols; an exception
-    // raised by a supplied protocol belongs to that provider.
+    // Only plain non-iterables are scalar singleton inputs; errors raised by
+    // a supplied iterable protocol belong to that provider.
     let iter = match cells.try_iter() {
         Ok(iter) => iter,
         Err(error)

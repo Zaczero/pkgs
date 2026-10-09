@@ -184,7 +184,9 @@ impl PySpatialIndex {
 
     /// Return the geometry at a live handle.
     ///
-    /// Raises ``KeyError`` when the handle is unknown or has been removed.
+    /// The handle must be a non-negative integer accepted by ``__index__``;
+    /// ``bool`` is not accepted. Raises ``KeyError`` when a valid handle is
+    /// unknown or has been removed.
     ///
     /// Returns
     /// -------
@@ -283,8 +285,9 @@ impl PySpatialIndex {
     /// Parameters
     /// ----------
     /// handle : int
-    ///     A row handle (positional-only; handles are integers, so a
-    ///     non-integer probe raises ``TypeError`` like ``Mapping.get``).
+    ///     A non-negative integer/index handle (positional-only; ``bool`` is
+    ///     rejected). Invalid or negative handles raise instead of returning
+    ///     ``default``.
     ///
     /// default : object, optional
     ///     Value returned when the handle is not live.
@@ -953,16 +956,19 @@ impl PySpatialIndex {
     ///
     /// A single `Geometry` returns one ``int`` handle. A `GeometryArray` or
     /// generic iterable of geometries returns a read-only `int64` ndarray of
-    /// handles in input order. Batch inserts follow the same frame and envelope rules as scalar
-    /// insert: the first inserted row fixes an empty index's CRS/epoch frame,
-    /// later inserts must match it, and geographic antimeridian-crossing rows use
-    /// the wrapped-band envelope required by ``self_join``.
+    /// handles in input order. Batch inserts follow the same frame rules as
+    /// scalar insert: the first inserted row fixes an empty index's CRS/epoch
+    /// frame, and later inserts must match it. A GeometryArray containing a
+    /// missing row is rejected. All input-validation failures leave the index
+    /// unchanged; this is not a transaction guarantee for allocation or
+    /// publication failures.
     ///
     /// Parameters
     /// ----------
     /// values : Geometry or GeometryArray or iterable of Geometry
-    ///     Values to append to the index; all must share the
-    ///     index's CRS/epoch frame. Empty geometries cannot be inserted.
+    ///     Values to append to the index; all must share the index's
+    ///     CRS/epoch frame. Empty geometries and missing GeometryArray rows
+    ///     cannot be inserted.
     ///
     /// Returns
     /// -------
@@ -976,7 +982,8 @@ impl PySpatialIndex {
     ///     If the geometry or geometries do not share the index's CRS/epoch
     ///     frame.
     /// GeometryError
-    ///     If any inserted geometry is empty.
+    ///     If any inserted geometry is empty, or a GeometryArray contains a
+    ///     missing row.
     ///
     /// Examples
     /// --------

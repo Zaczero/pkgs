@@ -211,8 +211,8 @@ pub(super) fn collect_h3_index_ids<I: H3Index>(
         validate_h3_index_ids::<I>(&values)?;
         return Ok(values);
     }
-    // Fallible growth (D10): `H3VertexArray(itertools.repeat(...))` etc. must
-    // MemoryError rather than capacity-overflow abort / hang.
+    // Collect id-like iterables through the shared admission boundary after
+    // packed integer arrays and buffers have been handled.
     crate::collect_py_iter(ids, |item| parse(&item).map(H3Index::id)).map_err(|err| {
         if err.is_instance_of::<pyo3::exceptions::PyMemoryError>(ids.py()) {
             err

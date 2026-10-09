@@ -355,13 +355,15 @@ print(f"city area: {city.area/1e6:.0f} km²")
 
 For geographic shape area and length, each stored edge is straight in the
 longitude/latitude chart. A constant-latitude edge therefore follows its
-parallel, rather than the shortest geodesic between its endpoints. WKT and
-GeoJSON store only vertices; they do not encode an edge model. When the source
-means a rhumb line or a path in a particular projected frame, **generate
-intermediate vertices with that intended algorithm** before construction —
-ordinary densify interpolates the stored chart edge and does not synthesize a
-rhumb route. Split or otherwise disambiguate half-period edges that have no
-unique chart direction.
+parallel, rather than the shortest geodesic between its endpoints. WKT records
+vertices without specifying an edge interpolation rule. GeoJSON follows RFC
+7946's straight Cartesian interpolation in its WGS 84 longitude/latitude
+coordinate system; it has no geodesic or rhumb-line edge option. To represent a
+geodesic, rhumb line, or path defined in another projected frame, **sample that
+path into intermediate vertices before writing GeoJSON**. The serialized
+segments remain straight between those samples. Ordinary densify interpolates
+the stored chart edge and does not synthesize a rhumb route. Split or otherwise
+disambiguate half-period edges that have no unique chart direction.
 
 For geographic shape pairs, [`distance`][gometry.distance],
 [`dwithin`][gometry.dwithin],

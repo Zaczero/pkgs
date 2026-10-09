@@ -1259,9 +1259,8 @@ fn to_numpy(slf: Bound<'_, Self>) -> PyResult<Py<PyAny>> {
 
     /// Center points of every cell, as a packed WGS84 point array.
     ///
-    /// The bulk twin of each scalar cell's center property — one
-    /// vectorized call for the index-millions-of-points workflow, returning
-    /// zero-copy packed point storage.
+    /// Computes each center from its cell id and allocates a packed point
+    /// coordinate column.
     ///
     /// Returns
     /// -------

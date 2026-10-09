@@ -765,8 +765,6 @@ h3_index_array_common! {
     ///     has unsupported dimensions.
     /// ParseError
     ///     If an id or token does not identify a valid H3 vertex.
-    /// MemoryError
-    ///     If the input cannot be collected into the array.
     impl PyH3VertexArray {
         iter: PyH3VertexArrayIter,
         scalar: PyH3Vertex,
@@ -808,8 +806,6 @@ h3_index_array_common! {
     ///     has unsupported dimensions.
     /// ParseError
     ///     If an id or token does not identify a valid H3 directed edge.
-    /// MemoryError
-    ///     If the input cannot be collected into the array.
     impl PyH3EdgeArray {
         iter: PyH3EdgeArrayIter,
         scalar: PyH3Edge,

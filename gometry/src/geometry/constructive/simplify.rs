@@ -1054,10 +1054,11 @@ impl Shape {
         })
     }
 
-    /// Whether raw output preserved what `preserve_topology` promises:
-    /// polygonal output stays valid and non-collapsed; simple lineal input
+    /// Whether raw output satisfies the per-geometry topology checks:
+    /// valid polygonal input stays valid and non-collapsed; simple lineal input
     /// stays simple, and closed line strings retain a closed non-degenerate
-    /// form.
+    /// form. Geometry-collection children are checked independently, so
+    /// relationships between separate children are not preserved.
     fn simplify_kept_topology(&self, simplified: &Self) -> Result<bool> {
         match self {
             Self::Polygon(_) | Self::MultiPolygon(_) => {
