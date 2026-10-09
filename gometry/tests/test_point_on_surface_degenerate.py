@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
+from fractions import Fraction
+from itertools import pairwise
 from typing import cast
 
 import gometry as gm
@@ -21,6 +23,44 @@ def _holed_donut() -> gm.Geometry:
         [(0, 0), (10, 0), (10, 10), (0, 10), (0, 0)],
         holes=[[(3, 3), (7, 3), (7, 7), (3, 7), (3, 3)]],
     )
+
+
+def _ring_location_exact(
+    ring: list[tuple[float, float]], point: tuple[float, float]
+) -> tuple[bool, bool]:
+    """Return (inside, boundary) using exact rational orientation and parity."""
+    exact_ring = [(Fraction(x), Fraction(y)) for x, y in ring]
+    px, py = (Fraction(value) for value in point)
+    inside = False
+    for (ax, ay), (bx, by) in pairwise(exact_ring):
+        orientation = (bx - ax) * (py - ay) - (by - ay) * (px - ax)
+        if (
+            orientation == 0
+            and min(ax, bx) <= px <= max(ax, bx)
+            and min(ay, by) <= py <= max(ay, by)
+        ):
+            return False, True
+        if (ay <= py < by and orientation > 0) or (by <= py < ay and orientation < 0):
+            inside = not inside
+    return inside, False
+
+
+def _polygon_covers_exact(polygon: gm.Polygon, point: tuple[float, float]) -> bool:
+    shell_inside, shell_boundary = _ring_location_exact(
+        list(polygon.exterior.coords), point
+    )
+    if not shell_inside and not shell_boundary:
+        return False
+    return all(
+        not _ring_location_exact(list(hole.coords), point)[0]
+        for hole in polygon.interiors
+    )
+
+
+def _geometry_covers_exact(geometry: gm.Geometry, point: tuple[float, float]) -> bool:
+    if geometry.geometry_type == 'Polygon':
+        return _polygon_covers_exact(cast('gm.Polygon', geometry), point)
+    return any(_geometry_covers_exact(part, point) for part in geometry.parts)
 
 
 SURFACE_CASES = [
@@ -48,6 +88,102 @@ def test_point_on_surface_satisfies_covers_invariant(case: SurfaceCase) -> None:
     assert math.isfinite(point.x)
     assert math.isfinite(point.y)
     _assert_covers_invariant(case.geom, point)
+
+
+def test_adjacent_float_polygon_candidates_are_exactly_covered() -> None:
+    unit = 2.0**-52
+    vertices = [(1.0, 0.0), (1.0 + unit, 2.0), (1.0 + unit, 3.0), (1.0, 0.0)]
+    polygons = [
+        gm.Polygon(vertices),
+        gm.Polygon([(-x, y) for x, y in vertices]),
+        gm.Polygon([(x, y + 8.0) for x, y in vertices]),
+        gm.Polygon([(-x, 8.0 - y) for x, y in vertices]),
+    ]
+
+    for polygon in polygons:
+        point = polygon.point_on_surface()
+        assert _polygon_covers_exact(cast('gm.Polygon', polygon), (point.x, point.y))
+        collection = gm.GeometryCollection([polygon])
+        collection_point = collection.point_on_surface()
+        assert _geometry_covers_exact(
+            collection, (collection_point.x, collection_point.y)
+        )
+
+
+def test_surface_scanline_preserves_hole_and_tie_rules_with_exact_membership() -> None:
+    donut = _holed_donut()
+    donut_point = donut.point_on_surface()
+    assert (donut_point.x, donut_point.y) == (8.5, 5.0)
+    assert _polygon_covers_exact(
+        cast('gm.Polygon', donut), (donut_point.x, donut_point.y)
+    )
+
+    first = gm.box(0, 0, 10, 10)
+    second = gm.box(20, 0, 30, 10)
+    multipolygon = gm.MultiPolygon([first, second])
+    component_tie = multipolygon.point_on_surface()
+    assert (component_tie.x, component_tie.y) == (5.0, 5.0)
+    assert _geometry_covers_exact(multipolygon, (component_tie.x, component_tie.y))
+
+    equal_chords = gm.Polygon([
+        (0, 0),
+        (2, 0),
+        (2, 6),
+        (6, 6),
+        (6, 0),
+        (8, 0),
+        (8, 8),
+        (0, 8),
+        (0, 0),
+    ])
+    chord_tie = equal_chords.point_on_surface()
+    assert (chord_tie.x, chord_tie.y) == (7.0, 4.0)
+    assert _polygon_covers_exact(
+        cast('gm.Polygon', equal_chords), (chord_tie.x, chord_tie.y)
+    )
+
+
+def test_typed_empty_and_nullable_reversed_duplicate_polygon_gather() -> None:
+    empty = gm.from_wkt('POLYGON EMPTY')
+    assert empty.point_on_surface().is_empty
+
+    unit = 2.0**-52
+    triangle = gm.Polygon([
+        (1.0, 0.0),
+        (1.0 + unit, 2.0),
+        (1.0 + unit, 3.0),
+        (1.0, 0.0),
+    ])
+    translated = gm.Polygon([
+        (1.0, 8.0),
+        (1.0 + unit, 10.0),
+        (1.0 + unit, 11.0),
+        (1.0, 8.0),
+    ])
+    source = gm.GeometryArray([triangle, None, translated])
+    gather = source[[2, 1, 0, 2]]
+    result = gather.point_on_surface()
+    assert result.is_missing.tolist() == [False, True, False, False]
+
+    expected = [translated, None, triangle, translated]
+    for index, source_polygon in enumerate(expected):
+        if source_polygon is not None:
+            point = result[index]
+            assert _polygon_covers_exact(
+                cast('gm.Polygon', source_polygon), (point.x, point.y)
+            )
+
+
+def test_geographic_split_point_on_surface_is_covered_by_source_and_split_parts() -> (
+    None
+):
+    source = gm.Polygon([(170, 40), (-170, 40), (-170, 50), (170, 50)], crs=4326)
+    split = source.split_antimeridian()
+
+    point = source.point_on_surface()
+
+    assert gm.covered_by(point, source)
+    assert _geometry_covers_exact(split, (point.x, point.y))
 
 
 def test_equal_width_polygon_components_keep_first_input_order() -> None:

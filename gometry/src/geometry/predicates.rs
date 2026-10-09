@@ -17,7 +17,8 @@ pub(in crate::geometry) use membership::{
     PolygonContact, multi_polygon_members_issue, polygon_rings_issue_with_contacts,
 };
 pub(crate) use membership::{
-    RingClass, TouchDirections, ring_classify_point, ring_contains_interior, ring_label,
+    RingClass, TouchDirections, ring_classify_point, ring_classify_point_columns,
+    ring_contains_interior, ring_label,
 };
 #[cfg(test)]
 pub(crate) use pole::ring_bounded_pole;

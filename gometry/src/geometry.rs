@@ -245,9 +245,10 @@ use predicates::{
 pub(in crate::geometry) use predicates::{PolygonContact, remove_antenna_vertices};
 pub(crate) use predicates::{
     RingClass, fan_alternations, line_is_ccw, line_is_closed_in_domain, line_is_simple,
-    line_is_valid, polygon_is_valid, shape_encloses_pole_in_frame, shape_has_polar_ring_in_frame,
-    shape_is_closed_in_domain, shape_reaches_geographic_pole_in_frame, validate_line,
-    validate_point, validate_points, validate_ring,
+    line_is_valid, polygon_is_valid, ring_classify_point_columns, shape_encloses_pole_in_frame,
+    shape_has_polar_ring_in_frame, shape_is_closed_in_domain,
+    shape_reaches_geographic_pole_in_frame, validate_line, validate_point, validate_points,
+    validate_ring,
 };
 pub(in crate::geometry) use segments::{
     DdInterval, SegmentParameter, clip_segment_parameter, dd_strict_cmp, exact_crossing_parameter,
