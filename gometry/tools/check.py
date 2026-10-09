@@ -3,8 +3,9 @@
 
 The fix phase rewrites the checkout: Rust and Python formatting, machine-applicable
 Clippy and Ruff fixes, and stub docstrings regenerated from the runtime. The checks
-then report only what needs judgment. `--no-fix` runs the checks alone, for a
-checkout that should not be rewritten, such as CI.
+then report only what needs judgment. `--prepare` runs those preparation steps and
+prints the runtime package root without running checks. `--no-fix` runs checks
+without rewriting the checkout.
 """
 
 from __future__ import annotations
@@ -174,10 +175,18 @@ def main() -> int:
         allow_abbrev=False,
         **({'color': False} if sys.version_info >= (3, 14) else {}),
     )
-    parser.add_argument(
-        '--no-fix', action='store_true', help='run the checks without rewriting files'
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument(
+        '--no-fix', action='store_true', help='run checks without rewriting files'
     )
-    no_fix = parser.parse_args().no_fix
+    mode.add_argument(
+        '--prepare',
+        action='store_true',
+        help='prepare and print the runtime package root without running checks',
+    )
+    options = parser.parse_args()
+    no_fix = options.no_fix
+    prepare_only = options.prepare
     environment = os.environ.copy()
     runtime_failure: str | None = None
     if no_fix:
@@ -194,7 +203,8 @@ def main() -> int:
                 environment = _child_environment(admission.receipt)
             except runtime_artifact.QualityPreparationRequired as error:
                 runtime_failure = (
-                    f'{error}; run `{sys.executable} tools/check.py` to prepare it'
+                    f'{error}; run `{sys.executable} tools/check.py --prepare` '
+                    'to prepare it'
                 )
             except Exception as error:
                 runtime_failure = str(error)
@@ -231,6 +241,10 @@ def main() -> int:
         except Exception as error:
             print(f'final quality runtime staging failed: {error}', file=sys.stderr)
             return 1
+
+        if prepare_only:
+            print(receipt['package_root'])
+            return 0
 
     failed: list[str] = []
     skipped: list[str] = []

@@ -946,13 +946,14 @@ def require_runtime(
             raise SystemExit(
                 f'Gometry is already imported; cannot replace it after stale admission: '
                 f'{stale}. Start a fresh process after `{sys.executable} '
-                f'{root / "tools" / "check.py"}`'
+                f'{root / "tools" / "check.py"} --prepare`'
             ) from None
         command = [sys.executable, str(root / 'tools' / 'check.py')]
         if not prepare_if_stale:
             raise SystemExit(
                 f'identified Gometry runtime is stale: {stale}; run '
-                f'`{sys.executable} {root / "tools" / "check.py"}` to prepare or refresh it'
+                f'`{sys.executable} {root / "tools" / "check.py"} --prepare` '
+                'to prepare it for tests'
             ) from None
         print(
             f'identified Gometry runtime is stale ({stale}); preparing it with '
