@@ -2,16 +2,25 @@
 #[path = "../cmake_flags.rs"]
 mod cmake_flags;
 
+#[cfg(not(feature = "nobuild"))]
 use std::env;
+#[cfg(not(feature = "nobuild"))]
 use std::fs::{self, File};
+#[cfg(not(feature = "nobuild"))]
 use std::path::{Path, PathBuf};
 
+#[cfg(not(feature = "nobuild"))]
 use flate2::read::GzDecoder;
+#[cfg(not(feature = "nobuild"))]
 use tar::Archive;
 
+#[cfg(not(feature = "nobuild"))]
 const MINIMUM_PROJ_VERSION: &str = "9.6.2";
+#[cfg(not(feature = "nobuild"))]
 const PROJ_ARCHIVE_SIZE: usize = 6_394_614;
+#[cfg(not(feature = "nobuild"))]
 const PROJ_ARCHIVE_FNV1A64: u64 = 0x0F8C94421730578E;
+#[cfg(not(feature = "nobuild"))]
 const PROJ_SOURCE_OVERRIDES: [(&str, &str); 3] = [
     ("aea.cpp", "src/projections/aea.cpp"),
     ("merc.cpp", "src/projections/merc.cpp"),
@@ -101,6 +110,7 @@ fn generate_bindings(include_path: std::path::PathBuf) -> Result<(), Box<dyn std
 }
 
 // returns the path of "include" for the built proj
+#[cfg(not(feature = "nobuild"))]
 fn build_from_source() -> Result<std::path::PathBuf, Box<dyn std::error::Error>> {
     eprintln!("building libproj from source");
     println!("cargo:rustc-cfg=bundled_build");
@@ -152,6 +162,7 @@ fn build_from_source() -> Result<std::path::PathBuf, Box<dyn std::error::Error>>
         source_list_contents.replacen(source_list_marker, source_list_replacement, 1),
     )?;
     let mut config = cmake::Config::new(source_dir);
+    cmake_flags::configure_fresh_build(&mut config);
     config.define("BUILD_SHARED_LIBS", "OFF");
     config.define("BUILD_TESTING", "OFF");
     config.define("BUILD_CCT", "OFF");
@@ -177,10 +188,18 @@ fn build_from_source() -> Result<std::path::PathBuf, Box<dyn std::error::Error>>
     // If these are not set, it's necessary that libsqlite3 exists on the build system
     // in a location accessible by cmake
     if let Ok(sqlite_include) = std::env::var("DEP_SQLITE3_INCLUDE") {
-        config.define("SQLITE3_INCLUDE_DIR", sqlite_include);
+        config.define("SQLite3_INCLUDE_DIR", sqlite_include);
     }
     if let Ok(sqlite_lib_dir) = std::env::var("DEP_SQLITE3_LIB_DIR") {
-        config.define("SQLITE3_LIBRARY", format!("{sqlite_lib_dir}/libsqlite3.a",));
+        let sqlite_library = if env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("msvc") {
+            "sqlite3.lib"
+        } else {
+            "libsqlite3.a"
+        };
+        config.define(
+            "SQLite3_LIBRARY",
+            PathBuf::from(sqlite_lib_dir).join(sqlite_library),
+        );
     }
 
     if cfg!(feature = "tiff") {
@@ -254,6 +273,7 @@ fn build_from_source() -> Result<std::path::PathBuf, Box<dyn std::error::Error>>
     Ok(proj.join("include"))
 }
 
+#[cfg(not(feature = "nobuild"))]
 fn verify_pinned_proj_archive(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
     let bytes = fs::read(path)?;
     if bytes.len() != PROJ_ARCHIVE_SIZE {
@@ -276,6 +296,7 @@ fn verify_pinned_proj_archive(path: &Path) -> Result<(), Box<dyn std::error::Err
     Ok(())
 }
 
+#[cfg(not(feature = "nobuild"))]
 fn replace_pinned_source(
     source_dir: &Path,
     relative: &str,
@@ -295,6 +316,7 @@ fn replace_pinned_source(
     Ok(())
 }
 
+#[cfg(not(feature = "nobuild"))]
 fn replace_pinned_source_section(
     source_dir: &Path,
     relative: &str,
@@ -324,6 +346,7 @@ fn replace_pinned_source_section(
     Ok(())
 }
 
+#[cfg(not(feature = "nobuild"))]
 fn remove_pinned_source_section(
     source_dir: &Path,
     relative: &str,
@@ -338,6 +361,7 @@ fn remove_pinned_source_section(
 /// These edits intentionally stay as small source anchors rather than copying
 /// generated upstream files. A changed archive, version, or anchor fails the
 /// build instead of silently producing a different CRS engine.
+#[cfg(not(feature = "nobuild"))]
 fn apply_pinned_semantic_patches(source_dir: &Path) -> Result<(), Box<dyn std::error::Error>> {
     replace_pinned_source(
         source_dir,
@@ -1214,6 +1238,7 @@ PJ *PJ_CONVERSION(unitconvert, 0) {"#,
     Ok(())
 }
 
+#[cfg(not(feature = "nobuild"))]
 fn configure_path_remapping(config: &mut cmake::Config) {
     cmake_flags::configure_path_remapping(config);
     if env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("msvc") {
