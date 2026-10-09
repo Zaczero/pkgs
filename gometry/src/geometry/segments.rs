@@ -1549,9 +1549,14 @@ pub(in crate::geometry) struct SquaredDistanceFilter {
 
 impl SquaredDistanceFilter {
     const UNIT_ROUNDOFF: f64 = f64::EPSILON / 2.0;
-    const POINT_PAIR_ERROR: f64 = 8.0 * Self::UNIT_ROUNDOFF;
-    const STRIP_NORM_ERROR: f64 = 4.0 * Self::UNIT_ROUNDOFF;
+    // Outward reciprocals of 1±8u and 1±4u. Multiplication plus nextafter
+    // encloses the same quotient without dividing for each bound.
+    const POINT_PAIR_LOWER_SCALE: f64 = f64::from_bits(0x3FEF_FFFF_FFFF_FFF8);
+    const POINT_PAIR_UPPER_SCALE: f64 = f64::from_bits(0x3FF0_0000_0000_0005);
+    const STRIP_NORM_LOWER_SCALE: f64 = f64::from_bits(0x3FEF_FFFF_FFFF_FFFC);
+    const STRIP_NORM_UPPER_SCALE: f64 = f64::from_bits(0x3FF0_0000_0000_0003);
     const DOT_ERROR: f64 = 8.0 * Self::UNIT_ROUNDOFF;
+    const SIGN_MASK: u64 = 1 << 63;
     // Keep each source operand and subtraction in [2^-200, 2^200], so
     // degree-four products stay normal and finite; unsafe stages decline.
     const MIN_OPERAND: f64 = f64::from_bits(0x3370_0000_0000_0000);
@@ -1573,30 +1578,28 @@ impl SquaredDistanceFilter {
     fn certified_point_pair(left: XY, right: XY) -> Option<Self> {
         let dx = filter_difference(left.x, right.x)?;
         let dy = filter_difference(left.y, right.y)?;
-        let dx_squared = checked_normal_product(dx, dx)?;
-        let dy_squared = checked_normal_product(dy, dy)?;
-        let squared = checked_normal_sum(dx_squared, dy_squared)?;
-        Self::nonnegative(squared, Self::POINT_PAIR_ERROR)
+        // The admitted residual band keeps both squares and their positive sum
+        // normal and finite, including exact zero residuals.
+        let squared = dx * dx + dy * dy;
+        Self::nonnegative(
+            squared,
+            Self::POINT_PAIR_LOWER_SCALE,
+            Self::POINT_PAIR_UPPER_SCALE,
+        )
     }
 
-    #[expect(
-        clippy::float_cmp,
-        reason = "an exactly zero squared distance has the exact [0, 0] enclosure"
-    )]
-    fn nonnegative(squared: f64, relative_error: f64) -> Option<Self> {
-        if squared == 0.0 {
+    fn nonnegative(squared: f64, lower_scale: f64, upper_scale: f64) -> Option<Self> {
+        if is_zero_bits(squared) {
             return Some(Self { lo: 0.0, hi: 0.0 });
         }
-        if !squared.is_normal() {
+        if !is_normal_bits(squared) {
             return None;
         }
-        // Divide by outward-widened 1±g; a final nextafter encloses quotient
-        // rounding without estimating the error through a rounded product.
-        let lower_denominator = (1.0 + relative_error).next_up();
-        let upper_denominator = (1.0 - relative_error).next_down();
-        let lo = (squared / lower_denominator).next_down().max(0.0);
-        let hi = (squared / upper_denominator).next_up();
-        (lo.is_normal() && hi.is_normal()).then_some(Self { lo, hi })
+        // If the rounded value has relative error at most g, the source value
+        // lies between squared/(1+g) and squared/(1-g).
+        let lo = (squared * lower_scale).next_down().max(0.0);
+        let hi = (squared * upper_scale).next_up();
+        (is_normal_bits(lo) && is_normal_bits(hi)).then_some(Self { lo, hi })
     }
 
     fn source_squared(squared: f64, relative_error: f64) -> Self {
@@ -1665,60 +1668,80 @@ impl SquaredDistanceFilter {
     }
 }
 
-#[expect(
-    clippy::float_cmp,
-    reason = "zero is the only admitted non-normal filter operand"
-)]
 fn filter_operand(value: f64) -> bool {
-    value == 0.0
-        || value.is_normal()
-            && value.abs() >= SquaredDistanceFilter::MIN_OPERAND
-            && value.abs() <= SquaredDistanceFilter::MAX_OPERAND
+    let magnitude = magnitude_bits(value);
+    if magnitude == 0 {
+        return true;
+    }
+    let exponent = magnitude >> 52;
+    let maximum = SquaredDistanceFilter::MAX_OPERAND.to_bits();
+    exponent != 0x7ff
+        && exponent >= (SquaredDistanceFilter::MIN_OPERAND.to_bits() >> 52)
+        && (exponent < (maximum >> 52) || magnitude == maximum)
 }
 
-#[expect(
-    clippy::float_cmp,
-    reason = "equal finite source coordinates have an exact zero residual"
-)]
+const fn magnitude_bits(value: f64) -> u64 {
+    value.to_bits() & !SquaredDistanceFilter::SIGN_MASK
+}
+
+const fn is_zero_bits(value: f64) -> bool {
+    magnitude_bits(value) == 0
+}
+
+const fn is_finite_bits(value: f64) -> bool {
+    magnitude_bits(value) >> 52 != 0x7FF
+}
+
+const fn is_normal_or_zero_bits(value: f64) -> bool {
+    let exponent = magnitude_bits(value) >> 52;
+    exponent == 0 && magnitude_bits(value) == 0 || exponent != 0 && exponent != 0x7FF
+}
+
+const fn is_normal_bits(value: f64) -> bool {
+    let exponent = magnitude_bits(value) >> 52;
+    exponent != 0 && exponent != 0x7FF
+}
+
+const fn are_exact_opposites(left: f64, right: f64) -> bool {
+    left.to_bits() ^ right.to_bits() == SquaredDistanceFilter::SIGN_MASK
+}
+
+const fn are_same_finite_number(left: f64, right: f64) -> bool {
+    left.to_bits() == right.to_bits() || is_zero_bits(left) && is_zero_bits(right)
+}
+
 fn filter_difference(left: f64, right: f64) -> Option<f64> {
     if !filter_operand(left) || !filter_operand(right) {
         return None;
     }
     let difference = left - right;
-    if difference == 0.0 {
-        return (left == right).then_some(0.0);
+    if is_zero_bits(difference) {
+        return are_same_finite_number(left, right).then_some(0.0);
     }
     filter_operand(difference).then_some(difference)
 }
 
-#[expect(
-    clippy::float_cmp,
-    reason = "a zero rounded product is exact only when an operand is zero"
-)]
 fn checked_normal_product(left: f64, right: f64) -> Option<f64> {
-    if !(left.is_normal() || left == 0.0) || !(right.is_normal() || right == 0.0) {
+    if !is_normal_or_zero_bits(left) || !is_normal_or_zero_bits(right) {
         return None;
     }
     let product = left * right;
-    if product == 0.0 {
-        return (left == 0.0 || right == 0.0).then_some(0.0);
+    if is_zero_bits(product) {
+        return Some(0.0);
     }
-    product.is_normal().then_some(product)
+    is_normal_bits(product).then_some(product)
 }
 
-#[expect(
-    clippy::float_cmp,
-    reason = "a zero rounded sum is exact only for exact cancellation or two zeros"
-)]
 fn checked_normal_sum(left: f64, right: f64) -> Option<f64> {
-    if !(left.is_normal() || left == 0.0) || !(right.is_normal() || right == 0.0) {
+    if !is_normal_or_zero_bits(left) || !is_normal_or_zero_bits(right) {
         return None;
     }
     let sum = left + right;
-    if sum == 0.0 {
-        return (left == -right || left == 0.0 && right == 0.0).then_some(0.0);
+    if is_zero_bits(sum) {
+        let both_zero = is_zero_bits(left) && is_zero_bits(right);
+        return (both_zero || are_exact_opposites(left, right)).then_some(0.0);
     }
-    sum.is_normal().then_some(sum)
+    is_normal_bits(sum).then_some(sum)
 }
 
 pub(in crate::geometry) fn clearance_aabb_filter(
@@ -1726,12 +1749,12 @@ pub(in crate::geometry) fn clearance_aabb_filter(
     aabb: [f64; 4],
 ) -> (ExactDistanceWitness, SquaredDistanceFilter) {
     let [lower_x, lower_y, upper_x, upper_y] = aabb;
-    if !point.x.is_finite()
-        || !point.y.is_finite()
-        || !lower_x.is_finite()
-        || !lower_y.is_finite()
-        || !upper_x.is_finite()
-        || !upper_y.is_finite()
+    if !is_finite_bits(point.x)
+        || !is_finite_bits(point.y)
+        || !is_finite_bits(lower_x)
+        || !is_finite_bits(lower_y)
+        || !is_finite_bits(upper_x)
+        || !is_finite_bits(upper_y)
         || lower_x > upper_x
         || lower_y > upper_y
     {
@@ -1852,10 +1875,6 @@ fn source_dot_difference_interval(normal: [f64; 2], left: XY, right: XY) -> Opti
         .add(DdInterval::exact(ny).mul(dy)?)
 }
 
-#[expect(
-    clippy::float_cmp,
-    reason = "zero products are accepted only as exact zero terms"
-)]
 fn source_dot_difference_binary64(normal: [f64; 2], left: XY, right: XY) -> Option<(f64, f64)> {
     let [nx, ny] = normal;
     if !filter_operand(nx) || !filter_operand(ny) {
@@ -1863,9 +1882,10 @@ fn source_dot_difference_binary64(normal: [f64; 2], left: XY, right: XY) -> Opti
     }
     let dx = filter_difference(left.x, right.x)?;
     let dy = filter_difference(left.y, right.y)?;
-    let x_product = checked_normal_product(nx, dx)?;
-    let y_product = checked_normal_product(ny, dy)?;
-    if x_product == 0.0 && y_product == 0.0 {
+    // The admitted operand/difference band keeps each nonzero product normal.
+    let x_product = nx * dx;
+    let y_product = ny * dy;
+    if is_zero_bits(x_product) && is_zero_bits(y_product) {
         return Some((0.0, 0.0));
     }
     let rounded = checked_normal_sum(x_product, y_product)?;
@@ -1887,17 +1907,13 @@ fn source_dot_difference_exact(normal: [f64; 2], left: XY, right: XY) -> Result<
         .try_add(ExactDyadic::from_f64(ny).try_product(&dy)?)
 }
 
-#[expect(
-    clippy::float_cmp,
-    reason = "the zero interval is exact only when both dot terms are exact zero"
-)]
 pub(crate) fn source_dot_cmp(normal: [f64; 2], left: XY, right: XY) -> Result<Ordering> {
     if let Some((lower, upper)) = source_dot_difference_binary64(normal, left, right) {
         let order = if lower > 0.0 {
             Some(Ordering::Greater)
         } else if upper < 0.0 {
             Some(Ordering::Less)
-        } else if lower == 0.0 && upper == 0.0 {
+        } else if is_zero_bits(lower) && is_zero_bits(upper) {
             Some(Ordering::Equal)
         } else {
             None
@@ -1942,10 +1958,6 @@ fn clearance_strip_filter_result(
     clearance_strip_dd_filter_result(point, normal, low, high, incumbent)
 }
 
-#[expect(
-    clippy::float_cmp,
-    reason = "zero gap endpoints are exact boundary cases in the interval proof"
-)]
 fn clearance_strip_binary64_result(
     point: XY,
     normal: [f64; 2],
@@ -1960,17 +1972,23 @@ fn clearance_strip_binary64_result(
     }
     let gap_lower = low_gap.0.max(high_gap.0).max(0.0);
     let gap_upper = low_gap.1.max(high_gap.1).max(0.0);
-    if !(gap_lower == 0.0 || gap_lower.is_normal()) || !(gap_upper == 0.0 || gap_upper.is_normal())
+    if !(is_zero_bits(gap_lower) || gap_lower.is_normal())
+        || !(is_zero_bits(gap_upper) || gap_upper.is_normal())
     {
         return None;
     }
 
     let [nx, ny] = normal;
-    let nx_squared = checked_normal_product(nx, nx)?;
-    let ny_squared = checked_normal_product(ny, ny)?;
+    // Both dot certificates above admitted the normal components in the same
+    // safe exponent band, so these squares cannot overflow or underflow.
+    let nx_squared = nx * nx;
+    let ny_squared = ny * ny;
     let norm_squared = checked_normal_sum(nx_squared, ny_squared)?;
-    let norm =
-        SquaredDistanceFilter::nonnegative(norm_squared, SquaredDistanceFilter::STRIP_NORM_ERROR)?;
+    let norm = SquaredDistanceFilter::nonnegative(
+        norm_squared,
+        SquaredDistanceFilter::STRIP_NORM_LOWER_SCALE,
+        SquaredDistanceFilter::STRIP_NORM_UPPER_SCALE,
+    )?;
     let key_lower = incumbent.filter.lo;
     let key_upper = incumbent.filter.hi;
     if !key_lower.is_normal()
@@ -1993,7 +2011,7 @@ fn clearance_strip_binary64_result(
         }
     }
 
-    let gap_upper_squared = if gap_upper == 0.0 {
+    let gap_upper_squared = if is_zero_bits(gap_upper) {
         0.0
     } else {
         checked_normal_product(gap_upper, gap_upper)?.next_up()
@@ -2108,9 +2126,15 @@ pub(crate) fn clearance_strip_exceeds(
 }
 
 pub(super) fn point_pair_distance_key(left: XY, right: XY) -> SquaredDistanceKey {
-    SquaredDistanceFilter::certified_point_pair(left, right)
-        .unwrap_or_else(SquaredDistanceFilter::unbounded)
-        .bind(ExactDistanceWitness::Points(left, right))
+    let witness = ExactDistanceWitness::Points(left, right);
+    let dx = left.x - right.x;
+    let dy = left.y - right.y;
+    let squared = dx * dx + dy * dy;
+    if squared_norm_is_trustworthy(squared, dx == 0.0 && dy == 0.0) {
+        SquaredDistanceFilter::point_pair(squared).bind(witness)
+    } else {
+        SquaredDistanceFilter::unbounded().bind(witness)
+    }
 }
 
 #[expect(

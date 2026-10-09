@@ -629,6 +629,28 @@ fn binary64_filter_declines_nonzero_products_that_underflow() {
 }
 
 #[test]
+fn touching_distance_intervals_defer_equal_witnesses_to_exact_selection() {
+    let left_witness = ExactDistanceWitness::Points(XY::new(0.0, 0.0), XY::new(1.0, 1.0));
+    let right_witness = ExactDistanceWitness::Points(XY::new(0.0, 0.0), XY::new(1.0, -1.0));
+    let left_filter = SquaredDistanceFilter { lo: 1.0, hi: 2.0 };
+    let right_filter = SquaredDistanceFilter { lo: 2.0, hi: 3.0 };
+    assert_eq!(
+        exact_selection_distance_cmp(left_witness, right_witness).unwrap(),
+        Ordering::Equal
+    );
+    assert_eq!(
+        left_filter.disjoint_cmp(right_filter),
+        None,
+        "touching conservative intervals do not establish strict distance order"
+    );
+    assert_eq!(
+        right_filter.disjoint_cmp(left_filter),
+        None,
+        "touching conservative intervals do not establish strict pruning order"
+    );
+}
+
+#[test]
 fn binary64_source_dot_enclosures_match_exact_dyadic_values() {
     let cases = [
         ([1.0, 1.0], XY::new(3.0, 4.0), XY::new(1.0, 2.0)),
