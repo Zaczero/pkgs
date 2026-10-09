@@ -852,6 +852,11 @@ assert_type(gm.s2_cover(POLY, level=12), gm.CellArray[gm.S2Cell])
 assert_type(
     gm.geohash_cover(gm.GeometryArray([POLY]), precision=5),
     gm.Groups[gm.CellArray[gm.GeohashCell]],
+assert_type(
+    gm.s2_cover_adaptive(gm.GeometryArray([POLY])),
+    gm.Groups[gm.CellArray[gm.S2Cell]],
+)
+assert_type(gm.s2_cover_adaptive(POLY), gm.CellArray[gm.S2Cell])
 )
 assert_type(gm.geohash_cover(POLY, precision=5), gm.CellArray[gm.GeohashCell])
 assert_type(

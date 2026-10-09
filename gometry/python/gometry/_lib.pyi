@@ -302,6 +302,7 @@ __all__ = [
     'rhumb_distance',
     's2_bounding_cell',
     's2_cells',
+    's2_cover_adaptive',
     's2_cover',
     's2_difference',
     's2_intersection',
@@ -22852,31 +22853,104 @@ def h3_base_cells() -> CellArray[H3Cell]:
 @overload
 def s2_cover(
     geom: GeometryArray[Geometry | None],
-    level: int | None = None,
+    level: int,
     *,
     cell_rule: CellRule = 'overlap',
     max_cells: int | None = 1000000,
-    target_cells: int = 8,
-    min_level: int | None = None,
-    max_level: int | None = None,
-    level_mod: Literal[1, 2, 3] = 1,
 ) -> Groups[CellArray[S2Cell]]: ...
 @overload
+    s2_cover_adaptive : Cover with adaptive levels.
+
+    Examples
+    --------
+    >>> import gometry as gm
+    >>> p = gm.Point(-122.4194, 37.7749, crs=4326)
+    >>> cov = gm.s2_cover(p, 12)
+    >>> cell = cov[0]
+    >>> assert cell is not None
+    >>> (len(cov), cell.token)
+    (1, '8085809')
+    """
+
+@overload
+def s2_cover_adaptive(
+    geom: GeometryArray[Geometry | None],
+    *,
+    target_cells: int = 8,
+    min_level: int = 0,
+    max_level: int = 30,
+    level_mod: Literal[1, 2, 3] = 1,
+    cell_rule: CellRule = 'overlap',
+    max_cells: int | None = 1000000,
+) -> Groups[CellArray[S2Cell]]: ...
+@overload
+def s2_cover_adaptive(
+    geom: Geometry,
+    *,
+    target_cells: int = 8,
+    min_level: int = 0,
+    max_level: int = 30,
+    level_mod: Literal[1, 2, 3] = 1,
+    cell_rule: CellRule = 'overlap',
+    max_cells: int | None = 1000000,
+) -> CellArray[S2Cell]:
+    """Cover a geometry with adaptively refined S2 cells.
+
+    ``target_cells`` guides refinement but is not a hard cap. Use ``max_cells``
+    for a hard output limit. Cells are coarsened only within the requested level
+    range, and emitted levels follow ``level_mod``. Array calls retain one group
+    per input row and share the total cap.
+
+    The four ``cell_rule`` values have the same meanings as in [`s2_cover`].
+
+    Parameters
+    ----------
+    geom : Geometry or GeometryArray
+        Geometry to cover (WGS84 lon/lat or projected). An array returns one
+        grouped cell row per input geometry.
+    target_cells : int, default 8
+        Approximate refinement target; the minimum admissible cover can exceed
+        this value.
+    min_level : int, default 0
+        Coarsest S2 level allowed.
+    max_level : int, default 30
+        Finest S2 level allowed.
+    level_mod : {1, 2, 3}, default 1
+        Restrict emitted levels to increments from ``min_level``.
+    cell_rule : {'within', 'center', 'overlap', 'bbox'}, default 'overlap'
+        Which cells to materialize. The rule never affects exact predicates.
+    max_cells : int or None, default 1000000
+        Hard cap on returned cells, applied cumulatively across array groups.
+        Pass ``None`` for an unlimited cover.
+
+    Returns
+    -------
+    CellArray or Groups of CellArray
+        A scalar returns its coverage; an array returns one cell group per row.
+
+    Raises
+    ------
+    GeometryError
+        If a parameter is invalid or the admissible starting cover exceeds
+        ``max_cells``.
+    InvalidGeometryError
+        If a scalar geometry is empty or coordinates leave the lon/lat domain.
+
+    See Also
+    --------
+    s2_cover : Cover at a fixed level.
+    s2_cells : Build S2 cells from lon/lat columns.
 def s2_cover(
     geom: Geometry,
-    level: int | None = None,
+    level: int,
     *,
     cell_rule: CellRule = 'overlap',
     max_cells: int | None = 1000000,
-    target_cells: int = 8,
-    min_level: int | None = None,
-    max_level: int | None = None,
-    level_mod: Literal[1, 2, 3] = 1,
 ) -> CellArray[S2Cell]:
-    """Cover a geometry with S2 cells within a level budget.
+    """Cover a geometry with S2 cells at one fixed level.
 
-    The result is a ``CellArray`` of S2 cells selected by ``cell_rule`` within
-    the level budget. Keep the source geometry separately and use the free
+    The result is a ``CellArray`` of S2 cells selected according to
+    ``cell_rule`` at the requested level. Keep the source geometry separately and use the free
     ``gm.*`` predicates for exact geometry questions.
 
     Parameters
@@ -22885,10 +22959,9 @@ def s2_cover(
         Geometry to cover (WGS84 lon/lat or projected). An array returns one
         grouped cell row per input geometry.
 
-    level : int, optional
-        S2 cell level (``0``-``30``; finer at higher values). Fixes both
-        ``min_level`` and ``max_level``. Omit for an adaptive multi-level
-        covering guided by ``target_cells``.
+    level : int
+        S2 cell level (``0``-``30``; finer at higher values). The level is
+        never coarsened to fit the output cap.
 
     cell_rule : {'within', 'center', 'overlap', 'bbox'}, default 'overlap'
         Which cells to materialize, strictest to loosest. ``'within'``: only
@@ -22901,24 +22974,9 @@ def s2_cover(
         The rule never affects the exact predicates.
 
     max_cells : int or None, default 1000000
-        Hard cap on returned cells and retained result allocation. Discarded
-        candidates do not consume it; array calls apply it cumulatively across
-        groups. For a fixed-level cover,
-        the level cannot be coarsened, so an insufficient cap raises. For an
-        adaptive cover, refinement stops and coarser cells are retained when
-        further children would exceed the cap; the result has at most
-        ``max_cells`` cells. Pass ``None`` for an unlimited cover.
-
-    target_cells : int, default 8
-        S2-idiomatic approximation target for optional adaptive refinement
-        when ``level`` is omitted. It does not affect fixed-level coverings.
-
-    min_level, max_level : int, optional
-        Coarsest/finest S2 levels allowed (default to ``level``).
-
-    level_mod : int, default 1
-        Restrict cells to levels a multiple of ``level_mod`` from
-        ``min_level``.
+        Hard cap on returned cells; array calls apply it cumulatively across
+        groups. An insufficient cap raises because the requested level is
+        fixed. Pass ``None`` for an unlimited cover.
 
     Returns
     -------
@@ -22928,11 +22986,10 @@ def s2_cover(
     Raises
     ------
     GeometryError
-        If the geometry, depth, or a coverage parameter is invalid, or if a
-        fixed-level cover exceeds ``max_cells``. An adaptive cover raises when
-        even its admissible starting cover cannot fit within the cap.
+        If the geometry, level, or a coverage parameter is invalid, or if the
+        cover exceeds ``max_cells``.
     InvalidGeometryError
-        If the geometry is empty or coordinates leave the lon/lat domain.
+        If a scalar geometry is empty or coordinates leave the lon/lat domain.
 
     See Also
     --------
@@ -22942,11 +22999,9 @@ def s2_cover(
     --------
     >>> import gometry as gm
     >>> p = gm.Point(-122.4194, 37.7749, crs=4326)
-    >>> cov = gm.s2_cover(p, level=12)
-    >>> cell = cov[0]
-    >>> assert cell is not None
-    >>> (len(cov), cell.token)
-    (1, '8085809')
+    >>> cov = gm.s2_cover_adaptive(p, target_cells=8)
+    >>> all(0 <= cell.level <= 30 for cell in cov if cell is not None)
+    True
     """
 
 @overload

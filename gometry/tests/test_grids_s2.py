@@ -146,7 +146,7 @@ def test_s2_bounds_coverage_membership() -> None:
     )
     assert not gm.contains(polygon, gm.Point(30.0, 52.0, crs=4326))
     with pytest.raises(ValueError):
-        gm.s2_cover(gm.box(0, 0, 1, 1), max_cells=0)
+        gm.s2_cover(gm.box(0, 0, 1, 1), level=1, max_cells=0)
 
 
 def test_s2_membership_is_exact_against_geometry_not_bounds() -> None:
@@ -402,7 +402,7 @@ def test_s2_adaptive_bbox_budget_is_global_and_exact_duplicates_are_free() -> No
     """Adaptive bbox windows share one finite deduplicated output budget."""
     separated = gm.MultiPoint([(0.0, 0.0), (120.0, 0.0)], crs=4326)
     with pytest.raises(gm.GeometryError, match='max_cells'):
-        gm.s2_cover(
+        gm.s2_cover_adaptive(
             separated,
             cell_rule='bbox',
             min_level=0,
@@ -411,7 +411,7 @@ def test_s2_adaptive_bbox_budget_is_global_and_exact_duplicates_are_free() -> No
             max_cells=1,
         )
 
-    covered = gm.s2_cover(
+    covered = gm.s2_cover_adaptive(
         separated,
         cell_rule='bbox',
         min_level=0,
@@ -423,7 +423,7 @@ def test_s2_adaptive_bbox_budget_is_global_and_exact_duplicates_are_free() -> No
     assert [cell.id for cell in covered] == sorted({cell.id for cell in covered})
 
     same_cell = gm.MultiPoint([(-75.0, 40.0), (-74.99, 40.01)], crs=4326)
-    deduplicated = gm.s2_cover(
+    deduplicated = gm.s2_cover_adaptive(
         same_cell,
         cell_rule='bbox',
         min_level=0,
@@ -439,29 +439,38 @@ def test_s2_bbox_exact_duplicate_windows_are_idempotent() -> None:
     window = gm.LineString([(-10.0, 0.0), (10.0, 0.0)], crs=4326)
     repeated = gm.GeometryCollection([window] * 8, crs=4326)
 
-    for options in (
-        {'level': 8, 'max_cells': None},
-        {
-            'min_level': 0,
-            'max_level': 30,
-            'target_cells': 8,
-            'max_cells': None,
-        },
-        {
-            'min_level': 0,
-            'max_level': 30,
-            'target_cells': 8,
-            'max_cells': 1,
-        },
-        {
-            'min_level': 0,
-            'max_level': 30,
-            'target_cells': 8,
-            'max_cells': 8,
-        },
+    for cover, options in (
+        (gm.s2_cover, {'level': 8, 'max_cells': None}),
+        (
+            gm.s2_cover_adaptive,
+            {
+                'min_level': 0,
+                'max_level': 30,
+                'target_cells': 8,
+                'max_cells': None,
+            },
+        ),
+        (
+            gm.s2_cover_adaptive,
+            {
+                'min_level': 0,
+                'max_level': 30,
+                'target_cells': 8,
+                'max_cells': 1,
+            },
+        ),
+        (
+            gm.s2_cover_adaptive,
+            {
+                'min_level': 0,
+                'max_level': 30,
+                'target_cells': 8,
+                'max_cells': 8,
+            },
+        ),
     ):
-        single = gm.s2_cover(window, cell_rule='bbox', **options)
-        duplicate = gm.s2_cover(repeated, cell_rule='bbox', **options)
+        single = cover(window, cell_rule='bbox', **options)
+        duplicate = cover(repeated, cell_rule='bbox', **options)
         assert [cell.id for cell in duplicate] == [cell.id for cell in single]
         if options['max_cells'] is not None:
             assert len(duplicate) <= options['max_cells']
@@ -1048,7 +1057,7 @@ def test_s2_within_certifies_against_the_complete_component_union() -> None:
 def test_s2_within_line_drops_invisible_candidates_at_every_level_mod() -> None:
     line = gm.LineString([(-50.0, -40.0), (50.0, -40.0)], crs=4326)
     for level_mod in (1, 2, 3):
-        assert not gm.s2_cover(
+        assert not gm.s2_cover_adaptive(
             line,
             cell_rule='within',
             min_level=0,
