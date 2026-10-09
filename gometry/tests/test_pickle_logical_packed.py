@@ -221,8 +221,15 @@ def test_packed_pickle_rejects_payloads_that_would_panic() -> None:
         'empty ring': lambda: _lib._unpickle_packed_array_v1(
             b'', b'', None, None, (offsets(0, 0), offsets(0, 1)), None, None, None
         ),
-        'no-shell polygon': lambda: _lib._unpickle_packed_array_v1(
-            b'', b'', None, None, (offsets(0), offsets(0, 0)), None, None, None
+        'descending polygon offsets': lambda: _lib._unpickle_packed_array_v1(
+            square_xs,
+            square_ys,
+            None,
+            None,
+            (offsets(0, 4), offsets(0, 1, 0)),
+            None,
+            None,
+            None,
         ),
     }
     for name, unpickle in rejected.items():
@@ -235,6 +242,21 @@ def test_packed_pickle_rejects_payloads_that_would_panic() -> None:
         b'', b'', None, None, (offsets(0), offsets(0)), None, None, None
     )
     assert len(empty) == 0
+
+
+def test_packed_pickle_accepts_present_zero_ring_polygon() -> None:
+    empty = _lib._unpickle_packed_array_v1(
+        b'',
+        b'',
+        None,
+        None,
+        (struct.pack('<i', 0), struct.pack('<2i', 0, 0)),
+        None,
+        None,
+        None,
+    )
+
+    assert empty.to_wkt() == ['POLYGON EMPTY']
 
 
 def test_polygon_pickle_rejects_active_ordinate_unclosed_rings() -> None:
