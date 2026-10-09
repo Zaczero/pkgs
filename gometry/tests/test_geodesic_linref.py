@@ -8,6 +8,7 @@ from itertools import pairwise
 from typing import Literal
 
 import gometry as gm
+import numpy as np
 import pyproj
 import pytest
 
@@ -963,7 +964,7 @@ def test_fraction_densify_keeps_step_count_independent_of_shared_budget() -> Non
     collection = gm.GeometryCollection([line, line])
 
     refined = collection.segmentize(fraction=0.5)
-    assert gm.get_coordinates(refined).shape == (6, 2)
+    assert np.asarray(refined.coords, dtype=np.float64).shape == (6, 2)
 
 
 def test_geographic_chart_lrs_matches_independent_parallel_oracle() -> None:

@@ -206,7 +206,6 @@ PAGES: tuple[Page, ...] = (
                 'from_polyline',
                 'from_wkb',
                 'from_wkt',
-                'get_coordinates',
                 'to_feature',
                 'to_feature_collection',
             ),

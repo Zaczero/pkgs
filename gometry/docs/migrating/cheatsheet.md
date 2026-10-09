@@ -42,7 +42,7 @@ Conventions: `import gometry as gm`; `geom` is a gometry geometry; and
 | — | [`geom.coordinate_axes`][gometry.Geometry.coordinate_axes] | |
 | — | [`geom.epoch`][gometry.Geometry.epoch] | |
 | `geom.crs` (n/a in Shapely) | [`geom.crs`][gometry.Geometry.crs] | |
-| `get_coordinates(geom)` | [`geom.coords`][gometry.Geometry.coords] (`list(...)`, `.x`/`.y`, `.index`) / [`gm.get_coordinates(...)`][gometry.get_coordinates] | Flat matrix; `return_index=True` adds a parallel source-row index. |
+| `shapely.get_coordinates(geom)` | [`geom.coords`][gometry.Geometry.coords] (`list(...)`, `.x`/`.y`, `.row_index`) | Use `np.asarray(view, dtype=np.float64)` for the flat matrix; `view.row_index` maps array coordinates to source rows. |
 | `get_parts(...)` | [`geom.parts`][gometry.Geometry.parts] | A scalar gives a sequence view; an array gives row-preserving `Groups`. |
 | `get_rings(...)` | [`polygon.exterior`][gometry.Polygon.exterior] / [`polygon.interiors`][gometry.Polygon.interiors] | These expose stored shell and hole rings. For a MultiPolygon, inspect each polygon in `geom.parts`; use [`geom.boundary()`][gometry.Geometry.boundary] for the topological boundary of occupied support. |
 | `str(geom)` / `f"{geom:.2f}"` / `f"{geom:x}"` | same | WKT text; `.Nf`/`.Ng` round for display, `x`/`X` hex WKB. |
@@ -226,7 +226,8 @@ for coordinate exports without changing the geometry.
 |---|---|---|
 | `CellId.from_lat_lng(...).parent(level)` | [`gm.S2Cell(point, level=...)`][gometry.S2Cell] | |
 | `Cell(cell_id)` boundary | [`cell.polygon`][gometry.Cell.polygon] / [`cells.polygon`][gometry.CellArray.polygon] | |
-| `RegionCoverer().get_covering(region)` | [`gm.s2_cover(geom, level=..., max_cells=...)`][gometry.s2_cover] | |
+| `RegionCoverer().get_covering(region)` | [`gm.s2_cover_adaptive(geom, ...)`][gometry.s2_cover_adaptive] | `target_cells` guides refinement; `max_cells` is the hard output cap. |
+| `RegionCoverer(min_level=L, max_level=L).get_covering(region)` | [`gm.s2_cover(geom, level=L, max_cells=...)`][gometry.s2_cover] | The requested level is never coarsened. |
 | `CellUnion` set ops | [`gm.s2_union(a, b)`][gometry.s2_union] / [`gm.s2_intersection(a, b)`][gometry.s2_intersection] / [`gm.s2_difference(a, b)`][gometry.s2_difference] | |
 | `CellUnion.normalize()` / expand | `cells.compact()` / `cells.uncompact(level)` | |
 | geometry membership | [`gm.covers(geometry, probe)`][gometry.covers] | |
@@ -278,5 +279,5 @@ for coordinate exports without changing the geometry.
 
 | Old | gometry | Notes |
 |---|---|---|
-| `DBSCAN(...).fit(coords)` / k-means / hierarchical clustering | feed [`gm.get_coordinates`][gometry.get_coordinates] (or `.coords.x`/`.y`) to scikit-learn / scipy | gometry stays a geometry engine; cluster in coordinate space via NumPy handoff. |
-| scattered-data interpolation (IDW, kriging, …) | scipy / scikit-gstat over `gm.get_coordinates` | Project to a suitable CRS first when planar XY is wrong. |
+| `DBSCAN(...).fit(coords)` / k-means / hierarchical clustering | feed `np.asarray(geom.coords, dtype=np.float64)` (or `.coords.x`/`.y`) to scikit-learn / scipy | gometry stays a geometry engine; cluster in coordinate space via NumPy handoff. |
+| scattered-data interpolation (IDW, kriging, …) | scipy / scikit-gstat over `np.asarray(geom.coords, dtype=np.float64)` | Project to a suitable CRS first when planar XY is wrong. |

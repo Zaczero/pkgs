@@ -1,15 +1,11 @@
 use pyo3::prelude::*;
 use pyo3::types::PyTuple;
 
-use crate::broadcast::{GeometryInput, classify_required};
 use crate::py::classes::coordinate_methods::{
-    Arc, CoordinateAxes, CoordinateAxis, Point, PyCoordinates, PyGeometryArray, coordinates,
-    point_tuple,
+    CoordinateAxes, CoordinateAxis, Point, PyCoordinates, coordinates, point_tuple,
 };
 use crate::py::errors::parameter_error;
-use crate::py::numpy::{
-    float64_array, float64_matrix, float64_slice_array, int64_array, optional_float64_array,
-};
+use crate::py::numpy::{float64_array, float64_slice_array, optional_float64_array};
 
 /// Resolve an axis layout token to [`CoordinateAxes`]; `concept` names the
 /// rejected parameter in the canonical error template.
@@ -229,75 +225,5 @@ pub(crate) fn column_ref_to_py(
         Dense(values) => float64_array(py, values),
         Nullable(values) => optional_float64_array(py, values),
         Missing => unreachable!("column_axis_to_py handles Missing"),
-    }
-}
-
-pub(crate) fn coordinate_view_for_input(input: GeometryInput<'_>) -> coordinates::CoordinateView {
-    match input {
-        GeometryInput::One(geometry) => {
-            coordinates::CoordinateView::from_shape(Arc::clone(&geometry.shape))
-        },
-        GeometryInput::Many(array) => array.coordinate_view(),
-    }
-}
-
-/// Extract coordinates as one flat dense matrix.
-///
-/// Parameters
-/// ----------
-/// values : Geometry, GeometryArray, or iterable of Geometry/None
-///     Values are flattened depth-first in source-row order. Missing and empty
-///     geometries contribute no rows, but array and iterable source indexes
-///     remain available through `return_index=True`.
-///     The matrix includes every axis carried by the coordinates; heterogeneous
-///     rows use ``NaN`` where a coordinate lacks an axis.
-/// return_index : bool, default False
-///     Return a source-row index alongside the matrix. Scalar geometries use
-///     index zero for every coordinate.
-///
-/// Returns
-/// -------
-/// numpy.ndarray or tuple of numpy.ndarray
-///     A dense matrix, or `(matrix, index)` when `return_index=True`.
-///
-/// Raises
-/// ------
-/// TypeError
-///     If ``values`` is not geometry-like.
-///
-/// Examples
-/// --------
-/// >>> import gometry as gm
-/// >>> gm.get_coordinates(gm.Point(1, 2)).tolist()
-/// [[1.0, 2.0]]
-/// >>> matrix, indexes = gm.get_coordinates(
-/// ...     [gm.Point(1, 2), None], return_index=True
-/// ... )
-/// >>> matrix.tolist(), indexes.tolist()
-/// ([[1.0, 2.0]], [0])
-#[pyfunction]
-#[pyo3(signature = (values, *, return_index = false))]
-pub(crate) fn get_coordinates(
-    py: Python<'_>,
-    values: &Bound<'_, PyAny>,
-    return_index: bool,
-) -> PyResult<Py<PyAny>> {
-    let array;
-    let input = if let Ok(input) = classify_required(values) {
-        input
-    } else {
-        array = PyGeometryArray::new(values, None, None)?;
-        GeometryInput::Many(&array)
-    };
-    let view = coordinate_view_for_input(input);
-    let axes = view.axes_for_python(py)?;
-    let (_, dims) = coordinate_axis_order(axes);
-    let (rows, data) = coordinate_matrix_data(py, &view, axes, f64::NAN)?;
-    let matrix = float64_matrix(py, data, rows, dims)?;
-    if return_index {
-        let indexes = int64_array(py, view.try_row_index_i64(py)?)?;
-        Ok((matrix, indexes).into_pyobject(py)?.unbind().into())
-    } else {
-        Ok(matrix)
     }
 }

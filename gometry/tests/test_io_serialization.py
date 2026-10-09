@@ -241,7 +241,7 @@ def test_geojson_writers_resolve_metric_for_constant_z_polar_annulus() -> None:
     for output in outputs:
         serialized = json.loads(output) if isinstance(output, str) else output
         geometry = gm.from_geojson(serialized)
-        coordinates = gm.get_coordinates(geometry).tolist()
+        coordinates = np.asarray(geometry.coords, dtype=np.float64).tolist()
         assert geometry.geometry_type in {'Polygon', 'MultiPolygon'}
         assert geometry.coordinate_axes == 'XYZ'
         assert len(coordinates) > 0

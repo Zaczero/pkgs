@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 import gometry as gm
+import numpy as np
 import pytest
 
 from tests._support import WEST_RADIAN_SOUTH_GRAD_CRS, ids, pair_rows
@@ -165,7 +166,7 @@ def _densify_box_edges(
     )
     rings = []
     for polygon in polygons:
-        coordinates = gm.get_coordinates(polygon).tolist()
+        coordinates = np.asarray(polygon.coords, dtype=np.float64).tolist()
         dense = []
         for start, end in pairwise(coordinates):
             dense.append((float(start[0]), float(start[1])))

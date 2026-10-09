@@ -6,6 +6,7 @@ import json
 import math
 
 import gometry as gm
+import numpy as np
 import pytest
 
 WGS84_SOUTH_WEST_GRADS = (
@@ -61,23 +62,29 @@ def test_a2_s2_bbox_antimeridian_not_full_equator():
     assert n_bbox <= max(4 * n_overlap, n_overlap + 64)
 
     repeated_band = gm.GeometryCollection([band, band], crs=4326)
-    for budget in (
-        {'level': 8, 'max_cells': None},
-        {
-            'min_level': 0,
-            'max_level': 30,
-            'target_cells': 8,
-            'max_cells': None,
-        },
-        {
-            'min_level': 0,
-            'max_level': 30,
-            'target_cells': 8,
-            'max_cells': 16,
-        },
+    for cover, budget in (
+        (gm.s2_cover, {'level': 8, 'max_cells': None}),
+        (
+            gm.s2_cover_adaptive,
+            {
+                'min_level': 0,
+                'max_level': 30,
+                'target_cells': 8,
+                'max_cells': None,
+            },
+        ),
+        (
+            gm.s2_cover_adaptive,
+            {
+                'min_level': 0,
+                'max_level': 30,
+                'target_cells': 8,
+                'max_cells': 16,
+            },
+        ),
     ):
-        single = gm.s2_cover(band, cell_rule='bbox', **budget)
-        duplicate = gm.s2_cover(repeated_band, cell_rule='bbox', **budget)
+        single = cover(band, cell_rule='bbox', **budget)
+        duplicate = cover(repeated_band, cell_rule='bbox', **budget)
         assert [cell.id for cell in duplicate] == [cell.id for cell in single]
         if budget['max_cells'] is not None:
             assert len(duplicate) <= budget['max_cells']
@@ -290,10 +297,14 @@ def _dynamic_grid_source() -> tuple[gm.Geometry, gm.Geometry]:
     [
         (gm.h3_cover, {'resolution': 7}),
         (gm.s2_cover, {'level': 12}),
+        (
+            gm.s2_cover_adaptive,
+            {'min_level': 12, 'max_level': 12, 'target_cells': 8},
+        ),
         (gm.geohash_cover, {'precision': 8}),
         (gm.tile_cover, {'zoom': 29}),
     ],
-    ids=['h3', 's2', 'geohash', 'tile'],
+    ids=['h3', 's2-fixed', 's2-adaptive', 'geohash', 'tile'],
 )
 def test_grid_cover_admits_dynamic_source_frame_once(cover, kwargs) -> None:
     source, _ = _dynamic_grid_source()
@@ -890,7 +901,7 @@ def test_grid_cover_normalizes_geographic_aliases_and_keeps_projected_chord(
 
     projected = source.to_crs(3857)
     projected_roundtrip = projected.to_crs(4326)
-    coordinates = gm.get_coordinates(projected_roundtrip)
+    coordinates = np.asarray(projected_roundtrip.coords, dtype=np.float64)
     assert coordinates.shape == (3, 2)
     assert coordinates[:, 0].tolist() == pytest.approx(
         [179.0, 0.0, -179.0],

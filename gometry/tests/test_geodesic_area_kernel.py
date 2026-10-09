@@ -124,7 +124,7 @@ def test_chart_area_scales_a_finite_result_after_the_combined_scale_overflows() 
 
 def test_geographic_box_uses_four_corners_and_zone_area() -> None:
     polygon = gm.box(-45.0, 70.0, 45.0, 80.0, crs=4326)
-    assert gm.get_coordinates(polygon).tolist() == [
+    assert np.asarray(polygon.coords, dtype=np.float64).tolist() == [
         [-45.0, 70.0],
         [45.0, 70.0],
         [45.0, 80.0],
@@ -144,7 +144,7 @@ def test_geographic_box_uses_four_corners_and_zone_area() -> None:
 
 def test_full_world_box_uses_minimal_valid_chart_band() -> None:
     band = gm.box(-180.0, 70.0, 180.0, 80.0, crs=4326)
-    assert gm.get_coordinates(band).tolist() == [
+    assert np.asarray(band.coords, dtype=np.float64).tolist() == [
         [-180.0, 70.0],
         [-60.0, 70.0],
         [60.0, 70.0],

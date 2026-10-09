@@ -32,7 +32,7 @@ GeoArrow, GeoParquet, WKB/WKT/GeoJSON, and [pickle](https://docs.python.org/3/li
 
 | Partner | Install | → gometry | gometry → | CRS carried | Copy/ownership note |
 | --- | --- | --- | --- | --- | --- |
-| **NumPy** | *(required)* | coordinate buffers → constructors / factories | ndarray returns, [`geom.coords.x`][gometry.Coordinates.x]/[`.y`][gometry.Coordinates.y], [`get_coordinates`][gometry.get_coordinates] | n/a | read-only views |
+| **NumPy** | *(required)* | coordinate buffers → constructors / factories | ndarray returns, [`geom.coords`][gometry.Geometry.coords] → matrix / row-index views | n/a | matrix export copies; per-axis columns may borrow |
 | **Arrow / GeoArrow** | *(native capsules)* | consume `__arrow_c_array__`/`__arrow_c_stream__` | export `__arrow_c_*__` capsules | PROJJSON | native packed layouts |
 | **pyarrow** | `gometry[arrow]` | [`from_arrow`][gometry.from_arrow] | [`to_arrow`][gometry.Geometry.to_arrow] | PROJJSON | native layouts |
 | **GeoParquet** | `gometry[arrow]` | [`from_geoparquet`][gometry.from_geoparquet] | [`arr.to_geoparquet()`][gometry.GeometryArray.to_geoparquet] | PROJJSON header | via pyarrow |
@@ -43,7 +43,7 @@ GeoArrow, GeoParquet, WKB/WKT/GeoJSON, and [pickle](https://docs.python.org/3/li
 | **lonboard** | `gometry[viz]` | — | [`explore`][gometry.explore], notebook `_repr_html_` | reprojects toward WGS84 | Arrow capsule route; preprocessing and widget construction may allocate |
 | **Shapely** | *(none)* | `__geo_interface__`, [`GeometryArray([...])`][gometry.GeometryArray] | `geom.__geo_interface__` | no (GeoJSON) | — |
 | **pyproj** | *(none)* | [`CRS(pyproj_crs)`][gometry.CRS] (duck-typed) | [`crs.to_wkt()`][gometry.CRS.to_wkt] / [`to_authority()`][gometry.CRS.to_authority] | — | — |
-| **scipy / scikit-learn** | *(none)* | — | [`get_coordinates`][gometry.get_coordinates] → ndarray | project first | NumPy view |
+| **scipy / scikit-learn** | *(none)* | — | `np.asarray(geom.coords, dtype=np.float64)` → ndarray | project first | matrix copy |
 | **pickle / [multiprocessing](https://docs.python.org/3/library/multiprocessing.html)** | *(none)* | [`pickle.loads`](https://docs.python.org/3/library/pickle.html#pickle.loads) | [`pickle.dumps`](https://docs.python.org/3/library/pickle.html#pickle.dumps) | preserved (+ epoch) | — |
 
 ## Optional extras

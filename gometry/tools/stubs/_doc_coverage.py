@@ -316,7 +316,13 @@ def required_raises(
 
     if owner == 'S2Cell' and name == 'parent':
         required.add('GeometryError')
-    if qualname in ('h3_cover', 's2_cover', 'geohash_cover', 'tile_cover'):
+    if qualname in (
+        'h3_cover',
+        's2_cover',
+        's2_cover_adaptive',
+        'geohash_cover',
+        'tile_cover',
+    ):
         required.add('GeometryError')
     if qualname == 'h3_pentagons':
         required.add('GeometryError')

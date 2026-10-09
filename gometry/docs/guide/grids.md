@@ -180,7 +180,7 @@ cell sets rather than a general spherical boolean-topology engine.
 import gometry as gm
 
 seam = gm.box(175.0, -5.0, -175.0, 5.0, crs=4326, wrap='split')
-covering = gm.s2_cover(seam, level=None, max_cells=24)
+covering = gm.s2_cover_adaptive(seam, max_cells=24)
 positive_lon = sum(1 for cell in covering.polygon if cell.bounds[0] >= 0)
 
 print("cells:", len(covering), "| levels:", sorted({cell.level for cell in covering}))
@@ -223,8 +223,10 @@ print("covering cells:", len(covering))
 
 ## Covering an area
 
-[`gm.h3_cover(geom, resolution=...)`][gometry.h3_cover] and [`gm.s2_cover(geom, level=...)`][gometry.s2_cover] return a
-typed `CellArray` directly:
+[`gm.h3_cover(geom, resolution=...)`][gometry.h3_cover], fixed-level
+[`gm.s2_cover(geom, level=...)`][gometry.s2_cover], and adaptive
+[`gm.s2_cover_adaptive(geom, ...)`][gometry.s2_cover_adaptive] return a typed
+`CellArray` directly:
 
 ```python exec="on" source="block" result="text"
 import gometry as gm
@@ -498,7 +500,7 @@ print("s2 union sample:", len(gm.s2_union(
 
 ```
 
-## S2 coverings: budget and multi-resolution
+## S2 coverings: fixed levels and adaptive budgets
 
 S2 coverings are multi-resolution, and S2 cell IDs nest as ranges. These
 properties provide a `cover` budget and whole-set algebra without touching
@@ -506,8 +508,8 @@ geometry.
 
 ### A budget and a rule
 
-`gm.s2_cover(geom, ...)` materializes cells at the requested `level`, with the
-same `cell_rule` and `max_cells` controls as the other grid factories:
+`gm.s2_cover(geom, level=...)` materializes cells only at the requested level.
+It never coarsens to fit `max_cells`:
 
 ```python exec="on" source="block" result="text"
 import gometry as gm
@@ -518,19 +520,18 @@ print('levels present:', sorted({c.level for c in cov}))
 
 ```
 
-`max_cells` is the hard output and allocation cap, defaulting to `1_000_000`;
-discarded cover candidates do not consume it, and grouped calls apply it to the
-total returned cells. It does not bound classifier or traversal CPU work. Pass
-`max_cells=None` for an unlimited cover (bounded only by memory). A fixed
-`level=` cover cannot coarsen, so it raises when the cover exceeds the cap. An
-adaptive cover (using `min_level`/`max_level`, or omitting `level`) stops
-refinement and retains coarser cells when its children would exceed the cap, so
-the result has at most `max_cells` cells. It raises only when even the
-admissible starting cover cannot fit or another coverage error occurs.
-`target_cells` remains the adaptive refinement target; it is distinct from the
-hard cap. The cells are a spatial key materialized according to `cell_rule`;
-exact geometry predicates remain free functions such as `gm.covers` and
-[`gm.contains_xy`][gometry.contains_xy].
+`gm.s2_cover_adaptive` uses the same four `cell_rule` values and accepts
+`target_cells`, `min_level`, `max_level`, and `level_mod`. The target guides
+refinement but is not a hard limit; the legal minimum cover can exceed it.
+Refinement may retain coarser cells within the requested level range when
+children would exceed `max_cells`.
+
+Both functions default `max_cells` to `1_000_000`; grouped calls apply it to
+the total returned cells. Discarded candidates do not consume the cap. Pass
+`max_cells=None` for an unlimited cover (bounded only by memory). The cap does
+not bound classifier or traversal CPU work. The cells are a spatial key
+materialized according to `cell_rule`; exact geometry predicates remain free
+functions such as `gm.covers` and [`gm.contains_xy`][gometry.contains_xy].
 
 ### Cell-set algebra
 

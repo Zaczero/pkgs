@@ -11,6 +11,11 @@ import pytest
 COVER_CASES = [
     (gm.h3_cover, {'resolution': 2}, 'H3'),
     (gm.s2_cover, {'level': 3}, 'S2'),
+    (
+        gm.s2_cover_adaptive,
+        {'min_level': 3, 'max_level': 3, 'target_cells': 8},
+        'S2',
+    ),
     (gm.geohash_cover, {'precision': 3}, 'geohash'),
     (gm.tile_cover, {'zoom': 3}, 'Tile'),
 ]
@@ -30,7 +35,9 @@ def test_empty_source_cover_requires_non_empty_geometry() -> None:
 
 
 @pytest.mark.parametrize(
-    'cover, depth, label', COVER_CASES, ids=['h3', 's2', 'geohash', 'tile']
+    'cover, depth, label',
+    COVER_CASES,
+    ids=['h3', 's2-fixed', 's2-adaptive', 'geohash', 'tile'],
 )
 def test_scalar_empty_errors_and_array_empty_is_a_group(cover, depth, label) -> None:
     empty = gm.from_wkt('POLYGON EMPTY', crs=4326)
@@ -47,7 +54,7 @@ def test_scalar_empty_errors_and_array_empty_is_a_group(cover, depth, label) -> 
 @pytest.mark.parametrize(
     'cover, depth',
     [(cover, depth) for cover, depth, _label in COVER_CASES],
-    ids=['h3', 's2', 'geohash', 'tile'],
+    ids=['h3', 's2-fixed', 's2-adaptive', 'geohash', 'tile'],
 )
 def test_array_first_row_budget_beats_later_invalid_latitude(cover, depth) -> None:
     first = gm.box(-2, -2, 2, 2, crs=4326)
@@ -61,7 +68,7 @@ def test_array_first_row_budget_beats_later_invalid_latitude(cover, depth) -> No
 @pytest.mark.parametrize(
     'cover, depth',
     [(cover, depth) for cover, depth, _label in COVER_CASES],
-    ids=['h3', 's2', 'geohash', 'tile'],
+    ids=['h3', 's2-fixed', 's2-adaptive', 'geohash', 'tile'],
 )
 def test_array_later_row_invalid_latitude_after_successful_row(cover, depth) -> None:
     first = gm.box(-1, -1, 1, 1, crs=4326)
@@ -83,6 +90,10 @@ def test_scalar_covers_return_cell_arrays() -> None:
     cases = [
         (gm.h3_cover(polygon, resolution=7), gm.H3Cell),
         (gm.s2_cover(polygon, level=10), gm.S2Cell),
+        (
+            gm.s2_cover_adaptive(polygon, min_level=8, max_level=10, target_cells=64),
+            gm.S2Cell,
+        ),
         (gm.geohash_cover(polygon, precision=6), gm.GeohashCell),
         (gm.tile_cover(polygon, zoom=10), gm.Tile),
     ]
@@ -103,6 +114,7 @@ def test_array_covers_return_groups() -> None:
     cases = [
         gm.h3_cover(polygons, resolution=7),
         gm.s2_cover(polygons, level=10),
+        gm.s2_cover_adaptive(polygons, min_level=8, max_level=10, target_cells=64),
         gm.geohash_cover(polygons, precision=6),
         gm.tile_cover(polygons, zoom=10),
     ]
@@ -120,6 +132,10 @@ def test_interleaved_missing_cover_rows_keep_logical_alignment() -> None:
     cases = [
         (gm.h3_cover, {'resolution': 2}),
         (gm.s2_cover, {'level': 3}),
+        (
+            gm.s2_cover_adaptive,
+            {'min_level': 3, 'max_level': 3, 'target_cells': 8},
+        ),
         (gm.geohash_cover, {'precision': 3}),
         (gm.tile_cover, {'zoom': 3}),
     ]
@@ -652,7 +668,7 @@ def test_s2_filtered_rules_budget_visible_emissions_only(rule):
 @pytest.mark.parametrize('rule', ['within', 'center'])
 def test_s2_adaptive_filtered_rules_coarsen_against_visible_cap(rule):
     source = gm.box(-20, -20, 20, 20, crs=4326)
-    unlimited = gm.s2_cover(
+    unlimited = gm.s2_cover_adaptive(
         source,
         cell_rule=rule,
         min_level=1,
@@ -660,7 +676,7 @@ def test_s2_adaptive_filtered_rules_coarsen_against_visible_cap(rule):
         target_cells=1000,
         max_cells=None,
     )
-    capped = gm.s2_cover(
+    capped = gm.s2_cover_adaptive(
         source,
         cell_rule=rule,
         min_level=1,
@@ -678,7 +694,7 @@ def test_s2_min_level_rejects_unavoidable_visible_overflow(rule):
     source = gm.box(0, 0, 2, 2, crs=4326)
     floor = gm.s2_cover(source, level=8, cell_rule=rule, max_cells=None)
     with pytest.raises(gm.GeometryError, match='max_cells'):
-        gm.s2_cover(
+        gm.s2_cover_adaptive(
             source,
             cell_rule=rule,
             min_level=8,
@@ -710,10 +726,28 @@ def test_grouped_cover_budget_is_cumulative(factory):
         factory(grouped, max_cells=total - 1)
 
 
+def test_s2_adaptive_array_cap_is_cumulative_for_point_rows() -> None:
+    points = gm.GeometryArray([
+        gm.Point(0.25, 0.25, crs=4326),
+        gm.Point(120.25, 0.25, crs=4326),
+        gm.Point(-120.25, -0.25, crs=4326),
+    ])
+    options = {
+        'min_level': 0,
+        'max_level': 4,
+        'target_cells': 8,
+    }
+
+    groups = gm.s2_cover_adaptive(points, max_cells=3, **options)
+    assert [len(group) for group in groups] == [1, 1, 1]
+    with pytest.raises(gm.GeometryError, match='max_cells'):
+        gm.s2_cover_adaptive(points, max_cells=2, **options)
+
+
 def test_s2_target_cells_quality_target_and_max_cells_ceiling():
     """target_cells seeks quality; max_cells is the output ceiling."""
     area = gm.box(0, 0, 2, 2, crs=4326)
-    adaptive = gm.s2_cover(area, min_level=4, max_level=8, target_cells=64)
+    adaptive = gm.s2_cover_adaptive(area, min_level=4, max_level=8, target_cells=64)
     assert 0 < len(adaptive) <= 64
     fixed = gm.s2_cover(area, level=6, max_cells=10_000)
     assert len(fixed) > 0
@@ -724,10 +758,10 @@ def test_s2_target_cells_quality_target_and_max_cells_ceiling():
 def test_s2_adaptive_max_cells_caps_output():
     """Adaptive max_cells coarsens a detailed cover to the requested ceiling."""
     line = gm.LineString([(-75.0, 40.0), (-74.0, 40.5), (-73.0, 41.2)], crs=4326)
-    unlimited = gm.s2_cover(
+    unlimited = gm.s2_cover_adaptive(
         line, min_level=1, max_level=14, target_cells=1_000_000, max_cells=None
     )
-    capped = gm.s2_cover(
+    capped = gm.s2_cover_adaptive(
         line, min_level=1, max_level=14, target_cells=1_000_000, max_cells=64
     )
     assert len(unlimited) == 640
@@ -738,7 +772,7 @@ def test_s2_adaptive_high_min_level_max_cells_rejects_typed():
     """A high-min-level interior subtree rejects rather than reserving huge space."""
     source = gm.box(-10.0, -10.0, 10.0, 10.0, crs=4326)
     with pytest.raises(gm.GeometryError, match='max_cells') as excinfo:
-        gm.s2_cover(
+        gm.s2_cover_adaptive(
             source,
             min_level=20,
             max_level=21,
@@ -845,7 +879,7 @@ def test_s2_adaptive_target_cells_matches_requested_detail():
     entries were charged before deeper pruning to Outside.
     """
     area = gm.box(-75.0, 40.0, -74.9, 40.1, crs=4326)
-    detailed = gm.s2_cover(area, min_level=1, max_level=10, target_cells=4)
+    detailed = gm.s2_cover_adaptive(area, min_level=1, max_level=10, target_cells=4)
     tokens = [c.token for c in detailed]
     k = len(tokens)
     assert k == 4
@@ -853,15 +887,15 @@ def test_s2_adaptive_target_cells_matches_requested_detail():
     assert {c.level for c in detailed} == {10}
     # A target at or above K preserves the detailed covering.
     for m in range(k, k + 3):
-        got = gm.s2_cover(area, min_level=1, max_level=10, target_cells=m)
+        got = gm.s2_cover_adaptive(area, min_level=1, max_level=10, target_cells=m)
         assert [c.token for c in got] == tokens, m
         assert len(got) <= m
     # Smaller targets coarsen only inside the requested adaptive range.
     for m in range(1, k):
-        got = gm.s2_cover(area, min_level=1, max_level=10, target_cells=m)
+        got = gm.s2_cover_adaptive(area, min_level=1, max_level=10, target_cells=m)
         assert 0 < len(got) <= m, m
         assert all(c.level >= 1 for c in got)
-    coarse = gm.s2_cover(area, min_level=0, max_level=10, target_cells=1)
+    coarse = gm.s2_cover_adaptive(area, min_level=0, max_level=10, target_cells=1)
     assert len(coarse) <= 1
 
 
@@ -918,10 +952,10 @@ def test_s2_fixed_level_matrix_only_emits_level_l(level, cell_rule):
 def test_s2_target_cells_respects_min_level_and_max_cells_stays_hard():
     """Adaptive targeting stays in range; max_cells remains a ceiling."""
     src = gm.box(0, 0, 1, 1, crs=4326)
-    tight = gm.s2_cover(src, min_level=0, max_level=12, target_cells=1)
+    tight = gm.s2_cover_adaptive(src, min_level=0, max_level=12, target_cells=1)
     assert len(tight) <= 1
     # Adaptive with min_level floor: every emitted cell is >= min_level.
-    adaptive = gm.s2_cover(src, min_level=4, max_level=12, target_cells=64)
+    adaptive = gm.s2_cover_adaptive(src, min_level=4, max_level=12, target_cells=64)
     assert 0 < len(adaptive) <= 64
     levels = {c.level for c in adaptive}
     assert levels
@@ -969,7 +1003,7 @@ def test_s2_point_level30_max_cells_one_succeeds():
 def test_s2_adaptive_max_level30_target_one_returns_coarse():
     """Adaptive min=0/max=30/target_cells=1 returns one coarse cell."""
     area = gm.box(0, 0, 1, 1, crs=4326)
-    cov = gm.s2_cover(area, min_level=0, max_level=30, target_cells=1)
+    cov = gm.s2_cover_adaptive(area, min_level=0, max_level=30, target_cells=1)
     assert len(cov) <= 1
 
 
@@ -993,7 +1027,7 @@ def test_s2_level_mod_target_cells_conforming_and_bounded(level_mod):
     """level_mod fanout uses actual K; outputs stay conforming and ≤ target."""
     src = gm.box(0, 0, 2, 2, crs=4326)
     target = 32
-    cov = gm.s2_cover(
+    cov = gm.s2_cover_adaptive(
         src,
         min_level=4,
         max_level=12,

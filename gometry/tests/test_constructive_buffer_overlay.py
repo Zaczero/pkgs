@@ -504,7 +504,7 @@ def test_snap_dedups_only_identical_projected_positions() -> None:
     reference = gm.MultiPoint([(0.5, 0), (0.5000000000005, 0)], crs=3857)
     snapped = cast('gm.Geometry', gm.snap(line, reference, 0.0))
     assert snapped.num_coordinates == 4
-    coords = gm.get_coordinates(snapped)
+    coords = np.asarray(snapped.coords, dtype=np.float64)
     assert coords[1][0] == 0.5
     assert coords[2][0] == 0.5000000000005
 
@@ -846,7 +846,7 @@ def test_minimum_clearance_line_realizes_the_clearance() -> None:
     geo = gm.box(13.0, 52.0, 13.1, 52.2, crs=4326)
     geo_line = geo.minimum_clearance_line()
     assert geo_line.crs == 'EPSG:4326'
-    geo_coords = gm.get_coordinates(geo_line)
+    geo_coords = np.asarray(geo_line.coords, dtype=np.float64)
     geo_witness_distance = gm.distance(
         gm.Point(*geo_coords[0][:2], crs=4326),
         gm.Point(*geo_coords[-1][:2], crs=4326),

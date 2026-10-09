@@ -207,7 +207,8 @@ pub(crate) fn crs_operations<'py>(
 /// tuple or numpy.ndarray
 ///     Scalars in, scalars out: ``(x, y)`` or ``(x, y, z)``. Lane input returns
 ///     a read-only ``(N, 2)``/``(N, 3)`` ``float64`` matrix (interleaved, the
-///     same shape as `get_coordinates`), so ``result[:, 0]`` / ``result[:, 1]``
+///     same shape as a NumPy matrix exported from ``geometry.coords``), so
+///     ``result[:, 0]`` / ``result[:, 1]``
 ///     read the transformed columns directly. The input epoch ``t`` is not a
 ///     transformed spatial ordinate and is not returned (use `apply` if you
 ///     need the raw columns echoed back).
@@ -345,10 +346,10 @@ pub(crate) fn crs_apply(
 
 /// Rebuild the `crs_transform` result — scalars in, a scalar tuple out
 /// (`(x, y)` or `(x, y, z)`); lane input returns a frozen `(N, 2)`/`(N, 3)`
-/// `float64` matrix (interleaved, consistent with `get_coordinates` and
-/// `transform_bounds_many`). The input epoch `t` is never a transformed
-/// spatial ordinate, so it is not echoed (unlike `crs_apply`, which returns
-/// the raw columns it ran on).
+/// `float64` matrix (interleaved, consistent with the NumPy export of
+/// `geometry.coords` and `transform_bounds_many`). The input epoch `t` is never
+/// a transformed spatial ordinate, so it is not echoed (unlike `crs_apply`,
+/// which returns the raw columns it ran on).
 #[expect(
     clippy::indexing_slicing,
     reason = "CrsCoordinateArgs records scalar input before broadcasting and scalar columns contain one ordinate"

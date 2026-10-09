@@ -226,10 +226,14 @@ _BASE_RELEASE_OPERATIONS: tuple[ReleaseOperation, ...] = (
     ),
     _op(
         'Array construction & I/O',
-        'get_coordinates with index',
-        '100k vertices with index',
-        ('get_coordinates',),
-        'gometry.get_coordinates/100k_vertices_with_index',
+        'coords matrix and row_index',
+        '100k vertices / float64 matrix + int64 row index',
+        (
+            'GeometryArray.coords',
+            'Coordinates.__array__',
+            'Coordinates.row_index',
+        ),
+        'gometry.coords.matrix_and_index/100k_vertices',
         'shapely.get_coordinates/100k_vertices_with_index',
         'Shapely',
         ('batched',),

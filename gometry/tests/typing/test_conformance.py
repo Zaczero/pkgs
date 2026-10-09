@@ -705,16 +705,19 @@ if TYPE_CHECKING:
     assert_type(gm.union_all(geometry_like_rows), gm.Geometry)
     assert_type(gm.intersection_all(geometry_like_rows), gm.Geometry)
     assert_type(gm.symmetric_difference_all(geometry_like_rows), gm.Geometry)
-    assert_type(gm.get_coordinates(geometry_like_rows), npt.NDArray[np.float64])
-    assert_type(gm.get_coordinates(POINTS), npt.NDArray[np.float64])
+    foreign_coordinate_view = gm.GeometryArray(geometry_like_rows).coords
     assert_type(
-        gm.get_coordinates(POINTS, return_index=True),
-        tuple[npt.NDArray[np.float64], npt.NDArray[np.int64]],
+        np.asarray(foreign_coordinate_view, dtype=np.float64),
+        npt.NDArray[np.float64],
     )
-    coordinate_flag: bool = bool(len(POINTS))
+    point_coordinate_view = POINTS.coords
     assert_type(
-        gm.get_coordinates(POINTS, return_index=coordinate_flag),
-        npt.NDArray[np.float64] | tuple[npt.NDArray[np.float64], npt.NDArray[np.int64]],
+        np.asarray(point_coordinate_view, dtype=np.float64),
+        npt.NDArray[np.float64],
+    )
+    assert_type(
+        point_coordinate_view.row_index,
+        npt.NDArray[np.int64],
     )
     assert_type(POINTS.parts, gm.Groups[gm.GeometryArray[gm.Geometry]])
     assert_type(POINTS.bounds, npt.NDArray[np.float64])
@@ -898,6 +901,11 @@ assert_type(
     gm.Groups[gm.CellArray[gm.S2Cell]],
 )
 assert_type(gm.s2_cover(POLY, level=12), gm.CellArray[gm.S2Cell])
+assert_type(
+    gm.s2_cover_adaptive(gm.GeometryArray([POLY])),
+    gm.Groups[gm.CellArray[gm.S2Cell]],
+)
+assert_type(gm.s2_cover_adaptive(POLY), gm.CellArray[gm.S2Cell])
 assert_type(
     gm.geohash_cover(gm.GeometryArray([POLY]), precision=5),
     gm.Groups[gm.CellArray[gm.GeohashCell]],

@@ -263,7 +263,7 @@ def test_world_tile_polygon_uses_geographic_rectangle_for_scalar_and_array() -> 
     minx, miny, maxx, maxy = hemisphere.bounds
     assert (minx, maxx) == (0.0, -180.0)
     midpoint = 90.0
-    assert gm.get_coordinates(hemisphere).tolist() == [
+    assert np.asarray(hemisphere.coords, dtype=np.float64).tolist() == [
         [minx, miny],
         [midpoint, miny],
         [-180.0, miny],

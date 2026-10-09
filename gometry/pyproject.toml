@@ -152,6 +152,8 @@ disable_error_code = ["overload-overlap"]
 # scope (their casts are intentional). venvPath/venv let a bare `pyright` resolve
 # numpy/pyarrow without --pythonpath (replaces the deleted test_pyright.py gate).
 include = ["python/gometry"]
+# Resolve package imports against this checkout, not an installed editable copy.
+extraPaths = ["python"]
 venvPath = "."
 venv = ".venv"
 pythonPlatform = "All"
