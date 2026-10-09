@@ -227,7 +227,7 @@ fn contains_verbatim_test_member(shape: &Shape, retained: &Shape) -> bool {
 
 fn subdivision_wkb(shape: &Shape) -> Vec<Vec<u8>> {
     shape
-        .subdivide_with_context(8, false, crate::geometry::SourceArcContext::cartesian())
+        .subdivide_with_context(8, false, &crate::geometry::SourceArcContext::cartesian())
         .expect("shared-set subdivision succeeds")
         .iter()
         .map(shape_wkb)
@@ -1052,7 +1052,7 @@ fn assert_shared_set_overlay_identity(name: &str, depth: usize) {
             &shared
                 .node_with_context(
                     Strictness::Lenient,
-                    crate::geometry::SourceArcContext::cartesian(),
+                    &crate::geometry::SourceArcContext::cartesian(),
                 )
                 .unwrap(),
         ),
@@ -1060,7 +1060,7 @@ fn assert_shared_set_overlay_identity(name: &str, depth: usize) {
             &expanded
                 .node_with_context(
                     Strictness::Lenient,
-                    crate::geometry::SourceArcContext::cartesian(),
+                    &crate::geometry::SourceArcContext::cartesian(),
                 )
                 .unwrap(),
         ),
@@ -1071,7 +1071,7 @@ fn assert_shared_set_overlay_identity(name: &str, depth: usize) {
             &Shape::polygonize_all_with_context(
                 &[&shared],
                 false,
-                crate::geometry::SourceArcContext::cartesian(),
+                &crate::geometry::SourceArcContext::cartesian(),
             )
             .unwrap(),
         ),
@@ -1079,7 +1079,7 @@ fn assert_shared_set_overlay_identity(name: &str, depth: usize) {
             &Shape::polygonize_all_with_context(
                 &[&expanded],
                 false,
-                crate::geometry::SourceArcContext::cartesian(),
+                &crate::geometry::SourceArcContext::cartesian(),
             )
             .unwrap(),
         ),
@@ -1090,7 +1090,7 @@ fn assert_shared_set_overlay_identity(name: &str, depth: usize) {
             &Shape::build_area_all_with_context(
                 &[&shared],
                 false,
-                crate::geometry::SourceArcContext::cartesian(),
+                &crate::geometry::SourceArcContext::cartesian(),
             )
             .unwrap(),
         ),
@@ -1098,7 +1098,7 @@ fn assert_shared_set_overlay_identity(name: &str, depth: usize) {
             &Shape::build_area_all_with_context(
                 &[&expanded],
                 false,
-                crate::geometry::SourceArcContext::cartesian(),
+                &crate::geometry::SourceArcContext::cartesian(),
             )
             .unwrap(),
         ),
@@ -1166,7 +1166,7 @@ fn depth_128_shared_set_overlay_finishes_with_correct_support() {
         }
 
         let parts = shared
-            .subdivide_with_context(8, false, crate::geometry::SourceArcContext::cartesian())
+            .subdivide_with_context(8, false, &crate::geometry::SourceArcContext::cartesian())
             .expect("deep subdivision succeeds");
         assert!(!parts.is_empty(), "depth {depth}");
         let area = Shape::union_all_topo(&parts, TopologyDomain::Cartesian, Strictness::Lenient)
@@ -4313,7 +4313,7 @@ mod rectangle_clip_tests {
             &[&source],
             "clip_by_rect",
             false,
-            crate::geometry::SourceArcContext::cartesian(),
+            &crate::geometry::SourceArcContext::cartesian(),
         )
         .unwrap();
         let actual = source.clip_by_rect(rect, false).unwrap();

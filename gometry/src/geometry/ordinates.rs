@@ -44,12 +44,12 @@ impl<'access, 'metric, M: ChartMetric> SourceArcContext<'access, 'metric, M> {
         }
     }
 
-    pub(crate) const fn domain(self) -> crate::geometry::TopologyDomain {
+    pub(crate) const fn domain(&self) -> crate::geometry::TopologyDomain {
         self.domain
     }
 
     pub(crate) const fn metric_access(
-        self,
+        &self,
     ) -> Option<&'access SourceArcMetricAccess<'access, 'metric, M>> {
         self.metric_access
     }
@@ -79,7 +79,7 @@ const OVERLAY_SNAP_RELATIVE: f64 = 1.0 / (1_u64 << 28) as f64;
 impl<'access, 'metric> OrdinateSource<'access, 'metric> {
     fn new<S: Borrow<Shape>>(
         inputs: &[S],
-        context: SourceArcContext<'access, 'metric>,
+        context: &SourceArcContext<'access, 'metric>,
     ) -> Result<Self> {
         // Shared XY owners bound dedup storage without expanding logical
         // occurrences. Non-collection shapes use their exact count.
@@ -103,7 +103,7 @@ impl<'access, 'metric> OrdinateSource<'access, 'metric> {
             } else {
                 ordinate_tolerance(inputs)
             },
-            context,
+            context: *context,
         })
     }
 
@@ -126,7 +126,7 @@ impl<'access, 'metric> OrdinateSource<'access, 'metric> {
 
     fn build_direct<S: Borrow<Shape>>(
         inputs: &[S],
-        context: SourceArcContext<'access, 'metric>,
+        context: &SourceArcContext<'access, 'metric>,
     ) -> Result<Self> {
         let mut result = Self::new(inputs, context)?;
         for input in inputs {
@@ -415,15 +415,14 @@ pub(crate) fn source_arc_ordinates<'m, M: ChartMetric + 'm>(
                 fraction
             } else {
                 let parameter = chart_parameter.round()?;
-                let edge = match state.edge {
-                    Some(edge) => edge,
-                    None => {
-                        work.charge(1)?;
-                        let edge =
-                            crate::crs::ChartEdge::from_retained(start, end, *frame, *longitude)?;
-                        state.edge = Some(edge);
-                        edge
-                    },
+                let edge = if let Some(edge) = state.edge {
+                    edge
+                } else {
+                    work.charge(1)?;
+                    let edge =
+                        crate::crs::ChartEdge::from_retained(start, end, *frame, *longitude)?;
+                    state.edge = Some(edge);
+                    edge
                 };
                 if parameter > 0.0 && parameter < 1.0 && state.total_length.is_none() {
                     state.total_length = Some(metric.chart_edge_length_with_work(&edge, work)?);
@@ -641,7 +640,7 @@ pub(super) fn carry_ordinates(
     inputs: &[&Shape],
     operation: &str,
     strict: bool,
-    context: SourceArcContext<'_, '_>,
+    context: &SourceArcContext<'_, '_>,
 ) -> Result<Shape> {
     // Pure-XY inputs: nothing to carry, the XY output is already final.
     if !inputs.iter().any(|shape| shape.has_z() || shape.has_m()) {
@@ -666,7 +665,7 @@ pub(crate) fn carry_overlay_ordinates(
     inputs: &[&Shape],
     operation: OverlayOp,
     strict: bool,
-    context: SourceArcContext<'_, '_>,
+    context: &SourceArcContext<'_, '_>,
 ) -> Result<Shape> {
     if !inputs.iter().any(|shape| shape.has_z() || shape.has_m()) {
         return Ok(output);
@@ -882,7 +881,9 @@ mod tests {
         let endpoint_metric_accesses = Cell::new(0_usize);
         let endpoint_metric = || -> crate::error::Result<&crate::crs::GeodesicMetric> {
             endpoint_metric_accesses.set(endpoint_metric_accesses.get().wrapping_add(1));
-            Err(crate::crs::CrsError::invalid("unexpected computed-edge metric access").into())
+            Err(crate::crs::CrsError::invalid(
+                "unexpected computed-edge metric access",
+            ))
         };
         let mut state = RootMetricState::default();
         let mut work = Unmetered;
@@ -907,7 +908,9 @@ mod tests {
         let xy_metric_accesses = Cell::new(0_usize);
         let xy_metric = || -> crate::error::Result<&crate::crs::GeodesicMetric> {
             xy_metric_accesses.set(xy_metric_accesses.get().wrapping_add(1));
-            Err(crate::crs::CrsError::invalid("unexpected computed-edge metric access").into())
+            Err(crate::crs::CrsError::invalid(
+                "unexpected computed-edge metric access",
+            ))
         };
         let xy = computed_native_sample_ordinates(
             frame,

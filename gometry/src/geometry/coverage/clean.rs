@@ -37,7 +37,7 @@ pub(crate) fn coverage_clean<S: std::borrow::Borrow<Shape>>(
     grid_size: f64,
     gap_width: f64,
     overlaps: CoverageOverlapRule,
-    context: SourceArcContext<'_, '_>,
+    context: &SourceArcContext<'_, '_>,
 ) -> Result<Vec<Shape>> {
     if !(grid_size.is_finite() && grid_size >= 0.0) {
         return Err(GeometryErrorKind::NonNegativeFinite("grid_size", grid_size).into());
@@ -99,7 +99,7 @@ pub(crate) fn coverage_clean<S: std::borrow::Borrow<Shape>>(
 /// geographic frame are split before the edge inventory sees them as planar.
 pub(crate) fn coverage_union_topo<S: std::borrow::Borrow<Shape>>(
     coverage: &[S],
-    context: SourceArcContext<'_, '_>,
+    context: &SourceArcContext<'_, '_>,
 ) -> Result<Shape> {
     let domain = context.domain();
     let crate::geometry::TopologyDomain::Geographic(frame) = domain else {
@@ -130,7 +130,7 @@ pub(crate) fn coverage_union_topo<S: std::borrow::Borrow<Shape>>(
 
 fn coverage_union_inner<S: std::borrow::Borrow<Shape>>(
     coverage: &[S],
-    context: SourceArcContext<'_, '_>,
+    context: &SourceArcContext<'_, '_>,
 ) -> Result<Shape> {
     // The fast dissolve is correct only for valid coverages. Validate at the
     // public kernel boundary instead of exposing an unchecked footgun.
@@ -267,7 +267,7 @@ fn dissolve_edge_incidences(
         "coverage_union",
         crate::geometry::CoordinateAxes::XY,
         false,
-        SourceArcContext::cartesian(),
+        &SourceArcContext::cartesian(),
     )?;
     let polygons = parts
         .into_iter()
@@ -352,7 +352,7 @@ mod tests {
             0.0,
             0.0,
             CoverageOverlapRule::LongestBorder,
-            SourceArcContext::cartesian(),
+            &SourceArcContext::cartesian(),
         )
         .expect("coverage clean");
         assert_eq!(overlay::partition_builds(), 1);
@@ -369,7 +369,7 @@ mod tests {
             0.0,
             0.0,
             CoverageOverlapRule::LongestBorder,
-            SourceArcContext::cartesian(),
+            &SourceArcContext::cartesian(),
         )
         .expect("finite-coordinate overlap");
         let overlap = Point::new_raw_xy(0.0, 0.5e308);
@@ -391,7 +391,7 @@ mod tests {
             0.0,
             0.0,
             CoverageOverlapRule::LongestBorder,
-            SourceArcContext::cartesian(),
+            &SourceArcContext::cartesian(),
         )
         .expect("coverage clean");
         let shared = XY::new(1.2, 0.0);
@@ -426,7 +426,7 @@ mod tests {
                 0.0,
                 0.0,
                 CoverageOverlapRule::LongestBorder,
-                SourceArcContext::cartesian(),
+                &SourceArcContext::cartesian(),
             )
             .expect("dense collinear coverage clean")
         });
@@ -474,7 +474,7 @@ mod tests {
                 0.0,
                 0.0,
                 CoverageOverlapRule::LongestBorder,
-                SourceArcContext::cartesian(),
+                &SourceArcContext::cartesian(),
             )
             .expect("coverage clean");
             assert_eq!(output.len(), 2);
@@ -575,7 +575,7 @@ mod tests {
                 0.0,
                 0.0,
                 CoverageOverlapRule::LongestBorder,
-                SourceArcContext::cartesian(),
+                &SourceArcContext::cartesian(),
             )
             .unwrap();
             assert_eq!(cleaned, rows, "{mode}");
@@ -595,7 +595,7 @@ mod tests {
             0.0,
             0.0,
             CoverageOverlapRule::LongestBorder,
-            SourceArcContext::cartesian(),
+            &SourceArcContext::cartesian(),
         )
         .unwrap();
         assert_eq!(cleaned.len(), 144);
@@ -606,7 +606,7 @@ mod tests {
                 .iter()
                 .all(Shape::is_empty)
         );
-        crate::geometry::coverage_union_topo(&cleaned, SourceArcContext::cartesian())
+        crate::geometry::coverage_union_topo(&cleaned, &SourceArcContext::cartesian())
             .expect("dissolve accepts the repaired jittered coverage");
     }
 }

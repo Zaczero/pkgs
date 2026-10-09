@@ -6,7 +6,7 @@ use crate::geographic::GeographicFrame;
 use crate::geometry::{
     ChartBox, ChartEdgeDifferential, ChartEdgeDifferentialBounds, ChartMetric,
     ChartPointDistanceSample, GeodesicMetric, GeodesicNumericalPolicy, Point, PointEdgeQuery,
-    PointEdgeQueryResult,
+    PointEdgeQueryResult, Work,
 };
 
 pub(crate) fn inverse_distance(
@@ -211,10 +211,10 @@ impl ChartMetric for EllipsoidMetric<'_> {
         edge.length(self.geodesic)
     }
 
-    fn chart_edge_length_with_work(
+    fn chart_edge_length_with_work<W: Work>(
         &self,
         edge: &ChartEdge,
-        work: &mut impl crate::geometry::Work,
+        work: &mut W,
     ) -> crate::error::Result<f64> {
         edge.length_with_work(self.geodesic, work)
     }
@@ -232,12 +232,12 @@ impl ChartMetric for EllipsoidMetric<'_> {
         edge.arclength_fraction(parameter, total_length, self.geodesic)
     }
 
-    fn chart_edge_arclength_fraction_with_work(
+    fn chart_edge_arclength_fraction_with_work<W: Work>(
         &self,
         edge: &ChartEdge,
         parameter: f64,
         total_length: Option<f64>,
-        work: &mut impl crate::geometry::Work,
+        work: &mut W,
     ) -> crate::error::Result<f64> {
         edge.arclength_fraction_with_work(parameter, total_length, self.geodesic, work)
     }

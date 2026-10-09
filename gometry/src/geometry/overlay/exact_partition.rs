@@ -115,7 +115,7 @@ pub(in crate::geometry) fn clip_polygonal_rectangle<P: AsRef<Polygon>>(
         crate::geometry::OverlayOp::Intersection,
         axes,
         strict,
-        crate::geometry::SourceArcContext::cartesian(),
+        &crate::geometry::SourceArcContext::cartesian(),
     )?;
     Ok(Some(if result.is_empty() {
         Shape::typed_empty(GeometryKind::Polygon, axes)
@@ -164,7 +164,7 @@ impl ResolvedNodePoints<'_, '_> {
 }
 
 impl<'e, 'p> ResolvedNodePoints<'e, 'p> {
-    fn from_embedding(
+    const fn from_embedding(
         embedding: &'e embedding::Embedding<'p>,
         by_node: Option<Vec<Option<(ZOrdinate, MOrdinate)>>>,
     ) -> Self {
@@ -660,6 +660,10 @@ struct SourceArcRecord {
 }
 
 impl SourceArcRecord {
+    #[expect(
+        clippy::large_types_passed_by_value,
+        reason = "this constructor transfers the newly staged source endpoint pair into its owning record"
+    )]
     fn new(points: [Point; 2]) -> Self {
         Self {
             points,
@@ -1469,7 +1473,7 @@ impl ExactSourceInventory {
         partition: &ExactPartition<'_>,
         node: NodeId,
         axes: crate::geometry::CoordinateAxes,
-        context: SourceArcContext<'_, '_, M>,
+        context: &SourceArcContext<'_, '_, M>,
         source_scope: Option<u32>,
     ) -> Result<(ZOrdinate, MOrdinate)> {
         if !axes.has_z() && !axes.has_m() {
@@ -1636,7 +1640,7 @@ impl ExactSourceInventory {
         emission: &'e ExactLineEmission<'p>,
         nodes: I,
         declared_axes: crate::geometry::CoordinateAxes,
-        context: SourceArcContext<'_, '_, M>,
+        context: &SourceArcContext<'_, '_, M>,
         source_scope: Option<u32>,
     ) -> Result<ResolvedNodePoints<'e, 'p>> {
         self.resolve_node_points(
@@ -1655,7 +1659,7 @@ impl ExactSourceInventory {
         embedding: &'e embedding::Embedding<'p>,
         nodes: I,
         declared_axes: crate::geometry::CoordinateAxes,
-        context: SourceArcContext<'_, '_, M>,
+        context: &SourceArcContext<'_, '_, M>,
         source_scope: Option<u32>,
     ) -> Result<ResolvedNodePoints<'e, 'p>> {
         if !declared_axes.has_z() && !declared_axes.has_m() {
@@ -1682,7 +1686,7 @@ impl ExactSourceInventory {
         partition: &ExactPartition<'_>,
         nodes: I,
         declared_axes: CoordinateAxes,
-        context: SourceArcContext<'_, '_, M>,
+        context: &SourceArcContext<'_, '_, M>,
         source_scope: Option<u32>,
         by_node: &mut [Option<(ZOrdinate, MOrdinate)>],
     ) -> Result<()> {
@@ -1731,7 +1735,7 @@ impl ExactSourceInventory {
         partition: &ExactPartition<'_>,
         declared_axes: crate::geometry::CoordinateAxes,
         strict: bool,
-        context: SourceArcContext<'_, '_, M>,
+        context: &SourceArcContext<'_, '_, M>,
     ) -> Result<Shape> {
         if partition.spans.is_empty() {
             return Ok(Shape::multi_line_string(declared_axes, Vec::new()));
@@ -1800,7 +1804,7 @@ impl ExactSourceInventory {
         declared_axes: CoordinateAxes,
         row_axes: &[CoordinateAxes],
         strict: bool,
-        context: SourceArcContext<'_, '_, M>,
+        context: &SourceArcContext<'_, '_, M>,
     ) -> Result<PolygonizeFull> {
         if row_axes.len() != self.operand_count() {
             return Err(GeometryErrorKind::Invalid(
@@ -2017,7 +2021,7 @@ impl ExactSourceInventory {
         &self,
         partition: &ExactPartition<'_>,
         declared_axes: CoordinateAxes,
-        context: SourceArcContext<'_, '_, M>,
+        context: &SourceArcContext<'_, '_, M>,
     ) -> Result<Shape> {
         debug_assert_eq!(self.operand_count(), 1);
         let (topology, edges) = partition.local_topology()?;
@@ -2098,7 +2102,7 @@ impl ExactSourceInventory {
         operation: crate::geometry::OverlayOp,
         declared_axes: crate::geometry::CoordinateAxes,
         strict: bool,
-        context: SourceArcContext<'_, '_, M>,
+        context: &SourceArcContext<'_, '_, M>,
     ) -> Result<Shape> {
         let (topology, edges) = partition.local_topology()?;
         let global = partition.global_faces(&topology, &edges)?;
@@ -2160,7 +2164,7 @@ impl ExactSourceInventory {
         operation: crate::geometry::OverlayOp,
         declared_axes: crate::geometry::CoordinateAxes,
         strict: bool,
-        context: SourceArcContext<'_, '_, M>,
+        context: &SourceArcContext<'_, '_, M>,
     ) -> Result<Shape> {
         let cells = self.select_cells(partition, topology, edges, global, operation, false)?;
         let ordinate_protected = self.ordinate_protected_nodes(partition, declared_axes)?;
@@ -2228,10 +2232,6 @@ impl ExactSourceInventory {
     /// The axis-aligned cut ordinate is exactly representable and pinned by
     /// the embedding. Dissolving a straight seam in one child cannot move a
     /// vertex retained by the other child off that seam.
-    #[expect(
-        clippy::indexing_slicing,
-        reason = "plan node IDs are admitted by this partition and index its node-aligned seen flags"
-    )]
     pub(in crate::geometry) fn subdivision_parts<M: ChartMetric>(
         &self,
         partition: &ExactPartition<'_>,
@@ -2240,7 +2240,7 @@ impl ExactSourceInventory {
         strict: bool,
         clip_operands: [usize; 2],
         budget: &mut ExpansionBudget,
-        context: SourceArcContext<'_, '_, M>,
+        context: &SourceArcContext<'_, '_, M>,
     ) -> Result<[Shape; 2]> {
         let geographic_frame = match context.domain() {
             crate::geometry::TopologyDomain::Cartesian => None,
@@ -2384,10 +2384,6 @@ impl ExactSourceInventory {
         Ok([first, second])
     }
 
-    #[expect(
-        clippy::indexing_slicing,
-        reason = "selected spans and node masks are sized from the same partition whose span and node IDs the routine visits"
-    )]
     fn subdivision_line_parts<M: ChartMetric>(
         &self,
         partition: &ExactPartition<'_>,
@@ -2398,7 +2394,7 @@ impl ExactSourceInventory {
         declared_axes: crate::geometry::CoordinateAxes,
         strict: bool,
         clip_operands: [usize; 2],
-        context: SourceArcContext<'_, '_, M>,
+        context: &SourceArcContext<'_, '_, M>,
     ) -> Result<[Shape; 2]> {
         let mut selected = Vec::with_capacity(clip_operands.len());
         for &clip_operand in &clip_operands {
@@ -2848,7 +2844,7 @@ impl ExactSourceInventory {
         method: RepairMethod,
         declared_axes: CoordinateAxes,
         strict: bool,
-        context: SourceArcContext<'_, '_, M>,
+        context: &SourceArcContext<'_, '_, M>,
     ) -> Result<Vec<Shape>> {
         let (topology, edges) = partition.local_topology()?;
         let global = partition.global_faces(&topology, &edges)?;
@@ -2887,8 +2883,8 @@ impl ExactSourceInventory {
         let embedding = partition.embed(&[&emission], "repair")?;
         let parts = plan.build_node_parts(partition, &topology, &emission)?;
         let mut groups = Vec::with_capacity(parts.polygons.len());
-        for mut rings in parts.polygons {
-            let mut ring_iter = rings.drain(..);
+        for rings in parts.polygons {
+            let mut ring_iter = rings.into_iter();
             let shell = ring_iter.next().expect("repair polygon has a shell");
             let Some(shell) = remove_node_antennas(shell) else {
                 continue;
@@ -2938,7 +2934,7 @@ impl ExactSourceInventory {
         operation: &'static str,
         declared_axes: CoordinateAxes,
         strict: bool,
-        context: SourceArcContext<'_, '_, M>,
+        context: &SourceArcContext<'_, '_, M>,
     ) -> Result<Vec<Shape>> {
         partition.kept_nodes = KeptNodes::All;
         let (topology, edges) = partition.local_topology()?;
@@ -3069,7 +3065,7 @@ impl ExactSourceInventory {
         declared_axes: CoordinateAxes,
         strict: bool,
         operation: &'static str,
-        context: SourceArcContext<'_, '_, M>,
+        context: &SourceArcContext<'_, '_, M>,
         source_scope: Option<u32>,
     ) -> Result<Vec<Shape>> {
         let by_node = self.resolve_node_points(
@@ -3118,7 +3114,7 @@ impl ExactSourceInventory {
         rows: Vec<Vec<(usize, bool)>>,
         row_axes: &[CoordinateAxes],
         strict: bool,
-        context: SourceArcContext<'_, '_, M>,
+        context: &SourceArcContext<'_, '_, M>,
     ) -> Result<Vec<Vec<Shape>>> {
         let mut output = Vec::with_capacity(rows.len());
         for (row, spans) in rows.into_iter().enumerate() {

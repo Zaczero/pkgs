@@ -176,7 +176,7 @@ pub(crate) fn geographic_intersection_witness_cached<M: ChartMetric>(
         OverlayOp::Intersection,
         Strictness::Lenient,
         false,
-        crate::geometry::SourceArcContext::new(
+        &crate::geometry::SourceArcContext::new(
             crate::geometry::TopologyDomain::Geographic(frame),
             Some(&metric_access),
         ),

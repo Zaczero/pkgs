@@ -11,6 +11,10 @@ use crate::crs::{ResolvedMetric, metric_interpolate_m};
 use crate::dispatch::MetricOp;
 use crate::dispatch::metric::{CachelessRowContext, GeodesicBinaryRow, LinearReferenceRow};
 use crate::error::Result;
+use crate::geographic::PointSelectionChart;
+use crate::geographic::chart::{
+    point_set_convex_hull_shape, point_set_minimum_rotated_rectangle_shape,
+};
 use crate::geometry::{
     Bounds, BufferCapStyle, BufferJoinStyle, BufferSide, DerivedPointStrategy, Dimension,
     GeometryKind, MeasureRange, OriginSpec, PreparedPlan, Shape, SimplifyMethod, SmoothMethod,
@@ -109,7 +113,7 @@ fn publish_planar_geographic_edges_budgeted_with_context(
             crate::geometry::publish_raw_computed_shape_with_budget_and_context(
                 &output,
                 frame,
-                crate::geometry::SourceArcContext::new(ctx.domain, Some(&metric_access)),
+                &crate::geometry::SourceArcContext::new(ctx.domain, Some(&metric_access)),
                 budget,
             )
         },
@@ -171,9 +175,8 @@ pub(crate) fn unary_convex_hull(
     let shape = data.shape();
     if !matches!(shape, Shape::Point(_) | Shape::Empty(..))
         && let TopologyDomain::Geographic(frame) = ctx.domain
-        && crate::geographic::chart::PointSelectionChart::accepts_point_set(shape)
-        && let Some(hull) =
-            crate::geographic::chart::point_set_convex_hull_shape(shape, frame, data.bounds())?
+        && PointSelectionChart::accepts_point_set(shape)
+        && let Some(hull) = point_set_convex_hull_shape(shape, frame, data.bounds())?
     {
         return Ok(hull);
     }
@@ -455,13 +458,9 @@ pub(crate) fn unary_minimum_rotated_rectangle(
     let shape = data.shape();
     if !matches!(shape, Shape::Point(_) | Shape::Empty(..))
         && let TopologyDomain::Geographic(frame) = ctx.domain
-        && crate::geographic::chart::PointSelectionChart::accepts_point_set(shape)
+        && PointSelectionChart::accepts_point_set(shape)
         && let Some(rectangle) =
-            crate::geographic::chart::point_set_minimum_rotated_rectangle_shape(
-                shape,
-                frame,
-                data.bounds(),
-            )?
+            point_set_minimum_rotated_rectangle_shape(shape, frame, data.bounds())?
     {
         return Ok(rectangle);
     }
@@ -509,7 +508,7 @@ pub(crate) fn unary_boundary(data: &PreparedPlan, ctx: &CachelessRowContext<'_>)
     };
     crate::geometry::boundary_with_metric(
         data,
-        crate::geometry::SourceArcContext::new(ctx.domain, Some(&metric_access)),
+        &crate::geometry::SourceArcContext::new(ctx.domain, Some(&metric_access)),
     )
 }
 
@@ -612,7 +611,7 @@ pub(crate) fn unary_node(data: &PreparedPlan, ctx: &CachelessRowContext<'_>) -> 
     };
     let source_context = crate::geometry::SourceArcContext::new(ctx.domain, Some(&metric_access));
     data.shape()
-        .node_with_context(Strictness::Lenient, source_context)
+        .node_with_context(Strictness::Lenient, &source_context)
 }
 
 /// Build-area kernel shared by the scalar and array unary method spine.
@@ -625,11 +624,10 @@ pub(crate) fn unary_build_area(
             crate::crs::CrsError::invalid(
                 "geographic build_area source ordinates require the operation's CRS metric",
             )
-            .into()
         })
     };
     let source_context = crate::geometry::SourceArcContext::new(ctx.domain, Some(&metric_access));
-    data.shape().build_area_with_context(false, source_context)
+    data.shape().build_area_with_context(false, &source_context)
 }
 
 /// Smooth kernel shared by the spine-routed free function.
@@ -703,7 +701,7 @@ fn smooth_for_domain(
                 &output,
                 frame,
                 &preserved_vertices,
-                source_context,
+                &source_context,
                 budget,
             )
         },
@@ -984,7 +982,7 @@ pub(crate) fn unary_snap_to_grid(
         let source_context =
             crate::geometry::SourceArcContext::new(ctx.domain, Some(&metric_access));
         data.shape()
-            .snap_to_grid_repaired(size, origin, ctx.domain, source_context)
+            .snap_to_grid_repaired(size, origin, ctx.domain, &source_context)
     } else {
         data.shape().snap_to_grid(size, origin)
     }

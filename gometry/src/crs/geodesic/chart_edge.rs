@@ -275,7 +275,7 @@ impl ChartEdge {
         Ok(Point::new_raw_xy(longitude, latitude))
     }
 
-    fn retained_longitude(self) -> RetainedChartDisplacement {
+    const fn retained_longitude(self) -> RetainedChartDisplacement {
         self.longitude
     }
 
@@ -445,10 +445,7 @@ impl ChartEdge {
         if parameter == 1.0 {
             return Ok(end);
         }
-        let total = match total_length {
-            Some(length) => length,
-            None => self.length(geodesic)?,
-        };
+        let total = total_length.map_or_else(|| self.length(geodesic), Ok)?;
         self.witness_interior(start, end, parameter, total, geodesic)
     }
 
@@ -527,10 +524,7 @@ impl ChartEdge {
         if parameter >= 1.0 {
             return Ok(1.0);
         }
-        let total = match total_length {
-            Some(length) => length,
-            None => self.length_with_work(geodesic, work)?,
-        };
+        let total = total_length.map_or_else(|| self.length_with_work(geodesic, work), Ok)?;
         if total == 0.0 {
             return Ok(0.0);
         }
@@ -571,16 +565,10 @@ impl ChartEdge {
             return Ok(0.0);
         }
         if t >= 1.0 {
-            return match total_length {
-                Some(length) => Ok(length),
-                None => self.length_with_work(geodesic, work),
-            };
+            return total_length.map_or_else(|| self.length_with_work(geodesic, work), Ok);
         }
         if self.latitude_delta == 0.0 {
-            let total = match total_length {
-                Some(length) => length,
-                None => self.length_with_work(geodesic, work)?,
-            };
+            let total = total_length.map_or_else(|| self.length_with_work(geodesic, work), Ok)?;
             return self.finite_length(total * t);
         }
         if let Some(meridian) = self.meridian {
@@ -1182,7 +1170,7 @@ impl ChartMetric for super::GeodesicMetric {
         edge.length(&self.geodesic)
     }
 
-    fn chart_edge_length_with_work(&self, edge: &ChartEdge, work: &mut impl Work) -> Result<f64> {
+    fn chart_edge_length_with_work<W: Work>(&self, edge: &ChartEdge, work: &mut W) -> Result<f64> {
         edge.length_with_work(&self.geodesic, work)
     }
 
@@ -1199,12 +1187,12 @@ impl ChartMetric for super::GeodesicMetric {
         edge.arclength_fraction(parameter, total_length, &self.geodesic)
     }
 
-    fn chart_edge_arclength_fraction_with_work(
+    fn chart_edge_arclength_fraction_with_work<W: Work>(
         &self,
         edge: &ChartEdge,
         parameter: f64,
         total_length: Option<f64>,
-        work: &mut impl Work,
+        work: &mut W,
     ) -> Result<f64> {
         edge.arclength_fraction_with_work(parameter, total_length, &self.geodesic, work)
     }
@@ -1334,7 +1322,6 @@ mod tests {
     use super::{AuthalicSeries, ChartEdge, ONE_DEGREE};
     use crate::geographic::{
         AngularFactor, ChartStep, EdgeDirection, GeographicAxisOrientation, GeographicFrame,
-        PeriodicAxis,
     };
     use crate::geometry::types::{ChartMetric as _, GeodesicMetric as _};
     use crate::geometry::{GeometryErrorKind, MOrdinate, Point, ZOrdinate};
@@ -1766,7 +1753,7 @@ mod tests {
         assert_eq!(to_point.x, 11.5);
         assert_eq!((to_point.x - from_point.x).to_bits(), 1.0_f64.to_bits());
         let exact_interval_delta = 2.0 * (to - from);
-        assert_eq!(exact_interval_delta.to_bits(), 0x3FEFFFFFFFFFFFFE);
+        assert_eq!(exact_interval_delta.to_bits(), 0x3FEF_FFFF_FFFF_FFFE);
         assert_ne!(
             (to_point.x - from_point.x).to_bits(),
             exact_interval_delta.to_bits()
@@ -2393,7 +2380,7 @@ mod tests {
         let frames = [degrees(), grads(), radians()];
         let mut state = 0x4D59_5DF4_D0F3_3173_u64;
         for frame in frames {
-            let axis: PeriodicAxis = frame.longitude();
+            let axis = frame.longitude();
             let half = axis.half_period();
             let period = axis.period();
             for (from, to) in [

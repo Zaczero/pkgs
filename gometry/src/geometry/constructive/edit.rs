@@ -2048,7 +2048,7 @@ impl Shape {
         self.subdivide_with_context(
             max_vertices,
             drop,
-            crate::geometry::SourceArcContext::cartesian(),
+            &crate::geometry::SourceArcContext::cartesian(),
         )
     }
 
@@ -2056,7 +2056,7 @@ impl Shape {
         &self,
         max_vertices: usize,
         drop: bool,
-        context: crate::geometry::SourceArcContext<'_, '_>,
+        context: &crate::geometry::SourceArcContext<'_, '_>,
     ) -> Result<Vec<Self>> {
         let mut parts = Vec::new();
         let mut budget = ExpansionBudget::new("subdivide", "max_vertices");
@@ -2120,7 +2120,7 @@ impl Shape {
             OverlayOp::Intersection,
             Strictness::from(drop),
             true,
-            crate::geometry::SourceArcContext::new(
+            &crate::geometry::SourceArcContext::new(
                 crate::geometry::TopologyDomain::Geographic(frame),
                 Some(metric_access),
             ),

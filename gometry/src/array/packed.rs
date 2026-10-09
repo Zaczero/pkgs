@@ -1018,7 +1018,6 @@ impl PyGeometryArray {
                     crate::crs::CrsError::invalid(
                         "geographic triangulation requires the operation's CRS metric",
                     )
-                    .into()
                 })
             };
             let source_context =
@@ -1026,7 +1025,7 @@ impl PyGeometryArray {
             let published = crate::geometry::publish_triangle_vertex_stream_budgeted(
                 vertices,
                 geographic,
-                source_context,
+                &source_context,
                 &mut budget,
             )?;
             return Self::packed_triangles_with_ring_ends(

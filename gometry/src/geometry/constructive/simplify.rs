@@ -685,7 +685,7 @@ pub(crate) fn split(
     shape: Shape,
     max_vertices: usize,
     drop: bool,
-    context: SourceArcContext<'_, '_>,
+    context: &SourceArcContext<'_, '_>,
     out: &mut Vec<Shape>,
     budget: &mut ExpansionBudget,
 ) -> Result<()> {
@@ -2308,7 +2308,7 @@ mod subdivision_tests {
         reset_partition_calls();
         reset_subdivision_work();
         let parts = shape
-            .subdivide_with_context(8, false, crate::geometry::SourceArcContext::cartesian())
+            .subdivide_with_context(8, false, &crate::geometry::SourceArcContext::cartesian())
             .unwrap();
         assert_eq!(parts.len(), 2);
         assert_eq!(partition_calls(), 1);
@@ -2344,13 +2344,15 @@ mod subdivision_tests {
                 .unwrap();
         let frame = crate::geographic::GeographicFrame::try_new(longitude, latitude, 0.0).unwrap();
         let no_metric = || -> Result<&crate::crs::GeodesicMetric> {
-            Err(crate::crs::CrsError::invalid("unexpected source-arc metric access").into())
+            Err(crate::crs::CrsError::invalid(
+                "unexpected source-arc metric access",
+            ))
         };
         let parts = shape
             .subdivide_with_context(
                 8,
                 false,
-                crate::geometry::SourceArcContext::new(
+                &crate::geometry::SourceArcContext::new(
                     crate::geometry::TopologyDomain::Geographic(frame),
                     Some(&no_metric),
                 ),
@@ -2394,7 +2396,7 @@ mod subdivision_tests {
 
         reset_subdivision_work();
         let parts = shape
-            .subdivide_with_context(8, false, crate::geometry::SourceArcContext::cartesian())
+            .subdivide_with_context(8, false, &crate::geometry::SourceArcContext::cartesian())
             .unwrap();
 
         let (work_items, splits) = subdivision_work();
@@ -2424,7 +2426,7 @@ mod subdivision_tests {
         );
         reset_partition_calls();
         let parts = shape
-            .subdivide_with_context(8, false, crate::geometry::SourceArcContext::cartesian())
+            .subdivide_with_context(8, false, &crate::geometry::SourceArcContext::cartesian())
             .unwrap();
         assert_eq!(parts.len(), 2);
         assert_eq!(partition_calls(), 1);
@@ -2440,7 +2442,7 @@ mod subdivision_tests {
         let shape = line_shape(&points);
         reset_partition_calls();
         let parts = shape
-            .subdivide_with_context(8, false, crate::geometry::SourceArcContext::cartesian())
+            .subdivide_with_context(8, false, &crate::geometry::SourceArcContext::cartesian())
             .unwrap();
         assert_eq!(parts.len(), 2);
         let mut counts = ShapeCountQuery::default();
@@ -2457,7 +2459,7 @@ mod subdivision_tests {
         let shape =
             crate::io::parse_wkt("POLYGON((0 0,20 0,20 20,0 20,0 0),(0 0,5 2,2 5,0 0))").unwrap();
         let parts = shape
-            .subdivide_with_context(8, false, crate::geometry::SourceArcContext::cartesian())
+            .subdivide_with_context(8, false, &crate::geometry::SourceArcContext::cartesian())
             .unwrap();
         let mut counts = ShapeCountQuery::default();
         assert!(parts.iter().all(|part| {
@@ -2475,7 +2477,7 @@ mod subdivision_tests {
         .unwrap();
         reset_partition_calls();
         let parts = shape
-            .subdivide_with_context(8, false, crate::geometry::SourceArcContext::cartesian())
+            .subdivide_with_context(8, false, &crate::geometry::SourceArcContext::cartesian())
             .unwrap();
         assert_eq!(parts.len(), 2);
         assert!(parts.iter().all(|part| matches!(part, Shape::Polygon(_))));
@@ -2499,7 +2501,7 @@ mod subdivision_tests {
         ])
         .unwrap();
         let parts = shape
-            .subdivide_with_context(7, false, crate::geometry::SourceArcContext::cartesian())
+            .subdivide_with_context(7, false, &crate::geometry::SourceArcContext::cartesian())
             .unwrap();
         assert!(parts.len() >= 2);
         assert!(parts.iter().all(|part| !part.is_empty()));
@@ -2526,7 +2528,7 @@ mod subdivision_tests {
             Vec::new(),
         ));
         let parts = shape
-            .subdivide_with_context(8, false, crate::geometry::SourceArcContext::cartesian())
+            .subdivide_with_context(8, false, &crate::geometry::SourceArcContext::cartesian())
             .unwrap();
         assert_eq!(parts.len(), 2);
         let source = all_points(&shape);
@@ -2556,7 +2558,7 @@ mod subdivision_tests {
         ] {
             let shape = crate::io::parse_wkt(wkt).unwrap();
             let parts = shape
-                .subdivide_with_context(8, false, crate::geometry::SourceArcContext::cartesian())
+                .subdivide_with_context(8, false, &crate::geometry::SourceArcContext::cartesian())
                 .unwrap();
             assert!(!parts.is_empty(), "{wkt}");
             assert!(parts.iter().all(|part| !part.is_empty()), "{wkt}");
@@ -2585,10 +2587,10 @@ mod subdivision_tests {
         .shape;
 
         let shared_parts = shared
-            .subdivide_with_context(8, false, crate::geometry::SourceArcContext::cartesian())
+            .subdivide_with_context(8, false, &crate::geometry::SourceArcContext::cartesian())
             .unwrap();
         let expanded_parts = expanded
-            .subdivide_with_context(8, false, crate::geometry::SourceArcContext::cartesian())
+            .subdivide_with_context(8, false, &crate::geometry::SourceArcContext::cartesian())
             .unwrap();
         let wkb = |parts: &[Shape]| {
             parts
@@ -2601,7 +2603,7 @@ mod subdivision_tests {
         assert_eq!(
             shared_parts_wkb,
             wkb(&shared
-                .subdivide_with_context(8, false, crate::geometry::SourceArcContext::cartesian())
+                .subdivide_with_context(8, false, &crate::geometry::SourceArcContext::cartesian())
                 .unwrap())
         );
 

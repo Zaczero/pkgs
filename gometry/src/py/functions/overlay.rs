@@ -407,7 +407,7 @@ pub(crate) fn coverage_union(py: Python<'_>, values: &Bound<'_, PyAny>) -> PyRes
     };
     let shape = py.detach(move || {
         let context = crate::geometry::SourceArcContext::new(domain, Some(&metric_access));
-        crate::geometry::coverage_union_topo(&shapes, context)
+        crate::geometry::coverage_union_topo(&shapes, &context)
     })?;
     drop(metric_scratch);
     Ok(Typed(PyGeometry::with_frame(shape, metadata)))
@@ -468,13 +468,12 @@ pub(crate) fn polygonize(py: Python<'_>, values: &Bound<'_, PyAny>) -> PyResult<
                 crate::crs::CrsError::invalid(
                     "geographic polygonize source ordinates require the operation's CRS metric",
                 )
-                .into()
             })
         };
         Shape::polygonize_all_with_context(
             &shapes,
             false,
-            crate::geometry::SourceArcContext::new(domain, Some(&metric_access)),
+            &crate::geometry::SourceArcContext::new(domain, Some(&metric_access)),
         )
     })?;
     Ok(PyGeometryArray::from_shapes(polygons, metadata)?)
@@ -530,13 +529,12 @@ pub(crate) fn polygonize_full(py: Python<'_>, values: &Bound<'_, PyAny>) -> PyRe
                 crate::crs::CrsError::invalid(
                     "geographic polygonize_full source ordinates require the operation's CRS metric",
                 )
-                .into()
             })
         };
         Shape::polygonize_full_all_with_context(
             &shapes,
             false,
-            crate::geometry::SourceArcContext::new(domain, Some(&metric_access)),
+            &crate::geometry::SourceArcContext::new(domain, Some(&metric_access)),
         )
     })?;
     crate::py_polygonize_full(py, full, metadata.crs_ref(), metadata.epoch())
@@ -823,7 +821,6 @@ pub(crate) fn coverage_simplify(
                 crate::crs::CrsError::invalid(
                     "geographic coverage simplification requires the operation's CRS metric",
                 )
-                .into()
             })
         };
         geometry::coverage_simplify_with_context(
@@ -831,7 +828,7 @@ pub(crate) fn coverage_simplify(
             tolerance,
             method,
             simplify_boundary,
-            geometry::SourceArcContext::new(domain, Some(&metric_access)),
+            &geometry::SourceArcContext::new(domain, Some(&metric_access)),
         )
     })?;
     let result = PyGeometryArray::from_shapes(rows, metadata)?;
@@ -926,7 +923,6 @@ pub(crate) fn coverage_clean(
                 crate::crs::CrsError::invalid(
                     "geographic coverage_clean source ordinates require the operation's CRS metric",
                 )
-                .into()
             })
         };
         geometry::coverage_clean(
@@ -934,7 +930,7 @@ pub(crate) fn coverage_clean(
             grid_size,
             gap_width,
             overlap_rule,
-            crate::geometry::SourceArcContext::new(domain, Some(&metric_access)),
+            &crate::geometry::SourceArcContext::new(domain, Some(&metric_access)),
         )
     })?;
     let result = PyGeometryArray::from_shapes(rows, metadata)?;

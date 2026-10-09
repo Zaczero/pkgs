@@ -9,6 +9,7 @@ use crate::error::{ResourceError, Result};
 use crate::geographic::{
     ChartPole, GeographicRing, Latitude, RetainedChartDisplacement, RingSummary, SeamIdentity,
 };
+use crate::geometry::exact_arith::round_native_longitude;
 use crate::geometry::ordinates::{
     NodeOrdinates, SourceArcMetricAccess, SourceArcRequest, source_arc_ordinates_unmetered,
 };
@@ -1539,12 +1540,15 @@ fn source_arc_node_ordinates<M: crate::geometry::ChartMetric>(
     metric_access: Option<&SourceArcMetricAccess<'_, '_, M>>,
 ) -> Result<NodeOrdinates> {
     let request = SourceArcRequest::new(frame, source, axes, parameter, longitude)?;
-    source_arc_ordinates_unmetered(&request, || match metric_access {
-        Some(access) => access(),
-        None => Err(crate::crs::CrsError::invalid(
-            "geographic source-ordinate carry requires the operation's CRS metric authority",
+    source_arc_ordinates_unmetered(&request, || {
+        metric_access.map_or_else(
+            || {
+                Err(crate::crs::CrsError::invalid(
+                    "geographic source-ordinate carry requires the operation's CRS metric authority",
+                ))
+            },
+            |access| access(),
         )
-        .into()),
     })
 }
 
@@ -1697,7 +1701,7 @@ fn round_canonical_longitude(
     longitude: &ExactRational,
 ) -> Result<f64> {
     let axis = frame.longitude();
-    crate::geometry::exact_arith::round_native_longitude(axis, longitude)
+    round_native_longitude(axis, longitude)
 }
 
 fn push_line_part(output: &mut Vec<CoordSeq>, points: &mut Vec<Point>) -> Result<()> {
@@ -2402,7 +2406,7 @@ fn emit_ring(
             let latitude = Latitude::try_new(frame, exact_latitude_at(index, parameter)?.round()?)
                 .map_err(|error| GeometryErrorKind::Invalid(error.to_string().into()))?
                 .get();
-            let [start, end] = endpoints;
+            let &[start, end] = endpoints;
             Ok(crate::geographic::ComputedSampleOrdinates {
                 y: latitude,
                 z: ZOrdinate(interpolate_optional_ordinate(start.z(), end.z(), parameter)),
@@ -3025,7 +3029,9 @@ mod tests {
         let metric_accesses = std::cell::Cell::new(0_usize);
         let no_metric = || -> Result<&crate::crs::GeodesicMetric> {
             metric_accesses.set(metric_accesses.get().wrapping_add(1));
-            Err(crate::crs::CrsError::invalid("unexpected source-arc metric request").into())
+            Err(crate::crs::CrsError::invalid(
+                "unexpected source-arc metric request",
+            ))
         };
 
         let xy = node_ordinates(&topology, CoordinateAxes::XY, Some(&no_metric)).unwrap();

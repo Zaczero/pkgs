@@ -155,7 +155,7 @@ fn publish_transformed_chain_with_edges(
             };
             crate::geometry::computed_native_sample_ordinates(
                 frame,
-                &endpoints,
+                endpoints,
                 longitude,
                 parameter,
                 output.axes(),
@@ -243,7 +243,7 @@ pub(crate) fn publish_raw_computed_shape_with_budget(
 pub(crate) fn publish_raw_computed_shape_with_budget_and_context(
     shape: &Shape,
     frame: GeographicFrame,
-    source_context: SourceArcContext<'_, '_, crate::crs::GeodesicMetric>,
+    source_context: &SourceArcContext<'_, '_, crate::crs::GeodesicMetric>,
     budget: &mut ExpansionBudget,
 ) -> Result<Shape> {
     map_computed_shape_chains(shape, shape, |_, coords, closed| {
@@ -269,7 +269,7 @@ pub(crate) fn publish_raw_computed_shape_with_context(
 ) -> Result<Shape> {
     let mut budget = ExpansionBudget::new(operation, "computed edges");
     budget.add(ShapeCountQuery::default().coordinates(shape)?)?;
-    publish_raw_computed_shape_with_budget_and_context(shape, frame, *source_context, &mut budget)
+    publish_raw_computed_shape_with_budget_and_context(shape, frame, source_context, &mut budget)
 }
 
 pub(crate) fn publish_transformed_shape(
@@ -355,7 +355,7 @@ pub(crate) fn publish_raw_computed_shapes_with_context(
     shapes: &[Shape],
     frame: GeographicFrame,
     operation: &'static str,
-    source_context: SourceArcContext<'_, '_, crate::crs::GeodesicMetric>,
+    source_context: &SourceArcContext<'_, '_, crate::crs::GeodesicMetric>,
 ) -> Result<Vec<Shape>> {
     let mut budget = ExpansionBudget::new(operation, "computed edges");
     let mut counts = ShapeCountQuery::default();
@@ -368,7 +368,7 @@ pub(crate) fn publish_raw_computed_shapes_with_context(
 pub(crate) fn publish_raw_computed_shapes_with_budget_and_context(
     shapes: &[Shape],
     frame: GeographicFrame,
-    source_context: SourceArcContext<'_, '_, crate::crs::GeodesicMetric>,
+    source_context: &SourceArcContext<'_, '_, crate::crs::GeodesicMetric>,
     budget: &mut ExpansionBudget,
 ) -> Result<Vec<Shape>> {
     shapes
@@ -454,7 +454,7 @@ impl PublishedTriangleVertices {
 pub(crate) fn publish_triangle_vertex_stream_budgeted(
     vertices: &[crate::geometry::Point],
     frame: GeographicFrame,
-    source_context: SourceArcContext<'_, '_, crate::crs::GeodesicMetric>,
+    source_context: &SourceArcContext<'_, '_, crate::crs::GeodesicMetric>,
     budget: &mut ExpansionBudget,
 ) -> Result<PublishedTriangleVertices> {
     if !vertices.len().is_multiple_of(4) {
@@ -520,7 +520,7 @@ pub(crate) fn publish_polygon_with_edge_roles_and_context(
     polygon: &Polygon,
     computed_edges: &[Vec<bool>],
     frame: GeographicFrame,
-    source_context: SourceArcContext<'_, '_, crate::crs::GeodesicMetric>,
+    source_context: &SourceArcContext<'_, '_, crate::crs::GeodesicMetric>,
     budget: &mut ExpansionBudget,
 ) -> Result<Polygon> {
     publish_polygon_with_edge_roles_inner(
@@ -537,7 +537,7 @@ fn publish_polygon_with_edge_roles_inner(
     computed_edges: &[Vec<bool>],
     frame: GeographicFrame,
     budget: &mut ExpansionBudget,
-    source_context: Option<SourceArcContext<'_, '_, crate::crs::GeodesicMetric>>,
+    source_context: Option<&SourceArcContext<'_, '_, crate::crs::GeodesicMetric>>,
 ) -> Result<Polygon> {
     if polygon.rings().count() != computed_edges.len() {
         return Err(GeometryErrorKind::message(
@@ -644,7 +644,7 @@ pub(crate) fn publish_changed_raw_computed_shape<'metric, M: ChartMetric + 'metr
     output: &Shape,
     frame: GeographicFrame,
     preserved_vertices: &[Vec<usize>],
-    source_context: SourceArcContext<'_, 'metric, M>,
+    source_context: &SourceArcContext<'_, 'metric, M>,
     budget: &mut ExpansionBudget,
 ) -> Result<Shape> {
     let mut chain_index = 0_usize;
@@ -696,7 +696,7 @@ fn publish_native_computed_chain<'intent, 'metric, P, M>(
     points: &P,
     closed_ring: bool,
     budget: &mut ExpansionBudget,
-    source_context: SourceArcContext<'_, 'metric, M>,
+    source_context: &SourceArcContext<'_, 'metric, M>,
     intent: impl Fn(
         usize,
         crate::geometry::Point,
@@ -730,12 +730,11 @@ where
             let ComputedLongitudeRelation::Native(longitude) = *relation else {
                 return Err(GeometryErrorKind::message(
                     "computed Native output requires a retained Native chart edge",
-                )
-                .into());
+                ));
             };
             computed_native_sample_ordinates(
                 frame,
-                &endpoints,
+                endpoints,
                 longitude,
                 parameter,
                 axes,
@@ -1157,7 +1156,7 @@ mod tests {
         let mut budget = ExpansionBudget::new("triangulate", "method");
         budget.add(vertices.len()).unwrap();
         let published =
-            publish_triangle_vertex_stream_budgeted(&vertices, frame, context, &mut budget)
+            publish_triangle_vertex_stream_budgeted(&vertices, frame, &context, &mut budget)
                 .unwrap();
 
         assert_eq!(published.ring_ends, [5]);
@@ -1176,7 +1175,9 @@ mod tests {
         let sample = published
             .points
             .iter()
-            .find(|point| point.x == 177.5 && point.y == 58.75)
+            .find(|point| {
+                point.x.to_bits() == 177.5_f64.to_bits() && point.y.to_bits() == 58.75_f64.to_bits()
+            })
             .expect("the 275-degree triangle edge is subdivided at its midpoint");
         assert!((sample.z().unwrap() - 43.730_417_185_196_416).abs() <= 2.0e-8);
         assert!((sample.m().unwrap() - 655.145_474_204_166_5).abs() <= 2.0e-7);
@@ -1199,7 +1200,7 @@ mod tests {
         let xy_published = publish_triangle_vertex_stream_budgeted(
             &xy_vertices,
             frame,
-            xy_context,
+            &xy_context,
             &mut xy_budget,
         )
         .unwrap();
@@ -1245,7 +1246,7 @@ mod tests {
             &smoothed,
             GeographicFrame::crs84(),
             &preserved_vertices,
-            SourceArcContext::cartesian(),
+            &SourceArcContext::cartesian(),
             &mut budget,
         )
         .unwrap();
@@ -1317,7 +1318,7 @@ mod tests {
             &smoothed,
             frame,
             &preserved_vertices,
-            context,
+            &context,
             &mut budget,
         )
         .unwrap();
@@ -1361,7 +1362,7 @@ mod tests {
             &xy_smoothed,
             frame,
             &xy_preserved,
-            xy_context,
+            &xy_context,
             &mut xy_budget,
         )
         .unwrap();

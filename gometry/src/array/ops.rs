@@ -34,14 +34,13 @@ fn publish_triangle_shapes_for_domain(
                     crate::crs::CrsError::invalid(
                         "geographic triangulation requires the operation's CRS metric",
                     )
-                    .into()
                 })
             };
             let source_context = geometry::SourceArcContext::new(domain, Some(&metric_access));
             geometry::publish_raw_computed_shapes_with_budget_and_context(
                 &shapes,
                 frame,
-                source_context,
+                &source_context,
                 budget,
             )
         },
@@ -64,14 +63,13 @@ fn publish_triangle_vertices_for_domain(
                     crate::crs::CrsError::invalid(
                         "geographic triangulation requires the operation's CRS metric",
                     )
-                    .into()
                 })
             };
             let source_context = geometry::SourceArcContext::new(domain, Some(&metric_access));
             geometry::publish_triangle_vertex_stream_budgeted(
                 &vertices,
                 frame,
-                source_context,
+                &source_context,
                 budget,
             )
         },
@@ -293,7 +291,7 @@ impl PyGeometryArray {
                                     shape,
                                     domain,
                                     method,
-                                    source_context,
+                                    &source_context,
                                 )?
                                 .map_or_else(
                                     || (shape.clone(), false),
@@ -721,12 +719,11 @@ impl PyGeometryArray {
                     crate::crs::CrsError::invalid(
                         "geographic polygonize source ordinates require the operation's CRS metric",
                     )
-                    .into()
                 })
             };
             shape.polygonize_with_context(
                 false,
-                crate::geometry::SourceArcContext::new(domain, Some(&metric_access)),
+                &crate::geometry::SourceArcContext::new(domain, Some(&metric_access)),
             )
         })
     }
@@ -744,10 +741,9 @@ impl PyGeometryArray {
                     crate::crs::CrsError::invalid(
                         "geographic line_merge source ordinates require the operation's CRS metric",
                     )
-                    .into()
                 })
             };
-            shape.line_merge_with_context(crate::geometry::SourceArcContext::new(
+            shape.line_merge_with_context(&crate::geometry::SourceArcContext::new(
                 domain,
                 Some(&metric_access),
             ))
@@ -864,7 +860,7 @@ impl PyGeometryArray {
             shape.subdivide_with_context(
                 max_vertices,
                 false,
-                crate::geometry::SourceArcContext::new(domain, Some(&metric_access)),
+                &crate::geometry::SourceArcContext::new(domain, Some(&metric_access)),
             )
         })
     }

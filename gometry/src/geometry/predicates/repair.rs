@@ -73,7 +73,7 @@ pub(crate) fn polygonal_repair(
     method: RepairMethod,
     preserve_source_vertices: bool,
     strict: bool,
-    context: SourceArcContext<'_, '_>,
+    context: &SourceArcContext<'_, '_>,
 ) -> Result<Shape> {
     let empty: &[Polygon] = &[];
     let inventory = ExactSourceInventory::from_polygon_operands(polygons, empty)?;

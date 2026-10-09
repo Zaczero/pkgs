@@ -174,7 +174,7 @@ pub(super) fn polygonize_outline(outline: Vec<CoordSeq>) -> PyResult<Option<Type
     let polygons: Vec<_> = Shape::build_area_all_with_context(
         &[&outline],
         true,
-        crate::geometry::SourceArcContext::cartesian(),
+        &crate::geometry::SourceArcContext::cartesian(),
     )?
     .into_iter()
     .filter_map(|shape| match shape {

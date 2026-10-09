@@ -266,14 +266,18 @@ impl Shape {
     /// so no validation is re-run here; valid input would simply be
     /// rebuilt.
     pub fn repair(&self, method: RepairMethod, drop: bool) -> Result<Self> {
-        self.repair_with_context(method, drop, crate::geometry::SourceArcContext::cartesian())
+        self.repair_with_context(
+            method,
+            drop,
+            &crate::geometry::SourceArcContext::cartesian(),
+        )
     }
 
     pub(crate) fn repair_with_context(
         &self,
         method: RepairMethod,
         drop: bool,
-        context: crate::geometry::SourceArcContext<'_, '_>,
+        context: &crate::geometry::SourceArcContext<'_, '_>,
     ) -> Result<Self> {
         self.repair_with_source_vertices(method, drop, false, context)
     }
@@ -282,7 +286,7 @@ impl Shape {
         &self,
         method: RepairMethod,
         drop: bool,
-        context: crate::geometry::SourceArcContext<'_, '_>,
+        context: &crate::geometry::SourceArcContext<'_, '_>,
     ) -> Result<Self> {
         self.repair_with_source_vertices(method, drop, true, context)
     }
@@ -292,7 +296,7 @@ impl Shape {
         method: RepairMethod,
         drop: bool,
         preserve_source_vertices: bool,
-        context: crate::geometry::SourceArcContext<'_, '_>,
+        context: &crate::geometry::SourceArcContext<'_, '_>,
     ) -> Result<Self> {
         match self {
             // Empty shapes are always valid; an invalid (multi)point means

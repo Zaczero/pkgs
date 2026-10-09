@@ -1,5 +1,3 @@
-use std::ops::ControlFlow;
-
 use super::centroid::{centroid_line_columns, lineal_centroid};
 use crate::error::Result;
 use crate::geometry::{
@@ -266,6 +264,15 @@ pub(crate) fn lineal_surface_point<'a>(
 
 /// The multipoint vertex nearest its centroid — a representative that is always
 /// one of the input points (so `covered_by` holds), no geo-rs conversion.
+pub(crate) fn multipoint_surface_point(xs: &[f64], ys: &[f64]) -> Option<Point> {
+    let count = xs.len();
+    if count == 0 {
+        return None;
+    }
+    let (centroid_x, centroid_y) = column_mean2(xs, ys)?;
+    multipoint_surface_point_at(xs, ys, Point::new_raw_xy(centroid_x, centroid_y))
+}
+
 #[expect(
     clippy::indexing_slicing,
     reason = "argmin ordinals and SIMD lane groups are generated from these equal-length columns"
@@ -274,19 +281,6 @@ pub(crate) fn lineal_surface_point<'a>(
     clippy::arithmetic_side_effects,
     reason = "the selected vertex is defined by the existing IEEE-754 squared-distance score"
 )]
-pub(crate) fn multipoint_surface_point(xs: &[f64], ys: &[f64]) -> Option<Point> {
-    let count = xs.len();
-    if count == 0 {
-        return None;
-    }
-    let (centroid_x, centroid_y) = column_mean2(xs, ys)?;
-    multipoint_surface_point_at(
-        xs,
-        ys,
-        Point::new_raw_xy(centroid_x, centroid_y),
-    )
-}
-
 pub(crate) fn multipoint_surface_point_at(
     xs: &[f64],
     ys: &[f64],
@@ -320,13 +314,12 @@ pub(crate) fn point_set_surface_point_at(shape: &Shape, center: Point) -> Option
         Shape::MultiPoint(points) => multipoint_surface_point_at(points.xs(), points.ys(), center),
         Shape::GeometryCollection(_) => {
             let mut best: Option<(f64, Point)> = None;
-            let _ = shape.try_for_each_first_point_run::<()>(|point| {
+            shape.for_each_first_point_run(|point| {
                 let candidate = Point::new_raw_xy(point.x, point.y);
                 let distance = squared_xy_distance(candidate, center);
                 if best.is_none_or(|(current, _)| distance.total_cmp(&current).is_lt()) {
                     best = Some((distance, candidate));
                 }
-                ControlFlow::<()>::Continue(())
             });
             best.map(|(_, point)| point)
         },

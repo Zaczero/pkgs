@@ -370,7 +370,7 @@ impl PyGeometryArray {
                         size.tuple(),
                         origin.tuple(),
                         domain,
-                        crate::geometry::SourceArcContext::new(domain, Some(&metric_access)),
+                        &crate::geometry::SourceArcContext::new(domain, Some(&metric_access)),
                     )
                 })
             }));

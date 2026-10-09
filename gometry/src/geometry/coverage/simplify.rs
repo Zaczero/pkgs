@@ -650,7 +650,7 @@ pub(crate) fn coverage_simplify_with_context<S: std::borrow::Borrow<Shape>>(
     tolerance: f64,
     method: SimplifyMethod,
     simplify_boundary: bool,
-    source_context: SourceArcContext<'_, '_, crate::crs::GeodesicMetric>,
+    source_context: &SourceArcContext<'_, '_, crate::crs::GeodesicMetric>,
 ) -> Result<Vec<Shape>> {
     if !(tolerance.is_finite() && tolerance >= 0.0) {
         return Err(GeometryErrorKind::NonNegativeFinite("tolerance", tolerance).into());
@@ -785,7 +785,7 @@ fn publish_coverage_edge_roles(
     shape: Shape,
     edge_roles: Vec<Vec<Vec<bool>>>,
     frame: crate::geographic::GeographicFrame,
-    source_context: SourceArcContext<'_, '_, crate::crs::GeodesicMetric>,
+    source_context: &SourceArcContext<'_, '_, crate::crs::GeodesicMetric>,
     budget: &mut crate::geometry::ExpansionBudget,
 ) -> Result<Shape> {
     match shape {
@@ -1194,7 +1194,7 @@ mod computed_edge_publication_tests {
             0.1,
             SimplifyMethod::Vw,
             true,
-            SourceArcContext::new(TopologyDomain::Geographic(GeographicFrame::crs84()), None),
+            &SourceArcContext::new(TopologyDomain::Geographic(GeographicFrame::crs84()), None),
         )
         .unwrap();
         let Shape::Polygon(polygon) = output.first().unwrap() else {
@@ -1247,7 +1247,7 @@ mod computed_edge_publication_tests {
             0.1,
             SimplifyMethod::Vw,
             true,
-            source_context,
+            &source_context,
         )
         .unwrap();
         let Shape::Polygon(polygon) = output.first().unwrap() else {
@@ -1262,7 +1262,9 @@ mod computed_edge_publication_tests {
         assert_eq!(published.last(), published.first());
         let sample = published
             .iter()
-            .find(|point| point.x == 137.5 && point.y == 58.75)
+            .find(|point| {
+                point.x.to_bits() == 137.5_f64.to_bits() && point.y.to_bits() == 58.75_f64.to_bits()
+            })
             .expect("the 275-degree computed coverage edge is subdivided");
         assert!((sample.z().unwrap() - 43.730_417_185_196_416).abs() <= 2.0e-8);
         assert!((sample.m().unwrap() - 655.145_474_204_166_5).abs() <= 2.0e-7);
@@ -1284,7 +1286,7 @@ mod computed_edge_publication_tests {
             0.1,
             SimplifyMethod::Vw,
             true,
-            xy_context,
+            &xy_context,
         )
         .unwrap();
         let Shape::Polygon(xy_polygon) = xy_output.first().unwrap() else {

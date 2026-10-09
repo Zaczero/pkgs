@@ -1484,7 +1484,7 @@ pub(crate) trait ChartMetric {
     fn chart_frame(&self) -> GeographicFrame;
     fn chart_edge(&self, start: Point, end: Point) -> Result<ChartEdge>;
     fn chart_edge_length(&self, edge: &ChartEdge) -> Result<f64>;
-    fn chart_edge_length_with_work(&self, edge: &ChartEdge, work: &mut impl Work) -> Result<f64>;
+    fn chart_edge_length_with_work<W: Work>(&self, edge: &ChartEdge, work: &mut W) -> Result<f64>;
     fn chart_edge_length_to(&self, edge: &ChartEdge, parameter: f64) -> Result<f64>;
     fn chart_edge_arclength_fraction(
         &self,
@@ -1492,12 +1492,12 @@ pub(crate) trait ChartMetric {
         parameter: f64,
         total_length: Option<f64>,
     ) -> Result<f64>;
-    fn chart_edge_arclength_fraction_with_work(
+    fn chart_edge_arclength_fraction_with_work<W: Work>(
         &self,
         edge: &ChartEdge,
         parameter: f64,
         total_length: Option<f64>,
-        work: &mut impl Work,
+        work: &mut W,
     ) -> Result<f64>;
     fn chart_edge_locate_t(&self, edge: &ChartEdge, distance: f64, length: f64) -> Result<f64>;
     /// Measure a source edge interval without rounding exact chart-cut points.

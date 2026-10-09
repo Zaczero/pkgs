@@ -2,6 +2,9 @@ use std::cmp::Ordering;
 
 use super::GeographicError;
 use crate::geometry::exact_arith::product_sum::ExactSum;
+use crate::geometry::exact_arith::{
+    nearest_periodic_alias, retained_delta_native, retained_lifted_native, retained_native_site,
+};
 use crate::geometry::{Bounds, Point};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -89,11 +92,11 @@ pub(crate) struct RetainedLongitudeSite<L: RetainedNativeLongitude = CanonicalLo
 }
 
 impl<L: RetainedNativeLongitude> RetainedLongitudeSite<L> {
-    pub(crate) fn new(native: L, periods: i64) -> Self {
+    pub(crate) const fn new(native: L, periods: i64) -> Self {
         Self { native, periods }
     }
 
-    pub(crate) fn native(&self) -> &L {
+    pub(crate) const fn native(&self) -> &L {
         &self.native
     }
 
@@ -111,7 +114,7 @@ pub(crate) struct RetainedChartDisplacement<L: RetainedNativeLongitude = Canonic
 }
 
 impl<L: RetainedNativeLongitude> RetainedChartDisplacement<L> {
-    pub(crate) fn from_native_endpoints(endpoints: [L; 2], periods: i64) -> Self {
+    pub(crate) const fn from_native_endpoints(endpoints: [L; 2], periods: i64) -> Self {
         Self { endpoints, periods }
     }
 
@@ -130,7 +133,7 @@ impl<L: RetainedNativeLongitude> RetainedChartDisplacement<L> {
         })
     }
 
-    pub(crate) fn endpoints(&self) -> &[L; 2] {
+    pub(crate) const fn endpoints(&self) -> &[L; 2] {
         &self.endpoints
     }
 
@@ -141,7 +144,7 @@ impl<L: RetainedNativeLongitude> RetainedChartDisplacement<L> {
 
 impl RetainedChartDisplacement<CanonicalLongitude> {
     pub(crate) fn delta_native(&self, axis: PeriodicAxis) -> f64 {
-        crate::geometry::exact_arith::retained_delta_native(
+        retained_delta_native(
             self.endpoints[0].get(),
             self.endpoints[1].get(),
             axis.period(),
@@ -328,7 +331,7 @@ impl PeriodicAxis {
         edge: &RetainedChartDisplacement,
         parameter: &f64,
     ) -> crate::error::Result<RetainedLongitudeSite> {
-        let (native, periods) = crate::geometry::exact_arith::retained_native_site(
+        let (native, periods) = retained_native_site(
             edge.endpoints[0].get(),
             edge.endpoints[1].get(),
             self.period(),
@@ -346,11 +349,7 @@ impl PeriodicAxis {
         self,
         site: &RetainedLongitudeSite,
     ) -> crate::error::Result<f64> {
-        crate::geometry::exact_arith::retained_lifted_native(
-            site.native.get(),
-            self.period,
-            site.periods,
-        )
+        retained_lifted_native(site.native.get(), self.period, site.periods)
     }
 
     /// The strict-interior certificate for an edge with zero quotient-seam
@@ -458,13 +457,7 @@ impl PeriodicAxis {
                 longitude,
                 difference,
             )
-            .unwrap_or_else(|| {
-                crate::geometry::exact_arith::nearest_periodic_alias(
-                    longitude,
-                    lifted_reference,
-                    self.period,
-                )
-            });
+            .unwrap_or_else(|| nearest_periodic_alias(longitude, lifted_reference, self.period));
         if alias.is_finite() {
             Ok(alias)
         } else {
@@ -1373,29 +1366,6 @@ impl EdgeDirection {
     }
 }
 
-#[cfg(test)]
-pub(crate) mod source_admission_counts {
-    use std::cell::Cell;
-
-    thread_local! {
-        static COUNTS: Cell<(usize, usize)> = const { Cell::new((0, 0)) };
-    }
-
-    pub(crate) fn snapshot() -> (usize, usize) {
-        COUNTS.get()
-    }
-
-    pub(super) fn connection() {
-        let (connections, canonicalizations) = COUNTS.get();
-        COUNTS.set((connections + 1, canonicalizations));
-    }
-
-    pub(super) fn canonicalization() {
-        let (connections, canonicalizations) = COUNTS.get();
-        COUNTS.set((connections, canonicalizations + 1));
-    }
-}
-
 /// One admitted edge decision with authentic canonical endpoints and the
 /// integral lift that selects its directed source branch.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -1456,5 +1426,28 @@ impl RingTurn {
             -1 => Self::Full(TurnDirection::Negative),
             _ => Self::Other,
         }
+    }
+}
+
+#[cfg(test)]
+pub(crate) mod source_admission_counts {
+    use std::cell::Cell;
+
+    thread_local! {
+        static COUNTS: Cell<(usize, usize)> = const { Cell::new((0, 0)) };
+    }
+
+    pub(crate) fn snapshot() -> (usize, usize) {
+        COUNTS.get()
+    }
+
+    pub(super) fn connection() {
+        let (connections, canonicalizations) = COUNTS.get();
+        COUNTS.set((connections.wrapping_add(1), canonicalizations));
+    }
+
+    pub(super) fn canonicalization() {
+        let (connections, canonicalizations) = COUNTS.get();
+        COUNTS.set((connections, canonicalizations.wrapping_add(1)));
     }
 }
