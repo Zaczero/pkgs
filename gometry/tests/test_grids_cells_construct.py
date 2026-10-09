@@ -406,10 +406,10 @@ def test_empty_cell_array_neighbors_children_are_empty_groups() -> None:
 def test_cell_array_outputs_preserve_nullable_reversed_duplicate_gathers() -> None:
     source = gm.CellArray(
         [
-            gm.H3Cell(37.7749, -122.4194, resolution=7),
+            gm.H3Cell(-122.4194, 37.7749, resolution=7),
             None,
-            gm.H3Cell(37.7749, -122.4194, resolution=8),
-            gm.H3Cell(37.7749, -122.4194, resolution=9),
+            gm.H3Cell(-122.4194, 37.7749, resolution=8),
+            gm.H3Cell(-122.4194, 37.7749, resolution=9),
         ],
         type=gm.H3Cell,
     )
@@ -453,9 +453,9 @@ def test_cell_array_parent_and_count_parse_depth_once_for_present_rows() -> None
 
     cells = gm.CellArray(
         [
-            gm.H3Cell(37.7749, -122.4194, resolution=7),
+            gm.H3Cell(-122.4194, 37.7749, resolution=7),
             None,
-            gm.H3Cell(37.7749, -122.4194, resolution=8),
+            gm.H3Cell(-122.4194, 37.7749, resolution=8),
         ],
         type=gm.H3Cell,
     )[::-1]
@@ -483,12 +483,12 @@ def test_cell_array_parent_and_count_parse_depth_once_for_present_rows() -> None
 
 
 def test_cell_array_parent_and_count_keep_root_and_max_depth_errors() -> None:
-    root = gm.CellArray([gm.H3Cell(37.7749, -122.4194, resolution=0)], type=gm.H3Cell)
+    root = gm.CellArray([gm.H3Cell(-122.4194, 37.7749, resolution=0)], type=gm.H3Cell)
     with pytest.raises(ValueError, match='minimum-resolution cell has no parent'):
         root.parent()
 
     maximum = gm.CellArray(
-        [gm.H3Cell(37.7749, -122.4194, resolution=15)], type=gm.H3Cell
+        [gm.H3Cell(-122.4194, 37.7749, resolution=15)], type=gm.H3Cell
     )
     np.testing.assert_array_equal(maximum.children_count(), [0.0])
     with pytest.raises(ValueError, match='must be >='):
