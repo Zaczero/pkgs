@@ -340,7 +340,6 @@ struct Node {
     range: Range<usize>,
     children: Option<[usize; 2]>,
     hull: Hull,
-    sorted: Vec<usize>,
 }
 
 pub(in crate::geometry::constructive::simplify) struct Index<'a> {
@@ -357,15 +356,25 @@ impl<'a> Index<'a> {
         let minimum = ys.iter().copied().fold(f64::INFINITY, f64::min);
         let maximum = ys.iter().copied().fold(f64::NEG_INFINITY, f64::max);
         let seed = std::hash::RandomState::new().build_hasher().finish();
+        // For nonempty input, bisection depth is at most ceil(log2(ceil(n / SCAN))).
+        // The power-of-two leaf bound gives a full-tree node bound of 2L - 1.
+        let leaf_capacity = xs.len().div_ceil(SCAN).next_power_of_two();
+        let node_capacity = leaf_capacity.wrapping_mul(2).wrapping_sub(1);
         let mut result = Self {
             source,
-            nodes: Vec::with_capacity(xs.len().wrapping_mul(2)),
+            nodes: Vec::with_capacity(node_capacity),
         };
-        result.build(0..xs.len(), [minimum, maximum], seed)?;
+        let (_, root_order) = result.build(0..xs.len(), [minimum, maximum], seed)?;
+        drop(root_order);
         Ok(result)
     }
 
-    fn build(&mut self, range: Range<usize>, y_extent: [f64; 2], seed: u64) -> Result<usize> {
+    fn build(
+        &mut self,
+        range: Range<usize>,
+        y_extent: [f64; 2],
+        seed: u64,
+    ) -> Result<(usize, Vec<usize>)> {
         let (children, mut sorted) = if range.len() <= SCAN {
             let mut sorted: Vec<_> = range.clone().collect();
             sorted.sort_unstable_by(|&left, &right| {
@@ -374,15 +383,11 @@ impl<'a> Index<'a> {
             (None, sorted)
         } else {
             let middle = range.start.wrapping_add(range.len() / 2);
-            let left = self.build(range.start..middle, y_extent, seed)?;
-            let right = self.build(middle..range.end, y_extent, seed)?;
-            let (a, b) = (
-                &self.nodes.get(left).expect("source range child").sorted,
-                &self.nodes.get(right).expect("source range child").sorted,
-            );
-            let mut sorted = Vec::with_capacity(a.len().wrapping_add(b.len()));
+            let (left, left_order) = self.build(range.start..middle, y_extent, seed)?;
+            let (right, right_order) = self.build(middle..range.end, y_extent, seed)?;
+            let mut sorted = Vec::with_capacity(left_order.len().wrapping_add(right_order.len()));
             let (mut ai, mut bi) = (0, 0);
-            while let (Some(&av), Some(&bv)) = (a.get(ai), b.get(bi)) {
+            while let (Some(&av), Some(&bv)) = (left_order.get(ai), right_order.get(bi)) {
                 if self.source.compare(av, bv).then(av.cmp(&bv)).is_le() {
                     sorted.push(av);
                     ai = ai.wrapping_add(1);
@@ -391,8 +396,8 @@ impl<'a> Index<'a> {
                     bi = bi.wrapping_add(1);
                 }
             }
-            sorted.extend_from_slice(a.get(ai..).expect("source hull merge suffix"));
-            sorted.extend_from_slice(b.get(bi..).expect("source hull merge suffix"));
+            sorted.extend_from_slice(left_order.get(ai..).expect("source hull merge suffix"));
+            sorted.extend_from_slice(right_order.get(bi..).expect("source hull merge suffix"));
             (Some([left, right]), sorted)
         };
         sorted.dedup_by(|left, right| self.source.compare(*left, *right).is_eq());
@@ -403,7 +408,8 @@ impl<'a> Index<'a> {
             y_extent,
             seed.wrapping_add(index as u64),
         )?;
-        sorted = hull
+        drop(sorted);
+        let outline_order = hull
             .outline
             .sorted_sites(|site| self.source.at(site))
             .collect();
@@ -411,9 +417,8 @@ impl<'a> Index<'a> {
             range,
             children,
             hull,
-            sorted,
         });
-        Ok(index)
+        Ok((index, outline_order))
     }
 
     fn maximum(

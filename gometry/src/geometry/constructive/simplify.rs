@@ -4,10 +4,6 @@
 )]
 #[cfg(test)]
 use std::cell::Cell;
-#[cfg(test)]
-use std::simd::Select as _;
-#[cfg(test)]
-use std::simd::cmp::SimdPartialOrd as _;
 
 mod rdp;
 
@@ -25,9 +21,6 @@ use crate::geometry::{
     simplify_chain_guarded, triangle_area, vw_area_tolerance,
 };
 #[cfg(test)]
-use crate::geometry::{REDUCE_LANES, ReduceSimd, point_on_segment, point_segment_distance_squared};
-
-#[cfg(test)]
 thread_local! {
     static SUBDIVISION_WORK: Cell<(usize, usize)> = const { Cell::new((0, 0)) };
 }
@@ -40,212 +33,6 @@ fn reset_subdivision_work() {
 #[cfg(test)]
 fn subdivision_work() -> (usize, usize) {
     SUBDIVISION_WORK.with(Cell::get)
-}
-
-// Rounded-score oracle for exact-distance and source-order counterexamples.
-#[cfg(test)]
-macro_rules! rounded_rdp_split {
-    ($xs:expr, $ys:expr, $start:expr, $end:expr, $tolerance:expr, $tolerance_squared:expr) => {{
-        (|xs: &[f64],
-          ys: &[f64],
-          start: usize,
-          end: usize,
-          tolerance: f64,
-          tolerance_squared: f64|
-         -> Result<Option<usize>> {
-            let (ax, ay) = (
-                *xs.get(start)
-                    .expect("Douglas-Peucker start belongs to its source range"),
-                *ys.get(start)
-                    .expect("Douglas-Peucker start belongs to its source range"),
-            );
-            let (bx, by) = (
-                *xs.get(end)
-                    .expect("Douglas-Peucker end belongs to its source range"),
-                *ys.get(end)
-                    .expect("Douglas-Peucker end belongs to its source range"),
-            );
-            let (dx, dy) = (bx - ax, by - ay);
-            let chord_squared = dx * dx + dy * dy;
-            let threshold = tolerance_squared * chord_squared;
-            let mut best = 0.0_f64;
-            let mut farthest = start;
-            let interior_start = start.wrapping_add(1);
-            let interior_xs = xs
-                .get(interior_start..end)
-                .expect("Douglas-Peucker interior belongs to its source range");
-            let interior_ys = ys
-                .get(interior_start..end)
-                .expect("Douglas-Peucker interior belongs to its source range");
-            let exact_scan = |best: &mut f64, farthest: &mut usize| -> Result<()> {
-                let chord = Segment {
-                    start: XY::new(ax, ay),
-                    end: XY::new(bx, by),
-                };
-                *best = f64::NEG_INFINITY;
-                for (offset, (&x, &y)) in interior_xs.iter().zip(interior_ys).enumerate() {
-                    let index = interior_start.wrapping_add(offset);
-                    let deviation = point_segment_distance_squared(XY::new(x, y), chord)?;
-                    if deviation > *best {
-                        *best = deviation;
-                        *farthest = index;
-                    }
-                }
-                Ok(())
-            };
-            // When tolerance² underflows/overflows or the chord collapses, recover
-            // with unsquared distances against the raw (positive) tolerance. Once
-            // only tolerance² survives the public API, recovery is impossible — so
-            // callers pass both.
-            if !threshold.is_finite()
-                || threshold == 0.0
-                || !threshold.is_normal()
-                || chord_squared <= 0.0
-                || !tolerance_squared.is_normal()
-            {
-                // Prefer the raw finite distance tolerance (survives when tol² is
-                // +inf). Fall back to sqrt of a finite square; +inf/NaN/negative
-                // raw means "no finite threshold" → never split (endpoints only).
-                let tol = if tolerance > 0.0 && tolerance.is_finite() {
-                    tolerance
-                } else if tolerance_squared.is_normal() {
-                    tolerance_squared.sqrt()
-                } else if tolerance_squared > 0.0 && tolerance_squared.is_finite() {
-                    tolerance_squared.sqrt().max(f64::MIN_POSITIVE)
-                } else if tolerance == 0.0 {
-                    let chord = Segment {
-                        start: XY::new(ax, ay),
-                        end: XY::new(bx, by),
-                    };
-                    let mut split = None;
-                    let mut best_d = f64::NAN;
-                    for (offset, (&x, &y)) in interior_xs.iter().zip(interior_ys).enumerate() {
-                        let index = interior_start.wrapping_add(offset);
-                        let point = XY::new(x, y);
-                        if point_on_segment(point, chord.start, chord.end) {
-                            continue;
-                        }
-                        let d = point_segment_distance(point, chord)?;
-                        if split.is_none() || d > best_d {
-                            split = Some(index);
-                            best_d = d;
-                        }
-                    }
-                    return Ok(split);
-                } else {
-                    return Ok(None);
-                };
-                let chord = Segment {
-                    start: XY::new(ax, ay),
-                    end: XY::new(bx, by),
-                };
-                let mut best_d = f64::NEG_INFINITY;
-                for (offset, (&x, &y)) in interior_xs.iter().zip(interior_ys).enumerate() {
-                    let index = interior_start.wrapping_add(offset);
-                    let d = point_segment_distance(XY::new(x, y), chord)?;
-                    if d > best_d {
-                        best_d = d;
-                        farthest = index;
-                    }
-                }
-                return Ok((best_d > tol).then_some(farthest));
-            }
-            let mut index = interior_start;
-            if end.wrapping_sub(index) >= REDUCE_LANES {
-                let lane_offsets =
-                    std::simd::Simd::<u64, REDUCE_LANES>::from_array(std::array::from_fn(|lane| {
-                        lane as u64
-                    }));
-                let (ax_s, ay_s) = (ReduceSimd::splat(ax), ReduceSimd::splat(ay));
-                let (bx_s, by_s) = (ReduceSimd::splat(bx), ReduceSimd::splat(by));
-                let (dx_s, dy_s) = (ReduceSimd::splat(dx), ReduceSimd::splat(dy));
-                let chord_s = ReduceSimd::splat(chord_squared);
-                let mut best_scores = ReduceSimd::splat(0.0);
-                let mut best_lanes = std::simd::Simd::<u64, REDUCE_LANES>::splat(0);
-                #[expect(
-                    clippy::arithmetic_side_effects,
-                    reason = "SIMD cursor lanes are bounded source ordinals"
-                )]
-                let mut cursor =
-                    std::simd::Simd::<u64, REDUCE_LANES>::splat(index as u64) + lane_offsets;
-                while index.wrapping_add(REDUCE_LANES) <= end {
-                    let lane_end = index.wrapping_add(REDUCE_LANES);
-                    let x = ReduceSimd::from_slice(
-                        xs.get(index..lane_end)
-                            .expect("Douglas-Peucker SIMD window belongs to its source range"),
-                    );
-                    let y = ReduceSimd::from_slice(
-                        ys.get(index..lane_end)
-                            .expect("Douglas-Peucker SIMD window belongs to its source range"),
-                    );
-                    #[expect(
-                        clippy::arithmetic_side_effects,
-                        reason = "SIMD lanes preserve the binary64 point-to-segment score"
-                    )]
-                    let score = {
-                        let (qx, qy) = (x - ax_s, y - ay_s);
-                        let along = qx * dx_s + qy * dy_s;
-                        let cross = qx * dy_s - qy * dx_s;
-                        let (rx, ry) = (x - bx_s, y - by_s);
-                        along.simd_le(ReduceSimd::splat(0.0)).select(
-                            (qx * qx + qy * qy) * chord_s,
-                            along
-                                .simd_ge(chord_s)
-                                .select((rx * rx + ry * ry) * chord_s, cross * cross),
-                        )
-                    };
-                    let improved = score.simd_gt(best_scores);
-                    best_scores = improved.select(score, best_scores);
-                    best_lanes = improved.cast::<i64>().select(cursor, best_lanes);
-                    #[expect(
-                        clippy::arithmetic_side_effects,
-                        reason = "SIMD cursor lanes are bounded source ordinals"
-                    )]
-                    {
-                        cursor += std::simd::Simd::splat(REDUCE_LANES as u64);
-                    }
-                    index = index.wrapping_add(REDUCE_LANES);
-                }
-                for (&score, &source_index) in
-                    best_scores.as_array().iter().zip(best_lanes.as_array())
-                {
-                    if score > best {
-                        best = score;
-                        farthest = source_index as usize;
-                    }
-                }
-            }
-            let scalar_xs = xs
-                .get(index..end)
-                .expect("Douglas-Peucker scalar suffix belongs to its source range");
-            let scalar_ys = ys
-                .get(index..end)
-                .expect("Douglas-Peucker scalar suffix belongs to its source range");
-            for (offset, (&x, &y)) in scalar_xs.iter().zip(scalar_ys).enumerate() {
-                let scalar_index = index.wrapping_add(offset);
-                let (qx, qy) = (x - ax, y - ay);
-                let along = qx * dx + qy * dy;
-                let score = if along <= 0.0 {
-                    (qx * qx + qy * qy) * chord_squared
-                } else if along >= chord_squared {
-                    let (rx, ry) = (x - bx, y - by);
-                    (rx * rx + ry * ry) * chord_squared
-                } else {
-                    let cross = qx * dy - qy * dx;
-                    cross * cross
-                };
-                if score > best {
-                    best = score;
-                    farthest = scalar_index;
-                }
-            }
-            if !best.is_finite() {
-                exact_scan(&mut best, &mut farthest)?;
-                return Ok((best > tolerance_squared).then_some(farthest));
-            }
-            Ok((best > threshold).then_some(farthest))
-        })($xs, $ys, $start, $end, $tolerance, $tolerance_squared)
-    }};
 }
 
 pub(crate) trait RdpEdgeSpanGuard: Copy {
@@ -389,7 +176,7 @@ fn rdp_keep_with_query<G: RdpEdgeSpanGuard>(
 
 #[cfg(test)]
 #[test]
-fn rounded_selector_witnesses_the_exact_tolerance_correction() {
+fn near_tolerance_chain_does_not_split() {
     let xs = [
         0.0,
         134_217_728.0,
@@ -404,24 +191,19 @@ fn rounded_selector_witnesses_the_exact_tolerance_correction() {
         134_217_737.0,
         268_435_457.0,
     ];
-    let tolerance = 0.707_106_79;
-    assert_eq!(
-        rounded_rdp_split!(&xs, &ys, 0, 4, tolerance, tolerance * tolerance).unwrap(),
-        Some(2)
-    );
-    assert_eq!(rdp::split(&xs, &ys, 0, 4, tolerance).unwrap(), None);
+    // Each interior point is one unit above y=x and projects inside the chord.
+    // Its cross product is 268_435_457, while the chord length is that value
+    // times sqrt(2), so the segment distance is 1 / sqrt(2), below tolerance.
+    assert_eq!(rdp::split(&xs, &ys, 0, 4, 0.707_106_79).unwrap(), None);
 }
 
 #[cfg(test)]
 #[test]
-fn rounded_selector_witnesses_the_source_order_tie_correction() {
+fn equal_height_sites_choose_the_first_source_position() {
     let xs: [f64; 32] = std::array::from_fn(|index| index as f64);
     let ys: [f64; 32] =
         std::array::from_fn(|index| if index == 2 || index == 9 { 1.0 } else { 0.0 });
-    assert_eq!(
-        rounded_rdp_split!(&xs, &ys, 0, 31, 0.5, 0.25).unwrap(),
-        Some(9)
-    );
+    // Equal maxima at positions 2 and 9 are one unit above the horizontal chord.
     assert_eq!(rdp::split(&xs, &ys, 0, 31, 0.5).unwrap(), Some(2));
 }
 
