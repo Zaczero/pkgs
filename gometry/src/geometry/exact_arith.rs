@@ -1155,7 +1155,7 @@ fn exact_integer_i64(value: &ExactDyadic) -> crate::error::Result<i64> {
             Ok(i64::MIN)
         } else {
             i64::try_from(magnitude)
-                .map(|magnitude| -magnitude)
+                .map(|magnitude| magnitude.wrapping_neg())
                 .map_err(|_| crate::error::ResourceError::SizeOverflow.into())
         }
     } else {
@@ -1621,6 +1621,43 @@ mod tests {
     }
 
     #[test]
+    fn exact_integer_i64_admits_signed_bounds_and_rejects_fractional_overflow() {
+        for (name, value, expected) in [
+            ("zero", ExactDyadic::zero(), 0),
+            ("positive one", ExactDyadic::from_i64(1), 1),
+            ("negative one", ExactDyadic::from_i64(-1), -1),
+            ("i64::MAX", ExactDyadic::from_i64(i64::MAX), i64::MAX),
+            ("i64::MIN", ExactDyadic::from_i64(i64::MIN), i64::MIN),
+        ] {
+            assert_eq!(exact_integer_i64(&value).unwrap(), expected, "{name}");
+        }
+
+        for (name, value) in [
+            ("positive 2^63", ExactDyadic::from_parts(false, vec![1], 63)),
+            (
+                "negative magnitude 2^63 + 1",
+                ExactDyadic::from_parts(true, vec![0x8000_0000_0000_0001], 0),
+            ),
+        ] {
+            assert!(
+                matches!(
+                    exact_integer_i64(&value).unwrap_err().kind(),
+                    crate::error::ErrorKind::Resource(crate::error::ResourceError::SizeOverflow)
+                ),
+                "{name}"
+            );
+        }
+
+        let fractional = ExactDyadic::from_parts(false, vec![1], -1);
+        assert!(matches!(
+            exact_integer_i64(&fractional).unwrap_err().kind(),
+            crate::error::ErrorKind::Geometry(
+                crate::geometry::GeometryErrorKind::Invalid(message)
+            ) if message.as_ref() == "retained periodic lift is not integral"
+        ));
+    }
+
+    #[test]
     fn scalar_and_retained_projection_share_exact_rounding_without_lift_narrowing() {
         let degree = GeographicFrame::crs84().longitude();
         let grad = GeographicFrame::try_new(
@@ -1674,7 +1711,7 @@ mod tests {
         }
         let (borrowed, lift) = split_rational_native_site(&third, 360.0, 180.0).unwrap();
         assert!(
-            matches!(borrowed, std::borrow::Cow::Borrowed(value) if std::ptr::eq(value, &third))
+            matches!(borrowed, std::borrow::Cow::Borrowed(value) if std::ptr::eq(value, &raw const third))
         );
         assert!(lift.is_zero());
         for axis in [degree, grad, radian] {
@@ -1687,14 +1724,14 @@ mod tests {
                 round_native_longitude(axis, &huge).unwrap().to_bits(),
                 (1.0_f64 / 3.0).to_bits()
             );
-            assert!(retained_exact_native_site(axis, &huge).is_err());
+            drop(retained_exact_native_site(axis, &huge).unwrap_err());
         }
         let almost_half = ExactRational::from_f64(180.0).try_subtract(&gap).unwrap();
         let overflow_site = RetainedLongitudeSite::new(
             ExactNativeLongitude::from_rational(degree, almost_half.clone()).unwrap(),
             i64::MAX,
         );
-        assert!(ExactNativeLongitude::round_site(degree, &overflow_site).is_err());
+        drop(ExactNativeLongitude::round_site(degree, &overflow_site).unwrap_err());
         assert_eq!(
             round_native_longitude(degree, &almost_half).unwrap(),
             -180.0
@@ -1841,7 +1878,7 @@ mod tests {
             .retained_native_endpoints(start, end, 1)
             .expect("the explicit producer branch is retained");
 
-        let rounded_positive_seam = axis.native_site_at(&edge, &0.75).unwrap();
+        let rounded_positive_seam = axis.native_site_at(&edge, 0.75).unwrap();
         assert_eq!(rounded_positive_seam.native().get(), -180.0);
         assert_eq!(rounded_positive_seam.periods(), 1);
         assert!(
@@ -1854,12 +1891,12 @@ mod tests {
             *rounded_positive_seam.native()
         );
         assert_eq!(
-            axis.lifted_site_longitude(&rounded_positive_seam).unwrap(),
+            axis.lifted_site_longitude(rounded_positive_seam).unwrap(),
             180.0
         );
 
-        let at_start = axis.native_site_at(&edge, &0.0).unwrap();
-        let at_end = axis.native_site_at(&edge, &1.0).unwrap();
+        let at_start = axis.native_site_at(&edge, 0.0).unwrap();
+        let at_end = axis.native_site_at(&edge, 1.0).unwrap();
         assert_eq!(at_start.native().get().to_bits(), start.to_bits());
         assert_eq!(at_start.periods(), 0);
         assert_eq!(at_end.native().get().to_bits(), end.to_bits());
@@ -1868,7 +1905,7 @@ mod tests {
         let reversed = axis
             .retained_native_endpoints(end, start, -1)
             .expect("the reversed producer branch is retained");
-        let rounded_negative_seam = axis.native_site_at(&reversed, &0.25).unwrap();
+        let rounded_negative_seam = axis.native_site_at(&reversed, 0.25).unwrap();
         assert_eq!(rounded_negative_seam.native().get(), -180.0);
         assert_eq!(rounded_negative_seam.periods(), 0);
         assert_eq!(

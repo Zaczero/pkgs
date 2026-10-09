@@ -1094,7 +1094,7 @@ mod tests {
     };
     use crate::geometry::tessellation::exact::{ExactDyadic, ExactRational};
     use crate::geometry::{
-        ChartMetric, CoordSeq, CoordinateAxes, Coordinates as _, LineSeq, MOrdinate, Point,
+        ChartMetric as _, CoordSeq, CoordinateAxes, Coordinates as _, LineSeq, MOrdinate, Point,
         Polygon, Ring, Shape, ZOrdinate,
     };
     use crate::test_support::allocation_count;
@@ -1133,11 +1133,11 @@ mod tests {
     ) -> f64 {
         fn integrate(limit: f64, start_degrees: f64, delta_radians: f64, flattening: f64) -> f64 {
             let intervals = 4096;
-            let step = limit / intervals as f64;
+            let step = limit / f64::from(intervals);
             let eccentricity_squared = flattening * (2.0 - flattening);
             let weighted = (0..=intervals)
                 .map(|index| {
-                    let parameter = index as f64 * step;
+                    let parameter = f64::from(index) * step;
                     let latitude =
                         (start_degrees + parameter * delta_radians.to_degrees()).to_radians();
                     let denominator = 1.0 - eccentricity_squared * latitude.sin() * latitude.sin();

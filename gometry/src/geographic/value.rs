@@ -45,6 +45,10 @@ impl AngularFactor {
     }
 
     pub(crate) fn degrees_to_native(self, degrees: f64, period: f64) -> f64 {
+        #[expect(
+            clippy::float_cmp,
+            reason = "the degree fast path is the exact conventional 360-unit identity"
+        )]
         if period == 360.0 {
             return degrees;
         }
@@ -55,6 +59,10 @@ impl AngularFactor {
     }
 
     pub(crate) fn native_to_degrees(self, value: f64, period: f64) -> f64 {
+        #[expect(
+            clippy::float_cmp,
+            reason = "the degree fast path is the exact conventional 360-unit identity"
+        )]
         if period == 360.0 {
             return value;
         }
@@ -194,6 +202,10 @@ impl PeriodicAxis {
         self.unit.effective_radians_per_unit()
     }
     pub(crate) fn to_degrees(self, value: f64) -> f64 {
+        #[expect(
+            clippy::float_cmp,
+            reason = "the degree fast path preserves the exact conventional longitude identity"
+        )]
         if self.period == 360.0 {
             value
         } else if let Some(period) = self.conventional_integer_period() {
@@ -202,7 +214,11 @@ impl PeriodicAxis {
             (value * self.unit.radians_per_unit()).to_degrees()
         }
     }
-    pub(crate) fn from_degrees(self, value: f64) -> f64 {
+    pub(crate) fn degrees_to_native(self, value: f64) -> f64 {
+        #[expect(
+            clippy::float_cmp,
+            reason = "the degree fast path preserves the exact conventional longitude identity"
+        )]
         if self.period == 360.0 {
             value
         } else if let Some(period) = self.conventional_integer_period() {
@@ -329,7 +345,7 @@ impl PeriodicAxis {
     pub(crate) fn native_site_at(
         self,
         edge: &RetainedChartDisplacement,
-        parameter: &f64,
+        parameter: f64,
     ) -> crate::error::Result<RetainedLongitudeSite> {
         let (native, periods) = retained_native_site(
             edge.endpoints[0].get(),
@@ -337,7 +353,7 @@ impl PeriodicAxis {
             self.period(),
             self.half_period(),
             edge.periods,
-            *parameter,
+            parameter,
         )?;
         Ok(RetainedLongitudeSite::new(
             CanonicalLongitude(native),
@@ -347,7 +363,7 @@ impl PeriodicAxis {
 
     pub(crate) fn lifted_site_longitude(
         self,
-        site: &RetainedLongitudeSite,
+        site: RetainedLongitudeSite,
     ) -> crate::error::Result<f64> {
         retained_lifted_native(site.native.get(), self.period, site.periods)
     }
@@ -1117,7 +1133,7 @@ impl GeographicFrame {
             } else {
                 longitude - self.prime_meridian_radians.to_degrees()
             } * self.longitude_orientation_sign();
-            self.longitude.from_degrees(relative)
+            self.longitude.degrees_to_native(relative)
         };
         let latitude = if self == Self::crs84() {
             latitude
@@ -1177,11 +1193,7 @@ impl Latitude {
                 value,
             });
         }
-        if value < south || value > north {
-            Some(GeographicError::LatitudeOutOfRange { value })
-        } else {
-            None
-        }
+        (value < south || value > north).then_some(GeographicError::LatitudeOutOfRange { value })
     }
 
     pub(crate) fn first_invalid(

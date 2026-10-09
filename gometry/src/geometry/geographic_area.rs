@@ -785,7 +785,7 @@ fn accumulate_fast(
             ring_moments,
             &mut variation,
             &mut maximum_latitude,
-        )? {
+        ) {
             let mut chart_turn = 0_i64;
             let mut previous = ring.nth_coord(0);
             let first_connection = frame
@@ -952,9 +952,9 @@ fn rectangle_moments(
     moments: &mut [BoundedSum],
     variation: &mut f64,
     maximum_latitude: &mut f64,
-) -> Result<bool> {
+) -> bool {
     if ring.coord_count() != 5 {
-        return Ok(false);
+        return false;
     }
     let first = ring.nth_coord(0);
     let second = ring.nth_coord(1);
@@ -967,7 +967,7 @@ fn rectangle_moments(
     )]
     let closure_differs = first.x != closing.x || first.y != closing.y;
     if closure_differs {
-        return Ok(false);
+        return false;
     }
     #[expect(
         clippy::float_cmp,
@@ -990,7 +990,7 @@ fn rectangle_moments(
                 (third.x, fourth.x),
             ])
         } else {
-            return Ok(false);
+            return false;
         };
     let axis = frame.longitude();
     let forward = axis
@@ -1004,7 +1004,7 @@ fn rectangle_moments(
             .chart_connection(from, to)
             .expect("rectangle longitude source was admitted");
         if connection.start != connection.end || connection.source_lift != 0 {
-            return Ok(false);
+            return false;
         }
     }
     if forward.start != reverse.end
@@ -1015,7 +1015,7 @@ fn rectangle_moments(
             ChartStep::Shortest(crate::geographic::EdgeDirection::HalfTurn(_))
         )
     {
-        return Ok(false);
+        return false;
     }
 
     let width = scaled_x(
@@ -1031,7 +1031,7 @@ fn rectangle_moments(
     let z1 = scaled_y(top, y_origin, latitude_scale);
     let radius = upper_add(z0.value.abs(), z0.error).max(upper_add(z1.value.abs(), z1.error));
     if !radius.is_finite() || radius > 0.5 {
-        return Ok(false);
+        return false;
     }
 
     *variation = upper_add(
@@ -1089,7 +1089,7 @@ fn rectangle_moments(
             radius_power = upper_mul(radius_power, radius);
         }
     }
-    Ok(true)
+    true
 }
 
 fn add_fast_edge(

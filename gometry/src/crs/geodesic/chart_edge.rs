@@ -11,6 +11,10 @@ use crate::geographic::{
     ChartStep, CircularInterval, EdgeDirection, GeographicFrame, Latitude, LongitudeWindows,
     RetainedChartDisplacement,
 };
+use crate::geometry::exact_arith::{
+    retained_delta_scaled, retained_source_interval_initial_piece_count,
+    retained_source_interval_reads_as, retained_source_sheet_site,
+};
 use crate::geometry::types::ChartMetric;
 use crate::geometry::{
     ChartBox, ChartEdgeDifferential, ChartEdgeDifferentialBounds, ChartPointDistanceSample,
@@ -129,6 +133,10 @@ impl AuthalicSeries {
         let e2 = geodesic.f * (2.0 - geodesic.f);
         let ratio = (e2 / 4.0).abs();
         let mut harmonics: usize = 1;
+        #[expect(
+            clippy::while_float,
+            reason = "the retained sine-series order ends at the specified relative tail threshold"
+        )]
         while ratio.powi(harmonics as i32) >= AUTHALIC_TAIL_RELATIVE {
             harmonics = harmonics.wrapping_add(1);
         }
@@ -168,10 +176,10 @@ impl AuthalicSeries {
 }
 
 fn binomial(n: usize, k: usize) -> f64 {
-    let k = k.min(n - k);
+    let k = k.min(n.wrapping_sub(k));
     let mut coefficient = 1.0;
     for index in 1..=k {
-        coefficient *= (n + 1 - index) as f64 / index as f64;
+        coefficient *= n.wrapping_add(1).wrapping_sub(index) as f64 / index as f64;
     }
     coefficient
 }
@@ -310,7 +318,7 @@ impl ChartEdge {
         let axis = self.frame.longitude();
         let longitude = self.retained_longitude();
         let site: crate::geographic::RetainedLongitudeSite =
-            axis.native_site_at(&longitude, &parameter)?;
+            axis.native_site_at(&longitude, parameter)?;
         let native = *site.native();
         let latitude = crate::geometry::interpolate_subdivision_ordinate(
             self.start_latitude,
@@ -678,6 +686,10 @@ impl ChartEdge {
             } else {
                 midpoint
             };
+            #[expect(
+                clippy::float_cmp,
+                reason = "an iterate equal to a bracket endpoint cannot advance past adjacent binary64 values"
+            )]
             if parameter == lower || parameter == upper {
                 break;
             }
@@ -690,8 +702,8 @@ impl ChartEdge {
     pub(crate) fn chart_position(&self, t: f64) -> Result<crate::geometry::Point> {
         let axis = self.frame.longitude();
         let longitude = self.retained_longitude();
-        let site: crate::geographic::RetainedLongitudeSite = axis.native_site_at(&longitude, &t)?;
-        let longitude = axis.lifted_site_longitude(&site)?;
+        let site: crate::geographic::RetainedLongitudeSite = axis.native_site_at(&longitude, t)?;
+        let longitude = axis.lifted_site_longitude(site)?;
         let latitude = crate::geometry::interpolate_subdivision_ordinate(
             self.start_latitude,
             self.end_latitude,
@@ -723,12 +735,7 @@ impl ChartEdge {
         let longitude = if source_start.x == source_end.x && retained.periods() == 0 {
             source_start.x
         } else {
-            crate::geometry::exact_arith::retained_source_sheet_site(
-                source_start.x,
-                retained,
-                self.frame.longitude(),
-                parameter,
-            )?
+            retained_source_sheet_site(source_start.x, retained, self.frame.longitude(), parameter)?
         };
         Ok(canonical_point.with_xy_raw(longitude, canonical_point.y))
     }
@@ -745,7 +752,7 @@ impl ChartEdge {
             .longitude()
             .chart_step(start.x, end.x)
             .map_err(|error| GeometryErrorKind::Invalid(error.to_string().into()))?;
-        crate::geometry::exact_arith::retained_source_interval_reads_as(
+        retained_source_interval_reads_as(
             self.retained_longitude(),
             self.frame,
             [self.start_latitude, self.end_latitude],
@@ -758,7 +765,7 @@ impl ChartEdge {
     }
 
     pub(crate) fn source_interval_initial_piece_count(&self, from: f64, to: f64) -> Result<usize> {
-        crate::geometry::exact_arith::retained_source_interval_initial_piece_count(
+        retained_source_interval_initial_piece_count(
             self.retained_longitude(),
             self.frame.longitude(),
             from,
@@ -818,18 +825,8 @@ impl ChartEdge {
         if previous.x == end.x {
             let axis = self.frame.longitude();
             let retained = self.retained_longitude();
-            let start_site = crate::geometry::exact_arith::retained_source_sheet_site(
-                source_start.x,
-                retained,
-                axis,
-                from,
-            )?;
-            let end_site = crate::geometry::exact_arith::retained_source_sheet_site(
-                source_start.x,
-                retained,
-                axis,
-                to,
-            )?;
+            let start_site = retained_source_sheet_site(source_start.x, retained, axis, from)?;
+            let end_site = retained_source_sheet_site(source_start.x, retained, axis, to)?;
             // RN is monotone over the exact affine source longitude. When both
             // written endpoints are those rounded sites and are identical, no
             // interior parameter can produce a readable nonzero longitude.
@@ -933,10 +930,10 @@ impl ChartEdge {
         // chart-step delta makes the midpoint the reference for its full lifted span.
         let longitude = self.retained_longitude();
         let midpoint: crate::geographic::RetainedLongitudeSite = axis
-            .native_site_at(&longitude, &0.5)
+            .native_site_at(&longitude, 0.5)
             .map_err(|error| crate::crs::CrsError::message(error.to_string()))?;
         let midpoint_longitude = axis
-            .lifted_site_longitude(&midpoint)
+            .lifted_site_longitude(midpoint)
             .map_err(|error| crate::crs::CrsError::message(error.to_string()))?;
         let lifted_longitude = axis
             .nearest_longitude_alias(midpoint_longitude, point.x)
@@ -1022,6 +1019,10 @@ impl ChartEdge {
             progress.seeds = progress.seeds.wrapping_add(1);
             progress.current_refinements = 0;
         });
+        #[expect(
+            clippy::while_float,
+            reason = "adaptive quadrature refines until its computed error meets the numerical tolerance"
+        )]
         while total_error > tolerance {
             work.charge(intervals.len() as u64)?;
             let largest = intervals
@@ -1045,7 +1046,7 @@ impl ChartEdge {
             update_test_progress(|progress| {
                 progress.removals = progress.removals.wrapping_add(1);
             });
-            if evaluations + 30 > MAX_GK15_EVALUATIONS {
+            if evaluations.wrapping_add(30) > MAX_GK15_EVALUATIONS {
                 return Err(GeometryErrorKind::message(
                     "chart-edge length quadrature did not converge within 5,000 evaluations",
                 ));
@@ -1083,7 +1084,7 @@ impl ChartEdge {
                 });
             }
 
-            evaluations += 30;
+            evaluations = evaluations.wrapping_add(30);
             total += (left + right) - parent.value;
             total_error = (total_error - parent.error).max(0.0) + left_error + right_error;
             intervals.push(Interval {
@@ -1252,7 +1253,7 @@ fn retained_longitude_radians(
     if ordinary.is_finite() {
         return ordinary;
     }
-    crate::geometry::exact_arith::retained_delta_scaled(
+    retained_delta_scaled(
         longitude.endpoints()[0].get(),
         longitude.endpoints()[1].get(),
         axis.period(),
@@ -1426,8 +1427,12 @@ mod tests {
 
     use super::super::GeodesicMetric;
     use super::{AuthalicSeries, ChartEdge, ONE_DEGREE};
+    use crate::crs::geodesic::geographic_metric_frame_at;
     use crate::geographic::{
         AngularFactor, ChartStep, EdgeDirection, GeographicAxisOrientation, GeographicFrame,
+    };
+    use crate::geometry::exact_arith::{
+        retained_source_interval_initial_piece_count, retained_source_sheet_site,
     };
     use crate::geometry::types::{ChartMetric as _, GeodesicMetric as _};
     use crate::geometry::{GeometryErrorKind, MOrdinate, Point, ZOrdinate};
@@ -1606,8 +1611,8 @@ mod tests {
         ];
         for frame in frames {
             let axis = frame.longitude();
-            let start = Point::new_raw_xy(axis.from_degrees(170.0), frame.pole() * 0.6);
-            let end = Point::new_raw_xy(axis.from_degrees(-170.0), frame.pole() * 0.9);
+            let start = Point::new_raw_xy(axis.degrees_to_native(170.0), frame.pole() * 0.6);
+            let end = Point::new_raw_xy(axis.degrees_to_native(-170.0), frame.pole() * 0.9);
             let edge = ChartEdge::new(start, end, frame).unwrap();
             let bounds = edge.bounds();
             for sample in 0..=64 {
@@ -1755,13 +1760,13 @@ mod tests {
         .unwrap();
         assert_eq!(edge.chart_position(0.5).unwrap().x, 180.0);
         assert_eq!(edge.chart_position(1.0).unwrap().x, 190.0);
-        assert!(
+        drop(
             ChartEdge::new(
                 Point::new_raw_xy(0.0, 10.0),
                 Point::new_raw_xy(180.0, 20.0),
-                frame
+                frame,
             )
-            .is_err()
+            .unwrap_err(),
         );
     }
 
@@ -1784,13 +1789,12 @@ mod tests {
         )
         .unwrap();
         let state = crate::crs::runtime_state_snapshot().unwrap();
-        let proj_radian = crate::crs::geodesic::geographic_metric_frame_at(
+        let proj_radian = geographic_metric_frame_at(
             "GEOGCS[\"WGS 84 rad\",DATUM[\"WGS_1984\",SPHEROID[\"WGS 84\",6378137,298.257223563]],PRIMEM[\"Greenwich\",0],UNIT[\"radian\",1],AXIS[\"Longitude\",EAST],AXIS[\"Latitude\",NORTH]]",
             &state,
         )
         .unwrap();
-        let proj_grad =
-            crate::crs::geodesic::geographic_metric_frame_at("EPSG:4807", &state).unwrap();
+        let proj_grad = geographic_metric_frame_at("EPSG:4807", &state).unwrap();
         let cases = [
             ("degrees", degrees(), 360.0, 10.0, 2.0),
             ("radians", radians(), std::f64::consts::TAU, 0.0, 0.5),
@@ -2198,7 +2202,7 @@ mod tests {
         let large_start = Point::new_raw_xy(360.0 * 2.0_f64.powi(44), 0.0);
         let large_end = Point::new_raw_xy(large_start.x + 5.0, 0.0);
         let large_edge = ChartEdge::new(large_start, large_end, degrees()).unwrap();
-        let large_site = crate::geometry::exact_arith::retained_source_sheet_site(
+        let large_site = retained_source_sheet_site(
             large_start.x,
             large_edge.retained_longitude(),
             degrees().longitude(),
@@ -2225,7 +2229,7 @@ mod tests {
         let huge_start = Point::new_raw_xy(1.0e22, 0.0);
         let huge_end = Point::new_raw_xy(1.0e22_f64.next_up(), 0.0);
         let huge = ChartEdge::new(huge_start, huge_end, degrees()).unwrap();
-        let source_sheet = crate::geometry::exact_arith::retained_source_sheet_site(
+        let source_sheet = retained_source_sheet_site(
             huge_start.x,
             huge.retained_longitude(),
             degrees().longitude(),
@@ -2233,15 +2237,13 @@ mod tests {
         )
         .unwrap();
         assert_eq!(source_sheet.to_bits(), huge_start.x.to_bits());
-        assert!(
-            crate::geometry::exact_arith::retained_source_interval_initial_piece_count(
-                huge.retained_longitude(),
-                degrees().longitude(),
-                0.0,
-                0.5,
-            )
-            .is_ok()
-        );
+        let _ = retained_source_interval_initial_piece_count(
+            huge.retained_longitude(),
+            degrees().longitude(),
+            0.0,
+            0.5,
+        )
+        .unwrap();
         let canonical = huge.chart_position(0.5).unwrap();
         let collapsed = huge
             .source_sheet_point(huge_start, huge_end, 0.5, canonical)
