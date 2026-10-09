@@ -1125,6 +1125,75 @@ def test_split_antimeridian_both_poles_reverse_winding() -> None:
     assert again.to_wkt() == split.to_wkt()
 
 
+def test_split_antimeridian_tilted_full_turn_non_dyadic_ordinates() -> None:
+    line = gm.LineString(
+        [(170.0, 0.0), (530.0, 60.0)],
+        z=[0.0, 100.0],
+        m=[100.0, 1100.0],
+        crs=4326,
+    )
+    split = line.split_antimeridian()
+    coordinates = [coordinate for part in split.parts for coordinate in part.coords]
+    seam = [coordinate for coordinate in coordinates if abs(coordinate[0]) == 180.0]
+    assert len(seam) >= 2
+    assert {-180.0, 180.0} <= {coordinate[0] for coordinate in seam}
+    for coordinate in seam:
+        expected_y = 60.0 / 36.0
+        expected_z = 3.332353583809422
+        expected_m = 133.32353583809422
+        assert abs(coordinate[1] - expected_y) <= 4.0 * math.ulp(expected_y)
+        assert abs(coordinate[2] - expected_z) <= 4.0 * math.ulp(expected_z)
+        assert abs(coordinate[3] - expected_m) <= 4.0 * math.ulp(expected_m)
+    assert len({(coordinate[2], coordinate[3]) for coordinate in seam}) == 1
+    quarter = [
+        coordinate for coordinate in coordinates if coordinate[:2] == (-100.0, 15.0)
+    ]
+    assert quarter
+    expected_z = 29.665344452905156
+    expected_m = 396.6534445290516
+    assert abs(quarter[0][2] - expected_z) <= 4.0 * math.ulp(expected_z)
+    assert abs(quarter[0][3] - expected_m) <= 4.0 * math.ulp(expected_m)
+
+
+def test_split_antimeridian_reversed_grad_hole_overlay_ordinates() -> None:
+    crs = (
+        'GEOGCS["West south grad",DATUM["Custom datum",'
+        'SPHEROID["Custom",7000000,150]],PRIMEM["Greenwich",0],'
+        'UNIT["grad",0.015707963267948967],'
+        'AXIS["Longitude",WEST],AXIS["Latitude",SOUTH]]'
+    )
+    polygon = gm.from_wkt(
+        'POLYGON ZM ('
+        '(-150 50 0 0, 150 50 0 0, 150 -80 100 1000, '
+        '-150 -80 100 1000, -150 50 0 0),'
+        '(-160 0 38.365710095703378 383.65710095703378, '
+        '-160 -50 76.731420191406755 767.31420191406755, '
+        '-200 -50 76.731420191406755 767.31420191406755, '
+        '-200 0 38.365710095703378 383.65710095703378, '
+        '-160 0 38.365710095703378 383.65710095703378))',
+        crs=crs,
+    )
+
+    split = polygon.split_antimeridian()
+    assert split.coordinate_axes == 'XYZM'
+    # Compensated Simpson references over 4,096 to 65,536 panels on the 1/150 ellipsoid.
+    for native_latitude, expected_z, expected_m in (
+        (0.0, 38.365710095703378, 383.65710095703378),
+        (-50.0, 76.731420191406755, 767.31420191406755),
+    ):
+        seam = [
+            coordinate
+            for part in split.parts
+            for coordinate in part.coords
+            if abs(coordinate[0]) == 200.0 and coordinate[1] == native_latitude
+        ]
+        assert seam, f'missing final seam node at latitude {native_latitude}'
+        for coordinate in seam:
+            assert abs(coordinate[2] - expected_z) <= 4.0 * math.ulp(expected_z)
+            assert abs(coordinate[3] - expected_m) <= 4.0 * math.ulp(expected_m)
+        assert len({(coordinate[2], coordinate[3]) for coordinate in seam}) == 1
+
+
 def test_split_antimeridian_crs84_canonical_identity_and_full_turn_rewrite() -> None:
     half_period = gm.LineString([(180, 0), (0, 0)], crs=4326)
     assert half_period.split_antimeridian().to_wkt() == half_period.to_wkt()

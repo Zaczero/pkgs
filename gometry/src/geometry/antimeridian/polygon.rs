@@ -329,6 +329,21 @@ fn chart_connection(start: Point, end: Point, frame: GeographicFrame) -> Result<
         .map_err(|error| GeometryErrorKind::antimeridian_split_failed(error.to_string()).into())
 }
 
+fn certified_no_chart_events(start: f64, end: f64, frame: GeographicFrame) -> bool {
+    let half_period = frame.longitude().half_period();
+    let start_abs = start.abs();
+    let end_abs = end.abs();
+    if !start.is_finite() || !end.is_finite() || start_abs >= half_period || end_abs >= half_period
+    {
+        return false;
+    }
+    if start == 0.0 || end == 0.0 || start.is_sign_negative() == end.is_sign_negative() {
+        return true;
+    }
+    // Round the remaining gap down so a subtraction near the seam falls back.
+    start_abs < (half_period - end_abs).next_down()
+}
+
 fn seam_event(
     connection: ChartConnection,
     frame: GeographicFrame,
@@ -429,6 +444,9 @@ fn append_source_edge_events<M: ChartMetric>(
     circle_witnesses: bool,
     band: Option<(f64, f64, f64)>,
 ) -> Result<()> {
+    if include_seam && certified_no_chart_events(source[0].x, source[1].x, frame) {
+        return Ok(());
+    }
     let connection = chart_connection(source[0], source[1], frame)?;
     let longitude = connection.retained();
     let mut events = Vec::new();
@@ -450,6 +468,7 @@ fn append_source_edge_events<M: ChartMetric>(
     if events.is_empty() {
         return Ok(());
     }
+    output.reserve(events.len() + 1);
     let mut root_metric = RootMetricState::default();
     for event in events {
         let parameter = event.parameter.round()?;
@@ -489,7 +508,7 @@ fn chart_line<M: ChartMetric>(
     metric_access: Option<&SourceArcMetricAccess<'_, '_, M>>,
 ) -> Result<LineSeq> {
     let points = collect_points(line);
-    let mut chart = Vec::with_capacity(points.len().saturating_mul(2));
+    let mut chart = Vec::with_capacity(points.len());
     for &[start, end] in points.array_windows::<2>() {
         if chart.is_empty() {
             chart.push(chart_point(start, frame, longitude_scale, latitude_scale)?);
@@ -525,20 +544,26 @@ fn chart_ring<M: ChartMetric>(
     let circle_edges = ring
         .segment_pairs()
         .filter(|[start, end]| {
-            axis.chart_step(start.x, end.x)
-                .expect("the geographic view admitted every ring coordinate")
-                .is_circle()
+            !certified_no_chart_events(start.x, end.x, frame)
+                && axis
+                    .chart_step(start.x, end.x)
+                    .expect("the geographic view admitted every ring coordinate")
+                    .is_circle()
         })
         .count();
     let witness_count = circle_edges
         .checked_mul(3)
         .ok_or(crate::error::ResourceError::SizeOverflow)?;
-    let output_count = geographic
+    let _maximum_output_count = geographic
         .len()
         .checked_add(geographic.len().saturating_sub(1))
         .and_then(|count| count.checked_add(witness_count))
         .ok_or(crate::error::ResourceError::SizeOverflow)?;
-    points.reserve_exact(output_count);
+    let output_capacity = geographic
+        .len()
+        .checked_add(witness_count)
+        .ok_or(crate::error::ResourceError::SizeOverflow)?;
+    points.reserve_exact(output_capacity);
     if matches!(summary.domain, RingDomain::FullLongitude(_)) && summary.chart_turn == 0 {
         let unwrapped = super::normalize::unwrap_coordinates(ring.coords(), frame).map_err(
             |error| match error {
@@ -1323,9 +1348,13 @@ fn build_rings(mut segments: Vec<Vec<Point>>) -> Vec<Vec<Point>> {
 
 #[cfg(test)]
 mod tests {
-    use super::{PoleClosure, chart_line, chart_polygon, split_polygon};
+    use super::{
+        PoleClosure, certified_no_chart_events, chart_line, chart_polygon, chart_ring,
+        split_polygon,
+    };
     use crate::geographic::{
         AngularFactor, ChartPole, GeodeticPole, GeographicAxisOrientation, GeographicFrame,
+        source_admission_counts,
     };
     use crate::geometry::antimeridian::segment_coords_with_metric;
     use crate::geometry::ordinates::{SourceArcRequest, source_arc_ordinates};
@@ -1344,6 +1373,98 @@ mod tests {
             )
             .unwrap(),
         )
+    }
+
+    #[test]
+    fn canonical_crs84_split_skips_retained_edge_admission() {
+        let shapes = [
+            line(&[10.0, 11.0, 12.0], &[0.0, 1.0, 0.0]),
+            Shape::Polygon(Polygon::new(
+                closed_ring(&[10.0, 20.0, 20.0, 10.0, 10.0], &[
+                    10.0, 10.0, 20.0, 20.0, 10.0,
+                ]),
+                Vec::new(),
+            )),
+        ];
+
+        for shape in shapes {
+            let before = source_admission_counts::snapshot().0;
+            let split = shape
+                .split_antimeridian_in_frame(GeographicFrame::crs84())
+                .unwrap();
+            assert_eq!(
+                source_admission_counts::snapshot().0,
+                before,
+                "a canonical CRS84 identity split must not admit source edges"
+            );
+            assert_eq!(split, shape);
+        }
+    }
+
+    #[test]
+    fn certified_chart_event_skip_falls_back_at_the_periodic_boundary() {
+        const CRS: &str = r#"GEOGCS["Custom grad",DATUM["Custom datum",SPHEROID["Custom",7000000,150]],PRIMEM["Greenwich",0],UNIT["grad",0.015707963267948967],AXIS["Longitude",EAST],AXIS["Latitude",NORTH]]"#;
+        let state = crate::crs::runtime_state_snapshot().unwrap();
+        let frame = crate::crs::info_with_state(CRS, &state)
+            .unwrap()
+            .geographic_frame()
+            .unwrap();
+        assert_eq!(frame.longitude().period().to_bits(), 400.0_f64.to_bits());
+        assert!(certified_no_chart_events(-10.0, 10.0, frame));
+        assert!(certified_no_chart_events(10.0, 20.0, frame));
+        assert!(!certified_no_chart_events(100.0, -100.0, frame));
+        assert!(!certified_no_chart_events(199.0, -2.0, frame));
+        assert!(!certified_no_chart_events(200.0, 0.0, frame));
+        assert!(!certified_no_chart_events(0.0, 400.0, frame));
+        assert!(!certified_no_chart_events(f64::NAN, 0.0, frame));
+
+        let longitude_scale =
+            frame.longitude().to_degrees(1.0) * frame.longitude_orientation_sign();
+        let latitude_scale = frame.latitude_unit().native_to_degrees(1.0, frame.pole())
+            * frame.latitude_orientation_sign();
+        let no_metric = None::<&crate::geometry::SourceArcMetricAccess<'_, '_>>;
+        let Shape::LineString(safe_line) = line(&[-20.0, 0.0, 20.0], &[0.0, 1.0, 0.0]) else {
+            unreachable!();
+        };
+        let before = source_admission_counts::snapshot().0;
+        let chart = chart_line(
+            &safe_line,
+            frame,
+            longitude_scale,
+            latitude_scale,
+            no_metric,
+        )
+        .unwrap();
+        assert_eq!(source_admission_counts::snapshot().0, before);
+        assert_eq!(chart.as_coords().iter_coords().count(), 3);
+
+        let Shape::LineString(crossing_line) = line(&[199.0, -2.0], &[0.0, 10.0]) else {
+            unreachable!();
+        };
+        let before = source_admission_counts::snapshot().0;
+        let chart = chart_line(
+            &crossing_line,
+            frame,
+            longitude_scale,
+            latitude_scale,
+            no_metric,
+        )
+        .unwrap();
+        assert_eq!(source_admission_counts::snapshot().0 - before, 1);
+        assert!(
+            chart
+                .as_coords()
+                .iter_coords()
+                .any(|point| point.x == 180.0)
+        );
+
+        let ring = closed_ring(&[-20.0, 20.0, 20.0, -20.0, -20.0], &[
+            10.0, 10.0, 20.0, 20.0, 10.0,
+        ]);
+        let before = source_admission_counts::snapshot().0;
+        let chart = chart_ring(&ring, frame, longitude_scale, latitude_scale, no_metric).unwrap();
+        assert_eq!(source_admission_counts::snapshot().0 - before, 4);
+        assert_eq!(chart.iter_coords().count(), 5);
     }
 
     fn closed_ring(xs: &[f64], ys: &[f64]) -> Ring {
@@ -1373,28 +1494,42 @@ mod tests {
             let intervals = 4096;
             let step = limit / f64::from(intervals);
             let eccentricity_squared = flattening * (2.0 - flattening);
-            let weighted = (0..=intervals)
-                .map(|index| {
-                    let parameter = f64::from(index) * step;
-                    let latitude =
-                        (start_degrees + parameter * delta_radians.to_degrees()).to_radians();
-                    let denominator = 1.0 - eccentricity_squared * latitude.sin() * latitude.sin();
-                    let radius = (1.0 - eccentricity_squared) / denominator.powf(1.5);
-                    let weight = if index == 0 || index == intervals {
-                        1.0
-                    } else if index % 2 == 0 {
-                        2.0
-                    } else {
-                        4.0
-                    };
-                    weight * radius * delta_radians
-                })
-                .sum::<f64>();
+            // Keep accumulation error below the Simpson refinement error.
+            let mut weighted = 0.0;
+            let mut correction = 0.0;
+            for index in 0..=intervals {
+                let parameter = f64::from(index) * step;
+                let latitude =
+                    (start_degrees + parameter * delta_radians.to_degrees()).to_radians();
+                let denominator = 1.0 - eccentricity_squared * latitude.sin() * latitude.sin();
+                let radius = (1.0 - eccentricity_squared) / denominator.powf(1.5);
+                let weight = if index == 0 || index == intervals {
+                    1.0
+                } else if index % 2 == 0 {
+                    2.0
+                } else {
+                    4.0
+                };
+                let term = weight * radius * delta_radians - correction;
+                let next = weighted + term;
+                correction = (next - weighted) - term;
+                weighted = next;
+            }
             step * weighted / 3.0
         }
         let delta_radians = (end_degrees - start_degrees).to_radians();
         integrate(parameter, start_degrees, delta_radians, flattening)
             / integrate(1.0, start_degrees, delta_radians, flattening)
+    }
+
+    fn ulp_error_limit(value: f64, ulps: f64) -> f64 {
+        let magnitude = value.abs();
+        let spacing = if magnitude == 0.0 {
+            f64::from_bits(1)
+        } else {
+            magnitude.next_up() - magnitude
+        };
+        ulps * spacing
     }
 
     #[test]
@@ -1528,34 +1663,144 @@ mod tests {
             unreachable!();
         };
         let state = crate::crs::runtime_state_snapshot().unwrap();
-        let chart =
-            crate::crs::with_ellipsoid_metric_at("EPSG:4326", &[&source], &state, |metric| {
-                let metric_access = || Ok(metric);
-                chart_line(
-                    line,
-                    GeographicFrame::crs84(),
-                    1.0,
-                    1.0,
-                    Some(&metric_access),
-                )
-            })
-            .unwrap();
-        let coordinates: Vec<_> = chart.as_coords().iter_coords().collect();
-        let seam = coordinates
-            .iter()
-            .find(|point| point.x == 180.0)
-            .expect("the authored full turn crosses the chart seam");
-        let quarter = coordinates
-            .iter()
-            .find(|point| point.x == -100.0)
-            .expect("the first quarter witness remains on the chart path");
+        crate::crs::with_ellipsoid_metric_at("EPSG:4326", &[&source], &state, |metric| {
+            let frame = GeographicFrame::crs84();
+            let metric_access = || Ok(metric);
+            let chart = chart_line(line, frame, 1.0, 1.0, Some(&metric_access))?;
+            let coordinates: Vec<_> = chart.as_coords().iter_coords().collect();
+            let seam = *coordinates
+                .iter()
+                .find(|point| point.x == 180.0)
+                .expect("the authored full turn crosses the chart seam");
+            let quarter = *coordinates
+                .iter()
+                .find(|point| point.x == -100.0)
+                .expect("the first quarter witness remains on the chart path");
 
-        assert!((seam.y - 60.0 * (10.0 / 360.0)).abs() <= 2.0e-14);
-        assert!((seam.z().unwrap() - 3.332_353_583_809_422).abs() <= 2.0e-8);
-        assert!((seam.m().unwrap() - 133.323_535_838_094_22).abs() <= 2.0e-7);
-        assert_eq!(quarter.y, 15.0);
-        assert!((quarter.z().unwrap() - 29.665_344_452_905_156).abs() <= 2.0e-8);
-        assert!((quarter.m().unwrap() - 396.653_444_529_051_6).abs() <= 2.0e-7);
+            let piece = [seam, quarter];
+            let longitude = frame
+                .longitude()
+                .chart_connection(piece[0].x, piece[1].x)
+                .map(|connection| connection.retained())
+                .map_err(|error| {
+                    GeometryErrorKind::antimeridian_split_failed(error.to_string())
+                })?;
+            let midpoint = ExactRational::new(
+                ExactDyadic::from_i64(1),
+                ExactDyadic::from_i64(2),
+            )?;
+            let request = SourceArcRequest::new(
+                frame,
+                &piece,
+                piece[0].axes().union(piece[1].axes()),
+                &midpoint,
+                || Ok(longitude),
+            )?;
+            let mut root_metric = RootMetricState::default();
+            let mut fraction = None;
+            let mut work = Unmetered;
+            let composed = source_arc_ordinates(
+                &request,
+                || Ok(metric),
+                &mut root_metric,
+                &mut fraction,
+                &mut work,
+            )?;
+            let split = source.split_antimeridian_in_frame_with_metric(
+                frame,
+                Some(&metric_access),
+            )?;
+            let mut public_seams = Vec::new();
+            let mut public_quarter = None;
+            split.for_each_point(|point| {
+                if point.x.abs() == 180.0 && (point.y - 60.0 / 36.0).abs() <= 2.0e-14 {
+                    public_seams.push(point);
+                }
+                if point.x == -100.0 && point.y == 15.0 {
+                    public_quarter = Some(point);
+                }
+            });
+            assert!(
+                public_seams.iter().any(|point| point.x == -180.0)
+                    && public_seams.iter().any(|point| point.x == 180.0),
+                "the final split omitted a seam alias: {public_seams:?}"
+            );
+            let public_quarter =
+                public_quarter.expect("the final split retains the first quarter witness");
+
+            let seam_parameter =
+                ExactRational::new(ExactDyadic::from_i64(10), ExactDyadic::from_i64(360))?;
+            let exact_seam_latitude =
+                ExactRational::from_f64(60.0).try_product(&seam_parameter)?;
+            assert_ne!(
+                ExactRational::from_f64(seam.y),
+                exact_seam_latitude,
+                "t=1/36 produces a binary64 seam latitude"
+            );
+
+            // Independent 70-digit Decimal Simpson integration, N=8192 and
+            // 16384, for the WGS84 first-fundamental-form speed on the root
+            // (170,0)->(530,60). The subedge reference uses the rounded
+            // binary64 seam latitude, as the emitted piece does.
+            let q_seam = 0.033_323_535_838_094_220_426_f64;
+            let q_quarter = 0.296_653_444_529_051_574_389_f64;
+            let q_later_root = 0.166_073_296_867_606_938_760_f64;
+            let q_later_piece = 0.166_073_296_867_606_938_760_f64;
+            let root_z = |q: f64| 100.0 * q;
+            let root_m = |q: f64| 100.0 + 1000.0 * q;
+            let mut max_absolute_error = 0.0_f64;
+            let mut max_relative_error = 0.0_f64;
+            let mut measure = |actual: f64, expected: f64| {
+                let absolute = (actual - expected).abs();
+                max_absolute_error = max_absolute_error.max(absolute);
+                max_relative_error = max_relative_error.max(absolute / expected.abs());
+                absolute
+            };
+            for point in &public_seams {
+                let expected_z = root_z(q_seam);
+                let expected_m = root_m(q_seam);
+                assert!(
+                    measure(point.z().unwrap(), expected_z)
+                        <= ulp_error_limit(expected_z, 4.0)
+                );
+                assert!(
+                    measure(point.m().unwrap(), expected_m)
+                        <= ulp_error_limit(expected_m, 4.0)
+                );
+            }
+            let quarter_z = root_z(q_quarter);
+            let quarter_m = root_m(q_quarter);
+            assert!(
+                measure(public_quarter.z().unwrap(), quarter_z)
+                    <= ulp_error_limit(quarter_z, 4.0)
+            );
+            assert!(
+                measure(public_quarter.m().unwrap(), quarter_m)
+                    <= ulp_error_limit(quarter_m, 4.0)
+            );
+            let later_z = root_z(q_later_piece);
+            let later_m = root_m(q_later_piece);
+            assert!(
+                measure(composed.z.value().unwrap(), later_z)
+                    <= ulp_error_limit(later_z, 4.0)
+            );
+            assert!(
+                measure(composed.m.value().unwrap(), later_m)
+                    <= ulp_error_limit(later_m, 4.0)
+            );
+            assert!(
+                (later_z - root_z(q_later_root)).abs() <= ulp_error_limit(later_z, 4.0)
+            );
+            assert!(
+                (later_m - root_m(q_later_root)).abs() <= ulp_error_limit(later_m, 4.0)
+            );
+            println!(
+                "tilted_full_turn_accuracy={{\"max_abs_error\":{max_absolute_error:.17e},\"max_relative_error\":{max_relative_error:.17e},\"seam_latitude\":{:.17e},\"piece_local_t\":0.5}}",
+                seam.y,
+            );
+            Ok(())
+        })
+        .unwrap();
     }
 
     #[test]
@@ -1716,8 +1961,17 @@ mod tests {
         let root_fraction = (360.0 - source_longitude) / 360.0;
         let expected_z = 20.0 + 10.0 * root_fraction;
         let expected_m = 2000.0 + 1000.0 * root_fraction;
-        assert!((observation.z.expect("shell carries Z") - expected_z).abs() <= 2.0e-9);
-        assert!((observation.m.expect("shell carries M") - expected_m).abs() <= 2.0e-8);
+        assert_eq!(chart_longitude, 135.0);
+        assert_eq!(expected_z.to_bits(), 21.25_f64.to_bits());
+        assert_eq!(expected_m.to_bits(), 2125.0_f64.to_bits());
+        assert_eq!(
+            observation.z.expect("shell carries Z").to_bits(),
+            21.25_f64.to_bits()
+        );
+        assert_eq!(
+            observation.m.expect("shell carries M").to_bits(),
+            2125.0_f64.to_bits()
+        );
     }
 
     fn split_crs84(shape: &Shape) -> Shape {
@@ -2363,6 +2617,213 @@ mod tests {
                 assert!((m.expect("split retains M") - 1000.0 * fraction).abs() <= 2.0e-7);
             }
         }
+    }
+
+    #[test]
+    fn reversed_grad_hole_overlay_retains_meridian_ordinates() {
+        const CRS: &str = r#"GEOGCS["West south grad",DATUM["Custom datum",SPHEROID["Custom",7000000,150]],PRIMEM["Greenwich",0],UNIT["grad",0.015707963267948967],AXIS["Longitude",WEST],AXIS["Latitude",SOUTH]]"#;
+        let state = crate::crs::runtime_state_snapshot().unwrap();
+        let frame = crate::crs::info_with_state(CRS, &state)
+            .unwrap()
+            .geographic_frame()
+            .unwrap();
+        assert_eq!(frame.longitude().period().to_bits(), 400.0_f64.to_bits());
+        assert_eq!(frame.longitude_orientation_sign(), -1.0);
+        assert_eq!(frame.latitude_orientation_sign(), -1.0);
+
+        let longitude_scale =
+            frame.longitude().to_degrees(1.0) * frame.longitude_orientation_sign();
+        let latitude_scale = frame.latitude_unit().native_to_degrees(1.0, frame.pole())
+            * frame.latitude_orientation_sign();
+        let chart_bottom = super::chart_latitude(50.0, frame, latitude_scale).unwrap();
+        let chart_top = super::chart_latitude(-80.0, frame, latitude_scale).unwrap();
+        let lower_latitude = super::chart_latitude(0.0, frame, latitude_scale).unwrap();
+        let upper_latitude = super::chart_latitude(-50.0, frame, latitude_scale).unwrap();
+        let parameter_at = |latitude: f64| {
+            let numerator = ExactDyadic::from_f64(latitude)
+                .try_subtract(ExactDyadic::from_f64(chart_bottom))
+                .unwrap();
+            let denominator = ExactDyadic::from_f64(chart_top)
+                .try_subtract(ExactDyadic::from_f64(chart_bottom))
+                .unwrap();
+            ExactRational::new(numerator, denominator)
+                .unwrap()
+                .round()
+                .unwrap()
+        };
+        let lower_parameter = parameter_at(lower_latitude);
+        let upper_parameter = parameter_at(upper_latitude);
+        let shell = xyzm_ring(&[
+            (-150.0, 50.0, 0.0, 0.0),
+            (150.0, 50.0, 0.0, 0.0),
+            (150.0, -80.0, 100.0, 1000.0),
+            (-150.0, -80.0, 100.0, 1000.0),
+            (-150.0, 50.0, 0.0, 0.0),
+        ]);
+        let shell_only = Shape::Polygon(Polygon::new(shell.clone(), Vec::new()));
+        let (lower_z, lower_m, upper_z, upper_m) =
+            crate::crs::with_ellipsoid_metric_at(CRS, &[&shell_only], &state, |metric| {
+                let ramp_start = Point::new_axes(
+                    180.0,
+                    chart_bottom,
+                    ZOrdinate(Some(0.0)),
+                    MOrdinate(Some(0.0)),
+                )?;
+                let ramp_end = Point::new_axes(
+                    180.0,
+                    chart_top,
+                    ZOrdinate(Some(100.0)),
+                    MOrdinate(Some(1000.0)),
+                )?;
+                let edge =
+                    crate::crs::ChartEdge::new(ramp_start, ramp_end, GeographicFrame::crs84())?;
+                let length = metric.chart_edge_length(&edge)?;
+                let lower_fraction =
+                    metric.chart_edge_arclength_fraction(&edge, lower_parameter, Some(length))?;
+                let upper_fraction =
+                    metric.chart_edge_arclength_fraction(&edge, upper_parameter, Some(length))?;
+                let (lower_z, lower_m) = crate::geometry::source_ordinate_values_at_fraction(
+                    ramp_start,
+                    ramp_end,
+                    CoordinateAxes::XYZM,
+                    lower_fraction,
+                );
+                let (upper_z, upper_m) = crate::geometry::source_ordinate_values_at_fraction(
+                    ramp_start,
+                    ramp_end,
+                    CoordinateAxes::XYZM,
+                    upper_fraction,
+                );
+                Ok((
+                    lower_z.0.expect("fixture carries Z"),
+                    lower_m.0.expect("fixture carries M"),
+                    upper_z.0.expect("fixture carries Z"),
+                    upper_m.0.expect("fixture carries M"),
+                ))
+            })
+            .unwrap();
+        let hole = xyzm_ring(&[
+            (-160.0, 0.0, lower_z, lower_m),
+            (-160.0, -50.0, upper_z, upper_m),
+            (-200.0, -50.0, upper_z, upper_m),
+            (-200.0, 0.0, lower_z, lower_m),
+            (-160.0, 0.0, lower_z, lower_m),
+        ]);
+        let polygon = Polygon::new(shell, vec![hole]);
+        let source = Shape::Polygon(polygon.clone());
+        let (parts, observations, split) =
+            crate::crs::with_ellipsoid_metric_at(CRS, &[&source], &state, |metric| {
+                let metric_access = || Ok(metric);
+                let chart = chart_polygon(
+                    &polygon,
+                    frame,
+                    longitude_scale,
+                    latitude_scale,
+                    Some(&metric_access),
+                )?;
+                crate::geometry::ordinates::take_source_arc_observations();
+                let chart_shape = Shape::Polygon(chart.clone());
+                let parts = split_polygon(
+                    &chart_shape,
+                    &chart,
+                    PoleClosure::Auto,
+                    Some(&metric_access),
+                )?;
+                let observations = crate::geometry::ordinates::take_source_arc_observations();
+                let split =
+                    source.split_antimeridian_in_frame_with_metric(frame, Some(&metric_access))?;
+                Ok((parts, observations, split))
+            })
+            .unwrap();
+        assert!(!parts.is_empty());
+        assert_eq!(split.axes(), CoordinateAxes::XYZM);
+
+        let mut matched = 0;
+        let mut max_absolute_error = 0.0_f64;
+        let mut max_relative_error = 0.0_f64;
+        for observation in observations.iter().filter(|observation| {
+            observation.source[0].x.abs() == 180.0
+                && observation.source[1].x.abs() == 180.0
+                && observation.source[0].x.to_bits() == observation.source[1].x.to_bits()
+                && observation.source[0].y != observation.source[1].y
+        }) {
+            let chart_latitude = observation.source[0].y
+                + (observation.source[1].y - observation.source[0].y) * observation.parameter;
+            let root_parameter = (chart_latitude - chart_bottom) / (chart_top - chart_bottom);
+            let q =
+                independent_meridian_fraction(root_parameter, chart_bottom, chart_top, 1.0 / 150.0);
+            let expected_z = 100.0 * q;
+            let expected_m = 1000.0 * q;
+            let observed_z = observation.z.expect("overlay source carries Z");
+            let observed_m = observation.m.expect("overlay source carries M");
+            let z_error = (observed_z - expected_z).abs();
+            let m_error = (observed_m - expected_m).abs();
+            max_absolute_error = max_absolute_error.max(z_error).max(m_error);
+            max_relative_error = max_relative_error
+                .max(z_error / expected_z.abs())
+                .max(m_error / expected_m.abs());
+            assert!(
+                z_error <= ulp_error_limit(expected_z, 4.0),
+                "Z error {z_error:e} at t={root_parameter}"
+            );
+            assert!(
+                m_error <= ulp_error_limit(expected_m, 4.0),
+                "M error {m_error:e} at t={root_parameter}; source={:?}; parameter={:.17e}; actual={observed_m:.17e}; expected={expected_m:.17e}; chart_latitude={chart_latitude:.17e}",
+                observation.source,
+                observation.parameter,
+            );
+            matched += 1;
+        }
+        assert!(
+            matched > 0,
+            "hole overlay made no interior seam-edge request"
+        );
+
+        let lower_q =
+            independent_meridian_fraction(lower_parameter, chart_bottom, chart_top, 1.0 / 150.0);
+        let upper_q =
+            independent_meridian_fraction(upper_parameter, chart_bottom, chart_top, 1.0 / 150.0);
+        for (native_latitude, expected_z, expected_m, source_z, source_m) in [
+            (0.0, 100.0 * lower_q, 1000.0 * lower_q, lower_z, lower_m),
+            (-50.0, 100.0 * upper_q, 1000.0 * upper_q, upper_z, upper_m),
+        ] {
+            let values = {
+                let mut values = Vec::new();
+                split.for_each_point(|point| {
+                    if point.x.abs() == 200.0 && point.y == native_latitude {
+                        values.push((point.z(), point.m()));
+                    }
+                });
+                values
+            };
+            assert!(
+                !values.is_empty(),
+                "missing final seam point at {native_latitude}"
+            );
+            for (z, m) in values {
+                let z = z.expect("final seam point carries Z");
+                let m = m.expect("final seam point carries M");
+                let z_error = (z - expected_z).abs();
+                let m_error = (m - expected_m).abs();
+                max_absolute_error = max_absolute_error.max(z_error).max(m_error);
+                max_relative_error = max_relative_error
+                    .max(z_error / expected_z.abs())
+                    .max(m_error / expected_m.abs());
+                assert!(
+                    z_error <= ulp_error_limit(expected_z, 4.0),
+                    "final Z error {z_error:e}"
+                );
+                assert!(
+                    m_error <= ulp_error_limit(expected_m, 4.0),
+                    "final M error {m_error:e}"
+                );
+                assert_eq!(z.to_bits(), source_z.to_bits());
+                assert_eq!(m.to_bits(), source_m.to_bits());
+            }
+        }
+        println!(
+            "reversed_grad_hole_accuracy={{\"max_abs_error\":{max_absolute_error:.17e},\"max_relative_error\":{max_relative_error:.17e},\"interior_requests\":{matched}}}"
+        );
     }
 
     #[test]
