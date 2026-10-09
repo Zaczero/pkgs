@@ -301,8 +301,8 @@ __all__ = [
     'rhumb_distance',
     's2_bounding_cell',
     's2_cells',
-    's2_cover_adaptive',
     's2_cover',
+    's2_cover_adaptive',
     's2_difference',
     's2_intersection',
     's2_union',
@@ -22805,6 +22805,60 @@ def s2_cover(
     max_cells: int | None = 1000000,
 ) -> Groups[CellArray[S2Cell]]: ...
 @overload
+def s2_cover(
+    geom: Geometry,
+    level: int,
+    *,
+    cell_rule: CellRule = 'overlap',
+    max_cells: int | None = 1000000,
+) -> CellArray[S2Cell]:
+    """Cover a geometry with S2 cells at one fixed level.
+
+    The result is a ``CellArray`` of S2 cells selected according to
+    ``cell_rule`` at the requested level. Keep the source geometry separately and use the free
+    ``gm.*`` predicates for exact geometry questions.
+
+    Parameters
+    ----------
+    geom : Geometry or GeometryArray
+        Geometry to cover (WGS84 lon/lat or projected). An array returns one
+        grouped cell row per input geometry.
+
+    level : int
+        S2 cell level (``0``-``30``; finer at higher values). The level is
+        never coarsened to fit the output cap.
+
+    cell_rule : {'within', 'center', 'overlap', 'bbox'}, default 'overlap'
+        Which cells to materialize, strictest to loosest. ``'within'``: only
+        cells entirely inside — cells the area fully owns. ``'center'``:
+        cells whose center is inside — unique assignment, balanced point
+        binning. ``'overlap'``: every cell touching the geometry — a
+        complete-coverage superset, the safe default for candidate keys.
+        ``'bbox'``: every cell meeting the geometry's envelope, one window per
+        part and split at the antimeridian — loosest and fastest.
+        The rule never affects the exact predicates.
+
+    max_cells : int or None, default 1000000
+        Hard cap on returned cells; array calls apply it cumulatively across
+        groups. An insufficient cap raises because the requested level is
+        fixed. Pass ``None`` for an unlimited cover.
+
+    Returns
+    -------
+    CellArray or Groups of CellArray
+        A scalar returns its coverage; an array returns one cell group per row.
+
+    Raises
+    ------
+    GeometryError
+        If the geometry, level, or a coverage parameter is invalid, or if the
+        cover exceeds ``max_cells``.
+    InvalidGeometryError
+        If a scalar geometry is empty or coordinates leave the lon/lat domain.
+
+    See Also
+    --------
+    s2_cells : Build S2 cells from lon/lat columns.
     s2_cover_adaptive : Cover with adaptive levels.
 
     Examples
@@ -22885,60 +22939,6 @@ def s2_cover_adaptive(
     See Also
     --------
     s2_cover : Cover at a fixed level.
-    s2_cells : Build S2 cells from lon/lat columns.
-def s2_cover(
-    geom: Geometry,
-    level: int,
-    *,
-    cell_rule: CellRule = 'overlap',
-    max_cells: int | None = 1000000,
-) -> CellArray[S2Cell]:
-    """Cover a geometry with S2 cells at one fixed level.
-
-    The result is a ``CellArray`` of S2 cells selected according to
-    ``cell_rule`` at the requested level. Keep the source geometry separately and use the free
-    ``gm.*`` predicates for exact geometry questions.
-
-    Parameters
-    ----------
-    geom : Geometry or GeometryArray
-        Geometry to cover (WGS84 lon/lat or projected). An array returns one
-        grouped cell row per input geometry.
-
-    level : int
-        S2 cell level (``0``-``30``; finer at higher values). The level is
-        never coarsened to fit the output cap.
-
-    cell_rule : {'within', 'center', 'overlap', 'bbox'}, default 'overlap'
-        Which cells to materialize, strictest to loosest. ``'within'``: only
-        cells entirely inside — cells the area fully owns. ``'center'``:
-        cells whose center is inside — unique assignment, balanced point
-        binning. ``'overlap'``: every cell touching the geometry — a
-        complete-coverage superset, the safe default for candidate keys.
-        ``'bbox'``: every cell meeting the geometry's envelope, one window per
-        part and split at the antimeridian — loosest and fastest.
-        The rule never affects the exact predicates.
-
-    max_cells : int or None, default 1000000
-        Hard cap on returned cells; array calls apply it cumulatively across
-        groups. An insufficient cap raises because the requested level is
-        fixed. Pass ``None`` for an unlimited cover.
-
-    Returns
-    -------
-    CellArray or Groups of CellArray
-        A scalar returns its coverage; an array returns one cell group per row.
-
-    Raises
-    ------
-    GeometryError
-        If the geometry, level, or a coverage parameter is invalid, or if the
-        cover exceeds ``max_cells``.
-    InvalidGeometryError
-        If a scalar geometry is empty or coordinates leave the lon/lat domain.
-
-    See Also
-    --------
     s2_cells : Build S2 cells from lon/lat columns.
 
     Examples

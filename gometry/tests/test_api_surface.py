@@ -799,6 +799,7 @@ def test_public_all_exports_every_curated_facade_symbol() -> None:
     assert callable(gm.h3_cover)
     assert callable(gm.s2_cells)
     assert callable(gm.s2_cover)
+    assert callable(gm.s2_cover_adaptive)
     assert not hasattr(gm, 'get_coordinates')
     assert not hasattr(gm, 'geodesic')
     assert not hasattr(gm, 'Planar')
