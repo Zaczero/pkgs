@@ -323,7 +323,7 @@ fn parse_require_wkt(text: &str, fallback: Option<&Crs>) -> PyResult<PyGeometry>
     let embedded = io::crs_from_optional_srid(srid)?;
     let crs = resolve_wire_crs(embedded.map(crs_arc), fallback, "EWKT SRID")?;
     guard_epoch_frame(None, crs.as_ref())?;
-    Ok(PyGeometry::with_epoch(
+    Ok(PyGeometry::new_with_crs_epoch(
         io::parse_wkt(body).map_err(|error| rebase_ewkt_parse_error(error, text, body))?,
         crs,
         None,

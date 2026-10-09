@@ -369,7 +369,7 @@ pub(crate) fn from_polyline(
     if let Ok(text) = data.cast::<pyo3::types::PyString>() {
         let text = text.to_cow()?.into_owned();
         let shape = py.detach(move || decode_tagged(&text))?;
-        return Ok(Typed(PyGeometry::with_epoch(shape, crs, epoch)?)
+        return Ok(Typed(PyGeometry::new_with_crs_epoch(shape, crs, epoch)?)
             .into_pyobject(py)?
             .unbind());
     }

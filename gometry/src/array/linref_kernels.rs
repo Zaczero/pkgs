@@ -262,10 +262,11 @@ mod tests {
     use super::{RowInterpolatePlan, interpolate_mixed_row_groups};
     use crate::InterpolatePlan;
     use crate::array::PyGeometryArray;
-    use crate::crs::frame::Frame;
+    use crate::crs::frame::{Frame, crs_arc};
     use crate::crs::{DistanceMode, MetricModel};
     use crate::geometry::storage::{GeometryArrayStorage, ValidityMask};
     use crate::geometry::{CoordSeq, LineSeq, Shape};
+    use crate::test_support::linear_reference_counters;
 
     fn line_seq(xs: Vec<f64>, ys: Vec<f64>, zs: Option<Vec<f64>>, ms: Option<Vec<f64>>) -> LineSeq {
         LineSeq::try_new(CoordSeq::try_from_vecs(xs, ys, zs, ms).unwrap()).expect("test line")
@@ -288,7 +289,7 @@ mod tests {
     }
 
     fn geographic_lines(lines: Vec<Shape>, crs: &str) -> PyGeometryArray {
-        PyGeometryArray::from_shapes(lines, Frame::Crs(crate::crs::frame::crs_arc(crs))).unwrap()
+        PyGeometryArray::from_shapes(lines, Frame::Crs(crs_arc(crs))).unwrap()
     }
 
     fn geographic_line(end_latitude: f64) -> Shape {
@@ -372,7 +373,7 @@ mod tests {
             crate::dispatch::MetricOp::LineInterpolate,
         )
         .unwrap();
-        crate::test_support::linear_reference_counters::reset();
+        linear_reference_counters::reset();
         let (row, error) = interpolate_mixed_row_groups(&two_faults, &plan, &model)
             .err()
             .expect("source admission rejects the invalid line");
@@ -383,10 +384,7 @@ mod tests {
                 .contains("invalid longitude/latitude (0, 95)"),
             "{error}",
         );
-        assert_eq!(
-            crate::test_support::linear_reference_counters::snapshot().resolved_metrics,
-            0,
-        );
+        assert_eq!(linear_reference_counters::snapshot().resolved_metrics, 0,);
 
         let valid_source = geographic_lines(vec![geographic_line(1.0)], bad_crs);
         let model = crate::broadcast::resolve_metric(
@@ -395,7 +393,7 @@ mod tests {
             crate::dispatch::MetricOp::LineInterpolate,
         )
         .unwrap();
-        crate::test_support::linear_reference_counters::reset();
+        linear_reference_counters::reset();
         let (_, error) = interpolate_mixed_row_groups(&valid_source, &plan, &model)
             .err()
             .expect("ellipsoid resolution rejects the unsupported flattening");
@@ -404,10 +402,7 @@ mod tests {
                 .to_string()
                 .contains("order-six binary64 series domain")
         );
-        assert_eq!(
-            crate::test_support::linear_reference_counters::snapshot().resolved_metrics,
-            1,
-        );
+        assert_eq!(linear_reference_counters::snapshot().resolved_metrics, 1,);
 
         let invalid_source = geographic_lines(vec![geographic_line(95.0)], "EPSG:4326");
         let model = crate::broadcast::resolve_metric(
@@ -416,7 +411,7 @@ mod tests {
             crate::dispatch::MetricOp::LineInterpolate,
         )
         .unwrap();
-        crate::test_support::linear_reference_counters::reset();
+        linear_reference_counters::reset();
         let (_, error) = interpolate_mixed_row_groups(&invalid_source, &plan, &model)
             .err()
             .expect("source admission rejects the invalid latitude");
@@ -425,10 +420,7 @@ mod tests {
                 .to_string()
                 .contains("invalid longitude/latitude (0, 95)")
         );
-        assert_eq!(
-            crate::test_support::linear_reference_counters::snapshot().resolved_metrics,
-            0,
-        );
+        assert_eq!(linear_reference_counters::snapshot().resolved_metrics, 0,);
 
         let nullable = geographic_lines(vec![geographic_line(1.0), geographic_line(95.0)], bad_crs)
             .with_missing_mask(ValidityMask::from_sparse(2, &[0]))
@@ -439,7 +431,7 @@ mod tests {
             crate::dispatch::MetricOp::LineInterpolate,
         )
         .unwrap();
-        crate::test_support::linear_reference_counters::reset();
+        linear_reference_counters::reset();
         let (row, error) = interpolate_mixed_row_groups(&nullable, &plan, &model)
             .err()
             .expect("source admission rejects the first present invalid line");
@@ -449,10 +441,7 @@ mod tests {
                 .to_string()
                 .contains("invalid longitude/latitude (0, 95)")
         );
-        assert_eq!(
-            crate::test_support::linear_reference_counters::snapshot().resolved_metrics,
-            0,
-        );
+        assert_eq!(linear_reference_counters::snapshot().resolved_metrics, 0,);
     }
 
     #[test]
@@ -479,7 +468,7 @@ mod tests {
             crate::dispatch::MetricOp::LineInterpolate,
         )
         .unwrap();
-        crate::test_support::linear_reference_counters::reset();
+        linear_reference_counters::reset();
 
         let builder = interpolate_mixed_row_groups(
             &array,
@@ -494,9 +483,6 @@ mod tests {
         assert_eq!(point_xyzm(&shapes[1]), (2.0, 0.0, None, None));
         assert_eq!(point_xyzm(&shapes[2]), (10.0, 1.0, Some(3.0), None));
         assert_eq!(point_xyzm(&shapes[3]), (12.0, 1.0, Some(7.0), None));
-        assert_eq!(
-            crate::test_support::linear_reference_counters::snapshot().resolved_metrics,
-            1,
-        );
+        assert_eq!(linear_reference_counters::snapshot().resolved_metrics, 1,);
     }
 }

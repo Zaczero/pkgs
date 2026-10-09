@@ -16,7 +16,7 @@ use crate::io::{
 };
 
 pub(crate) const GEOJSON_M_ERROR: &str =
-    "GeoJSON cannot represent M; drop it with set_m(None) (or force_2d()).";
+    "GeoJSON cannot represent M; drop it with with_coordinates(m=None) (or force_2d()).";
 
 trait GeoJsonSink {
     fn push_str(&mut self, value: &str) -> Result<()>;
@@ -75,7 +75,7 @@ impl GeoJsonSink for CheckedGeoJson {
 pub(crate) fn geojson_interface_error() -> String {
     format!(
         "__geo_interface__ cannot represent M or coordinate epoch; {GEOJSON_M_ERROR} \
-         Clear the coordinate epoch with set_epoch(None)."
+         Clear the coordinate epoch with with_epoch(None)."
     )
 }
 

@@ -237,25 +237,33 @@ def test_force_3d_on_empties_has_uniform_dimension() -> None:
     assert (gm.LineString([(0, 0), (1, 1)])).force_3d().has_z
 
 
-def test_set_z_and_set_m_retag_empties() -> None:
-    """set_z/set_m on an empty flip the declared axes (no vertices to fill);
-    ``None`` clears the ordinate. Collections retag nested empties too.
-    """
+def test_with_coordinates_retags_empty_dimensions() -> None:
+    """Coordinate replacements change declared axes on empties and collections."""
     for t in _EMPTY_TYPES:
         empty = gm.from_wkt(f'{t} EMPTY')
-        assert empty.set_z(5.0).coordinate_axes == 'XYZ', t
-        assert empty.set_m(7.0).coordinate_axes == 'XYM', t
-        assert empty.set_z(5.0).set_m(7.0).coordinate_axes == 'XYZM', t
-        assert empty.set_z(5.0).set_z(None).coordinate_axes == 'XY', t
-        assert empty.set_z(5.0).is_empty, t
+        assert empty.with_coordinates(z=5.0).coordinate_axes == 'XYZ', t
+        assert empty.with_coordinates(m=7.0).coordinate_axes == 'XYM', t
+        assert empty.with_coordinates(z=5.0, m=7.0).coordinate_axes == 'XYZM', t
+        assert (
+            empty.with_coordinates(z=5.0).with_coordinates(z=None).coordinate_axes
+            == 'XY'
+        ), t
+        assert empty.with_coordinates(z=5.0).is_empty, t
+        array = gm.GeometryArray([empty])
+        lifted_array = array.with_coordinates(z=5.0)
+        assert lifted_array[0].coordinate_axes == 'XYZ', t
+        assert lifted_array.with_coordinates(z=None)[0].coordinate_axes == 'XY', t
     nested = gm.from_wkt('GEOMETRYCOLLECTION (POINT EMPTY)').force_3d()
     assert nested.to_wkt() == 'GEOMETRYCOLLECTION (POINT Z EMPTY)'
 
 
-@pytest.mark.parametrize('method', ['set_z', 'set_m', 'force_3d'])
+@pytest.mark.parametrize(
+    ('method', 'axis'),
+    [('with_coordinates', 'z'), ('with_coordinates', 'm'), ('force_3d', None)],
+)
 @pytest.mark.parametrize('value', [float('nan'), float('inf'), -float('inf')])
-def test_ordinate_setters_reject_nonfinite_before_empty_or_noop(
-    method: str, value: float
+def test_ordinate_replacement_rejects_nonfinite_before_empty_or_noop(
+    method: str, axis: str | None, value: float
 ) -> None:
     geometries = [
         gm.Point(1, 2),
@@ -264,14 +272,19 @@ def test_ordinate_setters_reject_nonfinite_before_empty_or_noop(
         gm.from_wkt('MULTIPOINT (EMPTY, (1 2))'),
     ]
     for geometry in geometries:
+        call_args = (value,) if axis is None else ()
+        call_kwargs = {} if axis is None else {axis: value}
         with pytest.raises(gm.InvalidGeometryError):
-            getattr(geometry, method)(value)
+            getattr(geometry, method)(*call_args, **call_kwargs)
 
 
-@pytest.mark.parametrize('method', ['set_z', 'set_m', 'force_3d'])
+@pytest.mark.parametrize(
+    ('method', 'axis'),
+    [('with_coordinates', 'z'), ('with_coordinates', 'm'), ('force_3d', None)],
+)
 @pytest.mark.parametrize('value', [float('nan'), float('inf'), -float('inf')])
-def test_array_ordinate_setters_reject_nonfinite_before_missing_or_noop(
-    method: str, value: float
+def test_array_ordinate_replacement_rejects_nonfinite_before_missing_or_noop(
+    method: str, axis: str | None, value: float
 ) -> None:
     arrays = [
         gm.GeometryArray([gm.Point(1, 2), None]),
@@ -280,15 +293,17 @@ def test_array_ordinate_setters_reject_nonfinite_before_missing_or_noop(
         gm.GeometryArray([]),
     ]
     for array in arrays:
+        call_args = (value,) if axis is None else ()
+        call_kwargs = {} if axis is None else {axis: value}
         with pytest.raises(gm.InvalidGeometryError):
-            getattr(array, method)(value)
+            getattr(array, method)(*call_args, **call_kwargs)
 
 
 def test_ordinate_updates_preserve_signed_zero_and_full_zm() -> None:
     source = gm.from_wkt('POINT ZM (-0 0 -0 0)')
-    z_updated = next(iter(source.set_z(7.0).coords))
-    m_updated = next(iter(source.set_m(8.0).coords))
-    both_updated = next(iter(source.set_z(7.0).set_m(8.0).coords))
+    z_updated = next(iter(source.with_coordinates(z=7.0).coords))
+    m_updated = next(iter(source.with_coordinates(m=8.0).coords))
+    both_updated = next(iter(source.with_coordinates(z=7.0, m=8.0).coords))
 
     assert z_updated == (-0.0, 0.0, 7.0, 0.0)
     assert m_updated == (-0.0, 0.0, -0.0, 8.0)

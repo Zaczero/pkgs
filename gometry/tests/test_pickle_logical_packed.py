@@ -122,7 +122,7 @@ def test_packed_payload_omits_unselected_parent_coordinates(
 def test_nullable_packed_pickle_keeps_present_payload_and_logical_mask(
     rows: list[object],
 ) -> None:
-    values = gm.GeometryArray(rows, crs=4326).set_epoch(2020.0)
+    values = gm.GeometryArray(rows, crs=4326).with_epoch(2020.0)
     _, args = values.__reduce_ex__(5)
     assert args[-1] == b'\x00\x01\x00'
     restored = pickle.loads(pickle.dumps(values, protocol=5))

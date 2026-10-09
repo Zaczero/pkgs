@@ -1424,38 +1424,38 @@ class Geometry:
         int
         """
     @overload
-    def set_coordinates(
+    def with_coordinates(
         self, coordinates: _CoordinateMatrix | Coordinates, /
     ) -> Self: ...
     @overload
-    def set_coordinates(
+    def with_coordinates(
         self,
         coordinates: None = None,
         /,
         *,
-        x: FloatColumn,
-        y: FloatColumn,
-        z: FloatColumn | None = None,
-        m: FloatColumn | None = None,
+        x: _FloatScalarInput | FloatColumn = ...,
+        y: _FloatScalarInput | FloatColumn = ...,
+        z: _FloatScalarInput | FloatColumn | None = ...,
+        m: _FloatScalarInput | FloatColumn | None = ...,
     ) -> Self:
-        """Return a geometry with the same topology and replacement coordinates.
+        """Return a geometry with selected coordinate ordinates replaced.
 
-        Pass one ``(N, dims)`` matrix (including a `Coordinates` view) or
-        explicit ``x=`` and ``y=`` columns. The vertex count and ordinate
-        layout are preserved; use dimension setters for adding or removing
-        Z/M axes.
+        Pass one ``(N, dims)`` matrix (including a `Coordinates` view), or
+        replace any of ``x=``, ``y=``, ``z=``, and ``m=`` by a scalar or a
+        column over the flattened coordinate sequence. Omitted ordinates are
+        preserved. ``z=None`` and ``m=None`` remove those dimensions; X and Y
+        cannot be removed. Matrix and column modes cannot be mixed. Calling
+        without arguments returns an unchanged value.
 
         Parameters
         ----------
         coordinates : sequence of float, optional
             Replacement ``(N, dims)`` coordinate matrix, including a
             `Coordinates` view.
-        x, y : sequence of float, optional
-            Replacement X and Y columns.
-        z, m : sequence of float, optional
-            Replacement Z and M columns when this geometry already has those
-            axes. Omitted axes are carried unchanged; ``None`` is not a
-            clearing sentinel.
+        x, y, z, m : float, sequence of float, or None, optional
+            Replace one ordinate by a scalar broadcast over vertices or a
+            column with one value per coordinate. Omitted ordinates are
+            preserved. ``None`` removes Z or M and is not valid for X or Y.
 
         Returns
         -------
@@ -1464,7 +1464,7 @@ class Geometry:
         Examples
         --------
         >>> import gometry as gm
-        >>> gm.LineString([(0, 0), (1, 1)]).set_coordinates([(5, 5), (6, 6)]).to_wkt()
+        >>> gm.LineString([(0, 0), (1, 1)]).with_coordinates([(5, 5), (6, 6)]).to_wkt()
         'LINESTRING (5 5, 6 6)'
         """
     def map_coordinates(
@@ -1525,14 +1525,14 @@ class Geometry:
         -------
         Geometry
         """
-    def set_epoch(self, epoch: float | None, *, overwrite: bool = False) -> Self:
+    def with_epoch(self, epoch: float | None, *, overwrite: bool = False) -> Self:
         """Declare (or clear) the coordinate epoch without moving coordinates.
         The epoch is the decimal year the coordinate set was observed
         (e.g. ``2020.0``). It supplies metadata to operations that use
         coordinate epochs; the CRS frame must admit an epoch.
-        ``set_epoch(None)`` clears it. Changing a present epoch to a different
+        ``with_epoch(None)`` clears it. Changing a present epoch to a different
         value requires ``overwrite=True`` (the silent-frame-change guard, like
-        ``set_crs``).
+        ``with_crs``).
 
         Parameters
         ----------
@@ -1558,11 +1558,11 @@ class Geometry:
         Examples
         --------
         >>> import gometry as gm
-        >>> gm.Point(-122.4, 37.8, crs=4326).set_epoch(2020.0).epoch
+        >>> gm.Point(-122.4, 37.8, crs=4326).with_epoch(2020.0).epoch
         2020.0
         """
 
-    def set_crs(self, crs: CrsInput | None, *, overwrite: bool = False) -> Self:
+    def with_crs(self, crs: CrsInput | None, *, overwrite: bool = False) -> Self:
         """Attach or relabel the CRS *without* moving coordinates.
         Declares what the coordinates already mean; to actually reproject them
         use `to_crs`. Attaching to a CRS-free geometry, clearing with
@@ -1596,7 +1596,7 @@ class Geometry:
         Examples
         --------
         >>> import gometry as gm
-        >>> gm.Point(1, 2).set_crs(4326).crs
+        >>> gm.Point(1, 2).with_crs(4326).crs
         CRS("EPSG:4326")
         """
     def to_crs(
@@ -1613,7 +1613,7 @@ class Geometry:
     ) -> Self:
         """Reproject coordinates to a target CRS.
         The source coordinate epoch is this geometry's own ``epoch`` metadata;
-        set it with ``set_epoch`` when the coordinate operation needs one.
+        assign it with ``with_epoch`` when the coordinate operation needs one.
         ``epoch`` here labels the *output* coordinate epoch.
 
         Parameters
@@ -1664,7 +1664,7 @@ class Geometry:
 
         See Also
         --------
-        set_crs : Declare/relabel the CRS *without* moving coordinates.
+        with_crs : Declare/relabel the CRS *without* moving coordinates.
 
         Examples
         --------
@@ -1706,7 +1706,7 @@ class Geometry:
     def to_polyline(self, *, precision: int = 5, drop_epoch: bool = False) -> str:
         """Encode the ``LineString`` or ``Point`` as Google polyline text (see
         `from_polyline`).
-        Each writer preserves all ordinates the format supports and rejects unsupported axes; remove geometry axes with `force_2d()`, `set_z(None)`, or `set_m(None)` before writing, or use `coords.select(...)` to choose a coordinate-view export layout.
+        Each writer preserves all ordinates the format supports and rejects unsupported axes; remove geometry axes with `force_2d()`, `with_coordinates(z=None)`, or `with_coordinates(m=None)` before writing, or use `coords.select(...)` to choose a coordinate-view export layout.
 
         Parameters
         ----------
@@ -1933,9 +1933,9 @@ class Geometry:
         If CRS-free coordinates have projected or other planar semantics, transform
         them or choose another format.
 
-        Each writer preserves all ordinates the format supports and rejects unsupported axes; remove geometry axes with `force_2d()`, `set_z(None)`, or `set_m(None)` before writing, or use `coords.select(...)` to choose a coordinate-view export layout.
+        Each writer preserves all ordinates the format supports and rejects unsupported axes; remove geometry axes with `force_2d()`, `with_coordinates(z=None)`, or `with_coordinates(m=None)` before writing, or use `coords.select(...)` to choose a coordinate-view export layout.
 
-        GeoJSON cannot represent M; drop it with ``set_m(None)`` (or ``force_2d()``).
+        GeoJSON cannot represent M; drop it with ``with_coordinates(m=None)`` (or ``force_2d()``).
 
         Parameters
         ----------
@@ -1952,7 +1952,7 @@ class Geometry:
         CRSError
             If the input carries a CRS outside the 2D/3D WGS84 longitude/latitude family.
         InvalidGeometryError
-            If input carries M ordinates; drop them with ``set_m(None)`` (or ``force_2d()``).
+            If input carries M ordinates; drop them with ``with_coordinates(m=None)`` (or ``force_2d()``).
         GeometryError
             If input carries a coordinate epoch and ``drop_epoch`` is false.
 
@@ -3830,40 +3830,6 @@ class Geometry:
         'POINT (1 2)'
         """
 
-    def set_z(self, z: _FloatScalarInput | None) -> Self:
-        """Set the Z ordinate at every vertex, or remove it. A numeric ``z`` writes
-        that Z at every vertex (replacing any existing Z); ``None`` removes the Z
-        ordinate. M passes through unchanged. To fill only the vertices that lack Z,
-        use force_3d; to drop to XY, use force_2d.
-
-        Parameters
-        ----------
-        z : float or None
-            Finite Z to assign at every vertex, or ``None`` to remove the Z ordinate.
-
-        Returns
-        -------
-        Geometry
-            The geometry with the new Z ordinate applied (same kind as the input).
-
-        Raises
-        ------
-        InvalidGeometryError
-            If ``z`` is not finite.
-
-        See Also
-        --------
-        set_m : Set or clear the M ordinate.
-        force_3d : Fill only the vertices that lack Z.
-
-        Examples
-        --------
-        >>> import gometry as gm
-        >>> arr = gm.GeometryArray([gm.Point(1, 2)])
-        >>> arr.set_z(30.0).to_wkt()[0]
-        'POINT Z (1 2 30)'
-        """
-
     def force_3d(self, z: _FloatScalarInput = 0.0) -> Self:
         """Make each geometry 3D, filling vertices that lack Z with ``z``. Vertices
         that already carry Z keep it; M passes through. The one obvious way to lift
@@ -3888,7 +3854,7 @@ class Geometry:
         See Also
         --------
         force_2d : Drop Z and M to plain XY.
-        set_z : Set the Z ordinate at every vertex (overwriting existing Z).
+        with_coordinates : Replace individual coordinate ordinates.
 
         Examples
         --------
@@ -4129,39 +4095,6 @@ class Geometry:
         (4, 4.0)
         """
 
-    def set_m(self, m: _FloatScalarInput | None) -> Self:
-        """Set the M ordinate at every vertex, or remove it. A numeric ``m`` writes
-        that M at every vertex (replacing any existing M); ``None`` removes the M
-        ordinate. Z passes through unchanged.
-
-        Parameters
-        ----------
-        m : float or None
-            Finite M to assign at every vertex, or ``None`` to remove the M ordinate.
-
-        Returns
-        -------
-        Geometry
-            The geometry with the new M ordinate applied (same kind as the input).
-
-        Raises
-        ------
-        InvalidGeometryError
-            If ``m`` is not finite.
-
-        See Also
-        --------
-        set_z : Set or clear the Z ordinate.
-        interpolate_m : Assign M by interpolating along the linework.
-
-        Examples
-        --------
-        >>> import gometry as gm
-        >>> arr = gm.GeometryArray([gm.Point(1, 2)])
-        >>> arr.set_m(5.0).to_wkt()[0]
-        'POINT M (1 2 5)'
-        """
-
     def to_wkt(
         self,
         *,
@@ -4171,7 +4104,7 @@ class Geometry:
     ) -> str:
         """Serialize to Well-Known Text.
 
-        Each writer preserves all ordinates the format supports and rejects unsupported axes; remove geometry axes with `force_2d()`, `set_z(None)`, or `set_m(None)` before writing, or use `coords.select(...)` to choose a coordinate-view export layout.
+        Each writer preserves all ordinates the format supports and rejects unsupported axes; remove geometry axes with `force_2d()`, `with_coordinates(z=None)`, or `with_coordinates(m=None)` before writing, or use `coords.select(...)` to choose a coordinate-view export layout.
 
         Parameters
         ----------
@@ -4222,7 +4155,7 @@ class Geometry:
     ) -> bytes:
         """Serialize to Well-Known Binary.
 
-        Each writer preserves all ordinates the format supports and rejects unsupported axes; remove geometry axes with `force_2d()`, `set_z(None)`, or `set_m(None)` before writing, or use `coords.select(...)` to choose a coordinate-view export layout.
+        Each writer preserves all ordinates the format supports and rejects unsupported axes; remove geometry axes with `force_2d()`, `with_coordinates(z=None)`, or `with_coordinates(m=None)` before writing, or use `coords.select(...)` to choose a coordinate-view export layout.
 
         Parameters
         ----------
@@ -7205,37 +7138,39 @@ class GeometryArray(Sequence[_GeometryT_co]):
             Python integers.
         """
     @overload
-    def set_coordinates(
+    def with_coordinates(
         self, coordinates: _CoordinateMatrix | Coordinates, /
     ) -> Self: ...
     @overload
-    def set_coordinates(
+    def with_coordinates(
         self,
         coordinates: None = None,
         /,
         *,
-        x: FloatColumn,
-        y: FloatColumn,
-        z: FloatColumn | None = None,
-        m: FloatColumn | None = None,
+        x: _FloatScalarInput | FloatColumn = ...,
+        y: _FloatScalarInput | FloatColumn = ...,
+        z: _FloatScalarInput | FloatColumn | None = ...,
+        m: _FloatScalarInput | FloatColumn | None = ...,
     ) -> Self:
-        """Return an array with the same topology and replacement coordinates.
+        """Return an array with selected coordinate ordinates replaced.
 
-        Pass one ``(N, dims)`` matrix (including a `Coordinates` view) or
-        explicit ``x=`` and ``y=`` columns. Missing rows contribute no input
-        coordinates and remain missing in the result.
+        Pass one ``(N, dims)`` matrix (including a `Coordinates` view), or
+        replace any of ``x=``, ``y=``, ``z=``, and ``m=`` by a scalar or a
+        column over the flattened coordinate sequence. Omitted ordinates are
+        preserved. ``z=None`` and ``m=None`` remove those dimensions; X and Y
+        cannot be removed. Missing rows contribute no coordinates and remain
+        missing. Matrix and column modes cannot be mixed. Calling without
+        arguments returns an unchanged value.
 
         Parameters
         ----------
         coordinates : sequence of float, optional
             Replacement ``(N, dims)`` coordinate matrix, including a
             `Coordinates` view.
-        x, y : sequence of float, optional
-            Replacement X and Y columns.
-        z, m : sequence of float, optional
-            Replacement Z and M columns when the array already has those axes.
-            Omitted axes are carried unchanged; ``None`` is not a clearing
-            sentinel.
+        x, y, z, m : float, sequence of float, or None, optional
+            Replace one ordinate by a scalar broadcast over vertices or a
+            column with one value per coordinate. Omitted ordinates are
+            preserved. ``None`` removes Z or M and is not valid for X or Y.
 
         Returns
         -------
@@ -7245,7 +7180,7 @@ class GeometryArray(Sequence[_GeometryT_co]):
         --------
         >>> import gometry as gm
         >>> arr = gm.GeometryArray([gm.LineString([(0, 0), (1, 1)])])
-        >>> arr.set_coordinates([(5, 5), (6, 6)]).to_wkt()
+        >>> arr.with_coordinates([(5, 5), (6, 6)]).to_wkt()
         ['LINESTRING (5 5, 6 6)']
         """
     def map_coordinates(
@@ -7656,7 +7591,7 @@ class GeometryArray(Sequence[_GeometryT_co]):
     ) -> list[str | None]:
         """Encode every ``LineString`` or ``Point`` row as Google polyline text (see
         `Geometry.to_polyline`).
-        Each writer preserves all ordinates the format supports and rejects unsupported axes; remove geometry axes with `force_2d()`, `set_z(None)`, or `set_m(None)` before writing, or use `coords.select(...)` to choose a coordinate-view export layout.
+        Each writer preserves all ordinates the format supports and rejects unsupported axes; remove geometry axes with `force_2d()`, `with_coordinates(z=None)`, or `with_coordinates(m=None)` before writing, or use `coords.select(...)` to choose a coordinate-view export layout.
 
         Parameters
         ----------
@@ -7694,9 +7629,9 @@ class GeometryArray(Sequence[_GeometryT_co]):
         >>> gm.GeometryArray([gm.LineString([(0, 0), (1, 1)])]).to_polyline()
         ['??_ibE_ibE']
         """
-    def set_epoch(self, epoch: float | None, *, overwrite: bool = False) -> Self:
+    def with_epoch(self, epoch: float | None, *, overwrite: bool = False) -> Self:
         """Declare (or clear) the array's coordinate epoch (see
-        `Geometry.set_epoch`). The CRS frame must admit an epoch. ``None``
+        `Geometry.with_epoch`). The CRS frame must admit an epoch. ``None``
         clears it; changing a present epoch needs ``overwrite=True``.
 
         Parameters
@@ -7724,13 +7659,13 @@ class GeometryArray(Sequence[_GeometryT_co]):
         --------
         >>> import gometry as gm
         >>> arr = gm.GeometryArray([gm.Point(-122.4, 37.8, crs=4326)])
-        >>> arr.set_epoch(2015.0).epoch
+        >>> arr.with_epoch(2015.0).epoch
         2015.0
         """
 
-    def set_crs(self, crs: CrsInput | None, *, overwrite: bool = False) -> Self:
+    def with_crs(self, crs: CrsInput | None, *, overwrite: bool = False) -> Self:
         """Relabel the CRS of all geometries without moving coordinates (see
-        `Geometry.set_crs`; replacing a different declared CRS requires
+        `Geometry.with_crs`; replacing a different declared CRS requires
         ``overwrite=True``).
 
         Parameters
@@ -7754,7 +7689,7 @@ class GeometryArray(Sequence[_GeometryT_co]):
         Examples
         --------
         >>> import gometry as gm
-        >>> gm.GeometryArray([gm.Point(1, 2)]).set_crs(4326).crs
+        >>> gm.GeometryArray([gm.Point(1, 2)]).with_crs(4326).crs
         CRS("EPSG:4326")
         """
     def to_crs(
@@ -7771,7 +7706,7 @@ class GeometryArray(Sequence[_GeometryT_co]):
     ) -> Self:
         """Reproject all geometries to a target CRS.
         The source coordinate epoch is the array's own ``epoch`` metadata
-        (stamp it with ``set_epoch`` first when the operation needs one);
+        (stamp it with ``with_epoch`` first when the operation needs one);
         ``epoch`` here labels the *output* coordinate epoch.
 
         Parameters
@@ -8300,9 +8235,9 @@ class GeometryArray(Sequence[_GeometryT_co]):
         If CRS-free coordinates have projected or other planar semantics, transform
         them or choose another format.
 
-        Each writer preserves all ordinates the format supports and rejects unsupported axes; remove geometry axes with `force_2d()`, `set_z(None)`, or `set_m(None)` before writing, or use `coords.select(...)` to choose a coordinate-view export layout.
+        Each writer preserves all ordinates the format supports and rejects unsupported axes; remove geometry axes with `force_2d()`, `with_coordinates(z=None)`, or `with_coordinates(m=None)` before writing, or use `coords.select(...)` to choose a coordinate-view export layout.
 
-        GeoJSON cannot represent M; drop it with ``set_m(None)`` (or ``force_2d()``).
+        GeoJSON cannot represent M; drop it with ``with_coordinates(m=None)`` (or ``force_2d()``).
 
         Parameters
         ----------
@@ -8319,7 +8254,7 @@ class GeometryArray(Sequence[_GeometryT_co]):
         CRSError
             If the input carries a CRS outside the 2D/3D WGS84 longitude/latitude family.
         InvalidGeometryError
-            If input carries M ordinates; drop them with ``set_m(None)`` (or ``force_2d()``).
+            If input carries M ordinates; drop them with ``with_coordinates(m=None)`` (or ``force_2d()``).
         GeometryError
             If input carries a coordinate epoch and ``drop_epoch`` is false.
 
@@ -10689,40 +10624,6 @@ class GeometryArray(Sequence[_GeometryT_co]):
         'POINT (1 2)'
         """
 
-    def set_z(self, z: float | None) -> Self:
-        """Set the Z ordinate at every vertex, or remove it. A numeric ``z`` writes
-        that Z at every vertex (replacing any existing Z); ``None`` removes the Z
-        ordinate. M passes through unchanged. To fill only the vertices that lack Z,
-        use force_3d; to drop to XY, use force_2d.
-
-        Parameters
-        ----------
-        z : float or None
-            Finite Z to assign at every vertex, or ``None`` to remove the Z ordinate.
-
-        Returns
-        -------
-        GeometryArray
-            One result per row (kinds preserved).
-
-        Raises
-        ------
-        InvalidGeometryError
-            If ``z`` is not finite.
-
-        See Also
-        --------
-        set_m : Set or clear the M ordinate.
-        force_3d : Fill only the vertices that lack Z.
-
-        Examples
-        --------
-        >>> import gometry as gm
-        >>> arr = gm.GeometryArray([gm.Point(1, 2)])
-        >>> arr.set_z(30.0).to_wkt()[0]
-        'POINT Z (1 2 30)'
-        """
-
     def force_3d(self, z: float = 0.0) -> Self:
         """Make each geometry 3D, filling vertices that lack Z with ``z``. Vertices
         that already carry Z keep it; M passes through. The one obvious way to lift
@@ -10746,7 +10647,7 @@ class GeometryArray(Sequence[_GeometryT_co]):
         See Also
         --------
         force_2d : Drop Z and M to plain XY.
-        set_z : Set the Z ordinate at every vertex (overwriting existing Z).
+        with_coordinates : Replace individual coordinate ordinates.
 
         Examples
         --------
@@ -11137,39 +11038,6 @@ class GeometryArray(Sequence[_GeometryT_co]):
         (4, 4.0)
         """
 
-    def set_m(self, m: float | None) -> Self:
-        """Set the M ordinate at every vertex, or remove it. A numeric ``m`` writes
-        that M at every vertex (replacing any existing M); ``None`` removes the M
-        ordinate. Z passes through unchanged.
-
-        Parameters
-        ----------
-        m : float or None
-            Finite M to assign at every vertex, or ``None`` to remove the M ordinate.
-
-        Returns
-        -------
-        GeometryArray
-            One result per row (kinds preserved).
-
-        Raises
-        ------
-        InvalidGeometryError
-            If ``m`` is not finite.
-
-        See Also
-        --------
-        set_z : Set or clear the Z ordinate.
-        interpolate_m : Assign M by interpolating along the linework.
-
-        Examples
-        --------
-        >>> import gometry as gm
-        >>> arr = gm.GeometryArray([gm.Point(1, 2)])
-        >>> arr.set_m(5.0).to_wkt()[0]
-        'POINT M (1 2 5)'
-        """
-
     def to_wkt(
         self,
         *,
@@ -11179,7 +11047,7 @@ class GeometryArray(Sequence[_GeometryT_co]):
     ) -> list[str | None]:
         """Serialize to Well-Known Text.
 
-        Each writer preserves all ordinates the format supports and rejects unsupported axes; remove geometry axes with `force_2d()`, `set_z(None)`, or `set_m(None)` before writing, or use `coords.select(...)` to choose a coordinate-view export layout.
+        Each writer preserves all ordinates the format supports and rejects unsupported axes; remove geometry axes with `force_2d()`, `with_coordinates(z=None)`, or `with_coordinates(m=None)` before writing, or use `coords.select(...)` to choose a coordinate-view export layout.
 
         Parameters
         ----------
@@ -11230,7 +11098,7 @@ class GeometryArray(Sequence[_GeometryT_co]):
     ) -> list[bytes | None]:
         """Serialize to Well-Known Binary.
 
-        Each writer preserves all ordinates the format supports and rejects unsupported axes; remove geometry axes with `force_2d()`, `set_z(None)`, or `set_m(None)` before writing, or use `coords.select(...)` to choose a coordinate-view export layout.
+        Each writer preserves all ordinates the format supports and rejects unsupported axes; remove geometry axes with `force_2d()`, `with_coordinates(z=None)`, or `with_coordinates(m=None)` before writing, or use `coords.select(...)` to choose a coordinate-view export layout.
 
         Parameters
         ----------
@@ -11402,9 +11270,10 @@ class Groups(Sequence[_GroupValuesT_co], Generic[_GroupValuesT_co]):
 
         Returns
         -------
-        numpy.ndarray or GeometryArray or CellArray
-            The selected flat values window. Numeric values are read-only int64;
-            geometry and cell values retain their immutable array types.
+        array-like
+            The selected flat values window selected by the producer: a read-only
+            int64 ndarray, `GeometryArray`, or `CellArray`. Its concrete type
+            matches the `Groups` type parameter.
         """
     @property
     def offsets(self) -> npt.NDArray[np.int64]:
@@ -12749,7 +12618,7 @@ class CRS:
 
         Converts the CRS definition by removing the ellipsoidal-height axis;
         it does not add or remove Z ordinates on geometries — use
-        `force_2d`/`force_3d` or `set_z` for that.
+        `force_2d`/`force_3d` or `with_coordinates(z=...)` for that.
 
         Parameters
         ----------
@@ -12770,7 +12639,7 @@ class CRS:
         """Return the 3D form of this CRS (adds an ellipsoidal height axis).
 
         Converts the CRS definition only; it does not add or remove Z
-        ordinates on geometries — use `force_2d`/`force_3d` or `set_z` for
+        ordinates on geometries — use `force_2d`/`force_3d` or `with_coordinates(z=...)` for
         that.
 
         Parameters
@@ -20591,7 +20460,7 @@ def to_feature(
     drop_epoch: bool = False,
 ) -> GeoJsonFeature:
     """Build a GeoJSON Feature mapping from a geometry and side data.
-    Each writer preserves all ordinates the format supports and rejects unsupported axes; remove geometry axes with `force_2d()`, `set_z(None)`, or `set_m(None)` before writing, or use `coords.select(...)` to choose a coordinate-view export layout.
+    Each writer preserves all ordinates the format supports and rejects unsupported axes; remove geometry axes with `force_2d()`, `with_coordinates(z=None)`, or `with_coordinates(m=None)` before writing, or use `coords.select(...)` to choose a coordinate-view export layout.
 
     Parameters
     ----------
@@ -20623,7 +20492,7 @@ def to_feature(
     InvalidGeometryError
         If the geometry has an M ordinate or coordinates outside the WGS84
         longitude/latitude domain. GeoJSON Feature mappings have no
-        representation for M; drop it with ``set_m(None)`` (or ``force_2d()``).
+        representation for M; drop it with ``with_coordinates(m=None)`` (or ``force_2d()``).
     CRSError
         If a CRS-tagged geometry is not in the WGS84 lon/lat family.
 
@@ -20661,7 +20530,7 @@ def to_feature_collection(
     drop_epoch: bool = False,
 ) -> GeoJsonFeatureCollection:
     """Build a GeoJSON FeatureCollection from geometries and aligned side data.
-    Each writer preserves all ordinates the format supports and rejects unsupported axes; remove geometry axes with `force_2d()`, `set_z(None)`, or `set_m(None)` before writing, or use `coords.select(...)` to choose a coordinate-view export layout.
+    Each writer preserves all ordinates the format supports and rejects unsupported axes; remove geometry axes with `force_2d()`, `with_coordinates(z=None)`, or `with_coordinates(m=None)` before writing, or use `coords.select(...)` to choose a coordinate-view export layout.
 
     Parameters
     ----------
@@ -20698,7 +20567,7 @@ def to_feature_collection(
     InvalidGeometryError
         If a geometry has an M ordinate or coordinates outside the WGS84
         longitude/latitude domain. GeoJSON Feature mappings cannot represent M;
-        drop it with ``set_m(None)`` (or ``force_2d()``).
+        drop it with ``with_coordinates(m=None)`` (or ``force_2d()``).
     CRSError
         If a CRS-tagged geometry is not EPSG:4326 longitude/latitude.
 

@@ -211,8 +211,8 @@ def _roundtrip_self_output(label: str, g: gm.Geometry) -> None:
         if geojson is None:
             return
         gj = gm.from_geojson(geojson)
-        left = g if g.crs is None else g.set_crs(None, overwrite=True)
-        right = gj if gj.crs is None else gj.set_crs(None, overwrite=True)
+        left = g if g.crs is None else g.with_crs(None, overwrite=True)
+        right = gj if gj.crs is None else gj.with_crs(None, overwrite=True)
         assert gm.equals(left, right), f'{label}/geojson'
 
     # Pickle and Arrow must reproduce exactly (including CRS + epoch).

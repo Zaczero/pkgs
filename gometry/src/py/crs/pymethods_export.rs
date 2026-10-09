@@ -260,7 +260,7 @@ impl PyCrs {
     ///
     /// Converts the CRS definition by removing the ellipsoidal-height axis;
     /// it does not add or remove Z ordinates on geometries — use
-    /// `force_2d`/`force_3d` or `set_z` for that.
+    /// `force_2d`/`force_3d` or `with_coordinates(z=...)` for that.
     ///
     /// Parameters
     /// ----------
@@ -287,7 +287,7 @@ impl PyCrs {
     /// Return the 3D form of this CRS (adds an ellipsoidal height axis).
     ///
     /// Converts the CRS definition only; it does not add or remove Z
-    /// ordinates on geometries — use `force_2d`/`force_3d` or `set_z` for
+    /// ordinates on geometries — use `force_2d`/`force_3d` or `with_coordinates(z=...)` for
     /// that.
     ///
     /// Parameters

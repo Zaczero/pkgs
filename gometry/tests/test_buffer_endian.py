@@ -1,7 +1,7 @@
 """Non-native-endian numeric buffer ingest must not silently corrupt values.
 
 D03: f64 buffers (`>f8` on little-endian) through the typed-buffer fast paths
-used by `points`, `set_coordinates`, and `crs_transform`.
+used by `points`, `with_coordinates`, and `crs_transform`.
 D04: u64 id buffers for CellArray / H3 vertex / H3 edge.
 D01: Arrow stream `read_all` errors must propagate (no silent empty array).
 """
@@ -35,13 +35,13 @@ def test_big_endian_float64_points_match_native() -> None:
     assert be.x == le.x and be.y == le.y
 
 
-def test_big_endian_float64_set_coordinates_and_crs_transform() -> None:
+def test_big_endian_float64_with_coordinates_and_crs_transform() -> None:
     x_be = np.array([1.0], dtype='>f8')
     y_be = np.array([2.0], dtype='>f8')
     x_le = np.array([1.0], dtype='<f8')
     y_le = np.array([2.0], dtype='<f8')
 
-    pt = gm.Point(0, 0).set_coordinates(x=x_be, y=y_be)
+    pt = gm.Point(0, 0).with_coordinates(x=x_be, y=y_be)
     assert pt.x == 1.0 and pt.y == 2.0
 
     out_be = gm.crs_transform(4326, 4326, x_be, y_be)

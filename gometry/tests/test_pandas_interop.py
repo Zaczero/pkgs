@@ -198,7 +198,7 @@ def test_extension_array_take_allow_fill_custom_fill(points: gm.GeometryArray) -
 
 
 def test_extension_array_take_allow_fill_custom_fill_from_empty_source() -> None:
-    source = gm.GeometryArray([], crs=4326).set_epoch(2020.0)
+    source = gm.GeometryArray([], crs=4326).with_epoch(2020.0)
     data = GeometryExtensionArray(source)
     fill = gm.Point(9, 9, crs=4326, epoch=2020.0)
 
@@ -357,7 +357,7 @@ def test_core_missing_rows_are_first_class() -> None:
 def test_pandas_nullable_packed_roundtrip_preserves_payload_rows(
     rows: list[object],
 ) -> None:
-    values = gm.GeometryArray(rows, crs=4326).set_epoch(2020.0)
+    values = gm.GeometryArray(rows, crs=4326).with_epoch(2020.0)
     restored = from_pandas(to_pandas(values))
     assert restored.to_wkt(drop_epoch=True) == values.to_wkt(drop_epoch=True)
     assert restored.is_missing.tolist() == [False, True, False]
@@ -366,7 +366,7 @@ def test_pandas_nullable_packed_roundtrip_preserves_payload_rows(
 
 
 def test_empty_selection_take_and_all_missing_mutation_preserve_frame() -> None:
-    arr = gm.GeometryArray([gm.Point(0, 0, crs=4326)]).set_epoch(2020.0)
+    arr = gm.GeometryArray([gm.Point(0, 0, crs=4326)]).with_epoch(2020.0)
     series = to_pandas(arr)
 
     selected = series[np.array([False])]
@@ -418,7 +418,7 @@ def test_from_geopandas_roundtrip(points: gm.GeometryArray) -> None:
 
 
 def test_to_geopandas_rejects_epoch_loss_without_flag(points: gm.GeometryArray) -> None:
-    epoch_points = points.set_epoch(2020.0)
+    epoch_points = points.with_epoch(2020.0)
     with pytest.raises(ValueError, match='drop_epoch=True'):
         epoch_points.to_geopandas()
     restored = gm.from_geopandas(epoch_points.to_geopandas(drop_epoch=True))

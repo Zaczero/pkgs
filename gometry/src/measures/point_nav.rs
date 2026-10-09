@@ -50,7 +50,7 @@ fn require_geographic_model(crs: Option<&str>, operation: MetricOp) -> PyResult<
     match crs::metric_model(crs)? {
         model @ crs::MetricModel::Geodesic { .. } => Ok(model),
         crs::MetricModel::Planar { .. } => Err(CRSError::new_err(format!(
-            "{operation} requires a geographic CRS; use set_crs(...) or to_crs(...) to attach one"
+            "{operation} requires a geographic CRS; use with_crs(...) or to_crs(...) to attach one"
         ))),
     }
 }

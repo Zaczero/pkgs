@@ -906,7 +906,7 @@ impl PyGeometry {
     /// New geometry with an explicit CRS and coordinate epoch (and a fresh
     /// bounds cache). Prefer [`with_shape`](Self::with_shape) when the CRS and
     /// epoch are inherited from an existing geometry.
-    pub(crate) fn with_epoch(
+    pub(crate) fn new_with_crs_epoch(
         shape: impl crate::geometry::IntoSharedShape,
         crs: Option<Crs>,
         epoch: Option<f64>,

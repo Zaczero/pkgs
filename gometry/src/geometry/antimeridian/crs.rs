@@ -198,7 +198,7 @@ pub(crate) fn antimeridian_frame(
         TopologyDomain::Geographic(frame) => Ok(frame),
         TopologyDomain::Cartesian if frame.crs_ref().is_none() => Ok(GeographicFrame::crs84()),
         TopologyDomain::Cartesian => Err(CrsError::invalid(format!(
-            "{op} requires a geographic CRS; use set_crs(...) or to_crs(...) to attach one"
+            "{op} requires a geographic CRS; use with_crs(...) or to_crs(...) to attach one"
         ))),
     }
 }

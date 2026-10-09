@@ -206,7 +206,7 @@ def test_chart_line_cache_isolated_across_frame_retag() -> None:
     original = gm.LineString(coordinates, crs=4326)
     # Warm WGS84 before the metadata-only retag shares the immutable shape.
     original.line_interpolate(500_000.0)
-    retagged = original.set_crs(4267, overwrite=True)
+    retagged = original.with_crs(4267, overwrite=True)
     fresh = gm.LineString(coordinates, crs=4267)
     assert (
         retagged.line_interpolate(500_000.0).to_wkb()

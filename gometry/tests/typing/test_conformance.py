@@ -20,7 +20,7 @@ static type.
 from __future__ import annotations
 
 import types
-from typing import TYPE_CHECKING, Any, TypeVar, assert_type, cast
+from typing import TYPE_CHECKING, Any, TypeVar, assert_type, cast, reveal_type
 
 import gometry as gm
 import gometry._types as sht
@@ -581,7 +581,7 @@ assert_type(
 buffered = POINTS.buffer(1.0)[0]
 assert buffered is not None
 assert_type(buffered.area, float)
-assert_type(gm.require(POINTS.set_crs(4326), crs=4326), gm.GeometryArray[gm.Point])
+assert_type(gm.require(POINTS.with_crs(4326), crs=4326), gm.GeometryArray[gm.Point])
 assert_type(gm.require(POINTS), gm.GeometryArray[gm.Point])
 assert_type(gm.require(POINT), gm.Point)
 assert_type(gm.require([POINT, None]), gm.GeometryArray[gm.Point | None])
@@ -642,10 +642,24 @@ if TYPE_CHECKING:
 
     float_column: sht.FloatColumn = [1.0, 2.0]
     assert_type(gm.Point(np.float32(1.0), np.int64(2)), gm.Point)
+    reveal_type(POINT.with_coordinates(z=np.float32(3.0)))
+    reveal_type(POINT.with_coordinates(None, z=np.float32(3.0)))
+    reveal_type(POINTS.with_coordinates(x=float_column))
+    nullable_points: gm.GeometryArray[gm.Point | None] = gm.GeometryArray([POINT, None])
+    reveal_type(nullable_points.with_coordinates(z=None))
     assert_type(
-        gm.Point(1.0, 2.0).set_coordinates(np.zeros((1, 2), dtype=np.float32)),
+        gm.Point(1.0, 2.0).with_coordinates(np.zeros((1, 2), dtype=np.float32)),
         gm.Point,
     )
+    assert_type(POINT.with_coordinates(z=np.float32(3.0)), gm.Point)
+    assert_type(POINT.with_coordinates(x=np.float32(1.0)), gm.Point)
+    assert_type(POINTS.with_coordinates(z=np.float32(3.0)), gm.GeometryArray[gm.Point])
+    assert_type(
+        nullable_points.with_coordinates(z=None),
+        gm.GeometryArray[gm.Point | None],
+    )
+    assert_type(POINT.with_crs(4326), gm.Point)
+    assert_type(POINTS.with_epoch(2020.0), gm.GeometryArray[gm.Point])
     assert_type(POINTS[np.int64(0)], gm.Point)
     integer_index_0d: np.ndarray[tuple[()], np.dtype[np.int64]] = np.array(
         0, dtype=np.int64
@@ -986,7 +1000,7 @@ assert_type(POINTS.sort_by_spatial_key(curve='morton'), gm.GeometryArray[gm.Poin
 assert_type(LINE.segmentize(0.5), gm.LineString)
 assert_type(LINE.segmentize(fraction=0.5), gm.LineString)
 assert_type(LINE.segmentize(0.5, path='geodesic'), gm.LineString)
-assert_type(LINE.segmentize(fraction=0.5, path='rhumb'), gm.LineString)
+assert_type(LINE.with_crs(4326).segmentize(fraction=0.5, path='rhumb'), gm.LineString)
 assert_type(LINES.segmentize(0.5), gm.GeometryArray[gm.LineString])
 assert_type(LINES.segmentize(fraction=0.5), gm.GeometryArray[gm.LineString])
 assert_type(LINES.segmentize(0.5, path='geodesic'), gm.GeometryArray[gm.LineString])
@@ -1000,12 +1014,17 @@ assert_type(LINES.line_interpolate(at=0.5), gm.GeometryArray[gm.Point])
 assert_type(LINE.line_interpolate([0.25, 0.75]), gm.GeometryArray[gm.Point])
 assert_type(LINE.line_interpolate(count=3), gm.GeometryArray[gm.Point])
 assert_type(
-    LINE.line_interpolate(count=3, unit='meters'),
+    LINE.with_crs(3857).line_interpolate(count=3, unit='meters'),
     gm.GeometryArray[gm.Point],
 )
 assert_type(MEASURED_LINE.line_interpolate(5.0), gm.Point)
 assert_type(LINE.line_locate(POINT), float)
-assert_type(LINE.line_locate(POINT, normalized=True, unit='meters'), float)
+assert_type(
+    LINE.with_crs(3857).line_locate(
+        POINT.with_crs(3857), normalized=True, unit='meters'
+    ),
+    float,
+)
 assert_type(MEASURED_LINE.line_locate(POINT), float)
 assert_type(LINE.line_substring(0.25, 0.75), gm.LineString | gm.Point)
 assert_type(
@@ -1035,7 +1054,7 @@ assert_type(
     gm.GeometryArray[gm.LineString | gm.Point],
 )
 assert_type(
-    LINES.line_substring(0.25, 0.75, normalized=True, unit='meters'),
+    LINES.with_crs(3857).line_substring(0.25, 0.75, normalized=True, unit='meters'),
     gm.GeometryArray[gm.LineString | gm.Point],
 )
 assert_type(np.asarray(POINTS.coords), npt.NDArray[np.float64])

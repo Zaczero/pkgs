@@ -114,10 +114,10 @@ def test_coverage_union_keeps_point_touching_parts_separate() -> None:
 
 def test_coverage_union_mixed_axes_stays_homogeneous_in_sparse_path() -> None:
     xy = gm.box(0, 0, 1, 1)
-    xyz = gm.box(3, 0, 4, 1).set_z(7.0)
-    xym = gm.box(6, 0, 7, 1).set_m(9.0)
-    xyzm = gm.box(9, 0, 10, 1).set_z(11.0).set_m(12.0)
-    xyz_second = gm.box(12, 0, 13, 1).set_z(8.0)
+    xyz = gm.box(3, 0, 4, 1).with_coordinates(z=7.0)
+    xym = gm.box(6, 0, 7, 1).with_coordinates(m=9.0)
+    xyzm = gm.box(9, 0, 10, 1).with_coordinates(z=11.0, m=12.0)
+    xyz_second = gm.box(12, 0, 13, 1).with_coordinates(z=8.0)
     explicit_empty_xy = gm.from_wkt('MULTIPOLYGON (EMPTY, ((0 0, 1 0, 1 1, 0 1, 0 0)))')
     explicit_empty_xyz = gm.from_wkt(
         'MULTIPOLYGON Z (EMPTY, ((3 0 7, 4 0 8, 4 1 9, 3 1 10, 3 0 7)))'
@@ -510,7 +510,7 @@ def test_coverage_simplify_preserves_topology() -> None:
     assert sum(g.area for g in out) == pytest.approx(sum(g.area for g in arr), rel=0.1)
     pinned = gm.coverage_simplify(arr, 0.5, simplify_boundary=False)
     assert gm.coverage_is_valid(pinned)
-    measured = gm.GeometryArray([g.set_z(1.0) for g in grid_rows()])
+    measured = gm.GeometryArray([g.with_coordinates(z=1.0) for g in grid_rows()])
     carried = gm.coverage_simplify(measured, 0.1)
     assert all(g.has_z for g in carried)
     assert all(z == 1.0 for geom in carried for z in geom.coords.z)
@@ -703,8 +703,8 @@ def test_coverage_clean_publishes_shared_bits_and_source_ordinates() -> None:
     import numpy as np
 
     rows = gm.GeometryArray([
-        gm.box(0, 0, 1.2, 1).set_z(7.0).set_m(11.0),
-        gm.box(1, 0, 2, 1).set_z(7.0).set_m(11.0),
+        gm.box(0, 0, 1.2, 1).with_coordinates(z=7.0, m=11.0),
+        gm.box(1, 0, 2, 1).with_coordinates(z=7.0, m=11.0),
     ])
     out = gm.coverage_clean(rows)
     assert all(geometry.coordinate_axes == 'XYZM' for geometry in out)
@@ -725,7 +725,7 @@ def test_coverage_clean_publishes_shared_bits_and_source_ordinates() -> None:
 
     mixed = gm.coverage_clean(
         gm.GeometryArray([
-            gm.box(0, 0, 1.2, 1).set_z(5.0),
+            gm.box(0, 0, 1.2, 1).with_coordinates(z=5.0),
             gm.box(1, 0, 2, 1),
         ])
     )

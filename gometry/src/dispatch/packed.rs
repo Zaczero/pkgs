@@ -77,11 +77,6 @@ pub(crate) enum PackedUnary {
     Force3d {
         z_fill: f64,
     },
-    /// `set_z` / `set_m` (which ordinate comes from the [`Operation`]).
-    SetOrdinate {
-        value: Option<f64>,
-        overwrite: bool,
-    },
     Quantize {
         precision: i32,
     },
@@ -403,12 +398,6 @@ pub(crate) fn try_unary_packed_array(
         (Operation::Force3d, PackedUnary::Force3d { z_fill }) => {
             Some(array.force_3d_unary_packed(py, *z_fill))
         },
-        (Operation::SetZ, PackedUnary::SetOrdinate { value, overwrite }) => {
-            Some(array.set_z_unary_packed(py, *value, *overwrite))
-        },
-        (Operation::SetM, PackedUnary::SetOrdinate { value, overwrite }) => {
-            Some(array.set_m_unary_packed(py, *value, *overwrite))
-        },
         (Operation::Quantize, PackedUnary::Quantize { precision }) => {
             Some(array.quantize_unary_packed(py, *precision))
         },
@@ -558,7 +547,7 @@ fn linref_point_between_packed_inner(
             crate::crs::ensure_geographic_coordseq_in_frame(*frame, &first_line)
                 .map_err(|error| (0, error))?;
         }
-        let rows = crate::crs::with_geographic_coordseq_metric_at(crs, state, |metric| {
+        crate::crs::with_geographic_coordseq_metric_at(crs, state, |metric| {
             let rows = (0..len)
                 .map(|row| {
                     let line = GeometryArrayStorage::line_view(coords, offsets, row_map, row);
@@ -576,8 +565,7 @@ fn linref_point_between_packed_inner(
                 .collect_rows();
             Ok(rows)
         })
-        .map_err(|error| (0, error))?;
-        rows
+        .map_err(|error| (0, error))?
     } else {
         (0..len)
             .map(|row| {
@@ -634,7 +622,7 @@ fn linref_substring_packed_inner(
             crate::crs::ensure_geographic_coordseq_in_frame(*frame, &first_line)
                 .map_err(|error| (0, error))?;
         }
-        let rows = crate::crs::with_geographic_coordseq_metric_at(crs, state, |metric| {
+        crate::crs::with_geographic_coordseq_metric_at(crs, state, |metric| {
             let rows = (0..len)
                 .map(|row| {
                     let line = GeometryArrayStorage::line_view(coords, offsets, row_map, row);
@@ -653,8 +641,7 @@ fn linref_substring_packed_inner(
                 .collect_rows();
             Ok(rows)
         })
-        .map_err(|error| (0, error))?;
-        rows
+        .map_err(|error| (0, error))?
     } else {
         (0..len)
             .map(|row| {

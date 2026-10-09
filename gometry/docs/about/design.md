@@ -178,8 +178,18 @@ so `CRS` is **unhashable** (`hash(CRS(...))` raises `TypeError`). Use
 ## CRS and candidate boundaries
 
 CRS metadata, precision controls, edge models, and coverage rules are explicit
-inputs. [`set_crs`][gometry.Geometry.set_crs] declares existing coordinates, [`to_crs`][gometry.Geometry.to_crs] transforms them, and
+inputs. [`with_crs`][gometry.Geometry.with_crs] declares existing coordinates, [`to_crs`][gometry.Geometry.to_crs] transforms them, and
 metric behavior follows the frame described in [CRS, units & measurement](../guide/crs.md).
+
+## Copy-returning replacements
+
+Read geometry state through properties and replace immutable state with
+`with_<field>` methods: [`with_crs`][gometry.Geometry.with_crs] and
+[`with_epoch`][gometry.Geometry.with_epoch] update metadata, while
+[`with_coordinates`][gometry.Geometry.with_coordinates] replaces selected
+coordinate ordinates. `to_<format>` transforms or serializes, `from_<format>`
+parses, and [`force_2d`][gometry.Geometry.force_2d] /
+[`force_3d`][gometry.Geometry.force_3d] project dimensions.
 
 Spatial indexes expose bounding-box candidates and exact predicate queries; grid
 covers return typed cell arrays and exact membership remains a predicate on the

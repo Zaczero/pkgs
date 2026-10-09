@@ -263,7 +263,7 @@ def test_union_all_splits_antimeridian_like_binary() -> None:
     """N-ary union_all must not keep the false-middle planar box of a
     geographic antimeridian-crossing polygon; match binary overlay's split.
     """
-    cross = gm.from_wkt('POLYGON ((170 -5, -170 -5, -170 5, 170 5, 170 -5))').set_crs(
+    cross = gm.from_wkt('POLYGON ((170 -5, -170 -5, -170 5, 170 5, 170 -5))').with_crs(
         4326
     )
     other = gm.Polygon([(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)], crs=4326)

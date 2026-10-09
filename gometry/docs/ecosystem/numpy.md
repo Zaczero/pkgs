@@ -92,14 +92,17 @@ same row formats as the array constructor.
 
 ## Coordinate matrices
 
-[`Geometry.set_coordinates`][gometry.Geometry.set_coordinates] and
-[`GeometryArray.set_coordinates`][gometry.GeometryArray.set_coordinates] accept
+[`Geometry.with_coordinates`][gometry.Geometry.with_coordinates] and
+[`GeometryArray.with_coordinates`][gometry.GeometryArray.with_coordinates] accept
 one rank-2 coordinate matrix. Its shape is `(N, 2)` for XY, `(N, 3)` for XYZ
 or XYM, or `(N, 4)` for XYZM, and `N` must match the receiver's coordinate
 count (or the flattened present-row count for an array). The matrix width must
 match the receiver's axes. A rank other than 2, an unsupported width, or a
 row-count mismatch raises an error. The matrix is converted to native float64
 values, so this is a validated replacement input rather than a zero-copy view.
+Keyword columns can instead replace selected ordinates; their scalar-broadcast,
+flattened ordering, omission, and dimension-removal rules are described in
+[Z and M under operations](../guide/geometry.md#z-m-under-operations).
 
 ## The geometry ↔ object-array bridge
 

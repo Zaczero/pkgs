@@ -337,7 +337,7 @@ pub(crate) fn build_polygon(
     let shell = Ring::closed_coordseq(shell_coords)?;
     // Rings must share one axes layout at construction (same rule as WKT/WKB
     // writers via `require_serializable_axes`) — never admit mixed XY/XYZ that
-    // would invent Z/M on serialize. Promote with force_3d/set_m first.
+    // would invent Z/M on serialize. Promote with force_3d/with_coordinates(m=...) first.
     let holes = match holes {
         Some(value) => crate::collect_py_iter(value, |item| {
             Ok(Ring::closed_coordseq(coordinate_vertices(
@@ -1271,7 +1271,7 @@ pub(crate) fn build_geometry_collection(
             },
         )
         .collect();
-    Ok(PyGeometry::with_epoch(
+    Ok(PyGeometry::new_with_crs_epoch(
         Shape::geometry_collection(items)?,
         frame.crs_owned(),
         frame.epoch(),

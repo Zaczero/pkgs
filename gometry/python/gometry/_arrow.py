@@ -165,7 +165,7 @@ def _extension_type_from_storage(
         if crs is None:
             raise _geoarrow_parse_error(
                 'invalid GeoArrow extension metadata: a coordinate epoch requires '
-                'a CRS; attach one with crs= (or set_crs(...)) before tagging an epoch'
+                'a CRS; attach one with crs= (or with_crs(...)) before tagging an epoch'
             )
         metadata['epoch'] = epoch
 

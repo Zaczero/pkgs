@@ -83,7 +83,7 @@ def test_array_to_wkb_ewkb_preserves_srid_endian_axes_and_missingness() -> None:
         [
             gm.Point(1.0, 2.0, z=3.0, m=4.0),
             None,
-            gm.LineString([(5.0, 6.0, 7.0), (8.0, 9.0, 10.0)]).set_m(11.0),
+            gm.LineString([(5.0, 6.0, 7.0), (8.0, 9.0, 10.0)]).with_coordinates(m=11.0),
         ],
         crs=4326,
     )

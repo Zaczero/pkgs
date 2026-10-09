@@ -727,7 +727,7 @@ def test_ordinary_geographic_bounds_preserve_endpoint_bits_through_retagging() -
 
     untagged = gm.GeometryArray([gm.LineString([(170.0, 0.0), (-170.0, 10.0)])])
     assert untagged.total_bounds == (-170.0, 0.0, 170.0, 10.0)
-    retagged = untagged.set_crs(4326)
+    retagged = untagged.with_crs(4326)
     assert tuple(retagged.bounds[0]) == (170.0, 0.0, -170.0, 10.0)
     assert retagged.total_bounds == (170.0, 0.0, -170.0, 10.0)
 
@@ -777,10 +777,10 @@ def test_crosses_antimeridian_matches_split_frame() -> None:
 def test_crosses_antimeridian_agrees_across_crs_and_array_lanes(
     geometry: gm.Geometry, crs: int | None
 ) -> None:
-    geometry = geometry.set_crs(crs)
+    geometry = geometry.with_crs(crs)
     expected = geometry.crosses_antimeridian
     assert gm.GeometryArray([geometry]).crosses_antimeridian.tolist() == [expected]
-    assert geometry.set_crs(4326).crosses_antimeridian is expected
+    assert geometry.with_crs(4326).crosses_antimeridian is expected
 
 
 def test_split_antimeridian_gates() -> None:
@@ -853,7 +853,7 @@ def test_split_antimeridian_exact_world_band_and_xy_pole() -> None:
     cap = gm.Polygon([(-45, 40), (45, 40), (135, 40), (-135, 40)], crs=4326)
     fixed = cap.split_antimeridian()
     assert gm.contains(cap, gm.Point(0, 89, crs=4326))
-    assert gm.contains(fixed.set_crs(None), gm.Point(0, 89))
+    assert gm.contains(fixed.with_crs(None), gm.Point(0, 89))
 
 
 _RADIAN_CRS = (
@@ -1908,11 +1908,11 @@ def test_geographic_validation_and_repair_use_normalized_topology() -> None:
 
     # CRS re-tagging shares the frozen coordinates. A cached planar verdict
     # must never leak into the geographic frame, or vice versa.
-    assert planar.set_crs(4326).is_valid
-    assert not annulus.set_crs(None).is_valid
+    assert planar.with_crs(4326).is_valid
+    assert not annulus.with_crs(None).is_valid
     planar_rows = gm.GeometryArray([planar])
     np.testing.assert_array_equal(planar_rows.is_valid, [False])
-    np.testing.assert_array_equal(planar_rows.set_crs(4326).is_valid, [True])
+    np.testing.assert_array_equal(planar_rows.with_crs(4326).is_valid, [True])
 
     repaired = annulus.repair()
     report_repaired = annulus.repair()

@@ -673,7 +673,7 @@ where
                     index,
                     format!(
                         "Polygon rings must share one coordinate axes layout for serialization; \
-                         got {} and {} — promote with force_3d/set_m first",
+                         got {} and {} — promote with force_3d/with_coordinates(m=...) first",
                         prev.as_str(),
                         member.as_str(),
                     )

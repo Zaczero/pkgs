@@ -24,7 +24,7 @@
 macro_rules! writer_ordinate_policy {
     () => {
         "Each writer preserves all ordinates the format supports and rejects unsupported axes; \
-         remove geometry axes with `force_2d()`, `set_z(None)`, or `set_m(None)` before writing, \
+         remove geometry axes with `force_2d()`, `with_coordinates(z=None)`, or `with_coordinates(m=None)` before writing, \
          or use `coords.select(...)` to choose a coordinate-view export layout."
     };
 }

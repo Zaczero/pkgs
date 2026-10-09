@@ -140,10 +140,10 @@ impl PyPoint {
                 // no-op and route Z/M through axis-aware empty retags.
                 let mut empty = Shape::typed_empty(GeometryKind::Point, *axes);
                 if let ReplacePresence::Set(value) = z_edit {
-                    empty = empty.set_z(value, true)?;
+                    empty = empty.replace_z(value, true)?;
                 }
                 if let ReplacePresence::Set(value) = m_edit {
-                    empty = empty.set_m(value, true)?;
+                    empty = empty.replace_m(value, true)?;
                 }
                 match (x_edit, y_edit) {
                     (ReplacePresence::Unset, ReplacePresence::Unset) => empty,

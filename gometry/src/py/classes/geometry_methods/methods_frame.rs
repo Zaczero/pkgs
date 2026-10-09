@@ -80,10 +80,10 @@ impl PyGeometry {
     /// Examples
     /// --------
     /// >>> import gometry as gm
-    /// >>> gm.Point(1, 2).set_crs(4326).crs
+    /// >>> gm.Point(1, 2).with_crs(4326).crs
     /// CRS("EPSG:4326")
     #[pyo3(signature = (crs, *, overwrite = false))]
-    pub fn set_crs(&self, crs: &Bound<'_, PyAny>, overwrite: bool) -> PyResult<Typed> {
+    pub fn with_crs(&self, crs: &Bound<'_, PyAny>, overwrite: bool) -> PyResult<Typed> {
         let frame = FrameEdit::SetCrs {
             crs: parse_crs(Some(crs))?,
             overwrite,
@@ -96,9 +96,9 @@ impl PyGeometry {
     /// The epoch is the decimal year the coordinate set was observed
     /// (e.g. ``2020.0``). It supplies metadata to operations that use
     /// coordinate epochs; the CRS frame must admit an epoch.
-    /// ``set_epoch(None)`` clears it. Changing a present epoch to a different
+    /// ``with_epoch(None)`` clears it. Changing a present epoch to a different
     /// value requires ``overwrite=True`` (the silent-frame-change guard, like
-    /// ``set_crs``).
+    /// ``with_crs``).
     ///
     /// Parameters
     /// ----------
@@ -124,10 +124,10 @@ impl PyGeometry {
     /// Examples
     /// --------
     /// >>> import gometry as gm
-    /// >>> gm.Point(-122.4, 37.8, crs=4326).set_epoch(2020.0).epoch
+    /// >>> gm.Point(-122.4, 37.8, crs=4326).with_epoch(2020.0).epoch
     /// 2020.0
     #[pyo3(signature = (epoch, *, overwrite = false))]
-    pub fn set_epoch(&self, epoch: Option<&Bound<'_, PyAny>>, overwrite: bool) -> PyResult<Typed> {
+    pub fn with_epoch(&self, epoch: Option<&Bound<'_, PyAny>>, overwrite: bool) -> PyResult<Typed> {
         let epoch = coordinate_epoch_option("epoch", epoch)?;
         let frame = FrameEdit::SetEpoch { epoch, overwrite }.apply(&self.frame)?;
         Ok(Typed(self.retag_frame(frame)))
@@ -174,7 +174,7 @@ impl PyGeometry {
 
     /// Reproject coordinates to a target CRS.
     /// The source coordinate epoch is this geometry's own ``epoch`` metadata;
-    /// set it with ``set_epoch`` when the coordinate operation needs one.
+    /// assign it with ``with_epoch`` when the coordinate operation needs one.
     /// ``epoch`` here labels the *output* coordinate epoch.
     ///
     /// Parameters
@@ -225,7 +225,7 @@ impl PyGeometry {
     ///
     /// See Also
     /// --------
-    /// set_crs : Declare/relabel the CRS *without* moving coordinates.
+    /// with_crs : Declare/relabel the CRS *without* moving coordinates.
     ///
     /// Examples
     /// --------

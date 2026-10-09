@@ -303,7 +303,7 @@ def to_geoparquet(
     ----------
     values : Geometry or GeometryArray
         Geometry rows. A scalar is stored as a single-row table.
-        Serialization describes the receiver CRS (use ``set_crs`` first).
+        Serialization describes the receiver CRS (use ``with_crs`` first).
     path : path-like
         Output Parquet path.
     attributes : pyarrow.Table or mapping, optional
@@ -330,7 +330,7 @@ def to_geoparquet(
     # empty; native encoding writes that axis and the reader rejects it.
     if 'M' in (arr.common_coordinate_axes or '') or arr.has_m.any():
         raise GeometryError(
-            'geoparquet 1.x does not support M ordinates; use force_2d() or set_m(None)'
+            'geoparquet 1.x does not support M ordinates; use force_2d() or with_coordinates(m=None)'
         )
     if encoding not in {'wkb', 'native'}:
         raise GeometryError(
@@ -760,7 +760,7 @@ def _decode_geometry_column(
     # OR structural native storage (empty/all-null native XYM must not slip).
     if storage_has_m or result.has_m.any():
         raise _metadata_error(
-            'geoparquet 1.x does not support M ordinates; use force_2d() or set_m(None)'
+            'geoparquet 1.x does not support M ordinates; use force_2d() or with_coordinates(m=None)'
         )
 
     declared = column_metadata['geometry_types']
