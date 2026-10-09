@@ -53,7 +53,6 @@ CHECKS: tuple[tuple[str, ...], ...] = (
     ('tools/stubs/_doc_coverage.py',),
     ('tools/gates/_check_doc_integrity.py',),
     ('tools/gates/_check_doc_model.py',),
-    ('tools/gates/_check_docstyle.py',),
     ('tools/gates/_check_docstring_examples.py',),
     ('tools/gates/_check_doctest_types.py',),
     ('tools/gates/_check_examples.py',),

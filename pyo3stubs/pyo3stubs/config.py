@@ -190,7 +190,8 @@ class StubConfig:
     typecheck_targets:
         Explicit paths checked by validity and pyright. Defaults to the stub.
     uninspectable_allowlist:
-        Public runtime callables where ``inspect.signature`` legitimately fails.
+        Public runtime callables or constructible class bindings where
+        ``inspect.signature`` legitimately fails (reason per name).
     doc_structure_allowlist:
         Public callables exempt from the ``doc-structure`` prose rules
         (reason per qualified name). Unused entries fail the run.

@@ -1,7 +1,7 @@
 """Unit tests for built-site checks and Griffe public canonicalization.
 
 Drives the real shipped helpers in ``tools/docs/``:
-* ``check.collect_errors`` unresolved-public-type + rendered double-period rules
+* ``check.collect_errors`` unresolved-public-type + public See Also targets
 * ``griffe_expand_aliases`` private→public class alias installation so annotation
   crossrefs resolve to ``gometry.X`` anchors
 * Python-defined adapter re-exports resolve to their top-level facade anchors
@@ -71,33 +71,243 @@ def test_public_type_link_is_not_flagged(tmp_path: Path) -> None:
     assert not any('unresolved public type links' in e for e in errors)
 
 
-def test_rendered_raises_double_period_is_flagged(tmp_path: Path) -> None:
-    """Render-injected ``..`` in a Raises description fails; ellipsis does not."""
+def test_rendered_see_also_links_target_public_symbols(tmp_path: Path) -> None:
     check = _check()
-    doubled = (
-        '<html><body>'
-        '<p><span class="doc-section-title">Raises:</span></p>'
-        '<table><tr><td>'
-        '<div class="doc-md-description"><p>If the rows\' metadata differ.</p>\n.</div>'
-        '</td></tr></table>'
-        '</body></html>'
+    page = (
+        '<html><body><details class="see-also"><p>'
+        '<a href="#gometry.Geometry.buffer">buffer</a>'
+        '</p></details></body></html>'
     )
-    # site/api must exist for collect_errors to proceed past the empty-site guard
-    site = _write_site(tmp_path / 'doubled', {'api/raises.html': doubled})
-    errors = check.collect_errors(site)
-    assert any('doubled terminal period' in e for e in errors), errors
+    valid = _write_site(tmp_path / 'valid', {'api/shape/index.html': page})
+    valid_errors = check.collect_errors(valid)
+    assert not any('does not target a public API symbol' in e for e in valid_errors)
 
-    ellipsis = (
-        '<html><body>'
-        '<p><span class="doc-section-title">Raises:</span></p>'
-        '<table><tr><td>'
-        '<div class="doc-md-description"><p>May raise for ... reasons.</p></div>'
-        '</td></tr></table>'
-        '</body></html>'
+    private_page = page.replace(
+        '#gometry.Geometry.buffer',
+        '#gometry._lib.Geometry.buffer',
     )
-    site2 = _write_site(tmp_path / 'ellipsis', {'api/ellipsis.html': ellipsis})
-    errors2 = check.collect_errors(site2)
-    assert not any('doubled terminal period' in e for e in errors2), errors2
+    invalid = _write_site(tmp_path / 'invalid', {'api/shape/index.html': private_page})
+    invalid_errors = check.collect_errors(invalid)
+    assert any(
+        'does not target a public API symbol' in e for e in invalid_errors
+    ), invalid_errors
+
+
+def test_shared_doc_parser_checks_stub_and_raw_rust_duplicates(tmp_path: Path) -> None:
+    from types import ModuleType
+
+    integrity = load_tool(
+        'doc_integrity', GOMETRY_ROOT / 'tools/gates/_check_doc_integrity.py'
+    )
+    from pyo3stubs.config import StubConfig
+
+    stub_path = tmp_path / 'python' / 'gometry' / '_lib.pyi'
+    stub_path.parent.mkdir(parents=True)
+    stub_path.write_text(
+        '''\
+class Widget:
+    """A widget.
+
+    Args:
+        size (int): The size.
+
+    Arguments:
+        size (int): The repeated size.
+    """
+'''
+    )
+    src_root = tmp_path / 'src'
+    src_root.mkdir()
+    (src_root / 'lib.rs').write_text(
+        '''\
+docs! {
+    #[cfg(test)]
+    /// Build a widget.
+    ///
+    /// Parameters
+    /// ----------
+    /// size : int
+    ///     The size.
+    ///
+    /// Parameters
+    /// ----------
+    /// size : int
+    ///     The repeated size.
+    pub fn build(size: usize) {}
+}
+'''
+    )
+    runtime = ModuleType('fakepkg._lib')
+    runtime.__all__ = ['Widget']
+    setattr(runtime, 'Widget', type('Widget', (), {'__doc__': 'A widget.'}))
+    cfg = StubConfig(
+        module='fakepkg._lib',
+        stub_path=stub_path,
+        src_root=src_root,
+    )
+
+    errors = integrity.collect_errors(cfg, runtime)
+
+    assert any('_lib.pyi' in error and "'Parameters'" in error for error in errors)
+    assert any('src/lib.rs' in error and "'Parameters'" in error for error in errors)
+
+
+def test_scalar_geometry_array_returns_cover_overloads_and_properties(
+    tmp_path: Path,
+) -> None:
+    model = load_tool(
+        'check_doc_model', GOMETRY_ROOT / 'tools/gates/_check_doc_model.py'
+    )
+    stub = tmp_path / '_lib.pyi'
+    stub.write_text(
+        '''\
+class Geometry:
+    @overload
+    def buffer(self, distance: float) -> Point:
+        """Buffer geometry.
+
+        Returns
+        -------
+        GeometryArray[Point]
+        """
+    @overload
+    def buffer(self, distance: float, *, array: bool) -> GeometryArray[Point]:
+        """Buffer geometry as an array.
+
+        Returns
+        -------
+        GeometryArray[Point]
+        """
+    @property
+    def bounds(self) -> tuple[float, float, float, float]:
+        """The scalar bounds.
+
+        Returns
+        -------
+        GeometryArray[float]
+        """
+
+class GeometryArray:
+    def buffer(self, distance: float) -> GeometryArray[Point]:
+        """Buffer each row.
+
+        Returns
+        -------
+        GeometryArray[Point]
+        """
+'''
+    )
+
+    errors = model._scalar_array_return_errors(stub, object())
+
+    assert len(errors) == 2, errors
+    assert any('Geometry.buffer' in error for error in errors)
+    assert any('Geometry.bounds' in error for error in errors)
+
+
+def test_doc_model_keeps_row_units_planarity_and_literal_value_claims() -> None:
+    model = load_tool(
+        'check_doc_model', GOMETRY_ROOT / 'tools/gates/_check_doc_model.py'
+    )
+
+    def subject(name: str, prose: str):
+        return model.DocSubject(
+            name,
+            'callable',
+            prose,
+            (),
+            model.DocLocation('gometry/_lib.pyi', 1),
+        )
+
+    subjects = (
+        subject(
+            'GeometryArray.buffer',
+            """\
+            Buffer each element.
+
+            Returns
+            -------
+            GeometryArray[Geometry]
+            """,
+        ),
+        subject(
+            'Geometry.intersection',
+            """\
+            Intersect the geometries (planar).
+
+            Returns
+            -------
+            Geometry
+            """,
+        ),
+        subject(
+            'Geometry.simplify',
+            """\
+            Simplify the geometry (planar).
+
+            Returns
+            -------
+            Geometry
+            """,
+        ),
+        subject(
+            'Geometry.buffer',
+            """\
+            Buffer with a quoted unit.
+
+            Parameters
+            ----------
+            unit : {'planar', 'meters'}
+                Measurement unit.
+
+            Returns
+            -------
+            Geometry
+            """,
+        ),
+        subject(
+            'Geometry.buffer',
+            """\
+            Buffer with an ambiguous unit.
+
+            Parameters
+            ----------
+            unit : {planar, meters}
+                Measurement unit.
+
+            Returns
+            -------
+            Geometry
+            """,
+        ),
+        subject(
+            'from_array',
+            """\
+            Return the array representation.
+
+            Returns
+            -------
+            ndarray of float64
+            """,
+        ),
+    )
+
+    errors = model._doc_content_errors(subjects)
+
+    assert any(
+        'GeometryArray.buffer' in error and 'per element' in error for error in errors
+    )
+    assert any(
+        'Geometry.intersection' in error and 'planar' in error for error in errors
+    )
+    assert not any(
+        'Geometry.simplify' in error and 'planar' in error for error in errors
+    )
+    assert not any('quoted unit' in error and 'enum' in error for error in errors)
+    assert any(
+        'ambiguous unit' not in error and 'enum values' in error for error in errors
+    )
+    assert any('from_array' in error and 'numpy.ndarray' in error for error in errors)
 
 
 def test_griffe_canonicalizes_private_classes_to_public_paths() -> None:

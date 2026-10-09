@@ -29,7 +29,12 @@ from typing import TYPE_CHECKING, TypeVar
 
 import libcst as cst
 
-from pyo3stubs.ast_util import annotated_data_descriptors, decorator_names, doc_of
+from pyo3stubs.ast_util import (
+    _runtime_doc_for_stub,
+    annotated_data_descriptors,
+    decorator_names,
+    doc_of,
+)
 from pyo3stubs.context import CheckContext
 from pyo3stubs.rust_scan import constructor_docs
 
@@ -37,48 +42,6 @@ if TYPE_CHECKING:
     from collections.abc import Iterator
 
     from pyo3stubs.config import StubConfig
-
-# PyO3 registers protocol methods as type slots, and CPython synthesises the
-# wrapper — taking the docstring with it. `LRUCache.__getitem__` reads "Return
-# self[key]." no matter what the `///` comment above the Rust said, so injecting
-# the runtime doc would overwrite the stub's own prose with boilerplate.
-#
-# The tell is the descriptor kind, not the text. Everything PyO3 documents
-# itself arrives as a `method_descriptor` (plain methods), `getset_descriptor`
-# (getters) or `classmethod_descriptor`; only CPython-synthesised slots are
-# `types.WrapperDescriptorType` (the type of `object.__lt__`).
-
-#: Docstrings CPython supplies for members a class never wrote. Two dunders slip
-#: past the descriptor-kind test above: `__new__` is a
-#: `builtin_function_or_method` carrying `object.__new__`'s text (PyO3 does not
-#: attach a `#[new]`'s `///` to it at all), and the `__class_getitem__` that
-#: `#[pyclass(generic)]` synthesises carries `dict.__class_getitem__`'s "See PEP
-#: 585". Both were being published into shipped stubs over the Rust prose.
-#:
-#: Read out of the running interpreter rather than written down, so it tracks
-#: CPython's wording instead of pinning one release's phrasing — and consulted
-#: only for dunders, where a hand-written `///` cannot plausibly collide.
-_BUILTIN_DOCS = frozenset(
-    doc
-    for owner in (object, type, dict, list, tuple, str, int)
-    for name in dir(owner)
-    if (doc := doc_of(getattr(owner, name, None))) is not None
-)
-
-
-def _runtime_doc_for_stub(name: str, obj: object) -> str | None:
-    """Runtime ``__doc__`` suitable for stub injection, or ``None`` to leave stub.
-
-    Returning None hands the symbol to the stub-only-override branch, so the
-    hand-written prose survives and `doc-contract` requires it to exist.
-    """
-    if isinstance(obj, types.WrapperDescriptorType):
-        return None
-    doc = doc_of(obj)
-    if doc is not None and name.startswith('__') and doc in _BUILTIN_DOCS:
-        return None
-    return doc
-
 
 #: The two node kinds that can carry a docstring in a stub.
 _Def = TypeVar('_Def', cst.ClassDef, cst.FunctionDef)
