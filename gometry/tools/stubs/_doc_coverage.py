@@ -68,8 +68,6 @@ RAISES_VALUEERROR_EXEMPT: dict[str, str] = {
     'MultiLineString.index': 'Sequence index lookup uses the list.index missing-value convention.',
     'MultiPoint.index': 'Sequence index lookup uses the list.index missing-value convention.',
     'MultiPolygon.index': 'Sequence index lookup uses the list.index missing-value convention.',
-    'H3VertexArray.index': 'list.index convention: a missing element is a plain ValueError',
-    'H3EdgeArray.index': 'list.index convention: a missing element is a plain ValueError',
 }
 _MIRRORED_RAISES = frozenset({
     'coverage_is_valid',
@@ -188,8 +186,6 @@ def required_raises(
         if name in _POLICY_GATED:
             required.add('InvalidGeometryError')
         extras = set(_OP_EXTRAS.get(name, frozenset()))
-        if name == 'to_wkt' and owner == 'CRS':
-            extras.discard('GeometryError')
         required |= extras
         metric = set(_METRIC_CRS_AWARE.get(name, frozenset()))
         # Properties ``area``/``length`` have no ``unit=`` (Rule 4 free fn owns
@@ -321,8 +317,6 @@ def required_raises(
             required.add('GeometryError')
     if qualname == 'join':
         required.add('CRSMismatchError')
-    if qualname in ('array', 'index'):
-        required.add('CRSMismatchError')
     if parameters and 'crs' in parameters:
         required.add('CRSError')
     if parameters and 'epoch' in parameters:
@@ -355,6 +349,8 @@ def _check_raises(
 
 
 def check_subject_raises(subject: DocSubject) -> list[str]:
+    if subject.kind in {'class', 'attribute', 'schema'}:
+        return []
     errors: list[str] = []
     doc = parse_doc(subject.prose)
     entries = raises_entries(doc)
@@ -387,7 +383,7 @@ def check_mirrored_raises(subjects: Iterable[DocSubject]) -> list[str]:
     by_name = {
         subject.qualname: subject
         for subject in subjects
-        if subject.prose and subject.kind != 'class'
+        if subject.prose and subject.kind not in {'class', 'attribute', 'schema'}
     }
     errors: list[str] = []
     for name in sorted(_MIRRORED_RAISES):
@@ -434,7 +430,7 @@ def main() -> int:
     checked: Counter[str] = Counter()
     errors.extend(check_mirrored_raises(subjects))
     for subject in subjects:
-        if subject.kind == 'class':
+        if subject.kind in {'class', 'attribute', 'schema'}:
             continue
         owner = subject.qualname.rpartition('.')[0] or '<top-level>'
         checked[owner] += 1

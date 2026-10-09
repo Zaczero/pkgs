@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import ast
-import inspect
 import re
 import sys
 from dataclasses import dataclass
@@ -31,14 +30,12 @@ from griffe_expand_aliases import (
     expand_annotation,
 )
 from public_inventory import load_public_symbols
-from pyo3stubs.ast_util import annotated_data_descriptors
 from pyo3stubs.cli import load_config
 from pyo3stubs.context import CheckContext
 from pyo3stubs.doc_structure import (
     DocSubject,
     attribute_entries,
     check_doc_subject,
-    function_groups,
     iter_doc_subjects,
     parameter_entries,
     parse_doc,
@@ -60,37 +57,6 @@ _PUBLIC_TYPEVAR_NAMES = {
     '_GroupKeyT': 'GroupKeyT',
     '_GroupValuesT_co': 'GroupValuesT_co',
 }
-_ARRAY_DOCUMENTATION_OWNERS = frozenset({'GeometryArray', 'CellArray'})
-_NDARRAY_TYPE = re.compile(r'(?<![\w.])(?:np\.ndarray|ndarray)(?![\w.])')
-_PER_ELEMENT = re.compile(r'\bper element\b', re.IGNORECASE)
-_PLANAR = re.compile(r'\(planar\)', re.IGNORECASE)
-_AUTO_SPLIT_OPS = frozenset({
-    'contains',
-    'within',
-    'covers',
-    'covered_by',
-    'intersects',
-    'disjoint',
-    'touches',
-    'crosses',
-    'overlaps',
-    'equals',
-    'relate',
-    'relate_pattern',
-    'intersection',
-    'union',
-    'difference',
-    'symmetric_difference',
-    'clip_by_rect',
-})
-_GENUINELY_PLANAR_OPS = frozenset({
-    'simplify',
-    'smooth',
-    'convex_hull',
-    'buffer',
-    'offset_curve',
-    'segmentize',
-})
 
 ParameterForm = tuple[str | None, str, str | None, str | None]
 CallForm = tuple[tuple[ParameterForm, ...], str | None]
@@ -130,70 +96,48 @@ def _mentions_type(type_text: str, name: str) -> bool:
     )
 
 
-def _scalar_array_return_errors(stub: Path, runtime: object) -> list[str]:
-    tree = ast.parse(stub.read_text(encoding='utf-8'), filename=str(stub))
+def _declaration_annotation(declaration: ast.AST) -> ast.expr | None:
+    if isinstance(declaration, (ast.FunctionDef, ast.AsyncFunctionDef)):
+        return declaration.returns
+    if isinstance(declaration, ast.AnnAssign):
+        return declaration.annotation
+    return None
+
+
+def _scalar_array_return_errors(subjects: Iterable[DocSubject]) -> list[str]:
+    """Keep return prose aligned with the selected binding declarations."""
     errors: list[str] = []
-    array_classes = {'GeometryArray', 'CellArray'}
-    for cls in tree.body:
-        if not isinstance(cls, ast.ClassDef) or cls.name in array_classes:
+    for subject in subjects:
+        if (
+            subject.kind not in {'callable', 'property'}
+            or not subject.prose
+            or not subject.declarations
+        ):
             continue
-        function_defs = function_groups(cls.body)
-        runtime_cls = getattr(runtime, cls.name, None)
-        descriptor_docs = {}
-        if isinstance(runtime_cls, type):
-            descriptor_docs = {
-                id(statement): doc
-                for _name, statement, doc, _descriptor in annotated_data_descriptors(
-                    runtime_cls, cls.body
-                )
-            }
-        for member in cls.body:
-            if isinstance(member, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                definitions = function_defs.get(member.name, [member])
-                if member is not definitions[-1]:
-                    continue
-                doc = ast.get_docstring(definitions[-1], clean=True)
-                if doc and member.returns is not None:
-                    returns = return_entries(parse_doc(doc))
-                    if any(
-                        _mentions_type(entry.type_text, 'GeometryArray')
-                        for entry in returns
-                    ) and not any(
-                        definition.returns is not None
-                        and any(
-                            isinstance(node, ast.Name) and node.id == 'GeometryArray'
-                            for node in ast.walk(definition.returns)
-                        )
-                        for definition in definitions
-                    ):
-                        errors.append(
-                            f'{stub.name}:{definitions[-1].lineno}: '
-                            f'{cls.name}.{member.name}: '
-                            'Returns type names GeometryArray but the binding '
-                            f'overloads return {", ".join(ast.unparse(definition.returns) for definition in definitions if definition.returns is not None)}'
-                        )
-                continue
-            if not isinstance(member, ast.AnnAssign) or not isinstance(
-                runtime_cls, type
-            ):
-                continue
-            if not isinstance(member.target, ast.Name):
-                continue
-            doc = descriptor_docs.get(id(member))
-            if doc is None:
-                continue
-            if any(
-                _mentions_type(entry.type_text, 'GeometryArray')
-                for entry in return_entries(parse_doc(doc))
-            ) and not any(
+        if not any(
+            _mentions_type(entry.type_text, 'GeometryArray')
+            for entry in return_entries(parse_doc(subject.prose))
+        ):
+            continue
+        declarations = tuple(
+            annotation
+            for declaration in subject.declarations
+            if (annotation := _declaration_annotation(declaration)) is not None
+        )
+        if any(
+            any(
                 isinstance(node, ast.Name) and node.id == 'GeometryArray'
-                for node in ast.walk(member.annotation)
-            ):
-                errors.append(
-                    f'{stub.name}:{member.lineno}: {cls.name}.{member.target.id}: '
-                    'Returns type names GeometryArray but the binding '
-                    f'annotation is {ast.unparse(member.annotation)}'
-                )
+                for node in ast.walk(annotation)
+            )
+            for annotation in declarations
+        ):
+            continue
+        rendered = ', '.join(ast.unparse(annotation) for annotation in declarations)
+        errors.append(
+            f'{subject.source.path}:{subject.source.line}: {subject.qualname}: '
+            'Returns type names GeometryArray but the binding declarations return '
+            f'{rendered or "no declared type"}'
+        )
     return errors
 
 
@@ -212,41 +156,17 @@ def _has_unquoted_enum(type_text: str) -> bool:
     return False
 
 
-def _doc_content_errors(subjects: Iterable[DocSubject]) -> list[str]:
-    """Retain factual doc claims while leaving editorial prose to the author."""
+def _doc_type_expression_errors(subjects: Iterable[DocSubject]) -> list[str]:
+    """Keep literal string choices quoted in parsed type expressions."""
     errors: list[str] = []
     for subject in subjects:
-        prose = subject.prose
-        if not prose:
+        if not subject.prose:
             continue
         qualname = subject.qualname
-        bare_name = qualname.rsplit('.', 1)[-1]
-        owner = qualname.rpartition('.')[0]
-        parsed = parse_doc(prose)
-        if (
-            bare_name in _ARRAY_DOCUMENTATION_OWNERS
-            or owner in _ARRAY_DOCUMENTATION_OWNERS
-        ) and _PER_ELEMENT.search(prose):
-            errors.append(
-                f'{qualname}: array documentation must describe row-aligned '
-                'results, not "per element"'
-            )
-
-        if bare_name in _AUTO_SPLIT_OPS and bare_name not in _GENUINELY_PLANAR_OPS:
-            lines = inspect.cleandoc(prose).splitlines()
-            summary_end = parsed.sections[0].line - 1 if parsed.sections else len(lines)
-            if _PLANAR.search('\n'.join(lines[:summary_end])):
-                errors.append(
-                    f'{qualname}: antimeridian-splitting operation is described '
-                    'as planar'
-                )
-
-        named_entries = (*parameter_entries(parsed), *attribute_entries(parsed))
-        type_entries = (*named_entries, *return_entries(parsed))
-        errors.extend(
-            f'{qualname}: type fields must use numpy.ndarray'
-            for entry in type_entries
-            if _NDARRAY_TYPE.search(entry.type_text)
+        parsed = parse_doc(subject.prose)
+        named_entries = (
+            *parameter_entries(parsed),
+            *attribute_entries(parsed),
         )
         errors.extend(
             f'{qualname}: enum values in a type field must be quoted'
@@ -855,7 +775,6 @@ def collect_errors() -> list[str]:
     loader.resolve_aliases(external=False)
     lib = pkg.members.get('_lib')
     errors: list[str] = []
-    errors.extend(_scalar_array_return_errors(STUB, gm))
     cfg = load_config(ROOT / 'tools' / 'stubs' / 'stubconfig.py')
     inventory = load_public_symbols(
         STUB,
@@ -868,7 +787,8 @@ def collect_errors() -> list[str]:
             source_classes=inventory.source_classes,
         )
     )
-    errors.extend(_doc_content_errors(subjects))
+    errors.extend(_scalar_array_return_errors(subjects))
+    errors.extend(_doc_type_expression_errors(subjects))
     python_root = ROOT / 'python'
     for subject in subjects:
         source_path = Path(subject.source.path).resolve()

@@ -16,7 +16,13 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from pyo3stubs.ast_util import decorator_names
-from pyo3stubs.doc_structure import DocClassSource, DocLocation, DocMemberSource
+from pyo3stubs.doc_structure import (
+    DocClassSource,
+    DocInitializationSource,
+    DocLocation,
+    DocMemberSource,
+    parse_doc,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Iterator, Mapping
@@ -128,6 +134,23 @@ def _source_location(path: Path, node: ast.AST) -> DocLocation:
     ):
         line = node.body[0].lineno
     return DocLocation(str(path), line)
+
+
+def _has_initialization_contract(prose: str | None) -> bool:
+    if not prose:
+        return False
+    sections = {section.name for section in parse_doc(prose).sections}
+    return bool(
+        sections
+        & {
+            'Parameters',
+            'Other Parameters',
+            'Keyword Arguments',
+            'Raises',
+            'Returns',
+            'Yields',
+        }
+    )
 
 
 def _class_members(
@@ -315,6 +338,30 @@ def load_public_symbols(stub_path: Path, init_path: Path) -> PublicInventory:
             imported.source_path,
         )
         symbols.update(f'{imported.public_name}.{member}' for member in members)
+        class_prose = ast.get_docstring(declaration)
+        source_initializer = members.get('__init__') or members.get('__new__')
+        if source_initializer is not None and _has_initialization_contract(
+            source_initializer.prose
+        ):
+            initialization = DocInitializationSource(
+                node=source_initializer.node,
+                prose=source_initializer.prose,
+                source=source_initializer.source,
+            )
+        elif _has_initialization_contract(class_prose):
+            initialization = DocInitializationSource(
+                node=declaration,
+                prose=class_prose,
+                source=_source_location(imported.source_path, declaration),
+            )
+        elif source_initializer is not None:
+            initialization = DocInitializationSource(
+                node=source_initializer.node,
+                prose=source_initializer.prose,
+                source=source_initializer.source,
+            )
+        else:
+            initialization = None
         classes.setdefault(
             imported.public_name,
             FacadeClass(
@@ -323,6 +370,7 @@ def load_public_symbols(stub_path: Path, init_path: Path) -> PublicInventory:
                     node=declaration,
                     source=_source_location(imported.source_path, declaration),
                     members=members,
+                    initialization=initialization,
                 ),
             ),
         )

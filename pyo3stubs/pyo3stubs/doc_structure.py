@@ -107,12 +107,22 @@ class DocMemberSource:
 
 
 @dataclass(frozen=True, slots=True)
+class DocInitializationSource:
+    """The one class-call documentation carrier selected from Python source."""
+
+    node: ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef
+    prose: str | None
+    source: DocLocation
+
+
+@dataclass(frozen=True, slots=True)
 class DocClassSource:
-    """A facade class declaration and its inherited, de-duplicated members."""
+    """A facade class declaration, one init carrier, and effective members."""
 
     node: ast.ClassDef
     source: DocLocation
     members: Mapping[str, DocMemberSource]
+    initialization: DocInitializationSource | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -131,6 +141,7 @@ class DocSubject:
     prose: str | None
     parameters: tuple[inspect.Parameter, ...] | None
     source: DocLocation
+    declarations: tuple[ast.AST, ...] = ()
 
 
 def _rust_constructor_sources(cfg: StubConfig) -> dict[str, ConstructorDocSource]:
@@ -657,23 +668,6 @@ def _property_getter(
     return defs[-1]
 
 
-def _has_initialization_contract(prose: str | None) -> bool:
-    if not prose:
-        return False
-    sections = {section.name for section in parse_doc(prose).sections}
-    return bool(
-        sections
-        & {
-            'Parameters',
-            'Other Parameters',
-            'Keyword Arguments',
-            'Raises',
-            'Returns',
-            'Yields',
-        }
-    )
-
-
 def _subject(
     qualname: str,
     kind: Literal[
@@ -687,6 +681,7 @@ def _subject(
     prose: str | None,
     parameters: list[inspect.Parameter] | None,
     source: DocLocation,
+    declarations: tuple[ast.AST, ...] = (),
 ) -> DocSubject:
     return DocSubject(
         qualname,
@@ -694,6 +689,7 @@ def _subject(
         prose,
         tuple(parameters) if parameters is not None else None,
         source,
+        declarations,
     )
 
 
@@ -730,9 +726,7 @@ def _class_subjects(
     constructible_stub = bool(new_defs) and not prohibited_stub_constructor
     source_constructor = constructor_sources.get(name)
     source_members = source_class.members if source_class is not None else {}
-    source_initializer = source_members.get('__init__') or source_members.get('__new__')
-    class_init_doc = class_doc if _has_initialization_contract(class_doc) else None
-    descriptor_carriers: dict[str, tuple[object, DocLocation]] = {}
+    descriptor_carriers: dict[str, tuple[object, DocLocation, ast.AnnAssign]] = {}
     if class_node is not None:
         for (
             member_name,
@@ -747,33 +741,24 @@ def _class_subjects(
             descriptor_carriers[member_name] = (
                 descriptor,
                 DocLocation(class_path, source_line),
+                statement,
             )
 
     if not prohibited_stub_constructor and (
         source_constructor is not None
         or constructible_stub
-        or source_initializer is not None
-        or class_init_doc is not None
+        or (source_class is not None and source_class.initialization is not None)
     ):
         carrier = new_defs[-1] if new_defs else None
+        constructor_declarations: tuple[ast.AST, ...] = tuple(new_defs)
         if source_constructor is not None:
             prose = source_constructor.prose
             source = DocLocation(source_constructor.path, source_constructor.line)
-        elif source_class is not None and (
-            source_initializer is not None or class_init_doc is not None
-        ):
-            initializer_doc = (
-                source_initializer.prose if source_initializer is not None else None
-            )
-            if _has_initialization_contract(initializer_doc):
-                prose = initializer_doc
-                source = source_initializer.source
-            elif class_init_doc is not None:
-                prose = class_init_doc
-                source = class_source
-            else:
-                prose = initializer_doc
-                source = source_initializer.source
+        elif source_class is not None and source_class.initialization is not None:
+            initialization = source_class.initialization
+            prose = initialization.prose
+            source = initialization.source
+            constructor_declarations = (initialization.node,)
         else:
             runtime_new = inspect.getattr_static(cls, '__new__', None)
             prose = _runtime_doc_for_stub('__new__', runtime_new)
@@ -789,9 +774,17 @@ def _class_subjects(
             prose,
             _parameters(cls),
             source,
+            declarations=constructor_declarations,
         )
 
-    yield _subject(name, 'class', class_doc, None, class_source)
+    yield _subject(
+        name,
+        'class',
+        class_doc,
+        None,
+        class_source,
+        declarations=(class_node,) if class_node is not None else (),
+    )
     if class_node is None:
         return
 
@@ -813,6 +806,7 @@ def _class_subjects(
                 source_member.prose,
                 None,
                 source_member.source,
+                declarations=(source_member.node,),
             )
             continue
         defs = stub_groups.get(member_name, [])
@@ -870,6 +864,15 @@ def _class_subjects(
                 prose,
                 None,
                 source,
+                declarations=(
+                    (source_member.node,)
+                    if source_member is not None
+                    else (
+                        (descriptor_carriers[member_name][2],)
+                        if member_name in descriptor_carriers
+                        else ((carrier,) if carrier is not None else ())
+                    )
+                ),
             )
             continue
 
@@ -883,6 +886,7 @@ def _class_subjects(
                 source_member.prose,
                 _parameters(runtime_member) if runtime_member is not None else None,
                 source_member.source,
+                declarations=(source_member.node,),
             )
             seen.add(member_name)
             continue
@@ -895,6 +899,7 @@ def _class_subjects(
                 prose,
                 _stub_parameters(carrier),
                 source,
+                declarations=tuple(defs),
             )
             continue
         yield _subject(
@@ -903,10 +908,11 @@ def _class_subjects(
             _runtime_doc_for_stub(member_name, runtime_member),
             _parameters(runtime_member),
             source,
+            declarations=tuple(defs),
         )
         seen.add(member_name)
 
-    for member_name, (descriptor, source) in descriptor_carriers.items():
+    for member_name, (descriptor, source, declaration) in descriptor_carriers.items():
         if not _is_public(member_name) or member_name in seen:
             continue
         yield _subject(
@@ -915,6 +921,7 @@ def _class_subjects(
             _runtime_doc_for_stub(member_name, descriptor),
             None,
             source,
+            declarations=(declaration,),
         )
 
 
@@ -993,6 +1000,7 @@ def iter_doc_subjects(
                 _runtime_doc_for_stub(name, obj),
                 _parameters(obj),
                 source,
+                declarations=tuple(defs),
             )
             key = (subject.qualname, subject.kind)
             if key not in seen_subjects:

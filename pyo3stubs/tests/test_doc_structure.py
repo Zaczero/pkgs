@@ -581,6 +581,7 @@ def test_source_facade_class_subjects_keep_member_provenance_and_one_init_carrie
     from pyo3stubs.context import CheckContext
     from pyo3stubs.doc_structure import (
         DocClassSource,
+        DocInitializationSource,
         DocLocation,
         DocMemberSource,
         iter_doc_subjects,
@@ -676,6 +677,11 @@ class Public(Base):
                 source=DocLocation('src/models.py', value_node.lineno + 1),
             ),
         },
+        initialization=DocInitializationSource(
+            node=public_node,
+            prose=ast.get_docstring(public_node),
+            source=DocLocation('src/models.py', public_node.body[0].lineno),
+        ),
     )
 
     class Base:
@@ -733,12 +739,14 @@ class Public(Base):
         public_node.body[0].lineno,
     )
     assert constructor.prose == ast.get_docstring(public_node)
+    assert constructor.declarations == (public_node,)
     assert check_doc_subject(constructor) == []
     assert (field.kind, field.prose, field.source.path) == (
         'attribute',
         'The retained value.',
         'src/models.py',
     )
+    assert field.declarations == (value_node,)
     assert check_doc_subject(field) == []
     assert label.source.path == 'src/models.py'
     assert inherited.source.path == 'src/base.py'

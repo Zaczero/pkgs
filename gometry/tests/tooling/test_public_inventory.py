@@ -277,6 +277,8 @@ def test_features_constructor_and_field_prose_matches_the_python_declaration() -
     )
     features = inventory.source_classes['Features']
     initializer = features.members['__init__']
+    assert features.initialization is not None
+    assert features.initialization.node is initializer.node
     assert initializer.prose is not None
     parameters = {
         entry.names[0]: entry

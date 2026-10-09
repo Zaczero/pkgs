@@ -13,7 +13,7 @@ import ast
 from html.parser import HTMLParser
 from pathlib import Path
 from types import SimpleNamespace
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 import griffe
 from jinja2 import (
@@ -326,7 +326,7 @@ def test_rendered_see_also_links_target_public_symbols(tmp_path: Path) -> None:
     )
 
 
-def test_shared_doc_parser_checks_stub_and_raw_rust_duplicates(
+def test_doc_integrity_checks_only_resolved_public_doc_carriers(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
@@ -342,13 +342,15 @@ def test_shared_doc_parser_checks_stub_and_raw_rust_duplicates(
     stub_path.write_text(
         '''\
 class Widget:
-    """A widget.
+    """Stale stub prose.
 
-    Args:
-        size (int): The size.
+    Notes
+    -----
+    This is not the resolved runtime carrier.
 
-    Arguments:
-        size (int): The repeated size.
+    Notes
+    -----
+    The stale duplicate is not inspected.
     """
 '''
     )
@@ -356,21 +358,15 @@ class Widget:
     src_root.mkdir()
     (src_root / 'lib.rs').write_text(
         """\
-docs! {
-    #[cfg(test)]
-    /// Build a widget.
-    ///
-    /// Parameters
-    /// ----------
-    /// size : int
-    ///     The size.
-    ///
-    /// Parameters
-    /// ----------
-    /// size : int
-    ///     The repeated size.
-    pub fn build(size: usize) {}
-}
+/// A duplicate on an unexported Rust item is not a public doc carrier.
+///
+/// Raises
+/// ------
+/// GeometryError
+///     First entry.
+/// GeometryError
+///     Duplicate entry.
+fn private_helper() {}
 """
     )
     runtime_package = tmp_path / 'runtime' / 'fakepkg'
@@ -381,7 +377,18 @@ docs! {
 __all__ = ['Widget']
 
 class Widget:
-    """A widget."""
+    """A widget.
+
+    Parameters
+    ----------
+    size : int
+        The size.
+
+    Parameters
+    ----------
+    size : int
+        The duplicate parameter.
+    """
 '''
     )
     monkeypatch.syspath_prepend(str(runtime_package.parent))
@@ -394,11 +401,14 @@ class Widget:
 
     errors = integrity.collect_errors(cfg, runtime)
 
-    assert any('_lib.pyi' in error and "'Parameters'" in error for error in errors)
-    assert any('src/lib.rs' in error and "'Parameters'" in error for error in errors)
+    assert len(errors) == 1, errors
+    assert errors[0].endswith("Widget: duplicate 'Parameters' section")
+    assert str(stub_path) in errors[0]
+    assert 'Notes' not in errors[0]
+    assert 'src/lib.rs' not in errors[0]
 
 
-def test_scalar_geometry_array_returns_cover_overloads_and_properties(
+def test_shared_subject_return_check_covers_overloads_and_properties(
     tmp_path: Path,
 ) -> None:
     model = load_tool(
@@ -453,14 +463,45 @@ class GeometryArray:
 '''
     )
 
-    errors = model._scalar_array_return_errors(stub, object())
+    tree = ast.parse(stub.read_text(encoding='utf-8'))
+    classes = {node.name: node for node in tree.body if isinstance(node, ast.ClassDef)}
+    from pyo3stubs.doc_structure import DocLocation
+
+    def subject(
+        class_name: str,
+        member_name: str,
+        kind: Literal['callable', 'property'] = 'callable',
+    ):
+        class_node = classes[class_name]
+        declarations = tuple(
+            node
+            for node in class_node.body
+            if isinstance(node, ast.FunctionDef) and node.name == member_name
+        )
+        carrier = declarations[-1]
+        return model.DocSubject(
+            f'{class_name}.{member_name}',
+            kind,
+            ast.get_docstring(carrier),
+            (),
+            DocLocation(str(stub), carrier.lineno),
+            declarations,
+        )
+
+    subjects = (
+        subject('Geometry', 'buffer'),
+        subject('Geometry', 'centroid'),
+        subject('Geometry', 'bounds', 'property'),
+        subject('GeometryArray', 'buffer'),
+    )
+    errors = model._scalar_array_return_errors(subjects)
 
     assert len(errors) == 2, errors
     assert any('Geometry.centroid' in error for error in errors)
     assert any('Geometry.bounds' in error for error in errors)
 
 
-def test_doc_model_keeps_row_units_planarity_and_literal_value_claims() -> None:
+def test_doc_model_requires_quoted_literal_values_in_type_entries() -> None:
     from pyo3stubs.doc_structure import DocLocation
 
     model = load_tool(
@@ -477,36 +518,6 @@ def test_doc_model_keeps_row_units_planarity_and_literal_value_claims() -> None:
         )
 
     subjects = (
-        subject(
-            'GeometryArray.buffer',
-            """\
-            Return one result per element.
-
-            Returns
-            -------
-            GeometryArray[Geometry]
-            """,
-        ),
-        subject(
-            'Geometry.intersection',
-            """\
-            Intersect the geometries (planar).
-
-            Returns
-            -------
-            Geometry
-            """,
-        ),
-        subject(
-            'Geometry.simplify',
-            """\
-            Simplify the geometry (planar).
-
-            Returns
-            -------
-            Geometry
-            """,
-        ),
         subject(
             'Geometry.buffer',
             """\
@@ -525,7 +536,7 @@ def test_doc_model_keeps_row_units_planarity_and_literal_value_claims() -> None:
         subject(
             'Geometry.buffer',
             """\
-            Buffer with an ambiguous unit.
+            Buffer with an unquoted enum-like type.
 
             Parameters
             ----------
@@ -537,34 +548,11 @@ def test_doc_model_keeps_row_units_planarity_and_literal_value_claims() -> None:
             Geometry
             """,
         ),
-        subject(
-            'from_array',
-            """\
-            Return the array representation.
-
-            Returns
-            -------
-            ndarray of float64
-            """,
-        ),
     )
 
-    errors = model._doc_content_errors(subjects)
+    errors = model._doc_type_expression_errors(subjects)
 
-    assert any(
-        'GeometryArray.buffer' in error and 'per element' in error for error in errors
-    )
-    assert any(
-        'Geometry.intersection' in error and 'planar' in error for error in errors
-    )
-    assert not any(
-        'Geometry.simplify' in error and 'planar' in error for error in errors
-    )
-    assert not any('quoted unit' in error and 'enum' in error for error in errors)
-    assert any(
-        'ambiguous unit' not in error and 'enum values' in error for error in errors
-    )
-    assert any('from_array' in error and 'numpy.ndarray' in error for error in errors)
+    assert errors == ['Geometry.buffer: enum values in a type field must be quoted']
 
 
 def test_griffe_canonicalizes_private_classes_to_public_paths() -> None:
