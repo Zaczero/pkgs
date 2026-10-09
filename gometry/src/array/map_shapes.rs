@@ -126,11 +126,42 @@ impl PyGeometryArray {
         py: Python<'_>,
         transform: impl Fn(&Shape, usize) -> Result<Shape> + Send + Sync,
     ) -> PyResult<Self> {
+        self.map_shapes_detached_indexed_with_storage(py, transform, false)
+    }
+
+    /// Geographic literal publishers bind their final row as a `Shape`; keep
+    /// that same row owner in `Mixed` storage rather than packing it afterward.
+    #[expect(
+        clippy::impl_trait_in_params,
+        reason = "the one-shot callback shares the existing detached row loop"
+    )]
+    pub(crate) fn map_shapes_detached_mixed(
+        &self,
+        py: Python<'_>,
+        transform: impl Fn(&Shape) -> Result<Shape> + Send + Sync,
+    ) -> PyResult<Self> {
+        self.map_shapes_detached_indexed_with_storage(py, move |shape, _| transform(shape), true)
+    }
+
+    #[expect(
+        clippy::impl_trait_in_params,
+        reason = "one row loop owns both established packed output and literal-preserving Mixed output"
+    )]
+    fn map_shapes_detached_indexed_with_storage(
+        &self,
+        py: Python<'_>,
+        transform: impl Fn(&Shape, usize) -> Result<Shape> + Send + Sync,
+        keep_mixed: bool,
+    ) -> PyResult<Self> {
         let array = self.clone();
         let shapes = py
             .detach(move || try_map_shape_rows(&array, transform))
             .map_err(rows_err)?;
-        let result = Self::from_shapes(shapes, self.frame.clone())?;
+        let result = if keep_mixed {
+            Self::mixed_shapes(shapes, self.frame.clone())?
+        } else {
+            Self::from_shapes(shapes, self.frame.clone())?
+        };
         Ok(if self.has_missing() {
             self.scatter_present_result(result)?
         } else {

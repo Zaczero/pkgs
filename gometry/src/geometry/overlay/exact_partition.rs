@@ -45,7 +45,7 @@ use crate::geometry::{
     Bounds, ChartMetric, Contact, CoordSeq, CoordinateAxes, ExpansionBudget, GeometryErrorKind,
     GeometryKind, LineSeq, Loc, MOrdinate, MultiLineString, Point, PointKey, Polygon,
     PolygonizeFull, RepairMethod, Result, Ring, RingKind, Segment, Shape, SharedShapeOwners,
-    Unmetered, XY, ZOrdinate, same_point, segment_contact_exact, storage,
+    Unmetered, Work, XY, ZOrdinate, same_point, segment_contact_exact, storage,
 };
 #[cfg(test)]
 use crate::geometry::{for_each_candidate_pair, single_chain};
@@ -65,11 +65,13 @@ use construction::{
     AxisValue, PointArena, interpolate_ordinate, parameter_along, partition_unique_segments,
     partition_unique_segments_in_window, partition_unique_segments_unbudgeted,
 };
-pub(in crate::geometry) use embedding::segments_within_chebyshev;
-pub(in crate::geometry) use emission::emitted_pair_preserves_incidence;
+pub(in crate::geometry) use embedding::{EmbeddingDomain, segments_within_chebyshev};
 use emission::{
-    BoundaryPlan, CellFacts, CoverageFaceState, GlobalFaces, NodeParts, polygonize_emission,
+    BoundaryPlan, CellFacts, CoverageFaceState, NodeParts, polygonize_emission,
     polygonize_full_emission,
+};
+pub(in crate::geometry) use emission::{
+    GlobalFaces, emitted_pair_preserves_incidence, walk_is_shell_with_work,
 };
 use location::AreaLocationCells;
 pub(in crate::geometry) use location::AreaLocationStrategy;
@@ -81,7 +83,10 @@ pub(in crate::geometry) use metrics::{
 pub(crate) use metrics::{partition_calls, reset_partition_calls};
 #[cfg(test)]
 use metrics::{record_partition_call, update as update_partition_metrics};
-pub(in crate::geometry) use rays::{RayPoints, shoot_left, visit_component_faces};
+pub(in crate::geometry) use rays::{
+    RayPoints, compare_departures_with_work, shoot_left, shoot_left_with_work,
+    visit_component_faces,
+};
 
 pub(in crate::geometry) use self::Axis as RayAxis;
 
@@ -670,6 +675,62 @@ impl SourceArcRecord {
             metric: Cell::new(RootMetricState::default()),
         }
     }
+}
+
+struct SourceSpanTraceView {
+    span: u32,
+    reversed: bool,
+    source_start: ExactRational,
+    source_end: ExactRational,
+}
+
+struct SourceLineRun {
+    member: usize,
+    nodes: Vec<NodeId>,
+    trace_slices: Vec<(usize, ExactRational, ExactRational)>,
+}
+
+fn push_source_line_run<W: Work + ?Sized>(
+    runs: &mut Vec<SourceLineRun>,
+    member: usize,
+    nodes: &mut Vec<NodeId>,
+    trace_slices: &mut Vec<(usize, ExactRational, ExactRational)>,
+    traced: bool,
+    work: &mut W,
+) -> Result<()> {
+    if nodes.len() < 2 {
+        nodes.clear();
+        trace_slices.clear();
+        return Ok(());
+    }
+    if traced {
+        let expected_edges = nodes
+            .len()
+            .checked_sub(1)
+            .ok_or(ResourceError::SizeOverflow)?;
+        if trace_slices.len() != expected_edges {
+            return Err(GeometryErrorKind::Invalid(
+                "source line run vertices do not match their trace slices".into(),
+            )
+            .into());
+        }
+        work.charge(1)?;
+    } else if !trace_slices.is_empty() {
+        return Err(
+            GeometryErrorKind::Invalid("untraced source line run has trace slices".into()).into(),
+        );
+    }
+    runs.push(SourceLineRun {
+        member,
+        nodes: std::mem::take(nodes),
+        trace_slices: std::mem::take(trace_slices),
+    });
+    Ok(())
+}
+
+pub(in crate::geometry) struct SubdivisionPart {
+    pub shape: Shape,
+    pub traces: Option<Vec<crate::geometry::topology::SourceTrace>>,
 }
 
 fn remove_node_antennas(mut nodes: Vec<NodeId>) -> Option<Vec<NodeId>> {
@@ -2384,6 +2445,143 @@ impl ExactSourceInventory {
         Ok([first, second])
     }
 
+    pub(in crate::geometry) fn subdivision_parts_with_budget<M: ChartMetric>(
+        &self,
+        partition: &ExactPartition<'_>,
+        source_shape: &Shape,
+        source_traces: Option<&[crate::geometry::topology::SourceTrace]>,
+        declared_axes: crate::geometry::CoordinateAxes,
+        strict: bool,
+        clip_operands: [usize; 2],
+        budget: &mut ExpansionBudget,
+        context: &SourceArcContext<'_, '_, M>,
+        trace_work: &mut crate::geometry::embedding_search::EvaluationBudget,
+    ) -> Result<[SubdivisionPart; 2]> {
+        let Some(source_traces) = source_traces else {
+            let [left, right] = self.subdivision_parts(
+                partition,
+                source_shape,
+                declared_axes,
+                strict,
+                clip_operands,
+                budget,
+                context,
+            )?;
+            return Ok([
+                SubdivisionPart {
+                    shape: left,
+                    traces: None,
+                },
+                SubdivisionPart {
+                    shape: right,
+                    traces: None,
+                },
+            ]);
+        };
+        let source = LineSource::from_shape(source_shape).ok_or_else(|| {
+            GeometryErrorKind::Invalid("source trace was attached to a non-line shape".into())
+        })?;
+        let ranges = source_line_ranges(source)?;
+        if source_traces.len() != ranges.len() {
+            return Err(GeometryErrorKind::Invalid(
+                "source traces do not match the subdivision line members".into(),
+            )
+            .into());
+        }
+        let operands = self.operand_count();
+        if clip_operands
+            .iter()
+            .any(|&operand| operand >= operands || operand == 0)
+        {
+            return Err(GeometryErrorKind::Invalid(
+                "exact subdivision clip operand is out of range".into(),
+            )
+            .into());
+        }
+        let (topology, edges) = partition.local_topology()?;
+        let global = partition.global_faces(&topology, &edges)?;
+        let winding_rings = self.winding_source_rings();
+        let facts =
+            self.build_cell_facts(partition, &topology, &edges, &global, &winding_rings, false)?;
+        let mut selected = Vec::with_capacity(clip_operands.len());
+        for &clip_operand in &clip_operands {
+            let cells = self.select_subdivision_cells(
+                partition,
+                &topology,
+                &global,
+                &facts,
+                0,
+                clip_operand,
+            );
+            selected.push(cells.spans);
+        }
+        let emissions: Vec<_> = selected
+            .iter()
+            .map(|spans| {
+                partition.span_emission(
+                    spans
+                        .iter()
+                        .enumerate()
+                        .filter_map(|(span, &keep)| keep.then_some(span as u32)),
+                )
+            })
+            .collect();
+        let emission_refs: Vec<_> = emissions.iter().collect();
+        trace_work.charge(
+            u64::try_from(partition.node_count()).map_err(|_| ResourceError::SizeOverflow)?,
+        )?;
+        let mut seen = vec![false; partition.node_count()];
+        let mut nodes = Vec::new();
+        for emission in &emissions {
+            for &[start, end] in &emission.items {
+                for node in [start, end] {
+                    trace_work.charge(1)?;
+                    let admitted = seen.get_mut(node.0 as usize).ok_or_else(|| {
+                        GeometryErrorKind::Invalid(
+                            "subdivision emission references an unknown node".into(),
+                        )
+                    })?;
+                    if !*admitted {
+                        *admitted = true;
+                        nodes.push(node);
+                    }
+                }
+            }
+        }
+        let embedding = partition.embed_with_budget(&emission_refs, "subdivide", trace_work)?;
+        let by_node =
+            self.resolve_node_points(partition, &embedding, nodes, declared_axes, context, None)?;
+        let views = partition.source_span_trace_views(&self.source_segments, trace_work)?;
+        let mut run_plans = Vec::with_capacity(selected.len());
+        for spans in &selected {
+            run_plans.push(self.source_line_runs(
+                partition,
+                &ranges,
+                &views,
+                spans,
+                source_traces,
+                trace_work,
+            )?);
+        }
+        let mut parts = Vec::with_capacity(run_plans.len());
+        for runs in run_plans {
+            parts.push(self.emit_traced_source_line_shape(
+                source.kind(),
+                runs,
+                source_traces,
+                &by_node,
+                declared_axes,
+                strict,
+                trace_work,
+            )?);
+        }
+        let mut parts = parts.into_iter();
+        Ok([
+            parts.next().expect("two subdivision selections"),
+            parts.next().expect("two subdivision selections"),
+        ])
+    }
+
     fn subdivision_line_parts<M: ChartMetric>(
         &self,
         partition: &ExactPartition<'_>,
@@ -2446,6 +2644,168 @@ impl ExactSourceInventory {
             outputs.next().expect("two subdivision line selections"),
             outputs.next().expect("two subdivision line selections"),
         ])
+    }
+
+    fn source_line_runs<W: Work + ?Sized>(
+        &self,
+        partition: &ExactPartition<'_>,
+        ranges: &[Range<usize>],
+        views: &[Vec<SourceSpanTraceView>],
+        selected: &[bool],
+        source_traces: &[crate::geometry::topology::SourceTrace],
+        work: &mut W,
+    ) -> Result<Vec<SourceLineRun>> {
+        if source_traces.len() != ranges.len() {
+            return Err(GeometryErrorKind::Invalid(
+                "source trace rows do not match the line members".into(),
+            )
+            .into());
+        }
+        work.charge(u64::try_from(selected.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
+        let mut runs = Vec::new();
+        let mut source_offset = 0_usize;
+        for (member, range) in ranges.iter().enumerate() {
+            work.charge(1)?;
+            if range.start != source_offset {
+                return Err(GeometryErrorKind::Invalid(
+                    "line member source ranges are not contiguous".into(),
+                )
+                .into());
+            }
+            source_offset = range.end;
+            let trace = source_traces.get(member).ok_or_else(|| {
+                GeometryErrorKind::Invalid("source trace member is unknown".into())
+            })?;
+            if trace.edge_count() != range.len() {
+                return Err(GeometryErrorKind::Invalid(
+                    "source trace edge count differs from its line member".into(),
+                )
+                .into());
+            }
+            let mut run = Vec::new();
+            let mut trace_slices = Vec::new();
+            for source in range.clone() {
+                let source_views = views.get(source).ok_or_else(|| {
+                    GeometryErrorKind::Invalid(
+                        "exact subdivision line provenance lost a source segment".into(),
+                    )
+                })?;
+                for view in source_views {
+                    work.charge(1)?;
+                    let is_selected = *selected.get(view.span as usize).ok_or_else(|| {
+                        GeometryErrorKind::Invalid(
+                            "source trace span is outside the selected span table".into(),
+                        )
+                    })?;
+                    if !is_selected {
+                        push_source_line_run(
+                            &mut runs,
+                            member,
+                            &mut run,
+                            &mut trace_slices,
+                            true,
+                            work,
+                        )?;
+                        continue;
+                    }
+                    let span = *partition.spans.get(view.span as usize).ok_or_else(|| {
+                        GeometryErrorKind::Invalid("source trace span is unknown".into())
+                    })?;
+                    let (start, end) = if view.reversed {
+                        (span.end, span.start)
+                    } else {
+                        (span.start, span.end)
+                    };
+                    if run.last().is_some_and(|&last| last != start) {
+                        push_source_line_run(
+                            &mut runs,
+                            member,
+                            &mut run,
+                            &mut trace_slices,
+                            true,
+                            work,
+                        )?;
+                    }
+                    if run.is_empty() {
+                        run.reserve(2);
+                        run.push(start);
+                    }
+                    if run.last().copied() != Some(end) {
+                        run.push(end);
+                        work.charge(1)?;
+                        trace_slices.push((
+                            source
+                                .checked_sub(range.start)
+                                .ok_or(ResourceError::SizeOverflow)?,
+                            view.source_start.clone(),
+                            view.source_end.clone(),
+                        ));
+                    }
+                }
+            }
+            push_source_line_run(&mut runs, member, &mut run, &mut trace_slices, true, work)?;
+        }
+        if source_offset != views.len() {
+            return Err(GeometryErrorKind::Invalid(
+                "line member source ranges omit partition source segments".into(),
+            )
+            .into());
+        }
+        Ok(runs)
+    }
+
+    fn emit_traced_source_line_shape<W: Work + ?Sized>(
+        &self,
+        source_kind: GeometryKind,
+        runs: Vec<SourceLineRun>,
+        source_traces: &[crate::geometry::topology::SourceTrace],
+        by_node: &ResolvedNodePoints,
+        declared_axes: CoordinateAxes,
+        strict: bool,
+        work: &mut W,
+    ) -> Result<SubdivisionPart> {
+        let node_count = runs.iter().try_fold(0_usize, |count, run| {
+            count
+                .checked_add(run.nodes.len())
+                .ok_or(ResourceError::SizeOverflow)
+        })?;
+        work.charge(u64::try_from(node_count).map_err(|_| ResourceError::SizeOverflow)?)?;
+        let mut line_nodes = Vec::with_capacity(node_count);
+        for run in &runs {
+            line_nodes.extend(run.nodes.iter().copied());
+        }
+        let line_axes = bucket_axes(&line_nodes, by_node, declared_axes, strict, "subdivide")?;
+        let coordinates = by_node.coordinates();
+        let mut lines = Vec::with_capacity(runs.len());
+        for run in &runs {
+            let mut points = Vec::with_capacity(run.nodes.len());
+            for &node in &run.nodes {
+                work.charge(1)?;
+                points.push(with_axes(
+                    by_node.point(node, embedding::Embedding::xy_at(coordinates, node)),
+                    line_axes,
+                ));
+            }
+            lines.push(LineSeq::from_proven(CoordSeq::try_from_points(&points)?));
+        }
+        if lines.is_empty() {
+            return Ok(SubdivisionPart {
+                shape: Shape::typed_empty(source_kind, declared_axes),
+                traces: Some(Vec::new()),
+            });
+        }
+        work.charge(u64::try_from(runs.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
+        let mut traces = Vec::with_capacity(runs.len());
+        for run in runs {
+            let source_trace = source_traces.get(run.member).ok_or_else(|| {
+                GeometryErrorKind::Invalid("source line trace member is unknown".into())
+            })?;
+            traces.push(source_trace.compose_edges(&run.trace_slices, work)?);
+        }
+        Ok(SubdivisionPart {
+            shape: Shape::narrow_lines(line_axes, lines),
+            traces: Some(traces),
+        })
     }
 
     #[expect(
@@ -4535,6 +4895,346 @@ fn walk_exact_chain(
     Ok((nodes, chain_spans))
 }
 
+fn graph_edge_departure<E, W>(edge_nodes: &E, edge: usize, origin: u32, work: &mut W) -> Result<u32>
+where
+    E: Fn(usize) -> Result<[u32; 2]> + ?Sized,
+    W: Work + ?Sized,
+{
+    work.charge(1)?;
+    let [start, end] = edge_nodes(edge)?;
+    if start == origin {
+        Ok(end)
+    } else if end == origin {
+        Ok(start)
+    } else {
+        Err(
+            GeometryErrorKind::Invalid("graph departure edge is not incident to its origin".into())
+                .into(),
+        )
+    }
+}
+
+fn graph_contact_walk<R, E, W>(
+    points: &R,
+    topology: &IndexedTopology,
+    edge_of_slot: &[u32],
+    edge_nodes: &E,
+    edge: usize,
+    work: &mut W,
+) -> Result<u32>
+where
+    R: RayPoints + ?Sized,
+    E: Fn(usize) -> Result<[u32; 2]> + ?Sized,
+    W: Work + ?Sized,
+{
+    work.charge(1)?;
+    let [start, end] = edge_nodes(edge)?;
+    let upper = match points.compare_axis(start, end, Axis::Y)? {
+        Ordering::Less => end,
+        Ordering::Greater => start,
+        Ordering::Equal => {
+            return Err(
+                GeometryErrorKind::Invalid("leftward ray contact is horizontal".into()).into(),
+            );
+        },
+    };
+    let start = *topology.starts.get(upper as usize).ok_or_else(|| {
+        GeometryErrorKind::Invalid("leftward ray contact node has no departure row".into())
+    })? as usize;
+    let end = *topology
+        .starts
+        .get(
+            (upper as usize)
+                .checked_add(1)
+                .ok_or(ResourceError::SizeOverflow)?,
+        )
+        .ok_or_else(|| {
+            GeometryErrorKind::Invalid("leftward ray contact row is incomplete".into())
+        })? as usize;
+    for slot in start..end {
+        work.charge(1)?;
+        if edge_of_slot.get(slot).copied()
+            == Some(u32::try_from(edge).map_err(|_| ResourceError::SizeOverflow)?)
+        {
+            let face = *topology.face_of.get(slot).ok_or_else(|| {
+                GeometryErrorKind::Invalid("leftward ray contact has no face walk".into())
+            })?;
+            return face
+                .checked_add(1)
+                .ok_or(ResourceError::SizeOverflow.into());
+        }
+    }
+    Err(
+        GeometryErrorKind::Invalid("leftward ray contact edge has no upper-end departure".into())
+            .into(),
+    )
+}
+
+fn graph_exterior_walk<R, E, W>(
+    points: &R,
+    topology: &IndexedTopology,
+    edge_of_slot: &[u32],
+    edge_nodes: &E,
+    root: u32,
+    work: &mut W,
+) -> Result<Option<u32>>
+where
+    R: RayPoints + ?Sized,
+    E: Fn(usize) -> Result<[u32; 2]> + ?Sized,
+    W: Work + ?Sized,
+{
+    let start = *topology.starts.get(root as usize).ok_or_else(|| {
+        GeometryErrorKind::Invalid("graph component root has no departure row".into())
+    })? as usize;
+    let end = *topology
+        .starts
+        .get(
+            (root as usize)
+                .checked_add(1)
+                .ok_or(ResourceError::SizeOverflow)?,
+        )
+        .ok_or_else(|| {
+            GeometryErrorKind::Invalid("graph component root row is incomplete".into())
+        })? as usize;
+    let mut chosen = None;
+    let mut has_upper = false;
+    for slot in start..end {
+        work.charge(1)?;
+        let target = *topology.targets.get(slot).ok_or_else(|| {
+            GeometryErrorKind::Invalid("graph component departure has no target".into())
+        })?;
+        work.charge(1)?;
+        let upper = !points.compare_axis(target, root, Axis::Y)?.is_lt();
+        if chosen.is_none() || (upper && !has_upper) {
+            chosen = Some(slot);
+            has_upper = upper;
+            continue;
+        }
+        if upper != has_upper {
+            continue;
+        }
+        let previous = chosen.ok_or_else(|| {
+            GeometryErrorKind::Invalid("graph exterior fan lost its chosen departure".into())
+        })?;
+        let previous_edge = *edge_of_slot.get(previous).ok_or_else(|| {
+            GeometryErrorKind::Invalid("graph exterior fan references an unknown edge".into())
+        })? as usize;
+        let current_edge = *edge_of_slot.get(slot).ok_or_else(|| {
+            GeometryErrorKind::Invalid("graph exterior fan references an unknown edge".into())
+        })? as usize;
+        let previous_target = graph_edge_departure(edge_nodes, previous_edge, root, work)?;
+        let current_target = graph_edge_departure(edge_nodes, current_edge, root, work)?;
+        if compare_departures_with_work(points, root, previous_target, current_target, work)?
+            == Ordering::Less
+        {
+            chosen = Some(slot);
+        }
+    }
+    chosen
+        .map(|slot| {
+            topology.face_of.get(slot).copied().ok_or_else(|| {
+                GeometryErrorKind::Invalid("graph exterior departure has no face".into()).into()
+            })
+        })
+        .transpose()
+}
+
+pub(in crate::geometry) fn graph_global_faces_with_work<R, E, W>(
+    points: &R,
+    topology: &IndexedTopology,
+    edge_count: usize,
+    edge_nodes: E,
+    edge_of_slot: &[u32],
+    work: &mut W,
+) -> Result<GlobalFaces>
+where
+    R: RayPoints + ?Sized,
+    E: Fn(usize) -> Result<[u32; 2]>,
+    W: Work + ?Sized,
+{
+    let node_count = topology.component_of.len();
+    let slots = edge_count
+        .checked_mul(2)
+        .ok_or(ResourceError::SizeOverflow)?;
+    if edge_of_slot.len() != slots
+        || topology.targets.len() != slots
+        || topology.face_of.len() != slots
+        || topology.starts.len()
+            != node_count
+                .checked_add(1)
+                .ok_or(ResourceError::SizeOverflow)?
+    {
+        return Err(GeometryErrorKind::Invalid(
+            "graph face inputs do not share one indexed topology".into(),
+        )
+        .into());
+    }
+    work.charge(u64::try_from(node_count).map_err(|_| ResourceError::SizeOverflow)?)?;
+    let mut component_count = 0_usize;
+    for &component in &topology.component_of {
+        work.charge(1)?;
+        component_count = component_count.max(
+            usize::try_from(component)
+                .map_err(|_| ResourceError::SizeOverflow)?
+                .checked_add(1)
+                .ok_or(ResourceError::SizeOverflow)?,
+        );
+    }
+    work.charge(u64::try_from(component_count).map_err(|_| ResourceError::SizeOverflow)?)?;
+    let mut minima = vec![None; component_count];
+    for (node, &component) in topology.component_of.iter().enumerate() {
+        work.charge(1)?;
+        let component = usize::try_from(component).map_err(|_| ResourceError::SizeOverflow)?;
+        let minimum = minima.get_mut(component).ok_or_else(|| {
+            GeometryErrorKind::Invalid("indexed graph component ID is unknown".into())
+        })?;
+        let node = u32::try_from(node).map_err(|_| ResourceError::SizeOverflow)?;
+        if let Some(previous) = *minimum {
+            work.charge(1)?;
+            let x = points.compare_axis(node, previous, Axis::X)?;
+            let order = if x.is_eq() {
+                work.charge(1)?;
+                points.compare_axis(node, previous, Axis::Y)?
+            } else {
+                x
+            };
+            if order.is_lt() {
+                *minimum = Some(node);
+            }
+        } else {
+            *minimum = Some(node);
+        }
+    }
+    work.charge(u64::try_from(component_count).map_err(|_| ResourceError::SizeOverflow)?)?;
+    let mut roots = Vec::with_capacity(component_count);
+    for minimum in minima {
+        work.charge(1)?;
+        roots.push(minimum.ok_or_else(|| {
+            GeometryErrorKind::Invalid("indexed graph component has no root node".into())
+        })?);
+    }
+
+    let walks = topology.face_starts.len().checked_sub(1).ok_or_else(|| {
+        GeometryErrorKind::Invalid("indexed graph face starts have no initial sentinel".into())
+    })?;
+    let size = walks.checked_add(1).ok_or(ResourceError::SizeOverflow)?;
+    let limit = u32::try_from(size).map_err(|_| ResourceError::SizeOverflow)?;
+    work.charge(u64::try_from(size).map_err(|_| ResourceError::SizeOverflow)?)?;
+    let mut links: Vec<u32> = (0..limit).collect();
+    work.charge(u64::try_from(component_count).map_err(|_| ResourceError::SizeOverflow)?)?;
+    let mut component_hosts = Vec::with_capacity(component_count);
+    let hits = if roots.len() == 1 {
+        work.charge(1)?;
+        vec![None]
+    } else {
+        shoot_left_with_work(points, edge_count, |edge| edge_nodes(edge), &roots, work)?
+    };
+    if hits.len() != roots.len() {
+        return Err(GeometryErrorKind::Invalid(
+            "leftward ray sweep returned an incomplete component-host table".into(),
+        )
+        .into());
+    }
+    for (&root, hit) in roots.iter().zip(hits) {
+        work.charge(1)?;
+        let host = if let Some(edge) = hit {
+            graph_contact_walk(points, topology, edge_of_slot, &edge_nodes, edge, work)?
+        } else {
+            0
+        };
+        component_hosts.push(host);
+        if let Some(exterior) =
+            graph_exterior_walk(points, topology, edge_of_slot, &edge_nodes, root, work)?
+        {
+            let link = usize::try_from(exterior)
+                .map_err(|_| ResourceError::SizeOverflow)?
+                .checked_add(1)
+                .ok_or(ResourceError::SizeOverflow)?;
+            *links.get_mut(link).ok_or_else(|| {
+                GeometryErrorKind::Invalid("graph exterior face link is unknown".into())
+            })? = host;
+        }
+    }
+
+    for start in 1..size {
+        work.charge(1)?;
+        let mut root = u32::try_from(start).map_err(|_| ResourceError::SizeOverflow)?;
+        let mut steps = 0_usize;
+        loop {
+            work.charge(1)?;
+            let parent = *links.get(root as usize).ok_or_else(|| {
+                GeometryErrorKind::Invalid("graph face link is outside its table".into())
+            })?;
+            if parent == root {
+                break;
+            }
+            root = parent;
+            steps = steps.checked_add(1).ok_or(ResourceError::SizeOverflow)?;
+            if steps >= size {
+                return Err(GeometryErrorKind::Invalid(
+                    "graph component exterior links contain a cycle".into(),
+                )
+                .into());
+            }
+        }
+        let mut node = u32::try_from(start).map_err(|_| ResourceError::SizeOverflow)?;
+        let mut steps = 0_usize;
+        loop {
+            work.charge(1)?;
+            let parent = *links.get(node as usize).ok_or_else(|| {
+                GeometryErrorKind::Invalid("graph face link is outside its table".into())
+            })?;
+            if parent == root {
+                break;
+            }
+            *links.get_mut(node as usize).ok_or_else(|| {
+                GeometryErrorKind::Invalid("graph face link is outside its table".into())
+            })? = root;
+            node = parent;
+            steps = steps.checked_add(1).ok_or(ResourceError::SizeOverflow)?;
+            if steps >= size {
+                return Err(GeometryErrorKind::Invalid(
+                    "graph component exterior links contain a cycle".into(),
+                )
+                .into());
+            }
+        }
+    }
+
+    work.charge(u64::try_from(size).map_err(|_| ResourceError::SizeOverflow)?)?;
+    let mut labels = vec![0_u32; size];
+    let mut count = 1_u32;
+    for node in 1..size {
+        work.charge(1)?;
+        if links[node] == node as u32 {
+            labels[node] = count;
+            count = count.checked_add(1).ok_or(ResourceError::SizeOverflow)?;
+        }
+    }
+    for host in &mut component_hosts {
+        work.charge(1)?;
+        let root = *links.get(*host as usize).ok_or_else(|| {
+            GeometryErrorKind::Invalid("graph component host is outside its link table".into())
+        })?;
+        *host = *labels.get(root as usize).ok_or_else(|| {
+            GeometryErrorKind::Invalid("graph component host has no global label".into())
+        })?;
+    }
+    work.charge(u64::try_from(walks).map_err(|_| ResourceError::SizeOverflow)?)?;
+    let mut walk_faces = Vec::with_capacity(walks);
+    for &root in links.iter().skip(1) {
+        work.charge(1)?;
+        walk_faces.push(*labels.get(root as usize).ok_or_else(|| {
+            GeometryErrorKind::Invalid("graph local face has no global label".into())
+        })?);
+    }
+    Ok(GlobalFaces {
+        walk_faces,
+        component_hosts,
+        count,
+    })
+}
+
 impl ExactPartition<'_> {
     pub(in crate::geometry) const fn node_count(&self) -> usize {
         self.points.len()
@@ -4664,6 +5364,61 @@ impl ExactPartition<'_> {
             *view = ordered;
         }
         Ok(views)
+    }
+
+    fn source_span_trace_views<W: Work + ?Sized>(
+        &self,
+        source_segments: &[Segment],
+        work: &mut W,
+    ) -> Result<Vec<Vec<SourceSpanTraceView>>> {
+        let views = self.source_span_views(source_segments)?;
+        let total = views.iter().try_fold(0_usize, |count, row| {
+            count
+                .checked_add(row.len())
+                .ok_or(ResourceError::SizeOverflow)
+        })?;
+        work.charge(u64::try_from(total).map_err(|_| ResourceError::SizeOverflow)?)?;
+        let mut traced = Vec::with_capacity(views.len());
+        for (source, row) in views.into_iter().enumerate() {
+            work.charge(1)?;
+            let segment = *source_segments.get(source).ok_or_else(|| {
+                GeometryErrorKind::Invalid("source span trace row is unknown".into())
+            })?;
+            let mut output = Vec::with_capacity(row.len());
+            for (span, reversed) in row {
+                work.charge(1)?;
+                let span_data = self.spans.get(span as usize).ok_or_else(|| {
+                    GeometryErrorKind::Invalid(
+                        "source span trace references an unknown exact span".into(),
+                    )
+                })?;
+                let [start, end] = if reversed {
+                    [span_data.end, span_data.start]
+                } else {
+                    [span_data.start, span_data.end]
+                };
+                let start_point = self.exact(start)?;
+                let end_point = self.exact(end)?;
+                let [start_numerator, start_denominator] = parameter_along(segment, &start_point)?;
+                let [end_numerator, end_denominator] = parameter_along(segment, &end_point)?;
+                let source_start = ExactRational::new(start_numerator, start_denominator)?;
+                let source_end = ExactRational::new(end_numerator, end_denominator)?;
+                if source_start.try_cmp(&source_end)?.is_ge() {
+                    return Err(GeometryErrorKind::Invalid(
+                        "source span trace does not advance along its edge".into(),
+                    )
+                    .into());
+                }
+                output.push(SourceSpanTraceView {
+                    span,
+                    reversed,
+                    source_start,
+                    source_end,
+                });
+            }
+            traced.push(output);
+        }
+        Ok(traced)
     }
 
     /// Build maximal chain views directly from exact span incidence.

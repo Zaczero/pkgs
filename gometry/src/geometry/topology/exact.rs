@@ -15,11 +15,12 @@ use crate::geographic::{
     ScalarGeographicView, SeamIdentity,
 };
 use crate::geometry::exact_arith::ExactSign;
-use crate::geometry::segments::try_sort_by;
+use crate::geometry::segments::try_sort_by_with_work;
 use crate::geometry::tessellation::exact::{CompactLimbs, ExactDyadic, ExactRational};
 use crate::geometry::{
     Bounds, Component, Coordinates as _, ExpansionBudget, GeometryErrorKind, Point, Polygon,
-    RingKind, Segment, Shape, XY, for_each_candidate_pair, for_each_overlapping_bounds_cross_pair,
+    RingKind, Segment, Shape, Unmetered, Work, XY, for_each_candidate_pair,
+    for_each_overlapping_bounds_cross_pair,
 };
 
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -41,9 +42,9 @@ pub(super) struct SourceEdgeId(pub u32);
 pub(super) struct ChartPieceId(pub u32);
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(super) struct ExactChartPoint {
-    pub(super) x: ExactRational,
-    pub(super) y: ExactRational,
+pub(in crate::geometry) struct ExactChartPoint {
+    pub(in crate::geometry) x: ExactRational,
+    pub(in crate::geometry) y: ExactRational,
 }
 
 #[expect(
@@ -90,32 +91,56 @@ impl ExactChartPoint {
         }
     }
 
-    pub(super) const fn from_rationals(x: ExactRational, y: ExactRational) -> Self {
+    pub(in crate::geometry) const fn from_rationals(x: ExactRational, y: ExactRational) -> Self {
         Self { x, y }
     }
 
-    pub(super) fn same_position(&self, other: &Self) -> Result<bool> {
+    pub(in crate::geometry) fn try_clone_with_work(&self, work: &mut impl Work) -> Result<Self> {
+        Ok(Self {
+            x: self.x.try_clone_with_work(work)?,
+            y: self.y.try_clone_with_work(work)?,
+        })
+    }
+
+    pub(in crate::geometry) fn same_position(&self, other: &Self) -> Result<bool> {
         Ok(self.x.try_cmp(&other.x)?.is_eq() && self.y.try_cmp(&other.y)?.is_eq())
     }
 
-    pub(super) fn compare_lex(&self, other: &Self) -> Result<Ordering> {
-        let x = self.x.try_cmp(&other.x)?;
+    pub(in crate::geometry) fn try_eq_with_work(
+        &self,
+        other: &Self,
+        work: &mut impl Work,
+    ) -> Result<bool> {
+        Ok(self.x.try_eq_with_work(&other.x, work)? && self.y.try_eq_with_work(&other.y, work)?)
+    }
+
+    pub(in crate::geometry) fn compare_lex(&self, other: &Self) -> Result<Ordering> {
+        let mut work = Unmetered;
+        self.compare_lex_with_work(other, &mut work)
+    }
+
+    pub(in crate::geometry) fn compare_lex_with_work(
+        &self,
+        other: &Self,
+        work: &mut impl Work,
+    ) -> Result<Ordering> {
+        let x = self.x.try_cmp_with_work(&other.x, work)?;
         Ok(if x.is_eq() {
-            self.y.try_cmp(&other.y)?
+            self.y.try_cmp_with_work(&other.y, work)?
         } else {
             x
         })
     }
 
-    pub(super) fn compare_x(&self, other: &Self) -> Result<Ordering> {
+    pub(in crate::geometry) fn compare_x(&self, other: &Self) -> Result<Ordering> {
         self.x.try_cmp(&other.x)
     }
 
-    pub(super) fn compare_y(&self, other: &Self) -> Result<Ordering> {
+    pub(in crate::geometry) fn compare_y(&self, other: &Self) -> Result<Ordering> {
         self.y.try_cmp(&other.y)
     }
 
-    pub(super) fn outward_bounds(&self) -> Result<[f64; 4]> {
+    pub(in crate::geometry) fn outward_bounds(&self) -> Result<[f64; 4]> {
         let (min_x, max_x) = self.x.outward_bounds()?;
         let (min_y, max_y) = self.y.outward_bounds()?;
         Ok([min_x, min_y, max_x, max_y])
@@ -184,31 +209,83 @@ pub(super) fn quotient_key(
     frame: GeographicFrame,
     point: &ExactChartPoint,
 ) -> Result<ExactQuotientKey> {
+    let mut work = Unmetered;
+    quotient_key_with_work(frame, point, &mut work)
+}
+
+pub(super) fn quotient_key_with_work(
+    frame: GeographicFrame,
+    point: &ExactChartPoint,
+    work: &mut impl Work,
+) -> Result<ExactQuotientKey> {
     let north =
         ExactRational::from_f64(frame.chart_pole_latitude(crate::geographic::ChartPole::North));
     let south =
         ExactRational::from_f64(frame.chart_pole_latitude(crate::geographic::ChartPole::South));
-    if point.y.try_cmp(&north)?.is_eq() {
+    if point.y.try_cmp_with_work(&north, work)?.is_eq() {
         return Ok(ExactQuotientKey::NorthPole);
     }
-    if point.y.try_cmp(&south)?.is_eq() {
+    if point.y.try_cmp_with_work(&south, work)?.is_eq() {
         return Ok(ExactQuotientKey::SouthPole);
     }
     let half = ExactRational::from_f64(frame.longitude().half_period());
-    if point.x.try_cmp(&half)?.is_eq()
+    if point.x.try_cmp_with_work(&half, work)?.is_eq()
         || point
             .x
-            .try_cmp(&half.try_subtract(&ExactRational::from_f64(frame.longitude().period()))?)?
+            .try_cmp_with_work(
+                &half.try_subtract_with_work(
+                    &ExactRational::from_f64(frame.longitude().period()),
+                    work,
+                )?,
+                work,
+            )?
             .is_eq()
     {
-        return Ok(ExactQuotientKey::Seam(point.y.clone()));
+        return Ok(ExactQuotientKey::Seam(point.y.try_clone_with_work(work)?));
     }
-    Ok(ExactQuotientKey::Coordinate(point.clone()))
+    Ok(ExactQuotientKey::Coordinate(
+        point.try_clone_with_work(work)?,
+    ))
+}
+
+pub(super) fn quotient_key_for_chart_position(
+    frame: GeographicFrame,
+    point: &ExactChartPoint,
+) -> Result<ExactQuotientKey> {
+    let mut work = Unmetered;
+    quotient_key_for_chart_position_with_work(frame, point, &mut work)
+}
+
+pub(super) fn quotient_key_for_chart_position_with_work(
+    frame: GeographicFrame,
+    point: &ExactChartPoint,
+    work: &mut impl Work,
+) -> Result<ExactQuotientKey> {
+    let (native, _) = crate::geometry::exact_arith::split_rational_native_site_with_work(
+        &point.x,
+        frame.longitude().period(),
+        frame.longitude().half_period(),
+        work,
+    )?;
+    quotient_key_with_work(
+        frame,
+        &ExactChartPoint::from_rationals(native.into_owned(), point.y.try_clone_with_work(work)?),
+        work,
+    )
 }
 
 pub(super) fn compare_quotient_keys(
     left: &ExactQuotientKey,
     right: &ExactQuotientKey,
+) -> Result<Ordering> {
+    let mut work = Unmetered;
+    compare_quotient_keys_with_work(left, right, &mut work)
+}
+
+pub(super) fn compare_quotient_keys_with_work(
+    left: &ExactQuotientKey,
+    right: &ExactQuotientKey,
+    work: &mut impl Work,
 ) -> Result<Ordering> {
     use ExactQuotientKey::{Coordinate, NorthPole, Seam, SouthPole};
     let rank = |key: &ExactQuotientKey| match key {
@@ -222,8 +299,8 @@ pub(super) fn compare_quotient_keys(
         return Ok(rank_order);
     }
     match (left, right) {
-        (Coordinate(left), Coordinate(right)) => left.compare_lex(right),
-        (Seam(left), Seam(right)) => left.try_cmp(right),
+        (Coordinate(left), Coordinate(right)) => left.compare_lex_with_work(right, work),
+        (Seam(left), Seam(right)) => left.try_cmp_with_work(right, work),
         (NorthPole, NorthPole) | (SouthPole, SouthPole) => Ok(Ordering::Equal),
         _ => unreachable!("equal quotient-key ranks have the same variant"),
     }
@@ -234,10 +311,26 @@ pub(super) fn compare_quotient_keys(
     clippy::arithmetic_side_effects,
     reason = "binary-search bounds remain within the sorted exact chart-port slice"
 )]
+#[cfg(test)]
 fn find_chart_port(ports: &[ChartPort], point: &ExactChartPoint) -> Result<ChartPortId> {
+    let mut work = Unmetered;
+    find_chart_port_with_work(ports, point, &mut work)
+}
+
+#[expect(
+    clippy::indexing_slicing,
+    clippy::arithmetic_side_effects,
+    reason = "binary-search bounds remain within the sorted exact chart-port slice"
+)]
+fn find_chart_port_with_work<W: Work + ?Sized>(
+    ports: &[ChartPort],
+    point: &ExactChartPoint,
+    work: &mut W,
+) -> Result<ChartPortId> {
     let mut low = 0_usize;
     let mut high = ports.len();
     while low < high {
+        work.charge(1)?;
         let middle = low + (high - low) / 2;
         match ports[middle].point.compare_lex(point)? {
             Ordering::Less => low = middle + 1,
@@ -259,46 +352,77 @@ pub(super) fn source_chart_point(frame: GeographicFrame, point: Point) -> ExactC
     )
 }
 
-pub(super) fn vector_difference(
+pub(in crate::geometry) fn vector_difference(
     start: &ExactChartPoint,
     end: &ExactChartPoint,
 ) -> Result<(ExactRational, ExactRational)> {
-    Ok((end.x.try_subtract(&start.x)?, end.y.try_subtract(&start.y)?))
+    let mut work = Unmetered;
+    vector_difference_with_work(start, end, &mut work)
 }
 
-pub(super) fn vector_cross(
+pub(in crate::geometry) fn vector_difference_with_work(
+    start: &ExactChartPoint,
+    end: &ExactChartPoint,
+    work: &mut impl Work,
+) -> Result<(ExactRational, ExactRational)> {
+    Ok((
+        end.x.try_subtract_with_work(&start.x, work)?,
+        end.y.try_subtract_with_work(&start.y, work)?,
+    ))
+}
+
+pub(in crate::geometry) fn vector_cross(
     left: &(ExactRational, ExactRational),
     right: &(ExactRational, ExactRational),
 ) -> Result<ExactRational> {
-    left.0
-        .try_product(&right.1)?
-        .try_subtract(&left.1.try_product(&right.0)?)
+    let mut work = Unmetered;
+    vector_cross_with_work(left, right, &mut work)
 }
 
-pub(super) fn point_on_exact_segment(
+pub(in crate::geometry) fn vector_cross_with_work(
+    left: &(ExactRational, ExactRational),
+    right: &(ExactRational, ExactRational),
+    work: &mut impl Work,
+) -> Result<ExactRational> {
+    left.0
+        .try_product_with_work(&right.1, work)?
+        .try_subtract_with_work(&left.1.try_product_with_work(&right.0, work)?, work)
+}
+
+pub(in crate::geometry) fn point_on_exact_segment(
     point: &ExactChartPoint,
     start: &ExactChartPoint,
     end: &ExactChartPoint,
 ) -> Result<bool> {
-    let line = vector_difference(start, end)?;
-    let offset = vector_difference(start, point)?;
-    if !vector_cross(&line, &offset)?.is_zero() {
+    let mut work = Unmetered;
+    point_on_exact_segment_with_work(point, start, end, &mut work)
+}
+
+pub(in crate::geometry) fn point_on_exact_segment_with_work(
+    point: &ExactChartPoint,
+    start: &ExactChartPoint,
+    end: &ExactChartPoint,
+    work: &mut impl Work,
+) -> Result<bool> {
+    let line = vector_difference_with_work(start, end, work)?;
+    let offset = vector_difference_with_work(start, point, work)?;
+    if !vector_cross_with_work(&line, &offset, work)?.is_zero() {
         return Ok(false);
     }
-    let (min_x, max_x) = if start.compare_x(end)?.is_le() {
+    let (min_x, max_x) = if start.x.try_cmp_with_work(&end.x, work)?.is_le() {
         (&start.x, &end.x)
     } else {
         (&end.x, &start.x)
     };
-    let (min_y, max_y) = if start.compare_y(end)?.is_le() {
+    let (min_y, max_y) = if start.y.try_cmp_with_work(&end.y, work)?.is_le() {
         (&start.y, &end.y)
     } else {
         (&end.y, &start.y)
     };
-    Ok(point.x.try_cmp(min_x)?.is_ge()
-        && point.x.try_cmp(max_x)?.is_le()
-        && point.y.try_cmp(min_y)?.is_ge()
-        && point.y.try_cmp(max_y)?.is_le())
+    Ok(point.x.try_cmp_with_work(min_x, work)?.is_ge()
+        && point.x.try_cmp_with_work(max_x, work)?.is_le()
+        && point.y.try_cmp_with_work(min_y, work)?.is_ge()
+        && point.y.try_cmp_with_work(max_y, work)?.is_le())
 }
 
 pub(super) fn parameter_on_exact_segment(
@@ -337,10 +461,18 @@ pub(super) fn interpolate_exact_segment(
 }
 
 pub(super) fn in_unit_interval(parameter: &ExactRational) -> Result<bool> {
-    Ok(
-        parameter.sign() != ExactSign::Negative
-            && parameter.try_cmp(&ExactRational::one())?.is_le(),
-    )
+    let mut work = Unmetered;
+    in_unit_interval_with_work(parameter, &mut work)
+}
+
+pub(in crate::geometry) fn in_unit_interval_with_work(
+    parameter: &ExactRational,
+    work: &mut impl Work,
+) -> Result<bool> {
+    Ok(parameter.sign() != ExactSign::Negative
+        && parameter
+            .try_cmp_with_work(&ExactRational::one(), work)?
+            .is_le())
 }
 
 fn compare_cut_events(left: &CutEvent, right: &CutEvent) -> Result<Ordering> {
@@ -352,14 +484,17 @@ fn compare_cut_events(left: &CutEvent, right: &CutEvent) -> Result<Ordering> {
     })
 }
 
-fn insert_cut_event(
+fn insert_cut_event<W: Work + ?Sized>(
     cuts: &mut FallibleAvl<CutEvent>,
     piece: &ExactChartPiece,
     parameter: ExactRational,
     point: ExactChartPoint,
-    compare: &mut impl FnMut(&CutEvent, &CutEvent) -> Result<Ordering>,
+    work: &mut W,
+    compare: &mut impl FnMut(&CutEvent, &CutEvent, &mut W) -> Result<Ordering>,
 ) -> Result<()> {
+    work.charge(1)?;
     if parameter.is_zero() {
+        work.charge(1)?;
         if !point.same_position(&piece.start)? {
             return Err(GeometryErrorKind::Invalid(
                 "an exact source-start parameter produced a different chart point".into(),
@@ -369,6 +504,7 @@ fn insert_cut_event(
         return Ok(());
     }
     if parameter.is_one() {
+        work.charge(1)?;
         if !point.same_position(&piece.end)? {
             return Err(GeometryErrorKind::Invalid(
                 "an exact source-end parameter produced a different chart point".into(),
@@ -382,9 +518,10 @@ fn insert_cut_event(
         parameter,
         point,
     };
-    if !cuts.insert(event.clone(), compare)?
+    work.charge(1)?;
+    if !cuts.insert_with_work(event.clone(), work, compare)?
         && !cuts
-            .get(&event, compare)?
+            .get_with_work(&event, work, compare)?
             .expect("a duplicate exact cut remains in its owner tree")
             .point
             .same_position(&event.point)?
@@ -397,48 +534,57 @@ fn insert_cut_event(
     Ok(())
 }
 
-fn exact_piece_contacts(
+fn exact_piece_contacts<W: Work + ?Sized>(
     left: &ExactChartPiece,
     right: &ExactChartPiece,
-    mut contact: impl FnMut(ExactChartPoint, ExactRational, ExactRational) -> Result<()>,
+    work: &mut W,
+    mut contact: impl FnMut(ExactChartPoint, ExactRational, ExactRational, &mut W) -> Result<()>,
 ) -> Result<()> {
+    work.charge(1)?;
     let r = vector_difference(&left.start, &left.end)?;
+    work.charge(1)?;
     let s = vector_difference(&right.start, &right.end)?;
+    work.charge(1)?;
     let q_minus_p = vector_difference(&left.start, &right.start)?;
+    work.charge(1)?;
     let denominator = vector_cross(&r, &s)?;
     if denominator.is_zero() {
+        work.charge(1)?;
         if !vector_cross(&q_minus_p, &r)?.is_zero() {
             return Ok(());
         }
-        for point in [
-            left.start.clone(),
-            left.end.clone(),
-            right.start.clone(),
-            right.end.clone(),
-        ] {
-            if point_on_exact_segment(&point, &left.start, &left.end)?
-                && point_on_exact_segment(&point, &right.start, &right.end)?
+        for point in [&left.start, &left.end, &right.start, &right.end] {
+            work.charge(1)?;
+            if point_on_exact_segment(point, &left.start, &left.end)?
+                && point_on_exact_segment(point, &right.start, &right.end)?
             {
+                work.charge(2)?;
                 contact(
-                    point.clone(),
-                    parameter_on_exact_segment(&point, &left.start, &left.end)?,
-                    parameter_on_exact_segment(&point, &right.start, &right.end)?,
+                    (*point).clone(),
+                    parameter_on_exact_segment(point, &left.start, &left.end)?,
+                    parameter_on_exact_segment(point, &right.start, &right.end)?,
+                    work,
                 )?;
             }
         }
         return Ok(());
     }
 
+    work.charge(1)?;
     let left_parameter = vector_cross(&q_minus_p, &s)?.try_quotient(&denominator)?;
+    work.charge(1)?;
     if !in_unit_interval(&left_parameter)? {
         return Ok(());
     }
+    work.charge(1)?;
     let right_parameter = vector_cross(&q_minus_p, &r)?.try_quotient(&denominator)?;
+    work.charge(1)?;
     if !in_unit_interval(&right_parameter)? {
         return Ok(());
     }
+    work.charge(1)?;
     let point = interpolate_exact_segment(&left.start, &left.end, &left_parameter)?;
-    contact(point, left_parameter, right_parameter)
+    contact(point, left_parameter, right_parameter, work)
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -448,16 +594,26 @@ pub(super) struct ExactSourceRange {
 }
 
 impl ExactSourceRange {
-    pub(super) fn compose(
+    pub(super) fn compose_with_work(
         &self,
         local_start: &ExactRational,
         local_end: &ExactRational,
+        work: &mut impl Work,
     ) -> Result<Self> {
-        let width = self.end.try_subtract(&self.start)?;
+        let width = self.end.try_subtract_with_work(&self.start, work)?;
         Ok(Self {
-            start: self.start.try_add(&width.try_product(local_start)?)?,
-            end: self.start.try_add(&width.try_product(local_end)?)?,
+            start: self
+                .start
+                .try_add_with_work(&width.try_product_with_work(local_start, work)?, work)?,
+            end: self
+                .start
+                .try_add_with_work(&width.try_product_with_work(local_end, work)?, work)?,
         })
+    }
+
+    pub(super) fn try_eq_with_work(&self, other: &Self, work: &mut impl Work) -> Result<bool> {
+        Ok(self.start.try_eq_with_work(&other.start, work)?
+            && self.end.try_eq_with_work(&other.end, work)?)
     }
 }
 
@@ -486,6 +642,46 @@ pub(super) struct ExactSourceEdge {
 impl ExactSourceEdge {
     pub(super) const fn retained_longitude(&self) -> RetainedChartDisplacement {
         self.longitude
+    }
+
+    pub(super) fn source_interval_reads_as(
+        &self,
+        frame: GeographicFrame,
+        reversed: bool,
+        start: Point,
+        end: Point,
+    ) -> Result<bool> {
+        let [source_start, source_end] = if reversed {
+            [self.source[1], self.source[0]]
+        } else {
+            self.source
+        };
+        let longitude = if reversed {
+            let [first, second] = *self.longitude.endpoints();
+            RetainedChartDisplacement::from_native_endpoints(
+                [second, first],
+                self.longitude
+                    .periods()
+                    .checked_neg()
+                    .ok_or(ResourceError::SizeOverflow)?,
+            )
+        } else {
+            self.longitude
+        };
+        let readback = frame
+            .longitude()
+            .chart_step(start.x, end.x)
+            .map_err(|error| GeometryErrorKind::Invalid(error.to_string().into()))?;
+        crate::geometry::exact_arith::retained_source_interval_reads_as(
+            longitude,
+            frame,
+            [source_start.y, source_end.y],
+            0.0,
+            1.0,
+            readback,
+            start,
+            end,
+        )
     }
 }
 
@@ -591,6 +787,10 @@ impl<T> FallibleAvl<T> {
         }
     }
 
+    pub(super) const fn len(&self) -> usize {
+        self.nodes.len()
+    }
+
     #[cfg(test)]
     pub(super) fn tree_height(&self) -> usize {
         self.height(self.root)
@@ -661,13 +861,26 @@ impl<T> FallibleAvl<T> {
         value: T,
         compare: &mut impl FnMut(&T, &T) -> Result<Ordering>,
     ) -> Result<bool> {
-        fn descend<T>(
+        let mut work = Unmetered;
+        self.insert_with_work(value, &mut work, |left, right, _work| compare(left, right))
+    }
+
+    pub(super) fn insert_with_work<W: Work + ?Sized>(
+        &mut self,
+        value: T,
+        work: &mut W,
+        compare: &mut impl FnMut(&T, &T, &mut W) -> Result<Ordering>,
+    ) -> Result<bool> {
+        fn descend<T, W: Work + ?Sized>(
             tree: &mut FallibleAvl<T>,
             root: Option<usize>,
             value: T,
-            compare: &mut impl FnMut(&T, &T) -> Result<Ordering>,
+            work: &mut W,
+            compare: &mut impl FnMut(&T, &T, &mut W) -> Result<Ordering>,
         ) -> Result<(usize, bool)> {
+            work.charge(1)?;
             let Some(root) = root else {
+                work.charge(1)?;
                 let index = tree.nodes.len();
                 tree.nodes.push(AvlNode {
                     value,
@@ -677,22 +890,28 @@ impl<T> FallibleAvl<T> {
                 });
                 return Ok((index, true));
             };
-            match compare(&value, &tree.nodes[root].value)? {
+            work.charge(1)?;
+            match compare(&value, &tree.nodes[root].value, work)? {
                 Ordering::Equal => Ok((root, false)),
                 Ordering::Less => {
-                    let (left, inserted) = descend(tree, tree.nodes[root].left, value, compare)?;
+                    let (left, inserted) =
+                        descend(tree, tree.nodes[root].left, value, work, compare)?;
+                    work.charge(1)?;
                     tree.nodes[root].left = Some(left);
                     Ok((tree.balance(root), inserted))
                 },
                 Ordering::Greater => {
-                    let (right, inserted) = descend(tree, tree.nodes[root].right, value, compare)?;
+                    let (right, inserted) =
+                        descend(tree, tree.nodes[root].right, value, work, compare)?;
+                    work.charge(1)?;
                     tree.nodes[root].right = Some(right);
                     Ok((tree.balance(root), inserted))
                 },
             }
         }
 
-        let (root, inserted) = descend(self, self.root, value, compare)?;
+        let (root, inserted) = descend(self, self.root, value, work, compare)?;
+        work.charge(1)?;
         self.root = Some(root);
         Ok(inserted)
     }
@@ -702,9 +921,22 @@ impl<T> FallibleAvl<T> {
         value: &T,
         compare: &mut impl FnMut(&T, &T) -> Result<Ordering>,
     ) -> Result<Option<&T>> {
+        let mut work = Unmetered;
+        self.get_with_work(value, &mut work, &mut |left, right, _work| {
+            compare(left, right)
+        })
+    }
+
+    pub(super) fn get_with_work<W: Work + ?Sized>(
+        &self,
+        value: &T,
+        work: &mut W,
+        compare: &mut impl FnMut(&T, &T, &mut W) -> Result<Ordering>,
+    ) -> Result<Option<&T>> {
         let mut cursor = self.root;
         while let Some(index) = cursor {
-            match compare(value, &self.nodes[index].value)? {
+            work.charge(1)?;
+            match compare(value, &self.nodes[index].value, work)? {
                 Ordering::Equal => return Ok(Some(&self.nodes[index].value)),
                 Ordering::Less => cursor = self.nodes[index].left,
                 Ordering::Greater => cursor = self.nodes[index].right,
@@ -713,22 +945,29 @@ impl<T> FallibleAvl<T> {
         Ok(None)
     }
 
-    pub(super) fn in_order_indices(&self) -> Vec<usize> {
+    pub(super) fn in_order_indices_with_work<W: Work + ?Sized>(
+        &self,
+        work: &mut W,
+    ) -> Result<Vec<usize>> {
+        work.charge(u64::try_from(self.nodes.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
         let mut ordered = Vec::with_capacity(self.nodes.len());
         let mut stack = Vec::with_capacity(self.height(self.root));
         let mut current = self.root;
         loop {
             while let Some(node) = current {
+                work.charge(1)?;
                 stack.push(node);
                 current = self.nodes[node].left;
             }
+            work.charge(1)?;
             let Some(node) = stack.pop() else {
                 break;
             };
+            work.charge(1)?;
             ordered.push(node);
             current = self.nodes[node].right;
         }
-        ordered
+        Ok(ordered)
     }
 
     pub(super) fn remove(
@@ -979,23 +1218,44 @@ impl ExactGeographicChartInventory {
         frame: GeographicFrame,
         views: impl ExactSizeIterator<Item = ScalarGeographicView<'a>>,
     ) -> Result<Self> {
-        Self::collect_views_inner(frame, views, false)
+        let mut work = Unmetered;
+        Self::collect_views_with_work(frame, views, &mut work)
+    }
+
+    pub(super) fn collect_views_with_work<'a>(
+        frame: GeographicFrame,
+        views: impl ExactSizeIterator<Item = ScalarGeographicView<'a>>,
+        work: &mut impl Work,
+    ) -> Result<Self> {
+        Self::collect_views_inner(frame, views, false, work)
     }
 
     pub(super) fn collect_views_as_set<'a>(
         frame: GeographicFrame,
         views: impl ExactSizeIterator<Item = ScalarGeographicView<'a>>,
     ) -> Result<Self> {
-        Self::collect_views_inner(frame, views, true)
+        let mut work = Unmetered;
+        Self::collect_views_as_set_with_work(frame, views, &mut work)
+    }
+
+    pub(super) fn collect_views_as_set_with_work<'a>(
+        frame: GeographicFrame,
+        views: impl ExactSizeIterator<Item = ScalarGeographicView<'a>>,
+        work: &mut impl Work,
+    ) -> Result<Self> {
+        Self::collect_views_inner(frame, views, true, work)
     }
 
     fn collect_views_inner<'a>(
         frame: GeographicFrame,
         views: impl ExactSizeIterator<Item = ScalarGeographicView<'a>>,
         as_set: bool,
+        work: &mut impl Work,
     ) -> Result<Self> {
+        work.charge(u64::try_from(views.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
         let mut inventory = Self::new(frame, views.len());
         for (row, view) in views.enumerate() {
+            work.charge(1)?;
             if view.frame() != frame {
                 return Err(GeometryErrorKind::Invalid(
                     "exact geographic source views do not share one frame".into(),
@@ -1004,9 +1264,9 @@ impl ExactGeographicChartInventory {
             }
             let row = SourceRowId(u32::try_from(row).map_err(|_| ResourceError::SizeOverflow)?);
             if as_set {
-                inventory.append_shape_as_set(view.shape(), row)?;
+                inventory.append_shape_as_set(view.shape(), row, work)?;
             } else {
-                inventory.append_shape(view.shape(), row)?;
+                inventory.append_shape(view.shape(), row, work)?;
             }
         }
         Ok(inventory)
@@ -1026,22 +1286,44 @@ impl ExactGeographicChartInventory {
         }
     }
 
-    fn append_shape(&mut self, shape: &Shape, row: SourceRowId) -> Result<()> {
-        shape.try_for_each_component(&mut |source| self.append_component(source, row))
+    fn append_shape(
+        &mut self,
+        shape: &Shape,
+        row: SourceRowId,
+        work: &mut impl Work,
+    ) -> Result<()> {
+        shape.try_for_each_component(&mut |source| {
+            work.charge(1)?;
+            self.append_component(source, row, work)
+        })
     }
 
-    fn append_shape_as_set(&mut self, shape: &Shape, row: SourceRowId) -> Result<()> {
-        shape.try_for_each_first_component(&mut |source| self.append_component(source, row))
+    fn append_shape_as_set(
+        &mut self,
+        shape: &Shape,
+        row: SourceRowId,
+        work: &mut impl Work,
+    ) -> Result<()> {
+        shape.try_for_each_first_component(&mut |source| {
+            work.charge(1)?;
+            self.append_component(source, row, work)
+        })
     }
 
-    fn append_component(&mut self, source: Component<'_>, row: SourceRowId) -> Result<()> {
+    fn append_component(
+        &mut self,
+        source: Component<'_>,
+        row: SourceRowId,
+        work: &mut impl Work,
+    ) -> Result<()> {
         match source {
             Component::Point(point) => {
+                work.charge(1)?;
                 self.points.push(ExactSourcePoint { point, row });
                 Ok(())
             },
-            Component::LineString(line) => self.push_line(line.as_coords(), row),
-            Component::Polygon(polygon) => self.push_polygon(polygon, row),
+            Component::LineString(line) => self.push_line(line.as_coords(), row, work),
+            Component::Polygon(polygon) => self.push_polygon_with_work(polygon, row, work),
         }
     }
 
@@ -1049,8 +1331,11 @@ impl ExactGeographicChartInventory {
         &mut self,
         coordinates: &crate::geometry::CoordSeq,
         row: SourceRowId,
+        work: &mut impl Work,
     ) -> Result<()> {
-        self.reserve_source_edges(coordinates.coord_count().saturating_sub(1))?;
+        let segment_count = coordinates.coord_count().saturating_sub(1);
+        work.charge(u64::try_from(segment_count).map_err(|_| ResourceError::SizeOverflow)?)?;
+        self.reserve_source_edges(segment_count, work)?;
         let line =
             SourceLineId(u32::try_from(self.lines.len()).map_err(|_| ResourceError::SizeOverflow)?);
         let edge_start = self.edges.len();
@@ -1058,21 +1343,33 @@ impl ExactGeographicChartInventory {
         let mut first_edge = None;
         let mut last_edge = None;
         for pair in coordinates.segment_pairs() {
+            work.charge(1)?;
             let [start, end] = pair;
             let before = self.pieces.len();
-            let (source, _) =
-                self.append_source_edge(start, end, row, SourceEdgeKind::Line { line }, 0)?;
+            let (source, _) = self.append_source_edge_with_work(
+                start,
+                end,
+                row,
+                SourceEdgeKind::Line { line },
+                0,
+                work,
+            )?;
             if self.pieces.len() != before {
                 first_edge.get_or_insert(source);
                 last_edge = Some(source);
             }
         }
         if self.pieces.len() == piece_start {
+            work.charge(
+                u64::try_from(coordinates.coord_count())
+                    .map_err(|_| ResourceError::SizeOverflow)?,
+            )?;
             self.points.reserve(coordinates.coord_count());
             for point in coordinates.iter_coords() {
                 self.points.push(ExactSourcePoint { point, row });
             }
         } else if let (Some(first), Some(last)) = (first_edge, last_edge) {
+            work.charge(2)?;
             self.line_boundaries.reserve(2);
             self.line_boundaries.push(ExactLineBoundary {
                 row,
@@ -1087,6 +1384,7 @@ impl ExactGeographicChartInventory {
                 at_end: true,
             });
         }
+        work.charge(1)?;
         self.lines.push(ExactSourceLine {
             id: line,
             row,
@@ -1096,15 +1394,30 @@ impl ExactGeographicChartInventory {
     }
 
     fn push_polygon(&mut self, polygon: &Polygon, row: SourceRowId) -> Result<()> {
+        let mut work = Unmetered;
+        self.push_polygon_with_work(polygon, row, &mut work)
+    }
+
+    fn push_polygon_with_work(
+        &mut self,
+        polygon: &Polygon,
+        row: SourceRowId,
+        work: &mut impl Work,
+    ) -> Result<()> {
         let polygon_id = SourcePolygonId(
             u32::try_from(self.polygons.len()).map_err(|_| ResourceError::SizeOverflow)?,
         );
+        work.charge(
+            u64::try_from(polygon.rings().len()).map_err(|_| ResourceError::SizeOverflow)?,
+        )?;
         let edge_count = polygon.rings().try_fold(0_usize, |count, ring| {
             count
                 .checked_add(ring.coord_count().saturating_sub(1))
                 .ok_or(ResourceError::SizeOverflow)
         })?;
-        self.reserve_source_edges(edge_count)?;
+        work.charge(u64::try_from(edge_count).map_err(|_| ResourceError::SizeOverflow)?)?;
+        self.reserve_source_edges(edge_count, work)?;
+        work.charge(1)?;
         self.polygons.reserve(1);
         self.rings.reserve(polygon.holes.len().saturating_add(1));
         let first_ring = self.rings.len();
@@ -1113,6 +1426,10 @@ impl ExactGeographicChartInventory {
             rings: first_ring..first_ring,
         });
         for (ring_index, ring) in polygon.rings().enumerate() {
+            work.charge(1)?;
+            work.charge(
+                u64::try_from(ring.coord_count()).map_err(|_| ResourceError::SizeOverflow)?,
+            )?;
             let ring_id = SourceRingId(
                 u32::try_from(self.rings.len()).map_err(|_| ResourceError::SizeOverflow)?,
             );
@@ -1131,7 +1448,8 @@ impl ExactGeographicChartInventory {
             let first_edge = self.edges.len();
             let mut lift = 0_i64;
             for [start, end] in ring.segment_pairs() {
-                let (_, transit) = self.append_source_edge(
+                work.charge(1)?;
+                let (_, transit) = self.append_source_edge_with_work(
                     start,
                     end,
                     row,
@@ -1142,6 +1460,7 @@ impl ExactGeographicChartInventory {
                         kind,
                     },
                     lift,
+                    work,
                 )?;
                 lift = lift
                     .checked_add(i64::from(transit))
@@ -1165,7 +1484,7 @@ impl ExactGeographicChartInventory {
         Ok(())
     }
 
-    fn reserve_source_edges(&mut self, count: usize) -> Result<()> {
+    fn reserve_source_edges(&mut self, count: usize, work: &mut impl Work) -> Result<()> {
         let edge_total = self
             .edges
             .len()
@@ -1176,10 +1495,14 @@ impl ExactGeographicChartInventory {
             .checked_mul(2)
             .and_then(|additional| self.pieces.len().checked_add(additional))
             .ok_or(ResourceError::SizeOverflow)?;
-        self.edges.reserve(count);
         let additional_pieces = piece_capacity
             .checked_sub(self.pieces.len())
             .expect("piece capacity includes the existing chart pieces");
+        let reservation_work = count
+            .checked_add(additional_pieces)
+            .ok_or(ResourceError::SizeOverflow)?;
+        work.charge(u64::try_from(reservation_work).map_err(|_| ResourceError::SizeOverflow)?)?;
+        self.edges.reserve(count);
         self.pieces.reserve(additional_pieces);
         Ok(())
     }
@@ -1192,6 +1515,20 @@ impl ExactGeographicChartInventory {
         kind: SourceEdgeKind,
         ring_lift: i64,
     ) -> Result<(SourceEdgeId, i8)> {
+        let mut work = Unmetered;
+        self.append_source_edge_with_work(start, end, row, kind, ring_lift, &mut work)
+    }
+
+    fn append_source_edge_with_work(
+        &mut self,
+        start: Point,
+        end: Point,
+        row: SourceRowId,
+        kind: SourceEdgeKind,
+        ring_lift: i64,
+        work: &mut impl Work,
+    ) -> Result<(SourceEdgeId, i8)> {
+        work.charge(1)?;
         let id =
             SourceEdgeId(u32::try_from(self.edges.len()).map_err(|_| ResourceError::SizeOverflow)?);
         let connection = self
@@ -1206,7 +1543,7 @@ impl ExactGeographicChartInventory {
             row,
             kind,
         });
-        self.push_chart_pieces(id, ring_lift)?;
+        self.push_chart_pieces_with_work(id, ring_lift, work)?;
         Ok((id, connection.seam_transit()))
     }
 
@@ -1214,7 +1551,13 @@ impl ExactGeographicChartInventory {
         clippy::indexing_slicing,
         reason = "SourceEdgeId is issued by append_source_edge for this inventory's edge vector"
     )]
-    fn push_chart_pieces(&mut self, source: SourceEdgeId, ring_lift: i64) -> Result<()> {
+    fn push_chart_pieces_with_work(
+        &mut self,
+        source: SourceEdgeId,
+        ring_lift: i64,
+        work: &mut impl Work,
+    ) -> Result<()> {
+        work.charge(1)?;
         let edge = self.edges[source.0 as usize];
         let [start, end] = edge.source;
         let local_edge = local_longitude_edge(self.frame, start.x, edge.retained_longitude());
@@ -1241,17 +1584,18 @@ impl ExactGeographicChartInventory {
             let seam_y = interpolate_rational(&start_y_rational, &delta_y, &parameter)?;
             let seam =
                 ExactChartPoint::from_rationals(ExactRational::from_dyadic(half), seam_y.clone());
-            self.push_chart_piece(
+            self.push_chart_piece_with_work(
                 source,
                 ExactChartPoint::from_dyadics(start_x, start_y),
                 seam,
                 zero,
                 parameter.clone(),
                 piece_lift,
+                work,
             )?;
             let end_x =
                 end_x.try_subtract(ExactDyadic::from_f64(self.frame.longitude().period()))?;
-            self.push_chart_piece(
+            self.push_chart_piece_with_work(
                 source,
                 ExactChartPoint::from_rationals(ExactRational::from_dyadic(negative_half), seam_y),
                 ExactChartPoint::from_dyadics(end_x, end_y),
@@ -1260,6 +1604,7 @@ impl ExactGeographicChartInventory {
                 piece_lift
                     .checked_add(1)
                     .ok_or(ResourceError::SizeOverflow)?,
+                work,
             )?;
         } else if end_x.cmp(&negative_half).is_lt() {
             let parameter = ExactRational::new(
@@ -1271,16 +1616,17 @@ impl ExactGeographicChartInventory {
                 ExactRational::from_dyadic(negative_half),
                 seam_y.clone(),
             );
-            self.push_chart_piece(
+            self.push_chart_piece_with_work(
                 source,
                 ExactChartPoint::from_dyadics(start_x, start_y),
                 seam,
                 zero,
                 parameter.clone(),
                 piece_lift,
+                work,
             )?;
             let end_x = end_x.try_add(ExactDyadic::from_f64(self.frame.longitude().period()))?;
-            self.push_chart_piece(
+            self.push_chart_piece_with_work(
                 source,
                 ExactChartPoint::from_rationals(ExactRational::from_dyadic(half), seam_y),
                 ExactChartPoint::from_dyadics(end_x, end_y),
@@ -1289,21 +1635,23 @@ impl ExactGeographicChartInventory {
                 piece_lift
                     .checked_sub(1)
                     .ok_or(ResourceError::SizeOverflow)?,
+                work,
             )?;
         } else {
-            self.push_chart_piece(
+            self.push_chart_piece_with_work(
                 source,
                 ExactChartPoint::from_dyadics(start_x, start_y),
                 ExactChartPoint::from_dyadics(end_x, end_y),
                 zero,
                 one,
                 piece_lift,
+                work,
             )?;
         }
         Ok(())
     }
 
-    fn push_chart_piece(
+    fn push_chart_piece_with_work(
         &mut self,
         source_edge: SourceEdgeId,
         start: ExactChartPoint,
@@ -1311,7 +1659,9 @@ impl ExactGeographicChartInventory {
         source_start: ExactRational,
         source_end: ExactRational,
         lift: i64,
+        work: &mut impl Work,
     ) -> Result<()> {
+        work.charge(1)?;
         if start.same_position(&end)? {
             return Ok(());
         }
@@ -1338,51 +1688,77 @@ impl ExactGeographicChartInventory {
         reason = "piece, port, quotient-node, and atom IDs index dense columns emitted by this noder"
     )]
     pub(super) fn node(&self, budget: &mut ExpansionBudget) -> Result<NodedExactChart> {
+        let mut work = Unmetered;
+        self.node_with_work(budget, &mut work)
+    }
+
+    #[expect(
+        clippy::indexing_slicing,
+        clippy::arithmetic_side_effects,
+        reason = "piece, port, quotient-node, and atom IDs index dense columns emitted by this noder"
+    )]
+    pub(super) fn node_with_work<W: Work + ?Sized>(
+        &self,
+        budget: &mut ExpansionBudget,
+        work: &mut W,
+    ) -> Result<NodedExactChart> {
         let cut_capacity = self
             .pieces
             .len()
             .checked_mul(2)
             .ok_or(ResourceError::SizeOverflow)?;
+        work.charge(u64::try_from(cut_capacity).map_err(|_| ResourceError::SizeOverflow)?)?;
         let mut cuts = FallibleAvl::with_capacity(cut_capacity);
-        let mut compare_cuts = compare_cut_events;
+        let mut compare_cuts = |left: &CutEvent, right: &CutEvent, work: &mut W| {
+            work.charge(1)?;
+            compare_cut_events(left, right)
+        };
         for piece in &self.pieces {
-            cuts.insert(
+            work.charge(1)?;
+            cuts.insert_with_work(
                 CutEvent {
                     piece: piece.id,
                     parameter: ExactRational::zero(),
                     point: piece.start.clone(),
                 },
+                work,
                 &mut compare_cuts,
             )?;
-            cuts.insert(
+            cuts.insert_with_work(
                 CutEvent {
                     piece: piece.id,
                     parameter: ExactRational::one(),
                     point: piece.end.clone(),
                 },
+                work,
                 &mut compare_cuts,
             )?;
         }
-        let source_keys = self.source_quotient_keys()?;
+        let source_keys = self.source_quotient_keys_with_work(work)?;
         let node_capacity = source_keys
             .len()
             .checked_add(self.pieces.len())
             .ok_or(ResourceError::SizeOverflow)?;
+        work.charge(u64::try_from(node_capacity).map_err(|_| ResourceError::SizeOverflow)?)?;
         let mut constructed_nodes = FallibleAvl::with_capacity(node_capacity);
-        let mut compare_keys = compare_quotient_keys;
+        let mut compare_keys = |left: &ExactQuotientKey, right: &ExactQuotientKey, work: &mut W| {
+            work.charge(1)?;
+            compare_quotient_keys(left, right)
+        };
         for key in source_keys {
-            constructed_nodes.insert(key, &mut compare_keys)?;
+            constructed_nodes.insert_with_work(key, work, &mut compare_keys)?;
         }
         for piece in &self.pieces {
+            work.charge(1)?;
             if !piece.source_range.start.is_zero() {
                 let key = quotient_key(self.frame, &piece.start)?;
-                if constructed_nodes.insert(key, &mut compare_keys)? {
+                if constructed_nodes.insert_with_work(key, work, &mut compare_keys)? {
                     budget.add(1)?;
                 }
             }
             if !piece.source_range.end.is_one() {
                 let key = quotient_key(self.frame, &piece.end)?;
-                if constructed_nodes.insert(key, &mut compare_keys)? {
+                if constructed_nodes.insert_with_work(key, work, &mut compare_keys)? {
                     budget.add(1)?;
                 }
             }
@@ -1391,6 +1767,7 @@ impl ExactGeographicChartInventory {
         let mut proxies = Vec::with_capacity(self.pieces.len());
         let mut proxyable = Vec::with_capacity(self.pieces.len());
         for piece in &self.pieces {
+            work.charge(1)?;
             if let Some(proxy) = piece.outward_proxy()? {
                 proxy_piece_ids.push(piece.id.0 as usize);
                 proxies.push(proxy);
@@ -1406,6 +1783,10 @@ impl ExactGeographicChartInventory {
             &proxies,
             |index| index as u32,
             |left, right| {
+                if let Err(error) = work.charge(1) {
+                    failure = Some(error);
+                    return std::ops::ControlFlow::Break(());
+                }
                 let left_piece = proxy_piece_ids[left];
                 let right_piece = proxy_piece_ids[right];
                 match self.refine_piece_pair(
@@ -1416,6 +1797,7 @@ impl ExactGeographicChartInventory {
                     &mut compare_cuts,
                     &mut compare_keys,
                     budget,
+                    work,
                 ) {
                     Ok(()) => std::ops::ControlFlow::Continue(()),
                     Err(error) => {
@@ -1432,10 +1814,12 @@ impl ExactGeographicChartInventory {
         // Proxy-declined pieces have no conservative broadphase interval.
         // Enumerate every pair involving one, without imposing a candidate cap.
         for left in 0..self.pieces.len() {
+            work.charge(1)?;
             if proxyable[left] {
                 continue;
             }
             for (right, &is_proxyable) in proxyable.iter().enumerate().take(left) {
+                work.charge(1)?;
                 if is_proxyable {
                     self.refine_piece_pair(
                         right,
@@ -1445,10 +1829,12 @@ impl ExactGeographicChartInventory {
                         &mut compare_cuts,
                         &mut compare_keys,
                         budget,
+                        work,
                     )?;
                 }
             }
             for right in left + 1..self.pieces.len() {
+                work.charge(1)?;
                 self.refine_piece_pair(
                     left,
                     right,
@@ -1457,6 +1843,7 @@ impl ExactGeographicChartInventory {
                     &mut compare_cuts,
                     &mut compare_keys,
                     budget,
+                    work,
                 )?;
             }
         }
@@ -1466,6 +1853,7 @@ impl ExactGeographicChartInventory {
             &mut compare_cuts,
             &mut compare_keys,
             budget,
+            work,
         )?;
         self.refine_source_points(
             &mut cuts,
@@ -1473,13 +1861,16 @@ impl ExactGeographicChartInventory {
             &proxy_piece_ids,
             &proxies,
             &proxyable,
+            work,
         )?;
 
-        let cut_order = cuts.in_order_indices();
+        let cut_order = cuts.in_order_indices_with_work(work)?;
+        work.charge(u64::try_from(self.pieces.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
         let mut occurrences = Vec::with_capacity(self.pieces.len());
         let mut previous_piece = None;
         let mut previous_cut: Option<usize> = None;
         for cut_index in cut_order {
+            work.charge(1)?;
             let cut = &cuts.nodes[cut_index].value;
             if previous_piece != Some(cut.piece) {
                 previous_piece = Some(cut.piece);
@@ -1487,15 +1878,19 @@ impl ExactGeographicChartInventory {
             }
             if let Some(start_index) = previous_cut {
                 let start = &cuts.nodes[start_index].value;
+                work.charge(1)?;
                 if !start.point.same_position(&cut.point)? {
                     let piece = &self.pieces[cut.piece.0 as usize];
+                    work.charge(1)?;
                     occurrences.push(AtomOccurrence {
                         start: start.point.clone(),
                         end: cut.point.clone(),
                         source_edge: piece.source_edge,
-                        source_range: piece
-                            .source_range
-                            .compose(&start.parameter, &cut.parameter)?,
+                        source_range: piece.source_range.compose_with_work(
+                            &start.parameter,
+                            &cut.parameter,
+                            work,
+                        )?,
                         lift: piece.lift,
                     });
                 }
@@ -1503,77 +1898,114 @@ impl ExactGeographicChartInventory {
             previous_cut = Some(cut_index);
         }
 
-        let mut port_points = Vec::with_capacity(occurrences.len().saturating_mul(2));
-        port_points.extend(
-            occurrences
-                .iter()
-                .flat_map(|occurrence| [occurrence.start.clone(), occurrence.end.clone()]),
-        );
+        let port_capacity = occurrences
+            .len()
+            .checked_mul(2)
+            .and_then(|count| self.edges.len().checked_mul(2)?.checked_add(count))
+            .and_then(|count| count.checked_add(self.points.len()))
+            .ok_or(ResourceError::SizeOverflow)?;
+        work.charge(u64::try_from(port_capacity).map_err(|_| ResourceError::SizeOverflow)?)?;
+        let mut port_points = Vec::with_capacity(port_capacity);
+        for occurrence in &occurrences {
+            work.charge(2)?;
+            port_points.extend([occurrence.start.clone(), occurrence.end.clone()]);
+        }
         for edge in &self.edges {
             for point in edge.source {
+                work.charge(1)?;
                 port_points.push(source_chart_point(self.frame, point));
             }
         }
         for source in &self.points {
+            work.charge(1)?;
             port_points.push(source_chart_point(self.frame, source.point));
         }
-        try_sort_by(&mut port_points, ExactChartPoint::compare_lex)?;
+        try_sort_by_with_work(&mut port_points, work, |left, right, work| {
+            work.charge(1)?;
+            left.compare_lex(right)
+        })?;
+        work.charge(u64::try_from(port_points.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
         let mut unique_ports: Vec<ExactChartPoint> = Vec::with_capacity(port_points.len());
         for point in port_points {
-            if let Some(previous) = unique_ports.last()
-                && previous.compare_lex(&point)?.is_eq()
-            {
+            work.charge(1)?;
+            let duplicate = if let Some(previous) = unique_ports.last() {
+                work.charge(1)?;
+                previous.compare_lex(&point)?.is_eq()
+            } else {
+                false
+            };
+            if duplicate {
                 continue;
             }
             unique_ports.push(point);
         }
-        let mut ports: Vec<_> = unique_ports
-            .into_iter()
-            .enumerate()
-            .map(|(index, point)| {
-                Ok(ChartPort {
-                    id: ChartPortId(u32::try_from(index).map_err(|_| ResourceError::SizeOverflow)?),
-                    point,
-                    node: QuotientNodeId(0),
-                })
-            })
-            .collect::<Result<_>>()?;
+        work.charge(u64::try_from(unique_ports.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
+        let mut ports = Vec::with_capacity(unique_ports.len());
+        for (index, point) in unique_ports.into_iter().enumerate() {
+            work.charge(1)?;
+            ports.push(ChartPort {
+                id: ChartPortId(u32::try_from(index).map_err(|_| ResourceError::SizeOverflow)?),
+                point,
+                node: QuotientNodeId(0),
+            });
+        }
 
+        work.charge(u64::try_from(self.edges.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
         let mut source_edge_ports = Vec::with_capacity(self.edges.len());
         for edge in &self.edges {
+            work.charge(1)?;
             source_edge_ports.push([
-                find_chart_port(&ports, &source_chart_point(self.frame, edge.source[0]))?,
-                find_chart_port(&ports, &source_chart_point(self.frame, edge.source[1]))?,
+                find_chart_port_with_work(
+                    &ports,
+                    &source_chart_point(self.frame, edge.source[0]),
+                    work,
+                )?,
+                find_chart_port_with_work(
+                    &ports,
+                    &source_chart_point(self.frame, edge.source[1]),
+                    work,
+                )?,
             ]);
         }
+        work.charge(u64::try_from(self.points.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
         let mut source_point_ports = Vec::with_capacity(self.points.len());
         for point in &self.points {
-            source_point_ports.push(find_chart_port(
+            work.charge(1)?;
+            source_point_ports.push(find_chart_port_with_work(
                 &ports,
                 &source_chart_point(self.frame, point.point),
+                work,
             )?);
         }
 
+        work.charge(u64::try_from(ports.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
         let mut quotient_keys = Vec::with_capacity(ports.len());
         for port in &ports {
+            work.charge(1)?;
             quotient_keys.push((quotient_key(self.frame, &port.point)?, port.id));
         }
-        try_sort_by(&mut quotient_keys, |left, right| {
+        try_sort_by_with_work(&mut quotient_keys, work, |left, right, work| {
+            work.charge(1)?;
             compare_quotient_keys(&left.0, &right.0)
                 .map(|order| order.then_with(|| left.1.cmp(&right.1)))
         })?;
-        let mut nodes = Vec::new();
+        work.charge(u64::try_from(quotient_keys.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
+        let mut nodes = Vec::with_capacity(quotient_keys.len());
+        work.charge(u64::try_from(ports.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
         let mut node_ports = Vec::with_capacity(ports.len());
         let mut port_cursor = 0;
         while port_cursor < quotient_keys.len() {
+            work.charge(1)?;
             let node_id = QuotientNodeId(
                 u32::try_from(nodes.len()).map_err(|_| ResourceError::SizeOverflow)?,
             );
             let start = node_ports.len();
             let key = quotient_keys[port_cursor].0.clone();
-            while port_cursor < quotient_keys.len()
-                && compare_quotient_keys(&key, &quotient_keys[port_cursor].0)?.is_eq()
-            {
+            while port_cursor < quotient_keys.len() {
+                work.charge(1)?;
+                if !compare_quotient_keys(&key, &quotient_keys[port_cursor].0)?.is_eq() {
+                    break;
+                }
                 let port = quotient_keys[port_cursor].1;
                 ports[port.0 as usize].node = node_id;
                 node_ports.push(port);
@@ -1586,10 +2018,12 @@ impl ExactGeographicChartInventory {
             });
         }
 
+        work.charge(u64::try_from(occurrences.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
         let mut atom_occurrences = Vec::with_capacity(occurrences.len());
         for occurrence in occurrences {
-            let start = find_chart_port(&ports, &occurrence.start)?;
-            let end = find_chart_port(&ports, &occurrence.end)?;
+            work.charge(1)?;
+            let start = find_chart_port_with_work(&ports, &occurrence.start, work)?;
+            let end = find_chart_port_with_work(&ports, &occurrence.end, work)?;
             let (ports, reversed) = if start <= end {
                 ([start, end], false)
             } else {
@@ -1603,7 +2037,8 @@ impl ExactGeographicChartInventory {
                 reversed,
             ));
         }
-        try_sort_by(&mut atom_occurrences, |left, right| {
+        try_sort_by_with_work(&mut atom_occurrences, work, |left, right, work| {
+            work.charge(1)?;
             let endpoints = left.0.cmp(&right.0);
             if !endpoints.is_eq() {
                 return Ok(endpoints);
@@ -1623,12 +2058,17 @@ impl ExactGeographicChartInventory {
                 end
             })
         })?;
-        let mut atoms = Vec::new();
+        work.charge(
+            u64::try_from(atom_occurrences.len()).map_err(|_| ResourceError::SizeOverflow)?,
+        )?;
+        let mut atoms = Vec::with_capacity(atom_occurrences.len());
         let mut cursor = 0;
         while cursor < atom_occurrences.len() {
+            work.charge(1)?;
             let endpoints = atom_occurrences[cursor].0;
             let mut owners = Vec::new();
             while cursor < atom_occurrences.len() && atom_occurrences[cursor].0 == endpoints {
+                work.charge(1)?;
                 let (_, source_edge, source_range, lift, reversed) = &atom_occurrences[cursor];
                 owners.push(ExactSpanOwner {
                     source_edge: *source_edge,
@@ -1644,7 +2084,7 @@ impl ExactGeographicChartInventory {
             });
         }
 
-        let distinct_sources = self.distinct_source_piece_count()?;
+        let distinct_sources = self.distinct_source_piece_count_with_work(work)?;
         let net_atom_growth = atoms.len().saturating_sub(distinct_sources);
         budget.add(net_atom_growth)?;
 
@@ -1658,16 +2098,21 @@ impl ExactGeographicChartInventory {
         })
     }
 
-    fn source_quotient_keys(&self) -> Result<Vec<ExactQuotientKey>> {
+    fn source_quotient_keys_with_work<W: Work + ?Sized>(
+        &self,
+        work: &mut W,
+    ) -> Result<Vec<ExactQuotientKey>> {
         let source_endpoints = self
             .edges
             .len()
             .checked_mul(2)
             .and_then(|count| count.checked_add(self.points.len()))
             .ok_or(ResourceError::SizeOverflow)?;
+        work.charge(u64::try_from(source_endpoints).map_err(|_| ResourceError::SizeOverflow)?)?;
         let mut keys = Vec::with_capacity(source_endpoints);
         for edge in &self.edges {
             for point in edge.source {
+                work.charge(1)?;
                 keys.push(quotient_key(
                     self.frame,
                     &source_chart_point(self.frame, point),
@@ -1675,17 +2120,27 @@ impl ExactGeographicChartInventory {
             }
         }
         for point in &self.points {
+            work.charge(1)?;
             keys.push(quotient_key(
                 self.frame,
                 &source_chart_point(self.frame, point.point),
             )?);
         }
-        try_sort_by(&mut keys, compare_quotient_keys)?;
+        try_sort_by_with_work(&mut keys, work, |left, right, work| {
+            work.charge(1)?;
+            compare_quotient_keys(left, right)
+        })?;
+        work.charge(u64::try_from(keys.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
         let mut unique = Vec::with_capacity(keys.len());
         for key in keys {
-            if let Some(previous) = unique.last()
-                && compare_quotient_keys(previous, &key)?.is_eq()
-            {
+            work.charge(1)?;
+            let duplicate = if let Some(previous) = unique.last() {
+                work.charge(1)?;
+                compare_quotient_keys(previous, &key)?.is_eq()
+            } else {
+                false
+            };
+            if duplicate {
                 continue;
             }
             unique.push(key);
@@ -1693,9 +2148,14 @@ impl ExactGeographicChartInventory {
         Ok(unique)
     }
 
-    fn distinct_source_piece_count(&self) -> Result<usize> {
+    fn distinct_source_piece_count_with_work<W: Work + ?Sized>(
+        &self,
+        work: &mut W,
+    ) -> Result<usize> {
+        work.charge(u64::try_from(self.pieces.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
         let mut endpoints = Vec::with_capacity(self.pieces.len());
         for piece in &self.pieces {
+            work.charge(1)?;
             let (start, end) = if piece.start.compare_lex(&piece.end)?.is_le() {
                 (piece.start.clone(), piece.end.clone())
             } else {
@@ -1703,7 +2163,8 @@ impl ExactGeographicChartInventory {
             };
             endpoints.push((start, end));
         }
-        try_sort_by(&mut endpoints, |left, right| {
+        try_sort_by_with_work(&mut endpoints, work, |left, right, work| {
+            work.charge(1)?;
             let start = left.0.compare_lex(&right.0)?;
             Ok(if start.is_eq() {
                 left.1.compare_lex(&right.1)?
@@ -1714,6 +2175,7 @@ impl ExactGeographicChartInventory {
         let mut unique = 0_usize;
         let mut previous: Option<(ExactChartPoint, ExactChartPoint)> = None;
         for piece in endpoints {
+            work.charge(1)?;
             let same = if let Some(previous) = &previous {
                 previous.0.same_position(&piece.0)? && previous.1.same_position(&piece.1)?
             } else {
@@ -1734,13 +2196,14 @@ impl ExactGeographicChartInventory {
         clippy::indexing_slicing,
         reason = "seam candidate ordinals index the parallel proxy-ID columns built by this sweep"
     )]
-    fn refine_seam_aliases(
+    fn refine_seam_aliases<W: Work + ?Sized>(
         &self,
         cuts: &mut FallibleAvl<CutEvent>,
         constructed_nodes: &mut FallibleAvl<ExactQuotientKey>,
-        compare_cuts: &mut impl FnMut(&CutEvent, &CutEvent) -> Result<Ordering>,
-        compare_keys: &mut impl FnMut(&ExactQuotientKey, &ExactQuotientKey) -> Result<Ordering>,
+        compare_cuts: &mut impl FnMut(&CutEvent, &CutEvent, &mut W) -> Result<Ordering>,
+        compare_keys: &mut impl FnMut(&ExactQuotientKey, &ExactQuotientKey, &mut W) -> Result<Ordering>,
         budget: &mut ExpansionBudget,
+        work: &mut W,
     ) -> Result<()> {
         let axis = self.frame.longitude();
         let half = ExactRational::from_f64(axis.half_period());
@@ -1757,6 +2220,7 @@ impl ExactGeographicChartInventory {
         let mut negative_bounds = Vec::new();
         let mut negative_unproxyable = Vec::new();
         for (index, piece) in self.pieces.iter().enumerate() {
+            work.charge(1)?;
             let positive = touches(piece, &half)?;
             let negative = touches(piece, &negative_half)?;
             if positive {
@@ -1783,6 +2247,10 @@ impl ExactGeographicChartInventory {
                 &positive_bounds,
                 &negative_bounds,
                 |left, right| {
+                    if let Err(error) = work.charge(1) {
+                        failure = Some(error);
+                        return std::ops::ControlFlow::Break(());
+                    }
                     let left_piece = positive_proxy_ids[left];
                     let right_piece = negative_proxy_ids[right];
                     if left_piece == right_piece {
@@ -1797,6 +2265,7 @@ impl ExactGeographicChartInventory {
                         compare_cuts,
                         compare_keys,
                         budget,
+                        work,
                     ) {
                         Ok(()) => std::ops::ControlFlow::Continue(()),
                         Err(error) => {
@@ -1812,6 +2281,7 @@ impl ExactGeographicChartInventory {
         }
         for &left in &positive_unproxyable {
             for &right in &negative_ids {
+                work.charge(1)?;
                 if left != right {
                     self.refine_piece_pair_shifted(
                         left,
@@ -1822,12 +2292,14 @@ impl ExactGeographicChartInventory {
                         compare_cuts,
                         compare_keys,
                         budget,
+                        work,
                     )?;
                 }
             }
         }
         for &left in &positive_proxy_ids {
             for &right in &negative_unproxyable {
+                work.charge(1)?;
                 if left != right {
                     self.refine_piece_pair_shifted(
                         left,
@@ -1838,6 +2310,7 @@ impl ExactGeographicChartInventory {
                         compare_cuts,
                         compare_keys,
                         budget,
+                        work,
                     )?;
                 }
             }
@@ -1845,16 +2318,17 @@ impl ExactGeographicChartInventory {
         Ok(())
     }
 
-    fn refine_piece_pair_shifted(
+    fn refine_piece_pair_shifted<W: Work + ?Sized>(
         &self,
         left: usize,
         right: usize,
         shift: &ExactRational,
         cuts: &mut FallibleAvl<CutEvent>,
         constructed_nodes: &mut FallibleAvl<ExactQuotientKey>,
-        compare_cuts: &mut impl FnMut(&CutEvent, &CutEvent) -> Result<Ordering>,
-        compare_keys: &mut impl FnMut(&ExactQuotientKey, &ExactQuotientKey) -> Result<Ordering>,
+        compare_cuts: &mut impl FnMut(&CutEvent, &CutEvent, &mut W) -> Result<Ordering>,
+        compare_keys: &mut impl FnMut(&ExactQuotientKey, &ExactQuotientKey, &mut W) -> Result<Ordering>,
         budget: &mut ExpansionBudget,
+        work: &mut W,
     ) -> Result<()> {
         let left_piece = self.pieces.get(left).ok_or_else(|| {
             GeometryErrorKind::Invalid("seam pair references an unknown left piece".into())
@@ -1863,25 +2337,31 @@ impl ExactGeographicChartInventory {
             GeometryErrorKind::Invalid("seam pair references an unknown right piece".into())
         })?;
         let shifted_right = right_piece.shifted_x(shift)?;
-        exact_piece_contacts(left_piece, &shifted_right, |point, left_t, right_t| {
-            let right_point =
-                ExactChartPoint::from_rationals(point.x.try_subtract(shift)?, point.y.clone());
-            let key = quotient_key(self.frame, &point)?;
-            if constructed_nodes.insert(key, compare_keys)? {
-                budget.add(1)?;
-            }
-            insert_cut_event(cuts, left_piece, left_t, point, compare_cuts)?;
-            insert_cut_event(cuts, right_piece, right_t, right_point, compare_cuts)
-        })
+        exact_piece_contacts(
+            left_piece,
+            &shifted_right,
+            work,
+            |point, left_t, right_t, work| {
+                let right_point =
+                    ExactChartPoint::from_rationals(point.x.try_subtract(shift)?, point.y.clone());
+                let key = quotient_key(self.frame, &point)?;
+                if constructed_nodes.insert_with_work(key, work, compare_keys)? {
+                    budget.add(1)?;
+                }
+                insert_cut_event(cuts, left_piece, left_t, point, work, compare_cuts)?;
+                insert_cut_event(cuts, right_piece, right_t, right_point, work, compare_cuts)
+            },
+        )
     }
 
-    fn refine_source_points(
+    fn refine_source_points<W: Work + ?Sized>(
         &self,
         cuts: &mut FallibleAvl<CutEvent>,
-        compare_cuts: &mut impl FnMut(&CutEvent, &CutEvent) -> Result<Ordering>,
+        compare_cuts: &mut impl FnMut(&CutEvent, &CutEvent, &mut W) -> Result<Ordering>,
         proxy_piece_ids: &[usize],
         proxies: &[Segment],
         proxyable: &[bool],
+        work: &mut W,
     ) -> Result<()> {
         if self.points.is_empty() || self.pieces.is_empty() {
             return Ok(());
@@ -1889,10 +2369,18 @@ impl ExactGeographicChartInventory {
         let axis = self.frame.longitude();
         let half = ExactRational::from_f64(axis.half_period());
         let negative_half = ExactRational::from_f64(-axis.half_period());
-        let mut point_coordinates = Vec::with_capacity(self.points.len());
+        let point_capacity = self
+            .points
+            .len()
+            .checked_mul(2)
+            .ok_or(ResourceError::SizeOverflow)?;
+        work.charge(u64::try_from(point_capacity).map_err(|_| ResourceError::SizeOverflow)?)?;
+        let mut point_coordinates = Vec::with_capacity(point_capacity);
         for source in &self.points {
+            work.charge(1)?;
             let point = source_chart_point(self.frame, source.point);
             if point.x.try_cmp(&half)?.is_eq() || point.x.try_cmp(&negative_half)?.is_eq() {
+                work.charge(2)?;
                 let y = point.y;
                 point_coordinates.push(ExactChartPoint::from_rationals(
                     negative_half.clone(),
@@ -1903,9 +2391,16 @@ impl ExactGeographicChartInventory {
                 point_coordinates.push(point);
             }
         }
-        try_sort_by(&mut point_coordinates, ExactChartPoint::compare_lex)?;
+        try_sort_by_with_work(&mut point_coordinates, work, |left, right, work| {
+            work.charge(1)?;
+            left.compare_lex(right)
+        })?;
+        work.charge(
+            u64::try_from(point_coordinates.len()).map_err(|_| ResourceError::SizeOverflow)?,
+        )?;
         let mut unique_points: Vec<ExactChartPoint> = Vec::with_capacity(point_coordinates.len());
         for point in point_coordinates {
+            work.charge(1)?;
             if let Some(previous) = unique_points.last()
                 && previous.same_position(&point)?
             {
@@ -1914,10 +2409,20 @@ impl ExactGeographicChartInventory {
             unique_points.push(point);
         }
 
+        work.charge(
+            u64::try_from(
+                unique_points
+                    .len()
+                    .checked_mul(2)
+                    .ok_or(ResourceError::SizeOverflow)?,
+            )
+            .map_err(|_| ResourceError::SizeOverflow)?,
+        )?;
         let mut point_bounds = Vec::with_capacity(unique_points.len());
         let mut proxy_points = Vec::with_capacity(unique_points.len());
         let mut unproxyable_points = Vec::new();
         for point in unique_points {
+            work.charge(1)?;
             let [min_x, min_y, max_x, max_y] = point.outward_bounds()?;
             if [min_x, min_y, max_x, max_y].into_iter().all(f64::is_finite) {
                 point_bounds.push(Bounds::new_raw(min_x, min_y, max_x, max_y));
@@ -1927,8 +2432,10 @@ impl ExactGeographicChartInventory {
             }
         }
 
+        work.charge(u64::try_from(proxies.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
         let mut piece_bounds = Vec::with_capacity(proxies.len());
         for proxy in proxies {
+            work.charge(1)?;
             piece_bounds.push(Bounds::new_raw(
                 proxy.start.x,
                 proxy.start.y,
@@ -1942,6 +2449,10 @@ impl ExactGeographicChartInventory {
                 &piece_bounds,
                 &point_bounds,
                 |piece_index, point_index| {
+                    if let Err(error) = work.charge(1) {
+                        failure = Some(error);
+                        return std::ops::ControlFlow::Break(());
+                    }
                     let Some(&piece_id) = proxy_piece_ids.get(piece_index) else {
                         failure = Some(
                             GeometryErrorKind::Invalid(
@@ -1960,7 +2471,7 @@ impl ExactGeographicChartInventory {
                         );
                         return std::ops::ControlFlow::Break(());
                     };
-                    match self.refine_piece_point(piece_id, point, cuts, compare_cuts) {
+                    match self.refine_piece_point(piece_id, point, cuts, compare_cuts, work) {
                         Ok(()) => std::ops::ControlFlow::Continue(()),
                         Err(error) => {
                             failure = Some(error);
@@ -1975,32 +2486,37 @@ impl ExactGeographicChartInventory {
         }
         for point in &unproxyable_points {
             for piece_index in 0..self.pieces.len() {
-                self.refine_piece_point(piece_index, point, cuts, compare_cuts)?;
+                work.charge(1)?;
+                self.refine_piece_point(piece_index, point, cuts, compare_cuts, work)?;
             }
         }
         for (piece_index, &is_proxyable) in proxyable.iter().enumerate() {
             if !is_proxyable {
                 for point in &proxy_points {
-                    self.refine_piece_point(piece_index, point, cuts, compare_cuts)?;
+                    work.charge(1)?;
+                    self.refine_piece_point(piece_index, point, cuts, compare_cuts, work)?;
                 }
             }
         }
         Ok(())
     }
 
-    fn refine_piece_point(
+    fn refine_piece_point<W: Work + ?Sized>(
         &self,
         piece_index: usize,
         point: &ExactChartPoint,
         cuts: &mut FallibleAvl<CutEvent>,
-        compare_cuts: &mut impl FnMut(&CutEvent, &CutEvent) -> Result<Ordering>,
+        compare_cuts: &mut impl FnMut(&CutEvent, &CutEvent, &mut W) -> Result<Ordering>,
+        work: &mut W,
     ) -> Result<()> {
+        work.charge(1)?;
         let piece = self.pieces.get(piece_index).ok_or_else(|| {
             GeometryErrorKind::Invalid("Q point contact has an unknown chart piece".into())
         })?;
         if point_on_exact_segment(point, &piece.start, &piece.end)? {
+            work.charge(1)?;
             let parameter = parameter_on_exact_segment(point, &piece.start, &piece.end)?;
-            insert_cut_event(cuts, piece, parameter, point.clone(), compare_cuts)?;
+            insert_cut_event(cuts, piece, parameter, point.clone(), work, compare_cuts)?;
         }
         Ok(())
     }
@@ -2009,25 +2525,27 @@ impl ExactGeographicChartInventory {
         clippy::indexing_slicing,
         reason = "piece indices are generated from the admitted exact chart-piece slice"
     )]
-    fn refine_piece_pair(
+    fn refine_piece_pair<W: Work + ?Sized>(
         &self,
         left: usize,
         right: usize,
         cuts: &mut FallibleAvl<CutEvent>,
         constructed_nodes: &mut FallibleAvl<ExactQuotientKey>,
-        compare_cuts: &mut impl FnMut(&CutEvent, &CutEvent) -> Result<Ordering>,
-        compare_keys: &mut impl FnMut(&ExactQuotientKey, &ExactQuotientKey) -> Result<Ordering>,
+        compare_cuts: &mut impl FnMut(&CutEvent, &CutEvent, &mut W) -> Result<Ordering>,
+        compare_keys: &mut impl FnMut(&ExactQuotientKey, &ExactQuotientKey, &mut W) -> Result<Ordering>,
         budget: &mut ExpansionBudget,
+        work: &mut W,
     ) -> Result<()> {
         let a = &self.pieces[left];
         let b = &self.pieces[right];
-        exact_piece_contacts(a, b, |point, left_t, right_t| {
+        work.charge(1)?;
+        exact_piece_contacts(a, b, work, |point, left_t, right_t, work| {
             let key = quotient_key(self.frame, &point)?;
-            if constructed_nodes.insert(key, compare_keys)? {
+            if constructed_nodes.insert_with_work(key, work, compare_keys)? {
                 budget.add(1)?;
             }
-            insert_cut_event(cuts, a, left_t, point.clone(), compare_cuts)?;
-            insert_cut_event(cuts, b, right_t, point, compare_cuts)?;
+            insert_cut_event(cuts, a, left_t, point.clone(), work, compare_cuts)?;
+            insert_cut_event(cuts, b, right_t, point, work, compare_cuts)?;
             Ok(())
         })
     }

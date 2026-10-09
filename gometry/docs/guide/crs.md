@@ -872,6 +872,14 @@ east/west seam spellings; it does not count for validity or simplicity, while
 same-side overlaps remain invalid. A full-longitude band may also use zigzag
 sides when the two boundary copies are antiparallel and exactly one period
 apart.
+
+Geographic overlay rounds constructed intersection nodes to nearest binary64
+coordinates when that assignment preserves the exact quotient chart. If nearest
+rounding would change that chart, the overlay searches adjacent representable
+coordinates for constructed nodes only; stored input vertices and graph
+segmentation remain fixed. This is a topology-preserving repair, not a
+user-selected snap grid.
+
 The **stay-planar**
 constructive ops ([`convex_hull`][gometry.Geometry.convex_hull], [`concave_hull`][gometry.Geometry.concave_hull], [`buffer`][gometry.Geometry.buffer], [`offset_curve`][gometry.Geometry.offset_curve],
 [`simplify`][gometry.Geometry.simplify], Voronoi, Delaunay) do **not** auto-split; call

@@ -10,18 +10,22 @@ use std::cmp::Ordering;
 use std::ops::Range;
 
 use super::embedding::{Embedding, Emission};
+use super::rays::RayPoints;
 use super::{
     ArealCells, Axis, ExactPartition, ExactSourceInventory, KeptNodes, NodeId, rings_occupied,
 };
+use crate::error::ResourceError;
 use crate::geometry::arrangement::IndexedTopology;
 use crate::geometry::exact_arith::ExactSign;
 use crate::geometry::segments::{point_on_segment, stored_cross_sign, stored_orientation_sign};
-use crate::geometry::{CoordSeq, GeometryErrorKind, Point, Polygon, Result, Ring, XY, same_point};
+use crate::geometry::{
+    CoordSeq, GeometryErrorKind, Point, Polygon, Result, Ring, Unmetered, Work, XY, same_point,
+};
 
-pub(super) struct GlobalFaces {
-    pub(super) walk_faces: Vec<u32>,
-    pub(super) component_hosts: Vec<u32>,
-    pub(super) count: u32,
+pub(in crate::geometry) struct GlobalFaces {
+    pub(in crate::geometry) walk_faces: Vec<u32>,
+    pub(in crate::geometry) component_hosts: Vec<u32>,
+    pub(in crate::geometry) count: u32,
 }
 
 pub(super) struct CellFacts {
@@ -906,13 +910,36 @@ pub(super) fn walk_is_shell(
     first: impl Fn(usize) -> u32,
     last: impl Fn(usize) -> u32,
 ) -> Result<bool> {
+    let mut work = Unmetered;
+    walk_is_shell_with_work(&partition.points, topology, steps, first, last, &mut work)
+}
+
+#[expect(
+    clippy::indexing_slicing,
+    reason = "walk callbacks return darts from the same nonempty closed walk in the checked topology"
+)]
+pub(in crate::geometry) fn walk_is_shell_with_work<R: RayPoints + ?Sized, W: Work + ?Sized>(
+    points: &R,
+    topology: &IndexedTopology,
+    steps: usize,
+    first: impl Fn(usize) -> u32,
+    last: impl Fn(usize) -> u32,
+    work: &mut W,
+) -> Result<bool> {
     let mut minimum = 0;
     for candidate in 1..steps {
-        if partition.compare_nodes(
-            NodeId(topology.owners[first(candidate) as usize]),
-            NodeId(topology.owners[first(minimum) as usize]),
-        )? == Ordering::Less
-        {
+        work.charge(1)?;
+        let candidate_node = topology.owners[first(candidate) as usize];
+        let minimum_node = topology.owners[first(minimum) as usize];
+        work.charge(1)?;
+        let x_order = points.compare_axis(candidate_node, minimum_node, Axis::X)?;
+        let order = if x_order.is_eq() {
+            work.charge(1)?;
+            points.compare_axis(candidate_node, minimum_node, Axis::Y)?
+        } else {
+            x_order
+        };
+        if order == Ordering::Less {
             minimum = candidate;
         }
     }
@@ -923,12 +950,10 @@ pub(super) fn walk_is_shell(
         minimum.wrapping_sub(1)
     };
     let incoming = topology.twins[last(prior) as usize];
-    let root = NodeId(topology.owners[outgoing as usize]);
-    let upper = |slot: u32| -> Result<bool> {
-        Ok(
-            partition.compare_axis(NodeId(topology.targets[slot as usize]), root, Axis::Y)?
-                != Ordering::Less,
-        )
+    let root = topology.owners[outgoing as usize];
+    let mut upper = |slot: u32| -> Result<bool> {
+        work.charge(1)?;
+        Ok(points.compare_axis(topology.targets[slot as usize], root, Axis::Y)? != Ordering::Less)
     };
     let outgoing_upper = upper(outgoing)?;
     let incoming_upper = upper(incoming)?;
@@ -1303,15 +1328,44 @@ impl GlobalFaces {
     /// twin's face: `bounds(face, twin_face)`. Each walk stays within one
     /// face, since the next dart clockwise from an incoming twin bounds the
     /// same face on its left.
-    #[expect(
-        clippy::indexing_slicing,
-        reason = "selected darts and successor rows are generated from this topology's CSR and global face map"
-    )]
     pub(super) fn boundary_walks(
         &self,
         topology: &IndexedTopology,
         bounds: impl Fn(usize, usize) -> bool,
     ) -> Vec<Vec<u32>> {
+        let mut work = Unmetered;
+        self.boundary_walks_with_work(topology, bounds, &mut work)
+            .expect("global faces and indexed topology are paired by their owner")
+    }
+
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "selected darts and successor rows are generated from this checked topology's CSR and global face map"
+    )]
+    pub(in crate::geometry) fn boundary_walks_with_work<W: Work + ?Sized>(
+        &self,
+        topology: &IndexedTopology,
+        bounds: impl Fn(usize, usize) -> bool,
+        work: &mut W,
+    ) -> Result<Vec<Vec<u32>>> {
+        let slots = topology.targets.len();
+        if topology.face_of.len() != slots
+            || topology.owners.len() != slots
+            || topology.twins.len() != slots
+            || self.walk_faces.len() != topology.face_of.len()
+            || topology.starts.len()
+                != topology
+                    .component_of
+                    .len()
+                    .checked_add(1)
+                    .ok_or(ResourceError::SizeOverflow)?
+        {
+            return Err(GeometryErrorKind::Invalid(
+                "graph boundary inputs do not share one indexed topology".into(),
+            )
+            .into());
+        }
+        work.charge(u64::try_from(slots).map_err(|_| ResourceError::SizeOverflow)?)?;
         #[derive(Clone, Copy, Debug, PartialEq, Eq)]
         #[repr(u8)]
         enum DartState {
@@ -1322,6 +1376,7 @@ impl GlobalFaces {
 
         let mut state = Vec::with_capacity(topology.targets.len());
         for (slot, &walk) in topology.face_of.iter().enumerate() {
+            work.charge(1)?;
             let other = topology.face_of[topology.twins[slot] as usize];
             state.push(
                 if bounds(
@@ -1334,29 +1389,45 @@ impl GlobalFaces {
                 },
             );
         }
+        work.charge(
+            u64::try_from(topology.component_of.len()).map_err(|_| ResourceError::SizeOverflow)?,
+        )?;
         let mut positions = Vec::with_capacity(topology.component_of.len());
         positions.resize(topology.component_of.len(), None);
         let mut walks = Vec::new();
         for start in 0..state.len() {
+            work.charge(1)?;
             if state[start] != DartState::Pending {
                 continue;
             }
             let mut walk = Vec::new();
             let mut slot = start;
             loop {
+                work.charge(1)?;
                 debug_assert_eq!(state[slot], DartState::Pending);
                 state[slot] = DartState::Walked;
                 positions[topology.owners[slot] as usize] = Some(walk.len());
+                work.charge(1)?;
                 walk.push(slot as u32);
                 let target = topology.targets[slot] as usize;
                 // A tangent hole can share a boundary walk with its shell.
                 // Cut closed cycles by exact identity before any rounding.
                 if let Some(begin) = positions[target] {
-                    let mut cycle = Vec::with_capacity(walk.len().wrapping_sub(begin));
+                    let cycle_len = walk.len().checked_sub(begin).ok_or_else(|| {
+                        GeometryErrorKind::Invalid(
+                            "graph boundary cycle starts after its current walk".into(),
+                        )
+                    })?;
+                    work.charge(
+                        u64::try_from(cycle_len).map_err(|_| ResourceError::SizeOverflow)?,
+                    )?;
+                    let mut cycle = Vec::with_capacity(cycle_len);
                     for dart in walk.drain(begin..) {
+                        work.charge(1)?;
                         positions[topology.owners[dart as usize] as usize] = None;
                         cycle.push(dart);
                     }
+                    work.charge(1)?;
                     walks.push(cycle);
                 }
                 let first = topology.starts[target] as usize;
@@ -1365,6 +1436,7 @@ impl GlobalFaces {
                 // Skip omitted wedges clockwise from the incoming twin.
                 slot = twin;
                 loop {
+                    work.charge(1)?;
                     slot = if slot == first {
                         end.wrapping_sub(1)
                     } else {
@@ -1381,7 +1453,7 @@ impl GlobalFaces {
             }
             debug_assert!(walk.is_empty());
         }
-        walks
+        Ok(walks)
     }
 
     #[expect(

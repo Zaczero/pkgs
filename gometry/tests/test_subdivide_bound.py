@@ -10,6 +10,7 @@ from itertools import pairwise
 from pathlib import Path
 
 import gometry as gm
+import pyproj
 import pytest
 import shapely
 
@@ -224,3 +225,107 @@ def test_subdivision_separates_multipolygon_members_that_fit() -> None:
 
     assert [part.geometry_type for part in parts] == ['Polygon', 'Polygon']
     _assert_subdivision_contract(geometry, 8, 'touching MultiPolygon')
+
+
+def test_geographic_subdivide_keeps_seam_edge_support_in_scalar_and_array() -> None:
+    line = gm.LineString(
+        [
+            (179, 0),
+            (-179, 30),
+            (-178, 31),
+            (-177, 32),
+            (-176, 33),
+            (-175, 34),
+            (-174, 35),
+            (-173, 36),
+            (-172, 37),
+        ],
+        crs='EPSG:4326',
+    )
+    scalar_parts = line.subdivide(max_vertices=8)
+    ordinary = gm.LineString([(0, 0), (1, 1), (2, 0)], crs='EPSG:4326')
+    groups = gm.GeometryArray([line, ordinary]).subdivide(max_vertices=8)
+
+    assert all(part.num_coordinates <= 8 for part in scalar_parts)
+    assert len(groups) == 2
+    assert [part.to_wkb() for part in groups[0]] == [
+        part.to_wkb() for part in scalar_parts
+    ]
+    assert [part.to_wkb() for part in groups[1]] == [ordinary.to_wkb()]
+
+    for part in scalar_parts:
+        line_members = (
+            [part] if part.geometry_type == 'LineString' else list(part.parts)
+        )
+        for member in line_members:
+            for x, y in member.coords:
+                if y >= 30:
+                    continue
+                if 179 - 1e-12 <= x <= 180 + 1e-12:
+                    continuous_x = x
+                elif -180 - 1e-12 <= x <= -179 + 1e-12:
+                    continuous_x = x + 360
+                else:
+                    pytest.fail(f'output point {(x, y)} is outside the first source edge')
+                assert 179 - 1e-12 <= continuous_x <= 181 + 1e-12
+                assert y == pytest.approx(15 * (continuous_x - 179), abs=2e-12)
+
+
+def test_geographic_subdivide_resolves_seam_ordinates_on_the_original_root() -> None:
+    coordinates = [
+        (179, 0),
+        (-179, 30),
+        (-178, 31),
+        (-177, 32),
+        (-176, 33),
+        (-175, 34),
+        (-174, 35),
+        (-173, 36),
+        (-172, 37),
+    ]
+    line = gm.LineString(
+        coordinates,
+        z=[10, 210, 310, 410, 510, 610, 710, 810, 910],
+        m=[100, 1100, 2100, 3100, 4100, 5100, 6100, 7100, 8100],
+        crs='EPSG:4326',
+    )
+    scalar_parts = line.subdivide(max_vertices=8)
+    ordinary = gm.LineString([(0, 0), (1, 1), (2, 0)], crs='EPSG:4326')
+    groups = gm.GeometryArray([line, ordinary]).subdivide(max_vertices=8)
+
+    assert [part.to_wkb() for part in groups[0]] == [
+        part.to_wkb() for part in scalar_parts
+    ]
+
+    geod = pyproj.Geod(ellps='WGS84')
+    chart_points = [
+        (179 + 2 * index / 1024, 30 * index / 1024) for index in range(1025)
+    ]
+    total_length = sum(
+        geod.inv(*start, *end)[2] for start, end in pairwise(chart_points)
+    )
+    first_half_length = sum(
+        geod.inv(*start, *end)[2] for start, end in pairwise(chart_points[:513])
+    )
+    arclength_fraction = first_half_length / total_length
+    assert abs(arclength_fraction - 0.5) > 1e-5
+
+    seam_vertices = []
+    for part in scalar_parts:
+        members = [part] if part.geometry_type == 'LineString' else list(part.parts)
+        for member in members:
+            seam_vertices.extend(
+                coordinate
+                for coordinate in member.coords
+                if abs(abs(coordinate[0]) - 180) < 1e-12
+                and abs(coordinate[1] - 15) < 1e-12
+            )
+
+    assert seam_vertices
+    for coordinate in seam_vertices:
+        assert coordinate[2] == pytest.approx(
+            10 + 200 * arclength_fraction, abs=2e-5
+        )
+        assert coordinate[3] == pytest.approx(
+            100 + 1000 * arclength_fraction, abs=1e-4
+        )

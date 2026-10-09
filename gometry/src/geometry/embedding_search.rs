@@ -527,13 +527,6 @@ pub(in crate::geometry) struct ClassSolution<N, C> {
 #[derive(Debug)]
 pub(in crate::geometry) struct SearchAssignment<N, C, O = ()> {
     pub classes: Vec<ClassSolution<N, C>>,
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "production problems return unit; generic search tests exercise moving non-Clone global outputs"
-        )
-    )]
     pub output: O,
     #[cfg(test)]
     pub evaluations: u64,
@@ -704,6 +697,17 @@ impl EvaluationBudget {
         self.limit = BASE_EVALUATION_LIMIT.max(per_node);
         if self.spent_ticks > self.limit_ticks() {
             return Err(self.limit_error());
+        }
+        Ok(())
+    }
+
+    pub(in crate::geometry) const fn constructed(&self) -> usize {
+        self.constructed
+    }
+
+    pub(in crate::geometry) fn include_constructed(&mut self, constructed: usize) -> Result<()> {
+        if constructed > self.constructed {
+            self.set_constructed(constructed)?;
         }
         Ok(())
     }
@@ -1588,6 +1592,11 @@ mod tests {
         global_error: bool,
         initial_evaluations: u64,
         comparison_phase: Option<Rc<Cell<u8>>>,
+        nested_completion: bool,
+        nested_hall_calls: Rc<Cell<usize>>,
+        nested_pass_calls: Rc<Cell<usize>>,
+        nested_before_ticks: Option<u128>,
+        nested_completion_ticks: u128,
         prepare_calls: Rc<Cell<usize>>,
         local_calls: Rc<Cell<usize>>,
         global_calls: Rc<Cell<usize>>,
@@ -1613,6 +1622,11 @@ mod tests {
                 global_error: false,
                 initial_evaluations: 0,
                 comparison_phase: None,
+                nested_completion: false,
+                nested_hall_calls: Rc::new(Cell::new(0)),
+                nested_pass_calls: Rc::new(Cell::new(0)),
+                nested_before_ticks: None,
+                nested_completion_ticks: 0,
                 prepare_calls: Rc::new(Cell::new(0)),
                 local_calls: Rc::new(Cell::new(0)),
                 global_calls: Rc::new(Cell::new(0)),
@@ -1762,6 +1776,67 @@ mod tests {
             if self.global_error {
                 return Err(GeometryErrorKind::Invalid("fixture global error".into()).into());
             }
+            if self.nested_completion {
+                let (node, candidate) = assignments
+                    .iter()
+                    .find_map(|assignment| {
+                        assignment
+                            .variables
+                            .first()
+                            .zip(assignment.values.first())
+                            .map(|(&node, &candidate)| (node, candidate))
+                    })
+                    .expect("nested fixture has one assigned outer variable");
+                let before = account.budget_mut().spent_ticks;
+                if candidate == 0 {
+                    self.nested_hall_calls
+                        .set(self.nested_hall_calls.get().wrapping_add(1));
+                    let mut completion = hall_completion_problem();
+                    let outcome = run_with_budget(&mut completion, account.budget_mut())?;
+                    let after = account.budget_mut().spent_ticks;
+                    if self.nested_before_ticks.is_none() {
+                        self.nested_before_ticks = Some(before);
+                        self.nested_completion_ticks = after.saturating_sub(before);
+                    }
+                    return match outcome {
+                        SearchOutcome::Exhausted => Ok(GlobalCheck::Reject(vec![0])),
+                        SearchOutcome::Pass(_) => Err(GeometryErrorKind::Invalid(
+                            "nested Hall completion unexpectedly passed".into(),
+                        )
+                        .into()),
+                    };
+                }
+                if candidate == 1 {
+                    self.nested_pass_calls
+                        .set(self.nested_pass_calls.get().wrapping_add(1));
+                    let mut completion = passing_completion_problem();
+                    let outcome = run_with_budget(&mut completion, account.budget_mut())?;
+                    let after = account.budget_mut().spent_ticks;
+                    if self.nested_before_ticks.is_none() {
+                        self.nested_before_ticks = Some(before);
+                        self.nested_completion_ticks = after.saturating_sub(before);
+                    }
+                    return match outcome {
+                        SearchOutcome::Pass(assignment) => {
+                            if assignment.output.0 != [(0, 7)] {
+                                return Err(GeometryErrorKind::Invalid(
+                                    "nested completion returned a different output".into(),
+                                )
+                                .into());
+                            }
+                            Ok(GlobalCheck::Pass(FixtureOutput(actual)))
+                        },
+                        SearchOutcome::Exhausted => Ok(GlobalCheck::Reject(vec![0])),
+                    };
+                }
+                return Err(GeometryErrorKind::Invalid(
+                    format!(
+                        "nested fixture has no completion for node {node} candidate {candidate}"
+                    )
+                    .into(),
+                )
+                .into());
+            }
             let run_nested = match self.nested_search {
                 NestedSearch::None => false,
                 NestedSearch::HallOn(candidate) => {
@@ -1863,6 +1938,96 @@ mod tests {
         constructed: usize,
     ) -> Result<SearchAssignment<usize, u8, FixtureOutput>> {
         Search::new(problem, "search_test", constructed)?.run()
+    }
+
+    fn hall_completion_problem() -> FixtureProblem {
+        FixtureProblem::new(vec![vec![0, 1, 2]], vec![vec![7], vec![7], vec![7]])
+    }
+
+    fn passing_completion_problem() -> FixtureProblem {
+        FixtureProblem::new(vec![vec![0]], vec![vec![7]])
+    }
+
+    #[test]
+    fn nested_finite_exhaustion_rejects_outer_candidate_and_search_continues() {
+        let mut problem = FixtureProblem::new(vec![vec![0]], vec![vec![0, 1]]);
+        problem.nested_completion = true;
+        let hall_calls = Rc::clone(&problem.nested_hall_calls);
+        let pass_calls = Rc::clone(&problem.nested_pass_calls);
+        let global_calls = Rc::clone(&problem.global_calls);
+
+        let assignment = search_fixture(problem, 1).unwrap();
+
+        assert_eq!(
+            assignment
+                .classes
+                .first()
+                .expect("outer class is returned")
+                .values,
+            [1]
+        );
+        assert_eq!(hall_calls.get(), 1);
+        assert_eq!(pass_calls.get(), 1);
+        assert_eq!(global_calls.get(), 2);
+        assert_eq!(assignment.output.0, [(0, 1)]);
+    }
+
+    #[test]
+    fn nested_search_exhaustion_spends_the_same_raw_budget() {
+        let mut baseline_problem = FixtureProblem::new(vec![vec![0]], vec![vec![0, 1]]);
+        baseline_problem.nested_completion = true;
+        let mut baseline_budget = EvaluationBudget::new("outer_operation", 1).unwrap();
+        assert!(matches!(
+            run_with_budget(&mut baseline_problem, &mut baseline_budget).unwrap(),
+            SearchOutcome::Pass(_)
+        ));
+        let outer_prefix_ticks = baseline_problem
+            .nested_before_ticks
+            .expect("outer G reaches nested completion");
+        let nested_ticks = baseline_problem.nested_completion_ticks;
+        assert!(nested_ticks > 0);
+
+        let remaining_ticks = outer_prefix_ticks + nested_ticks - 1;
+        let mut shared_budget =
+            EvaluationBudget::with_remaining_ticks_for_test("outer_operation", 1, remaining_ticks)
+                .unwrap();
+        let mut nested_problem = FixtureProblem::new(vec![vec![0]], vec![vec![0, 1]]);
+        nested_problem.nested_completion = true;
+        let error = run_with_budget(&mut nested_problem, &mut shared_budget).unwrap_err();
+
+        assert!(matches!(
+            error.kind(),
+            ErrorKind::Geometry(GeometryErrorKind::ExactEmbeddingSearchLimit {
+                operation: "outer_operation",
+                constructed: 1,
+                ..
+            })
+        ));
+        assert_eq!(nested_problem.global_calls.get(), 1);
+        assert_eq!(nested_problem.nested_hall_calls.get(), 1);
+        assert_eq!(nested_problem.nested_pass_calls.get(), 0);
+        assert_eq!(shared_budget.spent_ticks, shared_budget.limit_ticks());
+    }
+
+    #[test]
+    fn adding_constructed_nodes_keeps_prior_work_in_the_same_budget() {
+        let mut budget = EvaluationBudget::new("shared_operation", 1).unwrap();
+        budget.charge_evaluations(3).unwrap();
+        budget.include_constructed(2).unwrap();
+        assert_eq!(budget.constructed(), 2);
+        assert_eq!(budget.spent_ticks, 48);
+
+        budget.set_constructed(3).unwrap();
+        assert_eq!(budget.constructed(), 3);
+        assert_eq!(budget.spent_ticks, 48);
+
+        let error = budget.set_constructed(2).unwrap_err();
+        assert!(matches!(
+            error.kind(),
+            ErrorKind::Geometry(GeometryErrorKind::Invalid(_))
+        ));
+        assert_eq!(budget.constructed(), 3);
+        assert_eq!(budget.spent_ticks, 48);
     }
 
     #[test]

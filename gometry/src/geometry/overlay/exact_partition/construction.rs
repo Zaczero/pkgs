@@ -20,6 +20,7 @@ use super::rays::RayPoints;
 use super::{Axis, ExactPartition, ExactSpan, KeptNodes, NodeId, NodeRecipe, OrdinateBindings};
 use crate::error::{Error, ResourceError};
 use crate::geometry::exact_arith::ExactSign;
+pub(super) use crate::geometry::ordinates::AxisValue;
 use crate::geometry::overlay::noding::{SegmentProvenance, SegmentSource};
 #[cfg(test)]
 use crate::geometry::segments::TouchEndpoint;
@@ -30,8 +31,9 @@ use crate::geometry::segments::{
 };
 use crate::geometry::tessellation::exact::{ExactDyadic, compare_ratios, round_ratio};
 use crate::geometry::{
-    Bounds, Contact, ExpansionBudget, GeometryErrorKind, HashMap, PointKey, Result, Segment, XY,
-    for_each_candidate_pair, same_point, same_topological_coordinate, single_chain,
+    Bounds, Contact, ExpansionBudget, GeometryErrorKind, HashMap, PointKey, Result, Segment,
+    Unmetered, Work, XY, for_each_candidate_pair, same_point, same_topological_coordinate,
+    single_chain,
 };
 
 #[cfg(test)]
@@ -275,12 +277,25 @@ impl<'a> PointArena<'a> {
         point: impl Fn(T) -> u32,
         equal: impl FnMut(T, T) -> Result<()>,
     ) -> Result<()> {
+        let mut work = Unmetered;
+        self.order_along_with_work(segment, items, point, equal, &mut work)
+    }
+
+    pub(in crate::geometry) fn order_along_with_work<T: Copy, W: Work + ?Sized>(
+        &self,
+        segment: Segment,
+        items: &mut [T],
+        point: impl Fn(T) -> u32,
+        equal: impl FnMut(T, T) -> Result<()>,
+        work: &mut W,
+    ) -> Result<()> {
         if items.len() < 2 {
             return Ok(());
         }
         let (axis, increasing) = segment_axis(segment);
-        RayPoints::sort_by_axis(self, items, axis, point, equal)?;
+        RayPoints::sort_by_axis_with_work(self, items, axis, point, equal, work)?;
         if !increasing {
+            work.charge(u64::try_from(items.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
             items.reverse();
         }
         Ok(())
@@ -328,29 +343,6 @@ pub(super) fn parameter_along(
         coordinate.clone().try_subtract(start.try_product(w)?)?,
         w.try_product(&direction)?,
     ])
-}
-
-#[derive(Clone, Copy, Default)]
-pub(super) struct AxisValue {
-    value: Option<f64>,
-    conflict: bool,
-}
-
-impl AxisValue {
-    pub(super) const fn observe(&mut self, value: Option<f64>) {
-        let Some(value) = value else {
-            return;
-        };
-        match self.value {
-            None => self.value = Some(value),
-            Some(previous) if previous.to_bits() == value.to_bits() => {},
-            Some(_) => self.conflict = true,
-        }
-    }
-
-    pub(super) fn value(self) -> Option<f64> {
-        (!self.conflict).then_some(self.value).flatten()
-    }
 }
 
 /// The ordinate at parameter `num / den` along a source from `start` to

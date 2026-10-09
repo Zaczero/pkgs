@@ -93,14 +93,13 @@ mod boundary;
 #[cfg(test)]
 pub(crate) use antimeridian::self_intersections_in_frame;
 pub(crate) use antimeridian::{
-    DerivedPointStrategy, GeographicDerivedPointScan, GeographicTopologyRoute, UnwrapChartError,
-    antimeridian_frame, chain_crosses_antimeridian, classify_geographic_chart,
-    classify_geographic_validity_chart, crosses_antimeridian_in_frame, faithful_geographic_chain,
-    geographic_crossing_bounds, geographic_topology_route, is_ring_data_in_frame,
-    is_simple_data_in_frame, repair_data_in_frame, repair_shape_in_frame,
-    self_intersections_data_in_frame, topology_domain, topology_domain_at,
-    unary_antimeridian_centroid, unary_antimeridian_derived, unwrap_contact_chart,
-    unwrap_coordinates, validate_data_in_frame, validate_shape_in_frame,
+    DerivedPointStrategy, GeographicDerivedPointScan, GeographicTopologyRoute, antimeridian_frame,
+    chain_crosses_antimeridian, classify_geographic_chart, classify_geographic_validity_chart,
+    crosses_antimeridian_in_frame, faithful_geographic_chain, geographic_crossing_bounds,
+    geographic_topology_route, is_ring_data_in_frame, is_simple_data_in_frame,
+    repair_data_in_frame, repair_shape_in_frame, self_intersections_data_in_frame, topology_domain,
+    topology_domain_at, unary_antimeridian_centroid, unary_antimeridian_derived,
+    unwrap_contact_chart, validate_data_in_frame, validate_shape_in_frame,
 };
 pub(crate) use boundary::boundary_with_metric;
 mod computed_shape;
@@ -135,6 +134,7 @@ mod distance;
 pub(in crate::geometry) use distance::{ExactPoint, point_segment_distance_squared_exact};
 pub(crate) use distance::{RowMetricPair, discrete_frechet_distance_with_scratch};
 pub(crate) use types::coordinate_columns_eq;
+pub(crate) mod embedding_completion;
 mod embedding_search;
 pub(crate) use embedding_search::{Unmetered, Work};
 mod facet_bvh;

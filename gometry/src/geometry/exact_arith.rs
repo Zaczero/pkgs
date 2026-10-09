@@ -36,12 +36,21 @@ impl ExactNativeLongitude {
         axis: crate::geographic::PeriodicAxis,
         value: ExactRational,
     ) -> crate::error::Result<Self> {
+        let mut work = crate::geometry::Unmetered;
+        Self::from_rational_with_work(axis, value, &mut work)
+    }
+
+    pub(in crate::geometry) fn from_rational_with_work(
+        axis: crate::geographic::PeriodicAxis,
+        value: ExactRational,
+        work: &mut impl crate::geometry::Work,
+    ) -> crate::error::Result<Self> {
         use std::cmp::Ordering;
 
         let half_period = ExactRational::from_f64(axis.half_period());
         let negative_half_period = ExactRational::from_f64(-axis.half_period());
-        if value.try_cmp(&negative_half_period)? == Ordering::Less
-            || value.try_cmp(&half_period)? != Ordering::Less
+        if value.try_cmp_with_work(&negative_half_period, work)? == Ordering::Less
+            || value.try_cmp_with_work(&half_period, work)? != Ordering::Less
         {
             return Err(crate::geometry::GeometryErrorKind::Invalid(
                 "exact retained longitude is outside its canonical native window".into(),
@@ -60,7 +69,17 @@ impl ExactNativeLongitude {
         axis: crate::geographic::PeriodicAxis,
         native: &Self,
     ) -> crate::error::Result<(crate::geographic::CanonicalLongitude, i8)> {
-        let (native, adjustment) = round_native_site(&native.0, axis.period(), axis.half_period())?;
+        let mut work = crate::geometry::Unmetered;
+        Self::round_native_with_work(axis, native, &mut work)
+    }
+
+    pub(in crate::geometry) fn round_native_with_work(
+        axis: crate::geographic::PeriodicAxis,
+        native: &Self,
+        work: &mut impl crate::geometry::Work,
+    ) -> crate::error::Result<(crate::geographic::CanonicalLongitude, i8)> {
+        let (native, adjustment) =
+            round_native_site_with_work(&native.0, axis.period(), axis.half_period(), work)?;
         let canonical = axis.canonicalize(native).map_err(|error| {
             crate::geometry::GeometryErrorKind::Invalid(error.to_string().into())
         })?;
@@ -90,10 +109,19 @@ pub(in crate::geometry) fn retained_exact_native_site(
     axis: crate::geographic::PeriodicAxis,
     longitude: &ExactRational,
 ) -> crate::error::Result<crate::geographic::RetainedLongitudeSite<ExactNativeLongitude>> {
+    let mut work = crate::geometry::Unmetered;
+    retained_exact_native_site_with_work(axis, longitude, &mut work)
+}
+
+pub(in crate::geometry) fn retained_exact_native_site_with_work(
+    axis: crate::geographic::PeriodicAxis,
+    longitude: &ExactRational,
+    work: &mut impl crate::geometry::Work,
+) -> crate::error::Result<crate::geographic::RetainedLongitudeSite<ExactNativeLongitude>> {
     let (native, lift) = split_rational_native_site(longitude, axis.period(), axis.half_period())?;
     let periods = exact_integer_i64(&lift)?;
     Ok(crate::geographic::RetainedLongitudeSite::new(
-        ExactNativeLongitude(native.into_owned()),
+        ExactNativeLongitude::from_rational_with_work(axis, native.into_owned(), work)?,
         periods,
     ))
 }
@@ -106,8 +134,20 @@ pub(in crate::geometry) fn round_native_longitude(
     axis: crate::geographic::PeriodicAxis,
     longitude: &ExactRational,
 ) -> crate::error::Result<f64> {
-    let (native, _) = split_rational_native_site(longitude, axis.period(), axis.half_period())?;
-    let (rounded, _) = round_native_site(&native, axis.period(), axis.half_period())?;
+    let mut work = crate::geometry::Unmetered;
+    round_native_longitude_with_work(axis, longitude, &mut work)
+}
+
+pub(in crate::geometry) fn round_native_longitude_with_work(
+    axis: crate::geographic::PeriodicAxis,
+    longitude: &ExactRational,
+    work: &mut impl crate::geometry::Work,
+) -> crate::error::Result<f64> {
+    let (native, _) =
+        split_rational_native_site_with_work(longitude, axis.period(), axis.half_period(), work)?;
+    let rounded = native.round_with_work(work)?;
+    let (rounded, _) =
+        fold_rounded_native_site_with_work(rounded, axis.period(), axis.half_period(), work)?;
     Ok(rounded)
 }
 
@@ -116,7 +156,60 @@ fn round_native_site(
     period: f64,
     half_period: f64,
 ) -> crate::error::Result<(f64, i8)> {
-    fold_rounded_native_site(native.round()?, period, half_period)
+    let mut work = crate::geometry::Unmetered;
+    round_native_site_with_work(native, period, half_period, &mut work)
+}
+
+fn round_native_site_with_work(
+    native: &ExactRational,
+    period: f64,
+    half_period: f64,
+    work: &mut impl crate::geometry::Work,
+) -> crate::error::Result<(f64, i8)> {
+    fold_rounded_native_site_with_work(native.round_with_work(work)?, period, half_period, work)
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(in crate::geometry) struct RoundedNativeSite {
+    pub native: f64,
+    pub periods: i64,
+}
+
+pub(in crate::geometry) fn rounded_native_neighbors(
+    axis: crate::geographic::PeriodicAxis,
+    longitude: &ExactRational,
+) -> crate::error::Result<[RoundedNativeSite; 3]> {
+    let mut work = crate::geometry::Unmetered;
+    rounded_native_neighbors_with_work(axis, longitude, &mut work)
+}
+
+pub(in crate::geometry) fn rounded_native_neighbors_with_work(
+    axis: crate::geographic::PeriodicAxis,
+    longitude: &ExactRational,
+    work: &mut impl crate::geometry::Work,
+) -> crate::error::Result<[RoundedNativeSite; 3]> {
+    let exact = retained_exact_native_site_with_work(axis, longitude, work)?;
+    let native = exact.native().rational().round_with_work(work)?;
+    let period = axis.period();
+    let half_period = axis.half_period();
+    let mut round_candidate = |candidate| {
+        let (native, adjustment) =
+            fold_rounded_native_site_with_work(candidate, period, half_period, work)?;
+        let periods = exact
+            .periods()
+            .checked_add(i64::from(adjustment))
+            .ok_or(crate::error::ResourceError::SizeOverflow)?;
+        let native = axis
+            .canonicalize(native)
+            .map_err(|error| crate::geometry::GeometryErrorKind::Invalid(error.to_string().into()))?
+            .get();
+        Ok(RoundedNativeSite { native, periods })
+    };
+    Ok([
+        round_candidate(native.next_down())?,
+        round_candidate(native)?,
+        round_candidate(native.next_up())?,
+    ])
 }
 
 /// Compare exact products of three finite binary64 factors.
@@ -1030,32 +1123,50 @@ fn split_rational_native_site(
     period: f64,
     half_period: f64,
 ) -> crate::error::Result<(std::borrow::Cow<'_, ExactRational>, ExactDyadic)> {
+    let mut work = crate::geometry::Unmetered;
+    split_rational_native_site_with_work(position, period, half_period, &mut work)
+}
+
+pub(in crate::geometry) fn split_rational_native_site_with_work<'position>(
+    position: &'position ExactRational,
+    period: f64,
+    half_period: f64,
+    work: &mut impl crate::geometry::Work,
+) -> crate::error::Result<(std::borrow::Cow<'position, ExactRational>, ExactDyadic)> {
     use std::cmp::Ordering;
 
     if !(period.is_finite() && period > 0.0 && half_period.is_finite() && half_period > 0.0) {
         return Err(crate::geometry::GeometryErrorKind::message(
             "retained chart period must be positive and finite",
-        ));
+        )
+        .into());
     }
     let half = ExactRational::from_f64(half_period);
     let negative_half = ExactRational::from_f64(-half_period);
-    if position.try_cmp(&negative_half)? != Ordering::Less
-        && position.try_cmp(&half)? == Ordering::Less
+    if position.try_cmp_with_work(&negative_half, work)? != Ordering::Less
+        && position.try_cmp_with_work(&half, work)? == Ordering::Less
     {
         return Ok((std::borrow::Cow::Borrowed(position), ExactDyadic::zero()));
     }
     let (numerator, denominator) = position.parts();
-    let quotient_denominator = denominator.try_product(&ExactDyadic::from_f64(period))?;
-    let mut lift = numerator.nearest_integer_quotient_ties_to_zero(&quotient_denominator)?;
+    let quotient_denominator =
+        denominator.try_product_with_work(&ExactDyadic::from_f64(period), work)?;
+    let mut lift =
+        numerator.nearest_integer_quotient_ties_to_zero_with_work(&quotient_denominator, work)?;
     let exact_period = ExactRational::from_f64(period);
-    let native = position
-        .try_subtract(&exact_period.try_product(&ExactRational::from_dyadic(lift.clone()))?)?;
-    let (native, lift) = if native.try_cmp(&half)? != Ordering::Less {
-        lift = lift.try_add(ExactDyadic::one())?;
-        (native.try_subtract(&exact_period)?, lift)
-    } else if native.try_cmp(&negative_half)? == Ordering::Less {
-        lift = lift.try_subtract(ExactDyadic::one())?;
-        (native.try_add(&exact_period)?, lift)
+    let native = position.try_subtract_with_work(
+        &exact_period.try_product_with_work(
+            &ExactRational::from_dyadic(lift.try_clone_with_work(work)?),
+            work,
+        )?,
+        work,
+    )?;
+    let (native, lift) = if native.try_cmp_with_work(&half, work)? != Ordering::Less {
+        lift = lift.try_add_with_work(ExactDyadic::one(), work)?;
+        (native.try_subtract_with_work(&exact_period, work)?, lift)
+    } else if native.try_cmp_with_work(&negative_half, work)? == Ordering::Less {
+        lift = lift.try_subtract_with_work(ExactDyadic::one(), work)?;
+        (native.try_add_with_work(&exact_period, work)?, lift)
     } else {
         (native, lift)
     };
@@ -1067,22 +1178,33 @@ fn fold_rounded_native_site(
     period: f64,
     half_period: f64,
 ) -> crate::error::Result<(f64, i8)> {
-    use crate::geometry::tessellation::exact::round_ratio;
+    let mut work = crate::geometry::Unmetered;
+    fold_rounded_native_site_with_work(native, period, half_period, &mut work)
+}
+
+fn fold_rounded_native_site_with_work(
+    native: f64,
+    period: f64,
+    half_period: f64,
+    work: &mut impl crate::geometry::Work,
+) -> crate::error::Result<(f64, i8)> {
+    use crate::geometry::tessellation::exact::round_ratio_with_work;
 
     let (folded, adjustment) = if native >= half_period {
         (
-            ExactDyadic::from_f64(native).try_subtract_ref(&ExactDyadic::from_f64(period))?,
+            ExactDyadic::from_f64(native)
+                .try_subtract_ref_with_work(&ExactDyadic::from_f64(period), work)?,
             1,
         )
     } else if native < -half_period {
         (
-            ExactDyadic::from_f64(native).try_add(ExactDyadic::from_f64(period))?,
+            ExactDyadic::from_f64(native).try_add_with_work(ExactDyadic::from_f64(period), work)?,
             -1,
         )
     } else {
         return Ok((if native == 0.0 { 0.0 } else { native }, 0));
     };
-    let folded = round_ratio(&folded, &ExactDyadic::one())?;
+    let folded = round_ratio_with_work(&folded, &ExactDyadic::one(), work)?;
     Ok((if folded == 0.0 { 0.0 } else { folded }, adjustment))
 }
 

@@ -7,6 +7,75 @@ use crate::geometry::{Bounds, Shape};
 use crate::py::numpy::{bool_array, bounds_array, float64_array};
 use crate::{PyGeometry, PyGeometryArray, Typed};
 
+/// Geometry row whose coordinates were finalized inside a producer's seal.
+/// Shape-backed output selected by a row producer before its acceptance pass.
+/// Array collection moves those rows into `Mixed` storage without packing them.
+pub(crate) enum OverlayOutput {
+    Packable(Shape),
+    PreserveShape(Shape),
+}
+
+impl BulkElement for OverlayOutput {
+    fn into_py(self, py: Python<'_>, frame: &Frame) -> PyResult<Py<PyAny>> {
+        let shape = match self {
+            Self::Packable(shape) | Self::PreserveShape(shape) => shape,
+        };
+        Ok(Typed(PyGeometry::with_frame(shape, frame.clone()))
+            .into_pyobject(py)?
+            .unbind())
+    }
+
+    fn bulk_into_py(values: Vec<Self>, py: Python<'_>, frame: &Frame) -> PyResult<Py<PyAny>> {
+        let sealed = values
+            .iter()
+            .any(|value| matches!(value, Self::PreserveShape(_)));
+        let shapes = values
+            .into_iter()
+            .map(|value| match value {
+                Self::Packable(shape) | Self::PreserveShape(shape) => shape,
+            })
+            .collect();
+        if sealed {
+            Ok(PyGeometryArray::mixed_shapes(shapes, frame.clone())?
+                .into_pyobject(py)?
+                .unbind()
+                .into())
+        } else {
+            <Shape as BulkElement>::bulk_into_py(shapes, py, frame)
+        }
+    }
+
+    fn missing_value() -> Self {
+        Self::Packable(<Shape as BulkElement>::missing_value())
+    }
+
+    fn bulk_into_py_masked(
+        values: Vec<Self>,
+        py: Python<'_>,
+        frame: &Frame,
+        missing: Option<&ValidityMask>,
+    ) -> PyResult<Py<PyAny>> {
+        let sealed = values
+            .iter()
+            .any(|value| matches!(value, Self::PreserveShape(_)));
+        let shapes = values
+            .into_iter()
+            .map(|value| match value {
+                Self::Packable(shape) | Self::PreserveShape(shape) => shape,
+            })
+            .collect();
+        if sealed {
+            Ok(PyGeometryArray::mixed_shapes(shapes, frame.clone())?
+                .with_missing_mask(missing.cloned())?
+                .into_pyobject(py)?
+                .unbind()
+                .into())
+        } else {
+            <Shape as BulkElement>::bulk_into_py_masked(shapes, py, frame, missing)
+        }
+    }
+}
+
 /// The bulk return form of a dispatch element. Numeric and boolean lanes land
 /// in fixed-width NumPy arrays; text stays a Python list; geometries become a
 /// `GeometryArray`; grid cells become a `CellArray`.

@@ -2,22 +2,27 @@
 
 use std::cmp::Ordering;
 use std::collections::BTreeSet;
-use std::ops::Range;
+use std::ops::{ControlFlow, Range};
 
 use super::exact::{
-    ExactChartPoint, ExactGeographicChartInventory, ExactQuotientKey, ExactSourceRange,
-    FallibleAvl, NodedExactChart, QuotientNodeId, SourceEdgeId, SourceEdgeKind, SourcePolygonId,
-    SourceRingId, SourceRowId, point_on_exact_segment, vector_cross, vector_difference,
+    ExactChartPoint, ExactGeographicChartInventory, ExactQuotientKey, ExactSourceEdge,
+    ExactSourceRange, FallibleAvl, NodedExactChart, QuotientNodeId, SourceEdgeId, SourceEdgeKind,
+    SourcePolygonId, SourceRingId, SourceRowId, point_on_exact_segment,
+    point_on_exact_segment_with_work, vector_cross, vector_cross_with_work, vector_difference,
+    vector_difference_with_work,
 };
 use crate::error::{ResourceError, Result};
 use crate::geographic::{ChartPole, GeographicFrame};
 use crate::geometry::exact_arith::ExactSign;
+use crate::geometry::ordinates::{
+    NodeOrdinates, RootCatalog, RootId, RootMetricState, SourceArcMetricAccess, resolve_source_root,
+};
 use crate::geometry::segments::try_sort_by;
 use crate::geometry::source_support::RingKind;
 use crate::geometry::tessellation::exact::ExactRational;
 use crate::geometry::{
-    Bounds, De9im, Dimension, GeometryErrorKind, Loc, Point, Segment, SegmentIndex, Shape,
-    ValidationIssue,
+    Bounds, ChartMetric, De9im, Dimension, ExpansionBudget, GeometryErrorKind, Loc, Point, Segment,
+    SegmentIndex, Shape, ValidationIssue, Work,
 };
 use crate::heap_size::HeapSize;
 
@@ -44,11 +49,40 @@ pub(super) struct QComponentId(pub u32);
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub(super) struct GlobalFaceId(pub u32);
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(in crate::geometry) enum PoleSector {
+    Fan {
+        pole: ChartPole,
+        clockwise: QDartId,
+        counterclockwise: QDartId,
+        face: GlobalFaceId,
+    },
+    Isolated {
+        pole: ChartPole,
+        node: QNodeId,
+        face: GlobalFaceId,
+    },
+    Terminal {
+        pole: ChartPole,
+        face: GlobalFaceId,
+    },
+}
+
+impl PoleSector {
+    pub(in crate::geometry) const fn face(self) -> GlobalFaceId {
+        match self {
+            Self::Fan { face, .. } | Self::Isolated { face, .. } | Self::Terminal { face, .. } => {
+                face
+            },
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub(super) struct CutIntervalId(pub u32);
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-enum QNodeKey {
+pub(super) enum QNodeKey {
     Source(QuotientNodeId),
     Cut(ExactRational),
 }
@@ -64,8 +98,8 @@ pub(super) struct QPort {
 #[derive(Clone, Debug)]
 pub(super) struct QNode {
     pub id: QNodeId,
-    key: QNodeKey,
-    pole: Option<ChartPole>,
+    pub(super) key: QNodeKey,
+    pub(super) pole: Option<ChartPole>,
     pub ports: Range<usize>,
 }
 
@@ -151,27 +185,27 @@ struct HostGerm {
     dy: ExactRational,
 }
 
-struct CutChart {
-    cut: ExactRational,
-    cut_east: ExactRational,
-    ports: Vec<QPort>,
-    nodes: Vec<QNode>,
-    node_ports: Vec<QPortId>,
-    spans: Vec<ChartSpan>,
-    source_edge_ports: Vec<[QPortId; 2]>,
-    source_point_ports: Vec<QPortId>,
+pub(super) struct CutChart {
+    pub(super) cut: ExactRational,
+    pub(super) cut_east: ExactRational,
+    pub(super) ports: Vec<QPort>,
+    pub(super) nodes: Vec<QNode>,
+    pub(super) node_ports: Vec<QPortId>,
+    pub(super) spans: Vec<ChartSpan>,
+    pub(super) source_edge_ports: Vec<[QPortId; 2]>,
+    pub(super) source_point_ports: Vec<QPortId>,
 }
 
 #[derive(Clone, Copy)]
-struct QFaceChart<'a> {
-    cut: &'a ExactRational,
-    cut_east: &'a ExactRational,
-    ports: &'a [QPort],
-    nodes: &'a [QNode],
+pub(super) struct QFaceChart<'a> {
+    pub(super) cut: &'a ExactRational,
+    pub(super) cut_east: &'a ExactRational,
+    pub(super) ports: &'a [QPort],
+    pub(super) nodes: &'a [QNode],
 }
 
 impl CutChart {
-    fn face_chart(&self) -> QFaceChart<'_> {
+    pub(super) fn face_chart(&self) -> QFaceChart<'_> {
         QFaceChart {
             cut: &self.cut,
             cut_east: &self.cut_east,
@@ -187,7 +221,7 @@ impl QuotientFaces {
         clippy::arithmetic_side_effects,
         reason = "Q IDs and outgoing CSR offsets are created together from checked source spans"
     )]
-    fn build(frame: GeographicFrame, chart_data: CutChart) -> Result<Self> {
+    pub(super) fn build(frame: GeographicFrame, chart_data: CutChart) -> Result<Self> {
         let mut union_find = UnionFind::new(chart_data.nodes.len());
         let mut degree = vec![0_usize; chart_data.nodes.len()];
         let mut face_span = vec![false; chart_data.spans.len()];
@@ -888,6 +922,21 @@ impl QCutIndex {
         self.intervals.get(low).ok_or_else(|| {
             GeometryErrorKind::Invalid("Q cut query is outside the latitude domain".into()).into()
         })
+    }
+
+    pub(super) fn interval_boundary_nodes(&self) -> Vec<[Option<QNodeId>; 2]> {
+        self.intervals
+            .iter()
+            .enumerate()
+            .map(|(index, _)| {
+                let low = index
+                    .checked_sub(1)
+                    .and_then(|event| self.events.get(event))
+                    .map(|event| event.node);
+                let high = self.events.get(index).map(|event| event.node);
+                [low, high]
+            })
+            .collect()
     }
 
     fn pole_interval_id(&self, pole: ChartPole) -> Result<CutIntervalId> {
@@ -2386,11 +2435,6 @@ pub(super) fn global_face_structure(
     })
 }
 
-#[expect(
-    clippy::indexing_slicing,
-    clippy::arithmetic_side_effects,
-    reason = "Q IDs and ring transitions index the dense topology and source inventory built together"
-)]
 fn build_global_face_topology(
     frame: GeographicFrame,
     sources: &ExactGeographicChartInventory,
@@ -2435,15 +2479,21 @@ fn build_global_face_topology(
                 .ok_or(ResourceError::SizeOverflow)?;
         }
     }
-    let seed_face = structure.seed.as_ref().map_or_else(
-        || {
-            seed_winding
-                .iter()
-                .any(|&winding| winding != 0)
-                .then_some(GlobalFaceId(0))
-        },
-        |seed| Some(structure.local_to_global[seed.local_face.0 as usize]),
-    );
+    let seed_face = if let Some(seed) = &structure.seed {
+        Some(
+            *structure
+                .local_to_global
+                .get(seed.local_face.0 as usize)
+                .ok_or_else(|| {
+                    GeometryErrorKind::Invalid("Q seed face is outside its topology".into())
+                })?,
+        )
+    } else {
+        seed_winding
+            .iter()
+            .any(|&winding| winding != 0)
+            .then_some(GlobalFaceId(0))
+    };
     if topology.source_point_ports.len() != sources.points.len() {
         return Err(GeometryErrorKind::Invalid(
             "Q source-point ports do not match the source inventory".into(),
@@ -2531,12 +2581,12 @@ pub(super) struct QuotientFaces {
     spans: Vec<ChartSpan>,
     darts: Vec<QDart>,
     span_darts: Vec<Option<QDartId>>,
-    outgoing: Vec<QDartId>,
-    outgoing_offsets: Vec<usize>,
+    pub(super) outgoing: Vec<QDartId>,
+    pub(super) outgoing_offsets: Vec<usize>,
     dart_positions: Vec<usize>,
     dart_faces: Vec<QLocalFaceId>,
     local_faces: Vec<QLocalFace>,
-    node_components: Vec<QComponentId>,
+    pub(super) node_components: Vec<QComponentId>,
     span_local_faces: Vec<Option<[QLocalFaceId; 2]>>,
     source_edge_ports: Vec<[QPortId; 2]>,
     source_point_ports: Vec<QPortId>,
@@ -2552,6 +2602,391 @@ impl QuotientFaces {
             nodes: &self.nodes,
         }
     }
+
+    pub(super) fn cut_interval_boundary_nodes(&self) -> Vec<[Option<QNodeId>; 2]> {
+        self.cut_index.interval_boundary_nodes()
+    }
+}
+
+#[cfg(test)]
+fn b3_subgraph_chart(
+    frame: GeographicFrame,
+    q: &ExactGeographicQ,
+    span_indices: &[usize],
+    point_nodes: &[QNodeId],
+    emitted: Option<(&[crate::geometry::XY], &[Option<f64>])>,
+) -> Result<CutChart> {
+    let period = ExactRational::from_f64(frame.longitude().period());
+    let cut_east = q.cut.try_add(&period)?;
+    let mut selected_spans = span_indices.to_vec();
+    selected_spans.sort_unstable();
+    selected_spans.dedup();
+
+    let mut port_nodes = Vec::new();
+    for &span_index in &selected_spans {
+        let span = q.spans.get(span_index).ok_or_else(|| {
+            GeometryErrorKind::Invalid("Q subgraph references an unknown span".into())
+        })?;
+        for port_id in span.ports {
+            let port = q.ports.get(port_id.0 as usize).ok_or_else(|| {
+                GeometryErrorKind::Invalid("Q subgraph span has an unknown port".into())
+            })?;
+            port_nodes.push((port.node, port_id));
+        }
+    }
+    for &node_id in point_nodes {
+        let node = q.nodes.get(node_id.0 as usize).ok_or_else(|| {
+            GeometryErrorKind::Invalid("Q subgraph references an unknown point node".into())
+        })?;
+        for &port_id in q.node_ports.get(node.ports.clone()).ok_or_else(|| {
+            GeometryErrorKind::Invalid("Q subgraph point node has an invalid port run".into())
+        })? {
+            port_nodes.push((node_id, port_id));
+        }
+    }
+    port_nodes.sort_unstable();
+    port_nodes.dedup();
+
+    let mut port_points = vec![None; q.ports.len()];
+    for &(_, port_id) in &port_nodes {
+        let port = q
+            .ports
+            .get(port_id.0 as usize)
+            .ok_or_else(|| GeometryErrorKind::Invalid("Q subgraph has an unknown port".into()))?;
+        let point = if port.cut {
+            if emitted.is_some() {
+                return Err(GeometryErrorKind::Invalid(
+                    "B3 spike does not cover selected cut ports".into(),
+                )
+                .into());
+            }
+            port.point.clone()
+        } else if let Some((node_coordinates, pole_port_longitude)) = emitted {
+            b3_assigned_port_point(
+                frame,
+                q,
+                port_id,
+                node_coordinates,
+                pole_port_longitude,
+                &cut_east,
+            )?
+        } else {
+            port.point.clone()
+        };
+        *port_points
+            .get_mut(port_id.0 as usize)
+            .ok_or_else(|| GeometryErrorKind::Invalid("Q subgraph port is unknown".into()))? =
+            Some(point);
+    }
+
+    let mut selected_nodes = port_nodes.iter().map(|(node, _)| *node).collect::<Vec<_>>();
+    selected_nodes.sort_unstable();
+    selected_nodes.dedup();
+    try_sort_by(&mut port_nodes, |left, right| {
+        let left_point = port_points
+            .get(left.1.0 as usize)
+            .and_then(Option::as_ref)
+            .ok_or_else(|| {
+                GeometryErrorKind::Invalid("Q subgraph port has no chart point".into())
+            })?;
+        let right_point = port_points
+            .get(right.1.0 as usize)
+            .and_then(Option::as_ref)
+            .ok_or_else(|| {
+                GeometryErrorKind::Invalid("Q subgraph port has no chart point".into())
+            })?;
+        let point_order = left_point.compare_lex(right_point)?;
+        if point_order.is_eq() {
+            let left_key = &q
+                .nodes
+                .get(left.0.0 as usize)
+                .ok_or_else(|| GeometryErrorKind::Invalid("Q subgraph node is unknown".into()))?
+                .key;
+            let right_key = &q
+                .nodes
+                .get(right.0.0 as usize)
+                .ok_or_else(|| GeometryErrorKind::Invalid("Q subgraph node is unknown".into()))?
+                .key;
+            compare_qnode_keys(left_key, right_key)
+        } else {
+            Ok(point_order)
+        }
+    })?;
+    port_nodes.dedup_by_key(|(_, port)| *port);
+
+    let mut nodes = Vec::with_capacity(selected_nodes.len());
+    let mut ports = Vec::with_capacity(port_nodes.len());
+    let mut node_ports = Vec::with_capacity(port_nodes.len());
+    let mut node_map = vec![None; q.nodes.len()];
+    let mut port_map = vec![None; q.ports.len()];
+    for old_node in &selected_nodes {
+        let old_node_data = q
+            .nodes
+            .get(old_node.0 as usize)
+            .ok_or_else(|| GeometryErrorKind::Invalid("Q subgraph has an unknown node".into()))?;
+        let node_id = QNodeId(u32::try_from(nodes.len()).map_err(|_| ResourceError::SizeOverflow)?);
+        *node_map.get_mut(old_node.0 as usize).ok_or_else(|| {
+            GeometryErrorKind::Invalid("Q subgraph node has an invalid ordinal".into())
+        })? = Some(node_id);
+        nodes.push(QNode {
+            id: node_id,
+            key: old_node_data.key.clone(),
+            pole: old_node_data.pole,
+            ports: 0..0,
+        });
+    }
+
+    for &(old_node, old_port_id) in &port_nodes {
+        let old_port = q
+            .ports
+            .get(old_port_id.0 as usize)
+            .ok_or_else(|| GeometryErrorKind::Invalid("Q subgraph has an unknown port".into()))?;
+        let node_id = node_map
+            .get(old_node.0 as usize)
+            .and_then(|node| *node)
+            .ok_or_else(|| GeometryErrorKind::Invalid("Q subgraph port node is absent".into()))?;
+        let port_id = QPortId(u32::try_from(ports.len()).map_err(|_| ResourceError::SizeOverflow)?);
+        let point = port_points
+            .get(old_port_id.0 as usize)
+            .and_then(Option::as_ref)
+            .cloned()
+            .ok_or_else(|| {
+                GeometryErrorKind::Invalid("Q subgraph port has no chart point".into())
+            })?;
+        ports.push(QPort {
+            id: port_id,
+            point,
+            node: node_id,
+            cut: old_port.cut,
+        });
+        *port_map.get_mut(old_port_id.0 as usize).ok_or_else(|| {
+            GeometryErrorKind::Invalid("Q subgraph port has an invalid ordinal".into())
+        })? = Some(port_id);
+    }
+    for &old_node in &selected_nodes {
+        let node_id = node_map
+            .get(old_node.0 as usize)
+            .and_then(|node| *node)
+            .ok_or_else(|| GeometryErrorKind::Invalid("Q subgraph node is absent".into()))?;
+        let old_node_data = q
+            .nodes
+            .get(old_node.0 as usize)
+            .ok_or_else(|| GeometryErrorKind::Invalid("Q subgraph node is unknown".into()))?;
+        let start = node_ports.len();
+        for &old_port_id in q
+            .node_ports
+            .get(old_node_data.ports.clone())
+            .ok_or_else(|| {
+                GeometryErrorKind::Invalid("Q subgraph node has an invalid port run".into())
+            })?
+        {
+            if let Some(port_id) = port_map.get(old_port_id.0 as usize).and_then(|port| *port) {
+                node_ports.push(port_id);
+            }
+        }
+        node_ports[start..].sort_unstable();
+        let end = node_ports.len();
+        nodes
+            .get_mut(node_id.0 as usize)
+            .ok_or_else(|| GeometryErrorKind::Invalid("Q subgraph node is absent".into()))?
+            .ports = start..end;
+    }
+
+    let mut spans = Vec::with_capacity(selected_spans.len());
+    for old_span_index in selected_spans {
+        let old_span = q.spans.get(old_span_index).ok_or_else(|| {
+            GeometryErrorKind::Invalid("Q subgraph references an unknown span".into())
+        })?;
+        let ports = [
+            *port_map
+                .get(old_span.ports[0].0 as usize)
+                .and_then(|port| *port)
+                .as_ref()
+                .ok_or_else(|| {
+                    GeometryErrorKind::Invalid("Q subgraph start port is absent".into())
+                })?,
+            *port_map
+                .get(old_span.ports[1].0 as usize)
+                .and_then(|port| *port)
+                .as_ref()
+                .ok_or_else(|| {
+                    GeometryErrorKind::Invalid("Q subgraph end port is absent".into())
+                })?,
+        ];
+        let nodes = [
+            *node_map
+                .get(old_span.nodes[0].0 as usize)
+                .and_then(|node| *node)
+                .as_ref()
+                .ok_or_else(|| {
+                    GeometryErrorKind::Invalid("Q subgraph start node is absent".into())
+                })?,
+            *node_map
+                .get(old_span.nodes[1].0 as usize)
+                .and_then(|node| *node)
+                .as_ref()
+                .ok_or_else(|| {
+                    GeometryErrorKind::Invalid("Q subgraph end node is absent".into())
+                })?,
+        ];
+        spans.push(ChartSpan {
+            id: ChartSpanId(u32::try_from(spans.len()).map_err(|_| ResourceError::SizeOverflow)?),
+            ports,
+            nodes,
+            owners: Box::default(),
+        });
+    }
+    Ok(CutChart {
+        cut: q.cut.clone(),
+        cut_east,
+        ports,
+        nodes,
+        node_ports,
+        spans,
+        source_edge_ports: Vec::new(),
+        source_point_ports: Vec::new(),
+    })
+}
+
+#[cfg(test)]
+fn b3_assigned_port_point(
+    frame: GeographicFrame,
+    q: &ExactGeographicQ,
+    port_id: QPortId,
+    node_coordinates: &[crate::geometry::XY],
+    pole_port_longitude: &[Option<f64>],
+    cut_east: &ExactRational,
+) -> Result<ExactChartPoint> {
+    let port = q
+        .ports
+        .get(port_id.0 as usize)
+        .ok_or_else(|| GeometryErrorKind::Invalid("Q emitted port is unknown".into()))?;
+    let node_coordinates = node_coordinates
+        .get(port.node.0 as usize)
+        .ok_or_else(|| GeometryErrorKind::Invalid("Q emitted node has no coordinate".into()))?;
+    let longitude = pole_port_longitude
+        .get(port_id.0 as usize)
+        .copied()
+        .flatten()
+        .unwrap_or(node_coordinates.x);
+    let axis = frame.longitude();
+    axis.canonicalize(longitude)
+        .map_err(|error| GeometryErrorKind::Invalid(error.to_string().into()))?;
+    let latitude = crate::geographic::Latitude::try_new(frame, node_coordinates.y)
+        .map_err(|error| GeometryErrorKind::Invalid(error.to_string().into()))?;
+    let exact_pole = port
+        .point
+        .y
+        .try_cmp(&ExactRational::from_f64(frame.pole()))?
+        .is_eq()
+        || port
+            .point
+            .y
+            .try_cmp(&ExactRational::from_f64(-frame.pole()))?
+            .is_eq();
+    if matches!(
+        latitude.identity(frame),
+        crate::geographic::SeamIdentity::Pole
+    ) != exact_pole
+    {
+        return Err(GeometryErrorKind::Invalid("Q assignment changes pole identity".into()).into());
+    }
+    let half = ExactRational::from_f64(axis.half_period());
+    let negative_half = ExactRational::zero().try_subtract(&half)?;
+    let period = ExactRational::from_f64(axis.period());
+    let exact_canonical = if port.point.x.try_cmp(&half)?.is_ge() {
+        port.point.x.try_subtract(&period)?
+    } else if port.point.x.try_cmp(&negative_half)?.is_lt() {
+        port.point.x.try_add(&period)?
+    } else {
+        port.point.x.clone()
+    };
+    let exact_seam =
+        exact_canonical.try_cmp(&half)?.is_eq() || exact_canonical.try_cmp(&negative_half)?.is_eq();
+    let candidate_longitude = axis
+        .canonicalize(longitude)
+        .map_err(|error| GeometryErrorKind::Invalid(error.to_string().into()))?;
+    if matches!(
+        candidate_longitude.identity(axis),
+        crate::geographic::SeamIdentity::Seam
+    ) && !exact_seam
+    {
+        return Err(
+            GeometryErrorKind::Invalid("Q assignment newly takes seam identity".into()).into(),
+        );
+    }
+    let center = ExactRational::from_f64(longitude);
+    let candidates = [
+        center.try_subtract(&period)?,
+        center.clone(),
+        center.try_add(&period)?,
+    ];
+    let one = ExactRational::one();
+    let zero = ExactRational::zero();
+    let mut nearest: Option<(ExactRational, ExactRational)> = None;
+    for candidate in candidates {
+        if candidate.try_cmp(&q.cut)?.is_lt() || candidate.try_cmp(cut_east)?.is_ge() {
+            continue;
+        }
+        let delta = candidate.try_subtract(&port.point.x)?;
+        let distance = if delta.try_cmp(&zero)?.is_lt() {
+            zero.try_subtract(&delta)?
+        } else {
+            delta
+        };
+        let replace = if let Some((previous_x, previous_distance)) = &nearest {
+            match distance.try_cmp(previous_distance)? {
+                Ordering::Less => true,
+                Ordering::Equal => candidate.try_cmp(previous_x)?.is_lt(),
+                Ordering::Greater => false,
+            }
+        } else {
+            true
+        };
+        if replace {
+            nearest = Some((candidate, distance));
+        }
+    }
+    let (x, x_distance) = nearest
+        .ok_or_else(|| GeometryErrorKind::Invalid("Q assignment has no chart longitude".into()))?;
+    let y = ExactRational::from_f64(node_coordinates.y);
+    let y_delta = y.try_subtract(&port.point.y)?;
+    let y_distance = if y_delta.try_cmp(&zero)?.is_lt() {
+        zero.try_subtract(&y_delta)?
+    } else {
+        y_delta
+    };
+    if x_distance.try_cmp(&one)?.is_ge() || y_distance.try_cmp(&one)?.is_ge() {
+        return Err(GeometryErrorKind::Invalid(
+            "Q assignment exceeds the chart lift budget".into(),
+        )
+        .into());
+    }
+    Ok(ExactChartPoint::from_rationals(x, y))
+}
+
+#[cfg(test)]
+pub(super) struct B3SubgraphFaceStructure {
+    pub(super) global: GlobalFaceStructure,
+    pub(super) outgoing: Vec<QDartId>,
+    pub(super) outgoing_offsets: Vec<usize>,
+}
+
+#[cfg(test)]
+pub(super) fn b3_subgraph_face_structure(
+    frame: GeographicFrame,
+    q: &ExactGeographicQ,
+    span_indices: &[usize],
+    point_nodes: &[QNodeId],
+    emitted: Option<(&[crate::geometry::XY], &[Option<f64>])>,
+) -> Result<B3SubgraphFaceStructure> {
+    let chart = b3_subgraph_chart(frame, q, span_indices, point_nodes, emitted)?;
+    let topology = QuotientFaces::build(frame, chart)?;
+    Ok(B3SubgraphFaceStructure {
+        global: global_face_structure(frame, &topology)?,
+        outgoing: topology.outgoing,
+        outgoing_offsets: topology.outgoing_offsets,
+    })
 }
 
 struct UnionFind {
@@ -2629,22 +3064,22 @@ fn compare_q_darts(
     left: QDartId,
     right: QDartId,
 ) -> Result<Ordering> {
+    let order = compare_q_darts_with_points(chart, darts, left, right, |port_id| {
+        chart
+            .ports
+            .get(port_id.0 as usize)
+            .map(|port| &port.point)
+            .ok_or_else(|| GeometryErrorKind::Invalid("Q dart has an unknown port".into()).into())
+    })?;
+    if !order.is_eq() {
+        return Ok(order);
+    }
     let left = darts
         .get(left.0 as usize)
         .ok_or_else(|| GeometryErrorKind::Invalid("Q fan references an unknown dart".into()))?;
     let right = darts
         .get(right.0 as usize)
         .ok_or_else(|| GeometryErrorKind::Invalid("Q fan references an unknown dart".into()))?;
-    if left.from_node != right.from_node {
-        return Err(GeometryErrorKind::Invalid(
-            "Q fan comparator received rays from different nodes".into(),
-        )
-        .into());
-    }
-    let node = chart
-        .nodes
-        .get(left.from_node.0 as usize)
-        .ok_or_else(|| GeometryErrorKind::Invalid("Q fan has an unknown node".into()))?;
     let left_origin = chart
         .ports
         .get(left.from_port.0 as usize)
@@ -2661,6 +3096,57 @@ fn compare_q_darts(
         .ports
         .get(right.to_port.0 as usize)
         .ok_or_else(|| GeometryErrorKind::Invalid("Q dart has an unknown target port".into()))?;
+    let node = chart
+        .nodes
+        .get(left.from_node.0 as usize)
+        .ok_or_else(|| GeometryErrorKind::Invalid("Q fan has an unknown node".into()))?;
+    let (left_ray, right_ray) = if node.pole.is_some() {
+        (
+            pole_tangent_ray(&left_origin.point, &left_target.point)?,
+            pole_tangent_ray(&right_origin.point, &right_target.point)?,
+        )
+    } else {
+        (
+            vector_difference(&left_origin.point, &left_target.point)?,
+            vector_difference(&right_origin.point, &right_target.point)?,
+        )
+    };
+    Err(coincident_q_ray_error(
+        left.from_node,
+        left.span,
+        right.span,
+        &left_ray,
+        &right_ray,
+    ))
+}
+
+pub(super) fn compare_q_darts_with_points<'point>(
+    chart: QFaceChart<'_>,
+    darts: &[QDart],
+    left: QDartId,
+    right: QDartId,
+    mut point_for_port: impl FnMut(QPortId) -> Result<&'point ExactChartPoint>,
+) -> Result<Ordering> {
+    let left = darts
+        .get(left.0 as usize)
+        .ok_or_else(|| GeometryErrorKind::Invalid("Q fan references an unknown dart".into()))?;
+    let right = darts
+        .get(right.0 as usize)
+        .ok_or_else(|| GeometryErrorKind::Invalid("Q fan references an unknown dart".into()))?;
+    if left.from_node != right.from_node {
+        return Err(GeometryErrorKind::Invalid(
+            "Q fan comparator received rays from different nodes".into(),
+        )
+        .into());
+    }
+    let node = chart
+        .nodes
+        .get(left.from_node.0 as usize)
+        .ok_or_else(|| GeometryErrorKind::Invalid("Q fan has an unknown node".into()))?;
+    let left_origin = point_for_port(left.from_port)?;
+    let left_target = point_for_port(left.to_port)?;
+    let right_origin = point_for_port(right.from_port)?;
+    let right_target = point_for_port(right.to_port)?;
 
     if let Some(pole) = node.pole {
         let canonical_longitude = |longitude: &ExactRational| -> Result<ExactRational> {
@@ -2670,40 +3156,20 @@ fn compare_q_darts(
                 Ok(longitude.clone())
             }
         };
-        let left_longitude = canonical_longitude(&left_origin.point.x)?;
-        let right_longitude = canonical_longitude(&right_origin.point.x)?;
+        let left_longitude = canonical_longitude(&left_origin.x)?;
+        let right_longitude = canonical_longitude(&right_origin.x)?;
         let longitude_order = compare_pole_meridians(pole, &left_longitude, &right_longitude)?;
         if !longitude_order.is_eq() {
             return Ok(longitude_order);
         }
-        let left_ray = pole_tangent_ray(&left_origin.point, &left_target.point)?;
-        let right_ray = pole_tangent_ray(&right_origin.point, &right_target.point)?;
-        let order = compare_pole_tangent_rays(pole, &left_ray, &right_ray)?;
-        if order.is_eq() {
-            return Err(coincident_q_ray_error(
-                left.from_node,
-                left.span,
-                right.span,
-                &left_ray,
-                &right_ray,
-            ));
-        }
-        return Ok(order);
+        let left_ray = pole_tangent_ray(left_origin, left_target)?;
+        let right_ray = pole_tangent_ray(right_origin, right_target)?;
+        return compare_pole_tangent_rays(pole, &left_ray, &right_ray);
     }
 
-    let left_ray = vector_difference(&left_origin.point, &left_target.point)?;
-    let right_ray = vector_difference(&right_origin.point, &right_target.point)?;
-    let order = compare_exact_rays_allow_equal(&left_ray, &right_ray)?;
-    if order.is_eq() {
-        return Err(coincident_q_ray_error(
-            left.from_node,
-            left.span,
-            right.span,
-            &left_ray,
-            &right_ray,
-        ));
-    }
-    Ok(order)
+    let left_ray = vector_difference(left_origin, left_target)?;
+    let right_ray = vector_difference(right_origin, right_target)?;
+    compare_exact_rays_allow_equal(&left_ray, &right_ray)
 }
 
 fn coincident_q_ray_error(
@@ -3175,6 +3641,337 @@ impl ExactGeographicQ {
         Ok(node.pole.is_some())
     }
 
+    pub(in crate::geometry) fn for_each_pole_sector(
+        &self,
+        pole: ChartPole,
+        work: &mut impl Work,
+        mut visit: impl FnMut(PoleSector) -> Result<()>,
+    ) -> Result<()> {
+        self.for_each_pole_sector_with_work(pole, work, |sector, _work| visit(sector))
+    }
+
+    pub(in crate::geometry) fn for_each_pole_sector_with_work<W: Work + ?Sized>(
+        &self,
+        pole: ChartPole,
+        work: &mut W,
+        mut visit: impl FnMut(PoleSector, &mut W) -> Result<()>,
+    ) -> Result<()> {
+        let mut found_pole_node = false;
+        for node in &self.nodes {
+            work.charge(1)?;
+            if node.pole != Some(pole) {
+                continue;
+            }
+            found_pole_node = true;
+            let node_index = node.id.0 as usize;
+            let start = *self.outgoing_offsets.get(node_index).ok_or_else(|| {
+                GeometryErrorKind::Invalid("Q pole has no outgoing-fan start".into())
+            })?;
+            let end = *self
+                .outgoing_offsets
+                .get(node_index.wrapping_add(1))
+                .ok_or_else(|| {
+                    GeometryErrorKind::Invalid("Q pole has no outgoing-fan end".into())
+                })?;
+            if start == end {
+                let face = self
+                    .source_node_faces
+                    .get(node_index)
+                    .copied()
+                    .flatten()
+                    .ok_or_else(|| {
+                        GeometryErrorKind::Invalid("isolated Q pole has no host face".into())
+                    })?;
+                work.charge(1)?;
+                visit(
+                    PoleSector::Isolated {
+                        pole,
+                        node: node.id,
+                        face,
+                    },
+                    work,
+                )?;
+                continue;
+            }
+            let fan = self.outgoing.get(start..end).ok_or_else(|| {
+                GeometryErrorKind::Invalid("Q pole outgoing fan is incomplete".into())
+            })?;
+            for (index, &clockwise) in fan.iter().enumerate() {
+                work.charge(1)?;
+                let next_index = index.checked_add(1).ok_or(ResourceError::SizeOverflow)?;
+                let counterclockwise_index = if next_index == fan.len() {
+                    0
+                } else {
+                    next_index
+                };
+                let counterclockwise = *fan.get(counterclockwise_index).ok_or_else(|| {
+                    GeometryErrorKind::Invalid("Q pole fan sector is incomplete".into())
+                })?;
+                let local_face = *self.dart_faces.get(clockwise.0 as usize).ok_or_else(|| {
+                    GeometryErrorKind::Invalid("Q pole dart has no incident sector".into())
+                })?;
+                let face = *self
+                    .global_face_of_local
+                    .get(local_face.0 as usize)
+                    .ok_or_else(|| {
+                        GeometryErrorKind::Invalid("Q pole sector has no global face".into())
+                    })?;
+                visit(
+                    PoleSector::Fan {
+                        pole,
+                        clockwise,
+                        counterclockwise,
+                        face,
+                    },
+                    work,
+                )?;
+            }
+        }
+        if !found_pole_node {
+            let interval = self.cut_index.pole_interval_id(pole)?;
+            let face = *self
+                .cut_interval_faces
+                .get(interval.0 as usize)
+                .ok_or_else(|| {
+                    GeometryErrorKind::Invalid("Q pole cut interval has no global host".into())
+                })?;
+            work.charge(1)?;
+            visit(PoleSector::Terminal { pole, face }, work)?;
+        }
+        Ok(())
+    }
+
+    pub(super) fn for_each_pole_incident_face(
+        &self,
+        pole: ChartPole,
+        mut visit: impl FnMut(GlobalFaceId) -> Result<()>,
+    ) -> Result<()> {
+        let mut work = crate::geometry::Unmetered;
+        let mut visited = BTreeSet::new();
+        self.for_each_pole_sector(pole, &mut work, |sector| {
+            let face = sector.face();
+            if visited.insert(face) {
+                visit(face)?;
+            }
+            Ok(())
+        })
+    }
+
+    pub(super) fn global_face_at_point(
+        &self,
+        frame: GeographicFrame,
+        source_point: &ExactChartPoint,
+    ) -> Result<Option<GlobalFaceId>> {
+        let point = lift_query_point(frame, &self.cut, source_point)?;
+        let cut_east = self
+            .cut
+            .try_add(&ExactRational::from_f64(frame.longitude().period()))?;
+        let north = ExactRational::from_f64(frame.chart_pole_latitude(ChartPole::North));
+        let south = ExactRational::from_f64(frame.chart_pole_latitude(ChartPole::South));
+        let interval_face = |latitude: &ExactRational| -> Result<GlobalFaceId> {
+            let interval = self.cut_index.interval_at(latitude, 1)?;
+            self.cut_interval_faces
+                .get(interval.id.0 as usize)
+                .copied()
+                .ok_or_else(|| {
+                    GeometryErrorKind::Invalid("Q cut interval has no global face".into()).into()
+                })
+        };
+        if point.y.try_cmp(&north)?.is_eq() {
+            return interval_face(&north).map(Some);
+        }
+        if point.y.try_cmp(&south)?.is_eq() {
+            return interval_face(&south).map(Some);
+        }
+        let mut face = interval_face(&point.y)?;
+        if point.x.try_cmp(&self.cut)?.is_eq() || point.x.try_cmp(&cut_east)?.is_eq() {
+            return Ok(Some(face));
+        }
+        let ray_start = ExactChartPoint::from_rationals(self.cut.clone(), point.y.clone());
+        let query = outward_segment_proxy(&ray_start, &point)?;
+        let mut crossings = Vec::<(ExactRational, usize)>::new();
+        let mut failure = None;
+        let mut boundary = false;
+        self.spatial_index
+            .for_each_candidate(query, |item| match item {
+                QSpatialItem::Span(span_index) => {
+                    let Some(span) = self.spans.get(span_index) else {
+                        failure = Some(
+                            GeometryErrorKind::Invalid(
+                                "Q face query references an unknown span".into(),
+                            )
+                            .into(),
+                        );
+                        return ControlFlow::Break(());
+                    };
+                    let Some(start) = self.ports.get(span.ports[0].0 as usize) else {
+                        failure = Some(
+                            GeometryErrorKind::Invalid("Q face-query span has no start".into())
+                                .into(),
+                        );
+                        return ControlFlow::Break(());
+                    };
+                    let Some(end) = self.ports.get(span.ports[1].0 as usize) else {
+                        failure = Some(
+                            GeometryErrorKind::Invalid("Q face-query span has no end".into())
+                                .into(),
+                        );
+                        return ControlFlow::Break(());
+                    };
+                    match point_on_exact_segment(&point, &start.point, &end.point) {
+                        Ok(true) => {
+                            boundary = true;
+                            return ControlFlow::Break(());
+                        },
+                        Ok(false) => {},
+                        Err(error) => {
+                            failure = Some(error);
+                            return ControlFlow::Break(());
+                        },
+                    }
+                    let order = match start.point.y.try_cmp(&end.point.y) {
+                        Ok(order) => order,
+                        Err(error) => {
+                            failure = Some(error);
+                            return ControlFlow::Break(());
+                        },
+                    };
+                    if order.is_eq() {
+                        return ControlFlow::Continue(());
+                    }
+                    let (low, high) = if order.is_lt() {
+                        (&start.point, &end.point)
+                    } else {
+                        (&end.point, &start.point)
+                    };
+                    let low_order = match point.y.try_cmp(&low.y) {
+                        Ok(order) => order,
+                        Err(error) => {
+                            failure = Some(error);
+                            return ControlFlow::Break(());
+                        },
+                    };
+                    let high_order = match point.y.try_cmp(&high.y) {
+                        Ok(order) => order,
+                        Err(error) => {
+                            failure = Some(error);
+                            return ControlFlow::Break(());
+                        },
+                    };
+                    if !low_order.is_gt() || !high_order.is_lt() {
+                        return ControlFlow::Continue(());
+                    }
+                    let delta_y = match high.y.try_subtract(&low.y) {
+                        Ok(delta) => delta,
+                        Err(error) => {
+                            failure = Some(error);
+                            return ControlFlow::Break(());
+                        },
+                    };
+                    let delta_x = match high.x.try_subtract(&low.x) {
+                        Ok(delta) => delta,
+                        Err(error) => {
+                            failure = Some(error);
+                            return ControlFlow::Break(());
+                        },
+                    };
+                    let hit_x = match point.y.try_subtract(&low.y).and_then(|offset| {
+                        delta_x
+                            .try_product(&offset.try_quotient(&delta_y)?)
+                            .and_then(|scaled| low.x.try_add(&scaled))
+                    }) {
+                        Ok(longitude) => longitude,
+                        Err(error) => {
+                            failure = Some(error);
+                            return ControlFlow::Break(());
+                        },
+                    };
+                    match hit_x.try_cmp(&self.cut) {
+                        Ok(order) if order.is_gt() => {},
+                        Ok(_) => return ControlFlow::Continue(()),
+                        Err(error) => {
+                            failure = Some(error);
+                            return ControlFlow::Break(());
+                        },
+                    }
+                    match hit_x.try_cmp(&point.x) {
+                        Ok(Ordering::Less) => crossings.push((hit_x, span_index)),
+                        Ok(Ordering::Equal) => {
+                            boundary = true;
+                            return ControlFlow::Break(());
+                        },
+                        Ok(Ordering::Greater) => {},
+                        Err(error) => {
+                            failure = Some(error);
+                            return ControlFlow::Break(());
+                        },
+                    }
+                },
+                QSpatialItem::Point(port_id) => {
+                    let Some(port) = self.ports.get(port_id.0 as usize) else {
+                        failure = Some(
+                            GeometryErrorKind::Invalid(
+                                "Q face query references an unknown port".into(),
+                            )
+                            .into(),
+                        );
+                        return ControlFlow::Break(());
+                    };
+                    match port.point.same_position(&point) {
+                        Ok(true) => {
+                            boundary = true;
+                            ControlFlow::Break(())
+                        },
+                        Ok(false) => ControlFlow::Continue(()),
+                        Err(error) => {
+                            failure = Some(error);
+                            ControlFlow::Break(())
+                        },
+                    }
+                },
+            })?;
+        if let Some(error) = failure {
+            return Err(error);
+        }
+        if boundary {
+            return Ok(None);
+        }
+        try_sort_by(&mut crossings, |left, right| left.0.try_cmp(&right.0))?;
+        for adjacent in crossings.windows(2) {
+            let [(left, _), (right, _)] = adjacent else {
+                unreachable!("windows(2) contains adjacent Q ray crossings");
+            };
+            if left.try_cmp(right)?.is_eq() {
+                return Ok(None);
+            }
+        }
+        for (_, span_index) in crossings {
+            let span = self
+                .spans
+                .get(span_index)
+                .ok_or_else(|| GeometryErrorKind::Invalid("Q face-ray span is unknown".into()))?;
+            let faces = self
+                .span_global_faces
+                .get(span_index)
+                .and_then(|faces| *faces)
+                .ok_or_else(|| {
+                    GeometryErrorKind::Invalid("Q face-ray span has no global face pair".into())
+                })?;
+            let start = self.ports.get(span.ports[0].0 as usize).ok_or_else(|| {
+                GeometryErrorKind::Invalid("Q face-ray span has no start port".into())
+            })?;
+            let end = self.ports.get(span.ports[1].0 as usize).ok_or_else(|| {
+                GeometryErrorKind::Invalid("Q face-ray span has no end port".into())
+            })?;
+            face = if start.point.y.try_cmp(&end.point.y)?.is_lt() {
+                faces[1]
+            } else {
+                faces[0]
+            };
+        }
+        Ok(Some(face))
+    }
+
     fn locate_point(
         &self,
         topology: &ExactGeographicTopology,
@@ -3628,6 +4425,34 @@ pub(crate) struct ExactGeographicTopology {
     pub(super) q: ExactGeographicQ,
 }
 
+impl RootCatalog for ExactGeographicTopology {
+    fn resolve<M: ChartMetric>(
+        &self,
+        root: RootId,
+        parameter: &ExactRational,
+        axes: crate::geometry::CoordinateAxes,
+        metric_access: Option<&SourceArcMetricAccess<'_, '_, M>>,
+        state: &mut RootMetricState,
+        fraction: &mut Option<f64>,
+        work: &mut impl Work,
+    ) -> Result<NodeOrdinates> {
+        let edge = self.sources.edges.get(root.index()).ok_or_else(|| {
+            GeometryErrorKind::Invalid("source trace references an unknown source edge".into())
+        })?;
+        resolve_source_root(
+            self.sources.frame,
+            &edge.source,
+            edge.retained_longitude(),
+            parameter,
+            axes,
+            metric_access,
+            state,
+            fraction,
+            work,
+        )
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct ExactGeographicPointLocation {
     /// Location in the complete geometry, including line and point support.
@@ -3671,34 +4496,92 @@ pub(crate) enum ExactGeographicRectangleLocation {
     Interior,
 }
 
+pub(super) enum CanonicalQNodeKey<'a> {
+    Chart(&'a ExactQuotientKey),
+    Cut {
+        longitude: &'a ExactRational,
+        latitude: &'a ExactRational,
+    },
+}
+
 impl ExactGeographicTopology {
+    pub(super) fn into_source_edges(self) -> Vec<ExactSourceEdge> {
+        self.sources.edges
+    }
+
+    pub(super) fn canonical_node_key(&self, node: QNodeId) -> Result<CanonicalQNodeKey<'_>> {
+        let q_node = self.q.nodes.get(node.0 as usize).ok_or_else(|| {
+            GeometryErrorKind::Invalid("canonical Q coordinate references an unknown node".into())
+        })?;
+        let QNodeKey::Source(source) = &q_node.key else {
+            let QNodeKey::Cut(latitude) = &q_node.key else {
+                unreachable!("QNodeKey has exactly Source and Cut variants");
+            };
+            return Ok(CanonicalQNodeKey::Cut {
+                longitude: &self.q.cut,
+                latitude,
+            });
+        };
+        self.chart
+            .nodes
+            .get(source.0 as usize)
+            .map(|chart_node| CanonicalQNodeKey::Chart(&chart_node.key))
+            .ok_or_else(|| {
+                GeometryErrorKind::Invalid(
+                    "canonical Q coordinate references an unknown chart node".into(),
+                )
+                .into()
+            })
+    }
+
     pub(crate) fn from_views<'a>(
         frame: GeographicFrame,
         views: impl ExactSizeIterator<Item = crate::geographic::ScalarGeographicView<'a>>,
     ) -> Result<Self> {
-        Self::build_from_views(frame, views)
+        let mut budget =
+            crate::geometry::ExpansionBudget::new("geographic topology", "exact chart noding");
+        let mut work = crate::geometry::Unmetered;
+        Self::from_views_with_work_and_expansion_budget(frame, views, &mut budget, &mut work)
+    }
+
+    pub(crate) fn from_views_with_expansion_budget<'a>(
+        frame: GeographicFrame,
+        views: impl ExactSizeIterator<Item = crate::geographic::ScalarGeographicView<'a>>,
+        budget: &mut ExpansionBudget,
+    ) -> Result<Self> {
+        let mut work = crate::geometry::Unmetered;
+        Self::from_views_with_work_and_expansion_budget(frame, views, budget, &mut work)
+    }
+
+    pub(crate) fn from_views_with_work_and_expansion_budget<'a>(
+        frame: GeographicFrame,
+        views: impl ExactSizeIterator<Item = crate::geographic::ScalarGeographicView<'a>>,
+        budget: &mut ExpansionBudget,
+        work: &mut impl Work,
+    ) -> Result<Self> {
+        let sources = ExactGeographicChartInventory::collect_views_with_work(frame, views, work)?;
+        Self::build(frame, sources, budget, work)
     }
 
     pub(crate) fn from_views_as_set<'a>(
         frame: GeographicFrame,
         views: impl ExactSizeIterator<Item = crate::geographic::ScalarGeographicView<'a>>,
     ) -> Result<Self> {
-        let sources = ExactGeographicChartInventory::collect_views_as_set(frame, views)?;
-        Self::build(frame, sources)
-    }
-
-    fn build_from_views<'a>(
-        frame: GeographicFrame,
-        views: impl ExactSizeIterator<Item = crate::geographic::ScalarGeographicView<'a>>,
-    ) -> Result<Self> {
-        let sources = ExactGeographicChartInventory::collect_views(frame, views)?;
-        Self::build(frame, sources)
-    }
-
-    fn build(frame: GeographicFrame, sources: ExactGeographicChartInventory) -> Result<Self> {
         let mut budget =
             crate::geometry::ExpansionBudget::new("geographic topology", "exact chart noding");
-        let chart = sources.node(&mut budget)?;
+        let mut work = crate::geometry::Unmetered;
+        let sources =
+            ExactGeographicChartInventory::collect_views_as_set_with_work(frame, views, &mut work)?;
+        Self::build(frame, sources, &mut budget, &mut work)
+    }
+
+    fn build(
+        frame: GeographicFrame,
+        sources: ExactGeographicChartInventory,
+        budget: &mut ExpansionBudget,
+        work: &mut impl Work,
+    ) -> Result<Self> {
+        let chart = sources.node_with_work(budget, work)?;
         let q = ExactGeographicQ::build(frame, &sources, &chart)?;
         Ok(Self { sources, chart, q })
     }
@@ -4581,39 +5464,54 @@ fn clip_open_parameter(
     Ok(low.try_cmp(high)?.is_lt())
 }
 
-fn exact_segments_intersect(
+pub(in crate::geometry) fn exact_segments_intersect(
     left_start: &ExactChartPoint,
     left_end: &ExactChartPoint,
     right_start: &ExactChartPoint,
     right_end: &ExactChartPoint,
 ) -> Result<bool> {
-    let left_start_orientation = exact_orientation(left_start, left_end, right_start)?;
-    let left_end_orientation = exact_orientation(left_start, left_end, right_end)?;
-    let right_start_orientation = exact_orientation(right_start, right_end, left_start)?;
-    let right_end_orientation = exact_orientation(right_start, right_end, left_end)?;
+    let mut work = crate::geometry::Unmetered;
+    exact_segments_intersect_with_work(left_start, left_end, right_start, right_end, &mut work)
+}
+
+pub(in crate::geometry) fn exact_segments_intersect_with_work(
+    left_start: &ExactChartPoint,
+    left_end: &ExactChartPoint,
+    right_start: &ExactChartPoint,
+    right_end: &ExactChartPoint,
+    work: &mut impl Work,
+) -> Result<bool> {
+    let left_start_orientation =
+        exact_orientation_with_work(left_start, left_end, right_start, work)?;
+    let left_end_orientation = exact_orientation_with_work(left_start, left_end, right_end, work)?;
+    let right_start_orientation =
+        exact_orientation_with_work(right_start, right_end, left_start, work)?;
+    let right_end_orientation =
+        exact_orientation_with_work(right_start, right_end, left_end, work)?;
     if signs_are_opposite(left_start_orientation, left_end_orientation)
         && signs_are_opposite(right_start_orientation, right_end_orientation)
     {
         return Ok(true);
     }
     Ok((left_start_orientation == ExactSign::Zero
-        && point_on_exact_segment(right_start, left_start, left_end)?)
+        && point_on_exact_segment_with_work(right_start, left_start, left_end, work)?)
         || (left_end_orientation == ExactSign::Zero
-            && point_on_exact_segment(right_end, left_start, left_end)?)
+            && point_on_exact_segment_with_work(right_end, left_start, left_end, work)?)
         || (right_start_orientation == ExactSign::Zero
-            && point_on_exact_segment(left_start, right_start, right_end)?)
+            && point_on_exact_segment_with_work(left_start, right_start, right_end, work)?)
         || (right_end_orientation == ExactSign::Zero
-            && point_on_exact_segment(left_end, right_start, right_end)?))
+            && point_on_exact_segment_with_work(left_end, right_start, right_end, work)?))
 }
 
-fn exact_orientation(
+fn exact_orientation_with_work(
     start: &ExactChartPoint,
     end: &ExactChartPoint,
     point: &ExactChartPoint,
+    work: &mut impl Work,
 ) -> Result<ExactSign> {
-    let direction = vector_difference(start, end)?;
-    let offset = vector_difference(start, point)?;
-    Ok(vector_cross(&direction, &offset)?.sign())
+    let direction = vector_difference_with_work(start, end, work)?;
+    let offset = vector_difference_with_work(start, point, work)?;
+    Ok(vector_cross_with_work(&direction, &offset, work)?.sign())
 }
 
 const fn signs_are_opposite(left: ExactSign, right: ExactSign) -> bool {
@@ -5208,10 +6106,6 @@ struct FaceOccupancyState {
 }
 
 impl FaceOccupancyState {
-    #[expect(
-        clippy::indexing_slicing,
-        reason = "ring, polygon, and row IDs index counters sized from the admitted inventory"
-    )]
     fn new(sources: &ExactGeographicChartInventory, winding: &[i64]) -> Result<Self> {
         if winding.len() != sources.rings.len() {
             return Err(GeometryErrorKind::Invalid(
@@ -5260,11 +6154,15 @@ impl FaceOccupancyState {
         let mut outside_hole_polygons = BTreeSet::new();
         let mut overlapping_hole_polygons = BTreeSet::new();
         let mut active_polygons = BTreeSet::new();
-        for (index, polygon) in sources.polygons.iter().enumerate() {
+        for (index, ((polygon, &shells), &holes)) in sources
+            .polygons
+            .iter()
+            .zip(&polygon_shells)
+            .zip(&polygon_holes)
+            .enumerate()
+        {
             let polygon_id =
                 SourcePolygonId(u32::try_from(index).map_err(|_| ResourceError::SizeOverflow)?);
-            let shells = polygon_shells[index];
-            let holes = polygon_holes[index];
             if holes != 0 && shells == 0 {
                 outside_hole_polygons.insert(polygon_id);
             }
@@ -6057,7 +6955,7 @@ fn add_cut_candidate(
     Ok(())
 }
 
-fn compare_qnode_keys(left: &QNodeKey, right: &QNodeKey) -> Result<Ordering> {
+pub(super) fn compare_qnode_keys(left: &QNodeKey, right: &QNodeKey) -> Result<Ordering> {
     match (left, right) {
         (QNodeKey::Source(left), QNodeKey::Source(right)) => Ok(left.cmp(right)),
         (QNodeKey::Source(_), QNodeKey::Cut(_)) => Ok(Ordering::Less),

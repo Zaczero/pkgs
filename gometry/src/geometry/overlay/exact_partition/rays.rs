@@ -15,9 +15,9 @@ use super::construction::PointArena;
 use super::metrics::update as update_partition_metrics;
 use crate::geometry::arrangement::compare_departures;
 use crate::geometry::exact_arith::ExactSign;
-use crate::geometry::segments::{stored_orientation_sign, try_sort_by};
+use crate::geometry::segments::{stored_orientation_sign, try_sort_by_with_work};
 use crate::geometry::tessellation::exact::{Interval, compare_ratios};
-use crate::geometry::{GeometryErrorKind, OrderTree, Result, XY};
+use crate::geometry::{GeometryErrorKind, OrderTree, Result, Unmetered, Work, XY};
 
 #[derive(Clone, Copy)]
 struct SweepEdge {
@@ -104,40 +104,78 @@ pub(in crate::geometry) trait RayPoints {
     /// Sort items by their points' coordinate on `axis`, reporting each
     /// adjacent pair at one coordinate to `equal`. The rounded coordinate
     /// sorts; exact points break only runs of equal rounded coordinates.
-    #[expect(
-        clippy::indexing_slicing,
-        reason = "run bounds are advanced only within the sorted item slice"
-    )]
     fn sort_by_axis<T: Copy, P: Fn(T) -> u32, E: FnMut(T, T) -> Result<()>>(
         &self,
         items: &mut [T],
         axis: Axis,
         point: P,
+        equal: E,
+    ) -> Result<()> {
+        let mut work = Unmetered;
+        self.sort_by_axis_with_work(items, axis, point, equal, &mut work)
+    }
+
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "runs advance within the keyed permutation created from this exact item slice"
+    )]
+    fn sort_by_axis_with_work<
+        T: Copy,
+        P: Fn(T) -> u32,
+        E: FnMut(T, T) -> Result<()>,
+        W: Work + ?Sized,
+    >(
+        &self,
+        items: &mut [T],
+        axis: Axis,
+        point: P,
         mut equal: E,
+        work: &mut W,
     ) -> Result<()> {
         let key = |item: T| {
             let value = axis.of(self.rounded(point(item)));
             if value == 0.0 { 0.0 } else { value }
         };
-        items.sort_unstable_by(|&left, &right| key(left).total_cmp(&key(right)));
+        work.charge(
+            u64::try_from(items.len()).map_err(|_| crate::error::ResourceError::SizeOverflow)?,
+        )?;
+        let mut keyed = Vec::with_capacity(items.len());
+        for &item in items.iter() {
+            work.charge(1)?;
+            keyed.push((key(item), item));
+        }
+        try_sort_by_with_work(&mut keyed, work, |left, right, work| {
+            work.charge(1)?;
+            Ok(left.0.total_cmp(&right.0))
+        })?;
         let mut run = 0;
-        while run < items.len() {
+        while run < keyed.len() {
+            work.charge(1)?;
             let mut end = run.wrapping_add(1);
-            while end < items.len() && key(items[end]).total_cmp(&key(items[run])).is_eq() {
+            while end < keyed.len() && keyed[end].0.total_cmp(&keyed[run].0).is_eq() {
+                work.charge(1)?;
                 end = end.wrapping_add(1);
             }
             if end.wrapping_sub(run) > 1 {
-                let tied = &mut items[run..end];
-                try_sort_by(tied, |&left, &right| {
-                    self.compare_axis(point(left), point(right), axis)
+                let tied = &mut keyed[run..end];
+                try_sort_by_with_work(tied, work, |left, right, work| {
+                    work.charge(1)?;
+                    self.compare_axis(point(left.1), point(right.1), axis)
                 })?;
-                for &[left, right] in tied.array_windows::<2>() {
-                    if self.compare_axis(point(left), point(right), axis)? == Ordering::Equal {
-                        equal(left, right)?;
+                for pair in tied.array_windows::<2>() {
+                    work.charge(1)?;
+                    if self.compare_axis(point(pair[0].1), point(pair[1].1), axis)?
+                        == Ordering::Equal
+                    {
+                        equal(pair[0].1, pair[1].1)?;
                     }
                 }
             }
             run = end;
+        }
+        for (item, (_, value)) in items.iter_mut().zip(keyed) {
+            work.charge(1)?;
+            *item = value;
         }
         Ok(())
     }
@@ -269,6 +307,38 @@ impl RayPoints for EmittedPoints<'_> {
     }
 }
 
+pub(in crate::geometry) fn compare_departures_with_work<R: RayPoints, W: Work + ?Sized>(
+    points: &R,
+    origin: u32,
+    left: u32,
+    right: u32,
+    work: &mut W,
+) -> Result<Ordering> {
+    work.charge(4)?;
+    let left_y = points.compare_axis(left, origin, Axis::Y)?;
+    let left_x = points.compare_axis(left, origin, Axis::X)?;
+    let right_y = points.compare_axis(right, origin, Axis::Y)?;
+    let right_x = points.compare_axis(right, origin, Axis::X)?;
+    let upper = |y: Ordering, x: Ordering| y.is_gt() || (y.is_eq() && x.is_gt());
+    let halves = upper(right_y, right_x).cmp(&upper(left_y, left_x));
+    if !halves.is_eq() {
+        return Ok(halves);
+    }
+    work.charge(1)?;
+    let sign = points.orientation(origin, left, right)?;
+    if sign == ExactSign::Zero && left != right {
+        return Err(GeometryErrorKind::Invalid(
+            "distinct graph edges share a departure ray".into(),
+        )
+        .into());
+    }
+    Ok(match sign {
+        ExactSign::Positive => Ordering::Less,
+        ExactSign::Negative => Ordering::Greater,
+        ExactSign::Zero => Ordering::Equal,
+    })
+}
+
 /// Leftward ray shooting for many queries in one sweep over y.
 ///
 /// The ray from a query runs toward -x just above the query's height, so an
@@ -291,7 +361,28 @@ pub(in crate::geometry) fn shoot_left<R: RayPoints, E: Fn(usize) -> [u32; 2]>(
     edge: E,
     queries: &[u32],
 ) -> Result<Vec<Option<usize>>> {
-    shoot_left_with_status::<OrderTree<SweepEdge>, _, _>(points, edge_count, edge, queries)
+    let mut work = Unmetered;
+    shoot_left_with_work(
+        points,
+        edge_count,
+        |index| Ok(edge(index)),
+        queries,
+        &mut work,
+    )
+}
+
+pub(in crate::geometry) fn shoot_left_with_work<
+    R: RayPoints,
+    E: Fn(usize) -> Result<[u32; 2]>,
+    W: Work + ?Sized,
+>(
+    points: &R,
+    edge_count: usize,
+    edge: E,
+    queries: &[u32],
+    work: &mut W,
+) -> Result<Vec<Option<usize>>> {
+    shoot_left_with_status::<OrderTree<SweepEdge>, _, _, _>(points, edge_count, edge, queries, work)
 }
 
 /// Compare each emitted component's local host with the face east of its
@@ -446,22 +537,44 @@ pub(super) fn shoot_left_vector_reference<R: RayPoints, E: Fn(usize) -> [u32; 2]
     edge: E,
     queries: &[u32],
 ) -> Result<Vec<Option<usize>>> {
-    shoot_left_with_status::<Vec<SweepEdge>, _, _>(points, edge_count, edge, queries)
+    let mut work = Unmetered;
+    shoot_left_with_status::<Vec<SweepEdge>, _, _, _>(
+        points,
+        edge_count,
+        |index| Ok(edge(index)),
+        queries,
+        &mut work,
+    )
 }
 
 #[expect(
     clippy::indexing_slicing,
     reason = "query positions come from the order permutation; status ranks come from prefix searches"
 )]
-fn shoot_left_with_status<S: SweepStatus, R: RayPoints, E: Fn(usize) -> [u32; 2]>(
+fn shoot_left_with_status<
+    S: SweepStatus,
+    R: RayPoints,
+    E: Fn(usize) -> Result<[u32; 2]>,
+    W: Work + ?Sized,
+>(
     points: &R,
     edge_count: usize,
     edge: E,
     queries: &[u32],
+    work: &mut W,
 ) -> Result<Vec<Option<usize>>> {
+    work.charge(
+        u64::try_from(queries.len()).map_err(|_| crate::error::ResourceError::SizeOverflow)?,
+    )?;
     let mut order = Vec::with_capacity(queries.len());
     order.extend(0..queries.len());
-    points.sort_by_axis(&mut order, Axis::Y, |index| queries[index], |_, _| Ok(()))?;
+    points.sort_by_axis_with_work(
+        &mut order,
+        Axis::Y,
+        |index| queries[index],
+        |_, _| Ok(()),
+        work,
+    )?;
     let Some((&first_query, &last_query)) = order.first().zip(order.last()) else {
         return Ok(Vec::new());
     };
@@ -471,22 +584,29 @@ fn shoot_left_with_status<S: SweepStatus, R: RayPoints, E: Fn(usize) -> [u32; 2]
     // whose vertical extent contains no query height.
     let mut starts: Vec<SweepEdge> = Vec::new();
     for index in 0..edge_count {
-        let [a, b] = edge(index);
+        work.charge(1)?;
+        let [a, b] = edge(index)?;
         let a_y = points.rounded(a).y;
         let b_y = points.rounded(b).y;
         if (a_y < min_query_y && b_y < min_query_y) || (a_y > max_query_y && b_y > max_query_y) {
             continue;
         }
+        work.charge(1)?;
         let (lower, upper) = match points.compare_axis(a, b, Axis::Y)? {
             Ordering::Less => (a, b),
             Ordering::Greater => (b, a),
             Ordering::Equal => continue,
         };
-        let first = first_not_left(&order, |query| {
+        let first = first_not_left_with_work(&order, work, |query, work| {
+            work.charge(1)?;
             Ok(points.compare_axis(queries[query], lower, Axis::Y)? == Ordering::Less)
         })?;
+        work.charge(1)?;
         if let Some(&query) = order.get(first)
-            && points.compare_axis(queries[query], upper, Axis::Y)? == Ordering::Less
+            && {
+                work.charge(1)?;
+                points.compare_axis(queries[query], upper, Axis::Y)? == Ordering::Less
+            }
         {
             starts.push(SweepEdge {
                 lower,
@@ -495,79 +615,115 @@ fn shoot_left_with_status<S: SweepStatus, R: RayPoints, E: Fn(usize) -> [u32; 2]
             });
         }
     }
+    work.charge(
+        u64::try_from(starts.len()).map_err(|_| crate::error::ResourceError::SizeOverflow)?,
+    )?;
     let mut ends = Vec::with_capacity(starts.len());
     ends.extend_from_slice(&starts);
-    points.sort_by_axis(&mut starts, Axis::Y, |edge| edge.lower, |_, _| Ok(()))?;
-    points.sort_by_axis(&mut ends, Axis::Y, |edge| edge.upper, |_, _| Ok(()))?;
+    points.sort_by_axis_with_work(&mut starts, Axis::Y, |edge| edge.lower, |_, _| Ok(()), work)?;
+    points.sort_by_axis_with_work(&mut ends, Axis::Y, |edge| edge.upper, |_, _| Ok(()), work)?;
+    work.charge(
+        u64::try_from(queries.len()).map_err(|_| crate::error::ResourceError::SizeOverflow)?,
+    )?;
     let mut answers = Vec::with_capacity(queries.len());
     answers.resize(queries.len(), None);
 
-    let orientation = |a, b, c| {
+    let negative = |a, b, c, work: &mut W| -> Result<bool> {
+        work.charge(1)?;
         #[cfg(test)]
         update_partition_metrics(|metrics| {
             metrics.ray_orientations = metrics.ray_orientations.wrapping_add(1);
         });
-        points.orientation(a, b, c)
+        Ok(points.orientation(a, b, c)? == ExactSign::Negative)
     };
-    let negative = |a, b, c| -> Result<bool> { Ok(orientation(a, b, c)? == ExactSign::Negative) };
-    let positive = |a, b, c| -> Result<bool> { Ok(orientation(a, b, c)? == ExactSign::Positive) };
+    let positive = |a, b, c, work: &mut W| -> Result<bool> {
+        work.charge(1)?;
+        #[cfg(test)]
+        update_partition_metrics(|metrics| {
+            metrics.ray_orientations = metrics.ray_orientations.wrapping_add(1);
+        });
+        Ok(points.orientation(a, b, c)? == ExactSign::Positive)
+    };
     // Whether `edge` lies left of every point just above `point`'s height on
     // the ray through it; for an edge starting at `point`, the fan order.
-    let left_above = |edge: SweepEdge, starting: SweepEdge| -> Result<bool> {
+    let left_above = |edge: SweepEdge, starting: SweepEdge, work: &mut W| -> Result<bool> {
         if edge.lower == starting.lower {
-            positive(starting.lower, starting.upper, edge.upper)
+            positive(starting.lower, starting.upper, edge.upper, work)
         } else {
-            negative(edge.lower, edge.upper, starting.lower)
+            negative(edge.lower, edge.upper, starting.lower, work)
         }
     };
     // The same just below the height where `ending` leaves, among the edges
     // converging on its upper endpoint by their lower directions.
-    let left_below = |edge: SweepEdge, ending: SweepEdge| -> Result<bool> {
+    let left_below = |edge: SweepEdge, ending: SweepEdge, work: &mut W| -> Result<bool> {
         if edge.upper == ending.upper {
-            positive(ending.lower, ending.upper, edge.lower)
+            positive(ending.lower, ending.upper, edge.lower, work)
         } else {
-            negative(edge.lower, edge.upper, ending.upper)
+            negative(edge.lower, edge.upper, ending.upper, work)
         }
     };
+    work.charge(
+        u64::try_from(starts.len()).map_err(|_| crate::error::ResourceError::SizeOverflow)?,
+    )?;
     let mut status = S::new_status(starts.len());
     let (mut next_start, mut next_end, mut next_query) = (0, 0, 0);
     while next_query < order.len() {
+        work.charge(1)?;
         let mut height = queries[order[next_query]];
         if let Some(starting) = starts.get(next_start)
-            && points.compare_axis(starting.lower, height, Axis::Y)? == Ordering::Less
+            && {
+                work.charge(1)?;
+                points.compare_axis(starting.lower, height, Axis::Y)? == Ordering::Less
+            }
         {
             height = starting.lower;
         }
         if let Some(ending) = ends.get(next_end)
-            && points.compare_axis(ending.upper, height, Axis::Y)? == Ordering::Less
+            && {
+                work.charge(1)?;
+                points.compare_axis(ending.upper, height, Axis::Y)? == Ordering::Less
+            }
         {
             height = ending.upper;
         }
         while let Some(&ending) = ends.get(next_end)
-            && points.compare_axis(ending.upper, height, Axis::Y)? == Ordering::Equal
+            && {
+                work.charge(1)?;
+                points.compare_axis(ending.upper, height, Axis::Y)? == Ordering::Equal
+            }
         {
-            let index = status.prefix_rank(|edge| left_below(edge, ending))?;
+            let index = status.prefix_rank(|edge| left_below(edge, ending, work))?;
+            work.charge(1)?;
             if status.get_at_rank(index).map(|edge| edge.item) != Some(ending.item) {
                 return Err(GeometryErrorKind::Invalid(
                     "leftward ray sweep lost an edge from its status".into(),
                 )
                 .into());
             }
+            work.charge(1)?;
             status.remove_rank(index);
             next_end = next_end.wrapping_add(1);
         }
         while let Some(&starting) = starts.get(next_start)
-            && points.compare_axis(starting.lower, height, Axis::Y)? == Ordering::Equal
+            && {
+                work.charge(1)?;
+                points.compare_axis(starting.lower, height, Axis::Y)? == Ordering::Equal
+            }
         {
-            let index = status.prefix_rank(|edge| left_above(edge, starting))?;
+            let index = status.prefix_rank(|edge| left_above(edge, starting, work))?;
+            work.charge(1)?;
             status.insert_rank(index, starting);
             next_start = next_start.wrapping_add(1);
         }
         while let Some(&query) = order.get(next_query)
-            && points.compare_axis(queries[query], height, Axis::Y)? == Ordering::Equal
+            && {
+                work.charge(1)?;
+                points.compare_axis(queries[query], height, Axis::Y)? == Ordering::Equal
+            }
         {
             let point = queries[query];
-            let rank = status.prefix_rank(|edge| negative(edge.lower, edge.upper, point))?;
+            let rank = status.prefix_rank(|edge| negative(edge.lower, edge.upper, point, work))?;
+            work.charge(1)?;
             answers[query] = rank
                 .checked_sub(1)
                 .and_then(|left| status.get_at_rank(left))
@@ -585,10 +741,27 @@ fn shoot_left_with_status<S: SweepStatus, R: RayPoints, E: Fn(usize) -> [u32; 2]
     reason = "binary-search middle is strictly below high, which starts at items.len()"
 )]
 fn first_not_left<T: Copy, L: FnMut(T) -> Result<bool>>(items: &[T], mut left: L) -> Result<usize> {
+    let mut work = Unmetered;
+    first_not_left_with_work(items, &mut work, |item, _work| left(item))
+}
+
+#[expect(
+    clippy::indexing_slicing,
+    reason = "binary-search middle is strictly below high, which starts at items.len()"
+)]
+fn first_not_left_with_work<T: Copy, W: Work + ?Sized, L>(
+    items: &[T],
+    work: &mut W,
+    mut left: L,
+) -> Result<usize>
+where
+    L: FnMut(T, &mut W) -> Result<bool>,
+{
     let (mut low, mut high) = (0, items.len());
     while low < high {
+        work.charge(1)?;
         let middle = low.wrapping_add(high.wrapping_sub(low) / 2);
-        if left(items[middle])? {
+        if left(items[middle], work)? {
             low = middle.wrapping_add(1);
         } else {
             high = middle;
