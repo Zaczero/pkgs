@@ -326,7 +326,6 @@ pub(crate) fn snap(
                 reference,
                 crate::dispatch::Operation::Snap.name(),
                 crate::dispatch::MetricResolver::None,
-                &crate::dispatch::NoBinaryFastPath,
                 move |left, right, _ctx| left.shape().snap(right.shape(), tolerance),
             )
         });
@@ -357,7 +356,6 @@ pub(crate) fn snap(
                 reference,
                 "snap",
                 crate::dispatch::MetricResolver::GeographicCarry,
-                &crate::dispatch::NoBinaryFastPath,
                 move |left, right, ctx| {
                     left.shape()
                         .snap(right.shape(), tolerance.get(ctx.lane.row()))
@@ -370,7 +368,6 @@ pub(crate) fn snap(
             reference,
             crate::dispatch::Operation::Snap.name(),
             crate::dispatch::MetricResolver::None,
-            &crate::dispatch::NoBinaryFastPath,
             move |left, right, _ctx| left.shape().snap(right.shape(), scalar),
         )
     })

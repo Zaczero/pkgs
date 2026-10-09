@@ -14,9 +14,8 @@ use crate::test_support::binary_dispatch_counters::metric_context_acquisition;
 pub(crate) enum MetricResolver {
     /// Pure topology, IO, or coordinate-space ops — no CRS metric model.
     None,
-    /// Antimeridian ops allow CRS-free lon/lat but reject projected CRS. They
-    /// still need the CRS metric model resolved once per call so row kernels do
-    /// not re-derive it for every geometry.
+    /// Antimeridian ops admit their CRS model before row execution; the row
+    /// kernel enforces that projected frames have no antimeridian.
     Antimeridian,
     /// Distance/area/length/buffer and other CRS-aware measure/constructive ops.
     Metric {
@@ -103,9 +102,8 @@ impl MetricResolver {
             Self::Antimeridian => {
                 #[cfg(test)]
                 metric_context_acquisition();
-                let model = crs::metric_model(frame.crs_str())?;
-                let model = scratch.model.get_or_init(|| model);
-                return Ok(MetricCtx::Antimeridian(model));
+                crs::metric_model(frame.crs_str())?;
+                return Ok(MetricCtx::Antimeridian);
             },
             Self::GeographicCarry => {
                 let (_, metric) = self.resolve_topology_ctx(frame, scratch)?;
@@ -252,7 +250,7 @@ impl MetricScratch {
 #[derive(Clone, Copy)]
 pub(crate) enum MetricCtx<'a> {
     None,
-    Antimeridian(&'a MetricModel),
+    Antimeridian,
     GeographicCarry {
         scratch: &'a MetricScratch,
     },
@@ -264,22 +262,6 @@ pub(crate) enum MetricCtx<'a> {
 }
 
 impl<'a> MetricCtx<'a> {
-    pub(crate) fn model(self) -> Option<&'a MetricModel> {
-        match self {
-            Self::None => None,
-            Self::Antimeridian(model) | Self::Metric { model, .. } => Some(model),
-            Self::GeographicCarry { scratch } => scratch.model.get(),
-        }
-    }
-
-    pub(crate) fn resolved(self) -> Option<&'a ResolvedMetric> {
-        match self {
-            Self::Metric { metric, .. } => Some(metric),
-            Self::GeographicCarry { scratch } => scratch.metric.get(),
-            Self::None | Self::Antimeridian(_) => None,
-        }
-    }
-
     /// The metric model a metric-resolved kernel is entitled to — the ONE
     /// spelling of the "registry said this op resolves a metric" invariant
     /// (14 kernels used to hand-roll this match with per-op error strings).
@@ -287,7 +269,7 @@ impl<'a> MetricCtx<'a> {
         match self {
             Self::Metric { model, .. } => Ok(model),
             Self::GeographicCarry { scratch } => scratch.metric_model(),
-            Self::None | Self::Antimeridian(_) => Err(crate::crs::CrsError::invalid(format!(
+            Self::None | Self::Antimeridian => Err(crate::crs::CrsError::invalid(format!(
                 "internal dispatch error: {} missing metric context",
                 op.name()
             ))),
@@ -300,7 +282,7 @@ impl<'a> MetricCtx<'a> {
         match self {
             Self::Metric { metric, .. } => Ok(metric),
             Self::GeographicCarry { scratch } => scratch.resolved_metric(),
-            Self::None | Self::Antimeridian(_) => Err(crate::crs::CrsError::invalid(format!(
+            Self::None | Self::Antimeridian => Err(crate::crs::CrsError::invalid(format!(
                 "internal dispatch error: {} missing metric context",
                 op.name()
             ))),
@@ -313,7 +295,7 @@ impl<'a> MetricCtx<'a> {
         let resolved = match self {
             Self::Metric { metric, .. } => metric,
             Self::GeographicCarry { scratch } => scratch.resolved_metric()?,
-            Self::None | Self::Antimeridian(_) => return Ok(None),
+            Self::None | Self::Antimeridian => return Ok(None),
         };
         Ok(match resolved {
             ResolvedMetric::Geodesic(metric) => Some(metric),
