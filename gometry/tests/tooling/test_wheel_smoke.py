@@ -782,6 +782,19 @@ def test_runtime_completion_rechecks_admitted_package_bytes(
         runtime_artifact.verify_runtime_completion(admission, runtime)
 
 
+def test_runtime_admission_uses_receipt_without_build_tools(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def unexpected_build_tool(*_args: Any, **_kwargs: Any) -> None:
+        pytest.fail('runtime admission invoked producer build tooling')
+
+    monkeypatch.setattr(quality_runtime, '_tool_output', unexpected_build_tool)
+    monkeypatch.setattr(quality_runtime, 'cargo_metadata', unexpected_build_tool)
+    admission = runtime_artifact.inspect_runtime_inputs(GOMETRY_ROOT)
+    runtime = runtime_artifact.verify_admitted_runtime(admission)
+    runtime_artifact.verify_runtime_completion(admission, runtime)
+
+
 @pytest.mark.parametrize(
     ('member', 'message'),
     [
