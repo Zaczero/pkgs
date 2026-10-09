@@ -19,7 +19,7 @@ mod index;
 mod order_tree;
 mod persistent_order;
 mod stabbing;
-mod sweep;
+pub(in crate::geometry) mod sweep;
 
 /// Used child-slot bytes of a bulk-loaded R-tree.
 ///
@@ -62,7 +62,8 @@ pub(crate) use sweep::SEGMENT_INDEX_MIN_PAIRS;
 pub(in crate::geometry) use sweep::{
     MonotoneRun, candidate_pairs_over_staged_runs, for_each_candidate_pair,
     for_each_indexed_overlapping_bounds_pair, for_each_overlapping_bounds_cross_pair,
-    for_each_overlapping_bounds_pair, sign_of, single_chain,
+    for_each_overlapping_bounds_cross_pair_with_work, for_each_overlapping_bounds_pair, sign_of,
+    single_chain,
 };
 
 #[cfg(test)]
