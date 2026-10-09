@@ -56,7 +56,6 @@ impl Iterator for Iter<'_> {
 }
 
 impl LiveHandles {
-    #[cfg(test)]
     pub(super) fn from_sorted(handles: impl IntoIterator<Item = usize>) -> Self {
         let mut live = Self::default();
         let mut previous = None;

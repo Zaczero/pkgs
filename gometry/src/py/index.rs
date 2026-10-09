@@ -8,7 +8,6 @@
 //! broadcast/prepared surfaces. Geographic nearest/`dwithin` queries prune the
 //! immutable runs with the sound geodesic lower bound in [`geodesic`].
 
-use crate::geometry::storage;
 mod geodesic;
 mod live_handles;
 mod str_tree;
@@ -75,14 +74,19 @@ mod impl_query;
 mod nearest_helpers;
 mod pymethods;
 
-pub(crate) use build::{build_spatial_index, index_metadata, restore_spatial_index, spatial_index};
+pub(crate) use build::{
+    build_spatial_index, index_metadata, restore_spatial_index, restore_spatial_index_v2,
+    spatial_index,
+};
 pub(crate) use free_functions::{join, join_indexed, nearest};
 pub(crate) use nearest_helpers::{
     Frontier, FrontierNode, NearestCandidate, RowMatches, aabb_box_distance_2, csr_rows,
     format_nearest, format_nearest_rows, nearest_candidates_from_heap, parse_max_distance,
     push_nearest_candidate, retain_row,
 };
-pub(crate) use pymethods::{_unpickle_spatial_index_v1, PySpatialIndexIter};
+pub(crate) use pymethods::{
+    _unpickle_spatial_index_v1, _unpickle_spatial_index_v2, PySpatialIndexIter,
+};
 /// metric `dwithin`.
 ///
 /// One parser owns the token vocabulary for
@@ -628,6 +632,13 @@ impl BoxedRows {
         )
     }
 
+    fn from_pairs(handles: &[usize], rows: Vec<PyGeometry>, next_handle: usize) -> Self {
+        if handles.len() == next_handle {
+            return Self::Dense(rows);
+        }
+        Self::Sparse(handles.iter().copied().zip(rows).collect())
+    }
+
     fn get(&self, handle: usize, packed_len: usize) -> Option<&PyGeometry> {
         match self {
             Self::Dense(rows) => rows.get(handle.wrapping_sub(packed_len)),
@@ -828,15 +839,10 @@ impl IndexRows {
         handle
     }
 
-    /// Materialize the sparse row table used by pickle.
-    ///
-    /// The live-handle directory is the handle owner, so removed and originally
-    /// missing rows become missing rows in the serialized array. Replaying
-    /// the source array and applying tombstones afterward is not equivalent
-    /// for compact nullable storage: its physical payload contains only
-    /// present rows and can otherwise make a removed logical row live again.
-    fn pickle_array(&self, frame: Frame) -> PyResult<PyGeometryArray> {
+    /// Materialize only live geometries and their stable handles for pickle.
+    fn pickle_live_rows(&self, frame: Frame) -> PyResult<(PyGeometryArray, Vec<usize>)> {
         let mut shapes = Vec::with_capacity(self.live_handles.len());
+        let mut handles = Vec::with_capacity(self.live_handles.len());
         let mut rows = self.operation();
         for handle in self.live_handles.iter() {
             let shape = rows
@@ -844,15 +850,9 @@ impl IndexRows {
                 .with_shape(std::clone::Clone::clone)
                 .map_err(pyo3::PyErr::from)?;
             shapes.push(shape);
+            handles.push(handle);
         }
-        let present = PyGeometryArray::from_shapes(shapes, frame)?;
-        let Some(missing) = storage::ValidityMask::from_missing_iter(
-            self.next_handle,
-            (0..self.next_handle).map(|handle| !self.live_handles.contains(handle)),
-        ) else {
-            return Ok(present);
-        };
-        Ok(PyGeometryArray::scatter_present_rows(&present, missing)?)
+        Ok((PyGeometryArray::from_shapes(shapes, frame)?, handles))
     }
 
     fn reserve_insert(&mut self, additional: usize) {
@@ -921,7 +921,13 @@ impl HeapSize for PySpatialIndex {
 /// Register the spatial-index free functions on the module. The `SpatialIndex`
 /// pyclass itself is registered with the core classes in the crate root.
 pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
-    crate::add_functions!(m; nearest, join, _unpickle_spatial_index_v1);
+    crate::add_functions!(
+        m;
+        nearest,
+        join,
+        _unpickle_spatial_index_v1,
+        _unpickle_spatial_index_v2
+    );
     crate::add_classes!(m; PySpatialIndex, PySpatialIndexIter);
     m.py()
         .import("collections.abc")?

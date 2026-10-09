@@ -1,5 +1,5 @@
 use pyo3::exceptions::{PyKeyError, PyTypeError};
-use pyo3::types::PyBool;
+use pyo3::types::{PyBool, PyTuple, PyTupleMethods as _};
 use pyo3::{IntoPyObjectExt as _, PyErr};
 
 use super::impl_nearest::NearestVisited;
@@ -10,13 +10,17 @@ use crate::py::index::{
     PyAnyMethods as _, PyResult, PySpatialIndex, Python, QueryDomain, build_spatial_index,
     exact_geometry, exact_geometry_array, format_nearest, format_nearest_rows, geometry_items,
     join_indexed, parse_max_distance, pyfunction, pymethods, query_distance, resolve_metric,
-    restore_spatial_index, spatial_index, usize_array, validate_nearest_k,
+    restore_spatial_index, restore_spatial_index_v2, spatial_index, usize_array,
+    validate_nearest_k,
 };
 use crate::py::numpy::int64_array;
 use crate::py::sizeof::python_sizeof;
 use crate::{CsrBuilder, parse_spatial_index_handle};
 
-type SpatialIndexReduce = (Py<PyAny>, (crate::PyGeometryArray, bool));
+type SpatialIndexReduce = (
+    Py<PyAny>,
+    (crate::PyGeometryArray, Py<PyTuple>, usize, bool),
+);
 
 fn append_nearest_candidates(
     builder: &mut CsrBuilder<usize>,
@@ -57,6 +61,68 @@ pub(crate) fn _unpickle_spatial_index_v1(
     // Metadata presence is re-derived from the row storage — a forged
     // has_metadata=false flag must not disable the CRS gate for present rows.
     restore_spatial_index(values, has_metadata)
+}
+
+#[expect(
+    clippy::used_underscore_items,
+    reason = "the leading underscore is the Python convention for a module-private helper, and pickle stores this name in its stream"
+)]
+#[pyfunction]
+pub(crate) fn _unpickle_spatial_index_v2(
+    values: &crate::PyGeometryArray,
+    handles: &Bound<'_, PyTuple>,
+    next_handle: &Bound<'_, PyAny>,
+    has_metadata: bool,
+) -> PyResult<PySpatialIndex> {
+    let handle_count = handles.len();
+    if handle_count != values.len() {
+        return Err(GeometryError::new_err(
+            "spatial index pickle handle count does not match value count",
+        ));
+    }
+    let next_handle = parse_index_next_handle(next_handle)?;
+    let mut parsed_handles = Vec::with_capacity(handle_count);
+    for value in handles.iter() {
+        if value.cast_exact::<PyBool>().is_ok() {
+            return Err(PyTypeError::new_err(
+                "spatial index pickle handles must be integers, not bool",
+            ));
+        }
+        let handle = parse_handle_like(&value)?;
+        if handle >= next_handle {
+            return Err(GeometryError::new_err(
+                "spatial index pickle handle must be less than next_handle",
+            ));
+        }
+        if parsed_handles
+            .last()
+            .is_some_and(|&previous| previous >= handle)
+        {
+            return Err(GeometryError::new_err(
+                "spatial index pickle handles must be strictly increasing",
+            ));
+        }
+        parsed_handles.push(handle);
+    }
+    restore_spatial_index_v2(values, parsed_handles, next_handle, has_metadata)
+}
+
+fn parse_index_next_handle(value: &Bound<'_, PyAny>) -> PyResult<usize> {
+    if value.cast_exact::<PyBool>().is_ok() {
+        return Err(PyTypeError::new_err(
+            "spatial index next_handle must be an integer, not bool",
+        ));
+    }
+    let handle = crate::py_i64_required("spatial index next_handle", value)?;
+    if handle < 0 {
+        return Err(GeometryError::new_err(
+            "spatial index next_handle must be non-negative",
+        ));
+    }
+    let handle = usize::try_from(handle)
+        .map_err(|_| GeometryError::new_err("spatial index next_handle is too large"))?;
+    super::checked_index_handle_end(0, handle).map_err(PyErr::from)?;
+    Ok(handle)
 }
 
 fn parse_handle_like(value: &Bound<'_, PyAny>) -> PyResult<usize> {
@@ -153,19 +219,27 @@ impl PySpatialIndex {
         self.rows.live_handles.len()
     }
 
-    /// Pickle as one sparse row table containing only live geometries.
+    /// Pickle live geometries with their stable handles and next identity.
     ///
     /// Handles are the public identity returned by ``query``/``nearest`` and
-    /// consumed by ``remove``/``__getitem__``. The row owner therefore writes
-    /// tombstones into the array's missing mask instead of replaying removed
-    /// source rows and filtering them after reconstruction.
+    /// consumed by ``remove``/``__getitem__``. Values are stored compactly in
+    /// handle order; removed and missing rows do not occupy pickle rows.
     pub(crate) fn __reduce__(&self, py: Python<'_>) -> PyResult<SpatialIndexReduce> {
         let callable = crate::gometry_lib_module(py)?
-            .getattr(pyo3::intern!(py, "_unpickle_spatial_index_v1"))?
+            .getattr(pyo3::intern!(py, "_unpickle_spatial_index_v2"))?
             .unbind();
         let frame = self.metadata.clone().unwrap_or_default();
-        let array = self.rows.pickle_array(frame)?;
-        Ok((callable, (array, self.metadata.is_some())))
+        let (array, handles) = self.rows.pickle_live_rows(frame)?;
+        let handles = PyTuple::new(py, handles)?.unbind();
+        Ok((
+            callable,
+            (
+                array,
+                handles,
+                self.rows.next_handle,
+                self.metadata.is_some(),
+            ),
+        ))
     }
 
     pub(crate) fn __copy__(&self, py: Python<'_>) -> PyResult<Py<Self>> {

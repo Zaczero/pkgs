@@ -276,19 +276,21 @@ pub(crate) fn restore_spatial_index(
     values: &PyGeometryArray,
     has_metadata: bool,
 ) -> PyResult<PySpatialIndex> {
-    if let Some(mut index) = packed_spatial_index(values)? {
-        let has_present_rows = values
-            .missing()
-            .map_or(values.len() != 0, |missing| missing.present_count() != 0);
-        index.metadata = (has_metadata || has_present_rows).then(|| values.frame.clone());
-        return Ok(index);
-    }
     let total_rows = checked_index_handle_end(0, values.len()).map_err(pyo3::PyErr::from)?;
+    let packed = matches!(values.storage(), GeometryArrayStorage::Packed(_));
+    let has_present_rows = values
+        .missing()
+        .map_or(values.len() != 0, |missing| missing.present_count() != 0);
+    let metadata_established = has_metadata || if packed { has_present_rows } else { false };
     let mut rows = Vec::with_capacity(values.len());
     let mut live_handles = LiveHandles::default();
     let mut present = false;
     let mut row_operation = values.row_operation();
-    let domain = crate::geometry::topology_domain(&values.frame)?;
+    let domain = if packed && !metadata_established {
+        TopologyDomain::Cartesian
+    } else {
+        crate::geometry::topology_domain(&values.frame)?
+    };
     let mut entries = Vec::with_capacity(values.len());
     let mut non_prunable_live = 0_usize;
     for logical in 0..values.len() {
@@ -298,11 +300,15 @@ pub(crate) fn restore_spatial_index(
                 row.row().with_shape(std::clone::Clone::clone)?,
             )));
             let geometry = PyGeometry::from_prepared_plan(plan, values.frame.clone());
-            let bounds = geometry.shape.bounds().ok_or_else(|| {
-                GeometryError::new_err(format!(
+            let Some(bounds) = geometry.shape.bounds() else {
+                if packed {
+                    rows.push(None);
+                    continue;
+                }
+                return Err(GeometryError::new_err(format!(
                     "spatial index pickle payload marks empty handle {logical} as live"
-                ))
-            })?;
+                )));
+            };
             let cover = index_envelopes(geometry.shape.shape(), bounds, domain)?;
             for &envelope in cover.entries() {
                 entries.push(IndexEntry {
@@ -326,7 +332,93 @@ pub(crate) fn restore_spatial_index(
     let cover_counts = cover_count_exceptions(&entries);
     // Re-derive metadata from the row storage, while retaining an explicitly
     // framed index after its last live row is removed.
-    let metadata = (has_metadata || present).then(|| values.frame.clone());
+    let metadata = (metadata_established || present).then(|| values.frame.clone());
+    Ok(PySpatialIndex {
+        rows: IndexRows {
+            packed: None,
+            boxed,
+            next_handle: total_rows,
+            live_handles,
+        },
+        bulk: StaticStrTree::build(entries, total_rows).map_err(pyo3::PyErr::from)?,
+        bulk_dead_entries: 0,
+        cover_counts,
+        overflow: StaticStrForest::new(),
+        mutation_gen: 0,
+        metadata,
+        non_prunable_live,
+    })
+}
+
+pub(crate) fn restore_spatial_index_v2(
+    values: &PyGeometryArray,
+    handles: Vec<usize>,
+    next_handle: usize,
+    has_metadata: bool,
+) -> PyResult<PySpatialIndex> {
+    let total_rows = checked_index_handle_end(0, next_handle).map_err(pyo3::PyErr::from)?;
+    if handles.len() != values.len() {
+        return Err(GeometryError::new_err(
+            "spatial index pickle handle count does not match value count",
+        ));
+    }
+    if values.has_missing() {
+        return Err(GeometryError::new_err(
+            "spatial index pickle values must not contain missing geometries",
+        ));
+    }
+    if handles.iter().any(|&handle| handle >= total_rows) {
+        return Err(GeometryError::new_err(
+            "spatial index pickle handle must be less than next_handle",
+        ));
+    }
+    if handles.windows(2).any(|pair| pair[0] >= pair[1]) {
+        return Err(GeometryError::new_err(
+            "spatial index pickle handles must be strictly increasing",
+        ));
+    }
+
+    let metadata = (has_metadata || !handles.is_empty()).then(|| values.frame.clone());
+    let domain = metadata
+        .as_ref()
+        .map(crate::geometry::topology_domain)
+        .transpose()?
+        .unwrap_or(TopologyDomain::Cartesian);
+    let mut entries = Vec::with_capacity(values.len());
+    let mut rows = Vec::with_capacity(values.len());
+    let mut non_prunable_live = 0_usize;
+    let mut row_operation = values.row_operation();
+    for (logical, &handle) in handles.iter().enumerate() {
+        let row = row_operation
+            .present_row_at(logical)
+            .ok_or_else(|| GeometryError::new_err("spatial index pickle values must be present"))?;
+        let plan = std::sync::Arc::new(crate::PreparedPlan::new(ShapeData::new(
+            row.row().with_shape(std::clone::Clone::clone)?,
+        )));
+        let geometry = PyGeometry::from_prepared_plan(plan, values.frame.clone());
+        let Some(bounds) = geometry.shape.bounds() else {
+            return Err(GeometryError::new_err(format!(
+                "spatial index pickle payload marks empty handle {handle} as live"
+            )));
+        };
+        let cover = index_envelopes(geometry.shape.shape(), bounds, domain)?;
+        for &envelope in cover.entries() {
+            entries.push(IndexEntry {
+                idx: handle,
+                envelope,
+            });
+        }
+        if matches!(domain, TopologyDomain::Geographic(_)) {
+            non_prunable_live = non_prunable_live.wrapping_add(usize::from(
+                geodesic_domain_invalid(geometry.shape.shape(), domain),
+            ));
+        }
+        rows.push(geometry);
+    }
+
+    let live_handles = LiveHandles::from_sorted(handles.iter().copied());
+    let boxed = BoxedRows::from_pairs(&handles, rows, total_rows);
+    let cover_counts = cover_count_exceptions(&entries);
     Ok(PySpatialIndex {
         rows: IndexRows {
             packed: None,
@@ -676,7 +768,7 @@ mod ownership_tests {
     }
 
     #[test]
-    fn pickle_restore_keeps_sparse_handles_on_the_packed_owner() {
+    fn v1_restore_keeps_sparse_handles_without_retaining_the_source() {
         let source = PyGeometryArray::scatter_present_rows(
             &PyGeometryArray::packed_points(
                 CoordSeq::try_from_vecs(vec![10.0], vec![10.0], None, None).unwrap(),
@@ -687,8 +779,8 @@ mod ownership_tests {
         )
         .unwrap();
         let restored = restore_spatial_index(&source, false).unwrap();
-        assert!(restored.rows.packed.is_some());
-        assert!(restored.rows.boxed.is_empty());
+        assert!(restored.rows.packed.is_none());
+        assert_eq!(restored.rows.boxed.len(), 1);
         assert!(!restored.rows.is_live(0));
         assert!(restored.rows.is_live(1));
         assert_eq!(restored.rows.live_handles.iter().collect::<Vec<_>>(), [1]);
@@ -696,6 +788,69 @@ mod ownership_tests {
             restored.rows.heap_bytes(),
             HeapSize::heap_bytes(&restored.rows)
         );
+    }
+
+    #[test]
+    fn v2_restore_rebuilds_sparse_payloads_under_original_handles() {
+        let values = PyGeometryArray::from_shapes(
+            vec![
+                Shape::Point(Point::new_raw_xy(7.0, 1.0)),
+                Shape::Point(Point::new_raw_xy(63.0, 2.0)),
+                Shape::Point(Point::new_raw_xy(65_537.0, 3.0)),
+            ],
+            Frame::None,
+        )
+        .unwrap();
+        let mut index =
+            restore_spatial_index_v2(&values, vec![7, 63, 65_537], 70_000, false).unwrap();
+
+        assert!(matches!(&index.rows.boxed, BoxedRows::Sparse(_)));
+        assert_eq!(index.rows.next_handle, 70_000);
+        assert_eq!(index.live_handles_sorted(), [7, 63, 65_537]);
+        let mut rows = index.rows.operation();
+        assert_eq!(rows.row(7).unwrap().quick_bounds().unwrap().minx(), 7.0);
+        assert_eq!(rows.row(63).unwrap().quick_bounds().unwrap().minx(), 63.0);
+        assert_eq!(
+            rows.row(65_537).unwrap().quick_bounds().unwrap().minx(),
+            65_537.0
+        );
+
+        assert_eq!(
+            index
+                .insert_one(&PyGeometry::with_frame(
+                    ShapeData::new(Shape::Point(Point::new_raw_xy(70_000.0, 4.0))),
+                    Frame::None,
+                ))
+                .unwrap(),
+            70_000
+        );
+        let mut copy = index.clone();
+        assert!(copy.remove_handle(63).unwrap());
+        assert!(index.rows.is_live(63));
+        assert!(!copy.rows.is_live(63));
+    }
+
+    #[test]
+    fn exhausted_handle_domain_rejects_insert_without_state_change() {
+        let maximum = isize::MAX as usize;
+        let values = PyGeometryArray::from_shapes(Vec::new(), Frame::None).unwrap();
+        let mut index = restore_spatial_index_v2(&values, Vec::new(), maximum, false).unwrap();
+        let geometry = PyGeometry::with_frame(
+            ShapeData::new(Shape::Point(Point::new_raw_xy(4.0, 5.0))),
+            Frame::None,
+        );
+
+        pyo3::Python::initialize();
+        pyo3::Python::attach(|py| {
+            let error = index
+                .insert_one(&geometry)
+                .expect_err("identity domain exhausted");
+            assert!(error.is_instance_of::<pyo3::exceptions::PyOverflowError>(py));
+        });
+        assert_eq!(index.rows.next_handle, maximum);
+        assert!(index.rows.live_handles.is_empty());
+        assert!(index.metadata.is_none());
+        assert_eq!(index.mutation_gen, 0);
     }
 
     #[test]
