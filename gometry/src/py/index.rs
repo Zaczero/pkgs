@@ -8,13 +8,12 @@
 //! broadcast/prepared surfaces. Geographic nearest/`dwithin` queries prune the
 //! immutable runs with the sound geodesic lower bound in [`geodesic`].
 
-use crate::geometry::storage;
 mod geodesic;
 mod live_handles;
 mod str_tree;
 
 use std::cmp::Ordering;
-use std::collections::BinaryHeap;
+use std::collections::{BTreeMap, BinaryHeap};
 use std::sync::Arc;
 
 use geodesic::{GeodesicBoxPruner, GeodesicIndexPruner, GeodesicPruner};
@@ -24,7 +23,7 @@ use str_tree::{StaticStrForest, StaticStrTree};
 
 use crate::array::{ArrayRowOperation, BoundsSeed};
 use crate::collections::sort_unique_row_ids;
-use crate::geometry::{Bounds, Point, Shape, ShapeData, SharedSlice, TopologyDomain};
+use crate::geometry::{Bounds, Point, Shape, ShapeData, TopologyDomain};
 use crate::py::errors::{GeometryError, parameter_error};
 use crate::py::numpy::{float64_array, int64_array, usize_array};
 use crate::py::vectors::Groups;
@@ -38,6 +37,35 @@ use crate::{
     validate_nearest_k,
 };
 
+pub(crate) fn checked_index_handle_end(start: usize, count: usize) -> crate::error::Result<usize> {
+    let end = start
+        .checked_add(count)
+        .ok_or(crate::error::ResourceError::SizeOverflow)?;
+    if end > isize::MAX as usize {
+        return Err(crate::error::ResourceError::SizeOverflow.into());
+    }
+    Ok(end)
+}
+
+fn cover_count_exceptions(entries: &[IndexEntry]) -> BTreeMap<usize, usize> {
+    debug_assert!(entries.windows(2).all(|pair| pair[0].idx <= pair[1].idx));
+    let mut counts = BTreeMap::new();
+    let mut start = 0;
+    while let Some(entry) = entries.get(start) {
+        let handle = entry.idx;
+        let mut end = start.wrapping_add(1);
+        while entries.get(end).is_some_and(|entry| entry.idx == handle) {
+            end = end.wrapping_add(1);
+        }
+        let count = end.wrapping_sub(start);
+        if count > 1 {
+            counts.insert(handle, count);
+        }
+        start = end;
+    }
+    counts
+}
+
 mod build;
 mod free_functions;
 mod impl_mutate;
@@ -46,14 +74,19 @@ mod impl_query;
 mod nearest_helpers;
 mod pymethods;
 
-pub(crate) use build::{build_spatial_index, index_metadata, restore_spatial_index, spatial_index};
+pub(crate) use build::{
+    build_spatial_index, index_metadata, restore_spatial_index, restore_spatial_index_v2,
+    spatial_index,
+};
 pub(crate) use free_functions::{join, join_indexed, nearest};
 pub(crate) use nearest_helpers::{
     Frontier, FrontierNode, NearestCandidate, RowMatches, aabb_box_distance_2, csr_rows,
     format_nearest, format_nearest_rows, nearest_candidates_from_heap, parse_max_distance,
     push_nearest_candidate, retain_row,
 };
-pub(crate) use pymethods::{_unpickle_spatial_index_v1, PySpatialIndexIter};
+pub(crate) use pymethods::{
+    _unpickle_spatial_index_v1, _unpickle_spatial_index_v2, PySpatialIndexIter,
+};
 /// metric `dwithin`.
 ///
 /// One parser owns the token vocabulary for
@@ -478,16 +511,15 @@ impl PreparedIndexQuery {
 )]
 #[derive(Debug)]
 pub(crate) struct PySpatialIndex {
-    // `rows` is append-only so a handle (its index) stays stable across mutation;
-    // `remove` tombstones handles; overflow entries stay in their immutable
-    // runs until the dead-entry invariant triggers compaction.
+    // Handles are never reused. The row owner retains the next identity even
+    // after removals; overflow entries stay in immutable runs until compaction.
     rows: IndexRows,
     /// Build-time rows, repacked once tombstones outnumber live cover entries.
     bulk: Arc<StaticStrTree>,
     bulk_dead_entries: usize,
-    /// Periodic covers may contribute several entries for one handle.
-    /// Single-entry covers need no count column.
-    bulk_entry_counts: Option<SharedSlice<usize>>,
+    /// Periodic covers may contribute several entries for one live handle.
+    /// Single-entry covers need no count entry.
+    cover_counts: BTreeMap<usize, usize>,
     /// Post-build inserts — immutable STR runs maintained by binary carries.
     overflow: StaticStrForest,
     /// Insert/remove generation used by live index iterators.
@@ -508,7 +540,7 @@ impl Clone for PySpatialIndex {
             rows: self.rows.clone(),
             bulk: Arc::clone(&self.bulk),
             bulk_dead_entries: self.bulk_dead_entries,
-            bulk_entry_counts: self.bulk_entry_counts.clone(),
+            cover_counts: self.cover_counts.clone(),
             overflow: self.overflow.clone(),
             mutation_gen: self.mutation_gen,
             metadata: self.metadata.clone(),
@@ -524,35 +556,194 @@ pub(crate) struct IndexEntry {
 }
 
 /// Column-shared storage retained by an index built from a packed array.
-/// The array remains the sole owner of packed row interpretation; the index
-/// resolves rows through its owner-bound operation instead of cloning every
-/// component and duplicating CSR/selection logic.
+/// The array remains the coordinate owner; compact nullable points additionally
+/// need original-present IDs to address its physical point ordinals.
+#[derive(Clone, Debug)]
+enum PackedRowAddressing {
+    /// A live handle is the source's logical row.
+    Logical,
+    /// Original logical ID of each physical row, in source storage order.
+    PresentOrdinals(Arc<[usize]>),
+}
+
 #[derive(Clone, Debug)]
 pub(crate) struct PackedStore {
     pub(crate) source: PyGeometryArray,
+    addressing: PackedRowAddressing,
 }
 
-/// The indexed rows. Building from a packed point or line array shares its
-/// coordinate columns zero-copy (no per-row boxing); Mixed-array rows,
-/// iterable rows, and every later `insert` are boxed handles. A handle is
-/// its build/insert position: packed rows first, then boxed rows.
+impl HeapSize for PackedStore {
+    fn heap_bytes(&self) -> usize {
+        let addressing = match &self.addressing {
+            PackedRowAddressing::Logical => 0,
+            PackedRowAddressing::PresentOrdinals(handles) => crate::heap_size::ARC_CONTROL_BYTES
+                .saturating_add(handles.len().saturating_mul(size_of::<usize>())),
+        };
+        self.source.heap_bytes().saturating_add(addressing)
+    }
+}
+
+/// The indexed rows. Building from a packed array shares its coordinate
+/// columns zero-copy (no per-row boxing); Mixed-array rows, iterable rows, and
+/// every later `insert` are boxed handles. A handle is its build/insert
+/// position: packed rows first, then boxed rows.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct IndexRows {
     pub(crate) packed: Option<PackedStore>,
-    boxed: Vec<PyGeometry>,
-    /// O(1) liveness by stable handle. This is the sole liveness authority for
-    /// both immutable bulk entries and mutable overflow entries.
-    live: Vec<u8>,
-    live_count: usize,
+    boxed: BoxedRows,
+    /// Never-reused identity for the next successful insertion.
+    next_handle: usize,
+    /// Sole membership, cardinality and iteration-order authority.
     live_handles: live_handles::LiveHandles,
+}
+
+#[derive(Clone, Debug)]
+enum BoxedRows {
+    Dense(Vec<PyGeometry>),
+    Sparse(BTreeMap<usize, PyGeometry>),
+}
+
+impl Default for BoxedRows {
+    fn default() -> Self {
+        Self::Dense(Vec::new())
+    }
+}
+
+impl BoxedRows {
+    fn from_dense(rows: Vec<PyGeometry>, live: &live_handles::LiveHandles) -> Self {
+        if live.len() == rows.len() {
+            return Self::Dense(rows);
+        }
+        Self::Sparse(
+            rows.into_iter()
+                .enumerate()
+                .filter_map(|(handle, geometry)| {
+                    live.contains(handle).then_some((handle, geometry))
+                })
+                .collect(),
+        )
+    }
+
+    fn from_optional(
+        rows: Vec<Option<PyGeometry>>,
+        live: &live_handles::LiveHandles,
+        total_rows: usize,
+    ) -> Self {
+        if live.len() == total_rows {
+            return Self::Dense(
+                rows.into_iter()
+                    .map(|row| row.expect("every input row is live"))
+                    .collect(),
+            );
+        }
+        Self::Sparse(
+            rows.into_iter()
+                .enumerate()
+                .filter_map(|(handle, geometry)| {
+                    live.contains(handle).then(|| {
+                        (
+                            handle,
+                            geometry.expect("live input row retains its geometry"),
+                        )
+                    })
+                })
+                .collect(),
+        )
+    }
+
+    fn from_pairs(handles: &[usize], rows: Vec<PyGeometry>, next_handle: usize) -> Self {
+        if handles.len() == next_handle {
+            return Self::Dense(rows);
+        }
+        Self::Sparse(handles.iter().copied().zip(rows).collect())
+    }
+
+    fn get(&self, handle: usize, packed_len: usize) -> Option<&PyGeometry> {
+        match self {
+            Self::Dense(rows) => rows.get(handle.wrapping_sub(packed_len)),
+            Self::Sparse(rows) => rows.get(&handle),
+        }
+    }
+
+    #[cfg(test)]
+    fn len(&self) -> usize {
+        match self {
+            Self::Dense(rows) => rows.len(),
+            Self::Sparse(rows) => rows.len(),
+        }
+    }
+
+    #[cfg(test)]
+    fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    fn reserve_insert(&mut self, additional: usize) {
+        if let Self::Dense(rows) = self {
+            rows.reserve(additional);
+        }
+    }
+
+    fn push(&mut self, handle: usize, packed_len: usize, geometry: PyGeometry) {
+        match self {
+            Self::Dense(rows) if handle == packed_len.wrapping_add(rows.len()) => {
+                rows.push(geometry);
+            },
+            Self::Dense(rows) => {
+                let old = std::mem::take(rows);
+                let mut sparse: BTreeMap<_, _> = old
+                    .into_iter()
+                    .enumerate()
+                    .map(|(offset, geometry)| (packed_len.wrapping_add(offset), geometry))
+                    .collect();
+                sparse.insert(handle, geometry);
+                *self = Self::Sparse(sparse);
+            },
+            Self::Sparse(rows) => {
+                let previous = rows.insert(handle, geometry);
+                debug_assert!(previous.is_none());
+            },
+        }
+    }
+
+    fn remove(&mut self, handle: usize, packed_len: usize) {
+        match self {
+            Self::Dense(rows) => {
+                let removed = handle.wrapping_sub(packed_len);
+                let old = std::mem::take(rows);
+                let sparse = old
+                    .into_iter()
+                    .enumerate()
+                    .filter_map(|(offset, geometry)| {
+                        (offset != removed).then_some((packed_len.wrapping_add(offset), geometry))
+                    })
+                    .collect();
+                *self = Self::Sparse(sparse);
+            },
+            Self::Sparse(rows) => {
+                rows.remove(&handle);
+            },
+        }
+    }
+
+    fn heap_bytes(&self) -> usize {
+        match self {
+            Self::Dense(rows) => rows.heap_bytes(),
+            Self::Sparse(rows) => rows.iter().fold(0_usize, |bytes, (_, geometry)| {
+                bytes
+                    .saturating_add(size_of::<(usize, PyGeometry)>())
+                    .saturating_add(size_of::<[usize; 2]>())
+                    .saturating_add(geometry.heap_bytes())
+            }),
+        }
+    }
 }
 
 /// Operation-scoped access to the index's arbitrary live handles.
 ///
 /// Candidate refinement visits handles in tree/order-dependent sequences and
-/// also serves boxed overflow rows. The packed side delegates arbitrary
-/// logical-row resolution to one owner-bound array operation, including the
-/// compact-point validity rank directory.
+/// also serves boxed overflow rows. Packed rows resolve through their retained
+/// owner and admitted row-addressing mode.
 pub(crate) struct IndexRowOperation<'a> {
     rows: &'a IndexRows,
     packed: Option<ArrayRowOperation<'a>>,
@@ -588,25 +779,43 @@ impl<'a> IndexRowOperation<'a> {
         &'operation mut self,
         handle: usize,
     ) -> crate::error::Result<IndexRowSource<'operation, 'a>> {
+        if !self.rows.live_handles.contains(handle) {
+            return Err(Self::missing_handle(handle));
+        }
         let packed_len = self.rows.packed_len();
         if handle < packed_len {
+            let packed_store = self
+                .rows
+                .packed
+                .as_ref()
+                .expect("packed length implies an index-owned packed source");
             let packed = self
                 .packed
                 .as_mut()
                 .expect("packed length implies an operation-owned packed row view");
-            let row = packed
-                .present_row_at(handle)
-                .ok_or_else(|| Self::missing_handle(handle));
-            return row.map(|row| IndexRowSource::Packed {
+            let (logical, row) = match &packed_store.addressing {
+                PackedRowAddressing::Logical => {
+                    let row = packed
+                        .present_row_at(handle)
+                        .ok_or_else(|| Self::missing_handle(handle))?;
+                    (row.logical(), row.row())
+                },
+                PackedRowAddressing::PresentOrdinals(handles) => {
+                    let ordinal = handles
+                        .binary_search(&handle)
+                        .map_err(|_| Self::missing_handle(handle))?;
+                    (handle, packed_store.source.storage().row(ordinal))
+                },
+            };
+            return Ok(IndexRowSource::Packed {
                 operation: packed,
-                logical: row.logical(),
-                row: row.row(),
+                logical,
+                row,
             });
         }
-        let boxed_index = handle.wrapping_sub(packed_len);
         let rows: &'a IndexRows = self.rows;
         rows.boxed
-            .get(boxed_index)
+            .get(handle, packed_len)
             .map(IndexRowSource::Boxed)
             .ok_or_else(|| Self::missing_handle(handle))
     }
@@ -652,83 +861,51 @@ impl IndexRows {
         IndexRowOperation::new(self)
     }
 
-    const fn live_count(&self) -> usize {
-        self.live_count
-    }
-    fn len(&self) -> usize {
-        debug_assert_eq!(
-            self.packed
-                .as_ref()
-                .map_or(0, |packed| packed.source.len())
-                .checked_add(self.boxed.len()),
-            Some(self.live.len())
-        );
-        self.live.len()
-    }
-
-    const fn packed_len(&self) -> usize {
-        self.live.len().wrapping_sub(self.boxed.len())
+    fn packed_len(&self) -> usize {
+        self.packed.as_ref().map_or(0, |packed| packed.source.len())
     }
 
     fn push(&mut self, geometry: PyGeometry) -> usize {
-        let handle = self.len();
-        self.boxed.push(geometry);
-        self.live.push(1);
-        self.live_count = self.live_count.wrapping_add(1);
+        let handle = self.next_handle;
+        self.boxed.push(handle, self.packed_len(), geometry);
         self.live_handles.insert(handle);
+        self.next_handle = self.next_handle.wrapping_add(1);
         handle
     }
 
-    /// Materialize the sparse row table used by pickle.
-    ///
-    /// The liveness bitmap is the handle owner, so removed and originally
-    /// missing rows become missing rows in the serialized array. Replaying
-    /// the source array and applying tombstones afterward is not equivalent
-    /// for compact nullable storage: its physical payload contains only
-    /// present rows and can otherwise make a removed logical row live again.
-    fn pickle_array(&self, frame: Frame) -> PyResult<PyGeometryArray> {
-        let mut shapes = Vec::with_capacity(self.live_count);
+    /// Materialize only live geometries and their stable handles for pickle.
+    fn pickle_live_rows(&self, frame: Frame) -> PyResult<(PyGeometryArray, Vec<usize>)> {
+        let mut shapes = Vec::with_capacity(self.live_handles.len());
+        let mut handles = Vec::with_capacity(self.live_handles.len());
         let mut rows = self.operation();
-        for (handle, &live) in self.live.iter().enumerate() {
-            if live == 0 {
-                continue;
-            }
+        for handle in self.live_handles.iter() {
             let shape = rows
                 .row(handle)?
                 .with_shape(std::clone::Clone::clone)
                 .map_err(pyo3::PyErr::from)?;
             shapes.push(shape);
+            handles.push(handle);
         }
-        let present = PyGeometryArray::from_shapes(shapes, frame)?;
-        let Some(missing) = storage::ValidityMask::from_missing_iter(
-            self.live.len(),
-            self.live.iter().map(|&live| live == 0),
-        ) else {
-            return Ok(present);
-        };
-        Ok(PyGeometryArray::scatter_present_rows(&present, missing)?)
+        Ok((PyGeometryArray::from_shapes(shapes, frame)?, handles))
     }
 
     fn reserve_insert(&mut self, additional: usize) {
-        self.boxed.reserve(additional);
-        self.live.reserve(additional);
+        self.boxed.reserve_insert(additional);
     }
 
     fn is_live(&self, handle: usize) -> bool {
-        self.live.get(handle).copied().unwrap_or(0) != 0
+        self.live_handles.contains(handle)
     }
 
     fn mark_removed(&mut self, handle: usize) -> bool {
-        let Some(live) = self.live.get_mut(handle) else {
-            return false;
-        };
-        if *live == 0 {
+        if !self.live_handles.contains(handle) {
             return false;
         }
-        *live = 0;
-        self.live_count = self.live_count.wrapping_sub(1);
-        self.live_handles.remove(handle);
-        true
+        let packed_len = self.packed_len();
+        if handle >= packed_len {
+            self.boxed.remove(handle, packed_len);
+        }
+        self.live_handles.remove(handle)
     }
 
     #[expect(
@@ -752,7 +929,9 @@ impl PySpatialIndex {
         self.rows
             .heap_bytes()
             .saturating_add(self.bulk.heap_bytes())
-            .saturating_add(self.bulk_entry_counts.heap_bytes())
+            .saturating_add(self.cover_counts.len().saturating_mul(
+                size_of::<(usize, usize)>().saturating_add(size_of::<[usize; 2]>()),
+            ))
             .saturating_add(self.overflow.heap_bytes())
             .saturating_add(self.metadata_heap_bytes())
     }
@@ -762,9 +941,8 @@ impl HeapSize for IndexRows {
     fn heap_bytes(&self) -> usize {
         self.packed
             .as_ref()
-            .map_or(0, |packed| HeapSize::heap_bytes(&packed.source))
+            .map_or(0, HeapSize::heap_bytes)
             .saturating_add(self.boxed.heap_bytes())
-            .saturating_add(self.live.heap_bytes())
             .saturating_add(self.live_handles.heap_bytes())
     }
 }
@@ -777,7 +955,13 @@ impl HeapSize for PySpatialIndex {
 /// Register the spatial-index free functions on the module. The `SpatialIndex`
 /// pyclass itself is registered with the core classes in the crate root.
 pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
-    crate::add_functions!(m; nearest, join, _unpickle_spatial_index_v1);
+    crate::add_functions!(
+        m;
+        nearest,
+        join,
+        _unpickle_spatial_index_v1,
+        _unpickle_spatial_index_v2
+    );
     crate::add_classes!(m; PySpatialIndex, PySpatialIndexIter);
     m.py()
         .import("collections.abc")?

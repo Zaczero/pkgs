@@ -442,33 +442,43 @@ composite algorithms.
 With CRS-aware units, geographic linework distance, nearest-point witnesses,
 and `line_locate` use a minimum over each straight chart edge's parameter `t`.
 Each sample evaluates geodesic distance from the query to the chart position. A
-global interval search combines a Lipschitz lower bound with a sampled
-second-order bound; degenerate edges and pole queries use their exact families.
-A witness lies on the chart edge, and LRS carries its ordinates by the fraction
-of edge arclength.
+global interval search combines a Lipschitz lower bound with analytic speed and
+covariant-acceleration bounds. Its second-order Taylor bound applies only when
+the full distance interval lies inside a certified normal neighborhood;
+otherwise the search uses the Lipschitz bound. Degenerate edges and pole
+queries use their direct families. A witness lies on the chart edge, and LRS
+carries its ordinates by the fraction of edge arclength.
 
 The attained binary64 minimum uses the radius-scaled gap `4e-11 × a` and a
 maximum of 128 evaluations per point-edge query. If the search reaches that
-budget, it returns its best attained distance and parameter. These are numerical
-quality budgets, not universal real-arithmetic error certificates. Search
-results are attained witnesses, not topological contacts. Exact chart topology
-establishes contact; a small positive distance does not.
-`line_locate` uses the attained parameter's ellipsoidal chart-edge arclength and
-adds the prefix before that edge. Point-to-chart-edge `dwithin` compares the
-same attained distance inclusively with the supplied radius. It does not add a
-contact tolerance or widen the radius by pruning slack. A positive infinite
-radius returns `True` for admitted non-empty operands without forcing an
-unrepresentable distance result. Vectorized results retain one boolean per
-input pair: missing rows and present empty geometries remain in place as `False`.
+budget, distance, nearest-point, and `line_locate` return their best attained
+sample. These are numerical quality budgets, not universal real-arithmetic
+error certificates. Search results are attained witnesses, not topological
+contacts. Exact chart topology establishes contact; a small positive distance
+does not. `line_locate` uses the attained parameter's ellipsoidal chart-edge
+arclength and adds the prefix before that edge.
+
+Point-to-chart-edge `dwithin` returns `True` only after an attained sample is at
+or below the supplied radius, and returns `False` only when a certified lower
+bound is strictly above it. If the 128-evaluation budget or binary64 parameter
+precision ends while those bounds straddle the radius, `dwithin` raises
+`CRSError` rather than reporting `False`. It does not add a contact tolerance or
+widen the radius by pruning slack. A positive infinite radius returns `True` for
+admitted non-empty operands without forcing an unrepresentable distance result.
+Vectorized results retain one boolean per input pair: missing rows and present
+empty geometries remain in place as `False`; a nonconvergent present pair raises
+instead of receiving a boolean.
 
 Geographic Hausdorff measures the continuous linework supports of the stored
 chart edges: the source ranges over each straight longitude/latitude edge, and
 its distance to the target is the minimum geodesic distance to target edges and
 isolated points. A global frontier combines a Lipschitz upper bound with a
-second-order Taylor bound from fixed target witnesses; each reported value is
-an attained source/target pair, not an interval bound. Its algorithmic gap is
-`a * (0.01 / 6_378_137)`, about one centimetre for WGS 84. These binary64
-budgets are numerical quality targets, not real-arithmetic certificates.
+second-order Taylor upper bound from fixed target witnesses only inside a
+certified normal neighborhood; elsewhere it uses the Lipschitz upper bound.
+Each reported value is an attained source/target pair, not an interval bound.
+Its algorithmic gap is `a * (0.01 / 6_378_137)`, about one centimetre for WGS
+84. These binary64 budgets are numerical quality targets, not real-arithmetic
+certificates.
 Geographic Hausdorff supports point and linework operands only; filled polygon
 interiors require `unit='planar'` or a projected CRS. Omit `max_error` on the
 geographic path; its algorithmic gap does not promise a caller-requested bound.

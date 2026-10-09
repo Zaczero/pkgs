@@ -114,8 +114,8 @@ if TYPE_CHECKING:
     gm.Groups()  # type: ignore[call-arg]
     gm.ValidationReport()  # type: ignore[call-arg]
 
-    gm.H3VertexArray([1.5])  # type: ignore[arg-type]
-    gm.H3EdgeArray([1.5])  # type: ignore[arg-type]
+    gm.H3VertexArray([1.5])  # type: ignore[list-item]
+    gm.H3EdgeArray([1.5])  # type: ignore[list-item]
 
     def _reject_to_pairs_for_noninteger_groups(
         geometries: gm.Groups[gm.GeometryArray[gm.Geometry]],

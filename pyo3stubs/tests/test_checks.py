@@ -22,7 +22,13 @@ from runpy import run_path
 
 import pytest
 
-from pyo3stubs.config import DualityConfig, MacroExport, StubConfig, SurfaceConfig
+from pyo3stubs.config import (
+    DualityConfig,
+    MacroExport,
+    StubConfig,
+    SurfaceConfig,
+    TextSignatureDefault,
+)
 from pyo3stubs.context import CheckContext
 from pyo3stubs.doc_contract import collect_errors as doc_contract
 from pyo3stubs.doc_structure import (
@@ -898,6 +904,106 @@ def test_text_signature_flags_literal_default_drift(tmp_path, pristine_src):
     assert 'text_signature default \'x\' != signature default "y"' in errors[0]
 
 
+def test_text_signature_rejects_none_against_a_different_exposed_default(
+    tmp_path,
+    pristine_src,
+):
+    mutated = seeded(pristine_src, 'b = "x"', 'b = None')
+    errors = text_signature(make_config(tmp_path, src_text=mutated))
+
+    assert len(errors) == 1, errors
+    assert 'text_signature default' in errors[0]
+
+
+def test_text_signature_rejects_an_unresolved_rust_default_comparison(
+    tmp_path,
+    pristine_src,
+):
+    mutated = seeded(pristine_src, 'b = "x"', 'b = DEFAULT_VALUE')
+    errors = text_signature(make_config(tmp_path, src_text=mutated))
+
+    assert len(errors) == 1, errors
+    assert 'cannot verify' in errors[0]
+
+
+def test_text_signature_requires_exact_source_owned_default_presentations(
+    tmp_path,
+    pristine_src,
+):
+    source = seeded(pristine_src, 'b = "x"', 'b = EffectiveDefault::Canonical')
+    aliases = {
+        'EffectiveDefault::Canonical': TextSignatureDefault(
+            value='x',
+            reason='the Rust wrapper resolves to its declared effective default',
+        ),
+    }
+    cfg = make_config(
+        tmp_path,
+        src_text=source,
+        text_signature_default_aliases=aliases,
+    )
+    assert text_signature(cfg) == []
+
+    drifted = seeded(
+        source,
+        'text_signature = "(a, b=\'x\')"',
+        'text_signature = "(a, b=\'y\')"',
+    )
+    drifted_root = tmp_path / 'drifted'
+    drifted_root.mkdir()
+    errors = text_signature(
+        make_config(
+            drifted_root,
+            src_text=drifted,
+            text_signature_default_aliases=aliases,
+        )
+    )
+    assert len(errors) == 1, errors
+    assert "source-owned public default 'x'" in errors[0]
+    assert 'effective default' in errors[0]
+
+
+def test_text_signature_rejects_unused_default_presentations(tmp_path, pristine_src):
+    cfg = make_config(
+        tmp_path,
+        src_text=pristine_src,
+        text_signature_default_aliases={
+            'Unused::DEFAULT': TextSignatureDefault(
+                value=1,
+                reason='a deliberately translated source default',
+            ),
+        },
+    )
+
+    assert text_signature(cfg) == [
+        "text_signature_default_aliases: unused Rust default expression 'Unused::DEFAULT'"
+    ]
+
+
+def test_text_signature_default_presentations_require_a_reason():
+    with pytest.raises(ValueError, match='reason must not be empty'):
+        TextSignatureDefault(value='x', reason='')
+
+
+def test_text_signature_validates_syntax_with_a_rust_kwargs_binding(
+    tmp_path,
+    pristine_src,
+):
+    mutated = seeded(
+        seeded(
+            pristine_src,
+            'signature = (a, b = "x"),',
+            'signature = (a, **kwargs),',
+        ),
+        'text_signature = "(a, b=\'x\')"',
+        'text_signature = "(a, b=)"',
+    )
+    errors = text_signature(make_config(tmp_path, src_text=mutated))
+
+    assert len(errors) == 1, errors
+    assert 'not a valid Python signature' in errors[0]
+
+
 def test_text_signature_ignores_spelling_of_the_same_value(tmp_path, pristine_src):
     """`1_000` and `1000` are one value; only a different value is drift."""
     same = seeded(seeded(pristine_src, 'b = "x"', 'b = 1_000'), "b='x'", 'b=1000')
@@ -1314,6 +1420,41 @@ def test_gen_docs_leaves_cpython_slot_wrappers_alone(
 
     assert 'Number of things, as the stub author described it.' in rendered
     assert 'Return len(self).' not in rendered
+
+
+def test_signature_scan_and_doc_generation_never_execute_other_descriptors(
+    tmp_path,
+    pristine_stub,
+    monkeypatch,
+):
+    import fakepkg._lib as lib
+
+    class DescriptorAccessError(Exception):
+        pass
+
+    class RaisingDescriptor:
+        def __get__(self, instance, owner=None):
+            raise DescriptorAccessError('descriptor lookup executed')
+
+    monkeypatch.setattr(lib.Sealed, 'danger', RaisingDescriptor(), raising=False)
+    stub = seeded(
+        pristine_stub,
+        _SEALED,
+        f'{_SEALED}\n    def danger(self) -> int: ...',
+    )
+    cfg = make_config(tmp_path, stub_text=stub)
+    failures = []
+    for consumer, operation in (
+        ('structural', lambda: structural(cfg)),
+        ('doc-structure', lambda: doc_structure(cfg)),
+        ('gen-docs', lambda: render_stub_with_docs(cfg)),
+    ):
+        try:
+            operation()
+        except DescriptorAccessError:
+            failures.append(consumer)
+
+    assert failures == []
 
 
 def test_gen_docs_places_docstring_on_last_overload(tmp_path, pristine_stub):

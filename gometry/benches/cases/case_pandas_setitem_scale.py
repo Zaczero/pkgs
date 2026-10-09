@@ -11,9 +11,13 @@ import statistics
 import sys
 import time
 
+from _observation import bootstrap, emit, prepare_measurement
+
+if __name__ == '__main__':
+    bootstrap()
+
 import gometry as gm
 import numpy as np
-from _observation import emit
 from _validation import emit_validation
 
 
@@ -22,6 +26,7 @@ def _median_setitem(ext: object, n: int, *, warm: int = 2, reps: int = 5) -> flo
     values = [gm.Point(float(i), float(i)) for i in range(n)]
     for _ in range(warm):
         ext[positions] = values  # type: ignore[index]
+    prepare_measurement()
     samples: list[float] = []
     for _ in range(reps):
         t0 = time.perf_counter()

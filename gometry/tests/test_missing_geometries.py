@@ -1303,12 +1303,12 @@ def test_pooled_reductions_skip_missing_iterable_rows() -> None:
         assert gm.equals_exact(operation(values), operation(present))
 
     ring = gm.LineString([(0, 0), (1, 0), (1, 1), (0, 1), (0, 0)])
-    pooled = gm.polygonize([ring, None])
-    dense = gm.polygonize([ring])
+    pooled = gm.polygonize_all([ring, None])
+    dense = gm.polygonize_all([ring])
     assert gm.equals_exact(pooled, dense).all()
     assert gm.equals_exact(
-        gm.polygonize_full([ring, None]).polygons,
-        gm.polygonize_full([ring]).polygons,
+        gm.polygonize_all([ring, None], diagnostics=True).polygons,
+        gm.polygonize_all([ring], diagnostics=True).polygons,
     ).all()
 
 

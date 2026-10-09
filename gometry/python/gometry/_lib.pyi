@@ -294,8 +294,7 @@ __all__ = [
     'pluscode_shorten',
     'point_between',
     'points',
-    'polygonize',
-    'polygonize_full',
+    'polygonize_all',
     'polygons',
     'relate',
     'relate_pattern',
@@ -4016,7 +4015,7 @@ class Geometry:
         """Build polygons from a geometry's own linework, automatically noding
         crossings and overlaps. Each geometry is polygonized in isolation; to reconstruct
         polygons from a pile of edges pooled across many geometries, use free function
-        ``polygonize`` on an iterable of
+        ``polygonize_all`` on an iterable of
         values. Input ordinates are carried where possible; unsourceable noding seams
         yield XY.
 
@@ -4025,6 +4024,10 @@ class Geometry:
         GeometryArray
             The polygons built from the input linework.
 
+
+        See Also
+        --------
+        polygonize_all : Pool linework across all supplied geometries.
 
         Raises
         ------
@@ -11009,7 +11012,7 @@ class GeometryArray(Sequence[_GeometryT_co]):
         """Build polygons from a geometry's own linework, automatically noding
         crossings and overlaps. Each geometry is polygonized in isolation; to reconstruct
         polygons from a pile of edges pooled across many geometries, use free function
-        ``polygonize`` on an iterable of
+        ``polygonize_all`` on an iterable of
         values. Input ordinates are carried where possible; unsourceable noding seams
         yield XY.
 
@@ -11019,8 +11022,12 @@ class GeometryArray(Sequence[_GeometryT_co]):
             One ragged group of polygons per input geometry, in input order — each
             input's OWN linework is polygonized independently (row ``i`` is
             ``self[i].polygonize()``). To pool ALL rows' edges into one graph so a
-            ring can close across inputs, use the free function ``polygonize``.
+            ring can close across inputs, use the free function ``polygonize_all``.
 
+
+        See Also
+        --------
+        polygonize_all : Pool linework across all supplied geometries.
 
         Raises
         ------
@@ -11685,12 +11692,11 @@ class SpatialIndex(Mapping[int, Geometry]):
         int
         """
     def __reduce__(self) -> tuple[Any, tuple[Any, ...]]:
-        """Pickle as one sparse row table containing only live geometries.
+        """Pickle live geometries with their stable handles and next identity.
 
         Handles are the public identity returned by ``query``/``nearest`` and
-        consumed by ``remove``/``__getitem__``. The row owner therefore writes
-        tombstones into the array's missing mask instead of replaying removed
-        source rows and filtering them after reconstruction.
+        consumed by ``remove``/``__getitem__``. Values are stored compactly in
+        handle order; removed and missing rows do not occupy pickle rows.
         """
     def __copy__(self) -> Self: ...
     def __deepcopy__(self, memo: object) -> Self: ...
@@ -11878,6 +11884,9 @@ class SpatialIndex(Mapping[int, Geometry]):
         GeometryError
             If a query parameter is invalid, or ``unit='meters'`` is requested
             for a CRS-free geometry.
+        CRSError
+            If geographic ``dwithin`` refinement cannot prove a result within
+            the point-edge evaluation budget.
 
         Examples
         --------
@@ -11944,6 +11953,9 @@ class SpatialIndex(Mapping[int, Geometry]):
             If the query and index CRS/coordinate-epoch frames differ.
         GeometryError
             If a predicate or distance option is invalid.
+        CRSError
+            If geographic ``dwithin`` refinement cannot prove a result within
+            the point-edge evaluation budget.
 
         Examples
         --------
@@ -12008,6 +12020,9 @@ class SpatialIndex(Mapping[int, Geometry]):
             If ``predicate`` is unknown or directional, ``distance`` is missing
             or invalid for ``predicate='dwithin'``, or ``unit='meters'`` is
             requested for a CRS-free geometry.
+        CRSError
+            If geographic ``dwithin`` refinement cannot prove a result within
+            the point-edge evaluation budget.
 
         Examples
         --------
@@ -18821,6 +18836,9 @@ def dwithin(
         ``unit='meters'`` is requested for a CRS-free geometry. Positive
         infinity is accepted and matches every pair of admitted non-empty
         operands.
+    CRSError
+        If geographic point-edge search reaches its 128-evaluation budget or
+        binary64 parameter precision without proving the threshold result.
 
     See Also
     --------
@@ -19025,6 +19043,9 @@ def join(
         If ``predicate`` is unknown, ``distance`` is missing or invalid for
         ``predicate='dwithin'``, or ``unit='meters'`` is requested for a
         CRS-free geometry.
+    CRSError
+        If geographic ``dwithin`` refinement cannot prove a result within the
+        point-edge evaluation budget.
 
     Examples
     --------
@@ -19739,20 +19760,32 @@ def coverage_simplify(
     'POLYGON ((1 0, 1 1, 0 1, 0 0, 1 0))'
     """
 
-def polygonize(
+@overload
+def polygonize_all(
     values: Geometry | GeometryArray[Geometry | None] | Iterable[_GeometryLike | None],
-) -> GeometryArray[Polygon]:
-    """Build polygons from the pooled linework of many geometries.
+    *,
+    diagnostics: Literal[False] = False,
+) -> GeometryArray[Polygon]: ...
+@overload
+def polygonize_all(
+    values: Geometry | GeometryArray[Geometry | None] | Iterable[_GeometryLike | None],
+    *,
+    diagnostics: Literal[True],
+) -> PolygonizeResult: ...
+@overload
+def polygonize_all(
+    values: Geometry | GeometryArray[Geometry | None] | Iterable[_GeometryLike | None],
+    *,
+    diagnostics: bool,
+) -> GeometryArray[Polygon] | PolygonizeResult:
+    """Build polygons from pooled linework, optionally returning full diagnostics.
 
-    ALL inputs' edges are noded into ONE planar graph, so a ring can close from
-    edges spread across different inputs — the canonical "reconstruct polygons
-    from this pile of noded lines" call. Returns every enclosed face as a
-    `GeometryArray` of polygons.
-
-    This is the whole-collection aggregate. To polygonize each geometry's own
-    linework independently (one polygon set per input), use the per-element
-    method `GeometryArray.polygonize` (which returns `Groups`) or
-    `Geometry.polygonize` on a single geometry.
+    All input geometries' edges are noded into one planar graph, so a ring can
+    close across inputs. `diagnostics=False` returns the enclosed polygons;
+    `diagnostics=True` returns those same polygons together with cut edges,
+    dangles, and invalid rings grouped by source row. `Geometry.polygonize()`
+    and `GeometryArray.polygonize()` instead polygonize each geometry's own
+    linework independently.
 
     Parameters
     ----------
@@ -19760,11 +19793,16 @@ def polygonize(
         One geometry or linework values to node and polygonize together. Array
         and iterable inputs may contain ``None`` rows; they are omitted from the
         pooled linework.
+    diagnostics : bool, default False
+        Return a `PolygonizeResult` containing the pooled polygons and
+        source-row `Groups` for cut edges, dangles, and invalid rings.
 
     Returns
     -------
-    GeometryArray
-        The polygons enclosed by the pooled linework.
+    GeometryArray or PolygonizeResult
+        With the default ``False``, the polygons enclosed by the pooled
+        linework. With ``True``, the same polygons plus the leftover-linework
+        diagnostics.
 
     Raises
     ------
@@ -19774,58 +19812,22 @@ def polygonize(
 
     See Also
     --------
-    polygonize_full : The same pooled aggregate plus dangles, cut edges, and invalid-ring diagnostics.
+    Geometry.polygonize : Polygonize one geometry's own linework.
+    GeometryArray.polygonize : Polygonize each array row independently.
+    union_all : Union of many geometries into one.
+    intersection_all : Common region shared by many geometries.
 
     Examples
     --------
     >>> import gometry as gm
-    >>> gm.polygonize([
+    >>> edges = [
     ...     gm.LineString([(0, 0), (1, 0)]),
     ...     gm.LineString([(1, 0), (1, 1)]),
     ...     gm.LineString([(1, 1), (0, 0)]),
-    ... ]).to_wkt()
+    ... ]
+    >>> gm.polygonize_all(edges).to_wkt()
     ['POLYGON ((0 0, 1 0, 1 1, 0 0))']
-    """
-
-def polygonize_full(
-    values: Geometry | GeometryArray[Geometry | None] | Iterable[_GeometryLike | None],
-) -> PolygonizeResult:
-    """Polygonize pooled linework and return full diagnostics.
-
-    Like ``polygonize``, all inputs form ONE planar graph,
-    including rings whose edges span multiple input geometries. In addition to
-    polygons, returns cut edges, dangles, and invalid rings. Passing a
-    `GeometryArray` pools its present rows; `array.polygonize()` remains the
-    independent row-wise spelling.
-
-    Parameters
-    ----------
-    values : Geometry, GeometryArray, or iterable of Geometry-like values
-        One geometry or linework values to node and polygonize together. Array
-        and iterable inputs may contain ``None`` rows; they are omitted from the
-        pooled linework, while diagnostic groups retain their source-row
-        positions.
-
-    Returns
-    -------
-    PolygonizeResult
-        Pooled polygons plus source-row ``Groups`` for cut edges, dangles, and
-        invalid rings.
-
-    Raises
-    ------
-    GeometryError
-        If no adjacent binary64 assignment preserves the exact polygonized
-        output, or the bounded embedding search is exhausted.
-
-    Examples
-    --------
-    >>> import gometry as gm
-    >>> result = gm.polygonize_full([
-    ...     gm.LineString([(0, 0), (1, 0)]),
-    ...     gm.LineString([(1, 0), (1, 1)]),
-    ...     gm.LineString([(1, 1), (0, 0)]),
-    ... ])
+    >>> result = gm.polygonize_all(edges, diagnostics=True)
     >>> result.polygons.to_wkt()
     ['POLYGON ((0 0, 1 0, 1 1, 0 0))']
     """
@@ -20001,6 +20003,8 @@ def union_all(
     See Also
     --------
     coverage_union : Faster dissolve for a valid polygonal coverage.
+    intersection_all : Common region shared by many geometries.
+    polygonize_all : Build polygons from pooled linework.
 
     Examples
     --------
@@ -20042,6 +20046,11 @@ def intersection_all(
     InvalidGeometryError
         If ``values`` is empty or contains coordinates outside its geographic CRS
         domain.
+
+    See Also
+    --------
+    union_all : Union of many geometries into one.
+    polygonize_all : Build polygons from pooled linework.
 
     Examples
     --------

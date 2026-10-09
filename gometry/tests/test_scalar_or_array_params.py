@@ -543,15 +543,16 @@ def test_free_snap_scalar_tolerance_preserves_missing_and_typed_empty_rows() -> 
         0.1,
     )
 
-    observed = []
-    for result in (*source_array_results, *reference_array_results, paired_result):
-        observed.append((
+    observed = [
+        (
             result.is_missing.tolist(),
             [
                 None if result[row] is None else result[row].to_wkt()
                 for row in range(len(result))
             ],
-        ))
+        )
+        for result in (*source_array_results, *reference_array_results, paired_result)
+    ]
     assert observed == [
         (
             [True, False, False],

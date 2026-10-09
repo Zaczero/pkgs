@@ -206,24 +206,19 @@ pub(crate) fn column_axis_to_py(
         },
         column @ (coordinates::CoordinateColumnRef::Borrowed(_)
         | coordinates::CoordinateColumnRef::Dense(_)
-        | coordinates::CoordinateColumnRef::Nullable(_)) => column_ref_to_py(py, owner, column),
-    }
-}
-
-pub(crate) fn column_ref_to_py(
-    py: Python<'_>,
-    owner: Bound<'_, PyAny>,
-    column: coordinates::CoordinateColumnRef<'_>,
-) -> PyResult<Py<PyAny>> {
-    use coordinates::CoordinateColumnRef::{Borrowed, Dense, Missing, Nullable};
-    match column {
-        Borrowed(slice) => {
-            // SAFETY: `owner` pins the immutable `Coordinates` object; the
-            // borrowed slice points into its stable backing storage.
-            unsafe { float64_slice_array(owner, slice) }
+        | coordinates::CoordinateColumnRef::Nullable(_)) => match column {
+            coordinates::CoordinateColumnRef::Borrowed(slice) => {
+                // SAFETY: `owner` pins the immutable `Coordinates` object; the
+                // borrowed slice points into its stable backing storage.
+                unsafe { float64_slice_array(owner, slice) }
+            },
+            coordinates::CoordinateColumnRef::Dense(values) => float64_array(py, values),
+            coordinates::CoordinateColumnRef::Nullable(values) => {
+                optional_float64_array(py, values)
+            },
+            coordinates::CoordinateColumnRef::Missing => {
+                unreachable!("column_axis_to_py handles Missing")
+            },
         },
-        Dense(values) => float64_array(py, values),
-        Nullable(values) => optional_float64_array(py, values),
-        Missing => unreachable!("column_axis_to_py handles Missing"),
     }
 }

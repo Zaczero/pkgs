@@ -2,12 +2,16 @@
 
 Borrowed gate: ``pandas.tests.extension.base`` exercises the behavior classes
 bespoke probes cannot enumerate (this suite would have caught both live glue
-bugs — the scalar ``__eq__`` and the empty-deleting ``dropna``). Ordering,
-reductions, and arithmetic are out of scope for an unordered geometry array;
-focused interop tests cover the mutable pandas-container contract.
+bugs — the scalar ``__eq__`` and the empty-deleting ``dropna``). Sorting runs
+on the array's deterministic WKB-byte key; order comparisons, ``searchsorted``,
+``diff`` and the numeric reductions and arithmetic are refused by design, and
+the overrides here pin each refusal. Focused interop tests cover the mutable
+pandas-container contract.
 """
 
 from __future__ import annotations
+
+import itertools
 
 import gometry as gm
 import numpy as np
@@ -21,6 +25,19 @@ def _points(n: int) -> list[gm.Point]:
     return [gm.Point(float(i), float(i % 7)) for i in range(n)]
 
 
+def _ordered_points() -> tuple[gm.Point, gm.Point, gm.Point]:
+    """Points A < B < C under the array's argsort key.
+
+    Geometries sort by WKB bytes (`_values_for_argsort`), and IEEE-754
+    little-endian bytes do not sort numerically — so pick x values that
+    differ only in the low mantissa byte, where byte order == value order.
+    """
+    base = 1.0
+    first = np.nextafter(base, 2.0)
+    second = np.nextafter(first, 2.0)
+    return gm.Point(base, 0.0), gm.Point(first, 0.0), gm.Point(second, 0.0)
+
+
 @pytest.fixture
 def dtype() -> GeometryDtype:
     return GeometryDtype()
@@ -30,11 +47,6 @@ def dtype() -> GeometryDtype:
 def data() -> GeometryExtensionArray:
     """Length-10, first two distinct non-missing (suite contract)."""
     return GeometryExtensionArray(gm.GeometryArray(_points(10)))
-
-
-@pytest.fixture
-def data_for_twos() -> None:
-    pytest.skip('geometries have no numeric "2" value')
 
 
 @pytest.fixture
@@ -60,13 +72,17 @@ def data_repeated(data):
 
 
 @pytest.fixture
-def data_for_sorting() -> None:
-    pytest.skip('geometries are unordered')
+def data_for_sorting() -> GeometryExtensionArray:
+    """[B, C, A] with A < B < C under the argsort order."""
+    a, b, c = _ordered_points()
+    return GeometryExtensionArray._from_sequence([b, c, a])
 
 
 @pytest.fixture
-def data_missing_for_sorting() -> None:
-    pytest.skip('geometries are unordered')
+def data_missing_for_sorting() -> GeometryExtensionArray:
+    """[B, NA, A] with A < B under the argsort order."""
+    a, b, _ = _ordered_points()
+    return GeometryExtensionArray._from_sequence([b, None, a])
 
 
 @pytest.fixture
@@ -81,16 +97,8 @@ def na_value():
 
 @pytest.fixture
 def data_for_grouping() -> GeometryExtensionArray:
-    """[B, B, NA, NA, A, A, B, C] with A < B < C under the argsort order.
-
-    Geometries sort by WKB bytes (`_values_for_argsort`), and IEEE-754
-    little-endian bytes do not sort numerically — so pick x values that
-    differ only in the low mantissa byte, where byte order == value order.
-    """
-    base = 1.0
-    a = gm.Point(base, 0.0)
-    b = gm.Point(np.nextafter(base, 2.0), 0.0)
-    c = gm.Point(np.nextafter(np.nextafter(base, 2.0), 2.0), 0.0)
+    """[B, B, NA, NA, A, A, B, C] with A < B < C under the argsort order."""
+    a, b, c = _ordered_points()
     return GeometryExtensionArray._from_sequence([b, b, None, None, a, a, b, c])
 
 
@@ -132,6 +140,12 @@ def fillna_method(request):
     return request.param
 
 
+@pytest.fixture(params=[None, lambda x: x])
+def sort_by_key(request):
+    """Mirrors pandas' own fixture (pandas/conftest.py): no key, then identity."""
+    return request.param
+
+
 @pytest.fixture(params=[True, False])
 def as_array(request):
     return request.param
@@ -169,7 +183,21 @@ class TestConstructors(base.BaseConstructorsTests):
 
 
 class TestGetitem(base.BaseGetitemTests):
-    pass
+    @pytest.mark.parametrize(
+        'indexer',
+        [[0, 1, 2, pd.NA], pd.array([0, 1, 2, pd.NA], dtype='Int64')],
+        ids=['list', 'integer-array'],
+    )
+    def test_getitem_series_integer_with_missing_raises(self, data, indexer):
+        """A string-indexed Series treats integers as labels, so NA never matches.
+
+        pandas' base test (xfailed upstream for every extension array) expects
+        the integer-NA `ValueError`; pandas resolves this lookup by label and
+        raises `KeyError` before the array is consulted.
+        """
+        series = pd.Series(data, index=[chr(100 + i) for i in range(len(data))])
+        with pytest.raises(KeyError, match='are in the'):
+            series[indexer]
 
 
 class TestIndex(base.BaseIndexTests):
@@ -189,13 +217,57 @@ class TestPrinting(base.BasePrintingTests):
 
 
 class TestReshaping(base.BaseReshapingTests):
-    @pytest.mark.xfail(
-        reason='base test hardcodes NaN as the expected NA; our na_value is '
-        "None (a missing geometry is None, not a float) — pandas' own JSON "
-        'extension xfails this the same way'
+    @pytest.mark.parametrize(
+        'index',
+        [
+            pd.MultiIndex.from_product([['A', 'B'], ['a', 'b']], names=['a', 'b']),
+            pd.MultiIndex.from_tuples([('A', 'a'), ('A', 'b'), ('B', 'b')]),
+            pd.MultiIndex.from_product([('A', 'B'), ('a', 'b', 'c'), (0, 1, 2)]),
+            pd.MultiIndex.from_tuples([
+                ('A', 'a', 1),
+                ('A', 'b', 0),
+                ('A', 'a', 0),
+                ('B', 'a', 0),
+                ('B', 'c', 1),
+            ]),
+        ],
     )
+    @pytest.mark.parametrize('obj', ['series', 'frame'])
     def test_unstack(self, data, index, obj):
-        super().test_unstack(data, index, obj)
+        """Unstack with `None` as the missing geometry.
+
+        The base test passes `fill_value=data.dtype.na_value` to the object
+        reference; for `na_value=None` pandas reads that as "no fill value" and
+        fills with NaN, so its expectation names the wrong missing marker.
+        Everything else is pandas' own assertion sequence.
+        """
+        final_length = min(len(index), len(data))
+        index = index[:final_length]
+        data = data[:final_length]
+        if obj == 'series':
+            ser = pd.Series(data, index=index)
+        else:
+            ser = pd.DataFrame({'A': data, 'B': data}, index=index)
+
+        levels = range(index.nlevels)
+        combinations = itertools.chain.from_iterable(
+            itertools.permutations(levels, size) for size in range(1, index.nlevels)
+        )
+        for level in combinations:
+            result = ser.unstack(level=list(level))
+            assert all(
+                isinstance(result[column].array, type(data))
+                for column in result.columns
+            )
+            if obj == 'series':
+                alternative = ser.to_frame().unstack(level=list(level))
+                pd.testing.assert_frame_equal(result, alternative.droplevel(0, axis=1))
+
+            expected = ser.astype(object).unstack(level=list(level))
+            expected = expected.where(expected.notna(), None)
+            if obj == 'series':
+                assert expected.dtypes.eq(np.dtype(object)).all()
+            pd.testing.assert_frame_equal(result.astype(object), expected)
 
 
 class TestGroupby(base.BaseGroupbyTests):
@@ -203,5 +275,21 @@ class TestGroupby(base.BaseGroupbyTests):
 
 
 class TestMethods(base.BaseMethodsTests):
+    """Sorting uses the WKB-byte argsort key; order comparisons are refused."""
+
     def test_combine_le(self, data_repeated):
-        pytest.skip('geometries are unordered; `<=` is a TypeError by design')
+        first, second = data_repeated(2)
+        with pytest.raises(TypeError, match='not supported'):
+            pd.Series(first).combine(pd.Series(second), lambda a, b: a <= b)
+
+    def test_searchsorted(self, data_for_sorting, as_series):
+        smallest = data_for_sorting.take([2, 0, 1])
+        needle = data_for_sorting[2]
+        values = pd.Series(smallest) if as_series else smallest
+        with pytest.raises(TypeError, match='not supported'):
+            values.searchsorted(needle)
+
+    @pytest.mark.parametrize('periods', [1, -2])
+    def test_diff(self, data, periods):
+        with pytest.raises(TypeError, match='diff'):
+            pd.Series(data).diff(periods)

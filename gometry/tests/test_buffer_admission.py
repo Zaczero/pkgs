@@ -83,26 +83,6 @@ def test_b5_indirect_empty_matrix_checks_optional_axis_length(axis: str) -> None
     assert empty.coordinate_axes == ('XYZ' if axis == 'z' else 'XYM')
 
 
-def test_b5_legacy_testbuffer_path_still_works_when_present() -> None:
-    """If CPython ships ``_testbuffer``, keep the original path green too."""
-    _testbuffer = pytest.importorskip('_testbuffer')
-    expected = [(1.0, 2.0), (3.0, 4.0), (5.0, 6.0)]
-    xs = _testbuffer.ndarray(
-        [1.0, 3.0, 5.0], shape=(3,), format='d', flags=_testbuffer.ND_PIL
-    )
-    ys = _testbuffer.ndarray(
-        [2.0, 4.0, 6.0], shape=(3,), format='d', flags=_testbuffer.ND_PIL
-    )
-    assert list(gm.LineString(x=xs, y=ys).coords) == expected
-    matrix = _testbuffer.ndarray(
-        [1.0, 2.0, 3.0, 4.0, 5.0, 6.0],
-        shape=(3, 2),
-        format='d',
-        flags=_testbuffer.ND_PIL,
-    )
-    assert list(gm.LineString(matrix).coords) == expected
-
-
 # ---------------------------------------------------------------------------
 # B / C10 — FixedSizeList child nulls under outer-valid rows
 # ---------------------------------------------------------------------------

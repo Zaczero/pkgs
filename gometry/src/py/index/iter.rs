@@ -54,7 +54,7 @@ impl PySpatialIndexIter {
             self.remaining = self.remaining.wrapping_sub(1);
             return Ok(Some(handle));
         }
-        self.next_handle = index.rows.len();
+        self.next_handle = index.rows.next_handle;
         self.remaining = 0;
         Ok(None)
     }

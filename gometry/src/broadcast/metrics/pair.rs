@@ -1,4 +1,4 @@
-use crate::array::{ArrayRow, PyGeometryArray};
+use crate::array::PyGeometryArray;
 #[cfg(test)]
 use crate::broadcast::metrics::ShapeData;
 use crate::broadcast::metrics::{
@@ -8,6 +8,7 @@ use crate::broadcast::metrics::{
 use crate::crs::local::{LocalInputPurpose, PreparedLocalInput, geodesic_by_identity};
 use crate::dispatch::MetricOp;
 use crate::geographic::{ComputedEdgeIntent, GeographicFrame, lonlat as geographic};
+use crate::geometry::storage::packed_columns::PackedColumns;
 use crate::geometry::storage::{PackedStorage, PointRows};
 use crate::geometry::{
     FrameDependentCaches, LineSeq, PreparedPlan, ShapeCountQuery, TopologyDomain,
@@ -233,7 +234,16 @@ pub(crate) fn lonlat_shape(geometry: &PyGeometry) -> PyResult<Shape> {
 /// Array sibling of [`lonlat_shape`]: validated lon/lat points at logical rows.
 pub(crate) enum LonLatPointRows<'a> {
     Source(PointRows<'a>),
-    Columns { xs: Vec<f64>, ys: Vec<f64> },
+    Columns {
+        xs: Vec<f64>,
+        ys: Vec<f64>,
+    },
+    CompactColumns {
+        xs: Vec<f64>,
+        ys: Vec<f64>,
+        present_rows: Vec<usize>,
+        logical_len: usize,
+    },
 }
 
 impl LonLatPointRows<'_> {
@@ -241,18 +251,40 @@ impl LonLatPointRows<'_> {
         match self {
             Self::Source(points) => points.len(),
             Self::Columns { xs, .. } => xs.len(),
+            Self::CompactColumns { logical_len, .. } => *logical_len,
         }
     }
 
-    pub(crate) fn get(&self, row: usize) -> Point {
+    pub(crate) fn for_each_present(
+        &self,
+        mut is_missing: impl FnMut(usize) -> bool,
+        mut visit: impl FnMut(usize, Point),
+    ) {
         match self {
-            Self::Source(points) => points.get(row),
-            Self::Columns { xs, ys } => Point::new_raw_xy(
-                *xs.get(row)
-                    .expect("longitude columns cover every logical row"),
-                *ys.get(row)
-                    .expect("latitude columns cover every logical row"),
-            ),
+            Self::Source(points) => {
+                for row in 0..points.len() {
+                    if !is_missing(row) {
+                        visit(row, points.get(row));
+                    }
+                }
+            },
+            Self::Columns { xs, ys } => {
+                for (row, (&x, &y)) in xs.iter().zip(ys).enumerate() {
+                    if !is_missing(row) {
+                        visit(row, Point::new_raw_xy(x, y));
+                    }
+                }
+            },
+            Self::CompactColumns {
+                xs,
+                ys,
+                present_rows,
+                ..
+            } => {
+                for ((&row, &x), &y) in present_rows.iter().zip(xs).zip(ys) {
+                    visit(row, Point::new_raw_xy(x, y));
+                }
+            },
         }
     }
 }
@@ -302,49 +334,75 @@ fn transform_present(
     Ok(())
 }
 
+fn transform_compact_present(
+    crs: &str,
+    xs: &mut [f64],
+    ys: &mut [f64],
+    present_rows: &[usize],
+) -> Result<(), LonLatPointsError> {
+    let plan =
+        crate::crs::TransformPlan::new(crs, "EPSG:4326").map_err(LonLatPointsError::Setup)?;
+    plan.transform_coordinates(xs, ys, crate::Zt::None)
+        .map_err(LonLatPointsError::Setup)?;
+    for (index, &row) in present_rows.iter().enumerate() {
+        lonlat_domain(
+            row,
+            *xs.get(index)
+                .expect("transformed longitude column matches present rows"),
+            *ys.get(index)
+                .expect("transformed latitude column matches present rows"),
+        )?;
+    }
+    Ok(())
+}
+
 fn compact_lonlat_points(
     array: &PyGeometryArray,
 ) -> Result<LonLatPointRows<'_>, LonLatPointsError> {
     let projected_crs = array.crs_str().filter(|crs| !crs::is_wgs84_lonlat(crs));
-    let mut xs = Vec::with_capacity(array.len());
-    let mut ys = Vec::with_capacity(array.len());
-    let mut present = Vec::with_capacity(array.len());
-    for logical_row in array
-        .row_operation()
-        .rows_with_missing(|| (f64::NAN, f64::NAN))
-    {
-        match logical_row {
-            ArrayRow::Missing { value, .. } => {
-                xs.push(value.0);
-                ys.push(value.1);
-            },
-            ArrayRow::Present(row) => {
-                let logical = row.logical();
-                let storage::ShapeRow::Point(point) = row.row() else {
-                    unreachable!("compact point storage yields point rows")
-                };
-                xs.push(point.x);
-                ys.push(point.y);
-                present.push(logical);
-            },
-        }
+    let Some(PackedColumns::Points(points)) = array.row_owner().packed_columns() else {
+        unreachable!("compact nullable point rows expose packed point columns");
+    };
+    let point_rows = points.rows();
+    let present_count = point_rows.present_count();
+    let mut xs = Vec::with_capacity(present_count);
+    let mut ys = Vec::with_capacity(present_count);
+    let mut present_rows = Vec::with_capacity(present_count);
+    for (logical, physical) in point_rows.cursor() {
+        let Some(physical) = physical else {
+            continue;
+        };
+        let (x, y) = points.physical_xy_at(physical);
+        xs.push(x);
+        ys.push(y);
+        present_rows.push(logical);
     }
     let Some(crs) = projected_crs else {
-        for &logical in &present {
+        for (index, &row) in present_rows.iter().enumerate() {
             lonlat_domain(
-                logical,
-                *xs.get(logical)
-                    .expect("present logical row is inside longitude columns"),
-                *ys.get(logical)
-                    .expect("present logical row is inside latitude columns"),
+                row,
+                *xs.get(index)
+                    .expect("compact longitude column matches present rows"),
+                *ys.get(index)
+                    .expect("compact latitude column matches present rows"),
             )?;
         }
-        return Ok(LonLatPointRows::Columns { xs, ys });
+        return Ok(LonLatPointRows::CompactColumns {
+            xs,
+            ys,
+            present_rows,
+            logical_len: array.len(),
+        });
     };
-    if !present.is_empty() {
-        transform_present(crs, &mut xs, &mut ys, &present)?;
+    if !present_rows.is_empty() {
+        transform_compact_present(crs, &mut xs, &mut ys, &present_rows)?;
     }
-    Ok(LonLatPointRows::Columns { xs, ys })
+    Ok(LonLatPointRows::CompactColumns {
+        xs,
+        ys,
+        present_rows,
+        logical_len: array.len(),
+    })
 }
 
 /// Resolve every logical row of `array` to a validated lon/lat point.
@@ -1012,8 +1070,12 @@ mod lonlat_points_tests {
         let points = lonlat_points(&array).expect("in-domain packed points");
         assert!(matches!(points, LonLatPointRows::Source(_)));
         assert_eq!(points.len(), 2);
-        assert_eq!(points.get(0), Point::new_raw_xy(1.0, 3.0));
-        assert_eq!(points.get(1), Point::new_raw_xy(2.0, 4.0));
+        let mut visited = Vec::new();
+        points.for_each_present(|_| false, |row, point| visited.push((row, point)));
+        assert_eq!(visited, [
+            (0, Point::new_raw_xy(1.0, 3.0)),
+            (1, Point::new_raw_xy(2.0, 4.0)),
+        ]);
     }
 
     #[test]
@@ -1022,9 +1084,38 @@ mod lonlat_points_tests {
         let mask = ValidityMask::from_vec(3, vec![true, false, true]).expect("mask");
         let array = PyGeometryArray::scatter_present_rows(&present, mask).unwrap();
         let points = lonlat_points(&array).expect("present row is in domain");
-        assert!(matches!(points, LonLatPointRows::Columns { .. }));
+        assert!(matches!(points, LonLatPointRows::CompactColumns { .. }));
         assert_eq!(points.len(), 3);
-        assert_eq!(points.get(1), Point::new_raw_xy(1.0, 2.0));
+        let mut visited = Vec::new();
+        points.for_each_present(
+            |row| array.is_row_missing(row),
+            |row, point| visited.push((row, point)),
+        );
+        assert_eq!(visited, [(1, Point::new_raw_xy(1.0, 2.0))]);
+    }
+
+    #[test]
+    fn compact_projected_points_transform_present_columns_in_place() {
+        let present = packed_xy(
+            vec![960_464.566_564_364_4],
+            vec![6_002_020.553_970_727],
+            Frame::Crs(crs_arc_static("EPSG:3857")),
+        );
+        let mask = ValidityMask::from_vec(3, vec![true, false, true]).expect("mask");
+        let array = PyGeometryArray::scatter_present_rows(&present, mask).unwrap();
+        let points = lonlat_points(&array).expect("projected point transforms to valid lon/lat");
+
+        assert!(matches!(points, LonLatPointRows::CompactColumns { .. }));
+        let mut visited = Vec::new();
+        points.for_each_present(
+            |row| array.is_row_missing(row),
+            |row, point| visited.push((row, point)),
+        );
+        assert_eq!(visited.len(), 1);
+        let (row, point) = *visited.first().expect("one point remains present");
+        assert_eq!(row, 1);
+        assert!((point.x - 8.628).abs() < 1e-10);
+        assert!((point.y - 47.366).abs() < 1e-10);
     }
 
     #[test]
@@ -1089,7 +1180,7 @@ mod lonlat_points_tests {
         );
         let points =
             lonlat_points(&array).expect("all-missing compact must not construct TransformPlan");
-        assert!(matches!(points, LonLatPointRows::Columns { .. }));
+        assert!(matches!(points, LonLatPointRows::CompactColumns { .. }));
         assert_eq!(points.len(), 2);
     }
 

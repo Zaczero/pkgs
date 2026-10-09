@@ -1028,6 +1028,41 @@ def test_set_coordinates_selection_rejects_z_open_ring(select) -> None:
     assert pickle.loads(pickle.dumps(kept)) == kept
 
 
+def test_set_coordinates_nullable_polygon_error_uses_logical_row() -> None:
+    polygon = gm.from_wkt('POLYGON ((0 0, 2 0, 2 2, 0 2, 0 0))')
+    array = gm.GeometryArray([None, polygon, None, polygon])
+    opened = np.asarray(array.coords).copy()
+    opened[-1, 0] = -1.0
+
+    with pytest.raises(
+        gm.InvalidGeometryError, match='polygon ring must be closed'
+    ) as error:
+        array.set_coordinates(opened)
+
+    assert error.value.__notes__ == ['while processing array element 3']
+
+
+def test_set_coordinates_nullable_polygon_carries_measure_columns() -> None:
+    first = gm.from_wkt('POLYGON M ((0 0 10, 1 0 20, 1 1 30, 0 1 40, 0 0 10))')
+    second = gm.from_wkt('POLYGON M ((2 2 50, 3 2 60, 3 3 70, 2 3 80, 2 2 50))')
+    array = gm.GeometryArray([None, first, None, second])
+    coordinates = np.asarray(array.coords)
+    xs = coordinates[:, 0].copy()
+    ys = coordinates[:, 1].copy()
+    xs[1] = 1.5
+    xs[6] = 3.5
+
+    out = array.set_coordinates(x=xs, y=ys)
+
+    assert out.is_missing.tolist() == [True, False, True, False]
+    np.testing.assert_array_equal(
+        out.coords.x, [0.0, 1.5, 1.0, 0.0, 0.0, 2.0, 3.5, 3.0, 2.0, 2.0]
+    )
+    np.testing.assert_array_equal(
+        out.coords.m, [10, 20, 30, 40, 10, 50, 60, 70, 80, 50]
+    )
+
+
 def test_set_coordinates_per_axis_and_num_coordinates() -> None:
     line = gm.from_wkt('LINESTRING ZM (0 0 5 50, 1 1 6 60)')
     moved = line.set_coordinates(x=[10.0, 11.0], y=[20.0, 21.0])
