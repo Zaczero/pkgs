@@ -18837,8 +18837,8 @@ def dwithin(
         infinity is accepted and matches every pair of admitted non-empty
         operands.
     CRSError
-        If a geographic point-edge search cannot certify the threshold result
-        within its evaluation budget.
+        If geographic point-edge search reaches its 128-evaluation budget or
+        binary64 parameter precision without proving the threshold result.
 
     See Also
     --------
