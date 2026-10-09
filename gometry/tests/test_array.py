@@ -142,6 +142,15 @@ def test_mixed_axes_arrays_summarize_honestly() -> None:
     assert gm.GeometryArray([]).common_coordinate_axes == 'XY'
 
 
+def test_require_preserves_missing_rows_in_a_geometry_array() -> None:
+    rows = gm.GeometryArray([gm.Point(1.0, 2.0), None])
+
+    required = gm.require(rows)
+
+    assert required.is_missing.tolist() == [False, True]
+    assert required[1] is None
+
+
 @pytest.mark.parametrize(
     'source_wkts',
     [

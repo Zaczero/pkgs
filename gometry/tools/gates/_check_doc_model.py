@@ -22,6 +22,7 @@ _PUBLIC_TYPEVAR_NAMES = {
     '_DefaultT': 'DefaultT',
     '_ExtremeT': 'ExtremeT',
     '_GeometryOtherT': 'GeometryOtherT',
+    '_GeometryRowT': 'GeometryRowT',
     '_GeometryT': 'GeometryT',
     '_GeometryT_co': 'GeometryT_co',
     '_GroupKeyT': 'GroupKeyT',
@@ -230,6 +231,29 @@ def collect_errors() -> list[str]:
                 errors.append(
                     f'{function.canonical_path}: private annotations {private}'
                 )
+
+    cell_array = pkg.members.get('CellArray')
+    if isinstance(cell_array, griffe.Class):
+        for name, geometry_type in (('center', 'Point'), ('polygon', 'Polygon')):
+            attribute = cell_array.members.get(name)
+            expected = f'GeometryArray[{geometry_type} | None]'
+            if not isinstance(attribute, griffe.Attribute):
+                errors.append(f'gometry.CellArray.{name}: property reference missing')
+                continue
+            if (
+                attribute.canonical_path != f'gometry.CellArray.{name}'
+                or _public_annotation(str(attribute.annotation)) != expected
+            ):
+                errors.append(
+                    f'gometry.CellArray.{name}: property annotation/path is not '
+                    f'{expected} at its public anchor'
+                )
+            if not {'property', 'readonly'}.issubset(attribute.labels):
+                errors.append(
+                    f'gometry.CellArray.{name}: property/read-only labels missing'
+                )
+            if attribute.docstring is None or not attribute.docstring.value.strip():
+                errors.append(f'gometry.CellArray.{name}: property prose missing')
 
     for module_name in ('_lib', '_types'):
         module = pkg.members.get(module_name)

@@ -37,6 +37,7 @@ from typing import (
     Generic,
     Literal,
     Never,
+    Protocol,
     Self,
     SupportsIndex,
     TypeAlias,
@@ -139,6 +140,7 @@ from gometry._types import (
 # subtype as their input, so a typed `Point`/`Polygon`/... flows through them.
 _GeometryT = TypeVar('_GeometryT', bound=Geometry)
 _GeometryOtherT = TypeVar('_GeometryOtherT', bound=Geometry)
+_GeometryRowT = TypeVar('_GeometryRowT', bound=Geometry | None)
 # Dissolve group key element type (the `by` iterable's element type).
 _GroupKeyT = TypeVar('_GroupKeyT', bound=Hashable)
 _DefaultT = TypeVar('_DefaultT')
@@ -12840,6 +12842,31 @@ class CRS:
 _CellT = TypeVar('_CellT')
 _CellT_co = TypeVar('_CellT_co', covariant=True, default=Cell)
 
+class _CellGeometryProjection(Protocol[_GeometryT_co]):
+    @overload
+    def __get__(
+        self,
+        instance: CellArray[Cell],
+        owner: type[CellArray[Cell | None]] | None = None,
+    ) -> GeometryArray[_GeometryT_co]: ...
+    @overload
+    def __get__(
+        self,
+        instance: CellArray[Cell | None],
+        owner: type[CellArray[Cell | None]] | None = None,
+    ) -> GeometryArray[_GeometryT_co | None]: ...
+    @overload
+    def __get__(
+        self,
+        instance: None,
+        owner: type[CellArray[Cell | None]],
+    ) -> Self: ...
+    def __set__(
+        self,
+        instance: CellArray[Cell | None],
+        value: Never,
+    ) -> None: ...
+
 @final
 class CellArrayIterator(Generic[_CellT_co]):
     """Lazy iterator over a `CellArray`'s typed cells (both directions)."""
@@ -13125,26 +13152,26 @@ class CellArray(Sequence[_CellT_co]):
         >>> codes.tolist()
         [0, 1]
         """
-    @property
-    def center(self) -> GeometryArray[Point]:
-        """Center points of every cell, as a packed WGS84 point array.
+    center: _CellGeometryProjection[Point]
+    """Center points of every cell, as a packed WGS84 point array.
 
-        The bulk twin of each scalar cell's center property — one
-        vectorized call for the index-millions-of-points workflow, returning
-        zero-copy packed point storage.
+    The bulk twin of each scalar cell's center property — one
+    vectorized call for the index-millions-of-points workflow, returning
+    zero-copy packed point storage.
 
-        Returns
-        -------
-        GeometryArray
-            One ``Point`` (lon/lat, ``OGC:CRS84``) per cell.
+    Returns
+    -------
+    GeometryArray
+        Dense cells yield one ``Point`` (lon/lat, ``OGC:CRS84``) per row.
+        Missing rows in a nullable ``CellArray`` remain ``None``.
 
-        Examples
-        --------
-        >>> import gometry as gm
-        >>> arr = gm.CellArray([gm.Tile(x=0, y=0, zoom=1)])
-        >>> arr.center.to_wkt()[0]
-        'POINT (-90 42.5255643899033)'
-        """
+    Examples
+    --------
+    >>> import gometry as gm
+    >>> arr = gm.CellArray([gm.Tile(x=0, y=0, zoom=1)])
+    >>> arr.center.to_wkt()[0]
+    'POINT (-90 42.5255643899033)'
+    """
     @property
     def area(self) -> npt.NDArray[np.float64]:
         """Cell areas in square meters, using each grid's area model.
@@ -13175,14 +13202,15 @@ class CellArray(Sequence[_CellT_co]):
         -------
         numpy.ndarray of bool
         """
-    @property
-    def polygon(self) -> GeometryArray[Polygon]:
-        """Filled WGS84 polygon of every cell, as a geometry array.
+    polygon: _CellGeometryProjection[Polygon]
+    """Filled WGS84 polygon of every cell, as a geometry array.
 
-        Returns
-        -------
-        GeometryArray
-        """
+    Returns
+    -------
+    GeometryArray
+        Dense cells yield one polygon per row. Missing rows in a nullable
+        ``CellArray`` remain ``None``.
+    """
     def children_count(self, depth: int | None = None, /) -> npt.NDArray[np.float64]:
         """Number of descendant cells each cell has at ``depth``.
 
@@ -20542,18 +20570,18 @@ def require(
 ) -> _GeometryT: ...
 @overload
 def require(
-    value: GeometryArray[_GeometryT],
+    value: GeometryArray[_GeometryRowT],
     *,
     crs: CrsInput | None = None,
     axes: CoordinateAxes | None = None,
-) -> GeometryArray[_GeometryT]: ...
+) -> GeometryArray[_GeometryRowT]: ...
 @overload
 def require(
-    value: Groups[GeometryArray[_GeometryT]],
+    value: Groups[GeometryArray[_GeometryRowT]],
     *,
     crs: CrsInput | None = None,
     axes: CoordinateAxes | None = None,
-) -> GeometryArray[_GeometryT]: ...
+) -> GeometryArray[_GeometryRowT]: ...
 @overload
 def require(
     value: str | Buffer | Mapping[str, Any] | SupportsGeoInterface,
@@ -20563,11 +20591,11 @@ def require(
 ) -> Geometry: ...
 @overload
 def require(
-    value: Iterable[_GeometryT | None],
+    value: Iterable[_GeometryRowT],
     *,
     crs: CrsInput | None = None,
     axes: CoordinateAxes | None = None,
-) -> GeometryArray[_GeometryT]: ...
+) -> GeometryArray[_GeometryRowT]: ...
 @overload
 def require(
     value: Iterable[
@@ -20576,7 +20604,7 @@ def require(
     *,
     crs: CrsInput | None = None,
     axes: CoordinateAxes | None = None,
-) -> GeometryArray[Geometry]:
+) -> GeometryArray[Geometry | None]:
     """Parse and require a geometry contract at an input boundary.
 
     Parameters

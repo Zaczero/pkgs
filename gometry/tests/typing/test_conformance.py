@@ -44,6 +44,52 @@ def _drop_missing_generic(
     return values.drop_missing()
 
 
+def _check_require_row_types(
+    nullable_array: gm.GeometryArray[gm.Point | None],
+    nullable_groups: gm.Groups[gm.GeometryArray[gm.Point | None]],
+    nullable_rows: Iterable[gm.Point | None],
+    foreign_rows: Iterable[gm.Point | str | None],
+) -> None:
+    assert_type(gm.require(nullable_array), gm.GeometryArray[gm.Point | None])
+    assert_type(
+        gm.require(nullable_groups),
+        gm.GeometryArray[gm.Point | None],
+    )
+    assert_type(gm.require(nullable_rows), gm.GeometryArray[gm.Point | None])
+    assert_type(
+        gm.require(foreign_rows),
+        gm.GeometryArray[gm.Geometry | None],
+    )
+
+
+def _check_cell_projection_row_types(
+    h3: gm.CellArray[gm.H3Cell],
+    nullable_h3: gm.CellArray[gm.H3Cell | None],
+    s2: gm.CellArray[gm.S2Cell],
+    nullable_s2: gm.CellArray[gm.S2Cell | None],
+    geohash: gm.CellArray[gm.GeohashCell],
+    nullable_geohash: gm.CellArray[gm.GeohashCell | None],
+    tile: gm.CellArray[gm.Tile],
+    nullable_tile: gm.CellArray[gm.Tile | None],
+) -> None:
+    assert_type(h3.center, gm.GeometryArray[gm.Point])
+    assert_type(nullable_h3.center, gm.GeometryArray[gm.Point | None])
+    assert_type(h3.polygon, gm.GeometryArray[gm.Polygon])
+    assert_type(nullable_h3.polygon, gm.GeometryArray[gm.Polygon | None])
+    assert_type(s2.center, gm.GeometryArray[gm.Point])
+    assert_type(nullable_s2.center, gm.GeometryArray[gm.Point | None])
+    assert_type(s2.polygon, gm.GeometryArray[gm.Polygon])
+    assert_type(nullable_s2.polygon, gm.GeometryArray[gm.Polygon | None])
+    assert_type(geohash.center, gm.GeometryArray[gm.Point])
+    assert_type(nullable_geohash.center, gm.GeometryArray[gm.Point | None])
+    assert_type(geohash.polygon, gm.GeometryArray[gm.Polygon])
+    assert_type(nullable_geohash.polygon, gm.GeometryArray[gm.Polygon | None])
+    assert_type(tile.center, gm.GeometryArray[gm.Point])
+    assert_type(nullable_tile.center, gm.GeometryArray[gm.Point | None])
+    assert_type(tile.polygon, gm.GeometryArray[gm.Polygon])
+    assert_type(nullable_tile.polygon, gm.GeometryArray[gm.Polygon | None])
+
+
 def _check_buffer_input_precision(
     dense: gm.GeometryArray[gm.Point],
     nullable: gm.GeometryArray[gm.Point | None],
@@ -537,6 +583,9 @@ assert buffered is not None
 assert_type(buffered.area, float)
 assert_type(gm.require(POINTS.set_crs(4326), crs=4326), gm.GeometryArray[gm.Point])
 assert_type(gm.require(POINTS), gm.GeometryArray[gm.Point])
+assert_type(gm.require(POINT), gm.Point)
+assert_type(gm.require([POINT, None]), gm.GeometryArray[gm.Point | None])
+assert_type(gm.require('POINT (1 1)'), gm.Geometry)
 assert_type(POLY.polylabel(), gm.Point)
 assert_type(POLY.minimum_bounding_radius(), float)
 assert_type(POINTS.minimum_bounding_radius(), npt.NDArray[np.float64])
@@ -570,7 +619,7 @@ assert_type(POINT, gm.Point)
 assert_type(POINTS, gm.GeometryArray[gm.Point])
 assert_type(gm.MultiPoint([POINT, gm.Point(2, 2)]), gm.MultiPoint)
 if TYPE_CHECKING:
-    from collections.abc import Hashable, Mapping
+    from collections.abc import Hashable, Iterable, Mapping
 
     import geopandas as gpd
     import pandas as pd

@@ -1232,7 +1232,8 @@ fn to_numpy(slf: Bound<'_, Self>) -> PyResult<Py<PyAny>> {
     /// Returns
     /// -------
     /// GeometryArray
-    ///     One ``Point`` (lon/lat, ``OGC:CRS84``) per cell.
+    ///     Dense cells yield one ``Point`` (lon/lat, ``OGC:CRS84``) per row.
+    ///     Missing rows in a nullable ``CellArray`` remain ``None``.
     ///
     /// Examples
     /// --------
@@ -1300,6 +1301,8 @@ fn to_numpy(slf: Bound<'_, Self>) -> PyResult<Py<PyAny>> {
     /// Returns
     /// -------
     /// GeometryArray
+    ///     Dense cells yield one polygon per row. Missing rows in a nullable
+    ///     ``CellArray`` remain ``None``.
     #[getter]
     pub(crate) fn polygon(&self, py: Python<'_>) -> PyResult<crate::PyGeometryArray> {
         let cells = self.clone();
