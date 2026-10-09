@@ -556,12 +556,31 @@ pub(crate) struct IndexEntry {
 }
 
 /// Column-shared storage retained by an index built from a packed array.
-/// The array remains the sole owner of packed row interpretation; the index
-/// resolves rows through its owner-bound operation instead of cloning every
-/// component and duplicating CSR/selection logic.
+/// The array remains the coordinate owner; compact nullable points additionally
+/// need original-present IDs to address its physical point ordinals.
+#[derive(Clone, Debug)]
+enum PackedRowAddressing {
+    /// A live handle is the source's logical row.
+    Logical,
+    /// Original logical ID of each physical row, in source storage order.
+    PresentOrdinals(Arc<[usize]>),
+}
+
 #[derive(Clone, Debug)]
 pub(crate) struct PackedStore {
     pub(crate) source: PyGeometryArray,
+    addressing: PackedRowAddressing,
+}
+
+impl HeapSize for PackedStore {
+    fn heap_bytes(&self) -> usize {
+        let addressing = match &self.addressing {
+            PackedRowAddressing::Logical => 0,
+            PackedRowAddressing::PresentOrdinals(handles) => crate::heap_size::ARC_CONTROL_BYTES
+                .saturating_add(handles.len().saturating_mul(size_of::<usize>())),
+        };
+        self.source.heap_bytes().saturating_add(addressing)
+    }
 }
 
 /// The indexed rows. Building from a packed array shares its coordinate
@@ -723,9 +742,8 @@ impl BoxedRows {
 /// Operation-scoped access to the index's arbitrary live handles.
 ///
 /// Candidate refinement visits handles in tree/order-dependent sequences and
-/// also serves boxed overflow rows. The packed side delegates arbitrary
-/// logical-row resolution to one owner-bound array operation, including the
-/// compact-point validity rank directory.
+/// also serves boxed overflow rows. Packed rows resolve through their retained
+/// owner and admitted row-addressing mode.
 pub(crate) struct IndexRowOperation<'a> {
     rows: &'a IndexRows,
     packed: Option<ArrayRowOperation<'a>>,
@@ -766,17 +784,33 @@ impl<'a> IndexRowOperation<'a> {
         }
         let packed_len = self.rows.packed_len();
         if handle < packed_len {
+            let packed_store = self
+                .rows
+                .packed
+                .as_ref()
+                .expect("packed length implies an index-owned packed source");
             let packed = self
                 .packed
                 .as_mut()
                 .expect("packed length implies an operation-owned packed row view");
-            let row = packed
-                .present_row_at(handle)
-                .ok_or_else(|| Self::missing_handle(handle));
-            return row.map(|row| IndexRowSource::Packed {
+            let (logical, row) = match &packed_store.addressing {
+                PackedRowAddressing::Logical => {
+                    let row = packed
+                        .present_row_at(handle)
+                        .ok_or_else(|| Self::missing_handle(handle))?;
+                    (row.logical(), row.row())
+                },
+                PackedRowAddressing::PresentOrdinals(handles) => {
+                    let ordinal = handles
+                        .binary_search(&handle)
+                        .map_err(|_| Self::missing_handle(handle))?;
+                    (handle, packed_store.source.storage().row(ordinal))
+                },
+            };
+            return Ok(IndexRowSource::Packed {
                 operation: packed,
-                logical: row.logical(),
-                row: row.row(),
+                logical,
+                row,
             });
         }
         let rows: &'a IndexRows = self.rows;
@@ -907,7 +941,7 @@ impl HeapSize for IndexRows {
     fn heap_bytes(&self) -> usize {
         self.packed
             .as_ref()
-            .map_or(0, |packed| HeapSize::heap_bytes(&packed.source))
+            .map_or(0, HeapSize::heap_bytes)
             .saturating_add(self.boxed.heap_bytes())
             .saturating_add(self.live_handles.heap_bytes())
     }
