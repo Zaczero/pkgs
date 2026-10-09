@@ -1532,14 +1532,14 @@ fn walk_line_steps(
 }
 
 fn source_arc_node_ordinates<M: crate::geometry::ChartMetric>(
-    frame: crate::geographic::GeographicFrame,
+    source_frame: crate::geographic::GeographicFrame,
     source: &[Point; 2],
     parameter: &ExactRational,
     axes: CoordinateAxes,
     longitude: impl FnOnce() -> Result<RetainedChartDisplacement>,
     metric_access: Option<&SourceArcMetricAccess<'_, '_, M>>,
 ) -> Result<NodeOrdinates> {
-    let request = SourceArcRequest::new(frame, source, axes, parameter, longitude)?;
+    let request = SourceArcRequest::new(source_frame, source, axes, parameter, longitude)?;
     source_arc_ordinates_unmetered(&request, || {
         metric_access.map_or_else(
             || {
