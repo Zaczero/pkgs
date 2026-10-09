@@ -2090,19 +2090,7 @@ impl Shape {
         let subject =
             crate::geometry::GeographicPrepared::try_new(&subject_plan, &subject_cache, frame)?;
 
-        let rectangle = if rect.crosses_antimeridian() {
-            let west = Bounds::new(
-                rect.minx(),
-                rect.miny(),
-                frame.longitude().half_period(),
-                rect.maxy(),
-            )?;
-            let east = Bounds::new(
-                -frame.longitude().half_period(),
-                rect.miny(),
-                rect.maxx(),
-                rect.maxy(),
-            )?;
+        let rectangle = if let Some([west, east]) = rect.split_geographic(frame) {
             Self::geometry_collection(vec![
                 crate::geometry::geographic_bounds_to_shape(west, frame)?,
                 crate::geometry::geographic_bounds_to_shape(east, frame)?,
@@ -2138,11 +2126,7 @@ impl Shape {
         bounds: Option<Bounds>,
     ) -> Result<Self> {
         if rect.crosses_antimeridian() {
-            let west = Bounds::new(rect.minx(), rect.miny(), 180.0, rect.maxy())?;
-            let east = Bounds::new(-180.0, rect.miny(), rect.maxx(), rect.maxy())?;
-            let left = self.clip_by_rect_with_bounds(west, drop, bounds)?;
-            let right = self.clip_by_rect_with_bounds(east, drop, bounds)?;
-            return left.union(&right, Strictness::from(drop));
+            return Err(crate::geometry::GeometryErrorKind::InvalidRectangle.into());
         }
         overlay_intersection_with_rectangle(self, rect, bounds, Strictness::from(drop))
     }

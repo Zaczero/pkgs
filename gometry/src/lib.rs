@@ -177,7 +177,7 @@ use py::support::{
     validate_buffer_quadrant_segments, validate_densify_fraction, validate_distance,
     validate_dwithin_distance, validate_dwithin_distance_arg, validate_equals_exact_tolerance,
     validate_max_segment_length, validate_nearest_k, validate_smooth_iterations,
-    voronoi_edges_flatten, voronoi_flatten, wrapped_box,
+    voronoi_edges_flatten, voronoi_flatten,
 };
 use pyo3::buffer::PyBuffer;
 use pyo3::exceptions::{PyTypeError, PyValueError};

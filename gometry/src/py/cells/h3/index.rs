@@ -9,7 +9,7 @@ use h3o::{CellIndex, DirectedEdgeIndex, VertexIndex};
 use numpy::{PyReadonlyArrayDyn, PyUntypedArray, PyUntypedArrayMethods as _};
 use pyo3::exceptions::PyTypeError;
 use pyo3::prelude::*;
-use pyo3::types::PyBool;
+use pyo3::types::{PyBool, PyString};
 
 use crate::boundary::buffer_endian::{buffer_item_count, try_typed_buffer};
 use crate::py::cells::{copy_numeric_ids, copy_u64_ids};
@@ -192,6 +192,13 @@ pub(super) fn collect_h3_index_ids<I: H3Index>(
             "byte payloads are not H3 collections; use payload.decode() for one textual token or a list/uint64 array for numeric ids",
         ));
     }
+    if ids.is_instance_of::<PyString>() {
+        let token: String = ids.extract()?;
+        return Err(PyTypeError::new_err(format!(
+            "bare token text is ambiguous; use [{token:?}] for one {} or an explicit iterable for many",
+            I::ARRAY_ENTITY,
+        )));
+    }
     if let Some(values) = parse_uint64_ids::<I>(ids)? {
         validate_h3_index_ids::<I>(&values)?;
         return Ok(values);
@@ -211,19 +218,8 @@ pub(super) fn collect_h3_index_ids<I: H3Index>(
         validate_h3_index_ids::<I>(&values)?;
         return Ok(values);
     }
-    // Collect id-like iterables through the shared admission boundary after
-    // packed integer arrays and buffers have been handled.
-    crate::collect_py_iter(ids, |item| parse(&item).map(H3Index::id)).map_err(|err| {
-        if err.is_instance_of::<pyo3::exceptions::PyMemoryError>(ids.py()) {
-            err
-        } else if err.is_instance_of::<PyTypeError>(ids.py())
-            && err.to_string().contains("not iterable")
-        {
-            PyTypeError::new_err(I::ARRAY_TYPE_ERROR)
-        } else {
-            err
-        }
-    })
+    let iter = crate::py_iter_or_error(ids, || PyTypeError::new_err(I::ARRAY_TYPE_ERROR))?;
+    crate::collect_py_iter_from_iter(ids, iter, |item| parse(&item).map(H3Index::id))
 }
 
 #[cfg(test)]

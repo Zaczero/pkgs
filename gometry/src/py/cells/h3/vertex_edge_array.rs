@@ -741,16 +741,17 @@ fn to_numpy(slf: Bound<'_, Self>) -> PyResult<Py<PyAny>> {
 h3_index_array_common! {
     /// Build an array of H3 vertices from vertex objects, ids, or tokens.
     ///
-    /// Integer NumPy arrays with zero or one dimension and unsigned 64-bit
-    /// buffers are also accepted. Wrap one token in a one-item iterable.
+    /// Iterables may mix index objects, integer ids, and tokens. Integer NumPy
+    /// arrays with zero or one dimension and unsigned 64-bit buffers are also
+    /// accepted. Wrap one token in a one-item iterable.
     /// ``None`` is not a missing row.
     ///
     /// Parameters
     /// ----------
     /// values : iterable, numpy.ndarray, or uint64 buffer
-    ///     H3Vertex objects, non-negative H3 ids, or vertex tokens. Integer
-    ///     NumPy arrays and uint64 buffers must contain valid H3 vertex ids.
-    ///     Byte strings and byte-formatted buffers are not collections.
+    ///     An iterable of H3Vertex objects, non-negative H3 ids, and/or vertex
+    ///     tokens. Integer NumPy arrays and uint64 buffers must contain valid
+    ///     H3 vertex ids. Byte strings and byte-formatted buffers are not collections.
     ///
     /// Returns
     /// -------
@@ -782,16 +783,17 @@ h3_index_array_common! {
 h3_index_array_common! {
     /// Build an array of H3 directed edges from edge objects, ids, or tokens.
     ///
-    /// Integer NumPy arrays with zero or one dimension and unsigned 64-bit
-    /// buffers are also accepted. Wrap one token in a one-item iterable.
+    /// Iterables may mix index objects, integer ids, and tokens. Integer NumPy
+    /// arrays with zero or one dimension and unsigned 64-bit buffers are also
+    /// accepted. Wrap one token in a one-item iterable.
     /// ``None`` is not a missing row.
     ///
     /// Parameters
     /// ----------
     /// values : iterable, numpy.ndarray, or uint64 buffer
-    ///     H3Edge objects, non-negative H3 ids, or edge tokens. Integer
-    ///     NumPy arrays and uint64 buffers must contain valid directed-edge ids.
-    ///     Byte strings and byte-formatted buffers are not collections.
+    ///     An iterable of H3Edge objects, non-negative H3 ids, and/or edge
+    ///     tokens. Integer NumPy arrays and uint64 buffers must contain valid
+    ///     directed-edge ids. Byte strings and byte-formatted buffers are not collections.
     ///
     /// Returns
     /// -------

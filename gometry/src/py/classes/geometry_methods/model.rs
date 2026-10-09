@@ -114,7 +114,7 @@ m : float, optional
 crs : CRS, int, str, or None, optional
     Coordinate reference system, attached as metadata (never transforms coordinates).
 epoch : float or None, optional
-    Coordinate epoch for a dynamic CRS; allowed only with ``crs``."
+    Coordinate epoch metadata; the CRS frame must admit geometry epochs."
 );
 geometry_leaf!(
     PyMultiPoint,
@@ -130,7 +130,7 @@ x, y, z, m : sequence of float, optional
 crs : CRS, int, str, or None, optional
     Coordinate reference system, attached as metadata (never transforms coordinates).
 epoch : float or None, optional
-    Coordinate epoch for a dynamic CRS; allowed only with ``crs``."
+    Coordinate epoch metadata; the CRS frame must admit geometry epochs."
 );
 geometry_leaf!(
     PyLineString,
@@ -146,7 +146,7 @@ x, y, z, m : sequence of float, optional
 crs : CRS, int, str, or None, optional
     Coordinate reference system, attached as metadata (never transforms coordinates).
 epoch : float or None, optional
-    Coordinate epoch for a dynamic CRS; allowed only with ``crs``."
+    Coordinate epoch metadata; the CRS frame must admit geometry epochs."
 );
 geometry_leaf!(
     PyMultiLineString,
@@ -160,7 +160,7 @@ lines : sequence of LineString or coordinate sequences, optional
 crs : CRS, int, str, or None, optional
     Coordinate reference system, attached as metadata (never transforms coordinates).
 epoch : float or None, optional
-    Coordinate epoch for a dynamic CRS; allowed only with ``crs``."
+    Coordinate epoch metadata; the CRS frame must admit geometry epochs."
 );
 geometry_leaf!(
     PyPolygon,
@@ -178,7 +178,7 @@ x, y, z, m : sequence of float, optional
 crs : CRS, int, str, or None, optional
     Coordinate reference system, attached as metadata (never transforms coordinates).
 epoch : float or None, optional
-    Coordinate epoch for a dynamic CRS; allowed only with ``crs``."
+    Coordinate epoch metadata; the CRS frame must admit geometry epochs."
 );
 geometry_leaf!(
     PyMultiPolygon,
@@ -192,7 +192,7 @@ polygons : sequence of Polygon or (shell, holes) pairs, optional
 crs : CRS, int, str, or None, optional
     Coordinate reference system, attached as metadata (never transforms coordinates).
 epoch : float or None, optional
-    Coordinate epoch for a dynamic CRS; allowed only with ``crs``."
+    Coordinate epoch metadata; the CRS frame must admit geometry epochs."
 );
 geometry_leaf!(
     PyGeometryCollection,
@@ -206,7 +206,7 @@ geometries : sequence of Geometry, optional
 crs : CRS, int, str, or None, optional
     Coordinate reference system, attached as metadata (never transforms coordinates).
 epoch : float or None, optional
-    Coordinate epoch for a dynamic CRS; allowed only with ``crs``."
+    Coordinate epoch metadata; the CRS frame must admit geometry epochs."
 );
 
 /// A geometry on its way back to Python as the leaf subclass matching its

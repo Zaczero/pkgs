@@ -1487,11 +1487,12 @@ class Geometry:
         """
     def set_epoch(self, epoch: float | None, *, overwrite: bool = False) -> Self:
         """Declare (or clear) the coordinate epoch without moving coordinates.
-        The epoch is the decimal year a dynamic-frame coordinate set was
-        observed (e.g. ``2020.0``), metadata for transforms between dynamic and
-        static datums. ``set_epoch(None)`` clears it. Changing a present epoch
-        to a different value requires ``overwrite=True`` (the
-        silent-frame-change guard, like ``set_crs``).
+        The epoch is the decimal year the coordinate set was observed
+        (e.g. ``2020.0``). It supplies metadata to operations that use
+        coordinate epochs; the CRS frame must admit an epoch.
+        ``set_epoch(None)`` clears it. Changing a present epoch to a different
+        value requires ``overwrite=True`` (the silent-frame-change guard, like
+        ``set_crs``).
 
         Parameters
         ----------
@@ -1509,7 +1510,8 @@ class Geometry:
         Raises
         ------
         CRSError
-            If a present epoch would change without ``overwrite=True``.
+            If the CRS frame cannot carry an epoch or a present epoch would
+            change without ``overwrite=True``.
         GeometryError
             If ``epoch`` is not a finite decimal year.
 
@@ -1571,9 +1573,8 @@ class Geometry:
     ) -> Self:
         """Reproject coordinates to a target CRS.
         The source coordinate epoch is this geometry's own ``epoch`` metadata;
-        transform between dynamic frames by stamping the source with
-        ``set_epoch`` first. ``epoch`` here labels the *output* coordinate
-        epoch.
+        set it with ``set_epoch`` when the coordinate operation needs one.
+        ``epoch`` here labels the *output* coordinate epoch.
 
         Parameters
         ----------
@@ -1584,10 +1585,9 @@ class Geometry:
             Bounding ``(west, south, east, north)`` to pick the best transform.
 
         epoch : float, optional
-            Output coordinate epoch (decimal year) to tag on the result, for
-            dynamic frames. Omitted keeps the source epoch while it still
-            means something: the CRS is unchanged, or the target CRS is
-            dynamic (time-dependent). A static target clears it.
+            Output coordinate epoch (decimal year) to tag on the result. Omitted
+            keeps the source epoch when the CRS is unchanged or the target admits
+            geometry epochs; otherwise the output has no epoch.
 
         authority : str, optional
             Restrict candidate coordinate operations to this authority
@@ -2157,8 +2157,7 @@ class Geometry:
         """Return the intersection with the closed rectangle
         ``(minx, miny, maxx, maxy)``. Its WKB is identical to
         ``intersection(self, box(minx, miny, maxx, maxy))`` when the box carries the
-        same CRS and coordinate epoch. For a geographic interval crossing the
-        antimeridian, use ``wrap='split'`` with a matching CRS. Point-only and edge-only
+        same CRS and coordinate epoch. Point-only and edge-only
         contacts are retained; equal ``minx``/``maxx`` or ``miny``/``maxy`` select a
         closed line or point.
 
@@ -2169,11 +2168,12 @@ class Geometry:
         the operation's natural XY result.
 
         In a geographic CRS, ``minx``/``maxx`` are the west/east longitudes and must be
-        canonical endpoints in ``[-180, 180]``. ``west <= east`` selects the ordinary
+        within the CRS frame's native half-period. ``west <= east`` selects the ordinary
         closed interval; ``west > east`` selects the closed interval crossing the
-        antimeridian. ``west=-180`` and ``east=180`` select a full longitude band, and
-        equal endpoints select a zero-width meridian. ``miny``/``maxy`` are the
-        south/north latitudes and must be finite with ``south <= north``.
+        longitude seam. The endpoints ``-half_period`` and ``half_period`` select a full
+        longitude band, and equal endpoints select a zero-width meridian. ``miny`` and
+        ``maxy`` are the south/north latitudes and must lie within the frame's poles,
+        with ``south <= north``.
 
         Geographic inputs use frame-aware overlay so longitude aliases, seam crossings,
         and pole vertices follow the CRS topology. Geographic rectangle horizontal
@@ -2196,9 +2196,9 @@ class Geometry:
         ------
         GeometryError
             If the rectangle coordinates are non-finite, south exceeds north, or a
-            geographic west/east endpoint is outside ``[-180, 180]``, or no adjacent
-            binary64 assignment preserves the exact clipped result or the bounded
-            embedding search is exhausted.
+            geographic endpoint is outside its CRS frame, or no adjacent binary64
+            assignment preserves the exact clipped result or the bounded embedding
+            search is exhausted.
         InvalidGeometryError
             If the input contains coordinates outside its geographic CRS domain.
 
@@ -4351,7 +4351,7 @@ class Point(Geometry):
     crs : CRS, int, str, or None, optional
         Coordinate reference system, attached as metadata (never transforms coordinates).
     epoch : float or None, optional
-        Coordinate epoch for a dynamic CRS; allowed only with ``crs``.
+        Coordinate epoch metadata; the CRS frame must admit geometry epochs.
     """
 
     __match_args__: Final = ('x', 'y')
@@ -4874,7 +4874,7 @@ class MultiPoint(Geometry):
     crs : CRS, int, str, or None, optional
         Coordinate reference system, attached as metadata (never transforms coordinates).
     epoch : float or None, optional
-        Coordinate epoch for a dynamic CRS; allowed only with ``crs``.
+        Coordinate epoch metadata; the CRS frame must admit geometry epochs.
     """
     @overload
     def __new__(
@@ -5234,7 +5234,7 @@ class LineString(Geometry):
     crs : CRS, int, str, or None, optional
         Coordinate reference system, attached as metadata (never transforms coordinates).
     epoch : float or None, optional
-        Coordinate epoch for a dynamic CRS; allowed only with ``crs``.
+        Coordinate epoch metadata; the CRS frame must admit geometry epochs.
     """
     @overload
     def __new__(
@@ -5386,7 +5386,7 @@ class MultiLineString(Geometry):
     crs : CRS, int, str, or None, optional
         Coordinate reference system, attached as metadata (never transforms coordinates).
     epoch : float or None, optional
-        Coordinate epoch for a dynamic CRS; allowed only with ``crs``.
+        Coordinate epoch metadata; the CRS frame must admit geometry epochs.
     """
     def __new__(
         cls,
@@ -5573,7 +5573,7 @@ class Polygon(Geometry):
     crs : CRS, int, str, or None, optional
         Coordinate reference system, attached as metadata (never transforms coordinates).
     epoch : float or None, optional
-        Coordinate epoch for a dynamic CRS; allowed only with ``crs``.
+        Coordinate epoch metadata; the CRS frame must admit geometry epochs.
     """
     @overload
     def __new__(
@@ -5723,7 +5723,7 @@ class MultiPolygon(Geometry):
     crs : CRS, int, str, or None, optional
         Coordinate reference system, attached as metadata (never transforms coordinates).
     epoch : float or None, optional
-        Coordinate epoch for a dynamic CRS; allowed only with ``crs``.
+        Coordinate epoch metadata; the CRS frame must admit geometry epochs.
     """
     def __new__(
         cls,
@@ -5906,7 +5906,7 @@ class GeometryCollection(Geometry):
     crs : CRS, int, str, or None, optional
         Coordinate reference system, attached as metadata (never transforms coordinates).
     epoch : float or None, optional
-        Coordinate epoch for a dynamic CRS; allowed only with ``crs``.
+        Coordinate epoch metadata; the CRS frame must admit geometry epochs.
     """
     def __new__(
         cls,
@@ -7531,8 +7531,8 @@ class GeometryArray(Sequence[_GeometryT_co]):
         """
     def set_epoch(self, epoch: float | None, *, overwrite: bool = False) -> Self:
         """Declare (or clear) the array's coordinate epoch (see
-        `Geometry.set_epoch`). ``None`` clears it; changing a present epoch
-        needs ``overwrite=True``.
+        `Geometry.set_epoch`). The CRS frame must admit an epoch. ``None``
+        clears it; changing a present epoch needs ``overwrite=True``.
 
         Parameters
         ----------
@@ -7550,7 +7550,8 @@ class GeometryArray(Sequence[_GeometryT_co]):
         Raises
         ------
         CRSError
-            If a present epoch would change without ``overwrite=True``.
+            If the CRS frame cannot carry an epoch or a present epoch would
+            change without ``overwrite=True``.
         GeometryError
             If ``epoch`` is not a finite decimal year.
 
@@ -7605,8 +7606,7 @@ class GeometryArray(Sequence[_GeometryT_co]):
     ) -> Self:
         """Reproject all geometries to a target CRS.
         The source coordinate epoch is the array's own ``epoch`` metadata
-        (stamp it with ``set_epoch`` first to transform between dynamic
-        frames);
+        (set it with ``set_epoch`` when the coordinate operation needs one);
         ``epoch`` here labels the *output* coordinate epoch.
 
         Parameters
@@ -7618,10 +7618,9 @@ class GeometryArray(Sequence[_GeometryT_co]):
             Bounding ``(west, south, east, north)`` to pick the best transform.
 
         epoch : float, optional
-            Output coordinate epoch (decimal year) to tag on the result, for
-            dynamic frames. Omitted keeps the source epoch while it still
-            means something: the CRS is unchanged, or the target CRS is
-            dynamic (time-dependent). A static target clears it.
+            Output coordinate epoch (decimal year) to tag on the result. Omitted
+            keeps the source epoch when the CRS is unchanged or the target admits
+            geometry epochs; otherwise the output has no epoch.
 
         authority : str, optional
             Restrict candidate coordinate operations to this authority
@@ -8490,8 +8489,7 @@ class GeometryArray(Sequence[_GeometryT_co]):
         """Return the intersection with the closed rectangle
         ``(minx, miny, maxx, maxy)``. Its WKB is identical to
         ``intersection(self, box(minx, miny, maxx, maxy))`` when the box carries the
-        same CRS and coordinate epoch. For a geographic interval crossing the
-        antimeridian, use ``wrap='split'`` with a matching CRS. Point-only and edge-only
+        same CRS and coordinate epoch. Point-only and edge-only
         contacts are retained; equal ``minx``/``maxx`` or ``miny``/``maxy`` select a
         closed line or point.
 
@@ -8502,11 +8500,13 @@ class GeometryArray(Sequence[_GeometryT_co]):
         the operation's natural XY result.
 
         In a geographic CRS, ``minx``/``maxx`` are the west/east longitudes and must be
-        canonical endpoints in ``[-180, 180]``. ``west <= east`` selects the ordinary
+        within the CRS frame's native half-period. ``west <= east`` selects the ordinary
         closed interval; ``west > east`` selects the closed interval crossing the
-        antimeridian. ``west=-180`` and ``east=180`` select a full longitude band, and
-        equal endpoints select a zero-width meridian. ``miny``/``maxy`` are the
-        south/north latitudes and must be finite with ``south <= north``.
+        longitude seam. The endpoints ``-half_period`` and ``half_period`` select a full
+        longitude band, and equal endpoints select a zero-width meridian. ``miny`` and
+        ``maxy`` are the south/north latitudes and must lie within the frame's poles,
+        with ``south <= north``. Use :func:`box` with ``wrap='split'`` to construct the
+        corresponding wrapped box.
 
         Geographic inputs use frame-aware overlay so longitude aliases, seam crossings,
         and pole vertices follow the CRS topology. Geographic rectangle horizontal
@@ -8529,9 +8529,9 @@ class GeometryArray(Sequence[_GeometryT_co]):
         ------
         GeometryError
             If the rectangle coordinates are non-finite, south exceeds north, or a
-            geographic west/east endpoint is outside ``[-180, 180]``, or no adjacent
-            binary64 assignment preserves the exact clipped result or the bounded
-            embedding search is exhausted.
+            geographic endpoint is outside its CRS frame, or no adjacent binary64
+            assignment preserves the exact clipped result or the bounded embedding
+            search is exhausted.
         InvalidGeometryError
             If the input contains coordinates outside its geographic CRS domain.
 
@@ -11292,7 +11292,9 @@ class Groups(Sequence[_GroupValuesT_co], Generic[_GroupValuesT_co]):
     def __getitem__(self, index: SupportsIndex, /) -> _GroupValuesT_co: ...
     @overload
     def __getitem__(self, index: slice, /) -> Self: ...
-    def to_pairs(self) -> tuple[npt.NDArray[np.int64], npt.NDArray[np.int64]]:
+    def to_pairs(
+        self: Groups[npt.NDArray[np.int64]],
+    ) -> tuple[npt.NDArray[np.int64], npt.NDArray[np.int64]]:
         """Expand integer CSR rows into parallel ``(row_ids, values)`` columns.
 
         The right column is a zero-copy read-only view of the flat CSR values;
@@ -13731,11 +13733,7 @@ class H3VertexArray(Sequence[H3Vertex]):
     __array_ufunc__: ClassVar[None]
     def __new__(
         cls,
-        values: npt.NDArray[np.uint64]
-        | Buffer
-        | Iterable[H3Vertex]
-        | Iterable[int]
-        | Iterable[str],
+        values: _IdArray | Iterable[H3Vertex | _IntScalarInput | str],
     ) -> Self:
         """Create and return a new object.  See help(type) for accurate signature."""
     @property
@@ -13990,11 +13988,7 @@ class H3EdgeArray(Sequence[H3Edge]):
     __array_ufunc__: ClassVar[None]
     def __new__(
         cls,
-        values: npt.NDArray[np.uint64]
-        | Buffer
-        | Iterable[H3Edge]
-        | Iterable[int]
-        | Iterable[str],
+        values: _IdArray | Iterable[H3Edge | _IntScalarInput | str],
     ) -> Self:
         """Create and return a new object.  See help(type) for accurate signature."""
     @property
@@ -15806,7 +15800,7 @@ def box(
     minx, miny, maxx, maxy : float
         Finite rectangle bounds; each minimum must not exceed its maximum,
         except that ``minx > maxx`` is allowed with ``wrap='split'`` to wrap a
-        geographic box across the antimeridian.
+        geographic box across the CRS frame's longitude seam.
 
     crs : str or int, optional
         CRS label (EPSG code, authority string, or WKT); attached as metadata,
@@ -15820,10 +15814,12 @@ def box(
         guarantee does not apply on that path.
 
     wrap : {'split'}, optional
-        Antimeridian handling for geographic (EPSG:4326) boxes. ``'split'``
-        lets ``minx`` exceed ``maxx`` to span the 180° meridian, returning a
-        `MultiPolygon` split at the antimeridian. The default (``None``) leaves
-        coordinates unwrapped and requires ``minx <= maxx``.
+        Seam handling for boxes with a geographic CRS. ``'split'`` lets
+        ``minx`` exceed ``maxx`` to cross the frame's longitude seam, returning
+        a `MultiPolygon`. The default (``None``) leaves coordinates unwrapped
+        and requires ``minx <= maxx``. Latitude bounds must lie within the frame's
+        poles. Longitude endpoints must lie within its native half-period unless
+        their eastward span is at least one period, which selects the full band.
 
     ccw : bool, default True
         If ``True`` the ring is counter-clockwise; ``False`` makes it clockwise.
@@ -15834,8 +15830,8 @@ def box(
     Returns
     -------
     Polygon | MultiPolygon
-        A rectangular polygon, or a MultiPolygon when ``wrap='split'`` spans
-        the antimeridian.
+        A rectangular polygon, or a MultiPolygon when ``wrap='split'`` crosses
+        the frame's longitude seam.
 
     Raises
     ------
@@ -15844,9 +15840,10 @@ def box(
         ``wrap='split'``.
     CRSError
         If ``epoch`` is set without ``crs``, or ``wrap='split'`` is used
-        without ``crs=4326``.
+        without a geographic CRS.
     GeometryError
-        If ``epoch`` is not a finite decimal year.
+        If ``epoch`` is not a finite decimal year or wrapped geographic bounds
+        lie outside their CRS frame.
 
     Examples
     --------
@@ -15963,7 +15960,7 @@ def boxes(
         and length measure the stored chart edges when the chart-edge path applies.
 
     wrap : {'split'}, optional
-        Antimeridian handling for geographic (EPSG:4326) boxes — same as `box`.
+        Seam handling for geographic boxes — same as `box`.
 
     ccw : bool, default True
         If ``True`` each ring is counter-clockwise; ``False`` makes it clockwise.
@@ -15982,9 +15979,10 @@ def boxes(
         If bounds are non-finite or invalid per row.
     CRSError
         If ``epoch`` is set without ``crs``, or ``wrap='split'`` is used
-        without ``crs=4326``.
+        without a geographic CRS.
     GeometryError
-        If every argument is scalar (use `box`) or ``epoch`` is invalid.
+        If every argument is scalar (use `box`), ``epoch`` is invalid, or wrapped
+        geographic bounds lie outside their CRS frame.
 
     Examples
     --------

@@ -307,8 +307,8 @@ impl PyGeometryArray {
     ///     Shared CRS label. CRS-free rows adopt it; existing CRS values must
     ///     be equivalent to it.
     /// epoch : float or None, optional, default None
-    ///     Shared coordinate epoch for a dynamic CRS. Existing epochs must
-    ///     agree with it.
+    ///     Shared coordinate epoch for a CRS that admits geometry epochs.
+    ///     Existing epochs must agree with it.
     ///
     /// Returns
     /// -------

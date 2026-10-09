@@ -49,9 +49,9 @@ def test_box_can_explicitly_split_antimeridian_crossing_bounds() -> None:
     assert gm.LineString([(170, 0), (-170, 0)]).crosses_antimeridian
     with pytest.raises(ValueError, match="wrap='split'"):
         gm.box(170, -10, -170, 10)
-    with pytest.raises(ValueError, match='requires crs=4326'):
+    with pytest.raises(ValueError, match='requires a geographic CRS'):
         gm.box(170, -10, -170, 10, crs=3857, wrap='split')
-    with pytest.raises(ValueError, match='requires crs=4326'):
+    with pytest.raises(ValueError, match='requires a geographic CRS'):
         gm.box(170, -10, -170, 10, wrap=cast('Any', 'split'))
     with pytest.raises(ValueError, match='unknown box wrap'):
         gm.box(0, 0, 1, 1, wrap=cast('Any', 'clip'))

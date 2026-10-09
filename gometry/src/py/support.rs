@@ -100,7 +100,7 @@ pub(crate) use geojson::{
     py_to_json_value, py_to_json_value_classified, require_geojson_crs,
     validate_geojson_feature_side_data, validate_geojson_json_value,
 };
-pub(crate) use io_encoders::{box_polygon, wrapped_box};
+pub(crate) use io_encoders::box_polygon;
 pub(crate) use linref::{
     InterpolatePlan, line_interpolate_coordseq, line_interpolate_points_coordseq,
     line_interpolate_points_shape, line_interpolate_shape, line_interpolate_shape_m,

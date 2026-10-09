@@ -110,8 +110,8 @@ use in_core::{
     try_in_core_transform_with_state, utm_crs,
 };
 pub(crate) use info::{
-    AngularUnit, engine_info_with_state, factor_columns, factors, factors_at, info,
-    info_with_state, is_dynamic, is_dynamic_with_state, operation_info_at,
+    AngularUnit, admits_geometry_epoch, admits_geometry_epoch_with_state, engine_info_with_state,
+    factor_columns, factors, factors_at, info, info_with_state, operation_info_at,
     operation_info_with_state,
 };
 pub(crate) use introspect::Confidence;

@@ -93,11 +93,12 @@ impl PyGeometry {
     }
 
     /// Declare (or clear) the coordinate epoch without moving coordinates.
-    /// The epoch is the decimal year a dynamic-frame coordinate set was
-    /// observed (e.g. ``2020.0``), metadata for transforms between dynamic and
-    /// static datums. ``set_epoch(None)`` clears it. Changing a present epoch
-    /// to a different value requires ``overwrite=True`` (the
-    /// silent-frame-change guard, like ``set_crs``).
+    /// The epoch is the decimal year the coordinate set was observed
+    /// (e.g. ``2020.0``). It supplies metadata to operations that use
+    /// coordinate epochs; the CRS frame must admit an epoch.
+    /// ``set_epoch(None)`` clears it. Changing a present epoch to a different
+    /// value requires ``overwrite=True`` (the silent-frame-change guard, like
+    /// ``set_crs``).
     ///
     /// Parameters
     /// ----------
@@ -115,7 +116,8 @@ impl PyGeometry {
     /// Raises
     /// ------
     /// CRSError
-    ///     If a present epoch would change without ``overwrite=True``.
+    ///     If the CRS frame cannot carry an epoch or a present epoch would
+    ///     change without ``overwrite=True``.
     /// GeometryError
     ///     If ``epoch`` is not a finite decimal year.
     ///
@@ -172,9 +174,8 @@ impl PyGeometry {
 
     /// Reproject coordinates to a target CRS.
     /// The source coordinate epoch is this geometry's own ``epoch`` metadata;
-    /// transform between dynamic frames by stamping the source with
-    /// ``set_epoch`` first. ``epoch`` here labels the *output* coordinate
-    /// epoch.
+    /// set it with ``set_epoch`` when the coordinate operation needs one.
+    /// ``epoch`` here labels the *output* coordinate epoch.
     ///
     /// Parameters
     /// ----------
@@ -185,10 +186,9 @@ impl PyGeometry {
     ///     Bounding ``(west, south, east, north)`` to pick the best transform.
     ///
     /// epoch : float, optional
-    ///     Output coordinate epoch (decimal year) to tag on the result, for
-    ///     dynamic frames. Omitted keeps the source epoch while it still
-    ///     means something: the CRS is unchanged, or the target CRS is
-    ///     dynamic (time-dependent). A static target clears it.
+    ///     Output coordinate epoch (decimal year) to tag on the result. Omitted
+    ///     keeps the source epoch when the CRS is unchanged or the target admits
+    ///     geometry epochs; otherwise the output has no epoch.
     ///
     /// authority : str, optional
     ///     Restrict candidate coordinate operations to this authority

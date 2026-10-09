@@ -42,7 +42,7 @@ edits and planar construction operate on stored coordinates.
 |---|---|---|
 | **CRS-aware measures** | [`area`][gometry.area], [`length`][gometry.length], [`distance`][gometry.distance], [`dwithin`][gometry.dwithin], [`hausdorff_distance`][gometry.hausdorff_distance], LRS | Geographic area, length, and LRS measure straight chart edges on the ellipsoid. Point-to-point distance uses a geodesic; shape distance, `dwithin`, `nearest_points`, and `shortest_line` minimize ellipsoidal geodesic separation over closed chart-edge supports, including filled polygons. Geographic Hausdorff ranges continuously over points and linework only. `unit='planar'` selects Cartesian measurement in stored coordinates. |
 | **Metric constructive** | [`buffer`][gometry.Geometry.buffer], [`offset_curve`][gometry.Geometry.offset_curve] | Distance *inputs* use CRS-natural units (and may use a local-projection construction on a geographic CRS); shapes are **coordinate-planar** — **not** antimeridian auto-split |
-| **Topology** | predicates, overlay, [`relate`][gometry.relate], [`clip_by_rect`][gometry.Geometry.clip_by_rect] | strict frame match; geographic topology resolves longitude aliases and seam and pole equivalence in the CRS-native frame; seam-crossing inputs are split into straight chart pieces in an unwrapped longitude/latitude plane. `clip_by_rect` admits canonical geographic rectangle endpoints in `[-180, 180]`, with west > east selecting the seam-crossing interval; non-canonical subjects use frame-aware overlay, while canonical seam-free inputs clip directly. Geographic rectangle parallels match [`box`][gometry.box]. |
+| **Topology** | predicates, overlay, [`relate`][gometry.relate], [`clip_by_rect`][gometry.Geometry.clip_by_rect] | strict frame match; geographic topology resolves longitude aliases and seam and pole equivalence in the CRS-native frame; seam-crossing inputs are split into straight chart pieces in an unwrapped longitude/latitude plane. `clip_by_rect` admits endpoints within the CRS frame's native longitude half-period and latitude poles, with west > east selecting the seam-crossing interval; non-canonical subjects use frame-aware overlay, while canonical seam-free inputs clip directly. Geographic rectangle parallels match [`box`][gometry.box]. |
 | **Coordinate refinement** | [`segmentize(max_length)`][gometry.Geometry.segmentize], [`line_interpolate`][gometry.Geometry.line_interpolate] | `segmentize` follows stored geographic edges by default; `path=` selects geodesic or rhumb routing. With CRS-aware units, geographic LRS inverts ellipsoidal arclength on those chart edges and retains original vertices. |
 | **Coordinate edit** | [`quantize`][gometry.Geometry.quantize], [`snap_to_grid`][gometry.Geometry.snap_to_grid], affine | raw coordinate space; no metric conversion |
 | **Planar constructive** | [`convex_hull`][gometry.Geometry.convex_hull], [`concave_hull`][gometry.Geometry.concave_hull], [`simplify`][gometry.Geometry.simplify], Voronoi, Delaunay | operate on stored XY; may need local projection or [`split_antimeridian`][gometry.Geometry.split_antimeridian] |
@@ -965,6 +965,9 @@ together with the **decimal year** it was observed — its *coordinate epoch*.
 gometry carries that as first-class metadata, [`geom.epoch`][gometry.Geometry.epoch], distinct from Z and M.
 A coordinate epoch dates a CRS realization, so it is **only meaningful with a CRS**:
 gometry enforces `epoch ⟹ crs` at every entry point.
+Geometry frames admit epochs for CRSs based on a dynamic datum or the WGS 84
+ensemble (EPSG:6326), including derived CRSs such as EPSG:3857. Dynamic members
+of another ensemble do not by themselves make that ensemble epoch-capable.
 
 ```python exec="on" source="block" result="text"
 import gometry as gm
@@ -998,17 +1001,17 @@ print("output epoch:", geocentric.epoch)
 
 ```
 
-When you omit `epoch=`, the source epoch is kept when the target CRS is *dynamic*
-(ITRF, the WGS 84 ensemble — coordinates there stay time-dependent) and cleared
-when the target is *static* (plate-fixed national frames, where an epoch adds
-nothing and would block strict frame checks against ordinary epoch-free data in
-the same CRS).
+When you omit `epoch=`, the source epoch is kept when the CRS is unchanged or
+the target CRS admits geometry epochs; otherwise it is cleared. An explicit
+`epoch=` labels the output frame but does not assert that the selected coordinate
+operation is time-dependent or has a particular accuracy.
 
 ```python exec="on" source="block" result="text"
 import gometry as gm
 
 observed = gm.Point(21.0, 52.0, crs=4326, epoch=2010.0)
 print("to ITRF2014 (dynamic):", observed.to_crs(9000).epoch)
+print("to Web Mercator (WGS 84 ensemble):", observed.to_crs(3857).epoch)
 print("to Poland CS92 (static):", observed.to_crs(2180).epoch)
 
 ```

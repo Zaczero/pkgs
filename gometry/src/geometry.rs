@@ -930,16 +930,26 @@ impl Bounds {
         }
     }
 
-    /// Geographic clip rectangle with canonical longitudes in ``[-180, 180]``.
-    /// Finite west/east endpoints use west>east to signal an
-    /// antimeridian-crossing window; latitudes must satisfy ``south <= north``.
-    pub fn new_geographic(west: f64, south: f64, east: f64, north: f64) -> Result<Self> {
+    /// Geographic rectangle with frame-native longitude and latitude bounds.
+    /// Finite west/east endpoints use west>east to signal a seam-crossing
+    /// window; latitudes must satisfy ``south <= north``.
+    pub(crate) fn new_geographic(
+        frame: crate::geographic::GeographicFrame,
+        west: f64,
+        south: f64,
+        east: f64,
+        north: f64,
+    ) -> Result<Self> {
+        let half_period = frame.longitude().half_period();
+        let pole = frame.pole();
         if west.is_finite()
             && south.is_finite()
             && east.is_finite()
             && north.is_finite()
-            && (-180.0..=180.0).contains(&west)
-            && (-180.0..=180.0).contains(&east)
+            && (-half_period..=half_period).contains(&west)
+            && (-half_period..=half_period).contains(&east)
+            && (-pole..=pole).contains(&south)
+            && (-pole..=pole).contains(&north)
             && south <= north
         {
             Ok(Self::new_raw(west, south, east, north))
@@ -948,9 +958,33 @@ impl Bounds {
         }
     }
 
+    /// The full longitude band between two frame-valid latitudes.
+    pub(crate) fn full_geographic_longitude(
+        frame: crate::geographic::GeographicFrame,
+        south: f64,
+        north: f64,
+    ) -> Result<Self> {
+        let half_period = frame.longitude().half_period();
+        Self::new_geographic(frame, -half_period, south, half_period, north)
+    }
+
     /// Whether these bounds cross the antimeridian (west longitude > east).
     pub fn crosses_antimeridian(self) -> bool {
         self.minx() > self.maxx()
+    }
+
+    /// Split a validated geographic rectangle at its frame's periodic seam.
+    pub(crate) fn split_geographic(
+        self,
+        frame: crate::geographic::GeographicFrame,
+    ) -> Option<[Self; 2]> {
+        self.crosses_antimeridian().then(|| {
+            let half_period = frame.longitude().half_period();
+            [
+                Self::new_raw(self.minx(), self.miny(), half_period, self.maxy()),
+                Self::new_raw(-half_period, self.miny(), self.maxx(), self.maxy()),
+            ]
+        })
     }
 
     pub fn intersects(self, other: Self) -> bool {
