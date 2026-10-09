@@ -20,7 +20,7 @@ use crate::geometry::storage::validity::ValidityMask;
 use crate::geometry::storage::{
     RowSelection, RowSelectionRef, physical_row, row_selection_from_logical_rows,
 };
-use crate::geometry::{CoordSeq, CoordSeqBuilder, CoordinateAxes, storage};
+use crate::geometry::{CoordSeq, storage};
 use crate::grid::cell::{GridCell, HierarchicalCell as _};
 use crate::grid::cell_set;
 use crate::grid::geohash::{GEOHASH_MAX_PRECISION, Geohash};
@@ -474,21 +474,44 @@ impl PyCellArray {
             .map(|logical| G::from_validated_id(self.id_at(logical)))
     }
 
-    fn missing_mask(&self) -> Option<ValidityMask> {
-        if matches!(self.selection_ref(), RowSelectionRef::Identity) {
-            return self.storage.missing.clone();
-        }
-        ValidityMask::from_missing_iter(
-            self.len(),
-            (0..self.len()).map(|row| self.is_row_missing(row)),
-        )
+    fn missing_mask_and_present_count(&self) -> (Option<ValidityMask>, usize) {
+        let missing = if matches!(self.selection_ref(), RowSelectionRef::Identity) {
+            self.storage.missing.clone()
+        } else {
+            ValidityMask::from_missing_iter(
+                self.len(),
+                (0..self.len()).map(|row| self.is_row_missing(row)),
+            )
+        };
+        let present_count = missing
+            .as_ref()
+            .map_or(self.len(), ValidityMask::present_count);
+        (missing, present_count)
     }
 
-    fn map_logical_cells<G, T>(&self, f: impl FnMut(G) -> T) -> Vec<T>
+    fn map_logical_cells<G, T>(&self, mut f: impl FnMut(G) -> T) -> Vec<T>
     where
         G: CellArrayGrid,
     {
-        self.logical_cells::<G>().map(f).collect()
+        self.try_map_logical_cells::<G, _, std::convert::Infallible>(Vec::new(), |cell| Ok(f(cell)))
+            .expect("infallible cell mapping")
+    }
+
+    fn try_map_logical_cells<G, T, E>(
+        &self,
+        mut output: Vec<T>,
+        mut f: impl FnMut(G) -> Result<T, E>,
+    ) -> Result<Vec<T>, E>
+    where
+        G: CellArrayGrid,
+    {
+        for row in 0..self.len() {
+            if self.is_row_missing(row) {
+                continue;
+            }
+            output.push(f(G::from_validated_id(self.id_at(row)))?);
+        }
+        Ok(output)
     }
 
     fn numpy_array_kind(
@@ -661,13 +684,6 @@ impl RowGetItemContainer for PyCellArray {
     fn container_to_py(py: Python<'_>, value: Self) -> PyResult<Py<PyAny>> {
         Ok(value.into_pyobject(py)?.into_any().unbind())
     }
-}
-
-/// Per-kind bulk dispatch over the logical cells: monomorphize `$body` once
-/// per grid type (ids are pre-validated by construction, so the id -> cell
-/// conversions cannot fail).
-macro_rules! map_grid_cells {
-    ($self:expr, |$cell:ident| $body:expr) => {{ dispatch_cell_grid!($self, G, { $self.map_logical_cells::<G, _>(|$cell| $body) }) }};
 }
 
 frozen_pymethods! {
@@ -1277,18 +1293,25 @@ fn to_numpy(slf: Bound<'_, Self>) -> PyResult<Py<PyAny>> {
     #[getter]
     pub(crate) fn center(&self, py: Python<'_>) -> PyResult<crate::PyGeometryArray> {
         use crate::grid::cell::GridCell as _;
+        let (missing, present_count) = self.missing_mask_and_present_count();
         let cells = self.clone();
-        let points = py.detach(move || map_grid_cells!(&cells, |cell| cell.center_point()));
-        let mut builder = CoordSeqBuilder::with_capacity(CoordinateAxes::XY, points.len());
-        for point in points {
-            builder.push(point);
-        }
-        let coords = builder.finish()?;
+        let coords = py.detach(move || {
+            dispatch_cell_grid!(&cells, G, {
+                let mut xs = Vec::with_capacity(present_count);
+                let mut ys = Vec::with_capacity(present_count);
+                for cell in cells.logical_cells::<G>() {
+                    let point = cell.center_point();
+                    xs.push(point.x);
+                    ys.push(point.y);
+                }
+                CoordSeq::try_from_vecs(xs, ys, None, None).map_err(PyErr::from)
+            })
+        })?;
         let result = crate::PyGeometryArray::packed_points(
             coords,
             crate::Frame::Crs(crate::wgs84_crs()),
         )?;
-        Ok(match self.missing_mask() {
+        Ok(match missing {
             None => result,
             Some(mask) => crate::PyGeometryArray::scatter_present_rows(&result, mask)?,
         })
@@ -1338,20 +1361,21 @@ fn to_numpy(slf: Bound<'_, Self>) -> PyResult<Py<PyAny>> {
     ///     ``CellArray`` remain ``None``.
     #[getter]
     pub(crate) fn polygon(&self, py: Python<'_>) -> PyResult<crate::PyGeometryArray> {
+        let (missing, present_count) = self.missing_mask_and_present_count();
         let cells = self.clone();
-        let shapes = py.detach(move || {
+        let shapes = py.detach(move || -> PyResult<Vec<_>> {
             dispatch_cell_grid!(&cells, G, {
-                cells.map_logical_cells::<G, _>(|cell| {
-                    GridCell::boundary_shape(cell).map_err(PyErr::from)
-                })
+                cells.try_map_logical_cells::<G, _, PyErr>(
+                    Vec::with_capacity(present_count),
+                    |cell| GridCell::boundary_shape(cell).map_err(PyErr::from),
+                )
             })
-        });
-        let shapes = shapes.into_iter().collect::<PyResult<Vec<_>>>()?;
+        })?;
         let result = crate::PyGeometryArray::from_shapes(
             shapes,
             crate::Frame::Crs(crate::wgs84_crs()),
         )?;
-        Ok(match self.missing_mask() {
+        Ok(match missing {
             None => result,
             Some(mask) => crate::PyGeometryArray::scatter_present_rows(&result, mask)?,
         })
@@ -1404,13 +1428,22 @@ fn to_numpy(slf: Bound<'_, Self>) -> PyResult<Py<PyAny>> {
         depth: Option<&Bound<'_, PyAny>>,
     ) -> PyResult<Py<PyAny>> {
         let values = dispatch_cell_grid!(self, G, {
+            let mut present = self.logical_cells::<G>();
+            let first = present.next();
+            let target_depth = first
+                .as_ref()
+                .map(|_| cell_ops::parse_explicit_depth(depth, G::parse_depth))
+                .transpose()?;
+            let mut present = first.into_iter().chain(present);
             let mut values = Vec::with_capacity(self.len());
             for row in 0..self.len() {
                 let value = if self.is_row_missing(row) {
                     f64::NAN
                 } else {
-                    cell_ops::cell_descendant_count(
-                        G::from_validated_id(self.id_at(row)), depth, G::parse_depth,
+                    let cell = present.next().expect("present cell count matches");
+                    cell_ops::cell_descendant_count_at_depth(
+                        cell,
+                        target_depth.expect("a present cell admitted the depth"),
                     )? as f64
                 };
                 values.push(value);
@@ -1447,23 +1480,29 @@ fn to_numpy(slf: Bound<'_, Self>) -> PyResult<Py<PyAny>> {
     #[pyo3(signature = (depth = None, /), text_signature = "($self, depth=None, /)")]
     pub(crate) fn parent(&self, depth: Option<&Bound<'_, PyAny>>) -> PyResult<Self> {
         let kind = self.kind();
-        let present = dispatch_cell_grid!(self, G, {
-            let mut present = Vec::with_capacity(self.len());
-            for cell in self.logical_cells::<G>() {
-                present.push(cell_ops::cell_parent(cell, depth, G::parse_depth)?.hash_key());
+        let ids = dispatch_cell_grid!(self, G, {
+            let mut present = self.logical_cells::<G>();
+            let first = present.next();
+            let target_depth = first
+                .as_ref()
+                .map(|_| cell_ops::parse_explicit_depth(depth, G::parse_depth))
+                .transpose()?;
+            let mut present = first.into_iter().chain(present);
+            let mut ids = Vec::with_capacity(self.len());
+            for row in 0..self.len() {
+                ids.push(if self.is_row_missing(row) {
+                    0
+                } else {
+                    cell_ops::cell_parent_at_depth(
+                        present.next().expect("present cell count matches"),
+                        target_depth.expect("a present cell admitted the depth"),
+                    )?
+                    .hash_key()
+                });
             }
-            Ok::<_, PyErr>(present)
+            Ok::<_, PyErr>(ids)
         })?;
-        let mut ids = Vec::with_capacity(self.len());
-        let mut next = present.into_iter();
-        for row in 0..self.len() {
-            ids.push(if self.is_row_missing(row) {
-                0
-            } else {
-                next.next().expect("present parent count matches")
-            });
-        }
-        let missing = self.missing_mask();
+        let (missing, _) = self.missing_mask_and_present_count();
         Ok(Self {
             storage: CellStorage::new(kind, ids, missing),
             selection: RowSelection::Identity,
@@ -1908,5 +1947,126 @@ mod tests {
             selected.heap_bytes(),
             arc + size_of::<Vec<u64>>() + size_of::<u64>() + arc + size_of::<Vec<u8>>() + 1
         );
+    }
+
+    #[test]
+    fn fallible_logical_mapping_stops_at_the_first_present_row_error() {
+        let cells = PyCellArray::from_ids_with_missing(
+            GridKind::H3Cell,
+            vec![
+                h3_id(37.7749, -122.4194, 7),
+                0,
+                h3_id(37.7749, -122.4194, 8),
+            ],
+            vec![false, true, false],
+        )
+        .select_logical_rows([2, 1, 0, 2]);
+        let mut visits = Vec::new();
+        let result = cells.try_map_logical_cells::<h3o::CellIndex, _, _>(Vec::new(), |cell| {
+            visits.push(u8::from(cell.resolution()));
+            if visits.len() == 2 {
+                Err(visits.len())
+            } else {
+                Ok(cell)
+            }
+        });
+        assert_eq!(result, Err(2));
+        assert_eq!(visits, [8, 7]);
+    }
+
+    #[test]
+    fn cell_array_depth_is_parsed_once_at_first_present_row() {
+        Python::initialize();
+        Python::attach(|py| {
+            let module = PyModule::from_code(
+                py,
+                c"class Depth:\n    def __init__(self):\n        self.calls = 0\n        self.value = 6\n    def __index__(self):\n        self.calls += 1\n        return self.value\n",
+                c"<cell-array-depth-test>",
+                c"cell_array_depth_test",
+            )
+            .expect("depth module");
+            let depth = module
+                .getattr("Depth")
+                .and_then(|class| class.call0())
+                .expect("counting depth");
+            let cells = PyCellArray::from_ids(GridKind::H3Cell, vec![
+                h3_id(37.7749, -122.4194, 7),
+                h3_id(37.7749, -122.4194, 8),
+            ]);
+
+            let parent = cells
+                .parent(Some(&depth))
+                .expect("parent resolves one shared explicit depth");
+            let expected_parent = crate::grid::cell::GridCell::parent_at(
+                h3o::CellIndex::try_from(cells.id_at(0)).expect("valid H3 id"),
+                6,
+            )
+            .expect("parent at depth 6");
+            assert_eq!(
+                parent.id_at(0),
+                crate::grid::cell::GridCell::hash_key(expected_parent)
+            );
+            assert_eq!(
+                depth
+                    .getattr("calls")
+                    .and_then(|calls| calls.extract::<usize>())
+                    .expect("call count"),
+                1
+            );
+
+            depth.setattr("value", 9).expect("change requested depth");
+            let counts = cells
+                .children_count(py, Some(&depth))
+                .expect("descendant counts resolve one shared explicit depth");
+            let counts = counts
+                .bind(py)
+                .call_method0("tolist")
+                .and_then(|values| values.extract::<Vec<f64>>())
+                .expect("counts as list");
+            assert_eq!(counts, [49.0, 7.0]);
+            assert_eq!(
+                depth
+                    .getattr("calls")
+                    .and_then(|calls| calls.extract::<usize>())
+                    .expect("call count"),
+                2
+            );
+        });
+    }
+
+    #[test]
+    fn cell_array_depth_is_not_admitted_without_a_present_row() {
+        Python::initialize();
+        Python::attach(|py| {
+            let module = PyModule::from_code(
+                py,
+                c"class Depth:\n    calls = 0\n    def __index__(self):\n        self.calls += 1\n        raise ValueError('depth should not be parsed')\n",
+                c"<cell-array-empty-depth-test>",
+                c"cell_array_empty_depth_test",
+            )
+            .expect("depth module");
+            let depth = module
+                .getattr("Depth")
+                .and_then(|class| class.call0())
+                .expect("counting depth");
+            for cells in [
+                PyCellArray::from_ids(GridKind::H3Cell, Vec::new()),
+                PyCellArray::from_ids_with_missing(GridKind::H3Cell, vec![0, 0], vec![true, true]),
+            ] {
+                cells
+                    .parent(Some(&depth))
+                    .expect("empty parent does not inspect depth");
+                cells
+                    .children_count(py, Some(&depth))
+                    .expect("empty descendants do not inspect depth");
+            }
+            assert_eq!(
+                depth
+                    .getattr("calls")
+                    .and_then(|calls| calls.extract::<usize>())
+                    .expect("call count"),
+                0
+            );
+        });
     }
 }

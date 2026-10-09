@@ -12,7 +12,8 @@ use crate::grid::coverer::CellClass;
 use crate::grid::s2::cell::Cell;
 use crate::grid::s2::cellid::{CellId, Face};
 use crate::grid::s2::coverer::{
-    AffineRectClass, CoverContext, CoverRule, CoverStats, Coverer, Covering, classify,
+    AffineRectClass, CandidateCertificate, CoverContext, CoverRule, CoverStats, Coverer, Covering,
+    classify, classify_one, productive_state, stage_children_at,
 };
 use crate::grid::s2::projection::MAX_LEVEL;
 use crate::grid::spherical_arc::{
@@ -398,6 +399,10 @@ fn adaptive_productivity_reuses_nested_certificates_for_a_holed_polygon() {
     let stats = covering.stats();
 
     assert!(!outer.is_empty());
+    assert!(
+        covering.cells.iter().all(|(_, interior)| *interior),
+        "within results carry the interior tag"
+    );
     let oracle = RelateCoverContext {
         authority: GeographicCoverageSource::new(&source, SphericalGridTarget::S2)
             .expect("oracle source carrier allocates"),
@@ -419,6 +424,10 @@ fn adaptive_productivity_reuses_nested_certificates_for_a_holed_polygon() {
         stats.carried_certificate_hits > stats.productive_path_reuses,
         "{stats:?}"
     );
+    assert_eq!(
+        stats.candidate_preparations, stats.raw_classify_calls,
+        "carried certificates must bypass fresh candidate preparation: {stats:?}"
+    );
     assert_eq!(stats.retained_map_entries, 0, "{stats:?}");
     assert!(stats.productive_frontier_peak <= target_cells, "{stats:?}");
     assert_eq!(
@@ -429,7 +438,7 @@ fn adaptive_productivity_reuses_nested_certificates_for_a_holed_polygon() {
 }
 
 #[test]
-fn fixed_within_keeps_invisible_frontier_bounded_for_a_holed_polygon() {
+fn fixed_within_emits_visible_terminals_without_staging_invisible_cells() {
     let source = polygon_with_hole();
     let coverer = fixed(8);
     let covering = coverer
@@ -440,10 +449,79 @@ fn fixed_within_keeps_invisible_frontier_bounded_for_a_holed_polygon() {
 
     assert_eq!(covering.outer(), expected);
     assert!(!expected.is_empty());
-    assert!(stats.invisible_stack_peak > 0, "{stats:?}");
+    assert_eq!(stats.visible_queue_peak, 0, "{stats:?}");
+    assert_eq!(stats.invisible_stack_peak, 0, "{stats:?}");
+}
+
+#[test]
+fn complete_carried_fan_matches_fresh_certificates_without_repreparation() {
+    let source = box_shape(-5.0, -5.0, 5.0, 5.0);
+    let affine = GeographicCoverageSource::new(&source, SphericalGridTarget::S2)
+        .expect("test source carrier allocates");
+    let ctx = CoverContext::prepare(&source, &affine, WorkingShapeRelation::Identity)
+        .expect("test cover context allocates");
+    let coverer = Coverer {
+        min_level: 0,
+        max_level: 6,
+        level_mod: 1,
+        max_cells: None,
+        target_cells: 8,
+    };
+
+    let carried = Face::ALL.into_iter().find_map(|face| {
+        let mut stats = CoverStats::default();
+        let root =
+            classify_one(&ctx, CellId::from_face(face), &mut stats).expect("face classification");
+        let target = coverer.refinement_target(root.certificate.id.level())?;
+        let productivity = productive_state(&ctx, root.certificate, coverer, &mut stats)
+            .expect("productivity classification")?;
+        let super::Productivity::Children(_) = &productivity else {
+            return None;
+        };
+        let mut moved = Vec::new();
+        stage_children_at(
+            &ctx,
+            root.certificate.id,
+            target,
+            Some(productivity),
+            &mut moved,
+            &mut stats,
+        )
+        .expect("carried fan moves");
+
+        let mut fresh = Vec::new();
+        let mut fresh_stats = CoverStats::default();
+        stage_children_at(
+            &ctx,
+            root.certificate.id,
+            target,
+            None,
+            &mut fresh,
+            &mut fresh_stats,
+        )
+        .expect("fresh fan classifies");
+
+        assert_eq!(
+            moved
+                .iter()
+                .map(|candidate| candidate.certificate)
+                .collect::<Vec<CandidateCertificate>>(),
+            fresh
+                .iter()
+                .map(|candidate| candidate.certificate)
+                .collect::<Vec<CandidateCertificate>>()
+        );
+        assert_eq!(
+            stats.candidate_preparations, stats.raw_classify_calls,
+            "{stats:?}"
+        );
+        assert_eq!(stats.carried_certificate_hits, moved.len(), "{stats:?}");
+        assert_eq!(fresh_stats.candidate_preparations, fresh.len());
+        Some(())
+    });
     assert!(
-        stats.invisible_stack_peak <= usize::from(coverer.max_level) * 3 + 4,
-        "invisible terminals accumulated: {stats:?}"
+        carried.is_some(),
+        "fixture must expose a productive face fan"
     );
 }
 
@@ -590,12 +668,15 @@ fn rule_specific_sink_retains_only_visible_cells() {
     let center = coverer
         .cover_identity_for_rule(&source, CoverRule::Center)
         .expect("fixture center fits");
+    let overlap_oracle = cover_with_relate_oracle(coverer, &source);
 
     let overlap_retained = overlap.outer().len();
     let within_retained = within.outer().len();
     let center_retained = center.outer().len();
     assert!(within_retained < overlap_retained);
     assert!(center_retained < overlap_retained);
+    assert_eq!(overlap.cells.as_slice(), overlap_oracle.cells.as_slice());
+    assert!(within.cells.iter().all(|(_, interior)| *interior));
 }
 
 /// Differential parity between the native coverer and the independent
@@ -1411,6 +1492,7 @@ fn fixed_level_budget_matches_unlimited_threshold() {
     .expect("unlimited short-line covering");
     let k = unlimited.outer().len();
     assert_eq!(k, 1, "repro line must fit in one L10 cell");
+    assert_eq!(unlimited.stats().visible_queue_peak, 0);
     assert_eq!(unlimited.outer()[0].token(), "89c6b5");
 
     for m in 1..=k + 2 {
@@ -1458,6 +1540,18 @@ fn fixed_level_budget_matches_unlimited_threshold() {
     .cover_identity(&longer)
     .expect("budget N must fit");
     assert_eq!(fit.outer(), long_u.outer());
+    assert_eq!(fit.cells.as_slice(), long_u.cells.as_slice());
+    let above_budget = n.checked_add(1).expect("test budget fits usize");
+    let above = Coverer {
+        min_level: 10,
+        max_level: 10,
+        level_mod: 1,
+        max_cells: Some(above_budget),
+        target_cells: 8,
+    }
+    .cover_identity(&longer)
+    .expect("budget N+1 must fit");
+    assert_eq!(above.cells.as_slice(), long_u.cells.as_slice());
     let err = Coverer {
         min_level: 10,
         max_level: 10,
