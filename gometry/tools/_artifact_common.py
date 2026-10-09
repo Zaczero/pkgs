@@ -402,22 +402,20 @@ def _effective_release_policy(target: str | None = None) -> dict[str, Any]:
             raise AssertionError(
                 f'{key.upper()} disagrees with target policy: {value!r} != {expected!r}'
             )
-    if present:
-        for prefix, key in (('CFLAGS', 'cflags'), ('CXXFLAGS', 'cxxflags')):
-            variable = f'{prefix}_{policy["target"].replace("-", "_")}'
-            value = os.environ.get(variable)
-            if value is None or value != expected_flags[key]:
-                raise AssertionError(
-                    f'{variable} is missing or disagrees with release policy: '
-                    f'{value!r} != {expected_flags[key]!r}'
-                )
     target_suffix = policy['target'].replace('-', '_')
     for key, prefix in (('cflags', 'CFLAGS'), ('cxxflags', 'CXXFLAGS')):
-        value = os.environ.get(f'{prefix}_{target_suffix}')
-        if value is not None and value != expected_flags[key]:
+        variable = f'{prefix}_{target_suffix}'
+        value = os.environ.get(variable)
+        expected = expected_flags[key]
+        if value is None:
+            if not present:
+                continue
             raise AssertionError(
-                f'{prefix}_{target_suffix} disagrees with target policy: '
-                f'{value!r} != {expected_flags[key]!r}'
+                f'{variable} is missing; release policy requires {expected!r}'
+            )
+        if value != expected:
+            raise AssertionError(
+                f'{variable} disagrees with release policy: {value!r} != {expected!r}'
             )
     return policy
 
