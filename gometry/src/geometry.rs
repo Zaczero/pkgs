@@ -206,7 +206,7 @@ pub(crate) use coverage::{
 pub(in crate::geometry) use coverage::{TopologyGuard, simplify_chain_guarded, triangle_area};
 use distance::line_length_3d;
 pub(crate) use distance::{
-    DirectedOptimizationResult, Distance3dParts, FrechetDpScratch, PreparedSupport,
+    ChartParts, DirectedOptimizationResult, Distance3dParts, FrechetDpScratch, PreparedSupport,
     bounds_distance_squared, directed_inradius_scaled, distance_3d_with_parts,
     ensure_geographic_hausdorff_linework, frechet_distance_line_columns,
     frechet_distance_line_columns_batch, hausdorff_distance, hausdorff_distance_line_columns,

@@ -271,6 +271,69 @@ pub(crate) mod binary_dispatch_counters {
     }
 }
 
+pub(crate) mod linear_reference_counters {
+    use super::*;
+
+    #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+    pub(crate) struct Snapshot {
+        pub(crate) prepared_chart_index_resolutions: usize,
+        pub(crate) coordseq_chart_index_builds: usize,
+        pub(crate) resolved_metrics: usize,
+        pub(crate) geographic_metric_scopes: usize,
+    }
+
+    thread_local! {
+        static COUNTERS: Cell<Snapshot> = const { Cell::new(Snapshot {
+            prepared_chart_index_resolutions: 0,
+            coordseq_chart_index_builds: 0,
+            resolved_metrics: 0,
+            geographic_metric_scopes: 0,
+        }) };
+    }
+
+    pub(crate) fn reset() {
+        COUNTERS.with(|counters| counters.set(Snapshot::default()));
+    }
+
+    pub(crate) fn snapshot() -> Snapshot {
+        COUNTERS.with(Cell::get)
+    }
+
+    pub(crate) fn prepared_chart_index_resolution() {
+        COUNTERS.with(|counters| {
+            let mut snapshot = counters.get();
+            snapshot.prepared_chart_index_resolutions =
+                snapshot.prepared_chart_index_resolutions.saturating_add(1);
+            counters.set(snapshot);
+        });
+    }
+
+    pub(crate) fn coordseq_chart_index_build() {
+        COUNTERS.with(|counters| {
+            let mut snapshot = counters.get();
+            snapshot.coordseq_chart_index_builds =
+                snapshot.coordseq_chart_index_builds.saturating_add(1);
+            counters.set(snapshot);
+        });
+    }
+
+    pub(crate) fn resolved_metric() {
+        COUNTERS.with(|counters| {
+            let mut snapshot = counters.get();
+            snapshot.resolved_metrics = snapshot.resolved_metrics.saturating_add(1);
+            counters.set(snapshot);
+        });
+    }
+
+    pub(crate) fn geographic_metric_scope() {
+        COUNTERS.with(|counters| {
+            let mut snapshot = counters.get();
+            snapshot.geographic_metric_scopes = snapshot.geographic_metric_scopes.saturating_add(1);
+            counters.set(snapshot);
+        });
+    }
+}
+
 #[pyclass(module = "gometry_test")]
 pub(crate) struct NativeBoundaryIterator {
     item: Py<PyAny>,

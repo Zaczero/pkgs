@@ -102,10 +102,10 @@ pub(crate) use geojson::{
 };
 pub(crate) use io_encoders::{box_polygon, wrapped_box};
 pub(crate) use linref::{
-    InterpolatePlan, line_interpolate_coordseq, line_interpolate_points_coordseq,
-    line_interpolate_points_shape, line_interpolate_shape, line_interpolate_shape_m,
-    line_locate_coordseq, line_locate_shape, line_locate_shape_m, line_substring_coordseq,
-    line_substring_shape, line_substring_shape_m, parse_interpolate_plan,
+    InterpolatePlan, PreparedLineLocate, line_interpolate_coordseq,
+    line_interpolate_points_coordseq, line_interpolate_points_shape, line_interpolate_shape,
+    line_interpolate_shape_m, line_locate_coordseq, line_substring_coordseq, line_substring_shape,
+    line_substring_shape_m, parse_interpolate_plan, prepare_line_locate,
 };
 pub(crate) use nearest::{
     fixed_geometry_array_nearest_points_admitted, fixed_geometry_array_shortest_line_geodesic,
