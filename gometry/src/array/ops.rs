@@ -8,11 +8,11 @@ use pyo3::types::{PyBytes, PyTuple};
 use crate::array::{
     Arc, ArrayRow, Bound, CollectRows as _, DefaultedF64Input, Error, F64Param, Frame, I64Param,
     InvalidGeometryError, Py, PyAny, PyAnyMethods as _, PyErr, PyGeometryArray, PyResult,
-    PyValidationReport, Python, RepairMethod, Result, Shape, VoronoiClipInput, bool_array,
-    cdt_refinement_values, exact_geometry, exact_geometry_array, expected_geometry_or_array,
-    geometry, io, non_negative_int, note_array_row, owned_voronoi_boundary,
-    pair_packed_equals_exact, parse_precision, require_geojson_crs, row_sample_seed, rows_err,
-    validate_equals_exact_tolerance, validate_subdivide_max_vertices,
+    PyValidationReport, Python, RepairMethod, Result, Shape, VoronoiClipInput, VoronoiOutput,
+    bool_array, cdt_refinement_values, exact_geometry, exact_geometry_array,
+    expected_geometry_or_array, geometry, io, non_negative_int, note_array_row,
+    owned_voronoi_boundary, pair_packed_equals_exact, parse_precision, require_geojson_crs,
+    row_sample_seed, rows_err, validate_equals_exact_tolerance, validate_subdivide_max_vertices,
 };
 use crate::geometry::storage;
 use crate::geometry::storage::builder::concat_packed_line_columns;
@@ -594,20 +594,20 @@ impl PyGeometryArray {
         Groups::from_geometry_builder(self.frame.clone(), builder)
     }
 
-    pub(crate) fn voronoi_polygons_impl(
+    pub(crate) fn voronoi_cells_impl(
         &self,
         py: Python<'_>,
         tolerance: f64,
         clip: &VoronoiClipInput,
     ) -> PyResult<Groups> {
-        let boundary = owned_voronoi_boundary(py, clip, &self.frame, "voronoi_polygons")?;
+        let boundary = owned_voronoi_boundary(py, clip, &self.frame, "voronoi_cells")?;
         let geographic_frame = match crate::geometry::topology_domain(&self.frame)? {
             crate::geometry::TopologyDomain::Geographic(frame) => Some(frame),
             crate::geometry::TopologyDomain::Cartesian => None,
         };
         self.flat_map_shapes_groups_budgeted(
             py,
-            "voronoi_polygons",
+            "voronoi_cells",
             "sites/clip topology",
             move |_, shape, budget| {
                 let outputs = shape.voronoi_polygon_outputs_budgeted(
@@ -620,13 +620,13 @@ impl PyGeometryArray {
         )
     }
 
-    pub(crate) fn voronoi_edges_impl(
+    pub(crate) fn voronoi_edge_lines_impl(
         &self,
         py: Python<'_>,
         tolerance: f64,
         clip: &VoronoiClipInput,
     ) -> PyResult<Groups> {
-        let boundary = owned_voronoi_boundary(py, clip, &self.frame, "voronoi_edges")?;
+        let boundary = owned_voronoi_boundary(py, clip, &self.frame, "voronoi_edge_lines")?;
         let geographic_frame = match geometry::topology_domain(&self.frame)? {
             geometry::TopologyDomain::Geographic(frame) => Some(frame),
             geometry::TopologyDomain::Cartesian => None,
@@ -647,7 +647,7 @@ impl PyGeometryArray {
                                 .row()
                                 .try_with_shape(|shape| {
                                     let mut budget = crate::geometry::ExpansionBudget::new(
-                                        "voronoi_edges",
+                                        "voronoi_edge_lines",
                                         "sites/clip topology",
                                     );
                                     let (coords, offsets) = shape.voronoi_edge_column_budgeted(
@@ -705,6 +705,19 @@ impl PyGeometryArray {
         Groups::from_packed_line_groups(frame, coords, line_offsets, group_offsets)
     }
 
+    pub(crate) fn voronoi_impl(
+        &self,
+        py: Python<'_>,
+        output: VoronoiOutput,
+        tolerance: f64,
+        clip: &VoronoiClipInput,
+    ) -> PyResult<Groups> {
+        match output {
+            VoronoiOutput::Polygons => self.voronoi_cells_impl(py, tolerance, clip),
+            VoronoiOutput::Edges => self.voronoi_edge_lines_impl(py, tolerance, clip),
+        }
+    }
+
     /// Per-row polygonize: each input geometry's own linework → its polygons,
     /// one group per input (`= scalar polygonize per row`). Pool raw linework
     /// with the free function ``polygonize``; passing a GeometryArray there
@@ -756,8 +769,8 @@ impl PyGeometryArray {
         py: Python<'_>,
         splitter: &Bound<'_, PyAny>,
         tolerance: f64,
-    ) -> PyResult<Self> {
-        let shapes = if let Some(splitter) = exact_geometry(splitter) {
+    ) -> PyResult<Groups> {
+        if let Some(splitter) = exact_geometry(splitter) {
             Frame::compatible_parts(
                 self.crs_ref(),
                 self.epoch(),
@@ -766,45 +779,50 @@ impl PyGeometryArray {
                 "split",
             )?;
             let splitter_shape = Arc::clone(&splitter.shape);
-            let array = self.clone();
-            py.detach(move || {
-                let mut shapes = Vec::new();
-                for row in array.row_operation().present_rows() {
-                    shapes.extend(
-                        row.row()
-                            .try_with_shape(|line| line.split(&splitter_shape, tolerance))?,
-                    );
-                }
-                Ok::<_, Error>(shapes)
-            })?
-        } else if let Some(splitters) = exact_geometry_array(splitter) {
+            return self
+                .flat_map_shapes_groups(py, move |line| line.split(&splitter_shape, tolerance));
+        }
+        if let Some(splitters) = exact_geometry_array(splitter) {
             crate::broadcast::validate_paired_arrays(self, splitters, "split")?;
             let lines = self.clone();
             let cutters = splitters.clone();
-            py.detach(move || {
-                let mut shapes = Vec::new();
-                for (line, cutter) in lines
-                    .row_operation()
-                    .rows_with_missing(|| ())
-                    .zip(cutters.row_operation().rows_with_missing(|| ()))
-                {
-                    let (ArrayRow::Present(line), ArrayRow::Present(cutter)) = (line, cutter)
-                    else {
-                        continue;
-                    };
-                    line.row().try_with_shape(|line| {
-                        cutter.row().try_with_shape(|cutter| {
-                            shapes.extend(line.split(cutter, tolerance)?);
-                            Ok::<_, Error>(())
-                        })
-                    })?;
-                }
-                Ok::<_, Error>(shapes)
-            })?
-        } else {
-            return Err(expected_geometry_or_array());
-        };
-        Ok(Self::from_shapes(shapes, self.frame.clone())?)
+            let builder = py
+                .detach(move || {
+                    let mut builder = crate::CsrBuilder::<Shape>::with_capacity(0, lines.len());
+                    for (line, cutter) in lines
+                        .row_operation()
+                        .rows_with_missing(|| ())
+                        .zip(cutters.row_operation().rows_with_missing(|| ()))
+                    {
+                        let (row, values) = match (line, cutter) {
+                            (ArrayRow::Present(line), ArrayRow::Present(cutter)) => {
+                                let logical = line.logical();
+                                let values = line
+                                    .row()
+                                    .try_with_shape(|line| {
+                                        cutter
+                                            .row()
+                                            .try_with_shape(|cutter| line.split(cutter, tolerance))
+                                    })
+                                    .map_err(|error| (logical, error))?;
+                                (logical, values)
+                            },
+                            (line, _) => {
+                                let logical = match line {
+                                    ArrayRow::Present(line) => line.logical(),
+                                    ArrayRow::Missing { logical, .. } => logical,
+                                };
+                                (logical, Vec::new())
+                            },
+                        };
+                        builder.push_row(values).map_err(|error| (row, error))?;
+                    }
+                    Ok::<_, (usize, Error)>(builder)
+                })
+                .map_err(rows_err)?;
+            return Groups::from_geometry_builder(self.frame.clone(), builder);
+        }
+        Err(expected_geometry_or_array())
     }
 
     pub(crate) fn extremes_impl(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
@@ -916,7 +934,7 @@ mod generation_budget_tests {
             Python::attach(|py| {
                 array.flat_map_shapes_groups_budgeted(
                     py,
-                    "voronoi_polygons",
+                    "voronoi_cells",
                     "sites/clip topology",
                     move |_, _, budget| {
                         budget.add(amount)?;

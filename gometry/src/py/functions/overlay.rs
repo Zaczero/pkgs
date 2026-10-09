@@ -314,7 +314,7 @@ pub(crate) fn symmetric_difference(
 ///
 /// See Also
 /// --------
-/// coverage_union : Faster dissolve for a valid polygonal coverage.
+/// coverage_union_all : Faster dissolve for a valid polygonal coverage.
 ///
 /// Examples
 /// --------
@@ -380,17 +380,17 @@ pub(crate) fn union_all(py: Python<'_>, values: &Bound<'_, PyAny>) -> PyResult<T
 /// --------
 /// >>> import gometry as gm
 /// >>> tiles = gm.GeometryArray([gm.box(0, 0, 1, 1), gm.box(1, 0, 2, 1)])
-/// >>> merged = gm.coverage_union(tiles)
+/// >>> merged = gm.coverage_union_all(tiles)
 /// >>> (merged.geometry_type, round(merged.area, 6))
 /// ('Polygon', 2.0)
 #[pyfunction]
-pub(crate) fn coverage_union(py: Python<'_>, values: &Bound<'_, PyAny>) -> PyResult<Typed> {
+pub(crate) fn coverage_union_all(py: Python<'_>, values: &Bound<'_, PyAny>) -> PyResult<Typed> {
     let (metadata, shapes) = pooled_shapes(values)?;
     if shapes.is_empty() {
         // A coverage union requires an operand, consistent with `union_all`.
         return Err(
             crate::error::Error::from(GeometryErrorKind::EmptyGeometrySequence {
-                operation: "coverage_union",
+                operation: "coverage_union_all",
             })
             .into(),
         );
@@ -401,7 +401,7 @@ pub(crate) fn coverage_union(py: Python<'_>, values: &Bound<'_, PyAny>) -> PyRes
     let metric_access = move || {
         metric.geographic_chart_metric()?.ok_or_else(|| {
             crate::crs::CrsError::invalid(
-                "geographic coverage_union source ordinates require the operation's CRS metric",
+                "geographic coverage_union_all source ordinates require the operation's CRS metric",
             )
         })
     };

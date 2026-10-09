@@ -212,10 +212,10 @@ def test_constructive_summary_geometries_are_rust_backed() -> None:
         concave_polygon,
         polygon_with_hole,
     ]).triangulate(method='earcut')
-    voronoi_cells = triangulation_points.voronoi_polygons(clip='envelope')
-    voronoi_edges = triangulation_points.voronoi_edges(clip='envelope')
-    clipped_voronoi_cells = triangulation_points.voronoi_polygons(
-        clip=gm.box(-1, -1, 2, 2, crs=3857)
+    voronoi_cells = triangulation_points.voronoi(output='polygons', clip='envelope')
+    voronoi_edge_lines = triangulation_points.voronoi(output='edges', clip='envelope')
+    clipped_voronoi_cells = triangulation_points.voronoi(
+        output='polygons', clip=gm.box(-1, -1, 2, 2, crs=3857)
     )
     assert polygon.centroid().to_wkt() == 'POINT (2 1)'
     assert centroids[0].to_wkt() == 'POINT (2 1)'
@@ -304,29 +304,45 @@ def test_constructive_summary_geometries_are_rust_backed() -> None:
     assert voronoi_cells.crs == 'EPSG:3857'
     assert all(cell.geometry_type == 'Polygon' for cell in voronoi_cells)
     assert sum(cell.area for cell in voronoi_cells) == pytest.approx(1)
-    assert len(voronoi_edges) > 0
-    assert all(edge.geometry_type == 'LineString' for edge in voronoi_edges)
-    assert len(triangulation_points.voronoi_polygons(clip='envelope')) == len(
+    assert len(voronoi_edge_lines) > 0
+    assert all(edge.geometry_type == 'LineString' for edge in voronoi_edge_lines)
+    assert len(triangulation_points.voronoi(output='polygons', clip='envelope')) == len(
         voronoi_cells
     )
     assert len(
-        gm.GeometryArray([triangulation_points]).voronoi_edges(clip='envelope')[0]
-    ) == len(voronoi_edges)
+        gm.GeometryArray([triangulation_points]).voronoi(
+            output='edges', clip='envelope'
+        )[0]
+    ) == len(voronoi_edge_lines)
     assert all(
         gm.covers(gm.box(-1, -1, 2, 2, crs=3857), cell)
         for cell in clipped_voronoi_cells
     )
     assert len(gm.MultiPoint([(0, 0), (1, 0)]).triangulate(method='delaunay')) == 0
-    assert len(gm.Point(0, 0).voronoi_polygons()) == 0
-    assert len(gm.MultiPoint([(0, 0), (1, 0), (2, 0)]).voronoi_polygons()) == 3
+    assert (
+        len(
+            gm.Point(0, 0).voronoi(
+                output='polygons',
+            )
+        )
+        == 0
+    )
+    assert (
+        len(
+            gm.MultiPoint([(0, 0), (1, 0), (2, 0)]).voronoi(
+                output='polygons',
+            )
+        )
+        == 3
+    )
     with pytest.raises(ValueError, match='unknown Voronoi clip'):
-        triangulation_points.voronoi_polygons(clip='bad')
+        triangulation_points.voronoi(output='polygons', clip='bad')
     with pytest.raises(TypeError, match='clip geometry must be a Polygon'):
-        triangulation_points.voronoi_polygons(clip=gm.Point(0, 0))
+        triangulation_points.voronoi(output='polygons', clip=gm.Point(0, 0))
     clip_box = gm.box(-1, -1, 2, 2)
     with pytest.raises(ValueError, match='matching CRS'):
-        triangulation_points.set_crs('EPSG:3857').voronoi_polygons(
-            clip=clip_box.set_crs('EPSG:4326')
+        triangulation_points.set_crs('EPSG:3857').voronoi(
+            output='polygons', clip=clip_box.set_crs('EPSG:4326')
         )
     with pytest.raises(TypeError, match='Polygon or MultiPolygon'):
         gm.Point(0, 0).triangulate(method='constrained')

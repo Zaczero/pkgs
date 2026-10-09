@@ -216,7 +216,7 @@ __all__ = [
     'coverage_invalid_edges',
     'coverage_is_valid',
     'coverage_simplify',
-    'coverage_union',
+    'coverage_union_all',
     'covered_by',
     'covers',
     'cross_track_distance',
@@ -2604,7 +2604,7 @@ class Geometry:
     @overload
     def line_locate(
         self,
-        geom: Geometry,
+        point: Point,
         *,
         basis: Literal['distance'] = 'distance',
         normalized: bool = False,
@@ -2613,7 +2613,7 @@ class Geometry:
     @overload
     def line_locate(
         self,
-        geom: GeometryArray[Geometry | None],
+        point: GeometryArray[Point | None],
         *,
         basis: Literal['distance'] = 'distance',
         normalized: bool = False,
@@ -2622,7 +2622,7 @@ class Geometry:
     @overload
     def line_locate(
         self,
-        geom: Geometry,
+        point: Point,
         *,
         basis: Literal['m'],
         normalized: Literal[False] = False,
@@ -2631,22 +2631,13 @@ class Geometry:
     @overload
     def line_locate(
         self,
-        geom: GeometryArray[Geometry | None],
+        point: GeometryArray[Point | None],
         *,
         basis: Literal['m'],
         normalized: Literal[False] = False,
         unit: None = None,
-    ) -> npt.NDArray[np.float64]: ...
-    @overload
-    def line_locate(
-        self,
-        geom: Geometry | GeometryArray[Geometry | None],
-        *,
-        basis: Literal['distance'] = 'distance',
-        normalized: bool = False,
-        unit: DistanceUnit | None = None,
-    ) -> float | npt.NDArray[np.float64]:
-        """Locate the position on linework nearest ``geom``. Empty linework, or
+    ) -> npt.NDArray[np.float64]:
+        """Locate the position on linework nearest ``point``. Empty linework, or
         an empty query point, locates to ``nan``.
 
         Projection is in X/Y. Zero-length X/Y segments add no distance-basis projection.
@@ -2665,8 +2656,9 @@ class Geometry:
 
         Parameters
         ----------
-        geom : Geometry or GeometryArray
-            A geometry to project, or one geometry per line row.
+        point : Point or GeometryArray[Point | None]
+            A point to project, or one point per line row. Missing query rows produce
+            ``nan`` in the result column.
 
         basis : {'distance', 'm'}, default 'distance'
             Return a CRS-aware distance, or the line's monotonic M ordinate. For
@@ -2693,7 +2685,7 @@ class Geometry:
         Returns
         -------
         float or numpy.ndarray
-            One location, or a column when ``geom`` is an array.
+            One location, or a column when ``point`` is an array.
 
 
         Raises
@@ -2859,6 +2851,16 @@ class Geometry:
     @overload
     def line_interpolate(
         self,
+        at: _FloatColumn1D,
+        *,
+        basis: Literal['m'],
+        count: None = None,
+        normalized: Literal[False] = False,
+        unit: None = None,
+    ) -> GeometryArray[Point]: ...
+    @overload
+    def line_interpolate(
+        self,
         at: _FloatScalarInput,
         *,
         count: None = None,
@@ -2885,7 +2887,8 @@ class Geometry:
         ----------
         at : float or sequence of float, optional
             One location or many explicit distance-basis locations. Under
-            ``basis='m'``, pass one stored M value (or one value per array row).
+            ``basis='m'``, pass one stored M value for a scalar result or a sequence of
+            stored M values for one line; an array accepts one M value per row.
 
 
         count : int, optional
@@ -3480,21 +3483,34 @@ class Geometry:
         7
         """
 
-    def voronoi_polygons(
+    @overload
+    def voronoi(
         self,
         *,
+        output: Literal['polygons'] = 'polygons',
         tolerance: _FloatScalarInput = 0.0,
         clip: VoronoiClip | Polygon = 'padded',
-    ) -> GeometryArray[Polygon]:
-        """Voronoi diagram polygons of the geometry's vertices. Operates in planar
-        lon/lat space and does NOT auto-split antimeridian-crossing geographic
-        input; call ``split_antimeridian`` first. Collinear vertices divide the clip
-        region into strips at their perpendicular bisectors, and a lone vertex owns
-        the whole clip polygon; the padded and envelope frames of a lone vertex, or
-        the envelope of a horizontal or vertical row, bound no cells.
+    ) -> GeometryArray[Polygon]: ...
+    @overload
+    def voronoi(
+        self,
+        *,
+        output: Literal['edges'],
+        tolerance: _FloatScalarInput = 0.0,
+        clip: VoronoiClip | Polygon = 'padded',
+    ) -> GeometryArray[LineString]:
+        """Construct a Voronoi diagram from the geometry's vertices. Operates in
+        planar longitude/latitude space and does NOT auto-split antimeridian-crossing
+        geographic input; call ``split_antimeridian`` first. Collinear vertices divide
+        the clip region into strips at their perpendicular bisectors, and a lone
+        vertex owns the whole clip polygon; the padded and envelope frames of a lone
+        vertex, or the envelope of a horizontal or vertical row, bound no cells.
 
         Parameters
         ----------
+        output : {'polygons', 'edges'}, default 'polygons'
+            Return clipped Voronoi cells or the internal Voronoi edges. Edge output
+            excludes the clip polygon's exterior boundary.
         tolerance : float, default 0.0
             Finite non-negative coordinate-space tolerance: native angular units for
             geographic CRSs, native linear units for projected CRSs, and raw coordinate
@@ -3507,15 +3523,15 @@ class Geometry:
 
         Returns
         -------
-        GeometryArray
-            The Voronoi cells of the input geometry.
-
+        GeometryArray[Polygon] or GeometryArray[LineString]
+            The selected output for the scalar geometry's vertices.
 
         Raises
         ------
         GeometryError
             If the output cannot be represented in binary64 or its embedding search
-            exhausts the budget. ``operation`` is ``'voronoi_polygons'``.
+            exhausts the budget. ``operation`` is ``'voronoi_cells'`` for polygon
+            output and ``'voronoi_edge_lines'`` for edge output.
         InvalidGeometryError
             If the clip polygon is invalid or exact Voronoi construction fails.
 
@@ -3523,10 +3539,11 @@ class Geometry:
         --------
         >>> import gometry as gm
         >>> sites = gm.MultiPoint([(0, 0), (2, 0), (1, 2)])
-        >>> len(sites.voronoi_polygons())
+        >>> len(sites.voronoi())
+        3
+        >>> len(sites.voronoi(output='edges'))
         3
         """
-
     def split_antimeridian(self) -> Geometry:
         """Split at the antimeridian. Parts that cross come back as multiple parts
         whose edges follow the seam — each side keeping its own seam sign — so the
@@ -4330,50 +4347,6 @@ class Geometry:
         >>> import gometry as gm
         >>> gm.Point(0, 2).skew(x_angle=45, origin=(0, 0)).to_wkt(precision=6)
         'POINT (2 2)'
-        """
-
-    def voronoi_edges(
-        self,
-        *,
-        tolerance: _FloatScalarInput = 0.0,
-        clip: VoronoiClip | Polygon = 'padded',
-    ) -> GeometryArray[LineString]:
-        """Voronoi diagram edges of the geometry's vertices. Operates in planar lon/lat
-        space and does NOT auto-split antimeridian-crossing geographic input; call
-        ``split_antimeridian`` first.
-
-        Parameters
-        ----------
-        tolerance : float, default 0.0
-            Finite non-negative coordinate-space tolerance: native angular units for
-            geographic CRSs, native linear units for projected CRSs, and raw coordinate
-            units when CRS-free.
-        clip : {'padded', 'envelope'} or Polygon, default 'padded'
-            How to bound the unbounded outer cells: a padded box, the input
-            envelope, or a `Polygon` to clip the diagram to.
-            Diagram vertices are synthesized and returned in XY. Rounded clip
-            incidences need not lie on the source polygon under overlay membership.
-
-        Returns
-        -------
-        GeometryArray
-            The Voronoi edges of the input geometry.
-
-
-        Raises
-        ------
-        GeometryError
-            If the output cannot be represented in binary64 or its embedding search
-            exhausts the budget. ``operation`` is ``'voronoi_edges'``.
-        InvalidGeometryError
-            If the clip polygon is invalid or exact Voronoi construction fails.
-
-        Examples
-        --------
-        >>> import gometry as gm
-        >>> sites = gm.MultiPoint([(0, 0), (2, 0), (1, 2)])
-        >>> len(sites.voronoi_edges())
-        3
         """
 
 @final
@@ -5406,7 +5379,7 @@ class LineString(Geometry):
         self,
         *,
         method: RepairMethod = 'linework',
-    ) -> LineString | MultiLineString: ...
+    ) -> Point | LineString | MultiLineString: ...
     def split_antimeridian(
         self,
     ) -> LineString | MultiLineString: ...
@@ -5611,7 +5584,7 @@ class MultiLineString(Geometry):
         self,
         *,
         method: RepairMethod = 'linework',
-    ) -> MultiLineString: ...
+    ) -> Point | MultiPoint | LineString | MultiLineString | GeometryCollection: ...
     def split_antimeridian(
         self,
     ) -> MultiLineString: ...
@@ -9127,7 +9100,9 @@ class GeometryArray(Sequence[_GeometryT_co]):
         self: GeometryArray[MultiLineString],
         *,
         method: RepairMethod = 'linework',
-    ) -> GeometryArray[MultiLineString]: ...
+    ) -> GeometryArray[
+        Point | MultiPoint | LineString | MultiLineString | GeometryCollection
+    ]: ...
     @overload
     def repair(
         self: GeometryArray[GeometryCollection],
@@ -9139,7 +9114,7 @@ class GeometryArray(Sequence[_GeometryT_co]):
         self: GeometryArray[LineString],
         *,
         method: RepairMethod = 'linework',
-    ) -> GeometryArray[LineString | MultiLineString]: ...
+    ) -> GeometryArray[Point | LineString | MultiLineString]: ...
     @overload
     def repair(
         self: GeometryArray[Polygon | MultiPolygon],
@@ -9163,7 +9138,9 @@ class GeometryArray(Sequence[_GeometryT_co]):
         self: GeometryArray[MultiLineString | None],
         *,
         method: RepairMethod = 'linework',
-    ) -> GeometryArray[MultiLineString | None]: ...
+    ) -> GeometryArray[
+        Point | MultiPoint | LineString | MultiLineString | GeometryCollection | None
+    ]: ...
     @overload
     def repair(
         self: GeometryArray[GeometryCollection | None],
@@ -9175,7 +9152,7 @@ class GeometryArray(Sequence[_GeometryT_co]):
         self: GeometryArray[LineString | None],
         *,
         method: RepairMethod = 'linework',
-    ) -> GeometryArray[LineString | MultiLineString | None]: ...
+    ) -> GeometryArray[Point | LineString | MultiLineString | None]: ...
     @overload
     def repair(
         self: GeometryArray[Polygon | MultiPolygon | None],
@@ -9246,7 +9223,7 @@ class GeometryArray(Sequence[_GeometryT_co]):
     @overload
     def line_locate(
         self,
-        geom: Geometry | GeometryArray[Geometry | None],
+        point: Point | GeometryArray[Point | None],
         *,
         basis: Literal['m'],
         normalized: Literal[False] = False,
@@ -9255,13 +9232,13 @@ class GeometryArray(Sequence[_GeometryT_co]):
     @overload
     def line_locate(
         self,
-        geom: Geometry | GeometryArray[Geometry | None],
+        point: Point | GeometryArray[Point | None],
         *,
         basis: Literal['distance'] = 'distance',
         normalized: bool = False,
         unit: DistanceUnit | None = None,
     ) -> npt.NDArray[np.float64]:
-        """Locate the position on linework nearest ``geom``. Empty linework, or
+        """Locate the position on linework nearest ``point``. Empty linework, or
         an empty query point, locates to ``nan``.
 
         Projection is in X/Y. Zero-length X/Y segments add no distance-basis projection.
@@ -9280,8 +9257,9 @@ class GeometryArray(Sequence[_GeometryT_co]):
 
         Parameters
         ----------
-        geom : Geometry or GeometryArray
-            A geometry to project, or one geometry per line row.
+        point : Point or GeometryArray[Point | None]
+            A point to project, or one point per line row. Missing query rows produce
+            ``nan`` in the result column.
 
         basis : {'distance', 'm'}, default 'distance'
             Return a CRS-aware distance, or the line's monotonic M ordinate. For
@@ -9511,7 +9489,8 @@ class GeometryArray(Sequence[_GeometryT_co]):
         ----------
         at : float or sequence of float, optional
             One location or many explicit distance-basis locations. Under
-            ``basis='m'``, pass one stored M value (or one value per array row).
+            ``basis='m'``, pass one stored M value for a scalar result or a sequence of
+            stored M values for one line; an array accepts one M value per row.
 
 
         count : int or iterable of int, optional
@@ -10142,21 +10121,34 @@ class GeometryArray(Sequence[_GeometryT_co]):
         7
         """
 
-    def voronoi_polygons(
+    @overload
+    def voronoi(
         self,
         *,
+        output: Literal['polygons'] = 'polygons',
         tolerance: float = 0.0,
         clip: VoronoiClip | Polygon = 'padded',
-    ) -> Groups[GeometryArray[Polygon]]:
-        """Voronoi diagram polygons of the geometry's vertices. Operates in planar
-        lon/lat space and does NOT auto-split antimeridian-crossing geographic
-        input; call ``split_antimeridian`` first. Collinear vertices divide the clip
-        region into strips at their perpendicular bisectors, and a lone vertex owns
-        the whole clip polygon; the padded and envelope frames of a lone vertex, or
-        the envelope of a horizontal or vertical row, bound no cells.
+    ) -> Groups[GeometryArray[Polygon]]: ...
+    @overload
+    def voronoi(
+        self,
+        *,
+        output: Literal['edges'],
+        tolerance: float = 0.0,
+        clip: VoronoiClip | Polygon = 'padded',
+    ) -> Groups[GeometryArray[LineString]]:
+        """Construct a Voronoi diagram from the geometry's vertices. Operates in
+        planar longitude/latitude space and does NOT auto-split antimeridian-crossing
+        geographic input; call ``split_antimeridian`` first. Collinear vertices divide
+        the clip region into strips at their perpendicular bisectors, and a lone
+        vertex owns the whole clip polygon; the padded and envelope frames of a lone
+        vertex, or the envelope of a horizontal or vertical row, bound no cells.
 
         Parameters
         ----------
+        output : {'polygons', 'edges'}, default 'polygons'
+            Return clipped Voronoi cells or the internal Voronoi edges. Edge output
+            excludes the clip polygon's exterior boundary.
         tolerance : float, default 0.0
             Finite non-negative coordinate-space tolerance: native angular units for
             geographic CRSs, native linear units for projected CRSs, and raw coordinate
@@ -10169,15 +10161,15 @@ class GeometryArray(Sequence[_GeometryT_co]):
 
         Returns
         -------
-        Groups of GeometryArray
-            One ragged group of Voronoi cells per input geometry, in input order.
-
+        Groups[GeometryArray[Polygon]] or Groups[GeometryArray[LineString]]
+            One ragged group of the selected output per input geometry, in input order.
 
         Raises
         ------
         GeometryError
             If the output cannot be represented in binary64 or its embedding search
-            exhausts the budget. ``operation`` is ``'voronoi_polygons'``.
+            exhausts the budget. ``operation`` is ``'voronoi_cells'`` for polygon
+            output and ``'voronoi_edge_lines'`` for edge output.
         InvalidGeometryError
             If the clip polygon is invalid or exact Voronoi construction fails.
 
@@ -10185,10 +10177,11 @@ class GeometryArray(Sequence[_GeometryT_co]):
         --------
         >>> import gometry as gm
         >>> sites = gm.MultiPoint([(0, 0), (2, 0), (1, 2)])
-        >>> len(sites.voronoi_polygons())
+        >>> len(sites.voronoi())
+        3
+        >>> len(sites.voronoi(output='edges'))
         3
         """
-
     @overload
     def split_antimeridian(
         self: GeometryArray[Point],
@@ -11075,7 +11068,10 @@ class GeometryArray(Sequence[_GeometryT_co]):
         'POLYGON ((0 0, 2 0, 2 2, 0 2, 0 0))'
         """
 
-    def validate(self) -> list[ValidationReport | None]:
+    @overload
+    def validate(self: GeometryArray[Geometry]) -> list[ValidationReport]: ...
+    @overload
+    def validate(self: GeometryArray[Geometry | None]) -> list[ValidationReport | None]:
         """Structured validity report in the geometry's coordinate frame.
         Geographic validity reads exact quotient topology, so period aliases and seam
         cuts do not depend on their stored longitude spelling. An out-of-domain
@@ -11341,50 +11337,6 @@ class GeometryArray(Sequence[_GeometryT_co]):
         'POINT (2 2)'
         """
 
-    def voronoi_edges(
-        self,
-        *,
-        tolerance: float = 0.0,
-        clip: VoronoiClip | Polygon = 'padded',
-    ) -> Groups[GeometryArray[LineString]]:
-        """Voronoi diagram edges of the geometry's vertices. Operates in planar lon/lat
-        space and does NOT auto-split antimeridian-crossing geographic input; call
-        ``split_antimeridian`` first.
-
-        Parameters
-        ----------
-        tolerance : float, default 0.0
-            Finite non-negative coordinate-space tolerance: native angular units for
-            geographic CRSs, native linear units for projected CRSs, and raw coordinate
-            units when CRS-free.
-        clip : {'padded', 'envelope'} or Polygon, default 'padded'
-            How to bound the unbounded outer cells: a padded box, the input
-            envelope, or a `Polygon` to clip the diagram to.
-            Diagram vertices are synthesized and returned in XY. Rounded clip
-            incidences need not lie on the source polygon under overlay membership.
-
-        Returns
-        -------
-        Groups of GeometryArray
-            One ragged group of Voronoi edges per input geometry, in input order.
-
-
-        Raises
-        ------
-        GeometryError
-            If the output cannot be represented in binary64 or its embedding search
-            exhausts the budget. ``operation`` is ``'voronoi_edges'``.
-        InvalidGeometryError
-            If the clip polygon is invalid or exact Voronoi construction fails.
-
-        Examples
-        --------
-        >>> import gometry as gm
-        >>> sites = gm.MultiPoint([(0, 0), (2, 0), (1, 2)])
-        >>> len(sites.voronoi_edges())
-        3
-        """
-
 @final
 class Groups(Sequence[_GroupValuesT_co], Generic[_GroupValuesT_co]):
     """Shared CSR ragged container: one flat `values` payload plus row `offsets`.
@@ -11402,9 +11354,9 @@ class Groups(Sequence[_GroupValuesT_co], Generic[_GroupValuesT_co]):
 
         Returns
         -------
-        numpy.ndarray or GeometryArray or CellArray
-            The selected flat values window. Numeric values are read-only int64;
-            geometry and cell values retain their immutable array types.
+        Group values
+            The selected flat payload window. Numeric values are read-only int64;
+            geometry and cell payloads retain their immutable array types.
         """
     @property
     def offsets(self) -> npt.NDArray[np.int64]:
@@ -18676,32 +18628,39 @@ def shortest_line(
 
 @overload
 def split(
+    geom: LineString | MultiLineString,
+    splitter: Point | MultiPoint | GeometryArray[Point | MultiPoint | None],
+    *,
+    tolerance: float = 0.0,
+) -> GeometryArray[LineString]: ...
+@overload
+def split(
+    geom: GeometryArray[LineString | MultiLineString],
+    splitter: Point | MultiPoint | GeometryArray[Point | MultiPoint],
+    *,
+    tolerance: float = 0.0,
+) -> Groups[GeometryArray[LineString]]: ...
+@overload
+def split(
+    geom: GeometryArray[LineString | MultiLineString | None],
+    splitter: Point | MultiPoint | GeometryArray[Point | MultiPoint | None],
+    *,
+    tolerance: float = 0.0,
+) -> Groups[GeometryArray[LineString]]: ...
+@overload
+def split(
     geom: Geometry,
-    splitter: Geometry | GeometryArray[_GeometryT],
-    *,
-    tolerance: float = 0.0,
-) -> GeometryArray[LineString]: ...
-@overload
-def split(
-    geom: GeometryArray[_GeometryT],
-    splitter: Geometry | GeometryArray[_GeometryOtherT],
-    *,
-    tolerance: float = 0.0,
-) -> GeometryArray[LineString]: ...
-@overload
-def split(
-    geom: GeometryArray[_GeometryT | None],
-    splitter: Geometry | GeometryArray[_GeometryOtherT | None],
-    *,
-    tolerance: float = 0.0,
-) -> GeometryArray[LineString | None]: ...
-@overload
-def split(
-    geom: Geometry | GeometryArray[Geometry | None],
     splitter: Geometry | GeometryArray[Geometry | None],
     *,
     tolerance: float = 0.0,
-) -> GeometryArray[LineString | None]:
+) -> GeometryArray[LineString]: ...
+@overload
+def split(
+    geom: GeometryArray[Geometry | None],
+    splitter: Geometry | GeometryArray[Geometry | None],
+    *,
+    tolerance: float = 0.0,
+) -> Groups[GeometryArray[LineString]]:
     """Split lineal geometry by point splitter(s).
 
     Each piece retains source vertices, including consecutive equal-X/Y
@@ -18723,8 +18682,11 @@ def split(
 
     Returns
     -------
-    GeometryArray
-        Split parts.
+    GeometryArray or Groups[GeometryArray]
+        A scalar line returns all split parts in one `GeometryArray`, even when
+        its cutter is an array of points. A line array returns one `Groups` row
+        per source line; an array cutter is paired row by row. Missing line or
+        cutter rows produce empty groups.
 
     Raises
     ------
@@ -18740,6 +18702,9 @@ def split(
     >>> import gometry as gm
     >>> gm.split(gm.LineString([(0, 0), (2, 0)]), gm.Point(1, 0)).to_wkt()
     ['LINESTRING (0 0, 1 0)', 'LINESTRING (1 0, 2 0)']
+    >>> pieces = gm.split(gm.GeometryArray([gm.LineString([(0, 0), (2, 0)])]), gm.Point(1, 0))
+    >>> pieces.offsets.tolist()
+    [0, 2]
     """
 
 @overload
@@ -19829,10 +19794,10 @@ def polygonize_full(
     ['POLYGON ((0 0, 1 0, 1 1, 0 0))']
     """
 
-def coverage_union(
+def coverage_union_all(
     values: Polygon
     | MultiPolygon
-    | GeometryArray[Polygon | MultiPolygon]
+    | GeometryArray[Polygon | MultiPolygon | None]
     | Iterable[_ArealLike | None],
 ) -> Polygon | MultiPolygon:
     """Union a polygonal *coverage* into one geometry by dissolving shared edges.
@@ -19878,7 +19843,7 @@ def coverage_union(
     --------
     >>> import gometry as gm
     >>> tiles = gm.GeometryArray([gm.box(0, 0, 1, 1), gm.box(1, 0, 2, 1)])
-    >>> merged = gm.coverage_union(tiles)
+    >>> merged = gm.coverage_union_all(tiles)
     >>> (merged.geometry_type, round(merged.area, 6))
     ('Polygon', 2.0)
     """
@@ -19967,6 +19932,14 @@ def coverage_clean(
     True
     """
 
+@overload
+def union_all(
+    values: Point
+    | MultiPoint
+    | GeometryArray[Point | MultiPoint | None]
+    | Iterable[Point | MultiPoint | None],
+) -> Point | MultiPoint: ...
+@overload
 def union_all(
     values: Geometry | GeometryArray[Geometry | None] | Iterable[_GeometryLike | None],
 ) -> Geometry:
@@ -19999,7 +19972,7 @@ def union_all(
 
     See Also
     --------
-    coverage_union : Faster dissolve for a valid polygonal coverage.
+    coverage_union_all : Faster dissolve for a valid polygonal coverage.
 
     Examples
     --------
@@ -20009,6 +19982,14 @@ def union_all(
     'POLYGON ((0 0, 2 0, 2 1, 3 1, 3 3, 1 3, 1 2, 0 2, 0 0))'
     """
 
+@overload
+def intersection_all(
+    values: Point
+    | MultiPoint
+    | GeometryArray[Point | MultiPoint | None]
+    | Iterable[Point | MultiPoint | None],
+) -> Point | MultiPoint: ...
+@overload
 def intersection_all(
     values: Geometry | GeometryArray[Geometry | None] | Iterable[_GeometryLike | None],
 ) -> Geometry:
@@ -20050,6 +20031,14 @@ def intersection_all(
     'POLYGON ((2 2, 3 2, 3 3, 2 3, 2 2))'
     """
 
+@overload
+def symmetric_difference_all(
+    values: Point
+    | MultiPoint
+    | GeometryArray[Point | MultiPoint | None]
+    | Iterable[Point | MultiPoint | None],
+) -> Point | MultiPoint: ...
+@overload
 def symmetric_difference_all(
     values: Geometry | GeometryArray[Geometry | None] | Iterable[_GeometryLike | None],
 ) -> Geometry:

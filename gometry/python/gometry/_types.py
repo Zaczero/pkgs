@@ -247,6 +247,7 @@ __all__ = [
     'TransformDirection',
     'TriangulationMethod',
     'VoronoiClip',
+    'VoronoiOutput',
     'WktAxisRule',
     'WktVersion',
 ]
@@ -282,6 +283,9 @@ NavigationPath: TypeAlias = Literal['geodesic', 'rhumb']
 JoinStyle: TypeAlias = Literal['round', 'miter', 'bevel']
 #: Voronoi clipping mode (a ``Polygon`` clip is passed as the geometry itself).
 VoronoiClip: TypeAlias = Literal['padded', 'envelope']
+#: Geometry representation returned by ``Geometry.voronoi`` and
+#: ``GeometryArray.voronoi``.
+VoronoiOutput: TypeAlias = Literal['polygons', 'edges']
 #: Which grid cells a coverage materializes (the tiling rule), strictest to
 #: loosest — uniform across H3, S2, geohash, and tiles.
 CellRule: TypeAlias = Literal['center', 'within', 'overlap', 'bbox']

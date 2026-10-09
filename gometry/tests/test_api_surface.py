@@ -386,8 +386,8 @@ def test_public_scalar_boundaries_raise_geometry_errors_not_overflow() -> None:
         (lambda: polygon.concave_hull(length_threshold=huge), 'length_threshold'),
         (lambda: polygon.polylabel(tolerance=huge), TypeError, 'tolerance'),
         (lambda: polygon.polylabel(tolerance=huge), 'tolerance'),
-        (lambda: sites.voronoi_polygons(tolerance=huge), OverflowError, None),
-        (lambda: sites.voronoi_edges(tolerance=huge), OverflowError, None),
+        (lambda: sites.voronoi(output='polygons', tolerance=huge), OverflowError, None),
+        (lambda: sites.voronoi(output='edges', tolerance=huge), OverflowError, None),
         (
             lambda: gm.contains_xy(geom, huge, 0),
             gm.InvalidGeometryError,
@@ -686,7 +686,7 @@ def test_public_all_exports_every_curated_facade_symbol() -> None:
         'coverage_invalid_edges',
         'coverage_is_valid',
         'coverage_simplify',
-        'coverage_union',
+        'coverage_union_all',
         'covered_by',
         'covers',
         'cross_track_distance',
@@ -898,7 +898,7 @@ def test_geometry_kind_rejections_are_catchable_as_geometry_error() -> None:
     for label, call in (
         (
             'voronoi clip of the wrong kind',
-            lambda: triangle.voronoi_polygons(clip=point),
+            lambda: triangle.voronoi(output='polygons', clip=point),
         ),
         ('multi_polygons member kind', lambda: gm.multi_polygons([[point]])),
     ):

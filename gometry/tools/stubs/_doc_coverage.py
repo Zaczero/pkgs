@@ -75,7 +75,7 @@ _MIRRORED_RAISES = frozenset({
     'coverage_invalid_edges',
     'coverage_simplify',
     'coverage_clean',
-    'coverage_union',
+    'coverage_union_all',
     'union_all',
     'intersection_all',
     'symmetric_difference_all',
@@ -118,8 +118,7 @@ _POLICY_GATED = (
     'envelope',
     'polylabel',
     'maximum_inscribed_circle',
-    'voronoi_polygons',
-    'voronoi_edges',
+    'voronoi',
     'minimum_rotated_rectangle',
 )
 _METRIC_CRS_AWARE: dict[str, frozenset[str]] = {
@@ -215,17 +214,17 @@ def required_raises(
     # Polygonal-coverage free duals + GeometryArray methods. Free forms take
     # mixed iterables and therefore require CRSMismatchError; array methods
     # share one frame. GeometryTypeError is the wrong-kind floor except for
-    # coverage_union (empty/invalid-coverage content only). InvalidGeometryError
+    # coverage_union_all (empty/invalid-coverage content only). InvalidGeometryError
     # is content: simplify/union require a valid coverage; clean can fail when
     # snap-repair cannot converge. Param-value lanes keep base GeometryError.
     if name in (
         'coverage_is_valid',
         'coverage_invalid_edges',
         'coverage_simplify',
-        'coverage_union',
+        'coverage_union_all',
         'coverage_clean',
     ) and owner in ('', 'GeometryArray'):
-        if name != 'coverage_union':
+        if name != 'coverage_union_all':
             required.add('GeometryTypeError')
         if name in (
             'coverage_is_valid',
@@ -234,7 +233,7 @@ def required_raises(
             'coverage_clean',
         ):
             required.add('GeometryError')
-        if name in ('coverage_simplify', 'coverage_union', 'coverage_clean'):
+        if name in ('coverage_simplify', 'coverage_union_all', 'coverage_clean'):
             required.add('InvalidGeometryError')
         if owner == '':
             required.add('CRSMismatchError')

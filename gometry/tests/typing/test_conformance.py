@@ -20,7 +20,7 @@ static type.
 from __future__ import annotations
 
 import types
-from typing import TYPE_CHECKING, Any, TypeVar, assert_type, cast
+from typing import TYPE_CHECKING, Any, TypeVar, assert_type, cast, reveal_type
 
 import gometry as gm
 import gometry._types as sht
@@ -30,10 +30,26 @@ import numpy.typing as npt
 POINT = gm.Point(1, 1)
 LINE = gm.LineString([(0, 0), (1, 1), (2, 0)])
 MEASURED_LINE = gm.LineString([(0, 0, 0, 0), (1, 1, 0, 10), (2, 0, 0, 20)])
+M_STATION_COLUMN = cast(
+    'sht.FloatColumn',
+    np.array([5.0, 15.0], dtype=np.float64),
+)
+MEASURED_LINES = gm.GeometryArray([MEASURED_LINE])
+NULLABLE_MEASURED_LINES = gm.GeometryArray([MEASURED_LINE, None])
+PROJECTED_LINE = gm.LineString([(0, 0), (1, 1)], crs=3857)
+PROJECTED_POINT = gm.Point(1, 1, crs=3857)
+MULTILINE = gm.MultiLineString([LINE])
 POLY = gm.box(0, 0, 2, 2)
 POINTS = gm.GeometryArray([POINT, gm.Point(2, 2)])
+NULLABLE_POINTS = gm.GeometryArray([POINT, None])
 LINES = gm.GeometryArray([LINE])
+LINES2 = gm.GeometryArray([LINE, LINE])
+NULLABLE_LINES = gm.GeometryArray([LINE, None])
+MULTILINES = gm.GeometryArray([MULTILINE])
+NULLABLE_MULTILINES = gm.GeometryArray([MULTILINE, None])
 POLYS = gm.GeometryArray([POLY])
+NULLABLE_POLYGONS = gm.GeometryArray([POLY, None])
+NORMALIZED: bool = True
 
 _GeometryT = TypeVar('_GeometryT', bound=gm.Geometry)
 
@@ -224,9 +240,11 @@ def _check_kind_narrowing(
     geometry: gm.Geometry,
     points: gm.GeometryArray[gm.Point],
     lines: gm.GeometryArray[gm.LineString],
+    multilines: gm.GeometryArray[gm.MultiLineString],
     polygons: gm.GeometryArray[gm.Polygon],
     nullable_points: gm.GeometryArray[gm.Point | None],
     nullable_lines: gm.GeometryArray[gm.LineString | None],
+    nullable_multilines: gm.GeometryArray[gm.MultiLineString | None],
     nullable_polygons: gm.GeometryArray[gm.Polygon | None],
     mixed: gm.GeometryArray[gm.Point | gm.Polygon],
 ) -> None:
@@ -246,9 +264,16 @@ def _check_kind_narrowing(
         gm.MultiPoint | gm.LineString | gm.MultiLineString | gm.GeometryCollection,
     )
     assert_type(point.repair(), gm.Point)
-    assert_type(multiline.repair(), gm.MultiLineString)
+    assert_type(
+        multiline.repair(),
+        gm.Point
+        | gm.MultiPoint
+        | gm.LineString
+        | gm.MultiLineString
+        | gm.GeometryCollection,
+    )
     assert_type(collection.repair(), gm.GeometryCollection)
-    assert_type(line.repair(), gm.LineString | gm.MultiLineString)
+    assert_type(line.repair(), gm.Point | gm.LineString | gm.MultiLineString)
     assert_type(multipolygon.repair(), gm.Polygon | gm.MultiPolygon)
     assert_type(geometry.repair(), gm.Geometry)
     assert_type(polygon.snap_to_grid(1.0), gm.Polygon)
@@ -296,7 +321,35 @@ def _check_kind_narrowing(
     assert_type(nullable_points.buffer(1.0), gm.GeometryArray[gm.Polygon | None])
     assert_type(points.repair(), gm.GeometryArray[gm.Point])
     assert_type(nullable_points.repair(), gm.GeometryArray[gm.Point | None])
-    assert_type(lines.repair(), gm.GeometryArray[gm.LineString | gm.MultiLineString])
+    assert_type(
+        lines.repair(),
+        gm.GeometryArray[gm.Point | gm.LineString | gm.MultiLineString],
+    )
+    assert_type(
+        nullable_lines.repair(),
+        gm.GeometryArray[gm.Point | gm.LineString | gm.MultiLineString | None],
+    )
+    assert_type(
+        multilines.repair(),
+        gm.GeometryArray[
+            gm.Point
+            | gm.MultiPoint
+            | gm.LineString
+            | gm.MultiLineString
+            | gm.GeometryCollection
+        ],
+    )
+    assert_type(
+        nullable_multilines.repair(),
+        gm.GeometryArray[
+            gm.Point
+            | gm.MultiPoint
+            | gm.LineString
+            | gm.MultiLineString
+            | gm.GeometryCollection
+            | None
+        ],
+    )
     assert_type(
         nullable_polygons.repair(),
         gm.GeometryArray[gm.Polygon | gm.MultiPolygon | None],
@@ -611,7 +664,23 @@ assert_type(
     gm.nearest_points(LINE, POINTS),
     tuple[gm.GeometryArray[gm.Point], gm.GeometryArray[gm.Point]],
 )
-assert_type(gm.split(gm.GeometryArray([LINE]), POINT), gm.GeometryArray[gm.LineString])
+assert_type(gm.split(LINE, POINT), gm.GeometryArray[gm.LineString])
+assert_type(
+    gm.split(LINE, NULLABLE_POINTS),
+    gm.GeometryArray[gm.LineString],
+)
+assert_type(
+    gm.split(LINES, POINT),
+    gm.Groups[gm.GeometryArray[gm.LineString]],
+)
+assert_type(
+    gm.split(NULLABLE_LINES, POINT),
+    gm.Groups[gm.GeometryArray[gm.LineString]],
+)
+assert_type(
+    gm.split(NULLABLE_LINES, NULLABLE_POINTS),
+    gm.Groups[gm.GeometryArray[gm.LineString]],
+)
 assert_type(gm.from_wkt('POINT (0 0)'), gm.Geometry)
 assert_type(gm.from_wkt(['POINT (0 0)']), gm.GeometryArray[gm.Geometry])
 assert_type(gm.from_wkt(['POINT (0 0)', None]), gm.GeometryArray[gm.Geometry | None])
@@ -986,7 +1055,12 @@ assert_type(POINTS.sort_by_spatial_key(curve='morton'), gm.GeometryArray[gm.Poin
 assert_type(LINE.segmentize(0.5), gm.LineString)
 assert_type(LINE.segmentize(fraction=0.5), gm.LineString)
 assert_type(LINE.segmentize(0.5, path='geodesic'), gm.LineString)
-assert_type(LINE.segmentize(fraction=0.5, path='rhumb'), gm.LineString)
+assert_type(
+    gm.LineString([(0.0, 0.0), (1.0, 0.0)], crs=4326).segmentize(
+        fraction=0.5, path='rhumb'
+    ),
+    gm.LineString,
+)
 assert_type(LINES.segmentize(0.5), gm.GeometryArray[gm.LineString])
 assert_type(LINES.segmentize(fraction=0.5), gm.GeometryArray[gm.LineString])
 assert_type(LINES.segmentize(0.5, path='geodesic'), gm.GeometryArray[gm.LineString])
@@ -1000,12 +1074,51 @@ assert_type(LINES.line_interpolate(at=0.5), gm.GeometryArray[gm.Point])
 assert_type(LINE.line_interpolate([0.25, 0.75]), gm.GeometryArray[gm.Point])
 assert_type(LINE.line_interpolate(count=3), gm.GeometryArray[gm.Point])
 assert_type(
-    LINE.line_interpolate(count=3, unit='meters'),
+    PROJECTED_LINE.line_interpolate(count=3, unit='meters'),
     gm.GeometryArray[gm.Point],
 )
 assert_type(MEASURED_LINE.line_interpolate(5.0), gm.Point)
+assert_type(
+    MEASURED_LINE.line_interpolate([5.0, 15.0], basis='m'),
+    gm.GeometryArray[gm.Point],
+)
+assert_type(
+    MEASURED_LINE.line_interpolate(M_STATION_COLUMN, basis='m'),
+    gm.GeometryArray[gm.Point],
+)
+assert_type(
+    MEASURED_LINES.line_interpolate([5.0], basis='m'),
+    gm.GeometryArray[gm.Point],
+)
+assert_type(
+    NULLABLE_MEASURED_LINES.line_interpolate([5.0, 5.0], basis='m'),
+    gm.GeometryArray[gm.Point | None],
+)
+assert_type(
+    LINES.line_interpolate([5.0], basis='m'),
+    gm.GeometryArray[gm.Point],
+)
+assert_type(
+    NULLABLE_LINES.line_interpolate([5.0, 15.0], basis='m'),
+    gm.GeometryArray[gm.Point | None],
+)
 assert_type(LINE.line_locate(POINT), float)
-assert_type(LINE.line_locate(POINT, normalized=True, unit='meters'), float)
+assert_type(
+    PROJECTED_LINE.line_locate(PROJECTED_POINT, normalized=True, unit='meters'),
+    float,
+)
+assert_type(LINE.line_locate(point=POINT), float)
+assert_type(LINE.line_locate(point=NULLABLE_POINTS), npt.NDArray[np.float64])
+assert_type(
+    LINE.line_locate(point=POINT, normalized=NORMALIZED),
+    float,
+)
+assert_type(
+    MEASURED_LINE.line_locate(
+        point=NULLABLE_POINTS, basis='m', normalized=False, unit=None
+    ),
+    npt.NDArray[np.float64],
+)
 assert_type(MEASURED_LINE.line_locate(POINT), float)
 assert_type(LINE.line_substring(0.25, 0.75), gm.LineString | gm.Point)
 assert_type(
@@ -1026,8 +1139,17 @@ assert_type(
     gm.Groups[gm.GeometryArray[gm.Point]],
 )
 assert_type(LINES.line_locate(POINT), npt.NDArray[np.float64])
+assert_type(LINES2.line_locate(point=NULLABLE_POINTS), npt.NDArray[np.float64])
 assert_type(
-    LINES.line_locate(POINT, normalized=True, unit='planar'),
+    NULLABLE_MEASURED_LINES.line_locate(
+        point=NULLABLE_POINTS, basis='m', normalized=False, unit=None
+    ),
+    npt.NDArray[np.float64],
+)
+assert_type(gm.GeometryArray([LINE]).validate(), list[gm.ValidationReport])
+assert_type(NULLABLE_LINES.validate(), list[gm.ValidationReport | None])
+assert_type(
+    LINES.line_locate(POINT, normalized=NORMALIZED, unit='planar'),
     npt.NDArray[np.float64],
 )
 assert_type(
@@ -1035,7 +1157,9 @@ assert_type(
     gm.GeometryArray[gm.LineString | gm.Point],
 )
 assert_type(
-    LINES.line_substring(0.25, 0.75, normalized=True, unit='meters'),
+    gm.GeometryArray([PROJECTED_LINE]).line_substring(
+        0.25, 0.75, normalized=True, unit='meters'
+    ),
     gm.GeometryArray[gm.LineString | gm.Point],
 )
 assert_type(np.asarray(POINTS.coords), npt.NDArray[np.float64])
@@ -1048,7 +1172,6 @@ assert_type(POINTS[POINTS.is_empty], gm.GeometryArray[gm.Point])
 iter_point = next(iter(POINTS))
 assert_type(iter_point, gm.Point)
 assert_type(iter_point.x, float)
-NULLABLE_POINTS = gm.GeometryArray([POINT, None])
 assert_type(NULLABLE_POINTS, gm.GeometryArray[gm.Point | None])
 assert_type(NULLABLE_POINTS[0], gm.Point | None)
 assert_type(NULLABLE_POINTS[:1], gm.GeometryArray[gm.Point | None])
@@ -1185,14 +1308,37 @@ assert_type(
 )
 assert_type(gm.coverage_is_valid([POLY]), bool)
 assert_type(gm.coverage_is_valid(POLY), bool)
-assert_type(gm.coverage_union(iter([POLY])), gm.Polygon | gm.MultiPolygon)
-assert_type(gm.coverage_union(POLY), gm.Polygon | gm.MultiPolygon)
+assert_type(gm.coverage_union_all(iter([POLY])), gm.Polygon | gm.MultiPolygon)
+assert_type(gm.coverage_union_all(POLY), gm.Polygon | gm.MultiPolygon)
 assert_type(gm.polygonize(POLY), gm.GeometryArray[gm.Polygon])
-assert_type(gm.coverage_union(GRID), gm.Polygon | gm.MultiPolygon)
+assert_type(gm.coverage_union_all(GRID), gm.Polygon | gm.MultiPolygon)
+assert_type(gm.coverage_union_all(POLYS), gm.Polygon | gm.MultiPolygon)
+assert_type(
+    gm.coverage_union_all(NULLABLE_POLYGONS),
+    gm.Polygon | gm.MultiPolygon,
+)
 assert_type(gm.polygonize(GRID), gm.GeometryArray[gm.Polygon])
 assert_type(gm.union_all(GRID), gm.Geometry)
-assert_type(gm.union_all(GRID), gm.Geometry)
+assert_type(gm.union_all(POINT), gm.Point | gm.MultiPoint)
+assert_type(gm.union_all(POINTS), gm.Point | gm.MultiPoint)
+assert_type(gm.union_all(NULLABLE_POINTS), gm.Point | gm.MultiPoint)
+assert_type(gm.intersection_all(POINT), gm.Point | gm.MultiPoint)
+assert_type(gm.intersection_all(POINTS), gm.Point | gm.MultiPoint)
+assert_type(gm.intersection_all(NULLABLE_POINTS), gm.Point | gm.MultiPoint)
+assert_type(gm.symmetric_difference_all(POINT), gm.Point | gm.MultiPoint)
+assert_type(gm.symmetric_difference_all(POINTS), gm.Point | gm.MultiPoint)
+assert_type(gm.symmetric_difference_all(NULLABLE_POINTS), gm.Point | gm.MultiPoint)
 assert_type(gm.to_feature_collection(POLY), sht.GeoJsonFeatureCollection)
+assert_type(POINT.voronoi(), gm.GeometryArray[gm.Polygon])
+assert_type(
+    POINT.voronoi(output='edges'),
+    gm.GeometryArray[gm.LineString],
+)
+assert_type(POINTS.voronoi(), gm.Groups[gm.GeometryArray[gm.Polygon]])
+assert_type(
+    POINTS.voronoi(output='edges'),
+    gm.Groups[gm.GeometryArray[gm.LineString]],
+)
 
 # Overload-narrowing coverage: one probe per @overload group that once shipped
 # dead (undecorated) variants — pyright's last-def-wins silently widened these
@@ -1319,3 +1465,69 @@ if TYPE_CHECKING:
     _geohash_cell_ok: gm.Cell = gm.GeohashCell(POINT, precision=7)
     _tile_cell_ok: gm.Cell = gm.Tile(POINT, zoom=10)
     assert_type(_h3_cell_ok.children_count(), int)
+
+if TYPE_CHECKING:
+
+    def _check_voronoi_output_union(output: sht.VoronoiOutput) -> None:
+        assert_type(
+            POINT.voronoi(output=output),
+            gm.GeometryArray[gm.Polygon] | gm.GeometryArray[gm.LineString],
+        )
+        assert_type(
+            POINTS.voronoi(output=output),
+            gm.Groups[gm.GeometryArray[gm.Polygon]]
+            | gm.Groups[gm.GeometryArray[gm.LineString]],
+        )
+        reveal_type(POINT.voronoi(output=output))
+        reveal_type(POINTS.voronoi(output=output))
+
+    # CE01: repair narrows only to kinds its runtime can actually produce.
+    reveal_type(LINE.repair())
+    reveal_type(MULTILINE.repair())
+    reveal_type(LINES.repair())
+    reveal_type(NULLABLE_LINES.repair())
+    reveal_type(MULTILINES.repair())
+    reveal_type(NULLABLE_MULTILINES.repair())
+
+    # CE02: split preserves a group for every line row and keeps scalar
+    # splitter-array use pooled.
+    reveal_type(gm.split(LINE, POINT))
+    reveal_type(gm.split(LINE, NULLABLE_POINTS))
+    reveal_type(gm.split(LINES, POINT))
+    reveal_type(gm.split(NULLABLE_LINES, NULLABLE_POINTS))
+
+    # CE03: one line accepts an M-station column as a point array.
+    reveal_type(MEASURED_LINE.line_interpolate(5.0, basis='m'))
+    reveal_type(MEASURED_LINE.line_interpolate([5.0, 15.0], basis='m'))
+    reveal_type(MEASURED_LINE.line_interpolate(np.array([5.0, 15.0]), basis='m'))
+    reveal_type(MEASURED_LINES.line_interpolate([5.0], basis='m'))
+    reveal_type(NULLABLE_MEASURED_LINES.line_interpolate([5.0, 5.0], basis='m'))
+
+    # CE04: validation preserves known row nullability and locate accepts only
+    # point queries, including nullable point columns.
+    reveal_type(gm.GeometryArray([LINE]).validate())
+    reveal_type(NULLABLE_LINES.validate())
+    reveal_type(LINE.line_locate(point=POINT))
+    reveal_type(MEASURED_LINE.line_locate(point=NULLABLE_POINTS, basis='m'))
+    reveal_type(LINES.line_locate(point=NULLABLE_POINTS, normalized=NORMALIZED))
+
+    # CE05: the pooled coverage aggregate has the same result for scalar,
+    # nullable-array and iterable polygon inputs.
+    reveal_type(gm.coverage_union_all(POLY))
+    reveal_type(gm.coverage_union_all(NULLABLE_POLYGONS))
+    reveal_type(gm.coverage_union_all(iter([POLY])))
+
+    # CE06: a Literal output chooses a return kind; a union-typed value keeps
+    # both choices visible, and array inputs retain Groups.
+    reveal_type(POINT.voronoi())
+    reveal_type(POINT.voronoi(output='edges'))
+    reveal_type(POINTS.voronoi())
+    reveal_type(POINTS.voronoi(output='edges'))
+
+    # CE08: point-only aggregates retain their closed result family for
+    # scalar, dense-array and nullable-array inputs.
+    reveal_type(gm.union_all(POINT))
+    reveal_type(gm.union_all(POINTS))
+    reveal_type(gm.union_all(NULLABLE_POINTS))
+    reveal_type(gm.intersection_all(NULLABLE_POINTS))
+    reveal_type(gm.symmetric_difference_all(NULLABLE_POINTS))

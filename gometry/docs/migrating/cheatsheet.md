@@ -103,7 +103,7 @@ Conventions: `import gometry as gm`; `geom` is a gometry geometry; and
 | `shortest_line(a, b)` | [`gm.shortest_line(a, b)`][gometry.shortest_line] | Connects the nearest witnesses. On a geographic CRS the default chart-edge length is no shorter than their geodesic separation, subject to binary64 rounding; measure with the same `unit=` choice and expect computed publication to add vertices when needed. |
 | `ops.nearest_points(a, b)` | [`gm.nearest_points(a, b)`][gometry.nearest_points] | The `(pa, pb)` pair behind `shortest_line`. |
 | `delaunay_triangles(g)` | `g.triangulate(method='delaunay')` | Use `method='constrained'` for constrained edges or `method='earcut'` for polygon interiors. |
-| `voronoi_polygons(g)` | `g.voronoi_polygons()` / `g.voronoi_edges()` | |
+| Voronoi diagram output | [`g.voronoi()`][gometry.Geometry.voronoi] / `g.voronoi(output='edges')` | Use the `output` keyword to select cells or internal edges. |
 | `polygonize(...)` | [`gm.polygonize(values)`][gometry.polygonize] to pool one graph; `array.polygonize()` for independent rows; [`gm.polygonize_full(values)`][gometry.polygonize_full] for pooled diagnostics | The free aggregates accept `GeometryArray` directly and pool its present rows. |
 | `build_area(...)` (GEOS) | `(...).build_area()` | Even-odd fill; unlike `polygonize`. |
 | `node(...)` (GEOS 3.7+) | `(...).node()` | Noded linework as `MultiLineString`. |
@@ -125,7 +125,7 @@ Conventions: `import gometry as gm`; `geom` is a gometry geometry; and
 | `line.interpolate(d)` | `line.line_interpolate(d)` | |
 | `line.project(pt)` | `line.line_locate(pt)` | |
 | `substring(line, a, b)` | `line.line_substring(a, b)` | |
-| `split(geom, splitter)` | [`gm.split(geom, splitter)`][gometry.split] | Binary free function (no instance method). |
+| `split(geom, splitter)` | [`gm.split(geom, splitter)`][gometry.split] | Binary free function; array line inputs return one `Groups` row per source line. |
 
 ### Validation, repair, precision
 

@@ -126,7 +126,7 @@ print(panels(
         ("two parcel rows", {'source': input_rows}, "The two input parcels overlap along a narrow strip instead of forming a valid coverage."),
         ("invalid shared edges", {'source': input_rows, 'result': invalid_edges}, "Diagnostic edges mark the mismatched parcel border around the overlap."),
         ("cleaned parcel coverage", {'source': input_rows, 'result': [item for row in cleaned for item in with_vertices(row)]}, "Coverage cleaning aligns the shared border and leaves two non-overlapping parcel rows."),
-        ("coverage union", {'result': gm.coverage_union(cleaned)}, "The cleaned parcels dissolve into one continuous polygon with no overlap or gap."),
+        ("coverage union", {'result': gm.coverage_union_all(cleaned)}, "The cleaned parcels dissolve into one continuous polygon with no overlap or gap."),
     ],
     labels={'source': 'input parcels', 'result': 'what the call returns'},
 ))

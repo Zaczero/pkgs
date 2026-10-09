@@ -71,8 +71,8 @@ def _swept_orders() -> Iterable[tuple[int, tuple[tuple[float, float], ...]]]:
 
 def test_polygons_and_edges_share_identical_synthesized_vertex_bits() -> None:
     source = gm.MultiPoint(SITES[:6])
-    polygons = source.voronoi_polygons(clip='envelope')
-    edges = source.voronoi_edges(clip='envelope')
+    polygons = source.voronoi(output='polygons', clip='envelope')
+    edges = source.voronoi(output='edges', clip='envelope')
     polygon_vertices = _vertex_bits(polygons)
     edge_vertices = _vertex_bits(edges)
     shared = polygon_vertices.keys() & edge_vertices.keys()
@@ -103,11 +103,13 @@ def test_named_and_explicit_equal_envelopes_are_byte_identical(
     sites: tuple[tuple[float, float], ...],
 ) -> None:
     source = gm.MultiPoint(sites)
-    named = source.voronoi_polygons(clip='envelope')
+    named = source.voronoi(output='polygons', clip='envelope')
     bounds = source.bounds
     assert bounds is not None
     min_x, min_y, max_x, max_y = bounds
-    explicit = source.voronoi_polygons(clip=gm.box(min_x, min_y, max_x, max_y))
+    explicit = source.voronoi(
+        output='polygons', clip=gm.box(min_x, min_y, max_x, max_y)
+    )
 
     assert _wkb_signature(named) == _wkb_signature(explicit)
     for left, right in zip(named, explicit, strict=True):
@@ -118,8 +120,10 @@ def test_named_and_explicit_equal_envelopes_are_byte_identical(
 def test_integer_site_sweep_polygons_and_edges_share_vertex_bits() -> None:
     for count, order in _swept_orders():
         source = gm.MultiPoint(order)
-        polygon_vertices = _vertex_bits(source.voronoi_polygons(clip='envelope'))
-        edge_vertices = _vertex_bits(source.voronoi_edges(clip='envelope'))
+        polygon_vertices = _vertex_bits(
+            source.voronoi(output='polygons', clip='envelope')
+        )
+        edge_vertices = _vertex_bits(source.voronoi(output='edges', clip='envelope'))
         shared = polygon_vertices.keys() & edge_vertices.keys()
 
         assert shared, (count, order)
@@ -132,8 +136,8 @@ def test_integer_site_sweep_emits_only_positive_zero() -> None:
     for count, order in _swept_orders():
         source = gm.MultiPoint(order)
         for vertices in (
-            _vertex_bits(source.voronoi_polygons(clip='envelope')),
-            _vertex_bits(source.voronoi_edges(clip='envelope')),
+            _vertex_bits(source.voronoi(output='polygons', clip='envelope')),
+            _vertex_bits(source.voronoi(output='edges', clip='envelope')),
         ):
             assert all(
                 bits == _float_bits(0.0)
@@ -149,9 +153,9 @@ def test_integer_site_sweep_named_and_explicit_clips_are_byte_identical() -> Non
         source = gm.MultiPoint(order)
         bounds = source.bounds
         assert bounds is not None
-        named = _wkb_signature(source.voronoi_polygons(clip='envelope'))
+        named = _wkb_signature(source.voronoi(output='polygons', clip='envelope'))
         explicit = _wkb_signature(
-            source.voronoi_polygons(clip=gm.box(*bounds)),
+            source.voronoi(output='polygons', clip=gm.box(*bounds)),
         )
 
         assert named == explicit, (count, order)
@@ -162,7 +166,7 @@ def test_integer_site_sweep_default_lane_is_permutation_deterministic(
     count: int,
 ) -> None:
     signatures = {
-        _wkb_signature(gm.MultiPoint(order).voronoi_polygons(clip='envelope'))
+        _wkb_signature(gm.MultiPoint(order).voronoi(output='polygons', clip='envelope'))
         for order in _orders(SITES[:count])
     }
 
@@ -178,6 +182,8 @@ def test_integer_site_sweep_explicit_polygon_lane_is_permutation_deterministic(
         source = gm.MultiPoint(order)
         bounds = source.bounds
         assert bounds is not None
-        signatures.add(_wkb_signature(source.voronoi_polygons(clip=gm.box(*bounds))))
+        signatures.add(
+            _wkb_signature(source.voronoi(output='polygons', clip=gm.box(*bounds)))
+        )
 
     assert len(signatures) == 1, (count, len(signatures))

@@ -490,8 +490,9 @@ print(panels(
 [`triangulate`][gometry.Geometry.triangulate] makes the triangulation choice
 explicit: `method='delaunay'` triangulates input vertices,
 `method='earcut'` triangulates polygon interiors, and `method='constrained'`
-keeps input edges as constraints. [`voronoi_polygons`][gometry.Geometry.voronoi_polygons]
-returns the dual Voronoi cells. [`polygonize`][gometry.Geometry.polygonize]
+keeps input edges as constraints. [`voronoi`][gometry.Geometry.voronoi] returns
+clipped cells by default; pass `output='edges'` for the internal Voronoi edges,
+which exclude the clip polygon's exterior boundary. [`polygonize`][gometry.Geometry.polygonize]
 assembles polygons from a collection of linework, automatically splitting
 crossings and overlaps before polygonization (the inverse of taking boundaries).
 The scalar and pooled free-function forms return a
@@ -504,9 +505,11 @@ import gometry as gm
 corners = gm.MultiPoint([(0, 0), (1, 0), (1, 1), (0, 1)])
 
 triangles = corners.triangulate(method='delaunay')
-cells = corners.voronoi_polygons()
+cells = corners.voronoi()
+edges = corners.voronoi(output='edges')
 print("triangles:", len(triangles))
 print("voronoi cells:", len(cells))
+print("voronoi edges:", len(edges))
 
 edges = [
     gm.LineString([(0, 0), (1, 0)]),
@@ -537,8 +540,8 @@ On arrays, the radius method returns a read-only `float64` NumPy column.
     `method='constrained'` accepts `min_angle` and `max_area` for
     constrained refinement; `method='earcut'` is the direct polygon-interior
     triangulation; `method='delaunay'` needs only the input vertices.
-    [`voronoi_edges`][gometry.Geometry.voronoi_edges] returns the cell boundaries
-    as lines, and
+    [`voronoi`][gometry.Geometry.voronoi] with `output='edges'` returns internal
+    Voronoi edges, and
     [`polygonize_full`][gometry.polygonize_full] additionally reports dangles,
     cut edges, and invalid rings for pooled linework, grouped by source row as
     [`Groups`][gometry.Groups].

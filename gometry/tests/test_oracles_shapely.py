@@ -41,7 +41,6 @@ def test_predicates_and_overlay_match_shapely_oracle() -> None:
         shared_paths,
         snap,
         union,
-        voronoi_polygons,
     )
     from shapely.geometry import Point
     from shapely.ops import (
@@ -52,6 +51,7 @@ def test_predicates_and_overlay_match_shapely_oracle() -> None:
         polygonize_full,
         split,
         substring,
+        voronoi_diagram,
     )
 
     left = gm.box(0, 0, 2, 2)
@@ -135,12 +135,12 @@ def test_predicates_and_overlay_match_shapely_oracle() -> None:
     assert sum(triangle.area for triangle in gometry_triangles) == pytest.approx(
         shapely_triangles.area
     )
-    gometry_voronoi = gm.MultiPoint([(0, 0), (1, 0), (0, 1), (1, 1)]).voronoi_polygons(
-        clip='envelope'
+    gometry_voronoi = gm.MultiPoint([(0, 0), (1, 0), (0, 1), (1, 1)]).voronoi(
+        output='polygons', clip='envelope'
     )
-    shapely_voronoi = voronoi_polygons(
+    shapely_voronoi = voronoi_diagram(
         from_wkt('MULTIPOINT ((0 0), (1 0), (0 1), (1 1))'),
-        extend_to=from_wkt('POLYGON ((0 0, 1 0, 1 1, 0 1, 0 0))'),
+        envelope=from_wkt('POLYGON ((0 0, 1 0, 1 1, 0 1, 0 0))'),
     )
     shapely_clipped_voronoi = [
         intersection(cell, from_wkt('POLYGON ((0 0, 1 0, 1 1, 0 1, 0 0))'))
