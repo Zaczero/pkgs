@@ -1,198 +1,34 @@
-use std::sync::Arc;
-
-use crate::array::{PyGeometryArray, StorageLayout};
-use crate::geometry::storage;
-use crate::geometry::storage::{
-    GeometryArrayStorage, PackedStorage, RowSelection, ValidityMask,
-    row_selection_from_logical_rows,
-};
+use crate::array::PyGeometryArray;
 
 impl PyGeometryArray {
     pub(crate) fn gather_logical_rows(&self, rows: &[usize]) -> crate::error::Result<Self> {
         self.gather_logical_rows_iter(rows.iter().copied())
     }
 
-    #[expect(
-        clippy::indexing_slicing,
-        clippy::arithmetic_side_effects,
-        reason = "an exact-size row iterator keeps each enumerated output within the pre-sized validity bitmap"
-    )]
     pub(crate) fn gather_logical_rows_iter(
         &self,
-        rows: impl ExactSizeIterator<Item = usize> + Clone,
+        source_rows: impl ExactSizeIterator<Item = usize> + Clone,
     ) -> crate::error::Result<Self> {
-        let row_count = rows.len();
-        let missing = self.missing().and_then(|mask| {
-            let mut bytes = vec![0; row_count.div_ceil(8)];
-            let mut valid_count = 0;
-            for (out, row) in rows.clone().enumerate() {
-                if mask.is_valid(row) {
-                    bytes[out / 8] |= 1 << (out % 8);
-                    valid_count += 1;
-                }
-            }
-            if valid_count == row_count {
-                return None;
-            }
-            ValidityMask::from_bitmap(crate::geometry::SharedSlice::from_vec(bytes), 0, row_count)
-        });
-        self.select_logical_rows(rows, missing)
+        let rows = self.rows.select(source_rows.clone())?;
+        Ok(Self::from_selected_rows(
+            self,
+            rows,
+            self.frame.clone(),
+            source_rows,
+        ))
     }
 
-    /// Gather a contiguous logical row range without allocating an index vector.
+    /// Gather a contiguous logical range without allocating an index vector.
     pub(crate) fn gather_logical_row_range(
         &self,
-        rows: std::ops::Range<usize>,
+        source_rows: std::ops::Range<usize>,
     ) -> crate::error::Result<Self> {
-        let missing = self
-            .missing()
-            .and_then(|mask| mask.window(rows.start, rows.len()));
-        if self.is_compact_nullable()
-            && let Some(mask) = self.missing()
-            && matches!(
-                self.storage(),
-                GeometryArrayStorage::Packed(PackedStorage::Points { .. })
-            )
-        {
-            let present = mask.present_before(rows.start)..mask.present_before(rows.end);
-            let storage = self.selected_point_present_rows(present);
-            return Self::from_selected_storage(
-                self,
-                Arc::new(storage),
-                self.frame.clone(),
-                missing,
-                StorageLayout::PresentOnly,
-                rows,
-            );
-        }
-        self.select_logical_rows(rows, missing)
-    }
-
-    fn select_logical_rows(
-        &self,
-        rows: impl Iterator<Item = usize> + Clone,
-        missing: Option<ValidityMask>,
-    ) -> crate::error::Result<Self> {
-        let storage = self.selected_storage(rows.clone());
-        let layout = if self.is_compact_nullable()
-            && matches!(
-                &storage,
-                GeometryArrayStorage::Packed(PackedStorage::Points { .. })
-            ) {
-            StorageLayout::PresentOnly
-        } else {
-            StorageLayout::LogicalRows
-        };
-        Self::from_selected_storage(
+        let rows = self.rows.select_range(source_rows.clone())?;
+        Ok(Self::from_selected_rows(
             self,
-            Arc::new(storage),
-            self.frame.clone(),
-            missing,
-            layout,
             rows,
-        )
-    }
-
-    /// Select present rows without attaching a validity mask.
-    pub(crate) fn gather_logical_rows_dense(&self, rows: &[usize]) -> crate::error::Result<Self> {
-        debug_assert!(
-            !self.is_compact_nullable() || rows.iter().all(|&row| !self.is_row_missing(row))
-        );
-        Self::from_selected_storage(
-            self,
-            Arc::new(self.selected_storage(rows.iter().copied())),
             self.frame.clone(),
-            None,
-            StorageLayout::LogicalRows,
-            rows.iter().copied(),
-        )
-    }
-
-    #[expect(
-        clippy::arithmetic_side_effects,
-        reason = "admitted packed line and polygon offset columns always contain their initial sentinel"
-    )]
-    pub(crate) fn selected_storage(
-        &self,
-        rows: impl Iterator<Item = usize> + Clone,
-    ) -> GeometryArrayStorage {
-        match self.storage() {
-            GeometryArrayStorage::Packed(PackedStorage::Points { .. }) => {
-                let missing = self.missing().filter(|_| self.is_compact_nullable());
-                let rank = missing.map(|mask| mask.rank_for_rows(rows.clone()));
-                let present = rows
-                    .filter_map(|row| rank.as_ref().map_or(Some(row), |rank| rank.resolve(row)));
-                self.selected_point_present_rows(present)
-            },
-            GeometryArrayStorage::Packed(PackedStorage::Lines {
-                coords,
-                offsets,
-                row_map,
-            }) => GeometryArrayStorage::Packed(PackedStorage::Lines {
-                coords: Arc::clone(coords),
-                offsets: offsets.clone(),
-                row_map: row_selection_from_logical_rows(
-                    row_map.as_deref(),
-                    offsets.len() - 1,
-                    rows,
-                ),
-            }),
-            GeometryArrayStorage::Packed(PackedStorage::Polygons {
-                coords,
-                ring_offsets,
-                polygon_offsets,
-                row_map,
-            }) => GeometryArrayStorage::Packed(PackedStorage::Polygons {
-                coords: Arc::clone(coords),
-                ring_offsets: ring_offsets.clone(),
-                polygon_offsets: polygon_offsets.clone(),
-                row_map: row_selection_from_logical_rows(
-                    row_map.as_deref(),
-                    polygon_offsets.len() - 1,
-                    rows,
-                ),
-            }),
-            GeometryArrayStorage::Mixed(shapes) => GeometryArrayStorage::Mixed(
-                rows.map(|row| {
-                    shapes
-                        .get(row)
-                        .expect("selected mixed row is within the backing array")
-                        .clone()
-                })
-                .collect(),
-            ),
-        }
-    }
-
-    pub(super) fn selected_point_present_rows(
-        &self,
-        present: impl Iterator<Item = usize> + Clone,
-    ) -> GeometryArrayStorage {
-        let GeometryArrayStorage::Packed(PackedStorage::Points { coords, row_map }) =
-            self.storage()
-        else {
-            unreachable!("point row selection requires packed points");
-        };
-        if present.clone().next().is_none() {
-            return GeometryArrayStorage::Packed(PackedStorage::Points {
-                coords: Arc::new(crate::geometry::CoordSeq::empty(coords.axes())),
-                row_map: RowSelection::Identity,
-            });
-        }
-        if let Some(window) =
-            storage::contiguous_physical_range(row_map.as_deref(), present.clone())
-        {
-            return GeometryArrayStorage::Packed(PackedStorage::Points {
-                coords: Arc::new(coords.view(crate::geometry::CoordWindow::from_range(
-                    window,
-                    coords.len(),
-                ))),
-                row_map: RowSelection::Identity,
-            });
-        }
-        GeometryArrayStorage::Packed(PackedStorage::Points {
-            coords: Arc::clone(coords),
-            row_map: row_selection_from_logical_rows(row_map.as_deref(), coords.len(), present),
-        })
+            source_rows,
+        ))
     }
 }

@@ -986,7 +986,6 @@ mod demotion_tests {
             .unwrap();
         let points = points.finish(Frame::None).unwrap();
         assert_eq!(stream_row_advances(), 3);
-        assert!(points.is_compact_nullable());
         assert_eq!(points.len(), 3);
         assert_eq!(
             points
@@ -1009,7 +1008,6 @@ mod demotion_tests {
         else {
             panic!("homogeneous nullable lines must stay packed");
         };
-        assert!(lines.is_compact_nullable());
         assert_eq!(coords.len(), 4);
         assert_eq!(offsets.as_slice(), &[0, 0, 2, 2, 4]);
 
@@ -1029,7 +1027,6 @@ mod demotion_tests {
         else {
             panic!("homogeneous nullable polygons must stay packed");
         };
-        assert!(polygons.is_compact_nullable());
         assert_eq!(coords.len(), 10);
         assert_eq!(ring_offsets.as_slice(), &[0, 5, 10]);
         assert_eq!(polygon_offsets.as_slice(), &[0, 0, 1, 1, 2]);

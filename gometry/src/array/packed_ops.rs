@@ -641,7 +641,7 @@ impl PyGeometryArray {
             Shape::multi_point(coords.axes(), (**coords).clone())
         } else {
             Shape::MultiPoint(crate::geometry::MultiPoint::from_coordseq(
-                Self::gather_point_coords(coords, row_map.as_deref())?,
+                self.rows.gather_point_coords()?,
             )?)
         }))
     }

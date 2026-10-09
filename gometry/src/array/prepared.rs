@@ -921,8 +921,6 @@ mod frame_cache_row_tests {
                 .expect("validity length"),
         )
         .unwrap();
-        assert!(masked.is_compact_nullable());
-
         let logical_xs = |array: &PyGeometryArray| {
             array
                 .row_operation()
@@ -1244,6 +1242,66 @@ mod frame_cache_row_tests {
                 &expected
             ));
         }
+    }
+
+    #[test]
+    fn nullable_point_windows_gathers_and_drop_missing_keep_source_products() {
+        let present = PyGeometryArray::packed_points(
+            CoordSeq::try_from_vecs(vec![11.0, 33.0, 44.0], vec![1.0, 3.0, 4.0], None, None)
+                .unwrap(),
+            Frame::None,
+        )
+        .unwrap();
+        let source = PyGeometryArray::scatter_present_rows(
+            &present,
+            storage::ValidityMask::from_vec(5, vec![true, false, true, false, false])
+                .expect("nullable source mask"),
+        )
+        .unwrap();
+        let row_one = source.row_products.frame_cache(1);
+        let row_three = source.row_products.frame_cache(3);
+        let row_four = source.row_products.frame_cache(4);
+
+        let window = source.gather_logical_row_range(1..5).unwrap();
+        assert!(Arc::ptr_eq(&window.row_products.frame_cache(0), &row_one));
+        assert!(Arc::ptr_eq(&window.row_products.frame_cache(2), &row_three));
+        let nested = window.gather_logical_rows(&[2, 0, 2]).unwrap();
+        assert!(Arc::ptr_eq(&nested.row_products.frame_cache(0), &row_three));
+        assert!(Arc::ptr_eq(&nested.row_products.frame_cache(1), &row_one));
+        assert!(Arc::ptr_eq(&nested.row_products.frame_cache(2), &row_three));
+        let nested_xs = nested
+            .logical_rows()
+            .map(|row| {
+                let LogicalRow::Present {
+                    row: ShapeRow::Point(point),
+                    ..
+                } = row
+                else {
+                    panic!("nested present point selection retains point values");
+                };
+                point.x
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(nested_xs, [33.0, 11.0, 33.0]);
+
+        let dropped = window.try_drop_missing().unwrap();
+        assert!(Arc::ptr_eq(&dropped.row_products.frame_cache(0), &row_one));
+        assert!(Arc::ptr_eq(
+            &dropped.row_products.frame_cache(1),
+            &row_three
+        ));
+        assert!(Arc::ptr_eq(&dropped.row_products.frame_cache(2), &row_four));
+        drop(source);
+        assert!(Arc::ptr_eq(
+            &dropped.row_products.frame_cache(1),
+            &row_three
+        ));
+        let GeometryArrayStorage::Packed(storage::PackedStorage::Points { coords, .. }) =
+            dropped.storage()
+        else {
+            panic!("drop_missing keeps homogeneous points packed");
+        };
+        assert_eq!(coords.xs(), &[11.0, 33.0, 44.0]);
     }
 
     #[test]

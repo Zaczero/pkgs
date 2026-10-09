@@ -5,9 +5,8 @@ use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyTuple};
 
 use crate::geometry::storage::admission::CheckedRingWindow;
-use crate::geometry::storage::packed_columns::PointRowLayout;
 use crate::geometry::storage::{
-    GeometryArrayStorage, PackedStorage, RowSelectionRef, ValidityMask,
+    ArrayRows, GeometryArrayStorage, LogicalRow, PackedStorage, RowSelectionRef, ValidityMask,
 };
 use crate::geometry::{CsrOffsetColumn, SharedSlice};
 use crate::{CoordSeq, Crs, Frame, PyGeometry, PyGeometryArray, ShapeData, Typed};
@@ -264,7 +263,7 @@ fn unpickle_geometry_array_detached(
     let mut shapes = Vec::with_capacity(rows.len());
     for (row, wkb) in rows.iter().enumerate() {
         let shape = if mask.as_ref().is_some_and(|mask| mask.is_missing(row)) {
-            PyGeometryArray::missing_placeholder()
+            ArrayRows::missing_placeholder()
         } else {
             crate::io::parse_wkb(wkb.as_slice())?.shape
         };
@@ -383,18 +382,16 @@ pub(crate) fn reduce_geometry_array(
     py: Python<'_>,
     array: &PyGeometryArray,
 ) -> PyResult<(Py<PyAny>, Py<PyAny>)> {
-    let storage = Arc::clone(array.storage_arc());
-    let missing = array.missing().cloned();
-    let point_layout = array.point_row_layout();
+    let rows = array.row_owner().clone();
     let crs = array.crs_str().map(str::to_owned);
     let epoch = array.epoch();
     let payload = py
         .detach(move || -> crate::error::Result<ArrayPicklePayload> {
             Ok(ArrayPicklePayload {
-                rows: pickle_rows(storage.as_ref(), missing.as_ref(), point_layout)?,
+                rows: pickle_rows(&rows)?,
                 crs,
                 epoch,
-                missing: missing.as_ref().map(missing_bytes),
+                missing: rows.missing().map(missing_bytes),
             })
         })
         .map_err(PyErr::from)?;
@@ -403,18 +400,11 @@ pub(crate) fn reduce_geometry_array(
 
 /// Packed payloads hold finite present rows only; storage with a nonfinite
 /// present ordinate falls back to WKB rows.
-fn pickle_rows(
-    storage: &GeometryArrayStorage,
-    missing: Option<&ValidityMask>,
-    point_layout: PointRowLayout,
-) -> crate::error::Result<PickleRows> {
-    let mixed = || -> crate::error::Result<PickleRows> {
-        Ok(PickleRows::Mixed(wkb_rows_for_mask(
-            storage,
-            missing,
-            point_layout,
-        )?))
-    };
+fn pickle_rows(rows: &ArrayRows) -> crate::error::Result<PickleRows> {
+    let storage = rows.storage();
+    let missing = rows.missing();
+    let mixed =
+        || -> crate::error::Result<PickleRows> { Ok(PickleRows::Mixed(wkb_rows_for_mask(rows)?)) };
     match (storage, missing) {
         (GeometryArrayStorage::Mixed(_), _) => mixed(),
         (GeometryArrayStorage::Packed(PackedStorage::Points { coords, row_map }), None) => {
@@ -427,22 +417,12 @@ fn pickle_rows(
                 levels: OffsetLevels::Points,
             })
         },
-        (GeometryArrayStorage::Packed(PackedStorage::Points { coords, row_map }), Some(mask)) => {
+        (GeometryArrayStorage::Packed(PackedStorage::Points { coords, row_map }), Some(_)) => {
             let selection = row_map.as_deref();
-            let row_aligned =
-                !point_layout.is_compact() && mask.len() == selection.len(coords.len());
-            let columns = if row_aligned {
-                let indices = selected_storage_indices(selection, coords.len(), Some(mask));
-                if !points_are_finite(coords, RowSelectionRef::Gather(&indices)) {
-                    return mixed();
-                }
-                encode_points(coords, &indices)?
-            } else {
-                if !points_are_finite(coords, selection) {
-                    return mixed();
-                }
-                encode_points_selection(coords, selection)?
-            };
+            if !points_are_finite(coords, selection) {
+                return mixed();
+            }
+            let columns = encode_points_selection(coords, selection)?;
             Ok(PickleRows::Packed {
                 columns,
                 levels: OffsetLevels::Points,
@@ -531,7 +511,7 @@ fn selected_storage_rows(
     let logical_rows = row_map.len(physical_rows);
     let mut rows = Vec::with_capacity(logical_rows);
     for logical in 0..logical_rows {
-        if missing.is_some_and(|mask| mask.len() == logical_rows && mask.is_missing(logical)) {
+        if missing.is_some_and(|mask| mask.is_missing(logical)) {
             continue;
         }
         rows.push(logical);
@@ -547,28 +527,12 @@ fn selected_line_windows(
     let logical_rows = row_map.len(offsets.len().saturating_sub(1));
     let mut windows = Vec::with_capacity(logical_rows);
     for logical in 0..logical_rows {
-        if missing.is_some_and(|mask| mask.len() == logical_rows && mask.is_missing(logical)) {
+        if missing.is_some_and(|mask| mask.is_missing(logical)) {
             continue;
         }
         windows.push(row_map.csr_window(offsets, logical));
     }
     windows
-}
-
-fn selected_storage_indices(
-    row_map: RowSelectionRef<'_>,
-    physical_rows: usize,
-    missing: Option<&ValidityMask>,
-) -> Vec<usize> {
-    let logical_rows = row_map.len(physical_rows);
-    let mut indices = Vec::with_capacity(logical_rows);
-    for logical in 0..logical_rows {
-        if missing.is_some_and(|mask| mask.len() == logical_rows && mask.is_missing(logical)) {
-            continue;
-        }
-        indices.push(row_map.physical(logical));
-    }
-    indices
 }
 
 fn points_are_finite(coords: &CoordSeq, selection: RowSelectionRef<'_>) -> bool {
@@ -630,24 +594,6 @@ fn columns_are_finite(coords: &CoordSeq, windows: &[std::ops::Range<usize>]) -> 
     })
 }
 
-fn encode_points(
-    coords: &CoordSeq,
-    indices: &[usize],
-) -> crate::error::Result<EncodedPointColumns> {
-    let selection = RowSelectionRef::Gather(indices);
-    let xs = selected_f64_column_le_bytes(coords.xs(), selection)?;
-    let ys = selected_f64_column_le_bytes(coords.ys(), selection)?;
-    let zs = coords
-        .zs()
-        .map(|values| selected_f64_column_le_bytes(values, selection))
-        .transpose()?;
-    let ms = coords
-        .ms()
-        .map(|values| selected_f64_column_le_bytes(values, selection))
-        .transpose()?;
-    Ok((xs, ys, zs, ms))
-}
-
 fn encode_points_selection(
     coords: &CoordSeq,
     selection: RowSelectionRef<'_>,
@@ -687,34 +633,15 @@ fn encode_windows(
     Ok((xs, ys, zs, ms))
 }
 
-fn wkb_rows_for_mask(
-    storage: &GeometryArrayStorage,
-    missing: Option<&ValidityMask>,
-    point_layout: PointRowLayout,
-) -> crate::error::Result<Vec<Vec<u8>>> {
-    let row_count = missing.map_or(storage.len(), ValidityMask::len);
-    let compact = missing.is_some_and(|mask| match storage {
-        GeometryArrayStorage::Packed(PackedStorage::Points { .. }) => point_layout.is_compact(),
-        GeometryArrayStorage::Packed(
-            PackedStorage::Lines { .. } | PackedStorage::Polygons { .. },
-        ) => storage.len() != mask.len(),
-        GeometryArrayStorage::Mixed(_) => false,
-    });
-    let mut rows = Vec::with_capacity(row_count);
-    let mut present = 0;
-    for logical in 0..row_count {
-        if missing.is_some_and(|mask| mask.is_missing(logical)) {
-            rows.push(Vec::new());
-            continue;
-        }
-        let payload_row = if compact { present } else { logical };
-        present = present.wrapping_add(1);
-        let wkb = storage
-            .row(payload_row)
-            .try_with_shape(|shape| crate::io::to_wkb(shape, None, false))?;
-        rows.push(wkb);
-    }
-    Ok(rows)
+fn wkb_rows_for_mask(rows: &ArrayRows) -> crate::error::Result<Vec<Vec<u8>>> {
+    rows.logical_rows()
+        .map(|row| match row {
+            LogicalRow::Missing { .. } => Ok(Vec::new()),
+            LogicalRow::Present { row, .. } => {
+                row.try_with_shape(|shape| crate::io::to_wkb(shape, None, false))
+            },
+        })
+        .collect()
 }
 
 fn materialize_array_pickle_payload(

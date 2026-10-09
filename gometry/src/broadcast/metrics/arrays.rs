@@ -325,8 +325,9 @@ pub(crate) fn array_crs_distances<'a>(
                     && let Some(values) = array.reduce_packed_points_detached(py, {
                         let right_shape = Arc::clone(&right_shape);
                         move |points| {
-                            let mut values = right_shape
-                                .distance_points(points.iter().map(|point| (point.x, point.y)))?;
+                            let mut values = right_shape.distance_points(
+                                points.present_points().map(|point| (point.x, point.y)),
+                            )?;
                             for value in &mut values {
                                 *value *= to_metre.get();
                             }
@@ -1109,8 +1110,10 @@ pub(crate) fn array_crs_dwithin_scalar(
             && let Some(values) = array.reduce_packed_points_detached(py, {
                 let other_shape = other.prepared_plan();
                 move |points| {
-                    Ok(other_shape
-                        .dwithin_points(points.iter().map(|point| (point.x, point.y)), limit)?)
+                    Ok(other_shape.dwithin_points(
+                        points.present_points().map(|point| (point.x, point.y)),
+                        limit,
+                    )?)
                 }
             })?
         {

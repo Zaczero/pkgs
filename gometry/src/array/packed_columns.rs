@@ -9,7 +9,7 @@ use crate::broadcast::rows_err;
 use crate::geometry::storage::packed_columns::{
     PackedColumnError, PackedColumnOutput, PackedColumnResult, PackedColumns, PointColumns,
     assemble_packed_output, map_selected_points, map_selected_to_crs,
-    replace_packed_columns_dispatch, resolve_packed_columns,
+    replace_packed_columns_dispatch,
 };
 use crate::geometry::storage::replacement::CoordinateReplacement;
 use crate::geometry::storage::{GeometryArrayStorage, PackedStorage};
@@ -51,9 +51,7 @@ impl PyGeometryArray {
     where
         R: Send,
     {
-        let Some(columns) =
-            resolve_packed_columns(self.storage(), self.missing(), self.point_row_layout())
-        else {
+        let Some(columns) = self.rows.packed_columns() else {
             return Ok(None);
         };
         let result = py
@@ -104,9 +102,7 @@ impl PyGeometryArray {
         output_axes: crate::geometry::CoordinateAxes,
         map: impl Fn(crate::geometry::Point) -> crate::error::Result<crate::geometry::Point> + Send,
     ) -> PyResult<Option<Self>> {
-        let Some(columns) =
-            resolve_packed_columns(self.storage(), self.missing(), self.point_row_layout())
-        else {
+        let Some(columns) = self.rows.packed_columns() else {
             return Ok(None);
         };
         let output = py
@@ -125,9 +121,7 @@ impl PyGeometryArray {
         transformer: crate::crs::TransformPlan,
         target_crs: &str,
     ) -> PyResult<Option<Self>> {
-        let Some(columns) =
-            resolve_packed_columns(self.storage(), self.missing(), self.point_row_layout())
-        else {
+        let Some(columns) = self.rows.packed_columns() else {
             return Ok(None);
         };
         let output = py
@@ -145,20 +139,14 @@ impl PyGeometryArray {
         output_frame: Frame,
         replacement: CoordinateReplacement,
     ) -> PyResult<Option<Self>> {
-        let Some(columns) =
-            resolve_packed_columns(self.storage(), self.missing(), self.point_row_layout())
-        else {
+        let Some(columns) = self.rows.packed_columns() else {
             return Ok(None);
         };
         let output = py
             .detach(move || -> PackedColumnResult<PackedColumnOutput> {
                 let mut replacement_index = 0;
-                let output = replace_packed_columns_dispatch(
-                    columns,
-                    &replacement,
-                    &mut replacement_index,
-                    self.missing(),
-                )?;
+                let output =
+                    replace_packed_columns_dispatch(columns, &replacement, &mut replacement_index)?;
                 if replacement_index != replacement.len {
                     return Err(PackedColumnError::Batch(
                         crate::geometry::GeometryErrorKind::message(format!(
@@ -186,14 +174,10 @@ impl PyGeometryArray {
     where
         R: Send,
     {
-        let Some(left_columns) =
-            resolve_packed_columns(left.storage(), left.missing(), left.point_row_layout())
-        else {
+        let Some(left_columns) = left.rows.packed_columns() else {
             return Ok(None);
         };
-        let Some(right_columns) =
-            resolve_packed_columns(right.storage(), right.missing(), right.point_row_layout())
-        else {
+        let Some(right_columns) = right.rows.packed_columns() else {
             return Ok(None);
         };
         let result = py
@@ -214,14 +198,10 @@ impl PyGeometryArray {
         let GeometryArrayStorage::Packed(PackedStorage::Points { .. }) = self.storage() else {
             return Ok(None);
         };
-        let storage = Arc::clone(self.storage_arc());
-        let missing = self.missing().cloned();
-        let point_layout = self.point_row_layout();
+        let rows = self.rows.clone();
         let result = py
             .detach(move || -> PackedColumnResult<R> {
-                let columns =
-                    resolve_packed_columns(storage.as_ref(), missing.as_ref(), point_layout)
-                        .expect("points");
+                let columns = rows.packed_columns().expect("points");
                 let PackedColumns::Points(point_columns) = columns else {
                     unreachable!("reduce_packed_points_detached requires point storage");
                 };
@@ -247,26 +227,12 @@ impl PyGeometryArray {
         else {
             return Ok(None);
         };
-        let left_storage = Arc::clone(self.storage_arc());
-        let right_storage = Arc::clone(right.storage_arc());
-        let left_missing = self.missing().cloned();
-        let right_missing = right.missing().cloned();
-        let left_point_layout = self.point_row_layout();
-        let right_point_layout = right.point_row_layout();
+        let left_rows = self.rows.clone();
+        let right_rows = right.rows.clone();
         let values = py
             .detach(move || -> PackedColumnResult<Option<Vec<T>>> {
-                let left_columns = resolve_packed_columns(
-                    left_storage.as_ref(),
-                    left_missing.as_ref(),
-                    left_point_layout,
-                )
-                .expect("points");
-                let right_columns = resolve_packed_columns(
-                    right_storage.as_ref(),
-                    right_missing.as_ref(),
-                    right_point_layout,
-                )
-                .expect("points");
+                let left_columns = left_rows.packed_columns().expect("points");
+                let right_columns = right_rows.packed_columns().expect("points");
                 let PackedColumns::Points(left) = left_columns else {
                     unreachable!("pair_packed_points_detached requires point storage");
                 };
