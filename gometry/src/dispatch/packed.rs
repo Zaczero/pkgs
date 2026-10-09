@@ -425,8 +425,8 @@ pub(crate) fn try_unary_packed_array(
             let result = match resolver.resolve_topology_ctx(&array.frame, &mut scratch) {
                 Ok((domain, metric)) => {
                     let rect = match domain {
-                        TopologyDomain::Geographic(_) => {
-                            Bounds::new_geographic(*minx, *miny, *maxx, *maxy)
+                        TopologyDomain::Geographic(frame) => {
+                            Bounds::new_geographic(frame, *minx, *miny, *maxx, *maxy)
                         },
                         TopologyDomain::Cartesian => Bounds::new(*minx, *miny, *maxx, *maxy),
                     };
