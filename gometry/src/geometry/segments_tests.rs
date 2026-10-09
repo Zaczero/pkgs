@@ -1,7 +1,6 @@
 use crate::error::ErrorKind;
 use crate::geometry::segments::{
-    EXACT_SELECTION_FALLBACKS, clip_segment_rect_interval, compare_along_segment,
-    segment_nearest_points,
+    clip_segment_rect_interval, compare_along_segment, segment_nearest_points,
 };
 use crate::geometry::tessellation::exact::{ExactDyadic, compare_ratios};
 use crate::geometry::*;
@@ -471,6 +470,131 @@ fn squared_distance_intervals_contain_the_exact_stored_double_distance() {
         assert!(key.is_bounded(), "index={index}");
         assert!(key.contains_exact(), "index={index}");
     }
+}
+
+#[test]
+fn clearance_strip_bounds_compare_exact_source_distances_at_all_scales() {
+    CLEARANCE_STRIP_EXACT_FALLBACKS.with(|count| count.set(0));
+    let ordinary_key = point_pair_distance_key(XY::new(0.0, 0.0), XY::new(1.0, 0.0));
+    let ordinary_fallbacks = CLEARANCE_STRIP_EXACT_FALLBACKS.with(std::cell::Cell::get);
+    assert!(
+        !clearance_strip_exceeds(
+            XY::new(0.0, 0.0),
+            [1.0, 0.0],
+            XY::new(0.0, -1.0),
+            XY::new(0.0, 1.0),
+            &ordinary_key,
+        )
+        .unwrap()
+    );
+    assert_eq!(
+        CLEARANCE_STRIP_EXACT_FALLBACKS.with(std::cell::Cell::get),
+        ordinary_fallbacks,
+        "a point inside its source strip should certify no-prune"
+    );
+    assert!(
+        !clearance_strip_exceeds(
+            XY::new(0.5, 0.0),
+            [1.0, 0.0],
+            XY::new(0.0, 0.0),
+            XY::new(0.0, 1.0),
+            &ordinary_key,
+        )
+        .unwrap()
+    );
+    assert_eq!(
+        CLEARANCE_STRIP_EXACT_FALLBACKS.with(std::cell::Cell::get),
+        ordinary_fallbacks,
+        "a positive strip bound below the incumbent should certify no-prune"
+    );
+    assert!(
+        clearance_strip_exceeds(
+            XY::new(2.0, 0.0),
+            [1.0, 0.0],
+            XY::new(0.0, 0.0),
+            XY::new(0.0, 1.0),
+            &ordinary_key,
+        )
+        .unwrap()
+    );
+    assert_eq!(
+        CLEARANCE_STRIP_EXACT_FALLBACKS.with(std::cell::Cell::get),
+        ordinary_fallbacks,
+        "an ordinary strict strip separation should prune without exact fallback"
+    );
+    assert!(
+        !clearance_strip_exceeds(
+            XY::new(0.625, 0.625),
+            [1.0, 1.0],
+            XY::new(0.0, 0.0),
+            XY::new(0.0, 0.0),
+            &ordinary_key,
+        )
+        .unwrap()
+    );
+    assert_eq!(
+        CLEARANCE_STRIP_EXACT_FALLBACKS.with(std::cell::Cell::get),
+        ordinary_fallbacks,
+        "an oblique positive bound below the incumbent should certify no-prune"
+    );
+    assert!(
+        clearance_strip_exceeds(
+            XY::new(0.875, 0.875),
+            [1.0, 1.0],
+            XY::new(0.0, 0.0),
+            XY::new(0.0, 0.0),
+            &ordinary_key,
+        )
+        .unwrap()
+    );
+    assert_eq!(
+        CLEARANCE_STRIP_EXACT_FALLBACKS.with(std::cell::Cell::get),
+        ordinary_fallbacks,
+        "an oblique strict bound above the incumbent should prune"
+    );
+    for spacing in [2.0_f64.powi(-700), 1.0, 2.0_f64.powi(600)] {
+        let low = XY::new(0.0, 0.0);
+        let high = XY::new(0.0, spacing);
+        let incumbent = point_pair_distance_key(low, XY::new(spacing, 0.0));
+        assert!(
+            clearance_strip_exceeds(
+                XY::new(2.0 * spacing, 0.0),
+                [1.0, 0.0],
+                low,
+                high,
+                &incumbent,
+            )
+            .unwrap()
+        );
+
+        let exact_tie = point_pair_distance_key(low, XY::new(spacing, 0.0));
+        assert!(
+            !clearance_strip_exceeds(XY::new(spacing, 0.0), [1.0, 0.0], low, high, &exact_tie,)
+                .unwrap()
+        );
+    }
+    assert!(
+        CLEARANCE_STRIP_EXACT_FALLBACKS.with(std::cell::Cell::get) >= 4,
+        "tiny/huge strip squares must reach the exact ratio comparison"
+    );
+
+    let origin = 2.0_f64.powi(60);
+    let translated = XY::new(origin + 2.0_f64.powi(40), origin + 3.0 * 2.0_f64.powi(12));
+    let source_origin = XY::new(origin, origin);
+    assert_eq!(
+        source_dot_cmp([1.0, -1.0], translated, source_origin).unwrap(),
+        Ordering::Greater,
+    );
+    let maximum = f64::MAX;
+    assert_eq!(
+        source_dot_cmp(
+            [1.0, 1.0],
+            XY::new(maximum, maximum),
+            XY::new(-maximum, -maximum),
+        )
+        .unwrap(),
+        Ordering::Greater,
+    );
 }
 
 #[test]

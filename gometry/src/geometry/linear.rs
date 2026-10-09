@@ -813,7 +813,7 @@ pub(super) fn split_line_by_points<C: Coordinates + ?Sized>(
         let upper_bound = tolerance.next_up() * tolerance.next_up();
         for point in points {
             let mut nearest = None;
-            bvh.nearest_point_with_stack::<false, true, true>(
+            bvh.nearest_point_with_stack::<true, true>(
                 &linework,
                 *point,
                 upper_bound,

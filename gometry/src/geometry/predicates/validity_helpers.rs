@@ -3,13 +3,16 @@ use ahash::HashMapExt as _;
 
 #[cfg(test)]
 use crate::geometry::HashMap;
+#[cfg(test)]
+use crate::geometry::PointKey;
 use crate::geometry::predicates::{LineworkChains, indexed_segments_are_simple, validate_line};
 use crate::geometry::{
-    Component, CoordSeq, Coordinates, FacetBvh, Ordering, Point, PointKey, PointSetIndex, Polygon,
-    PreparedLinework, RefinedChainProvenance, SEGMENT_INDEX_MIN_PAIRS, Segment, Shape,
-    ShapeCountQuery, VertexProvenance, XY, point_distance, point_distance_squared,
-    point_in_ccw_triangle, point_segment_distance, ring_winding, same_point, segment_projection,
-    squared_norm_is_trustworthy, try_point_distance_squared, try_point_segment_distance_squared,
+    ClearanceFacetBvh, ClearancePointQuery, Component, CoordSeq, Coordinates, FacetBvh, Ordering,
+    Point, PointSetIndex, Polygon, PreparedLinework, RefinedChainProvenance,
+    SEGMENT_INDEX_MIN_PAIRS, Segment, Shape, ShapeCountQuery, SquaredDistanceKey, VertexProvenance,
+    XY, point_distance, point_distance_squared, point_in_ccw_triangle, point_pair_distance_key,
+    point_segment_distance, point_segment_exact_distance_key, ring_winding, same_point,
+    segment_projection,
 };
 
 /// Iteratively remove segments with a degree-1 endpoint (dangles) from the
@@ -149,19 +152,68 @@ pub(in crate::geometry) fn face_interior_point(face: &[XY]) -> XY {
 }
 
 /// The realizing pair of the minimum clearance — `(vertex, nearest other
-/// vertex or segment projection, squared distance)` — or `None` when the
-/// clearance is infinite. Both `minimum_clearance` (the scalar) and
-/// `minimum_clearance_line` (the witness line) fold this one scan, so the
-/// two surfaces can never disagree.
+/// vertex or segment projection)` — or `None` when the clearance is infinite.
+/// Both scalar and witness-line surfaces finish this same selected source.
 #[derive(Clone, Debug)]
 pub(crate) struct MinimumClearanceWitness {
     pub(crate) plan: [VertexProvenance; 2],
-    pub(crate) distance_squared: f64,
-    /// The vertices the plan indexes. Emitting the witness pair needs them,
-    /// and the scan above already transposed the geometry to build them, so
-    /// the witness carries them rather than letting each caller transpose it
-    /// a second time.
+    /// The vertices the plan indexes; witness emission and source-continuum
+    /// measurement both read them.
     pub(crate) points: Vec<Point>,
+}
+
+impl MinimumClearanceWitness {
+    pub(crate) fn planar_distance(&self) -> crate::error::Result<f64> {
+        match self.plan.as_slice() {
+            [
+                VertexProvenance::Input(left),
+                VertexProvenance::Input(right),
+            ] => Ok(point_distance(
+                *self
+                    .points
+                    .get(*left)
+                    .expect("clearance point provenance belongs to the source points"),
+                *self
+                    .points
+                    .get(*right)
+                    .expect("clearance point provenance belongs to the source points"),
+            )),
+            [
+                VertexProvenance::Input(point),
+                VertexProvenance::OnSegment { i, j, .. },
+            ] => {
+                let point = *self
+                    .points
+                    .get(*point)
+                    .expect("clearance point provenance belongs to the source points");
+                let start = *self
+                    .points
+                    .get(*i)
+                    .expect("clearance segment provenance belongs to the source points");
+                let end = *self
+                    .points
+                    .get(*j)
+                    .expect("clearance segment provenance belongs to the source points");
+                point_segment_distance(point, Segment {
+                    start: start.xy(),
+                    end: end.xy(),
+                })
+            },
+            _ => unreachable!("clearance witnesses start at an input point"),
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+struct MinimumClearanceCandidate {
+    source: ClearanceSource,
+    distance_key: SquaredDistanceKey,
+}
+
+#[derive(Clone, Copy)]
+enum ClearanceSource {
+    PointPair { first: usize, second: usize },
+    PointSegment { point: usize, segment: usize },
 }
 
 pub(crate) fn minimum_clearance_witness(
@@ -175,14 +227,11 @@ pub(crate) fn minimum_clearance_witness(
     let keep = |point: Point, _: usize, segment: Segment| {
         !same_point(point, segment.start) && !same_point(point, segment.end)
     };
-    let witness = minimum_clearance_candidates(shape, &points, &segments, &keep)?;
-    Ok(
-        witness.map(|(plan, distance_squared)| MinimumClearanceWitness {
-            plan,
-            distance_squared,
-            points,
-        }),
-    )
+    let Some(candidate) = minimum_clearance_candidates(shape, &points, &segments, &keep)? else {
+        return Ok(None);
+    };
+    let plan = finish_clearance_candidate(&candidate, &points, &segments)?;
+    Ok(Some(MinimumClearanceWitness { plan, points }))
 }
 
 pub(crate) fn minimum_clearance_witness_with_support(
@@ -275,10 +324,11 @@ pub(crate) fn minimum_clearance_witness_with_support(
             .expect("paired line-chain site end belongs to the site coordinate slice");
         !same_point(point, start) && !same_point(point, end)
     };
-    let witness = minimum_clearance_candidates(support, &site_points, &segments, &keep)?;
-    let Some((mut plan, distance_squared)) = witness else {
+    let Some(candidate) = minimum_clearance_candidates(support, &site_points, &segments, &keep)?
+    else {
         return Ok(None);
     };
+    let mut plan = finish_clearance_candidate(&candidate, &site_points, &segments)?;
     let has_segment_witness = plan
         .iter()
         .any(|vertex| matches!(vertex, VertexProvenance::OnSegment { .. }));
@@ -303,11 +353,7 @@ pub(crate) fn minimum_clearance_witness_with_support(
     } else {
         site_points
     };
-    Ok(Some(MinimumClearanceWitness {
-        plan,
-        distance_squared,
-        points,
-    }))
+    Ok(Some(MinimumClearanceWitness { plan, points }))
 }
 
 struct SupportChainLineage {
@@ -322,7 +368,7 @@ fn minimum_clearance_candidates(
     points: &[Point],
     segments: &[IndexedSegment],
     keep: &impl Fn(Point, usize, Segment) -> bool,
-) -> crate::error::Result<Option<([VertexProvenance; 2], f64)>> {
+) -> crate::error::Result<Option<MinimumClearanceCandidate>> {
     let witness = if points
         .len()
         .saturating_mul(points.len().max(segments.len()))
@@ -341,115 +387,59 @@ fn minimum_clearance_witness_indexed(
     points: &[Point],
     segments: &[IndexedSegment],
     keep: &impl Fn(Point, usize, Segment) -> bool,
-) -> crate::error::Result<Option<([VertexProvenance; 2], f64)>> {
-    let vertex_index = PointSetIndex::build(points.iter().copied());
-    let mut vertex_witness = None;
-    let mut clearance_squared = f64::INFINITY;
+) -> crate::error::Result<Option<MinimumClearanceCandidate>> {
+    let vertex_index = PointSetIndex::build_clearance_with_ordinals(points);
+    let mut vertex_query: ClearancePointQuery<'_> = vertex_index.clearance_query();
+    let mut best: Option<MinimumClearanceCandidate> = None;
     for (point_index, point) in points.iter().enumerate() {
-        if let Some((other, raw_sq)) = vertex_index.nearest_other(*point)
-            && let Some(distance_squared) =
-                admit_clearance_squared(raw_sq, clearance_squared, || {
-                    Ok(point_distance(*point, other))
-                })?
+        let incumbent = best.as_ref().map(|candidate| &candidate.distance_key);
+        if let Some((other, distance_key)) =
+            vertex_query.nearest_clearance_neighbor(*point, incumbent)?
         {
-            clearance_squared = distance_squared;
-            vertex_witness = Some((point_index, other, distance_squared));
+            let (first, second) = if point_index < other {
+                (point_index, other)
+            } else {
+                (other, point_index)
+            };
+            consider_clearance_candidate(&mut best, &MinimumClearanceCandidate {
+                source: ClearanceSource::PointPair { first, second },
+                distance_key,
+            })?;
         }
     }
-    let mut witness = vertex_witness.map(|(point_index, other, distance_squared)| {
-        let key = PointKey::new(other);
-        let other_index = points
-            .iter()
-            .position(|point| PointKey::new(*point) == key)
-            .expect("the selected indexed vertex belongs to the source points");
-        (
-            [
-                VertexProvenance::Input(point_index),
-                VertexProvenance::Input(other_index),
-            ],
-            distance_squared,
-        )
-    });
     let linework = PreparedLinework::build_all(shape)?;
-    let bvh = FacetBvh::build_for_clearance(&linework);
+    let bvh: Option<ClearanceFacetBvh> = FacetBvh::build_for_clearance(&linework)?;
     if bvh.is_none() && !segments.is_empty() {
         return Err(crate::error::ResourceError::SizeOverflow.into());
     }
     let mut stack = Vec::new();
     for (point_index, point) in points.iter().enumerate() {
-        // Express the clearance fold's strict bound as an inclusive predecessor.
-        // An untrustworthy square cannot prune candidate distances.
-        let probe_best = (if clearance_squared.is_normal() {
-            clearance_squared
-        } else {
-            f64::INFINITY
-        })
-        .next_down();
-        let mut nearest = None;
-        if let Some(bvh) = &bvh {
-            if bvh.has_slabs() {
-                bvh.nearest_point_with_stack_and_ordinal::<true, true, true>(
-                    &linework,
-                    *point,
-                    probe_best,
-                    f64::INFINITY,
-                    keep,
-                    &mut stack,
-                    &mut nearest,
-                )?;
-            } else {
-                bvh.nearest_point_with_stack_and_ordinal::<false, true, true>(
-                    &linework,
-                    *point,
-                    probe_best,
-                    f64::INFINITY,
-                    keep,
-                    &mut stack,
-                    &mut nearest,
-                )?;
-            }
-        }
-        if let Some(nearest) = nearest
-            && let Some(seg_i) = nearest.segment_ordinal()
-            && let Some(distance_squared) =
-                admit_clearance_squared(nearest.distance_squared, clearance_squared, || {
-                    point_segment_distance(
-                        *point,
-                        segments
-                            .get(seg_i)
-                            .expect("segment ordinals come from the indexed segment slice")
-                            .xy,
-                    )
-                })?
+        let incumbent = best.as_ref().map(|candidate| &candidate.distance_key);
+        if let Some(bvh) = &bvh
+            && let Some((segment, distance_key)) = bvh
+                .nearest_clearance_segment_with_stack_and_ordinal(
+                    &linework, *point, keep, incumbent, &mut stack,
+                )?
         {
-            clearance_squared = distance_squared;
-            let segment = *segments
-                .get(seg_i)
-                .expect("segment ordinals come from the indexed segment slice");
-            witness = Some((
-                [
-                    VertexProvenance::Input(point_index),
-                    VertexProvenance::OnSegment {
-                        i: segment.start,
-                        j: segment.end,
-                        projection: segment_projection(*point, segment.xy)?,
-                    },
-                ],
-                distance_squared,
-            ));
+            consider_clearance_candidate(&mut best, &MinimumClearanceCandidate {
+                source: ClearanceSource::PointSegment {
+                    point: point_index,
+                    segment,
+                },
+                distance_key,
+            })?;
         }
     }
-    Ok(witness)
+    Ok(best)
 }
 
-/// Brute O(n²) path for small multipoints / sparse linework.
+/// Exhaustive source-key path for small multipoints / sparse linework.
 fn minimum_clearance_witness_brute(
     points: &[Point],
     segments: &[IndexedSegment],
     keep: &impl Fn(Point, usize, Segment) -> bool,
-) -> crate::error::Result<Option<([VertexProvenance; 2], f64)>> {
-    let mut witness = None;
-    let mut clearance_squared = f64::INFINITY;
+) -> crate::error::Result<Option<MinimumClearanceCandidate>> {
+    let mut best = None;
     for (left_index, left) in points.iter().enumerate() {
         let later_points = points
             .get(left_index.wrapping_add(1)..)
@@ -458,25 +448,14 @@ fn minimum_clearance_witness_brute(
             if same_point(*left, *right) {
                 continue;
             }
-            // Normal squares compare in squared space; false-zero / subnormal
-            // residuals recompute in distance space (1.5e-162 not dropped,
-            // 2.2e-162 not quantized).
-            let Some(distance_squared) = admit_clearance_from_try(
-                Ok(try_point_distance_squared(*left, *right)),
-                clearance_squared,
-                || Ok(point_distance(*left, *right)),
-            )?
-            else {
-                continue;
-            };
-            clearance_squared = distance_squared;
-            witness = Some((
-                [
-                    VertexProvenance::Input(left_index),
-                    VertexProvenance::Input(left_index.wrapping_add(1).wrapping_add(offset)),
-                ],
-                distance_squared,
-            ));
+            let right_index = left_index.wrapping_add(1).wrapping_add(offset);
+            consider_clearance_candidate(&mut best, &MinimumClearanceCandidate {
+                source: ClearanceSource::PointPair {
+                    first: left_index,
+                    second: right_index,
+                },
+                distance_key: point_pair_distance_key(left.xy(), right.xy()),
+            })?;
         }
     }
     for (point_index, point) in points.iter().enumerate() {
@@ -484,72 +463,67 @@ fn minimum_clearance_witness_brute(
             if !keep(*point, segment_index, segment.xy) {
                 continue;
             }
-            let Some(distance_squared) = admit_clearance_from_try(
-                try_point_segment_distance_squared(*point, segment.xy),
-                clearance_squared,
-                || point_segment_distance(*point, segment.xy),
-            )?
-            else {
+            let distance_key = point_segment_exact_distance_key(point.xy(), segment.xy);
+            if distance_key.is_exact_zero()? {
                 continue;
-            };
-            clearance_squared = distance_squared;
-            witness = Some((
-                [
-                    VertexProvenance::Input(point_index),
-                    VertexProvenance::OnSegment {
-                        i: segment.start,
-                        j: segment.end,
-                        projection: segment_projection(*point, segment.xy)?,
-                    },
-                ],
-                distance_squared,
-            ));
+            }
+            consider_clearance_candidate(&mut best, &MinimumClearanceCandidate {
+                source: ClearanceSource::PointSegment {
+                    point: point_index,
+                    segment: segment_index,
+                },
+                distance_key,
+            })?;
         }
     }
-    Ok(witness)
+    Ok(best)
 }
 
-/// True when candidate distance `d` is strictly closer than the current
-/// clearance tracked as a (possibly untrustworthy) squared residual.
-fn clearance_beats_distance(clearance_squared: f64, d: f64) -> bool {
-    if clearance_squared.is_normal() {
-        d < clearance_squared.sqrt()
-    } else if !clearance_squared.is_finite() {
-        // Still at +inf sentinel.
-        true
-    } else {
-        // Prior best was zero/subnormal placeholder — compare via sqrt of the
-        // placeholder when it is positive finite.
-        clearance_squared <= 0.0 || d < clearance_squared.sqrt()
+fn consider_clearance_candidate(
+    best: &mut Option<MinimumClearanceCandidate>,
+    candidate: &MinimumClearanceCandidate,
+) -> crate::error::Result<()> {
+    let replace = match best.as_ref() {
+        None => true,
+        Some(best) => candidate
+            .distance_key
+            .cmp_distance(&best.distance_key)?
+            .is_lt(),
+    };
+    if replace {
+        *best = Some(*candidate);
     }
+    Ok(())
 }
 
-/// Admit a candidate clearance residual: normal positive squares compare in
-/// squared space; false-zero / subnormal residuals recompute via `honest_d`.
-fn admit_clearance_squared(
-    raw_sq: f64,
-    clearance_squared: f64,
-    honest_d: impl FnOnce() -> crate::error::Result<f64>,
-) -> crate::error::Result<Option<f64>> {
-    if squared_norm_is_trustworthy(raw_sq, false) {
-        Ok((raw_sq > 0.0 && raw_sq < clearance_squared).then_some(raw_sq))
-    } else {
-        let d = honest_d()?;
-        Ok((d > 0.0 && clearance_beats_distance(clearance_squared, d)).then_some(d * d))
-    }
-}
-
-/// Brute-path twin of [`admit_clearance_squared`] over a `try_*` Option square.
-fn admit_clearance_from_try(
-    tried: crate::error::Result<Option<f64>>,
-    clearance_squared: f64,
-    honest_d: impl FnOnce() -> crate::error::Result<f64>,
-) -> crate::error::Result<Option<f64>> {
-    if let Some(sq) = tried? {
-        admit_clearance_squared(sq, clearance_squared, honest_d)
-    } else {
-        let d = honest_d()?;
-        Ok((d > 0.0 && clearance_beats_distance(clearance_squared, d)).then_some(d * d))
+fn finish_clearance_candidate(
+    candidate: &MinimumClearanceCandidate,
+    points: &[Point],
+    segments: &[IndexedSegment],
+) -> crate::error::Result<[VertexProvenance; 2]> {
+    match candidate.source {
+        ClearanceSource::PointPair { first, second } => Ok([
+            VertexProvenance::Input(first),
+            VertexProvenance::Input(second),
+        ]),
+        ClearanceSource::PointSegment { point, segment } => {
+            let segment = *segments
+                .get(segment)
+                .expect("clearance segment ordinal belongs to the indexed source segments");
+            Ok([
+                VertexProvenance::Input(point),
+                VertexProvenance::OnSegment {
+                    i: segment.start,
+                    j: segment.end,
+                    projection: segment_projection(
+                        *points
+                            .get(point)
+                            .expect("clearance point ordinal belongs to the source points"),
+                        segment.xy,
+                    )?,
+                },
+            ])
+        },
     }
 }
 
@@ -771,6 +745,9 @@ mod prune_dangles_tests {
 
 #[cfg(test)]
 mod clearance_index_tests {
+    use pyo3::prelude::{Bound, PyModule, Python};
+    use pyo3::types::{PyAnyMethods as _, PyList, PyListMethods as _};
+
     use super::*;
     use crate::geometry::LineSeq;
 
@@ -788,28 +765,202 @@ mod clearance_index_tests {
         line(&points)
     }
 
-    #[test]
-    fn indexed_clearance_matches_brute_force() {
-        let shape = indexed_line();
+    fn assert_indexed_matches_exact_exhaustive(shape: &Shape) -> MinimumClearanceCandidate {
         let points = shape.points_vec().unwrap();
+        let segments = indexed_segments(shape).unwrap();
+        let keep = |point: Point, _: usize, segment: Segment| {
+            !same_point(point, segment.start) && !same_point(point, segment.end)
+        };
+        let estimated_pairs = points
+            .len()
+            .saturating_mul(points.len().max(segments.len()));
+        assert!(estimated_pairs >= SEGMENT_INDEX_MIN_PAIRS);
+        let indexed = minimum_clearance_witness_indexed(shape, &points, &segments, &keep)
+            .unwrap()
+            .expect("finite indexed clearance");
+        let exhaustive = minimum_clearance_witness_brute(&points, &segments, &keep)
+            .unwrap()
+            .expect("finite exhaustive clearance");
+        match (indexed.source, exhaustive.source) {
+            (
+                ClearanceSource::PointPair {
+                    first: indexed_first,
+                    second: indexed_second,
+                },
+                ClearanceSource::PointPair {
+                    first: exhaustive_first,
+                    second: exhaustive_second,
+                },
+            ) => assert_eq!(
+                (indexed_first, indexed_second),
+                (exhaustive_first, exhaustive_second),
+            ),
+            (
+                ClearanceSource::PointSegment {
+                    point: indexed_point,
+                    segment: indexed_segment,
+                },
+                ClearanceSource::PointSegment {
+                    point: exhaustive_point,
+                    segment: exhaustive_segment,
+                },
+            ) => assert_eq!(
+                (indexed_point, indexed_segment),
+                (exhaustive_point, exhaustive_segment),
+            ),
+            _ => panic!("indexed and exhaustive clearance chose different source kinds"),
+        }
+        assert!(
+            indexed
+                .distance_key
+                .cmp_distance(&exhaustive.distance_key)
+                .unwrap()
+                .is_eq()
+        );
+        let indexed_plan = finish_clearance_candidate(&indexed, &points, &segments).unwrap();
+        let exhaustive_plan = finish_clearance_candidate(&exhaustive, &points, &segments).unwrap();
+        assert_eq!(
+            crate::geometry::emit_from_original(&points, &indexed_plan).unwrap(),
+            crate::geometry::emit_from_original(&points, &exhaustive_plan).unwrap(),
+        );
+        indexed
+    }
+
+    #[test]
+    fn indexed_clearance_matches_exact_exhaustive_oracle() {
+        let shape = indexed_line();
+        let candidate = assert_indexed_matches_exact_exhaustive(&shape);
+        assert!(matches!(candidate.source, ClearanceSource::PointPair {
+            first: 0,
+            second: 1
+        }));
+    }
+
+    #[test]
+    fn indexed_clearance_returns_none_when_all_xy_candidates_are_aliases() {
+        let points = vec![Point::new_raw_xy(-0.0, 0.0); 64];
+        let shape = line(&points);
         let segments = indexed_segments(&shape).unwrap();
         let keep = |point: Point, _: usize, segment: Segment| {
             !same_point(point, segment.start) && !same_point(point, segment.end)
         };
-        assert!(points.len() * points.len().max(segments.len()) >= SEGMENT_INDEX_MIN_PAIRS);
-        let (indexed_plan, indexed_distance) =
+
+        assert!(
             minimum_clearance_witness_indexed(&shape, &points, &segments, &keep)
                 .unwrap()
-                .expect("finite indexed clearance");
-        let (brute_plan, brute_distance) =
-            minimum_clearance_witness_brute(&points, &segments, &keep)
-                .unwrap()
-                .expect("finite brute-force clearance");
-        assert_eq!(indexed_distance, brute_distance);
-        assert_eq!(
-            crate::geometry::emit_from_original(&points, &indexed_plan).unwrap(),
-            crate::geometry::emit_from_original(&points, &brute_plan).unwrap()
+                .is_none()
         );
+    }
+
+    #[test]
+    fn indexed_tiny_and_huge_clearance_keep_exact_point_pairs() {
+        for spacing in [2.0_f64.powi(-700), 2.0_f64.powi(600)] {
+            for count in [64_u16, 128, 256] {
+                let points: Vec<_> = (0..count)
+                    .map(|index| Point::new_raw_xy(f64::from(index) * spacing, 0.0))
+                    .collect();
+                let shape = line(&points);
+                crate::geometry::CLEARANCE_POINT_BUILD_SITES.with(|work| work.set(0));
+                crate::geometry::CLEARANCE_POINT_NODES.with(|work| work.set(0));
+                crate::geometry::CLEARANCE_POINT_LEAVES.with(|work| work.set(0));
+                crate::geometry::CLEARANCE_POINT_RECHECKS.with(|work| work.set(0));
+                crate::geometry::CLEARANCE_POINT_EXACT_FALLBACKS.with(|work| work.set(0));
+                let candidate = assert_indexed_matches_exact_exhaustive(&shape);
+                assert!(matches!(candidate.source, ClearanceSource::PointPair {
+                    first: 0,
+                    second: 1
+                }));
+                let build_sites =
+                    crate::geometry::CLEARANCE_POINT_BUILD_SITES.with(std::cell::Cell::get);
+                let nodes = crate::geometry::CLEARANCE_POINT_NODES.with(std::cell::Cell::get);
+                let leaves = crate::geometry::CLEARANCE_POINT_LEAVES.with(std::cell::Cell::get);
+                let rechecks = crate::geometry::CLEARANCE_POINT_RECHECKS.with(std::cell::Cell::get);
+                let exact_fallbacks =
+                    crate::geometry::CLEARANCE_POINT_EXACT_FALLBACKS.with(std::cell::Cell::get);
+                eprintln!(
+                    "point clearance: spacing={spacing:e}, {count} sites ({build_sites} build visits), {nodes} node bounds, {leaves} leaf bounds, {rechecks} rechecks, {exact_fallbacks} exact fallbacks",
+                );
+                assert!(
+                    nodes > 0 && leaves > 0,
+                    "point query did not visit the source tree"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn indexed_near_tie_keeps_exactly_closer_segment_over_rounded_point_pair() {
+        let mut parts = vec![
+            Shape::Point(Point::new_raw_xy(0.0, 0.0)),
+            Shape::Point(Point::new_raw_xy(1.0, 2.0_f64.powi(-28))),
+            line(&[
+                Point::new_raw_xy(-10.0, -1.0),
+                Point::new_raw_xy(10.0, -1.0),
+            ]),
+        ];
+        parts.extend(
+            (0..64).map(|index| {
+                Shape::Point(Point::new_raw_xy(100.0 + 10.0 * f64::from(index), 100.0))
+            }),
+        );
+        let shape = Shape::geometry_collection(parts).unwrap();
+
+        let candidate = assert_indexed_matches_exact_exhaustive(&shape);
+
+        assert!(matches!(candidate.source, ClearanceSource::PointSegment {
+            point: 0,
+            segment: 0
+        }));
+    }
+
+    #[test]
+    fn indexed_oblique_strip_bound_preserves_exact_exhaustive_winner() {
+        let mut parts = vec![
+            Shape::Point(Point::new_raw_xy(0.625, 0.625)),
+            line(&[Point::new_raw_xy(-1.0, 1.0), Point::new_raw_xy(1.0, -1.0)]),
+            Shape::Point(Point::new_raw_xy(100.0, 100.0)),
+            Shape::Point(Point::new_raw_xy(101.0, 100.0)),
+        ];
+        parts.extend((0..60).map(|index| {
+            Shape::Point(Point::new_raw_xy(1000.0 + 10.0 * f64::from(index), 1000.0))
+        }));
+        let shape = Shape::geometry_collection(parts).unwrap();
+        let candidate = assert_indexed_matches_exact_exhaustive(&shape);
+        let point_pair = point_pair_distance_key(XY::new(100.0, 100.0), XY::new(101.0, 100.0));
+
+        assert!(matches!(candidate.source, ClearanceSource::PointSegment {
+            point: 0,
+            segment: 0
+        }));
+        assert!(
+            candidate
+                .distance_key
+                .cmp_distance(&point_pair)
+                .unwrap()
+                .is_lt()
+        );
+    }
+
+    #[test]
+    fn indexed_zero_segment_candidate_does_not_hide_positive_clearance() {
+        let mut parts = vec![
+            Shape::Point(Point::new_raw_xy(0.0, 0.0)),
+            line(&[Point::new_raw_xy(-10.0, 0.0), Point::new_raw_xy(10.0, 0.0)]),
+            line(&[Point::new_raw_xy(-1.0, 1.0), Point::new_raw_xy(1.0, 1.0)]),
+        ];
+        parts.extend(
+            (0..64).map(|index| {
+                Shape::Point(Point::new_raw_xy(100.0 + 10.0 * f64::from(index), 100.0))
+            }),
+        );
+        let shape = Shape::geometry_collection(parts).unwrap();
+
+        let candidate = assert_indexed_matches_exact_exhaustive(&shape);
+
+        assert!(matches!(candidate.source, ClearanceSource::PointSegment {
+            point: 0,
+            segment: 1
+        }));
     }
 
     #[test]
@@ -836,7 +987,7 @@ mod clearance_index_tests {
         let witness = minimum_clearance_witness_with_support(&sites, &support, &refined_chains)
             .unwrap()
             .expect("source line has a finite clearance");
-        assert_eq!(witness.distance_squared, 1.0);
+        assert_eq!(witness.planar_distance().unwrap(), 1.0);
         assert!(matches!(witness.plan[0], VertexProvenance::Input(2)));
         assert!(matches!(
             witness.plan[1],
@@ -896,7 +1047,7 @@ mod clearance_index_tests {
         let witness = minimum_clearance_witness_with_support(&sites, &support, &refined_chains)
             .unwrap()
             .expect("the point and line have a finite clearance");
-        assert_eq!(witness.distance_squared, 0.0625);
+        assert_eq!(witness.planar_distance().unwrap(), 0.25);
         assert!(matches!(witness.plan[0], VertexProvenance::Input(64)));
         assert!(matches!(
             witness.plan[1],
@@ -914,5 +1065,219 @@ mod clearance_index_tests {
             inserted_site_witness.plan[1],
             VertexProvenance::Input(_)
         ));
+    }
+
+    fn public_clearance_module(py: Python<'_>) -> Bound<'_, PyModule> {
+        let module = PyModule::new(py, "gometry._lib").unwrap();
+        crate::lib(&module).unwrap();
+        module
+    }
+
+    fn public_line_wkb(
+        py: Python<'_>,
+        module: &Bound<'_, PyModule>,
+        coordinates: [(f64, f64); 2],
+    ) -> Vec<u8> {
+        let coordinates = PyList::new(py, coordinates).unwrap();
+        module
+            .getattr("LineString")
+            .unwrap()
+            .call1((&coordinates,))
+            .unwrap()
+            .call_method0("to_wkb")
+            .unwrap()
+            .extract()
+            .unwrap()
+    }
+
+    #[test]
+    fn compiled_public_tiny_clearance_uses_exact_source_selection() {
+        crate::test_support::initialize_python();
+        Python::attach(|py| {
+            let module = public_clearance_module(py);
+            let spacing = 2.0_f64.powi(-700);
+            let coordinates =
+                PyList::new(py, [(0.0, 0.0), (5.0 * spacing, 0.0), (spacing, 0.0)]).unwrap();
+            let shape = module
+                .getattr("MultiPoint")
+                .unwrap()
+                .call1((&coordinates,))
+                .unwrap();
+
+            assert_eq!(
+                shape
+                    .call_method0("minimum_clearance")
+                    .unwrap()
+                    .extract::<f64>()
+                    .unwrap(),
+                spacing,
+            );
+            let witness = shape
+                .call_method0("minimum_clearance_line")
+                .unwrap()
+                .call_method0("to_wkb")
+                .unwrap()
+                .extract::<Vec<u8>>()
+                .unwrap();
+            assert_eq!(
+                witness,
+                public_line_wkb(py, &module, [(0.0, 0.0), (spacing, 0.0)]),
+            );
+        });
+    }
+
+    #[test]
+    fn compiled_public_huge_clearance_uses_exact_source_selection() {
+        crate::test_support::initialize_python();
+        Python::attach(|py| {
+            let module = public_clearance_module(py);
+            let spacing = 2.0_f64.powi(600);
+            let coordinates =
+                PyList::new(py, [(0.0, 0.0), (5.0 * spacing, 0.0), (spacing, 0.0)]).unwrap();
+            let shape = module
+                .getattr("MultiPoint")
+                .unwrap()
+                .call1((&coordinates,))
+                .unwrap();
+
+            assert_eq!(
+                shape
+                    .call_method0("minimum_clearance")
+                    .unwrap()
+                    .extract::<f64>()
+                    .unwrap(),
+                spacing,
+            );
+            let witness = shape
+                .call_method0("minimum_clearance_line")
+                .unwrap()
+                .call_method0("to_wkb")
+                .unwrap()
+                .extract::<Vec<u8>>()
+                .unwrap();
+            assert_eq!(
+                witness,
+                public_line_wkb(py, &module, [(0.0, 0.0), (spacing, 0.0)]),
+            );
+        });
+    }
+
+    #[test]
+    fn compiled_public_near_tie_uses_exact_source_selection() {
+        crate::test_support::initialize_python();
+        Python::attach(|py| {
+            let module = public_clearance_module(py);
+            let points = PyList::new(py, [(0.0, 0.0), (1.0, 2.0_f64.powi(-28))]).unwrap();
+            let multipoint = module
+                .getattr("MultiPoint")
+                .unwrap()
+                .call1((&points,))
+                .unwrap();
+            let line_coordinates = PyList::new(py, [(-10.0, -1.0), (10.0, -1.0)]).unwrap();
+            let line = module
+                .getattr("LineString")
+                .unwrap()
+                .call1((&line_coordinates,))
+                .unwrap();
+            let parts = PyList::empty(py);
+            parts.append(multipoint).unwrap();
+            parts.append(line).unwrap();
+            for index in 0..64 {
+                parts
+                    .append(
+                        module
+                            .getattr("Point")
+                            .unwrap()
+                            .call1((100.0 + 10.0 * f64::from(index), 100.0))
+                            .unwrap(),
+                    )
+                    .unwrap();
+            }
+            let shape = module
+                .getattr("GeometryCollection")
+                .unwrap()
+                .call1((&parts,))
+                .unwrap();
+
+            assert_eq!(
+                shape
+                    .call_method0("minimum_clearance")
+                    .unwrap()
+                    .extract::<f64>()
+                    .unwrap(),
+                1.0,
+            );
+            let witness = shape
+                .call_method0("minimum_clearance_line")
+                .unwrap()
+                .call_method0("to_wkb")
+                .unwrap()
+                .extract::<Vec<u8>>()
+                .unwrap();
+            assert_eq!(
+                witness,
+                public_line_wkb(py, &module, [(0.0, 0.0), (0.0, -1.0)]),
+            );
+        });
+    }
+
+    #[test]
+    fn compiled_public_positive_clearance_skips_zero_segment_incidence() {
+        crate::test_support::initialize_python();
+        Python::attach(|py| {
+            let module = public_clearance_module(py);
+            let parts = PyList::empty(py);
+            parts
+                .append(module.getattr("Point").unwrap().call1((0.0, 0.0)).unwrap())
+                .unwrap();
+            for coordinates in [[(-10.0, 0.0), (10.0, 0.0)], [(-1.0, 1.0), (1.0, 1.0)]] {
+                let coordinates = PyList::new(py, coordinates).unwrap();
+                parts
+                    .append(
+                        module
+                            .getattr("LineString")
+                            .unwrap()
+                            .call1((&coordinates,))
+                            .unwrap(),
+                    )
+                    .unwrap();
+            }
+            for index in 0..64 {
+                parts
+                    .append(
+                        module
+                            .getattr("Point")
+                            .unwrap()
+                            .call1((100.0 + 10.0 * f64::from(index), 100.0))
+                            .unwrap(),
+                    )
+                    .unwrap();
+            }
+            let shape = module
+                .getattr("GeometryCollection")
+                .unwrap()
+                .call1((&parts,))
+                .unwrap();
+
+            assert_eq!(
+                shape
+                    .call_method0("minimum_clearance")
+                    .unwrap()
+                    .extract::<f64>()
+                    .unwrap(),
+                1.0,
+            );
+            let witness = shape
+                .call_method0("minimum_clearance_line")
+                .unwrap()
+                .call_method0("to_wkb")
+                .unwrap()
+                .extract::<Vec<u8>>()
+                .unwrap();
+            assert_eq!(
+                witness,
+                public_line_wkb(py, &module, [(0.0, 0.0), (0.0, 1.0)]),
+            );
+        });
     }
 }

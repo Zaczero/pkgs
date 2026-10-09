@@ -1,7 +1,44 @@
-"""Stable source ordinals and per-probe clearance admission."""
+"""Exact source clearance keys and stable source ordinals."""
 
 import gometry as gm
 import pytest
+
+
+@pytest.mark.parametrize(
+    'spacing',
+    [2.0**-700, 1.0, 2.0**600],
+    ids=['tiny', 'normal', 'huge'],
+)
+def test_minimum_clearance_finishes_the_selected_source_pair(spacing: float) -> None:
+    shape = gm.MultiPoint([(0.0, 0.0), (5.0 * spacing, 0.0), (spacing, 0.0)])
+
+    assert shape.minimum_clearance() == spacing
+    assert (
+        shape.minimum_clearance_line().to_wkb()
+        == gm.LineString([(0.0, 0.0), (spacing, 0.0)]).to_wkb()
+    )
+
+
+@pytest.mark.parametrize(
+    'spacing',
+    [2.0**-700, 2.0**600],
+    ids=['indexed-tiny', 'indexed-huge'],
+)
+def test_indexed_minimum_clearance_keeps_tiny_and_huge_source_pairs(
+    spacing: float,
+) -> None:
+    shape = gm.MultiPoint([
+        (0.0, 0.0),
+        (5.0 * spacing, 0.0),
+        (spacing, 0.0),
+        *[((8.0 + 2.0 * index) * spacing, 0.0) for index in range(64)],
+    ])
+
+    assert shape.minimum_clearance() == spacing
+    assert (
+        shape.minimum_clearance_line().to_wkb()
+        == gm.LineString([(0.0, 0.0), (spacing, 0.0)]).to_wkb()
+    )
 
 
 @pytest.mark.parametrize('extra', [0, 58], ids=['small', 'indexed'])
@@ -19,6 +56,35 @@ def test_clearance_equal_probes_retain_first_improving_probe(extra: int) -> None
             (0, 1),
             (0, 0),
         ]).to_wkb()
+    )
+
+
+def test_indexed_clearance_uses_exact_source_distance_for_rounded_near_tie() -> None:
+    shape = gm.GeometryCollection([
+        gm.MultiPoint([(0.0, 0.0), (1.0, 2.0**-28)]),
+        gm.LineString([(-10.0, -1.0), (10.0, -1.0)]),
+        *(gm.Point(100.0 + 10.0 * index, 100.0) for index in range(64)),
+    ])
+
+    assert shape.minimum_clearance() == 1.0
+    assert (
+        shape.minimum_clearance_line().to_wkb()
+        == gm.LineString([(0.0, 0.0), (0.0, -1.0)]).to_wkb()
+    )
+
+
+def test_indexed_zero_segment_incidence_does_not_hide_positive_clearance() -> None:
+    shape = gm.GeometryCollection([
+        gm.Point(0.0, 0.0),
+        gm.LineString([(-10.0, 0.0), (10.0, 0.0)]),
+        gm.LineString([(-1.0, 1.0), (1.0, 1.0)]),
+        *(gm.Point(100.0 + 10.0 * index, 100.0) for index in range(64)),
+    ])
+
+    assert shape.minimum_clearance() == 1.0
+    assert (
+        shape.minimum_clearance_line().to_wkb()
+        == gm.LineString([(0.0, 0.0), (0.0, 1.0)]).to_wkb()
     )
 
 
