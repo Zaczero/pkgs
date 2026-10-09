@@ -544,7 +544,13 @@ impl Groups {
     }
 
     /// The flat backing column (int64 ndarray, `GeometryArray`, or
-    /// `CellArray`).
+    /// `CellArray`), with values in group order.
+    ///
+    /// Returns
+    /// -------
+    /// numpy.ndarray or GeometryArray or CellArray
+    ///     The selected flat values window. Numeric values are read-only int64;
+    ///     geometry and cell values retain their immutable array types.
     #[getter]
     fn values(slf: Bound<'_, Self>) -> PyResult<Py<PyAny>> {
         match &slf.borrow().values {
@@ -619,6 +625,12 @@ impl Groups {
 
     /// The `len(self) + 1` row boundaries into ``values`` (CSR offsets
     /// column): row ``i`` is ``values[offsets[i]:offsets[i + 1]]``.
+    ///
+    /// Returns
+    /// -------
+    /// numpy.ndarray
+    ///     A read-only int64 array of row boundaries. Slices are rebased to
+    ///     start at zero; a slice starting after row zero owns a rebased copy.
     #[getter]
     fn offsets(slf: Bound<'_, Self>) -> PyResult<Py<PyAny>> {
         if slf.borrow().rows.start == 0 {
@@ -644,6 +656,11 @@ impl Groups {
     }
 
     /// Per-group element counts (`offsets[i + 1] - offsets[i]`).
+    ///
+    /// Returns
+    /// -------
+    /// numpy.ndarray
+    ///     A materialized, read-only int64 count for each group in row order.
     #[getter]
     fn counts(slf: Bound<'_, Self>) -> PyResult<Py<PyAny>> {
         let this = slf.borrow();

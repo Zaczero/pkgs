@@ -183,6 +183,11 @@ impl PyCoordinates {
 
     /// Coordinate layout: ``'XY'``, ``'XYZ'``, ``'XYM'``, or ``'XYZM'`` — the
     /// `select`-forced layout when set, else the union of the present axes.
+    ///
+    /// Returns
+    /// -------
+    /// CoordinateAxes
+    ///     The exact ordinate layout visible through this coordinate view.
     #[getter]
     pub fn coordinate_axes(&self, py: Python<'_>) -> PyResult<&'static str> {
         match self.layout {
@@ -223,18 +228,38 @@ impl PyCoordinates {
 
     /// Per-coordinate source geometry row (all ``0`` for a scalar geometry);
     /// the source row for each vertex of a ``GeometryArray``.
+    ///
+    /// Returns
+    /// -------
+    /// numpy.ndarray
+    ///     A materialized, read-only int64 array in flat coordinate order, one
+    ///     source-row label per vertex.
     #[getter]
     pub fn row_index(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         int64_array(py, self.view.try_row_index_i64(py)?)
     }
 
     /// The X ordinates as a read-only ``float64`` ``numpy.ndarray``.
+    ///
+    /// Returns
+    /// -------
+    /// numpy.ndarray
+    ///     One read-only value per vertex in view order, in the geometry's
+    ///     native coordinate units (raw coordinate units when CRS-free). The
+    ///     array shares the immutable coordinate column when one is available.
     #[getter]
     pub fn x(slf: Bound<'_, Self>, py: Python<'_>) -> PyResult<Py<PyAny>> {
         column_axis_to_py(py, slf, CoordinateAxis::X)
     }
 
     /// The Y ordinates as a read-only ``float64`` ``numpy.ndarray``.
+    ///
+    /// Returns
+    /// -------
+    /// numpy.ndarray
+    ///     One read-only value per vertex in view order, in the geometry's
+    ///     native coordinate units (raw coordinate units when CRS-free). The
+    ///     array shares the immutable coordinate column when one is available.
     #[getter]
     pub fn y(slf: Bound<'_, Self>, py: Python<'_>) -> PyResult<Py<PyAny>> {
         column_axis_to_py(py, slf, CoordinateAxis::Y)
@@ -242,6 +267,13 @@ impl PyCoordinates {
 
     /// The Z ordinates as a read-only ``float64`` ``numpy.ndarray`` of view
     /// length (``NaN`` when no coordinate carries Z).
+    ///
+    /// Returns
+    /// -------
+    /// numpy.ndarray
+    ///     One read-only value per vertex in view order; missing Z ordinates
+    ///     are ``NaN``. Values remain in the geometry's native coordinate
+    ///     units; absent columns are materialized.
     #[getter]
     pub fn z(slf: Bound<'_, Self>, py: Python<'_>) -> PyResult<Py<PyAny>> {
         column_axis_to_py(py, slf, CoordinateAxis::Z)
@@ -249,6 +281,13 @@ impl PyCoordinates {
 
     /// The M ordinates as a read-only ``float64`` ``numpy.ndarray`` of view
     /// length (``NaN`` when no coordinate carries M).
+    ///
+    /// Returns
+    /// -------
+    /// numpy.ndarray
+    ///     One read-only value per vertex in view order; missing M ordinates
+    ///     are ``NaN``. M is a measure ordinate, not a CRS unit; absent columns
+    ///     are materialized.
     #[getter]
     pub fn m(slf: Bound<'_, Self>, py: Python<'_>) -> PyResult<Py<PyAny>> {
         column_axis_to_py(py, slf, CoordinateAxis::M)

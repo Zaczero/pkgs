@@ -122,6 +122,11 @@ impl PyPoint {
 
     /// X coordinate of the point.
     ///
+    /// Returns
+    /// -------
+    /// float
+    ///     The X ordinate in the geometry's coordinate units.
+    ///
     /// Raises
     /// ------
     /// AttributeError
@@ -133,6 +138,11 @@ impl PyPoint {
 
     /// Y coordinate of the point.
     ///
+    /// Returns
+    /// -------
+    /// float
+    ///     The Y ordinate in the geometry's coordinate units.
+    ///
     /// Raises
     /// ------
     /// AttributeError
@@ -143,6 +153,11 @@ impl PyPoint {
     }
 
     /// Z (elevation) ordinate.
+    ///
+    /// Returns
+    /// -------
+    /// float
+    ///     The Z ordinate in the geometry's coordinate units.
     ///
     /// Raises
     /// ------
@@ -156,6 +171,11 @@ impl PyPoint {
     }
 
     /// M (measure) ordinate.
+    ///
+    /// Returns
+    /// -------
+    /// float
+    ///     The M measure value; it is not converted using CRS units.
     ///
     /// Raises
     /// ------
@@ -187,7 +207,14 @@ impl PyPolygon {
         ("exterior", "interiors")
     }
 
-    /// Exterior ring as a closed ``LineString``.
+    /// Exterior ring as a closed ``LineString``. ``POLYGON EMPTY`` returns an
+    /// empty line preserving the polygon's declared axes.
+    ///
+    /// Returns
+    /// -------
+    /// LineString
+    ///     The closed exterior ring, or an axis-preserving empty line for
+    ///     ``POLYGON EMPTY``. The result retains the polygon's CRS and epoch.
     #[getter]
     pub(crate) fn exterior(slf: PyRef<'_, Self>) -> Typed {
         let base = slf.as_super();
@@ -195,7 +222,15 @@ impl PyPolygon {
         base.typed_shape(ring)
     }
 
-    /// Interior rings (holes), each a closed ``LineString``.
+    /// Interior rings (holes), each a closed ``LineString``. The list follows
+    /// the polygon's ring order; ``POLYGON EMPTY`` has no interior rings.
+    ///
+    /// Returns
+    /// -------
+    /// list of LineString
+    ///     A new list with one closed ring per hole, in polygon ring order.
+    ///     Empty polygons return an empty list. Each ring retains the polygon's
+    ///     declared axes, CRS, and epoch.
     #[getter]
     pub(crate) fn interiors(slf: PyRef<'_, Self>) -> Vec<Typed> {
         let base = slf.as_super();

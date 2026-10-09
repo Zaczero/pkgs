@@ -249,21 +249,40 @@ def test_the_constructor_falls_back_to_the_rust_doc_comment(tmp_path):
         '#[pymethods]\n'
         'impl PyWidget {\n'
         '    /// Build a widget of the requested size.\n'
+        '    ///\n'
+        '    /// Parameters\n'
+        '    /// ----------\n'
+        '    /// size : int, default 3\n'
+        '    ///     Requested size.\n'
+        '    ///\n'
+        '    /// Returns\n'
+        '    /// -------\n'
+        '    /// Widget\n'
         '    #[new]\n'
+        '    #[pyo3(signature = (size = 3))]\n'
         '    fn new(size: usize) -> Self { Self }\n'
         '}\n'
     )
     cfg = make_config(tmp_path, src_text=src)
-    assert constructor_docs(cfg) == {'Widget': 'Build a widget of the requested size.'}
+    expected_doc = """\
+Build a widget of the requested size.
+
+Parameters
+----------
+size : int, default 3
+    Requested size.
+
+Returns
+-------
+Widget"""
+    assert constructor_docs(cfg) == {'Widget': expected_doc}
 
     stub = 'class Widget:\n    def __new__(cls, size: int) -> Widget: ...\n'
 
     class Widget:
         """Class prose."""
 
-        # A PyO3 class installs its own `tp_new`, so `__new__` is in
-        # `vars(cls)` and is not treated as a stub-only override.
-        def __new__(cls, size: int) -> Self:
+        def __new__(cls, size: int = 3) -> Self:
             del size
             return super().__new__(cls)
 
@@ -277,6 +296,30 @@ def test_the_constructor_falls_back_to_the_rust_doc_comment(tmp_path):
     )
     assert 'Build a widget of the requested size.' in out
     assert 'See help(type)' not in out
+
+    from pyo3stubs.context import CheckContext
+    from pyo3stubs.doc_structure import check_doc_subject, iter_doc_subjects
+
+    generated_cfg = make_config(tmp_path, stub_text=out, src_text=src)
+    subjects = tuple(
+        iter_doc_subjects(CheckContext(generated_cfg), runtime_module=module)
+    )
+    constructor = next(subject for subject in subjects if subject.kind == 'constructor')
+    assert check_doc_subject(constructor) == []
+
+    mutated = out.replace('default 3', 'default 4', 1)
+    assert mutated != out
+    mutated_cfg = make_config(tmp_path, stub_text=mutated, src_text=src)
+    mutated_subjects = tuple(
+        iter_doc_subjects(CheckContext(mutated_cfg), runtime_module=module)
+    )
+    mutated_constructor = next(
+        subject for subject in mutated_subjects if subject.kind == 'constructor'
+    )
+    assert any(
+        'documented default 4 != runtime 3' in error
+        for error in check_doc_subject(mutated_constructor)
+    )
 
 
 def test_an_impl_inside_a_project_macro_is_still_scanned(tmp_path):
@@ -310,3 +353,27 @@ def test_an_impl_inside_a_project_macro_is_still_scanned(tmp_path):
         if item.attr('new') is not None
     ]
     assert [item.line for item in inner] == [8], 'line numbers survive the re-parse'
+
+
+def test_configured_constructor_macro_uses_its_impl_doc_carrier(tmp_path):
+    """A macro-generated `#[new]` can carry prose on its class impl input."""
+    from pyo3stubs.rust_scan import constructor_doc_sources, constructor_docs
+
+    src = (
+        '#[pyclass(name = "Widget")]\n'
+        'pub struct PyWidget;\n'
+        '\n'
+        'make_array! {\n'
+        '    /// Build a widget array.\n'
+        '    impl PyWidget {}\n'
+        '}\n'
+    )
+    cfg = make_config(
+        tmp_path,
+        src_text=src,
+        constructor_doc_macros=frozenset({'make_array'}),
+    )
+
+    assert constructor_docs(cfg) == {'Widget': 'Build a widget array.'}
+    source = constructor_doc_sources(cfg)['Widget']
+    assert (source.path, source.line) == ('src/lib.rs', 6)

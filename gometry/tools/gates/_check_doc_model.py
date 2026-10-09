@@ -4,16 +4,24 @@
 from __future__ import annotations
 
 import ast
+import inspect
+import re
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import griffe
 
 ROOT = Path(__file__).resolve().parents[2]
 STUB = ROOT / 'python/gometry/_lib.pyi'
-sys.path.insert(0, str(ROOT / 'tools/docs'))
+_TOOLS_ROOT = ROOT / 'tools'
+if str(_TOOLS_ROOT) not in sys.path:
+    sys.path.insert(0, str(_TOOLS_ROOT))
+
+from _gatelib import prepend_rust_source_import_paths
+
+prepend_rust_source_import_paths()
 
 from griffe_expand_aliases import (
     ExpandTokenAliases,
@@ -22,6 +30,21 @@ from griffe_expand_aliases import (
     constructor_binding,
     expand_annotation,
 )
+from pyo3stubs.ast_util import annotated_data_descriptors
+from pyo3stubs.cli import load_config
+from pyo3stubs.context import CheckContext
+from pyo3stubs.doc_structure import (
+    DocSubject,
+    attribute_entries,
+    function_groups,
+    iter_doc_subjects,
+    parameter_entries,
+    parse_doc,
+    return_entries,
+)
+
+if TYPE_CHECKING:
+    from collections.abc import Iterable
 
 _PUBLIC_TYPEVAR_NAMES = {
     '_CellT': 'CellT',
@@ -35,6 +58,37 @@ _PUBLIC_TYPEVAR_NAMES = {
     '_GroupKeyT': 'GroupKeyT',
     '_GroupValuesT_co': 'GroupValuesT_co',
 }
+_ARRAY_DOCUMENTATION_OWNERS = frozenset({'GeometryArray', 'CellArray'})
+_NDARRAY_TYPE = re.compile(r'(?<![\w.])(?:np\.ndarray|ndarray)(?![\w.])')
+_PER_ELEMENT = re.compile(r'\bper element\b', re.IGNORECASE)
+_PLANAR = re.compile(r'\(planar\)', re.IGNORECASE)
+_AUTO_SPLIT_OPS = frozenset({
+    'contains',
+    'within',
+    'covers',
+    'covered_by',
+    'intersects',
+    'disjoint',
+    'touches',
+    'crosses',
+    'overlaps',
+    'equals',
+    'relate',
+    'relate_pattern',
+    'intersection',
+    'union',
+    'difference',
+    'symmetric_difference',
+    'clip_by_rect',
+})
+_GENUINELY_PLANAR_OPS = frozenset({
+    'simplify',
+    'smooth',
+    'convex_hull',
+    'buffer',
+    'offset_curve',
+    'segmentize',
+})
 
 ParameterForm = tuple[str | None, str, str | None, str | None]
 CallForm = tuple[tuple[ParameterForm, ...], str | None]
@@ -60,6 +114,144 @@ def _public_annotation(annotation: str) -> str:
     for private, public in _PUBLIC_TYPEVAR_NAMES.items():
         annotation = annotation.replace(private, public)
     return annotation
+
+
+def _mentions_type(type_text: str, name: str) -> bool:
+    """Find a type name as a parsed identifier, not a substring."""
+    normalized = type_text.replace('`', '').replace(' or ', ' | ')
+    try:
+        expression = ast.parse(normalized, mode='eval')
+    except SyntaxError:
+        return False
+    return any(
+        isinstance(node, ast.Name) and node.id == name for node in ast.walk(expression)
+    )
+
+
+def _scalar_array_return_errors(stub: Path, runtime: object) -> list[str]:
+    tree = ast.parse(stub.read_text(encoding='utf-8'), filename=str(stub))
+    errors: list[str] = []
+    array_classes = {'GeometryArray', 'CellArray'}
+    for cls in tree.body:
+        if not isinstance(cls, ast.ClassDef) or cls.name in array_classes:
+            continue
+        function_defs = function_groups(cls.body)
+        runtime_cls = getattr(runtime, cls.name, None)
+        descriptor_docs = {}
+        if isinstance(runtime_cls, type):
+            descriptor_docs = {
+                id(statement): doc
+                for _name, statement, doc, _descriptor in annotated_data_descriptors(
+                    runtime_cls, cls.body
+                )
+            }
+        for member in cls.body:
+            if isinstance(member, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                definitions = function_defs.get(member.name, [member])
+                if member is not definitions[-1]:
+                    continue
+                doc = ast.get_docstring(definitions[-1], clean=True)
+                if doc and member.returns is not None:
+                    returns = return_entries(parse_doc(doc))
+                    if any(
+                        _mentions_type(entry.type_text, 'GeometryArray')
+                        for entry in returns
+                    ) and not any(
+                        definition.returns is not None
+                        and any(
+                            isinstance(node, ast.Name) and node.id == 'GeometryArray'
+                            for node in ast.walk(definition.returns)
+                        )
+                        for definition in definitions
+                    ):
+                        errors.append(
+                            f'{stub.name}:{definitions[-1].lineno}: '
+                            f'{cls.name}.{member.name}: '
+                            'Returns type names GeometryArray but the binding '
+                            f'overloads return {", ".join(ast.unparse(definition.returns) for definition in definitions if definition.returns is not None)}'
+                        )
+                continue
+            if not isinstance(member, ast.AnnAssign) or not isinstance(
+                runtime_cls, type
+            ):
+                continue
+            if not isinstance(member.target, ast.Name):
+                continue
+            doc = descriptor_docs.get(id(member))
+            if doc is None:
+                continue
+            if any(
+                _mentions_type(entry.type_text, 'GeometryArray')
+                for entry in return_entries(parse_doc(doc))
+            ) and not any(
+                isinstance(node, ast.Name) and node.id == 'GeometryArray'
+                for node in ast.walk(member.annotation)
+            ):
+                errors.append(
+                    f'{stub.name}:{member.lineno}: {cls.name}.{member.target.id}: '
+                    'Returns type names GeometryArray but the binding '
+                    f'annotation is {ast.unparse(member.annotation)}'
+                )
+    return errors
+
+
+def _has_unquoted_enum(type_text: str) -> bool:
+    for match in re.finditer(r'\{([^{}]*)\}', type_text):
+        try:
+            expression = ast.parse('{' + match.group(1) + '}', mode='eval').body
+        except SyntaxError:
+            continue
+        if isinstance(expression, ast.Set) and any(
+            isinstance(node, (ast.Name, ast.Attribute))
+            for element in expression.elts
+            for node in ast.walk(element)
+        ):
+            return True
+    return False
+
+
+def _doc_content_errors(subjects: Iterable[DocSubject]) -> list[str]:
+    """Retain factual doc claims while leaving editorial prose to the author."""
+    errors: list[str] = []
+    for subject in subjects:
+        prose = subject.prose
+        if not prose:
+            continue
+        qualname = subject.qualname
+        bare_name = qualname.rsplit('.', 1)[-1]
+        owner = qualname.rpartition('.')[0]
+        parsed = parse_doc(prose)
+        if (
+            bare_name in _ARRAY_DOCUMENTATION_OWNERS
+            or owner in _ARRAY_DOCUMENTATION_OWNERS
+        ) and _PER_ELEMENT.search(prose):
+            errors.append(
+                f'{qualname}: array documentation must describe row-aligned '
+                'results, not "per element"'
+            )
+
+        if bare_name in _AUTO_SPLIT_OPS and bare_name not in _GENUINELY_PLANAR_OPS:
+            lines = inspect.cleandoc(prose).splitlines()
+            summary_end = parsed.sections[0].line - 1 if parsed.sections else len(lines)
+            if _PLANAR.search('\n'.join(lines[:summary_end])):
+                errors.append(
+                    f'{qualname}: antimeridian-splitting operation is described '
+                    'as planar'
+                )
+
+        named_entries = (*parameter_entries(parsed), *attribute_entries(parsed))
+        type_entries = (*named_entries, *return_entries(parsed))
+        errors.extend(
+            f'{qualname}: type fields must use numpy.ndarray'
+            for entry in type_entries
+            if _NDARRAY_TYPE.search(entry.type_text)
+        )
+        errors.extend(
+            f'{qualname}: enum values in a type field must be quoted'
+            for entry in named_entries
+            if _has_unquoted_enum(entry.type_text)
+        )
+    return errors
 
 
 def _expressions(expr: Any) -> list[griffe.ExprName]:
@@ -661,6 +853,11 @@ def collect_errors() -> list[str]:
     loader.resolve_aliases(external=False)
     lib = pkg.members.get('_lib')
     errors: list[str] = []
+    errors.extend(_scalar_array_return_errors(STUB, gm))
+    cfg = load_config(ROOT / 'tools' / 'stubs' / 'stubconfig.py')
+    errors.extend(
+        _doc_content_errors(iter_doc_subjects(CheckContext(cfg), runtime_module=gm))
+    )
     if not isinstance(lib, griffe.Module):
         return ['transformed model has no gometry._lib module']
     aliases = annotation_aliases(pkg)

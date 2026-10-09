@@ -13,6 +13,7 @@ Two gates were red against this very fixture with nothing noticing.
 
 from __future__ import annotations
 
+import inspect
 import sys
 from collections.abc import Callable
 from dataclasses import dataclass, replace
@@ -22,8 +23,14 @@ from runpy import run_path
 import pytest
 
 from pyo3stubs.config import DualityConfig, MacroExport, StubConfig, SurfaceConfig
+from pyo3stubs.context import CheckContext
 from pyo3stubs.doc_contract import collect_errors as doc_contract
-from pyo3stubs.doc_structure import collect_errors as doc_structure
+from pyo3stubs.doc_structure import (
+    collect_errors as doc_structure,
+)
+from pyo3stubs.doc_structure import (
+    iter_doc_subjects,
+)
 from pyo3stubs.gates import GATES, Status, gate, gate_names, run_all
 from pyo3stubs.gen import render_stub_with_docs
 from pyo3stubs.leaked_types import collect_errors as leaked_types
@@ -206,7 +213,7 @@ CASES: dict[str, Case] = {
     'doc-contract': Case(
         clean=_default,
         seeded=_stub(_SEALED, f'{_SEALED}\n    def narrowed(self) -> int: ...'),
-        expect='stub override needs its own docstring',
+        expect='runtime docstring missing or empty',
     ),
     'doc-structure': Case(
         clean=_default,
@@ -245,6 +252,8 @@ def test_parser_gates_skip_on_pypy_before_importing_their_parser(tmp_path, monke
         'token-vocabulary',
         'leaked-types',
         'rust-nullability',
+        'doc-contract',
+        'doc-structure',
     ):
         result = gate(name).run(cfg)
         assert result.status is Status.SKIPPED
@@ -374,6 +383,153 @@ def test_signature_coverage_flags_stale_allowlist(tmp_path):
     assert any('documented' in e and 'inspectable again' in e for e in structural(cfg))
 
 
+def _class_signature_fixture(tmp_path, pristine_stub, monkeypatch, allowlist):
+    import fakepkg._lib as lib
+
+    class UninspectableClassSignature(type):
+        @property
+        def __signature__(cls) -> inspect.Signature:
+            raise ValueError('class binding signature is opaque')
+
+    class SignatureBlind(metaclass=UninspectableClassSignature):
+        """A public class with an opaque binding signature."""
+
+    class NeverConstructor(metaclass=UninspectableClassSignature):
+        """A class whose stub explicitly prohibits construction."""
+
+        def __new__(cls, _value: object):
+            raise TypeError('not constructible')
+
+    class NoReturnConstructor(metaclass=UninspectableClassSignature):
+        """A class whose stub constructor never returns."""
+
+        def __new__(cls):
+            raise TypeError('not constructible')
+
+    for name, cls in (
+        ('SignatureBlind', SignatureBlind),
+        ('NeverConstructor', NeverConstructor),
+        ('NoReturnConstructor', NoReturnConstructor),
+    ):
+        monkeypatch.setattr(lib, name, cls, raising=False)
+    monkeypatch.setattr(
+        lib,
+        '__all__',
+        [*lib.__all__, 'SignatureBlind', 'NeverConstructor', 'NoReturnConstructor'],
+    )
+
+    stub = seeded(
+        pristine_stub,
+        'from typing import Final, final, overload',
+        'from typing import Final, Never, NoReturn, final, overload',
+    )
+    stub = seeded(
+        stub,
+        "__all__ = ['Open', 'Sealed', 'documented', 'overloaded']",
+        "__all__ = ['Open', 'Sealed', 'documented', 'overloaded', "
+        "'SignatureBlind', 'NeverConstructor', 'NoReturnConstructor']",
+    )
+    stub += '''\
+
+class SignatureBlind:
+    """A public class with an opaque binding signature."""
+
+class NeverConstructor:
+    """A class whose stub explicitly prohibits construction."""
+    def __new__(cls, value: Never, /) -> NeverConstructor: ...
+
+class NoReturnConstructor:
+    """A class whose stub constructor never returns."""
+    def __new__(cls) -> NoReturn: ...
+'''
+    return (
+        make_config(
+            tmp_path,
+            stub_text=stub,
+            uninspectable_allowlist=allowlist,
+        ),
+        lib,
+    )
+
+
+def test_signature_coverage_reports_uninspectable_class_bindings(
+    tmp_path, pristine_stub, monkeypatch
+):
+    cfg, _lib = _class_signature_fixture(
+        tmp_path,
+        pristine_stub,
+        monkeypatch,
+        {'hidden_callable': 'fixture: __signature__ raises'},
+    )
+
+    errors = structural(cfg)
+
+    assert any(
+        'SignatureBlind: inspect.signature fails' in error for error in errors
+    ), errors
+    assert not any(
+        name in error
+        for error in errors
+        for name in ('NeverConstructor', 'NoReturnConstructor')
+    ), errors
+
+
+def test_signature_coverage_allows_a_reasoned_class_binding_blind_spot(
+    tmp_path, pristine_stub, monkeypatch
+):
+    cfg, _lib = _class_signature_fixture(
+        tmp_path,
+        pristine_stub,
+        monkeypatch,
+        {
+            'hidden_callable': 'fixture: __signature__ raises',
+            'SignatureBlind': 'fixture metaclass makes class signature unreadable',
+        },
+    )
+
+    assert not any(
+        'SignatureBlind: inspect.signature fails' in error for error in structural(cfg)
+    )
+
+
+def test_signature_coverage_rejects_empty_and_stale_class_allowlist_entries(
+    tmp_path, pristine_stub, monkeypatch
+):
+    cfg, lib = _class_signature_fixture(
+        tmp_path,
+        pristine_stub,
+        monkeypatch,
+        {
+            'hidden_callable': 'fixture: __signature__ raises',
+            'SignatureBlind': '',
+        },
+    )
+    errors = structural(cfg)
+    assert any(
+        "uninspectable allowlist entry 'SignatureBlind' needs a non-empty reason"
+        in error
+        for error in errors
+    ), errors
+
+    monkeypatch.setattr(
+        lib,
+        'SignatureBlind',
+        type('SignatureBlind', (), {'__doc__': 'A public class.'}),
+    )
+    stale = make_config(
+        tmp_path,
+        stub_text=cfg.stub_path.read_text(),
+        uninspectable_allowlist={
+            'hidden_callable': 'fixture: __signature__ raises',
+            'SignatureBlind': 'fixture metaclass makes class signature unreadable',
+        },
+    )
+    assert any(
+        "uninspectable allowlist entry 'SignatureBlind' is inspectable again" in error
+        for error in structural(stale)
+    )
+
+
 def test_leak_allowlist_rot_is_reported(tmp_path):
     """An allowlist nobody prunes is how a real violation goes quiet."""
     cfg = make_config(
@@ -447,6 +603,103 @@ def test_doc_structure_requires_returns_for_annotated_descriptor(
     monkeypatch.setattr(type(descriptor), '__doc__', 'Optional payload.')
     errors = doc_structure(make_config(tmp_path, stub_text=pristine_stub))
     assert any('Sealed.maybe: no Returns section' in e for e in errors)
+
+
+def test_doc_structure_keeps_a_property_only_module_in_its_subjects(tmp_path):
+    stub = '''\
+class Shape:
+    """A shape."""
+
+    @property
+    def area(self) -> float:
+        """Area."""
+'''
+    cfg = make_config(
+        tmp_path,
+        stub_text=stub,
+        module='fakepkg.property_only',
+    )
+
+    assert doc_contract(cfg) == []
+    assert any(
+        'Shape.area: no Returns section' in error for error in doc_structure(cfg)
+    )
+
+
+def test_doc_contract_requires_constructor_prose_not_just_class_prose(tmp_path):
+    stub = '''\
+class Widget:
+    """A widget."""
+
+    def __new__(cls, size: int = 3) -> Widget: ...
+'''
+    cfg = make_config(
+        tmp_path,
+        stub_text=stub,
+        module='fakepkg.constructor_only',
+    )
+
+    assert any(
+        'Widget.__new__: runtime docstring missing or empty' in error
+        for error in doc_contract(cfg)
+    )
+
+
+def test_doc_structure_uses_the_binding_signature_for_constructor_parameters(
+    tmp_path,
+):
+    stub = '''\
+class Widget:
+    """A widget."""
+
+    def __new__(cls, size: int = 3) -> Widget:
+        """Build a widget.
+
+        Returns
+        -------
+        Widget
+        """
+'''
+    cfg = make_config(
+        tmp_path,
+        stub_text=stub,
+        module='fakepkg.constructor_only',
+    )
+
+    assert any(
+        "Widget.__new__: parameter 'size' is not documented" in error
+        for error in doc_structure(cfg)
+    )
+
+
+def test_doc_structure_rejects_constructor_default_drift(tmp_path):
+    stub = '''\
+class Widget:
+    """A widget."""
+
+    def __new__(cls, size: int = 3) -> Widget:
+        """Build a widget.
+
+        Parameters
+        ----------
+        size : int, default 4
+            Requested size.
+
+        Returns
+        -------
+        Widget
+        """
+'''
+    cfg = make_config(
+        tmp_path,
+        stub_text=stub,
+        module='fakepkg.constructor_only',
+    )
+
+    assert any(
+        'Widget.__new__.size: documented default 4 != runtime 3' in error
+        for error in doc_structure(cfg)
+    )
 
 
 @pytest.mark.parametrize(
@@ -526,19 +779,18 @@ def test_validity_rejects_a_shadowed_overload_whatever_the_config(
 
 
 def test_doc_contract_rejects_an_ellipsis_body_as_prose(tmp_path, pristine_stub):
-    """`...` is not a docstring.
+    """A stub body containing `...` does not provide author prose.
 
-    Every `.pyi` body is `...`, which parses to `Expr(Constant(Ellipsis))`.
-    Treating any leading constant as prose made `_has_docstring` return True
-    for every stub def, so this branch -- a stub-only override must carry its
-    own hand-written prose -- could never fire for anyone.
+    The runtime fixture has no corresponding ``narrowed`` member, so the shared
+    subject inventory must report the missing documentation until the stub
+    override carries a non-empty docstring.
     """
     # `narrowed` exists only in the stub, so it takes the stub-override branch.
     mutated = seeded(
         pristine_stub, _SEALED, f'{_SEALED}\n    def narrowed(self) -> int: ...'
     )
     assert any(
-        'Sealed.narrowed: stub override needs its own docstring' in e
+        'Sealed.narrowed: runtime docstring missing or empty' in e
         for e in doc_contract(make_config(tmp_path, stub_text=mutated))
     )
 
@@ -562,23 +814,68 @@ def test_doc_contract_accepts_an_override_documented_by_inheritance(
     import fakepkg._lib as lib
 
     class Base:
-        def narrowed(self) -> int:
-            """Documented where it is defined."""
-            return 0
+        def narrowed(self, value: int, flag: bool = True) -> int:
+            """Narrow an inherited operation.
+
+            Parameters
+            ----------
+            value : int
+                The value.
+            flag : bool, default True
+                Whether to keep the sign.
+
+            Returns
+            -------
+            int
+                The result.
+            """
+            return value if flag else -value
 
     monkeypatch.setattr(
         lib, 'Open', type('Open', (Base,), {'__doc__': lib.Open.__doc__})
     )
     anchor = '    """A subclassable class (``#[pyclass(subclass)]`` analogue)."""'
     mutated = seeded(
-        pristine_stub, anchor, f'{anchor}\n    def narrowed(self) -> int: ...'
+        pristine_stub,
+        anchor,
+        f'{anchor}\n    def narrowed(self, value: int, flag: bool = True) -> int: ...',
     )
-    assert doc_contract(make_config(tmp_path, stub_text=mutated)) == []
+    cfg = make_config(tmp_path, stub_text=mutated)
+    assert doc_contract(cfg) == []
+    subject = next(
+        subject
+        for subject in iter_doc_subjects(CheckContext(cfg))
+        if subject.qualname == 'Open.narrowed'
+    )
+    assert subject.qualname == 'Open.narrowed'
+    assert inspect.cleandoc(subject.prose or '') == inspect.cleandoc(
+        Base.narrowed.__doc__ or ''
+    )
+    parameters = subject.parameters
+    assert parameters is not None
+    assert tuple(parameter.name for parameter in parameters) == (
+        'value',
+        'flag',
+    )
+    assert parameters[1].default is True
+    assert doc_structure(cfg) == []
+
+    changed_default = seeded(
+        mutated,
+        'def narrowed(self, value: int, flag: bool = True) -> int: ...',
+        'def narrowed(self, value: int, flag: bool = False) -> int: ...',
+    )
+    changed_cfg = make_config(tmp_path, stub_text=changed_default)
+    errors = doc_structure(changed_cfg)
+    assert any(
+        'Open.narrowed.flag: documented default True != runtime False' in error
+        for error in errors
+    ), errors
 
     monkeypatch.undo()
     assert any(
-        'Open.narrowed: stub override needs its own docstring' in e
-        for e in doc_contract(make_config(tmp_path, stub_text=mutated))
+        'Open.narrowed: runtime docstring missing or empty' in error
+        for error in doc_contract(changed_cfg)
     )
 
 

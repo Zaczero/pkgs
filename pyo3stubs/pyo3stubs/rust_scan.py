@@ -158,6 +158,15 @@ class PyClassExport:
     item: Item
 
 
+@dataclass(frozen=True, slots=True)
+class ConstructorDocSource:
+    """Authored constructor prose and its Rust source location."""
+
+    prose: str | None
+    path: str
+    line: int
+
+
 def token_params(source: str) -> tuple[tuple[str, str], ...]:
     """Top-level ``key = value`` pairs of a delimited Rust token tree.
 
@@ -243,28 +252,62 @@ def rust_class_map(cfg: StubConfig) -> dict[str, str]:
     return mapping
 
 
-def constructor_docs(cfg: StubConfig) -> dict[str, str]:
-    """Exported Python class -> the ``///`` block on its ``#[new]``.
+def constructor_doc_sources(cfg: StubConfig) -> dict[str, ConstructorDocSource]:
+    """Exported Python class -> its authored constructor prose and source.
 
     PyO3 does not attach a ``#[new]``'s doc comment to anything Python can read:
     the class docstring comes from the ``#[pyclass]``, and ``__new__`` carries
     CPython's inherited boilerplate. Without this the prose is written,
     maintained, and unreachable — 16 of gometry's 20 constructors, several with
-    full numpydoc parameter tables.
+    full numpydoc parameter tables. A configured macro may carry that same
+    prose on the class ``impl`` in its invocation when the expanded ``#[new]``
+    is not present in the retained syntax tree.
     """
     classes = rust_class_map(cfg)
-    docs: dict[str, str] = {}
+    direct: dict[str, ConstructorDocSource] = {}
+    macro_carriers: dict[str, ConstructorDocSource] = {}
     for source in iter_sources(cfg):
         for item in source.walk():
-            if item.kind != 'impl_item':
-                continue
-            py_class = classes.get(item.name)
-            if py_class is None:
-                continue
-            for child in item.children:
-                if child.attr('new') is not None and child.doc:
-                    docs.setdefault(py_class, child.doc)
-    return docs
+            if item.kind == 'impl_item':
+                py_class = classes.get(item.name)
+                if py_class is not None:
+                    for child in item.children:
+                        if child.attr('new') is not None:
+                            direct.setdefault(
+                                py_class,
+                                ConstructorDocSource(
+                                    child.doc or None,
+                                    source.label,
+                                    child.line,
+                                ),
+                            )
+            elif (
+                item.kind == 'macro_invocation'
+                and item.name in cfg.constructor_doc_macros
+            ):
+                for impl in item.children:
+                    py_class = (
+                        classes.get(impl.name) if impl.kind == 'impl_item' else None
+                    )
+                    if py_class is not None and impl.doc:
+                        macro_carriers.setdefault(
+                            py_class,
+                            ConstructorDocSource(
+                                impl.doc,
+                                source.label,
+                                impl.line,
+                            ),
+                        )
+    return macro_carriers | direct
+
+
+def constructor_docs(cfg: StubConfig) -> dict[str, str]:
+    """Exported Python class -> authored ``#[new]`` prose."""
+    return {
+        name: source.prose
+        for name, source in constructor_doc_sources(cfg).items()
+        if source.prose is not None
+    }
 
 
 def unquote(source: str) -> str:
