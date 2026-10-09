@@ -377,6 +377,9 @@ impl PySpatialIndex {
     /// GeometryError
     ///     If a query parameter is invalid, or ``unit='meters'`` is requested
     ///     for a CRS-free geometry.
+    /// CRSError
+    ///     If geographic ``dwithin`` refinement cannot prove a result within
+    ///     the point-edge evaluation budget.
     ///
     /// Examples
     /// --------
@@ -539,6 +542,9 @@ impl PySpatialIndex {
     ///     If the query and index CRS/coordinate-epoch frames differ.
     /// GeometryError
     ///     If a predicate or distance option is invalid.
+    /// CRSError
+    ///     If geographic ``dwithin`` refinement cannot prove a result within
+    ///     the point-edge evaluation budget.
     ///
     /// Examples
     /// --------
@@ -591,6 +597,9 @@ impl PySpatialIndex {
     ///     If ``predicate`` is unknown or directional, ``distance`` is missing
     ///     or invalid for ``predicate='dwithin'``, or ``unit='meters'`` is
     ///     requested for a CRS-free geometry.
+    /// CRSError
+    ///     If geographic ``dwithin`` refinement cannot prove a result within
+    ///     the point-edge evaluation budget.
     ///
     /// Examples
     /// --------
