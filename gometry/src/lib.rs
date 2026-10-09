@@ -125,7 +125,7 @@ use py::functions::{
     coverage_invalid_edges, coverage_is_valid, coverage_simplify, coverage_union, difference,
     from_features, from_geojson, from_wkb, from_wkt, intersection, intersection_all,
     osm_shortlink_encode, osm_shortlink_location, overlay_operator, pluscode_encode,
-    pluscode_polygon, pluscode_recover, pluscode_shorten, polygonize, polygonize_full, require,
+    pluscode_polygon, pluscode_recover, pluscode_shorten, polygonize_all, require,
     symmetric_difference, symmetric_difference_all, to_feature, to_feature_collection, union,
     union_all,
 };
@@ -263,7 +263,7 @@ fn lib(m: &Bound<'_, PyModule>) -> PyResult<()> {
         intersection, union, difference, symmetric_difference, union_all,
         intersection_all, symmetric_difference_all,
         coverage_is_valid, coverage_invalid_edges, coverage_simplify, coverage_clean,
-        coverage_union, polygonize, polygonize_full,
+        coverage_union, polygonize_all,
         // IO, validation, and coordinate access.
         from_wkt, from_wkb, from_geojson, from_features, to_feature, to_feature_collection,
         from_polyline, require,

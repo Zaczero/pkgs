@@ -104,6 +104,13 @@ def _declaration_annotation(declaration: ast.AST) -> ast.expr | None:
     return None
 
 
+def _ast_mentions_type(expression: ast.expr, name: str) -> bool:
+    return any(
+        isinstance(node, (ast.Name, ast.Attribute)) and _stub_base_name(node) == name
+        for node in ast.walk(expression)
+    )
+
+
 def _scalar_array_return_errors(
     subjects: Iterable[DocSubject],
     stub_tree: ast.Module,
@@ -130,10 +137,7 @@ def _scalar_array_return_errors(
             if (annotation := _declaration_annotation(declaration)) is not None
         )
         if any(
-            any(
-                isinstance(node, ast.Name) and node.id == 'GeometryArray'
-                for node in ast.walk(annotation)
-            )
+            _ast_mentions_type(annotation, 'GeometryArray')
             for annotation in declarations
         ):
             continue
@@ -143,6 +147,7 @@ def _scalar_array_return_errors(
                 annotation,
                 class_nodes.get(class_name),
                 generic_arguments,
+                class_nodes,
                 'GeometryArray',
             )
             for annotation in declarations
@@ -511,11 +516,16 @@ def _generic_class_return_support(
     annotation: ast.expr,
     class_node: ast.ClassDef | None,
     generic_arguments: dict[str, dict[str, tuple[ast.expr, ...]]],
+    class_nodes: dict[str, ast.ClassDef],
     target_type: str,
 ) -> bool | None:
     """Check whether stub specializations include a documented result type."""
     if class_node is None:
         return False
+    if class_node.name == target_type and _ast_mentions_type(annotation, 'Self'):
+        return True
+    if _descriptor_returns_type(annotation, class_node, class_nodes, target_type):
+        return True
 
     class_arguments = generic_arguments.get(class_node.name, {})
     class_parameters = tuple(class_arguments)
@@ -528,17 +538,48 @@ def _generic_class_return_support(
         concrete_arguments.extend(class_arguments[parameter])
 
     if any(
-        any(
-            isinstance(node, (ast.Name, ast.Attribute))
-            and _stub_base_name(node) == target_type
-            for node in ast.walk(argument)
-        )
-        for argument in concrete_arguments
+        _ast_mentions_type(argument, target_type) for argument in concrete_arguments
     ):
         return True
     if concrete_arguments:
         return False
     return None
+
+
+def _descriptor_returns_type(
+    annotation: ast.expr,
+    owner: ast.ClassDef,
+    class_nodes: dict[str, ast.ClassDef],
+    target_type: str,
+) -> bool:
+    """Resolve a typed descriptor through its instance ``__get__`` overloads."""
+    for node in ast.walk(annotation):
+        if not isinstance(node, ast.Subscript):
+            continue
+        descriptor = class_nodes.get(_stub_base_name(node.value))
+        if descriptor is None:
+            continue
+        for member in descriptor.body:
+            if (
+                not isinstance(member, (ast.FunctionDef, ast.AsyncFunctionDef))
+                or member.name != '__get__'
+                or member.returns is None
+            ):
+                continue
+            parameters = [*member.args.posonlyargs, *member.args.args]
+            if len(parameters) < 2 or parameters[1].annotation is None:
+                continue
+            instance_type = parameters[1].annotation
+            if (
+                isinstance(instance_type, ast.Constant) and instance_type.value is None
+            ) or (isinstance(instance_type, ast.Name) and instance_type.id == 'None'):
+                continue
+            if _ast_mentions_type(instance_type, owner.name) and _ast_mentions_type(
+                member.returns,
+                target_type,
+            ):
+                return True
+    return False
 
 
 def _stub_class_call_result(

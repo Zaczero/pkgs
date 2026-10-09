@@ -61,11 +61,11 @@ free functions because neither operand owns the question: [`contains(a, b)`][gom
 [`distance(a, b)`][gometry.distance], [`intersection(a, b)`][gometry.intersection].
 An operation over a whole collection is a free function that takes the
 collection, the way Python's `sum(iterable)` is: [`gm.union_all(values)`][gometry.union_all],
-[`gm.intersection_all`][gometry.intersection_all], [`gm.polygonize(values)`][gometry.polygonize], and the
+[`gm.intersection_all`][gometry.intersection_all], [`gm.polygonize_all(values)`][gometry.polygonize_all], and the
 [`gm.coverage_*`][gometry.coverage_union] family accept a `GeometryArray` or any iterable of geometries.
 An array method that shares a scalar method's name is therefore always its
 row-wise mirror: [`arr.polygonize()`][gometry.GeometryArray.polygonize] polygonizes
-each row, while `gm.polygonize(arr)` pools every row's linework into one graph.
+each row, while `gm.polygonize_all(arr)` pools every row's linework into one graph.
 Methods with no scalar counterpart treat the array as a container, like
 [`arr.concat(...)`][gometry.GeometryArray.concat] and
 [`arr.drop_missing()`][gometry.GeometryArray.drop_missing], or group its rows by

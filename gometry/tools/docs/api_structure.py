@@ -148,8 +148,7 @@ PAGES: tuple[Page, ...] = (
         'Noding, splitting, snapping, polygonization, and validation boundaries.',
         (
             section(
-                'polygonize',
-                'polygonize_full',
+                'polygonize_all',
                 'require',
                 'shared_paths',
                 'snap',

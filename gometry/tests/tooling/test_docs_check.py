@@ -746,7 +746,7 @@ class GeometryArray:
     assert any('Geometry.bounds' in error for error in errors)
 
 
-def test_shared_subject_return_check_resolves_class_generic_instantiations(
+def test_shared_subject_return_check_resolves_generic_classes_and_descriptors(
     tmp_path: Path,
 ) -> None:
     model = load_tool(
@@ -755,18 +755,46 @@ def test_shared_subject_return_check_resolves_class_generic_instantiations(
     stub = tmp_path / '_lib.pyi'
     stub.write_text(
         '''\
-from typing import Generic, TypeVar
+from typing import Generic, Self, TypeVar
 
-T = TypeVar('T')
+_GroupValuesT_co = TypeVar('_GroupValuesT_co', covariant=True)
 U = TypeVar('U')
 V = TypeVar('V')
+W = TypeVar('W')
+X = TypeVar('X')
 
-class GeometryArray: ...
-class CellArray: ...
+class GeometryArray(Generic[W]):
+    def restore(self) -> Self:
+        """Restore the array.
 
-class Groups(Generic[T]):
+        Returns
+        -------
+        GeometryArray[W]
+            This array.
+        """
+
+class _CellGeometryProjection(Generic[W]):
+    def __get__(
+        self,
+        instance: CellArray,
+        owner: type[CellArray] | None = None,
+    ) -> GeometryArray[W]: ...
+
+    def __get__(self, instance: None, owner: type[CellArray]) -> Self: ...
+
+class CellArray:
+    center: _CellGeometryProjection[Point]
+    """The center geometries.
+
+    Returns
+    -------
+    GeometryArray[Point]
+        The projected geometry values.
+    """
+
+class Groups(Generic[_GroupValuesT_co]):
     @property
-    def values(self) -> T:
+    def values(self) -> _GroupValuesT_co:
         """The flat backing column.
 
         Returns
@@ -797,6 +825,17 @@ class Deferred(Generic[V]):
             A type that has no in-stub specialization.
         """
 
+class PayloadBox(Generic[X]):
+    @property
+    def payload(self) -> X:
+        """The wrapped payload.
+
+        Returns
+        -------
+        GeometryArray
+            The specialized payload.
+        """
+
 class Geometry:
     @property
     def bounds(self) -> tuple[float, float, float, float]:
@@ -812,23 +851,42 @@ def geometry_groups() -> Groups[GeometryArray]: ...
 def cell_groups() -> Groups[CellArray]: ...
 def numpy_groups() -> Groups[npt.NDArray[np.int64]]: ...
 def cell_only_groups() -> CellGroups[CellArray]: ...
+def geometry_box() -> PayloadBox[GeometryArray[Point]]: ...
 '''
     )
     tree = ast.parse(stub.read_text(encoding='utf-8'))
     classes = {node.name: node for node in tree.body if isinstance(node, ast.ClassDef)}
     from pyo3stubs.doc_structure import DocLocation
 
-    def subject(class_name: str, member_name: str):
+    def subject(
+        class_name: str,
+        member_name: str,
+        kind: Literal['callable', 'property'] = 'property',
+    ):
         class_node = classes[class_name]
         declaration = next(
             node
             for node in class_node.body
-            if isinstance(node, ast.FunctionDef) and node.name == member_name
+            if (
+                isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+                and node.name == member_name
+            )
+            or (
+                isinstance(node, ast.AnnAssign)
+                and isinstance(node.target, ast.Name)
+                and node.target.id == member_name
+            )
         )
+        if isinstance(declaration, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            prose = ast.get_docstring(declaration)
+        else:
+            index = class_node.body.index(declaration)
+            following = class_node.body[index + 1]
+            prose = following.value.value
         return model.DocSubject(
             f'{class_name}.{member_name}',
-            'property',
-            ast.get_docstring(declaration),
+            kind,
+            prose,
             (),
             DocLocation(str(stub), declaration.lineno),
             (declaration,),
@@ -839,6 +897,9 @@ def cell_only_groups() -> CellGroups[CellArray]: ...
             subject('Groups', 'values'),
             subject('CellGroups', 'values'),
             subject('Deferred', 'values'),
+            subject('PayloadBox', 'payload'),
+            subject('GeometryArray', 'restore', 'callable'),
+            subject('CellArray', 'center'),
             subject('Geometry', 'bounds'),
         ),
         tree,

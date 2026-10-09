@@ -308,12 +308,24 @@ class Cell(Protocol):
 
     @property
     def token(self) -> str:
-        """The cell id in its system's canonical lowercase text form."""
+        """The cell id in its system's canonical lowercase text form.
+
+        Returns
+        -------
+        str
+            Canonical text for this cell.
+        """
         ...
 
     @property
     def center(self) -> Point:
-        """Cell center as a WGS 84 ``Point`` (lon/lat)."""
+        """Cell center as a WGS 84 ``Point`` (lon/lat).
+
+        Returns
+        -------
+        Point
+            The center in longitude/latitude coordinates.
+        """
         ...
 
     @property
@@ -321,6 +333,11 @@ class Cell(Protocol):
         """The cell as a filled WGS 84 ``Polygon`` (lon/lat).
 
         H3 and S2 emit planar chord proxies for their true spherical edges.
+
+        Returns
+        -------
+        Polygon
+            The filled cell boundary in longitude/latitude coordinates.
         """
         ...
 
@@ -331,6 +348,11 @@ class Cell(Protocol):
         How many there are is system-specific, and can vary with position:
         six around an H3 hexagon but five around a pentagon, four for S2,
         eight for geohash away from the poles.
+
+        Returns
+        -------
+        CellArray[Self]
+            The edge-adjacent cells at the same depth.
         """
         ...
 
@@ -340,23 +362,72 @@ class Cell(Protocol):
 
         H3 and S2 use an authalic sphere; geohash and tile use the WGS 84
         ellipsoidal area of their lon/lat rectangle.
+
+        Returns
+        -------
+        float
+            Area in square meters.
         """
         ...
 
     def parent(self, depth: int | None = None, /) -> Self:
-        """Parent cell at a coarser depth, one step coarser by default."""
+        """Parent cell at a coarser depth, one step coarser by default.
+
+        Parameters
+        ----------
+        depth : int or None, optional, default None
+            Requested parent depth; ``None`` selects one step coarser.
+
+        Returns
+        -------
+        Self
+            The ancestor at the requested depth.
+        """
         ...
 
     def children(self, depth: int | None = None, /) -> CellArray[Self]:
-        """Child cells at a finer depth, one step finer by default."""
+        """Child cells at a finer depth, one step finer by default.
+
+        Parameters
+        ----------
+        depth : int or None, optional, default None
+            Requested child depth; ``None`` selects one step finer.
+
+        Returns
+        -------
+        CellArray[Self]
+            The cells at the requested depth.
+        """
         ...
 
     def children_count(self, depth: int | None = None, /) -> int:
-        """Count descendants at a finer depth without materializing them."""
+        """Count descendants at a finer depth without materializing them.
+
+        Parameters
+        ----------
+        depth : int or None, optional, default None
+            Requested child depth; ``None`` selects one step finer.
+
+        Returns
+        -------
+        int
+            Number of cells at the requested depth.
+        """
         ...
 
     def contains(self, other: Self | str) -> bool:
-        """Whether this cell is, or is an ancestor of, ``other``."""
+        """Whether this cell is, or is an ancestor of, ``other``.
+
+        Parameters
+        ----------
+        other : Self or str
+            A cell or its canonical token.
+
+        Returns
+        -------
+        bool
+            Whether ``other`` is this cell or one of its descendants.
+        """
         ...
 
     def intersects(self, other: Self | str) -> bool:
@@ -364,6 +435,16 @@ class Cell(Protocol):
 
         Hierarchy cells cannot partially overlap, so this holds exactly when
         one of the two contains the other.
+
+        Parameters
+        ----------
+        other : Self or str
+            A cell or its canonical token.
+
+        Returns
+        -------
+        bool
+            Whether the two cells overlap hierarchically.
         """
         ...
 
@@ -809,7 +890,7 @@ def _restore_extremes_v1(
 class PolygonizeResult(NamedTuple):
     """Full polygonization output: the polygons plus the leftover linework.
 
-    Returned by `polygonize_full`; unpacks as ``(polygons, cut_edges,
+    Returned by `polygonize_all(diagnostics=True)`; unpacks as ``(polygons, cut_edges,
     dangles, invalid_rings)``, or use the named fields. ``polygons`` is the
     pooled result; each diagnostic is a ``Groups[GeometryArray[LineString]]``
     with one row per input source.

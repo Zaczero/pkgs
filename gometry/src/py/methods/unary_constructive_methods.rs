@@ -796,7 +796,7 @@ method_doc! {
     body: r"Build polygons from a geometry's own linework, automatically noding
 crossings and overlaps. Each geometry is polygonized in isolation; to reconstruct
 polygons from a pile of edges pooled across many geometries, use free function
-``polygonize`` on an iterable of
+``polygonize_all`` on an iterable of
 values. Input ordinates are carried where possible; unsourceable noding seams
 yield XY.";
     scalar: r"
@@ -815,10 +815,14 @@ Groups of GeometryArray
     One ragged group of polygons per input geometry, in input order — each
     input's OWN linework is polygonized independently (row ``i`` is
     ``self[i].polygonize()``). To pool ALL rows' edges into one graph so a
-    ring can close across inputs, use the free function ``polygonize``.
+    ring can close across inputs, use the free function ``polygonize_all``.
 
 ";
     tail: r"
+See Also
+--------
+polygonize_all : Pool linework across all supplied geometries.
+
 Raises
 ------
 GeometryError
