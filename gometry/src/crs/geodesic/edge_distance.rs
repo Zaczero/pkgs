@@ -675,12 +675,22 @@ pub(super) fn curvature_hessian_bound(
         return f64::INFINITY;
     }
     let semi_major = CertifiedInterval::exact(geodesic.a);
+    let d_max = 1.0_f64.max(c.upper());
+    let d_max_root = CertifiedInterval::exact(d_max).sqrt();
+    let minimum_meridian_radius = semi_major
+        .mul(CertifiedInterval::exact(c.lower()))
+        .div(CertifiedInterval::exact(d_max).mul(d_max_root))
+        .lower();
+    let meridian_curvature =
+        CertifiedInterval::exact(1.0).div(CertifiedInterval::exact(minimum_meridian_radius));
     let semi_minor = semi_major.mul(c.sqrt());
     let semi_major_squared = semi_major.mul(semi_major);
     let semi_minor_squared = semi_minor.mul(semi_minor);
     let equatorial = semi_major.div(semi_minor_squared);
     let polar = semi_minor.div(semi_major_squared);
-    let maximum_principal_curvature = equatorial.max(polar);
+    // Mmin supplies the same meridional principal-curvature extremum as one of
+    // the semiaxis terms, with its own outward scale enclosure.
+    let maximum_principal_curvature = equatorial.max(polar).max(meridian_curvature);
     let injectivity_radius_lower = CertifiedInterval::from_bounds(
         crate::geometry::interval::PI_LOWER,
         crate::geometry::interval::PI_UPPER,
