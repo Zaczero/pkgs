@@ -97,13 +97,19 @@ RELEASE_ENV_VARS = (
 )
 
 
-def run(cmd: list[str], *, cwd: Path = ROOT, env: dict[str, str] | None = None) -> None:
+def run(
+    cmd: list[str],
+    *,
+    cwd: Path = ROOT,
+    env: dict[str, str] | None = None,
+    capture_output: bool = True,
+) -> None:
     result = subprocess.run(
         cmd,
         cwd=cwd,
         env=env,
         check=False,
-        capture_output=True,
+        capture_output=capture_output,
         text=True,
     )
     if result.stdout:
