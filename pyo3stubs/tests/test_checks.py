@@ -13,9 +13,11 @@ Two gates were red against this very fixture with nothing noticing.
 
 from __future__ import annotations
 
+import sys
 from collections.abc import Callable
 from dataclasses import dataclass, replace
-from typing import TYPE_CHECKING
+from pathlib import Path
+from runpy import run_path
 
 import pytest
 
@@ -25,13 +27,12 @@ from pyo3stubs.gates import GATES, Status, gate, gate_names, run_all
 from pyo3stubs.gen import render_stub_with_docs
 from pyo3stubs.leaked_types import collect_errors as leaked_types
 from pyo3stubs.rust_nullability import collect_errors as rust_nullability
-from pyo3stubs.rust_scan import pyclass_names, rust_class_map
+from pyo3stubs.rust_scan import iter_sources, pyclass_names, rust_class_map
 from pyo3stubs.structural import collect_errors as structural
 from pyo3stubs.text_signature import collect_errors as text_signature
 from tests._support import make_config, seeded
 
-if TYPE_CHECKING:
-    from pathlib import Path
+_GOMETRY_ROOT = Path(__file__).resolve().parents[2] / 'gometry'
 
 #: ``(tmp_path, pristine stub, pristine Rust) -> StubConfig``.
 Build = Callable[['Path', str, str], StubConfig]
@@ -667,6 +668,206 @@ def test_rust_scan_skips_cfg_test_modules(tmp_path):
     cfg = make_config(tmp_path, src_text=src)
     assert set(rust_class_map(cfg)) == {'Shipped'}
     assert pyclass_names(cfg)['Shipped'].endswith('lib.rs')
+
+
+def test_rust_scan_scope_drops_only_proven_test_cfg_items(tmp_path):
+    src = """\
+#[pyclass]
+struct Shipped;
+#[cfg(test)]
+#[pyclass]
+struct TestOnly;
+#[cfg(not(test))]
+#[pyclass]
+struct NotTest;
+#[cfg(any(test, feature = "mixed"))]
+#[pyclass]
+struct Mixed;
+#[cfg(all(test, feature = "mixed"))]
+#[pyclass]
+struct DefinitelyTest;
+#[cfg_attr(test, cfg(test))]
+#[pyclass]
+struct CfgAttr;
+#[cfg(not(test))]
+#[cfg(target_os = "linux")]
+#[pyclass]
+struct MultipleCfg;
+#[cfg(test)]
+mod tests {
+    #[pyclass]
+    struct NestedTest;
+}
+"""
+    cfg = make_config(tmp_path, src_text=src)
+    export = {
+        item.name
+        for source in iter_sources(cfg)
+        for item in source.walk()
+        if item.attr('pyclass') is not None
+    }
+    raw = {
+        item.name
+        for source in iter_sources(cfg, scope='all')
+        for item in source.walk()
+        if item.attr('pyclass') is not None
+    }
+
+    assert export == {'Shipped', 'NotTest', 'Mixed', 'CfgAttr', 'MultipleCfg'}
+    assert raw == {
+        'Shipped',
+        'TestOnly',
+        'NotTest',
+        'Mixed',
+        'DefinitelyTest',
+        'CfgAttr',
+        'MultipleCfg',
+        'NestedTest',
+    }
+
+
+def test_rust_scan_retains_nodes_and_recovers_macro_items_with_source_lines(
+    tmp_path,
+):
+    src = r"""
+const TEXT: &str = r####"#[pyfunction] fn fake() -> PyGeometry { "}" }"####;
+macro_rules! wrapper {
+    () => {
+        #[pyo3::pyfunction]
+        fn definition_only<'a>(value: &'a PyGeometry) -> PyGeometry { todo!() }
+    };
+}
+#[pyo3::pyfunction]
+fn live<'a>(
+    value: &'a crate::PyGeometry,
+) -> ::pyo3::PyResult<Option<crate::PyGeometry>> {
+    /* outer comment { /* nested comment } */ */
+    let _brace = "{ #[pyfunction] fn fake() -> PyGeometry {} }";
+    let _ = value;
+    Ok(None)
+}
+frozen_pymethods! {
+    impl PyGeometry {
+        fn wrapped<'a>(&'a self) -> crate::PyResult<crate::PyGeometry> { todo!() }
+    }
+}
+"""
+    cfg = make_config(tmp_path, src_text=src)
+    source = iter_sources(cfg, scope='all')[0]
+    functions = {
+        item.name: item for item in source.walk() if item.kind == 'function_item'
+    }
+
+    assert set(functions) == {'live', 'wrapped'}
+    assert functions['live'].type_node is not None
+    assert functions['live'].type_node.text.decode() == functions['live'].ty
+    assert functions['live'].ty.replace(' ', '').replace('\n', '') == (
+        '::pyo3::PyResult<Option<crate::PyGeometry>>'
+    )
+    live_line = next(
+        line
+        for line, content in enumerate(src.splitlines(), 1)
+        if content.startswith('fn live')
+    )
+    wrapped_line = next(
+        line
+        for line, content in enumerate(src.splitlines(), 1)
+        if content.strip().startswith('fn wrapped')
+    )
+    assert functions['live'].line == live_line
+    assert functions['wrapped'].line == wrapped_line
+    macro = next(item for item in source.walk() if item.kind == 'macro_invocation')
+    assert macro.name == 'frozen_pymethods'
+    assert macro.text.startswith('frozen_pymethods!')
+
+
+def test_gometry_typed_return_gate_catches_real_bindings_not_literal_text(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(sys, 'path', list(sys.path))
+    gate = run_path(str(_GOMETRY_ROOT / 'tools' / 'gates' / '_check_typed_returns.py'))
+    src_root = tmp_path / 'src'
+    src_root.mkdir()
+    source = """\
+const DOC: &str = r###"#[pyfunction] fn spoof() -> PyGeometry { }"###;
+
+#[pyo3::pyfunction]
+fn direct() -> ::pyo3::PyResult<Option<crate::PyGeometry>> { todo!() }
+
+#[cfg(test)]
+mod tests {
+    #[pyo3::pyfunction]
+    fn test_only() -> crate::PyGeometry { todo!() }
+}
+
+frozen_pymethods! {
+    impl PyGeometry {
+        fn wrapped(&self) -> crate::PyResult<crate::PyGeometry> { todo!() }
+    }
+}
+"""
+    (src_root / 'lib.rs').write_text(source)
+
+    violations = gate['collect_violations'](src_root)
+
+    assert [(item.name, item.surface, item.path, item.line) for item in violations] == [
+        ('direct', '#[pyfunction]', 'lib.rs', 4),
+        ('test_only', '#[pyfunction]', 'lib.rs', 9),
+        ('wrapped', '#[pymethods]', 'lib.rs', 14),
+    ]
+
+
+def test_gometry_algebraic_gate_scans_test_bodies_not_literal_text(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(sys, 'path', list(sys.path))
+    gate = run_path(
+        str(_GOMETRY_ROOT / 'tools' / 'gates' / '_check_algebraic_float.py')
+    )
+    src_root = tmp_path / 'src'
+    source_dir = src_root / 'predicates'
+    source_dir.mkdir(parents=True)
+    source = """\
+#[cfg(test)]
+fn forbidden() {
+    // .algebraic_sub() is only a comment.
+    let _text = r###".algebraic_mul area > 0.0"###;
+    let _ = left.algebraic_add(right);
+}
+"""
+    (source_dir / 'fixture.rs').write_text(source)
+
+    errors, total_uses, whitelisted_functions = gate['collect_algebraic_errors'](
+        src_root
+    )
+
+    assert errors == ['src/predicates/fixture.rs:5:forbidden']
+    assert total_uses == 1
+    assert whitelisted_functions == 0
+
+
+def test_gometry_decision_surface_gate_ignores_literal_text(tmp_path, monkeypatch):
+    monkeypatch.setattr(sys, 'path', list(sys.path))
+    gate = run_path(
+        str(_GOMETRY_ROOT / 'tools' / 'gates' / '_check_algebraic_float.py')
+    )
+    src_root = tmp_path / 'src'
+    source_dir = src_root / 'predicates'
+    source_dir.mkdir(parents=True)
+    source = """\
+const DOC: &str = r###"if area > 0.0 { }"###;
+
+fn decision() {
+    if area > 0.0 {}
+}
+"""
+    (source_dir / 'fixture.rs').write_text(source)
+
+    errors = gate['collect_decision_surface_errors'](src_root)
+
+    assert errors == [
+        'src/predicates/fixture.rs:4: raw area float branch in decision module'
+    ]
 
 
 def test_rust_scan_ignores_pyclasses_that_are_not_code(tmp_path):

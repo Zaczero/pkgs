@@ -8,9 +8,13 @@ for focused diagnosis. Unit tests import their internals through
     if str(_TOOLS_ROOT) not in sys.path:
         sys.path.insert(0, str(_TOOLS_ROOT))
 
-    from _gatelib import iter_rust_sources, prepend_tools_import_paths, report_errors, strip_rust_comments
+    from _gatelib import (
+        prepend_rust_source_import_paths,
+        report_errors,
+        rust_source_config,
+    )
 
-    prepend_tools_import_paths()
+    prepend_rust_source_import_paths()
 """
 
 from __future__ import annotations
@@ -20,7 +24,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
+    from pyo3stubs.config import StubConfig
 
 TOOLS_DIR = Path(__file__).resolve().parent
 TOOL_IMPORT_DIRS = (
@@ -40,67 +44,23 @@ def prepend_tools_import_paths() -> None:
             sys.path.insert(0, path)
 
 
-def strip_rust_comments(text: str) -> str:
-    """Remove ``//`` and ``/* */`` comments while preserving string contents."""
-    out: list[str] = []
-    index = 0
-    length = len(text)
-    while index < length:
-        ch = text[index]
-        if ch == '/' and index + 1 < length:
-            nxt = text[index + 1]
-            if nxt == '/':
-                index += 2
-                while index < length and text[index] != '\n':
-                    index += 1
-                continue
-            if nxt == '*':
-                index += 2
-                while index + 1 < length and not (
-                    text[index] == '*' and text[index + 1] == '/'
-                ):
-                    index += 1
-                index = min(index + 2, length)
-                continue
-        if ch in '"\'':
-            quote = ch
-            out.append(ch)
-            index += 1
-            while index < length:
-                cur = text[index]
-                out.append(cur)
-                index += 1
-                if cur == '\\' and index < length:
-                    out.append(text[index])
-                    index += 1
-                    continue
-                if cur == quote:
-                    break
-            continue
-        if ch == 'b' and index + 1 < length and text[index + 1] in '"\'':
-            quote = text[index + 1]
-            out.append(ch)
-            out.append(quote)
-            index += 2
-            while index < length:
-                cur = text[index]
-                out.append(cur)
-                index += 1
-                if cur == '\\' and index < length:
-                    out.append(text[index])
-                    index += 1
-                    continue
-                if cur == quote:
-                    break
-            continue
-        out.append(ch)
-        index += 1
-    return ''.join(out)
+def prepend_rust_source_import_paths() -> None:
+    """Resolve shared tools and the sibling grammar package from this checkout."""
+    prepend_tools_import_paths()
+    path = str(ROOT.parent / 'pyo3stubs')
+    if path not in sys.path:
+        sys.path.insert(0, path)
 
 
-def iter_rust_sources(root: Path | None = None) -> Iterator[Path]:
-    """Every ``src/**/*.rs`` file, sorted, under ``root`` (default: repo root)."""
-    yield from sorted(((root or ROOT) / 'src').rglob('*.rs'))
+def rust_source_config(src_root: Path = ROOT / 'src') -> StubConfig:
+    """Minimal source paths for grammar-backed checks that do not load gometry."""
+    from pyo3stubs.config import StubConfig
+
+    return StubConfig(
+        module='gometry._lib',
+        stub_path=ROOT / 'python' / 'gometry' / '_lib.pyi',
+        src_root=src_root,
+    )
 
 
 def report_errors(errors: list[str], label: str) -> int:
